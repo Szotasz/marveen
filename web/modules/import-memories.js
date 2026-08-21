@@ -38,40 +38,62 @@ function renderSources(sources) {
     el.innerHTML = `<p class="empty-state">${escapeHtml(t('import.sources.empty'))}</p>`
     return
   }
-  el.innerHTML = sources.map(s => `
-    <div class="import-source-card" data-id="${escapeHtml(s.id)}">
-      <div class="import-source-header">
-        <span class="import-source-icon">${typeIcon(s.type)}</span>
-        <span class="import-source-label">${escapeHtml(s.label || s.path)}</span>
-        <span class="import-source-type">${escapeHtml(typeLabel(s.type))}</span>
-        <label class="import-toggle" title="${t('import.toggle.label')}">
-          <input type="checkbox" class="import-enabled-toggle" data-id="${escapeHtml(s.id)}" ${s.enabled ? 'checked' : ''}>
-          <span>${t('import.toggle.active')}</span>
-        </label>
-      </div>
-      <div class="import-source-meta">
-        <span title="${t('import.path.label')}">${escapeHtml(s.path)}</span>
-        <span>${escapeHtml(intervalLabel(s.interval_hours))}</span>
-        <span>${t('import.last_run')}: ${formatTs(s.last_run_at)}</span>
-      </div>
-      <div class="import-source-actions">
-        <button class="btn-secondary btn-compact import-sync-btn" data-id="${escapeHtml(s.id)}">${t('import.btn.sync')}</button>
-        <button class="btn-secondary btn-compact import-log-btn" data-id="${escapeHtml(s.id)}">${t('import.btn.log')}</button>
-        <button class="btn-secondary btn-compact import-wipe-btn" data-id="${escapeHtml(s.id)}">${t('import.btn.wipe_source')}</button>
-        <button class="btn-danger btn-compact import-delete-btn" data-id="${escapeHtml(s.id)}">${t('import.btn.delete')}</button>
-      </div>
+
+  const statusBadge = (enabled) => enabled
+    ? `<span class="import-status-badge active">${escapeHtml(t('import.status.active'))}</span>`
+    : `<span class="import-status-badge inactive">${escapeHtml(t('import.status.inactive'))}</span>`
+
+  el.innerHTML = `
+    <div class="import-sources-table-wrap">
+      <table class="import-sources-table">
+        <thead>
+          <tr>
+            <th>${escapeHtml(t('import.col.type'))}</th>
+            <th>${escapeHtml(t('import.col.name'))}</th>
+            <th>${escapeHtml(t('import.col.interval'))}</th>
+            <th>${escapeHtml(t('import.col.last_sync'))}</th>
+            <th>${escapeHtml(t('import.col.status'))}</th>
+            <th style="text-align:right">${escapeHtml(t('import.col.actions'))}</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${sources.map(s => `
+            <tr data-id="${escapeHtml(s.id)}">
+              <td><span class="isrc-type">${typeIcon(s.type)} ${escapeHtml(typeLabel(s.type))}</span></td>
+              <td>
+                ${s.label ? `<span class="isrc-label">${escapeHtml(s.label)}</span><br>` : ''}
+                <span class="isrc-path" title="${escapeHtml(s.path)}">${escapeHtml(s.path)}</span>
+              </td>
+              <td>${escapeHtml(intervalLabel(s.interval_hours))}</td>
+              <td style="white-space:nowrap;color:var(--text-muted);font-size:12px">${formatTs(s.last_run_at)}</td>
+              <td>${statusBadge(s.enabled)}</td>
+              <td>
+                <div class="isrc-actions">
+                  <button class="btn-secondary btn-compact import-sync-btn" data-id="${escapeHtml(s.id)}">${t('import.btn.sync')}</button>
+                  <button class="btn-secondary btn-compact import-log-btn" data-id="${escapeHtml(s.id)}">${t('import.btn.log')}</button>
+                  <button class="btn-secondary btn-compact import-toggle-btn" data-id="${escapeHtml(s.id)}" data-enabled="${s.enabled ? '1' : '0'}">${s.enabled ? t('import.btn.disable') : t('import.btn.enable')}</button>
+                  <button class="btn-secondary btn-compact import-wipe-btn" data-id="${escapeHtml(s.id)}">${t('import.btn.wipe_source')}</button>
+                  <button class="btn-danger btn-compact import-delete-btn" data-id="${escapeHtml(s.id)}">${t('import.btn.delete')}</button>
+                </div>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
     </div>
-  `).join('')
+  `
 
   // Event handlers
-  el.querySelectorAll('.import-enabled-toggle').forEach(cb => {
-    cb.addEventListener('change', async () => {
-      const id = cb.dataset.id
+  el.querySelectorAll('.import-toggle-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id
+      const nowEnabled = btn.dataset.enabled === '0'
       await fetch(`/api/import/sources/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: cb.checked }),
+        body: JSON.stringify({ enabled: nowEnabled }),
       })
+      loadImportSources()
     })
   })
 

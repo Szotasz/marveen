@@ -8327,3 +8327,48 @@ body {
   border-color: #ff6b5e;
   color: #ff6b5e;
 }
+
+/* ── Import sources table ──────────────────────────────────────────────────── */
+.import-sources-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.import-sources-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.import-sources-table th {
+  background: var(--bg-card);
+  padding: 10px 14px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.import-sources-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.import-sources-table tr:last-child td { border-bottom: none; }
+.import-sources-table tbody tr:hover { background: var(--bg-hover, rgba(127,127,127,.05)); }
+.import-sources-table .isrc-type { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.import-sources-table .isrc-path { font-family: monospace; font-size: 12px; color: var(--text-muted); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.import-sources-table .isrc-label { font-weight: 600; font-size: 13px; }
+.import-sources-table .isrc-actions { display: flex; gap: 4px; justify-content: flex-end; flex-wrap: wrap; }
+.import-status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.import-status-badge.active   { background: rgba(57,255,20,.15); color: #39FF14; border: 1px solid rgba(57,255,20,.35); }
+.import-status-badge.inactive { background: var(--bg-hover); color: var(--text-muted); border: 1px solid var(--border); }
