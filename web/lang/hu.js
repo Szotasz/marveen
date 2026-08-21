@@ -1873,6 +1873,7 @@ window._i18n.hu = {
   'import.sharepoint.warning':    'SharePoint: Ellenőrizd, hogy a szervezeted IT/adatvédelmi szabályzata engedélyezi-e a tartalom személyes AI rendszerbe másolását. Szükséges Graph scope: Sites.Read.All.',
   'import.page.title':            'Import emlékek',
   'import.page.desc':             'Fájlrendszer, Google Drive és SharePoint tartalmak automatikus beolvasása a memória rendszerbe.',
+  'import.page.info':             'Elfogadott kiterjesztések: txt, md, mdx, mdc, json, html, htm, csv, yaml, yml, xml, log, toml, ini, cfg, rst, tsv, sql. Kihagyva: .env, .key, .pem, .p12 és hasonló kulcs/tanúsítvány fájlok; id_rsa, id_ed25519 nevű fájlok; tartalom alapján Bearer tokenek, privát kulcsok, jelszó-értékek és IBAN-szerű minták.',
   'import.sources.title':         'Importforrások',
   'import.add.title':             'Új forrás',
 

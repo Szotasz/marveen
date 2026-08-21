@@ -504,6 +504,7 @@ main {
 .page-header { margin-bottom: 32px; }
 .page-header h1 { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; }
 .subtitle { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
+.page-info-text { color: var(--text-muted); font-size: 12px; margin-top: 8px; line-height: 1.6; max-width: 720px; }
 
 /* === Overview page === */
 .overview-stats {
