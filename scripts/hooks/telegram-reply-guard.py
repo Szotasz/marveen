@@ -109,7 +109,11 @@ def main():
     if not oq:
         sys.exit(0)  # nothing open, or already answered by a reply-tool call
 
-    chat_id, message_id, text, ts, created_at = oq
+    # open_question_with_age() also returns the inbound's attachment columns.
+    # Take only the prefix this hook needs, so the unpack cannot raise (it sits
+    # outside the try above, so a mismatch would kill the hook and the harness
+    # would read the empty stdout as "allow" -- the guard would never block).
+    chat_id, message_id, text, ts, created_at = oq[:5]
 
     # Pure acknowledgement -> no reply owed.
     if _is_ack(text):
