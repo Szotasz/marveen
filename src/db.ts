@@ -2416,6 +2416,41 @@ export async function backfillImportShadowRows(): Promise<number> {
   }
 
   logger.info({ count: pending.length }, 'Backfilled import shadow rows')
+
+  // Strip raw HTML/markup from any previously-crawled HTML import rows.
+  // New crawls already strip via import-crawler.ts; this one-time pass cleans
+  // rows ingested before that fix.  Inline regex avoids a circular import
+  // (import-crawler.ts already imports getDb from db.ts).
+  type HtmlImportRow = { import_id: string; content: string; shadow_id: number }
+  const htmlRows = db
+    .prepare(
+      `SELECT im.id AS import_id, im.content, m.id AS shadow_id
+       FROM import_memories im
+       JOIN memories m ON m.id = im.memory_shadow_id
+       WHERE (im.file_name LIKE '%.html' OR im.file_name LIKE '%.htm'
+           OR im.file_name LIKE '%.xml'  OR im.file_name LIKE '%.svg')
+         AND im.content LIKE '<%'`,
+    )
+    .all() as HtmlImportRow[]
+
+  if (htmlRows.length > 0) {
+    const stripInline = (raw: string) =>
+      raw
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&[a-z#0-9]+;/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+
+    for (const row of htmlRows) {
+      const stripped = stripInline(row.content)
+      db.prepare('UPDATE import_memories SET content = ? WHERE id = ?').run(stripped, row.import_id)
+      db.prepare('UPDATE memories SET content = ?, embedding_blob = NULL WHERE id = ?').run(stripped, row.shadow_id)
+    }
+    logger.info({ count: htmlRows.length }, 'Stripped HTML markup from existing import shadow rows')
+  }
+
   void runLinkMaintenance({ maxAge: 86400 * 30 }).catch(err =>
     logger.warn({ err }, 'Link maintenance after import shadow backfill failed'),
   )

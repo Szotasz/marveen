@@ -14,6 +14,21 @@ import {
   MAX_CONCURRENT_READS,
 } from './import-config.js'
 
+// ── HTML/markup stripping ────────────────────────────────────────────────────
+// Extensions whose raw content is markup and should be stripped to plain text
+// before storage and embedding, so cosine similarity finds content neighbours.
+const HTML_LIKE_EXTS = new Set(['.html', '.htm', '.xml', '.svg'])
+
+export function stripMarkup(raw: string): string {
+  return raw
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&[a-z#0-9]+;/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 // ── Secret-gate patterns ─────────────────────────────────────────────────────
 // Matches API tokens, private keys, passwords and similar credentials that must
 // not be stored in the memory database.
@@ -215,9 +230,11 @@ async function crawlLocalSource(
 
       if (containsSecret(raw)) { counts.skippedSecret++; return }
 
-      const content = raw.length > MAX_CONTENT_BYTES
-        ? raw.slice(0, MAX_CONTENT_BYTES) + '\n[truncated]'
-        : raw
+      const fileExt = extname(filePath).toLowerCase()
+      const stripped = HTML_LIKE_EXTS.has(fileExt) ? stripMarkup(raw) : raw
+      const content = stripped.length > MAX_CONTENT_BYTES
+        ? stripped.slice(0, MAX_CONTENT_BYTES) + '\n[truncated]'
+        : stripped
 
       const hash = createHash('sha256').update(raw).digest('hex')
       const keywords = extractKeywords(content, basename(filePath))

@@ -531,7 +531,7 @@ Respond ONLY with JSON, nothing else:
     const nodes = nodeRows.map(r => ({
       id: r.id,
       label: r.content.length > 40 ? r.content.slice(0, 40) + '...' : r.content,
-      tier: r.category || 'warm',
+      tier: r.agent_id === 'import' ? 'import' : (r.category || 'warm'),
       agent: r.agent_id || '',
       degree: degreeMap.get(r.id) ?? 0,
       created_at: r.created_at,
@@ -584,11 +584,11 @@ Respond ONLY with JSON, nothing else:
       'SELECT COUNT(*) AS cnt FROM span_reads WHERE memory_id = ?'
     ).get(id) as CountRow
 
-    type NeighborRow = { id: number; content: string; category: string; weight: number; direction: string }
+    type NeighborRow = { id: number; content: string; category: string; agent_id: string | null; weight: number; direction: string }
     // SQLite forbids ORDER BY/LIMIT inside individual UNION ALL arms -- wrap each arm in a subquery
     const neighbors = db2.prepare(`
       SELECT * FROM (
-        SELECT m.id, m.content, m.category, ml.weight, 'outgoing' AS direction
+        SELECT m.id, m.content, m.category, m.agent_id, ml.weight, 'outgoing' AS direction
         FROM memory_links ml
         JOIN memories m ON m.id = ml.dst_id
         WHERE ml.src_id = ? AND ml.weight >= 0.75
@@ -596,7 +596,7 @@ Respond ONLY with JSON, nothing else:
       )
       UNION ALL
       SELECT * FROM (
-        SELECT m.id, m.content, m.category, ml.weight, 'incoming' AS direction
+        SELECT m.id, m.content, m.category, m.agent_id, ml.weight, 'incoming' AS direction
         FROM memory_links ml
         JOIN memories m ON m.id = ml.src_id
         WHERE ml.dst_id = ? AND ml.weight >= 0.75
@@ -642,7 +642,7 @@ Respond ONLY with JSON, nothing else:
       neighbors: neighbors.map(n => ({
         id: n.id,
         label: n.content.length > 60 ? n.content.slice(0, 60) + '...' : n.content,
-        tier: n.category,
+        tier: n.agent_id === 'import' ? 'import' : n.category,
         weight: n.weight,
         direction: n.direction,
       })),
