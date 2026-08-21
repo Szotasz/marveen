@@ -396,7 +396,7 @@ const GRAPH_TIER_COLORS = {
   warm: '#d97757',
   cold: '#6a9bcc',
   shared: '#b0a040',
-  import: '#1a7a1a',
+  import: '#39FF14',
 }
 
 // Poly spec: luminous dark-variants for ambient glow
