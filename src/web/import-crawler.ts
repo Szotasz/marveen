@@ -97,8 +97,9 @@ function upsertImportMemory(
   now: number,
 ): 'added' | 'updated' | 'hash_match' {
   const db = getDb()
-  const existing = db.prepare("SELECT id, content_hash FROM import_memories WHERE source_id = ? AND file_path = ?")
-    .get(sourceId, filePath) as { id: string; content_hash: string } | undefined
+  const existing = db.prepare(
+    "SELECT id, content_hash, memory_shadow_id FROM import_memories WHERE source_id = ? AND file_path = ?"
+  ).get(sourceId, filePath) as { id: string; content_hash: string; memory_shadow_id: number | null } | undefined
 
   if (existing) {
     if (existing.content_hash === hash) {
@@ -109,6 +110,20 @@ function upsertImportMemory(
       UPDATE import_memories SET content_hash = ?, content = ?, keywords = ?, last_seen_at = ?, updated_at = ?
       WHERE id = ?
     `).run(hash, content, keywords, now, now, existing.id)
+    if (existing.memory_shadow_id) {
+      // Keep shadow row in sync with updated content
+      db.prepare('UPDATE memories SET content = ?, keywords = ?, updated_at = ? WHERE id = ?')
+        .run(content, keywords, now, existing.memory_shadow_id)
+    } else {
+      // Create missing shadow row (defensive: migration backfill covers existing rows).
+      // agent_id='import' is the discriminator; category='warm' satisfies the CHECK
+      // constraint; chat_id and sector are sentinel values for NOT NULL columns.
+      const sr = db.prepare(
+        `INSERT INTO memories (agent_id, content, category, keywords, chat_id, sector, created_at, accessed_at, updated_at)
+         VALUES ('import', ?, 'warm', ?, 'import', 'semantic', ?, ?, ?) RETURNING id`
+      ).get(content, keywords, now, now, now) as { id: number }
+      db.prepare('UPDATE import_memories SET memory_shadow_id = ? WHERE id = ?').run(sr.id, existing.id)
+    }
     return 'updated'
   }
 
@@ -117,6 +132,13 @@ function upsertImportMemory(
     INSERT INTO import_memories (id, source_id, file_path, file_name, content_hash, content, keywords, last_seen_at, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(id, sourceId, filePath, fileName, hash, content, keywords, now, now, now)
+  // Create shadow row so the main embedding and link pipelines pick this up.
+  // agent_id='import' is the discriminator; category='warm' satisfies the CHECK constraint.
+  const sr = db.prepare(
+    `INSERT INTO memories (agent_id, content, category, keywords, chat_id, sector, created_at, accessed_at, updated_at)
+     VALUES ('import', ?, 'warm', ?, 'import', 'semantic', ?, ?, ?) RETURNING id`
+  ).get(content, keywords, now, now, now) as { id: number }
+  db.prepare('UPDATE import_memories SET memory_shadow_id = ? WHERE id = ?').run(sr.id, id)
   return 'added'
 }
 

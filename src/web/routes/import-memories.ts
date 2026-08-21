@@ -65,7 +65,7 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
   }
 
   // ── PUT /api/import/sources/:id ──────────────────────────────────────────
-  const sourceMatch = path.match(/^\/api\/import\/sources\/([a-f0-9]+)$/)
+  const sourceMatch = path.match(/^\/api\/import\/sources\/([a-zA-Z0-9_-]+)$/)
   if (sourceMatch && method === 'PUT') {
     const id = sourceMatch[1]
     const body = await readBody(req)
@@ -97,14 +97,26 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
   // ── DELETE /api/import/sources/:id ──────────────────────────────────────
   if (sourceMatch && method === 'DELETE') {
     const id = sourceMatch[1]
-    const changes = getDb().prepare("DELETE FROM import_sources WHERE id = ?").run(id).changes
+    const db = getDb()
+    const shadowIds = db.prepare(
+      'SELECT memory_shadow_id FROM import_memories WHERE source_id = ? AND memory_shadow_id IS NOT NULL'
+    ).all(id) as { memory_shadow_id: number }[]
+    // NULL out FK before deleting shadow rows so the FK constraint is not violated.
+    if (shadowIds.length) {
+      db.prepare('UPDATE import_memories SET memory_shadow_id = NULL WHERE source_id = ?').run(id)
+    }
+    const changes = db.prepare("DELETE FROM import_sources WHERE id = ?").run(id).changes
     if (!changes) { json(res, { error: 'Not found' }, 404); return true }
+    if (shadowIds.length) {
+      const ph = shadowIds.map(() => '?').join(',')
+      db.prepare(`DELETE FROM memories WHERE id IN (${ph})`).run(...shadowIds.map(r => r.memory_shadow_id))
+    }
     json(res, { ok: true })
     return true
   }
 
   // ── POST /api/import/sources/:id/sync ────────────────────────────────────
-  const syncMatch = path.match(/^\/api\/import\/sources\/([a-f0-9]+)\/sync$/)
+  const syncMatch = path.match(/^\/api\/import\/sources\/([a-zA-Z0-9_-]+)\/sync$/)
   if (syncMatch && method === 'POST') {
     const id = syncMatch[1]
     const existing = getDb().prepare("SELECT id FROM import_sources WHERE id = ?").get(id)
@@ -116,7 +128,7 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
   }
 
   // ── GET /api/import/sources/:id/log ─────────────────────────────────────
-  const logMatch = path.match(/^\/api\/import\/sources\/([a-f0-9]+)\/log$/)
+  const logMatch = path.match(/^\/api\/import\/sources\/([a-zA-Z0-9_-]+)\/log$/)
   if (logMatch && method === 'GET') {
     const id = logMatch[1]
     const rows = getDb().prepare(
@@ -136,17 +148,39 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
   }
 
   // ── DELETE /api/import/sources/:id/memories ──────────────────────────────
-  const wipeSourceMatch = path.match(/^\/api\/import\/sources\/([a-f0-9]+)\/memories$/)
+  const wipeSourceMatch = path.match(/^\/api\/import\/sources\/([a-zA-Z0-9_-]+)\/memories$/)
   if (wipeSourceMatch && method === 'DELETE') {
     const id = wipeSourceMatch[1]
-    const changes = getDb().prepare("DELETE FROM import_memories WHERE source_id = ?").run(id).changes
+    const db = getDb()
+    const shadowIds = db.prepare(
+      'SELECT memory_shadow_id FROM import_memories WHERE source_id = ? AND memory_shadow_id IS NOT NULL'
+    ).all(id) as { memory_shadow_id: number }[]
+    if (shadowIds.length) {
+      db.prepare('UPDATE import_memories SET memory_shadow_id = NULL WHERE source_id = ?').run(id)
+    }
+    const changes = db.prepare("DELETE FROM import_memories WHERE source_id = ?").run(id).changes
+    if (shadowIds.length) {
+      const ph = shadowIds.map(() => '?').join(',')
+      db.prepare(`DELETE FROM memories WHERE id IN (${ph})`).run(...shadowIds.map(r => r.memory_shadow_id))
+    }
     json(res, { ok: true, deleted: changes })
     return true
   }
 
   // ── DELETE /api/import/memories ──────────────────────────────────────────
   if (path === '/api/import/memories' && method === 'DELETE') {
-    const changes = getDb().prepare("DELETE FROM import_memories").run().changes
+    const db = getDb()
+    const shadowIds = db.prepare(
+      'SELECT memory_shadow_id FROM import_memories WHERE memory_shadow_id IS NOT NULL'
+    ).all() as { memory_shadow_id: number }[]
+    if (shadowIds.length) {
+      db.prepare('UPDATE import_memories SET memory_shadow_id = NULL').run()
+    }
+    const changes = db.prepare("DELETE FROM import_memories").run().changes
+    if (shadowIds.length) {
+      const ph = shadowIds.map(() => '?').join(',')
+      db.prepare(`DELETE FROM memories WHERE id IN (${ph})`).run(...shadowIds.map(r => r.memory_shadow_id))
+    }
     logger.info({ deleted: changes }, 'Import memories wiped')
     json(res, { ok: true, deleted: changes })
     return true
