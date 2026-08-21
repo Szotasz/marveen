@@ -234,5 +234,9 @@ def open_question(agent_id):
     oq = open_question_with_age(agent_id)
     if not oq:
         return None
-    chat_id, message_id, text, ts, _created_at, att_kind, att_file_id = oq
+    # Prefix-slice on purpose (HOOKARITAS821): if open_question_with_age()
+    # ever widens again, this unpack would ValueError INSIDE ledger_lib, and
+    # every caller that wraps only the open_question() call in try/except
+    # would read the failure as "ledger unavailable" -- fail-open, silently.
+    chat_id, message_id, text, ts, _created_at, att_kind, att_file_id = oq[:7]
     return (chat_id, message_id, text, ts, att_kind, att_file_id)
