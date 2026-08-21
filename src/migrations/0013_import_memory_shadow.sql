@@ -1,6 +1,6 @@
--- #7ce24975: shadow rows for import_memories in the main memories table.
+-- Shadow rows for import_memories in the main memories table.
 -- Every import_memories entry gets a corresponding row in memories
--- (category='import', agent_id='import') so it is picked up by the existing
+-- (agent_id='import') so it is picked up by the existing
 -- embedding and link-maintenance pipelines without schema changes there.
 
 ALTER TABLE import_memories ADD COLUMN memory_shadow_id INTEGER REFERENCES memories(id);
