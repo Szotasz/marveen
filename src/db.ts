@@ -8,6 +8,7 @@ import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { applyMigrations } from './db-migrations.js'
 import { rerank } from './reranker.js'
+import { stripMarkup } from './web/import-utils.js'
 
 let db: Database.Database
 let vecExtensionLoaded = false
@@ -2249,7 +2250,8 @@ function vectorRecencyDecay(createdAt: number, nowSec: number): number {
 async function vectorSearch(
   agentId: string,
   queryEmbedding: number[],
-  limit: number = 10
+  limit: number = 10,
+  crossAgent: boolean = false
 ): Promise<Memory[]> {
   let candidates: Memory[] = []
   const nowSec = Math.floor(Date.now() / 1000)
@@ -2270,9 +2272,11 @@ async function vectorSearch(
       if (annRows.length > 0) {
         const ids = annRows.map(r => r.memory_id)
         const placeholders = ids.map(() => '?').join(',')
-        const memories = db.prepare(
-          `SELECT * FROM memories WHERE id IN (${placeholders}) AND (agent_id = ? OR category = 'shared')`
-        ).all([...ids, agentId]) as Memory[]
+        // crossAgent: skip agent_id/shared filter so import shadow rows can
+        // link against the full fleet knowledge base.
+        const memories = crossAgent
+          ? (db.prepare(`SELECT * FROM memories WHERE id IN (${placeholders})`).all(ids) as Memory[])
+          : (db.prepare(`SELECT * FROM memories WHERE id IN (${placeholders}) AND (agent_id = ? OR category = 'shared')`).all([...ids, agentId]) as Memory[])
 
         const distMap = new Map(annRows.map(r => [r.memory_id, r.distance]))
         // Pipeline step 2: recency boost -- reorder by (proximity * decay) so
@@ -2292,9 +2296,10 @@ async function vectorSearch(
 
   if (candidates.length === 0) {
     // BLOB cosine fallback: full-scan, score = cosine * recency decay.
-    const rows = db.prepare(
-      "SELECT * FROM memories WHERE (embedding_blob IS NOT NULL OR embedding IS NOT NULL) AND (agent_id = ? OR category = 'shared')"
-    ).all(agentId) as Memory[]
+    // crossAgent: skip agent_id/shared filter (same reason as ANN path above).
+    const rows = crossAgent
+      ? (db.prepare("SELECT * FROM memories WHERE embedding_blob IS NOT NULL OR embedding IS NOT NULL").all() as Memory[])
+      : (db.prepare("SELECT * FROM memories WHERE (embedding_blob IS NOT NULL OR embedding IS NOT NULL) AND (agent_id = ? OR category = 'shared')").all(agentId) as Memory[])
 
     const scored = rows.map(m => {
       try {
@@ -2416,6 +2421,32 @@ export async function backfillImportShadowRows(): Promise<number> {
   }
 
   logger.info({ count: pending.length }, 'Backfilled import shadow rows')
+
+  // Strip raw HTML/markup from any previously-crawled HTML import rows.
+  // New crawls already strip via import-crawler.ts; this one-time pass cleans
+  // rows ingested before that fix.  Runs here (after initVecSupport) so that
+  // vec0 is loaded when vec_memories_au fires on the embedding_blob UPDATE.
+  type HtmlImportRow = { import_id: string; content: string; shadow_id: number }
+  const htmlRows = db
+    .prepare(
+      `SELECT im.id AS import_id, im.content, m.id AS shadow_id
+       FROM import_memories im
+       JOIN memories m ON m.id = im.memory_shadow_id
+       WHERE (im.file_name LIKE '%.html' OR im.file_name LIKE '%.htm'
+           OR im.file_name LIKE '%.xml'  OR im.file_name LIKE '%.svg')
+         AND im.content LIKE '<%'`,
+    )
+    .all() as HtmlImportRow[]
+
+  if (htmlRows.length > 0) {
+    for (const row of htmlRows) {
+      const stripped = stripMarkup(row.content)
+      db.prepare('UPDATE import_memories SET content = ? WHERE id = ?').run(stripped, row.import_id)
+      db.prepare('UPDATE memories SET content = ?, embedding_blob = NULL WHERE id = ?').run(stripped, row.shadow_id)
+    }
+    logger.info({ count: htmlRows.length }, 'Stripped HTML markup from existing import shadow rows')
+  }
+
   void runLinkMaintenance({ maxAge: 86400 * 30 }).catch(err =>
     logger.warn({ err }, 'Link maintenance after import shadow backfill failed'),
   )
@@ -2511,7 +2542,10 @@ export async function linkToNeighbors(memoryId: number, maxNeighbors = 5, simila
   if (!agentRow?.agent_id) return 0
 
   const queryVec = blobToFloats(row.embedding_blob)
-  const candidates = await vectorSearch(agentRow.agent_id, queryVec, maxNeighbors + 1)
+  // Import shadow rows (agent_id='import') must search the full fleet so they
+  // can link against memories from all agents, not only other import rows.
+  const crossAgent = agentRow.agent_id === 'import'
+  const candidates = await vectorSearch(agentRow.agent_id, queryVec, maxNeighbors + 1, crossAgent)
 
   let linked = 0
   for (const candidate of candidates) {

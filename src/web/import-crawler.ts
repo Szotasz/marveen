@@ -13,6 +13,7 @@ import {
   MAX_TOTAL_CONTENT_BYTES,
   MAX_CONCURRENT_READS,
 } from './import-config.js'
+import { HTML_LIKE_EXTS, stripMarkup } from './import-utils.js'
 
 // ── Secret-gate patterns ─────────────────────────────────────────────────────
 // Matches API tokens, private keys, passwords and similar credentials that must
@@ -215,9 +216,11 @@ async function crawlLocalSource(
 
       if (containsSecret(raw)) { counts.skippedSecret++; return }
 
-      const content = raw.length > MAX_CONTENT_BYTES
-        ? raw.slice(0, MAX_CONTENT_BYTES) + '\n[truncated]'
-        : raw
+      const fileExt = extname(filePath).toLowerCase()
+      const stripped = HTML_LIKE_EXTS.has(fileExt) ? stripMarkup(raw) : raw
+      const content = stripped.length > MAX_CONTENT_BYTES
+        ? stripped.slice(0, MAX_CONTENT_BYTES) + '\n[truncated]'
+        : stripped
 
       const hash = createHash('sha256').update(raw).digest('hex')
       const keywords = extractKeywords(content, basename(filePath))
