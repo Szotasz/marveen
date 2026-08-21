@@ -119,7 +119,7 @@ export async function refreshMarveenBotUsername(): Promise<void> {
   } catch { /* offline; cache stays stale */ }
 }
 
-export async function sendTelegramMessage(token: string, chatId: string, text: string): Promise<void> {
+export async function sendTelegramMessage(token: string, chatId: string, text: string): Promise<number | null> {
   // Test-run marking happens HERE too, not only in notifyChannel: this path
   // reads its token from .env FILES (schedule-runner alerts), so blanking
   // CHANNEL_TOKEN/CHANNEL_CHAT_ID in a test's environment does not stop it.
@@ -136,6 +136,15 @@ export async function sendTelegramMessage(token: string, chatId: string, text: s
   if (!resp.ok) {
     const body = await resp.text().catch(() => '')
     throw new Error(`Telegram API ${resp.status}: ${body.slice(0, 200)}`)
+  }
+  // Some callers need the message id back (the approval gate stamps it onto
+  // the request row so the decision UI can reference the exact message). A
+  // malformed success body is not a send failure -- return null, never throw.
+  try {
+    const data = await resp.json() as { result?: { message_id?: number } }
+    return typeof data.result?.message_id === 'number' ? data.result.message_id : null
+  } catch {
+    return null
   }
 }
 

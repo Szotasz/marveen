@@ -3393,6 +3393,14 @@ export function resolveApproval(id: string, status: 'approved' | 'rejected' | 't
   `).run(status, now, resolvedBy, telegramMessageId ?? null, id).changes > 0
 }
 
+// The CREATE path stamps the owner-notification message id onto the row
+// (APPROVALVAK821): until this existed, telegram_message_id was only writable
+// through resolveApproval, so a pending request could never carry it.
+export function setApprovalTelegramMessageId(id: string, telegramMessageId: number): boolean {
+  return db.prepare('UPDATE approvals SET telegram_message_id = ? WHERE id = ?')
+    .run(telegramMessageId, id).changes > 0
+}
+
 export function listApprovals(opts: {
   agent_id?: string
   category?: string

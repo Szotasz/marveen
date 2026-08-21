@@ -1,40 +1,107 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { PROJECT_ROOT, MAIN_AGENT_ID } from '../../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN } from '../../config.js'
 import {
   createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals,
-  createAgentMessage,
+  createAgentMessage, setApprovalTelegramMessageId,
   type Approval,
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
+import { resolveOwnerChatId } from '../../owner-chat.js'
+import { sendTelegramMessage } from '../telegram.js'
 import type { RouteContext } from './types.js'
 
 const AUTONOMY_CONFIG_PATH = join(PROJECT_ROOT, 'store', 'autonomy-config.json')
 
-interface AutonomyCategory {
-  key: string
-  timeout_minutes?: number | null
-}
+// APPROVALVAK821: a pending approval with timeout_at NULL can never reach the
+// 'timeout' status -- the sweeper's WHERE clause skips it forever, so an
+// unanswered request leaves the asking agent polling into eternity. No
+// category carried timeout_minutes in any real install, which made the state
+// STRUCTURALLY unreachable. Every request therefore gets a timeout: the
+// caller's explicit timeout_seconds wins, then the category's
+// timeout_minutes, then this default.
+export const DEFAULT_TIMEOUT_MINUTES = 1440
+// Cap: a timeout past a week is indistinguishable from the old "never".
+export const MAX_TIMEOUT_SECONDS = 7 * 24 * 3600
 
-interface AutonomyConfig {
-  categories: AutonomyCategory[]
-}
-
-function getTimeoutAt(category: string): number | null {
+function readCategoryTimeoutMinutes(category: string): number | null {
   try {
     if (!existsSync(AUTONOMY_CONFIG_PATH)) return null
-    const config = JSON.parse(readFileSync(AUTONOMY_CONFIG_PATH, 'utf-8')) as AutonomyConfig
+    const config = JSON.parse(readFileSync(AUTONOMY_CONFIG_PATH, 'utf-8')) as {
+      categories: { key: string; timeout_minutes?: number | null }[]
+    }
     const cat = config.categories.find(c => c.key === category)
     if (!cat || cat.timeout_minutes == null) return null
-    return Math.floor(Date.now() / 1000) + cat.timeout_minutes * 60
+    return cat.timeout_minutes
   } catch {
     return null
   }
 }
 
+// Pure + exported for tests. `timeoutSeconds` is the request-body value as
+// received (unknown): the scaffolded agent instructions have always told
+// agents to send timeout_seconds, but the old handler never read it.
+export function computeTimeoutAt(category: string, timeoutSeconds: unknown, nowMs: number = Date.now()): number {
+  const now = Math.floor(nowMs / 1000)
+  if (typeof timeoutSeconds === 'number' && Number.isFinite(timeoutSeconds) && timeoutSeconds > 0) {
+    return now + Math.min(Math.floor(timeoutSeconds), MAX_TIMEOUT_SECONDS)
+  }
+  const catMinutes = readCategoryTimeoutMinutes(category)
+  if (catMinutes != null && catMinutes > 0) return now + catMinutes * 60
+  return now + DEFAULT_TIMEOUT_MINUTES * 60
+}
+
+// Owner-facing Telegram text. Pure + exported for tests. Plain text (no
+// markdown escaping concerns), proper accents: this is outgoing copy.
+export function buildOwnerApprovalText(approval: Approval): string {
+  const expires = approval.timeout_at
+    ? new Date(approval.timeout_at * 1000).toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' })
+    : 'nincs'
+  return [
+    `[JÓVÁHAGYÁS KELL] ${approval.agent_id} | ${approval.category}`,
+    approval.action_description,
+    `Lejárat: ${expires}`,
+    `Döntés: Dashboard -> Jóváhagyások (id: ${approval.id})`,
+  ].join('\n')
+}
+
+// APPROVALVAK821 (a) -- the request must reach the OWNER, not only the main
+// agent's inter-agent queue. Fire-and-forget on purpose: the POST response
+// must not wait on the Telegram round-trip, and a failed send must not fail
+// the request -- but it must be LOUD in the logs, because a silently
+// undelivered approval is exactly the closed loop this fixes.
+function notifyOwner(approval: Approval): void {
+  void (async () => {
+    if (!TELEGRAM_BOT_TOKEN) {
+      logger.warn({ approvalId: approval.id }, 'approval owner notification suppressed: no TELEGRAM_BOT_TOKEN')
+      return
+    }
+    const ownerChat = resolveOwnerChatId()
+    if (!ownerChat) {
+      logger.warn({ approvalId: approval.id }, 'approval owner notification suppressed: no owner chat')
+      return
+    }
+    try {
+      const messageId = await sendTelegramMessage(TELEGRAM_BOT_TOKEN, ownerChat, buildOwnerApprovalText(approval))
+      if (messageId != null) setApprovalTelegramMessageId(approval.id, messageId)
+      logger.info({ approvalId: approval.id, messageId }, 'approval owner notification sent')
+    } catch (err) {
+      logger.warn({ err, approvalId: approval.id }, 'approval owner notification FAILED -- the request is only visible on the dashboard')
+    }
+  })()
+}
+
 function notifyMainAgent(approval: Approval): void {
+  // APPROVALVAK821 (b): when the requester IS the main agent, this used to
+  // deliver the notification back to the requester itself -- which counted as
+  // "notified" while no human ever saw it. The owner Telegram above is the
+  // real notification; a self-addressed message is noise that hides the gap.
+  if (approval.agent_id === MAIN_AGENT_ID) {
+    logger.info({ approvalId: approval.id }, 'approval main-agent notify skipped: requester is the main agent (owner is notified on Telegram)')
+    return
+  }
   try {
     const content = [
       `[APPROVAL_REQUEST]`,
@@ -67,7 +134,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
   // POST /api/approvals -- create new approval request
   if (path === '/api/approvals' && method === 'POST') {
-    let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown }
+    let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown; timeout_seconds?: unknown }
     try {
       body = JSON.parse((await readBody(req)).toString())
     } catch {
@@ -75,7 +142,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const { agent_id, category, action_description, action_payload } = body
+    const { agent_id, category, action_description, action_payload, timeout_seconds } = body
     if (typeof agent_id !== 'string' || !agent_id.trim()) {
       json(res, { error: 'agent_id is required' }, 400)
       return true
@@ -94,7 +161,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     }
 
     const id = randomUUID()
-    const timeout_at = getTimeoutAt(category)
+    const timeout_at = computeTimeoutAt(category, timeout_seconds)
     const approval = createApproval({
       id,
       agent_id: agent_id.trim(),
@@ -104,6 +171,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       timeout_at,
     })
 
+    notifyOwner(approval)
     notifyMainAgent(approval)
     logger.info({ id, agent_id, category }, 'Approval request created')
     json(res, approval, 201)
