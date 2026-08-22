@@ -1,0 +1,110 @@
+/* =============================================================
+   modal.css — CUBE modal component (DS F5)
+   .modal-overlay + .modal[data-variant][data-size]
+   Consolidated from two style.css blocks + .modal-content.
+   ============================================================= */
+
+/* === Overlay === */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal-backdrop);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--overlay);
+  backdrop-filter: blur(4px);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity var(--dur-base) var(--ease-out), visibility var(--dur-base) var(--ease-out);
+}
+
+.modal-overlay.active    { opacity: 1; visibility: visible; }
+.modal-overlay[hidden]   { display: none; }
+
+/* === Panel === */
+
+.modal {
+  --_max-w: 480px;
+  --_max-h: 90vh;
+
+  width: 90%;
+  max-width: var(--_max-w);
+  max-height: var(--_max-h);
+  overflow-y: auto;
+  background: var(--bg-modal);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  z-index: var(--z-modal);
+  transform: translateY(20px) scale(0.97);
+  transition: transform var(--dur-base) var(--ease-out);
+}
+
+.modal-overlay.active .modal { transform: translateY(0) scale(1); }
+
+/* === Size variants === */
+
+.modal[data-variant="wide"]  { --_max-w: 640px; }
+.modal[data-variant="full"]  { --_max-w: 900px; }
+.modal[data-variant="sheet"] {
+  --_max-w: 100%;
+  --_max-h: 80vh;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+
+/* === Structural slots === */
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-5) var(--sp-6);
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-header h2 { font-size: var(--fs-lg); font-weight: var(--fw-semibold); letter-spacing: -0.01em; }
+.modal-header h3 { margin: 0; font-size: var(--fs-base); }
+
+.modal-close {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+  font-size: 20px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.modal-close:hover { background: var(--danger); color: var(--text-inverse); }
+
+.modal-body { padding: var(--sp-6); }
+
+.modal-footer {
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+/* === Legacy dialog wrapper (.modal-content) ===
+   Simpler dialog variant used by settings and schedule dialogs.
+   Uses [hidden] to toggle visibility (modal-overlay[hidden]).    */
+
+.modal-content {
+  background: var(--bg-modal);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  width: 90%;
+  max-width: 480px;
+  box-shadow: var(--shadow-lg);
+}
+
+.modal-desc { font-size: var(--fs-base); color: var(--text-muted); margin: 0 0 12px; }
