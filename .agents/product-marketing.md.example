@@ -1,0 +1,56 @@
+# Termék- és marketing-kontextus (sablon)
+
+Másold le `product-marketing.md` néven ugyanebbe a mappába, és töltsd ki a saját
+adataiddal. A kitöltött fájl SZÁNDÉKOSAN nem kerül gitbe (a .gitignore kizárja):
+kereskedelmi adat, ami csak a te telepítésedé. A marketing- és tartalom-skillek
+ebből dolgoznak kérdezés helyett -- minél konkrétabb, annál kevesebbet kérdez
+vissza az ügynök.
+
+## 1. Kik vagyunk, mit árulunk
+
+- [Cég/márka neve, egy mondatos leírás]
+- [Termék 1: mi ez, kinek szól, mi a fő értékígéret]
+- [Termék 2: ...]
+
+## 2. Célközönség
+
+- [Elsődleges szegmens: ki ő, mi fáj neki, hol éred el]
+- [Másodlagos szegmens: ...]
+
+## 3. Aktiváció: az "aha pillanat" termékenként
+
+- [Termék 1: mikor érti meg a felhasználó az értéket -- pl. az első sikeres X után]
+- [Termék 2: ...]
+
+## 4. Konverziós célok felületenként
+
+- [Felület (pl. weboldal, hírlevél, közösség): mi a kívánt következő lépés]
+
+## 5. Árazás és csomagolás
+
+- [Termék / csomag: ár, számlázási mód (nettó/bruttó, havi/éves), mi jár bele]
+- [Kedvezmény-szabályok, ha vannak]
+
+## 6. Csatornák és mérés
+
+- [Élő csatornák és szerepük (pl. hírlevél = megtartás, közösség = aktiválás)]
+- [NEM létező csatornák -- mondd ki, hogy az ügynök ne hivatkozzon rájuk]
+- [Mit mérünk és hol (pl. feliratkozás, vásárlás, aktiváció)]
+
+## 7. Hang és stílus
+
+- [Hangnem, tegezés/magázás, tiltott fordulatok, kötelező formai szabályok]
+
+## 8. TILTOTT MINTÁK -- ez kapu, nem ajánlás
+
+- [Amit az ügynök kimenő anyagban SOHA nem tehet meg (pl. ár-ígéret jóváhagyás
+  nélkül, nem létező funkció említése, más ügyfél adatainak felhasználása)]
+
+## 9. Versenytársak és pozicionálás
+
+- [Versenytárs: miben más a mi termékünk, mit NEM mondunk róluk]
+
+## 10. Mire ne tegyen javaslatot
+
+- [Témák/döntések, amik mindig a tulajdonoshoz mennek (pl. árváltoztatás,
+  új csatorna nyitása, partneri megállapodás)]

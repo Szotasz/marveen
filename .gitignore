@@ -121,3 +121,11 @@ transcripts/
 
 # Local Netlify folder
 .netlify
+
+# .agents/: az install sajat termek-/marketing-kontextusa -- KERESKEDELMI ADAT
+# (arak, pozicionalas, versenytarsak), SOHA nem mehet a repoba. Tartalom-szintu
+# ignore (".agents/*", nem ".agents/"), mert konyvtar-szintu kizaras utan a
+# fajl-negacio nem hat (ld. 8811abfd, a .claude/settings.json ugyanigy romlott
+# el). A .example vaz viszont kimegy: abbol kap a vevo sajat kontextus-sablont.
+.agents/*
+!.agents/product-marketing.md.example
