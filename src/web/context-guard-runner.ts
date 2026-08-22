@@ -178,7 +178,20 @@ export function resumePrompt(
     base + source +
     `Utána ellenőrizd a kanban tábládat (in_progress kártyák, assignee=${name}) és a hot memóriáidat, ` +
     `és FOLYTASD a megkezdett munkát magadtól. Ne kezdd elölről ami a handoff szerint már kész. ` +
-    `Röviden jelezz a csatornádon, hogy friss kontextussal folytatod.`
+    // RESPAWNZAJ822/PRODFAAG822: a fresh session acting on a resume goal is
+    // exactly the actor that branch-switched and committed on the live prod
+    // tree (2026-08-22 10:10, PR #1036 duplicate). The constraint must ride in
+    // the resume prompt itself -- it is the ONLY context the fresh session has.
+    `KORLÁT: a futó prod fán (a repo fő checkoutján) NE válts ágat, NE commitolj és NE nyiss belőle PR-t ` +
+    `-- ha repo-munka kell, használj worktree-t (git worktree add). ` +
+    // The main agent's channel is the OWNER's channel (Telegram), and session
+    // meta must never go there (standing owner preference; a 3am status
+    // notice measured on 2026-08-05, review msg 14197). Sub-agents' channel
+    // is the inter-agent queue, where the notice belongs. This prompt is the
+    // fresh session's ONLY rule set, so the split must live here.
+    (name === MAIN_AGENT_ID
+      ? `Zárásul egyetlen transzkript-sorban rögzítsd, hogy friss kontextussal folytatod -- a csatornádra (a gazda Telegramjára) session-meta NEM mehet ki.`
+      : `Röviden jelezz a csatornádon, hogy friss kontextussal folytatod.`)
   )
 }
 
