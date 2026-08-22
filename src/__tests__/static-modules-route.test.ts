@@ -31,11 +31,11 @@ describe('rewriteIndexHtml: app.js cache-busting', () => {
     expect(out).toContain('defer')
   })
 
-  it('injects ?v= into style.css independently of app.js', () => {
-    const html = '<link rel="stylesheet" href="/style.css">'
+  it('injects ?v= into css/index.css independently of app.js', () => {
+    const html = '<link rel="stylesheet" href="/css/index.css">'
     const out = rewriteIndexHtml(html, app, css, brand)
-    expect(out).toContain(`/style.css?v=${css}`)
-    expect(out).not.toContain('href="/style.css"')
+    expect(out).toContain(`/css/index.css?v=${css}`)
+    expect(out).not.toContain('href="/css/index.css"')
   })
 
   it('does not match an unversioned URL that already has a ?v= token', () => {
