@@ -68,6 +68,11 @@ describe('gateDecision Bash: POSITIVE CONTROLS -- real send attempts still deny 
     expect(bash(`node -e "require('./src/graph-mail.js').sendMail({to:'a@b.hu'})"`).deny).toBe(true)
   })
 
+  it('heredoc stripping is ORDER-INDEPENDENT: marker-first file-writes stay content, heredoc-FED senders still deny (round 3)', () => {
+    expect(bash(`cat <<'EOF' > /tmp/notes.md\nsendmail --to x@y.hu is how the legacy path worked\nEOF`).deny).toBe(false)
+    expect(bash(`sendmail -t a@b.hu <<'EOF'\ntorzs sora\nEOF`).deny).toBe(true)
+  })
+
   it('an unparseable command falls back to the legacy patterns (never weaker than before)', () => {
     expect(bash(`echo "unbalanced quote and sendmail mentioned`).deny).toBe(true)
     expect(bash(`echo "unbalanced quote, harmless text`).deny).toBe(false)

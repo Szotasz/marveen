@@ -59,7 +59,12 @@ const SEND_PATTERNS = [
 // Wrapper-shell -c strings recurse; interpreter code-string arguments
 // (python -c / node -e) are scanned for code-level send calls -- code handed
 // to an interpreter IS operation, not content.
-const HEREDOC_RE = /<<-?\s*'?(\w+)'?\n[\s\S]*?\n\1/g
+// Order-independent heredoc stripping (round 3, msg 14286): the rest of
+// the intro line (e.g. a redirect after the marker) is command text and
+// is KEPT -- only the body is cut. Without this, marker-first spellings
+// leaked the body into command position (FP), and dropping the intro
+// would have lost a heredoc-fed real sender (FN).
+const HEREDOC_RE = /(<<-?\s*'?(\w+)'?[^\n]*)\n[\s\S]*?\n\2(?=\s|$)/g
 const ENV_ASSIGN = /^[A-Za-z_][A-Za-z_0-9]*=/
 const SENDER_PROG = /^(sendmail|msmtp|swaks)$/i
 const SENDPY = /^send\.py$/i
@@ -96,7 +101,7 @@ export function maskSubshellMarkers(cmd) {
 // Quote-aware tokenizer -> [[token, ...], ...] per segment. Throws on an
 // unbalanced quote (the caller falls back to the legacy content patterns).
 export function segmentsTokens(cmd) {
-  const s = maskSubshellMarkers(cmd.replace(HEREDOC_RE, ' '))
+  const s = maskSubshellMarkers(cmd.replace(HEREDOC_RE, '$1'))
   const segments = []
   let cur = []
   let tok = ''
