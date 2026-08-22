@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { PROJECT_ROOT, MAIN_AGENT_ID } from '../../config.js'
+import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID } from '../../config.js'
 import {
   createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals,
   createAgentMessage,
@@ -11,7 +11,7 @@ import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
-const AUTONOMY_CONFIG_PATH = join(PROJECT_ROOT, 'store', 'autonomy-config.json')
+const AUTONOMY_CONFIG_PATH = join(STORE_DIR, 'autonomy-config.json')
 
 interface AutonomyCategory {
   key: string

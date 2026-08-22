@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { serveFile, MIME } from '../http-helpers.js'
-import { PROJECT_ROOT, BRAND_NAME } from '../../config.js'
+import { PROJECT_ROOT, STORE_DIR, BRAND_NAME } from '../../config.js'
 import type { RouteContext } from './types.js'
 
 // Substitute the configured brand into the PWA manifest's user-visible fields
@@ -97,7 +97,7 @@ function serveIndexHtml(ctx: RouteContext, webDir: string): void {
 // extension probe order.
 function detectAvatarType(): string | null {
   for (const ext of ['.png', '.jpg', '.jpeg', '.webp']) {
-    if (existsSync(join(PROJECT_ROOT, 'store', `marveen-avatar${ext}`))) return MIME[ext]
+    if (existsSync(join(STORE_DIR, `marveen-avatar${ext}`))) return MIME[ext]
   }
   return null
 }

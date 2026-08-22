@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT, STORE_DIR } from '../config.js'
 import { listAgentNames, readAgentClaudeConfigDir } from './agent-config.js'
 import { agentSessionName, capturePane } from './agent-process.js'
 import { detectPaneState } from '../pane-state.js'
@@ -334,7 +334,7 @@ function hasLiveChildProcesses(session: string, mcpPatterns: string[]): boolean 
 export const TASKSTATE_FRESH_WINDOW_MS = 10 * 60 * 1000  // 10 min
 
 function hasLiveTaskStateFile(name: string, nowMs: number): boolean {
-  const path = join(PROJECT_ROOT, 'store', 'agent-taskstate', `${name}.json`)
+  const path = join(STORE_DIR, 'agent-taskstate', `${name}.json`)
   if (!existsSync(path)) return false
   try {
     const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>

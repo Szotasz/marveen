@@ -10,11 +10,11 @@
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { PROJECT_ROOT } from '../config.js'
+import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 
-export const COSTOPS_CONFIG_PATH = join(PROJECT_ROOT, 'store', 'costops-config.json')
-export const COSTOPS_EXAMPLE_PATH = join(PROJECT_ROOT, 'store', 'costops-config.json.example')
+export const COSTOPS_CONFIG_PATH = join(STORE_DIR, 'costops-config.json')
+export const COSTOPS_EXAMPLE_PATH = join(STORE_DIR, 'costops-config.json.example')
 
 export type CostConfidence =
   | 'actual_invoice'

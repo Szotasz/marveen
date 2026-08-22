@@ -22,14 +22,14 @@
 import { readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { PROJECT_ROOT } from '../config.js'
+import { PROJECT_ROOT, STORE_DIR } from '../config.js'
 import {
   expandAndValidateConfigDir,
   readAgentClaudeConfigDir,
   readAgentClaudePlan,
 } from './agent-config.js'
 
-export const CLAUDE_PLANS_PATH = join(PROJECT_ROOT, 'store', 'claude-plans.json')
+export const CLAUDE_PLANS_PATH = join(STORE_DIR, 'claude-plans.json')
 
 export type ClaudePlanType = 'personal' | 'team'
 

@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync, copyFileSync, writeFileSync } from 'node:fs'
 import { join, extname } from 'node:path'
 import {
-  PROJECT_ROOT, MAIN_AGENT_ID, CHANNEL_PROVIDER,
+  PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, CHANNEL_PROVIDER,
   currentBotName, currentBrandName, currentOwnerName,
   KANBAN_LABEL_COLORS,
 } from '../../config.js'
@@ -159,7 +159,7 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
     // after at most 1h, then ETag revalidation; the swapping session itself
     // busts via the frontend avatar epoch).
     for (const ext of ['.png', '.jpg', '.jpeg', '.webp']) {
-      const p = join(PROJECT_ROOT, 'store', `marveen-avatar${ext}`)
+      const p = join(STORE_DIR, `marveen-avatar${ext}`)
       if (existsSync(p)) { serveFile(req, res, p, { cacheSeconds: 3600 }); return true }
     }
     const fallback = join(webDir, 'avatars', '01_robot.png')
@@ -173,7 +173,7 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
     const contentType = req.headers['content-type'] || ''
 
     for (const ext of ['.png', '.jpg', '.jpeg', '.webp']) {
-      const p = join(PROJECT_ROOT, 'store', `marveen-avatar${ext}`)
+      const p = join(STORE_DIR, `marveen-avatar${ext}`)
       if (existsSync(p)) unlinkSync(p)
     }
 
@@ -186,13 +186,13 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
       }
       const srcPath = join(webDir, 'avatars', galleryAvatar)
       if (!existsSync(srcPath)) { json(res, { error: 'Avatar not found' }, 404); return true }
-      const destPath = join(PROJECT_ROOT, 'store', `marveen-avatar${extname(galleryAvatar) || '.png'}`)
+      const destPath = join(STORE_DIR, `marveen-avatar${extname(galleryAvatar) || '.png'}`)
       copyFileSync(srcPath, destPath)
       sendMarveenAvatarChange(destPath).catch(() => {})
     } else {
       const { file } = parseMultipart(body, contentType)
       if (!file) { json(res, { error: 'No file uploaded' }, 400); return true }
-      const destPath = join(PROJECT_ROOT, 'store', `marveen-avatar${extname(file.name) || '.png'}`)
+      const destPath = join(STORE_DIR, `marveen-avatar${extname(file.name) || '.png'}`)
       writeFileSync(destPath, file.data)
       sendMarveenAvatarChange(destPath).catch(() => {})
     }

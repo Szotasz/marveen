@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
-import { PROJECT_ROOT, DEFAULT_AGENT_MODEL } from '../config.js'
+import { PROJECT_ROOT, STORE_DIR, DEFAULT_AGENT_MODEL } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import {
   normalizeModelFallbackConfig,
@@ -12,7 +12,7 @@ import {
 // Single global config for the model-fallback-on-limit feature (one safety-net
 // policy for the whole fleet, unlike per-agent auto-restart). Default disabled,
 // so an upgrade is inert until the operator turns it on from the dashboard.
-const STORE_PATH = join(PROJECT_ROOT, 'store', 'model-fallback.json')
+const STORE_PATH = join(STORE_DIR, 'model-fallback.json')
 
 // chain[0] is what the runner reverts UP to, so it has to be the model this
 // install actually runs -- not the distribution literal in model-fallback.ts

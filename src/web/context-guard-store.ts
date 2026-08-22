@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
-import { PROJECT_ROOT } from '../config.js'
+import { PROJECT_ROOT, STORE_DIR } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import {
   normalizeContextGuardConfig,
@@ -14,7 +14,7 @@ import {
 // is unprotected until an operator enables it. Default-off keeps the guard from
 // double-restarting against the existing context-clean path (#525) until the two
 // systems share a trigger.
-const STORE_PATH = join(PROJECT_ROOT, 'store', 'context-guard.json')
+const STORE_PATH = join(STORE_DIR, 'context-guard.json')
 
 function readRaw(): Record<string, unknown> {
   try {

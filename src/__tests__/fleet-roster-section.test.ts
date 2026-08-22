@@ -8,6 +8,7 @@ const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-roster-test-'))
 
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: tmpRoot,
+  STORE_DIR: tmpRoot,
   OWNER_NAME: 'TestOwner',
   MAIN_AGENT_ID: 'main-agent',
   BOT_NAME: 'main-agent',

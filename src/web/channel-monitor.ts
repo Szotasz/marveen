@@ -5,7 +5,7 @@ import { execFileSync, spawn } from 'node:child_process'
 import { resolveFromPath } from '../platform.js'
 import { WEB_PORT } from '../config.js'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID, SERVICE_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT, RESPAWN_ENABLED } from '../config.js'
+import { MAIN_AGENT_ID, SERVICE_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT, STORE_DIR, RESPAWN_ENABLED } from '../config.js'
 import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-config.js'
 import {
   agentHasChannel,
@@ -104,7 +104,7 @@ const agentRestartFailures: Map<string, number> = new Map()
 let agentRestartFailuresInitialized = false
 
 function agentFailuresPath(agentName: string): string {
-  return join(PROJECT_ROOT, 'store', `.agent-failures-${agentName}`)
+  return join(STORE_DIR, `.agent-failures-${agentName}`)
 }
 
 function loadPersistedAgentFailures(agentName: string): number {
@@ -864,7 +864,7 @@ export function lastMainRespawnAt(): number {
 // also suppresses this in-process watchdog for the grace window. Symmetrically,
 // hardRestartMarveenChannels writes the same file so the timer defers to us.
 // Best-effort: 0 if absent/garbage.
-const RESPAWN_STAMP_FILE = join(PROJECT_ROOT, 'store', '.channel-last-respawn')
+const RESPAWN_STAMP_FILE = join(STORE_DIR, '.channel-last-respawn')
 function fileRespawnStampMs(): number {
   try {
     const s = parseInt(readFileSync(RESPAWN_STAMP_FILE, 'utf-8').trim(), 10)
@@ -1147,7 +1147,7 @@ function maybeRestartWedgedMainChannel(state: StuckInputState): void {
 // PREVENTS that case (warm pipe); the ACTIVE detector for it now ships as
 // src/web/inbound-probe.ts (2026-06-01) -- a userbot sends a marker the watchdog
 // verifies in the transcript. This staleness path remains the coarse backstop.
-const KEEPALIVE_FILE = join(PROJECT_ROOT, 'store', '.channel-keepalive')
+const KEEPALIVE_FILE = join(STORE_DIR, '.channel-keepalive')
 const KEEPALIVE_STALE_MS = 18 * 60 * 1000 // ~3 missed 6-min cycles
 const KEEPALIVE_RESPAWN_GRACE_MS = 15 * 60 * 1000 // let a respawned session re-establish the file
 let marveenLastKeepaliveRespawn = 0

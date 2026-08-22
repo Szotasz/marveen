@@ -12,7 +12,7 @@ import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
 import type { Server as HttpServer } from 'node:http'
-import { PROJECT_ROOT, STORE_DIR, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
+import { PROJECT_ROOT, STORE_DIR, IS_ISOLATED_MODE, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
 import { initDatabase, backfillEmbeddings } from './db.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
 import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
@@ -464,11 +464,24 @@ async function main(): Promise<void> {
     logger.error({ err: reason }, 'unhandledRejection')
   })
 
-  await acquireLock()
+  // In isolated mode (MARVEEN_STORE_DIR override) skip takeover/reaper/reconciliation
+  // so this instance cannot SIGTERM the production dashboard running on the default port.
+  if (!IS_ISOLATED_MODE) {
+    await acquireLock()
+  } else {
+    logger.info('Isolated mode (MARVEEN_STORE_DIR): skipping port takeover and lock acquisition')
+  }
 
   // Database
   initDatabase()
   logger.info('Adatbazis inicializalva')
+
+  if (IS_ISOLATED_MODE) {
+    // Isolated mode: only serve the web dashboard, no background tasks or agent management.
+    webServer = startWebServer(WEB_PORT)
+    logger.info(`Marveen fut izolalt modban! Dashboard: http://localhost:${WEB_PORT}`)
+    return
+  }
 
   // Backfill embeddings for memories saved before Ollama was available.
   // Fire-and-forget: a missing or slow Ollama instance must not block startup.

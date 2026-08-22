@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { PROJECT_ROOT } from '../config.js'
+import { PROJECT_ROOT, STORE_DIR } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import {
   normalizeGateConfig,
@@ -8,8 +8,8 @@ import {
   type GateConfig,
 } from '../context-restart-gate.js'
 
-const CONFIG_PATH = join(PROJECT_ROOT, 'store', 'context-restart-gate.json')
-const STATE_PATH  = join(PROJECT_ROOT, 'store', 'context-restart-gate-state.json')
+const CONFIG_PATH = join(STORE_DIR, 'context-restart-gate.json')
+const STATE_PATH  = join(STORE_DIR, 'context-restart-gate-state.json')
 
 // ---- Config (per-agent, keyed by agent name) --------------------------------
 

@@ -45,6 +45,7 @@ afterAll(() => {
 
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: '/fake/project',
+  STORE_DIR: '/fake/project/store',
   BRAND_NAME: 'TestBrand',
 }))
 

@@ -16,6 +16,7 @@ const FAKE_ROOT = vi.hoisted(() => {
 
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: FAKE_ROOT,
+  STORE_DIR: FAKE_ROOT + '/store',
 }))
 
 vi.mock('../web/atomic-write.js', () => ({

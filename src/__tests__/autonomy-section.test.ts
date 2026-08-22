@@ -11,6 +11,7 @@ const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-autonomy-test-'))
 
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: tmpRoot,
+  STORE_DIR: tmpRoot,
   OWNER_NAME: 'TestOwner',
   MAIN_AGENT_ID: 'agent-a',
   BOT_NAME: 'agent-a',

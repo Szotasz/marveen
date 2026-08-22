@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
-import { PROJECT_ROOT } from '../config.js'
+import { PROJECT_ROOT, STORE_DIR } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import {
   normalizeAutoRestartConfig,
@@ -12,7 +12,7 @@ import {
 // (the main orchestrator included, under its agent id). A single file keeps the
 // main session and sub-agents uniform and sidesteps the per-agent-dir vs
 // PROJECT_ROOT config-path split.
-const STORE_PATH = join(PROJECT_ROOT, 'store', 'auto-restart.json')
+const STORE_PATH = join(STORE_DIR, 'auto-restart.json')
 
 function readRaw(): Record<string, unknown> {
   try {

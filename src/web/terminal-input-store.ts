@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
-import { PROJECT_ROOT } from '../config.js'
+import { PROJECT_ROOT, STORE_DIR } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 
 // Master opt-in toggle for the dashboard per-agent terminal-input (send-keys)
@@ -14,7 +14,7 @@ import { atomicWriteFileSync } from './atomic-write.js'
 // dashboard-token gate) before ANY /keys call is accepted. It defaults to OFF
 // and stays OFF across restarts unless the operator turned it on. Every accepted
 // /keys call is audit-logged separately (the missing fix from the incident).
-const STORE_PATH = join(PROJECT_ROOT, 'store', 'terminal-input.json')
+const STORE_PATH = join(STORE_DIR, 'terminal-input.json')
 
 interface TerminalInputConfig {
   enabled: boolean
