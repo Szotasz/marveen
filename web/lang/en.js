@@ -1876,4 +1876,26 @@ window._i18n.en = {
   'import.sources.title':         'Import sources',
   'import.add.title':             'Add source',
 
+  // Backups page
+  'nav.backups':                       'Backups',
+  'backups.subtitle':                  'Manage, verify, and restore backup archives',
+  'backups.btn.run':                   'Run backup now',
+  'backups.stat.last':                 'Last backup',
+  'backups.stat.count':                'Archive count',
+  'backups.stat.retention':            'Retention limit',
+  'backups.list.title':                'Archives',
+  'backups.list.empty':                'No backups available.',
+  'backups.col.name':                  'Filename',
+  'backups.col.date':                  'Date',
+  'backups.col.size':                  'Size',
+  'backups.col.checksum':              'Checksum',
+  'backups.col.actions':               'Actions',
+  'backups.verify.title':              'Verification output',
+  'backups.settings.title':            'Settings',
+  'backups.settings.keep_label':       'Retention limit (BACKUP_KEEP)',
+  'backups.settings.keep_hint':        'Archives older than this limit are automatically pruned on the next backup run.',
+  'backups.settings.save_btn':         'Save',
+  'backups.modal.delete.title':        'Delete archive',
+  'backups.modal.delete.confirm':      'Delete',
+
 }

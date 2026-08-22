@@ -181,6 +181,10 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/></svg>
             <span class="sb-label">Vault</span>
           </a>
+          <a href="#" class="sb-link" data-page="backups">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <span class="sb-label" data-i18n="nav.backups">Adatmentés</span>
+          </a>
         </div>
       </div>
       <div class="sb-group" data-group="connections">
@@ -2182,6 +2186,102 @@
           </div>
         </div>
         <div id="artifactsPreviewBody"></div>
+      </div>
+    </div>
+
+    <!-- === Backups Page === -->
+    <div class="page" id="backupsPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1 data-i18n="nav.backups">Adatmentés</h1>
+            <p class="subtitle" data-i18n="backups.subtitle">Mentések kezelése, ellenőrzése és visszaállítási runbook</p>
+          </div>
+          <button class="btn-primary btn-compact" id="backupsRunBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <span data-i18n="backups.btn.run">Mentés most</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Status bar -->
+      <div class="stat-cards" style="margin-bottom:16px">
+        <div class="stat-card">
+          <div class="stat-label" data-i18n="backups.stat.last">Utolsó mentés</div>
+          <div class="stat-value" id="backupsLastTime">-</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label" data-i18n="backups.stat.count">Mentések száma</div>
+          <div class="stat-value" id="backupsCount">-</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label" data-i18n="backups.stat.retention">Megőrzési limit</div>
+          <div class="stat-value" id="backupsRetentionStat">-</div>
+        </div>
+      </div>
+
+      <!-- Backup list -->
+      <div class="section-card" style="margin-bottom:16px">
+        <div class="section-card-header" style="display:flex;justify-content:space-between;align-items:center">
+          <h2 data-i18n="backups.list.title">Archívumok</h2>
+          <button class="btn-secondary btn-compact" id="backupsRefreshBtn">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            <span data-i18n="common.btn.refresh">Frissítés</span>
+          </button>
+        </div>
+        <div id="backupsEmpty" hidden style="color:var(--text-muted);padding:24px 0;text-align:center" data-i18n="backups.list.empty">Nincs elérhető mentés.</div>
+        <div id="backupsTableWrap" style="overflow-x:auto">
+          <table class="data-table" id="backupsTable" hidden>
+            <thead>
+              <tr>
+                <th data-i18n="backups.col.name">Fájlnév</th>
+                <th data-i18n="backups.col.date">Dátum</th>
+                <th data-i18n="backups.col.size">Méret</th>
+                <th data-i18n="backups.col.checksum">Ellenőrzőösszeg</th>
+                <th data-i18n="backups.col.actions">Műveletek</th>
+              </tr>
+            </thead>
+            <tbody id="backupsTbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Verify output panel -->
+      <div id="backupsVerifyPanel" hidden class="section-card" style="margin-bottom:16px">
+        <div class="section-card-header" style="display:flex;justify-content:space-between;align-items:center">
+          <h2 data-i18n="backups.verify.title">Ellenőrzés eredménye</h2>
+          <button class="btn-secondary btn-compact" id="backupsVerifyCloseBtn">&times;</button>
+        </div>
+        <pre id="backupsVerifyOutput" style="white-space:pre-wrap;font-size:12px;margin:0;padding:8px 0;color:var(--text-muted)"></pre>
+      </div>
+
+      <!-- Settings form -->
+      <div class="section-card">
+        <h2 class="section-card-header" data-i18n="backups.settings.title">Beállítások</h2>
+        <div class="form-grid" style="max-width:400px">
+          <label class="form-label" for="backupsKeepSelect" data-i18n="backups.settings.keep_label">Megőrzési limit (BACKUP_KEEP)</label>
+          <select id="backupsKeepSelect" class="form-input" style="width:120px">
+            <option value="10">10</option>
+            <option value="30" selected>30</option>
+            <option value="60">60</option>
+            <option value="180">180</option>
+          </select>
+          <p class="form-hint" style="margin:4px 0 12px;color:var(--text-muted);font-size:12px" data-i18n="backups.settings.keep_hint">A beállított határnál régebbi archívumok automatikusan törlődnek a következő mentéskor.</p>
+          <button class="btn-primary btn-compact" id="backupsSaveSettingsBtn" data-i18n="backups.settings.save_btn">Mentés</button>
+        </div>
+      </div>
+    </div>
+    <!-- /Backups Page -->
+
+    <!-- Modal: Backup törlés megerősítés -->
+    <div class="modal-overlay" id="backupsDeleteModal" hidden>
+      <div class="modal" style="max-width:420px">
+        <h2 data-i18n="backups.modal.delete.title">Archívum törlése</h2>
+        <p id="backupsDeleteModalDesc" style="margin:8px 0 20px;color:var(--text-muted)"></p>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn-secondary" id="backupsDeleteCancelBtn" data-i18n="common.btn.cancel">Mégse</button>
+          <button class="btn-danger" id="backupsDeleteConfirmBtn" data-i18n="backups.modal.delete.confirm">Törlés</button>
+        </div>
       </div>
     </div>
 

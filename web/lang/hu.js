@@ -1878,4 +1878,26 @@ window._i18n.hu = {
   'import.sources.title':         'Importforrások',
   'import.add.title':             'Új forrás',
 
+  // Backups page
+  'nav.backups':                       'Adatmentés',
+  'backups.subtitle':                  'Mentések kezelése, ellenőrzése és visszaállítási runbook',
+  'backups.btn.run':                   'Mentés most',
+  'backups.stat.last':                 'Utolsó mentés',
+  'backups.stat.count':                'Mentések száma',
+  'backups.stat.retention':            'Megőrzési limit',
+  'backups.list.title':                'Archívumok',
+  'backups.list.empty':                'Nincs elérhető mentés.',
+  'backups.col.name':                  'Fájlnév',
+  'backups.col.date':                  'Dátum',
+  'backups.col.size':                  'Méret',
+  'backups.col.checksum':              'Ellenőrzőösszeg',
+  'backups.col.actions':               'Műveletek',
+  'backups.verify.title':              'Ellenőrzés eredménye',
+  'backups.settings.title':            'Beállítások',
+  'backups.settings.keep_label':       'Megőrzési limit (BACKUP_KEEP)',
+  'backups.settings.keep_hint':        'A beállított határnál régebbi archívumok automatikusan törlődnek a következő mentéskor.',
+  'backups.settings.save_btn':         'Mentés',
+  'backups.modal.delete.title':        'Archívum törlése',
+  'backups.modal.delete.confirm':      'Törlés',
+
 }
