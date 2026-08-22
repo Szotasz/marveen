@@ -208,7 +208,7 @@ When you receive the heartbeat prompt:
      as written, do not recompose it:
 
      \`\`\`bash
-     python3 -c "import json,urllib.request; tok=open('${id.storeDir}/.dashboard-token').read().strip(); d=json.load(urllib.request.urlopen(urllib.request.Request('${id.dashboardOrigin}/api/kanban/heartbeat-summary', headers={'Authorization':'Bearer '+tok}))); c=d['counts']; print('COUNTS urgent=%s in_progress=%s waiting=%s planned=%s new_hot_memories_1h=%s waiting_shown=%s' % (c['urgent'],c['in_progress'],c['waiting'],c['planned'],c['new_hot_memories_1h'],d.get('waiting_shown'))); [print('URGENT',x['id'],x['title']) for x in d['urgent']]; [print('WAITING',x['id'],x['title']) for x in d['waiting']]"
+     python3 -c "import json,urllib.request; tok=open('${id.storeDir}/.dashboard-token').read().strip(); d=json.load(urllib.request.urlopen(urllib.request.Request('${id.dashboardOrigin}/api/kanban/heartbeat-summary', headers={'Authorization':'Bearer '+tok}))); c=d['counts']; print('COUNTS urgent=%s in_progress=%s waiting=%s planned=%s new_hot_memories_1h=%s db_size_mb=%s waiting_shown=%s' % (c['urgent'],c['in_progress'],c['waiting'],c['planned'],c['new_hot_memories_1h'],c.get('db_size_mb'),d.get('waiting_shown'))); [print('URGENT',x['id'],x['title']) for x in d['urgent']]; [print('WAITING',x['id'],x['title']) for x in d['waiting']]"
      \`\`\`
 
      The command is ONE line on purpose: it survives copy-paste from any
@@ -303,6 +303,19 @@ When you receive the heartbeat prompt:
      write \`new hot memories (1h): nincs adat (a summary nem adja)\` --
      do not fall back to your own query, and never fill the line with 0.
 
+     HBDBMERET822: the DB size comes from the SAME response: report
+     \`counts.db_size_mb\`. Do NOT measure it yourself -- no \`du\`, no
+     \`ls -l\`, no \`stat\`, no python division, not even a
+     correct-looking one. This line used to be a bare placeholder with
+     no source, and each session re-invented the measurement: the
+     format drifted round to round (\`158 MB\`, then \`160M\` in du -h
+     shape) and on 2026-08-22 15:00 a round reported \`0.0 MB\`
+     against a real 159 MB, right after a restart. A growth signal
+     that reads 0.0 does not die loudly -- nobody misses a zero.
+     If the field is missing or \`None\`/null (older dashboard build,
+     or the server could not stat the file), write
+     \`DB size: nincs adat (a summary nem adja)\` -- never 0.
+
 2. **Format** the result as a single inter-agent message:
 
    \`\`\`
@@ -324,7 +337,7 @@ When you receive the heartbeat prompt:
    - last hour: <N fired, N skipped>
 
    ### Memory / system
-   - DB size: <X> MB
+   - DB size: <counts.db_size_mb> MB
    - new hot memories (1h): <N>
    \`\`\`
 

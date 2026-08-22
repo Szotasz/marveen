@@ -285,7 +285,9 @@ function readClaudeCodeOauthJson(): string | null {
 // --- Data types ---
 
 interface SystemInfo {
-  dbSizeMB: number
+  // null = could not measure. Never 0: the metric is a growth signal, and a
+  // false zero reads as calm, not as failure (HBDBMERET822).
+  dbSizeMB: number | null
   dbWarning: boolean
 }
 
@@ -343,8 +345,9 @@ function collectSystem(): SystemInfo {
     const dbPath = join(STORE_DIR, DB_FILENAME)
     const dbSize = statSync(dbPath).size / (1024 * 1024)
     return { dbSizeMB: Math.round(dbSize * 10) / 10, dbWarning: dbSize > 100 }
-  } catch {
-    return { dbSizeMB: 0, dbWarning: false }
+  } catch (err) {
+    logger.warn({ err }, 'Heartbeat: DB size stat failed; reporting null, not 0')
+    return { dbSizeMB: null, dbWarning: false }
   }
 }
 
@@ -459,7 +462,7 @@ function buildAgentPrompt(data: HeartbeatData): string {
 
   // System -- trusted (our own metrics, no external input).
   prompt += `## Rendszer\n`
-  prompt += `- DB meret: ${data.system.dbSizeMB} MB${data.system.dbWarning ? ' WARNING >100MB!' : ''}\n`
+  prompt += `- DB meret: ${data.system.dbSizeMB === null ? 'nincs adat (stat hiba)' : `${data.system.dbSizeMB} MB${data.system.dbWarning ? ' WARNING >100MB!' : ''}`}\n`
   prompt += `- Aktiv utemezett feladatok: ${data.tasks.count}\n`
   if (data.tasks.nextRun) {
     const nextDate = new Date(data.tasks.nextRun * 1000)

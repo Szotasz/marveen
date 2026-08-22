@@ -1,12 +1,16 @@
 import Database from 'better-sqlite3'
 import { join } from 'node:path'
-import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync, statSync } from 'node:fs'
 import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from './config.js'
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 
 let db: Database.Database
+// The path the CURRENT handle was opened on (null for ':memory:'). Kept so
+// size reporting measures the database actually being served, not a
+// re-derived default path that an override would silently diverge from.
+let openedDbPath: string | null = null
 
 // Lock the DB file and its sidecars (WAL, SHM, rollback journal) down to
 // owner-only. better-sqlite3 opens the main file with the process umask
@@ -66,6 +70,7 @@ export function initDatabase(dbPathOverride?: string): void {
     }
   }
   db = new Database(dbPath)
+  openedDbPath = isMemory ? null : dbPath
   db.pragma('journal_mode = WAL')
   // Performance pragmas: safe with WAL, applied after journal_mode is set.
   // cache_size: negative value = kibibytes; -65536 → 64 MB page cache.
@@ -2090,6 +2095,32 @@ export const HEARTBEAT_NEW_HOT_MEMORIES_SQL =
 export function countNewHotMemories(agentId: string): number {
   const row = db.prepare(HEARTBEAT_NEW_HOT_MEMORIES_SQL).get(agentId) as { n: number } | undefined
   return row?.n ?? 0
+}
+
+/**
+ * HBDBMERET822: the heartbeat's "DB size" number is computed HERE, server-side,
+ * and served over /api/kanban/heartbeat-summary -- same closure as the kanban
+ * counts and countNewHotMemories above. Before this, the scaffold's template
+ * had a bare `DB size: <X> MB` placeholder with no sanctioned source, so each
+ * session re-invented the measurement: the format drifted round to round
+ * (`158 MB` -> `160M`, a du -h shape) and on 2026-08-22 15:00 the report said
+ * `0.0 MB` against a real 159 MB. A zero here is the dangerous direction --
+ * the metric exists as a GROWTH signal, and a permanent 0.0 does not die
+ * loudly, it just looks calm.
+ *
+ * Returns null (never 0) when the size cannot be measured: for ':memory:'
+ * databases and on stat failure. 0 is a plausible reading; null is not --
+ * the consumer renders it as "nincs adat". Same lesson as the silent
+ * `catch { return 0 }` this replaces in heartbeat.ts collectSystem.
+ */
+export function getDbFileSizeMb(): number | null {
+  if (!openedDbPath) return null
+  try {
+    return Math.round((statSync(openedDbPath).size / (1024 * 1024)) * 10) / 10
+  } catch (err) {
+    logger.warn({ err, dbPath: openedDbPath }, 'DB size stat failed; serving null, not 0')
+    return null
+  }
 }
 
 // --- Agent Messages ---
