@@ -178,7 +178,7 @@ body {
     display: block;
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.45);
+    background: color-mix(in srgb, black 45%, transparent);
     z-index: 85;
     opacity: 0;
     pointer-events: none;
@@ -312,8 +312,8 @@ nav { display: flex; gap: 4px; }
   padding: 0 6px;
   margin-left: 6px;
   border-radius: 999px;
-  background: #e53e3e;
-  color: #fff;
+  background: var(--danger);
+  color: var(--color-white);
   font-size: 11px;
   font-weight: 700;
   line-height: 18px;
@@ -334,22 +334,22 @@ nav { display: flex; gap: 4px; }
   border-left: 4px solid var(--accent);
 }
 .updates-summary.up-to-date {
-  border-left: 4px solid #22c55e;
+  border-left: 4px solid var(--success);
 }
 .updates-summary.error {
-  border-left: 4px solid #e53e3e;
+  border-left: 4px solid var(--danger);
 }
 .updates-diagnose {
   padding: 16px 18px;
   border-radius: var(--radius);
   background: var(--bg-input);
-  border-left: 4px solid #e53e3e;
+  border-left: 4px solid var(--danger);
   margin: 0 0 20px;
   font-size: 14px;
   line-height: 1.6;
 }
 .updates-diagnose.needs-human {
-  border-left-color: #f59e0b;
+  border-left-color: var(--warning);
 }
 .updates-diagnose p {
   margin: 8px 0 12px;
@@ -603,11 +603,11 @@ main {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #22c55e;
+  background: var(--success);
   margin-right: 4px;
   vertical-align: middle;
 }
-.overview-agent-status.stopped .dot { background: #a0a0a0; }
+.overview-agent-status.stopped .dot { background: var(--color-stone-400); }
 
 .overview-activity {
   display: flex;
@@ -755,7 +755,7 @@ main {
   padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
   background: var(--bg-card);
   border-top: 1px solid var(--border);
-  box-shadow: 0 -6px 20px rgba(0, 0, 0, .25);
+  box-shadow: 0 -6px 20px color-mix(in srgb, black 25%, transparent);
 }
 .kanban-drop-target {
   flex: 1;
@@ -919,7 +919,7 @@ main {
   background: color-mix(in srgb, var(--accent) 8%, var(--bg-card));
 }
 .kanban-card.drop-target-invalid {
-  outline: 2px dashed var(--danger, #e53e3e);
+  outline: 2px dashed var(--danger);
   outline-offset: 2px;
   cursor: no-drop;
 }
@@ -1182,7 +1182,7 @@ main {
   justify-content: center;
   font-size: 12px;
   font-weight: 700;
-  color: #fff;
+  color: var(--color-white);
   flex-shrink: 0;
 }
 .kanban-swimlane-avatar.owner { background: var(--accent); }
@@ -1477,9 +1477,9 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   color: var(--accent);
   flex-shrink: 0;
 }
-.agent-avatar.gradient-1 { background: linear-gradient(135deg, rgba(217,119,87,0.15), rgba(217,119,87,0.35)); }
-.agent-avatar.gradient-2 { background: linear-gradient(135deg, rgba(106,155,204,0.15), rgba(106,155,204,0.35)); color: var(--info); }
-.agent-avatar.gradient-3 { background: linear-gradient(135deg, rgba(120,140,93,0.15), rgba(120,140,93,0.35)); color: var(--success); }
+.agent-avatar.gradient-1 { background: linear-gradient(135deg, var(--accent-soft), color-mix(in srgb, var(--accent) 35%, transparent)); }
+.agent-avatar.gradient-2 { background: linear-gradient(135deg, var(--info-soft), color-mix(in srgb, var(--info) 35%, transparent)); color: var(--info); }
+.agent-avatar.gradient-3 { background: linear-gradient(135deg, var(--success-soft), color-mix(in srgb, var(--success) 35%, transparent)); color: var(--success); }
 .agent-avatar img {
   width: 100%;
   height: 100%;
@@ -1529,7 +1529,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   background: var(--bg-input);
   color: var(--text-muted);
 }
-.agent-model-badge.opus { background: rgba(217,119,87,0.12); color: var(--accent); }
+.agent-model-badge.opus { background: var(--accent-soft); color: var(--accent); }
 .agent-model-badge.sonnet { background: var(--info-soft); color: var(--info); }
 .agent-model-badge.haiku { background: var(--success-soft); color: var(--success); }
 
@@ -1549,7 +1549,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   font-family: inherit;
   color: var(--text-muted);
   background: var(--bg-input);
-  border: 1px solid var(--border, rgba(255,255,255,0.08));
+  border: 1px solid var(--border);
   border-radius: 4px;
   cursor: pointer;
   transition: color 0.15s, border-color 0.15s, background 0.15s;
@@ -1617,13 +1617,13 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 .process-dot.running {
   background: var(--success);
-  box-shadow: 0 0 6px rgba(120, 140, 93, 0.6);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--success) 60%, transparent);
   animation: pulse-dot 2s ease-in-out infinite;
 }
 .process-dot.stopped { background: var(--text-muted); }
 .process-dot.restarting {
-  background: var(--warning, #d4a52c);
-  box-shadow: 0 0 6px rgba(212, 165, 44, 0.6);
+  background: var(--warning);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--warning) 60%, transparent);
   animation: pulse-dot 1s ease-in-out infinite;
 }
 
@@ -1871,8 +1871,8 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   gap: 10px;
   margin-top: 14px;
   padding: 12px 16px;
-  background: rgba(217, 119, 87, 0.08);
-  border: 1px solid rgba(217, 119, 87, 0.2);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
   border-radius: var(--radius-sm);
   font-size: 13px;
   color: var(--text-secondary);
@@ -1888,15 +1888,15 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   font-size: 12px;
 }
 .tg-notice-ok {
-  background: rgba(120, 140, 93, 0.08);
-  border-color: rgba(120, 140, 93, 0.2);
+  background: var(--success-soft);
+  border-color: color-mix(in srgb, var(--success) 20%, transparent);
 }
 .tg-notice-ok svg { color: var(--success); }
 .tg-notice-warn {
-  background: rgba(200, 140, 40, 0.08);
-  border-color: rgba(200, 140, 40, 0.3);
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
+  border-color: color-mix(in srgb, var(--warning) 30%, transparent);
 }
-.tg-notice-warn svg { color: #c88c28; }
+.tg-notice-warn svg { color: var(--color-amber-600); }
 
 .tg-pairing-section {
   margin-top: 20px;
@@ -1979,12 +1979,12 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   letter-spacing: 0.04em;
   padding: 2px 8px;
   border-radius: 999px;
-  background: rgba(0, 122, 255, 0.15);
+  background: var(--info-soft);
   color: rgb(70, 140, 240);
   text-transform: uppercase;
 }
 .tg-allowed-kind-group {
-  background: rgba(0, 168, 132, 0.15);
+  background: color-mix(in srgb, var(--color-teal-500) 15%, transparent);
   color: rgb(40, 170, 130);
 }
 .tg-allowed-id {
@@ -2009,9 +2009,9 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   transition: all 0.15s ease;
 }
 .btn-icon-danger:hover {
-  background: rgba(220, 60, 70, 0.1);
+  background: var(--danger-soft);
   color: rgb(230, 90, 100);
-  border-color: rgba(220, 60, 70, 0.3);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
 }
 
 /* === Skills Tab === */
@@ -2146,7 +2146,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(20, 20, 19, 0.5);
+  background: var(--overlay);
   backdrop-filter: blur(4px);
   opacity: 0;
   visibility: hidden;
@@ -2293,7 +2293,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .avatar-upload-zone:hover,
 .avatar-upload-zone.drag-over {
   border-color: var(--accent);
-  background: rgba(217,119,87,0.05);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
 }
 .avatar-upload-content {
   display: flex;
@@ -2328,7 +2328,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   height: 20px;
   border-radius: 50%;
   background: var(--danger);
-  color: #fff;
+  color: var(--color-white);
   border: none;
   font-size: 14px;
   line-height: 1;
@@ -2517,7 +2517,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   display: inline-block;
   width: 16px;
   height: 16px;
-  border: 2px solid rgba(255,255,255,0.3);
+  border: 2px solid var(--alpha-white-35);
   border-top-color: white;
   border-radius: 50%;
   animation: spin 0.6s linear infinite;
@@ -2597,12 +2597,12 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   color: var(--success);
 }
 .badge-paused {
-  background: rgba(217, 119, 87, 0.12);
+  background: var(--accent-soft);
   color: var(--accent);
 }
 .badge-heartbeat {
-  background: rgba(200, 80, 120, 0.12);
-  color: #c85078;
+  background: color-mix(in srgb, var(--color-pink-500) 12%, transparent);
+  color: var(--color-pink-500);
 }
 
 .task-info {
@@ -2663,7 +2663,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   color: var(--text-secondary);
 }
 .btn-icon:hover { background: var(--accent-soft); color: var(--accent); }
-.btn-icon-danger:hover { background: rgba(191, 77, 67, 0.1); color: var(--danger); }
+.btn-icon-danger:hover { background: var(--danger-soft); color: var(--danger); }
 
 /* === Task detail === */
 .task-detail-meta {
@@ -2708,8 +2708,8 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   font-size: 11px;
   font-weight: 500;
   color: var(--text-muted);
-  background: var(--bg-elevated, rgba(255, 165, 0, 0.15));
-  border: 1px solid var(--border, rgba(255, 165, 0, 0.4));
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
   border-radius: 4px;
 }
 .meta-badge[hidden] { display: none; }
@@ -2796,8 +2796,8 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   padding: 0 5px;
   margin-left: 6px;
   border-radius: 999px;
-  background: var(--warning, #d4a52c);
-  color: #fff;
+  background: var(--warning);
+  color: var(--color-white);
   font-size: 11px;
   font-weight: 700;
   line-height: 18px;
@@ -2810,8 +2810,8 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   padding: 10px 16px;
   margin-bottom: 12px;
   border-radius: var(--radius);
-  background: color-mix(in srgb, var(--warning, #d4a52c) 12%, transparent);
-  border: 1px solid var(--warning, #d4a52c);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  border: 1px solid var(--warning);
   font-size: 13px;
   color: var(--text);
 }
@@ -2825,8 +2825,8 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   padding: 10px 14px;
   margin-bottom: 14px;
   border-radius: var(--radius);
-  background: color-mix(in srgb, var(--warning, #d4a52c) 12%, transparent);
-  border: 1px solid var(--warning, #d4a52c);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  border: 1px solid var(--warning);
   font-size: 13px;
   color: var(--text);
 }
@@ -2983,22 +2983,22 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   width: 340px;
   display: flex;
   flex-direction: column;
-  background: rgba(10,12,16,0.84);
+  background: color-mix(in srgb, var(--color-stone-1000) 84%, transparent);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
-  border: 1px solid rgba(255,255,255,0.08);
-  border-left: 2px solid var(--gc-tier-accent, rgba(255,255,255,0.2));
+  border: 1px solid var(--alpha-white-08);
+  border-left: 2px solid var(--gc-tier-accent);
   border-radius: 14px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.5), 0 0 24px var(--gc-tier-glow-shadow, transparent);
+  box-shadow: 0 8px 32px color-mix(in srgb, black 50%, transparent), 0 0 24px var(--gc-tier-glow-shadow, transparent);
   z-index: 10;
   animation: graphPanelIn 0.18s ease;
   overflow: hidden;
-  color: rgba(255,255,255,0.92);
+  color: var(--alpha-white-92);
   font-size: 13px;
   line-height: 1.55;
 }
 @supports not (backdrop-filter: blur(1px)) {
-  .graph-panel { background: rgba(10,12,16,0.94); }
+  .graph-panel { background: color-mix(in srgb, var(--color-stone-1000) 94%, transparent); }
 }
 .graph-panel[hidden] { display: none; }
 @keyframes graphPanelIn {
@@ -3008,7 +3008,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .graph-panel-drag-handle {
   display: none;
   width: 36px; height: 4px;
-  background: rgba(255,255,255,0.2);
+  background: var(--alpha-white-15);
   border-radius: 2px;
   margin: 8px auto 2px;
 }
@@ -3024,7 +3024,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   flex-shrink: 0;
   background: none;
   border: none;
-  color: rgba(255,255,255,0.35);
+  color: var(--alpha-white-35);
   font-size: 18px;
   cursor: pointer;
   line-height: 1;
@@ -3033,8 +3033,8 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   transition: color 0.15s, background 0.15s;
 }
 .graph-panel-close:hover {
-  color: rgba(255,255,255,0.92);
-  background: rgba(255,255,255,0.08);
+  color: var(--alpha-white-92);
+  background: var(--alpha-white-08);
 }
 .gc-tier-badge {
   display: inline-flex;
@@ -3055,16 +3055,16 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .gc-agent-chip {
   padding: 2px 8px;
   border-radius: 999px;
-  background: rgba(255,255,255,0.08);
+  background: var(--alpha-white-08);
   font-size: 11px;
-  color: rgba(255,255,255,0.65);
+  color: var(--alpha-white-65);
 }
 .gc-hub-badge {
   padding: 2px 8px;
   border-radius: 999px;
-  background: rgba(255,255,255,0.08);
+  background: var(--alpha-white-08);
   font-size: 11px;
-  color: #e3cf5e;
+  color: var(--color-amber-300);
 }
 .gc-freshness {
   display: flex;
@@ -3072,7 +3072,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   gap: 4px;
   margin-left: auto;
   font-size: 10.5px;
-  color: rgba(255,255,255,0.55);
+  color: var(--alpha-white-65);
   flex-shrink: 0;
 }
 .gc-freshness-dot {
@@ -3090,7 +3090,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 .gc-created-line {
   font-size: 11px;
-  color: rgba(255,255,255,0.35);
+  color: var(--alpha-white-35);
   padding: 0 14px 8px;
   flex-shrink: 0;
 }
@@ -3114,17 +3114,17 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 13px;
-  color: rgba(255,255,255,0.92);
+  color: var(--alpha-white-92);
   line-height: 1.55;
   padding: 12px 0 8px;
   scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,0.15) transparent;
+  scrollbar-color: var(--alpha-white-15) transparent;
   mask-image: linear-gradient(to bottom, transparent 0, black 16px, black calc(100% - 16px), transparent 100%);
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 16px, black calc(100% - 16px), transparent 100%);
 }
 .gc-content::-webkit-scrollbar { width: 4px; }
 .gc-content::-webkit-scrollbar-track { background: transparent; }
-.gc-content::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+.gc-content::-webkit-scrollbar-thumb { background: var(--alpha-white-15); border-radius: 2px; }
 .gc-import-meta {
   padding: 10px 0 8px;
   display: flex;
@@ -3136,8 +3136,8 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #39FF14;
-  border: 1px solid rgba(57,255,20,0.3);
+  color: var(--color-terminal-green);
+  border: 1px solid color-mix(in srgb, var(--color-terminal-green) 30%, transparent);
   border-radius: 999px;
   padding: 1px 9px;
   margin-bottom: 4px;
@@ -3150,22 +3150,22 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   line-height: 1.4;
 }
 .gc-import-lbl {
-  color: rgba(255,255,255,0.35);
+  color: var(--alpha-white-35);
   flex-shrink: 0;
   min-width: 58px;
 }
 .gc-import-val {
-  color: rgba(255,255,255,0.82);
+  color: var(--alpha-white-92);
   word-break: break-all;
 }
 .gc-import-path {
-  color: rgba(255,255,255,0.45);
+  color: var(--alpha-white-65);
   font-size: 11px;
   font-family: monospace;
 }
 .gc-meta {
   font-size: 11px;
-  color: rgba(255,255,255,0.35);
+  color: var(--alpha-white-35);
   padding: 2px 0 10px;
 }
 .gc-keywords {
@@ -3180,24 +3180,24 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .gc-kw-chip {
   padding: 2px 8px;
   border-radius: 999px;
-  background: rgba(255,255,255,0.07);
-  color: rgba(255,255,255,0.65);
+  background: var(--alpha-white-08);
+  color: var(--alpha-white-65);
   font-size: 10.5px;
 }
 .gc-kw-more {
   padding: 2px 8px;
   border-radius: 999px;
-  background: rgba(255,255,255,0.07);
-  color: rgba(255,255,255,0.5);
+  background: var(--alpha-white-08);
+  color: var(--alpha-white-65);
   font-size: 10.5px;
   cursor: pointer;
 }
-.gc-kw-more:hover { background: rgba(255,255,255,0.12); }
+.gc-kw-more:hover { background: var(--alpha-gray-12); }
 .gc-section-title {
   font-size: 10.5px;
   letter-spacing: 0.07em;
   text-transform: uppercase;
-  color: rgba(255,255,255,0.35);
+  color: var(--alpha-white-35);
   padding: 8px 0 6px;
   display: flex;
   justify-content: space-between;
@@ -3213,7 +3213,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   cursor: pointer;
   transition: background 0.1s;
 }
-.gc-neighbor-row:hover { background: rgba(255,255,255,0.05); }
+.gc-neighbor-row:hover { background: var(--alpha-white-05); }
 .gc-neighbor-dot {
   width: 7px; height: 7px;
   border-radius: 50%;
@@ -3221,7 +3221,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 .gc-neighbor-dir {
   font-size: 10px;
-  color: rgba(255,255,255,0.35);
+  color: var(--alpha-white-35);
   width: 12px;
   text-align: center;
   flex-shrink: 0;
@@ -3235,7 +3235,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 .gc-neighbor-bar-track {
   width: 28px; height: 3px;
-  background: rgba(255,255,255,0.1);
+  background: var(--alpha-gray-12);
   border-radius: 2px;
   flex-shrink: 0;
   overflow: hidden;
@@ -3243,14 +3243,14 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .gc-neighbor-bar-fill { height: 100%; border-radius: 2px; }
 .gc-neighbor-weight {
   font-size: 10.5px;
-  color: rgba(255,255,255,0.35);
+  color: var(--alpha-white-35);
   width: 28px;
   text-align: right;
   flex-shrink: 0;
 }
 .gc-neighbor-overflow {
   font-size: 10.5px;
-  color: rgba(255,255,255,0.3);
+  color: var(--alpha-white-35);
   padding: 4px 6px 6px;
 }
 .gc-tier-history { padding-bottom: 12px; }
@@ -3279,13 +3279,13 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   font-weight: 600;
   text-transform: uppercase;
 }
-.gc-tier-arrow { font-size: 12px; color: rgba(255,255,255,0.35); }
-.gc-tier-date { font-size: 10px; color: rgba(255,255,255,0.35); }
-.gc-tier-more { font-size: 11px; color: rgba(255,255,255,0.3); align-self: center; }
+.gc-tier-arrow { font-size: 12px; color: var(--alpha-white-35); }
+.gc-tier-date { font-size: 10px; color: var(--alpha-white-35); }
+.gc-tier-more { font-size: 11px; color: var(--alpha-white-35); align-self: center; }
 .gc-skeleton-bar {
   height: 12px;
   border-radius: 4px;
-  background: rgba(255,255,255,0.06);
+  background: var(--alpha-white-05);
   position: relative;
   overflow: hidden;
   margin-bottom: 8px;
@@ -3294,7 +3294,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.08) 50%, transparent 100%);
+  background: linear-gradient(90deg, transparent 0%, var(--alpha-white-08) 50%, transparent 100%);
   animation: gcSheen 1.2s ease-in-out infinite;
 }
 @media (prefers-reduced-motion: reduce) { .gc-skeleton-bar::after { animation: none; } }
@@ -3305,11 +3305,11 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .gc-skeleton-neighbor {
   height: 28px;
   border-radius: 8px;
-  background: rgba(255,255,255,0.05);
+  background: var(--alpha-white-05);
   margin-bottom: 4px;
 }
 .gc-footer {
-  border-top: 1px solid rgba(255,255,255,0.08);
+  border-top: 1px solid var(--alpha-white-08);
   padding: 8px 8px;
   display: flex;
   gap: 2px;
@@ -3323,7 +3323,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   gap: 2px;
   background: none;
   border: none;
-  color: rgba(255,255,255,0.55);
+  color: var(--alpha-white-65);
   cursor: pointer;
   font-size: 11px;
   border-radius: 8px;
@@ -3331,8 +3331,8 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   transition: color 0.15s, background 0.15s;
 }
 .gc-footer-btn:hover:not(:disabled) {
-  color: rgba(255,255,255,0.92);
-  background: rgba(255,255,255,0.08);
+  color: var(--alpha-white-92);
+  background: var(--alpha-white-08);
 }
 .gc-footer-btn:disabled { opacity: 0.35; cursor: default; }
 .gc-footer-icon { font-size: 13px; line-height: 1; }
@@ -3381,8 +3381,8 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   display: flex;
   align-items: center;
   gap: 6px;
-  background: rgba(20,20,19,0.75);
-  border: 1px solid #3d3d3a;
+  background: color-mix(in srgb, var(--color-stone-950) 75%, transparent);
+  border: 1px solid var(--color-stone-750);
   border-radius: 8px;
   padding: 5px 10px;
   z-index: 5;
@@ -3390,10 +3390,10 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 
 /* === Tier Badges === */
-.badge-hot { background: rgba(220, 60, 60, 0.12); color: #dc3c3c; }
-.badge-warm { background: rgba(217, 119, 87, 0.12); color: var(--accent); }
+.badge-hot { background: var(--danger-soft); color: var(--danger); }
+.badge-warm { background: var(--accent-soft); color: var(--accent); }
 .badge-cold { background: var(--info-soft); color: var(--info); }
-.badge-shared { background: rgba(200, 180, 100, 0.18); color: #9a8a30; }
+.badge-shared { background: var(--warning-soft); color: var(--color-amber-700); }
 
 .mem-agent-badge {
   font-size: 10px;
@@ -3505,9 +3505,9 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.4px;
-  background: rgba(239, 68, 68, 0.12);
-  color: #ef4444;
-  border: 1px solid rgba(239, 68, 68, 0.25);
+  background: var(--danger-soft);
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent);
 }
 
 /* === Memory version history (Előzmények tab) === */
@@ -3681,7 +3681,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   padding: 14px 18px;
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-left: 3px solid #e5a43a;
+  border-left: 3px solid var(--warning);
   border-radius: var(--radius);
 }
 .pending-retries-header {
@@ -4346,10 +4346,10 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .recall-memory {
   border-left: 3px solid var(--border);
 }
-.recall-memory[data-cat="hot"]    { border-left-color: #ef4444; }
-.recall-memory[data-cat="warm"]   { border-left-color: #f59e0b; }
-.recall-memory[data-cat="cold"]   { border-left-color: #3b82f6; }
-.recall-memory[data-cat="shared"] { border-left-color: #8b5cf6; }
+.recall-memory[data-cat="hot"]    { border-left-color: var(--danger); }
+.recall-memory[data-cat="warm"]   { border-left-color: var(--warning); }
+.recall-memory[data-cat="cold"]   { border-left-color: var(--info); }
+.recall-memory[data-cat="shared"] { border-left-color: var(--color-violet-500); }
 .recall-item-header {
   display: flex;
   justify-content: space-between;
@@ -4365,17 +4365,17 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 .recall-badge {
   font-size: 11px;
-  color: #fff;
+  color: var(--color-white);
   padding: 2px 8px;
   border-radius: 12px;
   white-space: nowrap;
 }
 .recall-badge-agent { background: var(--accent); }
 .recall-badge-cat { background: var(--text-muted); }
-.recall-badge-cat[data-cat="hot"]    { background: #ef4444; }
-.recall-badge-cat[data-cat="warm"]   { background: #f59e0b; }
-.recall-badge-cat[data-cat="cold"]   { background: #3b82f6; }
-.recall-badge-cat[data-cat="shared"] { background: #8b5cf6; }
+.recall-badge-cat[data-cat="hot"]    { background: var(--danger); }
+.recall-badge-cat[data-cat="warm"]   { background: var(--warning); }
+.recall-badge-cat[data-cat="cold"]   { background: var(--info); }
+.recall-badge-cat[data-cat="shared"] { background: var(--color-violet-500); }
 .recall-item-content {
   white-space: pre-wrap;
   font-size: 13px;
@@ -4647,7 +4647,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   width: 36px;
   height: 36px;
   border-radius: var(--radius-sm);
-  background: var(--accent-soft, rgba(99, 102, 241, 0.1));
+  background: var(--accent-soft);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4761,7 +4761,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 
 /* Info modal key section */
 .ssh-info-key-section {
-  background: var(--bg-hover, rgba(127,127,127,.05));
+  background: var(--bg-hover);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 14px 16px;
@@ -4822,9 +4822,9 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   text-transform: uppercase;
   letter-spacing: 0.4px;
 }
-.ssh-key-badge.ok { background: rgba(34,197,94,.15); color: #16a34a; }
-.ssh-key-badge.missing { background: rgba(234,179,8,.15); color: #b45309; }
-.ssh-key-badge.expired { background: rgba(239,68,68,.15); color: #dc2626; }
+.ssh-key-badge.ok { background: var(--success-soft); color: var(--success); }
+.ssh-key-badge.missing { background: var(--warning-soft); color: var(--color-amber-700); }
+.ssh-key-badge.expired { background: var(--danger-soft); color: var(--danger); }
 [data-theme="dark"] .ssh-key-badge.ok { color: #4ade80; }
 [data-theme="dark"] .ssh-key-badge.missing { color: #fbbf24; }
 [data-theme="dark"] .ssh-key-badge.expired { color: #f87171; }
@@ -4845,7 +4845,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   gap: 12px;
   transition: border-color var(--transition), box-shadow var(--transition);
 }
-.ssh-card:hover { border-color: var(--accent); box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+.ssh-card:hover { border-color: var(--accent); box-shadow: 0 2px 8px color-mix(in srgb, black 8%, transparent); }
 .ssh-card-head {
   display: flex;
   align-items: flex-start;
@@ -4930,7 +4930,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   vertical-align: middle;
 }
 .ssh-table tr:last-child td { border-bottom: none; }
-.ssh-table tbody tr:hover { background: var(--bg-hover, rgba(127,127,127,.05)); }
+.ssh-table tbody tr:hover { background: var(--bg-hover); }
 .ssh-table .ssh-table-name { font-weight: 600; }
 .ssh-table .ssh-table-mono { font-family: monospace; font-size: 12px; color: var(--text-muted); }
 .ssh-table .ssh-table-actions { display: flex; gap: 4px; justify-content: flex-end; }
@@ -5029,10 +5029,10 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   background: transparent;
   cursor: pointer;
   transition: all var(--transition);
-  color: #b45309;
+  color: var(--color-amber-700);
 }
 [data-theme="dark"] .ssh-keygen-btn { color: #fbbf24; }
-.ssh-keygen-btn:hover { background: rgba(234,179,8,.12); }
+.ssh-keygen-btn:hover { background: var(--warning-soft); }
 
 .ssh-info-btn {
   width: 24px;
@@ -5058,8 +5058,8 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   border-radius: 6px;
   margin-top: 8px;
 }
-.vault-bind-status.success { background: rgba(34,197,94,.12); color: var(--success); }
-.vault-bind-status.error { background: rgba(239,68,68,.12); color: var(--danger); }
+.vault-bind-status.success { background: var(--success-soft); color: var(--success); }
+.vault-bind-status.error { background: var(--danger-soft); color: var(--danger); }
 
 .vault-scan-desc {
   font-size: 13px;
@@ -5111,7 +5111,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: color-mix(in srgb, black 60%, transparent);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -5124,7 +5124,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   border-radius: var(--radius);
   width: 90%;
   max-width: 480px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 8px 32px color-mix(in srgb, black 30%, transparent);
 }
 .modal-header {
   display: flex;
@@ -5260,7 +5260,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   border-radius: 50%;
   flex-shrink: 0;
 }
-.connector-status-dot.connected { background: var(--success); box-shadow: 0 0 6px rgba(120,140,93,0.4); }
+.connector-status-dot.connected { background: var(--success); box-shadow: 0 0 6px color-mix(in srgb, var(--success) 40%, transparent); }
 .connector-status-dot.configured { background: var(--info); }
 .connector-status-dot.needs_auth { background: var(--accent); }
 .connector-status-dot.failed { background: var(--danger); }
@@ -5451,7 +5451,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .catalog-filter-btn.active {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--color-white);
 }
 
 /* === Catalog Grid === */
@@ -5560,7 +5560,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 .catalog-install-btn.install {
   background: var(--success);
-  color: #fff;
+  color: var(--color-white);
 }
 .catalog-install-btn.install:hover {
   filter: brightness(1.1);
@@ -5632,7 +5632,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   color: var(--success);
 }
 .status-overall.degraded {
-  background: rgba(217, 119, 87, 0.12);
+  background: var(--accent-soft);
   color: var(--accent);
 }
 .status-overall.unknown {
@@ -5734,8 +5734,8 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 .status-incident-badge.resolved { background: var(--success-soft); color: var(--success); }
 .status-incident-badge.monitoring { background: var(--info-soft); color: var(--info); }
-.status-incident-badge.identified { background: rgba(217,119,87,0.12); color: var(--accent); }
-.status-incident-badge.investigating { background: rgba(191,77,67,0.12); color: var(--danger); }
+.status-incident-badge.identified { background: var(--accent-soft); color: var(--accent); }
+.status-incident-badge.investigating { background: var(--danger-soft); color: var(--danger); }
 
 .status-incident-desc {
   font-size: 13px;
@@ -5907,7 +5907,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .skills-filter-btn.active {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--color-white);
 }
 
 .skill-health-dot {
@@ -5921,7 +5921,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 
 .skill-health-ok   { background: var(--success); }
-.skill-health-warn { background: var(--warning, #f59e0b); }
+.skill-health-warn { background: var(--warning); }
 .skill-health-err  { background: var(--danger); }
 
 .skill-health-label {
@@ -5932,9 +5932,9 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   font-weight: 500;
 }
 
-.skill-health-label.skill-health-ok   { background: var(--success-soft, rgba(34,197,94,.15)); color: var(--success); }
-.skill-health-label.skill-health-warn { background: rgba(245,158,11,.15); color: var(--warning, #f59e0b); }
-.skill-health-label.skill-health-err  { background: var(--danger-soft, rgba(239,68,68,.15)); color: var(--danger); }
+.skill-health-label.skill-health-ok   { background: var(--success-soft); color: var(--success); }
+.skill-health-label.skill-health-warn { background: var(--warning-soft); color: var(--warning); }
+.skill-health-label.skill-health-err  { background: var(--danger-soft); color: var(--danger); }
 
 .skill-keyword-tag {
   display: inline-block;
@@ -6127,17 +6127,17 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 
 .skills-card--local {
-  border-color: var(--warning, #f59e0b);
-  background: color-mix(in srgb, var(--warning, #f59e0b) 6%, var(--bg-card));
+  border-color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 6%, var(--bg-card));
 }
 .skills-card--local:hover {
-  border-color: var(--warning, #f59e0b);
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--warning, #f59e0b) 20%, transparent);
+  border-color: var(--warning);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--warning) 20%, transparent);
 }
 .skills-badge--agent {
-  background: color-mix(in srgb, var(--warning, #f59e0b) 15%, transparent);
-  color: var(--warning, #f59e0b);
-  border: 1px solid color-mix(in srgb, var(--warning, #f59e0b) 40%, transparent);
+  background: color-mix(in srgb, var(--warning) 15%, transparent);
+  color: var(--warning);
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
 }
 
 .skills-card-header {
@@ -6485,7 +6485,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   cursor: not-allowed;
 }
 .autonomy-level-btn.active {
-  color: #fff;
+  color: var(--color-white);
   box-shadow: var(--shadow-sm);
 }
 .autonomy-level-btn.active[data-level="1"] {
@@ -6542,8 +6542,8 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .settings-restart-badge {
   font-size: 11px;
   font-weight: 500;
-  color: var(--warning, #c9a000);
-  border: 1px solid var(--warning, #c9a000);
+  color: var(--warning);
+  border: 1px solid var(--warning);
   border-radius: 4px;
   padding: 1px 6px;
   white-space: nowrap;
@@ -6590,8 +6590,8 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   margin-bottom: 16px;
   border-radius: var(--radius);
   overflow: hidden;
-  border: 1px solid rgba(0, 151, 124, 0.25);
-  background: linear-gradient(135deg, rgba(0, 151, 124, 0.06) 0%, rgba(89, 233, 206, 0.04) 100%);
+  border: 1px solid color-mix(in srgb, var(--color-teal-500) 25%, transparent);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--color-teal-500) 6%, transparent) 0%, color-mix(in srgb, var(--color-mint-300) 4%, transparent) 100%);
 }
 [data-theme="dark"] .cxhu-banner {
   background: linear-gradient(135deg, rgba(0, 151, 124, 0.12) 0%, rgba(89, 233, 206, 0.06) 100%);
@@ -6614,7 +6614,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .cxhu-banner-headline {
   font-weight: 700;
   font-size: 14px;
-  color: #00977c;
+  color: var(--color-teal-500);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6631,8 +6631,8 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   align-items: center;
   padding: 7px 14px;
   border-radius: var(--radius-sm);
-  background: #00977c;
-  color: #fff;
+  background: var(--color-teal-500);
+  color: var(--color-white);
   font-size: 12px;
   font-weight: 600;
   text-decoration: none;
@@ -6640,7 +6640,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   transition: background var(--transition), transform var(--transition);
 }
 .cxhu-banner-cta:hover {
-  background: #007d67;
+  background: var(--color-teal-600);
   transform: translateY(-1px);
 }
 .cxhu-banner-close {
@@ -6680,8 +6680,8 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .cxhu-spinner {
   width: 18px;
   height: 18px;
-  border: 2px solid rgba(0, 151, 124, 0.25);
-  border-top-color: #00977c;
+  border: 2px solid color-mix(in srgb, var(--color-teal-500) 25%, transparent);
+  border-top-color: var(--color-teal-500);
   border-radius: 50%;
   animation: cxhu-spin 0.7s linear infinite;
   flex-shrink: 0;
@@ -6698,8 +6698,8 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   gap: 5px;
   font-size: 12px;
   font-weight: 600;
-  color: #00977c;
-  background: rgba(0, 151, 124, 0.1);
+  color: var(--color-teal-500);
+  background: color-mix(in srgb, var(--color-teal-500) 10%, transparent);
   padding: 5px 10px;
   border-radius: 999px;
 }
@@ -6711,7 +6711,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   text-underline-offset: 2px;
   white-space: nowrap;
 }
-.cxhu-link-sm:hover { color: #00977c; }
+.cxhu-link-sm:hover { color: var(--color-teal-500); }
 .cxhu-state--token {
   gap: 6px;
 }
@@ -6726,7 +6726,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   width: 200px;
   transition: border-color var(--transition);
 }
-.cxhu-token-input:focus { border-color: #00977c; }
+.cxhu-token-input:focus { border-color: var(--color-teal-500); }
 .cxhu-token-input::placeholder { color: var(--text-muted); font-size: 11px; }
 .cxhu-error-msg {
   font-size: 12px;
@@ -6794,7 +6794,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 .auth-mode-card.selected .auth-mode-card-icon {
   background: var(--accent);
-  color: #fff;
+  color: var(--color-white);
 }
 .auth-mode-card-body { flex: 1; min-width: 0; }
 .auth-mode-card-title {
@@ -6830,11 +6830,11 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   background: var(--bg);
   padding: 14px 16px;
 }
-.activity-card.act-working { border-left-color: #22c55e; }
-.activity-card.act-idle    { border-left-color: #9ca3af; }
-.activity-card.act-error   { border-left-color: #ef4444; }
-.activity-card.act-unknown { border-left-color: #eab308; }
-.activity-card.act-stopped { border-left-color: #6b7280; opacity: 0.7; }
+.activity-card.act-working { border-left-color: var(--success); }
+.activity-card.act-idle    { border-left-color: var(--color-stone-400); }
+.activity-card.act-error   { border-left-color: var(--danger); }
+.activity-card.act-unknown { border-left-color: var(--warning); }
+.activity-card.act-stopped { border-left-color: var(--color-stone-500); opacity: 0.7; }
 .activity-card.act-clickable { cursor: pointer; transition: background 0.15s, box-shadow 0.15s; }
 .activity-card.act-clickable:hover { background: var(--bg-card-hover, var(--bg-card)); box-shadow: 0 0 0 2px var(--accent); }
 .act-term-icon { color: var(--text-muted); flex-shrink: 0; opacity: 0.6; }
@@ -6847,32 +6847,32 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 .act-mode-badge {
   font-size: 10px; font-weight: 600; letter-spacing: 0.02em;
-  background: rgba(234,179,8,0.16); color: #a16207;
+  background: var(--warning-soft); color: var(--color-amber-700);
   border-radius: 4px; padding: 1px 6px; white-space: nowrap;
 }
 .activity-badge { font-size: 12px; font-weight: 600; border-radius: 999px; padding: 2px 10px; }
 .activity-badge.act-working {
-  background: rgba(34,197,94,0.15); color: #16a34a;
+  background: var(--success-soft); color: var(--success);
   /* "Breathing" pulse so the live "dolgozik" badge reads as active, mirroring
      the .process-dot.running pulse (same 2s ease-in-out cadence). */
   animation: badge-breathe 2s ease-in-out infinite;
 }
-.activity-badge.act-idle    { background: rgba(156,163,175,0.18); color: #6b7280; }
-.activity-badge.act-error   { background: rgba(239,68,68,0.15); color: #dc2626; }
-.activity-badge.act-unknown { background: rgba(234,179,8,0.18); color: #ca8a04; }
-.activity-badge.act-stopped { background: rgba(107,114,128,0.15); color: #6b7280; }
+.activity-badge.act-idle    { background: var(--neutral-soft); color: var(--color-stone-500); }
+.activity-badge.act-error   { background: var(--danger-soft); color: var(--danger); }
+.activity-badge.act-unknown { background: var(--warning-soft); color: var(--color-amber-600); }
+.activity-badge.act-stopped { background: var(--neutral-soft); color: var(--color-stone-500); }
 
 /* Green "breathing" glow for the working badge: saturates the pill and pulses a
    soft halo at peak, then settles. */
 @keyframes badge-breathe {
-  0%, 100% { background: rgba(34,197,94,0.12); box-shadow: 0 0 0 0 rgba(34,197,94,0); }
-  50%      { background: rgba(34,197,94,0.32); box-shadow: 0 0 8px 1px rgba(34,197,94,0.40); }
+  0%, 100% { background: var(--success-soft); box-shadow: 0 0 0 0 transparent; }
+  50%      { background: color-mix(in srgb, var(--success) 32%, transparent); box-shadow: 0 0 8px 1px color-mix(in srgb, var(--success) 40%, transparent); }
 }
 .activity-tail {
   margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
   line-height: 1.45; color: var(--text-muted); white-space: pre-wrap; word-break: break-word;
   max-height: clamp(200px, 28vh, 480px); overflow: auto;
-  background: var(--bg-subtle, rgba(127,127,127,0.06));
+  background: var(--bg-subtle);
   border-radius: 6px; padding: 8px 10px;
 }
 .activity-tail-empty { margin: 0; font-size: 12px; color: var(--text-muted); font-style: italic; }
@@ -6881,9 +6881,9 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
    Activity page's green working badge, including the breathe pulse. The SVG uses
    currentColor, so the icon greens with the label. */
 .agent-terminal-btn.agent-terminal-btn--busy {
-  background: rgba(34,197,94,0.15);
-  color: #16a34a;
-  border-color: #22c55e;
+  background: var(--success-soft);
+  color: var(--success);
+  border-color: var(--success);
   animation: badge-breathe 2s ease-in-out infinite;
 }
 
@@ -6926,7 +6926,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .chat-agent-item.selected { background: color-mix(in srgb, var(--accent) 12%, transparent); border-left: 3px solid var(--accent); }
 .chat-agent-avatar { flex-shrink: 0; }
 .chat-avatar { border-radius: 50%; display: block; object-fit: cover; }
-.chat-avatar-mono { border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; color: #fff; flex-shrink: 0; }
+.chat-avatar-mono { border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; color: var(--color-white); flex-shrink: 0; }
 .chat-agent-info { flex: 1; min-width: 0; }
 .chat-agent-name { font-size: 13px; font-weight: 600; }
 .chat-agent-preview { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
@@ -6976,7 +6976,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .chat-bubble { max-width: 72%; display: flex; flex-direction: column; gap: 4px; }
 .bubble-out {
   background: var(--accent);
-  color: #fff;
+  color: var(--color-white);
   border-radius: 16px 4px 16px 16px;
   padding: 10px 14px;
   align-self: flex-end;
@@ -6999,15 +6999,15 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .bubble-id-chip {
   font-size: 10px;
   font-weight: 700;
-  background: rgba(255,255,255,0.2);
+  background: var(--alpha-white-15);
   border-radius: 4px;
   padding: 1px 5px;
   font-family: monospace;
 }
-.bubble-out .bubble-id-chip { background: rgba(255,255,255,0.25); color: #fff; }
+.bubble-out .bubble-id-chip { background: var(--alpha-white-15); color: var(--color-white); }
 .bubble-in .bubble-id-chip { background: var(--bg-hover); color: var(--text-muted); }
 .bubble-text { font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
-.bubble-out .bubble-text { color: #fff; }
+.bubble-out .bubble-text { color: var(--color-white); }
 .bubble-time { font-size: 10px; opacity: 0.55; text-align: right; margin-top: 2px; }
 .chat-compose {
   padding: 10px 14px;
@@ -7065,16 +7065,16 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  background: color-mix(in srgb, #ef4444 12%, transparent);
-  border: 1px solid #ef4444;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid var(--danger);
   border-radius: 6px;
   padding: 6px 10px;
   margin: 8px 0 0;
 }
-.agent-reauth-reason { font-size: 11px; color: #ef4444; font-weight: 600; flex: 1; }
+.agent-reauth-reason { font-size: 11px; color: var(--danger); font-weight: 600; flex: 1; }
 .btn-danger {
-  background: #ef4444;
-  color: #fff;
+  background: var(--danger);
+  color: var(--color-white);
   border: none;
   border-radius: 6px;
   padding: 4px 10px;
@@ -7083,7 +7083,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   cursor: pointer;
   flex-shrink: 0;
 }
-.btn-danger:hover { background: #dc2626; }
+.btn-danger:hover { background: var(--danger); }
 .btn-danger:disabled { opacity: 0.6; cursor: not-allowed; }
 .agent-card-actions {
   display: flex;
@@ -7133,7 +7133,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   gap: 2px;
   padding: 8px 12px;
   border-radius: 8px;
-  color: var(--text, #222);
+  color: var(--text);
   text-decoration: none;
   font-size: 14px;
   border: 1px solid transparent;
@@ -7141,7 +7141,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .docs-list-title { line-height: 1.3; }
 .docs-list-date {
   font-size: 11px;
-  color: var(--text-muted, #888);
+  color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
 .docs-list-group-label {
@@ -7149,14 +7149,14 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--text-muted, #888);
+  color: var(--text-muted);
   padding: 10px 12px 2px;
 }
 .docs-list-group-label:first-child { padding-top: 0; }
-.docs-list-item:hover { background: var(--surface-2, rgba(127,127,127,0.08)); }
+.docs-list-item:hover { background: var(--surface-2); }
 .docs-list-item.active {
-  background: var(--surface-2, rgba(127,127,127,0.12));
-  border-color: var(--border, rgba(127,127,127,0.25));
+  background: var(--surface-2);
+  border-color: var(--border);
   font-weight: 600;
 }
 .docs-content {
@@ -7166,20 +7166,20 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   line-height: 1.65;
 }
 .markdown-body h1 { font-size: 1.7em; margin: 0.2em 0 0.6em; }
-.markdown-body h2 { font-size: 1.35em; margin: 1.4em 0 0.5em; border-bottom: 1px solid var(--border, rgba(127,127,127,0.2)); padding-bottom: 0.2em; }
+.markdown-body h2 { font-size: 1.35em; margin: 1.4em 0 0.5em; border-bottom: 1px solid var(--border); padding-bottom: 0.2em; }
 .markdown-body h3 { font-size: 1.12em; margin: 1.2em 0 0.4em; }
 .markdown-body p { margin: 0.6em 0; }
 .markdown-body ul, .markdown-body ol { margin: 0.5em 0; padding-left: 1.6em; }
 .markdown-body li { margin: 0.25em 0; }
 .markdown-body code {
-  background: var(--surface-2, rgba(127,127,127,0.12));
+  background: var(--surface-2);
   padding: 0.12em 0.4em;
   border-radius: 4px;
   font-size: 0.9em;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 .markdown-body pre {
-  background: var(--surface-2, rgba(127,127,127,0.12));
+  background: var(--surface-2);
   padding: 12px 14px;
   border-radius: 8px;
   overflow-x: auto;
@@ -7191,19 +7191,19 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   width: 100%;
 }
 .markdown-body th, .markdown-body td {
-  border: 1px solid var(--border, rgba(127,127,127,0.3));
+  border: 1px solid var(--border);
   padding: 7px 11px;
   text-align: left;
 }
-.markdown-body th { background: var(--surface-2, rgba(127,127,127,0.1)); }
+.markdown-body th { background: var(--surface-2); }
 .markdown-body blockquote {
   margin: 0.8em 0;
   padding: 0.4em 1em;
-  border-left: 3px solid var(--border, rgba(127,127,127,0.4));
-  color: var(--text-muted, #666);
+  border-left: 3px solid var(--border);
+  color: var(--text-muted);
 }
-.markdown-body hr { border: none; border-top: 1px solid var(--border, rgba(127,127,127,0.25)); margin: 1.4em 0; }
-.markdown-body a { color: var(--accent, #3b82f6); }
+.markdown-body hr { border: none; border-top: 1px solid var(--border); margin: 1.4em 0; }
+.markdown-body a { color: var(--accent); }
 @media (max-width: 760px) {
   .docs-layout { flex-direction: column; }
   .docs-list { flex-basis: auto; width: 100%; position: static; }
@@ -7211,8 +7211,8 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 
 /* === Agent conversation (readable transcript) modal === */
 .conversation-modal { width: min(820px, 94vw); max-height: 88vh; display: flex; flex-direction: column; }
-.conversation-toolbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border, #2a2a2a); flex-wrap: wrap; }
-.conversation-toolbar #conversationSearch { flex: 1; min-width: 160px; padding: 7px 10px; border-radius: 6px; border: 1px solid var(--border, #333); background: var(--bg-input, #1c1c1c); color: inherit; }
+.conversation-toolbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.conversation-toolbar #conversationSearch { flex: 1; min-width: 160px; padding: 7px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-input); color: inherit; }
 .conversation-filter { display: flex; align-items: center; gap: 5px; font-size: 12px; opacity: .85; white-space: nowrap; }
 .conversation-container { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 8px; background: var(--bg); border-radius: 0 0 8px 8px; min-height: 320px; }
 .conversation-empty { opacity: .6; text-align: center; padding: 30px; }
@@ -7249,16 +7249,16 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #fff;
+  background: var(--color-white);
   border-radius: 10px;
   padding: 10px;
   box-sizing: border-box;
 }
 .mobile-login-qr svg { width: 100%; height: 100%; display: block; }
-.mobile-login-qr .muted { color: var(--muted, #888); text-align: center; font-size: 13px; }
+.mobile-login-qr .muted { color: var(--muted); text-align: center; font-size: 13px; }
 .mobile-login-warn {
   font-size: 12px;
-  color: var(--muted, #888);
+  color: var(--muted);
   text-align: center;
   margin: 0;
   line-height: 1.4;
@@ -7277,25 +7277,25 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .naplo-toolbar { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
 .naplo-source-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
 .naplo-tab { padding: 5px 14px; border-radius: 20px; border: 1px solid var(--border); background: var(--bg-card); color: var(--text); cursor: pointer; font-size: 13px; transition: background 0.15s, color 0.15s; }
-.naplo-tab.active { background: var(--accent, #2563eb); color: #fff; border-color: transparent; }
+.naplo-tab.active { background: var(--accent); color: var(--color-white); border-color: transparent; }
 .naplo-filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .naplo-date { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text); font-size: 13px; }
 .naplo-date-sep { color: var(--text-muted); font-size: 13px; }
 .naplo-search { flex: 1; min-width: 160px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text); font-size: 13px; }
 .naplo-summary { font-size: 13px; color: var(--text-muted); margin-bottom: 10px; }
 .naplo-empty { color: var(--text-muted); font-size: 14px; text-align: center; margin-top: 40px; }
-.naplo-empty.error { color: var(--danger, #ef4444); }
+.naplo-empty.error { color: var(--danger); }
 .naplo-timeline { display: flex; flex-direction: column; gap: 1px; }
 .naplo-entry { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 6px; background: var(--bg-card); border: 1px solid var(--border); font-size: 13px; }
 .naplo-entry-meta { display: flex; align-items: center; gap: 8px; }
 .naplo-ts { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
-.naplo-badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; color: #fff; white-space: nowrap; }
+.naplo-badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; color: var(--color-white); white-space: nowrap; }
 .naplo-entry-detail { color: var(--text); line-height: 1.5; }
-.naplo-entry-detail code { background: var(--bg, #f5f5f5); padding: 1px 5px; border-radius: 3px; font-family: monospace; font-size: 12px; }
+.naplo-entry-detail code { background: var(--bg); padding: 1px 5px; border-radius: 3px; font-family: monospace; font-size: 12px; }
 .naplo-actor { color: var(--text-muted); font-size: 12px; }
 .naplo-note { font-style: italic; color: var(--text-muted); }
 .naplo-event-type { font-size: 11px; background: var(--bg); border-radius: 3px; padding: 1px 5px; color: var(--text-muted); }
-.naplo-sensitive { font-size: 11px; color: var(--danger, #ef4444); font-weight: 600; }
+.naplo-sensitive { font-size: 11px; color: var(--danger); font-weight: 600; }
 
 /* === Safe-area insets (iOS notch / Dynamic Island / home indicator) ===
  * The page ships viewport-fit=cover (see index.html), which lets content draw
@@ -7381,8 +7381,8 @@ body {
   align-items: flex-start;
   gap: 8px;
   padding: 12px 16px;
-  background: rgba(201, 160, 0, 0.1);
-  border: 1px solid rgba(201, 160, 0, 0.35);
+  background: var(--warning-soft);
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
   border-radius: var(--radius-sm);
   font-size: 13px;
   line-height: 1.5;
@@ -7476,7 +7476,7 @@ body {
 }
 
 .fleet-dry-run-warnings {
-  color: #c9a000;
+  color: var(--color-amber-600);
   font-size: 12px;
   margin-top: 6px;
 }
@@ -7519,14 +7519,14 @@ body {
 .updates-group > summary.updates-group-head::-webkit-details-marker { display: none; }
 .updates-group > summary.updates-group-head::before { content: "\25B8"; color: var(--text-muted); transition: transform .15s; }
 .updates-group[open] > summary.updates-group-head::before { transform: rotate(90deg); }
-.updates-group-tag { font-weight: 600; color: var(--accent, #dc2626); white-space: nowrap; }
+.updates-group-tag { font-weight: 600; color: var(--accent); white-space: nowrap; }
 .updates-group-summary { color: var(--text); flex: 1; }
 .updates-group-count { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
 .updates-group .updates-commit-list { padding: 6px 14px 12px; }
 
 /* Version-centric update view: human summary up front, raw commits collapsed. */
 .updates-version { border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 12px; padding: 14px 16px; }
-.updates-version-tag { font-weight: 700; color: var(--accent, #dc2626); font-size: 15px; margin-bottom: 6px; }
+.updates-version-tag { font-weight: 700; color: var(--accent); font-size: 15px; margin-bottom: 6px; }
 .updates-version-summary { color: var(--text); font-size: 14px; line-height: 1.6; }
 .updates-version-details { margin-top: 10px; }
 .updates-version-details > summary { list-style: none; cursor: pointer; color: var(--text-muted); font-size: 12px; user-select: none; }
@@ -7551,15 +7551,15 @@ body {
 .onboarding-step.active { color: var(--text); border-color: var(--accent); }
 .onboarding-step.done { opacity: 0.55; }
 .onboarding-step .onb-num { display: inline-flex; width: 18px; height: 18px; align-items: center; justify-content: center; border-radius: 50%; background: var(--border); font-size: 11px; }
-.onboarding-step.active .onb-num { background: var(--accent); color: #fff; }
+.onboarding-step.active .onb-num { background: var(--accent); color: var(--color-white); }
 .onboarding-body p { font-size: 14px; line-height: 1.6; }
 .onb-input { width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-input); color: var(--text); font-size: 13px; margin: 4px 0; }
 .onb-hint { font-size: 12px; color: var(--text-muted); margin: 4px 0 12px; }
 .onboarding-body .btn-primary, .onboarding-body .btn-secondary { margin-right: 8px; margin-top: 4px; }
 .onb-msg { font-size: 13px; margin-top: 12px; min-height: 18px; }
-.onb-msg.ok { color: #22c55e; }
-.onb-msg.err { color: #e53e3e; }
-.onb-ok-line { color: #22c55e; font-size: 14px; }
+.onb-msg.ok { color: var(--success); }
+.onb-msg.err { color: var(--danger); }
+.onb-ok-line { color: var(--success); font-size: 14px; }
 .onb-list { font-size: 13px; color: var(--text-muted); padding-left: 18px; line-height: 1.7; }
 .onb-pending { margin: 10px 0; }
 .onb-pending-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
@@ -7580,7 +7580,7 @@ body {
   font-size: 10px;
   font-weight: 600;
   color: var(--accent);
-  background: var(--accent-soft, rgba(217, 119, 87, 0.1));
+  background: var(--accent-soft);
   padding: 1px 6px;
   border-radius: 8px;
   margin-left: 6px;
@@ -7592,7 +7592,7 @@ body {
   position: fixed;
   inset: 0;
   z-index: 99999;
-  background: rgba(20, 20, 19, 0.92);
+  background: color-mix(in srgb, var(--color-stone-950) 92%, transparent);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -7609,7 +7609,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 12px 40px color-mix(in srgb, black 35%, transparent);
 }
 .mv-auth-card h2 {
   margin: 0;
@@ -7638,7 +7638,7 @@ body {
   border: 0;
   border-radius: 8px;
   background: var(--accent);
-  color: #fff;
+  color: var(--color-white);
   font-size: 15px;
   font-weight: 600;
   cursor: pointer;
@@ -7691,7 +7691,7 @@ body {
 /* Branch-drift warning (top banner + Updates-page notice). The [hidden] rule
    is explicit because the shared .auth-setup-banner display:flex would
    otherwise override the UA's [hidden] { display: none }. */
-.branch-drift-banner { border-left-color: var(--warning, #d97706); }
+.branch-drift-banner { border-left-color: var(--warning); }
 .branch-drift-banner[hidden] { display: none; }
 .branch-drift-banner code,
 .updates-branch-notice code {
@@ -7711,7 +7711,7 @@ body {
   line-height: 1.6;
 }
 .updates-branch-notice.ok { color: var(--text-muted); }
-.updates-branch-notice.warn { border-left: 3px solid var(--warning, #d97706); }
+.updates-branch-notice.warn { border-left: 3px solid var(--warning); }
 
 /* Settings login card */
 .auth-card h3 { margin: 0 0 12px; font-size: 15px; }
@@ -7798,7 +7798,7 @@ body {
 .trace-status-badge { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 8px; }
 .trace-status-ok { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
 .trace-status-error { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
-.trace-status-running { background: color-mix(in srgb, #f59e0b 15%, transparent); color: #f59e0b; }
+.trace-status-running { background: color-mix(in srgb, var(--warning) 15%, transparent); color: var(--warning); }
 .trace-waterfall-body {
   flex: 1;
   overflow: auto;
@@ -7817,7 +7817,7 @@ body {
 .trace-wf-row-bg:nth-child(odd) { fill: color-mix(in srgb, var(--text) 3%, transparent); }
 .trace-wf-label { font-size: 11px; fill: var(--text); font-family: monospace; }
 .trace-wf-bar { rx: 3; }
-.trace-wf-bar-running { stroke: #f59e0b; stroke-width: 1.5; stroke-dasharray: 4 2; }
+.trace-wf-bar-running { stroke: var(--warning); stroke-width: 1.5; stroke-dasharray: 4 2; }
 .trace-wf-bar-error { opacity: 0.85; }
 .trace-wf-axis-line { stroke: var(--border); }
 .trace-wf-axis-label { font-size: 9px; fill: var(--text-muted); }
@@ -7837,7 +7837,7 @@ body {
   margin-bottom: 14px;
   flex-wrap: wrap;
 }
-.fh-bar.fh-warn { border-color: #f59e0b; background: rgba(245,158,11,0.06); }
+.fh-bar.fh-warn { border-color: var(--warning); background: color-mix(in srgb, var(--warning) 6%, transparent); }
 .fh-bar.fh-danger { border-color: var(--danger); background: var(--danger-soft); }
 .fh-item {
   display: flex;
@@ -7854,7 +7854,7 @@ body {
   background: var(--success);
   flex-shrink: 0;
 }
-.fh-dot.warn { background: #f59e0b; }
+.fh-dot.warn { background: var(--warning); }
 .fh-dot.danger { background: var(--danger); }
 .fh-value { font-weight: 600; color: var(--text); }
 .fh-label { color: var(--text-muted); font-size: 11px; }
@@ -7862,9 +7862,9 @@ body {
 
 /* Attention Required section */
 .attention-section {
-  border: 1px solid #f59e0b;
+  border: 1px solid var(--warning);
   border-radius: var(--radius);
-  background: rgba(245,158,11,0.05);
+  background: color-mix(in srgb, var(--warning) 5%, transparent);
   margin-bottom: 14px;
   overflow: hidden;
 }
@@ -7883,8 +7883,8 @@ body {
   font-weight: 700;
   padding: 1px 7px;
   border-radius: 10px;
-  background: #f59e0b;
-  color: #fff;
+  background: var(--warning);
+  color: var(--color-white);
 }
 .attention-toggle {
   background: none;
@@ -7982,7 +7982,7 @@ body {
   margin-right: 4px;
   vertical-align: middle;
 }
-.agent-mini-meta.stopped .dot { background: #a0a0a0; }
+.agent-mini-meta.stopped .dot { background: var(--color-stone-400); }
 
 /* Activity feed header + pills */
 .ov-activity-header {
@@ -8013,7 +8013,7 @@ body {
 .ov-pill.active {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--color-white);
 }
 .ov-pill:hover:not(.active) { border-color: var(--accent); color: var(--text); }
 
@@ -8146,8 +8146,8 @@ body {
   right: 10px;
   display: flex;
   gap: 2px;
-  background: rgba(31,30,29,0.82);
-  border: 1px solid #3d3d3a;
+  background: color-mix(in srgb, var(--color-stone-900) 82%, transparent);
+  border: 1px solid var(--color-stone-750);
   border-radius: 10px;
   padding: 5px;
   backdrop-filter: blur(6px);
@@ -8157,7 +8157,7 @@ body {
   padding: 6px 14px;
   border-radius: 7px;
   font-size: 12px;
-  color: #73726c;
+  color: var(--color-stone-600);
   background: transparent;
   border: none;
   cursor: pointer;
@@ -8165,19 +8165,19 @@ body {
   font-family: inherit;
 }
 .mode-seg.active {
-  background: #d97757;
-  color: #faf9f5;
+  background: var(--color-clay-500);
+  color: var(--color-stone-50);
   font-weight: 600;
 }
 .mode-seg:hover:not(.active) {
-  color: #b0aea5;
+  color: var(--color-stone-300);
 }
 
 /* Canvas crossfade overlay */
 .graph-crossfade {
   position: absolute;
   inset: 0;
-  background: #0d0d0b;
+  background: var(--color-stone-1000);
   opacity: 0;
   pointer-events: none;
   z-index: 20;
@@ -8213,19 +8213,19 @@ body {
   transform: translateY(-6px);
 }
 .tl-feed-date {
-  color: #b0aea5;
+  color: var(--color-stone-300);
   font-weight: 500;
   flex-shrink: 0;
 }
 .tl-feed-text {
-  color: #73726c;
+  color: var(--color-stone-600);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .tl-feed-row.newest .tl-feed-date,
 .tl-feed-row.newest .tl-feed-text {
-  color: #ff9a70;
+  color: var(--color-clay-300);
 }
 
 /* Scrubber card (bottom-center overlay) */
@@ -8235,8 +8235,8 @@ body {
   left: 50%;
   transform: translateX(-50%);
   width: min(900px, 86%);
-  background: rgba(31,30,29,0.88);
-  border: 1px solid #3d3d3a;
+  background: color-mix(in srgb, var(--color-stone-900) 88%, transparent);
+  border: 1px solid var(--color-stone-750);
   border-radius: 14px;
   backdrop-filter: blur(8px);
   padding: 14px 22px;
@@ -8250,9 +8250,9 @@ body {
   width: 30px;
   height: 30px;
   border-radius: 50%;
-  background: #d97757;
+  background: var(--color-clay-500);
   border: none;
-  color: #fff;
+  color: var(--color-white);
   font-size: 11px;
   cursor: pointer;
   display: flex;
@@ -8264,7 +8264,7 @@ body {
   padding: 0;
 }
 .tl-play-btn:hover {
-  background: #c46849;
+  background: var(--color-clay-600);
 }
 .tl-track-wrap {
   flex: 1;
@@ -8277,7 +8277,7 @@ body {
   position: relative;
   height: 6px;
   border-radius: 3px;
-  background: #30302e;
+  background: var(--color-stone-800);
   cursor: pointer;
 }
 .tl-track-fill {
@@ -8286,8 +8286,8 @@ body {
   top: 0;
   height: 100%;
   border-radius: 3px;
-  background: linear-gradient(to right, #6a9bcc, #d97757, #ff6b5e);
-  box-shadow: 0 0 10px rgba(255,107,94,0.5);
+  background: linear-gradient(to right, var(--color-blue-500), var(--color-clay-500), var(--danger));
+  box-shadow: 0 0 10px color-mix(in srgb, var(--danger) 50%, transparent);
   pointer-events: none;
   width: 0%;
 }
@@ -8298,8 +8298,8 @@ body {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #faf9f5;
-  box-shadow: 0 0 12px rgba(255,154,112,0.9);
+  background: var(--color-stone-50);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--color-clay-300) 90%, transparent);
   cursor: grab;
   left: 0%;
   z-index: 2;
@@ -8313,18 +8313,18 @@ body {
   position: absolute;
   top: 0;
   font-size: 10px;
-  color: #73726c;
+  color: var(--color-stone-600);
   transform: translateX(-50%);
   white-space: nowrap;
   pointer-events: none;
 }
 .tl-date-chip {
-  background: #30302e;
+  background: var(--color-stone-800);
   border-radius: 7px;
   padding: 3px 10px;
   font-size: 12px;
   font-weight: 600;
-  color: #faf9f5;
+  color: var(--color-stone-50);
   flex-shrink: 0;
   white-space: nowrap;
 }
@@ -8340,9 +8340,9 @@ body {
 .tl-record-btn {
   height: 28px;
   border-radius: 7px;
-  background: #2d2d2b;
-  border: 1px solid #4d4d49;
-  color: #a09f9a;
+  background: var(--color-stone-800);
+  border: 1px solid var(--color-stone-700);
+  color: var(--color-stone-400);
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
@@ -8355,16 +8355,16 @@ body {
   white-space: nowrap;
 }
 .tl-record-btn:hover:not(:disabled) {
-  background: #3a3a38;
-  color: #faf9f5;
+  background: var(--color-stone-750);
+  color: var(--color-stone-50);
 }
 .tl-record-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
 .tl-record-btn.recording {
-  border-color: #ff6b5e;
-  color: #ff6b5e;
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 /* ── Import sources table ──────────────────────────────────────────────────── */
@@ -8396,7 +8396,7 @@ body {
   vertical-align: middle;
 }
 .import-sources-table tr:last-child td { border-bottom: none; }
-.import-sources-table tbody tr:hover { background: var(--bg-hover, rgba(127,127,127,.05)); }
+.import-sources-table tbody tr:hover { background: var(--bg-hover); }
 .import-sources-table .isrc-type { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .import-sources-table .isrc-path { font-family: monospace; font-size: 12px; color: var(--text-muted); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
 .import-sources-table .isrc-label { font-weight: 600; font-size: 13px; }
@@ -8409,5 +8409,5 @@ body {
   font-weight: 600;
   white-space: nowrap;
 }
-.import-status-badge.active   { background: rgba(57,255,20,.15); color: #39FF14; border: 1px solid rgba(57,255,20,.35); }
+.import-status-badge.active   { background: color-mix(in srgb, var(--color-terminal-green) 15%, transparent); color: var(--color-terminal-green); border: 1px solid color-mix(in srgb, var(--color-terminal-green) 35%, transparent); }
 .import-status-badge.inactive { background: var(--bg-hover); color: var(--text-muted); border: 1px solid var(--border); }
