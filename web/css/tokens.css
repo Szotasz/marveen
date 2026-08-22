@@ -1,0 +1,47 @@
+/* === Anthropic Design Tokens === */
+:root {
+  --bg: #faf9f5;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f5f4ed;
+  --bg-input: #f0eee6;
+  --bg-modal: #ffffff;
+  --bg-code: #f0eee6;
+  --text: #141413;
+  --text-secondary: #30302e;
+  --text-muted: #87867f;
+  --border: #d1cfc5;
+  --border-focus: #d97757;
+  --accent: #d97757;
+  --accent-hover: #c46849;
+  --accent-soft: rgba(217, 119, 87, 0.1);
+  --danger: #bf4d43;
+  --danger-soft: rgba(191, 77, 67, 0.12);
+  --danger-hover: #a8413a;
+  --success: #788c5d;
+  --success-soft: rgba(120, 140, 93, 0.12);
+  --info: #6a9bcc;
+  --info-soft: rgba(106, 155, 204, 0.12);
+  --shadow-sm: 0 1px 3px rgba(20, 20, 19, 0.04);
+  --shadow-md: 0 4px 16px rgba(20, 20, 19, 0.06);
+  --shadow-lg: 0 8px 32px rgba(20, 20, 19, 0.1);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-lg: 16px;
+  --transition: 0.2s ease;
+}
+
+[data-theme="dark"] {
+  --bg: #141413;
+  --bg-card: #1f1e1d;
+  --bg-card-hover: #262624;
+  --bg-input: #30302e;
+  --bg-modal: #1f1e1d;
+  --bg-code: #262624;
+  --text: #faf9f5;
+  --text-secondary: #b0aea5;
+  --text-muted: #73726c;
+  --border: #3d3d3a;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.2);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.25);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,0.35);
+}
