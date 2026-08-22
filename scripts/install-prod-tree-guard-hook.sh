@@ -8,8 +8,14 @@
 #
 # Two git hooks, both scoped to the MAIN worktree only (linked worktrees have
 # a different toplevel and pass untouched):
-#   pre-commit    -- BLOCKS a commit on the main checkout.
+#   pre-commit.d/05-prod-tree-guard -- BLOCKS a commit on the main checkout.
 #                    Override: MARVEEN_PROD_COMMIT_OK=1 git commit ...
+#                    Installed as a CHAIN ENTRY, not as the pre-commit file:
+#                    the secret gate (install-secret-gate-hook.sh) shares the
+#                    same pre-commit.d dispatcher, and a monolithic pre-commit
+#                    would couple the end state to installer ORDER -- run
+#                    second, it would demote the other guard's runner to a
+#                    .bak and silently disable it (review finding, msg 14196).
 #   post-checkout -- git has no pre-checkout, so a branch switch cannot be
 #                    blocked; this ALERTS the main agent and, when the tracked
 #                    tree is clean, auto-reverts to the default branch.
@@ -22,20 +28,22 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HOOK_DIR="$(cd "$(git -C "$ROOT" rev-parse --git-common-dir)" && pwd)/hooks"
+DISPATCH="$HOOK_DIR/pre-commit"
+GUARD="$HOOK_DIR/pre-commit.d/05-prod-tree-guard"
+DISPATCH_MARK="marveen-pre-commit-dispatcher"
 MARK="marveen-prod-tree-guard"
-mkdir -p "$HOOK_DIR"
+mkdir -p "$HOOK_DIR/pre-commit.d"
 
-preserve_foreign() {
-  # Keep a pre-existing, non-guard hook out of the way instead of clobbering it.
-  local hook="$1"
-  if [ -f "$hook" ] && ! grep -q "$MARK" "$hook" 2>/dev/null; then
-    mv "$hook" "$hook.pre-prod-guard.bak"
-    echo "  (preserved existing $(basename "$hook") as $(basename "$hook").pre-prod-guard.bak)"
-  fi
-}
+# 0. A superseded MONOLITHIC prod-guard pre-commit (the 2026-08-22 hand-install
+#    or an earlier version of this installer) is OURS: remove it instead of
+#    preserving it, or it would ride along in the chain as a duplicate.
+if [ -f "$DISPATCH" ] && grep -q "$MARK" "$DISPATCH" 2>/dev/null && ! grep -q "$DISPATCH_MARK" "$DISPATCH" 2>/dev/null; then
+  rm "$DISPATCH"
+  echo "  (removed superseded monolithic prod-guard pre-commit)"
+fi
 
-preserve_foreign "$HOOK_DIR/pre-commit"
-cat > "$HOOK_DIR/pre-commit" <<'EOF'
+# 1. The sub-hook: block commits on the main checkout.
+cat > "$GUARD" <<'EOF'
 #!/usr/bin/env bash
 # marveen-prod-tree-guard : block commits on the main (prod) checkout.
 # The dashboard serves static files from this tree and host updates pull into
@@ -56,9 +64,37 @@ if [ "$TOPLEVEL" = "$PROD_ROOT" ] && [ "${MARVEEN_PROD_COMMIT_OK:-0}" != "1" ]; 
 fi
 exit 0
 EOF
-chmod +x "$HOOK_DIR/pre-commit"
+chmod +x "$GUARD"
 
-preserve_foreign "$HOOK_DIR/post-checkout"
+# 2. Dispatcher: byte-for-byte the same contract as install-secret-gate-hook.sh
+#    (same marker), so whichever installer runs first creates it and the other
+#    leaves it alone -- no ordering dependency between the two guards.
+if [ -f "$DISPATCH" ] && ! grep -q "$DISPATCH_MARK" "$DISPATCH" 2>/dev/null; then
+  mv "$DISPATCH" "$HOOK_DIR/pre-commit.d/00-existing-precommit"
+  chmod +x "$HOOK_DIR/pre-commit.d/00-existing-precommit"
+  echo "  (preserved existing pre-commit as pre-commit.d/00-existing-precommit)"
+fi
+cat > "$DISPATCH" <<EOF
+#!/usr/bin/env bash
+# $DISPATCH_MARK : run every executable in pre-commit.d/.
+set -euo pipefail
+HOOK_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
+status=0
+for h in "\$HOOK_DIR"/pre-commit.d/*; do
+  [ -x "\$h" ] || continue
+  "\$h" "\$@" || status=1
+done
+exit \$status
+EOF
+chmod +x "$DISPATCH"
+
+# 3. post-checkout: no chain exists for this hook type; a pre-existing foreign
+#    hook is preserved out of the way (a guard must not clobber, and the .bak
+#    is inspectable). Our own superseded copy (marker match) is simply replaced.
+if [ -f "$HOOK_DIR/post-checkout" ] && ! grep -q "$MARK" "$HOOK_DIR/post-checkout" 2>/dev/null; then
+  mv "$HOOK_DIR/post-checkout" "$HOOK_DIR/post-checkout.pre-prod-guard.bak"
+  echo "  (preserved existing post-checkout as post-checkout.pre-prod-guard.bak)"
+fi
 cat > "$HOOK_DIR/post-checkout" <<'EOF'
 #!/usr/bin/env bash
 # marveen-prod-tree-guard : loud (non-blocking) alert + clean-tree auto-revert
