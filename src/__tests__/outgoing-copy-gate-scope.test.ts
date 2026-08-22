@@ -127,6 +127,12 @@ describe('outgoing-copy gate: quoted tokens in OPERATION position still fire (ms
     expect(isSend(`curl -s http://localhost:3420/api/messages -d '{"to":"marveen","content":"elso sor\nsendmail emlitve a masodik sorban"}'`)).toBe(false)
   })
 
+  it('naive exec-shape in interpreter code fires; exec alone or mailer-name alone does not (msg 14298)', () => {
+    expect(isSend(`python3 -c "import subprocess; subprocess.run(['sendmail','-t','a@b.hu'])"`)).toBe(true)
+    expect(isSend(`python3 -c "import subprocess; subprocess.run(['ls','-la'])"`)).toBe(false)
+    expect(isSend(`python3 -c "print('a sendmail utvonala regen mas volt')"`)).toBe(false)
+  })
+
   it('heredoc stripping is ORDER-INDEPENDENT: marker-first spelling is still content (round 3, msg 14286)', () => {
     // The same sentence as the redirect-first FP test, tokens swapped -- both
     // are completely ordinary shell.

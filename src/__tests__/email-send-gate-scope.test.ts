@@ -68,6 +68,13 @@ describe('gateDecision Bash: POSITIVE CONTROLS -- real send attempts still deny 
     expect(bash(`node -e "require('./src/graph-mail.js').sendMail({to:'a@b.hu'})"`).deny).toBe(true)
   })
 
+  it('naive exec-shape in interpreter code denies; exec alone or mailer-name alone does not (msg 14298)', () => {
+    expect(bash(`python3 -c "import subprocess; subprocess.run(['sendmail','-t','a@b.hu'])"`).deny).toBe(true)
+    expect(bash(`node -e "require('child_process').execSync('msmtp a@b.hu < /tmp/m.txt')"`).deny).toBe(true)
+    expect(bash(`python3 -c "import subprocess; subprocess.run(['ls','-la'])"`).deny).toBe(false)
+    expect(bash(`python3 -c "print('a sendmail utvonala regen mas volt')"`).deny).toBe(false)
+  })
+
   it('heredoc stripping is ORDER-INDEPENDENT: marker-first file-writes stay content, heredoc-FED senders still deny (round 3)', () => {
     expect(bash(`cat <<'EOF' > /tmp/notes.md\nsendmail --to x@y.hu is how the legacy path worked\nEOF`).deny).toBe(false)
     expect(bash(`sendmail -t a@b.hu <<'EOF'\ntorzs sora\nEOF`).deny).toBe(true)

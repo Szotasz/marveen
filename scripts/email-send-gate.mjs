@@ -6,6 +6,15 @@
 // Sub-agents may NOT send outbound email; any email must be routed through the
 // main agent (Marveen) for approval -- only Marveen retains email-send.
 //
+// STATED LIMIT (msg 14298): this gate catches the ACCIDENTAL send, not a
+// determined evader. Static analysis of arbitrary interpreter code is
+// undecidable, so a sub-agent CAN send through interpreter code the patterns
+// do not model -- the premise "a sub-agent cannot send outbound" does NOT
+// hold against intent, only against accident. The exec-heuristic below covers
+// the naive shapes (process-spawn plus a known mailer name in one code
+// string) and claims no more. Our sub-agents are not adversaries; if that
+// assumption ever changes, this gate is the wrong tool.
+//
 // Why a hook and not a permissions deny-list: permissive security profiles
 // launch Claude Code with --dangerously-skip-permissions, which BYPASSES the
 // settings.json allow/deny list. A PreToolUse hook runs regardless of
@@ -75,6 +84,12 @@ const WRAPPER_SHELL = /^(sh|bash|zsh|dash)$/i
 const CURLISH = /^(curl|wget|http)$/i
 const RESEND_TARGET = /^(https?:\/\/)?([^/@\s]*\.)?api\.resend\.com(\/|$)/i
 const CODE_SEND = /\bsmtplib\b|SMTP\s*\(|\bsendMail\s*\(|\bsendEmail\b|\bmail\.send\b/i
+// Naive-shape exec heuristic (msg 14298): process-spawn AND a known mailer
+// name together in one interpreter code string. Covers the accidental shapes;
+// see the STATED LIMIT in the header for what it deliberately does not claim.
+const CODE_EXECISH = /\bsubprocess\b|os\.system|\bpopen\b|child_process|\bexec[A-Za-z]*\s*\(|\bspawn[A-Za-z]*\s*\(/i
+const CODE_SENDER_LIT = /sendmail|msmtp|swaks|send\.py/i
+const codeStringSends = (code) => CODE_SEND.test(code) || (CODE_EXECISH.test(code) && CODE_SENDER_LIT.test(code))
 
 // Unquoted newline / backtick / `$(` become segment separators; quoted text is
 // untouched (it is content). Tracks quote state by hand -- no shell involved.
@@ -146,7 +161,7 @@ function segmentIsSend(toksIn, depth) {
   if (PYTHON.test(prog) || NODEISH.test(prog)) {
     for (let i = 0; i < rest.length; i++) {
       if ((rest[i] === '-c' || rest[i] === '-e' || rest[i] === '--eval') &&
-          rest[i + 1] && CODE_SEND.test(rest[i + 1])) return true
+          rest[i + 1] && codeStringSends(rest[i + 1])) return true
     }
   }
   const candidates = [prog]

@@ -85,9 +85,26 @@ _WRAPPER_SHELL = re.compile(r"^(sh|bash|zsh|dash)$", re.I)
 _CURLISH = re.compile(r"^(curl|wget|http)$", re.I)
 # Interpreter kod-string argumentum (python -c / node -e): az interpreternek
 # atadott kod MUVELET, nem tartalom -- a kod-szintu kuldes-hivasokra szurunk.
+#
+# KIMONDOTT HATAR (Marveen, msg 14298): tetszoleges interpreter-kod statikus
+# elemzese eldonthetetlen -- ez a kapu a VELETLEN kuldest fogja meg, nem egy
+# elszant kikerulot. A lenti exec-heurisztika a NAIV alakokat fedi (a kod
+# process-inditast ES kuldo-programnevet egyutt tartalmaz); ennel tobbet nem
+# allit, es nem is allithat.
 _CODE_SEND = re.compile(
     r"\bsmtplib\b|SMTP\s*\(|\bsendMail\s*\(|\bsendEmail\b|\bmail\.send\b", re.I
 )
+_CODE_EXECISH = re.compile(
+    r"\bsubprocess\b|os\.system|\bpopen\b|child_process|\bexec[A-Za-z]*\s*\(|\bspawn[A-Za-z]*\s*\(",
+    re.I,
+)
+_CODE_SENDER_LIT = re.compile(r"sendmail|msmtp|swaks|send\.py", re.I)
+
+
+def _code_string_sends(code: str) -> bool:
+    if _CODE_SEND.search(code):
+        return True
+    return bool(_CODE_EXECISH.search(code) and _CODE_SENDER_LIT.search(code))
 # Token-ELEJERE horgonyzott cel-minta: egy URL-argumentum vagy csupasz
 # domain/utvonal illik ra; egy JSON-payload ('{...api.resend.com...}') nem.
 _RESEND_TARGET = re.compile(r"^(https?://)?([^/@\s]*\.)?api\.resend\.com(/|$|\s|$)", re.I)
@@ -166,7 +183,7 @@ def _segment_is_send(toks, depth: int) -> bool:
     # interpreter kod-string: python -c / node -e / --eval, ami kuldest hiv
     if _PYTHON.match(prog) or _NODEISH.match(prog):
         for i, t in enumerate(rest):
-            if t in ("-c", "-e", "--eval") and i + 1 < len(rest) and _CODE_SEND.search(rest[i + 1]):
+            if t in ("-c", "-e", "--eval") and i + 1 < len(rest) and _code_string_sends(rest[i + 1]):
                 return True
     # send.py futtatasa (kozvetlenul, vagy python/runner utan) --to cimzettel
     candidates = [prog] + (
