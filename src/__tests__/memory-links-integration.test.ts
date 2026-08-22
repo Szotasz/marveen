@@ -215,4 +215,57 @@ describe('linkToNeighbors', () => {
     db.prepare('DELETE FROM memory_links WHERE src_id = ? OR dst_id = ?').run(impId, impId)
     db.prepare('DELETE FROM memories WHERE id IN (?, ?)').run(impId, fltId)
   })
+
+  it('crossAgent linking ranks by pure cosine, not recency: an older higher-cosine memory beats a fresh lower-cosine one', async () => {
+    // Regression: the crossAgent (link-building) path used to rank candidates by
+    // cosine * recency-decay. A batch of freshly imported docs (decay ~1.0) then
+    // crowded out older-but-more-similar fleet memories (decay <1), so imports
+    // linked only to each other. The fix ranks the link path by pure cosine.
+    const db = getDb()
+    const DAY = 86400
+    function toBuf(v: number[]) {
+      const b = Buffer.allocUnsafe(v.length * 4)
+      v.forEach((f, i) => b.writeFloatLE(f, i * 4))
+      return b
+    }
+    // Query along dim 0. old: cosine 0.90 (higher). fresh: cosine 0.70 (lower).
+    const vecImport = Array.from({ length: 768 }, (_, i) => (i === 0 ? 1 : 0))
+    const vecOld    = Array.from({ length: 768 }, (_, i) => (i === 0 ? 0.90 : i === 1 ? Math.sqrt(1 - 0.81) : 0))
+    const vecFresh  = Array.from({ length: 768 }, (_, i) => (i === 0 ? 0.70 : i === 1 ? Math.sqrt(1 - 0.49) : 0))
+
+    const impId = Number((db.prepare(
+      `INSERT INTO memories (agent_id, chat_id, sector, content, category, created_at, accessed_at, updated_at)
+       VALUES ('import', 'import', 'semantic', 'recency-rank import doc', 'warm', unixepoch(), unixepoch(), unixepoch())`
+    ).run() as { lastInsertRowid: number | bigint }).lastInsertRowid)
+    db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(toBuf(vecImport), impId)
+
+    // Older fleet memory (100 days old), higher cosine 0.90.
+    const oldId = Number((db.prepare(
+      `INSERT INTO memories (agent_id, chat_id, sector, content, category, created_at, accessed_at, updated_at)
+       VALUES ('agent-old', 'chat-old', 'semantic', 'older higher-cosine fleet memory', 'warm', unixepoch() - ?, unixepoch(), unixepoch())`
+    ).run(100 * DAY) as { lastInsertRowid: number | bigint }).lastInsertRowid)
+    db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(toBuf(vecOld), oldId)
+
+    // Fresh competing memory (now), lower cosine 0.70.
+    const freshId = Number((db.prepare(
+      `INSERT INTO memories (agent_id, chat_id, sector, content, category, created_at, accessed_at, updated_at)
+       VALUES ('agent-fresh', 'chat-fresh', 'semantic', 'fresh lower-cosine memory', 'warm', unixepoch(), unixepoch(), unixepoch())`
+    ).run() as { lastInsertRowid: number | bigint }).lastInsertRowid)
+    db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(toBuf(vecFresh), freshId)
+
+    // maxNeighbors=1: only the single top-ranked candidate gets linked.
+    const linked = await linkToNeighbors(impId, 1, 0.75)
+    expect(linked).toBe(1)
+
+    const links = db.prepare(
+      'SELECT dst_id FROM memory_links WHERE src_id = ? AND link_type = ?'
+    ).all(impId, 'semantic') as { dst_id: number }[]
+    // Pure cosine wins: the older 0.90 memory is linked, not the fresh 0.70 one.
+    expect(links.map(l => l.dst_id)).toContain(oldId)
+    expect(links.map(l => l.dst_id)).not.toContain(freshId)
+
+    // Cleanup
+    db.prepare('DELETE FROM memory_links WHERE src_id = ? OR dst_id = ?').run(impId, impId)
+    db.prepare('DELETE FROM memories WHERE id IN (?, ?, ?)').run(impId, oldId, freshId)
+  })
 })
