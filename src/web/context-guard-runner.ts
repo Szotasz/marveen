@@ -178,6 +178,12 @@ export function resumePrompt(
     base + source +
     `Utána ellenőrizd a kanban tábládat (in_progress kártyák, assignee=${name}) és a hot memóriáidat, ` +
     `és FOLYTASD a megkezdett munkát magadtól. Ne kezdd elölről ami a handoff szerint már kész. ` +
+    // RESPAWNZAJ822/PRODFAAG822: a fresh session acting on a resume goal is
+    // exactly the actor that branch-switched and committed on the live prod
+    // tree (2026-08-22 10:10, PR #1036 duplicate). The constraint must ride in
+    // the resume prompt itself -- it is the ONLY context the fresh session has.
+    `KORLÁT: a futó prod fán (a repo fő checkoutján) NE válts ágat, NE commitolj és NE nyiss belőle PR-t ` +
+    `-- ha repo-munka kell, használj worktree-t (git worktree add). ` +
     `Röviden jelezz a csatornádon, hogy friss kontextussal folytatod.`
   )
 }
