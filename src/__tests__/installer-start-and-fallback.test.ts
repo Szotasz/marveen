@@ -115,7 +115,13 @@ describe('the ERR-trap abort is real (guards the premise of the tests above)', (
   // that lives on line 644.
   it('an unguarded capture aborts, and bash blames the enclosing `fi`', () => {
     const r = runScriptFile([...TRAP, 'if [ -n "x" ]; then', '  out="$(false)"', 'fi', 'echo REACHED'])
-    expect(r.out).toBe('TRAP:6')
+    // bash 3.2 (macOS /bin/bash, where the installer incident happened) blames
+    // the enclosing `fi` (line 6); bash 5 (Linux CI) attributes the assignment
+    // line itself (line 5). The guarded premise holds on both: the abort is
+    // real, and the blamed line MAY be the enclosing fi rather than the
+    // failing capture -- the exact number is a bash-version detail (MARVCI822,
+    // the first ubuntu run of the suite).
+    expect(r.out).toMatch(/^TRAP:[56]$/)
     expect(r.out).not.toContain('REACHED')
     expect(r.code).toBe(9)
   })

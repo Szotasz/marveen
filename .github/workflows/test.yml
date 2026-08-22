@@ -28,5 +28,18 @@ jobs:
       # the suite exercises native bindings, and an install that skips their
       # build would fail the ABI probe instead of measuring the code.
       - run: npm ci
+      # The suite resolves the `claude` binary at module load (resolveFromPath
+      # throws when it is absent) -- without this stub 17 suites fail at
+      # COLLECTION, before a single test runs (measured on the first ubuntu
+      # run). The stub satisfies PATH resolution only; it exits 1 LOUDLY, so if
+      # any test ever actually executes claude, that run fails visibly instead
+      # of silently faking success.
+      - name: Stub the claude binary for PATH resolution
+        run: |
+          sudo install -m 755 /dev/stdin /usr/local/bin/claude <<'EOF'
+          #!/bin/sh
+          echo "claude CI stub: tests must not execute this binary" >&2
+          exit 1
+          EOF
       - run: npm run typecheck
       - run: npm test
