@@ -30,16 +30,33 @@ function fixtureDb() {
 
 describe('HEARTBEAT_NEW_HOT_MEMORIES_SQL (the shipped statement, on a fixture DB)', () => {
   it('counts only the given agent, only hot, only the last hour', () => {
-    const { db, ins } = fixtureDb()
-    const now = Math.floor(Date.now() / 1000)
-    ins.run('marveen', 'hot', 'fresh main-agent hot #1', now - 60)
-    ins.run('marveen', 'hot', 'fresh main-agent hot #2', now - 3599)
+    const { db } = fixtureDb()
+    // DETERMINISTIC CLOCK (msg 14306: this test flaked on the CI's first real
+    // day, `expected 1 to be 2`). The old fixture computed `now` in JS at test
+    // start while the shipped statement evaluates unixepoch() at QUERY time --
+    // a row at now-3599 sat exactly 1s inside the window, so any 1s of elapsed
+    // time (trivial on a loaded runner) pushed it out. Fix, two parts:
+    //   1. Fixture timestamps come from the SAME clock the query uses
+    //      (SQLite's unixepoch(), evaluated at insert), so there is no
+    //      JS-vs-SQLite skew at all.
+    //   2. The boundary is pinned from the MONOTONE-SAFE side: the row at
+    //      exactly -3600 is excluded by the strict `>` and elapsed time only
+    //      pushes it FURTHER out (deterministic forever); the inside row sits
+    //      at -3590, so a false failure would need a 9-second stall between
+    //      two adjacent synchronous statements. The pair brackets the window
+    //      constant to within 10s -- a meaningful change (1800, 7200) or a
+    //      `>=` regression still fails loudly, which is what this test is for.
+    const sqlIns = db.prepare(
+      "INSERT INTO memories (agent_id,category,content,created_at) VALUES (?,?,?, unixepoch() + ?)",
+    )
+    sqlIns.run('marveen', 'hot', 'fresh main-agent hot #1', -60)
+    sqlIns.run('marveen', 'hot', 'fresh main-agent hot #2 (just inside the hour)', -3590)
     // The exact wrong-row family HBMEMBLIND819 measured: the heartbeat's OWN
     // id. It must not be countable by accident when the caller passes the
     // main agent's id.
-    ins.run('heartbeat', 'hot', 'heartbeat own hot', now - 60)
-    ins.run('marveen', 'hot', 'main-agent hot but old', now - 3700)
-    ins.run('marveen', 'warm', 'fresh but warm', now - 60)
+    sqlIns.run('heartbeat', 'hot', 'heartbeat own hot', -60)
+    sqlIns.run('marveen', 'hot', 'main-agent hot at EXACTLY the boundary (strict > excludes it)', -3600)
+    sqlIns.run('marveen', 'warm', 'fresh but warm', -60)
 
     const forMain = db.prepare(HEARTBEAT_NEW_HOT_MEMORIES_SQL).get('marveen') as { n: number }
     expect(forMain.n).toBe(2)
