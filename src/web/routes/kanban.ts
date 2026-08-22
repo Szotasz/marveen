@@ -14,6 +14,7 @@ import {
   getHeartbeatKanbanSummary,
   countNewHotMemories,
   countPlannedKanbanCards,
+  getDbFileSizeMb,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
@@ -139,6 +140,7 @@ export function buildHeartbeatSummaryResponse(
   summary: { urgent: HeartbeatSummaryCard[]; in_progress: HeartbeatSummaryCard[]; waiting: HeartbeatSummaryCard[] },
   newHotMemories1h: number,
   plannedCount: number,
+  dbSizeMb: number | null,
 ) {
   const trunc = (t: string) =>
     t.length > HEARTBEAT_SUMMARY_TITLE_MAX ? t.slice(0, HEARTBEAT_SUMMARY_TITLE_MAX) + '…' : t
@@ -163,6 +165,12 @@ export function buildHeartbeatSummaryResponse(
       // heartbeat agent copies a number instead of running (and rewriting)
       // a query -- see HEARTBEAT_NEW_HOT_MEMORIES_SQL in db.ts.
       new_hot_memories_1h: newHotMemories1h,
+      // HBDBMERET822: without a sanctioned source the agent re-invented this
+      // measurement every session (format drift `158 MB` -> `160M`, then a
+      // false `0.0 MB` against a real 159 MB, 2026-08-22 15:00). null means
+      // "could not measure" and renders as "nincs adat" -- never 0, because
+      // for a growth signal a false zero looks like calm, not like failure.
+      db_size_mb: dbSizeMb,
     },
     urgent: summary.urgent.map(slim),
     waiting: waitingRecent.map(slim),
@@ -201,7 +209,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   // few -- while counts.* always carries the FULL totals. The list is for
   // naming items; the numbers ONLY ever come from counts.
   if (path === '/api/kanban/heartbeat-summary' && method === 'GET') {
-    json(res, buildHeartbeatSummaryResponse(getHeartbeatKanbanSummary(), countNewHotMemories(MAIN_AGENT_ID), countPlannedKanbanCards()))
+    json(res, buildHeartbeatSummaryResponse(getHeartbeatKanbanSummary(), countNewHotMemories(MAIN_AGENT_ID), countPlannedKanbanCards(), getDbFileSizeMb()))
     return true
   }
 
