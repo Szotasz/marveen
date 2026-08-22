@@ -34,16 +34,65 @@ import re
 import sys
 
 # --- what counts as an email send -------------------------------------------
-# Deliberately narrower than email-send-gate.mjs: that one may block read-only
-# inspection of the send scripts (acceptable for a sub-agent deny), while this
-# one must only fire on an actual send, or it would block the main agent from
-# reading its own tooling. Hence the recipient-argument requirement below.
-SEND_CMD = re.compile(
-    r"(support-mail/send\.py|\bsend\.py\b|graph-mail[^\n]*\bsend\b|api\.resend\.com"
-    r"|\bsendmail\b|\bmsmtp\b|\bswaks\b)",
-    re.I,
-)
-HAS_RECIPIENT = re.compile(r"(--to\b|\bto_addrs\b|\bto=|\"to\"\s*:|'to'\s*:)", re.I)
+# KAPUHATOKOR822 (2026-08-22, NEGY hamis pozitiv egy delutanon, HAROM
+# muvelet-tipuson: inter-agent uzenet, sqlite-iras, fajl-OLVASAS): a korabbi
+# szures a TELJES parancs-stringben kereste a kuldes-mintakat, igy egy
+# inter-agent curl JSON-torzse ('"to":' a boritekban + 'send.py' a szoveg
+# TARTALMABAN), egy hirlevel-szoveget iro sqlite-parancs vagy a send-script
+# puszta elolvasasa is kuldesnek latszott. A kapu levelnek olvasta azt, ami
+# uzenet A RENDSZERROL -- es pont arrol a temarol nemitotta volna el a
+# flottat, amirol a legfontosabb beszelni (Iris tetje: egy valodi incidenst
+# nem lehetne jelenteni rola).
+#
+# A szures ezert PARANCS-POZICIORA megy, nem tartalomra: elobb kivagjuk a
+# heredoc-torzseket es az idezett stringeket (a tartalom igy nem tud parancs-
+# nak latszani), majd pipeline/szekvencia-szegmensenkent a MEGHIVOTT programot
+# nezzuk. Kuldes az, ahol a kuldo program fut:
+#   - sendmail / msmtp / swaks a program-pozicioban (ezek csak kuldeni tudnak);
+#   - send.py TENYLEGES futtatasa (python vagy kozvetlen ut) --to cimzettel a
+#     SAJAT szegmenseben (a --help/olvasas igy nem trigger);
+#   - graph-mail futtatasa `send` alparanccsal;
+#   - curl/wget, amelynek IDEZETLEN URL-tokenje az api.resend.com-ra mutat
+#     (a -d payloadban idezett elofordulas nem szamit -- az tartalom).
+_HEREDOC = re.compile(r"<<-?\s*'?(\w+)'?\n.*?\n\1", re.S)
+_QUOTED = re.compile(r"\"(?:\\.|[^\"\\])*\"|'[^']*'")
+_ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*=\S*$")
+_SENDER_PROG = re.compile(r"^(?:\S*/)?(sendmail|msmtp|swaks)$", re.I)
+_SENDPY = re.compile(r"^(?:\S*/)?send\.py$", re.I)
+_GRAPHMAIL = re.compile(r"graph-mail(\.ts)?$", re.I)
+_RECIPIENT_FLAG = re.compile(r"(^|\s)--to(\s|=|$)", re.I)
+
+
+def _command_segments(cmd: str):
+    """Pipeline/szekvencia-szegmensek, heredoc-torzs es idezett stringek nelkul."""
+    c = _HEREDOC.sub(" ", cmd)
+    c = _QUOTED.sub(" __STR__ ", c)
+    return [s for s in re.split(r"\|\|?|&&?|;|\n|\$\(", c) if s.strip()]
+
+
+def is_send_invocation(cmd: str) -> bool:
+    for seg in _command_segments(cmd):
+        toks = seg.split()
+        while toks and _ENV_ASSIGN.match(toks[0]):
+            toks.pop(0)
+        if not toks:
+            continue
+        prog = toks[0]
+        rest = toks[1:]
+        if _SENDER_PROG.match(prog):
+            return True
+        # send.py futtatasa: kozvetlenul, vagy python/python3 utan
+        candidates = [prog] + (rest[:1] if re.match(r"^(?:\S*/)?python3?$", prog) else [])
+        if any(_SENDPY.match(c) for c in candidates) and _RECIPIENT_FLAG.search(seg):
+            return True
+        # graph-mail send alparancs (tsx/node runner utan is)
+        if any(_GRAPHMAIL.search(t) for t in toks) and "send" in rest:
+            return True
+        if re.match(r"^(?:\S*/)?(curl|wget|http)$", prog) and any(
+            "api.resend.com" in t for t in rest
+        ):
+            return True
+    return False
 
 # --- Hungarian detection (accent-insensitive markers) -----------------------
 # These fire on both the correct and the stripped spelling, so a transliterated
@@ -508,7 +557,7 @@ def main():
         text, unreadable = collect_mcp_body(tool_input), None
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
-        if not (SEND_CMD.search(cmd) and HAS_RECIPIENT.search(cmd)):
+        if not is_send_invocation(cmd):
             sys.exit(0)
         text, unreadable = collect_bash_body(cmd)
     else:
