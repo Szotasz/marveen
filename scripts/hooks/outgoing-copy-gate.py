@@ -65,7 +65,12 @@ import sys
 # belsejeben emlitett domain tovabbra is csak tartalom (az URL-minta a token
 # ELEJERE horgonyzott). A wrapper hejj (`sh -c "..."`) string-argumentuma
 # rekurzivan elemzodik.
-_HEREDOC = re.compile(r"<<-?\s*'?(\w+)'?\n.*?\n\1", re.S)
+# A heredoc-kivagas SORREND-FUGGETLEN (Marveen 3. kore, msg 14286): a
+# hatarolo utani SOR-MARADEK (pl. atiranyitas: <<EOF > fajl) a parancs
+# resze es MEGMARAD -- csak a torzs esik ki. Enelkul (a) forditott
+# sorrendnel a torzs parancsnak latszott (FP), (b) a bevezeto sor
+# eldobasa a heredoc-taplalt VALODI kuldot vesztette volna el (FN).
+_HEREDOC = re.compile(r"(<<-?\s*'?(\w+)'?[^\n]*)\n.*?\n\2(?=\s|$)", re.S)
 _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*=")
 _SENDER_PROG = re.compile(r"^(sendmail|msmtp|swaks)$", re.I)
 _SENDPY = re.compile(r"^send\.py$", re.I)
@@ -116,7 +121,7 @@ def _mask_subshell_markers(cmd: str) -> str:
 def _segments_tokens(cmd: str):
     """[[token, ...], ...] szegmensenkent -- quote-tudatosan, poziciot orizve."""
     import shlex
-    lex = shlex.shlex(_mask_subshell_markers(_HEREDOC.sub(" ", cmd)),
+    lex = shlex.shlex(_mask_subshell_markers(_HEREDOC.sub(r"\1", cmd)),
                       posix=True, punctuation_chars="();|&")
     lex.whitespace_split = True
     segments, cur = [], []

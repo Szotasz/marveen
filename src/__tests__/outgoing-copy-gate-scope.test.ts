@@ -127,6 +127,16 @@ describe('outgoing-copy gate: quoted tokens in OPERATION position still fire (ms
     expect(isSend(`curl -s http://localhost:3420/api/messages -d '{"to":"marveen","content":"elso sor\nsendmail emlitve a masodik sorban"}'`)).toBe(false)
   })
 
+  it('heredoc stripping is ORDER-INDEPENDENT: marker-first spelling is still content (round 3, msg 14286)', () => {
+    // The same sentence as the redirect-first FP test, tokens swapped -- both
+    // are completely ordinary shell.
+    expect(isSend(`cat <<'EOF' > /tmp/notes.md\nsendmail --to x@y.hu is how the legacy path worked\nEOF`)).toBe(false)
+  })
+
+  it('a heredoc-FED real sender still fires: the intro line survives the stripping', () => {
+    expect(isSend(`sendmail -t a@b.hu <<'EOF'\ntorzs sora\nEOF`)).toBe(true)
+  })
+
   it('an unparseable command (unbalanced quote) falls back conservatively: audits on strong literals only', () => {
     expect(isSend(`echo "lezaratlan idezojel es sendmail emlitve`)).toBe(true)
     expect(isSend(`echo "lezaratlan idezojel, artalmatlan szoveg`)).toBe(false)
