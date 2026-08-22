@@ -118,3 +118,6 @@ evidence/
 .evidence/
 transcripts/
 .session-capture/
+
+# Local Netlify folder
+.netlify
