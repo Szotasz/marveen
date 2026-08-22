@@ -2297,7 +2297,8 @@ async function vectorSearch(
   }
 
   if (candidates.length === 0) {
-    // BLOB cosine fallback: full-scan, score = cosine * recency decay.
+    // BLOB cosine fallback: full-scan. Recall ranks by cosine * recency decay;
+    // crossAgent (link-building) ranks by pure cosine -- see the scoring note below.
     // crossAgent: skip agent_id/shared filter (same reason as ANN path above).
     const rows = crossAgent
       ? (db.prepare("SELECT * FROM memories WHERE embedding_blob IS NOT NULL OR embedding IS NOT NULL").all() as Memory[])
@@ -2308,7 +2309,17 @@ async function vectorSearch(
         const emb: number[] = m.embedding_blob
           ? blobToFloats(m.embedding_blob as Buffer)
           : JSON.parse(m.embedding!) as number[]
-        return { memory: m, score: cosineSimilarity(queryEmbedding, emb) * vectorRecencyDecay(m.created_at, nowSec) }
+        const sim = cosineSimilarity(queryEmbedding, emb)
+        // crossAgent is the graph link-building path (linkToNeighbors): rank by
+        // pure similarity. The recency decay is a recall-time bias meant to
+        // surface fresh memories in search; applying it here suppresses older
+        // but genuinely-similar neighbors, which is exactly wrong when wiring the
+        // structural graph. Symptom it fixes: a batch of freshly imported docs
+        // (decay ~1.0) crowds every neighbor slot with other fresh imports, so
+        // established agent memories (decay <1) never get linked even when their
+        // cosine is well above the threshold -- imports end up connected only to
+        // each other. Recall (crossAgent=false) keeps the recency weighting.
+        return { memory: m, score: crossAgent ? sim : sim * vectorRecencyDecay(m.created_at, nowSec) }
       } catch {
         return { memory: m, score: 0 }
       }
