@@ -15,22 +15,31 @@ import { dirname, join } from 'node:path'
 //      stretched the auto-delegation checkbox inside its flex label to full
 //      width, shoving the adjacent label text past the modal's right edge.
 //      Fix: checkbox/radio inputs keep their native size.
+// F5 (DS): modal base class extracted to web/css/components/modal.css.
+//   Contracts for overlay/panel/close are now pinned against modal.css.
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const cssPath = join(__dirname, '..', '..', 'web', 'style.css')
 const btnCssPath = join(__dirname, '..', '..', 'web', 'css', 'components', 'btn.css')
+const modalCssPath = join(__dirname, '..', '..', 'web', 'css', 'components', 'modal.css')
 // Strip /* ... */ comments so an explanatory comment that *mentions* a property
 // is never mistaken for a real declaration.
 const css = readFileSync(cssPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
 const btnCss = readFileSync(btnCssPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+const modalCss = readFileSync(modalCssPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
 
-/** Return the body of the first `selector { ... }` rule, or null. */
-function ruleBody(selector: string): string | null {
-  const idx = css.indexOf(selector)
+/** Return the body of the first `selector { ... }` block in a CSS string, or null. */
+function ruleBodyIn(source: string, selector: string): string | null {
+  const idx = source.indexOf(selector)
   if (idx < 0) return null
-  const open = css.indexOf('{', idx)
-  const close = css.indexOf('}', open)
+  const open = source.indexOf('{', idx)
+  const close = source.indexOf('}', open)
   if (open < 0 || close < 0) return null
-  return css.slice(open + 1, close)
+  return source.slice(open + 1, close)
+}
+
+/** Return the body of the first `selector { ... }` rule in style.css, or null. */
+function ruleBody(selector: string): string | null {
+  return ruleBodyIn(css, selector)
 }
 
 describe('dashboard modal CSS contract', () => {
@@ -65,5 +74,25 @@ describe('dashboard modal CSS contract', () => {
     const close = btnCss.indexOf('}', open)
     const body = btnCss.slice(open + 1, close)
     expect(body).toMatch(/display\s*:\s*none/i)
+  })
+
+  // F5: modal base class extracted to web/css/components/modal.css
+
+  it('.modal-overlay is defined in modal.css with fixed positioning (F5)', () => {
+    const body = ruleBodyIn(modalCss, '.modal-overlay {')
+    expect(body, '.modal-overlay rule not found in web/css/components/modal.css').not.toBeNull()
+    expect(body!).toMatch(/position\s*:\s*fixed/i)
+  })
+
+  it('.modal[data-variant="wide"] overrides --_max-w in modal.css (F5: replaces .modal-wide)', () => {
+    const body = ruleBodyIn(modalCss, '.modal[data-variant="wide"]')
+    expect(body, '.modal[data-variant="wide"] not found in web/css/components/modal.css').not.toBeNull()
+    expect(body!).toMatch(/--_max-w\s*:\s*640px/)
+  })
+
+  it('.modal-close danger hover is defined in modal.css (F5)', () => {
+    const body = ruleBodyIn(modalCss, '.modal-close:hover')
+    expect(body, '.modal-close:hover not found in web/css/components/modal.css').not.toBeNull()
+    expect(body!).toMatch(/background\s*:\s*var\(--danger\)/i)
   })
 })
