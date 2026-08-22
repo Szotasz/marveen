@@ -187,6 +187,40 @@
   --ease-in-out:  cubic-bezier(0.45, 0, 0.55, 1);
   /* Legacy alias — value unchanged from F0; full migration in a later phase */
   --transition: 0.2s ease;
+
+  /* ── Legacy / JS-injectable tokens ──────────────────────────
+     These were referenced (with or without fallbacks) before F1.
+     Defined here so every token reference in the features layer resolves.
+     JS may override any of these via element.style.setProperty().  */
+
+  /* Aliases to F1 semantic tokens */
+  --muted:      var(--text-muted);      /* old name for --text-muted */
+  --mono:       var(--font-mono);       /* old name for --font-mono */
+
+  /* Subtle hover / surface overlays */
+  --bg-hover:   var(--alpha-gray-05);   /* semi-transparent hover: rgba(127,127,127,0.05) */
+  --bg-subtle:  var(--alpha-gray-05);   /* identical to bg-hover */
+  --surface-2:  var(--alpha-gray-12);   /* markdown/docs subtle surface: rgba(127,127,127,0.12) */
+
+  /* Elevated warning surface (Tasks meta-badge) */
+  --bg-elevated: color-mix(in srgb, var(--warning) 15%, transparent);
+
+  /* Page / panel areas — JS overrides per section */
+  --bg-main:    var(--bg);              /* main content area background */
+  --bg-panel:   var(--bg-card);         /* panel surface */
+
+  /* Memgraph tier accent — JS injects specific tier color at runtime */
+  --gc-tier-accent:      rgba(255,255,255,0.20);  /* default: subtle white border */
+  --gc-tier-glow-shadow: transparent;             /* default: no glow; JS enables */
+
+  /* Kanban layout */
+  --kanban-col-min: 280px;   /* JS may narrow on small viewports */
+
+  /* Per-item color props — JS always sets these before render */
+  --chip-color:        var(--accent);          /* chip/tag color; JS overrides */
+  --label-color:       var(--text-secondary);  /* kanban label text; JS overrides */
+  --prio-color:        var(--text-secondary);  /* priority badge; JS overrides */
+  --card-aging-color:  var(--warning);         /* kanban card aging border; JS overrides */
 }
 
 /* ── Dark theme overrides ────────────────────────────────────*/
