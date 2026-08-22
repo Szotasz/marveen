@@ -42,8 +42,8 @@ export function rewriteIndexHtml(html: string, appVer: string, cssVer: string, b
       `$1/app.js?v=${appVer}$2`,
     )
     .replace(
-      /(<link\s+rel="stylesheet"\s+href=")\/style\.css(")/,
-      `$1/style.css?v=${cssVer}$2`,
+      /(<link\s+rel="stylesheet"\s+href=")\/css\/index\.css(")/,
+      `$1/css/index.css?v=${cssVer}$2`,
     )
     .replace(
       /(<meta name="apple-mobile-web-app-title" content=")[^"]*(">)/,
@@ -55,6 +55,11 @@ export function rewriteIndexHtml(html: string, appVer: string, cssVer: string, b
 // Only bare alphanumeric+hyphen+underscore names ending in .js are accepted.
 export const MODULE_FILENAME_PATTERN = /^[a-zA-Z0-9_-]+\.js$/
 
+// Regex that validates a web/css/**/*.css path (path-traversal guard).
+// Accepts bare filenames (tokens.css) and one subdir deep (components/btn.css).
+// No dots, no encoded characters, no parent traversal.
+export const CSS_FILENAME_PATTERN = /^(?:[a-z0-9-]+\/)?[a-z0-9-]+\.css$/
+
 function serveIndexHtml(ctx: RouteContext, webDir: string): void {
   const { req, res } = ctx
   try {
@@ -62,7 +67,8 @@ function serveIndexHtml(ctx: RouteContext, webDir: string): void {
     const s = statSync(filePath)
     // Both versioned asset tokens are part of the index ETag: a cached
     // index.html must be invalidated whenever the rewritten ?v= URLs change.
-    const etag = `"${s.mtimeMs}-${s.size}-${assetVersion(webDir, 'app.js')}-${assetVersion(webDir, 'style.css')}"`
+    const cssVer = assetVersion(webDir, 'css/index.css')
+    const etag = `"${s.mtimeMs}-${s.size}-${assetVersion(webDir, 'app.js')}-${cssVer}"`
     const ifNoneMatch = req.headers['if-none-match']
     if (ifNoneMatch === etag) {
       res.writeHead(304, { ETag: etag, 'Cache-Control': 'no-cache' })
@@ -72,7 +78,7 @@ function serveIndexHtml(ctx: RouteContext, webDir: string): void {
     const html = rewriteIndexHtml(
       readFileSync(filePath, 'utf-8'),
       assetVersion(webDir, 'app.js'),
-      assetVersion(webDir, 'style.css'),
+      cssVer,
       BRAND_NAME,
     )
     res.writeHead(200, {
@@ -161,6 +167,24 @@ export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promis
     const iconFile = path.replace('/icons/', '')
     const iconPath = join(webDir, 'icons', iconFile)
     if (existsSync(iconPath)) { serveFile(req, res, iconPath, { cacheSeconds: 3600 }); return true }
+    res.writeHead(404); res.end()
+    return true
+  }
+
+  // CSS design-system files (web/css/**/*.css).
+  // Path-traversal guard: only lowercase alphanumeric+hyphen names, optionally
+  // one subdir deep (e.g. components/btn.css, features/sidebar.css).
+  // Served with a long max-age: index.html injects a ?v= cache-bust token via
+  // rewriteIndexHtml so content changes always produce a new URL.
+  if (path.startsWith('/css/')) {
+    const cssFile = path.slice('/css/'.length)
+    if (CSS_FILENAME_PATTERN.test(cssFile)) {
+      const cssPath = join(webDir, 'css', cssFile)
+      if (existsSync(cssPath)) {
+        serveFile(req, res, cssPath, { cacheSeconds: 86400 })
+        return true
+      }
+    }
     res.writeHead(404); res.end()
     return true
   }

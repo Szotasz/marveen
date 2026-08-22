@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { EventEmitter } from 'node:events'
 import type http from 'node:http'
 import type { RouteContext } from '../web/routes/types.js'
+import { CSS_FILENAME_PATTERN } from '../web/routes/static.js'
 
 // Set up a fake web directory with real files so the route handler can serve them.
 let FAKE_WEB_DIR = ''
@@ -13,11 +14,14 @@ beforeAll(() => {
   FAKE_WEB_DIR = mkdtempSync(join(tmpdir(), 'static-test-'))
   writeFileSync(join(FAKE_WEB_DIR, 'index.html'), `<!DOCTYPE html><html><head>
 <script src="/app.js"></script>
-<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/css/index.css">
 <meta name="apple-mobile-web-app-title" content="Marveen">
 </head><body></body></html>`)
   writeFileSync(join(FAKE_WEB_DIR, 'app.js'), 'console.log("app")')
   writeFileSync(join(FAKE_WEB_DIR, 'style.css'), 'body{}')
+  mkdirSync(join(FAKE_WEB_DIR, 'css'))
+  writeFileSync(join(FAKE_WEB_DIR, 'css', 'index.css'), '@layer tokens,features;')
+  writeFileSync(join(FAKE_WEB_DIR, 'css', 'tokens.css'), ':root{--bg:#fff}')
   writeFileSync(join(FAKE_WEB_DIR, 'sw.js'), 'self.addEventListener("install",()=>{})')
   writeFileSync(join(FAKE_WEB_DIR, 'manifest.json'), JSON.stringify({
     name: 'Marveen Dashboard',
@@ -102,8 +106,8 @@ describe('rewriteIndexHtml', () => {
     expect(result).toContain('?v=v1')
   })
 
-  it('rewrites style.css version', () => {
-    const html = '<link rel="stylesheet" href="/style.css">'
+  it('rewrites css/index.css version', () => {
+    const html = '<link rel="stylesheet" href="/css/index.css">'
     const result = rewriteIndexHtml(html, 'v1', 'v2', 'Brand')
     expect(result).toContain('?v=v2')
   })
@@ -126,6 +130,27 @@ describe('MODULE_FILENAME_PATTERN', () => {
     expect(MODULE_FILENAME_PATTERN.test('../utils.js')).toBe(false)
     expect(MODULE_FILENAME_PATTERN.test('sub/utils.js')).toBe(false)
   })
+})
+
+describe('CSS_FILENAME_PATTERN', () => {
+  const allow = ['index.css', 'tokens.css', 'components/btn.css', 'features/sidebar.css']
+  const deny = [
+    '../secret.css', '../../style.css', '../style.css',
+    'tokens.js', 'Tokens.css', '.css', 'a/b/c.css', '%2e%2e/secret.css',
+    'components/../tokens.css',
+  ]
+
+  for (const name of allow) {
+    it(`allows "${name}"`, () => {
+      expect(CSS_FILENAME_PATTERN.test(name)).toBe(true)
+    })
+  }
+
+  for (const name of deny) {
+    it(`rejects "${name}"`, () => {
+      expect(CSS_FILENAME_PATTERN.test(name)).toBe(false)
+    })
+  }
 })
 
 describe('tryHandleStatic', () => {
@@ -244,6 +269,34 @@ describe('tryHandleStatic', () => {
 
   it('returns 404 for invalid module filename (path traversal)', async () => {
     const { ctx, res } = makeCtx('GET', '/modules/../secret.js')
+    const handled = await tryHandleStatic(ctx, FAKE_WEB_DIR)
+    expect(handled).toBe(true)
+    expect(res.code).toBe(404)
+  })
+
+  it('serves /css/index.css', async () => {
+    const { ctx, res } = makeCtx('GET', '/css/index.css')
+    const handled = await tryHandleStatic(ctx, FAKE_WEB_DIR)
+    expect(handled).toBe(true)
+    expect(res.code).toBe(200)
+  })
+
+  it('serves /css/tokens.css', async () => {
+    const { ctx, res } = makeCtx('GET', '/css/tokens.css')
+    const handled = await tryHandleStatic(ctx, FAKE_WEB_DIR)
+    expect(handled).toBe(true)
+    expect(res.code).toBe(200)
+  })
+
+  it('returns 404 for missing css file', async () => {
+    const { ctx, res } = makeCtx('GET', '/css/nonexistent.css')
+    const handled = await tryHandleStatic(ctx, FAKE_WEB_DIR)
+    expect(handled).toBe(true)
+    expect(res.code).toBe(404)
+  })
+
+  it('returns 404 for css path traversal attempt', async () => {
+    const { ctx, res } = makeCtx('GET', '/css/../style.css')
     const handled = await tryHandleStatic(ctx, FAKE_WEB_DIR)
     expect(handled).toBe(true)
     expect(res.code).toBe(404)
