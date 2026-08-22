@@ -62,3 +62,28 @@ describe('outgoing-copy gate tokenization: prose vs identifier (GATEKOTOJEL817/G
     expect(probs[0]).toMatch(/"\.\.\.[^"]*a video nagyon[^"]*\.\.\." @\d+/)
   })
 })
+
+// GATESZAMKOTOJEL821 (2026-08-21): the same prose-vs-identifier class, one step
+// further. HYPHEN_WORD admits only LETTERS around the hyphen, so a Hungarian
+// suffix attached to a NUMBER ("429-es", "2026-os") is tokenized as a bare word
+// -- and "es" then reads as the accent-stripped "és". The gate blocked a correct
+// message about HTTP status codes. A digit before the hyphen is the signal: that
+// token is part of an identifier, not prose.
+describe('outgoing-copy gate tokenization: a suffix attached to a number is not prose (GATESZAMKOTOJEL821)', () => {
+  it('HTTP status codes with Hungarian suffixes pass', () => {
+    expect(auditAccent('A 429-es vagy 403-as hibakód esetén várunk egy kicsit, és köszönöm, hogy szóltál.')).toEqual([])
+  })
+
+  it('a year and a port number with suffixes pass', () => {
+    expect(auditAccent('A 2026-os tervben a 3420-as port marad, és kérlek jelezz, ha nem így van.')).toEqual([])
+  })
+
+  it('a standalone "es" in the same sentence is still caught -- the fix must not widen into a whitelist', () => {
+    // Both halves in one sentence: the suffix on 429 is skipped, the bare word is not.
+    const probs = auditAccent('A 429-es hibakod mellett a dokumentum es a melleklet is megjott, kerlek nezd meg.')
+    expect(probs.length).toBe(1)
+    expect(probs[0]).toContain('es -> és')
+    // the reported occurrence is the standalone one, not the suffix on 429
+    expect(probs[0]).toContain('a dokumentum es a melleklet')
+  })
+})

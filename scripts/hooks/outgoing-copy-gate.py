@@ -257,6 +257,14 @@ def accent_check_tokens(prose: str):
     out = []
     for m in HYPHEN_WORD.finditer(prose):
         tok = m.group(0)
+        # DIGIT-HYPHEN SUFFIX (429-es, 403-as, 2026-os, 3420-as). HYPHEN_WORD only
+        # admits LETTERS around the hyphen, so a Hungarian suffix attached to a
+        # NUMBER is seen as a standalone word -- and "es" is then read as the
+        # accent-stripped "és". These are not prose words; they carry no accent.
+        # (2026-08-21: the gate blocked a correct message reading "429-es vagy
+        # 403-as". GATEKOTOJEL817 covered letter-hyphen-letter forms, not this one.)
+        if m.start() >= 2 and prose[m.start() - 1] == "-" and prose[m.start() - 2].isdigit():
+            continue
         if "-" not in tok and tok[0].isupper() and not _at_sentence_start(prose, m.start()):
             continue
         out.append((tok.lower(), m.start()))
