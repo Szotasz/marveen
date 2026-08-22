@@ -1,0 +1,8 @@
+/* Layer declaration — order is fixed and cannot be overridden */
+@layer tokens, reset, base, components, features;
+
+/* Tokens layer: custom properties only */
+@import url("tokens.css") layer(tokens);
+
+/* Wrap the existing style.css entirely in the features layer */
+@import url("../style.css") layer(features);
