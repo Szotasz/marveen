@@ -80,13 +80,55 @@ describe('contextLimitForModel / calibrateLimit', () => {
     expect(contextLimitForModel('claude-opus-4-6')).toBe(1_000_000)
     expect(contextLimitForModel('claude-opus-5')).toBe(1_000_000)
     expect(contextLimitForModel('claude-opus-5[1m]')).toBe(1_000_000)
-    // Sonnet stays 200k: never observed above 198k on this host. Haiku 200k
-    // by spec; unknown models stay conservative (calibration steps them up).
-    expect(contextLimitForModel('claude-sonnet-5')).toBe(200_000)
+    // Sonnet joined the 1M families 2026-08-16: measured live, 7 running
+    // claude-sonnet-5 agents each showed the statusline's own authoritative
+    // context_window_size as ~999k (delphi 216,165 raw tokens / 999k = 21.6%,
+    // matching its pane's displayed 22%), while the old 200k assumption read
+    // the same session at 108% and force-restarted it mid-task -- the fable-5
+    // failure mode above, recurring on the model this file used to trust.
+    // Haiku 200k by spec; unknown models stay conservative (calibration
+    // steps them up).
+    expect(contextLimitForModel('claude-sonnet-5')).toBe(1_000_000)
     expect(contextLimitForModel('claude-haiku-4-5')).toBe(200_000)
     expect(contextLimitForModel('claude-opus-4-5')).toBe(200_000)
+    // deepseek-v4-pro: the dashboard model catalog advertises "1M kontextus",
+    // but that is the vendor's marketing figure, not what this CLI actually
+    // exposes per session -- measured live 2026-08-17 across 4 running
+    // deepseek-v4-pro agents right after the fleet-wide switch (delphi
+    // 115,414/59%=195.6k, ereceipt 101,074/51%=198.2k, kutato 112,703/56%=
+    // 201.3k, ordog 145,847/73%=199.8k), all four independently landing on
+    // ~200k. Stays 200k; do not "fix" this to 1M without a fresh measurement.
     expect(contextLimitForModel('deepseek-v4-pro')).toBe(200_000)
     expect(contextLimitForModel(null)).toBe(200_000)
+  })
+
+  it('trusts minimax-m3 for the real 1M window -- but ONLY because agent-process.ts forces CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 to work around a vendor-side compat-layer bug', () => {
+    // MiniMax's own /anthropic compat endpoint misreports 200K in its model
+    // metadata instead of M3's real 1M (MiniMax-AI/MiniMax-M2.7#46). Measured
+    // live 2026-08-19 BEFORE the workaround, on two independently running
+    // fleet agents (mag 108992/54%=201.8k, rendezo 62810/31%=202.6k) -- both
+    // converged on ~200k, matching the vendor bug exactly. AFTER
+    // resolveProviderEnv started forcing CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000,
+    // a live restart confirmed the CLI itself now reports a ~1M window (pane
+    // showed "999k left" / "937k left" post-restart, up from "199k left" /
+    // "137k left"). This constant and that env var override are a PAIR: if the
+    // override in agent-process.ts is ever removed, this must revert to
+    // 200_000 (like deepseek-v4-pro above), or the guard will under-restart
+    // against a window the CLI no longer actually has.
+    expect(contextLimitForModel('minimax-m3')).toBe(1_000_000)
+  })
+
+  it('does not force-restart a Sonnet 5 session mid-task on a stale 200k denominator (2026-08-16 delphi incident)', () => {
+    // delphi's live transcript carried 216,165 raw tokens (input + cache_read
+    // + cache_creation) -- comfortably inside a 999k window, but 108% of the
+    // old 200k assumption. calibrateLimit alone cannot rescue this: 216,165
+    // is within CALIBRATION_OVERSHOOT_TOLERANCE (1.25x) of 200_000, so it
+    // reads as a genuinely-full 200k session rather than proof the base was
+    // wrong, and never steps up to a bigger tier.
+    const observed = 216_165
+    const limit = calibrateLimit(observed, contextLimitForModel('claude-sonnet-5'))
+    expect(limit).toBe(1_000_000)
+    expect(observed / limit).toBeLessThan(DEFAULT_CONTEXT_GUARD.hardPct)
   })
 
   it('defaults the handoff timeout to 20 minutes (6 was shorter than a working turn)', () => {

@@ -365,6 +365,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   if (agentGetsEmailGate(name)) injectEmailSendGate(existing)
   if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
   injectEgressGate(existing)
+  injectBuildNumberGate(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 
@@ -458,6 +459,59 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
     ...prev.filter((e) => !JSON.stringify(e).includes('self-pace-gate.mjs')),
     entry,
   ]
+}
+
+// Idempotently wire the build-number-commit-gate PreToolUse hook (blocks a
+// `git commit` on a repo's release branch when BuildNumberV2.txt is not part
+// of the staged set). Applied to ALL agents including MAIN_AGENT_ID -- this is
+// not a trust boundary like the email/self-pace gates, it is a general
+// correctness rule from commit.md 0.5 that any agent (the main one included)
+// can miss. Card #667-adjacent: four VHR5 commits on 7.4.1.61 followed every
+// formal convention in commit.md 0.5 (card line, hu/en body) but skipped the
+// build-number step, because nothing enforced it -- prose alone let a
+// compliant-looking commit through four times running. Fires at the Claude
+// Code tool-call layer, before the shell ever sees the command, so
+// `git commit --no-verify` (which bypasses the repo's OWN pre-commit hook)
+// cannot reach it. Same dedupe shape as the other gate injectors.
+export function injectBuildNumberGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'build-number-commit-gate.mjs'))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('build-number-commit-gate.mjs')),
+    entry,
+  ]
+}
+
+// Idempotent migration: ensure every agent's settings.json carries the
+// build-number-commit gate hook. Same shape as ensureEgressGate -- called at
+// server startup so existing agents get it without a full respawn.
+export function ensureBuildNumberGate(name: string): boolean {
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'build-number-commit-gate.mjs'))
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const ptuJson = JSON.stringify(ptu)
+  if (ptuJson.includes('build-number-commit-gate.mjs') && hookCommandWired(ptuJson, command)) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectBuildNumberGate(settings)
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
 }
 
 // Idempotently wire the egress-gate PreToolUse hook (hard-blocks WebFetch to

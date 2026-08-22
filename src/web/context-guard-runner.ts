@@ -178,7 +178,9 @@ export function resumePrompt(
     base + source +
     `Utána ellenőrizd a kanban tábládat (in_progress kártyák, assignee=${name}) és a hot memóriáidat, ` +
     `és FOLYTASD a megkezdett munkát magadtól. Ne kezdd elölről ami a handoff szerint már kész. ` +
-    `Röviden jelezz a csatornádon, hogy friss kontextussal folytatod.`
+    `NE jelezz erről a Telegram-csatornán -- a session-váltás önmagában nem döntés-kérés, ` +
+    `nem érdekli a tulajdonost (Józsi, 2026-08-18). Ha van tényleges döntés-kérésed, azt küldd, ` +
+    `a puszta "friss kontextussal folytatom" jelzést ne.`
   )
 }
 

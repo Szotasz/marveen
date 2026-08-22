@@ -18,11 +18,33 @@
     ],
     "SessionStart": [
       {
-        "matcher": "compact|resume",
+        "matcher": "startup|compact|resume",
         "hooks": [
           {
             "type": "command",
             "command": "python3 {{PROJECT_ROOT}}/scripts/hooks/taskstate-replay.py",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/ledger-replay.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/ledger-replay.py; exit 0'",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "mcp__plugin.telegram.telegram__reply",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/ledger-outbound.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/ledger-outbound.py; exit 0'",
             "timeout": 15
           }
         ]
@@ -31,6 +53,11 @@
     "UserPromptSubmit": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/ledger-capture.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/ledger-capture.py; exit 0'",
+            "timeout": 15
+          },
           {
             "type": "command",
             "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/staleness-guard.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/staleness-guard.py; exit 0'",
