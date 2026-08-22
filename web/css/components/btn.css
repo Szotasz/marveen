@@ -1,0 +1,118 @@
+/* === .btn component === */
+/* Poly spec §1: CUBE data-attr, local --_ tokens */
+
+.btn {
+  --_bg:        var(--bg-input);
+  --_fg:        var(--text);
+  --_border:    var(--border);
+  --_bg-hover:  var(--bg-card-hover);
+  --_bg-active: var(--border);
+
+  display:         inline-flex;
+  align-items:     center;
+  justify-content: center;
+  gap:             var(--sp-1);
+  height:          36px;
+  padding:         0 var(--sp-4);
+  background:      var(--_bg);
+  color:           var(--_fg);
+  border:          1px solid var(--_border);
+  border-radius:   var(--radius-sm);
+  font-size:       var(--fs-base);
+  font-weight:     var(--fw-medium);
+  font-family:     inherit;
+  cursor:          pointer;
+  white-space:     nowrap;
+  text-decoration: none;
+  transition:
+    background    var(--dur-fast) var(--ease-out),
+    border-color  var(--dur-fast) var(--ease-out),
+    box-shadow    var(--dur-fast) var(--ease-out),
+    color         var(--dur-fast) var(--ease-out);
+}
+.btn:hover        { background: var(--_bg-hover); }
+.btn:active       { background: var(--_bg-active); transform: translateY(1px); }
+.btn:focus-visible { box-shadow: var(--focus-ring); outline: none; }
+.btn[disabled],
+.btn:disabled     { opacity: 0.5; pointer-events: none; cursor: not-allowed; }
+.btn[hidden]      { display: none; }
+
+/* -- variants ------------------------------------------------------------ */
+
+.btn[data-variant="primary"] {
+  --_bg:        var(--accent);
+  --_fg:        var(--text-inverse);
+  --_border:    transparent;
+  --_bg-hover:  var(--accent-hover);
+  --_bg-active: var(--accent-active);
+}
+
+/* secondary = default ős; only hover differs */
+.btn[data-variant="secondary"]:hover:not(:disabled) {
+  border-color: var(--accent);
+  color:        var(--accent);
+}
+
+.btn[data-variant="ghost"] {
+  --_bg:       transparent;
+  --_fg:       var(--text-secondary);
+  --_border:   transparent;
+  --_bg-hover: var(--neutral-soft);
+}
+
+.btn[data-variant="danger"] {
+  --_bg:       transparent;
+  --_fg:       var(--danger);
+  --_border:   var(--danger);
+  --_bg-hover: var(--danger);
+}
+.btn[data-variant="danger"]:hover { color: var(--text-inverse); }
+.btn[data-variant="danger"]:disabled { opacity: 0.6; }
+
+.btn[data-variant="icon"] {
+  --_bg:       var(--bg-input);
+  --_fg:       var(--text-secondary);
+  --_border:   transparent;
+  --_bg-hover: var(--accent-soft);
+  width:    32px;
+  height:   32px;
+  padding:  0;
+}
+.btn[data-variant="icon"]:hover { color: var(--accent); }
+
+.btn[data-variant="icon"][data-danger] {
+  --_bg:  transparent;
+  --_fg:  var(--text-muted);
+}
+.btn[data-variant="icon"][data-danger]:hover {
+  --_bg: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* -- sizes --------------------------------------------------------------- */
+
+.btn[data-size="compact"] {
+  height:    28px;
+  padding:   0 var(--sp-3);
+  font-size: var(--fs-sm);
+}
+
+.btn[data-size="full"] {
+  width: 100%;
+}
+
+/* -- loading state ------------------------------------------------------- */
+
+.btn[aria-busy="true"] { pointer-events: none; position: relative; }
+.btn[aria-busy="true"] > :not(.btn-spinner) { opacity: 0; }
+.btn[aria-busy="true"]::after {
+  content:       "";
+  position:      absolute;
+  width:         14px;
+  height:        14px;
+  border:        2px solid var(--_fg);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation:     btn-spin 0.7s linear infinite;
+}
+@keyframes btn-spin { to { transform: rotate(360deg); } }

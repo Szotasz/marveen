@@ -201,7 +201,7 @@ function renderDeviceKeysSection(body) {
     `<div class="auth-form auth-device-mint">` +
       `<input id="authDevName" type="text" autocapitalize="off" spellcheck="false" maxlength="64" placeholder="${t('auth.devices.name_placeholder')}">` +
       `<input id="authDevExpiry" type="number" min="1" max="3650" placeholder="${t('auth.devices.expiry_placeholder')}">` +
-      `<button class="btn-secondary" id="authDevMintBtn">${t('auth.devices.mint')}</button>` +
+      `<button class="btn" data-variant="secondary" id="authDevMintBtn">${t('auth.devices.mint')}</button>` +
       `<div class="auth-form-msg" id="authDevMsg"></div>` +
       `<div id="authDevMinted" hidden></div>` +
     `</div>`
@@ -226,7 +226,7 @@ async function refreshDeviceKeyList() {
       return `<div class="auth-session-row auth-device-row" data-key-id="${k.id}">` +
         `<span class="auth-device-name">${escapeHtml(k.name)}${bridge}</span>` +
         `<span class="auth-device-meta">${created} &middot; ${t('auth.devices.last_used', { date: lastUsed })}${expires}</span>` +
-        `<button class="btn-secondary btn-compact auth-device-revoke" data-key-id="${k.id}">${t('auth.devices.revoke')}</button>` +
+        `<button class="btn auth-device-revoke" data-variant="secondary" data-size="compact" data-key-id="${k.id}">${t('auth.devices.revoke')}</button>` +
       `</div>`
     }).join('')
     el.querySelectorAll('.auth-device-revoke').forEach((btn) => {
@@ -279,7 +279,7 @@ async function mintDeviceKey() {
       `<p class="auth-muted">${t('auth.devices.minted_hint')}</p>` +
       `<div class="auth-form auth-device-minted-row">` +
         `<input id="authDevMintedKey" type="text" readonly value="${escapeHtml(data.key)}" onclick="this.select()">` +
-        `<button class="btn-secondary btn-compact" id="authDevCopyBtn">${t('auth.devices.copy')}</button>` +
+        `<button class="btn" data-variant="secondary" data-size="compact" id="authDevCopyBtn">${t('auth.devices.copy')}</button>` +
       `</div>`
     document.getElementById('authDevCopyBtn').addEventListener('click', async () => {
       try {
@@ -307,7 +307,7 @@ function renderBridgeEnrollSection(body) {
       `<input id="authBridgeKeyLine" type="text" autocapitalize="off" spellcheck="false" placeholder="${t('auth.bridge.key_placeholder')}">` +
       `<input id="authBridgeName" type="text" autocapitalize="off" spellcheck="false" maxlength="64" placeholder="${t('auth.bridge.name_placeholder')}">` +
       `<input id="authBridgeHost" type="text" autocapitalize="off" spellcheck="false" maxlength="253" placeholder="${t('auth.bridge.host_placeholder')}">` +
-      `<button class="btn-secondary" id="authBridgeEnrollBtn">${t('auth.bridge.enroll')}</button>` +
+      `<button class="btn" data-variant="secondary" id="authBridgeEnrollBtn">${t('auth.bridge.enroll')}</button>` +
       `<div class="auth-form-msg" id="authBridgeMsg"></div>` +
       `<div id="authBridgeBundle" hidden></div>` +
     `</div>`
@@ -346,7 +346,7 @@ async function bridgeEnrollFromUi() {
       `<p class="auth-muted">${t('auth.bridge.bundle_hint', { host: escapeHtml(data.host || '') })}</p>` +
       `<div class="auth-form auth-device-minted-row">` +
         `<input id="authBridgeBundleVal" type="text" readonly value="${escapeHtml(data.bundle)}" onclick="this.select()">` +
-        `<button class="btn-secondary btn-compact" id="authBridgeCopyBtn">${t('auth.devices.copy')}</button>` +
+        `<button class="btn" data-variant="secondary" data-size="compact" id="authBridgeCopyBtn">${t('auth.devices.copy')}</button>` +
       `</div>`
     document.getElementById('authBridgeCopyBtn').addEventListener('click', async () => {
       try {
@@ -365,7 +365,7 @@ function renderCreateLoginForm(body) {
       `<input id="authNewUser" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="${t('auth.login.username')}">` +
       `<input id="authNewPass" type="password" autocomplete="new-password" placeholder="${t('auth.card.new_password')}">` +
       `<input id="authNewPass2" type="password" autocomplete="new-password" placeholder="${t('auth.card.repeat_password')}">` +
-      `<button class="btn-primary" id="authCreateBtn">${t('auth.card.create')}</button>` +
+      `<button class="btn" data-variant="primary" id="authCreateBtn">${t('auth.card.create')}</button>` +
       `<div class="auth-form-msg" id="authCreateMsg"></div>` +
     `</div>`
   body.querySelector('#authCreateBtn')?.addEventListener('click', async () => {
@@ -395,13 +395,13 @@ function renderSessionPanel(body, status) {
       `<input id="authCurPass" type="password" autocomplete="current-password" placeholder="${t('auth.card.current_password')}">` +
       `<input id="authChgPass" type="password" autocomplete="new-password" placeholder="${t('auth.card.new_password')}">` +
       `<input id="authChgPass2" type="password" autocomplete="new-password" placeholder="${t('auth.card.repeat_password')}">` +
-      `<button class="btn-primary" id="authChgBtn">${t('auth.card.change_password')}</button>` +
+      `<button class="btn" data-variant="primary" id="authChgBtn">${t('auth.card.change_password')}</button>` +
       `<div class="auth-form-msg" id="authChgMsg"></div>` +
     `</div>` +
     `<div class="auth-sessions" id="authSessions"></div>` +
     `<div class="auth-actions">` +
-      `<button class="btn-secondary btn-compact" id="authLogoutAllBtn">${t('auth.card.logout_all')}</button>` +
-      `<button class="btn-secondary btn-compact" id="authLogoutBtn">${t('auth.card.logout')}</button>` +
+      `<button class="btn" data-variant="secondary" data-size="compact" id="authLogoutAllBtn">${t('auth.card.logout_all')}</button>` +
+      `<button class="btn" data-variant="secondary" data-size="compact" id="authLogoutBtn">${t('auth.card.logout')}</button>` +
     `</div>`
   document.getElementById('authChgBtn').addEventListener('click', async () => {
     const msg = document.getElementById('authChgMsg')
@@ -643,7 +643,9 @@ export async function loadSettings() {
       panel.appendChild(footer)
 
       const refreshBtn = document.createElement('button')
-      refreshBtn.className = 'btn-secondary btn-compact'
+      refreshBtn.className = 'btn'
+      refreshBtn.dataset.variant = 'secondary'
+      refreshBtn.dataset.size = 'compact'
       refreshBtn.textContent = t('common.btn.refresh')
       refreshBtn.addEventListener('click', () => renderAutonomyContent(grid, footer))
       panel.appendChild(refreshBtn)

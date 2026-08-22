@@ -41,10 +41,10 @@ export async function loadSkills(agentName) {
           ${skill.description ? `<div class="skill-item-desc">${escapeHtml(skill.description)}</div>` : ''}
         </div>
         <div class="skill-item-actions">
-          ${deletable ? `<button class="btn-icon btn-icon-danger" title="${t('skills.btn.delete')}">${trashIcon()}</button>` : ''}
+          ${deletable ? `<button class="btn" data-variant="icon" data-danger="" title="${t('skills.btn.delete')}">${trashIcon()}</button>` : ''}
         </div>
       `
-      const delBtn = item.querySelector('.btn-icon-danger')
+      const delBtn = item.querySelector('[data-variant="icon"][data-danger]')
       if (delBtn) {
         delBtn.addEventListener('click', async () => {
           if (!confirm(t('skills.confirm.delete', { name: skill.name }))) return
@@ -420,7 +420,7 @@ function renderGlobalSkillsGrid() {
     card.className = isLocal ? 'skills-card skills-card--local' : 'skills-card'
     const icon = getSkillIcon(skill.name)
     const sourceBadge = isLocal
-      ? `<span class="connector-source-badge skills-badge--agent">${escapeHtml(skill.agentId)}</span>`
+      ? `<span class="connector-source-badge skills-tag--agent">${escapeHtml(skill.agentId)}</span>`
       : (skill.source ? `<span class="connector-source-badge">${escapeHtml(sourceLabels[skill.source] || skill.source)}</span>` : '')
 
     const hasDesc = !!skill.description

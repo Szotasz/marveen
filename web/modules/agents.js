@@ -787,11 +787,11 @@ function renderAgents() {
         <span class="tg-status" title="${t('agents.marveen_channel_tip')}"><span class="tg-dot connected"></span>${t('agents.status.online')}</span>
       </div>
       <div class="agent-card-actions">
-        <button class="btn-secondary btn-compact agent-conversation-btn" title="${t('agents.btn.conversation')}">
+        <button class="btn agent-conversation-btn" data-variant="secondary" data-size="compact" title="${t('agents.btn.conversation')}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
           ${t('agents.btn.conversation')}
         </button>
-        <button class="btn-secondary btn-compact agent-terminal-btn" title="Terminal">
+        <button class="btn agent-terminal-btn" data-variant="secondary" data-size="compact" title="Terminal">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
           Terminal
         </button>
@@ -845,14 +845,14 @@ function renderAgents() {
       ${agent.needsReauth ? `
         <div class="agent-reauth-banner">
           <span class="agent-reauth-reason">${escapeHtml(agent.reauthReason || t('agents.reauth.reason'))}</span>
-          <button class="btn-danger btn-compact agent-login-btn" data-phase="start">${t('agents.btn.login')}</button>
+          <button class="btn agent-login-btn" data-variant="danger" data-size="compact" data-phase="start">${t('agents.btn.login')}</button>
         </div>` : ''}
       <div class="agent-card-actions">
-        <button class="btn-secondary btn-compact agent-conversation-btn" title="${t('agents.btn.conversation')}">
+        <button class="btn agent-conversation-btn" data-variant="secondary" data-size="compact" title="${t('agents.btn.conversation')}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
           ${t('agents.btn.conversation')}
         </button>
-        <button class="btn-secondary btn-compact agent-terminal-btn" title="Terminal">
+        <button class="btn agent-terminal-btn" data-variant="secondary" data-size="compact" title="Terminal">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
           Terminal
         </button>
@@ -963,7 +963,7 @@ function renderFederatedAgentCards(agentsGrid, addBtn) {
         <span class="tg-status"><span class="tg-dot ${reachable ? 'connected' : 'disconnected'}"></span> ${reachable ? t('federation.peer_state.ok') : t('federation.peer_state.' + (fa.peerState || 'unknown'))}</span>
       </div>
       <div class="agent-card-actions">
-        <button class="btn-secondary btn-compact federated-message-btn">${t('federation.btn.message')}</button>
+        <button class="btn federated-message-btn" data-variant="secondary" data-size="compact" >${t('federation.btn.message')}</button>
       </div>`
     card.querySelector('.federated-message-btn').addEventListener('click', (e) => {
       e.stopPropagation()
@@ -1862,7 +1862,7 @@ document.getElementById('analyzeAllModelsBtn').addEventListener('click', async (
       if (ok.length > 0) {
         html += `<p style="color:var(--text-muted);margin:0;font-size:12px">${t('agents.model.ok_agents', { list: ok.map(r => r.agent).join(', ') })}</p>`
       }
-      html += `<button class="btn-secondary btn-compact" id="createModelChangeCardsBtn" style="margin-top:10px">${t('agents.model.create_cards_btn')}</button>`
+      html += `<button class="btn" data-variant="secondary" data-size="compact" id="createModelChangeCardsBtn" style="margin-top:10px">${t('agents.model.create_cards_btn')}</button>`
     }
     html += '</div>'
     panel.innerHTML = html
@@ -2507,7 +2507,7 @@ function renderCustomToolSection(serverKey, existingCustomSet, catalogToolIds = 
       <div class="mcp-custom-tool-tags" id="customTags_${escapeHtml(serverKey)}">${tags}</div>
       <div class="mcp-custom-tool-input-row">
         <input type="text" class="mcp-custom-tool-input" placeholder="${t('agents.mcp_scope.unknown_server_hint')}">
-        <button type="button" class="btn-compact btn-secondary mcp-custom-tool-add">${t('agents.mcp_scope.add_custom_tool')}</button>
+        <button type="button" class="btn mcp-custom-tool-add" data-variant="secondary" data-size="compact" >${t('agents.mcp_scope.add_custom_tool')}</button>
       </div>
     </div>
   `
@@ -2933,7 +2933,7 @@ function showSmokeTestResult(output) {
       <h3>${t('channel.smoke_test.title')}</h3>
       <pre style="background:#1a1a2e;color:#e0e0e0;padding:12px;border-radius:6px;overflow-x:auto;font-size:13px;max-height:400px;white-space:pre-wrap">${output.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>
       <div style="text-align:right;margin-top:12px">
-        <button class="btn-secondary" id="smokeTestCloseBtn">${t('common.btn.close')}</button>
+        <button class="btn" data-variant="secondary" id="smokeTestCloseBtn">${t('common.btn.close')}</button>
       </div>
     </div>`
   document.body.appendChild(overlay)
@@ -2963,7 +2963,7 @@ async function refreshPendingPairings() {
           <span class="tg-pending-code">${escapeHtml(p.code)}</span>
           <span class="tg-pending-sender">Sender: ${escapeHtml(p.senderId)}</span>
         </div>
-        <button class="btn-primary btn-compact" style="padding:5px 12px; font-size:12px; margin:0" data-code="${escapeHtml(p.code)}">${t('common.btn.approve')}</button>
+        <button class="btn" data-variant="primary" data-size="compact" style="padding:5px 12px; font-size:12px; margin:0" data-code="${escapeHtml(p.code)}">${t('common.btn.approve')}</button>
       `
       item.querySelector('button').addEventListener('click', async () => {
         await approvePairing(p.code)
@@ -3017,7 +3017,7 @@ async function refreshAllowedList() {
           <span class="tg-allowed-kind">DM</span>
           <span class="tg-allowed-id">${escapeHtml(id)}</span>
         </div>
-        <button class="btn-icon-danger" title="${t('common.btn.remove')}" data-kind="user" data-id="${escapeHtml(id)}">&times;</button>
+        <button class="btn" data-variant="icon" data-danger="" title="${t('common.btn.remove')}" data-kind="user" data-id="${escapeHtml(id)}">&times;</button>
       `
       item.querySelector('button').addEventListener('click', () => removeAllowed('user', id))
       listEl.appendChild(item)
@@ -3030,7 +3030,7 @@ async function refreshAllowedList() {
           <span class="tg-allowed-kind tg-allowed-kind-group">${t('channel.badge.group')}</span>
           <span class="tg-allowed-id">${escapeHtml(g.id)}</span>
         </div>
-        <button class="btn-icon-danger" title="${t('common.btn.remove')}" data-kind="group" data-id="${escapeHtml(g.id)}">&times;</button>
+        <button class="btn" data-variant="icon" data-danger="" title="${t('common.btn.remove')}" data-kind="group" data-id="${escapeHtml(g.id)}">&times;</button>
       `
       item.querySelector('button').addEventListener('click', () => removeAllowed('group', g.id))
       listEl.appendChild(item)
@@ -3085,8 +3085,8 @@ async function refreshInvites() {
           ${linkHtml}
         </div>
         <div style="display:flex; gap:6px;">
-          ${inv.deepLink && !inv.used ? `<button class="btn-secondary btn-compact" data-link="${escapeHtml(inv.deepLink)}" style="padding:4px 10px; font-size:11px; margin:0;">${t('common.btn.copy_btn')}</button>` : ''}
-          <button class="btn-icon-danger" title="${t('channel.btn.revoke')}" data-token="${escapeHtml(inv.token)}">&times;</button>
+          ${inv.deepLink && !inv.used ? `<button class="btn" data-variant="secondary" data-size="compact" data-link="${escapeHtml(inv.deepLink)}" style="padding:4px 10px; font-size:11px; margin:0;">${t('common.btn.copy_btn')}</button>` : ''}
+          <button class="btn" data-variant="icon" data-danger="" title="${t('channel.btn.revoke')}" data-token="${escapeHtml(inv.token)}">&times;</button>
         </div>
       `
       const copyBtn = item.querySelector('button[data-link]')
@@ -3188,8 +3188,8 @@ async function refreshChannelRequests() {
           <span class="tg-allowed-id" style="font-size:11px;color:var(--text-muted)">${ts}</span>
         </div>
         <div style="display:flex;gap:6px">
-          <button class="btn-primary btn-compact" data-approve="${req.id}" style="padding:4px 10px;font-size:11px;margin:0">${t('common.btn.approve')}</button>
-          <button class="btn-icon-danger" data-deny="${req.id}" title="${t('channel.btn.deny')}">&times;</button>
+          <button class="btn" data-variant="primary" data-size="compact" data-approve="${req.id}" style="padding:4px 10px;font-size:11px;margin:0">${t('common.btn.approve')}</button>
+          <button class="btn" data-variant="icon" data-danger="" data-deny="${req.id}" title="${t('channel.btn.deny')}">&times;</button>
         </div>
       `
       item.dataset.reqId = req.id

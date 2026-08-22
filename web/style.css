@@ -1992,28 +1992,6 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   font-size: 12px;
   color: var(--text);
 }
-.btn-icon-danger {
-  background: transparent;
-  border: 1px solid transparent;
-  color: var(--text-muted);
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  transition: all 0.15s ease;
-}
-.btn-icon-danger:hover {
-  background: var(--danger-soft);
-  color: rgb(230, 90, 100);
-  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
-}
-
 /* === Skills Tab === */
 .skill-header {
   display: flex;
@@ -2383,73 +2361,6 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 .form-group textarea { resize: vertical; }
 
-/* === Buttons === */
-.btn-primary {
-  width: 100%;
-  padding: 12px;
-  background: var(--text);
-  color: var(--bg);
-  border: none;
-  border-radius: var(--radius-sm);
-  font-size: 15px;
-  font-weight: 500;
-  font-family: inherit;
-  cursor: pointer;
-  transition: all var(--transition);
-  margin-top: 8px;
-}
-.btn-primary:hover { opacity: 0.85; }
-.btn-primary:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.btn-compact {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  width: auto;
-  padding: 10px 20px;
-  font-size: 14px;
-  margin-top: 0;
-  white-space: nowrap;
-}
-/* Keep compact controls out of layout when JavaScript marks them hidden. */
-.btn-compact[hidden] { display: none; }
-
-.btn-secondary {
-  padding: 10px 20px;
-  background: var(--bg-input);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  font-size: 14px;
-  font-weight: 500;
-  font-family: inherit;
-  cursor: pointer;
-  transition: all var(--transition);
-}
-.btn-secondary:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-.btn-secondary:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  color: var(--text-muted);
-}
-
-.btn-danger {
-  padding: 10px 20px;
-  background: transparent;
-  color: var(--danger);
-  border: 1px solid var(--danger);
-  border-radius: var(--radius-sm);
-  font-size: 14px;
-  font-weight: 500;
-  font-family: inherit;
-  cursor: pointer;
-  transition: all var(--transition);
-}
-.btn-danger:hover { background: var(--danger); color: white; }
-
 /* === Detail === */
 .detail-top {
   display: flex;
@@ -2583,28 +2494,6 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 
 .task-status { flex-shrink: 0; }
 
-.badge {
-  display: inline-block;
-  padding: 3px 10px;
-  border-radius: 20px;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-}
-.badge-active {
-  background: var(--success-soft);
-  color: var(--success);
-}
-.badge-paused {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-.badge-heartbeat {
-  background: color-mix(in srgb, var(--color-pink-500) 12%, transparent);
-  color: var(--color-pink-500);
-}
-
 .task-info {
   flex: 1;
   min-width: 0;
@@ -2647,23 +2536,6 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   transition: opacity var(--transition);
 }
 .task-row:hover .task-actions { opacity: 1; }
-
-.btn-icon {
-  width: 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: var(--bg-input);
-  border-radius: var(--radius-sm);
-  font-size: 14px;
-  cursor: pointer;
-  transition: all var(--transition);
-  color: var(--text-secondary);
-}
-.btn-icon:hover { background: var(--accent-soft); color: var(--accent); }
-.btn-icon-danger:hover { background: var(--danger-soft); color: var(--danger); }
 
 /* === Task detail === */
 .task-detail-meta {
@@ -3389,12 +3261,6 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   pointer-events: all;
 }
 
-/* === Tier Badges === */
-.badge-hot { background: var(--danger-soft); color: var(--danger); }
-.badge-warm { background: var(--accent-soft); color: var(--accent); }
-.badge-cold { background: var(--info-soft); color: var(--info); }
-.badge-shared { background: var(--warning-soft); color: var(--color-amber-700); }
-
 .mem-agent-badge {
   font-size: 10px;
   font-weight: 600;
@@ -3593,26 +3459,6 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   font-weight: 600;
   min-width: 140px;
   text-align: center;
-}
-
-.btn-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-card);
-  color: var(--text);
-  font-size: 14px;
-  cursor: pointer;
-  transition: all var(--transition);
-}
-.btn-icon:hover {
-  background: var(--bg-input);
-  border-color: var(--accent);
-  color: var(--accent);
 }
 
 .log-entries {
@@ -4363,19 +4209,19 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   display: flex;
   gap: 6px;
 }
-.recall-badge {
+.recall-label {
   font-size: 11px;
   color: var(--color-white);
   padding: 2px 8px;
   border-radius: 12px;
   white-space: nowrap;
 }
-.recall-badge-agent { background: var(--accent); }
-.recall-badge-cat { background: var(--text-muted); }
-.recall-badge-cat[data-cat="hot"]    { background: var(--danger); }
-.recall-badge-cat[data-cat="warm"]   { background: var(--warning); }
-.recall-badge-cat[data-cat="cold"]   { background: var(--info); }
-.recall-badge-cat[data-cat="shared"] { background: var(--color-violet-500); }
+.recall-label-agent { background: var(--accent); }
+.recall-label-cat { background: var(--text-muted); }
+.recall-label-cat[data-cat="hot"]    { background: var(--danger); }
+.recall-label-cat[data-cat="warm"]   { background: var(--warning); }
+.recall-label-cat[data-cat="cold"]   { background: var(--info); }
+.recall-label-cat[data-cat="shared"] { background: var(--color-violet-500); }
 .recall-item-content {
   white-space: pre-wrap;
   font-size: 13px;
@@ -6134,7 +5980,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   border-color: var(--warning);
   box-shadow: 0 4px 12px color-mix(in srgb, var(--warning) 20%, transparent);
 }
-.skills-badge--agent {
+.skills-tag--agent {
   background: color-mix(in srgb, var(--warning) 15%, transparent);
   color: var(--warning);
   border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
@@ -7072,19 +6918,6 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   margin: 8px 0 0;
 }
 .agent-reauth-reason { font-size: 11px; color: var(--danger); font-weight: 600; flex: 1; }
-.btn-danger {
-  background: var(--danger);
-  color: var(--color-white);
-  border: none;
-  border-radius: 6px;
-  padding: 4px 10px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-.btn-danger:hover { background: var(--danger); }
-.btn-danger:disabled { opacity: 0.6; cursor: not-allowed; }
 .agent-card-actions {
   display: flex;
   gap: 6px;

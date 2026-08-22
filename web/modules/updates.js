@@ -194,7 +194,7 @@ async function renderDiagnoseOffer() {
   box.className = 'updates-diagnose'
   box.innerHTML = `<strong>${escapeHtml(t('updates.diagnose.title'))}</strong>`
     + `<p>${escapeHtml(t('updates.diagnose.body'))}</p>`
-    + `<button class="btn-secondary btn-compact" id="updatesDiagnoseBtn">${escapeHtml(t('updates.diagnose.btn'))}</button>`
+    + `<button class="btn" data-variant="secondary" data-size="compact" id="updatesDiagnoseBtn">${escapeHtml(t('updates.diagnose.btn'))}</button>`
   document.getElementById('updatesDiagnoseBtn').addEventListener('click', runDiagnose)
 }
 

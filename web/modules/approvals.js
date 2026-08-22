@@ -98,8 +98,8 @@ function _renderApprovalsTable() {
     const countdown = isPending && a.timeout_at ? `<span class="approvals-countdown" data-timeout="${a.timeout_at}" id="cd-${a.id}"></span>` : (a.timeout_at ? '-' : '')
     const actions = isPending
       ? `<div style="display:flex;gap:4px">
-           <button class="btn-primary btn-compact approvals-decide" data-id="${escapeAttr(a.id)}" data-decision="approved" style="font-size:11px">${t('approvals.btn.approve')}</button>
-           <button class="btn-danger btn-compact approvals-decide" data-id="${escapeAttr(a.id)}" data-decision="rejected" style="font-size:11px">${t('approvals.btn.reject')}</button>
+           <button class="btn approvals-decide" data-variant="primary" data-size="compact" data-id="${escapeAttr(a.id)}" data-decision="approved" style="font-size:11px">${t('approvals.btn.approve')}</button>
+           <button class="btn approvals-decide" data-variant="danger" data-size="compact" data-id="${escapeAttr(a.id)}" data-decision="rejected" style="font-size:11px">${t('approvals.btn.reject')}</button>
          </div>`
       : (() => {
           const resolvedBy = escapeHtml(a.resolved_by || '')
@@ -160,9 +160,9 @@ function _renderApprovalsPagination(total) {
   const hasPrev = offset > 0
   const hasNext = offset + APPROVALS_PAGE_LIMIT < total
   pager.innerHTML = `
-    <button class="btn-secondary btn-compact" ${hasPrev ? '' : 'disabled'} id="approvalsPrev">&#8592; Előző</button>
+    <button class="btn" data-variant="secondary" data-size="compact" ${hasPrev ? '' : 'disabled'} id="approvalsPrev">&#8592; Előző</button>
     <span style="font-size:12px;color:var(--text-muted)">${offset + 1}-${Math.min(offset + APPROVALS_PAGE_LIMIT, total)} / ${total}</span>
-    <button class="btn-secondary btn-compact" ${hasNext ? '' : 'disabled'} id="approvalsNext">Következő &#8594;</button>
+    <button class="btn" data-variant="secondary" data-size="compact" ${hasNext ? '' : 'disabled'} id="approvalsNext">Következő &#8594;</button>
   `
   pager.querySelector('#approvalsPrev')?.addEventListener('click', () => {
     _approvalsState.offset = Math.max(0, offset - APPROVALS_PAGE_LIMIT)

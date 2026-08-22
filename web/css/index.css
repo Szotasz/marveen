@@ -4,5 +4,10 @@
 /* Tokens layer: custom properties only */
 @import url("tokens.css") layer(tokens);
 
+/* Components layer: CUBE data-attr based components */
+@import url("components/btn.css")   layer(components);
+@import url("components/badge.css") layer(components);
+@import url("components/chip.css")  layer(components);
+
 /* Wrap the existing style.css entirely in the features layer */
 @import url("../style.css") layer(features);

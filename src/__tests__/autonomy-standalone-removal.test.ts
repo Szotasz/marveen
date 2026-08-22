@@ -49,7 +49,9 @@ describe('standalone autonomy page removal', () => {
   })
 
   it('settings tab autonomy panel has a refresh button wired to renderAutonomyContent', () => {
-    expect(APP).toContain("refreshBtn.className = 'btn-secondary btn-compact'")
+    expect(APP).toContain("refreshBtn.className = 'btn'")
+    expect(APP).toContain("refreshBtn.dataset.variant = 'secondary'")
+    expect(APP).toContain("refreshBtn.dataset.size = 'compact'")
     expect(APP).toContain("t('common.btn.refresh')")
     expect(APP).toContain("refreshBtn.addEventListener('click', () => renderAutonomyContent(grid, footer))")
   })

@@ -75,9 +75,9 @@ function renderList(rows) {
           <td style="padding:6px 8px"><code>${escapeHtml(r.kind)}</code></td>
           <td style="padding:6px 8px;color:var(--text-muted)">${fmtTime(r.created_at)}</td>
           <td style="padding:6px 8px;white-space:nowrap">
-            <button class="btn-secondary btn-compact artifact-preview-btn" data-id="${escapeHtml(r.id)}" data-kind="${escapeHtml(r.kind)}" data-title="${escapeHtml(r.title)}" data-i18n="memories.artifacts.btn.preview">Előnézet</button>
-            <button class="btn-secondary btn-compact artifact-rename-btn" data-id="${escapeHtml(r.id)}" data-i18n="artifacts.btn.rename">Átnevezés</button>
-            <button class="btn-secondary btn-compact artifact-delete-btn" data-id="${escapeHtml(r.id)}" style="color:var(--danger)">Törlés</button>
+            <button class="btn artifact-preview-btn" data-variant="secondary" data-size="compact" data-id="${escapeHtml(r.id)}" data-kind="${escapeHtml(r.kind)}" data-title="${escapeHtml(r.title)}" data-i18n="memories.artifacts.btn.preview">Előnézet</button>
+            <button class="btn artifact-rename-btn" data-variant="secondary" data-size="compact" data-id="${escapeHtml(r.id)}" data-i18n="artifacts.btn.rename">Átnevezés</button>
+            <button class="btn artifact-delete-btn" data-variant="secondary" data-size="compact" data-id="${escapeHtml(r.id)}" style="color:var(--danger)">Törlés</button>
           </td>
         </tr>
       `).join('')}
@@ -191,7 +191,9 @@ function renderPreview(container, artifact) {
   a.href = url
   a.download = title || `artifact-${id}`
   a.textContent = 'Letöltés'
-  a.className = 'btn-primary btn-compact'
+  a.className = 'btn'
+  a.dataset.variant = 'primary'
+  a.dataset.size = 'compact'
   container.innerHTML = ''
   container.appendChild(a)
 }

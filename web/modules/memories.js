@@ -27,6 +27,7 @@ let logDates = []
 
 const tierLabels = { hot: '\u{1F525} Hot', warm: '\u{1F321}\uFE0F Warm', cold: '\u2744\uFE0F Cold', shared: '\u{1F517} Shared', import: '\u{1F4E5} Import' }
 const tierColors = { hot: '#dc3c3c', warm: '#d97757', cold: '#6a9bcc', shared: '#9a8a30', import: '#39FF14' }
+const TIER_TO_VARIANT = { hot: 'danger', warm: 'accent', cold: 'info', shared: 'warning' }
 
 // Populate agent dropdowns from API
 export async function loadMemAgents() {
@@ -180,7 +181,7 @@ export async function loadMemStats() {
       <div class="stat-card"><div class="stat-value">${embCount}</div><div class="stat-label">${t('memories.stat.vectors_pct', { pct: embPct })}</div></div>
       <div class="stat-card"><div class="stat-value">${artifactCount}</div><div class="stat-label">${t('memories.stat.artifacts')}</div></div>
       <div class="stat-card" title="${t('memories.stat.import_title')}"><div class="stat-value" style="color:#39FF14">${importCount}</div><div class="stat-label">${t('memories.stat.import')}</div></div>
-      <button class="btn-secondary btn-compact" id="memBackfillBtn" style="margin-left:auto;font-size:11px;padding:6px 12px;align-self:center">${t('memories.stat.vectors_btn')}</button>
+      <button class="btn" data-variant="secondary" data-size="compact" id="memBackfillBtn" style="margin-left:auto;font-size:11px;padding:6px 12px;align-self:center">${t('memories.stat.vectors_btn')}</button>
     `
     document.getElementById('memBackfillBtn')?.addEventListener('click', async () => {
       const btn = document.getElementById('memBackfillBtn')
@@ -236,7 +237,7 @@ function renderMemories(memories, staleIds = new Set()) {
 
     const tier = mem.tier || mem.category || 'warm'
     const tierBadge = tierLabels[tier] || tier
-    const badgeClass = 'badge-' + tier
+    const tierVariant = TIER_TO_VARIANT[tier] || 'neutral'
     const shortContent = mem.content.length > 120 ? mem.content.slice(0, 120) + '...' : mem.content
     const agentLabel = mem.agent_id || mainAgentId()
     const isStale = staleIds.has(mem.id)
@@ -252,7 +253,7 @@ function renderMemories(memories, staleIds = new Set()) {
 
     item.innerHTML = `
       <div class="mem-item-header">
-        <span class="badge ${badgeClass}">${tierBadge}</span>
+        <span class="badge" data-variant="${tierVariant}">${tierBadge}</span>
         <span class="mem-agent-badge">${escapeHtml(agentLabel)}</span>
         <span class="mem-date">${escapeHtml(mem.created_label || '')}</span>
         ${isStale ? '<span class="mem-stale-badge" title="Frissult mióta az ágens utoljára olvasta">elavult</span>' : ''}
@@ -262,14 +263,14 @@ function renderMemories(memories, staleIds = new Set()) {
       <div class="mem-content-full">${escapeHtml(mem.content)}</div>
       ${keywordsHtml}
       <div class="mem-item-footer">
-        <button class="btn-secondary" data-edit-memid="${mem.id}" style="padding:6px 14px; font-size:12px;">${t('common.btn.edit')}</button>
-        <button class="btn-danger" data-memid="${mem.id}" style="padding:6px 14px; font-size:12px;">${t('common.btn.delete')}</button>
+        <button class="btn" data-variant="secondary" data-edit-memid="${mem.id}" style="padding:6px 14px; font-size:12px;">${t('common.btn.edit')}</button>
+        <button class="btn" data-variant="danger" data-memid="${mem.id}" style="padding:6px 14px; font-size:12px;">${t('common.btn.delete')}</button>
       </div>
     `
 
     // Toggle expand
     item.addEventListener('click', (e) => {
-      if (e.target.closest('.btn-danger') || e.target.closest('.btn-secondary')) return
+      if (e.target.closest('[data-variant="danger"]') || e.target.closest('[data-variant="secondary"]')) return
       item.classList.toggle('expanded')
     })
 
@@ -281,7 +282,7 @@ function renderMemories(memories, staleIds = new Set()) {
     })
 
     // Delete
-    const delBtn = item.querySelector('.btn-danger')
+    const delBtn = item.querySelector('[data-variant="danger"]')
     delBtn.addEventListener('click', async (e) => {
       e.stopPropagation()
       if (!confirm('Biztosan torlod ezt az emleket?')) return
@@ -355,7 +356,7 @@ async function loadMemVersions(memId) {
             <span class="mem-version-type">${escapeHtml(changeLabel)}</span>
           </div>
           <div class="mem-version-content">${escapeHtml(v.content)}</div>
-          ${v.category ? `<div class="mem-version-cat"><span class="badge badge-${v.category}">${escapeHtml(v.category)}</span></div>` : ''}
+          ${v.category ? `<div class="mem-version-cat"><span class="badge" data-variant="${TIER_TO_VARIANT[v.category] || 'neutral'}">${escapeHtml(v.category)}</span></div>` : ''}
         </div>
       `
     }).join('')
