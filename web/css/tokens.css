@@ -1,47 +1,248 @@
-/* === Anthropic Design Tokens === */
+/* ============================================================
+   Design Token Registry — F1
+   Hierarchy: primitive -> semantic -> component-local (--_x)
+   Component NEVER references a primitive directly.
+   ============================================================ */
+
+/* ── Primitive paletta ───────────────────────────────────────
+   Stone (brand-neutral neutral ramp, 16 stops)                */
 :root {
-  --bg: #faf9f5;
-  --bg-card: #ffffff;
-  --bg-card-hover: #f5f4ed;
-  --bg-input: #f0eee6;
-  --bg-modal: #ffffff;
-  --bg-code: #f0eee6;
-  --text: #141413;
-  --text-secondary: #30302e;
-  --text-muted: #87867f;
-  --border: #d1cfc5;
-  --border-focus: #d97757;
-  --accent: #d97757;
-  --accent-hover: #c46849;
-  --accent-soft: rgba(217, 119, 87, 0.1);
-  --danger: #bf4d43;
-  --danger-soft: rgba(191, 77, 67, 0.12);
-  --danger-hover: #a8413a;
-  --success: #788c5d;
-  --success-soft: rgba(120, 140, 93, 0.12);
-  --info: #6a9bcc;
-  --info-soft: rgba(106, 155, 204, 0.12);
-  --shadow-sm: 0 1px 3px rgba(20, 20, 19, 0.04);
-  --shadow-md: 0 4px 16px rgba(20, 20, 19, 0.06);
-  --shadow-lg: 0 8px 32px rgba(20, 20, 19, 0.1);
-  --radius: 12px;
-  --radius-sm: 8px;
-  --radius-lg: 16px;
+  --color-stone-50:   #faf9f5;
+  --color-stone-100:  #f5f4ed;
+  --color-stone-150:  #f0eee6;
+  --color-stone-200:  #d1cfc5;
+  --color-stone-300:  #b0aea5;
+  --color-stone-400:  #a09f9a;
+  --color-stone-500:  #87867f;
+  --color-stone-600:  #73726c;
+  --color-stone-700:  #4d4d49;
+  --color-stone-750:  #3d3d3a;
+  --color-stone-800:  #30302e;
+  --color-stone-850:  #262624;
+  --color-stone-900:  #1f1e1d;
+  --color-stone-950:  #141413;
+  --color-stone-1000: #0d0d0b;
+  --color-white:      #ffffff;
+
+  /* Clay (accent ramp) */
+  --color-clay-300: #ff9a70;
+  --color-clay-500: #d97757;
+  --color-clay-600: #c46849;
+  --color-clay-700: #a85a3f;
+
+  /* Red (danger) */
+  --color-red-300: #d97b72;
+  --color-red-500: #bf4d43;
+  --color-red-600: #a8413a;
+
+  /* Amber (warning, new) */
+  --color-amber-300: #fbbf24;
+  --color-amber-500: #f59e0b;
+  --color-amber-600: #d97706;
+  --color-amber-700: #b45309;
+
+  /* Green (success) */
+  --color-green-300: #9db07f;
+  --color-green-500: #788c5d;
+  --color-green-600: #66794e;
+
+  /* Blue (info) */
+  --color-blue-300: #8fb4d9;
+  --color-blue-500: #6a9bcc;
+  --color-blue-600: #5787b8;
+
+  /* Supplementary primitives (data-viz, special surfaces) */
+  --color-teal-500:        #00977c;
+  --color-teal-600:        #007d67;
+  --color-mint-300:        #59e9ce;
+  --color-violet-500:      #8b5cf6;
+  --color-indigo-500:      #6366f1;
+  --color-pink-500:        #c85078;
+  --color-terminal-green:  #39ff14;
+
+  /* Alpha primitives (theme-independent layers) */
+  --alpha-white-05: rgba(255,255,255,0.05);
+  --alpha-white-08: rgba(255,255,255,0.08);
+  --alpha-white-15: rgba(255,255,255,0.15);
+  --alpha-white-35: rgba(255,255,255,0.35);
+  --alpha-white-65: rgba(255,255,255,0.65);
+  --alpha-white-92: rgba(255,255,255,0.92);
+  --alpha-gray-05:  rgba(127,127,127,0.05);
+  --alpha-gray-12:  rgba(127,127,127,0.12);
+  --alpha-gray-25:  rgba(127,127,127,0.25);
+
+  /* ── Semantic — Surface ──────────────────────────────────
+     Computed values are byte-identical to the F0 hex literals. */
+  --bg:           var(--color-stone-50);
+  --bg-card:      var(--color-white);
+  --bg-card-hover:var(--color-stone-100);
+  --bg-input:     var(--color-stone-150);
+  --bg-modal:     var(--color-white);
+  --bg-code:      var(--color-stone-150);
+  --overlay:      rgba(20,20,19,0.5);
+
+  /* ── Semantic — Text ─────────────────────────────────────*/
+  --text:           var(--color-stone-950);
+  --text-secondary: var(--color-stone-800);
+  --text-muted:     var(--color-stone-500);
+  --text-inverse:   var(--color-stone-50);
+  --text-on-warning:var(--color-stone-950);
+
+  /* ── Semantic — Border & focus ───────────────────────────*/
+  --border:       var(--color-stone-200);
+  --border-strong:var(--color-stone-300);
+  --border-focus: var(--color-clay-500);
+  --focus-ring:   0 0 0 3px rgba(217,119,87,0.35);
+
+  /* ── Semantic — Accent triads ────────────────────────────*/
+  --accent:       var(--color-clay-500);
+  --accent-hover: var(--color-clay-600);
+  --accent-active:var(--color-clay-700);
+  --accent-soft:  rgba(217,119,87,0.10);
+
+  /* ── Semantic — Danger ───────────────────────────────────*/
+  --danger:       var(--color-red-500);
+  --danger-hover: var(--color-red-600);
+  --danger-soft:  rgba(191,77,67,0.12);
+
+  /* ── Semantic — Success ──────────────────────────────────*/
+  --success:      var(--color-green-500);
+  --success-hover:var(--color-green-600);
+  --success-soft: rgba(120,140,93,0.12);
+
+  /* ── Semantic — Warning (new) ────────────────────────────*/
+  --warning:      var(--color-amber-600);
+  --warning-hover:var(--color-amber-700);
+  --warning-soft: rgba(245,158,11,0.14);
+
+  /* ── Semantic — Info ─────────────────────────────────────*/
+  --info:         var(--color-blue-500);
+  --info-hover:   var(--color-blue-600);
+  --info-soft:    rgba(106,155,204,0.12);
+
+  /* ── Semantic — Neutral ──────────────────────────────────*/
+  --neutral-soft: var(--alpha-gray-12);
+
+  /* ── Semantic — Shadow ───────────────────────────────────*/
+  --shadow-sm:    0 1px 3px rgba(20,20,19,0.04);
+  --shadow-md:    0 4px 16px rgba(20,20,19,0.06);
+  --shadow-lg:    0 8px 32px rgba(20,20,19,0.1);
+  --shadow-focus: var(--focus-ring);
+
+  /* ── Semantic — Radius ───────────────────────────────────*/
+  --radius-xs:  4px;
+  --radius-sm:  8px;
+  --radius:     12px;
+  --radius-lg:  16px;
+  --radius-full:999px;
+
+  /* ── Typography scale ────────────────────────────────────*/
+  --fs-2xs:  10px;
+  --fs-xs:   11px;
+  --fs-sm:   12px;
+  --fs-base: 13px;
+  --fs-md:   14px;
+  --fs-lg:   16px;
+  --fs-xl:   20px;
+  --fs-2xl:  24px;
+  --fs-3xl:  32px;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
+
+  --fw-normal:  400;
+  --fw-medium:  500;
+  --fw-semibold:600;
+  --fw-bold:    700;
+
+  --lh-tight: 1.25;
+  --lh-base:  1.5;
+
+  /* ── Spacing scale (4px grid) ────────────────────────────*/
+  --sp-05: 2px;
+  --sp-1:  4px;
+  --sp-2:  8px;
+  --sp-3:  12px;
+  --sp-4:  16px;
+  --sp-5:  20px;
+  --sp-6:  24px;
+  --sp-8:  32px;
+  --sp-10: 40px;
+
+  /* ── Z-index scale ───────────────────────────────────────*/
+  --z-base:           0;
+  --z-raised:         10;
+  --z-sticky:         100;
+  --z-dropdown:       500;
+  --z-modal-backdrop: 900;
+  --z-modal:          1000;
+  --z-toast:          1100;
+  --z-tooltip:        1200;
+
+  /* ── Motion ──────────────────────────────────────────────*/
+  --dur-fast:  120ms;
+  --dur-base:  200ms;
+  --dur-slow:  320ms;
+  --ease-out:     cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out:  cubic-bezier(0.45, 0, 0.55, 1);
+  /* Legacy alias — value unchanged from F0; full migration in a later phase */
   --transition: 0.2s ease;
 }
 
+/* ── Dark theme overrides ────────────────────────────────────*/
 [data-theme="dark"] {
-  --bg: #141413;
-  --bg-card: #1f1e1d;
-  --bg-card-hover: #262624;
-  --bg-input: #30302e;
-  --bg-modal: #1f1e1d;
-  --bg-code: #262624;
-  --text: #faf9f5;
-  --text-secondary: #b0aea5;
-  --text-muted: #73726c;
-  --border: #3d3d3a;
+  /* Surface */
+  --bg:           var(--color-stone-950);
+  --bg-card:      var(--color-stone-900);
+  --bg-card-hover:var(--color-stone-850);
+  --bg-input:     var(--color-stone-800);
+  --bg-modal:     var(--color-stone-900);
+  --bg-code:      var(--color-stone-850);
+  --overlay:      rgba(0,0,0,0.6);
+
+  /* Text */
+  --text:          var(--color-stone-50);
+  --text-secondary:var(--color-stone-300);
+  --text-muted:    var(--color-stone-600);
+
+  /* Border */
+  --border:        var(--color-stone-750);
+  --border-strong: var(--color-stone-700);
+
+  /* Focus */
+  --focus-ring: 0 0 0 3px rgba(217,119,87,0.45);
+
+  /* Accent */
+  --accent-active:var(--color-clay-600);
+  --accent-soft:  rgba(217,119,87,0.16);
+
+  /* Danger */
+  --danger-soft: rgba(191,77,67,0.20);
+
+  /* Success */
+  --success-hover:var(--color-green-500);
+  --success-soft: rgba(120,140,93,0.20);
+
+  /* Warning */
+  --warning:      var(--color-amber-300);
+  --warning-hover:var(--color-amber-500);
+  --warning-soft: rgba(245,158,11,0.18);
+
+  /* Info */
+  --info-hover:  var(--color-blue-500);
+  --info-soft:   rgba(106,155,204,0.20);
+
+  /* Shadow */
   --shadow-sm: 0 1px 3px rgba(0,0,0,0.2);
   --shadow-md: 0 4px 16px rgba(0,0,0,0.25);
   --shadow-lg: 0 8px 32px rgba(0,0,0,0.35);
+}
+
+/* ── Reduced motion ──────────────────────────────────────────*/
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur-base: 0ms;
+    --dur-slow: 0ms;
+  }
 }
