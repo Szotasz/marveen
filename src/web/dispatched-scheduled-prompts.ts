@@ -12,11 +12,17 @@
 // never inbound channel messages, never inter-agent messages. A parked line that
 // is not a substring of a recorded body must never match.
 
-// Recently dispatched scheduled prompt bodies live at most this long. A stranded
-// remnant is cleared within seconds/minutes of the dispatch that produced it, so
-// a short TTL keeps the match window tight and prevents a long-past body from
-// authorizing a clear of some unrelated later parked line.
-export const DISPATCHED_PROMPT_TTL_MS = 15 * 60 * 1000 // 15 minutes
+import { SCHEDULED_TASK_PREAMBLE } from '../prompt-safety.js'
+
+// Recently dispatched scheduled prompt bodies live at most this long.
+//
+// SCHEDCONTENTMATCH v2 (2026-08-22): raised 15min -> 2h after a 78-minute main-box
+// wedge (2026-08-21 07:19-08:37) whose remnant fell out of the 15-minute window
+// long before anything looked at it. The TTL is no longer a correctness boundary:
+// the time-INDEPENDENT config-prompt corpus below now decides the same matches on
+// its own, so the record path is a fast path/optimization (it also covers the
+// pre-check-prefixed body, which the raw config prompt does not contain).
+export const DISPATCHED_PROMPT_TTL_MS = 2 * 60 * 60 * 1000 // 2 hours
 
 // Ring-buffer capacity: a handful of scheduled tasks can dispatch in a short
 // burst; 32 is comfortably above any realistic in-flight count while staying
@@ -43,6 +49,42 @@ interface RecordedPrompt {
 }
 
 const recorded: RecordedPrompt[] = []
+
+// SCHEDCONTENTMATCH v2: the TIME-INDEPENDENT half of the corpus -- the scheduled
+// task CONFIG prompt bodies currently on disk, refreshed by the schedule runner
+// on every poll. Two gaps in the record-only design made the 2026-08-21 wedge
+// survive 78 minutes:
+//   (a) TTL: a wedge can stand for hours; the record that authorized clearing it
+//       expired long before anyone looked.
+//   (b) skipIfBusy=true ticks are dropped BEFORE dispatch, so a body that never
+//       dispatched was never recorded -- yet its text can still strand in the box
+//       from an earlier attempt.
+// A config prompt is the same class of text as a dispatched body: operator-authored
+// system text (SKILL.md on disk / the bearer-gated schedule editor), NEVER an
+// inbound channel or inter-agent message. Matching against it is therefore exactly
+// as Balogh-safe as matching a record, and it holds regardless of elapsed time or
+// process restarts (the set is re-read from disk each poll).
+let configPrompts: string[] = []
+
+// The dispatched text is SCHEDULED_TASK_PREAMBLE + prefix + wrapScheduledTask(body),
+// so a fragment sliced out of the PREAMBLE is not a substring of any raw config
+// prompt. The preamble is a static, operator-owned system constant, so it belongs
+// in the time-independent corpus permanently (Masha adversarial pre-flag 87/1).
+const STATIC_SYSTEM_CORPUS = [normalize(SCHEDULED_TASK_PREAMBLE)].filter(t => t.length >= MIN_RECORD_LEN)
+
+// Replace the config-prompt corpus with the CURRENT scheduled-task prompt bodies.
+// Called by the schedule runner each poll cycle with `task.prompt` for every task
+// it just read from disk -- deliberately injected rather than read here, so this
+// module stays IO-free and trivially testable. Bodies shorter than MIN_RECORD_LEN
+// carry no signal and are dropped.
+export function setScheduledTaskConfigPrompts(prompts: string[]): void {
+  const next: string[] = []
+  for (const p of prompts) {
+    const norm = normalize(p)
+    if (norm.length >= MIN_RECORD_LEN) next.push(norm)
+  }
+  configPrompts = next
+}
 
 // Trim, then collapse every run of internal whitespace (incl. newlines/tabs) to
 // a single space. Applied identically to recorded bodies and to the parked text
@@ -75,9 +117,11 @@ export function recordDispatchedScheduledPrompt(body: string): void {
   }
 }
 
-// True iff the parked text is a substring of some non-expired recorded scheduled
-// body (catching a stranded FRAGMENT of a longer dispatched prompt). The parked
-// text must clear SCHED_MATCH_MIN_LEN after normalization to be eligible.
+// True iff the parked text is a substring of (a) some non-expired recorded
+// dispatched body, or (b) a CURRENT scheduled-task config prompt / the static
+// scheduled-task preamble -- catching a stranded FRAGMENT of a longer scheduled
+// prompt however long it has been standing. The parked text must clear
+// SCHED_MATCH_MIN_LEN after normalization to be eligible.
 export function matchesDispatchedScheduledPrompt(parked: string): boolean {
   const norm = normalize(parked)
   if (norm.length < SCHED_MATCH_MIN_LEN) return false
@@ -86,10 +130,22 @@ export function matchesDispatchedScheduledPrompt(parked: string): boolean {
   for (const rec of recorded) {
     if (rec.body.includes(norm)) return true
   }
+  // Time-independent half: the scheduled-task CONFIG prompts on disk plus the
+  // static scheduled-task preamble. No TTL applies here -- an hours-old wedge
+  // whose text is provably one of our own scheduled bodies is still provably
+  // ours, and the Balogh invariant is unchanged (only a POSITIVE match ever
+  // authorizes a clear; everything else keeps the escalate-only behaviour).
+  for (const body of configPrompts) {
+    if (body.includes(norm)) return true
+  }
+  for (const body of STATIC_SYSTEM_CORPUS) {
+    if (body.includes(norm)) return true
+  }
   return false
 }
 
 // Test-only: clear all recorded state so each test starts from a clean buffer.
 export function __resetDispatchedScheduledPromptsForTest(): void {
   recorded.length = 0
+  configPrompts = []
 }

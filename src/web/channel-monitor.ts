@@ -14,6 +14,7 @@ import {
   capturePane,
   captureParkedInputView,
   clearInputBuffer,
+  clearStaleParkedInput,
   dismissResumeSummaryModalIfPresent,
   dismissModelConsentDialogIfPresent,
   stampFableOverageConsentSharedRoots,
@@ -43,6 +44,7 @@ import {
   type StuckInputActionFacts,
 } from '../pane-state.js'
 import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST } from './main-agent.js'
+import { matchesDispatchedScheduledPrompt } from './dispatched-scheduled-prompts.js'
 import { notifyChannel } from '../notify.js'
 import { getProvider, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { attemptChannelMcpReconnect } from './channel-mcp-reconnect.js'
@@ -1113,6 +1115,30 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
   return { ok: false, error: 'hard restart failed: tmux respawn-pane failed' }
 }
 
+// SCHEDCONTENTMATCH v2 (2026-08-22): the stuck-input watcher is the OTHER path
+// that decides the fate of a parked main box, and it never consulted the
+// content-match. Its soft recovery has no move for a plain (non-<channel>) parked
+// line on the main session -> 'hold', and the restart guard then defers it as
+// "possibly a human draft" (a mid-slice remnant carries no machine-origin prefix).
+// That is exactly how the 2026-08-21 wedge stood for 78 minutes with the v1 fix
+// already live. A parked line that is provably a fragment of one of our OWN
+// scheduled prompts is system-generated text that can never be a real inbound
+// reply, so hand it to the SAME Balogh-safe clear path (clearStaleParkedInput
+// independently re-captures, re-confirms stability and re-checks the match before
+// touching anything). Returns true when the box was cleared.
+// Balogh invariant: ONLY a positive match diverts; every other parked line keeps
+// the unchanged defer/escalate behaviour below.
+export async function clearMainParkedScheduledRemnant(): Promise<boolean> {
+  const view = captureParkedInputView(MAIN_CHANNELS_SESSION)
+  const parked = view != null ? parkedInputText(view) : null
+  if (parked == null || !matchesDispatchedScheduledPrompt(parked)) return false
+  logger.warn(
+    { session: MAIN_CHANNELS_SESSION, parked: parked.slice(0, 60) },
+    'Stuck-input watcher: parked main input matched a scheduled prompt -- routing to the Balogh-safe auto-clear instead of deferring as a possible human draft',
+  )
+  return await clearStaleParkedInput(MAIN_CHANNELS_SESSION)
+}
+
 // Escalate a main channel input that survived the full soft recovery to a hard
 // restart (respawn-pane). Driven by the pure decideStuckInputRestart; this
 // wrapper owns the I/O + counters. Called once per monitor tick right after the
@@ -1618,10 +1644,18 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
     // only when the captured block looks COMPLETE -- a truncated capture stays
     // on Enter rather than risk a partial re-inject to the wrong chat_id.
     mainStuckInput = await recoverStuckInputForSession(MAIN_CHANNELS_SESSION, mainStuckInput, MAIN_STUCK_THRESHOLDS, false)
-    // Reliable backstop: if the soft recovery is exhausted and the input is
-    // STILL parked, the TUI is hard-wedged -- escalate to a respawn-pane (the
-    // automated form of the manual `systemctl restart channels`). Rate-limited.
-    maybeRestartWedgedMainChannel(mainStuckInput)
+    // SCHEDCONTENTMATCH v2: before the restart/defer decision, give a parked line
+    // that is provably our OWN scheduled prompt the Balogh-safe auto-clear (see
+    // clearMainParkedScheduledRemnant). A cleared box ends the episode, so reset
+    // the tracker and skip the restart escalation for this tick.
+    if (mainStuckInput.parkedSig !== null && await clearMainParkedScheduledRemnant()) {
+      mainStuckInput = { parkedSig: null, firstSeenAt: null, lastRecoverAt: null, attempts: 0 }
+    } else {
+      // Reliable backstop: if the soft recovery is exhausted and the input is
+      // STILL parked, the TUI is hard-wedged -- escalate to a respawn-pane (the
+      // automated form of the manual `systemctl restart channels`). Rate-limited.
+      maybeRestartWedgedMainChannel(mainStuckInput)
+    }
     // Same recovery for every running sub-agent session: a parked channel
     // message wedges a sub-agent ("nem válaszol") exactly as it would the main
     // session. Per-session state lives in agentStuckInput; drop it once the
