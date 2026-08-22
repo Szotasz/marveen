@@ -516,6 +516,18 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  {
+    key: 'BACKUP_KEEP',
+    type: 'int',
+    default: 30,
+    min: 10,
+    max: 180,
+    valueSet: ['10', '30', '60', '180'],
+    description: 'Megtartott mentések száma (auto-prune határ). Régebbi archívumok automatikusan törlődnek. Az értékek 10/30/60/180 lehetnek.',
+    module: 'backup',
+    secret: false,
+    requiresRestart: false,
+  },
 ]
 
 export function getSettingDefinition(key: string): SettingDefinition | undefined {

@@ -35,7 +35,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKUP_DIR="${REPO_ROOT}/backups"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 ARCHIVE="${BACKUP_DIR}/claudeclaw-${STAMP}.tar.gz"
-KEEP=14
+# Retention count: override with BACKUP_KEEP env var (default 30).
+KEEP="${BACKUP_KEEP:-30}"
 
 mkdir -p "${BACKUP_DIR}"
 cd "${REPO_ROOT}"
@@ -47,6 +48,12 @@ if [[ -f store/claudeclaw.db ]] && command -v sqlite3 >/dev/null 2>&1; then
   # Verify the artifacts table survived the checkpoint (absent on fresh installs is OK).
   if ! sqlite3 store/claudeclaw.db "SELECT 1 FROM sqlite_master WHERE name='artifacts'" 2>/dev/null | grep -q 1; then
     echo "backup: WARNING -- artifacts table missing in DB (fresh install?)" >&2
+  fi
+  # Integrity check: a corrupt DB is worse than no backup -- abort early.
+  IC_RESULT="$(sqlite3 store/claudeclaw.db 'PRAGMA integrity_check(1);' 2>/dev/null || echo 'error')"
+  if [[ "${IC_RESULT}" != "ok" ]]; then
+    echo "backup: ABORT -- PRAGMA integrity_check failed: ${IC_RESULT}" >&2
+    exit 2
   fi
 fi
 
@@ -156,7 +163,20 @@ stage_group "${HOMELIST}" "${HOME}" home
 # stay clean (no leading "./").
 ( cd "${STAGE}" && tar -czf "${ARCHIVE}" MANIFEST.txt \
     $( [[ -d repo ]] && echo repo ) $( [[ -d home ]] && echo home ) )
-echo "backup: wrote ${ARCHIVE} ($(wc -c < "${ARCHIVE}" | awk '{print $1}') bytes)"
+
+ARCHIVE_BYTES="$(wc -c < "${ARCHIVE}" | awk '{print $1}')"
+# sha256: shasum on macOS, sha256sum on Linux -- pick whichever is present.
+if command -v shasum >/dev/null 2>&1; then
+  CHECKSUM="$(shasum -a 256 "${ARCHIVE}" | awk '{print $1}')"
+elif command -v sha256sum >/dev/null 2>&1; then
+  CHECKSUM="$(sha256sum "${ARCHIVE}" | awk '{print $1}')"
+else
+  CHECKSUM="unavailable"
+fi
+# Write a sidecar .sha256 file next to the archive for offline verification.
+echo "${CHECKSUM}  $(basename "${ARCHIVE}")" > "${ARCHIVE%.tar.gz}.sha256"
+echo "backup: wrote ${ARCHIVE} (${ARCHIVE_BYTES} bytes)"
+echo "backup: sha256 ${CHECKSUM}"
 
 # The archive contains sensitive tokens (dashboard bearer, channel bot tokens,
 # project .env secrets). Do not auto-sync ${BACKUP_DIR} to iCloud, Dropbox,
@@ -164,9 +184,9 @@ echo "backup: wrote ${ARCHIVE} ($(wc -c < "${ARCHIVE}" | awk '{print $1}') bytes
 echo "backup: WARNING -- archive contains sensitive tokens; keep ${BACKUP_DIR} out of cloud-sync folders (iCloud / Dropbox / Google Drive)." >&2
 
 # Keep the newest ${KEEP} archives, drop the rest. while-read (not mapfile)
-# for macOS bash 3.2 compatibility.
+# for macOS bash 3.2 compatibility. Remove the .sha256 sidecar alongside.
 ls -1t "${BACKUP_DIR}"/claudeclaw-*.tar.gz 2>/dev/null | tail -n +$((KEEP + 1)) | while IFS= read -r f; do
   [[ -z "${f}" ]] && continue
-  rm -f "${f}"
+  rm -f "${f}" "${f%.tar.gz}.sha256"
   echo "backup: pruned $(basename "${f}")"
 done

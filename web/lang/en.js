@@ -805,6 +805,7 @@ window._i18n.en = {
   'settings.desc.KANBAN_LABEL_COLORS':         'Comma-separated HEX colours available for Kanban card labels. The dashboard offers these as swatches instead of a free-text colour input.',
   'settings.desc.ALERT_THRESHOLD_MS':          'How long a failed scheduled task may wait for a retry before a Telegram alert is sent. Default: 3,600,000 ms (1 hour). Retries continue after the alert.',
   'settings.desc.DEFAULT_REVERT_AFTER_MINUTES': 'Minutes after the last rate-limit event before the agent reverts to the primary model in the model-fallback mechanism. Default: 330 minutes (5.5 hours).',
+  'settings.desc.BACKUP_KEEP':                  'Number of backup archives to retain. Archives older than this limit are automatically pruned. Allowed values: 10/30/60/180.',
 
   // --- Vault ---
   'vault.page_title':            'Vault',

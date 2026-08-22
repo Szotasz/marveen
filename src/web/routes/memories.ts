@@ -3,7 +3,7 @@ import {
   hybridSearch, backfillEmbeddings, clearMemoryCache,
   searchMemories, getMemoriesForChat, getDb, touchMemoriesAccessed,
   recordMemoryRead, recordMemoryReadBatch, getStaleMemories, getMemoryVersions,
-  runMemoryMaintenance, runLinkMaintenance, getLinksForMemories,
+  runMemoryMaintenance, runLinkMaintenance, getLinksForMemories, writeAgentAuditLog,
   type Memory,
 } from '../../db.js'
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config.js'
@@ -682,11 +682,18 @@ Respond ONLY with JSON, nothing else:
   if (memIdMatch && method === 'DELETE') {
     const id = parseInt(memIdMatch[1], 10)
     const db2 = getDb()
+    const row = db2.prepare('SELECT agent_id FROM memories WHERE id = ?').get(id) as { agent_id: string | null } | undefined
     const changes = db2.prepare('DELETE FROM memories WHERE id = ?').run(id).changes
     // Invalidate the in-process TTL cache so a deleted memory does not
     // resurface in the agent-filtered list for the cache lifetime.
-    if (changes > 0) clearMemoryCache()
-    if (changes > 0) { json(res, { ok: true }); return true }
+    if (changes > 0) {
+      clearMemoryCache()
+      try {
+        writeAgentAuditLog({ agent_id: row?.agent_id || 'unknown', entity: 'memory', action: 'delete', entity_id: id })
+      } catch { /* audit failure must not abort the delete */ }
+      json(res, { ok: true })
+      return true
+    }
     json(res, { error: 'Memory not found' }, 404)
     return true
   }

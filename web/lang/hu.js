@@ -1135,6 +1135,7 @@ window._i18n.hu = {
   'settings.desc.KANBAN_LABEL_COLORS':         'A kanban kártyák címkéihez elérhető HEX-színek vesszővel elválasztva. A dashboard ezeket kínálja választhatóként a szabad szöveges bevitel helyett.',
   'settings.desc.ALERT_THRESHOLD_MS':          'Mennyi ideig várhat egy sikertelen ütemezett feladat újrapróbálkozásra, mielőtt Telegram-értesítés megy ki. Alapértelmezetten 3 600 000 ms (1 óra). A próbálkozás az értesítés után is folytatódik.',
   'settings.desc.DEFAULT_REVERT_AFTER_MINUTES': 'Mennyi perccel az utolsó rate-limit esemény után álljon vissza az ágens az elsődleges modellre a modell-fallback mechanizmusban. Alapértelmezetten 330 perc (5,5 óra).',
+  'settings.desc.BACKUP_KEEP':                  'Megtartott mentések száma. A beállított határnál régebbi archívumok automatikusan törlődnek. Értékek: 10/30/60/180.',
 
   // --- Vault ---
   'vault.page_title':            'Vault',

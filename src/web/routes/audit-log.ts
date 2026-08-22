@@ -3,7 +3,7 @@ import { queryAuditLog, type AuditSource } from '../../db.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import type { RouteContext } from './types.js'
 
-const VALID_SOURCES = new Set<AuditSource>(['config', 'idea', 'store', 'diary'])
+const VALID_SOURCES = new Set<AuditSource>(['config', 'idea', 'store', 'diary', 'agent'])
 
 export async function tryHandleAuditLog(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
