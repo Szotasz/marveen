@@ -35,18 +35,27 @@ MARK="marveen-prod-tree-guard"
 mkdir -p "$HOOK_DIR/pre-commit.d"
 
 # A hook file is OURS (a superseded hand-install or an earlier version of this
-# installer) if it carries the marker OR the guard's own override/alert
-# strings. Content matters, not just the marker: the 2026-08-22 hand-installed
-# host files PREDATE the marker convention this PR introduced (review, msg
-# 14200) -- marker-only recognition would demote them to stale duplicates
-# (with a baked-in operator path) instead of removing them.
-is_ours() {
-  grep -qE 'marveen-prod-tree-guard|MARVEEN_PROD_COMMIT_OK|MARVEEN_PROD_CHECKOUT_OK|PROD-FA ORSEG' "$1" 2>/dev/null
+# installer) if it carries the marker OR a full sentence of OUR OWN prose.
+# Content matters, not just the marker: the 2026-08-22 hand-installed host
+# files PREDATE the marker convention this PR introduced (review, msg 14200).
+# But the recognition is deliberately NARROW: never match the override/alert
+# TOKENS (MARVEEN_PROD_COMMIT_OK etc.) -- those are published in our own
+# error messages, so a foreign hook whose comment merely mentions the bypass
+# would match and be deleted without trace (review, msg 14204; measured with
+# a foreign lint-hook). On any doubt the default is PRESERVATION: a wrongly
+# preserved duplicate is recoverable, a wrongly deleted foreign hook is not.
+is_ours_precommit() {
+  grep -qF 'marveen-prod-tree-guard' "$1" 2>/dev/null ||
+  grep -qF 'BLOCKED: commit on the running prod checkout' "$1" 2>/dev/null
+}
+is_ours_postcheckout() {
+  grep -qF 'marveen-prod-tree-guard' "$1" 2>/dev/null ||
+  grep -qF 'Loud (non-blocking) alert when the running prod checkout switches branches' "$1" 2>/dev/null
 }
 
 # 0. A superseded MONOLITHIC prod-guard pre-commit is OURS: remove it instead
 #    of preserving it, or it would ride along in the chain as a duplicate.
-if [ -f "$DISPATCH" ] && is_ours "$DISPATCH" && ! grep -q "$DISPATCH_MARK" "$DISPATCH" 2>/dev/null; then
+if [ -f "$DISPATCH" ] && is_ours_precommit "$DISPATCH" && ! grep -q "$DISPATCH_MARK" "$DISPATCH" 2>/dev/null; then
   rm "$DISPATCH"
   echo "  (removed superseded monolithic prod-guard pre-commit)"
 fi
@@ -100,9 +109,9 @@ chmod +x "$DISPATCH"
 # 3. post-checkout: no chain exists for this hook type; a pre-existing foreign
 #    hook is preserved out of the way (a guard must not clobber, and the .bak
 #    is inspectable). Our own superseded copy (marker OR content match, see
-#    is_ours) is simply replaced -- backing up our own old file would recreate
-#    the misleading-.bak class on this hook (review, msg 14200).
-if [ -f "$HOOK_DIR/post-checkout" ] && ! is_ours "$HOOK_DIR/post-checkout"; then
+#    is_ours_postcheckout) is simply replaced -- backing up our own old file
+#    would recreate the misleading-.bak class on this hook (review, msg 14200).
+if [ -f "$HOOK_DIR/post-checkout" ] && ! is_ours_postcheckout "$HOOK_DIR/post-checkout"; then
   mv "$HOOK_DIR/post-checkout" "$HOOK_DIR/post-checkout.pre-prod-guard.bak"
   echo "  (preserved existing post-checkout as post-checkout.pre-prod-guard.bak)"
 fi
