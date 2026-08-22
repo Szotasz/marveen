@@ -75,16 +75,27 @@ _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*=")
 _SENDER_PROG = re.compile(r"^(sendmail|msmtp|swaks)$", re.I)
 _SENDPY = re.compile(r"^send\.py$", re.I)
 _PYTHON = re.compile(r"^python3?$", re.I)
-_GRAPHMAIL = re.compile(r"^graph-mail(\.ts)?$", re.I)
+# A ket kapu (ez + scripts/email-send-gate.mjs) SZANDEKOSAN azonos
+# felismeres-szemantikat visel, es ezt kozos eset-lista orzi
+# (send-invocation-cases.json + konformancia-teszt): a divergencia
+# teszt-hibakent jelenjen meg, ne incidenskent (Marveen, msg 14289).
+_NODEISH = re.compile(r"^(node|tsx|ts-node|deno|bun|npx)$", re.I)
+_GRAPHMAIL = re.compile(r"^graph-mail(\.ts|\.js)?$", re.I)
 _WRAPPER_SHELL = re.compile(r"^(sh|bash|zsh|dash)$", re.I)
 _CURLISH = re.compile(r"^(curl|wget|http)$", re.I)
+# Interpreter kod-string argumentum (python -c / node -e): az interpreternek
+# atadott kod MUVELET, nem tartalom -- a kod-szintu kuldes-hivasokra szurunk.
+_CODE_SEND = re.compile(
+    r"\bsmtplib\b|SMTP\s*\(|\bsendMail\s*\(|\bsendEmail\b|\bmail\.send\b", re.I
+)
 # Token-ELEJERE horgonyzott cel-minta: egy URL-argumentum vagy csupasz
 # domain/utvonal illik ra; egy JSON-payload ('{...api.resend.com...}') nem.
 _RESEND_TARGET = re.compile(r"^(https?://)?([^/@\s]*\.)?api\.resend\.com(/|$|\s|$)", re.I)
 # A tovabbi kuldes-jellegu literalok, amikre a parse-hiba eseten (es CSAK
 # akkor) konzervativan visszaesunk -- lasd is_send_invocation vegen.
 _FALLBACK_LITERALS = re.compile(
-    r"send\.py|api\.resend\.com|\bsendmail\b|\bmsmtp\b|\bswaks\b", re.I
+    r"send\.py|api\.resend\.com|\bsendmail\b|\bmsmtp\b|\bswaks\b"
+    r"|\bsmtplib\b|\bsendMail\s*\(", re.I
 )
 
 
@@ -152,8 +163,15 @@ def _segment_is_send(toks, depth: int) -> bool:
             if t == "-c" and i + 1 < len(rest):
                 if is_send_invocation(rest[i + 1], _depth=depth + 1):
                     return True
-    # send.py futtatasa (kozvetlenul vagy python utan) --to cimzettel
-    candidates = [prog] + ([_basename(rest[0])] if rest and _PYTHON.match(prog) else [])
+    # interpreter kod-string: python -c / node -e / --eval, ami kuldest hiv
+    if _PYTHON.match(prog) or _NODEISH.match(prog):
+        for i, t in enumerate(rest):
+            if t in ("-c", "-e", "--eval") and i + 1 < len(rest) and _CODE_SEND.search(rest[i + 1]):
+                return True
+    # send.py futtatasa (kozvetlenul, vagy python/runner utan) --to cimzettel
+    candidates = [prog] + (
+        [_basename(rest[0])] if rest and (_PYTHON.match(prog) or _NODEISH.match(prog)) else []
+    )
     if any(_SENDPY.match(c) for c in candidates) and any(
         t == "--to" or t.startswith("--to=") for t in rest
     ):
