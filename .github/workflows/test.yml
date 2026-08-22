@@ -1,0 +1,45 @@
+# MARVCI822: the repo's only workflow was the secret gate -- vitest and tsc
+# never ran in CI for ANY PR, so every "N/N green" claim was a local
+# measurement the PR head could not prove (found via the review of
+# #1037/#1038, measured 2026-08-22).
+#
+# Deliberately NOT a required status check yet: flipping it to required at
+# introduction would block every open PR whose head predates the workflow
+# (the required-check-never-ran class). The switch to required is a separate
+# owner/Marveen decision, gated on measuring how many open PRs run it green
+# (decision msg 14205, recorded on the MARVCI822 card).
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [develop, main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      # Full install ON PURPOSE, unlike the secret-gate's --ignore-scripts:
+      # the suite exercises native bindings, and an install that skips their
+      # build would fail the ABI probe instead of measuring the code.
+      - run: npm ci
+      # The suite resolves the `claude` binary at module load (resolveFromPath
+      # throws when it is absent) -- without this stub 17 suites fail at
+      # COLLECTION, before a single test runs (measured on the first ubuntu
+      # run). The stub satisfies PATH resolution only; it exits 1 LOUDLY, so if
+      # any test ever actually executes claude, that run fails visibly instead
+      # of silently faking success.
+      - name: Stub the claude binary for PATH resolution
+        run: |
+          sudo install -m 755 /dev/stdin /usr/local/bin/claude <<'EOF'
+          #!/bin/sh
+          echo "claude CI stub: tests must not execute this binary" >&2
+          exit 1
+          EOF
+      - run: npm run typecheck
+      - run: npm test
