@@ -303,7 +303,7 @@ describe('kanban extraction is a shipped one-liner, never an improvised pipe+her
     const out = renderHeartbeatClaudeMd(ID)
     expect(out).toContain(`python3 -c "import json,urllib.request;`)
     expect(out).toContain(`${ID.dashboardOrigin}/api/kanban/heartbeat-summary`)
-    expect(out).toMatch(/COUNTS urgent=%s in_progress=%s waiting=%s planned=%s new_hot_memories_1h=%s waiting_shown=%s/)
+    expect(out).toMatch(/COUNTS urgent=%s in_progress=%s waiting=%s planned=%s new_hot_memories_1h=%s db_size_mb=%s waiting_shown=%s/)
   })
 
   it('the ONLY python3-heredoc mention is the quoted example inside the ban paragraph', () => {
