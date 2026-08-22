@@ -17,9 +17,11 @@ vi.mock('../db.js', () => ({
     prepare: vi.fn().mockReturnValue({
       all: vi.fn().mockReturnValue([]),
       run: vi.fn().mockReturnValue({ changes: 0 }),
+      get: vi.fn().mockReturnValue(null),
     }),
   }),
   touchMemoriesAccessed: vi.fn(),
+  writeAgentAuditLog: vi.fn(),
 }))
 vi.mock('../config.js', () => ({
   MAIN_AGENT_ID: 'marveen',
@@ -181,7 +183,10 @@ describe('tryHandleMemories', () => {
   it('DELETE /api/memories/1 returns ok when found', async () => {
     const db = await import('../db.js')
     vi.mocked(db.getDb).mockReturnValueOnce({
-      prepare: vi.fn().mockReturnValue({ run: vi.fn().mockReturnValue({ changes: 1 }) }),
+      prepare: vi.fn().mockReturnValue({
+        get: vi.fn().mockReturnValue({ agent_id: 'agent-a' }),
+        run: vi.fn().mockReturnValue({ changes: 1 }),
+      }),
     } as any)
     const { ctx, out } = makeCtx('DELETE', '/api/memories/1')
     const handled = await tryHandleMemories(ctx)

@@ -4,7 +4,7 @@ import { homedir, tmpdir } from 'node:os'
 import { logger } from '../../logger.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
-import { createAgentMessage, getDb } from '../../db.js'
+import { createAgentMessage, getDb, writeAgentAuditLog } from '../../db.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { setSecret, deleteSecret } from '../vault.js'
@@ -379,6 +379,10 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
       // about it for the same reason a fully generated one does.
       personalityPendingDetail = detail
     }
+
+    try {
+      writeAgentAuditLog({ agent_id: 'system', entity: 'agent', action: 'create', entity_id: name, detail: { model, profileId } })
+    } catch { /* audit failure must not abort agent creation */ }
 
     // Notifications are deliberately OUTSIDE the try above. They used to sit
     // inside it, after the "Agent created successfully" log, so a failure here
@@ -877,6 +881,9 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     removeDesiredAgent(name)
     rmSync(dir, { recursive: true, force: true })
     cleanupTeamReferences(name)
+    try {
+      writeAgentAuditLog({ agent_id: 'system', entity: 'agent', action: 'delete', entity_id: name })
+    } catch { /* audit failure must not abort agent deletion */ }
     json(res, { ok: true })
     return true
   }

@@ -30,6 +30,7 @@ import { initImportMemories, loadImportSources } from './modules/import-memories
 import { loadUpdates, wireBranchDriftBanner, initUpdates } from './modules/updates.js'
 import { initOnboarding, dismissOnboarding, showSudoModal, initChannelSetup } from './modules/onboarding.js'
 import { initArtifacts, loadArtifacts } from './modules/artifacts.js'
+import { initBackups, refreshBackups } from './modules/backups.js'
 
 // avatarBust() is imported from ./modules/agents.js (avatar epoch owned there).
 
@@ -648,6 +649,7 @@ registerPage('archived',  { enter: () => loadArchivedPage() })
 registerPage('naplo',     { enter: () => loadNaplo() })
 registerPage('federation',{ enter: loadFederationPage })
 registerPage('artifacts', { enter: () => { initArtifacts(); loadArtifacts() } })
+registerPage('backups',   { enter: () => { initBackups(); refreshBackups() } })
 
 // Boot: wires up DOM (nav clicks, sidebar, hashchange listener), translates nav/static
 // elements, and performs the initial URL-hash route. Must run after DOM is ready.

@@ -1135,6 +1135,7 @@ window._i18n.hu = {
   'settings.desc.KANBAN_LABEL_COLORS':         'A kanban kártyák címkéihez elérhető HEX-színek vesszővel elválasztva. A dashboard ezeket kínálja választhatóként a szabad szöveges bevitel helyett.',
   'settings.desc.ALERT_THRESHOLD_MS':          'Mennyi ideig várhat egy sikertelen ütemezett feladat újrapróbálkozásra, mielőtt Telegram-értesítés megy ki. Alapértelmezetten 3 600 000 ms (1 óra). A próbálkozás az értesítés után is folytatódik.',
   'settings.desc.DEFAULT_REVERT_AFTER_MINUTES': 'Mennyi perccel az utolsó rate-limit esemény után álljon vissza az ágens az elsődleges modellre a modell-fallback mechanizmusban. Alapértelmezetten 330 perc (5,5 óra).',
+  'settings.desc.BACKUP_KEEP':                  'Megtartott mentések száma. A beállított határnál régebbi archívumok automatikusan törlődnek. Értékek: 10/30/60/180.',
 
   // --- Vault ---
   'vault.page_title':            'Vault',
@@ -1876,5 +1877,27 @@ window._i18n.hu = {
   'import.page.info':             'Elfogadott kiterjesztések: txt, md, mdx, mdc, json, html, htm, csv, yaml, yml, xml, log, toml, ini, cfg, rst, tsv, sql. Kihagyva: .env, .key, .pem, .p12 és hasonló kulcs/tanúsítvány fájlok; id_rsa, id_ed25519 nevű fájlok; tartalom alapján Bearer tokenek, privát kulcsok, jelszó-értékek és IBAN-szerű minták.',
   'import.sources.title':         'Importforrások',
   'import.add.title':             'Új forrás',
+
+  // Backups page
+  'nav.backups':                       'Adatmentés',
+  'backups.subtitle':                  'Mentések kezelése, ellenőrzése és visszaállítási runbook',
+  'backups.btn.run':                   'Mentés most',
+  'backups.stat.last':                 'Utolsó mentés',
+  'backups.stat.count':                'Mentések száma',
+  'backups.stat.retention':            'Megőrzési limit',
+  'backups.list.title':                'Archívumok',
+  'backups.list.empty':                'Nincs elérhető mentés.',
+  'backups.col.name':                  'Fájlnév',
+  'backups.col.date':                  'Dátum',
+  'backups.col.size':                  'Méret',
+  'backups.col.checksum':              'Ellenőrzőösszeg',
+  'backups.col.actions':               'Műveletek',
+  'backups.verify.title':              'Ellenőrzés eredménye',
+  'backups.settings.title':            'Beállítások',
+  'backups.settings.keep_label':       'Megőrzési limit (BACKUP_KEEP)',
+  'backups.settings.keep_hint':        'A beállított határnál régebbi archívumok automatikusan törlődnek a következő mentéskor.',
+  'backups.settings.save_btn':         'Mentés',
+  'backups.modal.delete.title':        'Archívum törlése',
+  'backups.modal.delete.confirm':      'Törlés',
 
 }

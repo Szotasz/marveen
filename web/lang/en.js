@@ -805,6 +805,7 @@ window._i18n.en = {
   'settings.desc.KANBAN_LABEL_COLORS':         'Comma-separated HEX colours available for Kanban card labels. The dashboard offers these as swatches instead of a free-text colour input.',
   'settings.desc.ALERT_THRESHOLD_MS':          'How long a failed scheduled task may wait for a retry before a Telegram alert is sent. Default: 3,600,000 ms (1 hour). Retries continue after the alert.',
   'settings.desc.DEFAULT_REVERT_AFTER_MINUTES': 'Minutes after the last rate-limit event before the agent reverts to the primary model in the model-fallback mechanism. Default: 330 minutes (5.5 hours).',
+  'settings.desc.BACKUP_KEEP':                  'Number of backup archives to retain. Archives older than this limit are automatically pruned. Allowed values: 10/30/60/180.',
 
   // --- Vault ---
   'vault.page_title':            'Vault',
@@ -1874,5 +1875,27 @@ window._i18n.en = {
   'import.page.info':             'Accepted extensions: txt, md, mdx, mdc, json, html, htm, csv, yaml, yml, xml, log, toml, ini, cfg, rst, tsv, sql. Skipped: files with extensions .env, .key, .pem, .p12 and similar key/certificate types; files named id_rsa or id_ed25519; and by content: Bearer tokens, private keys, password values, and IBAN-like patterns.',
   'import.sources.title':         'Import sources',
   'import.add.title':             'Add source',
+
+  // Backups page
+  'nav.backups':                       'Backups',
+  'backups.subtitle':                  'Manage, verify, and restore backup archives',
+  'backups.btn.run':                   'Run backup now',
+  'backups.stat.last':                 'Last backup',
+  'backups.stat.count':                'Archive count',
+  'backups.stat.retention':            'Retention limit',
+  'backups.list.title':                'Archives',
+  'backups.list.empty':                'No backups available.',
+  'backups.col.name':                  'Filename',
+  'backups.col.date':                  'Date',
+  'backups.col.size':                  'Size',
+  'backups.col.checksum':              'Checksum',
+  'backups.col.actions':               'Actions',
+  'backups.verify.title':              'Verification output',
+  'backups.settings.title':            'Settings',
+  'backups.settings.keep_label':       'Retention limit (BACKUP_KEEP)',
+  'backups.settings.keep_hint':        'Archives older than this limit are automatically pruned on the next backup run.',
+  'backups.settings.save_btn':         'Save',
+  'backups.modal.delete.title':        'Delete archive',
+  'backups.modal.delete.confirm':      'Delete',
 
 }
