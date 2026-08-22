@@ -569,11 +569,13 @@ export function startWebServer(port = 3420): http.Server {
     }
   }
 
-  try {
-    ensureDefaultScheduledTasks()
-    logger.info('Default scheduled tasks seeded')
-  } catch (err) {
-    logger.warn({ err }, 'Scheduled tasks seed skipped')
+  if (!webOnly) {
+    try {
+      ensureDefaultScheduledTasks()
+      logger.info('Default scheduled tasks seeded')
+    } catch (err) {
+      logger.warn({ err }, 'Scheduled tasks seed skipped')
+    }
   }
 
   try {

@@ -477,7 +477,11 @@ async function main(): Promise<void> {
   logger.info('Adatbazis inicializalva')
 
   if (IS_ISOLATED_MODE) {
-    // Isolated mode: only serve the web dashboard, no background tasks or agent management.
+    // Isolated mode: serve the web dashboard only, no background tasks or agent management.
+    // WEB_ONLY=true ensures startWebServer skips all startup project-file writes
+    // (ensureAutonomySection, ensureFederationClaudeMdSection, reconcileAgentsOnStartup,
+    // hook registration) -- isolated instances must never modify shared project files.
+    process.env['WEB_ONLY'] = 'true'
     webServer = startWebServer(WEB_PORT)
     logger.info(`Marveen fut izolalt modban! Dashboard: http://localhost:${WEB_PORT}`)
     return
