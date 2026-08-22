@@ -1,0 +1,64 @@
+/* =============================================================
+   card.css — CUBE card component (DS F4)
+   .card[data-variant][data-state]
+   Component-local props (--_*) override per variant/state.
+   Feature classes in style.css override --_pad / --_radius
+   to match their specific layouts.
+   ============================================================= */
+
+.card {
+  --_bg:     var(--bg-card);
+  --_border: var(--border);
+  --_shadow: none;
+  --_pad:    var(--sp-4);
+  --_radius: var(--radius);
+
+  background:    var(--_bg);
+  border:        1px solid var(--_border);
+  border-radius: var(--_radius);
+  padding:       var(--_pad);
+  box-shadow:    var(--_shadow);
+}
+
+/* === Variants === */
+
+.card[data-variant="interactive"] {
+  cursor: pointer;
+  transition:
+    background      var(--dur-fast) var(--ease-out),
+    border-color    var(--dur-fast) var(--ease-out),
+    box-shadow      var(--dur-fast) var(--ease-out),
+    transform       var(--dur-fast) var(--ease-out);
+}
+
+.card[data-variant="interactive"]:hover {
+  --_bg:     var(--bg-card-hover);
+  --_border: var(--accent);
+  --_shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+/* stat: centred big-number + label layout */
+.card[data-variant="stat"] {
+  text-align: center;
+}
+
+/* list-item: tighter padding for dense lists */
+.card[data-variant="list-item"] {
+  --_pad: var(--sp-2) var(--sp-3);
+}
+
+/* === States === */
+
+/* selected: accent border + focus ring */
+.card[data-state="selected"] {
+  --_border: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+/* dragging: kanban drag-ghost — elevated + slight tilt */
+.card[data-state="dragging"] {
+  --_shadow: var(--shadow-lg);
+  transform: rotate(1.5deg);
+  opacity: 0.9;
+}
