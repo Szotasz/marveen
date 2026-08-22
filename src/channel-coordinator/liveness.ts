@@ -12,7 +12,7 @@ import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { resolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
-import { PROJECT_ROOT } from '../config.js'
+import { STORE_DIR } from '../config.js'
 import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
 import { agentDir } from '../web/agent-config.js'
 import { matchesProviderPollerCmd } from './provider-poller-match.js'
@@ -22,12 +22,12 @@ const TMUX = resolveFromPath('tmux')
 // Keep in sync with channel-monitor.ts. The scheduled keepalive refreshes
 // store/.channel-keepalive every ~6 min REGARDLESS of inbound traffic, so a
 // stale file with a live process means the TUI is wedged (not merely quiet).
-export const KEEPALIVE_FILE = join(PROJECT_ROOT, 'store', '.channel-keepalive')
+export const KEEPALIVE_FILE = join(STORE_DIR, '.channel-keepalive')
 export const KEEPALIVE_STALE_MS = 18 * 60 * 1000
 // After any main-session respawn the plugin needs time to come up; never call
 // the native "down" inside this window (matches MARVEEN_POST_RESPAWN_GRACE_MS).
 export const STARTUP_GRACE_MS = 360_000
-export const RESPAWN_STAMP_FILE = join(PROJECT_ROOT, 'store', '.channel-last-respawn')
+export const RESPAWN_STAMP_FILE = join(STORE_DIR, '.channel-last-respawn')
 
 // --- extracted verbatim from channel-monitor.ts (behavior-preserving) ---
 

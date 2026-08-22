@@ -1,14 +1,14 @@
 import { existsSync, readFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomBytes, createCipheriv, createDecipheriv, scryptSync } from 'node:crypto'
-import { PROJECT_ROOT } from '../config.js'
+import { PROJECT_ROOT, STORE_DIR } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { isKeychainAvailable, keychainStore, keychainRetrieve } from './keychain.js'
 import { logger } from '../logger.js'
 
-const VAULT_PATH = join(PROJECT_ROOT, 'store', 'vault.json')
-const VAULT_KEY_PATH = join(PROJECT_ROOT, 'store', '.vault-key')
-const VAULT_KEY_MIGRATED = join(PROJECT_ROOT, 'store', '.vault-key.migrated')
+const VAULT_PATH = join(STORE_DIR, 'vault.json')
+const VAULT_KEY_PATH = join(STORE_DIR, '.vault-key')
+const VAULT_KEY_MIGRATED = join(STORE_DIR, '.vault-key.migrated')
 const ALGORITHM = 'aes-256-gcm'
 const KEY_LENGTH = 32
 const IV_LENGTH = 16

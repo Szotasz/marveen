@@ -26,7 +26,7 @@ const dashboardOrigin = resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT)
 // `store/.dashboard-token` does not exist -- curl then sends an empty Bearer
 // and every call 401s silently. Measured 2026-07-25: relative 401, absolute
 // 200; this had been silently killing sub-agent memory saves and searches.
-const tokenPath = join(PROJECT_ROOT, 'store', '.dashboard-token')
+const tokenPath = join(STORE_DIR, '.dashboard-token')
 
 // Hook commands run under `/bin/sh -c` with a NON-interactive PATH. On nvm
 // installs a bare `node` is not on that PATH, so the hook exits 127 -- which

@@ -10,7 +10,7 @@ import { getProviderType, getChannelToken, getChannelChatId, type ChannelProvide
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 export const PROJECT_ROOT = join(__dirname, '..')
-export const STORE_DIR = join(PROJECT_ROOT, 'store')
+export const STORE_DIR = process.env['MARVEEN_STORE_DIR'] ?? join(PROJECT_ROOT, 'store')
 export const DB_FILENAME = 'claudeclaw.db'
 export const PID_FILENAME = 'claudeclaw.pid'
 

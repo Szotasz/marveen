@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { PROJECT_ROOT } from '../config.js'
+import { PROJECT_ROOT, STORE_DIR } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 
 // A single bearer token gates every /api/* route. It is loaded from
@@ -9,7 +9,7 @@ import { atomicWriteFileSync } from './atomic-write.js'
 // (mode 0600) and auto-generated on first run. Static assets (/, /index.html,
 // /style.css, /app.js, /avatars/*) and the auth-status endpoint stay public
 // so the UI can bootstrap itself.
-const DASHBOARD_TOKEN_PATH = join(PROJECT_ROOT, 'store', '.dashboard-token')
+const DASHBOARD_TOKEN_PATH = join(STORE_DIR, '.dashboard-token')
 
 export function loadOrCreateDashboardToken(): string {
   const fromEnv = process.env.DASHBOARD_TOKEN?.trim()
@@ -21,7 +21,7 @@ export function loadOrCreateDashboardToken(): string {
     }
   } catch { /* fall through and regenerate */ }
   const fresh = randomBytes(32).toString('hex')
-  mkdirSync(join(PROJECT_ROOT, 'store'), { recursive: true })
+  mkdirSync(STORE_DIR, { recursive: true })
   atomicWriteFileSync(DASHBOARD_TOKEN_PATH, fresh, { mode: 0o600 })
   return fresh
 }

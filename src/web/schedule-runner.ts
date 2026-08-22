@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { logger } from '../logger.js'
 import {
-  PROJECT_ROOT,
+  PROJECT_ROOT, STORE_DIR,
   MAIN_AGENT_ID,
   ALLOWED_CHAT_ID,
   BOT_NAME,
@@ -252,7 +252,7 @@ export const SCHEDULE_JANITOR_PARKED_MIN_AGE_MS = 120_000
 // a dashboard restart that lands inside a task's catch-up window used to re-fire
 // an already-run task (observed: a restart re-sent a second vmd-report). Persist
 // it to disk and reload on startup so the skip-check survives restarts.
-const SCHEDULE_LAST_RUN_PATH = join(PROJECT_ROOT, 'store', 'schedule-last-run.json')
+const SCHEDULE_LAST_RUN_PATH = join(STORE_DIR, 'schedule-last-run.json')
 const scheduleLastRun: Map<string, number> = new Map()
 
 function loadScheduleLastRun(): void {
@@ -287,7 +287,7 @@ function persistScheduleLastRun(): void {
 // staleness (decideCatchUp): still-useful ones are executed as catch-ups, the
 // rest are recorded as 'missed' runs and reported. The one thing that never
 // happens again is silence.
-const SCHEDULE_TICK_STATE_PATH = join(PROJECT_ROOT, 'store', 'schedule-tick-state.json')
+const SCHEDULE_TICK_STATE_PATH = join(STORE_DIR, 'schedule-tick-state.json')
 
 // Hard ceiling on the catch-up window. Beyond this the downtime is an outage,
 // not a hiccup: replaying a week of crons on boot would be a burst of stale

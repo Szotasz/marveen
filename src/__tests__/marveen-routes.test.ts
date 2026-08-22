@@ -7,6 +7,7 @@ vi.mock('../config.js', async (importOriginal) => {
   return {
     ...actual,
     PROJECT_ROOT: '/tmp/marveen-test',
+    STORE_DIR: '/tmp/marveen-test/store',
     MAIN_AGENT_ID: 'marveen',
     BOT_NAME: 'Jarvis',
     BRAND_NAME: 'Marveen',

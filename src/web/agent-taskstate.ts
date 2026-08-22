@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { PROJECT_ROOT } from '../config.js'
+import { STORE_DIR as _STORE_DIR } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { logger } from '../logger.js'
 
@@ -16,7 +16,7 @@ import { logger } from '../logger.js'
 // is written -> re-injection no-ops -> Claude's own compact summary is used ->
 // ZERO regression. The feature can only help, never harm.
 
-const STORE_DIR = join(PROJECT_ROOT, 'store', 'agent-taskstate')
+const STORE_DIR = join(_STORE_DIR, 'agent-taskstate')
 
 // Orphan hygiene only: the consumed flag is the PRIMARY single-replay guard, so
 // the TTL can be generous -- a legitimate task may run many hours. 12h sweeps a

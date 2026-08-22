@@ -1,12 +1,12 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { PROJECT_ROOT } from '../../config.js'
+import { PROJECT_ROOT, STORE_DIR } from '../../config.js'
 import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
 import type { RouteContext } from './types.js'
 
-const CONFIG_PATH = join(PROJECT_ROOT, 'store', 'autonomy-config.json')
+const CONFIG_PATH = join(STORE_DIR, 'autonomy-config.json')
 
 interface AutonomyCategory {
   key: string

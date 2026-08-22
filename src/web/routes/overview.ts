@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, MAIN_AGENT_ID, currentBotName } from '../../config.js'
+import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, currentBotName } from '../../config.js'
 import { getDb, countTaskRunsBetween } from '../../db.js'
 import {
   agentDir, listAgentNames, readAgentDisplayName,
@@ -230,8 +230,8 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
       hasAvatar: boolean; avatarUrl: string; lastActive: number | null
     }> = []
     const mainHasAvatar = [
-      join(PROJECT_ROOT, 'store', 'marveen-avatar.png'),
-      join(PROJECT_ROOT, 'store', 'marveen-avatar.jpg'),
+      join(STORE_DIR, 'marveen-avatar.png'),
+      join(STORE_DIR, 'marveen-avatar.jpg'),
     ].some(existsSync)
     agentsForGrid.push({
       id: MAIN_AGENT_ID,

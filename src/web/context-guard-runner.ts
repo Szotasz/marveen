@@ -1,7 +1,7 @@
 import { statSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT, STORE_DIR } from '../config.js'
 import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS } from './channel-monitor.js'
 import { shouldDeferForRecentRespawn } from './stuck-tool-call-watcher.js'
 import { listAgentNames, listAllAgentNames, agentDir, readAgentModel, readAgentClaudeConfigDir, readAgentRemoteHost } from './agent-config.js'
@@ -62,7 +62,7 @@ const remoteSkipLogged = new Set<string>()
 // model) maximum breaks that loop: once a session has proven the window is
 // bigger, the proof survives restarts. Keyed by model so a real model
 // downgrade (e.g. fable-5 -> haiku) does not inherit a 1M denominator.
-const HIGHWATER_PATH = join(PROJECT_ROOT, 'store', 'context-guard-highwater.json')
+const HIGHWATER_PATH = join(STORE_DIR, 'context-guard-highwater.json')
 type HighwaterMap = Record<string, { model: string; tokens: number }>
 
 function readHighwater(): HighwaterMap {
@@ -390,7 +390,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         try {
           const finalPane = pane ?? capturePane(session)
           if (finalPane) {
-            snapshotPath = join(PROJECT_ROOT, 'store', `context-guard-last-pane-${name}.txt`)
+            snapshotPath = join(STORE_DIR, `context-guard-last-pane-${name}.txt`)
             writeFileSync(snapshotPath, finalPane)
           }
         } catch (err) {

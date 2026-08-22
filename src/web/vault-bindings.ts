@@ -1,14 +1,14 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT } from '../config.js'
+import { PROJECT_ROOT, STORE_DIR } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { readFileOr, AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
 import { getSecret, listSecrets } from './vault.js'
 import { getExternalProjectPaths } from './dashboard-settings.js'
 import { logger } from '../logger.js'
 
-const BINDINGS_PATH = join(PROJECT_ROOT, 'store', 'vault-bindings.json')
+const BINDINGS_PATH = join(STORE_DIR, 'vault-bindings.json')
 const VAULT_WRAPPER_PATH = join(PROJECT_ROOT, 'scripts', 'vault-env-wrapper.sh')
 
 export interface VaultBindingTarget {

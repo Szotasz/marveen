@@ -1,13 +1,13 @@
 import { existsSync, statSync, mkdirSync, rmSync } from 'node:fs'
 import { join, resolve, isAbsolute, basename } from 'node:path'
 import { execSync, spawn } from 'node:child_process'
-import { PROJECT_ROOT } from '../config.js'
+import { PROJECT_ROOT, STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 import { readFileOr } from './agent-config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 
-const SETTINGS_PATH = join(PROJECT_ROOT, 'store', 'dashboard-settings.json')
-const GITHUB_REPOS_DIR = join(PROJECT_ROOT, 'store', 'github-repos')
+const SETTINGS_PATH = join(STORE_DIR, 'dashboard-settings.json')
+const GITHUB_REPOS_DIR = join(STORE_DIR, 'github-repos')
 
 interface GitHubRepo {
   url: string

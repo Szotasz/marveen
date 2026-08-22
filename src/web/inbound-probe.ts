@@ -20,7 +20,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { logger } from '../logger.js'
-import { PROJECT_ROOT } from '../config.js'
+import { PROJECT_ROOT, STORE_DIR } from '../config.js'
 import { readEnvFile } from '../env.js'
 
 // Mirrors KEEPALIVE_RESPAWN_GRACE_MS from channel-monitor.ts (15 min).
@@ -29,8 +29,8 @@ import { readEnvFile } from '../env.js'
 // channel-monitor.ts to call hardRestartMarveenChannels at respawn time.
 const RESPAWN_GRACE_MS = 15 * 60 * 1000
 
-const SESSION_FILE = join(PROJECT_ROOT, 'store', '.watchdog-userbot.session')
-const PROBE_LAST_SENT_FILE = join(PROJECT_ROOT, 'store', '.watchdog-probe-last-sent')
+const SESSION_FILE = join(STORE_DIR, '.watchdog-userbot.session')
+const PROBE_LAST_SENT_FILE = join(STORE_DIR, '.watchdog-probe-last-sent')
 const VENV_PYTHON = join(PROJECT_ROOT, '.watchdog-venv', 'bin', 'python3')
 const PROBER_SCRIPT = join(PROJECT_ROOT, 'scripts', 'watchdog-inbound-prober.py')
 

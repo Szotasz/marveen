@@ -21,12 +21,12 @@ import type { RouteContext } from './types.js'
 // The dashboard never writes it -- update.sh does on entry, removes on exit
 // via a trap -- so the gate survives the stop.sh / start.sh dashboard
 // restart that happens inside a successful update.
-const UPDATE_PIDFILE = join(PROJECT_ROOT, 'store', 'update.pid')
+const UPDATE_PIDFILE = join(STORE_DIR, 'update.pid')
 
 // The seeded on-demand (enabled:false) task the post-rollback diagnosis fires.
 const DIAGNOSE_TASK = 'post-rollback-diagnose'
 // One-diagnosis-per-rollback marker (keyed by the last-result timestamp).
-const DIAGNOSE_MARKER = join(PROJECT_ROOT, 'store', 'update-diagnose.last')
+const DIAGNOSE_MARKER = join(STORE_DIR, 'update-diagnose.last')
 
 type LastResult = { status?: string; ts?: number; phase?: string; message?: string }
 function readLastResult(): LastResult | null {
