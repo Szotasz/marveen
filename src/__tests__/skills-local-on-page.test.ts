@@ -49,7 +49,7 @@ describe('local agent skills on global Skills page', () => {
 
   it('CSS defines .skills-card--local with distinct border/background', () => {
     expect(CSS).toContain('.skills-card--local')
-    expect(CSS).toContain('.skills-badge--agent')
+    expect(CSS).toContain('.skills-tag--agent')
   })
 
   it('agent filter button is present in HTML', () => {

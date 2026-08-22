@@ -17,9 +17,11 @@ import { dirname, join } from 'node:path'
 //      Fix: checkbox/radio inputs keep their native size.
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const cssPath = join(__dirname, '..', '..', 'web', 'style.css')
+const btnCssPath = join(__dirname, '..', '..', 'web', 'css', 'components', 'btn.css')
 // Strip /* ... */ comments so an explanatory comment that *mentions* a property
 // is never mistaken for a real declaration.
 const css = readFileSync(cssPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+const btnCss = readFileSync(btnCssPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
 
 /** Return the body of the first `selector { ... }` rule, or null. */
 function ruleBody(selector: string): string | null {
@@ -49,12 +51,19 @@ describe('dashboard modal CSS contract', () => {
     expect(body!).toMatch(/width\s*:\s*auto/i)
   })
 
-  it.each(['.btn-compact[hidden]', '.tg-notice[hidden]'])(
-    '%s stays out of layout when hidden',
-    (selector) => {
-      const body = ruleBody(`${selector} {`)
-      expect(body, `missing ${selector} override in web/style.css`).not.toBeNull()
-      expect(body!).toMatch(/display\s*:\s*none/i)
-    },
-  )
+  it('.tg-notice[hidden] stays out of layout when hidden', () => {
+    const body = ruleBody('.tg-notice[hidden] {')
+    expect(body, 'missing .tg-notice[hidden] override in web/style.css').not.toBeNull()
+    expect(body!).toMatch(/display\s*:\s*none/i)
+  })
+
+  it('.btn[hidden] stays out of layout when hidden (F3: moved to btn.css)', () => {
+    // After F3 migration .btn-compact[hidden] -> .btn[hidden] in components/btn.css
+    const idx = btnCss.indexOf('.btn[hidden]')
+    expect(idx, 'missing .btn[hidden] override in web/css/components/btn.css').toBeGreaterThanOrEqual(0)
+    const open = btnCss.indexOf('{', idx)
+    const close = btnCss.indexOf('}', open)
+    const body = btnCss.slice(open + 1, close)
+    expect(body).toMatch(/display\s*:\s*none/i)
+  })
 })
