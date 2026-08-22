@@ -11,6 +11,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 
 export const PROJECT_ROOT = join(__dirname, '..')
 export const STORE_DIR = process.env['MARVEEN_STORE_DIR'] ?? join(PROJECT_ROOT, 'store')
+// Isolated mode: MARVEEN_STORE_DIR is set to a non-default path.
+// In this mode the instance skips takeover/reaper/reconciliation so it
+// can run alongside the production dashboard without interfering.
+export const IS_ISOLATED_MODE = Boolean(process.env['MARVEEN_STORE_DIR'])
 export const DB_FILENAME = 'claudeclaw.db'
 export const PID_FILENAME = 'claudeclaw.pid'
 
@@ -241,7 +245,7 @@ export function systemdStatusUnits(serviceId: string): string[] {
   return [...new Set([`${serviceId}-dashboard`, serviceId, LEGACY_SERVICE_ID])]
 }
 
-export const WEB_PORT = parseInt(env['WEB_PORT'] ?? '3420', 10)
+export const WEB_PORT = parseInt(process.env['WEB_PORT'] ?? env['WEB_PORT'] ?? '3420', 10)
 
 export const WEB_HOST = env['WEB_HOST'] ?? '127.0.0.1'
 

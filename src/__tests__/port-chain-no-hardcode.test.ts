@@ -143,7 +143,7 @@ describe('PORTCHAIN1: the port chain follows WEB_PORT on a NON-default port', ()
 
   it('leaves the documented fallbacks alone', () => {
     const stays: Array<[string, RegExp]> = [
-      ['src/config.ts', /WEB_PORT = parseInt\(env\['WEB_PORT'\] \?\? '3420', 10\)/],
+      ['src/config.ts', /WEB_PORT = parseInt\((?:process\.env\['WEB_PORT'\] \?\? )?env\['WEB_PORT'\] \?\? '3420', 10\)/],
       ['src/web.ts', /startWebServer\(port = 3420\)/],
       ['src/remote-enroll-core.ts', /REMOTE_PORT = 3420/],
       ['scripts/fleet-safe-start.sh', /MARVEEN_DASHBOARD_URL:-http:\/\/localhost:3420/],
