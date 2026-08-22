@@ -1,0 +1,68 @@
+/* =============================================================
+   table.css — CUBE table component (DS F6)
+   .table-wrap > table.table[data-variant][data-size]
+   ============================================================= */
+
+/* === Wrapper === */
+
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+/* === Base table === */
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-base);
+}
+
+.table th {
+  background: var(--bg-card);
+  padding: var(--sp-2) var(--sp-3);
+  text-align: left;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-strong);
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: var(--z-raised);
+}
+
+.table td {
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.table tr:last-child td { border-bottom: none; }
+
+.table tbody tr:hover { background: var(--bg-card-hover); }
+
+/* === Variants === */
+
+.table[data-variant="compact"] td {
+  padding: var(--sp-1) var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.table[data-variant="compact"] th {
+  padding: var(--sp-1) var(--sp-2);
+}
+
+.table[data-variant="striped"] tbody tr:nth-child(even) {
+  background: var(--neutral-soft);
+}
+
+/* === Row state === */
+
+.table tbody tr[data-state="selected"] {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}

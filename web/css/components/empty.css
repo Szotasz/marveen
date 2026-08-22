@@ -1,0 +1,64 @@
+/* =============================================================
+   empty.css — CUBE empty-state component (DS F6)
+   .empty[data-variant="page|panel|inline"]
+   ============================================================= */
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--sp-2);
+  color: var(--text-muted);
+}
+
+.empty-icon {
+  font-size: 24px;
+  color: var(--text-muted);
+  line-height: 1;
+}
+
+.empty-title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text-secondary);
+}
+
+.empty-desc {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  max-width: 36ch;
+}
+
+/* === Variants === */
+
+.empty[data-variant="page"] {
+  padding: var(--sp-10);
+  gap: var(--sp-2);
+}
+
+.empty[data-variant="panel"] {
+  padding: var(--sp-6);
+  gap: var(--sp-2);
+}
+
+.empty[data-variant="inline"] {
+  flex-direction: row;
+  text-align: left;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+}
+
+.empty[data-variant="inline"] .empty-icon { font-size: 16px; }
+.empty[data-variant="inline"] .empty-title { display: none; }
+
+/* === Legacy alias ===
+   Simple inline empty messages rendered as <p class="empty-state">
+   get the inline-variant look without markup restructure.           */
+
+.empty-state {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  padding: var(--sp-3);
+  text-align: center;
+}
