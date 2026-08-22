@@ -44,8 +44,8 @@ function renderSources(sources) {
     : `<span class="import-status-badge inactive">${escapeHtml(t('import.status.inactive'))}</span>`
 
   el.innerHTML = `
-    <div class="import-sources-table-wrap">
-      <table class="import-sources-table">
+    <div class="table-wrap import-sources-table-wrap">
+      <table class="table import-sources-table">
         <thead>
           <tr>
             <th>${escapeHtml(t('import.col.type'))}</th>

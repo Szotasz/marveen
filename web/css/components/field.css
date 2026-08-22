@@ -1,0 +1,130 @@
+/* =============================================================
+   field.css — CUBE field/input component (DS F6)
+   .field[data-state][data-size] > .field-label + .field-control
+     + .field-help | .field-error
+   Also hosts .form-group (migrated from style.css features layer).
+   ============================================================= */
+
+/* === CUBE ős === */
+
+.field {
+  --_bg:     var(--bg-input);
+  --_border: var(--border);
+  --_ring:   none;
+}
+
+.field-label {
+  display: block;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  margin-bottom: var(--sp-1);
+  color: var(--text-secondary);
+}
+
+.field-control {
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--_bg);
+  border: 1px solid var(--_border);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-md);
+  font-family: inherit;
+  line-height: var(--lh-base);
+  color: var(--text);
+  min-height: 36px;
+  box-shadow: var(--_ring);
+  transition: border-color var(--dur-fast) var(--ease-out),
+              box-shadow   var(--dur-fast) var(--ease-out);
+  outline: none;
+}
+
+.field-control::placeholder { color: var(--text-muted); }
+
+.field-control:is(textarea) { resize: vertical; }
+
+.field-help  { font-size: var(--fs-xs); color: var(--text-muted); margin-top: var(--sp-05); }
+.field-error { font-size: var(--fs-xs); color: var(--danger);     margin-top: var(--sp-05); display: none; }
+
+/* === States === */
+
+.field:focus-within {
+  --_border: var(--border-focus);
+  --_ring:   var(--focus-ring);
+}
+
+.field[data-state="error"] {
+  --_border: var(--danger);
+  --_ring:   0 0 0 3px var(--danger-soft);
+}
+
+.field[data-state="error"] .field-help  { display: none; }
+.field[data-state="error"] .field-error { display: block; }
+
+.field[disabled] {
+  opacity: 0.6;
+  --_bg: var(--bg-card-hover);
+  cursor: not-allowed;
+}
+
+.field[readonly] .field-control {
+  --_bg: transparent;
+  border-style: dashed;
+}
+
+/* === Size variant === */
+
+.field[data-size="sm"] .field-control {
+  min-height: 28px;
+  font-size: var(--fs-base);
+  padding: var(--sp-1) var(--sp-2);
+}
+
+/* ================================================================
+   .form-group — migrated from style.css features layer (DS F6)
+   Existing HTML markup unchanged; visual behaviour preserved.
+   Raw pixel values not mappable to 4px-grid tokens are kept as-is.
+   ================================================================ */
+
+.form-group { margin-bottom: 18px; }
+
+.form-group label {
+  display: block;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  margin-bottom: 6px;
+  color: var(--text-secondary);
+}
+
+.form-group input,
+.form-group textarea,
+.form-group select {
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-md);
+  font-family: inherit;
+  color: var(--text);
+  transition: all var(--transition);
+  outline: none;
+}
+
+/* Checkbox/radio must not inherit text-field width:100% + padding
+   (agent-detail Csapat tab overflow bug guard). */
+.form-group input[type="checkbox"],
+.form-group input[type="radio"] {
+  width: auto;
+  flex: 0 0 auto;
+  padding: 0;
+  margin: 0;
+}
+
+.form-group input:focus,
+.form-group textarea:focus,
+.form-group select:focus {
+  border-color: var(--border-focus);
+  box-shadow: var(--focus-ring);
+}
+
+.form-group textarea { resize: vertical; }

@@ -10,6 +10,9 @@
 @import url("components/chip.css")  layer(components);
 @import url("components/card.css")  layer(components);
 @import url("components/modal.css") layer(components);
+@import url("components/field.css") layer(components);
+@import url("components/table.css") layer(components);
+@import url("components/empty.css") layer(components);
 
 /* Wrap the existing style.css entirely in the features layer */
 @import url("../style.css") layer(features);

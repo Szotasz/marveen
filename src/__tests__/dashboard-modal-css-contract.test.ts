@@ -21,11 +21,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const cssPath = join(__dirname, '..', '..', 'web', 'style.css')
 const btnCssPath = join(__dirname, '..', '..', 'web', 'css', 'components', 'btn.css')
 const modalCssPath = join(__dirname, '..', '..', 'web', 'css', 'components', 'modal.css')
+const fieldCssPath = join(__dirname, '..', '..', 'web', 'css', 'components', 'field.css')
 // Strip /* ... */ comments so an explanatory comment that *mentions* a property
 // is never mistaken for a real declaration.
 const css = readFileSync(cssPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
 const btnCss = readFileSync(btnCssPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
 const modalCss = readFileSync(modalCssPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+const fieldCss = readFileSync(fieldCssPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
 
 /** Return the body of the first `selector { ... }` block in a CSS string, or null. */
 function ruleBodyIn(source: string, selector: string): string | null {
@@ -51,11 +53,12 @@ describe('dashboard modal CSS contract', () => {
     expect(body!).toMatch(/(^|[;{\s])height\s*:/)
   })
 
-  it('checkbox/radio inputs in a form-group override the text-field width:100% (overflow guard)', () => {
-    const body = ruleBody('.form-group input[type="checkbox"]')
+  it('checkbox/radio inputs in a form-group override the text-field width:100% (overflow guard, F6: moved to field.css)', () => {
+    // After F6 migration .form-group block moved to web/css/components/field.css
+    const body = ruleBodyIn(fieldCss, '.form-group input[type="checkbox"]')
     expect(
       body,
-      'missing `.form-group input[type="checkbox"]` width override in web/style.css',
+      'missing `.form-group input[type="checkbox"]` width override in web/css/components/field.css',
     ).not.toBeNull()
     expect(body!).toMatch(/width\s*:\s*auto/i)
   })
