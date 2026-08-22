@@ -1040,6 +1040,62 @@ export function ensureFleetRosterSection(name: string): void {
   atomicWriteFileSync(claudeMdPath, updated)
 }
 
+// SKILLUTCSAPDA822: the near-identical `.claude-config/skills` path IS the
+// shared global directory (a symlink to ~/.claude/skills, single-copy
+// distribution -- deliberate, see skills-symlink-single-copy), and the
+// skill-run base directory even DISPLAYS that path. An agent writing "its
+// own" skill there writes to the whole fleet, and nothing says so. Measured
+// 2026-08-22: five third-party marketing skills landed in the shared dir and
+// only luck caught them. The symlink stays; the fix is naming the trap in
+// every agent's CLAUDE.md, idempotently, on every respawn.
+const SKILLS_TRAP_BEGIN = '<!-- BEGIN GENERATED: skills-path-trap (auto-generated, do not edit by hand) -->'
+const SKILLS_TRAP_END = '<!-- END GENERATED: skills-path-trap -->'
+const SKILLS_TRAP_BLOCK_RE = new RegExp(
+  `${SKILLS_TRAP_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${SKILLS_TRAP_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+function buildSkillsPathTrapBody(): string {
+  return [
+    '## Skill-útvonal csapda (KÖTELEZŐ elolvasni skill-írás előtt)',
+    '',
+    'A `.claude-config/skills` NEM a saját mappád: symlink a globális',
+    '`~/.claude/skills`-re, tehát ami oda kerül, az a TELJES flottánál megjelenik',
+    '-- akkor is, ha a skill-futtatás base directory-ja ezt az utat mutatja.',
+    'A saját, csak neked szóló vagy kipróbálatlan külső skill a munkakönyvtárad',
+    '`.claude/skills/` mappájába megy. A globálisba írás tudatos, flotta-szintű',
+    'döntés legyen, ne alapértelmezés.',
+  ].join('\n')
+}
+
+// Same five-rule idempotency contract as ensureFleetRosterSection /
+// ensureAutonomySection; called on every startAgentProcess() so existing
+// agents receive the warning automatically on respawn.
+export function ensureSkillsPathTrapSection(name: string): void {
+  const claudeMdPath = name === MAIN_AGENT_ID
+    ? join(PROJECT_ROOT, 'CLAUDE.md')
+    : join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${SKILLS_TRAP_BEGIN}\n${buildSkillsPathTrapBody()}\n${SKILLS_TRAP_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  let updated: string
+  if (SKILLS_TRAP_BLOCK_RE.test(existing)) {
+    updated = existing.replace(SKILLS_TRAP_BLOCK_RE, block)
+  } else {
+    updated = existing.trimEnd() + '\n\n' + block + '\n'
+  }
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
 export async function generateClaudeMd(name: string, description: string, model: string): Promise<string> {
   // Distribution-safe default-drive line: only emit a concrete folder when this
   // install has one configured (OWNER_DRIVE_FOLDER). A fresh install with no
@@ -1112,6 +1168,7 @@ Te egy önfejlesztő ágens vagy. A munkád során tanulsz, és újrafelhasznál
 ### Skill-ek helye
 - Globális: ~/.claude/skills/ (minden ágens számára elérhető)
 - Egyéni: a te munkakönyvtárad .claude/skills/ mappája
+- CSAPDA: a .claude-config/skills NEM a tiéd -- az a globális mappa symlinken át; saját skill a .claude/skills alá menjen
 
 ### Automatikus skill generálás
 Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) automatikusan hozz létre SKILL.md fájlt:
