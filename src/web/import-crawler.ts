@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, statSync, readFileSync } from 'node:fs'
 import { join, extname, basename } from 'node:path'
-import { getDb } from '../db.js'
+import { getDb, runLinkMaintenance } from '../db.js'
 import { logger } from '../logger.js'
 import {
   ALLOWED_EXTENSIONS,
@@ -55,15 +55,23 @@ function isAllowedFile(filePath: string): { ok: boolean; reason?: string } {
 }
 
 // ── Auto-keywords ─────────────────────────────────────────────────────────────
-function extractKeywords(content: string, fileName: string): string {
+export function extractKeywords(content: string, fileName: string): string {
   // Try YAML front matter tags first (md/mdx files)
   const fmMatch = content.match(/^---[\s\S]*?tags:\s*\[([^\]]+)\][\s\S]*?---/i)
   if (fmMatch) {
     return fmMatch[1].replace(/['"\s]/g, '').replace(/,/g, ', ').trim()
   }
-  // Fall back: first 20 space-separated tokens from content + the filename stem
+  // Fall back: first 20 space-separated tokens from content + the filename stem.
+  // Use a Unicode-aware split so accented letters (á, é, ő, ű, ...) stay inside
+  // words instead of acting as separators; the old ASCII \w class treated every
+  // accented char as a break, shattering Hungarian words into 1-2 letter shards.
+  // Drop <2-char tokens so those shards never surface as keyword tags.
   const stem = basename(fileName, extname(fileName))
-  const words = content.replace(/[^\w\s]/g, ' ').split(/\s+/).filter(Boolean).slice(0, 20)
+  const words = content
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .filter(w => w.length >= 2)
+    .slice(0, 20)
   if (stem) words.unshift(stem)
   return [...new Set(words)].slice(0, 20).join(', ')
 }
@@ -321,6 +329,19 @@ export async function crawlSource(sourceId: string): Promise<void> {
       skippedHash: counts.skippedHash, skippedSecret: counts.skippedSecret,
       skippedSize: counts.skippedSize, skippedType: counts.skippedType,
     }, 'Import scan complete')
+
+    // Newly added/updated shadow memories carry no embedding yet, and the memory
+    // graph links are built purely from embedding similarity. Trigger a link
+    // maintenance pass (it backfills embeddings for recently-updated rows lacking
+    // one, then rebuilds neighbor links) so imported docs join the graph without a
+    // manual step. Bounded to the last day's updates; fire-and-forget, non-fatal.
+    if (counts.added + counts.updated > 0) {
+      runLinkMaintenance({ maxAge: 86400 }).catch(err =>
+        logger.warn(
+          { sourceId, err: err instanceof Error ? err.message : String(err) },
+          'Import: post-crawl link maintenance failed',
+        ))
+    }
   } catch (err) {
     error = err instanceof Error ? err.message : String(err)
     logger.error({ sourceId, err }, 'Import crawl error')
