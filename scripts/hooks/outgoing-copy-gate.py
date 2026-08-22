@@ -695,9 +695,95 @@ def telegram_gate(tool_input: dict) -> None:
     sys.exit(0)
 
 
-def audit(text: str):
-    """Return a list of human-readable problems."""
+# --- QUOTED SPANS ARE EVIDENCE, NOT PROSE (GATEIDEZET822, 2026-08-22) --------
+# LIVE CASE: the gate blocked the main agent's OWN Telegram message, because the
+# message QUOTED the accent-stripped sentence from the 2026-08-10 incident it was
+# explaining. The gate exists to audit what the AUTHOR wrote; a verbatim quote is
+# not the author's writing, and showing the wrong form is often the entire point
+# of the sentence around it. Quoted spans are therefore masked out of EVERY check
+# (accents, em dash, double hyphen, name, homoglyph).
+#
+# The mask writes SAME-LENGTH spaces on purpose: _hit_context() reports by offset
+# into the same string, so shrinking the text would move every later finding's
+# quoted context off by the removed characters.
+#
+# Two guards keep the exemption from becoming a bypass:
+#   - the same wrong form OUTSIDE the quote still blocks (covered by a test), and
+#   - a finding dropped by masking is written to the gate log, never silent.
+#     A hole nobody knows about protects only until someone steps in it.
+QUOTE_PAIRS = (
+    ("\u201e", "\u201d"),   # Hungarian: low-9 open, right-double close
+    ("\u201c", "\u201d"),   # typographic English
+    ("\u00bb", "\u00ab"),   # Hungarian guillemets (pointing outward)
+    ("\u00ab", "\u00bb"),   # French guillemets
+    ('"', '"'),             # straight double quote
+)
+# No real quotation runs longer than this; the cap stops a stray opening quote
+# from swallowing the rest of the message and disabling the gate wholesale.
+QUOTE_MAX = 1000
+BLOCKQUOTE = re.compile(r"^[ \t]*>[^\n]*$", re.M)
+
+
+def mask_quoted(text: str):
+    """Blank out quoted spans. Returns (masked_text, span_count)."""
+    chars = list(text)
+    n = len(text)
+    spans = 0
+
+    def blank(a, b):
+        for k in range(a, b):
+            if chars[k] != "\n":
+                chars[k] = " "
+
+    # 1. markdown blockquote lines
+    for m in BLOCKQUOTE.finditer(text):
+        blank(m.start(), m.end())
+        spans += 1
+
+    # 2. quote pairs
+    openers = {pair[0]: pair[1] for pair in QUOTE_PAIRS}
+    i = 0
+    while i < n:
+        closer = openers.get(text[i])
+        if closer is None:
+            i += 1
+            continue
+        limit = min(n, i + 1 + QUOTE_MAX)
+        j = text.find(closer, i + 1, limit)
+        if j == -1:
+            i += 1
+            continue
+        # a blank line inside the pair means these are almost certainly two
+        # unrelated quote marks, not one quotation
+        if "\n\n" in text[i:j]:
+            i += 1
+            continue
+        blank(i, j + 1)
+        spans += 1
+        i = j + 1
+
+    return "".join(chars), spans
+
+
+def _log_gate(line: str) -> None:
+    try:
+        log_path = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(line if line.endswith("\n") else line + "\n")
+    except OSError:
+        pass
+
+
+def audit(text: str, mask_quotes: bool = True):
+    """Return a list of human-readable problems.
+
+    mask_quotes=False is the raw pass, used ONLY to log what the quote
+    masking dropped. Never gate on it.
+    """
     plain = TAG.sub(" ", text)
+    nspans = 0
+    if mask_quotes:
+        plain, nspans = mask_quoted(plain)
     problems = []
     if EM_DASH in plain:
         problems.append(
@@ -760,6 +846,13 @@ def audit(text: str):
             problems.append(
                 f"MAGYAR SZOVEG GYAKORLATILAG EKEZET NELKUL (ekezet-arany {ratio:.3%}, {letters} betun). "
                 "A szolistam nem talalt konkret talalatot, de az arany onmagaban gepi atirasra utal -- olvasd vissza."
+            )
+    if mask_quotes and nspans:
+        hidden = [p for p in audit(text, mask_quotes=False) if p not in problems]
+        if hidden:
+            _log_gate(
+                f"outgoing-copy-gate: IDEZETBEN kihagyva {len(hidden)} talalat "
+                f"({nspans} idezett szakasz): " + " | ".join(h[:120] for h in hidden)
             )
     return problems
 
