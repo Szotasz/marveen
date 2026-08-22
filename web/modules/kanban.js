@@ -1463,7 +1463,9 @@ async function showCardDetail(card) {
 
         if (canDeleteChild) {
           const delBtn = document.createElement('button')
-          delBtn.className = 'btn-danger btn-compact'
+          delBtn.className = 'btn'
+          delBtn.dataset.variant = 'danger'
+          delBtn.dataset.size = 'compact'
           delBtn.style.flexShrink = '0'
           delBtn.textContent = t('kanban.modal.delete_btn')
           delBtn.onclick = async (e) => {

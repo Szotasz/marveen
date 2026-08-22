@@ -69,11 +69,11 @@ function renderSources(sources) {
               <td>${statusBadge(s.enabled)}</td>
               <td>
                 <div class="isrc-actions">
-                  <button class="btn-secondary btn-compact import-sync-btn" data-id="${escapeHtml(s.id)}">${t('import.btn.sync')}</button>
-                  <button class="btn-secondary btn-compact import-log-btn" data-id="${escapeHtml(s.id)}">${t('import.btn.log')}</button>
-                  <button class="btn-secondary btn-compact import-toggle-btn" data-id="${escapeHtml(s.id)}" data-enabled="${s.enabled ? '1' : '0'}">${s.enabled ? t('import.btn.disable') : t('import.btn.enable')}</button>
-                  <button class="btn-secondary btn-compact import-wipe-btn" data-id="${escapeHtml(s.id)}">${t('import.btn.wipe_source')}</button>
-                  <button class="btn-danger btn-compact import-delete-btn" data-id="${escapeHtml(s.id)}">${t('import.btn.delete')}</button>
+                  <button class="btn import-sync-btn" data-variant="secondary" data-size="compact" data-id="${escapeHtml(s.id)}">${t('import.btn.sync')}</button>
+                  <button class="btn import-log-btn" data-variant="secondary" data-size="compact" data-id="${escapeHtml(s.id)}">${t('import.btn.log')}</button>
+                  <button class="btn import-toggle-btn" data-variant="secondary" data-size="compact" data-id="${escapeHtml(s.id)}" data-enabled="${s.enabled ? '1' : '0'}">${s.enabled ? t('import.btn.disable') : t('import.btn.enable')}</button>
+                  <button class="btn import-wipe-btn" data-variant="secondary" data-size="compact" data-id="${escapeHtml(s.id)}">${t('import.btn.wipe_source')}</button>
+                  <button class="btn import-delete-btn" data-variant="danger" data-size="compact" data-id="${escapeHtml(s.id)}">${t('import.btn.delete')}</button>
                 </div>
               </td>
             </tr>

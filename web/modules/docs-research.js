@@ -158,7 +158,7 @@ async function openDoc(name) {
     const content = doc.content || ''
     contentEl.innerHTML =
       '<div class="docs-content-toolbar">' +
-        '<button class="btn-secondary btn-compact" id="docsDownloadBtn">' + t('docs.download_btn') + '</button>' +
+        '<button class="btn" data-variant="secondary" data-size="compact" id="docsDownloadBtn">' + t('docs.download_btn') + '</button>' +
       '</div>' +
       '<div class="docs-rendered markdown-body md-rendered">' + renderMarkdown(content) + '</div>'
     const dl = document.getElementById('docsDownloadBtn')
@@ -227,7 +227,7 @@ async function openResearchDoc(agent, name) {
     const content = doc.content || ''
     contentEl.innerHTML =
       '<div class="docs-content-toolbar">' +
-        '<button class="btn-secondary btn-compact" id="researchDownloadBtn">' + t('docs.download_btn') + '</button>' +
+        '<button class="btn" data-variant="secondary" data-size="compact" id="researchDownloadBtn">' + t('docs.download_btn') + '</button>' +
       '</div>' +
       '<div class="docs-rendered markdown-body">' + renderMarkdown(content) + '</div>'
     const dl = document.getElementById('researchDownloadBtn')

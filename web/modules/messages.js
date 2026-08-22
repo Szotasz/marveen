@@ -12,10 +12,10 @@ import { avatarBust, setFederatedPeerStatus, federatedAgentEntries } from './age
 // sees a message from Gábor, not a spoofable string. /api/messages sits behind
 // the dashboard bearer token + Cloudflare Access.
 const MSG_STATUS_META = {
-  pending: { label: () => t('messages.status.pending'), cls: 'badge-warm' },
-  delivered: { label: () => t('messages.status.delivered'), cls: 'badge-active' },
-  done: { label: () => t('messages.status.done'), cls: 'badge-active' },
-  failed: { label: () => t('messages.status.failed'), cls: 'badge-paused' },
+  pending:   { label: () => t('messages.status.pending'),   variant: 'accent'   },
+  delivered: { label: () => t('messages.status.delivered'), variant: 'success'  },
+  done:      { label: () => t('messages.status.done'),      variant: 'success'  },
+  failed:    { label: () => t('messages.status.failed'),    variant: 'accent'   },
 }
 async function resolveOwnerName() {
   try {
@@ -237,7 +237,7 @@ async function loadChatThread(agentName) {
       <div class="chat-thread-header">
         ${chatAvatarHtml(agentName, 32)}
         <span class="chat-thread-title">${escapeHtml(threadDisplayName)}</span>
-        <button class="btn-secondary btn-compact" style="margin-left:auto" onclick="loadChatThread('${escapeHtml(agentName)}')">
+        <button class="btn" data-variant="secondary" data-size="compact" style="margin-left:auto" onclick="loadChatThread('${escapeHtml(agentName)}')">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
         </button>
       </div>
@@ -245,7 +245,7 @@ async function loadChatThread(agentName) {
       <div class="chat-compose">
         <div class="chat-compose-row">
           <textarea id="chatComposeText" class="chat-compose-input" rows="2" placeholder="${t('messages.placeholder', { agent: escapeHtml(chatDisplayName(agentName)) })}"></textarea>
-          <button class="btn-primary btn-compact chat-send-btn" id="chatSendBtn">${t('messages.send_btn')}</button>
+          <button class="btn chat-send-btn" data-variant="primary" data-size="compact" id="chatSendBtn">${t('messages.send_btn')}</button>
         </div>
       </div>
     </div>
@@ -453,7 +453,7 @@ function buildBubbleHtml(m) {
   const senderName = isOutgoing ? mainAgentId() : m.from_agent
   const senderLabel = chatDisplayName(senderName)
   const when = m.created_at ? new Date(m.created_at * 1000).toLocaleString('hu-HU', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : ''
-  const statusMetaRaw = MSG_STATUS_META[m.status] || { label: m.status || '', cls: 'badge' }
+  const statusMetaRaw = MSG_STATUS_META[m.status] || { label: m.status || '', variant: 'neutral' }
   const statusMeta = { ...statusMetaRaw, label: typeof statusMetaRaw.label === 'function' ? statusMetaRaw.label() : statusMetaRaw.label }
   return `<div class="chat-bubble-row ${isOutgoing ? 'outgoing' : 'incoming'}" data-msg-id="${m.id}">
     ${!isOutgoing ? `<div class="chat-bubble-avatar">${chatAvatarHtml(senderName, 28)}</div>` : ''}
@@ -461,7 +461,7 @@ function buildBubbleHtml(m) {
       <div class="bubble-meta">
         ${!isOutgoing ? `<span class="bubble-sender">${escapeHtml(senderLabel)}</span>` : ''}
         <span class="bubble-id-chip">#${m.id}</span>
-        <span class="badge ${statusMeta.cls}" style="font-size:10px">${escapeHtml(statusMeta.label)}</span>
+        <span class="badge" data-variant="${statusMeta.variant}" style="font-size:10px">${escapeHtml(statusMeta.label)}</span>
         ${m.status === 'pending' && m.to_agent === mainAgentId() ? `<span style="font-size:10px;color:var(--text-muted)">${escapeHtml(t('messages.pending_main_hint'))}</span>` : ''}
         ${m.origin_note ? `<span class="badge" style="font-size:10px" title="Self-declared by the sender, not verified (card 06f062e4)">origin: ${escapeHtml(m.origin_note)}</span>` : ''}
       </div>

@@ -336,11 +336,11 @@ function renderPendingRetries(container, rows) {
       <div class="pending-retry-info">
         <div class="pending-retry-title">
           ${escapeHtml(r.taskName)}
-          <span class="badge badge-paused">${escapeHtml(r.agentName)}</span>
+          <span class="badge" data-variant="accent">${escapeHtml(r.agentName)}</span>
           ${r.alertSentAt
-            ? `<span class="badge badge-heartbeat" title="${t('tasks.heartbeat.alert_badge_sent')}">⚠️ ${t('tasks.heartbeat.alert_sent')}</span>`
+            ? `<span class="badge" data-variant="info" title="${t('tasks.heartbeat.alert_badge_sent')}">⚠️ ${t('tasks.heartbeat.alert_sent')}</span>`
             : r.alertDue
-              ? `<span class="badge badge-heartbeat" title="${t('tasks.heartbeat.alert_badge_pending')}">⏳ ${t('tasks.heartbeat.alert_pending')}</span>`
+              ? `<span class="badge" data-variant="info" title="${t('tasks.heartbeat.alert_badge_pending')}">⏳ ${t('tasks.heartbeat.alert_pending')}</span>`
               : ''}
         </div>
         <div class="pending-retry-meta">
@@ -348,7 +348,7 @@ function renderPendingRetries(container, rows) {
           ${r.lastReason ? `<span>ok: ${escapeHtml(r.lastReason)}</span>` : ''}
         </div>
       </div>
-      <button class="btn-icon btn-icon-danger" data-action="cancel-pending" title="${t('common.btn.remove')}">
+      <button class="btn" data-variant="icon" data-danger="" data-action="cancel-pending" title="${t('common.btn.remove')}">
         ${trashIcon()}
       </button>
     </div>
@@ -406,8 +406,8 @@ function makeScheduleRow(task) {
       <div class="schedule-info">
         <div class="schedule-title">
           ${escapeHtml(task.description || task.name)}
-          ${task.type === 'heartbeat' ? '<span class="badge badge-heartbeat">💓 heartbeat</span>' : ''}
-          <span class="badge ${task.enabled ? 'badge-active' : 'badge-paused'}">${task.enabled ? t('tasks.status.active') : t('tasks.status.paused')}</span>
+          ${task.type === 'heartbeat' ? '<span class="badge" data-variant="info">💓 heartbeat</span>' : ''}
+          <span class="badge" data-variant="${task.enabled ? 'success' : 'accent'}">${task.enabled ? t('tasks.status.active') : t('tasks.status.paused')}</span>
         </div>
         <div class="schedule-meta">
           <span class="schedule-cron">${escapeHtml(task.schedule)}</span>
@@ -416,16 +416,16 @@ function makeScheduleRow(task) {
         </div>
       </div>
       <div class="schedule-actions">
-        <button class="btn-icon" data-action="run" title="${t('tasks.btn.run_now')}">
+        <button class="btn" data-variant="icon" data-action="run" title="${t('tasks.btn.run_now')}">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
         </button>
-        <button class="btn-icon" data-action="toggle" title="${task.enabled ? t('tasks.btn.toggle_pause') : t('tasks.btn.toggle_resume')}">
+        <button class="btn" data-variant="icon" data-action="toggle" title="${task.enabled ? t('tasks.btn.toggle_pause') : t('tasks.btn.toggle_resume')}">
           ${task.enabled ? pauseIcon() : playIcon()}
         </button>
-        <button class="btn-icon" data-action="history" title="${t('tasks.btn.history')}">
+        <button class="btn" data-variant="icon" data-action="history" title="${t('tasks.btn.history')}">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
         </button>
-        <button class="btn-icon btn-icon-danger" data-action="delete" title="${t('tasks.btn.delete')}">
+        <button class="btn" data-variant="icon" data-danger="" data-action="delete" title="${t('tasks.btn.delete')}">
           ${trashIcon()}
         </button>
       </div>
@@ -433,7 +433,7 @@ function makeScheduleRow(task) {
 
     // Row click -> edit (but not action buttons)
     row.addEventListener('click', (e) => {
-      if (e.target.closest('.btn-icon')) return
+      if (e.target.closest('[data-variant="icon"]')) return
       openEditSchedule(task)
     })
 
@@ -505,10 +505,10 @@ const RUN_STATUS_LABEL = {
   error: () => t('tasks.run_status.error'),
   skipped: () => t('tasks.run_status.skipped'),
 }
-const RUN_STATUS_CLASS = {
-  fired: 'badge-active',
-  error: 'badge-danger',
-  skipped: 'badge-paused',
+const RUN_STATUS_VARIANT = {
+  fired:   'success',
+  error:   'danger',
+  skipped: 'accent',
 }
 
 async function openScheduleRunHistory(taskName) {
@@ -529,11 +529,11 @@ async function openScheduleRunHistory(taskName) {
       const time = d.toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
       const labelRaw = RUN_STATUS_LABEL[run.status]
       const label = labelRaw ? (typeof labelRaw === 'function' ? labelRaw() : labelRaw) : run.status
-      const cls = RUN_STATUS_CLASS[run.status] || 'badge-paused'
+      const variant = RUN_STATUS_VARIANT[run.status] || 'accent'
       const tokens = run.tokens_est !== null ? `~${run.tokens_est.toLocaleString()}` : '-'
       return `<tr>
         <td style="white-space:nowrap">${date} ${time}</td>
-        <td><span class="badge ${cls}">${escapeHtml(label)}</span></td>
+        <td><span class="badge" data-variant="${variant}">${escapeHtml(label)}</span></td>
         <td style="text-align:right;font-variant-numeric:tabular-nums">${tokens}</td>
       </tr>`
     }).join('')
@@ -867,7 +867,9 @@ document.getElementById('expandPromptBtn').addEventListener('click', async () =>
     applyRow.className = 'expand-apply-row'
     const applyBtn = document.createElement('button')
     applyBtn.type = 'button'
-    applyBtn.className = 'btn-primary btn-compact'
+    applyBtn.className = 'btn'
+    applyBtn.dataset.variant = 'primary'
+    applyBtn.dataset.size = 'compact'
     applyBtn.innerHTML = `<span class="btn-text">${t('tasks.expand.apply_btn')}</span><span class="btn-loading" hidden><span class="spinner"></span></span>`
     applyBtn.addEventListener('click', async () => {
       if (expandAnswers.length === 0) { showToast(t('tasks.expand.need_answer')); return }

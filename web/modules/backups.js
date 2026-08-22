@@ -44,7 +44,8 @@ function makeChecksumCell(entry) {
     return td
   }
   const span = document.createElement('span')
-  span.className = 'badge badge-ok'
+  span.className = 'badge'
+  span.dataset.variant = 'success'
   span.style.cssText = 'font-family:monospace;font-size:11px'
   const short = entry.checksum ? entry.checksum.slice(0, 12) + '…' : '?'
   span.textContent = 'sha256: ' + short
@@ -58,12 +59,16 @@ function makeActionCell(name) {
   td.style.cssText = 'white-space:nowrap;display:flex;gap:4px'
 
   const verifyBtn = document.createElement('button')
-  verifyBtn.className = 'btn-secondary btn-compact backups-verify-btn'
+  verifyBtn.className = 'btn backups-verify-btn'
+  verifyBtn.dataset.variant = 'secondary'
+  verifyBtn.dataset.size = 'compact'
   verifyBtn.dataset.name = name
   verifyBtn.textContent = 'Verify'
 
   const deleteBtn = document.createElement('button')
-  deleteBtn.className = 'btn-secondary btn-compact backups-delete-btn'
+  deleteBtn.className = 'btn backups-delete-btn'
+  deleteBtn.dataset.variant = 'secondary'
+  deleteBtn.dataset.size = 'compact'
   deleteBtn.dataset.name = name
   deleteBtn.style.color = 'var(--danger,#e53e3e)'
   deleteBtn.textContent = t('backups.modal.delete.confirm')

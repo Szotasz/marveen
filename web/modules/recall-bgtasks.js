@@ -146,7 +146,7 @@ function renderRecallTimeline(el, data) {
         <div class="recall-item-header">
           <span class="recall-item-label">${esc(item.label)}</span>
           <div class="recall-item-badges">
-            <span class="recall-badge recall-badge-agent">${esc(item.agent)}</span>
+            <span class="recall-label recall-label-agent">${esc(item.agent)}</span>
           </div>
         </div>
         <div class="recall-item-content">${esc(item.content)}</div>
@@ -157,8 +157,8 @@ function renderRecallTimeline(el, data) {
         <div class="recall-item-header">
           <span class="recall-item-label">${esc(item.label)}</span>
           <div class="recall-item-badges">
-            <span class="recall-badge recall-badge-cat" data-cat="${esc(cat)}">${esc(item.category)}</span>
-            <span class="recall-badge recall-badge-agent">${esc(item.agent)}</span>
+            <span class="recall-label recall-label-cat" data-cat="${esc(cat)}">${esc(item.category)}</span>
+            <span class="recall-label recall-label-agent">${esc(item.agent)}</span>
           </div>
         </div>
         <div class="recall-item-content">${esc(item.content)}</div>

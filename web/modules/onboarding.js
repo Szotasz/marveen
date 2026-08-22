@@ -80,7 +80,7 @@ function onbIdentityHtml(s) {
     + `<label class="form-label-sm">${escapeHtml(t('onboarding.identity.owner_label'))}</label>`
     + `<input id="onbOwnerName" type="text" class="onb-input" maxlength="60" value="${escapeHtml(s.currentOwnerName || '')}" autocomplete="off">`
     + `<div class="onb-hint">${escapeHtml(t('onboarding.identity.hint'))}</div>`
-    + `<button class="btn-primary btn-compact" id="onbIdentityBtn">${escapeHtml(t('onboarding.identity.save_btn'))}</button>`
+    + `<button class="btn" data-variant="primary" data-size="compact" id="onbIdentityBtn">${escapeHtml(t('onboarding.identity.save_btn'))}</button>`
     + `<div id="onbMsg" class="onb-msg"></div>`
 }
 
@@ -91,9 +91,9 @@ function onbStep1Html(s) {
       : `<label class="form-label-sm">${escapeHtml(t('onboarding.step1.token_label'))}</label>`
         + `<input id="onbToken" type="password" class="onb-input" placeholder="sk-ant-oat01-..." autocomplete="off">`
         + `<div class="onb-hint">${escapeHtml(t('onboarding.step1.token_hint'))}</div>`
-        + `<button class="btn-primary btn-compact" id="onbAuthBtn">${escapeHtml(t('onboarding.step1.save_btn'))}</button>`)
+        + `<button class="btn" data-variant="primary" data-size="compact" id="onbAuthBtn">${escapeHtml(t('onboarding.step1.save_btn'))}</button>`)
     + (s.claudeAuthPresent && !s.agentsRunning
-      ? `<button class="btn-primary btn-compact" id="onbLaunchBtn">${escapeHtml(t('onboarding.step1.launch_btn'))}</button>`
+      ? `<button class="btn" data-variant="primary" data-size="compact" id="onbLaunchBtn">${escapeHtml(t('onboarding.step1.launch_btn'))}</button>`
       : '')
     + `<div id="onbMsg" class="onb-msg"></div>`
 }
@@ -103,7 +103,7 @@ function onbStep2Html() {
     + `<label class="form-label-sm">${escapeHtml(t('onboarding.step2.token_label'))}</label>`
     + `<input id="onbBotToken" type="password" class="onb-input" placeholder="123456:ABC..." autocomplete="off">`
     + `<div class="onb-hint">${escapeHtml(t('onboarding.step2.token_hint'))}</div>`
-    + `<button class="btn-primary btn-compact" id="onbBotBtn">${escapeHtml(t('onboarding.step2.save_btn'))}</button>`
+    + `<button class="btn" data-variant="primary" data-size="compact" id="onbBotBtn">${escapeHtml(t('onboarding.step2.save_btn'))}</button>`
     + `<div id="onbMsg" class="onb-msg"></div>`
 }
 
@@ -118,7 +118,7 @@ function onbStep3Html(s) {
     + svcLine
     + `<ol class="onb-list"><li>${escapeHtml(t('onboarding.step3.li1'))}</li><li>${escapeHtml(t('onboarding.step3.li2'))}</li></ol>`
     + `<div id="onbPending" class="onb-pending"></div>`
-    + `<button class="btn-secondary btn-compact" id="onbRefreshBtn">${escapeHtml(t('onboarding.step3.refresh_btn'))}</button>`
+    + `<button class="btn" data-variant="secondary" data-size="compact" id="onbRefreshBtn">${escapeHtml(t('onboarding.step3.refresh_btn'))}</button>`
     + `<div id="onbMsg" class="onb-msg"></div>`
 }
 
@@ -259,7 +259,7 @@ function wireOnboarding(step) {
         box.innerHTML = list.map((x) => {
           const code = escapeHtml(String(x.code))
           const label = escapeHtml(String(x.senderId || x.chatId || '?')) + ' · ' + code
-          return `<div class="onb-pending-row"><span>${label}</span><button class="btn-primary btn-compact onb-approve" data-code="${code}">${escapeHtml(t('onboarding.step3.approve_btn'))}</button></div>`
+          return `<div class="onb-pending-row"><span>${label}</span><button class="btn onb-approve" data-variant="primary" data-size="compact" data-code="${code}">${escapeHtml(t('onboarding.step3.approve_btn'))}</button></div>`
         }).join('')
         box.querySelectorAll('.onb-approve').forEach((b) => b.addEventListener('click', async () => {
           b.disabled = true
@@ -311,8 +311,8 @@ export function showSudoModal(sudoCommand) {
       <button id="sudoCopyBtn" style="position:absolute;top:6px;right:6px;padding:4px 10px;font-size:11px;border-radius:6px;border:1px solid var(--border);background:var(--bg-card);cursor:pointer">${t('common.copy')}</button>
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-      <button id="sudoCancelBtn" class="btn btn-secondary" style="padding:6px 16px;font-size:13px">${t('channel.sudo_modal.cancel')}</button>
-      <button id="sudoDoneBtn" class="btn btn-primary" style="padding:6px 16px;font-size:13px">${t('channel.sudo_modal.retry')}</button>
+      <button id="sudoCancelBtn" class="btn" data-variant="secondary" style="padding:6px 16px;font-size:13px">${t('channel.sudo_modal.cancel')}</button>
+      <button id="sudoDoneBtn" class="btn" data-variant="primary" style="padding:6px 16px;font-size:13px">${t('channel.sudo_modal.retry')}</button>
     </div>
   `
   overlay.appendChild(card)
@@ -381,8 +381,8 @@ function showSlackManifestModal(manifest, instructions) {
     <h4 style="margin:0 0 8px;font-size:14px">${t('channel.slack_manifest.steps_title')}</h4>
     <ol style="font-size:13px;padding-left:20px;margin:0 0 16px">${stepsHtml}</ol>
     <div style="display:flex;gap:8px;justify-content:flex-end">
-      <button id="slackManifestCloseBtn" class="btn btn-secondary" style="padding:6px 16px;font-size:13px">${t('common.btn.close')}</button>
-      <a href="https://api.slack.com/apps" target="_blank" rel="noopener" class="btn btn-primary" style="padding:6px 16px;font-size:13px;text-decoration:none;display:inline-flex;align-items:center;gap:4px">
+      <button id="slackManifestCloseBtn" class="btn" data-variant="secondary" style="padding:6px 16px;font-size:13px">${t('common.btn.close')}</button>
+      <a href="https://api.slack.com/apps" target="_blank" rel="noopener" class="btn" data-variant="primary" style="padding:6px 16px;font-size:13px;text-decoration:none;display:inline-flex;align-items:center;gap:4px">
         ${t('channel.slack_manifest.open_btn')}
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
       </a>

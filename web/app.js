@@ -770,7 +770,7 @@ if (document.readyState !== 'loading') boot();
       ${labelsHtml}
       <div class="archived-card-foot">
         <span class="archived-date">${t('archived.label.archived_at', {date: fmtDate(card.archived_at)})}</span>
-        <button class="btn-secondary btn-compact archived-restore-btn" data-id="${esc(card.id)}" title="${t('archived.btn.restore_to_board')}" style="white-space:nowrap;flex-shrink:0;">${t('archived.btn.restore')}</button>
+        <button class="btn archived-restore-btn" data-variant="secondary" data-size="compact" data-id="${esc(card.id)}" title="${t('archived.btn.restore_to_board')}" style="white-space:nowrap;flex-shrink:0;">${t('archived.btn.restore')}</button>
       </div>
     </div>`
   }

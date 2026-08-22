@@ -135,10 +135,10 @@ function renderFederationPage() {
         ${t('federation.share_cap_label')}
       </label>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <button class="btn-secondary btn-compact" data-action="reveal">${t('federation.btn.reveal')}</button>
-        <button class="btn-secondary btn-compact" data-action="rotate">${t('federation.btn.rotate')}</button>
-        <button class="btn-secondary btn-compact" data-action="edit">${t('common.edit')}</button>
-        <button class="btn-secondary btn-compact" data-action="delete" style="color:var(--danger)">${t('common.delete')}</button>
+        <button class="btn" data-variant="secondary" data-size="compact" data-action="reveal">${t('federation.btn.reveal')}</button>
+        <button class="btn" data-variant="secondary" data-size="compact" data-action="rotate">${t('federation.btn.rotate')}</button>
+        <button class="btn" data-variant="secondary" data-size="compact" data-action="edit">${t('common.edit')}</button>
+        <button class="btn" data-variant="secondary" data-size="compact" data-action="delete" style="color:var(--danger)">${t('common.delete')}</button>
       </div>
       <div class="fed-token-reveal" hidden style="font-family:monospace;font-size:12px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px;word-break:break-all"></div>`
     card.querySelector('[data-action="reveal"]').addEventListener('click', () => fedRevealToken(peer.id, card))

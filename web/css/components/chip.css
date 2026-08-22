@@ -1,0 +1,68 @@
+/* === .chip component === */
+/* Poly spec §6: badge-anatomy + interactive border + remove button */
+
+.chip {
+  --_base: var(--text-secondary);
+  --_soft: var(--neutral-soft);
+
+  display:       inline-flex;
+  align-items:   center;
+  gap:           var(--sp-1);
+  background:    var(--_soft);
+  color:         var(--_base);
+  font-size:     var(--fs-xs);
+  font-weight:   var(--fw-medium);
+  line-height:   var(--lh-tight);
+  padding:       var(--sp-05) var(--sp-2);
+  border-radius: var(--radius-full);
+  border:        1px solid transparent;
+  cursor:        pointer;
+  transition:
+    border-color var(--dur-fast),
+    background   var(--dur-fast),
+    color        var(--dur-fast);
+}
+.chip:hover                  { border-color: var(--_base); }
+.chip:active,
+.chip[data-state="active"]   { background: var(--_base); color: var(--text-inverse); }
+.chip:focus-visible          { box-shadow: var(--focus-ring); outline: none; }
+.chip[disabled]              { opacity: 0.5; pointer-events: none; }
+
+/* -- variants ------------------------------------------------------------ */
+
+.chip[data-variant="accent"],
+.chip[data-variant="primary"] {
+  --_base: var(--accent);
+  --_soft: var(--accent-soft);
+}
+.chip[data-variant="success"] {
+  --_base: var(--success);
+  --_soft: var(--success-soft);
+}
+.chip[data-variant="danger"] {
+  --_base: var(--danger);
+  --_soft: var(--danger-soft);
+}
+.chip[data-variant="warning"] {
+  --_base: var(--warning);
+  --_soft: var(--warning-soft);
+}
+.chip[data-variant="info"] {
+  --_base: var(--info);
+  --_soft: var(--info-soft);
+}
+
+/* -- remove button ------------------------------------------------------- */
+
+.chip-remove {
+  font-size:   12px;
+  line-height: 1;
+  opacity:     0.7;
+  padding:     0 2px;
+  border-radius: var(--radius-full);
+  transition:  background var(--dur-fast), opacity var(--dur-fast);
+}
+.chip-remove:hover {
+  background: var(--alpha-gray-25);
+  opacity:    1;
+}

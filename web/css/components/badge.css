@@ -1,0 +1,53 @@
+/* === .badge component === */
+/* Poly spec §5: CUBE data-attr, no interaction */
+
+.badge {
+  --_base: var(--text-secondary);
+  --_soft: var(--neutral-soft);
+
+  display:       inline-flex;
+  align-items:   center;
+  gap:           var(--sp-1);
+  background:    var(--_soft);
+  color:         var(--_base);
+  font-size:     var(--fs-xs);
+  font-weight:   var(--fw-semibold);
+  line-height:   var(--lh-tight);
+  padding:       var(--sp-05) var(--sp-2);
+  border-radius: var(--radius-full);
+  text-transform:  uppercase;
+  letter-spacing:  0.03em;
+}
+
+.badge[data-size="sm"] {
+  font-size: var(--fs-2xs);
+  padding:   0 var(--sp-1);
+}
+
+/* -- variants ------------------------------------------------------------ */
+
+.badge[data-variant="neutral"] {
+  --_base: var(--text-secondary);
+  --_soft: var(--neutral-soft);
+}
+.badge[data-variant="accent"],
+.badge[data-variant="primary"] {
+  --_base: var(--accent);
+  --_soft: var(--accent-soft);
+}
+.badge[data-variant="success"] {
+  --_base: var(--success);
+  --_soft: var(--success-soft);
+}
+.badge[data-variant="danger"] {
+  --_base: var(--danger);
+  --_soft: var(--danger-soft);
+}
+.badge[data-variant="warning"] {
+  --_base: var(--warning);
+  --_soft: var(--warning-soft);
+}
+.badge[data-variant="info"] {
+  --_base: var(--info);
+  --_soft: var(--info-soft);
+}
