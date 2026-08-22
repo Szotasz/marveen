@@ -29,6 +29,9 @@
     { "name": "python code-string using smtplib", "cmd": "python3 -c \"import smtplib; s = smtplib.SMTP('smtp.x.hu'); s.sendmail('a','b','m')\"", "expected": true },
     { "name": "node code-string calling sendMail()", "cmd": "node -e \"require('./src/graph-mail.js').sendMail({to:'a@b.hu'})\"", "expected": true },
     { "name": "real mailer on the second line of a multi-line command", "cmd": "cat /tmp/x.txt\nsendmail -t a@b.hu < /tmp/mail.txt", "expected": true },
-    { "name": "heredoc-fed real mailer (round 3: intro survives)", "cmd": "sendmail -t a@b.hu <<'EOF'\ntorzs sora\nEOF", "expected": true }
+    { "name": "heredoc-fed real mailer (round 3: intro survives)", "cmd": "sendmail -t a@b.hu <<'EOF'\ntorzs sora\nEOF", "expected": true },
+    { "name": "naive exec-shape: process-spawn plus mailer in one code string (msg 14298)", "cmd": "python3 -c \"import subprocess; subprocess.run(['sendmail','-t','a@b.hu'])\"", "expected": true },
+    { "name": "exec without a mailer stays clean", "cmd": "python3 -c \"import subprocess; subprocess.run(['ls','-la'])\"", "expected": false },
+    { "name": "mailer name in plain code text without exec stays clean", "cmd": "python3 -c \"print('a mailer utvonala regen mas volt, sendmail neven futott')\"", "expected": false }
   ]
 }
