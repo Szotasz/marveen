@@ -1,0 +1,34 @@
+{
+  "_comment": "Shared recognition contract of the two mail gates (scripts/hooks/outgoing-copy-gate.py :: is_send_invocation and scripts/email-send-gate.mjs :: isSendInvocation). The conformance test (send-invocation-conformance.test.ts) runs EVERY case through BOTH implementations and asserts both equal `expected` -- divergence between the two copies surfaces as a test failure, not an incident (SUBGATEPOZ822, msg 14289). Unparseable-input fallbacks are deliberately NOT here: the two gates fall back differently by design (copy-gate: strong literals; hard-gate: full legacy patterns) and each pins its own in its scope test.",
+  "cases": [
+    { "name": "inter-agent curl, content mentions the mail script", "cmd": "curl -s -X POST http://localhost:3420/api/messages -H \"Content-Type: application/json\" -d '{\"from\":\"marveen\",\"to\":\"samu\",\"content\":\"a scripts/support-mail/send.py hookon fennakadt, --to hianyzott\"}'", "expected": false },
+    { "name": "sqlite write carrying newsletter copy", "cmd": "sqlite3 store/claudeclaw.db \"INSERT INTO kanban_comments (card_id, author, content) VALUES ('X', 'Zara', 'a hirlevel az api.resend.com-on megy ki, sendmail nincs')\"", "expected": false },
+    { "name": "reading the mail script", "cmd": "cat /Users/marvin/ClaudeClaw/scripts/support-mail/send.py", "expected": false },
+    { "name": "grepping for the recipient flag", "cmd": "grep -n -- \"--to\" scripts/support-mail/send.py", "expected": false },
+    { "name": "redirect-first heredoc writing mail-shaped notes", "cmd": "cat > /tmp/notes.md <<'EOF'\nsendmail --to x@y.hu is how the legacy path worked\nEOF", "expected": false },
+    { "name": "marker-first heredoc writing mail-shaped notes (round 3)", "cmd": "cat <<'EOF' > /tmp/notes.md\nsendmail --to x@y.hu is how the legacy path worked\nEOF", "expected": false },
+    { "name": "message quoting a full outbound command", "cmd": "curl -s -X POST http://localhost:3420/api/messages -d '{\"from\":\"samu\",\"to\":\"marveen\",\"content\":\"futtasd: python3 scripts/support-mail/send.py --to ugyfel@ceg.hu\"}'", "expected": false },
+    { "name": "provider domain inside a quoted payload", "cmd": "curl -s http://localhost:3420/api/messages -d '{\"to\":\"samu\",\"content\":\"az api.resend.com lassu ma\"}'", "expected": false },
+    { "name": "multi-line quoted payload with a mailer word on line 2", "cmd": "curl -s http://localhost:3420/api/messages -d '{\"to\":\"marveen\",\"content\":\"elso sor\nsendmail emlitve a masodik sorban\"}'", "expected": false },
+    { "name": "wrapper shell -c that only talks about sending", "cmd": "bash -c \"echo a kuldo-script a support-mail mappaban van\"", "expected": false },
+    { "name": "mail script help is not a send", "cmd": "python3 scripts/support-mail/send.py --help", "expected": false },
+    { "name": "M365 CLI read-only subcommand", "cmd": "npx tsx scripts/graph-mail.ts list --folder inbox", "expected": false },
+
+    { "name": "mail script via python with recipient", "cmd": "python3 /Users/marvin/ClaudeClaw/scripts/support-mail/send.py --to a@b.hu --subject \"X\" --body \"Y\"", "expected": true },
+    { "name": "mail script direct with recipient and stdin body", "cmd": "./scripts/support-mail/send.py --to=a@b.hu < /tmp/body.txt", "expected": true },
+    { "name": "classic mailer with stdin", "cmd": "sendmail -t a@b.hu < /tmp/mail.txt", "expected": true },
+    { "name": "classic mailer mid-pipeline", "cmd": "echo torzs | msmtp a@b.hu", "expected": true },
+    { "name": "swaks with recipient", "cmd": "swaks --to a@b.hu --server smtp.x.hu", "expected": true },
+    { "name": "env prefix does not hide the mailer", "cmd": "SMTP_DEBUG=1 msmtp a@b.hu < /tmp/m.txt", "expected": true },
+    { "name": "M365 CLI outbound subcommand", "cmd": "npx tsx scripts/graph-mail.ts send --to a@b.hu --subject X", "expected": true },
+    { "name": "curl with unquoted provider URL", "cmd": "curl -X POST https://api.resend.com/emails -H \"Authorization: Bearer X\" -d '{\"to\":\"a@b.hu\"}'", "expected": true },
+    { "name": "curl with double-quoted provider URL (round 2)", "cmd": "curl -X POST \"https://api.resend.com/emails\" -d @/tmp/mail.json", "expected": true },
+    { "name": "curl with single-quoted provider URL (round 2)", "cmd": "curl 'https://api.resend.com/emails' -d @/tmp/mail.json", "expected": true },
+    { "name": "wrapper shell -c with a real send (round 2)", "cmd": "bash -c \"python3 scripts/support-mail/send.py --to a@b.hu --subject X\"", "expected": true },
+    { "name": "wrapper shell -c with a piped mailer", "cmd": "sh -c 'echo m | sendmail a@b.hu'", "expected": true },
+    { "name": "python code-string using smtplib", "cmd": "python3 -c \"import smtplib; s = smtplib.SMTP('smtp.x.hu'); s.sendmail('a','b','m')\"", "expected": true },
+    { "name": "node code-string calling sendMail()", "cmd": "node -e \"require('./src/graph-mail.js').sendMail({to:'a@b.hu'})\"", "expected": true },
+    { "name": "real mailer on the second line of a multi-line command", "cmd": "cat /tmp/x.txt\nsendmail -t a@b.hu < /tmp/mail.txt", "expected": true },
+    { "name": "heredoc-fed real mailer (round 3: intro survives)", "cmd": "sendmail -t a@b.hu <<'EOF'\ntorzs sora\nEOF", "expected": true }
+  ]
+}
