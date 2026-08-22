@@ -54,45 +54,125 @@ import sys
 #   - graph-mail futtatasa `send` alparanccsal;
 #   - curl/wget, amelynek IDEZETLEN URL-tokenje az api.resend.com-ra mutat
 #     (a -d payloadban idezett elofordulas nem szamit -- az tartalom).
+# MASODIK KOR (Marveen adverzarialis merese, msg 14282): az elso valtozat a
+# quoted stringeket VAKON vagta ki, ezert ket hamis negativot nyitott -- az
+# IDEZOJELES URL a curl sajat argumentum-helyen (a curl SZOKASOS irasmodja!)
+# es a burkolo hejj `-c` string-argumentuma atment. A gyoker: az idezojel a
+# TARTALOM ellen jo hatar, de nem mondja meg, hogy a token URL- vagy
+# PROGRAM-POZICIOBAN all-e. Ezert a kivagas helyett QUOTE-TUDATOS tokenizalas
+# fut (shlex): az idezett token EGY tokenkent, poziciojaval egyutt erkezik --
+# a curl idezojeles URL-argumentuma igy vizsgalhato, mikozben egy -d payload
+# belsejeben emlitett domain tovabbra is csak tartalom (az URL-minta a token
+# ELEJERE horgonyzott). A wrapper hejj (`sh -c "..."`) string-argumentuma
+# rekurzivan elemzodik.
 _HEREDOC = re.compile(r"<<-?\s*'?(\w+)'?\n.*?\n\1", re.S)
-_QUOTED = re.compile(r"\"(?:\\.|[^\"\\])*\"|'[^']*'")
-_ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*=\S*$")
-_SENDER_PROG = re.compile(r"^(?:\S*/)?(sendmail|msmtp|swaks)$", re.I)
-_SENDPY = re.compile(r"^(?:\S*/)?send\.py$", re.I)
-_GRAPHMAIL = re.compile(r"graph-mail(\.ts)?$", re.I)
-_RECIPIENT_FLAG = re.compile(r"(^|\s)--to(\s|=|$)", re.I)
+_ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*=")
+_SENDER_PROG = re.compile(r"^(sendmail|msmtp|swaks)$", re.I)
+_SENDPY = re.compile(r"^send\.py$", re.I)
+_PYTHON = re.compile(r"^python3?$", re.I)
+_GRAPHMAIL = re.compile(r"^graph-mail(\.ts)?$", re.I)
+_WRAPPER_SHELL = re.compile(r"^(sh|bash|zsh|dash)$", re.I)
+_CURLISH = re.compile(r"^(curl|wget|http)$", re.I)
+# Token-ELEJERE horgonyzott cel-minta: egy URL-argumentum vagy csupasz
+# domain/utvonal illik ra; egy JSON-payload ('{...api.resend.com...}') nem.
+_RESEND_TARGET = re.compile(r"^(https?://)?([^/@\s]*\.)?api\.resend\.com(/|$|\s|$)", re.I)
+# A tovabbi kuldes-jellegu literalok, amikre a parse-hiba eseten (es CSAK
+# akkor) konzervativan visszaesunk -- lasd is_send_invocation vegen.
+_FALLBACK_LITERALS = re.compile(
+    r"send\.py|api\.resend\.com|\bsendmail\b|\bmsmtp\b|\bswaks\b", re.I
+)
 
 
-def _command_segments(cmd: str):
-    """Pipeline/szekvencia-szegmensek, heredoc-torzs es idezett stringek nelkul."""
-    c = _HEREDOC.sub(" ", cmd)
-    c = _QUOTED.sub(" __STR__ ", c)
-    return [s for s in re.split(r"\|\|?|&&?|;|\n|\$\(", c) if s.strip()]
+def _basename(tok: str) -> str:
+    return tok.rsplit("/", 1)[-1]
 
 
-def is_send_invocation(cmd: str) -> bool:
-    for seg in _command_segments(cmd):
-        toks = seg.split()
-        while toks and _ENV_ASSIGN.match(toks[0]):
-            toks.pop(0)
-        if not toks:
-            continue
-        prog = toks[0]
-        rest = toks[1:]
-        if _SENDER_PROG.match(prog):
-            return True
-        # send.py futtatasa: kozvetlenul, vagy python/python3 utan
-        candidates = [prog] + (rest[:1] if re.match(r"^(?:\S*/)?python3?$", prog) else [])
-        if any(_SENDPY.match(c) for c in candidates) and _RECIPIENT_FLAG.search(seg):
-            return True
-        # graph-mail send alparancs (tsx/node runner utan is)
-        if any(_GRAPHMAIL.search(t) for t in toks) and "send" in rest:
-            return True
-        if re.match(r"^(?:\S*/)?(curl|wget|http)$", prog) and any(
-            "api.resend.com" in t for t in rest
-        ):
-            return True
+def _mask_subshell_markers(cmd: str) -> str:
+    """Idezojelen KIVULI ujsor/`$(`/backtick -> `;` szeparator, hogy a shlex
+    szegmens-hatarkent lassa; idezojelen BELUL a szoveg erintetlen (tartalom)."""
+    out = []
+    q = None  # None | "'" | '"'
+    i, n = 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if q:
+            if ch == "\\" and q == '"' and i + 1 < n:
+                out.append(cmd[i:i + 2]); i += 2; continue
+            if ch == q:
+                q = None
+            out.append(ch); i += 1; continue
+        if ch in "'\"":
+            q = ch; out.append(ch); i += 1; continue
+        if ch == "\\" and i + 1 < n:
+            out.append(cmd[i:i + 2]); i += 2; continue
+        if ch == "\n" or ch == "`":
+            out.append(";"); i += 1; continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "(":
+            out.append(";"); i += 2; continue
+        out.append(ch); i += 1
+    return "".join(out)
+
+
+def _segments_tokens(cmd: str):
+    """[[token, ...], ...] szegmensenkent -- quote-tudatosan, poziciot orizve."""
+    import shlex
+    lex = shlex.shlex(_mask_subshell_markers(_HEREDOC.sub(" ", cmd)),
+                      posix=True, punctuation_chars="();|&")
+    lex.whitespace_split = True
+    segments, cur = [], []
+    for tok in lex:
+        if tok in ("|", "||", "&", "&&", ";", "(", ")", ";;", "|&"):
+            if cur:
+                segments.append(cur)
+            cur = []
+        else:
+            cur.append(tok)
+    if cur:
+        segments.append(cur)
+    return segments
+
+
+def _segment_is_send(toks, depth: int) -> bool:
+    while toks and _ENV_ASSIGN.match(toks[0]):
+        toks = toks[1:]
+    if not toks:
+        return False
+    prog = _basename(toks[0])
+    rest = toks[1:]
+    if _SENDER_PROG.match(prog):
+        return True
+    # burkolo hejj: a -c string-argumentum maga is parancs -- rekurzio
+    if _WRAPPER_SHELL.match(prog) and depth < 3:
+        for i, t in enumerate(rest):
+            if t == "-c" and i + 1 < len(rest):
+                if is_send_invocation(rest[i + 1], _depth=depth + 1):
+                    return True
+    # send.py futtatasa (kozvetlenul vagy python utan) --to cimzettel
+    candidates = [prog] + ([_basename(rest[0])] if rest and _PYTHON.match(prog) else [])
+    if any(_SENDPY.match(c) for c in candidates) and any(
+        t == "--to" or t.startswith("--to=") for t in rest
+    ):
+        return True
+    # graph-mail kimeno alparanccsal (tsx/node runner utan is)
+    if any(_GRAPHMAIL.match(_basename(t)) for t in toks) and "send" in rest:
+        return True
+    # curl/wget: a cel-token akkor is muvelet, ha idezojelben allt -- a
+    # horgonyzott minta valasztja el a payload-belseji emlitestol
+    if _CURLISH.match(prog) and any(_RESEND_TARGET.match(t) for t in rest):
+        return True
     return False
+
+
+def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
+    try:
+        segments = _segments_tokens(cmd)
+    except ValueError:
+        # Parse-hiba (pl. lezaratlan idezojel): nem tudunk poziciot mondani.
+        # Konzervativ visszaeses: csak akkor auditalunk, ha eros kuldes-literal
+        # all a szovegben -- igy egy fura, de valodi kuldes nem csuszik at
+        # neman, a tipikus belso parancsok viszont nem kapnak hamis pozitivot.
+        return bool(_FALLBACK_LITERALS.search(cmd))
+    return any(_segment_is_send(toks, _depth) for toks in segments)
 
 # --- Hungarian detection (accent-insensitive markers) -----------------------
 # These fire on both the correct and the stripped spelling, so a transliterated

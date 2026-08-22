@@ -93,3 +93,42 @@ describe('outgoing-copy gate: every real send shape still fires (no false negati
     expect(isSend('SMTP_DEBUG=1 msmtp a@b.hu < /tmp/m.txt')).toBe(true)
   })
 })
+
+// Marveen's adversarial round (msg 14282): the first version stripped quoted
+// strings BLINDLY, which opened two false negatives -- and the first is the
+// NORMAL way people write curl, so it needed no intent to slip through. The
+// quote is a good boundary against content, but it does not say whether the
+// quoted token stands in URL/PROGRAM position. These pin the repaired
+// distinction from both sides.
+describe('outgoing-copy gate: quoted tokens in OPERATION position still fire (msg 14282)', () => {
+  it('a QUOTED provider URL in curl argument position fires -- the usual way curl is written', () => {
+    expect(isSend(`curl -X POST "https://api.resend.com/emails" -H "Authorization: Bearer X" -d @/tmp/mail.json`)).toBe(true)
+    expect(isSend(`curl 'https://api.resend.com/emails' -d @/tmp/mail.json`)).toBe(true)
+  })
+
+  it('the same domain inside a quoted -d payload still does NOT fire (the FP fix must survive)', () => {
+    expect(isSend(`curl -s http://localhost:3420/api/messages -d '{"to":"samu","content":"az api.resend.com lassu ma"}'`)).toBe(false)
+  })
+
+  it('a wrapper shell -c string is analyzed recursively', () => {
+    expect(isSend(`bash -c "python3 scripts/support-mail/send.py --to a@b.hu --subject X"`)).toBe(true)
+    expect(isSend(`sh -c 'msmtp a@b.hu < /tmp/m.txt'`)).toBe(true)
+  })
+
+  it('a wrapper shell -c string that only TALKS about sending does not fire', () => {
+    expect(isSend(`bash -c "echo a kuldo-script a support-mail mappaban van"`)).toBe(false)
+  })
+
+  it('a real sender on the SECOND LINE of a multi-line command fires (newline is a separator)', () => {
+    expect(isSend(`cat /tmp/x.txt\nsendmail -t a@b.hu < /tmp/mail.txt`)).toBe(true)
+  })
+
+  it('a multi-line quoted payload does not leak fake program positions', () => {
+    expect(isSend(`curl -s http://localhost:3420/api/messages -d '{"to":"marveen","content":"elso sor\nsendmail emlitve a masodik sorban"}'`)).toBe(false)
+  })
+
+  it('an unparseable command (unbalanced quote) falls back conservatively: audits on strong literals only', () => {
+    expect(isSend(`echo "lezaratlan idezojel es sendmail emlitve`)).toBe(true)
+    expect(isSend(`echo "lezaratlan idezojel, artalmatlan szoveg`)).toBe(false)
+  })
+})
