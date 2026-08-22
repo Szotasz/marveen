@@ -1,11 +1,29 @@
 // Backups page module
-import { apiFetch, formatDate, formatBytes, showToast } from './util.js'
 import { t } from './i18n.js'
+import { showToast } from './toast.js'
+
+// app.js patches the global fetch so same-origin /api/ calls carry the
+// dashboard Bearer token; this module only needs a thin JSON wrapper.
+async function apiFetch(url, opts = {}) {
+  const init = { ...opts }
+  if (init.body && !init.headers) init.headers = { 'Content-Type': 'application/json' }
+  let res
+  try {
+    res = await fetch(url, init)
+  } catch {
+    return null
+  }
+  let data = null
+  try { data = await res.json() } catch { /* empty or non-JSON body */ }
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    return 'ok' in data ? data : { ...data, ok: res.ok }
+  }
+  return data ?? { ok: res.ok }
+}
 
 let pendingDeleteName = null
 
 function formatSize(bytes) {
-  if (typeof formatBytes === 'function') return formatBytes(bytes)
   if (bytes < 1024) return bytes + ' B'
   if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB'
   return (bytes / 1048576).toFixed(1) + ' MB'
