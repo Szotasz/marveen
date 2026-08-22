@@ -57,3 +57,20 @@ describe('resumePrompt carries the prod-tree constraint on every variant', () =>
     expect(resumePrompt('samu', '/x/HANDOFF.md', false)).toContain('worktree')
   })
 })
+
+// Review msg 14197: the main agent's channel is the OWNER's Telegram, and
+// session meta must never go there (standing owner preference; a 3am status
+// notice went out exactly this way on 2026-08-05). The closing line is
+// therefore agent-dependent, and this pins BOTH directions so a rewording
+// cannot re-point the main agent at the owner's channel.
+describe('resumePrompt closing line is agent-dependent', () => {
+  it('main agent (mocked MAIN_AGENT_ID=marveen): no channel notice, transcript line instead', () => {
+    const p = resumePrompt('marveen', '/x/HANDOFF.md', true)
+    expect(p).not.toContain('jelezz a csatornádon')
+    expect(p).toContain('transzkript')
+    expect(p).toContain(CONSTRAINT)
+  })
+  it('sub-agent: channel notice stays (their channel is the inter-agent queue)', () => {
+    expect(resumePrompt('samu', '/x/HANDOFF.md', true)).toContain('jelezz a csatornádon')
+  })
+})
