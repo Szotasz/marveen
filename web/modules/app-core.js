@@ -33,14 +33,73 @@ let _pages = null
 let _pageSwitchHook = null
 export function setPageSwitchHook(fn) { _pageSwitchHook = fn }
 
-/** Register lifecycle hooks for a page. leave({ to }) can return false to abort navigation. */
-export function registerPage(name, { enter = null, leave = null } = {}) {
-  _pageRegistry.set(name, { enter, leave })
+/**
+ * Register lifecycle hooks for a page.
+ * - leave({ to }) can return false to abort navigation.
+ * - lazy: true marks the enter() as a lazy module loader — switchPage wraps it
+ *   with a loading overlay and timeout. Do NOT set this on static pages whose
+ *   enter() is an async data-fetch (always-async != lazy-import).
+ */
+export function registerPage(name, { enter = null, leave = null, lazy = false } = {}) {
+  _pageRegistry.set(name, { enter, leave, lazy })
 }
 
 /** Register a page-id alias: hash `from` is rewritten to `to`; `before` fires first. */
 export function registerAlias(from, to, before = null) {
   _aliasRegistry.set(from, { to, before })
+}
+
+// ── Page loading overlay (for async enter callbacks) ─────────────────────────
+
+let _loadingOverlay = null
+
+function _ensureOverlay() {
+  if (_loadingOverlay) return _loadingOverlay
+  _loadingOverlay = document.createElement('div')
+  _loadingOverlay.id = 'page-loading-overlay'
+  _loadingOverlay.setAttribute('aria-live', 'polite')
+  _loadingOverlay.setAttribute('aria-label', 'Betöltés...')
+  Object.assign(_loadingOverlay.style, {
+    position: 'fixed', inset: '0', zIndex: '9999',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    background: 'rgba(0,0,0,0.08)', backdropFilter: 'blur(1px)',
+    pointerEvents: 'all',
+  })
+  _loadingOverlay.innerHTML = '<div class="spinner"></div>'
+  document.body.appendChild(_loadingOverlay)
+  return _loadingOverlay
+}
+
+function _showPageLoading() {
+  _ensureOverlay().hidden = false
+  document.querySelector('.sidebar-nav')?.setAttribute('aria-disabled', 'true')
+}
+
+function _hidePageLoading() {
+  if (_loadingOverlay) _loadingOverlay.hidden = true
+  document.querySelector('.sidebar-nav')?.removeAttribute('aria-disabled')
+}
+
+function _showPageError(pageId, err) {
+  console.error('[lazy-load] Failed to load page:', pageId, err)
+  _hidePageLoading()
+  const pageEl = document.getElementById(pageId + 'Page')
+  if (!pageEl) return
+  pageEl.querySelector('.page-load-error')?.remove()
+  const errDiv = document.createElement('div')
+  errDiv.className = 'page-load-error'
+  errDiv.setAttribute('role', 'alert')
+  errDiv.style.cssText = 'padding:2rem;display:flex;gap:1rem;align-items:center;'
+  const msg = document.createElement('span')
+  msg.textContent = 'Nem sikerült betölteni az oldalt.'
+  const retryBtn = document.createElement('button')
+  retryBtn.className = 'btn'
+  retryBtn.setAttribute('data-variant', 'secondary')
+  retryBtn.textContent = 'Újra'
+  retryBtn.addEventListener('click', () => { errDiv.remove(); switchPage(pageId) })
+  errDiv.appendChild(msg)
+  errDiv.appendChild(retryBtn)
+  pageEl.prepend(errDiv)
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -65,7 +124,20 @@ export function switchPage(pageId) {
   document.querySelector('main')?.classList.toggle('kanban-active', pageId === 'kanban')
 
   _currentPage = pageId
-  _pageRegistry.get(pageId)?.enter?.()
+  const pageReg = _pageRegistry.get(pageId)
+  const result = pageReg?.enter?.()
+  // Only apply the loading overlay for pages explicitly marked lazy: true.
+  // Static pages whose enter() happens to be async (loadOverview, loadKanban, etc.)
+  // must NOT trigger the overlay -- they are fire-and-forget data fetches, not
+  // blocking module loads. Using the "returns a Promise" heuristic would block
+  // every navigation until the API calls resolve.
+  if (pageReg?.lazy && result instanceof Promise) {
+    _showPageLoading()
+    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
+    Promise.race([result, timeout])
+      .then(() => _hidePageLoading())
+      .catch(err => _showPageError(pageId, err))
+  }
   _pageSwitchHook?.(pageId)
 }
 

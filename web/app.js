@@ -10,27 +10,25 @@ import {
   getFederatedPeerStatus, setFederatedPeerStatus, federatedAgentEntries,
   avatarBust, agentApiName, populateAvatarGrid, loadAvailableModels,
 } from './modules/agents.js'
-import { initSchedules, loadSchedules, loadScheduleAgents, openEditSchedule, getScheduleCron } from './modules/schedules.js'
-import { initMemories, loadMemAgents, loadMemStats, loadMemories } from './modules/memories.js'
-import { initConnectors, loadConnectors, loadVaultPage } from './modules/connectors.js'
+// Static: clearSkillModalScope needed in closeModal handler; loadSkills+initSkills injected at boot.
 import { initSkills, loadSkills, loadGlobalSkills, clearSkillModalScope } from './modules/skills.js'
+// Static: getChatSelectedAgent/setChatSelectedAgent/renderTeamEditor injected into initAgents at boot.
 import { loadMessagesPage, getChatSelectedAgent, setChatSelectedAgent, renderTeamEditor } from './modules/messages.js'
-import { initSettings, loadSettings, isSettingsDirty } from './modules/settings.js'
-import { initTokenUsage, loadTokenUsage } from './modules/token-usage.js'
 import { loadOverview } from './modules/overview.js'
-import { loadFederationPage, initFederation } from './modules/federation.js'
-import { loadIdeasPage, initIdeas } from './modules/ideas.js'
 import { openTerminalModal, openConversationModal, initAgentModals } from './modules/agent-modals.js'
-import { loadStatus, initStatus } from './modules/status-costs.js'
-import { loadDocs } from './modules/docs-research.js'
-import { loadRecallPage, loadBgTasksPage, initRecallBgTasks } from './modules/recall-bgtasks.js'
-import { loadApprovalsPage, initApprovals } from './modules/approvals.js'
-import { loadMigrateAgents, initMigrate } from './modules/migrate.js'
-import { initImportMemories, loadImportSources } from './modules/import-memories.js'
-import { loadUpdates, wireBranchDriftBanner, initUpdates } from './modules/updates.js'
+// Static: wireBranchDriftBanner called at boot; initUpdates starts badge polling at boot.
+import { wireBranchDriftBanner, initUpdates, loadUpdates } from './modules/updates.js'
+// Static: showSudoModal/dismissOnboarding/initChannelSetup used at boot.
 import { initOnboarding, dismissOnboarding, showSudoModal, initChannelSetup } from './modules/onboarding.js'
-import { initArtifacts, loadArtifacts } from './modules/artifacts.js'
-import { initBackups, refreshBackups } from './modules/backups.js'
+
+// ── Lazy-load helper ──────────────────────────────────────────────────────────
+// Deduplicates module loads: the Promise is stored on first call, subsequent calls
+// return the same Promise (ES module registry also caches, but this tracks init state).
+const _moduleCache = new Map()
+function lazyLoad(key, loader) {
+  if (!_moduleCache.has(key)) _moduleCache.set(key, loader())
+  return _moduleCache.get(key)
+}
 
 // avatarBust() is imported from ./modules/agents.js (avatar epoch owned there).
 
@@ -387,7 +385,11 @@ sidebarGroupEls.forEach((g) => {
 // ============================================================
 
 // Wire DnD (kanban-dnd.js) + modal helpers + ideas callback into the kanban module.
-initKanban({ openModal, closeModal, wireColumn: wireKanbanColumnDnD, wireCardTouch: wireKanbanCardTouchDnD, loadIdeasPage })
+initKanban({
+  openModal, closeModal, wireColumn: wireKanbanColumnDnD, wireCardTouch: wireKanbanCardTouchDnD,
+  // ideas.js is lazy -- pass a thunk so the kanban module can call it without requiring eager load.
+  loadIdeasPage: (...args) => lazyLoad('ideas', () => import('./modules/ideas.js')).then(m => m.loadIdeasPage(...args)),
+})
 
 // Wire modal helpers + DI callbacks into the agents module.
 initAgents({
@@ -396,25 +398,18 @@ initAgents({
   setChatSelectedAgent, showSudoModal, renderTeamEditor,
 })
 
-// Wire modal helpers into the schedules module.
-initSchedules({ openModal, closeModal })
-initMemories({ openModal, closeModal })
-initConnectors({ openModal, closeModal })
+// Wire modal helpers into skills (static module, clearSkillModalScope needed globally).
 initSkills({ openModal, closeModal })
-initSettings({ wireBranchDriftBanner })
-// Wire branch-drift banner dismiss at startup (DOMContentLoaded moved to module eval in settings.js)
+// Wire branch-drift banner dismiss at startup.
 wireBranchDriftBanner()
-initTokenUsage()
-initFederation({ openModal, closeModal })
-initIdeas({ openModal, closeModal })
 initAgentModals({ openModal, closeModal, loadAgents })
-initStatus()
-initRecallBgTasks()
-initApprovals()
-initMigrate()
-initImportMemories()
+// Badge polling starts immediately so the nav badge reflects update status on any tab.
 initUpdates()
 initChannelSetup()
+
+// Stored after first settings lazy-load; allows the leave guard to call isSettingsDirty
+// synchronously even though the settings module is lazy.
+let _isSettingsDirty = null
 
 // === Helpers ===
 function escapeHtml(str) {
@@ -486,7 +481,6 @@ if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.
 
 // === Init ===
 populateAvatarGrid()
-loadMemAgents()
 loadOverview()
 loadAvailableModels()
 {
@@ -610,41 +604,134 @@ document.getElementById('deepseekConfigLink')?.addEventListener('click', (e) => 
   checkStatus()
 })()
 
-// loadFederationPage, initFederation imported from ./modules/federation.js (S-13b)
 // ── Page registration + boot ──────────────────────────────────────────────────
 // Alias: '#team' hash -> 'agents' page, tree view. Must be registered before boot()
 // so the alias is available when routeFromHash() resolves the initial URL.
 registerAlias('team', 'agents', () => setAgentsActiveView('tree'))
 
+// Static pages (modules loaded at boot).
 registerPage('overview',  { enter: loadOverview })
 registerPage('kanban',    { enter: () => { window._initGanttViewSwitcher?.(); loadKanban(); startKanbanRefresh() }, leave: stopKanbanRefresh })
 registerPage('agents',    { enter: () => { loadAgents().then(() => setAgentsView(getAgentsActiveView() || 'grid')); startAgentsBusyPoll() }, leave: stopAgentsBusyPoll })
-registerPage('memories',  { enter: () => { loadMemAgents(); loadMemStats(); loadMemories() } })
-registerPage('tasks',     { enter: loadSchedules })
 registerPage('skills',    { enter: loadGlobalSkills })
-registerPage('connectors',{ enter: loadConnectors })
-registerPage('migrate',   { enter: loadMigrateAgents })
-registerPage('import',    { enter: loadImportSources })
-registerPage('docs',      { enter: loadDocs })
-registerPage('status',    { enter: loadStatus })
-registerPage('recall',    { enter: loadRecallPage })
-registerPage('bgTasks',   { enter: loadBgTasksPage })
-registerPage('vault',     { enter: loadVaultPage })
-registerPage('approvals', { enter: loadApprovalsPage })
-registerPage('settings',  {
-  enter: loadSettings,
-  // Abort navigation away from settings if there are unsaved changes.
-  leave: () => !isSettingsDirty() || window.confirm(t('settings.unsaved_warning')) || false,
-})
-registerPage('updates',   { enter: loadUpdates })
 registerPage('messages',  { enter: loadMessagesPage })
-registerPage('tokenUsage',{ enter: loadTokenUsage })
-registerPage('ideas',     { enter: loadIdeasPage })
+registerPage('updates',   { enter: loadUpdates })
+
+// Lazy pages: module loads on first navigation; init runs once via _moduleCache flag.
+// lazy: true tells switchPage to apply the loading overlay + timeout -- it must NOT
+// be set on static pages whose enter() is already async (data-fetch, fire-and-forget).
+registerPage('memories', {
+  lazy: true,
+  enter: async () => {
+    const m = await lazyLoad('memories', () => import('./modules/memories.js'))
+    if (!_moduleCache.get('memories_inited')) {
+      m.initMemories({ openModal, closeModal })
+      _moduleCache.set('memories_inited', true)
+    }
+    m.loadMemAgents(); m.loadMemStats(); m.loadMemories()
+  }
+})
+registerPage('tasks', {
+  lazy: true,
+  enter: async () => {
+    const m = await lazyLoad('schedules', () => import('./modules/schedules.js'))
+    if (!_moduleCache.get('schedules_inited')) {
+      m.initSchedules({ openModal, closeModal })
+      _moduleCache.set('schedules_inited', true)
+    }
+    m.loadSchedules()
+  }
+})
+registerPage('connectors', {
+  lazy: true,
+  enter: async () => {
+    const m = await lazyLoad('connectors', () => import('./modules/connectors.js'))
+    if (!_moduleCache.get('connectors_inited')) {
+      m.initConnectors({ openModal, closeModal })
+      _moduleCache.set('connectors_inited', true)
+    }
+    m.loadConnectors()
+  }
+})
+registerPage('vault', {
+  lazy: true,
+  enter: async () => {
+    const m = await lazyLoad('connectors', () => import('./modules/connectors.js'))
+    if (!_moduleCache.get('connectors_inited')) {
+      m.initConnectors({ openModal, closeModal })
+      _moduleCache.set('connectors_inited', true)
+    }
+    m.loadVaultPage()
+  }
+})
+registerPage('migrate',   { lazy: true, enter: async () => { const m = await lazyLoad('migrate', () => import('./modules/migrate.js')); if (!_moduleCache.get('migrate_inited')) { m.initMigrate(); _moduleCache.set('migrate_inited', true) }; m.loadMigrateAgents() } })
+registerPage('import',    { lazy: true, enter: async () => { const m = await lazyLoad('import-memories', () => import('./modules/import-memories.js')); if (!_moduleCache.get('import_inited')) { m.initImportMemories(); _moduleCache.set('import_inited', true) }; m.loadImportSources() } })
+registerPage('docs',      { lazy: true, enter: async () => { const m = await lazyLoad('docs-research', () => import('./modules/docs-research.js')); m.loadDocs() } })
+registerPage('status',    { lazy: true, enter: async () => { const m = await lazyLoad('status-costs', () => import('./modules/status-costs.js')); if (!_moduleCache.get('status_inited')) { m.initStatus(); _moduleCache.set('status_inited', true) }; m.loadStatus() } })
+registerPage('recall',    { lazy: true, enter: async () => { const m = await lazyLoad('recall-bgtasks', () => import('./modules/recall-bgtasks.js')); if (!_moduleCache.get('recall_inited')) { m.initRecallBgTasks(); _moduleCache.set('recall_inited', true) }; m.loadRecallPage() } })
+registerPage('bgTasks',   { lazy: true, enter: async () => { const m = await lazyLoad('recall-bgtasks', () => import('./modules/recall-bgtasks.js')); if (!_moduleCache.get('recall_inited')) { m.initRecallBgTasks(); _moduleCache.set('recall_inited', true) }; m.loadBgTasksPage() } })
+registerPage('approvals', { lazy: true, enter: async () => { const m = await lazyLoad('approvals', () => import('./modules/approvals.js')); if (!_moduleCache.get('approvals_inited')) { m.initApprovals(); _moduleCache.set('approvals_inited', true) }; m.loadApprovalsPage() } })
+registerPage('settings',  {
+  lazy: true,
+  enter: async () => {
+    const m = await lazyLoad('settings', () => import('./modules/settings.js'))
+    if (!_moduleCache.get('settings_inited')) {
+      m.initSettings({ wireBranchDriftBanner })
+      _isSettingsDirty = m.isSettingsDirty
+      _moduleCache.set('settings_inited', true)
+    }
+    m.loadSettings()
+  },
+  // Before first visit _isSettingsDirty is null -> no unsaved changes possible.
+  leave: () => !_isSettingsDirty?.() || window.confirm(t('settings.unsaved_warning')) || false,
+})
+registerPage('tokenUsage',{ lazy: true, enter: async () => { const m = await lazyLoad('token-usage', () => import('./modules/token-usage.js')); if (!_moduleCache.get('token-usage_inited')) { m.initTokenUsage(); _moduleCache.set('token-usage_inited', true) }; m.loadTokenUsage() } })
+registerPage('ideas', {
+  lazy: true,
+  enter: async () => {
+    const m = await lazyLoad('ideas', () => import('./modules/ideas.js'))
+    if (!_moduleCache.get('ideas_inited')) {
+      m.initIdeas({ openModal, closeModal })
+      _moduleCache.set('ideas_inited', true)
+    }
+    m.loadIdeasPage()
+  }
+})
 registerPage('archived',  { enter: () => loadArchivedPage() })
 registerPage('naplo',     { enter: () => loadNaplo() })
-registerPage('federation',{ enter: loadFederationPage })
-registerPage('artifacts', { enter: () => { initArtifacts(); loadArtifacts() } })
-registerPage('backups',   { enter: () => { initBackups(); refreshBackups() } })
+registerPage('federation', {
+  lazy: true,
+  enter: async () => {
+    const m = await lazyLoad('federation', () => import('./modules/federation.js'))
+    if (!_moduleCache.get('federation_inited')) {
+      m.initFederation({ openModal, closeModal })
+      _moduleCache.set('federation_inited', true)
+    }
+    m.loadFederationPage()
+  }
+})
+registerPage('artifacts', {
+  lazy: true,
+  enter: async () => {
+    const m = await lazyLoad('artifacts', () => import('./modules/artifacts.js'))
+    if (!_moduleCache.get('artifacts_inited')) {
+      m.initArtifacts()
+      _moduleCache.set('artifacts_inited', true)
+    }
+    m.loadArtifacts()
+  }
+})
+registerPage('backups', {
+  lazy: true,
+  enter: async () => {
+    const m = await lazyLoad('backups', () => import('./modules/backups.js'))
+    if (!_moduleCache.get('backups_inited')) {
+      m.initBackups()
+      _moduleCache.set('backups_inited', true)
+    }
+    m.refreshBackups()
+  }
+})
 
 // Boot: wires up DOM (nav clicks, sidebar, hashchange listener), translates nav/static
 // elements, and performs the initial URL-hash route. Must run after DOM is ready.

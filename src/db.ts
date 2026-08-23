@@ -74,11 +74,14 @@ export function initDatabase(dbPathOverride?: string): void {
   db = new Database(dbPath)
   db.pragma('journal_mode = WAL')
   // Performance pragmas: safe with WAL, applied after journal_mode is set.
-  // cache_size: negative value = kibibytes; -65536 → 64 MB page cache.
-  // mmap_size: memory-mapped I/O in bytes; 256 MB. Skipped for :memory: (no file to map).
+  // cache_size: negative value = kibibytes; -8192 → 8 MB page cache (was 64 MB).
+  //   In WAL mode the page cache has minimal I/O impact; 8 MB is ample for the
+  //   query mix here and saves ~56 MB RSS at idle (Rick's memory-reduction plan P1).
+  // mmap_size: memory-mapped I/O in bytes; 64 MB (was 256 MB). Still covers the
+  //   typical DB size and avoids the large anonymous mapping that bloats RSS (P2).
   // synchronous = NORMAL: safe under WAL (only full-fsync skipped, not the WAL checkpoint).
-  db.pragma('cache_size = -65536')
-  if (!isMemory) db.pragma('mmap_size = 268435456')
+  db.pragma('cache_size = -8192')
+  if (!isMemory) db.pragma('mmap_size = 67108864')
   db.pragma('synchronous = NORMAL')
   // Concurrency pragmas: applied before migrations so the retry window is
   // active even during the first-run schema creation.
