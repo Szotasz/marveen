@@ -43,6 +43,59 @@ export function registerAlias(from, to, before = null) {
   _aliasRegistry.set(from, { to, before })
 }
 
+// ── Page loading overlay (for async enter callbacks) ─────────────────────────
+
+let _loadingOverlay = null
+
+function _ensureOverlay() {
+  if (_loadingOverlay) return _loadingOverlay
+  _loadingOverlay = document.createElement('div')
+  _loadingOverlay.id = 'page-loading-overlay'
+  _loadingOverlay.setAttribute('aria-live', 'polite')
+  _loadingOverlay.setAttribute('aria-label', 'Betöltés...')
+  Object.assign(_loadingOverlay.style, {
+    position: 'fixed', inset: '0', zIndex: '9999',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    background: 'rgba(0,0,0,0.08)', backdropFilter: 'blur(1px)',
+    pointerEvents: 'all',
+  })
+  _loadingOverlay.innerHTML = '<div class="spinner"></div>'
+  document.body.appendChild(_loadingOverlay)
+  return _loadingOverlay
+}
+
+function _showPageLoading() {
+  _ensureOverlay().hidden = false
+  document.querySelector('.sidebar-nav')?.setAttribute('aria-disabled', 'true')
+}
+
+function _hidePageLoading() {
+  if (_loadingOverlay) _loadingOverlay.hidden = true
+  document.querySelector('.sidebar-nav')?.removeAttribute('aria-disabled')
+}
+
+function _showPageError(pageId, err) {
+  console.error('[lazy-load] Failed to load page:', pageId, err)
+  _hidePageLoading()
+  const pageEl = document.getElementById(pageId + 'Page')
+  if (!pageEl) return
+  pageEl.querySelector('.page-load-error')?.remove()
+  const errDiv = document.createElement('div')
+  errDiv.className = 'page-load-error'
+  errDiv.setAttribute('role', 'alert')
+  errDiv.style.cssText = 'padding:2rem;display:flex;gap:1rem;align-items:center;'
+  const msg = document.createElement('span')
+  msg.textContent = 'Nem sikerült betölteni az oldalt.'
+  const retryBtn = document.createElement('button')
+  retryBtn.className = 'btn'
+  retryBtn.setAttribute('data-variant', 'secondary')
+  retryBtn.textContent = 'Újra'
+  retryBtn.addEventListener('click', () => { errDiv.remove(); switchPage(pageId) })
+  errDiv.appendChild(msg)
+  errDiv.appendChild(retryBtn)
+  pageEl.prepend(errDiv)
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
 export function switchPage(pageId) {
@@ -65,7 +118,14 @@ export function switchPage(pageId) {
   document.querySelector('main')?.classList.toggle('kanban-active', pageId === 'kanban')
 
   _currentPage = pageId
-  _pageRegistry.get(pageId)?.enter?.()
+  const result = _pageRegistry.get(pageId)?.enter?.()
+  if (result instanceof Promise) {
+    _showPageLoading()
+    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
+    Promise.race([result, timeout])
+      .then(() => _hidePageLoading())
+      .catch(err => _showPageError(pageId, err))
+  }
   _pageSwitchHook?.(pageId)
 }
 
