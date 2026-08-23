@@ -15,7 +15,7 @@
 
 > **Fork.** Ez a repó a [Szotasz/marveen](https://github.com/Szotasz/marveen) önálló forkja, amely `fork-point` (2026-07-26, baseline: upstream `55ecbc6`) óta függetlenül fejlődik. Az upstream javításokat szelektíven vesszük át (`git fetch upstream` + cherry-pick). Hozzájárulásokat ehhez a forkhoz várunk PR-ként. Az AI által generált monolitikus kódot felhagyva, modularizált verzió alkotása a célom, amelyben nagyságrendekkel kisebb tokenhasználatot emészt fel magának a keretrendszernek a használata és robosztusabb kialakítása révén hosszútávon stabilabb működést biztosít.
 >
-> Állapot: upstream `75bfead` vs fork `050fb88`, 2026-08-23
+> Állapot: upstream `fde7870` vs fork `18f1904`, 2026-08-23
 
 ## Jónás Gergő (cett) hozzájárulásai az eredeti Marveen repóhoz
 
@@ -85,11 +85,15 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 - **Secret-resolver Docker/k8s secret-mount támogatással** -- `src/secret-resolver.ts`: fájlrendszer-alapú secret-mount olvasó (`/run/secrets/<KEY>`), `SECRET_MOUNT_DIR` env-változóval tesztelhető. Precedencia: `config-overrides.json` > mount-fájl > `.env` > registry-alapértelmezés -- a konténeres/k8s-deploy felülírja a helyi `.env`-et, ami a helyes biztonsági sorrend. TOCTOU-biztos (nincs `existsSync` + külön `readFileSync`, csak try/catch olvasás).
 - **OpenAPI 3.1 spec az összes végponthoz** -- `docs/openapi.yaml` (2898 sor, 70 dokumentált végpont, 95 operation). Három réteg: Tier1 teljes séma+példa a core inter-agent útvonalaknak (memories, messages, kanban, agents, skills, approvals, blackboard, daily-log, skill-usage), Tier2 medium részletesség (schedules, ideas, artifacts, token-usage, connectors, recall, autonomy), Tier3 `x-internal: true` a belső/dashboard-only route-oknak. Bearer-auth globális security scheme, belső végpontoknál override.
 - **Zero-dep SDK-generátor az OpenAPI specből** -- `scripts/generate-sdk.mjs`: a szokásos generátor-eszközök (openapi-typescript, @hey-api/openapi-ts) nem kompatibilisek a projekt TypeScript 7 verziójával (belső `ts.factory` API-változás miatt összeomlanak), ezért egyedi, TS-compiler-API nélküli generátor `js-yaml`-lel: 11 komponens-séma + 95 operation TypeScript interfészre/type alias-ra fordítva (nullable, allOf, oneOf, enum, array mind kezelve). A generált `src/generated/api.ts` commitolt; CI-lépés (`generate + git diff --exit-code`) biztosítja, hogy a kliens-kód sose maradjon le a spec mögött.
+- **CI breaking-change detekció az API-specre** -- CI-lépés (`oasdiff` v1.29.1, pinned), amely a PR `docs/openapi.yaml`-jét a base-verzióhoz méri és megbukik inkompatibilis változásnál (végpont/mező eltávolítás, kötelezővé tétel, típusváltás, enum-érték törlés). Csak PR-eventre fut; a base-spec `git show`-val jön (a checkout `fetch-depth: 0`-val teljes historyt húz); új spec (nincs base) esetén kihagyja. Hibánál a deprecation-policy fájlra mutat.
+- **URL-szintű API-verziózás** -- kanonikus `/api/v1/*` útvonalak, a régi `/api/*` deprecated aliasként él tovább `Deprecation` + `Sunset` (RFC 8594) headerekkel. `src/web/routes/versioning.ts`: `normalizePath()` a verzió-prefix kezelésére, `applyDeprecationHeaders()` a legacy útvonalakra; az `apiVersion` a `RouteContext`-ben. Párhuzamos verziók futtathatók, a meglévő kliensek nem törnek.
+- **CHANGELOG-vezérelt release notes** -- `CHANGELOG.md` (Keep a Changelog formátum, `**[API]**` jelöléssel az API-változásokon); `scripts/generate-changelog.mjs` conventional commitokból generál szekciókat (Added/Fixed/Changed) `--release X.Y.Z` promócióval + `package.json` bumppal; `scripts/release-notes.mjs` egy verzió jegyzetét adja stdoutra (`gh release` pipe). CI-gate: ha az API-felület (`docs/openapi.yaml`, `src/web/routes/`, `src/generated/api.ts`) változik, a `CHANGELOG.md`-nek is változnia kell.
+- **API deprecation policy** -- `docs/api-deprecation-policy.md`: a verzió-életciklus egyetlen mérvadó referenciája (verziózási séma, RFC 8594 headerek, minimum 6 hónapos deprecation-ablak, lépésről-lépésre deprecate/remove folyamat tulaj-jóváhagyással, CHANGELOG-konvenciók, szerepkör-táblázat). A `CLAUDE.md` egy rövid szekcióval mutat rá.
 
 ## A fork létrehozása óta átvett - cherry-pick - javítások:
 #720, #727, #729, #738, #739, #740, #741, #742, #743, #744, #746, #747, #749, #751, #752, #753, #756, #757, #758, #763, #760, #765, #768, #769, #771, #772, #776, #777, #778, #779, #780, #781, #782, #783, #784, #785, #786, #789, #790, #791, #793, #795, #797, #799, #800, #801, #802, #803, #805, #821, #822, #826, #828, #829, #832, #838, #866, #833, #933, #934, #942, #943, #938, #854, #855, #871, #879, #888, #889, #906, #911, #926, #929, #940, #936, #973, #877, #964, #842, #857, #861, #885, #895, #896, #843, #876, #957, #1001, #1000, #982, #899, #939, #955, #992, #988, #985, #1007, #1010, #1013, #995, 
 
-Állapot: upstream `75bfead` vs fork `050fb88`, 2026-08-23
+Állapot: upstream `fde7870` vs fork `18f1904`, 2026-08-23
 
 <!-- ONGOING: Minden jövőbeli fork-PR leadásakor (Zack -> Jarvis) frissítsd ezt a szakaszt
      a friss git log alapján:
