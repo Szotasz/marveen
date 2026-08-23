@@ -24,9 +24,9 @@ beforeEach(() => {
 // 1. SQLite pragmas
 // ---------------------------------------------------------------------------
 describe('SQLite performance pragmas', () => {
-  it('cache_size is set to -65536 (64 MB)', () => {
+  it('cache_size is set to -8192 (8 MB)', () => {
     const row = getDb().pragma('cache_size', { simple: true })
-    expect(row).toBe(-65536)
+    expect(row).toBe(-8192)
   })
 
   it('synchronous is NORMAL (1)', () => {
