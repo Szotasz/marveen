@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { readEnvFile } from './env.js'
 import { getProviderType, getChannelToken, getChannelChatId, type ChannelProviderType } from './channel-provider.js'
 import { validateEnvConfig } from './config-schema.js'
+import { resolveSecret } from './secret-resolver.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -39,11 +40,15 @@ function readConfigOverrides(): Record<string, unknown> {
   }
 }
 const overrides = readConfigOverrides()
-// Effective raw value for a registry-backed key consumed at boot:
-// config-overrides.json wins, then .env. Callers apply their own default.
+// Effective raw value for a registry-backed key consumed at boot.
+// Resolution order: config-overrides.json > /run/secrets/<KEY> > .env > registry default.
+// /run/secrets/ sits above .env so a Docker/k8s secret-mount always wins over a
+// local developer .env without requiring a process.env override.
 function cfg(key: string): string | undefined {
   const ov = overrides[key]
   if (ov !== undefined && ov !== null && String(ov).length > 0) return String(ov)
+  const secret = resolveSecret(key)
+  if (secret !== undefined) return secret
   return env[key]
 }
 
