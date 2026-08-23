@@ -20,11 +20,11 @@
     "type": "local",
     "category": "productivity",
     "icon": "📧",
-    "command": "npx",
-    "args": ["-y", "gmail-mcp-server"],
+    "command": "node",
+    "args": ["vendor/gmail-mcp-server/dist/index.js", "--multi-user"],
     "env": {},
     "authType": "oauth",
-    "authNote": "Első használatkor OAuth bejelentkezés szükséges a böngészőben",
+    "authNote": "Első használatkor OAuth bejelentkezés szükséges a böngészőben. A publikált npm csomag --multi-user módja hibás volt (userId figyelmen kívül hagyva minden olvasás/keresés/küldés hívásnál) -- a vendor/gmail-mcp-server alatti, javított másolatot használjuk helyette, lásd ATTRIBUTIONS.md és vendor/gmail-mcp-server/MARVEEN_PATCH.md.",
     "infoUrl": "https://github.com/ArtyMcLabin/Gmail-MCP-Server"
   },
   {
