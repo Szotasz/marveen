@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readEnvFile } from './env.js'
 import { getProviderType, getChannelToken, getChannelChatId, type ChannelProviderType } from './channel-provider.js'
+import { validateEnvConfig } from './config-schema.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -388,3 +389,8 @@ export const HEARTBEAT_CALENDAR_ID = (cfg('HEARTBEAT_CALENDAR_ID') ?? '').trim()
 // reconfigures a running fleet.
 export const DEFAULT_AGENT_MODEL =
   cfg('DEFAULT_AGENT_MODEL') || DISTRIBUTION_DEFAULT_AGENT_MODEL
+
+// Boot-time Zod validation: additive side-effect only.
+// Warns on recoverable format errors; throws on FATAL misconfiguration in prod.
+// Existing exports above are unchanged -- the parse result is not used.
+validateEnvConfig({ ...env, ...overrides }, process.env['NODE_ENV'] === 'production')
