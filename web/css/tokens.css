@@ -80,6 +80,8 @@
   --bg-modal:     var(--color-white);
   --bg-code:      var(--color-stone-150);
   --overlay:      rgba(20,20,19,0.5);
+  --tooltip-bg:   var(--color-stone-950);  /* inverse surface: dark on light page */
+  --tooltip-fg:   var(--color-stone-50);
 
   /* ── Semantic — Text ─────────────────────────────────────*/
   --text:           var(--color-stone-950);
@@ -265,6 +267,10 @@
   /* Info */
   --info-hover:  var(--color-blue-500);
   --info-soft:   rgba(106,155,204,0.20);
+
+  /* Tooltip — light surface on dark page */
+  --tooltip-bg: var(--color-stone-100);
+  --tooltip-fg: var(--color-stone-950);
 
   /* Shadow */
   --shadow-sm: 0 1px 3px rgba(0,0,0,0.2);

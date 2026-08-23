@@ -1,0 +1,70 @@
+/* ── Tooltip component ───────────────────────────────────────────────────────
+   .tooltip            inverse-surface popover (data-side: top|bottom|left|right)
+   Intended use: positioned absolutely/fixed by JS; CSS handles appearance + animation.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.tooltip {
+  --_bg:         var(--tooltip-bg);
+  --_fg:         var(--tooltip-fg);
+  --_offset:     4px;   /* gap between anchor and tooltip */
+  --_slide:      4px;   /* entry slide distance */
+
+  position: absolute;
+  z-index: var(--z-tooltip);
+  max-width: 240px;
+  padding: var(--sp-1) var(--sp-2);
+  background: var(--_bg);
+  color: var(--_fg);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-base);
+  white-space: normal;
+  word-break: break-word;
+  pointer-events: none;
+
+  /* Hidden by default; shown when [data-state="open"] or .visible added by JS */
+  opacity: 0;
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+  /* 300 ms appearance delay via animation-delay on the wrapper (JS responsibility) */
+}
+
+/* ── Visible state ─────────────────────────────────────────────────────── */
+.tooltip[data-state="open"],
+.tooltip.visible {
+  opacity: 1;
+}
+
+/* ── Side-specific entry animations ─────────────────────────────────────── */
+.tooltip[data-side="top"] {
+  transform: translateY(var(--_slide));
+}
+.tooltip[data-side="top"][data-state="open"],
+.tooltip[data-side="top"].visible {
+  transform: translateY(0);
+}
+
+.tooltip[data-side="bottom"] {
+  transform: translateY(calc(var(--_slide) * -1));
+}
+.tooltip[data-side="bottom"][data-state="open"],
+.tooltip[data-side="bottom"].visible {
+  transform: translateY(0);
+}
+
+.tooltip[data-side="left"] {
+  transform: translateX(var(--_slide));
+}
+.tooltip[data-side="left"][data-state="open"],
+.tooltip[data-side="left"].visible {
+  transform: translateX(0);
+}
+
+.tooltip[data-side="right"] {
+  transform: translateX(calc(var(--_slide) * -1));
+}
+.tooltip[data-side="right"][data-state="open"],
+.tooltip[data-side="right"].visible {
+  transform: translateX(0);
+}

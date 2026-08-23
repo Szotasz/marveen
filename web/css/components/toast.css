@@ -1,0 +1,103 @@
+/* ── Toast component ─────────────────────────────────────────────────────────
+   .toast-stack  fixed container for stacked notifications
+   .toast        individual notification card (data-variant: success|danger|info|warning)
+   .toast.visible backward-compat alias (existing JS toggles .visible on #toast)
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.toast-stack {
+  position: fixed;
+  bottom: var(--sp-4);
+  right: var(--sp-4);
+  z-index: var(--z-toast);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  pointer-events: none;
+  max-width: 380px;
+  width: calc(100vw - var(--sp-8));
+}
+
+/* ── Base ───────────────────────────────────────────────────────────────── */
+.toast {
+  --_base:    var(--text-secondary);
+  --_soft:    var(--neutral-soft);
+  --_text:    var(--text);
+
+  position: fixed;
+  bottom: var(--sp-6);
+  right: var(--sp-4);
+  z-index: var(--z-toast);
+  min-width: 280px;
+  max-width: 380px;
+  pointer-events: all;
+
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--_base);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  padding: var(--sp-3) var(--sp-4);
+  color: var(--_text);
+  font-size: var(--fs-base);
+  font-weight: var(--fw-medium);
+
+  opacity: 0;
+  transform: translateX(16px);
+  transition:
+    opacity var(--dur-slow) var(--ease-out),
+    transform var(--dur-slow) var(--ease-out);
+}
+
+/* When inside a .toast-stack the fixed positioning is overridden */
+.toast-stack .toast {
+  position: relative;
+  bottom: auto;
+  right: auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* ── Visible state (class or aria attribute) ─────────────────────────────── */
+.toast.visible,
+.toast[data-state="open"] {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+/* ── Variants ────────────────────────────────────────────────────────────── */
+.toast[data-variant="success"] {
+  --_base: var(--success);
+  --_soft: var(--success-soft);
+}
+
+.toast[data-variant="danger"] {
+  --_base: var(--danger);
+  --_soft: var(--danger-soft);
+}
+
+.toast[data-variant="warning"] {
+  --_base: var(--warning);
+  --_soft: var(--warning-soft);
+}
+
+.toast[data-variant="info"] {
+  --_base: var(--info);
+  --_soft: var(--info-soft);
+}
+
+/* ── Progress bar ────────────────────────────────────────────────────────── */
+.toast-progress {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  background: var(--_base);
+  border-radius: 0 0 0 var(--radius);
+  transition: width linear;
+  opacity: 0.5;
+}
+
+/* ── Hover: pause auto-dismiss ───────────────────────────────────────────── */
+.toast:hover .toast-progress {
+  animation-play-state: paused;
+}
