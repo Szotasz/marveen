@@ -2164,8 +2164,8 @@ let tlMediaRecorder = null
 let tlRecordedChunks = []
 let tlFpsSamples = []    // recent frame deltas (ms) for FPS guardrail, capped at 15
 
-const TL_LIMB_ANGLES = { hot: -0.55, warm: 0.25, cold: 1.55, shared: 2.85 }
-const TL_TIERS = ['hot', 'warm', 'cold', 'shared']
+const TL_LIMB_ANGLES = { hot: -0.55, warm: 0.25, cold: 1.55, shared: 2.85, import: 4.1 }
+const TL_TIERS = ['hot', 'warm', 'cold', 'shared', 'import']
 const HU_MONTHS = ['jan','feb','már','ápr','máj','jún','júl','aug','szep','okt','nov','dec']
 
 // Deterministic hash for a node id - avoids Math.random() for layout stability
