@@ -2435,6 +2435,10 @@ function startTimelineLoop() {
         // Pop the most recently created node(s) so a visual gap before them
         // doesn't make the replay look like it stopped early.
         tlEmphasiseLatestArrivals(now)
+        // Ensure the final static state matches what buildTimeline() and manual
+        // scrubbing show: edges that arrived via 'flash' during playback must be
+        // promoted to 'alive' now that we are paused at t1.
+        tlRebuildAtTime(tlT1)
       }
       // Fire events that fall within the new simTime window
       tlCheckAndFireEvents(tlSimTime - dt * 0.001 * tlPlaybackSpeed, tlSimTime, now)
