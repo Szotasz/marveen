@@ -50,7 +50,6 @@ import { isMainChannelsAgent, MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import {
   writeAgentSettingsFromProfile,
   scaffoldAgentDir,
-  scaffoldAgentMemoriaHeartbeat,
   generateClaudeMd,
   generateSoulMd,
 } from '../agent-scaffold.js'
@@ -317,7 +316,6 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     if (existsSync(agentDir(name))) { json(res, { error: 'Agent already exists' }, 409); return true }
 
     scaffoldAgentDir(name)
-    scaffoldAgentMemoriaHeartbeat(name)
     writeAgentModel(name, model)
     writeAgentSecurityProfile(name, profileId)
     writeAgentSettingsFromProfile(name, loadProfileTemplate(profileId))
