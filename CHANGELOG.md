@@ -11,6 +11,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- **[API]** CI breaking-change detection for docs/openapi.yaml via oasdiff (PRs fail if a breaking change is introduced without approval)
 - **[API]** URL-level versioning with /api/v1/* canonical paths
 - **[API]** add custom OpenAPI->TypeScript SDK generator
 - **[API]** add operationId to all 95 operations
