@@ -29,6 +29,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 ### Documentation
 
 - add fork-diff entries for deploy-readiness subtasks 1-4
+- expand SECURITY.md with guidelines for CSS modularization, OpenAPI/SDK contract, CI gates, 12-factor secret management, and API versioning/deprecation (HU+EN)
 
 ## [1.33.0] - 2026-08-18
 
