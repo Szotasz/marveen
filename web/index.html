@@ -1310,6 +1310,17 @@
           </div>
           <div class="modal-body" style="display:flex;flex-direction:column;gap:12px;overflow-y:auto;flex:1;min-height:0">
             <div id="ideaDetailDesc" style="font-size:14px;color:var(--text);white-space:pre-wrap"></div>
+            <div id="ideaAttachmentsBlock" style="padding:10px;border:1px solid var(--border);border-radius:var(--radius-sm)">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
+                <h4 style="margin:0;font-size:13px;font-weight:600" data-i18n="ideas.detail.attach.title">Csatolmányok</h4>
+                <label class="btn-secondary btn-compact" id="ideaAttachmentUploadLabel" style="font-size:11px;cursor:pointer">
+                  <span data-i18n="ideas.detail.attach.add">Fájl hozzáadása</span>
+                  <input type="file" id="ideaAttachmentInput" multiple accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.txt,.md,.csv,.docx,.xlsx" style="display:none">
+                </label>
+              </div>
+              <div id="ideaAttachmentStatus" style="display:none;color:var(--text-muted);font-size:12px;margin-bottom:6px"></div>
+              <div id="ideaAttachmentsList"></div>
+            </div>
             <!-- Inline impact/effort scoring -->
             <div id="ideaDetailScoring" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 10px;background:var(--bg-input);border-radius:var(--radius-sm)">
               <span style="font-size:12px;font-weight:600;color:var(--text-muted)" data-i18n="ideas.scoring_label">Pontozás:</span>
