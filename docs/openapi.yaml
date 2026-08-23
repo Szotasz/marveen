@@ -349,6 +349,7 @@ paths:
   /api/memories:
     get:
       tags: [memories]
+      operationId: listMemories
       summary: List or search memories
       description: |
         Returns memories for an agent. When `q` is provided, performs hybrid
@@ -402,6 +403,7 @@ paths:
 
     post:
       tags: [memories]
+      operationId: createMemory
       summary: Save a new memory
       requestBody:
         required: true
@@ -451,6 +453,7 @@ paths:
   /api/memories/stats:
     get:
       tags: [memories]
+      operationId: getMemoryStats
       summary: Memory tier statistics
       responses:
         "200":
@@ -463,6 +466,7 @@ paths:
   /api/memories/stale:
     get:
       tags: [memories]
+      operationId: listStaleMemories
       summary: Memories updated since the agent last read them
       parameters:
         - name: agent_id
@@ -489,6 +493,7 @@ paths:
   /api/memories/links:
     get:
       tags: [memories]
+      operationId: listMemoryLinks
       summary: Memory graph edges for a set of memory ids or an agent
       parameters:
         - name: ids
@@ -514,6 +519,7 @@ paths:
   /api/memories/graph:
     get:
       tags: [memories]
+      operationId: getMemoryGraph
       summary: Memory graph — nodes + edges (dashboard graph view)
       parameters:
         - name: agent
@@ -555,6 +561,7 @@ paths:
   /api/memories/graph/timeline:
     get:
       tags: [memories]
+      operationId: getMemoryGraphTimeline
       summary: Temporal memory graph slice for the timeline scrubber
       parameters:
         - name: agent
@@ -614,6 +621,7 @@ paths:
   /api/memories/read-event:
     post:
       tags: [memories]
+      operationId: recordMemoryReadEvent
       summary: Record that an agent read one or more memories (explicit read-trace)
       requestBody:
         required: true
@@ -666,6 +674,7 @@ paths:
   /api/memories/resort:
     post:
       tags: [memories]
+      operationId: resortMemories
       summary: Run scheduled memory maintenance (tier re-sort + version prune)
       description: Idempotent. Called by the maintenance scheduled task.
       requestBody:
@@ -701,6 +710,7 @@ paths:
   /api/memories/import:
     post:
       tags: [memories]
+      operationId: importMemories
       summary: Bulk-import memory chunks (AI-categorised when Ollama is available)
       requestBody:
         required: true
@@ -750,6 +760,7 @@ paths:
   /api/memories/backfill:
     post:
       tags: [memories]
+      operationId: backfillMemoryEmbeddings
       summary: Backfill vector embeddings for memories that lack them
       responses:
         "200":
@@ -773,6 +784,7 @@ paths:
   /api/memories/links/maintain:
     post:
       tags: [memories]
+      operationId: maintainMemoryLinks
       summary: Run memory graph link maintenance (re-embed stale, refresh neighbors, prune decayed)
       requestBody:
         content:
@@ -809,6 +821,7 @@ paths:
           type: integer
     get:
       tags: [memories]
+      operationId: getMemory
       summary: Fetch a single memory by id
       parameters:
         - name: include
@@ -837,6 +850,7 @@ paths:
                 $ref: "#/components/schemas/Error"
     put:
       tags: [memories]
+      operationId: updateMemory
       summary: Update a memory
       requestBody:
         required: true
@@ -870,6 +884,7 @@ paths:
                 $ref: "#/components/schemas/Error"
     delete:
       tags: [memories]
+      operationId: deleteMemory
       summary: Delete a memory
       responses:
         "200":
@@ -894,6 +909,7 @@ paths:
           type: integer
     get:
       tags: [memories]
+      operationId: getMemoryVersions
       summary: Version history for a single memory
       responses:
         "200":
@@ -914,6 +930,7 @@ paths:
           type: integer
     get:
       tags: [memories]
+      operationId: getMemoryDetail
       summary: Memory detail — base data + read-count + neighbors + tier history
       responses:
         "200":
@@ -949,6 +966,7 @@ paths:
   /api/messages:
     get:
       tags: [messages]
+      operationId: listMessages
       summary: List agent messages
       description: |
         Returns messages filtered by agent, status, and pagination cursor.
@@ -1007,6 +1025,7 @@ paths:
 
     post:
       tags: [messages]
+      operationId: sendMessage
       summary: Send an inter-agent message
       description: |
         Creates a message in the queue for delivery to the target agent's session.
@@ -1060,6 +1079,7 @@ paths:
   /api/messages/threads:
     get:
       tags: [messages]
+      operationId: listMessageThreads
       summary: Conversation thread list (sidebar view — one row per peer)
       responses:
         "200":
@@ -1074,6 +1094,7 @@ paths:
   /api/messages/backlog:
     get:
       tags: [messages]
+      operationId: getMessageBacklog
       summary: Pending message backlog per agent (count + age of oldest)
       responses:
         "200":
@@ -1094,6 +1115,7 @@ paths:
           type: integer
     put:
       tags: [messages]
+      operationId: updateMessageStatus
       summary: Mark a message done or failed (executor callback)
       requestBody:
         required: true
@@ -1131,6 +1153,7 @@ paths:
   /api/kanban:
     get:
       tags: [kanban]
+      operationId: listKanbanCards
       summary: List kanban cards
       parameters:
         - name: status
@@ -1173,6 +1196,7 @@ paths:
 
     post:
       tags: [kanban]
+      operationId: createKanbanCard
       summary: Create a new kanban card
       requestBody:
         required: true
@@ -1223,6 +1247,7 @@ paths:
           type: string
     get:
       tags: [kanban]
+      operationId: getKanbanCard
       summary: Get a single kanban card
       responses:
         "200":
@@ -1239,6 +1264,7 @@ paths:
                 $ref: "#/components/schemas/Error"
     put:
       tags: [kanban]
+      operationId: updateKanbanCard
       summary: Update kanban card fields
       requestBody:
         required: true
@@ -1273,6 +1299,7 @@ paths:
                 $ref: "#/components/schemas/Error"
     delete:
       tags: [kanban]
+      operationId: deleteKanbanCard
       summary: Delete a kanban card
       responses:
         "200":
@@ -1297,6 +1324,7 @@ paths:
           type: string
     post:
       tags: [kanban]
+      operationId: moveKanbanCard
       summary: Move a kanban card to a new status
       requestBody:
         required: true
@@ -1338,6 +1366,7 @@ paths:
           type: string
     get:
       tags: [kanban]
+      operationId: listKanbanCardComments
       summary: List comments on a kanban card
       responses:
         "200":
@@ -1350,6 +1379,7 @@ paths:
                   $ref: "#/components/schemas/KanbanComment"
     post:
       tags: [kanban]
+      operationId: addKanbanCardComment
       summary: Add a comment to a kanban card
       requestBody:
         required: true
@@ -1380,6 +1410,7 @@ paths:
   /api/kanban/labels:
     get:
       tags: [kanban]
+      operationId: listKanbanLabels
       summary: List all kanban labels
       responses:
         "200":
@@ -1392,6 +1423,7 @@ paths:
                   type: object
     post:
       tags: [kanban]
+      operationId: createKanbanLabel
       summary: Create a kanban label
       requestBody:
         required: true
@@ -1417,6 +1449,7 @@ paths:
   /api/kanban-projects:
     get:
       tags: [kanban]
+      operationId: listKanbanProjects
       summary: List kanban projects
       responses:
         "200":
@@ -1431,6 +1464,7 @@ paths:
   /api/kanban/assignees:
     get:
       tags: [kanban]
+      operationId: listKanbanAssignees
       summary: List all known assignee values
       responses:
         "200":
@@ -1445,6 +1479,7 @@ paths:
   /api/kanban/archived:
     get:
       tags: [kanban]
+      operationId: listArchivedKanbanCards
       summary: List archived kanban cards
       responses:
         "200":
@@ -1459,6 +1494,7 @@ paths:
   /api/kanban/heartbeat-summary:
     get:
       tags: [kanban]
+      operationId: getKanbanHeartbeatSummary
       summary: Compact board summary for heartbeat agents
       responses:
         "200":
@@ -1473,6 +1509,7 @@ paths:
   /api/approvals:
     get:
       tags: [approvals]
+      operationId: listApprovals
       summary: List approval requests
       parameters:
         - name: agent
@@ -1506,6 +1543,7 @@ paths:
 
     post:
       tags: [approvals]
+      operationId: createApproval
       summary: Create an approval request
       requestBody:
         required: true
@@ -1556,6 +1594,7 @@ paths:
           description: UUID
     get:
       tags: [approvals]
+      operationId: getApproval
       summary: Poll approval status
       responses:
         "200":
@@ -1573,6 +1612,7 @@ paths:
 
     patch:
       tags: [approvals]
+      operationId: resolveApproval
       summary: Resolve an approval (approve / reject / timeout)
       description: Self-approval guard — the requesting agent cannot approve its own request.
       requestBody:
@@ -1630,6 +1670,7 @@ paths:
   /api/blackboard:
     get:
       tags: [blackboard]
+      operationId: listBlackboard
       summary: List fleet blackboard (last 10 rows, newest first)
       responses:
         "200":
@@ -1651,6 +1692,7 @@ paths:
 
     post:
       tags: [blackboard]
+      operationId: upsertBlackboardEntry
       summary: Upsert agent status (one row per agent_id — creates or updates)
       requestBody:
         required: true
@@ -1705,6 +1747,7 @@ paths:
           type: string
     patch:
       tags: [blackboard]
+      operationId: updateBlackboardEntry
       summary: Partially update a blackboard row by id
       requestBody:
         required: true
@@ -1751,6 +1794,7 @@ paths:
   /api/daily-log:
     get:
       tags: [daily-log]
+      operationId: getDailyLog
       summary: Read daily log for an agent and date
       parameters:
         - name: agent
@@ -1774,6 +1818,7 @@ paths:
 
     post:
       tags: [daily-log]
+      operationId: appendDailyLog
       summary: Append an entry to the daily log
       requestBody:
         required: true
@@ -1809,6 +1854,7 @@ paths:
   /api/daily-log/dates:
     get:
       tags: [daily-log]
+      operationId: listDailyLogDates
       summary: List dates for which the agent has daily-log entries
       parameters:
         - name: agent
@@ -1832,6 +1878,7 @@ paths:
   /api/skill-usage:
     get:
       tags: [skill-usage]
+      operationId: listSkillUsage
       summary: Recent skill usage rows
       parameters:
         - name: agent_id
@@ -1878,6 +1925,7 @@ paths:
 
     post:
       tags: [skill-usage]
+      operationId: recordSkillUsage
       summary: Record a skill usage event (called by PostToolUse hook)
       requestBody:
         required: true
@@ -1913,6 +1961,7 @@ paths:
   /api/skill-usage/summary:
     get:
       tags: [skill-usage]
+      operationId: getSkillUsageSummary
       summary: Per-skill usage summary (last_used_at + 30d/90d/all-time counts)
       responses:
         "200":
@@ -1933,6 +1982,7 @@ paths:
   /api/skill-usage/stats:
     get:
       tags: [skill-usage]
+      operationId: getSkillUsageStats
       summary: Aggregated usage counts per skill (dream-engine health endpoint)
       parameters:
         - name: since
@@ -1955,6 +2005,7 @@ paths:
   /api/skills:
     get:
       tags: [skills]
+      operationId: listGlobalSkills
       summary: List global skills
       responses:
         "200":
@@ -1982,6 +2033,7 @@ paths:
   /api/skills/local:
     get:
       tags: [skills]
+      operationId: listLocalSkills
       summary: List agent-local skills (across all agents)
       responses:
         "200":
@@ -1998,6 +2050,7 @@ paths:
   /api/agents:
     get:
       tags: [agents]
+      operationId: listAgents
       summary: List all fleet agents
       responses:
         "200":
@@ -2019,6 +2072,7 @@ paths:
                       type: boolean
     post:
       tags: [agents]
+      operationId: createAgent
       summary: Create a new agent
       requestBody:
         required: true
@@ -2060,6 +2114,7 @@ paths:
           type: string
     get:
       tags: [agents]
+      operationId: getAgent
       summary: Get agent configuration and runtime state
       responses:
         "200":
@@ -2076,6 +2131,7 @@ paths:
                 $ref: "#/components/schemas/Error"
     put:
       tags: [agents]
+      operationId: updateAgentConfig
       summary: Update agent configuration fields
       requestBody:
         required: true
@@ -2105,6 +2161,7 @@ paths:
                 $ref: "#/components/schemas/Error"
     delete:
       tags: [agents]
+      operationId: deleteAgent
       summary: Delete an agent
       responses:
         "200":
@@ -2127,6 +2184,7 @@ paths:
   /api/schedules:
     get:
       tags: [schedules]
+      operationId: listSchedules
       summary: List scheduled tasks
       responses:
         "200":
@@ -2139,6 +2197,7 @@ paths:
                   type: object
     post:
       tags: [schedules]
+      operationId: createSchedule
       summary: Create a scheduled task
       requestBody:
         required: true
@@ -2178,6 +2237,7 @@ paths:
   /api/schedules/pending:
     get:
       tags: [schedules]
+      operationId: listPendingSchedules
       summary: List tasks due for execution now
       responses:
         "200":
@@ -2192,6 +2252,7 @@ paths:
   /api/schedules/agents:
     get:
       tags: [schedules]
+      operationId: listScheduledAgents
       summary: List agents that have scheduled tasks
       responses:
         "200":
@@ -2206,6 +2267,7 @@ paths:
   /api/ideas:
     get:
       tags: [ideas]
+      operationId: listIdeas
       summary: List ideas
       parameters:
         - name: status
@@ -2232,6 +2294,7 @@ paths:
                   type: object
     post:
       tags: [ideas]
+      operationId: createIdea
       summary: Create an idea
       requestBody:
         required: true
@@ -2274,6 +2337,7 @@ paths:
   /api/ideas/categories:
     get:
       tags: [ideas]
+      operationId: listIdeaCategories
       summary: List distinct idea categories
       responses:
         "200":
@@ -2288,6 +2352,7 @@ paths:
   /api/artifacts:
     get:
       tags: [artifacts]
+      operationId: listArtifacts
       summary: List stored artifacts
       parameters:
         - name: agent_id
@@ -2314,6 +2379,7 @@ paths:
                   type: object
     post:
       tags: [artifacts]
+      operationId: storeArtifact
       summary: Store a new artifact
       requestBody:
         required: true
@@ -2350,6 +2416,7 @@ paths:
   /api/artifacts/stats:
     get:
       tags: [artifacts]
+      operationId: getArtifactStats
       summary: Artifact store statistics
       responses:
         "200":
@@ -2362,6 +2429,7 @@ paths:
   /api/token-usage:
     get:
       tags: [token-usage]
+      operationId: listTokenUsage
       summary: Recent token usage rows
       responses:
         "200":
@@ -2376,6 +2444,7 @@ paths:
   /api/token-usage/collect:
     post:
       tags: [token-usage]
+      operationId: recordTokenUsage
       summary: Record a token usage event (called by PostToolUse hook)
       requestBody:
         required: true
@@ -2394,6 +2463,7 @@ paths:
   /api/token-usage/summary:
     get:
       tags: [token-usage]
+      operationId: getTokenUsageSummary
       summary: Token usage summary per agent
       responses:
         "200":
@@ -2408,6 +2478,7 @@ paths:
   /api/token-usage/timeline:
     get:
       tags: [token-usage]
+      operationId: getTokenUsageTimeline
       summary: Token usage over time (for dashboard charts)
       responses:
         "200":
@@ -2422,6 +2493,7 @@ paths:
   /api/token-usage/model-dist:
     get:
       tags: [token-usage]
+      operationId: getTokenUsageModelDist
       summary: Token usage distribution per model
       responses:
         "200":
@@ -2436,6 +2508,7 @@ paths:
   /api/token-usage/tool-stats:
     get:
       tags: [token-usage]
+      operationId: getTokenUsageToolStats
       summary: Tool call frequency statistics
       responses:
         "200":
@@ -2450,6 +2523,7 @@ paths:
   /api/connectors:
     get:
       tags: [connectors]
+      operationId: listConnectors
       summary: List configured connectors
       responses:
         "200":
@@ -2464,6 +2538,7 @@ paths:
   /api/connectors/status:
     get:
       tags: [connectors]
+      operationId: getConnectorStatus
       summary: Connector health status
       responses:
         "200":
@@ -2476,6 +2551,7 @@ paths:
   /api/connectors/refresh:
     post:
       tags: [connectors]
+      operationId: refreshConnectors
       summary: Trigger connector data refresh
       responses:
         "200":
@@ -2488,6 +2564,7 @@ paths:
   /api/connectors/external-paths:
     get:
       tags: [connectors]
+      operationId: listExternalPaths
       summary: List external filesystem paths watched by connectors
       responses:
         "200":
@@ -2500,6 +2577,7 @@ paths:
                   type: string
     post:
       tags: [connectors]
+      operationId: addExternalPath
       summary: Add an external filesystem path
       requestBody:
         required: true
@@ -2520,6 +2598,7 @@ paths:
                 $ref: "#/components/schemas/OkResponse"
     delete:
       tags: [connectors]
+      operationId: removeExternalPath
       summary: Remove an external filesystem path
       requestBody:
         required: true
@@ -2542,6 +2621,7 @@ paths:
   /api/connectors/github-repos:
     get:
       tags: [connectors]
+      operationId: listGithubRepos
       summary: List connected GitHub repositories
       responses:
         "200":
@@ -2554,6 +2634,7 @@ paths:
                   type: object
     post:
       tags: [connectors]
+      operationId: addGithubRepo
       summary: Add a GitHub repository connector
       requestBody:
         required: true
@@ -2578,6 +2659,7 @@ paths:
   /api/recall:
     get:
       tags: [recall]
+      operationId: getRecall
       summary: Unified recall view (recent memories + daily-log)
       parameters:
         - name: agent
@@ -2600,6 +2682,7 @@ paths:
   /api/recall/dates:
     get:
       tags: [recall]
+      operationId: listRecallDates
       summary: Dates with recall entries for an agent
       parameters:
         - name: agent
@@ -2620,6 +2703,7 @@ paths:
   /api/autonomy:
     get:
       tags: [autonomy]
+      operationId: getAutonomyConfig
       summary: Current autonomy level configuration
       responses:
         "200":
@@ -2630,6 +2714,7 @@ paths:
                 type: object
     post:
       tags: [autonomy]
+      operationId: updateAutonomyLevel
       summary: Update autonomy level for a category
       requestBody:
         required: true
@@ -2660,6 +2745,7 @@ paths:
   /api/status:
     get:
       tags: [internal]
+      operationId: getStatus
       summary: Dashboard process and service status
       x-internal: true
       security: []
@@ -2674,6 +2760,7 @@ paths:
   /api/overview:
     get:
       tags: [internal]
+      operationId: getOverview
       summary: Dashboard overview panel data
       x-internal: true
       responses:
@@ -2687,6 +2774,7 @@ paths:
   /api/marveen:
     get:
       tags: [internal]
+      operationId: getSystemInfo
       summary: System info and runtime settings
       x-internal: true
       responses:
@@ -2700,6 +2788,7 @@ paths:
   /api/auth/me:
     get:
       tags: [internal]
+      operationId: getAuthMe
       summary: Validate Bearer token and return identity
       x-internal: true
       responses:
@@ -2719,6 +2808,7 @@ paths:
   /api/migrate:
     post:
       tags: [internal]
+      operationId: runMigrations
       summary: Run pending database migrations
       x-internal: true
       responses:
@@ -2732,6 +2822,7 @@ paths:
   /api/updates:
     get:
       tags: [internal]
+      operationId: checkUpdates
       summary: Check for available upstream updates
       x-internal: true
       responses:
@@ -2745,6 +2836,7 @@ paths:
   /api/onboarding:
     get:
       tags: [internal]
+      operationId: getOnboarding
       summary: Onboarding wizard state
       x-internal: true
       responses:
@@ -2756,6 +2848,7 @@ paths:
                 type: object
     post:
       tags: [internal]
+      operationId: submitOnboarding
       summary: Submit onboarding step
       x-internal: true
       requestBody:
@@ -2775,6 +2868,7 @@ paths:
   /api/background-tasks:
     get:
       tags: [internal]
+      operationId: listBackgroundTasks
       summary: List background tasks
       x-internal: true
       responses:
@@ -2790,6 +2884,7 @@ paths:
   /api/tool-log:
     get:
       tags: [internal]
+      operationId: listToolLog
       summary: Recent tool call log
       x-internal: true
       responses:
