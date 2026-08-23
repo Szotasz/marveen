@@ -37,6 +37,12 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
+      - name: Check SDK is up to date
+        run: |
+          npm run generate:sdk
+          git diff --exit-code src/generated/api.ts || \
+            (echo "SDK out of sync -- run 'npm run generate:sdk' and commit src/generated/api.ts" && exit 1)
+
       - name: Stub external binaries (claude, tmux) for module-load resolution
         run: |
           mkdir -p "$HOME/bin"
