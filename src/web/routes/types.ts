@@ -22,6 +22,12 @@ export interface RouteContext {
    *  `device` is the key name for the 'device' kind. Lets routes distinguish
    *  a human session from a token/fleet caller or an enrolled device. */
   auth?: { kind: 'token' | 'session' | 'federation' | 'device'; user?: string; peer?: string; device?: string }
+  /**
+   * API version the caller addressed. 'v1' when the request used /api/v1/*,
+   * null for the legacy /api/* alias, undefined for non-API paths.
+   * Set by the versioning normaliser in web.ts before dispatch.
+   */
+  apiVersion?: 'v1' | null
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<boolean>
