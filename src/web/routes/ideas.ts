@@ -13,12 +13,14 @@ import { getEffectiveSettingValue } from '../../settings-store.js'
 import type { RouteContext } from './types.js'
 
 type IdeaRow = import('../../db.js').IdeaBoxRow
+type IdeaScope = IdeaRow['scope']
 
 function getIdea(id: string): IdeaRow | undefined {
   return getDb().prepare('SELECT * FROM idea_box WHERE id = ?').get(id) as IdeaRow | undefined
 }
 
 const VALID_PRIORITIES = new Set(['low', 'normal', 'high', 'urgent'])
+const VALID_SCOPES = new Set<IdeaScope>(['munka', 'szemelyes'])
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 const ATTACHMENTS_ROOT = resolve(PROJECT_ROOT, 'store', 'idea-attachments')
 const execFileAsync = promisify(execFile)
@@ -66,21 +68,22 @@ async function readAttachmentUpload(req: RouteContext['req'], res: RouteContext[
   } catch {
     json(res, { error: 'A fájl legfeljebb 20 MB lehet' }, 413); return null
   }
-  const { file } = parseMultipart(body, req.headers['content-type'] || '')
+  const { file, fields } = parseMultipart(body, req.headers['content-type'] || '')
   if (!file) { json(res, { error: 'Nincs feltöltött fájl' }, 400); return null }
   if (file.data.length > MAX_ATTACHMENT_BYTES) { json(res, { error: 'A fájl legfeljebb 20 MB lehet' }, 413); return null }
   const extension = extname(file.name).toLowerCase()
   const allowedMimes = ALLOWED_ATTACHMENT_TYPES[extension]
   const mime = file.mime.toLowerCase().split(';', 1)[0].trim()
   if (!allowedMimes?.has(mime)) { json(res, { error: 'Ez a fájltípus nem tölthető fel' }, 415); return null }
-  return { file, extension, mime }
+  return { file, fields, extension, mime }
 }
 
-async function storeIdeaAttachment(ideaId: string, upload: NonNullable<Awaited<ReturnType<typeof readAttachmentUpload>>>) {
+async function storeIdeaAttachment(ideaId: string, scope: IdeaScope, upload: NonNullable<Awaited<ReturnType<typeof readAttachmentUpload>>>) {
   const { file, extension, mime } = upload
   const id = randomUUID().slice(0, 8)
   const filename = file.name.replace(/^.*[\\/]/, '').slice(0, 255) || 'attachment'
-  const ideaDir = resolve(ATTACHMENTS_ROOT, ideaId)
+  const scopeDir = scope === 'szemelyes' ? 'szemelyes' : 'munka'
+  const ideaDir = resolve(ATTACHMENTS_ROOT, scopeDir, ideaId)
   const ideaRel = relative(ATTACHMENTS_ROOT, ideaDir)
   if (!ideaRel || ideaRel.startsWith(`..${sep}`) || ideaRel === '..') throw new Error('Invalid idea attachment directory')
   mkdirSync(ideaDir, { recursive: true })
@@ -127,7 +130,10 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/ideas' && method === 'GET') {
     const status = url.searchParams.get('status') || undefined
     const category = url.searchParams.get('category') || undefined
-    const ideas = listIdeas({ status, category })
+    const scopeParam = url.searchParams.get('scope')
+    if (scopeParam !== null && !VALID_SCOPES.has(scopeParam as IdeaScope)) { json(res, { error: 'scope must be munka or szemelyes' }, 400); return true }
+    const scope = scopeParam as IdeaScope | null
+    const ideas = listIdeas({ status, category, scope: scope ?? undefined })
     const staleCutoff = Math.floor(Date.now() / 1000) - IDEA_STALE_DAYS * 86400
     json(res, ideas.map(i => ({ ...i, stale: i.status === 'new' && i.updated_at < staleCutoff })))
     return true
@@ -184,10 +190,11 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
 
   if (attachmentsMatch && method === 'POST') {
     const ideaId = decodeURIComponent(attachmentsMatch[1])
-    if (!getIdea(ideaId)) { json(res, { error: 'Ötlet nem található' }, 404); return true }
+    const idea = getIdea(ideaId)
+    if (!idea) { json(res, { error: 'Ötlet nem található' }, 404); return true }
     const upload = await readAttachmentUpload(req, res)
     if (!upload) return true
-    const row = await storeIdeaAttachment(ideaId, upload)
+    const row = await storeIdeaAttachment(ideaId, idea.scope, upload)
     json(res, publicAttachment(row))
     return true
   }
@@ -195,6 +202,9 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/ideas/upload' && method === 'POST') {
     const upload = await readAttachmentUpload(req, res)
     if (!upload) return true
+    const scopeParam = upload.fields.scope || 'munka'
+    if (!VALID_SCOPES.has(scopeParam as IdeaScope)) { json(res, { error: 'scope must be munka or szemelyes' }, 400); return true }
+    const scope = scopeParam as IdeaScope
     const id = randomUUID().slice(0, 8)
     const filename = upload.file.name.replace(/^.*[\\/]/, '').slice(0, 255) || 'attachment'
     const titleWithoutExtension = upload.extension ? filename.slice(0, -upload.extension.length).trim() : filename.trim()
@@ -204,6 +214,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       title,
       description: null,
       category: 'Egyéb',
+      scope,
       status: 'new',
       source: 'upload',
       kanban_id: null,
@@ -212,7 +223,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
     })
     let attachment: import('../../db.js').IdeaAttachmentRow | undefined
     try {
-      attachment = await storeIdeaAttachment(id, upload)
+      attachment = await storeIdeaAttachment(id, scope, upload)
       if (attachment.extracted_text && !updateIdea(id, { description: attachment.extracted_text.slice(0, 2000) })) {
         throw new Error('Failed to update uploaded idea description')
       }
@@ -237,8 +248,11 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       source?: string
       impact?: number | null
       effort?: number | null
+      scope?: IdeaScope
     }
     if (!data.title) { json(res, { error: 'title required' }, 400); return true }
+    const scope = data.scope ?? 'munka'
+    if (!VALID_SCOPES.has(scope)) { json(res, { error: 'scope must be munka or szemelyes' }, 400); return true }
     // Same 1-5 validation as PUT -- previously POST silently dropped these fields
     let impact: number | null = null
     if (data.impact !== undefined && data.impact !== null) {
@@ -258,6 +272,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       title: data.title,
       description: data.description ?? null,
       category: data.category ?? 'Egyéb',
+      scope,
       status: 'new',
       source: data.source ?? 'manual',
       kanban_id: null,
@@ -281,7 +296,9 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       kanban_id?: string
       impact?: number | null
       effort?: number | null
+      scope?: IdeaScope
     }
+    if (data.scope !== undefined && !VALID_SCOPES.has(data.scope)) { json(res, { error: 'scope must be munka or szemelyes' }, 400); return true }
     // Coerce impact/effort to int or null -- reject values outside 1-5
     if (data.impact !== undefined && data.impact !== null) {
       const v = Math.round(Number(data.impact))
@@ -295,6 +312,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
     }
     const current = getIdea(id)
     if (!current) { json(res, { error: 'Ötlet nem található' }, 404); return true }
+    // Scope changes deliberately do not move attachments: stored_path remains authoritative.
     if (updateIdea(id, data)) {
       if (data.status && data.status !== current.status) {
         logIdeaStatusChange(id, current.status, data.status, MAIN_AGENT_ID)

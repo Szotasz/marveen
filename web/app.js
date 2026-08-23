@@ -14940,6 +14940,13 @@ let ideasAll = []
 let ideasPromoteId = null
 let ideaEditId = null
 let ideaDetailId = null
+const IDEA_SCOPE_STORAGE_KEY = 'ideas-scope-filter'
+let ideaScope = (() => {
+  try {
+    const saved = localStorage.getItem(IDEA_SCOPE_STORAGE_KEY)
+    return ['munka', 'szemelyes', 'all'].includes(saved) ? saved : 'munka'
+  } catch { return 'munka' }
+})()
 const STATUS_COLORS = { new: 'var(--accent)', reviewed: '#f59e0b', kanban: '#22c55e', rejected: '#ef4444' }
 const STATUS_LABELS = { new: () => t('ideas.status.new'), reviewed: () => t('ideas.status.reviewed'), kanban: () => t('ideas.status.kanban'), rejected: () => t('ideas.status.rejected') }
 
@@ -14952,6 +14959,7 @@ async function loadIdeasPage() {
   // first promote the "Kanbanban" box showed 0 with the item hidden, which read
   // as data loss on the first live promote (2026-08-20).
   if (categoryFilter) params.set('category', categoryFilter)
+  if (ideaScope !== 'all') params.set('scope', ideaScope)
   const [ideasRes, catsRes] = await Promise.all([fetch('/api/ideas?' + params), fetch('/api/ideas/categories')])
   ideasAll = await ideasRes.json()
   if (statusFilter === 'active') ideas = ideasAll.filter(i => i.status === 'new' || i.status === 'reviewed')
@@ -14965,6 +14973,7 @@ async function loadIdeasPage() {
   }
   renderIdeasStats()
   renderIdeasList()
+  document.querySelectorAll('#ideaScopeFilter [data-scope]').forEach(button => button.classList.toggle('active', button.dataset.scope === ideaScope))
 }
 
 document.getElementById('ideaUploadInput')?.addEventListener('change', async (event) => {
@@ -14980,6 +14989,7 @@ document.getElementById('ideaUploadInput')?.addEventListener('change', async (ev
       button.textContent = t('ideas.upload.uploading', { name: file.name })
       const form = new FormData()
       form.append('file', file)
+      form.append('scope', ideaScope === 'all' ? 'munka' : ideaScope)
       try {
         const res = await fetch('/api/ideas/upload', { method: 'POST', body: form })
         if (!res.ok) {
@@ -15072,7 +15082,7 @@ function renderIdeaCard(idea) {
 
 function applyIdeaModalI18n() {
   const labels = document.querySelectorAll('#ideaModalOverlay .form-label')
-  const keys = ['ideas.modal.title_label', 'ideas.modal.desc_label', 'ideas.modal.category_label', 'ideas.modal.impact_label', 'ideas.modal.effort_label']
+  const keys = ['ideas.modal.title_label', 'ideas.modal.desc_label', 'ideas.scope.label', 'ideas.modal.category_label', 'ideas.modal.impact_label', 'ideas.modal.effort_label']
   labels.forEach((el, i) => { if (keys[i]) el.textContent = t(keys[i]) })
   const saveBtn = document.getElementById('ideaModalSave')
   const cancelBtn = document.getElementById('ideaModalCancel')
@@ -15085,6 +15095,7 @@ function openIdeaNew() {
   document.getElementById('ideaModalTitle').textContent = t('ideas.modal.title_new')
   document.getElementById('ideaTitleInput').value = ''
   document.getElementById('ideaDescInput').value = ''
+  document.getElementById('ideaScopeInput').value = ideaScope === 'all' ? 'munka' : ideaScope
   applyIdeaModalI18n()
   openModal(document.getElementById('ideaModalOverlay'))
 }
@@ -15097,6 +15108,7 @@ function openIdeaEdit(id) {
   document.getElementById('ideaTitleInput').value = idea.title
   document.getElementById('ideaDescInput').value = idea.description || ''
   document.getElementById('ideaCategoryInput').value = idea.category
+  document.getElementById('ideaScopeInput').value = idea.scope
   document.getElementById('ideaImpactInput').value = idea.impact ?? ''
   document.getElementById('ideaEffortInput').value = idea.effort ?? ''
   openModal(document.getElementById('ideaModalOverlay'))
@@ -15111,6 +15123,7 @@ async function saveIdea() {
     title,
     description: document.getElementById('ideaDescInput').value.trim() || undefined,
     category: document.getElementById('ideaCategoryInput').value,
+    scope: document.getElementById('ideaScopeInput').value,
     source: 'manual',
     impact: impactRaw ? parseInt(impactRaw) : null,
     effort: effortRaw ? parseInt(effortRaw) : null,
@@ -15140,6 +15153,10 @@ async function openIdeaDetail(id) {
   document.getElementById('ideaDetailTitle').textContent = idea.title
   document.getElementById('ideaDetailMeta').textContent = `${idea.category} · ${statusLabel}`
   document.getElementById('ideaDetailDesc').textContent = idea.description || t('ideas.no_description')
+  const otherScope = idea.scope === 'munka' ? 'szemelyes' : 'munka'
+  document.getElementById('ideaDetailScope').textContent = t('ideas.scope.current', { scope: t(`ideas.scope.${idea.scope}`) })
+  document.getElementById('ideaDetailScopeMove').textContent = t('ideas.scope.move', { scope: t(`ideas.scope.${otherScope}`) })
+  document.getElementById('ideaDetailScopeMove').dataset.scope = otherScope
   document.getElementById('ideaDetailImpact').value = idea.impact ?? ''
   document.getElementById('ideaDetailEffort').value = idea.effort ?? ''
   updateDetailScoreChip()
@@ -15308,6 +15325,18 @@ document.getElementById('ideaDetailEditBtn')?.addEventListener('click', () => {
   closeModal(document.getElementById('ideaDetailOverlay'))
   openIdeaEdit(ideaDetailId)
 })
+document.getElementById('ideaDetailScopeMove')?.addEventListener('click', async (event) => {
+  if (!ideaDetailId) return
+  const scope = event.currentTarget.dataset.scope
+  try {
+    const res = await fetch(`/api/ideas/${encodeURIComponent(ideaDetailId)}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope }),
+    })
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    closeModal(document.getElementById('ideaDetailOverlay'))
+    await loadIdeasPage()
+  } catch { showToast(t('ideas.scope.move_error'), 'error') }
+})
 
 function openIdeaPromote(id) {
   ideasPromoteId = id
@@ -15371,6 +15400,13 @@ document.getElementById('ideaPromoteDetail')?.addEventListener('click', () => pr
 document.getElementById('ideaPromotePlan')?.addEventListener('click', () => promoteIdea('plan'))
 document.getElementById('ideaStatusFilter')?.addEventListener('change', loadIdeasPage)
 document.getElementById('ideaCategoryFilter')?.addEventListener('change', loadIdeasPage)
+document.getElementById('ideaScopeFilter')?.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-scope]')
+  if (!button) return
+  ideaScope = button.dataset.scope
+  try { localStorage.setItem(IDEA_SCOPE_STORAGE_KEY, ideaScope) } catch { /* storage blocked */ }
+  loadIdeasPage()
+})
 
 
 // === Agent reauth login flow ===

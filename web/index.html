@@ -1225,6 +1225,11 @@
             <p class="subtitle" data-i18n="ideas.page_subtitle">Fejlesztési ötletek és javaslatok</p>
           </div>
           <div style="display:flex;gap:8px;align-items:center">
+            <div id="ideaScopeFilter" style="display:flex;gap:4px">
+              <button class="btn-secondary btn-compact view-toggle-btn" data-scope="munka" data-i18n="ideas.scope.munka">Munka</button>
+              <button class="btn-secondary btn-compact view-toggle-btn" data-scope="szemelyes" data-i18n="ideas.scope.szemelyes">Személyes</button>
+              <button class="btn-secondary btn-compact view-toggle-btn" data-scope="all" data-i18n="ideas.scope.all">Mind</button>
+            </div>
             <select id="ideaCategoryFilter" class="input" style="width:160px;font-size:13px">
               <option value="" data-i18n="ideas.filter.all_categories">Összes kategória</option>
             </select>
@@ -1254,6 +1259,9 @@
             <div class="form-group"><label class="form-label" data-i18n="ideas.modal.title_label">Cím *</label><input type="text" id="ideaTitleInput" class="input" placeholder="Rövid, egyértelmű cím" data-i18n-placeholder="ideas.modal.title_ph"></div>
             <div class="form-group"><label class="form-label" data-i18n="ideas.modal.desc_label">Leírás</label><textarea id="ideaDescInput" class="input" rows="4" placeholder="Részletes leírás..." data-i18n-placeholder="ideas.modal.desc_ph"></textarea></div>
             <div style="display:flex;gap:8px">
+              <div class="form-group" style="flex:1"><label class="form-label" data-i18n="ideas.scope.label">Terület</label>
+                <select id="ideaScopeInput" class="input"><option value="munka" data-i18n="ideas.scope.munka">Munka</option><option value="szemelyes" data-i18n="ideas.scope.szemelyes">Személyes</option></select>
+              </div>
               <div class="form-group" style="flex:1"><label class="form-label" data-i18n="ideas.modal.category_label">Kategória</label>
                 <select id="ideaCategoryInput" class="input"><option data-i18n="ideas.category.sales">Sales</option><option data-i18n="ideas.category.education">Oktatás</option><option data-i18n="ideas.category.automation">Automatizálás</option><option data-i18n="ideas.category.integration">Integráció</option><option data-i18n="ideas.category.system">Rendszer</option><option data-i18n="ideas.category.other">Egyéb</option></select>
               </div>
@@ -1312,6 +1320,10 @@
           </div>
           <div class="modal-body" style="display:flex;flex-direction:column;gap:12px;overflow-y:auto;flex:1;min-height:0">
             <div id="ideaDetailDesc" style="font-size:14px;color:var(--text);white-space:pre-wrap"></div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span id="ideaDetailScope" style="font-size:12px;color:var(--text-muted)"></span>
+              <button class="btn-secondary btn-compact" id="ideaDetailScopeMove" style="font-size:11px"></button>
+            </div>
             <div id="ideaAttachmentsBlock" style="padding:10px;border:1px solid var(--border);border-radius:var(--radius-sm)">
               <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
                 <h4 style="margin:0;font-size:13px;font-weight:600" data-i18n="ideas.detail.attach.title">Csatolmányok</h4>
