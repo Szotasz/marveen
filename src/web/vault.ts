@@ -37,28 +37,35 @@ export class VaultKeyError extends Error {
   }
 }
 
-function vaultEntryCount(): number {
+// Strict loader for KEY DECISIONS: a missing vault.json is a legitimate
+// first run (empty), but an EXISTING-yet-unreadable one must never be treated
+// as empty -- that would re-open the silent-new-key class through a corrupted
+// or permission-broken file (PR #1048 review finding).
+function loadVaultEntriesForKeyCheck(): VaultEntry[] {
+  if (!existsSync(VAULT_PATH)) return []
   try {
     const store = JSON.parse(readFileSync(VAULT_PATH, 'utf-8'))
-    return Array.isArray(store?.entries) ? store.entries.length : 0
-  } catch {
-    return 0
+    if (!Array.isArray(store?.entries)) throw new Error('entries is not an array')
+    return store.entries
+  } catch (err: any) {
+    throw new VaultKeyError(
+      'store/vault.json exists but cannot be read or parsed -- refusing master-key decisions ' +
+      `on a possibly corrupted vault (${err.message}). Repair or restore vault.json first.`
+    )
   }
+}
+
+function vaultEntryCount(): number {
+  return loadVaultEntriesForKeyCheck().length
 }
 
 // True iff the candidate master key decrypts the vault (trial-decrypts the
 // first entry; an empty vault is opened by any key by definition).
 function keyOpensVault(master: Buffer): boolean {
-  let entry: VaultEntry | undefined
+  const entries = loadVaultEntriesForKeyCheck()
+  if (!entries.length) return true
   try {
-    const store = JSON.parse(readFileSync(VAULT_PATH, 'utf-8'))
-    entry = store?.entries?.[0]
-  } catch {
-    return true
-  }
-  if (!entry) return true
-  try {
-    decryptWithKey(master, entry.encrypted)
+    decryptWithKey(master, entries[0].encrypted)
     return true
   } catch {
     return false

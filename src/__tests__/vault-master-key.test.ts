@@ -169,3 +169,33 @@ describe('VAULTUJKULCS822: keychain.ts hardening (source scan)', () => {
     expect(src).toMatch(/status === EXIT_ITEM_NOT_FOUND/)
   })
 })
+
+describe('PR #1048 review: corrupt vault.json must not look like an empty vault', () => {
+  it('existing but unparseable vault.json -> VaultKeyError on key decisions (no silent new key)', async () => {
+    writeFileSync(vaultPath, '{ this is not json', { mode: 0o600 })
+    keychainMock.available = true
+    keychainMock.readResult = { status: 'empty', value: null }
+    const v = await freshVault()
+    expect(() => v.setSecret('x', 'X', 'v')).toThrowError(/cannot be read or parsed/)
+    expect(keychainMock.storeCalls).toHaveLength(0)
+  })
+
+  it('corrupt vault.json + present .vault-key -> migration refused, .migrated untouched', async () => {
+    const goodKey = await seedVaultWithSecret()
+    writeFileSync(migratedPath, goodKey + '\n')
+    writeFileSync(vaultPath, '###corrupt###', { mode: 0o600 })
+    keychainMock.available = true
+    const v = await freshVault()
+    expect(() => v.setSecret('x', 'X', 'v')).toThrowError(/cannot be read or parsed/)
+    expect(keychainMock.storeCalls).toHaveLength(0)
+    expect(readFileSync(migratedPath, 'utf-8').trim()).toBe(goodKey)
+  })
+
+  it('MISSING vault.json stays a legitimate first run (key generation allowed)', async () => {
+    keychainMock.available = true
+    keychainMock.readResult = { status: 'empty', value: null }
+    const v = await freshVault()
+    v.setSecret('first', 'First', 'v1')
+    expect(keychainMock.storeCalls).toHaveLength(1)
+  })
+})
