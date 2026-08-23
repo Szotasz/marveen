@@ -760,53 +760,6 @@ export function ensureDefaultScheduledTasks(): void {
   }
 }
 
-// Deterministic cron-minute offset (0-59) derived from the agent name so
-// each agent's heartbeat fires at a different minute within the hour and the
-// fleet does not all wake up simultaneously (thundering herd).
-function heartbeatMinuteFor(name: string): number {
-  let h = 0
-  for (const c of name) h = (h * 31 + c.charCodeAt(0)) & 0xffff
-  return h % 60
-}
-
-// Create the per-agent `memoria-heartbeat-<name>` scheduled task under
-// ~/.claude/scheduled-tasks/ so every new agent starts with a 4-hourly
-// memory + skill-reflection heartbeat out of the box.
-//
-// The function is idempotent: if the task directory already exists it
-// returns without touching it, so re-running the scaffold (e.g. on
-// a repair) is safe.
-export function scaffoldAgentMemoriaHeartbeat(name: string): void {
-  const destDir = join(homedir(), '.claude', 'scheduled-tasks', `memoria-heartbeat-${name}`)
-  if (existsSync(destDir)) return
-
-  mkdirSync(destDir, { recursive: true })
-
-  const taskConfig = {
-    schedule: `${heartbeatMinuteFor(name)} */4 * * *`,
-    agent: name,
-    enabled: true,
-    type: 'heartbeat',
-    skipIfBusy: true,
-    forceSend: false,
-    description: `4 óránként átnézi ${name} munkáját, menti a szakterületi tanulságot, és skillt generál/patch-el ha volt komplex munka`,
-    createdAt: Math.floor(Date.now() / 1000),
-  }
-  atomicWriteFileSync(join(destDir, 'task-config.json'), JSON.stringify(taskConfig, null, 2) + '\n')
-
-  // Generate SKILL.md from the per-agent template that ships in the repo.
-  // Fall back to an empty file if the template is unexpectedly missing so
-  // the task directory is always complete and the scheduler can still fire.
-  const templatePath = join(PROJECT_ROOT, 'scheduled-tasks', 'memoria-heartbeat', 'SKILL.agent.md')
-  if (existsSync(templatePath)) {
-    const skillContent = resolveTemplatePlaceholders(readFileSync(templatePath, 'utf-8'))
-      .replaceAll('{{AGENT_NAME}}', name)
-    atomicWriteFileSync(join(destDir, 'SKILL.md'), skillContent)
-  } else {
-    atomicWriteFileSync(join(destDir, 'SKILL.md'), '')
-  }
-}
-
 export function scaffoldAgentDir(name: string) {
   const dir = agentDir(name)
   mkdirSync(join(dir, '.claude', 'skills'), { recursive: true })
