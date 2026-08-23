@@ -49,6 +49,33 @@ jobs:
           git diff --exit-code src/generated/api.ts || \
             (echo "SDK out of sync -- run 'npm run generate:sdk' and commit src/generated/api.ts" && exit 1)
 
+      - name: Check API spec for breaking changes
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # Pin to a specific release for reproducibility. Bump intentionally.
+          # OASDIFF_VERSION is the git tag (with v); OASDIFF_ASSET_VERSION is
+          # the same number without the v, which the release asset name embeds.
+          OASDIFF_VERSION: v1.29.1
+          OASDIFF_ASSET_VERSION: 1.29.1
+        run: |
+          if ! git show "$BASE_SHA:docs/openapi.yaml" > /tmp/openapi-base.yaml 2>/dev/null; then
+            echo "docs/openapi.yaml not present in base -- new spec, skipping breaking change check."
+            exit 0
+          fi
+          curl -sSfL \
+            "https://github.com/oasdiff/oasdiff/releases/download/${OASDIFF_VERSION}/oasdiff_${OASDIFF_ASSET_VERSION}_linux_amd64.tar.gz" \
+            | tar xz -C /tmp oasdiff
+          chmod +x /tmp/oasdiff
+          if ! /tmp/oasdiff breaking /tmp/openapi-base.yaml docs/openapi.yaml; then
+            echo ""
+            echo "Breaking API changes detected in docs/openapi.yaml."
+            echo "If the change is intentional, document it in CHANGELOG.md with"
+            echo "a 'Removed' or 'Changed [BREAKING]' entry and get owner approval"
+            echo "before merging (see docs/api-deprecation-policy.md)."
+            exit 1
+          fi
+
       - name: Check CHANGELOG updated for API changes
         if: github.event_name == 'pull_request'
         env:
