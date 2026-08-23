@@ -15,6 +15,8 @@
     "coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "generate:sdk": "node scripts/generate-sdk.mjs",
+    "changelog": "node scripts/generate-changelog.mjs",
+    "release-notes": "node scripts/release-notes.mjs",
     "syntax-check": "node --check web/app.js web/sw.js",
     "smoke": "playwright test --config=playwright.config.ts"
   },

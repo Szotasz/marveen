@@ -13,6 +13,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          # Full history: the CHANGELOG-updated check diffs HEAD against the
+          # PR base SHA, which the default shallow (depth=1) clone doesn't
+          # contain -> "Invalid symmetric difference expression" (git can't
+          # find a common ancestor). fetch-depth: 0 makes that diff reliable.
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
@@ -42,6 +48,24 @@ jobs:
           npm run generate:sdk
           git diff --exit-code src/generated/api.ts || \
             (echo "SDK out of sync -- run 'npm run generate:sdk' and commit src/generated/api.ts" && exit 1)
+
+      - name: Check CHANGELOG updated for API changes
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          changed=$(git diff --name-only "$BASE_SHA"...HEAD)
+          api_changed=$(echo "$changed" | grep -E '^(docs/openapi\.yaml|src/web/routes/|src/generated/api\.ts)' || true)
+          if [ -n "$api_changed" ]; then
+            changelog_changed=$(echo "$changed" | grep '^CHANGELOG\.md' || true)
+            if [ -z "$changelog_changed" ]; then
+              echo "API-related files changed but CHANGELOG.md was not updated."
+              echo "Changed API files:"
+              echo "$api_changed"
+              echo "Run 'npm run changelog' and commit CHANGELOG.md."
+              exit 1
+            fi
+          fi
 
       - name: Stub external binaries (claude, tmux) for module-load resolution
         run: |
