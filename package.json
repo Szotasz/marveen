@@ -26,7 +26,8 @@
     "better-sqlite3": "^13.0.3",
     "cron-parser": "^5.10.0",
     "pino": "^10.3.1",
-    "sqlite-vec": "^0.1.9"
+    "sqlite-vec": "^0.1.9",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
