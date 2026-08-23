@@ -481,7 +481,6 @@ if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.
 
 // === Init ===
 populateAvatarGrid()
-loadMemAgents()
 loadOverview()
 loadAvailableModels()
 {
@@ -619,7 +618,10 @@ registerPage('messages',  { enter: loadMessagesPage })
 registerPage('updates',   { enter: loadUpdates })
 
 // Lazy pages: module loads on first navigation; init runs once via _moduleCache flag.
+// lazy: true tells switchPage to apply the loading overlay + timeout -- it must NOT
+// be set on static pages whose enter() is already async (data-fetch, fire-and-forget).
 registerPage('memories', {
+  lazy: true,
   enter: async () => {
     const m = await lazyLoad('memories', () => import('./modules/memories.js'))
     if (!_moduleCache.get('memories_inited')) {
@@ -630,6 +632,7 @@ registerPage('memories', {
   }
 })
 registerPage('tasks', {
+  lazy: true,
   enter: async () => {
     const m = await lazyLoad('schedules', () => import('./modules/schedules.js'))
     if (!_moduleCache.get('schedules_inited')) {
@@ -640,6 +643,7 @@ registerPage('tasks', {
   }
 })
 registerPage('connectors', {
+  lazy: true,
   enter: async () => {
     const m = await lazyLoad('connectors', () => import('./modules/connectors.js'))
     if (!_moduleCache.get('connectors_inited')) {
@@ -650,6 +654,7 @@ registerPage('connectors', {
   }
 })
 registerPage('vault', {
+  lazy: true,
   enter: async () => {
     const m = await lazyLoad('connectors', () => import('./modules/connectors.js'))
     if (!_moduleCache.get('connectors_inited')) {
@@ -659,14 +664,15 @@ registerPage('vault', {
     m.loadVaultPage()
   }
 })
-registerPage('migrate',   { enter: async () => { const m = await lazyLoad('migrate', () => import('./modules/migrate.js')); if (!_moduleCache.get('migrate_inited')) { m.initMigrate(); _moduleCache.set('migrate_inited', true) }; m.loadMigrateAgents() } })
-registerPage('import',    { enter: async () => { const m = await lazyLoad('import-memories', () => import('./modules/import-memories.js')); if (!_moduleCache.get('import_inited')) { m.initImportMemories(); _moduleCache.set('import_inited', true) }; m.loadImportSources() } })
-registerPage('docs',      { enter: async () => { const m = await lazyLoad('docs-research', () => import('./modules/docs-research.js')); m.loadDocs() } })
-registerPage('status',    { enter: async () => { const m = await lazyLoad('status-costs', () => import('./modules/status-costs.js')); if (!_moduleCache.get('status_inited')) { m.initStatus(); _moduleCache.set('status_inited', true) }; m.loadStatus() } })
-registerPage('recall',    { enter: async () => { const m = await lazyLoad('recall-bgtasks', () => import('./modules/recall-bgtasks.js')); if (!_moduleCache.get('recall_inited')) { m.initRecallBgTasks(); _moduleCache.set('recall_inited', true) }; m.loadRecallPage() } })
-registerPage('bgTasks',   { enter: async () => { const m = await lazyLoad('recall-bgtasks', () => import('./modules/recall-bgtasks.js')); if (!_moduleCache.get('recall_inited')) { m.initRecallBgTasks(); _moduleCache.set('recall_inited', true) }; m.loadBgTasksPage() } })
-registerPage('approvals', { enter: async () => { const m = await lazyLoad('approvals', () => import('./modules/approvals.js')); if (!_moduleCache.get('approvals_inited')) { m.initApprovals(); _moduleCache.set('approvals_inited', true) }; m.loadApprovalsPage() } })
+registerPage('migrate',   { lazy: true, enter: async () => { const m = await lazyLoad('migrate', () => import('./modules/migrate.js')); if (!_moduleCache.get('migrate_inited')) { m.initMigrate(); _moduleCache.set('migrate_inited', true) }; m.loadMigrateAgents() } })
+registerPage('import',    { lazy: true, enter: async () => { const m = await lazyLoad('import-memories', () => import('./modules/import-memories.js')); if (!_moduleCache.get('import_inited')) { m.initImportMemories(); _moduleCache.set('import_inited', true) }; m.loadImportSources() } })
+registerPage('docs',      { lazy: true, enter: async () => { const m = await lazyLoad('docs-research', () => import('./modules/docs-research.js')); m.loadDocs() } })
+registerPage('status',    { lazy: true, enter: async () => { const m = await lazyLoad('status-costs', () => import('./modules/status-costs.js')); if (!_moduleCache.get('status_inited')) { m.initStatus(); _moduleCache.set('status_inited', true) }; m.loadStatus() } })
+registerPage('recall',    { lazy: true, enter: async () => { const m = await lazyLoad('recall-bgtasks', () => import('./modules/recall-bgtasks.js')); if (!_moduleCache.get('recall_inited')) { m.initRecallBgTasks(); _moduleCache.set('recall_inited', true) }; m.loadRecallPage() } })
+registerPage('bgTasks',   { lazy: true, enter: async () => { const m = await lazyLoad('recall-bgtasks', () => import('./modules/recall-bgtasks.js')); if (!_moduleCache.get('recall_inited')) { m.initRecallBgTasks(); _moduleCache.set('recall_inited', true) }; m.loadBgTasksPage() } })
+registerPage('approvals', { lazy: true, enter: async () => { const m = await lazyLoad('approvals', () => import('./modules/approvals.js')); if (!_moduleCache.get('approvals_inited')) { m.initApprovals(); _moduleCache.set('approvals_inited', true) }; m.loadApprovalsPage() } })
 registerPage('settings',  {
+  lazy: true,
   enter: async () => {
     const m = await lazyLoad('settings', () => import('./modules/settings.js'))
     if (!_moduleCache.get('settings_inited')) {
@@ -679,8 +685,9 @@ registerPage('settings',  {
   // Before first visit _isSettingsDirty is null -> no unsaved changes possible.
   leave: () => !_isSettingsDirty?.() || window.confirm(t('settings.unsaved_warning')) || false,
 })
-registerPage('tokenUsage',{ enter: async () => { const m = await lazyLoad('token-usage', () => import('./modules/token-usage.js')); if (!_moduleCache.get('token-usage_inited')) { m.initTokenUsage(); _moduleCache.set('token-usage_inited', true) }; m.loadTokenUsage() } })
+registerPage('tokenUsage',{ lazy: true, enter: async () => { const m = await lazyLoad('token-usage', () => import('./modules/token-usage.js')); if (!_moduleCache.get('token-usage_inited')) { m.initTokenUsage(); _moduleCache.set('token-usage_inited', true) }; m.loadTokenUsage() } })
 registerPage('ideas', {
+  lazy: true,
   enter: async () => {
     const m = await lazyLoad('ideas', () => import('./modules/ideas.js'))
     if (!_moduleCache.get('ideas_inited')) {
@@ -693,6 +700,7 @@ registerPage('ideas', {
 registerPage('archived',  { enter: () => loadArchivedPage() })
 registerPage('naplo',     { enter: () => loadNaplo() })
 registerPage('federation', {
+  lazy: true,
   enter: async () => {
     const m = await lazyLoad('federation', () => import('./modules/federation.js'))
     if (!_moduleCache.get('federation_inited')) {
@@ -703,6 +711,7 @@ registerPage('federation', {
   }
 })
 registerPage('artifacts', {
+  lazy: true,
   enter: async () => {
     const m = await lazyLoad('artifacts', () => import('./modules/artifacts.js'))
     if (!_moduleCache.get('artifacts_inited')) {
@@ -713,6 +722,7 @@ registerPage('artifacts', {
   }
 })
 registerPage('backups', {
+  lazy: true,
   enter: async () => {
     const m = await lazyLoad('backups', () => import('./modules/backups.js'))
     if (!_moduleCache.get('backups_inited')) {

@@ -33,9 +33,15 @@ let _pages = null
 let _pageSwitchHook = null
 export function setPageSwitchHook(fn) { _pageSwitchHook = fn }
 
-/** Register lifecycle hooks for a page. leave({ to }) can return false to abort navigation. */
-export function registerPage(name, { enter = null, leave = null } = {}) {
-  _pageRegistry.set(name, { enter, leave })
+/**
+ * Register lifecycle hooks for a page.
+ * - leave({ to }) can return false to abort navigation.
+ * - lazy: true marks the enter() as a lazy module loader — switchPage wraps it
+ *   with a loading overlay and timeout. Do NOT set this on static pages whose
+ *   enter() is an async data-fetch (always-async != lazy-import).
+ */
+export function registerPage(name, { enter = null, leave = null, lazy = false } = {}) {
+  _pageRegistry.set(name, { enter, leave, lazy })
 }
 
 /** Register a page-id alias: hash `from` is rewritten to `to`; `before` fires first. */
@@ -118,8 +124,14 @@ export function switchPage(pageId) {
   document.querySelector('main')?.classList.toggle('kanban-active', pageId === 'kanban')
 
   _currentPage = pageId
-  const result = _pageRegistry.get(pageId)?.enter?.()
-  if (result instanceof Promise) {
+  const pageReg = _pageRegistry.get(pageId)
+  const result = pageReg?.enter?.()
+  // Only apply the loading overlay for pages explicitly marked lazy: true.
+  // Static pages whose enter() happens to be async (loadOverview, loadKanban, etc.)
+  // must NOT trigger the overlay -- they are fire-and-forget data fetches, not
+  // blocking module loads. Using the "returns a Promise" heuristic would block
+  // every navigation until the API calls resolve.
+  if (pageReg?.lazy && result instanceof Promise) {
     _showPageLoading()
     const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
     Promise.race([result, timeout])

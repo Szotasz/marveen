@@ -40,8 +40,15 @@ describe('lazy-load: module structure', () => {
     expect(APP_JS).toContain('_moduleCache = new Map()')
   })
 
-  it('app-core.js handles async enter() results in switchPage', () => {
-    expect(APP_CORE).toContain('result instanceof Promise')
+  it('app-core.js applies overlay only when lazy: true (not on all async enter)', () => {
+    // The overlay must be gated on pageReg.lazy, NOT on "result instanceof Promise".
+    // Static pages (overview, kanban) have async enter() for data-fetching -- they must
+    // not trigger the overlay. Using the Promise heuristic would block every navigation.
+    expect(APP_CORE).toContain('pageReg?.lazy && result instanceof Promise')
+  })
+
+  it('app-core.js registerPage accepts lazy flag', () => {
+    expect(APP_CORE).toContain('lazy = false')
   })
 
   it('app-core.js shows a loading overlay for async page transitions', () => {
@@ -66,6 +73,23 @@ describe('lazy-load: module structure', () => {
       // Dynamic imports use import() — those are allowed and tested above.
       const staticPattern = new RegExp(`^import\\s*\\{[^}]+\\}\\s*from\\s*['"]\\./modules/${mod.replace('.', '\\.')}['"]`, 'm')
       expect(APP_JS).not.toMatch(staticPattern)
+    })
+
+    it(`app.js marks ${mod} page as lazy: true`, () => {
+      // Every lazy module's registerPage call must carry lazy: true so the
+      // overlay/timeout logic in switchPage fires only for actual module loads,
+      // not for the fire-and-forget data-fetching calls of static pages.
+      // A module may appear multiple times (e.g. ideas.js in the kanban thunk AND
+      // in registerPage). Check that at least ONE occurrence has lazy: true nearby.
+      const importStr = `import('./modules/${mod}')`
+      let pos = 0
+      let found = false
+      while ((pos = APP_JS.indexOf(importStr, pos)) !== -1) {
+        const surrounding = APP_JS.slice(Math.max(0, pos - 800), pos + 50)
+        if (surrounding.includes('lazy: true')) { found = true; break }
+        pos += importStr.length
+      }
+      expect(found).toBe(true)
     })
   }
 })
