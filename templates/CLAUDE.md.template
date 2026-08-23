@@ -130,6 +130,29 @@ Státuszok: planned, in_progress, waiting, done
 Prioritások: low, normal, high, urgent
 Ha {{OWNER_NAME}} ad feladatot Telegramon, vedd fel a kanban táblára is.
 
+## Fleet Blackboard
+
+Ha 3+ tool-hivasos vagy tobb lepeses munkaba kezdesz, jelezd a kozos blackboardon,
+hogy a tobbiek lassak mi folyik eppen a flottaban -- ne csak a sajat munkadat
+lasd, hanem masok aktualis allapotat is meg tudd nezni delegalas/koordinacio elott.
+
+Munka kezdetekor (upsert -- egy ugynoknek EGY sora van, nem duplikal):
+```bash
+curl -s -X POST http://localhost:{{WEB_PORT}}/api/blackboard -H "Content-Type: application/json" -H "Authorization: Bearer $(cat store/.dashboard-token)" -d '{"agent_id":"{{MAIN_AGENT_ID}}","task_ref":"<kanban-kartya-id-ha-van>","status":"active","summary":"Rovid leiras mit csinalsz most, max 500 kar"}'
+```
+Munka vegen vagy allapotvaltaskor (ugyanaz a POST, frissiti a sort):
+```bash
+curl -s -X POST http://localhost:{{WEB_PORT}}/api/blackboard -H "Content-Type: application/json" -H "Authorization: Bearer $(cat store/.dashboard-token)" -d '{"agent_id":"{{MAIN_AGENT_ID}}","status":"done","summary":"Kesz: rovid osszefoglalo"}'
+```
+Ha elakadsz: `status: "blocked"`, a summary-ban a blokkolo oka -- ez segit masoknak eldonteni, ra tudnak-e segiteni.
+
+Masok allapotanak lekerdezese (utolso 10 bejegyzes, friss->regi):
+```bash
+curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" http://localhost:{{WEB_PORT}}/api/blackboard
+```
+
+Reszletes recept es buktatok: `fleet-dashboard-api` skill.
+
 ## Ütemezett feladatok
 
 Az ütemezett feladatok a `~/.claude/scheduled-tasks/` mappában élnek, fájl-alapúak (SKILL.md + task-config.json). A schedule runner 60 másodpercenként ellenőrzi és a te tmux session-ödbe küldi a promptot.
