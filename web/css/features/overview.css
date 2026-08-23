@@ -472,3 +472,50 @@
   .kpi-item { min-width: 45%; border-bottom: 1px solid var(--border); }
 }
 
+
+/* Fleet Blackboard widget */
+.ov-blackboard-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-top: 6px;
+}
+.ov-blackboard-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.ov-blackboard-table thead th {
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  white-space: nowrap;
+}
+.ov-blackboard-table tbody tr:not(:last-child) td {
+  border-bottom: 1px solid var(--border);
+}
+.ov-blackboard-table td {
+  padding: 6px 10px;
+  vertical-align: middle;
+}
+.bb-agent { font-weight: 600; white-space: nowrap; }
+.bb-summary { color: var(--text); max-width: 360px; }
+.bb-ref { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.bb-time { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.bb-status {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.bb-status.bb-active { background: var(--info-bg, #e0f0ff); color: var(--info, #0066cc); }
+.bb-status.bb-done   { background: var(--success-bg, #e6f9ee); color: var(--success, #1a8a3a); }
+.bb-status.bb-blocked{ background: var(--danger-bg, #ffeaea); color: var(--danger, #cc2222); }

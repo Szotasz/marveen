@@ -80,6 +80,7 @@ import { tryHandleSecurity } from './web/routes/security.js'
 import { tryHandleArtifacts } from './web/routes/artifacts.js'
 import { tryHandleImportMemories } from './web/routes/import-memories.js'
 import { tryHandleBackups } from './web/routes/backups.js'
+import { tryHandleBlackboard } from './web/routes/blackboard.js'
 import type { RouteContext } from './web/routes/types.js'
 import { RouteDispatcher } from './web/routes/dispatcher.js'
 import { reconcileAgentsOnStartup, flushRunningStateToDesired } from './web/startup-reconciliation.js'
@@ -97,6 +98,7 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleMemories)
   .add(tryHandleImportMemories)
   .add(tryHandleBackups)
+  .add(tryHandleBlackboard)
   .add(tryHandleArtifacts)
   .add(tryHandleMigrate)
   .add(tryHandleKanban)
