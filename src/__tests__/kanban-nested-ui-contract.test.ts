@@ -21,12 +21,13 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readAllCss } from './css-helper.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..', '..')
 
 const KANBAN_JS = readFileSync(join(ROOT, 'web/modules/kanban.js'), 'utf8')
-const STYLE_CSS = readFileSync(join(ROOT, 'web/style.css'), 'utf8')
+const STYLE_CSS = readAllCss()
 
 describe('kanban 3-level UI: detail modal', () => {
   it('uses /subtree endpoint (not only /children) in the detail modal', () => {

@@ -1,0 +1,400 @@
+/* === Agent Grid === */
+.agents-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+/* === Agent Card === */
+.agent-card {
+  display: flex;
+  flex-direction: column;
+  padding: 24px 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all var(--transition);
+  min-height: 180px;
+}
+.agent-card:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--accent);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+.agent-card-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+.agent-avatar {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.agent-avatar.gradient-1 { background: linear-gradient(135deg, var(--accent-soft), color-mix(in srgb, var(--accent) 35%, transparent)); }
+.agent-avatar.gradient-2 { background: linear-gradient(135deg, var(--info-soft), color-mix(in srgb, var(--info) 35%, transparent)); color: var(--info); }
+.agent-avatar.gradient-3 { background: linear-gradient(135deg, var(--success-soft), color-mix(in srgb, var(--success) 35%, transparent)); color: var(--success); }
+.agent-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.agent-card-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-name {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.4;
+}
+
+.agent-card-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 12px;
+}
+
+.agent-model-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  background: var(--bg-input);
+  color: var(--text-muted);
+}
+.agent-model-badge.opus { background: var(--accent-soft); color: var(--accent); }
+.agent-model-badge.sonnet { background: var(--info-soft); color: var(--info); }
+.agent-model-badge.haiku { background: var(--success-soft); color: var(--success); }
+
+/* === Per-agent tmux attach copy buttons (running agents only) === */
+.agent-tmux-cmds {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.tmux-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--text-muted);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.tmux-copy-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.tmux-copy-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.tmux-copy-btn.copied {
+  color: var(--success);
+  border-color: var(--success);
+}
+.tmux-copy-ico {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.marveen-card { border-left: 3px solid var(--accent); }
+.marveen-badge {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-left: 4px;
+}
+
+/* === Telegram status dot === */
+.tg-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+.tg-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.tg-dot.connected { background: var(--success); }
+.tg-dot.disconnected { background: var(--text-muted); }
+
+/* === Process status === */
+.process-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.process-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.process-dot.running {
+  background: var(--success);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--success) 60%, transparent);
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+.process-dot.stopped { background: var(--text-muted); }
+.process-dot.restarting {
+  background: var(--warning);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--warning) 60%, transparent);
+  animation: pulse-dot 1s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.agent-process-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px;
+  background: var(--bg-input);
+  border-radius: var(--radius);
+  margin-top: 20px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.process-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 500;
+}
+.process-uptime {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', 'SF Mono', monospace;
+}
+.process-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* === Add Card === */
+.add-card {
+  border: 2px dashed var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 14px;
+  font-family: inherit;
+}
+.add-card:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.add-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--bg-input);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition);
+}
+.add-card:hover .add-icon { background: var(--accent-soft); }
+
+/* === Wizard === */
+.wizard-steps {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+.wizard-step {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  transition: background var(--transition);
+}
+.wizard-step.active { background: var(--accent); }
+.wizard-step.done { background: var(--success); }
+
+.wizard-panel[hidden] { display: none; }
+
+.wizard-generating {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+  text-align: center;
+}
+.wizard-spinner-wrap {
+  margin-bottom: 20px;
+}
+.wizard-spin {
+  width: 36px;
+  height: 36px;
+  border-width: 3px;
+  border-color: var(--border);
+  border-top-color: var(--accent);
+}
+.wizard-gen-status {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.wizard-gen-sub {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.wizard-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+.wizard-actions .btn-secondary { width: auto; }
+
+.code-textarea {
+  width: 100%;
+  padding: 14px 16px;
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
+  resize: vertical;
+  outline: none;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+.code-textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* === Agent Detail Modal ===
+   Needs a compound selector (`.modal.modal-agent-detail`) to outrank
+   the later `.modal { max-width: 480px; }` rule below -- otherwise
+   source order wins and the detail modal stays at 480px. */
+.modal.modal-agent-detail {
+  max-width: 900px;
+}
+/* At narrower widths, the five-tab nav still wouldn't fit -- tighten
+   the tab paddings so everything stays on one row. The outer modal
+   padding also drops a bit so the tab row actually has room. */
+.modal.modal-agent-detail .tab-nav { padding: 0 16px; }
+.modal.modal-agent-detail .tab-btn { padding: 12px 10px; }
+
+/* === Tab Navigation === */
+.tab-nav {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 20px;
+  padding: 0 24px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.tab-btn {
+  padding: 12px 16px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all var(--transition);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.tab-panel { padding: 0 24px 24px; }
+.tab-panel[hidden] { display: none; }
+
+/* === Agent Overview === */
+.agent-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-top: 20px;
+}
+.agent-overview-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+}
+
+/* === Agent Settings === */
+.agent-save-section {
+  margin-top: 8px;
+  margin-bottom: 20px;
+}
+

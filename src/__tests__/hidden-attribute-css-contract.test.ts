@@ -14,12 +14,13 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { readAllCss } from './css-helper.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const WEB = join(__dirname, '..', '..', 'web')
 // Strip comments so an explanatory comment mentioning a property is never
 // mistaken for a real declaration.
-const css = readFileSync(join(WEB, 'style.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+const css = readAllCss().replace(/\/\*[\s\S]*?\*\//g, '')
 const html = readFileSync(join(WEB, 'index.html'), 'utf8')
 
 /** Does an unconditional `.cls { ... display: <not none> ... }` rule exist? */

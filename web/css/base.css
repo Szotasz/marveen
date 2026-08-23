@@ -1,0 +1,39 @@
+/* Ensure [hidden] always wins over component-level display declarations */
+[hidden] { display: none !important; }
+
+/* === Reset === */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* Page-level horizontal clip. `overflow-x: clip` (not `hidden`) is deliberate:
+   `hidden` would compute overflow-y to `auto` and make body a scroll container,
+   which breaks the dashboard's many `position: sticky` elements. `clip` clips
+   without establishing a scroll container, so sticky keeps working. This stops
+   an installed (standalone) PWA from being draggable sideways when something
+   overflows by a hair: Safari's rubber-band hides it, standalone does not. */
+html, body { max-width: 100%; overflow-x: clip; }
+
+/* Keep the iOS rubber-band bounce -- it looks good. The problem was only that
+ * flinging past the TOP edge dragged the sticky chrome and exposed the darker
+ * body background beside the (lighter) menu. We bleed the menu's own card
+ * background (and its divider line) straight up above the sticky chrome via
+ * .sidebar::before (wide layout) and .mobile-topbar::before (portrait), so the
+ * overpull on the menu side stays the light menu colour, seam included.
+ *
+ * Only the TOP is handled this way. The bottom overscroll gutter can't be split
+ * per-column: iOS paints it from a single canvas background COLOR (it ignores
+ * background-image/gradients there) and absolutely-positioned bleed below the
+ * content either adds stray scroll or gets clipped. So the bottom gutter stays
+ * the dark content colour, which is the larger part of the page anyway. */
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  min-height: 100vh;
+  transition: background var(--transition), color var(--transition);
+  font-size: 15px;
+  display: grid;
+  grid-template-columns: 220px 1fr;
+}
+

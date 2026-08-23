@@ -4,6 +4,9 @@
 /* Tokens layer: custom properties only */
 @import url("tokens.css") layer(tokens);
 
+/* Base layer: global resets and body scaffold */
+@import url("base.css") layer(base);
+
 /* Components layer: CUBE data-attr based components */
 @import url("components/btn.css")   layer(components);
 @import url("components/badge.css") layer(components);
@@ -16,5 +19,40 @@
 @import url("components/toast.css")   layer(components);
 @import url("components/tooltip.css") layer(components);
 
-/* Wrap the existing style.css entirely in the features layer */
-@import url("../style.css") layer(features);
+/* Features layer: page and section styles */
+/* Layout */
+@import url("features/sidebar.css")          layer(features);
+@import url("features/header.css")            layer(features);
+@import url("features/overview.css")          layer(features);
+
+/* Kanban */
+@import url("features/kanban.css")            layer(features);
+@import url("features/kanban-cards.css")      layer(features);
+@import url("features/kanban-detail.css")     layer(features);
+
+/* Agents */
+@import url("features/agents.css")            layer(features);
+@import url("features/agent-tabs.css")        layer(features);
+@import url("features/agent-widgets.css")     layer(features);
+@import url("features/agent-pages.css")       layer(features);
+@import url("features/agent-skills.css")      layer(features);
+@import url("features/agent-messaging.css")   layer(features);
+@import url("features/agent-system.css")      layer(features);
+
+/* Memory */
+@import url("features/memories.css")          layer(features);
+@import url("features/memgraph.css")          layer(features);
+@import url("features/memory-list.css")       layer(features);
+
+/* Schedules / Timeline */
+@import url("features/schedules.css")         layer(features);
+@import url("features/timeline.css")          layer(features);
+@import url("features/recall.css")            layer(features);
+
+/* Connectors */
+@import url("features/connectors.css")        layer(features);
+@import url("features/connectors-ssh.css")    layer(features);
+@import url("features/connectors-catalog.css") layer(features);
+
+/* Responsive — always last so media queries override feature styles */
+@import url("features/responsive.css")        layer(features);

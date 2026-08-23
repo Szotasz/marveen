@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readAllCss } from './css-helper.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP        = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
@@ -19,7 +20,7 @@ const MESSAGES_MOD = readFileSync(join(__dirname, '../../web/modules/messages.js
 const FEDERATION_MOD = readFileSync(join(__dirname, '../../web/modules/federation.js'), 'utf-8')
 const APP_CORE   = readFileSync(join(__dirname, '../../web/modules/app-core.js'), 'utf-8')
 const HTML       = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
-const CSS        = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
+const CSS        = readAllCss()
 
 describe('federation UI wiring', () => {
   it('sidebar has the federation nav item AFTER the ideabox item', () => {

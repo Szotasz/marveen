@@ -1,0 +1,245 @@
+/* === Schedule View Toggle === */
+.schedule-view-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.view-btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.view-btn:hover { color: var(--text); border-color: var(--accent); }
+.view-btn.active { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+
+.schedule-view[hidden] { display: none; }
+
+/* === Schedule List === */
+.schedule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pending-retries-banner {
+  margin-bottom: 16px;
+  padding: 14px 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius);
+}
+.pending-retries-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.pending-retries-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.pending-retries-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.pending-retries-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pending-retry-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+}
+.pending-retry-info { flex: 1; min-width: 0; }
+.pending-retry-title {
+  font-size: 13px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.pending-retry-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  gap: 12px;
+  margin-top: 3px;
+  flex-wrap: wrap;
+}
+
+.schedule-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 18px 4px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+.schedule-section:first-child { margin-top: 4px; }
+.schedule-section-icon { font-size: 13px; }
+.schedule-section-count {
+  background: var(--bg-input);
+  color: var(--text-muted);
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.schedule-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.schedule-row:hover {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-sm);
+}
+
+.schedule-agent-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: var(--accent-soft);
+}
+.schedule-agent-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.schedule-info {
+  flex: 1;
+  min-width: 0;
+}
+.schedule-title {
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: 3px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.schedule-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.schedule-cron {
+  font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  background: var(--bg-input);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+.schedule-agent-name {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.schedule-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity var(--transition);
+}
+.schedule-row:hover .schedule-actions { opacity: 1; }
+/* Touch devices have no hover, so the reveal-on-hover would leave the actions
+ * permanently invisible (e.g. a landscape phone, which is wider than the 640px
+ * mobile tweak). Show them whenever the pointer can't hover. */
+@media (hover: none) { .schedule-actions { opacity: 1; } }
+
+.schedule-empty {
+  text-align: center;
+  padding: 64px 24px;
+  color: var(--text-muted);
+}
+.schedule-empty svg { margin-bottom: 16px; opacity: 0.4; }
+
+/* === Prompt Expand === */
+.prompt-expand-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+.expand-questions {
+  margin-top: 12px;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: var(--bg-input);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+.expand-questions[hidden] { display: none; }
+.expand-questions:not([hidden]) { display: flex; }
+.expand-question {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.expand-question-text {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+.expand-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.expand-option {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: transparent;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.expand-option:hover { border-color: var(--accent); color: var(--accent); }
+.expand-option.selected {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+.expand-apply-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+

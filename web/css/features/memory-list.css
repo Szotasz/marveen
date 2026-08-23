@@ -1,0 +1,228 @@
+/* === Memory List === */
+.mem-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mem-item {
+  padding: 14px 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: all var(--transition);
+  cursor: pointer;
+}
+.mem-item:hover {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-sm);
+}
+.mem-item.expanded .mem-content-full { display: block; }
+.mem-item.expanded .mem-content-short { display: none; }
+
+.mem-item-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+
+.mem-date {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.mem-salience {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: auto;
+  font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+}
+
+.mem-content-short,
+.mem-content-full {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.mem-content-short {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mem-content-full {
+  display: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mem-item-footer {
+  display: none;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.mem-item.expanded .mem-item-footer { display: flex; }
+
+.mem-empty, .log-empty {
+  text-align: center;
+  padding: 48px 24px;
+  color: var(--text-muted);
+}
+
+/* Stale badge: appears on memory cards updated since the agent last read them */
+.mem-stale-badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 20px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent);
+}
+
+/* === Memory version history (Előzmények tab) === */
+.mem-version-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.mem-version-item {
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+}
+
+.mem-version-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.mem-version-num {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  min-width: 24px;
+}
+
+.mem-version-date {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.mem-version-by {
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.mem-version-type {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.mem-version-content {
+  font-size: 13px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
+.mem-version-cat {
+  margin-top: 6px;
+}
+
+.mem-version-empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 24px 0;
+}
+
+/* === Daily Log === */
+.log-date-nav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: center;
+  margin-bottom: 20px;
+}
+.log-current-date {
+  font-size: 16px;
+  font-weight: 600;
+  min-width: 140px;
+  text-align: center;
+}
+
+.log-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.log-entry {
+  display: flex;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+}
+.log-entry-time {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+  white-space: nowrap;
+  padding-top: 2px;
+}
+.log-entry-content {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  flex: 1;
+}
+
+/* === Naplo (Audit Timeline) === */
+.naplo-toolbar { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+.naplo-source-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.naplo-tab { padding: 5px 14px; border-radius: 20px; border: 1px solid var(--border); background: var(--bg-card); color: var(--text); cursor: pointer; font-size: 13px; transition: background 0.15s, color 0.15s; }
+.naplo-tab.active { background: var(--accent); color: var(--color-white); border-color: transparent; }
+.naplo-filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.naplo-date { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text); font-size: 13px; }
+.naplo-date-sep { color: var(--text-muted); font-size: 13px; }
+.naplo-search { flex: 1; min-width: 160px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text); font-size: 13px; }
+.naplo-summary { font-size: 13px; color: var(--text-muted); margin-bottom: 10px; }
+.naplo-empty { color: var(--text-muted); font-size: 14px; text-align: center; margin-top: 40px; }
+.naplo-empty.error { color: var(--danger); }
+.naplo-timeline { display: flex; flex-direction: column; gap: 1px; }
+.naplo-entry { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 6px; background: var(--bg-card); border: 1px solid var(--border); font-size: 13px; }
+.naplo-entry-meta { display: flex; align-items: center; gap: 8px; }
+.naplo-ts { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.naplo-badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; color: var(--color-white); white-space: nowrap; }
+.naplo-entry-detail { color: var(--text); line-height: 1.5; }
+.naplo-entry-detail code { background: var(--bg); padding: 1px 5px; border-radius: 3px; font-family: monospace; font-size: 12px; }
+.naplo-actor { color: var(--text-muted); font-size: 12px; }
+.naplo-note { font-style: italic; color: var(--text-muted); }
+.naplo-event-type { font-size: 11px; background: var(--bg); border-radius: 3px; padding: 1px 5px; color: var(--text-muted); }
+.naplo-sensitive { font-size: 11px; color: var(--danger); font-weight: 600; }
+
