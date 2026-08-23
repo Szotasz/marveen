@@ -54,14 +54,17 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           # Pin to a specific release for reproducibility. Bump intentionally.
+          # OASDIFF_VERSION is the git tag (with v); OASDIFF_ASSET_VERSION is
+          # the same number without the v, which the release asset name embeds.
           OASDIFF_VERSION: v1.29.1
+          OASDIFF_ASSET_VERSION: 1.29.1
         run: |
           if ! git show "$BASE_SHA:docs/openapi.yaml" > /tmp/openapi-base.yaml 2>/dev/null; then
             echo "docs/openapi.yaml not present in base -- new spec, skipping breaking change check."
             exit 0
           fi
           curl -sSfL \
-            "https://github.com/oasdiff/oasdiff/releases/download/${OASDIFF_VERSION}/oasdiff_Linux_x86_64.tar.gz" \
+            "https://github.com/oasdiff/oasdiff/releases/download/${OASDIFF_VERSION}/oasdiff_${OASDIFF_ASSET_VERSION}_linux_amd64.tar.gz" \
             | tar xz -C /tmp oasdiff
           chmod +x /tmp/oasdiff
           if ! /tmp/oasdiff breaking /tmp/openapi-base.yaml docs/openapi.yaml; then
