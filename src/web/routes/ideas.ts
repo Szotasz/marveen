@@ -55,6 +55,56 @@ function publicAttachment(row: import('../../db.js').IdeaAttachmentRow) {
   return { ...rest, has_text: Boolean(extractedText?.trim()) }
 }
 
+async function readAttachmentUpload(req: RouteContext['req'], res: RouteContext['res']) {
+  const declaredLength = Number(req.headers['content-length'] || 0)
+  if (declaredLength > MAX_ATTACHMENT_BYTES + 1024 * 1024) {
+    json(res, { error: 'A fájl legfeljebb 20 MB lehet' }, 413); return null
+  }
+  let body: Buffer
+  try {
+    body = await readBody(req, { maxBytes: MAX_ATTACHMENT_BYTES + 1024 * 1024 })
+  } catch {
+    json(res, { error: 'A fájl legfeljebb 20 MB lehet' }, 413); return null
+  }
+  const { file } = parseMultipart(body, req.headers['content-type'] || '')
+  if (!file) { json(res, { error: 'Nincs feltöltött fájl' }, 400); return null }
+  if (file.data.length > MAX_ATTACHMENT_BYTES) { json(res, { error: 'A fájl legfeljebb 20 MB lehet' }, 413); return null }
+  const extension = extname(file.name).toLowerCase()
+  const allowedMimes = ALLOWED_ATTACHMENT_TYPES[extension]
+  const mime = file.mime.toLowerCase().split(';', 1)[0].trim()
+  if (!allowedMimes?.has(mime)) { json(res, { error: 'Ez a fájltípus nem tölthető fel' }, 415); return null }
+  return { file, extension, mime }
+}
+
+async function storeIdeaAttachment(ideaId: string, upload: NonNullable<Awaited<ReturnType<typeof readAttachmentUpload>>>) {
+  const { file, extension, mime } = upload
+  const id = randomUUID().slice(0, 8)
+  const filename = file.name.replace(/^.*[\\/]/, '').slice(0, 255) || 'attachment'
+  const ideaDir = resolve(ATTACHMENTS_ROOT, ideaId)
+  const ideaRel = relative(ATTACHMENTS_ROOT, ideaDir)
+  if (!ideaRel || ideaRel.startsWith(`..${sep}`) || ideaRel === '..') throw new Error('Invalid idea attachment directory')
+  mkdirSync(ideaDir, { recursive: true })
+  const filePath = resolve(ideaDir, `${id}-${safeAttachmentFilename(filename)}`)
+  const storedPath = relative(PROJECT_ROOT, filePath)
+  try {
+    writeFileSync(filePath, file.data)
+    let extractedText: string | null = null
+    if (extension === '.pdf') {
+      try { extractedText = await extractPdfText(filePath) }
+      catch (err) { logger.warn({ err, ideaId, attachmentId: id }, 'PDF text extraction failed') }
+    }
+    const row: import('../../db.js').IdeaAttachmentRow = {
+      id, idea_id: ideaId, filename, stored_path: storedPath, mime, size: file.data.length,
+      extracted_text: extractedText, created_at: Math.floor(Date.now() / 1000),
+    }
+    addIdeaAttachment(row)
+    return row
+  } catch (err) {
+    try { unlinkSync(filePath) } catch { /* best effort */ }
+    throw err
+  }
+}
+
 async function extractPdfText(filePath: string): Promise<string | null> {
   const script = resolve(PROJECT_ROOT, 'scripts', 'muhely', 'pdftext.py')
   const { stdout } = await execFileAsync('python3', [script, filePath], {
@@ -135,45 +185,46 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
   if (attachmentsMatch && method === 'POST') {
     const ideaId = decodeURIComponent(attachmentsMatch[1])
     if (!getIdea(ideaId)) { json(res, { error: 'Ötlet nem található' }, 404); return true }
-    const declaredLength = Number(req.headers['content-length'] || 0)
-    if (declaredLength > MAX_ATTACHMENT_BYTES + 1024 * 1024) {
-      json(res, { error: 'A fájl legfeljebb 20 MB lehet' }, 413); return true
-    }
-    let body: Buffer
-    try {
-      body = await readBody(req, { maxBytes: MAX_ATTACHMENT_BYTES + 1024 * 1024 })
-    } catch {
-      json(res, { error: 'A fájl legfeljebb 20 MB lehet' }, 413); return true
-    }
-    const { file } = parseMultipart(body, req.headers['content-type'] || '')
-    if (!file) { json(res, { error: 'Nincs feltöltött fájl' }, 400); return true }
-    if (file.data.length > MAX_ATTACHMENT_BYTES) { json(res, { error: 'A fájl legfeljebb 20 MB lehet' }, 413); return true }
-    const extension = extname(file.name).toLowerCase()
-    const allowedMimes = ALLOWED_ATTACHMENT_TYPES[extension]
-    const mime = file.mime.toLowerCase().split(';', 1)[0].trim()
-    if (!allowedMimes?.has(mime)) { json(res, { error: 'Ez a fájltípus nem tölthető fel' }, 415); return true }
-
-    const id = randomUUID().slice(0, 8)
-    const filename = file.name.replace(/^.*[\\/]/, '').slice(0, 255) || 'attachment'
-    const ideaDir = resolve(ATTACHMENTS_ROOT, ideaId)
-    const ideaRel = relative(ATTACHMENTS_ROOT, ideaDir)
-    if (!ideaRel || ideaRel.startsWith(`..${sep}`) || ideaRel === '..') { json(res, { error: 'Érvénytelen ötletazonosító' }, 400); return true }
-    mkdirSync(ideaDir, { recursive: true })
-    const filePath = resolve(ideaDir, `${id}-${safeAttachmentFilename(filename)}`)
-    const storedPath = relative(PROJECT_ROOT, filePath)
-    writeFileSync(filePath, file.data)
-    let extractedText: string | null = null
-    if (extension === '.pdf') {
-      try { extractedText = await extractPdfText(filePath) }
-      catch (err) { logger.warn({ err, ideaId, attachmentId: id }, 'PDF text extraction failed') }
-    }
-    const row: import('../../db.js').IdeaAttachmentRow = {
-      id, idea_id: ideaId, filename, stored_path: storedPath, mime, size: file.data.length,
-      extracted_text: extractedText, created_at: Math.floor(Date.now() / 1000),
-    }
-    try { addIdeaAttachment(row) }
-    catch (err) { try { unlinkSync(filePath) } catch { /* best effort */ }; throw err }
+    const upload = await readAttachmentUpload(req, res)
+    if (!upload) return true
+    const row = await storeIdeaAttachment(ideaId, upload)
     json(res, publicAttachment(row))
+    return true
+  }
+
+  if (path === '/api/ideas/upload' && method === 'POST') {
+    const upload = await readAttachmentUpload(req, res)
+    if (!upload) return true
+    const id = randomUUID().slice(0, 8)
+    const filename = upload.file.name.replace(/^.*[\\/]/, '').slice(0, 255) || 'attachment'
+    const titleWithoutExtension = upload.extension ? filename.slice(0, -upload.extension.length).trim() : filename.trim()
+    const title = (titleWithoutExtension || filename.trim() || filename).slice(0, 120)
+    createIdea({
+      id,
+      title,
+      description: null,
+      category: 'Egyéb',
+      status: 'new',
+      source: 'upload',
+      kanban_id: null,
+      impact: null,
+      effort: null,
+    })
+    let attachment: import('../../db.js').IdeaAttachmentRow | undefined
+    try {
+      attachment = await storeIdeaAttachment(id, upload)
+      if (attachment.extracted_text && !updateIdea(id, { description: attachment.extracted_text.slice(0, 2000) })) {
+        throw new Error('Failed to update uploaded idea description')
+      }
+    } catch (err) {
+      if (attachment) {
+        const filePath = attachmentAbsolutePath(attachment.stored_path)
+        if (filePath) try { unlinkSync(filePath) } catch { /* best effort */ }
+      }
+      try { deleteIdea(id) } catch (cleanupErr) { logger.error({ err: cleanupErr, ideaId: id }, 'Failed to clean up idea after upload failure') }
+      throw err
+    }
+    json(res, { idea: getIdea(id), attachment: publicAttachment(attachment) })
     return true
   }
 
