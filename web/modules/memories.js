@@ -2345,10 +2345,12 @@ function buildTimeline(data) {
   // Build event stream
   tlEvents = (data.events || []).slice().sort((a, b) => a.ts - b.ts)
 
-  // Edge animation states (§5.4b)
-  tlEdgeStates = (data.edges || []).map(e => ({
-    edge: e, _phase: 'waiting', _animStart: 0, _drawProgress: 0,
-  }))
+  // Edge animation states (§5.4b). Sort heaviest first so the 250-edge cap
+  // always keeps the strongest connections regardless of DB insertion order.
+  tlEdgeStates = (data.edges || [])
+    .slice()
+    .sort((a, b) => b.weight - a.weight)
+    .map(e => ({ edge: e, _phase: 'waiting', _animStart: 0, _drawProgress: 0 }))
 
   tlT0 = data.time_range.min_ts || 0
   tlT1 = data.time_range.max_ts || (tlT0 + 1)
@@ -2390,7 +2392,7 @@ function tlRebuildAtTime(targetSimTime) {
   // Rebuild edge states instantly (§5.4b, scrub=no animation)
   let aliveEdgeCount = 0
   for (const es of tlEdgeStates) {
-    const visible = es.edge.weight >= 0.80 && es.edge.created_at <= targetSimTime
+    const visible = es.edge.weight >= 0.75 && es.edge.created_at <= targetSimTime
     if (visible && aliveEdgeCount < 250) {
       es._phase = 'alive'; es._drawProgress = 1
       aliveEdgeCount++
