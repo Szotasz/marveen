@@ -13,6 +13,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          # Full history: the CHANGELOG-updated check diffs HEAD against the
+          # PR base SHA, which the default shallow (depth=1) clone doesn't
+          # contain -> "Invalid symmetric difference expression" (git can't
+          # find a common ancestor). fetch-depth: 0 makes that diff reliable.
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
