@@ -1,0 +1,312 @@
+/* === Timeline View === */
+.timeline-header {
+  position: sticky;
+  top: 64px;
+  z-index: 5;
+  background: var(--bg);
+  padding-bottom: 8px;
+}
+.timeline-hours {
+  display: flex;
+  height: 32px;
+  border-bottom: 1px solid var(--border);
+  margin-left: 100px;
+}
+.timeline-hour {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+  border-left: 1px solid var(--border);
+  padding-top: 8px;
+  min-width: 0;
+}
+.timeline-hour:first-child { border-left: none; }
+
+.timeline-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+}
+
+.timeline-row {
+  display: flex;
+  align-items: center;
+  height: 44px;
+  position: relative;
+}
+
+.timeline-agent {
+  width: 100px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding-right: 10px;
+}
+.timeline-agent-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: var(--accent-soft);
+}
+.timeline-agent-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.timeline-agent-name {
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.timeline-track {
+  flex: 1;
+  height: 100%;
+  position: relative;
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+  overflow: visible;
+}
+
+.timeline-marker {
+  position: absolute;
+  top: 6px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  overflow: visible;
+  border: 2px solid var(--accent);
+  background: var(--bg-card);
+  cursor: pointer;
+  transition: transform var(--transition), box-shadow var(--transition);
+  z-index: 2;
+}
+.timeline-marker:hover {
+  transform: scale(1.2);
+  z-index: 100;
+  box-shadow: 0 0 12px var(--accent-soft);
+}
+.timeline-marker img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+}
+.timeline-marker.disabled {
+  border-color: var(--text-muted);
+  opacity: 0.5;
+}
+
+.timeline-marker-tooltip {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 10px;
+  background: var(--text);
+  color: var(--bg);
+  border-radius: 6px;
+  font-size: 11px;
+  white-space: nowrap;
+  z-index: 10;
+  pointer-events: none;
+}
+.timeline-marker-tooltip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: var(--text);
+}
+.timeline-marker:hover .timeline-marker-tooltip { display: block; z-index: 101; }
+
+.timeline-now {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--danger);
+  pointer-events: none;
+  z-index: 5;
+  pointer-events: none;
+}
+.timeline-now::before {
+  content: 'most';
+  position: absolute;
+  top: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  color: var(--danger);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* === Week View === */
+.week-grid {
+  display: flex;
+  gap: 4px;
+  min-height: 300px;
+}
+.week-day {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 48px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: flex var(--transition), border-color var(--transition);
+}
+.week-day.week-day-expanded {
+  flex: 1 1 auto;
+  cursor: default;
+  min-width: 200px;
+}
+.week-day:not(.week-day-expanded):hover {
+  border-color: var(--accent);
+}
+.week-day-today {
+  border-color: var(--accent);
+}
+.week-day-header {
+  padding: 10px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  text-align: center;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.week-day-expanded .week-day-header {
+  padding: 10px 14px;
+  font-size: 12px;
+}
+.week-day-today .week-day-header {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.week-day-count {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 0;
+  flex: 1;
+}
+.week-day-expanded .week-day-count { display: none; }
+.week-day-count-num {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--bg-input);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.week-day-today .week-day-count-num {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.week-day-tasks {
+  display: none;
+  flex: 1;
+  position: relative;
+  min-height: 400px;
+}
+.week-day-expanded .week-day-tasks { display: block; }
+
+/* Hour grid lines inside expanded day */
+.week-hour-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--border);
+  opacity: 0.4;
+}
+.week-hour-label {
+  position: absolute;
+  left: 4px;
+  font-size: 9px;
+  color: var(--text-muted);
+  transform: translateY(-50%);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.week-day-empty {
+  flex: 1;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  min-height: 400px;
+}
+.week-day-expanded .week-day-empty { display: flex; }
+
+.week-task-card {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  z-index: 2;
+  min-height: 36px;
+  box-shadow: var(--shadow-sm);
+}
+.week-task-card:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  z-index: 10;
+  box-shadow: var(--shadow-md);
+  transform: scale(1.02);
+}
+.week-task-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.week-task-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.week-task-info { min-width: 0; flex: 1; }
+.week-task-time {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  font-family: 'JetBrains Mono', monospace;
+}
+.week-task-name {
+  font-size: 10px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 900px) {
+  .week-grid { flex-direction: column; }
+  .week-day { flex: 0 0 auto !important; min-width: 0 !important; }
+  .week-day-expanded { min-width: 0 !important; }
+}
+

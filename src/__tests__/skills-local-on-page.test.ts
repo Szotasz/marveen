@@ -7,12 +7,13 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readAllCss } from './css-helper.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 // Skills page logic extracted to web/modules/skills.js in S-10 modularization.
 const APP     = readFileSync(join(__dirname, '../../web/modules/skills.js'), 'utf-8')
 const HTML    = readFileSync(join(__dirname, '../../web/index.html'),     'utf-8')
-const CSS     = readFileSync(join(__dirname, '../../web/style.css'),      'utf-8')
+const CSS     = readAllCss()
 const HU      = readFileSync(join(__dirname, '../../web/lang/hu.js'),     'utf-8')
 const EN      = readFileSync(join(__dirname, '../../web/lang/en.js'),     'utf-8')
 const SKILLS  = readFileSync(join(__dirname, '../../src/web/routes/skills.ts'), 'utf-8')

@@ -1,0 +1,294 @@
+/* === Kanban Board === */
+/* Five statuses, four fixed tracks: the board always wrapped "done" onto a
+ * second row of its own, at every window size. auto-fit fits as many columns
+ * as can hold KANBAN_COL_MIN and collapses the rest, so the count follows the
+ * window instead of a constant: all five side by side from ~1500px up, and on
+ * a narrow window fewer per row -- but never squeezed below a width where the
+ * card titles stop being readable. (min-width:0 on the column keeps a long
+ * unbroken title from inflating its track past that minimum.) */
+.kanban-board {
+  --kanban-col-min: 280px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(var(--kanban-col-min), 1fr));
+  gap: 12px;
+  min-height: calc(100vh - 160px);
+}
+/* Both the flat board and the swimlane board carry .kanban-board; an
+   explicit [hidden] override is required because the unconditional
+   `display: grid` above otherwise wins the cascade over the UA [hidden]
+   default (equal specificity, later source order). */
+.kanban-board[hidden] { display: none; }
+/* Same override needed for columns: display:flex above wins over UA [hidden]{display:none}. */
+.kanban-col[hidden] { display: none; }
+
+.kanban-col {
+  background: var(--bg-input);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  min-height: 200px;
+  /* A grid item's default minimum is its content's min-content width, so one
+   * long unbroken card title would push its track past the minmax() minimum
+   * and steal room from the other columns. */
+  min-width: 0;
+}
+
+.kanban-col-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 16px 10px;
+  position: sticky;
+  top: 0;
+}
+.kanban-col-title {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+}
+.kanban-col-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-card);
+  border-radius: 10px;
+  padding: 1px 7px;
+  min-width: 20px;
+  text-align: center;
+  border: 1px solid transparent;
+  transition: color 0.2s, border-color 0.2s, transform 0.2s;
+}
+
+/* WIP limit badge states — colour applied via inline style from JS */
+.kanban-col-count[data-wip="warn"] { background: color-mix(in oklch, currentColor 10%, var(--bg-card)); }
+.kanban-col-count[data-wip="full"] { background: color-mix(in oklch, currentColor 10%, var(--bg-card)); animation: wip-pulse-mild 2.4s ease-in-out infinite; }
+.kanban-col-count[data-wip="over"] { background: color-mix(in oklch, currentColor 12%, var(--bg-card)); animation: wip-pulse-strong 1.6s ease-in-out infinite; transform: scale(1.1); }
+
+@keyframes wip-pulse-mild {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+@keyframes wip-pulse-strong {
+  0%, 100% { opacity: 1; transform: scale(1.1); }
+  50% { opacity: 0.4; transform: scale(1.1); }
+}
+.kanban-add-btn {
+  margin-left: auto;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 6px;
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition);
+  line-height: 1;
+}
+.kanban-add-btn:hover { background: var(--accent-soft); color: var(--accent); }
+
+.kanban-col-body {
+  flex: 1;
+  padding: 4px 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 60px;
+}
+.kanban-col-body.drag-over {
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+}
+
+/* Touch drag drop bar. Raised only while a long-press drag is in progress:
+   on a phone the columns stack, so the next column is ~2000px below the fold
+   and there is nothing on screen to drop onto. Fixed to the bottom edge so
+   the drop target is always within thumb reach, whatever the scroll position. */
+.kanban-touch-dropbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9998; /* under the dragged ghost (9999), over the board */
+  display: flex;
+  gap: 6px;
+  padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
+  background: var(--bg-card);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -6px 20px color-mix(in srgb, black 25%, transparent);
+}
+.kanban-drop-target {
+  flex: 1;
+  min-width: 0;
+  padding: 12px 4px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The column the card is already in -- a valid drop (it just reorders), but
+   dimmed so the eye goes to the other four. */
+.kanban-drop-target.is-current {
+  opacity: .5;
+}
+.kanban-drop-target.drag-over {
+  background: var(--accent-soft);
+  border-style: solid;
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+/* === Kanban Swimlanes === */
+.kanban-swimlane-board {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.kanban-swimlane {
+  border-bottom: 2px dashed var(--border);
+  padding-bottom: 16px;
+  margin-bottom: 16px;
+}
+.kanban-swimlane:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+  margin-bottom: 0;
+}
+.kanban-swimlane-header {
+  position: sticky;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 4px;
+  background: var(--bg);
+}
+.kanban-swimlane-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-white);
+  flex-shrink: 0;
+}
+.kanban-swimlane-avatar.owner { background: var(--accent); }
+.kanban-swimlane-avatar.bot { background: var(--info); }
+.kanban-swimlane-avatar.agent { background: var(--success); }
+.kanban-swimlane-avatar.unknown { background: var(--text-muted); }
+.kanban-swimlane-avatar.priority-urgent { background: var(--danger); }
+.kanban-swimlane-avatar.priority-high { background: var(--accent); }
+.kanban-swimlane-avatar.priority-normal { background: var(--text-muted); }
+.kanban-swimlane-avatar.priority-low { background: var(--border); }
+.kanban-swimlane-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+  margin-right: auto;
+}
+.kanban-swimlane-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-card);
+  border-radius: 10px;
+  padding: 1px 7px;
+  min-width: 20px;
+  text-align: center;
+}
+.kanban-swimlane-toggle {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition);
+}
+.kanban-swimlane-toggle:hover { background: var(--accent-soft); color: var(--accent); }
+/* The swimlane rows carry the same five status columns as the flat board, so
+ * they follow the same rule -- otherwise switching to swimlanes would silently
+ * put the column count back to four. */
+.kanban-swimlane-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(var(--kanban-col-min, 280px), 1fr));
+  gap: 12px;
+  margin-top: 4px;
+}
+.kanban-swimlane.collapsed .kanban-swimlane-body { display: none; }
+.kanban-swimlane-col {
+  background: var(--bg-input);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  min-height: 60px;
+}
+.kanban-swimlane-col-header {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+  padding: 8px 12px 4px;
+}
+.kanban-swimlane-col-body {
+  flex: 1;
+  min-height: 40px;
+}
+
+/* === Page switching === */
+.page[hidden] { display: none; }
+/* The board keeps its tighter side padding -- it needs every pixel for the
+ * status columns. The width cap it used to override is gone from `main`. */
+main.kanban-active { padding-left: 16px; padding-right: 16px; }
+
+.page-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  /* On a narrow (landscape phone) main, let the action cluster drop below the
+   * title instead of overflowing the right edge. No-op on desktop, where there
+   * is room for one row. */
+  flex-wrap: wrap;
+}
+
+.header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+/* Agents page: grid / org-chart view toggle */
+.view-toggle {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.view-toggle-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+

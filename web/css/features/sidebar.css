@@ -1,0 +1,214 @@
+/* === Sidebar === */
+.sidebar {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: var(--bg-card);
+  padding: 20px 14px;
+  z-index: 90;
+}
+/* Bleed the sidebar's card background -- and its right-hand divider line --
+ * straight up above itself, so the iOS rubber-band overpull at the TOP shows the
+ * light menu colour and the seam continues, instead of the darker body bg the
+ * dragged sticky column would otherwise expose. Off-screen except during the
+ * bounce; absolute so it adds no scroll height; pointer-events:none so it never
+ * eats taps. right:-1px reaches the border-box edge so the 1px border-right
+ * lines up exactly with the sidebar's own divider. */
+.sidebar::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: -1px;
+  bottom: 100%;
+  height: 100vh;
+  background: var(--bg-card);
+  border-right: 1px solid var(--border);
+  pointer-events: none;
+}
+
+/* === Mobile shell (hamburger + off-canvas sidebar) === */
+/* On desktop the top bar and backdrop are hidden; the sidebar lives in the
+ * body grid. On narrow screens the body collapses to one column, the sidebar
+ * slides in off-canvas over a backdrop, and a fixed top bar carries the
+ * hamburger -- without this the fixed 220px sidebar column pushed the content
+ * off the right edge of a phone viewport. */
+.mobile-topbar { display: none; }
+.sidebar-backdrop { display: none; }
+@media (max-width: 768px) {
+  body { grid-template-columns: 1fr; }
+  .mobile-topbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    position: sticky;
+    top: 0;
+    z-index: 80;
+    height: 52px;
+    padding: 0 14px;
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+  }
+  .mobile-topbar-title { font-weight: 600; font-size: 15px; }
+  /* Same bleed for the portrait top bar: light card colour overpulls above it. */
+  .mobile-topbar::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 100%;
+    height: 100vh;
+    background: var(--bg-card);
+    pointer-events: none;
+  }
+  .mobile-menu-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--text);
+    cursor: pointer;
+  }
+  .sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 240px;
+    max-width: 82vw;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    box-shadow: var(--shadow-lg);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: color-mix(in srgb, black 45%, transparent);
+    z-index: 85;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease;
+  }
+  .sidebar-backdrop.open { opacity: 1; pointer-events: auto; }
+  main { max-width: 100%; padding: 16px 14px 48px; overflow-x: hidden; }
+  .activity-list { grid-template-columns: 1fr; }
+  .activity-tail { max-height: clamp(140px, 35vh, 320px); }
+}
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.sidebar-brand-mark {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: var(--text);
+  color: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 16px;
+  overflow: hidden;
+}
+.sidebar-brand-mark img { width: 100%; height: 100%; object-fit: cover; }
+.sidebar-brand-name { font-weight: 600; font-size: 15px; letter-spacing: -0.01em; }
+.sidebar-brand-sub { font-size: 11px; color: var(--text-muted); }
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 14px;
+  flex: 1;
+  overflow-y: auto;
+  /* overflow-y:auto makes the browser compute overflow-x from `visible` to
+   * `auto`, so a label that overran the column turned the nav into a sideways
+   * scroller (landscape, where the notch inset squeezed the column). Pin it. */
+  overflow-x: hidden;
+  /* Keep a scroll gesture that starts in the menu inside the menu: without this
+   * it chains to the document the moment the nav hits its top/bottom (or has
+   * nothing to scroll), so "scrolling the menu" ends up scrolling the page. */
+  overscroll-behavior: contain;
+}
+.sb-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all var(--transition);
+}
+.sb-link svg { flex-shrink: 0; color: currentColor; }
+/* min-width:0 lets a long label wrap inside the column instead of forcing the
+ * link wider than the nav (which is what produced the landscape overflow);
+ * overflow-wrap:anywhere lets even a single long word (e.g. "Dokumentáció", or
+ * any label at a large system text size) break onto a second line rather than
+ * spill past the edge or get clipped. */
+.sb-link .sb-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.sb-link:hover { color: var(--text); background: var(--accent-soft); }
+.sb-link.active { color: var(--text); background: var(--accent-soft); }
+.sb-link.active svg { color: var(--accent); }
+.sb-badge { margin-left: auto; }
+.sidebar-footer {
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-start;
+}
+
+/* === Collapsible sidebar groups === */
+.sb-group { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+.sb-group-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.sb-group-header:hover { color: var(--text); background: var(--accent-soft); }
+.sb-group-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.sb-group-chevron { flex-shrink: 0; transition: transform var(--transition); }
+.sb-group.open .sb-group-chevron { transform: rotate(90deg); }
+.sb-group-items { display: flex; flex-direction: column; gap: 2px; }
+.sb-group:not(.open) .sb-group-items { display: none; }
+
+/* Docs pinned to the sidebar bottom, just above the lang/theme row. Sits
+ * outside the scrolling .sidebar-nav (flex:1), so it stays visible however
+ * long the open group list gets. Separator reuses the .sidebar-footer
+ * border-top pattern. */
+.sidebar-docs {
+  padding-top: 12px;
+  padding-bottom: 12px;
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+

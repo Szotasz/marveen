@@ -1,0 +1,491 @@
+/* === Telegram Tab === */
+.tg-instructions {
+  margin-bottom: 20px;
+}
+.tg-instructions h4 {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+.tg-instructions ol {
+  padding-left: 20px;
+  font-size: 14px;
+  color: var(--text-secondary);
+  line-height: 1.8;
+}
+.tg-instructions code {
+  background: var(--bg-code);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.tg-connected-info {
+  margin-bottom: 20px;
+}
+.tg-bot-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+  font-size: 15px;
+  font-weight: 500;
+}
+.tg-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px 16px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+/* The class display rule outranks the browser's [hidden] default. */
+.tg-notice[hidden] { display: none; }
+.tg-notice svg { flex-shrink: 0; margin-top: 1px; color: var(--accent); }
+.tg-notice code {
+  background: var(--bg-code);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+.tg-notice-ok {
+  background: var(--success-soft);
+  border-color: color-mix(in srgb, var(--success) 20%, transparent);
+}
+.tg-notice-ok svg { color: var(--success); }
+.tg-notice-warn {
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
+  border-color: color-mix(in srgb, var(--warning) 30%, transparent);
+}
+.tg-notice-warn svg { color: var(--color-amber-600); }
+
+.tg-pairing-section {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+.tg-pairing-section h4 {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.tg-pairing-info {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+.tg-pending-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tg-pending-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+.tg-pending-code {
+  font-family: 'JetBrains Mono', 'SF Mono', monospace;
+  font-weight: 600;
+  color: var(--accent);
+}
+.tg-pending-sender {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.tg-connected-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.tg-allowed-section {
+  margin-top: 16px;
+}
+.tg-allowed-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.tg-allowed-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 8px 0;
+  font-style: italic;
+}
+.tg-allowed-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+.tg-allowed-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.tg-allowed-kind {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--info-soft);
+  color: rgb(70, 140, 240);
+  text-transform: uppercase;
+}
+.tg-allowed-kind-group {
+  background: color-mix(in srgb, var(--color-teal-500) 15%, transparent);
+  color: rgb(40, 170, 130);
+}
+.tg-allowed-id {
+  font-family: 'JetBrains Mono', 'SF Mono', monospace;
+  font-size: 12px;
+  color: var(--text);
+}
+/* === Skills Tab === */
+.skill-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.skill-header h4 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.skill-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.skill-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+  transition: all var(--transition);
+}
+.skill-item:hover {
+  background: var(--bg-card-hover);
+}
+.skill-item-info {
+  flex: 1;
+  min-width: 0;
+}
+.skill-item-name {
+  font-size: 14px;
+  font-weight: 500;
+}
+.skill-item-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+  background: var(--info-soft);
+  color: var(--info);
+}
+.skill-item-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.skill-item-actions {
+  flex-shrink: 0;
+  margin-left: 12px;
+}
+
+.skill-empty {
+  text-align: center;
+  padding: 32px 16px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.skill-create-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 20px;
+}
+.skill-tab-btn {
+  padding: 10px 16px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all var(--transition);
+}
+.skill-tab-btn:hover { color: var(--text); }
+.skill-tab-btn.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.skill-tab-panel[hidden] { display: none; }
+
+.file-upload-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px 24px;
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all var(--transition);
+  text-align: center;
+  color: var(--text-muted);
+}
+.file-upload-area:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.file-upload-area p { font-size: 14px; }
+.file-upload-area .hint { font-size: 12px; margin-top: 4px; }
+
+/* === Agent detail bottom === */
+.agent-detail-bottom {
+  margin: 0 24px;
+  padding-top: 16px;
+  padding-bottom: 8px;
+}
+
+/* === Avatar Gallery === */
+.avatar-gallery { margin-bottom: 20px; }
+.form-label-sm {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--text-secondary);
+}
+.avatar-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 4px;
+}
+.avatar-grid-item {
+  aspect-ratio: 1;
+  border-radius: var(--radius-sm);
+  border: 2px solid transparent;
+  cursor: pointer;
+  overflow: hidden;
+  transition: all var(--transition);
+  background: var(--bg-input);
+}
+.avatar-grid-item:hover {
+  border-color: var(--accent);
+  transform: scale(1.05);
+}
+.avatar-grid-item.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.avatar-grid-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.detail-avatar-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+.avatar-change-btn {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--bg-modal);
+  background: var(--accent);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.avatar-change-btn:hover { background: var(--accent-hover); }
+
+.detail-avatar-gallery {
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  background: var(--bg-input);
+  border-radius: var(--radius);
+}
+
+.avatar-upload-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.avatar-upload-divider::before,
+.avatar-upload-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.avatar-upload-zone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.avatar-upload-zone:hover,
+.avatar-upload-zone.drag-over {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+.avatar-upload-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.avatar-upload-preview {
+  position: relative;
+  display: inline-block;
+}
+/* The plain class rules above (display:flex/inline-block) outrank the UA
+   [hidden]{display:none}, so toggling the `hidden` attribute had no effect.
+   Re-assert it with attribute+class specificity for both upload zones. */
+.avatar-upload-content[hidden],
+.avatar-upload-preview[hidden] {
+  display: none;
+}
+.avatar-upload-preview img {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+.avatar-preview-clear {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--danger);
+  color: var(--color-white);
+  border: none;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hint { font-weight: 400; color: var(--text-muted); }
+
+/* === Detail === */
+.detail-top {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.detail-avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex-shrink: 0;
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.detail-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.detail-info h3 { font-size: 18px; font-weight: 600; }
+.detail-info p { font-size: 13px; color: var(--text-secondary); margin-top: 4px; }
+
+.detail-section { margin-bottom: 24px; }
+.detail-section h4 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+
+.code-block {
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 16px;
+  font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+
+.detail-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+

@@ -1,0 +1,316 @@
+/* === Responsive === */
+@media (max-width: 900px) {
+  .kanban-board {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+  .kanban-col { min-height: auto; }
+  .kanban-swimlane-body {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+}
+
+@media (max-width: 640px) {
+  main { padding: 20px 16px 48px; }
+  .agents-grid { grid-template-columns: 1fr; gap: 12px; }
+  .agent-card { padding: 20px 14px; min-height: auto; }
+  .agent-avatar { width: 44px; height: 44px; font-size: 18px; }
+  .modal { width: 95%; }
+  .modal-agent-detail { max-width: 100%; }
+  .header-left { gap: 16px; }
+  .mem-toolbar { flex-direction: column; }
+  .mem-stats { gap: 8px; }
+  .stat-card { min-width: 70px; padding: 12px; }
+  .stat-value { font-size: 20px; }
+  .mem-tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .mem-tab { padding: 10px 12px; font-size: 12px; }
+  .log-date-nav { gap: 8px; }
+  .log-current-date { font-size: 14px; min-width: 120px; }
+  .log-entry { padding: 10px 12px; gap: 8px; }
+  .log-entry-time { font-size: 11px; }
+  .tab-nav { padding: 0 16px; overflow-x: auto; }
+  .tab-btn { padding: 10px 12px; font-size: 13px; }
+  .tab-panel { padding: 0 16px 16px; }
+  .agent-overview-grid { grid-template-columns: 1fr; }
+  .agent-detail-bottom { margin: 0 16px; }
+  .schedule-view-toggle { flex-wrap: wrap; }
+  .schedule-row { padding: 12px 14px; gap: 10px; }
+  .schedule-actions { opacity: 1; }
+  .timeline-agent { width: 70px; }
+  .timeline-hours { margin-left: 70px; }
+  .timeline-marker { width: 24px; height: 24px; top: 10px; }
+  .timeline-marker-tooltip { font-size: 10px; }
+  .connector-scope-grid { grid-template-columns: 1fr; }
+  .connector-stats { gap: 8px; }
+  .catalog-grid { grid-template-columns: 1fr; }
+  .catalog-filters { gap: 4px; }
+  .catalog-filter-btn { padding: 5px 10px; font-size: 12px; }
+  .skills-grid { grid-template-columns: 1fr; }
+  .skills-stats { gap: 8px; }
+  .skills-body-wrap { flex-direction: column; }
+  .skills-category-sidebar { width: 100%; flex-direction: row; flex-wrap: wrap; position: static; }
+  .autonomy-grid { gap: 8px; }
+  .autonomy-row { flex-wrap: wrap; gap: 10px; }
+  .autonomy-row-label { min-width: unset; flex: 1 1 100%; }
+}
+
+/* === Autonomy Page === */
+.autonomy-legend {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 24px;
+  padding: 14px 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.autonomy-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.autonomy-legend-item strong {
+  font-weight: 600;
+  font-size: 14px;
+}
+.autonomy-level-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.autonomy-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.autonomy-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color var(--transition);
+}
+.autonomy-row:hover { border-color: var(--accent); }
+.autonomy-row.locked {
+  opacity: 0.55;
+  pointer-events: none;
+}
+.autonomy-row.locked:hover { border-color: var(--border); }
+.autonomy-row.capped { border-left: 3px solid var(--accent); }
+.autonomy-row-label {
+  flex: 1;
+  min-width: 260px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+}
+.autonomy-row-lock {
+  color: var(--text-muted);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.autonomy-row-lock svg { flex-shrink: 0; }
+.autonomy-row-cap {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.autonomy-row-cap svg { flex-shrink: 0; }
+.autonomy-levels {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-input);
+  border-radius: 6px;
+  padding: 3px;
+}
+.autonomy-level-btn {
+  padding: 6px 16px;
+  border: none;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text-muted);
+  transition: all var(--transition);
+  min-width: 36px;
+  text-align: center;
+}
+.autonomy-level-btn:hover:not(.active):not(:disabled) {
+  color: var(--text);
+  background: var(--bg-card);
+}
+.autonomy-level-btn.over-cap {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+.autonomy-level-btn.active {
+  color: var(--color-white);
+  box-shadow: var(--shadow-sm);
+}
+.autonomy-level-btn.active[data-level="1"] {
+  background: var(--text-muted);
+}
+.autonomy-level-btn.active[data-level="2"] {
+  background: var(--accent);
+}
+.autonomy-level-btn.active[data-level="3"] {
+  background: var(--success);
+}
+.autonomy-grid > :last-child { margin-bottom: 0; }
+.autonomy-footer {
+  margin-top: 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* === Settings page === */
+.settings-group { margin-bottom: 28px; }
+.settings-group:last-child { margin-bottom: 0; }
+.settings-group-title {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin: 0 0 10px;
+}
+.settings-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 14px 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+  transition: border-color var(--transition);
+}
+.settings-row:hover { border-color: var(--accent); }
+.settings-row-info { flex: 1; min-width: 240px; }
+.settings-row-key {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  font-family: var(--font-mono, monospace);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.settings-restart-badge {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--warning);
+  border: 1px solid var(--warning);
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+.settings-row-desc {
+  font-size: 13px;
+  color: var(--text);
+  margin-top: 4px;
+}
+.settings-row-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.settings-row-editor {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.settings-row-editor .input {
+  width: 140px;
+  font-size: 13px;
+}
+.settings-color-input {
+  width: 72px;
+  height: 32px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-input);
+  cursor: pointer;
+}
+.settings-row-error {
+  font-size: 12px;
+  color: var(--danger);
+  flex-basis: 100%;
+}
+
+/* === Safe-area insets (iOS notch / Dynamic Island / home indicator) ===
+ * The page ships viewport-fit=cover (see index.html), which lets content draw
+ * edge-to-edge under the notch in an installed (standalone) PWA. env() resolves
+ * to 0 on devices/browsers with no inset (Android without a cutout, desktop),
+ * so every rule here is a no-op there -- no platform sniffing needed.
+ *
+ * Landscape is the important case: an iPhone in landscape is WIDER than the
+ * mobile breakpoint, so it uses the desktop column layout (sidebar + main as
+ * in-flow grid children of <body>), NOT the mobile shell.
+ *
+ * Each side inset is filled by the column that meets it, NOT by a body gap, so
+ * the strip shows the right colour. The LEFT inset (the menu side) is handled on
+ * .sidebar below, letting its lighter card background bleed into the cutout
+ * instead of leaving a darker body-coloured gap beside the menu. The RIGHT inset
+ * sits next to <main>, whose background already is the body colour, so padding
+ * the body on the right is seamless there. Bottom padding clears the home
+ * indicator in both orientations. iOS reports left/right insets as 0 in
+ * portrait, so none of this adds stray side padding there. */
+body {
+  padding-right: env(safe-area-inset-right);
+}
+/* Bottom inset: on the wide layout (the sidebar lives in the body grid as a
+ * sticky column) put it on <main>, NOT <body>. Padding on <body> shortens the
+ * sticky sidebar's containing block, so a flick to the very bottom detaches the
+ * menu from top:0 and slides it up by the inset -- the residual drift still
+ * visible at the bottom in landscape. <main> is the scrolling content; padding
+ * it clears the home indicator without shrinking that container, so the menu
+ * stays pinned. Below the breakpoint the sidebar is a fixed off-canvas drawer
+ * (independent of body height), so <body> padding is correct there. */
+@media (min-width: 769px) {
+  main { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+  /* Widen the sidebar track by the left inset so the menu keeps its full content
+   * width in landscape. Without this the inset (added to .sidebar padding-left
+   * below) eats into a fixed 220px track, squeezing the labels until they
+   * overflow. The added track width and the added padding cancel out, leaving
+   * the same 192px content box as desktop. */
+  body { grid-template-columns: calc(220px + env(safe-area-inset-left)) 1fr; }
+}
+@media (max-width: 768px) {
+  body { padding-bottom: env(safe-area-inset-bottom); }
+}
+/* Left inset = the menu side. Extend the sidebar's own (lighter) card background
+ * into the cutout; the extra inner padding keeps the brand/nav clear of the
+ * notch. Portrait and no-notch devices report 0, so this stays the base 14px. */
+.sidebar {
+  padding-left: calc(14px + env(safe-area-inset-left));
+}
+/* Portrait status-bar/notch: grow the sticky top bar so its card background
+ * fills the strip and its content sits below the notch. Done here (not via
+ * body padding-top) so the strip shows the bar colour, not a body-coloured
+ * gap. The bar only renders below the mobile breakpoint (portrait), where this
+ * height override wins over the base rule by source order. */
+.mobile-topbar {
+  height: calc(52px + env(safe-area-inset-top));
+  padding-top: env(safe-area-inset-top);
+}

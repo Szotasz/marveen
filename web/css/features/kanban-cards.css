@@ -1,0 +1,363 @@
+/* === Kanban Card === */
+.kanban-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  cursor: grab;
+  transition: all var(--transition);
+  user-select: none;
+  position: relative;
+}
+.kanban-card-actions {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.kanban-card:hover .kanban-card-actions {
+  opacity: 1;
+}
+.card-breakdown-btn {
+  background: color-mix(in oklch, var(--accent) 15%, transparent);
+  border: 1px solid color-mix(in oklch, var(--accent) 30%, transparent);
+  border-radius: 5px;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 5px;
+  transition: background 0.15s;
+}
+.card-breakdown-btn:hover {
+  background: color-mix(in oklch, var(--accent) 25%, transparent);
+}
+.card-breakdown-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.kanban-subtask-badge {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  background: color-mix(in oklch, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in oklch, var(--accent) 25%, transparent);
+  padding: 1px 7px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.kanban-subtask-badge:hover {
+  background: color-mix(in oklch, var(--accent) 20%, transparent);
+}
+
+/* Embedded subtasks — rendered inside the parent card when same column */
+.kanban-embedded-subtasks {
+  border-top: 1px solid var(--border);
+  margin-top: 10px;
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.kanban-embedded-subtask {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  line-height: 1.3;
+}
+.kanban-embedded-subtask:hover {
+  border-color: var(--accent);
+  background: var(--bg-input);
+}
+.kanban-embedded-seq {
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.kanban-embedded-assignee {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.kanban-embedded-grandchildren {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+}
+/* display:flex above wins over UA [hidden]{display:none} -- explicit override required. */
+.kanban-embedded-grandchildren[hidden] { display: none; }
+.kanban-embedded-subtask.kanban-depth-2 {
+  font-size: 11px;
+  padding: 3px 6px;
+  background: var(--bg-input);
+  border-color: var(--border);
+  margin-left: 14px;
+}
+.kanban-subtask-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 10px;
+  color: var(--text-muted);
+  padding: 0 2px;
+  margin-left: auto;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.kanban-subtask-toggle:hover { color: var(--accent); }
+.kanban-embedded-subtask { flex-wrap: wrap; }
+
+.kanban-card:hover {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-sm);
+}
+.kanban-card.dragging {
+  opacity: 0.4;
+  transform: rotate(2deg);
+}
+.kanban-card.drop-target-parent {
+  outline: 2px dashed var(--accent);
+  outline-offset: 2px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-card));
+}
+.kanban-card.drop-target-invalid {
+  outline: 2px dashed var(--danger);
+  outline-offset: 2px;
+  cursor: no-drop;
+}
+.kanban-card-project {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  background: color-mix(in oklch, var(--accent) 12%, transparent);
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-bottom: 4px;
+  letter-spacing: 0.02em;
+}
+
+.kanban-card-title {
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+
+.kanban-card-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.kanban-card-assignee {
+  font-size: 11px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.assignee-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  font-weight: 700;
+  color: white;
+  flex-shrink: 0;
+}
+.assignee-dot.owner { background: var(--accent); }
+.assignee-dot.bot { background: var(--info); }
+.assignee-dot.agent { background: var(--success); }
+.assignee-dot.unknown { background: var(--text-muted); }
+
+.kanban-card-due {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+.kanban-card-due.overdue { color: var(--danger); font-weight: 600; }
+
+.kanban-card-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.kanban-card-label-pill {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 8px;
+  color: var(--label-color);
+  background: color-mix(in srgb, var(--label-color) 16%, transparent);
+  cursor: pointer;
+  line-height: 1.5;
+}
+.kanban-card-label-pill:hover { filter: brightness(1.15); }
+.kanban-card-label-overflow {
+  color: var(--text-muted);
+  background: var(--bg);
+  cursor: default;
+}
+.kanban-card-label-overflow:hover { filter: none; }
+
+/* Archived cards: same card look as the board, laid out in a responsive grid */
+.archived-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+.archived-card {
+  cursor: pointer;
+}
+.archived-card:active { cursor: pointer; }
+.archived-prio-pill {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 8px;
+  color: var(--prio-color);
+  background: color-mix(in srgb, var(--prio-color) 16%, transparent);
+  line-height: 1.5;
+}
+.archived-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.archived-date {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.kanban-col-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 12px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-card));
+  cursor: pointer;
+  user-select: none;
+  transition: opacity 0.15s;
+}
+.kanban-col-chip:hover { opacity: 0.8; }
+.kanban-col-chip.hidden {
+  border-color: var(--border);
+  color: var(--muted);
+  background: var(--bg);
+  text-decoration: line-through;
+  opacity: 0.55;
+}
+
+.kanban-quick-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 12px;
+  /* Inactive chips already carry their label's own colour (border + text +
+     faint tint), so the header filter row visually matches the per-card label
+     pills on the board; the active state below fills solid. */
+  border: 1px solid var(--chip-color);
+  color: var(--chip-color);
+  background: color-mix(in srgb, var(--chip-color) 12%, var(--bg-card));
+  cursor: pointer;
+  user-select: none;
+}
+.kanban-quick-filter-chip:hover { border-color: var(--chip-color); }
+.kanban-quick-filter-chip.active {
+  color: white;
+  background: var(--chip-color);
+  border-color: var(--chip-color);
+}
+.kanban-quick-filter-count {
+  font-size: 10px;
+  opacity: 0.85;
+}
+.kanban-quick-filter-clear {
+  margin-left: 2px;
+  font-weight: 700;
+}
+.kanban-quick-filter-clear-all {
+  font-size: 12px;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+}
+/* On narrow screens the filter row wraps; remove the auto-margin so
+   quick-filter chips don't get pushed to the far right of their own line. */
+@media (max-width: 768px) {
+  #kanbanQuickFilters { margin-left: 0 !important; }
+}
+
+.priority-bar {
+  width: 3px;
+  height: 100%;
+  border-radius: 2px;
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+.kanban-card {
+  position: relative;
+  overflow: hidden;
+}
+.kanban-card[data-priority="urgent"] { border-left: 3px solid var(--danger); }
+.kanban-card[data-priority="high"] { border-left: 3px solid var(--accent); }
+.kanban-card[data-priority="normal"] { border-left: 3px solid transparent; }
+.kanban-card[data-priority="low"] { border-left: 3px solid var(--border); }
+
+/* Card aging: left stripe overrides priority border when card is stale.
+   Colour is set as --card-aging-color via inline style by JS. */
+.kanban-card[data-aging] { border-left: 3px solid var(--card-aging-color); }
+
+/* Aging badge: hourglass + day/hour counter, top-right (left of the ⚡ action) */
+.kanban-card-aging-badge {
+  position: absolute;
+  top: 6px;
+  right: 28px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+@keyframes aging-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.kanban-card-aging-badge.kanban-card-aging-critical {
+  animation: aging-pulse 2.2s ease-in-out infinite;
+}
+

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { readAllCss } from './css-helper.js'
 
 // Contract test for two dashboard modal CSS regressions reported 2026-06-11:
 //   1. "Vibrating terminal modal": `.terminal-modal` had only `max-height: 90vh`
@@ -18,13 +19,12 @@ import { dirname, join } from 'node:path'
 // F5 (DS): modal base class extracted to web/css/components/modal.css.
 //   Contracts for overlay/panel/close are now pinned against modal.css.
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const cssPath = join(__dirname, '..', '..', 'web', 'style.css')
 const btnCssPath = join(__dirname, '..', '..', 'web', 'css', 'components', 'btn.css')
 const modalCssPath = join(__dirname, '..', '..', 'web', 'css', 'components', 'modal.css')
 const fieldCssPath = join(__dirname, '..', '..', 'web', 'css', 'components', 'field.css')
 // Strip /* ... */ comments so an explanatory comment that *mentions* a property
 // is never mistaken for a real declaration.
-const css = readFileSync(cssPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+const css = readAllCss().replace(/\/\*[\s\S]*?\*\//g, '')
 const btnCss = readFileSync(btnCssPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
 const modalCss = readFileSync(modalCssPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
 const fieldCss = readFileSync(fieldCssPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')

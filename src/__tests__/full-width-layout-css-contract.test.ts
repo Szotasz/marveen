@@ -12,15 +12,15 @@
 // House idiom: read the frontend files as strings and assert short,
 // formatting-proof fragments.
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { readAllCss } from './css-helper.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const WEB = join(__dirname, '..', '..', 'web')
 // Strip comments so the explanatory comment inside the `main` rule (which
 // mentions the old cap) is never mistaken for a real declaration.
-const css = readFileSync(join(WEB, 'style.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+const css = readAllCss().replace(/\/\*[\s\S]*?\*\//g, '')
 
 /** The declarations of the first top-level `<selector> { ... }` rule. */
 function ruleBody(selector: string): string {

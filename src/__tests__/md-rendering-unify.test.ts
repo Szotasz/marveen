@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readAllCss } from './css-helper.js'
 
 // ---------------------------------------------------------------------------
 // Local mdInline re-implementation for DOM-free unit testing.
@@ -37,7 +38,7 @@ const APP          = readFileSync(join(__dirname, '../../web/app.js'),          
 const DOCS_MOD     = readFileSync(join(__dirname, '../../web/modules/docs-research.js'), 'utf-8')
 const SKILLS_MOD   = readFileSync(join(__dirname, '../../web/modules/skills.js'),        'utf-8')
 const HTML         = readFileSync(join(__dirname, '../../web/index.html'),               'utf-8')
-const CSS          = readFileSync(join(__dirname, '../../web/style.css'),                'utf-8')
+const CSS          = readAllCss()
 
 describe('md rendering unification', () => {
   it('docs-research.js has exactly one renderMarkdown function definition', () => {

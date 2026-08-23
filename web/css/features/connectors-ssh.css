@@ -1,0 +1,596 @@
+/* === SSH Vault Section === */
+.ssh-section {
+  margin-top: 32px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+.ssh-key-store-section { margin-top: 28px; }
+
+/* Key assign select in card/table */
+.ssh-key-select {
+  font-size: 12px;
+  padding: 3px 6px;
+  height: 28px;
+  min-width: 0;
+  max-width: 160px;
+}
+.ssh-key-select-wrap {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.ssh-key-select-wrap .ssh-key-select { flex: 1; }
+
+/* Info modal server section */
+.ssh-info-server-section {
+  margin-bottom: 14px;
+}
+.ssh-info-server-section .ssh-info-key-section-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+/* Info modal key section */
+.ssh-info-key-section {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 20px;
+}
+.ssh-info-key-section-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.ssh-info-key-section .ssh-key-select {
+  width: 100%;
+  max-width: 100%;
+  height: 34px;
+  font-size: 13px;
+}
+.ssh-section-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+.ssh-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.ssh-section-sub {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.ssh-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* SSH key status badges */
+.ssh-key-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 20px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.ssh-key-badge.ok { background: var(--success-soft); color: var(--success); }
+.ssh-key-badge.missing { background: var(--warning-soft); color: var(--color-amber-700); }
+.ssh-key-badge.expired { background: var(--danger-soft); color: var(--danger); }
+[data-theme="dark"] .ssh-key-badge.ok { color: #4ade80; }
+[data-theme="dark"] .ssh-key-badge.missing { color: #fbbf24; }
+[data-theme="dark"] .ssh-key-badge.expired { color: #f87171; }
+
+/* SSH card grid */
+.ssh-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+.ssh-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+.ssh-card:hover { border-color: var(--accent); box-shadow: 0 2px 8px color-mix(in srgb, black 8%, transparent); }
+.ssh-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.ssh-card-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.ssh-card-title { flex: 1; min-width: 0; }
+.ssh-card-name {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ssh-card-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ssh-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+.ssh-card-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+}
+.ssh-card-row svg { flex-shrink: 0; opacity: 0.6; }
+.ssh-card-row span { color: var(--text); font-family: monospace; font-size: 12px; }
+.ssh-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.ssh-card-actions { display: flex; gap: 4px; }
+
+/* SSH table */
+/* ssh-table base styles moved to table.css (DS F6); feature overrides remain */
+.ssh-table .ssh-table-name { font-weight: 600; }
+.ssh-table .ssh-table-mono { font-family: monospace; font-size: 12px; color: var(--text-muted); }
+.ssh-table .ssh-table-actions { display: flex; gap: 4px; justify-content: flex-end; }
+
+@media (max-width: 600px) {
+  .ssh-cards { grid-template-columns: 1fr; }
+  .ssh-section-header { flex-direction: column; }
+}
+
+/* SSH keygen + info modal styles */
+.ssh-pubkey-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+.ssh-pubkey-box {
+  width: 100%;
+  font-family: monospace;
+  font-size: 11px;
+  padding: 10px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  resize: none;
+  line-height: 1.5;
+  word-break: break-all;
+}
+.ssh-pubkey-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 8px;
+}
+.ssh-install-step {
+  margin-bottom: 14px;
+}
+.ssh-install-step-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+.ssh-code-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+.ssh-code {
+  flex: 1;
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--text);
+  word-break: break-all;
+  white-space: pre-wrap;
+  user-select: all;
+}
+.ssh-code-copy {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.ssh-code-copy:hover { color: var(--accent); border-color: var(--accent); }
+.ssh-code-copy.copied { color: var(--success); border-color: var(--success); }
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin 0.8s linear infinite; }
+
+/* Keygen button -- inline on card/table */
+.ssh-keygen-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 20px;
+  border: 1px solid currentColor;
+  background: transparent;
+  cursor: pointer;
+  transition: all var(--transition);
+  color: var(--color-amber-700);
+}
+[data-theme="dark"] .ssh-keygen-btn { color: #fbbf24; }
+.ssh-keygen-btn:hover { background: var(--warning-soft); }
+
+.ssh-info-btn {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  transition: all var(--transition);
+  flex-shrink: 0;
+}
+.ssh-info-btn:hover { color: var(--accent); border-color: var(--accent); }
+
+.vault-bind-status {
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-top: 8px;
+}
+.vault-bind-status.success { background: var(--success-soft); color: var(--success); }
+.vault-bind-status.error { background: var(--danger-soft); color: var(--danger); }
+
+.vault-scan-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+}
+.vault-scan-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 6px;
+  background: var(--bg-card);
+}
+.vault-scan-check { flex-shrink: 0; }
+.vault-scan-info { flex: 1; min-width: 0; }
+.vault-scan-server {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.vault-scan-env {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: monospace;
+}
+.vault-scan-env code {
+  background: var(--bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+.vault-scan-targets {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.vault-scan-id { flex-shrink: 0; }
+
+.env-var-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.env-var-label {
+  font-size: 12px;
+  font-weight: 600;
+  font-family: monospace;
+  color: var(--text);
+}
+.env-var-input { width: 100%; }
+.connector-builtin-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.connector-builtin {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.connector-builtin-name {
+  font-size: 13px;
+  font-weight: 500;
+  flex: 1;
+}
+.connector-builtin-action {
+  font-size: 11px;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: none;
+}
+.connector-builtin-action:hover { text-decoration: underline; }
+
+/* Built-in row's "Részletek" button: carries the same action styling
+   but presents as an actual <button> with focus ring for keyboard
+   users. The bare <span> it replaced was unreachable by tab and
+   lacked a click handler despite looking like a control. */
+.connector-builtin-action.btn-link {
+  background: none;
+  border: none;
+  /* Inherit base .connector-builtin-action sizing so both visual
+     heights stay identical across built-in rows regardless of
+     whether a row ends with a span or a button. */
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--accent);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.connector-builtin-action.btn-link:hover {
+  background: var(--bg-input);
+  text-decoration: underline;
+}
+.connector-builtin-action.btn-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Inline <code> inside the built-in detail modal: give it a
+   distinct background so the command text stands out from the
+   surrounding prose in both light and dark themes. Scoped to the
+   new modal's body specifically; .modal-body is shared by ~13
+   other modals with their own <code> styling (Agent detail
+   Settings, Telegram instructions, etc.) that we must not
+   override. */
+#builtinDetailBody code {
+  background: var(--bg-input);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.92em;
+}
+
+.connector-grid {
+  display: block;
+}
+
+.connector-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.connector-card:hover {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-sm);
+}
+
+.connector-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.connector-status-dot.connected { background: var(--success); box-shadow: 0 0 6px color-mix(in srgb, var(--success) 40%, transparent); }
+.connector-status-dot.configured { background: var(--info); }
+.connector-status-dot.needs_auth { background: var(--accent); }
+.connector-status-dot.failed { background: var(--danger); }
+.connector-status-dot.unknown { background: var(--text-muted); }
+
+.connector-info {
+  flex: 1;
+  min-width: 0;
+}
+.connector-name {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.connector-endpoint {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.connector-type-badge {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.connector-type-badge.remote { background: var(--info-soft); color: var(--info); }
+.connector-type-badge.local { background: var(--success-soft); color: var(--success); }
+.connector-type-badge.plugin { background: var(--accent-soft); color: var(--accent); }
+
+.connector-source-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  border-radius: 10px;
+  background: var(--bg-input);
+  color: var(--text-muted);
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.info-box {
+  padding: 12px 16px;
+  margin: 0 0 16px;
+  border-radius: 8px;
+  background: var(--info-soft);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  border-left: 3px solid var(--info);
+}
+.info-box strong { color: var(--info); }
+
+.connector-stale-banner {
+  padding: 10px 14px;
+  margin: 0 0 12px;
+  border-radius: 6px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 13px;
+  border-left: 3px solid var(--danger);
+}
+
+.connector-card-readonly {
+  cursor: default;
+  opacity: 0.9;
+}
+.connector-card-readonly:hover {
+  /* The base .connector-card:hover rule applies border-color +
+     box-shadow to hint at a click target. Read-only cards have no
+     click handler, so mute those cues explicitly. */
+  border-color: var(--border);
+  box-shadow: none;
+}
+.connector-readonly-hint {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.connector-detail-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.connector-detail-row {
+  display: flex;
+  gap: 12px;
+}
+.connector-detail-row .meta-label { min-width: 80px; }
+
+.connector-agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.connector-agent-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+}
+.connector-agent-item input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+}
+.connector-agent-item label {
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.connector-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 0;
+  color: var(--text-muted);
+  font-size: 14px;
+  gap: 10px;
+}
+

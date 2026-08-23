@@ -1,0 +1,296 @@
+/* === Fleet Migration Section === */
+.fleet-section {
+  margin-top: 40px;
+  padding-top: 32px;
+  border-top: 1px solid var(--border);
+  max-width: 860px;
+}
+
+.fleet-section-header {
+  margin-bottom: 16px;
+}
+
+.fleet-section-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.fleet-section-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.fleet-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--warning-soft);
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 20px;
+}
+
+.fleet-warning-icon { flex-shrink: 0; }
+
+.fleet-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.fleet-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  box-shadow: var(--shadow-sm);
+}
+
+.fleet-card-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.fleet-card-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+
+.fleet-file-input {
+  display: block;
+  width: 100%;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.fleet-dry-run-result {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.fleet-dry-run-result.ok {
+  background: var(--info-soft);
+  border: 1px solid var(--info);
+}
+
+.fleet-dry-run-result.has-errors {
+  background: var(--danger-soft);
+  border: 1px solid var(--danger);
+}
+
+.fleet-dry-run-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.fleet-dry-run-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.fleet-dry-run-stat {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  text-align: center;
+}
+
+.fleet-dry-run-stat-value {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.fleet-dry-run-stat-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.fleet-dry-run-warnings {
+  color: var(--color-amber-600);
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+.fleet-dry-run-errors {
+  color: var(--danger);
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+.fleet-apply-result {
+  margin-top: 16px;
+  padding: 14px 16px;
+  background: var(--success-soft);
+  border: 1px solid var(--success);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.fleet-apply-result-title {
+  font-weight: 600;
+  color: var(--success);
+  margin-bottom: 6px;
+}
+
+@media (max-width: 768px) {
+  /* Off-canvas drawer is position:fixed, so it ignores the <body> padding above.
+   * When opened in portrait, keep its top brand below the notch and its footer
+   * above the home indicator. */
+  .sidebar {
+    padding-top: max(20px, env(safe-area-inset-top));
+    padding-bottom: max(20px, env(safe-area-inset-bottom));
+  }
+}
+
+/* Update view: release-grouped collapsible list */
+.updates-group { border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 10px; overflow: hidden; }
+.updates-group > summary.updates-group-head { list-style: none; cursor: pointer; display: flex; align-items: baseline; gap: 10px; padding: 12px 14px; background: var(--bg-input); font-size: 14px; }
+.updates-group > summary.updates-group-head::-webkit-details-marker { display: none; }
+.updates-group > summary.updates-group-head::before { content: "\25B8"; color: var(--text-muted); transition: transform .15s; }
+.updates-group[open] > summary.updates-group-head::before { transform: rotate(90deg); }
+.updates-group-tag { font-weight: 600; color: var(--accent); white-space: nowrap; }
+.updates-group-summary { color: var(--text); flex: 1; }
+.updates-group-count { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.updates-group .updates-commit-list { padding: 6px 14px 12px; }
+
+/* Version-centric update view: human summary up front, raw commits collapsed. */
+.updates-version { border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 12px; padding: 14px 16px; }
+.updates-version-tag { font-weight: 700; color: var(--accent); font-size: 15px; margin-bottom: 6px; }
+.updates-version-summary { color: var(--text); font-size: 14px; line-height: 1.6; }
+.updates-version-details { margin-top: 10px; }
+.updates-version-details > summary { list-style: none; cursor: pointer; color: var(--text-muted); font-size: 12px; user-select: none; }
+.updates-version-details > summary::-webkit-details-marker { display: none; }
+.updates-version-details > summary::before { content: "\25B8 "; transition: transform .15s; display: inline-block; }
+.updates-version-details[open] > summary::before { transform: rotate(90deg); }
+.updates-version-details .updates-commit-list { padding: 10px 0 2px; }
+/* First-run onboarding wizard */
+.onboarding-overlay { z-index: 10000; }
+/* The base .modal ships zero padding (other modals pad via .modal-header /
+   .modal-body); the onboarding wizard renders its content directly, so it
+   needs its own inner padding -- without it the title and inputs sit flush
+   against the modal edge (first screen every fresh install sees). */
+.onboarding-modal { max-width: 540px; width: 92%; position: relative; padding: 24px 26px 22px; }
+@media (max-width: 600px) { .onboarding-modal { padding: 18px 16px 16px; } }
+.onboarding-modal .modal-close { position: absolute; top: 12px; right: 12px; }
+.onboarding-modal h2 { margin: 0 0 4px; }
+.onb-sub { color: var(--text-muted); font-size: 13px; margin: 0 0 16px; }
+.onboarding-steps { display: flex; gap: 8px; margin-bottom: 10px; }
+.onb-flow-note { font-size: 12px; color: var(--text-muted); background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 0 0 14px; }
+.onboarding-step { flex: 1; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); padding: 6px 8px; border-radius: 8px; background: var(--bg-input); border: 1px solid var(--border); }
+.onboarding-step.active { color: var(--text); border-color: var(--accent); }
+.onboarding-step.done { opacity: 0.55; }
+.onboarding-step .onb-num { display: inline-flex; width: 18px; height: 18px; align-items: center; justify-content: center; border-radius: 50%; background: var(--border); font-size: 11px; }
+.onboarding-step.active .onb-num { background: var(--accent); color: var(--color-white); }
+.onboarding-body p { font-size: 14px; line-height: 1.6; }
+.onb-input { width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-input); color: var(--text); font-size: 13px; margin: 4px 0; }
+.onb-hint { font-size: 12px; color: var(--text-muted); margin: 4px 0 12px; }
+.onboarding-body .btn-primary, .onboarding-body .btn-secondary { margin-right: 8px; margin-top: 4px; }
+.onb-msg { font-size: 13px; margin-top: 12px; min-height: 18px; }
+.onb-msg.ok { color: var(--success); }
+.onb-msg.err { color: var(--danger); }
+.onb-ok-line { color: var(--success); font-size: 14px; }
+.onb-list { font-size: 13px; color: var(--text-muted); padding-left: 18px; line-height: 1.7; }
+.onb-pending { margin: 10px 0; }
+.onb-pending-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+/* === Federation (round 2): federated agent cards -- NOT the SSH "remote" feature === */
+.federated-agent-card {
+  cursor: default;
+  border-style: dashed;
+}
+.federated-agent-card:hover {
+  transform: none;
+  box-shadow: none;
+}
+.federated-agent-card .agent-name,
+.federated-agent-card .agent-desc {
+  color: var(--text-muted);
+}
+.federated-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 1px 6px;
+  border-radius: 8px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+/* === OTel Trace Waterfall (card def5a189) === */
+.chat-upper-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 180px;
+  overflow: hidden;
+}
+.trace-resize-handle {
+  height: 5px;
+  background: var(--border);
+  cursor: row-resize;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.trace-resize-handle:hover, .trace-resize-handle.dragging { background: var(--accent); }
+.trace-waterfall-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 140px;
+  overflow: hidden;
+  border-top: 1px solid var(--border);
+  background: var(--bg-card);
+}
+.trace-waterfall-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  background: var(--bg-card);
+}
+.trace-waterfall-title { font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.trace-select { font-size: 12px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); max-width: 320px; flex: 1; }
+.trace-status-badge { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 8px; }
+.trace-status-ok { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+.trace-status-error { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
+.trace-status-running { background: color-mix(in srgb, var(--warning) 15%, transparent); color: var(--warning); }
+.trace-waterfall-body {
+  flex: 1;
+  overflow: auto;
+  position: relative;
+}
+.trace-waterfall-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 80px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+/* Waterfall SVG rows */
+.trace-wf-svg { display: block; width: 100%; }
+.trace-wf-row-bg:nth-child(odd) { fill: color-mix(in srgb, var(--text) 3%, transparent); }
+.trace-wf-label { font-size: 11px; fill: var(--text); font-family: monospace; }
+.trace-wf-bar { rx: 3; }
+.trace-wf-bar-running { stroke: var(--warning); stroke-width: 1.5; stroke-dasharray: 4 2; }
+.trace-wf-bar-error { opacity: 0.85; }
+.trace-wf-axis-line { stroke: var(--border); }
+.trace-wf-axis-label { font-size: 9px; fill: var(--text-muted); }
+.trace-bottleneck { stroke: var(--danger); stroke-width: 1.5; stroke-dasharray: 3 2; }
+

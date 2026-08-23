@@ -1,0 +1,444 @@
+/* === Header === */
+header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  height: 64px;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 32px;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  font-size: 16px;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+.logo svg { color: var(--accent); }
+
+nav { display: flex; gap: 4px; }
+
+.nav-link {
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-decoration: none;
+  transition: all var(--transition);
+}
+.nav-link:hover { color: var(--text); background: var(--accent-soft); }
+.nav-link.active { color: var(--accent); background: var(--accent-soft); }
+
+.updates-badge {
+  display: inline-block;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  margin-left: 6px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: var(--color-white);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  vertical-align: middle;
+}
+.updates-badge[hidden] { display: none; }
+
+.updates-summary {
+  padding: 16px 18px;
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  margin: 20px 0;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.updates-summary.behind {
+  border-left: 4px solid var(--accent);
+}
+.updates-summary.up-to-date {
+  border-left: 4px solid var(--success);
+}
+.updates-summary.error {
+  border-left: 4px solid var(--danger);
+}
+.updates-diagnose {
+  padding: 16px 18px;
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  border-left: 4px solid var(--danger);
+  margin: 0 0 20px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.updates-diagnose.needs-human {
+  border-left-color: var(--warning);
+}
+.updates-diagnose p {
+  margin: 8px 0 12px;
+  color: var(--text-muted);
+}
+.updates-summary code {
+  background: var(--bg-card);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: 'JetBrains Mono', 'SF Mono', monospace;
+}
+
+.updates-commits { margin-top: 20px; }
+.updates-commit-list { display: flex; flex-direction: column; gap: 8px; }
+.updates-commit {
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+}
+.updates-commit-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+  font-family: 'JetBrains Mono', 'SF Mono', monospace;
+}
+.updates-commit-msg { font-size: 14px; color: var(--text); }
+
+.team-graph {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  align-items: center;
+  padding: 24px 0;
+}
+.team-level {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.team-node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 160px;
+  max-width: 220px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: border-color var(--transition), transform var(--transition);
+}
+.team-node:hover { border-color: var(--accent); transform: translateY(-1px); }
+.team-node.main { background: var(--accent-soft); border-color: var(--accent); }
+.team-node.leader { border-color: var(--accent); }
+/* Drag-and-drop reporting edit (Team page). */
+.team-node.team-draggable { cursor: grab; }
+.team-node.team-dragging { opacity: 0.45; cursor: grabbing; }
+.team-node.team-drop-target {
+  border-color: var(--accent);
+  border-style: dashed;
+  background: var(--accent-soft);
+  transform: translateY(-1px);
+}
+.team-node-avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  overflow: hidden;
+  margin-bottom: 8px;
+  background: var(--bg-input);
+}
+.team-node-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.team-node-name { font-weight: 600; font-size: 14px; color: var(--text); margin-bottom: 2px; }
+.team-node-meta { font-size: 12px; color: var(--text-muted); }
+.team-connector {
+  width: 2px;
+  height: 16px;
+  background: var(--border);
+}
+/* Nested tree: a subtree is a column (manager on top, its reports beneath),
+   so reports always sit directly under their own manager. */
+.team-subtree {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.team-children {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: flex-start;
+}
+.team-empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 24px;
+}
+
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.theme-toggle:hover { color: var(--text); border-color: var(--accent); }
+
+[data-theme="light"] .icon-moon { display: none; }
+[data-theme="dark"] .icon-sun { display: none; }
+
+/* === Main === */
+main {
+  /* No width cap: on a large screen the content uses the whole window, the way
+   * the kanban board always has. This is not merely "wider lines" -- almost every
+   * card list here is a `repeat(auto-fill, minmax(Npx, 1fr))` grid, so the extra
+   * room turns into extra COLUMNS on its own (measured at 2400px: agents 3 -> 7,
+   * skills -> 5, costs -> 9, status -> 10). The pages with no grid (memories,
+   * messages, settings) become full-width single columns; if one of those ever
+   * reads too wide, the fix belongs to that page's own layout, not to a global
+   * cap that also flattens the grids. */
+  padding: 32px 32px 64px;
+  width: 100%;
+  /* main is the 1fr grid track; a grid item's default minimum size is its
+   * content's min-content, so wide cards (e.g. schedule rows with badges +
+   * action buttons) inflate the track and push the whole layout past the
+   * viewport -- everything on the right clips. This was masked in portrait,
+   * where main gets overflow-x:hidden (a scroll container's min size is 0).
+   * min-width:0 gives the wide/landscape layout the same freedom: the track
+   * follows 1fr and the flex cards shrink to fit instead of overflowing. */
+  min-width: 0;
+}
+
+.page-header { margin-bottom: 32px; }
+.page-header h1 { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; }
+.subtitle { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
+.page-info-text { color: var(--text-muted); font-size: 12px; margin-top: 8px; line-height: 1.6; max-width: 720px; }
+
+/* === Mobile login QR modal === */
+.mobile-login-qr {
+  width: 240px;
+  height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-white);
+  border-radius: 10px;
+  padding: 10px;
+  box-sizing: border-box;
+}
+.mobile-login-qr svg { width: 100%; height: 100%; display: block; }
+.mobile-login-qr .muted { color: var(--muted); text-align: center; font-size: 13px; }
+.mobile-login-warn {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+  margin: 0;
+  line-height: 1.4;
+}
+
+/* === Dashboard browser login (optional) === */
+.mv-auth-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  background: color-mix(in srgb, var(--color-stone-950) 92%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.mv-auth-card {
+  background: var(--bg-card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  width: 100%;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 12px 40px color-mix(in srgb, black 35%, transparent);
+}
+.mv-auth-card h2 {
+  margin: 0;
+  font-size: 18px;
+  text-align: center;
+}
+.mv-auth-desc {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+  line-height: 1.5;
+}
+.mv-auth-card input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+.mv-auth-card button {
+  padding: 11px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--color-white);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mv-auth-card button:hover { background: var(--accent-hover); }
+.mv-auth-card button:disabled { opacity: 0.6; cursor: default; }
+.mv-auth-err {
+  color: var(--danger);
+  font-size: 13px;
+  min-height: 16px;
+  text-align: center;
+}
+
+/* Setup banner */
+.auth-setup-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 16px;
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  font-size: 13px;
+}
+/* The `display: flex` above is an author rule, so it outranks the UA's
+   [hidden] { display: none } -- without this override the banner stays on
+   screen even when initAuthBanner()/the dismiss button set el.hidden = true,
+   making the close button look dead. Same fix as .kanban-board[hidden] etc. */
+.auth-setup-banner[hidden] { display: none; }
+
+.auth-setup-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.auth-setup-banner-close {
+  background: none;
+  border: 0;
+  color: var(--text-muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+/* Branch-drift warning (top banner + Updates-page notice). The [hidden] rule
+   is explicit because the shared .auth-setup-banner display:flex would
+   otherwise override the UA's [hidden] { display: none }. */
+.branch-drift-banner { border-left-color: var(--warning); }
+.branch-drift-banner[hidden] { display: none; }
+.branch-drift-banner code,
+.updates-branch-notice code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 6px;
+  font-size: 12px;
+  user-select: all;
+}
+.updates-branch-notice {
+  margin: 0 0 12px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.updates-branch-notice.ok { color: var(--text-muted); }
+.updates-branch-notice.warn { border-left: 3px solid var(--warning); }
+
+/* Settings login card */
+.auth-card h3 { margin: 0 0 12px; font-size: 15px; }
+.auth-muted { color: var(--text-muted); font-size: 13px; margin: 0 0 12px; }
+.auth-form { display: flex; flex-direction: column; gap: 8px; max-width: 360px; }
+.auth-form input {
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+.auth-form-msg { font-size: 13px; min-height: 16px; }
+.auth-form-msg.err { color: var(--danger); }
+.auth-form-msg.ok { color: var(--accent); }
+.auth-actions { display: flex; gap: 8px; margin-top: 12px; }
+.auth-sessions { margin-top: 14px; }
+.auth-sessions-title { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.auth-session-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 4px 0;
+  border-top: 1px solid var(--border);
+}
+.auth-session-row code { color: var(--text); }
+.auth-session-ua { margin-left: auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auth-device-keys { margin-top: 18px; }
+.auth-device-name { color: var(--text); font-weight: 600; }
+.auth-device-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auth-device-row .auth-device-revoke { margin-left: auto; flex-shrink: 0; }
+.auth-device-mint { margin-top: 10px; }
+.auth-device-minted-row { flex-direction: row; max-width: none; }
+.auth-device-minted-row input { flex: 1; font-family: var(--mono, monospace); font-size: 12px; }
+.auth-device-warn { margin-bottom: 8px; }
+.auth-device-bridge-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  vertical-align: middle;
+}
+.auth-bridge-enroll { margin-top: 18px; }
+
