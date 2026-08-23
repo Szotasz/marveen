@@ -33,7 +33,12 @@ describe('HEARTBEAT_NEW_HOT_MEMORIES_SQL (the shipped statement, on a fixture DB
     const { db, ins } = fixtureDb()
     const now = Math.floor(Date.now() / 1000)
     ins.run('marveen', 'hot', 'fresh main-agent hot #1', now - 60)
-    ins.run('marveen', 'hot', 'fresh main-agent hot #2', now - 3599)
+    // Margin widened from -3599 (2026-08-23, CI flake): the SQL computes its
+    // own boundary via unixepoch() at QUERY time, not from this JS `now`. A
+    // 1-second margin means any wall-clock delay between capturing `now` and
+    // the query running (DB setup, CI load) can push the row just outside the
+    // window, flipping the count from 2 to 1. -3500 leaves 100s of slack.
+    ins.run('marveen', 'hot', 'fresh main-agent hot #2', now - 3500)
     // The exact wrong-row family HBMEMBLIND819 measured: the heartbeat's OWN
     // id. It must not be countable by accident when the caller passes the
     // main agent's id.
