@@ -210,7 +210,9 @@ const skillDetailOverlay = document.getElementById('skillDetailOverlay')
 
 let globalSkills = []
 let localAgentSkills = []
+let skillUsageMap = {}
 let skillsActiveFilter = 'all'
+let skillsActiveSort = 'name'
 let skillsSearchQuery = ''
 let skillsActiveCategory = 'all'
 
@@ -259,16 +261,30 @@ if (skillsPageNewBtn) {
   })
 }
 
+function buildUsageTags(usage) {
+  const parts = []
+  if (usage.count_30d > 0)
+    parts.push(`<span class="skill-usage-tag" title="${escapeHtml(t('skills.usage.30d'))}">${usage.count_30d}x (30d)</span>`)
+  if (usage.count_90d > 0 && usage.count_90d !== usage.count_30d)
+    parts.push(`<span class="skill-usage-tag skill-usage-tag--dim" title="${escapeHtml(t('skills.usage.90d'))}">${usage.count_90d}x (90d)</span>`)
+  if (usage.last_used_at)
+    parts.push(`<span class="skill-usage-last" title="${escapeHtml(t('skills.usage.last'))}">${escapeHtml(formatMtime(usage.last_used_at * 1000))}</span>`)
+  return parts.join('')
+}
+
 export async function loadGlobalSkills() {
   skillsGrid.innerHTML = `<div class="connector-loading"><span class="spinner"></span> ${t('skills.loading')}</div>`
   skillsStats.innerHTML = ''
   try {
-    const [globalRes, localRes] = await Promise.all([
+    const [globalRes, localRes, usageSummaryRes] = await Promise.all([
       fetch('/api/skills'),
       fetch('/api/skills/local'),
+      fetch('/api/skill-usage/summary'),
     ])
     globalSkills = await globalRes.json()
     localAgentSkills = localRes.ok ? await localRes.json() : []
+    const usageRows = usageSummaryRes.ok ? await usageSummaryRes.json() : []
+    skillUsageMap = Object.fromEntries(usageRows.map(r => [r.skill_name, r]))
     renderGlobalSkills()
   } catch (err) {
     console.error('Skills betoltes hiba:', err)
@@ -310,6 +326,14 @@ export async function loadGlobalSkills() {
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
+    })
+  }
+
+  const sortSelect = document.getElementById('skillsSortSelect')
+  if (sortSelect) {
+    sortSelect.addEventListener('change', () => {
+      skillsActiveSort = sortSelect.value
+      renderGlobalSkillsGrid()
     })
   }
 })()
@@ -407,6 +431,20 @@ function renderGlobalSkillsGrid() {
 
   const allFiltered = [...filteredGlobal, ...filteredLocal]
 
+  if (skillsActiveSort === 'lru') {
+    allFiltered.sort((a, b) => {
+      const ta = skillUsageMap[a.name]?.last_used_at || 0
+      const tb = skillUsageMap[b.name]?.last_used_at || 0
+      return tb - ta
+    })
+  } else if (skillsActiveSort === 'usage') {
+    allFiltered.sort((a, b) => {
+      const ca = skillUsageMap[a.name]?.count_30d || 0
+      const cb = skillUsageMap[b.name]?.count_30d || 0
+      return cb - ca
+    })
+  }
+
   if (allFiltered.length === 0) {
     skillsEmpty.hidden = false
     return
@@ -436,6 +474,8 @@ function renderGlobalSkillsGrid() {
       : ''
 
     const mtimeStr = skill.mtime ? formatMtime(skill.mtime) : ''
+    const usage = skillUsageMap[skill.name] || null
+    const usageTags = usage ? buildUsageTags(usage) : ''
 
     const displayName = skill.label || skill.name
     card.innerHTML = `
@@ -449,10 +489,11 @@ function renderGlobalSkillsGrid() {
           <div class="skills-card-desc">${escapeHtml(skill.description || t('skills.no_description'))}</div>
         </div>
       </div>
-      ${(kwTags || agentBadges || mtimeStr) ? `
+      ${(kwTags || agentBadges || mtimeStr || usageTags) ? `
       <div class="skills-card-footer">
         ${kwTags}
         ${agentBadges}
+        ${usageTags}
         ${mtimeStr ? `<span class="skill-card-mtime" title="${t('skills.mtime.title')}">${escapeHtml(mtimeStr)}</span>` : ''}
       </div>` : ''}
     `
@@ -460,8 +501,12 @@ function renderGlobalSkillsGrid() {
     skillsGrid.appendChild(card)
   }
 
-  for (const skill of filteredGlobal) renderCard(skill, false)
-  for (const skill of filteredLocal) renderCard(skill, true)
+  if (skillsActiveSort !== 'name') {
+    for (const skill of allFiltered) renderCard(skill, !!skill.agentId)
+  } else {
+    for (const skill of filteredGlobal) renderCard(skill, false)
+    for (const skill of filteredLocal) renderCard(skill, true)
+  }
 }
 
 let _skillDetailCurrentName = null
@@ -517,9 +562,18 @@ async function openSkillDetail(skillName, displayLabel, agentId = null) {
         ? t('skills.source.user')
         : t('skills.source.unknown')
       const mtimeStr = detail.mtime ? formatMtime(detail.mtime) : ''
+      const usage = skillUsageMap[skillName]
+      const usageHtml = usage ? `
+        <div class="skill-detail-usage">
+          <span>${usage.total_count}x ${t('skills.usage.total')}</span>
+          <span>${usage.count_30d}x (30d)</span>
+          <span>${usage.count_90d}x (90d)</span>
+          ${usage.last_used_at ? `<span>${escapeHtml(t('skills.usage.last'))}: ${escapeHtml(formatMtime(usage.last_used_at * 1000))}</span>` : ''}
+        </div>` : ''
       metaEl.innerHTML = `
         <div class="skill-detail-source">${t('skills.detail.source_label')} <strong>${sourceLabel}</strong>${mtimeStr ? ` &middot; <span title="${escapeHtml(t('skills.mtime.title'))}">${escapeHtml(mtimeStr)}</span>` : ''}</div>
         <div class="skill-detail-note">${t('skills.detail.auto_available')}</div>
+        ${usageHtml}
       `
     }
 

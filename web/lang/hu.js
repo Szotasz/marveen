@@ -770,6 +770,13 @@ window._i18n.hu = {
   'skills.health.ok':            'OK',
   'skills.health.nodesc':        'Hiányzó leírás',
   'skills.health.empty':         'Üres',
+  'skills.usage.last':           'Utolsó használat',
+  'skills.usage.30d':            '30 napos',
+  'skills.usage.90d':            '90 napos',
+  'skills.usage.total':          'összesen',
+  'skills.sort.name':            'Névsor',
+  'skills.sort.lru':             'Utolsó használat',
+  'skills.sort.usage':           '30 napos forgalom',
 
   // --- Connectors (MCP) ---
   'connectors.page_title':       'MCP összekötők',

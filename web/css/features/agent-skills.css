@@ -484,3 +484,40 @@
   margin-top: 8px;
 }
 
+
+/* Skill usage tags (skill card footer + detail modal) */
+.skill-usage-tag {
+  font-size: var(--text-xs, 0.7rem);
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--accent-muted, color-mix(in srgb, var(--accent) 15%, transparent));
+  color: var(--accent);
+}
+.skill-usage-tag--dim {
+  background: var(--surface-raised, var(--bg-2));
+  color: var(--text-muted);
+}
+.skill-usage-last {
+  font-size: var(--text-xs, 0.7rem);
+  color: var(--text-muted);
+}
+.skill-detail-usage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  font-size: var(--text-sm, 0.8rem);
+  color: var(--text-muted);
+}
+
+/* Sort selector in skills toolbar */
+.skills-sort-select {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 6px);
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}

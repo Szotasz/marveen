@@ -527,6 +527,13 @@ window._i18n.en = {
   'skills.health.ok':            'OK',
   'skills.health.nodesc':        'Missing description',
   'skills.health.empty':         'Empty',
+  'skills.usage.last':           'Last used',
+  'skills.usage.30d':            '30d uses',
+  'skills.usage.90d':            '90d uses',
+  'skills.usage.total':          'total',
+  'skills.sort.name':            'Name',
+  'skills.sort.lru':             'Last used',
+  'skills.sort.usage':           '30-day uses',
 
   // --- Connectors (MCP) ---
   'connectors.page_title':       'MCP connectors',

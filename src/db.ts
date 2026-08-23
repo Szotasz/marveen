@@ -3192,6 +3192,31 @@ export function getSkillUsageStats(sinceSecs?: number): SkillUsageStatRow[] {
   `).all(cutoff) as SkillUsageStatRow[]
 }
 
+export interface SkillUsageSummaryRow {
+  skill_name: string
+  last_used_at: number
+  total_count: number
+  count_30d: number
+  count_90d: number
+}
+
+export function getSkillUsageSummary(): SkillUsageSummaryRow[] {
+  const now = Math.floor(Date.now() / 1000)
+  const cutoff30 = now - 30 * 86400
+  const cutoff90 = now - 90 * 86400
+  return db.prepare(`
+    SELECT
+      skill_name,
+      MAX(created_at) AS last_used_at,
+      COUNT(*) AS total_count,
+      SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS count_30d,
+      SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS count_90d
+    FROM skill_usage
+    GROUP BY skill_name
+    ORDER BY last_used_at DESC
+  `).all(cutoff30, cutoff90) as SkillUsageSummaryRow[]
+}
+
 // --- Config Change Log ---
 // Pass null for oldValue/newValue when the registry entry is secret:true --
 // this keeps secret values out of the audit trail entirely rather than

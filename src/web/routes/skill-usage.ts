@@ -1,4 +1,4 @@
-import { logSkillUsage, getSkillUsageRows, getSkillUsageStats } from '../../db.js'
+import { logSkillUsage, getSkillUsageRows, getSkillUsageStats, getSkillUsageSummary } from '../../db.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
@@ -24,6 +24,12 @@ export async function tryHandleSkillUsage(ctx: RouteContext): Promise<boolean> {
     }
     logSkillUsage(data.agent_id, data.skill_name, data.trigger_type, data.session_id)
     json(res, { ok: true })
+    return true
+  }
+
+  // GET /api/skill-usage/summary -- per-skill last_used_at + 30d/90d/all-time counts
+  if (path === '/api/skill-usage/summary' && method === 'GET') {
+    json(res, getSkillUsageSummary())
     return true
   }
 
