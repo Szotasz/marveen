@@ -8,6 +8,7 @@ import { t } from './i18n.js'
 
 let _ovLoadGen = 0
 let _ovActiveAgentFilter = null
+let _bbPollTimer = null
 
 function formatRelative(ts) {
   const diff = Math.max(0, Date.now() - ts)
@@ -189,5 +190,41 @@ export async function loadOverview() {
   } catch (err) {
     const feed = document.getElementById('ovActivityFeed')
     if (feed) feed.innerHTML = '<div class="ov-activity-empty" style="color:var(--danger)">Hiba: ' + escapeHtml(String(err.message || err)) + '</div>'
+  }
+
+  // Start blackboard polling on first load; restart timer on every loadOverview call.
+  if (_bbPollTimer) clearInterval(_bbPollTimer)
+  loadBlackboard()
+  _bbPollTimer = setInterval(loadBlackboard, 15000)
+}
+
+const BB_STATUS_LABEL = { active: 'aktív', done: 'kész', blocked: 'blokkolt' }
+const BB_STATUS_CLASS = { active: 'bb-active', done: 'bb-done', blocked: 'bb-blocked' }
+
+async function loadBlackboard() {
+  const tbody = document.getElementById('ovBlackboardBody')
+  if (!tbody) return
+  try {
+    const res = await fetch('/api/blackboard')
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const rows = await res.json()
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="ov-activity-empty">Nincs adat.</td></tr>'
+      return
+    }
+    tbody.innerHTML = ''
+    for (const r of rows) {
+      const tr = document.createElement('tr')
+      const statusLabel = BB_STATUS_LABEL[r.status] || r.status
+      const statusCls = BB_STATUS_CLASS[r.status] || ''
+      tr.innerHTML = '<td class="bb-agent">' + escapeHtml(r.agent_id) + '</td>'
+        + '<td><span class="bb-status ' + statusCls + '">' + escapeHtml(statusLabel) + '</span></td>'
+        + '<td class="bb-summary">' + escapeHtml(r.summary) + '</td>'
+        + '<td class="bb-ref">' + escapeHtml(r.task_ref || '') + '</td>'
+        + '<td class="bb-time">' + formatRelative(r.updated_at * 1000) + '</td>'
+      tbody.appendChild(tr)
+    }
+  } catch (_err) {
+    tbody.innerHTML = '<tr><td colspan="5" class="ov-activity-empty" style="color:var(--danger)">Blackboard hiba.</td></tr>'
   }
 }
