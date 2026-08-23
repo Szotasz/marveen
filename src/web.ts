@@ -50,7 +50,6 @@ import { tryHandleKanban } from './web/routes/kanban.js'
 import { tryHandleSchedules } from './web/routes/schedules.js'
 import { tryHandleConnectors } from './web/routes/connectors.js'
 import { tryHandleDocs } from './web/routes/docs.js'
-import { tryHandleResearch } from './web/routes/research.js'
 import { tryHandleConnectorsHu } from './web/routes/connectors-hu.js'
 import { tryHandleAgentsSkills } from './web/routes/agents-skills.js'
 import { tryHandleSkills } from './web/routes/skills.js'
@@ -65,7 +64,6 @@ import { tryHandleStatus } from './web/routes/status.js'
 import { tryHandleAutonomy } from './web/routes/autonomy.js'
 import { tryHandleApprovals, startApprovalTimeoutSweeper } from './web/routes/approvals.js'
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
-import { tryHandleCosts, startCostsSyncTask } from './web/routes/costs.js'
 import { tryHandleIdeas } from './web/routes/ideas.js'
 import { tryHandleToolLog } from './web/routes/tool-log.js'
 import { tryHandleSpans } from './web/routes/spans.js'
@@ -106,7 +104,6 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleConnectorsHu)
   .add(tryHandleConnectors)
   .add(tryHandleDocs)
-  .add(tryHandleResearch)
   .add(tryHandleAgentsSkills)
   .add(tryHandleSkills)
   .add(tryHandleAgentTerminal)
@@ -123,7 +120,6 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleAutonomy)
   .add(tryHandleApprovals)
   .add(tryHandleTokenUsage)
-  .add(tryHandleCosts)
   .add(tryHandleIdeas)
   .add(tryHandleSpans)
   .add(tryHandleToolLog)
@@ -408,11 +404,6 @@ export function startWebServer(port = 3420): http.Server {
   const channelHealthInterval = webOnly ? undefined : startChannelHealthMonitor()
   if (!webOnly) logger.info('Channel MCP health monitor started (60s poll, 45s offset)')
 
-  // CostOps: reflect the local config's fixed costs into the ledger once at boot + every
-  // 10 minutes. Deliberately NOT done inside the GET /api/costs/summary handler -- a read
-  // endpoint must not write (was flagged in review); this is the one place that does.
-  const costsSyncInterval = webOnly ? undefined : startCostsSyncTask()
-  if (!webOnly) logger.info('CostOps fixed-cost sync started (10min poll + startup)')
 
   const stuckInputInterval = webOnly ? undefined : startStuckInputWatcher()
   if (!webOnly) logger.info('Stuck-input watcher started (15s poll, 20s offset)')
@@ -599,7 +590,6 @@ export function startWebServer(port = 3420): http.Server {
     workerLivenessCancelled = true
     if (workerLivenessInterval) clearInterval(workerLivenessInterval)
     clearInterval(channelHealthInterval)
-    if (costsSyncInterval) clearInterval(costsSyncInterval)
     clearInterval(stuckInputInterval)
     clearInterval(stuckToolCallInterval)
     if (inboxNudgeInterval) clearInterval(inboxNudgeInterval)

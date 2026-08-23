@@ -92,10 +92,6 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
             <span class="sb-label">Ügynökök</span>
           </a>
-          <a href="#" class="sb-link" data-page="activity">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
-            <span class="sb-label">Aktivitás</span>
-          </a>
           <a href="#" class="sb-link" data-page="messages">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
             <span class="sb-label">Üzenetek</span>
@@ -128,10 +124,6 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15 8.5 22 9.3 17 14.2 18.2 21 12 17.8 5.8 21 7 14.2 2 9.3 9 8.5"/></svg>
             <span class="sb-label">Skillek</span>
           </a>
-          <a href="#" class="sb-link" data-page="research">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-            <span class="sb-label" data-i18n="nav.research">Kutatás</span>
-          </a>
           <a href="#" class="sb-link" data-page="ideas">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
             <span class="sb-label">Ötletláda</span>
@@ -148,10 +140,6 @@
           <svg class="sb-group-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
         </button>
         <div class="sb-group-items" id="sbGroupStats">
-          <a href="#" class="sb-link" data-page="costs">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-            <span class="sb-label">Költségek</span>
-          </a>
           <a href="#" class="sb-link" data-page="tokenUsage">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
             <span class="sb-label">Token Monitor</span>
@@ -497,21 +485,6 @@
     </div>
 
     <!-- === Activity (live agent status) Page === -->
-    <div class="page" id="activityPage" hidden>
-      <div class="page-header">
-        <div class="page-header-row">
-          <div>
-            <h1 data-i18n="activity.page_title">Aktivitás</h1>
-            <p class="subtitle" data-i18n="activity.page_subtitle">Mit csinál épp minden ügynök: élő nézet, 3 mp-enként frissül</p>
-          </div>
-          <div class="activity-meta"><span id="activityUpdated" class="activity-updated"></span></div>
-        </div>
-      </div>
-      <div class="activity-list" id="activityList">
-        <p class="activity-empty" data-i18n="activity.loading">Betöltés…</p>
-      </div>
-    </div>
-
     <!-- === Tasks (Schedules) Page === -->
     <div class="page" id="tasksPage" hidden>
       <div class="page-header">
@@ -1208,21 +1181,6 @@
     </div>
 
     <!-- === Research Page === -->
-    <div class="page" id="researchPage" hidden>
-      <div class="page-header">
-        <h1 data-i18n="research.page_title">Kutatás</h1>
-        <p class="subtitle" data-i18n="research.page_subtitle">Ágensek research/ mappái, olvasható formában</p>
-      </div>
-      <div class="docs-layout">
-        <aside class="docs-list" id="researchList">
-          <p class="muted" data-i18n="research.loading">Betöltés...</p>
-        </aside>
-        <article class="docs-content markdown-body" id="researchContent">
-          <p class="muted" data-i18n="research.select_hint">Válassz egy dokumentumot a bal oldali listából.</p>
-        </article>
-      </div>
-    </div>
-
     <!-- === Status Page === -->
     <div class="page" id="statusPage" hidden>
       <div class="page-header">
@@ -2039,25 +1997,6 @@
     </div>
 
     <!-- Costs page (CostOps v0.1, PR #524) -->
-    <div class="page" id="costsPage" hidden>
-      <div class="page-header">
-        <div class="page-header-row">
-          <div>
-            <h1 data-i18n="costs.page_title">Költségek</h1>
-            <p class="subtitle" data-i18n="costs.page_subtitle">Havi költség-összefoglaló a helyi konfigurációból</p>
-          </div>
-          <button class="btn" data-variant="secondary" data-size="compact" id="refreshCostsBtn" data-i18n="common.btn.refresh">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-            </svg>
-            Frissítés
-          </button>
-        </div>
-      </div>
-
-      <div id="costsContent"></div>
-    </div>
-
     <!-- Naplo page -->
     <div class="page" id="naploPage" hidden>
       <div class="page-header">

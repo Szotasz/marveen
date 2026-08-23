@@ -70,7 +70,6 @@ window._i18n.hu = {
   'nav.kanban':       'Kanban',
   'nav.archived':     'Archivált',
   'nav.agents':       'Ügynökök',
-  'nav.activity':     'Aktivitás',
   'nav.team':         'Csapat',
   'nav.messages':     'Üzenetek',
   'nav.tasks':        'Ütemezések',
@@ -81,7 +80,6 @@ window._i18n.hu = {
   'nav.connectors':   'MCP',
   'nav.migrate':      'Költöztetés',
   'nav.docs':         'Dokumentáció',
-  'nav.research':     'Kutatás',
   'nav.status':       'Státusz',
   'nav.approvals':    'Jóváhagyások',
   'nav.settings':     'Beállítások',
@@ -481,22 +479,6 @@ window._i18n.hu = {
   'agents.toast.profile_error':    'Hiba a profil mentésekor',
   'agents.btn.reconnect':          'Újracsatlakozás...',
   'agents.btn.running':            'Futtatás...',
-  // --- Activity ---
-  'activity.page_title':         'Aktivitás',
-  'activity.page_subtitle':      'Mit csinál épp minden ügynök: élő nézet, 3 mp-enként frissül',
-
-  'activity.updated':            'Frissítve: {time}',
-  'activity.error_load':         'Nem sikerült lekérni az aktivitást',
-  'activity.empty':              'Nincs ügynök.',
-  'activity.badge.main':         'fő',
-  'activity.tooltip.mode':       'Jogosultsági mód: {mode}. Ebben a módban az ágens megáll és jóváhagyásra vár, mielőtt eszközt hívna -- ha senki nem figyeli, órákig állhat úgy, hogy közben tétlennek látszik.',
-  'activity.loading':            'Betöltés…',
-  'activity.state.working':      'dolgozik',
-  'activity.state.idle':         'várakozik',
-  'activity.state.unknown':      'ismeretlen',
-  'activity.state.error':        'hiba',
-  'activity.state.stopped':      'leállt',
-
   // --- Tasks (Schedules) ---
   'tasks.page_title':            'Ütemezések',
   'tasks.page_subtitle':         'Időzített feladatok kezelése',
@@ -895,16 +877,6 @@ window._i18n.hu = {
   'docs.download_btn':           '⬇ .md letöltés',
   'docs.open_error':             'Nem sikerült megnyitni',
 
-  // --- Research ---
-  'research.page_title':         'Kutatás',
-  'research.page_subtitle':      'Ágensek research/ mappái, olvasható formában',
-  'research.loading':            'Betöltés...',
-  'research.select_hint':        'Válassz egy dokumentumot a bal oldali listából.',
-  'research.list_load_error':    'Nem sikerült betölteni a listát',
-  'research.empty_list':         'Nincs kutatási anyag.',
-  'research.empty_content':      'Nincs megjeleníthető dokumentum.',
-  'research.open_error':         'Nem sikerült megnyitni',
-
   // --- Status ---
   'status.page_title':           'Státusz',
   'status.page_subtitle':        'Claude szolgáltatások állapota',
@@ -927,24 +899,6 @@ window._i18n.hu = {
   'status.comp.partial_outage':  'részleges kimaradás',
   'status.comp.major_outage':    'kimaradás',
   'status.comp.maintenance':     'karbantartás',
-
-  // --- Costs (CostOps v0.1, PR #524) ---
-  'costs.page_title':            'Költségek',
-  'costs.page_subtitle':         'Havi költség-összefoglaló a helyi konfigurációból',
-  'costs.loading':               'Betöltés...',
-  'costs.load_failed':           'Nem sikerült betölteni a költség-összefoglalót.',
-  'costs.no_config':             'Nincs helyi költség-konfiguráció -- a számok üresek, amíg nem kerül beállításra.',
-  'costs.current_spend':         'Havi eddigi költség',
-  'costs.forecast':              'Hónap végi előrejelzés',
-  'costs.month':                 'Időszak',
-  'costs.budget_title':          'Büdzsé',
-  'costs.budget_used':           'Felhasználva',
-  'costs.no_sources':            'Nincs aktív költségforrás.',
-  'costs.source_name':           'Forrás',
-  'costs.source_provider':       'Szolgáltató',
-  'costs.source_spend':          'Költség',
-  'costs.token_usage_note':      'Token-felhasználás mennyisége (nincs árazva)',
-  'costs.calls':                 'hívás',
 
   'tokenUsage.col.time':         'Idő',
   'tokenUsage.col.agent':        'Ágens',
@@ -1665,8 +1619,6 @@ window._i18n.hu = {
   'kanban.gantt.nav_next':          'Következő',
 
   // --- Activity tooltip ---
-  'activity.tooltip.terminal':   'Terminal megnyitása',
-
   // --- Connectors tooltips ---
   'connectors.tooltip.installed_mcp': 'Bekötve a .mcp.json-ban (a Connectors listán kezelhető)',
   'connectors.tooltip.installed_src': 'Forrás: {src}',
