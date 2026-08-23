@@ -12,7 +12,7 @@ import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID } from '../../channel-coordinator/ingest.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
-import { OWNER_NAME } from '../../config.js'
+import { OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
@@ -42,6 +42,9 @@ export function shouldNotifyDelegator(fromAgent: string, toAgent: string, conten
   if (content.startsWith(COMPLETION_REPORT_PREFIX)) return false
   return true
 }
+
+// Frozen at module load, like the config constant it derives from.
+const SYSTEM_SENDERS = parseSystemSenderIds(SYSTEM_SENDER_IDS, sanitizeAgentIdent)
 
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
@@ -99,8 +102,17 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // "unknown agent". The owner is not a fleet agent (no agents/<id>/ dir), so
     // isKnownAgent alone rejects it. Match on the router's normalization to stay
     // symmetric with the other guards above.
+    //
+    // Neighbouring SYSTEMS are legitimate senders too, on the same reasoning as
+    // the owner: they are token-authenticated and only notify an agent, but they
+    // have no agents/<id>/ directory. Opt-in via SYSTEM_SENDER_IDS in .env
+    // (empty by default). Without this, such a system silently loses its push
+    // channel the moment this guard ships -- observed here: an external case
+    // manager pushed 4182 messages, then every call 403'd for nine days while
+    // its fail-soft caller logged nothing.
     const isOwnerSender = sanitizeAgentIdent(from) === sanitizeAgentIdent(OWNER_NAME)
-    if (!isOwnerSender && !isKnownAgent(sanitizeAgentIdent(from))) {
+    const isSystemSender = SYSTEM_SENDERS.has(sanitizeAgentIdent(from))
+    if (!isOwnerSender && !isSystemSender && !isKnownAgent(sanitizeAgentIdent(from))) {
       logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST from unregistered agent')
       json(res, { error: `unknown agent '${from.trim()}' -- from must be a registered fleet agent id` }, 403)
       return true
