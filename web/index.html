@@ -613,6 +613,11 @@
           <button class="skills-filter-btn" data-filter="plugin" data-i18n="skills.filter.plugin">Plugin</button>
           <button class="skills-filter-btn" data-filter="agent" data-i18n="skills.filter.agent">Ágens</button>
         </div>
+        <select id="skillsSortSelect" class="skills-sort-select" aria-label="Rendezés">
+          <option value="name" data-i18n="skills.sort.name">Névsor</option>
+          <option value="lru" data-i18n="skills.sort.lru">Utolsó használat</option>
+          <option value="usage" data-i18n="skills.sort.usage">30 napos forgalom</option>
+        </select>
       </div>
       <div class="skills-body-wrap">
         <nav class="skills-category-sidebar" id="skillsCategorySidebar"></nav>
