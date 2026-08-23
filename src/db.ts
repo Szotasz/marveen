@@ -3980,3 +3980,7 @@ export function countActiveAdmins(): number {
   return (db.prepare("SELECT COUNT(*) AS c FROM dashboard_users WHERE role = 'admin' AND disabled = 0").get() as { c: number }).c
 }
 
+// Prefix that marks a message as a completion report / acknowledgement.
+// Used by shouldNotifyDelegator to avoid ping-pong chains.
+export const COMPLETION_REPORT_PREFIX = '[Eredmény]'
+
