@@ -70,7 +70,6 @@ window._i18n.en = {
   'nav.kanban':       'Kanban',
   'nav.archived':     'Archived',
   'nav.agents':       'Agents',
-  'nav.activity':     'Activity',
   'nav.team':         'Team',
   'nav.messages':     'Messages',
   'nav.tasks':        'Schedules',
@@ -81,7 +80,6 @@ window._i18n.en = {
   'nav.connectors':   'MCP',
   'nav.migrate':      'Migrate',
   'nav.docs':         'Documentation',
-  'nav.research':     'Research',
   'nav.status':       'Status',
   'nav.approvals':    'Approvals',
   'nav.settings':     'Settings',
@@ -325,16 +323,6 @@ window._i18n.en = {
   'agents.team.trusted_label':      'Explicit trusted contacts (optional)',
   'agents.team.trusted_hint':       'The router decides by default based on report relationships and delegation lists. Add extra agents here manually -- e.g. a cross-team partner without a hierarchical relationship but whose messages should be trusted.',
   'agents.toast.avatar_error':   'Error saving avatar',
-
-  // --- Activity ---
-  'activity.page_title':         'Activity',
-  'activity.page_subtitle':      'What each agent is doing: live view, updates every 3 sec',
-  'activity.loading':            'Loading…',
-  'activity.state.working':      'working',
-  'activity.state.idle':         'idle',
-  'activity.state.unknown':      'unknown',
-  'activity.state.error':        'error',
-  'activity.state.stopped':      'stopped',
 
   // --- Tasks (Schedules) ---
   'tasks.page_title':            'Schedules',
@@ -611,15 +599,6 @@ window._i18n.en = {
   'docs.open_error':             'Failed to open',
 
   // --- Research ---
-  'research.page_title':         'Research',
-  'research.page_subtitle':      "Each agent's research/ folder in readable form",
-  'research.loading':            'Loading...',
-  'research.select_hint':        'Select a document from the list on the left.',
-  'research.list_load_error':    'Failed to load the list',
-  'research.empty_list':         'No research documents found.',
-  'research.empty_content':      'No documents to display.',
-  'research.open_error':         'Failed to open',
-
   // --- Status ---
   'status.page_title':           'Status',
   'status.page_subtitle':        'Claude service status',
@@ -644,23 +623,6 @@ window._i18n.en = {
   'status.comp.maintenance':     'under maintenance',
 
   // --- Costs (CostOps v0.1, PR #524) ---
-  'costs.page_title':            'Costs',
-  'costs.page_subtitle':         'Monthly cost summary from the local config',
-  'costs.loading':               'Loading...',
-  'costs.load_failed':           'Failed to load the cost summary.',
-  'costs.no_config':             'No local cost config yet -- numbers stay empty until one is set up.',
-  'costs.current_spend':         'Spend this month',
-  'costs.forecast':              'Month-end forecast',
-  'costs.month':                 'Period',
-  'costs.budget_title':          'Budget',
-  'costs.budget_used':           'Used',
-  'costs.no_sources':            'No active cost sources.',
-  'costs.source_name':           'Source',
-  'costs.source_provider':       'Provider',
-  'costs.source_spend':          'Spend',
-  'costs.token_usage_note':      'Token usage volume (not priced)',
-  'costs.calls':                 'calls',
-
   'tokenUsage.col.time':         'Time',
   'tokenUsage.col.agent':        'Agent',
   'tokenUsage.col.content':      'Content',
@@ -942,11 +904,6 @@ window._i18n.en = {
   'updates.toast.error':         'Error: {msg}',
 
   // --- Additional parity keys ---
-  'activity.badge.main':			'main',
-  'activity.tooltip.mode':		'Permission mode: {mode}. In this mode the agent stops and waits for approval before calling a tool -- with nobody watching it can sit there for hours while still looking idle.',
-  'activity.empty':			'No agents.',
-  'activity.error_load':			'Failed to load activity',
-  'activity.updated':			'Updated: {time}',
   'agents.api_key.missing':			'No API key configured',
   'agents.api_key.ok':			'API key configured in vault',
   'agents.btn.conversation':			'Conversation',
@@ -1662,8 +1619,6 @@ window._i18n.en = {
   'kanban.gantt.nav_next':          'Next',
 
   // --- Activity tooltip ---
-  'activity.tooltip.terminal':   'Open terminal',
-
   // --- Connectors tooltips ---
   'connectors.tooltip.installed_mcp': 'Wired in .mcp.json (manageable in Connectors list)',
   'connectors.tooltip.installed_src': 'Source: {src}',

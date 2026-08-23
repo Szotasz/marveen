@@ -17,12 +17,12 @@ import { initSkills, loadSkills, loadGlobalSkills, clearSkillModalScope } from '
 import { loadMessagesPage, getChatSelectedAgent, setChatSelectedAgent, renderTeamEditor } from './modules/messages.js'
 import { initSettings, loadSettings, isSettingsDirty } from './modules/settings.js'
 import { initTokenUsage, loadTokenUsage } from './modules/token-usage.js'
-import { startActivityPoll, stopActivityPoll, loadActivity, loadOverview, initActivity } from './modules/overview.js'
+import { loadOverview } from './modules/overview.js'
 import { loadFederationPage, initFederation } from './modules/federation.js'
 import { loadIdeasPage, initIdeas } from './modules/ideas.js'
 import { openTerminalModal, openConversationModal, initAgentModals } from './modules/agent-modals.js'
-import { loadStatus, loadCosts, initStatusCosts } from './modules/status-costs.js'
-import { loadDocs, loadResearch } from './modules/docs-research.js'
+import { loadStatus, initStatus } from './modules/status-costs.js'
+import { loadDocs } from './modules/docs-research.js'
 import { loadRecallPage, loadBgTasksPage, initRecallBgTasks } from './modules/recall-bgtasks.js'
 import { loadApprovalsPage, initApprovals } from './modules/approvals.js'
 import { loadMigrateAgents, initMigrate } from './modules/migrate.js'
@@ -317,9 +317,9 @@ const SIDEBAR_GROUPS_LS_KEY = 'marveen.sidebarGroups'
 // into their group containers per this map, so regrouping a page (say, moving
 // naplo under system) or relabeling a group is a one-line change right here.
 const SIDEBAR_GROUPS = [
-  { key: 'team',        labelKey: 'nav.group.team',        pages: ['agents', 'activity', 'messages', 'tasks', 'bgTasks'] },
-  { key: 'knowledge',   labelKey: 'nav.group.knowledge',   pages: ['memories', 'skills', 'research', 'ideas', 'artifacts'] },
-  { key: 'stats',       labelKey: 'nav.group.stats',       pages: ['costs', 'tokenUsage'] },
+  { key: 'team',        labelKey: 'nav.group.team',        pages: ['agents', 'messages', 'tasks', 'bgTasks'] },
+  { key: 'knowledge',   labelKey: 'nav.group.knowledge',   pages: ['memories', 'skills', 'ideas', 'artifacts'] },
+  { key: 'stats',       labelKey: 'nav.group.stats',       pages: ['tokenUsage'] },
   { key: 'system',      labelKey: 'nav.group.system',      pages: ['status', 'naplo', 'updates', 'settings', 'vault'] },
   { key: 'connections', labelKey: 'nav.group.connections', pages: ['connectors', 'federation', 'migrate', 'import'] },
 ]
@@ -385,7 +385,6 @@ sidebarGroupEls.forEach((g) => {
 })
 
 // ============================================================
-// startActivityPoll, stopActivityPoll, loadActivity, loadOverview, initActivity imported from ./modules/overview.js
 
 // Wire DnD (kanban-dnd.js) + modal helpers + ideas callback into the kanban module.
 initKanban({ openModal, closeModal, wireColumn: wireKanbanColumnDnD, wireCardTouch: wireKanbanCardTouchDnD, loadIdeasPage })
@@ -406,11 +405,10 @@ initSettings({ wireBranchDriftBanner })
 // Wire branch-drift banner dismiss at startup (DOMContentLoaded moved to module eval in settings.js)
 wireBranchDriftBanner()
 initTokenUsage()
-initActivity({ openTerminalModal })
 initFederation({ openModal, closeModal })
 initIdeas({ openModal, closeModal })
 initAgentModals({ openModal, closeModal, loadAgents })
-initStatusCosts()
+initStatus()
 initRecallBgTasks()
 initApprovals()
 initMigrate()
@@ -620,7 +618,6 @@ registerAlias('team', 'agents', () => setAgentsActiveView('tree'))
 
 registerPage('overview',  { enter: loadOverview })
 registerPage('kanban',    { enter: () => { window._initGanttViewSwitcher?.(); loadKanban(); startKanbanRefresh() }, leave: stopKanbanRefresh })
-registerPage('activity',  { enter: startActivityPoll, leave: stopActivityPoll })
 registerPage('agents',    { enter: () => { loadAgents().then(() => setAgentsView(getAgentsActiveView() || 'grid')); startAgentsBusyPoll() }, leave: stopAgentsBusyPoll })
 registerPage('memories',  { enter: () => { loadMemAgents(); loadMemStats(); loadMemories() } })
 registerPage('tasks',     { enter: loadSchedules })
@@ -629,7 +626,6 @@ registerPage('connectors',{ enter: loadConnectors })
 registerPage('migrate',   { enter: loadMigrateAgents })
 registerPage('import',    { enter: loadImportSources })
 registerPage('docs',      { enter: loadDocs })
-registerPage('research',  { enter: loadResearch })
 registerPage('status',    { enter: loadStatus })
 registerPage('recall',    { enter: loadRecallPage })
 registerPage('bgTasks',   { enter: loadBgTasksPage })
@@ -643,7 +639,6 @@ registerPage('settings',  {
 registerPage('updates',   { enter: loadUpdates })
 registerPage('messages',  { enter: loadMessagesPage })
 registerPage('tokenUsage',{ enter: loadTokenUsage })
-registerPage('costs',     { enter: loadCosts })
 registerPage('ideas',     { enter: loadIdeasPage })
 registerPage('archived',  { enter: () => loadArchivedPage() })
 registerPage('naplo',     { enter: () => loadNaplo() })
