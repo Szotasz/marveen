@@ -2339,25 +2339,6 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* === Toast === */
-.toast {
-  position: fixed;
-  bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%) translateY(100px);
-  padding: 12px 24px;
-  background: var(--text);
-  color: var(--bg);
-  border-radius: var(--radius-sm);
-  font-size: 14px;
-  font-weight: 500;
-  box-shadow: var(--shadow-lg);
-  transition: transform 0.3s ease;
-  z-index: 1100;
-  white-space: nowrap;
-}
-.toast.visible { transform: translateX(-50%) translateY(0); }
-
 /* === Tasks === */
 .tasks-empty {
   text-align: center;
