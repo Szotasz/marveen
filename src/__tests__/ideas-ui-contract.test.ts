@@ -21,8 +21,8 @@ describe('ideas UI wiring (S-13c)', () => {
     expect(APP).toMatch(/registerPage\('ideas'/)
   })
 
-  it('app.js imports loadIdeasPage and initIdeas from ideas.js', () => {
-    expect(APP).toMatch(/import.*loadIdeasPage.*initIdeas.*from.*modules\/ideas\.js/)
+  it('app.js lazy-loads ideas.js via dynamic import (S-16 lazy-load)', () => {
+    expect(APP).toMatch(/import\(['"]\.\/modules\/ideas\.js['"]\)/)
   })
 
   it('app.js calls initIdeas with openModal and closeModal', () => {
