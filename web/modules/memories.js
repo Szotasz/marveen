@@ -2164,8 +2164,8 @@ let tlMediaRecorder = null
 let tlRecordedChunks = []
 let tlFpsSamples = []    // recent frame deltas (ms) for FPS guardrail, capped at 15
 
-const TL_LIMB_ANGLES = { hot: -0.55, warm: 0.25, cold: 1.55, shared: 2.85 }
-const TL_TIERS = ['hot', 'warm', 'cold', 'shared']
+const TL_LIMB_ANGLES = { hot: -0.55, warm: 0.25, cold: 1.55, shared: 2.85, import: 4.1 }
+const TL_TIERS = ['hot', 'warm', 'cold', 'shared', 'import']
 const HU_MONTHS = ['jan','feb','már','ápr','máj','jún','júl','aug','szep','okt','nov','dec']
 
 // Deterministic hash for a node id - avoids Math.random() for layout stability
@@ -2345,10 +2345,12 @@ function buildTimeline(data) {
   // Build event stream
   tlEvents = (data.events || []).slice().sort((a, b) => a.ts - b.ts)
 
-  // Edge animation states (§5.4b)
-  tlEdgeStates = (data.edges || []).map(e => ({
-    edge: e, _phase: 'waiting', _animStart: 0, _drawProgress: 0,
-  }))
+  // Edge animation states (§5.4b). Sort heaviest first so the 250-edge cap
+  // always keeps the strongest connections regardless of DB insertion order.
+  tlEdgeStates = (data.edges || [])
+    .slice()
+    .sort((a, b) => b.weight - a.weight)
+    .map(e => ({ edge: e, _phase: 'waiting', _animStart: 0, _drawProgress: 0 }))
 
   tlT0 = data.time_range.min_ts || 0
   tlT1 = data.time_range.max_ts || (tlT0 + 1)
@@ -2390,7 +2392,7 @@ function tlRebuildAtTime(targetSimTime) {
   // Rebuild edge states instantly (§5.4b, scrub=no animation)
   let aliveEdgeCount = 0
   for (const es of tlEdgeStates) {
-    const visible = es.edge.weight >= 0.80 && es.edge.created_at <= targetSimTime
+    const visible = es.edge.weight >= 0.75 && es.edge.created_at <= targetSimTime
     if (visible && aliveEdgeCount < 250) {
       es._phase = 'alive'; es._drawProgress = 1
       aliveEdgeCount++
@@ -2433,6 +2435,10 @@ function startTimelineLoop() {
         // Pop the most recently created node(s) so a visual gap before them
         // doesn't make the replay look like it stopped early.
         tlEmphasiseLatestArrivals(now)
+        // Ensure the final static state matches what buildTimeline() and manual
+        // scrubbing show: edges that arrived via 'flash' during playback must be
+        // promoted to 'alive' now that we are paused at t1.
+        tlRebuildAtTime(tlT1)
       }
       // Fire events that fall within the new simTime window
       tlCheckAndFireEvents(tlSimTime - dt * 0.001 * tlPlaybackSpeed, tlSimTime, now)
