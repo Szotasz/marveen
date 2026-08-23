@@ -1,0 +1,2898 @@
+openapi: 3.1.0
+
+info:
+  title: Marveen Dashboard API
+  version: 1.0.0
+  description: |
+    Internal REST API for the Marveen fleet dashboard and inter-agent communication.
+    All endpoints require a Bearer token (`store/.dashboard-token`).
+
+    **Tiers**
+    - Tier 1 (full schema): core inter-agent endpoints — memories, messages, kanban,
+      agents, skills, approvals, blackboard, daily-log, skill-usage.
+    - Tier 2 (medium): schedules, ideas, artifacts, token-usage, connectors, recall, autonomy.
+    - Tier 3 (x-internal): status checks, dashboard-internal routes, static assets.
+
+servers:
+  - url: http://localhost:3420
+    description: Local dashboard (default port)
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: memories
+    description: Agent memory store (hot/warm/cold/shared tiers)
+  - name: messages
+    description: Inter-agent message queue
+  - name: kanban
+    description: Kanban board — cards, comments, labels, projects
+  - name: agents
+    description: Fleet agent management (CRUD, model, channels, process)
+  - name: skills
+    description: Skill filesystem read and usage tracking
+  - name: approvals
+    description: Human-in-the-loop approval requests
+  - name: blackboard
+    description: Fleet shared status board
+  - name: daily-log
+    description: Append-only per-agent daily journal
+  - name: skill-usage
+    description: Skill usage event log and statistics
+  - name: schedules
+    description: File-based scheduled task management
+  - name: ideas
+    description: Idea box
+  - name: artifacts
+    description: DB-backed artifact store
+  - name: token-usage
+    description: LLM token consumption tracking
+  - name: connectors
+    description: External data source connectors
+  - name: recall
+    description: Consolidated recall (memory + daily-log) view
+  - name: autonomy
+    description: Autonomy level configuration per category
+  - name: internal
+    description: Dashboard-internal and status endpoints (x-internal)
+
+# ---------------------------------------------------------------------------
+# Reusable components
+# ---------------------------------------------------------------------------
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: Token stored in `store/.dashboard-token`
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Human-readable error description
+      example:
+        error: "agent_id is required"
+
+    OkResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          enum: [true]
+
+    Memory:
+      type: object
+      required: [id, agent_id, content, category, created_at, accessed_at]
+      properties:
+        id:
+          type: integer
+        agent_id:
+          type: string
+          description: Owning agent id, or "import" for imported shadow rows
+        content:
+          type: string
+        category:
+          type: string
+          enum: [hot, warm, cold, shared]
+        keywords:
+          type: [string, "null"]
+        created_at:
+          type: integer
+          description: Unix timestamp (seconds)
+        accessed_at:
+          type: integer
+          description: Unix timestamp (seconds)
+        updated_at:
+          type: integer
+          description: Unix timestamp (seconds)
+        is_stale:
+          type: boolean
+          description: >
+            Only included when agent filter active.
+            True when the memory was updated after the agent's last read.
+        created_label:
+          type: string
+          description: Human-readable created_at (localised)
+        accessed_label:
+          type: string
+          description: Human-readable accessed_at (localised)
+      example:
+        id: 42
+        agent_id: "jarvis"
+        content: "Kanban board redesign merged 2026-08-22"
+        category: "warm"
+        keywords: "kanban, design"
+        created_at: 1787400000
+        accessed_at: 1787486000
+        is_stale: false
+
+    MemoryLink:
+      type: object
+      required: [src_id, dst_id, weight]
+      properties:
+        src_id:
+          type: integer
+        dst_id:
+          type: integer
+        weight:
+          type: number
+          minimum: 0
+          maximum: 1
+        created_at:
+          type: integer
+
+    AgentMessage:
+      type: object
+      required: [id, from_agent, to_agent, content, status, created_at]
+      properties:
+        id:
+          type: integer
+        from_agent:
+          type: string
+        to_agent:
+          type: string
+        content:
+          type: string
+        status:
+          type: string
+          enum: [pending, delivered, done, failed]
+        result:
+          type: [string, "null"]
+        origin_note:
+          type: [string, "null"]
+          maxLength: 120
+        created_at:
+          type: integer
+        delivered_at:
+          type: [integer, "null"]
+        completed_at:
+          type: [integer, "null"]
+        trace_id:
+          type: [string, "null"]
+        span_id:
+          type: [string, "null"]
+      example:
+        id: 3715
+        from_agent: "zack"
+        to_agent: "jarvis"
+        content: "feat/zod-config-schema kész -- 23ec40d, 24 teszt zöld"
+        status: "pending"
+        result: null
+        origin_note: null
+        created_at: 1787487278
+
+    KanbanCard:
+      type: object
+      required: [id, title, status]
+      properties:
+        id:
+          type: string
+          description: 8-character hex id
+        seq:
+          type: integer
+          description: Human-facing sequential number
+        title:
+          type: string
+        description:
+          type: [string, "null"]
+        status:
+          type: string
+          enum: [planned, in_progress, waiting, done]
+        priority:
+          type: string
+          enum: [low, normal, high, urgent]
+        assignee:
+          type: [string, "null"]
+        parent_id:
+          type: [string, "null"]
+        project:
+          type: [string, "null"]
+        created_at:
+          type: integer
+        updated_at:
+          type: integer
+        dispatched_at:
+          type: [integer, "null"]
+      example:
+        id: "6df6d262"
+        seq: 201
+        title: "OpenAPI 3.1 spec elkészítése"
+        status: "in_progress"
+        priority: "high"
+        assignee: "zack"
+
+    KanbanComment:
+      type: object
+      required: [id, card_id, author, content, created_at]
+      properties:
+        id:
+          type: integer
+        card_id:
+          type: string
+        author:
+          type: string
+        content:
+          type: string
+        created_at:
+          type: integer
+
+    Approval:
+      type: object
+      required: [id, agent_id, category, action_description, status, created_at]
+      properties:
+        id:
+          type: string
+          description: UUID
+        agent_id:
+          type: string
+        category:
+          type: string
+        action_description:
+          type: string
+        action_payload:
+          type: [string, "null"]
+          description: Optional JSON payload for the action
+        status:
+          type: string
+          enum: [pending, approved, rejected, timeout]
+        resolved_by:
+          type: [string, "null"]
+        timeout_at:
+          type: [integer, "null"]
+        created_at:
+          type: integer
+        resolved_at:
+          type: [integer, "null"]
+      example:
+        id: "a1b2c3d4-e5f6-..."
+        agent_id: "zack"
+        category: "code_deploy"
+        action_description: "Push feat/openapi-spec to origin"
+        status: "pending"
+        timeout_at: 1787490000
+        created_at: 1787486000
+
+    BlackboardRow:
+      type: object
+      required: [id, agent_id, status, summary, updated_at]
+      properties:
+        id:
+          type: string
+          description: 8-character hex id
+        agent_id:
+          type: string
+        task_ref:
+          type: [string, "null"]
+          description: Kanban card id (optional reference)
+        status:
+          type: string
+          enum: [active, done, blocked]
+        summary:
+          type: string
+          maxLength: 500
+        updated_at:
+          type: integer
+      example:
+        id: "b4cda374"
+        agent_id: "zack"
+        task_ref: "6df6d262"
+        status: "active"
+        summary: "feat/openapi-spec: írja az OpenAPI 3.1 spec-et"
+        updated_at: 1787488514
+
+    SkillUsageSummaryRow:
+      type: object
+      required: [skill_name, last_used_at, total_count, count_30d, count_90d]
+      properties:
+        skill_name:
+          type: string
+        last_used_at:
+          type: integer
+          description: Unix timestamp of most recent use
+        total_count:
+          type: integer
+        count_30d:
+          type: integer
+        count_90d:
+          type: integer
+
+    DailyLog:
+      type: object
+      properties:
+        agent_id:
+          type: string
+        date:
+          type: string
+          format: date
+        entries:
+          type: array
+          items:
+            type: object
+            properties:
+              content:
+                type: string
+              created_at:
+                type: integer
+
+# ---------------------------------------------------------------------------
+# Paths — Tier 1
+# ---------------------------------------------------------------------------
+paths:
+
+  # ---- Memories -----------------------------------------------------------
+
+  /api/memories:
+    get:
+      tags: [memories]
+      operationId: listMemories
+      summary: List or search memories
+      description: |
+        Returns memories for an agent. When `q` is provided, performs hybrid
+        vector + keyword search. Without `q`, returns recent memories for the
+        agent (or the chat owner when `agent` is omitted).
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+          description: Search query (triggers hybrid search when present)
+        - name: agent
+          in: query
+          schema:
+            type: string
+          description: Agent id filter (preferred over deprecated `agent_id`)
+        - name: category
+          in: query
+          schema:
+            type: string
+            enum: [hot, warm, cold, shared]
+          description: Filter by memory tier
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+        - name: mode
+          in: query
+          schema:
+            type: string
+            enum: [hybrid, keyword]
+            default: hybrid
+          description: Search mode (only applies when `q` is set)
+      responses:
+        "200":
+          description: Memory list (gzip-compressed when Accept-Encoding includes gzip)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Memory"
+        "401":
+          description: Missing or invalid Bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    post:
+      tags: [memories]
+      operationId: createMemory
+      summary: Save a new memory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                agent_id:
+                  type: string
+                  description: Defaults to MAIN_AGENT_ID when omitted
+                content:
+                  type: string
+                  minLength: 1
+                category:
+                  type: string
+                  enum: [hot, warm, cold, shared]
+                  default: warm
+                keywords:
+                  type: string
+                  description: Comma-separated keywords for keyword search
+            example:
+              agent_id: "jarvis"
+              content: "Kanban board redesign shipped 2026-08-22"
+              category: "warm"
+              keywords: "kanban, design"
+      responses:
+        "200":
+          description: Memory saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  id:
+                    type: integer
+        "400":
+          description: Missing content or invalid category
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/memories/stats:
+    get:
+      tags: [memories]
+      operationId: getMemoryStats
+      summary: Memory tier statistics
+      responses:
+        "200":
+          description: Count per tier + total
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/memories/stale:
+    get:
+      tags: [memories]
+      operationId: listStaleMemories
+      summary: Memories updated since the agent last read them
+      parameters:
+        - name: agent_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of stale memories
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Memory"
+        "400":
+          description: agent_id required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/memories/links:
+    get:
+      tags: [memories]
+      operationId: listMemoryLinks
+      summary: Memory graph edges for a set of memory ids or an agent
+      parameters:
+        - name: ids
+          in: query
+          schema:
+            type: string
+          description: Comma-separated memory ids
+        - name: agent
+          in: query
+          schema:
+            type: string
+          description: Fetch all edges for the agent's top-500 memories
+      responses:
+        "200":
+          description: Edge list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MemoryLink"
+
+  /api/memories/graph:
+    get:
+      tags: [memories]
+      operationId: getMemoryGraph
+      summary: Memory graph — nodes + edges (dashboard graph view)
+      parameters:
+        - name: agent
+          in: query
+          schema:
+            type: string
+        - name: weight_min
+          in: query
+          schema:
+            type: number
+            default: 0.75
+            minimum: 0
+            maximum: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 200
+            maximum: 500
+      responses:
+        "200":
+          description: Graph payload
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nodes:
+                    type: array
+                    items:
+                      type: object
+                  edges:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MemoryLink"
+                  meta:
+                    type: object
+
+  /api/memories/graph/timeline:
+    get:
+      tags: [memories]
+      operationId: getMemoryGraphTimeline
+      summary: Temporal memory graph slice for the timeline scrubber
+      parameters:
+        - name: agent
+          in: query
+          schema:
+            type: string
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: integer
+          description: Start Unix timestamp
+        - name: to
+          in: query
+          schema:
+            type: integer
+          description: End Unix timestamp (defaults to now)
+        - name: weight_min
+          in: query
+          schema:
+            type: number
+            default: 0.75
+      responses:
+        "200":
+          description: Nodes, edges, and timeline events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nodes:
+                    type: array
+                    items:
+                      type: object
+                  edges:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MemoryLink"
+                  events:
+                    type: array
+                    items:
+                      type: object
+                  time_range:
+                    type: object
+                    properties:
+                      min_ts:
+                        type: integer
+                      max_ts:
+                        type: integer
+        "400":
+          description: from > to
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/memories/read-event:
+    post:
+      tags: [memories]
+      operationId: recordMemoryReadEvent
+      summary: Record that an agent read one or more memories (explicit read-trace)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - description: Single read
+                  type: object
+                  required: [agent_id, memory_id]
+                  properties:
+                    agent_id:
+                      type: string
+                    memory_id:
+                      type: integer
+                    context:
+                      type: string
+                      enum: [heartbeat, search, direct]
+                - description: Batch read
+                  type: object
+                  required: [reads]
+                  properties:
+                    reads:
+                      type: array
+                      items:
+                        type: object
+                        required: [agent_id, memory_id]
+                        properties:
+                          agent_id:
+                            type: string
+                          memory_id:
+                            type: integer
+                          context:
+                            type: string
+                            enum: [heartbeat, search, direct]
+      responses:
+        "200":
+          description: Read event recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/memories/resort:
+    post:
+      tags: [memories]
+      operationId: resortMemories
+      summary: Run scheduled memory maintenance (tier re-sort + version prune)
+      description: Idempotent. Called by the maintenance scheduled task.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                warm_to_cold_days:
+                  type: integer
+                cold_to_warm_days:
+                  type: integer
+                min_agents:
+                  type: integer
+                version_ttl_days:
+                  type: integer
+      responses:
+        "200":
+          description: Resort result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/OkResponse"
+                  - type: object
+        "500":
+          description: Resort failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/memories/import:
+    post:
+      tags: [memories]
+      operationId: importMemories
+      summary: Bulk-import memory chunks (AI-categorised when Ollama is available)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [chunks]
+              properties:
+                agent_id:
+                  type: string
+                chunks:
+                  type: array
+                  items:
+                    type: string
+                  minItems: 1
+      responses:
+        "200":
+          description: Import result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  imported:
+                    type: integer
+                  stats:
+                    type: object
+                    properties:
+                      hot:
+                        type: integer
+                      warm:
+                        type: integer
+                      cold:
+                        type: integer
+                      shared:
+                        type: integer
+        "400":
+          description: No chunks provided
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/memories/backfill:
+    post:
+      tags: [memories]
+      operationId: backfillMemoryEmbeddings
+      summary: Backfill vector embeddings for memories that lack them
+      responses:
+        "200":
+          description: Backfill complete
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  count:
+                    type: integer
+        "500":
+          description: Backfill failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/memories/links/maintain:
+    post:
+      tags: [memories]
+      operationId: maintainMemoryLinks
+      summary: Run memory graph link maintenance (re-embed stale, refresh neighbors, prune decayed)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                weight_threshold:
+                  type: number
+                max_age_seconds:
+                  type: integer
+      responses:
+        "200":
+          description: Maintenance result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/OkResponse"
+                  - type: object
+        "500":
+          description: Maintenance failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/memories/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      tags: [memories]
+      operationId: getMemory
+      summary: Fetch a single memory by id
+      parameters:
+        - name: include
+          in: query
+          schema:
+            type: string
+            enum: [versions]
+          description: Pass `versions` to include version history
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+          description: When set, records a `direct` span-read for this agent
+      responses:
+        "200":
+          description: Memory object
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Memory"
+        "404":
+          description: Memory not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      tags: [memories]
+      operationId: updateMemory
+      summary: Update a memory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content:
+                  type: string
+                category:
+                  type: string
+                  enum: [hot, warm, cold, shared]
+                agent_id:
+                  type: string
+                keywords:
+                  type: string
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "404":
+          description: Memory not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags: [memories]
+      operationId: deleteMemory
+      summary: Delete a memory
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "404":
+          description: Memory not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/memories/{id}/versions:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      tags: [memories]
+      operationId: getMemoryVersions
+      summary: Version history for a single memory
+      responses:
+        "200":
+          description: Version list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/memories/{id}/detail:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      tags: [memories]
+      operationId: getMemoryDetail
+      summary: Memory detail — base data + read-count + neighbors + tier history
+      responses:
+        "200":
+          description: Detail object
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Memory"
+                  - type: object
+                    properties:
+                      read_count:
+                        type: integer
+                      neighbors:
+                        type: array
+                        items:
+                          type: object
+                      tier_history:
+                        type: array
+                        items:
+                          type: object
+                      import_meta:
+                        type: [object, "null"]
+        "404":
+          description: Memory not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ---- Messages -----------------------------------------------------------
+
+  /api/messages:
+    get:
+      tags: [messages]
+      operationId: listMessages
+      summary: List agent messages
+      description: |
+        Returns messages filtered by agent, status, and pagination cursor.
+        Only `agent`, `status`, `limit`, and `before` are accepted query parameters —
+        unknown parameters return 400 to prevent silent filtering bugs.
+      parameters:
+        - name: agent
+          in: query
+          schema:
+            type: string
+          description: Agent mailbox filter (returns messages TO this agent)
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, delivered, done, failed]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+        - name: before
+          in: query
+          schema:
+            type: integer
+          description: Pagination cursor — message id to fetch messages before
+      responses:
+        "200":
+          description: Message list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AgentMessage"
+        "400":
+          description: Unknown query parameter
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Error"
+                  - type: object
+                    properties:
+                      unknown:
+                        type: array
+                        items:
+                          type: string
+                      known:
+                        type: array
+                        items:
+                          type: string
+                      hint:
+                        type: string
+
+    post:
+      tags: [messages]
+      operationId: sendMessage
+      summary: Send an inter-agent message
+      description: |
+        Creates a message in the queue for delivery to the target agent's session.
+        The `from` field must be a registered fleet agent id (or the owner name).
+        Federation addresses use slash notation: `"peer-system/agent-name"`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from, to, content]
+              properties:
+                from:
+                  type: string
+                  description: Sender agent id (registered fleet agent)
+                to:
+                  type: string
+                  description: Recipient agent id, or `"system/agent"` for federation
+                content:
+                  type: string
+                  minLength: 1
+                origin_note:
+                  type: string
+                  maxLength: 120
+                  description: Optional attributability tag
+            example:
+              from: "zack"
+              to: "jarvis"
+              content: "feat/openapi-spec kész, 23ec40d, Jónás tesztre vár"
+      responses:
+        "200":
+          description: Message created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentMessage"
+        "400":
+          description: Missing fields or invalid federated address
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: from is reserved (coordinator) or unregistered agent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/messages/threads:
+    get:
+      tags: [messages]
+      operationId: listMessageThreads
+      summary: Conversation thread list (sidebar view — one row per peer)
+      responses:
+        "200":
+          description: Thread list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/messages/backlog:
+    get:
+      tags: [messages]
+      operationId: getMessageBacklog
+      summary: Pending message backlog per agent (count + age of oldest)
+      responses:
+        "200":
+          description: Backlog summary
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/messages/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    put:
+      tags: [messages]
+      operationId: updateMessageStatus
+      summary: Mark a message done or failed (executor callback)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [done, failed]
+                result:
+                  type: string
+                  description: Short result summary (first 500 chars stored)
+            example:
+              status: "done"
+              result: "feat/openapi-spec pushed, 23ec40d"
+      responses:
+        "200":
+          description: Status updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "404":
+          description: Message not found or invalid status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ---- Kanban -------------------------------------------------------------
+
+  /api/kanban:
+    get:
+      tags: [kanban]
+      operationId: listKanbanCards
+      summary: List kanban cards
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [planned, in_progress, waiting, done]
+        - name: assignee
+          in: query
+          schema:
+            type: string
+        - name: priority
+          in: query
+          schema:
+            type: string
+            enum: [low, normal, high, urgent]
+        - name: project
+          in: query
+          schema:
+            type: string
+        - name: q
+          in: query
+          schema:
+            type: string
+          description: Full-text search on title and description
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+      responses:
+        "200":
+          description: Card list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/KanbanCard"
+
+    post:
+      tags: [kanban]
+      operationId: createKanbanCard
+      summary: Create a new kanban card
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title:
+                  type: string
+                description:
+                  type: string
+                status:
+                  type: string
+                  enum: [planned, in_progress, waiting, done]
+                  default: planned
+                priority:
+                  type: string
+                  enum: [low, normal, high, urgent]
+                  default: normal
+                assignee:
+                  type: string
+                parent_id:
+                  type: string
+                project:
+                  type: string
+      responses:
+        "201":
+          description: Card created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanCard"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/kanban/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [kanban]
+      operationId: getKanbanCard
+      summary: Get a single kanban card
+      responses:
+        "200":
+          description: Card object
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanCard"
+        "404":
+          description: Card not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      tags: [kanban]
+      operationId: updateKanbanCard
+      summary: Update kanban card fields
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                description:
+                  type: string
+                priority:
+                  type: string
+                  enum: [low, normal, high, urgent]
+                assignee:
+                  type: string
+                project:
+                  type: string
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "404":
+          description: Card not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags: [kanban]
+      operationId: deleteKanbanCard
+      summary: Delete a kanban card
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "404":
+          description: Card not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/kanban/{id}/move:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [kanban]
+      operationId: moveKanbanCard
+      summary: Move a kanban card to a new status
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status, actor]
+              properties:
+                status:
+                  type: string
+                  enum: [planned, in_progress, waiting, done]
+                actor:
+                  type: string
+                  description: Agent id of the mover (required for dispatch logic)
+            example:
+              status: "done"
+              actor: "zack"
+      responses:
+        "200":
+          description: Moved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "404":
+          description: Card not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/kanban/{id}/comments:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [kanban]
+      operationId: listKanbanCardComments
+      summary: List comments on a kanban card
+      responses:
+        "200":
+          description: Comment list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/KanbanComment"
+    post:
+      tags: [kanban]
+      operationId: addKanbanCardComment
+      summary: Add a comment to a kanban card
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [author, content]
+              properties:
+                author:
+                  type: string
+                content:
+                  type: string
+      responses:
+        "201":
+          description: Comment added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanComment"
+        "400":
+          description: Missing fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/kanban/labels:
+    get:
+      tags: [kanban]
+      operationId: listKanbanLabels
+      summary: List all kanban labels
+      responses:
+        "200":
+          description: Label list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+    post:
+      tags: [kanban]
+      operationId: createKanbanLabel
+      summary: Create a kanban label
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, color]
+              properties:
+                name:
+                  type: string
+                color:
+                  type: string
+                  description: 6-digit hex color (#rrggbb)
+      responses:
+        "201":
+          description: Label created
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/kanban-projects:
+    get:
+      tags: [kanban]
+      operationId: listKanbanProjects
+      summary: List kanban projects
+      responses:
+        "200":
+          description: Project list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/kanban/assignees:
+    get:
+      tags: [kanban]
+      operationId: listKanbanAssignees
+      summary: List all known assignee values
+      responses:
+        "200":
+          description: Assignee list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+
+  /api/kanban/archived:
+    get:
+      tags: [kanban]
+      operationId: listArchivedKanbanCards
+      summary: List archived kanban cards
+      responses:
+        "200":
+          description: Archived card list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/KanbanCard"
+
+  /api/kanban/heartbeat-summary:
+    get:
+      tags: [kanban]
+      operationId: getKanbanHeartbeatSummary
+      summary: Compact board summary for heartbeat agents
+      responses:
+        "200":
+          description: Summary object
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ---- Approvals ----------------------------------------------------------
+
+  /api/approvals:
+    get:
+      tags: [approvals]
+      operationId: listApprovals
+      summary: List approval requests
+      parameters:
+        - name: agent
+          in: query
+          schema:
+            type: string
+        - name: category
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, approved, rejected, timeout]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 500
+      responses:
+        "200":
+          description: Approval list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Approval"
+
+    post:
+      tags: [approvals]
+      operationId: createApproval
+      summary: Create an approval request
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id, category, action_description]
+              properties:
+                agent_id:
+                  type: string
+                category:
+                  type: string
+                action_description:
+                  type: string
+                action_payload:
+                  type: string
+                  description: Optional JSON payload for the action
+                timeout_seconds:
+                  type: integer
+                  description: Override the category default timeout
+            example:
+              agent_id: "zack"
+              category: "code_deploy"
+              action_description: "Push feat/openapi-spec branch to origin"
+              timeout_seconds: 3600
+      responses:
+        "201":
+          description: Approval request created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Approval"
+        "400":
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/approvals/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          description: UUID
+    get:
+      tags: [approvals]
+      operationId: getApproval
+      summary: Poll approval status
+      responses:
+        "200":
+          description: Approval object
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Approval"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    patch:
+      tags: [approvals]
+      operationId: resolveApproval
+      summary: Resolve an approval (approve / reject / timeout)
+      description: Self-approval guard — the requesting agent cannot approve its own request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status, resolved_by]
+              properties:
+                status:
+                  type: string
+                  enum: [approved, rejected, timeout]
+                resolved_by:
+                  type: string
+                telegram_message_id:
+                  type: integer
+            example:
+              status: "approved"
+              resolved_by: "jarvis"
+      responses:
+        "200":
+          description: Resolved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Approval"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Self-approval not allowed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Already resolved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ---- Blackboard ---------------------------------------------------------
+
+  /api/blackboard:
+    get:
+      tags: [blackboard]
+      operationId: listBlackboard
+      summary: List fleet blackboard (last 10 rows, newest first)
+      responses:
+        "200":
+          description: Blackboard rows
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 10
+                items:
+                  $ref: "#/components/schemas/BlackboardRow"
+              example:
+                - id: "b4cda374"
+                  agent_id: "zack"
+                  task_ref: "6df6d262"
+                  status: "active"
+                  summary: "feat/openapi-spec: írja a YAML-t"
+                  updated_at: 1787488514
+
+    post:
+      tags: [blackboard]
+      operationId: upsertBlackboardEntry
+      summary: Upsert agent status (one row per agent_id — creates or updates)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id, summary]
+              properties:
+                agent_id:
+                  type: string
+                summary:
+                  type: string
+                  maxLength: 500
+                status:
+                  type: string
+                  enum: [active, done, blocked]
+                  default: active
+                task_ref:
+                  type: [string, "null"]
+                  description: Kanban card id (optional)
+            example:
+              agent_id: "zack"
+              task_ref: "6df6d262"
+              status: "active"
+              summary: "feat/openapi-spec: Tier 1 végpontok dokumentálása"
+      responses:
+        "200":
+          description: Upserted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  row:
+                    $ref: "#/components/schemas/BlackboardRow"
+        "400":
+          description: Validation error (missing agent_id/summary, summary > 500 chars, invalid status)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/blackboard/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    patch:
+      tags: [blackboard]
+      operationId: updateBlackboardEntry
+      summary: Partially update a blackboard row by id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [active, done, blocked]
+                summary:
+                  type: string
+                  maxLength: 500
+                task_ref:
+                  type: [string, "null"]
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  row:
+                    $ref: "#/components/schemas/BlackboardRow"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Row not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ---- Daily Log ----------------------------------------------------------
+
+  /api/daily-log:
+    get:
+      tags: [daily-log]
+      operationId: getDailyLog
+      summary: Read daily log for an agent and date
+      parameters:
+        - name: agent
+          in: query
+          schema:
+            type: string
+          description: Defaults to MAIN_AGENT_ID
+        - name: date
+          in: query
+          schema:
+            type: string
+            format: date
+          description: ISO date (YYYY-MM-DD), defaults to today
+      responses:
+        "200":
+          description: Daily log object
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DailyLog"
+
+    post:
+      tags: [daily-log]
+      operationId: appendDailyLog
+      summary: Append an entry to the daily log
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                agent_id:
+                  type: string
+                  description: Defaults to MAIN_AGENT_ID
+                content:
+                  type: string
+                  minLength: 1
+            example:
+              agent_id: "zack"
+              content: "## 14:10 -- feat/openapi-spec\nTier 1 végpontok kész, commit 23ec40d"
+      responses:
+        "200":
+          description: Appended
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Content required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/daily-log/dates:
+    get:
+      tags: [daily-log]
+      operationId: listDailyLogDates
+      summary: List dates for which the agent has daily-log entries
+      parameters:
+        - name: agent
+          in: query
+          schema:
+            type: string
+          description: Defaults to MAIN_AGENT_ID
+      responses:
+        "200":
+          description: Date list (YYYY-MM-DD strings)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+                  format: date
+
+  # ---- Skill Usage --------------------------------------------------------
+
+  /api/skill-usage:
+    get:
+      tags: [skill-usage]
+      operationId: listSkillUsage
+      summary: Recent skill usage rows
+      parameters:
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+        - name: skill_name
+          in: query
+          schema:
+            type: string
+        - name: since
+          in: query
+          schema:
+            type: integer
+          description: Unix timestamp — only rows after this
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 500
+      responses:
+        "200":
+          description: Usage row list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: integer
+                    agent_id:
+                      type: string
+                    skill_name:
+                      type: string
+                    trigger_type:
+                      type: string
+                      enum: [tool_call, skill_read]
+                    session_id:
+                      type: [string, "null"]
+                    created_at:
+                      type: integer
+
+    post:
+      tags: [skill-usage]
+      operationId: recordSkillUsage
+      summary: Record a skill usage event (called by PostToolUse hook)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id, skill_name, trigger_type]
+              properties:
+                agent_id:
+                  type: string
+                skill_name:
+                  type: string
+                trigger_type:
+                  type: string
+                  enum: [tool_call, skill_read]
+                session_id:
+                  type: [string, "null"]
+      responses:
+        "200":
+          description: Recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/skill-usage/summary:
+    get:
+      tags: [skill-usage]
+      operationId: getSkillUsageSummary
+      summary: Per-skill usage summary (last_used_at + 30d/90d/all-time counts)
+      responses:
+        "200":
+          description: Summary list ordered by last_used_at DESC
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SkillUsageSummaryRow"
+              example:
+                - skill_name: "fleet-dashboard-api"
+                  last_used_at: 1787461082
+                  total_count: 134
+                  count_30d: 45
+                  count_90d: 120
+
+  /api/skill-usage/stats:
+    get:
+      tags: [skill-usage]
+      operationId: getSkillUsageStats
+      summary: Aggregated usage counts per skill (dream-engine health endpoint)
+      parameters:
+        - name: since
+          in: query
+          schema:
+            type: integer
+          description: Unix timestamp cutoff (seconds)
+      responses:
+        "200":
+          description: Stats list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  # ---- Skills -------------------------------------------------------------
+
+  /api/skills:
+    get:
+      tags: [skills]
+      operationId: listGlobalSkills
+      summary: List global skills
+      responses:
+        "200":
+          description: Skill list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    label:
+                      type: string
+                    description:
+                      type: string
+                    keywords:
+                      type: array
+                      items:
+                        type: string
+                    mtime:
+                      type: integer
+
+  /api/skills/local:
+    get:
+      tags: [skills]
+      operationId: listLocalSkills
+      summary: List agent-local skills (across all agents)
+      responses:
+        "200":
+          description: Local skill list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  # ---- Agents -------------------------------------------------------------
+
+  /api/agents:
+    get:
+      tags: [agents]
+      operationId: listAgents
+      summary: List all fleet agents
+      responses:
+        "200":
+          description: Agent list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    display_name:
+                      type: string
+                    model:
+                      type: string
+                    running:
+                      type: boolean
+    post:
+      tags: [agents]
+      operationId: createAgent
+      summary: Create a new agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: Agent id (ASCII slug)
+                display_name:
+                  type: string
+                model:
+                  type: string
+                role:
+                  type: string
+      responses:
+        "201":
+          description: Agent created
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/agents/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [agents]
+      operationId: getAgent
+      summary: Get agent configuration and runtime state
+      responses:
+        "200":
+          description: Agent detail
+          content:
+            application/json:
+              schema:
+                type: object
+        "404":
+          description: Agent not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      tags: [agents]
+      operationId: updateAgentConfig
+      summary: Update agent configuration fields
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Any writable agent field (see AGENT_PUT_WRITABLE_FIELDS)
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Validation error or unknown field
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Agent not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags: [agents]
+      operationId: deleteAgent
+      summary: Delete an agent
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "404":
+          description: Agent not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ---------------------------------------------------------------------------
+  # Tier 2 — medium detail
+  # ---------------------------------------------------------------------------
+
+  /api/schedules:
+    get:
+      tags: [schedules]
+      operationId: listSchedules
+      summary: List scheduled tasks
+      responses:
+        "200":
+          description: Task list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+    post:
+      tags: [schedules]
+      operationId: createSchedule
+      summary: Create a scheduled task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id, skill_name, cron]
+              properties:
+                agent_id:
+                  type: string
+                skill_name:
+                  type: string
+                cron:
+                  type: string
+                  description: Cron expression (node local TZ, Europe/Budapest)
+                task_type:
+                  type: string
+                  enum: [task, heartbeat]
+                  default: task
+                payload:
+                  type: object
+      responses:
+        "201":
+          description: Task created
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/schedules/pending:
+    get:
+      tags: [schedules]
+      operationId: listPendingSchedules
+      summary: List tasks due for execution now
+      responses:
+        "200":
+          description: Due task list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/schedules/agents:
+    get:
+      tags: [schedules]
+      operationId: listScheduledAgents
+      summary: List agents that have scheduled tasks
+      responses:
+        "200":
+          description: Agent id list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+
+  /api/ideas:
+    get:
+      tags: [ideas]
+      operationId: listIdeas
+      summary: List ideas
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: category
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: Idea list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+    post:
+      tags: [ideas]
+      operationId: createIdea
+      summary: Create an idea
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, description]
+              properties:
+                title:
+                  type: string
+                description:
+                  type: string
+                category:
+                  type: string
+                impact:
+                  type: integer
+                  minimum: 1
+                  maximum: 5
+                effort:
+                  type: integer
+                  minimum: 1
+                  maximum: 5
+                source:
+                  type: string
+      responses:
+        "201":
+          description: Idea created
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/ideas/categories:
+    get:
+      tags: [ideas]
+      operationId: listIdeaCategories
+      summary: List distinct idea categories
+      responses:
+        "200":
+          description: Category list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+
+  /api/artifacts:
+    get:
+      tags: [artifacts]
+      operationId: listArtifacts
+      summary: List stored artifacts
+      parameters:
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+        - name: kind
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: Artifact list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+    post:
+      tags: [artifacts]
+      operationId: storeArtifact
+      summary: Store a new artifact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id, kind, content]
+              properties:
+                agent_id:
+                  type: string
+                kind:
+                  type: string
+                title:
+                  type: string
+                content:
+                  type: string
+                metadata:
+                  type: object
+      responses:
+        "201":
+          description: Artifact stored
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/artifacts/stats:
+    get:
+      tags: [artifacts]
+      operationId: getArtifactStats
+      summary: Artifact store statistics
+      responses:
+        "200":
+          description: Stats object
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/token-usage:
+    get:
+      tags: [token-usage]
+      operationId: listTokenUsage
+      summary: Recent token usage rows
+      responses:
+        "200":
+          description: Usage rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/token-usage/collect:
+    post:
+      tags: [token-usage]
+      operationId: recordTokenUsage
+      summary: Record a token usage event (called by PostToolUse hook)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+
+  /api/token-usage/summary:
+    get:
+      tags: [token-usage]
+      operationId: getTokenUsageSummary
+      summary: Token usage summary per agent
+      responses:
+        "200":
+          description: Summary list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/token-usage/timeline:
+    get:
+      tags: [token-usage]
+      operationId: getTokenUsageTimeline
+      summary: Token usage over time (for dashboard charts)
+      responses:
+        "200":
+          description: Timeline data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/token-usage/model-dist:
+    get:
+      tags: [token-usage]
+      operationId: getTokenUsageModelDist
+      summary: Token usage distribution per model
+      responses:
+        "200":
+          description: Distribution data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/token-usage/tool-stats:
+    get:
+      tags: [token-usage]
+      operationId: getTokenUsageToolStats
+      summary: Tool call frequency statistics
+      responses:
+        "200":
+          description: Tool stats
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/connectors:
+    get:
+      tags: [connectors]
+      operationId: listConnectors
+      summary: List configured connectors
+      responses:
+        "200":
+          description: Connector list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/connectors/status:
+    get:
+      tags: [connectors]
+      operationId: getConnectorStatus
+      summary: Connector health status
+      responses:
+        "200":
+          description: Status per connector
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/connectors/refresh:
+    post:
+      tags: [connectors]
+      operationId: refreshConnectors
+      summary: Trigger connector data refresh
+      responses:
+        "200":
+          description: Refresh started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+
+  /api/connectors/external-paths:
+    get:
+      tags: [connectors]
+      operationId: listExternalPaths
+      summary: List external filesystem paths watched by connectors
+      responses:
+        "200":
+          description: Path list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+    post:
+      tags: [connectors]
+      operationId: addExternalPath
+      summary: Add an external filesystem path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path:
+                  type: string
+      responses:
+        "200":
+          description: Added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+    delete:
+      tags: [connectors]
+      operationId: removeExternalPath
+      summary: Remove an external filesystem path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path:
+                  type: string
+      responses:
+        "200":
+          description: Removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+
+  /api/connectors/github-repos:
+    get:
+      tags: [connectors]
+      operationId: listGithubRepos
+      summary: List connected GitHub repositories
+      responses:
+        "200":
+          description: Repository list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+    post:
+      tags: [connectors]
+      operationId: addGithubRepo
+      summary: Add a GitHub repository connector
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [owner, repo]
+              properties:
+                owner:
+                  type: string
+                repo:
+                  type: string
+      responses:
+        "201":
+          description: Connector added
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/recall:
+    get:
+      tags: [recall]
+      operationId: getRecall
+      summary: Unified recall view (recent memories + daily-log)
+      parameters:
+        - name: agent
+          in: query
+          schema:
+            type: string
+        - name: date
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: Recall payload
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/recall/dates:
+    get:
+      tags: [recall]
+      operationId: listRecallDates
+      summary: Dates with recall entries for an agent
+      parameters:
+        - name: agent
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Date list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+                  format: date
+
+  /api/autonomy:
+    get:
+      tags: [autonomy]
+      operationId: getAutonomyConfig
+      summary: Current autonomy level configuration
+      responses:
+        "200":
+          description: Autonomy config
+          content:
+            application/json:
+              schema:
+                type: object
+    post:
+      tags: [autonomy]
+      operationId: updateAutonomyLevel
+      summary: Update autonomy level for a category
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [category, level]
+              properties:
+                category:
+                  type: string
+                level:
+                  type: integer
+                  minimum: 1
+                  maximum: 3
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+
+  # ---------------------------------------------------------------------------
+  # Tier 3 — internal / status (x-internal: true)
+  # ---------------------------------------------------------------------------
+
+  /api/status:
+    get:
+      tags: [internal]
+      operationId: getStatus
+      summary: Dashboard process and service status
+      x-internal: true
+      security: []
+      responses:
+        "200":
+          description: Status object
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/overview:
+    get:
+      tags: [internal]
+      operationId: getOverview
+      summary: Dashboard overview panel data
+      x-internal: true
+      responses:
+        "200":
+          description: Overview payload
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/marveen:
+    get:
+      tags: [internal]
+      operationId: getSystemInfo
+      summary: System info and runtime settings
+      x-internal: true
+      responses:
+        "200":
+          description: System info
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/auth/me:
+    get:
+      tags: [internal]
+      operationId: getAuthMe
+      summary: Validate Bearer token and return identity
+      x-internal: true
+      responses:
+        "200":
+          description: Identity
+          content:
+            application/json:
+              schema:
+                type: object
+        "401":
+          description: Invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/migrate:
+    post:
+      tags: [internal]
+      operationId: runMigrations
+      summary: Run pending database migrations
+      x-internal: true
+      responses:
+        "200":
+          description: Migration result
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/updates:
+    get:
+      tags: [internal]
+      operationId: checkUpdates
+      summary: Check for available upstream updates
+      x-internal: true
+      responses:
+        "200":
+          description: Update status
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/onboarding:
+    get:
+      tags: [internal]
+      operationId: getOnboarding
+      summary: Onboarding wizard state
+      x-internal: true
+      responses:
+        "200":
+          description: Onboarding state
+          content:
+            application/json:
+              schema:
+                type: object
+    post:
+      tags: [internal]
+      operationId: submitOnboarding
+      summary: Submit onboarding step
+      x-internal: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Step result
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/background-tasks:
+    get:
+      tags: [internal]
+      operationId: listBackgroundTasks
+      summary: List background tasks
+      x-internal: true
+      responses:
+        "200":
+          description: Task list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /api/tool-log:
+    get:
+      tags: [internal]
+      operationId: listToolLog
+      summary: Recent tool call log
+      x-internal: true
+      responses:
+        "200":
+          description: Tool log rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
