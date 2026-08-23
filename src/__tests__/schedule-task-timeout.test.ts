@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { decideTaskTimeout, resolveStuckTimeoutMs, TASK_FIRE_GRACE_MS, TASK_FIRE_TIMEOUT_MS } from '../web/schedule-runner.js'
@@ -195,6 +195,30 @@ describe('resolveStuckTimeoutMs: the threshold is per task', () => {
     // Entries are evicted at maxTrackMs regardless, so anything above it would
     // mean "never alert" while still looking like a threshold.
     expect(resolveStuckTimeoutMs({ stuckAfterMinutes: 60 * 24 })).toBe(MAX_TRACK)
+  })
+
+  // The clamp above only covers the PER-TASK branch. The default branch returns
+  // defaultMs untouched, which was safe while that was a literal 300_000 -- but
+  // this value now comes from .env, so an operator writing a big number would
+  // get exactly the quiet disable the per-task branch refuses: above the
+  // eviction age the entry is gone before the timeout can elapse, and nothing
+  // reports it. Mocking the config (rather than asserting on the constant as
+  // loaded) is what makes this measure the clamp: without it the test would
+  // pass on the unclamped code too, because the default .env sets nothing.
+  it('a GLOBAL value above the tracking window is clamped too, not just the per-task one', async () => {
+    vi.resetModules()
+    vi.doMock('../config.js', async () => ({
+      ...(await vi.importActual<typeof import('../config.js')>('../config.js')),
+      TASK_STALL_TIMEOUT_MS: 7 * 60 * 60_000,   // 7h, past the 6h eviction age
+    }))
+    try {
+      const mod = await import('../web/schedule-runner.js')
+      expect(mod.TASK_FIRE_TIMEOUT_MS).toBe(MAX_TRACK)
+      expect(mod.resolveStuckTimeoutMs({})).toBe(MAX_TRACK)
+    } finally {
+      vi.doUnmock('../config.js')
+      vi.resetModules()
+    }
   })
 
   it('the resolved budget actually drives the decision', () => {
