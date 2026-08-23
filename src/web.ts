@@ -12,6 +12,7 @@ import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
 import { isBlockedCrossOriginWrite, originMatchesServedHost, buildAllowedHosts, isAllowedHost } from './web/csrf-origin.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
+import { normalizePath, applyDeprecationHeaders } from './web/routes/versioning.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
 import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureGovernanceGateCommands, ensureQuarantineReader, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
@@ -159,7 +160,7 @@ export function startWebServer(port = 3420): http.Server {
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://localhost:${port}`)
-    const path = url.pathname
+    const { path, deprecated, apiVersion } = normalizePath(url.pathname)
     const method = req.method || 'GET'
 
     // DNS-rebinding defence: reject requests whose Host header is not in the
@@ -236,7 +237,9 @@ export function startWebServer(port = 3420): http.Server {
     }
 
     try {
-      const routeCtx: RouteContext = { req, res, path, method, url, fedPeer: fedPeerForCtx, auth: ctxAuth }
+      if (deprecated) applyDeprecationHeaders(res)
+
+      const routeCtx: RouteContext = { req, res, path, method, url, fedPeer: fedPeerForCtx, auth: ctxAuth, apiVersion }
 
       if (await dispatcher.dispatch(routeCtx)) return
 
