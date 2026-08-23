@@ -33,7 +33,8 @@ import {
   SCHEDULED_TASKS_DIR,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
-import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir } from './agent-config.js'
+import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir, readAgentClaudeConfigDir } from './agent-config.js'
+import { readTranscriptMtimeFromProjectDir } from './active-model.js'
 import { channelStateDir } from '../channel-provider.js'
 import {
   agentSessionName,
@@ -100,6 +101,18 @@ export interface TaskInflightEntry {
   host: string | null
   injectedAt: number
   alerted: boolean
+  // Evidence that the injected prompt was actually PICKED UP -- the pane was
+  // observed 'busy' at some sweep, or the target session's transcript advanced
+  // after injectedAt. Set by the sweep, never at injection time: a session that
+  // swallows the keystrokes without starting a turn produces neither signal.
+  // Without this the watchdog cannot tell "went busy, then finished" from
+  // "never started at all", and treats both as success (see decideTaskTimeout).
+  sawTurn: boolean
+  // Where the target agent's transcripts live, captured at injection time so a
+  // config edit mid-flight cannot move the evidence. Reused as the arguments to
+  // readTranscriptMtimeFromProjectDir on every sweep.
+  workingDir: string
+  configDir: string | undefined
   // Per-task stuck threshold, resolved at injection time from the task config
   // (see resolveStuckTimeoutMs). Captured on the entry rather than looked up
   // during the sweep so an edit to the schedule mid-run cannot move the
@@ -137,14 +150,34 @@ export function resolveStuckTimeoutMs(
 // Active task/heartbeat injections keyed by `${taskName}@${agentName}`.
 const taskInflightMap = new Map<string, TaskInflightEntry>()
 
-export type TaskTimeoutDecision = 'clear' | 'alert' | 'hold'
+export type TaskTimeoutDecision = 'clear' | 'alert' | 'hold' | 'lost'
 
 // Pure: decide what the watchdog should do for a single in-flight entry this
 // tick. Exported so it can be unit-tested without tmux I/O.
 //
-// clear -- remove the entry (session idle = task done, or entry too stale)
+// clear -- remove the entry (task ran, or entry too stale)
 // alert -- send a one-shot Telegram alert (session busy past timeout threshold)
+// lost  -- the injection never started a turn: re-deliver instead of counting
+//          it as done (see below)
 // hold  -- no action this tick
+//
+// THE 'lost' CASE (2026-08-23 incident). This function used to return 'clear'
+// for ANY idle pane, on the reasoning "idle = the task completed". That is only
+// true if the pane was ever NOT idle. A Claude Code session wedged at 100%
+// context accepts the injected keystrokes and never starts a turn, so its pane
+// reads idle before the injection, during it, and forever after -- the footer
+// carries the normal idle chrome and the readiness probe upstream sees nothing
+// wrong. Two heartbeats (memoria-heartbeat 12:00, webinar4me-inbox-check 13:00)
+// were injected into exactly that state, recorded 'fired', stamped lastRun, and
+// were cleared by this watchdog on the very next sweep as "completed". They
+// never ran, nothing retried them, and no alert was raised: a silent loss with
+// a success record on top of it.
+//
+// So idle only clears when there is positive evidence a turn happened
+// (entry.sawTurn). Idle with no such evidence, once the grace window has
+// passed, is a lost delivery. The grace window matters: it is what keeps a
+// fast task that finishes between two sweeps from being misread as lost --
+// its transcript will have advanced, which is what sawTurn records.
 //
 // Rationale for non-busy states returning 'hold' instead of 'clear':
 //   - null (capture failed): no signal, conservative.
@@ -154,14 +187,21 @@ export type TaskTimeoutDecision = 'clear' | 'alert' | 'hold'
 // Clearing on these states would drop the entry before the 300s timeout can
 // fire, producing false-negative coverage for genuinely stuck tasks.
 export function decideTaskTimeout(
-  entry: Pick<TaskInflightEntry, 'injectedAt' | 'alerted'>,
+  entry: Pick<TaskInflightEntry, 'injectedAt' | 'alerted' | 'sawTurn'>,
   paneState: PaneState | null,
   now: number,
   opts: { graceMs: number; timeoutMs: number; maxTrackMs: number },
 ): TaskTimeoutDecision {
   const elapsed = now - entry.injectedAt
   if (elapsed >= opts.maxTrackMs) return 'clear'
-  if (paneState === 'idle') return 'clear'
+  if (paneState === 'idle') {
+    if (entry.sawTurn) return 'clear'
+    // Idle, and nothing ever showed the prompt being picked up. Inside the
+    // grace window that is just the normal pre-turn lag, so hold; past it the
+    // delivery is gone.
+    if (elapsed < opts.graceMs) return 'hold'
+    return 'lost'
+  }
   if (entry.alerted) return 'hold'
   if (elapsed < opts.graceMs) return 'hold'
   if (paneState === 'busy' && elapsed >= opts.timeoutMs) return 'alert'
@@ -753,6 +793,9 @@ async function attemptFireTask(
       host,
       injectedAt: now,
       alerted: false,
+      sawTurn: false,
+      workingDir: agentName === MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(agentName),
+      configDir: agentName === MAIN_AGENT_ID ? undefined : (readAgentClaudeConfigDir(agentName) ?? undefined),
       timeoutMs: resolveStuckTimeoutMs(task),
     })
 
@@ -1181,6 +1224,21 @@ export function startScheduleRunner(): NodeJS.Timeout {
     for (const [key, entry] of taskInflightMap) {
       const pane = capturePane(entry.session, entry.host)
       const state = pane != null ? detectPaneState(pane) : null
+      // Record evidence that the injection actually started a turn. 'busy' is
+      // the direct observation; the transcript mtime covers the task that ran
+      // and finished entirely between two sweeps, which no pane sample would
+      // ever catch. Deliberately NOT set on 'typing': that state means our
+      // prompt is parked UNSENT in the input box, which the resubmit loop owns
+      // -- counting it as a turn would re-open the silent-loss hole from the
+      // other side.
+      if (!entry.sawTurn) {
+        if (state === 'busy') {
+          entry.sawTurn = true
+        } else {
+          const mtime = readTranscriptMtimeFromProjectDir(entry.workingDir, entry.configDir)
+          if (mtime != null && mtime > entry.injectedAt) entry.sawTurn = true
+        }
+      }
       const decision = decideTaskTimeout(entry, state, now, {
         graceMs: TASK_FIRE_GRACE_MS,
         timeoutMs: entry.timeoutMs,
@@ -1191,6 +1249,24 @@ export function startScheduleRunner(): NodeJS.Timeout {
       } else if (decision === 'alert') {
         sendTaskTimeoutAlert(entry, now - entry.injectedAt)
         entry.alerted = true
+      } else if (decision === 'lost') {
+        // The prompt was typed into a session that never acted on it. Undo the
+        // success bookkeeping: overwrite the run record and drop the lastRun
+        // stamp so the occurrence is no longer considered served, then queue
+        // the redelivery. The retry queue is the right owner from here -- it
+        // already refuses to inject into a session that is not ready and keeps
+        // the row (with its aged-retry alert) until the session is rescued.
+        logger.warn(
+          { task: entry.taskName, agent: entry.agentName, session: entry.session, elapsedMs: now - entry.injectedAt },
+          'Scheduled injection never started a turn (session accepted the keystrokes but stayed idle) -- recording as lost and re-queueing',
+        )
+        appendTaskRun(entry.taskName, entry.agentName, 'lost')
+        if (scheduleLastRun.get(entry.taskName) === entry.injectedAt) {
+          scheduleLastRun.delete(entry.taskName)
+          persistScheduleLastRun()
+        }
+        insertPendingTaskRetryIfNew(entry.taskName, entry.agentName, now, 'lost-injection')
+        taskInflightMap.delete(key)
       }
     }
 

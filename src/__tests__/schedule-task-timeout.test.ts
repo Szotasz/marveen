@@ -21,8 +21,12 @@ const MAX_TRACK = 6 * 60 * 60_000   // 6 hours
 
 const BASE_OPTS = { graceMs: GRACE, timeoutMs: TIMEOUT, maxTrackMs: MAX_TRACK }
 
-function makeEntry(overrides: Partial<Pick<TaskInflightEntry, 'injectedAt' | 'alerted'>> = {}): Pick<TaskInflightEntry, 'injectedAt' | 'alerted'> {
-  return { injectedAt: 0, alerted: false, ...overrides }
+// sawTurn defaults to TRUE here: every pre-existing case in this file was
+// written for a task that really did start running, and the watchdog's original
+// contract (idle => done) is only correct for those. The sawTurn=false cases --
+// an injection that never started a turn -- get their own describe block below.
+function makeEntry(overrides: Partial<Pick<TaskInflightEntry, 'injectedAt' | 'alerted' | 'sawTurn'>> = {}): Pick<TaskInflightEntry, 'injectedAt' | 'alerted' | 'sawTurn'> {
+  return { injectedAt: 0, alerted: false, sawTurn: true, ...overrides }
 }
 
 // --- Grace period ---
@@ -98,6 +102,45 @@ describe('decideTaskTimeout: one-shot alert flag', () => {
     const entry = makeEntry({ injectedAt: 0, alerted: true })
     const now = TIMEOUT + 60_000
     expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('clear')
+  })
+})
+
+// --- Lost injection (idle pane that never started a turn) ---
+//
+// Regression guard for the 2026-08-23 silent loss: two heartbeats were injected
+// into a session wedged at 100% context, which presents as a perfectly normal
+// idle pane. The watchdog cleared them on the next sweep as "completed", the
+// runner had already stamped lastRun, and nothing ever retried them.
+
+describe('decideTaskTimeout: injection that never started a turn', () => {
+  it('reports lost when the pane is idle past grace and no turn was ever observed', () => {
+    const entry = makeEntry({ injectedAt: 0, sawTurn: false })
+    const now = GRACE + 1
+    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('lost')
+  })
+
+  it('holds inside the grace window -- pre-turn lag is not a loss', () => {
+    const entry = makeEntry({ injectedAt: 0, sawTurn: false })
+    const now = GRACE - 1
+    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('hold')
+  })
+
+  it('clears instead of losing once a turn has been observed', () => {
+    const entry = makeEntry({ injectedAt: 0, sawTurn: true })
+    const now = GRACE + 1
+    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('clear')
+  })
+
+  it('still evicts at max tracking age rather than reporting lost', () => {
+    const entry = makeEntry({ injectedAt: 0, sawTurn: false })
+    const now = MAX_TRACK + 1
+    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('clear')
+  })
+
+  it('does not report lost while the pane is busy -- that is the alert path', () => {
+    const entry = makeEntry({ injectedAt: 0, sawTurn: false })
+    const now = TIMEOUT + 1
+    expect(decideTaskTimeout(entry, 'busy', now, BASE_OPTS)).toBe('alert')
   })
 })
 
