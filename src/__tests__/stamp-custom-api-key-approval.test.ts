@@ -8,8 +8,8 @@ import { stampCustomApiKeyApproval } from '../web/agent-process.js'
 // function Jne(e) { return e.trim().slice(-20) }
 const suffix = (key: string) => key.trim().slice(-20)
 
-const KEY_BEARER = 'sk-litellm-test-bearertokenvalue12345'
-const KEY_XAPI   = 'sk-litellm-test-xapikey0000000000000'
+const KEY_BEARER = 'test-bearer-redacted-tokenvalue12345'
+const KEY_XAPI   = 'test-litellm-xapikey0000000000000'
 const KEY_SHORT  = 'short'
 
 describe('stampCustomApiKeyApproval', () => {
