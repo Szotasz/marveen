@@ -27,6 +27,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- fix token management API path matching so `/api/v1/admin/tokens` resolves correctly (handler was comparing against the pre-normalised `/api/v1/` form instead of the normalised `/api/` form that the dispatcher passes to route handlers)
 - widen flaky 1s margin in heartbeat-hot-memory-count test
 - call tlRebuildAtTime(t1) on natural playback end
 - sort edges by weight desc before 250-cap; align static threshold to 0.75
