@@ -84,6 +84,7 @@ import { tryHandleImportMemories } from './web/routes/import-memories.js'
 import { tryHandleBackups } from './web/routes/backups.js'
 import { tryHandleBlackboard } from './web/routes/blackboard.js'
 import { tryHandleAdminTokens } from './web/routes/tokens.js'
+import { tryHandleAdminB2b } from './web/routes/admin-b2b.js'
 import { getDb } from './db.js'
 import type { RouteContext } from './web/routes/types.js'
 import { RouteDispatcher } from './web/routes/dispatcher.js'
@@ -105,6 +106,7 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleBackups)
   .add(tryHandleBlackboard)
   .add(tryHandleAdminTokens)
+  .add(tryHandleAdminB2b)
   .add(tryHandleArtifacts)
   .add(tryHandleMigrate)
   .add(tryHandleKanban)

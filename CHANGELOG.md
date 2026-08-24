@@ -11,8 +11,10 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- **[API]** `POST/GET /api/v1/admin/tenants`, `PATCH /api/v1/admin/tenants/:id` -- tenant registry CRUD (admin:all required)
+- **[API]** `POST/GET /api/v1/admin/users`, `PATCH /api/v1/admin/users/:id` -- dashboard user provisioning with role+tenant validation and audit log (admin:all required)
+- migration 0019: `tenants` table DDL with pre-seeded 'default' tenant
 - **[Import]** xlsx/xls/docx binary format support in the import crawler: new `extractContent()` helper dispatches to SheetJS CE (xlsx/xls, sheet_to_csv output) and mammoth (docx, plain-text extraction); malformed files are counted as `skippedType` instead of crashing; ZIP-bomb guard caps extracted text at 2 MB before the existing 100 KB content truncation; binary files use a separate 5 MB size limit (vs 500 KB for text files)
-
 - **[API]** RouteContext gains optional `role` and `tenantId` fields (non-breaking additive extension; set by the top-level RBAC gate for downstream route handlers)
 - tenant isolation wired into memories, kanban, and messages route handlers: admin role bypasses filter (sees all tenants), scoped callers are restricted to their own tenant_id; saveAgentMemory/createAgentMessage/createKanbanCard accept optional tenantId param (backward-compat, default: 'default')
 - enroll dashboard bearer in api_tokens on startup (INSERT OR IGNORE; role=admin, tenant=default, no expiry); resolveApiToken() now resolves it from DB instead of the file-token fallback
