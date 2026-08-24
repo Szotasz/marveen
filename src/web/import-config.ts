@@ -20,7 +20,22 @@ export const MAX_CONCURRENT_READS = 5
 export const ALLOWED_EXTENSIONS = new Set([
   'txt', 'md', 'mdx', 'mdc', 'json', 'html', 'htm', 'csv',
   'yaml', 'yml', 'xml', 'log', 'toml', 'ini', 'cfg', 'rst', 'tsv', 'sql',
+  // Binary formats parsed by extractContent() before entering the text pipeline
+  'xlsx', 'xls', 'docx',
 ])
+
+/**
+ * Extensions that require binary-aware parsing instead of readFileSync(utf-8).
+ * Each extension must also appear in ALLOWED_EXTENSIONS.
+ */
+export const BINARY_EXTS = new Set(['xlsx', 'xls', 'docx'])
+
+/**
+ * Hard cap on the extracted text length from binary parsers (ZIP-bomb guard).
+ * The downstream MAX_CONTENT_BYTES truncation still applies after this cap,
+ * so the DB row size is bounded by MAX_CONTENT_BYTES regardless.
+ */
+export const MAX_EXTRACTED_BYTES = 2 * 1024 * 1024 // 2 MB
 
 /**
  * File extensions that are unconditionally blocked from import regardless of

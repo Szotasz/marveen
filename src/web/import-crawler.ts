@@ -1,13 +1,17 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, statSync, readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { join, extname, basename } from 'node:path'
+import { Worker } from 'node:worker_threads'
 import { getDb, runLinkMaintenance } from '../db.js'
 import { logger } from '../logger.js'
 import {
   ALLOWED_EXTENSIONS,
+  BINARY_EXTS,
   BLOCKED_EXTENSIONS,
   BLOCKED_BASENAMES,
   MAX_CONTENT_BYTES,
+  MAX_EXTRACTED_BYTES,
   MAX_FILE_SIZE_BYTES,
   MAX_FILES_PER_RUN,
   MAX_TOTAL_CONTENT_BYTES,
@@ -74,6 +78,61 @@ export function extractKeywords(content: string, fileName: string): string {
     .slice(0, 20)
   if (stem) words.unshift(stem)
   return [...new Set(words)].slice(0, 20).join(', ')
+}
+
+// ── Binary format extraction ─────────────────────────────────────────────────
+
+// Binary files can be larger than text files; use a separate size cap so valid
+// xlsx/docx files aren't rejected by the text-file 500 KB guard.
+const MAX_BINARY_FILE_SIZE_BYTES = 5 * 1024 * 1024 // 5 MB
+
+// Worker script path resolved from the compiled dist/ layout at runtime.
+// import.meta.url points to the running .js file in dist/web/, so the relative
+// reference lands on dist/web/import-binary-worker.js -- same directory.
+const WORKER_URL = new URL('./import-binary-worker.js', import.meta.url)
+
+async function parseBinaryInWorker(filePath: string, ext: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const worker = new Worker(WORKER_URL, {
+      workerData: { filePath, ext },
+      resourceLimits: { maxOldGenerationSizeMb: 128 },
+    })
+
+    let settled = false
+    const settle = (result: string | null): void => {
+      if (settled) return
+      settled = true
+      resolve(result)
+    }
+
+    const timer = setTimeout(() => { worker.terminate(); settle(null) }, 10_000)
+
+    worker.on('message', (msg: { ok: boolean; text?: string }) => {
+      clearTimeout(timer)
+      settle(msg.ok && typeof msg.text === 'string' ? msg.text : null)
+    })
+    worker.on('error', () => { clearTimeout(timer); settle(null) })
+    // exit fires after message in the normal path; settle() is idempotent.
+    // Non-zero exit (OOM, terminate) -> resolve null if not yet settled.
+    worker.on('exit', (code) => { clearTimeout(timer); if (code !== 0) settle(null) })
+  })
+}
+
+export async function extractContent(filePath: string, ext: string): Promise<string | null> {
+  if (BINARY_EXTS.has(ext)) {
+    const extracted = await parseBinaryInWorker(filePath, ext)
+    if (extracted === null) return null
+    if (extracted.length > MAX_EXTRACTED_BYTES) {
+      return extracted.slice(0, MAX_EXTRACTED_BYTES) + '\n[extraction truncated]'
+    }
+    return extracted
+  }
+
+  try {
+    return readFileSync(filePath, 'utf-8')
+  } catch {
+    return null
+  }
 }
 
 // ── Mutex: one running scan per source ───────────────────────────────────────
@@ -215,17 +274,21 @@ async function crawlLocalSource(
       const fileGuard = isAllowedFile(filePath)
       if (!fileGuard.ok) { counts.skippedType++; return }
 
+      const fileExt = extname(filePath).slice(1).toLowerCase()
+      const isBinary = BINARY_EXTS.has(fileExt)
+
       let size: number
       try { size = statSync(filePath).size } catch { counts.skippedType++; return }
-      if (size > MAX_FILE_SIZE_BYTES) { counts.skippedSize++; return }
+      const sizeLimit = isBinary ? MAX_BINARY_FILE_SIZE_BYTES : MAX_FILE_SIZE_BYTES
+      if (size > sizeLimit) { counts.skippedSize++; return }
 
-      let raw: string
-      try { raw = readFileSync(filePath, 'utf-8') } catch { counts.skippedType++; return }
+      const raw = await extractContent(filePath, fileExt)
+      if (raw === null) { counts.skippedType++; return }
 
       if (containsSecret(raw)) { counts.skippedSecret++; return }
 
-      const fileExt = extname(filePath).toLowerCase()
-      const stripped = HTML_LIKE_EXTS.has(fileExt) ? stripMarkup(raw) : raw
+      const dotExt = '.' + fileExt
+      const stripped = HTML_LIKE_EXTS.has(dotExt) ? stripMarkup(raw) : raw
       const content = stripped.length > MAX_CONTENT_BYTES
         ? stripped.slice(0, MAX_CONTENT_BYTES) + '\n[truncated]'
         : stripped
