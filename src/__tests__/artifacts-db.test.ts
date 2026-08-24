@@ -34,6 +34,13 @@ describe('createArtifact cloud_url UPSERT', () => {
     const full = getArtifact(r2.id)
     expect(full!.content.toString('utf-8')).toBe('<h1>v2</h1>')
     expect(full!.title).toBe('Cloud artifact v2')
+
+    // updated_at must be >= created_at after a re-publish.
+    // This is the backend invariant the frontend relies on:
+    // the artifact list must show updated_at (not created_at) for re-published artifacts.
+    const inList = listArtifacts({ agent: 'agent-a' }).find(r => r.cloud_url === CLOUD_URL)
+    expect(inList).toBeDefined()
+    expect(inList!.updated_at).toBeGreaterThanOrEqual(inList!.created_at)
   })
 
   it('artifact without cloud_url inserts unconditionally (updated=false)', () => {

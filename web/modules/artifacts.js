@@ -63,7 +63,7 @@ function renderList(rows) {
         <th style="padding:6px 8px">Cím</th>
         <th style="padding:6px 8px">Agent</th>
         <th style="padding:6px 8px">Típus</th>
-        <th style="padding:6px 8px">Idő</th>
+        <th style="padding:6px 8px">Módosítva</th>
         <th style="padding:6px 8px"></th>
       </tr>
     </thead>
@@ -73,7 +73,7 @@ function renderList(rows) {
           <td class="artifact-title-cell" style="padding:6px 8px" data-id="${escapeHtml(r.id)}" data-title="${escapeHtml(r.title)}">${escapeHtml(r.title)}</td>
           <td style="padding:6px 8px;color:var(--text-muted)">${escapeHtml(r.agent_id)}</td>
           <td style="padding:6px 8px"><code>${escapeHtml(r.kind)}</code></td>
-          <td style="padding:6px 8px;color:var(--text-muted)">${fmtTime(r.created_at)}</td>
+          <td style="padding:6px 8px;color:var(--text-muted)" title="${r.updated_at !== r.created_at ? 'Létrehozva: ' + fmtTime(r.created_at) : ''}">${fmtTime(r.updated_at ?? r.created_at)}</td>
           <td style="padding:6px 8px;white-space:nowrap">
             <button class="btn artifact-preview-btn" data-variant="secondary" data-size="compact" data-id="${escapeHtml(r.id)}" data-kind="${escapeHtml(r.kind)}" data-title="${escapeHtml(r.title)}" data-i18n="memories.artifacts.btn.preview">Előnézet</button>
             <button class="btn artifact-rename-btn" data-variant="secondary" data-size="compact" data-id="${escapeHtml(r.id)}" data-i18n="artifacts.btn.rename">Átnevezés</button>
