@@ -4,6 +4,7 @@ import {
   normalizeAutoRestartConfig,
   restartDue,
   dailyDueAtMs,
+  restartBlockedBy,
   DEFAULT_AUTO_RESTART,
 } from '../auto-restart.js'
 
@@ -74,5 +75,22 @@ describe('dailyDueAtMs', () => {
     const midnight = 1_700_000_000_000
     expect(dailyDueAtMs(midnight, 0)).toBe(midnight)
     expect(dailyDueAtMs(midnight, 180)).toBe(midnight + 180 * 60_000) // 03:00
+  })
+})
+
+describe('restartBlockedBy', () => {
+  // Regression guard: paneIsIdle used to be the ONLY pre-restart check, and an
+  // agent waiting on the owner's answer is idle precisely then -- so a due
+  // restart swallowed the pending exchange (for a channel agent even a
+  // "continue" restart is effectively fresh).
+  it('an unanswered inbound question defers even an idle pane', () => {
+    expect(restartBlockedBy({ paneIdle: true, openQuestion: true })).toBe('open-question')
+  })
+  it('a busy pane defers, and wins the ordering over an open question', () => {
+    expect(restartBlockedBy({ paneIdle: false, openQuestion: false })).toBe('busy-pane')
+    expect(restartBlockedBy({ paneIdle: false, openQuestion: true })).toBe('busy-pane')
+  })
+  it('idle pane and no open question proceeds', () => {
+    expect(restartBlockedBy({ paneIdle: true, openQuestion: false })).toBeNull()
   })
 })

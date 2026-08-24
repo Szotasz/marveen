@@ -13,7 +13,8 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { respawnMainSessionFresh } from './channel-monitor.js'
 import { paneLooksIdle } from '../pane-state.js'
 import { readAutoRestartConfig } from './auto-restart-store.js'
-import { restartDue, dailyDueAtMs, parseHHMM, mainRestartMechanism, type AutoRestartConfig } from '../auto-restart.js'
+import { restartDue, dailyDueAtMs, parseHHMM, mainRestartMechanism, restartBlockedBy, type AutoRestartConfig } from '../auto-restart.js'
+import { hasOpenInboundQuestion } from '../db.js'
 
 // Drives per-agent scheduled restarts (see src/auto-restart.ts for the why and
 // the pure due-logic). Mirrors the other watcher loops: a 60s sweep, started
@@ -132,8 +133,18 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
 
   const session = sessionFor(name)
   const host = name === MAIN_AGENT_ID ? null : readAgentRemoteHost(name)
-  if (!paneIsIdle(session, host)) {
-    logger.info({ name, session }, 'auto-restart: due but pane is busy, deferring to next tick')
+  // An agent waiting on the owner's answer is idle precisely then -- so the
+  // idle-guard alone lets a due restart swallow the pending exchange. The
+  // ledger's open-question signal covers that case; a ledger read failure
+  // counts as no-question (same fail-open as the context-restart gate) so a
+  // broken ledger cannot pin restarts forever.
+  const openQuestion = (() => {
+    try { return hasOpenInboundQuestion(name) }
+    catch { return false }
+  })()
+  const blocked = restartBlockedBy({ paneIdle: paneIsIdle(session, host), openQuestion })
+  if (blocked) {
+    logger.info({ name, session, blocked }, 'auto-restart: due but deferred to next tick')
     return
   }
 
