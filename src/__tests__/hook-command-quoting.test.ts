@@ -13,6 +13,12 @@ import {
 } from '../web/agent-scaffold.js'
 import { PROJECT_ROOT } from '../config.js'
 
+// When running from a git worktree under /tmp, vitest sets MARVEEN_SCRIPTS_DIR
+// to the main repo root so that inject functions can resolve scripts without
+// hitting the /tmp prefix guard. Tests that build the expected hook command must
+// use the same base so hookCommandWired comparisons stay consistent.
+const SCRIPTS_DIR = process.env['MARVEEN_SCRIPTS_DIR'] ?? PROJECT_ROOT
+
 // Review feedback on PR #803, pinned as tests:
 //  1. every injector must write a QUOTED absolute interpreter path -- an
 //     unquoted execPath with a space in it is split by `sh -c`, exit 127,
@@ -84,7 +90,7 @@ describe('hookCommandWired', () => {
   it('finds a freshly injected command (posix path)', () => {
     const s: Record<string, unknown> = {}
     injectEgressGate(s)
-    const cmd = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'egress-gate.mjs'))
+    const cmd = hookCommand(join(SCRIPTS_DIR, 'scripts', 'hooks', 'egress-gate.mjs'))
     const ptuJson = JSON.stringify((s.hooks as Record<string, unknown>).PreToolUse)
     expect(hookCommandWired(ptuJson, cmd)).toBe(true)
   })
