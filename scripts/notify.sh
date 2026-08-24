@@ -38,7 +38,17 @@ fi
 # reader can see who it came from. Distribution-safe: the main agent id is read
 # from .env (default marveen), no hardcoded names.
 SENDER=""
-SESS=$(tmux display-message -p '#S' 2>/dev/null)
+# Only ask tmux who we are when we are actually INSIDE a tmux pane. Detached
+# callers -- cron, systemd, a plain ssh shell -- have no session, but
+# `tmux display-message -p '#S'` still answers happily with whatever session the
+# server most recently touched. That mislabels a cron- or systemd-fired system
+# alert as coming from an arbitrary agent, which is worse than no attribution: it
+# points the reader at an uninvolved agent while a system alert is in flight.
+# No pane -> no claim about the sender; the message goes out as the main agent.
+SESS=""
+if [ -n "${TMUX:-}" ]; then
+  SESS=$(tmux display-message -p '#S' 2>/dev/null)
+fi
 case "$SESS" in
   agent-*)
     SENDER="${SESS#agent-}"
