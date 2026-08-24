@@ -40,8 +40,10 @@ export function resolveRole(auth: AuthResult): Role {
       // Per-device fleet keys have agent-level access (read+write, own tenant).
       return 'agent'
     case 'session':
-      // Browser session-login users start as viewer; admin grant is explicit.
-      return 'viewer'
+      // Session callers carry the role from dashboard_users (looked up in auth-gate
+      // when the DB is available). Falls back to 'viewer' for unenrolled or
+      // DB-less callers (e.g. in tests that don't pass a DB to resolveAuth).
+      return auth.role ?? 'viewer'
     case 'federation':
       // Federated peers can read and write messages/manifests (agent scope).
       return 'agent'
@@ -107,13 +109,25 @@ export function checkPermission(
 
 // ── Tenant resolution ────────────────────────────────────────────────────────
 //
-// Returns the tenant scope for a request. Once the token-based tenant lookup is
-// wired into the auth gate, 'token' auth will carry its own tenantId. Until then
-// every request is in the default tenant so nothing breaks.
+// Returns the tenant scope for a request.
+//   string  -- tenant-scoped: only this tenant's data is accessible
+//   null    -- global (admin): all tenants are accessible (bypass scope filter)
+//
+// CRITICAL -- admin bypass rule (Rick architecture spec):
+//   Callers with role === 'admin' get null (global) regardless of any
+//   tenant_id stored on their credential. Deciding access by tenant_id alone
+//   would lock even admin users to a single tenant, breaking fleet operations.
+//   The scopeToTenant wrapper must check role === 'admin' (not tenantId === null)
+//   as the bypass condition, since null also covers the initial null-default
+//   for non-admin viewer users before their tenant is assigned.
 
-export function resolveTenantId(auth: AuthResult): string {
+export function resolveTenantId(auth: AuthResult): string | null {
   if (auth.kind === 'token' && 'tenantId' in auth && typeof (auth as { tenantId?: unknown }).tenantId === 'string') {
     return (auth as { tenantId: string }).tenantId
+  }
+  if (auth.kind === 'session' && 'tenantId' in auth) {
+    const t = (auth as { tenantId?: string | null }).tenantId
+    if (t !== undefined) return t  // null = global admin; string = scoped
   }
   return 'default'
 }

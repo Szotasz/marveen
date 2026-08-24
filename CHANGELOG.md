@@ -13,6 +13,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 - **[API]** RouteContext gains optional `role` and `tenantId` fields (non-breaking additive extension; set by the top-level RBAC gate for downstream route handlers)
 - enroll dashboard bearer in api_tokens on startup (INSERT OR IGNORE; role=admin, tenant=default, no expiry); resolveApiToken() now resolves it from DB instead of the file-token fallback
+- migration 0018: add role + tenant_id to dashboard_users; first-user-wins bootstrap in createDashboardUser (first user gets admin+global, subsequent users get viewer); session AuthResult carries role+tenantId from DB lookup; resolveTenantId returns null for global admin
 - **[API]** CI breaking-change detection for docs/openapi.yaml via oasdiff (PRs fail if a breaking change is introduced without approval)
 - **[API]** URL-level versioning with /api/v1/* canonical paths
 - **[API]** add custom OpenAPI->TypeScript SDK generator
