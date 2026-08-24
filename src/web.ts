@@ -82,6 +82,8 @@ import { tryHandleArtifacts } from './web/routes/artifacts.js'
 import { tryHandleImportMemories } from './web/routes/import-memories.js'
 import { tryHandleBackups } from './web/routes/backups.js'
 import { tryHandleBlackboard } from './web/routes/blackboard.js'
+import { tryHandleAdminTokens } from './web/routes/tokens.js'
+import { getDb } from './db.js'
 import type { RouteContext } from './web/routes/types.js'
 import { RouteDispatcher } from './web/routes/dispatcher.js'
 import { reconcileAgentsOnStartup, flushRunningStateToDesired } from './web/startup-reconciliation.js'
@@ -100,6 +102,7 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleImportMemories)
   .add(tryHandleBackups)
   .add(tryHandleBlackboard)
+  .add(tryHandleAdminTokens)
   .add(tryHandleArtifacts)
   .add(tryHandleMigrate)
   .add(tryHandleKanban)
@@ -208,7 +211,7 @@ export function startWebServer(port = 3420): http.Server {
     // fleet curl call keeps working with users present or absent. requiresAuth()
     // decides whether a missing principal is a 401 (gated /api/* + fleet
     // manifest) or a public probe (auth status/login, avatars).
-    const auth: AuthResult = resolveAuth(req, url, path, method, DASHBOARD_TOKEN)
+    const auth: AuthResult = resolveAuth(req, url, path, method, DASHBOARD_TOKEN, getDb())
     if (requiresAuth(path, method) && auth.kind === 'none') {
       if (isFederationWireEndpoint(path, method)) {
         // 401s are otherwise silent; federation-endpoint auth failures are the
