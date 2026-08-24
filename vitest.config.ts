@@ -1,4 +1,18 @@
 import { defineConfig, configDefaults } from 'vitest/config'
+import { execSync } from 'node:child_process'
+import { resolve, dirname } from 'node:path'
+
+// Resolve the main working tree root regardless of whether vitest is run from a
+// git worktree in /tmp. `git rev-parse --git-common-dir` always returns the main
+// repo's .git directory (absolute when called from a linked worktree, relative
+// ".git" when called from the main tree). resolve() normalises both cases to an
+// absolute path; dirname then strips the trailing /.git component.
+// This value is injected as MARVEEN_SCRIPTS_DIR so that agent-scaffold.ts resolves
+// hook-script paths to the real repo (not the /tmp worktree), keeping
+// isUnsafeHookCommand from blocking every inject* call in tests. PROJECT_ROOT is
+// deliberately left pointing at the worktree so agent-config lookups stay isolated.
+const gitCommonDir = resolve(execSync('git rev-parse --git-common-dir').toString().trim())
+const mainRepoRoot = dirname(gitCommonDir)
 
 // The Playwright smoke suite (tests/smoke/**) is driven by `npm run smoke`
 // (playwright.config.ts), not by `vitest run`. Playwright's test() API throws
@@ -10,6 +24,9 @@ import { defineConfig, configDefaults } from 'vitest/config'
 // exist under dist/).
 export default defineConfig({
   test: {
+    env: {
+      MARVEEN_SCRIPTS_DIR: mainRepoRoot,
+    },
     exclude: [...configDefaults.exclude, 'tests/smoke/**', 'dist/**'],
     // Default 5 s is too tight for DB-heavy tests in a fully-parallel suite run.
     // Affected tests pass in isolation; the timeout is a concurrency artefact.

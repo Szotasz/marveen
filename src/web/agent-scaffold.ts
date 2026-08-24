@@ -10,6 +10,12 @@ import { resolveProfilePlaceholders, type ProfileTemplate } from './profiles.js'
 import { MCP_TOOL_REGISTRY, parseMcpScope, buildMcpDenyList } from './mcp-tool-registry.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
 
+// When vitest runs from a git worktree under /tmp, PROJECT_ROOT resolves to
+// /tmp/wt-*/ which isUnsafeHookCommand() blocks. MARVEEN_SCRIPTS_DIR lets the
+// test environment point hook-script lookups at the real repo root without
+// moving PROJECT_ROOT (which is also the agents/ and templates/ base).
+const SCRIPTS_DIR = process.env['MARVEEN_SCRIPTS_DIR'] ?? PROJECT_ROOT
+
 // Resolve the base URL agents should use to reach the dashboard API.
 // DASHBOARD_PUBLIC_URL wins when set (distributed / k3s deployment); falls
 // back to localhost for single-host installs. Exported so heartbeat-agent-
@@ -300,7 +306,7 @@ export function ensureAgentHooks(name: string): boolean {
 // blocking the prompt. Intentional policy blocks (the script exists and returns
 // non-zero) are still propagated via exec. The script path appears twice so the
 // guard regex below can still match it.
-const _stalenessScript = join(PROJECT_ROOT, 'scripts', 'hooks', 'staleness-guard.py')
+const _stalenessScript = join(SCRIPTS_DIR, 'scripts', 'hooks', 'staleness-guard.py')
 const STALENESS_HOOK_CMD = `bash -c '[ -f ${_stalenessScript} ] && exec python3 ${_stalenessScript}; exit 0'`
 
 export function ensureAgentStalenessHook(name: string): boolean {
@@ -393,7 +399,7 @@ export function injectEmailSendGate(existing: Record<string, unknown>): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'))
+  const command = hookCommand(join(SCRIPTS_DIR, 'scripts', 'email-send-gate.mjs'))
   // Registration guard: a /tmp or missing path must never enter shared settings.
   if (isUnsafeHookCommand(command)) return
   const entry = {
@@ -428,7 +434,7 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'self-pace-gate.mjs'))
+  const command = hookCommand(join(SCRIPTS_DIR, 'scripts', 'self-pace-gate.mjs'))
   // Registration guard: a /tmp or missing path must never enter shared settings.
   if (isUnsafeHookCommand(command)) return
   const entry = {
@@ -454,7 +460,7 @@ export function injectEgressGate(existing: Record<string, unknown>): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'egress-gate.mjs'))
+  const command = hookCommand(join(SCRIPTS_DIR, 'scripts', 'hooks', 'egress-gate.mjs'))
   // Registration guard: a /tmp or missing path must never enter shared settings.
   if (isUnsafeHookCommand(command)) return
   const entry = {
@@ -478,7 +484,7 @@ export function ensureEgressGate(name: string): boolean {
   if (existsSync(settingsPath)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
   }
-  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'egress-gate.mjs'))
+  const command = hookCommand(join(SCRIPTS_DIR, 'scripts', 'hooks', 'egress-gate.mjs'))
   const hooks = (settings.hooks && typeof settings.hooks === 'object')
     ? settings.hooks as Record<string, unknown>
     : {}
@@ -642,8 +648,8 @@ export function ensureGovernanceGateCommands(name: string): boolean {
   if (!existsSync(settingsPath)) return false
   let settings: Record<string, unknown> = {}
   try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
-  const emailCmd = hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'))
-  const paceCmd = hookCommand(join(PROJECT_ROOT, 'scripts', 'self-pace-gate.mjs'))
+  const emailCmd = hookCommand(join(SCRIPTS_DIR, 'scripts', 'email-send-gate.mjs'))
+  const paceCmd = hookCommand(join(SCRIPTS_DIR, 'scripts', 'self-pace-gate.mjs'))
   const hooks = (settings.hooks && typeof settings.hooks === 'object')
     ? settings.hooks as Record<string, unknown>
     : {}

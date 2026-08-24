@@ -17,7 +17,10 @@ import { spawnSync, execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const ROOT = join(__dirname, '..', '..')
+// When running from a git worktree in /tmp, fall back to the main repo root so
+// that STALENESS_HOOK and PRUNE_SCRIPT point to paths outside /tmp and
+// isUnsafeHookCommand's /tmp prefix guard does not block them.
+const ROOT = process.env['MARVEEN_SCRIPTS_DIR'] ?? join(__dirname, '..', '..')
 const PRUNE_SCRIPT = join(ROOT, 'scripts', 'boot-hook-prune.py')
 const STALENESS_HOOK = join(ROOT, 'scripts', 'hooks', 'staleness-guard.py')
 
