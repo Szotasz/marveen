@@ -25,7 +25,7 @@ intentional, not an error to work around.
 3. On a clean scan it writes `<file>.mio-attestation.json` (content hash +
    scanner version + timestamp + member HMAC) and uploads both. That trail
    is what marks the material as pre-checked on the platform side.
-4. `MIO_MEMBER_ID` and `MIO_ATTEST_KEY` must be set (from the member's
+4. `MIO_MEMBER_ID`, `MIO_KEY_ID` and `MIO_ATTEST_KEY` must be set (from the member's
    marveen.io profile). Never print MIO_ATTEST_KEY.
 
 ## Pitfalls
@@ -37,6 +37,6 @@ intentional, not an error to work around.
 
 ## Verification
 - After `mio-upload`, confirm the `.mio-attestation.json` exists next to
-  the file and `findings_count` is 0.
+  the file and every entry in `checks` says `"result": "clean"`.
 - After `mio-fetch`, the envelope header shows how many findings were
   neutralized; mention that count if you summarize the content for the user.

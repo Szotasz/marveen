@@ -102,5 +102,5 @@ fi
 
 echo
 echo "Put $CLAUDE_DIR/mio/bin on PATH for the agent (or reference the tools"
-echo "by absolute path). Set MIO_MEMBER_ID and MIO_ATTEST_KEY from your"
+echo "by absolute path). Set MIO_MEMBER_ID, MIO_KEY_ID and MIO_ATTEST_KEY from your"
 echo "marveen.io profile before using mio-upload."

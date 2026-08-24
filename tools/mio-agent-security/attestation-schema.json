@@ -1,52 +1,97 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://marveen.io/schemas/mio-attestation/1.json",
-  "title": "mio-attestation/1",
-  "description": "Attestation trail emitted by mio-upload on a clean scan. The proof is a REPLAYABLE RUN, not a secret: the server re-runs the same scanner version on the received content and recomputes the HMAC with the member's key. A copied attestation does not validate against different content. (Schema owner: this package; server-side replay: Geri / connectors side. Change via PR touching BOTH sides.)",
+  "title": "mio-attestation v1",
+  "description": "Attestation trail emitted by mio-upload on a clean scan. Agreed client/server contract (MIOAIPKG824, Dani+Geri 2026-08-24). What it proves: (a) provenance (key_id), (b) integrity (content_sha256 over the RAW bytes, no normalization), (c) replayability (the server re-runs the SAME scanner version+rulepack on the received bytes and compares verdicts). It does NOT prove the scan ran honestly on the member machine; server-side archives of runnable scanner versions are required for (c). HMAC: HMAC-SHA256 with the member key over the CANONICAL JSON (RFC 8785 style: sorted keys, compact separators, UTF-8, no escaping of non-ASCII) of this object WITHOUT the hmac field. Change via PR touching both client and server.",
   "type": "object",
   "required": [
-    "schema",
+    "v",
+    "key_id",
+    "member_id",
     "content_sha256",
     "scanner",
+    "checks",
     "scanned_at",
-    "member_id",
-    "findings_count",
-    "hmac_sha256",
-    "hmac_payload_format"
+    "hmac"
   ],
   "properties": {
-    "schema": { "const": "mio-attestation/1" },
+    "v": {
+      "const": 1
+    },
+    "key_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identifies the signing key; keys rotate, old keys stay verifiable, revocation is server-side (revoked_at) and unilateral."
+    },
+    "member_id": {
+      "type": "string",
+      "minLength": 1
+    },
     "content_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
-      "description": "SHA-256 of the exact uploaded bytes."
+      "description": "SHA-256 of the exact uploaded bytes, no canonicalization."
     },
     "scanner": {
       "type": "object",
-      "required": ["name", "version", "rulepack"],
+      "required": [
+        "name",
+        "version",
+        "rulepack"
+      ],
       "properties": {
-        "name": { "const": "mio-scan" },
-        "version": { "type": "string" },
-        "rulepack": { "type": "string", "description": "Date-stamped rule set id." }
+        "name": {
+          "const": "mio-scan"
+        },
+        "version": {
+          "type": "string",
+          "description": "Engine version, must resolve to a runnable archived artifact server-side."
+        },
+        "rulepack": {
+          "type": "string",
+          "description": "Date-stamped rule set id; replay needs the exact rules, not just the engine."
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "description": "WHAT was checked, not just that it passed; distinguishes checked-and-clean from not-checked.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "result",
+          "hits"
+        ],
+        "properties": {
+          "id": {
+            "enum": [
+              "prompt_injection",
+              "pii"
+            ]
+          },
+          "result": {
+            "enum": [
+              "clean",
+              "flagged"
+            ]
+          },
+          "hits": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
       }
     },
     "scanned_at": {
       "type": "string",
       "format": "date-time",
-      "description": "UTC timestamp of the scan (ISO 8601)."
+      "description": "RFC 3339 UTC."
     },
-    "member_id": { "type": "string", "minLength": 1 },
-    "findings_count": {
-      "const": 0,
-      "description": "An attestation is only emitted on a clean scan."
-    },
-    "hmac_sha256": {
+    "hmac": {
       "type": "string",
-      "pattern": "^[0-9a-f]{64}$",
-      "description": "HMAC-SHA256 over hmac_payload_format fields joined with '|', keyed with the member-specific MIO_ATTEST_KEY."
-    },
-    "hmac_payload_format": {
-      "const": "content_sha256|scanner.version|scanner.rulepack|scanned_at|member_id"
+      "pattern": "^[0-9a-f]{64}$"
     }
   },
   "additionalProperties": false

@@ -8,13 +8,16 @@
 # and, if MIO_UPLOAD_URL is set, POSTs the file together with the
 # attestation.
 #
-# The attestation is a REPLAYABLE RUN, not a secret: content hash + scanner
-# version + timestamp + member-specific HMAC. The server side re-runs the
-# same scanner on the received content and recomputes the HMAC; a copied
-# attestation does not validate against different content.
+# The attestation is a REPLAYABLE RUN, not a secret (mio-attestation v1,
+# agreed client/server contract, see attestation-schema.json): it proves
+# provenance (key_id), integrity (content hash over the raw bytes) and
+# replayability (the server re-runs the same scanner version+rulepack). The
+# HMAC is computed over the canonical JSON of the attestation without the
+# hmac field; a copied attestation does not validate against different
+# content or another member.
 #
-# Required env: MIO_MEMBER_ID, MIO_ATTEST_KEY (from your marveen.io profile).
-# Optional env: MIO_UPLOAD_URL.
+# Required env: MIO_MEMBER_ID, MIO_KEY_ID, MIO_ATTEST_KEY (from your
+# marveen.io profile). Optional env: MIO_UPLOAD_URL.
 #
 # Usage: mio-upload <file>
 set -euo pipefail
@@ -25,6 +28,7 @@ if [[ -z "$FILE" || ! -f "$FILE" ]]; then
   exit 64
 fi
 : "${MIO_MEMBER_ID:?MIO_MEMBER_ID is not set (see your marveen.io profile)}"
+: "${MIO_KEY_ID:?MIO_KEY_ID is not set (see your marveen.io profile)}"
 : "${MIO_ATTEST_KEY:?MIO_ATTEST_KEY is not set (see your marveen.io profile)}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,24 +58,32 @@ if findings:
           file=sys.stderr)
     sys.exit(2)
 
+# mio-attestation v1 (agreed schema). content_sha256 = RAW bytes, no
+# normalization. HMAC = HMAC-SHA256 over the canonical JSON (RFC 8785
+# style: sorted keys, compact separators, UTF-8 without ASCII escaping;
+# our value types are strings and small ints, for which this equals JCS)
+# of the attestation WITHOUT the hmac field.
 content_hash = hashlib.sha256(content).hexdigest()
-scanned_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+scanned_at = datetime.datetime.now(datetime.timezone.utc)\
+    .isoformat(timespec="seconds").replace("+00:00", "Z")
 scanner = result["scanner"]
-payload = "|".join([content_hash, scanner["version"], scanner["rulepack"],
-                    scanned_at, member_id])
-digest = hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()
-
+checks = [
+    {"id": "prompt_injection", "result": "clean", "hits": 0},
+    {"id": "pii", "result": "clean", "hits": 0},
+]
 attestation = {
-    "schema": "mio-attestation/1",
+    "v": 1,
+    "key_id": os.environ["MIO_KEY_ID"],
+    "member_id": member_id,
     "content_sha256": content_hash,
     "scanner": scanner,
+    "checks": checks,
     "scanned_at": scanned_at,
-    "member_id": member_id,
-    "findings_count": 0,
-    "hmac_sha256": digest,
-    "hmac_payload_format":
-        "content_sha256|scanner.version|scanner.rulepack|scanned_at|member_id",
 }
+canonical = json.dumps(attestation, sort_keys=True,
+                       separators=(",", ":"), ensure_ascii=False)
+attestation["hmac"] = hmac.new(key, canonical.encode("utf-8"),
+                               hashlib.sha256).hexdigest()
 with open(att_path, "w") as fh:
     json.dump(attestation, fh, indent=2)
 print(f"mio-upload: scan clean, attestation written: {att_path}")

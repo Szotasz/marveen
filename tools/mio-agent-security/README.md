@@ -47,12 +47,16 @@ protection is a **PreToolUse gate + sanctioned wrapper**:
 ## The attestation trail
 
 `mio-upload` writes `<file>.mio-attestation.json`
-(schema: `attestation-schema.json`, `mio-attestation/1`):
-content SHA-256 + scanner name/version/rulepack + UTC timestamp +
-member id + member-keyed HMAC. The proof is a **replayable run, not a
-secret**: the server re-runs the same scanner on the received bytes and
-recomputes the HMAC. Copying someone's attestation onto different content
-does not validate.
+(schema: `attestation-schema.json`, mio-attestation v1, agreed with the
+server side): key id + member id + content SHA-256 (raw bytes) + scanner
+name/version/rulepack + per-check results (`checks` is a list so
+"checked and clean" is distinguishable from "not checked") + RFC 3339 UTC
+timestamp + member-keyed HMAC over the canonical JSON. The proof is a
+**replayable run, not a secret**: it shows provenance (key id), integrity
+(content hash) and replayability (the server re-runs the same scanner
+version and rulepack on the received bytes). It does NOT prove the scan ran
+honestly on the member machine. Keys rotate by key id, old keys stay
+verifiable, revocation is server-side and unilateral.
 
 ## Install
 
@@ -66,8 +70,8 @@ The installer prints every path it writes. Default is the project scope on
 purpose: a package meant for one project must not silently land in every
 project's context.
 
-Then set `MIO_MEMBER_ID` and `MIO_ATTEST_KEY` (from your marveen.io
-profile) in the environment the agent runs in.
+Then set `MIO_MEMBER_ID`, `MIO_KEY_ID` and `MIO_ATTEST_KEY` (from your
+marveen.io profile) in the environment the agent runs in.
 
 ## Package layout
 
