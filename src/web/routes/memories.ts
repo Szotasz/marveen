@@ -35,6 +35,12 @@ function containsSuspiciousContent(content: string): boolean {
 export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
+  // Tenant scope: admin role sees/writes all tenants (bypass); scoped callers
+  // are restricted to their own tenant_id. The 'default' tenant covers the
+  // fleet's own memories for backward-compat (existing rows + fleet agents).
+  const isAdmin = ctx.role === 'admin'
+  const effectiveTenantId: string = isAdmin ? 'default' : (ctx.tenantId ?? 'default')
+
   if (path === '/api/memories' && method === 'POST') {
     const body = await readBody(req)
     const data = JSON.parse(body.toString()) as { agent_id?: string; content: string; tier?: string; category?: string; keywords?: string }
@@ -57,7 +63,8 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       data.content.trim(),
       category,
       data.keywords || undefined,
-      true
+      true,
+      effectiveTenantId,
     )
     json(res, { ok: true, id: result.id })
     return true
@@ -95,6 +102,12 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       results = getAgentMemories(agentId, limit, tier || undefined)
     } else {
       results = getMemoriesForChat(ALLOWED_CHAT_ID, limit)
+    }
+
+    // Tenant isolation: non-admin callers only see their own tenant's rows.
+    // Applied before the tier filter so the two can compose correctly.
+    if (!isAdmin) {
+      results = results.filter((m) => ((m as Memory & { tenant_id?: string }).tenant_id ?? 'default') === effectiveTenantId)
     }
 
     // Still needed for the search branches above, which rank by relevance and
@@ -672,6 +685,14 @@ Respond ONLY with JSON, nothing else:
 
   if (memIdMatch && method === 'PUT') {
     const id = parseInt(memIdMatch[1], 10)
+    // Non-admin callers may only update memories belonging to their own tenant.
+    if (!isAdmin) {
+      const tenantRow = getDb().prepare('SELECT tenant_id FROM memories WHERE id = ?').get(id) as { tenant_id: string } | undefined
+      if (!tenantRow || tenantRow.tenant_id !== effectiveTenantId) {
+        json(res, { error: 'Memory not found' }, 404)
+        return true
+      }
+    }
     const body = await readBody(req)
     const { content, category, tier, agent_id, keywords } = JSON.parse(body.toString()) as { content: string; category?: string; tier?: string; agent_id?: string; keywords?: string }
     if (updateMemory(id, content, tier || category, agent_id, keywords)) { json(res, { ok: true }); return true }
@@ -682,7 +703,12 @@ Respond ONLY with JSON, nothing else:
   if (memIdMatch && method === 'DELETE') {
     const id = parseInt(memIdMatch[1], 10)
     const db2 = getDb()
-    const row = db2.prepare('SELECT agent_id FROM memories WHERE id = ?').get(id) as { agent_id: string | null } | undefined
+    const row = db2.prepare('SELECT agent_id, tenant_id FROM memories WHERE id = ?').get(id) as { agent_id: string | null; tenant_id: string } | undefined
+    // Non-admin callers may only delete memories belonging to their own tenant.
+    if (!isAdmin && row && row.tenant_id !== effectiveTenantId) {
+      json(res, { error: 'Memory not found' }, 404)
+      return true
+    }
     const changes = db2.prepare('DELETE FROM memories WHERE id = ?').run(id).changes
     // Invalidate the in-process TTL cache so a deleted memory does not
     // resurface in the agent-filtered list for the cache lifetime.

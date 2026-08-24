@@ -81,7 +81,7 @@ function makeCtx(method: string, path: string, body?: object): { ctx: RouteConte
     end(b?: any) { try { out.body = JSON.parse(b?.toString() || 'null') } catch { out.body = b } },
   } as any
   const url = new URL(`http://localhost:3420${path}`)
-  return { ctx: { req, res, path: url.pathname, method, url } as RouteContext, out }
+  return { ctx: { req, res, path: url.pathname, method, url, role: 'admin' } as RouteContext, out }
 }
 
 describe('tryHandleKanban', () => {

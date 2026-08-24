@@ -48,7 +48,7 @@ function makeCtx(method: string, path: string, body?: object): { ctx: RouteConte
     end(b?: string) { try { out.body = JSON.parse(b || '{}') } catch { out.body = b } },
   } as any
   const url = new URL(`http://localhost:3420${path}`)
-  const ctx = { req, res, path: url.pathname, method, url } as RouteContext
+  const ctx = { req, res, path: url.pathname, method, url, role: 'admin' } as RouteContext
   return { ctx, out }
 }
 

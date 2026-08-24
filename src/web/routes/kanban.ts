@@ -24,6 +24,7 @@ import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
+import { scopeToTenant } from '../tenant-scope.js'
 import type { RouteContext } from './types.js'
 
 // A headless agent cannot "drag" a card to done, so the dispatch hands it the
@@ -173,12 +174,24 @@ export function buildHeartbeatSummaryResponse(
 export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
+  // Tenant scope: admin role sees/writes all tenants; scoped callers are
+  // restricted to their own tenant_id. Admin bypass uses role===admin check,
+  // not tenantId===null, because null is also the initial default for viewer
+  // users before tenant assignment (Rick architecture spec).
+  const isAdmin = ctx.role === 'admin'
+  const effectiveTenantId: string | null = isAdmin ? null : (ctx.tenantId ?? 'default')
+
   if (path === '/api/kanban' && method === 'GET') {
     // Embed each card's labels in one extra JOIN query (getLabelsForAllCards)
     // instead of an N+1 per-card lookup, so the footer-pill UI gets
     // everything it needs in a single round trip.
     const labelsByCard = getLabelsForAllCards()
-    const cards = listKanbanCards().map((card) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
+    let cards
+    if (!isAdmin && effectiveTenantId !== null) {
+      cards = scopeToTenant(getDb(), effectiveTenantId).kanban.list().map((card) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
+    } else {
+      cards = listKanbanCards().map((card) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
+    }
     jsonMaybeGzip(req, res, cards)
     return true
   }
@@ -309,7 +322,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const data = JSON.parse(body.toString())
     const id = randomUUID().slice(0, 8)
     try {
-      createKanbanCard({ id, ...data })
+      createKanbanCard({ id, ...data, tenant_id: effectiveTenantId ?? 'default' })
     } catch (err) {
       json(res, { error: (err as Error).message }, 400)
       return true
@@ -321,6 +334,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const kanbanCardMatch = path.match(/^\/api\/kanban\/([^/]+)$/)
   if (kanbanCardMatch && method === 'PUT') {
     const id = decodeURIComponent(kanbanCardMatch[1])
+    // Non-admin callers may only update cards belonging to their own tenant.
+    if (!isAdmin && effectiveTenantId !== null) {
+      const ownedCard = scopeToTenant(getDb(), effectiveTenantId).kanban.get(id)
+      if (!ownedCard) { json(res, { error: 'Kártya nem található' }, 404); return true }
+    }
     const body = await readBody(req)
     const data = JSON.parse(body.toString())
     if (updateKanbanCard(id, data)) { json(res, { ok: true }); return true }
@@ -330,6 +348,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
 
   if (kanbanCardMatch && method === 'DELETE') {
     const id = decodeURIComponent(kanbanCardMatch[1])
+    // Non-admin callers may only delete cards belonging to their own tenant.
+    if (!isAdmin && effectiveTenantId !== null) {
+      const ownedCard = scopeToTenant(getDb(), effectiveTenantId).kanban.get(id)
+      if (!ownedCard) { json(res, { error: 'Kártya nem található' }, 404); return true }
+    }
     revertIdeaFromKanban(id)
     if (deleteKanbanCard(id)) { json(res, { ok: true }); return true }
     json(res, { error: 'Kártya nem található' }, 404)
