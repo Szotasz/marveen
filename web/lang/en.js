@@ -1835,7 +1835,7 @@ window._i18n.en = {
   'import.sharepoint.warning':    'SharePoint: Check that your organisation\'s IT/data-protection policy permits copying content into a personal AI system. Required Graph scope: Sites.Read.All.',
   'import.page.title':            'Import Memories',
   'import.page.desc':             'Automatically ingest files from local folders, Google Drive, or SharePoint into the memory system.',
-  'import.page.info':             'Accepted extensions: txt, md, mdx, mdc, json, html, htm, csv, yaml, yml, xml, log, toml, ini, cfg, rst, tsv, sql. Skipped: files with extensions .env, .key, .pem, .p12 and similar key/certificate types; files named id_rsa or id_ed25519; and by content: Bearer tokens, private keys, password values, and IBAN-like patterns.',
+  'import.page.info':             'Accepted extensions: txt, md, mdx, mdc, json, html, htm, csv, yaml, yml, xml, log, toml, ini, cfg, rst, tsv, sql, plus xlsx, xls, docx (binary formats with content extraction). Skipped: files with extensions .env, .key, .pem, .p12 and similar key/certificate types; files named id_rsa or id_ed25519; and by content: Bearer tokens, private keys, password values, and IBAN-like patterns.',
   'import.sources.title':         'Import sources',
   'import.add.title':             'Add source',
 
