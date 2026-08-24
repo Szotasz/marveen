@@ -232,7 +232,7 @@ fi
 # vault.js derives PROJECT_ROOT from the imported dist/config.js __dirname, so
 # when dist/ lives inside $root, all vault files land in $root/store/.
 # On Linux the vault auto-creates .vault-key without any logger calls.
-TEST_XAPIKEY='sk-test-xapikey-1234567890abcdef'
+TEST_XAPIKEY='dummy-xapikey-1234567890abcdef'
 if TEST_ROOT="$root" TEST_KEY="$TEST_XAPIKEY" node --input-type=module <<'VAULT_SETUP' 2>/dev/null
 import { join } from 'node:path'
 const { setSecret } = await import(join(process.env.TEST_ROOT, 'dist', 'web', 'vault.js'))
