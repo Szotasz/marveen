@@ -20,7 +20,7 @@ vi.mock('../db.js', () => ({
   reparentKanbanCard: vi.fn().mockReturnValue({ ok: true }),
   propagateStatus: vi.fn(),
   getDb: vi.fn().mockReturnValue({
-    prepare: vi.fn().mockReturnValue({ all: vi.fn().mockReturnValue([]) }),
+    prepare: vi.fn().mockReturnValue({ all: vi.fn().mockReturnValue([]), get: vi.fn().mockReturnValue(null) }),
     transaction: vi.fn().mockImplementation((fn: () => any) => fn),
   }),
   createAgentMessage: vi.fn(),
@@ -67,6 +67,7 @@ vi.mock('../settings-store.js', () => ({
   getEffectiveSettingValue: vi.fn().mockReturnValue(100),
 }))
 
+import * as db from '../db.js'
 import { tryHandleKanban } from '../web/routes/kanban.js'
 
 function makeCtx(method: string, path: string, body?: object): { ctx: RouteContext; out: { status: number; body: any } } {
@@ -405,5 +406,50 @@ describe('tryHandleKanban', () => {
   it('returns false for unmatched route', async () => {
     const { ctx } = makeCtx('GET', '/api/other')
     expect(await tryHandleKanban(ctx)).toBe(false)
+  })
+})
+
+// ── Tenant isolation (non-admin scoped callers) ───────────────────────────────
+
+function makeScopedCtx(
+  method: string,
+  path: string,
+  tenantId: string,
+  body?: object,
+): { ctx: RouteContext; out: { status: number; body: any } } {
+  const buf = body ? Buffer.from(JSON.stringify(body)) : Buffer.alloc(0)
+  const req = new EventEmitter() as any
+  req.method = method
+  req.headers = {}
+  setImmediate(() => { req.emit('data', buf); req.emit('end') })
+  const out = { status: 200, body: null as any }
+  const res = {
+    writeHead(s: number) { out.status = s },
+    end(b?: any) { try { out.body = JSON.parse(b?.toString() || 'null') } catch { out.body = b } },
+  } as any
+  const url = new URL(`http://localhost:3420${path}`)
+  return { ctx: { req, res, path: url.pathname, method, url, role: 'viewer', tenantId } as RouteContext, out }
+}
+
+describe('tryHandleKanban -- tenant isolation for scoped callers', () => {
+  it('GET /api/kanban uses scoped list and does not call listKanbanCards', async () => {
+    vi.mocked(db.listKanbanCards).mockClear()
+    const { ctx, out } = makeScopedCtx('GET', '/api/kanban', 'acme')
+    await tryHandleKanban(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.listKanbanCards)).not.toHaveBeenCalled()
+  })
+
+  it('PUT /api/kanban/:id returns 404 when card does not belong to caller tenant', async () => {
+    // scopeToTenant.kanban.get → null (getDb mock: prepare().get = null)
+    const { ctx, out } = makeScopedCtx('PUT', '/api/kanban/card1', 'acme', { title: 'Updated' })
+    await tryHandleKanban(ctx)
+    expect(out.status).toBe(404)
+  })
+
+  it('DELETE /api/kanban/:id returns 404 when card does not belong to caller tenant', async () => {
+    const { ctx, out } = makeScopedCtx('DELETE', '/api/kanban/card1', 'acme')
+    await tryHandleKanban(ctx)
+    expect(out.status).toBe(404)
   })
 })
