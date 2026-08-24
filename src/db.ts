@@ -3862,3 +3862,121 @@ export function listOtelTraces(limit = 50): OtelTraceSummary[] {
   `).all(limit) as OtelTraceSummary[]
 }
 
+// ── B2B Tenant registry ───────────────────────────────────────────────────────
+
+export interface Tenant {
+  id: string
+  display_name: string
+  created_at: number
+  disabled_at: number | null
+}
+
+export function createTenant(id: string, displayName: string): Tenant {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare('INSERT INTO tenants (id, display_name, created_at) VALUES (?, ?, ?)')
+    .run(id, displayName, now)
+  return { id, display_name: displayName, created_at: now, disabled_at: null }
+}
+
+export function getTenant(id: string): Tenant | undefined {
+  return db.prepare('SELECT * FROM tenants WHERE id = ?').get(id) as Tenant | undefined
+}
+
+export function listTenants(includeDisabled = false): Tenant[] {
+  if (includeDisabled) {
+    return db.prepare('SELECT * FROM tenants ORDER BY created_at ASC').all() as Tenant[]
+  }
+  return db.prepare('SELECT * FROM tenants WHERE disabled_at IS NULL ORDER BY created_at ASC').all() as Tenant[]
+}
+
+export function updateTenant(id: string, patch: { display_name?: string; disabled?: boolean }): Tenant | null {
+  const existing = getTenant(id)
+  if (!existing) return null
+  const now = Math.floor(Date.now() / 1000)
+  const fields: string[] = []
+  const params: unknown[] = []
+  if (patch.display_name !== undefined) {
+    fields.push('display_name = ?')
+    params.push(patch.display_name)
+  }
+  if (patch.disabled === true) {
+    fields.push('disabled_at = ?')
+    params.push(now)
+  } else if (patch.disabled === false) {
+    fields.push('disabled_at = NULL')
+  }
+  if (fields.length === 0) return existing
+  params.push(id)
+  db.prepare(`UPDATE tenants SET ${fields.join(', ')} WHERE id = ?`).run(...params)
+  return db.prepare('SELECT * FROM tenants WHERE id = ?').get(id) as Tenant
+}
+
+// ── B2B Dashboard user provisioning ──────────────────────────────────────────
+
+/** Admin-controlled user provisioning: explicit role + tenant_id, no first-user-wins. */
+export function provisionDashboardUser(
+  username: string,
+  passwordHash: string,
+  role: string,
+  tenantId: string | null,
+): DashboardUser {
+  const now = Math.floor(Date.now() / 1000)
+  const info = db
+    .prepare('INSERT INTO dashboard_users (username, password_hash, role, tenant_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(username, passwordHash, role, tenantId, now, now)
+  return { id: Number(info.lastInsertRowid), username, password_hash: passwordHash, role, tenant_id: tenantId, created_at: now, updated_at: now, disabled: 0 }
+}
+
+export function getDashboardUserById(id: number): DashboardUser | undefined {
+  return db.prepare('SELECT * FROM dashboard_users WHERE id = ?').get(id) as DashboardUser | undefined
+}
+
+export interface ListUsersOpts {
+  tenantId?: string | 'global'
+  includeDisabled?: boolean
+}
+
+export function listDashboardUsersFiltered(opts: ListUsersOpts = {}): DashboardUserPublic[] {
+  const conditions: string[] = []
+  const params: unknown[] = []
+  if (!opts.includeDisabled) {
+    conditions.push('disabled = 0')
+  }
+  if (opts.tenantId === 'global') {
+    conditions.push('tenant_id IS NULL')
+  } else if (opts.tenantId) {
+    conditions.push('tenant_id = ?')
+    params.push(opts.tenantId)
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+  return db
+    .prepare(`SELECT id, username, role, tenant_id, created_at, updated_at, disabled FROM dashboard_users ${where} ORDER BY username COLLATE NOCASE`)
+    .all(...params) as DashboardUserPublic[]
+}
+
+export interface AdminUserPatch {
+  role?: string
+  tenant_id?: string | null
+  password_hash?: string
+  disabled?: boolean
+}
+
+export function adminPatchDashboardUser(id: number, patch: AdminUserPatch): DashboardUser | null {
+  const existing = getDashboardUserById(id)
+  if (!existing) return null
+  const now = Math.floor(Date.now() / 1000)
+  const fields: string[] = ['updated_at = ?']
+  const params: unknown[] = [now]
+  if (patch.role !== undefined) { fields.push('role = ?'); params.push(patch.role) }
+  if ('tenant_id' in patch) { fields.push('tenant_id = ?'); params.push(patch.tenant_id ?? null) }
+  if (patch.password_hash !== undefined) { fields.push('password_hash = ?'); params.push(patch.password_hash) }
+  if (patch.disabled !== undefined) { fields.push('disabled = ?'); params.push(patch.disabled ? 1 : 0) }
+  params.push(id)
+  db.prepare(`UPDATE dashboard_users SET ${fields.join(', ')} WHERE id = ?`).run(...params)
+  return getDashboardUserById(id) ?? null
+}
+
+export function countActiveAdmins(): number {
+  return (db.prepare("SELECT COUNT(*) AS c FROM dashboard_users WHERE role = 'admin' AND disabled = 0").get() as { c: number }).c
+}
+
