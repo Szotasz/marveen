@@ -46,7 +46,16 @@ if [ "$OS" = "Darwin" ]; then
   done
   unset _svc
 elif [ "$OS" = "Linux" ]; then
-  if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
+  # System-scope units first (root-style install): as root `systemctl --user`
+  # fails, so this script used to fall through to the direct nohup launch and
+  # start a SECOND dashboard instance next to the system-unit one
+  # (EADDRINUSE crash loop). Mirrors the same branch in stop.sh.
+  if pidof systemd >/dev/null 2>&1 && systemctl cat "${SLUG}-dashboard.service" >/dev/null 2>&1; then
+    if ! systemctl start "${SLUG}-dashboard" "${SLUG}-channels"; then
+      echo "ERROR: system units ${SLUG}-dashboard/${SLUG}-channels exist but could not be started (run as root?)" >&2
+      exit 1
+    fi
+  elif pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
     systemctl --user start "${SLUG}-dashboard" "${SLUG}-channels"
   else
     echo "systemd not available (WSL or container), using direct launch..."
