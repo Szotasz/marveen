@@ -1,0 +1,89 @@
+#!/bin/bash
+# mio-upload: outbound scanner + attestation trail for marveen.io uploads.
+#
+# Scans the file with mio-scan at the moment of sending. If the scan finds
+# PII or embedded instructions, the upload is REFUSED (exit 2) and the
+# findings are printed; nothing leaves the machine. On a clean scan it
+# writes an attestation JSON next to the file (<file>.mio-attestation.json)
+# and, if MIO_UPLOAD_URL is set, POSTs the file together with the
+# attestation.
+#
+# The attestation is a REPLAYABLE RUN, not a secret: content hash + scanner
+# version + timestamp + member-specific HMAC. The server side re-runs the
+# same scanner on the received content and recomputes the HMAC; a copied
+# attestation does not validate against different content.
+#
+# Required env: MIO_MEMBER_ID, MIO_ATTEST_KEY (from your marveen.io profile).
+# Optional env: MIO_UPLOAD_URL.
+#
+# Usage: mio-upload <file>
+set -euo pipefail
+
+FILE="${1:-}"
+if [[ -z "$FILE" || ! -f "$FILE" ]]; then
+  echo "usage: mio-upload <file>" >&2
+  exit 64
+fi
+: "${MIO_MEMBER_ID:?MIO_MEMBER_ID is not set (see your marveen.io profile)}"
+: "${MIO_ATTEST_KEY:?MIO_ATTEST_KEY is not set (see your marveen.io profile)}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCAN="$SCRIPT_DIR/mio-scan"
+ATT="$FILE.mio-attestation.json"
+
+python3 - "$FILE" "$SCAN" "$ATT" << 'PYEOF'
+import datetime, hashlib, hmac, json, os, subprocess, sys
+
+file_path, scan_path, att_path = sys.argv[1], sys.argv[2], sys.argv[3]
+member_id = os.environ["MIO_MEMBER_ID"]
+key = os.environ["MIO_ATTEST_KEY"].encode()
+
+content = open(file_path, "rb").read()
+result = json.loads(subprocess.run(
+    [sys.executable, scan_path], input=content,
+    capture_output=True, check=True).stdout)
+
+findings = result["findings"]
+if findings:
+    print("mio-upload: REFUSED, the scan found "
+          f"{len(findings)} issue(s); nothing was uploaded:", file=sys.stderr)
+    for f in findings:
+        print(f"  line {f['line']}: [{f['category']}/{f['rule']}] {f['match']}",
+              file=sys.stderr)
+    print("Fix the content (remove PII / embedded instructions) and retry.",
+          file=sys.stderr)
+    sys.exit(2)
+
+content_hash = hashlib.sha256(content).hexdigest()
+scanned_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+scanner = result["scanner"]
+payload = "|".join([content_hash, scanner["version"], scanner["rulepack"],
+                    scanned_at, member_id])
+digest = hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()
+
+attestation = {
+    "schema": "mio-attestation/1",
+    "content_sha256": content_hash,
+    "scanner": scanner,
+    "scanned_at": scanned_at,
+    "member_id": member_id,
+    "findings_count": 0,
+    "hmac_sha256": digest,
+    "hmac_payload_format":
+        "content_sha256|scanner.version|scanner.rulepack|scanned_at|member_id",
+}
+with open(att_path, "w") as fh:
+    json.dump(attestation, fh, indent=2)
+print(f"mio-upload: scan clean, attestation written: {att_path}")
+PYEOF
+
+if [[ -n "${MIO_UPLOAD_URL:-}" ]]; then
+  curl -sS --max-time 60 -X POST "$MIO_UPLOAD_URL" \
+    -F "file=@$FILE" \
+    -F "attestation=@$ATT;type=application/json" \
+    -H "X-MIO-Member: $MIO_MEMBER_ID"
+  echo
+  echo "mio-upload: uploaded with attestation."
+else
+  echo "mio-upload: MIO_UPLOAD_URL not set, skipping transport (attestation ready)."
+fi

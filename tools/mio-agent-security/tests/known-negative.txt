@@ -1,0 +1,16 @@
+Szia közösség!
+
+Ma egy rövid összefoglalót hoztam arról, hogyan érdemes egy AI ügynöknek
+feladatlistát adni. A lényeg, hogy a feladatok legyenek konkrétak, legyen
+bennük elfogadási feltétel, és a végén mindig legyen ellenőrzés.
+
+Három tanulság a heti kísérletezésből:
+
+1. A rövid, jól körülhatárolt kérések jobb eredményt adnak, mint a hosszú,
+   mindent egyszerre kérő promptok.
+2. Érdemes példát adni a kívánt kimenetre, mert a formátum így stabil marad.
+3. A visszaellenőrzés lépését nem szabad kihagyni, mert a magabiztos válasz
+   nem mindig helyes válasz.
+
+A jövő héten a jegyzetelő munkafolyamatomat mutatom meg, addig is jó
+kísérletezést mindenkinek!

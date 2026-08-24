@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marveen.io/schemas/mio-attestation/1.json",
+  "title": "mio-attestation/1",
+  "description": "Attestation trail emitted by mio-upload on a clean scan. The proof is a REPLAYABLE RUN, not a secret: the server re-runs the same scanner version on the received content and recomputes the HMAC with the member's key. A copied attestation does not validate against different content. (Schema owner: this package; server-side replay: Geri / connectors side. Change via PR touching BOTH sides.)",
+  "type": "object",
+  "required": [
+    "schema",
+    "content_sha256",
+    "scanner",
+    "scanned_at",
+    "member_id",
+    "findings_count",
+    "hmac_sha256",
+    "hmac_payload_format"
+  ],
+  "properties": {
+    "schema": { "const": "mio-attestation/1" },
+    "content_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the exact uploaded bytes."
+    },
+    "scanner": {
+      "type": "object",
+      "required": ["name", "version", "rulepack"],
+      "properties": {
+        "name": { "const": "mio-scan" },
+        "version": { "type": "string" },
+        "rulepack": { "type": "string", "description": "Date-stamped rule set id." }
+      }
+    },
+    "scanned_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp of the scan (ISO 8601)."
+    },
+    "member_id": { "type": "string", "minLength": 1 },
+    "findings_count": {
+      "const": 0,
+      "description": "An attestation is only emitted on a clean scan."
+    },
+    "hmac_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "HMAC-SHA256 over hmac_payload_format fields joined with '|', keyed with the member-specific MIO_ATTEST_KEY."
+    },
+    "hmac_payload_format": {
+      "const": "content_sha256|scanner.version|scanner.rulepack|scanned_at|member_id"
+    }
+  },
+  "additionalProperties": false
+}

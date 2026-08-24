@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""mio-scan: content scanner for the marveen.io agent security package.
+
+Scans text for (a) embedded-instruction / prompt-injection patterns and
+(b) PII / secret-shaped strings. Used by mio-fetch (inbound) and mio-upload
+(outbound). Deterministic, dependency-free (stdlib only).
+
+Output (stdout): one JSON object:
+  { "scanner": {"name": "mio-scan", "version": ..., "rulepack": ...},
+    "findings": [ {"rule": ..., "category": "injection"|"pii",
+                   "match": <truncated>, "line": N}, ... ] }
+Exit code: 0 = scanned (regardless of findings). Non-zero = scanner error.
+"""
+import json
+import re
+import sys
+
+SCANNER_NAME = "mio-scan"
+SCANNER_VERSION = "1.0.0"
+RULEPACK = "2026-08-24"
+
+INJECTION_RULES = [
+    ("ignore-previous-instructions",
+     r"(?i)\b(ignore|disregard|forget)\b.{0,40}\b(previous|prior|above|all)\b.{0,30}\b(instructions?|prompts?|rules?)\b"),
+    ("ignore-previous-instructions-hu",
+     r"(?i)\b(hagyd\s+figyelmen\s+k[ií]v[üu]l|felejtsd\s+el)\b.{0,60}\b(utas[ií]t[áa]s|szab[áa]ly|prompt)"),
+    ("role-reassignment",
+     r"(?i)\byou\s+are\s+(now|no\s+longer)\b|\bact\s+as\s+(if\s+you\s+are\s+)?(the\s+)?(system|admin|root|developer)\b"),
+    ("system-prompt-probe",
+     r"(?i)\b(reveal|print|show|repeat)\b.{0,30}\b(system\s+prompt|hidden\s+instructions?|initial\s+prompt)\b"),
+    ("fake-system-tag",
+     r"(?i)<\s*/?\s*(system|assistant_instructions|important_system)[^>]*>"),
+    ("imperative-html-comment",
+     r"(?is)<!--.{0,200}\b(you\s+must|execute|run|send|curl|fetch|post)\b.{0,400}-->"),
+    ("pipe-to-shell",
+     r"(?i)\b(curl|wget)\b[^\n|;]{0,200}\|\s*(ba)?sh\b"),
+    ("exfiltrate-instruction",
+     r"(?i)\b(send|post|upload|exfiltrate|forward)\b.{0,40}\b(credentials?|secrets?|tokens?|api[-_ ]?keys?|\.env|passwords?)\b"),
+    ("tool-invocation-bait",
+     r"(?i)\b(use|call|invoke)\b.{0,20}\b(the\s+)?(bash|shell|webfetch|browser)\s+tool\b"),
+    ("long-base64-blob",
+     r"[A-Za-z0-9+/]{240,}={0,2}"),
+]
+
+PII_RULES = [
+    ("email-address",
+     r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"),
+    ("hu-phone-number",
+     r"(?<!\d)(\+36|0036|06)[ \-]?(\d{1,2})[ \-]?\d{3}[ \-]?\d{3,4}(?!\d)"),
+    ("card-number-shaped",
+     r"(?<!\d)(\d[ \-]?){15,16}(?!\d)"),
+    ("api-key-shaped",
+     r"\b(sk|pk|rk)[-_](live|test|ant|proj)?[-_]?[A-Za-z0-9_\-]{16,}\b"),
+    ("bearer-token-literal",
+     r"(?i)\bauthorization:\s*bearer\s+[A-Za-z0-9._\-]{12,}"),
+    ("hu-taj-shaped",
+     r"(?<!\d)\d{3}[ \-]\d{3}[ \-]\d{3}(?!\d)"),
+    ("secret-assignment",
+     r"(?i)\b(password|jelsz[óo]|secret|api[-_]?key|token)\b\s*[:=]\s*['\"]?[^\s'\"]{8,}"),
+]
+
+
+def scan(text):
+    findings = []
+    lines = text.splitlines() or [text]
+    for category, rules in (("injection", INJECTION_RULES), ("pii", PII_RULES)):
+        for rule_name, pattern in rules:
+            for m in re.finditer(pattern, text):
+                line_no = text.count("\n", 0, m.start()) + 1
+                snippet = m.group(0)
+                findings.append({
+                    "rule": rule_name,
+                    "category": category,
+                    "match": snippet[:80] + ("..." if len(snippet) > 80 else ""),
+                    "line": line_no,
+                    "span": [m.start(), m.end()],
+                })
+    findings.sort(key=lambda f: f["span"][0])
+    return findings
+
+
+def main():
+    data = sys.stdin.buffer.read()
+    try:
+        text = data.decode("utf-8", errors="replace")
+    except Exception as e:
+        print(json.dumps({"error": f"decode failed: {e}"}))
+        return 1
+    findings = scan(text)
+    print(json.dumps({
+        "scanner": {"name": SCANNER_NAME, "version": SCANNER_VERSION, "rulepack": RULEPACK},
+        "findings": findings,
+    }, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
