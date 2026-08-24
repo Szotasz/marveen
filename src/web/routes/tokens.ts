@@ -1,10 +1,14 @@
 // Admin token management routes.
 //
 // Provides CRUD over the api_tokens table:
-//   GET    /api/v1/admin/tokens               -- list all tokens (hashes omitted)
-//   POST   /api/v1/admin/tokens               -- create a new token
-//   POST   /api/v1/admin/tokens/:id/rotate    -- rotate: new token, old one revoked
-//   DELETE /api/v1/admin/tokens/:id/revoke    -- revoke without rotation
+//   GET    /api/admin/tokens               -- list all tokens (hashes omitted)
+//   POST   /api/admin/tokens               -- create a new token
+//   POST   /api/admin/tokens/:id/rotate    -- rotate: new token, old one revoked
+//   DELETE /api/admin/tokens/:id/revoke    -- revoke without rotation
+//
+// Callers address /api/v1/admin/tokens (canonical) or /api/admin/tokens (legacy).
+// The versioning normaliser in web.ts strips the /v1 segment, so ctx.path always
+// arrives here as /api/admin/tokens regardless of which form the caller used.
 //
 // All routes require admin:all permission (enforced by the RBAC layer via the
 // /api/v1/admin/ prefix rule in rbac.ts). Token hashes are never returned in
@@ -63,16 +67,16 @@ const VALID_ROLES = new Set(['admin', 'agent', 'read_only', 'viewer'])
 export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> {
   const { path, method, res } = ctx
 
-  // GET /api/v1/admin/tokens
-  if (method === 'GET' && path === '/api/v1/admin/tokens') {
+  // GET /api/admin/tokens
+  if (method === 'GET' && path === '/api/admin/tokens') {
     const db = getDb()
     const rows = db.prepare('SELECT * FROM api_tokens ORDER BY created_at DESC').all() as TokenRow[]
     json(res, rows.map(toPublic))
     return true
   }
 
-  // POST /api/v1/admin/tokens -- create
-  if (method === 'POST' && path === '/api/v1/admin/tokens') {
+  // POST /api/admin/tokens -- create
+  if (method === 'POST' && path === '/api/admin/tokens') {
     let parsed: { name?: unknown; role?: unknown; tenant_id?: unknown; expires_in_days?: unknown }
     try {
       const buf = await readBody(ctx.req)
@@ -117,8 +121,8 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
     return true
   }
 
-  // POST /api/v1/admin/tokens/:id/rotate
-  const rotateMatch = /^\/api\/v1\/admin\/tokens\/(\d+)\/rotate$/.exec(path)
+  // POST /api/admin/tokens/:id/rotate
+  const rotateMatch = /^\/api\/admin\/tokens\/(\d+)\/rotate$/.exec(path)
   if (method === 'POST' && rotateMatch) {
     const id = Number(rotateMatch[1])
 
@@ -164,8 +168,8 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
     return true
   }
 
-  // DELETE /api/v1/admin/tokens/:id/revoke
-  const revokeMatch = /^\/api\/v1\/admin\/tokens\/(\d+)\/revoke$/.exec(path)
+  // DELETE /api/admin/tokens/:id/revoke
+  const revokeMatch = /^\/api\/admin\/tokens\/(\d+)\/revoke$/.exec(path)
   if (method === 'DELETE' && revokeMatch) {
     const id = Number(revokeMatch[1])
     const db = getDb()
