@@ -95,24 +95,24 @@ export function scopeToTenant(db: Database.Database, tenantId: string) {
       insert(
         agentId: string,
         category: string,
-        key: string,
-        value: string,
+        content: string,
+        keywords?: string,
       ): number {
         const now = Math.floor(Date.now() / 1000)
         const result = db
           .prepare(
-            `INSERT INTO memories (agent_id, category, key, value, tenant_id, created_at, accessed_at)
+            `INSERT INTO memories (agent_id, category, content, keywords, tenant_id, created_at, accessed_at)
              VALUES (?, ?, ?, ?, ?, ?, ?)`,
           )
-          .run(agentId, category, key, value, tenantId, now, now)
+          .run(agentId, category, content, keywords ?? null, tenantId, now, now)
         return Number(result.lastInsertRowid)
       },
 
       /** Update a memory only if it belongs to this tenant. */
-      update(id: number, patch: { value?: string; category?: string }): boolean {
+      update(id: number, patch: { content?: string; category?: string }): boolean {
         const fields: string[] = []
         const params: unknown[] = []
-        if (patch.value !== undefined) { fields.push('value = ?'); params.push(patch.value) }
+        if (patch.content !== undefined) { fields.push('content = ?'); params.push(patch.content) }
         if (patch.category !== undefined) { fields.push('category = ?'); params.push(patch.category) }
         if (fields.length === 0) return false
         params.push(tenantId, id)

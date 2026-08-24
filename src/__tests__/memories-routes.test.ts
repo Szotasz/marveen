@@ -30,6 +30,7 @@ vi.mock('../config.js', () => ({
   APP_TZ: 'Europe/Budapest',
 }))
 
+import * as db from '../db.js'
 import { tryHandleMemories } from '../web/routes/memories.js'
 
 function makeBody(data: object): Buffer {
@@ -48,7 +49,7 @@ function makeCtx(method: string, path: string, body?: object): { ctx: RouteConte
     end(b?: string) { try { out.body = JSON.parse(b || '{}') } catch { out.body = b } },
   } as any
   const url = new URL(`http://localhost:3420${path}`)
-  const ctx = { req, res, path: url.pathname, method, url } as RouteContext
+  const ctx = { req, res, path: url.pathname, method, url, role: 'admin' } as RouteContext
   return { ctx, out }
 }
 
@@ -205,5 +206,57 @@ describe('tryHandleMemories', () => {
     const { ctx } = makeCtx('GET', '/api/other')
     const handled = await tryHandleMemories(ctx)
     expect(handled).toBe(false)
+  })
+})
+
+// ── Tenant isolation (non-admin scoped callers) ───────────────────────────────
+
+function makeScopedCtx(
+  method: string,
+  path: string,
+  tenantId: string,
+  body?: object,
+): { ctx: RouteContext; out: { status: number; body: any } } {
+  const buf = body ? Buffer.from(JSON.stringify(body)) : Buffer.alloc(0)
+  const req = new EventEmitter() as any
+  req.method = method
+  req.headers = {}
+  setImmediate(() => { req.emit('data', buf); req.emit('end') })
+  const out = { status: 200, body: null as any }
+  const res = {
+    writeHead(s: number) { out.status = s },
+    end(b?: string) { try { out.body = JSON.parse(b || '{}') } catch { out.body = b } },
+  } as any
+  const url = new URL(`http://localhost:3420${path}`)
+  const ctx = { req, res, path: url.pathname, method, url, role: 'viewer', tenantId } as RouteContext
+  return { ctx, out }
+}
+
+describe('tryHandleMemories -- tenant isolation for scoped callers', () => {
+  it('GET /api/memories?agent= filters out results from other tenants', async () => {
+    vi.mocked(db.getAgentMemories).mockReturnValueOnce([
+      { id: 1, tenant_id: 'acme', content: 'visible', agent_id: 'agent-a', category: 'hot' } as any,
+      { id: 2, tenant_id: 'other', content: 'hidden', agent_id: 'agent-a', category: 'hot' } as any,
+    ])
+    const { ctx, out } = makeScopedCtx('GET', '/api/memories?agent=agent-a', 'acme')
+    await tryHandleMemories(ctx)
+    expect(out.status).toBe(200)
+    expect(Array.isArray(out.body)).toBe(true)
+    expect(out.body).toHaveLength(1)
+    expect(out.body[0].content).toBe('visible')
+  })
+
+  it('PUT /api/memories/:id returns 404 when memory belongs to another tenant', async () => {
+    // getDb mock: prepare().get = null → pre-check fails → 404
+    const { ctx, out } = makeScopedCtx('PUT', '/api/memories/1', 'acme', { content: 'x' })
+    await tryHandleMemories(ctx)
+    expect(out.status).toBe(404)
+  })
+
+  it('DELETE /api/memories/:id returns 404 when memory belongs to another tenant', async () => {
+    // getDb mock: prepare().get = null → !row branch → 404
+    const { ctx, out } = makeScopedCtx('DELETE', '/api/memories/1', 'acme')
+    await tryHandleMemories(ctx)
+    expect(out.status).toBe(404)
   })
 })

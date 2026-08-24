@@ -21,6 +21,11 @@ import type { RouteContext } from './types.js'
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
+  // Tenant scope: admin role sees/writes all tenants (bypass); scoped callers
+  // are restricted to their own tenant_id. 'default' is the fleet's own tenant.
+  const isAdmin = ctx.role === 'admin'
+  const effectiveTenantId: string = isAdmin ? 'default' : (ctx.tenantId ?? 'default')
+
   if (path === '/api/messages' && method === 'POST') {
     const body = await readBody(req)
     const { from, to, content, origin_note } = JSON.parse(body.toString()) as
@@ -130,7 +135,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // Card 06f062e4: optional attributability tag, self-declared like `from`
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
-    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote)
+    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote, null, effectiveTenantId)
     logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note }, 'Agent message created')
     json(res, msg)
     return true
@@ -186,6 +191,11 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       messages = getAgentConversation(agent, limit, Number.isFinite(before as number) ? before : undefined)
     } else {
       messages = listAgentMessages(limit)
+    }
+
+    // Tenant isolation: non-admin callers only see messages belonging to their tenant.
+    if (!isAdmin) {
+      messages = messages.filter((m) => ((m as AgentMessage & { tenant_id?: string }).tenant_id ?? 'default') === effectiveTenantId)
     }
 
     jsonMaybeGzip(req, res, messages)

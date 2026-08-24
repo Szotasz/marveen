@@ -21,7 +21,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
-import { checkPermission, resolveRole } from '../web/authz.js'
+import { checkPermission, resolveRole, resolveTenantId } from '../web/authz.js'
 import type { AuthResult } from '../web/auth-gate.js'
 
 // ── In-memory DB setup ────────────────────────────────────────────────────────
@@ -427,5 +427,59 @@ describe('Token lifecycle -- valid active token', () => {
 
   it('resolveToken returns null for an unknown token', () => {
     expect(resolveToken(db, 'unknown-token-xyz')).toBeNull()
+  })
+})
+
+// ── Admin bypass: admin session sees all tenants ──────────────────────────────
+//
+// Verifies that role===admin is the correct bypass signal (not tenantId===null)
+// and that the scopeToTenant wrapper still isolates non-admin callers.
+
+describe('Admin bypass -- admin role bypasses tenant filter', () => {
+  let db: Database.Database
+
+  beforeEach(() => {
+    db = openTestDb()
+    db.prepare(
+      'INSERT INTO memories (agent_id, category, key, value, tenant_id) VALUES (?, ?, ?, ?, ?)',
+    ).run('agent-a', 'warm', 'k-a', 'data-a', 'tenant-a')
+    db.prepare(
+      'INSERT INTO memories (agent_id, category, key, value, tenant_id) VALUES (?, ?, ?, ?, ?)',
+    ).run('agent-a', 'warm', 'k-b', 'data-b', 'tenant-b')
+  })
+
+  it('resolveRole returns admin for a session with role=admin', () => {
+    const auth: AuthResult = { kind: 'session', user: 'admin-user', role: 'admin', tenantId: null }
+    expect(resolveRole(auth)).toBe('admin')
+  })
+
+  it('resolveTenantId returns null for admin session (global scope)', () => {
+    const auth: AuthResult = { kind: 'session', user: 'admin-user', role: 'admin', tenantId: null }
+    expect(resolveTenantId(auth)).toBeNull()
+  })
+
+  it('admin role grants access to all endpoints (checkPermission)', () => {
+    const auth: AuthResult = { kind: 'session', user: 'admin-user', role: 'admin', tenantId: null }
+    expect(checkPermission(auth, 'GET', '/api/memories').allowed).toBe(true)
+    expect(checkPermission(auth, 'DELETE', '/api/memories/1').allowed).toBe(true)
+    expect(checkPermission(auth, 'GET', '/api/kanban').allowed).toBe(true)
+    expect(checkPermission(auth, 'POST', '/api/kanban').allowed).toBe(true)
+  })
+
+  it('admin raw DB query sees rows from all tenants', () => {
+    const rows = db.prepare('SELECT * FROM memories WHERE agent_id = ?').all('agent-a')
+    expect(rows).toHaveLength(2)
+  })
+
+  it('scoped tenant-a caller only sees tenant-a rows (not admin bypass)', () => {
+    const rows = scopeToTenant(db, 'tenant-a').memories.list('agent-a')
+    expect(rows).toHaveLength(1)
+    expect((rows[0] as { tenant_id: string }).tenant_id).toBe('tenant-a')
+  })
+
+  it('scoped tenant-b caller only sees tenant-b rows (not admin bypass)', () => {
+    const rows = scopeToTenant(db, 'tenant-b').memories.list('agent-a')
+    expect(rows).toHaveLength(1)
+    expect((rows[0] as { tenant_id: string }).tenant_id).toBe('tenant-b')
   })
 })

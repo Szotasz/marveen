@@ -19,8 +19,8 @@ const SCHEMA = `
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id    TEXT    NOT NULL,
     category    TEXT    NOT NULL,
-    key         TEXT    NOT NULL,
-    value       TEXT    NOT NULL,
+    content     TEXT    NOT NULL,
+    keywords    TEXT,
     tenant_id   TEXT    NOT NULL DEFAULT 'default',
     created_at  INTEGER NOT NULL DEFAULT 0,
     accessed_at INTEGER NOT NULL DEFAULT 0
@@ -70,24 +70,24 @@ describe('scopeToTenant -- memories', () => {
     db = openDb()
     // Seed rows for two tenants
     db.exec(`
-      INSERT INTO memories (agent_id, category, key, value, tenant_id)
-        VALUES ('agent-a', 'warm', 'k-a', 'val-a', 'tenant-a');
-      INSERT INTO memories (agent_id, category, key, value, tenant_id)
-        VALUES ('agent-a', 'warm', 'k-b', 'val-b', 'tenant-b');
+      INSERT INTO memories (agent_id, category, content, keywords, tenant_id)
+        VALUES ('agent-a', 'warm', 'mem-a-content', 'kw-a', 'tenant-a');
+      INSERT INTO memories (agent_id, category, content, keywords, tenant_id)
+        VALUES ('agent-a', 'warm', 'mem-b-content', 'kw-b', 'tenant-b');
     `)
   })
 
   it('list returns only tenant-a rows', () => {
     const rows = scopeToTenant(db, 'tenant-a').memories.list('agent-a')
     expect(rows).toHaveLength(1)
-    expect(rows[0]!.key).toBe('k-a')
+    expect(rows[0]!.content).toBe('mem-a-content')
     expect(rows[0]!.tenant_id).toBe('tenant-a')
   })
 
   it('list returns only tenant-b rows', () => {
     const rows = scopeToTenant(db, 'tenant-b').memories.list('agent-a')
     expect(rows).toHaveLength(1)
-    expect(rows[0]!.key).toBe('k-b')
+    expect(rows[0]!.content).toBe('mem-b-content')
   })
 
   it('cross-tenant list returns 0 rows for unknown tenant', () => {
@@ -96,8 +96,8 @@ describe('scopeToTenant -- memories', () => {
   })
 
   it('category filter works within tenant', () => {
-    db.exec(`INSERT INTO memories (agent_id, category, key, value, tenant_id)
-      VALUES ('agent-a', 'cold', 'k-cold', 'v-cold', 'tenant-a')`)
+    db.exec(`INSERT INTO memories (agent_id, category, content, tenant_id)
+      VALUES ('agent-a', 'cold', 'cold-content', 'tenant-a')`)
     const warm = scopeToTenant(db, 'tenant-a').memories.list('agent-a', 'warm')
     expect(warm).toHaveLength(1)
     const cold = scopeToTenant(db, 'tenant-a').memories.list('agent-a', 'cold')
@@ -106,60 +106,60 @@ describe('scopeToTenant -- memories', () => {
 
   it('get returns row only within correct tenant', () => {
     const scope = scopeToTenant(db, 'tenant-a')
-    const row = db.prepare('SELECT id FROM memories WHERE key = ?').get('k-a') as { id: number }
+    const row = db.prepare('SELECT id FROM memories WHERE content = ?').get('mem-a-content') as { id: number }
     expect(scope.memories.get(row.id)).not.toBeNull()
   })
 
   it('get returns null for row in different tenant', () => {
     const scope = scopeToTenant(db, 'tenant-a')
-    const row = db.prepare('SELECT id FROM memories WHERE key = ?').get('k-b') as { id: number }
+    const row = db.prepare('SELECT id FROM memories WHERE content = ?').get('mem-b-content') as { id: number }
     expect(scope.memories.get(row.id)).toBeNull()
   })
 
   it('insert stamps correct tenant_id', () => {
-    scopeToTenant(db, 'tenant-a').memories.insert('agent-a', 'hot', 'new-key', 'new-val')
-    const row = db.prepare('SELECT tenant_id FROM memories WHERE key = ?').get('new-key') as {
+    scopeToTenant(db, 'tenant-a').memories.insert('agent-a', 'hot', 'new-insert-content', 'new-kw')
+    const row = db.prepare('SELECT tenant_id FROM memories WHERE content = ?').get('new-insert-content') as {
       tenant_id: string
     }
     expect(row.tenant_id).toBe('tenant-a')
   })
 
   it('insert into tenant-a is invisible to tenant-b', () => {
-    scopeToTenant(db, 'tenant-a').memories.insert('agent-a', 'hot', 'hidden', 'secret')
+    scopeToTenant(db, 'tenant-a').memories.insert('agent-a', 'hot', 'hidden-content')
     const rows = scopeToTenant(db, 'tenant-b').memories.list('agent-a')
-    expect(rows.find((r) => r.key === 'hidden')).toBeUndefined()
+    expect(rows.find((r) => r.content === 'hidden-content')).toBeUndefined()
   })
 
   it('update patches only own-tenant row', () => {
     const scope = scopeToTenant(db, 'tenant-a')
-    const row = db.prepare('SELECT id FROM memories WHERE key = ?').get('k-a') as { id: number }
-    const changed = scope.memories.update(row.id, { value: 'updated' })
+    const row = db.prepare('SELECT id FROM memories WHERE content = ?').get('mem-a-content') as { id: number }
+    const changed = scope.memories.update(row.id, { category: 'cold' })
     expect(changed).toBe(true)
-    const updated = db.prepare('SELECT value FROM memories WHERE id = ?').get(row.id) as { value: string }
-    expect(updated.value).toBe('updated')
+    const updated = db.prepare('SELECT category FROM memories WHERE id = ?').get(row.id) as { category: string }
+    expect(updated.category).toBe('cold')
   })
 
   it('update cannot touch cross-tenant row', () => {
     const scopeA = scopeToTenant(db, 'tenant-a')
-    const rowB = db.prepare('SELECT id FROM memories WHERE key = ?').get('k-b') as { id: number }
-    const changed = scopeA.memories.update(rowB.id, { value: 'hacked' })
+    const rowB = db.prepare('SELECT id FROM memories WHERE content = ?').get('mem-b-content') as { id: number }
+    const changed = scopeA.memories.update(rowB.id, { category: 'cold' })
     expect(changed).toBe(false)
-    const untouched = db.prepare('SELECT value FROM memories WHERE id = ?').get(rowB.id) as { value: string }
-    expect(untouched.value).toBe('val-b')
+    const untouched = db.prepare('SELECT category FROM memories WHERE id = ?').get(rowB.id) as { category: string }
+    expect(untouched.category).toBe('warm')
   })
 
   it('delete removes only own-tenant row', () => {
     const scope = scopeToTenant(db, 'tenant-a')
-    const row = db.prepare('SELECT id FROM memories WHERE key = ?').get('k-a') as { id: number }
+    const row = db.prepare('SELECT id FROM memories WHERE content = ?').get('mem-a-content') as { id: number }
     expect(scope.memories.delete(row.id)).toBe(true)
-    expect(db.prepare('SELECT id FROM memories WHERE key = ?').get('k-a')).toBeUndefined()
+    expect(db.prepare('SELECT id FROM memories WHERE content = ?').get('mem-a-content')).toBeUndefined()
   })
 
   it('delete cannot remove cross-tenant row', () => {
     const scopeA = scopeToTenant(db, 'tenant-a')
-    const rowB = db.prepare('SELECT id FROM memories WHERE key = ?').get('k-b') as { id: number }
+    const rowB = db.prepare('SELECT id FROM memories WHERE content = ?').get('mem-b-content') as { id: number }
     expect(scopeA.memories.delete(rowB.id)).toBe(false)
-    expect(db.prepare('SELECT id FROM memories WHERE key = ?').get('k-b')).toBeDefined()
+    expect(db.prepare('SELECT id FROM memories WHERE content = ?').get('mem-b-content')).toBeDefined()
   })
 })
 
@@ -319,8 +319,8 @@ describe('scopeToTenant -- default tenant backward-compat', () => {
     db = openDb()
     // Simulate rows that got tenant_id = 'default' from the migration backfill.
     db.exec(`
-      INSERT INTO memories (agent_id, category, key, value, tenant_id)
-        VALUES ('agent-a', 'warm', 'legacy-key', 'legacy-val', 'default');
+      INSERT INTO memories (agent_id, category, content, keywords, tenant_id)
+        VALUES ('agent-a', 'warm', 'legacy-content', 'legacy-kw', 'default');
       INSERT INTO kanban_cards (id, title, tenant_id)
         VALUES ('legacy-card', 'Legacy Task', 'default');
     `)
@@ -329,7 +329,7 @@ describe('scopeToTenant -- default tenant backward-compat', () => {
   it('default tenant scope sees legacy memory rows', () => {
     const rows = scopeToTenant(db, 'default').memories.list('agent-a')
     expect(rows).toHaveLength(1)
-    expect(rows[0]!.key).toBe('legacy-key')
+    expect(rows[0]!.content).toBe('legacy-content')
   })
 
   it('default tenant scope sees legacy kanban cards', () => {
