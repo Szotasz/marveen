@@ -255,6 +255,17 @@ export const WEB_PORT = parseInt(process.env['WEB_PORT'] ?? env['WEB_PORT'] ?? '
 
 export const WEB_HOST = env['WEB_HOST'] ?? '127.0.0.1'
 
+// RBAC enforcement mode. Controls whether the top-level RBAC gate in web.ts
+// blocks denied requests (enforce) or only logs a would-deny (shadow).
+// Default: shadow -- safe for rollout; no existing request is blocked while
+// the permission table is being validated in production traffic.
+// Switch to 'enforce' via env override once Fázis 1 observation confirms
+// no unexpected would-deny entries in the logs.
+export const RBAC_MODE: 'shadow' | 'enforce' =
+  (process.env['RBAC_MODE'] ?? env['RBAC_MODE'] ?? 'shadow').trim().toLowerCase() === 'enforce'
+    ? 'enforce'
+    : 'shadow'
+
 // Kanban card aging visual thresholds (hours since last update) and colours.
 // Override per-install via .env; defaults match the design spec (24/72/168h).
 export const KANBAN_AGING_WARN_H = parseInt(env['KANBAN_AGING_WARN_H'] ?? '24', 10)

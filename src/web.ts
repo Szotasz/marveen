@@ -4,12 +4,13 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
-import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID } from './config.js'
+import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, RBAC_MODE } from './config.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
 import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
 import { isBlockedCrossOriginWrite, originMatchesServedHost, buildAllowedHosts, isAllowedHost } from './web/csrf-origin.js'
+import { applyRbacGate, resolveRole, resolveTenantId } from './web/authz.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { normalizePath, applyDeprecationHeaders } from './web/routes/versioning.js'
@@ -222,6 +223,22 @@ export function startWebServer(port = 3420): http.Server {
       res.end(JSON.stringify({ error: 'Unauthorized' }))
       return
     }
+    // RBAC gate: role + permission enforcement, shadow or hard, controlled by
+    // RBAC_MODE env ('shadow' default). In shadow mode the gate only logs
+    // would-deny entries so Fázis 1 observation can surface unexpected denials
+    // without blocking any real traffic. Switch to 'enforce' via env override
+    // after observing the shadow logs confirm no false positives.
+    // Runs only for gated, authenticated requests (kind !== 'none').
+    if (requiresAuth(path, method) && auth.kind !== 'none') {
+      const passed = applyRbacGate(auth, method, path, res, RBAC_MODE, (reason) => {
+        logger.warn({ path, method, authKind: auth.kind, reason }, 'rbac:shadow would-deny')
+      })
+      if (!passed) return
+    }
+
+    const role = auth.kind !== 'none' ? resolveRole(auth) : undefined
+    const tenantId = auth.kind !== 'none' ? resolveTenantId(auth) : undefined
+
     const fedPeerForCtx: string | null = auth.kind === 'federation' ? auth.peer : null
     const ctxAuth =
       auth.kind === 'token' ? { kind: 'token' as const }
@@ -242,7 +259,7 @@ export function startWebServer(port = 3420): http.Server {
     try {
       if (deprecated) applyDeprecationHeaders(res)
 
-      const routeCtx: RouteContext = { req, res, path, method, url, fedPeer: fedPeerForCtx, auth: ctxAuth, apiVersion }
+      const routeCtx: RouteContext = { req, res, path, method, url, fedPeer: fedPeerForCtx, auth: ctxAuth, apiVersion, role, tenantId }
 
       if (await dispatcher.dispatch(routeCtx)) return
 

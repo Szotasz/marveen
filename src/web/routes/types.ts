@@ -1,4 +1,5 @@
 import type http from 'node:http'
+import type { Role } from '../rbac.js'
 
 // Shared shape every route handler in this folder consumes. The dispatcher in
 // src/web.ts builds it once per request and walks each module's tryHandle*
@@ -28,6 +29,12 @@ export interface RouteContext {
    * Set by the versioning normaliser in web.ts before dispatch.
    */
   apiVersion?: 'v1' | null
+  /** Resolved RBAC role for this request. Set by the top-level gate in web.ts.
+   *  Absent on ungated public paths (no principal required). */
+  role?: Role
+  /** Tenant scope for this request. Always 'default' until the token-based
+   *  tenant lookup is wired into the auth gate. Routes may use this for scopeToTenant(). */
+  tenantId?: string
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<boolean>

@@ -11,6 +11,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- **[API]** RouteContext gains optional `role` and `tenantId` fields (non-breaking additive extension; set by the top-level RBAC gate for downstream route handlers)
 - **[API]** CI breaking-change detection for docs/openapi.yaml via oasdiff (PRs fail if a breaking change is introduced without approval)
 - **[API]** URL-level versioning with /api/v1/* canonical paths
 - **[API]** add custom OpenAPI->TypeScript SDK generator

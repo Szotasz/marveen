@@ -105,6 +105,51 @@ export function checkPermission(
 //
 // On success it returns true and attaches req.__authzRole for downstream use.
 
+// ── Tenant resolution ────────────────────────────────────────────────────────
+//
+// Returns the tenant scope for a request. Once the token-based tenant lookup is
+// wired into the auth gate, 'token' auth will carry its own tenantId. Until then
+// every request is in the default tenant so nothing breaks.
+
+export function resolveTenantId(auth: AuthResult): string {
+  if (auth.kind === 'token' && 'tenantId' in auth && typeof (auth as { tenantId?: unknown }).tenantId === 'string') {
+    return (auth as { tenantId: string }).tenantId
+  }
+  return 'default'
+}
+
+// ── Shadow / hard enforcement gate ──────────────────────────────────────────
+//
+// Centralises the RBAC_MODE branch so web.ts stays thin and the logic is
+// unit-testable without spinning up an HTTP server.
+//
+//   shadow  -- logs a would-deny via `onWouldDeny`, never writes a 4xx response.
+//              The request always proceeds. Default for safe rollout.
+//   enforce -- calls enforcePermission, writes 401/403/503, returns false on deny.
+
+export type RbacMode = 'shadow' | 'enforce'
+
+export function applyRbacGate(
+  auth: AuthResult,
+  method: string,
+  path: string,
+  res: http.ServerResponse,
+  mode: RbacMode,
+  onWouldDeny?: (reason: string) => void,
+): boolean {
+  const decision = checkPermission(auth, method, path)
+  if (decision.allowed) return true
+
+  if (mode === 'enforce') {
+    return enforcePermission(auth, method, path, res)
+  }
+
+  // shadow: never block, but surface the would-deny so Fázis 1 observation
+  // can detect unexpected denials (e.g. session-login users doing writes).
+  onWouldDeny?.(decision.allowed ? '' : decision.reason)
+  return true
+}
+
 export function enforcePermission(
   auth: AuthResult,
   method: string,
