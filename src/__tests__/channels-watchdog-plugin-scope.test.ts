@@ -62,38 +62,42 @@ describe('channels.sh watchdog plugin-liveness fallback is scoped to this sessio
   })
 })
 
-// Live mechanism proof: `pgrep -P <parent> bun` finds only a genuine "bun"
-// -named child of that exact parent pid, and nothing under an unrelated pid.
-// This is not testing channels.sh's bash glue (execSync-ing the whole script
-// would need a live tmux session) -- it independently proves the underlying
-// primitive the fix relies on actually works on this host/OS, the same way
-// the reap-scope tests prove the awk primitive rather than the whole script.
+// Live mechanism proof: `pgrep -P <parent> <name>` finds only a genuine child
+// of that exact parent pid, and nothing under an unrelated pid. This is not
+// testing channels.sh's bash glue (execSync-ing the whole script would need a
+// live tmux session) -- it independently proves the underlying primitive the
+// fix relies on actually works on this host/OS, the same way the reap-scope
+// tests prove the awk primitive rather than the whole script.
+//
+// The pinned property is "pgrep -P filters by parent AND by name", which does
+// not require the literal name "bun". An earlier revision of this test
+// simulated a bun process by copying /bin/bash to a file named `bun`: macOS
+// SIGKILLs a copied platform binary, so the child was already gone by the time
+// pgrep ran and the test was flaky-red on every macOS fleet host (standalone
+// 3/3 red; full suite intermittently red). `/bin/sleep` is a real, unmodified
+// system binary on both platforms, so nothing kills it.
 import { execFileSync, spawn } from 'node:child_process'
-import { mkdtempSync, copyFileSync, chmodSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 
 describe('pgrep -P scoping primitive (proves the mechanism, not just the source text)', () => {
-  it('finds a "bun"-named process only under its real parent pid, not under an unrelated pid', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'pgrep-scope-'))
-    const bunPath = join(dir, 'bun')
-    copyFileSync('/bin/bash', bunPath)
-    chmodSync(bunPath, 0o755)
-    // A pure-builtin busy loop: never execs into another binary, so /proc's
-    // comm stays "bun" (the copied file's own name) instead of collapsing to
-    // whatever a single-command `-c` would exec into.
-    const child = spawn(bunPath, ['-c', 'while :; do :; done'], { stdio: 'ignore' })
+  it('finds a named child only under its real parent pid, not under an unrelated pid', async () => {
+    const child = spawn('/bin/sleep', ['30'], { stdio: 'ignore' })
     try {
       await new Promise(r => setTimeout(r, 300))
-      const ownHit = execFileSync('/usr/bin/pgrep', ['-P', String(process.pid), 'bun'], { encoding: 'utf-8' }).trim()
+      const ownHit = execFileSync('/usr/bin/pgrep', ['-P', String(process.pid), 'sleep'], { encoding: 'utf-8' }).trim()
       expect(ownHit).toBe(String(child.pid))
+      // The "unrelated parent" must be a process that provably has no children.
+      // pid 1 is NOT safe for this: on macOS launchd has direct `sleep`-named
+      // children, so `pgrep -P 1 sleep` legitimately matches and the negative
+      // half would fail for a reason that has nothing to do with the property
+      // under test. A leaf process -- the child we just spawned -- cannot have
+      // children by construction, so it is the sound choice on both platforms.
       let unrelatedHit = ''
       try {
-        unrelatedHit = execFileSync('/usr/bin/pgrep', ['-P', '1', 'bun'], { encoding: 'utf-8' }).trim()
+        unrelatedHit = execFileSync('/usr/bin/pgrep', ['-P', String(child.pid), 'sleep'], { encoding: 'utf-8' }).trim()
       } catch { /* pgrep exits 1 on no match -- that IS the expected "not found" */ }
       expect(unrelatedHit).toBe('')
     } finally {
       child.kill('SIGKILL')
-      rmSync(dir, { recursive: true, force: true })
     }
   })
 })
