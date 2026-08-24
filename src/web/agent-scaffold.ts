@@ -345,6 +345,44 @@ export function ensureAgentStalenessHook(name: string): boolean {
   return true
 }
 
+// Idempotent migration: ensure the provenance-gate UserPromptSubmit hook is
+// present. Same merge shape and fail-open wrapper as the staleness guard above
+// (kept as a sibling rather than a shared helper to match how the egress and
+// governance gates are wired in this file).
+//
+// The gate flags an input that carries NO provenance envelope (<channel ...>,
+// <scheduled-task ...>, <trusted-peer ...>, <untrusted ...>) yet asks for an
+// irreversible or outward-facing operation, and tells the agent to confirm on a
+// verified channel first. It exists because the "only wrapped input is verified"
+// rule previously lived in a memory note: on 2026-06-26 a bare "mehet a restart"
+// line reached an agent's pane and triggered an unintended session restart.
+// FLAG, never block -- Viktor's decision, 2026-07-22 (kanban b241f29e).
+const _provenanceScript = join(PROJECT_ROOT, 'scripts', 'hooks', 'provenance-gate.py')
+const PROVENANCE_HOOK_CMD = `bash -c '[ -f ${_provenanceScript} ] && exec python3 ${_provenanceScript}; exit 0'`
+
+export function ensureAgentProvenanceHook(name: string): boolean {
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ups = Array.isArray(hooks.UserPromptSubmit) ? hooks.UserPromptSubmit as unknown[] : []
+  // Idempotency: already wired if any command entry references the gate script.
+  const already = JSON.stringify(ups).includes('provenance-gate.py')
+  if (already) return false
+  // Registration guard: don't write a /tmp or non-existent path into shared settings.
+  if (isUnsafeHookCommand(PROVENANCE_HOOK_CMD)) return false
+  ups.push({ hooks: [{ type: 'command', command: PROVENANCE_HOOK_CMD, timeout: 10 }] })
+  hooks.UserPromptSubmit = ups
+  settings.hooks = hooks
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
 export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemplate): void {
   const agentRoot = agentDir(name)
   const settingsDir = join(agentRoot, '.claude')

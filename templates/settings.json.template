@@ -50,6 +50,11 @@
           },
           {
             "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/provenance-gate.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/provenance-gate.py; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/channel-inbox-drain.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/channel-inbox-drain.py; exit 0'",
             "timeout": 5
           },
