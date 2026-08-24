@@ -89,6 +89,7 @@ import type { RouteContext } from './web/routes/types.js'
 import { RouteDispatcher } from './web/routes/dispatcher.js'
 import { reconcileAgentsOnStartup, flushRunningStateToDesired } from './web/startup-reconciliation.js'
 import { startImportCrawler, stopImportCrawler } from './web/import-crawler.js'
+import { bootstrapDashboardToken } from './web/token-bootstrap.js'
 
 const WEB_DIR = join(PROJECT_ROOT, 'web')
 
@@ -151,6 +152,7 @@ export function startWebServer(port = 3420): http.Server {
   ensureDirs()
 
   const DASHBOARD_TOKEN = loadOrCreateDashboardToken()
+  bootstrapDashboardToken(DASHBOARD_TOKEN, getDb())
   const allowedOrigins = new Set([
     `http://localhost:${port}`,
     `http://127.0.0.1:${port}`,
