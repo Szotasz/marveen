@@ -24,7 +24,7 @@
     "node": ">=20 <24"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.232",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.238",
     "@huggingface/transformers": "^4.2.0",
     "better-sqlite3": "^13.0.3",
     "cron-parser": "^5.10.0",
@@ -38,7 +38,7 @@
     "@playwright/test": "^1.62.1",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^26.2.0",
-    "@vitest/coverage-v8": "^4.1.10",
+    "@vitest/coverage-v8": "^4.1.11",
     "js-yaml": "^5.3.0",
     "pino-pretty": "^13.0.0",
     "tsx": "^4.23.12",
