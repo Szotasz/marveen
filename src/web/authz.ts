@@ -33,8 +33,9 @@ export type { Role, Permission }
 export function resolveRole(auth: AuthResult): Role {
   switch (auth.kind) {
     case 'token':
-      // The main dashboard bearer token has full admin access.
-      return 'admin'
+      // DB-registered tokens carry their own role; the legacy file-token
+      // fallback (no role field) defaults to admin for backward-compat.
+      return auth.role ?? 'admin'
     case 'device':
       // Per-device fleet keys have agent-level access (read+write, own tenant).
       return 'agent'
