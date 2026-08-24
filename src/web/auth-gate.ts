@@ -35,7 +35,7 @@ export type AuthResult =
   | { kind: 'token'; role?: Role; tenantId?: string }
   | { kind: 'device'; device: string; deviceId: number }
   | { kind: 'federation'; peer: string }
-  | { kind: 'session'; user: string }
+  | { kind: 'session'; user: string; role?: Role; tenantId?: string | null }
   | { kind: 'none' }
 
 // ── api_tokens DB lookup ─────────────────────────────────────────────────────
@@ -172,10 +172,22 @@ export function resolveAuth(
   }
 
   // 6. Browser-login session cookie.
+  //    When the DB is available, look up the user's role and tenant scope so the
+  //    RBAC gate can apply the correct permission set for session-login callers.
   const cookieValue = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
   if (cookieValue) {
     const session = resolveSession(cookieValue)
-    if (session) return { kind: 'session', user: session.username }
+    if (session) {
+      if (db) {
+        const userRow = db
+          .prepare('SELECT role, tenant_id FROM dashboard_users WHERE username = ? COLLATE NOCASE AND disabled = 0')
+          .get(session.username) as { role: string; tenant_id: string | null } | undefined
+        if (userRow) {
+          return { kind: 'session', user: session.username, role: userRow.role as Role, tenantId: userRow.tenant_id }
+        }
+      }
+      return { kind: 'session', user: session.username }
+    }
   }
 
   return { kind: 'none' }

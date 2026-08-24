@@ -32,9 +32,13 @@ export interface RouteContext {
   /** Resolved RBAC role for this request. Set by the top-level gate in web.ts.
    *  Absent on ungated public paths (no principal required). */
   role?: Role
-  /** Tenant scope for this request. Always 'default' until the token-based
-   *  tenant lookup is wired into the auth gate. Routes may use this for scopeToTenant(). */
-  tenantId?: string
+  /** Tenant scope for this request.
+   *  string -- tenant-scoped (filter data to this tenant).
+   *  null   -- global admin (bypass tenant filter; all tenants visible).
+   *  undefined -- ungated public path (no principal).
+   *  Routes MUST check role === 'admin' for the bypass, not tenantId === null,
+   *  because null is also the initial default for viewer users before assignment. */
+  tenantId?: string | null
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<boolean>

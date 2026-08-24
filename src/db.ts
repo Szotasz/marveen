@@ -244,16 +244,26 @@ export interface DashboardUser {
   created_at: number
   updated_at: number
   disabled: number
+  role: string
+  tenant_id: string | null
 }
 
 export type DashboardUserPublic = Omit<DashboardUser, 'password_hash'>
 
 export function createDashboardUser(username: string, passwordHash: string): DashboardUser {
   const now = Math.floor(Date.now() / 1000)
+  // First-user-wins bootstrap: if the table is currently empty, the first user
+  // becomes the global admin (role=admin, tenant_id=NULL). All subsequent users
+  // start as viewer so they can only read until an admin grants them higher access.
+  const isFirst = (db.prepare('SELECT COUNT(*) AS c FROM dashboard_users').get() as { c: number }).c === 0
+  const role = isFirst ? 'admin' : 'viewer'
+  const tenantId = null  // NULL = global scope; tenant-scoped users are created via the admin provisioning API
   const info = db
-    .prepare('INSERT INTO dashboard_users (username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?)')
-    .run(username, passwordHash, now, now)
-  return { id: Number(info.lastInsertRowid), username, password_hash: passwordHash, created_at: now, updated_at: now, disabled: 0 }
+    .prepare(
+      'INSERT INTO dashboard_users (username, password_hash, role, tenant_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+    )
+    .run(username, passwordHash, role, tenantId, now, now)
+  return { id: Number(info.lastInsertRowid), username, password_hash: passwordHash, role, tenant_id: tenantId, created_at: now, updated_at: now, disabled: 0 }
 }
 
 export function getDashboardUser(username: string): DashboardUser | undefined {
@@ -264,7 +274,7 @@ export function getDashboardUser(username: string): DashboardUser | undefined {
 
 export function listDashboardUsers(): DashboardUserPublic[] {
   return db
-    .prepare('SELECT id, username, created_at, updated_at, disabled FROM dashboard_users ORDER BY username COLLATE NOCASE')
+    .prepare('SELECT id, username, role, tenant_id, created_at, updated_at, disabled FROM dashboard_users ORDER BY username COLLATE NOCASE')
     .all() as DashboardUserPublic[]
 }
 
