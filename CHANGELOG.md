@@ -11,6 +11,9 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- **[API]** `POST/GET /api/v1/admin/tenants`, `PATCH /api/v1/admin/tenants/:id` -- tenant registry CRUD (admin:all required)
+- **[API]** `POST/GET /api/v1/admin/users`, `PATCH /api/v1/admin/users/:id` -- dashboard user provisioning with role+tenant validation and audit log (admin:all required)
+- migration 0019: `tenants` table DDL with pre-seeded 'default' tenant
 - **[API]** RouteContext gains optional `role` and `tenantId` fields (non-breaking additive extension; set by the top-level RBAC gate for downstream route handlers)
 - tenant isolation wired into memories, kanban, and messages route handlers: admin role bypasses filter (sees all tenants), scoped callers are restricted to their own tenant_id; saveAgentMemory/createAgentMessage/createKanbanCard accept optional tenantId param (backward-compat, default: 'default')
 - enroll dashboard bearer in api_tokens on startup (INSERT OR IGNORE; role=admin, tenant=default, no expiry); resolveApiToken() now resolves it from DB instead of the file-token fallback
