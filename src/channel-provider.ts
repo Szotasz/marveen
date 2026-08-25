@@ -601,6 +601,11 @@ export function readChannelToken(provider: ChannelProviderType, envFilePath: str
     : provider === 'googlechat' ? 'GOOGLECHAT_PROJECT_ID'
     : provider === 'teams' ? 'TEAMS_BOT_APP_ID'
     : 'TELEGRAM_BOT_TOKEN'
-  const match = content.match(new RegExp(`${key}=(.+)`))
+  // Anchored to a whole line: a commented-out `# SLACK_BOT_TOKEN=old` or a
+  // prefixed `OLD_TELEGRAM_BOT_TOKEN=` must NOT match. Unanchored, a dead
+  // token left commented in one .env shadowed the live one in the next lookup
+  // location, and a commented-out GOOGLECHAT_PROJECT_ID still counted as a
+  // configured channel for hasChannel/agentHasChannel.
+  const match = content.match(new RegExp(`^\\s*${key}=(.+)$`, 'm'))
   return match ? match[1].trim() : null
 }
