@@ -52,11 +52,20 @@ vi.mock('../db.js', () => ({
 
 // The alert paths resolve a REAL bot token from install-level config and send
 // to the real owner chat. Neutralize the sink: a green suite must never cost
-// the operator's attention.
-vi.mock('../web/telegram.js', () => ({
-  sendTelegramMessage: vi.fn(async () => {}),
-  sendTelegramPhoto: vi.fn(async () => {}),
-}))
+// the operator's attention. The runner sends over getProvider(CHANNEL_PROVIDER)
+// since the provider-aware alerts (not sendTelegramMessage any more), so THAT
+// is the export to neutralize; everything else stays real.
+vi.mock('../channel-provider.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../channel-provider.js')>()
+  return {
+    ...real,
+    getProvider: (type: Parameters<typeof real.getProvider>[0]) => ({
+      ...real.getProvider(type),
+      sendMessage: vi.fn(async () => {}),
+      sendPhoto: vi.fn(async () => {}),
+    }),
+  }
+})
 
 vi.mock('../web/scheduled-tasks-io.js', () => ({
   listScheduledTasks: () => mockListScheduledTasks(),
@@ -75,6 +84,10 @@ vi.mock('../web/agent-process.js', () => ({
   capturePane: () => null,
   sendEnterToSession: vi.fn(),
   clearStaleParkedInput: (...a: unknown[]) => mockClearParked(...(a as [])),
+  // Only heartbeat tasks fire here, so the bound-channel path is not reached;
+  // the export is still mocked so a future non-heartbeat case does not die on
+  // "No resolveAgentProvider export is defined on the mock".
+  resolveAgentProvider: () => 'telegram',
 }))
 
 const TASK: ScheduledTask = {

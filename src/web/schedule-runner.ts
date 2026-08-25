@@ -496,8 +496,8 @@ export function channelDeliveryName(provider: ChannelProviderType): string {
       return "Teamsen";
     case "telegram":
       return "Telegramon";
-    default:
-      return "Telegramon";
+    // No default: the switch is exhaustive over ChannelProviderType, so a new
+    // provider is a compile error here instead of silently reading "Telegramon".
   }
 }
 
