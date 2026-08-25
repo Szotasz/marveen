@@ -684,6 +684,21 @@ export function initDatabase(dbPathOverride?: string): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_task_runs_ts ON task_runs(ts)`)
   // Migration: add status column to task_runs (introduced 2026-06-13)
   try { db.exec(`ALTER TABLE task_runs ADD COLUMN status TEXT NOT NULL DEFAULT 'fired'`) } catch { /* already present */ }
+  // Migration: completion bookkeeping (introduced 2026-08-26).
+  //
+  // `status` records how the DISPATCH went (fired / skipped / lost / ...) and is
+  // stamped once, at injection time. It was the only column, so a run that had
+  // been delivered and a run that had finished looked identical for ever --
+  // 3269 'fired' rows on this install, zero completions. These two columns
+  // record how the run ENDED, and are written by the post-fire watchdog sweep
+  // that already computes exactly that and then threw the answer away.
+  //
+  // Deliberately additive: `status` keeps its meaning, so every existing query
+  // and the historical rows stay valid. A NULL completed_at means "not closed",
+  // which is the honest reading for every row written before this migration.
+  try { db.exec(`ALTER TABLE task_runs ADD COLUMN completed_at INTEGER`) } catch { /* already present */ }
+  try { db.exec(`ALTER TABLE task_runs ADD COLUMN outcome TEXT`) } catch { /* already present */ }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_task_runs_open ON task_runs(completed_at, ts)`)
 
   // --- Pending Scheduled Task Retries ---
   // Busy-skipped scheduled tasks used to live in an in-memory Map. On a
@@ -2891,21 +2906,92 @@ export function getAgentConversationThreads(): AgentThread[] {
 
 export interface TaskRunEntry { name: string; agent: string; ts: number; status: string }
 
-export interface TaskRunHistoryEntry { ts: number; status: string; tokens_est: number | null }
+export interface TaskRunHistoryEntry {
+  ts: number
+  status: string
+  tokens_est: number | null
+  // Completion bookkeeping (2026-08-26). null = the run was never closed:
+  // either it is still in flight, or it predates this migration. The UI must
+  // render that as 'unknown', NOT as 'still running' -- the two are different
+  // claims and conflating them is how a finished task kept looking stuck.
+  completed_at: number | null
+  outcome: string | null
+  duration_ms: number | null
+}
 
 const TASK_RUN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
-export function appendTaskRun(name: string, agent: string, status = 'fired'): void {
+/**
+ * Record that a run was dispatched. Returns the row id so the caller can close
+ * the run later with markTaskRunCompleted -- without it there is no way to
+ * attach an ending to a beginning, which is why completions were never written.
+ */
+export function appendTaskRun(name: string, agent: string, status = 'fired'): number {
   const now = Date.now()
-  db.prepare('INSERT INTO task_runs (name, agent, ts, status) VALUES (?, ?, ?, ?)').run(name, agent, now, status)
+  const info = db.prepare('INSERT INTO task_runs (name, agent, ts, status) VALUES (?, ?, ?, ?)').run(name, agent, now, status)
   // Opportunistic TTL prune: cheap indexed DELETE, keeps the table bounded.
   db.prepare('DELETE FROM task_runs WHERE ts < ?').run(now - TASK_RUN_TTL_MS)
+  return Number(info.lastInsertRowid)
+}
+
+/** How a run ENDED. Distinct from `status`, which is how it was dispatched. */
+export type TaskRunOutcome = 'done' | 'abandoned' | 'lost' | 'interrupted'
+
+/**
+ * Close a run. Idempotent by design: the WHERE clause refuses to overwrite an
+ * already-closed row, so a duplicate sweep (or a reconcile racing a live sweep)
+ * cannot turn a 'done' into an 'abandoned'. First writer wins.
+ */
+export function markTaskRunCompleted(runId: number, outcome: TaskRunOutcome, completedAt = Date.now()): boolean {
+  const info = db.prepare(
+    'UPDATE task_runs SET completed_at = ?, outcome = ? WHERE id = ? AND completed_at IS NULL'
+  ).run(completedAt, outcome, runId)
+  return info.changes > 0
+}
+
+/**
+ * Close runs that a restart orphaned.
+ *
+ * The watchdog's in-flight map lives in memory, so a dashboard restart loses
+ * every open run it was tracking and those rows would stay open for ever --
+ * re-introducing the exact "cannot tell running from finished" problem this
+ * change removes, just in a smaller window. Rows older than maxAgeMs with no
+ * completed_at are closed as 'interrupted': we genuinely do not know whether
+ * they finished, and saying so is more useful than either optimistic 'done'
+ * or alarming 'abandoned'.
+ */
+export function reconcileOpenTaskRuns(maxAgeMs: number, now = Date.now()): number {
+  const info = db.prepare(
+    `UPDATE task_runs SET completed_at = ?, outcome = 'interrupted'
+     WHERE completed_at IS NULL AND ts < ? AND status IN ('fired', 'fired_late')`
+  ).run(now, now - maxAgeMs)
+  return info.changes
+}
+
+/**
+ * Median wall-clock duration of the recent COMPLETED runs of a task, in ms.
+ * Returns null until there is enough history to be meaningful.
+ *
+ * This is what turns the stuck-task alert from a bare threshold into a
+ * judgement the operator can make: "running 5 min, typically finishes in 40 s"
+ * says something; "running 5 min" alone does not.
+ */
+export function getTaskRunMedianDurationMs(name: string, minSamples = 5, limit = 50): number | null {
+  const rows = db.prepare(
+    `SELECT (completed_at - ts) AS d FROM task_runs
+     WHERE name = ? AND outcome = 'done' AND completed_at IS NOT NULL
+     ORDER BY ts DESC LIMIT ?`
+  ).all(name, limit) as { d: number }[]
+  const ds = rows.map(r => r.d).filter(d => Number.isFinite(d) && d >= 0).sort((a, b) => a - b)
+  if (ds.length < minSamples) return null
+  const mid = Math.floor(ds.length / 2)
+  return ds.length % 2 === 0 ? Math.round((ds[mid - 1] + ds[mid]) / 2) : ds[mid]
 }
 
 export function listTaskRunHistory(name: string, limit: number): TaskRunHistoryEntry[] {
   const rows = db.prepare(
-    'SELECT ts, status, agent FROM task_runs WHERE name = ? ORDER BY ts DESC LIMIT ?'
-  ).all(name, limit) as { ts: number; status: string; agent: string }[]
+    'SELECT ts, status, agent, completed_at, outcome FROM task_runs WHERE name = ? ORDER BY ts DESC LIMIT ?'
+  ).all(name, limit) as { ts: number; status: string; agent: string; completed_at: number | null; outcome: string | null }[]
 
   // token_usage.timestamp is in seconds; task_runs.ts is in ms -- divide by 1000
   const tokenStmt = db.prepare(
@@ -2919,7 +3005,15 @@ export function listTaskRunHistory(name: string, limit: number): TaskRunHistoryE
     const newerTs = i > 0 ? rows[i - 1].ts : undefined
     const windowEnd = newerTs !== undefined ? Math.min(row.ts + 3600000, newerTs) : row.ts + 3600000
     const tokenRow = tokenStmt.get(row.agent, Math.floor(row.ts / 1000), Math.floor(windowEnd / 1000)) as { total: number }
-    return { ts: row.ts, status: row.status, tokens_est: tokenRow.total > 0 ? tokenRow.total : null }
+    const completedAt = row.completed_at ?? null
+    return {
+      ts: row.ts,
+      status: row.status,
+      tokens_est: tokenRow.total > 0 ? tokenRow.total : null,
+      completed_at: completedAt,
+      outcome: row.outcome ?? null,
+      duration_ms: completedAt != null ? completedAt - row.ts : null,
+    }
   })
 }
 

@@ -6,7 +6,7 @@ import { resolveOwnerChatId } from "../owner-chat.js"
 import { atomicWriteFileSync } from "./atomic-write.js"
 import { logger } from "../logger.js"
 import { sendTelegramMessage } from "./telegram.js"
-import { appendTaskRun } from "../db.js"
+import { appendTaskRun, markTaskRunCompleted } from "../db.js"
 import type { ScheduledTask } from "./scheduled-tasks-io.js"
 
 // command-type scheduled tasks run a raw shell command directly (no LLM
@@ -91,7 +91,14 @@ export function runCommandTask(task: ScheduledTask, now: number): void {
   const { next, action } = evaluateCommandResult(map[task.name], ok, failThreshold, now)
   map[task.name] = next
   persist()
-  try { appendTaskRun(task.name, task.agent || "system") } catch { /* non-fatal */ }
+  // A command task is synchronous: by the time runCommand returns, the run IS
+  // over. Close it here rather than leaving it to the pane watchdog, which
+  // never sees these -- they are not injected into a session at all, so without
+  // this they would be the one class of run that stays open for ever.
+  try {
+    const runId = appendTaskRun(task.name, task.agent || "system")
+    markTaskRunCompleted(runId, "done")
+  } catch { /* non-fatal */ }
   logger.info({ task: task.name, ok, detail, fails: next.fails, action }, "command task ran")
 
   if (action === "none") return

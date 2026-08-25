@@ -55,19 +55,19 @@ describe('decideTaskTimeout: idle clear', () => {
   it('clears immediately when the pane is idle (task completed before timeout)', () => {
     const entry = makeEntry({ injectedAt: 0 })
     const now = GRACE + 1000
-    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('clear')
+    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('done')
   })
 
   it('clears even before the grace period if somehow idle', () => {
     const entry = makeEntry({ injectedAt: 0 })
     const now = GRACE - 5000
-    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('clear')
+    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('done')
   })
 
   it('clears when idle even after the timeout has elapsed', () => {
     const entry = makeEntry({ injectedAt: 0 })
     const now = TIMEOUT + 1000
-    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('clear')
+    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('done')
   })
 })
 
@@ -105,7 +105,7 @@ describe('decideTaskTimeout: one-shot alert flag', () => {
   it('still clears when idle even after alerted', () => {
     const entry = makeEntry({ injectedAt: 0, alerted: true })
     const now = TIMEOUT + 60_000
-    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('clear')
+    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('done')
   })
 })
 
@@ -129,16 +129,16 @@ describe('decideTaskTimeout: injection that never started a turn', () => {
     expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('hold')
   })
 
-  it('clears instead of losing once a turn has been observed', () => {
+  it('reports done instead of lost once a turn has been observed', () => {
     const entry = makeEntry({ injectedAt: 0, sawTurn: true })
     const now = GRACE + 1
-    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('clear')
+    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('done')
   })
 
   it('still evicts at max tracking age rather than reporting lost', () => {
     const entry = makeEntry({ injectedAt: 0, sawTurn: false })
     const now = MAX_TRACK + 1
-    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('clear')
+    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('abandoned')
   })
 
   it('does not report lost while the pane is busy -- that is the alert path', () => {
@@ -182,20 +182,26 @@ describe('decideTaskTimeout: stage-2 owner escalation', () => {
     expect(decideTaskTimeout(entry, 'busy', now, BASE_OPTS)).toBe('hold')
   })
 
-  it('still clears when idle even after escalation', () => {
+  it('still ends when idle even after escalation, and it ends as done', () => {
+    // Upstream wrote this as 'clear'. Since the done/abandoned split that value
+    // no longer exists: an idle pane with a turn seen is a FINISHED run, so the
+    // honest assertion is 'done'. Changing it is the point of the split, not a
+    // concession to it.
     const entry = makeEntry({ injectedAt: 0, alerted: true, ownerAlerted: true })
     const now = TIMEOUT + OWNER_EXTRA + 60_000
-    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('clear')
+    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('done')
   })
 
   it('maxTrackMs eviction still wins over escalate for a task configured near the ceiling', () => {
     // Known, accepted limitation (see decideTaskTimeout's doc comment):
-    // clear (maxTrackMs) is checked before alert/escalate, so a task whose
+    // abandoned (maxTrackMs) is checked before alert/escalate, so a task whose
     // timeoutMs + ownerExtraMs together exceed maxTrackMs never escalates.
+    // Upstream called this 'clear'; after the split, giving up on a still-busy
+    // task is 'abandoned' -- explicitly NOT 'done', because we never saw it end.
     const entry = makeEntry({ injectedAt: 0, alerted: true })
     const nearCeilingOpts = { graceMs: GRACE, timeoutMs: MAX_TRACK - 1000, maxTrackMs: MAX_TRACK, ownerExtraMs: OWNER_EXTRA }
     const now = MAX_TRACK + 1
-    expect(decideTaskTimeout(entry, 'busy', now, nearCeilingOpts)).toBe('clear')
+    expect(decideTaskTimeout(entry, 'busy', now, nearCeilingOpts)).toBe('abandoned')
   })
 })
 
@@ -227,13 +233,30 @@ describe('decideTaskTimeout: max tracking age', () => {
   it('evicts the entry regardless of pane state after maxTrackMs', () => {
     const entry = makeEntry({ injectedAt: 0, alerted: true })
     const now = MAX_TRACK + 1
-    expect(decideTaskTimeout(entry, 'busy', now, BASE_OPTS)).toBe('clear')
+    expect(decideTaskTimeout(entry, 'busy', now, BASE_OPTS)).toBe('abandoned')
   })
 
   it('evicts even if the pane is unknown at max age', () => {
     const entry = makeEntry({ injectedAt: 0 })
     const now = MAX_TRACK + 1
-    expect(decideTaskTimeout(entry, 'unknown', now, BASE_OPTS)).toBe('clear')
+    expect(decideTaskTimeout(entry, 'unknown', now, BASE_OPTS)).toBe('abandoned')
+  })
+
+  // The load-bearing half of the 2026-08-26 split. Ageing out is NOT success:
+  // the session was still busy when we stopped watching. If both cases kept
+  // returning one value, recording completions would silently stamp 'done' on
+  // every task that ran past six hours -- worse than recording nothing, because
+  // it would look like evidence.
+  it('a busy session at max age is abandoned, NOT done', () => {
+    const entry = makeEntry({ injectedAt: 0, alerted: true })
+    const decision = decideTaskTimeout(entry, 'busy', MAX_TRACK + 1, BASE_OPTS)
+    expect(decision).toBe('abandoned')
+    expect(decision).not.toBe('done')
+  })
+
+  it('an idle session that saw a turn is done, and max age cannot mask it as such', () => {
+    const finished = makeEntry({ injectedAt: 0, sawTurn: true })
+    expect(decideTaskTimeout(finished, 'idle', GRACE + 1000, BASE_OPTS)).toBe('done')
   })
 })
 
