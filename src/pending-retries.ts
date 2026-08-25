@@ -82,6 +82,7 @@ export function shouldSendAlert(
 export function classifySendError(errMessage: string): 'transient' | 'permanent' {
   if (errMessage.includes('Telegram API')) return classifyTelegramError(errMessage)
   if (errMessage.includes('Slack API')) return classifySlackError(errMessage)
+  if (errMessage.includes('Discord API')) return classifyDiscordError(errMessage)
   return 'transient' // no recognized provider prefix -> network-level failure
 }
 
@@ -95,6 +96,14 @@ function classifyHttpStatus(status: number): 'transient' | 'permanent' {
 /** Telegram: "Telegram API <status>: ...". */
 function classifyTelegramError(errMessage: string): 'transient' | 'permanent' {
   const match = /Telegram API (\d{3})\b/.exec(errMessage)
+  return match ? classifyHttpStatus(Number(match[1])) : 'transient'
+}
+
+/** Discord (discordProvider.sendMessage): "Discord API <status>: <body>".
+ *  Same HTTP-status policy -- without this branch a bad channel id / revoked
+ *  bot token (4xx) fell through as "transient" and respun every 60s. */
+function classifyDiscordError(errMessage: string): 'transient' | 'permanent' {
+  const match = /Discord API (\d{3})\b/.exec(errMessage)
   return match ? classifyHttpStatus(Number(match[1])) : 'transient'
 }
 

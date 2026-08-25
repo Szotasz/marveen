@@ -166,3 +166,23 @@ describe('classifySendError (Slack shapes)', () => {
     expect(classifySendError('fetch failed')).toBe('transient')
   })
 })
+
+// Discord is a valid CHANNEL_PROVIDER for the alert path too (channelDeliveryName,
+// resolveSchedulerAlertToken). discordProvider.sendMessage throws
+// "Discord API <status>: <body>"; without its own branch every 4xx fell
+// through the "no recognized prefix" default as transient and respun each tick.
+describe('classifySendError (Discord shapes)', () => {
+  it('treats Discord HTTP 429/5xx as transient, other 4xx as permanent', () => {
+    expect(classifySendError('Discord API 429: rate limited')).toBe('transient')
+    expect(classifySendError('Discord API 502: bad gateway')).toBe('transient')
+    expect(classifySendError('Discord API 401: {"message":"401: Unauthorized"}')).toBe('permanent')
+    expect(classifySendError('Discord API 403: {"message":"Missing Access"}')).toBe('permanent')
+    expect(classifySendError('Discord API 404: {"message":"Unknown Channel"}')).toBe('permanent')
+  })
+
+  it('does not confuse a status-looking number inside the body with the status', () => {
+    // The status is the number right after the prefix; the body may carry
+    // its own codes (Discord echoes "401: Unauthorized" in the JSON).
+    expect(classifySendError('Discord API 503: {"code":40001}')).toBe('transient')
+  })
+})
