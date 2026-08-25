@@ -537,17 +537,14 @@ async function openScheduleRunHistory(taskName) {
         <td style="text-align:right;font-variant-numeric:tabular-nums">${tokens}</td>
       </tr>`
     }).join('')
-    body.innerHTML = `<table style="width:100%;border-collapse:collapse">
+    body.innerHTML = `<div class="table-wrap"><table class="table" data-variant="compact">
       <thead><tr>
-        <th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border)">${t('tasks.history.time')}</th>
-        <th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border)">${t('tasks.history.status')}</th>
-        <th style="text-align:right;padding:4px 8px;border-bottom:1px solid var(--border)">${t('tasks.history.tokens')}</th>
+        <th>${t('tasks.history.time')}</th>
+        <th>${t('tasks.history.status')}</th>
+        <th style="text-align:right">${t('tasks.history.tokens')}</th>
       </tr></thead>
       <tbody>${rows}</tbody>
-    </table>`
-    body.querySelectorAll('tbody tr').forEach(tr => {
-      tr.querySelectorAll('td').forEach(td => { td.style.padding = '5px 8px'; td.style.borderBottom = '1px solid var(--border-light, #eee)' })
-    })
+    </table></div>`
   } catch { body.innerHTML = '<p class="hint">' + t('tasks.history.error') + '</p>' }
 }
 

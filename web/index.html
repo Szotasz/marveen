@@ -319,8 +319,8 @@
 
       <!-- Zone 5: Fleet Blackboard -->
       <div class="ov-section-title" style="margin-top:18px;">Fleet Blackboard</div>
-      <div class="ov-blackboard-table-wrap">
-        <table class="ov-blackboard-table" id="ovBlackboardTable">
+      <div class="table-wrap">
+        <table class="table ov-blackboard-table" data-variant="compact" id="ovBlackboardTable">
           <thead>
             <tr>
               <th>Ágens</th>
@@ -2193,8 +2193,8 @@
           </button>
         </div>
         <div id="backupsEmpty" hidden style="color:var(--text-muted);padding:24px 0;text-align:center" data-i18n="backups.list.empty">Nincs elérhető mentés.</div>
-        <div id="backupsTableWrap" style="overflow-x:auto">
-          <table class="data-table" id="backupsTable" hidden>
+        <div class="table-wrap" id="backupsTableWrap">
+          <table class="table" id="backupsTable" hidden>
             <thead>
               <tr>
                 <th data-i18n="backups.col.name">Fájlnév</th>
