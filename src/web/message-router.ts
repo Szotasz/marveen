@@ -30,7 +30,6 @@ import {
 import { detectPaneState, type PaneState } from '../pane-state.js'
 import { setLastInboundModality } from './voice-modality.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
-import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
 
 // A message that cannot be delivered within this window (target session never
@@ -132,13 +131,6 @@ function notifyOrchestratorOfFailedHandoff(msg: AgentMessage, reason: string): v
     logger.warn({ err, id: msg.id }, 'Failed to enqueue handoff-failure notification')
   }
 }
-// Wakeup cooldown for the main agent: the router fires at most one
-// sendPromptToSession wakeup per COOLDOWN_MS window to avoid spamming the
-// channels session. 45s gives enough headroom that a normal turn (typically
-// 5-30s) ends and drain-inbox fires before we would retry.
-let lastMainAgentWakeupMs = 0
-const MAIN_AGENT_WAKEUP_COOLDOWN_MS = 45 * 1000
-
 // Bounce a terminal federated-delivery failure back to the SENDER's inbox as
 // a local 'system' notice, so a delegating agent learns its task never
 // arrived (otherwise the failure only flips a DB row nobody reads, and the
@@ -498,7 +490,6 @@ export async function runMessageRouterTick(): Promise<void> {
     // on their own budget so neither queue starves the other.
     await deliverFederatedBatch(federatedPending, now)
 
-    let mainAgentWakeupFiredThisTick = false
     for (const msg of pending) {
       // Skip messages already batched by the reconnect pre-pass: they are
       // 'done' in the DB now but still appear in our snapshot slice.
@@ -521,24 +512,20 @@ export async function runMessageRouterTick(): Promise<void> {
       // day. Leave the message pending; the next main-agent turn claims it
       // atomically. Sub-agents keep the tmux-inject path (they have idle gaps).
       //
-      // WAKEUP: without an active nudge the main agent only drains on the next
-      // user message or heartbeat -- up to 22+ min latency observed in prod.
-      // Fire one lightweight wakeup per cooldown window so an idle channels
-      // session starts a turn and drain-inbox claims the message immediately.
-      // Busy session: Claude Code queues the wakeup for the next turn boundary.
-      if (isMainAgent) {
-        if (!mainAgentWakeupFiredThisTick && now - lastMainAgentWakeupMs >= MAIN_AGENT_WAKEUP_COOLDOWN_MS) {
-          mainAgentWakeupFiredThisTick = true
-          lastMainAgentWakeupMs = now
-          try {
-            await sendPromptToSession(MAIN_CHANNELS_SESSION, '[inbox-wakeup: pending inter-agent messages]', null, { waitForIdle: false })
-            logger.info({ msgId: msg.id }, 'message-router: main-agent wakeup fired')
-          } catch (err) {
-            logger.warn({ err }, 'message-router: main-agent wakeup injection failed')
-          }
-        }
-        continue
-      }
+      // WAKEUP: owned by the inbox-nudge-watcher, NOT by this router. The
+      // wakeup that used to live here (#538) predates that watcher (#557)
+      // and was never removed, so two engines nudged the
+      // same pane -- and this one fired BLIND: waitForIdle:false, no readiness
+      // check, no staleness tracking, once per 45s cooldown for as long as the
+      // row stayed pending. Against a mid-turn pane that lands as a queued
+      // mid-turn message, not a prompt submit: no UserPromptSubmit, so no
+      // drain-inbox call, so no claim -- the row stays pending and the cooldown
+      // re-arms -- observed as four such injections in three minutes for a
+      // single message, five main-agent turns burned, nothing delivered.
+      // The watcher does the same job correctly (double-capture-confirmed idle,
+      // abort-on-busy send, stale-spell escalation, owner alert, hourly budget),
+      // so the router simply leaves the row for the PULL path to claim.
+      if (isMainAgent) continue
       // Use cached session data from the pre-pass (one sessionExistsOnHost call
       // per unique receiver per tick). Fall back to a direct call for agents not
       // in the pending set (shouldn't happen, but safe).
