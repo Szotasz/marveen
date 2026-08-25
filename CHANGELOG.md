@@ -11,6 +11,8 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- **[API]** `POST /api/messages` accepts opt-in external system sender ids via `SYSTEM_SENDER_IDS` env var (comma-separated); `parseSystemSenderIds()` normalises entries with `sanitizeAgentIdent`; empty by default so fresh installs are unchanged
+- **[API]** `POST /api/messages` `PUT /api/messages/:id` -- closing a message now sends a reverse `[Eredmény]` completion-report notification to the delegating agent via `shouldNotifyDelegator()` (self-messages, non-addressable senders, and completion-report contents are excluded to avoid ping-pong chains)
 - **[API]** `POST/GET /api/v1/admin/tenants`, `PATCH /api/v1/admin/tenants/:id` -- tenant registry CRUD (admin:all required)
 - **[API]** `POST/GET /api/v1/admin/users`, `PATCH /api/v1/admin/users/:id` -- dashboard user provisioning with role+tenant validation and audit log (admin:all required)
 - migration 0019: `tenants` table DDL with pre-seeded 'default' tenant
