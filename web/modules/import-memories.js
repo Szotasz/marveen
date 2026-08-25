@@ -138,7 +138,7 @@ async function loadSourceLog(sourceId) {
     const res = await fetch(`/api/import/sources/${sourceId}/log`)
     const rows = await res.json()
     if (!rows.length) { logEl.innerHTML = `<p class="empty-state">${escapeHtml(t('import.log.empty'))}</p>`; return }
-    logEl.innerHTML = `<table class="import-log-table"><thead><tr>
+    logEl.innerHTML = `<div class="table-wrap"><table class="table import-log-table" data-variant="compact"><thead><tr>
       <th>${t('import.log.run_at')}</th>
       <th>${t('import.log.scanned')}</th>
       <th>${t('import.log.added')}</th>
@@ -152,7 +152,7 @@ async function loadSourceLog(sourceId) {
       <td>${r.files_updated}</td>
       <td>${r.files_skipped_hash + r.files_skipped_secret + r.files_skipped_size + r.files_skipped_type}</td>
       <td>${r.error ? `<span class="error-text">${escapeHtml(r.error.slice(0, 80))}</span>` : '-'}</td>
-    </tr>`).join('')}</tbody></table>`
+    </tr>`).join('')}</tbody></table></div>`
   } catch { logEl.innerHTML = '<p class="empty-state">Hiba</p>' }
 }
 

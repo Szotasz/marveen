@@ -1810,6 +1810,7 @@ window._i18n.hu = {
   'import.btn.wipe_all':          'Összes import törlése',
   'import.sources.empty':         'Nincs konfigurált import forrás.',
   'import.sources.load_error':    'Betöltési hiba',
+  'import.log.title':             'Futási napló',
   'import.log.empty':             'Nincs futási napló.',
   'import.log.run_at':            'Futás ideje',
   'import.log.scanned':           'Beolvasva',

@@ -1811,6 +1811,7 @@ window._i18n.en = {
   'import.btn.wipe_all':          'Wipe all imports',
   'import.sources.empty':         'No import sources configured.',
   'import.sources.load_error':    'Load error',
+  'import.log.title':             'Run Log',
   'import.log.empty':             'No run log.',
   'import.log.run_at':            'Run time',
   'import.log.scanned':           'Scanned',
