@@ -33,9 +33,10 @@ vi.mock('../web/federation/address.js', () => ({
 vi.mock('../web/federation/config.js', () => ({
   getFederationConfig: vi.fn().mockReturnValue({ peers: [] }),
 }))
-vi.mock('../config.js', () => ({
-  OWNER_NAME: 'test-owner',
-}))
+vi.mock('../config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../config.js')>()
+  return { ...actual, OWNER_NAME: 'test-owner' }
+})
 
 import { tryHandleMessages } from '../web/routes/messages.js'
 
