@@ -21,11 +21,17 @@ import {
   listDashboardUsersFiltered,
   adminPatchDashboardUser,
   countActiveAdmins,
+  listPartnerSenders,
+  createPartnerSender,
+  disablePartnerSender,
   type Tenant,
   type DashboardUserPublic,
+  type PartnerSender,
 } from '../../db.js'
 import { readBody, json } from '../http-helpers.js'
 import { hashPassword } from '../password-hash.js'
+import { sanitizeAgentIdent } from '../../prompt-safety.js'
+import { isKnownAgent } from '../agent-config.js'
 import { logger } from '../../logger.js'
 import type { RouteContext } from './types.js'
 
@@ -35,6 +41,8 @@ const TENANT_ID_RE = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/
 const RESERVED_TENANT_IDS = new Set(['default', 'admin', 'system', 'root'])
 const VALID_ROLES = new Set(['admin', 'agent', 'read_only', 'viewer'])
 const USERNAME_RE = /^[A-Za-z0-9._-]+$/
+// sender_id must be a valid sanitized agent ident (sanitizeAgentIdent strips everything else)
+const SENDER_ID_RE = /^[a-zA-Z0-9_-]+$/
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -240,6 +248,73 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     if (!updated) { json(res, { error: 'user_not_found' }, 404); return true }
     auditAdmin(ctx, 'admin.user.update', userId, { username: existing.username, ...patch, password_hash: patch.password_hash ? '[redacted]' : undefined })
     json(res, userToPublic(updated))
+    return true
+  }
+
+  // ── Partner Senders ────────────────────────────────────────────────────────
+
+  if (path === '/api/admin/partner-senders' && method === 'POST') {
+    const body = JSON.parse((await readBody(req)).toString()) as Record<string, unknown>
+    const senderId = typeof body.sender_id === 'string' ? body.sender_id.trim() : ''
+    const tenantId = typeof body.tenant_id === 'string' ? body.tenant_id.trim() : ''
+    const displayName = typeof body.display_name === 'string' ? body.display_name.trim() : ''
+
+    if (!SENDER_ID_RE.test(senderId) || senderId.length > 63) {
+      json(res, { error: 'invalid_sender_id', field: 'sender_id',
+        hint: 'sender_id must match [a-zA-Z0-9_-] and be 1-63 chars' }, 400)
+      return true
+    }
+    if (!tenantId || RESERVED_TENANT_IDS.has(tenantId)) {
+      json(res, { error: 'invalid_tenant_id', field: 'tenant_id' }, 400); return true
+    }
+    const tenant = getTenant(tenantId)
+    if (!tenant || tenant.disabled_at !== null) {
+      json(res, { error: 'tenant_not_found', field: 'tenant_id' }, 404); return true
+    }
+    // Block fleet agent names: a partner sender with the same id as a fleet
+    // agent would be confusing and could mask routing bugs. 409 matches the
+    // "already exists" shape callers expect for idempotency-friendly retries.
+    if (isKnownAgent(sanitizeAgentIdent(senderId))) {
+      json(res, { error: 'sender_id_is_fleet_agent',
+        hint: 'choose a sender_id that does not collide with a registered fleet agent' }, 409)
+      return true
+    }
+    // Check for existing (active or soft-disabled) entry
+    const existing = listPartnerSenders(tenantId).find((s) => s.sender_id === sanitizeAgentIdent(senderId))
+    if (existing) {
+      json(res, { error: 'partner_sender_already_exists' }, 409); return true
+    }
+
+    const createdBy = ctx.auth?.user ?? 'system'
+    const record = createPartnerSender(sanitizeAgentIdent(senderId), tenantId, displayName, createdBy)
+    auditAdmin(ctx, 'admin.partner_sender.create', `${tenantId}/${sanitizeAgentIdent(senderId)}`,
+      { sender_id: record.sender_id, tenant_id: tenantId, display_name: displayName })
+    json(res, record, 201)
+    return true
+  }
+
+  if (path === '/api/admin/partner-senders' && method === 'GET') {
+    const tenantId = ctx.url.searchParams.get('tenant_id') ?? undefined
+    const items = listPartnerSenders(tenantId)
+    json(res, { items, total: items.length })
+    return true
+  }
+
+  // DELETE /api/admin/partner-senders/:sender_id?tenant_id=<id>
+  const partnerSenderDeleteMatch = path.match(/^\/api\/admin\/partner-senders\/([^/]+)$/)
+  if (partnerSenderDeleteMatch && method === 'DELETE') {
+    const senderId = decodeURIComponent(partnerSenderDeleteMatch[1])
+    const tenantId = ctx.url.searchParams.get('tenant_id') ?? ''
+    if (!tenantId) {
+      json(res, { error: 'tenant_id_required', hint: 'pass ?tenant_id=<id>' }, 400); return true
+    }
+    const disabled = disablePartnerSender(sanitizeAgentIdent(senderId), tenantId)
+    if (!disabled) {
+      json(res, { error: 'partner_sender_not_found' }, 404); return true
+    }
+    auditAdmin(ctx, 'admin.partner_sender.disable', `${tenantId}/${sanitizeAgentIdent(senderId)}`,
+      { sender_id: sanitizeAgentIdent(senderId), tenant_id: tenantId })
+    json(res, { ok: true })
     return true
   }
 

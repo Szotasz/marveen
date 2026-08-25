@@ -11,6 +11,9 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- **[API]** `POST /api/admin/partner-senders`, `GET /api/admin/partner-senders`, `DELETE /api/admin/partner-senders/:sender_id` -- DB-backed per-tenant partner sender allowlist CRUD (admin:all required); soft-delete via `disabled_at`; 409 guard blocks fleet agent names as sender ids
+- **[API]** `POST /api/messages` -- partner-scoped tokens (non-default `tenant_id`) validate `from` against the `partner_senders` allowlist; both accepted and rejected sends are written to `agent_audit_log`; fleet-auth path is unchanged for default-tenant tokens
+- migration 0020: `partner_senders` table with composite PK `(sender_id, tenant_id)`, `disabled_at` soft-delete, and indexes on both columns
 - **[API]** `POST /api/messages` accepts opt-in external system sender ids via `SYSTEM_SENDER_IDS` env var (comma-separated); `parseSystemSenderIds()` normalises entries with `sanitizeAgentIdent`; empty by default so fresh installs are unchanged
 - **[API]** `POST /api/messages` `PUT /api/messages/:id` -- closing a message now sends a reverse `[Eredmény]` completion-report notification to the delegating agent via `shouldNotifyDelegator()` (self-messages, non-addressable senders, and completion-report contents are excluded to avoid ping-pong chains)
 - **[API]** `POST/GET /api/v1/admin/tenants`, `PATCH /api/v1/admin/tenants/:id` -- tenant registry CRUD (admin:all required)
