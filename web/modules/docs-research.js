@@ -52,9 +52,9 @@ function renderMarkdown(md) {
       i += 2
       const rows = []
       while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) { rows.push(parseRow(lines[i])); i++ }
-      let tbl = '<table><thead><tr>' + headers.map(c => '<th>' + mdInline(c) + '</th>').join('') + '</tr></thead><tbody>'
+      let tbl = '<div class="table-wrap"><table class="table" data-variant="compact"><thead><tr>' + headers.map(c => '<th>' + mdInline(c) + '</th>').join('') + '</tr></thead><tbody>'
       for (const r of rows) tbl += '<tr>' + r.map(c => '<td>' + mdInline(c) + '</td>').join('') + '</tr>'
-      tbl += '</tbody></table>'
+      tbl += '</tbody></table></div>'
       out.push(tbl)
       continue
     }

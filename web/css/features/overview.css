@@ -474,36 +474,6 @@
 
 
 /* Fleet Blackboard widget */
-.ov-blackboard-table-wrap {
-  overflow-x: auto;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  margin-top: 6px;
-}
-.ov-blackboard-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
-.ov-blackboard-table thead th {
-  background: var(--bg-card);
-  color: var(--text-muted);
-  font-weight: 600;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
-  text-align: left;
-  white-space: nowrap;
-}
-.ov-blackboard-table tbody tr:not(:last-child) td {
-  border-bottom: 1px solid var(--border);
-}
-.ov-blackboard-table td {
-  padding: 6px 10px;
-  vertical-align: middle;
-}
 .bb-agent { font-weight: 600; white-space: nowrap; }
 .bb-summary { color: var(--text); max-width: 360px; }
 .bb-ref { color: var(--text-muted); font-size: 12px; white-space: nowrap; }

@@ -693,12 +693,12 @@ function renderTuDetails(data) {
         style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);width:260px;font-size:13px">
       <span id="tuDetailsCount" style="color:var(--text-secondary);font-size:12px"></span>
     </div>
-    <div style="overflow-x:auto"><table class="mem-table" style="width:100%;min-width:600px">
+    <div class="table-wrap"><table class="table" data-variant="compact">
       <thead><tr>
-        <th style="${thStyle}" data-sort="timestamp">${t('tokenUsage.col.time')}${arrow('timestamp')}</th>
-        <th style="${thStyle}" data-sort="agent">${t('tokenUsage.col.agent')}${arrow('agent')}</th>
-        <th style="${thStyleR}" data-sort="input">Input${arrow('input')}</th>
-        <th style="${thStyleR}" data-sort="output">Output${arrow('output')}</th>
+        <th data-sort="timestamp">${t('tokenUsage.col.time')}${arrow('timestamp')}</th>
+        <th data-sort="agent">${t('tokenUsage.col.agent')}${arrow('agent')}</th>
+        <th style="text-align:right" data-sort="input">Input${arrow('input')}</th>
+        <th style="text-align:right" data-sort="output">Output${arrow('output')}</th>
         <th>${t('tokenUsage.col.content')}</th>
       </tr></thead>
       <tbody id="tuDetailsTbody"></tbody>
@@ -823,12 +823,12 @@ function renderTuModelDist(data) {
     </tr>`
   }).join('')
 
-  tableEl.innerHTML = `<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;min-width:300px">
+  tableEl.innerHTML = `<div class="table-wrap"><table class="table" data-variant="compact">
     <thead><tr>
-      <th style="${thStyle}">Modell</th>
-      <th style="${thStyle.replace('text-align:left','text-align:right')}">${t('tokenUsage.model_dist_calls', { n: '' }).trim()}</th>
-      <th style="${thStyle.replace('text-align:left','text-align:right')}">%</th>
-      <th style="${thStyle.replace('text-align:left','text-align:right')}">Becsült USD</th>
+      <th>Modell</th>
+      <th style="text-align:right">${t('tokenUsage.model_dist_calls', { n: '' }).trim()}</th>
+      <th style="text-align:right">%</th>
+      <th style="text-align:right">Becsült USD</th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table></div>`
@@ -896,13 +896,13 @@ function renderTuToolStats(data) {
 
   const agentHeader = showAgents ? `<th style="${thStyle}">${t('tokenUsage.tool_stats_col_agents')}</th>` : ''
 
-  el.innerHTML = `<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;min-width:400px">
+  el.innerHTML = `<div class="table-wrap"><table class="table" data-variant="compact">
     <thead><tr>
-      <th style="${thStyle}">${t('tokenUsage.tool_stats_col_tool')}</th>
-      <th style="${thStyle.replace('text-align:left','text-align:right')}">${t('tokenUsage.tool_stats_col_calls')}</th>
-      <th style="${thStyle}"></th>
-      <th style="${thStyle}">${t('tokenUsage.tool_stats_col_server')}</th>
-      <th style="${thStyle.replace('text-align:left','text-align:right')}">${t('tokenUsage.tool_stats_col_cost')}</th>
+      <th>${t('tokenUsage.tool_stats_col_tool')}</th>
+      <th style="text-align:right">${t('tokenUsage.tool_stats_col_calls')}</th>
+      <th></th>
+      <th>${t('tokenUsage.tool_stats_col_server')}</th>
+      <th style="text-align:right">${t('tokenUsage.tool_stats_col_cost')}</th>
       ${agentHeader}
     </tr></thead>
     <tbody>${rows}</tbody>
