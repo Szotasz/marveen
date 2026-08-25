@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { chatIdFromAccessConfig, channelDeliveryName } from '../web/schedule-runner.js'
+import { chatIdFromAccessConfig, channelDeliveryName, resolveSchedulerAlertToken } from '../web/schedule-runner.js'
+import { PROJECT_ROOT } from '../config.js'
+import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
 
 // Regression guard for 2026-07-27 (Zara report, Marveen diagnosis): the
 // scheduled-task prompt prefix carried a "chat_id: 0" sentinel from a
@@ -52,6 +54,62 @@ describe('channelDeliveryName (provider -> Hungarian channel noun)', () => {
     expect(channelDeliveryName('discord')).toBe('Discordon')
     expect(channelDeliveryName('googlechat')).toBe('Google Chaten')
     expect(channelDeliveryName('teams')).toBe('Teamsen')
+  })
+})
+
+// Regression guard for the 2026-07-08 fix: the scheduler-alert bot token is
+// looked up in marveen/.env FIRST and the main agent's channel .env SECOND, for
+// every provider that has a bot token. The provider-aware rewrite once dropped
+// the second location for Telegram and every alert went silent on hosts whose
+// token lives in the plugin env. The reader is stubbed so the test pins the
+// lookup ORDER and the empty-value fall-through, not the filesystem.
+describe('resolveSchedulerAlertToken (lookup order via injected reader)', () => {
+  const PROJECT_ENV = join(PROJECT_ROOT, '.env')
+  const channelEnv = (p: ChannelProviderType) => join(channelStateDir(p), '.env')
+
+  /** Reader stub: answers per path, records the calls in order. */
+  function stub(answers: Record<string, string | null>) {
+    const calls: Array<[ChannelProviderType, string]> = []
+    const read = (p: ChannelProviderType, path: string) => {
+      calls.push([p, path])
+      return answers[path] ?? null
+    }
+    return { read, calls }
+  }
+
+  it('telegram: marveen/.env wins and the channel .env is not consulted', () => {
+    const { read, calls } = stub({ [PROJECT_ENV]: '111:project', [channelEnv('telegram')]: '222:plugin' })
+    expect(resolveSchedulerAlertToken('telegram', read)).toBe('111:project')
+    expect(calls).toEqual([['telegram', PROJECT_ENV]])
+  })
+
+  it('telegram: falls back to ~/.claude/channels/telegram/.env (the plugin env)', () => {
+    const { read, calls } = stub({ [PROJECT_ENV]: null, [channelEnv('telegram')]: '222:plugin' })
+    expect(resolveSchedulerAlertToken('telegram', read)).toBe('222:plugin')
+    expect(calls).toEqual([['telegram', PROJECT_ENV], ['telegram', channelEnv('telegram')]])
+  })
+
+  it('an EMPTY value in marveen/.env falls through, like the old `if (token)` did', () => {
+    const { read } = stub({ [PROJECT_ENV]: '', [channelEnv('telegram')]: '222:plugin' })
+    expect(resolveSchedulerAlertToken('telegram', read)).toBe('222:plugin')
+  })
+
+  it('slack: same two locations in the same order, provider passed through to the reader', () => {
+    const { read, calls } = stub({ [PROJECT_ENV]: null, [channelEnv('slack')]: 'xoxb-channel' })
+    expect(resolveSchedulerAlertToken('slack', read)).toBe('xoxb-channel')
+    expect(calls).toEqual([['slack', PROJECT_ENV], ['slack', channelEnv('slack')]])
+  })
+
+  it('no token anywhere -> undefined (callers take the log-only branch)', () => {
+    const { read } = stub({})
+    expect(resolveSchedulerAlertToken('telegram', read)).toBeUndefined()
+  })
+
+  it('creds-based providers never read a token: their reader value is a project/app id, not a bot token', () => {
+    const { read, calls } = stub({ [PROJECT_ENV]: 'project-id-would-be-here' })
+    expect(resolveSchedulerAlertToken('googlechat', read)).toBeUndefined()
+    expect(resolveSchedulerAlertToken('teams', read)).toBeUndefined()
+    expect(calls).toEqual([])
   })
 })
 

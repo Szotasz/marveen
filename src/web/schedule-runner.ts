@@ -1003,23 +1003,27 @@ export async function runScheduledTaskNow(
 // Bot token for the system-level scheduler alerts (pending-retry, task-timeout,
 // catch-up summary). SLACKAWARE: the alerts go over whatever channel the MAIN
 // agent is bound to (CHANNEL_PROVIDER), so the token is resolved for that
-// provider. Telegram keeps its historical dual-location lookup (marveen/.env
-// first, then the plugin env -- 2026-07-08: every scheduler alert was silently
-// suppressed on hosts where the token had moved to the plugin env after the
-// channels migration); other providers read the main agent's channel .env via
-// readChannelToken. A creds-based provider (Google Chat/Teams) has no bot token,
-// so the alert send falls back to the log-only path in each caller.
-function resolveSchedulerAlertToken(): string | undefined {
-  if (CHANNEL_PROVIDER === 'telegram') {
-    const envContent = readFileOr(join(PROJECT_ROOT, '.env'), '')
-    const token = envContent.match(/TELEGRAM_BOT_TOKEN=(.+)/)?.[1]?.trim()
-    if (token) return token
-  } else if (CHANNEL_PROVIDER === 'slack') {
-    const token = readChannelToken(CHANNEL_PROVIDER, join(channelStateDir(CHANNEL_PROVIDER), '.env'))
-    if (token) return token
-  }
-  
-  return undefined
+// provider. Every provider keeps the historical dual-location lookup:
+// marveen/.env first, then the main agent's channel .env (2026-07-08: every
+// scheduler alert was silently suppressed on hosts where the token had moved
+// to the plugin env after the channels migration -- that fallback must hold
+// for Telegram and Slack alike). readChannelToken maps the provider to its
+// env key (TELEGRAM_BOT_TOKEN / SLACK_BOT_TOKEN / ...). A creds-based
+// provider (Google Chat/Teams) has no bot token and no direct send path, so
+// the alert falls back to the log-only path in each caller.
+// `provider` and `readToken` are injectable for the unit test only (lookup
+// order + empty-value fall-through); production callers use the defaults.
+export function resolveSchedulerAlertToken(
+  provider: ChannelProviderType = CHANNEL_PROVIDER,
+  readToken: (provider: ChannelProviderType, envFilePath: string) => string | null = readChannelToken,
+): string | undefined {
+  if (provider === "googlechat" || provider === "teams") return undefined;
+
+  return (
+    readToken(provider, join(PROJECT_ROOT, ".env")) ||
+    readToken(provider, join(channelStateDir(provider), ".env")) ||
+    undefined
+  );
 }
 
 // Resolve the owner chat for the MAIN agent's bound provider. The default
