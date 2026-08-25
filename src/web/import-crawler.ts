@@ -233,14 +233,58 @@ function writeAuditLog(
 }
 
 // ── Local FS connector ────────────────────────────────────────────────────────
-function collectLocalFiles(dirPath: string, results: string[], depth = 0): void {
-  if (depth > 20) return // guard against symlink cycles
+
+// Directories that cloud/OS providers create internally and that are never
+// user content. OneDrive File Provider's .Trash throws EUNKNOWN (-11) on
+// readdirSync; Dropbox's .dropbox.cache and similar are noise at best.
+// Hidden dot-dirs are skipped as a catch-all: user content lives in named
+// folders, not in hidden FS internals. This list is checked against the
+// BASENAME of each directory entry, not the full path.
+const SYSTEM_DIR_SKIP_BASENAMES = new Set([
+  '.Trash', '.Trash-1000', '.Trash-0',
+  '.dropbox', '.dropbox.cache',
+  '.CloudStorage', '.fseventsd',
+  '.Spotlight-V100', '.TemporaryItems',
+  '.DocumentRevisions-V100', '.MobileBackups',
+])
+
+function isSkippedSystemDir(name: string): boolean {
+  if (SYSTEM_DIR_SKIP_BASENAMES.has(name)) return true
+  // Skip all hidden dot-dirs (start with '.'): these are OS/cloud internals,
+  // not user content. Plain dot-files (non-dirs) are handled by isAllowedFile.
+  if (name.startsWith('.')) return true
+  return false
+}
+
+// shared ref so depth-recursive calls accumulate into one counter without
+// threading a return value through every level of recursion.
+export type CollectOpts = { depth: number; dirsSkipped: { count: number } }
+
+export function collectLocalFiles(dirPath: string, results: string[], opts: CollectOpts): void {
+  if (opts.depth > 20) return // guard against symlink cycles
   if (!existsSync(dirPath)) return
-  const entries = readdirSync(dirPath, { withFileTypes: true })
+  let entries
+  try {
+    entries = readdirSync(dirPath, { withFileTypes: true })
+  } catch (err) {
+    logger.warn({ dirPath, err: err instanceof Error ? err.message : String(err) }, 'import-crawler: skipping unreadable directory')
+    opts.dirsSkipped.count++
+    return
+  }
   for (const entry of entries) {
     const full = join(dirPath, entry.name)
     if (entry.isDirectory()) {
-      collectLocalFiles(full, results, depth + 1)
+      if (isSkippedSystemDir(entry.name)) {
+        logger.warn({ dir: full }, 'import-crawler: skipping system/cloud internal directory')
+        opts.dirsSkipped.count++
+        continue
+      }
+      try {
+        collectLocalFiles(full, results, { ...opts, depth: opts.depth + 1 })
+      } catch (err) {
+        logger.warn({ dir: full, err: err instanceof Error ? err.message : String(err) }, 'import-crawler: skipping directory after recursive error')
+        opts.dirsSkipped.count++
+      }
     } else if (entry.isFile()) {
       results.push(full)
     }
@@ -250,13 +294,15 @@ function collectLocalFiles(dirPath: string, results: string[], depth = 0): void 
 async function crawlLocalSource(
   source: ImportSource,
   totalSizeBefore: number,
-): Promise<{ added: number; updated: number; skippedHash: number; skippedSecret: number; skippedSize: number; skippedType: number; scanned: number }> {
-  const counts = { added: 0, updated: 0, skippedHash: 0, skippedSecret: 0, skippedSize: 0, skippedType: 0, scanned: 0 }
+): Promise<{ added: number; updated: number; skippedHash: number; skippedSecret: number; skippedSize: number; skippedType: number; scanned: number; dirsSkippedError: number }> {
+  const counts = { added: 0, updated: 0, skippedHash: 0, skippedSecret: 0, skippedSize: 0, skippedType: 0, scanned: 0, dirsSkippedError: 0 }
   const now = Math.floor(Date.now() / 1000)
   let totalSize = totalSizeBefore
 
   const allFiles: string[] = []
-  collectLocalFiles(source.path, allFiles)
+  const dirsSkipped = { count: 0 }
+  collectLocalFiles(source.path, allFiles, { depth: 0, dirsSkipped })
+  counts.dirsSkippedError = dirsSkipped.count
 
   const files = allFiles.slice(0, MAX_FILES_PER_RUN)
 
@@ -310,8 +356,8 @@ async function crawlLocalSource(
 async function crawlGdriveSource(
   source: ImportSource,
   totalSizeBefore: number,
-): Promise<{ added: number; updated: number; skippedHash: number; skippedSecret: number; skippedSize: number; skippedType: number; scanned: number }> {
-  const counts = { added: 0, updated: 0, skippedHash: 0, skippedSecret: 0, skippedSize: 0, skippedType: 0, scanned: 0 }
+): Promise<{ added: number; updated: number; skippedHash: number; skippedSecret: number; skippedSize: number; skippedType: number; scanned: number; dirsSkippedError: number }> {
+  const counts = { added: 0, updated: 0, skippedHash: 0, skippedSecret: 0, skippedSize: 0, skippedType: 0, scanned: 0, dirsSkippedError: 0 }
   const now = Math.floor(Date.now() / 1000)
   let totalSize = totalSizeBefore
 
@@ -340,8 +386,8 @@ async function crawlGdriveSource(
 async function crawlSharePointSource(
   source: ImportSource,
   _totalSizeBefore: number,
-): Promise<{ added: number; updated: number; skippedHash: number; skippedSecret: number; skippedSize: number; skippedType: number; scanned: number }> {
-  const counts = { added: 0, updated: 0, skippedHash: 0, skippedSecret: 0, skippedSize: 0, skippedType: 0, scanned: 0 }
+): Promise<{ added: number; updated: number; skippedHash: number; skippedSecret: number; skippedSize: number; skippedType: number; scanned: number; dirsSkippedError: number }> {
+  const counts = { added: 0, updated: 0, skippedHash: 0, skippedSecret: 0, skippedSize: 0, skippedType: 0, scanned: 0, dirsSkippedError: 0 }
   // TODO: wire to the Microsoft Graph MCP when available.
   logger.warn({ sourceId: source.id }, 'SharePoint MCP connector: not yet wired to live session; skipping')
   return counts
@@ -391,6 +437,7 @@ export async function crawlSource(sourceId: string): Promise<void> {
       added: counts.added, updated: counts.updated,
       skippedHash: counts.skippedHash, skippedSecret: counts.skippedSecret,
       skippedSize: counts.skippedSize, skippedType: counts.skippedType,
+      dirsSkippedError: counts.dirsSkippedError,
     }, 'Import scan complete')
 
     // Newly added/updated shadow memories carry no embedding yet, and the memory
