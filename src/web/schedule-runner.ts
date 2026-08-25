@@ -11,7 +11,7 @@ import {
   APP_TZ_INVALID,
   CHANNEL_PROVIDER,
 } from '../config.js'
-import { resolveOwnerChatId } from '../owner-chat.js'
+import { resolveOwnerChatId, configuredOwnerChatFor } from '../owner-chat.js'
 import {
   appendTaskRun,
   listPendingTaskRetries,
@@ -1027,13 +1027,15 @@ export function resolveSchedulerAlertToken(
 }
 
 // Resolve the owner chat for the MAIN agent's bound provider. The default
-// resolveOwnerChatId() reads telegram/access.json; the scheduler alerts must
-// follow CHANNEL_PROVIDER so a Slack-bound main agent resolves its owner from
-// slack/access.json (the live CHANNEL_PROVIDER=slack install has no telegram
-// access.json at all, so the default path returned null and every scheduler
-// alert was suppressed).
+// resolveOwnerChatId() reads ALLOWED_CHAT_ID + telegram/access.json; the
+// scheduler alerts must follow CHANNEL_PROVIDER on BOTH halves: the configured
+// id comes from the provider's own .env key (SLACK_CHANNEL_ID etc. via
+// configuredOwnerChatFor -- a stale Telegram ALLOWED_CHAT_ID must not win on a
+// Slack install) and the paired fallback from slack/access.json (the live
+// CHANNEL_PROVIDER=slack install has no telegram access.json at all, so the
+// default path returned null and every scheduler alert was suppressed).
 function resolveSchedulerOwnerChat(): string | null {
-  return resolveOwnerChatId(undefined, undefined, CHANNEL_PROVIDER)
+  return resolveOwnerChatId(undefined, configuredOwnerChatFor(CHANNEL_PROVIDER), CHANNEL_PROVIDER)
 }
 
 // Send a system-level scheduler alert over the MAIN agent's bound channel. The

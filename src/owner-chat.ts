@@ -29,8 +29,23 @@
 //    migration, and must never ship in the same release as this.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { ALLOWED_CHAT_ID, MAIN_AGENT_ID } from './config.js'
+import { ALLOWED_CHAT_ID, CHANNEL_CHAT_ID, MAIN_AGENT_ID } from './config.js'
 import { channelStateDir, type ChannelProviderType } from './channel-provider.js'
+
+/**
+ * The .env value that names the owner chat for a given provider. ALLOWED_CHAT_ID
+ * is the Telegram key; every other provider has its own (SLACK_CHANNEL_ID,
+ * DISCORD_CHANNEL_ID, ... -- getChannelChatId), surfaced as CHANNEL_CHAT_ID.
+ * A Slack-bound install routinely keeps a stale numeric Telegram id in
+ * ALLOWED_CHAT_ID; feeding that to chat.postMessage earns a permanent
+ * `channel_not_found`, so the provider's own key must win there.
+ */
+export function configuredOwnerChatFor(
+  provider: ChannelProviderType,
+  env: { allowedChatId: string; channelChatId: string } = { allowedChatId: ALLOWED_CHAT_ID, channelChatId: CHANNEL_CHAT_ID },
+): string {
+  return provider === 'telegram' ? env.allowedChatId : env.channelChatId
+}
 
 /**
  * Normalise a configured chat id to "set" or "not set".
