@@ -3984,3 +3984,48 @@ export function countActiveAdmins(): number {
 // Used by shouldNotifyDelegator to avoid ping-pong chains.
 export const COMPLETION_REPORT_PREFIX = '[Eredmény]'
 
+// ── Partner Senders ───────────────────────────────────────────────────────────
+
+export interface PartnerSender {
+  sender_id: string
+  tenant_id: string
+  display_name: string
+  created_by: string
+  created_at: number
+  disabled_at: number | null
+}
+
+export function isAuthorizedPartnerSender(senderId: string, tenantId: string): boolean {
+  const row = db.prepare(
+    'SELECT 1 FROM partner_senders WHERE sender_id = ? AND tenant_id = ? AND disabled_at IS NULL'
+  ).get(senderId, tenantId)
+  return row != null
+}
+
+export function listPartnerSenders(tenantId?: string): PartnerSender[] {
+  if (tenantId != null) {
+    return db.prepare(
+      'SELECT sender_id, tenant_id, display_name, created_by, created_at, disabled_at FROM partner_senders WHERE tenant_id = ? ORDER BY created_at ASC'
+    ).all(tenantId) as PartnerSender[]
+  }
+  return db.prepare(
+    'SELECT sender_id, tenant_id, display_name, created_by, created_at, disabled_at FROM partner_senders ORDER BY tenant_id, created_at ASC'
+  ).all() as PartnerSender[]
+}
+
+export function createPartnerSender(senderId: string, tenantId: string, displayName: string, createdBy: string): PartnerSender {
+  db.prepare(
+    'INSERT INTO partner_senders (sender_id, tenant_id, display_name, created_by) VALUES (?, ?, ?, ?)'
+  ).run(senderId, tenantId, displayName, createdBy)
+  return db.prepare(
+    'SELECT sender_id, tenant_id, display_name, created_by, created_at, disabled_at FROM partner_senders WHERE sender_id = ? AND tenant_id = ?'
+  ).get(senderId, tenantId) as PartnerSender
+}
+
+export function disablePartnerSender(senderId: string, tenantId: string): boolean {
+  const result = db.prepare(
+    'UPDATE partner_senders SET disabled_at = unixepoch() WHERE sender_id = ? AND tenant_id = ? AND disabled_at IS NULL'
+  ).run(senderId, tenantId)
+  return result.changes > 0
+}
+

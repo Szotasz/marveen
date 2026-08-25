@@ -6,6 +6,8 @@ import {
   closeOtelSpan,
   getPendingBacklogByAgent,
   COMPLETION_REPORT_PREFIX,
+  isAuthorizedPartnerSender,
+  writeAgentAuditLog,
   type AgentMessage,
 } from '../../db.js'
 import { logger } from '../../logger.js'
@@ -116,12 +118,29 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // channel the moment this guard ships -- observed here: an external case
     // manager pushed 4182 messages, then every call 403'd for nine days while
     // its fail-soft caller logged nothing.
-    const isOwnerSender = sanitizeAgentIdent(from) === sanitizeAgentIdent(OWNER_NAME)
-    const isSystemSender = SYSTEM_SENDERS.has(sanitizeAgentIdent(from))
-    if (!isOwnerSender && !isSystemSender && !isKnownAgent(sanitizeAgentIdent(from))) {
-      logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST from unregistered agent')
-      json(res, { error: `unknown agent '${from.trim()}' -- from must be a registered fleet agent id` }, 403)
-      return true
+    // Partner-tenant path: a scoped (non-default, non-null) tenant token must
+    // have its `from` registered in partner_senders for that tenant. Fleet
+    // agents and the owner do not reach this branch -- they always use the
+    // default/admin path below. Audit both accept and reject for partner sends.
+    const isPartnerTenant = ctx.tenantId != null && ctx.tenantId !== 'default'
+    if (isPartnerTenant) {
+      const cleanFrom = sanitizeAgentIdent(from)
+      const allowed = isAuthorizedPartnerSender(cleanFrom, ctx.tenantId!)
+      if (!allowed) {
+        writeAgentAuditLog({ agent_id: cleanFrom, entity: 'message', action: 'create',
+          detail: { from: from.trim(), to: to.trim(), tenant_id: ctx.tenantId, reason: 'sender_not_in_allowlist' } })
+        logger.warn({ from: from.trim(), to: to.trim(), tenant_id: ctx.tenantId }, 'Rejected partner /api/messages POST: sender not in allowlist')
+        json(res, { error: `sender '${from.trim()}' not in allowlist for tenant '${ctx.tenantId}'` }, 403)
+        return true
+      }
+    } else {
+      const isOwnerSender = sanitizeAgentIdent(from) === sanitizeAgentIdent(OWNER_NAME)
+      const isSystemSender = SYSTEM_SENDERS.has(sanitizeAgentIdent(from))
+      if (!isOwnerSender && !isSystemSender && !isKnownAgent(sanitizeAgentIdent(from))) {
+        logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST from unregistered agent')
+        json(res, { error: `unknown agent '${from.trim()}' -- from must be a registered fleet agent id` }, 403)
+        return true
+      }
     }
     // Qualified to ("peer/agent"): validate at creation time so the sender
     // gets an actionable error NOW instead of a silent 1h abandon. Local
@@ -174,6 +193,10 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
     const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote, null, effectiveTenantId)
+    if (isPartnerTenant) {
+      writeAgentAuditLog({ agent_id: sanitizeAgentIdent(from), entity: 'message', action: 'create', entity_id: msg.id,
+        detail: { from: from.trim(), to: storedTo, tenant_id: ctx.tenantId, authorized_by: 'partner_sender_allowlist' } })
+    }
     logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note }, 'Agent message created')
     json(res, msg)
     return true

@@ -24,6 +24,17 @@ vi.mock('../db.js', () => ({
   listDashboardUsersFiltered: vi.fn(),
   adminPatchDashboardUser: vi.fn(),
   countActiveAdmins: vi.fn(),
+  listPartnerSenders: vi.fn(),
+  createPartnerSender: vi.fn(),
+  disablePartnerSender: vi.fn(),
+}))
+
+vi.mock('../prompt-safety.js', () => ({
+  sanitizeAgentIdent: vi.fn().mockImplementation((s: string) => s.replace(/[^a-zA-Z0-9_-]/g, '')),
+}))
+
+vi.mock('../web/agent-config.js', () => ({
+  isKnownAgent: vi.fn().mockReturnValue(false),
 }))
 
 vi.mock('../logger.js', () => ({
