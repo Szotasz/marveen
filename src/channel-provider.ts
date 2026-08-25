@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { logger } from './logger.js'
 import { formatForTelegram, splitMessage } from './format.js'
 import { markIfTestRun } from './test-run-marker.js'
+import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 
 export type ChannelProviderType = 'telegram' | 'slack' | 'discord' | 'googlechat' | 'teams'
 
@@ -24,6 +25,11 @@ export interface ChannelProvider {
 
 // -- Telegram implementation --
 
+// Every sendMessage below carries a deadline. The scheduler's pending-retry
+// alert stamps `alert_sent_at` BEFORE the send and clears it only on a thrown
+// error, so a socket that never answers would pin the stamp forever and
+// silence that alert for good. A timeout turns the hang into an error the
+// callers already classify as transient (no HTTP status) and retry next tick.
 function telegramHttpPost(token: string, method: string, body: string, contentType: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const req = https.request(
@@ -34,6 +40,7 @@ function telegramHttpPost(token: string, method: string, body: string, contentTy
           'Content-Type': contentType,
           'Content-Length': Buffer.byteLength(body),
         },
+        timeout: TOOL_TIMEOUTS['telegram'],
       },
       (res) => {
         res.resume()
@@ -45,6 +52,8 @@ function telegramHttpPost(token: string, method: string, body: string, contentTy
       }
     )
     req.on('error', reject)
+    // The `timeout` option only emits the event; the request must be destroyed by hand, which surfaces through the 'error' handler above.
+    req.on('timeout', () => req.destroy(new Error(`Telegram ${method} timed out after ${TOOL_TIMEOUTS['telegram']}ms`)))
     req.write(body)
     req.end()
   })
@@ -196,6 +205,7 @@ const slackProvider: ChannelProvider = {
         unfurl_links: false,
         unfurl_media: false,
       }),
+      signal: AbortSignal.timeout(TOOL_TIMEOUTS['slack']),
     })
     if (!resp.ok) {
       throw new Error(`Slack API HTTP ${resp.status}`)
@@ -300,6 +310,7 @@ const discordProvider: ChannelProvider = {
         'Authorization': `Bot ${token}`,
       },
       body: JSON.stringify({ content: text }),
+      signal: AbortSignal.timeout(TOOL_TIMEOUTS['discord']),
     })
     if (!resp.ok) {
       const body = await resp.text().catch(() => '')
