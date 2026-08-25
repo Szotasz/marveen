@@ -102,8 +102,15 @@ export function resolveOwnerChatId(
         if (id) return id
       }
     }
-    if (raw.groups && typeof raw.groups === 'object') {
-      for (const key of Object.keys(raw.groups as Record<string, unknown>)) {
+    // Telegram/Discord keep allowed groups under `groups`, Slack under
+    // `channels` -- the same allowFrom -> groups -> channels heuristic as
+    // schedule-runner's chatIdFromAccessConfig, so a Slack main agent bound
+    // only to a channel (empty DM allowlist) resolves an owner here too, not
+    // just in the task-prompt path.
+    for (const mapKey of ['groups', 'channels'] as const) {
+      const map = raw[mapKey]
+      if (!map || typeof map !== 'object') continue
+      for (const key of Object.keys(map as Record<string, unknown>)) {
         const id = normalizeChatId(key)
         if (id) return id
       }

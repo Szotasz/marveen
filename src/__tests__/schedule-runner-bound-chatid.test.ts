@@ -31,11 +31,11 @@ describe('chatIdFromAccessConfig (pure core)', () => {
     // Slack access.json uses `channels`, not `groups` -- the same helper must
     // cover it so a Slack-bound agent with only a channel (no DM allowlist)
     // still resolves a deliverable id.
-    expect(chatIdFromAccessConfig({ allowFrom: [], channels: { C0123ABCDE: {} } })).toBe('C0123ABCDE')
+    expect(chatIdFromAccessConfig({ allowFrom: [], channels: { C0000000001: {} } })).toBe('C0000000001')
   })
 
   it('prefers the DM allowlist entry over a group/channel fallback', () => {
-    expect(chatIdFromAccessConfig({ allowFrom: ['U0BKECRGKCY'], channels: { C0123: {} } })).toBe('U0BKECRGKCY')
+    expect(chatIdFromAccessConfig({ allowFrom: ['U0000000001'], channels: { C0123: {} } })).toBe('U0000000001')
   })
 
   it('returns null for missing/empty/corrupt bindings (config gap, not a default)', () => {

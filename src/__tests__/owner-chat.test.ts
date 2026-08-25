@@ -70,6 +70,18 @@ describe('resolveOwnerChatId', () => {
     expect(resolveOwnerChatId(reader({ allowFrom: [], groups: { '-100999': {} } }), '0')).toBe('-100999')
   })
 
+  it('falls back to a Slack channel binding (`channels` map) when there is no DM entry', () => {
+    // Slack access.json keeps channel bindings under `channels`, not `groups`
+    // (routes/agents.ts channel-request approval writes access.channels[id]).
+    // A main agent bound only to a channel must still have an owner chat for
+    // the scheduler alerts, the same way chatIdFromAccessConfig resolves the
+    // task-prompt delivery.
+    expect(resolveOwnerChatId(reader({ allowFrom: [], channels: { C0000000001: {} } }), '', 'slack')).toBe('C0000000001')
+    // The DM allowlist still wins over any channel, and groups over channels.
+    expect(resolveOwnerChatId(reader({ allowFrom: ['U0000000001'], channels: { C0000000001: {} } }), '', 'slack')).toBe('U0000000001')
+    expect(resolveOwnerChatId(reader({ allowFrom: [], groups: { '-100999': {} }, channels: { C0000000001: {} } }), '')).toBe('-100999')
+  })
+
   it('returns null when this install genuinely has no owner chat', () => {
     // Null is a real answer, not a failure: callers must SKIP the send. The
     // alternative -- passing "0" on -- is what produced silent 400s.
