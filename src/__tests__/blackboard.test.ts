@@ -182,6 +182,46 @@ describe('POST /api/blackboard', () => {
       expect(out.status).toBe(200)
     }
   })
+
+  it('does not record history on no-op upsert (identical data)', async () => {
+    // existing row has the same status, summary, and task_ref as the incoming POST
+    const stmtCheck = makeStmt({ ...ROW_A })
+    const stmtInsert = makeStmt(undefined)
+    const stmtGet = makeStmt({ ...ROW_A })
+    mockPrepare
+      .mockReturnValueOnce(stmtCheck)
+      .mockReturnValueOnce(stmtInsert)
+      .mockReturnValueOnce(stmtGet)
+    const { ctx, out } = makeCtx('POST', '/api/blackboard', {
+      agent_id: 'agent-a',
+      summary: ROW_A.summary,
+      task_ref: ROW_A.task_ref,
+      status: ROW_A.status,
+    })
+    await tryHandleBlackboard(ctx)
+    expect(out.status).toBe(200)
+    expect(mockInsertBlackboardHistory).not.toHaveBeenCalled()
+  })
+
+  it('records history when status changes on upsert', async () => {
+    const stmtCheck = makeStmt({ ...ROW_A })           // existing: active
+    const stmtInsert = makeStmt(undefined)
+    const stmtGet = makeStmt({ ...ROW_A, status: 'done' }) // new: done
+    mockPrepare
+      .mockReturnValueOnce(stmtCheck)
+      .mockReturnValueOnce(stmtInsert)
+      .mockReturnValueOnce(stmtGet)
+    const { ctx } = makeCtx('POST', '/api/blackboard', {
+      agent_id: 'agent-a',
+      summary: ROW_A.summary,
+      status: 'done',
+    })
+    await tryHandleBlackboard(ctx)
+    expect(mockInsertBlackboardHistory).toHaveBeenCalledOnce()
+    expect(mockInsertBlackboardHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'done' })
+    )
+  })
 })
 
 describe('PATCH /api/blackboard/:id', () => {
@@ -232,6 +272,25 @@ describe('PATCH /api/blackboard/:id', () => {
     const { ctx } = makeCtx('PATCH', '/api/other/bb000001')
     const handled = await tryHandleBlackboard(ctx)
     expect(handled).toBe(false)
+  })
+
+  it('does not record history on no-op PATCH (identical data)', async () => {
+    // PATCH body matches existing row exactly -- nothing changes
+    const stmtGet1 = makeStmt({ ...ROW_A })
+    const stmtUpdate = makeStmt(undefined)
+    const stmtGet2 = makeStmt({ ...ROW_A })
+    mockPrepare
+      .mockReturnValueOnce(stmtGet1)
+      .mockReturnValueOnce(stmtUpdate)
+      .mockReturnValueOnce(stmtGet2)
+    const { ctx, out } = makeCtx('PATCH', '/api/blackboard/bb000001', {
+      status: ROW_A.status,
+      summary: ROW_A.summary,
+      task_ref: ROW_A.task_ref,
+    })
+    await tryHandleBlackboard(ctx)
+    expect(out.status).toBe(200)
+    expect(mockInsertBlackboardHistory).not.toHaveBeenCalled()
   })
 })
 
@@ -286,6 +345,15 @@ describe('GET /api/blackboard/history', () => {
     const { ctx, out } = makeCtx('GET', '/api/blackboard/history')
     await tryHandleBlackboard(ctx)
     expect(out.body).toEqual([])
+  })
+
+  it('returns 400 when since is not an integer', async () => {
+    const { ctx, out } = makeCtx('GET', '/api/blackboard/history?since=abc')
+    const handled = await tryHandleBlackboard(ctx)
+    expect(handled).toBe(true)
+    expect(out.status).toBe(400)
+    expect((out.body as { error: string }).error).toMatch(/since/)
+    expect(mockListBlackboardHistory).not.toHaveBeenCalled()
   })
 
   it('does NOT interfere with the existing /api/blackboard GET', async () => {

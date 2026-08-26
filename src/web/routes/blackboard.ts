@@ -21,7 +21,7 @@ function listBlackboard(limit = 10): BlackboardRow[] {
 
 function upsertBlackboard(agent_id: string, data: { task_ref?: string | null; status?: string; summary: string }): BlackboardRow {
   const db = getDb()
-  const existing = db.prepare('SELECT id FROM fleet_blackboard WHERE agent_id = ?').get(agent_id) as { id: string } | undefined
+  const existing = db.prepare('SELECT * FROM fleet_blackboard WHERE agent_id = ?').get(agent_id) as BlackboardRow | undefined
   const id = existing?.id ?? randomUUID().replace(/-/g, '').slice(0, 8)
   db.prepare(`
     INSERT INTO fleet_blackboard (id, agent_id, task_ref, status, summary, updated_at)
@@ -33,7 +33,14 @@ function upsertBlackboard(agent_id: string, data: { task_ref?: string | null; st
       updated_at = unixepoch()
   `).run(id, agent_id, data.task_ref ?? null, data.status ?? 'active', data.summary)
   const row = db.prepare('SELECT * FROM fleet_blackboard WHERE id = ?').get(id) as BlackboardRow
-  insertBlackboardHistory({ agent_id: row.agent_id, task_ref: row.task_ref, status: row.status, summary: row.summary })
+  // Only record history when something actually changed (no-op upserts are silent).
+  const changed = !existing ||
+    existing.status !== row.status ||
+    existing.summary !== row.summary ||
+    (existing.task_ref ?? null) !== (row.task_ref ?? null)
+  if (changed) {
+    insertBlackboardHistory({ agent_id: row.agent_id, task_ref: row.task_ref, status: row.status, summary: row.summary })
+  }
   return row
 }
 
@@ -48,7 +55,14 @@ function patchBlackboard(id: string, data: { status?: string; summary?: string; 
     UPDATE fleet_blackboard SET status = ?, summary = ?, task_ref = ?, updated_at = unixepoch() WHERE id = ?
   `).run(status, summary, task_ref, id)
   const updated = db.prepare('SELECT * FROM fleet_blackboard WHERE id = ?').get(id) as BlackboardRow
-  insertBlackboardHistory({ agent_id: updated.agent_id, task_ref: updated.task_ref, status: updated.status, summary: updated.summary })
+  // Only record history when the patch actually changed something.
+  const changed =
+    updated.status !== row.status ||
+    updated.summary !== row.summary ||
+    (updated.task_ref ?? null) !== (row.task_ref ?? null)
+  if (changed) {
+    insertBlackboardHistory({ agent_id: updated.agent_id, task_ref: updated.task_ref, status: updated.status, summary: updated.summary })
+  }
   return updated
 }
 
@@ -62,7 +76,12 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
     const { url } = ctx
     const agent_id = url.searchParams.get('agent_id') ?? undefined
     const sinceRaw = url.searchParams.get('since')
-    const since = sinceRaw !== null ? parseInt(sinceRaw, 10) : undefined
+    let since: number | undefined
+    if (sinceRaw !== null) {
+      const sinceVal = parseInt(sinceRaw, 10)
+      if (isNaN(sinceVal)) { json(res, { error: 'since must be an integer' }, 400); return true }
+      since = sinceVal
+    }
     const limitRaw = url.searchParams.get('limit')
     const limit = limitRaw !== null ? Math.min(Math.max(1, parseInt(limitRaw, 10) || 50), 200) : undefined
     json(res, listBlackboardHistory({ agent_id, since, limit }))

@@ -177,4 +177,24 @@ describe('API-level double-write via upsert simulation', () => {
     const rows = db.prepare('SELECT * FROM fleet_blackboard_history').all()
     expect(rows).toHaveLength(0)
   })
+
+  it('no-op upsert (same status/summary/task_ref) does not add a history row', () => {
+    const noop_agent = 'agent-noop'
+    // First write: real insert, history is recorded
+    db.prepare('INSERT INTO fleet_blackboard (id, agent_id, task_ref, status, summary) VALUES (?, ?, NULL, ?, ?)')
+      .run('bb-noop-01', noop_agent, 'active', 'Same summary')
+    db.prepare('INSERT INTO fleet_blackboard_history (agent_id, task_ref, status, summary) VALUES (?, NULL, ?, ?)')
+      .run(noop_agent, 'active', 'Same summary')
+
+    // Simulate change-detection: existing matches incoming, so no history insert
+    const existing = db.prepare('SELECT * FROM fleet_blackboard WHERE id = ?').get('bb-noop-01') as { status: string; summary: string; task_ref: string | null }
+    const changed = existing.status !== 'active' || existing.summary !== 'Same summary' || (existing.task_ref ?? null) !== null
+    if (changed) {
+      db.prepare('INSERT INTO fleet_blackboard_history (agent_id, task_ref, status, summary) VALUES (?, NULL, ?, ?)')
+        .run(noop_agent, 'active', 'Same summary')
+    }
+
+    const history = db.prepare('SELECT * FROM fleet_blackboard_history WHERE agent_id = ?').all(noop_agent)
+    expect(history).toHaveLength(1) // only the first real insert
+  })
 })
