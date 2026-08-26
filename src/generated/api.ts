@@ -151,6 +151,29 @@ export interface DailyLog {
   }[];
 }
 
+export interface Tenant {
+  /** Tenant identifier — 3-63 chars, `^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$` */
+  id: string;
+  display_name: string;
+  /** Unix timestamp (seconds) */
+  created_at: number;
+  /** Unix timestamp when disabled; null when active */
+  disabled_at: number;
+}
+
+export interface PartnerSender {
+  /** Sanitized sender identifier — `[a-zA-Z0-9_-]`, 1-63 chars */
+  sender_id: string;
+  tenant_id: string;
+  display_name: string;
+  /** Username of the admin who created this record */
+  created_by: string;
+  /** Unix timestamp (seconds) */
+  created_at: number;
+  /** Unix timestamp when soft-deleted; null when active */
+  disabled_at: number;
+}
+
 // -------------------------------------------------------------------------
 // Utility types
 // -------------------------------------------------------------------------
@@ -327,6 +350,14 @@ export type ListGithubReposResponse = Record<string, unknown>[]
 export type ListRecallDatesResponse = string[]
 
 export type UpdateAutonomyLevelResponse = OkResponse
+
+export type CreateTenantResponse = Tenant
+
+export type UpdateTenantResponse = Tenant
+
+export type CreatePartnerSenderResponse = PartnerSender
+
+export type DisablePartnerSenderResponse = OkResponse
 
 export type ListBackgroundTasksResponse = Record<string, unknown>[]
 
