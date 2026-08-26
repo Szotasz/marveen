@@ -17,7 +17,8 @@ import {
   getDbFileSizeMb,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
-import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
+import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS, TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID } from '../../config.js'
+import { sendTelegramMessage } from '../telegram.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { resolveKanbanDispatchTarget } from '../../kanban-dispatch.js'
@@ -402,7 +403,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // to a real card into the human-facing `#<seq>` form before persistence
     // (#75 Cuzcoo dispatch). Random hex / non-matching tokens pass through.
     const normalizedContent = normalizeKanbanRefs(content, getKanbanSeqByIdPrefix)
-    json(res, addKanbanComment(cardId, author, normalizedContent))
+    const comment = addKanbanComment(cardId, author, normalizedContent)
+    const card = getKanbanCard(cardId)
+    if (card) notifyOwnerOfAgentComment(card, author, normalizedContent)
+    json(res, comment)
     return true
   }
 
@@ -474,4 +478,51 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   }
 
   return false
+}
+
+/**
+ * Tell the owner when an agent comments on one of their cards.
+ *
+ * A card assigned to the owner is one THEY are expected to act on. An agent
+ * answering there is usually a question or a handback, and until now it landed
+ * silently: the comment appeared on a board nobody was looking at, and the
+ * thread stalled waiting for a reply the owner never knew was expected.
+ *
+ * The owner is identified from OWNER_NAME rather than a literal name, so this
+ * stays correct in an install configured for someone else.
+ *
+ * Best-effort and fire-and-forget: adding a comment must not fail because a
+ * notification could not go out, and the caller is an API request.
+ */
+export function notifyOwnerOfAgentComment(
+  card: { id: string; title: string; assignee: string | null },
+  author: string,
+  content: string,
+  send?: (text: string) => Promise<void>,
+): boolean {
+  const owner = OWNER_NAME.trim().toLowerCase()
+  const assignee = (card.assignee ?? '').trim().toLowerCase()
+  // Only cards the owner is holding, and only when someone else wrote.
+  if (!owner || assignee !== owner) return false
+  if (author.trim().toLowerCase() === owner) return false
+
+  // The channel check gates the DEFAULT sender only. An injected sender is the
+  // caller's own transport, and refusing it because the global Telegram config
+  // happens to be empty would make the function untestable and would silently
+  // disable a perfectly working alternative delivery path.
+  let deliver = send
+  if (!deliver) {
+    if (!TELEGRAM_BOT_TOKEN.trim() || !ALLOWED_CHAT_ID.trim()) return false
+    deliver = (text: string) => sendTelegramMessage(TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID, text)
+  }
+
+  const excerpt = content.replace(/\s+/g, ' ').trim().slice(0, 180)
+  const text = `[kanban] ${author} kommentelt a kartyadon: "${card.title}"\n${excerpt}${content.length > 180 ? '...' : ''}`
+  void deliver(text).catch((err: unknown) => {
+    logger.warn(
+      { context: { action: 'owner_comment_nudge_failed', card: card.id }, err: err instanceof Error ? err.message : 'unknown' },
+      'Owner comment nudge could not be delivered',
+    )
+  })
+  return true
 }
