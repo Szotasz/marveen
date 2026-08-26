@@ -469,10 +469,15 @@ SEED_REFRESH_KEPT=0
 # Render a template stream the same way the seeder does. Keep in sync with the
 # sed blocks in the seeding loops below and in install-linux.sh.
 render_seed_template() {
+  # {{PROJECT_ROOT}} is the node seeder's alias for {{INSTALL_DIR}}
+  # (substituteTemplatePlaceholders) -- without it here, any shipped task using
+  # that form (ledger-live-drain does) hash-mismatches every rendered historical
+  # version and is permanently classified "touched", so it never refreshes.
   sed -e "s/{{MAIN_AGENT_ID}}/${MAIN_AGENT_ID:-}/g" \
       -e "s/{{BOT_NAME}}/${BOT_NAME:-}/g" \
       -e "s/{{OWNER_NAME}}/${OWNER_NAME:-}/g" \
       -e "s|{{INSTALL_DIR}}|${INSTALL_DIR}|g" \
+      -e "s|{{PROJECT_ROOT}}|${INSTALL_DIR}|g" \
       -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g"
 }
 
@@ -555,6 +560,12 @@ run_seed_refresh() {
   refresh_untouched_seeds "seed-skills" "$HOME/.claude/skills" "verbatim"
   if [ -n "${MAIN_AGENT_ID:-}" ]; then
     refresh_untouched_seeds "seed-scheduled-tasks" "$HOME/.claude/scheduled-tasks" "template"
+    # SEEDREFRESH826: the TOP-LEVEL scheduled-tasks/ dir (dream-engine,
+    # memoria-heartbeat, reggeli-napindito, ledger-live-drain) was seeded by
+    # ensureDefaultScheduledTasks but never refreshed -- a one-shot seed, so
+    # every shipped fix reached new installs only. Measured on the reference
+    # host: 5/5 live seeded copies had drifted. Same untouched-only rule.
+    refresh_untouched_seeds "scheduled-tasks" "$HOME/.claude/scheduled-tasks" "template"
   fi
   if [ "$SEED_REFRESH_UPDATED" -gt 0 ]; then
     echo -e "  ${GREEN}✓${NC} Szallitott skill/feladat frissitve: ${SEED_REFRESH_UPDATED} (erintetlen masolat); megtartva: ${SEED_REFRESH_KEPT} (helyben modositott)"
