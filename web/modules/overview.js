@@ -201,6 +201,21 @@ export async function loadOverview() {
 const BB_STATUS_LABEL = { active: 'aktív', done: 'kész', blocked: 'blokkolt' }
 const BB_STATUS_CLASS = { active: 'bb-active', done: 'bb-done', blocked: 'bb-blocked' }
 
+// Signal A = forgot to update (orange ⚠), B = stuck/lost completion (red 🔴), AB = both.
+const BB_SIGNAL_ICON  = { a: '⚠️', b: '🔴', ab: '🔴⚠️' }
+const BB_SIGNAL_CLASS = { a: 'bb-signal-a', b: 'bb-signal-b', ab: 'bb-signal-ab' }
+
+function bbSignalBadge(signal) {
+  if (!signal) return ''
+  const icon    = BB_SIGNAL_ICON[signal]  || ''
+  const cls     = BB_SIGNAL_CLASS[signal] || ''
+  const labelKey   = 'bb.signal.' + signal + '.label'
+  const tooltipKey = 'bb.signal.' + signal + '.tooltip'
+  return '<span class="bb-signal ' + cls + '" title="' + escapeHtml(t(tooltipKey)) + '">'
+    + escapeHtml(icon + ' ' + t(labelKey))
+    + '</span>'
+}
+
 async function loadBlackboard() {
   const tbody = document.getElementById('ovBlackboardBody')
   if (!tbody) return
@@ -217,8 +232,11 @@ async function loadBlackboard() {
       const tr = document.createElement('tr')
       const statusLabel = BB_STATUS_LABEL[r.status] || r.status
       const statusCls = BB_STATUS_CLASS[r.status] || ''
+      const signalHtml = bbSignalBadge(r.signal)
+      if (signalHtml) tr.classList.add('bb-row-flagged')
       tr.innerHTML = '<td class="bb-agent">' + escapeHtml(r.agent_id) + '</td>'
-        + '<td><span class="bb-status ' + statusCls + '">' + escapeHtml(statusLabel) + '</span></td>'
+        + '<td><span class="bb-status ' + statusCls + '">' + escapeHtml(statusLabel) + '</span>'
+        + (signalHtml ? ' ' + signalHtml : '') + '</td>'
         + '<td class="bb-summary">' + escapeHtml(r.summary) + '</td>'
         + '<td class="bb-ref">' + escapeHtml(r.task_ref || '') + '</td>'
         + '<td class="bb-time">' + formatRelative(r.updated_at * 1000) + '</td>'

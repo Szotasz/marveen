@@ -1,7 +1,82 @@
 import { getDb, insertBlackboardHistory, listBlackboardHistory, upsertBlackboard, type BlackboardRow } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
+import { getEffectiveSettingValue } from '../../settings-store.js'
 import type { RouteContext } from './types.js'
+
+// Signal values attached to each blackboard row in the GET response.
+// 'a' = agent was active in messages but blackboard row is stale (forgot to update).
+// 'b' = active row has not changed for a long time (completion signal likely lost).
+// 'ab' = both signals apply simultaneously.
+export type BlackboardSignal = 'a' | 'b' | 'ab' | null
+
+export interface BlackboardRowWithSignal extends BlackboardRow {
+  signal: BlackboardSignal
+}
+
+// Pure function: compute the stale signal for one blackboard row.
+// Exported for unit testing without DB access.
+export function computeBlackboardSignal(
+  row: BlackboardRow,
+  lastMsgAt: number | null,
+  nowSec: number,
+  thresholds: { msgHours: number; bbHours: number; activeHours: number },
+): BlackboardSignal {
+  const { msgHours, bbHours, activeHours } = thresholds
+
+  // Signal A: agent sent a message recently, but blackboard row is older than bbHours.
+  const signalA =
+    lastMsgAt !== null &&
+    lastMsgAt > nowSec - msgHours * 3600 &&
+    row.updated_at < nowSec - bbHours * 3600
+
+  // Signal B: active row unchanged for longer than activeHours.
+  const signalB =
+    row.status === 'active' &&
+    row.updated_at < nowSec - activeHours * 3600
+
+  if (signalA && signalB) return 'ab'
+  if (signalA) return 'a'
+  if (signalB) return 'b'
+  return null
+}
+
+function listBlackboardWithSignals(limit = 10): BlackboardRowWithSignal[] {
+  const db = getDb()
+  const rows = db
+    .prepare('SELECT * FROM fleet_blackboard ORDER BY updated_at DESC LIMIT ?')
+    .all(limit) as BlackboardRow[]
+
+  if (!rows.length) return []
+
+  const msgHours = Number(getEffectiveSettingValue('BB_SIGNAL_A_MSG_HOURS'))
+  const bbHours = Number(getEffectiveSettingValue('BB_SIGNAL_A_BB_HOURS'))
+  const activeHours = Number(getEffectiveSettingValue('BB_SIGNAL_B_ACTIVE_HOURS'))
+  const thresholds = { msgHours, bbHours, activeHours }
+
+  // Fetch the most recent outbound message timestamp for each agent in one query.
+  // agent_messages.from_agent may contain a slash-prefixed sub-path; we match on
+  // the exact agent_id as stored in fleet_blackboard (lower-cased base name).
+  const agentIds = rows.map((r) => r.agent_id)
+  const placeholders = agentIds.map(() => '?').join(',')
+  const msgRows = db
+    .prepare(
+      `SELECT from_agent AS agent_id, MAX(created_at) AS last_msg_at
+         FROM agent_messages
+        WHERE from_agent IN (${placeholders})
+          AND created_at > ?
+        GROUP BY from_agent`,
+    )
+    .all(...agentIds, Math.floor(Date.now() / 1000) - msgHours * 3600) as { agent_id: string; last_msg_at: number }[]
+
+  const lastMsgMap = new Map(msgRows.map((r) => [r.agent_id, r.last_msg_at]))
+  const nowSec = Math.floor(Date.now() / 1000)
+
+  return rows.map((row) => ({
+    ...row,
+    signal: computeBlackboardSignal(row, lastMsgMap.get(row.agent_id) ?? null, nowSec, thresholds),
+  }))
+}
 
 function listBlackboard(limit = 10): BlackboardRow[] {
   return getDb()
@@ -54,7 +129,7 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/blackboard' && method === 'GET') {
-    json(res, listBlackboard(10))
+    json(res, listBlackboardWithSignals(10))
     return true
   }
 
