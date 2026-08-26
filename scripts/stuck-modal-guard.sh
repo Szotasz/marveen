@@ -128,9 +128,18 @@ alert_owner() {
   if [ -z "$token" ] || [ -z "$chat" ]; then
     log "ALERT (no bot token or owner chat id configured): $msg"; return 1
   fi
-  curl -s -m 10 -o /dev/null "https://api.telegram.org/bot${token}/sendMessage" \
-    --data-urlencode "chat_id=${chat}" --data-urlencode "text=${msg}" \
-    && log "owner alerted via direct Bot API" || log "ALERT sendMessage FAILED: $msg"
+  # Honest send (NOTIFYVAKSWEEP826): curl exit 0 alone is not delivery -- an
+  # HTTP 200 with {"ok":false} logged "owner alerted" while nothing arrived.
+  # Return reflects CONFIRMED delivery so the caller's backoff stamp can
+  # depend on it.
+  . "$(cd "$(dirname "$0")" && pwd)/lib/send-telegram.sh"
+  local send_err
+  if send_err="$(send_telegram_message "$token" "$chat" "$msg" 2>&1)"; then
+    log "owner alerted via direct Bot API (delivery confirmed)"
+    return 0
+  fi
+  log "ALERT sendMessage FAILED: ${send_err}"
+  return 1
 }
 
 # --- live guard ----------------------------------------------------------------
@@ -231,8 +240,14 @@ run_guard() {
     log "ALERT: stuck modal after $count respawns -- backing off, manual check needed"
     local bstamp=0; [ -f "$BACKOFF_STAMP" ] && bstamp="$(stat -c %Y "$BACKOFF_STAMP" 2>/dev/null || echo 0)"
     if [ $(( now - bstamp )) -ge 3600 ]; then
-      alert_owner "🔴 The ${SESSION} session is stuck in a /mcp modal and ${count} auto-respawns did not clear it. Manual check needed: tmux attach -t ${SESSION}. Messages sent during the outage may be lost -- please resend."
-      date +%s > "$BACKOFF_STAMP" 2>/dev/null || true
+      # Backoff stamp ONLY on confirmed delivery (NOTIFYVAKSWEEP826): this is
+      # the "your messages may be lost, resend" alert -- burying its own
+      # failure under an hour of backoff was the worst possible combination.
+      if alert_owner "🔴 The ${SESSION} session is stuck in a /mcp modal and ${count} auto-respawns did not clear it. Manual check needed: tmux attach -t ${SESSION}. Messages sent during the outage may be lost -- please resend."; then
+        date +%s > "$BACKOFF_STAMP" 2>/dev/null || true
+      else
+        log "alert not delivered -- backoff stamp NOT written, will retry next tick"
+      fi
     fi
     return 0
   fi

@@ -77,42 +77,12 @@ replay_unfinished_messages() {
   TMPDATA=$(mktemp)
   echo "$RESPONSE" > "$TMPDATA"
 
-  python3 - "$SESSION_NAME" "$AGENT_ID" "$CUTOFF" "$TMPDATA" <<'PYEOF' 2>/dev/null
-import json, sys, subprocess, time
-
-session_name, agent_id, cutoff_str, data_file = sys.argv[1:5]
-cutoff = int(cutoff_str)
-
-with open(data_file) as f:
-    msgs = json.load(f)
-
-pending = [
-    m for m in msgs
-    if m.get('to_agent') == agent_id
-       and m.get('status') == 'delivered'
-       and m.get('completed_at') is None
-       and m.get('created_at', 0) >= cutoff
-]
-
-if not pending:
-    sys.exit(0)
-
-print(f"[watchdog] {agent_id}: replaying {len(pending)} unfinished message(s)", flush=True)
-time.sleep(15)  # let claude boot up and reach the prompt
-
-for m in pending:
-    content = m.get('content', '')
-    full_msg = f"[Újraküldés - feladat elveszett restart előtt]: {content}"
-    chunk_size = 990
-    for i in range(0, len(full_msg), chunk_size):
-        chunk = full_msg[i:i + chunk_size]
-        subprocess.run(['tmux', 'send-keys', '-t', session_name, '-l', chunk],
-                       timeout=5, capture_output=True)
-    subprocess.run(['tmux', 'send-keys', '-t', session_name, 'Enter'],
-                   timeout=5, capture_output=True)
-    time.sleep(2)
-
-PYEOF
+  # Replay logic extracted to its own file (testable) + MSGSZIVARGAS826: every
+  # injected message writes a dated marker into the dashboard log -- this used
+  # to be a fully record-less injection path, invisible to every detector.
+  python3 "$INSTALL_DIR/scripts/watchdog-replay.py" \
+    "$SESSION_NAME" "$AGENT_ID" "$CUTOFF" "$TMPDATA" \
+    "$INSTALL_DIR/store/dashboard.log" 2>/dev/null
 
   rm -f "$TMPDATA"
 }

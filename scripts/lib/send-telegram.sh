@@ -25,6 +25,42 @@
 # Bash 3.2 compatible (macOS system bash). Source it, do not execute it:
 #   . "$(dirname "$0")/lib/send-telegram.sh"
 
+# telegram_api_call TOKEN METHOD [curl args...] -- the same contract for ANY
+# Bot API method (setMyCommands, sendPhoto, ...): success only on curl exit 0
+# AND "ok":true, loud stderr otherwise, token redacted.
+telegram_api_call() {
+  if [ "$#" -lt 2 ]; then
+    echo "telegram_api_call: usage: telegram_api_call TOKEN METHOD [curl args...]" >&2
+    return 1
+  fi
+  local token="$1" method="$2"
+  shift 2
+  if [ -z "$token" ] || [ -z "$method" ]; then
+    echo "telegram_api_call: empty token/method -- refusing (nothing would be delivered)" >&2
+    return 1
+  fi
+
+  local response curl_exit
+  response=$(curl -sS -m 15 "https://api.telegram.org/bot${token}/${method}" "$@" 2>&1)
+  curl_exit=$?
+  # Never let the token reach a log/journal: redact before any echo.
+  response="${response//${token}/<token>}"
+
+  if [ "$curl_exit" -ne 0 ]; then
+    echo "telegram_api_call(${method}): transport failure (curl exit ${curl_exit}): ${response}" >&2
+    return 1
+  fi
+  case "$response" in
+    *'"ok":true'*)
+      return 0
+      ;;
+    *)
+      echo "telegram_api_call(${method}): Bot API rejected the call: ${response}" >&2
+      return 1
+      ;;
+  esac
+}
+
 send_telegram_message() {
   if [ "$#" -lt 3 ]; then
     echo "send_telegram_message: usage: send_telegram_message TOKEN CHAT_ID TEXT [curl args...]" >&2
@@ -36,27 +72,8 @@ send_telegram_message() {
     echo "send_telegram_message: empty token/chat_id/text -- refusing (nothing would be delivered)" >&2
     return 1
   fi
-
-  local response curl_exit
-  response=$(curl -sS -m 15 "https://api.telegram.org/bot${token}/sendMessage" \
+  telegram_api_call "$token" "sendMessage" \
     --data-urlencode "chat_id=${chat_id}" \
     --data-urlencode "text=${text}" \
-    "$@" 2>&1)
-  curl_exit=$?
-  # Never let the token reach a log/journal: redact before any echo.
-  response="${response//${token}/<token>}"
-
-  if [ "$curl_exit" -ne 0 ]; then
-    echo "send_telegram_message: transport failure (curl exit ${curl_exit}): ${response}" >&2
-    return 1
-  fi
-  case "$response" in
-    *'"ok":true'*)
-      return 0
-      ;;
-    *)
-      echo "send_telegram_message: Bot API rejected the send: ${response}" >&2
-      return 1
-      ;;
-  esac
+    "$@"
 }
