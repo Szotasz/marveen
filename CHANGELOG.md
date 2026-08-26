@@ -38,6 +38,11 @@ Extract a version for release: `npm run release-notes -- <version>`
 - **[API]** add operationId to all 95 operations
 - **[API]** add OpenAPI 3.1 spec for all API endpoints
 
+### Changed
+
+- `PUT /api/agents/:name` 400 response body: replaced `rejected` (array of unknown fields) and `writable` (array of allowed fields) with the system-wide `field` + `hint` pattern; `field` holds the first rejected key, `hint` lists writable fields and any additional rejected keys; callers that parsed `rejected` mechanically must migrate to `hint` text (the dashboard did not read either field)
+- `POST /api/messages` error responses: `error` is now a stable snake_case machine token (`missing_required_fields`, `sender_reserved`, `federated_sender_not_allowed`, `sender_not_in_allowlist`, `unknown_sender`, `invalid_federated_address`, `federation_disabled`, `federation_self_reference`, `unknown_federation_peer`, `invalid_recipient_format`); human-readable explanation moved to `hint`; status codes and trigger conditions are unchanged
+
 ### Fixed
 
 - Model-fallback: `modelUnavailableStreak` is now reset to 0 when a pane is unreadable (`capturePane` returns null), so two model-unavailable detections only count as consecutive if no null-pane sweep occurred between them; previously the streak was frozen and could add up across non-consecutive sweeps, triggering a spurious model switch

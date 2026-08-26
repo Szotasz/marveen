@@ -62,7 +62,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     const { from, to, content, origin_note } = JSON.parse(body.toString()) as
       { from: string; to: string; content: string; origin_note?: string }
     if (!from?.trim() || !to?.trim() || !content?.trim()) {
-      json(res, { error: 'from, to, and content are required' }, 400)
+      json(res, { error: 'missing_required_fields', hint: 'from, to, and content are required' }, 400)
       return true
     }
     // Security: the channel-coordinator id grants channel-inbound delivery
@@ -82,7 +82,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // router's normalization here closes that asymmetry.
     if (sanitizeAgentIdent(from) === COORDINATOR_AGENT_ID) {
       logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST forging channel-coordinator id')
-      json(res, { error: 'from is reserved for the in-process channel coordinator' }, 403)
+      json(res, { error: 'sender_reserved', hint: 'from is reserved for the in-process channel coordinator' }, 403)
       return true
     }
     // Federation spoof guard: a slash-qualified from ("teodor/teodor") is the
@@ -92,7 +92,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // federation peer toward another local agent.
     if (from.includes('/')) {
       logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST with qualified from (federation impersonation guard)')
-      json(res, { error: 'from must be a local agent id without "/" -- federated senders are only accepted via /api/federation/inbox' }, 403)
+      json(res, { error: 'federated_sender_not_allowed', hint: 'from must be a local agent id without "/"; federated senders are only accepted via /api/federation/inbox' }, 403)
       return true
     }
     // From-authentication: accept messages only from registered fleet agents.
@@ -130,7 +130,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
         writeAgentAuditLog({ agent_id: cleanFrom, entity: 'message', action: 'create',
           detail: { from: from.trim(), to: to.trim(), tenant_id: ctx.tenantId, reason: 'sender_not_in_allowlist' } })
         logger.warn({ from: from.trim(), to: to.trim(), tenant_id: ctx.tenantId }, 'Rejected partner /api/messages POST: sender not in allowlist')
-        json(res, { error: `sender '${from.trim()}' not in allowlist for tenant '${ctx.tenantId}'` }, 403)
+        json(res, { error: 'sender_not_in_allowlist', hint: `sender '${from.trim()}' is not in the allowlist for tenant '${ctx.tenantId}'` }, 403)
         return true
       }
     } else {
@@ -138,7 +138,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       const isSystemSender = SYSTEM_SENDERS.has(sanitizeAgentIdent(from))
       if (!isOwnerSender && !isSystemSender && !isKnownAgent(sanitizeAgentIdent(from))) {
         logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST from unregistered agent')
-        json(res, { error: `unknown agent '${from.trim()}' -- from must be a registered fleet agent id` }, 403)
+        json(res, { error: 'unknown_sender', hint: `unknown agent '${from.trim()}'; from must be a registered fleet agent id` }, 403)
         return true
       }
     }
@@ -149,12 +149,12 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (storedTo.includes('/')) {
       const target = parseQualifiedId(storedTo)
       if (!target) {
-        json(res, { error: 'Invalid federated address in to (expected "<system>/<agent>")' }, 400)
+        json(res, { error: 'invalid_federated_address', hint: 'expected format: "<system>/<agent>"' }, 400)
         return true
       }
       const cfg = getFederationConfig()
       if (!cfg.enabled) {
-        json(res, { error: 'Federation is disabled on this system' }, 400)
+        json(res, { error: 'federation_disabled', hint: 'Federation is disabled on this system' }, 400)
         return true
       }
       // System ids are case-insensitive (stored lowercase in the config).
@@ -164,11 +164,11 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       // PEER's namespace -- leave its case alone.
       const targetSystem = target.system.toLowerCase()
       if (targetSystem === cfg.systemId) {
-        json(res, { error: `'${target.system}' is this system -- address the agent locally as '${target.agent}'` }, 400)
+        json(res, { error: 'federation_self_reference', hint: `'${target.system}' is this system; address the agent locally as '${target.agent}'` }, 400)
         return true
       }
       if (!cfg.peers.some((p) => p.id === targetSystem)) {
-        json(res, { error: `Unknown federation peer '${target.system}'` }, 400)
+        json(res, { error: 'unknown_federation_peer', hint: `unknown federation peer '${target.system}'` }, 400)
         return true
       }
       storedTo = formatQualifiedId(targetSystem, target.agent)
@@ -180,7 +180,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       // with the correct form. Safe: sanitizeAgentIdent strips ':', so no
       // legitimate local agent id can contain one, and the channel
       // coordinator inserts directly into the DB, bypassing this endpoint.
-      json(res, { error: 'Invalid recipient: use "<system>/<agent>" (slash) for a federated address, not the "federation:x:y" source form' }, 400)
+      json(res, { error: 'invalid_recipient_format', hint: 'use "<system>/<agent>" (slash) for a federated address, not the "federation:x:y" source form' }, 400)
       return true
     }
     // Code-side enforcement of the kanban-ref convention: rewrite any
