@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3'
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync } from 'node:fs'
 import { load as loadSqliteVec } from 'sqlite-vec'
@@ -4073,5 +4074,50 @@ export function listBlackboardHistory(opts: {
 export function pruneBlackboardHistory(ttlDays = 30): number {
   const cutoff = Math.floor(Date.now() / 1000) - ttlDays * 86400
   return db.prepare('DELETE FROM fleet_blackboard_history WHERE created_at < ?').run(cutoff).changes
+}
+
+// Remove fleet_blackboard rows that have been stuck in 'active' for longer
+// than ttlHours without any agent updating them. These are orphaned entries
+// from tasks whose sawTurn=false path cleared the watchdog without writing
+
+export interface BlackboardRow {
+  id: string
+  agent_id: string
+  task_ref: string | null
+  status: 'active' | 'done' | 'blocked'
+  summary: string
+  updated_at: number
+}
+
+export function findBlackboardRowByAgent(agent_id: string): BlackboardRow | undefined {
+  return db.prepare('SELECT * FROM fleet_blackboard WHERE agent_id = ?').get(agent_id) as BlackboardRow | undefined
+}
+
+// Upsert a fleet blackboard row for agent_id, writing a history entry only
+// when the status, summary, or task_ref actually changes.
+export function upsertBlackboard(
+  agent_id: string,
+  data: { task_ref?: string | null; status?: string; summary: string },
+): BlackboardRow {
+  const existing = db.prepare('SELECT * FROM fleet_blackboard WHERE agent_id = ?').get(agent_id) as BlackboardRow | undefined
+  const id = existing?.id ?? randomUUID().replace(/-/g, '').slice(0, 8)
+  db.prepare(`
+    INSERT INTO fleet_blackboard (id, agent_id, task_ref, status, summary, updated_at)
+    VALUES (?, ?, ?, ?, ?, unixepoch())
+    ON CONFLICT(agent_id) DO UPDATE SET
+      task_ref   = excluded.task_ref,
+      status     = excluded.status,
+      summary    = excluded.summary,
+      updated_at = unixepoch()
+  `).run(id, agent_id, data.task_ref ?? null, data.status ?? 'active', data.summary)
+  const row = db.prepare('SELECT * FROM fleet_blackboard WHERE id = ?').get(id) as BlackboardRow
+  const changed = !existing ||
+    existing.status !== row.status ||
+    existing.summary !== row.summary ||
+    (existing.task_ref ?? null) !== (row.task_ref ?? null)
+  if (changed) {
+    insertBlackboardHistory({ agent_id: row.agent_id, task_ref: row.task_ref, status: row.status, summary: row.summary })
+  }
+  return row
 }
 

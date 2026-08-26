@@ -21,6 +21,9 @@ import {
   markPendingTaskRetryAlert,
   clearPendingTaskRetryAlert,
   markScheduledTaskKanbanWaiting,
+  upsertBlackboard,
+  findActiveKanbanCardByTitle,
+  findBlackboardRowByAgent,
 } from '../db.js'
 import { toPendingRetryView, classifyTelegramSendError, type PendingRetryView } from '../pending-retries.js'
 import {
@@ -115,6 +118,11 @@ export interface TaskInflightEntry {
   // during the sweep so an edit to the schedule mid-run cannot move the
   // goalposts under an already-running injection.
   timeoutMs: number
+  // Snapshot of the blackboard row written at injection time (status=active).
+  // The done write at task completion checks the current row against this
+  // snapshot before writing: if the agent modified the row in the meantime
+  // (e.g. switched to blocked, changed the summary), the runner leaves it alone.
+  blackboardSnapshot: { status: string; summary: string; task_ref: string | null } | undefined
 }
 
 // How long a fired task may stay busy before the watchdog calls it stuck.
@@ -203,6 +211,22 @@ export function decideTaskTimeout(
   if (elapsed < opts.graceMs) return 'hold'
   if (paneState === 'busy' && elapsed >= opts.timeoutMs) return 'alert'
   return 'hold'
+}
+
+// Write status=done to the blackboard when the watchdog clears a task entry,
+// but only if the agent has not modified the row since the runner wrote active.
+// Exported so the done-write path (including task_ref passthrough) can be tested
+// in isolation against a mocked db layer.
+export function applyBlackboardDone(entry: TaskInflightEntry): void {
+  if (!entry.sawTurn || !entry.blackboardSnapshot) return
+  const cur = findBlackboardRowByAgent(entry.agentName)
+  const unchanged = cur !== undefined &&
+    cur.status === entry.blackboardSnapshot.status &&
+    cur.summary === entry.blackboardSnapshot.summary &&
+    (cur.task_ref ?? null) === entry.blackboardSnapshot.task_ref
+  if (unchanged) {
+    upsertBlackboard(entry.agentName, { status: 'done', summary: entry.taskName, task_ref: entry.blackboardSnapshot.task_ref })
+  }
 }
 
 export type ResubmitAction = 'none' | 'enter' | 'reinject' | 'giveup'
@@ -742,6 +766,16 @@ async function attemptFireTask(
       SCHEDULED_TASK_PREAMBLE + '\n' +
       prefix.trimEnd() + '\n\n' +
       wrapScheduledTask(`scheduled-task:${task.name}`, taskBody)
+    // Mark this agent as active on the shared fleet blackboard before injecting
+    // the prompt, so other agents can see the task is in flight. Snapshot the
+    // written values so the done write later can verify nothing changed.
+    const _bbTaskRef = findActiveKanbanCardByTitle(task.name)?.id ?? null
+    const _bbActiveRow = upsertBlackboard(agentName, {
+      status: 'active',
+      summary: task.name,
+      task_ref: _bbTaskRef,
+    })
+    const _bbSnapshot = { status: _bbActiveRow.status, summary: _bbActiveRow.summary, task_ref: _bbActiveRow.task_ref ?? null }
     // forceSend skips the busy-state check above; it must also skip the
     // pre-flight wait-until-idle gate inside sendPromptToSession, otherwise a
     // task aimed at a long-busy session would block on the 12s idle wait every
@@ -788,6 +822,7 @@ async function attemptFireTask(
       workingDir: agentName === MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(agentName),
       configDir: agentName === MAIN_AGENT_ID ? undefined : (readAgentClaudeConfigDir(agentName) ?? undefined),
       timeoutMs: resolveStuckTimeoutMs(task),
+      blackboardSnapshot: _bbSnapshot,
     })
 
     // Post-send verify: if the agent started a new turn during our chunk
@@ -1232,6 +1267,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         maxTrackMs: TASK_FIRE_MAX_TRACK_MS,
       })
       if (decision === 'clear') {
+        applyBlackboardDone(entry)
         taskInflightMap.delete(key)
       } else if (decision === 'alert') {
         sendTaskTimeoutAlert(entry, now - entry.injectedAt)

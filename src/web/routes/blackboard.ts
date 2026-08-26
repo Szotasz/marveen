@@ -1,47 +1,12 @@
-import { randomUUID } from 'node:crypto'
-import { getDb, insertBlackboardHistory, listBlackboardHistory } from '../../db.js'
+import { getDb, insertBlackboardHistory, listBlackboardHistory, upsertBlackboard, type BlackboardRow } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
-
-interface BlackboardRow {
-  id: string
-  agent_id: string
-  task_ref: string | null
-  status: 'active' | 'done' | 'blocked'
-  summary: string
-  updated_at: number
-}
 
 function listBlackboard(limit = 10): BlackboardRow[] {
   return getDb()
     .prepare('SELECT * FROM fleet_blackboard ORDER BY updated_at DESC LIMIT ?')
     .all(limit) as BlackboardRow[]
-}
-
-function upsertBlackboard(agent_id: string, data: { task_ref?: string | null; status?: string; summary: string }): BlackboardRow {
-  const db = getDb()
-  const existing = db.prepare('SELECT * FROM fleet_blackboard WHERE agent_id = ?').get(agent_id) as BlackboardRow | undefined
-  const id = existing?.id ?? randomUUID().replace(/-/g, '').slice(0, 8)
-  db.prepare(`
-    INSERT INTO fleet_blackboard (id, agent_id, task_ref, status, summary, updated_at)
-    VALUES (?, ?, ?, ?, ?, unixepoch())
-    ON CONFLICT(agent_id) DO UPDATE SET
-      task_ref   = excluded.task_ref,
-      status     = excluded.status,
-      summary    = excluded.summary,
-      updated_at = unixepoch()
-  `).run(id, agent_id, data.task_ref ?? null, data.status ?? 'active', data.summary)
-  const row = db.prepare('SELECT * FROM fleet_blackboard WHERE id = ?').get(id) as BlackboardRow
-  // Only record history when something actually changed (no-op upserts are silent).
-  const changed = !existing ||
-    existing.status !== row.status ||
-    existing.summary !== row.summary ||
-    (existing.task_ref ?? null) !== (row.task_ref ?? null)
-  if (changed) {
-    insertBlackboardHistory({ agent_id: row.agent_id, task_ref: row.task_ref, status: row.status, summary: row.summary })
-  }
-  return row
 }
 
 function patchBlackboard(id: string, data: { status?: string; summary?: string; task_ref?: string | null }): BlackboardRow | undefined {
