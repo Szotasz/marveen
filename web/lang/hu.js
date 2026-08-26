@@ -1861,4 +1861,11 @@ window._i18n.hu = {
   'backups.modal.delete.title':        'Archívum törlése',
   'backups.modal.delete.confirm':      'Törlés',
 
+  'bb.signal.a.label':   'Frissíteni felejtett',
+  'bb.signal.a.tooltip': 'Az ágens az utóbbi órákban küldött üzenetet, de a blackboard-sora nem frissült.',
+  'bb.signal.b.label':   'Elakadt / elveszett jel',
+  'bb.signal.b.tooltip': 'Aktív sor régóta változatlanul áll -- a befejezés jele valószínűleg elveszett.',
+  'bb.signal.ab.label':  'Mindkét jel',
+  'bb.signal.ab.tooltip':'Az ágens aktív volt üzenetküldésben, de a sor nem frissült; emellett a sor már régóta változatlanul active állapotban áll.',
+
 }

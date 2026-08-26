@@ -111,6 +111,16 @@ export interface BlackboardRow {
   updated_at: number;
 }
 
+export type BlackboardRowWithSignal = BlackboardRow & {
+  /** Stale-signal computed at query time (no data is modified).
+"a" = agent sent a message recently but blackboard row was not updated (forgot to update).
+"b" = active row unchanged for longer than the configured threshold (completion signal may be lost).
+"ab" = both signals apply.
+null = no signal.
+ */
+  signal?: 'a' | 'b' | 'ab' | 'null' | null;
+}
+
 export interface BlackboardHistoryRow {
   /** Auto-increment primary key */
   id: number;
@@ -232,7 +242,7 @@ export type GetApprovalResponse = Approval
 
 export type ResolveApprovalResponse = Approval
 
-export type ListBlackboardResponse = BlackboardRow[]
+export type ListBlackboardResponse = BlackboardRowWithSignal[]
 
 export type ListBlackboardHistoryResponse = BlackboardHistoryRow[]
 

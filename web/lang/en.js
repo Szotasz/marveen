@@ -1862,4 +1862,11 @@ window._i18n.en = {
   'backups.modal.delete.title':        'Delete archive',
   'backups.modal.delete.confirm':      'Delete',
 
+  'bb.signal.a.label':   'Forgot to update',
+  'bb.signal.a.tooltip': 'Agent sent a message recently, but the blackboard row has not been updated.',
+  'bb.signal.b.label':   'Stuck / lost signal',
+  'bb.signal.b.tooltip': 'Active row has not changed for a long time — the completion signal was likely lost.',
+  'bb.signal.ab.label':  'Both signals',
+  'bb.signal.ab.tooltip':'Agent was active in messages but the row was not updated; additionally the row has been active and unchanged for a long time.',
+
 }

@@ -32,6 +32,16 @@ vi.mock('../db.js', () => ({
   upsertBlackboard: (agent_id: unknown, data: unknown) => mockUpsertBlackboard(agent_id, data),
 }))
 
+// ---------- settings-store mock (default thresholds) ----------
+vi.mock('../settings-store.js', () => ({
+  getEffectiveSettingValue: vi.fn((key: string) => {
+    if (key === 'BB_SIGNAL_A_MSG_HOURS') return 2
+    if (key === 'BB_SIGNAL_A_BB_HOURS') return 4
+    if (key === 'BB_SIGNAL_B_ACTIVE_HOURS') return 24
+    return 0
+  }),
+}))
+
 function makeStmt(value: unknown) {
   return { all: vi.fn(() => value), get: vi.fn(() => value), run: vi.fn(() => ({ lastInsertRowid: 1n })) }
 }
@@ -66,12 +76,19 @@ describe('GET /api/blackboard', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('returns list from db, max 10 rows', async () => {
-    mockPrepare.mockReturnValue(makeStmt([ROW_A, ROW_B]))
+    // Three prepare calls: fleet_blackboard rows, agent_messages (empty), fleet_blackboard_history (empty).
+    // Empty history -> lastChangedAt falls back to row.updated_at.
+    mockPrepare
+      .mockReturnValueOnce(makeStmt([ROW_A, ROW_B]))
+      .mockReturnValueOnce(makeStmt([]))
+      .mockReturnValueOnce(makeStmt([]))
     const { ctx, out } = makeCtx('GET', '/api/blackboard')
     const handled = await tryHandleBlackboard(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(200)
-    expect(out.body).toEqual([ROW_A, ROW_B])
+    // ROW_A: active + updated_at 1700000000 far in the past (>24h) -> signal 'b'
+    // ROW_B: done -> no signal
+    expect(out.body).toEqual([{ ...ROW_A, signal: 'b' }, { ...ROW_B, signal: null }])
   })
 
   it('returns empty array when table is empty', async () => {
@@ -316,10 +333,13 @@ describe('GET /api/blackboard/history', () => {
   })
 
   it('does NOT interfere with the existing /api/blackboard GET', async () => {
-    mockPrepare.mockReturnValue({ all: vi.fn(() => [ROW_A]) })
+    mockPrepare
+      .mockReturnValueOnce(makeStmt([ROW_A]))
+      .mockReturnValueOnce(makeStmt([]))
+      .mockReturnValueOnce(makeStmt([]))
     const { ctx, out } = makeCtx('GET', '/api/blackboard')
     const handled = await tryHandleBlackboard(ctx)
     expect(handled).toBe(true)
-    expect(out.body).toEqual([ROW_A])
+    expect(out.body).toEqual([{ ...ROW_A, signal: 'b' }])
   })
 })

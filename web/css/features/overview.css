@@ -489,3 +489,32 @@
 .bb-status.bb-active { background: var(--info-bg, #e0f0ff); color: var(--info, #0066cc); }
 .bb-status.bb-done   { background: var(--success-bg, #e6f9ee); color: var(--success, #1a8a3a); }
 .bb-status.bb-blocked{ background: var(--danger-bg, #ffeaea); color: var(--danger, #cc2222); }
+
+/* Stale-signal badges -- shown inline after the status chip when a row is flagged */
+.bb-signal {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: default;
+}
+.bb-signal.bb-signal-a  { background: #fff3cd; color: #856404; }  /* amber -- forgot to update */
+.bb-signal.bb-signal-b  { background: var(--danger-bg, #ffeaea); color: var(--danger, #cc2222); } /* red -- stuck/lost */
+.bb-signal.bb-signal-ab { background: #ffeaea; color: #cc2222; }
+
+/* Row-level highlight so flagged rows catch the eye even before the badge */
+tr.bb-row-flagged { background: color-mix(in srgb, var(--warning, #f0ad4e) 8%, transparent); }
+
+/* Dark-theme overrides */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .bb-signal.bb-signal-a  { background: #3d2f00; color: #ffd06a; }
+  :root:not([data-theme="light"]) .bb-signal.bb-signal-b  { background: #3d0000; color: #ff8080; }
+  :root:not([data-theme="light"]) .bb-signal.bb-signal-ab { background: #3d0000; color: #ff8080; }
+  :root:not([data-theme="light"]) tr.bb-row-flagged { background: color-mix(in srgb, #f0ad4e 6%, transparent); }
+}
+:root[data-theme="dark"] .bb-signal.bb-signal-a  { background: #3d2f00; color: #ffd06a; }
+:root[data-theme="dark"] .bb-signal.bb-signal-b  { background: #3d0000; color: #ff8080; }
+:root[data-theme="dark"] .bb-signal.bb-signal-ab { background: #3d0000; color: #ff8080; }
+:root[data-theme="dark"] tr.bb-row-flagged { background: color-mix(in srgb, #f0ad4e 6%, transparent); }

@@ -307,6 +307,29 @@ components:
         summary: "feat/openapi-spec: írja az OpenAPI 3.1 spec-et"
         updated_at: 1787488514
 
+    BlackboardRowWithSignal:
+      allOf:
+        - $ref: "#/components/schemas/BlackboardRow"
+        - type: object
+          properties:
+            signal:
+              type: [string, "null"]
+              enum: ["a", "b", "ab", null]
+              description: |
+                Stale-signal computed at query time (no data is modified).
+                "a" = agent sent a message recently but blackboard row was not updated (forgot to update).
+                "b" = active row unchanged for longer than the configured threshold (completion signal may be lost).
+                "ab" = both signals apply.
+                null = no signal.
+          example:
+            id: "b4cda374"
+            agent_id: "agent-a"
+            task_ref: "card-001"
+            status: "active"
+            summary: "Working on task"
+            updated_at: 1700000000
+            signal: "b"
+
     BlackboardHistoryRow:
       type: object
       required: [id, agent_id, status, summary, created_at]
@@ -1703,16 +1726,17 @@ paths:
       tags: [blackboard]
       operationId: listBlackboard
       summary: List fleet blackboard (last 10 rows, newest first)
+      description: Each row includes a computed `signal` field indicating staleness. No data is modified.
       responses:
         "200":
-          description: Blackboard rows
+          description: Blackboard rows with stale-signal annotations
           content:
             application/json:
               schema:
                 type: array
                 maxItems: 10
                 items:
-                  $ref: "#/components/schemas/BlackboardRow"
+                  $ref: "#/components/schemas/BlackboardRowWithSignal"
               example:
                 - id: "b4cda374"
                   agent_id: "zack"
@@ -1720,6 +1744,7 @@ paths:
                   status: "active"
                   summary: "feat/openapi-spec: írja a YAML-t"
                   updated_at: 1787488514
+                  signal: null
 
     post:
       tags: [blackboard]
