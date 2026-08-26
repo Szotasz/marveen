@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { resolveKanbanDispatchTarget } from '../kanban-dispatch.js'
+import { kanbanMoveInstructions } from '../web/routes/kanban.js'
 
 const base = {
   ownerName: 'Gábor',
@@ -79,5 +80,28 @@ describe('resolveKanbanDispatchTarget', () => {
     it('recognises a self-move even when the agent session is not running', () => {
       expect(resolveKanbanDispatchTarget('sentinel', { ...base, actor: 'sentinel' })).toBeNull()
     })
+  })
+})
+
+describe('kanbanMoveInstructions', () => {
+  it('gives the agent the curl to post a result comment AND to mark done', () => {
+    const out = kanbanMoveInstructions('abc123', 'cody')
+    expect(out).toContain('/api/kanban/abc123/comments')
+    expect(out).toContain('"author":"cody"')
+    expect(out).toContain('/api/kanban/abc123/move')
+    expect(out).toContain('"status":"done"')
+    expect(out).not.toContain('húzd "done"-ra')
+  })
+
+  it('names the agent as the actor on every move it is told to make', () => {
+    const out = kanbanMoveInstructions('abc123', 'cody')
+    expect(out).toContain('"status":"done","actor":"cody"')
+    expect(out).toContain('"status":"in_progress","actor":"cody"')
+  })
+
+  it('keeps the bearer token out of the message (reads it at run time)', () => {
+    const out = kanbanMoveInstructions('abc123', 'cody')
+    expect(out).toContain('$(cat ')
+    expect(out).toContain('.dashboard-token')
   })
 })
