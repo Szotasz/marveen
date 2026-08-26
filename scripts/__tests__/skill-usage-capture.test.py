@@ -136,6 +136,24 @@ class TestAgentIdFromCwd(unittest.TestCase):
         cwd_with_slash = os.path.join(install, "agents", "agent-a") + "/"
         self.assertEqual(self._call(cwd_with_slash), "agent-a")
 
+    # Regression guards for the drifted-private-copy bug: the hook used to
+    # carry its own resolver that missed the install-subdirectory case and
+    # invented an agent id from the cwd basename, so skill_usage rows were
+    # attributed to a directory name instead of a real agent.
+
+    def test_delegates_to_the_shared_ledger_resolver(self):
+        import sys as _sys
+        _sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks"))
+        import ledger_lib
+        self.assertIs(hook._agent_id_from_cwd, ledger_lib.agent_id_from_cwd)
+
+    def test_install_subdir_is_main_agent_not_directory_name(self):
+        install = self._install()
+        cwd = os.path.join(install, "store", "some-workdir")
+        # The drifted copy returned "some-workdir" here.
+        self.assertNotEqual(self._call(cwd), "some-workdir")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

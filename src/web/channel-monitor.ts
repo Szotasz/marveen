@@ -2,7 +2,7 @@ import { existsSync, readFileSync, statSync, writeFileSync, utimesSync } from 'n
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync, spawn } from 'node:child_process'
-import { resolveFromPath } from '../platform.js'
+import { makeLazyBinResolver } from '../platform.js'
 import { WEB_PORT } from '../config.js'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, SERVICE_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT, RESPAWN_ENABLED } from '../config.js'
@@ -53,8 +53,15 @@ import { decideDownAgentAction, AGENT_MAX_RESTART_ATTEMPTS, parseEtimeToSeconds 
 import { getClaudePidForSession, hasChannelPluginAlive, probeChannelPluginLiveness, classifyRespawnStampAdvance } from '../channel-coordinator/liveness.js'
 import { getDesiredAgents } from './agent-desired-state.js'
 
-const TMUX = resolveFromPath('tmux')
-const CLAUDE = resolveFromPath('claude')
+// Lazily resolved (see makeLazyBinResolver): a module-level `resolveFromPath`
+// const throws at IMPORT time, so any environment where the binary is not
+// resolvable -- a transient PATH gap, or CI where no `claude` is installed --
+// fails the whole module load and takes every importer down with it. Deferring
+// to first use keeps importing this module side-effect free; the resolution
+// error then surfaces at the call site that actually needs the binary. This
+// mirrors the pattern already used in agent-process.ts.
+const tmuxBin = makeLazyBinResolver('tmux')
+const claudeBin = makeLazyBinResolver('claude')
 
 // How long the agent's claude process has been running. Returns -1 when it
 // cannot be determined, which the restart policy treats as "do not restart".
@@ -397,7 +404,7 @@ async function performStuckInputAction(
           // first (no-op when absent); an Enter on the then-idle prompt is
           // harmless.
           await dismissModelConsentDialogIfPresent(session)
-          execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+          execFileSync(tmuxBin(), ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
         }
         submitted = true
         break
@@ -415,7 +422,7 @@ async function performStuckInputAction(
         // Enter must never reach the model consent dialog (its default SWITCHES
         // the model). No-op when the dialog is absent.
         await dismissModelConsentDialogIfPresent(session)
-        execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+        execFileSync(tmuxBin(), ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
         submitted = true
         break
       case 'hold':
@@ -705,14 +712,14 @@ export function respawnMainSessionFresh(): void {
     logger.warn({ err }, 'respawnMainSessionFresh: pre-respawn reap failed (continuing)')
   }
   try {
-    reapDetachedChannelClaudes({ tmuxPath: TMUX })
+    reapDetachedChannelClaudes({ tmuxPath: tmuxBin() })
   } catch (err) {
     logger.warn({ err }, 'respawnMainSessionFresh: detached-claude reap failed (continuing)')
   }
   ensureSharedClaudeOnboarded()
 
   const claudeCmd = buildMainSessionRespawnCmd({
-    claudePath: CLAUDE,
+    claudePath: claudeBin(),
     pluginId: provider.pluginId,
     extraPluginIds: readExtraChannelPluginIds(),
     model: readConfiguredMainModel(),
@@ -722,7 +729,7 @@ export function respawnMainSessionFresh(): void {
     isolatedConfigDir: ensureMainAgentIsolatedConfigDir(),
     fleetToken: hasFleetOauthToken(),
   })
-  execFileSync(TMUX, ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
+  execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
   // Stamp IMMEDIATELY after the respawn, before the scheduling follow-ups.
   // The stamp is a coordination contract, not bookkeeping: five watchers read
   // lastMainRespawnAt() / store/.channel-last-respawn and suppress themselves
@@ -771,7 +778,7 @@ export async function resumeMarveenSession(): Promise<boolean> {
     // spares the live session (this pane) and kills only the leftovers.
     // See project_channels_continue_respawn_leak.
     try {
-      reapDetachedChannelClaudes({ tmuxPath: TMUX })
+      reapDetachedChannelClaudes({ tmuxPath: tmuxBin() })
     } catch (err) {
       logger.warn({ err }, 'resumeMarveenSession: detached-claude reap failed (continuing)')
     }
@@ -782,7 +789,7 @@ export async function resumeMarveenSession(): Promise<boolean> {
     ensureSharedClaudeOnboarded()
 
     const claudeCmd = buildMainSessionRespawnCmd({
-      claudePath: CLAUDE,
+      claudePath: claudeBin(),
       pluginId: provider.pluginId,
       extraPluginIds: readExtraChannelPluginIds(),
       model: readConfiguredMainModel(),
@@ -794,7 +801,7 @@ export async function resumeMarveenSession(): Promise<boolean> {
       isolatedConfigDir: ensureMainAgentIsolatedConfigDir(),
       fleetToken: hasFleetOauthToken(),
     })
-    execFileSync(TMUX, ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
+    execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
 
     // --continue replays the last conversation. When the prior session is large
     // (>200k tokens) Claude Code opens with a "Resume from summary" modal that
@@ -979,7 +986,7 @@ let marveenLastSessionCreate = 0
 
 export function mainChannelsSessionExists(): boolean {
   try {
-    execFileSync(TMUX, ['has-session', '-t', MAIN_CHANNELS_SESSION], { timeout: 3000 })
+    execFileSync(tmuxBin(), ['has-session', '-t', MAIN_CHANNELS_SESSION], { timeout: 3000 })
     return true
   } catch {
     return false
@@ -1037,7 +1044,7 @@ function respawnMarveenSessionFresh(): boolean {
     // Same first-run-picker guard as resumeMarveenSession.
     ensureSharedClaudeOnboarded()
     const claudeCmd = buildMainSessionRespawnCmd({
-      claudePath: CLAUDE,
+      claudePath: claudeBin(),
       pluginId: provider.pluginId,
       extraPluginIds: readExtraChannelPluginIds(),
       model: readConfiguredMainModel(),
@@ -1048,7 +1055,7 @@ function respawnMarveenSessionFresh(): boolean {
       isolatedConfigDir: ensureMainAgentIsolatedConfigDir(),
       fleetToken: hasFleetOauthToken(),
     })
-    execFileSync(TMUX, ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
+    execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
     logger.warn({ provider: provider.type }, 'Hard restart: marveen session respawned fresh (no --continue)')
     // Re-establish /name on the fresh process (see note in resumeMarveenSession).
     // scheduleIdentitySetup only schedules delayed timers -> fire-and-forget.
@@ -1648,7 +1655,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           } else {
             logger.warn({ session: t.session, agent: label }, 'Session parked in a blocking interactive menu -- sending Escape to recover')
             try {
-              execFileSync(TMUX, ['send-keys', '-t', t.session, 'Escape'], { timeout: 5000 })
+              execFileSync(tmuxBin(), ['send-keys', '-t', t.session, 'Escape'], { timeout: 5000 })
             } catch (err) {
               logger.warn({ err, session: t.session }, 'Menu-recovery Escape failed')
             }
@@ -1897,7 +1904,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
     if (shouldRunPeriodicReap(lastDetachedReapAt, Date.now(), DETACHED_REAP_INTERVAL_MS)) {
       lastDetachedReapAt = Date.now()
       try {
-        const reaped = reapDetachedChannelClaudes({ tmuxPath: TMUX })
+        const reaped = reapDetachedChannelClaudes({ tmuxPath: tmuxBin() })
         if (reaped.length > 0) {
           logger.warn({ reaped }, 'channel-monitor: periodic reap removed detached channel-claude orphans')
         }

@@ -121,3 +121,21 @@ export function dailyDueAtMs(
 ): number {
   return localMidnightMs + minutesSinceMidnight * 60_000
 }
+
+/**
+ * Why a due restart must still be deferred, or null when it may proceed.
+ * Pure so the invariants are unit-testable:
+ *   - a busy pane defers (never cut off a live turn), and
+ *   - an unanswered inbound question defers -- an idle pane is NOT proof there
+ *     is nothing to lose, because an agent waiting on the owner's answer is
+ *     idle precisely then, and a restart swallows the pending exchange (for a
+ *     channel agent even a "continue" restart is effectively fresh).
+ * Busy-pane wins the ordering: it is the harder invariant (mid-turn cutoff).
+ */
+export function restartBlockedBy(
+  signals: { paneIdle: boolean; openQuestion: boolean },
+): 'busy-pane' | 'open-question' | null {
+  if (!signals.paneIdle) return 'busy-pane'
+  if (signals.openQuestion) return 'open-question'
+  return null
+}

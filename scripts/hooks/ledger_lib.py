@@ -102,9 +102,9 @@ def owner_name():
 
 def agent_id_from_cwd(cwd):
     """Which channel agent is this session? Derived from cwd so the hooks are
-    generic across all three agents and never cross-contaminate:
-      <install>/agents/<id>  -> <id>           (sub-agent: dia, erno-ba, ...)
-      <install>               -> MAIN_AGENT_ID  (the main channels agent)
+    generic across every agent and never cross-contaminate:
+      <install>/agents/<id>[/...]  -> <id>           (a sub-agent)
+      anywhere else in the tree    -> MAIN_AGENT_ID   (the main channels agent)
     """
     cwd = (cwd or "").rstrip("/")
     install = _install_dir().rstrip("/")
@@ -120,9 +120,13 @@ def agent_id_from_cwd(cwd):
         # identities and makes the reply guard block on a question it has
         # already answered, because it finds no outbound under the real id.
         return main_agent_id()
-    # Fallback: last path component (best effort), else main.
-    base = os.path.basename(cwd)
-    return base or main_agent_id()
+    # Outside the install tree: never invent an agent id from the directory name.
+    # The launcher can name the session explicitly via MARVEEN_AGENT_ID; failing
+    # that, attribute to the main agent rather than a bogus basename.
+    env_id = os.environ.get("MARVEEN_AGENT_ID", "").strip()
+    if env_id:
+        return env_id
+    return main_agent_id()
 
 
 def connect():

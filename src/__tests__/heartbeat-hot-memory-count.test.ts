@@ -106,6 +106,8 @@ describe('wiring contract: the number flows endpoint -> agent, never agent -> qu
     // hot-memory SQL anymore -- that is the exact surface that drifted twice.
     expect(SCAFFOLD).not.toMatch(/FROM memories[\s\S]{0,120}category='hot'/)
     // Missing field degrades to "no data", never to a self-run query or a 0.
-    expect(SCAFFOLD).toMatch(/nincs adat \(a summary nem adja\)/)
+    // (Phrase updated with the HBMEMBLIND819 third contract: the missing
+    // field now surfaces as the instrument's ERROR line.)
+    expect(SCAFFOLD).toMatch(/nincs adat \(muszer-hiba\)/)
   })
 })

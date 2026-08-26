@@ -19,7 +19,15 @@
 //   - The tool call is HARD-BLOCKED (decision: deny).
 //   - The blocked call is appended to EGRESS_BLOCK_LOG for operator review.
 //   - The operator can approve the URL/domain: add it to store/egress-allowlist.json,
-//     then re-run the WebFetch. No restart required.
+//     then re-run the WebFetch. No restart required for THIS hook (it re-reads
+//     the JSON on every invocation).
+//   - GRANT LATENCY for the quarantine-reader (EGRESSRENDER824): the reader's
+//     own prompt-level list is a RENDERED copy of this JSON, refreshed by a
+//     file-watcher within ~5s of a JSON change and read at the reader's next
+//     SPAWN. A denial from the reader's prompt copy produces NO line in the
+//     block log below (it rejects without a network call) -- if a freshly
+//     granted domain is still refused, wait a few seconds and spawn a new
+//     reader; a session restart is NOT needed.
 //
 // The log is separate from the main Marveen log so operators can grep it
 // independently: `tail -f store/egress-blocked.log`

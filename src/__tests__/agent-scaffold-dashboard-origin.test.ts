@@ -122,6 +122,7 @@ describe('renderHeartbeatClaudeMd: respects dashboardOrigin', () => {
     storeDir: '/srv/app/store',
     dashboardOrigin: 'http://localhost:3420',
     calendarAccount: '',
+    metricsScript: '/srv/app/scripts/heartbeat-metrics.sh',
   }
 
   it('uses a public URL when dashboardOrigin is set to one', () => {

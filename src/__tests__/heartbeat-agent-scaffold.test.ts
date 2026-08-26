@@ -15,6 +15,7 @@ const ID: HeartbeatIdentity = {
   storeDir: '/srv/app/store',
   dashboardOrigin: 'http://localhost:3420',
   calendarAccount: 'nina@example.com',
+  metricsScript: '/srv/app/scripts/heartbeat-metrics.sh',
 }
 
 describe('renderHeartbeatClaudeMd', () => {
@@ -36,10 +37,15 @@ describe('renderHeartbeatClaudeMd', () => {
     expect(out).toContain('"from":"heartbeat"')
   })
 
-  it('uses the supplied store dir (absolute) for the DB and token paths', () => {
+  it('uses the supplied store dir (absolute) for the instrument env and the token path', () => {
     const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toContain('/srv/app/store/claudeclaw.db')
+    // The DB path itself no longer appears in the prose: the metrics
+    // instrument derives it from CLAW_STORE_DIR, so the only store-dir
+    // surfaces left are the instrument's env prefix and the step-3
+    // message POST's token read.
+    expect(out).toContain('CLAW_STORE_DIR=/srv/app/store')
     expect(out).toContain('cat /srv/app/store/.dashboard-token')
+    expect(out).not.toContain('claudeclaw.db')
   })
 
   it('uses the supplied dashboard origin for the messages API', () => {
@@ -121,11 +127,13 @@ describe('renderHeartbeatClaudeMd', () => {
       storeDir: '/data/store',
       dashboardOrigin: 'http://localhost:9000',
       calendarAccount: '',
+      metricsScript: '/data/scripts/heartbeat-metrics.sh',
     })
     expect(a).not.toBe(b)
     expect(b).toContain("across Omar's systems")
     expect(b).toContain('"to":"atlas"')
-    expect(b).toContain('/data/store/claudeclaw.db')
+    expect(b).toContain('CLAW_STORE_DIR=/data/store')
+    expect(b).toContain('bash /data/scripts/heartbeat-metrics.sh')
     expect(b).toContain('http://localhost:9000/api/messages')
   })
 
@@ -182,11 +190,17 @@ describe('renderHeartbeatClaudeMd', () => {
     expect(out).not.toContain('next_run_at')
   })
 
-  it('compares task_runs.ts in milliseconds', () => {
+  it('names the task_runs milliseconds trap but ships no runnable SQL for it', () => {
     // ts is epoch MILLISECONDS; a seconds comparison matches every row and
-    // silently turns "last hour" into "since the beginning".
+    // silently turns "last hour" into "since the beginning". This assertion
+    // REPLACES the older one that required the literal
+    // `(unixepoch()-3600)*1000` query in the prose: the cutoff now lives in
+    // scripts/heartbeat-metrics.sh (asserted by its own conformance test),
+    // and the prose only names the trap so nobody re-derives it by hand.
     const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toContain('(unixepoch()-3600)*1000')
+    expect(out).toContain('MILLISECONDS')
+    expect(out).toMatch(/\*1000[^\n]*cutoff/)
+    expect(out).not.toMatch(/sqlite3 [^\n]*task_runs/)
   })
 })
 
@@ -234,8 +248,14 @@ describe('hot-memory metric is an endpoint number, never an agent-run query (HBM
   })
 
   it('degrades a missing field to "no data", never to a self-run query or a zero', () => {
+    // Phrase updated with the instrument contract: the missing-field case
+    // now surfaces as an ERROR line from the script, and the report writes
+    // "nincs adat (muszer-hiba)" -- the load-bearing part is that the
+    // degradation path exists and is named, and that fabricating a 0 is
+    // called out as the defect.
     const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toContain('nincs adat (a summary nem adja)')
+    expect(out).toContain('nincs adat (muszer-hiba)')
+    expect(out).toMatch(/fabricated 0 is the defect/)
   })
 })
 
@@ -298,44 +318,63 @@ describe('deferred MCP tools (HBCALMCP808)', () => {
 // json.load reads EOF. A command the agent re-improvises every hour is not a
 // mechanism (the HBMEMBLIND819 lesson, extraction-side): the scaffold now
 // ships the COMPLETE one-line extractor and bans the pipe+heredoc shape.
-describe('kanban extraction is a shipped one-liner, never an improvised pipe+heredoc (HBHEREDOC819)', () => {
-  it('ships the complete python3 -c extractor with every counts field', () => {
+// HBHEREDOC819 -> HBMEMBLIND819 third contract: the shipped one-liner era
+// ended 2026-08-24 22:00, when a post-compact round re-composed the shipped
+// extractor with a truncated format string and a missing field printed as a
+// silent 0 -- the third failure of the same metric on a third layer. The
+// extraction now lives in scripts/heartbeat-metrics.sh (its own conformance
+// test exercises it); the prose ships NO extractor at all, only the
+// instrument call and the sentinel rule.
+describe('metrics come from the on-disk instrument, never from prose the agent can recompose', () => {
+  it('ships the instrument call with identity-derived env and path', () => {
     const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toContain(`python3 -c "import json,urllib.request;`)
-    expect(out).toContain(`${ID.dashboardOrigin}/api/kanban/heartbeat-summary`)
-    expect(out).toMatch(/COUNTS urgent=%s in_progress=%s waiting=%s planned=%s new_hot_memories_1h=%s db_size_mb=%s waiting_shown=%s/)
+    expect(out).toContain(
+      'CLAW_STORE_DIR=/srv/app/store CLAW_DASHBOARD_ORIGIN=http://localhost:3420'
+    )
+    expect(out).toContain('bash /srv/app/scripts/heartbeat-metrics.sh')
   })
 
-  it('the ONLY python3-heredoc mention is the quoted example inside the ban paragraph', () => {
+  it('ships NO runnable extractor -- the copy-surface that drifted three times', () => {
     const out = renderHeartbeatClaudeMd(ID)
-    // The ban paragraph must quote the forbidden shape (so the agent can
-    // recognise it), and NOTHING else in the prompt may contain one -- a
-    // runnable heredoc anywhere would be exactly the copy-surface that broke
-    // the 18:00 round. Window: the ban paragraph's own bounds.
-    // Class-level, not variant-enumerated: two review rounds each found a
-    // form the previous narrow regex missed (bare, then -u, then `python3 -`
-    // dash-stdin -- the commonest shape here). The pinned property is that on
-    // one line, `python3` is never followed by `<<` at all; enumerating
-    // switches guarantees a fourth variant.
+    expect(out).not.toContain('python3 -c "import json,urllib.request')
+    expect(out).not.toMatch(/COUNTS urgent=%s/)
+    // The endpoint may be NAMED (as the server-side source of the numbers)
+    // but never fetched from the prose.
+    expect(out).toContain('/api/kanban/heartbeat-summary')
+    expect(out).not.toMatch(/curl[^\n]*heartbeat-summary/)
+  })
+
+  it('states the sentinel rule: known sentinel or instrument failure, never "looks like output"', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    expect(out).toContain('HB_METRICS_V1')
+    // The unknown-version branch is named explicitly (a future V2 under
+    // these instructions must read as instrument failure, not be accepted
+    // silently) -- Marveen's stipulation on HBMEMBLIND819, 2026-08-25.
+    expect(out).toContain('HB_METRICS_V2')
+    expect(out).toContain('muszer-hiba')
+    expect(out).toMatch(/NEVER write 0/)
+  })
+
+  it('the ONLY python3-heredoc mention is the quoted example inside the ban text', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    // The ban must quote the forbidden shape (so the agent can recognise
+    // it), and NOTHING else in the prompt may contain one. Class-level, not
+    // variant-enumerated: on one line, `python3` is never followed by `<<`
+    // outside the ban sentence.
     const matches = [...out.matchAll(/python3[^\n]*<</g)]
     expect(matches.length).toBe(1)
-    const banStart = out.indexOf('FORBIDDEN SHAPE (HBHEREDOC819)')
+    const banStart = out.indexOf('THE SENTINEL RULE (HBMEMBLIND819)')
     expect(banStart).toBeGreaterThanOrEqual(0)
-    const banEnd = out.indexOf('It returns exactly', banStart)
+    const banEnd = out.indexOf('If the output contains', banStart)
     expect(banEnd).toBeGreaterThan(banStart)
     const idx = matches[0].index ?? -1
     expect(idx).toBeGreaterThan(banStart)
     expect(idx).toBeLessThan(banEnd)
   })
 
-  it('the kanban endpoint is never fetched with curl (the curl+shell-var path is what got improvised)', () => {
+  it('names the heredoc incident so the ban survives paraphrase', () => {
     const out = renderHeartbeatClaudeMd(ID)
-    expect(out).not.toMatch(/curl[^\n]*heartbeat-summary/)
-  })
-
-  it('names the forbidden shape and the incident so the ban survives paraphrase', () => {
-    const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toContain('FORBIDDEN SHAPE (HBHEREDOC819)')
+    expect(out).toContain('HBHEREDOC819')
     expect(out).toMatch(/heredoc becomes python3's stdin/)
   })
 })

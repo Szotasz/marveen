@@ -41,6 +41,7 @@ import {
   OWNER_NAME,
   BOT_NAME,
   MAIN_AGENT_ID,
+  HEARTBEAT_AGENT_ID,
   WEB_PORT,
   HEARTBEAT_CALENDAR_ACCOUNT,
   APP_TZ,
@@ -50,7 +51,7 @@ import { resolveDashboardOrigin } from './agent-scaffold.js'
 import { logger } from '../logger.js'
 import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
 
-const HEARTBEAT_AGENT_NAME = 'heartbeat'
+const HEARTBEAT_AGENT_NAME = HEARTBEAT_AGENT_ID
 const HEARTBEAT_AGENT_DIR = join(PROJECT_ROOT, 'agents', HEARTBEAT_AGENT_NAME)
 
 // Channel plugins MUST be explicitly disabled in the agent's
@@ -98,6 +99,12 @@ export interface HeartbeatIdentity {
   // Google Calendar account to summarise, or '' to let the calendar MCP
   // server use whatever account it is authenticated as.
   calendarAccount: string
+  // Absolute path to scripts/heartbeat-metrics.sh -- the round's single
+  // callable instrument (HBMEMBLIND819 third contract). The rendered
+  // CLAUDE.md references this path and nothing else about how the
+  // numbers are produced, so there is no command prose left to
+  // recompose.
+  metricsScript: string
 }
 
 // Build the identity from the live config. Kept separate from the pure
@@ -110,6 +117,7 @@ export function currentHeartbeatIdentity(): HeartbeatIdentity {
     storeDir: STORE_DIR,
     dashboardOrigin: resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT),
     calendarAccount: HEARTBEAT_CALENDAR_ACCOUNT,
+    metricsScript: join(PROJECT_ROOT, 'scripts', 'heartbeat-metrics.sh'),
   }
 }
 
@@ -204,117 +212,77 @@ When you receive the heartbeat prompt:
      If the call fails (token revoked / 401), record the failure
      reason rather than the events; the main agent can act on the
      failure.
-   - **Kanban** -- ONE command, fetch AND extract together; run it EXACTLY
-     as written, do not recompose it:
+   - **Metrics (kanban + tasks + memory + DB size)** -- ONE fixed,
+     on-disk instrument. Run it EXACTLY as written and copy its output
+     lines VERBATIM into the report sections below; never recompose any
+     of its measurements yourself:
 
      \`\`\`bash
-     python3 -c "import json,urllib.request; tok=open('${id.storeDir}/.dashboard-token').read().strip(); d=json.load(urllib.request.urlopen(urllib.request.Request('${id.dashboardOrigin}/api/kanban/heartbeat-summary', headers={'Authorization':'Bearer '+tok}))); c=d['counts']; print('COUNTS urgent=%s in_progress=%s waiting=%s planned=%s new_hot_memories_1h=%s db_size_mb=%s waiting_shown=%s' % (c['urgent'],c['in_progress'],c['waiting'],c['planned'],c['new_hot_memories_1h'],c.get('db_size_mb'),d.get('waiting_shown'))); [print('URGENT',x['id'],x['title']) for x in d['urgent']]; [print('WAITING',x['id'],x['title']) for x in d['waiting']]"
+     CLAW_STORE_DIR=${id.storeDir} CLAW_DASHBOARD_ORIGIN=${id.dashboardOrigin} CLAW_TZ=${APP_TZ} bash ${id.metricsScript}
      \`\`\`
 
-     The command is ONE line on purpose: it survives copy-paste from any
-     indentation, needs no shell variable, no pipe, and no second
-     process -- the failure modes that produced HBHEREDOC819 and
-     HBKANBANDRIFT819 structurally cannot occur in it.
+     THE SENTINEL RULE (HBMEMBLIND819): a number may enter your report
+     ONLY from an output whose FIRST line starts with the known
+     sentinel \`HB_METRICS_V1\`. Anything else -- an unknown or newer
+     sentinel (a future \`HB_METRICS_V2\` under these instructions
+     included), "No such file or directory", a shell error, empty
+     output -- is an INSTRUMENT FAILURE: put the literal first line of
+     what you got into EVERY affected section as
+     \`muszer-hiba: <line>\`. NEVER write 0 for a value the instrument
+     did not print, and NEVER rebuild these numbers with your own
+     curl / python3 / sqlite3 / du / ls / stat -- not even a
+     correct-looking one-liner. That includes the pipe+heredoc shape
+     that produced HBHEREDOC819 (\`echo "$X" | python3 << 'PY'\` loses
+     the piped data silently: the heredoc becomes python3's stdin).
 
-     FORBIDDEN SHAPE (HBHEREDOC819): NEVER pipe the response into a
-     python3 HEREDOC (\`echo "$X" | python3 << 'PY' ... PY\`) -- the
-     heredoc becomes python3's stdin, the piped data is silently lost,
-     and json.load reads EOF. Measured 2026-08-19 18:00: the round
-     reported "empty response from /api/kanban/heartbeat-summary"
-     while the endpoint was serving 200 with 3173 bytes in 9ms, and
-     the SAME shell POSTed to the same origin with the same token
-     right after. The command above has no pipe and no heredoc; if it
-     fails, REPORT the failure line as-is -- do not rebuild the
-     extraction some other way, and do not hide the error.
+     If the output contains \`ERROR <section>: <reason>\` lines, copy
+     each into its section verbatim as \`muszer-hiba: ERROR ...\` and
+     use the lines that ARE present -- partial output is fine, silence
+     and substitution are not. The instrument is fail-closed: a
+     missing or null field never prints as 0, so
+     \`new hot memories (1h): nincs adat (muszer-hiba)\` is the honest
+     report and a fabricated 0 is the defect.
 
-     It returns exactly what this section may report:
-     \`{"counts":{...}, "urgent":[...], "waiting":[...]}\`, where the
-     lists contain only UNFINISHED cards -- never archived, never
-     \`done\`, but \`planned\` included, because "urgent and nobody
-     has touched it" is exactly what this line is for. Report the ids
-     and titles it gives you and nothing else.
+     Why a fixed script and not a prescribed command, measured three
+     times on the SAME metric: 2026-08-07 (HBMEMBLIND807) a prose
+     bullet let the round compose its own SQL (reported 0 beside 3 hot
+     memories); the fix prescribed a ready-made query, and 2026-08-19
+     (HBMEMBLIND819) post-compact rounds reconstructed it with the
+     wrong agent_id (14/14 rounds a false 0); the next fix shipped a
+     ready-made one-liner, and 2026-08-24 22:00 a round re-composed
+     THAT with a truncated format string, so the missing field printed
+     as 0 again. A prescription you must re-copy every hour is not a
+     mechanism; a script on disk has nothing to recompose.
 
-     EVERY NUMBER COMES FROM \`counts.*\` AND NOWHERE ELSE
-     (HBKANBANDRIFT819): the lists are capped and their titles
-     truncated BY DESIGN (waiting shows only the few most recently
-     updated; \`counts.waiting\` is the full total), so counting the
-     array items gives a number that is WRONG on purpose. Measured
-     2026-08-19 16:42: a heartbeat counted a truncated list and
-     reported waiting: 12 against a real 280. If \`counts\` is missing
-     from the response, write "nincs adat" -- never count the lists as
-     a substitute.
-
-     Two things this replaces, both measured: the old instruction told
-     you to write the filter yourself, and on 2026-08-04 the 09:00
-     report still listed five items of which THREE were \`done\` --
-     a rule you must re-apply every hour is not a mechanism. And the
-     old call used \`sqlite3\`, which does not exist on a stock Linux
-     install (exit 127), so on those hosts this step died silently.
-
-     If a list comes back EMPTY, write that it is empty. Do not widen
-     the query, do not fall back to another status, do not fill the
-     line with closed cards so that it has content: an empty urgent
-     list is the good news, and a report nobody can trust to be empty
-     is a report nobody reads.
-   - **Scheduled tasks** -- the live registry is the dashboard API, NOT
-     the \`scheduled_tasks\` table (that table is empty on this
-     deployment, and a count taken from it reports 0 forever):
-
-     \`\`\`bash
-     curl -s -H "Authorization: Bearer $(cat ${id.storeDir}/.dashboard-token)" \\
-       ${id.dashboardOrigin}/api/schedules \\
-       | python3 -c "import json,sys; r=json.load(sys.stdin); print(sum(1 for x in r if x.get('enabled')))"
-     \`\`\`
-
-     For what actually ran, query \`task_runs\`. Its \`ts\` column is in
-     MILLISECONDS, so the one-hour cutoff is \`(unixepoch()-3600)*1000\`
-     -- with a seconds comparison every row matches and the count is
-     the whole table:
-     \`sqlite3 ${id.storeDir}/claudeclaw.db "SELECT status, COUNT(*) FROM
-     task_runs WHERE ts > (unixepoch()-3600)*1000 GROUP BY status"\`.
-   - **Memory + system** -- DB file size and new hot memories.
-     HBWARN807: there is NO warnings metric here on purpose. The old
-     bullet asked for "status='warning' entries in the memory log" -- a
-     source that DOES NOT EXIST (memories has no status column, the
-     store has no such log table), so the line could only ever say
-     'none': an unfalsifiable metric is zero evidence wearing the
-     costume of a check. If a warnings line ever returns, it must come
-     with a READY-MADE query against a REAL source, like the hot-memory
-     count below.
-     HBMEMBLIND807+819: the hot-memory count comes from the SAME
-     \`/api/kanban/heartbeat-summary\` call you already made for the
-     Kanban section: report \`counts.new_hot_memories_1h\` from that
-     response. Do NOT run any query for this number -- not even a
-     correct-looking one.
-
-     Why an endpoint number and not a query, measured twice:
-     2026-08-07 (HBMEMBLIND807) this bullet was prose, the agent
-     composed its own SQL and reported 0 while three hot memories sat
-     in the window. The fix prescribed a ready-made query with "do not
-     rewrite the query" -- and 2026-08-19 (HBMEMBLIND819) that failed
-     too: 14/14 rounds over 24h reported 0 against real values of 2,
-     because post-compact rounds reconstructed the query from memory as
-     "count MY hot memories" and substituted the wrong agent_id. A
-     prescription you must re-copy every hour is not a mechanism; a
-     number computed server-side has nothing to rewrite. The kanban
-     counts above never drifted for exactly this reason.
-
-     If the field is MISSING from the response (older dashboard build),
-     write \`new hot memories (1h): nincs adat (a summary nem adja)\` --
-     do not fall back to your own query, and never fill the line with 0.
-
-     HBDBMERET822: the DB size comes from the SAME response: report
-     \`counts.db_size_mb\`. Do NOT measure it yourself -- no \`du\`, no
-     \`ls -l\`, no \`stat\`, no python division, not even a
-     correct-looking one. This line used to be a bare placeholder with
-     no source, and each session re-invented the measurement: the
-     format drifted round to round (\`158 MB\`, then \`160M\` in du -h
-     shape) and on 2026-08-22 15:00 a round reported \`0.0 MB\`
-     against a real 159 MB, right after a restart. A growth signal
-     that reads 0.0 does not die loudly -- nobody misses a zero.
-     If the field is missing or \`None\`/null (older dashboard build,
-     or the server could not stat the file), write
-     \`DB size: nincs adat (a summary nem adja)\` -- never 0.
+     What the lines mean, and where each number is allowed to come from:
+     - \`COUNTS ...\` -- kanban totals plus \`counts.new_hot_memories_1h\`
+       and \`counts.db_size_mb\`, all computed server-side on
+       \`${id.dashboardOrigin}/api/kanban/heartbeat-summary\` and copied
+       through. EVERY number comes from this line and nowhere else
+       (HBKANBANDRIFT819: the URGENT/WAITING lists are capped and
+       their titles truncated BY DESIGN -- counting list items once
+       reported waiting: 12 against a real 280).
+     - \`URGENT <id> <title>\` / \`WAITING <id> <title>\` -- only
+       UNFINISHED cards, never \`done\`, \`planned\` included. If a
+       list is empty, report it as empty: do not widen the query, do
+       not fill the line with closed cards. An empty urgent list is
+       the good news, and a report nobody can trust to be empty is a
+       report nobody reads.
+     - \`SCHEDULES enabled=N\` -- the live registry
+       (\`${id.dashboardOrigin}/api/schedules\`), NOT the
+       \`scheduled_tasks\` table (empty on this deployment; a count
+       from it reports 0 forever).
+     - \`TASK_RUNS_1H ...\` -- what actually ran in the last hour.
+       \`task_runs.ts\` is in MILLISECONDS and the script bakes the
+       \`*1000\` cutoff in -- exactly the kind of trap that must never
+       be re-derived by hand.
+     HBWARN807 still holds: there is NO warnings metric here on
+     purpose. The old bullet pointed at a source that does not exist
+     (memories has no status column, the store has no such log table),
+     so the line could only ever say 'none' -- an unfalsifiable metric
+     is zero evidence wearing the costume of a check. If a warnings
+     line ever returns, it must come as a field of this instrument's
+     output, backed by a real source.
 
 2. **Format** the result as a single inter-agent message:
 
@@ -327,22 +295,22 @@ When you receive the heartbeat prompt:
    - <or: "calendar fetch failed: <reason>">
 
    ### Kanban
-   - urgent: <N> (<short titles, comma-separated>)
-   - in_progress: <N>
-   - waiting: <N> (<short titles>)
-   - planned: <N>
+   - urgent: <N from COUNTS> (<short titles from the URGENT lines>)
+   - in_progress: <N from COUNTS>
+   - waiting: <N from COUNTS> (<short titles from the WAITING lines>)
+   - planned: <N from COUNTS>
 
    ### Tasks
-   - enabled schedules: <N>
-   - last hour: <N fired, N skipped>
+   - enabled schedules: <N from SCHEDULES>
+   - last hour: <the TASK_RUNS_1H line, verbatim>
 
    ### Memory / system
-   - DB size: <counts.db_size_mb> MB
-   - new hot memories (1h): <N>
+   - DB size: <db_size_mb from COUNTS> MB
+   - new hot memories (1h): <new_hot_memories_1h from COUNTS>
    \`\`\`
 
    Every line above is a MEASUREMENT of this round, never a memory of
-   an earlier one. Run the queries again and report what they return
+   an earlier one. Run the instrument again and report what it returns
    now, even when you are sure nothing changed -- especially then.
    A value carried over from an earlier round makes its line constant,
    and a line that always says the same thing stops being read -- at

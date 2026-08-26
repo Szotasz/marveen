@@ -1,7 +1,7 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, STORE_DIR } from '../config.js'
+import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, STORE_DIR } from '../config.js'
 import { channelStateDir } from '../channel-provider.js'
 import { runAgent } from '../agent.js'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -380,6 +380,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // covered by the self-pace block + the #0 CLAUDE.md doctrine.
   if (agentGetsEmailGate(name)) injectEmailSendGate(existing)
   if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
+  if (agentGetsKanbanWriteGate(name)) injectKanbanWriteGate(existing)
   injectEgressGate(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
@@ -472,6 +473,39 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
   hooks.PreToolUse = [
     ...prev.filter((e) => !JSON.stringify(e).includes('self-pace-gate.mjs')),
+    entry,
+  ]
+}
+
+// Which agents are subject to the kanban-write gate: ONLY the hidden heartbeat
+// worker (HBFUTTATOIR824). Its skill has forbidden board writes in prompt text
+// since 2026-08-22 ("A FUTTATO A TABLARA NEM IR. SEMMIT.") with zero
+// enforcement -- three violating writes on 2026-08-24 alone, one auto-closing
+// a card whose PR was unreviewed. Every OTHER agent's kanban-first workflow
+// REQUIRES board writes, so this must never widen to the general sub-agent
+// population. Pure + exported so both directions are unit-testable.
+export function agentGetsKanbanWriteGate(name: string): boolean {
+  return name === HEARTBEAT_AGENT_ID
+}
+
+// Idempotently wire the kanban-write-gate PreToolUse hook (blocks SQL and
+// dashboard-API writes to the kanban tables; reads pass). Same shape + dedupe
+// discipline as injectEmailSendGate. Bash-only matcher: the write routes are
+// sqlite3 / python / curl invocations, all of which arrive as Bash commands.
+export function injectKanbanWriteGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'kanban-write-gate.mjs'))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('kanban-write-gate.mjs')),
     entry,
   ]
 }
@@ -737,30 +771,91 @@ export function ensureGovernanceGateCommands(name: string): boolean {
 // disappeared on 2026-07-30. Now the owner's domains are an INPUT to the
 // render, so a re-render preserves the decision instead of erasing it.
 // Returns true if the file was written, false if already up-to-date.
-export function ensureQuarantineReader(name: string): boolean {
-  const tplPath = join(PROJECT_ROOT, 'templates', 'sub-agents', 'quarantine-reader.md')
+// Where an agent's deployed quarantine-reader definition lives. PROJECT scope
+// for EVERY agent, the main agent included -- and that word is load-bearing
+// (EGRESSRENDER824, measured 2026-08-24 with positive AND negative controls):
+// the Claude Code runtime reads a PROJECT-scoped agent definition from disk at
+// each sub-agent SPAWN, but caches a USER-scoped (~/.claude/agents) one at
+// session start. The main agent's copy used to go to the user scope, so an
+// operator-approved domain only reached its reader after a full session
+// restart -- and the denial came from the stale prompt copy, without any
+// network call, so nothing ever landed in store/egress-blocked.log. Writing
+// the main agent's copy into PROJECT_ROOT/.claude/agents makes a grant
+// effective at the NEXT reader spawn, no restart. Pure + exported so the
+// target-path guarantee is unit-testable.
+export function quarantineReaderDestDir(name: string): string {
+  if (name === MAIN_AGENT_ID) return join(PROJECT_ROOT, '.claude', 'agents')
+  return join(agentDir(name), '.claude', 'agents')
+}
+
+// The optional `paths` override exists for tests only: it lets the whole
+// render-write-cleanup sequence run inside a tmp directory, so the legacy
+// removal ORDER is assertable without touching the real homedir.
+export function ensureQuarantineReader(
+  name: string,
+  paths?: { tplPath?: string; destDir?: string; legacyPath?: string; storeDir?: string },
+): boolean {
+  const tplPath = paths?.tplPath ?? join(PROJECT_ROOT, 'templates', 'sub-agents', 'quarantine-reader.md')
   if (!existsSync(tplPath)) return false
-  let destDir: string
-  if (name === MAIN_AGENT_ID) {
-    destDir = join(homedir(), '.claude', 'agents')
-  } else {
-    destDir = join(agentDir(name), '.claude', 'agents')
-  }
+  const destDir = paths?.destDir ?? quarantineReaderDestDir(name)
   mkdirSync(destDir, { recursive: true })
   const destPath = join(destDir, 'quarantine-reader.md')
   let rendered: string
   try {
-    rendered = renderQuarantineReader(readFileSync(tplPath, 'utf-8'), quarantineReaderDomains())
+    rendered = renderQuarantineReader(readFileSync(tplPath, 'utf-8'), quarantineReaderDomains(paths?.storeDir))
   } catch {
     return false
   }
+  let upToDate = false
   if (existsSync(destPath)) {
     try {
-      if (readFileSync(destPath, 'utf-8') === rendered) return false
-    } catch { /* fall through to re-write */ }
+      upToDate = readFileSync(destPath, 'utf-8') === rendered
+    } catch { /* unreadable -> treat as stale, re-write below */ }
   }
-  writeFileSync(destPath, rendered)
-  return true
+  if (!upToDate) writeFileSync(destPath, rendered)
+  // Legacy cleanup, deliberately AFTER the project-scoped copy is guaranteed
+  // on disk (either it was already current, or the line above just wrote it):
+  // there must be no window in which NEITHER copy exists. The user-scope copy
+  // is the pre-EGRESSRENDER824 location, cached at session start and therefore
+  // permanently stale -- a leftover would shadow nothing (project scope wins)
+  // but would mislead the next person debugging the gate.
+  if (name === MAIN_AGENT_ID) {
+    const legacyPath = paths?.legacyPath ?? join(homedir(), '.claude', 'agents', 'quarantine-reader.md')
+    try { rmSync(legacyPath, { force: true }) } catch { /* best effort */ }
+  }
+  return !upToDate
+}
+
+// EGRESSRENDER824 (b): a grant typed into store/egress-allowlist.json used to
+// reach the reader PROMPT copies only at the next scaffold (boot/spawn of the
+// dashboard) -- the egress-gate HOOK reads the JSON live, but the reader's
+// prompt-level list is baked at render time, so the two silently disagreed
+// and the prompt denial produced no egress-blocked.log line. This watcher
+// closes the gap: any change to the JSON re-renders every deployed reader
+// copy. fs.watchFile (mtime polling) rather than fs.watch: it survives the
+// file being replaced (editors/atomic writes) and needs no debounce.
+// `opts` exists for tests: a tmp storeDir + a short poll interval + an
+// injected ensure() make the re-render decision assertable in milliseconds
+// without touching real agent directories. Production callers pass none of it.
+// Returns a stop function (unwatchFile) so a test can end the poll.
+export function watchEgressAllowlistForReaderRender(
+  listAgents: () => string[],
+  onRendered?: (agents: string[]) => void,
+  opts?: { storeDir?: string; intervalMs?: number; ensure?: (name: string) => boolean },
+): () => void {
+  const allowlistPath = join(opts?.storeDir ?? STORE_DIR, 'egress-allowlist.json')
+  const ensure = opts?.ensure ?? ((name: string) => ensureQuarantineReader(name))
+  const listener = () => {
+    const rendered: string[] = []
+    for (const name of [MAIN_AGENT_ID, ...listAgents()]) {
+      try {
+        if (ensure(name)) rendered.push(name)
+      } catch { /* per-agent best effort: one bad dir must not stop the rest */ }
+    }
+    if (rendered.length) onRendered?.(rendered)
+  }
+  watchFile(allowlistPath, { interval: opts?.intervalMs ?? 5000 }, listener)
+  return () => unwatchFile(allowlistPath, listener)
 }
 
 // Copy the repo's `scheduled-tasks/<task>/task-config.json` to the

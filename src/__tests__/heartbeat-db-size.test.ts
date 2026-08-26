@@ -68,13 +68,17 @@ describe('wiring contract: endpoint -> agent, never agent -> du/stat', () => {
 
   it('the scaffold names counts.db_size_mb as the ONLY source and forbids self-measurement', () => {
     expect(SCAFFOLD).toMatch(/counts\.db_size_mb/)
-    // The one-line kanban command must surface the number in its measured
-    // output, tolerant of older builds (dict.get, no KeyError).
-    expect(SCAFFOLD).toMatch(/db_size_mb=%s/)
-    expect(SCAFFOLD).toMatch(/c\.get\('db_size_mb'\)/)
+    // The extractor moved from the prose into scripts/heartbeat-metrics.sh
+    // (HBMEMBLIND819 third contract): the measured-output surface and the
+    // missing-field handling are asserted on the SCRIPT now. Older-build
+    // tolerance flipped on purpose: a missing field is an ERROR line + a
+    // non-zero exit, never a silently absent (or zeroed) value.
+    const METRICS = readFileSync(join(ROOT, 'scripts', 'heartbeat-metrics.sh'), 'utf-8')
+    expect(METRICS).toMatch(/db_size_mb=%s/)
+    expect(METRICS).toMatch(/required = \[[^\]]*'db_size_mb'/)
     // The drifted surface itself: the template placeholder with no source.
     expect(SCAFFOLD).not.toMatch(/DB size: <X> MB/)
     // Missing/null degrades to "no data", never to a self-run measurement.
-    expect(SCAFFOLD).toMatch(/DB size: nincs adat \(a summary nem adja\)/)
+    expect(SCAFFOLD).toMatch(/nincs adat \(muszer-hiba\)/)
   })
 })

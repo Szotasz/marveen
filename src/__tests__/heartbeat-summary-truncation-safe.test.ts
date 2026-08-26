@@ -90,9 +90,12 @@ describe('wiring: the endpoint serves the pure builder, the scaffold forbids cou
     expect(handler).toMatch(/countPlannedKanbanCards\(\)/)
   })
 
-  it('the scaffold says numbers come from counts.* only and names the drift incident', () => {
-    expect(SCAFFOLD).toMatch(/EVERY NUMBER COMES FROM \\`counts\.\*\\`/)
+  it('the scaffold says numbers come from the COUNTS line only and names the drift incident', () => {
+    // Wording moved with the HBMEMBLIND819 third contract: the copy-surface
+    // is now the instrument's COUNTS line (fed by counts.*), and the ban on
+    // counting the capped lists is stated next to it.
+    expect(SCAFFOLD).toMatch(/EVERY number comes from this line and nowhere else/)
     expect(SCAFFOLD).toMatch(/HBKANBANDRIFT819/)
-    expect(SCAFFOLD).toMatch(/never count the lists as/)
+    expect(SCAFFOLD).toMatch(/counting list items once\s+reported waiting: 12 against a real 280/)
   })
 })

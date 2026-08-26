@@ -425,6 +425,66 @@ export function initDatabase(dbPathOverride?: string): void {
     END
   `)
 
+  // KANBANCTXDEAD824 follow-up: paragraph-length card titles cost tokens in
+  // every agent that reads the board, and the 2026-08-24 sweep moved ~1.3 MB
+  // of accreted title text into comments by hand. These triggers automate that
+  // exact transformation for future writes so the debt cannot re-accumulate.
+  //
+  // Deliberately NOT a CHECK constraint: agents write this table with raw
+  // sqlite3 and rarely inspect exit codes, so a rejected INSERT would lose the
+  // card silently -- worse than any long title. Self-healing instead, same
+  // philosophy as kanban_cards_status_bumps_updated_at above: the full
+  // original title is preserved as a comment on the same card (marked so the
+  // reader knows a trigger wrote it), then the title is cut to fit.
+  //
+  // The truncated title is substr(...,1,299) || '…' = 300 chars, deliberately
+  // NOT > 300: even with PRAGMA recursive_triggers=ON the re-fired WHEN
+  // clause is false, so the trigger cannot loop. Existing long titles are
+  // untouched (AFTER INSERT / AFTER UPDATE only) -- the 2026-08-24 sweep
+  // already migrated the backlog, and re-running it is explicitly out of
+  // scope here.
+  //
+  // The `OF title` restriction and the NEW.title != OLD.title guard are
+  // deliberately REDUNDANT and both load-bearing: either alone keeps a plain
+  // status flip from silently truncating one of the remaining legacy
+  // long-titled cards. A regression pin covers the behavior (a non-title
+  // UPDATE leaves a legacy long title byte-identical) and fails only when
+  // BOTH are removed -- kanban-title-gate-trigger.test.ts.
+  //
+  // Second-order effect for writers: a strict write-readback comparing the
+  // just-written title against the stored row sees a mismatch above 300
+  // chars -- the trigger rewrote it. That divergence is the trigger WORKING,
+  // not a lost write; readbacks must compare against the truncated form (or
+  // look for the trigger comment) instead of raw equality.
+  const titleGateBody = `
+    BEGIN
+      INSERT INTO kanban_comments (card_id, author, content, created_at)
+      VALUES (
+        NEW.id,
+        'cim-kapu (trigger)',
+        '[CIM-KAPU TRIGGER] A kartyara ' || length(NEW.title)
+          || ' karakteres cim erkezett; a 300 feletti cimeket a tabla-olvasok'
+          || ' token-koltsege miatt a trigger levagja (KANBANCTXDEAD824).'
+          || ' A teljes eredeti cim valtozatlanul:' || char(10) || char(10)
+          || NEW.title,
+        CAST(strftime('%s','now') AS INTEGER)
+      );
+      UPDATE kanban_cards SET title = substr(NEW.title, 1, 299) || '…' WHERE id = NEW.id;
+    END
+  `
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS kanban_cards_title_gate_insert
+    AFTER INSERT ON kanban_cards
+    FOR EACH ROW WHEN length(NEW.title) > 300
+    ${titleGateBody}
+  `)
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS kanban_cards_title_gate_update
+    AFTER UPDATE OF title ON kanban_cards
+    FOR EACH ROW WHEN NEW.title != OLD.title AND length(NEW.title) > 300
+    ${titleGateBody}
+  `)
+
   // --- Kanban labels (tags) -----------------------------------------------
   // Labels are a separate registry (not hardcoded per-card strings) so the
   // same label can be reused across many cards and recolored in one place.
@@ -1700,12 +1760,6 @@ export function listKanbanCards(): KanbanCard[] {
   return db
     .prepare('SELECT rowid AS seq, * FROM kanban_cards WHERE archived_at IS NULL ORDER BY sort_order ASC')
     .all() as KanbanCard[]
-}
-
-export function listKanbanCardsSummary(): { status: string; title: string; assignee: string | null; priority: string; id: string }[] {
-  return db
-    .prepare("SELECT id, title, status, assignee, priority FROM kanban_cards WHERE archived_at IS NULL ORDER BY status, sort_order ASC")
-    .all() as any[]
 }
 
 export function getKanbanCard(id: string): KanbanCard | undefined {

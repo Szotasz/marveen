@@ -180,6 +180,21 @@ check_cmd() {
   fi
 }
 
+# INSTPWURES825: egy tavoli, NEM interaktiv SSH-session nem tolti be a
+# shell-profilt, ezert az Apple Siliconos Homebrew (es minden, amit o
+# telepitett: node, tmux, git) NINCS a PATH-on. A lenti ellenorzesek brew
+# nelkul hamisan hianyt jeleznenek, a telepito ag pedig ujra telepitene a
+# mar meglevo Homebrew-t. Ezert a meres ELOTT betoltjuk a brew kornyezetet,
+# ha a binaris letezik -- ugyanaz a ket sor, amit a telepito ag a sajat
+# telepitese utan mar hasznal.
+if ! command -v brew &>/dev/null; then
+  if [ -x /opt/homebrew/bin/brew ]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+  elif [ -x /usr/local/bin/brew ]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+  fi
+fi
+
 MISSING=0
 check_cmd "node" "Node.js (v20+)" || MISSING=1
 check_cmd "npm" "npm" || MISSING=1

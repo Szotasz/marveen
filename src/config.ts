@@ -231,6 +231,10 @@ export function brandSlug(raw: string): string {
 // (NFKD + ASCII + lowercase dashes). Older installs without this env var
 // fall back to "marveen" so nothing breaks when upgrading in place.
 export const MAIN_AGENT_ID = env['MAIN_AGENT_ID'] ?? 'marveen'
+// The hidden heartbeat worker's agent id. Lives here (not in
+// heartbeat-agent-scaffold) so agent-scaffold can key gates on it without an
+// import cycle: heartbeat-agent-scaffold already imports agent-scaffold.
+export const HEARTBEAT_AGENT_ID = 'heartbeat'
 
 // Identifier the OS service manager uses for the main agent's units (launchd
 // label com.<id>.channels / com.<id>.dashboard, systemd <id>-channels, etc.).

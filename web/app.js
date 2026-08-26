@@ -2713,6 +2713,7 @@ function resetWizard() {
   agentDesc.value = ''
   agentModel.value = 'inherit'
   loadAvailableModels()
+  loadOllamaModels()
   selectedAvatar = null
   selectedAvatarFile = null
   document.querySelectorAll('#avatarGrid .avatar-grid-item').forEach(i => i.classList.remove('selected'))
@@ -3946,19 +3947,33 @@ function switchAgentTab(tab) {
 
 // === Settings save buttons ===
 async function loadOllamaModels() {
-  const group = document.getElementById('ollamaModelGroup')
-  if (!group) return
-  group.innerHTML = ''
+  // Two optgroups, mirroring loadAvailableModels(): one in the agent edit panel
+  // and one in the new-agent wizard. getElementById returns a single node, so
+  // the earlier single-group version could only ever reach the edit panel --
+  // the wizard had no local-model option at all.
+  const groups = [
+    document.getElementById('ollamaModelGroup'),
+    document.getElementById('agentModelOllamaGroup'),
+  ]
+  let models = []
   try {
     const res = await fetch('/api/ollama/models')
-    const models = await res.json()
+    if (res.ok) models = await res.json()
+  } catch { /* Ollama not reachable -- fall through with an empty list */ }
+  if (!Array.isArray(models)) models = []
+  for (const group of groups) {
+    if (!group) continue
+    group.innerHTML = ''
+    // Hide rather than show an empty group, matching loadAvailableModels().
+    if (models.length === 0) { group.style.display = 'none'; continue }
+    group.style.display = ''
     for (const m of models) {
       const opt = document.createElement('option')
       opt.value = m.name
       opt.textContent = `${m.name} (${m.size})`
       group.appendChild(opt)
     }
-  } catch { /* Ollama not available */ }
+  }
 }
 
 // Populates the DeepSeek optgroups in both the wizard and the agent edit
@@ -12380,6 +12395,7 @@ populateAvatarGrid()
 loadMemAgents()
 loadOverview()
 loadAvailableModels()
+loadOllamaModels()
 {
   const onbClose = document.getElementById('onboardingClose')
   if (onbClose) onbClose.addEventListener('click', dismissOnboarding)
