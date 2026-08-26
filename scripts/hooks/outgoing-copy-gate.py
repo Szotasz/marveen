@@ -306,8 +306,12 @@ HU_MARKERS = [
     "hogy", "nem", "vagy", "amit", "ami", "mert", "ezt", "ez a", "van", "lesz",
     "kell", "tehat", "tehát", "koszonom", "köszönöm", "szia", "sziasztok",
     "kerlek", "kérlek", "csatolva", "udvozlettel", "üdvözlettel", "levelet",
-    "level", "kuldom", "küldöm", "jelezz", "irj", "írj", "mar", "már", "csak",
+    "kuldom", "küldöm", "jelezz", "irj", "írj", "mar", "már", "csak",
 ]
+# A puszta "level" 2026-08-26-an kikerult a markerek kozul. Magyar markerkent
+# gyenge (a gyakori alak a "levelet", az mar bent van), viszont az ANGOL "level"
+# minden elofordulasa magyar-pontot adott egy angol szovegnek, es igy indithatta
+# el az ekezet-vizsgalatot olyan uzeneten, ami nem is magyar.
 
 # Accentless spellings of frequent Hungarian words -> the correct form. Every
 # entry is a word that CANNOT be spelled without its accent, so a hit inside
@@ -540,7 +544,22 @@ def _hit_context(prose: str, pos: int, length: int) -> str:
 # fennakadt a `video_view` esemenynevben levo "video"-n. A szobonto az aláhúzást
 # hataroljelnek veszi, tehat minden snake_case azonosito, fajlnev, URL-slug es
 # domain beszallit egy "magyar szot", ami ott ekezet nelkul HELYES. Ugyanaz az
-# osztaly, mint a 2026-08-11-i `level` fajlnev-talalat. A javitas nem a szotarbol
+# osztaly, mint a 2026-08-11-i `level` fajlnev-talalat. Ugyanide tartozik a
+# 2026-08-25-i talalat ugyanebbol az osztalybol: a TULAJDONNEV + kotojeles toldalek
+# ("Chrome-ot", "Drive-ra") is puszta "ot"/"ra" tokenre esik szet, es az "ot" benne
+# van a szotarban (-> "ot"). Ezert a maszk a nagybetuvel kezdodo tovet is elfogadja,
+# de CSAK ha a kotojel utan legfeljebb negy kisbetu all: egy valodi magyar osszetett
+# szo masodik tagja ("Telegram-hidam") tipikusan hosszabb, tehat az tovabbra is fennakad.
+# 2026-08-26-i talalat, HARMADIK a sorozatban, de mas alosztaly: nem toldalek volt,
+# hanem egy ANGOL SZO, ami veletlenul egy ekezetes magyar szo ekezetlen alakja.
+# A "level 1" (autonomia-szint) alak a szotarban "level -> level" javaslatot valtott ki,
+# es ketszer blokkolta a reggeli uzenetet. A szotarbol NEM vettem ki a bejegyzest, mert
+# a magyar "level" tenyleg hibas alak; a maszk csak a SZAM ELOTTI angol hasznalatot vagja ki.
+# Ami igy is fennakad: az idezojelbe tett, magarol beszelo "level" szo. Arra a kod-span
+# (backtick) a kijarat, az ugyanis maszkolva van.
+# 2026-08-24-i talalat: a szambol es kotojeles magyar toldalekbol allo alak
+# ("8:09-es", "2-es", "17:06-kor") a szobontonal puszta "es"/"kor" tokenne esik
+# szet, amit a szotar hibanak lat -- pedig ott toldalek, nem szo. A javitas nem a szotarbol
 # vesz ki (az elrontana a valodi talalatokat is), hanem a technikai regiokat
 # vagja ki a vizsgalt szovegbol. A gondolatjel- es nev-ellenorzes NEM ezen fut.
 TECHNICAL = re.compile(
@@ -550,6 +569,9 @@ TECHNICAL = re.compile(
       | \b\w+(?:_\w+)+\b            # snake_case azonosito
       | \b\w+\.[A-Za-z]{2,10}\b     # fajlnev / domain (video.mp4, marveen.io)
       | \b[\w-]*/[\w/-]+            # utvonal / slug
+      | \d+(?:[.:,]\d+)*-[^\W\d_]+   # szam + magyar toldalek (8:09-es, 2-es, 17:06-kor)
+      | \b[A-ZÁÉÍÓÖŐÚÜŰ][^\W\d_]*-[a-záéíóöőúüű]{1,4}\b   # tulajdonnev + toldalek (Chrome-ot, Drive-ra)
+      | \blevel\s+\d+\b            # angol "level 1" (autonomia-szint, log-szint)
     """,
     re.X,
 )
