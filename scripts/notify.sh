@@ -79,30 +79,15 @@ if [ -n "${VITEST:-}" ] || [ "${NODE_ENV:-}" = "test" ]; then
 fi
 
 # Delivery must be HONEST (NOTIFYVAK826): this script is the fleet's FALLBACK
-# channel, used exactly when the primary Telegram plugin is already down. A
-# swallowed curl failure here reported success while nothing was delivered --
-# indistinguishable, from the owner's side, from "nothing happened". Success
-# therefore requires BOTH a clean curl exit AND the Bot API's own "ok":true
-# (an HTTP 200 with ok:false -- bad chat_id, parse error -- exits 0 in curl).
-RESPONSE=$(curl -sS -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-  -d "chat_id=${CHAT_ID}" \
-  -d "text=${MESSAGE}" \
-  -d "parse_mode=HTML" 2>&1)
-CURL_EXIT=$?
-# Never echo the bot token: some curl errors quote the request URL.
-RESPONSE="${RESPONSE//${TOKEN}/<token>}"
+# channel, used exactly when the primary Telegram plugin is already down. The
+# success contract (curl exit 0 AND Bot API "ok":true, loud stderr otherwise,
+# token redacted) lives in the shared library so every sender speaks the same
+# truth (NOTIFYVAKSWEEP826) -- this script consumes it, it no longer inlines it.
+. "$SCRIPT_DIR/lib/send-telegram.sh"
 
-if [ $CURL_EXIT -ne 0 ]; then
-  echo "Hiba: ertesites kuldese sikertelen (curl exit ${CURL_EXIT}): ${RESPONSE}" >&2
+if send_telegram_message "$TOKEN" "$CHAT_ID" "$MESSAGE" --data-urlencode "parse_mode=HTML"; then
+  echo "Ertesites elkuldve."
+else
+  echo "Hiba: ertesites kuldese sikertelen (reszletek fent)." >&2
   exit 1
 fi
-
-case "$RESPONSE" in
-  *'"ok":true'*)
-    echo "Ertesites elkuldve."
-    ;;
-  *)
-    echo "Hiba: a Telegram API elutasitotta az ertesitest: ${RESPONSE}" >&2
-    exit 1
-    ;;
-esac
