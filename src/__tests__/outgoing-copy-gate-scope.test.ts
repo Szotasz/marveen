@@ -148,3 +148,40 @@ describe('outgoing-copy gate: quoted tokens in OPERATION position still fire (ms
     expect(isSend(`echo "lezaratlan idezojel, artalmatlan szoveg`)).toBe(false)
   })
 })
+
+describe('RESENDGATE826: the resend trigger fires on the METHOD, not the hostname', () => {
+  // The method-blind pattern blocked a read-only GET /domains (no body, no
+  // recipient, nothing leaves) exactly when a domain-verification MEASUREMENT
+  // needed it. The narrowing is strict: recognize the method, or stay closed.
+
+  it('read-only queries pass: bare GET, explicit GET, forced -G', () => {
+    expect(isSend(`curl -s -H "Authorization: Bearer re_x" https://api.resend.com/domains`)).toBe(false)
+    expect(isSend(`curl -sS -X GET https://api.resend.com/emails/abc123 -H "Authorization: Bearer re_x"`)).toBe(false)
+    expect(isSend(`curl -G https://api.resend.com/domains -H "Authorization: Bearer re_x"`)).toBe(false)
+    expect(isSend(`wget -qO- https://api.resend.com/domains`)).toBe(false)
+  })
+
+  it('KNOWN POSITIVE: a real POST /emails still fires, in every spelling', () => {
+    // The condition of the narrowing: an actual send may never slip through.
+    expect(isSend(`curl -X POST https://api.resend.com/emails -H "Authorization: Bearer X" -d '{"to":"a@b.hu"}'`)).toBe(true)
+    expect(isSend(`curl 'https://api.resend.com/emails' -d @/tmp/mail.json`)).toBe(true) // implicit POST via body
+    expect(isSend(`curl -sX POST https://api.resend.com/emails -d '{}'`)).toBe(true) // bundled cluster
+    expect(isSend(`curl --request=POST https://api.resend.com/emails`)).toBe(true)
+    expect(isSend(`curl --json '{"to":"a@b.hu"}' https://api.resend.com/emails`)).toBe(true)
+  })
+
+  it('state-changing non-POST methods fire too', () => {
+    expect(isSend(`curl -X DELETE https://api.resend.com/emails/abc123`)).toBe(true)
+    expect(isSend(`curl --request PATCH https://api.resend.com/emails/abc123 -d '{"scheduled_at":null}'`)).toBe(true)
+  })
+
+  it('an undeterminable method stays FAIL-CLOSED: variable, truncated flag, config file', () => {
+    expect(isSend(`curl -X "$METHOD" https://api.resend.com/domains`)).toBe(true)
+    expect(isSend(`curl https://api.resend.com/domains -X`)).toBe(true)
+    expect(isSend(`curl -K /tmp/curlrc https://api.resend.com/domains`)).toBe(true)
+  })
+
+  it('a GET carrying a body is suspicious and stays closed', () => {
+    expect(isSend(`curl -X GET https://api.resend.com/emails -d '{"to":"a@b.hu"}'`)).toBe(true)
+  })
+})

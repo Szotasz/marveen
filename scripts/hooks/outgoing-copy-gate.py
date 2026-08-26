@@ -108,6 +108,88 @@ def _code_string_sends(code: str) -> bool:
 # Token-ELEJERE horgonyzott cel-minta: egy URL-argumentum vagy csupasz
 # domain/utvonal illik ra; egy JSON-payload ('{...api.resend.com...}') nem.
 _RESEND_TARGET = re.compile(r"^(https?://)?([^/@\s]*\.)?api\.resend\.com(/|$|\s|$)", re.I)
+
+# RESENDGATE826: a resend-celu curl/wget csak akkor KULDES, ha a METODUS az.
+# A korabbi minta metodus-vak volt, es egy read-only GET /domains (nincs torzs,
+# nincs cimzett) ugyanugy fail-closed elutasitast kapott -- pont egy domain-
+# verifikacios MERES akadt el rajta. A szukites iranya szigoru: a metodust
+# FELISMERNI kell (explicit -X/--request/--method, vagy implicit POST a
+# torzs-flagekbol); ha nem allapithato meg (valtozo, config-fajl, csonka flag),
+# marad a fail-closed. Egy "nincs felismerheto torzs -> atmegy" szabaly a
+# kaput utne ki, ezert ILYEN AG NINCS.
+_CURL_BODY_OPTS = {
+    "-d", "--data", "--data-raw", "--data-binary", "--data-urlencode",
+    "--data-ascii", "-F", "--form", "--form-string", "--json",
+    "-T", "--upload-file",
+    # wget torzs-flagek
+    "--post-data", "--post-file", "--body-data", "--body-file",
+}
+_SAFE_METHODS = {"GET", "HEAD"}
+
+
+def _curl_resend_verdict(rest):
+    """'read' | 'send' | 'unknown' -- unknown a hivo oldalon fail-closed."""
+    method = None
+    has_body = False
+    get_forced = False
+    i, n = 0, len(rest)
+    while i < n:
+        t = rest[i]
+        if t in ("-X", "--request", "--method"):
+            if i + 1 >= n or not rest[i + 1].isalpha():
+                return "unknown"  # csonka vagy valtozo ($METHOD) -- nem dontheto
+            method = rest[i + 1].upper()
+            i += 2
+            continue
+        if t.startswith("--request=") or t.startswith("--method="):
+            m = t.split("=", 1)[1]
+            if not m.isalpha():
+                return "unknown"
+            method = m.upper()
+            i += 1
+            continue
+        if t in ("-G", "--get"):
+            get_forced = True
+            i += 1
+            continue
+        if t in ("-K", "--config"):
+            return "unknown"  # a config-fajl rejtett metodust/torzset hordozhat
+        if t in _CURL_BODY_OPTS or any(
+            t.startswith(o + "=") for o in _CURL_BODY_OPTS if o.startswith("--")
+        ):
+            has_body = True
+            i += 1
+            continue
+        if t.startswith("-") and not t.startswith("--") and len(t) > 1:
+            # egy-kotojeles cluster (-sS, -sX POST, -sd '{}'): a betuk kotegelve
+            letters = t[1:]
+            if "X" in letters:
+                after = letters.split("X", 1)[1]
+                if after:
+                    if not after.isalpha():
+                        return "unknown"
+                    method = after.upper()
+                else:
+                    if i + 1 >= n or not rest[i + 1].isalpha():
+                        return "unknown"
+                    method = rest[i + 1].upper()
+                    i += 1
+            elif "d" in letters or "F" in letters or "T" in letters:
+                has_body = True
+            elif "G" in letters:
+                get_forced = True
+            elif "K" in letters:
+                return "unknown"
+            i += 1
+            continue
+        i += 1
+    if method is not None and method not in _SAFE_METHODS:
+        return "send"
+    if has_body and not get_forced:
+        # implicit POST (curl -d/-F/--json/-T alapertelmezese), vagy egy
+        # gyanus "GET torzzsel" alak -- mindketto kuldeskent kezelve
+        return "send"
+    return "read"
 # A tovabbi kuldes-jellegu literalok, amikre a parse-hiba eseten (es CSAK
 # akkor) konzervativan visszaesunk -- lasd is_send_invocation vegen.
 _FALLBACK_LITERALS = re.compile(
@@ -197,9 +279,12 @@ def _segment_is_send(toks, depth: int) -> bool:
     if any(_GRAPHMAIL.match(_basename(t)) for t in toks) and "send" in rest:
         return True
     # curl/wget: a cel-token akkor is muvelet, ha idezojelben allt -- a
-    # horgonyzott minta valasztja el a payload-belseji emlitestol
+    # horgonyzott minta valasztja el a payload-belseji emlitestol.
+    # RESENDGATE826: csak a TENYLEGES kuldes (POST/PUT/... vagy torzs) akad
+    # fenn; a read-only GET/HEAD lekerdezes atmegy; a nem-donthato metodus
+    # tovabbra is fail-closed.
     if _CURLISH.match(prog) and any(_RESEND_TARGET.match(t) for t in rest):
-        return True
+        return _curl_resend_verdict(rest) != "read"
     return False
 
 
