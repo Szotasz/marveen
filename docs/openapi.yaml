@@ -57,6 +57,10 @@ tags:
     description: Autonomy level configuration per category
   - name: internal
     description: Dashboard-internal and status endpoints (x-internal)
+  - name: admin-tenants
+    description: B2B tenant management (requires admin:all role)
+  - name: admin-partner-senders
+    description: B2B partner sender allowlist management (requires admin:all role)
 
 # ---------------------------------------------------------------------------
 # Reusable components
@@ -392,6 +396,46 @@ components:
                 type: string
               created_at:
                 type: integer
+
+    Tenant:
+      type: object
+      required: [id, display_name, created_at, disabled_at]
+      properties:
+        id:
+          type: string
+          description: "Tenant identifier — 3-63 chars, `^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$`"
+        display_name:
+          type: string
+          maxLength: 120
+        created_at:
+          type: integer
+          description: Unix timestamp (seconds)
+        disabled_at:
+          type: integer
+          nullable: true
+          description: Unix timestamp when disabled; null when active
+
+    PartnerSender:
+      type: object
+      required: [sender_id, tenant_id, display_name, created_by, created_at, disabled_at]
+      properties:
+        sender_id:
+          type: string
+          description: "Sanitized sender identifier — `[a-zA-Z0-9_-]`, 1-63 chars"
+        tenant_id:
+          type: string
+        display_name:
+          type: string
+        created_by:
+          type: string
+          description: Username of the admin who created this record
+        created_at:
+          type: integer
+          description: Unix timestamp (seconds)
+        disabled_at:
+          type: integer
+          nullable: true
+          description: Unix timestamp when soft-deleted; null when active
 
 # ---------------------------------------------------------------------------
 # Paths — Tier 1
@@ -2843,6 +2887,257 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OkResponse"
+
+  # ---------------------------------------------------------------------------
+  # Admin — B2B management (admin:all)
+  # ---------------------------------------------------------------------------
+
+  /admin/tenants:
+    post:
+      tags: [admin-tenants]
+      operationId: createTenant
+      summary: Create a tenant
+      description: |
+        Creates a new B2B tenant. Requires `admin:all` role.
+
+        Tenant id rules: `^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$` (3-63 chars).
+        Reserved ids (`default`, `admin`, `system`, `root`) are always rejected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, display_name]
+              properties:
+                id:
+                  type: string
+                  description: "Tenant id — `^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$`"
+                display_name:
+                  type: string
+                  maxLength: 120
+            example:
+              id: acme-corp
+              display_name: Acme Corporation
+      responses:
+        "201":
+          description: Tenant created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tenant"
+        "400":
+          description: "`invalid_tenant_id` or `display_name_required`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: "`tenant_already_exists`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    get:
+      tags: [admin-tenants]
+      operationId: listTenants
+      summary: List tenants
+      description: Returns active tenants. Pass `include_disabled=true` to include disabled ones.
+      parameters:
+        - name: include_disabled
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: Tenant list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Tenant"
+                  total:
+                    type: integer
+
+  /admin/tenants/{tenant_id}:
+    patch:
+      tags: [admin-tenants]
+      operationId: updateTenant
+      summary: Update a tenant
+      description: |
+        Partial update — at least one field required. The `default` tenant
+        cannot be disabled (`cannot_disable_default_tenant`).
+      parameters:
+        - name: tenant_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                display_name:
+                  type: string
+                  maxLength: 120
+                disabled:
+                  type: boolean
+      responses:
+        "200":
+          description: Updated tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tenant"
+        "400":
+          description: "`no_fields`, `display_name_required`, or `cannot_disable_default_tenant`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "`tenant_not_found`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /admin/partner-senders:
+    post:
+      tags: [admin-partner-senders]
+      operationId: createPartnerSender
+      summary: Register a partner sender
+      description: |
+        Adds a sender id to the tenant allowlist. The `sender_id` is sanitized
+        before storage (kept chars: `[a-zA-Z0-9_-]`, max 63 chars after sanitization).
+
+        Two 409 cases:
+        - `sender_id_is_fleet_agent` — the id collides with a registered fleet
+          agent name; pick a different sender id.
+        - `partner_sender_already_exists` — an active or soft-disabled record
+          already exists for this `(sender_id, tenant_id)` pair.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sender_id, tenant_id]
+              properties:
+                sender_id:
+                  type: string
+                  description: "`[a-zA-Z0-9_-]`, 1-63 chars"
+                tenant_id:
+                  type: string
+                display_name:
+                  type: string
+            example:
+              sender_id: acme-bot
+              tenant_id: acme-corp
+              display_name: Acme Integration Bot
+      responses:
+        "201":
+          description: Partner sender created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PartnerSender"
+        "400":
+          description: "`invalid_sender_id` or `invalid_tenant_id`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "`tenant_not_found` (tenant does not exist or is disabled)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: "`sender_id_is_fleet_agent` or `partner_sender_already_exists`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    get:
+      tags: [admin-partner-senders]
+      operationId: listPartnerSenders
+      summary: List partner senders
+      description: |
+        Returns all partner senders. Filter by tenant with `?tenant_id=<id>`.
+        Includes both active and soft-disabled records.
+      parameters:
+        - name: tenant_id
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Partner sender list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PartnerSender"
+                  total:
+                    type: integer
+
+  /admin/partner-senders/{sender_id}:
+    delete:
+      tags: [admin-partner-senders]
+      operationId: disablePartnerSender
+      summary: Disable a partner sender (soft-delete)
+      description: |
+        Sets `disabled_at` on the record — the row is retained in the database.
+        Requires `?tenant_id=<id>` query parameter.
+      parameters:
+        - name: sender_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: tenant_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Tenant the sender belongs to
+      responses:
+        "200":
+          description: Sender disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: "`tenant_id_required` — missing `?tenant_id=` query parameter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "`partner_sender_not_found` — not found or already disabled"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   # ---------------------------------------------------------------------------
   # Tier 3 — internal / status (x-internal: true)
