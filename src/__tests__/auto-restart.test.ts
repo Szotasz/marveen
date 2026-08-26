@@ -32,11 +32,11 @@ describe('normalizeAutoRestartConfig', () => {
   })
   it('keeps a valid daily config and clears interval (daily wins)', () => {
     const c = normalizeAutoRestartConfig({ enabled: true, mode: 'fresh', dailyTime: '03:00', intervalHours: 6, handoff: true })
-    expect(c).toEqual({ enabled: true, mode: 'fresh', dailyTime: '03:00', intervalHours: null, handoff: true })
+    expect(c).toEqual({ enabled: true, mode: 'fresh', dailyTime: '03:00', intervalHours: null, handoff: true, openQuestionDeferralCapHours: 24 })
   })
   it('keeps a valid interval config when no daily time', () => {
     const c = normalizeAutoRestartConfig({ enabled: true, mode: 'continue', intervalHours: 8 })
-    expect(c).toEqual({ enabled: true, mode: 'continue', dailyTime: null, intervalHours: 8, handoff: false })
+    expect(c).toEqual({ enabled: true, mode: 'continue', dailyTime: null, intervalHours: 8, handoff: false, openQuestionDeferralCapHours: 24 })
   })
   it('drops an invalid dailyTime and non-positive interval', () => {
     const c = normalizeAutoRestartConfig({ enabled: true, dailyTime: '99:99', intervalHours: 0 })
@@ -45,6 +45,12 @@ describe('normalizeAutoRestartConfig', () => {
   })
   it('defaults mode to continue for an unknown mode', () => {
     expect(normalizeAutoRestartConfig({ mode: 'wild' }).mode).toBe('continue')
+  })
+  it('keeps a valid open-question deferral cap and defaults invalid ones', () => {
+    expect(normalizeAutoRestartConfig({ openQuestionDeferralCapHours: 6 }).openQuestionDeferralCapHours).toBe(6)
+    expect(normalizeAutoRestartConfig({ openQuestionDeferralCapHours: 0 }).openQuestionDeferralCapHours).toBe(24)
+    expect(normalizeAutoRestartConfig({ openQuestionDeferralCapHours: -1 }).openQuestionDeferralCapHours).toBe(24)
+    expect(normalizeAutoRestartConfig({ openQuestionDeferralCapHours: 'lots' }).openQuestionDeferralCapHours).toBe(24)
   })
 })
 

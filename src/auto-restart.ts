@@ -43,7 +43,12 @@ export interface AutoRestartConfig {
   intervalHours: number | null
   /** Phase 2: run the handoff skill to persist context before a fresh restart. */
   handoff: boolean
+  /** Hours an unanswered inbound question may keep deferring a due restart
+   *  before the restart proceeds anyway. See OPEN_QUESTION_DEFERRAL_CAP_HOURS. */
+  openQuestionDeferralCapHours: number
 }
+
+export const OPEN_QUESTION_DEFERRAL_CAP_HOURS = 24
 
 export const DEFAULT_AUTO_RESTART: AutoRestartConfig = {
   enabled: false,
@@ -51,6 +56,7 @@ export const DEFAULT_AUTO_RESTART: AutoRestartConfig = {
   dailyTime: null,
   intervalHours: null,
   handoff: false,
+  openQuestionDeferralCapHours: OPEN_QUESTION_DEFERRAL_CAP_HOURS,
 }
 
 /** Parse 'HH:MM' (24h) into minutes since local midnight, or null if invalid. */
@@ -80,12 +86,18 @@ export function normalizeAutoRestartConfig(raw: unknown): AutoRestartConfig {
   }
   // dailyTime takes precedence: never keep both, so the schedule is unambiguous.
   if (dailyTime !== null) intervalHours = null
+  let openQuestionDeferralCapHours = OPEN_QUESTION_DEFERRAL_CAP_HOURS
+  if (typeof o.openQuestionDeferralCapHours === 'number' &&
+      Number.isFinite(o.openQuestionDeferralCapHours) && o.openQuestionDeferralCapHours > 0) {
+    openQuestionDeferralCapHours = o.openQuestionDeferralCapHours
+  }
   return {
     enabled: o.enabled === true,
     mode,
     dailyTime,
     intervalHours,
     handoff: o.handoff === true,
+    openQuestionDeferralCapHours,
   }
 }
 
@@ -147,9 +159,10 @@ export function restartBlockedBy(
  * standing for 72 days), and an uncapped deferral turns the nightly restart
  * into a mechanism that silently never runs. After the cap the restart
  * proceeds anyway -- the deferral must have an end, and the override is
- * logged so it also has a voice.
+ * logged so it also has a voice. The hours are configurable per agent via
+ * AutoRestartConfig.openQuestionDeferralCapHours; this is the default.
  */
-export const OPEN_QUESTION_DEFERRAL_CAP_MS = 24 * 60 * 60 * 1000
+export const OPEN_QUESTION_DEFERRAL_CAP_MS = OPEN_QUESTION_DEFERRAL_CAP_HOURS * 60 * 60 * 1000
 
 /**
  * Whether a due-but-deferred restart must proceed despite the block.
