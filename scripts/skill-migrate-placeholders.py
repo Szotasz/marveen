@@ -2,13 +2,15 @@
 """
 skill-migrate-placeholders.py
 
-Migrates hardcoded fleet agent names in SKILL.md files to portable placeholders.
+Migrates hardcoded fleet agent names AND the operator's personal name / email in SKILL.md files
+to portable placeholders.
 
 Usage:
-  python3 scripts/skill-migrate-placeholders.py --dry-run       # show planned changes only
-  python3 scripts/skill-migrate-placeholders.py --apply         # apply with .bak backups
-  python3 scripts/skill-migrate-placeholders.py --verify        # count remaining hardcoded refs
-  python3 scripts/skill-migrate-placeholders.py --verify-scope-a  # count only in-scope refs
+  python3 scripts/skill-migrate-placeholders.py --dry-run         # show planned changes only
+  python3 scripts/skill-migrate-placeholders.py --apply           # apply with .bak backups
+  python3 scripts/skill-migrate-placeholders.py --verify          # count remaining hardcoded refs
+  python3 scripts/skill-migrate-placeholders.py --verify-scope-a  # count only in-scope agent refs
+  python3 scripts/skill-migrate-placeholders.py --verify-owner    # count remaining owner refs
 
 Scope-A definition (must reach 0):
   - Shared/global skills: ALL agent-name refs (all sections, YAML, headers)
@@ -19,11 +21,28 @@ Idempotent: running --apply twice is safe (already-replaced text stays unchanged
 Skip list (system identifiers, not fleet-agent refs):
   - com.jarvis.* LaunchAgent labels (boo/marveen-branch-live-test)
   - Filenames where agent name is embedded in the filename itself (e.g. "Poly neka-redesign.html")
+
+Owner name / email skip list (exceptions NOT replaced):
+  - Domain contexts: jonasgergo.hu, aimit.hu, etc.
+  - Python open() file paths -- Python does not expand $HOME; paths must stay absolute
+  - Google MCP token filenames (tokens/jonas.json, account=jonas)
+  - snake_case memory slugs (warm_jonas_*, feedback_gergo_*, etc.)
+  - Wiki links ([[warm_jonas_infografika_preferenciak]])
+  - grep privacy-filter pattern strings (where the name IS the grep search term)
+  - Bash home paths /Users/<username>/ are normalised to $HOME/ separately (not a name ref)
+
+Runtime token resolution:
+  <OWNER> and <BACKEND_AGENT>-style tokens in skill files are DOCUMENTATION-ONLY placeholders.
+  They are NOT resolved at runtime when agents read skill files. Agent scaffold templates use
+  {{OWNER_NAME}} (double curly) syntax which resolveTemplatePlaceholders() handles at agent
+  creation time. No additional wiring is needed for skill-file angle-bracket tokens.
 """
 
 import argparse
+import os
 import re
 import shutil
+import unicodedata
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -44,6 +63,232 @@ ROLE_PLACEHOLDERS: dict[str, str] = {
 }
 
 ALL_AGENT_IDS = set(ROLE_PLACEHOLDERS.keys())
+
+# ---------------------------------------------------------------------------
+# Owner name / email configuration
+# ---------------------------------------------------------------------------
+# Read from MARVEEN_ROOT/.env first, then override with os.environ.
+# Matches how src/config.ts loads OWNER_NAME: env['OWNER_NAME'] ?? 'Owner'.
+# OWNER_NAME_PLACEHOLDER keeps migration-safe: the literal word "Owner" is the
+# generic default and not a person's name, so we never replace it.
+
+def _load_dotenv(marveen_root: Path) -> dict[str, str]:
+    """Parse key=value lines from .env without shell expansion."""
+    env_file = marveen_root / ".env"
+    result: dict[str, str] = {}
+    if not env_file.exists():
+        return result
+    for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        # Strip optional surrounding quotes
+        val = val.strip().strip('"').strip("'")
+        result[key.strip()] = val
+    return result
+
+
+def _resolve_owner_config(marveen_root: Path) -> tuple[str, str]:
+    """Return (OWNER_NAME, OWNER_EMAIL) from .env + os.environ."""
+    dotenv = _load_dotenv(marveen_root)
+    name = os.environ.get("OWNER_NAME") or dotenv.get("OWNER_NAME") or ""
+    email = os.environ.get("OWNER_EMAIL") or dotenv.get("OWNER_EMAIL") or ""
+    return name, email
+
+
+# Resolved at startup (after MARVEEN_ROOT is set below).
+# These are filled in main() or at module level after MARVEEN_ROOT is known.
+OWNER_NAME: str = ""
+OWNER_EMAIL: str = ""
+
+# ---------------------------------------------------------------------------
+# Owner name regex patterns
+# ---------------------------------------------------------------------------
+# Built at startup once OWNER_NAME is resolved (see _build_owner_patterns).
+# Keeping them as module-level vars lets unit tests set them directly.
+
+OWNER_NAME_RX: re.Pattern | None = None
+OWNER_EMAIL_RX: re.Pattern | None = None
+
+# Common Hungarian noun-case suffixes that attach directly to a name (no space).
+# Listed longest-first so alternation prefers the longest match.
+_HU_SUFFIXES = (
+    "höz", "hez", "hoz",   # adessive
+    "től", "tól",           # ablative
+    "ből", "ból",           # elative
+    "nek", "nak",           # dative
+    "vel", "val",           # instrumental
+    "nél", "nál",           # adessive-2
+    "ről", "ről", "rol",    # delative
+    "ből",                  # (listed again harmlessly; re deduplicates)
+    "ben", "ban",           # inessive
+    "nek", "nak",           # (harmless repeat)
+    "re", "ra",             # sublative
+    "t",                    # accusative (short; must be last to avoid masking longer ones)
+)
+_HU_SUFFIX_ALT = "|".join(dict.fromkeys(_HU_SUFFIXES))  # deduplicated, order preserved
+
+
+def _build_owner_patterns(owner_name: str, owner_email: str) -> None:
+    """Build OWNER_NAME_RX and OWNER_EMAIL_RX from the resolved config values."""
+    global OWNER_NAME_RX, OWNER_EMAIL_RX
+
+    if owner_name and owner_name.lower() not in ("owner", ""):
+        # Split into first / last name to support accented and unaccented variants.
+        # Canonical: "Jónás Gergő"; unaccented variant: "Jonas Gergo".
+        # Also handle the OS username form as an atomic unit (e.g. "jonasgergo").
+        parts = owner_name.split()
+        if len(parts) >= 2:
+            first_raw, last_raw = parts[0], parts[-1]
+
+            def _accent_alts(s: str) -> str:
+                """Return a regex that matches both accented and unaccented forms."""
+                return (
+                    s
+                    .replace("á", "[aá]").replace("é", "[eé]")
+                    .replace("í", "[ií]").replace("ó", "[oó]")
+                    .replace("ö", "[oö]").replace("ő", "[oöő]")  # ő → o, ö, or ő
+                    .replace("ú", "[uú]").replace("ü", "[uü]")
+                    .replace("ű", "[uüű]")                       # ű → u, ü, or ű
+                    .replace("A", "[aA]").replace("E", "[eE]")
+                )
+
+            first_rx = _accent_alts(first_raw)
+            last_rx = _accent_alts(last_raw)
+
+            # Derive the username form: lowercase, ASCII-only, concatenated.
+            # unicodedata NFKD decomposes accented chars (á→a+combining, ő→o+combining)
+            # so the ASCII filter strips the combining marks and leaves base letters.
+            username = "".join(
+                c for c in unicodedata.normalize("NFKD", owner_name.lower())
+                if c.isascii() and (c.isalpha() or c.isdigit())
+            )
+
+            # Alternation: longest match first (full name before username).
+            # Look-around instead of \b (unreliable with accented chars).
+            # Capture group 1: matched name form.
+            # Capture group 2: optional Hungarian suffix (consumed, recreated with hyphen).
+            OWNER_NAME_RX = re.compile(
+                r"(?<![a-zA-Z0-9_])"
+                r"(" + first_rx + r"\s+" + last_rx
+                + (r"|" + re.escape(username) if username else r"")
+                + r")"
+                r"(?:(" + _HU_SUFFIX_ALT + r"))?"
+                r"(?![a-zA-Z0-9_])",
+                re.IGNORECASE,
+            )
+        else:
+            # Single-word owner name: match as-is.
+            OWNER_NAME_RX = re.compile(
+                r"(?<![a-zA-Z0-9_])(" + re.escape(owner_name) + r")(?![a-zA-Z0-9_])",
+                re.IGNORECASE,
+            )
+
+    if owner_email and "@" in owner_email:
+        OWNER_EMAIL_RX = re.compile(re.escape(owner_email), re.IGNORECASE)
+
+
+# ---------------------------------------------------------------------------
+# Owner exception detection
+# ---------------------------------------------------------------------------
+
+# Matches the OS home path that should become $HOME/ in bash contexts.
+# Separate from name replacement: the path is a filesystem reference, not a name.
+_OS_PATH_RX: re.Pattern | None = None  # built after MARVEEN_ROOT/HOME are known
+
+# Lines where the owner name appears inside a Python open() call: keep as absolute path.
+_PYTHON_OPEN_PREFIX_RX = re.compile(r"""open\s*\(\s*['"]""")
+
+# snake_case identifier: underscore immediately before or after the match position.
+_SNAKE_BEFORE_RX = re.compile(r"_$")
+_SNAKE_AFTER_RX = re.compile(r"^_")
+
+# Wiki link: match is between [[ and ]]
+_WIKI_OPEN_RX = re.compile(r"\[\[[^\]]*$")
+_WIKI_CLOSE_RX = re.compile(r"^[^\[]*\]\]")
+
+# Domain context: name immediately before a TLD dot
+_DOMAIN_AFTER_RX = re.compile(r"^\.(hu|com|net|org|io|eu)\b")
+
+# Skill slug with hyphen (jonasgergo-hu, jonasgergo-hu-cikk, etc.)
+_SLUG_AFTER_RX = re.compile(r"^-[a-z]")
+
+# Google MCP account/token patterns: "account=jonas" or "tokens/jonas.json" or "jonas.json"
+_GOOGLE_ACCOUNT_RX = re.compile(r"""account\s*=\s*['"]?\w+['"]?|tokens/\w+\.json|\w+\.json['"]""")
+
+# grep pattern context: name appears as part of a grep search term (inside quotes after grep)
+_GREP_PATTERN_RX = re.compile(r"""grep\b[^"']*['"][^'"]*$""")
+
+
+def _is_owner_name_exception(line: str, match: re.Match) -> str | None:
+    """Return a skip reason string if the owner name match should not be replaced, else None."""
+    start, end = match.start(), match.end()
+    before = line[:start]
+    after = line[end:]
+
+    # 1. Domain context (jonasgergo.hu, aimit.hu…)
+    if _DOMAIN_AFTER_RX.match(after):
+        return "domain context"
+
+    # 2. Skill/slug: username form (no space) immediately before a hyphen+letter.
+    # Full name form (with space) followed by hyphen is a ragozás, not a slug.
+    if _SLUG_AFTER_RX.match(after) and " " not in (match.group(1) or ""):
+        return "slug/skill-name context"
+
+    # 3. Python open() path: an open(" or open(' appears before the match on the same line
+    if _PYTHON_OPEN_PREFIX_RX.search(before):
+        return "python open() path"
+
+    # 4. Google MCP token / account references
+    if _GOOGLE_ACCOUNT_RX.search(line):
+        # Only skip if the matched text is related to the google pattern
+        # (line contains account=... or tokens/*.json)
+        return "google-mcp account/token"
+
+    # 5. snake_case identifier: underscore immediately adjacent
+    if _SNAKE_BEFORE_RX.search(before) or _SNAKE_AFTER_RX.match(after):
+        return "snake_case identifier"
+
+    # 6. Wiki link: match is between [[ and ]] on the same line
+    if _WIKI_OPEN_RX.search(before) and _WIKI_CLOSE_RX.match(after):
+        return "wiki link slug"
+
+    # 7. grep privacy-filter line: grep appears earlier on the line and we're inside its quote
+    if _GREP_PATTERN_RX.search(before):
+        return "grep pattern string"
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Path normalisation (bash contexts)
+# ---------------------------------------------------------------------------
+
+def _normalize_bash_path(text: str, home_path: str, changes: list[str]) -> str:
+    """Replace /Users/<username>/ with $HOME/ in bash contexts.
+
+    Skips lines containing Python open() calls: Python does not expand $HOME.
+    """
+    if not home_path or home_path not in text:
+        return text
+
+    path_rx = re.compile(re.escape(home_path))
+    lines = text.split("\n")
+    result = []
+    for line in lines:
+        if home_path not in line:
+            result.append(line)
+            continue
+        if _PYTHON_OPEN_PREFIX_RX.search(line):
+            result.append(line)  # keep absolute path in Python open() calls
+            continue
+        new_line = path_rx.sub("$HOME/", line)
+        if new_line != line:
+            changes.append(f'Path "{home_path}" -> "$HOME/"')
+        result.append(new_line)
+    return "\n".join(result)
+
 
 # Strings that contain agent names but are system identifiers, NOT fleet-agent refs.
 # Lines containing any of these substrings are skipped during prose replacement.
@@ -279,6 +524,54 @@ def migrate_file(path: Path, agent_id: str, dry_run: bool) -> list[str]:
 
         text = "\n".join(result_lines)
 
+    # --- Pass 4: owner name replacement ---
+    if OWNER_NAME_RX is not None:
+        lines = text.split("\n")
+        result_lines = []
+        in_frontmatter = False
+
+        for i, line in enumerate(lines):
+            if i == 0 and line.strip() == "---":
+                in_frontmatter = True
+                result_lines.append(line)
+                continue
+            if in_frontmatter and line.strip() == "---":
+                in_frontmatter = False
+                result_lines.append(line)
+                continue
+            if in_frontmatter:
+                result_lines.append(line)
+                continue
+
+            def _owner_replacer(m: re.Match) -> str:
+                reason = _is_owner_name_exception(line, m)
+                if reason:
+                    return m.group(0)  # no change
+                suffix = m.group(2)
+                if suffix:
+                    result = "<OWNER>-" + suffix.lower()
+                else:
+                    result = "<OWNER>"
+                if result != m.group(0):
+                    changes.append(f'Owner name "{m.group(0)}" -> "{result}"')
+                return result
+
+            new_line = OWNER_NAME_RX.sub(_owner_replacer, line)
+            result_lines.append(new_line)
+
+        text = "\n".join(result_lines)
+
+    # --- Pass 5: owner email replacement ---
+    if OWNER_EMAIL_RX is not None:
+        def _email_replacer(m: re.Match) -> str:
+            changes.append(f'Owner email "{m.group(0)}" -> "<OWNER_EMAIL>"')
+            return "<OWNER_EMAIL>"
+        text = OWNER_EMAIL_RX.sub(_email_replacer, text)
+
+    # --- Pass 6: bash path normalisation ($HOME) ---
+    home_path = str(Path.home()) + "/"
+    text = _normalize_bash_path(text, home_path, changes)
+
     # Deduplicate
     seen: set[str] = set()
     unique_changes: list[str] = []
@@ -386,9 +679,31 @@ def count_hardcoded_refs(dirs: list[Path]) -> dict[str, int]:
 # Main
 # ---------------------------------------------------------------------------
 
+def count_owner_refs(dirs: list[Path]) -> int:
+    """Count remaining owner name/email refs (for --verify-owner)."""
+    total = 0
+    if OWNER_NAME_RX is None and OWNER_EMAIL_RX is None:
+        return 0
+    for skill_dir in dirs:
+        if not skill_dir.exists():
+            continue
+        for md in skill_dir.rglob("SKILL.md"):
+            if md.name == ".skill-index.md":
+                continue
+            text = md.read_text(encoding="utf-8", errors="replace")
+            for line in text.splitlines():
+                if OWNER_NAME_RX is not None:
+                    for m in OWNER_NAME_RX.finditer(line):
+                        if _is_owner_name_exception(line, m) is None:
+                            total += 1
+                if OWNER_EMAIL_RX is not None:
+                    total += len(OWNER_EMAIL_RX.findall(line))
+    return total
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Migrate agent names to placeholders in skill files."
+        description="Migrate agent names and owner name to placeholders in skill files."
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--dry-run", action="store_true")
@@ -399,7 +714,17 @@ def main() -> None:
         action="store_true",
         help="Count only scope-A in-scope refs (target: 0)",
     )
+    group.add_argument(
+        "--verify-owner",
+        action="store_true",
+        help="Count remaining owner name/email refs (target: 0)",
+    )
     args = parser.parse_args()
+
+    # Resolve and build owner patterns at startup.
+    global OWNER_NAME, OWNER_EMAIL
+    OWNER_NAME, OWNER_EMAIL = _resolve_owner_config(MARVEEN_ROOT)
+    _build_owner_patterns(OWNER_NAME, OWNER_EMAIL)
 
     existing_dirs = [d for d in SKILL_DIRS if d.exists()]
 
@@ -431,6 +756,19 @@ def main() -> None:
             print(f"    - {reason}")
         return
 
+    if args.verify_owner:
+        if OWNER_NAME_RX is None and OWNER_EMAIL_RX is None:
+            print("=== Owner refs: OWNER_NAME not configured (set OWNER_NAME in .env) ===")
+            return
+        print(f"=== Owner name refs (target: 0) -- OWNER_NAME={OWNER_NAME!r} ===")
+        total = count_owner_refs(existing_dirs)
+        print(f"  Remaining replaceable refs: {total}")
+        if total == 0:
+            print("  OWNER CLEAN")
+        else:
+            print(f"  {total} refs remaining -- run --dry-run to see details")
+        return
+
     mode = "DRY-RUN" if args.dry_run else "APPLY"
     print(f"=== Skill placeholder migration [{mode}] ===")
     print(f"Scanning {len(existing_dirs)} directories...")
@@ -445,6 +783,8 @@ def main() -> None:
         dir_changes = 0
 
         for md in sorted(skill_dir.rglob("SKILL.md")):
+            if md.name == ".skill-index.md":
+                continue  # auto-generated; regenerate with skill-index.sh after apply
             skill_name = md.parent.name
             changes = migrate_file(md, agent_id, dry_run=args.dry_run)
             if changes:
