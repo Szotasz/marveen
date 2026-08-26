@@ -1262,7 +1262,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
             cur.summary === entry.blackboardSnapshot.summary &&
             (cur.task_ref ?? null) === entry.blackboardSnapshot.task_ref
           if (unchanged) {
-            upsertBlackboard(entry.agentName, { status: 'done', summary: entry.taskName })
+            upsertBlackboard(entry.agentName, { status: 'done', summary: entry.taskName, task_ref: entry.blackboardSnapshot.task_ref })
           }
         }
         taskInflightMap.delete(key)
