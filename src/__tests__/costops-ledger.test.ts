@@ -185,7 +185,7 @@ describe('costops ledger + summary', () => {
     expect(s.breakdown.estimate).toBe(1450)
   })
 
-  it('reports token_usage as VOLUME only, never priced', () => {
+  it('reports token_usage volume, and never lets it contribute to money', () => {
     const db = getDb()
     const w = monthWindow(NOW)
     const ins = db.prepare("INSERT INTO token_usage (agent,session_id,timestamp,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens) VALUES (?,?,?,?,?,?,?)")
@@ -197,8 +197,11 @@ describe('costops ledger + summary', () => {
     expect(s.token_usage.agents).toBe(2)
     expect(s.token_usage.input_tokens).toBe(1500)
     expect(s.token_usage.output_tokens).toBe(7000)
-    expect(s.token_usage.note).toContain('not priced')
     // token usage must NOT contribute to money
     expect(s.current_spend).toBe(0)
+    // These rows carry no model, so v0.2 cannot price them -- and says so
+    // rather than reporting a confident $0.
+    expect(s.token_usage.list_price_equivalent.total).toBe(0)
+    expect(s.token_usage.list_price_equivalent.unpriced_calls).toBe(2)
   })
 })
