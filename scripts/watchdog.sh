@@ -48,6 +48,33 @@ if [ "${1:-}" = "--resolve-provider" ]; then
   exit 0
 fi
 
+# ISOLATION PARITY: the dashboard launches every sub-agent with a per-agent
+# CLAUDE_CONFIG_DIR (agent-process.ts provisions <agent>/.claude-config, gated
+# on the fleet OAuth token) so plugin registries never clobber each other in
+# the shared ~/.claude. channel-watchdog.sh already rebuilds the same CFG_ENV
+# on its respawn path (channel-watchdog.sh:183-201); this watchdog's tmux
+# launch dropped it, so the FIRST auto-recovery silently moved an agent back
+# onto the shared ~/.claude. Same gating as agent-process.ts: no token file ->
+# no isolation (degraded shared mode is then the intended behaviour). The
+# token is read inside the pane via $(cat), so the literal secret never lands
+# in the command string, `ps` output or tmux pane history.
+agent_launch_env() {
+  local AGENT_DIR="$1"
+  if [ -d "$AGENT_DIR/.claude-config" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then
+    printf '%s' "export CLAUDE_CONFIG_DIR=\"$AGENT_DIR/.claude-config\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "
+  fi
+}
+
+# Self-test hook, mirroring --resolve-provider: print the launch-env prefix
+# for one agent dir and exit, so the isolation contract is testable from
+# fixtures (scripts/__tests__/watchdog-config-isolation.test.sh).
+if [ "${1:-}" = "--launch-env" ]; then
+  [ -n "${2:-}" ] || { echo "usage: watchdog.sh --launch-env <agent-dir>" >&2; exit 2; }
+  ENV_PREFIX="$(agent_launch_env "$2")"
+  if [ -n "$ENV_PREFIX" ]; then echo "isolation=yes prefix=$ENV_PREFIX"; else echo "isolation=no"; fi
+  exit 0
+fi
+
 
 export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
@@ -145,7 +172,9 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
     continue
   fi
 
-  CMD="export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official"
+  ISO_ENV="$(agent_launch_env "$AGENT_DIR")"
+
+  CMD="${ISO_ENV}export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official"
 
   tmux new-session -d -s "$SESSION_NAME" "$CMD" 2>/dev/null
   sleep 2
