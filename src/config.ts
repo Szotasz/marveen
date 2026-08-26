@@ -128,6 +128,10 @@ export const SLACK_CHANNEL_ID = env['SLACK_CHANNEL_ID'] ?? ''
 // text like "owner channels".
 export const OWNER_NAME_PLACEHOLDER = 'Owner'
 export const OWNER_NAME = env['OWNER_NAME'] ?? OWNER_NAME_PLACEHOLDER
+// Owner email address. Empty string when not configured (distribution-safe default:
+// no email is baked into a fresh install). Set OWNER_EMAIL in .env.
+// Used by the <OWNER_EMAIL> placeholder convention in skill files and templates.
+export const OWNER_EMAIL = env['OWNER_EMAIL'] ?? ''
 // Shared Google Drive folder ID the fleet writes deliverables into. Empty by
 // default (distribution-safe: no owner-specific folder is baked into a fresh
 // install's generated agent CLAUDE.md); set OWNER_DRIVE_FOLDER in .env to wire
