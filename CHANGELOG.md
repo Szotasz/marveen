@@ -11,6 +11,9 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- **[API]** `GET /api/blackboard/history` -- append-only audit trail of fleet blackboard state transitions; supports `agent_id`, `since` (Unix timestamp), and `limit` (max 200) query filters; returns newest-first; no auth required (matches existing `/api/blackboard`)
+- migration 0021: `fleet_blackboard_history` table with indexes on `agent_id`, `created_at DESC`, and `status`; 30-day retention via `runDecaySweep()`; written at the API layer on every `POST /api/blackboard` and `PATCH /api/blackboard/:id`
+
 - **[API]** `POST /api/admin/partner-senders`, `GET /api/admin/partner-senders`, `DELETE /api/admin/partner-senders/:sender_id` -- DB-backed per-tenant partner sender allowlist CRUD (admin:all required); soft-delete via `disabled_at`; 409 guard blocks fleet agent names as sender ids
 - **[API]** `POST /api/messages` -- partner-scoped tokens (non-default `tenant_id`) validate `from` against the `partner_senders` allowlist; both accepted and rejected sends are written to `agent_audit_log`; fleet-auth path is unchanged for default-tenant tokens
 - migration 0020: `partner_senders` table with composite PK `(sender_id, tenant_id)`, `disabled_at` soft-delete, and indexes on both columns
