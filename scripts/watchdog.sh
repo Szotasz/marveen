@@ -80,9 +80,13 @@ replay_unfinished_messages() {
   # Replay logic extracted to its own file (testable) + MSGSZIVARGAS826: every
   # injected message writes a dated marker into the dashboard log -- this used
   # to be a fully record-less injection path, invisible to every detector.
+  # stderr goes to the watchdog log, NOT /dev/null (NOTIFYVAKSWEEP826 zaro
+  # kor, Marveen msg 16091): the replay python is honest about a failed
+  # marker write, but the old 2>/dev/null buried exactly that line -- the
+  # instrument built against silence would have gone blind silently.
   python3 "$INSTALL_DIR/scripts/watchdog-replay.py" \
     "$SESSION_NAME" "$AGENT_ID" "$CUTOFF" "$TMPDATA" \
-    "$INSTALL_DIR/store/dashboard.log" 2>/dev/null
+    "$INSTALL_DIR/store/dashboard.log" 2>>"$LOG"
 
   rm -f "$TMPDATA"
 }
