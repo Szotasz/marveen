@@ -4085,6 +4085,10 @@ export interface BlackboardRow {
   updated_at: number
 }
 
+export function findBlackboardRowByAgent(agent_id: string): BlackboardRow | undefined {
+  return db.prepare('SELECT * FROM fleet_blackboard WHERE agent_id = ?').get(agent_id) as BlackboardRow | undefined
+}
+
 // Upsert a fleet blackboard row for agent_id, writing a history entry only
 // when the status, summary, or task_ref actually changes.
 export function upsertBlackboard(

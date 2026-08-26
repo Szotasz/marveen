@@ -178,6 +178,36 @@ describe('API-level double-write via upsert simulation', () => {
     expect(rows).toHaveLength(0)
   })
 
+  it('snapshot match: done is written only when current row equals the active snapshot', () => {
+    const agent = 'agent-snap'
+    const id = 'bb-snap-01'
+    // Write active and capture snapshot
+    db.prepare('INSERT INTO fleet_blackboard (id, agent_id, task_ref, status, summary) VALUES (?, ?, NULL, ?, ?)')
+      .run(id, agent, 'active', 'task-x')
+    const snapshot = { status: 'active', summary: 'task-x', task_ref: null }
+
+    // Simulate: agent has NOT modified the row -- snapshot matches current
+    const cur = db.prepare('SELECT * FROM fleet_blackboard WHERE agent_id = ?').get(agent) as { status: string; summary: string; task_ref: string | null }
+    const unchanged = cur.status === snapshot.status && cur.summary === snapshot.summary && (cur.task_ref ?? null) === snapshot.task_ref
+    expect(unchanged).toBe(true)
+    // runner would write done here (not modelled further -- just verifies the guard)
+  })
+
+  it('snapshot mismatch: done is skipped when agent changed status to blocked', () => {
+    const agent = 'agent-blocked'
+    const id = 'bb-blk-01'
+    db.prepare('INSERT INTO fleet_blackboard (id, agent_id, task_ref, status, summary) VALUES (?, ?, NULL, ?, ?)')
+      .run(id, agent, 'active', 'task-y')
+    const snapshot = { status: 'active', summary: 'task-y', task_ref: null }
+
+    // Simulate: agent switched to blocked mid-run
+    db.prepare('UPDATE fleet_blackboard SET status = ? WHERE id = ?').run('blocked', id)
+
+    const cur = db.prepare('SELECT * FROM fleet_blackboard WHERE agent_id = ?').get(agent) as { status: string; summary: string; task_ref: string | null }
+    const unchanged = cur.status === snapshot.status && cur.summary === snapshot.summary && (cur.task_ref ?? null) === snapshot.task_ref
+    expect(unchanged).toBe(false) // runner must NOT write done
+  })
+
   it('no-op upsert (same status/summary/task_ref) does not add a history row', () => {
     const noop_agent = 'agent-noop'
     // First write: real insert, history is recorded

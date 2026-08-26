@@ -52,8 +52,9 @@ vi.mock('../db.js', () => ({
   markPendingTaskRetryAlert: vi.fn(() => false),
   clearPendingTaskRetryAlert: vi.fn(),
   markScheduledTaskKanbanWaiting: vi.fn(),
-  upsertBlackboard: vi.fn(),
+  upsertBlackboard: vi.fn(() => ({ id: 'bb000001', agent_id: '', task_ref: null, status: 'active', summary: '', updated_at: 0 })),
   findActiveKanbanCardByTitle: vi.fn(() => undefined),
+  findBlackboardRowByAgent: vi.fn(() => ({ id: 'bb000001', agent_id: '', task_ref: null, status: 'active', summary: '', updated_at: 0 })),
 }))
 
 // The runner's alert paths resolve a REAL bot token from install-level config
