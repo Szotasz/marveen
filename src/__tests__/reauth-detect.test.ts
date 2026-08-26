@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { detectReauthNeeded } from '../web/reauth-detect.js'
+import { detectReauthNeeded, detectsModelUnavailablePane } from '../web/reauth-detect.js'
 
 // Dashboard reauth badge (Szabi 2026-06-03). Must fire on the distinctive
 // Claude Code auth-failure strings, and NOT on ordinary chat that merely
@@ -180,6 +180,34 @@ describe('detectReauthNeeded: browser sign-in screen', () => {
       '🔐 A(z) boni ágens halott OAuth tokent jelez (First-run onboarding picker (Select login method)) több mint ~9 perce.',
       'Manuális browser /login kell a dashboardon (az ügynök kártyáján a "Bejelentkezés" gomb), automatikusan nem gyógyítható.',
     ].join('\n')
+    expect(detectReauthNeeded(pane).needsReauth).toBe(false)
+  })
+})
+
+describe('detectsModelUnavailablePane', () => {
+  it('detects the model-unavailable phrases', () => {
+    expect(detectsModelUnavailablePane("There's an issue with the selected model")).toBe(true)
+    expect(detectsModelUnavailablePane("There's an issue with the selected model")).toBe(true)
+    expect(detectsModelUnavailablePane('Run /model to pick a different model')).toBe(true)
+  })
+
+  it('returns false for null/empty pane', () => {
+    expect(detectsModelUnavailablePane(null)).toBe(false)
+    expect(detectsModelUnavailablePane(undefined)).toBe(false)
+    expect(detectsModelUnavailablePane('')).toBe(false)
+  })
+
+  it('only matches in the bottom region, not scrollback', () => {
+    const banner = "There's an issue with the selected model"
+    const scrollback = [banner, ...Array(40).fill('normal output')].join('\n')
+    expect(detectsModelUnavailablePane(scrollback)).toBe(false)
+    const live = [...Array(40).fill('normal output'), banner].join('\n')
+    expect(detectsModelUnavailablePane(live)).toBe(true)
+  })
+
+  it('does NOT set needsReauth on detectReauthNeeded for model-unavailable phrase', () => {
+    // Critical: model-unavailable must NOT flow into the reauth-healer respawn path.
+    const pane = "There's an issue with the selected model\n> "
     expect(detectReauthNeeded(pane).needsReauth).toBe(false)
   })
 })

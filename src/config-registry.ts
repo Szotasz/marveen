@@ -2,7 +2,7 @@
 // (a zero-import module) so the registry default and the boot-time constant in
 // config.ts cannot drift apart -- bumping the distribution default is a
 // one-line change in exactly one place.
-export const DISTRIBUTION_DEFAULT_AGENT_MODEL = 'claude-opus-4-8[1m]'
+export const DISTRIBUTION_DEFAULT_AGENT_MODEL = 'claude-opus-5'
 
 // Single source of truth for settings the dashboard's "Beallitasok" page can
 // show and edit. Each entry describes one .env-backed config key: its type
@@ -502,7 +502,6 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
       'claude-opus-5',
       'claude-sonnet-5',
       'claude-fable-5',
-      'claude-opus-4-8[1m]',
       'claude-haiku-4-5-20251001',
     ],
   },
