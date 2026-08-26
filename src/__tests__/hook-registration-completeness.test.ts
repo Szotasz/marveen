@@ -41,10 +41,6 @@ const REGISTRATION_SURFACES = [
 const EXEMPT: Record<string, string> = {
   'ledger_lib.py':
     'shared library imported by the ledger hooks; not itself a hook',
-  'ledger-live-drain.py':
-    'scheduled-task script by design (its docstring says so); the seeded task ships separately -- delete this entry when the scheduled-tasks/ledger-live-drain seed lands',
-  'skill-usage-capture.py':
-    'PostToolUse registration ships separately in the settings template -- delete this entry when it lands',
   'memory-save.sh':
     'legacy: referenced only by a historical rebuild prompt, wired nowhere; kept pending a maintainer decision to remove it',
   'telegram-ack.py':

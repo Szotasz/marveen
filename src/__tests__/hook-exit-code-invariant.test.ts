@@ -62,12 +62,7 @@ const HOOKS: HookCase[] = [
 // script -> payload kind -> why the violation is tolerated FOR NOW. The stale
 // check below fails the build once the underlying fix lands, so an entry
 // cannot outlive the bug it excuses.
-const EXPECTED_VIOLATIONS: Record<string, { kind: 'non-dict' | 'bad-stdin'; reason: string }> = {
-  'scripts/hooks/outgoing-copy-gate.py': {
-    kind: 'non-dict',
-    reason: 'crashes with exit 1 on a non-dict tool_input; the fail-closed net ships separately -- delete this entry when it lands',
-  },
-}
+const EXPECTED_VIOLATIONS: Record<string, { kind: 'non-dict' | 'bad-stdin'; reason: string }> = {}
 
 function runHook(h: HookCase, input: string): number {
   try {
