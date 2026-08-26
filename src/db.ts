@@ -4079,14 +4079,6 @@ export function pruneBlackboardHistory(ttlDays = 30): number {
 // Remove fleet_blackboard rows that have been stuck in 'active' for longer
 // than ttlHours without any agent updating them. These are orphaned entries
 // from tasks whose sawTurn=false path cleared the watchdog without writing
-// 'done' -- they would otherwise stay active forever and produce misleading
-// history. Called by runDecaySweep() together with the other retention jobs.
-export function pruneStaleBlackboardActive(ttlHours = 24): number {
-  const cutoff = Math.floor(Date.now() / 1000) - ttlHours * 3600
-  return db.prepare(
-    "DELETE FROM fleet_blackboard WHERE status = 'active' AND updated_at < ?"
-  ).run(cutoff).changes
-}
 
 export interface BlackboardRow {
   id: string

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { initDatabase, getDb, upsertBlackboard, findBlackboardRowByAgent, listBlackboardHistory, pruneStaleBlackboardActive } from '../db.js'
+import { initDatabase, upsertBlackboard, findBlackboardRowByAgent, listBlackboardHistory } from '../db.js'
 
 // Test upsertBlackboard against the real exported function with an in-memory
 // SQLite database. This is the guard that mocked-route tests cannot provide:
@@ -102,25 +102,3 @@ describe('upsertBlackboard: snapshot guard (schedule-runner done-write protectio
   })
 })
 
-describe('pruneStaleBlackboardActive: orphaned active row cleanup', () => {
-  it('removes an active row older than the TTL', () => {
-    upsertBlackboard('agent-c', { status: 'active', summary: 'stuck task', task_ref: null })
-    // Push updated_at 48h into the past to make it genuinely stale.
-    getDb().prepare("UPDATE fleet_blackboard SET updated_at = unixepoch() - 48*3600 WHERE agent_id = 'agent-c'").run()
-
-    expect(pruneStaleBlackboardActive(24)).toBe(1)
-    expect(findBlackboardRowByAgent('agent-c')).toBeUndefined()
-  })
-
-  it('does not remove a done row', () => {
-    upsertBlackboard('agent-c', { status: 'done', summary: 'finished', task_ref: null })
-    expect(pruneStaleBlackboardActive(0)).toBe(0)
-    expect(findBlackboardRowByAgent('agent-c')?.status).toBe('done')
-  })
-
-  it('does not remove a fresh active row', () => {
-    upsertBlackboard('agent-c', { status: 'active', summary: 'fresh task', task_ref: null })
-    expect(pruneStaleBlackboardActive(24)).toBe(0) // 24h TTL, row is seconds old
-    expect(findBlackboardRowByAgent('agent-c')?.status).toBe('active')
-  })
-})

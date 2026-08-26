@@ -10,7 +10,6 @@ import {
   pruneAuditLogs,
   pruneTokenUsage,
   pruneBlackboardHistory,
-  pruneStaleBlackboardActive,
   getMemoriesForChat,
   listKanbanCardsSummary,
   hybridSearch,
@@ -165,8 +164,7 @@ export function runDecaySweep(): void {
   pruneAuditLogs()
   const tokenPruneResult = pruneTokenUsage()
   const blackboardHistoryPruned = pruneBlackboardHistory()
-  const staleBlackboardPruned = pruneStaleBlackboardActive()
-  logger.info({ ...tokenPruneResult, blackboardHistoryPruned, staleBlackboardPruned }, 'Memoria leepulesi sopres vegrehajtva')
+  logger.info({ ...tokenPruneResult, blackboardHistoryPruned }, 'Memoria leepulesi sopres vegrehajtva')
 }
 
 // --- Daily digest ---
