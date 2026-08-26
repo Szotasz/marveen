@@ -93,23 +93,49 @@ function liveStatusRegion(pane: string): string | null {
 }
 
 // Model-unavailable phrases. Separate from REAUTH_MARKERS so this does NOT
-// feed into the reauth-healer's respawn path: a bare respawn without first
+// feed into the reauth-healer’s respawn path: a bare respawn without first
 // changing the model config would immediately loop on the same error.
 // The model-fallback-runner (src/web/model-fallback-runner.ts) handles recovery
 // autonomously (detect → change model → restart). This function is for the
 // dashboard badge only.
-const MODEL_UNAVAILABLE_RX = /There['’]s an issue with the selected model|Run \/model to pick a different model/i
+const MODEL_UNAVAILABLE_RX = /There['‘’]s an issue with the selected model|Run \/model to pick a different model/i
 const MODEL_UNAVAILABLE_TAIL_LINES = 15
+
+/**
+ * Like liveStatusRegion() but EXCLUDES the box interior (user input area).
+ * Only returns the status line directly above the upper border and the hint
+ * lines below the lower border. The box interior is excluded to prevent a
+ * quoted model-error message from re-triggering the badge across many sweeps.
+ * Returns null when no recognisable input box is found.
+ */
+function liveStatusRegionExclBox(pane: string): string | null {
+  const lines = pane.split('\n')
+  const borders: number[] = []
+  for (let i = lines.length - 1; i >= 0 && borders.length < 2; i--) {
+    if (BOX_BORDER_RX.test(lines[i])) borders.push(i)
+  }
+  if (borders.length < 2) return null
+  // borders[0] = lower border (larger index), borders[1] = upper border (smaller index)
+  const lower = borders[0]
+  const upper = borders[1]
+  const statusLine = upper >= 1 ? [lines[upper - 1]] : []
+  const belowBox = lines.slice(lower + 1)
+  return [...statusLine, ...belowBox].join('\n')
+}
 
 /**
  * True when the live pane shows a "model unavailable" error. Alert-only: do
  * NOT trigger a respawn on this -- only the model-fallback-runner, which
  * changes the model first, should restart the session.
+ *
+ * When the pane has a Claude Code input box, only the status line above the
+ * upper border and hint lines below the lower border are examined; the box
+ * interior is excluded to prevent a quoted error phrase from persisting as a
+ * false positive badge.
  */
 export function detectsModelUnavailablePane(pane: string | null | undefined): boolean {
   if (!pane) return false
-  const lines = pane.split('\n')
-  const region = lines.slice(Math.max(0, lines.length - MODEL_UNAVAILABLE_TAIL_LINES)).join('\n')
+  const region = liveStatusRegionExclBox(pane) ?? tailOf(pane, MODEL_UNAVAILABLE_TAIL_LINES)
   if (ESCALATION_QUOTE_MARKERS.some((rx) => rx.test(region))) return false
   return MODEL_UNAVAILABLE_RX.test(region)
 }

@@ -89,16 +89,47 @@ export function detectsUsageLimit(pane: string): boolean {
 
 // Claude Code shows this message when the configured model is no longer
 // available (retired or removed). Unlike a usage-limit banner it does NOT
-// self-clear after a window reset: only a model switch fixes it. Restricted to
-// the bottom region to avoid false-positives from scrollback that quotes it.
+// self-clear after a window reset: only a model switch fixes it.
 const MODEL_UNAVAILABLE_RX =
-  /There['’]s an issue with the selected model|Run \/model to pick a different model/i
+  /There['‘’]s an issue with the selected model|Run \/model to pick a different model/i
 const MODEL_UNAVAILABLE_REGION_LINES = 15
+
+// Matches Claude Code’s input box borders (used to locate the live region).
+const BOX_BORDER_RX = /─{10,}/
+
+/**
+ * The Claude Code live status region: the status line directly above the upper
+ * box border (top-1), plus the hint lines below the lower box border.
+ * The box interior (where user input and inter-agent messages live) is
+ * intentionally excluded -- Claude Code never writes its own model-unavailable
+ * errors there, and a quoted message could persist across many sweeps and cause
+ * a false positive that box-interior exclusion prevents.
+ * Returns null when the pane has no recognisable input box (headless / crashed).
+ */
+function liveStatusRegionOf(pane: string): string | null {
+  const lines = pane.split('\n')
+  const borders: number[] = []
+  for (let i = lines.length - 1; i >= 0 && borders.length < 2; i--) {
+    if (BOX_BORDER_RX.test(lines[i])) borders.push(i)
+  }
+  if (borders.length < 2) return null
+  // borders[0] = lower border (larger index), borders[1] = upper border (smaller index)
+  const lower = borders[0]
+  const upper = borders[1]
+  const statusLine = upper >= 1 ? [lines[upper - 1]] : []
+  const belowBox = lines.slice(lower + 1)
+  return [...statusLine, ...belowBox].join('\n')
+}
 
 /**
  * True when the live pane shows a "model unavailable" error (retired / removed
- * model ID). Pure + dependency-free. Restricted to the bottom region so quoted
- * text in scrollback cannot trigger it.
+ * model ID). Pure + dependency-free.
+ *
+ * When the pane has a Claude Code input box, only the status line (directly
+ * above the upper border) and the hint lines below the lower border are
+ * examined. The box interior is excluded to prevent false-positives from quoted
+ * inter-agent messages that mention the error phrase. When no box is present
+ * (headless or crashed pane), falls back to the bottom 15 lines.
  *
  * This is NOT a usage-limit event -- it does not self-clear. The correct
  * response is to change the model, then restart. Callers must NOT trigger a
@@ -106,8 +137,8 @@ const MODEL_UNAVAILABLE_REGION_LINES = 15
  */
 export function detectsModelUnavailable(pane: string): boolean {
   if (!pane || !pane.trim()) return false
-  const lines = pane.split('\n')
-  const region = lines.slice(-MODEL_UNAVAILABLE_REGION_LINES).join('\n')
+  const region = liveStatusRegionOf(pane)
+    ?? pane.split('\n').slice(-MODEL_UNAVAILABLE_REGION_LINES).join('\n')
   return MODEL_UNAVAILABLE_RX.test(region)
 }
 

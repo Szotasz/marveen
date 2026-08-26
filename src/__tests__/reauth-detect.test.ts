@@ -211,3 +211,78 @@ describe('detectsModelUnavailablePane', () => {
     expect(detectReauthNeeded(pane).needsReauth).toBe(false)
   })
 })
+
+describe('detectsModelUnavailablePane: box-interior exclusion', () => {
+  const BOX = '─'.repeat(80)
+  const PHRASE_A = ["There", "s an issue with the selected model"].join("'")
+  const PHRASE_B = 'Run /model to pick a different model'
+
+  it('(1) no input box -- phrase in the last line fires (headless fallback)', () => {
+    const pane = [...Array(5).fill('normal output'), PHRASE_A].join('\n')
+    expect(detectsModelUnavailablePane(pane)).toBe(true)
+  })
+
+  it('(2) no input box -- phrase 40+ lines above the tail does NOT fire', () => {
+    const pane = [PHRASE_A, ...Array(40).fill('normal output')].join('\n')
+    expect(detectsModelUnavailablePane(pane)).toBe(false)
+  })
+
+  it('(3) phrase is inside the box interior -- does NOT fire', () => {
+    const pane = [
+      '  ~290k uncached',
+      BOX,
+      '> quoted message: ' + PHRASE_A,
+      '> second line',
+      BOX,
+      '  hint: bypass permissions',
+    ].join('\n')
+    expect(detectsModelUnavailablePane(pane)).toBe(false)
+  })
+
+  it('(4) phrase is in transcript 2+ lines above the upper border -- does NOT fire', () => {
+    const pane = [
+      PHRASE_A,
+      '  normal transcript line',
+      '  ~290k uncached',
+      BOX,
+      '> ',
+      BOX,
+      '  hint: bypass permissions',
+    ].join('\n')
+    expect(detectsModelUnavailablePane(pane)).toBe(false)
+  })
+
+  it('(5) phrase is the status line directly above the upper border -- fires', () => {
+    const pane = [
+      '  normal transcript line',
+      PHRASE_A,
+      BOX,
+      '> ',
+      BOX,
+      '  hint: bypass permissions',
+    ].join('\n')
+    expect(detectsModelUnavailablePane(pane)).toBe(true)
+  })
+
+  it('(6) phrase is inside box interior as quoted inter-agent message -- does NOT fire', () => {
+    const pane = [
+      '  status: ok',
+      BOX,
+      '  [Inter-agent]: ' + PHRASE_B,
+      BOX,
+      '  hint: ← for agents',
+    ].join('\n')
+    expect(detectsModelUnavailablePane(pane)).toBe(false)
+  })
+
+  it('(7) phrase is below the lower border (hint / error line) -- fires', () => {
+    const pane = [
+      '  status: ok',
+      BOX,
+      '> ',
+      BOX,
+      PHRASE_A,
+    ].join('\n')
+    expect(detectsModelUnavailablePane(pane)).toBe(true)
+  })
+})

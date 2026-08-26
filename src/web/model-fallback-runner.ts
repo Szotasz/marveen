@@ -43,6 +43,16 @@ const INTERVAL_MS = 60_000
 // working on the fallback model, and the operator can revert manually.
 const downgradedAt = new Map<string, number>()
 
+// Require this many consecutive sweeps detecting model-unavailable before
+// acting. Prevents false positives from a quoted error phrase in the box
+// interior leaking into the bottom-15 fallback region on a headless pane.
+const MODEL_UNAVAILABLE_MIN_CONSECUTIVE = 2
+const modelUnavailableStreak = new Map<string, number>()
+
+export function modelUnavailableStreakFor(name: string): number {
+  return modelUnavailableStreak.get(name) ?? 0
+}
+
 const MAIN_SETTINGS_PATH = join(PROJECT_ROOT, '.claude', 'settings.json')
 
 function readMainModel(): string {
@@ -123,7 +133,15 @@ function checkAgent(name: string, nowMs: number, revertAfterMs: number, chain: s
   const pane = capturePane(session, host)
   if (pane == null) return
 
-  const limitDetected = detectsUsageLimit(pane) || detectsModelUnavailable(pane)
+  const usageLimitDetected = detectsUsageLimit(pane)
+  const rawModelUnavailable = detectsModelUnavailable(pane)
+  const prevStreak = modelUnavailableStreak.get(name) ?? 0
+  const newStreak = rawModelUnavailable ? prevStreak + 1 : 0
+  modelUnavailableStreak.set(name, newStreak)
+  if (newStreak >= MODEL_UNAVAILABLE_MIN_CONSECUTIVE) {
+    logger.info({ name, streak: newStreak }, 'model-fallback: model-unavailable confirmed by consecutive detection')
+  }
+  const limitDetected = usageLimitDetected || (newStreak >= MODEL_UNAVAILABLE_MIN_CONSECUTIVE)
   const currentModel = readModelFor(name)
   const action = decideModelAction({
     limitDetected,
@@ -147,6 +165,7 @@ function checkAgent(name: string, nowMs: number, revertAfterMs: number, chain: s
     restartFor(name)
     if (action.kind === 'downgrade') downgradedAt.set(name, nowMs)
     else downgradedAt.delete(name)
+    modelUnavailableStreak.delete(name)
     logger.info(
       { name, from: currentModel, to: action.model, action: action.kind },
       'model-fallback: switched model',
@@ -161,6 +180,7 @@ export function startModelFallbackRunner(): NodeJS.Timeout {
     const cfg = readModelFallbackConfig()
     if (!cfg.enabled) {
       if (downgradedAt.size > 0) downgradedAt.clear() // re-seed cleanly if re-enabled
+      if (modelUnavailableStreak.size > 0) modelUnavailableStreak.clear()
       return
     }
     const now = Date.now()
