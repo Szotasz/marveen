@@ -262,6 +262,38 @@ class TestEmailReplacement(unittest.TestCase):
         result = _apply_pass5(line)
         self.assertEqual(result, line)
 
+    def test_empty_email_leaves_content_intact(self):
+        # Critical: if OWNER_EMAIL is not configured, Pass 5 must be a no-op.
+        # An empty OWNER_EMAIL_RX would silently replace every empty string match.
+        # Mutation: change `if owner_email and "@" in owner_email` to just `if True`
+        # → OWNER_EMAIL_RX built from "" → re.compile("") matches everywhere →
+        # every character boundary replaced with <OWNER_EMAIL>.
+        _setup(email="")
+        line = "Contact boss@company.com for details."
+        result = _apply_pass5(line)
+        self.assertEqual(result, line,
+            "Empty OWNER_EMAIL must skip Pass 5 entirely, not corrupt content")
+
+    def test_resolve_owner_config_no_email_in_dotenv(self):
+        # _resolve_owner_config returns ("", "") when OWNER_EMAIL absent from .env.
+        # Confirm the full config-resolution path produces a None OWNER_EMAIL_RX.
+        import os, tempfile
+        with tempfile.TemporaryDirectory() as td:
+            env_path = Path(td) / ".env"
+            env_path.write_text('OWNER_NAME=Test Person\n', encoding="utf-8")
+            # Temporarily remove OWNER_EMAIL from os.environ if set
+            old = os.environ.pop("OWNER_EMAIL", None)
+            try:
+                name, email = smp._resolve_owner_config(Path(td))
+                smp.OWNER_NAME_RX = None
+                smp.OWNER_EMAIL_RX = None
+                smp._build_owner_patterns(name, email)
+                self.assertIsNone(smp.OWNER_EMAIL_RX,
+                    "OWNER_EMAIL absent from .env must produce None OWNER_EMAIL_RX")
+            finally:
+                if old is not None:
+                    os.environ["OWNER_EMAIL"] = old
+
 
 # ---------------------------------------------------------------------------
 # Tests: bash path normalization (Pass 6)
