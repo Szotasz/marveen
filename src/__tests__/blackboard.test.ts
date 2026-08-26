@@ -24,10 +24,12 @@ const ROW_B = {
 const mockPrepare = vi.fn()
 const mockInsertBlackboardHistory = vi.fn()
 const mockListBlackboardHistory = vi.fn<(opts?: unknown) => object[]>(() => [])
+const mockUpsertBlackboard = vi.fn<(agent_id: unknown, data: unknown) => object>(() => ({ ...ROW_A }))
 vi.mock('../db.js', () => ({
   getDb: vi.fn(() => ({ prepare: mockPrepare })),
   insertBlackboardHistory: (a: unknown) => mockInsertBlackboardHistory(a),
   listBlackboardHistory: (a: unknown) => mockListBlackboardHistory(a),
+  upsertBlackboard: (agent_id: unknown, data: unknown) => mockUpsertBlackboard(agent_id, data),
 }))
 
 function makeStmt(value: unknown) {
@@ -89,14 +91,8 @@ describe('GET /api/blackboard', () => {
 describe('POST /api/blackboard', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('creates new row when agent has no existing entry', async () => {
-    const stmtCheck = makeStmt(undefined)
-    const stmtInsert = makeStmt(undefined)
-    const stmtGet = makeStmt({ ...ROW_A })
-    mockPrepare
-      .mockReturnValueOnce(stmtCheck)
-      .mockReturnValueOnce(stmtInsert)
-      .mockReturnValueOnce(stmtGet)
+  it('creates new row and calls upsertBlackboard with correct args', async () => {
+    mockUpsertBlackboard.mockReturnValueOnce({ ...ROW_A })
     const { ctx, out } = makeCtx('POST', '/api/blackboard', {
       agent_id: 'agent-a',
       summary: 'Working on feature X',
@@ -107,20 +103,15 @@ describe('POST /api/blackboard', () => {
     expect(handled).toBe(true)
     expect(out.status).toBe(200)
     expect((out.body as { ok: boolean }).ok).toBe(true)
-    expect(mockInsertBlackboardHistory).toHaveBeenCalledOnce()
-    expect(mockInsertBlackboardHistory).toHaveBeenCalledWith(
-      expect.objectContaining({ agent_id: 'agent-a', status: 'active' })
+    expect(mockUpsertBlackboard).toHaveBeenCalledOnce()
+    expect(mockUpsertBlackboard).toHaveBeenCalledWith(
+      'agent-a',
+      expect.objectContaining({ status: 'active', summary: 'Working on feature X', task_ref: 'task-001' })
     )
   })
 
   it('upserts when agent already has a row', async () => {
-    const stmtCheck = makeStmt({ id: 'bb000001' })
-    const stmtInsert = makeStmt(undefined)
-    const stmtGet = makeStmt({ ...ROW_A, summary: 'Updated' })
-    mockPrepare
-      .mockReturnValueOnce(stmtCheck)
-      .mockReturnValueOnce(stmtInsert)
-      .mockReturnValueOnce(stmtGet)
+    mockUpsertBlackboard.mockReturnValueOnce({ ...ROW_A, summary: 'Updated' })
     const { ctx, out } = makeCtx('POST', '/api/blackboard', {
       agent_id: 'agent-a',
       summary: 'Updated',
@@ -128,7 +119,7 @@ describe('POST /api/blackboard', () => {
     await tryHandleBlackboard(ctx)
     expect(out.status).toBe(200)
     expect((out.body as { row: { summary: string } }).row.summary).toBe('Updated')
-    expect(mockInsertBlackboardHistory).toHaveBeenCalledOnce()
+    expect(mockUpsertBlackboard).toHaveBeenCalledOnce()
   })
 
   it('rejects missing agent_id', async () => {
@@ -136,7 +127,7 @@ describe('POST /api/blackboard', () => {
     await tryHandleBlackboard(ctx)
     expect(out.status).toBe(400)
     expect((out.body as { error: string }).error).toMatch(/agent_id/)
-    expect(mockInsertBlackboardHistory).not.toHaveBeenCalled()
+    expect(mockUpsertBlackboard).not.toHaveBeenCalled()
   })
 
   it('rejects missing summary', async () => {
@@ -170,56 +161,24 @@ describe('POST /api/blackboard', () => {
   it('accepts all valid status values', async () => {
     for (const status of ['active', 'done', 'blocked']) {
       vi.clearAllMocks()
-      const stmtCheck = makeStmt(undefined)
-      const stmtInsert = makeStmt(undefined)
-      const stmtGet = makeStmt({ ...ROW_A, status })
-      mockPrepare
-        .mockReturnValueOnce(stmtCheck)
-        .mockReturnValueOnce(stmtInsert)
-        .mockReturnValueOnce(stmtGet)
+      mockUpsertBlackboard.mockReturnValueOnce({ ...ROW_A, status })
       const { ctx, out } = makeCtx('POST', '/api/blackboard', { agent_id: 'agent-a', summary: 'ok', status })
       await tryHandleBlackboard(ctx)
       expect(out.status).toBe(200)
     }
   })
 
-  it('does not record history on no-op upsert (identical data)', async () => {
-    // existing row has the same status, summary, and task_ref as the incoming POST
-    const stmtCheck = makeStmt({ ...ROW_A })
-    const stmtInsert = makeStmt(undefined)
-    const stmtGet = makeStmt({ ...ROW_A })
-    mockPrepare
-      .mockReturnValueOnce(stmtCheck)
-      .mockReturnValueOnce(stmtInsert)
-      .mockReturnValueOnce(stmtGet)
-    const { ctx, out } = makeCtx('POST', '/api/blackboard', {
-      agent_id: 'agent-a',
-      summary: ROW_A.summary,
-      task_ref: ROW_A.task_ref,
-      status: ROW_A.status,
-    })
+  // No-op detection and history writes are implemented inside upsertBlackboard (db.ts),
+  // which is tested against real SQLite in db-blackboard-history.test.ts.
+  // The route's responsibility is forwarding valid input to upsertBlackboard.
+  it('passes task_ref=null when omitted from POST body', async () => {
+    mockUpsertBlackboard.mockReturnValueOnce({ ...ROW_A, task_ref: null })
+    const { ctx, out } = makeCtx('POST', '/api/blackboard', { agent_id: 'agent-a', summary: 'ok' })
     await tryHandleBlackboard(ctx)
     expect(out.status).toBe(200)
-    expect(mockInsertBlackboardHistory).not.toHaveBeenCalled()
-  })
-
-  it('records history when status changes on upsert', async () => {
-    const stmtCheck = makeStmt({ ...ROW_A })           // existing: active
-    const stmtInsert = makeStmt(undefined)
-    const stmtGet = makeStmt({ ...ROW_A, status: 'done' }) // new: done
-    mockPrepare
-      .mockReturnValueOnce(stmtCheck)
-      .mockReturnValueOnce(stmtInsert)
-      .mockReturnValueOnce(stmtGet)
-    const { ctx } = makeCtx('POST', '/api/blackboard', {
-      agent_id: 'agent-a',
-      summary: ROW_A.summary,
-      status: 'done',
-    })
-    await tryHandleBlackboard(ctx)
-    expect(mockInsertBlackboardHistory).toHaveBeenCalledOnce()
-    expect(mockInsertBlackboardHistory).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'done' })
+    expect(mockUpsertBlackboard).toHaveBeenCalledWith(
+      'agent-a',
+      expect.objectContaining({ task_ref: null })
     )
   })
 })

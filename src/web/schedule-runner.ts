@@ -21,6 +21,8 @@ import {
   markPendingTaskRetryAlert,
   clearPendingTaskRetryAlert,
   markScheduledTaskKanbanWaiting,
+  upsertBlackboard,
+  findActiveKanbanCardByTitle,
 } from '../db.js'
 import { toPendingRetryView, classifyTelegramSendError, type PendingRetryView } from '../pending-retries.js'
 import {
@@ -742,6 +744,13 @@ async function attemptFireTask(
       SCHEDULED_TASK_PREAMBLE + '\n' +
       prefix.trimEnd() + '\n\n' +
       wrapScheduledTask(`scheduled-task:${task.name}`, taskBody)
+    // Mark this agent as active on the shared fleet blackboard before injecting
+    // the prompt, so other agents can see the task is in flight.
+    upsertBlackboard(agentName, {
+      status: 'active',
+      summary: task.name,
+      task_ref: findActiveKanbanCardByTitle(task.name)?.id ?? null,
+    })
     // forceSend skips the busy-state check above; it must also skip the
     // pre-flight wait-until-idle gate inside sendPromptToSession, otherwise a
     // task aimed at a long-busy session would block on the 12s idle wait every
@@ -1232,6 +1241,12 @@ export function startScheduleRunner(): NodeJS.Timeout {
         maxTrackMs: TASK_FIRE_MAX_TRACK_MS,
       })
       if (decision === 'clear') {
+        // Only mark done when the agent actually started a turn -- if the grace
+        // window expired without evidence of a turn (sawTurn=false), we can't
+        // confirm the task ran, so leave the blackboard state as-is.
+        if (entry.sawTurn) {
+          upsertBlackboard(entry.agentName, { status: 'done', summary: entry.taskName })
+        }
         taskInflightMap.delete(key)
       } else if (decision === 'alert') {
         sendTaskTimeoutAlert(entry, now - entry.injectedAt)
