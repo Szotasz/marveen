@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""PostToolUse hook (matcher: the Telegram reply tool): record the OUTBOUND reply
-text into the rolling transcript (direction='out'). This both (a) gives the
+"""PostToolUse hook (matcher: a channel plugin's reply tool): record the OUTBOUND
+reply text into the rolling transcript (direction='out'). This both (a) gives the
 SessionStart replay full conversation context and (b) closes the open question
 (an inbound with a later outbound is considered answered). Deterministic.
 
 agent_id is derived from the session's cwd (generic across the three agents). The
 reply tool sometimes uses chat_id=0/empty as a shorthand for the main chat
 (CLAUDE.md), resolved to the agent's owner chat. Never blocks (exit 0).
+
+PROVIDER-AGNOSTIC: matches `mcp__plugin_<provider>_<server>__reply` for any
+channel plugin rather than one hardcoded provider, so a second channel does not
+silently vanish from the transcript. Register one PostToolUse matcher per
+installed channel plugin -- see docs/conversation-continuity.md.
 """
 import sys
 import os
@@ -17,6 +22,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
 
 
+# mcp__plugin_telegram_telegram__reply, mcp__plugin_discord_discord__reply, ...
+REPLY_TOOL_RX = re.compile(r"^mcp__plugin_[A-Za-z0-9_]+__reply$")
+
+
 def _owner_chat():
     v = os.environ.get("LEDGER_OWNER_CHAT") or os.environ.get("ALLOWED_CHAT_ID")
     return v.strip() if v else ""
@@ -25,15 +34,24 @@ def _owner_chat():
 def _id_from_text(text):
     """Extract a numeric id from a plain-text string, or return None.
 
-    Two patterns in priority order:
+    Three patterns in priority order:
     1. Parenthesized exact form: "sent (id: 3461)" -> "3461"
        Matches the current Telegram plugin response format.
-    2. Word-boundary fallback: matches "id: 42" or "id 42" but not
+    2. Multi-part form: "sent 2 parts (ids: 3461, 3462)" -> "3461"
+       Matches a channel plugin that splits an over-long reply (Discord).
+    3. Word-boundary fallback: matches "id: 42" or "id 42" but not
        "invalid 42" (the word boundary \b prevents partial-word hits
        that would produce false positives from error messages).
     """
     # Exact parenthesized form first.
     m = re.search(r"\(id:\s*(\d+)\)", text, re.IGNORECASE)
+    if m:
+        return str(m.group(1))
+    # Multi-part form: a long reply is split and the tool answers
+    # "sent 2 parts (ids: 123, 456)". The FIRST id identifies the turn; it is
+    # only used to deduplicate a double-fire of the hook, so any stable choice
+    # works as long as it is deterministic.
+    m = re.search(r"\(ids:\s*(\d+)", text, re.IGNORECASE)
     if m:
         return str(m.group(1))
     # Word-boundary fallback for looser formats.
@@ -99,8 +117,10 @@ def main():
     except Exception:
         sys.exit(0)
     tool = payload.get("tool_name") or ""
-    # Double-check (the matcher should already filter): only the telegram reply.
-    if "telegram" not in tool or "reply" not in tool:
+    # Double-check (the matcher should already filter): only a channel plugin's
+    # reply tool. Anchored on the full MCP tool-name shape so an unrelated tool
+    # that merely contains "reply" cannot write a bogus turn into the ledger.
+    if not REPLY_TOOL_RX.match(tool):
         sys.exit(0)
     agent_id = ledger_lib.agent_id_from_cwd(payload.get("cwd"))
     tool_input = payload.get("tool_input") or {}
