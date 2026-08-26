@@ -68,6 +68,7 @@ import { tryHandleAutonomy } from './web/routes/autonomy.js'
 import { tryHandleApprovals, startApprovalTimeoutSweeper } from './web/routes/approvals.js'
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
 import { tryHandleCosts, startCostsSyncTask } from './web/routes/costs.js'
+import { startQuotaGuardTask } from './costops/quota-guard.js'
 import { tryHandleIdeas } from './web/routes/ideas.js'
 import { tryHandleToolLog } from './web/routes/tool-log.js'
 import { tryHandleSpans } from './web/routes/spans.js'
@@ -388,6 +389,10 @@ export function startWebServer(port = 3420): http.Server {
   // 10 minutes. Deliberately NOT done inside the GET /api/costs/summary handler -- a read
   // endpoint must not write (was flagged in review); this is the one place that does.
   const costsSyncInterval = webOnly ? undefined : startCostsSyncTask()
+  // Subscription quota guard: warns at 70% of the seven-day window, switches
+  // the fleet to eco mode at 85%. Writes config only -- scheduling the agent
+  // restarts that make a model change effective stays an operator decision.
+  const quotaGuardInterval = webOnly ? undefined : startQuotaGuardTask()
   if (!webOnly) logger.info('CostOps fixed-cost sync started (10min poll + startup)')
 
   const stuckInputInterval = webOnly ? undefined : startStuckInputWatcher()
