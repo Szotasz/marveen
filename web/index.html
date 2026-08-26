@@ -533,7 +533,13 @@
             <h1>Skillek</h1>
             <p class="subtitle" data-i18n="skills.page_subtitle">A Claude Code által látott skillek (user mappa + plugin cache)</p>
           </div>
-          <div style="display:flex;gap:8px;align-items:center">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button class="btn-secondary btn-compact" id="skillsAccessBtn" title="Per-skill access control">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/>
+              </svg>
+              Access
+            </button>
             <button class="btn-secondary btn-compact" id="skillsExportBtn" data-i18n="skills.btn.export">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                 <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
@@ -570,6 +576,7 @@
           <button class="skills-filter-btn" data-filter="agent" data-i18n="skills.filter.agent">Ágens</button>
         </div>
       </div>
+      <div id="skillsAccessPanel" hidden style="margin:0 0 16px 0"></div>
       <div class="skills-body-wrap">
         <nav class="skills-category-sidebar" id="skillsCategorySidebar"></nav>
         <div class="skills-main-area">

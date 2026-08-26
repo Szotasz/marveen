@@ -5496,6 +5496,8 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .skills-filter-btns {
   display: flex;
   gap: 4px;
+  flex-wrap: wrap;
+  row-gap: 4px;
 }
 
 .skills-filter-btn {
