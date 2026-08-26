@@ -228,10 +228,9 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     const unknown = [...url.searchParams.keys()].filter((k) => !KNOWN_PARAMS.has(k))
     if (unknown.length) {
       json(res, {
-        error: 'unknown query parameter',
-        unknown,
-        known: [...KNOWN_PARAMS],
-        hint: 'the mailbox filter is "agent"; "agent_id" and "to" are not read',
+        error: 'unknown_query_parameter',
+        field: unknown[0],
+        hint: `unknown parameter(s): ${unknown.join(', ')}; accepted: ${[...KNOWN_PARAMS].join(', ')}; the mailbox filter is "agent" — "agent_id" and "to" are not read`,
       }, 400)
       return true
     }

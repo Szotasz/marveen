@@ -214,4 +214,20 @@ describe('POST /api/messages: error codes are snake_case machine tokens', () => 
     expect(out.body.error).toBe('message_not_found')
     expect(out.body.hint).toContain('not found')
   })
+
+  // Regression guard for the GET /api/messages unknown-param guard.
+  // Before this fix: error was a prose sentence and the response included
+  // separate `unknown` and `known` arrays instead of field + hint.
+  it('GET /api/messages unknown param → unknown_query_parameter with field + hint', async () => {
+    const { ctx, out } = makeCtx('GET', '/api/messages?agent_id=jarvis')
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toBe('unknown_query_parameter')
+    expect(out.body.field).toBe('agent_id')
+    expect(out.body.hint).toContain('agent_id')
+    expect(out.body.hint).toContain('agent')
+    // Old-shape fields must not appear.
+    expect(out.body.unknown).toBeUndefined()
+    expect(out.body.known).toBeUndefined()
+  })
 })
