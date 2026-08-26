@@ -380,7 +380,10 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // covered by the self-pace block + the #0 CLAUDE.md doctrine.
   if (agentGetsEmailGate(name)) injectEmailSendGate(existing)
   if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
-  if (agentGetsKanbanWriteGate(name)) injectKanbanWriteGate(existing)
+  if (agentGetsKanbanWriteGate(name)) {
+    injectKanbanWriteGate(existing)
+    injectDigestProvenanceGate(existing)
+  }
   injectEgressGate(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
@@ -506,6 +509,30 @@ export function injectKanbanWriteGate(existing: Record<string, unknown>): void {
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
   hooks.PreToolUse = [
     ...prev.filter((e) => !JSON.stringify(e).includes('kanban-write-gate.mjs')),
+    entry,
+  ]
+}
+
+// Idempotently wire the digest-provenance-gate PreToolUse hook (validates the
+// heartbeat worker's /api/messages POSTs: closed cards / merged PRs in action
+// rows and unverifiable msg-id citations are denied -- DIGESTSTALE825). Scoped
+// by the SAME predicate as the kanban-write gate: heartbeat worker only. The
+// prompt-layer version of this rule was proven insufficient live (the first
+// run after the SKILL.md gate still shipped 0/4 accuracy + a fabricated owner
+// decision), so the rule lives here, in code.
+export function injectDigestProvenanceGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'digest-provenance-gate.mjs'))
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('digest-provenance-gate.mjs')),
     entry,
   ]
 }
