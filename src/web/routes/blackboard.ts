@@ -16,24 +16,33 @@ export interface BlackboardRowWithSignal extends BlackboardRow {
 
 // Pure function: compute the stale signal for one blackboard row.
 // Exported for unit testing without DB access.
+//
+// lastChangedAt: timestamp of the last actual state change (from fleet_blackboard_history);
+// falls back to row.updated_at when no history entry exists for the agent.
+// This is separate from row.updated_at because upsertBlackboard always refreshes updated_at,
+// even on no-op writes (e.g. schedule-runner rewriting the same summary every 15 minutes).
+// Signal B must measure time-since-last-change, not time-since-last-write.
 export function computeBlackboardSignal(
   row: BlackboardRow,
   lastMsgAt: number | null,
+  lastChangedAt: number,
   nowSec: number,
   thresholds: { msgHours: number; bbHours: number; activeHours: number },
 ): BlackboardSignal {
   const { msgHours, bbHours, activeHours } = thresholds
 
   // Signal A: agent sent a message recently, but blackboard row is older than bbHours.
+  // Uses row.updated_at: the question is whether the agent touched the blackboard at all.
   const signalA =
     lastMsgAt !== null &&
     lastMsgAt > nowSec - msgHours * 3600 &&
     row.updated_at < nowSec - bbHours * 3600
 
   // Signal B: active row unchanged for longer than activeHours.
+  // Uses lastChangedAt (history-based), NOT updated_at, to avoid masking by no-op writes.
   const signalB =
     row.status === 'active' &&
-    row.updated_at < nowSec - activeHours * 3600
+    lastChangedAt < nowSec - activeHours * 3600
 
   if (signalA && signalB) return 'ab'
   if (signalA) return 'a'
@@ -70,11 +79,31 @@ function listBlackboardWithSignals(limit = 10): BlackboardRowWithSignal[] {
     .all(...agentIds, Math.floor(Date.now() / 1000) - msgHours * 3600) as { agent_id: string; last_msg_at: number }[]
 
   const lastMsgMap = new Map(msgRows.map((r) => [r.agent_id, r.last_msg_at]))
+
+  // For Signal B: use the last actual state change from history, not updated_at.
+  // updated_at is refreshed by every write (including no-op rewrites from schedule-runner),
+  // so it cannot distinguish "never changed" from "written repeatedly with the same state".
+  const histRows = db
+    .prepare(
+      `SELECT agent_id, MAX(created_at) AS last_changed_at
+         FROM fleet_blackboard_history
+        WHERE agent_id IN (${placeholders})
+        GROUP BY agent_id`,
+    )
+    .all(...agentIds) as { agent_id: string; last_changed_at: number }[]
+  const lastChangedMap = new Map(histRows.map((r) => [r.agent_id, r.last_changed_at]))
+
   const nowSec = Math.floor(Date.now() / 1000)
 
   return rows.map((row) => ({
     ...row,
-    signal: computeBlackboardSignal(row, lastMsgMap.get(row.agent_id) ?? null, nowSec, thresholds),
+    signal: computeBlackboardSignal(
+      row,
+      lastMsgMap.get(row.agent_id) ?? null,
+      lastChangedMap.get(row.agent_id) ?? row.updated_at,
+      nowSec,
+      thresholds,
+    ),
   }))
 }
 

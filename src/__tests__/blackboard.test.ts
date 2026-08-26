@@ -76,15 +76,17 @@ describe('GET /api/blackboard', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('returns list from db, max 10 rows', async () => {
-    // First prepare: fleet_blackboard rows; second prepare: agent_messages (no recent msgs).
+    // Three prepare calls: fleet_blackboard rows, agent_messages (empty), fleet_blackboard_history (empty).
+    // Empty history -> lastChangedAt falls back to row.updated_at.
     mockPrepare
       .mockReturnValueOnce(makeStmt([ROW_A, ROW_B]))
+      .mockReturnValueOnce(makeStmt([]))
       .mockReturnValueOnce(makeStmt([]))
     const { ctx, out } = makeCtx('GET', '/api/blackboard')
     const handled = await tryHandleBlackboard(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(200)
-    // ROW_A: active + updated_at 1700000000 is far in the past (>24h) -> signal 'b'
+    // ROW_A: active + updated_at 1700000000 far in the past (>24h) -> signal 'b'
     // ROW_B: done -> no signal
     expect(out.body).toEqual([{ ...ROW_A, signal: 'b' }, { ...ROW_B, signal: null }])
   })
@@ -333,6 +335,7 @@ describe('GET /api/blackboard/history', () => {
   it('does NOT interfere with the existing /api/blackboard GET', async () => {
     mockPrepare
       .mockReturnValueOnce(makeStmt([ROW_A]))
+      .mockReturnValueOnce(makeStmt([]))
       .mockReturnValueOnce(makeStmt([]))
     const { ctx, out } = makeCtx('GET', '/api/blackboard')
     const handled = await tryHandleBlackboard(ctx)

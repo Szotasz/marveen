@@ -20,13 +20,15 @@ function row(overrides: Partial<BlackboardRow> = {}): BlackboardRow {
 const THRESHOLDS = { msgHours: 2, bbHours: 4, activeHours: 24 }
 
 // Helper: run the function and return the signal.
+// lastChangedAt defaults to row.updated_at (simulates "no history entry exists").
 function sig(
   r: BlackboardRow,
   lastMsgAt: number | null,
+  lastChangedAt = r.updated_at,
   nowSec = NOW,
   thresholds = THRESHOLDS,
 ): BlackboardSignal {
-  return computeBlackboardSignal(r, lastMsgAt, nowSec, thresholds)
+  return computeBlackboardSignal(r, lastMsgAt, lastChangedAt, nowSec, thresholds)
 }
 
 describe('computeBlackboardSignal: signal A (forgot to update)', () => {
@@ -89,6 +91,32 @@ describe('computeBlackboardSignal: combined signals', () => {
   it('returns null when row is fresh and no recent message', () => {
     const freshRow = row({ updated_at: NOW - 1 * 3600 })
     expect(sig(freshRow, null)).toBeNull()
+  })
+})
+
+describe('computeBlackboardSignal: signal B uses lastChangedAt, not updated_at', () => {
+  it('returns "b" when lastChangedAt is old even if updated_at is recent (no-op write masking)', () => {
+    // Simulates schedule-runner writing the same active row every 15 minutes:
+    // updated_at is 10 minutes ago (looks fresh), but the row hasn't actually changed in 25 hours.
+    // With updated_at as source, Signal B would NOT fire (updated_at is fresh).
+    // With lastChangedAt from history, Signal B MUST fire.
+    const recentWriteRow = row({ updated_at: NOW - 10 * 60 })  // 10 min ago
+    const lastChangedAt = NOW - 25 * 3600                       // 25h ago (old actual change)
+    expect(sig(recentWriteRow, null, lastChangedAt)).toBe('b')
+  })
+
+  it('returns null when lastChangedAt is recent, even if updated_at is old (inverse sanity check)', () => {
+    // A row that looks stale by updated_at but actually changed recently should NOT fire B.
+    const staleWriteRow = row({ updated_at: NOW - 25 * 3600 })
+    const lastChangedAt = NOW - 1 * 3600  // changed 1h ago
+    expect(sig(staleWriteRow, null, lastChangedAt)).toBeNull()
+  })
+
+  it('falls back to updated_at when no history exists (lastChangedAt === updated_at)', () => {
+    // When there is no history entry, lastChangedAt equals updated_at by convention.
+    // Signal B should still fire if updated_at itself is old.
+    const staleRow = row({ updated_at: NOW - 25 * 3600 })
+    expect(sig(staleRow, null, staleRow.updated_at)).toBe('b')
   })
 })
 
