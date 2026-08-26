@@ -21,9 +21,11 @@ let stage: string
 // of the script one level below a temp root that carries the fake .env.
 function stageScript(): { scriptCopy: string } {
   const scriptsDir = join(stage, 'scripts')
-  mkdirSync(scriptsDir, { recursive: true })
+  mkdirSync(join(scriptsDir, 'lib'), { recursive: true })
   const scriptCopy = join(scriptsDir, 'notify.sh')
   execFileSync('/bin/cp', [SCRIPT, scriptCopy])
+  // notify.sh sources the shared send contract from its own lib/ sibling.
+  execFileSync('/bin/cp', [join(ROOT, 'scripts', 'lib', 'send-telegram.sh'), join(scriptsDir, 'lib', 'send-telegram.sh')])
   writeFileSync(join(stage, '.env'), `TELEGRAM_BOT_TOKEN=${FAKE_TOKEN}\nALLOWED_CHAT_ID=42\nMAIN_AGENT_ID=mainbot\n`)
   return { scriptCopy }
 }
