@@ -92,6 +92,28 @@ function liveStatusRegion(pane: string): string | null {
   return lines.slice(Math.max(0, top - 1)).join('\n')
 }
 
+// Model-unavailable phrases. Separate from REAUTH_MARKERS so this does NOT
+// feed into the reauth-healer's respawn path: a bare respawn without first
+// changing the model config would immediately loop on the same error.
+// The model-fallback-runner (src/web/model-fallback-runner.ts) handles recovery
+// autonomously (detect → change model → restart). This function is for the
+// dashboard badge only.
+const MODEL_UNAVAILABLE_RX = /There['’]s an issue with the selected model|Run \/model to pick a different model/i
+const MODEL_UNAVAILABLE_TAIL_LINES = 15
+
+/**
+ * True when the live pane shows a "model unavailable" error. Alert-only: do
+ * NOT trigger a respawn on this -- only the model-fallback-runner, which
+ * changes the model first, should restart the session.
+ */
+export function detectsModelUnavailablePane(pane: string | null | undefined): boolean {
+  if (!pane) return false
+  const lines = pane.split('\n')
+  const region = lines.slice(Math.max(0, lines.length - MODEL_UNAVAILABLE_TAIL_LINES)).join('\n')
+  if (ESCALATION_QUOTE_MARKERS.some((rx) => rx.test(region))) return false
+  return MODEL_UNAVAILABLE_RX.test(region)
+}
+
 /**
  * Inspect a captured pane and decide whether the session needs re-auth.
  * Returns { needsReauth:false } for a null/empty pane (capture failed / not

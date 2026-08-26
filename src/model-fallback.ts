@@ -18,7 +18,7 @@
 // next downgrade target. Kept as literals here to preserve the zero-import,
 // trivially-testable property of this module.
 export const DEFAULT_MODEL_CHAIN: readonly string[] = [
-  'claude-opus-4-8[1m]',
+  'claude-opus-5',
   'claude-sonnet-5',
   'claude-haiku-4-5-20251001',
 ]
@@ -85,6 +85,30 @@ export function detectsUsageLimit(pane: string): boolean {
   const lines = pane.split('\n')
   const region = lines.slice(-USAGE_LIMIT_BANNER_REGION_LINES).join('\n')
   return USAGE_LIMIT_RX.test(region)
+}
+
+// Claude Code shows this message when the configured model is no longer
+// available (retired or removed). Unlike a usage-limit banner it does NOT
+// self-clear after a window reset: only a model switch fixes it. Restricted to
+// the bottom region to avoid false-positives from scrollback that quotes it.
+const MODEL_UNAVAILABLE_RX =
+  /There['’]s an issue with the selected model|Run \/model to pick a different model/i
+const MODEL_UNAVAILABLE_REGION_LINES = 15
+
+/**
+ * True when the live pane shows a "model unavailable" error (retired / removed
+ * model ID). Pure + dependency-free. Restricted to the bottom region so quoted
+ * text in scrollback cannot trigger it.
+ *
+ * This is NOT a usage-limit event -- it does not self-clear. The correct
+ * response is to change the model, then restart. Callers must NOT trigger a
+ * bare respawn without first updating the model config.
+ */
+export function detectsModelUnavailable(pane: string): boolean {
+  if (!pane || !pane.trim()) return false
+  const lines = pane.split('\n')
+  const region = lines.slice(-MODEL_UNAVAILABLE_REGION_LINES).join('\n')
+  return MODEL_UNAVAILABLE_RX.test(region)
 }
 
 /**

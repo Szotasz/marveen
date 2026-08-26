@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   detectsUsageLimit,
+  detectsModelUnavailable,
   nextFallbackModel,
   decideModelAction,
   normalizeModelFallbackConfig,
@@ -91,6 +92,46 @@ describe('decideModelAction', () => {
   it('does not re-revert when already back on the primary', () => {
     expect(decideModelAction({ ...base, limitDetected: false, currentModel: PRIMARY, downgradedAt: 0 }))
       .toEqual({ kind: 'none' })
+  })
+})
+
+describe('detectsModelUnavailable', () => {
+  it('matches the "model unavailable" banner phrases', () => {
+    expect(detectsModelUnavailable("There's an issue with the selected model")).toBe(true)
+    expect(detectsModelUnavailable("There’s an issue with the selected model")).toBe(true)
+    expect(detectsModelUnavailable('Run /model to pick a different model')).toBe(true)
+  })
+
+  it('matches only in the live region (bottom 15 lines)', () => {
+    const banner = "There's an issue with the selected model"
+    const scrollback = [banner, ...Array(40).fill('normal output')].join('\n')
+    expect(detectsModelUnavailable(scrollback)).toBe(false)
+    const live = [...Array(40).fill('normal output'), banner].join('\n')
+    expect(detectsModelUnavailable(live)).toBe(true)
+  })
+
+  it('returns false for empty / whitespace panes', () => {
+    expect(detectsModelUnavailable('')).toBe(false)
+    expect(detectsModelUnavailable('   \n  ')).toBe(false)
+  })
+
+  it('does NOT match usage-limit or generic API errors', () => {
+    expect(detectsModelUnavailable('You hit your session limit · resets 5:50pm')).toBe(false)
+    expect(detectsModelUnavailable('API Error: 429 rate_limit_error')).toBe(false)
+  })
+})
+
+describe('DEFAULT_MODEL_CHAIN sanity', () => {
+  const RETIRED_MODELS = ['claude-opus-4-8[1m]', 'claude-opus-4.8', 'claude-opus-4-8']
+
+  it('chain contains no known-retired model IDs', () => {
+    for (const model of DEFAULT_MODEL_CHAIN) {
+      expect(RETIRED_MODELS).not.toContain(model)
+    }
+  })
+
+  it('chain[0] (primary / revert target) is not a retired model', () => {
+    expect(RETIRED_MODELS).not.toContain(DEFAULT_MODEL_CHAIN[0])
   })
 })
 

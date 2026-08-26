@@ -22,7 +22,7 @@ import {
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { paneLooksIdle } from '../pane-state.js'
 import { readModelFallbackConfig } from './model-fallback-store.js'
-import { detectsUsageLimit, decideModelAction } from '../model-fallback.js'
+import { detectsUsageLimit, detectsModelUnavailable, decideModelAction } from '../model-fallback.js'
 
 // Drives the model-fallback-on-limit feature (see src/model-fallback.ts for the
 // why and the pure decision logic). Mirrors the auto-restart runner: a 60s
@@ -54,12 +54,31 @@ function readMainModel(): string {
   }
 }
 
-function writeMainModel(model: string): void {
+export function writeMainModel(model: string): void {
   if (!isValidModelId(model)) throw new InvalidModelIdError(model)
+
+  // 1. Write .claude/settings.json (existing behaviour, atomic).
   let cfg: Record<string, unknown> = {}
   try { cfg = JSON.parse(readFileSync(MAIN_SETTINGS_PATH, 'utf-8')) } catch {}
   cfg.model = model
   atomicWriteFileSync(MAIN_SETTINGS_PATH, JSON.stringify(cfg, null, 2))
+
+  // 2. Sync .env MAIN_AGENT_MODEL so channels.sh resolve_main_model() sees the
+  //    same value: channels.sh:126-134 prefers MAIN_AGENT_MODEL from .env over
+  //    settings.json, so without this the next channels.sh restart silently
+  //    reverts to the old .env value.
+  const envPath = join(PROJECT_ROOT, '.env')
+  try {
+    let env = readFileSync(envPath, 'utf-8')
+    env = /^MAIN_AGENT_MODEL=/m.test(env)
+      ? env.replace(/^MAIN_AGENT_MODEL=.*/m, `MAIN_AGENT_MODEL=${model}`)
+      : `${env.trimEnd()}\nMAIN_AGENT_MODEL=${model}\n`
+    atomicWriteFileSync(envPath, env)
+  } catch (err) {
+    // Non-fatal: settings.json was written. channels.sh will use the stale .env
+    // value on next restart (model may revert). Log as warning so it is visible.
+    logger.warn({ err }, 'model-fallback: writeMainModel could not sync .env')
+  }
 }
 
 function readModelFor(name: string): string {
@@ -104,7 +123,7 @@ function checkAgent(name: string, nowMs: number, revertAfterMs: number, chain: s
   const pane = capturePane(session, host)
   if (pane == null) return
 
-  const limitDetected = detectsUsageLimit(pane)
+  const limitDetected = detectsUsageLimit(pane) || detectsModelUnavailable(pane)
   const currentModel = readModelFor(name)
   const action = decideModelAction({
     limitDetected,
