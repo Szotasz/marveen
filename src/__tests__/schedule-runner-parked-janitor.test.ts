@@ -48,7 +48,7 @@ vi.mock('../db.js', () => ({
   appendTaskRun: (...a: unknown[]) => mockAppendTaskRun(...a),
   listPendingTaskRetries: () => mockListPendingRetries(),
   deletePendingTaskRetry: (...a: unknown[]) => mockDeletePendingRetry(...a),
-  updatePendingTaskRetry: (...a: unknown[]) => mockUpdatePendingRetry(...(a as [])),
+  updatePendingTaskRetry: (...a: unknown[]) => mockUpdatePendingRetry(...(a as [unknown, unknown, unknown, unknown])),
   insertPendingTaskRetryIfNew: vi.fn(),
   markPendingTaskRetryAlert: vi.fn(() => false),
   clearPendingTaskRetryAlert: vi.fn(),
