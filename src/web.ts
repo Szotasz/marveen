@@ -12,7 +12,7 @@ import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
 import { isBlockedCrossOriginWrite, originMatchesServedHost } from './web/csrf-origin.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
-import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
+import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
 import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureGovernanceGateCommands, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
@@ -505,7 +505,14 @@ export function startWebServer(port = 3420): http.Server {
       const pruned: string[] = []
       // Include the main agent (MAIN_AGENT_ID) so the voice hook is also seeded
       // into ~/.claude/settings.json alongside existing hooks (e.g. telegram_progress.py).
-      for (const agentName of [MAIN_AGENT_ID, ...listAgentNames()]) {
+      // listALLAgentNames, not listAgentNames (HBGATEWIRE826): the
+      // .hidden-from-dashboard sentinel is a UI concern, but this loop used it
+      // to skip hook-seeding too -- the heartbeat agent therefore ran with
+      // ZERO dashboard-side hooks (its kanban-write-gate and
+      // digest-provenance-gate included), and heartbeat-worker froze at the
+      // partial set from its last pre-hiding seed. Hidden technical workers
+      // need the guard hooks MORE than visible agents, not less.
+      for (const agentName of [MAIN_AGENT_ID, ...listAllAgentNames()]) {
         // Self-heal FIRST: drop entries this app previously wrote whose script
         // file no longer exists (e.g. a deleted worktree instance's paths), so
         // the re-registration below lands on a clean, unblocked settings file.
