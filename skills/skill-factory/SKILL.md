@@ -62,6 +62,8 @@ Never hardcode fleet-specific agent names or IDs in a skill. Use these placehold
 
 **In Pitfalls/incident entries:** incident dates and descriptions stay as-is. Concrete agent names in examples become `<AGENT_A>`/`<AGENT_B>`; self-references become `<AGENT>`; orchestrator references become `<MAIN_AGENT>`.
 
+**Placeholders in prose only, never in commands (CRITICAL):** A placeholder inside an executable command is a literal string that never matches. The command runs, finds nothing, and gives no error -- silent failure. Example: `tmux ls | grep agent-<DESIGN_AGENT>` will always return empty. Rule: if a line is inside a code fence (` ``` `), use the real agent ID, not the placeholder. Placeholders go in prose descriptions, table cells, and narrative text only. The migration script enforces this by skipping code fences.
+
 ### Step 3: Write SKILL.md
 
 ```bash
