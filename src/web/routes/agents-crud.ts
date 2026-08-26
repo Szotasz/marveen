@@ -778,7 +778,11 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     // agent-put-fields.ts for why, and for the securityProfile redirect.
     const fieldCheck = checkAgentPutFields(name, data)
     if (!fieldCheck.ok) {
-      json(res, { error: fieldCheck.message, rejected: fieldCheck.rejected, writable: AGENT_PUT_WRITABLE_FIELDS }, 400)
+      json(res, {
+        error: fieldCheck.code,
+        field: fieldCheck.rejected[0],
+        hint: fieldCheck.message,
+      }, 400)
       return true
     }
     if (data.memoryIsolation !== undefined) {

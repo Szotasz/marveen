@@ -1175,13 +1175,22 @@ paths:
               schema:
                 $ref: "#/components/schemas/AgentMessage"
         "400":
-          description: Missing fields or invalid federated address
+          description: |
+            Missing required fields or invalid federated address.
+            `error` is a stable snake_case code; human detail is in `hint`.
+            Codes: `missing_required_fields`, `invalid_federated_address`,
+            `federation_disabled`, `federation_self_reference`,
+            `unknown_federation_peer`, `invalid_recipient_format`.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "403":
-          description: from is reserved (coordinator) or unregistered agent
+          description: |
+            Sender not authorised.
+            `error` is a stable snake_case code; human detail is in `hint`.
+            Codes: `sender_reserved`, `federated_sender_not_allowed`,
+            `sender_not_in_allowlist`, `unknown_sender`.
           content:
             application/json:
               schema:
@@ -2311,7 +2320,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/OkResponse"
         "400":
-          description: Validation error or unknown field
+          description: |
+            Validation error or unknown field. `field` names the first rejected
+            key; `hint` lists writable fields and any additional rejected keys.
           content:
             application/json:
               schema:

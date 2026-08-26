@@ -41,7 +41,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
     try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'invalid JSON' }, 400); return true }
     const arFields = checkConfigPutFields(data, Object.keys(DEFAULT_AUTO_RESTART))
     if (!arFields.ok) {
-      json(res, { error: arFields.message, rejected: arFields.rejected, known: Object.keys(DEFAULT_AUTO_RESTART) }, 400)
+      json(res, { error: arFields.code, field: arFields.rejected[0], hint: arFields.message }, 400)
       return true
     }
     setStoreWriteActor('dashboard')
@@ -67,7 +67,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
     try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'invalid JSON' }, 400); return true }
     const cgFields = checkConfigPutFields(data, Object.keys(DEFAULT_CONTEXT_GUARD))
     if (!cgFields.ok) {
-      json(res, { error: cgFields.message, rejected: cgFields.rejected, known: Object.keys(DEFAULT_CONTEXT_GUARD) }, 400)
+      json(res, { error: cgFields.code, field: cgFields.rejected[0], hint: cgFields.message }, 400)
       return true
     }
     setStoreWriteActor('dashboard')
