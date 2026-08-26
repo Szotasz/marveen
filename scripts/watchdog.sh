@@ -48,6 +48,27 @@ if [ "${1:-}" = "--resolve-provider" ]; then
   exit 0
 fi
 
+# An agent is READY to be started only once both personality files exist. The
+# dashboard wizard creates the directory first and generates CLAUDE.md /
+# SOUL.md afterwards through an LLM call that can take minutes
+# (routes/agents.ts: "Generating agent CLAUDE.md and SOUL.md..."), so a
+# directory alone proves nothing about whether the agent is finished. Claude
+# Code reads CLAUDE.md at startup: a session started before the files land
+# comes up with no identity, no rules and no persona, and stays that way
+# until restarted by hand -- from the outside the creation looks failed.
+agent_is_scaffolded() {
+  [ -f "$1/CLAUDE.md" ] && [ -f "$1/SOUL.md" ]
+}
+
+# Self-test hook, mirroring --resolve-provider: evaluate the predicate and
+# exit before touching tmux, so the contract is testable from fixtures
+# (scripts/__tests__/watchdog-scaffold-guard.test.sh).
+if [ "${1:-}" = "--check-scaffolded" ]; then
+  [ -n "${2:-}" ] || { echo "usage: watchdog.sh --check-scaffolded <agent-dir>" >&2; exit 2; }
+  if agent_is_scaffolded "$2"; then echo "scaffolded=yes"; else echo "scaffolded=no"; fi
+  exit 0
+fi
+
 
 export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
@@ -129,6 +150,13 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
   SESSION_NAME="agent-${AGENT_ID}"
 
   if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    continue
+  fi
+
+  # Do not start a half-scaffolded agent: the wizard's LLM call may still be
+  # writing CLAUDE.md / SOUL.md. The next tick starts it once both exist.
+  if ! agent_is_scaffolded "$AGENT_DIR"; then
+    echo "$(timestamp) [watchdog] $AGENT_ID: personality files not ready yet (wizard still generating?), skipping this tick" >> "$LOG"
     continue
   fi
 
