@@ -79,7 +79,20 @@ components:
       properties:
         error:
           type: string
-          description: Human-readable error description
+          description: Machine-readable error code or short description
+        hint:
+          type: string
+          description: >-
+            Optional human-readable debugging note. Present when the server has
+            extra context that helps the caller fix the request (e.g. which
+            parameter name the filter expects, or why a value was rejected).
+            Clients must not rely on its exact text; treat it as informational.
+        field:
+          type: string
+          description: >-
+            Name of the request field that caused the validation failure.
+            Present on 4xx validation errors when the problem can be attributed
+            to a single input field.
       example:
         error: "agent_id is required"
 
