@@ -213,6 +213,22 @@ export function decideTaskTimeout(
   return 'hold'
 }
 
+// Write status=done to the blackboard when the watchdog clears a task entry,
+// but only if the agent has not modified the row since the runner wrote active.
+// Exported so the done-write path (including task_ref passthrough) can be tested
+// in isolation against a mocked db layer.
+export function applyBlackboardDone(entry: TaskInflightEntry): void {
+  if (!entry.sawTurn || !entry.blackboardSnapshot) return
+  const cur = findBlackboardRowByAgent(entry.agentName)
+  const unchanged = cur !== undefined &&
+    cur.status === entry.blackboardSnapshot.status &&
+    cur.summary === entry.blackboardSnapshot.summary &&
+    (cur.task_ref ?? null) === entry.blackboardSnapshot.task_ref
+  if (unchanged) {
+    upsertBlackboard(entry.agentName, { status: 'done', summary: entry.taskName, task_ref: entry.blackboardSnapshot.task_ref })
+  }
+}
+
 export type ResubmitAction = 'none' | 'enter' | 'reinject' | 'giveup'
 
 // Decide what the post-send resubmit loop should do on a given attempt. Pure
@@ -1251,20 +1267,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         maxTrackMs: TASK_FIRE_MAX_TRACK_MS,
       })
       if (decision === 'clear') {
-        // Only mark done when:
-        //  1. The agent actually started a turn (sawTurn=true).
-        //  2. The blackboard row hasn't been modified since we wrote active --
-        //     if the agent blocked or changed the summary mid-run, leave it alone.
-        if (entry.sawTurn && entry.blackboardSnapshot) {
-          const cur = findBlackboardRowByAgent(entry.agentName)
-          const unchanged = cur !== undefined &&
-            cur.status === entry.blackboardSnapshot.status &&
-            cur.summary === entry.blackboardSnapshot.summary &&
-            (cur.task_ref ?? null) === entry.blackboardSnapshot.task_ref
-          if (unchanged) {
-            upsertBlackboard(entry.agentName, { status: 'done', summary: entry.taskName, task_ref: entry.blackboardSnapshot.task_ref })
-          }
-        }
+        applyBlackboardDone(entry)
         taskInflightMap.delete(key)
       } else if (decision === 'alert') {
         sendTaskTimeoutAlert(entry, now - entry.injectedAt)

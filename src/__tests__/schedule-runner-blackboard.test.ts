@@ -1,5 +1,12 @@
-import { describe, it, expect } from 'vitest'
-import { decideTaskTimeout } from '../web/schedule-runner.js'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { decideTaskTimeout, applyBlackboardDone, type TaskInflightEntry } from '../web/schedule-runner.js'
+
+vi.mock('../db.js', () => ({
+  upsertBlackboard: vi.fn().mockReturnValue({ status: 'done', summary: '', task_ref: null }),
+  findBlackboardRowByAgent: vi.fn(),
+}))
+
+import { upsertBlackboard, findBlackboardRowByAgent } from '../db.js'
 
 // Mirror the production constants -- they are module-private so we cannot
 // import them directly. Values are hard-coded here so that a change to the
@@ -116,5 +123,66 @@ describe('schedule-runner: snapshot guard -- equality dimension (inline simulati
 
   it('row missing (undefined) => done is skipped', () => {
     expect(unchanged(SNAP, undefined)).toBe(false)
+  })
+})
+
+describe('applyBlackboardDone: task_ref passthrough to upsertBlackboard', () => {
+  const BASE_ENTRY: TaskInflightEntry = {
+    taskName: 'kanban-task',
+    agentName: 'agent-a',
+    session: 'sess-x',
+    host: null,
+    injectedAt: 0,
+    alerted: false,
+    sawTurn: true,
+    workingDir: '/tmp',
+    configDir: undefined,
+    timeoutMs: 300_000,
+    blackboardSnapshot: undefined,
+  }
+
+  beforeEach(() => {
+    vi.mocked(upsertBlackboard).mockClear()
+    vi.mocked(findBlackboardRowByAgent).mockReset()
+  })
+
+  it('passes non-null task_ref from snapshot to upsertBlackboard (regression guard)', () => {
+    // The active row was written with task_ref='card-abc'. The runner snapshots it.
+    // On clear, applyBlackboardDone must pass that task_ref to the done upsert.
+    // Without the fix (task_ref omitted from the call), upsertBlackboard receives
+    // no task_ref and the column goes null -- this assertion would fail.
+    const snapshot = { status: 'active', summary: 'kanban-task', task_ref: 'card-abc' }
+    vi.mocked(findBlackboardRowByAgent).mockReturnValue(
+      { status: 'active', summary: 'kanban-task', task_ref: 'card-abc', updated_at: 0, agent_id: 'agent-a' } as any,
+    )
+
+    applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
+
+    expect(upsertBlackboard).toHaveBeenCalledWith('agent-a', {
+      status: 'done',
+      summary: 'kanban-task',
+      task_ref: 'card-abc',
+    })
+  })
+
+  it('skips upsertBlackboard when sawTurn is false', () => {
+    applyBlackboardDone({ ...BASE_ENTRY, sawTurn: false, blackboardSnapshot: { status: 'active', summary: 'x', task_ref: null } })
+    expect(upsertBlackboard).not.toHaveBeenCalled()
+  })
+
+  it('skips upsertBlackboard when snapshot is missing', () => {
+    applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: undefined })
+    expect(upsertBlackboard).not.toHaveBeenCalled()
+  })
+
+  it('skips upsertBlackboard when current row does not match snapshot', () => {
+    const snapshot = { status: 'active', summary: 'kanban-task', task_ref: 'card-abc' }
+    // Agent changed the summary mid-run.
+    vi.mocked(findBlackboardRowByAgent).mockReturnValue(
+      { status: 'active', summary: 'different-summary', task_ref: 'card-abc', updated_at: 0, agent_id: 'agent-a' } as any,
+    )
+
+    applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
+    expect(upsertBlackboard).not.toHaveBeenCalled()
   })
 })
