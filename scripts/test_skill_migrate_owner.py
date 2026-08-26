@@ -404,6 +404,121 @@ class TestMigrateFileIntegration(unittest.TestCase):
         self.assertNotIn("Jónás Gergő", out)
 
 
+# ---------------------------------------------------------------------------
+# Tests: code-fence skip (Passes 3, 4, 5)
+# ---------------------------------------------------------------------------
+
+class TestCodeFenceSkip(unittest.TestCase):
+    """Passes 3-5 must not replace inside Markdown code fences.
+
+    Rule: placeholders belong in prose, not in executable commands. A replacement
+    inside a fence would silently break commands (grep finds nothing, tmux finds
+    no session, curl hits a non-existent agent).
+
+    Mutation that breaks these: removing the _is_fence_marker / in_fence guard
+    from any of the three passes -> name/email inside fence is replaced -> test fails.
+    """
+
+    def setUp(self):
+        _setup(name="Jónás Gergő", email="owner@example.com")
+
+    def _run(self, content: str, agent_id: str = "global") -> str:
+        with tempfile.TemporaryDirectory() as td:
+            md = Path(td) / "SKILL.md"
+            md.write_text(content, encoding="utf-8")
+            smp.migrate_file(md, agent_id, dry_run=False)
+            return md.read_text(encoding="utf-8")
+
+    def test_owner_name_in_fence_not_replaced(self):
+        # Inside ``` block: Jónás Gergő must survive unchanged
+        content = "# Skill\n\n```bash\necho Jónás Gergő\n```\n"
+        out = self._run(content)
+        self.assertIn("Jónás Gergő", out,
+            "Owner name inside code fence must not be replaced")
+        self.assertNotIn("<OWNER>", out)
+
+    def test_owner_name_outside_fence_replaced(self):
+        content = "# Skill\n\nJónás Gergő manages this.\n\n```bash\necho hello\n```\n"
+        out = self._run(content)
+        self.assertIn("<OWNER>", out)
+        self.assertNotIn("Jónás Gergő", out)
+
+    def test_owner_email_in_fence_not_replaced(self):
+        # Inside ``` block: email must survive unchanged
+        content = "# Skill\n\n```bash\ncurl -u owner@example.com api\n```\n"
+        out = self._run(content)
+        self.assertIn("owner@example.com", out,
+            "Owner email inside code fence must not be replaced")
+        self.assertNotIn("<OWNER_EMAIL>", out)
+
+    def test_agent_name_in_fence_not_replaced(self):
+        # Inside ``` block: real agent id used in a grep pattern must survive
+        content = "# Skill\n\n```bash\ntmux ls | grep jarvis-channels\n```\n"
+        out = self._run(content)
+        self.assertIn("jarvis-channels", out,
+            "Agent name inside code fence must not be replaced")
+        self.assertNotIn("<MAIN_AGENT>", out)
+
+    def test_mixed_fence_and_prose(self):
+        # Outside fence: replaced. Inside fence: preserved.
+        content = (
+            "# Skill\n\n"
+            "Jónás Gergő manages this.\n\n"
+            "```bash\n"
+            "# Jónás Gergő ez egy parancsban\n"
+            "curl owner@example.com\n"
+            "```\n\n"
+            "Contact owner@example.com for help.\n"
+        )
+        out = self._run(content)
+        self.assertIn("<OWNER>", out)
+        self.assertIn("<OWNER_EMAIL>", out)
+        self.assertIn("Jónás Gergő ez egy parancsban", out)
+        self.assertIn("curl owner@example.com", out)
+
+    def test_multiple_fences(self):
+        # Second fence block after a closed one must also be skipped
+        content = (
+            "# Skill\n\n"
+            "```bash\necho Jónás Gergő\n```\n\n"
+            "Prose Jónás Gergő here.\n\n"
+            "```bash\nowner@example.com\n```\n"
+        )
+        out = self._run(content)
+        self.assertIn("<OWNER>", out)
+        self.assertIn("echo Jónás Gergő", out)
+        self.assertIn("owner@example.com", out)
+        self.assertNotIn("<OWNER_EMAIL>", out)
+
+    def test_json_to_in_fence_not_replaced(self):
+        # Pass 2: "to":"peter" inside a curl command must NOT become "to":"<HEALTH_AGENT>"
+        # Mutation: remove Pass 2 fence skip -> curl command broken, API call fails silently
+        content = (
+            "# Skill\n\n"
+            "```bash\n"
+            'curl -d \'{"from":"<AGENT>","to":"peter","content":"task"}\'\n'
+            "```\n"
+        )
+        out = self._run(content, agent_id="jarvis")
+        self.assertIn('"to":"peter"', out,
+            "JSON to field inside code fence must not be replaced")
+        self.assertNotIn("<HEALTH_AGENT>", out)
+
+    def test_json_from_in_fence_not_replaced(self):
+        # Pass 1: "from":"zack" inside a fence must not become "from":"<BACKEND_AGENT>"
+        # Mutation: remove Pass 1 fence skip -> API call sends wrong sender ID
+        content = (
+            "# Skill\n\n"
+            "```bash\n"
+            'curl -d \'{"from":"zack","to":"jarvis","content":"done"}\'\n'
+            "```\n"
+        )
+        out = self._run(content, agent_id="zack")
+        self.assertIn('"from":"zack"', out,
+            "JSON from field inside code fence must not be replaced")
+        self.assertNotIn("<BACKEND_AGENT>", out)
+
+
 if __name__ == "__main__":
     result = unittest.main(verbosity=2, exit=False)
     sys.exit(0 if result.result.wasSuccessful() else 1)
