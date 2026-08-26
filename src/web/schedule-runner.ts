@@ -48,6 +48,7 @@ import {
   clearStaleParkedInput,
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
+import { recordDispatchedScheduledPrompt, setScheduledTaskConfigPrompts } from './dispatched-scheduled-prompts.js'
 import { sendTelegramMessage } from './telegram.js'
 import { runCommandTask } from './command-task.js'
 import { decideQuotaAction, type QuotaWorkClass } from '../quota-gate.js'
@@ -752,6 +753,13 @@ async function attemptFireTask(
       SCHEDULED_TASK_PREAMBLE + '\n' +
       prefix.trimEnd() + '\n\n' +
       wrapScheduledTask(`scheduled-task:${task.name}`, taskBody)
+    // SCHEDCONTENTMATCH (Balogh-safe): record the EXACT text we are about to
+    // type into the box, so that if a fragment of it later strands as a parked
+    // line on the main channels box, clearStaleParkedInput can recognise it as
+    // our own system-generated remnant and auto-clear it (instead of silencing
+    // the channel unattended). Recorded here, right at the dispatch, so the
+    // recorded body is byte-identical to what lands in the input box.
+    recordDispatchedScheduledPrompt(fullPrompt)
     // forceSend skips the busy-state check above; it must also skip the
     // pre-flight wait-until-idle gate inside sendPromptToSession, otherwise a
     // task aimed at a long-busy session would block on the 12s idle wait every
@@ -1207,6 +1215,14 @@ export function startScheduleRunner(): NodeJS.Timeout {
     tickRunning = true
     try {
     const tasks = listScheduledTasks()
+    // SCHEDCONTENTMATCH v2 (2026-08-22): refresh the TIME-INDEPENDENT half of the
+    // Balogh-safe content-match corpus from the tasks we just read off disk. A
+    // stranded main-box remnant can then be recognised as our own system text
+    // hours later -- and even for a tick that was dropped by skipIfBusy before it
+    // ever dispatched (so nothing was recorded). Config prompts are operator-
+    // authored, never inbound message text, so this cannot widen the match to a
+    // real reply.
+    setScheduledTaskConfigPrompts(tasks.map(t => t.prompt))
     const now = Date.now()
     // Scan the real interval elapsed since the previous tick (30 min on the
     // first tick), not a fixed 60s window -- a late/dropped tick must not let a

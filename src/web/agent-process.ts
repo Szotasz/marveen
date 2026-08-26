@@ -53,6 +53,7 @@ import { getSecret } from './vault.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
+import { matchesDispatchedScheduledPrompt } from './dispatched-scheduled-prompts.js'
 import { notifyChannel } from '../notify.js'
 
 // Lazy so a transient PATH gap at import time (e.g. the 04:00 auto-update
@@ -2218,7 +2219,14 @@ export async function clearStaleParkedInput(session: string, host: string | null
   //     notifyChannel direct to the owner (pure HTTP, does not touch the box)
   //     with the CONCRETE manual fix -- a message actionable in seconds, not
   //     "something is wrong".
-  if (session === MAIN_CHANNELS_SESSION) {
+  // SCHEDCONTENTMATCH (Balogh-safe scheduler-content-match, 2026-08-19): the
+  // main box is NEVER auto-cleared for a REAL parked line -- but a stranded
+  // fragment of one of OUR OWN dispatched scheduled prompts is provably
+  // system-generated text (never a real inbound reply), so it is SAFE to clear
+  // instead of silencing the channel unattended overnight. Only a parked line
+  // that is a substring of a recently-recorded dispatched scheduled body
+  // qualifies; anything else keeps the escalate-only behavior 100% unchanged.
+  if (session === MAIN_CHANNELS_SESSION && !matchesDispatchedScheduledPrompt(parked)) {
     const fails = (prev && prev.sig === parked ? prev.fails : 0) + 1
     let escalated = !!(prev && prev.sig === parked && prev.escalated)
     const stage = decideMainParkedEscalation(fails, escalated)
@@ -2239,6 +2247,15 @@ export async function clearStaleParkedInput(session: string, host: string | null
     }
     unwedgeAttempts.set(key, { last: nowMs, sig: parked, fails, escalated })
     return false
+  }
+  if (session === MAIN_CHANNELS_SESSION) {
+    // Reached only when the matched-remnant guard above let the main box fall
+    // through: this is our own dispatched scheduled prompt stranded in the box,
+    // safe to clear via the SAME forward-deletion path the sub-agents use.
+    logger.info(
+      { session, parked: parked.slice(0, 60) },
+      'message-router: main-agent parked input matched a dispatched scheduled prompt -- auto-clearing stale remnant (Balogh-safe)',
+    )
   }
 
   // Forward deletion, budgeted by the visible row count -- see the rationale and
