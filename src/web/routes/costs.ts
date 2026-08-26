@@ -4,11 +4,13 @@
 // startCostsSyncTask() below (called once at server boot), not as a side effect
 // of a client request. No LLM, no provider API, no secrets in the response.
 
-import { json } from '../http-helpers.js'
+import { json, readBody } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import { getDb } from '../../db.js'
 import { loadCostopsConfig } from '../../costops/config.js'
-import { syncFixedCostsToLedger, getCostSummary, getCostSources } from '../../costops/ledger.js'
+import { syncFixedCostsToLedger, getCostSummary, getCostSources, getTokenCostReport } from '../../costops/ledger.js'
+import { PRICE_MAP, isPriced } from '../../costops/pricing.js'
+import { applyEcoMode, readEcoState, baseModelId, DEFAULT_ECO_MODEL } from '../../costops/eco-mode.js'
 import type { RouteContext } from './types.js'
 
 // Runs the fixed-cost -> ledger reflection once immediately (so the summary is
@@ -33,7 +35,7 @@ export function startCostsSyncTask(intervalMs = SYNC_INTERVAL_MS): NodeJS.Timeou
 }
 
 export async function tryHandleCosts(ctx: RouteContext): Promise<boolean> {
-  const { res, path, method, url } = ctx
+  const { req, res, path, method, url } = ctx
 
   if (path === '/api/costs/summary' && method === 'GET') {
     try {
@@ -57,6 +59,58 @@ export async function tryHandleCosts(ctx: RouteContext): Promise<boolean> {
     } catch (err) {
       logger.error({ err }, 'CostOps sources failed')
       json(res, { error: 'Cost sources failed' }, 500)
+    }
+    return true
+  }
+
+  // Token list-price equivalent over a rolling window. `days` (default 7,
+  // max 400) is a rolling lookback rather than a calendar month so a daily
+  // ceiling can be evaluated without a month-boundary special case.
+  if (path === '/api/costs/tokens' && method === 'GET') {
+    try {
+      const raw = Number(url.searchParams.get('days') ?? '7')
+      const days = Number.isFinite(raw) ? Math.min(Math.max(Math.trunc(raw), 1), 400) : 7
+      const now = Math.floor(Date.now() / 1000)
+      json(res, getTokenCostReport(getDb(), { start: now - days * 86400, end: now }))
+    } catch (err) {
+      logger.error({ err }, 'CostOps token cost failed')
+      json(res, { error: 'Token cost failed' }, 500)
+    }
+    return true
+  }
+
+  // Eco mode. GET previews, POST applies. Neither restarts an agent: a model
+  // change only lands on the next restart, and that stays an operator call.
+  if (path === '/api/costs/eco' && method === 'GET') {
+    try {
+      const state = readEcoState()
+      const target = url.searchParams.get('target') || DEFAULT_ECO_MODEL
+      json(res, {
+        state,
+        preview: applyEcoMode(!state.enabled, target, { dryRun: true }),
+      })
+    } catch (err) {
+      logger.error({ err }, 'CostOps eco preview failed')
+      json(res, { error: 'Eco preview failed' }, 500)
+    }
+    return true
+  }
+
+  if (path === '/api/costs/eco' && method === 'POST') {
+    try {
+      const body = JSON.parse((await readBody(req)).toString() || '{}')
+      const enable = body.enabled === true
+      const target = typeof body.target === 'string' && body.target ? body.target : DEFAULT_ECO_MODEL
+      // An unrecognised model string is not a harmless typo: the agent's next
+      // launch fails on it. Refuse rather than write one into a live config.
+      if (enable && !isPriced(baseModelId(target))) {
+        json(res, { error: `Unknown eco target model: ${target}`, known: Object.keys(PRICE_MAP) }, 400)
+        return true
+      }
+      json(res, applyEcoMode(enable, target, { dryRun: body.dry_run === true }))
+    } catch (err) {
+      logger.error({ err }, 'CostOps eco apply failed')
+      json(res, { error: 'Eco apply failed' }, 500)
     }
     return true
   }
