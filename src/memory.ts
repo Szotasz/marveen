@@ -9,6 +9,7 @@ import {
   decayMemories as dbDecay,
   pruneAuditLogs,
   pruneTokenUsage,
+  pruneBlackboardHistory,
   getMemoriesForChat,
   listKanbanCardsSummary,
   hybridSearch,
@@ -162,7 +163,8 @@ export function runDecaySweep(): void {
   dbDecay()
   pruneAuditLogs()
   const tokenPruneResult = pruneTokenUsage()
-  logger.info(tokenPruneResult, 'Memoria leepulesi sopres vegrehajtva')
+  const blackboardHistoryPruned = pruneBlackboardHistory()
+  logger.info({ ...tokenPruneResult, blackboardHistoryPruned }, 'Memoria leepulesi sopres vegrehajtva')
 }
 
 // --- Daily digest ---

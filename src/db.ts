@@ -4029,3 +4029,49 @@ export function disablePartnerSender(senderId: string, tenantId: string): boolea
   return result.changes > 0
 }
 
+// --- fleet_blackboard_history --------------------------------------------------
+
+export interface BlackboardHistoryRow {
+  id: number
+  agent_id: string
+  task_ref: string | null
+  status: string
+  summary: string
+  created_at: number
+}
+
+export function insertBlackboardHistory(entry: {
+  agent_id: string
+  task_ref: string | null
+  status: string
+  summary: string
+}): void {
+  db.prepare(
+    'INSERT INTO fleet_blackboard_history (agent_id, task_ref, status, summary) VALUES (?, ?, ?, ?)'
+  ).run(entry.agent_id, entry.task_ref, entry.status, entry.summary)
+}
+
+export function listBlackboardHistory(opts: {
+  agent_id?: string
+  since?: number
+  limit?: number
+} = {}): BlackboardHistoryRow[] {
+  const limit = Math.min(opts.limit ?? 50, 200)
+  const parts: string[] = []
+  const params: (string | number)[] = []
+  if (opts.agent_id) { parts.push('agent_id = ?'); params.push(opts.agent_id) }
+  if (opts.since !== undefined) { parts.push('created_at >= ?'); params.push(opts.since) }
+  const where = parts.length ? 'WHERE ' + parts.join(' AND ') : ''
+  params.push(limit)
+  return db.prepare(
+    `SELECT id, agent_id, task_ref, status, summary, created_at
+     FROM fleet_blackboard_history ${where}
+     ORDER BY created_at DESC LIMIT ?`
+  ).all(...params) as BlackboardHistoryRow[]
+}
+
+export function pruneBlackboardHistory(ttlDays = 30): number {
+  const cutoff = Math.floor(Date.now() / 1000) - ttlDays * 86400
+  return db.prepare('DELETE FROM fleet_blackboard_history WHERE created_at < ?').run(cutoff).changes
+}
+

@@ -307,6 +307,35 @@ components:
         summary: "feat/openapi-spec: írja az OpenAPI 3.1 spec-et"
         updated_at: 1787488514
 
+    BlackboardHistoryRow:
+      type: object
+      required: [id, agent_id, status, summary, created_at]
+      properties:
+        id:
+          type: integer
+          description: Auto-increment primary key
+        agent_id:
+          type: string
+        task_ref:
+          type: [string, "null"]
+          description: Kanban card id at the time of the write
+        status:
+          type: string
+          enum: [active, done, blocked]
+        summary:
+          type: string
+          maxLength: 500
+        created_at:
+          type: integer
+          description: Unix timestamp of when this transition was recorded
+      example:
+        id: 1
+        agent_id: "agent-a"
+        task_ref: "task-001"
+        status: "active"
+        summary: "Started"
+        created_at: 1700000000
+
     SkillUsageSummaryRow:
       type: object
       required: [skill_name, last_used_at, total_count, count_30d, count_90d]
@@ -1790,6 +1819,56 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  /blackboard/history:
+    get:
+      tags: [blackboard]
+      operationId: listBlackboardHistory
+      summary: List blackboard state-transition history (append-only audit trail)
+      parameters:
+        - name: agent_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter to a single agent
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Return only entries with created_at >= this Unix timestamp
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+          description: Maximum rows to return (capped at 200)
+      responses:
+        "200":
+          description: History rows, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BlackboardHistoryRow"
+              example:
+                - id: 1
+                  agent_id: "agent-a"
+                  task_ref: "task-001"
+                  status: "active"
+                  summary: "Started"
+                  created_at: 1700000000
+                - id: 2
+                  agent_id: "agent-a"
+                  task_ref: "task-001"
+                  status: "done"
+                  summary: "Finished"
+                  created_at: 1700001000
 
   # ---- Daily Log ----------------------------------------------------------
 

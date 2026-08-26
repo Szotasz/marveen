@@ -111,6 +111,18 @@ export interface BlackboardRow {
   updated_at: number;
 }
 
+export interface BlackboardHistoryRow {
+  /** Auto-increment primary key */
+  id: number;
+  agent_id: string;
+  /** Kanban card id at the time of the write */
+  task_ref?: string | null;
+  status: 'active' | 'done' | 'blocked';
+  summary: string;
+  /** Unix timestamp of when this transition was recorded */
+  created_at: number;
+}
+
 export interface SkillUsageSummaryRow {
   skill_name: string;
   /** Unix timestamp of most recent use */
@@ -221,6 +233,8 @@ export type GetApprovalResponse = Approval
 export type ResolveApprovalResponse = Approval
 
 export type ListBlackboardResponse = BlackboardRow[]
+
+export type ListBlackboardHistoryResponse = BlackboardHistoryRow[]
 
 export type GetDailyLogResponse = DailyLog
 

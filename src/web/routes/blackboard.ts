@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { getDb } from '../../db.js'
+import { getDb, insertBlackboardHistory, listBlackboardHistory } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
@@ -32,7 +32,9 @@ function upsertBlackboard(agent_id: string, data: { task_ref?: string | null; st
       summary    = excluded.summary,
       updated_at = unixepoch()
   `).run(id, agent_id, data.task_ref ?? null, data.status ?? 'active', data.summary)
-  return db.prepare('SELECT * FROM fleet_blackboard WHERE id = ?').get(id) as BlackboardRow
+  const row = db.prepare('SELECT * FROM fleet_blackboard WHERE id = ?').get(id) as BlackboardRow
+  insertBlackboardHistory({ agent_id: row.agent_id, task_ref: row.task_ref, status: row.status, summary: row.summary })
+  return row
 }
 
 function patchBlackboard(id: string, data: { status?: string; summary?: string; task_ref?: string | null }): BlackboardRow | undefined {
@@ -45,13 +47,27 @@ function patchBlackboard(id: string, data: { status?: string; summary?: string; 
   db.prepare(`
     UPDATE fleet_blackboard SET status = ?, summary = ?, task_ref = ?, updated_at = unixepoch() WHERE id = ?
   `).run(status, summary, task_ref, id)
-  return db.prepare('SELECT * FROM fleet_blackboard WHERE id = ?').get(id) as BlackboardRow
+  const updated = db.prepare('SELECT * FROM fleet_blackboard WHERE id = ?').get(id) as BlackboardRow
+  insertBlackboardHistory({ agent_id: updated.agent_id, task_ref: updated.task_ref, status: updated.status, summary: updated.summary })
+  return updated
 }
 
 const VALID_STATUS = new Set(['active', 'done', 'blocked'])
 
 export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
+
+  // History endpoint must be matched before the generic /api/blackboard GET.
+  if (path === '/api/blackboard/history' && method === 'GET') {
+    const { url } = ctx
+    const agent_id = url.searchParams.get('agent_id') ?? undefined
+    const sinceRaw = url.searchParams.get('since')
+    const since = sinceRaw !== null ? parseInt(sinceRaw, 10) : undefined
+    const limitRaw = url.searchParams.get('limit')
+    const limit = limitRaw !== null ? Math.min(Math.max(1, parseInt(limitRaw, 10) || 50), 200) : undefined
+    json(res, listBlackboardHistory({ agent_id, since, limit }))
+    return true
+  }
 
   if (path === '/api/blackboard' && method === 'GET') {
     json(res, listBlackboard(10))
