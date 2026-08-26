@@ -8,7 +8,7 @@ import { json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import { getDb } from '../../db.js'
 import { loadCostopsConfig } from '../../costops/config.js'
-import { syncFixedCostsToLedger, getCostSummary, getCostSources } from '../../costops/ledger.js'
+import { syncFixedCostsToLedger, getCostSummary, getCostSources, getTokenCostReport } from '../../costops/ledger.js'
 import type { RouteContext } from './types.js'
 
 // Runs the fixed-cost -> ledger reflection once immediately (so the summary is
@@ -57,6 +57,22 @@ export async function tryHandleCosts(ctx: RouteContext): Promise<boolean> {
     } catch (err) {
       logger.error({ err }, 'CostOps sources failed')
       json(res, { error: 'Cost sources failed' }, 500)
+    }
+    return true
+  }
+
+  // Token list-price equivalent over a rolling window. `days` (default 7,
+  // max 400) is a rolling lookback rather than a calendar month so a daily
+  // ceiling can be evaluated without a month-boundary special case.
+  if (path === '/api/costs/tokens' && method === 'GET') {
+    try {
+      const raw = Number(url.searchParams.get('days') ?? '7')
+      const days = Number.isFinite(raw) ? Math.min(Math.max(Math.trunc(raw), 1), 400) : 7
+      const now = Math.floor(Date.now() / 1000)
+      json(res, getTokenCostReport(getDb(), { start: now - days * 86400, end: now }))
+    } catch (err) {
+      logger.error({ err }, 'CostOps token cost failed')
+      json(res, { error: 'Token cost failed' }, 500)
     }
     return true
   }
