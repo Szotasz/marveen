@@ -41,7 +41,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 ### Changed
 
 - `PUT /api/agents/:name` 400 response body: replaced `rejected` (array of unknown fields) and `writable` (array of allowed fields) with the system-wide `field` + `hint` pattern; `field` holds the first rejected key, `hint` lists writable fields and any additional rejected keys; callers that parsed `rejected` mechanically must migrate to `hint` text (the dashboard did not read either field)
-- `POST /api/messages` error responses: `error` is now a stable snake_case machine token (`missing_required_fields`, `sender_reserved`, `federated_sender_not_allowed`, `sender_not_in_allowlist`, `unknown_sender`, `invalid_federated_address`, `federation_disabled`, `federation_self_reference`, `unknown_federation_peer`, `invalid_recipient_format`); human-readable explanation moved to `hint`; status codes and trigger conditions are unchanged
+- `POST /api/messages` and `PUT /api/messages/:id` error responses: `error` is now a stable snake_case machine token (`missing_required_fields`, `sender_reserved`, `federated_sender_not_allowed`, `sender_not_in_allowlist`, `unknown_sender`, `invalid_federated_address`, `federation_disabled`, `federation_self_reference`, `unknown_federation_peer`, `invalid_recipient_format`, `message_not_found`); human-readable explanation moved to `hint`; status codes and trigger conditions are unchanged
 
 ### Fixed
 

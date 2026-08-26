@@ -294,7 +294,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       }
       json(res, { ok: true }); return true
     }
-    json(res, { error: 'Message not found or invalid status' }, 404)
+    json(res, { error: 'message_not_found', hint: 'Message not found or invalid status' }, 404)
     return true
   }
 

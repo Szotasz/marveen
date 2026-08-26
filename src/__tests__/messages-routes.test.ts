@@ -202,4 +202,16 @@ describe('POST /api/messages: error codes are snake_case machine tokens', () => 
     expect(out.body.error).toBe('unknown_sender')
     expect(out.body.hint).toContain('stranger')
   })
+
+  // Regression guard for the PUT /api/messages/:id 404 path.
+  // Strict equality so restoring the old prose string fails immediately.
+  it('PUT /api/messages/:id not found → message_not_found (not a prose sentence)', async () => {
+    const { markMessageDone } = await import('../db.js')
+    vi.mocked(markMessageDone).mockReturnValueOnce(false)
+    const { ctx, out } = makeCtx('PUT', '/api/messages/99999', { status: 'done' })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(404)
+    expect(out.body.error).toBe('message_not_found')
+    expect(out.body.hint).toContain('not found')
+  })
 })
