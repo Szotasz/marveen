@@ -5,6 +5,8 @@ import {
   restartDue,
   dailyDueAtMs,
   restartBlockedBy,
+  deferralOverride,
+  OPEN_QUESTION_DEFERRAL_CAP_MS,
   DEFAULT_AUTO_RESTART,
 } from '../auto-restart.js'
 
@@ -92,5 +94,34 @@ describe('restartBlockedBy', () => {
   })
   it('idle pane and no open question proceeds', () => {
     expect(restartBlockedBy({ paneIdle: true, openQuestion: false })).toBeNull()
+  })
+})
+
+describe('deferralOverride', () => {
+  const now = 1_700_000_000_000
+  const day = 24 * 60 * 60 * 1000
+
+  // Regression guard: the open-question signal is clockless (a question the
+  // owner never answers stays open forever), so before the cap an agent with
+  // one stale question had its nightly restart silently deferred for months --
+  // a live ledger showed a streak of 72.6 days.
+  it('overrides an open-question deferral once the streak reaches the cap', () => {
+    expect(deferralOverride('open-question', now - OPEN_QUESTION_DEFERRAL_CAP_MS, now)).toBe(true)
+    expect(deferralOverride('open-question', now - Math.round(72.6 * day), now)).toBe(true)
+  })
+  it('keeps deferring while the streak is under the cap', () => {
+    expect(deferralOverride('open-question', now - OPEN_QUESTION_DEFERRAL_CAP_MS + 1, now)).toBe(false)
+    expect(deferralOverride('open-question', now, now)).toBe(false)
+  })
+  it('never overrides a busy pane, no matter how long the streak', () => {
+    expect(deferralOverride('busy-pane', now - 100 * day, now)).toBe(false)
+  })
+  it('does nothing without a block or without a streak', () => {
+    expect(deferralOverride(null, now - 100 * day, now)).toBe(false)
+    expect(deferralOverride('open-question', null, now)).toBe(false)
+  })
+  it('respects an explicit cap argument', () => {
+    expect(deferralOverride('open-question', now - 2 * day, now, 3 * day)).toBe(false)
+    expect(deferralOverride('open-question', now - 3 * day, now, 3 * day)).toBe(true)
   })
 })

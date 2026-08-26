@@ -139,3 +139,37 @@ export function restartBlockedBy(
   if (signals.openQuestion) return 'open-question'
   return null
 }
+
+/**
+ * Cap on how long an unanswered inbound question may keep deferring a due
+ * restart. The open-question signal has no clock of its own: a question the
+ * owner never answers stays "open" forever (a live agent ledger showed one
+ * standing for 72 days), and an uncapped deferral turns the nightly restart
+ * into a mechanism that silently never runs. After the cap the restart
+ * proceeds anyway -- the deferral must have an end, and the override is
+ * logged so it also has a voice.
+ */
+export const OPEN_QUESTION_DEFERRAL_CAP_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Whether a due-but-deferred restart must proceed despite the block.
+ * Only 'open-question' deferrals are overridden: a busy pane is the harder
+ * invariant (never cut off a live turn) and is never overridden, no matter
+ * how long the streak.
+ *
+ * @param blocked          Result of restartBlockedBy for this tick.
+ * @param deferredSinceMs  When the current open-question deferral streak
+ *                         started, or null if there is no streak.
+ * @param nowMs            Current clock (ms).
+ * @param capMs            Maximum streak length before the override fires.
+ */
+export function deferralOverride(
+  blocked: 'busy-pane' | 'open-question' | null,
+  deferredSinceMs: number | null,
+  nowMs: number,
+  capMs: number = OPEN_QUESTION_DEFERRAL_CAP_MS,
+): boolean {
+  if (blocked !== 'open-question') return false
+  if (deferredSinceMs === null) return false
+  return nowMs - deferredSinceMs >= capMs
+}
