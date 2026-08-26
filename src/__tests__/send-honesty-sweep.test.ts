@@ -34,6 +34,8 @@ function stageTree(scriptNames: string[]): { root: string; bin: string } {
   mkdirSync(join(stage, 'store'), { recursive: true })
   for (const s of scriptNames) cpSync(join(ROOT, 'scripts', s), join(scripts, s))
   cpSync(join(ROOT, 'scripts', 'lib', 'send-telegram.sh'), join(scripts, 'lib', 'send-telegram.sh'))
+  // limit-monitor's dedupe hash comes from the shared helper (MD5SUMHIANY826).
+  cpSync(join(ROOT, 'scripts', 'lib', 'content-hash.sh'), join(scripts, 'lib', 'content-hash.sh'))
   const bin = join(stage, 'bin')
   mkdirSync(bin, { recursive: true })
   writeFileSync(join(bin, 'curl'),

@@ -59,12 +59,26 @@ fi
 # its own dedupe -- the send failed, the hash said "already alerted", and the
 # warning was lost forever, precisely during quota/network degradation
 # (NOTIFYVAKSWEEP826, the worst row of the sweep).
-HASH="$(printf '%s' "$CANDIDATE" | md5sum | awk '{print $1}')"
-PREV="$(cat "$STATE" 2>/dev/null)"
-if [ "$HASH" = "$PREV" ]; then
-  log "signal unchanged, already alerted ($HASH)"
-  exit 0
-fi
+#
+# The hash comes from the shared existence-checked helper (MD5SUMHIANY826):
+# the old bare `md5sum` pipeline yielded an EMPTY hash on macOS (no md5sum),
+# empty == empty compared "unchanged", and every alert was silently swallowed
+# on the flagship host. If NO hashing tool exists at all, this path fails
+# OPEN: a duplicate alert on every tick is recoverable, a swallowed limit
+# warning is not.
+. "$INSTALL_DIR/scripts/lib/content-hash.sh"
+HASH="$(printf '%s' "$CANDIDATE" | dedupe_check "$STATE")"
+case $? in
+  0) : ;; # new signal -> alert below
+  1)
+    log "signal unchanged, already alerted ($HASH)"
+    exit 0
+    ;;
+  *)
+    HASH=""
+    log "content_hash UNAVAILABLE -- dedupe disabled for this tick, alerting anyway (fail-open)"
+    ;;
+esac
 
 # Alert the owner via Bot API (token-free path; no Claude invocation)
 TOKEN="$(grep -oE '[0-9]+:[A-Za-z0-9_-]+' "$HOME/.claude/channels/telegram/.env" 2>/dev/null | head -1)"
@@ -81,8 +95,10 @@ if [ -n "$TOKEN" ]; then
   # next timer tick instead of vanishing.
   . "$INSTALL_DIR/scripts/lib/send-telegram.sh"
   if send_telegram_message "$TOKEN" "$CHAT_ID" "$MSG" --data-urlencode "disable_web_page_preview=true" 2>>"$LOG"; then
-    echo "$HASH" > "$STATE"
-    log "ALERT sent to $CHAT_ID: $HASH"
+    # No stamp on an empty hash (fail-open tick): an empty state file is the
+    # exact shape the MD5SUMHIANY826 bug hid behind.
+    [ -n "$HASH" ] && echo "$HASH" > "$STATE"
+    log "ALERT sent to $CHAT_ID: ${HASH:-nohash}"
   else
     log "ALERT send FAILED (will retry next tick, stamp NOT written): $HASH"
   fi
