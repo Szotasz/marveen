@@ -79,6 +79,23 @@ describe('upsertBlackboard: snapshot guard (schedule-runner done-write protectio
     expect(history.map(r => r.status).sort()).toEqual(['active', 'done'])
   })
 
+  it('done write preserves a non-null task_ref from the active snapshot', () => {
+    // Active row starts with a real kanban card ref. The runner snapshots it, then
+    // writes done passing task_ref from the snapshot. Without the fix the done call
+    // had no task_ref argument and the column silently became null.
+    const row = upsertBlackboard('agent-b', { status: 'active', summary: 'kanban-task', task_ref: 'card-abc' })
+    expect(row.task_ref).toBe('card-abc')
+
+    // Simulate runner done write with task_ref preserved from snapshot.
+    const doneRow = upsertBlackboard('agent-b', { status: 'done', summary: 'kanban-task', task_ref: row.task_ref ?? null })
+    expect(doneRow.task_ref).toBe('card-abc')
+
+    // Verify the live row also carries the value (not just the return value).
+    const cur = findBlackboardRowByAgent('agent-b')!
+    expect(cur.task_ref).toBe('card-abc')
+    expect(cur.status).toBe('done')
+  })
+
   it('done is NOT written when agent changed status to blocked mid-run', () => {
     const row = upsertBlackboard('agent-b', { status: 'active', summary: 'heartbeat-daily', task_ref: null })
     const snapshot = { status: row.status, summary: row.summary, task_ref: row.task_ref ?? null }
