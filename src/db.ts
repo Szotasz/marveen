@@ -701,6 +701,15 @@ export function initDatabase(dbPathOverride?: string): void {
   // Migrations for columns added after initial release
   try { db.exec('ALTER TABLE token_usage ADD COLUMN thinking_tokens INTEGER NOT NULL DEFAULT 0') } catch { /* already exists */ }
   try { db.exec('ALTER TABLE token_usage ADD COLUMN model TEXT') } catch { /* already exists */ }
+  // How task_title got its value. Two writers fill that one column with very
+  // different reliability: the transcript parser reads a marker the runner puts
+  // in the prompt (exact -- the prompt names the task), while
+  // correlateWithKanban() attributes by time window (a guess: every row in a
+  // span gets whatever card moved then). Indistinguishable in one column, they
+  // let a heuristic attribution be read as an exact one.
+  // NULL means the provenance predates this column, not that it is unknown
+  // forever: a rescan stamps the marker rows via the upsert below.
+  try { db.exec('ALTER TABLE token_usage ADD COLUMN task_source TEXT') } catch { /* already exists */ }
 
   // Deduplicate existing rows before creating unique index
   try {
@@ -722,6 +731,12 @@ export function initDatabase(dbPathOverride?: string): void {
       last_size INTEGER NOT NULL DEFAULT 0
     )
   `)
+  // The scheduled task a transcript was last working on. Transcript parsing
+  // resumes mid-file from last_line, so the marker that names the task can sit
+  // in an already-consumed chunk; without carrying it across, every row after
+  // the first resume would lose its label and the attribution would be silently
+  // partial rather than obviously broken.
+  try { db.exec('ALTER TABLE token_usage_cursors ADD COLUMN last_task_title TEXT') } catch { /* already exists */ }
 
   // --- Idea Box ---
   db.exec(`

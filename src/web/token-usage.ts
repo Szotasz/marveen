@@ -71,6 +71,51 @@ function findJsonlFiles(dir: string): string[] {
   return files
 }
 
+/**
+ * The scheduled task a prompt belongs to, read off the provenance wrapper the
+ * schedule runner puts around every injected prompt.
+ *
+ * Two markers ride along, and measurement across all 95 transcripts on
+ * 2026-07-31 found them on all 1149 scheduled prompts together, never one
+ * without the other: a structured `<scheduled-task source="scheduled-task:X">`
+ * tag and a human-readable `[Heartbeat: X]` / `[Utemezett feladat: X]` prefix.
+ * We anchor on the structured tag -- it is machine-intended, quoted, and cannot
+ * be confused with a user quoting the bracket form in prose.
+ *
+ * Neither marker sits at the start of the message: the safety wrapper's
+ * preamble comes first, so this searches rather than matching from the head.
+ */
+const SCHEDULED_TASK_TAG = /<scheduled-task source="scheduled-task:([^"]+)"/
+
+/** Schedule name for a prompt, or null if this is not a scheduled run. */
+export function parseScheduledTaskMarker(text: string): string | null {
+  const m = SCHEDULED_TASK_TAG.exec(text)
+  return m ? m[1] : null
+}
+
+/**
+ * Text carried by a transcript `user` line, or null when the line is not a
+ * real user turn.
+ *
+ * Tool results arrive as `user` lines too -- 8270 of 10579 across the fleet's
+ * transcripts -- and they must be distinguished from a person typing. If a
+ * tool result counted as a user turn, the label would be cleared on the very
+ * first tool call of a scheduled run, which is to say almost immediately, and
+ * the task would appear to cost a single API call.
+ */
+export function userTurnText(content: unknown): string | null {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return null
+  let text = ''
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue
+    const b = block as { type?: string; text?: string }
+    if (b.type === 'tool_result') return null // a tool result, not a person
+    if (b.type === 'text' && typeof b.text === 'string') text += b.text
+  }
+  return text
+}
+
 interface ParsedCall {
   agent: string
   sessionId: string
@@ -83,6 +128,10 @@ interface ParsedCall {
   thinkingTokens: number
   /** Model identifier from the API response, e.g. "claude-sonnet-5". */
   model: string | null
+  /** Scheduled task this turn belongs to, or null for interactive work. Only
+   *  the schedule NAME is stored: its kind (task vs heartbeat) already lives in
+   *  the schedule's own task-config.json and would go stale if duplicated here. */
+  taskTitle: string | null
   contentPreview: string
   toolName: string | null
   /** The API message id (msg_...). One assistant turn that calls a tool is
@@ -122,6 +171,7 @@ export function collapseByMessageId(calls: ParsedCall[]): ParsedCall[] {
     ex.cacheCreationTokens = Math.max(ex.cacheCreationTokens, c.cacheCreationTokens)
     ex.thinkingTokens = Math.max(ex.thinkingTokens, c.thinkingTokens)
     if (!ex.model && c.model) ex.model = c.model
+    if (!ex.taskTitle && c.taskTitle) ex.taskTitle = c.taskTitle
     if (!ex.toolName && c.toolName) ex.toolName = c.toolName
     if (!ex.contentPreview && c.contentPreview) ex.contentPreview = c.contentPreview
   }
@@ -132,10 +182,14 @@ async function parseJsonlFile(
   filePath: string,
   agent: string,
   fromLine: number,
-): Promise<{ calls: ParsedCall[]; linesRead: number }> {
+  carriedTask: string | null = null,
+): Promise<{ calls: ParsedCall[]; linesRead: number; endTask: string | null }> {
   const calls: ParsedCall[] = []
   let lineNum = 0
   let sessionId = ''
+  // Survives across resumes via the cursor -- see the token_usage_cursors
+  // migration in db.ts for why dropping it would corrupt attribution quietly.
+  let currentTask: string | null = carriedTask
 
   const rl = createInterface({
     input: createReadStream(filePath, { encoding: 'utf-8' }),
@@ -152,6 +206,15 @@ async function parseJsonlFile(
 
     if (obj.sessionId) {
       sessionId = obj.sessionId
+    }
+
+    // A real user turn either starts a scheduled run or ends one. An
+    // unmarked turn means a person took over, so the previous task's label
+    // must stop here rather than bleeding onto unrelated later work.
+    if (obj.type === 'user') {
+      const text = userTurnText(obj.message?.content)
+      if (text !== null) currentTask = parseScheduledTaskMarker(text)
+      continue
     }
 
     if (obj.type !== 'assistant' || !obj.message?.usage) continue
@@ -197,6 +260,7 @@ async function parseJsonlFile(
       cacheCreationTokens: (u.cache_creation_input_tokens || 0),
       thinkingTokens,
       model: obj.message?.model || null,
+      taskTitle: currentTask,
       contentPreview: preview,
       toolName,
       messageId: obj.message?.id || null,
@@ -205,7 +269,7 @@ async function parseJsonlFile(
 
   // Collapse the multi-line tool-turn rows (same message id, repeated usage)
   // before they reach the DB -- this is the fix for the ~2x token inflation.
-  return { calls: collapseByMessageId(calls), linesRead: lineNum }
+  return { calls: collapseByMessageId(calls), linesRead: lineNum, endTask: currentTask }
 }
 
 export async function collectTokenUsage(): Promise<{ inserted: number; files: number }> {
@@ -214,14 +278,20 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
   let totalInserted = 0
   let totalFiles = 0
 
-  const getCursor = db.prepare('SELECT last_line, last_size FROM token_usage_cursors WHERE file_path = ?')
-  const setCursor = db.prepare('INSERT OR REPLACE INTO token_usage_cursors (file_path, last_line, last_size) VALUES (?, ?, ?)')
+  const getCursor = db.prepare('SELECT last_line, last_size, last_task_title FROM token_usage_cursors WHERE file_path = ?')
+  const setCursor = db.prepare('INSERT OR REPLACE INTO token_usage_cursors (file_path, last_line, last_size, last_task_title) VALUES (?, ?, ?, ?)')
   const insertCall = db.prepare(`
     INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens,
-      cache_read_tokens, cache_creation_tokens, thinking_tokens, model, content_preview, tool_name)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      cache_read_tokens, cache_creation_tokens, thinking_tokens, model, content_preview, tool_name, task_title, task_source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(agent, session_id, timestamp, input_tokens, output_tokens) DO UPDATE SET
       model = CASE WHEN token_usage.model IS NULL AND excluded.model IS NOT NULL THEN excluded.model ELSE token_usage.model END,
+      -- Fills in on a re-scan but never overwrites an existing label, so a
+      -- deliberate backfill can label history without rewriting good rows.
+      task_title = CASE WHEN token_usage.task_title IS NULL AND excluded.task_title IS NOT NULL THEN excluded.task_title ELSE token_usage.task_title END,
+      -- Fills provenance on a rescan for rows labelled before this column
+      -- existed, without ever relabelling a row that already has a source.
+      task_source = CASE WHEN token_usage.task_source IS NULL AND excluded.task_source IS NOT NULL THEN excluded.task_source ELSE token_usage.task_source END,
       thinking_tokens = CASE WHEN (token_usage.thinking_tokens IS NULL OR token_usage.thinking_tokens = 0) AND excluded.thinking_tokens > 0 THEN excluded.thinking_tokens ELSE token_usage.thinking_tokens END
   `)
 
@@ -231,13 +301,18 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
       let fileSize: number
       try { fileSize = statSync(file).size } catch { continue }
 
-      const cursor = getCursor.get(file) as { last_line: number; last_size: number } | undefined
+      const cursor = getCursor.get(file) as { last_line: number; last_size: number; last_task_title: string | null } | undefined
       if (cursor && cursor.last_size === fileSize) continue
 
       const fromLine = (cursor && cursor.last_size <= fileSize) ? cursor.last_line : 0
 
       try {
-        const { calls, linesRead } = await parseJsonlFile(file, source.agent, fromLine)
+        // Resuming mid-file means the marker naming the current task may be
+        // behind us; the cursor carries it forward. A full re-read (fromLine 0)
+        // starts clean so a stale label cannot survive a deliberate rescan.
+        const { calls, linesRead, endTask } = await parseJsonlFile(
+          file, source.agent, fromLine, fromLine > 0 ? (cursor?.last_task_title ?? null) : null,
+        )
 
         if (calls.length > 0) {
           const tx = db.transaction(() => {
@@ -247,15 +322,16 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
                 c.inputTokens, c.outputTokens,
                 c.cacheReadTokens, c.cacheCreationTokens,
                 c.thinkingTokens, c.model,
-                c.contentPreview || null, c.toolName,
+                c.contentPreview || null, c.toolName, c.taskTitle,
+                c.taskTitle ? 'schedule_marker' : null,
               )
             }
-            setCursor.run(file, linesRead, fileSize)
+            setCursor.run(file, linesRead, fileSize, endTask)
           })
           tx()
           totalInserted += calls.length
         } else {
-          setCursor.run(file, linesRead, fileSize)
+          setCursor.run(file, linesRead, fileSize, endTask)
         }
         totalFiles++
       } catch (err) {
@@ -510,7 +586,7 @@ export function correlateWithKanban(): void {
 
       db.prepare(`
         UPDATE token_usage
-        SET task_title = ?, project = ?
+        SET task_title = ?, project = ?, task_source = 'kanban_correlation'
         WHERE agent = ? AND timestamp BETWEEN ? AND ? AND task_title IS NULL
       `).run(card.title, card.project || null, row.agent, card.updated_at, endTs)
     }
