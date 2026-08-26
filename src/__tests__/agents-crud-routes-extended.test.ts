@@ -592,4 +592,38 @@ describe('agents-crud routes (extended)', () => {
     const body = responseBody() as any
     expect(body[0].state).toBe('error')
   })
+
+  // Regression guard: PUT /api/agents/:name error codes must be stable machine
+  // tokens. Before this fix the route passed fieldCheck.message (a prose sentence)
+  // as the `error` field. Strict equality so reverting the fix fails immediately.
+  describe('PUT /api/agents/:name: error codes are snake_case machine tokens', () => {
+    it('unknown field → unsupported_field (not a prose sentence)', async () => {
+      const { ctx, statusCode, responseBody } = makeCtx({
+        method: 'PUT',
+        path: '/api/agents/test-agent',
+        body: JSON.stringify({ securityProfile: 'researcher' }),
+      })
+      expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+      expect(statusCode()).toBe(400)
+      const body = responseBody() as any
+      expect(body.error).toBe('unsupported_field')
+      expect(typeof body.field).toBe('string')
+      expect(typeof body.hint).toBe('string')
+      // The prose sentence must not appear as the error value.
+      expect(body.error).not.toContain('Unsupported field')
+    })
+
+    it('non-object body → invalid_body (not a prose sentence)', async () => {
+      const { ctx, statusCode, responseBody } = makeCtx({
+        method: 'PUT',
+        path: '/api/agents/test-agent',
+        body: '"just-a-string"',
+      })
+      expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+      expect(statusCode()).toBe(400)
+      const body = responseBody() as any
+      expect(body.error).toBe('invalid_body')
+      expect(body.error).not.toContain('Request body')
+    })
+  })
 })

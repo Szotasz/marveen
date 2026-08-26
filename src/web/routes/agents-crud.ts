@@ -779,11 +779,9 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     const fieldCheck = checkAgentPutFields(name, data)
     if (!fieldCheck.ok) {
       json(res, {
-        error: fieldCheck.message,
+        error: fieldCheck.code,
         field: fieldCheck.rejected[0],
-        hint: fieldCheck.rejected.length > 1
-          ? `also rejected: ${fieldCheck.rejected.slice(1).join(', ')}; writable fields: ${AGENT_PUT_WRITABLE_FIELDS.join(', ')}`
-          : `writable fields: ${AGENT_PUT_WRITABLE_FIELDS.join(', ')}`,
+        hint: fieldCheck.message,
       }, 400)
       return true
     }

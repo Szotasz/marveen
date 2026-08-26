@@ -323,4 +323,43 @@ describe('agents-process routes -- extended coverage', () => {
       expect(await tryHandleAgentsProcess(ctx)).toBe(false)
     })
   })
+
+  // Regression guard: PUT auto-restart and context-guard error codes must be
+  // stable machine tokens. Before this fix the routes passed cgFields.message /
+  // arFields.message (prose) as `error`, plus bespoke `rejected`+`known` arrays.
+  // Strict equality so reverting the fix fails immediately.
+  describe('error codes are snake_case machine tokens', () => {
+    it('auto-restart unknown field → unsupported_field (not a prose sentence)', async () => {
+      const { ctx, statusCode, responseBody } = makeCtx({
+        method: 'PUT',
+        path: '/api/agents/rick/auto-restart',
+        body: JSON.stringify({ enabled: true, noSuchField: 42 }),
+      })
+      expect(await tryHandleAgentsProcess(ctx)).toBe(true)
+      expect(statusCode()).toBe(400)
+      const body = responseBody() as any
+      expect(body.error).toBe('unsupported_field')
+      expect(body.field).toBe('noSuchField')
+      expect(typeof body.hint).toBe('string')
+      // Old-shape fields must not appear.
+      expect(body.rejected).toBeUndefined()
+      expect(body.known).toBeUndefined()
+    })
+
+    it('context-guard unknown field → unsupported_field (not a prose sentence)', async () => {
+      const { ctx, statusCode, responseBody } = makeCtx({
+        method: 'PUT',
+        path: '/api/agents/rick/context-guard',
+        body: JSON.stringify({ enabled: true, actPct: 0.8, noSuchField: 99 }),
+      })
+      expect(await tryHandleAgentsProcess(ctx)).toBe(true)
+      expect(statusCode()).toBe(400)
+      const body = responseBody() as any
+      expect(body.error).toBe('unsupported_field')
+      expect(body.field).toBe('noSuchField')
+      expect(typeof body.hint).toBe('string')
+      expect(body.rejected).toBeUndefined()
+      expect(body.known).toBeUndefined()
+    })
+  })
 })

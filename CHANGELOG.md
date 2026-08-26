@@ -40,7 +40,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Changed
 
-- `PUT /api/agents/:name` 400 response body: replaced `rejected` (array of unknown fields) and `writable` (array of allowed fields) with the system-wide `field` + `hint` pattern; `field` holds the first rejected key, `hint` lists writable fields and any additional rejected keys; callers that parsed `rejected` mechanically must migrate to `hint` text (the dashboard did not read either field)
+- `PUT /api/agents/:name`, `PUT /api/agents/:name/auto-restart`, and `PUT /api/agents/:name/context-guard` 400 response bodies: `error` is now a stable snake_case machine token (`unsupported_field` or `invalid_body`); replaced bespoke `rejected` + `writable`/`known` arrays with the system-wide `field` + `hint` pattern; `field` holds the first rejected key, `hint` carries the human-readable explanation including the full rejected list and known alternatives; callers that parsed `rejected` mechanically must migrate to `hint` text (the dashboard did not read either field)
 - `POST /api/messages`, `PUT /api/messages/:id`, and `GET /api/messages` (unknown-param guard) error responses: `error` is now a stable snake_case machine token (`missing_required_fields`, `sender_reserved`, `federated_sender_not_allowed`, `sender_not_in_allowlist`, `unknown_sender`, `invalid_federated_address`, `federation_disabled`, `federation_self_reference`, `unknown_federation_peer`, `invalid_recipient_format`, `message_not_found`, `unknown_query_parameter`); human-readable explanation moved to `hint`; status codes and trigger conditions are unchanged
 
 ### Fixed

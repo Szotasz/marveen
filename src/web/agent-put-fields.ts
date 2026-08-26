@@ -28,7 +28,7 @@ const ELSEWHERE: Record<string, (name: string) => string> = {
 
 export type AgentPutFieldCheck =
   | { ok: true }
-  | { ok: false; rejected: string[]; message: string }
+  | { ok: false; rejected: string[]; message: string; code: string }
 
 // Rejects the UNKNOWN rather than allow-listing the known at the call site: a
 // field someone adds to the client tomorrow surfaces as a loud 400 instead of
@@ -36,7 +36,7 @@ export type AgentPutFieldCheck =
 // not recognise is precisely what we must not hide.
 export function checkAgentPutFields(name: string, body: unknown): AgentPutFieldCheck {
   if (body === null || typeof body !== 'object') {
-    return { ok: false, rejected: [], message: 'Request body must be a JSON object.' }
+    return { ok: false, rejected: [], message: 'Request body must be a JSON object.', code: 'invalid_body' }
   }
   const writable = new Set<string>(AGENT_PUT_WRITABLE_FIELDS)
   const rejected = Object.keys(body as Record<string, unknown>).filter(k => !writable.has(k))
@@ -46,7 +46,7 @@ export function checkAgentPutFields(name: string, body: unknown): AgentPutFieldC
   const message =
     `Unsupported field(s) for this endpoint: ${rejected.join(', ')}.` +
     (hints.length ? ` ${hints.join('; ')}.` : '')
-  return { ok: false, rejected, message }
+  return { ok: false, rejected, message, code: 'unsupported_field' }
 }
 
 // Same rule for the per-agent CONFIG endpoints (auto-restart, context-guard).
@@ -69,7 +69,7 @@ export function checkAgentPutFields(name: string, body: unknown): AgentPutFieldC
 // default; a misspelled key is now loud.
 export function checkConfigPutFields(body: unknown, knownFields: readonly string[]): AgentPutFieldCheck {
   if (body === null || typeof body !== 'object') {
-    return { ok: false, rejected: [], message: 'Request body must be a JSON object.' }
+    return { ok: false, rejected: [], message: 'Request body must be a JSON object.', code: 'invalid_body' }
   }
   const known = new Set<string>(knownFields)
   const rejected = Object.keys(body as Record<string, unknown>).filter(k => !known.has(k))
@@ -80,5 +80,6 @@ export function checkConfigPutFields(body: unknown, knownFields: readonly string
     message:
       `Unknown field(s) for this config endpoint: ${rejected.join(', ')}. ` +
       `Known fields: ${knownFields.join(', ')}.`,
+    code: 'unsupported_field',
   }
 }
