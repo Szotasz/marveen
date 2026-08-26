@@ -1919,7 +1919,7 @@ paths:
           required: false
           schema:
             type: integer
-          description: Return only entries with created_at >= this Unix timestamp
+          description: Return only entries with created_at >= this Unix timestamp (inclusive; paginating clients should use last_seen + 1 to avoid re-fetching the boundary row)
         - name: limit
           in: query
           required: false

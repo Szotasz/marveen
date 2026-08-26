@@ -131,7 +131,11 @@ function checkAgent(name: string, nowMs: number, revertAfterMs: number, chain: s
   const session = sessionFor(name)
   const host = name === MAIN_AGENT_ID ? null : readAgentRemoteHost(name)
   const pane = capturePane(session, host)
-  if (pane == null) return
+  if (pane == null) {
+    // Pane unreadable: reset streak so two detections must be consecutive captures.
+    modelUnavailableStreak.delete(name)
+    return
+  }
 
   const usageLimitDetected = detectsUsageLimit(pane)
   const rawModelUnavailable = detectsModelUnavailable(pane)

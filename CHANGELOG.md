@@ -40,6 +40,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- Model-fallback: `modelUnavailableStreak` is now reset to 0 when a pane is unreadable (`capturePane` returns null), so two model-unavailable detections only count as consecutive if no null-pane sweep occurred between them; previously the streak was frozen and could add up across non-consecutive sweeps, triggering a spurious model switch
 - fix token management API path matching so `/api/v1/admin/tokens` resolves correctly (handler was comparing against the pre-normalised `/api/v1/` form instead of the normalised `/api/` form that the dispatcher passes to route handlers)
 - widen flaky 1s margin in heartbeat-hot-memory-count test
 - call tlRebuildAtTime(t1) on natural playback end
