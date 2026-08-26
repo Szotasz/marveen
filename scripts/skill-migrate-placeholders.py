@@ -436,12 +436,14 @@ def _is_fence_marker(line: str) -> bool:
 # Main file migration
 # ---------------------------------------------------------------------------
 
-def migrate_file(path: Path, agent_id: str, dry_run: bool) -> list[str]:
+def migrate_file(path: Path, agent_id: str, dry_run: bool) -> tuple[list[str], int]:
     """
     Migrate one SKILL.md file. Scope-A expansion:
     - Shared/global (agent_id == 'global' or 'jarvis'): ALL sections, YAML desc, headers
     - Agent-own: cross-agent refs in ALL sections; YAML name: field is skipped
-    Returns list of human-readable change descriptions.
+    Returns (unique_change_descriptions, total_occurrence_count) where
+    unique_change_descriptions is deduplicated for display and
+    total_occurrence_count is the raw number of individual string replacements.
     """
     original = path.read_text(encoding="utf-8")
     text = original
@@ -645,7 +647,11 @@ def migrate_file(path: Path, agent_id: str, dry_run: bool) -> list[str]:
     home_path = str(Path.home()) + "/"
     text = _normalize_bash_path(text, home_path, changes)
 
-    # Deduplicate
+    # Raw occurrence count before deduplication — each individual string replacement
+    # counts as one occurrence. This is what the approver needs to see.
+    total_occurrences = len(changes)
+
+    # Deduplicate for display only (keeps the printed change list readable)
     seen: set[str] = set()
     unique_changes: list[str] = []
     for c in changes:
@@ -658,7 +664,7 @@ def migrate_file(path: Path, agent_id: str, dry_run: bool) -> list[str]:
             shutil.copy2(path, path.with_suffix(".md.bak"))
             path.write_text(text, encoding="utf-8")
 
-    return unique_changes
+    return unique_changes, total_occurrences
 
 
 def infer_agent_id(skill_dir: Path) -> str:
@@ -849,30 +855,36 @@ def main() -> None:
 
     total_files = 0
     total_changes = 0
+    total_occurrences = 0
 
     for skill_dir in existing_dirs:
         agent_id = infer_agent_id(skill_dir)
         dir_label = str(skill_dir).replace(str(HOME), "~")
         dir_changes = 0
+        dir_occurrences = 0
 
         for md in sorted(skill_dir.rglob("SKILL.md")):
             if md.name == ".skill-index.md":
                 continue  # auto-generated; regenerate with skill-index.sh after apply
             skill_name = md.parent.name
-            changes = migrate_file(md, agent_id, dry_run=args.dry_run)
+            changes, occurrences = migrate_file(md, agent_id, dry_run=args.dry_run)
             if changes:
                 total_files += 1
                 dir_changes += len(changes)
+                dir_occurrences += occurrences
                 total_changes += len(changes)
+                total_occurrences += occurrences
                 print(f"  [{dir_label}/{skill_name}]")
                 for c in changes:
                     print(f"    - {c}")
 
         if dir_changes:
-            print(f"  -> {dir_changes} changes in {dir_label}")
+            occ_note = f" ({dir_occurrences} occurrences)" if dir_occurrences != dir_changes else ""
+            print(f"  -> {dir_changes} changes{occ_note} in {dir_label}")
             print()
 
-    print(f"=== Summary: {total_changes} changes across {total_files} files ===")
+    occ_summary = f", {total_occurrences} occurrences" if total_occurrences != total_changes else ""
+    print(f"=== Summary: {total_changes} changes{occ_summary} across {total_files} files ===")
     if args.dry_run:
         print("Run with --apply to execute.")
     else:

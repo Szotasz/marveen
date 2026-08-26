@@ -519,6 +519,77 @@ class TestCodeFenceSkip(unittest.TestCase):
         self.assertNotIn("<BACKEND_AGENT>", out)
 
 
+class TestOccurrenceCount(unittest.TestCase):
+    """migrate_file must count individual occurrences, not deduplicated change types.
+
+    A line like "... only if Jarvis confirms. (Jarvis-decision, 2026-08-22.)"
+    contains two occurrences of the same name. The approver must see the real
+    number of replacements, not the deduplicated display count.
+
+    These tests FAIL on the old code (which returned len(unique_changes) = 1)
+    and PASS on the fixed code (which returns raw len(changes) = 2 as occurrences).
+    Mutation proof: change `total_occurrences = len(changes)` to
+    `total_occurrences = len(unique_changes)` and both tests turn red.
+    """
+
+    def setUp(self):
+        _setup(name="Jonas Gergo", email="owner@example.com")
+
+    def _run_with_counts(self, content: str, agent_id: str = "global") -> tuple[str, list[str], int]:
+        """Run migrate_file and return (file_content, unique_changes, occurrences)."""
+        with tempfile.TemporaryDirectory() as td:
+            md = Path(td) / "SKILL.md"
+            md.write_text(content, encoding="utf-8")
+            unique_changes, occurrences = smp.migrate_file(md, agent_id, dry_run=False)
+            return md.read_text(encoding="utf-8"), unique_changes, occurrences
+
+    def test_two_occurrences_on_same_line_counted_as_two(self):
+        # One line, two occurrences of the same name -> occurrences must be 2.
+        # Mutation: if total_occurrences = len(unique_changes) instead of len(changes),
+        # occurrences would be 1 and this assertion fails.
+        content = (
+            "---\nname: test\ndescription: test\n---\n\n"
+            "# Test\n\n"
+            "- Only if Jarvis confirms. (Jarvis-decision, 2026-08-22.)\n"
+        )
+        out, unique_changes, occurrences = self._run_with_counts(content, agent_id="global")
+        self.assertNotIn("Jarvis", out, "Both occurrences must be replaced")
+        self.assertIn("<MAIN_AGENT>", out)
+        # unique_changes has one entry (same rule applied twice on same line)
+        self.assertEqual(len(unique_changes), 1,
+            "Deduplicated display list should have one entry for this rule")
+        # occurrences counts each individual replacement
+        self.assertEqual(occurrences, 2,
+            "Two occurrences of 'Jarvis' on one line must count as 2, not 1")
+
+    def test_one_occurrence_counted_as_one(self):
+        # Baseline: single occurrence -> occurrences == 1 == len(unique_changes).
+        content = (
+            "---\nname: test\ndescription: test\n---\n\n"
+            "# Test\n\n"
+            "- Ask Jarvis before proceeding.\n"
+        )
+        out, unique_changes, occurrences = self._run_with_counts(content, agent_id="global")
+        self.assertNotIn("Jarvis", out)
+        self.assertEqual(occurrences, 1)
+        self.assertEqual(len(unique_changes), 1)
+
+    def test_occurrences_across_multiple_lines(self):
+        # Two separate lines, one occurrence each -> occurrences == 2, unique_changes == 1.
+        content = (
+            "---\nname: test\ndescription: test\n---\n\n"
+            "# Test\n\n"
+            "- Notify Jarvis when done.\n"
+            "- Jarvis will confirm.\n"
+        )
+        out, unique_changes, occurrences = self._run_with_counts(content, agent_id="global")
+        self.assertNotIn("Jarvis", out)
+        self.assertEqual(occurrences, 2,
+            "Two occurrences on separate lines must count as 2")
+        self.assertEqual(len(unique_changes), 1,
+            "Same rule on two lines still yields one deduplicated display entry")
+
+
 if __name__ == "__main__":
     result = unittest.main(verbosity=2, exit=False)
     sys.exit(0 if result.result.wasSuccessful() else 1)
