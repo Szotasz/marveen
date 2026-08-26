@@ -5,8 +5,8 @@
 // cross-tree fallbacks correctly, and replays the 2026-06-09 multi-plugin
 // masking scenario end-to-end.
 
-import { describe, it, expect } from 'vitest'
-import { decideHasPluginAlive } from '../channel-coordinator/liveness.js'
+import { describe, it, expect, vi } from 'vitest'
+import { decideHasPluginAlive, snapshotProcsWithRetry, PS_PROBE_TIMEOUT_MS, PS_PROBE_RETRY_TIMEOUT_MS } from '../channel-coordinator/liveness.js'
 
 // Synthetic `ps -axo pid,ppid,command` snapshots. First line is the header
 // `ps` always emits; the decider skips it via .slice(1) just like the live
@@ -186,5 +186,43 @@ describe('decideHasPluginAlive -- slack/discord cross-tree scan', () => {
       psOutput: out, claudePid: CLAUDE_PID, providerType: 'slack',
       botPid: null, isPidAlive: ALL_PIDS_ALIVE,
     })).toBe(false)
+  })
+})
+
+describe('snapshotProcsWithRetry', () => {
+  it('returns the first attempt without retrying on the fast path', () => {
+    const run = vi.fn((_t: number) => 'PS-OUTPUT')
+    const out = snapshotProcsWithRetry(run)
+    expect(out).toBe('PS-OUTPUT')
+    expect(run).toHaveBeenCalledTimes(1)
+    expect(run).toHaveBeenCalledWith(PS_PROBE_TIMEOUT_MS)
+  })
+
+  it('retries once with the longer deadline when the fast path throws', () => {
+    const run = vi.fn((timeoutMs: number) => {
+      if (timeoutMs === PS_PROBE_TIMEOUT_MS) throw new Error('ETIMEDOUT')
+      return 'PS-OUTPUT-RETRY'
+    })
+    const out = snapshotProcsWithRetry(run)
+    expect(out).toBe('PS-OUTPUT-RETRY')
+    expect(run).toHaveBeenCalledTimes(2)
+    expect(run).toHaveBeenNthCalledWith(1, PS_PROBE_TIMEOUT_MS)
+    expect(run).toHaveBeenNthCalledWith(2, PS_PROBE_RETRY_TIMEOUT_MS)
+  })
+
+  it('propagates the error when BOTH attempts throw (verdict stays unknown upstream)', () => {
+    const run = vi.fn((_t: number) => { throw new Error('ETIMEDOUT') })
+    expect(() => snapshotProcsWithRetry(run)).toThrow('ETIMEDOUT')
+    expect(run).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not retry after a successful fast path even if it would have failed later', () => {
+    const run = vi.fn((_t: number) => 'OK')
+    snapshotProcsWithRetry(run)
+    expect(run).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses the retry timeout strictly greater than the fast-path timeout', () => {
+    expect(PS_PROBE_RETRY_TIMEOUT_MS).toBeGreaterThan(PS_PROBE_TIMEOUT_MS)
   })
 })

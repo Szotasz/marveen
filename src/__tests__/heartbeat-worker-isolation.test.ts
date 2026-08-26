@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { formatHeartbeatCardLabel } from '../heartbeat.js'
 import { CHANNEL_PLUGIN_IDS } from '../web/plugin-ids.js'
 
 // Contract tests for the 2026-06-02 channel-disconnect chain.
@@ -84,5 +86,40 @@ describe('heartbeat worker cwd + CLAUDE_CONFIG_DIR isolation (2026-06-02 inciden
 
   it('idempotent: stale non-symlinks under the config dir get rebuilt, not appended', () => {
     expect(SRC).toMatch(/rmSync\(linkPath/)
+  })
+})
+
+describe('formatHeartbeatCardLabel', () => {
+  it('leads with the bracketed id, the one authoritative handle', () => {
+    expect(formatHeartbeatCardLabel({ id: '8290FF71', title: 'Installer re-run .env karositas' }))
+      .toBe('[8290FF71] Installer re-run .env karositas')
+  })
+
+  it('truncates long titles so cross-referenced card names drop out of view', () => {
+    const title = 'A'.repeat(70) + ' lasd meg CARD1 es CARD2 kartyakat reszletesen'
+    const label = formatHeartbeatCardLabel({ id: 'X1', title })
+    expect(label.startsWith('[X1] ')).toBe(true)
+    expect(label.length).toBe('[X1] '.length + 80 + 3)
+    expect(label).not.toContain('CARD2')
+    expect(label.endsWith('...')).toBe(true)
+  })
+
+  it('keeps short titles verbatim, no ellipsis', () => {
+    expect(formatHeartbeatCardLabel({ id: 'Y2', title: 'rovid cim' })).toBe('[Y2] rovid cim')
+  })
+})
+
+describe('heartbeat prompt contract (source-pinned)', () => {
+  const hbSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../heartbeat.ts'), 'utf-8')
+
+  it('the kanban section instructs report-only, id-only naming', () => {
+    expect(hbSrc).toContain('KIZAROLAG a szogletes zarojeles ID-javal nevezz meg')
+    expect(hbSrc).toContain('eltunt tetelre okot ne kovetkeztess')
+  })
+
+  it('the prompt is fed labeled cards, not bare titles', () => {
+    expect(hbSrc).toContain('urgentLabels.join')
+    expect(hbSrc).toContain('waitingLabels.join')
+    expect(hbSrc).toContain('summary.urgent.map(formatHeartbeatCardLabel)')
   })
 })

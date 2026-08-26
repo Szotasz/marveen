@@ -5,7 +5,10 @@ import {
   restartDue,
   dailyDueAtMs,
   DEFAULT_AUTO_RESTART,
+  mainRestartMechanism,
 } from '../auto-restart.js'
+import { isMainChannelsAgent } from '../web/main-agent.js'
+import { MAIN_AGENT_ID } from '../config.js'
 
 describe('parseHHMM', () => {
   it('parses valid times to minutes since midnight', () => {
@@ -74,5 +77,36 @@ describe('dailyDueAtMs', () => {
     const midnight = 1_700_000_000_000
     expect(dailyDueAtMs(midnight, 0)).toBe(midnight)
     expect(dailyDueAtMs(midnight, 180)).toBe(midnight + 180 * 60_000) // 03:00
+  })
+})
+
+describe('mainRestartMechanism', () => {
+  it('uses launchd when launchctl is present (macOS: unchanged behaviour)', () => {
+    expect(mainRestartMechanism(true)).toBe('launchd')
+  })
+
+  it('falls back to a tmux respawn when launchctl is absent (Linux)', () => {
+    expect(mainRestartMechanism(false)).toBe('tmux-respawn')
+  })
+
+  it('never returns launchd without launchctl -- the ENOENT loop this fixes', () => {
+    expect(mainRestartMechanism(false)).not.toBe('launchd')
+  })
+})
+
+describe('isMainChannelsAgent', () => {
+  it('is true for the main agent', () => {
+    expect(isMainChannelsAgent(MAIN_AGENT_ID)).toBe(true)
+  })
+
+  it('is false for sub-agents (they keep the agent-process path)', () => {
+    for (const name of ['dia', 'erno-ba', 'virgil', 'kolos', 'tekla', 'stori']) {
+      expect(isMainChannelsAgent(name)).toBe(false)
+    }
+  })
+
+  it('is false for empty / unknown names', () => {
+    expect(isMainChannelsAgent('')).toBe(false)
+    expect(isMainChannelsAgent('marveen-channels')).toBe(false)
   })
 })

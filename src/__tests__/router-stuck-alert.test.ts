@@ -12,7 +12,7 @@
 // these tests pin it.
 
 import { describe, it, expect } from 'vitest'
-import { formatStuckSessionAlert, shouldEscalateStuckSession } from '../web/message-router.js'
+import { formatStuckSessionAlert, shouldEscalateStuckSession, shouldAbandon, shouldGiveUpOnInject } from '../web/message-router.js'
 import { detectPaneState } from '../pane-state.js'
 
 const MAIN = 'marveen'
@@ -125,5 +125,48 @@ describe('shouldEscalateStuckSession: a busy pane is work, not a stall', () => {
       '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
     ].join('\n')
     expect(shouldEscalateStuckSession(detectPaneState(quoted), 11 * MIN)).toBe(true)
+  })
+})
+
+const WINDOW_MS = 60 * 60 * 1000 // 1 hour, same as MESSAGE_ABANDON_WINDOW_MS
+
+describe('shouldAbandon: abandon only when session is absent past the window', () => {
+  it('returns false when session exists regardless of age', () => {
+    expect(shouldAbandon(true, WINDOW_MS + 1, WINDOW_MS)).toBe(false)
+    expect(shouldAbandon(true, WINDOW_MS * 10, WINDOW_MS)).toBe(false)
+    expect(shouldAbandon(true, 0, WINDOW_MS)).toBe(false)
+  })
+
+  it('returns false when session is absent but within the window', () => {
+    expect(shouldAbandon(false, WINDOW_MS - 1, WINDOW_MS)).toBe(false)
+    expect(shouldAbandon(false, 0, WINDOW_MS)).toBe(false)
+  })
+
+  it('returns true when session is absent AND past the window', () => {
+    expect(shouldAbandon(false, WINDOW_MS + 1, WINDOW_MS)).toBe(true)
+    expect(shouldAbandon(false, WINDOW_MS * 2, WINDOW_MS)).toBe(true)
+  })
+
+  it('returns false at the exact window boundary (strict greater-than)', () => {
+    expect(shouldAbandon(false, WINDOW_MS, WINDOW_MS)).toBe(false)
+  })
+})
+
+const MAX = 3 // same as MAX_INJECT_FAILURES
+
+describe('shouldGiveUpOnInject: retry transient inject throws before giving up', () => {
+  it('keeps retrying (false) below the failure cap', () => {
+    expect(shouldGiveUpOnInject(1, MAX)).toBe(false)
+    expect(shouldGiveUpOnInject(2, MAX)).toBe(false)
+  })
+
+  it('gives up (true) once the cap is reached', () => {
+    expect(shouldGiveUpOnInject(3, MAX)).toBe(true)
+    expect(shouldGiveUpOnInject(4, MAX)).toBe(true)
+  })
+
+  it('reaching the cap is inclusive (>=, not strict >)', () => {
+    expect(shouldGiveUpOnInject(MAX, MAX)).toBe(true)
+    expect(shouldGiveUpOnInject(MAX - 1, MAX)).toBe(false)
   })
 })

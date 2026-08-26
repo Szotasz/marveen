@@ -8,25 +8,30 @@ import type { ScheduledTask } from '../web/scheduled-tasks-io.js'
 // heartbeat: 277 consecutive 'busy' retries over 69 minutes, fixed by hand with
 // C-c/C-u, then delivered on the next tick.
 //
-// The post-send resubmit ladder cannot see this case -- it runs only in the
-// seconds after OUR injection and only when the marker is parked in the input
-// region -- so the retry queue runs the same stale-parked-input janitor the
-// message-router already runs on its own queue.
-//
-// What this pins:
-//   * a long-waiting 'busy' retry asks the janitor, aimed at the SAME session
-//     the fire path would have written to;
-//   * a young retry does not (an ordinary long turn is not a wedge);
-//   * a non-'busy' verdict does not (emptying the box fixes none of those);
-//   * the fire path itself is untouched -- a ready session still fires and
-//     drains the row without the janitor being consulted.
+// A pending retry whose target session is MISSING (and whose auto-start fails)
+// must survive the tick, not be deleted. Deleting it was a silent abandonment
+// that contradicts the never-abandon policy the queue exists for: the one
+// real-world window where it bites is a target session vanishing during a
+// main-agent restart -- auto-start fails once, and a queued daily task (e.g. a
+// morning briefing) is dropped with only a debug log.
 
+const mockAppendTaskRun = vi.fn()
 const mockDeletePendingRetry = vi.fn()
-const mockUpdatePendingRetry = vi.fn(() => true)
+// Mirrors the real DB: refreshing the row updates its last_reason, so the
+// NEXT tick sees the state this tick wrote (the transition-dedup depends on
+// exactly that).
+const mockUpdatePendingRetry = vi.fn((taskName: unknown, _agent: unknown, _now: unknown, reason: unknown) => {
+  for (const row of mockListPendingRetries() as Array<Record<string, unknown>>) {
+    if (row.task_name === taskName) row.last_reason = reason
+  }
+  return true
+})
 const mockListPendingRetries = vi.fn(() => [] as unknown[])
 const mockSessionExists = vi.fn(() => true)
 const mockSessionReady = vi.fn(async () => false)
 const mockClearParked = vi.fn(async () => true)
+const mockSendPrompt = vi.fn(() => 'sent')
+const mockStartAgent = vi.fn(() => ({ ok: false, error: 'tmux unavailable' }))
 const mockListScheduledTasks = vi.fn(() => [] as ScheduledTask[])
 
 vi.mock('../logger.js', () => ({
@@ -40,10 +45,10 @@ vi.mock('../web/atomic-write.js', () => ({
 }))
 
 vi.mock('../db.js', () => ({
-  appendTaskRun: vi.fn(),
+  appendTaskRun: (...a: unknown[]) => mockAppendTaskRun(...a),
   listPendingTaskRetries: () => mockListPendingRetries(),
   deletePendingTaskRetry: (...a: unknown[]) => mockDeletePendingRetry(...a),
-  updatePendingTaskRetry: () => mockUpdatePendingRetry(),
+  updatePendingTaskRetry: (...a: unknown[]) => mockUpdatePendingRetry(...(a as [])),
   insertPendingTaskRetryIfNew: vi.fn(),
   markPendingTaskRetryAlert: vi.fn(() => false),
   clearPendingTaskRetryAlert: vi.fn(),
@@ -70,8 +75,8 @@ vi.mock('../web/agent-process.js', () => ({
   agentSessionName: (name: string) => `agent-${name}`,
   isAgentRunning: () => true,
   isSessionReadyForPrompt: () => mockSessionReady(),
-  sendPromptToSession: vi.fn(() => 'sent'),
-  startAgentProcess: vi.fn(() => ({ ok: false, error: 'tmux unavailable' })),
+  sendPromptToSession: (...a: unknown[]) => mockSendPrompt(...(a as [])),
+  startAgentProcess: (...a: unknown[]) => mockStartAgent(...(a as [])),
   sessionExistsOnHost: () => mockSessionExists(),
   // null capture => no first-run gate is detected, and the post-send resubmit
   // loop sees nothing parked and stops.
@@ -80,7 +85,9 @@ vi.mock('../web/agent-process.js', () => ({
   clearStaleParkedInput: (...a: unknown[]) => mockClearParked(...(a as [])),
 }))
 
-const TASK: ScheduledTask = {
+// --- Fixtures for parked-janitor suite ---
+
+const PARKED_TASK: ScheduledTask = {
   name: 'parked-janitor-fixture',
   description: 'parked-input janitor fixture',
   prompt: 'Do the thing.',
@@ -92,9 +99,9 @@ const TASK: ScheduledTask = {
   targetSession: 'parked-test-session',
 }
 
-function retryRow(ageMs: number, overrides: Record<string, unknown> = {}) {
+function parkedRetryRow(ageMs: number, overrides: Record<string, unknown> = {}) {
   return {
-    task_name: TASK.name,
+    task_name: PARKED_TASK.name,
     agent_name: 'parkedagent',
     first_attempt: Date.now() - ageMs,
     last_attempt: Date.now() - 15_000,
@@ -105,7 +112,7 @@ function retryRow(ageMs: number, overrides: Record<string, unknown> = {}) {
   }
 }
 
-async function runOneTick() {
+async function runParkedTick() {
   vi.resetModules()
   const { startScheduleRunner } = await import('../web/schedule-runner.js')
   const stop = startScheduleRunner()
@@ -121,7 +128,7 @@ describe('schedule runner: stale-parked-input janitor on the retry queue', () =>
     // A quiet moment: no cron occurrence for the fixture, so only the
     // pending-retry loop acts.
     vi.setSystemTime(new Date('2026-08-14T10:30:00.000Z'))
-    mockListScheduledTasks.mockReturnValue([TASK])
+    mockListScheduledTasks.mockReturnValue([PARKED_TASK])
     mockSessionExists.mockReturnValue(true)
     mockSessionReady.mockResolvedValue(false)
     mockClearParked.mockResolvedValue(true)
@@ -133,8 +140,8 @@ describe('schedule runner: stale-parked-input janitor on the retry queue', () =>
   })
 
   it('asks the janitor once a busy retry has waited past the threshold', async () => {
-    mockListPendingRetries.mockReturnValue([retryRow(69 * 60_000)])
-    await runOneTick()
+    mockListPendingRetries.mockReturnValue([parkedRetryRow(69 * 60_000)])
+    await runParkedTick()
 
     // Aimed at the session the fire path resolves (targetSession override =>
     // local, host null), not at a re-derived guess.
@@ -146,8 +153,8 @@ describe('schedule runner: stale-parked-input janitor on the retry queue', () =>
 
   it('leaves a young busy retry alone', async () => {
     // Below SCHEDULE_JANITOR_PARKED_MIN_AGE_MS: an ordinary long turn, not a wedge.
-    mockListPendingRetries.mockReturnValue([retryRow(45_000)])
-    await runOneTick()
+    mockListPendingRetries.mockReturnValue([parkedRetryRow(45_000)])
+    await runParkedTick()
 
     expect(mockClearParked).not.toHaveBeenCalled()
   })
@@ -156,18 +163,110 @@ describe('schedule runner: stale-parked-input janitor on the retry queue', () =>
     // Session gone + auto-start fails => 'missing'. Old enough to pass the age
     // gate, so only the reason keeps the janitor out.
     mockSessionExists.mockReturnValue(false)
-    mockListPendingRetries.mockReturnValue([retryRow(69 * 60_000)])
-    await runOneTick()
+    mockListPendingRetries.mockReturnValue([parkedRetryRow(69 * 60_000)])
+    await runParkedTick()
 
     expect(mockClearParked).not.toHaveBeenCalled()
   })
 
   it('stays out of the way when the retry simply fires', async () => {
     mockSessionReady.mockResolvedValue(true)
-    mockListPendingRetries.mockReturnValue([retryRow(69 * 60_000)])
-    await runOneTick()
+    mockListPendingRetries.mockReturnValue([parkedRetryRow(69 * 60_000)])
+    await runParkedTick()
 
-    expect(mockDeletePendingRetry).toHaveBeenCalledWith(TASK.name, 'parkedagent')
+    expect(mockDeletePendingRetry).toHaveBeenCalledWith(PARKED_TASK.name, 'parkedagent')
     expect(mockClearParked).not.toHaveBeenCalled()
+  })
+})
+
+// --- Fixtures for retry-missing suite ---
+
+function missingTask(overrides: Partial<ScheduledTask> & { name: string; schedule: string }): ScheduledTask {
+  return {
+    description: 'retry-missing fixture',
+    prompt: 'Do the thing.',
+    agent: 'retryagent',
+    enabled: true,
+    createdAt: 0,
+    type: 'task',
+    targetSession: 'retry-test-session',
+    ...overrides,
+  }
+}
+
+const DAILY = missingTask({ name: 'retry-missing-e2e-daily', schedule: '0 8 * * *' })
+
+function missingRetryRow(overrides: Record<string, unknown> = {}) {
+  return {
+    task_name: DAILY.name,
+    agent_name: 'retryagent',
+    first_attempt: Date.now() - 5 * 60000,
+    last_attempt: Date.now() - 60000,
+    attempt_count: 5,
+    last_reason: 'busy',
+    alerted_at: null,
+    ...overrides,
+  }
+}
+
+async function runMissingTick() {
+  vi.resetModules()
+  const { startScheduleRunner } = await import('../web/schedule-runner.js')
+  const stop = startScheduleRunner()
+  // First tick is scheduled, not immediate: advance past the 60s interval and
+  // let the async tick body drain.
+  await vi.advanceTimersByTimeAsync(61_000)
+  clearInterval(stop)
+}
+
+describe('schedule runner: pending retry survives a missing target session', () => {
+  beforeEach(() => {
+    vi.stubEnv('SCHEDULER_TZ', 'Europe/Budapest')
+    vi.clearAllMocks()
+    vi.useFakeTimers()
+    // A quiet moment (no cron occurrence for the fixture) so only the
+    // pending-retry loop acts.
+    vi.setSystemTime(new Date('2026-07-31T10:30:00.000Z'))
+    mockListScheduledTasks.mockReturnValue([DAILY])
+    // The target session is gone and auto-start fails => attemptFireTask
+    // resolves 'missing'.
+    mockSessionExists.mockReturnValue(false)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllEnvs()
+  })
+
+  it("keeps the retry row on 'missing' and logs the transition once across ticks", async () => {
+    mockListPendingRetries.mockReturnValue([missingRetryRow()])
+    await runMissingTick()
+
+    // The row survives...
+    expect(mockDeletePendingRetry).not.toHaveBeenCalled()
+    // ...its live state is refreshed to 'missing' (feeds the age-based alert)...
+    expect(mockUpdatePendingRetry).toHaveBeenCalledWith(DAILY.name, 'retryagent', expect.any(Number), 'missing')
+    // ...and the run-log records the TRANSITION exactly once, even though the
+    // runner ticked several times inside the window -- a stuck-missing task
+    // must not write a run-log row per tick.
+    const runs = mockAppendTaskRun.mock.calls.filter(c => c[0] === DAILY.name).map(c => String(c[2]))
+    expect(runs).toEqual(['missing-retrying'])
+  })
+
+  it('does not re-log a retry already known to be missing', async () => {
+    mockListPendingRetries.mockReturnValue([missingRetryRow({ last_reason: 'missing' })])
+    await runMissingTick()
+
+    expect(mockDeletePendingRetry).not.toHaveBeenCalled()
+    const runs = mockAppendTaskRun.mock.calls.filter(c => c[0] === DAILY.name).map(c => String(c[2]))
+    expect(runs).toEqual([])
+  })
+
+  it("still deletes the row when the retry finally fires", async () => {
+    mockSessionExists.mockReturnValue(true)
+    mockListPendingRetries.mockReturnValue([missingRetryRow()])
+    await runMissingTick()
+
+    expect(mockDeletePendingRetry).toHaveBeenCalledWith(DAILY.name, 'retryagent')
   })
 })

@@ -19,9 +19,19 @@ import { dirname, join } from 'node:path'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SCAFFOLD_PATH = join(__dirname, '..', 'web', 'agent-scaffold.ts')
+const SCAFFOLD_SRC = readFileSync(SCAFFOLD_PATH, 'utf-8')
+const AGENTS_CRUD_SRC = readFileSync(join(__dirname, '..', 'web', 'routes', 'agents-crud.ts'), 'utf-8')
+
+function promptBodyOf(fnName: string, terminator: string): string {
+  const start = SCAFFOLD_SRC.indexOf(`export async function ${fnName}`)
+  expect(start, `${fnName} not found in source`).toBeGreaterThan(0)
+  const end = terminator ? SCAFFOLD_SRC.indexOf(terminator, start) : SCAFFOLD_SRC.length
+  expect(end, `terminator for ${fnName} not found`).toBeGreaterThan(start)
+  return SCAFFOLD_SRC.slice(start, end)
+}
 
 describe('generateClaudeMd: stranger-sender ARANYSZABÁLY block is bot-name agnostic', () => {
-  const src = readFileSync(SCAFFOLD_PATH, 'utf-8')
+  const src = SCAFFOLD_SRC
 
   // Locate the prompt body that becomes the CLAUDE.md (the section we care
   // about lives inside the `generateClaudeMd` template string).
@@ -67,17 +77,50 @@ describe('generateClaudeMd: stranger-sender ARANYSZABÁLY block is bot-name agno
 })
 
 describe('deferred MCP tool hint (FLEETDEFER809)', () => {
-  const SRC = readFileSync(SCAFFOLD_PATH, 'utf-8')
-  // The load-bearing rule: a deferred tool's failed direct call must not be
-  // read as absence. Without this section an agent whose scaffold predates
-  // deferred loading reports "not available" while the tool sits in its own
-  // deferred list (measured: HBCALMCP808, a full day of empty calendar rounds).
   it('the shared scaffold teaches select-then-keyword ToolSearch before claiming absence', () => {
-    expect(SRC).toContain('deferred betöltése (FLEETDEFER809)')
-    expect(SRC).toContain('select:<tool_nev>')
-    // keyword fallback is part of the contract: server names differ per install
-    expect(SRC).toMatch(/KULCSSZÓVAL/)
-    // absence may only be claimed after the keyword search also failed
-    expect(SRC).toMatch(/Csak akkor mondd ki a hiányt/)
+    expect(SCAFFOLD_SRC).toContain('deferred betöltése (FLEETDEFER809)')
+    expect(SCAFFOLD_SRC).toContain('select:<tool_nev>')
+    expect(SCAFFOLD_SRC).toMatch(/KULCSSZÓVAL/)
+    expect(SCAFFOLD_SRC).toMatch(/Csak akkor mondd ki a hiányt/)
+  })
+})
+
+const GENERATORS: Array<{ name: string; terminator: string }> = [
+  { name: 'generateClaudeMd', terminator: 'export async function generateSoulMd' },
+  { name: 'generateSoulMd', terminator: 'export async function generateSkillMd' },
+  { name: 'generateSkillMd', terminator: '' },
+]
+
+describe.each(GENERATORS)('$name prompt: formatting rules', ({ name, terminator }) => {
+  const body = promptBodyOf(name, terminator)
+
+  it('declares the IMPORTANT FORMATTING RULES block', () => {
+    expect(body).toContain('IMPORTANT FORMATTING RULES:')
+  })
+
+  it('requires proper Hungarian accents', () => {
+    expect(body).toMatch(/proper accents \(á, é, í, ó, ö, ő, ú, ü, ű\)/)
+  })
+
+  it('forbids the em dash and names the simple hyphen as the replacement', () => {
+    expect(body).toMatch(/Never use em dash \(—\), only simple hyphen \(-\)\./)
+  })
+})
+
+describe('per-agent heartbeat scaffold removed (sweep model)', () => {
+  it('agent-scaffold.ts does not export scaffoldAgentMemoriaHeartbeat', () => {
+    expect(SCAFFOLD_SRC).not.toContain('scaffoldAgentMemoriaHeartbeat')
+  })
+
+  it('agent-scaffold.ts does not contain heartbeatMinuteFor', () => {
+    expect(SCAFFOLD_SRC).not.toContain('heartbeatMinuteFor')
+  })
+
+  it('agents-crud.ts does not call scaffoldAgentMemoriaHeartbeat', () => {
+    expect(AGENTS_CRUD_SRC).not.toContain('scaffoldAgentMemoriaHeartbeat')
+  })
+
+  it('agents-crud.ts does not import scaffoldAgentMemoriaHeartbeat', () => {
+    expect(AGENTS_CRUD_SRC).not.toContain('scaffoldAgentMemoriaHeartbeat')
   })
 })
