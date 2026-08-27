@@ -103,7 +103,7 @@ export async function reconcileAgentsOnStartup(): Promise<void> {
         const result = startAgentProcess(name)
         if (result.ok) {
           logger.info({ agent: name }, 'startup-reconciliation: launched successfully')
-        } else if (result.error === 'Agent is already running') {
+        } else if (result.error === 'conflict') {
           // Race: another Marveen process started it between our check and now.
           logger.debug({ agent: name }, 'startup-reconciliation: agent already running (start race)')
         } else {

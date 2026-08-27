@@ -927,9 +927,9 @@ function startRemoteAgentProcess(
   host: string,
   workdir: string,
   opts: { fresh?: boolean },
-): { ok: boolean; error?: string } {
+): { ok: boolean; error?: string; hint?: string } {
   const state = agentRunState(name)
-  if (state === 'running') return { ok: false, error: 'Agent is already running' }
+  if (state === 'running') return { ok: false, error: 'conflict', hint: 'Agent is already running' }
   if (state === 'unreachable') {
     return { ok: false, error: `Remote host '${host}' unreachable -- refusing to start (cannot confirm state)` }
   }
@@ -978,7 +978,7 @@ function startRemoteAgentProcess(
   }
 }
 
-export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): { ok: boolean; pid?: number; error?: string } {
+export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): { ok: boolean; pid?: number; error?: string; hint?: string } {
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
 
@@ -1007,7 +1007,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
   ensureSharedClaudeOnboarded()
 
 
-  if (isAgentRunning(name)) return { ok: false, error: 'Agent is already running' }
+  if (isAgentRunning(name)) return { ok: false, error: 'conflict', hint: 'Agent is already running' }
 
   const agentProvider = resolveAgentProvider(name)
   const provider = getProvider(agentProvider)
@@ -1434,7 +1434,7 @@ export function getAgentProcessInfo(name: string): { running: boolean; session?:
   }
 }
 
-export function restartAgentProcess(name: string, opts: { fresh?: boolean } = {}): { ok: boolean; pid?: number; error?: string } {
+export function restartAgentProcess(name: string, opts: { fresh?: boolean } = {}): { ok: boolean; pid?: number; error?: string; hint?: string } {
   if (isAgentRunning(name)) {
     const stopResult = stopAgentProcess(name)
     if (!stopResult.ok) return { ok: false, error: stopResult.error || 'Failed to stop running agent before restart' }

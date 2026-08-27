@@ -119,9 +119,9 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
     const result = startAgentProcess(name, { fresh: startFresh })
     // Record operator intent so the monitor keeps this agent up across shared
     // tmux-server restarts / reboots (see agent-desired-state.ts).
-    if (result.ok || result.error === 'Agent is already running') addDesiredAgent(name)
+    if (result.ok || result.error === 'conflict') addDesiredAgent(name)
     if (result.ok) { json(res, { ok: true }); return true }
-    json(res, { error: result.error }, 400)
+    json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, 400)
     return true
   }
 

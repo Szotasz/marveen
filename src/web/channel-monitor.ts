@@ -1883,7 +1883,7 @@ async function reconcileDesiredAgents(): Promise<void> {
       try {
         const r = startAgentProcess(name)
         agentLastRestart.set(name, Date.now())
-        if (!r.ok && r.error !== 'Agent is already running') {
+        if (!r.ok && r.error !== 'conflict') {
           logger.error({ agent: name, error: r.error }, 'Reconcile start failed')
         }
       } catch (err) {

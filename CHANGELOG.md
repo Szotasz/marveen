@@ -11,6 +11,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Changed
 
+- **[API]** `POST /api/agents/:name/start`: `"Agent is already running"` -> `"conflict"` (+ `hint`); applies to both local and remote agent start paths (BA atomic couplings commit)
 - **[API]** `POST /api/auth/login`: `error` value normalised to snake_case token; `"Invalid credentials"` -> `"unauthorized"` (+ `hint`); `"Too many attempts"` -> `"limit_exceeded"`; `"Invalid JSON"` -> `"parse_error"`
 - **[API]** `GET /api/auth/sessions`, `POST /api/auth/logout-all`: `"Session required"` -> `"unauthorized"` (+ `hint`)
 - **[API]** `POST /api/auth/password`: `"User not found"` -> `"not_found"` + `field: "user"`; `"Invalid password"` / PasswordPolicyError -> `"invalid_value"` + `field: "password"` + `hint`; `"Forbidden for this credential type"` -> `"forbidden"` (+ `hint`)

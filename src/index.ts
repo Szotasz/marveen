@@ -562,7 +562,7 @@ async function main(): Promise<void> {
     const heartbeatStart = startAgentProcess(HEARTBEAT_AGENT_NAME)
     if (heartbeatStart.ok) {
       logger.info({ agent: HEARTBEAT_AGENT_NAME }, 'Heartbeat agent started')
-    } else if (heartbeatStart.error === 'Agent is already running') {
+    } else if (heartbeatStart.error === 'conflict') {
       logger.info({ agent: HEARTBEAT_AGENT_NAME }, 'Heartbeat agent already running')
     } else {
       logger.warn({ error: heartbeatStart.error }, 'Heartbeat agent failed to start (legacy native heartbeat is NOT a fallback any more)')
