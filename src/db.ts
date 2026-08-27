@@ -1292,10 +1292,10 @@ export function getSubtreeHeight(cardId: string): number {
 // the old and new parent.
 export function reparentKanbanCard(
   id: string, newParentId: string | null,
-): { ok: true } | { ok: false; code: 'not_found' | 'invalid' | 'limit_exceeded'; hint: string } {
+): { ok: true } | { ok: false; code: 'not_found' | 'invalid_value' | 'limit_exceeded'; hint: string } {
   const card = getKanbanCard(id)
   if (!card) return { ok: false, code: 'not_found', hint: 'Card not found' }
-  if (newParentId === id) return { ok: false, code: 'invalid', hint: 'Card cannot be its own parent' }
+  if (newParentId === id) return { ok: false, code: 'invalid_value', hint: 'Card cannot be its own parent' }
 
   let newDepth = 0
   if (newParentId) {

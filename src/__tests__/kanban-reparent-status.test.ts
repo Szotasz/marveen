@@ -115,12 +115,12 @@ describe('PATCH /api/kanban/:id/parent -- status code from code, not string', ()
 
   it('returns 400 when code is invalid (self-parent)', async () => {
     vi.mocked(db.reparentKanbanCard).mockReturnValueOnce({
-      ok: false, code: 'invalid', hint: 'Card cannot be its own parent',
+      ok: false, code: 'invalid_value', hint: 'Card cannot be its own parent',
     })
     const { ctx, out } = makeCtx('PATCH', '/api/kanban/card1/parent', { parent_id: 'card1' })
     await tryHandleKanban(ctx)
     expect(out.status).toBe(400)
-    expect(out.body.error).toBe('invalid')
+    expect(out.body.error).toBe('invalid_value')
   })
 
   it('returns 400 when code is limit_exceeded (depth)', async () => {

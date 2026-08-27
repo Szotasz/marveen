@@ -252,7 +252,7 @@ describe('reparentKanbanCard branches', () => {
     const result = reparentKanbanCard(selfId, selfId)
     expect(result.ok).toBe(false)
     if (!result.ok) {
-      expect(result.code).toBe('invalid')
+      expect(result.code).toBe('invalid_value')
       expect(result.hint).toMatch(/own parent/i)
     }
   })
