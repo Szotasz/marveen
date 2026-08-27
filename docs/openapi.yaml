@@ -79,7 +79,7 @@ components:
       properties:
         error:
           type: string
-          description: Machine-readable error code or short description
+          description: Machine-readable snake_case error code (e.g. not_found, invalid_value, parse_error)
         hint:
           type: string
           description: >-
@@ -94,7 +94,8 @@ components:
             Present on 4xx validation errors when the problem can be attributed
             to a single input field.
       example:
-        error: "agent_id is required"
+        error: "required"
+        field: "agent_id"
 
     OkResponse:
       type: object

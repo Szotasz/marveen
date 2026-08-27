@@ -8,7 +8,7 @@
 // -------------------------------------------------------------------------
 
 export interface Error {
-  /** Machine-readable error code or short description */
+  /** Machine-readable snake_case error code (e.g. not_found, invalid_value, parse_error) */
   error: string;
   /** Optional human-readable debugging note. Present when the server has extra context that helps the caller fix the request (e.g. which parameter name the filter expects, or why a value was rejected). Clients must not rely on its exact text; treat it as informational. */
   hint?: string;

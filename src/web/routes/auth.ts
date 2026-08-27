@@ -61,7 +61,7 @@ import type { RouteContext } from './types.js'
 
 const LOGIN_BODY_MAX_BYTES = 8 * 1024
 const USERNAME_RE = /^[a-zA-Z0-9._-]{1,64}$/
-const INVALID_CREDENTIALS = { error: 'Invalid credentials' }
+const INVALID_CREDENTIALS = { error: 'unauthorized', hint: 'Invalid username or password' }
 
 // Set Secure only when the request arrived over https (Tailscale Serve sets
 // x-forwarded-proto). The primary transport is plain http://127.0.0.1 where an
@@ -101,7 +101,7 @@ function kindAllowed(auth: RouteContext['auth'], kinds: readonly string[]): bool
   return auth !== undefined && kinds.includes(auth.kind)
 }
 
-const FORBIDDEN_KIND = { error: 'Forbidden for this credential type' }
+const FORBIDDEN_KIND = { error: 'forbidden', hint: 'This credential type is not allowed for this operation' }
 
 // Who may manage dashboard users (list/create/delete). 'session' is included
 // deliberately: a logged-in operator managing users is the existing behavior.
@@ -148,7 +148,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     try {
       body = await parseJsonBody(req)
     } catch {
-      json(res, { error: 'Invalid JSON' }, 400)
+      json(res, { error: 'parse_error' }, 400)
       return true
     }
     const username = str(body.username).trim()
@@ -159,7 +159,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     if (throttle.locked) {
       if (throttle.global) logger.warn('login: global failure cap reached -- all logins throttled')
       res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': String(throttle.retryAfterS), 'Cache-Control': 'private, no-store' })
-      res.end(JSON.stringify({ error: 'Too many attempts', retry_after_s: throttle.retryAfterS }))
+      res.end(JSON.stringify({ error: 'limit_exceeded', retry_after_s: throttle.retryAfterS }))
       return true
     }
 
@@ -204,7 +204,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/auth/logout-all' && method === 'POST') {
     if (auth?.kind !== 'session' || !auth.user) {
-      json(res, { error: 'Session required' }, 400)
+      json(res, { error: 'unauthorized', hint: 'A valid session is required' }, 400)
       return true
     }
     const user = getDashboardUser(auth.user)
@@ -216,12 +216,12 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/auth/sessions' && method === 'GET') {
     if (auth?.kind !== 'session' || !auth.user) {
-      json(res, { error: 'Session required' }, 400)
+      json(res, { error: 'unauthorized', hint: 'A valid session is required' }, 400)
       return true
     }
     const user = getDashboardUser(auth.user)
     if (!user) {
-      json(res, { error: 'User not found' }, 404)
+      json(res, { error: 'not_found', field: 'user' }, 404)
       return true
     }
     json(res, { sessions: listUserSessions(user.id) })
@@ -233,7 +233,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     try {
       body = await parseJsonBody(req)
     } catch {
-      json(res, { error: 'Invalid JSON' }, 400)
+      json(res, { error: 'parse_error' }, 400)
       return true
     }
     const newPassword = str(body.new_password)
@@ -242,7 +242,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     if (auth?.kind === 'session' && auth.user) {
       user = getDashboardUser(auth.user)
       if (!user) {
-        json(res, { error: 'User not found' }, 404)
+        json(res, { error: 'not_found', field: 'user' }, 404)
         return true
       }
       // Session callers must prove knowledge of the current password.
@@ -258,7 +258,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       const username = str(body.username)
       user = username ? getDashboardUser(username) : undefined
       if (!user) {
-        json(res, { error: 'User not found' }, 404)
+        json(res, { error: 'not_found', field: 'user' }, 404)
         return true
       }
     } else {
@@ -269,7 +269,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     try {
       assertPasswordPolicy(newPassword)
     } catch (err) {
-      json(res, { error: err instanceof PasswordPolicyError ? err.message : 'Invalid password' }, 400)
+      json(res, { error: 'invalid_value', field: 'password', hint: err instanceof PasswordPolicyError ? err.message : 'Invalid password' }, 400)
       return true
     }
     const hash = await hashPassword(newPassword)
@@ -309,23 +309,23 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     try {
       body = await parseJsonBody(req)
     } catch {
-      json(res, { error: 'Invalid JSON' }, 400)
+      json(res, { error: 'parse_error' }, 400)
       return true
     }
     const username = str(body.username).trim()
     const password = str(body.password)
     if (!USERNAME_RE.test(username)) {
-      json(res, { error: 'Invalid username (1-64 chars: letters, digits, . _ -)' }, 400)
+      json(res, { error: 'invalid_value', field: 'username', hint: '1-64 chars: letters, digits, . _ -' }, 400)
       return true
     }
     if (getDashboardUser(username)) {
-      json(res, { error: 'User already exists' }, 409)
+      json(res, { error: 'conflict' }, 409)
       return true
     }
     try {
       assertPasswordPolicy(password)
     } catch (err) {
-      json(res, { error: err instanceof PasswordPolicyError ? err.message : 'Invalid password' }, 400)
+      json(res, { error: 'invalid_value', field: 'password', hint: err instanceof PasswordPolicyError ? err.message : 'Invalid password' }, 400)
       return true
     }
     const hash = await hashPassword(password)
@@ -353,12 +353,12 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     try {
       body = await parseJsonBody(req)
     } catch {
-      json(res, { error: 'Invalid JSON' }, 400)
+      json(res, { error: 'parse_error' }, 400)
       return true
     }
     const name = str(body.name).trim()
     if (!DEVICE_KEY_NAME_RE.test(name)) {
-      json(res, { error: 'Invalid device name (1-64 chars: letters, digits, space, . _ -)' }, 400)
+      json(res, { error: 'invalid_value', field: 'name', hint: '1-64 chars: letters, digits, space, . _ -' }, 400)
       return true
     }
     // Expiry is opt-in: absent/0 means the key lives until revoked.
@@ -366,7 +366,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     if (body.expires_in_days !== undefined && body.expires_in_days !== null && body.expires_in_days !== 0) {
       const n = Number(body.expires_in_days)
       if (!Number.isFinite(n) || n <= 0 || n > DEVICE_KEY_MAX_EXPIRY_DAYS) {
-        json(res, { error: `Invalid expires_in_days (1-${DEVICE_KEY_MAX_EXPIRY_DAYS})` }, 400)
+        json(res, { error: 'invalid_value', field: 'expires_in_days', hint: `1-${DEVICE_KEY_MAX_EXPIRY_DAYS}` }, 400)
         return true
       }
       expiresInDays = n
@@ -375,7 +375,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     let installId: string | undefined
     if (body.install_id !== undefined && body.install_id !== null) {
       if (typeof body.install_id !== 'string' || !UUID_V4_RE.test(body.install_id)) {
-        json(res, { error: 'install_id must be a UUID v4' }, 400)
+        json(res, { error: 'invalid_value', field: 'install_id', hint: 'Must be a UUID v4' }, 400)
         return true
       }
       installId = body.install_id
@@ -396,7 +396,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     const id = Number(deviceKeyMatch[1])
     const key = getDeviceKey(id)
     if (!key || !revokeDeviceKey(id)) {
-      json(res, { error: 'Device key not found' }, 404)
+      json(res, { error: 'not_found', field: 'device_key' }, 404)
       return true
     }
     // Bridge-paired key: revoke means BOTH halves at once -- the dashboard
@@ -427,7 +427,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     const username = decodeURIComponent(delMatch[1]!)
     const user = getDashboardUser(username)
     if (!user) {
-      json(res, { error: 'User not found' }, 404)
+      json(res, { error: 'not_found', field: 'user' }, 404)
       return true
     }
     deleteDashboardUser(username)

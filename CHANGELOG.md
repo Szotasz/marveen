@@ -9,6 +9,15 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
+### Changed
+
+- **[API]** `POST /api/auth/login`: `error` value normalised to snake_case token; `"Invalid credentials"` -> `"unauthorized"` (+ `hint`); `"Too many attempts"` -> `"limit_exceeded"`; `"Invalid JSON"` -> `"parse_error"`
+- **[API]** `GET /api/auth/sessions`, `POST /api/auth/logout-all`: `"Session required"` -> `"unauthorized"` (+ `hint`)
+- **[API]** `POST /api/auth/password`: `"User not found"` -> `"not_found"` + `field: "user"`; `"Invalid password"` / PasswordPolicyError -> `"invalid_value"` + `field: "password"` + `hint`; `"Forbidden for this credential type"` -> `"forbidden"` (+ `hint`)
+- **[API]** `GET/DELETE /api/auth/users`, `POST /api/auth/users`: `"Invalid username (...)"` -> `"invalid_value"` + `field: "username"` + `hint`; `"User already exists"` -> `"conflict"`; `"User not found"` -> `"not_found"` + `field: "user"`; `"Forbidden for this credential type"` -> `"forbidden"` (+ `hint`)
+- **[API]** `GET/POST /api/auth/device-keys`, `DELETE /api/auth/device-keys/:id`: `"Invalid device name (...)"` -> `"invalid_value"` + `field: "name"` + `hint`; `"Invalid expires_in_days (...)"` -> `"invalid_value"` + `field: "expires_in_days"` + `hint`; `"install_id must be a UUID v4"` -> `"invalid_value"` + `field: "install_id"` + `hint`; `"Device key not found"` -> `"not_found"` + `field: "device_key"`; `"Forbidden for this credential type"` -> `"forbidden"` (+ `hint`)
+- **[API]** `Error` schema `example` updated: `{ error: "agent_id is required" }` -> `{ error: "required", field: "agent_id" }`; `error.description` updated to reflect snake_case token contract
+
 ### Added
 
 - `scripts/skill-migrate-placeholders.py` dry-run and apply output now reports both the number of unique change types and the total occurrence count separately (e.g. "9 changes, 15 occurrences across 5 files"); `migrate_file` returns `(unique_changes, occurrence_count)` tuple; 3 new tests in `TestOccurrenceCount` covering single-line double-occurrence, multi-line, and baseline single-occurrence cases
