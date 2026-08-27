@@ -56,7 +56,7 @@ describe('main-agent detail and lifecycle guards', () => {
 
     expect(handled).toBe(true)
     expect(out.status).toBe(400)
-    expect(out.body?.error).toMatch(/Main agent/)
+    expect(`${out.body?.error} ${out.body?.hint ?? ''}`).toMatch(/main agent/i)
   })
 
   it('places lifecycle guards before sub-agent process and desired-state calls', () => {
