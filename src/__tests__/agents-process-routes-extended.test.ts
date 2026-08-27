@@ -260,7 +260,8 @@ describe('agents-process routes -- extended coverage', () => {
       })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
       expect(statusCode()).toBe(400)
-      expect((responseBody() as any).error).toContain('main-agent only')
+      expect((responseBody() as any).error).toBe('not_supported')
+      expect((responseBody() as any).hint).toContain('main-agent only')
     })
 
     it('returns 200 for main agent with empty inbox', async () => {
