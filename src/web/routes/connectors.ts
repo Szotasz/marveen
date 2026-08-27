@@ -757,7 +757,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     }
 
     if (targets.length === 0) {
-      json(res, { error: 'not_found', hint: 'No targets found for this server' }, 400)
+      json(res, { error: 'invalid_value', field: 'serverName', hint: 'No targets found for this server' }, 400)
       return true
     }
     addBinding({ vaultSecretId: data.vaultSecretId, envVar: data.envVar, targets })
