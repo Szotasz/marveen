@@ -8,6 +8,7 @@ import {
   injectEmailSendGate,
   injectSelfPaceGate,
   injectEgressGate,
+  injectSkillAccessGate,
   ensureEgressGate,
   ensureGovernanceGateCommands,
   emailGateMatcherStale,
@@ -190,5 +191,28 @@ describe('emailGateMatcherStale', () => {
     expect(emailGateMatcherStale([{ matcher: 'WebFetch', hooks: [{ type: 'command', command: 'x egress-gate.mjs' }] }])).toBe(false)
     expect(emailGateMatcherStale([])).toBe(false)
     expect(emailGateMatcherStale(undefined)).toBe(false)
+  })
+})
+
+// FIX 3: skill-access-gate must carry a 'Skill' matcher so node is not
+// spawned for every tool call.
+describe('injectSkillAccessGate matcher', () => {
+  it('writes a Skill matcher on the PreToolUse entry (FIX 3: no spawn on every tool call)', () => {
+    const settings: Record<string, unknown> = {}
+    injectSkillAccessGate(settings)
+    const hooks = settings.hooks as Record<string, unknown>
+    const ptu = hooks.PreToolUse as { matcher: string, hooks: unknown[] }[]
+    const entry = ptu.find((e) => JSON.stringify(e).includes('skill-access-gate.mjs'))
+    expect(entry).toBeDefined()
+    expect(entry?.matcher).toBe('Skill')
+  })
+
+  it('is idempotent: a second inject does not duplicate the entry', () => {
+    const settings: Record<string, unknown> = {}
+    injectSkillAccessGate(settings)
+    injectSkillAccessGate(settings)
+    const ptu = (settings.hooks as Record<string, unknown>).PreToolUse as unknown[]
+    const count = ptu.filter((e) => JSON.stringify(e).includes('skill-access-gate.mjs')).length
+    expect(count).toBe(1)
   })
 })

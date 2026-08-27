@@ -1,6 +1,5 @@
-// Unit tests for readSkillAccessConfig() exported from src/web/routes/skills.ts.
-// Tests cover: missing file, malformed JSON, non-array values, valid config,
-// and the MAIN_AGENT_ID fail-safe.
+// Unit tests for readSkillAccessConfig() exported from src/web/routes/skills.ts,
+// and for the gate-logic exports from scripts/hooks/skill-access-gate.mjs.
 //
 // STORE_DIR is never reached because readFileSync is stubbed; no config mock needed.
 import { describe, it, expect, beforeEach, vi } from 'vitest'
@@ -20,6 +19,8 @@ vi.mock('node:fs', async (orig) => {
 
 import { readSkillAccessConfig } from '../web/routes/skills.js'
 import { MAIN_AGENT_ID } from '../config.js'
+// @ts-expect-error -- plain .mjs hook script, no types
+import { deriveAgentIdFromCwd, gateDecision } from '../../scripts/hooks/skill-access-gate.mjs'
 
 describe('readSkillAccessConfig', () => {
   beforeEach(() => {
@@ -63,5 +64,77 @@ describe('readSkillAccessConfig', () => {
     expect('bad_string' in result).toBe(false)
     expect('bad_number' in result).toBe(false)
     expect(result['good']).toContain(MAIN_AGENT_ID)
+  })
+})
+
+// --- gate-script exports: agent identity derivation (FIX 1: nested cwd) ---
+
+describe('deriveAgentIdFromCwd', () => {
+  it('identifies a sub-agent from a direct agents/<name> path', () => {
+    expect(deriveAgentIdFromCwd('/home/user/marveen/agents/daidalosz')).toBe('daidalosz')
+    expect(deriveAgentIdFromCwd('/home/user/marveen/agents/daidalosz/')).toBe('daidalosz')
+  })
+
+  it('identifies a sub-agent from a nested path inside agents/<name> (FIX 1: no end-anchor bypass)', () => {
+    expect(deriveAgentIdFromCwd('/home/user/marveen/agents/daidalosz/workspace')).toBe('daidalosz')
+    expect(deriveAgentIdFromCwd('/home/user/marveen/agents/daidalosz/workspace/some-project')).toBe('daidalosz')
+    expect(deriveAgentIdFromCwd('/home/user/marveen/agents/talosz/.claude/worktree-abc')).toBe('talosz')
+  })
+
+  it('returns null for the repo root (main agent)', () => {
+    expect(deriveAgentIdFromCwd('/home/user/marveen')).toBeNull()
+    expect(deriveAgentIdFromCwd('/home/user/marveen/')).toBeNull()
+  })
+
+  it('returns null for paths that happen to contain "agents" as a directory prefix in an unrelated segment', () => {
+    // A path like /home/agents-backup/marveen must not match
+    expect(deriveAgentIdFromCwd('/home/user/projects/marveen')).toBeNull()
+  })
+})
+
+// --- gate-script exports: access decision (known-positive control) ---
+
+describe('gateDecision', () => {
+  it('allows non-Skill tool calls unconditionally', () => {
+    expect(gateDecision('Bash', { command: 'ls' }, 'daidalosz', {})).toEqual({ allow: true })
+    expect(gateDecision('WebFetch', { url: 'https://x.com' }, 'daidalosz', { 'web-skill': ['atlas'] })).toEqual({ allow: true })
+  })
+
+  it('allows a main agent (agentId null) regardless of config', () => {
+    const config = { 'secret-skill': ['daidalosz'] }
+    expect(gateDecision('Skill', { skill: 'secret-skill' }, null, config)).toEqual({ allow: true })
+  })
+
+  it('allows a skill that is not in the config', () => {
+    expect(gateDecision('Skill', { skill: 'unknown-skill' }, 'talosz', {})).toEqual({ allow: true })
+  })
+
+  it('allows a listed agent to call a restricted skill', () => {
+    const config = { 'restricted-skill': ['daidalosz', 'atlas'] }
+    expect(gateDecision('Skill', { skill: 'restricted-skill' }, 'daidalosz', config)).toEqual({ allow: true })
+  })
+
+  it('DENIES an unlisted agent calling a restricted skill (known-positive control)', () => {
+    const config = { 'restricted-skill': ['atlas'] }
+    const result = gateDecision('Skill', { skill: 'restricted-skill' }, 'talosz', config)
+    expect(result.deny).toBe(true)
+    expect(result.reason).toContain('"restricted-skill"')
+    expect(result.reason).toContain('"talosz"')
+  })
+
+  it('DENIES any sub-agent when config is null (corrupt config fail-closed, FIX 2)', () => {
+    const result = gateDecision('Skill', { skill: 'any-skill' }, 'daidalosz', null)
+    expect(result.deny).toBe(true)
+    expect(result.reason).toContain('corrupt or unreadable')
+  })
+
+  it('fails open for a malformed (non-array) allow-list entry', () => {
+    const config = { 'bad-entry': 'not-an-array' }
+    expect(gateDecision('Skill', { skill: 'bad-entry' }, 'talosz', config)).toEqual({ allow: true })
+  })
+
+  it('handles a missing skill name as allow', () => {
+    expect(gateDecision('Skill', {}, 'talosz', { '': ['atlas'] })).toEqual({ allow: true })
+    expect(gateDecision('Skill', null, 'talosz', {})).toEqual({ allow: true })
   })
 })

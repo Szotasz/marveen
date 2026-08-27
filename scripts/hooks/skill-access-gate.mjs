@@ -14,54 +14,96 @@
 //   - MAIN_AGENT_ID             -> always allowed regardless of config (fail-safe)
 //
 // Agent identity is derived from process.cwd():
-//   /...marveen/agents/<name>/  -> agentId = <name>
-//   anything else (repo root)   -> main agent, always allowed
+//   /...marveen/agents/<name>/anything  -> agentId = <name>
+//   anything else (repo root, ClaudeClaw worktrees, etc.) -> main agent, always allowed
+//
+// NOTE: sessions running outside the repo tree (e.g. ClaudeClaw-wt) cannot be
+// attributed to a sub-agent and are treated as the main agent (unrestricted).
 //
 // Blocked calls are logged to store/skill-access-blocked.log.
 
 import { readFileSync, appendFileSync, mkdirSync } from 'node:fs'
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { dirname, join, basename } from 'node:path'
+import { dirname, join } from 'node:path'
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const CONFIG_PATH = join(REPO_ROOT, 'store', 'skill-access.json')
 const BLOCK_LOG = join(REPO_ROOT, 'store', 'skill-access-blocked.log')
 
-// Derive the agent id from the current working directory.
-// Sub-agents run from agents/<name>/ so basename = agent name.
-// The main agent runs from the repo root, which is not under agents/.
-function deriveAgentId() {
-  const cwd = process.cwd()
-  const match = cwd.match(/[/\\]agents[/\\]([^/\\]+)[/\\]?$/)
+// Derive the Marveen agent id from the current working directory.
+// Matches agents/<name> anywhere in the path (including nested subdirectories
+// such as worktree-isolated sub-agents running from agents/<name>/workspace/...).
+// The main agent (atlas) runs from the repo root, which is not under agents/.
+export function deriveAgentIdFromCwd(cwd) {
+  const match = cwd.match(/[/\\]agents[/\\]([^/\\]+)([/\\]|$)/)
   return match ? match[1] : null // null = main agent, always allowed
 }
 
-function loadConfig() {
-  try {
-    const raw = readFileSync(CONFIG_PATH, 'utf-8').trim()
-    if (!raw) return {}
-    const parsed = JSON.parse(raw)
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {}
-    return parsed
-  } catch {
-    return {} // missing or malformed -> fail-open (all unrestricted)
+// Evaluate whether a Skill call should be allowed.
+// config: the parsed skill-access config object, or null (corrupt/unreadable).
+// Returns { allow: true } or { deny: true, reason: string }.
+export function gateDecision(toolName, toolInput, agentId, config) {
+  if (toolName !== 'Skill') return { allow: true }
+  if (agentId === null) return { allow: true } // main agent always allowed
+
+  const skillName = String(toolInput?.skill ?? '')
+  if (!skillName) return { allow: true }
+
+  if (config === null) {
+    return {
+      deny: true,
+      reason:
+        `Skill "${skillName}" blocked: skill-access.json is corrupt or unreadable. ` +
+        `Fix the config or remove it to restore access.`,
+    }
+  }
+
+  if (!(skillName in config)) return { allow: true }
+
+  const allowed = config[skillName]
+  if (!Array.isArray(allowed)) return { allow: true } // malformed entry -> fail-open
+
+  if (allowed.includes(agentId)) return { allow: true }
+
+  return {
+    deny: true,
+    reason:
+      `Skill "${skillName}" is restricted. Agent "${agentId}" is not in the access list. ` +
+      `Authorized agents: ${allowed.join(', ')}. ` +
+      `To grant access, update store/skill-access.json or use the dashboard Skills > Hozzáférés view.`,
   }
 }
 
-function allow() {
-  process.exit(0)
+export function loadConfig(configPath = CONFIG_PATH) {
+  let raw
+  try {
+    raw = readFileSync(configPath, 'utf-8').trim()
+  } catch (err) {
+    if (err?.code === 'ENOENT') return {} // missing file -> fail-open (not configured)
+    logConfigError(`I/O error reading skill-access.json: ${err?.message ?? err}`)
+    return null
+  }
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {}
+    return parsed
+  } catch (err) {
+    // Corrupt JSON in an existing config: fail-closed (deny + loud log)
+    logConfigError(`Malformed skill-access.json (JSON parse error): ${err?.message ?? err}`)
+    return null
+  }
 }
 
-function deny(reason) {
-  process.stdout.write(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      permissionDecision: 'deny',
-      permissionDecisionReason: reason,
-    },
-  }))
-  process.exit(0)
+function logConfigError(msg) {
+  try {
+    mkdirSync(join(REPO_ROOT, 'store'), { recursive: true })
+    const ts = new Date().toISOString()
+    const line = `${ts} CONFIG_ERROR ${msg}\n`
+    appendFileSync(BLOCK_LOG, line)
+    process.stderr.write(`[skill-access-gate] ${line}`)
+  } catch { /* logging is best-effort */ }
 }
 
 function logBlocked(skillName, agentId) {
@@ -87,48 +129,25 @@ if (isInvokedDirectly()) {
   try {
     payload = JSON.parse(readFileSync(0, 'utf-8'))
   } catch {
-    allow() // malformed input must never block
+    process.exit(0) // malformed input must never block
   }
 
-  if (payload?.tool_name !== 'Skill') {
-    allow() // only intercept Skill tool calls
-  }
-
-  const agentId = deriveAgentId()
-
-  // Main agent is always allowed (fail-safe)
-  if (agentId === null) {
-    allow()
-  }
-
-  const skillName = String(payload?.tool_input?.skill ?? '')
-  if (!skillName) {
-    allow() // no skill name -> let Claude Code handle the error
-  }
-
+  const agentId = deriveAgentIdFromCwd(process.cwd())
   const config = loadConfig()
+  const decision = gateDecision(payload?.tool_name, payload?.tool_input, agentId, config)
 
-  // Not in config -> unrestricted
-  if (!(skillName in config)) {
-    allow()
+  if (decision.allow) {
+    process.exit(0)
   }
 
-  const allowed = config[skillName]
-
-  // Malformed entry -> fail-open
-  if (!Array.isArray(allowed)) {
-    allow()
-  }
-
-  if (allowed.includes(agentId)) {
-    allow()
-  }
-
-  // Blocked
-  logBlocked(skillName, agentId)
-  deny(
-    `Skill "${skillName}" is restricted. Agent "${agentId}" is not in the access list. ` +
-    `Authorized agents: ${allowed.join(', ')}. ` +
-    `To grant access, update store/skill-access.json or use the dashboard Skills > Access view.`
-  )
+  // Blocked: log and emit deny
+  logBlocked(String(payload?.tool_input?.skill ?? ''), agentId ?? 'unknown')
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: decision.reason,
+    },
+  }))
+  process.exit(0)
 }

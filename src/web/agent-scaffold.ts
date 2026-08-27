@@ -640,6 +640,7 @@ export function injectSkillAccessGate(existing: Record<string, unknown>): void {
   const command = `bash -c '[ -f ${scriptPath} ] && exec node ${scriptPath}; exit 0'`
   if (isUnsafeHookCommand(command)) return
   const entry = {
+    matcher: 'Skill',
     hooks: [{ type: 'command', command, timeout: 5 }],
   }
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
