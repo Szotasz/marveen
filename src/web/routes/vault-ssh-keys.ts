@@ -82,7 +82,7 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
       const username = typeof data.username === 'string' ? data.username.trim() : ''
 
       if (!label || !username) {
-        json(res, { error: 'label and username are required' }, 400)
+        json(res, { error: 'required', hint: 'label and username are required' }, 400)
         return true
       }
 
@@ -114,7 +114,7 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
       const privateKey = typeof data.privateKey === 'string' ? data.privateKey.trim() : ''
 
       if (!label || !username || !privateKey) {
-        json(res, { error: 'label, username and privateKey are required' }, 400)
+        json(res, { error: 'required', hint: 'label, username and privateKey are required' }, 400)
         return true
       }
 
@@ -160,7 +160,7 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
   if (pubKeyMatch && method === 'GET') {
     const id = decodeURIComponent(pubKeyMatch[1])
     const key = getVaultSshKey(id)
-    if (!key) { json(res, { error: `Key "${id}" not found` }, 404); return true }
+    if (!key) { json(res, { error: 'not_found', hint: `Key "${id}" not found` }, 404); return true }
     json(res, { publicKey: key.public_key, fingerprint: key.fingerprint, keyType: key.key_type })
     return true
   }
@@ -170,9 +170,9 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
   if (delMatch && method === 'DELETE') {
     const id = decodeURIComponent(delMatch[1])
     const key = getVaultSshKey(id)
-    if (!key) { json(res, { error: `Key "${id}" not found` }, 404); return true }
+    if (!key) { json(res, { error: 'not_found', hint: `Key "${id}" not found` }, 404); return true }
     const { deleted, unassigned } = deleteVaultSshKey(id)
-    if (!deleted) { json(res, { error: `Key "${id}" not found` }, 404); return true }
+    if (!deleted) { json(res, { error: 'not_found', hint: `Key "${id}" not found` }, 404); return true }
     // The pool row is gone, but the encrypted private key still sits in the
     // generic vault.ts secret store (vault_key_id) unless we remove it too --
     // otherwise it lingers as an orphaned "ssh-key-*" entry, visible/revealable

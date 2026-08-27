@@ -51,7 +51,7 @@ describe('tryHandleApprovals - PATCH error paths', () => {
     const handled = await tryHandleApprovals(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(400)
-    expect(out.body.error).toMatch(/invalid json/i)
+    expect(out.body.error).toBe('parse_error')
   })
 
   it('PATCH when resolveApproval returns false and approval not found → 404', async () => {
@@ -79,6 +79,7 @@ describe('tryHandleApprovals - PATCH error paths', () => {
     const handled = await tryHandleApprovals(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(409)
-    expect(out.body.error).toMatch(/already resolved/i)
+    expect(out.body.error).toBe('conflict')
+    expect(out.body.hint).toMatch(/already resolved/i)
   })
 })

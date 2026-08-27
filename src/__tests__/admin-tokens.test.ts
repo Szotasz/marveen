@@ -128,7 +128,8 @@ describe('POST /api/v1/admin/tokens', () => {
 
     expect(handled).toBe(true)
     expect(out.status).toBe(400)
-    expect(out.body.error).toBe('name is required')
+    expect(out.body.error).toBe('required')
+    expect(out.body.field).toBe('name')
   })
 
   it('returns 400 for invalid role', async () => {
@@ -137,7 +138,9 @@ describe('POST /api/v1/admin/tokens', () => {
 
     expect(handled).toBe(true)
     expect(out.status).toBe(400)
-    expect(out.body.error).toMatch(/role must be one of/)
+    expect(out.body.error).toBe('invalid_value')
+    expect(out.body.field).toBe('role')
+    expect(out.body.hint).toMatch(/role must be one of/)
   })
 
   it('returns 400 for invalid JSON body', async () => {
@@ -158,7 +161,7 @@ describe('POST /api/v1/admin/tokens', () => {
     const handled = await tryHandleAdminTokens(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(400)
-    expect(out.body.error).toBe('invalid body')
+    expect(out.body.error).toBe('parse_error')
   })
 })
 
@@ -198,7 +201,7 @@ describe('POST /api/v1/admin/tokens/:id/rotate', () => {
 
     expect(handled).toBe(true)
     expect(out.status).toBe(404)
-    expect(out.body.error).toBe('token not found')
+    expect(out.body.error).toBe('not_found')
   })
 
   it('returns 409 when token already revoked', async () => {
@@ -211,7 +214,7 @@ describe('POST /api/v1/admin/tokens/:id/rotate', () => {
 
     expect(handled).toBe(true)
     expect(out.status).toBe(409)
-    expect(out.body.error).toBe('token already revoked')
+    expect(out.body.error).toBe('conflict')
   })
 })
 
@@ -240,7 +243,7 @@ describe('DELETE /api/v1/admin/tokens/:id/revoke', () => {
 
     expect(handled).toBe(true)
     expect(out.status).toBe(404)
-    expect(out.body.error).toBe('token not found')
+    expect(out.body.error).toBe('not_found')
   })
 
   it('returns 409 when token already revoked', async () => {
@@ -253,7 +256,7 @@ describe('DELETE /api/v1/admin/tokens/:id/revoke', () => {
 
     expect(handled).toBe(true)
     expect(out.status).toBe(409)
-    expect(out.body.error).toBe('token already revoked')
+    expect(out.body.error).toBe('conflict')
   })
 })
 

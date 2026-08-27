@@ -81,18 +81,18 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
       const desc = typeof data.desc === 'string' ? data.desc.trim() : null
 
       if (!name || !host || !user) {
-        json(res, { error: 'name, host and user are required' }, 400)
+        json(res, { error: 'required', hint: 'name, host and user are required' }, 400)
         return true
       }
 
       const id = data.id && validateId(data.id) ? data.id : slugify(name) || slugify(host)
       if (!validateId(id)) {
-        json(res, { error: 'Could not derive a valid id from the name' }, 400)
+        json(res, { error: 'invalid_value', field: 'name', hint: 'Could not derive a valid id from the name' }, 400)
         return true
       }
 
       if (getVaultSshServer(id)) {
-        json(res, { error: `Server with id "${id}" already exists` }, 409)
+        json(res, { error: 'conflict', hint: `Server with id "${id}" already exists` }, 409)
         return true
       }
 
@@ -101,7 +101,7 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
       json(res, { server: toApiShape(server) }, 201)
     } catch (err) {
       logger.error({ err }, 'Failed to create vault ssh server')
-      json(res, { error: 'Failed to create server' }, 500)
+      json(res, { error: 'internal_error', hint: 'Failed to create server' }, 500)
     }
     return true
   }
@@ -113,7 +113,7 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(singleMatch[1])
     try {
       const existing = getVaultSshServer(id)
-      if (!existing) { json(res, { error: `Server "${id}" not found` }, 404); return true }
+      if (!existing) { json(res, { error: 'not_found', hint: `Server "${id}" not found` }, 404); return true }
 
       const body = await readBody(req)
       const data = JSON.parse(body.toString())
@@ -127,7 +127,7 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
       // Key assignment: sshKeyId (assign existing pool key) or null (unassign)
       if (data.sshKeyId !== undefined) {
         if (data.sshKeyId !== null && !getVaultSshKey(data.sshKeyId)) {
-          json(res, { error: `SSH key "${data.sshKeyId}" not found` }, 404)
+          json(res, { error: 'not_found', field: 'sshKeyId', hint: `SSH key "${data.sshKeyId}" not found` }, 404)
           return true
         }
         patch.ssh_key_id = data.sshKeyId ?? null
@@ -140,7 +140,7 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
       json(res, { server: toApiShape(updated, key) })
     } catch (err) {
       logger.error({ err }, 'Failed to update vault ssh server')
-      json(res, { error: 'Failed to update server' }, 500)
+      json(res, { error: 'internal_error', hint: 'Failed to update server' }, 500)
     }
     return true
   }
@@ -149,7 +149,7 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
   if (singleMatch && method === 'DELETE') {
     const id = decodeURIComponent(singleMatch[1])
     if (!deleteVaultSshServer(id)) {
-      json(res, { error: `Server "${id}" not found` }, 404)
+      json(res, { error: 'not_found', hint: `Server "${id}" not found` }, 404)
       return true
     }
     logger.info({ id }, 'vault ssh server deleted')
@@ -163,7 +163,7 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
   if (genKeyMatch && method === 'POST') {
     const id = decodeURIComponent(genKeyMatch[1])
     const server = getVaultSshServer(id)
-    if (!server) { json(res, { error: `Server "${id}" not found` }, 404); return true }
+    if (!server) { json(res, { error: 'not_found', hint: `Server "${id}" not found` }, 404); return true }
     try {
       let keyUser = server.username
       const bodyRaw = await readBody(req)
@@ -203,10 +203,10 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
   if (pubKeyMatch && method === 'GET') {
     const id = decodeURIComponent(pubKeyMatch[1])
     const server = getVaultSshServer(id)
-    if (!server) { json(res, { error: `Server "${id}" not found` }, 404); return true }
-    if (!server.ssh_key_id) { json(res, { error: 'No key assigned to this server' }, 404); return true }
+    if (!server) { json(res, { error: 'not_found', hint: `Server "${id}" not found` }, 404); return true }
+    if (!server.ssh_key_id) { json(res, { error: 'not_found', hint: 'No key assigned to this server' }, 404); return true }
     const key = getVaultSshKey(server.ssh_key_id)
-    if (!key) { json(res, { error: 'Assigned key not found' }, 404); return true }
+    if (!key) { json(res, { error: 'not_found', hint: 'Assigned key not found' }, 404); return true }
     json(res, { publicKey: key.public_key, fingerprint: key.fingerprint, keyType: key.key_type })
     return true
   }
