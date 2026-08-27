@@ -35,7 +35,7 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       const { key, value, actor } = JSON.parse(body.toString())
 
       if (!key || typeof key !== 'string') {
-        json(res, { error: 'required', field: 'key', hint: 'key must be a non-empty string' }, 400)
+        json(res, { error: 'required', field: 'key', hint: 'key must be a non-empty string' }, 500)
         return true
       }
 
@@ -56,7 +56,7 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       // the change log without assuming the write will succeed.
       const validation = validateSettingValue(def, value)
       if (!validation.ok) {
-        json(res, { error: 'invalid_value', field: 'value', hint: validation.error }, 400)
+        json(res, { error: 'invalid_value', field: 'value', hint: validation.error }, 500)
         return true
       }
 
@@ -65,7 +65,7 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       const oldValue = getEffectiveSettingValue(key)
       const result = setOverride(key, value)
       if (!result.ok) {
-        json(res, { error: 'internal_error', hint: result.error }, 400)
+        json(res, { error: 'internal_error', hint: result.error }, 500)
         return true
       }
 
