@@ -188,7 +188,8 @@ describe('tryHandleAgentsChannels (extended)', () => {
     const { ctx, out } = makeCtx('POST', '/api/agents/test-agent/channels/telegram', { botToken: '' })
     expect(await tryHandleAgentsChannels(ctx)).toBe(true)
     expect(out.status).toBe(400)
-    expect(out.body.error).toMatch(/botToken/)
+    expect(out.body.error).toBe('required')
+    expect(out.body.field).toBe('botToken')
   })
 
   it('POST channel setup returns 400 when validateToken fails', async () => {
@@ -221,7 +222,8 @@ describe('tryHandleAgentsChannels (extended)', () => {
     const { ctx, out } = makeCtx('POST', '/api/agents/test-agent/channels/telegram/approve', { code: 'no-such-code' })
     expect(await tryHandleAgentsChannels(ctx)).toBe(true)
     expect(out.status).toBe(404)
-    expect(out.body.error).toMatch(/invalid|expired/i)
+    expect(out.body.error).toBe('not_found')
+    expect(out.body.hint).toMatch(/invalid|expired/i)
   })
 
   it('POST channel invite create returns token for known agent', async () => {
@@ -242,6 +244,7 @@ describe('tryHandleAgentsChannels (extended)', () => {
     const { ctx, out } = makeCtx('POST', '/api/agents/test-agent/channel/reconnect')
     expect(await tryHandleAgentsChannels(ctx)).toBe(true)
     expect(out.status).toBe(400)
-    expect(out.body.error).toMatch(/not running/i)
+    expect(out.body.error).toBe('invalid_value')
+    expect(out.body.hint).toMatch(/not running/i)
   })
 })
