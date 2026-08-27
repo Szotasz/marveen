@@ -67,7 +67,7 @@ describe('tryHandleMemories', () => {
     const handled = await tryHandleMemories(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(400)
-    expect(out.body.error).toMatch(/security filter/i)
+    expect(out.body.error).toBe('forbidden')
   })
 
   it('POST /api/memories returns 400 for suspicious content (rm -rf)', async () => {
@@ -81,7 +81,8 @@ describe('tryHandleMemories', () => {
     const handled = await tryHandleMemories(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(400)
-    expect(out.body.error).toMatch(/Invalid category/i)
+    expect(out.body.error).toBe('invalid_value')
+    expect(out.body.field).toBe('category')
   })
 
   it('POST /api/memories saves valid memory and returns id', async () => {

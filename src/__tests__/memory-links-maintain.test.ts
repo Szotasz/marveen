@@ -92,7 +92,7 @@ describe('POST /api/memories/links/maintain', () => {
     const handled = await tryHandleMemories(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(500)
-    expect(out.body.error).toMatch(/failed/i)
+    expect(out.body.error).toBe('internal_error')
   })
 })
 

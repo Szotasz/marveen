@@ -109,7 +109,8 @@ describe('POST /api/import/sources', () => {
     const { ctx, out } = makeCtx('POST', '/api/import/sources', { path: '/tmp/docs' })
     await tryHandleImportMemories(ctx)
     expect(out.status).toBe(400)
-    expect((out.body as { error: string }).error).toMatch(/type/)
+    expect((out.body as { error: string; field: string }).error).toBe('invalid_value')
+    expect((out.body as { error: string; field: string }).field).toBe('type')
   })
 
   it('returns 400 when type is invalid', async () => {
@@ -122,14 +123,16 @@ describe('POST /api/import/sources', () => {
     const { ctx, out } = makeCtx('POST', '/api/import/sources', { type: 'local' })
     await tryHandleImportMemories(ctx)
     expect(out.status).toBe(400)
-    expect((out.body as { error: string }).error).toMatch(/path/)
+    expect((out.body as { error: string; field: string }).error).toBe('required')
+    expect((out.body as { error: string; field: string }).field).toBe('path')
   })
 
   it('returns 400 when interval_hours is invalid', async () => {
     const { ctx, out } = makeCtx('POST', '/api/import/sources', { type: 'local', path: '/tmp/docs', interval_hours: 3 })
     await tryHandleImportMemories(ctx)
     expect(out.status).toBe(400)
-    expect((out.body as { error: string }).error).toMatch(/interval_hours/)
+    expect((out.body as { error: string; field: string }).error).toBe('invalid_value')
+    expect((out.body as { error: string; field: string }).field).toBe('interval_hours')
   })
 
   it('creates a source and returns an id', async () => {

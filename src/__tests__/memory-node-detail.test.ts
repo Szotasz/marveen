@@ -130,7 +130,7 @@ describe('GET /api/memories/:id/detail', () => {
     const handled = await tryHandleMemories(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(404)
-    expect(out.body.error).toBe('Memory not found')
+    expect(out.body.error).toBe('not_found')
   })
 
   it('includes neighbors with correct shape', async () => {

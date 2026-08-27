@@ -51,7 +51,7 @@ export async function tryHandleSchedules(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/schedules/expand-questions' && method === 'POST') {
     const body = await readBody(req)
     const { prompt, agent } = JSON.parse(body.toString()) as { prompt: string; agent?: string }
-    if (!prompt?.trim()) { json(res, { error: 'Prompt is required' }, 400); return true }
+    if (!prompt?.trim()) { json(res, { error: 'required', field: 'prompt', hint: 'Prompt is required' }, 400); return true }
 
     const aiPrompt = `A felhasznalo egy utemezett feladatot akar letrehozni egy AI agensnek. A rovid leirasa:
 "${prompt.trim()}"
@@ -74,7 +74,7 @@ Valaszolj KIZAROLAG JSON formatumban, semmi mas:
       json(res, questions)
     } catch (err) {
       logger.error({ err }, 'Failed to generate expand questions')
-      json(res, { error: 'Failed to generate questions' }, 500)
+      json(res, { error: 'internal_error', hint: 'Failed to generate questions' }, 500)
     }
     return true
   }
@@ -82,7 +82,7 @@ Valaszolj KIZAROLAG JSON formatumban, semmi mas:
   if (path === '/api/schedules/expand-prompt' && method === 'POST') {
     const body = await readBody(req)
     const { prompt, answers } = JSON.parse(body.toString()) as { prompt: string; answers: { question: string; answer: string }[] }
-    if (!prompt?.trim()) { json(res, { error: 'Prompt is required' }, 400); return true }
+    if (!prompt?.trim()) { json(res, { error: 'required', field: 'prompt', hint: 'Prompt is required' }, 400); return true }
 
     const answersText = answers.map((a: { question: string; answer: string }) => `Kerdes: ${a.question}\nValasz: ${a.answer}`).join('\n\n')
 
@@ -104,7 +104,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       json(res, { prompt: expanded })
     } catch (err) {
       logger.error({ err }, 'Failed to expand prompt')
-      json(res, { error: 'Failed to expand prompt' }, 500)
+      json(res, { error: 'internal_error', hint: 'Failed to expand prompt' }, 500)
     }
     return true
   }
@@ -120,7 +120,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       body = await readBody(req, { maxBytes: 256 * 1024 })
     } catch (err) {
       if (err instanceof RequestBodyTooLargeError) {
-        json(res, { error: `Request body too large (max ${err.limit} bytes)` }, 413)
+        json(res, { error: 'limit_exceeded', hint: `Request body too large (max ${err.limit} bytes)` }, 413)
         return true
       }
       throw err
@@ -129,19 +129,19 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       name: string; description: string; prompt: string; schedule: string; agent?: string; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string
     }
     const name = sanitizeScheduleName(data.name || '')
-    if (!name) { json(res, { error: 'Name is required' }, 400); return true }
-    if (!data.prompt?.trim()) { json(res, { error: 'Prompt is required' }, 400); return true }
+    if (!name) { json(res, { error: 'required', field: 'name', hint: 'Name is required' }, 400); return true }
+    if (!data.prompt?.trim()) { json(res, { error: 'required', field: 'prompt', hint: 'Prompt is required' }, 400); return true }
     if (data.prompt.length > MAX_SCHEDULED_TASK_PROMPT_LEN) {
       json(res, {
-        error: `Prompt too large (${data.prompt.length} chars, max ${MAX_SCHEDULED_TASK_PROMPT_LEN})`,
+        error: 'limit_exceeded', field: 'prompt', hint: `Prompt too large (${data.prompt.length} chars, max ${MAX_SCHEDULED_TASK_PROMPT_LEN})`,
       }, 413)
       return true
     }
-    if (!data.schedule?.trim()) { json(res, { error: 'Schedule is required' }, 400); return true }
-    if (!isValidCronShape(data.schedule)) { json(res, { error: 'Invalid cron expression' }, 400); return true }
+    if (!data.schedule?.trim()) { json(res, { error: 'required', field: 'schedule', hint: 'Schedule is required' }, 400); return true }
+    if (!isValidCronShape(data.schedule)) { json(res, { error: 'invalid_value', field: 'schedule', hint: 'Invalid cron expression' }, 400); return true }
 
     const dir = join(SCHEDULED_TASKS_DIR, name)
-    if (existsSync(dir)) { json(res, { error: 'Schedule already exists' }, 409); return true }
+    if (existsSync(dir)) { json(res, { error: 'conflict', hint: 'Schedule already exists' }, 409); return true }
 
     writeScheduledTask(name, {
       description: data.description || '',
@@ -162,16 +162,16 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
   const scheduleUpdateMatch = path.match(/^\/api\/schedules\/([^/]+)$/)
   if (scheduleUpdateMatch && method === 'PUT') {
     const resolved = resolveScheduleDir(scheduleUpdateMatch[1])
-    if (!resolved) { json(res, { error: 'Schedule not found' }, 404); return true }
+    if (!resolved) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     const { name, dir } = resolved
-    if (!existsSync(dir)) { json(res, { error: 'Schedule not found' }, 404); return true }
+    if (!existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
 
     let body: Buffer
     try {
       body = await readBody(req, { maxBytes: 256 * 1024 })
     } catch (err) {
       if (err instanceof RequestBodyTooLargeError) {
-        json(res, { error: `Request body too large (max ${err.limit} bytes)` }, 413)
+        json(res, { error: 'limit_exceeded', hint: `Request body too large (max ${err.limit} bytes)` }, 413)
         return true
       }
       throw err
@@ -181,12 +181,12 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     }
     if (data.prompt !== undefined && data.prompt.length > MAX_SCHEDULED_TASK_PROMPT_LEN) {
       json(res, {
-        error: `Prompt too large (${data.prompt.length} chars, max ${MAX_SCHEDULED_TASK_PROMPT_LEN})`,
+        error: 'limit_exceeded', field: 'prompt', hint: `Prompt too large (${data.prompt.length} chars, max ${MAX_SCHEDULED_TASK_PROMPT_LEN})`,
       }, 413)
       return true
     }
     if (data.schedule !== undefined && !isValidCronShape(data.schedule)) {
-      json(res, { error: 'Invalid cron expression' }, 400)
+      json(res, { error: 'invalid_value', field: 'schedule', hint: 'Invalid cron expression' }, 400)
       return true
     }
     writeScheduledTask(name, data)
@@ -197,9 +197,9 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
 
   if (scheduleUpdateMatch && method === 'DELETE') {
     const resolved = resolveScheduleDir(scheduleUpdateMatch[1])
-    if (!resolved) { json(res, { error: 'Schedule not found' }, 404); return true }
+    if (!resolved) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     const { name, dir } = resolved
-    if (!existsSync(dir)) { json(res, { error: 'Schedule not found' }, 404); return true }
+    if (!existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     rmSync(dir, { recursive: true, force: true })
     logger.info({ name }, 'Scheduled task deleted')
     json(res, { ok: true })
@@ -209,9 +209,9 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
   const scheduleToggleMatch = path.match(/^\/api\/schedules\/([^/]+)\/toggle$/)
   if (scheduleToggleMatch && method === 'POST') {
     const resolved = resolveScheduleDir(scheduleToggleMatch[1])
-    if (!resolved) { json(res, { error: 'Schedule not found' }, 404); return true }
+    if (!resolved) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     const { name, dir } = resolved
-    if (!existsSync(dir)) { json(res, { error: 'Schedule not found' }, 404); return true }
+    if (!existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
 
     const configPath = join(dir, 'task-config.json')
     let config: Record<string, unknown> = {}
@@ -227,9 +227,9 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
   const scheduleRunMatch = path.match(/^\/api\/schedules\/([^/]+)\/run$/)
   if (scheduleRunMatch && method === 'POST') {
     const resolved = resolveScheduleDir(scheduleRunMatch[1])
-    if (!resolved) { json(res, { error: 'Schedule not found' }, 404); return true }
+    if (!resolved) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     const { name, dir } = resolved
-    if (!existsSync(dir)) { json(res, { error: 'Schedule not found' }, 404); return true }
+    if (!existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     const result = await runScheduledTaskNow(name)
     if (!result.ok) { json(res, { error: result.error }, 400); return true }
     logger.info({ name, result: result.result }, 'Scheduled task run-now fired')
@@ -247,9 +247,9 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
   const scheduleRunsMatch = path.match(/^\/api\/schedules\/([^/]+)\/runs$/)
   if (scheduleRunsMatch && method === 'GET') {
     const resolved = resolveScheduleDir(scheduleRunsMatch[1])
-    if (!resolved) { json(res, { error: 'Schedule not found' }, 404); return true }
+    if (!resolved) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     const { name, dir } = resolved
-    if (!existsSync(dir)) { json(res, { error: 'Schedule not found' }, 404); return true }
+    if (!existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     const runs = listTaskRunHistory(name, 10)
     json(res, runs)
     return true
@@ -258,9 +258,9 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
   const pendingCancelMatch = path.match(/^\/api\/schedules\/pending\/(\d+)$/)
   if (pendingCancelMatch && method === 'DELETE') {
     const id = parseInt(pendingCancelMatch[1], 10)
-    if (!Number.isFinite(id)) { json(res, { error: 'Invalid id' }, 400); return true }
+    if (!Number.isFinite(id)) { json(res, { error: 'invalid_value', field: 'id', hint: 'Invalid id' }, 400); return true }
     const removed = deletePendingTaskRetryById(id)
-    if (!removed) { json(res, { error: 'Pending retry not found' }, 404); return true }
+    if (!removed) { json(res, { error: 'not_found', hint: 'Pending retry not found' }, 404); return true }
     logger.info({ id }, 'Pending scheduled-task retry cancelled via API')
     json(res, { ok: true })
     return true

@@ -44,10 +44,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/memories' && method === 'POST') {
     const body = await readBody(req)
     const data = JSON.parse(body.toString()) as { agent_id?: string; content: string; tier?: string; category?: string; keywords?: string }
-    if (!data.content?.trim()) { json(res, { error: 'Content is required' }, 400); return true }
+    if (!data.content?.trim()) { json(res, { error: 'required', field: 'content', hint: 'Content is required' }, 400); return true }
     if (containsSuspiciousContent(data.content)) {
       logger.warn({ agent: data.agent_id }, 'Memory content rejected: suspicious pattern')
-      json(res, { error: 'Content rejected by security filter' }, 400)
+      json(res, { error: 'forbidden', hint: 'Content rejected by security filter' }, 400)
       return true
     }
     if (data.tier && !data.category) {
@@ -55,7 +55,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     }
     const category = (data.category || data.tier || 'warm').toLowerCase()
     if (!MEMORY_CATEGORIES.has(category)) {
-      json(res, { error: `Invalid category "${category}". Allowed: ${[...MEMORY_CATEGORIES].join(', ')}` }, 400)
+      json(res, { error: 'invalid_value', field: 'category', hint: `Invalid category "${category}". Allowed: ${[...MEMORY_CATEGORIES].join(', ')}` }, 400)
       return true
     }
     const result = saveAgentMemory(
@@ -169,7 +169,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     const { agent_id, chunks } = JSON.parse(body.toString()) as { agent_id: string; chunks: string[] }
 
     if (!chunks || !Array.isArray(chunks) || chunks.length === 0) {
-      json(res, { error: 'No chunks to import' }, 400)
+      json(res, { error: 'required', field: 'chunks', hint: 'No chunks to import' }, 400)
       return true
     }
 
@@ -271,7 +271,7 @@ Respond ONLY with JSON, nothing else:
       json(res, { ok: true, count })
     } catch (err) {
       logger.error({ err }, 'Backfill failed')
-      json(res, { error: 'Backfill failed' }, 500)
+      json(res, { error: 'internal_error', hint: 'Backfill failed' }, 500)
     }
     return true
   }
@@ -298,7 +298,7 @@ Respond ONLY with JSON, nothing else:
       json(res, { ok: true, ...result })
     } catch (err) {
       logger.error({ err }, 'Memory resort failed')
-      json(res, { error: 'Resort failed' }, 500)
+      json(res, { error: 'internal_error', hint: 'Resort failed' }, 500)
     }
     return true
   }
@@ -337,7 +337,7 @@ Respond ONLY with JSON, nothing else:
       json(res, { ok: true, ...result })
     } catch (err) {
       logger.error({ err }, 'Link maintenance failed')
-      json(res, { error: 'Link maintenance failed' }, 500)
+      json(res, { error: 'internal_error', hint: 'Link maintenance failed' }, 500)
     }
     return true
   }
@@ -372,7 +372,7 @@ Respond ONLY with JSON, nothing else:
     }
 
     const { agent_id, memory_id, context } = parsed
-    if (!agent_id || !memory_id) { json(res, { error: 'agent_id and memory_id required' }, 400); return true }
+    if (!agent_id || !memory_id) { json(res, { error: 'required', hint: 'agent_id and memory_id required' }, 400); return true }
     recordMemoryRead(agent_id, memory_id, toCtx(context))
     json(res, { ok: true })
     return true
@@ -392,7 +392,7 @@ Respond ONLY with JSON, nothing else:
     const fromTs      = parseInt(url.searchParams.get('from') || '0', 10)
     const toTs        = Math.min(nowSec, parseInt(url.searchParams.get('to') || String(nowSec), 10))
 
-    if (fromTs > toTs) { json(res, { error: 'from must be <= to' }, 400); return true }
+    if (fromTs > toTs) { json(res, { error: 'invalid_value', field: 'from', hint: 'from must be <= to' }, 400); return true }
 
     const db2 = getDb()
 
@@ -566,7 +566,7 @@ Respond ONLY with JSON, nothing else:
   // GET /api/memories/stale?agent_id=X -- memories updated after agent's last read
   if (path === '/api/memories/stale' && method === 'GET') {
     const agentId = url.searchParams.get('agent_id') || url.searchParams.get('agent') || ''
-    if (!agentId) { json(res, { error: 'agent_id required' }, 400); return true }
+    if (!agentId) { json(res, { error: 'required', field: 'agent_id', hint: 'agent_id required' }, 400); return true }
     const stale = getStaleMemories(agentId)
     json(res, stale.map(m => ({ ...m, embedding: undefined, embedding_blob: undefined })))
     return true
@@ -590,7 +590,7 @@ Respond ONLY with JSON, nothing else:
     const mem = db2.prepare(
       'SELECT id, content, category, agent_id, keywords, created_at, accessed_at FROM memories WHERE id = ?'
     ).get(id) as DetailRow | undefined
-    if (!mem) { json(res, { error: 'Memory not found' }, 404); return true }
+    if (!mem) { json(res, { error: 'not_found' }, 404); return true }
 
     type CountRow = { cnt: number }
     const { cnt: read_count } = db2.prepare(
@@ -673,7 +673,7 @@ Respond ONLY with JSON, nothing else:
     const includeVersions = url.searchParams.get('include') === 'versions'
     const db2 = getDb()
     const mem = db2.prepare('SELECT * FROM memories WHERE id = ?').get(id) as Memory | undefined
-    if (!mem) { json(res, { error: 'Memory not found' }, 404); return true }
+    if (!mem) { json(res, { error: 'not_found' }, 404); return true }
     const { embedding: _emb, embedding_blob: _blob, ...rest } = mem
     const agentId = url.searchParams.get('agent_id') || url.searchParams.get('agent') || ''
     if (agentId) recordMemoryRead(agentId, id, 'direct')
@@ -689,14 +689,14 @@ Respond ONLY with JSON, nothing else:
     if (!isAdmin) {
       const tenantRow = getDb().prepare('SELECT tenant_id FROM memories WHERE id = ?').get(id) as { tenant_id: string } | undefined
       if (!tenantRow || tenantRow.tenant_id !== effectiveTenantId) {
-        json(res, { error: 'Memory not found' }, 404)
+        json(res, { error: 'not_found' }, 404)
         return true
       }
     }
     const body = await readBody(req)
     const { content, category, tier, agent_id, keywords } = JSON.parse(body.toString()) as { content: string; category?: string; tier?: string; agent_id?: string; keywords?: string }
     if (updateMemory(id, content, tier || category, agent_id, keywords)) { json(res, { ok: true }); return true }
-    json(res, { error: 'Memory not found' }, 404)
+    json(res, { error: 'not_found' }, 404)
     return true
   }
 
@@ -706,7 +706,7 @@ Respond ONLY with JSON, nothing else:
     const row = db2.prepare('SELECT agent_id, tenant_id FROM memories WHERE id = ?').get(id) as { agent_id: string | null; tenant_id: string } | undefined
     // Non-admin callers may only delete memories belonging to their own tenant.
     if (!isAdmin && row && row.tenant_id !== effectiveTenantId) {
-      json(res, { error: 'Memory not found' }, 404)
+      json(res, { error: 'not_found' }, 404)
       return true
     }
     const changes = db2.prepare('DELETE FROM memories WHERE id = ?').run(id).changes
@@ -720,7 +720,7 @@ Respond ONLY with JSON, nothing else:
       json(res, { ok: true })
       return true
     }
-    json(res, { error: 'Memory not found' }, 404)
+    json(res, { error: 'not_found' }, 404)
     return true
   }
 
