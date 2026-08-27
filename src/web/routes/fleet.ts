@@ -13,7 +13,7 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/fleet/export' && method === 'GET') {
     if (vaultPassword !== undefined && vaultPassword.length < MIN_VAULT_PASSWORD_LEN) {
-      json(res, { error: `X-Vault-Password must be at least ${MIN_VAULT_PASSWORD_LEN} characters.` }, 400)
+      json(res, { error: 'invalid_value', field: 'X-Vault-Password', hint: `X-Vault-Password must be at least ${MIN_VAULT_PASSWORD_LEN} characters.` }, 400)
       return true
     }
     try {
@@ -41,7 +41,7 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
 
     // M1: check vault password length for import side too
     if (vaultPassword !== undefined && vaultPassword.length < MIN_VAULT_PASSWORD_LEN) {
-      json(res, { error: `X-Vault-Password must be at least ${MIN_VAULT_PASSWORD_LEN} characters.` }, 400)
+      json(res, { error: 'invalid_value', field: 'X-Vault-Password', hint: `X-Vault-Password must be at least ${MIN_VAULT_PASSWORD_LEN} characters.` }, 400)
       return true
     }
 

@@ -45,13 +45,13 @@ function killSession(session: string): void {
   } catch { /* already dead */ }
 }
 
-export function spawnBackgroundTask(agentId: string, prompt: string): BackgroundTask | { error: string } {
+export function spawnBackgroundTask(agentId: string, prompt: string): BackgroundTask | { error: string; hint?: string } {
   const id = randomBytes(4).toString('hex').toUpperCase()
   const session = bgSessionName(id)
 
   const task = createBackgroundTaskAtomic(id, agentId, prompt, session, MAX_CONCURRENT)
   if (!task) {
-    return { error: `Maximum ${MAX_CONCURRENT} egyidejű háttérfeladat ágensenként.` }
+    return { error: 'limit_exceeded', hint: `Maximum ${MAX_CONCURRENT} egyidejű háttérfeladat ágensenként.` }
   }
 
   const shellCmd = [
@@ -70,7 +70,7 @@ export function spawnBackgroundTask(agentId: string, prompt: string): Background
   } catch (err) {
     logger.error({ err, id, session }, 'Failed to spawn background task tmux session')
     finishBackgroundTask(id, 'failed', '(spawn failed)')
-    return { error: 'Nem sikerült elindítani a háttérfeladatot' }
+    return { error: 'internal_error', hint: 'Nem sikerült elindítani a háttérfeladatot' }
   }
 
   logger.info({ id, agentId, session, prompt: prompt.slice(0, 100) }, 'Background task started')
@@ -147,17 +147,17 @@ export async function tryHandleBackgroundTasks(ctx: RouteContext): Promise<boole
     const body = await readBody(req)
     const data = JSON.parse(body.toString()) as { agent_id: string; prompt: string }
     if (!data.prompt?.trim()) {
-      json(res, { error: 'Prompt megadása kötelező' }, 400)
+      json(res, { error: 'required', field: 'prompt', hint: 'Prompt megadása kötelező' }, 400)
       return true
     }
     if (!data.agent_id?.trim()) {
-      json(res, { error: 'Agent ID megadása kötelező' }, 400)
+      json(res, { error: 'required', field: 'agentId', hint: 'Agent ID megadása kötelező' }, 400)
       return true
     }
 
     const result = spawnBackgroundTask(data.agent_id.trim(), data.prompt.trim())
     if ('error' in result) {
-      json(res, { error: result.error }, 429)
+      json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, result.error === 'limit_exceeded' ? 429 : 500)
       return true
     }
     json(res, result, 201)
@@ -180,7 +180,7 @@ export async function tryHandleBackgroundTasks(ctx: RouteContext): Promise<boole
   const taskMatch = path.match(TASK_ID_RE)
   if (taskMatch && method === 'GET') {
     const task = getBackgroundTask(taskMatch[1])
-    if (!task) { json(res, { error: 'Háttérfeladat nem található' }, 404); return true }
+    if (!task) { json(res, { error: 'not_found', hint: 'Háttérfeladat nem található' }, 404); return true }
 
     let liveOutput: string | null = null
     if (task.status === 'running' && task.tmux_session) {
@@ -198,7 +198,7 @@ export async function tryHandleBackgroundTasks(ctx: RouteContext): Promise<boole
 
   if (taskMatch && method === 'DELETE') {
     const task = getBackgroundTask(taskMatch[1])
-    if (!task) { json(res, { error: 'Háttérfeladat nem található' }, 404); return true }
+    if (!task) { json(res, { error: 'not_found', hint: 'Háttérfeladat nem található' }, 404); return true }
     const output = task.tmux_session ? captureSession(task.tmux_session) : null
     if (task.status === 'running' && task.tmux_session) {
       killSession(task.tmux_session)
