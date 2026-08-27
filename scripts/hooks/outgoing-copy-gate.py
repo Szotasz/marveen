@@ -557,6 +557,14 @@ def _hit_context(prose: str, pos: int, length: int) -> str:
 # a magyar "level" tenyleg hibas alak; a maszk csak a SZAM ELOTTI angol hasznalatot vagja ki.
 # Ami igy is fennakad: az idezojelbe tett, magarol beszelo "level" szo. Arra a kod-span
 # (backtick) a kijarat, az ugyanis maszkolva van.
+# 2026-08-27, NEGYEDIK a sorozatban: a KOTOJELES KISBETUS AZONOSITO. Az utemezett
+# feladatok es skillek nevei (folyamatos-ellenorzes, mentes-lemaradas-ellenorzes,
+# kontextus-atadas-visszaallitas) ekezet nelkuli magyar szavakbol allnak, mert fajl- es
+# mappanevek. A szotar ezeket valodi talalatnak latja, pedig AZONOSITOK, nem proza --
+# a gazdanak pont igy, betuhiven kell leirni oket, kulonben nem talalja meg a gepen.
+# A maszk ezert kivagja a legalabb ket tagu, csupa kisbetus, kotojellel osszekotott
+# alakokat. Egy valodi magyar mondat nem all ilyen alakbol, es a NAGYBETUS kezdetu
+# osszetetelekre (Chrome-ot) mar van kulon, szigorubb szabaly folotte.
 # 2026-08-24-i talalat: a szambol es kotojeles magyar toldalekbol allo alak
 # ("8:09-es", "2-es", "17:06-kor") a szobontonal puszta "es"/"kor" tokenne esik
 # szet, amit a szotar hibanak lat -- pedig ott toldalek, nem szo. A javitas nem a szotarbol
@@ -572,6 +580,7 @@ TECHNICAL = re.compile(
       | \d+(?:[.:,]\d+)*-[^\W\d_]+   # szam + magyar toldalek (8:09-es, 2-es, 17:06-kor)
       | \b[A-ZÁÉÍÓÖŐÚÜŰ][^\W\d_]*-[a-záéíóöőúüű]{1,4}\b   # tulajdonnev + toldalek (Chrome-ot, Drive-ra)
       | \blevel\s+\d+\b            # angol "level 1" (autonomia-szint, log-szint)
+      | \b[a-z]+(?:-[a-z]+){1,4}\b    # kotojeles kisbetus azonosito (feladat- es skill-nevek)
     """,
     re.X,
 )
