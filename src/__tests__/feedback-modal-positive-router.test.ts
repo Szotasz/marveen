@@ -69,6 +69,11 @@ vi.mock('../web/agent-config.js', () => ({
   readAgentVoiceConfig: () => ({ responseMode: 'text' }),
   isKnownAgent: () => true,
   agentDir: () => '/tmp/none-agentdir',
+  // These cases are about the KEYBOARD path (modal cleared -> prompt delivered),
+  // so the agent under test is deliberately NOT a worksource agent: a queue
+  // agent skips the readiness gate entirely, which would stop this file from
+  // measuring the refusal branch it exists to pin.
+  readAgentWorksourceChannel: () => false,
 }))
 
 vi.mock('../web/agent-process.js', () => ({
