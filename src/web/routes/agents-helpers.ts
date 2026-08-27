@@ -72,10 +72,10 @@ export function agentRunStateCached(name: string, isRemote: boolean): AgentRunSt
 // always 0). Rejects empty, whitespace-only, non-numeric, or wrong-length
 // values before any state write so a typo in the dashboard cannot bounce the
 // live Marveen session through hardRestartMarveenChannels().
-export function validateDiscordChannelId(cid: string | undefined): { ok: boolean; error?: string } {
+export function validateDiscordChannelId(cid: string | undefined): { ok: boolean; error?: string; field?: string; hint?: string } {
   const trimmed = cid?.trim()
   if (!trimmed || !/^[0-9]{17,20}$/.test(trimmed)) {
-    return { ok: false, error: 'Discord channelId is required and must be a numeric snowflake (17-20 digits).' }
+    return { ok: false, error: 'invalid_value', field: 'channelId', hint: 'Discord channelId is required and must be a numeric snowflake (17-20 digits).' }
   }
   return { ok: true }
 }
@@ -310,6 +310,6 @@ export function listAgentSummaries(): AgentSummary[] {
 // Replaces the ~15 inline `if (!existsSync(agentDir(name))) { json(res, …, 404); return true }` copies.
 export function assertAgentExists(name: string, res: http.ServerResponse): boolean {
   if (existsSync(agentDir(name))) return true
-  json(res, { error: 'Agent not found' }, 404)
+  json(res, { error: 'not_found', hint: 'Agent not found' }, 404)
   return false
 }

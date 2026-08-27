@@ -296,7 +296,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
     // live session for no useful reason. Reject before any state write.
     if (provider === 'discord') {
       const cidCheck = validateDiscordChannelId(channelId)
-      if (!cidCheck.ok) { json(res, { error: cidCheck.error }, 400); return true }
+      if (!cidCheck.ok) { json(res, { error: cidCheck.error, field: cidCheck.field, ...(cidCheck.hint ? { hint: cidCheck.hint } : {}) }, 400); return true }
     }
 
     const channelProvider = getProvider(provider)

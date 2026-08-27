@@ -46,7 +46,7 @@ export async function tryHandleAgentTaskState(ctx: RouteContext): Promise<boolea
     const agent = decodeURIComponent(baseMatch[1])
     const body = await readBody(req)
     let fields: Record<string, unknown>
-    try { fields = JSON.parse(body.toString()) } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+    try { fields = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
     const record = writeTaskState(agent, {
       doneSteps: fields.doneSteps as string[] | undefined,
       alreadyDelegated: fields.alreadyDelegated as string[] | undefined,

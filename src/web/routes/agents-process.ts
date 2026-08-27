@@ -95,7 +95,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
     let data: { host?: string; workdir?: string }
     try { data = JSON.parse(body.toString() || '{}') } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON body' }, 400); return true }
     const result = writeAgentRemoteConfig(name, data.host ?? '', data.workdir ?? '')
-    if (!result.ok) { json(res, { error: result.error }, 400); return true }
+    if (!result.ok) { json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, 400); return true }
     // Config changed -> drop any cached status so the next poll reflects it.
     remoteRunStateCache.invalidate(name)
     remotePaneCache.invalidate(name)

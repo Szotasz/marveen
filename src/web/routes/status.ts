@@ -59,7 +59,7 @@ export async function tryHandleStatus(ctx: RouteContext): Promise<boolean> {
       jsonMaybeGzip(req, res, { overall, components, incidents: items.slice(0, 15), fetchedAt: Date.now() })
     } catch (err) {
       logger.warn({ err }, 'Failed to fetch Claude status')
-      json(res, { overall: 'unknown', components: [], incidents: [], fetchedAt: Date.now(), error: 'Failed to fetch status' })
+      json(res, { overall: 'unknown', components: [], incidents: [], fetchedAt: Date.now(), error: 'internal_error', hint: 'Failed to fetch status' })
     }
     return true
   }

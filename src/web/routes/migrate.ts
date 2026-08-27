@@ -13,8 +13,8 @@ export async function tryHandleMigrate(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { sourcePath } = JSON.parse(body.toString()) as { sourcePath: string; sourceType: string }
 
-    if (!sourcePath?.trim()) { json(res, { error: 'Útvonal megadása kötelező' }, 400); return true }
-    if (!existsSync(sourcePath)) { json(res, { error: 'A megadott útvonal nem létezik' }, 404); return true }
+    if (!sourcePath?.trim()) { json(res, { error: 'required', field: 'path', hint: 'Útvonal megadása kötelező' }, 400); return true }
+    if (!existsSync(sourcePath)) { json(res, { error: 'not_found', hint: 'A megadott útvonal nem létezik' }, 404); return true }
 
     const findings: { type: string; path: string; name: string; size: number }[] = []
 

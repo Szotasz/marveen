@@ -179,19 +179,19 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
 
     if (contentType.includes('application/json')) {
       const { galleryAvatar } = JSON.parse(body.toString()) as { galleryAvatar: string }
-      if (!galleryAvatar) { json(res, { error: 'No avatar specified' }, 400); return true }
+      if (!galleryAvatar) { json(res, { error: 'required', field: 'avatar', hint: 'No avatar specified' }, 400); return true }
       if (galleryAvatar.includes('..') || galleryAvatar.includes('/') || galleryAvatar.includes('\\')) {
-        json(res, { error: 'Invalid avatar name' }, 400)
+        json(res, { error: 'invalid_value', field: 'avatar', hint: 'Invalid avatar name' }, 400)
         return true
       }
       const srcPath = join(webDir, 'avatars', galleryAvatar)
-      if (!existsSync(srcPath)) { json(res, { error: 'Avatar not found' }, 404); return true }
+      if (!existsSync(srcPath)) { json(res, { error: 'not_found', hint: 'Avatar not found' }, 404); return true }
       const destPath = join(STORE_DIR, `marveen-avatar${extname(galleryAvatar) || '.png'}`)
       copyFileSync(srcPath, destPath)
       sendMarveenAvatarChange(destPath).catch(() => {})
     } else {
       const { file } = parseMultipart(body, contentType)
-      if (!file) { json(res, { error: 'No file uploaded' }, 400); return true }
+      if (!file) { json(res, { error: 'required', field: 'file', hint: 'No file uploaded' }, 400); return true }
       const destPath = join(STORE_DIR, `marveen-avatar${extname(file.name) || '.png'}`)
       writeFileSync(destPath, file.data)
       sendMarveenAvatarChange(destPath).catch(() => {})

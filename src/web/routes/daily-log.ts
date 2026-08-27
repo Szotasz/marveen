@@ -9,7 +9,7 @@ export async function tryHandleDailyLog(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/daily-log' && method === 'POST') {
     const body = await readBody(req)
     const data = JSON.parse(body.toString()) as { agent_id?: string; content: string }
-    if (!data.content?.trim()) { json(res, { error: 'Content required' }, 400); return true }
+    if (!data.content?.trim()) { json(res, { error: 'required', field: 'content', hint: 'Content required' }, 400); return true }
     appendDailyLog(data.agent_id || MAIN_AGENT_ID, data.content.trim())
     json(res, { ok: true })
     return true

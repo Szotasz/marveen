@@ -83,7 +83,8 @@ describe('tryHandleRecall', () => {
     const { ctx, out } = makeCtx('GET', '/api/recall', { date: 'not-a-date' })
     expect(await tryHandleRecall(ctx)).toBe(true)
     expect(out.status).toBe(400)
-    expect(out.body.error).toContain('not-a-date')
+    expect(out.body.error).toBe('invalid_value')
+    expect(out.body.hint).toContain('not-a-date')
   })
 
   it('GET /api/recall with both date and q filters results', async () => {

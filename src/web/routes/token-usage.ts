@@ -21,7 +21,7 @@ export async function tryHandleTokenUsage(ctx: RouteContext): Promise<boolean> {
       json(res, { ok: true, ...result })
     } catch (err) {
       logger.error({ err }, 'Token usage collection failed')
-      json(res, { error: 'Collection failed' }, 500)
+      json(res, { error: 'internal_error', hint: 'Collection failed' }, 500)
     }
     return true
   }

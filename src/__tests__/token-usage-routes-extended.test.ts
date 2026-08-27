@@ -59,7 +59,8 @@ describe('tryHandleTokenUsage -- extended coverage', () => {
     const { ctx, out } = makeCtx('POST', '/api/token-usage/collect')
     expect(await tryHandleTokenUsage(ctx)).toBe(true)
     expect(out.status).toBe(500)
-    expect(out.body.error).toContain('Collection')
+    expect(out.body.error).toBe('internal_error')
+    expect(out.body.hint).toContain('Collection')
   })
 
   it('GET /api/token-usage/model-dist returns 200', async () => {
