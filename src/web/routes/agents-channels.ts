@@ -162,14 +162,14 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
     const name = decodeURIComponent(smokeTestMatch[1])
     if (!assertAgentExists(name, res)) return true
     const provider = readAgentChannelProvider(name) as ChannelProviderType
-    if (provider !== 'slack') { json(res, { error: 'Nem Slack provider' }, 400); return true }
+    if (provider !== 'slack') { json(res, { error: 'invalid_value', field: 'provider', hint: 'Nem Slack provider' }, 400); return true }
     const scriptPath = join(agentDir(name), '..', '..', 'scripts', 'smoke-test-slack-channel.sh')
-    if (!existsSync(scriptPath)) { json(res, { error: 'Smoke-test script nem található' }, 404); return true }
+    if (!existsSync(scriptPath)) { json(res, { error: 'not_found', hint: 'Smoke-test script nem található' }, 404); return true }
     const agentEnvPath = join(channelStateDir('slack', agentDir(name)), '.env')
     let envContent = ''
     try { envContent = readFileSync(agentEnvPath, 'utf-8') } catch { /* no .env */ }
     if (!/SLACK_SMOKE_TEST_ALLOWED=true/.test(envContent)) {
-      json(res, { error: 'SLACK_SMOKE_TEST_ALLOWED=true nincs beállítva az agent .env-jében' }, 403)
+      json(res, { error: 'forbidden', hint: 'SLACK_SMOKE_TEST_ALLOWED=true nincs beállítva az agent .env-jében' }, 403)
       return true
     }
     try {
@@ -191,10 +191,10 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
   if (reconnectMatch && method === 'POST') {
     const name = decodeURIComponent(reconnectMatch[1])
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
-      json(res, { error: 'Agent not found' }, 404); return true
+      json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true
     }
     if (name !== MAIN_AGENT_ID && !isAgentRunning(name)) {
-      json(res, { error: 'Agent is not running' }, 400); return true
+      json(res, { error: 'invalid_value', field: 'agent', hint: 'Agent is not running' }, 400); return true
     }
     const result = attemptChannelMcpReconnect(name)
     json(res, result)
@@ -206,7 +206,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
   if (healthMatch && method === 'GET') {
     const name = decodeURIComponent(healthMatch[1])
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
-      json(res, { error: 'Agent not found' }, 404); return true
+      json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true
     }
     json(res, getChannelHealth(name))
     return true
@@ -220,7 +220,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
     const stateDir = channelStateDir(provider, agentDir(name))
     const envPath = join(stateDir, '.env')
     const token = readChannelToken(provider, envPath) || (provider === 'telegram' ? parseTelegramToken(name) : null)
-    if (!token) { json(res, { error: `${provider} not configured for this agent` }, 404); return true }
+    if (!token) { json(res, { error: 'not_found', field: 'provider', hint: `${provider} not configured for this agent` }, 404); return true }
     const channelProvider = getProvider(provider)
     const result = await channelProvider.validateToken(token)
     if (result.ok) { json(res, { ok: true, botName: result.botName }); return true }
@@ -235,7 +235,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
     const isMain = name === MAIN_AGENT_ID
     // Marveen lives at PROJECT_ROOT, not under agents/marveen/ -- skip the
     // dir check for the main agent and route writes to ~/.claude/channels/.
-    if (!isMain && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!isMain && !existsSync(agentDir(name))) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
 
     const body = await readBody(req)
 
@@ -246,7 +246,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
       const { saKeyPath, projectId, subscription, owner, allowDomain } =
         JSON.parse(body.toString()) as { saKeyPath?: string; projectId?: string; subscription?: string; owner?: string; allowDomain?: string }
       if (!saKeyPath?.trim() || !projectId?.trim() || !subscription?.trim() || !owner?.trim()) {
-        json(res, { error: 'Google Chat: saKeyPath, projectId, subscription és owner kötelező' }, 400); return true
+        json(res, { error: 'required', hint: 'Google Chat: saKeyPath, projectId, subscription és owner kötelező' }, 400); return true
       }
       const gcDir = isMain ? channelStateDir(provider) : channelStateDir(provider, agentDir(name))
       mkdirSync(gcDir, { recursive: true })
@@ -287,7 +287,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
     }
 
     const { botToken, appToken, channelId } = JSON.parse(body.toString()) as { botToken: string; appToken?: string; channelId?: string }
-    if (!botToken?.trim()) { json(res, { error: 'botToken is required' }, 400); return true }
+    if (!botToken?.trim()) { json(res, { error: 'required', field: 'botToken', hint: 'botToken is required' }, 400); return true }
 
     // Discord-specific channelId guard: the dashboard ships the channel where
     // the bot will post by default; without it the plugin spins up but cannot
@@ -305,7 +305,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
 
     const dupeOwner = findBotTokenDuplicate(provider, botToken.trim(), name)
     if (dupeOwner) {
-      json(res, { error: `This bot token is already used by agent "${dupeOwner}". Each agent needs its own bot token to avoid getUpdates conflicts.` }, 409)
+      json(res, { error: 'conflict', field: 'botToken', hint: `This bot token is already used by agent "${dupeOwner}". Each agent needs its own bot token to avoid getUpdates conflicts.` }, 409)
       return true
     }
 
@@ -326,7 +326,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
     if (provider === 'slack' && !isManagedSettingsReady()) {
       const displayName = readAgentDisplayName(name) || name
       json(res, {
-        error: 'managed-settings-missing',
+        error: 'managed_settings_missing',
         sudoCommand: getManagedSettingsSudoCommand(),
         slackAppManifest: generateSlackAppManifest(displayName),
         slackAppInstructions: getSlackAppSetupInstructions(),
@@ -405,7 +405,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
   if (pendingMatch && method === 'GET') {
     const [name, provider] = pendingMatch
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
-      json(res, { error: 'Agent not found' }, 404)
+      json(res, { error: 'not_found', hint: 'Agent not found' }, 404)
       return true
     }
     const accessPath = resolveAccessPath(name, provider)
@@ -432,12 +432,12 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
   if (approveMatch && method === 'POST') {
     const [name, provider] = approveMatch
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
-      json(res, { error: 'Agent not found' }, 404)
+      json(res, { error: 'not_found', hint: 'Agent not found' }, 404)
       return true
     }
 
     const { code } = await readJsonBody<{ code: string }>(req)
-    if (!code?.trim()) { json(res, { error: 'Code is required' }, 400); return true }
+    if (!code?.trim()) { json(res, { error: 'required', field: 'code', hint: 'Code is required' }, 400); return true }
 
     const chDir = name === MAIN_AGENT_ID
       ? channelStateDir(provider)
@@ -450,7 +450,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
       const pending = access.pending || {}
       const entry = pending[code.trim()]
 
-      if (!entry) { json(res, { error: 'Invalid or expired code' }, 404); return true }
+      if (!entry) { json(res, { error: 'not_found', hint: 'Invalid or expired code' }, 404); return true }
 
       if (!access.allowFrom) access.allowFrom = []
       if (!access.allowFrom.includes(entry.senderId)) {
@@ -475,7 +475,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
       json(res, { ok: true, senderId: entry.senderId })
     } catch (err) {
       logger.error({ err }, 'Failed to approve pairing')
-      json(res, { error: 'Failed to approve pairing' }, 500)
+      json(res, { error: 'internal_error', hint: 'Failed to approve pairing' }, 500)
     }
     return true
   }
@@ -485,7 +485,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
   if (allowedListMatch && method === 'GET') {
     const [name, provider] = allowedListMatch
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
-      json(res, { error: 'Agent not found' }, 404)
+      json(res, { error: 'not_found', hint: 'Agent not found' }, 404)
       return true
     }
     const accessPath = resolveAccessPath(name, provider)
@@ -506,7 +506,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
   if (inviteCreateMatch && method === 'POST') {
     const [name, provider] = inviteCreateMatch
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
-      json(res, { error: 'Agent not found' }, 404)
+      json(res, { error: 'not_found', hint: 'Agent not found' }, 404)
       return true
     }
     let botName: string | undefined
@@ -529,7 +529,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
       json(res, result)
     } catch (err) {
       logger.error({ err }, 'Failed to create invite')
-      json(res, { error: 'Failed to create invite' }, 500)
+      json(res, { error: 'internal_error', hint: 'Failed to create invite' }, 500)
     }
     return true
   }
@@ -538,7 +538,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
   if (inviteCreateMatch && method === 'GET') {
     const [name, provider] = inviteCreateMatch
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
-      json(res, { error: 'Agent not found' }, 404)
+      json(res, { error: 'not_found', hint: 'Agent not found' }, 404)
       return true
     }
     const accessPath = resolveAccessPath(name, provider)
@@ -567,12 +567,12 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
   if (inviteRevokeMatch && method === 'DELETE') {
     const { name, provider, token } = inviteRevokeMatch
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
-      json(res, { error: 'Agent not found' }, 404)
+      json(res, { error: 'not_found', hint: 'Agent not found' }, 404)
       return true
     }
     const accessPath = resolveAccessPath(name, provider)
     const ok = revokeInvite(accessPath, token)
-    if (!ok) { json(res, { error: 'Invite not found' }, 404); return true }
+    if (!ok) { json(res, { error: 'not_found', hint: 'Invite not found' }, 404); return true }
     json(res, { ok: true })
     return true
   }
@@ -585,7 +585,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
   if (allowedRemoveMatch && method === 'DELETE') {
     const { name, provider, kind, id } = allowedRemoveMatch
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
-      json(res, { error: 'Agent not found' }, 404)
+      json(res, { error: 'not_found', hint: 'Agent not found' }, 404)
       return true
     }
     const chDir = name === MAIN_AGENT_ID
@@ -610,7 +610,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
       json(res, { ok: true })
     } catch (err) {
       logger.error({ err }, 'Failed to remove allowlist entry')
-      json(res, { error: 'Failed to remove allowlist entry' }, 500)
+      json(res, { error: 'internal_error', hint: 'Failed to remove allowlist entry' }, 500)
     }
     return true
   }
@@ -620,7 +620,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
   const chReqListMatch = path.match(/^\/api\/agents\/([^/]+)\/channel-requests$/)
   if (chReqListMatch && method === 'GET') {
     const name = decodeURIComponent(chReqListMatch[1])
-    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
     json(res, listPendingChannelRequests(name))
     return true
   }
@@ -629,18 +629,18 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
   if (chReqApproveMatch && method === 'POST') {
     const name = decodeURIComponent(chReqApproveMatch[1])
     const reqId = Number(chReqApproveMatch[2])
-    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
 
     const body = await readBody(req)
     let opts: { requireMention?: boolean; allowFromAll?: boolean } = {}
-    try { opts = JSON.parse(body.toString() || '{}') } catch { json(res, { error: 'Invalid JSON body' }, 400); return true }
+    try { opts = JSON.parse(body.toString() || '{}') } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON body' }, 400); return true }
 
     const pending = listPendingChannelRequests(name)
     const request = pending.find(r => r.id === reqId)
-    if (!request) { json(res, { error: 'Request not found' }, 404); return true }
+    if (!request) { json(res, { error: 'not_found', hint: 'Request not found' }, 404); return true }
 
     const provider = readAgentChannelProvider(name) as ChannelProviderType
-    if (provider !== 'slack') { json(res, { error: 'Only Slack agents support channel requests' }, 400); return true }
+    if (provider !== 'slack') { json(res, { error: 'not_supported', hint: 'Only Slack agents support channel requests' }, 400); return true }
 
     const accessPath = resolveAccessPath(name, provider)
     try {
@@ -669,7 +669,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
       json(res, { ok: true })
     } catch (err) {
       logger.error({ err }, 'Failed to approve channel request')
-      json(res, { error: 'Failed to approve request' }, 500)
+      json(res, { error: 'internal_error', hint: 'Failed to approve request' }, 500)
     }
     return true
   }
@@ -678,11 +678,11 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
   if (chReqDenyMatch && method === 'POST') {
     const name = decodeURIComponent(chReqDenyMatch[1])
     const reqId = Number(chReqDenyMatch[2])
-    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
     if (updateChannelRequestStatus(reqId, 'denied')) {
       json(res, { ok: true })
     } else {
-      json(res, { error: 'Request not found or already resolved' }, 404)
+      json(res, { error: 'not_found', hint: 'Request not found or already resolved' }, 404)
     }
     return true
   }
@@ -693,7 +693,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
   if (authInitMatch && method === 'POST') {
     const name = decodeURIComponent(authInitMatch[1])
     if (!assertAgentExists(name, res)) return true
-    if (!isAgentRunning(name)) { json(res, { error: 'Agent is not running' }, 400); return true }
+    if (!isAgentRunning(name)) { json(res, { error: 'invalid_value', field: 'agent', hint: 'Agent is not running' }, 400); return true }
     const session = agentSessionName(name)
     const host = readAgentRemoteHost(name)
     try {
@@ -715,11 +715,11 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
       if (authUrl) {
         json(res, { ok: true, authUrl })
       } else {
-        json(res, { ok: false, error: 'Auth URL nem jelent meg 12 masodpercen belul. Probald ujra, vagy nezd a tmux session-t.' })
+        json(res, { ok: false, error: 'timeout', hint: 'Auth URL nem jelent meg 12 masodpercen belul. Probald ujra, vagy nezd a tmux session-t.' })
       }
     } catch (err) {
       logger.error({ err, name }, 'Auth init failed')
-      json(res, { error: 'Auth flow indítása sikertelen' }, 500)
+      json(res, { error: 'internal_error', hint: 'Auth flow indítása sikertelen' }, 500)
     }
     return true
   }
