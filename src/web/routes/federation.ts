@@ -141,7 +141,7 @@ export function validateInboxPayload(
   // the configured 'teodor'. The agent segment is the sender's own namespace
   // and keeps its case.
   const fromSystem = from.system.toLowerCase()
-  if (fromSystem === cfg.systemId) return { status: 403, error: 'invalid_value', field: 'from', hint: 'from system equals this system' }
+  if (fromSystem === cfg.systemId) return { status: 403, error: 'forbidden', field: 'from', hint: 'from system equals this system' }
   if (callerPeerId !== null) {
     // The token identified the caller: the claimed sender prefix must be the
     // caller itself -- peer A can no longer speak as peer B.

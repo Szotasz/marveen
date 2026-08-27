@@ -171,7 +171,7 @@ describe('validateInboxPayload - invalid inputs', () => {
 describe('validateInboxPayload - from system checks', () => {
   it('returns 403 when from system equals local system id', () => {
     const r = validateInboxPayload({ from: 'local/agent1', to: 'marveen', content: 'hi' }, BASE_CFG, BASE_DEPS, null)
-    expect(r).toMatchObject({ status: 403, error: 'invalid_value', hint: expect.stringContaining('from system equals this system') })
+    expect(r).toMatchObject({ status: 403, error: 'forbidden', hint: expect.stringContaining('from system equals this system') })
   })
 
   it('returns 403 when caller peer does not match from system', () => {
