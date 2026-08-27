@@ -224,7 +224,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
     const channelProvider = getProvider(provider)
     const result = await channelProvider.validateToken(token)
     if (result.ok) { json(res, { ok: true, botName: result.botName }); return true }
-    json(res, { error: result.error }, 400)
+    json(res, { error: result.error ?? 'invalid_value', ...(result.hint ? { hint: result.hint } : {}) }, result.error === 'internal_error' ? 500 : 400)
     return true
   }
 
@@ -301,7 +301,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
 
     const channelProvider = getProvider(provider)
     const validation = await channelProvider.validateToken(botToken.trim())
-    if (!validation.ok) { json(res, { error: validation.error || 'Invalid token' }, 400); return true }
+    if (!validation.ok) { json(res, { error: validation.error ?? 'invalid_value', ...(validation.hint ? { hint: validation.hint } : {}) }, validation.error === 'internal_error' ? 500 : 400); return true }
 
     const dupeOwner = findBotTokenDuplicate(provider, botToken.trim(), name)
     if (dupeOwner) {
@@ -319,7 +319,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
       const currentToken = readChannelToken(provider, join(stateDir0, '.env'))
       if (botToken.trim() !== currentToken) {
         const busyCheck = await checkTelegramTokenBusy(botToken.trim())
-        if (busyCheck.busy) { json(res, { error: busyCheck.error }, 409); return true }
+        if (busyCheck.busy) { json(res, { error: 'conflict', ...(busyCheck.hint ? { hint: busyCheck.hint } : {}) }, 409); return true }
       }
     }
 

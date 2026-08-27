@@ -573,6 +573,7 @@ export function listSettingModules(): string[] {
 export interface SettingValidationResult {
   ok: boolean
   error?: string
+  hint?: string
   /** Normalised value (e.g. parsed int) to persist when ok === true. */
   value?: string | number
 }
@@ -583,7 +584,7 @@ export function validateSettingValue(def: SettingDefinition, raw: unknown): Sett
   if (def.valueSet && def.valueSet.length > 0) {
     const str = String(raw)
     if (!def.valueSet.includes(str)) {
-      return { ok: false, error: `Érvénytelen érték. Megengedett: ${def.valueSet.join(', ')}` }
+      return { ok: false, error: 'invalid_value', hint: `Érvénytelen érték. Megengedett: ${def.valueSet.join(', ')}` }
     }
     return { ok: true, value: str }
   }
@@ -595,20 +596,20 @@ export function validateSettingValue(def: SettingDefinition, raw: unknown): Sett
     const s = String(raw).trim().toLowerCase()
     if (raw === true || s === '1' || s === 'true') return { ok: true, value: '1' }
     if (raw === false || s === '0' || s === 'false' || s === '') return { ok: true, value: '0' }
-    return { ok: false, error: 'Logikai érték szükséges (be/ki).' }
+    return { ok: false, error: 'invalid_value', hint: 'Logikai érték szükséges (be/ki).' }
   }
 
   if (def.type === 'int') {
     const n = typeof raw === 'number' ? raw : parseInt(String(raw), 10)
-    if (!Number.isInteger(n)) return { ok: false, error: 'Egész szám szükséges.' }
-    if (def.min !== undefined && n < def.min) return { ok: false, error: `Az érték legalább ${def.min} lehet.` }
-    if (def.max !== undefined && n > def.max) return { ok: false, error: `Az érték legfeljebb ${def.max} lehet.` }
+    if (!Number.isInteger(n)) return { ok: false, error: 'invalid_value', hint: 'Egész szám szükséges.' }
+    if (def.min !== undefined && n < def.min) return { ok: false, error: 'invalid_value', hint: `Az érték legalább ${def.min} lehet.` }
+    if (def.max !== undefined && n > def.max) return { ok: false, error: 'invalid_value', hint: `Az érték legfeljebb ${def.max} lehet.` }
     return { ok: true, value: n }
   }
 
   if (def.type === 'color') {
     const str = String(raw)
-    if (!HEX_COLOR_RE.test(str)) return { ok: false, error: 'Érvénytelen szín (várható formátum: #rrggbb).' }
+    if (!HEX_COLOR_RE.test(str)) return { ok: false, error: 'invalid_value', hint: 'Érvénytelen szín (várható formátum: #rrggbb).' }
     return { ok: true, value: str }
   }
 

@@ -178,7 +178,7 @@ export function startWebServer(port = 3420): http.Server {
     if (!isAllowedHost(req.headers.host, allowedHosts)) {
       logger.warn({ host: req.headers.host, path }, 'Host header not allowed -- possible DNS-rebinding attempt')
       res.writeHead(403, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: 'Host not allowed' }))
+      res.end(JSON.stringify({ error: 'forbidden', hint: 'Host not allowed' }))
       return
     }
 
@@ -206,7 +206,7 @@ export function startWebServer(port = 3420): http.Server {
     if (isBlockedCrossOriginWrite(method, origin, req.headers.host, req.headers['x-forwarded-host'] as string | undefined, allowedOrigins)) {
       logger.warn({ method, path, origin, host: req.headers.host, xForwardedHost: req.headers['x-forwarded-host'] }, 'CSRF: blocked write from foreign origin')
       res.writeHead(403, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: 'Origin not allowed' }))
+      res.end(JSON.stringify({ error: 'forbidden', hint: 'Origin not allowed' }))
       return
     }
 
@@ -224,7 +224,7 @@ export function startWebServer(port = 3420): http.Server {
         logger.warn({ path, method }, 'federation: rejected wire-endpoint auth')
       }
       res.writeHead(401, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: 'Unauthorized' }))
+      res.end(JSON.stringify({ error: 'unauthorized', hint: 'Bearer token required' }))
       return
     }
     // RBAC gate: role + permission enforcement, shadow or hard, controlled by
@@ -271,7 +271,7 @@ export function startWebServer(port = 3420): http.Server {
       res.end('Not found')
     } catch (err) {
       logger.error({ err }, 'Web szerver hiba')
-      json(res, { error: 'Szerver hiba' }, 500)
+      json(res, { error: 'internal_error', hint: 'Szerver hiba' }, 500)
     }
   })
 
