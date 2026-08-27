@@ -79,12 +79,13 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/updates/diagnose' && method === 'POST') {
     const result = readLastResult()
     if (!isDiagnosable(result)) {
-      json(res, { error: 'No failed or rolled-back update to diagnose.', reason: 'no-rollback' }, 409)
+      json(res, { error: 'conflict', hint: 'No failed or rolled-back update to diagnose.', reason: 'no-rollback' }, 409)
       return true
     }
     if (!claudeAgentRunnable()) {
       json(res, {
-        error: 'This host cannot run a Claude agent (CPU lacks AVX), so auto-diagnosis is unavailable. Manual intervention needed.',
+        error: 'not_supported',
+        hint: 'This host cannot run a Claude agent (CPU lacks AVX), so auto-diagnosis is unavailable. Manual intervention needed.',
         reason: 'claude-unrunnable',
       }, 400)
       return true
@@ -101,7 +102,7 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
     const fired = await runScheduledTaskNow(DIAGNOSE_TASK, { allowDisabled: true })
     if (!fired.ok) {
       logger.warn({ err: fired.error }, 'post-rollback diagnosis could not be fired')
-      json(res, { error: fired.error || 'Could not start the diagnosis agent.', reason: 'fire-failed' }, 500)
+      json(res, { error: 'internal_error', hint: fired.error || 'Could not start the diagnosis agent.', reason: 'fire-failed' }, 500)
       return true
     }
     try { writeFileSync(DIAGNOSE_MARKER, key, { mode: 0o600 }) } catch { /* best-effort */ }
@@ -181,7 +182,8 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
         const code = (retryErr as NodeJS.ErrnoException)?.code
         if (classifyLockWriteError(code) === 'race') {
           json(res, {
-            error: 'Another update is starting concurrently. Retry in a few seconds.',
+            error: 'conflict',
+            hint: 'Another update is starting concurrently. Retry in a few seconds.',
             reason: 'already-running',
             pid: 0,
           }, 409)
@@ -261,7 +263,7 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
       } catch (err) {
         releaseLock()
         logger.error({ err }, 'store/update.log not writable; refusing to start a blind update')
-        json(res, { error: 'store/ is not writable; cannot run the updater safely.', reason: 'store-unwritable' }, 500)
+        json(res, { error: 'internal_error', hint: 'store/ is not writable; cannot run the updater safely.', reason: 'store-unwritable' }, 500)
         return true
       }
       const child = spawn('/bin/bash', [join(PROJECT_ROOT, 'update.sh')], {

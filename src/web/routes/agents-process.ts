@@ -35,10 +35,10 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
   const autoRestartMatch = path.match(/^\/api\/agents\/([^/]+)\/auto-restart$/)
   if (autoRestartMatch && method === 'PUT') {
     const name = decodeURIComponent(autoRestartMatch[1])
-    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
     const body = await readBody(req)
     let data: unknown
-    try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'invalid JSON' }, 400); return true }
+    try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON body' }, 400); return true }
     const arFields = checkConfigPutFields(data, Object.keys(DEFAULT_AUTO_RESTART))
     if (!arFields.ok) {
       json(res, { error: arFields.code, field: arFields.rejected[0], hint: arFields.message }, 400)
@@ -57,14 +57,14 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
   const contextGuardMatch = path.match(/^\/api\/agents\/([^/]+)\/context-guard$/)
   if (contextGuardMatch && (method === 'GET' || method === 'PUT')) {
     const name = decodeURIComponent(contextGuardMatch[1])
-    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
     if (method === 'GET') {
       json(res, { ok: true, contextGuard: readContextGuardConfig(name) })
       return true
     }
     const body = await readBody(req)
     let data: unknown
-    try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'invalid JSON' }, 400); return true }
+    try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON body' }, 400); return true }
     const cgFields = checkConfigPutFields(data, Object.keys(DEFAULT_CONTEXT_GUARD))
     if (!cgFields.ok) {
       json(res, { error: cgFields.code, field: cgFields.rejected[0], hint: cgFields.message }, 400)
@@ -89,11 +89,11 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
   const remoteCfgMatch = path.match(/^\/api\/agents\/([^/]+)\/remote$/)
   if (remoteCfgMatch && method === 'PUT') {
     const name = decodeURIComponent(remoteCfgMatch[1])
-    if (name === MAIN_AGENT_ID) { json(res, { error: 'Main agent is always local' }, 400); return true }
+    if (name === MAIN_AGENT_ID) { json(res, { error: 'not_supported', hint: 'Main agent is always local' }, 400); return true }
     if (!assertAgentExists(name, res)) return true
     const body = await readBody(req)
     let data: { host?: string; workdir?: string }
-    try { data = JSON.parse(body.toString() || '{}') } catch { json(res, { error: 'invalid JSON' }, 400); return true }
+    try { data = JSON.parse(body.toString() || '{}') } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON body' }, 400); return true }
     const result = writeAgentRemoteConfig(name, data.host ?? '', data.workdir ?? '')
     if (!result.ok) { json(res, { error: result.error }, 400); return true }
     // Config changed -> drop any cached status so the next poll reflects it.
@@ -107,7 +107,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
   if (startMatch && method === 'POST') {
     const name = decodeURIComponent(startMatch[1])
     if (isMainChannelsAgent(name)) {
-      json(res, { error: 'Main agent lifecycle is service-managed; use /api/marveen/restart for recovery' }, 400)
+      json(res, { error: 'not_supported', hint: 'Main agent lifecycle is service-managed; use /api/marveen/restart for recovery' }, 400)
       return true
     }
     if (!assertAgentExists(name, res)) return true
@@ -121,7 +121,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
     // tmux-server restarts / reboots (see agent-desired-state.ts).
     if (result.ok || result.error === 'conflict') addDesiredAgent(name)
     if (result.ok) { json(res, { ok: true }); return true }
-    json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, 400)
+    json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, result.error === 'not_found' ? 404 : result.error === 'conflict' ? 409 : result.error === 'internal_error' ? 500 : 400)
     return true
   }
 
@@ -129,14 +129,14 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
   if (stopMatch && method === 'POST') {
     const name = decodeURIComponent(stopMatch[1])
     if (isMainChannelsAgent(name)) {
-      json(res, { error: 'Main agent lifecycle is service-managed; use /api/marveen/restart for recovery' }, 400)
+      json(res, { error: 'not_supported', hint: 'Main agent lifecycle is service-managed; use /api/marveen/restart for recovery' }, 400)
       return true
     }
     const result = stopAgentProcess(name)
     // Explicit stop clears intent so the monitor will not resurrect it.
     removeDesiredAgent(name)
     if (result.ok) { json(res, { ok: true }); return true }
-    json(res, { error: result.error }, 400)
+    json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, result.error === 'conflict' ? 409 : result.error === 'internal_error' ? 500 : 400)
     return true
   }
 
@@ -153,7 +153,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
   if (drainMatch && method === 'POST') {
     const name = decodeURIComponent(drainMatch[1])
     if (name !== MAIN_AGENT_ID) {
-      json(res, { error: 'drain-inbox is main-agent only (sub-agents use the router push path)' }, 400)
+      json(res, { error: 'not_supported', hint: 'drain-inbox is main-agent only (sub-agents use the router push path)' }, 400)
       return true
     }
     const claimed = claimPendingForAgent(name, INBOX_DRAIN_CAP)
@@ -188,7 +188,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
     if (isMainChannelsAgent(name)) {
       const r = hardRestartMarveenChannels()
       if (r.ok) { json(res, { ok: true }); return true }
-      json(res, { error: r.error || 'Restart failed' }, 500)
+      json(res, { error: 'internal_error', hint: r.error || 'Restart failed' }, 500)
       return true
     }
     if (!assertAgentExists(name, res)) return true
@@ -197,7 +197,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
     try { restartFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}
     const result = restartAgentProcess(name, { fresh: restartFresh })
     if (result.ok) { json(res, { ok: true }); return true }
-    json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, 400)
+    json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, result.error === 'not_found' ? 404 : result.error === 'conflict' ? 409 : result.error === 'internal_error' ? 500 : 400)
     return true
   }
 

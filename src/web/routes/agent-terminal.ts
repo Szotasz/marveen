@@ -97,9 +97,9 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
     if (method === 'POST') {
       const body = await readBody(ctx.req)
       let enabled: unknown
-      try { enabled = (JSON.parse(body.toString()) as { enabled?: unknown }).enabled } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+      try { enabled = (JSON.parse(body.toString()) as { enabled?: unknown }).enabled } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON body' }, 400); return true }
       if (typeof enabled !== 'boolean') {
-        json(res, { error: 'Provide {enabled:boolean}' }, 400)
+        json(res, { error: 'invalid_value', field: 'enabled', hint: 'Provide {enabled:boolean}' }, 400)
         return true
       }
       const next = writeTerminalInputEnabled(enabled)
@@ -119,7 +119,7 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
   if (streamMatch && method === 'GET') {
     const name = decodeURIComponent(streamMatch[1])
     const target = resolveTarget(name)
-    if (!target.exists) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!target.exists) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
     const session = target.session
 
     res.writeHead(200, {
@@ -189,16 +189,16 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
     const ua = ctx.req.headers['user-agent'] ?? ''
     if (!readTerminalInputEnabled()) {
       logger.warn({ name, remote, xff, ua }, 'agent-terminal: KEYS INJECTION BLOCKED (toggle OFF)')
-      json(res, { error: 'Terminal input is disabled. Enable it in the dashboard first.' }, 403)
+      json(res, { error: 'forbidden', hint: 'Terminal input is disabled. Enable it in the dashboard first.' }, 403)
       return true
     }
     const target = resolveTarget(name)
-    if (!target.exists) { json(res, { error: 'Agent not found' }, 404); return true }
-    if (!target.running) { json(res, { error: 'Agent is not running' }, 400); return true }
+    if (!target.exists) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
+    if (!target.running) { json(res, { error: 'conflict', hint: 'Agent is not running' }, 409); return true }
     const session = target.session
     const body = await readBody(ctx.req)
     let parsed: { keys?: string; special?: string }
-    try { parsed = JSON.parse(body.toString()) } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+    try { parsed = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON body' }, 400); return true }
 
     // Sanitize a pasted literal payload (strip surrounding whitespace + stray
     // newlines) so a pasted login link/code doesn't pre-submit or get corrupted.
@@ -207,7 +207,7 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
       ? specialKeyArgs(session, parsed.special)
       : (literalKeys ? literalKeyArgs(session, literalKeys) : null)
     if (!args) {
-      json(res, { error: 'Provide {keys:string} or an allow-listed {special}' }, 400)
+      json(res, { error: 'invalid_value', hint: 'Provide {keys:string} or an allow-listed {special}' }, 400)
       return true
     }
     // AUDIT every accepted injection. Preview reflects the SANITIZED payload
@@ -222,7 +222,7 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
       json(res, { ok: true })
     } catch (err) {
       logger.warn({ err, name }, 'agent-terminal: send-keys failed')
-      json(res, { error: 'send-keys failed' }, 500)
+      json(res, { error: 'internal_error', hint: 'send-keys failed' }, 500)
     }
     return true
   }
@@ -232,14 +232,14 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
   if (loginMatch && method === 'POST') {
     const name = decodeURIComponent(loginMatch[1])
     const target = resolveTarget(name)
-    if (!target.exists) { json(res, { error: 'Agent not found' }, 404); return true }
-    if (!target.running) { json(res, { error: 'Agent is not running' }, 400); return true }
+    if (!target.exists) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
+    if (!target.running) { json(res, { error: 'conflict', hint: 'Agent is not running' }, 409); return true }
     const session = target.session
     const body = await readBody(ctx.req)
     let phase: string | undefined
     try { phase = (JSON.parse(body.toString()) as { phase?: string }).phase } catch { /* default below */ }
     if (phase !== 'start' && phase !== 'confirm') {
-      json(res, { error: "phase must be 'start' or 'confirm'" }, 400)
+      json(res, { error: 'invalid_value', field: 'phase', hint: "phase must be 'start' or 'confirm'" }, 400)
       return true
     }
     try {
@@ -248,7 +248,7 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
       json(res, { ok: true, phase })
     } catch (err) {
       logger.warn({ err, name, phase }, 'agent-terminal: /login sequence failed')
-      json(res, { error: 'login sequence failed' }, 500)
+      json(res, { error: 'internal_error', hint: 'login sequence failed' }, 500)
     }
     return true
   }

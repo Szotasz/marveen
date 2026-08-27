@@ -65,7 +65,7 @@ export async function tryHandleBackups(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/backups/run' && method === 'POST') {
     if (!existsSync(BACKUP_SCRIPT)) {
-      json(res, { error: 'Backup script not found' }, 500)
+      json(res, { error: 'internal_error', hint: 'Backup script not found' }, 500)
       return true
     }
     // Fire-and-forget: spawn detached so the HTTP response is not blocked.
@@ -79,11 +79,11 @@ export async function tryHandleBackups(ctx: RouteContext): Promise<boolean> {
     const name = decodeURIComponent(deleteMatch[1])
     // Reject path traversal: name must match the archive filename pattern exactly.
     if (!name.match(/^claudeclaw-\d{8}-\d{6}\.tar\.gz$/)) {
-      json(res, { error: 'Invalid archive name' }, 400)
+      json(res, { error: 'invalid_value', field: 'name', hint: 'Invalid archive name' }, 400)
       return true
     }
     const filePath = join(BACKUP_DIR, name)
-    if (!existsSync(filePath)) { json(res, { error: 'Archive not found' }, 404); return true }
+    if (!existsSync(filePath)) { json(res, { error: 'not_found', hint: 'Archive not found' }, 404); return true }
     unlinkSync(filePath)
     const sha256Path = filePath.replace('.tar.gz', '.sha256')
     if (existsSync(sha256Path)) { try { unlinkSync(sha256Path) } catch { /* ignore */ } }
@@ -95,13 +95,13 @@ export async function tryHandleBackups(ctx: RouteContext): Promise<boolean> {
   if (verifyMatch && method === 'POST') {
     const name = decodeURIComponent(verifyMatch[1])
     if (!name.match(/^claudeclaw-\d{8}-\d{6}\.tar\.gz$/)) {
-      json(res, { error: 'Invalid archive name' }, 400)
+      json(res, { error: 'invalid_value', field: 'name', hint: 'Invalid archive name' }, 400)
       return true
     }
     const filePath = join(BACKUP_DIR, name)
-    if (!existsSync(filePath)) { json(res, { error: 'Archive not found' }, 404); return true }
+    if (!existsSync(filePath)) { json(res, { error: 'not_found', hint: 'Archive not found' }, 404); return true }
     if (!existsSync(VERIFY_SCRIPT)) {
-      json(res, { error: 'verify-restore.sh not found' }, 500)
+      json(res, { error: 'internal_error', hint: 'verify-restore.sh not found' }, 500)
       return true
     }
     try {

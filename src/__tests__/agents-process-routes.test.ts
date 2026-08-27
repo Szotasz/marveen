@@ -95,7 +95,7 @@ describe('agents-process routes -- main-agent lifecycle guard', () => {
     const handled = await tryHandleAgentsProcess(ctx)
     expect(handled).toBe(true)
     expect(statusCode()).toBe(400)
-    expect(JSON.parse(responseBody())).toMatchObject({ error: expect.stringContaining('service-managed') })
+    expect(JSON.parse(responseBody())).toMatchObject({ error: 'not_supported', hint: expect.stringContaining('service-managed') })
   })
 
   it('POST /api/agents/marveen/stop returns 400 (service-managed)', async () => {
@@ -103,7 +103,7 @@ describe('agents-process routes -- main-agent lifecycle guard', () => {
     const handled = await tryHandleAgentsProcess(ctx)
     expect(handled).toBe(true)
     expect(statusCode()).toBe(400)
-    expect(JSON.parse(responseBody())).toMatchObject({ error: expect.stringContaining('service-managed') })
+    expect(JSON.parse(responseBody())).toMatchObject({ error: 'not_supported', hint: expect.stringContaining('service-managed') })
   })
 
   it('GET /api/agents/marveen/context-guard returns 200', async () => {

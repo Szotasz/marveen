@@ -63,7 +63,7 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
 
 import { tryHandleAgentsProcess } from '../web/routes/agents-process.js'
 import { addDesiredAgent } from '../web/agent-desired-state.js'
-import { startAgentProcess } from '../web/agent-process.js'
+import { startAgentProcess, stopAgentProcess } from '../web/agent-process.js'
 
 function makeCtx(opts: { method: string; path: string; body?: string; headers?: Record<string, string> }): {
   ctx: RouteContext; statusCode: () => number; responseBody: () => unknown
@@ -238,6 +238,14 @@ describe('agents-process routes -- extended coverage', () => {
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
       expect(statusCode()).toBe(200)
     })
+
+    it('returns 409 when startAgentProcess returns conflict (already running)', async () => {
+      vi.mocked(startAgentProcess).mockReturnValueOnce({ ok: false, error: 'conflict', hint: 'Agent is already running' })
+      const { ctx, statusCode, responseBody } = makeCtx({ method: 'POST', path: '/api/agents/agent-a/start', body: '{}' })
+      expect(await tryHandleAgentsProcess(ctx)).toBe(true)
+      expect(statusCode()).toBe(409)
+      expect((responseBody() as any).error).toBe('conflict')
+    })
   })
 
   describe('POST /api/agents/:name/stop', () => {
@@ -250,6 +258,14 @@ describe('agents-process routes -- extended coverage', () => {
       expect(statusCode()).toBe(200)
       expect((responseBody() as any).ok).toBe(true)
     })
+
+    it('returns 409 when stopAgentProcess returns conflict (agent not running)', async () => {
+      vi.mocked(stopAgentProcess).mockReturnValueOnce({ ok: false, error: 'conflict', hint: 'agent is not running, nothing to stop' })
+      const { ctx, statusCode, responseBody } = makeCtx({ method: 'POST', path: '/api/agents/agent-a/stop' })
+      expect(await tryHandleAgentsProcess(ctx)).toBe(true)
+      expect(statusCode()).toBe(409)
+      expect((responseBody() as any).error).toBe('conflict')
+    })
   })
 
   describe('POST /api/agents/:name/drain-inbox', () => {
@@ -260,7 +276,8 @@ describe('agents-process routes -- extended coverage', () => {
       })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
       expect(statusCode()).toBe(400)
-      expect((responseBody() as any).error).toContain('main-agent only')
+      expect((responseBody() as any).error).toBe('not_supported')
+      expect((responseBody() as any).hint).toContain('main-agent only')
     })
 
     it('returns 200 for main agent with empty inbox', async () => {

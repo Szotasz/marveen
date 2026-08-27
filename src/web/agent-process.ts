@@ -931,7 +931,7 @@ function startRemoteAgentProcess(
   const state = agentRunState(name)
   if (state === 'running') return { ok: false, error: 'conflict', hint: 'Agent is already running' }
   if (state === 'unreachable') {
-    return { ok: false, error: `Remote host '${host}' unreachable -- refusing to start (cannot confirm state)` }
+    return { ok: false, error: 'internal_error', hint: `Remote host '${host}' unreachable -- refusing to start (cannot confirm state)` }
   }
 
   ensureControlDir()
@@ -945,7 +945,7 @@ function startRemoteAgentProcess(
     const probe = buildSshExec(host, 'which claude')
     execFileSync(probe.file, probe.args, { timeout: 8000, stdio: 'ignore' })
   } catch {
-    return { ok: false, error: `claude not found on PATH on '${host}' (or host unreachable)` }
+    return { ok: false, error: 'internal_error', hint: `claude not found on PATH on '${host}' (or host unreachable)` }
   }
 
   // --continue only when the remote session dir already exists. workdir is an
@@ -974,13 +974,13 @@ function startRemoteAgentProcess(
     return { ok: true }
   } catch (err) {
     logger.error({ err, name, host }, 'Failed to start remote agent tmux session')
-    return { ok: false, error: 'Failed to start remote tmux session' }
+    return { ok: false, error: 'internal_error', hint: 'Failed to start remote tmux session' }
   }
 }
 
 export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): { ok: boolean; pid?: number; error?: string; hint?: string } {
   const dir = agentDir(name)
-  if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
+  if (!existsSync(dir)) return { ok: false, error: 'not_found', hint: 'Agent not found' }
 
   // Remote agents are handled entirely by the ssh path above (with its own
   // start guard), before any local already-running check / scaffolding.
@@ -1391,13 +1391,13 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     return { ok: true }
   } catch (err) {
     logger.error({ err, name }, 'Failed to start agent tmux session')
-    return { ok: false, error: 'Failed to start tmux session' }
+    return { ok: false, error: 'internal_error', hint: 'Failed to start tmux session' }
   }
 }
 
-export function stopAgentProcess(name: string): { ok: boolean; error?: string } {
+export function stopAgentProcess(name: string): { ok: boolean; error?: string; hint?: string } {
   const session = agentSessionName(name)
-  if (!isAgentRunning(name)) return { ok: false, error: 'Agent is not running' }
+  if (!isAgentRunning(name)) return { ok: false, error: 'conflict', hint: 'agent is not running, nothing to stop' }
 
   const host = readAgentRemoteHost(name)
 
@@ -1421,7 +1421,7 @@ export function stopAgentProcess(name: string): { ok: boolean; error?: string } 
     return { ok: true }
   } catch (err) {
     logger.error({ err, name, session, host }, 'Failed to stop agent tmux session')
-    return { ok: false, error: 'Failed to stop tmux session' }
+    return { ok: false, error: 'internal_error', hint: 'Failed to stop tmux session' }
   }
 }
 
@@ -1437,7 +1437,7 @@ export function getAgentProcessInfo(name: string): { running: boolean; session?:
 export function restartAgentProcess(name: string, opts: { fresh?: boolean } = {}): { ok: boolean; pid?: number; error?: string; hint?: string } {
   if (isAgentRunning(name)) {
     const stopResult = stopAgentProcess(name)
-    if (!stopResult.ok) return { ok: false, error: stopResult.error || 'Failed to stop running agent before restart' }
+    if (!stopResult.ok) return { ok: false, error: stopResult.error ?? 'internal_error', hint: stopResult.hint || 'Failed to stop running agent before restart' }
   }
   return startAgentProcess(name, opts)
 }
