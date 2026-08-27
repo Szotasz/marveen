@@ -64,6 +64,7 @@ describe('tryHandleAgentsModels', () => {
     const handled = await tryHandleAgentsModels(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(403)
+    expect((out.body as { error: string }).error).toBe('forbidden')
   })
 
   it('POST /api/openrouter/manual returns 403 when key absent', async () => {
@@ -71,6 +72,7 @@ describe('tryHandleAgentsModels', () => {
     const handled = await tryHandleAgentsModels(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(403)
+    expect((out.body as { error: string }).error).toBe('forbidden')
   })
 
   it('GET /api/openrouter/manual returns list when key present', async () => {
@@ -89,6 +91,8 @@ describe('tryHandleAgentsModels', () => {
     const { ctx, out } = makeCtx('POST', '/api/openrouter/manual', { checked: true })
     await tryHandleAgentsModels(ctx)
     expect(out.status).toBe(400)
+    expect((out.body as { error: string; field: string }).error).toBe('required')
+    expect((out.body as { error: string; field: string }).field).toBe('id')
     vi.mocked(vault.getSecret).mockReturnValue(null)
   })
 
@@ -106,6 +110,7 @@ describe('tryHandleAgentsModels', () => {
     const { ctx, out } = makeCtx('GET', '/api/openrouter/models')
     await tryHandleAgentsModels(ctx)
     expect(out.status).toBe(403)
+    expect((out.body as { error: string }).error).toBe('forbidden')
   })
 
   it('GET /api/claude-plans returns plan list', async () => {
