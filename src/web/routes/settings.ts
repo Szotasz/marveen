@@ -35,19 +35,19 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       const { key, value, actor } = JSON.parse(body.toString())
 
       if (!key || typeof key !== 'string') {
-        json(res, { error: 'Missing or invalid "key"' }, 400)
+        json(res, { error: 'required', field: 'key', hint: 'key must be a non-empty string' }, 400)
         return true
       }
 
       const def = SETTINGS_REGISTRY.find((s) => s.key === key)
       if (!def) {
-        json(res, { error: `Unknown setting key: ${key}` }, 404)
+        json(res, { error: 'not_found', hint: `Unknown setting key: ${key}` }, 404)
         return true
       }
       if (def.secret) {
         // Defensive: v1 has no secret entries, but a future registry entry
         // marked secret must never be settable through this generic route.
-        json(res, { error: 'Secret settings cannot be changed via this endpoint' }, 403)
+        json(res, { error: 'forbidden', hint: 'Secret settings cannot be changed via this endpoint' }, 403)
         return true
       }
 
@@ -56,7 +56,7 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       // the change log without assuming the write will succeed.
       const validation = validateSettingValue(def, value)
       if (!validation.ok) {
-        json(res, { error: validation.error }, 400)
+        json(res, { error: 'invalid_value', field: 'value', hint: validation.error }, 400)
         return true
       }
 
@@ -65,7 +65,7 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       const oldValue = getEffectiveSettingValue(key)
       const result = setOverride(key, value)
       if (!result.ok) {
-        json(res, { error: result.error }, 400)
+        json(res, { error: 'internal_error', hint: result.error }, 500)
         return true
       }
 
@@ -74,7 +74,7 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       json(res, { ok: true, key, value: validation.value, requiresRestart: def.requiresRestart })
     } catch (err) {
       logger.error({ err }, 'Failed to update setting')
-      json(res, { error: 'Failed to update setting' }, 500)
+      json(res, { error: 'internal_error', hint: 'Failed to update setting' }, 500)
     }
     return true
   }

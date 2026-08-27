@@ -231,7 +231,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const { name, dir } = resolved
     if (!existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     const result = await runScheduledTaskNow(name)
-    if (!result.ok) { json(res, { error: result.error }, 400); return true }
+    if (!result.ok) { json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, result.error === 'not_found' ? 404 : 400); return true }
     logger.info({ name, result: result.result }, 'Scheduled task run-now fired')
     json(res, { ok: true, result: result.result })
     return true

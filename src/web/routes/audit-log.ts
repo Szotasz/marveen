@@ -27,11 +27,11 @@ export async function tryHandleAuditLog(ctx: RouteContext): Promise<boolean> {
   const to = toParam ? parseInt(toParam, 10) : undefined
 
   if (from !== undefined && isNaN(from)) {
-    json(res, { error: 'Invalid "from" parameter' }, 400)
+    json(res, { error: 'invalid_value', field: 'from', hint: 'Invalid "from" parameter' }, 400)
     return true
   }
   if (to !== undefined && isNaN(to)) {
-    json(res, { error: 'Invalid "to" parameter' }, 400)
+    json(res, { error: 'invalid_value', field: 'to', hint: 'Invalid "to" parameter' }, 400)
     return true
   }
 
@@ -47,7 +47,7 @@ export async function tryHandleAuditLog(ctx: RouteContext): Promise<boolean> {
   const limit = limitParam ? Math.min(parseInt(limitParam, 10), maxEntries) : Math.min(200, maxEntries)
 
   if (isNaN(limit) || limit < 1) {
-    json(res, { error: 'Invalid "limit" parameter' }, 400)
+    json(res, { error: 'invalid_value', field: 'limit', hint: 'Invalid "limit" parameter' }, 400)
     return true
   }
 

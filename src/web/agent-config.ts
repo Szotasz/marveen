@@ -336,7 +336,7 @@ export function writeAgentRemoteConfig(
   name: string,
   host: string,
   workdir: string,
-): { ok: true; remote: RemoteAgentConfig } | { ok: false; error: string } {
+): { ok: true; remote: RemoteAgentConfig } | { ok: false; error: string; hint?: string } {
   const h = host.trim()
   const w = workdir.trim()
   const configPath = join(agentDir(name), 'agent-config.json')
@@ -353,13 +353,14 @@ export function writeAgentRemoteConfig(
 
   // Setting: both required and both must validate together.
   if (!h || !w) {
-    return { ok: false, error: 'Both remoteHost and remoteWorkdir are required (or both empty to clear).' }
+    return { ok: false, error: 'required', hint: 'Both remoteHost and remoteWorkdir are required (or both empty to clear).' }
   }
   const probe = resolveRemoteConfig(JSON.stringify({ remoteHost: h, remoteWorkdir: w }))
   if (!probe.host || !probe.workdir) {
     return {
       ok: false,
-      error: 'Invalid remoteHost (alias or user@host, no port/metachars) or remoteWorkdir (must be an absolute path without `..`).',
+      error: 'invalid_value',
+      hint: 'Invalid remoteHost (alias or user@host, no port/metachars) or remoteWorkdir (must be an absolute path without `..`).',
     }
   }
   config.remoteHost = probe.host

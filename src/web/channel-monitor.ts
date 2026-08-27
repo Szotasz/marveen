@@ -1038,7 +1038,7 @@ function schedulePostResumePluginGuard(provider: ChannelProviderType): void {
   logger.info({ delayMs: POST_RESUME_GUARD_DELAY_MS }, 'Post-resume plugin guard scheduled after --continue resume')
 }
 
-export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
+export function hardRestartMarveenChannels(): { ok: boolean; error?: string; hint?: string } {
   // FABLEFALL1: the restarted session boots from the main/worker shared config
   // roots, which the per-agent spawn-time stamp never covers -- stamp them now
   // so the model consent dialog cannot render on the fresh boot (change-only,
@@ -1078,7 +1078,7 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
     marveenLastHardRestart = Date.now()
     return { ok: true }
   }
-  return { ok: false, error: 'hard restart failed: tmux respawn-pane failed' }
+  return { ok: false, error: 'internal_error', hint: 'hard restart failed: tmux respawn-pane failed' }
 }
 
 // Escalate a main channel input that survived the full soft recovery to a hard

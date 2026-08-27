@@ -15,11 +15,11 @@ export async function tryHandleSkillUsage(ctx: RouteContext): Promise<boolean> {
       session_id?: string | null
     }
     if (!data.agent_id || !data.skill_name || !data.trigger_type) {
-      json(res, { error: 'agent_id, skill_name and trigger_type required' }, 400)
+      json(res, { error: 'required', hint: 'agent_id, skill_name and trigger_type required' }, 400)
       return true
     }
     if (data.trigger_type !== 'tool_call' && data.trigger_type !== 'skill_read') {
-      json(res, { error: 'trigger_type must be tool_call or skill_read' }, 400)
+      json(res, { error: 'invalid_value', field: 'trigger_type', hint: 'trigger_type must be tool_call or skill_read' }, 400)
       return true
     }
     logSkillUsage(data.agent_id, data.skill_name, data.trigger_type, data.session_id)

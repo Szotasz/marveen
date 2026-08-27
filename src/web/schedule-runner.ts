@@ -944,13 +944,13 @@ export function taskInjectionRank(t: Pick<ScheduledTask, 'forceSend' | 'type'>):
 export async function runScheduledTaskNow(
   taskName: string,
   opts: { allowDisabled?: boolean } = {},
-): Promise<{ ok: boolean; result?: string; error?: string }> {
+): Promise<{ ok: boolean; result?: string; error?: string; hint?: string }> {
   const task = listScheduledTasks().find(t => t.name === taskName)
-  if (!task) return { ok: false, error: 'Schedule not found' }
+  if (!task) return { ok: false, error: 'not_found', hint: 'Schedule not found' }
   // allowDisabled: for on-demand-only tasks that are intentionally kept
   // enabled:false so the cron never fires them, but a guarded endpoint can
   // still trigger them (e.g. the post-rollback diagnosis, PR-D).
-  if (!task.enabled && !opts.allowDisabled) return { ok: false, error: 'Schedule is disabled' }
+  if (!task.enabled && !opts.allowDisabled) return { ok: false, error: 'disabled', hint: 'Schedule is disabled' }
 
   const now = Date.now()
   const targets = task.agent === 'all'

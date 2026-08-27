@@ -198,7 +198,7 @@ export async function tryHandleRecall(ctx: RouteContext): Promise<boolean> {
 
     const range = dateExpr ? parseDateExpression(dateExpr) : { from: todayBudapest(), to: todayBudapest() }
     if (!range) {
-      json(res, { error: `Nem értelmezhető dátum: "${dateExpr}"` }, 400)
+      json(res, { error: 'invalid_value', field: 'date', hint: `Nem értelmezhető dátum: "${dateExpr}"` }, 400)
       return true
     }
 

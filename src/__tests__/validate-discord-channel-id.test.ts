@@ -17,7 +17,8 @@ describe('validateDiscordChannelId', () => {
   it('rejects undefined', () => {
     const r = validateDiscordChannelId(undefined)
     expect(r.ok).toBe(false)
-    expect(r.error).toMatch(/required.*snowflake/)
+    expect(r.error).toBe('invalid_value')
+    expect(r.hint).toMatch(/snowflake/)
   })
   it('rejects an empty string', () => {
     expect(validateDiscordChannelId('').ok).toBe(false)

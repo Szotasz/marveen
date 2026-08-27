@@ -168,7 +168,7 @@ export async function tryHandleAgentConversation(ctx: RouteContext): Promise<boo
       entries,
     })
   } catch {
-    json(res, { error: 'A beszélgetés feldolgozása nem sikerült' }, 500)
+    json(res, { error: 'internal_error', hint: 'A beszélgetés feldolgozása nem sikerült' }, 500)
   }
   return true
 }

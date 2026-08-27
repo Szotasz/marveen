@@ -61,23 +61,23 @@ describe('validateDiscordChannelId', () => {
   })
 
   it('rejects undefined', () => {
-    expect(validateDiscordChannelId(undefined)).toEqual({ ok: false, error: expect.stringContaining('snowflake') })
+    expect(validateDiscordChannelId(undefined)).toEqual({ ok: false, error: 'invalid_value', field: 'channelId', hint: expect.stringContaining('snowflake') })
   })
 
   it('rejects empty string', () => {
-    expect(validateDiscordChannelId('')).toEqual({ ok: false, error: expect.any(String) })
+    expect(validateDiscordChannelId('')).toEqual({ ok: false, error: 'invalid_value', field: 'channelId', hint: expect.any(String) })
   })
 
   it('rejects non-numeric string', () => {
-    expect(validateDiscordChannelId('abc12345678901234')).toEqual({ ok: false, error: expect.any(String) })
+    expect(validateDiscordChannelId('abc12345678901234')).toEqual({ ok: false, error: 'invalid_value', field: 'channelId', hint: expect.any(String) })
   })
 
   it('rejects too-short numeric string (16 digits)', () => {
-    expect(validateDiscordChannelId('1234567890123456')).toEqual({ ok: false, error: expect.any(String) })
+    expect(validateDiscordChannelId('1234567890123456')).toEqual({ ok: false, error: 'invalid_value', field: 'channelId', hint: expect.any(String) })
   })
 
   it('rejects too-long numeric string (21 digits)', () => {
-    expect(validateDiscordChannelId('123456789012345678901')).toEqual({ ok: false, error: expect.any(String) })
+    expect(validateDiscordChannelId('123456789012345678901')).toEqual({ ok: false, error: 'invalid_value', field: 'channelId', hint: expect.any(String) })
   })
 })
 

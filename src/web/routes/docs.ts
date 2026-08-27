@@ -60,12 +60,12 @@ export async function tryHandleDocs(ctx: RouteContext): Promise<boolean> {
   if (match && method === 'GET') {
     const name = decodeURIComponent(match[1])
     if (!NAME_RE.test(name) || basename(name) !== name) {
-      json(res, { error: 'Invalid doc name' }, 400)
+      json(res, { error: 'invalid_value', field: 'name', hint: 'Invalid doc name' }, 400)
       return true
     }
     const file = join(DOCS_DIR, name)
     if (!existsSync(file) || !statSync(file).isFile()) {
-      json(res, { error: 'Not found' }, 404)
+      json(res, { error: 'not_found', hint: 'Not found' }, 404)
       return true
     }
     const content = readFileSync(file, 'utf-8')

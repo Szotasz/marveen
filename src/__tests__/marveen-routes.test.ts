@@ -116,28 +116,32 @@ describe('tryHandleMarveen', () => {
     const { ctx, out } = makeCtx('POST', '/api/marveen/avatar', undefined, { 'content-type': 'multipart/form-data' })
     expect(await tryHandleMarveen(ctx, '/tmp/webdir')).toBe(true)
     expect(out.status).toBe(400)
-    expect(out.body.error).toMatch(/no file/i)
+    expect(out.body.error).toBe('required')
+    expect(out.body.hint).toMatch(/no file/i)
   })
 
   it('POST /api/marveen/avatar returns 400 when galleryAvatar missing in JSON', async () => {
     const { ctx, out } = makeCtx('POST', '/api/marveen/avatar', {}, { 'content-type': 'application/json' })
     expect(await tryHandleMarveen(ctx, '/tmp/webdir')).toBe(true)
     expect(out.status).toBe(400)
-    expect(out.body.error).toMatch(/avatar/i)
+    expect(out.body.error).toBe('required')
+    expect(out.body.field).toBe('avatar')
   })
 
   it('POST /api/marveen/avatar returns 404 when gallery file missing', async () => {
     const { ctx, out } = makeCtx('POST', '/api/marveen/avatar', { galleryAvatar: 'nonexistent.png' }, { 'content-type': 'application/json' })
     expect(await tryHandleMarveen(ctx, '/tmp/webdir-no-avatars')).toBe(true)
     expect(out.status).toBe(404)
-    expect(out.body.error).toMatch(/not found/i)
+    expect(out.body.error).toBe('not_found')
+    expect(out.body.hint).toMatch(/not found/i)
   })
 
   it('POST /api/marveen/avatar returns 400 for path traversal in galleryAvatar', async () => {
     const { ctx, out } = makeCtx('POST', '/api/marveen/avatar', { galleryAvatar: '../etc/passwd' }, { 'content-type': 'application/json' })
     expect(await tryHandleMarveen(ctx, '/tmp/webdir')).toBe(true)
     expect(out.status).toBe(400)
-    expect(out.body.error).toMatch(/invalid avatar name/i)
+    expect(out.body.error).toBe('invalid_value')
+    expect(out.body.hint).toMatch(/invalid avatar name/i)
   })
 
   it('POST /api/marveen/avatar replaces existing avatar with gallery file', async () => {
