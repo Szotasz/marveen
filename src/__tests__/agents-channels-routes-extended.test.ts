@@ -181,7 +181,7 @@ describe('tryHandleAgentsChannels (extended)', () => {
     expect(await tryHandleAgentsChannels(ctx)).toBe(true)
     // On macOS the managed settings path doesn't exist in test env -> 409
     expect(out.status).toBe(409)
-    expect(out.body.error).toBe('managed-settings-missing')
+    expect(out.body.error).toBe('managed_settings_missing')
   })
 
   it('POST channel setup returns 400 when botToken missing', async () => {

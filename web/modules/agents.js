@@ -2846,7 +2846,7 @@ document.getElementById('chConnectBtn').addEventListener('click', async () => {
     })
     if (res.status === 409) {
       const err = await res.json()
-      if (err.error === 'managed-settings-missing') {
+      if (err.error === 'managed_settings_missing') {
         _showSudoModal?.(err.sudoCommand)
         return
       }

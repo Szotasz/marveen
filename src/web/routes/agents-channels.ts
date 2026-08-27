@@ -326,7 +326,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
     if (provider === 'slack' && !isManagedSettingsReady()) {
       const displayName = readAgentDisplayName(name) || name
       json(res, {
-        error: 'managed-settings-missing',
+        error: 'managed_settings_missing',
         sudoCommand: getManagedSettingsSudoCommand(),
         slackAppManifest: generateSlackAppManifest(displayName),
         slackAppInstructions: getSlackAppSetupInstructions(),
