@@ -32,15 +32,15 @@ async function handleCreate(ctx: RouteContext): Promise<boolean> {
     cloud_url?: string
   }>(ctx.req)
 
-  if (!body.agent_id?.trim())   { json(res, { error: 'agent_id is required' },  400); return true }
-  if (!body.title?.trim())      { json(res, { error: 'title is required' },      400); return true }
-  if (!body.kind)               { json(res, { error: 'kind is required' },        400); return true }
+  if (!body.agent_id?.trim())   { json(res, { error: 'required', field: 'agent_id', hint: 'agent_id is required' },  400); return true }
+  if (!body.title?.trim())      { json(res, { error: 'required', field: 'title', hint: 'title is required' },      400); return true }
+  if (!body.kind)               { json(res, { error: 'required', field: 'kind', hint: 'kind is required' },        400); return true }
   if (!ARTIFACT_KINDS.has(body.kind as ArtifactKind)) {
-    json(res, { error: `Invalid kind "${body.kind}". Allowed: ${[...ARTIFACT_KINDS].join(', ')}` }, 400)
+    json(res, { error: 'invalid_value', field: 'kind', hint: `Invalid kind "${body.kind}". Allowed: ${[...ARTIFACT_KINDS].join(', ')}` }, 400)
     return true
   }
   if (body.content === undefined || body.content === null) {
-    json(res, { error: 'content is required' }, 400); return true
+    json(res, { error: 'required', field: 'content', hint: 'content is required' }, 400); return true
   }
 
   const kind = body.kind as ArtifactKind
@@ -50,7 +50,7 @@ async function handleCreate(ctx: RouteContext): Promise<boolean> {
       ? Buffer.from(body.content, 'base64')
       : Buffer.from(body.content, 'utf-8')
   } catch {
-    json(res, { error: 'Failed to encode content' }, 400); return true
+    json(res, { error: 'invalid_value', field: 'content', hint: 'Failed to encode content' }, 400); return true
   }
 
   try {
@@ -68,7 +68,7 @@ async function handleCreate(ctx: RouteContext): Promise<boolean> {
     json(res, { ok: true, id: result.id }, result.updated ? 200 : 201)
   } catch (err) {
     logger.error({ err }, 'artifact create failed')
-    json(res, { error: 'Failed to save artifact' }, 500)
+    json(res, { error: 'internal_error', hint: 'Failed to save artifact' }, 500)
   }
   return true
 }
@@ -92,7 +92,7 @@ function handleList(ctx: RouteContext): boolean {
 function handleGet(ctx: RouteContext, id: string): boolean {
   const { res } = ctx
   const row = getArtifact(id)
-  if (!row) { json(res, { error: 'Not found' }, 404); return true }
+  if (!row) { json(res, { error: 'not_found', hint: 'Not found' }, 404); return true }
 
   const contentStr = row.kind === 'binary'
     ? row.content.toString('base64')
@@ -119,7 +119,7 @@ function handleGet(ctx: RouteContext, id: string): boolean {
 function handleViewToken(ctx: RouteContext, id: string): boolean {
   const { res } = ctx
   const row = getArtifact(id)
-  if (!row) { json(res, { error: 'Not found' }, 404); return true }
+  if (!row) { json(res, { error: 'not_found', hint: 'Not found' }, 404); return true }
 
   const nowSec = Math.floor(Date.now() / 1000)
   const { token, exp } = signViewToken(id, nowSec)
@@ -139,21 +139,21 @@ function handleView(ctx: RouteContext, id: string): boolean {
 
   if (!token || isNaN(exp)) {
     res.writeHead(400, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ error: 'Missing token or exp' }))
+    res.end(JSON.stringify({ error: 'required', hint: 'Missing token or exp' }))
     return true
   }
 
   const nowSec = Math.floor(Date.now() / 1000)
   if (!verifyViewToken(id, token, exp, nowSec)) {
     res.writeHead(401, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ error: 'Invalid or expired token' }))
+    res.end(JSON.stringify({ error: 'unauthorized', hint: 'Invalid or expired token' }))
     return true
   }
 
   const row = getArtifact(id)
   if (!row) {
     res.writeHead(404, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ error: 'Not found' }))
+    res.end(JSON.stringify({ error: 'not_found', hint: 'Not found' }))
     return true
   }
 
@@ -175,14 +175,14 @@ async function handleRename(ctx: RouteContext, id: string): Promise<boolean> {
 
   const title = body.title?.trim() ?? ''
   if (!title) {
-    json(res, { error: 'title is required and must not be empty' }, 400); return true
+    json(res, { error: 'required', field: 'title', hint: 'title is required and must not be empty' }, 400); return true
   }
   if (title.length > ARTIFACT_TITLE_MAX_LENGTH) {
-    json(res, { error: `title must not exceed ${ARTIFACT_TITLE_MAX_LENGTH} characters` }, 400); return true
+    json(res, { error: 'limit_exceeded', field: 'title', hint: `title must not exceed ${ARTIFACT_TITLE_MAX_LENGTH} characters` }, 400); return true
   }
 
   const found = renameArtifact(id, title)
-  if (!found) { json(res, { error: 'Not found' }, 404); return true }
+  if (!found) { json(res, { error: 'not_found', hint: 'Not found' }, 404); return true }
   json(res, { ok: true })
   return true
 }
@@ -191,7 +191,7 @@ async function handleRename(ctx: RouteContext, id: string): Promise<boolean> {
 function handleDelete(ctx: RouteContext, id: string): boolean {
   const { res } = ctx
   const deleted = deleteArtifact(id)
-  if (!deleted) { json(res, { error: 'Not found' }, 404); return true }
+  if (!deleted) { json(res, { error: 'not_found', hint: 'Not found' }, 404); return true }
   json(res, { ok: true })
   return true
 }

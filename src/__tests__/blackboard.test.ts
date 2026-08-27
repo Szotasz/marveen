@@ -143,7 +143,8 @@ describe('POST /api/blackboard', () => {
     const { ctx, out } = makeCtx('POST', '/api/blackboard', { summary: 'No agent' })
     await tryHandleBlackboard(ctx)
     expect(out.status).toBe(400)
-    expect((out.body as { error: string }).error).toMatch(/agent_id/)
+    expect((out.body as { error: string; field: string }).error).toBe('required')
+    expect((out.body as { error: string; field: string }).field).toBe('agent_id')
     expect(mockUpsertBlackboard).not.toHaveBeenCalled()
   })
 
@@ -151,7 +152,8 @@ describe('POST /api/blackboard', () => {
     const { ctx, out } = makeCtx('POST', '/api/blackboard', { agent_id: 'agent-a' })
     await tryHandleBlackboard(ctx)
     expect(out.status).toBe(400)
-    expect((out.body as { error: string }).error).toMatch(/summary/)
+    expect((out.body as { error: string; field: string }).error).toBe('required')
+    expect((out.body as { error: string; field: string }).field).toBe('summary')
   })
 
   it('rejects summary longer than 500 chars', async () => {
@@ -161,7 +163,8 @@ describe('POST /api/blackboard', () => {
     })
     await tryHandleBlackboard(ctx)
     expect(out.status).toBe(400)
-    expect((out.body as { error: string }).error).toMatch(/500/)
+    expect((out.body as { error: string; hint: string }).error).toBe('limit_exceeded')
+    expect((out.body as { error: string; hint: string }).hint).toMatch(/500/)
   })
 
   it('rejects invalid status', async () => {
@@ -172,7 +175,8 @@ describe('POST /api/blackboard', () => {
     })
     await tryHandleBlackboard(ctx)
     expect(out.status).toBe(400)
-    expect((out.body as { error: string }).error).toMatch(/status/)
+    expect((out.body as { error: string; field: string }).error).toBe('invalid_value')
+    expect((out.body as { error: string; field: string }).field).toBe('status')
   })
 
   it('accepts all valid status values', async () => {
@@ -235,7 +239,8 @@ describe('PATCH /api/blackboard/:id', () => {
     const { ctx, out } = makeCtx('PATCH', '/api/blackboard/bb000001', { status: 'paused' })
     await tryHandleBlackboard(ctx)
     expect(out.status).toBe(400)
-    expect((out.body as { error: string }).error).toMatch(/status/)
+    expect((out.body as { error: string; field: string }).error).toBe('invalid_value')
+    expect((out.body as { error: string; field: string }).field).toBe('status')
   })
 
   it('rejects summary > 500 chars in PATCH', async () => {
@@ -328,7 +333,8 @@ describe('GET /api/blackboard/history', () => {
     const handled = await tryHandleBlackboard(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(400)
-    expect((out.body as { error: string }).error).toMatch(/since/)
+    expect((out.body as { error: string; field: string }).error).toBe('invalid_value')
+    expect((out.body as { error: string; field: string }).field).toBe('since')
     expect(mockListBlackboardHistory).not.toHaveBeenCalled()
   })
 

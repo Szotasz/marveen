@@ -55,28 +55,32 @@ describe('POST /api/artifacts', () => {
     const { ctx, out } = makeCtx('POST', '/api/artifacts', { title: 'T', kind: 'text', content: 'hi' })
     await tryHandleArtifacts(ctx)
     expect(out.status).toBe(400)
-    expect((out.body as { error: string }).error).toMatch(/agent_id/)
+    expect((out.body as { error: string; field: string }).error).toBe('required')
+    expect((out.body as { error: string; field: string }).field).toBe('agent_id')
   })
 
   it('returns 400 when title is missing', async () => {
     const { ctx, out } = makeCtx('POST', '/api/artifacts', { agent_id: 'agent-a', kind: 'text', content: 'hi' })
     await tryHandleArtifacts(ctx)
     expect(out.status).toBe(400)
-    expect((out.body as { error: string }).error).toMatch(/title/)
+    expect((out.body as { error: string; field: string }).error).toBe('required')
+    expect((out.body as { error: string; field: string }).field).toBe('title')
   })
 
   it('returns 400 for invalid kind', async () => {
     const { ctx, out } = makeCtx('POST', '/api/artifacts', { agent_id: 'agent-a', title: 'T', kind: 'word', content: 'x' })
     await tryHandleArtifacts(ctx)
     expect(out.status).toBe(400)
-    expect((out.body as { error: string }).error).toMatch(/kind/)
+    expect((out.body as { error: string; field: string }).error).toBe('invalid_value')
+    expect((out.body as { error: string; field: string }).field).toBe('kind')
   })
 
   it('returns 400 when content is missing', async () => {
     const { ctx, out } = makeCtx('POST', '/api/artifacts', { agent_id: 'agent-a', title: 'T', kind: 'text' })
     await tryHandleArtifacts(ctx)
     expect(out.status).toBe(400)
-    expect((out.body as { error: string }).error).toMatch(/content/)
+    expect((out.body as { error: string; field: string }).error).toBe('required')
+    expect((out.body as { error: string; field: string }).field).toBe('content')
   })
 
   it('calls createArtifact and returns 201 with id (new insert)', async () => {
@@ -221,28 +225,31 @@ describe('PATCH /api/artifacts/:id', () => {
     const { ctx, out } = makeCtx('PATCH', '/api/artifacts/ghost-id', { title: 'Whatever' })
     await tryHandleArtifacts(ctx)
     expect(out.status).toBe(404)
-    expect((out.body as { error: string }).error).toMatch(/not found/i)
+    expect((out.body as { error: string }).error).toBe('not_found')
   })
 
   it('returns 400 when title is missing', async () => {
     const { ctx, out } = makeCtx('PATCH', '/api/artifacts/art-r2', {})
     await tryHandleArtifacts(ctx)
     expect(out.status).toBe(400)
-    expect((out.body as { error: string }).error).toMatch(/title/)
+    expect((out.body as { error: string; field: string }).error).toBe('required')
+    expect((out.body as { error: string; field: string }).field).toBe('title')
   })
 
   it('returns 400 when title is an empty string', async () => {
     const { ctx, out } = makeCtx('PATCH', '/api/artifacts/art-r3', { title: '   ' })
     await tryHandleArtifacts(ctx)
     expect(out.status).toBe(400)
-    expect((out.body as { error: string }).error).toMatch(/title/)
+    expect((out.body as { error: string; field: string }).error).toBe('required')
+    expect((out.body as { error: string; field: string }).field).toBe('title')
   })
 
   it('returns 400 when title exceeds ARTIFACT_TITLE_MAX_LENGTH', async () => {
     const { ctx, out } = makeCtx('PATCH', '/api/artifacts/art-r4', { title: 'a'.repeat(251) })
     await tryHandleArtifacts(ctx)
     expect(out.status).toBe(400)
-    expect((out.body as { error: string }).error).toMatch(/250/)
+    expect((out.body as { error: string; hint: string }).error).toBe('limit_exceeded')
+    expect((out.body as { error: string; hint: string }).hint).toMatch(/250/)
   })
 
   it('trims whitespace from title before calling renameArtifact', async () => {

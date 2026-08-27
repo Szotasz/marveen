@@ -148,7 +148,7 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
     let since: number | undefined
     if (sinceRaw !== null) {
       const sinceVal = parseInt(sinceRaw, 10)
-      if (isNaN(sinceVal)) { json(res, { error: 'since must be an integer' }, 400); return true }
+      if (isNaN(sinceVal)) { json(res, { error: 'invalid_value', field: 'since', hint: 'since must be an integer' }, 400); return true }
       since = sinceVal
     }
     const limitRaw = url.searchParams.get('limit')
@@ -167,23 +167,23 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
     try {
       body = JSON.parse((await readBody(req)).toString())
     } catch {
-      json(res, { error: 'invalid JSON' }, 400)
+      json(res, { error: 'parse_error', hint: 'invalid JSON' }, 400)
       return true
     }
     const agent_id = String(body.agent_id ?? '').trim()
     const summary = String(body.summary ?? '').trim()
-    if (!agent_id) { json(res, { error: 'agent_id required' }, 400); return true }
-    if (!summary) { json(res, { error: 'summary required' }, 400); return true }
-    if (summary.length > 500) { json(res, { error: 'summary max 500 chars' }, 400); return true }
+    if (!agent_id) { json(res, { error: 'required', field: 'agent_id', hint: 'agent_id required' }, 400); return true }
+    if (!summary) { json(res, { error: 'required', field: 'summary', hint: 'summary required' }, 400); return true }
+    if (summary.length > 500) { json(res, { error: 'limit_exceeded', field: 'summary', hint: 'summary max 500 chars' }, 400); return true }
     const status = body.status ? String(body.status) : 'active'
-    if (!VALID_STATUS.has(status)) { json(res, { error: 'status must be active|done|blocked' }, 400); return true }
+    if (!VALID_STATUS.has(status)) { json(res, { error: 'invalid_value', field: 'status', hint: 'status must be active|done|blocked' }, 400); return true }
     const task_ref = body.task_ref ? String(body.task_ref) : null
     try {
       const row = upsertBlackboard(agent_id, { task_ref, status, summary })
       json(res, { ok: true, row })
     } catch (err) {
       logger.error({ err }, 'blackboard upsert error')
-      json(res, { error: 'internal error' }, 500)
+      json(res, { error: 'internal_error', hint: 'internal error' }, 500)
     }
     return true
   }
@@ -195,15 +195,15 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
     try {
       body = JSON.parse((await readBody(req)).toString())
     } catch {
-      json(res, { error: 'invalid JSON' }, 400)
+      json(res, { error: 'parse_error', hint: 'invalid JSON' }, 400)
       return true
     }
     if (body.status !== undefined && !VALID_STATUS.has(String(body.status))) {
-      json(res, { error: 'status must be active|done|blocked' }, 400)
+      json(res, { error: 'invalid_value', field: 'status', hint: 'status must be active|done|blocked' }, 400)
       return true
     }
     if (body.summary !== undefined && String(body.summary).length > 500) {
-      json(res, { error: 'summary max 500 chars' }, 400)
+      json(res, { error: 'limit_exceeded', field: 'summary', hint: 'summary max 500 chars' }, 400)
       return true
     }
     const updated = patchBlackboard(id, {
@@ -211,7 +211,7 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
       summary: body.summary !== undefined ? String(body.summary) : undefined,
       task_ref: Object.prototype.hasOwnProperty.call(body, 'task_ref') ? (body.task_ref as string | null) : undefined,
     })
-    if (!updated) { json(res, { error: 'not found' }, 404); return true }
+    if (!updated) { json(res, { error: 'not_found', hint: 'not found' }, 404); return true }
     json(res, { ok: true, row: updated })
     return true
   }

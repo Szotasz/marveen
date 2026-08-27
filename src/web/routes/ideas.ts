@@ -48,18 +48,18 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       impact?: number | null
       effort?: number | null
     }
-    if (!data.title) { json(res, { error: 'title required' }, 400); return true }
+    if (!data.title) { json(res, { error: 'required', field: 'title', hint: 'title required' }, 400); return true }
     // Same 1-5 validation as PUT -- previously POST silently dropped these fields
     let impact: number | null = null
     if (data.impact !== undefined && data.impact !== null) {
       const v = Math.round(Number(data.impact))
-      if (!Number.isFinite(v) || v < 1 || v > 5) { json(res, { error: 'impact must be 1-5 or null' }, 400); return true }
+      if (!Number.isFinite(v) || v < 1 || v > 5) { json(res, { error: 'invalid_value', field: 'impact', hint: 'impact must be 1-5 or null' }, 400); return true }
       impact = v
     }
     let effort: number | null = null
     if (data.effort !== undefined && data.effort !== null) {
       const v = Math.round(Number(data.effort))
-      if (!Number.isFinite(v) || v < 1 || v > 5) { json(res, { error: 'effort must be 1-5 or null' }, 400); return true }
+      if (!Number.isFinite(v) || v < 1 || v > 5) { json(res, { error: 'invalid_value', field: 'effort', hint: 'effort must be 1-5 or null' }, 400); return true }
       effort = v
     }
     const id = randomUUID().slice(0, 8)
@@ -95,16 +95,16 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
     // Coerce impact/effort to int or null -- reject values outside 1-5
     if (data.impact !== undefined && data.impact !== null) {
       const v = Math.round(Number(data.impact))
-      if (!Number.isFinite(v) || v < 1 || v > 5) { json(res, { error: 'impact must be 1-5 or null' }, 400); return true }
+      if (!Number.isFinite(v) || v < 1 || v > 5) { json(res, { error: 'invalid_value', field: 'impact', hint: 'impact must be 1-5 or null' }, 400); return true }
       data.impact = v
     }
     if (data.effort !== undefined && data.effort !== null) {
       const v = Math.round(Number(data.effort))
-      if (!Number.isFinite(v) || v < 1 || v > 5) { json(res, { error: 'effort must be 1-5 or null' }, 400); return true }
+      if (!Number.isFinite(v) || v < 1 || v > 5) { json(res, { error: 'invalid_value', field: 'effort', hint: 'effort must be 1-5 or null' }, 400); return true }
       data.effort = v
     }
     const current = getIdea(id)
-    if (!current) { json(res, { error: 'Ötlet nem található' }, 404); return true }
+    if (!current) { json(res, { error: 'not_found', hint: 'Ötlet nem található' }, 404); return true }
     if (updateIdea(id, data)) {
       if (data.status && data.status !== current.status) {
         logIdeaStatusChange(id, current.status, data.status, MAIN_AGENT_ID)
@@ -112,14 +112,14 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       json(res, { ok: true })
       return true
     }
-    json(res, { error: 'Ötlet nem található' }, 404)
+    json(res, { error: 'not_found', hint: 'Ötlet nem található' }, 404)
     return true
   }
 
   if (ideaMatch && method === 'DELETE') {
     const id = decodeURIComponent(ideaMatch[1])
     if (deleteIdea(id)) { json(res, { ok: true }); return true }
-    json(res, { error: 'Ötlet nem található' }, 404)
+    json(res, { error: 'not_found', hint: 'Ötlet nem található' }, 404)
     return true
   }
 
@@ -137,7 +137,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { author, content } = JSON.parse(body.toString()) as { author?: string; content?: string }
     if (!content || typeof content !== 'string' || !content.trim()) {
-      json(res, { error: 'content required' }, 400); return true
+      json(res, { error: 'required', field: 'content', hint: 'content required' }, 400); return true
     }
     const comment = addIdeaComment(ideaId, author?.trim() || MAIN_AGENT_ID, content.trim())
     json(res, { ok: true, comment })
@@ -153,7 +153,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
     const phase = data.phase ?? 'detail'
 
     const idea = (getDb().prepare('SELECT * FROM idea_box WHERE id = ?').get(ideaId) as import('../../db.js').IdeaBoxRow | undefined)
-    if (!idea) { json(res, { error: 'Ötlet nem található' }, 404); return true }
+    if (!idea) { json(res, { error: 'not_found', hint: 'Ötlet nem található' }, 404); return true }
 
     const cardId = randomUUID().slice(0, 8)
     const status = phase === 'plan' ? 'planned' : 'waiting'
@@ -179,7 +179,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
   if (breakdownMatch && method === 'POST') {
     const ideaId = decodeURIComponent(breakdownMatch[1])
     const idea = getIdea(ideaId)
-    if (!idea) { json(res, { error: 'Ötlet nem található' }, 404); return true }
+    if (!idea) { json(res, { error: 'not_found', hint: 'Ötlet nem található' }, 404); return true }
     try {
       const result = await generateBreakdown(idea.title, idea.description)
       json(res, { subtasks: result.subtasks })
@@ -196,14 +196,14 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
   if (promoteBreakdownMatch && method === 'POST') {
     const ideaId = decodeURIComponent(promoteBreakdownMatch[1])
     const idea = getIdea(ideaId)
-    if (!idea) { json(res, { error: 'Ötlet nem található' }, 404); return true }
+    if (!idea) { json(res, { error: 'not_found', hint: 'Ötlet nem található' }, 404); return true }
     const body = await readBody(req)
     const { subtasks, success_criteria } = JSON.parse(body.toString()) as {
       subtasks: Array<{ title: string; description?: string; assignee?: string | null; priority?: string }>
       success_criteria?: string
     }
     if (!Array.isArray(subtasks) || subtasks.length === 0) {
-      json(res, { error: 'Legalább egy jóváhagyott alfeladat kötelező' }, 400)
+      json(res, { error: 'required', field: 'subtasks', hint: 'Legalább egy jóváhagyott alfeladat kötelező' }, 400)
       return true
     }
     const baseDesc = idea.description ?? ''
@@ -247,8 +247,8 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
   if (revertMatch && method === 'POST') {
     const id = decodeURIComponent(revertMatch[1])
     const idea = getIdea(id)
-    if (!idea) { json(res, { error: 'Ötlet nem található' }, 404); return true }
-    if (idea.status !== 'kanban') { json(res, { error: 'Csak kanban státuszú ötlet vonható vissza' }, 400); return true }
+    if (!idea) { json(res, { error: 'not_found', hint: 'Ötlet nem található' }, 404); return true }
+    if (idea.status !== 'kanban') { json(res, { error: 'invalid_value', field: 'status', hint: 'Csak kanban státuszú ötlet vonható vissza' }, 400); return true }
     updateIdea(id, { status: 'reviewed', kanban_id: null })
     logIdeaStatusChange(id, 'kanban', 'reviewed', MAIN_AGENT_ID, 'Manuális visszavonás')
     json(res, { ok: true })
