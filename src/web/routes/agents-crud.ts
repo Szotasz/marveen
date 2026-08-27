@@ -489,7 +489,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     const requested = (data.profile || '').trim()
     if (!requested) { json(res, { error: 'required', field: 'profile', hint: 'profile is required' }, 400); return true }
     const profile = loadProfileTemplate(requested)
-    if (profile.id !== requested) { json(res, { error: `Unknown profile: ${requested}` }, 400); return true }
+    if (profile.id !== requested) { json(res, { error: 'invalid_value', field: 'profile', hint: `unknown profile: ${requested}` }, 400); return true }
     writeAgentSecurityProfile(name, requested)
     writeAgentSettingsFromProfile(name, profile)
     json(res, { ok: true, requiresRestart: isAgentRunning(name) })
@@ -821,12 +821,12 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
           return true
         }
         if (!mapState.ok) {
-          json(res, { error: `Model-profile map is unusable: ${mapState.error}` }, 400)
+          json(res, { error: 'internal_error', hint: `model-profile map is unusable: ${mapState.error}` }, 400)
           return true
         }
         writeAgentModelProfile(name, mp)
       } else {
-        json(res, { error: `modelProfile must be one of ${MODEL_PROFILE_IDS.join('|')}` }, 400)
+        json(res, { error: 'invalid_value', field: 'modelProfile', hint: `modelProfile must be one of ${MODEL_PROFILE_IDS.join('|')}` }, 400)
         return true
       }
     }
@@ -858,7 +858,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
       }
       const planId = data.claudePlan.trim()
       if (planId && !readClaudePlans().some(p => p.id === planId)) {
-        json(res, { error: `Ismeretlen Claude plan id: ${planId}` }, 400)
+        json(res, { error: 'invalid_value', field: 'claudePlan', hint: `unknown claude plan id: ${planId}` }, 400)
         return true
       }
       writeAgentClaudePlan(name, planId)
