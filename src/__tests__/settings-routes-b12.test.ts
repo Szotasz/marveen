@@ -64,4 +64,29 @@ describe('settings route POST /api/settings -- setOverride failure (B12)', () =>
     expect((body() as any).error).toBe('internal_error')
     // mutation guard: changing 500 -> 400 in settings.ts:68 turns this RED
   })
+
+  it('returns 400 for missing key (required, client error not server error)', async () => {
+    const { ctx, status, body } = makeCtx({
+      method: 'POST',
+      path: '/api/settings',
+      body: { value: true },
+    })
+    await tryHandleSettings(ctx)
+    expect(status()).toBe(400)
+    expect((body() as any).error).toBe('required')
+    // mutation guard: changing 400 -> 500 in settings.ts:38 turns this RED
+  })
+
+  it('returns 400 for invalid value (invalid_value, client error not server error)', async () => {
+    mocks.validateSettingValue.mockReturnValueOnce({ ok: false, error: 'Value must be a boolean' })
+    const { ctx, status, body } = makeCtx({
+      method: 'POST',
+      path: '/api/settings',
+      body: { key: 'test.key', value: 'notabool' },
+    })
+    await tryHandleSettings(ctx)
+    expect(status()).toBe(400)
+    expect((body() as any).error).toBe('invalid_value')
+    // mutation guard: changing 400 -> 500 in settings.ts:59 turns this RED
+  })
 })
