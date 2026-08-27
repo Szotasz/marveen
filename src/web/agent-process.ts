@@ -49,6 +49,7 @@ import { loadProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureAutonomySection, ensureSkillsPathTrapSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
+import { recordInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
@@ -1874,6 +1875,11 @@ export async function sendPromptToSession(
   }
 
   const oneLine = text.replace(/\r?\n/g, ' ')
+  // STUCKINPUT827: remember the EXACT byte stream we are about to type. If the
+  // submitting Enter does not land, the stuck-input watcher re-injects THIS
+  // instead of guessing from a lossy screen scrape. Recorded before the send so
+  // a delivery that parks mid-stream is recoverable too.
+  recordInjectedPrompt(session, oneLine)
   const CHUNK = 80
   // Stream oneLine into the pane as CHUNK-sized literal send-keys writes,
   // followed by a submitting Enter. Extracted as a closure so the

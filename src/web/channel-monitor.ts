@@ -33,6 +33,7 @@ import { withSessionSendLock } from './session-send-lock.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence } from './channel-poller-reap.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
+import { getInjectedPrompt, matchesInjectedPrompt } from './injected-prompt-registry.js'
 import {
   detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, detectsFirstRunGate, detectsModelConsentDialog, type PaneErrorAlertState, type PaneState,
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
@@ -328,6 +329,11 @@ export async function recoverStuckInputForSession(
     // and corrupts the message) and prefers a chat_id-safe re-inject; the
     // truncation-guard (no verbatim re-inject of an incomplete <channel> block)
     // is preserved via blockTruncated.
+    // STUCKINPUT827: what the sender actually typed into THIS pane, if it is
+    // still on record. A match turns the lossy scrape into a known message and
+    // opens the 'reinject-recorded' path (see decideStuckInputAction).
+    const recorded = getInjectedPrompt(session)
+    const recordedMatch = matchesInjectedPrompt(parkedInputText(pane), recorded)
     const facts: StuckInputActionFacts = {
       escalate: attempt > MAIN_STUCK_ENTER_ATTEMPTS,
       rowCount: parkedInputRowCount(pane),
@@ -338,9 +344,10 @@ export async function recoverStuckInputForSession(
       hasPlainText: allowPlainReinject && parkedInputText(pane) != null,
       scheduledTaskBlock: parkedScheduledTaskInput(pane),
       machineOrigin: parkedMachineOriginInput(pane),
+      recordedMatch,
     }
     const action = decideStuckInputAction(facts)
-    await performStuckInputAction(session, action, pane, block, sig, attempt)
+    await performStuckInputAction(session, action, pane, block, sig, attempt, recorded?.text ?? null)
   }
   return decision.next
 }
@@ -358,6 +365,7 @@ async function performStuckInputAction(
   block: ReturnType<typeof parkedChannelInput>,
   prevSig: string | null,
   attempt: number,
+  recordedText: string | null,
 ): Promise<void> {
   let submitted = false
   try {
@@ -405,6 +413,27 @@ async function performStuckInputAction(
           // harmless.
           await dismissModelConsentDialogIfPresent(session)
           execFileSync(tmuxBin(), ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+        }
+        submitted = true
+        break
+      }
+      case 'reinject-recorded': {
+        // The registry proved this parked text is the message WE typed, so the
+        // clear destroys no human draft and the re-inject replays the original
+        // rather than a head-lost scrape. Same recover-mode critical section as
+        // reinject-block: never race a live delivery into this pane.
+        if (recordedText == null || recordedText.length === 0) {
+          logger.warn({ session, attempt }, 'Stuck input -- reinject-recorded chosen without a recorded text; holding')
+          break
+        }
+        logger.warn({ session, attempt }, 'Stuck input -- clear + re-inject the recorded prompt (registry-proven)')
+        const res = await withSessionSendLock(session, null, 'recover', async () => {
+          await clearInputBuffer(session)
+          await sendPromptToSession(session, recordedText, null, { lockMode: 'held' })
+        })
+        if (!res.ran) {
+          logger.info({ session, attempt }, 'Stuck-input recovery (reinject-recorded) skipped: a delivery is in flight into this pane (fail-closed)')
+          break
         }
         submitted = true
         break
