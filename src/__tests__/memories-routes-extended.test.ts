@@ -90,7 +90,7 @@ describe('tryHandleMemories - extended paths', () => {
       const handled = await tryHandleMemories(ctx)
       expect(handled).toBe(true)
       expect(out.status).toBe(400)
-      expect(out.body.error).toMatch(/rejected/i)
+      expect(out.body.error).toBe('forbidden')
     })
 
     it('returns 400 for invalid category', async () => {
@@ -102,7 +102,8 @@ describe('tryHandleMemories - extended paths', () => {
       const handled = await tryHandleMemories(ctx)
       expect(handled).toBe(true)
       expect(out.status).toBe(400)
-      expect(out.body.error).toMatch(/invalid category/i)
+      expect(out.body.error).toBe('invalid_value')
+      expect(out.body.field).toBe('category')
     })
 
     it('accepts deprecated "tier" field as category alias', async () => {
@@ -223,7 +224,8 @@ describe('tryHandleMemories - extended paths', () => {
       const handled = await tryHandleMemories(ctx)
       expect(handled).toBe(true)
       expect(out.status).toBe(400)
-      expect(out.body.error).toMatch(/no chunks/i)
+      expect(out.body.error).toBe('required')
+      expect(out.body.field).toBe('chunks')
     })
 
     it('imports chunks when Ollama is not available (warm fallback)', async () => {

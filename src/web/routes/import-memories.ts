@@ -42,14 +42,14 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
     }
 
     if (!data.type || !['local', 'gdrive', 'sharepoint'].includes(data.type)) {
-      json(res, { error: 'type must be local | gdrive | sharepoint' }, 400); return true
+      json(res, { error: 'invalid_value', field: 'type', hint: 'type must be local | gdrive | sharepoint' }, 400); return true
     }
     if (!data.path?.trim()) {
-      json(res, { error: 'path is required' }, 400); return true
+      json(res, { error: 'required', field: 'path', hint: 'path is required' }, 400); return true
     }
     const intervalHours = data.interval_hours ?? 4
     if (!VALID_INTERVALS.has(intervalHours)) {
-      json(res, { error: `interval_hours must be one of: ${[...VALID_INTERVALS].join(', ')}` }, 400); return true
+      json(res, { error: 'invalid_value', field: 'interval_hours', hint: `interval_hours must be one of: ${[...VALID_INTERVALS].join(', ')}` }, 400); return true
     }
 
     const now = Math.floor(Date.now() / 1000)
@@ -75,10 +75,10 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
     const now = Math.floor(Date.now() / 1000)
     const db = getDb()
     const existing = db.prepare("SELECT id FROM import_sources WHERE id = ?").get(id)
-    if (!existing) { json(res, { error: 'Not found' }, 404); return true }
+    if (!existing) { json(res, { error: 'not_found' }, 404); return true }
 
     if (data.interval_hours !== undefined && !VALID_INTERVALS.has(data.interval_hours)) {
-      json(res, { error: `interval_hours must be one of: ${[...VALID_INTERVALS].join(', ')}` }, 400); return true
+      json(res, { error: 'invalid_value', field: 'interval_hours', hint: `interval_hours must be one of: ${[...VALID_INTERVALS].join(', ')}` }, 400); return true
     }
 
     const fields: string[] = ['updated_at = ?']
@@ -106,7 +106,7 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
       db.prepare('UPDATE import_memories SET memory_shadow_id = NULL WHERE source_id = ?').run(id)
     }
     const changes = db.prepare("DELETE FROM import_sources WHERE id = ?").run(id).changes
-    if (!changes) { json(res, { error: 'Not found' }, 404); return true }
+    if (!changes) { json(res, { error: 'not_found' }, 404); return true }
     if (shadowIds.length) {
       const ph = shadowIds.map(() => '?').join(',')
       db.prepare(`DELETE FROM memories WHERE id IN (${ph})`).run(...shadowIds.map(r => r.memory_shadow_id))
@@ -120,7 +120,7 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
   if (syncMatch && method === 'POST') {
     const id = syncMatch[1]
     const existing = getDb().prepare("SELECT id FROM import_sources WHERE id = ?").get(id)
-    if (!existing) { json(res, { error: 'Not found' }, 404); return true }
+    if (!existing) { json(res, { error: 'not_found' }, 404); return true }
     // Fire-and-forget; the crawl runs in the background
     crawlSource(id).catch(err => logger.error({ sourceId: id, err }, 'Manual sync error'))
     json(res, { ok: true, queued: true })
