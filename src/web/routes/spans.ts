@@ -23,7 +23,7 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
       attributes?: string
     }
     if (!data.trace_id || !data.span_id) {
-      json(res, { error: 'trace_id and span_id required' }, 400)
+      json(res, { error: 'required', hint: 'trace_id and span_id required' }, 400)
       return true
     }
     if (data.end_ms !== undefined) {
@@ -32,7 +32,7 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
       if (!ok) {
         // Span may not exist yet -- treat as upsert-close (agent sent single event)
         if (!data.agent_id || !data.operation || data.start_ms === undefined) {
-          json(res, { error: 'span not found; provide agent_id, operation, start_ms to create and close in one call' }, 404)
+          json(res, { error: 'not_found', hint: 'span not found; provide agent_id, operation, start_ms to create and close in one call' }, 404)
           return true
         }
         upsertOtelSpan({
@@ -47,7 +47,7 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
     } else {
       // Open path: must have agent_id, operation, start_ms
       if (!data.agent_id || !data.operation || data.start_ms === undefined) {
-        json(res, { error: 'agent_id, operation, and start_ms required to open a span' }, 400)
+        json(res, { error: 'required', hint: 'agent_id, operation, and start_ms required to open a span' }, 400)
         return true
       }
       upsertOtelSpan({
@@ -75,7 +75,7 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
   if (traceMatch && method === 'GET') {
     const traceId = traceMatch[1]
     const spans = getOtelTrace(traceId)
-    if (!spans.length) { json(res, { error: 'trace not found' }, 404); return true }
+    if (!spans.length) { json(res, { error: 'not_found', hint: 'trace not found' }, 404); return true }
     json(res, { trace_id: traceId, spans })
     return true
   }
@@ -91,7 +91,7 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
     const toMs = toParam ? parseInt(toParam) : undefined
     const limit = limitParam ? Math.min(parseInt(limitParam), 5000) : 1000
     if ((fromMs !== undefined && isNaN(fromMs)) || (toMs !== undefined && isNaN(toMs))) {
-      json(res, { error: 'from and to must be unix timestamps in milliseconds' }, 400)
+      json(res, { error: 'invalid_value', hint: 'from and to must be unix timestamps in milliseconds' }, 400)
       return true
     }
     const spans = queryOtelSpans({ agent: agentParam, fromMs, toMs, limit })
