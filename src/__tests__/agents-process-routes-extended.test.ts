@@ -260,7 +260,7 @@ describe('agents-process routes -- extended coverage', () => {
     })
 
     it('returns 409 when stopAgentProcess returns conflict (agent not running)', async () => {
-      vi.mocked(stopAgentProcess).mockReturnValueOnce({ ok: false, error: 'conflict', hint: 'Agent is not running' })
+      vi.mocked(stopAgentProcess).mockReturnValueOnce({ ok: false, error: 'conflict', hint: 'agent is not running, nothing to stop' })
       const { ctx, statusCode, responseBody } = makeCtx({ method: 'POST', path: '/api/agents/agent-a/stop' })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
       expect(statusCode()).toBe(409)

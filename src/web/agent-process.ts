@@ -1397,7 +1397,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
 
 export function stopAgentProcess(name: string): { ok: boolean; error?: string; hint?: string } {
   const session = agentSessionName(name)
-  if (!isAgentRunning(name)) return { ok: false, error: 'conflict', hint: 'Agent is not running' }
+  if (!isAgentRunning(name)) return { ok: false, error: 'conflict', hint: 'agent is not running, nothing to stop' }
 
   const host = readAgentRemoteHost(name)
 
@@ -1437,7 +1437,7 @@ export function getAgentProcessInfo(name: string): { running: boolean; session?:
 export function restartAgentProcess(name: string, opts: { fresh?: boolean } = {}): { ok: boolean; pid?: number; error?: string; hint?: string } {
   if (isAgentRunning(name)) {
     const stopResult = stopAgentProcess(name)
-    if (!stopResult.ok) return { ok: false, error: stopResult.error ?? 'internal_error', hint: stopResult.hint || 'Failed to stop running agent before restart' }
+    if (!stopResult.ok) return { ok: false, error: stopResult.error ?? 'internal_error', hint: stopResult.error === 'conflict' ? 'cannot restart: agent is not running' : (stopResult.hint || 'Failed to stop running agent before restart') }
   }
   return startAgentProcess(name, opts)
 }
