@@ -35,10 +35,14 @@ describe('telegram sendMessage deadline', () => {
   it('passes the TOOL_TIMEOUTS.telegram deadline to https.request', async () => {
     const pending = getProvider('telegram').sendMessage('tok', '1', 'hi')
     expect(opts?.timeout).toBe(TOOL_TIMEOUTS['telegram'])
-    // Let the request "complete" so the promise settles.
+    // Let the request "complete" so the promise settles. The sender reads the
+    // body since TSOKFALSE827, so the fake response must stream end (a real
+    // IncomingMessage always does).
     const cb = httpsRequest.mock.calls[0][2] as (res: EventEmitter & { statusCode: number; resume: () => void }) => void
     const res = Object.assign(new EventEmitter(), { statusCode: 200, resume: () => {} })
     cb(res)
+    res.emit('data', Buffer.from('{"ok":true}'))
+    res.emit('end')
     await expect(pending).resolves.toBeUndefined()
   })
 

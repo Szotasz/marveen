@@ -140,12 +140,24 @@ export async function sendTelegramMessage(token: string, chatId: string, text: s
   // Some callers need the message id back (the approval gate stamps it onto
   // the request row so the decision UI can reference the exact message). A
   // malformed success body is not a send failure -- return null, never throw.
+  type SendResponse = { ok?: boolean; error_code?: number; description?: string; result?: { message_id?: number } }
+  let data: SendResponse | null = null
   try {
-    const data = await resp.json() as { result?: { message_id?: number } }
-    return typeof data.result?.message_id === 'number' ? data.result.message_id : null
+    data = await resp.json() as SendResponse
   } catch {
     return null
   }
+  // HTTP 200 + {"ok":false} is a REJECTED send, not a malformed success: treat
+  // it exactly like a non-2xx so the callers' try/catch + classifySendError
+  // paths see it -- success means transport OK AND ok:true, the same contract
+  // the bash senders adopted in NOTIFYVAKSWEEP826. TSOKFALSE827. The
+  // "Telegram API <code>" shape keeps classifySendError's transient/permanent
+  // sorting; a code-less body stays status-free -> transient (retry).
+  if (data?.ok === false) {
+    const code = typeof data.error_code === 'number' ? ` ${data.error_code}` : ''
+    throw new Error(`Telegram API${code}: ok:false ${String(data.description ?? '').slice(0, 200)}`)
+  }
+  return typeof data?.result?.message_id === 'number' ? data.result.message_id : null
 }
 
 export async function sendTelegramPhoto(token: string, chatId: string, photoPath: string, caption: string): Promise<void> {
@@ -157,12 +169,30 @@ export async function sendTelegramPhoto(token: string, chatId: string, photoPath
   parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="photo"; filename="avatar.png"\r\nContent-Type: image/png\r\n\r\n`))
   parts.push(fileData)
   parts.push(Buffer.from(`\r\n--${boundary}--\r\n`))
-  await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+  const resp = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
     method: 'POST',
     headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
     body: Buffer.concat(parts),
     signal: AbortSignal.timeout(TOOL_TIMEOUTS['telegram']),
   })
+  // This sender checked NOTHING -- a 4xx or an ok:false vanished without a
+  // trace. Same honest-send contract as sendTelegramMessage (TSOKFALSE827):
+  // success means transport OK AND ok:true; every caller already wraps this
+  // in try/catch, so the throw lands in an existing warn path.
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => '')
+    throw new Error(`Telegram API ${resp.status}: ${body.slice(0, 200)}`)
+  }
+  try {
+    const data = await resp.json() as { ok?: boolean; error_code?: number; description?: string }
+    if (data.ok === false) {
+      const code = typeof data.error_code === 'number' ? ` ${data.error_code}` : ''
+      throw new Error(`Telegram API${code}: ok:false ${String(data.description ?? '').slice(0, 200)}`)
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith('Telegram API')) throw err
+    // Malformed body on HTTP 200: not a send failure.
+  }
 }
 
 export async function sendWelcomeMessage(agentName: string, token: string): Promise<void> {

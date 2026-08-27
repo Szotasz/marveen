@@ -43,12 +43,35 @@ function telegramHttpPost(token: string, method: string, body: string, contentTy
         timeout: TOOL_TIMEOUTS['telegram'],
       },
       (res) => {
-        res.resume()
-        if (res.statusCode === 200) {
+        // Read the body even on HTTP 200: the Bot API can answer 200 with
+        // {"ok":false,...}, and discarding the body turned that into a silent
+        // success -- the same blind spot the bash senders closed in
+        // NOTIFYVAKSWEEP826 (success = transport OK AND "ok":true). TSOKFALSE827.
+        const chunks: Buffer[] = []
+        res.on('data', (chunk: Buffer) => { chunks.push(chunk) })
+        res.on('end', () => {
+          const responseBody = Buffer.concat(chunks).toString('utf-8')
+          if (res.statusCode !== 200) {
+            reject(new Error(`Telegram API ${res.statusCode}: ${responseBody.slice(0, 200)}`))
+            return
+          }
+          try {
+            const parsed = JSON.parse(responseBody) as { ok?: boolean; error_code?: number; description?: string }
+            if (parsed.ok === false) {
+              // Carry the body's error_code in the "Telegram API <code>" shape so
+              // classifySendError sorts it transient/permanent like an HTTP status;
+              // without a code the message stays status-free -> transient (retry).
+              const code = typeof parsed.error_code === 'number' ? ` ${parsed.error_code}` : ''
+              reject(new Error(`Telegram API${code}: ok:false ${String(parsed.description ?? '').slice(0, 200)}`))
+              return
+            }
+          } catch {
+            // A malformed body on HTTP 200 is not a send failure; the message
+            // may well be delivered. Same tolerance as sendTelegramMessage.
+          }
           resolve()
-        } else {
-          reject(new Error(`Telegram API ${res.statusCode}`))
-        }
+        })
+        res.on('error', reject)
       }
     )
     req.on('error', reject)
