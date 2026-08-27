@@ -261,7 +261,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/connectors/github-repos' && method === 'POST') {
     const body = await readBody(req)
     const { url, env } = JSON.parse(body.toString()) as { url: string, env?: Record<string, string> }
-    if (!url?.trim()) { json(res, { error: 'URL is required' }, 400); return true }
+    if (!url?.trim()) { json(res, { error: 'required', field: 'url', hint: 'URL is required' }, 400); return true }
 
     const envVarMapping: Record<string, string> = {}
     if (env) {
@@ -308,11 +308,11 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         const match = Object.keys(enabled).find(
           k => enabled[k] && k.split('@')[0].toLowerCase() === plain,
         )
-        if (!match) { json(res, { error: 'Connector not found' }, 404); return true }
+        if (!match) { json(res, { error: 'not_found', hint: 'Connector not found' }, 404); return true }
         json(res, { name, scope: 'user', status: 'configured', type: 'plugin', command: match, args: '', env: {} })
         return true
       } catch {
-        json(res, { error: 'Connector not found' }, 404)
+        json(res, { error: 'not_found', hint: 'Connector not found' }, 404)
         return true
       }
     }
@@ -355,7 +355,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         return true
       } catch { /* fall through */ }
     }
-    json(res, { error: 'Connector not found' }, 404)
+    json(res, { error: 'not_found', hint: 'Connector not found' }, 404)
     return true
   }
 
@@ -371,12 +371,12 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       env?: Record<string, string>
     }
 
-    if (!data.name?.trim()) { json(res, { error: 'Name is required' }, 400); return true }
+    if (!data.name?.trim()) { json(res, { error: 'required', field: 'name', hint: 'Name is required' }, 400); return true }
 
     const rawName = data.name.trim()
     const sanitizedName = rawName.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
     if (!sanitizedName) {
-      json(res, { error: 'Name must contain at least one letter, number, hyphen, or underscore' }, 400)
+      json(res, { error: 'invalid_value', field: 'name', hint: 'Name must contain at least one letter, number, hyphen, or underscore' }, 400)
       return true
     }
     const nameChanged = sanitizedName !== rawName
@@ -409,7 +409,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         // Store only env var names with blank values -- never the secrets.
         catalogEntry.env = Object.fromEntries(Object.keys(data.env || {}).map(k => [k, '']))
       } else {
-        json(res, { error: 'URL (http/sse) or command (stdio) required' }, 400)
+        json(res, { error: 'required', hint: 'URL (http/sse) or command (stdio) required' }, 400)
         return true
       }
 
@@ -467,7 +467,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     } else if (purgeFromMcpListCache(name)) {
       json(res, { ok: true, removed: 0, purgedFromCache: true })
     } else {
-      json(res, { error: 'Connector not found in any config' }, 404)
+      json(res, { error: 'not_found', hint: 'Connector not found in any config' }, 404)
     }
     return true
   }
@@ -519,7 +519,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         }
       } catch { /* fall through */ }
     }
-    if (!connectorConfig) { json(res, { error: 'Connector not found' }, 404); return true }
+    if (!connectorConfig) { json(res, { error: 'not_found', hint: 'Connector not found' }, 404); return true }
 
     const targetSet = new Set(targetAgents)
     for (const agentName of targetAgents) {
@@ -589,7 +589,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       json(res, result)
     } catch (err) {
       logger.error({ err }, 'Failed to load MCP catalog')
-      json(res, { error: 'Failed to load catalog' }, 500)
+      json(res, { error: 'internal_error', hint: 'Failed to load catalog' }, 500)
     }
     return true
   }
@@ -600,7 +600,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     try {
       const catalog = loadMcpCatalog()
       const item = catalog.find(c => c.id === id)
-      if (!item) { json(res, { error: 'Item not found in catalog' }, 404); return true }
+      if (!item) { json(res, { error: 'not_found', hint: 'Item not found in catalog' }, 404); return true }
 
       const body = await readBody(req)
       let envData: Record<string, string> = {}
@@ -623,7 +623,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         execSync(cmd, { timeout: 30000, encoding: 'utf-8' })
       } else if (item.type === 'remote') {
         const url = item.url
-        if (!url) { json(res, { error: 'Remote item has no URL' }, 400); return true }
+        if (!url) { json(res, { error: 'invalid_value', field: 'url', hint: 'Remote item has no URL' }, 400); return true }
         execSync(`claude mcp add --transport sse --scope user ${shellEscape(cliName)} ${shellEscape(url)} 2>&1`, { timeout: 30000, encoding: 'utf-8' })
       }
 
@@ -646,7 +646,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     try {
       const catalog = loadMcpCatalog()
       const item = catalog.find(c => c.id === id)
-      if (!item) { json(res, { error: 'Item not found in catalog' }, 404); return true }
+      if (!item) { json(res, { error: 'not_found', hint: 'Item not found in catalog' }, 404); return true }
 
       const cliName = item.id
       try {
@@ -676,7 +676,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/vault' && method === 'POST') {
     const body = await readBody(req)
     const { id, label, value } = JSON.parse(body.toString()) as { id: string, label: string, value: string }
-    if (!id?.trim() || !value) { json(res, { error: 'id and value required' }, 400); return true }
+    if (!id?.trim() || !value) { json(res, { error: 'required', hint: 'id and value required' }, 400); return true }
     setSecret(id.trim(), label || id.trim(), value)
     const syncResult = syncSecret(id.trim())
     json(res, { ok: true, synced: syncResult.updated })
@@ -693,14 +693,14 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   if (vaultMatch && !isVaultSubroute && method === 'GET') {
     const id = decodeURIComponent(vaultMatch[1])
     const val = getSecret(id)
-    if (val === null) { json(res, { error: 'Not found' }, 404); return true }
+    if (val === null) { json(res, { error: 'not_found', hint: 'Not found' }, 404); return true }
     json(res, { id, value: val })
     return true
   }
 
   if (vaultMatch && !isVaultSubroute && method === 'DELETE') {
     const id = decodeURIComponent(vaultMatch[1])
-    if (!deleteSecret(id)) { json(res, { error: 'Not found' }, 404); return true }
+    if (!deleteSecret(id)) { json(res, { error: 'not_found', hint: 'Not found' }, 404); return true }
     removeBindingsForSecret(id)
     json(res, { ok: true })
     return true
@@ -721,7 +721,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       targets?: Array<{ mcpFilePath: string, serverName: string }>
     }
     if (!data.vaultSecretId || !data.envVar) {
-      json(res, { error: 'vaultSecretId and envVar required' }, 400)
+      json(res, { error: 'required', hint: 'vaultSecretId and envVar required' }, 400)
       return true
     }
 
@@ -757,7 +757,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     }
 
     if (targets.length === 0) {
-      json(res, { error: 'No targets found for this server' }, 400)
+      json(res, { error: 'not_found', hint: 'No targets found for this server' }, 400)
       return true
     }
     addBinding({ vaultSecretId: data.vaultSecretId, envVar: data.envVar, targets })
@@ -771,7 +771,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const secretId = decodeURIComponent(bindingDeleteMatch[1])
     const envVar = decodeURIComponent(bindingDeleteMatch[2])
     unsyncBinding(secretId, envVar)
-    if (!removeBinding(secretId, envVar)) { json(res, { error: 'Binding not found' }, 404); return true }
+    if (!removeBinding(secretId, envVar)) { json(res, { error: 'not_found', hint: 'Binding not found' }, 404); return true }
     json(res, { ok: true })
     return true
   }
