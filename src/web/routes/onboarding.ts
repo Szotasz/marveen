@@ -348,7 +348,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
   // Launch the fleet (main-agent channels session). Idempotent: no double-spawn.
   if (path === '/api/onboarding/launch' && method === 'POST') {
     if (agentsRunning()) { json(res, { ok: true, alreadyRunning: true }); return true }
-    if (!claudeAuthPresent()) { json(res, { error: 'forbidden', hint: 'Eloszor allitsd be a Claude-autentikaciot.', reason: 'no-auth' }, 409); return true }
+    if (!claudeAuthPresent()) { json(res, { error: 'conflict', hint: 'Eloszor allitsd be a Claude-autentikaciot.', reason: 'no-auth' }, 409); return true }
     // ONBTMUX1: on a fresh install the channels session does NOT exist yet, and
     // `tmux respawn-pane` (what hardRestartMarveenChannels does on Linux) cannot
     // bring back a session that was never there -- it fails with "respawn-pane
