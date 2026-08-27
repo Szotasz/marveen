@@ -21,11 +21,41 @@ export TMUX_TMPDIR="$BASE/tmux"; mkdir -p "$TMUX_TMPDIR"
 new_case() {
   local c="$BASE/$1"; mkdir -p "$c/scripts" "$c/store" "$c/fakehome"
   cp "$INSTALL_DIR/scripts/limit-monitor.sh" "$c/scripts/"
+  # The monitor sources scripts/lib/send-telegram.sh, so a case dir without it
+  # is not a smaller install -- it is a BROKEN one, and the difference would
+  # only show up as a silently missing send. Copy what a real install has.
+  mkdir -p "$c/scripts/lib"; cp "$INSTALL_DIR/scripts/lib/send-telegram.sh" "$c/scripts/lib/"
   printf 'MAIN_AGENT_ID=probe\nALLOWED_CHAT_ID=1\n' > "$c/.env"
   echo "$c"
 }
-run_case() { (cd "$1" && HOME="$1/fakehome" bash scripts/limit-monitor.sh >/dev/null 2>&1); }
-alerted() { grep -q "ALERT wanted" "$1/store/limit-monitor.log" 2>/dev/null; }
+
+# A case that can actually DELIVER: a bot token plus a curl stub standing in for
+# the Bot API. Without this the dedupe assertions were passing for the wrong
+# reason -- the old code stamped before sending, so "no token" still suppressed
+# the second alert. Now the stamp depends on a real delivery, so the test has to
+# provide one.
+#   deliver_case <name> <ok|fail>
+deliver_case() {
+  local c; c="$(new_case "$1")"
+  mkdir -p "$c/fakehome/.claude/channels/telegram" "$c/fakebin"
+  printf 'TELEGRAM_BOT_TOKEN=123456:AAfake-token-for-tests\n' \
+    > "$c/fakehome/.claude/channels/telegram/.env"
+  if [ "$2" = "ok" ]; then
+    printf '#!/bin/sh\nprintf %%s "{\\"ok\\":true,\\"result\\":{}}"\nexit 0\n' > "$c/fakebin/curl"
+  else
+    # An HTTP 200 carrying ok:false -- the exact shape that used to be invisible.
+    printf '#!/bin/sh\nprintf %%s "{\\"ok\\":false,\\"error_code\\":400,\\"description\\":\\"Bad Request: chat not found\\"}"\nexit 0\n' > "$c/fakebin/curl"
+  fi
+  chmod +x "$c/fakebin/curl"
+  echo "$c"
+}
+run_case() { (cd "$1" && HOME="$1/fakehome" PATH="$1/fakebin:$PATH" bash scripts/limit-monitor.sh >/dev/null 2>&1); }
+# An alert was RAISED -- deliberately independent of whether it was delivered.
+# The old form grepped only "ALERT wanted", the line for a case with no bot
+# token, so the moment a case could actually deliver, the same true state read
+# as "no alert". What these cases assert is that the monitor DECIDED to alert;
+# whether the send succeeded is a separate question with its own cases below.
+alerted() { grep -qE 'ALERT (wanted|sent|send FAILED)' "$1/store/limit-monitor.log" 2>/dev/null; }
 
 echo "(a) text signals that MUST alert"
 i=0
@@ -65,7 +95,7 @@ LINES
 echo "(c) the measured path: rate_limits from the status line"
 now=$(date +%s); reset=$((now + 3600))
 
-C="$(new_case quota_hit)"
+C="$(deliver_case quota_hit ok)"
 printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":94,"resets_at":%d}}}\n' "$now" "$reset" \
   > "$C/store/.claude-rate-limits.json"
 run_case "$C"
@@ -89,7 +119,7 @@ printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":97,"reset
   > "$C/store/.claude-rate-limits.json"
 : > "$C/store/limit-monitor.log"
 run_case "$C"
-if grep -q "ALERT wanted" "$C/store/limit-monitor.log" 2>/dev/null; then
+if alerted "$C"; then
   fail "94% -> 97% in the same window alerted twice"
 else
   pass "94% -> 97% in the same window stays at one alert"
@@ -99,7 +129,7 @@ printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":100,"rese
   > "$C/store/.claude-rate-limits.json"
 : > "$C/store/limit-monitor.log"
 run_case "$C"
-if grep -q "ALERT wanted" "$C/store/limit-monitor.log" 2>/dev/null; then
+if alerted "$C"; then
   pass "100% alerts even though 90% already did"
 else
   fail "100% was swallowed by the 90% alert"
@@ -109,7 +139,7 @@ printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":94,"reset
   > "$C/store/.claude-rate-limits.json"
 : > "$C/store/limit-monitor.log"
 run_case "$C"
-if grep -q "ALERT wanted" "$C/store/limit-monitor.log" 2>/dev/null; then
+if alerted "$C"; then
   pass "the next window alerts again"
 else
   fail "the next window stayed silent"
@@ -166,6 +196,49 @@ elif grep -q "quota file stale" "$C/store/limit-monitor.log" 2>/dev/null; then
   pass "a stale reading is skipped, and says so"
 else
   fail "a stale reading was skipped without a trace"
+fi
+
+echo "(d) a FAILED delivery must not suppress the retry"
+# This is the case the whole honest-send contract exists for. The Bot API can
+# answer HTTP 200 with {"ok":false} -- bad chat_id, blocked bot, mangled .env --
+# and the old code could not tell that from a delivered alert: it stamped the
+# dedupe key BEFORE sending and logged "ALERT sent" unconditionally. The result
+# was the worst possible one: the alert nobody received, silenced forever by its
+# own suppression stamp, on the one signal that cannot be reported any other way.
+CF="$(deliver_case quota_fail fail)"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":94,"resets_at":%d}}}\n' "$now" "$reset" \
+  > "$CF/store/.claude-rate-limits.json"
+run_case "$CF"
+if grep -q "ALERT send FAILED" "$CF/store/limit-monitor.log" 2>/dev/null; then
+  pass "an ok:false response is reported as a failure, not as a send"
+else
+  fail "an ok:false response was logged as a successful send"
+fi
+if [ -s "$CF/store/.limit-monitor-quota-state" ]; then
+  fail "the dedupe stamp was written despite the delivery failing"
+else
+  pass "no dedupe stamp after a failed delivery"
+fi
+# ...and therefore the next tick must try again rather than call it old news.
+: > "$CF/store/limit-monitor.log"
+run_case "$CF"
+if grep -q "quota signal unchanged" "$CF/store/limit-monitor.log" 2>/dev/null; then
+  fail "the next tick suppressed an alert that was never delivered"
+else
+  pass "the next tick retries an undelivered alert"
+fi
+
+# The mirror case, so the pair above cannot pass for the wrong reason: with a
+# delivering stub the stamp MUST appear. Without this, a bug that never stamps
+# at all would look like a perfect result.
+CO="$(deliver_case quota_ok_stamp ok)"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":94,"resets_at":%d}}}\n' "$now" "$reset" \
+  > "$CO/store/.claude-rate-limits.json"
+run_case "$CO"
+if [ -s "$CO/store/.limit-monitor-quota-state" ]; then
+  pass "a delivered alert does write the dedupe stamp"
+else
+  fail "a delivered alert left no dedupe stamp -- alerts would repeat forever"
 fi
 
 echo ""
