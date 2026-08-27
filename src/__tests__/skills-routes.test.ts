@@ -209,7 +209,8 @@ describe('tryHandleSkills', () => {
       const { ctx, out } = makeCtx('POST', '/api/skills', { name: 'new-skill', description: '' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(400)
-      expect(out.body.error).toMatch(/description/i)
+      expect(out.body.error).toBe('required')
+      expect(out.body.field).toBe('description')
     })
 
     it('returns 409 when skill already exists', async () => {
@@ -247,7 +248,8 @@ describe('tryHandleSkills', () => {
       const { ctx, out } = makeCtx('PUT', '/api/skills/my-plugin%3Aplug-skill', { content: 'new' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(403)
-      expect(out.body.error).toMatch(/plugin/i)
+      expect(out.body.error).toBe('forbidden')
+      expect(out.body.hint).toMatch(/plugin/i)
     })
   })
 

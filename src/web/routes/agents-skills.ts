@@ -71,13 +71,13 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
   const skillImportMatch = path.match(/^\/api\/agents\/([^/]+)\/skills\/import$/)
   if (skillImportMatch && method === 'POST') {
     const name = sanitizeAgentName(decodeURIComponent(skillImportMatch[1]))
-    if (!name) { json(res, { error: 'Invalid agent name' }, 400); return true }
-    if (!agentExistsFor(name)) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!name) { json(res, { error: 'invalid_value', field: 'name', hint: 'Invalid agent name' }, 400); return true }
+    if (!agentExistsFor(name)) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
 
     const body = await readBody(req)
     const contentType = req.headers['content-type'] || ''
     const { file } = parseMultipart(body, contentType)
-    if (!file) { json(res, { error: 'No file uploaded' }, 400); return true }
+    if (!file) { json(res, { error: 'required', field: 'file', hint: 'No file uploaded' }, 400); return true }
 
     const skillsDir = skillsRootFor(name)
     mkdirSync(skillsDir, { recursive: true })
@@ -91,7 +91,7 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
       for (const entry of entries) {
         if (entry.includes('..') || entry.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(entry)) {
           unlinkSync(tmpPath)
-          json(res, { error: 'Invalid skill file: path traversal detected' }, 400)
+          json(res, { error: 'invalid_value', field: 'file', hint: 'Invalid skill file: path traversal detected' }, 400)
           return true
         }
       }
@@ -121,7 +121,7 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
         for (const f of after) {
           try { rmSync(join(skillsDir, f), { recursive: true, force: true }) } catch { /* best effort */ }
         }
-        json(res, { error: 'Invalid skill file: symlink entries rejected' }, 400)
+        json(res, { error: 'invalid_value', field: 'file', hint: 'Invalid skill file: symlink entries rejected' }, 400)
         return true
       }
 
@@ -133,7 +133,7 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
         for (const f of after) {
           try { rmSync(join(skillsDir, f), { recursive: true, force: true }) } catch { /* best effort */ }
         }
-        json(res, { error: 'No valid skill (SKILL.md) found in archive' }, 400)
+        json(res, { error: 'invalid_value', field: 'file', hint: 'No valid skill (SKILL.md) found in archive' }, 400)
         return true
       }
 
@@ -149,7 +149,7 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
         }
       } catch { /* dir gone or unreadable; nothing to do */ }
       logger.error({ err }, 'Failed to import skill')
-      json(res, { error: 'Failed to extract .skill file' }, 500)
+      json(res, { error: 'internal_error', hint: 'Failed to extract .skill file' }, 500)
       return true
     }
   }
@@ -158,16 +158,16 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
   if (skillActionMatch && method === 'DELETE') {
     const name = sanitizeAgentName(decodeURIComponent(skillActionMatch[1]))
     const skillName = sanitizeSkillName(decodeURIComponent(skillActionMatch[2]))
-    if (!name || !skillName) { json(res, { error: 'Invalid agent or skill name' }, 400); return true }
-    if (!agentExistsFor(name)) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!name || !skillName) { json(res, { error: 'invalid_value', hint: 'Invalid agent or skill name' }, 400); return true }
+    if (!agentExistsFor(name)) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
     let skillDir: string
     try {
       skillDir = safeJoin(skillsRootFor(name), skillName)
     } catch {
-      json(res, { error: 'Invalid skill path' }, 400)
+      json(res, { error: 'invalid_value', field: 'skillName', hint: 'Invalid skill path' }, 400)
       return true
     }
-    if (!existsSync(skillDir)) { json(res, { error: 'Skill not found' }, 404); return true }
+    if (!existsSync(skillDir)) { json(res, { error: 'not_found', hint: 'Skill not found' }, 404); return true }
     rmSync(skillDir, { recursive: true, force: true })
     json(res, { ok: true })
     return true
@@ -176,7 +176,7 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
   const skillsMatch = path.match(/^\/api\/agents\/([^/]+)\/skills$/)
   if (skillsMatch && method === 'GET') {
     const name = decodeURIComponent(skillsMatch[1])
-    if (!agentExistsFor(name)) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!agentExistsFor(name)) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
     const globalRoot = join(homedir(), '.claude', 'skills')
     let skills: AgentSkill[]
     if (name === MAIN_AGENT_ID) {
@@ -201,15 +201,15 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
 
   if (skillsMatch && method === 'POST') {
     const agentName = decodeURIComponent(skillsMatch[1])
-    if (!agentExistsFor(agentName)) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!agentExistsFor(agentName)) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
     const body = await readBody(req)
     const { name: rawSkillName, description } = JSON.parse(body.toString()) as { name: string; description: string }
     const skillName = sanitizeSkillName(rawSkillName || '')
-    if (!skillName) { json(res, { error: 'Skill name is required' }, 400); return true }
-    if (!description) { json(res, { error: 'Skill description is required' }, 400); return true }
+    if (!skillName) { json(res, { error: 'required', field: 'name', hint: 'Skill name is required' }, 400); return true }
+    if (!description) { json(res, { error: 'required', field: 'description', hint: 'Skill description is required' }, 400); return true }
 
     const skillDir = join(skillsRootFor(agentName), skillName)
-    if (existsSync(skillDir)) { json(res, { error: 'Skill already exists' }, 409); return true }
+    if (existsSync(skillDir)) { json(res, { error: 'conflict', hint: 'Skill already exists' }, 409); return true }
     mkdirSync(skillDir, { recursive: true })
 
     try {
@@ -217,7 +217,7 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
       atomicWriteFileSync(join(skillDir, 'SKILL.md'), skillMd)
     } catch (err) {
       rmSync(skillDir, { recursive: true, force: true })
-      json(res, { error: 'Failed to generate skill' }, 500)
+      json(res, { error: 'internal_error', hint: 'Failed to generate skill' }, 500)
       return true
     }
 
