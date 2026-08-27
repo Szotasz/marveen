@@ -70,7 +70,7 @@ export async function tryHandleAgentsModels(ctx: RouteContext): Promise<boolean>
   // vault key; the ticked set is shared across all agents' dropdowns.
   if (path === '/api/openrouter/manual' && method === 'GET') {
     if (getSecret('openrouter-fleet-key') === null) {
-      json(res, { error: 'OpenRouter not configured' }, 403)
+      json(res, { error: 'forbidden', hint: 'OpenRouter not configured' }, 403)
       return true
     }
     json(res, { models: loadCuratedManual() })
@@ -78,12 +78,12 @@ export async function tryHandleAgentsModels(ctx: RouteContext): Promise<boolean>
   }
   if (path === '/api/openrouter/manual' && method === 'POST') {
     if (getSecret('openrouter-fleet-key') === null) {
-      json(res, { error: 'OpenRouter not configured' }, 403)
+      json(res, { error: 'forbidden', hint: 'OpenRouter not configured' }, 403)
       return true
     }
     const body = await readBody(req)
     const { id, name, checked } = JSON.parse(body.toString()) as { id?: string; name?: string; checked?: boolean }
-    if (!id || typeof id !== 'string') { json(res, { error: 'id is required' }, 400); return true }
+    if (!id || typeof id !== 'string') { json(res, { error: 'required', field: 'id', hint: 'id is required' }, 400); return true }
     const models = checked ? addCuratedManual(id, name || id) : removeCuratedManual(id)
     json(res, { ok: true, models })
     return true
@@ -94,7 +94,7 @@ export async function tryHandleAgentsModels(ctx: RouteContext): Promise<boolean>
   // is public; the module caches it for 6h.
   if (path === '/api/openrouter/models' && method === 'GET') {
     if (getSecret('openrouter-fleet-key') === null) {
-      json(res, { error: 'OpenRouter not configured' }, 403)
+      json(res, { error: 'forbidden', hint: 'OpenRouter not configured' }, 403)
       return true
     }
     try {
@@ -102,7 +102,7 @@ export async function tryHandleAgentsModels(ctx: RouteContext): Promise<boolean>
       json(res, { models })
     } catch (err) {
       logger.warn({ err }, 'openrouter models list fetch failed')
-      json(res, { error: 'Could not fetch OpenRouter models' }, 502)
+      json(res, { error: 'internal_error', hint: 'Could not fetch OpenRouter models' }, 502)
     }
     return true
   }

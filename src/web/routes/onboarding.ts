@@ -205,9 +205,9 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     try { body = JSON.parse((await readBody(req)).toString()) as typeof body } catch { /* empty */ }
     const agentName = (body.agentName ?? '').trim()
     const ownerName = (body.ownerName ?? '').trim()
-    if (!agentName || !ownerName) { json(res, { error: 'agentName es ownerName szukseges.', reason: 'missing' }, 400); return true }
+    if (!agentName || !ownerName) { json(res, { error: 'required', hint: 'agentName es ownerName szukseges.', reason: 'missing' }, 400); return true }
     if (agentName.length > 40 || ownerName.length > 60 || /[\n\r\0=]/.test(agentName + ownerName)) {
-      json(res, { error: 'A nev tul hosszu vagy tiltott karaktert tartalmaz.', reason: 'bad-name' }, 400)
+      json(res, { error: 'invalid_value', hint: 'A nev tul hosszu vagy tiltott karaktert tartalmaz.', reason: 'bad-name' }, 400)
       return true
     }
 
@@ -221,7 +221,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       setEnvKey('IDENTITY_CONFIRMED', '1')
     } catch (err) {
       logger.error({ err }, 'onboarding: failed to persist identity to .env')
-      json(res, { error: 'Nem sikerult elmenteni az .env-be.', reason: 'write-failed' }, 500)
+      json(res, { error: 'internal_error', hint: 'Nem sikerult elmenteni az .env-be.', reason: 'write-failed' }, 500)
       return true
     }
 
@@ -276,9 +276,9 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     try { body = JSON.parse((await readBody(req)).toString()) as typeof body } catch { /* empty */ }
     const token = (body.token ?? '').trim()
     const apiKey = (body.apiKey ?? '').trim()
-    if (!token && !apiKey) { json(res, { error: 'token vagy apiKey szukseges.', reason: 'missing' }, 400); return true }
-    if (token && !/^sk-ant-oat/.test(token)) { json(res, { error: 'A setup-token formatuma nem stimmel (sk-ant-oat...).', reason: 'bad-token' }, 400); return true }
-    if (apiKey && !/^sk-ant-/.test(apiKey)) { json(res, { error: 'Az API-kulcs formatuma nem stimmel (sk-ant-...).', reason: 'bad-key' }, 400); return true }
+    if (!token && !apiKey) { json(res, { error: 'required', hint: 'token vagy apiKey szukseges.', reason: 'missing' }, 400); return true }
+    if (token && !/^sk-ant-oat/.test(token)) { json(res, { error: 'invalid_value', field: 'token', hint: 'A setup-token formatuma nem stimmel (sk-ant-oat...).', reason: 'bad-token' }, 400); return true }
+    if (apiKey && !/^sk-ant-/.test(apiKey)) { json(res, { error: 'invalid_value', field: 'apiKey', hint: 'Az API-kulcs formatuma nem stimmel (sk-ant-...).', reason: 'bad-key' }, 400); return true }
 
     // Verify BEFORE persisting, with a REAL probe. 2026-07-15 bootcamp bug 3:
     // the old persist-then-verify order stored a mistyped/revoked token into
@@ -295,7 +295,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     const probe = await liveProbeAuth(token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : { ANTHROPIC_API_KEY: apiKey })
     if (probe === 'auth-rejected') {
       logger.warn({ mode: token ? 'oauth' : 'apikey' }, 'onboarding: Claude auth REJECTED by live probe; nothing persisted')
-      json(res, { error: 'A megadott token/kulcs nem ervenyes (a proba-hivast a szerver elutasitotta). Ellenorizd, hogy a teljes setup-tokent illesztetted-e be.', reason: 'verify-failed', verified: false }, 400)
+      json(res, { error: 'invalid_value', hint: 'A megadott token/kulcs nem ervenyes (a proba-hivast a szerver elutasitotta). Ellenorizd, hogy a teljes setup-tokent illesztetted-e be.', reason: 'verify-failed', verified: false }, 400)
       return true
     }
     const verified = probe === 'ok'
@@ -319,7 +319,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       }
     } catch (err) {
       logger.error({ err }, 'onboarding: failed to persist Claude auth to .env')
-      json(res, { error: 'Nem sikerult elmenteni az .env-be.', reason: 'write-failed' }, 500)
+      json(res, { error: 'internal_error', hint: 'Nem sikerult elmenteni az .env-be.', reason: 'write-failed' }, 500)
       return true
     }
 
@@ -348,7 +348,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
   // Launch the fleet (main-agent channels session). Idempotent: no double-spawn.
   if (path === '/api/onboarding/launch' && method === 'POST') {
     if (agentsRunning()) { json(res, { ok: true, alreadyRunning: true }); return true }
-    if (!claudeAuthPresent()) { json(res, { error: 'Eloszor allitsd be a Claude-autentikaciot.', reason: 'no-auth' }, 409); return true }
+    if (!claudeAuthPresent()) { json(res, { error: 'conflict', hint: 'Eloszor allitsd be a Claude-autentikaciot.', reason: 'no-auth' }, 409); return true }
     // ONBTMUX1: on a fresh install the channels session does NOT exist yet, and
     // `tmux respawn-pane` (what hardRestartMarveenChannels does on Linux) cannot
     // bring back a session that was never there -- it fails with "respawn-pane
@@ -367,7 +367,8 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       if (created === 'script-missing' || created === 'spawn-failed') {
         logger.error({ created }, 'onboarding: channels session absent and channels.sh could not be launched')
         json(res, {
-          error: 'Az ügynökök indítása nem sikerült: a channels.sh nem futtatható. A telepítés sérült lehet -- futtasd újra a telepítőt, vagy nézd meg a store/channels-failures.log-ot.',
+          error: 'internal_error',
+          hint: 'Az ügynökök indítása nem sikerült: a channels.sh nem futtatható. A telepítés sérült lehet -- futtasd újra a telepítőt, vagy nézd meg a store/channels-failures.log-ot.',
           reason: created === 'script-missing' ? 'channels-script-missing' : 'channels-spawn-failed',
         }, 500)
         return true
@@ -377,7 +378,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const r = hardRestartMarveenChannels()
-    if (!r.ok) { json(res, { error: r.error || 'Nem sikerult eletre kelteni az agenteket.', reason: 'launch-failed' }, 500); return true }
+    if (!r.ok) { json(res, { error: 'internal_error', hint: r.error || 'Nem sikerult eletre kelteni az agenteket.', reason: 'launch-failed' }, 500); return true }
     logger.info('onboarding: fleet launched (channels session)')
     json(res, { ok: true, started: true })
     return true

@@ -44,7 +44,7 @@ export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
       json(res, config)
     } catch (err) {
       logger.error({ err }, 'Failed to load autonomy config')
-      json(res, { error: 'Config not found' }, 404)
+      json(res, { error: 'not_found', hint: 'Config not found' }, 404)
     }
     return true
   }
@@ -55,24 +55,24 @@ export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
       const { key, level } = JSON.parse(body.toString())
 
       if (!key || typeof level !== 'number' || level < 1 || level > 3) {
-        json(res, { error: 'Invalid key or level (must be 1-3)' }, 400)
+        json(res, { error: 'invalid_value', hint: 'Invalid key or level (must be 1-3)' }, 400)
         return true
       }
 
       const config = loadConfig()
       const cat = config.categories.find(c => c.key === key)
       if (!cat) {
-        json(res, { error: `Category "${key}" not found` }, 404)
+        json(res, { error: 'not_found', hint: `Category "${key}" not found` }, 404)
         return true
       }
 
       if (cat.locked && level > 1) {
-        json(res, { error: `Category "${key}" is locked at level 1 (safety constraint)` }, 403)
+        json(res, { error: 'forbidden', hint: `Category "${key}" is locked at level 1 (safety constraint)` }, 403)
         return true
       }
 
       if (level > cat.maxLevel) {
-        json(res, { error: `Category "${key}" max level is ${cat.maxLevel}` }, 400)
+        json(res, { error: 'invalid_value', field: 'level', hint: `Category "${key}" max level is ${cat.maxLevel}` }, 400)
         return true
       }
 
@@ -83,7 +83,7 @@ export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
       json(res, { ok: true, key, level, updated_at: config.updated_at })
     } catch (err) {
       logger.error({ err }, 'Failed to update autonomy config')
-      json(res, { error: 'Failed to update' }, 500)
+      json(res, { error: 'internal_error', hint: 'Failed to update' }, 500)
     }
     return true
   }

@@ -35,10 +35,10 @@ export function getExternalProjectPaths(): string[] {
   return read().externalProjectPaths || []
 }
 
-export function addExternalProjectPath(raw: string): { paths: string[], error?: string } {
-  if (!raw || !isAbsolute(raw)) return { paths: getExternalProjectPaths(), error: 'Absolute path required' }
+export function addExternalProjectPath(raw: string): { paths: string[], error?: string, hint?: string, field?: string } {
+  if (!raw || !isAbsolute(raw)) return { paths: getExternalProjectPaths(), error: 'required', field: 'path', hint: 'Absolute path required' }
   const p = resolve(raw)
-  if (!existsSync(p) || !statSync(p).isDirectory()) return { paths: getExternalProjectPaths(), error: 'Directory does not exist' }
+  if (!existsSync(p) || !statSync(p).isDirectory()) return { paths: getExternalProjectPaths(), error: 'not_found', field: 'path', hint: 'Directory does not exist' }
   const s = read()
   const list = s.externalProjectPaths || []
   if (list.includes(p)) return { paths: list }
@@ -93,16 +93,16 @@ export async function installGitHubRepo(
   url: string,
   envVars?: Record<string, string>,
   onProgress?: (p: GitHubInstallProgress) => void,
-): Promise<{ repo: GitHubRepo, requiredEnvVars?: string[], error?: never } | { repo?: never, requiredEnvVars?: string[], error: string }> {
+): Promise<{ repo: GitHubRepo, requiredEnvVars?: string[], error?: never } | { repo?: never, requiredEnvVars?: string[], error: string, hint?: string, field?: string }> {
   const parsed = parseGitHubUrl(url)
-  if (!parsed) return { error: 'Invalid GitHub URL' }
+  if (!parsed) return { error: 'invalid_value', field: 'url', hint: 'Invalid GitHub URL' }
 
   const repoName = `${parsed.owner}--${parsed.repo}`
   const targetDir = join(GITHUB_REPOS_DIR, repoName)
 
   if (existsSync(targetDir)) {
     const existing = getGitHubRepos().find(r => r.name === repoName)
-    if (existing) return { error: `Already installed: ${repoName}` }
+    if (existing) return { error: 'conflict', hint: `Already installed: ${repoName}` }
     rmSync(targetDir, { recursive: true, force: true })
   }
 
@@ -162,11 +162,11 @@ export async function installGitHubRepo(
   return { repo, requiredEnvVars: requiredEnvVars.length > 0 ? requiredEnvVars : undefined }
 }
 
-export function removeGitHubRepo(name: string): { ok: boolean, error?: string } {
+export function removeGitHubRepo(name: string): { ok: boolean, error?: string, hint?: string } {
   const s = read()
   const repos = s.githubRepos || []
   const idx = repos.findIndex(r => r.name === name)
-  if (idx === -1) return { ok: false, error: 'Repo not found' }
+  if (idx === -1) return { ok: false, error: 'not_found', hint: 'Repo not found' }
 
   const repo = repos[idx]
   if (existsSync(repo.path)) {
@@ -180,11 +180,11 @@ export function removeGitHubRepo(name: string): { ok: boolean, error?: string } 
   return { ok: true }
 }
 
-export function updateGitHubRepo(name: string): { ok: boolean, error?: string } {
+export function updateGitHubRepo(name: string): { ok: boolean, error?: string, hint?: string } {
   const repos = getGitHubRepos()
   const repo = repos.find(r => r.name === name)
-  if (!repo) return { ok: false, error: 'Repo not found' }
-  if (!existsSync(repo.path)) return { ok: false, error: 'Directory missing' }
+  if (!repo) return { ok: false, error: 'not_found', hint: 'Repo not found' }
+  if (!existsSync(repo.path)) return { ok: false, error: 'not_found', hint: 'Directory missing' }
 
   try {
     execSync('git pull --ff-only 2>&1', { cwd: repo.path, timeout: 60000, encoding: 'utf-8', stdio: 'pipe' })

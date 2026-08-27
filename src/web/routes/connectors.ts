@@ -240,7 +240,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { path: p } = JSON.parse(body.toString()) as { path: string }
     const result = addExternalProjectPath(p)
-    if (result.error) { json(res, { error: result.error }, 400); return true }
+    if (result.error) { json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}), ...(result.field ? { field: result.field } : {}) }, result.error === 'not_found' ? 404 : 400); return true }
     json(res, { ok: true, paths: result.paths })
     return true
   }
@@ -273,7 +273,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     }
 
     const result = await installGitHubRepo(url.trim(), Object.keys(envVarMapping).length > 0 ? envVarMapping : undefined)
-    if (result.error) { json(res, { error: result.error }, 400); return true }
+    if (result.error) { json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}), ...(result.field ? { field: result.field } : {}) }, result.error === 'conflict' ? 409 : result.error === 'not_found' ? 404 : 400); return true }
     json(res, { ok: true, repo: result.repo, requiredEnvVars: result.requiredEnvVars })
     return true
   }
@@ -282,7 +282,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   if (githubRepoMatch && method === 'DELETE') {
     const name = decodeURIComponent(githubRepoMatch[1])
     const result = removeGitHubRepo(name)
-    if (result.error) { json(res, { error: result.error }, 404); return true }
+    if (result.error) { json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, 404); return true }
     json(res, { ok: true })
     return true
   }
@@ -290,7 +290,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   if (githubRepoMatch && method === 'PATCH') {
     const name = decodeURIComponent(githubRepoMatch[1])
     const result = updateGitHubRepo(name)
-    if (result.error) { json(res, { error: result.error }, 400); return true }
+    if (result.error) { json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, result.error === 'not_found' ? 404 : 400); return true }
     json(res, { ok: true })
     return true
   }
