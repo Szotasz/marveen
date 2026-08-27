@@ -126,8 +126,8 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     const agentId = ctx.url.searchParams.get('agent') ?? ''
     const chatId = ctx.url.searchParams.get('chat') ?? ''
     const fileParam = ctx.url.searchParams.get('file') ?? ''
-    if (!agentId || !/^[a-zA-Z0-9_-]+$/.test(agentId)) { json(res, { error: 'Invalid agent' }, 400); return true }
-    if (!chatId || !/^\d+$/.test(chatId)) { json(res, { error: 'Invalid chat_id' }, 400); return true }
+    if (!agentId || !/^[a-zA-Z0-9_-]+$/.test(agentId)) { json(res, { error: 'invalid_value', field: 'agent', hint: 'Invalid agent' }, 400); return true }
+    if (!chatId || !/^\d+$/.test(chatId)) { json(res, { error: 'invalid_value', field: 'chat_id', hint: 'Invalid chat_id' }, 400); return true }
     const voiceCfg = readAgentVoiceConfig(agentId)
     const stateDir = resolveAgentChannelStateDir(agentId, 'telegram')
     const kindParam = ctx.url.searchParams.get('kind') ?? ''
@@ -160,7 +160,7 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/voice/modality' && method === 'GET') {
     const agentId = ctx.url.searchParams.get('agent') ?? ''
     const chatId = ctx.url.searchParams.get('chat') ?? ''
-    if (!agentId || !chatId) { json(res, { error: 'agent and chat required' }, 400); return true }
+    if (!agentId || !chatId) { json(res, { error: 'required', hint: 'agent and chat required' }, 400); return true }
     const modality = getLastInboundModality(agentId, chatId)
     json(res, { modality })
     return true
@@ -173,13 +173,13 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/voice/modality/set' && method === 'POST') {
     const body = await readBody(req)
     let data: { agent_id?: string; chat_id?: string; modality?: string }
-    try { data = JSON.parse(body.toString()) as typeof data } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+    try { data = JSON.parse(body.toString()) as typeof data } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
     const agentId = data.agent_id?.trim() ?? ''
     const chatId = data.chat_id?.trim() ?? ''
     const modality = data.modality?.trim() ?? ''
-    if (!agentId || !/^[a-zA-Z0-9_-]+$/.test(agentId)) { json(res, { error: 'Invalid agent_id' }, 400); return true }
-    if (!chatId || !/^\d+$/.test(chatId)) { json(res, { error: 'Invalid chat_id' }, 400); return true }
-    if (modality !== 'voice' && modality !== 'text') { json(res, { error: 'modality must be voice or text' }, 400); return true }
+    if (!agentId || !/^[a-zA-Z0-9_-]+$/.test(agentId)) { json(res, { error: 'invalid_value', field: 'agent_id', hint: 'Invalid agent_id' }, 400); return true }
+    if (!chatId || !/^\d+$/.test(chatId)) { json(res, { error: 'invalid_value', field: 'chat_id', hint: 'Invalid chat_id' }, 400); return true }
+    if (modality !== 'voice' && modality !== 'text') { json(res, { error: 'invalid_value', field: 'modality', hint: 'modality must be voice or text' }, 400); return true }
     setLastInboundModality(agentId, chatId, modality as 'voice' | 'text')
     json(res, { ok: true })
     return true
@@ -199,19 +199,19 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
   // Body: { file_id: string, state_dir: string }
   // Returns: { transcript: string }
   if (path === '/api/voice/stt' && method === 'POST') {
-    if (!isVoiceInstalled()) { json(res, { error: 'Voice toolkit not installed' }, 503); return true }
+    if (!isVoiceInstalled()) { json(res, { error: 'not_supported', hint: 'Voice toolkit not installed' }, 503); return true }
     const body = await readBody(req)
     let data: { file_id?: string; state_dir?: string }
-    try { data = JSON.parse(body.toString()) as typeof data } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+    try { data = JSON.parse(body.toString()) as typeof data } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
     const fileId = data.file_id?.trim() ?? ''
     const stateDir = data.state_dir?.trim() ?? ''
-    if (!SAFE_FILE_ID_RE.test(fileId)) { json(res, { error: 'Invalid file_id' }, 400); return true }
-    if (!isSafeStateDir(stateDir)) { json(res, { error: 'Invalid state_dir' }, 400); return true }
+    if (!SAFE_FILE_ID_RE.test(fileId)) { json(res, { error: 'invalid_value', field: 'file_id', hint: 'Invalid file_id' }, 400); return true }
+    if (!isSafeStateDir(stateDir)) { json(res, { error: 'invalid_value', field: 'state_dir', hint: 'Invalid state_dir' }, 400); return true }
 
     const transcript = await transcribeVoiceFile(fileId, stateDir)
     if (transcript === null) {
       logger.warn({ fileId }, '/api/voice/stt: whisper failed')
-      json(res, { error: 'STT failed' }, 500)
+      json(res, { error: 'internal_error', hint: 'STT failed' }, 500)
       return true
     }
     json(res, { transcript })
@@ -222,22 +222,22 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
   // Body: { text: string, voice_model: string, chat_id: string, state_dir: string }
   // Returns: { ok: boolean, message_id?: number }
   if (path === '/api/voice/tts' && method === 'POST') {
-    if (!isVoiceInstalled()) { json(res, { error: 'Voice toolkit not installed' }, 503); return true }
+    if (!isVoiceInstalled()) { json(res, { error: 'not_supported', hint: 'Voice toolkit not installed' }, 503); return true }
     const body = await readBody(req)
     let data: { text?: string; voice_model?: string; chat_id?: string | number; state_dir?: string }
-    try { data = JSON.parse(body.toString()) as typeof data } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+    try { data = JSON.parse(body.toString()) as typeof data } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
     const text = data.text?.trim() ?? ''
     const voiceModel = data.voice_model?.trim() ?? 'hu_HU-imre-medium'
     const chatId = String(data.chat_id ?? '').trim()
     const stateDir = data.state_dir?.trim() ?? ''
 
-    if (!text) { json(res, { error: 'text required' }, 400); return true }
-    if (!/^\d+$/.test(chatId)) { json(res, { error: 'Invalid chat_id' }, 400); return true }
-    if (!isSafeStateDir(stateDir)) { json(res, { error: 'Invalid state_dir' }, 400); return true }
+    if (!text) { json(res, { error: 'required', field: 'text', hint: 'text required' }, 400); return true }
+    if (!/^\d+$/.test(chatId)) { json(res, { error: 'invalid_value', field: 'chat_id', hint: 'Invalid chat_id' }, 400); return true }
+    if (!isSafeStateDir(stateDir)) { json(res, { error: 'invalid_value', field: 'state_dir', hint: 'Invalid state_dir' }, 400); return true }
 
     const onnxPath = voiceOnnxPath(voiceModel)
     if (!onnxPath) {
-      json(res, { error: `Unknown or missing voice model: ${voiceModel}` }, 400)
+      json(res, { error: 'invalid_value', field: 'voice_model', hint: `Unknown or missing voice model: ${voiceModel}` }, 400)
       return true
     }
 
@@ -248,7 +248,7 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     )
     if (result.code !== 0) {
       logger.warn({ voiceModel, chatId, stderr: result.stderr }, '/api/voice/tts: piper/sendVoice failed')
-      json(res, { error: 'TTS failed', detail: result.stderr.slice(0, 200) }, 500)
+      json(res, { error: 'internal_error', hint: 'TTS failed', detail: result.stderr.slice(0, 200) }, 500)
       return true
     }
     // _vtools.py prints "ok=True id=12345" or "ok=False id=None"
