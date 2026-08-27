@@ -197,7 +197,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
     try { restartFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}
     const result = restartAgentProcess(name, { fresh: restartFresh })
     if (result.ok) { json(res, { ok: true }); return true }
-    json(res, { error: result.error }, 400)
+    json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, 400)
     return true
   }
 
