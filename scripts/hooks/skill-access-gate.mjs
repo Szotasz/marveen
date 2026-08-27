@@ -11,13 +11,13 @@
 //   - Skill absent from config  -> unrestricted (everyone may call it)
 //   - Skill present in config   -> ONLY the listed agents may call it
 //   - Empty / missing file      -> all skills unrestricted (fail-open)
-//   - MAIN_AGENT_ID             -> always allowed regardless of config (fail-safe)
+//   - MAIN_AGENT_ID            -> always allowed regardless of config (fail-safe)
 //
 // Agent identity is derived from process.cwd():
 //   /...marveen/agents/<name>/anything  -> agentId = <name>
-//   anything else (repo root, ClaudeClaw worktrees, etc.) -> main agent, always allowed
+//   anything else (repo root, worktrees outside the repo tree, etc.) -> main agent, always allowed
 //
-// NOTE: sessions running outside the repo tree (e.g. ClaudeClaw-wt) cannot be
+// NOTE: sessions running outside the repo tree cannot be
 // attributed to a sub-agent and are treated as the main agent (unrestricted).
 //
 // Blocked calls are logged to store/skill-access-blocked.log.
@@ -34,7 +34,7 @@ const BLOCK_LOG = join(REPO_ROOT, 'store', 'skill-access-blocked.log')
 // Derive the Marveen agent id from the current working directory.
 // Matches agents/<name> anywhere in the path (including nested subdirectories
 // such as worktree-isolated sub-agents running from agents/<name>/workspace/...).
-// The main agent (atlas) runs from the repo root, which is not under agents/.
+// The main agent runs from the repo root, which is not under agents/.
 export function deriveAgentIdFromCwd(cwd) {
   const match = cwd.match(/[/\\]agents[/\\]([^/\\]+)([/\\]|$)/)
   return match ? match[1] : null // null = main agent, always allowed

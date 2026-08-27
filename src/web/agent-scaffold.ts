@@ -32,7 +32,7 @@ const tokenPath = join(PROJECT_ROOT, 'store', '.dashboard-token')
 // Hook commands run under `/bin/sh -c` with a NON-interactive PATH. On nvm
 // installs a bare `node` is not on that PATH, so the hook exits 127 -- which
 // Claude Code treats as a NON-blocking error and lets the tool call through:
-// the gate silently never enforces (atlas incident, 2026-07-30). process.execPath
+// the gate silently never enforces (a prior silent-no-enforce incident). process.execPath
 // is the absolute binary of the node running this server, which by definition
 // exists on the host that spawns the agents. Exported for unit tests.
 export const HOOK_NODE_BIN = process.execPath
