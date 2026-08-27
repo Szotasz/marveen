@@ -456,6 +456,39 @@ export function writeAgentMemoryIsolation(name: string, enabled: boolean): void 
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
+// Opt-in per-agent worksource channel (default OFF). When true the router hands
+// inter-agent messages to this agent by writing a file into its worksource
+// queue instead of typing them into its tmux pane, and the launcher loads the
+// worksource channel plugin for it.
+//
+// DELIBERATELY ITS OWN FLAG, not folded into `channelProvider` or `hasChannel`.
+// `hasChannel` is derived from the presence of a chat-provider TOKEN FILE
+// (agent-process.ts), and it gates the plugin watchdog, the /mcp unlock driver
+// and `--continue` suppression. An agent whose only channel is worksource has
+// no bot poller for the watchdog to find, so reusing `hasChannel` would make it
+// read "plugin down" forever and enter its restart ladder -- a restart loop
+// caused purely by wiring. Keeping this orthogonal is what lets a worksource
+// agent stay invisible to every chat-channel monitor.
+export function readAgentWorksourceChannel(name: string): boolean {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    return config.worksourceChannel === true
+  } catch { /* fall through */ }
+  return false
+}
+
+// Persist the opt-in worksourceChannel flag. `false` removes the key so the
+// config file stays minimal and the default-OFF semantics remain explicit.
+export function writeAgentWorksourceChannel(name: string, enabled: boolean): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  if (enabled) config.worksourceChannel = true
+  else delete config.worksourceChannel
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
 export function writeAgentAuthMode(name: string, mode: AuthMode): void {
   if (!VALID_AUTH_MODES.has(mode)) return
   const configPath = join(agentDir(name), 'agent-config.json')

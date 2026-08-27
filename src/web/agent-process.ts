@@ -27,7 +27,8 @@ import {
   stuckInputSignature,
   type FirstRunGateKind,
 } from '../pane-state.js'
-import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel } from './agent-config.js'
+import { worksourceRootFor } from './worksource-queue.js'
 import { resolveAgentConfigDir } from './claude-plans.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
@@ -1413,6 +1414,64 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
       }
     }
 
+    // ---- worksource channel (opt-in per agent, default OFF) ----
+    //
+    // Registers the queue reader as a project-scope stdio MCP server and asks
+    // Claude Code to treat it as a CHANNEL, so a queued item arrives as a real
+    // turn instead of being typed into the pane.
+    //
+    // NOT gated on `hasChannel`, deliberately. `hasChannel` means "this agent
+    // has a chat-provider bot token", and it arms the plugin watchdog, the /mcp
+    // unlock driver and `--continue` suppression. A worksource agent runs no bot
+    // poller, so borrowing that flag would make the watchdog hunt for a poller
+    // that does not exist, read it as "plugin down", and restart the agent on a
+    // loop. The two channel kinds stay orthogonal; an agent may have either,
+    // both, or neither.
+    //
+    // Merged into the SAME .mcp.json the telegram tee writes above, never
+    // overwriting it: an agent can legitimately have both a chat channel and a
+    // work queue, and clobbering the file would silence the bot.
+    //
+    // Why the `--dangerously-load-development-channels` flag: Claude Code keeps
+    // an allowlist of approved channel plugins and SILENTLY DISCARDS channel
+    // notifications from anything else -- the server looks healthy in /mcp and
+    // nothing ever arrives. worksource is a local plugin, not a marketplace one,
+    // so it is off that list by construction. The flag is scoped to exactly the
+    // agents that opted in, and those agents load only the .mcp.json this code
+    // writes; it is not applied fleet-wide. (An `allowedChannelPlugins` entry in
+    // managed settings is the non-dev route, but it is keyed by plugin +
+    // marketplace, which a local plugin has no id in.)
+    let worksourceFlags = ''
+    if (readAgentWorksourceChannel(name) && name !== MAIN_AGENT_ID) {
+      try {
+        const serverPath = join(PROJECT_ROOT, 'plugins', 'worksource', 'server.mjs')
+        if (!existsSync(serverPath)) throw new Error(`worksource server not found at ${serverPath}`)
+        const mcpJsonPath = join(agentDir(name), '.mcp.json')
+        let mcpConfig: { mcpServers: Record<string, unknown> } = { mcpServers: {} }
+        try {
+          const existing = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as { mcpServers?: Record<string, unknown> }
+          if (existing && typeof existing === 'object' && existing.mcpServers) mcpConfig = { mcpServers: existing.mcpServers }
+        } catch { /* absent or unreadable -> start from empty, do not fail the launch */ }
+        mcpConfig.mcpServers.worksource = {
+          command: process.execPath,
+          args: [serverPath],
+          // Passed as MCP server env rather than shell exports: the values are
+          // agent-derived paths and this keeps them out of the launch command
+          // string entirely, so there is nothing to quote and nothing to escape.
+          env: { WORKSOURCE_AGENT_ID: name, WORKSOURCE_DIR: worksourceRootFor(name) },
+        }
+        writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2))
+        worksourceFlags = ' --channels server:worksource --dangerously-load-development-channels'
+        logger.info({ name, serverPath }, 'worksource channel wired for agent')
+      } catch (err) {
+        // Fail OPEN, on purpose: a worksource agent that comes up without its
+        // queue channel still gets its work, because the router leaves the items
+        // in pending/ and the reader delivers them on the next successful start.
+        // Refusing to launch would trade a delayed message for a dead agent.
+        logger.warn({ err, name }, 'Could not wire worksource channel; agent starts without it')
+      }
+    }
+
     if (name !== MAIN_AGENT_ID) {
       const settingsPath = join(agentDir(name), '.claude', 'settings.json')
       try {
@@ -1609,7 +1668,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // exactly how korall lost its `hasCompletedOnboarding` flag on every restart
     // and parked on the login picker with a perfectly good token in its env.
     const umaskPrefix = agentTmuxTarget(name).runAsUser ? 'umask 002 && ' : ''
-    const cmd = `${umaskPrefix}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
+    const cmd = `${umaskPrefix}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start
