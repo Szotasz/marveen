@@ -6,8 +6,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // vi.fn() references that tests override with mockReturnValue).
 
 const mockSessionExistsOnHost = vi.fn<(host: string | null, session: string) => boolean>()
-const mockStartAgentProcess = vi.fn<(name: string) => { ok: boolean; error?: string }>()
-const mockRestartAgentProcess = vi.fn<(name: string) => { ok: boolean; error?: string }>()
+const mockStartAgentProcess = vi.fn<(name: string) => { ok: boolean; error?: string; hint?: string }>()
+const mockRestartAgentProcess = vi.fn<(name: string) => { ok: boolean; error?: string; hint?: string }>()
 const mockCapturePane = vi.fn<(session: string) => string | null>()
 const mockDetectPaneState = vi.fn<(pane: string) => string>()
 const mockGetDesiredAgents = vi.fn<() => Set<string>>()
@@ -200,7 +200,7 @@ describe('reconcileAgentsOnStartup', () => {
   it('handles startAgentProcess "already running" race gracefully', async () => {
     mockGetDesiredAgents.mockReturnValue(new Set(['agent-a']))
     mockSessionExistsOnHost.mockReturnValue(false)
-    mockStartAgentProcess.mockReturnValue({ ok: false, error: 'Agent is already running' })
+    mockStartAgentProcess.mockReturnValue({ ok: false, error: 'conflict', hint: 'Agent is already running' })
 
     await expect(reconcileAgentsOnStartup()).resolves.not.toThrow()
   })

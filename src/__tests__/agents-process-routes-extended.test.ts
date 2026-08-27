@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type http from 'node:http'
 import type { RouteContext } from '../web/routes/types.js'
@@ -62,6 +62,8 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
 })
 
 import { tryHandleAgentsProcess } from '../web/routes/agents-process.js'
+import { addDesiredAgent } from '../web/agent-desired-state.js'
+import { startAgentProcess } from '../web/agent-process.js'
 
 function makeCtx(opts: { method: string; path: string; body?: string; headers?: Record<string, string> }): {
   ctx: RouteContext; statusCode: () => number; responseBody: () => unknown
@@ -321,6 +323,35 @@ describe('agents-process routes -- extended coverage', () => {
     it('returns false for unknown route', async () => {
       const { ctx } = makeCtx({ method: 'GET', path: '/api/totally/unknown' })
       expect(await tryHandleAgentsProcess(ctx)).toBe(false)
+    })
+  })
+
+  // Guard: the start handler must call addDesiredAgent on the conflict path so the
+  // monitor resurrects the agent on reboot/tmux-restart even when it was already
+  // running at request time. Without this the operator's intent is silently lost.
+  describe('POST /api/agents/:name/start -- addDesiredAgent desired-state guard', () => {
+    beforeEach(() => {
+      vi.mocked(addDesiredAgent).mockClear()
+      // Reset to the happy-path default between tests in this block.
+      vi.mocked(startAgentProcess).mockReturnValue({ ok: true })
+    })
+
+    it('calls addDesiredAgent when startAgentProcess returns conflict', async () => {
+      vi.mocked(startAgentProcess).mockReturnValueOnce({
+        ok: false,
+        error: 'conflict',
+        hint: 'Agent is already running',
+      })
+      const { ctx } = makeCtx({ method: 'POST', path: '/api/agents/agent-b/start', body: '{}' })
+      await tryHandleAgentsProcess(ctx)
+      expect(vi.mocked(addDesiredAgent)).toHaveBeenCalledWith('agent-b')
+    })
+
+    it('does NOT call addDesiredAgent when startAgentProcess returns a non-conflict error', async () => {
+      vi.mocked(startAgentProcess).mockReturnValueOnce({ ok: false, error: 'not_found' })
+      const { ctx } = makeCtx({ method: 'POST', path: '/api/agents/agent-b/start', body: '{}' })
+      await tryHandleAgentsProcess(ctx)
+      expect(vi.mocked(addDesiredAgent)).not.toHaveBeenCalled()
     })
   })
 
