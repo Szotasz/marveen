@@ -128,50 +128,50 @@ export function validateInboxPayload(
   cfg: FederationConfig,
   deps: { isKnownAgent(name: string): boolean; mainAgentId: string },
   callerPeerId: string | null,
-): InboxAccept | { status: number; error: string } {
+): InboxAccept | { status: number; error: string; field?: string; hint?: string } {
   if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
-    return { status: 400, error: 'Body must be a JSON object' }
+    return { status: 400, error: 'invalid_value', hint: 'Body must be a JSON object' }
   }
   const p = payload as Record<string, unknown>
 
   const from = parseQualifiedId(p.from)
-  if (!from) return { status: 400, error: 'from must be a valid "<system>/<agent>" id' }
+  if (!from) return { status: 400, error: 'invalid_value', field: 'from', hint: 'from must be a valid "<system>/<agent>" id' }
   // System ids are case-insensitive (stored lowercase in the config); a peer
   // whose operator typed 'Teodor' as its systemId must still authenticate as
   // the configured 'teodor'. The agent segment is the sender's own namespace
   // and keeps its case.
   const fromSystem = from.system.toLowerCase()
-  if (fromSystem === cfg.systemId) return { status: 403, error: 'from system equals this system' }
+  if (fromSystem === cfg.systemId) return { status: 403, error: 'invalid_value', field: 'from', hint: 'from system equals this system' }
   if (callerPeerId !== null) {
     // The token identified the caller: the claimed sender prefix must be the
     // caller itself -- peer A can no longer speak as peer B.
     if (fromSystem !== callerPeerId) {
-      return { status: 403, error: 'from system does not match the authenticated peer' }
+      return { status: 403, error: 'forbidden', hint: 'from system does not match the authenticated peer' }
     }
   } else {
     // Dashboard-token caller (owner/debug): any configured peer may be
     // claimed, as in round 1.
     if (!cfg.peers.some((peer) => peer.id === fromSystem)) {
-      return { status: 403, error: 'from system is not a configured peer' }
+      return { status: 403, error: 'forbidden', hint: 'from system is not a configured peer' }
     }
   }
 
   if (typeof p.to !== 'string' || p.to.includes('/')) {
-    return { status: 403, error: 'to must be a local (unqualified) agent id' }
+    return { status: 403, error: 'forbidden', field: 'to', hint: 'to must be a local (unqualified) agent id' }
   }
-  if (!isValidIdSegment(p.to)) return { status: 400, error: 'invalid to' }
+  if (!isValidIdSegment(p.to)) return { status: 400, error: 'invalid_value', field: 'to', hint: 'invalid to' }
   if (p.to !== deps.mainAgentId && !deps.isKnownAgent(p.to)) {
-    return { status: 404, error: `Unknown recipient agent '${p.to}'` }
+    return { status: 404, error: 'not_found', field: 'to', hint: `Unknown recipient agent '${p.to}'` }
   }
 
   if (typeof p.content !== 'string' || p.content.trim().length === 0) {
-    return { status: 400, error: 'content is required' }
+    return { status: 400, error: 'required', field: 'content', hint: 'content is required' }
   }
 
   let ref: string | null = null
   if (p.ref !== undefined && p.ref !== null) {
     if (typeof p.ref !== 'string' || p.ref.length === 0 || p.ref.length > INBOX_MAX_REF_LENGTH) {
-      return { status: 400, error: 'invalid ref' }
+      return { status: 400, error: 'invalid_value', field: 'ref', hint: 'invalid ref' }
     }
     ref = p.ref
   }
@@ -270,7 +270,7 @@ const JSON_PARSE_ERROR = Symbol('json-parse-error')
 
 async function readJsonBody(ctx: RouteContext): Promise<unknown | typeof JSON_PARSE_ERROR> {
   const body = await readBody(ctx.req, { maxBytes: INBOX_MAX_BODY_BYTES })
-  try { return JSON.parse(body.toString()) } catch { json(ctx.res, { error: 'Invalid JSON' }, 400); return JSON_PARSE_ERROR }
+  try { return JSON.parse(body.toString()) } catch { json(ctx.res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return JSON_PARSE_ERROR }
 }
 
 function isErr(v: unknown): v is typeof JSON_PARSE_ERROR {
@@ -282,7 +282,7 @@ function isErr(v: unknown): v is typeof JSON_PARSE_ERROR {
 // (hand-recoverable) peers. Returns true when it wrote a 409 (caller stops).
 function refuseIfConfigUnhealthy(res: RouteContext['res']): boolean {
   if (federationFileHealth() === 'invalid') {
-    json(res, { error: 'federation.json failed validation -- fix or remove the file before editing peers' }, 409)
+    json(res, { error: 'conflict', hint: 'federation.json failed validation -- fix or remove the file before editing peers' }, 409)
     return true
   }
   return false
@@ -295,14 +295,14 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/federation/manifest' && method === 'GET') {
     const cfg = getFederationConfig()
-    if (!cfg.enabled) { json(res, { error: 'Federation disabled' }, 403); return true }
+    if (!cfg.enabled) { json(res, { error: 'forbidden', hint: 'Federation disabled' }, 403); return true }
     json(res, buildManifest(cfg, ctx.fedPeer ?? null))
     return true
   }
 
   if (path === '/api/federation/inbox' && method === 'POST') {
     const cfg = getFederationConfig()
-    if (!cfg.enabled) { json(res, { error: 'Federation disabled' }, 403); return true }
+    if (!cfg.enabled) { json(res, { error: 'forbidden', hint: 'Federation disabled' }, 403); return true }
 
     // Declared-size precheck: when the over-limit trips INSIDE readBody, the
     // request socket is destroyed and the 413 below never reaches the peer
@@ -310,7 +310,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     // declares Content-Length, so answer it cleanly before reading.
     const declared = parseInt(String(req.headers['content-length'] ?? ''), 10)
     if (Number.isFinite(declared) && declared > INBOX_MAX_BODY_BYTES) {
-      json(res, { error: `Request body too large (max ${INBOX_MAX_BODY_BYTES} bytes)` }, 413)
+      json(res, { error: 'limit_exceeded', hint: `Request body too large (max ${INBOX_MAX_BODY_BYTES} bytes)` }, 413)
       return true
     }
     let body: Buffer
@@ -318,20 +318,21 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
       body = await readBody(req, { maxBytes: INBOX_MAX_BODY_BYTES })
     } catch (err) {
       if (err instanceof RequestBodyTooLargeError) {
-        json(res, { error: `Request body too large (max ${err.limit} bytes)` }, 413)
+        json(res, { error: 'limit_exceeded', hint: `Request body too large (max ${err.limit} bytes)` }, 413)
         return true
       }
       throw err
     }
 
     let payload: unknown
-    try { payload = JSON.parse(body.toString()) } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+    try { payload = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
 
     const callerPeerId = ctx.fedPeer ?? null
     const verdict = validateInboxPayload(payload, cfg, { isKnownAgent, mainAgentId: MAIN_AGENT_ID }, callerPeerId)
     if ('status' in verdict) {
-      logger.warn({ fedIn: true, callerPeer: callerPeerId, reason: verdict.error, status: verdict.status }, 'federation inbox: rejected message')
-      json(res, { error: verdict.error }, verdict.status)
+      const { status: vStatus, ...errBody } = verdict
+      logger.warn({ fedIn: true, callerPeer: callerPeerId, reason: verdict.error, status: vStatus }, 'federation inbox: rejected message')
+      json(res, errBody, vStatus)
       return true
     }
 
@@ -376,7 +377,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
   // but remains peer-authored -- routing data, never instructions.
   if (path === '/api/federation/directory' && method === 'GET') {
     const cfg = getFederationConfig()
-    if (!cfg.enabled) { json(res, { error: 'Federation disabled' }, 403); return true }
+    if (!cfg.enabled) { json(res, { error: 'forbidden', hint: 'Federation disabled' }, 403); return true }
     const lang = resolveLang()
     const capSkills = (skills: Array<{ name: string; description: string }>): Array<{ name: string; description: string }> =>
       skills.slice(0, DIRECTORY_MAX_SKILLS_PER_AGENT).map((s) => ({
@@ -453,7 +454,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/federation/apply' && method === 'POST') {
     const r = hardRestartMarveenChannels()
     if (r.ok) { json(res, { ok: true }); return true }
-    json(res, { error: r.error || 'Restart failed' }, 500)
+    json(res, { error: 'internal_error', hint: r.error || 'Restart failed' }, 500)
     return true
   }
 
@@ -480,7 +481,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
         json(res, peersView(getFederationConfig()))
         return true
       }
-      json(res, { error: `Invalid federation config: ${validated}` }, 400)
+      json(res, { error: 'invalid_value', hint: `Invalid federation config: ${validated}` }, 400)
       return true
     }
     // Synchronous validate->write->cache (no await in between). Well-formed
