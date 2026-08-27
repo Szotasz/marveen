@@ -129,14 +129,16 @@ describe('tryHandleSkills', () => {
     const { ctx, out } = makeCtx('POST', '/api/skills', { description: 'A skill' })
     expect(await tryHandleSkills(ctx)).toBe(true)
     expect(out.status).toBe(400)
-    expect(out.body.error).toMatch(/name/i)
+    expect(out.body.error).toBe('required')
+    expect(out.body.field).toBe('name')
   })
 
   it('POST /api/skills returns 400 when description missing', async () => {
     const { ctx, out } = makeCtx('POST', '/api/skills', { name: 'new-skill' })
     expect(await tryHandleSkills(ctx)).toBe(true)
     expect(out.status).toBe(400)
-    expect(out.body.error).toMatch(/description/i)
+    expect(out.body.error).toBe('required')
+    expect(out.body.field).toBe('description')
   })
 
   it('POST /api/skills returns 409 when skill already exists', async () => {
@@ -159,7 +161,8 @@ describe('tryHandleSkills', () => {
     const { ctx, out } = makeCtx('POST', '/api/skills/import')
     expect(await tryHandleSkills(ctx)).toBe(true)
     expect(out.status).toBe(400)
-    expect(out.body.error).toMatch(/no file/i)
+    expect(out.body.error).toBe('required')
+    expect(out.body.field).toBe('file')
   })
 
   it('POST /api/skills/:name/assign returns 404 for non-existent skill', async () => {
