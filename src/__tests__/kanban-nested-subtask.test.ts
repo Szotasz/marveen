@@ -226,7 +226,10 @@ describe('reparentKanbanCard', () => {
     // Result: card-b -> depth 2, card-c -> depth 3. Blocked.
     const result = reparentKanbanCard('card-b', 'card-e')
     expect(result.ok).toBe(false)
-    expect(result.error).toMatch(/max depth/)
+    if (!result.ok) {
+      expect(result.code).toBe('limit_exceeded')
+      expect(result.hint).toMatch(/max depth/)
+    }
   })
 
   it('rejects self-parenting', () => {
@@ -239,7 +242,10 @@ describe('reparentKanbanCard', () => {
     createKanbanCard({ id: 'card-a', title: 'Solo' })
     const result = reparentKanbanCard('card-a', 'nonexistent')
     expect(result.ok).toBe(false)
-    expect(result.error).toMatch(/not found/)
+    if (!result.ok) {
+      expect(result.code).toBe('not_found')
+      expect(result.hint).toMatch(/not found/)
+    }
   })
 })
 

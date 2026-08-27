@@ -1290,21 +1290,23 @@ export function getSubtreeHeight(cardId: string): number {
 // Validates the depth constraint: target.depth + 1 + subtreeHeight(id) <= 2.
 // Cascades depth to all descendants and triggers status propagation on both
 // the old and new parent.
-export function reparentKanbanCard(id: string, newParentId: string | null): { ok: boolean; error?: string } {
+export function reparentKanbanCard(
+  id: string, newParentId: string | null,
+): { ok: true } | { ok: false; code: 'not_found' | 'invalid' | 'limit_exceeded'; hint: string } {
   const card = getKanbanCard(id)
-  if (!card) return { ok: false, error: 'Card not found' }
-  if (newParentId === id) return { ok: false, error: 'Card cannot be its own parent' }
+  if (!card) return { ok: false, code: 'not_found', hint: 'Card not found' }
+  if (newParentId === id) return { ok: false, code: 'invalid', hint: 'Card cannot be its own parent' }
 
   let newDepth = 0
   if (newParentId) {
     const newParent = getKanbanCard(newParentId)
-    if (!newParent) return { ok: false, error: 'Parent card not found' }
+    if (!newParent) return { ok: false, code: 'not_found', hint: 'Parent card not found' }
     newDepth = newParent.depth + 1
     const sh = getSubtreeHeight(id)
-    if (newDepth + sh > 2) return { ok: false, error: 'Reparenting would exceed max depth of 3 levels' }
+    if (newDepth + sh > 2) return { ok: false, code: 'limit_exceeded', hint: 'Reparenting would exceed max depth of 3 levels' }
   } else {
     const sh = getSubtreeHeight(id)
-    if (sh > 2) return { ok: false, error: 'Subtree too deep to move to top-level (descendants would exceed depth 2)' }
+    if (sh > 2) return { ok: false, code: 'limit_exceeded', hint: 'Subtree too deep to move to top-level (descendants would exceed depth 2)' }
   }
 
   const oldParentId = card.parent_id

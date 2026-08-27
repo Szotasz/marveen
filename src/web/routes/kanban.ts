@@ -226,7 +226,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/kanban/labels' && method === 'POST') {
     const body = await readBody(req)
     const { name, color } = JSON.parse(body.toString()) as { name?: string; color?: string }
-    if (!name || !name.trim()) { json(res, { error: 'Címke neve kötelező' }, 400); return true }
+    if (!name || !name.trim()) { json(res, { error: 'required', field: 'name', hint: 'Címke neve kötelező' }, 400); return true }
     // Colour is validated against the configured palette (KANBAN_LABEL_COLORS)
     // rather than accepted as free-text, so every label's colour traces back
     // to the single configurable source instead of an arbitrary per-request value.
@@ -244,20 +244,20 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const { name, color } = JSON.parse(body.toString()) as { name?: string; color?: string }
     const fields: { name?: string; color?: string } = {}
     if (name !== undefined) {
-      if (!name.trim()) { json(res, { error: 'Címke neve kötelező' }, 400); return true }
+      if (!name.trim()) { json(res, { error: 'required', field: 'name', hint: 'Címke neve kötelező' }, 400); return true }
       fields.name = name.trim()
     }
     if (color !== undefined) {
       fields.color = KANBAN_LABEL_COLORS.includes(color) ? color : KANBAN_LABEL_COLORS[0]
     }
     if (updateLabel(id, fields)) { json(res, { ok: true }); return true }
-    json(res, { error: 'Címke nem található' }, 404)
+    json(res, { error: 'not_found', hint: 'Címke nem található' }, 404)
     return true
   }
   if (labelMatch && method === 'DELETE') {
     const id = decodeURIComponent(labelMatch[1])
     if (deleteLabel(id)) { json(res, { ok: true }); return true }
-    json(res, { error: 'Címke nem található' }, 404)
+    json(res, { error: 'not_found', hint: 'Címke nem található' }, 404)
     return true
   }
 
@@ -269,23 +269,23 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   }
   if (cardLabelsMatch && method === 'POST') {
     const cardId = decodeURIComponent(cardLabelsMatch[1])
-    if (!getKanbanCard(cardId)) { json(res, { error: 'Kártya nem található' }, 404); return true }
+    if (!getKanbanCard(cardId)) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
     const body = await readBody(req)
     // Accept `id` as an alias for `labelId` -- API callers reasonably send either,
     // since GET /api/kanban/labels returns objects keyed by `id`, not `labelId`.
     const parsed = JSON.parse(body.toString()) as { labelId?: string; id?: string }
     const labelId = parsed.labelId ?? parsed.id
-    if (!labelId) { json(res, { error: 'labelId mező kötelező' }, 400); return true }
+    if (!labelId) { json(res, { error: 'required', field: 'labelId', hint: 'labelId mező kötelező' }, 400); return true }
     if (!getLabel(labelId)) {
       // Common mistake: sending the label's `name` where an `id` is expected -- GET
       // /api/kanban/labels lists both, so this is an easy mix-up. Point at the real id
       // instead of a bare "not found" that reads as if the label doesn't exist at all.
       const byName = listLabels().find((l) => l.name === labelId)
       if (byName) {
-        json(res, { error: `Címke nem található id alapján -- a "${labelId}" egy név, nem id. Használd az id-t: ${byName.id}` }, 404)
+        json(res, { error: 'not_found', field: 'labelId', hint: `Címke nem található id alapján -- a "${labelId}" egy név, nem id. Használd az id-t: ${byName.id}` }, 404)
         return true
       }
-      json(res, { error: 'Címke nem található' }, 404)
+      json(res, { error: 'not_found', hint: 'Címke nem található' }, 404)
       return true
     }
     addLabelToCard(cardId, labelId)
@@ -298,7 +298,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const cardId = decodeURIComponent(cardLabelDeleteMatch[1])
     const labelId = decodeURIComponent(cardLabelDeleteMatch[2])
     if (removeLabelFromCard(cardId, labelId)) { json(res, { ok: true }); return true }
-    json(res, { error: 'A kártyán nincs ilyen címke' }, 404)
+    json(res, { error: 'not_found', hint: 'A kártyán nincs ilyen címke' }, 404)
     return true
   }
 
@@ -337,12 +337,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // Non-admin callers may only update cards belonging to their own tenant.
     if (!isAdmin && effectiveTenantId !== null) {
       const ownedCard = scopeToTenant(getDb(), effectiveTenantId).kanban.get(id)
-      if (!ownedCard) { json(res, { error: 'Kártya nem található' }, 404); return true }
+      if (!ownedCard) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
     }
     const body = await readBody(req)
     const data = JSON.parse(body.toString())
     if (updateKanbanCard(id, data)) { json(res, { ok: true }); return true }
-    json(res, { error: 'Kártya nem található' }, 404)
+    json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404)
     return true
   }
 
@@ -351,11 +351,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // Non-admin callers may only delete cards belonging to their own tenant.
     if (!isAdmin && effectiveTenantId !== null) {
       const ownedCard = scopeToTenant(getDb(), effectiveTenantId).kanban.get(id)
-      if (!ownedCard) { json(res, { error: 'Kártya nem található' }, 404); return true }
+      if (!ownedCard) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
     }
     revertIdeaFromKanban(id)
     if (deleteKanbanCard(id)) { json(res, { ok: true }); return true }
-    json(res, { error: 'Kártya nem található' }, 404)
+    json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404)
     return true
   }
 
@@ -372,7 +372,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { ok: true })
       return true
     }
-    json(res, { error: 'Kártya nem található' }, 404)
+    json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404)
     return true
   }
 
@@ -381,7 +381,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(kanbanArchiveMatch[1])
     revertIdeaFromKanban(id)
     if (archiveKanbanCard(id)) { json(res, { ok: true }); return true }
-    json(res, { error: 'Kártya nem található' }, 404)
+    json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404)
     return true
   }
 
@@ -404,7 +404,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanUnarchiveMatch && method === 'POST') {
     const id = decodeURIComponent(kanbanUnarchiveMatch[1])
     if (unarchiveKanbanCard(id)) { json(res, { ok: true }); return true }
-    json(res, { error: 'Kártya nem található vagy nincs archiválva' }, 404)
+    json(res, { error: 'not_found', hint: 'Kártya nem található vagy nincs archiválva' }, 404)
     return true
   }
 
@@ -418,7 +418,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const cardId = decodeURIComponent(kanbanCommentsMatch[1])
     const body = await readBody(req)
     const { author, content } = JSON.parse(body.toString())
-    if (!author || !content) { json(res, { error: 'Szerző és tartalom kötelező' }, 400); return true }
+    if (!author || !content) { json(res, { error: 'required', hint: 'Szerző és tartalom kötelező' }, 400); return true }
     // Code-side kanban-ref enforcement: rewrite `#<hex8>` references that map
     // to a real card into the human-facing `#<seq>` form before persistence
     // (#75 Cuzcoo dispatch). Random hex / non-matching tokens pass through.
@@ -438,9 +438,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (breakdownMatch && method === 'POST') {
     const cardId = decodeURIComponent(breakdownMatch[1])
     const card = getKanbanCard(cardId)
-    if (!card) { json(res, { error: 'Kártya nem található' }, 404); return true }
+    if (!card) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
     const existing = getChildCards(cardId)
-    if (existing.length > 0) { json(res, { error: 'A kártya már rendelkezik subtask-okkal' }, 409); return true }
+    if (existing.length > 0) { json(res, { error: 'conflict', hint: 'A kártya már rendelkezik subtask-okkal' }, 409); return true }
     try {
       const result = await generateBreakdown(card.title, card.description)
       json(res, { subtasks: result.subtasks })
@@ -455,14 +455,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (acceptMatch && method === 'POST') {
     const parentId = decodeURIComponent(acceptMatch[1])
     const parent = getKanbanCard(parentId)
-    if (!parent) { json(res, { error: 'Szülő kártya nem található' }, 404); return true }
-    if (parent.depth >= 2) { json(res, { error: 'Szülő kártya már maximális mélységen van (depth 2)' }, 400); return true }
+    if (!parent) { json(res, { error: 'not_found', hint: 'Szülő kártya nem található' }, 404); return true }
+    if (parent.depth >= 2) { json(res, { error: 'limit_exceeded', field: 'parent_id', hint: 'Szülő kártya már maximális mélységen van (depth 2)' }, 400); return true }
     const body = await readBody(req)
     const { subtasks } = JSON.parse(body.toString()) as {
       subtasks: Array<{ title: string; description: string; assignee: string | null; priority: string }>
     }
     if (!Array.isArray(subtasks) || subtasks.length === 0) {
-      json(res, { error: 'Subtask lista kötelező' }, 400)
+      json(res, { error: 'required', field: 'subtasks', hint: 'Subtask lista kötelező' }, 400)
       return true
     }
     const db = getDb()
@@ -501,7 +501,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const subtreeMatch = path.match(/^\/api\/kanban\/([^/]+)\/subtree$/)
   if (subtreeMatch && method === 'GET') {
     const cardId = decodeURIComponent(subtreeMatch[1])
-    if (!getKanbanCard(cardId)) { json(res, { error: 'Kártya nem található' }, 404); return true }
+    if (!getKanbanCard(cardId)) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
     json(res, getSubtree(cardId))
     return true
   }
@@ -516,8 +516,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const { parent_id } = JSON.parse(body.toString()) as { parent_id: string | null }
     const result = reparentKanbanCard(id, parent_id ?? null)
     if (!result.ok) {
-      const status = result.error?.includes('not found') ? 404 : 400
-      json(res, { error: result.error }, status)
+      const status = result.code === 'not_found' ? 404 : 400
+      json(res, { error: result.code, hint: result.hint }, status)
       return true
     }
     json(res, { ok: true })
