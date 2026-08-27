@@ -68,7 +68,8 @@ describe('tryHandleApprovals', () => {
     const handled = await tryHandleApprovals(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(400)
-    expect(out.body.error).toMatch(/agent_id/i)
+    expect(out.body.error).toBe('required')
+    expect(out.body.field).toBe('agent_id')
   })
 
   it('POST /api/approvals returns 400 when category missing', async () => {
@@ -76,7 +77,8 @@ describe('tryHandleApprovals', () => {
     const handled = await tryHandleApprovals(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(400)
-    expect(out.body.error).toMatch(/category/i)
+    expect(out.body.error).toBe('required')
+    expect(out.body.field).toBe('category')
   })
 
   it('POST /api/approvals returns 400 when action_description missing', async () => {
@@ -84,7 +86,8 @@ describe('tryHandleApprovals', () => {
     const handled = await tryHandleApprovals(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(400)
-    expect(out.body.error).toMatch(/action_description/i)
+    expect(out.body.error).toBe('required')
+    expect(out.body.field).toBe('action_description')
   })
 
   it('POST /api/approvals creates approval and returns 201', async () => {
@@ -150,7 +153,9 @@ describe('tryHandleApprovals', () => {
     const handled = await tryHandleApprovals(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(400)
-    expect(out.body.error).toMatch(/approved.*rejected.*timeout/i)
+    expect(out.body.error).toBe('invalid_value')
+    expect(out.body.field).toBe('status')
+    expect(out.body.hint).toMatch(/approved.*rejected.*timeout/i)
   })
 
   it('PATCH /api/approvals/:id returns 400 when resolved_by missing', async () => {
@@ -158,7 +163,8 @@ describe('tryHandleApprovals', () => {
     const handled = await tryHandleApprovals(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(400)
-    expect(out.body.error).toMatch(/resolved_by/i)
+    expect(out.body.error).toBe('required')
+    expect(out.body.field).toBe('resolved_by')
   })
 
   it('PATCH /api/approvals/:id returns 403 on self-approval', async () => {
@@ -170,7 +176,8 @@ describe('tryHandleApprovals', () => {
     const handled = await tryHandleApprovals(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(403)
-    expect(out.body.error).toMatch(/cannot approve/i)
+    expect(out.body.error).toBe('forbidden')
+    expect(out.body.hint).toMatch(/cannot approve/i)
   })
 
   it('returns false for unmatched route', async () => {

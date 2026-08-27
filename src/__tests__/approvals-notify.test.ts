@@ -99,7 +99,8 @@ describe('approvals self-approval guard', () => {
     const handled = await tryHandleApprovals(patchCtx)
     expect(handled).toBe(true)
     expect(patchOut.status).toBe(403)
-    expect(patchOut.body.error).toMatch(/cannot approve its own request/)
+    expect(patchOut.body.error).toBe('forbidden')
+    expect(patchOut.body.hint).toMatch(/cannot approve its own request/)
   })
 
   it('allows approval when resolved_by differs from the requesting agent_id', async () => {

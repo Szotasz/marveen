@@ -71,25 +71,25 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     try {
       body = JSON.parse((await readBody(req)).toString())
     } catch {
-      json(res, { error: 'Invalid JSON' }, 400)
+      json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400)
       return true
     }
 
     const { agent_id, category, action_description, action_payload } = body
     if (typeof agent_id !== 'string' || !agent_id.trim()) {
-      json(res, { error: 'agent_id is required' }, 400)
+      json(res, { error: 'required', field: 'agent_id', hint: 'agent_id is required' }, 400)
       return true
     }
     if (typeof category !== 'string' || !category.trim()) {
-      json(res, { error: 'category is required' }, 400)
+      json(res, { error: 'required', field: 'category', hint: 'category is required' }, 400)
       return true
     }
     if (typeof action_description !== 'string' || !action_description.trim()) {
-      json(res, { error: 'action_description is required' }, 400)
+      json(res, { error: 'required', field: 'action_description', hint: 'action_description is required' }, 400)
       return true
     }
     if (action_payload !== undefined && typeof action_payload !== 'string') {
-      json(res, { error: 'action_payload must be a string (JSON) if provided' }, 400)
+      json(res, { error: 'invalid_value', field: 'action_payload', hint: 'action_payload must be a string (JSON) if provided' }, 400)
       return true
     }
 
@@ -128,7 +128,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
   if (idMatch && method === 'GET') {
     const approval = getApproval(idMatch[1])
     if (!approval) {
-      json(res, { error: 'Not found' }, 404)
+      json(res, { error: 'not_found', hint: 'Not found' }, 404)
       return true
     }
     json(res, approval)
@@ -141,17 +141,17 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     try {
       body = JSON.parse((await readBody(req)).toString())
     } catch {
-      json(res, { error: 'Invalid JSON' }, 400)
+      json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400)
       return true
     }
 
     const { status, resolved_by, telegram_message_id } = body
     if (status !== 'approved' && status !== 'rejected' && status !== 'timeout') {
-      json(res, { error: 'status must be approved, rejected, or timeout' }, 400)
+      json(res, { error: 'invalid_value', field: 'status', hint: 'status must be approved, rejected, or timeout' }, 400)
       return true
     }
     if (typeof resolved_by !== 'string' || !resolved_by.trim()) {
-      json(res, { error: 'resolved_by is required' }, 400)
+      json(res, { error: 'required', field: 'resolved_by', hint: 'resolved_by is required' }, 400)
       return true
     }
     const msgId = typeof telegram_message_id === 'number' ? telegram_message_id : null
@@ -163,7 +163,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // main-agent side (approval-request-handling skill).
     const target = getApproval(idMatch[1])
     if (target && resolved_by.trim() === target.agent_id) {
-      json(res, { error: 'The requesting agent cannot approve its own request' }, 403)
+      json(res, { error: 'forbidden', hint: 'The requesting agent cannot approve its own request' }, 403)
       return true
     }
 
@@ -172,9 +172,9 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       // Either not found or already resolved
       const existing = getApproval(idMatch[1])
       if (!existing) {
-        json(res, { error: 'Not found' }, 404)
+        json(res, { error: 'not_found', hint: 'Not found' }, 404)
       } else {
-        json(res, { error: `Already resolved as ${existing.status}` }, 409)
+        json(res, { error: 'conflict', hint: `Already resolved as ${existing.status}` }, 409)
       }
       return true
     }

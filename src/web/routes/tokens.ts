@@ -82,7 +82,7 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
       const buf = await readBody(ctx.req)
       parsed = JSON.parse(buf.toString())
     } catch {
-      json(res, { error: 'invalid body' }, 400)
+      json(res, { error: 'parse_error', hint: 'invalid body' }, 400)
       return true
     }
 
@@ -90,9 +90,9 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
     const role = typeof parsed.role === 'string' ? parsed.role.trim() : ''
     const tenantId = typeof parsed.tenant_id === 'string' ? parsed.tenant_id.trim() : 'default'
 
-    if (!name) { json(res, { error: 'name is required' }, 400); return true }
+    if (!name) { json(res, { error: 'required', field: 'name', hint: 'name is required' }, 400); return true }
     if (!VALID_ROLES.has(role)) {
-      json(res, { error: `role must be one of: ${[...VALID_ROLES].join(', ')}` }, 400)
+      json(res, { error: 'invalid_value', field: 'role', hint: `role must be one of: ${[...VALID_ROLES].join(', ')}` }, 400)
       return true
     }
 
@@ -116,7 +116,7 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
       json(res, { token: rawToken, ...toPublic(row) }, 201)
     } catch (e) {
       logger.error({ err: e }, 'api_token create failed')
-      json(res, { error: 'failed to create token' }, 500)
+      json(res, { error: 'internal_error', hint: 'failed to create token' }, 500)
     }
     return true
   }
@@ -132,14 +132,14 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
       const str = buf.toString().trim()
       if (str) parsed = JSON.parse(str)
     } catch {
-      json(res, { error: 'invalid body' }, 400)
+      json(res, { error: 'parse_error', hint: 'invalid body' }, 400)
       return true
     }
 
     const db = getDb()
     const old = db.prepare('SELECT * FROM api_tokens WHERE id = ?').get(id) as TokenRow | undefined
-    if (!old) { json(res, { error: 'token not found' }, 404); return true }
-    if (old.revoked_at !== null) { json(res, { error: 'token already revoked' }, 409); return true }
+    if (!old) { json(res, { error: 'not_found', hint: 'token not found' }, 404); return true }
+    if (old.revoked_at !== null) { json(res, { error: 'conflict', hint: 'token already revoked' }, 409); return true }
 
     const now = Math.floor(Date.now() / 1000)
     const expiresInDays = typeof parsed.expires_in_days === 'number' ? parsed.expires_in_days : null
@@ -163,7 +163,7 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
       json(res, { token: rawToken, ...toPublic(newRow) })
     } catch (e) {
       logger.error({ err: e }, 'api_token rotate failed')
-      json(res, { error: 'failed to rotate token' }, 500)
+      json(res, { error: 'internal_error', hint: 'failed to rotate token' }, 500)
     }
     return true
   }
@@ -174,8 +174,8 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
     const id = Number(revokeMatch[1])
     const db = getDb()
     const row = db.prepare('SELECT * FROM api_tokens WHERE id = ?').get(id) as TokenRow | undefined
-    if (!row) { json(res, { error: 'token not found' }, 404); return true }
-    if (row.revoked_at !== null) { json(res, { error: 'token already revoked' }, 409); return true }
+    if (!row) { json(res, { error: 'not_found', hint: 'token not found' }, 404); return true }
+    if (row.revoked_at !== null) { json(res, { error: 'conflict', hint: 'token already revoked' }, 409); return true }
 
     const now = Math.floor(Date.now() / 1000)
     db.prepare('UPDATE api_tokens SET revoked_at = ? WHERE id = ?').run(now, id)
