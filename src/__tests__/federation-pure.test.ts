@@ -144,7 +144,7 @@ describe('purgeInboxDedup', () => {
 describe('validateInboxPayload - invalid inputs', () => {
   it('returns 400 when payload is null', () => {
     const r = validateInboxPayload(null, BASE_CFG, BASE_DEPS, 'peer-a')
-    expect(r).toMatchObject({ status: 400, error: expect.stringContaining('JSON object') })
+    expect(r).toMatchObject({ status: 400, error: 'invalid_value', hint: expect.stringContaining('JSON object') })
   })
 
   it('returns 400 when payload is an array', () => {
@@ -159,7 +159,7 @@ describe('validateInboxPayload - invalid inputs', () => {
 
   it('returns 400 when from is missing', () => {
     const r = validateInboxPayload({ to: 'marveen', content: 'hi' }, BASE_CFG, BASE_DEPS, 'peer-a')
-    expect(r).toMatchObject({ status: 400, error: expect.stringContaining('from') })
+    expect(r).toMatchObject({ status: 400, error: 'invalid_value', field: 'from' })
   })
 
   it('returns 400 when from has invalid format', () => {
@@ -171,17 +171,17 @@ describe('validateInboxPayload - invalid inputs', () => {
 describe('validateInboxPayload - from system checks', () => {
   it('returns 403 when from system equals local system id', () => {
     const r = validateInboxPayload({ from: 'local/agent1', to: 'marveen', content: 'hi' }, BASE_CFG, BASE_DEPS, null)
-    expect(r).toMatchObject({ status: 403, error: expect.stringContaining('from system equals this system') })
+    expect(r).toMatchObject({ status: 403, error: 'forbidden', hint: expect.stringContaining('from system equals this system') })
   })
 
   it('returns 403 when caller peer does not match from system', () => {
     const r = validateInboxPayload({ from: 'peer-b/agent1', to: 'marveen', content: 'hi' }, BASE_CFG, BASE_DEPS, 'peer-a')
-    expect(r).toMatchObject({ status: 403, error: expect.stringContaining('does not match the authenticated peer') })
+    expect(r).toMatchObject({ status: 403, error: 'forbidden', hint: expect.stringContaining('does not match the authenticated peer') })
   })
 
   it('returns 403 when dashboard caller uses unconfigured peer', () => {
     const r = validateInboxPayload({ from: 'unknown-peer/agent1', to: 'marveen', content: 'hi' }, BASE_CFG, BASE_DEPS, null)
-    expect(r).toMatchObject({ status: 403, error: expect.stringContaining('not a configured peer') })
+    expect(r).toMatchObject({ status: 403, error: 'forbidden', hint: expect.stringContaining('not a configured peer') })
   })
 
   it('allows dashboard caller to use configured peer', () => {
@@ -193,7 +193,7 @@ describe('validateInboxPayload - from system checks', () => {
 describe('validateInboxPayload - to field checks', () => {
   it('returns 403 when to contains slash', () => {
     const r = validateInboxPayload({ from: 'peer-a/agent1', to: 'foo/bar', content: 'hi' }, BASE_CFG, BASE_DEPS, 'peer-a')
-    expect(r).toMatchObject({ status: 403, error: expect.stringContaining('local') })
+    expect(r).toMatchObject({ status: 403, error: 'forbidden', field: 'to' })
   })
 
   it('returns 400 when to is not a string', () => {
@@ -208,14 +208,14 @@ describe('validateInboxPayload - to field checks', () => {
 
   it('returns 404 when to agent is not known', () => {
     const r = validateInboxPayload({ from: 'peer-a/agent1', to: 'unknownagent', content: 'hi' }, BASE_CFG, BASE_DEPS, 'peer-a')
-    expect(r).toMatchObject({ status: 404, error: expect.stringContaining('Unknown recipient') })
+    expect(r).toMatchObject({ status: 404, error: 'not_found', hint: expect.stringContaining('Unknown recipient') })
   })
 })
 
 describe('validateInboxPayload - content checks', () => {
   it('returns 400 when content is empty', () => {
     const r = validateInboxPayload({ from: 'peer-a/agent1', to: 'marveen', content: '' }, BASE_CFG, BASE_DEPS, 'peer-a')
-    expect(r).toMatchObject({ status: 400, error: expect.stringContaining('content') })
+    expect(r).toMatchObject({ status: 400, error: 'required', field: 'content' })
   })
 
   it('returns 400 when content is not a string', () => {
@@ -232,12 +232,12 @@ describe('validateInboxPayload - content checks', () => {
 describe('validateInboxPayload - ref field', () => {
   it('returns 400 when ref is empty string', () => {
     const r = validateInboxPayload({ from: 'peer-a/agent1', to: 'marveen', content: 'hi', ref: '' }, BASE_CFG, BASE_DEPS, 'peer-a')
-    expect(r).toMatchObject({ status: 400, error: expect.stringContaining('ref') })
+    expect(r).toMatchObject({ status: 400, error: 'invalid_value', field: 'ref' })
   })
 
   it('returns 400 when ref is too long', () => {
     const r = validateInboxPayload({ from: 'peer-a/agent1', to: 'marveen', content: 'hi', ref: 'x'.repeat(200) }, BASE_CFG, BASE_DEPS, 'peer-a')
-    expect(r).toMatchObject({ status: 400, error: expect.stringContaining('ref') })
+    expect(r).toMatchObject({ status: 400, error: 'invalid_value', field: 'ref' })
   })
 
   it('returns 400 when ref is not a string', () => {
