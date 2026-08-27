@@ -120,7 +120,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       body = await readBody(req, { maxBytes: 256 * 1024 })
     } catch (err) {
       if (err instanceof RequestBodyTooLargeError) {
-        json(res, { error: `Request body too large (max ${err.limit} bytes)` }, 413)
+        json(res, { error: 'limit_exceeded', hint: `Request body too large (max ${err.limit} bytes)` }, 413)
         return true
       }
       throw err
@@ -171,7 +171,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       body = await readBody(req, { maxBytes: 256 * 1024 })
     } catch (err) {
       if (err instanceof RequestBodyTooLargeError) {
-        json(res, { error: `Request body too large (max ${err.limit} bytes)` }, 413)
+        json(res, { error: 'limit_exceeded', hint: `Request body too large (max ${err.limit} bytes)` }, 413)
         return true
       }
       throw err
