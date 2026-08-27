@@ -311,9 +311,9 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     const model = resolveModelId(rawModel || DEFAULT_MODEL)
     const profileId = (rawProfile || 'default').trim() || 'default'
 
-    if (!name) { json(res, { error: 'Name is required' }, 400); return true }
-    if (!description) { json(res, { error: 'Description is required' }, 400); return true }
-    if (existsSync(agentDir(name))) { json(res, { error: 'Agent already exists' }, 409); return true }
+    if (!name) { json(res, { error: 'required', field: 'name', hint: 'name is required' }, 400); return true }
+    if (!description) { json(res, { error: 'required', field: 'description', hint: 'description is required' }, 400); return true }
+    if (existsSync(agentDir(name))) { json(res, { error: 'conflict', hint: 'An agent with this name already exists' }, 409); return true }
 
     scaffoldAgentDir(name)
     writeAgentModel(name, model)
@@ -431,12 +431,12 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
 
     if (contentType.includes('application/json')) {
       const { galleryAvatar } = JSON.parse(body.toString()) as { galleryAvatar: string }
-      if (!galleryAvatar) { json(res, { error: 'No avatar specified' }, 400); return true }
+      if (!galleryAvatar) { json(res, { error: 'required', field: 'avatar', hint: 'avatar is required' }, 400); return true }
       if (galleryAvatar.includes('..') || galleryAvatar.includes('/') || galleryAvatar.includes('\\')) {
-        json(res, { error: 'Invalid avatar name' }, 400); return true
+        json(res, { error: 'invalid_value', field: 'name', hint: 'avatar name must not contain path separators' }, 400); return true
       }
       const srcPath = join(webDir, 'avatars', galleryAvatar)
-      if (!existsSync(srcPath)) { json(res, { error: 'Avatar not found' }, 404); return true }
+      if (!existsSync(srcPath)) { json(res, { error: 'not_found', field: 'avatar' }, 404); return true }
       const ext = extname(galleryAvatar) || '.png'
       const destPath = join(agentDir(name), `avatar${ext}`)
       copyFileSync(srcPath, destPath)
@@ -445,7 +445,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
       return true
     } else {
       const { file } = parseMultipart(body, contentType)
-      if (!file) { json(res, { error: 'No file uploaded' }, 400); return true }
+      if (!file) { json(res, { error: 'required', field: 'file', hint: 'file upload is required' }, 400); return true }
       const ext = extname(file.name) || '.png'
       const destPath = join(agentDir(name), `avatar${ext}`)
       writeFileSync(destPath, file.data)
@@ -487,7 +487,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     if (!assertAgentExists(name, res)) return true
     const data = await readJsonBody<{ profile?: string }>(req)
     const requested = (data.profile || '').trim()
-    if (!requested) { json(res, { error: 'profile is required' }, 400); return true }
+    if (!requested) { json(res, { error: 'required', field: 'profile', hint: 'profile is required' }, 400); return true }
     const profile = loadProfileTemplate(requested)
     if (profile.id !== requested) { json(res, { error: `Unknown profile: ${requested}` }, 400); return true }
     writeAgentSecurityProfile(name, requested)
@@ -598,7 +598,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
   // would be read as an agent name.
   if (path === '/api/agents/export-all' && method === 'GET') {
     const names = listAgentNames().filter((n) => n !== MAIN_AGENT_ID)
-    if (names.length === 0) { json(res, { error: 'No agents to export' }, 404); return true }
+    if (names.length === 0) { json(res, { error: 'not_found', hint: 'no agents available to export' }, 404); return true }
     const includeSecrets = /[?&]secrets=(1|true)\b/.test(req.url || '')
     const work = mkdtempSync(join(tmpdir(), 'marveen-fleet-dl-'))
     const outPath = join(work, fleetBundleFilename())
@@ -618,7 +618,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
       res.end(data)
     } catch (err) {
       logger.error({ err }, 'Fleet export failed')
-      json(res, { error: 'Export failed', detail: err instanceof Error ? err.message : String(err) }, 500)
+      json(res, { error: 'internal_error', detail: err instanceof Error ? err.message : String(err) }, 500)
     } finally {
       rmSync(work, { recursive: true, force: true })
     }
@@ -629,7 +629,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
   if (exportMatch && method === 'GET') {
     const name = decodeURIComponent(exportMatch[1])
     if (name === MAIN_AGENT_ID) {
-      json(res, { error: 'The main agent cannot be exported as a bundle; use scripts/backup.sh for a whole-host move.' }, 400)
+      json(res, { error: 'not_supported', hint: 'the main agent cannot be exported as a bundle; use scripts/backup.sh for a whole-host move' }, 400)
       return true
     }
     if (!assertAgentExists(name, res)) return true
@@ -652,7 +652,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
       res.end(data)
     } catch (err) {
       logger.error({ err, name }, 'Agent export failed')
-      json(res, { error: 'Export failed', detail: err instanceof Error ? err.message : String(err) }, 500)
+      json(res, { error: 'internal_error', detail: err instanceof Error ? err.message : String(err) }, 500)
     } finally {
       rmSync(work, { recursive: true, force: true })
     }
@@ -678,7 +678,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
       if (nameMatch) overrideName = decodeURIComponent(nameMatch[1]).trim()
       overwrite = /[?&]overwrite=(1|true)\b/.test(url)
     }
-    if (!bundle || bundle.length === 0) { json(res, { error: 'No bundle uploaded' }, 400); return true }
+    if (!bundle || bundle.length === 0) { json(res, { error: 'required', field: 'bundle', hint: 'bundle upload is required' }, 400); return true }
     try {
       // One endpoint accepts either format: peek the manifest, then dispatch to
       // the single-agent or whole-fleet importer.
@@ -725,7 +725,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
   const voiceConfigMatch = path.match(/^\/api\/agents\/([^/]+)\/voice-config$/)
   if (voiceConfigMatch && method === 'GET') {
     const name = decodeURIComponent(voiceConfigMatch[1])
-    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'not_found', field: 'name' }, 404); return true }
     json(res, { ...readAgentVoiceConfig(name), availableVoices: Array.from(KNOWN_VOICE_MODELS) })
     return true
   }
@@ -734,10 +734,10 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
   // Body: { responseMode?: 'text'|'voice'|'auto', voiceModel?: string }
   if (voiceConfigMatch && method === 'PUT') {
     const name = decodeURIComponent(voiceConfigMatch[1])
-    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'not_found', field: 'name' }, 404); return true }
     const body = await readBody(req)
     let data: { responseMode?: string; voiceModel?: string }
-    try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'invalid JSON' }, 400); return true }
+    try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'request body must be valid JSON' }, 400); return true }
     try {
       writeAgentVoiceConfig(name, {
         responseMode: data.responseMode as 'text' | 'voice' | 'auto' | undefined,
@@ -756,16 +756,16 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
   const agentMatch = path.match(/^\/api\/agents\/([^/]+)$/)
   if (agentMatch && method === 'GET') {
     const name = decodeURIComponent(agentMatch[1])
-    if (!isKnownAgent(name)) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!isKnownAgent(name)) { json(res, { error: 'not_found', field: 'name' }, 404); return true }
     json(res, getAgentDetail(name))
     return true
   }
 
   if (agentMatch && method === 'PUT') {
     const name = decodeURIComponent(agentMatch[1])
-    if (!isKnownAgent(name)) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!isKnownAgent(name)) { json(res, { error: 'not_found', field: 'name' }, 404); return true }
     if (isMainChannelsAgent(name)) {
-      json(res, { error: 'Main agent configuration is read-only through the dashboard API' }, 400)
+      json(res, { error: 'forbidden', hint: 'main agent configuration is read-only through the dashboard API' }, 400)
       return true
     }
     const configRoot = agentConfigRoot(name)
@@ -790,7 +790,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
       // root: a memory boundary there is meaningless, and exposing the knob
       // for it would invite the classic main-agent footgun. Sub-agents only.
       if (isMainChannelsAgent(name)) {
-        json(res, { error: 'memoryIsolation is not applicable to the main agent' }, 400)
+        json(res, { error: 'not_supported', hint: 'memoryIsolation is not applicable to the main agent' }, 400)
         return true
       }
       writeAgentMemoryIsolation(name, data.memoryIsolation === true)
@@ -817,7 +817,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
       } else if (typeof mp === 'string' && isModelProfileId(mp)) {
         const mapState = readModelProfileMap()
         if (!mapState) {
-          json(res, { error: 'No model-profile map is provisioned on this deployment; a modelProfile cannot be honoured yet.' }, 400)
+          json(res, { error: 'not_supported', hint: 'no model-profile map is provisioned on this deployment; a modelProfile cannot be honoured yet' }, 400)
           return true
         }
         if (!mapState.ok) {
@@ -853,7 +853,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
       // CLAUDE_CONFIG_DIR), not this per-agent path, so a plan set here would be
       // a silent no-op at launch. Reject loudly rather than mislead the UI.
       if (name === MAIN_AGENT_ID) {
-        json(res, { error: 'main agent plan is managed via channels.sh, not settable here' }, 400)
+        json(res, { error: 'not_supported', hint: 'main agent plan is managed via channels.sh, not settable here' }, 400)
         return true
       }
       const planId = data.claudePlan.trim()
@@ -870,7 +870,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
   if (agentMatch && method === 'DELETE') {
     const name = decodeURIComponent(agentMatch[1])
     const dir = agentDir(name)
-    if (!existsSync(dir)) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!existsSync(dir)) { json(res, { error: 'not_found', field: 'name' }, 404); return true }
     // Stop the running session BEFORE removing the dir (#842). Otherwise the
     // orphaned session survives, rewrites a minimal .claude-config under the
     // agent dir, and the agent "returns" as an empty draft that still reports

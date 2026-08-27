@@ -177,7 +177,7 @@ describe('agents-crud routes', () => {
     const handled = await tryHandleAgentsCrud(ctx, WEB_DIR)
     expect(handled).toBe(true)
     expect(statusCode()).toBe(404)
-    expect(responseBody()).toMatchObject({ error: expect.stringContaining('not found') })
+    expect(responseBody()).toMatchObject({ error: 'not_found' })
   })
 
   it('unrelated path returns false', async () => {
