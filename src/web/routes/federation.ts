@@ -523,7 +523,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     if (isErr(payload)) return true
     const enabled = payload !== null && typeof payload === 'object' && (payload as Record<string, unknown>).enabled === true
     const flipped = setFederationEnabledPreservingFile(enabled)
-    if (!flipped) { json(res, { error: 'federation.json failed validation -- federation stays disabled; fix or remove the file' }, 409); return true }
+    if (!flipped) { json(res, { error: 'conflict', hint: 'federation.json failed validation -- federation stays disabled; fix or remove the file' }, 409); return true }
     if (!enabled) {
       resetPeerBackoff()
       resetFederationPollerCache()
@@ -544,10 +544,10 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     if (isErr(payload)) return true
     const mode = payload !== null && typeof payload === 'object' ? (payload as Record<string, unknown>).mode : undefined
     if (typeof mode !== 'string' || !FEDERATION_ROUTING_MODES.includes(mode as FederationRoutingMode)) {
-      json(res, { error: `invalid mode (${FEDERATION_ROUTING_MODES.join('|')})` }, 400); return true
+      json(res, { error: 'invalid_value', field: 'mode', hint: `invalid mode (${FEDERATION_ROUTING_MODES.join('|')})` }, 400); return true
     }
     if (!setFederationRoutingModePreservingFile(mode as FederationRoutingMode)) {
-      json(res, { error: 'federation.json unreadable -- routing mode not persisted' }, 409); return true
+      json(res, { error: 'conflict', hint: 'federation.json unreadable -- routing mode not persisted' }, 409); return true
     }
     ensureFederationClaudeMdSection()
     logger.warn({ fed: true, routingMode: mode }, 'federation: routing mode set via POST /api/federation/routing-mode')
@@ -560,28 +560,28 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/federation/peers' && method === 'POST') {
     const payload = await readJsonBody(ctx)
     if (isErr(payload)) return true
-    if (payload === null || typeof payload !== 'object') { json(res, { error: 'Body must be a JSON object' }, 400); return true }
+    if (payload === null || typeof payload !== 'object') { json(res, { error: 'invalid_value', hint: 'Body must be a JSON object' }, 400); return true }
     if (refuseIfConfigUnhealthy(res)) return true
     const p = payload as Record<string, unknown>
     // --- synchronous read->mutate->write section (no await below) ---
     const cfg = getFederationConfig()
-    if (!isValidIdSegment(p.id)) { json(res, { error: 'invalid peer id' }, 400); return true }
+    if (!isValidIdSegment(p.id)) { json(res, { error: 'invalid_value', field: 'id', hint: 'invalid peer id' }, 400); return true }
     // Case-insensitive ids, stored lowercase (the operator keeps typing the
     // display name 'Teodor' for the slug 'teodor' -- see L1).
     const id = (p.id as string).toLowerCase()
-    if (id === (cfg.systemId || MAIN_AGENT_ID).toLowerCase()) { json(res, { error: 'peer id equals own systemId' }, 400); return true }
-    if (cfg.peers.some((peer) => peer.id === id)) { json(res, { error: `peer '${id}' already exists` }, 409); return true }
-    if (!isAcceptablePeerBaseUrl(p.baseUrl)) { json(res, { error: 'invalid baseUrl (https required; http only on loopback)' }, 400); return true }
+    if (id === (cfg.systemId || MAIN_AGENT_ID).toLowerCase()) { json(res, { error: 'invalid_value', field: 'id', hint: 'peer id equals own systemId' }, 400); return true }
+    if (cfg.peers.some((peer) => peer.id === id)) { json(res, { error: 'conflict', hint: `peer '${id}' already exists` }, 409); return true }
+    if (!isAcceptablePeerBaseUrl(p.baseUrl)) { json(res, { error: 'invalid_value', field: 'baseUrl', hint: 'invalid baseUrl (https required; http only on loopback)' }, 400); return true }
     let addWindow: number | undefined
     if (p.abandonWindowMinutes !== undefined && p.abandonWindowMinutes !== null) {
       if (typeof p.abandonWindowMinutes !== 'number' || !Number.isInteger(p.abandonWindowMinutes)
         || p.abandonWindowMinutes < MIN_ABANDON_WINDOW_MINUTES || p.abandonWindowMinutes > MAX_ABANDON_WINDOW_MINUTES) {
-        json(res, { error: `invalid abandonWindowMinutes (${MIN_ABANDON_WINDOW_MINUTES}..${MAX_ABANDON_WINDOW_MINUTES})` }, 400); return true
+        json(res, { error: 'invalid_value', field: 'abandonWindowMinutes', hint: `invalid abandonWindowMinutes (${MIN_ABANDON_WINDOW_MINUTES}..${MAX_ABANDON_WINDOW_MINUTES})` }, 400); return true
       }
       addWindow = p.abandonWindowMinutes
     }
     if (p.shareCapabilitySummaries !== undefined && typeof p.shareCapabilitySummaries !== 'boolean') {
-      json(res, { error: 'invalid shareCapabilitySummaries (boolean)' }, 400); return true
+      json(res, { error: 'invalid_value', field: 'shareCapabilitySummaries', hint: 'invalid shareCapabilitySummaries (boolean)' }, 400); return true
     }
     const inboundToken = generatePeerInboundToken()
     const peer: FederationPeer = {
@@ -599,7 +599,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     // hazard the shareCapabilitySummaries note guards against).
     const next: FederationConfig = { enabled: cfg.enabled, systemId: cfg.systemId || MAIN_AGENT_ID, routingMode: cfg.routingMode, peers: [...cfg.peers, peer] }
     const validated = validateFederationConfig(next)
-    if (typeof validated === 'string') { json(res, { error: `Invalid peer: ${validated}` }, 400); return true }
+    if (typeof validated === 'string') { json(res, { error: 'invalid_value', hint: `Invalid peer: ${validated}` }, 400); return true }
     writeFederationConfig(validated)
     ensureFederationClaudeMdSection()
     logger.warn({ fed: true, peer: id }, 'federation: peer added, inbound token minted')
@@ -612,43 +612,43 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     // Lowercase: ids are case-insensitive, stored lowercase.
     const id = decodeURIComponent(peerIdMatch[1]).toLowerCase()
     // %2F could smuggle a slash into the decoded id; validate before ANY use.
-    if (!isValidIdSegment(id)) { json(res, { error: 'invalid peer id' }, 400); return true }
+    if (!isValidIdSegment(id)) { json(res, { error: 'invalid_value', field: 'id', hint: 'invalid peer id' }, 400); return true }
     if (refuseIfConfigUnhealthy(res)) return true
 
     if (method === 'PATCH') {
       const payload = await readJsonBody(ctx)
       if (isErr(payload)) return true
-      if (payload === null || typeof payload !== 'object') { json(res, { error: 'Body must be a JSON object' }, 400); return true }
+      if (payload === null || typeof payload !== 'object') { json(res, { error: 'invalid_value', hint: 'Body must be a JSON object' }, 400); return true }
       const p = payload as Record<string, unknown>
       // --- synchronous read->mutate->write section ---
       const cfg = getFederationConfig()
       const existing = cfg.peers.find((peer) => peer.id === id)
-      if (!existing) { json(res, { error: 'Unknown peer' }, 404); return true }
+      if (!existing) { json(res, { error: 'not_found', hint: 'Unknown peer' }, 404); return true }
       const updated: FederationPeer = { ...existing }
       if (p.baseUrl !== undefined) {
-        if (!isAcceptablePeerBaseUrl(p.baseUrl)) { json(res, { error: 'invalid baseUrl' }, 400); return true }
+        if (!isAcceptablePeerBaseUrl(p.baseUrl)) { json(res, { error: 'invalid_value', field: 'baseUrl', hint: 'invalid baseUrl' }, 400); return true }
         updated.baseUrl = (p.baseUrl as string).replace(/\/+$/, '')
       }
       if (p.outboundToken !== undefined) {
         if (p.outboundToken === '' || p.outboundToken === null) updated.outboundToken = ''
         else if (typeof p.outboundToken === 'string' && p.outboundToken.trim().length >= FEDERATION_MIN_TOKEN_LENGTH) updated.outboundToken = p.outboundToken.trim()
-        else { json(res, { error: `invalid outboundToken (min ${FEDERATION_MIN_TOKEN_LENGTH} chars, or empty)` }, 400); return true }
+        else { json(res, { error: 'invalid_value', field: 'outboundToken', hint: `invalid outboundToken (min ${FEDERATION_MIN_TOKEN_LENGTH} chars, or empty)` }, 400); return true }
       }
       if (p.abandonWindowMinutes !== undefined) {
         if (p.abandonWindowMinutes === null) delete updated.abandonWindowMinutes
         else if (typeof p.abandonWindowMinutes === 'number' && Number.isInteger(p.abandonWindowMinutes)
           && p.abandonWindowMinutes >= MIN_ABANDON_WINDOW_MINUTES && p.abandonWindowMinutes <= MAX_ABANDON_WINDOW_MINUTES) {
           updated.abandonWindowMinutes = p.abandonWindowMinutes
-        } else { json(res, { error: `invalid abandonWindowMinutes (${MIN_ABANDON_WINDOW_MINUTES}..${MAX_ABANDON_WINDOW_MINUTES})` }, 400); return true }
+        } else { json(res, { error: 'invalid_value', field: 'abandonWindowMinutes', hint: `invalid abandonWindowMinutes (${MIN_ABANDON_WINDOW_MINUTES}..${MAX_ABANDON_WINDOW_MINUTES})` }, 400); return true }
       }
       if (p.shareCapabilitySummaries !== undefined) {
-        if (typeof p.shareCapabilitySummaries !== 'boolean') { json(res, { error: 'invalid shareCapabilitySummaries (boolean)' }, 400); return true }
+        if (typeof p.shareCapabilitySummaries !== 'boolean') { json(res, { error: 'invalid_value', field: 'shareCapabilitySummaries', hint: 'invalid shareCapabilitySummaries (boolean)' }, 400); return true }
         if (p.shareCapabilitySummaries) updated.shareCapabilitySummaries = true
         else delete updated.shareCapabilitySummaries
       }
       const next: FederationConfig = { ...cfg, peers: cfg.peers.map((peer) => (peer.id === id ? updated : peer)) }
       const validated = validateFederationConfig(next)
-      if (typeof validated === 'string') { json(res, { error: `Invalid peer update: ${validated}` }, 400); return true }
+      if (typeof validated === 'string') { json(res, { error: 'invalid_value', hint: `Invalid peer update: ${validated}` }, 400); return true }
       writeFederationConfig(validated)
       resetPeerBackoff(id) // a token/url fix should get a fresh attempt now, not after the old backoff
       ensureFederationClaudeMdSection()
@@ -660,10 +660,10 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     // DELETE: remove the peer + purge everything scoped to it.
     // --- synchronous read->mutate->write section ---
     const cfg = getFederationConfig()
-    if (!cfg.peers.some((peer) => peer.id === id)) { json(res, { error: 'Unknown peer' }, 404); return true }
+    if (!cfg.peers.some((peer) => peer.id === id)) { json(res, { error: 'not_found', hint: 'Unknown peer' }, 404); return true }
     const next: FederationConfig = { ...cfg, peers: cfg.peers.filter((peer) => peer.id !== id) }
     const validated = validateFederationConfig(next)
-    if (typeof validated === 'string') { json(res, { error: `Invalid config after removal: ${validated}` }, 400); return true }
+    if (typeof validated === 'string') { json(res, { error: 'invalid_value', hint: `Invalid config after removal: ${validated}` }, 400); return true }
     writeFederationConfig(validated)
     const failed = failPendingFederatedMessages(id, `Federation peer '${id}' removed while pending`)
     purgeInboxDedup(id)
@@ -678,9 +678,9 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
   const revealMatch = path.match(/^\/api\/federation\/peers\/([^/]+)\/inbound-token$/)
   if (revealMatch && method === 'GET') {
     const id = decodeURIComponent(revealMatch[1]).toLowerCase()
-    if (!isValidIdSegment(id)) { json(res, { error: 'invalid peer id' }, 400); return true }
+    if (!isValidIdSegment(id)) { json(res, { error: 'invalid_value', field: 'id', hint: 'invalid peer id' }, 400); return true }
     const peer = getFederationConfig().peers.find((p) => p.id === id)
-    if (!peer) { json(res, { error: 'Unknown peer' }, 404); return true }
+    if (!peer) { json(res, { error: 'not_found', hint: 'Unknown peer' }, 404); return true }
     // This secret admits a REMOTE system into our inbox -- revealing it is a
     // security-relevant event, log it (the failed-auth warns set the
     // precedent).
@@ -692,16 +692,16 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
   const rotateMatch = path.match(/^\/api\/federation\/peers\/([^/]+)\/rotate-inbound-token$/)
   if (rotateMatch && method === 'POST') {
     const id = decodeURIComponent(rotateMatch[1]).toLowerCase()
-    if (!isValidIdSegment(id)) { json(res, { error: 'invalid peer id' }, 400); return true }
+    if (!isValidIdSegment(id)) { json(res, { error: 'invalid_value', field: 'id', hint: 'invalid peer id' }, 400); return true }
     if (refuseIfConfigUnhealthy(res)) return true
     // --- synchronous read->mutate->write section ---
     const cfg = getFederationConfig()
     const existing = cfg.peers.find((peer) => peer.id === id)
-    if (!existing) { json(res, { error: 'Unknown peer' }, 404); return true }
+    if (!existing) { json(res, { error: 'not_found', hint: 'Unknown peer' }, 404); return true }
     const fresh = generatePeerInboundToken()
     const next: FederationConfig = { ...cfg, peers: cfg.peers.map((peer) => (peer.id === id ? { ...peer, inboundToken: fresh } : peer)) }
     const validated = validateFederationConfig(next)
-    if (typeof validated === 'string') { json(res, { error: `Invalid config after rotation: ${validated}` }, 400); return true }
+    if (typeof validated === 'string') { json(res, { error: 'invalid_value', hint: `Invalid config after rotation: ${validated}` }, 400); return true }
     writeFederationConfig(validated)
     logger.warn({ fed: true, peer: id }, 'federation: inbound token rotated -- the peer must update its outbound token')
     json(res, { id, inboundToken: fresh })
