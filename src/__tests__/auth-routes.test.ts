@@ -162,7 +162,7 @@ describe('POST /api/auth/login', () => {
     const badPass = await call('POST', '/api/auth/login', { body: { username: 'alice', password: 'wrong-password' } })
     expect(badUser.res.statusCode).toBe(401)
     expect(badPass.res.statusCode).toBe(401)
-    expect(badUser.json()).toEqual({ error: 'Invalid credentials' })
+    expect(badUser.json()).toEqual({ error: 'unauthorized', hint: 'Invalid username or password' })
     expect(badPass.json()).toEqual(badUser.json())
   })
 
