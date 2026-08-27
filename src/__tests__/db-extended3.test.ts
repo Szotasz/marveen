@@ -233,7 +233,10 @@ describe('reparentKanbanCard branches', () => {
   it('returns error for nonexistent card', () => {
     const result = reparentKanbanCard('nonexistent-card', null)
     expect(result.ok).toBe(false)
-    expect(result.error).toContain('not found')
+    if (!result.ok) {
+      expect(result.code).toBe('not_found')
+      expect(result.hint).toMatch(/not found/i)
+    }
   })
 
   it('returns ok:true for top-level reparent', () => {
@@ -248,7 +251,10 @@ describe('reparentKanbanCard branches', () => {
     createKanbanCard({ id: selfId, title: 'Self-parent test', status: 'planned' })
     const result = reparentKanbanCard(selfId, selfId)
     expect(result.ok).toBe(false)
-    expect(result.error).toContain('own parent')
+    if (!result.ok) {
+      expect(result.code).toBe('invalid_value')
+      expect(result.hint).toMatch(/own parent/i)
+    }
   })
 })
 

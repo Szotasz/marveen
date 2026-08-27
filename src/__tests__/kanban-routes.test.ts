@@ -347,10 +347,11 @@ describe('tryHandleKanban', () => {
 
   it('PATCH /api/kanban/:id/parent returns 400 on error', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.reparentKanbanCard).mockReturnValueOnce({ ok: false, error: 'depth limit exceeded' })
+    vi.mocked(db.reparentKanbanCard).mockReturnValueOnce({ ok: false, code: 'limit_exceeded', hint: 'Reparenting would exceed max depth of 3 levels' })
     const { ctx, out } = makeCtx('PATCH', '/api/kanban/card1/parent', { parent_id: 'other' })
     await tryHandleKanban(ctx)
     expect(out.status).toBe(400)
+    expect(out.body.error).toBe('limit_exceeded')
   })
 
   it('POST /api/kanban/:id/breakdown returns subtasks', async () => {
