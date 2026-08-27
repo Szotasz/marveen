@@ -1459,8 +1459,14 @@ function createCardEl(card, embeddedChildren = []) {
   // Skipped for done cards. Config thresholds and colours come from window._marveen.kanbanAging.
   let agingBadgeHtml = ''
   const agingCfg = window._marveen?.kanbanAging
-  if (agingCfg && card.updated_at && card.status !== 'done') {
-    const hoursOld = (Date.now() / 1000 - card.updated_at) / 3600
+  // Age from the last STATUS CHANGE, not from updated_at. A comment sets
+  // updated_at (see addKanbanComment in src/db.ts), so a card that has not
+  // moved in weeks used to look fresh as soon as anyone wrote on it -- and the
+  // main agent writes on cards more than anyone. Falls back to updated_at only
+  // if the API is older than this field.
+  const agingBasis = card.last_status_at ?? card.updated_at
+  if (agingCfg && agingBasis && card.status !== 'done') {
+    const hoursOld = (Date.now() / 1000 - agingBasis) / 3600
     let agingLevel = null
     let agingColor = null
     if (hoursOld >= agingCfg.criticalH) {
@@ -1473,7 +1479,7 @@ function createCardEl(card, embeddedChildren = []) {
     if (agingLevel) {
       const days = Math.floor(hoursOld / 24)
       const ageLabel = days >= 1 ? `${days}d` : `${Math.floor(hoursOld)}h`
-      const exact = new Date(card.updated_at * 1000).toLocaleString('hu-HU')
+      const exact = new Date(agingBasis * 1000).toLocaleString('hu-HU')
       agingBadgeHtml = `<span class="kanban-card-aging-badge kanban-card-aging-${agingLevel}" style="color:${agingColor}" title="${t('kanban.aging.tooltip', { exact })}">⏳ ${ageLabel}</span>`
       el.dataset.aging = agingLevel
       el.style.setProperty('--card-aging-color', agingColor)

@@ -1735,6 +1735,10 @@ export interface KanbanCard {
   sort_order: number
   created_at: number
   updated_at: number
+  // Unix seconds of the card's last STATUS CHANGE (from kanban_card_events),
+  // falling back to created_at when it has never moved. Use this for ageing and
+  // stuck detection; updated_at is reset by comments and edits.
+  last_status_at?: number
   archived_at: number | null
   // Set the first time the card is moved to in_progress and the assigned agent
   // is woken (kanban -> agent dispatch). NULL = never dispatched; the once-only
@@ -1757,8 +1761,18 @@ export function listKanbanCards(): KanbanCard[] {
   db.prepare(
     "UPDATE kanban_cards SET archived_at = ? WHERE status = 'done' AND archived_at IS NULL AND updated_at < ?"
   ).run(Math.floor(Date.now() / 1000), archiveCutoff)
+  // last_status_at: when the card LAST CHANGED COLUMN, not when its row was
+  // last touched. These are not the same thing, and the difference is a real
+  // blind spot: addKanbanComment() sets updated_at, so a card that has not
+  // moved in weeks looks fresh the moment anyone comments on it. The main agent
+  // comments more than anyone, so ageing measured on updated_at is mostly
+  // measuring the watcher, not the work. Falls back to created_at for cards
+  // that have never moved (no event rows), which is the honest age for those.
   return db
-    .prepare('SELECT rowid AS seq, * FROM kanban_cards WHERE archived_at IS NULL ORDER BY sort_order ASC')
+    .prepare(`SELECT c.rowid AS seq, c.*,
+                     COALESCE((SELECT MAX(e.created_at) FROM kanban_card_events e
+                               WHERE e.card_id = c.id), c.created_at) AS last_status_at
+              FROM kanban_cards c WHERE c.archived_at IS NULL ORDER BY c.sort_order ASC`)
     .all() as KanbanCard[]
 }
 
