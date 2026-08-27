@@ -71,14 +71,14 @@ describe('readSkillAccessConfig', () => {
 
 describe('deriveAgentIdFromCwd', () => {
   it('identifies a sub-agent from a direct agents/<name> path', () => {
-    expect(deriveAgentIdFromCwd('/home/user/marveen/agents/daidalosz')).toBe('daidalosz')
-    expect(deriveAgentIdFromCwd('/home/user/marveen/agents/daidalosz/')).toBe('daidalosz')
+    expect(deriveAgentIdFromCwd('/home/user/marveen/agents/agent-a')).toBe('agent-a')
+    expect(deriveAgentIdFromCwd('/home/user/marveen/agents/agent-a/')).toBe('agent-a')
   })
 
   it('identifies a sub-agent from a nested path inside agents/<name> (FIX 1: no end-anchor bypass)', () => {
-    expect(deriveAgentIdFromCwd('/home/user/marveen/agents/daidalosz/workspace')).toBe('daidalosz')
-    expect(deriveAgentIdFromCwd('/home/user/marveen/agents/daidalosz/workspace/some-project')).toBe('daidalosz')
-    expect(deriveAgentIdFromCwd('/home/user/marveen/agents/talosz/.claude/worktree-abc')).toBe('talosz')
+    expect(deriveAgentIdFromCwd('/home/user/marveen/agents/agent-a/workspace')).toBe('agent-a')
+    expect(deriveAgentIdFromCwd('/home/user/marveen/agents/agent-a/workspace/some-project')).toBe('agent-a')
+    expect(deriveAgentIdFromCwd('/home/user/marveen/agents/agent-b/.claude/worktree-abc')).toBe('agent-b')
   })
 
   it('returns null for the repo root (main agent)', () => {
@@ -96,45 +96,45 @@ describe('deriveAgentIdFromCwd', () => {
 
 describe('gateDecision', () => {
   it('allows non-Skill tool calls unconditionally', () => {
-    expect(gateDecision('Bash', { command: 'ls' }, 'daidalosz', {})).toEqual({ allow: true })
-    expect(gateDecision('WebFetch', { url: 'https://x.com' }, 'daidalosz', { 'web-skill': ['atlas'] })).toEqual({ allow: true })
+    expect(gateDecision('Bash', { command: 'ls' }, 'agent-a', {})).toEqual({ allow: true })
+    expect(gateDecision('WebFetch', { url: 'https://x.com' }, 'agent-a', { 'web-skill': ['main-agent'] })).toEqual({ allow: true })
   })
 
   it('allows a main agent (agentId null) regardless of config', () => {
-    const config = { 'secret-skill': ['daidalosz'] }
+    const config = { 'secret-skill': ['agent-a'] }
     expect(gateDecision('Skill', { skill: 'secret-skill' }, null, config)).toEqual({ allow: true })
   })
 
   it('allows a skill that is not in the config', () => {
-    expect(gateDecision('Skill', { skill: 'unknown-skill' }, 'talosz', {})).toEqual({ allow: true })
+    expect(gateDecision('Skill', { skill: 'unknown-skill' }, 'agent-b', {})).toEqual({ allow: true })
   })
 
   it('allows a listed agent to call a restricted skill', () => {
-    const config = { 'restricted-skill': ['daidalosz', 'atlas'] }
-    expect(gateDecision('Skill', { skill: 'restricted-skill' }, 'daidalosz', config)).toEqual({ allow: true })
+    const config = { 'restricted-skill': ['agent-a', 'main-agent'] }
+    expect(gateDecision('Skill', { skill: 'restricted-skill' }, 'agent-a', config)).toEqual({ allow: true })
   })
 
   it('DENIES an unlisted agent calling a restricted skill (known-positive control)', () => {
-    const config = { 'restricted-skill': ['atlas'] }
-    const result = gateDecision('Skill', { skill: 'restricted-skill' }, 'talosz', config)
+    const config = { 'restricted-skill': ['main-agent'] }
+    const result = gateDecision('Skill', { skill: 'restricted-skill' }, 'agent-b', config)
     expect(result.deny).toBe(true)
     expect(result.reason).toContain('"restricted-skill"')
-    expect(result.reason).toContain('"talosz"')
+    expect(result.reason).toContain('"agent-b"')
   })
 
   it('DENIES any sub-agent when config is null (corrupt config fail-closed, FIX 2)', () => {
-    const result = gateDecision('Skill', { skill: 'any-skill' }, 'daidalosz', null)
+    const result = gateDecision('Skill', { skill: 'any-skill' }, 'agent-a', null)
     expect(result.deny).toBe(true)
     expect(result.reason).toContain('corrupt or unreadable')
   })
 
   it('fails open for a malformed (non-array) allow-list entry', () => {
     const config = { 'bad-entry': 'not-an-array' }
-    expect(gateDecision('Skill', { skill: 'bad-entry' }, 'talosz', config)).toEqual({ allow: true })
+    expect(gateDecision('Skill', { skill: 'bad-entry' }, 'agent-b', config)).toEqual({ allow: true })
   })
 
   it('handles a missing skill name as allow', () => {
-    expect(gateDecision('Skill', {}, 'talosz', { '': ['atlas'] })).toEqual({ allow: true })
-    expect(gateDecision('Skill', null, 'talosz', {})).toEqual({ allow: true })
+    expect(gateDecision('Skill', {}, 'agent-b', { '': ['main-agent'] })).toEqual({ allow: true })
+    expect(gateDecision('Skill', null, 'agent-b', {})).toEqual({ allow: true })
   })
 })
