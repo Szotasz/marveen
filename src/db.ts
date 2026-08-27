@@ -2240,6 +2240,32 @@ export function markMessageDelivered(id: number): boolean {
   return db.prepare("UPDATE agent_messages SET status = 'delivered', delivered_at = ? WHERE id = ? AND status = 'pending'").run(now, id).changes > 0
 }
 
+// Freshness/supersession signal (SB hardening 2026-08-22): how many STRICTLY
+// NEWER, non-failed messages from the same from->to pair exist at the moment
+// this one is (finally) delivered. The queue delivers FIFO, but a target that
+// was busy/absent for a while can receive a message describing an already-
+// closed state while newer messages from the same sender (the actual current
+// truth) sit further down the queue -- the "stale replay" that flipped a PROD
+// DEPLOY-GO on 2026-08-22. This turns the id-ordering check that caught it from
+// discipline (which tires) into a mechanical annotation on the delivered text.
+//
+// Higher id == strictly newer (monotonic autoincrement). 'failed' is excluded:
+// a message that never reached the receiver cannot be "the current truth".
+// idx_agent_messages_thread(from_agent, to_agent, created_at) seeks the query to
+// the (from,to) partition on its two equality columns; `id > ?` and `status !=
+// 'failed'` are NOT index bounds -- they filter every row of that partition
+// (EXPLAIN QUERY PLAN confirms: only the two equalities use the index). Cheap
+// today (a from->to partition is a few hundred rows), but it is a per-partition
+// scan, not an id-bounded range. If a partition ever reaches tens of thousands,
+// bound created_at too (the caller knows the delivered message's created_at) or
+// add an (from_agent, to_agent, id) index.
+export function countNewerMessagesFromSameSender(fromAgent: string, toAgent: string, msgId: number): number {
+  const row = db.prepare(
+    "SELECT COUNT(*) AS n FROM agent_messages WHERE from_agent = ? AND to_agent = ? AND id > ? AND status != 'failed'"
+  ).get(fromAgent, toAgent, msgId) as { n: number }
+  return row.n
+}
+
 // Per-agent backlog: how many messages are waiting, and how old the oldest one
 // is. The queue only surfaces when somebody opens a pane and notices, which is
 // how an 18-row backlog went unseen on 2026-07-27 and got mistaken for data
