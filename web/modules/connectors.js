@@ -208,14 +208,15 @@ document.getElementById('catalogInstallBtn').addEventListener('click', async () 
       body: JSON.stringify({ env: envData }),
     })
     const data = await res.json()
-    if (!res.ok) throw new Error(data.error || 'Hiba')
+    // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+    if (!res.ok) throw Object.assign(new Error('api call failed'), { apiData: data })
     _closeModal?.(catalogInstallOverlay)
     showToast(data.message || t('connectors.toast.installed'))
     // Reload both views
     loadCatalog()
     loadConnectors()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(getErrorMessage(err.apiData, 'Hiba'))
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -228,12 +229,13 @@ async function catalogUninstall(item) {
   try {
     const res = await fetch(`/api/mcp-catalog/${encodeURIComponent(item.id)}/uninstall`, { method: 'DELETE' })
     const data = await res.json()
-    if (!res.ok) throw new Error(data.error || 'Hiba')
+    // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+    if (!res.ok) throw Object.assign(new Error('api call failed'), { apiData: data })
     showToast(data.message || t('connectors.toast.removed'))
     loadCatalog()
     loadConnectors()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(getErrorMessage(err.apiData, 'Hiba'))
   }
 }
 
@@ -2003,7 +2005,8 @@ document.getElementById('saveConnectorBtn').addEventListener('click', async () =
     })
     if (!res.ok) {
       const err = await res.json()
-      throw new Error(err.error || 'Hiba')
+      // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+      throw Object.assign(new Error('api call failed'), { apiData: err })
     }
     const result = await res.json()
     const savedName = result.name || name
@@ -2026,7 +2029,7 @@ document.getElementById('saveConnectorBtn').addEventListener('click', async () =
     }
     loadConnectors()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(getErrorMessage(err.apiData, 'Hiba'))
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false

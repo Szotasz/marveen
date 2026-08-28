@@ -108,7 +108,8 @@ export function initMigrate() {
         body: JSON.stringify({ sourcePath: path }),
       })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Hiba')
+      // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+      if (!res.ok) throw Object.assign(new Error('api call failed'), { apiData: data })
 
       migrateFindings = data.findings
       renderMigrateFindings(data)
@@ -116,7 +117,7 @@ export function initMigrate() {
       document.getElementById('migrateStep1').hidden = true
       document.getElementById('migrateStep2').hidden = false
     } catch (err) {
-      showToast(`Hiba: ${err.message}`)
+      showToast(getErrorMessage(err.apiData, 'Hiba'))
     } finally {
       btn.disabled = false
       btn.querySelector('.btn-text').hidden = false
@@ -145,7 +146,8 @@ export function initMigrate() {
         body: JSON.stringify({ findings: migrateFindings, agentId }),
       })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Hiba')
+      // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+      if (!res.ok) throw Object.assign(new Error('api call failed'), { apiData: data })
 
       // Show results
       document.getElementById('migrateStep2').hidden = true
@@ -164,7 +166,7 @@ export function initMigrate() {
         ${data.details ? '<div class="migrate-result-details">' + data.details.map(d => escapeHtml(d)).join('<br>') + '</div>' : ''}
       `
     } catch (err) {
-      showToast(`Hiba: ${err.message}`)
+      showToast(getErrorMessage(err.apiData, 'Hiba'))
     } finally {
       btn.disabled = false
       btn.querySelector('.btn-text').hidden = false
@@ -334,7 +336,8 @@ export function initMigrate() {
       const res = await fetch('/api/fleet/import?apply=true', { method: 'POST', headers, body: fleetLastBody })
       const data = await res.json()
 
-      if (!res.ok) throw new Error(data.error || t('fleet.import.error'))
+      // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+      if (!res.ok) throw Object.assign(new Error('api call failed'), { apiData: data })
 
       const imp = data.imported || {}
       const agentNames = Array.isArray(imp.agents) ? imp.agents : []
@@ -356,7 +359,7 @@ export function initMigrate() {
       fleetLastBody = null
       btn.disabled = true
     } catch (err) {
-      showToast(`${t('fleet.import.error')}: ${err.message}`)
+      showToast(getErrorMessage(err.apiData, t('fleet.import.error')))
       btn.disabled = false
       btn.querySelector('.btn-text').hidden = false
       btn.querySelector('.btn-loading').hidden = true
