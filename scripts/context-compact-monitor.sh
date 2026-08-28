@@ -282,6 +282,15 @@ try:
 
         # Threshold check (cheapest gate first)
         if pct < COMPACT_PCT / 100:
+            # If a pending flag exists here, the agent compacted on its own --
+            # the flag is no longer meaningful. Clear it so state stays accurate.
+            a_st = state.get(agent, {})
+            if a_st.get("pending_compact", False):
+                a_st.pop("pending_compact", None)
+                a_st.pop("pending_since", None)
+                state[agent] = a_st
+                state_dirty = True
+                print(f"[{LABEL}] {agent}: {pct:.0%} below threshold, pending flag cleared (self-compacted)", flush=True)
             continue
 
         agent_state = state.get(agent, {})
