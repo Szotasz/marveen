@@ -45,7 +45,7 @@ document.getElementById('connectorRefreshBtn').addEventListener('click', async (
     const res = await fetch('/api/connectors/refresh', { method: 'POST' })
     const data = await res.json().catch(() => ({}))
     if (!res.ok || !data.ok) {
-      showToast(t('updates.error', {msg: data.error || 'HTTP ' + res.status}))
+      showToast(t('updates.error', {msg: data.hint || 'HTTP ' + res.status}))
     } else {
       showToast(t('connectors.toast.mcp_refreshed', { n: data.count || 0 }))
     }

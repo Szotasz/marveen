@@ -222,12 +222,22 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/connectors/refresh' && method === 'POST') {
     const cache = await refreshMcpListCache()
     const httpStatus = cache.error ? 502 : 200
-    json(res, {
-      ok: !cache.error,
-      count: cache.entries.length,
-      lastRefreshed: cache.lastRefreshed,
-      error: cache.error,
-    }, httpStatus)
+    if (cache.error) {
+      logger.error({ err: cache.error }, 'Connector cache refresh failed (upstream)')
+      json(res, {
+        ok: false,
+        count: cache.entries.length,
+        lastRefreshed: cache.lastRefreshed,
+        error: 'upstream_error',
+        hint: 'MCP catalog refresh failed: upstream source unavailable',
+      }, 502)
+    } else {
+      json(res, {
+        ok: true,
+        count: cache.entries.length,
+        lastRefreshed: cache.lastRefreshed,
+      }, 200)
+    }
     return true
   }
 

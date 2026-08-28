@@ -103,7 +103,8 @@ describe('tryHandleMarveen', () => {
     const { ctx, out } = makeCtx('POST', '/api/marveen/restart')
     expect(await tryHandleMarveen(ctx, '/tmp/webdir')).toBe(true)
     expect(out.status).toBe(500)
-    expect(out.body.error).toMatch(/restart failed|tmux failed/i)
+    expect(out.body.error).toBe('internal_error')
+    expect(out.body.hint).toMatch(/restart failed/i)
   })
 
   it('GET /api/marveen/avatar returns 404 when no avatar file exists', async () => {

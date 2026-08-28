@@ -446,7 +446,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { subtasks: result.subtasks })
     } catch (err) {
       logger.error({ err, cardId }, 'Breakdown generation failed')
-      json(res, { error: (err as Error).message }, 500)
+      json(res, { error: 'internal_error', hint: 'Breakdown generation failed' }, 500)
     }
     return true
   }
