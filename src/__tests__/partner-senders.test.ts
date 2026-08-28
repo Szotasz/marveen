@@ -30,6 +30,8 @@ vi.mock('../db.js', () => ({
   COMPLETION_REPORT_PREFIX: '[Eredmény]',
   isAuthorizedPartnerSender: vi.fn(),
   writeAgentAuditLog: vi.fn(),
+  findBlackboardRowByAgent: vi.fn().mockReturnValue(undefined),
+  upsertBlackboard: vi.fn(),
   // used by admin-b2b.ts
   getDb: vi.fn().mockReturnValue({
     prepare: vi.fn().mockReturnValue({

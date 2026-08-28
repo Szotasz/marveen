@@ -9,6 +9,10 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
+### Added
+
+- **[API]** `POST /api/messages` (inter-agent delivery): new optional boolean field `assign` (default `false`). When `assign: true`, the endpoint opens an `"assigned"` blackboard row for the local recipient if they have no `active` or `blocked` row; summary is the first 100 characters of the message content. Omitting `assign` or passing `false` has no blackboard side effect, so replies, notifications, and acknowledgements are unaffected. A second `assign: true` delivery to the same agent overwrites the existing `assigned` row with the newer summary. The agent's own `POST /api/blackboard` with `status: "active"` overwrites the row as before. Federated recipients (`"peer/agent"` addresses) are not affected. Signal B in `GET /api/blackboard` now fires for `assigned` rows as well as `active` ones.
+
 ### Fixed
 
 - **[API]** `POST /api/auth/logout-all`, `GET /api/auth/sessions`: HTTP status changed `400` → `401` when the caller has no valid session (`error: "unauthorized"`). A missing or invalid session is a missing-authentication condition, not a malformed request; `400 Bad Request` implies a fixable client error, while `401 Unauthorized` correctly signals that authentication is required. No login loop risk: `POST /api/auth/login` is handled earlier in `tryHandleAuth` and exits before these checks.

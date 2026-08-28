@@ -38,10 +38,12 @@ export function computeBlackboardSignal(
     lastMsgAt > nowSec - msgHours * 3600 &&
     row.updated_at < nowSec - bbHours * 3600
 
-  // Signal B: active row unchanged for longer than activeHours.
+  // Signal B: active or assigned row unchanged for longer than activeHours.
+  // 'assigned' means a message was delivered but the agent hasn't acknowledged it --
+  // same observable symptom as a forgotten active row.
   // Uses lastChangedAt (history-based), NOT updated_at, to avoid masking by no-op writes.
   const signalB =
-    row.status === 'active' &&
+    (row.status === 'active' || row.status === 'assigned') &&
     lastChangedAt < nowSec - activeHours * 3600
 
   if (signalA && signalB) return 'ab'

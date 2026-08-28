@@ -8,6 +8,8 @@ import {
   COMPLETION_REPORT_PREFIX,
   isAuthorizedPartnerSender,
   writeAgentAuditLog,
+  findBlackboardRowByAgent,
+  upsertBlackboard,
   type AgentMessage,
 } from '../../db.js'
 import { logger } from '../../logger.js'
@@ -59,8 +61,8 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/messages' && method === 'POST') {
     const body = await readBody(req)
-    const { from, to, content, origin_note } = JSON.parse(body.toString()) as
-      { from: string; to: string; content: string; origin_note?: string }
+    const { from, to, content, origin_note, assign } = JSON.parse(body.toString()) as
+      { from: string; to: string; content: string; origin_note?: string; assign?: boolean }
     if (!from?.trim() || !to?.trim() || !content?.trim()) {
       json(res, { error: 'required', hint: 'from, to, and content are required' }, 400)
       return true
@@ -198,6 +200,20 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
         detail: { from: from.trim(), to: storedTo, tenant_id: ctx.tenantId, authorized_by: 'partner_sender_allowlist' } })
     }
     logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note }, 'Agent message created')
+    // Delivery hook: open an 'assigned' blackboard row only when the sender explicitly
+    // sets assign:true (deliberate task delegation). Replies, acknowledgements, and
+    // notifications are sent without assign:true and produce no row.
+    // Federated recipients are skipped (no local row).
+    if (assign === true && !storedTo.includes('/')) {
+      const existing = findBlackboardRowByAgent(storedTo)
+      if (!existing || (existing.status !== 'active' && existing.status !== 'blocked')) {
+        upsertBlackboard(storedTo, {
+          status: 'assigned',
+          summary: normalizedContent.slice(0, 100),
+          task_ref: null,
+        })
+      }
+    }
     json(res, msg)
     return true
   }

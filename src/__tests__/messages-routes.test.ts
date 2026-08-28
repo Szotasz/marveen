@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -13,6 +13,8 @@ vi.mock('../db.js', () => ({
   markMessageFailed: vi.fn().mockReturnValue(true),
   getAgentMessage: vi.fn().mockReturnValue(null),
   closeOtelSpan: vi.fn(),
+  findBlackboardRowByAgent: vi.fn().mockReturnValue(undefined),
+  upsertBlackboard: vi.fn(),
 }))
 vi.mock('../channel-coordinator/ingest.js', () => ({
   COORDINATOR_AGENT_ID: 'telegram-coordinator',
@@ -232,5 +234,101 @@ describe('POST /api/messages: error codes are snake_case machine tokens', () => 
     // Old-shape fields must not appear.
     expect(out.body.unknown).toBeUndefined()
     expect(out.body.known).toBeUndefined()
+  })
+})
+
+describe('POST /api/messages: assign:true delivery hook', () => {
+  beforeEach(async () => {
+    const db = await import('../db.js')
+    const { isKnownAgent } = await import('../web/agent-config.js')
+    vi.mocked(db.findBlackboardRowByAgent).mockReturnValue(undefined)
+    vi.mocked(db.upsertBlackboard).mockClear()
+    // Reset isKnownAgent: an earlier test queues a mockReturnValueOnce(false) that
+    // does not get consumed (the owner path bypasses the check). Without this reset
+    // the stale queue entry fires on the first delivery-hook test.
+    vi.mocked(isKnownAgent).mockReset()
+    vi.mocked(isKnownAgent).mockReturnValue(true)
+  })
+
+  it('assign:true opens an assigned blackboard row for local recipient', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 42, from_agent: 'zack', to_agent: 'boo', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'zack',
+      to: 'boo',
+      content: 'Please verify the branch feat/679',
+      assign: true,
+    })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.upsertBlackboard)).toHaveBeenCalledOnce()
+    expect(vi.mocked(db.upsertBlackboard)).toHaveBeenCalledWith('boo', {
+      status: 'assigned',
+      summary: 'Please verify the branch feat/679',
+      task_ref: null,
+    })
+  })
+
+  it('assign omitted: no blackboard row opened', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 43, from_agent: 'zack', to_agent: 'boo', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'zack',
+      to: 'boo',
+      content: 'Just a heads up',
+    })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.upsertBlackboard)).not.toHaveBeenCalled()
+  })
+
+  it('assign:false: no blackboard row opened', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 44, from_agent: 'zack', to_agent: 'boo', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'zack',
+      to: 'boo',
+      content: 'Reply: understood',
+      assign: false,
+    })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.upsertBlackboard)).not.toHaveBeenCalled()
+  })
+
+  it('assign:true skipped when recipient already has an active row', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({
+      id: 'abc', agent_id: 'boo', task_ref: null, status: 'active', summary: 'already working', updated_at: 0,
+    })
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 45, from_agent: 'zack', to_agent: 'boo', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'zack',
+      to: 'boo',
+      content: 'New task for you',
+      assign: true,
+    })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.upsertBlackboard)).not.toHaveBeenCalled()
+  })
+
+  it('assign:true skipped for federated recipient', async () => {
+    const db = await import('../db.js')
+    const { parseQualifiedId, formatQualifiedId } = await import('../web/federation/address.js')
+    const { getFederationConfig } = await import('../web/federation/config.js')
+    vi.mocked(parseQualifiedId).mockReturnValueOnce({ system: 'remote', agent: 'boo' })
+    vi.mocked(formatQualifiedId).mockReturnValueOnce('remote/boo')
+    vi.mocked(getFederationConfig).mockReturnValueOnce({ enabled: true, systemId: 'local', peers: [{ id: 'remote' }] } as any)
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 46, from_agent: 'zack', to_agent: 'remote/boo', origin_note: null } as any)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'zack',
+      to: 'remote/boo',
+      content: 'Remote task',
+      assign: true,
+    })
+    await tryHandleMessages(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.upsertBlackboard)).not.toHaveBeenCalled()
   })
 })
