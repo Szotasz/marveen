@@ -58,9 +58,9 @@ describe('tryHandleRecall', () => {
 
   it('GET /api/recall with q and agent param passes agent to recallSearch', async () => {
     mockRecallSearch.mockClear()
-    const { ctx, out } = makeCtx('GET', '/api/recall', { q: 'kanban', agent: 'jarvis' })
+    const { ctx, out } = makeCtx('GET', '/api/recall', { q: 'kanban', agent: 'agent-b' })
     await tryHandleRecall(ctx)
-    expect(mockRecallSearch).toHaveBeenCalledWith('kanban', 'jarvis', 50, 'default')
+    expect(mockRecallSearch).toHaveBeenCalledWith('kanban', 'agent-b', 50, 'default')
   })
 
   it('GET /api/recall with date calls recallByDateRange', async () => {

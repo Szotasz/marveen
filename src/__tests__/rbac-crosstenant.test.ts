@@ -594,32 +594,32 @@ describe('threads isolation -- getAgentConversationThreads SQL contract', () => 
 
   beforeEach(() => {
     db3 = openMsgDb()
-    db3.prepare('INSERT INTO agent_messages (from_agent, to_agent, content, tenant_id, created_at) VALUES (?, ?, ?, ?, ?)').run('agent-a', 'jarvis', 'tenant-a msg', 'tenant-a', 1000)
-    db3.prepare('INSERT INTO agent_messages (from_agent, to_agent, content, tenant_id, created_at) VALUES (?, ?, ?, ?, ?)').run('boo', 'agent-a', 'tenant-b msg', 'tenant-b', 2000)
+    db3.prepare('INSERT INTO agent_messages (from_agent, to_agent, content, tenant_id, created_at) VALUES (?, ?, ?, ?, ?)').run('agent-a', 'agent-b', 'tenant-a msg', 'tenant-a', 1000)
+    db3.prepare('INSERT INTO agent_messages (from_agent, to_agent, content, tenant_id, created_at) VALUES (?, ?, ?, ?, ?)').run('agent-c', 'agent-a', 'tenant-b msg', 'tenant-b', 2000)
   })
 
   it('tenant-B threads do NOT include tenant-A agents', () => {
     const threads = threadsForTenant(db3, 'tenant-b')
     const agentNames = threads.map(t => t.agent)
-    expect(agentNames).not.toContain('jarvis')
-    expect(agentNames.every(a => ['boo', 'agent-a'].includes(a))).toBe(true)
+    expect(agentNames).not.toContain('agent-b')
+    expect(agentNames.every(a => ['agent-c', 'agent-a'].includes(a))).toBe(true)
   })
 
   it('tenant-A threads do NOT include tenant-B agents', () => {
     const threads = threadsForTenant(db3, 'tenant-a')
     const agentNames = threads.map(t => t.agent)
-    expect(agentNames).not.toContain('boo')
-    expect(agentNames.every(a => ['agent-a', 'jarvis'].includes(a))).toBe(true)
+    expect(agentNames).not.toContain('agent-c')
+    expect(agentNames.every(a => ['agent-a', 'agent-b'].includes(a))).toBe(true)
   })
 
   it('zero cross-tenant agent leakage -- agents exclusive to tenant-A never appear in tenant-B listing', () => {
     const bThreads = threadsForTenant(db3, 'tenant-b')
     const bAgentNames = bThreads.map(t => t.agent)
-    // jarvis only appears in tenant-a messages; must not leak into tenant-b threads
-    expect(bAgentNames).not.toContain('jarvis')
-    // boo only appears in tenant-b messages; must not leak into tenant-a threads
+    // agent-b only appears in tenant-a messages; must not leak into tenant-b threads
+    expect(bAgentNames).not.toContain('agent-b')
+    // agent-c only appears in tenant-b messages; must not leak into tenant-a threads
     const aThreads = threadsForTenant(db3, 'tenant-a')
-    expect(aThreads.map(t => t.agent)).not.toContain('boo')
+    expect(aThreads.map(t => t.agent)).not.toContain('agent-c')
   })
 })
 
