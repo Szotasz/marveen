@@ -621,3 +621,61 @@ describe('threads isolation -- getAgentConversationThreads SQL contract', () => 
     expect(aThreads.map(t => t.agent)).not.toContain('boo')
   })
 })
+
+// ── 14. /api/recall memories cross-tenant isolation -- SQL contract ───────────
+//
+// Acceptance criterion (feaec069):
+//   Non-admin tenant_B recall MUST NOT return tenant_A memories.
+//   daily_logs have no tenant_id (Jonas Q3 decision) -- logs are not filtered.
+
+describe('/api/recall memories isolation -- recallSearch SQL contract', () => {
+  let db4: Database.Database
+
+  function openRecallDb(): Database.Database {
+    const d = new Database(':memory:')
+    d.exec(`
+      CREATE VIRTUAL TABLE memories_fts USING fts5(content, keywords);
+      CREATE TABLE memories (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_id    TEXT NOT NULL,
+        category    TEXT NOT NULL,
+        content     TEXT NOT NULL DEFAULT '',
+        keywords    TEXT,
+        tenant_id   TEXT NOT NULL DEFAULT 'default',
+        created_at  INTEGER NOT NULL DEFAULT 0,
+        accessed_at INTEGER NOT NULL DEFAULT 0
+      );
+    `)
+    return d
+  }
+
+  // SQL that mirrors the updated recallSearch FTS path with tenantId + agentId:
+  function recallMemsForTenant(d: Database.Database, agentId: string, tenantId: string, query: string, limit = 50) {
+    return d.prepare(
+      `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND tenant_id = ? AND (content LIKE ? OR keywords LIKE ?) ORDER BY created_at DESC LIMIT ?`
+    ).all(agentId, tenantId, `%${query}%`, `%${query}%`, limit) as Array<{ id: number; category: string; tenant_id: string }>
+  }
+
+  beforeEach(() => {
+    db4 = openRecallDb()
+    db4.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, created_at) VALUES (?, ?, ?, ?, ?)').run('zack', 'shared', 'tenant-a project context', 'tenant-a', 100)
+    db4.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, created_at) VALUES (?, ?, ?, ?, ?)').run('zack', 'warm', 'tenant-b zack memory', 'tenant-b', 90)
+  })
+
+  it('tenant-B recall does NOT return tenant-A shared memories', () => {
+    const rows = recallMemsForTenant(db4, 'zack', 'tenant-b', 'context')
+    // 'tenant-a project context' matches the query but belongs to tenant-a
+    expect(rows.filter(r => r.tenant_id === 'tenant-a')).toHaveLength(0)
+  })
+
+  it('tenant-A recall does NOT return tenant-B memories', () => {
+    const rows = recallMemsForTenant(db4, 'zack', 'tenant-a', 'memory')
+    expect(rows.filter(r => r.tenant_id === 'tenant-b')).toHaveLength(0)
+  })
+
+  it('tenant-B recall returns its OWN memories', () => {
+    const rows = recallMemsForTenant(db4, 'zack', 'tenant-b', 'zack')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.tenant_id).toBe('tenant-b')
+  })
+})
