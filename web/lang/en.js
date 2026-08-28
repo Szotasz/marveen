@@ -775,6 +775,10 @@ window._i18n.en = {
   'settings.desc.KANBAN_LABEL_COLORS':         'Comma-separated HEX colours available for Kanban card labels. The dashboard offers these as swatches instead of a free-text colour input.',
   'settings.desc.ALERT_THRESHOLD_MS':          'How long a failed scheduled task may wait for a retry before a Telegram alert is sent. Default: 3,600,000 ms (1 hour). Retries continue after the alert.',
   'settings.desc.DEFAULT_REVERT_AFTER_MINUTES': 'Minutes after the last rate-limit event before the agent reverts to the primary model in the model-fallback mechanism. Default: 330 minutes (5.5 hours).',
+  'settings.desc.BB_SIGNAL_A_BB_HOURS':        'Blackboard signal A: a row counts as stalled when its last update is older than this many hours while the agent was still sending messages.',
+  'settings.desc.BB_SIGNAL_A_MSG_HOURS':       'Blackboard signal A: if the agent sent a message within this many hours but its blackboard row is older than the signal-A threshold, the row is suspect (the agent forgot to update it).',
+  'settings.desc.BB_SIGNAL_B_ACTIVE_HOURS':    'Blackboard signal B: an active row unchanged for this many hours, which suggests the completion signal was lost.',
+  'settings.desc.DEFAULT_AGENT_MODEL':         'Default model for new agents, and the model used for background worker sessions. Existing agents are NOT affected: an agent with an explicit model in its own config keeps it. Takes effect when the service restarts.',
   'settings.desc.BACKUP_KEEP':                  'Number of backup archives to retain. Archives older than this limit are automatically pruned. Allowed values: 10/30/60/180.',
 
   // --- Vault ---
