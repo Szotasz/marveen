@@ -2,6 +2,8 @@ import http from 'node:http'
 import { readFileSync, statSync } from 'node:fs'
 import { extname } from 'node:path'
 import { gzipSync } from 'node:zlib'
+import { logger } from '../logger.js'
+import { checkErrorResponse } from '../api-error-catalog.js'
 
 export const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -62,6 +64,21 @@ export async function readJsonBody<T>(req: http.IncomingMessage): Promise<T> {
 }
 
 export function json(res: http.ServerResponse, data: unknown, status = 200): void {
+  // Phase A: warn-only catalog check -- collect violations, never throw.
+  // Phase B (separate PR) will switch to throw in test / logger.error in prod.
+  if (
+    data !== null &&
+    typeof data === 'object' &&
+    'error' in data &&
+    typeof (data as Record<string, unknown>).error === 'string'
+  ) {
+    const token = (data as Record<string, unknown>).error as string
+    const violation = checkErrorResponse(token, status)
+    if (violation) {
+      logger.warn({ token, status }, `[api-error-catalog] violation: ${violation}`)
+    }
+  }
+
   // Cache-Control: private, no-store prevents CDN / proxy caching of API
   // responses that may contain user-specific data or session state. Without
   // this header, intermediate caches can serve stale or cross-user data.
