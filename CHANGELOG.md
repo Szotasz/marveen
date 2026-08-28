@@ -21,6 +21,8 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- Settings screen: four configuration keys showed their raw i18n key instead of a description (`BB_SIGNAL_A_BB_HOURS`, `BB_SIGNAL_A_MSG_HOURS`, `BB_SIGNAL_B_ACTIVE_HOURS`, `DEFAULT_AGENT_MODEL`). The registry entries existed, but the matching `settings.desc.*` strings were missing from both language files. All 50 registry keys now have a description in Hungarian and English. No API change.
+
 - **[API]** `GET /api/overview` is now tenant-scoped. Non-admin callers see only memories and inter-agent messages that belong to their own tenant. Admin callers retain the global view across all tenants, and may pass an optional `?tenant=<id>` query parameter to narrow the view to a single tenant. Fleet-internal counters (token usage, pending approvals, stuck tasks, error spans) remain unscoped. Activity feed items in the response are filtered by the same tenant boundary.
 
 - **[API]** Memory recall and message-thread endpoints are now tenant-scoped for non-admin callers. Affected endpoints: `GET /api/memories` (list, search, hybrid search, vector search), `GET /api/memories/stale`, `GET /api/recall` (date-range and keyword search), `GET /api/messages/threads`. A non-admin token with `tenant_id=X` now sees only memories and threads that belong to tenant X; shared-tier memories (`category="shared"`) are visible within the same tenant but never across tenants. Admin tokens continue to see the global view across all tenants. Daily log entries in `/api/recall` results remain fleet-wide (the `daily_logs` table carries no `tenant_id` column by design).
