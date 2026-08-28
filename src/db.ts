@@ -276,6 +276,10 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_convlog_agent ON conversation_log(agent_id, created_at)`)
+  // Pure-created_at index for the daily retention prune -- idx_convlog_agent is
+  // (agent_id, created_at), so its leading column makes it useless for an
+  // agent-agnostic `WHERE created_at < ?` sweep.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_convlog_created ON conversation_log(created_at)`)
   // Migration for pre-existing DBs: transcript-less voice/video_note inbounds
   // keep their attachment identity so a respawned session can still download
   // and transcribe them; reply_to_message_id lets an inbound quote be
@@ -1473,6 +1477,9 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_otel_spans_trace ON otel_spans(trace_id, start_ms)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_otel_spans_agent ON otel_spans(agent_id, start_ms)`)
+  // Same reason as idx_convlog_created: the retention sweep filters on start_ms
+  // alone, which neither composite index above can serve.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_otel_spans_start ON otel_spans(start_ms)`)
 
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
@@ -5266,6 +5273,104 @@ export function getTokenPruneLag(): TokenPruneLag {
     Math.floor(Date.now() / 1000),
     (TOKEN_PRUNE_TOLERANCE_CYCLES * DECAY_SWEEP_INTERVAL_MS) / 3_600_000,
   )
+}
+
+// Prune conversation_log rows older than CONVERSATION_LOG_RETENTION_DAYS.
+// `created_at` is unix SECONDS. Served by idx_convlog_created.
+export function pruneConversationLog(): number {
+  const retentionDays = Number(getEffectiveSettingValue('CONVERSATION_LOG_RETENTION_DAYS'))
+  const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400
+  return db.prepare('DELETE FROM conversation_log WHERE created_at < ?').run(cutoff).changes
+}
+
+// Prune otel_spans older than OTEL_SPAN_RETENTION_DAYS. `start_ms` is unix
+// MILLISECONDS (unlike every other table here, which uses seconds). Spans still
+// marked 'running' are pruned too: a span that never got an end_ms within the
+// retention window is not in flight, it is a leaked row from a crashed process.
+export function pruneOtelSpans(): number {
+  const retentionDays = Number(getEffectiveSettingValue('OTEL_SPAN_RETENTION_DAYS'))
+  const cutoffMs = Date.now() - retentionDays * 86400 * 1000
+  return db.prepare('DELETE FROM otel_spans WHERE start_ms < ?').run(cutoffMs).changes
+}
+
+// Prune settled agent_messages older than AGENT_MESSAGE_RETENTION_DAYS.
+// Deliberately limited to 'done' and 'failed': a 'pending' or 'delivered' row
+// that is still around after weeks means delivery or processing got stuck, and
+// silently deleting it would erase the only evidence of that. Stuck rows are a
+// signal, not garbage -- they stay until someone looks at them.
+export function pruneAgentMessages(): number {
+  const retentionDays = Number(getEffectiveSettingValue('AGENT_MESSAGE_RETENTION_DAYS'))
+  const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400
+  return db
+    .prepare("DELETE FROM agent_messages WHERE created_at < ? AND status IN ('done','failed')")
+    .run(cutoff)
+    .changes
+}
+
+// Prune tool_call_log to TOOL_CALL_LOG_RETENTION_DAYS. Thin wrapper over
+// pruneToolCallLog() so the daily sweep reads the configured retention instead
+// of that function's 24-hour call-site default (which the dashboard endpoint
+// still uses for an explicit manual purge).
+export function pruneToolCallLogRetention(): number {
+  const retentionDays = Number(getEffectiveSettingValue('TOOL_CALL_LOG_RETENTION_DAYS'))
+  const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400
+  return db.prepare('DELETE FROM tool_call_log WHERE created_at < ?').run(cutoff).changes
+}
+
+/** Fraction of the DB that must be free pages before a VACUUM is worth it. */
+const VACUUM_FREE_RATIO = 0.2
+/** Below this many free pages a VACUUM cannot reclaim anything meaningful. */
+const VACUUM_MIN_FREE_PAGES = 1000
+
+export interface CompactResult {
+  /** WAL frames still in the log after the checkpoint (0 means fully drained). */
+  walFramesLeft: number
+  /** True when the checkpoint could not run because a reader/writer held the DB. */
+  checkpointBusy: boolean
+  vacuumed: boolean
+  freePagesBefore: number
+}
+
+// Drain the WAL and, when the file has enough dead space to be worth it, VACUUM.
+//
+// Without an explicit checkpoint the WAL only auto-truncates on the last
+// connection closing, which for a long-running daemon is "never" -- the sidecar
+// then grows past the DB itself. TRUNCATE both applies the frames and shrinks
+// the file back to zero.
+//
+// VACUUM is gated on free-page ratio because it rewrites the whole DB under an
+// exclusive lock; running it daily on a healthy file is pure I/O for no gain.
+// Both steps tolerate SQLITE_BUSY: another connection is mid-write, and the
+// next daily sweep will get it.
+export function checkpointAndCompact(): CompactResult {
+  const result: CompactResult = { walFramesLeft: -1, checkpointBusy: false, vacuumed: false, freePagesBefore: 0 }
+
+  try {
+    // better-sqlite3 returns [{ busy, log, checkpointed }] for wal_checkpoint.
+    const rows = db.pragma('wal_checkpoint(TRUNCATE)') as Array<{ busy: number; log: number; checkpointed: number }>
+    const row = rows?.[0]
+    if (row) {
+      result.checkpointBusy = row.busy === 1
+      result.walFramesLeft = row.log
+    }
+  } catch (err) {
+    result.checkpointBusy = true
+    logger.warn({ err }, 'WAL checkpoint sikertelen, a kovetkezo sweep ujraprobalja')
+  }
+
+  try {
+    const freePages = Number((db.pragma('freelist_count', { simple: true }) as number) ?? 0)
+    const totalPages = Number((db.pragma('page_count', { simple: true }) as number) ?? 0)
+    result.freePagesBefore = freePages
+    if (freePages >= VACUUM_MIN_FREE_PAGES && totalPages > 0 && freePages / totalPages >= VACUUM_FREE_RATIO) {
+      db.exec('VACUUM')
+      result.vacuumed = true
+    }
+  } catch (err) {
+    logger.warn({ err }, 'VACUUM sikertelen, a kovetkezo sweep ujraprobalja')
+  }
+
+  return result
 }
 
 // --- Vault SSH Keys (shared key pool) ---

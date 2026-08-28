@@ -6,6 +6,11 @@ import {
   decayMemories as dbDecay,
   pruneAuditLogs,
   pruneTokenUsage,
+  pruneConversationLog,
+  pruneOtelSpans,
+  pruneAgentMessages,
+  pruneToolCallLogRetention,
+  checkpointAndCompact,
   getMemoriesForChat,
 } from './db.js'
 import { runAgent } from './agent.js'
@@ -110,7 +115,26 @@ export function runDecaySweep(): void {
   dbDecay()
   pruneAuditLogs()
   const tokenRowsPruned = pruneTokenUsage()
-  logger.info({ tokenRowsPruned }, 'Memoria leepulesi sopres vegrehajtva')
+  const convRowsPruned = pruneConversationLog()
+  const spanRowsPruned = pruneOtelSpans()
+  const agentMsgRowsPruned = pruneAgentMessages()
+  const toolCallRowsPruned = pruneToolCallLogRetention()
+  // Compaction runs last: the deletes above are what create the free pages and
+  // WAL frames it reclaims.
+  const compact = checkpointAndCompact()
+  logger.info(
+    {
+      tokenRowsPruned,
+      convRowsPruned,
+      spanRowsPruned,
+      agentMsgRowsPruned,
+      toolCallRowsPruned,
+      walFramesLeft: compact.walFramesLeft,
+      checkpointBusy: compact.checkpointBusy,
+      vacuumed: compact.vacuumed,
+    },
+    'Memoria leepulesi sopres vegrehajtva',
+  )
 }
 
 // --- Daily digest ---
