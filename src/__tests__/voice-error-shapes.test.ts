@@ -186,6 +186,15 @@ describe('POST /api/voice/stt -- error shapes', () => {
     expect(out.body.error).toBe('not_supported')
     expect(String(out.body.error)).toMatch(/^[a-z_]+$/)
   })
+
+  it('returns not_supported + 400 on /api/voice/tts when voice toolkit is not installed', async () => {
+    mockVoiceInstalled = false
+    const { ctx, out } = makeCtx('POST', '/api/voice/tts', { text: 'hello' })
+    await tryHandleVoice(ctx)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toBe('not_supported')
+    expect(String(out.body.error)).toMatch(/^[a-z_]+$/)
+  })
 })
 
 // ── Mutation verification ─────────────────────────────────────────────────────
