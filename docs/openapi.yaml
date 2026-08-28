@@ -1169,10 +1169,11 @@ paths:
         The `from` field must be a registered fleet agent id (or the owner name).
         Federation addresses use slash notation: `"peer-system/agent-name"`.
 
-        Side effect: when the local recipient has no `active` or `blocked` blackboard
-        row, a row with `status: "assigned"` is automatically opened. The summary
-        is the first 100 characters of the message content. The agent's own
-        `POST /api/blackboard` with `status: "active"` overwrites this row.
+        Side effect: when `assign: true` is set and the local recipient has no `active`
+        or `blocked` blackboard row, a row with `status: "assigned"` is automatically
+        opened. The summary is the first 100 characters of the message content. The
+        agent's own `POST /api/blackboard` with `status: "active"` overwrites this row.
+        Omitting `assign` or setting it to `false` produces no blackboard side effect.
       requestBody:
         required: true
         content:
@@ -1194,6 +1195,13 @@ paths:
                   type: string
                   maxLength: 120
                   description: Optional attributability tag
+                assign:
+                  type: boolean
+                  default: false
+                  description: |
+                    When true, opens an "assigned" blackboard row for the local recipient
+                    if they have no active or blocked row. Use for deliberate task
+                    delegation; omit for replies, notifications, and acknowledgements.
             example:
               from: "zack"
               to: "jarvis"

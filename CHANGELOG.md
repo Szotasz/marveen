@@ -11,7 +11,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
-- **[API]** `POST /api/messages` (inter-agent delivery): when the local recipient has no `active` or `blocked` blackboard row, the endpoint now automatically opens a row with `status: "assigned"` and a summary derived from the first 100 characters of the message content. This makes delegated-but-not-yet-started work visible on the fleet blackboard without waiting for the agent to self-report. The agent's own `POST /api/blackboard` with `status: "active"` overwrites the row as before. Federated recipients (`"peer/agent"` addresses) are not affected. Signal B in `GET /api/blackboard` now fires for `assigned` rows as well as `active` ones.
+- **[API]** `POST /api/messages` (inter-agent delivery): new optional boolean field `assign` (default `false`). When `assign: true`, the endpoint opens an `"assigned"` blackboard row for the local recipient if they have no `active` or `blocked` row; summary is the first 100 characters of the message content. Omitting `assign` or passing `false` has no blackboard side effect, so replies, notifications, and acknowledgements are unaffected. A second `assign: true` delivery to the same agent overwrites the existing `assigned` row with the newer summary. The agent's own `POST /api/blackboard` with `status: "active"` overwrites the row as before. Federated recipients (`"peer/agent"` addresses) are not affected. Signal B in `GET /api/blackboard` now fires for `assigned` rows as well as `active` ones.
 
 ### Fixed
 
