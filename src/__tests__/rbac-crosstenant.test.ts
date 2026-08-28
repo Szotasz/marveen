@@ -18,11 +18,12 @@
 // The scopeToTenant helper is implemented inline as a minimal mock that mirrors
 // the contract the real query-scope wrapper implementation will fulfill.
 
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, beforeAll } from 'vitest'
 import Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
 import { checkPermission, resolveRole, resolveTenantId } from '../web/authz.js'
 import type { AuthResult } from '../web/auth-gate.js'
+import { initDatabase, getDb, saveAgentMemory, getStaleMemories } from '../db.js'
 
 // ── In-memory DB setup ────────────────────────────────────────────────────────
 //
@@ -680,73 +681,47 @@ describe('/api/recall memories isolation -- recallSearch SQL contract', () => {
   })
 })
 
-// ── 15. /api/memories/stale cross-tenant isolation -- SQL contract ────────────
+// ── 15. /api/memories/stale cross-tenant isolation -- real getStaleMemories ────
 //
 // Acceptance criterion (feaec069):
 //   Non-admin tenant_B GET /api/memories/stale MUST NOT return tenant_A memories.
+//
+// Unlike blocks 12-14 (which exercise SQL copies for readability), this block
+// calls the REAL getStaleMemories from db.ts against an in-memory database
+// so that the test fails if the function body loses the tenant filter.
 
-describe('/api/memories/stale isolation -- getStaleMemories SQL contract', () => {
-  let db5: Database.Database
+describe('/api/memories/stale isolation -- real getStaleMemories', () => {
+  const now = Math.floor(Date.now() / 1000)
 
-  function openStaleDb(): Database.Database {
-    const d = new Database(':memory:')
-    d.exec(`
-      CREATE TABLE memories (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        agent_id    TEXT NOT NULL,
-        category    TEXT NOT NULL,
-        content     TEXT NOT NULL DEFAULT '',
-        keywords    TEXT,
-        tenant_id   TEXT NOT NULL DEFAULT 'default',
-        updated_at  INTEGER NOT NULL DEFAULT 0
-      );
-      CREATE TABLE span_reads (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        agent_id    TEXT NOT NULL,
-        memory_id   INTEGER NOT NULL,
-        read_at     INTEGER NOT NULL
-      );
-    `)
-    return d
-  }
-
-  // SQL that mirrors the updated getStaleMemories with tenantId:
-  function staleMemsForTenant(d: Database.Database, agentId: string, tenantId: string) {
-    return d.prepare(
-      `SELECT m.* FROM memories m
-       LEFT JOIN (
-         SELECT memory_id, MAX(read_at) AS last_read
-         FROM span_reads
-         WHERE agent_id = ?
-         GROUP BY memory_id
-       ) sr ON sr.memory_id = m.id
-       WHERE (m.agent_id = ? OR m.category = 'shared')
-         AND m.updated_at > COALESCE(sr.last_read, 0)
-         AND m.tenant_id = ?
-       ORDER BY m.updated_at DESC`
-    ).all(agentId, agentId, tenantId) as Array<{ id: number; category: string; tenant_id: string }>
-  }
+  beforeAll(() => {
+    process.env.NODE_ENV = 'test'
+    initDatabase(':memory:')
+  })
 
   beforeEach(() => {
-    db5 = openStaleDb()
-    // tenant-a memory (shared tier) -- would cross to tenant-b without filter
-    db5.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, updated_at) VALUES (?, ?, ?, ?, ?)').run('zack', 'shared', 'tenant-a stale shared', 'tenant-a', 200)
-    // tenant-b own memory
-    db5.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, updated_at) VALUES (?, ?, ?, ?, ?)').run('zack', 'warm', 'tenant-b warm memory', 'tenant-b', 100)
+    const d = getDb()
+    d.exec('DELETE FROM memories')
+    d.exec('DELETE FROM span_reads')
+    // tenant-a shared memory -- would leak to tenant-b without the tenant filter
+    const r1 = saveAgentMemory('zack', 'tenant-a stale shared', 'shared', undefined, false, 'tenant-a')
+    d.prepare('UPDATE memories SET updated_at = ? WHERE id = ?').run(now, r1.id)
+    // tenant-b own warm memory
+    const r2 = saveAgentMemory('zack', 'tenant-b warm memory', 'warm', undefined, false, 'tenant-b')
+    d.prepare('UPDATE memories SET updated_at = ? WHERE id = ?').run(now, r2.id)
   })
 
   it('tenant-B stale does NOT return tenant-A shared memories', () => {
-    const rows = staleMemsForTenant(db5, 'zack', 'tenant-b')
+    const rows = getStaleMemories('zack', 'tenant-b')
     expect(rows.filter(r => r.tenant_id === 'tenant-a')).toHaveLength(0)
   })
 
   it('tenant-A stale does NOT return tenant-B memories', () => {
-    const rows = staleMemsForTenant(db5, 'zack', 'tenant-a')
+    const rows = getStaleMemories('zack', 'tenant-a')
     expect(rows.filter(r => r.tenant_id === 'tenant-b')).toHaveLength(0)
   })
 
   it('tenant-B stale returns its OWN memories', () => {
-    const rows = staleMemsForTenant(db5, 'zack', 'tenant-b')
+    const rows = getStaleMemories('zack', 'tenant-b')
     expect(rows).toHaveLength(1)
     expect(rows[0]!.tenant_id).toBe('tenant-b')
   })

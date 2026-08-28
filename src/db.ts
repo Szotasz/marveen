@@ -335,6 +335,7 @@ export interface Memory {
   category: string  // 'hot' | 'warm' | 'cold' | 'shared'
   auto_generated: number
   keywords: string | null
+  tenant_id?: string
   embedding: string | null
   embedding_blob: Buffer | null
 }
@@ -751,7 +752,9 @@ export function recordMemoryReadBatch(
 
 // Returns memories that are stale for the given agent:
 // updated_at > agent's last span_read.read_at (or never read at all).
-export function getStaleMemories(agentId: string): Memory[] {
+export function getStaleMemories(agentId: string, tenantId?: string): Memory[] {
+  const tc = tenantId ? '\n      AND m.tenant_id = ?' : ''
+  const tp = tenantId ? [tenantId] : []
   return db.prepare(`
     SELECT m.* FROM memories m
     LEFT JOIN (
@@ -761,9 +764,9 @@ export function getStaleMemories(agentId: string): Memory[] {
       GROUP BY memory_id
     ) sr ON sr.memory_id = m.id
     WHERE (m.agent_id = ? OR m.category = 'shared')
-      AND m.updated_at > COALESCE(sr.last_read, 0)
+      AND m.updated_at > COALESCE(sr.last_read, 0)${tc}
     ORDER BY m.updated_at DESC
-  `).all(agentId, agentId) as Memory[]
+  `).all(agentId, agentId, ...tp) as Memory[]
 }
 
 export function getMemoryVersions(memoryId: number): MemoryVersion[] {

@@ -571,7 +571,7 @@ Respond ONLY with JSON, nothing else:
   if (path === '/api/memories/stale' && method === 'GET') {
     const agentId = url.searchParams.get('agent_id') || url.searchParams.get('agent') || ''
     if (!agentId) { json(res, { error: 'required', field: 'agent_id', hint: 'agent_id required' }, 400); return true }
-    const stale = getStaleMemories(agentId)
+    const stale = getStaleMemories(agentId, isAdmin ? undefined : effectiveTenantId)
     json(res, stale.map(m => ({ ...m, embedding: undefined, embedding_blob: undefined })))
     return true
   }
