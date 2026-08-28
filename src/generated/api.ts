@@ -110,7 +110,7 @@ export interface BlackboardRow {
   agent_id: string;
   /** Kanban card id (optional reference) */
   task_ref?: string | null;
-  status: 'active' | 'done' | 'blocked';
+  status: 'active' | 'done' | 'blocked' | 'stale' | 'assigned';
   summary: string;
   updated_at: number;
 }
@@ -131,7 +131,7 @@ export interface BlackboardHistoryRow {
   agent_id: string;
   /** Kanban card id at the time of the write */
   task_ref?: string | null;
-  status: 'active' | 'done' | 'blocked';
+  status: 'active' | 'done' | 'blocked' | 'stale' | 'assigned';
   summary: string;
   /** Unix timestamp of when this transition was recorded */
   created_at: number;

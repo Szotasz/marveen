@@ -20,6 +20,7 @@ import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
 import { startUpdateChecker } from './web/update-checker.js'
+import { startBlackboardStaleSweeper } from './web/blackboard-stale-sweeper.js'
 import { startScheduleRunner } from './web/schedule-runner.js'
 import { startChannelPluginMonitor } from './web/channel-monitor.js'
 import { startInboundProber } from './web/inbound-probe.js'
@@ -465,6 +466,9 @@ export function startWebServer(port = 3420): http.Server {
   const updateCheckerInterval = webOnly ? undefined : startUpdateChecker()
   if (!webOnly) logger.info('Update checker started (15min poll)')
 
+  const blackboardStaleInterval = webOnly ? undefined : startBlackboardStaleSweeper()
+  if (!webOnly) logger.info('Blackboard stale sweeper started (5min sweep)')
+
   const federationPollerInterval = webOnly ? undefined : startFederationPoller()
   if (!webOnly) logger.info('Federation manifest poller started (10min poll, 25s offset)')
 
@@ -630,6 +634,7 @@ export function startWebServer(port = 3420): http.Server {
     clearInterval(authSessionSweepInterval)
     stopImportCrawler()
     clearInterval(updateCheckerInterval)
+    if (blackboardStaleInterval) clearInterval(blackboardStaleInterval)
     if (federationPollerInterval) clearInterval(federationPollerInterval)
     if (capabilityRunnerInterval) clearInterval(capabilityRunnerInterval)
     clearInterval(tokenCollectInterval)

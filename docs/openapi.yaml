@@ -311,7 +311,7 @@ components:
           description: Kanban card id (optional reference)
         status:
           type: string
-          enum: [active, done, blocked]
+          enum: [active, done, blocked, stale, assigned]
         summary:
           type: string
           maxLength: 500
@@ -362,7 +362,7 @@ components:
           description: Kanban card id at the time of the write
         status:
           type: string
-          enum: [active, done, blocked]
+          enum: [active, done, blocked, stale, assigned]
         summary:
           type: string
           maxLength: 500
@@ -1832,7 +1832,7 @@ paths:
                   maxLength: 500
                 status:
                   type: string
-                  enum: [active, done, blocked]
+                  enum: [active, done, blocked, stale, assigned]
                   default: active
                 task_ref:
                   type: [string, "null"]
@@ -1881,7 +1881,7 @@ paths:
               properties:
                 status:
                   type: string
-                  enum: [active, done, blocked]
+                  enum: [active, done, blocked, stale, assigned]
                 summary:
                   type: string
                   maxLength: 500

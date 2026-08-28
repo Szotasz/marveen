@@ -4078,6 +4078,31 @@ export function pruneBlackboardHistory(ttlDays = 30): number {
   return db.prepare('DELETE FROM fleet_blackboard_history WHERE created_at < ?').run(cutoff).changes
 }
 
+// Mark fleet_blackboard 'active' rows as 'stale' when they have not been
+// updated for longer than the per-agent threshold. Returns how many rows were
+// marked. Called by the blackboard-stale-sweeper on a background interval.
+export function markBlackboardStale(
+  thresholdsByAgent: Record<string, number>,
+  defaultThresholdSec: number,
+  nowSec = Math.floor(Date.now() / 1000),
+): number {
+  const rows = db.prepare(
+    `SELECT id, agent_id, task_ref, summary, updated_at FROM fleet_blackboard WHERE status = 'active'`,
+  ).all() as { id: string; agent_id: string; task_ref: string | null; summary: string; updated_at: number }[]
+  let marked = 0
+  for (const row of rows) {
+    const threshold = thresholdsByAgent[row.agent_id] ?? defaultThresholdSec
+    if (nowSec - row.updated_at > threshold) {
+      db.prepare(
+        `UPDATE fleet_blackboard SET status = 'stale', updated_at = ? WHERE id = ?`,
+      ).run(nowSec, row.id)
+      insertBlackboardHistory({ agent_id: row.agent_id, task_ref: row.task_ref, status: 'stale', summary: row.summary })
+      marked++
+    }
+  }
+  return marked
+}
+
 // Remove fleet_blackboard rows that have been stuck in 'active' for longer
 // than ttlHours without any agent updating them. These are orphaned entries
 // from tasks whose sawTurn=false path cleared the watchdog without writing
@@ -4086,7 +4111,7 @@ export interface BlackboardRow {
   id: string
   agent_id: string
   task_ref: string | null
-  status: 'active' | 'done' | 'blocked'
+  status: 'active' | 'done' | 'blocked' | 'stale' | 'assigned'
   summary: string
   updated_at: number
 }
