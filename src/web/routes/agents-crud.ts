@@ -744,7 +744,8 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
         voiceModel: data.voiceModel,
       })
     } catch (err: unknown) {
-      json(res, { error: err instanceof Error ? err.message : 'invalid config' }, 400)
+      logger.error({ err }, 'Failed to write voice config')
+      json(res, { error: 'invalid_value', hint: 'Invalid voice configuration' }, 400)
       return true
     }
     json(res, { ok: true, ...readAgentVoiceConfig(name) })
@@ -765,7 +766,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     const name = decodeURIComponent(agentMatch[1])
     if (!isKnownAgent(name)) { json(res, { error: 'not_found', field: 'name' }, 404); return true }
     if (isMainChannelsAgent(name)) {
-      json(res, { error: 'forbidden', hint: 'main agent configuration is read-only through the dashboard API' }, 400)
+      json(res, { error: 'forbidden', hint: 'main agent configuration is read-only through the dashboard API' }, 403)
       return true
     }
     const configRoot = agentConfigRoot(name)

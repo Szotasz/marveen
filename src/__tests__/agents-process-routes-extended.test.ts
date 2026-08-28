@@ -377,7 +377,7 @@ describe('agents-process routes -- extended coverage', () => {
   // arFields.message (prose) as `error`, plus bespoke `rejected`+`known` arrays.
   // Strict equality so reverting the fix fails immediately.
   describe('error codes are snake_case machine tokens', () => {
-    it('auto-restart unknown field → unsupported_field (not a prose sentence)', async () => {
+    it('auto-restart unknown field → invalid_value (not a prose sentence)', async () => {
       const { ctx, statusCode, responseBody } = makeCtx({
         method: 'PUT',
         path: '/api/agents/rick/auto-restart',
@@ -386,7 +386,7 @@ describe('agents-process routes -- extended coverage', () => {
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
       expect(statusCode()).toBe(400)
       const body = responseBody() as any
-      expect(body.error).toBe('unsupported_field')
+      expect(body.error).toBe('invalid_value')
       expect(body.field).toBe('noSuchField')
       expect(typeof body.hint).toBe('string')
       // Old-shape fields must not appear.
@@ -394,7 +394,7 @@ describe('agents-process routes -- extended coverage', () => {
       expect(body.known).toBeUndefined()
     })
 
-    it('context-guard unknown field → unsupported_field (not a prose sentence)', async () => {
+    it('context-guard unknown field → invalid_value (not a prose sentence)', async () => {
       const { ctx, statusCode, responseBody } = makeCtx({
         method: 'PUT',
         path: '/api/agents/rick/context-guard',
@@ -403,7 +403,7 @@ describe('agents-process routes -- extended coverage', () => {
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
       expect(statusCode()).toBe(400)
       const body = responseBody() as any
-      expect(body.error).toBe('unsupported_field')
+      expect(body.error).toBe('invalid_value')
       expect(body.field).toBe('noSuchField')
       expect(typeof body.hint).toBe('string')
       expect(body.rejected).toBeUndefined()

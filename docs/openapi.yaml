@@ -1200,9 +1200,7 @@ paths:
           description: |
             Missing required fields or invalid federated address.
             `error` is a stable snake_case code; human detail is in `hint`.
-            Codes: `missing_required_fields`, `invalid_federated_address`,
-            `federation_disabled`, `federation_self_reference`,
-            `unknown_federation_peer`, `invalid_recipient_format`.
+            Codes: `required`, `invalid_value`, `federation_disabled`.
           content:
             application/json:
               schema:
@@ -2973,13 +2971,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/Tenant"
         "400":
-          description: "`invalid_tenant_id` or `display_name_required`"
+          description: "`invalid_value` or `required`"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: "`tenant_already_exists`"
+          description: "`conflict`"
           content:
             application/json:
               schema:
@@ -3046,13 +3044,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/Tenant"
         "400":
-          description: "`no_fields`, `display_name_required`, or `cannot_disable_default_tenant`"
+          description: "`required`, `invalid_value`, or `not_supported`"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "404":
-          description: "`tenant_not_found`"
+          description: "`not_found`"
           content:
             application/json:
               schema:
@@ -3068,9 +3066,9 @@ paths:
         before storage (kept chars: `[a-zA-Z0-9_-]`, max 63 chars after sanitization).
 
         Two 409 cases:
-        - `sender_id_is_fleet_agent` — the id collides with a registered fleet
+        - `conflict` with `hint: "sender_id_is_fleet_agent"` — the id collides with a registered fleet
           agent name; pick a different sender id.
-        - `partner_sender_already_exists` — an active or soft-disabled record
+        - `conflict` with `hint: "partner_sender_already_exists"` — an active or soft-disabled record
           already exists for this `(sender_id, tenant_id)` pair.
       requestBody:
         required: true
@@ -3099,19 +3097,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/PartnerSender"
         "400":
-          description: "`invalid_sender_id` or `invalid_tenant_id`"
+          description: "`invalid_value`"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "404":
-          description: "`tenant_not_found` (tenant does not exist or is disabled)"
+          description: "`not_found` (tenant does not exist or is disabled)"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: "`sender_id_is_fleet_agent` or `partner_sender_already_exists`"
+          description: "`conflict`"
           content:
             application/json:
               schema:
@@ -3173,13 +3171,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/OkResponse"
         "400":
-          description: "`tenant_id_required` — missing `?tenant_id=` query parameter"
+          description: "`required` — missing `?tenant_id=` query parameter"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "404":
-          description: "`partner_sender_not_found` — not found or already disabled"
+          description: "`not_found` — not found or already disabled"
           content:
             application/json:
               schema:

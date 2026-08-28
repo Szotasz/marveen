@@ -49,13 +49,23 @@ describe('main-agent detail and lifecycle guards', () => {
   it.each([
     [`/api/agents/${MAIN_AGENT_ID}/start`, 'POST'],
     [`/api/agents/${MAIN_AGENT_ID}/stop`, 'POST'],
-    [`/api/agents/${MAIN_AGENT_ID}`, 'PUT'],
-  ])('rejects %s before entering sub-agent logic', async (path, method) => {
+  ])('rejects %s with not_supported (service-managed) before entering sub-agent logic', async (path, method) => {
     const { ctx, out } = fakeCtx(path, method)
     const handled = await tryHandleAgents(ctx, join(PROJECT_ROOT, 'web'))
 
     expect(handled).toBe(true)
     expect(out.status).toBe(400)
+    expect(out.body?.error).toBe('not_supported')
+    expect(`${out.body?.error} ${out.body?.hint ?? ''}`).toMatch(/main agent/i)
+  })
+
+  it('rejects PUT /api/agents/:main-agent with forbidden (403)', async () => {
+    const { ctx, out } = fakeCtx(`/api/agents/${MAIN_AGENT_ID}`, 'PUT')
+    const handled = await tryHandleAgents(ctx, join(PROJECT_ROOT, 'web'))
+
+    expect(handled).toBe(true)
+    expect(out.status).toBe(403)
+    expect(out.body?.error).toBe('forbidden')
     expect(`${out.body?.error} ${out.body?.hint ?? ''}`).toMatch(/main agent/i)
   })
 

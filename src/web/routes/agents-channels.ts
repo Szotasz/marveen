@@ -224,7 +224,11 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
     const channelProvider = getProvider(provider)
     const result = await channelProvider.validateToken(token)
     if (result.ok) { json(res, { ok: true, botName: result.botName }); return true }
-    json(res, { error: result.error ?? 'invalid_value', ...(result.hint ? { hint: result.hint } : {}) }, result.error === 'internal_error' ? 500 : 400)
+    {
+      const errToken = result.error === 'internal_error' || result.error === 'invalid_value' ? result.error : 'internal_error'
+      if (errToken !== result.error) logger.warn({ rawError: result.error }, 'Channel provider returned non-canonical error token')
+      json(res, { error: errToken, ...(result.hint ? { hint: result.hint } : {}) }, errToken === 'internal_error' ? 500 : 400)
+    }
     return true
   }
 
@@ -301,7 +305,12 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
 
     const channelProvider = getProvider(provider)
     const validation = await channelProvider.validateToken(botToken.trim())
-    if (!validation.ok) { json(res, { error: validation.error ?? 'invalid_value', ...(validation.hint ? { hint: validation.hint } : {}) }, validation.error === 'internal_error' ? 500 : 400); return true }
+    if (!validation.ok) {
+      const errToken = validation.error === 'internal_error' || validation.error === 'invalid_value' ? validation.error : 'internal_error'
+      if (errToken !== validation.error) logger.warn({ rawError: validation.error }, 'Channel provider returned non-canonical error token')
+      json(res, { error: errToken, ...(validation.hint ? { hint: validation.hint } : {}) }, errToken === 'internal_error' ? 500 : 400)
+      return true
+    }
 
     const dupeOwner = findBotTokenDuplicate(provider, botToken.trim(), name)
     if (dupeOwner) {

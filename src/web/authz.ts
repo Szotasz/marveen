@@ -14,6 +14,7 @@
 //   any configuration change.
 
 import type http from 'node:http'
+import { json } from './http-helpers.js'
 import { hasPermission, resolveRequiredPermission } from './rbac.js'
 import type { Role, Permission } from './rbac.js'
 import type { AuthResult } from './auth-gate.js'
@@ -173,23 +174,19 @@ export function enforcePermission(
   const decision = checkPermission(auth, method, path)
   if (decision.allowed) return true
 
-  res.writeHead(decision.status, {
-    'Content-Type': 'application/json',
-    // Expose the reason only for 503 (operational error) to avoid leaking
-    // role/permission names to unauthenticated callers.
-    ...(decision.status === 503
-      ? { 'Retry-After': '5' }
-      : {}),
-  })
-  res.end(
-    JSON.stringify({
+  // 503: role resolution threw unexpectedly (future auth kind without handler);
+  // Retry-After signals transience to clients. Token intentionally internal_error
+  // -- the warn-gate will flag it at 503 for catalog review in PR-B.
+  if (decision.status === 503) res.setHeader('Retry-After', '5')
+  json(
+    res,
+    {
       error:
-        decision.status === 401
-          ? 'Unauthorized'
-          : decision.status === 503
-            ? 'Service temporarily unavailable'
-            : 'Forbidden',
-    }),
+        decision.status === 401 ? 'unauthorized'
+        : decision.status === 503 ? 'internal_error'
+        : 'forbidden',
+    },
+    decision.status,
   )
   return false
 }

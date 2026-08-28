@@ -324,7 +324,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     try {
       createKanbanCard({ id, ...data, tenant_id: effectiveTenantId ?? 'default' })
     } catch (err) {
-      json(res, { error: (err as Error).message }, 400)
+      logger.error({ err }, 'Failed to create kanban card')
+      json(res, { error: 'internal_error', hint: 'Failed to create card' }, 500)
       return true
     }
     json(res, { ok: true, id })

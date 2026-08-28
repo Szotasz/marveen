@@ -138,22 +138,19 @@ function handleView(ctx: RouteContext, id: string): boolean {
   const exp = parseInt(expStr, 10)
 
   if (!token || isNaN(exp)) {
-    res.writeHead(400, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ error: 'required', hint: 'Missing token or exp' }))
+    json(res, { error: 'required', hint: 'Missing token or exp' }, 400)
     return true
   }
 
   const nowSec = Math.floor(Date.now() / 1000)
   if (!verifyViewToken(id, token, exp, nowSec)) {
-    res.writeHead(401, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ error: 'unauthorized', hint: 'Invalid or expired token' }))
+    json(res, { error: 'unauthorized', hint: 'Invalid or expired token' }, 401)
     return true
   }
 
   const row = getArtifact(id)
   if (!row) {
-    res.writeHead(404, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ error: 'not_found', hint: 'Not found' }))
+    json(res, { error: 'not_found', hint: 'Not found' }, 404)
     return true
   }
 
