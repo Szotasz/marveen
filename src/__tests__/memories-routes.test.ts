@@ -144,7 +144,7 @@ describe('tryHandleMemories', () => {
     const handled = await tryHandleMemories(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(200)
-    expect(vi.mocked(db.hybridSearch)).toHaveBeenCalledWith('agent-a', 'default-mode-test', expect.any(Number))
+    expect(vi.mocked(db.hybridSearch)).toHaveBeenCalledWith('agent-a', 'default-mode-test', expect.any(Number), undefined)
     expect(vi.mocked(db.searchAgentMemories)).not.toHaveBeenCalled()
   })
 

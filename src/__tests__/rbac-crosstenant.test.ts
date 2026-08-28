@@ -483,3 +483,141 @@ describe('Admin bypass -- admin role bypasses tenant filter', () => {
     expect((rows[0] as { tenant_id: string }).tenant_id).toBe('tenant-b')
   })
 })
+
+// ── 12. Shared-tier isolation -- getAgentMemories SQL contract ────────────────
+//
+// Acceptance criterion (feaec069):
+//   tenant_A category=shared memory MUST NOT appear in a tenant_B recall
+//   of the same agent. The SQL pattern mirrors getAgentMemories with tenantId.
+
+describe('shared-tier isolation -- getAgentMemories SQL contract', () => {
+  let db2: Database.Database
+
+  function openMemDb(): Database.Database {
+    const d = new Database(':memory:')
+    d.exec(`
+      CREATE TABLE memories (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_id    TEXT NOT NULL,
+        category    TEXT NOT NULL,
+        content     TEXT NOT NULL DEFAULT '',
+        keywords    TEXT,
+        tenant_id   TEXT NOT NULL DEFAULT 'default',
+        accessed_at INTEGER NOT NULL DEFAULT 0
+      );
+    `)
+    return d
+  }
+
+  // SQL that mirrors the updated getAgentMemories with tenantId (no category filter):
+  function recallForTenant(d: Database.Database, agentId: string, tenantId: string, limit = 50) {
+    return d.prepare(
+      `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND tenant_id = ? ORDER BY accessed_at DESC LIMIT ?`
+    ).all(agentId, tenantId, limit) as Array<{ id: number; category: string; tenant_id: string }>
+  }
+
+  beforeEach(() => {
+    db2 = openMemDb()
+    // tenant-a owns a shared-tier memory for zack
+    db2.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, accessed_at) VALUES (?, ?, ?, ?, ?)').run('zack', 'shared', 'tenant-a shared secret', 'tenant-a', 100)
+    // tenant-b owns a warm-tier memory for zack
+    db2.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, accessed_at) VALUES (?, ?, ?, ?, ?)').run('zack', 'warm', 'tenant-b warm data', 'tenant-b', 100)
+    // tenant-b also owns its own shared-tier memory for zack
+    db2.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, accessed_at) VALUES (?, ?, ?, ?, ?)').run('zack', 'shared', 'tenant-b shared data', 'tenant-b', 90)
+  })
+
+  it('tenant-B recall does NOT include tenant-A shared memory', () => {
+    const rows = recallForTenant(db2, 'zack', 'tenant-b')
+    const leaked = rows.filter(r => r.tenant_id === 'tenant-a')
+    expect(leaked).toHaveLength(0)
+  })
+
+  it('tenant-B recall includes its OWN shared-tier memory', () => {
+    const rows = recallForTenant(db2, 'zack', 'tenant-b')
+    const ownShared = rows.filter(r => r.category === 'shared' && r.tenant_id === 'tenant-b')
+    expect(ownShared).toHaveLength(1)
+  })
+
+  it('tenant-A recall returns tenant-A shared memory but not tenant-B data', () => {
+    const rows = recallForTenant(db2, 'zack', 'tenant-a')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.tenant_id).toBe('tenant-a')
+    expect(rows[0]!.category).toBe('shared')
+  })
+
+  it('zero rows leaked across tenants (exhaustive check)', () => {
+    const rowsA = recallForTenant(db2, 'zack', 'tenant-a')
+    const rowsB = recallForTenant(db2, 'zack', 'tenant-b')
+    for (const r of rowsA) expect(r.tenant_id).toBe('tenant-a')
+    for (const r of rowsB) expect(r.tenant_id).toBe('tenant-b')
+  })
+})
+
+// ── 13. Threads cross-tenant isolation -- getAgentConversationThreads contract ─
+//
+// Acceptance criterion (feaec069):
+//   Non-admin tenant_B caller must NOT see tenant_A message threads.
+
+describe('threads isolation -- getAgentConversationThreads SQL contract', () => {
+  let db3: Database.Database
+
+  function openMsgDb(): Database.Database {
+    const d = new Database(':memory:')
+    d.exec(`
+      CREATE TABLE agent_messages (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        from_agent TEXT NOT NULL,
+        to_agent   TEXT NOT NULL,
+        content    TEXT NOT NULL DEFAULT '',
+        status     TEXT NOT NULL DEFAULT 'pending',
+        tenant_id  TEXT NOT NULL DEFAULT 'default',
+        created_at INTEGER NOT NULL DEFAULT 0
+      );
+    `)
+    return d
+  }
+
+  // SQL that mirrors the updated getAgentConversationThreads with tenantId:
+  function threadsForTenant(d: Database.Database, tenantId: string) {
+    return d.prepare(`
+      WITH parties AS (
+        SELECT from_agent AS agent FROM agent_messages WHERE tenant_id = ?
+        UNION
+        SELECT to_agent AS agent FROM agent_messages WHERE tenant_id = ?
+      )
+      SELECT p.agent AS agent,
+        (SELECT COUNT(*) FROM agent_messages m WHERE (m.from_agent = p.agent OR m.to_agent = p.agent) AND m.tenant_id = ?) AS count
+      FROM parties p
+    `).all(tenantId, tenantId, tenantId) as Array<{ agent: string; count: number }>
+  }
+
+  beforeEach(() => {
+    db3 = openMsgDb()
+    db3.prepare('INSERT INTO agent_messages (from_agent, to_agent, content, tenant_id, created_at) VALUES (?, ?, ?, ?, ?)').run('zack', 'jarvis', 'tenant-a msg', 'tenant-a', 1000)
+    db3.prepare('INSERT INTO agent_messages (from_agent, to_agent, content, tenant_id, created_at) VALUES (?, ?, ?, ?, ?)').run('boo', 'zack', 'tenant-b msg', 'tenant-b', 2000)
+  })
+
+  it('tenant-B threads do NOT include tenant-A agents', () => {
+    const threads = threadsForTenant(db3, 'tenant-b')
+    const agentNames = threads.map(t => t.agent)
+    expect(agentNames).not.toContain('jarvis')
+    expect(agentNames.every(a => ['boo', 'zack'].includes(a))).toBe(true)
+  })
+
+  it('tenant-A threads do NOT include tenant-B agents', () => {
+    const threads = threadsForTenant(db3, 'tenant-a')
+    const agentNames = threads.map(t => t.agent)
+    expect(agentNames).not.toContain('boo')
+    expect(agentNames.every(a => ['zack', 'jarvis'].includes(a))).toBe(true)
+  })
+
+  it('zero cross-tenant agent leakage -- agents exclusive to tenant-A never appear in tenant-B listing', () => {
+    const bThreads = threadsForTenant(db3, 'tenant-b')
+    const bAgentNames = bThreads.map(t => t.agent)
+    // jarvis only appears in tenant-a messages; must not leak into tenant-b threads
+    expect(bAgentNames).not.toContain('jarvis')
+    // boo only appears in tenant-b messages; must not leak into tenant-a threads
+    const aThreads = threadsForTenant(db3, 'tenant-a')
+    expect(aThreads.map(t => t.agent)).not.toContain('boo')
+  })
+})

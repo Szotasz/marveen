@@ -126,7 +126,7 @@ describe('tryHandleMemories - extended paths', () => {
       const handled = await tryHandleMemories(ctx)
       expect(handled).toBe(true)
       expect(out.status).toBe(200)
-      expect(mockHybridSearch).toHaveBeenCalledWith('agent-a', 'test', 50)
+      expect(mockHybridSearch).toHaveBeenCalledWith('agent-a', 'test', 50, 'default')
     })
 
     it('GET with q + agentId + mode=fts calls searchAgentMemories (explicit FTS override)', async () => {
@@ -135,7 +135,7 @@ describe('tryHandleMemories - extended paths', () => {
       const handled = await tryHandleMemories(ctx)
       expect(handled).toBe(true)
       expect(out.status).toBe(200)
-      expect(mockSearchAgentMemories).toHaveBeenCalledWith('agent-a', 'test', 50)
+      expect(mockSearchAgentMemories).toHaveBeenCalledWith('agent-a', 'test', 50, 'default')
     })
 
     it('GET with q + agentId + mode=fts falls back to LIKE search when FTS returns empty', async () => {
@@ -177,7 +177,7 @@ describe('tryHandleMemories - extended paths', () => {
       const { ctx, out } = makeCtx('GET', '/api/memories', undefined, { agent: 'agent-a' })
       const handled = await tryHandleMemories(ctx)
       expect(handled).toBe(true)
-      expect(mockGetAgentMemories).toHaveBeenCalledWith('agent-a', 50, undefined)
+      expect(mockGetAgentMemories).toHaveBeenCalledWith('agent-a', 50, undefined, 'default')
     })
 
     it('GET with no params returns chat memories', async () => {

@@ -62,13 +62,13 @@ export function scopeToTenant(db: Database.Database, tenantId: string) {
     // ── memories ─────────────────────────────────────────────────────────────
 
     memories: {
-      /** List memories for an agent within this tenant. */
+      /** List memories for an agent within this tenant, including shared-tier. */
       list(agentId: string, category?: string, limit = 50): ScopedMemory[] {
         if (category) {
           return db
             .prepare(
               `SELECT * FROM memories
-               WHERE tenant_id = ? AND agent_id = ? AND category = ?
+               WHERE tenant_id = ? AND (agent_id = ? OR category = 'shared') AND category = ?
                ORDER BY accessed_at DESC LIMIT ?`,
             )
             .all(tenantId, agentId, category, limit) as ScopedMemory[]
@@ -76,7 +76,7 @@ export function scopeToTenant(db: Database.Database, tenantId: string) {
         return db
           .prepare(
             `SELECT * FROM memories
-             WHERE tenant_id = ? AND agent_id = ?
+             WHERE tenant_id = ? AND (agent_id = ? OR category = 'shared')
              ORDER BY accessed_at DESC LIMIT ?`,
           )
           .all(tenantId, agentId, limit) as ScopedMemory[]

@@ -597,36 +597,41 @@ export function saveAgentMemory(
 // accessed memories" instead of "the N most recent <category> memories", so an
 // older-but-still-active memory would drop out of the list with no truncation
 // signal -- invisible to the caller, and worst right after a restart.
-export function getAgentMemories(agentId: string, limit: number = 20, category?: string): Memory[] {
-  const key = `${agentId}:${limit}:${category ?? ''}`
+export function getAgentMemories(agentId: string, limit: number = 20, category?: string, tenantId?: string): Memory[] {
+  const key = `${agentId}:${limit}:${category ?? ''}:${tenantId ?? ''}`
   const cached = memoryCacheGet(key)
   if (cached) return cached
+  const tc = tenantId ? ' AND tenant_id = ?' : ''
+  const tp = tenantId ? [tenantId] : []
   const result = (category
     ? db.prepare(
-        "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? ORDER BY accessed_at DESC LIMIT ?"
-      ).all(agentId, category, limit)
+        `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ?${tc} ORDER BY accessed_at DESC LIMIT ?`
+      ).all(agentId, category, ...tp, limit)
     : db.prepare(
-        "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') ORDER BY accessed_at DESC LIMIT ?"
-      ).all(agentId, limit)) as Memory[]
+        `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${tc} ORDER BY accessed_at DESC LIMIT ?`
+      ).all(agentId, ...tp, limit)) as Memory[]
   memoryCacheSet(key, result)
   return result
 }
 
-export function searchAgentMemories(agentId: string, query: string, limit: number = 10): Memory[] {
+export function searchAgentMemories(agentId: string, query: string, limit: number = 10, tenantId?: string): Memory[] {
   const terms = buildFtsMatchExpression(query)
   if (!terms) return []
+  const tc = tenantId ? ' AND m.tenant_id = ?' : ''
+  const tp = tenantId ? [tenantId] : []
   try {
     const candidates = db.prepare(
       `SELECT m.*, f.rank AS rank FROM memories m
        JOIN memories_fts f ON m.id = f.rowid
-       WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')
+       WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')${tc}
        ORDER BY rank LIMIT ?`
-    ).all(terms, agentId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
+    ).all(terms, agentId, ...tp, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
     return withoutRank(reRankByRecency(candidates, limit)) as Memory[]
   } catch {
+    const tcFallback = tenantId ? ' AND tenant_id = ?' : ''
     return db.prepare(
-      "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?"
-    ).all(agentId, `%${query}%`, `%${query}%`, limit) as Memory[]
+      `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?)${tcFallback} ORDER BY accessed_at DESC LIMIT ?`
+    ).all(agentId, `%${query}%`, `%${query}%`, ...tp, limit) as Memory[]
   }
 }
 
@@ -2062,27 +2067,32 @@ export interface AgentThread {
 // message. Drives the dashboard sidebar. Recency is computed per-peer (max
 // created_at) so a rarely-active peer's last message is never hidden behind the
 // global recency window (the bug the JS-filter path had). Sorted newest-first.
-export function getAgentConversationThreads(): AgentThread[] {
+export function getAgentConversationThreads(tenantId?: string): AgentThread[] {
+  const tc = tenantId ? ' WHERE tenant_id = ?' : ''
+  const tp = tenantId ? [tenantId] : []
+  const countTc = tenantId ? ' AND m.tenant_id = ?' : ''
   const parties = db.prepare(`
     WITH parties AS (
-      SELECT from_agent AS agent FROM agent_messages
+      SELECT from_agent AS agent FROM agent_messages${tc}
       UNION
-      SELECT to_agent AS agent FROM agent_messages
+      SELECT to_agent AS agent FROM agent_messages${tc}
     )
     SELECT p.agent AS agent,
-      (SELECT COUNT(*) FROM agent_messages m WHERE m.from_agent = p.agent OR m.to_agent = p.agent) AS count
+      (SELECT COUNT(*) FROM agent_messages m WHERE (m.from_agent = p.agent OR m.to_agent = p.agent)${countTc}) AS count
     FROM parties p
-  `).all() as { agent: string; count: number }[]
+  `).all(...tp, ...tp, ...tp) as { agent: string; count: number }[]
 
-  const lastStmt = db.prepare(
-    'SELECT * FROM agent_messages WHERE from_agent = ? OR to_agent = ? ORDER BY created_at DESC, id DESC LIMIT 1'
-  )
+  const lastStmt = tenantId
+    ? db.prepare('SELECT * FROM agent_messages WHERE (from_agent = ? OR to_agent = ?) AND tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT 1')
+    : db.prepare('SELECT * FROM agent_messages WHERE from_agent = ? OR to_agent = ? ORDER BY created_at DESC, id DESC LIMIT 1')
 
   const system = new Set<string>(CHAT_SYSTEM_AGENTS)
   const threads: AgentThread[] = []
   for (const p of parties) {
     if (!p.agent || system.has(p.agent)) continue
-    const lastMessage = (lastStmt.get(p.agent, p.agent) as AgentMessage | undefined) ?? null
+    const lastMessage = (tenantId
+      ? lastStmt.get(p.agent, p.agent, tenantId)
+      : lastStmt.get(p.agent, p.agent)) as AgentMessage | undefined ?? null
     threads.push({ agent: p.agent, count: p.count, lastMessage })
   }
   threads.sort((a, b) => {
@@ -2321,10 +2331,16 @@ async function vectorSearch(
   agentId: string,
   queryEmbedding: number[],
   limit: number = 10,
-  crossAgent: boolean = false
+  crossAgent: boolean = false,
+  tenantId?: string
 ): Promise<Memory[]> {
   let candidates: Memory[] = []
   const nowSec = Math.floor(Date.now() / 1000)
+  // Tenant clause applied to non-crossAgent paths only. crossAgent is the
+  // graph link-building path (linkToNeighbors) which intentionally crosses
+  // agent and tenant boundaries to build the structural knowledge graph.
+  const tc = (!crossAgent && tenantId) ? ' AND tenant_id = ?' : ''
+  const tp = (!crossAgent && tenantId) ? [tenantId] : []
 
   // crossAgent skips ANN entirely: the vec_memories index may have orphan rows
   // (entries whose backing memories row was deleted or never backfilled), so an
@@ -2347,8 +2363,8 @@ async function vectorSearch(
         const ids = annRows.map(r => r.memory_id)
         const placeholders = ids.map(() => '?').join(',')
         const memories = db.prepare(
-          `SELECT * FROM memories WHERE id IN (${placeholders}) AND (agent_id = ? OR category = 'shared')`
-        ).all([...ids, agentId]) as Memory[]
+          `SELECT * FROM memories WHERE id IN (${placeholders}) AND (agent_id = ? OR category = 'shared')${tc}`
+        ).all([...ids, agentId, ...tp]) as Memory[]
 
         const distMap = new Map(annRows.map(r => [r.memory_id, r.distance]))
         // Pipeline step 2: recency boost -- reorder by (proximity * decay) so
@@ -2372,7 +2388,7 @@ async function vectorSearch(
     // crossAgent: skip agent_id/shared filter (same reason as ANN path above).
     const rows = crossAgent
       ? (db.prepare("SELECT * FROM memories WHERE embedding_blob IS NOT NULL OR embedding IS NOT NULL").all() as Memory[])
-      : (db.prepare("SELECT * FROM memories WHERE (embedding_blob IS NOT NULL OR embedding IS NOT NULL) AND (agent_id = ? OR category = 'shared')").all(agentId) as Memory[])
+      : (db.prepare(`SELECT * FROM memories WHERE (embedding_blob IS NOT NULL OR embedding IS NOT NULL) AND (agent_id = ? OR category = 'shared')${tc}`).all(agentId, ...tp) as Memory[])
 
     const scored = rows.map(m => {
       try {
@@ -2406,15 +2422,15 @@ async function vectorSearch(
 // Keeps linked memories visible without letting them outrank direct hits.
 const LINK_TRAVERSAL_DECAY = 0.5
 
-export async function hybridSearch(agentId: string, query: string, limit: number = 10): Promise<Memory[]> {
+export async function hybridSearch(agentId: string, query: string, limit: number = 10, tenantId?: string): Promise<Memory[]> {
   const k = 60 // RRF constant
 
   // FTS5 results
-  const ftsResults = searchAgentMemories(agentId, query, limit * 2)
+  const ftsResults = searchAgentMemories(agentId, query, limit * 2, tenantId)
 
   // Vector results
   const queryEmbedding = await generateEmbedding(query)
-  const vecResults = queryEmbedding ? await vectorSearch(agentId, queryEmbedding, limit * 2) : []
+  const vecResults = queryEmbedding ? await vectorSearch(agentId, queryEmbedding, limit * 2, false, tenantId) : []
 
   // Reciprocal Rank Fusion
   const scores: Map<number, number> = new Map()
