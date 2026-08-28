@@ -780,6 +780,10 @@ window._i18n.en = {
   'settings.desc.BB_SIGNAL_B_ACTIVE_HOURS':    'Blackboard signal B: an active row unchanged for this many hours, which suggests the completion signal was lost.',
   'settings.desc.DEFAULT_AGENT_MODEL':         'Default model for new agents, and the model used for background worker sessions. Existing agents are NOT affected: an agent with an explicit model in its own config keeps it. Takes effect when the service restarts.',
   'settings.desc.BACKUP_KEEP':                  'Number of backup archives to retain. Archives older than this limit are automatically pruned. Allowed values: 10/30/60/180.',
+  'settings.desc.BB_STALE_ORCHESTRATOR_MIN':    'Blackboard stale threshold (minutes) for orchestrator-tier agents (fleet coordinator, long sessions). Default: 120 minutes.',
+  'settings.desc.BB_STALE_INTERACTIVE_MIN':     'Blackboard stale threshold (minutes) for interactive-tier agents (multi-step interactive agents). Default: 90 minutes.',
+  'settings.desc.BB_STALE_SHORT_RUNNING_MIN':   'Blackboard stale threshold (minutes) for short-running-tier agents (heartbeat/scheduled, done in minutes). Default: 15 minutes.',
+  'settings.desc.BB_STALE_DEFAULT_MIN':         'Blackboard stale threshold (minutes) for unknown (default) tier agents. Conservative fallback. Default: 60 minutes.',
 
   // --- Vault ---
   'vault.page_title':            'Vault',
