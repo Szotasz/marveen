@@ -164,14 +164,14 @@ describe('runInviteMonitorTick', () => {
   afterEach(() => rmSync(tmp, { recursive: true, force: true }))
 
   it('does nothing when there are no access.json files', () => {
-    expect(() => runInviteMonitorTick('jarvis', agentsRoot)).not.toThrow()
+    expect(() => runInviteMonitorTick('agent-a', agentsRoot)).not.toThrow()
   })
 
   it('auto-approves a pending entry when a live invite exists', () => {
     // Set up a main-agent telegram channel dir with access.json + invites.json
     // channel-invites reads from channelStateDir(provider) for the main agent.
     // We can't easily inject the channel dir here, so test via the agentsRoot path.
-    const agentName = 'rick'
+    const agentName = 'agent-d'
     const agentChannelDir = join(agentsRoot, agentName, '.claude', 'channels', 'telegram')
     mkdirSync(agentChannelDir, { recursive: true })
     const accessPath = join(agentChannelDir, 'access.json')
@@ -189,7 +189,7 @@ describe('runInviteMonitorTick', () => {
       },
     })
 
-    runInviteMonitorTick('jarvis', agentsRoot)
+    runInviteMonitorTick('agent-a', agentsRoot)
 
     const access = readJson(accessPath) as { allowFrom?: string[]; pending?: Record<string, unknown>; dmPolicy?: string }
     expect(access.allowFrom).toContain('user123')
@@ -202,15 +202,15 @@ describe('startInviteMonitor / stopInviteMonitor', () => {
 
   it('starts and stops without errors', () => {
     const agentsRoot = mkdtempSync(join(tmpdir(), 'monitor-lifecycle-'))
-    expect(() => startInviteMonitor('jarvis', agentsRoot, 999999)).not.toThrow()
+    expect(() => startInviteMonitor('agent-a', agentsRoot, 999999)).not.toThrow()
     expect(() => stopInviteMonitor()).not.toThrow()
     rmSync(agentsRoot, { recursive: true, force: true })
   })
 
   it('does not start a second interval if already running', () => {
     const agentsRoot = mkdtempSync(join(tmpdir(), 'monitor-dedup-'))
-    startInviteMonitor('jarvis', agentsRoot, 999999)
-    expect(() => startInviteMonitor('jarvis', agentsRoot, 999999)).not.toThrow()
+    startInviteMonitor('agent-a', agentsRoot, 999999)
+    expect(() => startInviteMonitor('agent-a', agentsRoot, 999999)).not.toThrow()
     stopInviteMonitor()
     rmSync(agentsRoot, { recursive: true, force: true })
   })

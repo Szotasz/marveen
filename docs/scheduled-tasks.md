@@ -50,7 +50,7 @@ ugyanúgy, mintha te gépelted volna be a chat-be.
 ```json
 {
   "schedule": "30 7 * * *",
-  "agent": "jarvis",
+  "agent": "agent-a",
   "enabled": true,
   "type": "task",
   "skipIfBusy": false,
@@ -68,7 +68,7 @@ ugyanúgy, mintha te gépelted volna be a chat-be.
 | Mező | Típus | Alapértelmezett | Leírás |
 |------|-------|-----------------|--------|
 | `schedule` | string | `"0 9 * * *"` | Cron kifejezés (perc óra nap hónap hétnapja) |
-| `agent` | string | főágens | A célpont ágens neve (pl. `"jarvis"`, `"rick"`) |
+| `agent` | string | főágens | A célpont ágens neve (pl. `"agent-a"`, `"agent-d"`) |
 | `enabled` | boolean | `true` | Ha `false`, a runner átugorja |
 | `type` | string | `"task"` | Lásd Feladattípusok |
 | `skipIfBusy` | boolean | `false` | Ha `true` és a session foglalt, elveti a tickt |
@@ -178,7 +178,7 @@ curl -s -X POST http://localhost:3420/api/schedules \
     "description": "Rövid leírás",
     "prompt": "A részletes prompt szövege amit az ágens megkap",
     "schedule": "0 8 * * *",
-    "agent": "jarvis",
+    "agent": "agent-a",
     "type": "heartbeat",
     "skipIfBusy": true
   }'
@@ -266,12 +266,12 @@ A tokenszám közelítő: az ágens teljes tokenforgalmát összesíti a futtat�
 
 | Feladat | Ágens | Ütemezés | Típus | Leírás |
 |---------|-------|----------|-------|--------|
-| `reggeli-napindito` | jarvis | `30 7 * * *` | task | Napi reggeli összefoglaló (email, naptár, AI hírek) |
-| `memoria-heartbeat` | jarvis | `*/15 * * * *` | heartbeat | Memória-audit és skill reflexió 15 percenként |
-| `kanban-audit` | jarvis | `0 8,12,16,20 * * *` | heartbeat | Kanban-tábla ellenőrzése naponta 4-szer |
-| `dream-engine` | jarvis | `7 2 * * *` | dream-engine | Éjszakai analízis és javaslatgenerálás |
-| `bumblebee-hygiene-scan` | jarvis | `0 9 * * 1` | heartbeat | Heti higiénia-ellenőrzés hétfőnként |
-| `folyamatos-ellenorzes` | jarvis | `*/30 * * * *` | heartbeat | Általános ellenőrzés (jelenleg disabled) |
+| `reggeli-napindito` | agent-a | `30 7 * * *` | task | Napi reggeli összefoglaló (email, naptár, AI hírek) |
+| `memoria-heartbeat` | agent-a | `*/15 * * * *` | heartbeat | Memória-audit és skill reflexió 15 percenként |
+| `kanban-audit` | agent-a | `0 8,12,16,20 * * *` | heartbeat | Kanban-tábla ellenőrzése naponta 4-szer |
+| `dream-engine` | agent-a | `7 2 * * *` | dream-engine | Éjszakai analízis és javaslatgenerálás |
+| `bumblebee-hygiene-scan` | agent-a | `0 9 * * 1` | heartbeat | Heti higiénia-ellenőrzés hétfőnként |
+| `folyamatos-ellenorzes` | agent-a | `*/30 * * * *` | heartbeat | Általános ellenőrzés (jelenleg disabled) |
 
 ---
 

@@ -55,7 +55,7 @@ function makeCtx(method: string, path: string, body?: object): { ctx: RouteConte
 
 describe('tryHandleMemories', () => {
   it('POST /api/memories returns 400 when content missing', async () => {
-    const { ctx, out } = makeCtx('POST', '/api/memories', { agent_id: 'jarvis' })
+    const { ctx, out } = makeCtx('POST', '/api/memories', { agent_id: 'agent-a' })
     const handled = await tryHandleMemories(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(400)
@@ -86,7 +86,7 @@ describe('tryHandleMemories', () => {
   })
 
   it('POST /api/memories saves valid memory and returns id', async () => {
-    const { ctx, out } = makeCtx('POST', '/api/memories', { agent_id: 'jarvis', content: 'User prefers dark mode', category: 'warm' })
+    const { ctx, out } = makeCtx('POST', '/api/memories', { agent_id: 'agent-a', content: 'User prefers dark mode', category: 'warm' })
     const handled = await tryHandleMemories(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(200)
@@ -117,14 +117,14 @@ describe('tryHandleMemories', () => {
   })
 
   it('GET /api/memories with agent= triggers agent filter', async () => {
-    const { ctx, out } = makeCtx('GET', '/api/memories?agent=jarvis')
+    const { ctx, out } = makeCtx('GET', '/api/memories?agent=agent-a')
     const handled = await tryHandleMemories(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(200)
   })
 
   it('GET /api/memories with q= and agent= triggers searchAgentMemories', async () => {
-    const { ctx, out } = makeCtx('GET', '/api/memories?q=test&agent=jarvis')
+    const { ctx, out } = makeCtx('GET', '/api/memories?q=test&agent=agent-a')
     const handled = await tryHandleMemories(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(200)

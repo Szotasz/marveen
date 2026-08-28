@@ -9,7 +9,7 @@ Threshold (any one is sufficient):
 
 On threshold hit: calls `claude --print` with a compact session summary,
 saves the draft to agents/<agent>/.claude/skills/auto-discovered/<ts>-draft.md,
-and posts an inter-agent message to jarvis.
+and posts an inter-agent message to the main agent.
 
 Always exits 0 -- hook must never block the compaction.
 """
@@ -25,6 +25,20 @@ from datetime import datetime
 MARVEEN_ROOT = "/Users/jonasgergo/marveen"
 DASHBOARD_TOKEN_PATH = os.path.join(MARVEEN_ROOT, "store/.dashboard-token")
 DASHBOARD_URL = "http://localhost:3420"
+
+
+def _read_env_main_agent_id() -> str:
+    """Read MAIN_AGENT_ID from .env; fall back to env var, then 'marveen'."""
+    env_file = os.path.join(MARVEEN_ROOT, ".env")
+    if os.path.exists(env_file):
+        with open(env_file) as f:
+            for line in f:
+                if line.startswith("MAIN_AGENT_ID="):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return os.environ.get("MAIN_AGENT_ID", "marveen")
+
+
+_MAIN_AGENT_ID = _read_env_main_agent_id()
 
 # Hungarian + English correction patterns
 CORRECTION_KEYWORDS = [
@@ -122,12 +136,12 @@ def _get_agent_name(cwd: str) -> str:
     m2 = re.search(r"/agents/([^/]+)/", config_dir)
     if m2:
         return m2.group(1)
-    return "jarvis"
+    return _MAIN_AGENT_ID
 
 
 def _draft_path(agent_name: str) -> str:
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    if agent_name == "jarvis":
+    if agent_name == _MAIN_AGENT_ID:
         base = os.path.expanduser("~/.claude/skills/auto-discovered")
     else:
         base = os.path.join(MARVEEN_ROOT, "agents", agent_name, ".claude", "skills", "auto-discovered")
@@ -165,7 +179,7 @@ def _run_claude(prompt: str) -> str:
         return ""
 
 
-def _notify_jarvis(agent_name: str, draft_path: str, reason: str) -> None:
+def _notify_main_agent(agent_name: str, draft_path: str, reason: str) -> None:
     try:
         token = open(DASHBOARD_TOKEN_PATH).read().strip()
     except Exception:
@@ -175,7 +189,7 @@ def _notify_jarvis(agent_name: str, draft_path: str, reason: str) -> None:
         f"Draft: {draft_path}\n"
         "Átnézés után patch-elhető vagy globális skillbe mozgatható."
     )
-    payload = json.dumps({"from": agent_name, "to": "jarvis", "content": content})
+    payload = json.dumps({"from": agent_name, "to": _MAIN_AGENT_ID, "content": content})
     try:
         req = urllib.request.Request(
             f"{DASHBOARD_URL}/api/messages",
@@ -253,7 +267,7 @@ description: [what it does; include multiple concrete trigger phrases so the ski
     except Exception:
         sys.exit(0)
 
-    _notify_jarvis(agent_name, draft_path, reason)
+    _notify_main_agent(agent_name, draft_path, reason)
     sys.exit(0)
 
 

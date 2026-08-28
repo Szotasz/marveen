@@ -35,43 +35,43 @@ afterAll(() => rmSync(TMP_ROOT, { recursive: true, force: true }))
 
 describe('readAutoRestartConfig', () => {
   it('returns disabled defaults when no file exists', () => {
-    const cfg = readAutoRestartConfig('jarvis')
+    const cfg = readAutoRestartConfig('agent-a')
     expect(cfg).toEqual(DEFAULT_AUTO_RESTART)
   })
 
   it('returns disabled defaults for an agent with no entry', () => {
     writeAutoRestartConfig('other', { enabled: true })
-    const cfg = readAutoRestartConfig('jarvis')
+    const cfg = readAutoRestartConfig('agent-a')
     expect(cfg).toEqual(DEFAULT_AUTO_RESTART)
   })
 
   it('returns normalized config after write', () => {
-    writeAutoRestartConfig('jarvis', { enabled: true, cooldownSeconds: 60 })
-    const cfg = readAutoRestartConfig('jarvis')
+    writeAutoRestartConfig('agent-a', { enabled: true, cooldownSeconds: 60 })
+    const cfg = readAutoRestartConfig('agent-a')
     expect(cfg.enabled).toBe(true)
   })
 })
 
 describe('writeAutoRestartConfig', () => {
   it('normalizes and persists a config', () => {
-    const saved = writeAutoRestartConfig('rick', { enabled: true })
+    const saved = writeAutoRestartConfig('agent-d', { enabled: true })
     expect(saved.enabled).toBe(true)
-    const readBack = readAutoRestartConfig('rick')
+    const readBack = readAutoRestartConfig('agent-d')
     expect(readBack.enabled).toBe(true)
   })
 
   it('overwrites an existing entry without affecting others', () => {
-    writeAutoRestartConfig('jarvis', { enabled: true })
-    writeAutoRestartConfig('rick', { enabled: false })
-    writeAutoRestartConfig('jarvis', { enabled: false })
-    expect(readAutoRestartConfig('jarvis').enabled).toBe(false)
-    expect(readAutoRestartConfig('rick').enabled).toBe(false)
+    writeAutoRestartConfig('agent-a', { enabled: true })
+    writeAutoRestartConfig('agent-d', { enabled: false })
+    writeAutoRestartConfig('agent-a', { enabled: false })
+    expect(readAutoRestartConfig('agent-a').enabled).toBe(false)
+    expect(readAutoRestartConfig('agent-d').enabled).toBe(false)
   })
 
   it('handles invalid JSON in the store file gracefully', () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     require('node:fs').writeFileSync(STORE_FILE, '{not valid json}')
-    const cfg = readAutoRestartConfig('jarvis')
+    const cfg = readAutoRestartConfig('agent-a')
     expect(cfg).toEqual(DEFAULT_AUTO_RESTART)
   })
 })
@@ -82,11 +82,11 @@ describe('readAllAutoRestartConfigs', () => {
   })
 
   it('returns all persisted agents normalized', () => {
-    writeAutoRestartConfig('jarvis', { enabled: true })
-    writeAutoRestartConfig('rick', { enabled: false })
+    writeAutoRestartConfig('agent-a', { enabled: true })
+    writeAutoRestartConfig('agent-d', { enabled: false })
     const all = readAllAutoRestartConfigs()
-    expect(Object.keys(all).sort()).toEqual(['jarvis', 'rick'])
-    expect(all['jarvis']!.enabled).toBe(true)
-    expect(all['rick']!.enabled).toBe(false)
+    expect(Object.keys(all).sort()).toEqual(['agent-a', 'agent-d'])
+    expect(all['agent-a']!.enabled).toBe(true)
+    expect(all['agent-d']!.enabled).toBe(false)
   })
 })

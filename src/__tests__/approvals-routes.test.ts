@@ -22,22 +22,22 @@ vi.mock('../config.js', () => ({
 
 vi.mock('../db.js', () => ({
   createApproval: vi.fn().mockReturnValue({
-    id: 'appr-uuid-1', agent_id: 'rick', category: 'file_write',
+    id: 'appr-uuid-1', agent_id: 'agent-d', category: 'file_write',
     action_description: 'Write to /etc', status: 'pending',
     created_at: 1700000000, timeout_at: null, resolved_by: null, resolved_at: null,
   }),
   getApproval: vi.fn().mockReturnValue({
-    id: 'appr-uuid-1', agent_id: 'rick', category: 'file_write',
+    id: 'appr-uuid-1', agent_id: 'agent-d', category: 'file_write',
     action_description: 'Write to /etc', status: 'pending',
     created_at: 1700000000, timeout_at: null, resolved_by: null, resolved_at: null,
   }),
   resolveApproval: vi.fn().mockReturnValue({
-    id: 'appr-uuid-1', agent_id: 'rick', category: 'file_write',
+    id: 'appr-uuid-1', agent_id: 'agent-d', category: 'file_write',
     action_description: 'Write to /etc', status: 'approved',
     created_at: 1700000000, timeout_at: null, resolved_by: 'user', resolved_at: 1700001000,
   }),
   listApprovals: vi.fn().mockReturnValue([{
-    id: 'appr-uuid-1', agent_id: 'rick', category: 'file_write',
+    id: 'appr-uuid-1', agent_id: 'agent-d', category: 'file_write',
     action_description: 'Write to /etc', status: 'pending',
     created_at: 1700000000, timeout_at: null, resolved_by: null, resolved_at: null,
   }]),
@@ -73,7 +73,7 @@ describe('tryHandleApprovals', () => {
   })
 
   it('POST /api/approvals returns 400 when category missing', async () => {
-    const { ctx, out } = makeCtx('POST', '/api/approvals', { agent_id: 'rick', action_description: 'do thing' })
+    const { ctx, out } = makeCtx('POST', '/api/approvals', { agent_id: 'agent-d', action_description: 'do thing' })
     const handled = await tryHandleApprovals(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(400)
@@ -82,7 +82,7 @@ describe('tryHandleApprovals', () => {
   })
 
   it('POST /api/approvals returns 400 when action_description missing', async () => {
-    const { ctx, out } = makeCtx('POST', '/api/approvals', { agent_id: 'rick', category: 'file_write' })
+    const { ctx, out } = makeCtx('POST', '/api/approvals', { agent_id: 'agent-d', category: 'file_write' })
     const handled = await tryHandleApprovals(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(400)
@@ -92,7 +92,7 @@ describe('tryHandleApprovals', () => {
 
   it('POST /api/approvals creates approval and returns 201', async () => {
     const { ctx, out } = makeCtx('POST', '/api/approvals', {
-      agent_id: 'rick',
+      agent_id: 'agent-d',
       category: 'file_write',
       action_description: 'Write to /etc',
     })
@@ -133,8 +133,8 @@ describe('tryHandleApprovals', () => {
     const db = await import('../db.js')
     // First call: guard check (pending). Second call: final fetch (approved).
     vi.mocked(db.getApproval)
-      .mockReturnValueOnce({ id: 'appr-uuid-1', agent_id: 'rick', category: 'file_write', action_description: 'x', status: 'pending', created_at: 0, timeout_at: null, resolved_by: null, resolved_at: null } as any)
-      .mockReturnValueOnce({ id: 'appr-uuid-1', agent_id: 'rick', category: 'file_write', action_description: 'x', status: 'approved', created_at: 0, timeout_at: null, resolved_by: 'user', resolved_at: 1 } as any)
+      .mockReturnValueOnce({ id: 'appr-uuid-1', agent_id: 'agent-d', category: 'file_write', action_description: 'x', status: 'pending', created_at: 0, timeout_at: null, resolved_by: null, resolved_at: null } as any)
+      .mockReturnValueOnce({ id: 'appr-uuid-1', agent_id: 'agent-d', category: 'file_write', action_description: 'x', status: 'approved', created_at: 0, timeout_at: null, resolved_by: 'user', resolved_at: 1 } as any)
     const { ctx, out } = makeCtx('PATCH', '/api/approvals/appr-uuid-1', {
       status: 'approved',
       resolved_by: 'user',
@@ -168,10 +168,10 @@ describe('tryHandleApprovals', () => {
   })
 
   it('PATCH /api/approvals/:id returns 403 on self-approval', async () => {
-    // getApproval returns agent_id: 'rick', so resolved_by: 'rick' is self
+    // getApproval returns agent_id: 'agent-d', so resolved_by: 'agent-d' is self
     const { ctx, out } = makeCtx('PATCH', '/api/approvals/appr-uuid-1', {
       status: 'approved',
-      resolved_by: 'rick',
+      resolved_by: 'agent-d',
     })
     const handled = await tryHandleApprovals(ctx)
     expect(handled).toBe(true)

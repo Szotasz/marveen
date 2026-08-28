@@ -69,7 +69,7 @@ def _main_agent_id() -> str:
 def _agent_id_from_cwd(cwd: str) -> str:
     """Derive agent_id from the session working directory.
 
-    <install>/agents/<id>  -> <id>       (sub-agent: zack, rick, ...)
+    <install>/agents/<id>  -> <id>       (sub-agent: agent-name, ...)
     <install>               -> MAIN_AGENT_ID
     """
     cwd = (cwd or "").rstrip("/")

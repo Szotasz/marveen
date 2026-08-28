@@ -1,7 +1,7 @@
 /**
  * API path versioning helpers.
  *
- * Strategy (per Rick, 2026-08-23):
+ * Strategy (per architecture decision, 2026-08-23):
  *   - Canonical paths: /api/v1/<resource>  (e.g. /api/v1/memories)
  *   - Legacy paths:    /api/<resource>      (deprecated, kept as alias)
  *

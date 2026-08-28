@@ -64,7 +64,7 @@ print(f"  ✓ patched {settings_path}")
 PYEOF
 }
 
-# ---- patch root settings (main agent / jarvis) ----------------------------
+# ---- patch root settings (main agent) -------------------------------------
 ROOT_SETTINGS="$REPO_DIR/.claude/settings.json"
 echo "→ root agent"
 patch_settings "$ROOT_SETTINGS"

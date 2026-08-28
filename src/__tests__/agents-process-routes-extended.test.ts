@@ -49,7 +49,7 @@ vi.mock('../web/routes/agents-helpers.js', async (importOriginal) => {
   }
 })
 vi.mock('../web/agent-message-wrap.js', () => ({
-  classifyAgentMessage: vi.fn().mockReturnValue({ category: 'peer', safeFrom: 'rick' }),
+  classifyAgentMessage: vi.fn().mockReturnValue({ category: 'peer', safeFrom: 'agent-d' }),
   wrapAgentMessageForDelivery: vi.fn().mockReturnValue('[Wrapped message]'),
 }))
 vi.mock('../web/agent-config.js', async (importOriginal) => {
@@ -108,7 +108,7 @@ describe('agents-process routes -- extended coverage', () => {
     it('returns 200 for sub-agent with valid body', async () => {
       const { ctx, statusCode, responseBody } = makeCtx({
         method: 'PUT',
-        path: '/api/agents/rick/auto-restart',
+        path: '/api/agents/agent-d/auto-restart',
         body: JSON.stringify({ enabled: true }),
       })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
@@ -131,7 +131,7 @@ describe('agents-process routes -- extended coverage', () => {
     it('GET returns 200 for sub-agent', async () => {
       const { ctx, statusCode, responseBody } = makeCtx({
         method: 'GET',
-        path: '/api/agents/rick/context-guard',
+        path: '/api/agents/agent-d/context-guard',
       })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
       expect(statusCode()).toBe(200)
@@ -152,7 +152,7 @@ describe('agents-process routes -- extended coverage', () => {
     it('PUT returns 200 for sub-agent with valid body', async () => {
       const { ctx, statusCode, responseBody } = makeCtx({
         method: 'PUT',
-        path: '/api/agents/rick/context-guard',
+        path: '/api/agents/agent-d/context-guard',
         body: JSON.stringify({ enabled: false }),
       })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
@@ -197,7 +197,7 @@ describe('agents-process routes -- extended coverage', () => {
     it('returns 200 for sub-agent with host and workdir', async () => {
       const { ctx, statusCode, responseBody } = makeCtx({
         method: 'PUT',
-        path: '/api/agents/rick/remote',
+        path: '/api/agents/agent-d/remote',
         body: JSON.stringify({ host: 'myhost', workdir: '/work' }),
       })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
@@ -209,7 +209,7 @@ describe('agents-process routes -- extended coverage', () => {
     it('returns 400 for invalid JSON', async () => {
       const { ctx, statusCode } = makeCtx({
         method: 'PUT',
-        path: '/api/agents/rick/remote',
+        path: '/api/agents/agent-d/remote',
         body: 'not-json',
       })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
@@ -221,7 +221,7 @@ describe('agents-process routes -- extended coverage', () => {
     it('returns 200 for sub-agent (happy path)', async () => {
       const { ctx, statusCode, responseBody } = makeCtx({
         method: 'POST',
-        path: '/api/agents/rick/start',
+        path: '/api/agents/agent-d/start',
         body: '{}',
       })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
@@ -232,7 +232,7 @@ describe('agents-process routes -- extended coverage', () => {
     it('returns 200 for sub-agent with fresh:true flag', async () => {
       const { ctx, statusCode } = makeCtx({
         method: 'POST',
-        path: '/api/agents/rick/start',
+        path: '/api/agents/agent-d/start',
         body: JSON.stringify({ fresh: true }),
       })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
@@ -252,7 +252,7 @@ describe('agents-process routes -- extended coverage', () => {
     it('returns 200 for sub-agent', async () => {
       const { ctx, statusCode, responseBody } = makeCtx({
         method: 'POST',
-        path: '/api/agents/rick/stop',
+        path: '/api/agents/agent-d/stop',
       })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
       expect(statusCode()).toBe(200)
@@ -272,7 +272,7 @@ describe('agents-process routes -- extended coverage', () => {
     it('returns 400 for non-main agent', async () => {
       const { ctx, statusCode, responseBody } = makeCtx({
         method: 'POST',
-        path: '/api/agents/rick/drain-inbox',
+        path: '/api/agents/agent-d/drain-inbox',
       })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
       expect(statusCode()).toBe(400)
@@ -306,7 +306,7 @@ describe('agents-process routes -- extended coverage', () => {
     it('restarts sub-agent (happy path)', async () => {
       const { ctx, statusCode, responseBody } = makeCtx({
         method: 'POST',
-        path: '/api/agents/rick/restart',
+        path: '/api/agents/agent-d/restart',
         body: '{}',
       })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
@@ -317,7 +317,7 @@ describe('agents-process routes -- extended coverage', () => {
     it('restarts sub-agent with fresh:true flag', async () => {
       const { ctx, statusCode } = makeCtx({
         method: 'POST',
-        path: '/api/agents/rick/restart',
+        path: '/api/agents/agent-d/restart',
         body: JSON.stringify({ fresh: true }),
       })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
@@ -329,7 +329,7 @@ describe('agents-process routes -- extended coverage', () => {
     it('returns 200 for sub-agent with process info', async () => {
       const { ctx, statusCode, responseBody } = makeCtx({
         method: 'GET',
-        path: '/api/agents/rick/status',
+        path: '/api/agents/agent-d/status',
       })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
       expect(statusCode()).toBe(200)
@@ -380,7 +380,7 @@ describe('agents-process routes -- extended coverage', () => {
     it('auto-restart unknown field → invalid_value (not a prose sentence)', async () => {
       const { ctx, statusCode, responseBody } = makeCtx({
         method: 'PUT',
-        path: '/api/agents/rick/auto-restart',
+        path: '/api/agents/agent-d/auto-restart',
         body: JSON.stringify({ enabled: true, noSuchField: 42 }),
       })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
@@ -397,7 +397,7 @@ describe('agents-process routes -- extended coverage', () => {
     it('context-guard unknown field → invalid_value (not a prose sentence)', async () => {
       const { ctx, statusCode, responseBody } = makeCtx({
         method: 'PUT',
-        path: '/api/agents/rick/context-guard',
+        path: '/api/agents/agent-d/context-guard',
         body: JSON.stringify({ enabled: true, actPct: 0.8, noSuchField: 99 }),
       })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)

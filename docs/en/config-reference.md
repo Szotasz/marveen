@@ -342,7 +342,7 @@ Each task lives in its own folder with two files. Detailed description: [schedul
 
 ## .mcp.json -- MCP Servers
 
-MCP configurations are scoped: agent `agents/<name>/.mcp.json` files contain only the servers relevant to that agent. The `.mcp.json` at the project root applies to the main agent (marveen/Jarvis).
+MCP configurations are scoped: agent `agents/<name>/.mcp.json` files contain only the servers relevant to that agent. The `.mcp.json` at the project root applies to the main agent.
 
 ```json
 {
@@ -381,7 +381,7 @@ Key configuration variables live in the launchd plist (`~/Library/LaunchAgents/c
 | `WEB_PORT` | Dashboard port (default: 3420). Can be set at install time via the `--port <N>` CLI flag (`./install-linux.sh --port 3421`) or as an env variable (`WEB_PORT=3421 ./install.sh`). |
 | `ANTHROPIC_API_KEY` | Claude API key |
 | `OWNER_NAME` | Owner name (e.g. "Jónás Gergő") |
-| `BOT_NAME` | Main agent name (e.g. "Jarvis") |
+| `BOT_NAME` | Main agent display name (e.g. "Marveen") |
 
 ---
 

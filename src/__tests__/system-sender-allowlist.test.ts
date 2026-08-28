@@ -26,7 +26,7 @@ describe('parseSystemSenderIds', () => {
 
   it('does not admit a sender that was never listed', () => {
     const s = parseSystemSenderIds('cortex', sanitizeAgentIdent)
-    expect(s.has('zack')).toBe(false)
+    expect(s.has('agent-b')).toBe(false)
     expect(s.has('cortex-router')).toBe(false)
   })
 

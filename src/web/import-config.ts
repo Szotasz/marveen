@@ -39,7 +39,7 @@ export const MAX_EXTRACTED_BYTES = 2 * 1024 * 1024 // 2 MB
 
 /**
  * File extensions that are unconditionally blocked from import regardless of
- * content (Dave/compliance, private key and credential formats).
+ * content (compliance, private key and credential formats).
  */
 export const BLOCKED_EXTENSIONS = new Set([
   'env', 'key', 'pem', 'p12', 'pfx', 'der', 'crt', 'cer', 'p8', 'ppk',

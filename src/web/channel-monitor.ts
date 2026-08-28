@@ -1046,7 +1046,7 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string; hin
   try { stampFableOverageConsentSharedRoots() } catch { /* backstop handlers remain */ }
   // macOS: bounce the launchd job when the plist exists. If the channels session
   // is NOT managed by launchd on this install (plist absent -- only
-  // com.jarvis.dashboard exists), fall through to the respawn-pane path below.
+  // com.marveen.dashboard exists), fall through to the respawn-pane path below.
   // The previous unconditional launchctl call was a silent no-op: launchctl
   // accepts a non-existent plist with exit 0, leaving the session untouched.
   if (process.platform !== 'linux' && existsSync(MAIN_CHANNELS_PLIST)) {

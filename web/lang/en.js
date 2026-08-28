@@ -459,7 +459,7 @@ window._i18n.en = {
   'naplo.source.idea':           'Ideas',
   'naplo.source.store':          'Store files',
   'naplo.search_placeholder':    'Search...',
-  'naplo.agent_placeholder':     'Agent (e.g. jarvis)',
+  'naplo.agent_placeholder':     'Agent (e.g. agent-a)',
   'naplo.btn.search':            'Search',
   'naplo.btn.refresh':           'Refresh',
   'naplo.empty':                 'No results.',

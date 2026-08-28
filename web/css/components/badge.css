@@ -1,5 +1,5 @@
 /* === .badge component === */
-/* Poly spec §5: CUBE data-attr, no interaction */
+/* design spec §5: CUBE data-attr, no interaction */
 
 .badge {
   --_base: var(--text-secondary);

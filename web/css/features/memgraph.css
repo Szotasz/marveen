@@ -1,4 +1,4 @@
-/* === Graph detail card (dark-glass, Poly spec §1) === */
+/* === Graph detail card (dark-glass, design spec §1) === */
 .graph-panel {
   position: absolute;
   top: 12px; right: 12px; bottom: 12px;

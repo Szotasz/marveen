@@ -71,9 +71,9 @@ describe('tryHandleTokenUsage -- extended coverage', () => {
 
   it('GET /api/token-usage/model-dist passes from/to/agent params', async () => {
     const { getModelDistribution } = await import('../web/token-usage.js')
-    const { ctx } = makeCtx('GET', '/api/token-usage/model-dist', { from: '1000', to: '2000', agent: 'rick' })
+    const { ctx } = makeCtx('GET', '/api/token-usage/model-dist', { from: '1000', to: '2000', agent: 'agent-d' })
     await tryHandleTokenUsage(ctx)
-    expect(getModelDistribution).toHaveBeenCalledWith(1000, 2000, 'rick')
+    expect(getModelDistribution).toHaveBeenCalledWith(1000, 2000, 'agent-d')
   })
 
   it('GET /api/token-usage/tool-stats returns 200', async () => {
@@ -84,9 +84,9 @@ describe('tryHandleTokenUsage -- extended coverage', () => {
 
   it('GET /api/token-usage/tool-stats passes params', async () => {
     const { getToolStats } = await import('../web/token-usage.js')
-    const { ctx } = makeCtx('GET', '/api/token-usage/tool-stats', { from: '500', to: '1500', agent: 'dave' })
+    const { ctx } = makeCtx('GET', '/api/token-usage/tool-stats', { from: '500', to: '1500', agent: 'agent-f' })
     await tryHandleTokenUsage(ctx)
-    expect(getToolStats).toHaveBeenCalledWith(500, 1500, 'dave')
+    expect(getToolStats).toHaveBeenCalledWith(500, 1500, 'agent-f')
   })
 
   it('returns false for unknown route', async () => {

@@ -9,7 +9,7 @@ describe('classifyPersona', () => {
   })
 
   it('suggests Haiku for a fitness coach persona', () => {
-    const text = 'A neved Peter. Te vagy a fleet sportedzője. Edzés, fitness, futás, kerékpár, úszás -- rövid válaszok.'
+    const text = 'A neved agent-g. Te vagy a fleet sportedzője. Edzés, fitness, futás, kerékpár, úszás -- rövid válaszok.'
     const result = classifyPersona(text)
     expect(result.suggestedModel).toBe('claude-haiku-4-5-20251001')
   })
@@ -44,21 +44,21 @@ describe('classifyPersona', () => {
 describe('suggestForAgent -- base (no signals)', () => {
   it('sets changeAdvised=false when current model matches suggestion', () => {
     const text = 'Senior backend fejlesztő, REST API, adatbázis.'
-    const result = suggestForAgent('zack', 'claude-sonnet-5', text)
+    const result = suggestForAgent('agent-b', 'claude-sonnet-5', text)
     expect(result.changeAdvised).toBe(false)
-    expect(result.agent).toBe('zack')
+    expect(result.agent).toBe('agent-b')
   })
 
   it('sets changeAdvised=true when models differ', () => {
     const text = 'IT architekt. Komplex elosztott rendszerterv, mikroszolgáltatás, stratégiai döntések.'
-    const result = suggestForAgent('rick', 'claude-sonnet-5', text)
+    const result = suggestForAgent('agent-d', 'claude-sonnet-5', text)
     expect(result.changeAdvised).toBe(true)
     expect(result.suggestedModel).toBe('claude-opus-4-8[1m]')
   })
 
   it('normalises [1m] suffix for comparison', () => {
     const text = 'IT architekt. Komplex elosztott rendszerterv, mikroszolgáltatás, stratégiai döntések.'
-    const result = suggestForAgent('rick', 'claude-opus-4-8[1m]', text)
+    const result = suggestForAgent('agent-d', 'claude-opus-4-8[1m]', text)
     expect(result.changeAdvised).toBe(false)
   })
 })
@@ -100,7 +100,7 @@ describe('suggestForAgent -- AgentSignals thresholds', () => {
 
   it('scheduledFreqPerDay >= 10 + haiku persona keywords pushes to Haiku', () => {
     const haikuPersona = 'Sport, edzés, futás, kerékpár, tréner.'
-    const result = suggestForAgent('peter', 'claude-sonnet-5', haikuPersona, 0, {
+    const result = suggestForAgent('agent-g', 'claude-sonnet-5', haikuPersona, 0, {
       scheduledFreqPerDay: 48,
     })
     expect(result.suggestedModel).toBe('claude-haiku-4-5-20251001')
@@ -152,7 +152,7 @@ describe('suggestForAgent -- AgentSignals thresholds', () => {
 describe('suggestForAgent -- reason structure (6 sections)', () => {
   it('reason contains all 6 sections when signals provided', () => {
     const text = 'IT architekt. Komplex elosztott rendszerterv, mikroszolgáltatás, stratégiai döntések.'
-    const result = suggestForAgent('rick', 'claude-sonnet-5', text, 0, {
+    const result = suggestForAgent('agent-d', 'claude-sonnet-5', text, 0, {
       tokenAvgInputPerCall: 12_000,
       kanbanOpenCount: 3,
       kanbanUrgentCount: 2,
@@ -188,7 +188,7 @@ describe('suggestForAgent -- reason structure (6 sections)', () => {
 
   it('cost section shows cheaper direction when switching to Haiku', () => {
     const haikuPersona = 'Sport, edzés, futás, kerékpár, úszás, tréner.'
-    const result = suggestForAgent('peter', 'claude-opus-4-8[1m]', haikuPersona, 0, {
+    const result = suggestForAgent('agent-g', 'claude-opus-4-8[1m]', haikuPersona, 0, {
       scheduledFreqPerDay: 48,
       kanbanOpenCount: 0,
       kanbanUrgentCount: 0,

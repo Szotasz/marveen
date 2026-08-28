@@ -39,7 +39,7 @@ A rendszer négy hozzáférési szintet különböztet meg.
 
 Teljes hozzáférés. Az admin minden tenant adatát látja és szerkesztheti, beléphet az
 adminisztrációs felületre (`/api/v1/admin/*`), és kezelhet tokeneket, felhasználókat,
-tenant-okat. A futó fleet-ügynökök (Jarvis, Zack stb.) bearer tokenje admin jogosultsággal
+tenant-okat. A futó fleet-ügynökök bearer tokenje admin jogosultsággal
 fut -- ez biztosítja, hogy a flotta konfigurációváltozás nélkül tovább működik.
 
 ### Agent
@@ -165,7 +165,7 @@ visszaadni -- a szűrés az adatbázis-rétegben történik, nem az alkalmazás 
 ### A meglévő adatok
 
 A rendszer bevezetésekor minden meglévő sor a `"default"` tenanthoz kerül. A futó flotta
-(Jarvis, Zack és a többi ágens) a `"default"` tenantot olvassa és írja -- ez változatlan marad.
+A fleet ágensek a `"default"` tenantot olvassák és írják -- ez változatlan marad.
 
 ### Mi nem izolált (tudatosan)
 

@@ -170,7 +170,7 @@ components:
           description: Human-readable accessed_at (localised)
       example:
         id: 42
-        agent_id: "jarvis"
+        agent_id: "agent-a"
         content: "Kanban board redesign merged 2026-08-22"
         category: "warm"
         keywords: "kanban, design"
@@ -225,8 +225,8 @@ components:
           type: [string, "null"]
       example:
         id: 3715
-        from_agent: "zack"
-        to_agent: "jarvis"
+        from_agent: "agent-b"
+        to_agent: "agent-a"
         content: "feat/zod-config-schema kész -- 23ec40d, 24 teszt zöld"
         status: "pending"
         result: null
@@ -271,7 +271,7 @@ components:
         title: "OpenAPI 3.1 spec elkészítése"
         status: "in_progress"
         priority: "high"
-        assignee: "zack"
+        assignee: "agent-b"
 
     KanbanComment:
       type: object
@@ -317,7 +317,7 @@ components:
           type: [integer, "null"]
       example:
         id: "a1b2c3d4-e5f6-..."
-        agent_id: "zack"
+        agent_id: "agent-b"
         category: "code_deploy"
         action_description: "Push feat/openapi-spec to origin"
         status: "pending"
@@ -346,7 +346,7 @@ components:
           type: integer
       example:
         id: "b4cda374"
-        agent_id: "zack"
+        agent_id: "agent-b"
         task_ref: "6df6d262"
         status: "active"
         summary: "feat/openapi-spec: írja az OpenAPI 3.1 spec-et"
@@ -567,7 +567,7 @@ paths:
                   type: string
                   description: Comma-separated keywords for keyword search
             example:
-              agent_id: "jarvis"
+              agent_id: "agent-a"
               content: "Kanban board redesign shipped 2026-08-22"
               category: "warm"
               keywords: "kanban, design"
@@ -1206,8 +1206,8 @@ paths:
                     if they have no active or blocked row. Use for deliberate task
                     delegation; omit for replies, notifications, and acknowledgements.
             example:
-              from: "zack"
-              to: "jarvis"
+              from: "agent-b"
+              to: "agent-a"
               content: "feat/openapi-spec kész, 23ec40d, Jónás tesztre vár"
       responses:
         "200":
@@ -1503,7 +1503,7 @@ paths:
                   description: Agent id of the mover (required for dispatch logic)
             example:
               status: "done"
-              actor: "zack"
+              actor: "agent-b"
       responses:
         "200":
           description: Moved
@@ -1727,7 +1727,7 @@ paths:
                   type: integer
                   description: Override the category default timeout
             example:
-              agent_id: "zack"
+              agent_id: "agent-b"
               category: "code_deploy"
               action_description: "Push feat/openapi-spec branch to origin"
               timeout_seconds: 3600
@@ -1793,7 +1793,7 @@ paths:
                   type: integer
             example:
               status: "approved"
-              resolved_by: "jarvis"
+              resolved_by: "agent-a"
       responses:
         "200":
           description: Resolved
@@ -1846,7 +1846,7 @@ paths:
                   $ref: "#/components/schemas/BlackboardRowWithSignal"
               example:
                 - id: "b4cda374"
-                  agent_id: "zack"
+                  agent_id: "agent-b"
                   task_ref: "6df6d262"
                   status: "active"
                   summary: "feat/openapi-spec: írja a YAML-t"
@@ -1878,7 +1878,7 @@ paths:
                   type: [string, "null"]
                   description: Kanban card id (optional)
             example:
-              agent_id: "zack"
+              agent_id: "agent-b"
               task_ref: "6df6d262"
               status: "active"
               summary: "feat/openapi-spec: Tier 1 végpontok dokumentálása"
@@ -2048,7 +2048,7 @@ paths:
                   type: string
                   minLength: 1
             example:
-              agent_id: "zack"
+              agent_id: "agent-b"
               content: "## 14:10 -- feat/openapi-spec\nTier 1 végpontok kész, commit 23ec40d"
       responses:
         "200":

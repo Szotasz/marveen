@@ -32,22 +32,22 @@ afterAll(() => {
 
 describe('logSkillUsage / getSkillUsageRows / getSkillUsageStats', () => {
   it('logSkillUsage inserts a row', () => {
-    logSkillUsage('test-rick', 'fleet-dashboard-api', 'tool_call', 'sess-abc')
-    logSkillUsage('test-rick', 'fleet-dashboard-api', 'skill_read', null)
-    logSkillUsage('test-rick', 'skill-factory', 'tool_call')
-    const rows = getSkillUsageRows({ agentId: 'test-rick' })
+    logSkillUsage('test-agent-d', 'fleet-dashboard-api', 'tool_call', 'sess-abc')
+    logSkillUsage('test-agent-d', 'fleet-dashboard-api', 'skill_read', null)
+    logSkillUsage('test-agent-d', 'skill-factory', 'tool_call')
+    const rows = getSkillUsageRows({ agentId: 'test-agent-d' })
     expect(rows.length).toBeGreaterThanOrEqual(3)
     expect(rows[0].skill_name).toBeDefined()
   })
 
   it('getSkillUsageRows filters by skillName', () => {
-    const rows = getSkillUsageRows({ agentId: 'test-rick', skillName: 'fleet-dashboard-api' })
+    const rows = getSkillUsageRows({ agentId: 'test-agent-d', skillName: 'fleet-dashboard-api' })
     expect(rows.every(r => r.skill_name === 'fleet-dashboard-api')).toBe(true)
     expect(rows.length).toBeGreaterThanOrEqual(2)
   })
 
   it('getSkillUsageRows respects limit', () => {
-    const rows = getSkillUsageRows({ agentId: 'test-rick', limit: 1 })
+    const rows = getSkillUsageRows({ agentId: 'test-agent-d', limit: 1 })
     expect(rows.length).toBe(1)
   })
 
@@ -90,12 +90,12 @@ describe('logConfigChange / getRecentConfigChanges', () => {
 
 describe('logStoreFileEvent / getRecentStoreFileEvents', () => {
   it('inserts and retrieves store file events', () => {
-    logStoreFileEvent('test/myfile.json', 'create', 0, 1024, 'test-rick')
+    logStoreFileEvent('test/myfile.json', 'create', 0, 1024, 'test-agent-d')
     logStoreFileEvent('test/secret.key', 'create', 1, 256, null)
     const events = getRecentStoreFileEvents(100)
     const mine = events.find(e => e.rel_path === 'test/myfile.json')
     expect(mine).toBeDefined()
-    expect(mine!.agent).toBe('test-rick')
+    expect(mine!.agent).toBe('test-agent-d')
     expect(mine!.file_size).toBe(1024)
   })
 })
@@ -187,7 +187,7 @@ describe('upsertOtelSpan / closeOtelSpan / getOtelTrace / listOtelTraces', () =>
       trace_id: traceId,
       span_id: 'span-a',
       parent_span_id: null,
-      agent_id: 'test-rick',
+      agent_id: 'test-agent-d',
       operation: 'test-op',
       start_ms: Date.now(),
       attributes: null,
@@ -203,7 +203,7 @@ describe('upsertOtelSpan / closeOtelSpan / getOtelTrace / listOtelTraces', () =>
       trace_id: traceId,
       span_id: 'span-a',
       parent_span_id: null,
-      agent_id: 'test-rick',
+      agent_id: 'test-agent-d',
       operation: 'test-op',
       start_ms: Date.now(),
       end_ms: Date.now() + 100,
@@ -220,7 +220,7 @@ describe('upsertOtelSpan / closeOtelSpan / getOtelTrace / listOtelTraces', () =>
       trace_id: traceId,
       span_id: 'span-b',
       parent_span_id: 'span-a',
-      agent_id: 'test-rick',
+      agent_id: 'test-agent-d',
       operation: 'child-op',
       start_ms: Date.now(),
       attributes: null,

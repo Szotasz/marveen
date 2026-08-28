@@ -401,7 +401,7 @@ const GRAPH_TIER_COLORS = {
   import: '#39FF14',
 }
 
-// Poly spec: luminous dark-variants for ambient glow
+// design spec: luminous dark-variants for ambient glow
 const GRAPH_TIER_GLOW = {
   hot:    '#ff6b5e',
   warm:   '#ff9a70',
@@ -432,7 +432,7 @@ let graphLastRenderTs = 0    // for delta-time based lerp
 // Particle pool: up to 60 particles on active edges
 let graphParticles = []  // [{ edgeIdx, t, speed }]
 
-// Poly spec section 2: back-out easing for node pop-in (cubic-bezier(0.34,1.56,0.64,1))
+// design spec section 2: back-out easing for node pop-in (cubic-bezier(0.34,1.56,0.64,1))
 function graphEaseOutBack(t) {
   const c1 = 1.70158
   const c3 = c1 + 1
@@ -588,7 +588,7 @@ function buildGraph(graphData) {
     node.labelAlpha = 0
   }
 
-  // Pop-in animation: stagger entry by node index (Poly spec section 2)
+  // Pop-in animation: stagger entry by node index (design spec section 2)
   const popStagger = GRAPH_REDUCED_MOTION ? 0 : Math.min(10, 1200 / Math.max(graphNodes.length, 1))
   const nowInit = Date.now()
   for (let ni = 0; ni < graphNodes.length; ni++) {
@@ -888,7 +888,7 @@ function renderGraph() {
   const time = nowMs * 0.001
   const dt = graphLastRenderTs > 0 ? Math.min(nowMs - graphLastRenderTs, 50) : 16.67
   graphLastRenderTs = nowMs
-  // Poly spec section 2: 180ms crossfade via exponential lerp (tau=60ms -> 95% at ~180ms)
+  // design spec section 2: 180ms crossfade via exponential lerp (tau=60ms -> 95% at ~180ms)
   const lerpFactor = 1 - Math.exp(-dt / 60)
   const hasSearch = graphSearchQuery.length > 0
 
@@ -1022,7 +1022,7 @@ function renderGraph() {
     ctx.globalAlpha = 1
   }
 
-  // === Label LOD: precompute eligibility + greedy collision (Poly spec section 6) ===
+  // === Label LOD: precompute eligibility + greedy collision (design spec section 6) ===
   {
     const z = graphZoom
     const dpr = window.devicePixelRatio || 1
@@ -1182,12 +1182,12 @@ function renderGraph() {
     else if (searchGlow || isHover || isSelected || isPanelHoverNeighbor) targetAlpha = 1.0
     else if (activeNode && !isConnected) targetAlpha = 0.13
 
-    // Hover-crossfade: exponential lerp toward targetAlpha (Poly spec section 2)
+    // Hover-crossfade: exponential lerp toward targetAlpha (design spec section 2)
     if (node.renderedAlpha === undefined) node.renderedAlpha = targetAlpha
     node.renderedAlpha += (targetAlpha - node.renderedAlpha) * lerpFactor
     const displayAlpha = node.renderedAlpha
 
-    // Pop-in scale: 0->1 back-out 300ms, staggered (Poly spec section 2)
+    // Pop-in scale: 0->1 back-out 300ms, staggered (design spec section 2)
     let popScale = 1
     if (!GRAPH_REDUCED_MOTION && node.birthMs && nowMs < node.birthMs + 300) {
       const t = Math.max(0, Math.min(1, (nowMs - node.birthMs) / 300))
@@ -1233,7 +1233,7 @@ function renderGraph() {
       }
     }
     // Core alpha: dark mode uses displayAlpha; light mode bumps to ~0.9 ambient
-    // so the halo's 0.35 multiplier doesn't drag the core down visually (Poly §4)
+    // so the halo's 0.35 multiplier doesn't drag the core down visually (design spec §4)
     ctx.globalAlpha = isDark ? displayAlpha : Math.min(displayAlpha * (0.9 / 0.85), 1.0)
 
     // Node core: radial gradient with highlight center offset
@@ -1300,7 +1300,7 @@ function renderGraph() {
 
     ctx.globalAlpha = displayAlpha
 
-    // Label pill (LOD-gated, Poly spec section 6)
+    // Label pill (LOD-gated, design spec section 6)
     const labelA = node.labelAlpha || 0
     if (labelA > 0.015) {
       const labelFontSize = Math.max(7, Math.min(11, 9 / Math.max(graphZoom * 0.7, 0.5)))
@@ -1389,7 +1389,7 @@ function graphRoundRect(ctx, x, y, w, h, r) {
   ctx.closePath()
 }
 
-// === Graph detail card (Poly spec §1-§7) ===
+// === Graph detail card (design spec §1-§7) ===
 
 function gcRelTime(ts) {
   const diff = Math.max(0, Date.now() / 1000 - ts)

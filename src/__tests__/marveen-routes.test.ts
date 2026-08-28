@@ -9,7 +9,7 @@ vi.mock('../config.js', async (importOriginal) => {
     PROJECT_ROOT: '/tmp/marveen-test',
     STORE_DIR: '/tmp/marveen-test/store',
     MAIN_AGENT_ID: 'marveen',
-    BOT_NAME: 'Jarvis',
+    BOT_NAME: 'agent-a',
     BRAND_NAME: 'Marveen',
     OWNER_NAME: 'Test User',
     CHANNEL_PROVIDER: 'telegram',

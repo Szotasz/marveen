@@ -23,7 +23,7 @@ export async function loadRecallPage() {
     document.getElementById('recallDate').value = today
 
     try {
-      // /api/schedules/agents includes the main agent (jarvis); /api/agents lists sub-agents only
+      // /api/schedules/agents includes the main agent (agent-a); /api/agents lists sub-agents only
       const res = await fetch('/api/schedules/agents')
       if (res.ok) {
         const agents = await res.json()

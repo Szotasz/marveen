@@ -100,7 +100,7 @@ Válasz:
       "idea_id": "abc123",
       "from_status": "new",
       "to_status": "kanban",
-      "actor": "jarvis",
+      "actor": "agent-a",
       "note": "promote:planning"
     },
     {

@@ -112,7 +112,7 @@ export const MCP_TOOL_REGISTRY: Record<string, readonly string[]> = {
  * Tools that should always be denied regardless of mcpScope, because they are
  * destructive or irreversible. Operators can opt out by not including these in
  * their deny list, but the scaffold includes them by default when mcpScope is
- * declared. Exported so the UI (Zack's mcp-catalog) can surface them as
+ * declared. Exported so the UI (the mcp-catalog) can surface them as
  * "dangerous" with a warning.
  */
 export const MCP_DANGEROUS_TOOLS: readonly string[] = [

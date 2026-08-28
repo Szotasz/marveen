@@ -42,11 +42,11 @@ Plugin content.
 
   // Create agent dir with local skill
   const agentsBase = path.join(fakeHome, 'agents')
-  const agentSkillDir = path.join(agentsBase, 'zack', '.claude', 'skills', 'agent-local-skill')
+  const agentSkillDir = path.join(agentsBase, 'agent-b', '.claude', 'skills', 'agent-local-skill')
   fs.mkdirSync(agentSkillDir, { recursive: true })
   fs.writeFileSync(path.join(agentSkillDir, 'SKILL.md'), `---
 name: agent-local-skill
-description: "Zack local skill"
+description: "agent-b local skill"
 ---
 Local.
 `)
@@ -81,7 +81,7 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
   return {
     ...actual,
     AGENTS_BASE_DIR: nodePath.join(FAKE_HOME, 'agents'),
-    listAgentNames: vi.fn().mockReturnValue(['zack']),
+    listAgentNames: vi.fn().mockReturnValue(['agent-b']),
     agentDir: vi.fn().mockImplementation((name: string) => nodePath.join(FAKE_HOME, 'agents', name)),
     readFileOr: vi.fn().mockImplementation((filePath: string, def: string) => {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -154,7 +154,7 @@ describe('tryHandleSkills', () => {
       expect(Array.isArray(out.body)).toBe(true)
       const localSkill = out.body.find((s: any) => s.name === 'agent-local-skill')
       expect(localSkill).toBeDefined()
-      expect(localSkill.agentId).toBe('zack')
+      expect(localSkill.agentId).toBe('agent-b')
       expect(localSkill.source).toBe('agent')
     })
   })
@@ -175,12 +175,12 @@ describe('tryHandleSkills', () => {
       expect(out.status).toBe(404)
     })
 
-    it('returns skill with ?agent=zack for agent-local skill', async () => {
-      const { ctx, out } = makeCtx('GET', '/api/skills/agent-local-skill', undefined, { agent: 'zack' })
+    it('returns skill with ?agent=agent-b for agent-local skill', async () => {
+      const { ctx, out } = makeCtx('GET', '/api/skills/agent-local-skill', undefined, { agent: 'agent-b' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(200)
       expect(out.body.source).toBe('agent')
-      expect(out.body.agentId).toBe('zack')
+      expect(out.body.agentId).toBe('agent-b')
     })
 
     it('returns 404 when agent is invalid with ?agent=', async () => {

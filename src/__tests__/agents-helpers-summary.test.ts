@@ -61,7 +61,7 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
     readAgentRemoteHost: vi.fn().mockReturnValue(null),
     findAvatarForAgent: vi.fn().mockReturnValue(null),
     extractDescriptionFromClaudeMd: vi.fn().mockReturnValue('A test agent'),
-    listAgentNames: vi.fn().mockReturnValue(['rick', 'dave']),
+    listAgentNames: vi.fn().mockReturnValue(['agent-d', 'agent-f']),
     isKnownAgent: vi.fn().mockReturnValue(true),
   }
 })
@@ -70,9 +70,9 @@ import { getAgentSummary, getAgentDetail, listAgentSummaries } from '../web/rout
 
 describe('getAgentSummary', () => {
   it('returns a valid AgentSummary with expected structure', () => {
-    const summary = getAgentSummary('rick')
+    const summary = getAgentSummary('agent-d')
     expect(summary).toBeDefined()
-    expect(summary.name).toBe('rick')
+    expect(summary.name).toBe('agent-d')
     expect(typeof summary.running).toBe('boolean')
     expect(['stopped', 'running', 'unreachable']).toContain(summary.runState)
     expect(typeof summary.hasTelegram).toBe('boolean')
@@ -83,42 +83,42 @@ describe('getAgentSummary', () => {
   })
 
   it('returns displayName from readAgentDisplayName', () => {
-    const summary = getAgentSummary('rick')
+    const summary = getAgentSummary('agent-d')
     expect(summary.displayName).toBe('Test Agent')
   })
 
   it('returns model from readAgentModel', () => {
-    const summary = getAgentSummary('rick')
+    const summary = getAgentSummary('agent-d')
     expect(summary.model).toBe('claude-sonnet-4-6')
   })
 
   it('returns status=draft when claudeMd and soulMd are empty', () => {
-    const summary = getAgentSummary('rick')
+    const summary = getAgentSummary('agent-d')
     expect(summary.status).toBe('draft')
   })
 
   it('returns hasAvatar:false when findAvatarForAgent returns null', () => {
-    const summary = getAgentSummary('rick')
+    const summary = getAgentSummary('agent-d')
     expect(summary.hasAvatar).toBe(false)
   })
 
   it('returns remoteHost:null for local agent', () => {
-    const summary = getAgentSummary('rick')
+    const summary = getAgentSummary('agent-d')
     expect(summary.remoteHost).toBeNull()
     expect(summary.remoteWorkdir).toBeNull()
   })
 
   it('returns claudePlan:null when not set', () => {
-    const summary = getAgentSummary('rick')
+    const summary = getAgentSummary('agent-d')
     expect(summary.claudePlan).toBeNull()
   })
 })
 
 describe('getAgentDetail', () => {
   it('returns AgentDetail extending AgentSummary', () => {
-    const detail = getAgentDetail('rick')
+    const detail = getAgentDetail('agent-d')
     expect(detail).toBeDefined()
-    expect(detail.name).toBe('rick')
+    expect(detail.name).toBe('agent-d')
     // AgentDetail-specific fields
     expect(detail.claudeMd).toBeDefined()
     expect(detail.soulMd).toBeDefined()
@@ -129,17 +129,17 @@ describe('getAgentDetail', () => {
   })
 
   it('returns empty skills array when skills dir does not exist', () => {
-    const detail = getAgentDetail('rick')
+    const detail = getAgentDetail('agent-d')
     expect(detail.skills).toEqual([])
   })
 
   it('returns hasApiKey:false when no secret set', () => {
-    const detail = getAgentDetail('rick')
+    const detail = getAgentDetail('agent-d')
     expect(detail.hasApiKey).toBe(false)
   })
 
   it('includes all AgentSummary fields', () => {
-    const detail = getAgentDetail('dave')
+    const detail = getAgentDetail('agent-f')
     expect(typeof detail.running).toBe('boolean')
     expect(['stopped', 'running', 'unreachable']).toContain(detail.runState)
     expect(detail.autoRestart).toBeDefined()
@@ -151,8 +151,8 @@ describe('listAgentSummaries', () => {
     const summaries = listAgentSummaries()
     expect(Array.isArray(summaries)).toBe(true)
     expect(summaries.length).toBe(2)
-    expect(summaries[0].name).toBe('rick')
-    expect(summaries[1].name).toBe('dave')
+    expect(summaries[0].name).toBe('agent-d')
+    expect(summaries[1].name).toBe('agent-f')
   })
 
   it('each summary has required fields', () => {

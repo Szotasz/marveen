@@ -52,7 +52,7 @@ Tag kanban cards with labels by theme or project. This lets you filter the board
 
 Define short personal keywords for repetitive requests that launch an entire complex workflow with a single word. You don't need to spell out every step -- the alias does it for you.
 
-Example: the "napindító" keyword runs the full morning chain (Dream Engine -> Peter workout summary -> email -> calendar) with one word.
+Example: the "napindító" keyword runs the full morning chain (Dream Engine -> workout summary -> email -> calendar) with one word.
 
 **Effect achieved:** faster, consistent daily control; recurring routines start on one keyword and never deviate from the usual order.
 

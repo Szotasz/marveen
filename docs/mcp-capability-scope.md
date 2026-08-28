@@ -93,5 +93,5 @@ Ha ezeket egy ágensnek nem kellene hívnia, a Csak olvasás preset automatikusa
 |---|---|
 | Csak olvas, elemez, kutat | Csak olvasás preset |
 | Issue-kat ír, de nem push-ol | Egyéni -- engedélyezd a `create_issue`, `add_issue_comment` toolokat |
-| Teljeskörű fejlesztő (pl. Zack) | Teljes hozzáférés, profil alapján |
+| Teljeskörű fejlesztő | Teljes hozzáférés, profil alapján |
 | Ismeretlen / kísérletező | Egyéni, minimális allow-lista |

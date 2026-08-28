@@ -39,7 +39,7 @@ vi.mock('../config.js', () => ({
   STORE_DIR: '/tmp/db-ext3-test-' + process.pid,
   OLLAMA_URL: 'http://localhost:11434',
   APP_TZ: 'Europe/Budapest',
-  MAIN_AGENT_ID: 'jarvis',
+  MAIN_AGENT_ID: 'agent-a',
   ALLOWED_CHAT_ID: '123456',
 }))
 vi.mock('../settings-store.js', () => ({
@@ -61,10 +61,10 @@ function getTodayDate(): string {
 describe('recallByDateRange', () => {
   beforeAll(() => {
     // Insert with today's date so recallByDateRange with today's range finds them
-    appendDailyLog('recall-jarvis', 'Worked on coverage recall test')
-    appendDailyLog('recall-jarvis', 'More coverage recall work')
-    appendDailyLog('recall-dave', 'Dave log entry recall test')
-    saveAgentMemory('recall-jarvis', 'Coverage memory recall', 'warm', 'coverage')
+    appendDailyLog('recall-agent-a', 'Worked on coverage recall test')
+    appendDailyLog('recall-agent-a', 'More coverage recall work')
+    appendDailyLog('recall-agent-f', 'agent-f log entry recall test')
+    saveAgentMemory('recall-agent-a', 'Coverage memory recall', 'warm', 'coverage')
   })
 
   it('returns logs in date range', () => {
@@ -78,8 +78,8 @@ describe('recallByDateRange', () => {
 
   it('filters by agentId', () => {
     const today = getTodayDate()
-    const result = recallByDateRange(today, today, 'recall-dave')
-    expect(result.logs.every(l => l.agent_id === 'recall-dave')).toBe(true)
+    const result = recallByDateRange(today, today, 'recall-agent-f')
+    expect(result.logs.every(l => l.agent_id === 'recall-agent-f')).toBe(true)
   })
 
   it('returns memories in range', () => {
@@ -95,8 +95,8 @@ describe('recallByDateRange', () => {
 
 describe('recallSearch', () => {
   beforeAll(() => {
-    appendDailyLog('recall-jarvis', 'Unique phrase xyzzy coverage alpha')
-    saveAgentMemory('recall-jarvis', 'Unique xyzzy memory content', 'cold', 'xyzzy')
+    appendDailyLog('recall-agent-a', 'Unique phrase xyzzy coverage alpha')
+    saveAgentMemory('recall-agent-a', 'Unique xyzzy memory content', 'cold', 'xyzzy')
   })
 
   it('returns matching logs and memories', () => {
@@ -106,8 +106,8 @@ describe('recallSearch', () => {
   })
 
   it('filters by agentId', () => {
-    const result = recallSearch('xyzzy', 'recall-jarvis', 20)
-    expect(result.memories.every(m => m.agent_id === 'recall-jarvis' || m.category === 'shared')).toBe(true)
+    const result = recallSearch('xyzzy', 'recall-agent-a', 20)
+    expect(result.memories.every(m => m.agent_id === 'recall-agent-a' || m.category === 'shared')).toBe(true)
   })
 
   it('returns empty dateRange when no logs match', () => {
@@ -272,7 +272,7 @@ describe('analyzeWorkflowCandidates', () => {
     const sessionId = 'wf-test-session-' + Date.now()
     const now = Math.floor(Date.now() / 1000)
     for (let i = 0; i < 6; i++) {
-      logToolCall(sessionId, 'Bash', null, true, 'jarvis', null, 100)
+      logToolCall(sessionId, 'Bash', null, true, 'agent-a', null, 100)
     }
     const result = analyzeWorkflowCandidates(3600, 5, 300)
     expect(Array.isArray(result)).toBe(true)
@@ -328,7 +328,7 @@ describe('queryAuditLog with idea source', () => {
 
 describe('queryAuditLog with store source', () => {
   beforeAll(() => {
-    logStoreFileEvent('config/test.json', 'write', 0, 1024, 'jarvis')
+    logStoreFileEvent('config/test.json', 'write', 0, 1024, 'agent-a')
   })
 
   it('returns store audit entries', () => {
@@ -337,7 +337,7 @@ describe('queryAuditLog with store source', () => {
   })
 
   it('filters store entries by agent', () => {
-    const results = queryAuditLog({ sources: ['store'], agent: 'jarvis', limit: 50 })
+    const results = queryAuditLog({ sources: ['store'], agent: 'agent-a', limit: 50 })
     expect(Array.isArray(results)).toBe(true)
   })
 
@@ -356,7 +356,7 @@ describe('queryAuditLog with diary source', () => {
   })
 
   it('filters diary by agent', () => {
-    const results = queryAuditLog({ sources: ['diary'], agent: 'jarvis', limit: 50 })
+    const results = queryAuditLog({ sources: ['diary'], agent: 'agent-a', limit: 50 })
     expect(Array.isArray(results)).toBe(true)
   })
 
@@ -411,7 +411,7 @@ describe('updateIdea patch branches', () => {
 
 describe('logStoreFileEvent and getRecentStoreFileEvents', () => {
   it('logs and retrieves store file events', () => {
-    logStoreFileEvent('store/test.db', 'read', 1, 512, 'zoe')
+    logStoreFileEvent('store/test.db', 'read', 1, 512, 'agent-h')
     const events = getRecentStoreFileEvents(10)
     expect(events.some(e => e.rel_path === 'store/test.db')).toBe(true)
   })
@@ -455,7 +455,7 @@ describe('setMessageResult', () => {
 
 describe('logConfigChange', () => {
   it('logs a config change entry', () => {
-    logConfigChange('test.key', 'old-value', 'new-value', 'jarvis')
+    logConfigChange('test.key', 'old-value', 'new-value', 'agent-a')
   })
 
   it('logs with null old value', () => {

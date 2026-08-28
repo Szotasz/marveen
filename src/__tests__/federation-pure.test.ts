@@ -107,7 +107,7 @@ const BASE_CFG: FederationConfig = {
 }
 
 const BASE_DEPS = {
-  isKnownAgent: (name: string) => name === 'jarvis',
+  isKnownAgent: (name: string) => name === 'agent-a',
   mainAgentId: 'marveen',
 }
 
@@ -270,8 +270,8 @@ describe('validateInboxPayload - ref field', () => {
 
 describe('validateInboxPayload - known agent recipient', () => {
   it('accepts message to known agent', () => {
-    const deps = { isKnownAgent: (n: string) => n === 'jarvis', mainAgentId: 'marveen' }
-    const r = validateInboxPayload({ from: 'peer-a/agent1', to: 'jarvis', content: 'ping' }, BASE_CFG, deps, 'peer-a')
-    expect((r as any).to).toBe('jarvis')
+    const deps = { isKnownAgent: (n: string) => n === 'agent-a', mainAgentId: 'marveen' }
+    const r = validateInboxPayload({ from: 'peer-a/agent1', to: 'agent-a', content: 'ping' }, BASE_CFG, deps, 'peer-a')
+    expect((r as any).to).toBe('agent-a')
   })
 })
