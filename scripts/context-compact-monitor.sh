@@ -50,6 +50,16 @@ COOLDOWN_S  = 2700   # 45 min: per-agent cooldown between compacts
 STALE_PENDING_S = 1800  # 30 min: pending flag expires after restart/long gap
 LABEL       = "context-compact-monitor"
 
+# Busy-pane detection -- see is_pane_idle() docstring for rationale.
+# Shape regex: word(s) + ellipsis (U+2026 or ASCII ...) + "(" + time digit.
+# Matches ongoing spinners; does NOT match "Crunched for Xm Ys" (past tense).
+_SPINNER_RE = re.compile(r'\w[\w\s]*[…\.]{1,3}\s*\([\dsmh]')
+_STRING_MARKERS = [
+    "esc to interrupt",  # primary: present throughout active tool/thinking
+    "Thinking",          # legacy Claude Code label
+    "Cogitating",        # legacy Claude Code label
+]
+
 def read_main_agent_id():
     """Read MAIN_AGENT_ID from .env; fall back to 'marveen' (upstream default)."""
     if ENV_FILE.exists():
@@ -120,18 +130,38 @@ def tmux_session_exists(session):
         return False
 
 def is_pane_idle(session):
-    """True when the pane shows no active-thinking/tool-running indicators."""
+    """True when the pane shows no active-thinking/tool-running indicators.
+
+    Fail-closed: any exception or unrecognised state returns False (= busy).
+    This biases toward missed compactions rather than interrupted work -- a
+    false-busy delays compaction (pending flag compensates); a false-idle
+    sends /compact mid-turn, which has a higher cost.
+
+    Detection uses two complementary signals:
+      1. String markers -- "esc to interrupt" is the most reliable; legacy
+         Claude Code labels kept for backward compatibility.
+      2. Spinner shape regex -- matches the ongoing-work spinners Claude Code
+         displays (e.g. "Wandering… (19s · 626 tokens)", "Compacting… (9m 42s)").
+         The pattern targets the SHAPE (word + ellipsis + parenthesised time),
+         surviving renames better than a word allowlist would.
+    Note: "Crunched for Xm Ys" is a past-tense completion marker, not a busy
+    indicator, and is intentionally not matched.
+    """
     try:
         r = subprocess.run(
             [TMUX_BIN, "capture-pane", "-t", session, "-p", "-S", "-20"],
             capture_output=True, text=True, timeout=3
         )
         if r.returncode != 0:
+            return False  # fail-closed: can't read = treat as busy
+        text = r.stdout
+        if any(m in text for m in _STRING_MARKERS):
             return False
-        busy_markers = ["Thinking…", "Thinking...", "esc to interrupt", "Cogitating"]
-        return not any(m in r.stdout for m in busy_markers)
+        if _SPINNER_RE.search(text):
+            return False
+        return True
     except Exception:
-        return False
+        return False  # fail-closed
 
 def send_compact(session):
     """Send /compact to the given tmux session. Returns True on success."""
