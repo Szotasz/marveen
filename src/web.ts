@@ -239,6 +239,13 @@ export function startWebServer(port = 3420): http.Server {
         logger.warn({ path, method, authKind: auth.kind, reason }, 'rbac:shadow would-deny')
       })
       if (!passed) return
+      // Phase 1: log non-admin allowed requests so the observation window can
+      // distinguish "no non-admin traffic arrived" from "gate never fired".
+      // Admin (token + legacy file-token) excluded: they are 100% of current
+      // traffic and produce no useful signal about session/device/federation auth.
+      if (RBAC_MODE === 'shadow' && resolveRole(auth) !== 'admin') {
+        logger.info({ path, method, authKind: auth.kind, role: resolveRole(auth) }, 'rbac:shadow allowed')
+      }
     }
 
     const role = auth.kind !== 'none' ? resolveRole(auth) : undefined
