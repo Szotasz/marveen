@@ -204,8 +204,10 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(pubKeyMatch[1])
     const server = getVaultSshServer(id)
     if (!server) { json(res, { error: 'not_found', hint: `Server "${id}" not found` }, 404); return true }
+    // deliberate: discriminating error response, admin-gated
     if (!server.ssh_key_id) { json(res, { error: 'not_found', hint: 'No key assigned to this server' }, 404); return true }
     const key = getVaultSshKey(server.ssh_key_id)
+    // deliberate: discriminating error response, admin-gated
     if (!key) { json(res, { error: 'not_found', hint: 'Assigned key not found' }, 404); return true }
     json(res, { publicKey: key.public_key, fingerprint: key.fingerprint, keyType: key.key_type })
     return true

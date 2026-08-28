@@ -139,6 +139,7 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
     const db = getDb()
     const old = db.prepare('SELECT * FROM api_tokens WHERE id = ?').get(id) as TokenRow | undefined
     if (!old) { json(res, { error: 'not_found', hint: 'token not found' }, 404); return true }
+    // deliberate: discriminating error response, admin-gated
     if (old.revoked_at !== null) { json(res, { error: 'conflict', hint: 'token already revoked' }, 409); return true }
 
     const now = Math.floor(Date.now() / 1000)
@@ -175,6 +176,7 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
     const db = getDb()
     const row = db.prepare('SELECT * FROM api_tokens WHERE id = ?').get(id) as TokenRow | undefined
     if (!row) { json(res, { error: 'not_found', hint: 'token not found' }, 404); return true }
+    // deliberate: discriminating error response, admin-gated
     if (row.revoked_at !== null) { json(res, { error: 'conflict', hint: 'token already revoked' }, 409); return true }
 
     const now = Math.floor(Date.now() / 1000)

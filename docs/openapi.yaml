@@ -84,23 +84,27 @@ components:
             in the enum; additional domain-specific tokens may appear in future
             API versions.
           enum:
-            - conflict
-            - disabled
-            - federation_disabled
-            - forbidden
-            - internal_error
-            - invalid_value
-            - limit_exceeded
-            - managed_settings_missing
             - not_found
-            - not_supported
-            - parse_error
             - required
-            - sender_not_in_allowlist
-            - timeout
+            - invalid_value
+            - forbidden
             - unauthorized
-            - unknown_query_parameter
+            - conflict
+            - limit_exceeded
+            - internal_error
+            - parse_error
+            - not_supported
+            - timeout
+            - disabled
+            - managed_settings_missing
             - upstream_error
+            - sender_not_in_allowlist
+            - federation_disabled
+            - unknown_query_parameter
+
+
+
+
         hint:
           type: string
           description: >-
