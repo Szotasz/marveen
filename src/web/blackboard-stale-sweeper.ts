@@ -6,7 +6,7 @@ import { logger } from '../logger.js'
 // at least 12 checks before the first possible mark -- acceptable precision.
 const SWEEP_INTERVAL_MS = 5 * 60_000
 
-const TIER_CONFIG_KEY: Record<string, string> = {
+export const TIER_CONFIG_KEY: Record<string, string> = {
   orchestrator:    'BB_STALE_ORCHESTRATOR_MIN',
   interactive:     'BB_STALE_INTERACTIVE_MIN',
   'short-running': 'BB_STALE_SHORT_RUNNING_MIN',

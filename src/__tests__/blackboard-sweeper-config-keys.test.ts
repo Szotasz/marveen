@@ -1,8 +1,10 @@
 /**
- * Integration test: verifies that the key names used in blackboard-stale-sweeper.ts
- * actually exist in the config-registry. Uses the real getEffectiveSettingValue
- * (not mocked) so a key-name mismatch causes this test to throw and fail -- the
- * mock in blackboard-stale-sweeper.test.ts cannot catch that class of bug.
+ * Integration test: verifies that every key name in the sweeper's TIER_CONFIG_KEY
+ * map actually exists in the config-registry with the expected default value.
+ *
+ * The key source is the sweeper itself (imported TIER_CONFIG_KEY), NOT a hand-written
+ * list in this file. If a future edit renames a key in one place but not the other,
+ * getEffectiveSettingValue throws "Unknown setting key: …" and this test fails.
  */
 import { describe, it, expect, vi } from 'vitest'
 
@@ -17,21 +19,28 @@ vi.mock('../config.js', () => ({
   ALLOWED_CHAT_ID: '123456',
 }))
 
-// settings-store.js is intentionally NOT mocked here -- the real
-// getEffectiveSettingValue calls the real getSettingDefinition, which throws
-// for any key not present in the registry.  If a future edit renames a key
-// in one place but not the other, this test fails before Boo has to notice.
+// settings-store is intentionally NOT mocked: the real getEffectiveSettingValue
+// calls the real getSettingDefinition and throws for any unknown key.
 const { getEffectiveSettingValue } = await import('../settings-store.js')
+const { TIER_CONFIG_KEY } = await import('../web/blackboard-stale-sweeper.js')
 
-describe('BB_STALE_* keys exist in config-registry with correct defaults', () => {
-  it.each([
-    ['BB_STALE_ORCHESTRATOR_MIN', 120],
-    ['BB_STALE_INTERACTIVE_MIN',  90],
-    ['BB_STALE_SHORT_RUNNING_MIN', 15],
-    ['BB_STALE_DEFAULT_MIN',       60],
-  ] as const)('%s → default %i', (key, expected) => {
-    // Throws "Unknown setting key: …" if the key is absent from the registry.
-    const val = getEffectiveSettingValue(key)
-    expect(val).toBe(expected)
-  })
+const EXPECTED_DEFAULTS: Record<string, number> = {
+  BB_STALE_ORCHESTRATOR_MIN: 120,
+  BB_STALE_INTERACTIVE_MIN:   90,
+  BB_STALE_SHORT_RUNNING_MIN: 15,
+  BB_STALE_DEFAULT_MIN:       60,
+}
+
+describe('TIER_CONFIG_KEY values exist in config-registry with correct defaults', () => {
+  for (const [tier, key] of Object.entries(TIER_CONFIG_KEY)) {
+    it(`tier "${tier}" → key "${key}" resolves without error`, () => {
+      // Throws "Unknown setting key: …" if the key is absent from the registry.
+      expect(() => getEffectiveSettingValue(key)).not.toThrow()
+    })
+
+    it(`tier "${tier}" → key "${key}" has expected default`, () => {
+      const val = getEffectiveSettingValue(key)
+      expect(val).toBe(EXPECTED_DEFAULTS[key])
+    })
+  }
 })
