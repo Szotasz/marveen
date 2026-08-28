@@ -27,7 +27,7 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
       res.end(buf)
     } catch (err: any) {
       if (err instanceof UserFacingError) {
-        json(res, { error: 'internal_error', hint: err.message }, 400)
+        json(res, { error: 'invalid_value', hint: err.message }, 400)
       } else {
         logger.error({ err }, 'Fleet export failed')
         json(res, { error: 'internal_error', hint: 'Fleet export failed' }, 500)
