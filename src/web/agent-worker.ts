@@ -645,9 +645,12 @@ function nextReqId(): string {
 
 // Outcome of one worker attempt. 'auth' is split out from 'fail' so the caller
 // can recover (reseed + restart) once, then signal an SDK fallback.
+// 'not_ready' is split out from 'fail' so the transient boot-time case is
+// detected at the type level -- no stringly-typed string comparison needed.
 type AttemptResult =
   | { kind: 'ok'; text: string | null; error?: string }
   | { kind: 'auth' }
+  | { kind: 'not_ready' }
   | { kind: 'fail'; error: string }
 
 async function runWorkerAttempt(ctx: WorkerCtx, message: string, timeoutMs: number): Promise<AttemptResult> {
@@ -657,7 +660,7 @@ async function runWorkerAttempt(ctx: WorkerCtx, message: string, timeoutMs: numb
     // login/401 chrome, never reaches an idle prompt) -- distinguish it.
     if (workerPaneHasAuthFailure(ctx)) return { kind: 'auth' }
     logger.warn({ session: ctx.session }, 'agent-worker: worker not ready, failing request (text=null)')
-    return { kind: 'fail', error: 'worker session not ready' }
+    return { kind: 'not_ready' }
   }
 
   const reqId = nextReqId()
@@ -738,17 +741,20 @@ export async function runViaWorker(
     for (let attempt = 0; attempt < 2; attempt++) {
       const r = await runWorkerAttempt(ctx, message, timeoutMs)
       if (r.kind === 'ok') return { text: r.text, error: r.error }
-      if (r.kind === 'fail') {
+      if (r.kind === 'not_ready') {
         // A momentary not-ready is TRANSIENT, not terminal: the boot-time
         // self-heal (or a plain restart here) usually brings the worker back,
         // and every consumer (agent-gen, capability-summary, heartbeat,
         // digest) reaches this single choke point -- so one central retry
         // fixes them all. Mirrors the auth-recovery retry-once shape above.
-        if (r.error === 'worker session not ready' && attempt === 0) {
+        if (attempt === 0) {
           logger.warn({ session: ctx.session }, 'agent-worker: worker not ready -- restarting once and retrying the request')
           restartWorkerSession(ctx)
           continue
         }
+        return { text: null, error: 'worker session not ready' }
+      }
+      if (r.kind === 'fail') {
         return { text: null, error: r.error }
       }
       // r.kind === 'auth'
