@@ -135,7 +135,7 @@ function patchBlackboard(id: string, data: { status?: string; summary?: string; 
   return updated
 }
 
-const VALID_STATUS = new Set(['active', 'done', 'blocked'])
+const VALID_STATUS = new Set(['active', 'done', 'blocked', 'stale', 'assigned'])
 
 export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
@@ -176,7 +176,7 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
     if (!summary) { json(res, { error: 'required', field: 'summary', hint: 'summary required' }, 400); return true }
     if (summary.length > 500) { json(res, { error: 'limit_exceeded', field: 'summary', hint: 'summary max 500 chars' }, 400); return true }
     const status = body.status ? String(body.status) : 'active'
-    if (!VALID_STATUS.has(status)) { json(res, { error: 'invalid_value', field: 'status', hint: 'status must be active|done|blocked' }, 400); return true }
+    if (!VALID_STATUS.has(status)) { json(res, { error: 'invalid_value', field: 'status', hint: 'status must be active|done|blocked|stale|assigned' }, 400); return true }
     const task_ref = body.task_ref ? String(body.task_ref) : null
     try {
       const row = upsertBlackboard(agent_id, { task_ref, status, summary })
@@ -199,7 +199,7 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
       return true
     }
     if (body.status !== undefined && !VALID_STATUS.has(String(body.status))) {
-      json(res, { error: 'invalid_value', field: 'status', hint: 'status must be active|done|blocked' }, 400)
+      json(res, { error: 'invalid_value', field: 'status', hint: 'status must be active|done|blocked|stale|assigned' }, 400)
       return true
     }
     if (body.summary !== undefined && String(body.summary).length > 500) {

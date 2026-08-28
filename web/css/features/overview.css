@@ -486,9 +486,11 @@
   font-weight: 600;
   white-space: nowrap;
 }
-.bb-status.bb-active { background: var(--info-bg, #e0f0ff); color: var(--info, #0066cc); }
-.bb-status.bb-done   { background: var(--success-bg, #e6f9ee); color: var(--success, #1a8a3a); }
-.bb-status.bb-blocked{ background: var(--danger-bg, #ffeaea); color: var(--danger, #cc2222); }
+.bb-status.bb-active   { background: var(--info-bg, #e0f0ff); color: var(--info, #0066cc); }
+.bb-status.bb-done     { background: var(--success-bg, #e6f9ee); color: var(--success, #1a8a3a); }
+.bb-status.bb-blocked  { background: var(--danger-bg, #ffeaea); color: var(--danger, #cc2222); }
+.bb-status.bb-stale    { background: var(--warning-bg, #fff8e0); color: var(--warning, #a06000); }
+.bb-status.bb-assigned { background: var(--muted-bg, #f0f0f4); color: var(--muted, #666); }
 
 /* Stale-signal badges -- shown inline after the status chip when a row is flagged */
 .bb-signal {

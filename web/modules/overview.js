@@ -198,8 +198,8 @@ export async function loadOverview() {
   _bbPollTimer = setInterval(loadBlackboard, 15000)
 }
 
-const BB_STATUS_LABEL = { active: 'aktív', done: 'kész', blocked: 'blokkolt' }
-const BB_STATUS_CLASS = { active: 'bb-active', done: 'bb-done', blocked: 'bb-blocked' }
+const BB_STATUS_LABEL = { active: 'aktív', done: 'kész', blocked: 'blokkolt', stale: 'elavult', assigned: 'kiosztva' }
+const BB_STATUS_CLASS = { active: 'bb-active', done: 'bb-done', blocked: 'bb-blocked', stale: 'bb-stale', assigned: 'bb-assigned' }
 
 // Signal A = forgot to update (orange ⚠), B = stuck/lost completion (red 🔴), AB = both.
 const BB_SIGNAL_ICON  = { a: '⚠️', b: '🔴', ab: '🔴⚠️' }
