@@ -105,6 +105,7 @@ components:
 
 
 
+
         hint:
           type: string
           description: >-
@@ -492,6 +493,7 @@ paths:
         Returns memories for an agent. When `q` is provided, performs hybrid
         vector + keyword search. Without `q`, returns recent memories for the
         agent (or the chat owner when `agent` is omitted).
+        Non-admin callers receive only memories within their own tenant scope.
       parameters:
         - name: q
           in: query
@@ -1238,6 +1240,7 @@ paths:
       tags: [messages]
       operationId: listMessageThreads
       summary: Conversation thread list (sidebar view — one row per peer)
+      description: Non-admin callers see only threads within their own tenant scope.
       responses:
         "200":
           description: Thread list
@@ -2872,6 +2875,7 @@ paths:
       tags: [recall]
       operationId: getRecall
       summary: Unified recall view (recent memories + daily-log)
+      description: The memory portion is tenant-scoped for non-admin callers; the daily-log portion is fleet-wide.
       parameters:
         - name: agent
           in: query
