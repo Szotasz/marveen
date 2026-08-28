@@ -19,7 +19,7 @@
 // kept pure (raw JSON string + homeDir in, validated array out) so it unit-
 // tests without the fs, mirroring resolveClaudeConfigDir in agent-config.ts.
 
-import { readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { PROJECT_ROOT } from '../config.js'
@@ -166,4 +166,46 @@ export function resolveAgentConfigDir(
     return { configDir: readAgentClaudeConfigDir(name), planUnresolved: true }
   }
   return { configDir: readAgentClaudeConfigDir(name), planUnresolved: false }
+}
+
+// The config root a READER must look in to find an agent's transcripts.
+//
+// resolveAgentConfigDir() answers what the operator CONFIGURED. That is the
+// right question for the launcher, which then goes on to auto-provision an
+// isolated config dir when nothing was configured (agent-process.ts:
+// ensureIsolatedChannelConfigDir -> agents/<name>/.claude-config). It is the
+// WRONG question for a reader, because the launcher's second step is invisible
+// to it: the agent is writing into the isolated dir while the reader looks in
+// ~/.claude.
+//
+// MEASURED 2026-08-21 07:03: every sub-agent's contextTokens on the dashboard
+// was byte-identical at 04:09 and at 07:00, across three hours in which one of
+// them ran a 12 MB catalogue audit. The live transcripts (agents/<name>/
+// .claude-config/projects/...) carried that morning's mtime and 3-7 MB; the
+// files actually being read (~/.claude/projects/-home-...-agents-<name>/) had
+// all stopped on 2026-08-18 15:44 at 0.2-0.5 MB.
+//
+// Why that is worse than a stale number on a screen: context-restart-gate-
+// runner.ts treats a null contextTokens as a fail-closed BLOCK. Here nothing
+// was null -- the old files still existed, so the gate got a confident,
+// three-day-old value and could not tell that it was blind. The same number
+// feeds the model suggestion (routes/agents.ts).
+//
+// This deliberately probes the filesystem rather than re-deriving the
+// launcher's decision (fleet token present? channel agent? auth mode?):
+// duplicating that logic is how the two paths drifted apart in the first
+// place. The isolated dir EXISTS only because the launcher provisioned it, so
+// its presence is the launcher's own answer, read back.
+// `projectRootOverride` exists for the tests: the isolated dir is found by
+// probing the filesystem, so the probe root has to be redirectable to a
+// fixture. Production callers pass nothing.
+export function resolveAgentConfigDirForRead(name: string, projectRootOverride?: string): string | null {
+  const configured = resolveAgentConfigDir(name).configDir
+  if (configured) return configured
+  const isolated = join(projectRootOverride ?? PROJECT_ROOT, 'agents', name, '.claude-config')
+  // `projects` is what a transcript reader is after. Requiring it (rather than
+  // just the directory) keeps a half-provisioned dir from shadowing the shared
+  // root that the agent may genuinely still be using.
+  if (existsSync(join(isolated, 'projects'))) return isolated
+  return null
 }
