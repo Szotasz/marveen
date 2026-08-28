@@ -75,18 +75,28 @@ function estimateTokenCostUsd(inputTokens: number, outputTokens: number, model: 
 }
 
 export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
-  const { req, res, path, method } = ctx
+  const { req, res, path, method, url } = ctx
 
   if (path === '/api/overview' && method === 'GET') {
+    const isAdmin = ctx.role === 'admin'
+    // Admin: global view by default, optional ?tenant=<id> to narrow to one tenant.
+    // Non-admin: always scoped to their own tenant.
+    const effectiveTenantId: string | null = isAdmin
+      ? (url.searchParams.get('tenant') ?? null)
+      : (ctx.tenantId ?? 'default')
+    const tc = effectiveTenantId ? ' AND tenant_id = ?' : ''
+    const tp: string[] = effectiveTenantId ? [effectiveTenantId] : []
+
     const subAgents = listAgentNames()
     const running = subAgents.filter(n => isAgentRunning(n)).length + 1
     const total = subAgents.length + 1
 
     const db0 = getDb()
-    const memStats = db0.prepare("SELECT COUNT(*) as c FROM memories").get() as { c: number }
-    const memCats = db0.prepare("SELECT COUNT(DISTINCT category) as c FROM memories").get() as { c: number }
+    const memStats = db0.prepare(`SELECT COUNT(*) as c FROM memories WHERE 1=1${tc}`).get(...tp) as { c: number }
+    const memCats = db0.prepare(`SELECT COUNT(DISTINCT category) as c FROM memories WHERE 1=1${tc}`).get(...tp) as { c: number }
     let artifactCount = 0
     try {
+      // artifacts has no tenant_id (admin-only pilot, deferred by design decision)
       const aRow = db0.prepare("SELECT COUNT(*) as c FROM artifacts").get() as { c: number }
       artifactCount = aRow.c
     } catch { /* artifacts table absent on fresh installs before migration */ }
@@ -163,7 +173,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     // Undelivered inter-agent messages (pending = not yet delivered to recipient session)
     let unreadMessages = 0
     try {
-      const umRow = db0.prepare("SELECT COUNT(*) as c FROM agent_messages WHERE status='pending'").get() as { c: number }
+      const umRow = db0.prepare(`SELECT COUNT(*) as c FROM agent_messages WHERE status='pending'${tc}`).get(...tp) as { c: number }
       unreadMessages = umRow.c
     } catch { /* ignore */ }
 
@@ -182,8 +192,8 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     try {
       const fourHAgoSec = Math.floor(fourHoursAgo / 1000)
       const memRows = db0.prepare(
-        "SELECT content, created_at, agent_id FROM memories WHERE created_at >= ? ORDER BY created_at DESC LIMIT 20"
-      ).all(fourHAgoSec) as { content: string; created_at: number; agent_id: string }[]
+        `SELECT content, created_at, agent_id FROM memories WHERE created_at >= ?${tc} ORDER BY created_at DESC LIMIT 20`
+      ).all(fourHAgoSec, ...tp) as { content: string; created_at: number; agent_id: string }[]
       for (const r of memRows) {
         activity.push({
           icon: 'memory',
@@ -196,8 +206,8 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     try {
       const fourHAgoSec = Math.floor(fourHoursAgo / 1000)
       const msgRows = db0.prepare(
-        "SELECT from_agent, to_agent, content, created_at FROM agent_messages WHERE created_at >= ? ORDER BY created_at DESC LIMIT 15"
-      ).all(fourHAgoSec) as { from_agent: string; to_agent: string; content: string; created_at: number }[]
+        `SELECT from_agent, to_agent, content, created_at FROM agent_messages WHERE created_at >= ?${tc} ORDER BY created_at DESC LIMIT 15`
+      ).all(fourHAgoSec, ...tp) as { from_agent: string; to_agent: string; content: string; created_at: number }[]
       for (const r of msgRows) {
         activity.push({
           icon: 'delegate',
@@ -207,7 +217,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
         })
       }
     } catch { /* ignore */ }
-    // Approval events in last 4h
+    // Approval events in last 4h (approvals has no tenant_id -- admin-only pilot, deferred by design decision)
     try {
       const fourHAgoSec = Math.floor(fourHoursAgo / 1000)
       const aprRows = db0.prepare(

@@ -19,7 +19,11 @@ vi.mock('../web/agent-team.js', () => ({
 
 const { tryHandleOverview } = await import('../web/routes/overview.js')
 
-function fakeCtx(path: string, method = 'GET'): { ctx: RouteContext; out: { status: number; body: any } } {
+function fakeCtx(
+  path: string,
+  method = 'GET',
+  auth?: { role?: RouteContext['role']; tenantId?: string | null },
+): { ctx: RouteContext; out: { status: number; body: any } } {
   const out: { status: number; body: any } = { status: 0, body: null }
   const res: any = {
     writeHead(status: number) { out.status = status; return res },
@@ -27,7 +31,15 @@ function fakeCtx(path: string, method = 'GET'): { ctx: RouteContext; out: { stat
     setHeader() { return res },
   }
   const url = new URL(`http://localhost:3420${path}`)
-  const ctx = { req: { headers: {} } as any, res, path: url.pathname, method, url } as RouteContext
+  const ctx = {
+    req: { headers: {} } as any,
+    res,
+    path: url.pathname,
+    method,
+    url,
+    role: auth?.role,
+    tenantId: auth?.tenantId,
+  } as RouteContext
   return { ctx, out }
 }
 
@@ -332,5 +344,91 @@ describe('GET /api/overview — agents.list lastActive', () => {
     // Fix-revert proof: removing the lastActive MAX query would leave all lastActive as null.
     const agentA = out.body.agents.list.find((a: any) => a.id === 'agent-a')
     expect(agentA.lastActive).toBe(ts2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Tenant isolation
+// ---------------------------------------------------------------------------
+
+describe('GET /api/overview — tenant isolation', () => {
+  it('non-admin sees only their own tenant memories in count', async () => {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    db.prepare(
+      "INSERT INTO memories (chat_id, agent_id, content, sector, salience, category, keywords, created_at, accessed_at, tenant_id) VALUES ('0','agent-a','tenant-a memory','semantic',1.0,'warm','k',?,?,'tenant-a')"
+    ).run(now, now)
+    db.prepare(
+      "INSERT INTO memories (chat_id, agent_id, content, sector, salience, category, keywords, created_at, accessed_at, tenant_id) VALUES ('0','agent-a','tenant-b memory','semantic',1.0,'warm','k',?,?,'tenant-b')"
+    ).run(now, now)
+
+    const { ctx, out } = fakeCtx('/api/overview', 'GET', { role: 'agent', tenantId: 'tenant-a' })
+    await tryHandleOverview(ctx)
+    // Fix-revert proof: without tenant scoping both memories would be counted.
+    expect(out.body.memories.count).toBe(1)
+  })
+
+  it('admin sees all tenants in the global view', async () => {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    db.prepare(
+      "INSERT INTO memories (chat_id, agent_id, content, sector, salience, category, keywords, created_at, accessed_at, tenant_id) VALUES ('0','agent-a','tenant-a memory','semantic',1.0,'warm','k',?,?,'tenant-a')"
+    ).run(now, now)
+    db.prepare(
+      "INSERT INTO memories (chat_id, agent_id, content, sector, salience, category, keywords, created_at, accessed_at, tenant_id) VALUES ('0','agent-a','tenant-b memory','semantic',1.0,'warm','k',?,?,'tenant-b')"
+    ).run(now, now)
+
+    const { ctx, out } = fakeCtx('/api/overview', 'GET', { role: 'admin' })
+    await tryHandleOverview(ctx)
+    // Fix-revert proof: if admin were accidentally scoped, count would be 0 (no 'default' tenant rows here).
+    expect(out.body.memories.count).toBe(2)
+  })
+
+  it('admin with ?tenant filter sees only that tenant', async () => {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    db.prepare(
+      "INSERT INTO memories (chat_id, agent_id, content, sector, salience, category, keywords, created_at, accessed_at, tenant_id) VALUES ('0','agent-a','tenant-a memory','semantic',1.0,'warm','k',?,?,'tenant-a')"
+    ).run(now, now)
+    db.prepare(
+      "INSERT INTO memories (chat_id, agent_id, content, sector, salience, category, keywords, created_at, accessed_at, tenant_id) VALUES ('0','agent-a','tenant-b memory','semantic',1.0,'warm','k',?,?,'tenant-b')"
+    ).run(now, now)
+
+    const { ctx, out } = fakeCtx('/api/overview?tenant=tenant-a', 'GET', { role: 'admin' })
+    await tryHandleOverview(ctx)
+    expect(out.body.memories.count).toBe(1)
+  })
+
+  it('non-admin activity feed excludes other-tenant memories', async () => {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    db.prepare(
+      "INSERT INTO memories (chat_id, agent_id, content, sector, salience, category, keywords, created_at, accessed_at, tenant_id) VALUES ('0','agent-a','only mine','semantic',1.0,'warm','k',?,?,'tenant-a')"
+    ).run(now, now)
+    db.prepare(
+      "INSERT INTO memories (chat_id, agent_id, content, sector, salience, category, keywords, created_at, accessed_at, tenant_id) VALUES ('0','agent-a','not mine','semantic',1.0,'warm','k',?,?,'tenant-b')"
+    ).run(now, now)
+
+    const { ctx, out } = fakeCtx('/api/overview', 'GET', { role: 'agent', tenantId: 'tenant-a' })
+    await tryHandleOverview(ctx)
+    const texts = out.body.activity.map((a: any) => a.text as string)
+    expect(texts.some((t: string) => t.includes('only mine'))).toBe(true)
+    expect(texts.some((t: string) => t.includes('not mine'))).toBe(false)
+  })
+
+  it('non-admin unreadMessages counts only own-tenant messages', async () => {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    db.prepare(
+      "INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, tenant_id) VALUES ('agent-a','agent-b','tenant-a msg','pending',?,'tenant-a')"
+    ).run(now)
+    db.prepare(
+      "INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, tenant_id) VALUES ('agent-c','agent-d','tenant-b msg','pending',?,'tenant-b')"
+    ).run(now)
+
+    const { ctx, out } = fakeCtx('/api/overview', 'GET', { role: 'agent', tenantId: 'tenant-a' })
+    await tryHandleOverview(ctx)
+    // Fix-revert proof: without tenant scoping both pending messages would be counted.
+    expect(out.body.unreadMessages).toBe(1)
   })
 })
