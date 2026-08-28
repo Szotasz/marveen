@@ -1320,7 +1320,7 @@ window._i18n.en = {
 
   // --- Context guard settings ---
   'agents.settings.ctx_guard_label':       'Context-limit restart',
-  'agents.settings.ctx_guard_sat_net':     'Saturation net: always active — restarts automatically at 100% context (cannot be disabled)',
+  'agents.settings.ctx_guard_sat_net':     'Saturation net: always active, restarts automatically at 100% context (cannot be disabled)',
   'agents.settings.ctx_guard_enabled':     'Proactive limit watcher (threshold-based handoff)',
   'agents.settings.ctx_guard_limit_tokens':'Token limit',
   'agents.settings.ctx_guard_act_pct':     'Handoff threshold (%)',
