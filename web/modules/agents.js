@@ -3238,14 +3238,15 @@ async function submitApproveModal() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ requireMention, allowFromAll }),
     })
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Hiba')
+    // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+    if (!res.ok) { const apiErr = await res.json().catch(() => ({})); throw Object.assign(new Error('api call failed'), { apiData: apiErr }) }
     document.getElementById('chApproveModalOverlay').hidden = true
     const item = document.querySelector(`[data-req-id="${id}"]`)
     if (item) item.remove()
     showToast(t('channel.toast.approved'))
     refreshChannelRequests()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(getErrorMessage(err.apiData, 'Hiba'))
   } finally {
     confirmBtn.querySelector('.btn-text').hidden = false
     confirmBtn.querySelector('.btn-loading').hidden = true
