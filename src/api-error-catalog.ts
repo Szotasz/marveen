@@ -31,20 +31,23 @@ export const VALID_TOKENS = new Set<string>(ERROR_TOKENS)
 export const ALLOWED_STATUS_TOKENS: Record<number, ReadonlyArray<ErrorToken>> = {
   400: [
     'required', 'invalid_value', 'parse_error', 'not_supported',
-    'managed_settings_missing', 'not_found', 'unknown_query_parameter',
-    'federation_disabled',
+    'not_found', 'unknown_query_parameter', 'federation_disabled',
+    // size-limit violation (body too large, quota exceeded, etc.); rate-limit stays at 429
+    'limit_exceeded',
   ],
   401: ['unauthorized'],
   403: ['forbidden', 'sender_not_in_allowlist'],
   404: ['not_found'],
   // disabled = operation-state conflict (entity exists but is in disabled state);
-  // same pattern as conflict (running operation on a non-running agent).
-  409: ['conflict', 'disabled'],
+  // managed_settings_missing = precondition unmet (entity exists, external config missing);
+  // both are state conflicts, not malformed requests.
+  409: ['conflict', 'disabled', 'managed_settings_missing'],
   429: ['limit_exceeded'],
   500: ['internal_error'],
   502: ['upstream_error'],
   408: ['timeout'],
-  503: ['timeout', 'upstream_error'],
+  // 503 is a transient state; internal cause is valid (e.g. role resolution failure)
+  503: ['timeout', 'upstream_error', 'internal_error'],
 }
 
 // Returns null if valid, or a violation string if not.
