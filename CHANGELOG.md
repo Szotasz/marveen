@@ -24,6 +24,8 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Changed
 
+- RBAC shadow mode (`RBAC_MODE=shadow`): `applyRbacGate` now emits `logger.info` for non-admin authenticated requests that are allowed through. Previously the allowed path produced no log output, making it impossible to distinguish "no non-admin traffic arrived" from "the gate was never exercised." Admin requests (`role=admin`, currently 100% of production traffic) are excluded to avoid noise. The `would-deny` warn log is unchanged. No API change; logging only.
+
 - **[API]** `POST /api/memories` (content security filter rejection): HTTP status changed `400` → `403`; `error` token was already `"forbidden"`, status-dominance rule now satisfied.
 - **[API]** `PUT /api/agents/:name` (main-agent write guard): HTTP status changed `400` → `403`; `error` token was already `"forbidden"`, status-dominance rule now satisfied.
 - **[API]** `POST /api/kanban`: raw DB exception message (`(err as Error).message`) removed from HTTP response body; exception now routed exclusively to `logger.error`; response changed from bare `error: err.message` at `400` to `error: "internal_error"` + static `hint` at `500`.
