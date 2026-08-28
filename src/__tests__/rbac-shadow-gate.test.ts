@@ -90,7 +90,7 @@ describe('applyRbacGate enforce mode', () => {
     expect(allowed).toBe(false)
     expect(res.writeHead).toHaveBeenCalledWith(403, expect.any(Object))
     const body = JSON.parse(((res.end as ReturnType<typeof vi.fn>).mock.calls[0][0] as string))
-    expect(body.error).toBe('Forbidden')
+    expect(body.error).toBe('forbidden')
   })
 
   it('allows admin token POST in enforce mode', () => {

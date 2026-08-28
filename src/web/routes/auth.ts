@@ -158,8 +158,9 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     const throttle = checkThrottle(usernameLc)
     if (throttle.locked) {
       if (throttle.global) logger.warn('login: global failure cap reached -- all logins throttled')
-      res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': String(throttle.retryAfterS), 'Cache-Control': 'private, no-store' })
-      res.end(JSON.stringify({ error: 'limit_exceeded', retry_after_s: throttle.retryAfterS }))
+      // setHeader before json() so Retry-After merges into writeHead's header map.
+      res.setHeader('Retry-After', String(throttle.retryAfterS))
+      json(res, { error: 'limit_exceeded', retry_after_s: throttle.retryAfterS }, 429)
       return true
     }
 
@@ -175,8 +176,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
 
     if (!ok || !user) {
       recordFailure(usernameLc)
-      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'private, no-store' })
-      res.end(JSON.stringify(INVALID_CREDENTIALS))
+      json(res, INVALID_CREDENTIALS, 401)
       return true
     }
 
