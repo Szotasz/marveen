@@ -989,7 +989,8 @@ document.getElementById('saveCardBtn').addEventListener('click', async () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       })
-      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || res.status) }
+      // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw Object.assign(new Error('api call failed'), { apiData: e }) }
       showToast(t('kanban.toast.card_updated'))
     } else {
       data.status = document.getElementById('cardEditStatus').value
@@ -998,13 +999,14 @@ document.getElementById('saveCardBtn').addEventListener('click', async () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       })
-      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || res.status) }
+      // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw Object.assign(new Error('api call failed'), { apiData: e }) }
       showToast(t('kanban.toast.card_created'))
     }
     _closeModal?.(cardModalOverlay)
     loadKanban()
   } catch (err) {
-    showToast(t('kanban.toast.save_error_msg', { msg: err.message }))
+    showToast(getErrorMessage(err.apiData, t('kanban.toast.save_error')))
   }
 })
 
