@@ -106,6 +106,7 @@ components:
 
 
 
+
         hint:
           type: string
           description: >-
@@ -3228,7 +3229,20 @@ paths:
       tags: [internal]
       operationId: getOverview
       summary: Dashboard overview panel data
+      description: >
+        Non-admin callers receive only memories and inter-agent messages within
+        their own tenant scope. Admin callers see the global view; an optional
+        `?tenant=<id>` query parameter narrows the result to a single tenant.
+        Fleet-internal counters (token usage, pending approvals, stuck tasks,
+        error spans) are always fleet-wide and unaffected by tenant scoping.
       x-internal: true
+      parameters:
+        - name: tenant
+          in: query
+          required: false
+          description: Admin only -- narrow the overview to a single tenant ID.
+          schema:
+            type: string
       responses:
         "200":
           description: Overview payload

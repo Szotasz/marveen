@@ -19,6 +19,8 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- **[API]** `GET /api/overview` is now tenant-scoped. Non-admin callers see only memories and inter-agent messages that belong to their own tenant. Admin callers retain the global view across all tenants, and may pass an optional `?tenant=<id>` query parameter to narrow the view to a single tenant. Fleet-internal counters (token usage, pending approvals, stuck tasks, error spans) remain unscoped. Activity feed items in the response are filtered by the same tenant boundary.
+
 - **[API]** Memory recall and message-thread endpoints are now tenant-scoped for non-admin callers. Affected endpoints: `GET /api/memories` (list, search, hybrid search, vector search), `GET /api/memories/stale`, `GET /api/recall` (date-range and keyword search), `GET /api/messages/threads`. A non-admin token with `tenant_id=X` now sees only memories and threads that belong to tenant X; shared-tier memories (`category="shared"`) are visible within the same tenant but never across tenants. Admin tokens continue to see the global view across all tenants. Daily log entries in `/api/recall` results remain fleet-wide (the `daily_logs` table carries no `tenant_id` column by design).
 
 - **[API]** `POST /api/agents/:name/channel/reconnect` and `POST /api/agents/:name/auth/init`: token `invalid_value` → `conflict`, **HTTP status 400 → 409**, hint `"Agent {name} is not running"`. Both endpoints check an operation-state condition (agent exists but is not running) -- consistent with the same change already applied to `/stop`, `/restart`, `/keys`, and `/login`.
