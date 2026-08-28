@@ -30,7 +30,7 @@ export CCM_ROOT="${MARVEEN_ROOT:-$(dirname "$SCRIPT_DIR")}"
 export CCM_COMPACT_PCT="${COMPACT_PCT:-75}"
 export CCM_URGENT_PCT="${URGENT_PCT:-95}"
 export CCM_STATE_FILE="${COMPACT_STATE_FILE:-$CCM_ROOT/store/context-compact-state.json}"
-export CCM_TMUX_BIN="${TMUX_BIN:-/usr/bin/tmux}"
+export CCM_TMUX_BIN="${TMUX_BIN:-tmux}"
 
 python3 << 'PYEOF'
 import json, os, re, sqlite3, subprocess, sys, time, urllib.request
@@ -42,13 +42,28 @@ TOKEN_FILE  = ROOT / "store" / ".dashboard-token"
 STATE_FILE  = Path(os.environ["CCM_STATE_FILE"])
 ENV_FILE    = ROOT / ".env"
 API         = "http://localhost:3420"
-TMUX_BIN    = os.environ.get("CCM_TMUX_BIN", "/usr/bin/tmux")
+TMUX_BIN    = os.environ.get("CCM_TMUX_BIN", "tmux")
 COMPACT_PCT = int(os.environ.get("CCM_COMPACT_PCT", "75"))
 URGENT_PCT  = int(os.environ.get("CCM_URGENT_PCT", "95"))
 FRESHNESS_S = 3600   # 60 min: parked/long-inactive agents are skipped
 COOLDOWN_S  = 2700   # 45 min: per-agent cooldown between compacts
 STALE_PENDING_S = 1800  # 30 min: pending flag expires after restart/long gap
 LABEL       = "context-compact-monitor"
+
+# Validate tmux binary once at startup. A missing/non-executable binary is a
+# configuration error, not a transient failure -- it must be LOUD, not silently
+# absorbed into the fail-closed "pane busy" path (which is reserved for
+# genuine runtime ambiguity like a single capture timeout).
+import shutil as _shutil
+_tmux_ok = bool(_shutil.which(TMUX_BIN))
+if not _tmux_ok:
+    print(
+        f"[{LABEL}] CONFIG ERROR: tmux binary not found or not executable: '{TMUX_BIN}'. "
+        "Set the TMUX_BIN env var to the correct path (e.g. /opt/homebrew/bin/tmux). "
+        "All panes will appear busy until this is fixed -- no compaction will occur.",
+        flush=True,
+    )
+    # Do NOT exit: fail-closed behavior continues, but the cause is now visible.
 
 # Busy-pane detection -- see is_pane_idle() docstring for rationale.
 # Shape regex: word(s) + ellipsis (U+2026 or ASCII ...) + "(" + time digit.
