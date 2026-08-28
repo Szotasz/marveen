@@ -193,7 +193,7 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
       json(res, { server: toApiShape(updated, key), publicKey, fingerprint })
     } catch (err: any) {
       logger.error({ err, id }, 'Failed to generate SSH keypair')
-      json(res, { error: 'Key generation failed: ' + (err?.message ?? String(err)) }, 500)
+      json(res, { error: 'internal_error', hint: 'Key generation failed' }, 500)
     }
     return true
   }

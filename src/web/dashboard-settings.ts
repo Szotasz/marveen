@@ -119,7 +119,8 @@ export async function installGitHubRepo(
     })
   } catch (err: any) {
     rmSync(targetDir, { recursive: true, force: true })
-    return { error: `Clone failed: ${err.stderr || err.message}` }
+    logger.error({ err }, 'Skill repo clone failed')
+    return { error: 'internal_error', hint: 'Clone failed' }
   }
 
   const hasPackageJson = existsSync(join(targetDir, 'package.json'))
@@ -193,6 +194,7 @@ export function updateGitHubRepo(name: string): { ok: boolean, error?: string, h
     }
     return { ok: true }
   } catch (err: any) {
-    return { ok: false, error: err.stderr || err.message }
+    logger.error({ err }, 'Skill repo update failed')
+    return { ok: false, error: 'internal_error', hint: 'Update failed' }
   }
 }

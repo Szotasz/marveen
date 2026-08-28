@@ -423,7 +423,8 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
       json(res, { ok: true, name: sanitizedName, nameChanged })
     } catch (err: any) {
-      json(res, { error: err.message || 'Failed to add connector' }, 500)
+      logger.error({ err }, 'Failed to add MCP connector')
+      json(res, { error: 'internal_error', hint: 'Failed to add connector' }, 500)
     }
     return true
   }
@@ -635,7 +636,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       json(res, { ok: true, message })
     } catch (err: any) {
       logger.error({ err }, 'Failed to install MCP from catalog')
-      json(res, { error: err.message || 'Failed to install' }, 500)
+      json(res, { error: 'internal_error', hint: 'Installation failed' }, 500)
     }
     return true
   }
@@ -660,7 +661,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       json(res, { ok: true, message: 'Eltávolítva' })
     } catch (err: any) {
       logger.error({ err }, 'Failed to uninstall MCP from catalog')
-      json(res, { error: err.message || 'Failed to uninstall' }, 500)
+      json(res, { error: 'internal_error', hint: 'Uninstall failed' }, 500)
     }
     return true
   }

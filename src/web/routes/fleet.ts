@@ -27,10 +27,10 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
       res.end(buf)
     } catch (err: any) {
       if (err instanceof UserFacingError) {
-        json(res, { error: err.message }, 400)
+        json(res, { error: 'internal_error', hint: err.message }, 400)
       } else {
-        logger.error({ err: err.message }, 'Fleet export failed')
-        json(res, { error: `Export hiba: ${err.message}` }, 500)
+        logger.error({ err }, 'Fleet export failed')
+        json(res, { error: 'internal_error', hint: 'Fleet export failed' }, 500)
       }
     }
     return true
@@ -50,7 +50,7 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
       const buf = await readBody(req)
       rawBody = buf.toString()
     } catch (err: any) {
-      json(res, { error: `Kérés olvasási hiba: ${err.message}` }, 400)
+      json(res, { error: 'parse_error', hint: 'Request body could not be read' }, 400)
       return true
     }
 
@@ -63,8 +63,8 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
         json(res, result, 200)
       }
     } catch (err: any) {
-      logger.error({ err: err.message }, 'Fleet import failed')
-      json(res, { error: `Import hiba: ${err.message}` }, 500)
+      logger.error({ err }, 'Fleet import failed')
+      json(res, { error: 'internal_error', hint: 'Fleet import failed' }, 500)
     }
     return true
   }
