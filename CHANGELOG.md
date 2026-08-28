@@ -9,6 +9,10 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
+### Fixed
+
+- `initDatabase` (`src/db.ts`): `tryLoadVecExtension()` is now called before `applyMigrations()`. Any schema-changing migration that uses a table-rebuild pattern (create-copy-drop-rename) causes SQLite to reparse the entire schema, which validates all triggers including the vec0-backed memory triggers. If the extension is not loaded on that connection at reparse time, the process crashes with `SqliteError: no such module: vec0` before the dashboard can start. Root cause of the 2026-08-28 outage triggered by migration 0022. The call is a safe no-op when the sqlite-vec binary is absent; `initVecSupport()` later in the same function still performs the virtual-table setup. A runtime invariant (`vecExtensionAttempted` flag set inside `tryLoadVecExtension`, checked before `applyMigrations`) ensures a future refactor that reverses the call order gets an explicit startup error rather than a cryptic mid-migration crash. The invariant does not require the vec0 binary to be present and is therefore covered by the existing test suite (5682 green).
+
 ### Added
 
 - **[API]** `GET/POST /api/blackboard`, `PATCH /api/blackboard/:id`: `status` enum extended with `"stale"` (auto-invalidated active row, written by the background sweeper when an agent has not updated its row within its configured threshold) and `"assigned"` (row opened automatically on inter-agent delivery, before the receiving agent acknowledges the task). Both values are accepted by the POST and PATCH validation; `VALID_STATUS` updated accordingly. SQLite CHECK constraint extended via migration 0022 (table-rebuild pattern; runner wraps in transaction, no explicit BEGIN/COMMIT in migration file). Frontend: `BB_STATUS_LABEL` and `BB_STATUS_CLASS` extended; `bb-stale` (warning palette) and `bb-assigned` (muted palette) CSS classes added. SDK regenerated. Rollback script included at `docs/rollback-0022.sql`.
