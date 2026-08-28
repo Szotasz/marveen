@@ -15,6 +15,9 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- **[API]** `POST /api/agents/:name/channel/reconnect`: `hint` changed from `"Agent is not running"` to `"Unknown or invalid agent: {name}"`. Token (`invalid_value`) and status (`400`) unchanged; hint reflects the input-validation framing.
+- **[API]** `POST /api/agents/:name/auth/init`: token changed `invalid_value` → `conflict`, status `400` → `409`, hint changed to `"Agent {name} is not running"`. Non-running state on an existing agent is an operation-state conflict, not an input error.
+
 - **[API]** `POST /api/auth/logout-all`, `GET /api/auth/sessions`: HTTP status changed `400` → `401` when the caller has no valid session (`error: "unauthorized"`). A missing or invalid session is a missing-authentication condition, not a malformed request; `400 Bad Request` implies a fixable client error, while `401 Unauthorized` correctly signals that authentication is required. No login loop risk: `POST /api/auth/login` is handled earlier in `tryHandleAuth` and exits before these checks.
 
 - Dashboard frontend: API error tokens are no longer shown raw in toast messages. Previously, fetch helpers in 6 modules (`agents.js`, `skills.js`, `connectors.js`, `schedules.js`, `messages.js`, `agent-modals.js`) serialised the API `error` field into `Error.message` via `throw new Error(err.error || fallback)` and then displayed `err.message` in `showToast()`. The token (e.g. `"forbidden"`) appeared verbatim instead of being translated or surfacing the API `hint`. Fix: all 17 throw sites now use `Object.assign(new Error('api call failed'), { apiData: err })` to carry the full API response; the corresponding catch sites use `getErrorMessage(err.apiData, fallback)` which returns the i18n-translated token text, the API `hint` if present, or the original fallback for non-API errors (network failure, JSON parse failure). No API change.

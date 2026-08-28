@@ -245,6 +245,7 @@ describe('tryHandleAgentsChannels (extended)', () => {
     expect(await tryHandleAgentsChannels(ctx)).toBe(true)
     expect(out.status).toBe(400)
     expect(out.body.error).toBe('invalid_value')
-    expect(out.body.hint).toMatch(/not running/i)
+    // hint differentiates input-validation (reconnect) from operation-state (auth/init)
+    expect(out.body.hint).toMatch(/unknown or invalid agent/i)
   })
 })
