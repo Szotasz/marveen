@@ -9,6 +9,10 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
+### Changed
+
+- `rbac:shadow` log entries (`RBAC_MODE=shadow`): the `would-deny` and `permitted` outcomes are now mutually exclusive. A `wouldDeny` flag is set inside the would-deny callback; the `permitted` INFO log is guarded by `!wouldDeny`. Previously a non-admin request that matched a would-deny rule produced both a WARN (`rbac:shadow would-deny`) and an INFO (`rbac:shadow allowed`) line for the same request, which was contradictory. The WARN now carries `outcome: "would-deny"` and the INFO carries `outcome: "permitted"` for clearer log queries. No API response change.
+
 ### Added
 
 - **[API]** `POST /api/messages` (inter-agent delivery): new optional boolean field `assign` (default `false`). When `assign: true`, the endpoint opens an `"assigned"` blackboard row for the local recipient if they have no `active` or `blocked` row; summary is the first 100 characters of the message content. Omitting `assign` or passing `false` has no blackboard side effect, so replies, notifications, and acknowledgements are unaffected. A second `assign: true` delivery to the same agent overwrites the existing `assigned` row with the newer summary. The agent's own `POST /api/blackboard` with `status: "active"` overwrites the row as before. Federated recipients (`"peer/agent"` addresses) are not affected. Signal B in `GET /api/blackboard` now fires for `assigned` rows as well as `active` ones.
