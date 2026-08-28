@@ -235,7 +235,7 @@ describe('POST /api/admin/partner-senders', () => {
     await tryHandleAdminB2b(ctx)
 
     expect(out.status).toBe(409)
-    expect(out.body.error).toBe('partner_sender_already_exists')
+    expect(out.body.error).toBe('conflict')
   })
 
   it('returns 409 if sender_id collides with a fleet agent name', async () => {
@@ -249,8 +249,8 @@ describe('POST /api/admin/partner-senders', () => {
     })
     await tryHandleAdminB2b(ctx)
 
-    expect(out.status).toBe(409)
-    expect(out.body.error).toBe('sender_id_is_fleet_agent')
+    expect(out.status).toBe(403)
+    expect(out.body.error).toBe('forbidden')
   })
 
   it('returns 400 for invalid sender_id format', async () => {
@@ -260,7 +260,8 @@ describe('POST /api/admin/partner-senders', () => {
     await tryHandleAdminB2b(ctx)
 
     expect(out.status).toBe(400)
-    expect(out.body.error).toBe('invalid_sender_id')
+    expect(out.body.error).toBe('invalid_value')
+    expect(out.body.field).toBe('sender_id')
   })
 
   it('returns 404 if tenant does not exist', async () => {
@@ -272,7 +273,8 @@ describe('POST /api/admin/partner-senders', () => {
     await tryHandleAdminB2b(ctx)
 
     expect(out.status).toBe(404)
-    expect(out.body.error).toBe('tenant_not_found')
+    expect(out.body.error).toBe('not_found')
+    expect(out.body.field).toBe('tenant_id')
   })
 })
 
@@ -327,7 +329,8 @@ describe('DELETE /api/admin/partner-senders/:id', () => {
     await tryHandleAdminB2b(ctx)
 
     expect(out.status).toBe(404)
-    expect(out.body.error).toBe('partner_sender_not_found')
+    expect(out.body.error).toBe('not_found')
+    expect(out.body.field).toBe('senderId')
   })
 
   it('returns 400 when tenant_id query param is missing', async () => {
@@ -335,6 +338,7 @@ describe('DELETE /api/admin/partner-senders/:id', () => {
     await tryHandleAdminB2b(ctx)
 
     expect(out.status).toBe(400)
-    expect(out.body.error).toBe('tenant_id_required')
+    expect(out.body.error).toBe('required')
+    expect(out.body.field).toBe('tenantId')
   })
 })

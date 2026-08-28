@@ -74,7 +74,7 @@ describe('POST /api/messages colon-form to guard (L5)', () => {
   it('rejects a "federation:x:y" source-form recipient with 400 instead of a silent 1h phantom', async () => {
     const r = await postMessage({ from: 'localboss', to: 'federation:teodor:teodor', content: 'hi' })
     expect(r.statusCode).toBe(400)
-    expect(r.json.error).toBe('invalid_recipient_format')
+    expect(r.json.error).toBe('invalid_value')
     expect(r.json.hint).toMatch(/slash/i)
   })
 

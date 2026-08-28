@@ -61,7 +61,7 @@ describe('tryHandleMessages', () => {
     const handled = await tryHandleMessages(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(400)
-    expect(out.body.error).toBe('missing_required_fields')
+    expect(out.body.error).toBe('required')
   })
 
   it('POST /api/messages returns 403 when from is coordinator id', async () => {
@@ -73,7 +73,7 @@ describe('tryHandleMessages', () => {
     const handled = await tryHandleMessages(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(403)
-    expect(out.body.error).toBe('sender_reserved')
+    expect(out.body.error).toBe('forbidden')
   })
 
   it('POST /api/messages returns 403 when from contains slash (federation spoof)', async () => {
@@ -85,7 +85,7 @@ describe('tryHandleMessages', () => {
     const handled = await tryHandleMessages(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(403)
-    expect(out.body.error).toBe('federated_sender_not_allowed')
+    expect(out.body.error).toBe('sender_not_in_allowlist')
   })
 
   it('POST /api/messages creates message for known agent', async () => {
@@ -136,7 +136,7 @@ describe('tryHandleMessages', () => {
     expect(out.status).toBe(200)
   })
 
-  it('POST /api/messages returns 403 for unknown non-owner sender', async () => {
+  it('POST /api/messages returns 404 for unknown non-owner sender', async () => {
     const { isKnownAgent } = await import('../web/agent-config.js')
     vi.mocked(isKnownAgent).mockReturnValueOnce(false)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
@@ -146,8 +146,9 @@ describe('tryHandleMessages', () => {
     })
     const handled = await tryHandleMessages(ctx)
     expect(handled).toBe(true)
-    expect(out.status).toBe(403)
-    expect(out.body.error).toBe('unknown_sender')
+    expect(out.status).toBe(404)
+    expect(out.body.error).toBe('not_found')
+    expect(out.body.field).toBe('from')
   })
 
   it('returns false for unmatched route', async () => {
@@ -161,36 +162,36 @@ describe('tryHandleMessages', () => {
 // These assertions use strict equality so that restoring any old sentence
 // string ("from, to, and content are required" etc.) causes an immediate failure.
 describe('POST /api/messages: error codes are snake_case machine tokens', () => {
-  it('missing fields → missing_required_fields (not a prose sentence)', async () => {
+  it('missing fields → required (not a prose sentence)', async () => {
     const { ctx, out } = makeCtx('POST', '/api/messages', { from: 'agent-a' })
     await tryHandleMessages(ctx)
-    expect(out.body.error).toBe('missing_required_fields')
+    expect(out.body.error).toBe('required')
     expect(out.body.hint).toContain('required')
   })
 
-  it('coordinator sender → sender_reserved (not a prose sentence)', async () => {
+  it('coordinator sender → forbidden (not a prose sentence)', async () => {
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'telegram-coordinator',
       to: 'agent-b',
       content: 'test',
     })
     await tryHandleMessages(ctx)
-    expect(out.body.error).toBe('sender_reserved')
+    expect(out.body.error).toBe('forbidden')
     expect(out.body.hint).toContain('reserved')
   })
 
-  it('slash in from → federated_sender_not_allowed (not a prose sentence)', async () => {
+  it('slash in from → sender_not_in_allowlist (not a prose sentence)', async () => {
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'peer/attacker',
       to: 'agent-b',
       content: 'test',
     })
     await tryHandleMessages(ctx)
-    expect(out.body.error).toBe('federated_sender_not_allowed')
+    expect(out.body.error).toBe('sender_not_in_allowlist')
     expect(out.body.hint).toContain('federation')
   })
 
-  it('unknown sender → unknown_sender (not a prose sentence)', async () => {
+  it('unknown sender → not_found (not a prose sentence)', async () => {
     const { isKnownAgent } = await import('../web/agent-config.js')
     vi.mocked(isKnownAgent).mockReturnValueOnce(false)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
@@ -199,19 +200,21 @@ describe('POST /api/messages: error codes are snake_case machine tokens', () => 
       content: 'inject',
     })
     await tryHandleMessages(ctx)
-    expect(out.body.error).toBe('unknown_sender')
+    expect(out.body.error).toBe('not_found')
+    expect(out.body.field).toBe('from')
     expect(out.body.hint).toContain('stranger')
   })
 
   // Regression guard for the PUT /api/messages/:id 404 path.
   // Strict equality so restoring the old prose string fails immediately.
-  it('PUT /api/messages/:id not found → message_not_found (not a prose sentence)', async () => {
+  it('PUT /api/messages/:id not found → not_found (not a prose sentence)', async () => {
     const { markMessageDone } = await import('../db.js')
     vi.mocked(markMessageDone).mockReturnValueOnce(false)
     const { ctx, out } = makeCtx('PUT', '/api/messages/99999', { status: 'done' })
     await tryHandleMessages(ctx)
     expect(out.status).toBe(404)
-    expect(out.body.error).toBe('message_not_found')
+    expect(out.body.error).toBe('not_found')
+    expect(out.body.field).toBe('messageId')
     expect(out.body.hint).toContain('not found')
   })
 

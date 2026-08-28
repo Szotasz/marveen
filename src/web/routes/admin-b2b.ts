@@ -76,13 +76,13 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     const displayName = typeof body.display_name === 'string' ? body.display_name.trim() : ''
 
     if (!TENANT_ID_RE.test(id) || RESERVED_TENANT_IDS.has(id)) {
-      json(res, { error: 'invalid_tenant_id', field: 'id' }, 400); return true
+      json(res, { error: 'invalid_value', field: 'id', hint: 'Tenant ID must match [a-z0-9_-] and not be a reserved identifier' }, 400); return true
     }
     if (!displayName || displayName.length > 120) {
-      json(res, { error: 'display_name_required', field: 'display_name' }, 400); return true
+      json(res, { error: 'required', field: 'display_name', hint: 'Display name is required and must be ≤120 chars' }, 400); return true
     }
     const existing = getTenant(id)
-    if (existing) { json(res, { error: 'tenant_already_exists' }, 409); return true }
+    if (existing) { json(res, { error: 'conflict', hint: 'Tenant ID already exists' }, 409); return true }
 
     const tenant = createTenant(id, displayName)
     auditAdmin(ctx, 'admin.tenant.create', id, { display_name: displayName })
@@ -101,7 +101,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
   if (tenantPatchMatch && method === 'PATCH') {
     const tenantId = tenantPatchMatch[1]
     const existing = getTenant(tenantId)
-    if (!existing) { json(res, { error: 'tenant_not_found' }, 404); return true }
+    if (!existing) { json(res, { error: 'not_found', field: 'id', hint: 'Tenant not found' }, 404); return true }
 
     const body = JSON.parse((await readBody(req)).toString()) as Record<string, unknown>
     const patch: { display_name?: string; disabled?: boolean } = {}
@@ -109,18 +109,18 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
 
     if ('display_name' in body) {
       const dn = typeof body.display_name === 'string' ? body.display_name.trim() : ''
-      if (!dn || dn.length > 120) { json(res, { error: 'display_name_required', field: 'display_name' }, 400); return true }
+      if (!dn || dn.length > 120) { json(res, { error: 'required', field: 'display_name', hint: 'Display name is required and must be ≤120 chars' }, 400); return true }
       patch.display_name = dn
       hasField = true
     }
     if ('disabled' in body) {
       if (body.disabled === true && tenantId === 'default') {
-        json(res, { error: 'cannot_disable_default_tenant' }, 400); return true
+        json(res, { error: 'forbidden', hint: 'Default tenant cannot be disabled' }, 403); return true
       }
       patch.disabled = Boolean(body.disabled)
       hasField = true
     }
-    if (!hasField) { json(res, { error: 'no_fields' }, 400); return true }
+    if (!hasField) { json(res, { error: 'required', hint: 'At least one field must be provided' }, 400); return true }
 
     const updated = updateTenant(tenantId, patch)
     auditAdmin(ctx, 'admin.tenant.update', tenantId, patch as Record<string, unknown>)
@@ -138,33 +138,33 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     const tenantId = 'tenant_id' in body ? (body.tenant_id === null ? null : String(body.tenant_id ?? '').trim() || null) : undefined
 
     if (!username || username.length < 3 || username.length > 64 || !USERNAME_RE.test(username)) {
-      json(res, { error: 'username_invalid', field: 'username' }, 400); return true
+      json(res, { error: 'invalid_value', field: 'username', hint: 'Username must be 3-64 chars, letters/digits/underscores/hyphens only' }, 400); return true
     }
     if (password.length < 12) {
-      json(res, { error: 'password_too_short', field: 'password' }, 400); return true
+      json(res, { error: 'invalid_value', field: 'password', hint: 'Password must be at least 12 characters' }, 400); return true
     }
     if (!VALID_ROLES.has(role)) {
-      json(res, { error: 'role_invalid', field: 'role' }, 400); return true
+      json(res, { error: 'invalid_value', field: 'role', hint: `Role must be one of: ${Array.from(VALID_ROLES).join(', ')}` }, 400); return true
     }
 
     // Final state cross-field validation.
     const finalTenantId = tenantId === undefined ? null : tenantId
     if (role !== 'admin' && finalTenantId === null) {
-      json(res, { error: 'tenant_required_for_non_admin', field: 'tenant_id' }, 400); return true
+      json(res, { error: 'forbidden', field: 'tenant_id', hint: 'Non-admin requests must specify a tenant' }, 403); return true
     }
     if (role === 'admin' && finalTenantId !== null) {
-      json(res, { error: 'admin_must_be_global', field: 'tenant_id' }, 400); return true
+      json(res, { error: 'forbidden', field: 'tenant_id', hint: 'Action requires a global admin account' }, 403); return true
     }
     if (finalTenantId !== null) {
       const tenant = getTenant(finalTenantId)
       if (!tenant || tenant.disabled_at !== null) {
-        json(res, { error: 'tenant_not_found', field: 'tenant_id' }, 400); return true
+        json(res, { error: 'not_found', field: 'tenant_id', hint: 'Tenant not found or disabled' }, 404); return true
       }
     }
 
     // Duplicate check (UNIQUE on username, case-insensitive).
     const dup = getDb().prepare('SELECT id FROM dashboard_users WHERE username = ? COLLATE NOCASE').get(username)
-    if (dup) { json(res, { error: 'username_taken', field: 'username' }, 409); return true }
+    if (dup) { json(res, { error: 'conflict', field: 'username', hint: 'Username already exists' }, 409); return true }
 
     const hash = await hashPassword(password)
     const user = provisionDashboardUser(username, hash, role, finalTenantId)
@@ -185,7 +185,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
   if (userPatchMatch && method === 'PATCH') {
     const userId = parseInt(userPatchMatch[1], 10)
     const existing = getDashboardUserById(userId)
-    if (!existing) { json(res, { error: 'user_not_found' }, 404); return true }
+    if (!existing) { json(res, { error: 'not_found', field: 'userId', hint: 'User not found' }, 404); return true }
 
     const body = JSON.parse((await readBody(req)).toString()) as Record<string, unknown>
     let hasField = false
@@ -195,7 +195,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
 
     if ('role' in body) {
       const newRole = typeof body.role === 'string' ? body.role : ''
-      if (!VALID_ROLES.has(newRole)) { json(res, { error: 'role_invalid', field: 'role' }, 400); return true }
+      if (!VALID_ROLES.has(newRole)) { json(res, { error: 'invalid_value', field: 'role', hint: `Role must be one of: ${Array.from(VALID_ROLES).join(', ')}` }, 400); return true }
       patch.role = newRole
       hasField = true
     }
@@ -205,7 +205,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     }
     if ('password' in body) {
       const pw = typeof body.password === 'string' ? body.password : ''
-      if (pw.length < 12) { json(res, { error: 'password_too_short', field: 'password' }, 400); return true }
+      if (pw.length < 12) { json(res, { error: 'invalid_value', field: 'password', hint: 'Password must be at least 12 characters' }, 400); return true }
       patch.password_hash = await hashPassword(pw)
       hasField = true
     }
@@ -213,22 +213,22 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
       patch.disabled = Boolean(body.disabled)
       hasField = true
     }
-    if (!hasField) { json(res, { error: 'no_fields' }, 400); return true }
+    if (!hasField) { json(res, { error: 'required', hint: 'At least one field must be provided' }, 400); return true }
 
     // Final state: merge submitted fields onto existing row, then validate.
     const finalRole = patch.role ?? existing.role
     const finalTenantId = 'tenant_id' in patch ? patch.tenant_id : existing.tenant_id
 
     if (finalRole !== 'admin' && finalTenantId === null) {
-      json(res, { error: 'tenant_required_for_non_admin', field: 'tenant_id' }, 400); return true
+      json(res, { error: 'forbidden', field: 'tenant_id', hint: 'Non-admin requests must specify a tenant' }, 403); return true
     }
     if (finalRole === 'admin' && finalTenantId !== null) {
-      json(res, { error: 'admin_must_be_global', field: 'tenant_id' }, 400); return true
+      json(res, { error: 'forbidden', field: 'tenant_id', hint: 'Action requires a global admin account' }, 403); return true
     }
     if (finalTenantId != null) {
       const tenant = getTenant(finalTenantId)
       if (!tenant || tenant.disabled_at !== null) {
-        json(res, { error: 'tenant_not_found', field: 'tenant_id' }, 400); return true
+        json(res, { error: 'not_found', field: 'tenant_id', hint: 'Tenant not found or disabled' }, 404); return true
       }
     }
 
@@ -236,16 +236,16 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     if (patch.disabled === true) {
       const actor = ctx.auth?.user
       if (actor && existing.username.toLowerCase() === actor.toLowerCase()) {
-        json(res, { error: 'cannot_disable_self' }, 400); return true
+        json(res, { error: 'forbidden', hint: 'Cannot disable your own account' }, 403); return true
       }
       // Last-admin protection: cannot disable the last active admin.
       if (existing.role === 'admin' && countActiveAdmins() <= 1) {
-        json(res, { error: 'last_admin' }, 400); return true
+        json(res, { error: 'forbidden', hint: 'Cannot remove the last administrator' }, 403); return true
       }
     }
 
     const updated = adminPatchDashboardUser(userId, patch)
-    if (!updated) { json(res, { error: 'user_not_found' }, 404); return true }
+    if (!updated) { json(res, { error: 'not_found', field: 'userId', hint: 'User not found' }, 404); return true }
     auditAdmin(ctx, 'admin.user.update', userId, { username: existing.username, ...patch, password_hash: patch.password_hash ? '[redacted]' : undefined })
     json(res, userToPublic(updated))
     return true
@@ -260,29 +260,28 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     const displayName = typeof body.display_name === 'string' ? body.display_name.trim() : ''
 
     if (!SENDER_ID_RE.test(senderId) || senderId.length > 63) {
-      json(res, { error: 'invalid_sender_id', field: 'sender_id',
+      json(res, { error: 'invalid_value', field: 'sender_id',
         hint: 'sender_id must match [a-zA-Z0-9_-] and be 1-63 chars' }, 400)
       return true
     }
     if (!tenantId || RESERVED_TENANT_IDS.has(tenantId)) {
-      json(res, { error: 'invalid_tenant_id', field: 'tenant_id' }, 400); return true
+      json(res, { error: 'invalid_value', field: 'tenant_id', hint: 'Tenant ID is invalid or reserved' }, 400); return true
     }
     const tenant = getTenant(tenantId)
     if (!tenant || tenant.disabled_at !== null) {
-      json(res, { error: 'tenant_not_found', field: 'tenant_id' }, 404); return true
+      json(res, { error: 'not_found', field: 'tenant_id', hint: 'Tenant not found or disabled' }, 404); return true
     }
     // Block fleet agent names: a partner sender with the same id as a fleet
-    // agent would be confusing and could mask routing bugs. 409 matches the
-    // "already exists" shape callers expect for idempotency-friendly retries.
+    // agent would be confusing and could mask routing bugs.
     if (isKnownAgent(sanitizeAgentIdent(senderId))) {
-      json(res, { error: 'sender_id_is_fleet_agent',
-        hint: 'choose a sender_id that does not collide with a registered fleet agent' }, 409)
+      json(res, { error: 'forbidden',
+        hint: 'Sender ID matches a fleet agent identifier' }, 403)
       return true
     }
     // Check for existing (active or soft-disabled) entry
     const existing = listPartnerSenders(tenantId).find((s) => s.sender_id === sanitizeAgentIdent(senderId))
     if (existing) {
-      json(res, { error: 'partner_sender_already_exists' }, 409); return true
+      json(res, { error: 'conflict', hint: 'Sender already registered' }, 409); return true
     }
 
     const createdBy = ctx.auth?.user ?? 'system'
@@ -306,11 +305,11 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     const senderId = decodeURIComponent(partnerSenderDeleteMatch[1])
     const tenantId = ctx.url.searchParams.get('tenant_id') ?? ''
     if (!tenantId) {
-      json(res, { error: 'tenant_id_required', hint: 'pass ?tenant_id=<id>' }, 400); return true
+      json(res, { error: 'required', field: 'tenantId', hint: 'pass ?tenant_id=<id>' }, 400); return true
     }
     const disabled = disablePartnerSender(sanitizeAgentIdent(senderId), tenantId)
     if (!disabled) {
-      json(res, { error: 'partner_sender_not_found' }, 404); return true
+      json(res, { error: 'not_found', field: 'senderId', hint: 'Partner sender not found or already disabled' }, 404); return true
     }
     auditAdmin(ctx, 'admin.partner_sender.disable', `${tenantId}/${sanitizeAgentIdent(senderId)}`,
       { sender_id: sanitizeAgentIdent(senderId), tenant_id: tenantId })
