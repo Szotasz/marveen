@@ -2,6 +2,7 @@ import { escapeHtml, mainAgentId } from './util.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
 import { avatarBust, setFederatedPeerStatus, federatedAgentEntries } from './agents.js'
+import { getErrorMessage } from './error-message.js'
 
 
 // === Team: inter-agent message log + compose ===
@@ -553,13 +554,14 @@ async function sendChatMessage(toAgent) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ from, to: toAgent, content }),
     })
-    if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Hiba') }
+    // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+    if (!res.ok) { const err = await res.json(); throw Object.assign(new Error('api call failed'), { apiData: err }) }
     if (textarea) textarea.value = ''
     showToast(t('messages.sent'))
     await loadChatThread(toAgent)
     await loadChatAgentList()
   } catch (e) {
-    showToast(t('messages.error_send', { msg: e.message || e }))
+    showToast(getErrorMessage(e.apiData, t('common.error')))
   } finally {
     if (btn) btn.disabled = false
   }

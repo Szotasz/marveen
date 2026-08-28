@@ -322,7 +322,8 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
 
     if (!res.ok) {
       const err = await res.json()
-      throw new Error(err.error || 'Ismeretlen hiba')
+      // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+      throw Object.assign(new Error('api call failed'), { apiData: err })
     }
 
     const result = await res.json()
@@ -375,7 +376,7 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
       updateWizardUI()
     }, 600)
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(getErrorMessage(err.apiData, 'Ismeretlen hiba'))
     wizardStep = 1
     updateWizardUI()
   }
@@ -410,7 +411,8 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
 
     if (!res.ok) {
       const err = await res.json()
-      throw new Error(err.error || 'Ismeretlen hiba')
+      // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+      throw Object.assign(new Error('api call failed'), { apiData: err })
     }
 
     _closeModal?.(agentWizardOverlay)
@@ -423,7 +425,7 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
       switchAgentTab('channel')
     } catch { /* detail open failed, list refresh already happened */ }
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(getErrorMessage(err.apiData, 'Ismeretlen hiba'))
   } finally {
     createBtn.disabled = false
     createBtn.querySelector('.btn-text').hidden = false
@@ -1378,11 +1380,12 @@ document.getElementById('marveenRestartBtn').addEventListener('click', async () 
     const res = await fetch('/api/marveen/restart', { method: 'POST' })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
-      throw new Error(err.error || t('agents.toast.restart_failed'))
+      // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+      throw Object.assign(new Error('api call failed'), { apiData: err })
     }
     showToast(t('agents.toast.marveen_restarted'))
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(getErrorMessage(err.apiData, t('agents.toast.restart_failed')))
   } finally {
     btn.disabled = false
   }
@@ -1399,7 +1402,8 @@ document.getElementById('agentStartBtn').addEventListener('click', async () => {
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/start`, { method: 'POST' })
     if (!res.ok) {
       const err = await res.json()
-      throw new Error(err.error || t('agents.toast.start_failed'))
+      // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+      throw Object.assign(new Error('api call failed'), { apiData: err })
     }
     showToast(t('agents.toast.started'))
     // Refresh
@@ -1410,7 +1414,7 @@ document.getElementById('agentStartBtn').addEventListener('click', async () => {
     }
     loadAgents()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(getErrorMessage(err.apiData, t('agents.toast.start_failed')))
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -1426,7 +1430,8 @@ document.getElementById('agentStopBtn').addEventListener('click', async () => {
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/stop`, { method: 'POST' })
     if (!res.ok) {
       const err = await res.json()
-      throw new Error(err.error || t('agents.toast.stop_failed'))
+      // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+      throw Object.assign(new Error('api call failed'), { apiData: err })
     }
     showToast(t('agents.toast.stopped'))
     const detailRes = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`)
@@ -1436,7 +1441,7 @@ document.getElementById('agentStopBtn').addEventListener('click', async () => {
     }
     loadAgents()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(getErrorMessage(err.apiData, t('agents.toast.stop_failed')))
   }
 })
 
@@ -2854,7 +2859,8 @@ document.getElementById('chConnectBtn').addEventListener('click', async () => {
     }
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
-      throw new Error(err.error || 'Kapcsolodasi hiba')
+      // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+      throw Object.assign(new Error('api call failed'), { apiData: err })
     }
     const result = await res.json()
     showToast(`${getProviderLabel()} sikeresen csatlakoztatva!`)
@@ -2862,7 +2868,7 @@ document.getElementById('chConnectBtn').addEventListener('click', async () => {
     await openAgentDetail(currentAgent.name)
     loadAgents()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(getErrorMessage(err.apiData, 'Kapcsolodasi hiba'))
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -2984,13 +2990,14 @@ async function approvePairing(code) {
     })
     if (!res.ok) {
       const err = await res.json()
-      throw new Error(err.error || t('channel.toast.approve_error'))
+      // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+      throw Object.assign(new Error('api call failed'), { apiData: err })
     }
     showToast(t('channel.toast.pairing_approved'))
     refreshPendingPairings()
     refreshAllowedList()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(getErrorMessage(err.apiData, t('channel.toast.approve_error')))
   }
 }
 
@@ -3047,12 +3054,13 @@ async function removeAllowed(kind, id) {
     const res = await fetch(`${channelApiBase()}/allowed/${kind}/${encodeURIComponent(id)}`, { method: 'DELETE' })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
-      throw new Error(err.error || t('channel.toast.remove_error'))
+      // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+      throw Object.assign(new Error('api call failed'), { apiData: err })
     }
     showToast(t('common.toast.removed'))
     refreshAllowedList()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(getErrorMessage(err.apiData, t('channel.toast.remove_error')))
   }
 }
 
@@ -3116,7 +3124,8 @@ async function generateInvite() {
     const res = await fetch(`${channelApiBase()}/invites`, { method: 'POST' })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
-      throw new Error(err.error || 'Sikertelen')
+      // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+      throw Object.assign(new Error('api call failed'), { apiData: err })
     }
     const data = await res.json()
     if (data.deepLink) {
@@ -3127,7 +3136,7 @@ async function generateInvite() {
     }
     refreshInvites()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(getErrorMessage(err.apiData, 'Sikertelen'))
   } finally {
     btn.disabled = false
     btn.textContent = t('channel.btn.invite_new')
@@ -3141,12 +3150,13 @@ async function revokeInviteToken(token) {
     const res = await fetch(`${channelApiBase()}/invites/${encodeURIComponent(token)}`, { method: 'DELETE' })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
-      throw new Error(err.error || 'Sikertelen')
+      // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+      throw Object.assign(new Error('api call failed'), { apiData: err })
     }
     showToast(t('channel.toast.invite_revoked'))
     refreshInvites()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(getErrorMessage(err.apiData, 'Sikertelen'))
   }
 }
 

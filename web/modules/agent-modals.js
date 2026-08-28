@@ -1,6 +1,7 @@
 import { escapeHtml } from './util.js'
 import { t } from './i18n.js'
 import { showToast } from './toast.js'
+import { getErrorMessage } from './error-message.js'
 
 let _openModal = null
 let _closeModal = null
@@ -21,7 +22,8 @@ export async function handleAgentLogin(agentName, btn) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phase }),
     })
-    if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'HTTP ' + res.status) }
+    // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+    if (!res.ok) { const err = await res.json().catch(() => ({})); throw Object.assign(new Error('api call failed'), { apiData: err }) }
     if (phase === 'start') {
       btn.dataset.phase = 'confirm'
       btn.textContent = t('agents.auth.btn_confirm')
@@ -33,7 +35,7 @@ export async function handleAgentLogin(agentName, btn) {
       setTimeout(() => _loadAgents && _loadAgents(), 1500)
     }
   } catch (e) {
-    showToast('Hiba: ' + (e.message || e))
+    showToast(getErrorMessage(e.apiData, t('common.error')))
     btn.textContent = origText
     btn.dataset.phase = 'start'
     btn.disabled = false

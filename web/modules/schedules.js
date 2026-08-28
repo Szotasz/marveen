@@ -935,7 +935,8 @@ saveScheduleBtn.addEventListener('click', async () => {
       })
       if (!res.ok) {
         const err = await res.json()
-        throw new Error(err.error || 'Hiba')
+        // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+        throw Object.assign(new Error('api call failed'), { apiData: err })
       }
       showToast(t('tasks.toast.updated'))
     } else {
@@ -947,14 +948,15 @@ saveScheduleBtn.addEventListener('click', async () => {
       })
       if (!res.ok) {
         const err = await res.json()
-        throw new Error(err.error || 'Ismeretlen hiba')
+        // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+        throw Object.assign(new Error('api call failed'), { apiData: err })
       }
       showToast(t('tasks.toast.created'))
     }
     _closeModal?.(scheduleModalOverlay)
     loadSchedules()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(getErrorMessage(err.apiData, t('common.error')))
   } finally {
     saveScheduleBtn.disabled = false
     saveScheduleBtn.querySelector('.btn-text').hidden = false

@@ -2,6 +2,7 @@ import { escapeHtml, mainAgentId } from './util.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
 import { agentApiName } from './agents.js'
+import { getErrorMessage } from './error-message.js'
 import { renderMarkdown } from './docs-research.js'
 
 
@@ -134,7 +135,8 @@ document.getElementById('saveSkillBtn').addEventListener('click', async () => {
     })
     if (!res.ok) {
       const err = await res.json()
-      throw new Error(err.error || 'Hiba')
+      // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+      throw Object.assign(new Error('api call failed'), { apiData: err })
     }
     _closeModal?.(skillModalOverlay)
     showToast(t('skills.toast.added'))
@@ -144,7 +146,7 @@ document.getElementById('saveSkillBtn').addEventListener('click', async () => {
       loadSkills(agentApiName())
     }
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(getErrorMessage(err.apiData, 'Hiba'))
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -175,7 +177,8 @@ document.getElementById('importSkillBtn').addEventListener('click', async () => 
     })
     if (!res.ok) {
       const err = await res.json()
-      throw new Error(err.error || 'Import hiba')
+      // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+      throw Object.assign(new Error('api call failed'), { apiData: err })
     }
     const result = await res.json()
     _closeModal?.(skillModalOverlay)
@@ -189,7 +192,7 @@ document.getElementById('importSkillBtn').addEventListener('click', async () => 
       loadSkills(agentApiName())
     }
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(getErrorMessage(err.apiData, 'Import hiba'))
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false

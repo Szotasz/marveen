@@ -2003,7 +2003,8 @@ document.getElementById('saveConnectorBtn').addEventListener('click', async () =
     })
     if (!res.ok) {
       const err = await res.json()
-      throw new Error(err.error || 'Hiba')
+      // apiData carries the full response object for getErrorMessage(); do NOT use err.message
+      throw Object.assign(new Error('api call failed'), { apiData: err })
     }
     const result = await res.json()
     const savedName = result.name || name
@@ -2026,7 +2027,7 @@ document.getElementById('saveConnectorBtn').addEventListener('click', async () =
     }
     loadConnectors()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(getErrorMessage(err.apiData, 'Hiba'))
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
