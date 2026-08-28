@@ -8,6 +8,8 @@ import {
   COMPLETION_REPORT_PREFIX,
   isAuthorizedPartnerSender,
   writeAgentAuditLog,
+  findBlackboardRowByAgent,
+  upsertBlackboard,
   type AgentMessage,
 } from '../../db.js'
 import { logger } from '../../logger.js'
@@ -198,6 +200,19 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
         detail: { from: from.trim(), to: storedTo, tenant_id: ctx.tenantId, authorized_by: 'partner_sender_allowlist' } })
     }
     logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note }, 'Agent message created')
+    // Delivery hook: open an 'assigned' blackboard row for the local recipient when
+    // they have no active or blocked row. Federated recipients are skipped (no local row).
+    // The agent's own POST to /api/blackboard with status='active' will overwrite this.
+    if (!storedTo.includes('/')) {
+      const existing = findBlackboardRowByAgent(storedTo)
+      if (!existing || (existing.status !== 'active' && existing.status !== 'blocked')) {
+        upsertBlackboard(storedTo, {
+          status: 'assigned',
+          summary: normalizedContent.slice(0, 100),
+          task_ref: null,
+        })
+      }
+    }
     json(res, msg)
     return true
   }

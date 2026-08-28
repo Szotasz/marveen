@@ -13,6 +13,8 @@ vi.mock('../db.js', () => ({
   markMessageFailed: vi.fn().mockReturnValue(true),
   getAgentMessage: vi.fn().mockReturnValue(null),
   closeOtelSpan: vi.fn(),
+  findBlackboardRowByAgent: vi.fn().mockReturnValue(undefined),
+  upsertBlackboard: vi.fn(),
 }))
 vi.mock('../channel-coordinator/ingest.js', () => ({
   COORDINATOR_AGENT_ID: 'telegram-coordinator',

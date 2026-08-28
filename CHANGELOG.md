@@ -9,6 +9,10 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
+### Added
+
+- **[API]** `POST /api/messages` (inter-agent delivery): when the local recipient has no `active` or `blocked` blackboard row, the endpoint now automatically opens a row with `status: "assigned"` and a summary derived from the first 100 characters of the message content. This makes delegated-but-not-yet-started work visible on the fleet blackboard without waiting for the agent to self-report. The agent's own `POST /api/blackboard` with `status: "active"` overwrites the row as before. Federated recipients (`"peer/agent"` addresses) are not affected. Signal B in `GET /api/blackboard` now fires for `assigned` rows as well as `active` ones.
+
 ### Fixed
 
 - **[API]** `POST /api/auth/logout-all`, `GET /api/auth/sessions`: HTTP status changed `400` → `401` when the caller has no valid session (`error: "unauthorized"`). A missing or invalid session is a missing-authentication condition, not a malformed request; `400 Bad Request` implies a fixable client error, while `401 Unauthorized` correctly signals that authentication is required. No login loop risk: `POST /api/auth/login` is handled earlier in `tryHandleAuth` and exits before these checks.

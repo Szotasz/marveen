@@ -1168,6 +1168,11 @@ paths:
         Creates a message in the queue for delivery to the target agent's session.
         The `from` field must be a registered fleet agent id (or the owner name).
         Federation addresses use slash notation: `"peer-system/agent-name"`.
+
+        Side effect: when the local recipient has no `active` or `blocked` blackboard
+        row, a row with `status: "assigned"` is automatically opened. The summary
+        is the first 100 characters of the message content. The agent's own
+        `POST /api/blackboard` with `status: "active"` overwrites this row.
       requestBody:
         required: true
         content:
