@@ -11,6 +11,8 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- `scheduled-tasks/dream-engine/SKILL.md` (Bucket 5): skill-fleet health now queries the `skill_usage` table for actual usage data instead of estimating from directory listings; fixes a long-standing false "not measurable" report that fired every night.
+
 - `initDatabase` (`src/db.ts`): `tryLoadVecExtension()` is now called before `applyMigrations()`. Any schema-changing migration that uses a table-rebuild pattern (create-copy-drop-rename) causes SQLite to reparse the entire schema, which validates all triggers including the vec0-backed memory triggers. If the extension is not loaded on that connection at reparse time, the process crashes with `SqliteError: no such module: vec0` before the dashboard can start. Root cause of the 2026-08-28 outage triggered by migration 0022. The call is a safe no-op when the sqlite-vec binary is absent; `initVecSupport()` later in the same function still performs the virtual-table setup. A runtime invariant (`vecExtensionAttempted` flag set inside `tryLoadVecExtension`, checked before `applyMigrations`) ensures a future refactor that reverses the call order gets an explicit startup error rather than a cryptic mid-migration crash. The invariant does not require the vec0 binary to be present and is therefore covered by the existing test suite (5682 green).
 
 ### Added
