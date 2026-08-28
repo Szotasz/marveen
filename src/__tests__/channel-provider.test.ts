@@ -175,10 +175,11 @@ describe('checkTelegramTokenBusy', () => {
     }))
     expect(r.busy).toBe(true)
     expect(r.reason).toBe('webhook')
-    expect(r.error).toContain('deleteWebhook')
-    expect(r.error).toContain('BotFather')
-    expect(r.error).not.toContain(TOKEN)
-    expect(r.error).not.toContain('TESTSECRETVALUE')
+    expect(r.error).toBe('conflict')
+    expect(r.hint).toContain('deleteWebhook')
+    expect(r.hint).toContain('BotFather')
+    expect(r.hint).not.toContain(TOKEN)
+    expect(r.hint).not.toContain('TESTSECRETVALUE')
   })
 
   it('reports a competing poller on getUpdates 409 with the stop-or-new-bot remedy', async () => {
@@ -188,9 +189,10 @@ describe('checkTelegramTokenBusy', () => {
     }))
     expect(r.busy).toBe(true)
     expect(r.reason).toBe('poller')
-    expect(r.error).toContain('409')
-    expect(r.error).toContain('BotFather')
-    expect(r.error).not.toContain(TOKEN)
+    expect(r.error).toBe('conflict')
+    expect(r.hint).toContain('409')
+    expect(r.hint).toContain('BotFather')
+    expect(r.hint).not.toContain(TOKEN)
   })
 
   it('passes a free token', async () => {

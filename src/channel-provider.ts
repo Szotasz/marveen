@@ -16,7 +16,7 @@ export interface ChannelProvider {
   readonly chatIdFormat: string
   sendMessage(token: string, chatId: string, text: string, parseMode?: string): Promise<void>
   sendPhoto(token: string, chatId: string, photoPath: string, caption: string): Promise<void>
-  validateToken(token: string): Promise<{ ok: boolean; botName?: string; error?: string }>
+  validateToken(token: string): Promise<{ ok: boolean; botName?: string; error?: string; hint?: string }>
   formatMessage(text: string): string
   splitMessage(text: string): string[]
 }
@@ -92,9 +92,9 @@ const telegramProvider: ChannelProvider = {
       if (data.ok && data.result) {
         return { ok: true, botName: data.result.username }
       }
-      return { ok: false, error: 'Invalid bot token' }
+      return { ok: false, error: 'invalid_value', hint: 'Invalid bot token' }
     } catch {
-      return { ok: false, error: 'Failed to connect to Telegram API' }
+      return { ok: false, error: 'internal_error', hint: 'Failed to connect to Telegram API' }
     }
   },
 
@@ -116,7 +116,7 @@ const telegramProvider: ChannelProvider = {
 export async function checkTelegramTokenBusy(
   token: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<{ busy: boolean; reason?: 'webhook' | 'poller'; error?: string }> {
+): Promise<{ busy: boolean; reason?: 'webhook' | 'poller'; error?: string; hint?: string }> {
   try {
     const wh = await fetchImpl(`https://api.telegram.org/bot${token}/getWebhookInfo`)
     const whData = await wh.json() as { ok: boolean; result?: { url?: string } }
@@ -124,8 +124,9 @@ export async function checkTelegramTokenBusy(
       return {
         busy: true,
         reason: 'webhook',
+        error: 'conflict',
         // The token itself must never appear in this user-facing message.
-        error: 'A bot token érvényes, de a bot jelenleg webhookra van kötve, így a Marveen nem tud rá csatlakozni. '
+        hint: 'A bot token érvényes, de a bot jelenleg webhookra van kötve, így a Marveen nem tud rá csatlakozni. '
           + `Teendő: szüntesd meg a webhookot (nyisd meg böngészőben: https://api.telegram.org/bot<A-TOKENED>/deleteWebhook), `
           + 'vagy készíts új botot a @BotFather-nél, és annak a tokenjét add meg itt.',
       }
@@ -135,7 +136,8 @@ export async function checkTelegramTokenBusy(
       return {
         busy: true,
         reason: 'poller',
-        error: 'A bot token érvényes, de egy másik futó rendszer már használja (a Telegram 409 Conflict választ adott). '
+        error: 'conflict',
+        hint: 'A bot token érvényes, de egy másik futó rendszer már használja (a Telegram 409 Conflict választ adott). '
           + 'Egy bot tokent egyszerre csak egy telepítés használhat. Teendő: állítsd le a korábbi telepítést, '
           + 'amelyik még ezzel a tokennel fut, vagy készíts új botot a @BotFather-nél, és annak a tokenjét add meg itt.',
       }
@@ -260,9 +262,9 @@ const slackProvider: ChannelProvider = {
       if (data.ok) {
         return { ok: true, botName: data.user || data.bot_id }
       }
-      return { ok: false, error: data.error || 'Invalid token' }
+      return { ok: false, error: 'invalid_value', hint: data.error || 'Invalid token' }
     } catch {
-      return { ok: false, error: 'Failed to connect to Slack API' }
+      return { ok: false, error: 'internal_error', hint: 'Failed to connect to Slack API' }
     }
   },
 
@@ -343,9 +345,9 @@ const discordProvider: ChannelProvider = {
       if (resp.ok && data.username) {
         return { ok: true, botName: data.username }
       }
-      return { ok: false, error: 'Invalid bot token' }
+      return { ok: false, error: 'invalid_value', hint: 'Invalid bot token' }
     } catch {
-      return { ok: false, error: 'Failed to connect to Discord API' }
+      return { ok: false, error: 'internal_error', hint: 'Failed to connect to Discord API' }
     }
   },
 

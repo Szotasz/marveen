@@ -56,7 +56,7 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       // the change log without assuming the write will succeed.
       const validation = validateSettingValue(def, value)
       if (!validation.ok) {
-        json(res, { error: 'invalid_value', field: 'value', hint: validation.error }, 400)
+        json(res, { error: 'invalid_value', field: 'value', hint: validation.hint }, 400)
         return true
       }
 
