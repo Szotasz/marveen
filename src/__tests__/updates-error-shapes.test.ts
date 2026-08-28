@@ -231,3 +231,20 @@ describe('updates /apply -- preflight 409 (detached-head)', () => {
     expect(out.body.error).not.toMatch(/detached|head|branch/i)
   })
 })
+
+describe('updates /apply -- preflight 409 (local-commits)', () => {
+  it('returns conflict token for local-commits preflight failure', async () => {
+    vi.mocked(checkUpdatePreflight).mockReturnValue({
+      ok: false,
+      reason: 'local-commits',
+      message: 'The branch has 2 local commits not yet pushed. Push or reset them, then retry.',
+      ahead: 2,
+    })
+    const { ctx, out } = makeCtx('POST', '/api/updates/apply')
+    await tryHandleUpdates(ctx)
+    expect(out.status).toBe(409)
+    expect(out.body.error).toBe('conflict')
+    expect(out.body.reason).toBe('local-commits')
+    expect(out.body.hint).toMatch(/local commits|push|reset/i)
+  })
+})
