@@ -4151,6 +4151,16 @@ export function markBlackboardStale(
   return marked
 }
 
+export function getAgentTier(agentId: string): string {
+  const row = db.prepare('SELECT tier FROM agent_blackboard_tier WHERE agent_id = ?').get(agentId) as { tier: string } | undefined
+  return row?.tier ?? 'default'
+}
+
+export function getActiveBlackboardAgentIds(): string[] {
+  const rows = db.prepare("SELECT DISTINCT agent_id FROM fleet_blackboard WHERE status = 'active'").all() as { agent_id: string }[]
+  return rows.map((r) => r.agent_id)
+}
+
 // Remove fleet_blackboard rows that have been stuck in 'active' for longer
 // than ttlHours without any agent updating them. These are orphaned entries
 // from tasks whose sawTurn=false path cleared the watchdog without writing

@@ -1102,6 +1102,10 @@ window._i18n.hu = {
   'settings.desc.BB_SIGNAL_B_ACTIVE_HOURS':    'Blackboard B-jel: egy aktív sor ennyi óránál régebben változatlan, ami arra utal, hogy a befejezés jelzése elveszett.',
   'settings.desc.DEFAULT_AGENT_MODEL':         'Az új ügynökök alapértelmezett modellje, egyben a háttér-worker sessionök modellje. A meglévő ügynökök NEM változnak: akinek a saját konfigjában konkrét modell van, az marad. A módosítás a szolgáltatás újraindításakor lép életbe.',
   'settings.desc.BACKUP_KEEP':                  'Megtartott mentések száma. A beállított határnál régebbi archívumok automatikusan törlődnek. Értékek: 10/30/60/180.',
+  'settings.desc.BB_STALE_ORCHESTRATOR_MIN':    'Blackboard stale-határ (perc) orchestrator tier ágenseinek (fleet-koordinátor, hosszú sessions). Alapértelmezetten 120 perc.',
+  'settings.desc.BB_STALE_INTERACTIVE_MIN':     'Blackboard stale-határ (perc) interactive tier ágenseinek (többlépéses interaktív ágensek). Alapértelmezetten 90 perc.',
+  'settings.desc.BB_STALE_SHORT_RUNNING_MIN':   'Blackboard stale-határ (perc) short-running tier ágenseinek (heartbeat/ütemezett, percek alatt kész). Alapértelmezetten 15 perc.',
+  'settings.desc.BB_STALE_DEFAULT_MIN':         'Blackboard stale-határ (perc) ismeretlen (default) tier ágenseinek. Konzervatív fallback. Alapértelmezetten 60 perc.',
 
   // --- Vault ---
   'vault.page_title':            'Vault',
