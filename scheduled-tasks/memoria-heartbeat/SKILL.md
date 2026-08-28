@@ -1,6 +1,7 @@
 ---
 name: memoria-heartbeat
-description: 30 percenként átnézi a beszélgetést, menti a fontosat, és skill-eket generál ha volt komplex munka
+description: 30 percenként átnézi a beszélgetést, menti a fontosat, és MEGLÉVŐ skilleket patch-el ha volt komplex munka (az ÚJ-skill generálást az auto-skillify PreCompact hook végzi)
+last_synced: 2026-08-28
 ---
 
 ## 0. ELŐSZÖR: Van-e várakozó Telegram üzenet?
@@ -16,7 +17,7 @@ Nézd át az utolsó 30 perc beszélgetéseidet. Két dolgot csinálj:
 Ha volt fontos döntés, preferencia, tanulság vagy bármi ami később hasznos, mentsd el:
 
 ```bash
-curl -s -X POST http://localhost:3420/api/memories \
+curl -s -X POST http://localhost:{{WEB_PORT}}/api/memories \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $(cat {{INSTALL_DIR}}/store/.dashboard-token)" \
   -d '{"agent_id":"SAJAT_NEVED","content":"...","category":"warm","keywords":"..."}'
@@ -25,62 +26,41 @@ curl -s -X POST http://localhost:3420/api/memories \
 `category` lehet: `hot` (aktív), `warm` (preferencia/config), `cold` (tanulság), `shared` (más agent-nek is).
 Az `agent_id`-t a CLAUDE.md-ből vagy a munkamappa nevéből derítsd ki.
 
-## 2. Skill reflexió (KÖTELEZŐ ha volt komplex munka)
+## 2. Skill reflexió -- MEGLÉVŐ skill patch-elése (KÖTELEZŐ ha releváns)
 
-Először döntsd el az alábbi 3 kérdéssel:
+**FONTOS:** az ÚJ skill létrehozását NEM itt csinálod -- azt az `auto-skillify` PreCompact hook végzi automatikusan (a session tool-historyjából, session végén). A heartbeat CSAK a MÁR LÉTEZŐ skillek javítását (patch) nézi, mert az cross-session visszatekintés, amit a hook nem lát.
 
-- **A**: Volt-e az utolsó 30 percben legalább 5 tool-hívásos komplex feladat?
-- **B**: Volt-e hiba → recovery (próbálkozás → fail → másképp) amit egy meglévő skill Buktatók szekciójába kellene tenni?
-- **C**: Volt-e user korrekció ("nem így", "ne ezt", "másképp"), ami skill-javítást igényel?
+Először döntsd el az alábbi 2 kérdéssel:
 
-**Ha A vagy B vagy C IGEN: KÖTELEZŐ skill akció, nem kihagyható.**
+- **B**: Volt-e hiba -> recovery (próbálkozás -> fail -> másképp) amit egy meglévő skill Buktatók szekciójába kellene tenni?
+- **C**: Volt-e user korrekció ("nem így", "ne ezt", "másképp"), ami egy meglévő skill javítását igényli?
+
+**Ha B vagy C IGEN, ÉS van rá releváns MEGLÉVŐ skill: KÖTELEZŐ a patch, nem kihagyható.**
 
 Lépések:
-1. Keress meglévő skillt a globális és az ágensspecifikus indexben egyaránt:
-   - Globális: `~/.claude/skills/.skill-index.md` (szöveges keresés)
-   - Ágensspecifikus (ha van): `./.claude/skills/.skill-index.md` a munkamappádban (szöveges keresés)
-   - Az ágensspecifikus index mindkét szintet tartalmazza, tehát ha az létezik, elég azt nézegetni.
+1. Keress meglévő skillt MINDKÉT indexben:
+   - Globális: `~/.claude/skills/.skill-index.md`
+   - Ágensspecifikus (ha van): `./.claude/skills/.skill-index.md` a munkamappádban
+   - Az ágensspecifikus index mindkét szintet tartalmazza Scope-jelöléssel, tehát ha az létezik, elég azt nézegetni.
 2. Ha van releváns skill: PATCH (csak a megváltozott rész cseréje, ne az egész fájl).
    - A `## Buktatók` szekciót preferáld ha hiba/recovery volt.
    - A `## Eljárás` szekciót ha a folyamat változott.
-3. Ha NINCS releváns skill: hozz létre újat:
-   ```bash
-   mkdir -p ~/.claude/skills/<NEV>
-   cat > ~/.claude/skills/<NEV>/SKILL.md <<EOF
-   ---
-   name: <NEV>
-   description: Mikor használd, mit csinál (1-2 mondat). Konkrét trigger.
-   ---
-   # <Cím>
-
-   ## Mikor használd
-   ...
-
-   ## Eljárás
-   1. ...
-
-   ## Buktatók
-   - ...
-
-   ## Ellenőrzés
-   - ...
-   EOF
-   ```
-4. Index regen (mindkét szint):
+3. Ha NINCS releváns MEGLÉVŐ skill a mintához: NE hozz létre újat itt -- azt az auto-skillify hook kezeli. Ha úgy érzed sürgős és a hook valamiért nem kapta el, jelezd egy `hot` memóriában (`auto-skillify-miss: <mi maradt ki>`), hogy később skillbe emelhető legyen.
+4. Index regen (csak ha patcheltél):
    ```bash
    bash {{INSTALL_DIR}}/scripts/skill-index.sh          # globális index frissítése
    bash {{INSTALL_DIR}}/scripts/skill-index.sh "$(pwd)" # ágensspecifikus merged index frissítése
    ```
 
-**Ha kihagytad a skill akciót, pedig A/B/C valamelyike IGEN volt:** kötelezően írj `hot` tier memóriát "skip-skill: <konkrét ok>" tartalommal, hogy később lássuk miért. Ne csendben hagyd ki.
+**Ha kihagytad a patch-et, pedig B vagy C IGEN volt ÉS volt rá meglévő skill:** kötelezően írj `hot` tier memóriát "skip-skill: <konkrét ok>" tartalommal, hogy később lássuk miért. Ne csendben hagyd ki.
 
 ## 3. Csendben maradás
 
 **KIVÉTEL: Ha a felhasználó üzenetet küldött egy csatornán (`<channel source=` kezdetű blokk a kontextusban), arra mindig válaszolj -- a csendes heartbeat szabály NEM vonatkozik rá.**
 
-Ha NINCS komplex feladat / hiba / korrekció (A=B=C=NEM), ÉS nincs várakozó Telegram üzenet, ÉS nincs új információ a 30 percben:
+Ha NINCS hiba / korrekció (B=C=NEM), ÉS nincs várakozó Telegram üzenet, ÉS nincs új információ a 30 percben:
 - Ne ments memóriát feleslegesen
-- Ne generálj skill-t
+- Ne patch-elj skillt feleslegesen
 - Ne küldj üzenetet a csatornára
 - Maradj csendben: egyszerűen FEJEZD BE a kört, akció nélkül.
 

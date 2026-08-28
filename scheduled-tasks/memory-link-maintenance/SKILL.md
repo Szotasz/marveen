@@ -1,6 +1,7 @@
 ---
 name: memory-link-maintenance
 description: Nightly memory link-graph maintenance via POST /api/memories/links/maintain
+last_synced: 2026-08-28
 ---
 
 # Memory Link Maintenance Job
