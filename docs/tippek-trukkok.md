@@ -52,7 +52,7 @@ Lásd el a kártyákat cimkékkel téma vagy projekt szerint. Így a táblán gy
 
 Definiálj rövid saját kulcsszavakat az ismétlődő kérésekhez, amelyek egyetlen szóra egy egész összetett workflow-t indítanak el. Nem kell minden lépést külön kérned -- az alias elvégzi helyetted.
 
-Példa: a "napindító" kulcsszó a teljes reggeli láncot futtatja (Dream Engine -> Peter edzés-összefoglaló -> email -> naptár) egyetlen szóra.
+Példa: a "napindító" kulcsszó a teljes reggeli láncot futtatja (Dream Engine -> edzés-összefoglaló -> email -> naptár) egyetlen szóra.
 
 **Elért hatás:** gyorsabb, konzisztens napi vezérlés; az ismétlődő rutinok egy kulcsszóra indulnak, és nem térnek el a szokásos sorrendtől.
 

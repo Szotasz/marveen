@@ -1,5 +1,5 @@
 /* === .btn component === */
-/* Poly spec §1: CUBE data-attr, local --_ tokens */
+/* design spec §1: CUBE data-attr, local --_ tokens */
 
 .btn {
   --_bg:        var(--bg-input);

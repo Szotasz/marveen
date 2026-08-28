@@ -682,7 +682,7 @@ window._i18n.hu = {
   'naplo.source.idea':           'Ötletláda',
   'naplo.source.store':          'Store-fájlok',
   'naplo.search_placeholder':    'Keresés...',
-  'naplo.agent_placeholder':     'Ágens (pl. jarvis)',
+  'naplo.agent_placeholder':     'Ágens (pl. agent-a)',
   'naplo.btn.search':            'Keresés',
   'naplo.btn.refresh':           'Frissítés',
   'naplo.empty':                 'Nincs találat.',

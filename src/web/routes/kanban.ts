@@ -177,7 +177,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   // Tenant scope: admin role sees/writes all tenants; scoped callers are
   // restricted to their own tenant_id. Admin bypass uses role===admin check,
   // not tenantId===null, because null is also the initial default for viewer
-  // users before tenant assignment (Rick architecture spec).
+  // users before tenant assignment (architecture spec).
   const isAdmin = ctx.role === 'admin'
   const effectiveTenantId: string | null = isAdmin ? null : (ctx.tenantId ?? 'default')
 

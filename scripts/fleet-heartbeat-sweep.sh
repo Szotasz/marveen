@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fleet memory-heartbeat sweep.
-# Triggered 4-hourly by the main agent (jarvis) scheduled task `memoria-heartbeat-fleet`.
+# Triggered 4-hourly by the main agent scheduled task `memoria-heartbeat-fleet`.
 # Sequentially (staggered) instructs every RUNNING fleet sub-agent to run its own
 # memory-heartbeat (memory save + skill reflection). Fleet membership is discovered
 # live from /api/agents -- NOT hardcoded. Runs in the background so the main agent's
@@ -12,7 +12,7 @@ set -euo pipefail
 ROOT="/Users/jonasgergo/marveen"
 TOKEN="$(cat "$ROOT/store/.dashboard-token")"
 API="http://localhost:3420"
-MAIN_AGENT="jarvis"          # coordinator; excluded from the sweep (has its own heartbeat)
+MAIN_AGENT="${MAIN_AGENT_ID:-marveen}"  # coordinator; excluded from the sweep (has its own heartbeat)
 STAGGER="${1:-60}"           # seconds between agents, avoids a fleet-wide token spike
 LOG="$ROOT/store/fleet-heartbeat-sweep.log"
 

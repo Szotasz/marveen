@@ -1,7 +1,7 @@
 // i18n runtime module (S-2, issue #3).
 //
 // Priority: localStorage['marveen.lang'] > DASHBOARD_LANG (server setting) > 'hu'.
-// Rick's spec (kanban card 209696a9): t(key,params), window._i18n={hu,en}, {name}
+// spec (kanban card 209696a9): t(key,params), window._i18n={hu,en}, {name}
 // interpolation, EN-fallback then key, dev-mode warning.
 //
 // Load-order contract:

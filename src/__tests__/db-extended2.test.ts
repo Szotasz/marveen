@@ -359,7 +359,7 @@ describe('kanban extended functions', () => {
 
 describe('task run functions', () => {
   it('appendTaskRun inserts a run entry', () => {
-    appendTaskRun('db2-task-heartbeat', 'jarvis', 'fired')
+    appendTaskRun('db2-task-heartbeat', 'agent-a', 'fired')
     const history = listTaskRunHistory('db2-task-heartbeat', 10)
     expect(history.length).toBeGreaterThanOrEqual(1)
     expect(history[0].status).toBe('fired')
@@ -399,7 +399,7 @@ describe('telegram history functions', () => {
 
 describe('idea box functions', () => {
   it('createIdea + listIdeas roundtrip', () => {
-    createIdea({ id: 'db2-idea-1', title: 'Great idea', description: 'Details here', category: 'Fejlesztes', status: 'new', source: 'jarvis', kanban_id: null, impact: 4, effort: 2 })
+    createIdea({ id: 'db2-idea-1', title: 'Great idea', description: 'Details here', category: 'Fejlesztes', status: 'new', source: 'agent-a', kanban_id: null, impact: 4, effort: 2 })
     const ideas = listIdeas()
     expect(ideas.some(i => i.id === 'db2-idea-1')).toBe(true)
   })
@@ -431,21 +431,21 @@ describe('idea box functions', () => {
   })
 
   it('addIdeaComment + getIdeaComments roundtrip', () => {
-    const comment = addIdeaComment('db2-idea-1', 'rick', 'This is a great idea!')
+    const comment = addIdeaComment('db2-idea-1', 'agent-d', 'This is a great idea!')
     expect(comment.idea_id).toBe('db2-idea-1')
-    expect(comment.author).toBe('rick')
+    expect(comment.author).toBe('agent-d')
     const comments = getIdeaComments('db2-idea-1')
     expect(comments.some(c => c.content === 'This is a great idea!')).toBe(true)
   })
 
   it('logIdeaStatusChange + getIdeaStatusLog roundtrip', () => {
-    logIdeaStatusChange('db2-idea-1', 'new', 'reviewed', 'rick', 'Looks good')
+    logIdeaStatusChange('db2-idea-1', 'new', 'reviewed', 'agent-d', 'Looks good')
     const log = getIdeaStatusLog('db2-idea-1')
-    expect(log.some(l => l.to_status === 'reviewed' && l.actor === 'rick')).toBe(true)
+    expect(log.some(l => l.to_status === 'reviewed' && l.actor === 'agent-d')).toBe(true)
   })
 
   it('revertIdeaFromKanban reverts a kanban idea to reviewed', () => {
-    createIdea({ id: 'db2-idea-2', title: 'Kanban idea', description: null, category: 'Egyeb', status: 'kanban', source: 'dave', kanban_id: 'db2-card-k1', impact: null, effort: null })
+    createIdea({ id: 'db2-idea-2', title: 'Kanban idea', description: null, category: 'Egyeb', status: 'kanban', source: 'agent-f', kanban_id: 'db2-card-k1', impact: null, effort: null })
     const reverted = revertIdeaFromKanban('db2-card-k1')
     expect(reverted).toBe('db2-idea-2')
     const ideas = listIdeas()

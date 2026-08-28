@@ -7,7 +7,7 @@
 //   - extractContent() from import-crawler.ts: tested for the ZIP-bomb cap
 //     (the one logic that lives in the main process, not in the worker) by
 //     mocking parseBinaryInWorker via vi.mock on node:worker_threads.
-//   - Full Worker spawn + timeout: covered by Jarvis live integration tests.
+//   - Full Worker spawn + timeout: covered by agent-a live integration tests.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { writeFileSync, mkdirSync, rmSync } from 'node:fs'
@@ -119,5 +119,5 @@ describe('extractContent -- text fallback', () => {
 // to whatever string the worker returns. It is a 2-line conditional; testing it
 // requires either spawning a real worker with a compiled dist/ or mocking the
 // Worker class at module level (which interferes with all other tests in the file).
-// Coverage is provided by Jarvis's live integration test with a deliberately
+// Coverage is provided by agent-a's live integration test with a deliberately
 // large xlsx file. The guard code is verified to be in place by code review.

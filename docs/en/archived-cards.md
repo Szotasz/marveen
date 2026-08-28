@@ -71,7 +71,7 @@ Response:
       "status": "done",
       "project": "Project name",
       "priority": "normal",
-      "assignee": "jarvis",
+      "assignee": "agent-a",
       "archived_at": 1718000000,
       "updated_at": 1718000000,
       "labels": [{ "id": "x1", "name": "AI", "color": "#3b82f6" }]

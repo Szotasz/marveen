@@ -59,7 +59,7 @@ function makeCtx(method: string, path: string, body?: object): { ctx: RouteConte
 
 describe('tryHandleMessages', () => {
   it('POST /api/messages returns 400 when fields missing', async () => {
-    const { ctx, out } = makeCtx('POST', '/api/messages', { from: 'rick' })
+    const { ctx, out } = makeCtx('POST', '/api/messages', { from: 'agent-d' })
     const handled = await tryHandleMessages(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(400)
@@ -69,7 +69,7 @@ describe('tryHandleMessages', () => {
   it('POST /api/messages returns 403 when from is coordinator id', async () => {
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'telegram-coordinator',
-      to: 'jarvis',
+      to: 'agent-a',
       content: 'test',
     })
     const handled = await tryHandleMessages(ctx)
@@ -81,7 +81,7 @@ describe('tryHandleMessages', () => {
   it('POST /api/messages returns 403 when from contains slash (federation spoof)', async () => {
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'external/attacker',
-      to: 'jarvis',
+      to: 'agent-a',
       content: 'hijack',
     })
     const handled = await tryHandleMessages(ctx)
@@ -92,8 +92,8 @@ describe('tryHandleMessages', () => {
 
   it('POST /api/messages creates message for known agent', async () => {
     const { ctx, out } = makeCtx('POST', '/api/messages', {
-      from: 'rick',
-      to: 'jarvis',
+      from: 'agent-d',
+      to: 'agent-a',
       content: 'Hello!',
     })
     const handled = await tryHandleMessages(ctx)
@@ -103,21 +103,21 @@ describe('tryHandleMessages', () => {
   })
 
   it('GET /api/messages returns 200 with list', async () => {
-    const { ctx, out } = makeCtx('GET', '/api/messages?agent=jarvis')
+    const { ctx, out } = makeCtx('GET', '/api/messages?agent=agent-a')
     const handled = await tryHandleMessages(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(200)
   })
 
   it('GET /api/messages with status=pending returns pending list', async () => {
-    const { ctx, out } = makeCtx('GET', '/api/messages?agent=jarvis&status=pending')
+    const { ctx, out } = makeCtx('GET', '/api/messages?agent=agent-a&status=pending')
     const handled = await tryHandleMessages(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(200)
   })
 
   it('GET /api/messages/threads returns thread list', async () => {
-    const { ctx, out } = makeCtx('GET', '/api/messages/threads?agent=jarvis')
+    const { ctx, out } = makeCtx('GET', '/api/messages/threads?agent=agent-a')
     const handled = await tryHandleMessages(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(200)
@@ -224,7 +224,7 @@ describe('POST /api/messages: error codes are snake_case machine tokens', () => 
   // Before this fix: error was a prose sentence and the response included
   // separate `unknown` and `known` arrays instead of field + hint.
   it('GET /api/messages unknown param → unknown_query_parameter with field + hint', async () => {
-    const { ctx, out } = makeCtx('GET', '/api/messages?agent_id=jarvis')
+    const { ctx, out } = makeCtx('GET', '/api/messages?agent_id=agent-a')
     await tryHandleMessages(ctx)
     expect(out.status).toBe(400)
     expect(out.body.error).toBe('unknown_query_parameter')
@@ -252,17 +252,17 @@ describe('POST /api/messages: assign:true delivery hook', () => {
 
   it('assign:true opens an assigned blackboard row for local recipient', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 42, from_agent: 'zack', to_agent: 'boo', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 42, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
-      from: 'zack',
-      to: 'boo',
+      from: 'agent-b',
+      to: 'agent-c',
       content: 'Please verify the branch feat/679',
       assign: true,
     })
     await tryHandleMessages(ctx)
     expect(out.status).toBe(200)
     expect(vi.mocked(db.upsertBlackboard)).toHaveBeenCalledOnce()
-    expect(vi.mocked(db.upsertBlackboard)).toHaveBeenCalledWith('boo', {
+    expect(vi.mocked(db.upsertBlackboard)).toHaveBeenCalledWith('agent-c', {
       status: 'assigned',
       summary: 'Please verify the branch feat/679',
       task_ref: null,
@@ -271,10 +271,10 @@ describe('POST /api/messages: assign:true delivery hook', () => {
 
   it('assign omitted: no blackboard row opened', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 43, from_agent: 'zack', to_agent: 'boo', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 43, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
-      from: 'zack',
-      to: 'boo',
+      from: 'agent-b',
+      to: 'agent-c',
       content: 'Just a heads up',
     })
     await tryHandleMessages(ctx)
@@ -284,10 +284,10 @@ describe('POST /api/messages: assign:true delivery hook', () => {
 
   it('assign:false: no blackboard row opened', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 44, from_agent: 'zack', to_agent: 'boo', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 44, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
-      from: 'zack',
-      to: 'boo',
+      from: 'agent-b',
+      to: 'agent-c',
       content: 'Reply: understood',
       assign: false,
     })
@@ -299,12 +299,12 @@ describe('POST /api/messages: assign:true delivery hook', () => {
   it('assign:true skipped when recipient already has an active row', async () => {
     const db = await import('../db.js')
     vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({
-      id: 'abc', agent_id: 'boo', task_ref: null, status: 'active', summary: 'already working', updated_at: 0,
+      id: 'abc', agent_id: 'agent-c', task_ref: null, status: 'active', summary: 'already working', updated_at: 0,
     })
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 45, from_agent: 'zack', to_agent: 'boo', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 45, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
-      from: 'zack',
-      to: 'boo',
+      from: 'agent-b',
+      to: 'agent-c',
       content: 'New task for you',
       assign: true,
     })
@@ -317,13 +317,13 @@ describe('POST /api/messages: assign:true delivery hook', () => {
     const db = await import('../db.js')
     const { parseQualifiedId, formatQualifiedId } = await import('../web/federation/address.js')
     const { getFederationConfig } = await import('../web/federation/config.js')
-    vi.mocked(parseQualifiedId).mockReturnValueOnce({ system: 'remote', agent: 'boo' })
-    vi.mocked(formatQualifiedId).mockReturnValueOnce('remote/boo')
+    vi.mocked(parseQualifiedId).mockReturnValueOnce({ system: 'remote', agent: 'agent-c' })
+    vi.mocked(formatQualifiedId).mockReturnValueOnce('remote/agent-c')
     vi.mocked(getFederationConfig).mockReturnValueOnce({ enabled: true, systemId: 'local', peers: [{ id: 'remote' }] } as any)
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 46, from_agent: 'zack', to_agent: 'remote/boo', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 46, from_agent: 'agent-b', to_agent: 'remote/agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
-      from: 'zack',
-      to: 'remote/boo',
+      from: 'agent-b',
+      to: 'remote/agent-c',
       content: 'Remote task',
       assign: true,
     })

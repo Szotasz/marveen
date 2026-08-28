@@ -12,7 +12,7 @@
 # yet at boot, and the first sweep 5 minutes later is early enough.
 #
 # IMPORTANT: this unit complements, but does NOT replace, the
-# com.jarvis.channels KeepAlive plist. The
+# com.marveen.channels KeepAlive plist. The
 # watchdog handles the "session stuck / wedged" case; launchd KeepAlive handles
 # the "session exited cleanly" case. Both are needed for full coverage.
 #
@@ -24,7 +24,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-LABEL="com.jarvis.channel-watchdog"
+LABEL="com.marveen.channel-watchdog"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 WATCHDOG="$PROJECT_DIR/scripts/channel-watchdog.sh"
 

@@ -1,5 +1,5 @@
 /* === .chip component === */
-/* Poly spec §6: badge-anatomy + interactive border + remove button */
+/* design spec §6: badge-anatomy + interactive border + remove button */
 
 .chip {
   --_base: var(--text-secondary);

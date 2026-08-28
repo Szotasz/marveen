@@ -75,7 +75,7 @@ describe('schedule-runner auto-starts a stopped agent for its scheduled task', (
 //
 // The schedule-runner used to inject a coercive "keep-alive" preamble into
 // heartbeat prompts for every agent whose name was not literally `heartbeat`
-// (so the jarvis-driven heartbeats -- kanban-audit, memoria-heartbeat -- all
+// (so the agent-a-driven heartbeats -- kanban-audit, memoria-heartbeat -- all
 // got it). The preamble sat OUTSIDE the wrapUntrusted() envelope and demanded
 // a mandatory no-op tool call while forbidding use of Telegram: the runner
 // poisoning its own trusted channel, a prompt injection we shipped ourselves.
@@ -351,7 +351,7 @@ function makeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     description: 'test',
     prompt: 'Do something.',
     schedule: '0 * * * *',
-    agent: 'jarvis',
+    agent: 'agent-a',
     enabled: true,
     createdAt: 0,
     type: 'heartbeat',

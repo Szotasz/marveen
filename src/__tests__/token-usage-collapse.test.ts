@@ -5,7 +5,7 @@ import { collapseByMessageId } from '../web/token-usage.js'
 // collapseByMessageId reads).
 function call(over: Partial<Record<string, unknown>> = {}): any {
   return {
-    agent: 'jarvis',
+    agent: 'agent-a',
     sessionId: 's1',
     timestamp: 1000,
     inputTokens: 0,

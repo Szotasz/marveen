@@ -51,31 +51,31 @@ describe('getDesiredAgents', () => {
 
 describe('addDesiredAgent', () => {
   it('creates the file and adds the agent', () => {
-    addDesiredAgent('jarvis')
+    addDesiredAgent('agent-a')
     const set = getDesiredAgents()
-    expect(set.has('jarvis')).toBe(true)
+    expect(set.has('agent-a')).toBe(true)
   })
 
   it('is idempotent -- adding twice does not duplicate', () => {
-    addDesiredAgent('jarvis')
-    addDesiredAgent('jarvis')
+    addDesiredAgent('agent-a')
+    addDesiredAgent('agent-a')
     expect(getDesiredAgents().size).toBe(1)
   })
 
   it('accumulates multiple agents', () => {
-    addDesiredAgent('jarvis')
-    addDesiredAgent('rick')
+    addDesiredAgent('agent-a')
+    addDesiredAgent('agent-d')
     const set = getDesiredAgents()
-    expect(set.has('jarvis')).toBe(true)
-    expect(set.has('rick')).toBe(true)
+    expect(set.has('agent-a')).toBe(true)
+    expect(set.has('agent-d')).toBe(true)
   })
 })
 
 describe('removeDesiredAgent', () => {
   it('removes an existing agent', () => {
-    addDesiredAgent('jarvis')
-    removeDesiredAgent('jarvis')
-    expect(getDesiredAgents().has('jarvis')).toBe(false)
+    addDesiredAgent('agent-a')
+    removeDesiredAgent('agent-a')
+    expect(getDesiredAgents().has('agent-a')).toBe(false)
   })
 
   it('is idempotent -- removing a non-present agent does not throw', () => {
@@ -83,11 +83,11 @@ describe('removeDesiredAgent', () => {
   })
 
   it('does not remove other agents', () => {
-    addDesiredAgent('jarvis')
-    addDesiredAgent('rick')
-    removeDesiredAgent('jarvis')
+    addDesiredAgent('agent-a')
+    addDesiredAgent('agent-d')
+    removeDesiredAgent('agent-a')
     const set = getDesiredAgents()
-    expect(set.has('jarvis')).toBe(false)
-    expect(set.has('rick')).toBe(true)
+    expect(set.has('agent-a')).toBe(false)
+    expect(set.has('agent-d')).toBe(true)
   })
 })

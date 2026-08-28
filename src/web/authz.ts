@@ -114,7 +114,7 @@ export function checkPermission(
 //   string  -- tenant-scoped: only this tenant's data is accessible
 //   null    -- global (admin): all tenants are accessible (bypass scope filter)
 //
-// CRITICAL -- admin bypass rule (Rick architecture spec):
+// CRITICAL -- admin bypass rule (architecture spec):
 //   Callers with role === 'admin' get null (global) regardless of any
 //   tenant_id stored on their credential. Deciding access by tenant_id alone
 //   would lock even admin users to a single tenant, breaking fleet operations.

@@ -11,6 +11,8 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Changed
 
+- Fleet agent names removed from all public-fork source files (test fixtures, API examples in `docs/openapi.yaml`, documentation examples, and production code comments). Test fixtures now use neutral names (`agent-a`, `agent-b`, `agent-c` …); production-code comments describing design decisions use role-neutral phrasing ("architecture spec", "design spec"); scripts that previously hard-coded the main agent name now read `MAIN_AGENT_ID` from the environment (default: `marveen`). No runtime behaviour change.
+
 - `rbac:shadow` log entries (`RBAC_MODE=shadow`): the `would-deny` and `permitted` outcomes are now mutually exclusive. A `wouldDeny` flag is set inside the would-deny callback; the `permitted` INFO log is guarded by `!wouldDeny`. Previously a non-admin request that matched a would-deny rule produced both a WARN (`rbac:shadow would-deny`) and an INFO (`rbac:shadow allowed`) line for the same request, which was contradictory. The WARN now carries `outcome: "would-deny"` and the INFO carries `outcome: "permitted"` for clearer log queries. No API response change.
 
 ### Added

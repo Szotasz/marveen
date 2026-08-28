@@ -100,7 +100,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // From-authentication: accept messages only from registered fleet agents.
     // The shared Bearer token is readable by any sub-agent, so without this
     // check any process with the token could inject messages as an arbitrary
-    // sender ("from": "zack" from an external attacker who obtained the token).
+    // sender ("from": "agent-b" from an external attacker who obtained the token).
     // Server-side validation: the `from` claim must match a known agent on the
     // filesystem (agents/<id>/ directory, or MAIN_AGENT_ID). This is not
     // impersonation-proof between fleet agents (they share the same token) but

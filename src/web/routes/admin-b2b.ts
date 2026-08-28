@@ -8,7 +8,7 @@
 // Reserved ids (always rejected): default, admin, system, root
 //
 // PATCH cross-field validation uses FINAL STATE (DB row + submitted fields
-// merged) per standard PATCH semantics -- Rick confirmed 2026-08-24.
+// merged) per standard PATCH semantics -- confirmed 2026-08-24.
 
 import {
   getDb,

@@ -14,7 +14,7 @@ vi.mock('../config.js', () => ({
 }))
 
 vi.mock('../db.js', () => ({
-  createApproval: vi.fn().mockReturnValue({ id: 'x', agent_id: 'rick', category: 'c', action_description: 'd', status: 'pending', created_at: 0, timeout_at: null, resolved_by: null, resolved_at: null }),
+  createApproval: vi.fn().mockReturnValue({ id: 'x', agent_id: 'agent-d', category: 'c', action_description: 'd', status: 'pending', created_at: 0, timeout_at: null, resolved_by: null, resolved_at: null }),
   getApproval: mockGetApproval,
   resolveApproval: mockResolveApproval,
   listApprovals: vi.fn().mockReturnValue([]),
@@ -56,7 +56,7 @@ describe('tryHandleApprovals - PATCH error paths', () => {
 
   it('PATCH when resolveApproval returns false and approval not found → 404', async () => {
     mockResolveApproval.mockReturnValueOnce(false)
-    mockGetApproval.mockReturnValueOnce({ id: 'appr-001', agent_id: 'rick', status: 'pending', category: 'c', action_description: 'd', created_at: 0, timeout_at: null, resolved_by: null, resolved_at: null })
+    mockGetApproval.mockReturnValueOnce({ id: 'appr-001', agent_id: 'agent-d', status: 'pending', category: 'c', action_description: 'd', created_at: 0, timeout_at: null, resolved_by: null, resolved_at: null })
       .mockReturnValueOnce(null) // final getApproval returns null → 404
     const { ctx, out } = makeCtx('PATCH', '/api/approvals/appr-001', {
       status: 'approved',
@@ -69,7 +69,7 @@ describe('tryHandleApprovals - PATCH error paths', () => {
 
   it('PATCH when resolveApproval returns false and approval already resolved → 409', async () => {
     mockResolveApproval.mockReturnValueOnce(false)
-    const alreadyResolved = { id: 'appr-002', agent_id: 'rick', status: 'approved', category: 'c', action_description: 'd', created_at: 0, timeout_at: null, resolved_by: 'user', resolved_at: 1 }
+    const alreadyResolved = { id: 'appr-002', agent_id: 'agent-d', status: 'approved', category: 'c', action_description: 'd', created_at: 0, timeout_at: null, resolved_by: 'user', resolved_at: 1 }
     // guard check (no self-approval) + final getApproval
     mockGetApproval.mockReturnValueOnce(alreadyResolved).mockReturnValueOnce(alreadyResolved)
     const { ctx, out } = makeCtx('PATCH', '/api/approvals/appr-002', {

@@ -34,39 +34,39 @@ afterAll(() => rmSync(TMP_ROOT, { recursive: true, force: true }))
 
 describe('readContextGuardConfig', () => {
   it('returns disabled defaults when no file exists', () => {
-    expect(readContextGuardConfig('jarvis')).toEqual(DEFAULT_CONTEXT_GUARD)
+    expect(readContextGuardConfig('agent-a')).toEqual(DEFAULT_CONTEXT_GUARD)
   })
 
   it('returns disabled defaults for an agent with no entry', () => {
     writeContextGuardConfig('other', { enabled: true })
-    expect(readContextGuardConfig('jarvis')).toEqual(DEFAULT_CONTEXT_GUARD)
+    expect(readContextGuardConfig('agent-a')).toEqual(DEFAULT_CONTEXT_GUARD)
   })
 
   it('returns the stored value after a write', () => {
-    writeContextGuardConfig('jarvis', { enabled: true })
-    expect(readContextGuardConfig('jarvis').enabled).toBe(true)
+    writeContextGuardConfig('agent-a', { enabled: true })
+    expect(readContextGuardConfig('agent-a').enabled).toBe(true)
   })
 })
 
 describe('writeContextGuardConfig', () => {
   it('normalizes and persists a config', () => {
-    const saved = writeContextGuardConfig('rick', { enabled: true })
+    const saved = writeContextGuardConfig('agent-d', { enabled: true })
     expect(saved.enabled).toBe(true)
-    expect(readContextGuardConfig('rick').enabled).toBe(true)
+    expect(readContextGuardConfig('agent-d').enabled).toBe(true)
   })
 
   it('overwrites an existing entry without affecting others', () => {
-    writeContextGuardConfig('jarvis', { enabled: true })
-    writeContextGuardConfig('rick', { enabled: false })
-    writeContextGuardConfig('jarvis', { enabled: false })
-    expect(readContextGuardConfig('jarvis').enabled).toBe(false)
-    expect(readContextGuardConfig('rick').enabled).toBe(false)
+    writeContextGuardConfig('agent-a', { enabled: true })
+    writeContextGuardConfig('agent-d', { enabled: false })
+    writeContextGuardConfig('agent-a', { enabled: false })
+    expect(readContextGuardConfig('agent-a').enabled).toBe(false)
+    expect(readContextGuardConfig('agent-d').enabled).toBe(false)
   })
 
   it('survives corrupted store file', () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     require('node:fs').writeFileSync(STORE_FILE, 'INVALID')
-    expect(readContextGuardConfig('jarvis')).toEqual(DEFAULT_CONTEXT_GUARD)
+    expect(readContextGuardConfig('agent-a')).toEqual(DEFAULT_CONTEXT_GUARD)
   })
 })
 
@@ -76,9 +76,9 @@ describe('readAllContextGuardConfigs', () => {
   })
 
   it('returns all persisted agents', () => {
-    writeContextGuardConfig('jarvis', { enabled: true })
-    writeContextGuardConfig('rick', { enabled: false })
+    writeContextGuardConfig('agent-a', { enabled: true })
+    writeContextGuardConfig('agent-d', { enabled: false })
     const all = readAllContextGuardConfigs()
-    expect(Object.keys(all).sort()).toEqual(['jarvis', 'rick'])
+    expect(Object.keys(all).sort()).toEqual(['agent-a', 'agent-d'])
   })
 })

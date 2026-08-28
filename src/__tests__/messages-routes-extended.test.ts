@@ -103,8 +103,8 @@ describe('tryHandleMessages - PUT /api/messages/:id', () => {
     mockMarkMessageDone.mockReturnValueOnce(true)
     mockGetAgentMessage.mockReturnValueOnce({
       id: 42,
-      from_agent: 'rick',
-      to_agent: 'jarvis',
+      from_agent: 'agent-d',
+      to_agent: 'agent-a',
       content: 'do something',
       trace_id: 'trace-abc',
       span_id: 'span-xyz',
@@ -119,8 +119,8 @@ describe('tryHandleMessages - PUT /api/messages/:id', () => {
     mockMarkMessageDone.mockReturnValueOnce(true)
     mockGetAgentMessage.mockReturnValueOnce({
       id: 77,
-      from_agent: 'rick',
-      to_agent: 'zack',
+      from_agent: 'agent-d',
+      to_agent: 'agent-b',
       content: 'original task content',
       trace_id: null,
       span_id: null,
@@ -131,7 +131,7 @@ describe('tryHandleMessages - PUT /api/messages/:id', () => {
     const { ctx, out } = makeCtx('PUT', '/api/messages/77', { status: 'done', result: 'done!' })
     await tryHandleMessages(ctx)
     expect(out.body.ok).toBe(true)
-    // createAgentMessage called to send reverse notification zack→rick
+    // createAgentMessage called to send reverse notification agent-b→agent-d
     expect(createSpy).toHaveBeenCalled()
   })
 
@@ -139,8 +139,8 @@ describe('tryHandleMessages - PUT /api/messages/:id', () => {
     mockMarkMessageDone.mockReturnValueOnce(true)
     mockGetAgentMessage.mockReturnValueOnce({
       id: 88,
-      from_agent: 'rick',
-      to_agent: 'zack',
+      from_agent: 'agent-d',
+      to_agent: 'agent-b',
       content: '[Eredmény] msg_id:77 status:done\n\nsummary',
       trace_id: null,
       span_id: null,

@@ -362,7 +362,7 @@ Minden feladat egy önálló mappa, benne két fájl. Részletes leírás: [sche
 
 ## .mcp.json -- MCP szerverek
 
-Az MCP konfigurációk scope-olva vannak: az ágensek `agents/<name>/.mcp.json` fájljaikban csak a számukra releváns szervereket tartalmazzák. A projekt gyökerében lévő `.mcp.json` a főágensre (marveen/Jarvis) vonatkozik.
+Az MCP konfigurációk scope-olva vannak: az ágensek `agents/<name>/.mcp.json` fájljaikban csak a számukra releváns szervereket tartalmazzák. A projekt gyökerében lévő `.mcp.json` a főágensre vonatkozik.
 
 ```json
 {
@@ -401,7 +401,7 @@ A főbb konfigurációs változók a launchd plist-ben (`~/Library/LaunchAgents/
 | `WEB_PORT` | Dashboard port (alapértelmezett: 3420). Telepítéskor megadható a `--port <N>` CLI flaggel (`./install-linux.sh --port 3421`) vagy env-változóként (`WEB_PORT=3421 ./install.sh`). |
 | `ANTHROPIC_API_KEY` | Claude API kulcs |
 | `OWNER_NAME` | A tulajdonos neve (pl. "Jónás Gergő") |
-| `BOT_NAME` | A főágens neve (pl. "Jarvis") |
+| `BOT_NAME` | A főágens megjelenítési neve (pl. "Marveen") |
 
 ---
 

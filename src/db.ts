@@ -79,7 +79,7 @@ export function initDatabase(dbPathOverride?: string): void {
   // Performance pragmas: safe with WAL, applied after journal_mode is set.
   // cache_size: negative value = kibibytes; -8192 → 8 MB page cache (was 64 MB).
   //   In WAL mode the page cache has minimal I/O impact; 8 MB is ample for the
-  //   query mix here and saves ~56 MB RSS at idle (Rick's memory-reduction plan P1).
+  //   query mix here and saves ~56 MB RSS at idle (the memory-reduction plan P1).
   // mmap_size: memory-mapped I/O in bytes; 64 MB (was 256 MB). Still covers the
   //   typical DB size and avoids the large anonymous mapping that bloats RSS (P2).
   // synchronous = NORMAL: safe under WAL (only full-fsync skipped, not the WAL checkpoint).

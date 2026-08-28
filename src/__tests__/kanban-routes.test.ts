@@ -199,13 +199,13 @@ describe('tryHandleKanban', () => {
   })
 
   it('POST /api/kanban/:id/comments adds comment', async () => {
-    const { ctx, out } = makeCtx('POST', '/api/kanban/card1/comments', { author: 'jarvis', content: 'Done!' })
+    const { ctx, out } = makeCtx('POST', '/api/kanban/card1/comments', { author: 'agent-a', content: 'Done!' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(200)
   })
 
   it('POST /api/kanban/:id/comments returns 400 when fields missing', async () => {
-    const { ctx, out } = makeCtx('POST', '/api/kanban/card1/comments', { author: 'jarvis' })
+    const { ctx, out } = makeCtx('POST', '/api/kanban/card1/comments', { author: 'agent-a' })
     await tryHandleKanban(ctx)
     expect(out.status).toBe(400)
   })

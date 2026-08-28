@@ -4,12 +4,12 @@ import type { RouteContext } from '../web/routes/types.js'
 
 const { mockRecallByDateRange, mockRecallSearch, mockGetDailyLogDates } = vi.hoisted(() => ({
   mockRecallByDateRange: vi.fn().mockReturnValue({
-    logs: [{ id: 1, agent_id: 'jarvis', date: '2026-07-01', content: 'test log', created_at: 1750000000 }],
-    memories: [{ id: 1, agent_id: 'jarvis', content: 'test memory', keywords: 'test', category: 'warm', created_at: 1750000000, accessed_at: 1750000001 }],
+    logs: [{ id: 1, agent_id: 'agent-a', date: '2026-07-01', content: 'test log', created_at: 1750000000 }],
+    memories: [{ id: 1, agent_id: 'agent-a', content: 'test memory', keywords: 'test', category: 'warm', created_at: 1750000000, accessed_at: 1750000001 }],
     dateRange: { from: '2026-07-01', to: '2026-07-01' },
   }),
   mockRecallSearch: vi.fn().mockReturnValue({
-    logs: [{ id: 2, agent_id: 'jarvis', date: '2026-07-02', content: 'search result log', created_at: 1750100000 }],
+    logs: [{ id: 2, agent_id: 'agent-a', date: '2026-07-02', content: 'search result log', created_at: 1750100000 }],
     memories: [],
     dateRange: { from: '2026-07-01', to: '2026-07-02' },
   }),
@@ -90,12 +90,12 @@ describe('tryHandleRecall', () => {
   it('GET /api/recall with both date and q filters results', async () => {
     mockRecallByDateRange.mockReturnValueOnce({
       logs: [
-        { id: 1, agent_id: 'jarvis', date: '2026-07-01', content: 'matching log content', created_at: 1750000000 },
-        { id: 2, agent_id: 'jarvis', date: '2026-07-01', content: 'other log', created_at: 1750000001 },
+        { id: 1, agent_id: 'agent-a', date: '2026-07-01', content: 'matching log content', created_at: 1750000000 },
+        { id: 2, agent_id: 'agent-a', date: '2026-07-01', content: 'other log', created_at: 1750000001 },
       ],
       memories: [
-        { id: 1, agent_id: 'jarvis', content: 'matching memory', keywords: '', category: 'warm', created_at: 1750000000, accessed_at: 1750000000 },
-        { id: 2, agent_id: 'jarvis', content: 'no match memory', keywords: '', category: 'cold', created_at: 1750000000, accessed_at: 1750000000 },
+        { id: 1, agent_id: 'agent-a', content: 'matching memory', keywords: '', category: 'warm', created_at: 1750000000, accessed_at: 1750000000 },
+        { id: 2, agent_id: 'agent-a', content: 'no match memory', keywords: '', category: 'cold', created_at: 1750000000, accessed_at: 1750000000 },
       ],
       dateRange: { from: '2026-07-01', to: '2026-07-01' },
     })
@@ -117,9 +117,9 @@ describe('tryHandleRecall', () => {
 
   it('GET /api/recall/dates respects agent and limit params', async () => {
     mockGetDailyLogDates.mockClear()
-    const { ctx, out } = makeCtx('GET', '/api/recall/dates', { agent: 'jarvis', limit: '30' })
+    const { ctx, out } = makeCtx('GET', '/api/recall/dates', { agent: 'agent-a', limit: '30' })
     await tryHandleRecall(ctx)
-    expect(mockGetDailyLogDates).toHaveBeenCalledWith('jarvis', 30)
+    expect(mockGetDailyLogDates).toHaveBeenCalledWith('agent-a', 30)
   })
 
   it('returns false for unmatched route', async () => {
