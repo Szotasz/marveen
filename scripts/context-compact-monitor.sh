@@ -4,13 +4,21 @@
 # of the model's context window. Covers both sub-agents (agent-<name> sessions) and the
 # main channels agent (<main_agent_id>-channels session).
 #
-# Anti-burn gates (all three are mandatory):
-#   1. token_usage row must be < 20 min old  -- parked/inactive agents are skipped
+# Gates (all mandatory):
+#   1. token_usage row must be < 60 min old  -- parked/long-inactive agents skipped
+#      EXCEPT: agents already flagged as pending skip this gate (they qualified earlier)
 #   2. 45-min per-agent cooldown             -- stored in COMPACT_STATE_FILE (atomic write)
-#   3. fail-closed on corrupt state file     -- whole round skipped, file quarantined
+#   3. pane must be idle                     -- busy panes are deferred and flagged as
+#      pending so the next idle moment triggers compact without re-qualifying
+#   4. fail-closed on corrupt state file     -- whole round skipped, file quarantined
+#
+# Urgent mode (>= URGENT_PCT):
+#   A notification line is written to the pane so the agent can /compact at its next
+#   safe point. No forced /compact -- the agent decides when is appropriate.
 #
 # Config env vars:
 #   COMPACT_PCT          threshold % (default 75)
+#   URGENT_PCT           urgent notification threshold % (default 95)
 #   COMPACT_STATE_FILE   path to state JSON (default: <ROOT>/store/context-compact-state.json)
 #   MARVEEN_ROOT         repo root (default: directory containing this script's parent)
 #   TMUX_BIN             tmux binary (default /usr/bin/tmux)
@@ -20,6 +28,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 export CCM_ROOT="${MARVEEN_ROOT:-$(dirname "$SCRIPT_DIR")}"
 export CCM_COMPACT_PCT="${COMPACT_PCT:-75}"
+export CCM_URGENT_PCT="${URGENT_PCT:-95}"
 export CCM_STATE_FILE="${COMPACT_STATE_FILE:-$CCM_ROOT/store/context-compact-state.json}"
 export CCM_TMUX_BIN="${TMUX_BIN:-/usr/bin/tmux}"
 
@@ -35,8 +44,10 @@ ENV_FILE    = ROOT / ".env"
 API         = "http://localhost:3420"
 TMUX_BIN    = os.environ.get("CCM_TMUX_BIN", "/usr/bin/tmux")
 COMPACT_PCT = int(os.environ.get("CCM_COMPACT_PCT", "75"))
-FRESHNESS_S = 1200   # 20 minutes: agents with no recent activity are skipped
-COOLDOWN_S  = 2700   # 45 minutes: per-agent cooldown between compacts
+URGENT_PCT  = int(os.environ.get("CCM_URGENT_PCT", "95"))
+FRESHNESS_S = 3600   # 60 min: parked/long-inactive agents are skipped
+COOLDOWN_S  = 2700   # 45 min: per-agent cooldown between compacts
+STALE_PENDING_S = 1800  # 30 min: pending flag expires after restart/long gap
 LABEL       = "context-compact-monitor"
 
 def read_main_agent_id():
@@ -138,6 +149,17 @@ def send_compact(session):
         print(f"[{LABEL}] tmux send-keys failed for {session}: {e}", flush=True)
         return False
 
+def send_urgent_notify(session, pct):
+    """Write a notification line to the pane without sending Enter."""
+    msg = f"\n[context-compact-monitor] Context at {pct:.0%} -- please /compact at your next safe point\n"
+    try:
+        subprocess.run(
+            [TMUX_BIN, "send-keys", "-t", session, "-l", msg],
+            timeout=5, capture_output=True
+        )
+    except Exception:
+        pass
+
 # ── API helpers ───────────────────────────────────────────────────────────────
 
 def api_get(path, token):
@@ -161,7 +183,7 @@ def post_daily_log(content, token, agent_id):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-# Gate 3: fail-closed on corrupt state
+# Gate 4: fail-closed on corrupt state
 try:
     state = read_state()
 except ValueError as e:
@@ -194,6 +216,7 @@ if not candidates:
 # Evaluate each candidate
 conn = sqlite3.connect(str(DB_PATH))
 compacted = []
+state_dirty = False
 try:
     for agent, session in candidates:
         row = conn.execute(
@@ -216,34 +239,71 @@ try:
         if pct < COMPACT_PCT / 100:
             continue
 
-        # Gate 1: freshness -- skip agents inactive for > 20 min
-        if now - ts > FRESHNESS_S:
+        agent_state = state.get(agent, {})
+        is_pending  = agent_state.get("pending_compact", False)
+        pending_since = agent_state.get("pending_since", 0)
+
+        # Stale pending cleanup: if flagged >30 min ago and token_usage is also
+        # old, the agent likely restarted -- the flag is no longer meaningful.
+        if is_pending and (now - pending_since) > STALE_PENDING_S and (now - ts) > STALE_PENDING_S:
+            print(f"[{LABEL}] {agent}: stale pending flag cleared (>{STALE_PENDING_S//60}min old)", flush=True)
+            agent_state.pop("pending_compact", None)
+            agent_state.pop("pending_since", None)
+            state[agent] = agent_state
+            is_pending = False
+            state_dirty = True
+
+        # Gate 1: freshness -- skip long-inactive agents
+        # Bypassed if the agent was already flagged as pending (qualified earlier).
+        if not is_pending and (now - ts) > FRESHNESS_S:
             continue
 
         # Gate 2: cooldown -- 45 min between compacts per agent
-        if now - state.get(agent, {}).get("last_compact", 0) < COOLDOWN_S:
+        if now - agent_state.get("last_compact", 0) < COOLDOWN_S:
             continue
 
-        # Don't interrupt a pane that is actively running a tool/thinking
+        # Gate 3: pane idle check
         if not is_pane_idle(session):
-            print(f"[{LABEL}] {agent}: {pct:.0%} >= threshold but pane busy -- deferred", flush=True)
+            # Flag as pending so the next idle moment triggers compact.
+            if not is_pending:
+                state.setdefault(agent, {})["pending_compact"] = True
+                state.setdefault(agent, {})["pending_since"] = now
+                state_dirty = True
+            urgency = " [URGENT]" if pct >= URGENT_PCT / 100 else ""
+            print(f"[{LABEL}] {agent}: {pct:.0%} >= threshold but pane busy{urgency} -- flagged pending", flush=True)
+            # At urgent levels, also notify the agent so it can decide when to compact.
+            if pct >= URGENT_PCT / 100:
+                send_urgent_notify(session, pct)
             continue
 
-        print(f"[{LABEL}] {agent}: {total:,}/{lim:,} ({pct:.0%}) -> /compact", flush=True)
+        # Pane is idle -- compact now. Clear pending flag.
+        if is_pending:
+            state.setdefault(agent, {}).pop("pending_compact", None)
+            state.setdefault(agent, {}).pop("pending_since", None)
+            state_dirty = True
+            print(f"[{LABEL}] {agent}: {pct:.0%} pending -> now idle -> /compact", flush=True)
+        else:
+            print(f"[{LABEL}] {agent}: {total:,}/{lim:,} ({pct:.0%}) -> /compact", flush=True)
+
         if send_compact(session):
             compacted.append((agent, total, lim, pct))
             state.setdefault(agent, {})["last_compact"] = now
+            state_dirty = True
 finally:
     conn.close()
 
-if compacted:
+if state_dirty:
     write_state(state)
+
+if compacted:
     ts_hm = time.strftime("%H:%M", time.localtime(now))
     lines = [f"## {ts_hm} -- {LABEL}"]
     for ag, tok, lim, p in compacted:
         lines.append(f"- {ag}: {tok:,}/{lim:,} ({p:.0%}) -> /compact sent")
     post_daily_log("\n".join(lines), token, MAIN_AGENT_ID)
     print(f"[{LABEL}] done: {len(compacted)} compact(s) sent", flush=True)
+elif state_dirty:
+    print(f"[{LABEL}] no compact sent; pending flags updated", flush=True)
 else:
     print(f"[{LABEL}] no action needed", flush=True)
 PYEOF
