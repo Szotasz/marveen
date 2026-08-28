@@ -221,6 +221,29 @@ describe('PUT/DELETE /api/schedules/:name -- not_found error shape', () => {
   })
 })
 
+describe('POST /api/schedules/:name/run -- disabled schedule returns 409', () => {
+  it('returns disabled + 409 when runScheduledTaskNow reports disabled', async () => {
+    mockExistsSync.mockReturnValue(true)
+    const { runScheduledTaskNow } = await import('../web/schedule-runner.js')
+    vi.mocked(runScheduledTaskNow).mockResolvedValueOnce({ ok: false, error: 'disabled', hint: 'Schedule is disabled' })
+    const { ctx, out } = makeCtx('POST', '/api/schedules/my-task/run')
+    await tryHandleSchedules(ctx)
+    expect(out.status).toBe(409)
+    expect(out.body.error).toBe('disabled')
+    expect(out.body.hint).toMatch(/disabled/i)
+  })
+
+  it('returns not_found + 404 when runScheduledTaskNow reports not_found', async () => {
+    mockExistsSync.mockReturnValue(true)
+    const { runScheduledTaskNow } = await import('../web/schedule-runner.js')
+    vi.mocked(runScheduledTaskNow).mockResolvedValueOnce({ ok: false, error: 'not_found', hint: 'Schedule not found' })
+    const { ctx, out } = makeCtx('POST', '/api/schedules/missing-task/run')
+    await tryHandleSchedules(ctx)
+    expect(out.status).toBe(404)
+    expect(out.body.error).toBe('not_found')
+  })
+})
+
 describe('DELETE /api/schedules/pending/:id -- error shapes', () => {
   it('returns invalid_value for non-numeric id', async () => {
     // The regex requires digits so non-numeric path won't match at all;

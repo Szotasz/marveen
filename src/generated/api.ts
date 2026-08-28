@@ -9,7 +9,7 @@
 
 export interface Error {
   /** Machine-readable snake_case error token. Canonical values are listed in the enum; additional domain-specific tokens may appear in future API versions. */
-  error: 'conflict' | 'federation_disabled' | 'forbidden' | 'internal_error' | 'invalid_value' | 'limit_exceeded' | 'managed_settings_missing' | 'not_found' | 'not_supported' | 'parse_error' | 'required' | 'sender_not_in_allowlist' | 'timeout' | 'unauthorized' | 'unknown_query_parameter' | 'upstream_error';
+  error: 'conflict' | 'disabled' | 'federation_disabled' | 'forbidden' | 'internal_error' | 'invalid_value' | 'limit_exceeded' | 'managed_settings_missing' | 'not_found' | 'not_supported' | 'parse_error' | 'required' | 'sender_not_in_allowlist' | 'timeout' | 'unauthorized' | 'unknown_query_parameter' | 'upstream_error';
   /** Optional human-readable debugging note. Present when the server has extra context that helps the caller fix the request (e.g. which parameter name the filter expects, or why a value was rejected). Clients must not rely on its exact text; treat it as informational. */
   hint?: string;
   /** Name of the request field that caused the validation failure. Present on 4xx validation errors when the problem can be attributed to a single input field. */
