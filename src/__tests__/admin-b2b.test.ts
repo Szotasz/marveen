@@ -100,7 +100,8 @@ describe('POST /api/v1/admin/tenants', () => {
     const { ctx, out } = makeCtx('POST', '/api/v1/admin/tenants', { id: 'Acme-Corp', display_name: 'x' })
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(400)
-    expect(out.body.error).toBe('invalid_tenant_id')
+    expect(out.body.error).toBe('invalid_value')
+    expect(out.body.field).toBe('id')
   })
 
   it('returns 400 for reserved tenant id', async () => {
@@ -108,7 +109,8 @@ describe('POST /api/v1/admin/tenants', () => {
       const { ctx, out } = makeCtx('POST', '/api/v1/admin/tenants', { id: reserved, display_name: 'x' })
       await tryHandleAdminB2b(ctx)
       expect(out.status).toBe(400)
-      expect(out.body.error).toBe('invalid_tenant_id')
+      expect(out.body.error).toBe('invalid_value')
+      expect(out.body.field).toBe('id')
     }
   })
 
@@ -116,7 +118,8 @@ describe('POST /api/v1/admin/tenants', () => {
     const { ctx, out } = makeCtx('POST', '/api/v1/admin/tenants', { id: 'acme-corp', display_name: '' })
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(400)
-    expect(out.body.error).toBe('display_name_required')
+    expect(out.body.error).toBe('required')
+    expect(out.body.field).toBe('display_name')
   })
 
   it('returns 409 when tenant id already exists', async () => {
@@ -124,7 +127,7 @@ describe('POST /api/v1/admin/tenants', () => {
     const { ctx, out } = makeCtx('POST', '/api/v1/admin/tenants', { id: 'acme-corp', display_name: 'Acme Corp' })
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(409)
-    expect(out.body.error).toBe('tenant_already_exists')
+    expect(out.body.error).toBe('conflict')
   })
 })
 
@@ -163,15 +166,16 @@ describe('PATCH /api/v1/admin/tenants/:id', () => {
     const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/tenants/ghost', { display_name: 'x' })
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(404)
-    expect(out.body.error).toBe('tenant_not_found')
+    expect(out.body.error).toBe('not_found')
+    expect(out.body.field).toBe('id')
   })
 
-  it('returns 400 when disabling default tenant', async () => {
+  it('returns 403 when disabling default tenant', async () => {
     vi.mocked(db.getTenant).mockReturnValue({ id: 'default', display_name: 'Fleet', created_at: 0, disabled_at: null })
     const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/tenants/default', { disabled: true })
     await tryHandleAdminB2b(ctx)
-    expect(out.status).toBe(400)
-    expect(out.body.error).toBe('cannot_disable_default_tenant')
+    expect(out.status).toBe(403)
+    expect(out.body.error).toBe('forbidden')
   })
 
   it('returns 400 for empty body', async () => {
@@ -179,7 +183,7 @@ describe('PATCH /api/v1/admin/tenants/:id', () => {
     const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/tenants/acme-corp', {})
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(400)
-    expect(out.body.error).toBe('no_fields')
+    expect(out.body.error).toBe('required')
   })
 })
 
@@ -214,7 +218,8 @@ describe('POST /api/v1/admin/users', () => {
     const { ctx, out } = makeCtx('POST', '/api/v1/admin/users', { username: 'ab', password: 'supersecret123', role: 'agent', tenant_id: 'acme-corp' })
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(400)
-    expect(out.body.error).toBe('username_invalid')
+    expect(out.body.error).toBe('invalid_value')
+    expect(out.body.field).toBe('username')
   })
 
   it('returns 400 for password too short', async () => {
@@ -222,37 +227,42 @@ describe('POST /api/v1/admin/users', () => {
     const { ctx, out } = makeCtx('POST', '/api/v1/admin/users', { username: 'acme-viewer', password: 'short', role: 'agent', tenant_id: 'acme-corp' })
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(400)
-    expect(out.body.error).toBe('password_too_short')
+    expect(out.body.error).toBe('invalid_value')
+    expect(out.body.field).toBe('password')
   })
 
   it('returns 400 for invalid role', async () => {
     const { ctx, out } = makeCtx('POST', '/api/v1/admin/users', { username: 'acme-viewer', password: 'supersecret123', role: 'superuser', tenant_id: 'acme-corp' })
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(400)
-    expect(out.body.error).toBe('role_invalid')
+    expect(out.body.error).toBe('invalid_value')
+    expect(out.body.field).toBe('role')
   })
 
-  it('returns 400 tenant_required_for_non_admin when tenant_id omitted for non-admin', async () => {
+  it('returns 403 forbidden when tenant_id omitted for non-admin', async () => {
     const { ctx, out } = makeCtx('POST', '/api/v1/admin/users', { username: 'acme-viewer', password: 'supersecret123', role: 'agent' })
     await tryHandleAdminB2b(ctx)
-    expect(out.status).toBe(400)
-    expect(out.body.error).toBe('tenant_required_for_non_admin')
+    expect(out.status).toBe(403)
+    expect(out.body.error).toBe('forbidden')
+    expect(out.body.field).toBe('tenant_id')
   })
 
-  it('returns 400 admin_must_be_global when admin role + tenant_id provided', async () => {
+  it('returns 403 forbidden when admin role + tenant_id provided', async () => {
     vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
     const { ctx, out } = makeCtx('POST', '/api/v1/admin/users', { username: 'new-admin', password: 'supersecret123', role: 'admin', tenant_id: 'acme-corp' })
     await tryHandleAdminB2b(ctx)
-    expect(out.status).toBe(400)
-    expect(out.body.error).toBe('admin_must_be_global')
+    expect(out.status).toBe(403)
+    expect(out.body.error).toBe('forbidden')
+    expect(out.body.field).toBe('tenant_id')
   })
 
-  it('returns 400 tenant_not_found for disabled tenant', async () => {
+  it('returns 404 not_found for disabled tenant', async () => {
     vi.mocked(db.getTenant).mockReturnValue({ ...SAMPLE_TENANT, disabled_at: 1787000001 })
     const { ctx, out } = makeCtx('POST', '/api/v1/admin/users', { username: 'acme-viewer', password: 'supersecret123', role: 'agent', tenant_id: 'acme-corp' })
     await tryHandleAdminB2b(ctx)
-    expect(out.status).toBe(400)
-    expect(out.body.error).toBe('tenant_not_found')
+    expect(out.status).toBe(404)
+    expect(out.body.error).toBe('not_found')
+    expect(out.body.field).toBe('tenant_id')
   })
 
   it('returns 409 for duplicate username', async () => {
@@ -263,7 +273,8 @@ describe('POST /api/v1/admin/users', () => {
     const { ctx, out } = makeCtx('POST', '/api/v1/admin/users', { username: 'acme-viewer', password: 'supersecret123', role: 'agent', tenant_id: 'acme-corp' })
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(409)
-    expect(out.body.error).toBe('username_taken')
+    expect(out.body.error).toBe('conflict')
+    expect(out.body.field).toBe('username')
   })
 })
 
@@ -299,33 +310,34 @@ describe('PATCH /api/v1/admin/users/:id', () => {
     expect(vi.mocked(db.adminPatchDashboardUser)).toHaveBeenCalled()
   })
 
-  it('returns 400 admin_must_be_global when PATCH submits tenant_id for existing admin (final state)', async () => {
+  it('returns 403 forbidden when PATCH submits tenant_id for existing admin (final state)', async () => {
     const existingAdmin = { ...SAMPLE_USER, role: 'admin', tenant_id: null }
     vi.mocked(db.getDashboardUserById).mockReturnValue(existingAdmin as any)
     const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/users/5', { tenant_id: 'acme-corp' })
     await tryHandleAdminB2b(ctx)
-    expect(out.status).toBe(400)
-    expect(out.body.error).toBe('admin_must_be_global')
+    expect(out.status).toBe(403)
+    expect(out.body.error).toBe('forbidden')
+    expect(out.body.field).toBe('tenant_id')
   })
 
-  it('returns 400 cannot_disable_self when admin disables their own account', async () => {
+  it('returns 403 forbidden when admin disables their own account', async () => {
     const selfUser = { ...SAMPLE_USER, username: 'admin-user', role: 'admin', tenant_id: null }
     vi.mocked(db.getDashboardUserById).mockReturnValue(selfUser as any)
     vi.mocked(db.countActiveAdmins).mockReturnValue(2)
     const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/users/5', { disabled: true })
     await tryHandleAdminB2b(ctx)
-    expect(out.status).toBe(400)
-    expect(out.body.error).toBe('cannot_disable_self')
+    expect(out.status).toBe(403)
+    expect(out.body.error).toBe('forbidden')
   })
 
-  it('returns 400 last_admin when disabling the last active admin', async () => {
+  it('returns 403 forbidden when disabling the last active admin', async () => {
     const lastAdmin = { ...SAMPLE_USER, username: 'other-admin', role: 'admin', tenant_id: null }
     vi.mocked(db.getDashboardUserById).mockReturnValue(lastAdmin as any)
     vi.mocked(db.countActiveAdmins).mockReturnValue(1)
     const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/users/5', { disabled: true })
     await tryHandleAdminB2b(ctx)
-    expect(out.status).toBe(400)
-    expect(out.body.error).toBe('last_admin')
+    expect(out.status).toBe(403)
+    expect(out.body.error).toBe('forbidden')
   })
 
   it('returns 404 for unknown user', async () => {
@@ -333,15 +345,16 @@ describe('PATCH /api/v1/admin/users/:id', () => {
     const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/users/999', { role: 'viewer' })
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(404)
-    expect(out.body.error).toBe('user_not_found')
+    expect(out.body.error).toBe('not_found')
+    expect(out.body.field).toBe('userId')
   })
 
-  it('returns 400 no_fields for empty body', async () => {
+  it('returns 400 required for empty body', async () => {
     vi.mocked(db.getDashboardUserById).mockReturnValue(SAMPLE_USER as any)
     const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/users/5', {})
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(400)
-    expect(out.body.error).toBe('no_fields')
+    expect(out.body.error).toBe('required')
   })
 
   it('returns false for unmatched route', async () => {
