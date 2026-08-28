@@ -194,7 +194,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
       json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true
     }
     if (name !== MAIN_AGENT_ID && !isAgentRunning(name)) {
-      json(res, { error: 'invalid_value', field: 'agent', hint: 'Agent is not running' }, 400); return true
+      json(res, { error: 'conflict', field: 'agent', hint: `Agent ${name} is not running` }, 409); return true
     }
     const result = attemptChannelMcpReconnect(name)
     json(res, result)
@@ -702,7 +702,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
   if (authInitMatch && method === 'POST') {
     const name = decodeURIComponent(authInitMatch[1])
     if (!assertAgentExists(name, res)) return true
-    if (!isAgentRunning(name)) { json(res, { error: 'invalid_value', field: 'agent', hint: 'Agent is not running' }, 400); return true }
+    if (!isAgentRunning(name)) { json(res, { error: 'conflict', field: 'agent', hint: `Agent ${name} is not running` }, 409); return true }
     const session = agentSessionName(name)
     const host = readAgentRemoteHost(name)
     try {
