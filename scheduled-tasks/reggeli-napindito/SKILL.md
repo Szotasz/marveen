@@ -4,6 +4,16 @@ description: Reggeli összefoglaló: Dream Engine + Peter edzői jelentés + ema
 last_synced: 2026-08-28
 ---
 
+<!-- KARBANTARTÓI MEGJEGYZÉS -- nem utasítás az ágensnek
+  A repo-verzió sablon (template-változókkal, dinamikus lookup-okkal).
+  A runtime-verzió konkrét értékekkel dolgozik. Ez SZANDEKOS elteres.
+  last_synced konvenció:
+    repo_last_synced == runtime_last_synced -> egyeztetett allapot (tartalom elterhet)
+    repo_last_synced != runtime_last_synced -> valamelyiket modositottak a szinkron utan
+  Szinkronizalaskor mindket peldanyon frissiteni kell a last_synced datumot.
+  A runtime peldanyok helye: ~/.claude/scheduled-tasks/<nev>/SKILL.md
+-->
+
 Reggeli napindítót a CLAUDE.md formátum szerint. A Telegram-csatornán a következő sorrendben:
 
 **FONTOS -- Dream Engine override**: a napindító ELEJÉRE (még az email/naptár szekciók ELŐTT) tedd be a `{{INSTALL_DIR}}/DREAM.md` fájl tartalmából az 5 bucket-et -- `💡 Skill-javaslatok`, `🧹 Memória-egészség`, `🎯 Top-3 holnapi javaslat`, `🌐 External opportunity`, `🛠 Skill-flotta health`. Ha a DREAM.md nem létezik vagy üres (pl. a Dream Engine valamiért nem futott le), kihagyod ezt a szekciót.

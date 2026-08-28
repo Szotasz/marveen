@@ -4,6 +4,16 @@ description: 30 percenként átnézi a beszélgetést, menti a fontosat, és MEG
 last_synced: 2026-08-28
 ---
 
+<!-- KARBANTARTÓI MEGJEGYZÉS -- nem utasítás az ágensnek
+  A repo-verzió sablon (template-változókkal).
+  A runtime-verzió konkrét értékekkel dolgozik. Ez SZANDEKOS elteres.
+  last_synced konvenció:
+    repo_last_synced == runtime_last_synced -> egyeztetett allapot (tartalom elterhet)
+    repo_last_synced != runtime_last_synced -> valamelyiket modositottak a szinkron utan
+  Szinkronizalaskor mindket peldanyon frissiteni kell a last_synced datumot.
+  A runtime peldanyok helye: ~/.claude/scheduled-tasks/<nev>/SKILL.md
+-->
+
 ## 0. ELŐSZÖR: Van-e várakozó Telegram üzenet?
 
 **Mielőtt bármit csinálnál**, nézd meg a session inputját: ha van `<channel source=` kezdetű blokk a kontextusban (azaz a felhasználó küldött valamit egy csatornán -- Telegram, Slack, stb.), **azonnal válaszolj rá** -- a heartbeat logika (A/B/C, csendben maradás) NEM vonatkozik a közvetlen felhasználói üzenetekre. Válasz után folytasd a heartbeat-et.
