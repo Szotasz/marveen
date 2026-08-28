@@ -61,8 +61,9 @@ def _dashboard_token() -> str:
         return ""
 
 
-# Kept as a module-level name so callers and tests address ONE symbol; the
-# implementation is the shared resolver, not a local copy.
+# Kept as a module-level alias for the tests (they pin that this file has no
+# private copy of the resolver); the hook itself resolves from the PAYLOAD
+# (transcript-anchored, LEDGERCWD828), not from this cwd-only fallback.
 _agent_id_from_cwd = ledger_lib.agent_id_from_cwd
 
 
@@ -102,7 +103,7 @@ def main() -> None:
         sys.exit(0)
 
     skill_name, trigger_type = result
-    agent_id = _agent_id_from_cwd(cwd)
+    agent_id = ledger_lib.agent_id_from_payload(payload)
 
     token = _dashboard_token()
     if not token:

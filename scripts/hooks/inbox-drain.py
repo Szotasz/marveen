@@ -48,7 +48,7 @@ def main():
     except Exception:
         sys.exit(0)
 
-    agent_id = ledger_lib.agent_id_from_cwd(payload.get("cwd"))
+    agent_id = ledger_lib.agent_id_from_payload(payload)
     if agent_id != ledger_lib.main_agent_id():
         sys.exit(0)  # sub-agents are delivered by the router push path
 

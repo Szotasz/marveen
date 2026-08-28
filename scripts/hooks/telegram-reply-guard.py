@@ -100,7 +100,7 @@ def main():
     except Exception:
         sys.exit(0)
 
-    agent_id = ledger_lib.agent_id_from_cwd(payload.get("cwd"))
+    agent_id = ledger_lib.agent_id_from_payload(payload)
 
     try:
         oq = ledger_lib.open_question_with_age(agent_id)

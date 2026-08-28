@@ -100,9 +100,64 @@ def owner_name():
     return "A felhasználó"
 
 
+def agent_id_from_payload(payload):
+    """Session-stable agent identity from a hook payload (LEDGERCWD828).
+
+    The shell cwd is MUTABLE within a session: when the main agent stepped into
+    agents/iris/... for a measurement, its OWN replies to the owner ledgered
+    under iris, the reply guard then found no outbound under the real id and
+    triple-sent an already-answered link. Measured blast radius on the owner
+    chat: 51 outbound rows under 7 names, several of them plain directory
+    names, not agents.
+
+    The session's transcript_path is derived from the agent's own config dir
+    (CLAUDE_CONFIG_DIR), which never changes within a session -- that is the
+    identity anchor. Resolution order:
+      1. transcript_path  (immutable per session)
+      2. MARVEEN_AGENT_ID (explicit launcher override)
+      3. cwd              (last resort, for callers that have nothing else)
+    """
+    payload = payload or {}
+    agent = _agent_id_from_config_path(payload.get("transcript_path"))
+    if agent:
+        return agent
+    env_id = os.environ.get("MARVEEN_AGENT_ID", "").strip()
+    if env_id:
+        return env_id
+    return agent_id_from_cwd(payload.get("cwd"))
+
+
+def _agent_id_from_config_path(path):
+    """Map a transcript/config path to an agent id, or None when the path says
+    nothing (caller falls through to the env/cwd chain).
+
+      <install>/agents/<id>/...  -> <id>            (a sub-agent's config dir)
+      anywhere else in the tree  -> MAIN_AGENT_ID   (.channels-config etc.)
+      under ~/.claude            -> MAIN_AGENT_ID   (non-isolated main session)
+      anything else / empty      -> None
+    """
+    if not path or not isinstance(path, str):
+        return None
+    path = os.path.abspath(path.strip())
+    install = _install_dir().rstrip("/")
+    agents_root = os.path.join(install, "agents")
+    if path.startswith(agents_root + os.sep):
+        rel = path[len(agents_root) + 1:]
+        head = rel.split(os.sep)[0]
+        return head or None
+    if path == install or path.startswith(install + os.sep):
+        return main_agent_id()
+    home_claude = os.path.join(os.path.expanduser("~"), ".claude")
+    if path == home_claude or path.startswith(home_claude + os.sep):
+        return main_agent_id()
+    return None
+
+
 def agent_id_from_cwd(cwd):
-    """Which channel agent is this session? Derived from cwd so the hooks are
-    generic across every agent and never cross-contaminate:
+    """Which channel agent is this session? Derived from cwd. LAST-RESORT ONLY:
+    the cwd changes within a session (a `cd` into agents/<x>/ re-attributes
+    every later row), so payload-carrying hooks must call agent_id_from_payload
+    instead -- its docstring carries the measured incident (LEDGERCWD828).
       <install>/agents/<id>[/...]  -> <id>           (a sub-agent)
       anywhere else in the tree    -> MAIN_AGENT_ID   (the main channels agent)
     """
