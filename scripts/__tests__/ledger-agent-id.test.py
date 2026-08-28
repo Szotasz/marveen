@@ -88,6 +88,23 @@ PAYLOAD_CASES = [
      None, MAIN),
     ("out-of-tree transcript says nothing -> cwd chain decides",
      {"transcript_path": "/tmp/elsewhere/t.jsonl", "cwd": os.path.join(INSTALL, "agents", "dia")}, "dia"),
+    # The MIRROR family (review finding on #1100): every fleet agent's tmux
+    # session runs on the DEFAULT ~/.claude config root, whose project dir is
+    # keyed by the flattened starting cwd -- the agent id is IN the segment.
+    # Measured live 2026-08-28: the running samu session's transcript sits
+    # exactly here. Mapping this family to MAIN would mirror the original bug.
+    ("~/.claude fleet-session transcript keeps the agent id (the mirror case)",
+     {"transcript_path": os.path.join(os.path.expanduser("~"), ".claude", "projects",
+                                      INSTALL.replace(os.sep, "-") + "-agents-iris", "s.jsonl"),
+      "cwd": os.path.join(INSTALL, "store")}, "iris"),
+    ("~/.claude session started DEEP in an agent tree still maps to the agent",
+     {"transcript_path": os.path.join(os.path.expanduser("~"), ".claude", "projects",
+                                      INSTALL.replace(os.sep, "-") + "-agents-geri-workspace-hideghivas", "s.jsonl"),
+      "cwd": "/tmp"}, "geri"),
+    ("~/.claude session started at the install root is the MAIN agent",
+     {"transcript_path": os.path.join(os.path.expanduser("~"), ".claude", "projects",
+                                      INSTALL.replace(os.sep, "-"), "s.jsonl"),
+      "cwd": os.path.join(INSTALL, "agents", "iris")}, MAIN),
 ]
 
 for name, payload, want in PAYLOAD_CASES:
@@ -136,12 +153,15 @@ with tempfile.TemporaryDirectory() as tmp:
         subprocess.run(["python3", HOOK], input=json.dumps(payload).encode(),
                        env=env, timeout=30, check=False)
 
+    HOME_FLEET_TRANSCRIPT = os.path.join(os.path.expanduser("~"), ".claude", "projects",
+                                         INSTALL.replace(os.sep, "-") + "-agents-iris", "s.jsonl")
     run_hook(MAIN_TRANSCRIPT, os.path.join(INSTALL, "agents", "iris", "workspace"))
     run_hook(SUB_TRANSCRIPT, os.path.join(INSTALL, "agents", "iris"))
+    run_hook(HOME_FLEET_TRANSCRIPT, os.path.join(INSTALL, "store"))
     rows = sqlite3.connect(db).execute(
         "SELECT agent_id FROM conversation_log WHERE direction='out' ORDER BY id").fetchall()
     got_ids = [r[0] for r in rows]
-    want_ids = [MAIN, "iris"]
+    want_ids = [MAIN, "iris", "iris"]
     ok = got_ids == want_ids
     if not ok:
         failed.append("end-to-end outbound rows")

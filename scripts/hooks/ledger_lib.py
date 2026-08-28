@@ -141,14 +141,62 @@ def _agent_id_from_config_path(path):
     path = os.path.abspath(path.strip())
     install = _install_dir().rstrip("/")
     agents_root = os.path.join(install, "agents")
+    # 1. The CONFIG OWNER is authoritative: a transcript under
+    #    <install>/agents/<id>/... is that agent's isolated config dir, no
+    #    matter where the session's cwd wandered.
     if path.startswith(agents_root + os.sep):
         rel = path[len(agents_root) + 1:]
         head = rel.split(os.sep)[0]
         return head or None
+    # 2. Non-isolated config roots (~/.claude and friends) key the project dir
+    #    by the session's STARTING cwd, flattened: /a/b -> "-a-b". Every fleet
+    #    agent's tmux session runs this way (measured 2026-08-28: the live
+    #    samu session's transcript sits under
+    #    ~/.claude/projects/-Users-marvin-ClaudeClaw-agents-samu/), so the
+    #    agent id is IN the path -- mapping the whole family to the main agent
+    #    would be the original bug mirrored. Parse the segment instead.
+    seg_agent = _agent_id_from_project_segment(path, install)
+    if seg_agent is not None:
+        return seg_agent
     if path == install or path.startswith(install + os.sep):
         return main_agent_id()
     home_claude = os.path.join(os.path.expanduser("~"), ".claude")
     if path == home_claude or path.startswith(home_claude + os.sep):
+        return main_agent_id()
+    return None
+
+
+def _agent_id_from_project_segment(path, install):
+    """Read the agent id out of a flattened projects/<segment>/ component.
+
+      .../projects/-Users-...-ClaudeClaw-agents-<id>[-...]/x.jsonl -> <id>
+      .../projects/-Users-...-ClaudeClaw[-...]/x.jsonl             -> MAIN
+      no /projects/ component, or a foreign segment                -> None
+
+    Agent ids may in principle contain hyphens, which the flattening makes
+    ambiguous; when <install>/agents exists its entries disambiguate (longest
+    match wins), otherwise the first hyphen-delimited hunk is taken -- correct
+    for every current fleet name.
+    """
+    marker = os.sep + "projects" + os.sep
+    i = path.find(marker)
+    if i < 0:
+        return None
+    seg = path[i + len(marker):].split(os.sep)[0]
+    flat_install = install.replace(os.sep, "-")
+    agents_prefix = flat_install + "-agents-"
+    if seg.startswith(agents_prefix):
+        rest = seg[len(agents_prefix):]
+        try:
+            names = sorted(os.listdir(os.path.join(install, "agents")), key=len, reverse=True)
+        except OSError:
+            names = []
+        for name in names:
+            if rest == name or rest.startswith(name + "-"):
+                return name
+        head = rest.split("-")[0]
+        return head or None
+    if seg == flat_install or seg.startswith(flat_install + "-"):
         return main_agent_id()
     return None
 
