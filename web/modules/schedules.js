@@ -9,6 +9,7 @@
 import { escapeHtml, mainAgentId } from './util.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
+import { getErrorMessage } from './error-message.js'
 import { avatarBust } from './agents.js'
 
 // ─── Local utilities ─────────────────────────────────────────────────────────
@@ -444,7 +445,7 @@ function makeScheduleRow(task) {
         const r = await fetch(`/api/schedules/${encodeURIComponent(task.name)}/run`, { method: 'POST' })
         const data = await r.json().catch(() => ({}))
         if (r.ok) showToast(t('tasks.toast.run_started') + (data.result ? ': ' + data.result : ''))
-        else showToast('Hiba: ' + (data.error || r.status))
+        else showToast('Hiba: ' + getErrorMessage(data, String(r.status)))
         loadSchedules()
       } catch { showToast(t('tasks.toast.run_error')) }
     })

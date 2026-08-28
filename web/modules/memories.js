@@ -2,6 +2,7 @@ import { escapeHtml, highlightJson, mainAgentId } from './util.js'
 import { renderMarkdown } from './docs-research.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
+import { getErrorMessage } from './error-message.js'
 
 
 let _openModal = null, _closeModal = null
@@ -2125,7 +2126,7 @@ memImportSaveBtn.addEventListener('click', async () => {
       loadMemories()
       loadMemStats()
     } else {
-      showToast('Hiba: ' + (data.error || 'Ismeretlen'))
+      showToast('Hiba: ' + getErrorMessage(data, 'Ismeretlen'))
     }
   } catch (err) {
     memImportProgress.hidden = true

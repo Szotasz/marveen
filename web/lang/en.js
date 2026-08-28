@@ -1869,4 +1869,23 @@ window._i18n.en = {
   'bb.signal.ab.label':  'Both signals',
   'bb.signal.ab.tooltip':'Agent was active in messages but the row was not updated; additionally the row has been active and unchanged for a long time.',
 
+  // Error token translations
+  'errors.not_found':                'Not found',
+  'errors.required':                 'Required field',
+  'errors.invalid_value':            'Invalid value',
+  'errors.forbidden':                'Access denied',
+  'errors.unauthorized':             'Authentication required',
+  'errors.conflict':                 'Conflict: resource already exists',
+  'errors.limit_exceeded':           'Limit exceeded',
+  'errors.internal_error':           'Internal error',
+  'errors.parse_error':              'Parse error',
+  'errors.not_supported':            'Not supported',
+  'errors.timeout':                  'Timeout',
+  'errors.disabled':                 'Feature disabled',
+  'errors.managed_settings_missing': 'Managed settings missing',
+  'errors.upstream_error':           'Upstream service unavailable',
+  'errors.sender_not_in_allowlist':  'Sender is not in the allowlist',
+  'errors.federation_disabled':      'Federation is disabled',
+  'errors.unknown_query_parameter':  'Unknown query parameter',
+
 }

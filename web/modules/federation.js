@@ -1,6 +1,7 @@
 import { escapeHtml } from './util.js'
 import { t } from './i18n.js'
 import { showToast } from './toast.js'
+import { getErrorMessage } from './error-message.js'
 import { getFederatedPeerStatus, setFederatedPeerStatus } from './agents.js'
 import { getChatSelectedAgent, setChatSelectedAgent } from './messages.js'
 
@@ -91,7 +92,7 @@ function renderFederationPage() {
     try {
       const res = await fetch('/api/federation/enabled', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); e.target.checked = !enabled; return }
+      if (!res.ok) { showToast(t('federation.toast.error', { msg: getErrorMessage(data, 'HTTP ' + res.status) })); e.target.checked = !enabled; return }
       showToast(enabled ? t('federation.toast.enabled') : t('federation.toast.disabled'))
       fedRefreshAndReload()
     } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })); e.target.checked = !enabled }
@@ -102,7 +103,7 @@ function renderFederationPage() {
       try {
         const res = await fetch('/api/federation/routing-mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) })
         const data = await res.json().catch(() => ({}))
-        if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+        if (!res.ok) { showToast(t('federation.toast.error', { msg: getErrorMessage(data, 'HTTP ' + res.status) })); return }
         showToast(t('federation.routing.toast_set', { mode: t('federation.routing.mode.' + mode + '.label') }))
       } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
     })
@@ -129,7 +130,7 @@ function renderFederationPage() {
         <span style="color:var(--text-muted);font-size:12px;margin-left:auto">${t('federation.card.last_ok')}: ${escapeHtml(lastOk)} · ${t('federation.card.agents')}: ${escapeHtml(agentCount)}</span>
       </div>
       <div style="font-size:13px;color:var(--text-muted);word-break:break-all">${escapeHtml(peer.baseUrl)}</div>
-      ${st && st.error ? `<div style="font-size:12px;color:var(--danger)">${escapeHtml(st.error)}</div>` : ''}
+      ${st && st.error ? `<div style="font-size:12px;color:var(--danger)">${escapeHtml(getErrorMessage(st))}</div>` : ''}
       <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-muted);cursor:pointer">
         <input type="checkbox" class="fed-share-cap" ${peer.shareCapabilitySummaries ? 'checked' : ''} style="accent-color:var(--accent)">
         ${t('federation.share_cap_label')}
@@ -156,7 +157,7 @@ async function fedRevealToken(peerId, card) {
   try {
     const res = await fetch(`/api/federation/peers/${encodeURIComponent(peerId)}/inbound-token`)
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: getErrorMessage(data, 'HTTP ' + res.status) })); return }
     box.textContent = data.inboundToken
     box.hidden = false
     navigator.clipboard?.writeText(data.inboundToken).then(
@@ -171,7 +172,7 @@ async function fedRotateToken(peerId) {
   try {
     const res = await fetch(`/api/federation/peers/${encodeURIComponent(peerId)}/rotate-inbound-token`, { method: 'POST' })
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: getErrorMessage(data, 'HTTP ' + res.status) })); return }
     showToast(t('federation.toast.rotated'))
     loadFederationPage()
   } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
@@ -184,7 +185,7 @@ async function fedToggleShareCap(peerId, share) {
       body: JSON.stringify({ shareCapabilitySummaries: share }),
     })
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); loadFederationPage(); return }
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: getErrorMessage(data, 'HTTP ' + res.status) })); loadFederationPage(); return }
     showToast(share ? t('federation.toast.share_cap_on') : t('federation.toast.share_cap_off'))
   } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })); loadFederationPage() }
 }
@@ -194,7 +195,7 @@ async function fedDeletePeer(peerId) {
   try {
     const res = await fetch(`/api/federation/peers/${encodeURIComponent(peerId)}`, { method: 'DELETE' })
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: getErrorMessage(data, 'HTTP ' + res.status) })); return }
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const key = localStorage.key(i)
       if (key && key.startsWith('chat_last_seen_' + peerId + '/')) localStorage.removeItem(key)
@@ -212,7 +213,7 @@ async function fedApplyToMainAgent() {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
     })
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: getErrorMessage(data, 'HTTP ' + res.status) })); return }
     showToast(t('federation.toast.applied'))
   } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
 }
@@ -249,14 +250,14 @@ async function fedSavePeerModal() {
       else body.abandonWindowMinutes = null
       res = await fetch(`/api/federation/peers/${encodeURIComponent(fedPeerModalEditId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       data = await res.json().catch(() => ({}))
-      if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+      if (!res.ok) { showToast(t('federation.toast.error', { msg: getErrorMessage(data, 'HTTP ' + res.status) })); return }
       showToast(t('federation.toast.peer_saved'))
     } else {
       const body = { id, baseUrl }
       if (outbound) body.outboundToken = outbound
       res = await fetch('/api/federation/peers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       data = await res.json().catch(() => ({}))
-      if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+      if (!res.ok) { showToast(t('federation.toast.error', { msg: getErrorMessage(data, 'HTTP ' + res.status) })); return }
       prompt(t('federation.modal.minted_token_hint'), data.inboundToken)
       showToast(t('federation.toast.peer_added'))
     }
@@ -270,7 +271,7 @@ async function fedRemoveAll() {
   try {
     const res = await fetch('/api/federation/remove', { method: 'POST' })
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: getErrorMessage(data, 'HTTP ' + res.status) })); return }
     setFederatedPeerStatus([])
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const key = localStorage.key(i)

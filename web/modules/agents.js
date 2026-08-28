@@ -18,6 +18,7 @@ import { escapeHtml, mainAgentId } from './util.js'
 import { showToast } from './toast.js'
 import { t, getLang } from './i18n.js'
 import { switchPage } from './app-core.js'
+import { getErrorMessage } from './error-message.js'
 
 // ─── Avatar cache-busting epoch ─────────────────────────────────────────────
 // Owned here; bumpAvatarEpoch() called only from agents section.
@@ -1117,7 +1118,7 @@ async function openAgentDetail(agentName) {
       const res = await fetch(url)
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
-        showToast(data.error || 'Hiba az exportálás során')
+        showToast(getErrorMessage(data, 'Hiba az exportálás során'))
         return
       }
       const blob = await res.blob()
@@ -1910,7 +1911,7 @@ if (exportAllAgentsBtn) {
       const res = await fetch(url)
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
-        showToast(data.error || 'Hiba az exportálás során')
+        showToast(getErrorMessage(data, 'Hiba az exportálás során'))
         return
       }
       const blob = await res.blob()
@@ -1960,7 +1961,7 @@ if (importAgentBtn && importAgentFile) {
           return
         }
       }
-      if (!res.ok) { showToast(data.error || 'Hiba az importálás során'); return }
+      if (!res.ok) { showToast(getErrorMessage(data, 'Hiba az importálás során')); return }
       const note = data.includedSecrets ? ' (titkokkal)' : ''
       if (data.kind === 'fleet') {
         const n = (data.imported || []).length
@@ -2251,7 +2252,7 @@ document.getElementById('authSharedApplyBtn').addEventListener('click', async ()
       const startRes = await fetch(`${base}/start`, { method: 'POST' })
       const startData = await startRes.json()
       if (!startRes.ok) {
-        errorDiv.textContent = startData.error || t('agents.error.restart')
+        errorDiv.textContent = getErrorMessage(startData, t('agents.error.restart'))
         errorDiv.hidden = false
         return
       }
@@ -2298,7 +2299,7 @@ document.getElementById('authFlowInitBtn').addEventListener('click', async () =>
       urlEl.textContent = data.authUrl
       resultDiv.hidden = false
     } else {
-      errorDiv.textContent = data.error || 'Auth URL nem talalhato'
+      errorDiv.textContent = getErrorMessage(data, 'Auth URL nem talalhato')
       errorDiv.hidden = false
     }
   } catch {
@@ -2913,7 +2914,7 @@ document.getElementById('chSmokeTestBtn').addEventListener('click', async () => 
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent)}/channels/slack/smoke-test`, { method: 'POST' })
     const data = await res.json()
     if (!res.ok) {
-      showToast(data.error || 'Smoke-test sikertelen', true)
+      showToast(getErrorMessage(data, 'Smoke-test sikertelen'), true)
       return
     }
     showSmokeTestResult(data.output || 'OK')

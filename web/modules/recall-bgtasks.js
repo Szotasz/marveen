@@ -1,5 +1,6 @@
 import { t } from './i18n.js'
 import { showToast } from './toast.js'
+import { getErrorMessage } from './error-message.js'
 
 function esc(s) {
   if (!s) return ''
@@ -95,7 +96,7 @@ async function doRecall() {
     const res = await fetch('/api/recall?' + params.toString())
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
-      timeline.innerHTML = `<p class="recall-error">${esc(err.error || t('recall.error'))}</p>`
+      timeline.innerHTML = `<p class="recall-error">${esc(getErrorMessage(err, t('recall.error')))}</p>`
       return
     }
     const data = await res.json()
@@ -222,7 +223,7 @@ async function startBgTask() {
     })
     const data = await res.json()
     if (!res.ok) {
-      showToast(data.error || t('common.error'))
+      showToast(getErrorMessage(data, t('common.error')))
       return
     }
     document.getElementById('bgPrompt').value = ''

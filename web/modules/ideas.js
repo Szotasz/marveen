@@ -2,6 +2,7 @@ import { escapeHtml } from './util.js'
 import { t } from './i18n.js'
 import { showToast } from './toast.js'
 import { kanbanState, showBreakdownModal } from './kanban.js'
+import { getErrorMessage } from './error-message.js'
 
 
 let _openModal = null
@@ -241,7 +242,7 @@ async function openIdeaBreakdown(id) {
   try {
     const res = await fetch(`/api/ideas/${id}/breakdown`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
     const data = await res.json()
-    if (!res.ok) { showToast(data.error || 'Breakdown hiba'); return }
+    if (!res.ok) { showToast(getErrorMessage(data, 'Breakdown hiba')); return }
     if (!data.subtasks || !data.subtasks.length) { showToast('Az AI nem adott vissza alfeladatot'); return }
     kanbanState.breakdownMode = 'idea'
     kanbanState.breakdownIdeaId = id
