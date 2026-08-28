@@ -96,7 +96,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     const memCats = db0.prepare(`SELECT COUNT(DISTINCT category) as c FROM memories WHERE 1=1${tc}`).get(...tp) as { c: number }
     let artifactCount = 0
     try {
-      // artifacts has no tenant_id (admin-only pilot, Q2 decision: fba2128b)
+      // artifacts has no tenant_id (admin-only pilot, deferred by design decision)
       const aRow = db0.prepare("SELECT COUNT(*) as c FROM artifacts").get() as { c: number }
       artifactCount = aRow.c
     } catch { /* artifacts table absent on fresh installs before migration */ }
@@ -217,7 +217,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
         })
       }
     } catch { /* ignore */ }
-    // Approval events in last 4h (approvals has no tenant_id -- admin-only pilot, Q2 decision: fba2128b)
+    // Approval events in last 4h (approvals has no tenant_id -- admin-only pilot, deferred by design decision)
     try {
       const fourHAgoSec = Math.floor(fourHoursAgo / 1000)
       const aprRows = db0.prepare(
