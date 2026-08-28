@@ -47,7 +47,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     if (!data.content?.trim()) { json(res, { error: 'required', field: 'content', hint: 'Content is required' }, 400); return true }
     if (containsSuspiciousContent(data.content)) {
       logger.warn({ agent: data.agent_id }, 'Memory content rejected: suspicious pattern')
-      json(res, { error: 'forbidden', hint: 'Content rejected by security filter' }, 400)
+      json(res, { error: 'forbidden', hint: 'Content rejected by security filter' }, 403)
       return true
     }
     if (data.tier && !data.category) {

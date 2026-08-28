@@ -99,12 +99,15 @@ describe('tryHandleKanban', () => {
     expect(out.body.ok).toBe(true)
   })
 
-  it('POST /api/kanban returns 400 on DB error', async () => {
+  it('POST /api/kanban returns 500 on DB error without leaking exception text', async () => {
     const db = await import('../db.js')
     vi.mocked(db.createKanbanCard).mockImplementationOnce(() => { throw new Error('FK violation') })
     const { ctx, out } = makeCtx('POST', '/api/kanban', { title: 'x' })
     await tryHandleKanban(ctx)
-    expect(out.status).toBe(400)
+    expect(out.status).toBe(500)
+    expect(out.body.error).toBe('internal_error')
+    // Raw DB exception text must never reach the HTTP response.
+    expect(JSON.stringify(out.body)).not.toContain('FK violation')
   })
 
   it('PUT /api/kanban/:id updates card', async () => {

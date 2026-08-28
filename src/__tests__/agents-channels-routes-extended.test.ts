@@ -150,15 +150,15 @@ describe('tryHandleAgentsChannels (extended)', () => {
     expect(out.body.botName).toBe('TestBot')
   })
 
-  it('POST channel test returns 400 when token validation fails', async () => {
+  it('POST channel test maps non-canonical provider error to internal_error', async () => {
     const cp = await import('../channel-provider.js')
     const mockValidate = vi.fn().mockResolvedValueOnce({ ok: false, error: 'bad token' })
     vi.mocked(cp.readChannelToken).mockReturnValueOnce('bot123:bad')
     vi.mocked(cp.getProvider).mockReturnValueOnce({ validateToken: mockValidate } as any)
     const { ctx, out } = makeCtx('POST', '/api/agents/test-agent/channels/telegram/test')
     expect(await tryHandleAgentsChannels(ctx)).toBe(true)
-    expect(out.status).toBe(400)
-    expect(out.body.error).toBe('bad token')
+    expect(out.status).toBe(500)
+    expect(out.body.error).toBe('internal_error')
   })
 
   it('POST channel setup (telegram) for sub-agent writes config and returns ok', async () => {
@@ -192,14 +192,14 @@ describe('tryHandleAgentsChannels (extended)', () => {
     expect(out.body.field).toBe('botToken')
   })
 
-  it('POST channel setup returns 400 when validateToken fails', async () => {
+  it('POST channel setup maps non-canonical provider error to internal_error', async () => {
     const cp = await import('../channel-provider.js')
     const mockValidate = vi.fn().mockResolvedValueOnce({ ok: false, error: 'Unauthorized' })
     vi.mocked(cp.getProvider).mockReturnValueOnce({ validateToken: mockValidate } as any)
     const { ctx, out } = makeCtx('POST', '/api/agents/test-agent/channels/telegram', { botToken: 'bot123:bad' })
     expect(await tryHandleAgentsChannels(ctx)).toBe(true)
-    expect(out.status).toBe(400)
-    expect(out.body.error).toBe('Unauthorized')
+    expect(out.status).toBe(500)
+    expect(out.body.error).toBe('internal_error')
   })
 
   it('DELETE channel teardown for sub-agent returns ok', async () => {

