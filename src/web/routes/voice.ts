@@ -199,7 +199,7 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
   // Body: { file_id: string, state_dir: string }
   // Returns: { transcript: string }
   if (path === '/api/voice/stt' && method === 'POST') {
-    if (!isVoiceInstalled()) { json(res, { error: 'not_supported', hint: 'Voice toolkit not installed' }, 503); return true }
+    if (!isVoiceInstalled()) { json(res, { error: 'not_supported', hint: 'Voice toolkit not installed' }, 400); return true }
     const body = await readBody(req)
     let data: { file_id?: string; state_dir?: string }
     try { data = JSON.parse(body.toString()) as typeof data } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
@@ -222,7 +222,7 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
   // Body: { text: string, voice_model: string, chat_id: string, state_dir: string }
   // Returns: { ok: boolean, message_id?: number }
   if (path === '/api/voice/tts' && method === 'POST') {
-    if (!isVoiceInstalled()) { json(res, { error: 'not_supported', hint: 'Voice toolkit not installed' }, 503); return true }
+    if (!isVoiceInstalled()) { json(res, { error: 'not_supported', hint: 'Voice toolkit not installed' }, 400); return true }
     const body = await readBody(req)
     let data: { text?: string; voice_model?: string; chat_id?: string | number; state_dir?: string }
     try { data = JSON.parse(body.toString()) as typeof data } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }

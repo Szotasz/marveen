@@ -63,9 +63,19 @@ export async function readJsonBody<T>(req: http.IncomingMessage): Promise<T> {
   return JSON.parse(body.toString()) as T
 }
 
+// Phase B -- enforcing mode.
+// If a new test breaks here: either the new code uses a non-canonical token (fix the code),
+// or this pairing is genuinely valid and missing from ALLOWED_STATUS_TOKENS (fix the table
+// with an explicit decision -- do NOT silently widen the table to make tests green).
+function reportViolation(violation: string, token: string, status: number): void {
+  const msg = `[api-error-catalog] invariant violation: ${violation}`
+  if (process.env.NODE_ENV === 'test') {
+    throw new Error(msg)
+  }
+  logger.error({ token, status }, msg)
+}
+
 export function json(res: http.ServerResponse, data: unknown, status = 200): void {
-  // Phase A: warn-only catalog check -- collect violations, never throw.
-  // Phase B (separate PR) will switch to throw in test / logger.error in prod.
   if (
     data !== null &&
     typeof data === 'object' &&
@@ -73,9 +83,16 @@ export function json(res: http.ServerResponse, data: unknown, status = 200): voi
     typeof (data as Record<string, unknown>).error === 'string'
   ) {
     const token = (data as Record<string, unknown>).error as string
-    const violation = checkErrorResponse(token, status)
+    let violation: string | null = null
+    try {
+      violation = checkErrorResponse(token, status)
+    } catch (e) {
+      // checkErrorResponse itself threw -- extremely unlikely, but must not block the response
+      logger.error({ error: e, token, status },
+        '[api-error-catalog] validator threw unexpectedly -- response will still be sent')
+    }
     if (violation) {
-      logger.warn({ token, status }, `[api-error-catalog] violation: ${violation}`)
+      reportViolation(violation, token, status)
     }
   }
 

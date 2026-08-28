@@ -178,11 +178,20 @@ describe('POST /api/voice/stt -- error shapes', () => {
     expect(String(out.body.error)).toMatch(/^[a-z_]+$/)
   })
 
-  it('returns not_supported + 503 when voice toolkit is not installed', async () => {
+  it('returns not_supported + 400 when voice toolkit is not installed', async () => {
     mockVoiceInstalled = false
     const { ctx, out } = makeCtx('POST', '/api/voice/stt', { file_id: 'AgACAgQAAxkBAAI', state_dir: '/tmp/st' })
     await tryHandleVoice(ctx)
-    expect(out.status).toBe(503)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toBe('not_supported')
+    expect(String(out.body.error)).toMatch(/^[a-z_]+$/)
+  })
+
+  it('returns not_supported + 400 on /api/voice/tts when voice toolkit is not installed', async () => {
+    mockVoiceInstalled = false
+    const { ctx, out } = makeCtx('POST', '/api/voice/tts', { text: 'hello' })
+    await tryHandleVoice(ctx)
+    expect(out.status).toBe(400)
     expect(out.body.error).toBe('not_supported')
     expect(String(out.body.error)).toMatch(/^[a-z_]+$/)
   })
