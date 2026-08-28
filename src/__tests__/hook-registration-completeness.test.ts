@@ -41,6 +41,8 @@ const REGISTRATION_SURFACES = [
 const EXEMPT: Record<string, string> = {
   'ledger_lib.py':
     'shared library imported by the ledger hooks; not itself a hook',
+  'clearstate_lib.py':
+    'shared library imported by clear-capture.py / clear-replay.py; not itself a hook',
   'memory-save.sh':
     'legacy: referenced only by a historical rebuild prompt, wired nowhere; kept pending a maintainer decision to remove it',
   'telegram-ack.py':

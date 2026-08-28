@@ -206,7 +206,7 @@ export function upgradeLegacyHookCommands(
  * The add pass in ensureAgentHooks dedupes on the exact COMMAND string, so a
  * group whose command is unchanged is considered already present and its stale
  * matcher is left in place forever -- silently, because nothing errors. That is
- * how every sub-agent kept `SessionStart: compact|resume` (and stayed deaf to
+ * how an existing sub-agent kept `SessionStart: compact|resume` (and stayed deaf to
  * source=clear) while the template said otherwise.
  *
  * Conservative on purpose. A group is only re-matched when EVERY command in it

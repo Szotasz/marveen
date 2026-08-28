@@ -33,8 +33,9 @@ import {
 // This complements the hard context-guard (context-guard-runner.ts), which
 // acts at 90%/97% of the context window via hard process restarts. The soft
 // gate acts much earlier (default 400k tokens) via /clear -- the SessionStart
-// hooks (ledger-replay, taskstate-replay, daily-log-digest) then inject a rich
-// context snapshot into the fresh session automatically.
+// hooks (clear-replay, taskstate-replay, and ledger-replay for the agents whose
+// channel turns are logged) then inject a context snapshot into the fresh
+// session automatically.
 //
 // The runner starts 3 minutes after dashboard boot (offset from context-guard's
 // 4.5 min so the two sweeps do not fire simultaneously) and then sweeps on each
@@ -53,8 +54,8 @@ const INITIAL_DELAY_MS = 3 * 60_000   // 3 min
 export function gateWakePrompt(): string {
   return (
     '[CONTEXT-RESTART-GATE] Friss kontextussal indultal, mert a kapu ujrainditott (/clear). ' +
-    'A visszatoltott blokkokban ott a beszelgetes vege, a napi naplo kivonata es -- ha volt futo munkad -- ' +
-    'a TASK-FOLYTATAS a mar kesz lepesekkel es a kovetkezo akcioval. ' +
+    'A visszatoltott blokkokban ott a torolt szal vege (utolso keresek, utolso valaszod, az atirat utja) ' +
+    'es -- ha volt futo munkad -- a TASK-FOLYTATAS a mar kesz lepesekkel es a kovetkezo akcioval. ' +
     'Olvasd be oket, ellenorizd a kanban tabladat es a hot memoriaidat, es FOLYTASD onnan ahol abbamaradt. ' +
     'Ne kezdd elolrol ami mar kesz, es ne delegald ujra amit mar atadtal. ' +
     'Ha nem volt futo munkad, az is teljes erteku allapot -- olyankor ne talalj ki magadnak feladatot. ' +
