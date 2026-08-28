@@ -13,6 +13,7 @@ import { stripMarkup } from './web/import-utils.js'
 
 let db: Database.Database
 let vecExtensionLoaded = false
+let vecExtensionAttempted = false
 
 // Lock the DB file and its sidecars (WAL, SHM, rollback journal) down to
 // owner-only. better-sqlite3 opens the main file with the process umask
@@ -55,6 +56,7 @@ export function initDatabase(dbPathOverride?: string): void {
     try { db.close() } catch { /* already closed */ }
   }
   vecExtensionLoaded = false
+  vecExtensionAttempted = false
   const dbPath = useOverride ? dbPathOverride! : join(STORE_DIR, DB_FILENAME)
   // Step 1: close the TOCTOU window on fresh installs. openSync with 'wx'
   // + 0o600 creates the file ONLY if it doesn't exist and sets the strict
@@ -110,6 +112,17 @@ export function initDatabase(dbPathOverride?: string): void {
   // (2026-08-28 outage, migration 0022). Safe no-op when the binary is missing;
   // initVecSupport() below still does the virtual-table setup.
   tryLoadVecExtension()
+
+  // Runtime invariant: tryLoadVecExtension() must be called before any
+  // migration. If this throws, someone moved the call below applyMigrations --
+  // do NOT suppress this error; restore the call order above.
+  if (!vecExtensionAttempted) {
+    throw new Error(
+      'BUG: tryLoadVecExtension() must run before applyMigrations() -- ' +
+      'see 2026-08-28 outage: table-rebuild migrations trigger a full schema ' +
+      'reparse that validates vec0-backed triggers before the module is loaded',
+    )
+  }
 
   applyMigrations(db)
 
@@ -2733,6 +2746,7 @@ export function migrateExistingEmbeddingsToBLOB(): number {
 }
 
 function tryLoadVecExtension(): void {
+  vecExtensionAttempted = true
   try {
     loadSqliteVec(db)
     vecExtensionLoaded = true
