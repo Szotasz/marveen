@@ -14,6 +14,7 @@ import { readBody, json, serveFile } from '../http-helpers.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
 import { readAutoRestartConfig } from '../auto-restart-store.js'
+import { logger } from '../../logger.js'
 import type { RouteContext } from './types.js'
 
 function getActiveMarveenModel(): string {
@@ -148,7 +149,11 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
 
   if (path === '/api/marveen/restart' && method === 'POST') {
     const result = hardRestartMarveenChannels()
-    if (!result.ok) { json(res, { error: result.error || 'Restart failed' }, 500); return true }
+    if (!result.ok) {
+      logger.error({ err: result.error }, 'Marveen restart failed')
+      json(res, { error: 'internal_error', hint: 'Restart failed' }, 500)
+      return true
+    }
     json(res, { ok: true })
     return true
   }
