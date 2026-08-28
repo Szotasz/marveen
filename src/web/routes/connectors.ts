@@ -273,7 +273,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     }
 
     const result = await installGitHubRepo(url.trim(), Object.keys(envVarMapping).length > 0 ? envVarMapping : undefined)
-    if (result.error) { json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}), ...(result.field ? { field: result.field } : {}) }, result.error === 'conflict' ? 409 : result.error === 'not_found' ? 404 : 400); return true }
+    if (result.error) { json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}), ...(result.field ? { field: result.field } : {}) }, result.error === 'conflict' ? 409 : result.error === 'not_found' ? 404 : result.error === 'internal_error' ? 500 : 400); return true }
     json(res, { ok: true, repo: result.repo, requiredEnvVars: result.requiredEnvVars })
     return true
   }
@@ -290,7 +290,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   if (githubRepoMatch && method === 'PATCH') {
     const name = decodeURIComponent(githubRepoMatch[1])
     const result = updateGitHubRepo(name)
-    if (result.error) { json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, result.error === 'not_found' ? 404 : 400); return true }
+    if (result.error) { json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, result.error === 'not_found' ? 404 : result.error === 'internal_error' ? 500 : 400); return true }
     json(res, { ok: true })
     return true
   }

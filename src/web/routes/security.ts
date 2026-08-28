@@ -93,7 +93,7 @@ export async function tryHandleSecurity(ctx: RouteContext): Promise<boolean> {
     }, 201)
   } catch (err) {
     if (err instanceof RemoteEnrollError) {
-      json(res, { error: err.message }, 400)
+      json(res, { error: 'invalid_value', hint: err.message }, 400)
       return true
     }
     logger.error({ err }, 'bridge enroll failed')

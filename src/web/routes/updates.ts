@@ -190,8 +190,9 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
           }, 409)
           return true
         }
+        logger.error({ err: retryErr }, 'Update pidfile retry-write failed')
         json(res, {
-          error: 'Pidfile retry-write failed: ' + (retryErr instanceof Error ? retryErr.message : String(retryErr)),
+          error: 'internal_error',
           reason: 'lock-write-failed',
         }, 500)
         return true
