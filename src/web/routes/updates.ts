@@ -169,7 +169,8 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
       const concurrency = checkNoConcurrentUpdate(pf)
       if (!concurrency.ok) {
         json(res, {
-          error: concurrency.message,
+          error: 'conflict',
+          hint: concurrency.message,
           reason: concurrency.reason,
           pid: concurrency.pid,
         }, 409)
@@ -247,7 +248,8 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
       if (!skipForAutoStash) {
         releaseLock()
         const body: Record<string, unknown> = {
-          error: preflight.message,
+          error: 'conflict',
+          hint: preflight.message,
           reason: preflight.reason,
         }
         json(res, body, 409)
