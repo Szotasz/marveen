@@ -1883,5 +1883,8 @@ window._i18n.hu = {
   'errors.disabled':                 'A funkció le van tiltva',
   'errors.managed_settings_missing': 'Hiányzó menedzselt beállítás',
   'errors.upstream_error':           'Külső szolgáltatás nem elérhető',
+  'errors.sender_not_in_allowlist':  'A küldő nincs az engedélyezett listán',
+  'errors.federation_disabled':      'A föderáció ki van kapcsolva',
+  'errors.unknown_query_parameter':  'Ismeretlen lekérdezési paraméter',
 
 }

@@ -1884,5 +1884,8 @@ window._i18n.en = {
   'errors.disabled':                 'Feature disabled',
   'errors.managed_settings_missing': 'Managed settings missing',
   'errors.upstream_error':           'Upstream service unavailable',
+  'errors.sender_not_in_allowlist':  'Sender is not in the allowlist',
+  'errors.federation_disabled':      'Federation is disabled',
+  'errors.unknown_query_parameter':  'Unknown query parameter',
 
 }

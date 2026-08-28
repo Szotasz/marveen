@@ -15,6 +15,9 @@ const ERROR_I18N = {
   disabled:                 'errors.disabled',
   managed_settings_missing: 'errors.managed_settings_missing',
   upstream_error:           'errors.upstream_error',
+  sender_not_in_allowlist:  'errors.sender_not_in_allowlist',
+  federation_disabled:      'errors.federation_disabled',
+  unknown_query_parameter:  'errors.unknown_query_parameter',
 }
 
 export function getErrorMessage(data, fallback = '') {
