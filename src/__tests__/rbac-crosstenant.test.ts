@@ -519,36 +519,36 @@ describe('shared-tier isolation -- getAgentMemories SQL contract', () => {
 
   beforeEach(() => {
     db2 = openMemDb()
-    // tenant-a owns a shared-tier memory for zack
-    db2.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, accessed_at) VALUES (?, ?, ?, ?, ?)').run('zack', 'shared', 'tenant-a shared secret', 'tenant-a', 100)
-    // tenant-b owns a warm-tier memory for zack
-    db2.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, accessed_at) VALUES (?, ?, ?, ?, ?)').run('zack', 'warm', 'tenant-b warm data', 'tenant-b', 100)
-    // tenant-b also owns its own shared-tier memory for zack
-    db2.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, accessed_at) VALUES (?, ?, ?, ?, ?)').run('zack', 'shared', 'tenant-b shared data', 'tenant-b', 90)
+    // tenant-a owns a shared-tier memory for agent-a
+    db2.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, accessed_at) VALUES (?, ?, ?, ?, ?)').run('agent-a', 'shared', 'tenant-a shared secret', 'tenant-a', 100)
+    // tenant-b owns a warm-tier memory for agent-a
+    db2.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, accessed_at) VALUES (?, ?, ?, ?, ?)').run('agent-a', 'warm', 'tenant-b warm data', 'tenant-b', 100)
+    // tenant-b also owns its own shared-tier memory for agent-a
+    db2.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, accessed_at) VALUES (?, ?, ?, ?, ?)').run('agent-a', 'shared', 'tenant-b shared data', 'tenant-b', 90)
   })
 
   it('tenant-B recall does NOT include tenant-A shared memory', () => {
-    const rows = recallForTenant(db2, 'zack', 'tenant-b')
+    const rows = recallForTenant(db2, 'agent-a', 'tenant-b')
     const leaked = rows.filter(r => r.tenant_id === 'tenant-a')
     expect(leaked).toHaveLength(0)
   })
 
   it('tenant-B recall includes its OWN shared-tier memory', () => {
-    const rows = recallForTenant(db2, 'zack', 'tenant-b')
+    const rows = recallForTenant(db2, 'agent-a', 'tenant-b')
     const ownShared = rows.filter(r => r.category === 'shared' && r.tenant_id === 'tenant-b')
     expect(ownShared).toHaveLength(1)
   })
 
   it('tenant-A recall returns tenant-A shared memory but not tenant-B data', () => {
-    const rows = recallForTenant(db2, 'zack', 'tenant-a')
+    const rows = recallForTenant(db2, 'agent-a', 'tenant-a')
     expect(rows).toHaveLength(1)
     expect(rows[0]!.tenant_id).toBe('tenant-a')
     expect(rows[0]!.category).toBe('shared')
   })
 
   it('zero rows leaked across tenants (exhaustive check)', () => {
-    const rowsA = recallForTenant(db2, 'zack', 'tenant-a')
-    const rowsB = recallForTenant(db2, 'zack', 'tenant-b')
+    const rowsA = recallForTenant(db2, 'agent-a', 'tenant-a')
+    const rowsB = recallForTenant(db2, 'agent-a', 'tenant-b')
     for (const r of rowsA) expect(r.tenant_id).toBe('tenant-a')
     for (const r of rowsB) expect(r.tenant_id).toBe('tenant-b')
   })
@@ -594,22 +594,22 @@ describe('threads isolation -- getAgentConversationThreads SQL contract', () => 
 
   beforeEach(() => {
     db3 = openMsgDb()
-    db3.prepare('INSERT INTO agent_messages (from_agent, to_agent, content, tenant_id, created_at) VALUES (?, ?, ?, ?, ?)').run('zack', 'jarvis', 'tenant-a msg', 'tenant-a', 1000)
-    db3.prepare('INSERT INTO agent_messages (from_agent, to_agent, content, tenant_id, created_at) VALUES (?, ?, ?, ?, ?)').run('boo', 'zack', 'tenant-b msg', 'tenant-b', 2000)
+    db3.prepare('INSERT INTO agent_messages (from_agent, to_agent, content, tenant_id, created_at) VALUES (?, ?, ?, ?, ?)').run('agent-a', 'jarvis', 'tenant-a msg', 'tenant-a', 1000)
+    db3.prepare('INSERT INTO agent_messages (from_agent, to_agent, content, tenant_id, created_at) VALUES (?, ?, ?, ?, ?)').run('boo', 'agent-a', 'tenant-b msg', 'tenant-b', 2000)
   })
 
   it('tenant-B threads do NOT include tenant-A agents', () => {
     const threads = threadsForTenant(db3, 'tenant-b')
     const agentNames = threads.map(t => t.agent)
     expect(agentNames).not.toContain('jarvis')
-    expect(agentNames.every(a => ['boo', 'zack'].includes(a))).toBe(true)
+    expect(agentNames.every(a => ['boo', 'agent-a'].includes(a))).toBe(true)
   })
 
   it('tenant-A threads do NOT include tenant-B agents', () => {
     const threads = threadsForTenant(db3, 'tenant-a')
     const agentNames = threads.map(t => t.agent)
     expect(agentNames).not.toContain('boo')
-    expect(agentNames.every(a => ['zack', 'jarvis'].includes(a))).toBe(true)
+    expect(agentNames.every(a => ['agent-a', 'jarvis'].includes(a))).toBe(true)
   })
 
   it('zero cross-tenant agent leakage -- agents exclusive to tenant-A never appear in tenant-B listing', () => {
@@ -659,23 +659,23 @@ describe('/api/recall memories isolation -- recallSearch SQL contract', () => {
 
   beforeEach(() => {
     db4 = openRecallDb()
-    db4.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, created_at) VALUES (?, ?, ?, ?, ?)').run('zack', 'shared', 'tenant-a project context', 'tenant-a', 100)
-    db4.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, created_at) VALUES (?, ?, ?, ?, ?)').run('zack', 'warm', 'tenant-b zack memory', 'tenant-b', 90)
+    db4.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, created_at) VALUES (?, ?, ?, ?, ?)').run('agent-a', 'shared', 'tenant-a project context', 'tenant-a', 100)
+    db4.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, created_at) VALUES (?, ?, ?, ?, ?)').run('agent-a', 'warm', 'tenant-b agent-a memory', 'tenant-b', 90)
   })
 
   it('tenant-B recall does NOT return tenant-A shared memories', () => {
-    const rows = recallMemsForTenant(db4, 'zack', 'tenant-b', 'context')
+    const rows = recallMemsForTenant(db4, 'agent-a', 'tenant-b', 'context')
     // 'tenant-a project context' matches the query but belongs to tenant-a
     expect(rows.filter(r => r.tenant_id === 'tenant-a')).toHaveLength(0)
   })
 
   it('tenant-A recall does NOT return tenant-B memories', () => {
-    const rows = recallMemsForTenant(db4, 'zack', 'tenant-a', 'memory')
+    const rows = recallMemsForTenant(db4, 'agent-a', 'tenant-a', 'memory')
     expect(rows.filter(r => r.tenant_id === 'tenant-b')).toHaveLength(0)
   })
 
   it('tenant-B recall returns its OWN memories', () => {
-    const rows = recallMemsForTenant(db4, 'zack', 'tenant-b', 'zack')
+    const rows = recallMemsForTenant(db4, 'agent-a', 'tenant-b', 'agent-a')
     expect(rows).toHaveLength(1)
     expect(rows[0]!.tenant_id).toBe('tenant-b')
   })
@@ -703,25 +703,25 @@ describe('/api/memories/stale isolation -- real getStaleMemories', () => {
     d.exec('DELETE FROM memories')
     d.exec('DELETE FROM span_reads')
     // tenant-a shared memory -- would leak to tenant-b without the tenant filter
-    const r1 = saveAgentMemory('zack', 'tenant-a stale shared', 'shared', undefined, false, 'tenant-a')
+    const r1 = saveAgentMemory('agent-a', 'tenant-a stale shared', 'shared', undefined, false, 'tenant-a')
     d.prepare('UPDATE memories SET updated_at = ? WHERE id = ?').run(now, r1.id)
     // tenant-b own warm memory
-    const r2 = saveAgentMemory('zack', 'tenant-b warm memory', 'warm', undefined, false, 'tenant-b')
+    const r2 = saveAgentMemory('agent-a', 'tenant-b warm memory', 'warm', undefined, false, 'tenant-b')
     d.prepare('UPDATE memories SET updated_at = ? WHERE id = ?').run(now, r2.id)
   })
 
   it('tenant-B stale does NOT return tenant-A shared memories', () => {
-    const rows = getStaleMemories('zack', 'tenant-b')
+    const rows = getStaleMemories('agent-a', 'tenant-b')
     expect(rows.filter(r => r.tenant_id === 'tenant-a')).toHaveLength(0)
   })
 
   it('tenant-A stale does NOT return tenant-B memories', () => {
-    const rows = getStaleMemories('zack', 'tenant-a')
+    const rows = getStaleMemories('agent-a', 'tenant-a')
     expect(rows.filter(r => r.tenant_id === 'tenant-b')).toHaveLength(0)
   })
 
   it('tenant-B stale returns its OWN memories', () => {
-    const rows = getStaleMemories('zack', 'tenant-b')
+    const rows = getStaleMemories('agent-a', 'tenant-b')
     expect(rows).toHaveLength(1)
     expect(rows[0]!.tenant_id).toBe('tenant-b')
   })
