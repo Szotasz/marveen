@@ -159,8 +159,9 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
       lockHeld = true
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') {
+        logger.error({ err }, 'Update pidfile write failed')
         json(res, {
-          error: 'Pidfile write failed: ' + (err instanceof Error ? err.message : String(err)),
+          error: 'internal_error',
           reason: 'lock-write-failed',
         }, 500)
         return true
@@ -189,8 +190,9 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
           }, 409)
           return true
         }
+        logger.error({ err: retryErr }, 'Update pidfile retry-write failed')
         json(res, {
-          error: 'Pidfile retry-write failed: ' + (retryErr instanceof Error ? retryErr.message : String(retryErr)),
+          error: 'internal_error',
           reason: 'lock-write-failed',
         }, 500)
         return true
@@ -229,8 +231,9 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
       preflight = checkUpdatePreflight(git)
     } catch (err) {
       releaseLock()
+      logger.error({ err }, 'Update pre-check crashed')
       json(res, {
-        error: 'Pre-check failed: ' + (err instanceof Error ? err.message : String(err)),
+        error: 'internal_error',
         reason: 'precheck-crashed',
       }, 500)
       return true
@@ -287,7 +290,8 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
       json(res, { ok: true })
     } catch (err) {
       releaseLock()
-      json(res, { error: err instanceof Error ? err.message : String(err) }, 500)
+      logger.error({ err }, 'Update handler error')
+      json(res, { error: 'internal_error' }, 500)
     }
     return true
   }

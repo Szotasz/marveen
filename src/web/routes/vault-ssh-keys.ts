@@ -98,7 +98,7 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
       json(res, { key: toApiShape(key), publicKey }, 201)
     } catch (err: any) {
       logger.error({ err }, 'Failed to create SSH key')
-      json(res, { error: 'Key generation failed: ' + (err?.message ?? String(err)) }, 500)
+      json(res, { error: 'internal_error', hint: 'Key generation failed' }, 500)
     }
     return true
   }
@@ -128,7 +128,8 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
         chmodSync(keyPath, 0o600)
         publicKey = execFileSync('ssh-keygen', ['-y', '-f', keyPath], { stdio: 'pipe' }).toString().trim()
       } catch (err: any) {
-        json(res, { error: 'Invalid private key: ' + (err?.stderr?.toString().trim() ?? err?.message ?? String(err)) }, 400)
+        logger.error({ err }, 'SSH key import: private key validation failed')
+        json(res, { error: 'invalid_value', hint: 'Invalid or unsupported private key format' }, 400)
         return true
       } finally {
         rmSync(tmpDir, { recursive: true, force: true })
@@ -150,7 +151,7 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
       json(res, { key: toApiShape(key), publicKey }, 201)
     } catch (err: any) {
       logger.error({ err }, 'Failed to import SSH key')
-      json(res, { error: 'Import failed: ' + (err?.message ?? String(err)) }, 500)
+      json(res, { error: 'internal_error', hint: 'Key import failed' }, 500)
     }
     return true
   }
