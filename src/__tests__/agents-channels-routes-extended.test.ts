@@ -240,12 +240,12 @@ describe('tryHandleAgentsChannels (extended)', () => {
     expect(Array.isArray(out.body)).toBe(true)
   })
 
-  it('POST reconnect returns 400 when agent not running', async () => {
+  it('POST reconnect returns 409 when agent not running', async () => {
     const { ctx, out } = makeCtx('POST', '/api/agents/test-agent/channel/reconnect')
     expect(await tryHandleAgentsChannels(ctx)).toBe(true)
-    expect(out.status).toBe(400)
-    expect(out.body.error).toBe('invalid_value')
-    // hint differentiates input-validation (reconnect) from operation-state (auth/init)
-    expect(out.body.hint).toMatch(/unknown or invalid agent/i)
+    expect(out.status).toBe(409)
+    expect(out.body.error).toBe('conflict')
+    // both reconnect and auth/init are operation-state: agent exists but is not running
+    expect(out.body.hint).toMatch(/not running/i)
   })
 })

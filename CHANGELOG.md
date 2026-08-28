@@ -15,8 +15,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
-- **[API]** `POST /api/agents/:name/channel/reconnect`: `hint` changed from `"Agent is not running"` to `"Unknown or invalid agent: {name}"`. Token (`invalid_value`) and status (`400`) unchanged; hint reflects the input-validation framing.
-- **[API]** `POST /api/agents/:name/auth/init`: token changed `invalid_value` → `conflict`, status `400` → `409`, hint changed to `"Agent {name} is not running"`. Non-running state on an existing agent is an operation-state conflict, not an input error.
+- **[API]** `POST /api/agents/:name/channel/reconnect` and `POST /api/agents/:name/auth/init`: token `invalid_value` → `conflict`, **HTTP status 400 → 409**, hint `"Agent {name} is not running"`. Both endpoints check an operation-state condition (agent exists but is not running) -- consistent with the same change already applied to `/stop`, `/restart`, `/keys`, and `/login`.
 
 - **[API]** `POST /api/auth/logout-all`, `GET /api/auth/sessions`: HTTP status changed `400` → `401` when the caller has no valid session (`error: "unauthorized"`). A missing or invalid session is a missing-authentication condition, not a malformed request; `400 Bad Request` implies a fixable client error, while `401 Unauthorized` correctly signals that authentication is required. No login loop risk: `POST /api/auth/login` is handled earlier in `tryHandleAuth` and exits before these checks.
 
