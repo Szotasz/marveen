@@ -1868,4 +1868,20 @@ window._i18n.hu = {
   'bb.signal.ab.label':  'Mindkét jel',
   'bb.signal.ab.tooltip':'Az ágens aktív volt üzenetküldésben, de a sor nem frissült; emellett a sor már régóta változatlanul active állapotban áll.',
 
+  // Error token translations
+  'errors.not_found':                'Nem található',
+  'errors.required':                 'Kötelező mező',
+  'errors.invalid_value':            'Érvénytelen érték',
+  'errors.forbidden':                'Hozzáférés megtagadva',
+  'errors.unauthorized':             'Hitelesítés szükséges',
+  'errors.conflict':                 'Ütközés: az erőforrás már létezik',
+  'errors.limit_exceeded':           'Korlát túllépve',
+  'errors.internal_error':           'Belső hiba',
+  'errors.parse_error':              'Feldolgozási hiba',
+  'errors.not_supported':            'Nem támogatott',
+  'errors.timeout':                  'Időtúllépés',
+  'errors.disabled':                 'A funkció le van tiltva',
+  'errors.managed_settings_missing': 'Hiányzó menedzselt beállítás',
+  'errors.upstream_error':           'Külső szolgáltatás nem elérhető',
+
 }
