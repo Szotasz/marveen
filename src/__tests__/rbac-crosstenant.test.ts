@@ -18,11 +18,12 @@
 // The scopeToTenant helper is implemented inline as a minimal mock that mirrors
 // the contract the real query-scope wrapper implementation will fulfill.
 
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, beforeAll } from 'vitest'
 import Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
 import { checkPermission, resolveRole, resolveTenantId } from '../web/authz.js'
 import type { AuthResult } from '../web/auth-gate.js'
+import { initDatabase, getDb, saveAgentMemory, getStaleMemories } from '../db.js'
 
 // ── In-memory DB setup ────────────────────────────────────────────────────────
 //
@@ -481,5 +482,247 @@ describe('Admin bypass -- admin role bypasses tenant filter', () => {
     const rows = scopeToTenant(db, 'tenant-b').memories.list('agent-a')
     expect(rows).toHaveLength(1)
     expect((rows[0] as { tenant_id: string }).tenant_id).toBe('tenant-b')
+  })
+})
+
+// ── 12. Shared-tier isolation -- getAgentMemories SQL contract ────────────────
+//
+// Acceptance criterion:
+//   tenant_A category=shared memory MUST NOT appear in a tenant_B recall
+//   of the same agent. The SQL pattern mirrors getAgentMemories with tenantId.
+
+describe('shared-tier isolation -- getAgentMemories SQL contract', () => {
+  let db2: Database.Database
+
+  function openMemDb(): Database.Database {
+    const d = new Database(':memory:')
+    d.exec(`
+      CREATE TABLE memories (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_id    TEXT NOT NULL,
+        category    TEXT NOT NULL,
+        content     TEXT NOT NULL DEFAULT '',
+        keywords    TEXT,
+        tenant_id   TEXT NOT NULL DEFAULT 'default',
+        accessed_at INTEGER NOT NULL DEFAULT 0
+      );
+    `)
+    return d
+  }
+
+  // SQL that mirrors the updated getAgentMemories with tenantId (no category filter):
+  function recallForTenant(d: Database.Database, agentId: string, tenantId: string, limit = 50) {
+    return d.prepare(
+      `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND tenant_id = ? ORDER BY accessed_at DESC LIMIT ?`
+    ).all(agentId, tenantId, limit) as Array<{ id: number; category: string; tenant_id: string }>
+  }
+
+  beforeEach(() => {
+    db2 = openMemDb()
+    // tenant-a owns a shared-tier memory for agent-a
+    db2.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, accessed_at) VALUES (?, ?, ?, ?, ?)').run('agent-a', 'shared', 'tenant-a shared secret', 'tenant-a', 100)
+    // tenant-b owns a warm-tier memory for agent-a
+    db2.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, accessed_at) VALUES (?, ?, ?, ?, ?)').run('agent-a', 'warm', 'tenant-b warm data', 'tenant-b', 100)
+    // tenant-b also owns its own shared-tier memory for agent-a
+    db2.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, accessed_at) VALUES (?, ?, ?, ?, ?)').run('agent-a', 'shared', 'tenant-b shared data', 'tenant-b', 90)
+  })
+
+  it('tenant-B recall does NOT include tenant-A shared memory', () => {
+    const rows = recallForTenant(db2, 'agent-a', 'tenant-b')
+    const leaked = rows.filter(r => r.tenant_id === 'tenant-a')
+    expect(leaked).toHaveLength(0)
+  })
+
+  it('tenant-B recall includes its OWN shared-tier memory', () => {
+    const rows = recallForTenant(db2, 'agent-a', 'tenant-b')
+    const ownShared = rows.filter(r => r.category === 'shared' && r.tenant_id === 'tenant-b')
+    expect(ownShared).toHaveLength(1)
+  })
+
+  it('tenant-A recall returns tenant-A shared memory but not tenant-B data', () => {
+    const rows = recallForTenant(db2, 'agent-a', 'tenant-a')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.tenant_id).toBe('tenant-a')
+    expect(rows[0]!.category).toBe('shared')
+  })
+
+  it('zero rows leaked across tenants (exhaustive check)', () => {
+    const rowsA = recallForTenant(db2, 'agent-a', 'tenant-a')
+    const rowsB = recallForTenant(db2, 'agent-a', 'tenant-b')
+    for (const r of rowsA) expect(r.tenant_id).toBe('tenant-a')
+    for (const r of rowsB) expect(r.tenant_id).toBe('tenant-b')
+  })
+})
+
+// ── 13. Threads cross-tenant isolation -- getAgentConversationThreads contract ─
+//
+// Acceptance criterion:
+//   Non-admin tenant_B caller must NOT see tenant_A message threads.
+
+describe('threads isolation -- getAgentConversationThreads SQL contract', () => {
+  let db3: Database.Database
+
+  function openMsgDb(): Database.Database {
+    const d = new Database(':memory:')
+    d.exec(`
+      CREATE TABLE agent_messages (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        from_agent TEXT NOT NULL,
+        to_agent   TEXT NOT NULL,
+        content    TEXT NOT NULL DEFAULT '',
+        status     TEXT NOT NULL DEFAULT 'pending',
+        tenant_id  TEXT NOT NULL DEFAULT 'default',
+        created_at INTEGER NOT NULL DEFAULT 0
+      );
+    `)
+    return d
+  }
+
+  // SQL that mirrors the updated getAgentConversationThreads with tenantId:
+  function threadsForTenant(d: Database.Database, tenantId: string) {
+    return d.prepare(`
+      WITH parties AS (
+        SELECT from_agent AS agent FROM agent_messages WHERE tenant_id = ?
+        UNION
+        SELECT to_agent AS agent FROM agent_messages WHERE tenant_id = ?
+      )
+      SELECT p.agent AS agent,
+        (SELECT COUNT(*) FROM agent_messages m WHERE (m.from_agent = p.agent OR m.to_agent = p.agent) AND m.tenant_id = ?) AS count
+      FROM parties p
+    `).all(tenantId, tenantId, tenantId) as Array<{ agent: string; count: number }>
+  }
+
+  beforeEach(() => {
+    db3 = openMsgDb()
+    db3.prepare('INSERT INTO agent_messages (from_agent, to_agent, content, tenant_id, created_at) VALUES (?, ?, ?, ?, ?)').run('agent-a', 'agent-b', 'tenant-a msg', 'tenant-a', 1000)
+    db3.prepare('INSERT INTO agent_messages (from_agent, to_agent, content, tenant_id, created_at) VALUES (?, ?, ?, ?, ?)').run('agent-c', 'agent-a', 'tenant-b msg', 'tenant-b', 2000)
+  })
+
+  it('tenant-B threads do NOT include tenant-A agents', () => {
+    const threads = threadsForTenant(db3, 'tenant-b')
+    const agentNames = threads.map(t => t.agent)
+    expect(agentNames).not.toContain('agent-b')
+    expect(agentNames.every(a => ['agent-c', 'agent-a'].includes(a))).toBe(true)
+  })
+
+  it('tenant-A threads do NOT include tenant-B agents', () => {
+    const threads = threadsForTenant(db3, 'tenant-a')
+    const agentNames = threads.map(t => t.agent)
+    expect(agentNames).not.toContain('agent-c')
+    expect(agentNames.every(a => ['agent-a', 'agent-b'].includes(a))).toBe(true)
+  })
+
+  it('zero cross-tenant agent leakage -- agents exclusive to tenant-A never appear in tenant-B listing', () => {
+    const bThreads = threadsForTenant(db3, 'tenant-b')
+    const bAgentNames = bThreads.map(t => t.agent)
+    // agent-b only appears in tenant-a messages; must not leak into tenant-b threads
+    expect(bAgentNames).not.toContain('agent-b')
+    // agent-c only appears in tenant-b messages; must not leak into tenant-a threads
+    const aThreads = threadsForTenant(db3, 'tenant-a')
+    expect(aThreads.map(t => t.agent)).not.toContain('agent-c')
+  })
+})
+
+// ── 14. /api/recall memories cross-tenant isolation -- SQL contract ───────────
+//
+// Acceptance criterion:
+//   Non-admin tenant_B recall MUST NOT return tenant_A memories.
+//   daily_logs have no tenant_id (Jonas Q3 decision) -- logs are not filtered.
+
+describe('/api/recall memories isolation -- recallSearch SQL contract', () => {
+  let db4: Database.Database
+
+  function openRecallDb(): Database.Database {
+    const d = new Database(':memory:')
+    d.exec(`
+      CREATE VIRTUAL TABLE memories_fts USING fts5(content, keywords);
+      CREATE TABLE memories (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_id    TEXT NOT NULL,
+        category    TEXT NOT NULL,
+        content     TEXT NOT NULL DEFAULT '',
+        keywords    TEXT,
+        tenant_id   TEXT NOT NULL DEFAULT 'default',
+        created_at  INTEGER NOT NULL DEFAULT 0,
+        accessed_at INTEGER NOT NULL DEFAULT 0
+      );
+    `)
+    return d
+  }
+
+  // SQL that mirrors the updated recallSearch FTS path with tenantId + agentId:
+  function recallMemsForTenant(d: Database.Database, agentId: string, tenantId: string, query: string, limit = 50) {
+    return d.prepare(
+      `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND tenant_id = ? AND (content LIKE ? OR keywords LIKE ?) ORDER BY created_at DESC LIMIT ?`
+    ).all(agentId, tenantId, `%${query}%`, `%${query}%`, limit) as Array<{ id: number; category: string; tenant_id: string }>
+  }
+
+  beforeEach(() => {
+    db4 = openRecallDb()
+    db4.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, created_at) VALUES (?, ?, ?, ?, ?)').run('agent-a', 'shared', 'tenant-a project context', 'tenant-a', 100)
+    db4.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, created_at) VALUES (?, ?, ?, ?, ?)').run('agent-a', 'warm', 'tenant-b agent-a memory', 'tenant-b', 90)
+  })
+
+  it('tenant-B recall does NOT return tenant-A shared memories', () => {
+    const rows = recallMemsForTenant(db4, 'agent-a', 'tenant-b', 'context')
+    // 'tenant-a project context' matches the query but belongs to tenant-a
+    expect(rows.filter(r => r.tenant_id === 'tenant-a')).toHaveLength(0)
+  })
+
+  it('tenant-A recall does NOT return tenant-B memories', () => {
+    const rows = recallMemsForTenant(db4, 'agent-a', 'tenant-a', 'memory')
+    expect(rows.filter(r => r.tenant_id === 'tenant-b')).toHaveLength(0)
+  })
+
+  it('tenant-B recall returns its OWN memories', () => {
+    const rows = recallMemsForTenant(db4, 'agent-a', 'tenant-b', 'agent-a')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.tenant_id).toBe('tenant-b')
+  })
+})
+
+// ── 15. /api/memories/stale cross-tenant isolation -- real getStaleMemories ────
+//
+// Acceptance criterion:
+//   Non-admin tenant_B GET /api/memories/stale MUST NOT return tenant_A memories.
+//
+// Unlike blocks 12-14 (which exercise SQL copies for readability), this block
+// calls the REAL getStaleMemories from db.ts against an in-memory database
+// so that the test fails if the function body loses the tenant filter.
+
+describe('/api/memories/stale isolation -- real getStaleMemories', () => {
+  const now = Math.floor(Date.now() / 1000)
+
+  beforeAll(() => {
+    process.env.NODE_ENV = 'test'
+    initDatabase(':memory:')
+  })
+
+  beforeEach(() => {
+    const d = getDb()
+    d.exec('DELETE FROM memories')
+    d.exec('DELETE FROM span_reads')
+    // tenant-a shared memory -- would leak to tenant-b without the tenant filter
+    const r1 = saveAgentMemory('agent-a', 'tenant-a stale shared', 'shared', undefined, false, 'tenant-a')
+    d.prepare('UPDATE memories SET updated_at = ? WHERE id = ?').run(now, r1.id)
+    // tenant-b own warm memory
+    const r2 = saveAgentMemory('agent-a', 'tenant-b warm memory', 'warm', undefined, false, 'tenant-b')
+    d.prepare('UPDATE memories SET updated_at = ? WHERE id = ?').run(now, r2.id)
+  })
+
+  it('tenant-B stale does NOT return tenant-A shared memories', () => {
+    const rows = getStaleMemories('agent-a', 'tenant-b')
+    expect(rows.filter(r => r.tenant_id === 'tenant-a')).toHaveLength(0)
+  })
+
+  it('tenant-A stale does NOT return tenant-B memories', () => {
+    const rows = getStaleMemories('agent-a', 'tenant-a')
+    expect(rows.filter(r => r.tenant_id === 'tenant-b')).toHaveLength(0)
+  })
+
+  it('tenant-B stale returns its OWN memories', () => {
+    const rows = getStaleMemories('agent-a', 'tenant-b')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.tenant_id).toBe('tenant-b')
   })
 })

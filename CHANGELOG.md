@@ -19,6 +19,8 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- **[API]** Memory recall and message-thread endpoints are now tenant-scoped for non-admin callers. Affected endpoints: `GET /api/memories` (list, search, hybrid search, vector search), `GET /api/memories/stale`, `GET /api/recall` (date-range and keyword search), `GET /api/messages/threads`. A non-admin token with `tenant_id=X` now sees only memories and threads that belong to tenant X; shared-tier memories (`category="shared"`) are visible within the same tenant but never across tenants. Admin tokens continue to see the global view across all tenants. Daily log entries in `/api/recall` results remain fleet-wide (the `daily_logs` table carries no `tenant_id` column by design).
+
 - **[API]** `POST /api/agents/:name/channel/reconnect` and `POST /api/agents/:name/auth/init`: token `invalid_value` → `conflict`, **HTTP status 400 → 409**, hint `"Agent {name} is not running"`. Both endpoints check an operation-state condition (agent exists but is not running) -- consistent with the same change already applied to `/stop`, `/restart`, `/keys`, and `/login`.
 
 - **[API]** `POST /api/auth/logout-all`, `GET /api/auth/sessions`: HTTP status changed `400` → `401` when the caller has no valid session (`error: "unauthorized"`). A missing or invalid session is a missing-authentication condition, not a malformed request; `400 Bad Request` implies a fixable client error, while `401 Unauthorized` correctly signals that authentication is required. No login loop risk: `POST /api/auth/login` is handled earlier in `tryHandleAuth` and exits before these checks.

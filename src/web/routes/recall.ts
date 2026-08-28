@@ -188,9 +188,11 @@ export async function tryHandleRecall(ctx: RouteContext): Promise<boolean> {
     const query = url.searchParams.get('q') || ''
     const agent = url.searchParams.get('agent') || undefined
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
+    const isAdmin = ctx.role === 'admin'
+    const recallTenantId = isAdmin ? undefined : (ctx.tenantId ?? 'default')
 
     if (query && !dateExpr) {
-      const result = recallSearch(query, agent, limit)
+      const result = recallSearch(query, agent, limit, recallTenantId)
       const formatted = formatRecallResult(result)
       json(res, formatted)
       return true
@@ -202,7 +204,7 @@ export async function tryHandleRecall(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const result = recallByDateRange(range.from, range.to, agent)
+    const result = recallByDateRange(range.from, range.to, agent, recallTenantId)
 
     if (query) {
       const escaped = escapeLike(query)

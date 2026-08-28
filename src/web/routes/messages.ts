@@ -221,7 +221,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   // Sidebar threads: one row per conversation peer (system agents excluded),
   // each with its count + most-recent message, recency computed per-peer.
   if (path === '/api/messages/threads' && method === 'GET') {
-    json(res, getAgentConversationThreads())
+    json(res, getAgentConversationThreads(isAdmin ? undefined : effectiveTenantId))
     return true
   }
 

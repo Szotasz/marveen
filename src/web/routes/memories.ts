@@ -82,14 +82,17 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     const mode = url.searchParams.get('mode') || 'hybrid'
 
     let results: Memory[]
+    const recallTenantId = isAdmin ? undefined : effectiveTenantId
     if (q && mode === 'hybrid') {
-      results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit)
+      results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit, recallTenantId)
     } else if (q && agentId) {
-      results = searchAgentMemories(agentId, q, limit)
+      results = searchAgentMemories(agentId, q, limit, recallTenantId)
       if (results.length === 0) {
         const db2 = getDb()
-        results = db2.prepare("SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?")
-          .all(agentId, `%${q}%`, `%${q}%`, limit) as Memory[]
+        const tcFallback = recallTenantId ? ' AND tenant_id = ?' : ''
+        const tpFallback = recallTenantId ? [recallTenantId] : []
+        results = db2.prepare(`SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?)${tcFallback} ORDER BY accessed_at DESC LIMIT ?`)
+          .all(agentId, `%${q}%`, `%${q}%`, ...tpFallback, limit) as Memory[]
       }
     } else if (q) {
       results = searchMemories(q, ALLOWED_CHAT_ID, limit)
@@ -98,8 +101,9 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
         results = db2.prepare('SELECT * FROM memories WHERE content LIKE ? ORDER BY accessed_at DESC LIMIT ?').all(`%${q}%`, limit) as Memory[]
       }
     } else if (agentId) {
-      // Category goes into the query, not a post-filter: see getAgentMemories.
-      results = getAgentMemories(agentId, limit, tier || undefined)
+      // Tenant filtering pushed into SQL (before LIMIT) to avoid the post-filter
+      // accuracy bug: getAgentMemories enforces tenantId in the WHERE clause.
+      results = getAgentMemories(agentId, limit, tier || undefined, recallTenantId)
     } else {
       results = getMemoriesForChat(ALLOWED_CHAT_ID, limit)
     }
@@ -567,7 +571,7 @@ Respond ONLY with JSON, nothing else:
   if (path === '/api/memories/stale' && method === 'GET') {
     const agentId = url.searchParams.get('agent_id') || url.searchParams.get('agent') || ''
     if (!agentId) { json(res, { error: 'required', field: 'agent_id', hint: 'agent_id required' }, 400); return true }
-    const stale = getStaleMemories(agentId)
+    const stale = getStaleMemories(agentId, isAdmin ? undefined : effectiveTenantId)
     json(res, stale.map(m => ({ ...m, embedding: undefined, embedding_blob: undefined })))
     return true
   }
