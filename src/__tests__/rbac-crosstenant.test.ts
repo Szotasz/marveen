@@ -679,3 +679,75 @@ describe('/api/recall memories isolation -- recallSearch SQL contract', () => {
     expect(rows[0]!.tenant_id).toBe('tenant-b')
   })
 })
+
+// ── 15. /api/memories/stale cross-tenant isolation -- SQL contract ────────────
+//
+// Acceptance criterion (feaec069):
+//   Non-admin tenant_B GET /api/memories/stale MUST NOT return tenant_A memories.
+
+describe('/api/memories/stale isolation -- getStaleMemories SQL contract', () => {
+  let db5: Database.Database
+
+  function openStaleDb(): Database.Database {
+    const d = new Database(':memory:')
+    d.exec(`
+      CREATE TABLE memories (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_id    TEXT NOT NULL,
+        category    TEXT NOT NULL,
+        content     TEXT NOT NULL DEFAULT '',
+        keywords    TEXT,
+        tenant_id   TEXT NOT NULL DEFAULT 'default',
+        updated_at  INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE span_reads (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_id    TEXT NOT NULL,
+        memory_id   INTEGER NOT NULL,
+        read_at     INTEGER NOT NULL
+      );
+    `)
+    return d
+  }
+
+  // SQL that mirrors the updated getStaleMemories with tenantId:
+  function staleMemsForTenant(d: Database.Database, agentId: string, tenantId: string) {
+    return d.prepare(
+      `SELECT m.* FROM memories m
+       LEFT JOIN (
+         SELECT memory_id, MAX(read_at) AS last_read
+         FROM span_reads
+         WHERE agent_id = ?
+         GROUP BY memory_id
+       ) sr ON sr.memory_id = m.id
+       WHERE (m.agent_id = ? OR m.category = 'shared')
+         AND m.updated_at > COALESCE(sr.last_read, 0)
+         AND m.tenant_id = ?
+       ORDER BY m.updated_at DESC`
+    ).all(agentId, agentId, tenantId) as Array<{ id: number; category: string; tenant_id: string }>
+  }
+
+  beforeEach(() => {
+    db5 = openStaleDb()
+    // tenant-a memory (shared tier) -- would cross to tenant-b without filter
+    db5.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, updated_at) VALUES (?, ?, ?, ?, ?)').run('zack', 'shared', 'tenant-a stale shared', 'tenant-a', 200)
+    // tenant-b own memory
+    db5.prepare('INSERT INTO memories (agent_id, category, content, tenant_id, updated_at) VALUES (?, ?, ?, ?, ?)').run('zack', 'warm', 'tenant-b warm memory', 'tenant-b', 100)
+  })
+
+  it('tenant-B stale does NOT return tenant-A shared memories', () => {
+    const rows = staleMemsForTenant(db5, 'zack', 'tenant-b')
+    expect(rows.filter(r => r.tenant_id === 'tenant-a')).toHaveLength(0)
+  })
+
+  it('tenant-A stale does NOT return tenant-B memories', () => {
+    const rows = staleMemsForTenant(db5, 'zack', 'tenant-a')
+    expect(rows.filter(r => r.tenant_id === 'tenant-b')).toHaveLength(0)
+  })
+
+  it('tenant-B stale returns its OWN memories', () => {
+    const rows = staleMemsForTenant(db5, 'zack', 'tenant-b')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.tenant_id).toBe('tenant-b')
+  })
+})

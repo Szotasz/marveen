@@ -128,7 +128,7 @@ describe('GET /api/memories/stale', () => {
     const handled = await tryHandleMemories(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(200)
-    expect(mocks.getStaleMemories).toHaveBeenCalledWith('agent-a')
+    expect(mocks.getStaleMemories).toHaveBeenCalledWith('agent-a', 'default')
     const body = out.body as any[]
     expect(body).toHaveLength(1)
     expect(body[0].content).toBe('stale')
@@ -139,7 +139,7 @@ describe('GET /api/memories/stale', () => {
     mocks.getStaleMemories.mockReturnValue([])
     const { ctx, out } = makeCtx('GET', '/api/memories/stale?agent=agent-b')
     await tryHandleMemories(ctx)
-    expect(mocks.getStaleMemories).toHaveBeenCalledWith('agent-b')
+    expect(mocks.getStaleMemories).toHaveBeenCalledWith('agent-b', 'default')
     expect(out.status).toBe(200)
   })
 
