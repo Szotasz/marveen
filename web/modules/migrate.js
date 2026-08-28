@@ -1,6 +1,7 @@
 import { escapeHtml } from './util.js'
 import { t } from './i18n.js'
 import { showToast } from './toast.js'
+import { getErrorMessage } from './error-message.js'
 
 
 // ============================================================
@@ -193,7 +194,7 @@ export function initMigrate() {
       const res = await fetch('/api/fleet/export', { headers })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
-        showToast(data.error || t('fleet.export.error'))
+        showToast(getErrorMessage(data, t('fleet.export.error')))
         return
       }
 

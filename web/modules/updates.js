@@ -1,6 +1,7 @@
 import { escapeHtml } from './util.js'
 import { t } from './i18n.js'
 import { showToast } from './toast.js'
+import { getErrorMessage } from './error-message.js'
 
 // ============================================================
 // === Updates page ===
@@ -115,7 +116,7 @@ export async function loadUpdates() {
     const lat = (data.latest || '').slice(0, 7) || '–'
     if (data.error) {
       summary.className = 'updates-summary error'
-      summary.innerHTML = `<strong>${t('updates.check_failed')}:</strong> ${escapeHtml(data.error)}<br>${t('updates.current_label')} <code>${cur}</code>`
+      summary.innerHTML = `<strong>${t('updates.check_failed')}:</strong> ${escapeHtml(getErrorMessage(data))}<br>${t('updates.current_label')} <code>${cur}</code>`
       applyBtn.hidden = true
     } else if (data.behind === 0) {
       summary.className = 'updates-summary up-to-date'
@@ -207,7 +208,7 @@ async function runDiagnose() {
     const data = await res.json().catch(() => ({}))
     if (!res.ok) {
       if (btn) btn.disabled = false
-      showToast(t('updates.diagnose.failed', { msg: data.error || ('HTTP ' + res.status) }))
+      showToast(t('updates.diagnose.failed', { msg: getErrorMessage(data, 'HTTP ' + res.status) }))
       return
     }
     showToast(data.already ? t('updates.diagnose.already') : t('updates.diagnose.started'))
@@ -247,7 +248,7 @@ async function runUpdate(autoStash) {
         }
         return
       }
-      showToast(t('updates.toast.not_started', { msg: data.error || ('HTTP ' + res.status) }))
+      showToast(t('updates.toast.not_started', { msg: getErrorMessage(data, 'HTTP ' + res.status) }))
       return
     }
     showToast(t('updates.toast.applying'))

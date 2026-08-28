@@ -17,6 +17,7 @@
 import { escapeHtml } from './util.js'
 import { t, getLang } from './i18n.js'
 import { showToast } from './toast.js'
+import { getErrorMessage } from './error-message.js'
 
 // ── Injected dependencies ────────────────────────────────────────────────────
 let _openModal = null, _closeModal = null, _wireColumn = null, _wireCardTouch = null, _loadIdeasPage = null
@@ -908,7 +909,7 @@ function createCardEl(card, embeddedTrees = []) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ parent_id: card.id }),
       })
-      if (!r.ok) { const err = await r.json().catch(() => ({})); showToast(err.error || t('kanban.toast.move_error')); return }
+      if (!r.ok) { const err = await r.json().catch(() => ({})); showToast(getErrorMessage(err, t('kanban.toast.move_error'))); return }
       loadKanban()
     } catch {
       showToast(t('kanban.toast.move_error'))
@@ -1414,7 +1415,7 @@ async function showCardDetail(card) {
           })
           if (!r.ok) {
             const err = await r.json().catch(() => ({}))
-            showToast(err.error || t('kanban.toast.subtask_error'))
+            showToast(getErrorMessage(err, t('kanban.toast.subtask_error')))
             return
           }
           showToast(t('kanban.toast.subtask_created'))
@@ -1507,7 +1508,7 @@ async function showCardDetail(card) {
     try {
       const res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/breakdown`, { method: 'POST' })
       const data = await res.json()
-      if (!res.ok) { showToast(data.error || 'Hiba'); btn.disabled = false; btn.textContent = 'Breakdown'; return }
+      if (!res.ok) { showToast(getErrorMessage(data, 'Hiba')); btn.disabled = false; btn.textContent = 'Breakdown'; return }
       breakdownMode = 'kanban'
       breakdownCardId = card.id
       breakdownSubtasks = data.subtasks
@@ -1531,7 +1532,7 @@ async function triggerBreakdown(card) {
   try {
     const res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/breakdown`, { method: 'POST' })
     const data = await res.json()
-    if (!res.ok) { showToast(data.error || 'Breakdown hiba'); return }
+    if (!res.ok) { showToast(getErrorMessage(data, 'Breakdown hiba')); return }
     breakdownMode = 'kanban'
     breakdownCardId = card.id
     breakdownSubtasks = data.subtasks
@@ -1606,7 +1607,7 @@ document.getElementById('breakdownAcceptBtn').addEventListener('click', async ()
         body: JSON.stringify({ subtasks: accepted, success_criteria: successCriteria }),
       })
       const data = await res.json()
-      if (!res.ok) { showToast(data.error || 'Hiba'); return }
+      if (!res.ok) { showToast(getErrorMessage(data, 'Hiba')); return }
       _closeModal?.(breakdownOverlay)
       showToast(t('kanban.breakdown.promoted', { count: data.child_count }))
       _loadIdeasPage?.()
@@ -1618,7 +1619,7 @@ document.getElementById('breakdownAcceptBtn').addEventListener('click', async ()
       body: JSON.stringify({ subtasks: accepted }),
     })
     const data = await res.json()
-    if (!res.ok) { showToast(data.error || 'Hiba'); return }
+    if (!res.ok) { showToast(getErrorMessage(data, 'Hiba')); return }
     _closeModal?.(breakdownOverlay)
     _closeModal?.(cardDetailOverlay)
     showToast(t('kanban.breakdown.created_count', { count: data.created.length }))

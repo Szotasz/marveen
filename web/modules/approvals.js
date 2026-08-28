@@ -1,6 +1,7 @@
 import { escapeHtml, escapeAttr } from './util.js'
 import { t } from './i18n.js'
 import { showToast } from './toast.js'
+import { getErrorMessage } from './error-message.js'
 
 
 
@@ -182,7 +183,7 @@ async function _resolveApproval(id, decision) {
       body: JSON.stringify({ status: decision, resolved_by: 'dashboard' }),
     })
     const data = await res.json()
-    if (!res.ok) { showToast(t('approvals.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+    if (!res.ok) { showToast(t('approvals.toast.error', { msg: getErrorMessage(data, 'HTTP ' + res.status) })); return }
     showToast(t(decision === 'approved' ? 'approvals.toast.approved' : 'approvals.toast.rejected'))
     // Update in-place to avoid full reload flicker
     const idx = _approvalsAll.findIndex(a => a.id === id)

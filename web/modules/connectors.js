@@ -1,6 +1,7 @@
 import { escapeHtml, mainAgentId } from './util.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
+import { getErrorMessage } from './error-message.js'
 
 
 let _openModal = null, _closeModal = null
@@ -45,7 +46,7 @@ document.getElementById('connectorRefreshBtn').addEventListener('click', async (
     const res = await fetch('/api/connectors/refresh', { method: 'POST' })
     const data = await res.json().catch(() => ({}))
     if (!res.ok || !data.ok) {
-      showToast(t('updates.error', {msg: data.hint || 'HTTP ' + res.status}))
+      showToast(t('updates.error', {msg: getErrorMessage(data, 'HTTP ' + res.status)}))
     } else {
       showToast(t('connectors.toast.mcp_refreshed', { n: data.count || 0 }))
     }
@@ -586,7 +587,7 @@ async function loadGitHubRepos() {
         try {
           const res = await fetch(`/api/connectors/github-repos/${encodeURIComponent(r.name)}`, { method: 'PATCH' })
           const data = await res.json()
-          if (data.error) { alert(data.error); return }
+          if (data.error) { alert(getErrorMessage(data)); return }
           loadConnectors()
         } finally { btn.disabled = false; btn.innerHTML = '&#x21bb;' }
       })
@@ -631,7 +632,7 @@ async function loadGitHubRepos() {
       const data = await res.json()
       if (data.error) {
         status.className = 'github-repo-status error'
-        status.textContent = data.error
+        status.textContent = getErrorMessage(data)
         return
       }
       if (data.requiredEnvVars && data.requiredEnvVars.length > 0) {
@@ -728,7 +729,7 @@ async function loadVault() {
     })
     if (!res.ok) {
       const e = await res.json().catch(() => ({}))
-      showToast('Mentés sikertelen: ' + (e.error || res.status))
+      showToast('Mentés sikertelen: ' + getErrorMessage(e, String(res.status)))
       return
     }
     idInput.value = ''
@@ -1075,7 +1076,7 @@ function openSshKeygenModal(callback) {
         body: JSON.stringify({ label, username }),
       })
       const data = await res.json()
-      if (!res.ok) { showToast(data.error || 'Generálás sikertelen'); resetKeygenForm(); return }
+      if (!res.ok) { showToast(getErrorMessage(data, 'Generálás sikertelen')); resetKeygenForm(); return }
 
       const pubkey = data.publicKey || (data.key && data.key.publicKey) || ''
       document.getElementById('sshKeygenPubkeyBox').value = pubkey
@@ -1318,7 +1319,7 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
       )
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
-        showToast(err.error || 'Hiba a mentéskor'); return
+        showToast(getErrorMessage(err, 'Hiba a mentéskor')); return
       }
       resetSshAddForm()
       panel.hidden = true
@@ -1440,7 +1441,7 @@ function renderVaultGrid(secrets) {
         })
         if (!res.ok) {
           const e = await res.json().catch(() => ({}))
-          showToast('Frissítés sikertelen: ' + (e.error || res.status))
+          showToast('Frissítés sikertelen: ' + getErrorMessage(e, String(res.status)))
           saveBtn.disabled = false
           saveBtn.textContent = 'Mentés'
           return
@@ -1600,7 +1601,7 @@ function renderVaultGrid(secrets) {
         loadVault()
         setTimeout(() => { _closeModal?.(overlay) }, 1500)
       } else {
-        statusEl.textContent = data.error || 'Hiba tortent'
+        statusEl.textContent = getErrorMessage(data, 'Hiba tortent')
         statusEl.className = 'vault-bind-status error'
         statusEl.hidden = false
       }
@@ -1814,7 +1815,7 @@ async function loadExternalPaths() {
       body: JSON.stringify({ path: val }),
     })
     const data = await res.json()
-    if (data.error) { alert(data.error); return }
+    if (data.error) { alert(getErrorMessage(data)); return }
     input.value = ''
     loadExternalPaths()
     loadConnectors()

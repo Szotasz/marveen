@@ -1,6 +1,7 @@
 import { escapeHtml } from './util.js'
 import { t } from './i18n.js'
 import { showToast } from './toast.js'
+import { getErrorMessage } from './error-message.js'
 
 // ============================================================
 // === Import Memories -- external file sources ===
@@ -190,7 +191,7 @@ export function initImportMemories() {
         })
         if (!res.ok) {
           const err = await res.json().catch(() => ({ error: 'Hiba' }))
-          showToast(err.error || t('import.toast.error'))
+          showToast(getErrorMessage(err, t('import.toast.error')))
           return
         }
         showToast(t('import.toast.source_added'))

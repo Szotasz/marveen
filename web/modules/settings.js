@@ -2,6 +2,7 @@ import { escapeHtml } from './util.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
 import { switchPage } from './app-core.js'
+import { getErrorMessage } from './error-message.js'
 
 
 let _wireBranchDriftBanner = null
@@ -89,7 +90,7 @@ async function setAutonomyLevel(key, level) {
     })
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
-      showToast(data.error || 'Hiba')
+      showToast(getErrorMessage(data, 'Hiba'))
       return
     }
     // Refresh the settings tab autonomy grid if it is visible
@@ -271,7 +272,7 @@ async function mintDeviceKey() {
       body: JSON.stringify(payload),
     })
     const data = await r.json().catch(() => ({}))
-    if (!r.ok) { msg.classList.add('err'); msg.textContent = data.error || t('auth.card.err_generic'); return }
+    if (!r.ok) { msg.classList.add('err'); msg.textContent = getErrorMessage(data, t('auth.card.err_generic')); return }
     document.getElementById('authDevName').value = ''
     document.getElementById('authDevExpiry').value = ''
     minted.hidden = false
@@ -334,7 +335,7 @@ async function bridgeEnrollFromUi() {
       body: JSON.stringify(hostOverride ? { key_line: keyLine, name, host: hostOverride } : { key_line: keyLine, name }),
     })
     const data = await r.json().catch(() => ({}))
-    if (!r.ok) { msg.classList.add('err'); msg.textContent = data.error || t('auth.card.err_generic'); return }
+    if (!r.ok) { msg.classList.add('err'); msg.textContent = getErrorMessage(data, t('auth.card.err_generic')); return }
     msg.classList.add('ok')
     msg.textContent = (data.action === 'replaced' ? t('auth.bridge.repaired') : t('auth.bridge.paired')) +
       (data.warnings && data.warnings.length ? ` (${data.warnings.join('; ')})` : '')
@@ -383,7 +384,7 @@ function renderCreateLoginForm(body) {
       })
       const data = await r.json().catch(() => ({}))
       if (r.ok) { msg.classList.add('ok'); msg.textContent = t('auth.card.created'); renderAuthCard(); initAuthBanner() }
-      else { msg.classList.add('err'); msg.textContent = data.error || t('auth.card.err_generic') }
+      else { msg.classList.add('err'); msg.textContent = getErrorMessage(data, t('auth.card.err_generic')) }
     } catch { msg.classList.add('err'); msg.textContent = t('auth.login.err_network') }
   })
 }
@@ -417,7 +418,7 @@ function renderSessionPanel(body, status) {
       })
       const data = await r.json().catch(() => ({}))
       if (r.ok) { msg.classList.add('ok'); msg.textContent = t('auth.card.password_changed') }
-      else { msg.classList.add('err'); msg.textContent = data.error || t('auth.card.err_generic') }
+      else { msg.classList.add('err'); msg.textContent = getErrorMessage(data, t('auth.card.err_generic')) }
     } catch { msg.classList.add('err'); msg.textContent = t('auth.login.err_network') }
   })
   document.getElementById('authLogoutBtn').addEventListener('click', async () => {
@@ -787,8 +788,8 @@ async function saveAllSettings() {
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
-        errorEl.textContent = data.error || 'Hiba'
-        errors.push(`${key}: ${data.error || 'hiba'}`)
+        errorEl.textContent = getErrorMessage(data, 'Hiba')
+        errors.push(`${key}: ${getErrorMessage(data, 'hiba')}`)
       } else {
         input.dataset.originalValue = String(raw)
         if (data.requiresRestart) needsRestart = true
