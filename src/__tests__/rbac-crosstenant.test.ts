@@ -487,7 +487,7 @@ describe('Admin bypass -- admin role bypasses tenant filter', () => {
 
 // ── 12. Shared-tier isolation -- getAgentMemories SQL contract ────────────────
 //
-// Acceptance criterion (feaec069):
+// Acceptance criterion:
 //   tenant_A category=shared memory MUST NOT appear in a tenant_B recall
 //   of the same agent. The SQL pattern mirrors getAgentMemories with tenantId.
 
@@ -556,7 +556,7 @@ describe('shared-tier isolation -- getAgentMemories SQL contract', () => {
 
 // ── 13. Threads cross-tenant isolation -- getAgentConversationThreads contract ─
 //
-// Acceptance criterion (feaec069):
+// Acceptance criterion:
 //   Non-admin tenant_B caller must NOT see tenant_A message threads.
 
 describe('threads isolation -- getAgentConversationThreads SQL contract', () => {
@@ -625,7 +625,7 @@ describe('threads isolation -- getAgentConversationThreads SQL contract', () => 
 
 // ── 14. /api/recall memories cross-tenant isolation -- SQL contract ───────────
 //
-// Acceptance criterion (feaec069):
+// Acceptance criterion:
 //   Non-admin tenant_B recall MUST NOT return tenant_A memories.
 //   daily_logs have no tenant_id (Jonas Q3 decision) -- logs are not filtered.
 
@@ -683,7 +683,7 @@ describe('/api/recall memories isolation -- recallSearch SQL contract', () => {
 
 // ── 15. /api/memories/stale cross-tenant isolation -- real getStaleMemories ────
 //
-// Acceptance criterion (feaec069):
+// Acceptance criterion:
 //   Non-admin tenant_B GET /api/memories/stale MUST NOT return tenant_A memories.
 //
 // Unlike blocks 12-14 (which exercise SQL copies for readability), this block
