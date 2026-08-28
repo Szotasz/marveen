@@ -204,7 +204,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/auth/logout-all' && method === 'POST') {
     if (auth?.kind !== 'session' || !auth.user) {
-      json(res, { error: 'unauthorized', hint: 'A valid session is required' }, 400)
+      json(res, { error: 'unauthorized', hint: 'A valid session is required' }, 401)
       return true
     }
     const user = getDashboardUser(auth.user)
@@ -216,7 +216,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/auth/sessions' && method === 'GET') {
     if (auth?.kind !== 'session' || !auth.user) {
-      json(res, { error: 'unauthorized', hint: 'A valid session is required' }, 400)
+      json(res, { error: 'unauthorized', hint: 'A valid session is required' }, 401)
       return true
     }
     const user = getDashboardUser(auth.user)
