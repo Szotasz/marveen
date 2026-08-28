@@ -102,6 +102,15 @@ export function initDatabase(dbPathOverride?: string): void {
   if (!isMemory) db.pragma('wal_checkpoint(TRUNCATE)')
   if (!isMemory) tightenDbPermissions(dbPath)
 
+  // Load sqlite-vec BEFORE migrations. A schema-changing migration (table
+  // rebuild: create-copy-drop-rename) makes SQLite reparse the schema, which
+  // validates every trigger -- including the vec0-backed memories triggers. If
+  // the extension is not loaded on this connection yet, that reparse fails with
+  // "no such module: vec0" and the process dies before the dashboard can start
+  // (2026-08-28 outage, migration 0022). Safe no-op when the binary is missing;
+  // initVecSupport() below still does the virtual-table setup.
+  tryLoadVecExtension()
+
   applyMigrations(db)
 
   // INVARIANT: a row that says 'delivered' must carry a delivered_at.
