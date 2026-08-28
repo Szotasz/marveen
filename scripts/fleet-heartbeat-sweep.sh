@@ -12,7 +12,18 @@ set -euo pipefail
 ROOT="/Users/jonasgergo/marveen"
 TOKEN="$(cat "$ROOT/store/.dashboard-token")"
 API="http://localhost:3420"
-MAIN_AGENT="${MAIN_AGENT_ID:-marveen}"  # coordinator; excluded from the sweep (has its own heartbeat)
+
+_read_main_agent_id() {
+  local env_file="$ROOT/.env"
+  if [[ -f "$env_file" ]]; then
+    local val
+    val="$(grep '^MAIN_AGENT_ID=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2-)"
+    val="${val//\"/}"; val="${val//\'/}"
+    [[ -n "$val" ]] && { echo "$val"; return; }
+  fi
+  echo "marveen"
+}
+MAIN_AGENT="${MAIN_AGENT_ID:-$(_read_main_agent_id)}"  # coordinator; excluded from the sweep (has its own heartbeat)
 STAGGER="${1:-60}"           # seconds between agents, avoids a fleet-wide token spike
 LOG="$ROOT/store/fleet-heartbeat-sweep.log"
 

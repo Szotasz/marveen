@@ -26,6 +26,20 @@ MARVEEN_ROOT = "/Users/jonasgergo/marveen"
 DASHBOARD_TOKEN_PATH = os.path.join(MARVEEN_ROOT, "store/.dashboard-token")
 DASHBOARD_URL = "http://localhost:3420"
 
+
+def _read_env_main_agent_id() -> str:
+    """Read MAIN_AGENT_ID from .env; fall back to env var, then 'marveen'."""
+    env_file = os.path.join(MARVEEN_ROOT, ".env")
+    if os.path.exists(env_file):
+        with open(env_file) as f:
+            for line in f:
+                if line.startswith("MAIN_AGENT_ID="):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return os.environ.get("MAIN_AGENT_ID", "marveen")
+
+
+_MAIN_AGENT_ID = _read_env_main_agent_id()
+
 # Hungarian + English correction patterns
 CORRECTION_KEYWORDS = [
     "ne csináld", "ne csinald", "ne tedd", "ne add", "ne írj", "ne irj",
@@ -122,13 +136,12 @@ def _get_agent_name(cwd: str) -> str:
     m2 = re.search(r"/agents/([^/]+)/", config_dir)
     if m2:
         return m2.group(1)
-    return os.environ.get("MAIN_AGENT_ID", "marveen")
+    return _MAIN_AGENT_ID
 
 
 def _draft_path(agent_name: str) -> str:
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    main_agent = os.environ.get("MAIN_AGENT_ID", "marveen")
-    if agent_name == main_agent:
+    if agent_name == _MAIN_AGENT_ID:
         base = os.path.expanduser("~/.claude/skills/auto-discovered")
     else:
         base = os.path.join(MARVEEN_ROOT, "agents", agent_name, ".claude", "skills", "auto-discovered")
@@ -176,8 +189,7 @@ def _notify_main_agent(agent_name: str, draft_path: str, reason: str) -> None:
         f"Draft: {draft_path}\n"
         "Átnézés után patch-elhető vagy globális skillbe mozgatható."
     )
-    main_agent = os.environ.get("MAIN_AGENT_ID", "marveen")
-    payload = json.dumps({"from": agent_name, "to": main_agent, "content": content})
+    payload = json.dumps({"from": agent_name, "to": _MAIN_AGENT_ID, "content": content})
     try:
         req = urllib.request.Request(
             f"{DASHBOARD_URL}/api/messages",
