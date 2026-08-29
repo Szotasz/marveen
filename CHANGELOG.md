@@ -9,6 +9,20 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
+### Fixed
+
+- `memories` table INSERT and DELETE no longer throw `no such module: vec0` when
+  the sqlite-vec extension is not loaded on the current connection (e.g. a
+  `sqlite3` CLI session). The three database-level sync triggers
+  (`vec_memories_ai`, `vec_memories_au`, `vec_memories_ad`) are removed from
+  `initVecSupport()`; the ANN index is now maintained by explicit application-level
+  calls in `saveAgentMemory`, `backfillEmbeddings`, `runLinkMaintenance`, and the
+  memory-delete paths. Existing installations: the triggers are dropped
+  automatically on first startup via the `DROP TRIGGER IF EXISTS` block that
+  already ran at the start of `initVecSupport()`. No migration file needed.
+  A new CI-safe regression test (`memories-vec0.test.ts`) guards against the
+  triggers re-appearing.
+
 ### Changed
 
 - Blackboard stale-sweeper thresholds moved from a hardcoded agent-name map to

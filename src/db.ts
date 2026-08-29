@@ -196,7 +196,7 @@ export function initDatabase(dbPathOverride?: string): void {
 
   // Create shadow rows in memories for any import_memories entries that lack
   // them.  Must run after initVecSupport so that vec0 is loaded and the
-  // vec_memories_ai trigger won't crash on INSERT.
+  // vec_memories virtual table exists before the backfill inserts into it.
   void backfillImportShadowRows().catch(err => logger.warn({ err }, 'Import shadow backfill failed'))
 }
 
@@ -585,7 +585,9 @@ export function saveAgentMemory(
   // unavailability silently skips them without affecting the saved memory.
   generateEmbedding(content + (keywords ? ' ' + keywords : '')).then(async emb => {
     if (emb) {
-      db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(floatsToBlob(emb), id)
+      const blob = floatsToBlob(emb)
+      db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(blob, id)
+      syncVecMemoryEmbeddingUpdate(id, blob)
       await linkToNeighbors(id)
     }
   }).catch(() => {})
@@ -2497,7 +2499,9 @@ export async function backfillEmbeddings(): Promise<number> {
     const text = row.content + (row.keywords ? ' ' + row.keywords : '')
     const emb = await generateEmbedding(text)
     if (emb) {
-      db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(floatsToBlob(emb), row.id)
+      const blob = floatsToBlob(emb)
+      db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(blob, row.id)
+      syncVecMemoryEmbeddingUpdate(row.id, blob)
       count++
     }
     // Small delay to not overwhelm Ollama
@@ -2510,7 +2514,8 @@ export async function backfillEmbeddings(): Promise<number> {
 
 // Creates shadow rows in `memories` for any `import_memories` entry that lacks
 // one (memory_shadow_id IS NULL).  Called after initVecSupport() so that vec0
-// is loaded and the vec_memories_ai trigger points to a live virtual table.
+// is loaded when the application-level vec sync (syncVecMemoryEmbeddingUpdate)
+// runs during embedding backfill.
 export async function backfillImportShadowRows(): Promise<number> {
   type ImportRow = { id: string; content: string; keywords: string | null; updated_at: number }
   const pending = db
@@ -2533,7 +2538,8 @@ export async function backfillImportShadowRows(): Promise<number> {
   // Strip raw HTML/markup from any previously-crawled HTML import rows.
   // New crawls already strip via import-crawler.ts; this one-time pass cleans
   // rows ingested before that fix.  Runs here (after initVecSupport) so that
-  // vec0 is loaded when vec_memories_au fires on the embedding_blob UPDATE.
+  // vec0 is loaded when the application-level vec sync runs on the
+  // embedding_blob UPDATE inside the loop below.
   type HtmlImportRow = { import_id: string; content: string; shadow_id: number }
   const htmlRows = db
     .prepare(
@@ -2708,7 +2714,9 @@ export async function runLinkMaintenance(opts: {
     const text = row.content + (row.keywords ? ' ' + row.keywords : '')
     const emb = await generateEmbedding(text)
     if (emb) {
-      db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(floatsToBlob(emb), row.id)
+      const blob = floatsToBlob(emb)
+      db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(blob, row.id)
+      syncVecMemoryEmbeddingUpdate(row.id, blob)
       reembedded++
     }
   }
@@ -2770,6 +2778,26 @@ export function migrateExistingEmbeddingsToBLOB(): number {
   return count
 }
 
+// Application-level vec_memories synchronisation helpers.
+//
+// These replace the three DROP'd triggers (vec_memories_ai/au/ad). Call them
+// wherever the application writes to `memories` so the ANN index stays in sync
+// without requiring vec0 to be loaded on every database connection.
+export function syncVecMemoryDelete(id: number): void {
+  if (!vecExtensionLoaded) return
+  try {
+    db.prepare('DELETE FROM vec_memories WHERE memory_id = ?').run(BigInt(id))
+  } catch { /* vec0 unavailable at runtime -- no-op */ }
+}
+
+export function syncVecMemoryEmbeddingUpdate(id: number, embeddingBlob: Buffer): void {
+  if (!vecExtensionLoaded) return
+  try {
+    db.prepare('DELETE FROM vec_memories WHERE memory_id = ?').run(BigInt(id))
+    db.prepare('INSERT OR IGNORE INTO vec_memories(memory_id, embedding) VALUES(?, ?)').run(BigInt(id), embeddingBlob)
+  } catch { /* vec0 unavailable at runtime -- no-op */ }
+}
+
 function tryLoadVecExtension(): void {
   vecExtensionAttempted = true
   try {
@@ -2797,33 +2825,6 @@ function initVecSupport(): void {
       memory_id INTEGER PRIMARY KEY,
       embedding FLOAT[768]
     )
-  `)
-
-  db.exec(`
-    CREATE TRIGGER vec_memories_ai
-    AFTER INSERT ON memories
-    WHEN NEW.embedding_blob IS NOT NULL
-    BEGIN
-      INSERT INTO vec_memories(memory_id, embedding) VALUES(NEW.id, NEW.embedding_blob);
-    END
-  `)
-
-  db.exec(`
-    CREATE TRIGGER vec_memories_au
-    AFTER UPDATE OF embedding_blob ON memories
-    BEGIN
-      DELETE FROM vec_memories WHERE memory_id = OLD.id;
-      INSERT INTO vec_memories(memory_id, embedding)
-        SELECT NEW.id, NEW.embedding_blob WHERE NEW.embedding_blob IS NOT NULL;
-    END
-  `)
-
-  db.exec(`
-    CREATE TRIGGER vec_memories_ad
-    AFTER DELETE ON memories
-    BEGIN
-      DELETE FROM vec_memories WHERE memory_id = OLD.id;
-    END
   `)
 
   // Backfill: push any existing BLOB embeddings not yet in the ANN index.

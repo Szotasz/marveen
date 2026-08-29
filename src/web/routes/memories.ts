@@ -4,6 +4,7 @@ import {
   searchMemories, getMemoriesForChat, getDb, touchMemoriesAccessed,
   recordMemoryRead, recordMemoryReadBatch, getStaleMemories, getMemoryVersions,
   runMemoryMaintenance, runLinkMaintenance, getLinksForMemories, writeAgentAuditLog,
+  syncVecMemoryDelete,
   type Memory,
 } from '../../db.js'
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config.js'
@@ -717,6 +718,7 @@ Respond ONLY with JSON, nothing else:
     // Invalidate the in-process TTL cache so a deleted memory does not
     // resurface in the agent-filtered list for the cache lifetime.
     if (changes > 0) {
+      syncVecMemoryDelete(id)
       clearMemoryCache()
       try {
         writeAgentAuditLog({ agent_id: row?.agent_id || 'unknown', entity: 'memory', action: 'delete', entity_id: id })

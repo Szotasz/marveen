@@ -14,6 +14,7 @@
 // tests can pass an in-memory database without touching the production store.
 
 import type Database from 'better-sqlite3'
+import { syncVecMemoryDelete } from '../db.js'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -129,6 +130,7 @@ export function scopeToTenant(db: Database.Database, tenantId: string) {
         const result = db
           .prepare('DELETE FROM memories WHERE tenant_id = ? AND id = ?')
           .run(tenantId, id)
+        if (result.changes > 0) syncVecMemoryDelete(id)
         return result.changes > 0
       },
     },

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { getDb } from '../../db.js'
+import { getDb, syncVecMemoryDelete } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { crawlSource } from '../import-crawler.js'
@@ -110,6 +110,7 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
     if (shadowIds.length) {
       const ph = shadowIds.map(() => '?').join(',')
       db.prepare(`DELETE FROM memories WHERE id IN (${ph})`).run(...shadowIds.map(r => r.memory_shadow_id))
+      for (const r of shadowIds) syncVecMemoryDelete(r.memory_shadow_id)
     }
     json(res, { ok: true })
     return true
@@ -162,6 +163,7 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
     if (shadowIds.length) {
       const ph = shadowIds.map(() => '?').join(',')
       db.prepare(`DELETE FROM memories WHERE id IN (${ph})`).run(...shadowIds.map(r => r.memory_shadow_id))
+      for (const r of shadowIds) syncVecMemoryDelete(r.memory_shadow_id)
     }
     json(res, { ok: true, deleted: changes })
     return true
@@ -180,6 +182,7 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
     if (shadowIds.length) {
       const ph = shadowIds.map(() => '?').join(',')
       db.prepare(`DELETE FROM memories WHERE id IN (${ph})`).run(...shadowIds.map(r => r.memory_shadow_id))
+      for (const r of shadowIds) syncVecMemoryDelete(r.memory_shadow_id)
     }
     logger.info({ deleted: changes }, 'Import memories wiped')
     json(res, { ok: true, deleted: changes })

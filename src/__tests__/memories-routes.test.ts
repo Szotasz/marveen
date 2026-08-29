@@ -22,6 +22,7 @@ vi.mock('../db.js', () => ({
   }),
   touchMemoriesAccessed: vi.fn(),
   writeAgentAuditLog: vi.fn(),
+  syncVecMemoryDelete: vi.fn(),
 }))
 vi.mock('../config.js', () => ({
   MAIN_AGENT_ID: 'marveen',
