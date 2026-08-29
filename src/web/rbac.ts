@@ -160,7 +160,7 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
 
   // Recall, overview and me -- non-admin readable (memories:read is the narrowest fitting permission).
   // /api/overview response is further filtered in the route handler: fleet-level fields are omitted
-  // for non-admin callers (see [B2] in store/668-rick-plan.md).
+  // for non-admin callers -- a tenant user must not learn the fleet's internal structure.
   { method: 'GET', pathPattern: '/api/recall',      prefix: true,  permission: 'memories:read' },
   { method: 'GET', pathPattern: '/api/v1/recall',   prefix: true,  permission: 'memories:read' },
   { method: 'GET', pathPattern: '/api/overview',    prefix: false, permission: 'memories:read' },
