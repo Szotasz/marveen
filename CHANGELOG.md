@@ -11,6 +11,12 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- Migration checksum guard improvement: known-safe mismatches (e.g. post-apply
+  comment or privacy scrubs) now log at `INFO` instead of `WARN`. A new
+  `KNOWN_SAFE_MISMATCHES` constant in `db-migrations.ts` documents each entry
+  with a reason, so a genuine accidental edit still surfaces as `WARN` and is
+  not lost in background noise.
+
 - Approval tenant-scoping for B2B users: `approvals` table now has a `tenant_id`
   column (migration 0025). `GET /api/approvals` scopes results to the caller's
   tenant for non-admin session users (SQL-level filter before LIMIT, per the

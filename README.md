@@ -15,7 +15,7 @@
 
 > **Fork.** Ez a repó a [Szotasz/marveen](https://github.com/Szotasz/marveen) önálló forkja, amely `fork-point` (2026-07-26, baseline: upstream `55ecbc6`) óta függetlenül fejlődik. Az upstream javításokat szelektíven vesszük át (`git fetch upstream` + cherry-pick). Hozzájárulásokat ehhez a forkhoz várunk PR-ként. Az AI által generált monolitikus kódot felhagyva, modularizált verzió alkotása a célom, amelyben nagyságrendekkel kisebb tokenhasználatot emészt fel magának a keretrendszernek a használata és robosztusabb kialakítása révén hosszútávon stabilabb működést biztosít.
 >
-> Állapot: upstream `1ac8a40` vs fork `a3b6d95`, 2026-08-29
+> Állapot: upstream `60e4bcc` vs fork `163234a`, 2026-08-29
 
 ## Jónás Gergő (cett) hozzájárulásai az eredeti Marveen repóhoz
 
@@ -51,7 +51,7 @@ A `span_reads` tábla rögzíti, ki és mikor olvasott egy emléket; a `memory_v
 
 **Üzemeltetési megbízhatóság**
 
-Marveen-újraindítás vagy váratlan crash után az összes konfigurált ágens 60 másodpercen belül automatikusan visszaáll; a rendszer megkülönbözteti a szellem-sessionöket (shell él, Claude összeomlott) és azokat is újraindítja. Ha egy modell elérhetetlenné válik, konfigurálható visszalépési lánc lép életbe (pl. opus -> sonnet -> haiku), kétszeres pane-megerősítéssel, hogy egy chatben idézett hibaüzenet ne indítson felesleges váltást. Kontextustelítődésnél fail-closed `/clear` kapu véd: nem indul újraindítás, ha aktív gyermekfolyamat, kézbesítetlen kimenet vagy megválaszolatlan kérdés van; a compact monitor per-agent cooldown-nal és modell-specifikus limittel ütemez; a deferred-compact pending flag megakadályozza, hogy aktívan dolgozó ágensek kiessenek a tömörítési körből (a token_usage sor forduló-végén keletkezik, ezért a frissesség-kaput a pending flag bypass-olja; 95%+ kontextusnál értesítő üzenet kerül a pane-be); a monitor a főágens saját session-jén belüli futásakor a busy jelzést önokozottnak tekinti -- nem flaggeli pending-nek, így elkerüli a végtelen halasztási ciklust; a `buildMemoryContext()` és a mögöttes `recentMemories()` most tenant-szűrést is elfogad, megelőzve a cross-tenant szivárgást ha a függvényt egy jövőbeli chat-integrációs úton bekötik. A 4-utas provider-dispatch (Claude/Ollama/Deepseek/OpenRouter) háttér-workerbe kiemelve, így a kanban AI-bontás is futhat helyi Ollama-modellen; session végén az auto-skillify hook SKILL.md draftot generál, ha a session elérte az összetettségi küszöböt.
+Marveen-újraindítás vagy váratlan crash után az összes konfigurált ágens 60 másodpercen belül automatikusan visszaáll; a rendszer megkülönbözteti a szellem-sessionöket (shell él, Claude összeomlott) és azokat is újraindítja. Ha egy modell elérhetetlenné válik, konfigurálható visszalépési lánc lép életbe (pl. opus -> sonnet -> haiku), kétszeres pane-megerősítéssel, hogy egy chatben idézett hibaüzenet ne indítson felesleges váltást. Kontextustelítődésnél fail-closed `/clear` kapu véd: nem indul újraindítás, ha aktív gyermekfolyamat, kézbesítetlen kimenet vagy megválaszolatlan kérdés van; a compact monitor per-agent cooldown-nal és modell-specifikus limittel ütemez; a deferred-compact pending flag megakadályozza, hogy aktívan dolgozó ágensek kiessenek a tömörítési körből (a token_usage sor forduló-végén keletkezik, ezért a frissesség-kaput a pending flag bypass-olja; 95%+ kontextusnál értesítő üzenet kerül a pane-be); a monitor a főágens saját session-jén belüli futásakor a busy jelzést önokozottnak tekinti -- nem flaggeli pending-nek, így elkerüli a végtelen halasztási ciklust; a `buildMemoryContext()` és a mögöttes `recentMemories()` most tenant-szűrést is elfogad, megelőzve a cross-tenant szivárgást ha a függvényt egy jövőbeli chat-integrációs úton bekötik. A 4-utas provider-dispatch (Claude/Ollama/Deepseek/OpenRouter) háttér-workerbe kiemelve, így a kanban AI-bontás is futhat helyi Ollama-modellen; session végén az auto-skillify hook SKILL.md draftot generál, ha a session elérte az összetettségi küszöböt. A migráció-runner állandó `WARN` helyett `INFO`-t logol, ha a checksum-eltérés egy ismert, jóváhagyott fájlmódosításból (pl. privacy-scrub) ered -- így egy valódi, véletlen szerkesztés jövőben nem olvad bele a megszokott zajba.
 
 **Fleet koordináció és láthatóság**
 
@@ -70,7 +70,7 @@ A DB migration runner checksum-ellenőrzéssel és per-migrációs tranzakciókk
 ## A fork létrehozása óta átvett - cherry-pick - javítások:
 #720, #727, #729, #738, #739, #740, #741, #742, #743, #744, #746, #747, #749, #751, #752, #753, #756, #757, #758, #763, #760, #765, #768, #769, #771, #772, #776, #777, #778, #779, #780, #781, #782, #783, #784, #785, #786, #789, #790, #791, #793, #795, #797, #799, #800, #801, #802, #803, #805, #821, #822, #826, #828, #829, #832, #838, #866, #833, #933, #934, #942, #943, #938, #854, #855, #871, #879, #888, #889, #906, #911, #926, #929, #940, #936, #973, #877, #964, #842, #857, #861, #885, #895, #896, #843, #876, #957, #1001, #1000, #982, #899, #939, #955, #992, #988, #985, #1007, #1010, #1013, #995, 
 
-Állapot: upstream `1ac8a40` vs fork `a3b6d95`, 2026-08-29
+Állapot: upstream `60e4bcc` vs fork `163234a`, 2026-08-29
 
 <!-- ONGOING: Minden jövőbeli fork-PR leadásakor (Zack -> Jarvis) frissítsd ezt a szakaszt
      a friss git log alapján:
