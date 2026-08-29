@@ -20,6 +20,13 @@ Extract a version for release: `npm run release-notes -- <version>`
   `approvals:write` permissions; POST (approval creation) remains restricted to
   fleet agents and admins at the route level regardless of RBAC write permission.
 
+- **[API]** B2B admin UI: new admin-only dashboard page with three tabs (Tenants /
+  Users / Device Keys). Agent availability matrix per tenant with deny-by-default
+  opt-in (`tenant_agent_availability` table, migration `0026`). Device key tenant
+  assignment. New endpoints: `GET/PUT /api/admin/agent-availability`,
+  `GET /api/admin/device-keys`, `PATCH /api/admin/device-keys/:id`.
+  `device_keys` gains a `tenant_id` FK column (same migration).
+
 - Approval attribution for session-auth callers: `PATCH /api/approvals/:id` now
   derives `resolved_by` from the authenticated session username (`ctx.auth.user`)
   when the request is made by a dashboard (session-auth) user, ignoring the
