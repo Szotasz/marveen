@@ -110,7 +110,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     }
 
     // Tenant isolation: non-admin callers only see their own tenant's rows.
-    // Applied before the tier filter so the two can compose correctly.
+    // REQUIRED for the q-only branch (no agentId): searchMemories and its LIKE
+    // fallback do not accept a tenantId, so SQL-level filtering is not possible
+    // there. For all other branches (agentId, hybridSearch, getMemoriesForChat)
+    // this is redundant defence-in-depth -- those already filter in SQL before LIMIT.
     if (!isAdmin) {
       results = results.filter((m) => ((m as Memory & { tenant_id?: string }).tenant_id ?? 'default') === effectiveTenantId)
     }
