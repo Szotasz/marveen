@@ -350,6 +350,47 @@ describe('checksum mismatch', () => {
       cleanup()
     }
   })
+
+  it('emits INFO (not WARN) when the mismatch is in KNOWN_SAFE_MISMATCHES (version 4)', () => {
+    const { dir, cleanup } = tempMigrationsDir()
+    const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => logger)
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => logger)
+
+    try {
+      // Version 4 is listed in KNOWN_SAFE_MISMATCHES.
+      const migrationPath = join(dir, '0004_span_tracing.sql')
+      writeMigration(dir, '0004_span_tracing.sql', 'CREATE TABLE safe_chk (id INTEGER PRIMARY KEY);')
+
+      const db = freshDb()
+      applyMigrations(db, dir)
+      expect(maxVersion(db)).toBe(4)
+
+      // Mutate the file (simulates the post-apply privacy scrub that happened in production).
+      writeFileSync(migrationPath, 'CREATE TABLE safe_chk (id INTEGER PRIMARY KEY); -- comment added', 'utf-8')
+
+      infoSpy.mockClear()
+      warnSpy.mockClear()
+
+      expect(() => applyMigrations(db, dir)).not.toThrow()
+      expect(appliedVersions(db)).toEqual([4])
+
+      // WARN must NOT have been called with a checksum message.
+      const checksumWarnCalled = warnSpy.mock.calls.some(args =>
+        args.some(a => typeof a === 'string' && a.includes('checksum')),
+      )
+      expect(checksumWarnCalled).toBe(false)
+
+      // INFO must have been called with a "known safe" message.
+      const safeInfoCalled = infoSpy.mock.calls.some(args =>
+        args.some(a => typeof a === 'string' && a.includes('known safe')),
+      )
+      expect(safeInfoCalled).toBe(true)
+    } finally {
+      infoSpy.mockRestore()
+      warnSpy.mockRestore()
+      cleanup()
+    }
+  })
 })
 
 // ── 8. import shadow migration (0013): schema-only, safe without vec0 ─────────

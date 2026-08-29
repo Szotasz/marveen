@@ -106,9 +106,21 @@ function applyMigration(db: Database.Database, m: MigrationFile): void {
 // ── checksum guard ───────────────────────────────────────────────────────────
 
 /**
+ * Known-safe checksum mismatches: migrations whose SQL was edited after
+ * application for non-schema reasons (comment cleanup, privacy scrub, etc.).
+ * A mismatch on a listed version logs at INFO instead of WARN, because the
+ * edit was deliberate and reviewed. Every entry must document the reason so
+ * a future reader can distinguish it from an accidental edit.
+ */
+const KNOWN_SAFE_MISMATCHES: Record<number, string> = {
+  4: 'Privacy scrub 2026-07-29: agent-name removed from seed comment. No schema change.',
+}
+
+/**
  * Warns (non-blocking) when the on-disk SQL differs from the recorded checksum.
  * This catches accidental edits to already-applied migrations. We warn and
  * continue rather than aborting because the schema change already happened.
+ * Mismatches listed in KNOWN_SAFE_MISMATCHES are downgraded to INFO.
  */
 function warnChecksumMismatch(
   db: Database.Database,
@@ -120,10 +132,18 @@ function warnChecksumMismatch(
   if (!row || row.checksum === null) return
   const current = sha256(m.sql)
   if (current !== row.checksum) {
-    logger.warn(
-      { version: m.version, expected: row.checksum, actual: current },
-      'Migration checksum mismatch -- file was modified after being applied. Continuing.',
-    )
+    const safeReason = KNOWN_SAFE_MISMATCHES[m.version]
+    if (safeReason) {
+      logger.info(
+        { version: m.version, reason: safeReason },
+        'Migration SQL updated after apply (known safe): checksum differs but schema is unchanged.',
+      )
+    } else {
+      logger.warn(
+        { version: m.version, expected: row.checksum, actual: current },
+        'Migration checksum mismatch -- file was modified after being applied. Continuing.',
+      )
+    }
   }
 }
 
