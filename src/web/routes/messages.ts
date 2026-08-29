@@ -198,6 +198,10 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (isPartnerTenant) {
       writeAgentAuditLog({ agent_id: sanitizeAgentIdent(from), entity: 'message', action: 'create', entity_id: msg.id,
         detail: { from: from.trim(), to: storedTo, tenant_id: ctx.tenantId, authorized_by: 'partner_sender_allowlist' } })
+    } else if (ctx.auth?.kind === 'session' && ctx.auth.user) {
+      try {
+        writeAgentAuditLog({ agent_id: ctx.auth.user, entity: 'message', action: 'create', entity_id: msg.id })
+      } catch { /* audit failure must not abort message creation */ }
     }
     logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note }, 'Agent message created')
     // Delivery hook: open an 'assigned' blackboard row only when the sender explicitly

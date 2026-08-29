@@ -198,8 +198,13 @@ describe('POST /api/messages -- partner tenant auth', () => {
 
     expect(out.status).toBe(200)
     expect(db.isAuthorizedPartnerSender).not.toHaveBeenCalled()
-    // No audit log for non-partner sends
-    expect(db.writeAgentAuditLog).not.toHaveBeenCalled()
+    // Session-auth user audit (kanban 666): session user gets their own audit row even on non-partner tenants.
+    expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(expect.objectContaining({
+      agent_id: 'admin-user',
+      entity: 'message',
+      action: 'create',
+      entity_id: 8,
+    }))
   })
 })
 

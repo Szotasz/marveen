@@ -14,6 +14,7 @@ import {
   getHeartbeatKanbanSummary,
   countNewHotMemories,
   countPlannedKanbanCards,
+  writeAgentAuditLog,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
@@ -328,6 +329,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'internal_error', hint: 'Failed to create card' }, 500)
       return true
     }
+    try {
+      if (ctx.auth?.kind === 'session' && ctx.auth.user) {
+        writeAgentAuditLog({ agent_id: ctx.auth.user, entity: 'kanban', action: 'create', entity_id: id })
+      }
+    } catch { /* audit failure must not abort card creation */ }
     json(res, { ok: true, id })
     return true
   }
@@ -342,7 +348,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     }
     const body = await readBody(req)
     const data = JSON.parse(body.toString())
-    if (updateKanbanCard(id, data)) { json(res, { ok: true }); return true }
+    if (updateKanbanCard(id, data)) {
+      try {
+        if (ctx.auth?.kind === 'session' && ctx.auth.user) {
+          writeAgentAuditLog({ agent_id: ctx.auth.user, entity: 'kanban', action: 'update', entity_id: id })
+        }
+      } catch { /* audit failure must not abort card update */ }
+      json(res, { ok: true })
+      return true
+    }
     json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404)
     return true
   }
