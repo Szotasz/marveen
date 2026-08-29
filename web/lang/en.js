@@ -330,7 +330,7 @@ window._i18n.en = {
 
   // --- Activity ---
   'agents.card.no_output':       'no recent output',
-  'activity.not_running':        'session not running',
+  'agents.card.not_running':     'session not running',
   'activity.state.working':      'working',
   'activity.state.idle':         'idle',
   'activity.state.unknown':      'unknown',
@@ -1621,7 +1621,6 @@ window._i18n.en = {
   'kanban.gantt.nav_next':          'Next',
 
   // --- Activity tooltip ---
-  'activity.tooltip.terminal':   'Open terminal',
 
   // --- Connectors tooltips ---
   'connectors.tooltip.installed_mcp': 'Wired in .mcp.json (manageable in Connectors list)',

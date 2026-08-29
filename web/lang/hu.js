@@ -469,7 +469,7 @@ window._i18n.hu = {
   'agents.btn.running':            'Futtatás...',
   // --- Activity ---
   'agents.card.no_output':       'nincs friss kimenet',
-  'activity.not_running':        'a session nem fut',
+  'agents.card.not_running':     'a session nem fut',
 
   'activity.tooltip.mode':       'Jogosultsági mód: {mode}. Ebben a módban az ágens megáll és jóváhagyásra vár, mielőtt eszközt hívna -- ha senki nem figyeli, órákig állhat úgy, hogy közben tétlennek látszik.',
   'activity.state.working':      'dolgozik',
@@ -1624,7 +1624,6 @@ window._i18n.hu = {
   'kanban.gantt.nav_next':          'Következő',
 
   // --- Activity tooltip ---
-  'activity.tooltip.terminal':   'Terminal megnyitása',
 
   // --- Connectors tooltips ---
   'connectors.tooltip.installed_mcp': 'Bekötve a .mcp.json-ban (a Connectors listán kezelhető)',
