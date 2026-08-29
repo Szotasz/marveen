@@ -247,6 +247,20 @@ describe('GET /api/memories -- admin ?tenant filter', () => {
     expect(mock).toHaveBeenCalled()
     expect(mock.mock.calls[0][3]).toBeUndefined()
   })
+
+  it('non-admin cannot spoof ?tenant -- uses own tenantId (IDOR guard)', async () => {
+    // A viewer passing ?tenant=other-tenant must NOT gain access to that tenant's memories.
+    // recallTenantId must equal the caller's own tenantId, not the spoofed param.
+    const { ctx } = makeCtx('GET', '/api/memories?q=test&tenant=other-tenant',
+      { kind: 'session', user: 'jane.doe' },
+      { role: 'viewer', tenantId: 'own-tenant' },
+    )
+    await tryHandleMemories(ctx)
+    const mock = vi.mocked(dbMod.hybridSearch)
+    expect(mock).toHaveBeenCalled()
+    // Must be called with 'own-tenant', not 'other-tenant'
+    expect(mock.mock.calls[0][3]).toBe('own-tenant')
+  })
 })
 
 // ── tenant-selector.js frontend unit ─────────────────────────────────────────
