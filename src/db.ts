@@ -450,19 +450,21 @@ function withoutRank<T extends { rank: number }>(rows: T[]): Omit<T, 'rank'>[] {
   return rows.map(({ rank: _rank, ...rest }) => rest)
 }
 
-export function searchMemories(query: string, chatId: string, limit = 3): Memory[] {
+export function searchMemories(query: string, chatId: string, limit = 3, tenantId?: string): Memory[] {
   const terms = buildFtsMatchExpression(query)
   if (!terms) return []
   try {
+    const tc = tenantId ? ' AND m.tenant_id = ?' : ''
+    const tp = tenantId ? [tenantId] : []
     const candidates = db
       .prepare(
         `SELECT m.*, f.rank AS rank FROM memories m
          JOIN memories_fts f ON m.id = f.rowid
-         WHERE f.content MATCH ? AND m.chat_id = ?
+         WHERE f.content MATCH ? AND m.chat_id = ?${tc}
          ORDER BY rank
          LIMIT ?`
       )
-      .all(terms, chatId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
+      .all(terms, chatId, ...tp, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
     return withoutRank(reRankByRecency(candidates, limit)) as Memory[]
   } catch {
     return []
@@ -502,7 +504,11 @@ export function decayMemories(): void {
   db.prepare('UPDATE memories SET salience = MAX(salience * 0.995, 0.01) WHERE created_at < ?').run(oneWeekAgo)
 }
 
-export function getMemoriesForChat(chatId: string, limit = 10): Memory[] {
+export function getMemoriesForChat(chatId: string, limit = 10, tenantId?: string): Memory[] {
+  if (tenantId) {
+    return db.prepare('SELECT * FROM memories WHERE chat_id = ? AND tenant_id = ? ORDER BY accessed_at DESC LIMIT ?')
+      .all(chatId, tenantId, limit) as Memory[]
+  }
   return db
     .prepare('SELECT * FROM memories WHERE chat_id = ? ORDER BY accessed_at DESC LIMIT ?')
     .all(chatId, limit) as Memory[]
@@ -1805,6 +1811,7 @@ export interface AgentMessage {
   trace_id: string | null
   span_id: string | null
   parent_span_id: string | null
+  tenant_id: string | null
 }
 
 export function createAgentMessage(
@@ -1831,16 +1838,19 @@ export function createAgentMessage(
     trace_id: traceCtx?.trace_id ?? null,
     span_id: traceCtx?.span_id ?? null,
     parent_span_id: traceCtx?.parent_span_id ?? null,
+    tenant_id: tenantId ?? null,
   }
 }
 
-export function getPendingMessages(toAgent?: string): AgentMessage[] {
+export function getPendingMessages(toAgent?: string, tenantId?: string): AgentMessage[] {
+  const tc = tenantId ? ' AND tenant_id = ?' : ''
+  const tp = tenantId ? [tenantId] : []
   if (toAgent) {
-    return db.prepare("SELECT * FROM agent_messages WHERE status = 'pending' AND to_agent = ? ORDER BY created_at ASC")
-      .all(toAgent) as AgentMessage[]
+    return db.prepare(`SELECT * FROM agent_messages WHERE status = 'pending' AND to_agent = ?${tc} ORDER BY created_at ASC`)
+      .all(toAgent, ...tp) as AgentMessage[]
   }
-  return db.prepare("SELECT * FROM agent_messages WHERE status = 'pending' ORDER BY created_at ASC")
-    .all() as AgentMessage[]
+  return db.prepare(`SELECT * FROM agent_messages WHERE status = 'pending'${tc} ORDER BY created_at ASC`)
+    .all(...tp) as AgentMessage[]
 }
 
 // Status-guarded (pending only): the federation removal path bulk-fails
@@ -1982,7 +1992,10 @@ export function markPendingFederatedFailed(id: number, error: string): boolean {
   return db.prepare("UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ? AND status = 'pending'").run(error, now, id).changes > 0
 }
 
-export function listAgentMessages(limit = 50): AgentMessage[] {
+export function listAgentMessages(limit = 50, tenantId?: string): AgentMessage[] {
+  if (tenantId) {
+    return db.prepare('SELECT * FROM agent_messages WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?').all(tenantId, limit) as AgentMessage[]
+  }
   return db.prepare('SELECT * FROM agent_messages ORDER BY created_at DESC LIMIT ?').all(limit) as AgentMessage[]
 }
 
@@ -2055,16 +2068,18 @@ const AGENT_MESSAGE_LIMIT_CAP = 200
 // then JS-filter -- that starved rarely-active agents' threads, dashboard bug
 // 2026-06-03). `beforeId` pages older: pass the oldest id you already have to
 // fetch the next-older batch (scroll-up pagination). Newest-first.
-export function getAgentConversation(agent: string, limit = 50, beforeId?: number): AgentMessage[] {
+export function getAgentConversation(agent: string, limit = 50, beforeId?: number, tenantId?: string): AgentMessage[] {
   const cap = Math.min(Math.max(1, Math.floor(limit) || 1), AGENT_MESSAGE_LIMIT_CAP)
+  const tc = tenantId ? ' AND tenant_id = ?' : ''
+  const tp = tenantId ? [tenantId] : []
   if (beforeId !== undefined && Number.isFinite(beforeId)) {
     return db.prepare(
-      'SELECT * FROM agent_messages WHERE (from_agent = ? OR to_agent = ?) AND id < ? ORDER BY created_at DESC, id DESC LIMIT ?'
-    ).all(agent, agent, beforeId, cap) as AgentMessage[]
+      `SELECT * FROM agent_messages WHERE (from_agent = ? OR to_agent = ?) AND id < ?${tc} ORDER BY created_at DESC, id DESC LIMIT ?`
+    ).all(agent, agent, beforeId, ...tp, cap) as AgentMessage[]
   }
   return db.prepare(
-    'SELECT * FROM agent_messages WHERE (from_agent = ? OR to_agent = ?) ORDER BY created_at DESC, id DESC LIMIT ?'
-  ).all(agent, agent, cap) as AgentMessage[]
+    `SELECT * FROM agent_messages WHERE (from_agent = ? OR to_agent = ?)${tc} ORDER BY created_at DESC, id DESC LIMIT ?`
+  ).all(agent, agent, ...tp, cap) as AgentMessage[]
 }
 
 export interface AgentThread {
