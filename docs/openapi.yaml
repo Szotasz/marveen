@@ -135,6 +135,7 @@ components:
 
 
 
+
         hint:
           type: string
           description: >-
@@ -3243,6 +3244,180 @@ paths:
                 $ref: "#/components/schemas/Error"
         "404":
           description: "`not_found` — not found or already disabled"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /admin/agent-availability:
+    get:
+      tags: [admin]
+      operationId: getAgentAvailability
+      summary: List agent availability for a tenant
+      description: Returns enabled/disabled status for every known agent for the given tenant. Deny-by-default — an absent row means disabled.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tenant_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Agent availability list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tenant_id, items]
+                properties:
+                  tenant_id:
+                    type: string
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [agent_id, enabled, updated_at]
+                      properties:
+                        agent_id:
+                          type: string
+                        enabled:
+                          type: boolean
+                        updated_at:
+                          type: integer
+        "400":
+          description: "`bad_request` — missing tenant_id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      tags: [admin]
+      operationId: setAgentAvailability
+      summary: Enable or disable an agent for a tenant
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, agent_id, enabled]
+              properties:
+                tenant_id:
+                  type: string
+                agent_id:
+                  type: string
+                enabled:
+                  type: boolean
+      responses:
+        "200":
+          description: Updated availability row
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tenant_id, agent_id, enabled, updated_at]
+                properties:
+                  tenant_id:
+                    type: string
+                  agent_id:
+                    type: string
+                  enabled:
+                    type: boolean
+                  updated_at:
+                    type: integer
+        "400":
+          description: "`bad_request`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /admin/device-keys:
+    get:
+      tags: [admin]
+      operationId: adminListDeviceKeys
+      summary: List all device keys (admin)
+      description: Returns all device keys including tenant assignment. Global admin only.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Device key list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name, createdAt]
+                      properties:
+                        id:
+                          type: integer
+                        name:
+                          type: string
+                        createdAt:
+                          type: integer
+                        lastUsedAt:
+                          type: integer
+                          nullable: true
+                        expiresAt:
+                          type: integer
+                          nullable: true
+                        installId:
+                          type: string
+                          nullable: true
+                        tenantId:
+                          type: string
+                          nullable: true
+
+  /admin/device-keys/{id}:
+    patch:
+      tags: [admin]
+      operationId: assignDeviceKeyTenant
+      summary: Assign or clear the tenant of a device key
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id]
+              properties:
+                tenant_id:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Updated device key info
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, tenantId]
+                properties:
+                  id:
+                    type: integer
+                  tenantId:
+                    type: string
+                    nullable: true
+        "404":
+          description: "`not_found`"
           content:
             application/json:
               schema:

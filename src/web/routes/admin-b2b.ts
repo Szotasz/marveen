@@ -24,14 +24,17 @@ import {
   listPartnerSenders,
   createPartnerSender,
   disablePartnerSender,
+  listTenantAgentAvailability,
+  setTenantAgentAvailability,
   type Tenant,
   type DashboardUserPublic,
   type PartnerSender,
 } from '../../db.js'
+import { listDeviceKeys, assignDeviceKeyTenant } from '../auth-device-keys.js'
 import { readBody, json } from '../http-helpers.js'
 import { hashPassword } from '../password-hash.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
-import { isKnownAgent } from '../agent-config.js'
+import { isKnownAgent, listAgentNames } from '../agent-config.js'
 import { logger } from '../../logger.js'
 import type { RouteContext } from './types.js'
 
@@ -331,6 +334,91 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     auditAdmin(ctx, 'admin.partner_sender.disable', `${tenantId}/${sanitizeAgentIdent(senderId)}`,
       { sender_id: sanitizeAgentIdent(senderId), tenant_id: tenantId })
     json(res, { ok: true })
+    return true
+  }
+
+  // ── Agent availability matrix ─────────────────────────────────────────────
+  // GET  /api/admin/agent-availability?tenant_id=<id>
+  // PUT  /api/admin/agent-availability   {tenant_id, agent_id, enabled}
+  //
+  // Deny-by-default: a (tenant, agent) pair is disabled unless an enabled=1
+  // row exists in tenant_agent_availability. The GET response always includes
+  // ALL known agents, not just those with rows, so the frontend can render the
+  // full matrix without a separate fleet-agents call.
+
+  if (path === '/api/admin/agent-availability' && method === 'GET') {
+    const tenantId = ctx.url.searchParams.get('tenant_id') ?? ''
+    if (!tenantId) {
+      json(res, { error: 'required', field: 'tenant_id', hint: 'pass ?tenant_id=<id>' }, 400); return true
+    }
+    const tenant = getTenant(tenantId)
+    if (!tenant) { json(res, { error: 'not_found', field: 'tenant_id', hint: 'Tenant not found' }, 404); return true }
+
+    const rows = listTenantAgentAvailability(tenantId)
+    const rowMap = new Map(rows.map(r => [r.agent_id, r]))
+    const allAgents = listAgentNames()
+    const items = allAgents.map(agentId => {
+      const row = rowMap.get(agentId)
+      return { agent_id: agentId, enabled: row ? row.enabled === 1 : false, updated_at: row?.updated_at ?? null }
+    })
+    json(res, { tenant_id: tenantId, items })
+    return true
+  }
+
+  if (path === '/api/admin/agent-availability' && method === 'PUT') {
+    const body = JSON.parse((await readBody(req)).toString()) as Record<string, unknown>
+    const tenantId = typeof body.tenant_id === 'string' ? body.tenant_id.trim() : ''
+    const agentId = typeof body.agent_id === 'string' ? body.agent_id.trim() : ''
+    const enabled = Boolean(body.enabled)
+
+    if (!tenantId) { json(res, { error: 'required', field: 'tenant_id' }, 400); return true }
+    if (!agentId) { json(res, { error: 'required', field: 'agent_id' }, 400); return true }
+
+    const tenant = getTenant(tenantId)
+    if (!tenant || tenant.disabled_at !== null) {
+      json(res, { error: 'not_found', field: 'tenant_id', hint: 'Tenant not found or disabled' }, 404); return true
+    }
+    if (!isKnownAgent(sanitizeAgentIdent(agentId))) {
+      json(res, { error: 'not_found', field: 'agent_id', hint: 'Unknown agent' }, 404); return true
+    }
+
+    const row = setTenantAgentAvailability(tenantId, sanitizeAgentIdent(agentId), enabled)
+    auditAdmin(ctx, 'admin.agent_availability.set', `${tenantId}/${agentId}`, { enabled })
+    json(res, { tenant_id: row.tenant_id, agent_id: row.agent_id, enabled: row.enabled === 1, updated_at: row.updated_at })
+    return true
+  }
+
+  // ── Device keys ───────────────────────────────────────────────────────────
+  // GET   /api/admin/device-keys                      list all keys (with tenant_id)
+  // PATCH /api/admin/device-keys/:id  {tenant_id}    assign/clear tenant
+
+  if (path === '/api/admin/device-keys' && method === 'GET') {
+    const keys = listDeviceKeys()
+    json(res, { items: keys, total: keys.length })
+    return true
+  }
+
+  const deviceKeyPatchMatch = path.match(/^\/api\/admin\/device-keys\/(\d+)$/)
+  if (deviceKeyPatchMatch && method === 'PATCH') {
+    const keyId = parseInt(deviceKeyPatchMatch[1], 10)
+    const body = JSON.parse((await readBody(req)).toString()) as Record<string, unknown>
+
+    if (!('tenant_id' in body)) {
+      json(res, { error: 'required', field: 'tenant_id', hint: 'Pass tenant_id (string or null)' }, 400); return true
+    }
+    const newTenantId = body.tenant_id === null ? null : typeof body.tenant_id === 'string' ? body.tenant_id.trim() || null : null
+
+    if (newTenantId !== null) {
+      const tenant = getTenant(newTenantId)
+      if (!tenant || tenant.disabled_at !== null) {
+        json(res, { error: 'not_found', field: 'tenant_id', hint: 'Tenant not found or disabled' }, 404); return true
+      }
+    }
+
+    const ok = assignDeviceKeyTenant(keyId, newTenantId)
+    if (!ok) { json(res, { error: 'not_found', field: 'id', hint: 'Device key not found' }, 404); return true }
+    auditAdmin(ctx, 'admin.device_key.assign_tenant', keyId, { tenant_id: newTenantId })
+    json(res, { ok: true, id: keyId, tenant_id: newTenantId })
     return true
   }
 

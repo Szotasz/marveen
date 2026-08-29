@@ -128,6 +128,7 @@ describe('mint + storage discipline', () => {
       lastUsedAt: null,
       expiresAt: null,
       installId: null,
+      tenantId: null,
     })
   })
 })
