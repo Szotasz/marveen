@@ -90,7 +90,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     const mode = url.searchParams.get('mode') || 'hybrid'
 
     let results: Memory[]
-    const recallTenantId = isAdmin ? undefined : effectiveTenantId
+    const recallTenantId = tenantParam ?? (isAdmin ? undefined : effectiveTenantId)
     if (q && mode === 'hybrid') {
       results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit, recallTenantId)
     } else if (q && agentId) {

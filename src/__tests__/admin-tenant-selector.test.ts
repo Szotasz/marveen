@@ -9,7 +9,7 @@
 //   Removing the `auth?.kind === 'session'` guard would cause the role/tenant_id
 //   to be set for token callers too, failing the "non-session: role=null" tests.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -210,5 +210,116 @@ describe('GET /api/kanban -- admin ?tenant filter', () => {
     await tryHandleKanban(ctx)
     // scopeToTenant called with own-tenant, not the spoofed acme-corp
     expect(vi.mocked(tenantScope.scopeToTenant)).toHaveBeenCalledWith(expect.anything(), 'own-tenant')
+  })
+})
+
+// ── memories ?tenant (BUG 1 regression) ──────────────────────────────────────
+// Mutation proof: removing the `tenantParam ??` prefix from the recallTenantId
+// assignment would cause BUG 1 to return: admin+?tenant would bypass tenant
+// filter (undefined) instead of scoping to the requested tenant.
+
+import * as dbMod from '../db.js'
+import { tryHandleMemories } from '../web/routes/memories.js'
+
+// Default mode is 'hybrid', so ?q without mode= hits hybridSearch(agentId, q, limit, tenantId).
+// tenantId is the 4th arg (index 3).
+describe('GET /api/memories -- admin ?tenant filter', () => {
+  it('scopes to ?tenant when admin passes tenant param', async () => {
+    const { ctx, out } = makeCtx('GET', '/api/memories?q=test&tenant=alpha',
+      { kind: 'session', user: 'jane.doe' },
+      { role: 'admin', tenantId: null },
+    )
+    await tryHandleMemories(ctx)
+    expect(out.status).toBe(200)
+    // hybridSearch 4th arg must be 'alpha' (not undefined -- BUG 1 regression)
+    const mock = vi.mocked(dbMod.hybridSearch)
+    expect(mock).toHaveBeenCalled()
+    expect(mock.mock.calls[0][3]).toBe('alpha')
+  })
+
+  it('bypasses tenant filter (undefined) when admin omits ?tenant', async () => {
+    const { ctx } = makeCtx('GET', '/api/memories?q=test',
+      { kind: 'session', user: 'jane.doe' },
+      { role: 'admin', tenantId: null },
+    )
+    await tryHandleMemories(ctx)
+    const mock = vi.mocked(dbMod.hybridSearch)
+    expect(mock).toHaveBeenCalled()
+    expect(mock.mock.calls[0][3]).toBeUndefined()
+  })
+})
+
+// ── tenant-selector.js frontend unit ─────────────────────────────────────────
+// Vitest runs under Node (no jsdom), so we shim the four DOM methods the
+// selector uses. The module-level auth-status cache is busted by resetModules()
+// before each dynamic import.
+
+describe('initTenantSelector -- frontend unit', () => {
+  let container: any
+  let savedFetch: typeof globalThis.fetch
+  let savedDocument: typeof globalThis.document
+  let savedWindow: typeof globalThis.window
+
+  beforeEach(() => {
+    savedFetch    = globalThis.fetch
+    savedDocument = (globalThis as any).document
+    savedWindow   = (globalThis as any).window
+    container = { hidden: true, append: vi.fn() }
+    ;(globalThis as any).window   = {}
+    ;(globalThis as any).document = {
+      getElementById: vi.fn().mockReturnValue(container),
+      createElement: vi.fn().mockImplementation((_tag: string) => ({
+        className: '', textContent: '', htmlFor: '', id: '', value: '',
+        children: [] as any[],
+        addEventListener: vi.fn(),
+        appendChild: vi.fn(),
+        append: vi.fn(),
+      })),
+    }
+  })
+
+  afterEach(() => {
+    globalThis.fetch            = savedFetch
+    ;(globalThis as any).document = savedDocument
+    ;(globalThis as any).window   = savedWindow
+    vi.resetModules()
+  })
+
+  it('returns null for non-admin callers', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ role: 'viewer', tenant_id: 'acme', authenticated: true }),
+    }) as any
+    const { initTenantSelector } = await import('../../web/modules/tenant-selector.js')
+    const getter = await initTenantSelector('myContainer', vi.fn())
+    expect(getter).toBeNull()
+  })
+
+  it('renders select and returns getter when admin + tenants available', async () => {
+    globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes('auth/status')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ role: 'admin', tenant_id: null, authenticated: true }) })
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ items: [{ id: 'alpha', display_name: 'Alpha Co' }], total: 1 }) })
+    }) as any
+    const { initTenantSelector } = await import('../../web/modules/tenant-selector.js')
+    const getter = await initTenantSelector('myContainer', vi.fn())
+    expect(getter).not.toBeNull()
+    expect(container.hidden).toBe(false)
+  })
+
+  it('returns null when tenant list response uses legacy array shape (no .items)', async () => {
+    // Regression: old shape was a bare array; .items ?? [] must guard against this
+    globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes('auth/status')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ role: 'admin', tenant_id: null, authenticated: true }) })
+      }
+      // Legacy bare-array response -- no .items field
+      return Promise.resolve({ ok: true, json: () => Promise.resolve([{ id: 'alpha', display_name: 'Alpha Co' }]) })
+    }) as any
+    const { initTenantSelector } = await import('../../web/modules/tenant-selector.js')
+    const getter = await initTenantSelector('myContainer', vi.fn())
+    // .items is undefined -> fallback [] -> tenants.length === 0 -> null
+    expect(getter).toBeNull()
   })
 })

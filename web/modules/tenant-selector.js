@@ -33,7 +33,7 @@ export async function initTenantSelector(containerId, onChange) {
   let tenants = []
   try {
     const r = await fetch('/api/admin/tenants')
-    if (r.ok) tenants = await r.json()
+    if (r.ok) tenants = (await r.json()).items ?? []
   } catch {}
 
   if (!tenants.length) return null
@@ -58,7 +58,7 @@ export async function initTenantSelector(containerId, onChange) {
   tenants.forEach(ten => {
     const opt = document.createElement('option')
     opt.value = ten.id
-    opt.textContent = ten.name ? `${ten.name} (${ten.id})` : ten.id
+    opt.textContent = ten.display_name ? `${ten.display_name} (${ten.id})` : ten.id
     sel.appendChild(opt)
   })
 
