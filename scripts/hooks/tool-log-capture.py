@@ -1,5 +1,22 @@
 #!/usr/bin/env python3
-"""PostToolUse hook: log every tool call to /api/tool-log for the activity dashboard."""
+"""PostToolUse hook: log every tool call to /api/tool-log for the activity dashboard.
+
+REGISTRATION IS PER-AGENT ON PURPOSE. This hook is shipped in
+templates/settings.json.template, which ensureAgentHooks merges into each
+agent's OWN settings.json (agents/<name>/.claude/settings.json). Do NOT
+"improve" this by hoisting the entry into the shared marveen/.claude or
+~/.claude settings so it "works for every session". That change looks like a
+fix and is the opposite: the per-agent placement is the ONLY thing keeping the
+owner's own Claude Code sessions out of tool_call_log. A session that is not an
+agent never loads an agent's settings.json, so it never reaches this hook --
+that is the whole defence, and hoisting the entry removes it.
+
+Identity comes from ledger_lib.agent_id_from_payload (LEDGERCWD828 / #1100):
+the session transcript path first, then MARVEEN_AGENT_ID, then cwd. The
+transcript path is fixed when the session starts, so an agent that later cds
+into another repo (devy working in molyo) still logs under its own name --
+measured 2026-08-29, both branches.
+"""
 import sys
 import os
 import json
