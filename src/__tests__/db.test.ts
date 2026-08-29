@@ -76,6 +76,26 @@ describe('memories', () => {
   it('leepulesi soprest vegrehajt hiba nelkul', () => {
     expect(() => decayMemories()).not.toThrow()
   })
+
+  it('recentMemories tenant filter is SQL-level (not post-LIMIT application filter)', () => {
+    // Mutation guard: if tenant_id = ? were applied after LIMIT instead of inside the
+    // WHERE clause, a query for 4 tenant-a rows from a pool of 8 mixed rows (4+4)
+    // would return only ~2 results. The SQL-level filter must come before LIMIT.
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    const chatId = 'tenant-mutation-chat'
+    for (let i = 0; i < 4; i++) {
+      db.prepare(
+        'INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, tenant_id) VALUES (?, ?, ?, 1.0, ?, ?, ?)'
+      ).run(chatId, `tenant-a memory ${i}`, 'semantic', now + i, now + i, 'tenant-a')
+      db.prepare(
+        'INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, tenant_id) VALUES (?, ?, ?, 1.0, ?, ?, ?)'
+      ).run(chatId, `tenant-b memory ${i}`, 'semantic', now + i, now + i, 'tenant-b')
+    }
+    const results = recentMemories(chatId, 4, 'tenant-a')
+    expect(results).toHaveLength(4)
+    expect(results.every((m) => m.tenant_id === 'tenant-a')).toBe(true)
+  })
 })
 
 describe('buildFtsMatchExpression', () => {
