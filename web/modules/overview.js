@@ -50,24 +50,27 @@ export async function loadOverview() {
     if (gen !== _ovLoadGen) return
     const d = await res.json()
 
-    // === Zone 1: Fleet Health bar ===
-    const running = d.agents.running
-    const total = d.agents.total
+    // === Zone 1: Fleet Health bar (admin-only fields) ===
+    const isAdminView = 'agents' in d
+    const running = isAdminView ? d.agents.running : 0
+    const total = isAdminView ? d.agents.total : 0
     const pendingApprovals = d.pendingApprovals || 0
     const errors4h = d.errors4h || 0
     const unread = d.unreadMessages || 0
     const stuck = d.stuckTasks || 0
 
-    document.getElementById('fhAgentsText').textContent = running + '/' + total
-    document.getElementById('fhApprovalsText').textContent = pendingApprovals
-    document.getElementById('fhCostText').textContent = d.costTodayUsd > 0 ? '$' + d.costTodayUsd.toFixed(2) : '—'
-    document.getElementById('fhErrorsText').textContent = errors4h
-
     const bar = document.getElementById('fleetHealthBar')
-    const dot = document.getElementById('fhDot')
-    const alertLevel = errors4h > 0 || stuck > 0 ? 'danger' : pendingApprovals > 0 ? 'warn' : ''
-    bar.className = 'fh-bar' + (alertLevel ? ' fh-' + alertLevel : '')
-    dot.className = 'fh-dot' + (alertLevel ? ' ' + alertLevel : '')
+    if (bar) bar.hidden = !isAdminView
+    if (isAdminView) {
+      document.getElementById('fhAgentsText').textContent = running + '/' + total
+      document.getElementById('fhApprovalsText').textContent = pendingApprovals
+      document.getElementById('fhCostText').textContent = d.costTodayUsd > 0 ? '$' + d.costTodayUsd.toFixed(2) : '—'
+      document.getElementById('fhErrorsText').textContent = errors4h
+      const dot = document.getElementById('fhDot')
+      const alertLevel = errors4h > 0 || stuck > 0 ? 'danger' : pendingApprovals > 0 ? 'warn' : ''
+      bar.className = 'fh-bar' + (alertLevel ? ' fh-' + alertLevel : '')
+      if (dot) dot.className = 'fh-dot' + (alertLevel ? ' ' + alertLevel : '')
+    }
 
     // === Zone 2: Attention Required ===
     const attSection = document.getElementById('attentionSection')
@@ -75,11 +78,11 @@ export async function loadOverview() {
     const attBadge = document.getElementById('attentionBadge')
     const attItems = []
 
-    if (pendingApprovals > 0) attItems.push({ icon: '⏳', text: pendingApprovals + ' üggő jóváhagyás vár', href: '#approvals', label: 'Megnyitás' })
+    if (isAdminView && pendingApprovals > 0) attItems.push({ icon: '⏳', text: pendingApprovals + ' üggő jóváhagyás vár', href: '#approvals', label: 'Megnyitás' })
     if (unread > 0) attItems.push({ icon: '\u{1F4AC}', text: unread + ' kézbesítetlen inter-agent üzenet', href: '#messages', label: 'Üzenetek' })
-    if (stuck > 0) attItems.push({ icon: '⏰', text: stuck + ' ütemezett feladat elakadt', href: '#tasks', label: 'Feladatok' })
-    if (errors4h > 0) attItems.push({ icon: '⚠', text: errors4h + ' hiba az elmúlt 4 órában', href: '#status', label: 'Státusz' })
-    const stoppedAgents = (d.agents.list || []).filter(function(a) { return !a.running && a.role !== 'main' })
+    if (isAdminView && stuck > 0) attItems.push({ icon: '⏰', text: stuck + ' ütemezett feladat elakadt', href: '#tasks', label: 'Feladatok' })
+    if (isAdminView && errors4h > 0) attItems.push({ icon: '⚠', text: errors4h + ' hiba az elmúlt 4 órában', href: '#status', label: 'Státusz' })
+    const stoppedAgents = isAdminView ? (d.agents.list || []).filter(function(a) { return !a.running && a.role !== 'main' }) : []
     if (stoppedAgents.length > 0) attItems.push({ icon: '\u{1F534}', text: stoppedAgents.length + ' ágens nem fut (' + stoppedAgents.map(function(a) { return a.label }).join(', ') + ')', href: '#agents', label: 'Ágensek' })
 
     if (attItems.length > 0) {
@@ -98,9 +101,10 @@ export async function loadOverview() {
       attSection.hidden = true
     }
 
-    // === Zone 3: Compact agents grid ===
+    // === Zone 3: Compact agents grid (admin-only) ===
     const grid = document.getElementById('agentsMiniGrid')
-    if (grid && d.agents.list) {
+    if (grid) grid.hidden = !isAdminView
+    if (grid && isAdminView && d.agents.list) {
       grid.innerHTML = ''
       for (const a of d.agents.list) {
         const card = document.createElement('div')
@@ -173,19 +177,26 @@ export async function loadOverview() {
     }
 
     // === Zone 5: KPI strip ===
-    const taskDiff = d.tasksToday - d.tasksYesterday
-    document.getElementById('kpiTasks').textContent = d.tasksToday
-    const trendEl = document.getElementById('kpiTasksTrend')
-    if (trendEl) {
-      if (taskDiff > 0) { trendEl.textContent = '+' + taskDiff; trendEl.className = 'kpi-trend up' }
-      else if (taskDiff < 0) { trendEl.textContent = String(taskDiff); trendEl.className = 'kpi-trend down' }
-      else { trendEl.textContent = ''; trendEl.className = 'kpi-trend' }
-    }
-    document.getElementById('kpiCost').textContent = d.costTodayUsd > 0 ? '$' + d.costTodayUsd.toFixed(2) : '—'
+    // kpiMemories is tenant-scoped (always shown); fleet KPIs are admin-only.
     document.getElementById('kpiMemories').textContent = d.memories.count.toLocaleString('hu-HU').replace(/,/g, ' ')
-    document.getElementById('kpiArtifacts').textContent = (d.artifacts?.count ?? 0).toLocaleString('hu-HU').replace(/,/g, ' ')
-    document.getElementById('kpiSkills').textContent = d.skills.count
-    document.getElementById('kpiTokens').textContent = fmtTokensShort(d.tokensToday)
+    ;['kpiTasks', 'kpiCost', 'kpiArtifacts', 'kpiSkills', 'kpiTokens'].forEach(function(id) {
+      const el = document.getElementById(id)
+      if (el && el.closest('.kpi-item')) el.closest('.kpi-item').hidden = !isAdminView
+    })
+    if (isAdminView) {
+      const taskDiff = d.tasksToday - d.tasksYesterday
+      document.getElementById('kpiTasks').textContent = d.tasksToday
+      const trendEl = document.getElementById('kpiTasksTrend')
+      if (trendEl) {
+        if (taskDiff > 0) { trendEl.textContent = '+' + taskDiff; trendEl.className = 'kpi-trend up' }
+        else if (taskDiff < 0) { trendEl.textContent = String(taskDiff); trendEl.className = 'kpi-trend down' }
+        else { trendEl.textContent = ''; trendEl.className = 'kpi-trend' }
+      }
+      document.getElementById('kpiCost').textContent = d.costTodayUsd > 0 ? '$' + d.costTodayUsd.toFixed(2) : '—'
+      document.getElementById('kpiArtifacts').textContent = (d.artifacts?.count ?? 0).toLocaleString('hu-HU').replace(/,/g, ' ')
+      document.getElementById('kpiSkills').textContent = d.skills.count
+      document.getElementById('kpiTokens').textContent = fmtTokensShort(d.tokensToday)
+    }
 
   } catch (err) {
     const feed = document.getElementById('ovActivityFeed')

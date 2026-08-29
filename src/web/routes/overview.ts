@@ -266,19 +266,25 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     }
 
     jsonMaybeGzip(req, res, {
-      agents: { total, running, list: agentsForGrid },
-      tasksToday,
-      tasksYesterday,
+      // Tenant-scoped: visible to all authenticated callers.
       memories: { count: memStats.c, categories: memCats.c },
-      artifacts: { count: artifactCount },
-      skills: { count: skillCount, today: skillsToday },
-      tokensToday,
-      costTodayUsd: Math.round(costTodayUsd * 10000) / 10000,
-      pendingApprovals,
-      errors4h,
       unreadMessages,
-      stuckTasks,
       activity: activity.slice(0, 30),
+      // Fleet-level: omitted entirely for non-admin callers.
+      // A non-admin caller must not learn the fleet's internal structure
+      // (agent list, token cost, task counts, etc.).
+      ...(isAdmin && {
+        agents: { total, running, list: agentsForGrid },
+        tasksToday,
+        tasksYesterday,
+        artifacts: { count: artifactCount },
+        skills: { count: skillCount, today: skillsToday },
+        tokensToday,
+        costTodayUsd: Math.round(costTodayUsd * 10000) / 10000,
+        pendingApprovals,
+        errors4h,
+        stuckTasks,
+      }),
     })
     return true
   }

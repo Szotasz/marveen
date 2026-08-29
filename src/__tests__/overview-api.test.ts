@@ -22,7 +22,7 @@ const { tryHandleOverview } = await import('../web/routes/overview.js')
 function fakeCtx(
   path: string,
   method = 'GET',
-  auth?: { role?: RouteContext['role']; tenantId?: string | null },
+  auth: { role?: RouteContext['role']; tenantId?: string | null } = { role: 'admin' },
 ): { ctx: RouteContext; out: { status: number; body: any } } {
   const out: { status: number; body: any } = { status: 0, body: null }
   const res: any = {
@@ -430,5 +430,46 @@ describe('GET /api/overview — tenant isolation', () => {
     await tryHandleOverview(ctx)
     // Fix-revert proof: without tenant scoping both pending messages would be counted.
     expect(out.body.unreadMessages).toBe(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Non-admin fleet-field filtering (regresszió-kapu)
+// ---------------------------------------------------------------------------
+//
+// These tests guard against fleet-level fields leaking to non-admin callers.
+// If anyone removes the `...(isAdmin && {...})` spread from overview.ts,
+// all ten `not.toHaveProperty` assertions below turn red immediately.
+//
+// Mutation proof: re-adding any fleet field unconditionally breaks this block.
+
+describe('GET /api/overview — non-admin response omits fleet-level fields', () => {
+  const FLEET_FIELDS = [
+    'agents', 'tasksToday', 'tasksYesterday', 'artifacts', 'skills',
+    'tokensToday', 'costTodayUsd', 'pendingApprovals', 'errors4h', 'stuckTasks',
+  ] as const
+
+  it('viewer role: all ten fleet-level fields are absent', async () => {
+    const { ctx, out } = fakeCtx('/api/overview', 'GET', { role: 'viewer' })
+    await tryHandleOverview(ctx)
+    for (const field of FLEET_FIELDS) {
+      expect(out.body, `field "${field}" must not be present for viewer`).not.toHaveProperty(field)
+    }
+  })
+
+  it('viewer role: tenant-scoped fields are still present', async () => {
+    const { ctx, out } = fakeCtx('/api/overview', 'GET', { role: 'viewer' })
+    await tryHandleOverview(ctx)
+    expect(out.body).toHaveProperty('memories')
+    expect(out.body).toHaveProperty('unreadMessages')
+    expect(out.body).toHaveProperty('activity')
+  })
+
+  it('admin role: all ten fleet-level fields are present', async () => {
+    const { ctx, out } = fakeCtx('/api/overview', 'GET', { role: 'admin' })
+    await tryHandleOverview(ctx)
+    for (const field of FLEET_FIELDS) {
+      expect(out.body, `field "${field}" must be present for admin`).toHaveProperty(field)
+    }
   })
 })

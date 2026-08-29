@@ -137,10 +137,9 @@ describe('checkPermission -- session login (viewer role)', () => {
     if (!result.allowed) expect(result.status).toBe(403)
   })
 
-  it('denies GET /api/blackboard (viewer has no blackboard access)', () => {
+  it('allows GET /api/blackboard (viewer has blackboard:read since 668)', () => {
     const result = checkPermission(SESSION, 'GET', '/api/blackboard')
-    expect(result.allowed).toBe(false)
-    if (!result.allowed) expect(result.status).toBe(403)
+    expect(result.allowed).toBe(true)
   })
 
   it('denies GET /api/admin/tokens', () => {

@@ -80,6 +80,7 @@ const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
     'memories:read',
     'kanban:read',
     'agents:read',
+    'blackboard:read',
   ]),
 }
 
@@ -156,6 +157,18 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   { method: 'GET', pathPattern: '/api/v1/memories', prefix: true, permission: 'memories:read' },
   { method: 'POST', pathPattern: '/api/v1/memories', prefix: true, permission: 'memories:write' },
   { method: 'DELETE', pathPattern: '/api/v1/memories', prefix: true, permission: 'memories:write' },
+
+  // Recall, overview and me -- non-admin readable (memories:read is the narrowest fitting permission).
+  // /api/overview response is further filtered in the route handler: fleet-level fields are omitted
+  // for non-admin callers -- a tenant user must not learn the fleet's internal structure.
+  { method: 'GET', pathPattern: '/api/recall',      prefix: true,  permission: 'memories:read' },
+  { method: 'GET', pathPattern: '/api/v1/recall',   prefix: true,  permission: 'memories:read' },
+  { method: 'GET', pathPattern: '/api/overview',    prefix: false, permission: 'memories:read' },
+  { method: 'GET', pathPattern: '/api/v1/overview', prefix: false, permission: 'memories:read' },
+  // prefix:false because /api/me has no sub-paths yet; avoids matching /api/messages.
+  // Add explicit rows when 625 introduces sub-paths.
+  { method: 'GET', pathPattern: '/api/me',          prefix: false, permission: 'memories:read' },
+  { method: 'GET', pathPattern: '/api/v1/me',       prefix: false, permission: 'memories:read' },
 ]
 
 /**

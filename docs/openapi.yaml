@@ -3250,6 +3250,77 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [memories, unreadMessages, activity]
+                properties:
+                  memories:
+                    type: object
+                    description: Tenant-scoped memory counts. Present for all authenticated callers.
+                    properties:
+                      count: { type: integer }
+                      categories: { type: integer }
+                  unreadMessages:
+                    type: integer
+                    description: Tenant-scoped unread inter-agent messages.
+                  activity:
+                    type: array
+                    description: Tenant-scoped recent activity feed (last 30 entries, 4h window).
+                    items:
+                      type: object
+                      properties:
+                        icon: { type: string }
+                        text: { type: string }
+                        at: { type: integer, description: Unix timestamp in milliseconds }
+                        agent: { type: string }
+                  agents:
+                    x-admin-only: true
+                    description: Admin-only. Omitted for non-admin callers.
+                    type: object
+                    properties:
+                      total: { type: integer }
+                      running: { type: integer }
+                      list: { type: array, items: { type: object } }
+                  tasksToday:
+                    x-admin-only: true
+                    description: Admin-only. Omitted for non-admin callers.
+                    type: integer
+                  tasksYesterday:
+                    x-admin-only: true
+                    description: Admin-only. Omitted for non-admin callers.
+                    type: integer
+                  artifacts:
+                    x-admin-only: true
+                    description: Admin-only. Omitted for non-admin callers.
+                    type: object
+                    properties:
+                      count: { type: integer }
+                  skills:
+                    x-admin-only: true
+                    description: Admin-only. Omitted for non-admin callers.
+                    type: object
+                    properties:
+                      count: { type: integer }
+                      today: { type: integer }
+                  tokensToday:
+                    x-admin-only: true
+                    description: Admin-only. Omitted for non-admin callers.
+                    type: integer
+                  costTodayUsd:
+                    x-admin-only: true
+                    description: Admin-only. Omitted for non-admin callers.
+                    type: number
+                    format: double
+                  pendingApprovals:
+                    x-admin-only: true
+                    description: Admin-only. Omitted for non-admin callers.
+                    type: integer
+                  errors4h:
+                    x-admin-only: true
+                    description: Admin-only. Omitted for non-admin callers.
+                    type: integer
+                  stuckTasks:
+                    x-admin-only: true
+                    description: Admin-only. Omitted for non-admin callers.
+                    type: integer
 
   /marveen:
     get:
