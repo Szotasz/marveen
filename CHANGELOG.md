@@ -9,6 +9,12 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
+### Added
+
+- **[API]** `dashboard_users` table gains optional `email` and `display_name` columns
+  (migration `0024`). `POST /api/admin/users` and `PATCH /api/admin/users/:id` now
+  accept these fields; both are nullable and absent from existing rows.
+
 ### Fixed
 
 - **[API]** `GET /api/messages` tenant isolation now filters in SQL before the `LIMIT`

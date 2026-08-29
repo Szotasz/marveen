@@ -7,6 +7,19 @@
 // Component schemas
 // -------------------------------------------------------------------------
 
+export interface DashboardUserPublic {
+  id?: number;
+  username?: string;
+  role?: string;
+  tenant_id?: string;
+  /** Optional contact email. Null if not set. */
+  email?: string;
+  /** Optional display name shown in the profile view. Null if not set. */
+  display_name?: string;
+  created_at?: number;
+  disabled?: boolean;
+}
+
 export interface Error {
   /** Machine-readable snake_case error token. Canonical values are listed in the enum; additional domain-specific tokens may appear in future API versions. */
   error: 'not_found' | 'required' | 'invalid_value' | 'forbidden' | 'unauthorized' | 'conflict' | 'limit_exceeded' | 'internal_error' | 'parse_error' | 'not_supported' | 'timeout' | 'disabled' | 'managed_settings_missing' | 'upstream_error' | 'sender_not_in_allowlist' | 'federation_disabled' | 'unknown_query_parameter';

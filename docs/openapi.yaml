@@ -73,6 +73,31 @@ components:
       description: Token stored in `store/.dashboard-token`
 
   schemas:
+    DashboardUserPublic:
+      type: object
+      properties:
+        id:
+          type: integer
+        username:
+          type: string
+        role:
+          type: string
+        tenant_id:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+          description: Optional contact email. Null if not set.
+        display_name:
+          type: string
+          nullable: true
+          description: Optional display name shown in the profile view. Null if not set.
+        created_at:
+          type: integer
+        disabled:
+          type: boolean
+
     Error:
       type: object
       required: [error]
@@ -101,6 +126,8 @@ components:
             - sender_not_in_allowlist
             - federation_disabled
             - unknown_query_parameter
+
+
 
 
 

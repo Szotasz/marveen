@@ -269,6 +269,8 @@ export interface DashboardUser {
   disabled: number
   role: string
   tenant_id: string | null
+  email: string | null
+  display_name: string | null
 }
 
 export type DashboardUserPublic = Omit<DashboardUser, 'password_hash'>
@@ -286,7 +288,7 @@ export function createDashboardUser(username: string, passwordHash: string): Das
       'INSERT INTO dashboard_users (username, password_hash, role, tenant_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
     )
     .run(username, passwordHash, role, tenantId, now, now)
-  return { id: Number(info.lastInsertRowid), username, password_hash: passwordHash, role, tenant_id: tenantId, created_at: now, updated_at: now, disabled: 0 }
+  return { id: Number(info.lastInsertRowid), username, password_hash: passwordHash, role, tenant_id: tenantId, email: null, display_name: null, created_at: now, updated_at: now, disabled: 0 }
 }
 
 export function getDashboardUser(username: string): DashboardUser | undefined {
@@ -3986,12 +3988,14 @@ export function provisionDashboardUser(
   passwordHash: string,
   role: string,
   tenantId: string | null,
+  email?: string | null,
+  displayName?: string | null,
 ): DashboardUser {
   const now = Math.floor(Date.now() / 1000)
   const info = db
-    .prepare('INSERT INTO dashboard_users (username, password_hash, role, tenant_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(username, passwordHash, role, tenantId, now, now)
-  return { id: Number(info.lastInsertRowid), username, password_hash: passwordHash, role, tenant_id: tenantId, created_at: now, updated_at: now, disabled: 0 }
+    .prepare('INSERT INTO dashboard_users (username, password_hash, role, tenant_id, email, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(username, passwordHash, role, tenantId, email ?? null, displayName ?? null, now, now)
+  return { id: Number(info.lastInsertRowid), username, password_hash: passwordHash, role, tenant_id: tenantId, email: email ?? null, display_name: displayName ?? null, created_at: now, updated_at: now, disabled: 0 }
 }
 
 export function getDashboardUserById(id: number): DashboardUser | undefined {
@@ -4017,7 +4021,7 @@ export function listDashboardUsersFiltered(opts: ListUsersOpts = {}): DashboardU
   }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
   return db
-    .prepare(`SELECT id, username, role, tenant_id, created_at, updated_at, disabled FROM dashboard_users ${where} ORDER BY username COLLATE NOCASE`)
+    .prepare(`SELECT id, username, role, tenant_id, email, display_name, created_at, updated_at, disabled FROM dashboard_users ${where} ORDER BY username COLLATE NOCASE`)
     .all(...params) as DashboardUserPublic[]
 }
 
@@ -4026,6 +4030,8 @@ export interface AdminUserPatch {
   tenant_id?: string | null
   password_hash?: string
   disabled?: boolean
+  email?: string | null
+  display_name?: string | null
 }
 
 export function adminPatchDashboardUser(id: number, patch: AdminUserPatch): DashboardUser | null {
@@ -4038,6 +4044,8 @@ export function adminPatchDashboardUser(id: number, patch: AdminUserPatch): Dash
   if ('tenant_id' in patch) { fields.push('tenant_id = ?'); params.push(patch.tenant_id ?? null) }
   if (patch.password_hash !== undefined) { fields.push('password_hash = ?'); params.push(patch.password_hash) }
   if (patch.disabled !== undefined) { fields.push('disabled = ?'); params.push(patch.disabled ? 1 : 0) }
+  if ('email' in patch) { fields.push('email = ?'); params.push(patch.email ?? null) }
+  if ('display_name' in patch) { fields.push('display_name = ?'); params.push(patch.display_name ?? null) }
   params.push(id)
   db.prepare(`UPDATE dashboard_users SET ${fields.join(', ')} WHERE id = ?`).run(...params)
   return getDashboardUserById(id) ?? null
