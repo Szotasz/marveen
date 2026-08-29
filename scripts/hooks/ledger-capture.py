@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit hook: capture inbound Telegram messages into the rolling
+"""UserPromptSubmit hook: capture inbound channel messages into the rolling
 transcript (direction='in') BEFORE the agent processes the prompt. Deterministic
 and agent-independent. agent_id is derived from the session's cwd so the hook is
 generic across all three channel agents and never cross-contaminates. Never
 blocks the prompt (always exit 0).
+
+PROVIDER-AGNOSTIC: every channel plugin emits the same <channel source="..">
+envelope, so the capture matches any `plugin:<provider>:<name>` source rather
+than one hardcoded provider. Hardcoding a single provider silently drops the
+whole conversation on every other channel -- and the failure is invisible,
+because the replay still produces a non-empty block from the one provider that
+IS captured.
 """
 import sys
 import os
@@ -16,8 +23,11 @@ import ledger_lib  # noqa: E402
 # <channel source="plugin:telegram:telegram" chat_id="X" message_id="Y" ... ts="Z">
 #   TEXT
 # </channel>
+# The source is `plugin:<provider>:<server>` for every channel plugin
+# (telegram, discord, slack, ...). Matching the shape instead of one literal
+# keeps a new provider working without a code change.
 CHANNEL_RX = re.compile(
-    r'<channel\s+source="plugin:telegram:telegram"([^>]*)>(.*?)</channel>',
+    r'<channel\s+source="plugin:[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+"([^>]*)>(.*?)</channel>',
     re.DOTALL,
 )
 
@@ -32,7 +42,7 @@ def main():
         payload = json.load(sys.stdin)
     except Exception:
         sys.exit(0)
-    agent_id = ledger_lib.agent_id_from_cwd(payload.get("cwd"))
+    agent_id = ledger_lib.agent_id_from_payload(payload)
     prompt = payload.get("prompt") or ""
     for m in CHANNEL_RX.finditer(prompt):
         attrs, text = m.group(1), m.group(2)

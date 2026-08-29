@@ -452,3 +452,88 @@ describe('confirmsWedgeProfile (#248 CPU-profile guard)', () => {
     expect(confirmsWedgeProfile(null, MAX)).toBe(true)
   })
 })
+
+// STUCKFREEZE819: both false kills of 2026-08-19 hit a LIVE session with a
+// STALE verdict -- stagnation accrued in a parked/idle stretch, and the kill
+// executed ~2 minutes after the verdict's inputs, right as the session woke
+// (measured transcript ages at the two kills: ~2s and ~9s; the 20:23:19 kill
+// landed ONE second after a healthy tool_result). The gate below re-checks
+// validity at KILL time via the session transcript's mtime; a genuinely
+// wedged TUI writes nothing, so its transcript is >= freezeSeconds old by
+// construction.
+import { verdictStaleByTranscript, STALE_VERDICT_FRESH_MS } from '../web/stuck-tool-call-watcher.js'
+import { readFileSync as rfs, writeFileSync as wfs, mkdtempSync as mkdt, statSync as st } from 'node:fs'
+import { join as pjoin } from 'node:path'
+import { tmpdir as ostmp } from 'node:os'
+import { spawn as pspawn } from 'node:child_process'
+
+describe('verdictStaleByTranscript (pure) -- STUCKFREEZE819', () => {
+  const NOW = 10_000_000
+  it('a transcript written moments ago marks the verdict stale (both measured false-kill ages abort)', () => {
+    expect(verdictStaleByTranscript(NOW - 2_000, NOW)).toBe(true)   // 20:23:19 shape (~2s)
+    expect(verdictStaleByTranscript(NOW - 9_400, NOW)).toBe(true)   // 14:08:59 shape (~9s)
+  })
+
+  it('a real wedge does not abort: by construction its transcript is at least freezeSeconds old', () => {
+    expect(verdictStaleByTranscript(NOW - THRESHOLDS.freezeSeconds * 1000, NOW)).toBe(false)
+    expect(verdictStaleByTranscript(NOW - STALE_VERDICT_FRESH_MS, NOW)).toBe(false) // boundary: exactly N -> proceed
+  })
+
+  it('null mtime (dir unreadable) fails OPEN -- the stagnation signal stands, same rule as the CPU guard', () => {
+    expect(verdictStaleByTranscript(null, NOW)).toBe(false)
+  })
+
+  it('the threshold is derived, not round: above the 9s measured false-kill maximum with margin, well below the 180s wedge floor', () => {
+    expect(STALE_VERDICT_FRESH_MS).toBeGreaterThan(9_400 * 2)
+    expect(STALE_VERDICT_FRESH_MS).toBeLessThanOrEqual((THRESHOLDS.freezeSeconds * 1000) / 3)
+  })
+})
+
+describe('negative control: a stopped process writes nothing, so the mtime signal cannot mask a real wedge', () => {
+  it('SIGSTOP freezes the writer and its file mtime stands still', async () => {
+    const dir = mkdt(pjoin(ostmp(), 'wedge-sim-'))
+    const f = pjoin(dir, 'transcript.jsonl')
+    wfs(f, '')
+    // A writer that appends every 100ms -- the healthy-session analogue.
+    const child = pspawn('/bin/sh', ['-c', `while :; do echo line >> ${JSON.stringify(f)}; sleep 0.1; done`], { stdio: 'ignore' })
+    try {
+      await new Promise(r => setTimeout(r, 500))
+      const liveAge = Date.now() - st(f).mtimeMs
+      expect(liveAge).toBeLessThan(STALE_VERDICT_FRESH_MS) // alive -> gate would abort a kill
+      // The simulated wedge: stop the process (the stdio-blocked render loop's analogue).
+      process.kill(child.pid!, 'SIGSTOP')
+      const mtimeAtStop = st(f).mtimeMs
+      await new Promise(r => setTimeout(r, 1200))
+      expect(st(f).mtimeMs).toBe(mtimeAtStop) // the mtime STANDS: a wedge ages past N and recovery proceeds
+      expect(verdictStaleByTranscript(mtimeAtStop, mtimeAtStop + STALE_VERDICT_FRESH_MS + 1)).toBe(false)
+    } finally {
+      try { process.kill(child.pid!, 'SIGKILL') } catch { /* gone */ }
+    }
+  })
+})
+
+describe('wiring: the stale-verdict gate sits at the KILL boundary, not in verdict formation', () => {
+  const SRC = rfs(pjoin(__dirname, '..', 'web', 'stuck-tool-call-watcher.ts'), 'utf-8')
+
+  it('checkSession calls the gate after the CPU guard and before resumeMarveenSession', () => {
+    // Window: the checkSession function's own structural bounds.
+    const start = SRC.indexOf('async function checkSession')
+    expect(start).toBeGreaterThanOrEqual(0)
+    const body = SRC.slice(start, SRC.indexOf('\n}', start))
+    // Comment lines dropped, and the guard pinned as the EXACT live line --
+    // a bare indexOf would stay green with the call neutered (`false && ...`),
+    // which is precisely the declaration-vs-reachability trap: the text is
+    // present, the gate never runs. Caught by mutation on the first version.
+    const code = body.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+    const cpuIdx = code.indexOf('confirmsWedgeProfile(')
+    const gateIdx = code.indexOf('if (verdictStaleByTranscript(transcriptMtime, Date.now())) {')
+    const killIdx = code.indexOf('resumeMarveenSession()')
+    expect(cpuIdx).toBeGreaterThanOrEqual(0)
+    expect(gateIdx).toBeGreaterThan(cpuIdx)
+    expect(killIdx).toBeGreaterThan(gateIdx)
+  })
+
+  it('an abort logs loudly and names the incident, so a suppressed kill is findable, not a hole', () => {
+    expect(SRC).toContain('ABORTING recovery (STUCKFREEZE819)')
+  })
+})

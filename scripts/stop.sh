@@ -19,7 +19,18 @@ if [ "$OS" = "Darwin" ]; then
   launchctl unload "$HOME/Library/LaunchAgents/com.${SLUG}.dashboard.plist" 2>/dev/null
   launchctl unload "$HOME/Library/LaunchAgents/com.${SLUG}.channels.plist" 2>/dev/null
 elif [ "$OS" = "Linux" ]; then
-  if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
+  # A root-style install runs the services as SYSTEM units, and as root
+  # `systemctl --user` fails -- so this script used to fall through to the
+  # pidfile fallback, kill a possibly-stale pidfile PID, report success, and
+  # leave the system-unit services running. Check the system scope FIRST
+  # (`systemctl cat` sees system units from any uid), and if stopping them
+  # fails, say so instead of claiming success over still-running services.
+  if pidof systemd >/dev/null 2>&1 && systemctl cat "${SLUG}-dashboard.service" >/dev/null 2>&1; then
+    if ! systemctl stop "${SLUG}-dashboard" "${SLUG}-channels" 2>/dev/null; then
+      echo "ERROR: system units ${SLUG}-dashboard/${SLUG}-channels exist but could not be stopped (run as root?)" >&2
+      exit 1
+    fi
+  elif pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
     systemctl --user stop "${SLUG}-dashboard" "${SLUG}-channels" 2>/dev/null || true
   else
     for svc in dashboard channels; do

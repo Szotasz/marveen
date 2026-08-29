@@ -43,7 +43,12 @@ export interface AutoRestartConfig {
   intervalHours: number | null
   /** Phase 2: run the handoff skill to persist context before a fresh restart. */
   handoff: boolean
+  /** Hours an unanswered inbound question may keep deferring a due restart
+   *  before the restart proceeds anyway. See OPEN_QUESTION_DEFERRAL_CAP_HOURS. */
+  openQuestionDeferralCapHours: number
 }
+
+export const OPEN_QUESTION_DEFERRAL_CAP_HOURS = 24
 
 export const DEFAULT_AUTO_RESTART: AutoRestartConfig = {
   enabled: false,
@@ -51,6 +56,7 @@ export const DEFAULT_AUTO_RESTART: AutoRestartConfig = {
   dailyTime: null,
   intervalHours: null,
   handoff: false,
+  openQuestionDeferralCapHours: OPEN_QUESTION_DEFERRAL_CAP_HOURS,
 }
 
 /** Parse 'HH:MM' (24h) into minutes since local midnight, or null if invalid. */
@@ -80,12 +86,18 @@ export function normalizeAutoRestartConfig(raw: unknown): AutoRestartConfig {
   }
   // dailyTime takes precedence: never keep both, so the schedule is unambiguous.
   if (dailyTime !== null) intervalHours = null
+  let openQuestionDeferralCapHours = OPEN_QUESTION_DEFERRAL_CAP_HOURS
+  if (typeof o.openQuestionDeferralCapHours === 'number' &&
+      Number.isFinite(o.openQuestionDeferralCapHours) && o.openQuestionDeferralCapHours > 0) {
+    openQuestionDeferralCapHours = o.openQuestionDeferralCapHours
+  }
   return {
     enabled: o.enabled === true,
     mode,
     dailyTime,
     intervalHours,
     handoff: o.handoff === true,
+    openQuestionDeferralCapHours,
   }
 }
 
@@ -120,4 +132,57 @@ export function dailyDueAtMs(
   minutesSinceMidnight: number,
 ): number {
   return localMidnightMs + minutesSinceMidnight * 60_000
+}
+
+/**
+ * Why a due restart must still be deferred, or null when it may proceed.
+ * Pure so the invariants are unit-testable:
+ *   - a busy pane defers (never cut off a live turn), and
+ *   - an unanswered inbound question defers -- an idle pane is NOT proof there
+ *     is nothing to lose, because an agent waiting on the owner's answer is
+ *     idle precisely then, and a restart swallows the pending exchange (for a
+ *     channel agent even a "continue" restart is effectively fresh).
+ * Busy-pane wins the ordering: it is the harder invariant (mid-turn cutoff).
+ */
+export function restartBlockedBy(
+  signals: { paneIdle: boolean; openQuestion: boolean },
+): 'busy-pane' | 'open-question' | null {
+  if (!signals.paneIdle) return 'busy-pane'
+  if (signals.openQuestion) return 'open-question'
+  return null
+}
+
+/**
+ * Cap on how long an unanswered inbound question may keep deferring a due
+ * restart. The open-question signal has no clock of its own: a question the
+ * owner never answers stays "open" forever (a live agent ledger showed one
+ * standing for 72 days), and an uncapped deferral turns the nightly restart
+ * into a mechanism that silently never runs. After the cap the restart
+ * proceeds anyway -- the deferral must have an end, and the override is
+ * logged so it also has a voice. The hours are configurable per agent via
+ * AutoRestartConfig.openQuestionDeferralCapHours; this is the default.
+ */
+export const OPEN_QUESTION_DEFERRAL_CAP_MS = OPEN_QUESTION_DEFERRAL_CAP_HOURS * 60 * 60 * 1000
+
+/**
+ * Whether a due-but-deferred restart must proceed despite the block.
+ * Only 'open-question' deferrals are overridden: a busy pane is the harder
+ * invariant (never cut off a live turn) and is never overridden, no matter
+ * how long the streak.
+ *
+ * @param blocked          Result of restartBlockedBy for this tick.
+ * @param deferredSinceMs  When the current open-question deferral streak
+ *                         started, or null if there is no streak.
+ * @param nowMs            Current clock (ms).
+ * @param capMs            Maximum streak length before the override fires.
+ */
+export function deferralOverride(
+  blocked: 'busy-pane' | 'open-question' | null,
+  deferredSinceMs: number | null,
+  nowMs: number,
+  capMs: number = OPEN_QUESTION_DEFERRAL_CAP_MS,
+): boolean {
+  if (blocked !== 'open-question') return false
+  if (deferredSinceMs === null) return false
+  return nowMs - deferredSinceMs >= capMs
 }

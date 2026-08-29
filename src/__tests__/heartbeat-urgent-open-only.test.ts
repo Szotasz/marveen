@@ -137,9 +137,11 @@ describe('there is ONE definition, and both consumers read it', () => {
 
 describe('the heartbeat AGENT is handed the list, not a filter to re-apply', () => {
   const SCAFFOLD_SRC = readFileSync(join(ROOT, 'src', 'web', 'heartbeat-agent-scaffold.ts'), 'utf-8')
+  // The kanban step lives inside the single Metrics instrument bullet since
+  // the HBMEMBLIND819 third contract; the window is that bullet's own bounds.
   const kanbanBlock = SCAFFOLD_SRC.slice(
-    SCAFFOLD_SRC.indexOf('- **Kanban**'),
-    SCAFFOLD_SRC.indexOf('- **Scheduled tasks**'),
+    SCAFFOLD_SRC.indexOf('- **Metrics ('),
+    SCAFFOLD_SRC.indexOf('2. **Format**'),
   )
 
   it('the kanban step is one endpoint call', () => {
@@ -153,7 +155,7 @@ describe('the heartbeat AGENT is handed the list, not a filter to re-apply', () 
   })
 
   it('it says out loud that an empty list stays empty', () => {
-    expect(kanbanBlock).toMatch(/EMPTY/)
+    expect(kanbanBlock).toMatch(/report it as empty/i)
     expect(kanbanBlock).toMatch(/Do not widen the query|do not fall back|do not fill/i)
   })
 })

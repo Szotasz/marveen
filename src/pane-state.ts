@@ -1521,6 +1521,7 @@ export type StuckInputAction =
   | 'reinject-plain'   // clear + re-inject collapsed parked text (sub-agents only)
   | 'clear-preamble'   // clear a truncated/stale safety preamble, never re-inject
   | 'clear-scheduled'  // clear a parked scheduled-task tick, never re-inject (next fire re-delivers)
+  | 'reinject-recorded' // clear + re-inject the EXACT text the sender typed (registry-proven)
   | 'enter'            // a single bare Enter -- ONLY safe at rowCount <= 1
   | 'hold'             // do nothing this tick (multi-row truncated / truncation-guard)
 
@@ -1549,6 +1550,12 @@ export interface StuckInputActionFacts {
   /** parkedScheduledTaskInput(pane): a scheduled-task tick is parked. Clear-only
    * is safe on ANY session (the next schedule fire re-delivers). */
   scheduledTaskBlock: boolean
+  /** STUCKINPUT827: the parked scrape MATCHES the text the sender recorded for
+   * this pane (injected-prompt-registry). This is stronger evidence than any
+   * scrape-shape heuristic: it proves both the ORIGIN (we typed it, so it is
+   * not a human draft) and the FULL CONTENT (so the re-inject is lossless, not
+   * a tail fragment). When true the head-lost/multi-row dead end is escapable. */
+  recordedMatch: boolean
 }
 
 /**
@@ -1585,6 +1592,18 @@ export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputActi
   // Single-row still tries the harmless Enter first.
   if (f.scheduledTaskBlock) {
     return f.escalate || multiRow ? 'clear-scheduled' : 'enter'
+  }
+  // STUCKINPUT827: the sender recorded what it typed, and the parked scrape
+  // matches it. That match answers BOTH questions the scrape alone cannot:
+  // whose text this is (ours, so clearing destroys no human draft) and what it
+  // says in full (so the re-inject replays the original, not a head-lost tail).
+  // Ranked above reinject-plain because that path re-types the SCRAPE, which is
+  // lossy by construction; ranked below the complete-block path, which is
+  // already lossless and chat_id-safe. Multi-row is the case this exists for --
+  // without a record it dead-ends in 'hold' (measured: 31 minutes parked on
+  // agent-cortex-router, 2026-08-27).
+  if (f.recordedMatch) {
+    return f.escalate || multiRow ? 'reinject-recorded' : 'enter'
   }
   // Sub-agent non-channel parked text: clear + re-inject, but ONLY with
   // POSITIVE machine origin (prefix or unmistakable wrapper marker). The old
@@ -1626,6 +1645,12 @@ export function parkedMainInputHasRemedy(pane: string): boolean {
     hasPlainText: false,
     scheduledTaskBlock: parkedScheduledTaskInput(pane),
     machineOrigin: parkedMachineOriginInput(pane),
+    // Deliberately false: this helper takes only a pane, not a session, so it
+    // cannot consult the injected-prompt registry. Claiming a remedy we have
+    // not verified would let a genuinely wedged main session defer its
+    // hard restart forever (the 2026-07-25 hermes incident). Under-claiming
+    // only costs a restart that the soft path might also have fixed.
+    recordedMatch: false,
   }
   return decideStuckInputAction(facts) !== 'hold'
 }

@@ -142,6 +142,39 @@ export const BOT_NAME = env['BOT_NAME'] ?? 'Marveen'
 // BOT_NAME, behaves exactly as before.
 export const BRAND_NAME = env['BRAND_NAME'] ?? BOT_NAME
 
+// External, non-fleet systems allowed to appear as `from` on POST
+// /api/messages. The from-auth guard there accepts registered fleet agents
+// (agents/<id>/) plus the human owner; a neighbouring SYSTEM that only ever
+// notifies an agent -- a ticketing backend, a case manager -- has no agent
+// directory and would be rejected, even though its call is token-authenticated.
+// Registering it as a fake fleet agent (mkdir agents/<id>/) "works" but has side
+// effects: the id then shows up in agent listings, restart and scheduler logic.
+//
+// Empty by default, so a fresh install behaves exactly as before and no
+// third-party id is baked into the distribution. Comma-separated in .env:
+//   SYSTEM_SENDER_IDS=cortex,billing
+// Read at module load -- adding a sender needs a dashboard restart.
+//
+// This does NOT weaken sender authentication in any meaningful way: the shared
+// dashboard token already lets its holder claim ANY registered fleet agent id
+// (see the from-auth comment in routes/messages.ts). One more claimable id does
+// not change that; the token remains the actual boundary.
+export const SYSTEM_SENDER_IDS = env['SYSTEM_SENDER_IDS'] ?? ''
+
+// Pure parse rule for SYSTEM_SENDER_IDS, so the default (unset => empty set) is
+// provable without a live .env. Entries are normalized with the SAME function
+// the route matches on, keeping this guard symmetric with the coordinator and
+// federation guards next to it -- an .env entry of "@cortex." must not silently
+// fail to match a request that sanitizes to "cortex".
+export function parseSystemSenderIds(raw: string | undefined, normalize: (s: string) => string): Set<string> {
+  return new Set(
+    (raw ?? '')
+      .split(',')
+      .map(s => normalize(s.trim()))
+      .filter(Boolean)
+  )
+}
+
 // Pure resolution rule for BRAND_NAME, so the default (brandEnv unset =>
 // botName) is provable without a live .env. brandEnv is the raw env value
 // (undefined / empty when unset). Mirrors the `env['BRAND_NAME'] ?? BOT_NAME`
@@ -198,6 +231,10 @@ export function brandSlug(raw: string): string {
 // (NFKD + ASCII + lowercase dashes). Older installs without this env var
 // fall back to "marveen" so nothing breaks when upgrading in place.
 export const MAIN_AGENT_ID = env['MAIN_AGENT_ID'] ?? 'marveen'
+// The hidden heartbeat worker's agent id. Lives here (not in
+// heartbeat-agent-scaffold) so agent-scaffold can key gates on it without an
+// import cycle: heartbeat-agent-scaffold already imports agent-scaffold.
+export const HEARTBEAT_AGENT_ID = 'heartbeat'
 
 // Identifier the OS service manager uses for the main agent's units (launchd
 // label com.<id>.channels / com.<id>.dashboard, systemd <id>-channels, etc.).

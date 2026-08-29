@@ -93,8 +93,10 @@ ALERT_COOLDOWN=600   # seconds; do not repeat the same band's alert within this
 log() { echo "[fleet-memory-gate] $*" >&2; }
 
 # --- read memory ---
-mem_total="$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null)"
-mem_avail="$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null)"
+# MEMGATE_PROC_MEMINFO exists for tests only (no /proc to stub on macOS).
+PROC_MEMINFO="${MEMGATE_PROC_MEMINFO:-/proc/meminfo}"
+mem_total="$(awk '/^MemTotal:/{print $2}' "$PROC_MEMINFO" 2>/dev/null)"
+mem_avail="$(awk '/^MemAvailable:/{print $2}' "$PROC_MEMINFO" 2>/dev/null)"
 if [[ -z "${mem_total:-}" || -z "${mem_avail:-}" || "$mem_total" -le 0 ]]; then
   log "cannot read /proc/meminfo -- fail-open (allow)"
   echo "meminfo-unreadable: allow"
@@ -135,13 +137,20 @@ send_alert() {
   local token=""
   [[ -f "$ENV_FILE" ]] && token="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"' \r\n')"
   if [[ -n "$token" ]]; then
-    curl -s --max-time 15 "https://api.telegram.org/bot${token}/sendMessage" \
-      --data-urlencode "chat_id=${CHAT_ID}" --data-urlencode "text=${msg}" >/dev/null 2>&1 \
-      && log "Telegram sent [$band]" || log "Telegram send failed (best-effort)"
+    # Honest send + cooldown stamp ONLY on confirmed delivery
+    # (NOTIFYVAKSWEEP826): stamping a failed send suppressed the retry for
+    # ALERT_COOLDOWN while the fleet was heading into OOM.
+    . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/send-telegram.sh"
+    local send_err
+    if send_err="$(send_telegram_message "$token" "$CHAT_ID" "$msg" 2>&1)"; then
+      log "Telegram sent [$band]"
+      echo "${band}:${now}" >"$ALERT_STAMP" 2>/dev/null || true
+    else
+      log "Telegram send FAILED -- cooldown stamp NOT written, will retry next run: ${send_err}"
+    fi
   else
     log "no TELEGRAM_BOT_TOKEN; alert only logged"
   fi
-  echo "${band}:${now}" >"$ALERT_STAMP" 2>/dev/null || true
 }
 
 set_safe_mode() {

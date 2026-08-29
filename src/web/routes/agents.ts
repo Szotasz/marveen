@@ -103,6 +103,7 @@ import {
   agentSessionName,
   sendPromptToSession,
   capturePane,
+  delay,
 } from '../agent-process.js'
 import { addDesiredAgent, removeDesiredAgent } from '../agent-desired-state.js'
 import { RemoteStatusCache } from '../remote-status-cache.js'
@@ -1109,10 +1110,16 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         setAgentEnabledPlugins(name, provider)
         gcWasRunning = isAgentRunning(name)
         if (gcWasRunning) {
-          const stopRes = stopAgentProcess(name)
+          const stopRes = await stopAgentProcess(name)
           if (stopRes.ok) {
-            try { execSync('sleep 2', { timeout: 4000 }) } catch {}
-            gcRestarted = startAgentProcess(name).ok
+            await delay(2000)
+            // 'Agent is already running' here means the 60s reconcile sweep
+            // raced us in the stop..start gap and started the agent with the
+            // NEW config (written above, before the stop) -- the end state is
+            // exactly what a restart promises, only the starter differs
+            // (PR1014KONFIG821).
+            const gcStartRes = await startAgentProcess(name)
+            gcRestarted = gcStartRes.ok || gcStartRes.error === 'Agent is already running'
           }
         }
       }
@@ -1206,11 +1213,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       if (provider === 'telegram') sendWelcomeMessage(name, botToken.trim()).catch(() => {})
       wasRunning = isAgentRunning(name)
       if (wasRunning) {
-        const stopRes = stopAgentProcess(name)
+        const stopRes = await stopAgentProcess(name)
         if (stopRes.ok) {
-          try { execSync('sleep 2', { timeout: 4000 }) } catch {}
-          const startRes = startAgentProcess(name)
-          restarted = startRes.ok
+          await delay(2000)
+          const startRes = await startAgentProcess(name)
+          // Same reconcile-race as the GC branch above: an 'already running'
+          // start after our own stop means the agent IS up with the new
+          // provider config (PR1014KONFIG821).
+          restarted = startRes.ok || startRes.error === 'Agent is already running'
         }
       }
     }
@@ -1739,7 +1749,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // Wait for Claude Code to render the auth URL (typically 3-6s)
       let authUrl: string | null = null
       for (let i = 0; i < 12; i++) {
-        execSync('sleep 1', { timeout: 3000 })
+        await delay(1000)
         const pane = capturePane(session, host)
         if (!pane) continue
         const urlMatch = pane.match(/https:\/\/console\.anthropic\.com\/[^\s"']+/)
@@ -1775,7 +1785,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // the --channels plugin MCP server (agent comes up deaf).
     let startFresh = false
     try { startFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}
-    const result = startAgentProcess(name, { fresh: startFresh })
+    const result = await startAgentProcess(name, { fresh: startFresh })
     // Record operator intent so the monitor keeps this agent up across shared
     // tmux-server restarts / reboots (see agent-desired-state.ts).
     if (result.ok || result.error === 'Agent is already running') addDesiredAgent(name)
@@ -1791,9 +1801,16 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       json(res, { error: 'Main agent lifecycle is service-managed; use /api/marveen/restart for recovery' }, 400)
       return true
     }
-    const result = stopAgentProcess(name)
-    // Explicit stop clears intent so the monitor will not resurrect it.
+    // Explicit stop clears intent so the monitor will not resurrect it -- and
+    // it must happen BEFORE the stop yields. stopAgentProcess() now awaits ~2s
+    // while the session settles; in that window the agent is already dead but
+    // would still be listed as desired, so reconcileDesiredAgents() (every 60s,
+    // looking for exactly "desired but not running") can restart it. The stop
+    // then returns ok while the agent is back up and no longer desired -- a
+    // live session nothing will ever reap, after the operator was told it
+    // stopped. Unconditional, as before: a failed stop still clears intent.
     removeDesiredAgent(name)
+    const result = await stopAgentProcess(name)
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error }, 400)
     return true
@@ -1854,7 +1871,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // Optional { "fresh": true } body -> no `--continue` (see /start note).
     let restartFresh = false
     try { restartFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}
-    const result = restartAgentProcess(name, { fresh: restartFresh })
+    const result = await restartAgentProcess(name, { fresh: restartFresh })
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error }, 400)
     return true
@@ -2119,23 +2136,35 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const name = decodeURIComponent(agentMatch[1])
     const dir = agentDir(name)
     if (!existsSync(dir)) { json(res, { error: 'Agent not found' }, 404); return true }
+    // Clear the desired run-state FIRST, before anything yields. Deleting an
+    // agent is at least as strong a statement of intent as stopping one, so it
+    // must clear the state the same way /stop does: without this the name
+    // outlives its directory in agents-desired.json, the reconciler keeps
+    // trying to start something that no longer exists (a permanent error-level
+    // line for a machine behaving correctly), and -- the sharper hazard --
+    // re-creating an agent with the same name later starts it immediately,
+    // unasked.
+    //
+    // The ordering is load-bearing, not cosmetic. stopAgentProcess() now awaits
+    // (it used to block the event loop with execSync('sleep 2')), so the ~2s it
+    // spends settling is a window in which other work runs. The agent is
+    // already dead in that window but would still be listed as desired, and
+    // channel-monitor's reconcileDesiredAgents() sweep -- which fires every 60s
+    // looking for exactly "desired but not running" -- would start it back up.
+    // The rmSync below would then delete the directory out from under a live
+    // session, producing precisely the orphan-ghost this handler exists to
+    // prevent. Clearing intent up front makes the agent invisible to the
+    // reconciler for the whole teardown.
+    removeDesiredAgent(name)
     // Stop the running tmux session BEFORE removing the dir. Otherwise the
     // orphaned session survives the delete, rewrites a minimal .claude-config
     // under agents/<name>/, and the agent "returns" as an empty draft (persona
     // gone) that still reports running=true, with the model reset to the default.
     // stopAgentProcess() reads config from the dir (remote host, channel
     // provider) for its orphan reap, so it must run while the dir still exists.
-    if (isAgentRunning(name)) stopAgentProcess(name)
+    if (isAgentRunning(name)) await stopAgentProcess(name)
     rmSync(dir, { recursive: true, force: true })
     cleanupTeamReferences(name)
-    // Deleting an agent is at least as strong a statement of intent as stopping
-    // one, so it must clear the desired run-state the same way /stop does.
-    // Without this the name outlives its directory in agents-desired.json, and
-    // the reconciler keeps trying to start something that no longer exists --
-    // a permanent error-level log line for a machine that is behaving
-    // correctly. The sharper hazard is later: create an agent with the same
-    // name again and the stale entry starts it immediately, unasked.
-    removeDesiredAgent(name)
     json(res, { ok: true })
     return true
   }

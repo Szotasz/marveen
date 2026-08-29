@@ -7,13 +7,25 @@ __pycache__/
 *.pyc
 
 # Secrets & personal data
+# GITIGNENV820: editor backups / copies of .env (.env~, .env.bak, .env.local)
+# were not covered -- only the exact name was. Cover every variant, keep the
+# tracked example file. *~ catches editor backups of ANY secret-bearing file.
 .env
+.env.*
+!.env.example
+*~
 store/
 workspace/
 agents/
 reports/
-.claude/
+# CLAUDEIGN820: '.claude/' (directory pattern) stopped traversal, so the
+# '!.claude/settings.json' negation never fired -- the tracked settings file
+# was invisible as untracked and git add refused it on fresh clones.
+# '.claude/*' lets git enumerate the first level so the negation can work;
+# '*/**/.claude/' keeps nested .claude dirs ignored like before.
+.claude/*
 !.claude/settings.json
+*/**/.claude/
 .config/
 
 # Database
@@ -68,6 +80,7 @@ HANDOFF.md
 DREAM.md
 .external-ops-last-run
 REBUILD_PROMPT_V3.1.md
+.lang
 
 # Main agent's runtime voice config (responseMode/voiceModel). Sub-agents store
 # theirs under agents/ (already ignored); the main agent's lives at the repo root
@@ -81,8 +94,11 @@ scripts/support-mail/no-support-reply.html
 
 # M365 / Graph mail credentials (client secret, tenant/client IDs). Plaintext
 # secret -- never commit. Operator keeps this locally per install.
-marveen-mail-ugyfelkod
+# GITIGNENV820 same-class gap: exact-name-only patterns left their backup/copy
+# variants (name.bak, name.old, name.secret.bak) stageable. Glob the whole family.
+marveen-mail-ugyfelkod*
 *.secret
+*.secret.*
 .mail-credentials*
 
 # Python bytecode cache
@@ -102,3 +118,14 @@ evidence/
 .evidence/
 transcripts/
 .session-capture/
+
+# Local Netlify folder
+.netlify
+
+# .agents/: az install sajat termek-/marketing-kontextusa -- KERESKEDELMI ADAT
+# (arak, pozicionalas, versenytarsak), SOHA nem mehet a repoba. Tartalom-szintu
+# ignore (".agents/*", nem ".agents/"), mert konyvtar-szintu kizaras utan a
+# fajl-negacio nem hat (ld. 8811abfd, a .claude/settings.json ugyanigy romlott
+# el). A .example vaz viszont kimegy: abbol kap a vevo sajat kontextus-sablont.
+.agents/*
+!.agents/product-marketing.md.example

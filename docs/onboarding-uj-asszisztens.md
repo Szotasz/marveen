@@ -32,7 +32,7 @@ naptárát, fájljait). A kettő független, bármelyikkel kezdheted.
    - Tipp: a botot te (admin) hozd létre, így céges kézben marad. A kolléga a
      tokent soha nem látja.
 
-2. **Asszisztens létrehozása a dashboardon** (https://marveen.isolutions.hu):
+2. **Asszisztens létrehozása a dashboardon** (https://marveen.example.com):
    - "Felvétel", ahogy a korábbi asszisztenseknél.
 
 3. **Token bekötése:**
@@ -94,4 +94,4 @@ saját Google fiókjával.
 
 ---
 
-*Készítette: iS Marveen Főnök. A flotta a marveen.isolutions.hu címen érhető el.*
+*Készítette: iS Marveen Főnök. A flotta a marveen.example.com címen érhető el.*

@@ -798,8 +798,8 @@ const columns = document.querySelectorAll('.kanban-col-body')
 // Modal wiring
 document.getElementById('cardModalClose').addEventListener('click', () => closeModal(cardModalOverlay))
 document.getElementById('cardDetailClose').addEventListener('click', () => closeModal(cardDetailOverlay))
-cardModalOverlay.addEventListener('click', (e) => { if (e.target === cardModalOverlay) closeModal(cardModalOverlay) })
-cardDetailOverlay.addEventListener('click', (e) => { if (e.target === cardDetailOverlay) closeModal(cardDetailOverlay) })
+attachOverlayCloseGuard(cardModalOverlay)
+attachOverlayCloseGuard(cardDetailOverlay)
 
 // Add card buttons per column
 document.querySelectorAll('.kanban-add-btn').forEach((btn) => {
@@ -2488,6 +2488,30 @@ function closeModal(overlay) {
   if (overlay && overlay.id === 'skillModalOverlay') skillModalScope = null
 }
 
+// True if any visible text/textarea field inside the overlay has typed
+// content. Used to gate backdrop-click close so a stray click can't
+// silently discard unsaved input (data loss reported 2026-08-19: a full
+// card description was lost by clicking outside the "Új kártya" modal).
+function overlayHasUnsavedInput(overlay) {
+  const fields = overlay.querySelectorAll(
+    'input[type="text"]:not([list]), input[type="date"], input[type="email"], input[type="url"], textarea',
+  )
+  for (const f of fields) {
+    if (f.offsetParent !== null && f.value && f.value.trim()) return true
+  }
+  return false
+}
+
+// Backdrop click closes the modal only if it has no unsaved input; if it
+// does, a confirm() gates the close so the click has to be deliberate.
+function attachOverlayCloseGuard(overlay) {
+  overlay.addEventListener('click', (e) => {
+    if (e.target !== overlay) return
+    if (overlayHasUnsavedInput(overlay) && !confirm('Van be nem mentett szöveg -- biztosan bezárod mentés nélkül?')) return
+    closeModal(overlay)
+  })
+}
+
 // Wizard open
 addBtn.addEventListener('click', () => {
   resetWizard()
@@ -2501,9 +2525,9 @@ document.getElementById('agentDetailClose').addEventListener('click', () => clos
 document.getElementById('skillModalClose').addEventListener('click', () => closeModal(skillModalOverlay))
 
 // Click-outside-to-close
-agentWizardOverlay.addEventListener('click', (e) => { if (e.target === agentWizardOverlay) closeModal(agentWizardOverlay) })
-agentDetailOverlay.addEventListener('click', (e) => { if (e.target === agentDetailOverlay) closeModal(agentDetailOverlay) })
-skillModalOverlay.addEventListener('click', (e) => { if (e.target === skillModalOverlay) closeModal(skillModalOverlay) })
+attachOverlayCloseGuard(agentWizardOverlay)
+attachOverlayCloseGuard(agentDetailOverlay)
+attachOverlayCloseGuard(skillModalOverlay)
 
 // Close all modals on Escape
 document.addEventListener('keydown', (e) => {
@@ -2641,6 +2665,7 @@ function resetWizard() {
   agentDesc.value = ''
   agentModel.value = 'inherit'
   loadAvailableModels()
+  loadOllamaModels()
   selectedAvatar = null
   selectedAvatarFile = null
   document.querySelectorAll('#avatarGrid .avatar-grid-item').forEach(i => i.classList.remove('selected'))
@@ -3907,19 +3932,33 @@ function switchAgentTab(tab) {
 
 // === Settings save buttons ===
 async function loadOllamaModels() {
-  const group = document.getElementById('ollamaModelGroup')
-  if (!group) return
-  group.innerHTML = ''
+  // Two optgroups, mirroring loadAvailableModels(): one in the agent edit panel
+  // and one in the new-agent wizard. getElementById returns a single node, so
+  // the earlier single-group version could only ever reach the edit panel --
+  // the wizard had no local-model option at all.
+  const groups = [
+    document.getElementById('ollamaModelGroup'),
+    document.getElementById('agentModelOllamaGroup'),
+  ]
+  let models = []
   try {
     const res = await fetch('/api/ollama/models')
-    const models = await res.json()
+    if (res.ok) models = await res.json()
+  } catch { /* Ollama not reachable -- fall through with an empty list */ }
+  if (!Array.isArray(models)) models = []
+  for (const group of groups) {
+    if (!group) continue
+    group.innerHTML = ''
+    // Hide rather than show an empty group, matching loadAvailableModels().
+    if (models.length === 0) { group.style.display = 'none'; continue }
+    group.style.display = ''
     for (const m of models) {
       const opt = document.createElement('option')
       opt.value = m.name
       opt.textContent = `${m.name} (${m.size})`
       group.appendChild(opt)
     }
-  } catch { /* Ollama not available */ }
+  }
 }
 
 // Populates the DeepSeek optgroups in both the wizard and the agent edit
@@ -5651,7 +5690,7 @@ document.getElementById('addScheduleBtn').addEventListener('click', () => {
   })
 })
 document.getElementById('scheduleModalClose').addEventListener('click', () => closeModal(scheduleModalOverlay))
-scheduleModalOverlay.addEventListener('click', (e) => { if (e.target === scheduleModalOverlay) closeModal(scheduleModalOverlay) })
+attachOverlayCloseGuard(scheduleModalOverlay)
 
 // Frequency change handler
 // Type toggle (task vs heartbeat)
@@ -6090,7 +6129,7 @@ function renderScheduleList(tasks) {
 
 const scheduleRunHistoryOverlay = document.getElementById('scheduleRunHistoryOverlay')
 document.getElementById('scheduleRunHistoryClose').addEventListener('click', () => closeModal(scheduleRunHistoryOverlay))
-scheduleRunHistoryOverlay.addEventListener('click', (e) => { if (e.target === scheduleRunHistoryOverlay) closeModal(scheduleRunHistoryOverlay) })
+attachOverlayCloseGuard(scheduleRunHistoryOverlay)
 
 const RUN_STATUS_LABEL = {
   fired: () => t('tasks.run_status.fired'),
@@ -6649,7 +6688,7 @@ document.getElementById('memAddBtn').addEventListener('click', () => {
 
 // Close memory modal
 document.getElementById('memModalClose').addEventListener('click', () => closeModal(memModalOverlay))
-memModalOverlay.addEventListener('click', (e) => { if (e.target === memModalOverlay) closeModal(memModalOverlay) })
+attachOverlayCloseGuard(memModalOverlay)
 
 // Save memory (create or edit)
 document.getElementById('saveMemBtn').addEventListener('click', async () => {
@@ -7714,7 +7753,7 @@ document.querySelectorAll('.catalog-filter-btn').forEach(btn => {
 
 // Catalog install modal
 document.getElementById('catalogInstallClose').addEventListener('click', () => closeModal(catalogInstallOverlay))
-catalogInstallOverlay.addEventListener('click', (e) => { if (e.target === catalogInstallOverlay) closeModal(catalogInstallOverlay) })
+attachOverlayCloseGuard(catalogInstallOverlay)
 
 async function loadCatalog() {
   const grid = document.getElementById('catalogGrid')
@@ -7895,8 +7934,8 @@ document.getElementById('addConnectorBtn').addEventListener('click', () => {
 })
 document.getElementById('connectorModalClose').addEventListener('click', () => closeModal(connectorModalOverlay))
 document.getElementById('connectorDetailClose').addEventListener('click', () => closeModal(connectorDetailOverlay))
-connectorModalOverlay.addEventListener('click', (e) => { if (e.target === connectorModalOverlay) closeModal(connectorModalOverlay) })
-connectorDetailOverlay.addEventListener('click', (e) => { if (e.target === connectorDetailOverlay) closeModal(connectorDetailOverlay) })
+attachOverlayCloseGuard(connectorModalOverlay)
+attachOverlayCloseGuard(connectorDetailOverlay)
 
 // Type toggle
 document.getElementById('connectorType').addEventListener('change', () => {
@@ -9871,7 +9910,7 @@ document.getElementById('memImportOpenBtn').addEventListener('click', () => {
 
 // Close import modal
 document.getElementById('memImportClose').addEventListener('click', () => closeModal(memImportOverlay))
-memImportOverlay.addEventListener('click', (e) => { if (e.target === memImportOverlay) closeModal(memImportOverlay) })
+attachOverlayCloseGuard(memImportOverlay)
 
 // File area click -> trigger file input
 memImportFileArea.addEventListener('click', () => memImportFileInput.click())
@@ -10389,7 +10428,7 @@ function formatMtime(ms) {
 }
 
 document.getElementById('skillDetailClose').addEventListener('click', () => closeModal(skillDetailOverlay))
-skillDetailOverlay.addEventListener('click', (e) => { if (e.target === skillDetailOverlay) closeModal(skillDetailOverlay) })
+attachOverlayCloseGuard(skillDetailOverlay)
 
 // Scope for the next skill create/import action. 'global' means the
 // Skills page opened the modal (write to ~/.claude/skills/); any other
@@ -12372,6 +12411,7 @@ populateAvatarGrid()
 loadMemAgents()
 loadOverview()
 loadAvailableModels()
+loadOllamaModels()
 {
   const onbClose = document.getElementById('onboardingClose')
   if (onbClose) onbClose.addEventListener('click', dismissOnboarding)
@@ -14912,6 +14952,7 @@ function renderTuToolStats(data) {
 // Ideas (Ötletláda)
 // ============================================================
 let ideas = []
+let ideasAll = []
 let ideasPromoteId = null
 let ideaEditId = null
 let ideaDetailId = null
@@ -14922,12 +14963,16 @@ async function loadIdeasPage() {
   const statusFilter = document.getElementById('ideaStatusFilter')?.value ?? 'active'
   const categoryFilter = document.getElementById('ideaCategoryFilter')?.value || ''
   const params = new URLSearchParams()
-  // 'active' = new+reviewed, fetched unfiltered then narrowed client-side
-  if (statusFilter && statusFilter !== 'active') params.set('status', statusFilter)
+  // Status narrowing happens client-side on the full fetch: the stats row must
+  // count every status, and a server-side status filter starved it — after the
+  // first promote the "Kanbanban" box showed 0 with the item hidden, which read
+  // as data loss on the first live promote (2026-08-20).
   if (categoryFilter) params.set('category', categoryFilter)
   const [ideasRes, catsRes] = await Promise.all([fetch('/api/ideas?' + params), fetch('/api/ideas/categories')])
-  ideas = await ideasRes.json()
-  if (statusFilter === 'active') ideas = ideas.filter(i => i.status === 'new' || i.status === 'reviewed')
+  ideasAll = await ideasRes.json()
+  if (statusFilter === 'active') ideas = ideasAll.filter(i => i.status === 'new' || i.status === 'reviewed')
+  else if (statusFilter) ideas = ideasAll.filter(i => i.status === statusFilter)
+  else ideas = ideasAll
   const cats = await catsRes.json()
   const catSel = document.getElementById('ideaCategoryFilter')
   if (catSel) {
@@ -14940,7 +14985,7 @@ async function loadIdeasPage() {
 
 function renderIdeasStats() {
   const counts = { new: 0, reviewed: 0, kanban: 0, rejected: 0 }
-  for (const i of ideas) counts[i.status] = (counts[i.status] || 0) + 1
+  for (const i of ideasAll) counts[i.status] = (counts[i.status] || 0) + 1
   const el = document.getElementById('ideasStats')
   if (!el) return
   el.innerHTML = Object.entries(counts).map(([s, n]) =>
@@ -16386,7 +16431,7 @@ async function openResearchDoc(agent, name) {
       if (backBtn) backBtn.addEventListener('click', () => switchPage('kanban'))
       const adOverlay = document.getElementById('archivedDetailOverlay')
       document.getElementById('archivedDetailClose').addEventListener('click', () => closeModal(adOverlay))
-      adOverlay.addEventListener('click', e => { if (e.target === adOverlay) closeModal(adOverlay) })
+      attachOverlayCloseGuard(adOverlay)
     }
     populateArchivedProjects()
     doArchivedSearch()

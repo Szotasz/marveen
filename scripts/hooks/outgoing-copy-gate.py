@@ -34,16 +34,270 @@ import re
 import sys
 
 # --- what counts as an email send -------------------------------------------
-# Deliberately narrower than email-send-gate.mjs: that one may block read-only
-# inspection of the send scripts (acceptable for a sub-agent deny), while this
-# one must only fire on an actual send, or it would block the main agent from
-# reading its own tooling. Hence the recipient-argument requirement below.
-SEND_CMD = re.compile(
-    r"(support-mail/send\.py|\bsend\.py\b|graph-mail[^\n]*\bsend\b|api\.resend\.com"
-    r"|\bsendmail\b|\bmsmtp\b|\bswaks\b)",
+# KAPUHATOKOR822 (2026-08-22, NEGY hamis pozitiv egy delutanon, HAROM
+# muvelet-tipuson: inter-agent uzenet, sqlite-iras, fajl-OLVASAS): a korabbi
+# szures a TELJES parancs-stringben kereste a kuldes-mintakat, igy egy
+# inter-agent curl JSON-torzse ('"to":' a boritekban + 'send.py' a szoveg
+# TARTALMABAN), egy hirlevel-szoveget iro sqlite-parancs vagy a send-script
+# puszta elolvasasa is kuldesnek latszott. A kapu levelnek olvasta azt, ami
+# uzenet A RENDSZERROL -- es pont arrol a temarol nemitotta volna el a
+# flottat, amirol a legfontosabb beszelni (Iris tetje: egy valodi incidenst
+# nem lehetne jelenteni rola).
+#
+# A szures ezert PARANCS-POZICIORA megy, nem tartalomra: elobb kivagjuk a
+# heredoc-torzseket es az idezett stringeket (a tartalom igy nem tud parancs-
+# nak latszani), majd pipeline/szekvencia-szegmensenkent a MEGHIVOTT programot
+# nezzuk. Kuldes az, ahol a kuldo program fut:
+#   - sendmail / msmtp / swaks a program-pozicioban (ezek csak kuldeni tudnak);
+#   - send.py TENYLEGES futtatasa (python vagy kozvetlen ut) --to cimzettel a
+#     SAJAT szegmenseben (a --help/olvasas igy nem trigger);
+#   - graph-mail futtatasa `send` alparanccsal;
+#   - curl/wget, amelynek IDEZETLEN URL-tokenje az api.resend.com-ra mutat
+#     (a -d payloadban idezett elofordulas nem szamit -- az tartalom).
+# MASODIK KOR (Marveen adverzarialis merese, msg 14282): az elso valtozat a
+# quoted stringeket VAKON vagta ki, ezert ket hamis negativot nyitott -- az
+# IDEZOJELES URL a curl sajat argumentum-helyen (a curl SZOKASOS irasmodja!)
+# es a burkolo hejj `-c` string-argumentuma atment. A gyoker: az idezojel a
+# TARTALOM ellen jo hatar, de nem mondja meg, hogy a token URL- vagy
+# PROGRAM-POZICIOBAN all-e. Ezert a kivagas helyett QUOTE-TUDATOS tokenizalas
+# fut (shlex): az idezett token EGY tokenkent, poziciojaval egyutt erkezik --
+# a curl idezojeles URL-argumentuma igy vizsgalhato, mikozben egy -d payload
+# belsejeben emlitett domain tovabbra is csak tartalom (az URL-minta a token
+# ELEJERE horgonyzott). A wrapper hejj (`sh -c "..."`) string-argumentuma
+# rekurzivan elemzodik.
+# A heredoc-kivagas SORREND-FUGGETLEN (Marveen 3. kore, msg 14286): a
+# hatarolo utani SOR-MARADEK (pl. atiranyitas: <<EOF > fajl) a parancs
+# resze es MEGMARAD -- csak a torzs esik ki. Enelkul (a) forditott
+# sorrendnel a torzs parancsnak latszott (FP), (b) a bevezeto sor
+# eldobasa a heredoc-taplalt VALODI kuldot vesztette volna el (FN).
+_HEREDOC = re.compile(r"(<<-?\s*'?(\w+)'?[^\n]*)\n.*?\n\2(?=\s|$)", re.S)
+_ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*=")
+_SENDER_PROG = re.compile(r"^(sendmail|msmtp|swaks)$", re.I)
+_SENDPY = re.compile(r"^send\.py$", re.I)
+_PYTHON = re.compile(r"^python3?$", re.I)
+# A ket kapu (ez + scripts/email-send-gate.mjs) SZANDEKOSAN azonos
+# felismeres-szemantikat visel, es ezt kozos eset-lista orzi
+# (send-invocation-cases.json + konformancia-teszt): a divergencia
+# teszt-hibakent jelenjen meg, ne incidenskent (Marveen, msg 14289).
+_NODEISH = re.compile(r"^(node|tsx|ts-node|deno|bun|npx)$", re.I)
+_GRAPHMAIL = re.compile(r"^graph-mail(\.ts|\.js)?$", re.I)
+_WRAPPER_SHELL = re.compile(r"^(sh|bash|zsh|dash)$", re.I)
+_CURLISH = re.compile(r"^(curl|wget|http)$", re.I)
+# Interpreter kod-string argumentum (python -c / node -e): az interpreternek
+# atadott kod MUVELET, nem tartalom -- a kod-szintu kuldes-hivasokra szurunk.
+#
+# KIMONDOTT HATAR (Marveen, msg 14298): tetszoleges interpreter-kod statikus
+# elemzese eldonthetetlen -- ez a kapu a VELETLEN kuldest fogja meg, nem egy
+# elszant kikerulot. A lenti exec-heurisztika a NAIV alakokat fedi (a kod
+# process-inditast ES kuldo-programnevet egyutt tartalmaz); ennel tobbet nem
+# allit, es nem is allithat.
+_CODE_SEND = re.compile(
+    r"\bsmtplib\b|SMTP\s*\(|\bsendMail\s*\(|\bsendEmail\b|\bmail\.send\b", re.I
+)
+_CODE_EXECISH = re.compile(
+    r"\bsubprocess\b|os\.system|\bpopen\b|child_process|\bexec[A-Za-z]*\s*\(|\bspawn[A-Za-z]*\s*\(",
     re.I,
 )
-HAS_RECIPIENT = re.compile(r"(--to\b|\bto_addrs\b|\bto=|\"to\"\s*:|'to'\s*:)", re.I)
+_CODE_SENDER_LIT = re.compile(r"sendmail|msmtp|swaks|send\.py", re.I)
+
+
+def _code_string_sends(code: str) -> bool:
+    if _CODE_SEND.search(code):
+        return True
+    return bool(_CODE_EXECISH.search(code) and _CODE_SENDER_LIT.search(code))
+# Token-ELEJERE horgonyzott cel-minta: egy URL-argumentum vagy csupasz
+# domain/utvonal illik ra; egy JSON-payload ('{...api.resend.com...}') nem.
+_RESEND_TARGET = re.compile(r"^(https?://)?([^/@\s]*\.)?api\.resend\.com(/|$|\s|$)", re.I)
+
+# RESENDGATE826: a resend-celu curl/wget csak akkor KULDES, ha a METODUS az.
+# A korabbi minta metodus-vak volt, es egy read-only GET /domains (nincs torzs,
+# nincs cimzett) ugyanugy fail-closed elutasitast kapott -- pont egy domain-
+# verifikacios MERES akadt el rajta. A szukites iranya szigoru: a metodust
+# FELISMERNI kell (explicit -X/--request/--method, vagy implicit POST a
+# torzs-flagekbol); ha nem allapithato meg (valtozo, config-fajl, csonka flag),
+# marad a fail-closed. Egy "nincs felismerheto torzs -> atmegy" szabaly a
+# kaput utne ki, ezert ILYEN AG NINCS.
+_CURL_BODY_OPTS = {
+    "-d", "--data", "--data-raw", "--data-binary", "--data-urlencode",
+    "--data-ascii", "-F", "--form", "--form-string", "--json",
+    "-T", "--upload-file",
+    # wget torzs-flagek
+    "--post-data", "--post-file", "--body-data", "--body-file",
+}
+_SAFE_METHODS = {"GET", "HEAD"}
+
+
+def _curl_resend_verdict(rest):
+    """'read' | 'send' | 'unknown' -- unknown a hivo oldalon fail-closed."""
+    method = None
+    has_body = False
+    get_forced = False
+    i, n = 0, len(rest)
+    while i < n:
+        t = rest[i]
+        if t in ("-X", "--request", "--method"):
+            if i + 1 >= n or not rest[i + 1].isalpha():
+                return "unknown"  # csonka vagy valtozo ($METHOD) -- nem dontheto
+            method = rest[i + 1].upper()
+            i += 2
+            continue
+        if t.startswith("--request=") or t.startswith("--method="):
+            m = t.split("=", 1)[1]
+            if not m.isalpha():
+                return "unknown"
+            method = m.upper()
+            i += 1
+            continue
+        if t in ("-G", "--get"):
+            get_forced = True
+            i += 1
+            continue
+        if t in ("-K", "--config"):
+            return "unknown"  # a config-fajl rejtett metodust/torzset hordozhat
+        if t in _CURL_BODY_OPTS or any(
+            t.startswith(o + "=") for o in _CURL_BODY_OPTS if o.startswith("--")
+        ):
+            has_body = True
+            i += 1
+            continue
+        if t.startswith("-") and not t.startswith("--") and len(t) > 1:
+            # egy-kotojeles cluster (-sS, -sX POST, -sd '{}'): a betuk kotegelve
+            letters = t[1:]
+            if "X" in letters:
+                after = letters.split("X", 1)[1]
+                if after:
+                    if not after.isalpha():
+                        return "unknown"
+                    method = after.upper()
+                else:
+                    if i + 1 >= n or not rest[i + 1].isalpha():
+                        return "unknown"
+                    method = rest[i + 1].upper()
+                    i += 1
+            elif "d" in letters or "F" in letters or "T" in letters:
+                has_body = True
+            elif "G" in letters:
+                get_forced = True
+            elif "K" in letters:
+                return "unknown"
+            i += 1
+            continue
+        i += 1
+    if method is not None and method not in _SAFE_METHODS:
+        return "send"
+    if has_body and not get_forced:
+        # implicit POST (curl -d/-F/--json/-T alapertelmezese), vagy egy
+        # gyanus "GET torzzsel" alak -- mindketto kuldeskent kezelve
+        return "send"
+    return "read"
+# A tovabbi kuldes-jellegu literalok, amikre a parse-hiba eseten (es CSAK
+# akkor) konzervativan visszaesunk -- lasd is_send_invocation vegen.
+_FALLBACK_LITERALS = re.compile(
+    r"send\.py|api\.resend\.com|\bsendmail\b|\bmsmtp\b|\bswaks\b"
+    r"|\bsmtplib\b|\bsendMail\s*\(", re.I
+)
+
+
+def _basename(tok: str) -> str:
+    return tok.rsplit("/", 1)[-1]
+
+
+def _mask_subshell_markers(cmd: str) -> str:
+    """Idezojelen KIVULI ujsor/`$(`/backtick -> `;` szeparator, hogy a shlex
+    szegmens-hatarkent lassa; idezojelen BELUL a szoveg erintetlen (tartalom)."""
+    out = []
+    q = None  # None | "'" | '"'
+    i, n = 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if q:
+            if ch == "\\" and q == '"' and i + 1 < n:
+                out.append(cmd[i:i + 2]); i += 2; continue
+            if ch == q:
+                q = None
+            out.append(ch); i += 1; continue
+        if ch in "'\"":
+            q = ch; out.append(ch); i += 1; continue
+        if ch == "\\" and i + 1 < n:
+            out.append(cmd[i:i + 2]); i += 2; continue
+        if ch == "\n" or ch == "`":
+            out.append(";"); i += 1; continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "(":
+            out.append(";"); i += 2; continue
+        out.append(ch); i += 1
+    return "".join(out)
+
+
+def _segments_tokens(cmd: str):
+    """[[token, ...], ...] szegmensenkent -- quote-tudatosan, poziciot orizve."""
+    import shlex
+    lex = shlex.shlex(_mask_subshell_markers(_HEREDOC.sub(r"\1", cmd)),
+                      posix=True, punctuation_chars="();|&")
+    lex.whitespace_split = True
+    segments, cur = [], []
+    for tok in lex:
+        if tok in ("|", "||", "&", "&&", ";", "(", ")", ";;", "|&"):
+            if cur:
+                segments.append(cur)
+            cur = []
+        else:
+            cur.append(tok)
+    if cur:
+        segments.append(cur)
+    return segments
+
+
+def _segment_is_send(toks, depth: int) -> bool:
+    while toks and _ENV_ASSIGN.match(toks[0]):
+        toks = toks[1:]
+    if not toks:
+        return False
+    prog = _basename(toks[0])
+    rest = toks[1:]
+    if _SENDER_PROG.match(prog):
+        return True
+    # burkolo hejj: a -c string-argumentum maga is parancs -- rekurzio
+    if _WRAPPER_SHELL.match(prog) and depth < 3:
+        for i, t in enumerate(rest):
+            if t == "-c" and i + 1 < len(rest):
+                if is_send_invocation(rest[i + 1], _depth=depth + 1):
+                    return True
+    # interpreter kod-string: python -c / node -e / --eval, ami kuldest hiv
+    if _PYTHON.match(prog) or _NODEISH.match(prog):
+        for i, t in enumerate(rest):
+            if t in ("-c", "-e", "--eval") and i + 1 < len(rest) and _code_string_sends(rest[i + 1]):
+                return True
+    # send.py futtatasa (kozvetlenul, vagy python/runner utan) --to cimzettel
+    candidates = [prog] + (
+        [_basename(rest[0])] if rest and (_PYTHON.match(prog) or _NODEISH.match(prog)) else []
+    )
+    if any(_SENDPY.match(c) for c in candidates) and any(
+        t == "--to" or t.startswith("--to=") for t in rest
+    ):
+        return True
+    # graph-mail kimeno alparanccsal (tsx/node runner utan is)
+    if any(_GRAPHMAIL.match(_basename(t)) for t in toks) and "send" in rest:
+        return True
+    # curl/wget: a cel-token akkor is muvelet, ha idezojelben allt -- a
+    # horgonyzott minta valasztja el a payload-belseji emlitestol.
+    # RESENDGATE826: csak a TENYLEGES kuldes (POST/PUT/... vagy torzs) akad
+    # fenn; a read-only GET/HEAD lekerdezes atmegy; a nem-donthato metodus
+    # tovabbra is fail-closed.
+    if _CURLISH.match(prog) and any(_RESEND_TARGET.match(t) for t in rest):
+        return _curl_resend_verdict(rest) != "read"
+    return False
+
+
+def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
+    try:
+        segments = _segments_tokens(cmd)
+    except ValueError:
+        # Parse-hiba (pl. lezaratlan idezojel): nem tudunk poziciot mondani.
+        # Konzervativ visszaeses: csak akkor auditalunk, ha eros kuldes-literal
+        # all a szovegben -- igy egy fura, de valodi kuldes nem csuszik at
+        # neman, a tipikus belso parancsok viszont nem kapnak hamis pozitivot.
+        return bool(_FALLBACK_LITERALS.search(cmd))
+    return any(_segment_is_send(toks, _depth) for toks in segments)
 
 # --- Hungarian detection (accent-insensitive markers) -----------------------
 # These fire on both the correct and the stripped spelling, so a transliterated
@@ -217,8 +471,68 @@ def _name_correction() -> str:
 
 BAD_NAME = load_bad_name()
 ACCENTED = set("áéíóöőúüűÁÉÍÓÖŐÚÜŰ")
-WORD = re.compile(r"[a-záéíóöőúüűA-ZÁÉÍÓÖŐÚÜŰ]+")
 TAG = re.compile(r"<[^>]+>")
+
+# GATEKOTOJEL817 + GATEHYPH816 (2026-08-19 este, ket hamis pozitiv elo
+# gazda-beszelgetesben, ot perc alatt): a kapu nem tett kulonbseget PROZA es
+# AZONOSITO kozott. (1) `Drive-ot` -- az idegen tulajdonnevhez a magyar
+# toldalek kotojellel kapcsolodik (ez a HELYES iras), de a betu-only WORD
+# tokenizalo a kotojelnel vagott, es a maradek `ot` darabot onallo magyar
+# szonak nezte (ot -> öt). (2) `Video atalakitas` -- egy Drive-mappa NEVE a
+# szovegben: mondatkozi nagybetus szo, azonosito, nem proza. A javitas a
+# TOKENIZALAS, nem a szotar (szo-kivetel a valodi hibakat is atengedne):
+#   - kotojeles alaknal a TELJES szoalak vizsgalando (a `drive-ot` egeszkent
+#     nincs a szotarban -> atmegy; az onallo `ot` prozaban tovabbra is bukik);
+#   - a MONDATKOZI nagybetus szo azonosito/tulajdonnev -> kimarad; mondat
+#     elejen (. ! ? : ujsor vagy lista-jel utan) a nagybetu normal proza,
+#     ott tovabbra is vizsgaljuk.
+HYPHEN_WORD = re.compile(r"[a-záéíóöőúüűA-ZÁÉÍÓÖŐÚÜŰ]+(?:-[a-záéíóöőúüűA-ZÁÉÍÓÖŐÚÜŰ]+)*")
+
+
+def _at_sentence_start(text: str, idx: int) -> bool:
+    i = idx - 1
+    while i >= 0 and text[i] in " \t\"'([{":
+        i -= 1
+    if i < 0:
+        return True
+    ch = text[i]
+    if ch in ".!?:\n":
+        return True
+    if ch in "-*•":
+        j = i - 1
+        while j >= 0 and text[j] in " \t":
+            j -= 1
+        return j < 0 or text[j] == "\n"
+    return False
+
+
+def accent_check_tokens(prose: str):
+    """(lowercase alak, kezdo-pozicio) parok az ekezet-vizsgalathoz."""
+    out = []
+    for m in HYPHEN_WORD.finditer(prose):
+        tok = m.group(0)
+        # DIGIT-HYPHEN SUFFIX (429-es, 403-as, 2026-os, 3420-as). HYPHEN_WORD only
+        # admits LETTERS around the hyphen, so a Hungarian suffix attached to a
+        # NUMBER is seen as a standalone word -- and "es" is then read as the
+        # accent-stripped "és". These are not prose words; they carry no accent.
+        # (2026-08-21: the gate blocked a correct message reading "429-es vagy
+        # 403-as". GATEKOTOJEL817 covered letter-hyphen-letter forms, not this one.)
+        if m.start() >= 2 and prose[m.start() - 1] == "-" and prose[m.start() - 2].isdigit():
+            continue
+        if "-" not in tok and tok[0].isupper() and not _at_sentence_start(prose, m.start()):
+            continue
+        out.append((tok.lower(), m.start()))
+    return out
+
+
+def _hit_context(prose: str, pos: int, length: int) -> str:
+    """A talalat elotti/utani 3-3 szo + karakter-pozicio (GATEHYPH816 (B):
+    elo beszelgetes kozben ne kelljen greppelni, melyik szorol van szo)."""
+    before = prose[:pos].split()[-3:]
+    token = prose[pos:pos + length]
+    after = prose[pos + length:].split()[:3]
+    frag = " ".join(before + [token] + after)
+    return f'"...{frag}..." @{pos}'
 
 
 # Technikai tokenek maszkolasa AZ EKEZET-ELLENORZES ELOTT. Merve 2026-08-13, a
@@ -413,7 +727,8 @@ def audit(text: str):
             f"VEGYES IRASRENDSZERU SZO (homoglifa), {len(mixed)} db: {shown}{more}. "
             "Latin szoba keveredett nem-latin betu: olvasva lathatatlan, de a keresest/grepet neman eltori."
         )
-    words = [w.lower() for w in WORD.findall(prose)]
+    tok_pos = accent_check_tokens(prose)
+    words = [w for w, _ in tok_pos]
     if is_hungarian(plain) or accentless_evidence(words):
         hits = sorted({w for w in words if w in ACCENTLESS})
         # Az aranyot is a prozan merjuk: a technikai tokenekben nincs ekezet, tehat
@@ -422,7 +737,14 @@ def audit(text: str):
         acc = sum(1 for ch in prose if ch in ACCENTED)
         ratio = (acc / letters) if letters else 0.0
         if hits:
-            shown = ", ".join(f"{h} -> {ACCENTLESS[h]}" for h in hits[:12])
+            first_pos = {}
+            for w, p in tok_pos:
+                if w in ACCENTLESS and w not in first_pos:
+                    first_pos[w] = p
+            shown = ", ".join(
+                f"{h} -> {ACCENTLESS[h]} ({_hit_context(prose, first_pos[h], len(h))})"
+                for h in hits[:12]
+            )
             more = f" (+{len(hits) - 12} tovabbi)" if len(hits) > 12 else ""
             problems.append(f"HIANYZO EKEZETEK, {len(hits)} szo: {shown}{more}")
         elif letters > 200 and ratio < 0.01:
@@ -448,7 +770,7 @@ def main():
         text, unreadable = collect_mcp_body(tool_input), None
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
-        if not (SEND_CMD.search(cmd) and HAS_RECIPIENT.search(cmd)):
+        if not is_send_invocation(cmd):
             sys.exit(0)
         text, unreadable = collect_bash_body(cmd)
     else:
@@ -493,4 +815,22 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-closed net
+        # An unhandled crash exits 1, and PreToolUse treats 1 as NON-blocking,
+        # so the send would run UNCHECKED -- the exact opposite of the email
+        # path's fail-closed contract (e.g. a non-dict tool_input used to
+        # AttributeError inside collect_mcp_body). The telegram path never
+        # reaches here: telegram_gate() catches its own errors and exits 0
+        # (fail-open by design), so this net only ever catches the email/Bash
+        # send paths, where blocking is the safe failure mode.
+        sys.stderr.write(
+            "KIMENO-SZOVEG KAPU: TILTVA, belso hiba a vizsgalat kozben "
+            f"({exc!r}).\n"
+            "Fail-closed: egy vizsgalhatatlan kuldes pont a kaput utne ki. "
+            "Tedd vizsgalhatova a hivast, aztan kuldd ujra.\n"
+        )
+        sys.exit(2)

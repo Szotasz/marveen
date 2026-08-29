@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { execSync, execFileSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { OLLAMA_URL } from '../config.js'
 import { makeLazyBinResolver } from '../platform.js'
 import { logger } from '../logger.js'
@@ -47,8 +47,9 @@ import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBO
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { loadProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
-import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureAutonomySection } from './agent-scaffold.js'
+import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureAutonomySection, ensureSkillsPathTrapSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
+import { recordInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
@@ -806,7 +807,7 @@ export function stampFableOverageConsentSharedRoots(): void {
   }
 }
 
-function resolveAgentProvider(name: string): ChannelProviderType {
+export function resolveAgentProvider(name: string): ChannelProviderType {
   const perAgent = readAgentChannelProvider(name)
   if (perAgent === 'slack' || perAgent === 'telegram' || perAgent === 'discord' || perAgent === 'googlechat' || perAgent === 'teams') return perAgent
   return CHANNEL_PROVIDER
@@ -979,7 +980,7 @@ function startRemoteAgentProcess(
   }
 }
 
-export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): { ok: boolean; pid?: number; error?: string } {
+export async function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
 
@@ -1047,7 +1048,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
   try {
     try {
       runTmux(null, ['kill-session', '-t', session])
-      execSync('sleep 3', { timeout: 5000 })
+      await delay(3000)
     } catch { /* ok */ }
 
     // Reap any orphan poller (bun/node) left over from a previous run BEFORE
@@ -1122,6 +1123,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     writeAgentSettingsFromProfile(name, profile)
     ensureFleetRosterSection(name)
     ensureAutonomySection(name)
+    ensureSkillsPathTrapSection(name)
     // A sub-agent must load ONLY its own channel plugin. The user-scope
     // enabledPlugins would otherwise make EVERY sub-agent spawn a telegram
     // (and slack/discord) poller that falls back to the main agent's bot
@@ -1419,7 +1421,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
   }
 }
 
-export function stopAgentProcess(name: string): { ok: boolean; error?: string } {
+export async function stopAgentProcess(name: string): Promise<{ ok: boolean; error?: string }> {
   const session = agentSessionName(name)
   if (!isAgentRunning(name)) return { ok: false, error: 'Agent is not running' }
 
@@ -1427,7 +1429,7 @@ export function stopAgentProcess(name: string): { ok: boolean; error?: string } 
 
   try {
     runTmux(host, ['kill-session', '-t', session], { timeout: 5000 })
-    execSync('sleep 2', { timeout: 4000 })
+    await delay(2000)
     // Reap any orphaned plugin grandchild that tmux did not tear down. This is
     // a LOCAL pkill against this host's process table, so it only makes sense
     // for local agents; a remote agent is channel-less and its processes live
@@ -1458,9 +1460,9 @@ export function getAgentProcessInfo(name: string): { running: boolean; session?:
   }
 }
 
-export function restartAgentProcess(name: string, opts: { fresh?: boolean } = {}): { ok: boolean; pid?: number; error?: string } {
+export async function restartAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   if (isAgentRunning(name)) {
-    const stopResult = stopAgentProcess(name)
+    const stopResult = await stopAgentProcess(name)
     if (!stopResult.ok) return { ok: false, error: stopResult.error || 'Failed to stop running agent before restart' }
   }
   return startAgentProcess(name, opts)
@@ -1873,6 +1875,11 @@ export async function sendPromptToSession(
   }
 
   const oneLine = text.replace(/\r?\n/g, ' ')
+  // STUCKINPUT827: remember the EXACT byte stream we are about to type. If the
+  // submitting Enter does not land, the stuck-input watcher re-injects THIS
+  // instead of guessing from a lossy screen scrape. Recorded before the send so
+  // a delivery that parks mid-stream is recoverable too.
+  recordInjectedPrompt(session, oneLine)
   const CHUNK = 80
   // Stream oneLine into the pane as CHUNK-sized literal send-keys writes,
   // followed by a submitting Enter. Extracted as a closure so the

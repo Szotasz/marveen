@@ -58,10 +58,20 @@ vi.mock('../db.js', () => ({
 // (HOME-based, so a test worktree does not isolate them) and send to the real
 // owner chat. Neutralize the sink entirely: a green suite must never cost the
 // operator's attention.
-vi.mock('../web/telegram.js', () => ({
-  sendTelegramMessage: vi.fn(async () => {}),
-  sendTelegramPhoto: vi.fn(async () => {}),
-}))
+// The runner sends over getProvider(CHANNEL_PROVIDER) since the provider-aware
+// alerts (not sendTelegramMessage any more), so THAT is the export to
+// neutralize; everything else in channel-provider stays real.
+vi.mock('../channel-provider.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../channel-provider.js')>()
+  return {
+    ...real,
+    getProvider: (type: Parameters<typeof real.getProvider>[0]) => ({
+      ...real.getProvider(type),
+      sendMessage: vi.fn(async () => {}),
+      sendPhoto: vi.fn(async () => {}),
+    }),
+  }
+})
 
 vi.mock('../web/scheduled-tasks-io.js', () => ({
   listScheduledTasks: () => mockListScheduledTasks(),
@@ -79,6 +89,7 @@ vi.mock('../web/agent-process.js', () => ({
   capturePane: () => null,
   sendEnterToSession: vi.fn(),
   clearStaleParkedInput: vi.fn(() => false),
+  resolveAgentProvider: () => 'telegram',
 }))
 
 function task(overrides: Partial<ScheduledTask> & { name: string; schedule: string }): ScheduledTask {

@@ -40,7 +40,9 @@
 import { execFileSync } from 'node:child_process'
 import { logger } from '../logger.js'
 import { resolveFromPath } from '../platform.js'
+import { PROJECT_ROOT } from '../config.js'
 import { capturePane } from './agent-process.js'
+import { readTranscriptMtimeFromProjectDir } from './active-model.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { resumeMarveenSession, sendAlert, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS } from './channel-monitor.js'
 import {
@@ -68,6 +70,44 @@ const WEDGE_MAX_CPU_PERCENT = 30
 export function confirmsWedgeProfile(cpuPercent: number | null, maxCpuPercent: number): boolean {
   if (cpuPercent === null) return true
   return cpuPercent <= maxCpuPercent
+}
+
+// STUCKFREEZE819: last-instant verdict-validity gate, at KILL EXECUTION time
+// (deliberately NOT folded into the verdict formation -- that would rebuild
+// the same gap smaller). Both false kills measured on 2026-08-19 hit a LIVE
+// session with a STALE verdict: stagnation accrued during a parked/idle
+// stretch, and by the time the kill executed (~2 minutes after the verdict's
+// inputs), the session had woken and was working -- the 20:23:19 kill landed
+// ONE second after a healthy tool_result, mid-turn (79s of healthy work); the
+// 14:08:59 kill landed 9 seconds after an inbox-wakeup injection. The
+// cheapest live-signal is the session transcript's mtime: a working session
+// appends constantly (measured ages at the two false kills: ~2s and ~9s),
+// while a genuinely wedged TUI writes nothing -- by construction its
+// transcript is at least freezeSeconds (180s) old when the verdict fires.
+//
+// Threshold derivation (not a round guess): must sit ABOVE the largest
+// measured false-kill age (9s, with margin) and WELL BELOW the 180s
+// stagnation floor of a real wedge. 30s = 3x the measured maximum and 6x
+// under the floor; any value in (9s, 180s) discriminates the two measured
+// populations.
+//
+// Known limit, stated not hidden: the mtime is DIRECTORY-level (newest jsonl
+// under the main session's project dir), so a hypothetical sibling session
+// with the same cwd could mask a real wedge -- for at most one sweep at a
+// time, because an abort keeps the spell and the next poll re-fires the
+// verdict once the masking writer pauses.
+export const STALE_VERDICT_FRESH_MS = 30_000
+
+// Pure: is the recovery verdict stale because the session's transcript shows
+// recent activity? null mtime (dir unreadable) -> false: fail-open, the
+// stagnation signal stands on its own, same rule as the CPU guard.
+export function verdictStaleByTranscript(
+  transcriptMtimeMs: number | null,
+  nowMs: number,
+  freshMs = STALE_VERDICT_FRESH_MS,
+): boolean {
+  if (transcriptMtimeMs === null) return false
+  return nowMs - transcriptMtimeMs < freshMs
 }
 
 // Recent CPU% of the main session's pane-leader claude (claudePid == panePid for
@@ -227,6 +267,20 @@ async function checkSession(label: string, session: string): Promise<void> {
       logger.info(
         { label, session, cpuPercent, maxCpuPercent: WEDGE_MAX_CPU_PERCENT, seconds: next.lastSeconds },
         'stuck-tool-call-watcher: counter stagnant but claude is CPU-active (not the idle wedge profile) -- deferring recovery',
+      )
+      return
+    }
+    // STUCKFREEZE819: last-instant validity re-check at the kill boundary.
+    // Every earlier guard sampled state at VERDICT time; this one samples at
+    // EXECUTION time, because the two are ~2 minutes apart and both measured
+    // false kills happened exactly in that gap (the session woke up between
+    // verdict and kill). Abort keeps the spell: a real wedge re-fires on the
+    // next poll, so this gate can only delay a true recovery by one sweep.
+    const transcriptMtime = readTranscriptMtimeFromProjectDir(PROJECT_ROOT)
+    if (verdictStaleByTranscript(transcriptMtime, Date.now())) {
+      logger.warn(
+        { label, session, transcriptAgeMs: transcriptMtime ? Date.now() - transcriptMtime : null, freshMs: STALE_VERDICT_FRESH_MS, seconds: next.lastSeconds },
+        'stuck-tool-call-watcher: verdict stale -- the session transcript was written moments ago, the session is alive; ABORTING recovery (STUCKFREEZE819)',
       )
       return
     }

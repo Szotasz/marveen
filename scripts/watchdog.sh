@@ -48,6 +48,54 @@ if [ "${1:-}" = "--resolve-provider" ]; then
   exit 0
 fi
 
+# ISOLATION PARITY: the dashboard launches every sub-agent with a per-agent
+# CLAUDE_CONFIG_DIR (agent-process.ts provisions <agent>/.claude-config, gated
+# on the fleet OAuth token) so plugin registries never clobber each other in
+# the shared ~/.claude. channel-watchdog.sh already rebuilds the same CFG_ENV
+# on its respawn path (channel-watchdog.sh:183-201); this watchdog's tmux
+# launch dropped it, so the FIRST auto-recovery silently moved an agent back
+# onto the shared ~/.claude. Same gating as agent-process.ts: no token file ->
+# no isolation (degraded shared mode is then the intended behaviour). The
+# token is read inside the pane via $(cat), so the literal secret never lands
+# in the command string, `ps` output or tmux pane history.
+agent_launch_env() {
+  local AGENT_DIR="$1"
+  if [ -d "$AGENT_DIR/.claude-config" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then
+    printf '%s' "export CLAUDE_CONFIG_DIR=\"$AGENT_DIR/.claude-config\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "
+  fi
+}
+
+# Self-test hook, mirroring --resolve-provider: print the launch-env prefix
+# for one agent dir and exit, so the isolation contract is testable from
+# fixtures (scripts/__tests__/watchdog-config-isolation.test.sh).
+if [ "${1:-}" = "--launch-env" ]; then
+  [ -n "${2:-}" ] || { echo "usage: watchdog.sh --launch-env <agent-dir>" >&2; exit 2; }
+  ENV_PREFIX="$(agent_launch_env "$2")"
+  if [ -n "$ENV_PREFIX" ]; then echo "isolation=yes prefix=$ENV_PREFIX"; else echo "isolation=no"; fi
+  exit 0
+fi
+
+# An agent is READY to be started only once both personality files exist. The
+# dashboard wizard creates the directory first and generates CLAUDE.md /
+# SOUL.md afterwards through an LLM call that can take minutes
+# (routes/agents.ts: "Generating agent CLAUDE.md and SOUL.md..."), so a
+# directory alone proves nothing about whether the agent is finished. Claude
+# Code reads CLAUDE.md at startup: a session started before the files land
+# comes up with no identity, no rules and no persona, and stays that way
+# until restarted by hand -- from the outside the creation looks failed.
+agent_is_scaffolded() {
+  [ -f "$1/CLAUDE.md" ] && [ -f "$1/SOUL.md" ]
+}
+
+# Self-test hook, mirroring --resolve-provider: evaluate the predicate and
+# exit before touching tmux, so the contract is testable from fixtures
+# (scripts/__tests__/watchdog-scaffold-guard.test.sh).
+if [ "${1:-}" = "--check-scaffolded" ]; then
+  [ -n "${2:-}" ] || { echo "usage: watchdog.sh --check-scaffolded <agent-dir>" >&2; exit 2; }
+  if agent_is_scaffolded "$2"; then echo "scaffolded=yes"; else echo "scaffolded=no"; fi
+  exit 0
+fi
+
 
 export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
@@ -77,42 +125,16 @@ replay_unfinished_messages() {
   TMPDATA=$(mktemp)
   echo "$RESPONSE" > "$TMPDATA"
 
-  python3 - "$SESSION_NAME" "$AGENT_ID" "$CUTOFF" "$TMPDATA" <<'PYEOF' 2>/dev/null
-import json, sys, subprocess, time
-
-session_name, agent_id, cutoff_str, data_file = sys.argv[1:5]
-cutoff = int(cutoff_str)
-
-with open(data_file) as f:
-    msgs = json.load(f)
-
-pending = [
-    m for m in msgs
-    if m.get('to_agent') == agent_id
-       and m.get('status') == 'delivered'
-       and m.get('completed_at') is None
-       and m.get('created_at', 0) >= cutoff
-]
-
-if not pending:
-    sys.exit(0)
-
-print(f"[watchdog] {agent_id}: replaying {len(pending)} unfinished message(s)", flush=True)
-time.sleep(15)  # let claude boot up and reach the prompt
-
-for m in pending:
-    content = m.get('content', '')
-    full_msg = f"[Újraküldés - feladat elveszett restart előtt]: {content}"
-    chunk_size = 990
-    for i in range(0, len(full_msg), chunk_size):
-        chunk = full_msg[i:i + chunk_size]
-        subprocess.run(['tmux', 'send-keys', '-t', session_name, '-l', chunk],
-                       timeout=5, capture_output=True)
-    subprocess.run(['tmux', 'send-keys', '-t', session_name, 'Enter'],
-                   timeout=5, capture_output=True)
-    time.sleep(2)
-
-PYEOF
+  # Replay logic extracted to its own file (testable) + MSGSZIVARGAS826: every
+  # injected message writes a dated marker into the dashboard log -- this used
+  # to be a fully record-less injection path, invisible to every detector.
+  # stderr goes to the watchdog log, NOT /dev/null (NOTIFYVAKSWEEP826 zaro
+  # kor, Marveen msg 16091): the replay python is honest about a failed
+  # marker write, but the old 2>/dev/null buried exactly that line -- the
+  # instrument built against silence would have gone blind silently.
+  python3 "$INSTALL_DIR/scripts/watchdog-replay.py" \
+    "$SESSION_NAME" "$AGENT_ID" "$CUTOFF" "$TMPDATA" \
+    "$INSTALL_DIR/store/dashboard.log" 2>>"$LOG"
 
   rm -f "$TMPDATA"
 }
@@ -158,6 +180,13 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
     continue
   fi
 
+  # Do not start a half-scaffolded agent: the wizard's LLM call may still be
+  # writing CLAUDE.md / SOUL.md. The next tick starts it once both exist.
+  if ! agent_is_scaffolded "$AGENT_DIR"; then
+    echo "$(timestamp) [watchdog] $AGENT_ID: personality files not ready yet (wizard still generating?), skipping this tick" >> "$LOG"
+    continue
+  fi
+
   echo "$(timestamp) [watchdog] $AGENT_ID missing, restarting..." >> "$LOG"
 
   resolve_agent_provider "$AGENT_DIR"
@@ -171,7 +200,9 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
     continue
   fi
 
-  CMD="export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official"
+  ISO_ENV="$(agent_launch_env "$AGENT_DIR")"
+
+  CMD="${ISO_ENV}export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official"
 
   tmux new-session -d -s "$SESSION_NAME" "$CMD" 2>/dev/null
   sleep 2

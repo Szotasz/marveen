@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { logger } from './logger.js'
 import { formatForTelegram, splitMessage } from './format.js'
 import { markIfTestRun } from './test-run-marker.js'
+import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 
 export type ChannelProviderType = 'telegram' | 'slack' | 'discord' | 'googlechat' | 'teams'
 
@@ -24,6 +25,11 @@ export interface ChannelProvider {
 
 // -- Telegram implementation --
 
+// Every sendMessage below carries a deadline. The scheduler's pending-retry
+// alert stamps `alert_sent_at` BEFORE the send and clears it only on a thrown
+// error, so a socket that never answers would pin the stamp forever and
+// silence that alert for good. A timeout turns the hang into an error the
+// callers already classify as transient (no HTTP status) and retry next tick.
 function telegramHttpPost(token: string, method: string, body: string, contentType: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const req = https.request(
@@ -34,17 +40,43 @@ function telegramHttpPost(token: string, method: string, body: string, contentTy
           'Content-Type': contentType,
           'Content-Length': Buffer.byteLength(body),
         },
+        timeout: TOOL_TIMEOUTS['telegram'],
       },
       (res) => {
-        res.resume()
-        if (res.statusCode === 200) {
+        // Read the body even on HTTP 200: the Bot API can answer 200 with
+        // {"ok":false,...}, and discarding the body turned that into a silent
+        // success -- the same blind spot the bash senders closed in
+        // NOTIFYVAKSWEEP826 (success = transport OK AND "ok":true). TSOKFALSE827.
+        const chunks: Buffer[] = []
+        res.on('data', (chunk: Buffer) => { chunks.push(chunk) })
+        res.on('end', () => {
+          const responseBody = Buffer.concat(chunks).toString('utf-8')
+          if (res.statusCode !== 200) {
+            reject(new Error(`Telegram API ${res.statusCode}: ${responseBody.slice(0, 200)}`))
+            return
+          }
+          try {
+            const parsed = JSON.parse(responseBody) as { ok?: boolean; error_code?: number; description?: string }
+            if (parsed.ok === false) {
+              // Carry the body's error_code in the "Telegram API <code>" shape so
+              // classifySendError sorts it transient/permanent like an HTTP status;
+              // without a code the message stays status-free -> transient (retry).
+              const code = typeof parsed.error_code === 'number' ? ` ${parsed.error_code}` : ''
+              reject(new Error(`Telegram API${code}: ok:false ${String(parsed.description ?? '').slice(0, 200)}`))
+              return
+            }
+          } catch {
+            // A malformed body on HTTP 200 is not a send failure; the message
+            // may well be delivered. Same tolerance as sendTelegramMessage.
+          }
           resolve()
-        } else {
-          reject(new Error(`Telegram API ${res.statusCode}`))
-        }
+        })
+        res.on('error', reject)
       }
     )
     req.on('error', reject)
+    // The `timeout` option only emits the event; the request must be destroyed by hand, which surfaces through the 'error' handler above.
+    req.on('timeout', () => req.destroy(new Error(`Telegram ${method} timed out after ${TOOL_TIMEOUTS['telegram']}ms`)))
     req.write(body)
     req.end()
   })
@@ -196,6 +228,7 @@ const slackProvider: ChannelProvider = {
         unfurl_links: false,
         unfurl_media: false,
       }),
+      signal: AbortSignal.timeout(TOOL_TIMEOUTS['slack']),
     })
     if (!resp.ok) {
       throw new Error(`Slack API HTTP ${resp.status}`)
@@ -300,6 +333,7 @@ const discordProvider: ChannelProvider = {
         'Authorization': `Bot ${token}`,
       },
       body: JSON.stringify({ content: text }),
+      signal: AbortSignal.timeout(TOOL_TIMEOUTS['discord']),
     })
     if (!resp.ok) {
       const body = await resp.text().catch(() => '')
@@ -590,6 +624,11 @@ export function readChannelToken(provider: ChannelProviderType, envFilePath: str
     : provider === 'googlechat' ? 'GOOGLECHAT_PROJECT_ID'
     : provider === 'teams' ? 'TEAMS_BOT_APP_ID'
     : 'TELEGRAM_BOT_TOKEN'
-  const match = content.match(new RegExp(`${key}=(.+)`))
+  // Anchored to a whole line: a commented-out `# SLACK_BOT_TOKEN=old` or a
+  // prefixed `OLD_TELEGRAM_BOT_TOKEN=` must NOT match. Unanchored, a dead
+  // token left commented in one .env shadowed the live one in the next lookup
+  // location, and a commented-out GOOGLECHAT_PROJECT_ID still counted as a
+  // configured channel for hasChannel/agentHasChannel.
+  const match = content.match(new RegExp(`^\\s*${key}=(.+)$`, 'm'))
   return match ? match[1].trim() : null
 }

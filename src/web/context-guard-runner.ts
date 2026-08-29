@@ -178,7 +178,20 @@ export function resumePrompt(
     base + source +
     `Utána ellenőrizd a kanban tábládat (in_progress kártyák, assignee=${name}) és a hot memóriáidat, ` +
     `és FOLYTASD a megkezdett munkát magadtól. Ne kezdd elölről ami a handoff szerint már kész. ` +
-    `Röviden jelezz a csatornádon, hogy friss kontextussal folytatod.`
+    // RESPAWNZAJ822/PRODFAAG822: a fresh session acting on a resume goal is
+    // exactly the actor that branch-switched and committed on the live prod
+    // tree (2026-08-22 10:10, PR #1036 duplicate). The constraint must ride in
+    // the resume prompt itself -- it is the ONLY context the fresh session has.
+    `KORLÁT: a futó prod fán (a repo fő checkoutján) NE válts ágat, NE commitolj és NE nyiss belőle PR-t ` +
+    `-- ha repo-munka kell, használj worktree-t (git worktree add). ` +
+    // The main agent's channel is the OWNER's channel (Telegram), and session
+    // meta must never go there (standing owner preference; a 3am status
+    // notice measured on 2026-08-05, review msg 14197). Sub-agents' channel
+    // is the inter-agent queue, where the notice belongs. This prompt is the
+    // fresh session's ONLY rule set, so the split must live here.
+    (name === MAIN_AGENT_ID
+      ? `Zárásul egyetlen transzkript-sorban rögzítsd, hogy friss kontextussal folytatod -- a csatornádra (a gazda Telegramjára) session-meta NEM mehet ki.`
+      : `Röviden jelezz a csatornádon, hogy friss kontextussal folytatod.`)
   )
 }
 
@@ -224,7 +237,7 @@ function measurePct(name: string, cfgLimit: number | null): number | null {
   return tokens / limit
 }
 
-function performRestart(name: string): void {
+async function performRestart(name: string): Promise<void> {
   if (name === MAIN_AGENT_ID) {
     // Platform-correct main-session restart. This was a hardcoded
     // `/bin/launchctl kickstart`, which exists only on macOS: on Linux every
@@ -243,7 +256,7 @@ function performRestart(name: string): void {
     const res = hardRestartMarveenChannels()
     if (!res.ok) throw new Error(res.error ?? 'main channels hard restart failed')
   } else {
-    restartAgentProcess(name, { fresh: true })
+    await restartAgentProcess(name, { fresh: true })
   }
 }
 
@@ -396,7 +409,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         } catch (err) {
           logger.warn({ err, name }, 'context-guard: pre-restart pane snapshot failed')
         }
-        performRestart(name)
+        await performRestart(name)
         try {
           createAgentMessage(
             name,
@@ -500,10 +513,25 @@ export function getHardGuardPhase(name: string): string {
 }
 
 export function startContextGuardRunner(): NodeJS.Timeout {
+  let tickRunning = false
   async function sweep() {
-    const now = Date.now()
-    for (const name of guardSweepAgentNames()) {
-      try { await checkAgent(name, now) } catch (err) { logger.debug({ err, agent: name }, 'context-guard: agent check error') }
+    // Re-entrancy guard: checkAgent's 'restart' action now awaits a real
+    // restartAgentProcess (no longer a blocking execSync('sleep N')), so a
+    // sweep with a restart in flight can still be running when the next
+    // interval fires. Skip an overlapping tick; the next tick re-evaluates
+    // every agent, so nothing is missed.
+    if (tickRunning) {
+      logger.debug('context-guard: previous sweep still running, skipping this tick')
+      return
+    }
+    tickRunning = true
+    try {
+      const now = Date.now()
+      for (const name of guardSweepAgentNames()) {
+        try { await checkAgent(name, now) } catch (err) { logger.debug({ err, agent: name }, 'context-guard: agent check error') }
+      }
+    } finally {
+      tickRunning = false
     }
   }
   setTimeout(sweep, INITIAL_DELAY_MS)

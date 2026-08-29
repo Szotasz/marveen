@@ -1,6 +1,6 @@
 ---
 name: memoria-heartbeat
-description: 30 percenként átnézi a beszélgetést, menti a fontosat, és skill-eket generál ha volt komplex munka
+description: Minden körben átnézi az ELŐZŐ KÖR ÓTA történteket, menti a fontosat, és skill-eket generál ha volt komplex munka
 ---
 
 ## 0. ELŐSZÖR: Van-e várakozó Telegram üzenet?
@@ -9,7 +9,16 @@ description: 30 percenként átnézi a beszélgetést, menti a fontosat, és ski
 
 ---
 
-Nézd át az utolsó 30 perc beszélgetéseidet. Két dolgot csinálj:
+Nézd át, mi történt **az előző memória-kör óta**. Két dolgot csinálj:
+
+> **AZ ABLAK "AZ ELŐZŐ KÖR ÓTA", NEM FIX PERCSZÁM -- MÉRVE 2026-08-22.** A szöveg korábban két
+> helyen is fix "30 perc"-et mondott, miközben a tényleges kadencia (a `task_runs` közökből mérve)
+> 15 perc volt: a 2x-es eltérés miatt **minden kör újranézte azt az ablakot, amit az előző már
+> feldolgozott** -- ez strukturálisan duplikált memória-írást és duplikált skill-patchet hív elő,
+> mert a friss kontextus nem tudja, hogy az előző kör már lezárta. A fix percszám a konfigurált
+> kadenciával együtt avul; "az előző kör óta" nem.
+> **HA MÉGIS ÁTFEDÉST LÁTSZ:** a mérce nem az idő, hanem hogy *lezártad-e már*. Ha egy munkára már
+> írtál memóriát vagy patcheltél skillt az előző körben, az KÉSZ -- ne írd meg újra más szavakkal.
 
 ## 1. Memória mentés
 
@@ -29,7 +38,7 @@ Az `agent_id`-t a CLAUDE.md-ből vagy a munkamappa nevéből derítsd ki.
 
 Először döntsd el az alábbi 3 kérdéssel:
 
-- **A**: Volt-e az utolsó 30 percben legalább 5 tool-hívásos komplex feladat?
+- **A**: Volt-e AZ ELŐZŐ KÖR ÓTA legalább 5 tool-hívásos komplex feladat? (Ami már az előző körben le lett zárva, az NEM számít -- lásd fent az ablak-megjegyzést.)
 - **B**: Volt-e hiba → recovery (próbálkozás → fail → másképp) amit egy meglévő skill Buktatók szekciójába kellene tenni?
 - **C**: Volt-e user korrekció ("nem így", "ne ezt", "másképp"), ami skill-javítást igényel?
 
@@ -78,10 +87,26 @@ Lépések:
 
 **KIVÉTEL: Ha a felhasználó üzenetet küldött egy csatornán (`<channel source=` kezdetű blokk a kontextusban), arra mindig válaszolj -- a csendes heartbeat szabály NEM vonatkozik rá.**
 
-Ha NINCS komplex feladat / hiba / korrekció (A=B=C=NEM), ÉS nincs várakozó Telegram üzenet, ÉS nincs új információ a 30 percben:
+Ha NINCS komplex feladat / hiba / korrekció (A=B=C=NEM), ÉS nincs várakozó Telegram üzenet, ÉS nincs új információ az előző kör óta:
 - Ne ments memóriát feleslegesen
 - Ne generálj skill-t
 - Ne küldj üzenetet a csatornára
 - Maradj csendben: egyszerűen FEJEZD BE a kört, akció nélkül.
 
 **KRITIKUS (felügyelet nélküli stabilitás):** SOHA ne gépelj semmit az input-boxba (a `❯` prompt-sorba) és ne hagyj ott parkolt, el-nem-küldött szöveget -- még a "csendes heartbeat" szót sem. Ha jelezni akarod a csendes kört, az KIZÁRÓLAG a normál válasz-szövegedben (transzkript) lehet, EGYETLEN rövid sorral, majd a köröd azonnal érjen véget. Parkolt input-szöveg blokkolja a következő üzenet kézbesítését (a router `busy`-nak látja a sessiont) -> a csatorna NÉMUL felügyelet nélkül.
+
+## 4. ZÁRÓ STAMP (KÖTELEZŐ, a kör UTOLSÓ lépése -- csendes körnél is)
+
+**MÉRT HIÁNY (2026-08-23): ennek a körnek korábban NEM volt záró nyoma.** Kívülről
+megkülönböztethetetlen volt, hogy a kör LEFUTOTT és csendes volt, vagy el sem jutott a végéig --
+"csendes kör"-t állítani úgy, hogy bizonyítani nem lehet, pont a hamis-nulla hibaosztály.
+
+Ezért a kör VÉGÉN, minden ágon (csendes körnél is), egyetlen sor:
+
+```bash
+python3 -c "import json,time; json.dump({'last_run_at': int(time.time()), 'outcome': 'OUTCOME'}, open('{{INSTALL_DIR}}/store/memoria-heartbeat-state.json','w'))"
+```
+
+Az `OUTCOME` értéke: `silent` (csendes kör), `memory` (memória mentve), `skill` (skill akció volt),
+`both`. A stamp attól ér valamit, hogy KIVÉTEL NÉLKÜL íródik -- egy kihagyott csendes kör a
+következő mérésben futás-hiánynak látszik.

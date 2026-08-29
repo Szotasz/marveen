@@ -74,11 +74,35 @@ interface ClaudeSettings {
 // our enabledPlugins:{} override. .DS_Store / lock files are just noise.
 const HEARTBEAT_CONFIG_SKIP = new Set(['settings.json', '.DS_Store', '.lock'])
 
+/**
+ * Mark the isolation-sandbox dir as hidden from the dashboard's agent list.
+ *
+ * MUST be callable independently of whether the heartbeat feature is enabled:
+ * agents/heartbeat-worker is a plain cwd, not an agent, but listAgentNames()
+ * cannot tell the difference without this sentinel. Before 2026-08-25 the
+ * write lived only at the END of ensureHeartbeatWorkerCwd(), which runs solely
+ * from executeHeartbeat() -- so on any install with HEARTBEAT_AGENT_ENABLED
+ * unset (the default) the sentinel was never created, the sandbox showed up as
+ * a real agent, and could be started as one. Observed in the wild.
+ */
+export function ensureHeartbeatWorkerHidden(): void {
+  try {
+    if (!existsSync(HEARTBEAT_AGENT_CWD)) return
+    const sentinelPath = join(HEARTBEAT_AGENT_CWD, '.hidden-from-dashboard')
+    if (!existsSync(sentinelPath)) writeFileSync(sentinelPath, '')
+  } catch (err) {
+    logger.warn({ err }, 'Heartbeat: failed to write the dashboard-hide sentinel')
+  }
+}
+
 function ensureHeartbeatWorkerCwd(): void {
   try {
     if (!existsSync(HEARTBEAT_AGENT_CWD)) {
       mkdirSync(HEARTBEAT_AGENT_CWD, { recursive: true })
     }
+    // Write the hide-sentinel FIRST, right after the dir exists: if any later
+    // step throws, the dir must still not masquerade as an agent.
+    ensureHeartbeatWorkerHidden()
     // Project-scope empty MCP list (defense in depth -- the load-bearing
     // gates are the enabledPlugins override + CLAUDE_CONFIG_DIR).
     const mcpPath = join(HEARTBEAT_AGENT_CWD, '.mcp.json')
@@ -208,13 +232,8 @@ function ensureHeartbeatWorkerCwd(): void {
       logger.warn({ err }, 'Heartbeat: failed to materialise .claude.json into isolated config dir (sub-agent will lack project MCPs)')
     }
 
-    // Dashboard-hide sentinel: Szabi 2026-06-02 asked that this technical
-    // worker NOT show up as a real agent on the dashboard. listAgentNames()
-    // filters out any subdir of agents/ that contains this sentinel file.
-    const sentinelPath = join(HEARTBEAT_AGENT_CWD, '.hidden-from-dashboard')
-    if (!existsSync(sentinelPath)) {
-      writeFileSync(sentinelPath, '')
-    }
+    // (The dashboard-hide sentinel is written at the top of this function --
+    // see ensureHeartbeatWorkerHidden.)
   } catch (err) {
     logger.warn({ err, cwd: HEARTBEAT_AGENT_CWD }, 'Heartbeat: failed to ensure isolated worker cwd, falling back to PROJECT_ROOT')
   }
@@ -285,7 +304,9 @@ function readClaudeCodeOauthJson(): string | null {
 // --- Data types ---
 
 interface SystemInfo {
-  dbSizeMB: number
+  // null = could not measure. Never 0: the metric is a growth signal, and a
+  // false zero reads as calm, not as failure (HBDBMERET822).
+  dbSizeMB: number | null
   dbWarning: boolean
 }
 
@@ -343,8 +364,9 @@ function collectSystem(): SystemInfo {
     const dbPath = join(STORE_DIR, DB_FILENAME)
     const dbSize = statSync(dbPath).size / (1024 * 1024)
     return { dbSizeMB: Math.round(dbSize * 10) / 10, dbWarning: dbSize > 100 }
-  } catch {
-    return { dbSizeMB: 0, dbWarning: false }
+  } catch (err) {
+    logger.warn({ err }, 'Heartbeat: DB size stat failed; reporting null, not 0')
+    return { dbSizeMB: null, dbWarning: false }
   }
 }
 
@@ -459,7 +481,7 @@ function buildAgentPrompt(data: HeartbeatData): string {
 
   // System -- trusted (our own metrics, no external input).
   prompt += `## Rendszer\n`
-  prompt += `- DB meret: ${data.system.dbSizeMB} MB${data.system.dbWarning ? ' WARNING >100MB!' : ''}\n`
+  prompt += `- DB meret: ${data.system.dbSizeMB === null ? 'nincs adat (stat hiba)' : `${data.system.dbSizeMB} MB${data.system.dbWarning ? ' WARNING >100MB!' : ''}`}\n`
   prompt += `- Aktiv utemezett feladatok: ${data.tasks.count}\n`
   if (data.tasks.nextRun) {
     const nextDate = new Date(data.tasks.nextRun * 1000)

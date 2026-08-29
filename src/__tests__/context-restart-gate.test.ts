@@ -1,22 +1,31 @@
 import { describe, it, expect } from 'vitest'
 import {
+  gateWakePrompt,
   isInfrastructureChild,
   findClaudePidInTree,
   extractMcpPackageNames,
   isMcpProcess,
+  isNonWorkHelperProcess,
+  parseEtimeSeconds,
+  commBasename,
   TASKSTATE_FRESH_WINDOW_MS,
 } from '../web/context-restart-gate-runner.js'
 import {
   decideGate,
+  decideWake,
   nextBlockClock,
+  WAKE_DELAY_MS,
+  WAKE_MAX_AGE_MS,
   DEFAULT_THRESHOLD_TOKENS,
   DEFAULT_STALE_CUTOFF_MS,
   DEFAULT_PERSISTENT_BLOCK_ALERT_MS,
+  DEFAULT_TRANSCRIPT_QUIET_MS,
   normalizeGateConfig,
   DEFAULT_GATE_CONFIG,
   type GateInputs,
   type GateConfig,
 } from '../context-restart-gate.js'
+import { pickGateConfig } from '../web/context-restart-gate-store.js'
 
 // Fully-clear inputs: context at threshold, pane idle, no dispatched work, no
 // open question, no task state, hard guard idle, child processes measured false.
@@ -31,6 +40,7 @@ const CLEAR_INPUTS: GateInputs = {
   pendingOutboundCount: 0,
   hasStaleOutbound:     false,
   hasChildProcesses:    false,
+  msSinceTranscriptWrite: 10 * 60 * 1000,   // quiet for 10 min
   hasOpenQuestion:      false,
   hasLiveTaskState:     false,
 }
@@ -159,6 +169,45 @@ describe('decideGate -- pane guards', () => {
     const d = decide({ paneState: 'error' })
     expect(d.action).toBe('block')
     expect(d.reason).toMatch(/fail-closed/)
+  })
+})
+
+// The failure this guard exists for: the gate sent /clear to a main agent
+// while the session was mid-turn (the pane read idle between two
+// tool calls). The keystrokes queued behind the running turn, the session was
+// never cleared, and the gate recorded a restart that had not happened.
+describe('decideGate -- transcript quiet window', () => {
+  it('blocks while the transcript is still being written', () => {
+    const d = decide({ msSinceTranscriptWrite: 4_000 })
+    expect(d.action).toBe('block')
+    expect(d.reason).toContain('transcript-active')
+  })
+
+  it('blocks when the transcript cannot be read (fail-closed)', () => {
+    const d = decide({ msSinceTranscriptWrite: null })
+    expect(d.action).toBe('block')
+    expect(d.reason).toContain('transcript-unreadable')
+  })
+
+  it('allows once the transcript has been quiet for the configured window', () => {
+    expect(decide({ msSinceTranscriptWrite: DEFAULT_TRANSCRIPT_QUIET_MS }).action).toBe('allow')
+  })
+
+  it('blocks one millisecond short of the window', () => {
+    expect(decide({ msSinceTranscriptWrite: DEFAULT_TRANSCRIPT_QUIET_MS - 1 }).action).toBe('block')
+  })
+
+  it('honours a custom transcriptQuietMs', () => {
+    const cfg: GateConfig = { ...ENABLED, transcriptQuietMs: 30_000 }
+    expect(decide({ msSinceTranscriptWrite: 45_000 }, null, cfg).action).toBe('allow')
+    expect(decide({ msSinceTranscriptWrite: 20_000 }, null, cfg).action).toBe('block')
+  })
+
+  it('an idle pane alone is no longer enough to open the gate', () => {
+    // Exactly the 14:05 shape: pane idle, nothing dispatched, but the agent
+    // wrote to its transcript two seconds ago.
+    const d = decide({ paneState: 'idle', msSinceTranscriptWrite: 2_000 })
+    expect(d.action).toBe('block')
   })
 })
 
@@ -502,6 +551,61 @@ describe('isMcpProcess -- pattern-based MCP server identification', () => {
     expect(isMcpProcess('bash', [])).toBe(false)
     expect(isMcpProcess('/bin/bash -c echo hello', ['gmail-mcp-server'])).toBe(false)
   })
+
+  // Config-independent shape rule. Regression: a sub-agent's gate stayed
+  // blocked on a live woocommerce MCP child that no longer appeared in its
+  // .mcp.json, so no pattern matched and the age filter could never absolve it.
+  it('identifies an MCP server whose package is NOT in the pattern list', () => {
+    expect(isMcpProcess('npm exec @amitgurbani/mcp-server-woocommerce', [])).toBe(true)
+    expect(isMcpProcess(
+      'node /Users/x/.npm/_npx/5da803678de24a4e/node_modules/.bin/mcp-server-woocommerce', []
+    )).toBe(true)
+  })
+
+  it('identifies a scoped @org/*-mcp package with an empty pattern list', () => {
+    expect(isMcpProcess('npx -y @notionhq/notion-mcp-server', [])).toBe(true)
+    expect(isMcpProcess('npx -y @aaronsb/google-workspace-mcp', [])).toBe(true)
+  })
+
+  it('treats a direct npx-cache child as infrastructure', () => {
+    // The Bash tool always goes through a shell, so a user-run npx is a
+    // grandchild; a direct npx-cache child of claude is an MCP server.
+    expect(isMcpProcess('node /Users/x/.npm/_npx/abc123/node_modules/.bin/something', [])).toBe(true)
+  })
+
+  it('still does NOT classify real work as MCP under the shape rule', () => {
+    expect(isMcpProcess('/opt/homebrew/bin/claude --dangerously-skip-permissions', [])).toBe(false)
+    expect(isMcpProcess('/bin/zsh -c npm run build', [])).toBe(false)
+    expect(isMcpProcess('python3 scripts/usage-collect.py', [])).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// pickGateConfig -- an agent with no entry of its own must still get a gate.
+// Regression: an agent created without a config entry inherited
+// `enabled: false` and grew to 545k tokens with nothing watching.
+// ---------------------------------------------------------------------------
+
+describe('pickGateConfig -- _default inheritance', () => {
+  it('prefers the agent own entry over _default', () => {
+    const cfg = pickGateConfig(
+      { _default: { enabled: true, thresholdTokens: 120_000 }, 'agent-a': { enabled: false } },
+      'agent-a',
+    )
+    expect(cfg.enabled).toBe(false)
+  })
+
+  it('falls back to _default for an agent with no entry', () => {
+    const cfg = pickGateConfig({ _default: { enabled: true, thresholdTokens: 120_000 } }, 'brand-new')
+    expect(cfg.enabled).toBe(true)
+    expect(cfg.thresholdTokens).toBe(120_000)
+  })
+
+  it('falls back to the built-in default when there is no _default either', () => {
+    const cfg = pickGateConfig({ 'agent-a': { enabled: true } }, 'brand-new')
+    expect(cfg.enabled).toBe(false)
+    expect(cfg.thresholdTokens).toBe(DEFAULT_THRESHOLD_TOKENS)
+  })
 })
 
 describe('hasLiveTaskState freshness window', () => {
@@ -520,5 +624,144 @@ describe('hasLiveTaskState freshness window', () => {
       null,
     )
     expect(d.action).toBe('allow')
+  })
+})
+
+// The gate reads process ages through `ps -o etime=`. It used to ask for
+// `etimes`, which only GNU procps understands; BSD ps (macOS) answered
+// "keyword not found", every age came back null, and null age is fail-closed --
+// so the gate could never open on macOS. These tests pin the portable parser.
+describe('parseEtimeSeconds -- ps etime parsing (portability)', () => {
+  it('parses mm:ss', () => {
+    expect(parseEtimeSeconds('00:38')).toBe(38)
+    expect(parseEtimeSeconds('12:05')).toBe(725)
+  })
+
+  it('parses hh:mm:ss', () => {
+    expect(parseEtimeSeconds('02:37:20')).toBe(9440)
+  })
+
+  it('parses dd-hh:mm:ss', () => {
+    expect(parseEtimeSeconds('1-02:37:20')).toBe(95840)
+  })
+
+  it('tolerates surrounding whitespace, as ps emits it', () => {
+    expect(parseEtimeSeconds('  02:37:20\n')).toBe(9440)
+  })
+
+  it('returns null on unparseable input rather than a wrong number', () => {
+    expect(parseEtimeSeconds('')).toBeNull()
+    expect(parseEtimeSeconds('ps: etimes: keyword not found')).toBeNull()
+    expect(parseEtimeSeconds('38')).toBeNull()
+  })
+})
+
+describe('isNonWorkHelperProcess', () => {
+  it('treats caffeinate as a helper, not in-flight work', () => {
+    expect(isNonWorkHelperProcess('caffeinate -i -t 300')).toBe(true)
+    expect(isNonWorkHelperProcess('/usr/bin/caffeinate -i -t 300')).toBe(true)
+  })
+
+  it('does not swallow real work children', () => {
+    expect(isNonWorkHelperProcess('node /some/script.js')).toBe(false)
+    expect(isNonWorkHelperProcess('/bin/zsh -lc npm test')).toBe(false)
+    expect(isNonWorkHelperProcess('')).toBe(false)
+  })
+
+  it('matches on the command, not on a substring of an argument', () => {
+    expect(isNonWorkHelperProcess('node /opt/caffeinate/index.js')).toBe(false)
+  })
+})
+
+// `ps -o comm=` prints a bare name on Linux but a full path on macOS. The exact
+// string compare against 'claude' never matched there, so the claude process
+// could not be located and the whole child check went fail-closed.
+describe('commBasename / findClaudePidInTree -- ps comm portability', () => {
+  it('reduces a macOS full-path comm to the command name', () => {
+    expect(commBasename('/opt/homebrew/bin/claude')).toBe('claude')
+    expect(commBasename('/usr/local/bin/claude')).toBe('claude')
+  })
+
+  it('leaves a Linux bare comm unchanged', () => {
+    expect(commBasename('claude')).toBe('claude')
+  })
+
+  it('returns null for null/blank', () => {
+    expect(commBasename(null)).toBeNull()
+    expect(commBasename('   ')).toBeNull()
+  })
+
+  it('finds claude when the pane comm is a full path (macOS direct shape)', () => {
+    expect(findClaudePidInTree(51262, '/opt/homebrew/bin/claude', [])).toBe(51262)
+  })
+
+  it('finds claude as a child when the pane is a shell (wrapper shape)', () => {
+    expect(findClaudePidInTree(100, '/bin/bash', [
+      { pid: 101, comm: '/opt/homebrew/bin/claude' },
+    ])).toBe(101)
+  })
+
+  it('still returns null when claude is genuinely absent', () => {
+    expect(findClaudePidInTree(100, '/bin/bash', [
+      { pid: 101, comm: '/usr/bin/node' },
+    ])).toBeNull()
+  })
+
+  it('does not match a command that merely ends with claude-something', () => {
+    expect(findClaudePidInTree(100, '/usr/bin/claude-wrapper', [])).toBeNull()
+  })
+})
+
+// ---- Wake nudge after /clear -------------------------------------------------
+//
+// The gate restarts an agent by sending /clear. A fresh Claude Code session
+// only speaks when prompted, so without this nudge the restarted agent stays
+// mute with its handover record unread (2026-08-14).
+describe('decideWake', () => {
+  const T = 1_800_000_000_000
+
+  it('does nothing when no wake is owed', () => {
+    expect(decideWake(null, T)).toBe('none')
+  })
+
+  it('waits while the fresh session is still booting', () => {
+    expect(decideWake(T, T)).toBe('wait')
+    expect(decideWake(T, T + WAKE_DELAY_MS - 1)).toBe('wait')
+  })
+
+  it('sends once the boot grace has passed', () => {
+    expect(decideWake(T, T + WAKE_DELAY_MS)).toBe('send')
+    expect(decideWake(T, T + WAKE_MAX_AGE_MS)).toBe('send')
+  })
+
+  it('drops a nudge that outlived its restart', () => {
+    expect(decideWake(T, T + WAKE_MAX_AGE_MS + 1)).toBe('drop')
+  })
+
+  // A backwards clock step must not look like an ancient debt and get dropped:
+  // keeping the debt costs one re-check, dropping it costs the wake entirely.
+  it('treats a negative age (clock skew) as wait, never drop', () => {
+    expect(decideWake(T, T - 60_000)).toBe('wait')
+  })
+
+  it('honours explicit overrides', () => {
+    expect(decideWake(T, T + 100, 50, 1000)).toBe('send')
+    expect(decideWake(T, T + 2000, 50, 1000)).toBe('drop')
+  })
+})
+
+describe('gateWakePrompt', () => {
+  // The nudge exists to produce a turn AND a visible sign of life; a nudge that
+  // only said "you restarted" would leave the owner staring at silence again.
+  it('asks the agent to continue and to report on its channel', () => {
+    const p = gateWakePrompt()
+    expect(p).toContain('[CONTEXT-RESTART-GATE]')
+    expect(p.toLowerCase()).toContain('folytasd')
+    expect(p.toLowerCase()).toContain('csatorna')
+  })
+
+  // Guard against the nudge itself becoming a source of invented work.
+  it('tells the agent that "nothing in flight" is a complete state', () => {
+    expect(gateWakePrompt()).toContain('ne talalj ki magadnak feladatot')
   })
 })

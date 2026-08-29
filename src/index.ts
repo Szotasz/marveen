@@ -16,7 +16,7 @@ import { PROJECT_ROOT, STORE_DIR, PID_FILENAME, WEB_PORT, MAIN_AGENT_ID, RESPAWN
 import { resolveOwnerChatId } from './owner-chat.js'
 import { initDatabase, backfillEmbeddings } from './db.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
-import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
+import { initHeartbeat, stopHeartbeat, ensureHeartbeatWorkerHidden } from './heartbeat.js'
 import { ensureHeartbeatAgent, shouldBootHeartbeatAgent, HEARTBEAT_AGENT_NAME } from './web/heartbeat-agent-scaffold.js'
 import { startAgentProcess } from './web/agent-process.js'
 import { renameSharedCredentialsIfSafe, fleetTokenBootPass } from './web/claude-credentials-guard.js'
@@ -548,7 +548,7 @@ async function main(): Promise<void> {
   if (shouldBootHeartbeatAgent({ respawnEnabled: RESPAWN_ENABLED, agentEnabled: HEARTBEAT_AGENT_ENABLED })) {
     ensureHeartbeatAgent()
     logger.info({ agent: HEARTBEAT_AGENT_NAME }, 'Heartbeat agent scaffold ensured (channel-less, dashboard-hidden)')
-    const heartbeatStart = startAgentProcess(HEARTBEAT_AGENT_NAME)
+    const heartbeatStart = await startAgentProcess(HEARTBEAT_AGENT_NAME)
     if (heartbeatStart.ok) {
       logger.info({ agent: HEARTBEAT_AGENT_NAME }, 'Heartbeat agent started')
     } else if (heartbeatStart.error === 'Agent is already running') {
@@ -557,6 +557,10 @@ async function main(): Promise<void> {
       logger.warn({ error: heartbeatStart.error }, 'Heartbeat agent failed to start (legacy native heartbeat is NOT a fallback any more)')
     }
   } else {
+    // Even with the feature off, keep the isolation sandbox out of the agent
+    // list: agents/heartbeat-worker is a cwd, not an agent, and without the
+    // sentinel the dashboard offers it as a startable agent (2026-08-25).
+    ensureHeartbeatWorkerHidden()
     logger.info('Heartbeat agent boot-start skipped (set HEARTBEAT_AGENT_ENABLED=1 on the respawn host to enable)')
   }
 
