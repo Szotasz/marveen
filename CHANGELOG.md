@@ -11,6 +11,14 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- Approval attribution for session-auth callers: `PATCH /api/approvals/:id` now
+  derives `resolved_by` from the authenticated session username (`ctx.auth.user`)
+  when the request is made by a dashboard (session-auth) user, ignoring the
+  body-supplied value. Fleet agents using a bearer token continue to supply
+  `resolved_by` in the request body as before. The approval list view on the
+  dashboard now shows the actual username of the approver instead of the generic
+  `"dashboard"` label.
+
 - User-level audit trail for session-authenticated B2B users: `POST /api/memories`,
   `POST /api/kanban`, `PUT /api/kanban/:id`, and `POST /api/messages` now create an
   `agent_audit_log` row with `agent_id` set to the session username when the caller

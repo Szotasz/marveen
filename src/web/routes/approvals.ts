@@ -150,7 +150,18 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid_value', field: 'status', hint: 'status must be approved, rejected, or timeout' }, 400)
       return true
     }
-    if (typeof resolved_by !== 'string' || !resolved_by.trim()) {
+
+    // Session-auth callers (B2B dashboard users) get their identity from the
+    // authenticated session; body-supplied resolved_by is ignored. Fleet agents
+    // using a bearer token must supply resolved_by in the body.
+    const effectiveResolvedBy: string | undefined =
+      ctx.auth?.kind === 'session' && ctx.auth.user
+        ? ctx.auth.user
+        : typeof resolved_by === 'string' && resolved_by.trim()
+          ? resolved_by.trim()
+          : undefined
+
+    if (!effectiveResolvedBy) {
       json(res, { error: 'required', field: 'resolved_by', hint: 'resolved_by is required' }, 400)
       return true
     }
@@ -162,12 +173,12 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // It catches naive/accidental self-approvals; the real control lives on the
     // main-agent side (approval-request-handling skill).
     const target = getApproval(idMatch[1])
-    if (target && resolved_by.trim() === target.agent_id) {
+    if (target && effectiveResolvedBy === target.agent_id) {
       json(res, { error: 'forbidden', hint: 'The requesting agent cannot approve its own request' }, 403)
       return true
     }
 
-    const updated = resolveApproval(idMatch[1], status, resolved_by.trim(), msgId)
+    const updated = resolveApproval(idMatch[1], status, effectiveResolvedBy, msgId)
     if (!updated) {
       // Either not found or already resolved
       const existing = getApproval(idMatch[1])
@@ -180,7 +191,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     }
 
     const approval = getApproval(idMatch[1])
-    logger.info({ id: idMatch[1], status, resolved_by }, 'Approval resolved')
+    logger.info({ id: idMatch[1], status, resolved_by: effectiveResolvedBy }, 'Approval resolved')
     json(res, approval)
     return true
   }
