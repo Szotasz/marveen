@@ -740,7 +740,7 @@ function agentActivityBodyHtml(entry) {
     : ''
   return (
     '<div class="agent-act-head">' +
-      '<span class="activity-badge ' + metaRaw.cls + '" title="' + escapeHtml(metaRaw.tip || '') + '">' + escapeHtml(label) + '</span>' +
+      '<span class="activity-badge ' + metaRaw.cls + '" title="' + escapeHtml(metaRaw.tip || '') + '">' + (entry.state === 'working' ? '<span class="act-orb" aria-hidden="true"></span>' : '') + escapeHtml(label) + '</span>' +
       '<span class="agent-act-head-right">' + modeChip + termIcon + '</span>' +
     '</div>' +
     (tail
