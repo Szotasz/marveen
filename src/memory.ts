@@ -81,13 +81,14 @@ const SKIP_PATTERN = /^(ok|igen|nem|koszi|kosz|hello|szia|hi|hey|thx|thanks|jo|o
 
 export async function buildMemoryContext(
   chatId: string,
-  userMessage: string
+  userMessage: string,
+  tenantId?: string
 ): Promise<string> {
   // Hybrid (FTS + vector RRF) search scoped to the main agent; falls back to
   // FTS-only when Ollama is not running. Keep recentMemories for recency signal.
   const [hybridResults, recent] = await Promise.all([
-    hybridSearch(MAIN_AGENT_ID, userMessage, 5),
-    Promise.resolve(recentMemories(chatId, 5)),
+    hybridSearch(MAIN_AGENT_ID, userMessage, 5, tenantId),
+    Promise.resolve(recentMemories(chatId, 5, tenantId)),
   ])
 
   const seen = new Set<number>()
