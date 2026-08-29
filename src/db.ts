@@ -1794,15 +1794,34 @@ export function createKanbanCard(card: {
   )
 }
 
-export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>): boolean {
+// A status change made through here is audited exactly like one made through
+// moveKanbanCard. Until this, only the dashboard's drag-and-drop (the /move
+// route) recorded kanban_card_events, while the PUT route -- the one every
+// agent and every script uses -- wrote none. Measured 2026-08-29: 8 events in
+// the whole table, the newest 6 weeks old, so "when did this card become
+// in_progress" was unanswerable for essentially every card on the board.
+export function updateKanbanCard(
+  id: string,
+  fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>,
+  actor?: string,
+): boolean {
   const card = getKanbanCard(id)
   if (!card) return false
   const now = Math.floor(Date.now() / 1000)
   const f = { ...card, ...fields, updated_at: now }
-  return db.prepare(
+  const changed = db.prepare(
     `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
      WHERE id=?`
   ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+  // Only a REAL transition is an event: a PUT that edits the title or the
+  // assignee and echoes the unchanged status back must not log one, or the
+  // history fills with noise that hides the transitions worth reading.
+  if (changed && f.status !== card.status) {
+    db.prepare(
+      'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
+    ).run(id, card.status, f.status, actor ?? null, now)
+  }
+  return changed
 }
 
 export function getChildCards(parentId: string): KanbanCard[] {
