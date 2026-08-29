@@ -21,6 +21,8 @@ import {
   deletePendingTaskRetryById,
   markPendingTaskRetryAlert,
   clearPendingTaskRetryAlert,
+  createApproval,
+  listApprovals,
 } from '../db.js'
 import { DB_FILENAME } from '../config.js'
 
@@ -95,6 +97,57 @@ describe('memories', () => {
     const results = recentMemories(chatId, 4, 'tenant-a')
     expect(results).toHaveLength(4)
     expect(results.every((m) => m.tenant_id === 'tenant-a')).toBe(true)
+  })
+})
+
+describe('approvals', () => {
+  it('listApprovals tenant filter is SQL-level (not post-LIMIT application filter)', () => {
+    // Mutation guard: if tenant_id = ? were applied after LIMIT instead of inside
+    // the WHERE clause, a query for 4 tenant-a rows from a pool of 8 mixed rows
+    // (4+4) would return fewer than 4 results. The SQL-level filter must come
+    // before LIMIT (per 626/704 pagination lesson).
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    const chatId = 'approvals-mutation-chat'
+    for (let i = 0; i < 4; i++) {
+      db.prepare(
+        `INSERT INTO approvals (id, agent_id, category, action_description, status, requested_at, tenant_id)
+         VALUES (?, ?, 'cat', 'desc', 'pending', ?, ?)`
+      ).run(`appr-a-${i}`, chatId, now + i, 'tenant-a')
+      db.prepare(
+        `INSERT INTO approvals (id, agent_id, category, action_description, status, requested_at, tenant_id)
+         VALUES (?, ?, 'cat', 'desc', 'pending', ?, ?)`
+      ).run(`appr-b-${i}`, chatId, now + i, 'tenant-b')
+    }
+    const results = listApprovals({ limit: 4, tenantId: 'tenant-a' })
+    // Must get exactly 4 tenant-a rows even though the table has 8 mixed rows
+    expect(results.length).toBe(4)
+    expect(results.every((a) => a.tenant_id === 'tenant-a')).toBe(true)
+  })
+
+  it('createApproval stores tenant_id and listApprovals returns it', () => {
+    const appr = createApproval({
+      id: 'appr-t-create',
+      agent_id: 'agent-x',
+      category: 'test',
+      action_description: 'test action',
+      tenant_id: 'tenant-create-test',
+    })
+    expect(appr.tenant_id).toBe('tenant-create-test')
+
+    const found = listApprovals({ tenantId: 'tenant-create-test' })
+    expect(found.length).toBeGreaterThan(0)
+    expect(found[0].tenant_id).toBe('tenant-create-test')
+  })
+
+  it('createApproval with no tenant_id stores null', () => {
+    const appr = createApproval({
+      id: 'appr-t-null',
+      agent_id: 'agent-y',
+      category: 'test',
+      action_description: 'fleet action without tenant',
+    })
+    expect(appr.tenant_id).toBeNull()
   })
 })
 

@@ -75,12 +75,16 @@ const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
     'kanban:read',
     'agents:read',
     'blackboard:read',
+    'approvals:read',
+    'approvals:write',
   ]),
   viewer: new Set<Permission>([
     'memories:read',
     'kanban:read',
     'agents:read',
     'blackboard:read',
+    'approvals:read',
+    'approvals:write',
   ]),
 }
 
@@ -118,12 +122,14 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   { method: 'GET', pathPattern: '/api/v1/federation/', prefix: true, permission: 'federation:read' },
   { method: 'POST', pathPattern: '/api/v1/federation/', prefix: true, permission: 'federation:write' },
 
-  // Approvals -- write is admin-only per blueprint.
+  // Approvals -- tenant users can read and resolve their own tenant's requests (IDOR-guarded in route).
   { method: 'GET', pathPattern: '/api/approvals', prefix: true, permission: 'approvals:read' },
   { method: 'POST', pathPattern: '/api/approvals', prefix: true, permission: 'approvals:write' },
+  { method: 'PATCH', pathPattern: '/api/approvals', prefix: true, permission: 'approvals:write' },
   { method: 'PUT', pathPattern: '/api/approvals', prefix: true, permission: 'approvals:write' },
   { method: 'GET', pathPattern: '/api/v1/approvals', prefix: true, permission: 'approvals:read' },
   { method: 'POST', pathPattern: '/api/v1/approvals', prefix: true, permission: 'approvals:write' },
+  { method: 'PATCH', pathPattern: '/api/v1/approvals', prefix: true, permission: 'approvals:write' },
   { method: 'PUT', pathPattern: '/api/v1/approvals', prefix: true, permission: 'approvals:write' },
 
   // Blackboard.

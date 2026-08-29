@@ -3748,6 +3748,7 @@ export interface Approval {
   requested_at: number
   resolved_at: number | null
   resolved_by: string | null
+  tenant_id: string | null
 }
 
 export function createApproval(params: {
@@ -3757,11 +3758,12 @@ export function createApproval(params: {
   action_description: string
   action_payload?: string | null
   timeout_at?: number | null
+  tenant_id?: string | null
 }): Approval {
   const now = Math.floor(Date.now() / 1000)
   db.prepare(`
-    INSERT INTO approvals (id, agent_id, category, action_description, action_payload, timeout_at, requested_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO approvals (id, agent_id, category, action_description, action_payload, timeout_at, requested_at, tenant_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     params.id,
     params.agent_id,
@@ -3770,6 +3772,7 @@ export function createApproval(params: {
     params.action_payload ?? null,
     params.timeout_at ?? null,
     now,
+    params.tenant_id ?? null,
   )
   return {
     id: params.id,
@@ -3783,6 +3786,7 @@ export function createApproval(params: {
     requested_at: now,
     resolved_at: null,
     resolved_by: null,
+    tenant_id: params.tenant_id ?? null,
   }
 }
 
@@ -3805,12 +3809,15 @@ export function listApprovals(opts: {
   category?: string
   status?: string
   limit?: number
+  tenantId?: string
 }): Approval[] {
   const conditions: string[] = []
   const params: unknown[] = []
   if (opts.agent_id) { conditions.push('agent_id = ?'); params.push(opts.agent_id) }
   if (opts.category) { conditions.push('category = ?'); params.push(opts.category) }
   if (opts.status) { conditions.push('status = ?'); params.push(opts.status) }
+  // SQL-level tenant filter must come before LIMIT (per 626/704 pagination lesson).
+  if (opts.tenantId !== undefined) { conditions.push('tenant_id = ?'); params.push(opts.tenantId) }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
   const limit = Math.min(opts.limit ?? 100, 500)
   params.push(limit)
