@@ -134,9 +134,16 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // Admin sees all tenants; non-admin session users are scoped to their own
     // tenant. Bearer-token (fleet agents) callers are treated as admin-equivalent
     // for reads (they use the global dashboard token, no tenant affiliation).
-    const tenantId = (ctx.auth?.kind === 'session' && ctx.role !== 'admin')
-      ? (ctx.tenantId ?? undefined)
-      : undefined
+    // Fail-closed: a non-admin session with no tenant assignment returns 403
+    // rather than silently dropping the filter and leaking all tenants' data.
+    let tenantId: string | undefined
+    if (ctx.auth?.kind === 'session' && ctx.role !== 'admin') {
+      if (!ctx.tenantId) {
+        json(res, { error: 'forbidden', hint: 'No tenant scope assigned to this session' }, 403)
+        return true
+      }
+      tenantId = ctx.tenantId
+    }
 
     const items = listApprovals({ agent_id, category, status, limit, tenantId })
     json(res, items)
@@ -199,11 +206,11 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     }
 
     // IDOR guard: non-admin session users may only resolve approvals that belong
-    // to their own tenant. A cross-tenant resolve attempt is a 403 (not 404) so
-    // the caller can distinguish "exists but not yours" from "never existed".
+    // to their own tenant. Fail-closed: a missing tenantId on the session is
+    // treated as unresolvable (403) rather than matching NULL fleet-global approvals,
+    // which would allow a tenant user to approve fleet-internal requests.
     if (ctx.auth?.kind === 'session' && ctx.role !== 'admin') {
-      const effectiveTenant = ctx.tenantId ?? null
-      if (!target || target.tenant_id !== effectiveTenant) {
+      if (!ctx.tenantId || !target || target.tenant_id !== ctx.tenantId) {
         json(res, { error: 'forbidden', hint: 'This approval does not belong to your tenant' }, 403)
         return true
       }
