@@ -11,6 +11,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import http from 'node:http'
 import { applyRbacGate, resolveTenantId, resolveRole } from '../web/authz.js'
+import { hasPermission, resolveRequiredPermission } from '../web/rbac.js'
 import type { AuthResult } from '../web/auth-gate.js'
 
 // Minimal mock ServerResponse -- only the methods the RBAC gate writes to.
@@ -121,6 +122,59 @@ describe('applyRbacGate enforce mode', () => {
     const res = mockRes()
     const allowed = applyRbacGate(auth, WRITE_METHOD, WRITE_PATH, res, 'enforce')
     expect(allowed).toBe(true)
+  })
+})
+
+// ── viewer permission coverage (668) ─────────────────────────────────────────
+
+describe('viewer role permission coverage', () => {
+  it('viewer has blackboard:read (added in 668)', () => {
+    expect(hasPermission('viewer', 'blackboard:read')).toBe(true)
+  })
+
+  it('viewer has memories:read, kanban:read, agents:read (unchanged)', () => {
+    expect(hasPermission('viewer', 'memories:read')).toBe(true)
+    expect(hasPermission('viewer', 'kanban:read')).toBe(true)
+    expect(hasPermission('viewer', 'agents:read')).toBe(true)
+  })
+
+  it('viewer does NOT have write permissions', () => {
+    expect(hasPermission('viewer', 'memories:write')).toBe(false)
+    expect(hasPermission('viewer', 'kanban:write')).toBe(false)
+    expect(hasPermission('viewer', 'blackboard:write')).toBe(false)
+    expect(hasPermission('viewer', 'messages:write')).toBe(false)
+    expect(hasPermission('viewer', 'admin:all')).toBe(false)
+  })
+
+  it('GET /api/blackboard requires blackboard:read (viewer can access)', () => {
+    const perm = resolveRequiredPermission('GET', '/api/blackboard')
+    expect(perm).toBe('blackboard:read')
+    expect(hasPermission('viewer', perm!)).toBe(true)
+  })
+
+  it('GET /api/recall requires memories:read (viewer can access)', () => {
+    const perm = resolveRequiredPermission('GET', '/api/recall')
+    expect(perm).toBe('memories:read')
+    expect(hasPermission('viewer', perm!)).toBe(true)
+  })
+
+  it('GET /api/overview requires memories:read (viewer can access)', () => {
+    const perm = resolveRequiredPermission('GET', '/api/overview')
+    expect(perm).toBe('memories:read')
+    expect(hasPermission('viewer', perm!)).toBe(true)
+  })
+
+  it('GET /api/me requires memories:read (viewer can access)', () => {
+    const perm = resolveRequiredPermission('GET', '/api/me')
+    expect(perm).toBe('memories:read')
+    expect(hasPermission('viewer', perm!)).toBe(true)
+  })
+
+  it('GET /api/messages has no table entry (remains admin:all fallback -- Q3 decision)', () => {
+    // /api/messages intentionally stays out of the table (Jónás Q3 decision).
+    // resolveRequiredPermission returns null -> caller applies admin:all.
+    const perm = resolveRequiredPermission('GET', '/api/messages')
+    expect(perm).toBeNull()
   })
 })
 

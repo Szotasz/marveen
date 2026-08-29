@@ -9,6 +9,24 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
+### Added
+
+- **[API]** `GET /api/overview` now accessible to `viewer` and `read_only` roles
+  (previously admin-only). Ten fleet-level fields (`agents`, `tasksToday`,
+  `tasksYesterday`, `artifacts`, `skills`, `tokensToday`, `costTodayUsd`,
+  `pendingApprovals`, `errors4h`, `stuckTasks`) are omitted from the response for
+  non-admin callers; tenant-scoped fields (`memories`, `unreadMessages`, `activity`)
+  are always returned. The overview.js frontend guards fleet-dependent UI zones
+  (`fleetHealthBar`, `agentsMiniGrid`, KPI strip) with `'agents' in data` so they
+  hide gracefully when the fields are absent.
+- `blackboard:read` permission added to the `viewer` role.
+- `GET /api/recall`, `GET /api/overview`, and `GET /api/me` added to
+  `ENDPOINT_PERMISSION_TABLE` with `memories:read` requirement so viewer sessions
+  can reach these endpoints through the RBAC gate.
+- `docs/openapi.yaml`: `/overview` response schema now documents all ten fleet-only
+  properties with `x-admin-only: true` and the three always-present tenant-scoped
+  properties in `required`.
+
 ### Fixed
 
 - `memories` table INSERT and DELETE no longer throw `no such module: vec0` when
