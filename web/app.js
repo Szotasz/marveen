@@ -733,6 +733,18 @@ registerPage('backups', {
   }
 })
 
+registerPage('adminB2b', {
+  lazy: true,
+  enter: async () => {
+    const m = await lazyLoad('admin-b2b', () => import('./modules/admin-b2b.js'))
+    if (!_moduleCache.get('admin-b2b_inited')) {
+      await m.initAdminB2b()
+      _moduleCache.set('admin-b2b_inited', true)
+    }
+    await m.loadAdminB2b()
+  }
+})
+
 // Boot: wires up DOM (nav clicks, sidebar, hashchange listener), translates nav/static
 // elements, and performs the initial URL-hash route. Must run after DOM is ready.
 document.addEventListener('DOMContentLoaded', boot, { once: true })

@@ -43,6 +43,8 @@ export interface DeviceKeyInfo {
   /** SSH enrollment id (marveen-remote:<uuid>) for Bridge-paired keys; null
    *  for keys minted outside the pairing flow. */
   installId: string | null
+  /** Tenant this key is scoped to. null = fleet-wide (legacy default). */
+  tenantId: string | null
 }
 
 export interface MintedDeviceKey extends DeviceKeyInfo {
@@ -67,13 +69,13 @@ function nowSec(): number {
   return Math.floor(Date.now() / 1000)
 }
 
-type DbRow = { id: number; name: string; created_at: number; last_used_at: number | null; expires_at: number | null; install_id: string | null }
+type DbRow = { id: number; name: string; created_at: number; last_used_at: number | null; expires_at: number | null; install_id: string | null; tenant_id: string | null }
 
 function rowToInfo(r: DbRow): DeviceKeyInfo {
-  return { id: r.id, name: r.name, createdAt: r.created_at, lastUsedAt: r.last_used_at, expiresAt: r.expires_at, installId: r.install_id }
+  return { id: r.id, name: r.name, createdAt: r.created_at, lastUsedAt: r.last_used_at, expiresAt: r.expires_at, installId: r.install_id, tenantId: r.tenant_id ?? null }
 }
 
-const INFO_COLUMNS = 'id, name, created_at, last_used_at, expires_at, install_id'
+const INFO_COLUMNS = 'id, name, created_at, last_used_at, expires_at, install_id, tenant_id'
 
 // Mint a new key. The raw value exists only in the returned object; the row
 // stores its hash. expiresInDays is opt-in -- omitted means the key lives until
@@ -89,7 +91,7 @@ export function createDeviceKey(name: string, opts: { expiresInDays?: number; in
     .run(keyHash, name, now, null, expiresAt, installId)
   const id = Number(info.lastInsertRowid)
   cache.set(keyHash, { id, name, lastUsedAt: null, expiresAt })
-  return { id, name, createdAt: now, lastUsedAt: null, expiresAt, installId, key: raw }
+  return { id, name, createdAt: now, lastUsedAt: null, expiresAt, installId, tenantId: null, key: raw }
 }
 
 function removeByHash(keyHash: string): void {
@@ -179,6 +181,12 @@ export function sweepExpiredDeviceKeys(): number {
     if (entry.expiresAt !== null && entry.expiresAt < now) cache.delete(hash)
   }
   return res.changes
+}
+
+/** Assign (or clear) the tenant scope of a device key. Returns false if not found. */
+export function assignDeviceKeyTenant(id: number, tenantId: string | null): boolean {
+  const res = getDb().prepare('UPDATE device_keys SET tenant_id = ? WHERE id = ?').run(tenantId, id)
+  return res.changes > 0
 }
 
 // Test seam: drop the in-memory cache to simulate a process restart (durable

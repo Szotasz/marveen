@@ -153,6 +153,7 @@
   font-weight: 500;
   transition: all var(--transition);
 }
+.sb-link[hidden] { display: none !important; }
 .sb-link svg { flex-shrink: 0; color: currentColor; }
 /* min-width:0 lets a long label wrap inside the column instead of forcing the
  * link wider than the nav (which is what produced the landscape overflow);

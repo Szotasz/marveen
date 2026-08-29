@@ -1,0 +1,101 @@
+/* B2B Admin UI */
+
+.admin-b2b-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 8px 16px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.admin-b2b-tab.active,
+.admin-b2b-tab:hover {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+}
+
+.admin-b2b-row {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  cursor: default;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 10px 0;
+}
+
+.admin-b2b-row:last-child { border-bottom: none; }
+
+.admin-b2b-row--disabled { opacity: 0.55; }
+
+.admin-b2b-row--selected { background: var(--surface-raised, rgba(0,0,0,.04)); border-radius: 4px; padding-left: 8px; padding-right: 8px; }
+
+.admin-b2b-row-main {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.admin-b2b-row-name {
+  font-weight: 500;
+}
+
+.admin-b2b-row-id {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.admin-b2b-row-meta {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.admin-b2b-row-actions {
+  align-items: center;
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+/* Agent matrix */
+.admin-b2b-matrix-row {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  padding: 8px 0;
+}
+
+.admin-b2b-matrix-row:last-child { border-bottom: none; }
+
+.admin-b2b-matrix-check { cursor: pointer; flex-shrink: 0; }
+
+.admin-b2b-matrix-agent {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.admin-b2b-matrix-status {
+  font-size: 12px;
+}
+
+.admin-b2b-matrix-status.enabled  { color: var(--success, #22c55e); }
+.admin-b2b-matrix-status.disabled { color: var(--text-muted); }
+
+/* Device key tenant select */
+.admin-b2b-select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 13px;
+  padding: 4px 8px;
+}

@@ -27,6 +27,13 @@ vi.mock('../db.js', () => ({
   listPartnerSenders: vi.fn(),
   createPartnerSender: vi.fn(),
   disablePartnerSender: vi.fn(),
+  listTenantAgentAvailability: vi.fn().mockReturnValue([]),
+  setTenantAgentAvailability: vi.fn(),
+}))
+
+vi.mock('../web/auth-device-keys.js', () => ({
+  listDeviceKeys: vi.fn().mockReturnValue([]),
+  assignDeviceKeyTenant: vi.fn().mockReturnValue(true),
 }))
 
 vi.mock('../prompt-safety.js', () => ({
@@ -35,6 +42,7 @@ vi.mock('../prompt-safety.js', () => ({
 
 vi.mock('../web/agent-config.js', () => ({
   isKnownAgent: vi.fn().mockReturnValue(false),
+  listAgentNames: vi.fn().mockReturnValue([]),
 }))
 
 vi.mock('../logger.js', () => ({
@@ -42,6 +50,8 @@ vi.mock('../logger.js', () => ({
 }))
 
 import * as db from '../db.js'
+import * as agentConfig from '../web/agent-config.js'
+import * as deviceKeys from '../web/auth-device-keys.js'
 import { tryHandleAdminB2b } from '../web/routes/admin-b2b.js'
 import { normalizePath } from '../web/routes/versioning.js'
 
@@ -408,6 +418,136 @@ describe('PATCH /api/v1/admin/users/:id -- profile fields', () => {
     expect(out.status).toBe(400)
     expect(out.body.error).toBe('invalid_value')
     expect(out.body.field).toBe('email')
+  })
+})
+
+// ── Agent availability ────────────────────────────────────────────────────────
+
+describe('GET /api/v1/admin/agent-availability', () => {
+  it('returns matrix with all known agents, deny-by-default', async () => {
+    vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
+    vi.mocked(agentConfig.listAgentNames).mockReturnValue(['jarvis', 'zack'])
+    vi.mocked(db.listTenantAgentAvailability).mockReturnValue([
+      { tenant_id: 'acme-corp', agent_id: 'jarvis', enabled: 1, updated_at: 1787000000 },
+    ])
+    const { ctx, out } = makeCtx('GET', '/api/v1/admin/agent-availability?tenant_id=acme-corp')
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body.tenant_id).toBe('acme-corp')
+    expect(out.body.items).toHaveLength(2)
+    const jarvis = out.body.items.find((i: any) => i.agent_id === 'jarvis')
+    const zack = out.body.items.find((i: any) => i.agent_id === 'zack')
+    expect(jarvis.enabled).toBe(true)
+    expect(zack.enabled).toBe(false)
+  })
+
+  it('returns 400 when tenant_id missing', async () => {
+    const { ctx, out } = makeCtx('GET', '/api/v1/admin/agent-availability')
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toBe('required')
+    expect(out.body.field).toBe('tenant_id')
+  })
+
+  it('returns 404 for unknown tenant', async () => {
+    vi.mocked(db.getTenant).mockReturnValue(undefined)
+    const { ctx, out } = makeCtx('GET', '/api/v1/admin/agent-availability?tenant_id=ghost')
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(404)
+    expect(out.body.error).toBe('not_found')
+  })
+})
+
+describe('PUT /api/v1/admin/agent-availability', () => {
+  it('enables a known agent for a tenant', async () => {
+    vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
+    vi.mocked(agentConfig.isKnownAgent).mockReturnValue(true)
+    const updatedRow = { tenant_id: 'acme-corp', agent_id: 'jarvis', enabled: 1 as const, updated_at: 1787000001 }
+    vi.mocked(db.setTenantAgentAvailability).mockReturnValue(updatedRow)
+    const { ctx, out } = makeCtx('PUT', '/api/v1/admin/agent-availability', { tenant_id: 'acme-corp', agent_id: 'jarvis', enabled: true })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body.enabled).toBe(true)
+    expect(out.body.agent_id).toBe('jarvis')
+    expect(vi.mocked(db.setTenantAgentAvailability)).toHaveBeenCalledWith('acme-corp', 'jarvis', true)
+  })
+
+  it('returns 400 when tenant_id missing', async () => {
+    const { ctx, out } = makeCtx('PUT', '/api/v1/admin/agent-availability', { agent_id: 'jarvis', enabled: true })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(400)
+    expect(out.body.field).toBe('tenant_id')
+  })
+
+  it('returns 404 for unknown agent', async () => {
+    vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
+    vi.mocked(agentConfig.isKnownAgent).mockReturnValue(false)
+    const { ctx, out } = makeCtx('PUT', '/api/v1/admin/agent-availability', { tenant_id: 'acme-corp', agent_id: 'ghost', enabled: true })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(404)
+    expect(out.body.field).toBe('agent_id')
+  })
+})
+
+// ── Device keys ───────────────────────────────────────────────────────────────
+
+describe('GET /api/v1/admin/device-keys', () => {
+  it('returns list of device keys', async () => {
+    vi.mocked(deviceKeys.listDeviceKeys).mockReturnValue([
+      { id: 1, name: 'Phone', createdAt: 1787000000, lastUsedAt: null, expiresAt: null, installId: null, tenantId: null },
+      { id: 2, name: 'Tablet', createdAt: 1787000001, lastUsedAt: 1787000100, expiresAt: null, installId: null, tenantId: 'acme-corp' },
+    ])
+    const { ctx, out } = makeCtx('GET', '/api/v1/admin/device-keys')
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body.items).toHaveLength(2)
+    expect(out.body.total).toBe(2)
+    expect(out.body.items[1].tenantId).toBe('acme-corp')
+  })
+})
+
+describe('PATCH /api/v1/admin/device-keys/:id', () => {
+  it('assigns a tenant to a device key', async () => {
+    vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
+    vi.mocked(deviceKeys.assignDeviceKeyTenant).mockReturnValue(true)
+    const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/device-keys/3', { tenant_id: 'acme-corp' })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body.ok).toBe(true)
+    expect(out.body.tenant_id).toBe('acme-corp')
+    expect(vi.mocked(deviceKeys.assignDeviceKeyTenant)).toHaveBeenCalledWith(3, 'acme-corp')
+  })
+
+  it('clears tenant assignment when tenant_id is null', async () => {
+    vi.mocked(deviceKeys.assignDeviceKeyTenant).mockReturnValue(true)
+    const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/device-keys/3', { tenant_id: null })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body.tenant_id).toBeNull()
+    expect(vi.mocked(deviceKeys.assignDeviceKeyTenant)).toHaveBeenCalledWith(3, null)
+  })
+
+  it('returns 400 when tenant_id field missing', async () => {
+    const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/device-keys/3', {})
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(400)
+    expect(out.body.field).toBe('tenant_id')
+  })
+
+  it('returns 404 when device key not found', async () => {
+    vi.mocked(deviceKeys.assignDeviceKeyTenant).mockReturnValue(false)
+    const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/device-keys/999', { tenant_id: null })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(404)
+    expect(out.body.error).toBe('not_found')
+  })
+
+  it('returns 404 for disabled tenant', async () => {
+    vi.mocked(db.getTenant).mockReturnValue({ ...SAMPLE_TENANT, disabled_at: 1787000001 })
+    const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/device-keys/3', { tenant_id: 'acme-corp' })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(404)
+    expect(out.body.field).toBe('tenant_id')
   })
 })
 

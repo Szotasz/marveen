@@ -4239,3 +4239,40 @@ export function upsertBlackboard(
   return row
 }
 
+// ── Tenant-agent availability (deny-by-default opt-in matrix) ─────────────────
+
+export interface TenantAgentAvailability {
+  tenant_id: string
+  agent_id: string
+  enabled: 0 | 1
+  updated_at: number
+}
+
+/** List all availability rows for a tenant (enabled + disabled). */
+export function listTenantAgentAvailability(tenantId: string): TenantAgentAvailability[] {
+  return db
+    .prepare('SELECT tenant_id, agent_id, enabled, updated_at FROM tenant_agent_availability WHERE tenant_id = ? ORDER BY agent_id')
+    .all(tenantId) as TenantAgentAvailability[]
+}
+
+/** Upsert a (tenant, agent) availability row. Returns the new row. */
+export function setTenantAgentAvailability(tenantId: string, agentId: string, enabled: boolean): TenantAgentAvailability {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(`
+    INSERT INTO tenant_agent_availability (tenant_id, agent_id, enabled, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(tenant_id, agent_id) DO UPDATE SET
+      enabled    = excluded.enabled,
+      updated_at = excluded.updated_at
+  `).run(tenantId, agentId, enabled ? 1 : 0, now)
+  return db.prepare('SELECT tenant_id, agent_id, enabled, updated_at FROM tenant_agent_availability WHERE tenant_id = ? AND agent_id = ?').get(tenantId, agentId) as TenantAgentAvailability
+}
+
+/** Check if an agent is explicitly enabled for a tenant. */
+export function isTenantAgentEnabled(tenantId: string, agentId: string): boolean {
+  const row = db
+    .prepare('SELECT enabled FROM tenant_agent_availability WHERE tenant_id = ? AND agent_id = ?')
+    .get(tenantId, agentId) as { enabled: number } | undefined
+  return row?.enabled === 1
+}
+

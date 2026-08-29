@@ -173,6 +173,10 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             <span class="sb-label" data-i18n="nav.backups">Adatmentés</span>
           </a>
+          <a href="#" class="sb-link" data-page="adminB2b" id="navAdminB2b" hidden>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            <span class="sb-label" data-i18n="nav.adminB2b">Felhasználók</span>
+          </a>
         </div>
       </div>
       <div class="sb-group" data-group="connections">
@@ -2241,6 +2245,115 @@
       </div>
     </div>
     <!-- /Backups Page -->
+
+    <!-- B2B Admin Page (global admin only) -->
+    <div class="page" id="adminB2bPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1 data-i18n="nav.adminB2b">Felhasználók</h1>
+            <p class="subtitle" data-i18n="admin.b2b.subtitle">Tenantok, B2B felhasználók és eszközkulcsok kezelése</p>
+          </div>
+        </div>
+      </div>
+      <div class="admin-b2b-tabs" role="tablist" id="adminB2bTabs">
+        <button class="admin-b2b-tab active" role="tab" data-tab="tenants" data-i18n="admin.b2b.tab.tenants">Tenantok</button>
+        <button class="admin-b2b-tab" role="tab" data-tab="users" data-i18n="admin.b2b.tab.users">Felhasználók</button>
+        <button class="admin-b2b-tab" role="tab" data-tab="deviceKeys" data-i18n="admin.b2b.tab.device_keys">Eszközkulcsok</button>
+      </div>
+
+      <!-- Tenantok fül -->
+      <div class="admin-b2b-panel" id="adminPanelTenants">
+        <div class="admin-b2b-toolbar">
+          <button class="btn" data-variant="primary" data-size="compact" id="tenantAddBtn" data-i18n="admin.b2b.tenant.add">+ Tenant</button>
+        </div>
+        <div id="tenantList" class="admin-b2b-list"></div>
+        <!-- Agent availability matrix (inline, per selected tenant) -->
+        <div id="agentMatrixContainer" hidden>
+          <div class="admin-b2b-section-title" data-i18n="admin.b2b.agent.matrix">Agent-hozzáférés</div>
+          <div id="agentMatrix" class="admin-b2b-matrix"></div>
+        </div>
+      </div>
+
+      <!-- Felhasználók fül -->
+      <div class="admin-b2b-panel" id="adminPanelUsers" hidden>
+        <div class="admin-b2b-toolbar">
+          <select id="userTenantFilter" class="admin-b2b-select">
+            <option value="" data-i18n="admin.b2b.user.filter.all">Mind a tenantok</option>
+          </select>
+          <button class="btn" data-variant="primary" data-size="compact" id="userAddBtn" data-i18n="admin.b2b.user.add">+ Felhasználó</button>
+        </div>
+        <div id="userList" class="admin-b2b-list"></div>
+      </div>
+
+      <!-- Eszközkulcsok fül -->
+      <div class="admin-b2b-panel" id="adminPanelDeviceKeys" hidden>
+        <div id="deviceKeyList" class="admin-b2b-list"></div>
+      </div>
+    </div>
+    <!-- /B2B Admin Page -->
+
+    <!-- Tenant add modal -->
+    <div class="modal-overlay" id="tenantAddModal" hidden>
+      <div class="modal" style="max-width:440px">
+        <h2 data-i18n="admin.b2b.tenant.modal.title">Új tenant</h2>
+        <div class="form-group" style="margin-top:16px">
+          <label class="form-label" data-i18n="admin.b2b.tenant.id">Tenant ID</label>
+          <input type="text" id="tenantIdInput" class="input" placeholder="pl. acme-corp" autocomplete="off">
+          <p class="form-hint" data-i18n="admin.b2b.tenant.id.hint">Kisbetű, szám, kötőjel; 3-63 karakter</p>
+        </div>
+        <div class="form-group" style="margin-top:12px">
+          <label class="form-label" data-i18n="admin.b2b.tenant.display_name">Megjelenített név</label>
+          <input type="text" id="tenantNameInput" class="input" placeholder="pl. ACME Corporation">
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px">
+          <button class="btn" data-variant="secondary" data-close="tenantAddModal" data-i18n="common.btn.cancel">Mégse</button>
+          <button class="btn" data-variant="primary" id="tenantAddConfirmBtn" data-i18n="common.btn.save">Mentés</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- User add modal -->
+    <div class="modal-overlay" id="userAddModal" hidden>
+      <div class="modal" style="max-width:480px">
+        <h2 data-i18n="admin.b2b.user.modal.title">Új felhasználó</h2>
+        <div style="display:grid;gap:12px;margin-top:16px">
+          <div class="form-group">
+            <label class="form-label" data-i18n="admin.b2b.user.username">Felhasználónév</label>
+            <input type="text" id="newUserUsername" class="input" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label class="form-label" data-i18n="admin.b2b.user.password">Jelszó (min. 12 kar.)</label>
+            <input type="password" id="newUserPassword" class="input">
+          </div>
+          <div class="form-group">
+            <label class="form-label" data-i18n="admin.b2b.user.role">Szerepkör</label>
+            <select id="newUserRole" class="admin-b2b-select">
+              <option value="viewer">viewer</option>
+              <option value="read_only">read_only</option>
+              <option value="agent">agent</option>
+              <option value="admin">admin</option>
+            </select>
+          </div>
+          <div class="form-group" id="newUserTenantGroup">
+            <label class="form-label" data-i18n="admin.b2b.user.tenant">Tenant</label>
+            <select id="newUserTenant" class="admin-b2b-select"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" data-i18n="admin.b2b.user.email">Email (opcionális)</label>
+            <input type="email" id="newUserEmail" class="input">
+          </div>
+          <div class="form-group">
+            <label class="form-label" data-i18n="admin.b2b.user.display_name">Megjelenített név (opcionális)</label>
+            <input type="text" id="newUserDisplayName" class="input">
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px">
+          <button class="btn" data-variant="secondary" data-close="userAddModal" data-i18n="common.btn.cancel">Mégse</button>
+          <button class="btn" data-variant="primary" id="userAddConfirmBtn" data-i18n="common.btn.save">Mentés</button>
+        </div>
+      </div>
+    </div>
 
     <!-- Modal: Backup törlés megerősítés -->
     <div class="modal-overlay" id="backupsDeleteModal" hidden>
