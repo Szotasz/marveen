@@ -67,7 +67,15 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
   // POST /api/approvals -- create new approval request
   if (path === '/api/approvals' && method === 'POST') {
-    let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown }
+    // Tenant users (session-auth, non-admin) cannot create approval requests;
+    // only fleet agents and admins do. This prevents a coarse approvals:write
+    // permission from allowing unintended creation via the dashboard.
+    if (ctx.auth?.kind === 'session' && ctx.role !== 'admin') {
+      json(res, { error: 'forbidden', hint: 'Tenant users cannot create approval requests' }, 403)
+      return true
+    }
+
+    let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown; tenant_id?: unknown }
     try {
       body = JSON.parse((await readBody(req)).toString())
     } catch {
@@ -75,7 +83,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const { agent_id, category, action_description, action_payload } = body
+    const { agent_id, category, action_description, action_payload, tenant_id } = body
     if (typeof agent_id !== 'string' || !agent_id.trim()) {
       json(res, { error: 'required', field: 'agent_id', hint: 'agent_id is required' }, 400)
       return true
@@ -92,6 +100,10 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid_value', field: 'action_payload', hint: 'action_payload must be a string (JSON) if provided' }, 400)
       return true
     }
+    if (tenant_id !== undefined && typeof tenant_id !== 'string') {
+      json(res, { error: 'invalid_value', field: 'tenant_id', hint: 'tenant_id must be a string if provided' }, 400)
+      return true
+    }
 
     const id = randomUUID()
     const timeout_at = getTimeoutAt(category)
@@ -102,6 +114,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       action_description: action_description.trim(),
       action_payload: typeof action_payload === 'string' ? action_payload : null,
       timeout_at,
+      tenant_id: typeof tenant_id === 'string' ? tenant_id.trim() || null : null,
     })
 
     notifyMainAgent(approval)
@@ -118,7 +131,21 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     const limitRaw = url.searchParams.get('limit')
     const limit = limitRaw ? Math.min(parseInt(limitRaw, 10) || 100, 500) : 100
 
-    const items = listApprovals({ agent_id, category, status, limit })
+    // Admin sees all tenants; non-admin session users are scoped to their own
+    // tenant. Bearer-token (fleet agents) callers are treated as admin-equivalent
+    // for reads (they use the global dashboard token, no tenant affiliation).
+    // Fail-closed: a non-admin session with no tenant assignment returns 403
+    // rather than silently dropping the filter and leaking all tenants' data.
+    let tenantId: string | undefined
+    if (ctx.auth?.kind === 'session' && ctx.role !== 'admin') {
+      if (!ctx.tenantId) {
+        json(res, { error: 'forbidden', hint: 'No tenant scope assigned to this session' }, 403)
+        return true
+      }
+      tenantId = ctx.tenantId
+    }
+
+    const items = listApprovals({ agent_id, category, status, limit, tenantId })
     json(res, items)
     return true
   }
@@ -176,6 +203,17 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     if (target && effectiveResolvedBy === target.agent_id) {
       json(res, { error: 'forbidden', hint: 'The requesting agent cannot approve its own request' }, 403)
       return true
+    }
+
+    // IDOR guard: non-admin session users may only resolve approvals that belong
+    // to their own tenant. Fail-closed: a missing tenantId on the session is
+    // treated as unresolvable (403) rather than matching NULL fleet-global approvals,
+    // which would allow a tenant user to approve fleet-internal requests.
+    if (ctx.auth?.kind === 'session' && ctx.role !== 'admin') {
+      if (!ctx.tenantId || !target || target.tenant_id !== ctx.tenantId) {
+        json(res, { error: 'forbidden', hint: 'This approval does not belong to your tenant' }, 403)
+        return true
+      }
     }
 
     const updated = resolveApproval(idMatch[1], status, effectiveResolvedBy, msgId)

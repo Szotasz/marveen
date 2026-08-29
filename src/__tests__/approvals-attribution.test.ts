@@ -58,13 +58,15 @@ function makeCtx(
     end(b?: string) { try { out.body = JSON.parse(b?.toString() || '{}') } catch { out.body = b } },
   } as any
   const url = new URL(`http://localhost:3420${path}`)
-  return { ctx: { req, res, path: url.pathname, method, url, auth } as RouteContext, out }
+  // session-auth callers in attribution tests are admin-level (no tenant scope restriction).
+  const role: RouteContext['role'] = auth?.kind === 'session' ? 'admin' : undefined
+  return { ctx: { req, res, path: url.pathname, method, url, auth, role } as RouteContext, out }
 }
 
 const PENDING_APPROVAL = {
   id: 'appr-001', agent_id: 'agent-d', category: 'file_write',
   action_description: 'Write to /etc', status: 'pending',
-  created_at: 0, timeout_at: null, resolved_by: null, resolved_at: null,
+  created_at: 0, timeout_at: null, resolved_by: null, resolved_at: null, tenant_id: null,
 }
 const RESOLVED_APPROVAL = {
   ...PENDING_APPROVAL, status: 'approved', resolved_by: 'alice', resolved_at: 1,

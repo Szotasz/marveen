@@ -11,6 +11,15 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- Approval tenant-scoping for B2B users: `approvals` table now has a `tenant_id`
+  column (migration 0025). `GET /api/approvals` scopes results to the caller's
+  tenant for non-admin session users (SQL-level filter before LIMIT, per the
+  626/704 pagination rule). `PATCH /api/approvals/:id` includes an IDOR guard:
+  a non-admin session user cannot resolve an approval belonging to a different
+  tenant. `viewer` and `read_only` roles gain `approvals:read` and
+  `approvals:write` permissions; POST (approval creation) remains restricted to
+  fleet agents and admins at the route level regardless of RBAC write permission.
+
 - Approval attribution for session-auth callers: `PATCH /api/approvals/:id` now
   derives `resolved_by` from the authenticated session username (`ctx.auth.user`)
   when the request is made by a dashboard (session-auth) user, ignoring the

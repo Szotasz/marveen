@@ -15,7 +15,7 @@
 
 > **Fork.** Ez a repó a [Szotasz/marveen](https://github.com/Szotasz/marveen) önálló forkja, amely `fork-point` (2026-07-26, baseline: upstream `55ecbc6`) óta függetlenül fejlődik. Az upstream javításokat szelektíven vesszük át (`git fetch upstream` + cherry-pick). Hozzájárulásokat ehhez a forkhoz várunk PR-ként. Az AI által generált monolitikus kódot felhagyva, modularizált verzió alkotása a célom, amelyben nagyságrendekkel kisebb tokenhasználatot emészt fel magának a keretrendszernek a használata és robosztusabb kialakítása révén hosszútávon stabilabb működést biztosít.
 >
-> Állapot: upstream `1ac8a40` vs fork `3d1f4ed`, 2026-08-29
+> Állapot: upstream `1ac8a40` vs fork `a3b6d95`, 2026-08-29
 
 ## Jónás Gergő (cett) hozzájárulásai az eredeti Marveen repóhoz
 
@@ -39,7 +39,7 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 
 A modell-azonosítót és a webport-értéket a konfiguráció bevitelétől az indítási pontig regex-validáció védi, kizárva a command-injection lehetőségét. Ha egy eszközkulcsot visszavonnak, az SSH `authorized_keys` bejegyzés is törlődik, nem csak az adatbázis-rekord -- a korábbi implementáció ezt az oldalt kihagyta. A dashboard alapértelmezés szerint loopbackre köt; minden beérkező kérés `Host` fejlécét érvényes originek allowlistjével veti össze, mielőtt az auth-logika lefutna, megelőzve a DNS-rebinding támadásokat.
 
-A hozzáférés-szabályozás több rétegen fut: Zod-séma validálja az összes env-változót boot-időben (production alatt FATAL a hibás token vagy portformátum), a secret-resolver fájlrendszer-alapú secret-mountot is kezel (`/run/secrets/<KEY>`, Docker/k8s kompatibilis, `.env` felett prioritással), a partner-sender allowlist és a delivery-intent registry megakadályozza, hogy ismeretlen forrásból érkező szöveg a sub-ágens bemenetébe kerüljön. Az RBAC gate egyelőre shadow módban fut: naplóz, de nem tilt. A memória-visszakeresés és a vektoros keresés (hibrid FTS + ANN), az üzenet-szálak, az egységes visszahívás (recall memories-oldala) és a dashboard-áttekintő (memória-darabszámok, kategória-bontás, olvasatlan üzenetek, aktivitás-feed) nem-admin hívásoknál SQL-szintű tenant-határon szűrnek; az admin globális képet lát és ?tenant= paraméterrel szűkíthet; a flottaszintű számlálók (token-használat, jóváhagyások, hibaspanok) szándékosan szűretlenek maradnak.
+A hozzáférés-szabályozás több rétegen fut: Zod-séma validálja az összes env-változót boot-időben (production alatt FATAL a hibás token vagy portformátum), a secret-resolver fájlrendszer-alapú secret-mountot is kezel (`/run/secrets/<KEY>`, Docker/k8s kompatibilis, `.env` felett prioritással), a partner-sender allowlist és a delivery-intent registry megakadályozza, hogy ismeretlen forrásból érkező szöveg a sub-ágens bemenetébe kerüljön. Az RBAC gate egyelőre shadow módban fut: naplóz, de nem tilt. A memória-visszakeresés és a vektoros keresés (hibrid FTS + ANN), az üzenet-szálak, az egységes visszahívás (recall memories-oldala) és a dashboard-áttekintő (memória-darabszámok, kategória-bontás, olvasatlan üzenetek, aktivitás-feed) nem-admin hívásoknál SQL-szintű tenant-határon szűrnek; az admin globális képet lát és ?tenant= paraméterrel szűkíthet; a flottaszintű számlálók (token-használat, jóváhagyások, hibaspanok) szándékosan szűretlenek maradnak. A jóváhagyások (`approvals`) szintén tenant-scopedak: az `approvals` tábla `tenant_id` oszlopot kapott (0025-ös migráció), a `listApprovals()` SQL-szintű tenant-szűréssel fut LIMIT előtt (cross-tenant IDOR megelőzve), a nem-admin session-user csak a saját tenantjának kéréseit látja és hagyhatja jóvá; a `viewer` és `read_only` szerepkörök `approvals:read` + `approvals:write` jogot kaptak, de a POST (kéréslétrehozás) route-szinten tiltott tenant-usernek -- azt kizárólag fleet-ágensek és admin generálhat.
 
 **Memória, keresés és adatkezelés**
 
@@ -68,7 +68,7 @@ A DB migration runner checksum-ellenőrzéssel és per-migrációs tranzakciókk
 ## A fork létrehozása óta átvett - cherry-pick - javítások:
 #720, #727, #729, #738, #739, #740, #741, #742, #743, #744, #746, #747, #749, #751, #752, #753, #756, #757, #758, #763, #760, #765, #768, #769, #771, #772, #776, #777, #778, #779, #780, #781, #782, #783, #784, #785, #786, #789, #790, #791, #793, #795, #797, #799, #800, #801, #802, #803, #805, #821, #822, #826, #828, #829, #832, #838, #866, #833, #933, #934, #942, #943, #938, #854, #855, #871, #879, #888, #889, #906, #911, #926, #929, #940, #936, #973, #877, #964, #842, #857, #861, #885, #895, #896, #843, #876, #957, #1001, #1000, #982, #899, #939, #955, #992, #988, #985, #1007, #1010, #1013, #995, 
 
-Állapot: upstream `1ac8a40` vs fork `3d1f4ed`, 2026-08-29
+Állapot: upstream `1ac8a40` vs fork `a3b6d95`, 2026-08-29
 
 <!-- ONGOING: Minden jövőbeli fork-PR leadásakor (Zack -> Jarvis) frissítsd ezt a szakaszt
      a friss git log alapján:
