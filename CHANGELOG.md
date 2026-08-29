@@ -9,6 +9,16 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
+### Changed
+
+- Memory content security filter (`SUSPICIOUS_PATTERNS` in
+  `src/web/routes/memories.ts`) now blocks only the four prompt-injection
+  patterns (instruction-override attempts). Six technical command patterns
+  (`rm -rf`, `curl https://`, `bash -c`, `eval()`, `exec()`,
+  `import subprocess`) have been removed: stored text cannot self-execute, and
+  the patterns were causing false positives on legitimate incident-recovery
+  notes and shell-recipe memories.
+
 ### Added
 
 - Migration checksum guard improvement: known-safe mismatches (e.g. post-apply
