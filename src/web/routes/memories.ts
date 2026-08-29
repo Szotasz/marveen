@@ -67,6 +67,11 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       true,
       effectiveTenantId,
     )
+    try {
+      if (ctx.auth?.kind === 'session' && ctx.auth.user) {
+        writeAgentAuditLog({ agent_id: ctx.auth.user, entity: 'memory', action: 'create', entity_id: result.id })
+      }
+    } catch { /* audit failure must not abort the save */ }
     json(res, { ok: true, id: result.id })
     return true
   }

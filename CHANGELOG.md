@@ -11,6 +11,12 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- User-level audit trail for session-authenticated B2B users: `POST /api/memories`,
+  `POST /api/kanban`, `PUT /api/kanban/:id`, and `POST /api/messages` now create an
+  `agent_audit_log` row with `agent_id` set to the session username when the caller
+  is a session-auth user. Only the username is stored; email, display name, IP, and
+  request body are never written to the audit log.
+
 - **[API]** `dashboard_users` table gains optional `email` and `display_name` columns
   (migration `0024`). `POST /api/admin/users` and `PATCH /api/admin/users/:id` now
   accept these fields; both are nullable and absent from existing rows.
