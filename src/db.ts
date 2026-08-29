@@ -473,10 +473,12 @@ export function searchMemories(query: string, chatId: string, limit = 3, tenantI
   }
 }
 
-export function recentMemories(chatId: string, limit = 5): Memory[] {
+export function recentMemories(chatId: string, limit = 5, tenantId?: string): Memory[] {
+  const tc = tenantId ? ' AND tenant_id = ?' : ''
+  const tp = tenantId ? [tenantId] : []
   return db
-    .prepare('SELECT * FROM memories WHERE chat_id = ? ORDER BY accessed_at DESC LIMIT ?')
-    .all(chatId, limit) as Memory[]
+    .prepare(`SELECT * FROM memories WHERE chat_id = ?${tc} ORDER BY accessed_at DESC LIMIT ?`)
+    .all(chatId, ...tp, limit) as Memory[]
 }
 
 export function touchMemory(id: number): void {

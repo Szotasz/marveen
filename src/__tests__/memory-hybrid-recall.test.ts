@@ -65,7 +65,14 @@ describe('buildMemoryContext uses hybridSearch', () => {
   it('calls hybridSearch with MAIN_AGENT_ID and the user message', async () => {
     mockHybridSearch.mockResolvedValue([])
     await buildMemoryContext('chat-1', 'what is my preferred language?')
-    expect(mockHybridSearch).toHaveBeenCalledWith('agent-a', 'what is my preferred language?', 5)
+    expect(mockHybridSearch).toHaveBeenCalledWith('agent-a', 'what is my preferred language?', 5, undefined)
+  })
+
+  it('passes tenantId to hybridSearch and recentMemories when provided', async () => {
+    mockHybridSearch.mockResolvedValue([])
+    await buildMemoryContext('chat-1', 'query', 'tenant-1')
+    expect(mockHybridSearch).toHaveBeenCalledWith('agent-a', 'query', 5, 'tenant-1')
+    expect(mockRecentMemories).toHaveBeenCalledWith('chat-1', 5, 'tenant-1')
   })
 
   it('returns empty string when no memories found', async () => {
