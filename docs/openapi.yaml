@@ -134,6 +134,7 @@ components:
 
 
 
+
         hint:
           type: string
           description: >-
@@ -552,6 +553,11 @@ paths:
             enum: [hybrid, keyword]
             default: hybrid
           description: Search mode (only applies when `q` is set)
+        - name: tenant
+          in: query
+          schema:
+            type: string
+          description: "Admin only: narrow results to one tenant (omit to see fleet-default scope)"
       responses:
         "200":
           description: Memory list (gzip-compressed when Accept-Encoding includes gzip)
@@ -1372,6 +1378,11 @@ paths:
           schema:
             type: integer
             default: 100
+        - name: tenant
+          in: query
+          schema:
+            type: string
+          description: "Admin only: narrow results to one tenant (omit for all-tenant bypass)"
       responses:
         "200":
           description: Card list
@@ -2914,6 +2925,11 @@ paths:
           schema:
             type: string
             format: date
+        - name: tenant
+          in: query
+          schema:
+            type: string
+          description: "Admin only: narrow memory results to one tenant"
       responses:
         "200":
           description: Recall payload

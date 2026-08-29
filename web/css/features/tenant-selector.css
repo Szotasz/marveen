@@ -1,0 +1,35 @@
+/* Tenant-filter bar shown to global admins on Memories, Kanban, and Recall pages */
+
+.tenant-selector-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  margin-bottom: 10px;
+  background: color-mix(in srgb, var(--warning, #d97757) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning, #d97757) 30%, transparent);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.tenant-selector-label {
+  color: var(--text-muted, var(--muted, #888));
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.tenant-selector {
+  font-size: 13px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  min-width: 180px;
+  cursor: pointer;
+}
+
+.tenant-selector:focus {
+  outline: 2px solid var(--accent, #3b82f6);
+  outline-offset: 1px;
+}

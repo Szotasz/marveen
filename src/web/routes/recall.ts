@@ -189,7 +189,8 @@ export async function tryHandleRecall(ctx: RouteContext): Promise<boolean> {
     const agent = url.searchParams.get('agent') || undefined
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
     const isAdmin = ctx.role === 'admin'
-    const recallTenantId = isAdmin ? undefined : (ctx.tenantId ?? 'default')
+    const tenantParam = isAdmin ? (url.searchParams.get('tenant') ?? null) : null
+    const recallTenantId = tenantParam ?? (isAdmin ? undefined : (ctx.tenantId ?? 'default'))
 
     if (query && !dateExpr) {
       const result = recallSearch(query, agent, limit, recallTenantId)

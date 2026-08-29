@@ -179,8 +179,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   // restricted to their own tenant_id. Admin bypass uses role===admin check,
   // not tenantId===null, because null is also the initial default for viewer
   // users before tenant assignment (architecture spec).
+  // Global admins may pass ?tenant=<id> to narrow to one specific tenant.
   const isAdmin = ctx.role === 'admin'
-  const effectiveTenantId: string | null = isAdmin ? null : (ctx.tenantId ?? 'default')
+  const tenantParam = isAdmin ? (ctx.url.searchParams.get('tenant') ?? null) : null
+  const effectiveTenantId: string | null = tenantParam ?? (isAdmin ? null : (ctx.tenantId ?? 'default'))
 
   if (path === '/api/kanban' && method === 'GET') {
     // Embed each card's labels in one extra JOIN query (getLabelsForAllCards)
@@ -188,7 +190,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // everything it needs in a single round trip.
     const labelsByCard = getLabelsForAllCards()
     let cards
-    if (!isAdmin && effectiveTenantId !== null) {
+    if (effectiveTenantId !== null) {
       cards = scopeToTenant(getDb(), effectiveTenantId).kanban.list().map((card) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
     } else {
       cards = listKanbanCards().map((card) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))

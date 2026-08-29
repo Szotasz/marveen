@@ -3,11 +3,14 @@ import { renderMarkdown } from './docs-research.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
 import { getErrorMessage } from './error-message.js'
-
+import { initTenantSelector } from './tenant-selector.js'
 
 let _openModal = null, _closeModal = null
-export function initMemories({ openModal, closeModal } = {}) {
+let _memTenantGetter = null
+
+export async function initMemories({ openModal, closeModal } = {}) {
   _openModal = openModal; _closeModal = closeModal
+  _memTenantGetter = await initTenantSelector('memoriesTenantSelectorContainer', () => loadMemories())
 }
 
 // ============================================================
@@ -212,6 +215,8 @@ export async function loadMemories() {
   if (agent) params.set('agent', agent)
   if (currentMemTier) params.set('tier', currentMemTier)
   params.set('limit', '50')
+  const tenant = _memTenantGetter?.()
+  if (tenant) params.set('tenant', tenant)
 
   try {
     const [memoriesRes, staleRes] = await Promise.all([
