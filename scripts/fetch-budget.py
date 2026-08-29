@@ -30,6 +30,22 @@ across runs, so it cannot stop what actually happened.
 This closes that gap on the caller's side, where the whole picture is. It counts
 what the egress gate already logged, so it is a measurement, not a good intention.
 
+WHAT IT CANNOT SEE, and the number has to say so
+------------------------------------------------
+The egress gate is a PreToolUse hook matched on "WebFetch" and nothing else. Its
+own header says it: it does not intercept WebSearch, curl or Bash network calls,
+or MCP outbound. So this counts WebFetch traffic and only that.
+
+Measured 2026-08-29: the roxy and cody profiles both carry Bash(curl:*), and
+roxy's whole purpose is calling an outside image service. Those requests never
+reach the log, so they never reach this tally -- and a clean report here would
+mean "nobody used WebFetch heavily", not "we were light on that source".
+
+That is the same failure this file already fixes one level down, where a
+SELFTEST_ line would have vanished from the count in silence. A number that
+quietly excludes things is worse than no number, so the scope is printed with
+every report rather than left in a docstring nobody opens.
+
 Usage
 -----
   fetch-budget.py [--host HOST] [--days N] [--warn-per-day 40] [--warn-per-min 3]
@@ -165,6 +181,9 @@ def main(argv=None):
     totals = collections.Counter(h for _, _, h in rows)
 
     print(f"LETOLTESEK, utolso {a.days} nap")
+    print("  [hatokor] CSAK a WebFetch hivasok. Az egress-kapu 'WebFetch' matcherre")
+    print("  fut, tehat a Bash/curl es az MCP forgalom NEM latszik itt. Amelyik")
+    print("  agensen van Bash(curl:*), annak a hivasai ebbol a szambol hianyoznak.")
     print(f"{'HOST':<30}{'OSSZ':>6}  {'CSUCSNAP':>10}  {'/NAP':>5}  {'CSUCS/PERC':>10}  {'AKTIV PERC':>10}")
     print("-" * 88)
     over = []
