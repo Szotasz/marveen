@@ -45,6 +45,8 @@ tags:
     description: File-based scheduled task management
   - name: ideas
     description: Idea box
+  - name: workspace
+    description: Fleet-agent working documents (plans, briefs, reports, notes, binary)
   - name: artifacts
     description: DB-backed artifact store
   - name: token-usage
@@ -126,6 +128,7 @@ components:
             - sender_not_in_allowlist
             - federation_disabled
             - unknown_query_parameter
+
 
 
 
@@ -506,6 +509,75 @@ components:
           type: integer
           nullable: true
           description: Unix timestamp when soft-deleted; null when active
+
+    WorkspaceDoc:
+      type: object
+      required: [id, agent_id, tenant_id, title, content_type, type, size_bytes, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        agent_id:
+          type: string
+        tenant_id:
+          type: string
+        doc_key:
+          type: string
+          nullable: true
+        title:
+          type: string
+        content:
+          type: string
+          nullable: true
+        content_type:
+          type: string
+          enum: [text, code, binary]
+        type:
+          type: string
+          enum: [plan, brief, report, notes]
+        task_ref:
+          type: string
+          nullable: true
+        size_bytes:
+          type: integer
+        last_accessed_at:
+          type: integer
+          nullable: true
+        created_at:
+          type: integer
+        updated_at:
+          type: integer
+        content_blob_b64:
+          type: string
+          nullable: true
+          description: Base64-encoded binary content (binary docs only, GET /:id response)
+
+    SaveWorkspaceDocInput:
+      type: object
+      required: [agent_id, title, content_type, type]
+      properties:
+        agent_id:
+          type: string
+        doc_key:
+          type: string
+          nullable: true
+          description: If provided, upserts on (agent_id, doc_key)
+        title:
+          type: string
+        content:
+          type: string
+          nullable: true
+        content_type:
+          type: string
+          enum: [text, code, binary]
+        type:
+          type: string
+          enum: [plan, brief, report, notes]
+        task_ref:
+          type: string
+          nullable: true
+        content_blob_b64:
+          type: string
+          description: Required for binary content_type; base64-encoded blob
 
 # ---------------------------------------------------------------------------
 # Paths — Tier 1
@@ -2602,6 +2674,169 @@ paths:
                 type: array
                 items:
                   type: string
+
+  /workspace:
+    get:
+      tags: [workspace]
+      operationId: listWorkspaceDocs
+      summary: List workspace docs
+      parameters:
+        - name: agent
+          in: query
+          schema:
+            type: string
+        - name: tenant
+          in: query
+          description: Admin-only tenant filter
+          schema:
+            type: string
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [plan, brief, report, notes]
+        - name: content_type
+          in: query
+          schema:
+            type: string
+            enum: [text, code, binary]
+        - name: task_ref
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Workspace doc list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WorkspaceDoc'
+                  total:
+                    type: integer
+    post:
+      tags: [workspace]
+      operationId: saveWorkspaceDoc
+      summary: Create or upsert a workspace doc
+      description: |
+        Fleet-agent token required (session callers get 403).
+        If doc_key is provided, upserts on (agent_id, doc_key).
+        content_type binary requires content_blob_b64 (base64).
+        Size limits: text 2 MB, code 4 MB, binary 16 MB.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveWorkspaceDocInput'
+      responses:
+        "201":
+          description: Created or updated doc
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceDoc'
+        "400":
+          description: Validation error
+        "403":
+          description: Caller is not a fleet agent
+        "413":
+          description: Content exceeds size limit
+  /workspace/{id}:
+    get:
+      tags: [workspace]
+      operationId: getWorkspaceDoc
+      summary: Get a workspace doc by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Workspace doc (binary docs include content_blob_b64)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceDoc'
+        "403":
+          description: Tenant mismatch for non-admin caller
+        "404":
+          description: Not found
+    patch:
+      tags: [workspace]
+      operationId: patchWorkspaceDoc
+      summary: Partially update a workspace doc
+      description: Fleet-agent token required.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                content:
+                  type: string
+                  nullable: true
+                type:
+                  type: string
+                  enum: [plan, brief, report, notes]
+                task_ref:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Updated doc
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceDoc'
+        "400":
+          description: Validation error or empty patch
+        "403":
+          description: Caller is not a fleet agent
+        "404":
+          description: Not found
+        "413":
+          description: Content exceeds size limit
+    delete:
+      tags: [workspace]
+      operationId: deleteWorkspaceDoc
+      summary: Delete a workspace doc
+      description: Fleet-agent token required. Only the owning agent may delete.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        "403":
+          description: Caller is not a fleet agent or not the owner
+        "404":
+          description: Not found
 
   /artifacts:
     get:

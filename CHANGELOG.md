@@ -27,6 +27,16 @@ Extract a version for release: `npm run release-notes -- <version>`
   with a reason, so a genuine accidental edit still surfaces as `WARN` and is
   not lost in background noise.
 
+- **[API]** `workspace_docs` table (migration `0027`): fleet-agent working documents
+  (plans, briefs, reports, notes, binary). UPSERT via `(agent_id, doc_key)` unique
+  index. `content_type` enum: `text` (2 MB), `code` (4 MB), `binary` (16 MB, BLOB,
+  base64 in API). Tenant-scoped listing and GET; non-admin callers see only their own
+  tenant's docs. Only fleet-agent tokens (`auth.kind = 'token'`) may write; session
+  callers get 403. App-level vec sync via `vec_workspace_docs` (no DB triggers).
+  TTL sweeper (`sweepExpiredWorkspaceDocs`) skips binary docs and docs whose
+  `task_ref` kanban card is still open. New endpoints: `GET/POST /api/workspace`,
+  `GET/PATCH/DELETE /api/workspace/:id`.
+
 - Approval tenant-scoping for B2B users: `approvals` table now has a `tenant_id`
   column (migration 0025). `GET /api/approvals` scopes results to the caller's
   tenant for non-admin session users (SQL-level filter before LIMIT, per the

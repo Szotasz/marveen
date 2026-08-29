@@ -191,6 +191,37 @@ export interface PartnerSender {
   disabled_at: number;
 }
 
+export interface WorkspaceDoc {
+  id: string;
+  agent_id: string;
+  tenant_id: string;
+  doc_key?: string;
+  title: string;
+  content?: string;
+  content_type: 'text' | 'code' | 'binary';
+  type: 'plan' | 'brief' | 'report' | 'notes';
+  task_ref?: string;
+  size_bytes: number;
+  last_accessed_at?: number;
+  created_at: number;
+  updated_at: number;
+  /** Base64-encoded binary content (binary docs only, GET /:id response) */
+  content_blob_b64?: string;
+}
+
+export interface SaveWorkspaceDocInput {
+  agent_id: string;
+  /** If provided, upserts on (agent_id, doc_key) */
+  doc_key?: string;
+  title: string;
+  content?: string;
+  content_type: 'text' | 'code' | 'binary';
+  type: 'plan' | 'brief' | 'report' | 'notes';
+  task_ref?: string;
+  /** Required for binary content_type; base64-encoded blob */
+  content_blob_b64?: string;
+}
+
 // -------------------------------------------------------------------------
 // Utility types
 // -------------------------------------------------------------------------
@@ -337,6 +368,13 @@ export type ListScheduledAgentsResponse = string[]
 export type ListIdeasResponse = Record<string, unknown>[]
 
 export type ListIdeaCategoriesResponse = string[]
+
+export type SaveWorkspaceDocRequest = SaveWorkspaceDocInput
+export type SaveWorkspaceDocResponse = WorkspaceDoc
+
+export type GetWorkspaceDocResponse = WorkspaceDoc
+
+export type PatchWorkspaceDocResponse = WorkspaceDoc
 
 export type ListArtifactsResponse = Record<string, unknown>[]
 
