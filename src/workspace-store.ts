@@ -153,6 +153,15 @@ export function saveWorkspaceDoc(input: SaveWorkspaceDocInput): WorkspaceDoc {
   return rowToDoc(row)
 }
 
+// Lightweight auth-gate check: returns id/agent_id/tenant_id/content_type/title
+// without touching last_accessed_at.  Use this before any ownership/tenant gate.
+export function peekWorkspaceDoc(id: string): Pick<WorkspaceDoc, 'id' | 'agent_id' | 'tenant_id' | 'content_type' | 'title'> | null {
+  const row = getDb().prepare(
+    'SELECT id, agent_id, tenant_id, content_type, title FROM workspace_docs WHERE id = ?'
+  ).get(id) as Pick<WorkspaceDoc, 'id' | 'agent_id' | 'tenant_id' | 'content_type' | 'title'> | undefined
+  return row ?? null
+}
+
 export function getWorkspaceDoc(id: string): WorkspaceDoc | null {
   const db = getDb()
   const row = db.prepare('SELECT * FROM workspace_docs WHERE id = ?').get(id) as DbRow | undefined

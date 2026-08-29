@@ -13,7 +13,7 @@ import { logger } from '../../logger.js'
 import {
   saveWorkspaceDoc, getWorkspaceDoc, getWorkspaceDocBlob,
   listWorkspaceDocs, patchWorkspaceDoc, deleteWorkspaceDoc,
-  WORKSPACE_DOC_SIZE_LIMITS,
+  peekWorkspaceDoc, WORKSPACE_DOC_SIZE_LIMITS,
   type WorkspaceDocType, type WorkspaceContentType,
 } from '../../workspace-store.js'
 import type { RouteContext } from './types.js'
@@ -65,6 +65,9 @@ export async function tryHandleWorkspace(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'parse_error', hint: 'Invalid JSON body' }, 400); return true
     }
 
+    // agent_id is self-declared in the body because all fleet agents share the
+    // same dashboard token — the auth layer carries no per-agent identity yet.
+    // Admin callers may intentionally author docs on behalf of other agents.
     const agentId   = typeof parsed.agent_id === 'string'    ? parsed.agent_id.trim()    : ''
     const title     = typeof parsed.title === 'string'       ? parsed.title.trim()       : ''
     const contentRaw = typeof parsed.content === 'string'    ? parsed.content            : null
@@ -127,15 +130,16 @@ export async function tryHandleWorkspace(ctx: RouteContext): Promise<boolean> {
   const idMatch = path.match(/^\/api\/workspace\/([^/]+)$/)
   if (idMatch && method === 'GET') {
     const id = idMatch[1]
-    const doc = getWorkspaceDoc(id)
-    if (!doc) { json(res, { error: 'not_found', field: 'id' }, 404); return true }
-
-    // Tenant gate: non-admin may only read own tenant's docs.
-    if (ctx.role !== 'admin' && doc.tenant_id !== (ctx.tenantId ?? 'default')) {
-      json(res, { error: 'forbidden' }, 403); return true
+    // Peek first (no last_accessed_at side-effect) so the tenant gate runs
+    // before we touch the row; return 404 on mismatch to avoid ID enumeration.
+    const meta = peekWorkspaceDoc(id)
+    if (!meta) { json(res, { error: 'not_found', field: 'id' }, 404); return true }
+    if (ctx.role !== 'admin' && meta.tenant_id !== (ctx.tenantId ?? 'default')) {
+      json(res, { error: 'not_found', field: 'id' }, 404); return true
     }
 
-    // For binary docs, attach blob as base64 in the response.
+    // Gate passed — full fetch (bumps last_accessed_at).
+    const doc = getWorkspaceDoc(id)!
     if (doc.content_type === 'binary') {
       const blob = getWorkspaceDocBlob(id)
       json(res, { ...doc, content_blob_b64: blob ? blob.toString('base64') : null })
@@ -153,8 +157,14 @@ export async function tryHandleWorkspace(ctx: RouteContext): Promise<boolean> {
     }
 
     const id = idMatch[1]
-    const existing = getWorkspaceDoc(id)
-    if (!existing) { json(res, { error: 'not_found', field: 'id' }, 404); return true }
+    const meta = peekWorkspaceDoc(id)
+    if (!meta) { json(res, { error: 'not_found', field: 'id' }, 404); return true }
+    // Tenant gate: non-admin fleet agents may only patch docs in their own tenant.
+    if (ctx.role !== 'admin' && meta.tenant_id !== (ctx.tenantId ?? 'default')) {
+      json(res, { error: 'not_found', field: 'id' }, 404); return true
+    }
+    // Shadow existing for title fallback and size-limit check (no last_accessed_at bump).
+    const existing = { ...meta } as { title: string; content_type: WorkspaceContentType }
 
     const body = await readBody(req)
     let parsed: Record<string, unknown>
@@ -201,18 +211,20 @@ export async function tryHandleWorkspace(ctx: RouteContext): Promise<boolean> {
     }
 
     const id = idMatch[1]
-    const existing = getWorkspaceDoc(id)
-    if (!existing) { json(res, { error: 'not_found', field: 'id' }, 404); return true }
-
-    // Only the owning agent may delete.
-    const callerAgentId = ctx.auth?.device ?? null
-    if (callerAgentId && callerAgentId !== existing.agent_id) {
-      json(res, { error: 'forbidden', hint: 'Only the owning agent may delete this doc' }, 403)
-      return true
+    // Peek first — no last_accessed_at side-effect, tenant gate before delete.
+    const meta = peekWorkspaceDoc(id)
+    if (!meta) { json(res, { error: 'not_found', field: 'id' }, 404); return true }
+    // Tenant gate: non-admin may not delete docs from another tenant.
+    if (ctx.role !== 'admin' && meta.tenant_id !== (ctx.tenantId ?? 'default')) {
+      json(res, { error: 'not_found', field: 'id' }, 404); return true
     }
+    // Note: per-agent ownership cannot be enforced here because all fleet agents
+    // share the same dashboard token (ctx.auth has no agent_id field).  Any
+    // fleet-agent token may delete any doc within its tenant.  Per-agent token
+    // differentiation is a future work item.
 
     deleteWorkspaceDoc(id)
-    logger.info({ id, agent_id: existing.agent_id }, 'workspace_doc deleted')
+    logger.info({ id, agent_id: meta.agent_id }, 'workspace_doc deleted')
     json(res, { ok: true })
     return true
   }
