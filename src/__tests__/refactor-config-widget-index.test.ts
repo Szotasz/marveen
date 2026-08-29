@@ -125,6 +125,7 @@ describe('orphaned i18n keys removed from lang files', () => {
     'agents.not_found',
     'agents.channel.conversation',
     'agents.model.cards_done',
+    'activity.no_output',
     'activity.session_stopped',
     'autonomy.btn.refresh',
     'autonomy.level.1',
