@@ -120,16 +120,23 @@ const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9
 // authenticated keeps its exact old meaning for token callers (existing probes
 // parse only that field): a valid bearer -> authenticated:true. A device key is
 // an authenticated principal too (method:'device', device:<key name>).
-function statusPayload(auth: RouteContext['auth']) {
+function statusPayload(ctx: RouteContext) {
+  const { auth } = ctx
   const authenticated = auth?.kind === 'token' || auth?.kind === 'session' || auth?.kind === 'device'
   const method = authenticated ? auth!.kind : null
   const user = auth?.kind === 'session' ? auth.user ?? null : null
   const device = auth?.kind === 'device' ? auth.device ?? null : null
+  // role and tenant_id are exposed for session-auth callers so the dashboard can
+  // distinguish a global admin (role=admin, tenant_id=null) from a tenant-scoped user.
+  const role = auth?.kind === 'session' ? (ctx.role ?? null) : null
+  const tenant_id = auth?.kind === 'session' ? (ctx.tenantId !== undefined ? ctx.tenantId : null) : null
   return {
     authenticated,
     method,
     user,
     device,
+    role,
+    tenant_id,
     login_available: countDashboardUsers(false) >= 1,
     setup_required: countDashboardUsers(true) === 0,
   }
@@ -139,7 +146,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, auth } = ctx
 
   if (path === '/api/auth/status' && method === 'GET') {
-    json(res, statusPayload(auth))
+    json(res, statusPayload(ctx))
     return true
   }
 

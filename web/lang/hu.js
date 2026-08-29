@@ -1895,4 +1895,7 @@ window._i18n.hu = {
   'errors.federation_disabled':      'A föderáció ki van kapcsolva',
   'errors.unknown_query_parameter':  'Ismeretlen lekérdezési paraméter',
 
+  'tenant.selector.label':           'Tenant:',
+  'tenant.selector.all':             'Összes tenant',
+
 }

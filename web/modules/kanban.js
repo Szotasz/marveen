@@ -18,11 +18,13 @@ import { escapeHtml } from './util.js'
 import { t, getLang } from './i18n.js'
 import { showToast } from './toast.js'
 import { getErrorMessage } from './error-message.js'
+import { initTenantSelector } from './tenant-selector.js'
 
 // ── Injected dependencies ────────────────────────────────────────────────────
 let _openModal = null, _closeModal = null, _wireColumn = null, _wireCardTouch = null, _loadIdeasPage = null
 
 // ── Module state ─────────────────────────────────────────────────────────────
+let _kanbanTenantGetter = null
 let kanbanCards = []
 let kanbanAssignees = []
 let kanbanProjects = []
@@ -87,6 +89,10 @@ export function initKanban({ openModal, closeModal, wireColumn, wireCardTouch, l
   // Wire the static flat-board columns. Swimlane columns are wired dynamically
   // in renderSwimlaneBoard as they are created (those elements don't exist yet).
   columns.forEach(col => _wireColumn?.(col))
+  // Tenant selector for global admins (fire-and-forget; getter available before
+  // first loadKanban() call because initKanban runs once before the page enters).
+  initTenantSelector('kanbanTenantSelectorContainer', () => loadKanban())
+    .then(getter => { _kanbanTenantGetter = getter })
 }
 
 // ── Utility ───────────────────────────────────────────────────────────────────
@@ -169,8 +175,10 @@ export async function loadKanban() {
         if (Array.isArray(storedHiddenCols)) kanbanHiddenColumns = new Set(storedHiddenCols)
       } catch { /* ignore malformed storage */ }
     }
+    const kanbanTenant = _kanbanTenantGetter?.()
+    const kanbanUrl = kanbanTenant ? `/api/kanban?tenant=${encodeURIComponent(kanbanTenant)}` : '/api/kanban'
     const [cardsRes, assigneesRes, projectsRes, labelsRes] = await Promise.all([
-      fetch('/api/kanban'),
+      fetch(kanbanUrl),
       fetch('/api/kanban/assignees'),
       fetch('/api/kanban-projects'),
       fetch('/api/kanban/labels'),

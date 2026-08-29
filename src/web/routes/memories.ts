@@ -39,8 +39,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
   // Tenant scope: admin role sees/writes all tenants (bypass); scoped callers
   // are restricted to their own tenant_id. The 'default' tenant covers the
   // fleet's own memories for backward-compat (existing rows + fleet agents).
+  // Global admins may pass ?tenant=<id> to narrow to one specific tenant.
   const isAdmin = ctx.role === 'admin'
-  const effectiveTenantId: string = isAdmin ? 'default' : (ctx.tenantId ?? 'default')
+  const tenantParam = isAdmin ? (url.searchParams.get('tenant') ?? null) : null
+  const effectiveTenantId: string = tenantParam ?? (isAdmin ? 'default' : (ctx.tenantId ?? 'default'))
 
   if (path === '/api/memories' && method === 'POST') {
     const body = await readBody(req)
@@ -88,7 +90,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     const mode = url.searchParams.get('mode') || 'hybrid'
 
     let results: Memory[]
-    const recallTenantId = isAdmin ? undefined : effectiveTenantId
+    const recallTenantId = isAdmin ? (tenantParam ?? undefined) : effectiveTenantId
     if (q && mode === 'hybrid') {
       results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit, recallTenantId)
     } else if (q && agentId) {

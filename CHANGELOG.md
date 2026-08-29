@@ -19,6 +19,18 @@ Extract a version for release: `npm run release-notes -- <version>`
   dashboard now shows the actual username of the approver instead of the generic
   `"dashboard"` label.
 
+- **[API]** Global admin tenant-selector on Memories, Kanban, and Recall dashboard
+  views. `GET /api/memories`, `GET /api/kanban`, and `GET /api/recall` now accept an
+  optional `?tenant=<id>` query parameter; the param is silently ignored for
+  non-admin callers so existing integrations are unaffected. `GET /api/auth/status`
+  now includes `role` and `tenant_id` fields for session-authenticated callers so the
+  dashboard can detect global admins (`role=admin`, `tenant_id=null`) and render the
+  selector without a separate endpoint. Frontend: `web/modules/tenant-selector.js`
+  shared utility fetches the tenant list from `/api/admin/tenants`, builds a `<select>`,
+  and wires change handlers; integrated into `memories.js`, `kanban.js`, and
+  `recall-bgtasks.js`. CSS in `web/css/features/tenant-selector.css`. Selector is
+  hidden for non-admin sessions; no layout or nav change for existing users.
+
 - User-level audit trail for session-authenticated B2B users: `POST /api/memories`,
   `POST /api/kanban`, `PUT /api/kanban/:id`, and `POST /api/messages` now create an
   `agent_audit_log` row with `agent_id` set to the session username when the caller

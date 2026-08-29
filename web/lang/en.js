@@ -1896,4 +1896,7 @@ window._i18n.en = {
   'errors.federation_disabled':      'Federation is disabled',
   'errors.unknown_query_parameter':  'Unknown query parameter',
 
+  'tenant.selector.label':           'Tenant:',
+  'tenant.selector.all':             'All tenants',
+
 }

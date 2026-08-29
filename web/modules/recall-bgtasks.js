@@ -1,6 +1,7 @@
 import { t } from './i18n.js'
 import { showToast } from './toast.js'
 import { getErrorMessage } from './error-message.js'
+import { initTenantSelector } from './tenant-selector.js'
 
 function esc(s) {
   if (!s) return ''
@@ -15,6 +16,7 @@ function esc(s) {
 
 let recallInitialized = false
 let recallSortDesc = true
+let _recallTenantGetter = null
 
 export async function loadRecallPage() {
   if (!recallInitialized) {
@@ -53,6 +55,9 @@ export async function loadRecallPage() {
     })
 
     loadRecallDates()
+    // Tenant selector for global admins (init once, fire-and-forget).
+    initTenantSelector('recallTenantSelectorContainer', () => doRecall())
+      .then(getter => { _recallTenantGetter = getter })
   }
   doRecall()
 }
@@ -86,6 +91,8 @@ async function doRecall() {
   }
   if (searchInput) params.set('q', searchInput)
   if (agentInput) params.set('agent', agentInput)
+  const recallTenant = _recallTenantGetter?.()
+  if (recallTenant) params.set('tenant', recallTenant)
 
   const timeline = document.getElementById('recallTimeline')
   const summary = document.getElementById('recallSummary')
