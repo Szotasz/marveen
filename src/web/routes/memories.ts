@@ -106,7 +106,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       // accuracy bug: getAgentMemories enforces tenantId in the WHERE clause.
       results = getAgentMemories(agentId, limit, tier || undefined, recallTenantId)
     } else {
-      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit)
+      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, recallTenantId)
     }
 
     // Tenant isolation: non-admin callers only see their own tenant's rows.

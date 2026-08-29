@@ -256,22 +256,21 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     const beforeRaw = url.searchParams.get('before')
     const before = beforeRaw !== null ? parseInt(beforeRaw, 10) : undefined
 
+    // Tenant isolation pushed into SQL before LIMIT: a post-LIMIT JS filter would
+    // starve tenant-scoped callers when other tenants occupy the LIMIT slots.
+    const msgTenantId = isAdmin ? undefined : effectiveTenantId
+
     let messages: AgentMessage[]
     if (status === 'pending' && agent) {
-      messages = getPendingMessages(agent)
+      messages = getPendingMessages(agent, msgTenantId)
     } else if (status === 'pending') {
-      messages = getPendingMessages()
+      messages = getPendingMessages(undefined, msgTenantId)
     } else if (agent) {
       // SQL-filtered to THIS agent's last N (+ before-cursor pagination), not
       // global-last-N-then-JS-filter which starved rarely-active threads.
-      messages = getAgentConversation(agent, limit, Number.isFinite(before as number) ? before : undefined)
+      messages = getAgentConversation(agent, limit, Number.isFinite(before as number) ? before : undefined, msgTenantId)
     } else {
-      messages = listAgentMessages(limit)
-    }
-
-    // Tenant isolation: non-admin callers only see messages belonging to their tenant.
-    if (!isAdmin) {
-      messages = messages.filter((m) => ((m as AgentMessage & { tenant_id?: string }).tenant_id ?? 'default') === effectiveTenantId)
+      messages = listAgentMessages(limit, msgTenantId)
     }
 
     jsonMaybeGzip(req, res, messages)

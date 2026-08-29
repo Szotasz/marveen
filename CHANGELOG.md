@@ -9,6 +9,21 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
+### Fixed
+
+- **[API]** `GET /api/messages` tenant isolation now filters in SQL before the `LIMIT`
+  clause rather than in JavaScript after it. Previously, a non-admin caller with
+  `LIMIT=N` could receive fewer than `N` rows when other tenants' rows occupied LIMIT
+  slots before the JS filter ran -- silently starving paginated clients. The same
+  fix applies to `GET /api/memories` for the plain listing path (`getMemoriesForChat`).
+  The four affected helpers (`listAgentMessages`, `getAgentConversation`,
+  `getPendingMessages`, `getMemoriesForChat`) now accept an optional `tenantId`
+  parameter that is pushed into the SQL `WHERE` clause. Admin callers pass no
+  `tenantId` and see the full unfiltered set, unchanged. A new regression test
+  (`tenant-listing-pagination.test.ts`) proves the pagination contract with two
+  tenants and more rows than LIMIT.
+
+
 ### Added
 
 - **[API]** `GET /api/overview` now accessible to `viewer` and `read_only` roles
