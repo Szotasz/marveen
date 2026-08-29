@@ -71,7 +71,7 @@ function makeCtx(method: string, rawPath: string, body?: object): { ctx: RouteCo
 }
 
 const SAMPLE_TENANT: db.Tenant = { id: 'acme-corp', display_name: 'Acme Corp', created_at: 1787000000, disabled_at: null }
-const SAMPLE_USER = { id: 5, username: 'acme-viewer', role: 'agent', tenant_id: 'acme-corp', created_at: 1787000000, updated_at: 1787000000, password_hash: '$hash$', disabled: 0 }
+const SAMPLE_USER = { id: 5, username: 'acme-viewer', role: 'agent', tenant_id: 'acme-corp', email: null, display_name: null, created_at: 1787000000, updated_at: 1787000000, password_hash: '$hash$', disabled: 0 }
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -362,3 +362,52 @@ describe('PATCH /api/v1/admin/users/:id', () => {
     expect(await tryHandleAdminB2b(ctx)).toBe(false)
   })
 })
+
+describe('POST /api/v1/admin/users -- profile fields', () => {
+  it('creates a user with email and display_name and returns both in response', async () => {
+    vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
+    vi.mocked(db.provisionDashboardUser).mockReturnValue({ ...SAMPLE_USER, email: 'viewer@acme.com', display_name: 'Acme Viewer' } as any)
+    const { ctx, out } = makeCtx('POST', '/api/v1/admin/users', {
+      username: 'acme-viewer', password: 'password123456', role: 'agent', tenant_id: 'acme-corp',
+      email: 'viewer@acme.com', display_name: 'Acme Viewer',
+    })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(201)
+    expect(out.body.email).toBe('viewer@acme.com')
+    expect(out.body.display_name).toBe('Acme Viewer')
+    expect(out.body).not.toHaveProperty('password_hash')
+  })
+
+  it('returns 400 for email without @', async () => {
+    vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
+    const { ctx, out } = makeCtx('POST', '/api/v1/admin/users', {
+      username: 'acme-viewer', password: 'password123456', role: 'agent', tenant_id: 'acme-corp',
+      email: 'notanemail',
+    })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toBe('invalid_value')
+    expect(out.body.field).toBe('email')
+  })
+})
+
+describe('PATCH /api/v1/admin/users/:id -- profile fields', () => {
+  it('updates email and returns it in response', async () => {
+    vi.mocked(db.getDashboardUserById).mockReturnValue({ ...SAMPLE_USER } as any)
+    vi.mocked(db.adminPatchDashboardUser).mockReturnValue({ ...SAMPLE_USER, email: 'new@acme.com' } as any)
+    const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/users/5', { email: 'new@acme.com' })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body.email).toBe('new@acme.com')
+  })
+
+  it('returns 400 for PATCH with email without @', async () => {
+    vi.mocked(db.getDashboardUserById).mockReturnValue({ ...SAMPLE_USER } as any)
+    const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/users/5', { email: 'notvalid' })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toBe('invalid_value')
+    expect(out.body.field).toBe('email')
+  })
+})
+

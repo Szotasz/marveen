@@ -46,10 +46,10 @@ const SENDER_ID_RE = /^[a-zA-Z0-9_-]+$/
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function userToPublic(u: { id: number; username: string; role: string; tenant_id: string | null; created_at: number; disabled: number }): {
-  id: number; username: string; role: string; tenant_id: string | null; created_at: number; disabled: boolean
+function userToPublic(u: { id: number; username: string; role: string; tenant_id: string | null; email?: string | null; display_name?: string | null; created_at: number; disabled: number }): {
+  id: number; username: string; role: string; tenant_id: string | null; email: string | null; display_name: string | null; created_at: number; disabled: boolean
 } {
-  return { id: u.id, username: u.username, role: u.role, tenant_id: u.tenant_id, created_at: u.created_at, disabled: u.disabled !== 0 }
+  return { id: u.id, username: u.username, role: u.role, tenant_id: u.tenant_id, email: u.email ?? null, display_name: u.display_name ?? null, created_at: u.created_at, disabled: u.disabled !== 0 }
 }
 
 function auditAdmin(ctx: RouteContext, action: string, targetId: string | number, detail: Record<string, unknown>): void {
@@ -136,6 +136,8 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     const password = typeof body.password === 'string' ? body.password : ''
     const role = typeof body.role === 'string' ? body.role : ''
     const tenantId = 'tenant_id' in body ? (body.tenant_id === null ? null : String(body.tenant_id ?? '').trim() || null) : undefined
+    const email = typeof body.email === 'string' ? body.email.trim() || null : null
+    const displayName = typeof body.display_name === 'string' ? body.display_name.trim() || null : null
 
     if (!username || username.length < 3 || username.length > 64 || !USERNAME_RE.test(username)) {
       json(res, { error: 'invalid_value', field: 'username', hint: 'Username must be 3-64 chars, letters/digits/underscores/hyphens only' }, 400); return true
@@ -162,12 +164,16 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
       }
     }
 
+    if (email && !email.includes('@')) {
+      json(res, { error: 'invalid_value', field: 'email', hint: 'Email must contain @' }, 400); return true
+    }
+
     // Duplicate check (UNIQUE on username, case-insensitive).
     const dup = getDb().prepare('SELECT id FROM dashboard_users WHERE username = ? COLLATE NOCASE').get(username)
     if (dup) { json(res, { error: 'conflict', field: 'username', hint: 'Username already exists' }, 409); return true }
 
     const hash = await hashPassword(password)
-    const user = provisionDashboardUser(username, hash, role, finalTenantId)
+    const user = provisionDashboardUser(username, hash, role, finalTenantId, email, displayName)
     auditAdmin(ctx, 'admin.user.create', user.id, { username, role, tenant_id: finalTenantId })
     json(res, userToPublic(user), 201)
     return true
@@ -191,7 +197,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     let hasField = false
 
     // Build the patch, validating each field.
-    const patch: { role?: string; tenant_id?: string | null; password_hash?: string; disabled?: boolean } = {}
+    const patch: { role?: string; tenant_id?: string | null; password_hash?: string; disabled?: boolean; email?: string | null; display_name?: string | null } = {}
 
     if ('role' in body) {
       const newRole = typeof body.role === 'string' ? body.role : ''
@@ -211,6 +217,17 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     }
     if ('disabled' in body) {
       patch.disabled = Boolean(body.disabled)
+      hasField = true
+    }
+    if ('email' in body) {
+      patch.email = typeof body.email === 'string' ? body.email.trim() || null : null
+      if (patch.email && !patch.email.includes('@')) {
+        json(res, { error: 'invalid_value', field: 'email', hint: 'Email must contain @' }, 400); return true
+      }
+      hasField = true
+    }
+    if ('display_name' in body) {
+      patch.display_name = typeof body.display_name === 'string' ? body.display_name.trim() || null : null
       hasField = true
     }
     if (!hasField) { json(res, { error: 'required', hint: 'At least one field must be provided' }, 400); return true }
