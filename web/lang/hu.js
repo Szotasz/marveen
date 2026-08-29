@@ -468,7 +468,7 @@ window._i18n.hu = {
   'agents.btn.reconnect':          'Újracsatlakozás...',
   'agents.btn.running':            'Futtatás...',
   // --- Activity ---
-  'activity.no_output':          'nincs friss kimenet',
+  'agents.card.no_output':       'nincs friss kimenet',
   'activity.not_running':        'a session nem fut',
 
   'activity.tooltip.mode':       'Jogosultsági mód: {mode}. Ebben a módban az ágens megáll és jóváhagyásra vár, mielőtt eszközt hívna -- ha senki nem figyeli, órákig állhat úgy, hogy közben tétlennek látszik.',

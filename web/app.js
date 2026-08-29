@@ -745,7 +745,7 @@ function agentActivityBodyHtml(entry) {
     '</div>' +
     (tail
       ? '<pre class="activity-tail">' + tail + '</pre>'
-      : '<p class="activity-tail-empty">' + (entry.running ? t('activity.no_output') : t('activity.not_running')) + '</p>')
+      : '<p class="activity-tail-empty">' + (entry.running ? t('agents.card.no_output') : t('activity.not_running')) + '</p>')
   )
 }
 

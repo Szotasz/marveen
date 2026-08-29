@@ -329,7 +329,7 @@ window._i18n.en = {
   'agents.toast.avatar_error':   'Error saving avatar',
 
   // --- Activity ---
-  'activity.no_output':          'no recent output',
+  'agents.card.no_output':       'no recent output',
   'activity.not_running':        'session not running',
   'activity.state.working':      'working',
   'activity.state.idle':         'idle',
