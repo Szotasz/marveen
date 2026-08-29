@@ -96,10 +96,13 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
           .all(agentId, `%${q}%`, `%${q}%`, ...tpFallback, limit) as Memory[]
       }
     } else if (q) {
-      results = searchMemories(q, ALLOWED_CHAT_ID, limit)
+      results = searchMemories(q, ALLOWED_CHAT_ID, limit, recallTenantId)
       if (results.length === 0) {
         const db2 = getDb()
-        results = db2.prepare('SELECT * FROM memories WHERE content LIKE ? ORDER BY accessed_at DESC LIMIT ?').all(`%${q}%`, limit) as Memory[]
+        const tcFallback = recallTenantId ? ' AND tenant_id = ?' : ''
+        const tpFallback = recallTenantId ? [recallTenantId] : []
+        results = db2.prepare(`SELECT * FROM memories WHERE content LIKE ?${tcFallback} ORDER BY accessed_at DESC LIMIT ?`)
+          .all(`%${q}%`, ...tpFallback, limit) as Memory[]
       }
     } else if (agentId) {
       // Tenant filtering pushed into SQL (before LIMIT) to avoid the post-filter
@@ -109,11 +112,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, recallTenantId)
     }
 
-    // Tenant isolation: non-admin callers only see their own tenant's rows.
-    // REQUIRED for the q-only branch (no agentId): searchMemories and its LIKE
-    // fallback do not accept a tenantId, so SQL-level filtering is not possible
-    // there. For all other branches (agentId, hybridSearch, getMemoriesForChat)
-    // this is redundant defence-in-depth -- those already filter in SQL before LIMIT.
+    // Tenant isolation: defence-in-depth guard. All branches above now filter
+    // tenant_id in SQL before LIMIT, so this filter is redundant in the normal
+    // path. It stays as a safety net in case a future branch forgets SQL-level
+    // filtering -- a non-admin caller must never see another tenant's rows.
     if (!isAdmin) {
       results = results.filter((m) => ((m as Memory & { tenant_id?: string }).tenant_id ?? 'default') === effectiveTenantId)
     }

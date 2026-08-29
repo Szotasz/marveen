@@ -450,19 +450,21 @@ function withoutRank<T extends { rank: number }>(rows: T[]): Omit<T, 'rank'>[] {
   return rows.map(({ rank: _rank, ...rest }) => rest)
 }
 
-export function searchMemories(query: string, chatId: string, limit = 3): Memory[] {
+export function searchMemories(query: string, chatId: string, limit = 3, tenantId?: string): Memory[] {
   const terms = buildFtsMatchExpression(query)
   if (!terms) return []
   try {
+    const tc = tenantId ? ' AND m.tenant_id = ?' : ''
+    const tp = tenantId ? [tenantId] : []
     const candidates = db
       .prepare(
         `SELECT m.*, f.rank AS rank FROM memories m
          JOIN memories_fts f ON m.id = f.rowid
-         WHERE f.content MATCH ? AND m.chat_id = ?
+         WHERE f.content MATCH ? AND m.chat_id = ?${tc}
          ORDER BY rank
          LIMIT ?`
       )
-      .all(terms, chatId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
+      .all(terms, chatId, ...tp, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
     return withoutRank(reRankByRecency(candidates, limit)) as Memory[]
   } catch {
     return []

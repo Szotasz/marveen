@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest'
-import { initDatabase, getDb, listAgentMessages, getAgentConversation, getPendingMessages } from '../db.js'
+import { initDatabase, getDb, listAgentMessages, getAgentConversation, getPendingMessages, searchMemories } from '../db.js'
+import type { Memory } from '../db.js'
 
 describe('tenant listing pagination', () => {
   beforeAll(() => {
@@ -54,3 +55,43 @@ describe('tenant listing pagination', () => {
     expect(rows.every(m => m.tenant_id === 'tenant-a')).toBe(true)
   })
 })
+
+describe('tenant memory search pagination (q-only branch)', () => {
+  beforeAll(() => {
+    initDatabase(':memory:')
+    const db = getDb()
+    // 4 memories for tenant-a with searchable content, 4 for tenant-b
+    for (let i = 1; i <= 4; i++) {
+      db.prepare(
+        "INSERT INTO memories (chat_id, agent_id, category, sector, content, created_at, accessed_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+      ).run('test-chat', 'test-agent', 'warm', 'semantic', `uniquetoken alpha content ${i}`, i, i, 'tenant-a')
+      db.prepare(
+        "INSERT INTO memories (chat_id, agent_id, category, sector, content, created_at, accessed_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+      ).run('test-chat', 'test-agent', 'warm', 'semantic', `uniquetoken beta content ${i}`, i + 100, i + 100, 'tenant-b')
+    }
+  })
+
+  it('searchMemories with tenantId=tenant-a returns only tenant-a rows', () => {
+    const rows = searchMemories('uniquetoken', 'test-chat', 10, 'tenant-a')
+    expect(rows.length).toBeGreaterThan(0)
+    expect(rows.every(m => (m as Memory & { tenant_id?: string }).tenant_id === 'tenant-a')).toBe(true)
+  })
+
+  it('searchMemories with tenantId=tenant-b returns only tenant-b rows', () => {
+    const rows = searchMemories('uniquetoken', 'test-chat', 10, 'tenant-b')
+    expect(rows.length).toBeGreaterThan(0)
+    expect(rows.every(m => (m as Memory & { tenant_id?: string }).tenant_id === 'tenant-b')).toBe(true)
+  })
+
+  it('LIKE fallback: tenant filter in SQL before LIMIT returns only correct tenant rows', () => {
+    // Directly exercise the tcFallback SQL pattern used in the q-only LIKE fallback branch.
+    const db = getDb()
+    const tcFallback = ' AND tenant_id = ?'
+    const tpFallback = ['tenant-a']
+    const rows = db.prepare(`SELECT * FROM memories WHERE content LIKE ?${tcFallback} ORDER BY accessed_at DESC LIMIT ?`)
+      .all('%uniquetoken%', ...tpFallback, 10) as (Memory & { tenant_id?: string })[]
+    expect(rows.length).toBeGreaterThan(0)
+    expect(rows.every(m => m.tenant_id === 'tenant-a')).toBe(true)
+  })
+})
+
