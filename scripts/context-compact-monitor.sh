@@ -10,6 +10,8 @@
 #   2. 45-min per-agent cooldown             -- stored in COMPACT_STATE_FILE (atomic write)
 #   3. pane must be idle                     -- busy panes are deferred and flagged as
 #      pending so the next idle moment triggers compact without re-qualifying
+#      EXCEPTION: if the monitor runs inside the main agent's own session, the
+#      busy state is self-caused by this heartbeat; the pending gate is skipped
 #   4. fail-closed on corrupt state file     -- whole round skipped, file quarantined
 #
 # Urgent mode (>= URGENT_PCT):
@@ -85,6 +87,25 @@ def read_main_agent_id():
 
 MAIN_AGENT_ID = read_main_agent_id()
 MAIN_SESSION  = f"{MAIN_AGENT_ID}-channels"
+
+def _current_tmux_session():
+    """Return the tmux session name this script is executing in, or None if outside tmux."""
+    if not os.environ.get("TMUX"):
+        return None
+    try:
+        r = subprocess.run(
+            [TMUX_BIN, "display-message", "-p", "#{session_name}"],
+            capture_output=True, text=True, timeout=3
+        )
+        if r.returncode == 0:
+            return r.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+# If the monitor is running inside the main agent's session, busy-state detection
+# on that session would be self-caused (this heartbeat run is what makes it "busy").
+_RUNNING_IN_SESSION = _current_tmux_session()
 
 # contextLimitForModel: mirrors src/context-guard.ts ONE_MILLION_FAMILIES
 ONE_MILLION_RX = [
@@ -318,17 +339,27 @@ try:
 
         # Gate 3: pane idle check
         if not is_pane_idle(session):
-            # Flag as pending so the next idle moment triggers compact.
-            if not is_pending:
-                state.setdefault(agent, {})["pending_compact"] = True
-                state.setdefault(agent, {})["pending_since"] = now
-                state_dirty = True
-            urgency = " [URGENT]" if pct >= URGENT_PCT / 100 else ""
-            print(f"[{LABEL}] {agent}: {pct:.0%} >= threshold but pane busy{urgency} -- flagged pending", flush=True)
-            # At urgent levels, also notify the agent so it can decide when to compact.
-            if pct >= URGENT_PCT / 100:
-                send_urgent_notify(session, pct)
-            continue
+            # Self-bypass: if the monitor is running inside the main agent's own session,
+            # the busy state is self-caused by this heartbeat run -- not genuine work.
+            # Skip the pending flag and fall through to send /compact.
+            if session == MAIN_SESSION and _RUNNING_IN_SESSION == MAIN_SESSION:
+                print(
+                    f"[{LABEL}] {agent}: pane busy but self-caused "
+                    f"(monitor running inside own session) -- proceeding with compact",
+                    flush=True,
+                )
+            else:
+                # Flag as pending so the next idle moment triggers compact.
+                if not is_pending:
+                    state.setdefault(agent, {})["pending_compact"] = True
+                    state.setdefault(agent, {})["pending_since"] = now
+                    state_dirty = True
+                urgency = " [URGENT]" if pct >= URGENT_PCT / 100 else ""
+                print(f"[{LABEL}] {agent}: {pct:.0%} >= threshold but pane busy{urgency} -- flagged pending", flush=True)
+                # At urgent levels, also notify the agent so it can decide when to compact.
+                if pct >= URGENT_PCT / 100:
+                    send_urgent_notify(session, pct)
+                continue
 
         # Pane is idle -- compact now. Clear pending flag.
         if is_pending:
