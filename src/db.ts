@@ -2514,7 +2514,8 @@ export async function backfillEmbeddings(): Promise<number> {
 
 // Creates shadow rows in `memories` for any `import_memories` entry that lacks
 // one (memory_shadow_id IS NULL).  Called after initVecSupport() so that vec0
-// is loaded and the vec_memories_ai trigger points to a live virtual table.
+// is loaded when the application-level vec sync (syncVecMemoryEmbeddingUpdate)
+// runs during embedding backfill.
 export async function backfillImportShadowRows(): Promise<number> {
   type ImportRow = { id: string; content: string; keywords: string | null; updated_at: number }
   const pending = db
@@ -2537,7 +2538,8 @@ export async function backfillImportShadowRows(): Promise<number> {
   // Strip raw HTML/markup from any previously-crawled HTML import rows.
   // New crawls already strip via import-crawler.ts; this one-time pass cleans
   // rows ingested before that fix.  Runs here (after initVecSupport) so that
-  // vec0 is loaded when vec_memories_au fires on the embedding_blob UPDATE.
+  // vec0 is loaded when the application-level vec sync runs on the
+  // embedding_blob UPDATE inside the loop below.
   type HtmlImportRow = { import_id: string; content: string; shadow_id: number }
   const htmlRows = db
     .prepare(
