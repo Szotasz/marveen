@@ -2883,6 +2883,17 @@ function initVecSupport(): void {
       DELETE FROM vec_artifacts WHERE artifact_rowid = OLD.rowid;
     END
   `)
+
+  // vec_workspace_docs: ANN index for workspace document embeddings.
+  // App-level sync only (no triggers) -- insert/delete handled in workspace-store.ts.
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS vec_workspace_docs USING vec0(
+      doc_id      TEXT     PRIMARY KEY,
+      agent_id    TEXT     PARTITION KEY,
+      tenant_id   TEXT,
+      embedding   float[768]
+    )
+  `)
 }
 
 // --- Artifact Vector Search ---

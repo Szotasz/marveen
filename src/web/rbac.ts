@@ -175,6 +175,16 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   // Add explicit rows when 625 introduces sub-paths.
   { method: 'GET', pathPattern: '/api/me',          prefix: false, permission: 'memories:read' },
   { method: 'GET', pathPattern: '/api/v1/me',       prefix: false, permission: 'memories:read' },
+
+  // Workspace docs -- fleet-agent produced working documents.
+  { method: 'GET',    pathPattern: '/api/workspace',    prefix: true,  permission: 'memories:read' },
+  { method: 'POST',   pathPattern: '/api/workspace',    prefix: false, permission: 'memories:write' },
+  { method: 'PATCH',  pathPattern: '/api/workspace',    prefix: true,  permission: 'memories:write' },
+  { method: 'DELETE', pathPattern: '/api/workspace',    prefix: true,  permission: 'memories:write' },
+  { method: 'GET',    pathPattern: '/api/v1/workspace', prefix: true,  permission: 'memories:read' },
+  { method: 'POST',   pathPattern: '/api/v1/workspace', prefix: false, permission: 'memories:write' },
+  { method: 'PATCH',  pathPattern: '/api/v1/workspace', prefix: true,  permission: 'memories:write' },
+  { method: 'DELETE', pathPattern: '/api/v1/workspace', prefix: true,  permission: 'memories:write' },
 ]
 
 /**

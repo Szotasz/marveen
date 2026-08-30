@@ -81,6 +81,7 @@ import { tryHandleFleet } from './web/routes/fleet.js'
 import { tryHandleVaultSshKeys } from './web/routes/vault-ssh-keys.js'
 import { tryHandleSecurity } from './web/routes/security.js'
 import { tryHandleArtifacts } from './web/routes/artifacts.js'
+import { tryHandleWorkspace } from './web/routes/workspace.js'
 import { tryHandleImportMemories } from './web/routes/import-memories.js'
 import { tryHandleBackups } from './web/routes/backups.js'
 import { tryHandleBlackboard } from './web/routes/blackboard.js'
@@ -109,6 +110,7 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleAdminTokens)
   .add(tryHandleAdminB2b)
   .add(tryHandleArtifacts)
+  .add(tryHandleWorkspace)
   .add(tryHandleMigrate)
   .add(tryHandleKanban)
   .add(tryHandleSchedules)
