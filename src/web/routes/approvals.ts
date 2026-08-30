@@ -206,12 +206,16 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     }
 
     // IDOR guard: non-admin session users may only resolve approvals that belong
-    // to their own tenant. Fail-closed: a missing tenantId on the session is
-    // treated as unresolvable (403) rather than matching NULL fleet-global approvals,
-    // which would allow a tenant user to approve fleet-internal requests.
+    // to their own tenant.
     if (ctx.auth?.kind === 'session' && ctx.role !== 'admin') {
-      if (!ctx.tenantId || !target || target.tenant_id !== ctx.tenantId) {
-        json(res, { error: 'forbidden', hint: 'This approval does not belong to your tenant' }, 403)
+      if (!ctx.tenantId) {
+        // Session has no tenant scope -- config error, fail-closed.
+        json(res, { error: 'forbidden', hint: 'No tenant scope assigned to this session' }, 403)
+        return true
+      }
+      if (!target || target.tenant_id !== ctx.tenantId) {
+        // Cross-tenant or not found -- anti-enumeration: same as kanban/memories.
+        json(res, { error: 'not_found' }, 404)
         return true
       }
     }

@@ -11,6 +11,11 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Changed
 
+- `PATCH /api/approvals/:id` now returns `404 not_found` for cross-tenant or
+  non-existent approval IDs (anti-enumeration), consistent with
+  `kanban` and `memories` by-id endpoints. `403 forbidden` is retained only
+  when the session has no `tenantId` assigned (configuration fail-closed).
+
 - Memory content security filter (`SUSPICIOUS_PATTERNS` in
   `src/web/routes/memories.ts`) now blocks only the four prompt-injection
   patterns (instruction-override attempts). Six technical command patterns
