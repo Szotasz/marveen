@@ -1172,8 +1172,32 @@ export function getMemoryStats(): { total: number; byAgent: Record<string, numbe
 
 export function updateMemory(id: number, content: string, category?: string, agentId?: string, keywords?: string): boolean {
   const now = Math.floor(Date.now() / 1000)
+  // Read the row's CURRENT text before writing -- the parameters alone cannot
+  // say whether the embedded text changed.
+  const before = db.prepare('SELECT content, keywords FROM memories WHERE id = ?').get(id) as
+    { content: string | null; keywords: string | null } | undefined
   const sets: string[] = ['content = ?', 'accessed_at = ?']
   const params: unknown[] = [content, now]
+  // The stored embedding was generated from the OLD text, so an edit silently
+  // leaves the vector describing text that is no longer there. Nothing in the
+  // schema records that mismatch (there is no embedding_generated_at column),
+  // and neither search path errors: FTS and the LIKE fallback read `content`
+  // live and stay correct, while hybridSearch keeps fusing the stale vector's
+  // ranking in. Dropping it to NULL hands the row back to backfillEmbeddings,
+  // which processes exactly `WHERE embedding IS NULL` and is therefore
+  // idempotent and resumable. Deliberately NOT regenerating here: that would
+  // put a synchronous Ollama call in the path of a DB write.
+  //
+  // The trigger is the embedded TEXT changing, which is content AND keywords:
+  // both saveAgentMemory and backfillEmbeddings embed `content + ' ' + keywords`,
+  // so a keywords-only edit leaves exactly the same stale vector.
+  //
+  // Compare against the stored values rather than testing for the parameter's
+  // presence -- `content` is required and every caller passes it (the PUT route
+  // resends the unchanged body on a category-only edit), so presence alone says
+  // nothing about a change.
+  const keywordsChanged = keywords !== undefined && (before?.keywords ?? null) !== keywords
+  if (before && (before.content !== content || keywordsChanged)) sets.push('embedding = NULL')
   if (category) { sets.push('category = ?'); params.push(category) }
   if (agentId) { sets.push('agent_id = ?'); params.push(agentId) }
   if (keywords !== undefined) { sets.push('keywords = ?'); params.push(keywords) }
