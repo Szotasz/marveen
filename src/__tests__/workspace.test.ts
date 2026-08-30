@@ -306,10 +306,19 @@ describe('DELETE /api/workspace/:id', () => {
     expect(out.body.ok).toBe(true)
   })
 
-  it('returns 403 for session-auth caller', async () => {
-    const { ctx, out } = makeCtx('DELETE', '/api/v1/workspace/abc123', undefined, { authKind: 'session' })
+  it('returns 403 for non-admin session-auth caller', async () => {
+    const { ctx, out } = makeCtx('DELETE', '/api/v1/workspace/abc123', undefined, { authKind: 'session', role: 'viewer' })
     await tryHandleWorkspace(ctx)
     expect(out.status).toBe(403)
+  })
+
+  it('allows admin session-auth to delete', async () => {
+    vi.mocked(store.peekWorkspaceDoc).mockReturnValue(SAMPLE_META as any)
+    vi.mocked(store.deleteWorkspaceDoc).mockReturnValue(true)
+    const { ctx, out } = makeCtx('DELETE', '/api/v1/workspace/abc123', undefined, { authKind: 'session', role: 'admin' })
+    await tryHandleWorkspace(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body.ok).toBe(true)
   })
 
   it('returns 404 for unknown doc', async () => {

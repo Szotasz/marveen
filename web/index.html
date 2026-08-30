@@ -132,6 +132,10 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
             <span class="sb-label" data-i18n="nav.artifacts">Artifaktek</span>
           </a>
+          <a href="#" class="sb-link" data-page="workspaceDocs">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            <span class="sb-label" data-i18n="nav.workspaceDocs">Munkadokumentumok</span>
+          </a>
         </div>
       </div>
       <div class="sb-group" data-group="stats">
@@ -2167,6 +2171,48 @@
           </div>
         </div>
         <div id="artifactsPreviewBody"></div>
+      </div>
+    </div>
+
+    <!-- === Workspace Docs Page === -->
+    <div class="page" id="workspaceDocsPage" hidden>
+      <div class="page-header">
+        <h1 data-i18n="nav.workspaceDocs">Munkadokumentumok</h1>
+      </div>
+      <div class="filters-row" id="wdFilters" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+        <input type="text" id="wdAgentFilter" placeholder="Agent ID" style="width:140px">
+        <select id="wdTypeFilter">
+          <option value="">Mind (típus)</option>
+          <option value="plan">Plan</option>
+          <option value="brief">Brief</option>
+          <option value="report">Report</option>
+          <option value="notes">Notes</option>
+        </select>
+        <select id="wdContentTypeFilter">
+          <option value="">Mind (tartalom)</option>
+          <option value="text">Text</option>
+          <option value="code">Code</option>
+          <option value="binary">Binary</option>
+        </select>
+        <input type="text" id="wdTenantFilter" placeholder="Tenant ID" style="width:120px">
+        <button class="btn" data-variant="secondary" data-size="compact" id="wdSearchBtn">Keresés</button>
+      </div>
+      <div id="wdList" style="margin-bottom:16px"></div>
+      <div id="wdEmpty" hidden style="color:var(--text-muted);padding:24px 0">Nincs találat.</div>
+
+      <!-- Preview panel -->
+      <div id="wdPreview" hidden style="border:1px solid var(--border);border-radius:6px;padding:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div>
+            <strong id="wdPreviewTitle"></strong>
+            <span id="wdPreviewMeta" style="margin-left:10px;font-size:12px;color:var(--text-muted)"></span>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <button class="btn" data-variant="danger" data-size="compact" id="wdPreviewDelete">Törlés</button>
+            <button class="btn" data-variant="secondary" data-size="compact" id="wdPreviewClose">&times;</button>
+          </div>
+        </div>
+        <div id="wdPreviewBody"></div>
       </div>
     </div>
 

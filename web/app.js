@@ -759,6 +759,18 @@ registerPage('profile', {
   }
 })
 
+registerPage('workspaceDocs', {
+  lazy: true,
+  enter: async () => {
+    const m = await lazyLoad('workspace-docs', () => import('./modules/workspace-docs.js'))
+    if (!_moduleCache.get('workspaceDocs_inited')) {
+      m.initWorkspaceDocs()
+      _moduleCache.set('workspaceDocs_inited', true)
+    }
+    await m.loadWorkspaceDocs()
+  }
+})
+
 // Boot: wires up DOM (nav clicks, sidebar, hashchange listener), translates nav/static
 // elements, and performs the initial URL-hash route. Must run after DOM is ready.
 document.addEventListener('DOMContentLoaded', boot, { once: true })

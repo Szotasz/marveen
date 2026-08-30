@@ -38,6 +38,13 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- Dashboard "Munkadokumentumok" page (`web/modules/workspace-docs.js`) for browsing,
+  viewing, and deleting fleet-agent workspace documents. Filters: agent ID, doc type
+  (plan/brief/report/notes), content type (text/code/binary), tenant (admin).
+  Preview panel renders text/code documents (with Markdown auto-detection) and
+  provides a download link for binary blobs. `DELETE /api/workspace/:id` now also
+  accepts admin session callers in addition to fleet-agent bearer tokens.
+
 - **[API]** Self-service profile page for session-authenticated dashboard users.
   New endpoints: `GET /api/v1/me` returns the caller's own profile (username,
   display_name, email, role, tenant_id, tenant_display_name, session_count);

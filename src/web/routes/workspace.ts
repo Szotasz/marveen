@@ -205,8 +205,8 @@ export async function tryHandleWorkspace(ctx: RouteContext): Promise<boolean> {
 
   // ── DELETE /api/workspace/:id ──────────────────────────────────────────────
   if (idMatch && method === 'DELETE') {
-    if (!agentOnly(ctx)) {
-      json(res, { error: 'forbidden', hint: 'Only fleet agent tokens may delete workspace docs' }, 403)
+    if (!agentOnly(ctx) && ctx.role !== 'admin') {
+      json(res, { error: 'forbidden', hint: 'Only fleet agent tokens or admin users may delete workspace docs' }, 403)
       return true
     }
 
