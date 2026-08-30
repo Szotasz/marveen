@@ -131,6 +131,32 @@ def escape_mdv2(text):
     return "".join("\\" + ch if ch in _MDV2_SPECIAL else ch for ch in str(text))
 
 
+def escape_mdv2_keep_bold(text):
+    """Escape for MarkdownV2 but leave '*' untouched, so hand-authored '*bold*'
+    markers survive. Use this for long, hand-written messages (e.g. the morning
+    brief) where the formatting is inline in the prose rather than wrapped around
+    programmatic labels. Only '*' is preserved: every other special is escaped,
+    so pair your asterisks or Telegram rejects the message with a 400."""
+    return "".join(
+        ch if ch == "*" else ("\\" + ch if ch in _MDV2_SPECIAL else ch)
+        for ch in str(text)
+    )
+
+
+def outgoing_gate_check(text):
+    """Return a list of problems the outgoing-copy-gate hook would reject.
+    Cheaper to run here than to have the send blocked."""
+    problems = []
+    if "\u2014" in text or "\u2013" in text:
+        problems.append("em/en dash present (the gate rejects it)")
+    if " -- " in text.replace("\\-", "-"):
+        problems.append("space-hyphen-hyphen-space present (the gate rejects it)")
+    stars = text.count("*") - text.count("\\*")
+    if stars % 2:
+        problems.append("odd number of unescaped '*' (Telegram 400: unclosed entity)")
+    return problems
+
+
 def _out(v):
     print(json.dumps(v, ensure_ascii=False, indent=2) if isinstance(v, (dict, list)) else v)
 
@@ -142,6 +168,13 @@ def main(argv):
     cmd, rest = argv[0], argv[1:]
     if cmd == "mdv2":
         print(escape_mdv2(rest[0] if rest else sys.stdin.read()))
+    elif cmd == "mdv2b":
+        src = rest[0] if rest else sys.stdin.read()
+        bad = outgoing_gate_check(src)
+        if bad:
+            sys.stderr.write("BLOCKED before send:\n- " + "\n- ".join(bad) + "\n")
+            return 2
+        print(escape_mdv2_keep_bold(src))
     elif cmd == "mem-save":
         _out(save_memory(rest[0], rest[1], rest[2] if len(rest) > 2 else "warm",
                          rest[3] if len(rest) > 3 else ""))
