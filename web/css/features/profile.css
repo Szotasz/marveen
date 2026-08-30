@@ -15,6 +15,7 @@
   text-decoration: none;
   transition: border-color var(--transition), background var(--transition);
 }
+.sb-user[hidden] { display: none !important; }
 .sb-user:hover { border-color: var(--accent); background: var(--accent-soft); }
 .sb-user.active { border-color: var(--accent); background: var(--accent-soft); }
 
