@@ -585,6 +585,8 @@ export function isPublicFetchHost(value: string): boolean {
   // this is defence-in-depth rather than an open door -- but it is the same
   // class of bypass the literal check already rejects, and it costs one pass.
   if (labels.some((l) => isInwardDashQuad(l))) return false
+  if (labels.some((l) => isInwardPackedLabel(l))) return false
+  if (labels.some((l) => isInwardIPv6Label(l))) return false
   for (let i = 0; i + 3 < labels.length; i++) {
     if (isInwardQuad(labels[i], labels[i + 1], labels[i + 2], labels[i + 3])) return false
   }
@@ -607,10 +609,83 @@ function isInwardIPv4(o: number[]): boolean {
   return false
 }
 
+/* One part of a dotted address, the way inet_aton reads it: 0x-prefixed is
+   hex, a leading zero is OCTAL, everything else decimal. This is not pedantry:
+   the resolvers behind the wildcard-DNS services use the same rules, so
+   0177.0.0.1.nip.io answers with 127.0.0.1 while a decimal-only parser sees
+   four harmless-looking labels. */
+function inetAtonPart(part: string): number | null {
+  if (/^0[xX][0-9a-fA-F]{1,8}$/.test(part)) return parseInt(part.slice(2), 16)
+  if (/^0[0-7]{1,11}$/.test(part)) return parseInt(part, 8)
+  if (/^(0|[1-9]\d{0,9})$/.test(part)) return parseInt(part, 10)
+  return null
+}
+
 function isInwardQuad(a: string, b: string, c: string, d: string): boolean {
-  const parts = [a, b, c, d]
-  if (!parts.every((p) => /^\d{1,3}$/.test(p))) return false
-  return isInwardIPv4(parts.map((p) => parseInt(p, 10)))
+  const parts = [a, b, c, d].map(inetAtonPart)
+  if (parts.some((n) => n == null)) return false
+  return isInwardIPv4(parts as number[])
+}
+
+/* A single label that IS the whole address, packed into one number:
+   2130706433.nip.io and 7f000001.nip.io both resolve to 127.0.0.1.
+
+   The lower bound is deliberate. Anything under 2^24 does not encode all four
+   octets, and treating it as an address would reject 123.example.com, which is
+   an ordinary public name and exactly what the guard promises not to touch.
+   Nothing is lost by the bound: those values decode into 0.0.0.0/8, which is
+   not routable anyway. */
+const PACKED_MIN = 0x01000000
+function isInwardPackedLabel(label: string): boolean {
+  let n: number | null = null
+  if (/^0[xX][0-9a-fA-F]{1,8}$/.test(label)) n = parseInt(label.slice(2), 16)
+  else if (/^0[0-7]{9,12}$/.test(label)) n = parseInt(label, 8)
+  else if (/^\d{8,10}$/.test(label)) n = Number(label)
+  else if (/^[0-9a-fA-F]{8}$/.test(label) && /[a-fA-F]/.test(label)) n = parseInt(label, 16)
+  if (n == null || !Number.isInteger(n) || n < PACKED_MIN || n > 0xffffffff) return false
+  return isInwardIPv4([(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255])
+}
+
+/* sslip.io writes IPv6 with dashes instead of colons, so 0--1.sslip.io is ::1.
+   The dotted-quad and dash-quad checks above never see it, because it is
+   neither. */
+function isInwardIPv6Label(label: string): boolean {
+  if (!/^[0-9a-fA-F-]+$/.test(label) || !label.includes('-')) return false
+  const addr = label.replace(/-/g, ':')
+  if ((addr.match(/::/g) ?? []).length > 1) return false
+  const groups = addr.split(':')
+  if (groups.length < 3 || groups.length > 8) return false
+  if (groups.some((g) => g !== '' && !/^[0-9a-fA-F]{1,4}$/.test(g))) return false
+  const filled = expandIPv6(groups)
+  if (filled == null) return false
+  const [h0] = filled
+  if (filled.every((g, i) => g === (i === 7 ? 1 : 0))) return true // ::1 loopback
+  if (filled.every((g) => g === 0)) return true // :: unspecified
+  if ((h0 & 0xffc0) === 0xfe80) return true // fe80::/10 link-local
+  if ((h0 & 0xfe00) === 0xfc00) return true // fc00::/7 unique local
+  // ::ffff:a.b.c.d and ::a.b.c.d carry an IPv4 inside
+  if (filled.slice(0, 5).every((g) => g === 0) && (filled[5] === 0xffff || filled[5] === 0)) {
+    const v4 = [(filled[6] >>> 8) & 255, filled[6] & 255, (filled[7] >>> 8) & 255, filled[7] & 255]
+    if (isInwardIPv4(v4)) return true
+  }
+  return false
+}
+
+/** '::' filled out to eight 16-bit groups, or null when it does not fit. */
+function expandIPv6(groups: string[]): number[] | null {
+  const gapAt = groups.indexOf('')
+  let parts: string[]
+  if (gapAt === -1) {
+    if (groups.length !== 8) return null
+    parts = groups
+  } else {
+    const head = groups.slice(0, gapAt).filter((g) => g !== '')
+    const tail = groups.slice(gapAt + 1).filter((g) => g !== '')
+    const missing = 8 - head.length - tail.length
+    if (missing < 1) return null
+    parts = [...head, ...Array(missing).fill('0'), ...tail]
+  }
+  return parts.map((g) => parseInt(g || '0', 16))
 }
 
 function isInwardDashQuad(label: string): boolean {
