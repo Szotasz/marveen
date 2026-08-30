@@ -100,6 +100,46 @@ components:
         disabled:
           type: boolean
 
+    UserProfile:
+      type: object
+      properties:
+        username:
+          type: string
+        display_name:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+        role:
+          type: string
+          enum: [admin, agent, read_only, viewer]
+        tenant_id:
+          type: string
+          nullable: true
+        tenant_display_name:
+          type: string
+          nullable: true
+        session_count:
+          type: integer
+
+    UserProfilePatch:
+      type: object
+      properties:
+        username:
+          type: string
+        display_name:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+        role:
+          type: string
+        tenant_id:
+          type: string
+          nullable: true
+
     Error:
       type: object
       required: [error]
@@ -3900,3 +3940,63 @@ paths:
                 type: array
                 items:
                   type: object
+
+  # ---- Profile (self-service) ---------------------------------------------
+
+  /me:
+    get:
+      tags: [auth]
+      operationId: getMe
+      summary: Get own profile
+      description: |
+        Returns the authenticated session user's own profile including display_name,
+        email, role, tenant, and active session count. Only session-authenticated
+        callers may use this endpoint; bearer-token callers receive 401.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Profile data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+    patch:
+      tags: [auth]
+      operationId: patchMe
+      summary: Update own profile
+      description: |
+        Updates the session user's own display_name and/or email.
+        Role, tenant, and username cannot be changed via this endpoint.
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                display_name:
+                  type: string
+                  nullable: true
+                  maxLength: 128
+                  description: Display name (null clears it)
+                email:
+                  type: string
+                  nullable: true
+                  format: email
+                  description: Email address (null clears it)
+      responses:
+        "200":
+          description: Updated profile fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfilePatch'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'

@@ -20,6 +20,24 @@ export interface DashboardUserPublic {
   disabled?: boolean;
 }
 
+export interface UserProfile {
+  username?: string;
+  display_name?: string;
+  email?: string;
+  role?: 'admin' | 'agent' | 'read_only' | 'viewer';
+  tenant_id?: string;
+  tenant_display_name?: string;
+  session_count?: number;
+}
+
+export interface UserProfilePatch {
+  username?: string;
+  display_name?: string;
+  email?: string;
+  role?: string;
+  tenant_id?: string;
+}
+
 export interface Error {
   /** Machine-readable snake_case error token. Canonical values are listed in the enum; additional domain-specific tokens may appear in future API versions. */
   error: 'not_found' | 'required' | 'invalid_value' | 'forbidden' | 'unauthorized' | 'conflict' | 'limit_exceeded' | 'internal_error' | 'parse_error' | 'not_supported' | 'timeout' | 'disabled' | 'managed_settings_missing' | 'upstream_error' | 'sender_not_in_allowlist' | 'federation_disabled' | 'unknown_query_parameter';
@@ -417,3 +435,7 @@ export type DisablePartnerSenderResponse = OkResponse
 export type ListBackgroundTasksResponse = Record<string, unknown>[]
 
 export type ListToolLogResponse = Record<string, unknown>[]
+
+export type GetMeResponse = UserProfile
+
+export type PatchMeResponse = UserProfilePatch

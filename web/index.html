@@ -210,6 +210,14 @@
         <span class="sb-label">Dokumentáció</span>
       </a>
     </div>
+    <!-- Bejelentkezett felhasználó blokk (session-auth esetén jelenik meg) -->
+    <a href="#" class="sb-user" id="navProfile" data-page="profile" hidden>
+      <div class="sb-user-avatar" id="sbUserAvatar"></div>
+      <div>
+        <div class="sb-user-name" id="sbUserName"></div>
+        <div class="sb-user-role" id="sbUserRole"></div>
+      </div>
+    </a>
     <div class="sidebar-footer">
       <button class="theme-toggle" id="langToggle" title="Language / Nyelv">HU</button>
       <button class="theme-toggle" id="mobileLoginBtn" title="Mobil belépés (QR)">
@@ -2367,7 +2375,136 @@
       </div>
     </div>
 
+    <!-- Profilom oldal (self-service, session-auth users only) -->
+    <div class="page" id="profilePage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1 data-i18n="profile.title">Profilom</h1>
+            <p class="subtitle" data-i18n="profile.subtitle">A fiókod adatai és biztonsági beállításai</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Identitás kártya -->
+      <div class="card profile-card" id="profileIdentityCard">
+        <div class="profile-identity-top">
+          <div class="profile-avatar" id="profileAvatar"></div>
+          <div>
+            <div class="profile-name" id="profileDisplayName"></div>
+            <div class="profile-badges" id="profileBadges"></div>
+          </div>
+        </div>
+        <div class="profile-grid">
+          <div class="profile-grid-label" data-i18n="profile.field.username">Felhasználónév</div>
+          <div class="profile-grid-value"><span class="mono" id="profileUsername"></span></div>
+          <div class="profile-grid-label" data-i18n="profile.field.email">E-mail</div>
+          <div class="profile-grid-value" id="profileEmail"></div>
+          <div class="profile-grid-label" data-i18n="profile.field.role">Szerepkör</div>
+          <div class="profile-grid-value" id="profileRole"></div>
+          <div class="profile-grid-label" data-i18n="profile.field.tenant">Tenant</div>
+          <div class="profile-grid-value" id="profileTenant"></div>
+        </div>
+        <div style="margin-top:16px">
+          <button class="btn" data-variant="secondary" data-size="compact" id="profileEditBtn" data-i18n="profile.btn.edit">Adatok szerkesztése</button>
+        </div>
+      </div>
+
+      <!-- Biztonság kártya -->
+      <div class="card profile-card">
+        <h2 class="profile-section-head" data-i18n="profile.security.title">Biztonság</h2>
+        <div class="profile-action-row">
+          <div>
+            <p class="profile-action-title" data-i18n="profile.security.password.title">Jelszó módosítása</p>
+            <p class="profile-action-desc" data-i18n="profile.security.password.desc">Az új jelszó legalább 12 karakter hosszú legyen.</p>
+          </div>
+          <button class="btn" data-variant="secondary" id="profilePasswordBtn" data-i18n="profile.security.password.btn">Jelszó módosítása</button>
+        </div>
+        <div class="profile-action-row">
+          <div>
+            <p class="profile-action-title" data-i18n="profile.security.sessions.title">Munkamenetek</p>
+            <p class="profile-action-desc" id="profileSessionsDesc"></p>
+          </div>
+          <button class="btn" data-variant="danger" id="profileSessionsBtn" data-i18n="profile.security.sessions.btn">Összes kiléptetése</button>
+        </div>
+      </div>
+
+      <!-- Elérhető ágensek (2. fázis placeholder) -->
+      <div class="card profile-card">
+        <h2 class="profile-section-head">
+          <span data-i18n="profile.agents.title">Elérhető ágensek</span>
+          <span class="badge" data-variant="neutral" style="margin-left:8px;font-size:10px">2. fázis</span>
+        </h2>
+        <div class="profile-agents-placeholder">
+          <div class="profile-ghost-chips">
+            <span class="profile-ghost-chip"><span class="profile-ghost-dot"></span>agent-a</span>
+            <span class="profile-ghost-chip"><span class="profile-ghost-dot"></span>agent-b</span>
+            <span class="profile-ghost-chip"><span class="profile-ghost-dot"></span>agent-c</span>
+          </div>
+          <p data-i18n="profile.agents.placeholder">Itt jelennek meg a tenantod számára engedélyezett ágensek.</p>
+        </div>
+      </div>
+    </div>
+
   </main>
+
+  <!-- Modal: Profilom -- adatok szerkesztése -->
+  <div class="modal-overlay" id="profileEditModal" hidden>
+    <div class="modal" style="max-width:400px" role="dialog" aria-modal="true" aria-labelledby="profileEditTitle">
+      <h2 id="profileEditTitle" data-i18n="profile.modal.edit.title">Adatok szerkesztése</h2>
+      <p class="modal-desc" data-i18n="profile.modal.edit.desc">A felhasználónevét és szerepkörét az adminisztrátor módosíthatja.</p>
+      <div class="field">
+        <label class="field-label" for="profileEditDisplayName" data-i18n="profile.field.display_name">Megjelenített név</label>
+        <input class="field-control" type="text" id="profileEditDisplayName" autocomplete="name" maxlength="128">
+      </div>
+      <div class="field">
+        <label class="field-label" for="profileEditEmail" data-i18n="profile.field.email">E-mail</label>
+        <input class="field-control" type="email" id="profileEditEmail" autocomplete="email">
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+        <button class="btn" data-variant="ghost" data-close="profileEditModal" data-i18n="common.btn.cancel">Mégse</button>
+        <button class="btn" data-variant="primary" id="profileEditSaveBtn" data-i18n="common.btn.save">Mentés</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Profilom -- jelszó módosítása -->
+  <div class="modal-overlay" id="profilePasswordModal" hidden>
+    <div class="modal" style="max-width:400px" role="dialog" aria-modal="true" aria-labelledby="profilePwTitle">
+      <h2 id="profilePwTitle" data-i18n="profile.modal.password.title">Jelszó módosítása</h2>
+      <p class="modal-desc" data-i18n="profile.modal.password.desc">A mentés után a többi munkameneted bejelentkezve marad.</p>
+      <div class="field">
+        <label class="field-label" for="profilePwCurrent" data-i18n="profile.modal.password.current">Jelenlegi jelszó</label>
+        <input class="field-control" type="password" id="profilePwCurrent" autocomplete="current-password">
+      </div>
+      <div class="field">
+        <label class="field-label" for="profilePwNew" data-i18n="profile.modal.password.new">Új jelszó</label>
+        <input class="field-control" type="password" id="profilePwNew" autocomplete="new-password">
+        <div class="field-help" data-i18n="profile.modal.password.hint">Legalább 12 karakter.</div>
+      </div>
+      <div class="field">
+        <label class="field-label" for="profilePwConfirm" data-i18n="profile.modal.password.confirm">Új jelszó megerősítése</label>
+        <input class="field-control" type="password" id="profilePwConfirm" autocomplete="new-password">
+      </div>
+      <div id="profilePwError" class="field-error" hidden></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+        <button class="btn" data-variant="ghost" data-close="profilePasswordModal" data-i18n="common.btn.cancel">Mégse</button>
+        <button class="btn" data-variant="primary" id="profilePwSaveBtn" data-i18n="common.btn.save">Mentés</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Profilom -- összes munkamenet kiléptetése -->
+  <div class="modal-overlay" id="profileSessionsModal" hidden>
+    <div class="modal" style="max-width:400px" role="dialog" aria-modal="true" aria-labelledby="profileSessTitle">
+      <h2 id="profileSessTitle" data-i18n="profile.modal.sessions.title">Összes munkamenet kiléptetése</h2>
+      <p class="modal-desc" id="profileSessModalDesc"></p>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+        <button class="btn" data-variant="ghost" data-close="profileSessionsModal" data-i18n="common.btn.cancel">Mégse</button>
+        <button class="btn" data-variant="danger" id="profileSessConfirmBtn" data-i18n="profile.modal.sessions.confirm">Kiléptetés</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Modal: Kanban kártya szerkesztés -->
   <div class="modal-overlay" id="cardModalOverlay">
