@@ -2,8 +2,9 @@
 //   1. GET /api/approvals scopes to session user's tenant (non-admin)
 //   2. GET /api/approvals is global for admin session
 //   3. POST /api/approvals is forbidden for non-admin session users
-//   4. PATCH /api/approvals/:id IDOR-guard: cross-tenant resolve -> 403
-//   5. PATCH /api/approvals/:id allows same-tenant resolve
+//   4. PATCH /api/approvals/:id IDOR-guard: cross-tenant or not-found -> 404 (anti-enumeration)
+//   5. PATCH /api/approvals/:id: session with no tenantId -> 403 (config fail-closed)
+//   6. PATCH /api/approvals/:id allows same-tenant resolve
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type { RouteContext } from '../web/routes/types.js'
@@ -146,8 +147,8 @@ describe('approvals tenant scoping -- POST forbidden for session non-admin', () 
 })
 
 describe('approvals IDOR guard -- PATCH resolve', () => {
-  it('non-admin session cannot resolve a cross-tenant approval (IDOR regression)', async () => {
-    // Approval belongs to tenant-y, caller is in tenant-x
+  it('non-admin session gets 404 for cross-tenant approval (anti-enumeration)', async () => {
+    // Approval belongs to tenant-y, caller is in tenant-x -> 404, not 403
     vi.mocked(db.getApproval).mockReturnValue({
       id: 'appr-1',
       agent_id: 'agent-a',
@@ -166,6 +167,51 @@ describe('approvals IDOR guard -- PATCH resolve', () => {
       authKind: 'session',
       role: 'viewer',
       tenantId: 'tenant-x',
+      user: 'alice',
+      body: { status: 'approved' },
+    })
+    await tryHandleApprovals(ctx)
+    expect(out.status).toBe(404)
+    expect(out.body.error).toBe('not_found')
+    expect(vi.mocked(db.resolveApproval)).not.toHaveBeenCalled()
+  })
+
+  it('non-admin session gets 404 when approval does not exist (anti-enumeration, mutation-proof)', async () => {
+    // getApproval returns undefined (id not found at all) -> same 404 as cross-tenant
+    vi.mocked(db.getApproval).mockReturnValue(undefined)
+    const { ctx, out } = makeCtx('PATCH', '/api/approvals/nonexistent', {
+      authKind: 'session',
+      role: 'viewer',
+      tenantId: 'tenant-x',
+      user: 'alice',
+      body: { status: 'approved' },
+    })
+    await tryHandleApprovals(ctx)
+    expect(out.status).toBe(404)
+    expect(out.body.error).toBe('not_found')
+    expect(vi.mocked(db.resolveApproval)).not.toHaveBeenCalled()
+  })
+
+  it('non-admin session with no tenantId gets 403 (config fail-closed, not anti-enum)', async () => {
+    // Session user has no tenant assignment -- this is a config error, not a cross-tenant attempt
+    vi.mocked(db.getApproval).mockReturnValue({
+      id: 'appr-cfg',
+      agent_id: 'agent-a',
+      category: 'cat',
+      action_description: 'do thing',
+      action_payload: null,
+      status: 'pending',
+      timeout_at: null,
+      resolved_by: null,
+      resolved_at: null,
+      telegram_message_id: null,
+      requested_at: 0,
+      tenant_id: 'tenant-x',
+    })
+    const { ctx, out } = makeCtx('PATCH', '/api/approvals/appr-cfg', {
+      authKind: 'session',
+      role: 'viewer',
+      tenantId: undefined,
       user: 'alice',
       body: { status: 'approved' },
     })
