@@ -179,6 +179,7 @@ components:
 
 
 
+
         hint:
           type: string
           description: >-
@@ -3952,8 +3953,6 @@ paths:
         Returns the authenticated session user's own profile including display_name,
         email, role, tenant, and active session count. Only session-authenticated
         callers may use this endpoint; bearer-token callers receive 401.
-      security:
-        - sessionCookie: []
       responses:
         "200":
           description: Profile data
@@ -3962,7 +3961,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/UserProfile'
         "401":
-          $ref: '#/components/responses/Unauthorized'
+          description: Not authenticated or not a session caller
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
     patch:
       tags: [auth]
       operationId: patchMe
@@ -3970,8 +3973,6 @@ paths:
       description: |
         Updates the session user's own display_name and/or email.
         Role, tenant, and username cannot be changed via this endpoint.
-      security:
-        - sessionCookie: []
       requestBody:
         required: true
         content:
@@ -3997,6 +3998,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/UserProfilePatch'
         "400":
-          $ref: '#/components/responses/BadRequest'
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         "401":
-          $ref: '#/components/responses/Unauthorized'
+          description: Not authenticated or not a session caller
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
