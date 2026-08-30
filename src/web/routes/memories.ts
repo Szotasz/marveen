@@ -16,17 +16,16 @@ import type { RouteContext } from './types.js'
 // src/db.ts so the API rejects bad values before they even reach SQLite.
 const MEMORY_CATEGORIES = new Set(['hot', 'warm', 'cold', 'shared'])
 
+// Prompt-injection guard: reject memory content that attempts to override the
+// agent's instructions. Technical shell/code patterns (curl, rm -rf, eval, etc.)
+// are intentionally NOT included: stored text cannot execute itself, and blocking
+// those patterns prevents legitimate incident-notes and skill-recipes from being
+// saved (false-positive class discovered 2026-08-29).
 const SUSPICIOUS_PATTERNS = [
-  /\bcurl\s+(-[a-zA-Z]\s+)*https?:\/\//i,
-  /\bbash\s+-c\b/i,
-  /\beval\s*\(/i,
-  /\bexec\s*\(/i,
-  /\bimport\s+subprocess\b/i,
   /ignore\s+(all\s+)?previous\s+instructions/i,
   /override\s+your\s+(instructions|rules|safety|guidelines)/i,
   /forget\s+your\s+(instructions|rules|safety|guidelines|training)/i,
   /new\s+persona/i,
-  /\brm\s+-rf\b/i,
 ]
 
 function containsSuspiciousContent(content: string): boolean {
