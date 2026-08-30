@@ -2086,6 +2086,19 @@
             <button class="btn-primary btn-compact" id="cardLabelNewSaveBtn" data-i18n="common.btn.save">Mentés</button>
           </div>
         </div>
+        <div class="card-detail-blockers">
+          <h4 data-i18n="kanban.modal.blockers_title">Blokkolja</h4>
+          <div class="blocker-list" id="cardBlockerList"></div>
+          <div class="form-row" style="gap:8px; align-items:center; margin-top:6px">
+            <select id="cardBlockerAdd" style="flex:1; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px">
+              <option value="" data-i18n="kanban.blocker.add_placeholder">-- Blokkoló kártya hozzáadása --</option>
+            </select>
+          </div>
+          <div id="cardBlockingWrap" style="display:none; margin-top:10px">
+            <h4 data-i18n="kanban.modal.blocking_title">Erre a kártyára várnak</h4>
+            <div class="blocker-list" id="cardBlockingList"></div>
+          </div>
+        </div>
         <div class="card-detail-comments">
           <h4 data-i18n="kanban.modal.comments_title">Megjegyzések</h4>
           <div class="comments-list" id="commentsList"></div>
