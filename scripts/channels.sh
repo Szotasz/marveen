@@ -744,7 +744,7 @@ unset _eperm_restarted
 # longer uses Remote Control.)
 _bot_name="${BOT_NAME:-${MAIN_AGENT_ID:-marveen}}"
 sleep 1
-$TMUX send-keys -t "$SESSION" "/name ${_bot_name}" Enter
+$TMUX send-keys -t "$SESSION" "/rename ${_bot_name}" Enter
 unset _bot_name
 
 # Reset the keep-alive watchdog baseline so a session that was just restarted
