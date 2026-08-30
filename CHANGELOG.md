@@ -9,6 +9,18 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
+### Added
+
+- **[API]** `DELETE /api/admin/tenants/:id` (admin-only): permanently deletes a
+  tenant and all its associated data in FK-safe cascade order. Pending approvals
+  are rejected first; `api_tokens` are revoked (tombstoned, not deleted) for
+  access-history audit; `dashboard_users`, `partner_senders`, `device_keys`,
+  `approvals`, `agent_messages`, `import_memories`, `kanban` (child tables
+  first), and `memories` (vec0-safe row-by-row `syncVecMemoryDelete`) are hard-
+  deleted; `tenant_agent_availability` is cleaned up explicitly. The `default`
+  tenant is permanently protected (returns `403`). Response: `{ ok, tenant_id,
+  memories_deleted }`.
+
 ### Changed
 
 - `PATCH /api/approvals/:id` now returns `404 not_found` for cross-tenant or

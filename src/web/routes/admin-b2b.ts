@@ -16,6 +16,7 @@ import {
   getTenant,
   listTenants,
   updateTenant,
+  deleteTenant,
   provisionDashboardUser,
   getDashboardUserById,
   listDashboardUsersFiltered,
@@ -100,9 +101,24 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  const tenantPatchMatch = path.match(/^\/api\/admin\/tenants\/([^/]+)$/)
-  if (tenantPatchMatch && method === 'PATCH') {
-    const tenantId = tenantPatchMatch[1]
+  const tenantByIdMatch = path.match(/^\/api\/admin\/tenants\/([^/]+)$/)
+
+  if (tenantByIdMatch && method === 'DELETE') {
+    const tenantId = tenantByIdMatch[1]
+    if (tenantId === 'default') {
+      json(res, { error: 'forbidden', hint: 'Default tenant cannot be deleted' }, 403)
+      return true
+    }
+    const existing = getTenant(tenantId)
+    if (!existing) { json(res, { error: 'not_found', field: 'id', hint: 'Tenant not found' }, 404); return true }
+    const result = deleteTenant(tenantId)
+    auditAdmin(ctx, 'admin.tenant.delete', tenantId, { memories_deleted: result.memoriesDeleted })
+    json(res, { ok: true, tenant_id: tenantId, memories_deleted: result.memoriesDeleted })
+    return true
+  }
+
+  if (tenantByIdMatch && method === 'PATCH') {
+    const tenantId = tenantByIdMatch[1]
     const existing = getTenant(tenantId)
     if (!existing) { json(res, { error: 'not_found', field: 'id', hint: 'Tenant not found' }, 404); return true }
 
