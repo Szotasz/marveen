@@ -395,6 +395,29 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   }
   if (kanbanCommentsMatch && method === 'POST') {
     const cardId = decodeURIComponent(kanbanCommentsMatch[1])
+    // A comment for a card that does not exist used to be STORED, with HTTP 200:
+    // `addKanbanComment` writes whatever card_id it is handed, and this branch
+    // never looked the card up. The row then hangs off an id no board view
+    // resolves -- the comment is invisible -- while the caller's only success
+    // signal says it landed. The `/breakdown` branch below has always guarded
+    // this way; the comment branch had not.
+    //
+    // This is not a hypothetical typo. `templates/CLAUDE.md.template` hands the
+    // agent a curl with a literal `KARTYA_ID` to substitute; an agent that
+    // forgets to substitute it gets a 200 and a comment on a card called
+    // "KARTYA_ID". The same shape reaches the endpoint from a truncated id
+    // column, or from a loop whose body kept its placeholder. Every one of
+    // those is silent today.
+    //
+    // The lookup is exact, matching `getKanbanCard` everywhere else: no caller
+    // in this repo constructs a prefix id (the dispatch instructions in
+    // `kanbanMoveInstructions` interpolate the full id), so rejecting a
+    // non-resolving id turns away only writes that were already lost.
+    const card = getKanbanCard(cardId)
+    if (!card) {
+      json(res, { error: `Kártya nem található: ${cardId}. A komment NEM jött létre. Teljes azonosító kell, a rövidített (prefix) alak nem működik.` }, 404)
+      return true
+    }
     const body = await readBody(req)
     const { author, content } = JSON.parse(body.toString())
     if (!author || !content) { json(res, { error: 'Szerző és tartalom kötelező' }, 400); return true }
