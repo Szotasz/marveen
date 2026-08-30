@@ -4,7 +4,8 @@ How heavy a guest have we been on each source? Read it BEFORE a fetch sweep.
 
 Why this exists
 ---------------
-On 2026-08-28 `learn.kregtool.com` started returning 403 to everything. It was not
+On 2026-08-28 one free, public documentation site started returning 403 to
+everything. It was not
 broken and it had not changed its mind about the allowlist: we had taken 140 pages
 off it in three days, 83 of them on 08-26 alone. It is a free, public source. We
 used it up.
@@ -81,9 +82,9 @@ MULTI_SUFFIX = {
 def host_of(url):
     """Group by the REGISTRABLE domain, not the exact hostname.
 
-    Measured 2026-08-28: counting exact hostnames put learn.kregtool.com at 140
-    and www.kregtool.com at 1, so the source read as 140 when the site had in
-    fact served us 141. One record is nothing; the unit being wrong is not.
+    Measured 2026-08-28: counting exact hostnames put `learn.<site>` at 140 and
+    `www.<site>` at 1, so the source read as 140 when the site had in fact
+    served us 141. One record is nothing; the unit being wrong is not.
     The allowlist matches a base domain OR ANY SUBDOMAIN of it, and the site
     operator sees one site -- so a per-hostname counter can sit under the cap on
     every subdomain while the site as a whole is well over it. Count the thing
@@ -116,6 +117,12 @@ def read(path):
     """
     rows = []
     skipped = 0
+    if not os.path.exists(path):
+        # A fresh install has taken no traffic yet, so the gate has written no
+        # log. That is "nothing measured", not an error: crashing here would
+        # make the tool unusable exactly where it is safest to sweep, and a
+        # caller that gates on it would refuse every first run.
+        return rows, skipped
     with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
             m = LINE.match(line)
@@ -194,7 +201,7 @@ def main(argv=None):
         # How many distinct minutes carried any traffic at all, on the peak day.
         # Without it a peak of 8/min reads as relentless when it may be one cluster
         # in an otherwise silent afternoon -- which is exactly how two of us
-        # misread the kregtool log before measuring it.
+        # misread that log before measuring it.
         active = sum(1 for (d, t, h) in per_min if h == host and d == peak_day)
         flag = ""
         if peak_n > a.warn_per_day or peak_min > a.warn_per_min:
@@ -209,7 +216,8 @@ def main(argv=None):
         print("A hozzaferes nem ujratermelodo eroforras. Ha egy oldal kizar, azt a")
         print("domain-lista bovitesevel NEM lehet megjavitani.")
         print("Es a megoldas NEM az, hogy ugyanannyi kerest teritunk szet tobb orara:")
-        print("a kregtoolnal a span-re vetitett atlag 0,4/perc volt, megis kizart. A")
+        print("a kizart forrasnal a span-re vetitett atlag 0,4/perc volt, megis")
+        print("kizart. A")
         print("kotolelek a DARABSZAM. Kevesebb oldalt akarj, ne udvariasabban ugyanannyit.")
         return 1
     return 0
