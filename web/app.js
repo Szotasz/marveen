@@ -406,6 +406,8 @@ initAgentModals({ openModal, closeModal, loadAgents })
 // Badge polling starts immediately so the nav badge reflects update status on any tab.
 initUpdates()
 initChannelSetup()
+// Sidebar user block: populate asynchronously for session callers (non-fatal if token-auth).
+import('./modules/profile.js').then(m => m.initSidebarUser()).catch(() => {})
 
 // Stored after first settings lazy-load; allows the leave guard to call isSettingsDirty
 // synchronously even though the settings module is lazy.
@@ -742,6 +744,18 @@ registerPage('adminB2b', {
       _moduleCache.set('admin-b2b_inited', true)
     }
     await m.loadAdminB2b()
+  }
+})
+
+registerPage('profile', {
+  lazy: true,
+  enter: async () => {
+    const m = await lazyLoad('profile', () => import('./modules/profile.js'))
+    if (!_moduleCache.get('profile_inited')) {
+      await m.initProfile()
+      _moduleCache.set('profile_inited', true)
+    }
+    await m.loadProfilePage()
   }
 })
 

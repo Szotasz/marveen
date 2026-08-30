@@ -57,6 +57,7 @@
 /* Admin tenant selector (global admin only, shown on Memories/Kanban/Recall) */
 @import url("features/tenant-selector.css")   layer(features);
 @import url("features/admin-b2b.css")         layer(features);
+@import url("features/profile.css")           layer(features);
 
 /* Responsive — always last so media queries override feature styles */
 @import url("features/responsive.css")        layer(features);

@@ -26,6 +26,19 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- **[API]** Self-service profile page for session-authenticated dashboard users.
+  New endpoints: `GET /api/v1/me` returns the caller's own profile (username,
+  display_name, email, role, tenant_id, tenant_display_name, session_count);
+  `PATCH /api/v1/me` updates display_name and/or email (validation: 128-char
+  max, valid email format). Only session callers may access these endpoints;
+  bearer-token callers receive 401. Password change and session logout-all reuse
+  the existing `POST /api/auth/password` and `POST /api/auth/logout-all`
+  endpoints. Frontend: new Profilom page in the dashboard (`web/modules/profile.js`,
+  `web/css/features/profile.css`) with an identity card, security actions (password
+  change modal, logout-all modal), and an agent-availability placeholder card (Phase
+  2). Sidebar user block (avatar + name + role + tenant) links to the profile page
+  for session callers.
+
 - Migration checksum guard improvement: known-safe mismatches (e.g. post-apply
   comment or privacy scrubs) now log at `INFO` instead of `WARN`. A new
   `KNOWN_SAFE_MISMATCHES` constant in `db-migrations.ts` documents each entry
