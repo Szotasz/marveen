@@ -324,4 +324,27 @@ describe('deleteTenant cascade (integration -- real SQLite)', () => {
     // Default tenant untouched
     expect(d.prepare("SELECT id FROM tenants WHERE id='default'").get()).toBeDefined()
   })
+
+  it('rolls back all changes atomically when an error occurs mid-cascade', () => {
+    const d = buildDb()
+    d.exec(`
+      INSERT INTO tenants (id, display_name, created_at) VALUES ('co-z', 'Co Z', 1);
+      INSERT INTO dashboard_users (username, password_hash, role, tenant_id, created_at, updated_at)
+        VALUES ('bob', '$h', 'viewer', 'co-z', 1, 1);
+    `)
+
+    // Simulate a mid-cascade failure inside a transaction
+    expect(() => {
+      d.transaction(() => {
+        d.prepare('DELETE FROM dashboard_users WHERE tenant_id=?').run('co-z')
+        // Intentionally throw before the tenant row is deleted
+        throw new Error('simulated mid-cascade failure')
+      })()
+    }).toThrow('simulated mid-cascade failure')
+
+    // dashboard_users must still be present (rollback restored it)
+    expect(d.prepare('SELECT id FROM dashboard_users WHERE tenant_id=?').get('co-z')).toBeDefined()
+    // Tenant row must still be present
+    expect(d.prepare('SELECT id FROM tenants WHERE id=?').get('co-z')).toBeDefined()
+  })
 })

@@ -4015,54 +4015,56 @@ export function updateTenant(id: string, patch: { display_name?: string; disable
 export function deleteTenant(tenantId: string): { memoriesDeleted: number } {
   if (tenantId === 'default') throw new Error('Cannot delete the default tenant')
 
-  // 1. Reject pending approvals
-  db.prepare(
-    "UPDATE approvals SET status = 'rejected', resolved_at = unixepoch() WHERE tenant_id = ? AND status = 'pending'",
-  ).run(tenantId)
+  return db.transaction((): { memoriesDeleted: number } => {
+    // 1. Reject pending approvals
+    db.prepare(
+      "UPDATE approvals SET status = 'rejected', resolved_at = unixepoch() WHERE tenant_id = ? AND status = 'pending'",
+    ).run(tenantId)
 
-  // 2. Revoke api_tokens (tombstone -- keep row for audit, mark revoked)
-  db.prepare('UPDATE api_tokens SET revoked_at = unixepoch() WHERE tenant_id = ? AND revoked_at IS NULL').run(tenantId)
+    // 2. Revoke api_tokens (tombstone -- keep row for audit, mark revoked)
+    db.prepare('UPDATE api_tokens SET revoked_at = unixepoch() WHERE tenant_id = ? AND revoked_at IS NULL').run(tenantId)
 
-  // 3. Drop identity/access rows
-  db.prepare('DELETE FROM dashboard_users WHERE tenant_id = ?').run(tenantId)
-  db.prepare('DELETE FROM partner_senders WHERE tenant_id = ?').run(tenantId)
-  db.prepare('DELETE FROM device_keys WHERE tenant_id = ?').run(tenantId)
+    // 3. Drop identity/access rows
+    db.prepare('DELETE FROM dashboard_users WHERE tenant_id = ?').run(tenantId)
+    db.prepare('DELETE FROM partner_senders WHERE tenant_id = ?').run(tenantId)
+    db.prepare('DELETE FROM device_keys WHERE tenant_id = ?').run(tenantId)
 
-  // 4. Drop all approvals
-  db.prepare('DELETE FROM approvals WHERE tenant_id = ?').run(tenantId)
+    // 4. Drop all approvals
+    db.prepare('DELETE FROM approvals WHERE tenant_id = ?').run(tenantId)
 
-  // 5. Drop messages and import memories
-  db.prepare('DELETE FROM agent_messages WHERE tenant_id = ?').run(tenantId)
-  db.prepare('DELETE FROM import_memories WHERE tenant_id = ?').run(tenantId)
+    // 5. Drop messages and import memories
+    db.prepare('DELETE FROM agent_messages WHERE tenant_id = ?').run(tenantId)
+    db.prepare('DELETE FROM import_memories WHERE tenant_id = ?').run(tenantId)
 
-  // 6. Drop kanban (child tables before parent)
-  const cardIds = (
-    db.prepare('SELECT id FROM kanban_cards WHERE tenant_id = ?').all(tenantId) as { id: string }[]
-  ).map((r) => r.id)
-  if (cardIds.length > 0) {
-    const ph = cardIds.map(() => '?').join(', ')
-    db.prepare(`DELETE FROM kanban_card_labels WHERE card_id IN (${ph})`).run(...cardIds)
-    db.prepare(`DELETE FROM kanban_card_events  WHERE card_id IN (${ph})`).run(...cardIds)
-    db.prepare(`DELETE FROM kanban_comments     WHERE card_id IN (${ph})`).run(...cardIds)
-  }
-  db.prepare('DELETE FROM kanban_cards WHERE tenant_id = ?').run(tenantId)
+    // 6. Drop kanban (child tables before parent)
+    const cardIds = (
+      db.prepare('SELECT id FROM kanban_cards WHERE tenant_id = ?').all(tenantId) as { id: string }[]
+    ).map((r) => r.id)
+    if (cardIds.length > 0) {
+      const ph = cardIds.map(() => '?').join(', ')
+      db.prepare(`DELETE FROM kanban_card_labels WHERE card_id IN (${ph})`).run(...cardIds)
+      db.prepare(`DELETE FROM kanban_card_events  WHERE card_id IN (${ph})`).run(...cardIds)
+      db.prepare(`DELETE FROM kanban_comments     WHERE card_id IN (${ph})`).run(...cardIds)
+    }
+    db.prepare('DELETE FROM kanban_cards WHERE tenant_id = ?').run(tenantId)
 
-  // 7. Drop memories -- row-by-row to keep vec0 index in sync
-  const memIds = (
-    db.prepare('SELECT id FROM memories WHERE tenant_id = ?').all(tenantId) as { id: number }[]
-  ).map((r) => r.id)
-  for (const id of memIds) {
-    syncVecMemoryDelete(id)
-    db.prepare('DELETE FROM memories WHERE id = ?').run(id)
-  }
+    // 7. Drop memories -- row-by-row to keep vec0 index in sync (same connection, safe inside tx)
+    const memIds = (
+      db.prepare('SELECT id FROM memories WHERE tenant_id = ?').all(tenantId) as { id: number }[]
+    ).map((r) => r.id)
+    for (const id of memIds) {
+      syncVecMemoryDelete(id)
+      db.prepare('DELETE FROM memories WHERE id = ?').run(id)
+    }
 
-  // 8. Drop tenant_agent_availability (SQLite FK enforcement is off by default)
-  db.prepare('DELETE FROM tenant_agent_availability WHERE tenant_id = ?').run(tenantId)
+    // 8. Drop tenant_agent_availability (SQLite FK enforcement is off by default)
+    db.prepare('DELETE FROM tenant_agent_availability WHERE tenant_id = ?').run(tenantId)
 
-  // 9. Drop the tenant row
-  db.prepare('DELETE FROM tenants WHERE id = ?').run(tenantId)
+    // 9. Drop the tenant row
+    db.prepare('DELETE FROM tenants WHERE id = ?').run(tenantId)
 
-  return { memoriesDeleted: memIds.length }
+    return { memoriesDeleted: memIds.length }
+  })()
 }
 
 // ── B2B Dashboard user provisioning ──────────────────────────────────────────
