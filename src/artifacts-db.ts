@@ -9,6 +9,7 @@ export type ArtifactKind = 'html' | 'markdown' | 'json' | 'text' | 'binary'
 export interface ArtifactRow {
   id: string
   agent_id: string
+  tenant_id: string
   title: string
   kind: ArtifactKind
   mime: string
@@ -23,6 +24,7 @@ export interface ArtifactRow {
 export interface ArtifactSummary {
   id: string
   agent_id: string
+  tenant_id: string
   title: string
   kind: ArtifactKind
   mime: string
@@ -37,6 +39,7 @@ export const ARTIFACT_KINDS: ReadonlySet<ArtifactKind> = new Set(['html', 'markd
 
 export interface CreateArtifactParams {
   agent_id: string
+  tenant_id?: string
   title: string
   kind: ArtifactKind
   mime?: string
@@ -59,6 +62,8 @@ export function createArtifact(params: CreateArtifactParams): { id: string; upda
   const mime = params.mime ?? DEFAULT_MIME[params.kind]
   const meta = JSON.stringify(params.meta ?? {})
 
+  const tenantId = params.tenant_id ?? 'default'
+
   if (params.cloud_url) {
     // UPSERT path: dedup on cloud_url; only updates rows that are already
     // cloud-sourced (WHERE source = 'cloud:artifact') to prevent accidental
@@ -67,8 +72,8 @@ export function createArtifact(params: CreateArtifactParams): { id: string; upda
       .get(params.cloud_url) as { id: string } | undefined
     const source = params.source ?? 'cloud:artifact'
     const row = db.prepare(`
-      INSERT INTO artifacts (agent_id, title, kind, mime, content, meta, source, cloud_url)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO artifacts (agent_id, tenant_id, title, kind, mime, content, meta, source, cloud_url)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(cloud_url) DO UPDATE SET
         content    = excluded.content,
         title      = excluded.title,
@@ -76,7 +81,7 @@ export function createArtifact(params: CreateArtifactParams): { id: string; upda
       WHERE source = 'cloud:artifact'
       RETURNING id
     `).get(
-      params.agent_id, params.title, params.kind, mime, params.content, meta, source, params.cloud_url,
+      params.agent_id, tenantId, params.title, params.kind, mime, params.content, meta, source, params.cloud_url,
     ) as { id: string }
     storeArtifactEmbedding(row.id, params.title, meta).catch(() => { /* non-critical */ })
     return { id: row.id, updated: !!existing }
@@ -84,10 +89,10 @@ export function createArtifact(params: CreateArtifactParams): { id: string; upda
 
   // Standard insert path (no cloud_url)
   const row = db.prepare(`
-    INSERT INTO artifacts (agent_id, title, kind, mime, content, meta, source)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO artifacts (agent_id, tenant_id, title, kind, mime, content, meta, source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     RETURNING id
-  `).get(params.agent_id, params.title, params.kind, mime, params.content, meta, params.source ?? null) as { id: string }
+  `).get(params.agent_id, tenantId, params.title, params.kind, mime, params.content, meta, params.source ?? null) as { id: string }
   // Fire-and-forget: index title+meta embedding for semantic search
   storeArtifactEmbedding(row.id, params.title, meta).catch(() => { /* non-critical */ })
   return { id: row.id, updated: false }
@@ -129,6 +134,7 @@ export async function storeArtifactEmbedding(
 
 export interface ListArtifactsOptions {
   agent?: string
+  tenant_id?: string
   kind?: string
   q?: string
   limit?: number
@@ -140,35 +146,38 @@ export function listArtifacts(opts: ListArtifactsOptions = {}): ArtifactSummary[
   const limit = Math.min(opts.limit ?? 50, 200)
   const offset = opts.offset ?? 0
 
-  const agentBind = opts.agent ? [opts.agent] : []
-  const kindBind  = opts.kind && ARTIFACT_KINDS.has(opts.kind as ArtifactKind) ? [opts.kind] : []
+  const agentBind  = opts.agent ? [opts.agent] : []
+  const tenantBind = opts.tenant_id !== undefined ? [opts.tenant_id] : []
+  const kindBind   = opts.kind && ARTIFACT_KINDS.has(opts.kind as ArtifactKind) ? [opts.kind] : []
   const q = opts.q?.trim()
 
   if (q) {
     // FTS5 MATCH: searches title, meta JSON, and textual body of non-binary artifacts
-    const agentCond  = agentBind.length ? 'AND a.agent_id = ?' : ''
-    const kindCond   = kindBind.length  ? 'AND a.kind = ?'     : ''
+    const agentCond  = agentBind.length  ? 'AND a.agent_id = ?'   : ''
+    const tenantCond = tenantBind.length ? 'AND a.tenant_id = ?'  : ''
+    const kindCond   = kindBind.length   ? 'AND a.kind = ?'       : ''
     return db.prepare(`
-      SELECT a.id, a.agent_id, a.title, a.kind, a.mime, a.meta, a.source, a.cloud_url, a.created_at, a.updated_at
+      SELECT a.id, a.agent_id, a.tenant_id, a.title, a.kind, a.mime, a.meta, a.source, a.cloud_url, a.created_at, a.updated_at
       FROM artifacts a
       WHERE a.rowid IN (SELECT rowid FROM artifacts_fts WHERE artifacts_fts MATCH ?)
-      ${agentCond} ${kindCond}
+      ${agentCond} ${tenantCond} ${kindCond}
       ORDER BY a.created_at DESC
       LIMIT ? OFFSET ?
-    `).all(ftsEscape(q), ...agentBind, ...kindBind, limit, offset) as ArtifactSummary[]
+    `).all(ftsEscape(q), ...agentBind, ...tenantBind, ...kindBind, limit, offset) as ArtifactSummary[]
   }
 
   const conditions: string[] = []
-  if (agentBind.length) conditions.push('agent_id = ?')
-  if (kindBind.length)  conditions.push('kind = ?')
+  if (agentBind.length)  conditions.push('agent_id = ?')
+  if (tenantBind.length) conditions.push('tenant_id = ?')
+  if (kindBind.length)   conditions.push('kind = ?')
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
   return db.prepare(`
-    SELECT id, agent_id, title, kind, mime, meta, source, cloud_url, created_at, updated_at
+    SELECT id, agent_id, tenant_id, title, kind, mime, meta, source, cloud_url, created_at, updated_at
     FROM artifacts
     ${where}
     ORDER BY created_at DESC
     LIMIT ? OFFSET ?
-  `).all(...agentBind, ...kindBind, limit, offset) as ArtifactSummary[]
+  `).all(...agentBind, ...tenantBind, ...kindBind, limit, offset) as ArtifactSummary[]
 }
 
 // Escape FTS5 special characters to prevent query-syntax errors on user input.

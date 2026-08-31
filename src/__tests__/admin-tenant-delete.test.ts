@@ -225,6 +225,15 @@ function buildDb(): Database.Database {
       tenant_id TEXT NOT NULL, agent_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
       PRIMARY KEY (tenant_id, agent_id)
     );
+    CREATE TABLE IF NOT EXISTS artifacts (
+      id TEXT NOT NULL PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      agent_id TEXT NOT NULL, tenant_id TEXT NOT NULL DEFAULT 'default',
+      title TEXT NOT NULL, kind TEXT NOT NULL, mime TEXT NOT NULL,
+      content BLOB NOT NULL, meta TEXT NOT NULL DEFAULT '{}',
+      source TEXT, cloud_url TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
     INSERT INTO tenants (id, display_name, created_at) VALUES ('default', 'Fleet (default)', 0);
   `)
   return d
@@ -283,6 +292,8 @@ describe('deleteTenant cascade (integration -- real SQLite)', () => {
       INSERT INTO kanban_card_events (card_id, to_status, created_at) VALUES ('card-1', 'done', 1);
       INSERT INTO memories (agent_id, content, tenant_id, created_at) VALUES ('a', 'mem', 'co-y', 1);
       INSERT INTO tenant_agent_availability (tenant_id, agent_id) VALUES ('co-y', 'agent-a');
+      INSERT INTO artifacts (agent_id, tenant_id, title, kind, mime, content, meta)
+        VALUES ('a', 'co-y', 'Report', 'text', 'text/plain', 'data', '{}');
     `)
 
     // Run the same cascade as deleteTenant()
@@ -306,6 +317,7 @@ describe('deleteTenant cascade (integration -- real SQLite)', () => {
     for (const id of memIds) {
       d.prepare('DELETE FROM memories WHERE id=?').run(id)
     }
+    d.prepare('DELETE FROM artifacts WHERE tenant_id=?').run('co-y')
     d.prepare('DELETE FROM tenant_agent_availability WHERE tenant_id=?').run('co-y')
     d.prepare('DELETE FROM tenants WHERE id=?').run('co-y')
 
@@ -320,6 +332,7 @@ describe('deleteTenant cascade (integration -- real SQLite)', () => {
     expect(d.prepare('SELECT id FROM kanban_comments WHERE card_id=?').get('card-1')).toBeUndefined()
     expect(d.prepare('SELECT id FROM kanban_card_events WHERE card_id=?').get('card-1')).toBeUndefined()
     expect(d.prepare('SELECT id FROM memories WHERE tenant_id=?').get('co-y')).toBeUndefined()
+    expect(d.prepare('SELECT id FROM artifacts WHERE tenant_id=?').get('co-y')).toBeUndefined()
     expect(d.prepare('SELECT tenant_id FROM tenant_agent_availability WHERE tenant_id=?').get('co-y')).toBeUndefined()
     // Default tenant untouched
     expect(d.prepare("SELECT id FROM tenants WHERE id='default'").get()).toBeDefined()

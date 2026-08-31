@@ -180,6 +180,7 @@ components:
 
 
 
+
         hint:
           type: string
           description: >-
@@ -2893,6 +2894,11 @@ paths:
           in: query
           schema:
             type: string
+        - name: tenant
+          in: query
+          description: Filter by tenant (admin only; ignored for non-admin callers)
+          schema:
+            type: string
         - name: limit
           in: query
           schema:
@@ -2921,6 +2927,9 @@ paths:
               properties:
                 agent_id:
                   type: string
+                tenant_id:
+                  type: string
+                  description: Tenant to stamp (admin only; non-admin callers use their own tenant)
                 kind:
                   type: string
                 title:
