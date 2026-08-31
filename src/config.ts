@@ -443,6 +443,12 @@ export const HEARTBEAT_CALENDAR_ID = (cfg('HEARTBEAT_CALENDAR_ID') ?? '').trim()
 export const DEFAULT_AGENT_MODEL =
   cfg('DEFAULT_AGENT_MODEL') || DISTRIBUTION_DEFAULT_AGENT_MODEL
 
+// Kill-switch for the SQL->file skill regen at startup (716-D).
+// Fail-safe: any value other than the literal '1' leaves regen disabled.
+// Set SKILL_SQL_REGEN=1 in .env (or process.env for one-off CLI runs).
+// process.env takes precedence so the env var can override .env at runtime.
+export const SKILL_SQL_REGEN = (process.env['SKILL_SQL_REGEN'] ?? env['SKILL_SQL_REGEN']) === '1'
+
 // Boot-time Zod validation: additive side-effect only.
 // Warns on recoverable format errors; throws on FATAL misconfiguration in prod.
 // Existing exports above are unchanged -- the parse result is not used.
