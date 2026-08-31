@@ -4506,3 +4506,27 @@ export function setScheduleEnabled(id: string, enabled: boolean): boolean {
   return db.prepare('UPDATE schedules SET enabled = ?, updated_at = ? WHERE id = ?').run(enabled ? 1 : 0, now, id).changes > 0
 }
 
+// INSERT OR IGNORE: seed a schedule from file only if it does not already exist
+// in the DB. Safe to run on every boot -- never overwrites hand-edited rows.
+export function seedScheduleIfAbsent(id: string, opts: UpsertScheduleOpts): boolean {
+  const now = opts.created_at ?? Math.floor(Date.now() / 1000)
+  const result = db.prepare(`
+    INSERT OR IGNORE INTO schedules (
+      id, prompt, description, schedule, agent, type, enabled, tenant_id,
+      skip_if_busy, force_send, target_session, command, timeout_ms, fail_threshold,
+      pre_check, catch_up_max_age_minutes, stuck_after_minutes, requires,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id, opts.prompt, opts.description, opts.schedule, opts.agent,
+    opts.type, opts.enabled ? 1 : 0, opts.tenant_id ?? null,
+    opts.skip_if_busy ? 1 : 0, opts.force_send ? 1 : 0,
+    opts.target_session ?? null, opts.command ?? null,
+    opts.timeout_ms ?? null, opts.fail_threshold ?? null,
+    opts.pre_check ?? null, opts.catch_up_max_age_minutes ?? null,
+    opts.stuck_after_minutes ?? null, opts.requires ?? null,
+    now, now,
+  )
+  return result.changes > 0  // true = newly inserted, false = already existed (skipped)
+}
+
