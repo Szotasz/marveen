@@ -23,11 +23,14 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { seedSkillIfAbsent, countSkills } from '../src/db.js'
+import { initDatabase, seedSkillIfAbsent, countSkills } from '../src/db.js'
 import { AGENTS_BASE_DIR, listAgentNames } from '../src/web/agent-config.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID } from '../src/config.js'
 
 const dryRun = process.argv.includes('--dry-run')
+
+// Initialize DB before any queries (applies migrations if needed).
+if (!dryRun) initDatabase()
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 

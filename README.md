@@ -15,7 +15,7 @@
 
 > **Fork.** Ez a repó a [Szotasz/marveen](https://github.com/Szotasz/marveen) önálló forkja, amely `fork-point` (2026-07-26, baseline: upstream `55ecbc6`) óta függetlenül fejlődik. Az upstream javításokat szelektíven vesszük át (`git fetch upstream` + cherry-pick). Hozzájárulásokat ehhez a forkhoz várunk PR-ként. Az AI által generált monolitikus kódot felhagyva, modularizált verzió alkotása a célom, amelyben nagyságrendekkel kisebb tokenhasználatot emészt fel magának a keretrendszernek a használata és robosztusabb kialakítása révén hosszútávon stabilabb működést biztosít.
 >
-> Állapot: upstream `1eb0e7f` vs fork `1ee9bc0`, 2026-08-31
+> Állapot: upstream `1eb0e7f` vs fork `69e18c2`, 2026-08-31
 
 ## Jónás Gergő (cett) hozzájárulásai az eredeti Marveen repóhoz
 
@@ -61,7 +61,7 @@ Marveen-újraindítás vagy váratlan crash után az összes konfigurált ágens
 
 A `fleet_blackboard` tábla agensenként egy upsert-alapú sort tárol (status: active/done/blocked, max 500 char összefoglaló), amelyet az Overview widget 15 másodpercenként frissít; ha egy ágens aktív sor mellett inter-agent üzenetet küld, de a blackboard-sorát nem frissíti, stale signal (piros/narancs badge) jelzi az anomáliát. A `fleet_blackboard_history` minden állapotváltást append-only módon rögzít 30 napos retentionnel. A schedule runner a feladat-prompt injektálása előtt automatikusan aktív-nak jelöli magát a blackboardon, majd befejezéskor done-ra vált. A Skills oldalon a kártyák 30 napos használati badge-et és LRU-rendezési opciót mutatnak a `skill_usage` tábla alapján; a deferred-MCP integráció 3-lépcsős ToolSearch-laddert követ, mielőtt "tool nem elérhető" választ adna.
 
-A skill-kezelés SQL-alapra vált (0030-as migráció): a `skills` + `skill_tenant_access` táblák tenant-izolált, auditálható, RBAC-védett tárolást biztosítanak. Fleet-belső skillek (`tenant_id='fleet'`, `is_global=1`) alapértelmezetten zárt B2B tenantok előtt -- adminnak explicit `skill_tenant_access` sort kell felvennie a hozzáférés engedélyezéséhez. A `/api/skills/sql/*` végpontok CRUD + hozzáférés-kezelést nyújtanak (tenant-szűrt lista, létrehozás, szerkesztés, törlés, grant/revoke). A `scripts/materialize-skills.ts` egyszeri, újrafuttatható migráció: a fájl-alapú skill-könyvtárakból (globális `~/.claude/skills/` és ágens-lokális `.claude/skills/`) INSERT OR IGNORE szemantikával tölt az SQL-táblába; a `--dry-run` flag az ír művelet nélküli előnézethez ad lehetőséget.
+A skill-kezelés SQL-alapra vált (0030-as migráció): a `skills` + `skill_tenant_access` táblák tenant-izolált, auditálható, RBAC-védett tárolást biztosítanak. Fleet-belső skillek (`tenant_id='fleet'`, `is_global=1`) alapértelmezetten zárt B2B tenantok előtt -- adminnak explicit `skill_tenant_access` sort kell felvennie a hozzáférés engedélyezéséhez. A `/api/skills/sql/*` végpontok CRUD + hozzáférés-kezelést nyújtanak (tenant-szűrt lista, létrehozás, szerkesztés, törlés, grant/revoke). A `scripts/materialize-skills.ts` egyszeri, újrafuttatható migráció: a fájl-alapú skill-könyvtárakból (globális `~/.claude/skills/` és ágens-lokális `.claude/skills/`) INSERT OR IGNORE szemantikával tölt az SQL-táblába; a `--dry-run` flag az ír művelet nélküli előnézethez ad lehetőséget. A startup indulás `SKILL_SQL_REGEN=1` kill-switch esetén visszaforrja az SQL-ből a fájlrendszerbe: atomikus írással (temp+rename), idempotens tartalom-ellenőrzéssel, nem-destruktív módon (SQL-ben nem szereplő fájlhoz soha nem nyúl); a `scripts/regen-skills.ts` kézi futtatáshoz és bizonyításhoz ad CLI-t.
 
 **API és integrációs szerződés**
 
@@ -76,7 +76,7 @@ A DB migration runner checksum-ellenőrzéssel és per-migrációs tranzakciókk
 ## A fork létrehozása óta átvett - cherry-pick - javítások:
 #720, #727, #729, #738, #739, #740, #741, #742, #743, #744, #746, #747, #749, #751, #752, #753, #756, #757, #758, #763, #760, #765, #768, #769, #771, #772, #776, #777, #778, #779, #780, #781, #782, #783, #784, #785, #786, #789, #790, #791, #793, #795, #797, #799, #800, #801, #802, #803, #805, #821, #822, #826, #828, #829, #832, #838, #866, #833, #933, #934, #942, #943, #938, #854, #855, #871, #879, #888, #889, #906, #911, #926, #929, #940, #936, #973, #877, #964, #842, #857, #861, #885, #895, #896, #843, #876, #957, #1001, #1000, #982, #899, #939, #955, #992, #988, #985, #1007, #1010, #1013, #995, 
 
-Állapot: upstream `1eb0e7f` vs fork `1ee9bc0`, 2026-08-31
+Állapot: upstream `1eb0e7f` vs fork `69e18c2`, 2026-08-31
 
 <!-- ONGOING: Minden jövőbeli fork-PR leadásakor (Zack -> Jarvis) frissítsd ezt a szakaszt
      a friss git log alapján:

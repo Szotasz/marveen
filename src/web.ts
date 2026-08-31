@@ -23,6 +23,7 @@ import { startUpdateChecker } from './web/update-checker.js'
 import { startBlackboardStaleSweeper } from './web/blackboard-stale-sweeper.js'
 import { startScheduleRunner } from './web/schedule-runner.js'
 import { seedSchedulesFromFilesIfEmpty } from './web/scheduled-tasks-io.js'
+import { regenSkillFilesFromSQL } from './web/skill-regen.js'
 import { startChannelPluginMonitor } from './web/channel-monitor.js'
 import { startInboundProber } from './web/inbound-probe.js'
 import { startChannelHealthMonitor } from './web/channel-health-monitor.js'
@@ -621,6 +622,14 @@ export function startWebServer(port = 3420): http.Server {
       if (seeded > 0) logger.info({ seeded }, 'Schedules table seeded from files')
     } catch (err) {
       logger.warn({ err }, 'Schedule DB seed skipped')
+    }
+    try {
+      const regen = regenSkillFilesFromSQL()
+      if (regen.enabled) {
+        logger.info({ written: regen.written, skipped: regen.skipped, errors: regen.errors }, 'Skill files regenerated from SQL')
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Skill file regen skipped')
     }
   }
 
