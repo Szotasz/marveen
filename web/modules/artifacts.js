@@ -2,6 +2,9 @@ import { escapeHtml, highlightJson } from './util.js'
 import { renderMarkdown } from './docs-research.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
+import { initTenantSelector } from './tenant-selector.js'
+
+let _tenantGetter = null
 
 const PREVIEW_TEXT_KINDS = new Set(['text', 'markdown', 'json'])
 
@@ -33,6 +36,8 @@ export async function loadArtifacts() {
     // date filter: from midnight to end-of-day (client interprets as created_at >= day start)
     params.set('date', date)
   }
+  const tenant = _tenantGetter?.()
+  if (tenant) params.set('tenant', tenant)
   params.set('limit', '100')
 
   try {
@@ -289,9 +294,11 @@ async function deleteArtifact(id) {
 
 let _wired = false
 
-export function initArtifacts() {
+export async function initArtifacts() {
   if (_wired) return
   _wired = true
+
+  _tenantGetter = await initTenantSelector('artifactsTenantSelectorContainer', () => loadArtifacts())
 
   searchBtn()?.addEventListener('click', loadArtifacts)
 

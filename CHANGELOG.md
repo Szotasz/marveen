@@ -11,315 +11,720 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
-- **[API]** `DELETE /api/admin/tenants/:id` (admin-only): permanently deletes a
-  tenant and all its associated data in FK-safe cascade order. Pending approvals
-  are rejected first; `api_tokens` are revoked (tombstoned, not deleted) for
-  access-history audit; `dashboard_users`, `partner_senders`, `device_keys`,
-  `approvals`, `agent_messages`, `import_memories`, `kanban` (child tables
-  first), and `memories` (vec0-safe row-by-row `syncVecMemoryDelete`) are hard-
-  deleted; `tenant_agent_availability` is cleaned up explicitly. The `default`
-  tenant is permanently protected (returns `403`). Response: `{ ok, tenant_id,
-  memories_deleted }`.
-
-### Changed
-
-- `PATCH /api/approvals/:id` now returns `404 not_found` for cross-tenant or
-  non-existent approval IDs (anti-enumeration), consistent with
-  `kanban` and `memories` by-id endpoints. `403 forbidden` is retained only
-  when the session has no `tenantId` assigned (configuration fail-closed).
-
-- Memory content security filter (`SUSPICIOUS_PATTERNS` in
-  `src/web/routes/memories.ts`) now blocks only the four prompt-injection
-  patterns (instruction-override attempts). Six technical command patterns
-  (`rm -rf`, `curl https://`, `bash -c`, `eval()`, `exec()`,
-  `import subprocess`) have been removed: stored text cannot self-execute, and
-  the patterns were causing false positives on legitimate incident-recovery
-  notes and shell-recipe memories.
-
-### Added
-
-- Dashboard "Munkadokumentumok" page (`web/modules/workspace-docs.js`) for browsing,
-  viewing, and deleting fleet-agent workspace documents. Filters: agent ID, doc type
-  (plan/brief/report/notes), content type (text/code/binary), tenant (admin).
-  Preview panel renders text/code documents (with Markdown auto-detection) and
-  provides a download link for binary blobs. `DELETE /api/workspace/:id` now also
-  accepts admin session callers in addition to fleet-agent bearer tokens.
-
-- **[API]** Self-service profile page for session-authenticated dashboard users.
-  New endpoints: `GET /api/v1/me` returns the caller's own profile (username,
-  display_name, email, role, tenant_id, tenant_display_name, session_count);
-  `PATCH /api/v1/me` updates display_name and/or email (validation: 128-char
-  max, valid email format). Only session callers may access these endpoints;
-  bearer-token callers receive 401. Password change and session logout-all reuse
-  the existing `POST /api/auth/password` and `POST /api/auth/logout-all`
-  endpoints. Frontend: new Profilom page in the dashboard (`web/modules/profile.js`,
-  `web/css/features/profile.css`) with an identity card, security actions (password
-  change modal, logout-all modal), and an agent-availability placeholder card (Phase
-  2). Sidebar user block (avatar + name + role + tenant) links to the profile page
-  for session callers.
-
-- Migration checksum guard improvement: known-safe mismatches (e.g. post-apply
-  comment or privacy scrubs) now log at `INFO` instead of `WARN`. A new
-  `KNOWN_SAFE_MISMATCHES` constant in `db-migrations.ts` documents each entry
-  with a reason, so a genuine accidental edit still surfaces as `WARN` and is
-  not lost in background noise.
-
-- **[API]** `workspace_docs` table (migration `0027`): fleet-agent working documents
-  (plans, briefs, reports, notes, binary). UPSERT via `(agent_id, doc_key)` unique
-  index. `content_type` enum: `text` (2 MB), `code` (4 MB), `binary` (16 MB, BLOB,
-  base64 in API). Tenant-scoped listing and GET; non-admin callers see only their own
-  tenant's docs. Only fleet-agent tokens (`auth.kind = 'token'`) may write; session
-  callers get 403. App-level vec sync via `vec_workspace_docs` (no DB triggers).
-  TTL sweeper (`sweepExpiredWorkspaceDocs`) skips binary docs and docs whose
-  `task_ref` kanban card is still open. New endpoints: `GET/POST /api/workspace`,
-  `GET/PATCH/DELETE /api/workspace/:id`.
-
-- Approval tenant-scoping for B2B users: `approvals` table now has a `tenant_id`
-  column (migration 0025). `GET /api/approvals` scopes results to the caller's
-  tenant for non-admin session users (SQL-level filter before LIMIT, per the
-  626/704 pagination rule). `PATCH /api/approvals/:id` includes an IDOR guard:
-  a non-admin session user cannot resolve an approval belonging to a different
-  tenant. `viewer` and `read_only` roles gain `approvals:read` and
-  `approvals:write` permissions; POST (approval creation) remains restricted to
-  fleet agents and admins at the route level regardless of RBAC write permission.
-
-- **[API]** B2B admin UI: new admin-only dashboard page with three tabs (Tenants /
-  Users / Device Keys). Agent availability matrix per tenant with deny-by-default
-  opt-in (`tenant_agent_availability` table, migration `0026`). Device key tenant
-  assignment. New endpoints: `GET/PUT /api/admin/agent-availability`,
-  `GET /api/admin/device-keys`, `PATCH /api/admin/device-keys/:id`.
-  `device_keys` gains a `tenant_id` FK column (same migration).
-
-- Approval attribution for session-auth callers: `PATCH /api/approvals/:id` now
-  derives `resolved_by` from the authenticated session username (`ctx.auth.user`)
-  when the request is made by a dashboard (session-auth) user, ignoring the
-  body-supplied value. Fleet agents using a bearer token continue to supply
-  `resolved_by` in the request body as before. The approval list view on the
-  dashboard now shows the actual username of the approver instead of the generic
-  `"dashboard"` label.
-
-- **[API]** Global admin tenant-selector on Memories, Kanban, and Recall dashboard
-  views. `GET /api/memories`, `GET /api/kanban`, and `GET /api/recall` now accept an
-  optional `?tenant=<id>` query parameter; the param is silently ignored for
-  non-admin callers so existing integrations are unaffected. `GET /api/auth/status`
-  now includes `role` and `tenant_id` fields for session-authenticated callers so the
-  dashboard can detect global admins (`role=admin`, `tenant_id=null`) and render the
-  selector without a separate endpoint. Frontend: `web/modules/tenant-selector.js`
-  shared utility fetches the tenant list from `/api/admin/tenants`, builds a `<select>`,
-  and wires change handlers; integrated into `memories.js`, `kanban.js`, and
-  `recall-bgtasks.js`. CSS in `web/css/features/tenant-selector.css`. Selector is
-  hidden for non-admin sessions; no layout or nav change for existing users.
-
-- User-level audit trail for session-authenticated B2B users: `POST /api/memories`,
-  `POST /api/kanban`, `PUT /api/kanban/:id`, and `POST /api/messages` now create an
-  `agent_audit_log` row with `agent_id` set to the session username when the caller
-  is a session-auth user. Only the username is stored; email, display name, IP, and
-  request body are never written to the audit log.
-
-- **[API]** `dashboard_users` table gains optional `email` and `display_name` columns
-  (migration `0024`). `POST /api/admin/users` and `PATCH /api/admin/users/:id` now
-  accept these fields; both are nullable and absent from existing rows.
-
-### Fixed
-
-- **[API]** `GET /api/messages` tenant isolation now filters in SQL before the `LIMIT`
-  clause rather than in JavaScript after it. Previously, a non-admin caller with
-  `LIMIT=N` could receive fewer than `N` rows when other tenants' rows occupied LIMIT
-  slots before the JS filter ran -- silently starving paginated clients. The same
-  fix applies to `GET /api/memories` for the plain listing path (`getMemoriesForChat`).
-  The four affected helpers (`listAgentMessages`, `getAgentConversation`,
-  `getPendingMessages`, `getMemoriesForChat`) now accept an optional `tenantId`
-  parameter that is pushed into the SQL `WHERE` clause. Admin callers pass no
-  `tenantId` and see the full unfiltered set, unchanged. A new regression test
-  (`tenant-listing-pagination.test.ts`) proves the pagination contract with two
-  tenants and more rows than LIMIT.
-
-
-### Added
-
-- **[API]** `GET /api/overview` now accessible to `viewer` and `read_only` roles
-  (previously admin-only). Ten fleet-level fields (`agents`, `tasksToday`,
-  `tasksYesterday`, `artifacts`, `skills`, `tokensToday`, `costTodayUsd`,
-  `pendingApprovals`, `errors4h`, `stuckTasks`) are omitted from the response for
-  non-admin callers; tenant-scoped fields (`memories`, `unreadMessages`, `activity`)
-  are always returned. The overview.js frontend guards fleet-dependent UI zones
-  (`fleetHealthBar`, `agentsMiniGrid`, KPI strip) with `'agents' in data` so they
-  hide gracefully when the fields are absent.
-- `blackboard:read` permission added to the `viewer` role.
-- `GET /api/recall`, `GET /api/overview`, and `GET /api/me` added to
-  `ENDPOINT_PERMISSION_TABLE` with `memories:read` requirement so viewer sessions
-  can reach these endpoints through the RBAC gate.
-- `docs/openapi.yaml`: `/overview` response schema now documents all ten fleet-only
-  properties with `x-admin-only: true` and the three always-present tenant-scoped
-  properties in `required`.
-
-### Fixed
-
-- `memories` table INSERT and DELETE no longer throw `no such module: vec0` when
-  the sqlite-vec extension is not loaded on the current connection (e.g. a
-  `sqlite3` CLI session). The three database-level sync triggers
-  (`vec_memories_ai`, `vec_memories_au`, `vec_memories_ad`) are removed from
-  `initVecSupport()`; the ANN index is now maintained by explicit application-level
-  calls in `saveAgentMemory`, `backfillEmbeddings`, `runLinkMaintenance`, and the
-  memory-delete paths. Existing installations: the triggers are dropped
-  automatically on first startup via the `DROP TRIGGER IF EXISTS` block that
-  already ran at the start of `initVecSupport()`. No migration file needed.
-  A new CI-safe regression test (`memories-vec0.test.ts`) guards against the
-  triggers re-appearing.
-
-### Changed
-
-- Blackboard stale-sweeper thresholds moved from a hardcoded agent-name map to
-  config-registry keys (`BB_STALE_ORCHESTRATOR_MIN`, `BB_STALE_INTERACTIVE_MIN`,
-  `BB_STALE_SHORT_RUNNING_MIN`, `BB_STALE_DEFAULT_MIN`) and a new
-  `agent_blackboard_tier` table (migration 0023). Agent-to-tier mapping lives in
-  the database; the sweeper source contains no agent names. No behaviour change for
-  existing fleets; fresh installations default all agents to 60 minutes.
-
-- Fleet agent names removed from all public-fork source files (test fixtures, API examples in `docs/openapi.yaml`, documentation examples, and production code comments). Test fixtures now use neutral names (`agent-a`, `agent-b`, `agent-c` …); production-code comments describing design decisions use role-neutral phrasing ("architecture spec", "design spec"); scripts that previously hard-coded the main agent name now read `MAIN_AGENT_ID` from the environment (default: `marveen`). No runtime behaviour change.
-
-- `rbac:shadow` log entries (`RBAC_MODE=shadow`): the `would-deny` and `permitted` outcomes are now mutually exclusive. A `wouldDeny` flag is set inside the would-deny callback; the `permitted` INFO log is guarded by `!wouldDeny`. Previously a non-admin request that matched a would-deny rule produced both a WARN (`rbac:shadow would-deny`) and an INFO (`rbac:shadow allowed`) line for the same request, which was contradictory. The WARN now carries `outcome: "would-deny"` and the INFO carries `outcome: "permitted"` for clearer log queries. No API response change.
-
-### Added
-
-- **[API]** `POST /api/messages` (inter-agent delivery): new optional boolean field `assign` (default `false`). When `assign: true`, the endpoint opens an `"assigned"` blackboard row for the local recipient if they have no `active` or `blocked` row; summary is the first 100 characters of the message content. Omitting `assign` or passing `false` has no blackboard side effect, so replies, notifications, and acknowledgements are unaffected. A second `assign: true` delivery to the same agent overwrites the existing `assigned` row with the newer summary. The agent's own `POST /api/blackboard` with `status: "active"` overwrites the row as before. Federated recipients (`"peer/agent"` addresses) are not affected. Signal B in `GET /api/blackboard` now fires for `assigned` rows as well as `active` ones.
-
-### Fixed
-
-- Settings screen: four configuration keys showed their raw i18n key instead of a description (`BB_SIGNAL_A_BB_HOURS`, `BB_SIGNAL_A_MSG_HOURS`, `BB_SIGNAL_B_ACTIVE_HOURS`, `DEFAULT_AGENT_MODEL`). The registry entries existed, but the matching `settings.desc.*` strings were missing from both language files. All 50 registry keys now have a description in Hungarian and English. No API change.
-
-- **[API]** `GET /api/overview` is now tenant-scoped. Non-admin callers see only memories and inter-agent messages that belong to their own tenant. Admin callers retain the global view across all tenants, and may pass an optional `?tenant=<id>` query parameter to narrow the view to a single tenant. Fleet-internal counters (token usage, pending approvals, stuck tasks, error spans) remain unscoped. Activity feed items in the response are filtered by the same tenant boundary.
-
-- **[API]** Memory recall and message-thread endpoints are now tenant-scoped for non-admin callers. Affected endpoints: `GET /api/memories` (list, search, hybrid search, vector search), `GET /api/memories/stale`, `GET /api/recall` (date-range and keyword search), `GET /api/messages/threads`. A non-admin token with `tenant_id=X` now sees only memories and threads that belong to tenant X; shared-tier memories (`category="shared"`) are visible within the same tenant but never across tenants. Admin tokens continue to see the global view across all tenants. Daily log entries in `/api/recall` results remain fleet-wide (the `daily_logs` table carries no `tenant_id` column by design).
-
-- **[API]** `POST /api/agents/:name/channel/reconnect` and `POST /api/agents/:name/auth/init`: token `invalid_value` → `conflict`, **HTTP status 400 → 409**, hint `"Agent {name} is not running"`. Both endpoints check an operation-state condition (agent exists but is not running) -- consistent with the same change already applied to `/stop`, `/restart`, `/keys`, and `/login`.
-
-- **[API]** `POST /api/auth/logout-all`, `GET /api/auth/sessions`: HTTP status changed `400` → `401` when the caller has no valid session (`error: "unauthorized"`). A missing or invalid session is a missing-authentication condition, not a malformed request; `400 Bad Request` implies a fixable client error, while `401 Unauthorized` correctly signals that authentication is required. No login loop risk: `POST /api/auth/login` is handled earlier in `tryHandleAuth` and exits before these checks.
-
-- Dashboard frontend: API error tokens are no longer shown raw in toast messages. Previously, fetch helpers in 6 modules (`agents.js`, `skills.js`, `connectors.js`, `schedules.js`, `messages.js`, `agent-modals.js`) serialised the API `error` field into `Error.message` via `throw new Error(err.error || fallback)` and then displayed `err.message` in `showToast()`. The token (e.g. `"forbidden"`) appeared verbatim instead of being translated or surfacing the API `hint`. Fix: all 17 throw sites now use `Object.assign(new Error('api call failed'), { apiData: err })` to carry the full API response; the corresponding catch sites use `getErrorMessage(err.apiData, fallback)` which returns the i18n-translated token text, the API `hint` if present, or the original fallback for non-API errors (network failure, JSON parse failure). No API change.
-
-- **[API]** `POST /api/voice/stt`, `POST /api/voice/tts`: HTTP status changed `503` → `400` when the voice toolkit is not installed (`error: "not_supported"`). A missing toolkit is a permanent configuration state, not a transient service outage; `503 Service Unavailable` implies the client should retry later, which is misleading here. The `not_supported` token at `400` correctly signals that the feature is unavailable on this installation. Surfaced by the Phase B api-error-catalog gate.
-
-- `scheduled-tasks/dream-engine/SKILL.md` (Bucket 5): skill-fleet health now queries the `skill_usage` table for actual usage data instead of estimating from directory listings. The previous text incorrectly stated that no use-log existed; the table has been collecting data from all agents since 2026-07-15. Also fixes Bucket 2 (`COUNT(embedding_blob)` instead of `COUNT(embedding)`, `CAST` guard on the stale-hot query) and Bucket 3 (idea_box SQL and `[Otletlada]` prefix added).
-
-- `initDatabase` (`src/db.ts`): `tryLoadVecExtension()` is now called before `applyMigrations()`. Any schema-changing migration that uses a table-rebuild pattern (create-copy-drop-rename) causes SQLite to reparse the entire schema, which validates all triggers including the vec0-backed memory triggers. If the extension is not loaded on that connection at reparse time, the process crashes with `SqliteError: no such module: vec0` before the dashboard can start. Root cause of the 2026-08-28 outage triggered by migration 0022. The call is a safe no-op when the sqlite-vec binary is absent; `initVecSupport()` later in the same function still performs the virtual-table setup. A runtime invariant (`vecExtensionAttempted` flag set inside `tryLoadVecExtension`, checked before `applyMigrations`) ensures a future refactor that reverses the call order gets an explicit startup error rather than a cryptic mid-migration crash. The invariant does not require the vec0 binary to be present and is therefore covered by the existing test suite (5682 green).
-
-### Added
-
-- **[API]** `GET/POST /api/blackboard`, `PATCH /api/blackboard/:id`: `status` enum extended with `"stale"` (auto-invalidated active row, written by the background sweeper when an agent has not updated its row within its configured threshold) and `"assigned"` (row opened automatically on inter-agent delivery, before the receiving agent acknowledges the task). Both values are accepted by the POST and PATCH validation; `VALID_STATUS` updated accordingly. SQLite CHECK constraint extended via migration 0022 (table-rebuild pattern; runner wraps in transaction, no explicit BEGIN/COMMIT in migration file). Frontend: `BB_STATUS_LABEL` and `BB_STATUS_CLASS` extended; `bb-stale` (warning palette) and `bb-assigned` (muted palette) CSS classes added. SDK regenerated. Rollback script included at `docs/rollback-0022.sql`.
-- Background sweeper `startBlackboardStaleSweeper()` (5 min sweep interval): marks `active` rows as `stale` when they exceed the per-agent threshold (interactive agents: 90 min; orchestrator: 120 min; default: 60 min). Writes a history entry on each mark. Logs only when rows are marked.
-
-### Changed
-
-- RBAC shadow mode (`RBAC_MODE=shadow`): `applyRbacGate` now emits `logger.info` for non-admin authenticated requests that are allowed through. Previously the allowed path produced no log output, making it impossible to distinguish "no non-admin traffic arrived" from "the gate was never exercised." Admin requests (`role=admin`, currently 100% of production traffic) are excluded to avoid noise. The `would-deny` warn log is unchanged. No API change; logging only.
-
-- **[API]** `POST /api/memories` (content security filter rejection): HTTP status changed `400` → `403`; `error` token was already `"forbidden"`, status-dominance rule now satisfied.
-- **[API]** `PUT /api/agents/:name` (main-agent write guard): HTTP status changed `400` → `403`; `error` token was already `"forbidden"`, status-dominance rule now satisfied.
-- **[API]** `POST /api/kanban`: raw DB exception message (`(err as Error).message`) removed from HTTP response body; exception now routed exclusively to `logger.error`; response changed from bare `error: err.message` at `400` to `error: "internal_error"` + static `hint` at `500`.
-- **[API]** `POST /api/agents/:name/channels/:provider/test`, `POST /api/agents/:name/channels/:provider` (setup): external channel-provider validation errors that do not match a canonical token (`"invalid_value"` or `"internal_error"`) are no longer passed through to the HTTP response; non-canonical strings are logged via `logger.warn` and the response uses `"internal_error"` at `500` instead.
-- **[API]** `PUT /api/agents/:name`, `PUT /api/agents/:name/auto-restart`, `PUT /api/agents/:name/context-guard`: unknown-field rejection token changed from non-canonical `"unsupported_field"` to `"invalid_value"`; non-object body token changed from non-canonical `"invalid_body"` to `"parse_error"`.
-- **[API]** `PUT /api/agents/:name/voice-config`: raw exception message removed from error response; now returns `"invalid_value"` + static hint with exception routed to `logger.error`.
-- **[API]** `enforcePermission` (authz middleware): error responses now flow through the `json()` helper so the Phase A warn-gate can observe them; prose tokens (`"Unauthorized"`, `"Forbidden"`, `"Service temporarily unavailable"`) replaced with canonical `"unauthorized"`, `"forbidden"`, `"internal_error"`; `Retry-After: 5` on the 503 path preserved via `res.setHeader()` before the helper call.
-- **[API]** `GET /api/artifacts/:id/view` (artifact view token): error responses routed through `json()` helper (tokens were already canonical; gate visibility was the only gap).
-- **[API]** `POST /api/auth/login` (throttle + invalid credentials paths): responses routed through `json()` helper; `Retry-After` on the 429 path preserved via `res.setHeader()` before the helper call.
-
-- **[API]** `POST /api/connectors/:name` (add), `POST /api/mcp-catalog/:id/install`, `DELETE /api/mcp-catalog/:id/uninstall`, `POST /api/fleet/export`, `POST /api/fleet/import`, `POST /api/vault/ssh-keys` (generate), `POST /api/vault/ssh-keys/import` (validate + import), `POST /api/vault/ssh-servers/:id/generate-key`, `POST /api/updates/run` (pidfile + precheck + handler catch), `POST /api/connectors/github-repos` (clone + update): raw exception message (`err.message` / `err.stderr`) removed from HTTP response body; exception detail now goes exclusively to `logger.error({ err }, ...)`; response `error` field is now a stable snake_case token (`"internal_error"`) with a static `hint`; vault-ssh-keys import validation branch additionally changed from leaking `err.stderr` (ssh-keygen output) to `"invalid_value"` + `hint: "Invalid or unsupported private key format"`; fleet export `UserFacingError` branch moved from bare `error: err.message` to `error: "invalid_value", hint: err.message` (UserFacingError signals a user-fixable config condition, 400 status -- `invalid_value` per status-dominance rule; `internal_error` is reserved for 500); `RemoteEnrollError` in security.ts likewise changed from bare `error: err.message` to `error: "invalid_value", hint: err.message` (same class pattern, same rationale); inner pidfile retry-catch in updates.ts (missed in first pass) now routes to `internal_error` + logger; `installGitHubRepo` and `updateGitHubRepo` dispatch in connectors.ts now map `internal_error` token to HTTP 500 (was falling through to 400); fleet body-read error changed to `"parse_error"` + static hint; fleet logger calls corrected from `{ err: err.message }` to `{ err }`
-
-- **[API]** `POST /api/updates/apply`: two pre-existing 409 conflict responses used prose error strings sourced from preflight and concurrency helper return values (`concurrency.message`, `preflight.message`); both replaced with stable `"conflict"` token; prose moved to `hint`; `reason` (machine-readable: `"already-running"`, `"dirty-tree"`, `"detached-head"`, `"local-commits"`) and `pid` fields retained unchanged
-
-- **[API]** `POST /api/agents`, `GET/PUT/DELETE /api/agents/:name`, `GET/PUT /api/agents/:name/voice-config`, `GET/PUT /api/agents/:name/avatar`, `GET /api/agents/export-all`, `GET /api/agents/:name/export`, `POST /api/agents/import`: `error` values normalised to snake_case tokens; `"Agent not found"` -> `"not_found"` + `field: "name"`; `"Agent already exists"` -> `"conflict"` + `hint`; `"Name is required"` / `"Description is required"` / `"profile is required"` -> `"required"` + `field` + `hint`; `"No avatar specified"` / `"No file uploaded"` / `"No bundle uploaded"` -> `"required"` + `field` + `hint`; `"Invalid avatar name"` -> `"invalid_value"` + `field: "name"` + `hint`; `"Avatar not found"` -> `"not_found"` + `field: "avatar"`; `"No agents to export"` -> `"not_found"` + `hint`; `"Export failed"` -> `"internal_error"`; `"invalid JSON"` -> `"parse_error"` + `hint`; `"Main agent configuration is read-only..."` -> `"forbidden"` + `hint`; `"memoryIsolation is not applicable..."` / `"No model-profile map..."` / `"main agent plan is managed..."` / `"The main agent cannot be exported..."` -> `"not_supported"` + `hint`; interpolated template literals also covered: `` `Unknown profile: ${x}` `` -> `"invalid_value"` + `field: "profile"` + `hint`; `` `modelProfile must be one of ...` `` -> `"invalid_value"` + `field: "modelProfile"` + `hint`; `` `Ismeretlen Claude plan id: ${x}` `` -> `"invalid_value"` + `field: "claudePlan"` + `hint`; `` `Model-profile map is unusable: ${x}` `` -> `"internal_error"` + `hint`
-- **[API]** `POST /api/agents/:name/start`: `"Agent is already running"` -> `"conflict"` (+ `hint`); applies to both local and remote agent start paths (BA atomic couplings commit)
-- **[API]** `GET/POST/PUT/DELETE /api/schedules`, `/api/schedules/:name`, `/api/schedules/:name/toggle`, `/api/schedules/:name/run`, `/api/schedules/:name/runs`, `DELETE /api/schedules/pending/:id`, `POST /api/schedules/expand-questions`, `POST /api/schedules/expand-prompt`: error values normalised to snake_case tokens; `"Name is required"` / `"Prompt is required"` / `"Schedule is required"` -> `"required"` + `field` + `hint`; `"Prompt too large (...)"` -> `"limit_exceeded"` + `field: "prompt"` + `hint`; `"Invalid cron expression"` -> `"invalid_value"` + `field: "schedule"` + `hint`; `"Invalid id"` -> `"invalid_value"` + `field: "id"` + `hint`; `"Schedule already exists"` -> `"conflict"` + `hint`; `"Schedule not found"` / `"Pending retry not found"` -> `"not_found"` + `hint`; `"Failed to generate questions"` / `"Failed to expand prompt"` -> `"internal_error"` + `hint`
-- **[API]** `GET/POST/PUT/DELETE /api/memories`, `/api/memories/:id`, `/api/memories/search`, `/api/memories/export`, `/api/memories/backfill`, `/api/memories/resort`, `/api/memories/links/maintain`, `/api/memories/import`, `/api/memories/:id/detail`: error values normalised to snake_case tokens; `"Content is required"` -> `"required"` + `field: "content"` + `hint`; `"Content rejected by security filter"` -> `"forbidden"` + `hint`; `"Invalid category ..."` -> `"invalid_value"` + `field: "category"` + `hint`; `"No chunks to import"` -> `"required"` + `field: "chunks"` + `hint`; `"agent_id required"` / `"agent_id and memory_id required"` -> `"required"` + `field` + `hint`; `"from must be <= to"` -> `"invalid_value"` + `field: "from"` + `hint`; `"Memory not found"` -> `"not_found"`; `"Backfill failed"` / `"Resort failed"` / `"Link maintenance failed"` -> `"internal_error"` + `hint`
-- **[API]** `GET/POST/PUT/DELETE /api/import/sources`, `/api/import/sources/:id/sync`, `/api/import/sources/:id/memories`: error values normalised to snake_case tokens; `"type must be local | gdrive | sharepoint"` -> `"invalid_value"` + `field: "type"` + `hint`; `"path is required"` -> `"required"` + `field: "path"` + `hint`; `"interval_hours must be one of: ..."` -> `"invalid_value"` + `field: "interval_hours"` + `hint`; `"Not found"` -> `"not_found"`
-- **[API]** `GET/POST /api/skills`, `/api/skills/local`, `/api/skills/export`, `/api/skills/:name`, `/api/skills/:name/assign`, `/api/skills/import`, `GET/POST/DELETE /api/agents/:name/skills`, `/api/agents/:name/skills/:skillName`, `/api/agents/:name/skills/import`: error values normalised to snake_case tokens; `"Skill not found"` -> `"not_found"`; `"No user skills directory"` -> `"not_found"`; `"Skill name is required"` / `"Skill description is required"` / `"No file uploaded"` / `"content is required"` -> `"required"` + `field`; `"Invalid skill name"` / `"Invalid skill file: path traversal detected"` / `"Invalid skill file: symlink entries rejected"` / `"No valid skill (SKILL.md) found in archive"` / `"Invalid skill path"` -> `"invalid_value"` + `field`; `"Skill already exists"` (including interpolated `` `Skill already exists: ${name}. Delete it first...` ``) -> `"conflict"` + `hint`; `"Export failed"` / `"Failed to generate skill"` / `"Failed to extract .skill file"` -> `"internal_error"` + `hint`; `"Plugin skills cannot be edited"` -> `"forbidden"` + `hint`; `"Invalid agent name"` -> `"invalid_value"` + `field: "name"`; `"Agent not found"` -> `"not_found"`; `"Invalid agent or skill name"` -> `"invalid_value"`
-- **[API]** `GET/POST/PUT/DELETE /api/connectors`, `/api/connectors/:name`, `/api/connectors/:name/assign`, `/api/connectors/test`, `/api/mcp-catalog`, `/api/mcp-catalog/:id/install`, `/api/mcp-catalog/:id/uninstall`, `GET/POST/DELETE /api/vault`, `/api/vault/bindings`, `/api/vault/bindings/sync`, `/api/vault/ssh-servers`, `/api/vault/ssh-keys`: error values normalised to snake_case tokens; `"Connector not found"` / `"Connector not found in any config"` / `"Item not found in catalog"` / `"Binding not found"` / `"Not found"` -> `"not_found"` + `hint`; `"URL is required"` / `"Name is required"` / `"URL (http/sse) or command (stdio) required"` / `"id and value required"` / `"vaultSecretId and envVar required"` -> `"required"` + `field`/`hint`; `"Name must contain at least one letter, number, hyphen, or underscore"` / `"Remote item has no URL"` -> `"invalid_value"` + `field` + `hint`; `"No targets found for this server"` -> `"not_found"` + `hint`; `"Failed to load catalog"` -> `"internal_error"` + `hint`; note: three catch-block lines using \`err.message || 'Failed to ...'\` were intentionally excluded at the time; resolved in the subsequent data-leak patch
-- **[API]** `GET/POST /api/voice/directive`, `/api/voice/modality`, `/api/voice/modality/set`, `/api/voice/stt`, `/api/voice/tts`, `/api/voice/status`: error values normalised to snake_case tokens; `"Invalid agent"` / `"Invalid agent_id"` / `"Invalid chat_id"` / `"Invalid file_id"` / `"Invalid state_dir"` / `"modality must be voice or text"` / `` `Unknown or missing voice model: ${voiceModel}` `` -> `"invalid_value"` + `field` + `hint`; `"agent and chat required"` / `"text required"` -> `"required"` + `field`/`hint`; `"Invalid JSON"` -> `"parse_error"` + `hint`; `"Voice toolkit not installed"` -> `"not_supported"` + `hint`; `"STT failed"` / `"TTS failed"` (+ `detail: result.stderr`) -> `"internal_error"` + `hint`; `detail` field preserved on TTS error; dynamic voice model name kept in `hint`, not in `error`
-- **[API]** `GET/POST/PUT/DELETE /api/kanban`, `/api/kanban/:id`, `/api/kanban/:id/archive`, `/api/kanban/:id/unarchive`, `/api/kanban/:id/parent`, `/api/kanban/:id/labels`, `/api/kanban/:id/labels/:labelId`, `/api/kanban/:id/subtasks`, `/api/kanban/comments`, `/api/kanban/comments/:id`, `/api/kanban/labels`, `/api/kanban/labels/:id`: error values normalised to snake_case tokens; Hungarian string literals replaced: `"Kártya nem található"` -> `"not_found"`; `"Szülő kártya nem található"` -> `"not_found"`; `"Kártya nem találhato vagy nincs archiválva"` -> `"not_found"`; `"Szülő kártya már maximális mélységen van (depth 2)"` -> `"limit_exceeded"` + `field: "parent_id"`; `"Címke neve kötelező"` -> `"required"` + `field: "name"`; `"Címke nem található"` -> `"not_found"`; `"labelId mező kötelező"` -> `"required"` + `field: "labelId"`; `"A kártyán nincs ilyen címke"` -> `"not_found"`; `"Szerző és tartalom kötelező"` -> `"required"`; `"A kártya már rendelkezik subtask-okkal"` -> `"conflict"`; `"Subtask lista kötelező"` -> `"required"` + `field: "subtasks"`; `PATCH /api/kanban/:id/parent` HTTP status code now derived from structured `code` field (`"not_found"` -> 404, others -> 400) instead of string inspection of the error message; `reparentKanbanCard` in `db.ts` returns typed `{ ok: false; code: "not_found" | "invalid" | "limit_exceeded"; hint: string }` union
-- **[API]** `POST /api/auth/login`: `error` value normalised to snake_case token; `"Invalid credentials"` -> `"unauthorized"` (+ `hint`); `"Too many attempts"` -> `"limit_exceeded"`; `"Invalid JSON"` -> `"parse_error"`
-- **[API]** `GET /api/auth/sessions`, `POST /api/auth/logout-all`: `"Session required"` -> `"unauthorized"` (+ `hint`)
-- **[API]** `POST /api/auth/password`: `"User not found"` -> `"not_found"` + `field: "user"`; `"Invalid password"` / PasswordPolicyError -> `"invalid_value"` + `field: "password"` + `hint`; `"Forbidden for this credential type"` -> `"forbidden"` (+ `hint`)
-- **[API]** `GET/DELETE /api/auth/users`, `POST /api/auth/users`: `"Invalid username (...)"` -> `"invalid_value"` + `field: "username"` + `hint`; `"User already exists"` -> `"conflict"`; `"User not found"` -> `"not_found"` + `field: "user"`; `"Forbidden for this credential type"` -> `"forbidden"` (+ `hint`)
-- **[API]** `POST /api/connectors/refresh`: 502 error response changed from raw `cache.error` prose string to stable token `"upstream_error"` with static `hint`; raw error now routed exclusively to `logger.error`; success (200) path no longer includes an `error` field; two new tokens canonicalized in the OpenAPI `Error` schema enum: `upstream_error` (external source unavailability) and `managed_settings_missing` (pre-existing token in agents-channels routes, now explicitly catalogued); `POST /api/marveen/restart` 500 response changed from `result.error || 'Restart failed'` to `"internal_error"` + static `hint`; `POST /api/kanban/:id/breakdown` and `POST /api/ideas/:id/breakdown` 500 responses changed from `(err as Error).message` to `"internal_error"` + static `hint`; frontend (`web/modules/connectors.js`) refresh-error toast now reads `data.hint` instead of `data.error`
-- **[API]** `GET/POST /api/auth/device-keys`, `DELETE /api/auth/device-keys/:id`: `"Invalid device name (...)"` -> `"invalid_value"` + `field: "name"` + `hint`; `"Invalid expires_in_days (...)"` -> `"invalid_value"` + `field: "expires_in_days"` + `hint`; `"install_id must be a UUID v4"` -> `"invalid_value"` + `field: "install_id"` + `hint`; `"Device key not found"` -> `"not_found"` + `field: "device_key"`; `"Forbidden for this credential type"` -> `"forbidden"` (+ `hint`)
-- **[API]** `GET/POST/PUT/DELETE /api/agents/:name/channels`, `/api/agents/:name/channels/:provider`, `/api/agents/:name/channels/:provider/pending`, `/api/agents/:name/channels/:provider/approve`, `/api/agents/:name/channels/:provider/invites`, `/api/agents/:name/channels/:provider/smoke-test`, `POST /api/agents/:name/channel/reconnect`, `GET/POST/DELETE /api/agents/:name/channel/connections`, `GET/POST/DELETE /api/agents/:name/channel/allow`: error values normalised to snake_case tokens; `"Agent not found"` -> `"not_found"` + `hint`; `"botToken is required"` -> `"required"` + `field: "botToken"`; `"Code is required"` -> `"required"` + `field: "code"`; `"Google Chat: saKeyPath, projectId, subscription és owner kötelező"` -> `"required"` + `hint`; `` `${provider} not configured for this agent` `` -> `"not_found"` + `field: "provider"` + `hint`; `` `This bot token is already used by agent "${dupeOwner}"...` `` -> `"conflict"` + `field: "botToken"` + `hint`; `"Invalid or expired code"` -> `"not_found"` + `hint`; `"Invite not found"` -> `"not_found"` + `hint`; `"Request not found"` / `"Request not found or already resolved"` -> `"not_found"` + `hint`; `"Agent is not running"` -> `"invalid_value"` + `field: "agent"` + `hint`; `"Auth flow indítása sikertelen"` -> `"internal_error"` + `hint`; `"Auth URL nem jelent meg 12 masodpercen belul..."` -> `"timeout"` + `hint`; `"SLACK_SMOKE_TEST_ALLOWED=true nincs beállítva..."` -> `"forbidden"` + `hint`; `"Nem Slack provider"` -> `"invalid_value"` + `field: "provider"` + `hint`; `"Smoke-test script nem található"` -> `"not_found"` + `hint`; `"managed-settings-missing"` -> `"managed_settings_missing"` (frontend consumer at `web/modules/agents.js:2849` renamed in the same commit)
-- **[API]** `POST /api/federation/enabled`, `POST /api/federation/routing-mode`, `POST /api/federation/peers`, `PATCH/DELETE /api/federation/peers/:id`, `GET /api/federation/peers/:id/inbound-token`, `POST /api/federation/peers/:id/rotate-inbound-token`, `POST /api/federation/remove`: error values normalised to snake_case tokens; `"invalid peer id"` -> `"invalid_value"` + `field: "id"` (4 sites); `"Unknown peer"` -> `"not_found"` (4 sites); `"Body must be a JSON object"` -> `"invalid_value"` + `hint` (2 sites); `"invalid shareCapabilitySummaries (boolean)"` -> `"invalid_value"` + `field: "shareCapabilitySummaries"` (2 sites); `` `invalid abandonWindowMinutes (...)` `` -> `"invalid_value"` + `field: "abandonWindowMinutes"` (2 sites); `"federation.json failed validation -- federation stays disabled..."` -> `"conflict"`; `"federation.json unreadable -- routing mode not persisted"` -> `"conflict"`; `` `invalid mode (...)` `` -> `"invalid_value"` + `field: "mode"`; `"peer id equals own systemId"` -> `"invalid_value"` + `field: "id"`; `` `peer '${id}' already exists` `` -> `"conflict"`; `"invalid baseUrl (...)"` / `"invalid baseUrl"` -> `"invalid_value"` + `field: "baseUrl"`; `` `invalid outboundToken (min ...)` `` -> `"invalid_value"` + `field: "outboundToken"`; `` `Invalid peer: ${v}` `` / `` `Invalid peer update: ${v}` `` / `` `Invalid config after removal: ${v}` `` / `` `Invalid config after rotation: ${v}` `` -> `"invalid_value"` + `hint`; security note: no error path leaks an inbound token value, fragment, or existence -- token is returned only on successful mint/reveal/rotate; external interface note: same as B7a (federation disabled by default)
-- **[API]** `POST /api/artifacts`, `GET /api/artifacts/:id`, `POST /api/artifacts/:id/view-token`, `GET /api/artifacts/:id/view`, `PATCH /api/artifacts/:id`, `DELETE /api/artifacts/:id`: error values normalised to snake_case tokens; `"agent_id is required"` -> `"required"` + `field: "agent_id"`; `"title is required"` -> `"required"` + `field: "title"`; `"kind is required"` -> `"required"` + `field: "kind"`; `` `Invalid kind "${body.kind}". Allowed: ...` `` -> `"invalid_value"` + `field: "kind"` + `hint`; `"content is required"` -> `"required"` + `field: "content"`; `"Failed to encode content"` -> `"invalid_value"` + `field: "content"` + `hint`; `"Failed to save artifact"` -> `"internal_error"` + `hint`; `"Not found"` (4 sites, replace_all) -> `"not_found"` + `hint`; `"Missing token or exp"` -> `"required"` + `hint`; `"Invalid or expired token"` -> `"unauthorized"` + `hint`; `"title is required and must not be empty"` -> `"required"` + `field: "title"` + `hint`; `` `title must not exceed ${ARTIFACT_TITLE_MAX_LENGTH} characters` `` -> `"limit_exceeded"` + `field: "title"` + `hint`
-- **[API]** `GET/POST/PUT/DELETE /api/ideas`, `/api/ideas/:id`, `/api/ideas/:id/comments`, `/api/ideas/:id/promote`, `/api/ideas/:id/breakdown`, `/api/ideas/:id/promote-breakdown`, `/api/ideas/:id/revert`: error values normalised to snake_case tokens; `"title required"` -> `"required"` + `field: "title"`; `"impact must be 1-5 or null"` (4 sites: POST + PUT) -> `"invalid_value"` + `field: "impact"` + `hint`; `"effort must be 1-5 or null"` (4 sites: POST + PUT) -> `"invalid_value"` + `field: "effort"` + `hint`; `"Ötlet nem található"` (6 sites) -> `"not_found"` + `hint`; `"content required"` -> `"required"` + `field: "content"`; `"Legalább egy jóváhagyott alfeladat kötelező"` -> `"required"` + `field: "subtasks"` + `hint`; `"Csak kanban státuszú ötlet vonható vissza"` -> `"invalid_value"` + `field: "status"` + `hint`; note: one err.message catch line at breakdown endpoint intentionally excluded (tracked separately for data-leak review)
-- **[API]** `GET/POST /api/blackboard`, `PATCH /api/blackboard/:id`, `GET /api/blackboard/history`: error values normalised to snake_case tokens; `"invalid JSON"` (2 sites) -> `"parse_error"` + `hint`; `"agent_id required"` -> `"required"` + `field: "agent_id"`; `"summary required"` -> `"required"` + `field: "summary"`; `"summary max 500 chars"` (2 sites) -> `"limit_exceeded"` + `field: "summary"` + `hint`; `"status must be active|done|blocked"` (2 sites) -> `"invalid_value"` + `field: "status"` + `hint`; `"internal error"` -> `"internal_error"` + `hint`; `"not found"` -> `"not_found"` + `hint`; `"since must be an integer"` -> `"invalid_value"` + `field: "since"` + `hint`; status codes unchanged (our own fleet tooling relies on them)
-- **[API]** `POST /api/spans`, `GET /api/traces/:id`, `GET /api/otel-export`: error values normalised to snake_case tokens; `"trace_id and span_id required"` -> `"required"` + `hint`; `"span not found; ..."` -> `"not_found"` + `hint`; `"agent_id, operation, and start_ms required to open a span"` -> `"required"` + `hint`; `"trace not found"` -> `"not_found"` + `hint`; `"from and to must be unix timestamps in milliseconds"` -> `"invalid_value"` + `hint`
-- **[API]** `GET/POST /api/autonomy`: `"Config not found"` -> `"not_found"` + `hint`; `"Invalid key or level (must be 1-3)"` -> `"invalid_value"` + `hint`; `` `Category "${key}" not found` `` -> `"not_found"` + `hint`; `` `Category "${key}" is locked at level 1 (safety constraint)` `` -> `"forbidden"` + `hint`; `` `Category "${key}" max level is ${cat.maxLevel}` `` -> `"invalid_value"` + `field: "level"` + `hint`; `"Failed to update"` -> `"internal_error"` + `hint`
-- **[API]** `GET /api/openrouter/manual`, `POST /api/openrouter/manual`, `GET /api/openrouter/models`: `"OpenRouter not configured"` (3 sites) -> `"forbidden"` + `hint`; `"id is required"` -> `"required"` + `field: "id"` + `hint`; `"Could not fetch OpenRouter models"` -> `"internal_error"` + `hint`
-- **[API]** `POST /api/onboarding/identity`, `POST /api/onboarding/claude-auth`, `POST /api/onboarding/launch`: `"agentName es ownerName szukseges."` -> `"required"` + `hint`; `"A nev tul hosszu vagy tiltott karaktert tartalmaz."` -> `"invalid_value"` + `hint`; `"Nem sikerult elmenteni az .env-be."` (2 sites) -> `"internal_error"` + `hint`; `"token vagy apiKey szukseges."` -> `"required"` + `hint`; `"A setup-token formatuma nem stimmel..."` -> `"invalid_value"` + `field: "token"` + `hint`; `"Az API-kulcs formatuma nem stimmel..."` -> `"invalid_value"` + `field: "apiKey"` + `hint`; `"A megadott token/kulcs nem ervenyes..."` -> `"invalid_value"` + `hint` (security: no token value echoed, format-check only); `"Eloszor allitsd be a Claude-autentikaciot."` -> `"forbidden"` + `hint`; `"Az ügynökök indítása nem sikerült: channels.sh..."` -> `"internal_error"` + `hint`; `r.error || 'Nem sikerult eletre kelteni...'` -> `"internal_error"` + `hint` (dynamic runtime string moved to hint)
-- **[API]** `POST /api/connectors/external-paths` (addExternalProjectPath), `POST /api/connectors/github-repos` (installGitHubRepo), `DELETE /api/connectors/github-repos/:name` (removeGitHubRepo), `PATCH /api/connectors/github-repos/:name` (updateGitHubRepo): pass-through error shapes from `dashboard-settings.ts` now include `hint` and `field`; `"Absolute path required"` -> `"required"` + `field: "path"` + `hint`; `"Directory does not exist"` -> `"not_found"` + `field: "path"` + `hint`; `"Invalid GitHub URL"` -> `"invalid_value"` + `field: "url"` + `hint`; `` `Already installed: ${repoName}` `` -> `"conflict"` + `hint`; `"Repo not found"` (2 sites) -> `"not_found"` + `hint`; `"Directory missing"` -> `"not_found"` + `hint`; two err.message/err.stderr catch-block lines were intentionally excluded at the time; resolved in the subsequent data-leak patch
-- **[API]** `GET/POST/DELETE /api/vault/ssh-servers`, `GET/POST/DELETE /api/vault/ssh-keys`, `GET/POST/DELETE /api/admin/tokens`, `POST /api/admin/tokens/:id/rotate`, `DELETE /api/admin/tokens/:id/revoke`, `GET/POST/PUT /api/security`, `GET/POST/PATCH /api/approvals`, `GET/PATCH /api/approvals/:id`: error values normalised to snake_case tokens; `"name, host and user are required"` -> `"required"` + `hint`; `"Could not derive a valid id from the name"` -> `"invalid_value"` + `field: "name"` + `hint`; `` `Server with id "${id}" already exists` `` -> `"conflict"` + `hint`; `"Failed to create server"` / `"Failed to update server"` -> `"internal_error"` + `hint`; `` `Server "${id}" not found` `` (3 sites) -> `"not_found"` + `hint`; `` `SSH key "${data.sshKeyId}" not found` `` -> `"not_found"` + `field: "sshKeyId"` + `hint`; `"No key assigned to this server"` / `"Assigned key not found"` -> `"not_found"` + `hint`; `"label and username are required"` / `"label, username and privateKey are required"` -> `"required"` + `hint`; `` `Key "${id}" not found` `` (3 sites) -> `"not_found"` + `hint`; `"invalid body"` (2 sites) -> `"parse_error"` + `hint`; `"name is required"` -> `"required"` + `field: "name"` + `hint`; `` `role must be one of: ...` `` -> `"invalid_value"` + `field: "role"` + `hint`; `"failed to create token"` -> `"internal_error"` + `hint`; `"token not found"` (2 sites) -> `"not_found"` + `hint`; `"token already revoked"` (2 sites) -> `"conflict"` + `hint`; `"failed to rotate token"` -> `"internal_error"` + `hint`; `"Forbidden for this credential type"` -> `"forbidden"` + `hint`; `"Invalid JSON"` -> `"parse_error"` + `hint`; `"key_line is required (...)"` -> `"required"` + `field: "key_line"` + `hint`; `"Invalid device name (...)"` -> `"invalid_value"` + `field: "name"` + `hint`; `"Invalid ssh_port (1-65535)"` -> `"invalid_value"` + `field: "ssh_port"` + `hint`; `"Enrollment failed"` -> `"internal_error"` + `hint`; `"Invalid JSON"` (2 sites in approvals) -> `"parse_error"` + `hint`; `"agent_id is required"` / `"category is required"` / `"action_description is required"` / `"resolved_by is required"` -> `"required"` + `field` + `hint`; `"action_payload must be a string (JSON) if provided"` -> `"invalid_value"` + `field: "action_payload"` + `hint`; `"Not found"` (2 sites) -> `"not_found"` + `hint`; `"status must be approved, rejected, or timeout"` -> `"invalid_value"` + `field: "status"` + `hint`; `"The requesting agent cannot approve its own request"` -> `"forbidden"` + `hint`; `` `Already resolved as ${existing.status}` `` -> `"conflict"` + `hint`; security note: no error path in vault-ssh-keys or admin/tokens leaks a key value, token value, or private key material; oracle protection: token/key existence and validity errors are indistinguishable; three `err.message`-based catch-block lines were intentionally excluded at the time; resolved in the subsequent data-leak patch
-- **[API]** `GET /api/federation/manifest`, `POST /api/federation/inbox`, `GET /api/federation/peers` (read), `GET /api/federation/status`, `GET /api/federation/directory`, `POST /api/federation/refresh`, `POST /api/federation/apply`, `PUT /api/federation/peers`: error values normalised to snake_case tokens; `"Federation disabled"` -> `"forbidden"` + `hint`; `"Body must be a JSON object"` -> `"invalid_value"` + `hint`; `"Invalid JSON"` (both inline and via shared readJsonBody helper) -> `"parse_error"` + `hint`; `"from must be a valid ..."` -> `"invalid_value"` + `field: "from"` + `hint`; `"from system equals this system"` -> `"invalid_value"` + `field: "from"` + `hint`; `"from system does not match..."` / `"from system is not a configured peer"` -> `"forbidden"` + `hint`; `"to must be a local (unqualified) agent id"` -> `"forbidden"` + `field: "to"` + `hint`; `"invalid to"` -> `"invalid_value"` + `field: "to"` + `hint`; `` `Unknown recipient agent '${p.to}'` `` -> `"not_found"` + `field: "to"` + `hint`; `"content is required"` -> `"required"` + `field: "content"` + `hint`; `"invalid ref"` -> `"invalid_value"` + `field: "ref"` + `hint`; `` `Request body too large (max ${INBOX_MAX_BODY_BYTES} bytes)` `` / `` `Request body too large (max ${err.limit} bytes)` `` -> `"limit_exceeded"` + `hint`; `"federation.json failed validation -- fix or remove..."` -> `"conflict"` + `hint`; `` `Invalid federation config: ${validated}` `` -> `"invalid_value"` + `hint`; `r.error || "Restart failed"` -> `"internal_error"` + `hint`; note: these endpoints are EXTERNAL INTERFACE (federated peers see the error format); federation is currently disabled by default (no FEDERATION_ENABLED in .env), so this is the last no-consumer moment -- future peers will already see snake_case tokens
-- **[API]** `Error` schema `example` updated: `{ error: "agent_id is required" }` -> `{ error: "required", field: "agent_id" }`; `error.description` updated to reflect snake_case token contract
-- **[API]** `POST /api/agents/:name/stop`, `POST /api/agents/:name/restart` (foundation `stopAgentProcess`): `"Agent is not running"` -> `"conflict"` + `hint: "agent is not running, nothing to stop"`; **HTTP status 400 -> 409** (state conflict, not client input error); `"Failed to stop tmux session"` -> `"internal_error"` + `hint`; `stopAgentProcess` return type extended with optional `hint`; restart propagates stop hint unchanged
-- **[API]** `POST /api/agents/:name/start`, `POST /api/agents/:name/stop`, `POST /api/agents/:name/restart` route pass-through: HTTP status now token-derived (`"not_found"` -> 404, `"conflict"` -> 409, `"internal_error"` -> 500, else 400) instead of hardcoded 400; previously all foundation errors were reported as 400 regardless of token
-- **[API]** `POST /api/background-tasks` (spawn): concurrency limit error -> `"limit_exceeded"` + `hint`; **HTTP status 500 -> 429** (was `internal_error` prose at 500); tmux spawn failure -> `"internal_error"` + `hint` at 500; `spawnBackgroundTask` return type extended with optional `hint`; route dispatches 429 vs 500 based on token
-- **[API]** `POST /api/agents/:name/keys`, `POST /api/agents/:name/login` (agent-terminal): `"Agent is not running"` -> `"conflict"` + `hint`; **HTTP status 400 -> 409**; `"Agent not found"` -> `"not_found"` (404, unchanged); `"Terminal input is disabled..."` -> `"forbidden"` + `hint` (403, unchanged); `"Invalid JSON"` (2 sites) -> `"parse_error"` + `hint`; `"Provide {enabled:boolean}"` -> `"invalid_value"` + `field: "enabled"` + `hint`; `"Provide {keys:string} or an allow-listed {special}"` -> `"invalid_value"` + `hint`; `"phase must be 'start' or 'confirm'"` -> `"invalid_value"` + `field: "phase"` + `hint`; `"send-keys failed"` / `"login sequence failed"` -> `"internal_error"` + `hint`
-- **[API]** `PUT /api/agents/:name/auto-restart`, `PUT/GET /api/agents/:name/context-guard`, `PUT /api/agents/:name/remote`, `POST /api/agents/:name/drain-inbox` (agents-process): `"Agent not found"` (2 sites) -> `"not_found"` + `hint` (404, unchanged); `"invalid JSON"` (3 sites) -> `"parse_error"` + `hint`; `"Main agent is always local"` -> `"not_supported"` + `hint`; `"Main agent lifecycle is service-managed..."` (2 sites) -> `"not_supported"` + `hint`; `"drain-inbox is main-agent only..."` -> `"not_supported"` + `hint`; main-channels hard-restart error: `r.error || 'Restart failed'` -> `"internal_error"` + `hint` at 500; foundation errors (remote SSH unreachable, claude not on PATH, tmux session failures) -> `"internal_error"` + `hint` at 500; `"Agent not found"` in `startAgentProcess` -> `"not_found"` + `hint`
-- **[API]** `POST /api/updates/diagnose`, `POST /api/updates/run`: `"No failed or rolled-back update to diagnose."` -> `"conflict"` + `hint` (409); `"This host cannot run a Claude agent (CPU lacks AVX)..."` -> `"not_supported"` + `hint`; `fired.error || 'Could not start the diagnosis agent.'` -> `"internal_error"` + `hint`; `"Another update is starting concurrently..."` -> `"conflict"` + `hint` (409); `"store/ is not writable..."` -> `"internal_error"` + `hint`; two `err.message`/`err.stderr` catch-block lines were intentionally excluded at the time; resolved in the subsequent data-leak patch
-- **[API]** `GET /api/fleet/export`, `POST /api/fleet/import`: `"X-Vault-Password must be at least N characters."` (2 sites) -> `"invalid_value"` + `field: "X-Vault-Password"` + `hint`
-- **[API]** `POST /api/backups/run`, `DELETE /api/backups/:name`, `POST /api/backups/:name/verify`: `"Backup script not found"` / `"verify-restore.sh not found"` -> `"internal_error"` + `hint` (500, unchanged); `"Invalid archive name"` (2 sites) -> `"invalid_value"` + `field: "name"` + `hint`; `"Archive not found"` (2 sites) -> `"not_found"` + `hint` (404, unchanged)
-- **[API]** `POST /api/background-tasks` validation: `"Prompt megadása kötelező"` -> `"required"` + `field: "prompt"` + `hint`; `"Agent ID megadása kötelező"` -> `"required"` + `field: "agentId"` + `hint`; `GET/DELETE /api/background-tasks/:id`: `"Háttérfeladat nem található"` (2 sites) -> `"not_found"` + `hint` (404, unchanged)
-- **[API]** `POST /api/settings`: `'Missing or invalid "key"'` -> `"required"` + `field: "key"`; `` `Unknown setting key: ${key}` `` -> `"not_found"` + `hint`; `'Secret settings cannot be changed via this endpoint'` -> `"forbidden"` + `hint`; `validateSettingValue` pass-through wrapped -> `"invalid_value"` + `field: "value"` + `hint`; `setOverride` failure: `"internal_error"` + `hint`; **HTTP status 400 -> 500** (setOverride failure is an atomic-write server error, unreachable via client input after the preceding key/value validation gates); `'Failed to update setting'` -> `"internal_error"` + `hint`
-- **[API]** Remaining error normalisation (B12 -- final batch): `POST /api/marveen/avatar`: `"No avatar specified"` -> `"required"` + `field: "avatar"`; `"Invalid avatar name"` -> `"invalid_value"` + `field: "avatar"`; `"Avatar not found"` -> `"not_found"`; `"No file uploaded"` -> `"required"` + `field: "file"`; `GET /api/audit-log`: `"Invalid \"from\" parameter"` / `"Invalid \"to\" parameter"` / `"Invalid \"limit\" parameter"` -> `"invalid_value"` + `field`; `validateDiscordChannelId` (agents-helpers): return type extended with `field` + `hint`; `"Discord channelId is required..."` prose -> `"invalid_value"` + `field: "channelId"` + `hint`; `assertAgentExists`: `"Agent not found"` -> `"not_found"`; `GET /api/docs/:name`: `"Invalid doc name"` -> `"invalid_value"` + `field: "name"`; `"Not found"` -> `"not_found"`; `GET /api/fleet-q/:name`: `"Agent nem található"` -> `"not_found"`; `"capabilities: string[] required"` -> `"required"` + `field: "capabilities"`; `POST /api/migrate/scan`: `"Útvonal megadása kötelező"` -> `"required"` + `field: "path"`; `"A megadott útvonal nem létezik"` -> `"not_found"`; `POST /api/skill-usage`: `"agent_id, skill_name and trigger_type required"` -> `"required"`; `"trigger_type must be tool_call or skill_read"` -> `"invalid_value"` + `field: "trigger_type"`; `runScheduledTaskNow` (schedule-runner): `"Schedule not found"` -> `"not_found"`; `"Schedule is disabled"` -> `"disabled"`; `POST /api/schedules/:name/run` route dispatch now returns 404 for `"not_found"` (was 400); `validateRemoteAgent` (agent-config): `"Both remoteHost and remoteWorkdir are required..."` -> `"required"`; `"Invalid remoteHost..."` -> `"invalid_value"`; `hardRestartMarveenChannels` (channel-monitor): `"hard restart failed: tmux respawn-pane failed"` -> `"internal_error"` + `hint`; `POST /api/agents/:name/conversation`: `"A beszélgetés feldolgozása nem sikerült"` -> `"internal_error"`; `POST /api/agents/:name/taskstate`: `"Invalid JSON"` -> `"parse_error"`; `POST /api/daily-log`: `"Content required"` -> `"required"` + `field: "content"`; `GET /api/recall`: invalid date expression -> `"invalid_value"` + `field: "date"` + `hint`; `GET /api/status`: health fetch failure -> `"internal_error"` + `hint`; `POST /api/token-usage/collect`: collection failure -> `"internal_error"` + `hint`; `POST /api/tool-log`: missing fields -> `"required"` + `hint`
-- **[API]** `POST /api/schedules/:name/run` -- disabled schedule: **HTTP status 400 -> 409** (operation-state conflict: the request is valid, but the target schedule is disabled and requires manual intervention to re-enable; consistent with the `agent-not-running` precedent from B11). Error token `"disabled"` was already emitted by `runScheduledTaskNow` but was missing from the `Error.error` OpenAPI enum; added. SDK regenerated.
-- **[API]** Scope-gap batch (B13 -- src root files): `src/channel-provider.ts` `validateToken` (Telegram, Slack, Discord): `"Invalid bot token"` -> `"invalid_value"` + `hint`; `"Failed to connect to Telegram/Slack/Discord API"` -> `"internal_error"` + `hint`; Slack external API error (`data.error`) moved to `hint`; consumer (`POST /api/agents/:name/channels/:provider/test` at agents-channels:227) now returns 500 for `"internal_error"` (was hardcoded 400) and spreads `hint`; consumer (`POST /api/agents/:name/channels/:provider` at agents-channels:304) same token-derived status + hint spread; `checkTelegramTokenBusy` (webhook/poller busy): `error` field was Hungarian prose -> `"conflict"` + `hint` (Hungarian remedy text unchanged, moved to `hint`); consumer (agents-channels:322) now always sends `error: "conflict"` + `hint` at 409; `src/web.ts` host/CSRF guards (`res.end` paths, no json() helper): `"Host not allowed"` / `"Origin not allowed"` -> `"forbidden"` + `hint` at 403; catch block: `"Szerver hiba"` -> `"internal_error"` + `hint` at 500; `src/config-registry.ts` `validateSettingValue`: all six prose `error` returns -> `"invalid_value"` + `hint` (Hungarian validation messages unchanged, moved to `hint`); `SettingValidationResult` interface extended with optional `hint`; `src/web/routes/settings.ts:59` consequence: `hint: validation.error` -> `hint: validation.hint` (after config-registry normalization `validation.error` is the token, not the prose); `src/settings-store.ts:86` (`Ismeretlen kulcs`) confirmed unreachable via HTTP (settings.ts registry-check gate at line 42 precedes `setOverride` call, and `setOverride` has no other HTTP callers) -- no change
-- **[API]** B2B/tenant/federation token consolidation (B14): 28 domain-specific error tokens in `messages.ts` and `admin-b2b.ts` replaced with the 16-token canonical set; `field` and `hint` carry the specificity that the old tokens expressed; HTTP status corrections: `forbidden` cases that were 400 now 403, `not_found` resource-lookup cases that were 400 now 404; specific mapping: `missing_required_fields` -> `required`; `sender_reserved` -> `forbidden` (403); `federated_sender_not_allowed` -> `sender_not_in_allowlist` (403); `unknown_sender` -> `not_found` + `field: "from"` (404, DB miss) or `sender_not_in_allowlist` (403, allowlist miss); `invalid_federated_address` -> `invalid_value` + `field: "federatedAddress"`; `federation_self_reference` -> `invalid_value` + `field: "peerId"`; `unknown_federation_peer` -> `not_found` + `field: "peerId"` (404); `invalid_recipient_format` -> `invalid_value` + `field: "recipient"`; `message_not_found` -> `not_found` + `field: "messageId"`; `invalid_tenant_id` -> `invalid_value` + `field: "tenant_id"`; `display_name_required` -> `required` + `field: "display_name"`; `tenant_already_exists` -> `conflict`; `tenant_not_found` -> `not_found` + `field: "tenant_id"` (404); `cannot_disable_default_tenant` -> `forbidden` (403); `no_fields` -> `required`; `username_invalid` -> `invalid_value` + `field: "username"`; `password_too_short` -> `invalid_value` + `field: "password"`; `role_invalid` -> `invalid_value` + `field: "role"`; `tenant_required_for_non_admin` -> `forbidden` + `field: "tenantId"` (403); `admin_must_be_global` -> `forbidden` + `field: "tenantId"` (403); `username_taken` -> `conflict` + `field: "username"`; `user_not_found` -> `not_found` + `field: "userId"` (404); `invalid_sender_id` -> `invalid_value` + `field: "sender_id"`; `sender_id_is_fleet_agent` -> `forbidden` (403, was 409); `partner_sender_already_exists` -> `conflict`; `tenant_id_required` -> `required` + `field: "tenantId"`; `partner_sender_not_found` -> `not_found` + `field: "senderId"` (404); `cannot_disable_self` -> `forbidden` (403); `last_admin` -> `forbidden` (403); OpenAPI `Error.error` enum reduced from 44 to 16 canonical tokens; SDK regenerated
-
-### Added
-
-- **[API]** `src/api-error-catalog.ts` (new file): canonical error token registry with 17 tokens as const (`ERROR_TOKENS`, `ErrorToken` type, `VALID_TOKENS` set, `ALLOWED_STATUS_TOKENS` pairing map, `checkErrorResponse()` validator); the OpenAPI `Error.error` enum is now generated from this file via `scripts/generate-error-schema.mjs` -- it is no longer hand-maintained; `npm run generate:sdk` now runs `generate:error-schema` first; `json()` helper in `src/web/http-helpers.ts` instrumented in Phase A warn-only mode: calls `checkErrorResponse()` on every error response and emits `logger.warn` on violation (never throws -- Phase B enforcement is a separate PR); `src/__tests__/api-error-catalog.test.ts` added with exhaustiveness and pairing tests; deliberate-exception comments added to `tokens.ts` (rotate/revoke) and `vault-ssh.ts` (L207/L209) to mark admin-gated discriminating responses
-- `scripts/skill-migrate-placeholders.py` dry-run and apply output now reports both the number of unique change types and the total occurrence count separately (e.g. "9 changes, 15 occurrences across 5 files"); `migrate_file` returns `(unique_changes, occurrence_count)` tuple; 3 new tests in `TestOccurrenceCount` covering single-line double-occurrence, multi-line, and baseline single-occurrence cases
-- `Error` schema in `docs/openapi.yaml` extended with two optional fields: `hint` (human-readable debugging note, present when the server has extra context) and `field` (name of the invalid input field, present on validation errors); both were already returned by several endpoints but were not part of the documented contract; SDK regenerated
-- `docs/openapi.yaml` extended with `/admin/tenants` (POST, GET, PATCH) and `/admin/partner-senders` (POST, GET, DELETE) paths and `Tenant` / `PartnerSender` component schemas; SDK regenerated (15 schemas, 102 operations)
-- `scripts/skill-migrate-placeholders.py` extended with owner name/email replacement (Passes 4-6): replaces the operator's name and email with `<OWNER>` / `<OWNER_EMAIL>` tokens; resolves owner config from `.env` `OWNER_NAME` / `OWNER_EMAIL` (same binding as `src/config.ts`); Hungarian suffix forms produce `<OWNER>-{suffix}`; exception list covers domains, Python `open()` paths, Google MCP tokens, snake_case slugs, wiki links, and grep patterns; `$HOME/` normalisation for bash paths; `--verify-owner` flag; idempotent on already-migrated files; `OWNER_EMAIL` added to `src/config.ts` and `.env.example`; Passes 3-5 now skip Markdown code fences so executable commands are never corrupted by placeholder substitution
-- **[API]** `GET /api/blackboard` now returns a `signal` field per row: `"a"` (agent sent a message recently but the blackboard row was not updated), `"b"` (active row unchanged longer than the configured threshold -- completion signal may have been lost), `"ab"` (both), or `null` (no signal); read-only, no data is modified; thresholds configurable via config-registry keys `BB_SIGNAL_A_MSG_HOURS` (default 2), `BB_SIGNAL_A_BB_HOURS` (default 4), `BB_SIGNAL_B_ACTIVE_HOURS` (default 24); the dashboard blackboard table renders flagged rows with an amber/red badge and a highlighted row
-- **[API]** `GET /api/blackboard/history` -- append-only audit trail of fleet blackboard state transitions; supports `agent_id`, `since` (Unix timestamp), and `limit` (max 200) query filters; returns newest-first; no auth required (matches existing `/api/blackboard`)
-- migration 0021: `fleet_blackboard_history` table with indexes on `agent_id`, `created_at DESC`, and `status`; 30-day retention via `runDecaySweep()`; written at the API layer on every `POST /api/blackboard` and `PATCH /api/blackboard/:id`
-- Schedule runner automatic blackboard writes: `upsertBlackboard` exported from `db.ts`; schedule runner calls `status=active` before injecting each task prompt (with `task_ref` from a matching kanban card if found), and `status=done` when the task completes (pane idle and `sawTurn=true`); a snapshot of the written active row is kept in `taskInflightMap`; done is only written if the current blackboard row still matches the snapshot -- if the agent changed status or summary mid-run the runner leaves it untouched
-- **[API]** `POST /api/admin/partner-senders`, `GET /api/admin/partner-senders`, `DELETE /api/admin/partner-senders/:sender_id` -- DB-backed per-tenant partner sender allowlist CRUD (admin:all required); soft-delete via `disabled_at`; 409 guard blocks fleet agent names as sender ids
-- **[API]** `POST /api/messages` -- partner-scoped tokens (non-default `tenant_id`) validate `from` against the `partner_senders` allowlist; both accepted and rejected sends are written to `agent_audit_log`; fleet-auth path is unchanged for default-tenant tokens
-- migration 0020: `partner_senders` table with composite PK `(sender_id, tenant_id)`, `disabled_at` soft-delete, and indexes on both columns
-- **[API]** `POST /api/messages` accepts opt-in external system sender ids via `SYSTEM_SENDER_IDS` env var (comma-separated); `parseSystemSenderIds()` normalises entries with `sanitizeAgentIdent`; empty by default so fresh installs are unchanged
-- **[API]** `POST /api/messages` `PUT /api/messages/:id` -- closing a message now sends a reverse `[Eredmény]` completion-report notification to the delegating agent via `shouldNotifyDelegator()` (self-messages, non-addressable senders, and completion-report contents are excluded to avoid ping-pong chains)
-- **[API]** `POST/GET /api/v1/admin/tenants`, `PATCH /api/v1/admin/tenants/:id` -- tenant registry CRUD (admin:all required)
-- **[API]** `POST/GET /api/v1/admin/users`, `PATCH /api/v1/admin/users/:id` -- dashboard user provisioning with role+tenant validation and audit log (admin:all required)
-- migration 0019: `tenants` table DDL with pre-seeded 'default' tenant
-- **[Import]** xlsx/xls/docx binary format support in the import crawler: new `extractContent()` helper dispatches to SheetJS CE (xlsx/xls, sheet_to_csv output) and mammoth (docx, plain-text extraction); malformed files are counted as `skippedType` instead of crashing; ZIP-bomb guard caps extracted text at 2 MB before the existing 100 KB content truncation; binary files use a separate 5 MB size limit (vs 500 KB for text files)
-- **[API]** RouteContext gains optional `role` and `tenantId` fields (non-breaking additive extension; set by the top-level RBAC gate for downstream route handlers)
-- tenant isolation wired into memories, kanban, and messages route handlers: admin role bypasses filter (sees all tenants), scoped callers are restricted to their own tenant_id; saveAgentMemory/createAgentMessage/createKanbanCard accept optional tenantId param (backward-compat, default: 'default')
-- enroll dashboard bearer in api_tokens on startup (INSERT OR IGNORE; role=admin, tenant=default, no expiry); resolveApiToken() now resolves it from DB instead of the file-token fallback
-- migration 0018: add role + tenant_id to dashboard_users; first-user-wins bootstrap in createDashboardUser (first user gets admin+global, subsequent users get viewer); session AuthResult carries role+tenantId from DB lookup; resolveTenantId returns null for global admin
-- **[API]** CI breaking-change detection for docs/openapi.yaml via oasdiff (PRs fail if a breaking change is introduced without approval)
+- workspace docs dashboard page (list, view, delete)
+- add DELETE /api/admin/tenants/:id with full cascade
+- self-service profile page for session-authenticated dashboard users
+- workspace_docs Phase 1 — fleet-agent working document store
+- B2B admin UI — tenant/user/device-key management
+- add tenant_id scoping with IDOR guard for B2B users
+- tenant-selector for global admin on Memories/Kanban/Recall
+- derive resolved_by from session username on approval resolution
+- user-level audit trail on core write routes for session-auth callers
+- add email and display_name columns to dashboard_users
+- add viewer RBAC access to blackboard, recall, overview, and me endpoints
+- promote blackboard stale thresholds to config-registry and tier table
+- **[API]** tenant-scope GET /api/overview for non-admin callers
+- tenant isolation for memory recall and message threads
+- gate delivery hook on explicit assign:true flag
+- open 'assigned' row on inter-agent message delivery
+- **[API]** phase B -- enforce mode (throw in test, log in prod)
+- add getErrorMessage helper and error token i18n keys
+- **[API]** error token catalog + Phase A warn-mode gate (PR-A)
+- add stale/assigned statuses, migration 0022, and stale sweeper (677 PR-1)
+- **[API]** normalise error shapes in schedules, memories, import-memories (B3a)
+- skip replacements inside Markdown code fences
+- extend skill-migrate-placeholders with owner name/email replacement
+- add stale signal to GET /api/blackboard
+- automatic fleet blackboard writes on task fire and completion
+- append-only history table with API-level double-write
+- detect an unavailable model and keep both model configs in sync
+- migrate docs-research.js markdown table to table.css component
+- migrate all dashboard tables to table.css component system
+- DB-backed per-tenant partner sender allowlist
+- add fan-out quota guard to fleet heartbeat sweep
+- versioned prod-tree guard with idempotent installer (PRODFAAG822) (#1038)
+- move fleet blackboard above activity feed
+- add xlsx/xls/docx binary format support with worker isolation
+- add B2B tenant and user management API
+- wire scopeToTenant into memories, kanban, and messages routes
+- add role+tenant_id to dashboard_users with first-user-wins bootstrap
+- enroll dashboard bearer in api_tokens on startup
+- wire RBAC shadow enforcement gate in web.ts (Phase 0)
+- add token rotation, expiry, and revocation with DB-lookup fallback
+- add tenant-scoped query wrapper for all four core tables
+- add tenant_id columns, api_tokens table, and tenant indexes (migration 0017)
+- add authorization middleware with role resolution and permission enforcement
+- add Role/Permission model and endpoint permission table
+- CHANGELOG-driven release notes process
 - **[API]** URL-level versioning with /api/v1/* canonical paths
 - **[API]** add custom OpenAPI->TypeScript SDK generator
 - **[API]** add operationId to all 95 operations
 - **[API]** add OpenAPI 3.1 spec for all API endpoints
-
-### Changed
-
-- `PUT /api/agents/:name`, `PUT /api/agents/:name/auto-restart`, and `PUT /api/agents/:name/context-guard` 400 response bodies: `error` is now a stable snake_case machine token (`unsupported_field` or `invalid_body`); replaced bespoke `rejected` + `writable`/`known` arrays with the system-wide `field` + `hint` pattern; `field` holds the first rejected key, `hint` carries the human-readable explanation including the full rejected list and known alternatives; callers that parsed `rejected` mechanically must migrate to `hint` text (the dashboard did not read either field)
-- `POST /api/messages`, `PUT /api/messages/:id`, and `GET /api/messages` (unknown-param guard) error responses: `error` is now a stable snake_case machine token (`missing_required_fields`, `sender_reserved`, `federated_sender_not_allowed`, `sender_not_in_allowlist`, `unknown_sender`, `invalid_federated_address`, `federation_disabled`, `federation_self_reference`, `unknown_federation_peer`, `invalid_recipient_format`, `message_not_found`, `unknown_query_parameter`); human-readable explanation moved to `hint`; status codes and trigger conditions are unchanged
+- add secret-resolver for Docker/k8s secret-mount support
+- add Zod-validated config schema (additive, boot-time)
+- add skill usage stats display + LRU sort
+- add Fleet Blackboard section to CLAUDE.md template
+- add fleet shared blackboard API and Overview widget
+- lazy-load JS modules on first navigation
+- remove per-agent memoria-heartbeat scaffold
+- remove Kutatás, Aktivitás, Költségek menu items
+- migrate 147 legacy btn-* classes to DS data-variant/size attrs
+- split web/style.css into css/features/* feature files
+- toast.css, tooltip.css, CSS guard CI check
+- add field, table, empty CUBE components
+- add modal CUBE component, migrate modal-wide
+- add card CUBE component
+- F3 btn/badge/chip CUBE component migration
+- F2 hex kivezetese - nyers hexek tokennre cserelve
+- guard isolated mode against startup project-file writes
+- add IS_ISOLATED_MODE guard to skip takeover in isolated instances
+- make STORE_DIR env-overridable via MARVEEN_STORE_DIR
+- F1 primitive palette + extended semantic layer
+- introduce @layer architecture with tokens extraction (F0)
+- add dashboard UI for backup management
+- backup integrity, agent audit log, and restore tooling
+- emphasise latest-arrived nodes at replay end
+- cross-agent vectorSearch for import shadow row linking
+- omit content from detail response for import shadow nodes
+- suppress content in graph detail card for import nodes
+- shadow row pipeline for import memories
+- add extension and secret-gate info below page title
+- move add-source form above sources table
+- convert sources list to table layout
+- add import memories system with background crawler
+- add OTEL JSON exporter endpoint (card ed91cbbd)
+- startup reconciliation for durable agent execution
+- fail-closed secret gate, so captured output cannot carry a key into a public repo (EVIDGUARD818) (#995)
+- two-stage escalation for a parked MAIN box -- never clear, heartbeat sees it, owner gets the fix (MAINBOXPARK816) (#985)
+- a stale handoff is not a handoff -- measure freshness at restart (GUARDSTALEHO817) (#988)
+- hold back background heartbeats when the shared window runs dry (#992)
+- idle-flush tier for heavy sessions that have gone quiet (#955)
+- payload-field recording + quarantine tier (split from #920) (#939)
+- report wedge recoveries and long channel outages to the owner (#899)
+- launchd port of the idle-path keepalive probe (COORDDRIFT816) (#982)
+- scope-A migration -- full coverage, IGNORECASE, hyphen-suffix
+- add skill-migrate-placeholders.py for #107 migration
+- add agent-name placeholder rules to skill-factory
+- add setup script for context-compact scheduled task
+- add context-compact monitor
+- add timeline video export (MediaRecorder WebM)
+- add dark-glass memory node detail card (Poly spec §1-§7)
+- **[API]** add GET /api/memories/:id/detail endpoint
+- tier-change audit log + timeline events + crossfade (iter2 §5.6)
+- semantic edge layer + feed cap 10 (iter2 §5.4b §5.7)
+- Phase 2 timeline mode frontend (§5.1-5.11)
+- GET /api/memories/graph/timeline endpoint + unit tests
+- extreme hub clustering coeff 3.75->10.0 (Jonas 4x request)
+- 1.5x stronger hub clustering (coeff 2.5->3.75, cap 36->44)
+- degree-weighted spring rest length for hub clustering
+- remove redundant Artifacts tab from Memories screen
+- label LOD + layout density fix (Poly spec §6)
+- memory graph v2 -- single-round-trip endpoint + cinematic render
+- add auto-skillify PreCompact hook
+- extract provider dispatch into provider-dispatch.ts
+- probe the entered Telegram bot token and speak the findings (INSTTOKEN807) (#929)
+- reject a busy Telegram bot token at save time with a human remedy (MCPTOKEN807) (#926)
+- let every page use the whole window, not just the kanban board (#879)
+- refresh a shipped skill/task only while it is provably untouched (#871)
+- add rename endpoint and inline title editing in dashboard
+- proactive /clear gate with fail-closed live-work detection (#938)
+- teach every agent the deferred-MCP ToolSearch protocol (FLEETDEFER809) (#943)
+- local artifact store follow-up fixes (#78)
+- delivery-intent gate for bareEnterRecovery (remote sub-agents)
+- delivery-intent gate for stuck-input plain-text re-inject
+- auto-sync cloud Artifact publishes to local artifact DB
+- add artifact count as separate KPI (P10)
+- add cloud_url dedup UPSERT and 200/201 status
+- P8b -- Artifacts tab on Memories screen
+- P8a -- HMAC view-token for browser-safe artifact serving
+- P7 -- semantic search via vec_artifacts ANN index
+- P5 -- fleet-wide artifact storage policy in CLAUDE.md template
+- P6 -- FTS5 full-text search for artifact store
+- add Artifacts dashboard tab (P3)
+- add migrate-artifacts.sh migration script (P4)
+- P2 -- Bearer-gated Artifact API (POST/GET-list/GET-id/DELETE)
+- P1 -- 0009_artifacts.sql schema + migration integration
+- tell the operator when the personality is a placeholder (#822)
+- notice and log when a worker session dies (#801)
+- ship the operator ops scripts, portable instead of install-bound (#795)
+- behaviour-neutral modelProfile layer (#776)
+- switch to Xenova/bge-reranker-base for multilingual support
+- move cross-encoder reranker to post-RRF fusion in hybridSearch()
+- MEMORY_RERANK_ENABLED opt-in flag for cross-encoder reranker
+- recency boost in vectorSearch before cross-encoder rerank
+- cross-encoder reranker for vectorSearch
+- enable F4 link-maintenance by default + docs + 0008 migration test
+- F5 -- dashboard graph edge visualization + semantic links
+- F4 -- link maintenance heartbeat task + API endpoint
+- F3 -- link-aware hybridSearch 1-hop graph traversal
+- F2 -- auto-link creation in saveAgentMemory pipeline
+- F1 -- memory_links table + db layer
+- F0 -- wire hybridSearch into recall paths
+- surface the automatic restarts and gate pairing on the running service (#753)
+- ANN semantic search via sqlite-vec
+- aggregate token_usage before pruning to preserve billing history
+- F2 auto tier-resort, version prune, smart search injection (#37)
+- add stale badge and version history tab to dashboard UI (#37)
+- add span_reads, memory_versions, stale-read tracing (#37)
+- expose mcpScope in GET /api/agents/:name + accept in PUT
+- add MCP scope tab to agent detail modal (HTML)
+- add i18n keys for MCP scope tab (hu + en)
+- add MCP scope tab logic (load, render, save)
+- extend mcp-catalog.json with per-tool lists
+- wire mcpScope into agent-scaffold settings.json generation
+- add mcp-tool-registry with parseMcpScope + buildMcpDenyList
+- port #729 -- Bridge pairing from dashboard (AUTHPLAN1 #2)
+- add coverage tests for F3b -- batch 2/N, reach 65% stmt coverage
+- add coverage tests for F3b -- batch 1/N
+- backend unit/contract tests for F2a coverage lift (#31)
+- add v8 coverage reporting with threshold gate (issue #31 F1)
+- 3-level board rendering, cross-parent DnD, tree detail view
+- add 3-level subtask hierarchy (depth column + backend)
+- S-14g -- extract onboarding wizard + channel-setup into onboarding.js
+- S-13b -- extract federation page to web/modules/federation.js
+- S-13a -- extract overview + activity to web/modules/overview.js
+- S-12 extract token-usage monitor to web/modules/token-usage.js
+- S-11 -- extract settings + auth/security to web/modules/settings.js
+- S-10 -- extract skills + messages frontend to separate modules
+- S-9 -- extract connectors/vault frontend to web/modules/connectors.js
+- S-8 -- extract memory view + graph frontend to web/modules/memories.js
+- S-7 -- extract scheduled tasks frontend to web/modules/schedules.js
+- S-6 -- extract agents view + channel management to web/modules/agents.js
+- S-5 extract kanban DnD to web/modules/kanban-dnd.js
+- S-4 extract kanban view to web/modules/kanban.js
+- S-3 extract router/nav core to web/modules/app-core.js
+- S-2 extract i18n runtime to web/modules/i18n.js
+- extract showToast to ES module, make app.js type=module
+- add schema_version table and migration runner
+- register 6 env keys in settings registry for dashboard editing
+- recovery paths -- security:reset CLI, break-glass audit + channel alert (#726)
+- Security tab hosting the auth card + AUTHCOPY1 copy fix (#725)
+- per-device dashboard keys (device_keys) -- mint/list/revoke + gate integration (#724)
+- reliable message send (verify HTTP status + id, retry) (#715)
+- redesign overview page with 5-zone layout (#282)
+- let one agent listen on multiple channel providers (#712)
+- OTel distributed trace waterfall for inter-agent messages (#705)
+- merge Agents and Team screens into one page with view toggle (#669)
+- drag-and-drop reporting edit in the Team graph (#671)
+- live green Terminal button while an agent is working (#672)
+- branch-drift warning for installs not on the product branch (#704)
+- Kutatás oldal -- read-only néző az ágensek research/ mappáihoz (#695)
+- remote-enroll bundle carries the dashboard token by default (#694)
+- optional username+password browser login for the dashboard (#691)
+- add remote access key enrollment helper (#692)
+- add Claude Opus 5 to the agent model selector
+- add usage-collect.py -- subscription quota monitor with pace alerts (#690)
+- add ask-fable.sh -- Fable one-shot CLI with anti-fallback guard (#688)
+- Microsoft Graph mail module for a single scoped M365 mailbox (#668)
 
 ### Fixed
 
-- Model-fallback: `modelUnavailableStreak` is now reset to 0 when a pane is unreadable (`capturePane` returns null), so two model-unavailable detections only count as consecutive if no null-pane sweep occurred between them; previously the streak was frozen and could add up across non-consecutive sweeps, triggering a spurious model switch
-- fix token management API path matching so `/api/v1/admin/tokens` resolves correctly (handler was comparing against the pre-normalised `/api/v1/` form instead of the normalised `/api/` form that the dispatcher passes to route handlers)
+- wrap deleteTenant cascade in db.transaction for atomicity
+- inline /me 401/400 responses, remove non-existent sessionCookie security
+- add .sb-user[hidden] override to satisfy hidden-attribute CSS contract
+- return 404 for cross-tenant PATCH (anti-enumeration)
+- address security review — tenant gates, peekWorkspaceDoc, no-enumeration
+- remove technical command patterns from content filter
+- downgrade known-safe checksum mismatches from WARN to INFO
+- migration 0025->0026, CHANGELOG + README fork-diff
+- fail-closed on missing tenantId in GET and PATCH
+- add missing action_payload field to Approval mock objects
+- add .d.ts for tenant-selector.js, add i18n keys
+- clarify memories recallTenantId gate, add IDOR regression test
+- memories ?tenant bypass + selector pagination + display_name
+- add tenant isolation to recentMemories and buildMemoryContext
+- skip pending flag when main agent busy due to self-caused heartbeat
+- push tenant filter into SQL for q-only memory search branch
+- push tenant filter into SQL before LIMIT for messages and memories listing
+- remove internal plan reference from rbac.ts comment
+- update stale trigger references in comments
+- replace vec0 DB triggers with app-level sync for memories ANN index
+- add missing settings descriptions for four config keys
+- read MAIN_AGENT_ID from .env when not exported to environment
+- commit getStaleMemories tenant isolation + real-function test
+- tenant isolation for /api/recall memories path
+- **[API]** reconnect 400 -> 409 conflict -- same operation-state semantics as auth/init
+- make rbac:shadow would-deny and permitted log outcomes mutually exclusive
+- clear pending_compact flag when agent self-compacted below threshold
+- **[API]** differentiate 'Agent is not running' hints (B6 follow-up)
+- **[API]** return 401 for unauthorized on logout-all and sessions
+- fix remaining token-carrying throw/catch pairs (688 3rd pass)
+- fix inline throw in approveChannelRequest (688 follow-up)
+- carry API response through throw/catch for proper error display
+- log non-admin allowed requests in shadow mode
+- resolve tmux binary from PATH, add startup config check
+- **[API]** document voice stt/tts 503->400 status change in CHANGELOG
+- add last_synced convention pointer to all SKILL.md files
+- add last_synced convention comment to SKILL.md files
+- sync repo SKILL.md versions with runtime
+- expand CHANGELOG entry to cover Bucket 2 and 3 fixes
+- sync dream-engine repo SKILL.md with runtime version
+- add runtime invariant to enforce vec-before-migrations call order
+- load sqlite-vec before migrations to prevent vec0 trigger crash
+- add missing domain-token i18n keys (sender_not_in_allowlist, federation_disabled, unknown_query_parameter)
+- replace raw data.error display with getErrorMessage helper
+- **[API]** update status-token pairings per Rick's catalog decisions
+- **[API]** PR-A2 addendum -- route authz/artifacts/auth through json() helper
+- **[API]** PR-A2 inventory fixes -- data-leak, forbidden status, token normalisation
+- **[API]** disabled schedule run returns 409 instead of 400
+- robust busy-pane detection via shape regex
+- **[API]** consolidate B2B/tenant/federation tokens to 16 canonical set (B14)
+- compact-monitor pending flag + urgent notify
+- connectors refresh toast reads hint not error token
+- **[API]** normalise prose error strings to stable tokens (B14)
+- restore 15min threshold class for short-running agents (677 PR-1)
+- **[API]** normalise updates 409 conflict error tokens to stable snake_case (B15)
+- **[API]** resolve four missed raw-error sites from QA round
+- **[API]** correct UserFacingError token to invalid_value in fleet export
+- **[API]** remove raw err.message/err.stderr from HTTP error responses
+- **[API]** normalise src-root error shapes to snake_case tokens (B13)
+- **[API]** restore settings required+invalid_value to 400 (regression fix)
+- **[API]** correct settings setOverride failure to 500 (was 400)
+- **[API]** normalise final batch of error response shapes to snake_case tokens
+- **[API]** restore restart conflict-hint differentiation (TOCTOU race)
+- **[API]** revert restart conflict-hint override, keep stop hint only
+- **[API]** differentiate stop vs restart conflict hints in agent-process
+- **[API]** normalise error response shapes in ops routes (B11b)
+- **[API]** normalise error response shapes in ops routes (B11a)
+- **[API]** align status codes with token semantics in B10 routes
+- **[API]** normalise error response shapes in config and onboarding routes
+- **[API]** normalise federation token/auth endpoint error shapes to snake_case
+- **[API]** correct federation inbox spoofing guard token to forbidden
+- **[API]** normalise federation read/inbox error shapes to snake_case tokens
+- **[API]** rename managed-settings-missing token to snake_case
+- **[API]** normalise agents-channels error shapes to snake_case tokens
+- **[API]** use invalid_value for vault binding no-targets case (B5 follow-up)
+- **[API]** normalise connectors + voice error shapes to snake_case codes (B5)
+- **[API]** normalise skills + agents-skills error shapes to snake_case codes (B4)
+- **[API]** align reparentKanbanCard error code to catalog (invalid -> invalid_value)
+- **[API]** normalise kanban + db error shapes to snake_case codes (B3b)
+- **[API]** normalise schedules.ts body-size errors to limit_exceeded (B3a addendum)
+- **[API]** normalise agents-crud template literal error values (B2 follow-up)
+- **[API]** normalise agents-crud route error values to snake_case tokens (B2)
+- **[API]** forward hint from restart handler (agents-process.ts:200)
+- **[API]** normalise agent-process 'already running' to conflict token (BA)
+- **[API]** normalise auth route error values to snake_case tokens (B1)
+- **[API]** normalise agent config PUT error shapes to snake_case codes
+- **[API]** normalise GET /api/messages unknown-param error to field + hint
+- **[API]** normalise PUT /api/messages/:id 404 error to snake_case code
+- correct empty-tuple cast in updatePendingTaskRetry mock
+- reset the streak when the pane cannot be read
+- report occurrence count separately from change-type count
+- signal B uses history-based lastChangedAt, not updated_at
+- preserve task_ref on done write; add snapshot guard tests
+- real SQLite tests for no-op guard + stale active row cleanup
+- snapshot guard -- skip done write if agent modified blackboard mid-run
+- skip history write on no-op upsert/patch; 400 on invalid since
+- eliminate false-positive self-trigger on pane capture
+- per-dir error resilience and system-dir skip
+- sub-agent outbound-mail hard-gate keys on command position, not content (SUBGATEPOZ822) (#1043)
+- outgoing-copy gate fires on real mail invocations, not mail-shaped content (KAPUHATOKOR822) (#1042)
+- allow opt-in external system senders on POST /api/messages (#1049)
+- an idle pane is not proof a scheduled task ran (#1051)
+- fail-closed master key handling (VAULTUJKULCS822) (#1048)
+- normalize path comparisons to /api/admin/tokens
+- show updated_at instead of created_at in artifact list
+- make hook-injection tests path-independent when run from git worktrees
+- correct oasdiff release asset name (was 404)
+- fetch full history so the CHANGELOG-check diff works
 - widen flaky 1s margin in heartbeat-hot-memory-count test
 - call tlRebuildAtTime(t1) on natural playback end
 - sort edges by weight desc before 250-cap; align static threshold to 0.75
 - add 'import' tier to TL_TIERS and TL_LIMB_ANGLES
 - regenerate package-lock.json for npm ci consistency
 - **[API]** remove leftover openapi-typescript devDependency
+- update ideas-ui-contract for lazy-loaded ideas.js
+- update ideas-ui-contract for lazy-loaded ideas.js
+- lazy-load regression fixes (boot-crash + overlay-on-all-async)
+- reduce SQLite page cache and mmap size (P1+P2)
+- add missing KANBAN_WIP_TESTING description key in hu/en
+- define 15 undefined tokens caught by F2 acceptance check
+- add /css/ route handler for design-system CSS files
+- repair broken imports in backups module
+- rank cross-fleet link-building by pure cosine, not recency
+- auto embed+link imported memories, Unicode-aware keywords
+- force BLOB full-scan for crossAgent + lower import threshold
+- correct tier mapping for import nodes, strip HTML before embedding
+- make migration 0013 schema-only, backfill import shadow rows after vec0 load
+- set import node color to #39FF14 in GRAPH_TIER_COLORS
+- wire tier=import listing, graph, and timeline endpoints
+- re-wrap HTML fragments on download
+- bracket raw IPv6 WEB_HOST; fix isAllowedHost extraction
+- adapt Kat2+3 batch to fork's modular architecture
+- ship the complete kanban extractor, ban pipe+heredoc (HBHEREDOC819) (#1013)
+- counts-first, truncated, capped payload (HBKANBANDRIFT819) (#1010)
+- serve the hot-memory count from the dashboard, stop prescribing the query (HBMEMBLIND819) (#1007)
+- adapt Kat1 batch to fork's modular architecture
+- reject inward-resolving names and unknown message filters (#1000)
+- pin 0600 on credential MCP config writes (VAULTMODE818) (#1001)
+- add 'session limit' variant to USAGE_LIMIT_RX (#957)
+- a session with queued messages is busy, not idle (#876)
+- a front-truncated tick is unrecognisable, and clearing it deleted in the wrong direction (#843)
+- stop the lossy rescue of head-dropped parked prompts (STUCKINPUT805) (#896)
+- bring the six unlocked pane writers under the send lane (PANEWRITERS805) (#895)
+- per-pane mutex so two writers cannot interleave into one message (DELIVLOCK805) (#885)
+- isolated settings.json lost keys the shared file never mentions (#861)
+- deleting an agent must clear its desired run-state (#857)
+- stop the tmux session on delete so no orphan ghost returns (#842)
+- self-heal updated_at on raw SQL status writes (0664aadf) (#964)
+- an agent picking up its own card got the task dispatched back at it (#877)
+- a parked prompt fragment deferred every scheduled task forever (#973)
+- ship canonical artifact-sync hook in root settings so the main agent mirrors cloud artifacts
+- hide controls hint in timeline mode (Poly review)
+- three card refinements from Poly re-review
+- separate freshness cls (CSS-safe) from label (accented display)
+- **[API]** wrap UNION ALL arms in subqueries for SQLite ORDER BY/LIMIT
+- tune §5.4b edge visibility + §5.7 feed total cap (Poly review)
+- scale-to-fit layout with 40px padding all sides
+- CI test, bottom padding, separate [hidden] rules
+- feed cap, bezier control points, slider visibility
+- replace innerHTML with textContent in timeline event feed
+- module cache-busting + defensive null-checks + light-mode core alpha
+- tier-clustering + ghost-label-wall (§6.5/§6.6)
+- add pop-in animation + exponential hover-crossfade (Poly spec)
+- set busy_timeout=5000, wal_autocheckpoint=2000, startup TRUNCATE checkpoint
+- correct type-import paths from ../../web/ to ../web/
+- capture Telegram message_id in outbound ledger entries (#936)
+- adapt #911 and #926 to fork's modular architecture
+- session-stuck escalation + working-session silence (split from #920, third delivery-path candidate) (#940)
+- both resubmit dead ends enqueue the never-abandon pending retry (#911)
+- a pending retry survives a missing target session (#906)
+- resolve an absolute lsof path so port/cwd probes work under launchd (#889)
+- macOS-capable single-instance reclaim (CWD774FIX, supersedes #774) (#888)
+- a natv modul a SZOLGALTATAS node-jara forduljon (macOS) (#855)
+- a whisper hiba nem allithatja meg a telepitest (macOS) (#854)
+- add missing deps: listAllAgentNames + session-send-lock
+- update kanban test for API-based heartbeat summary (#933 follow-up)
+- teach the scaffold the deferred-MCP ToolSearch protocol (HBCALMCP808) (#942)
+- remove the unfalsifiable warnings metric (HBWARN807) (#934)
+- the hot-memory metric ships as a ready-made query, not prose (HBMEMBLIND807) (#933)
+- an MCP server added later never reached existing isolated config dirs (#838)
+- close the model-id command-injection at every launch sink (#866)
+- replace substring allowlist check with strict hostname validation
+- enable inline JS in HTML artifact iframe
+- sync local copy on cloud update + add download button
+- make daily-log and prune-aggregate tests TZ-safe
+- bash 3.2 compatibility in migrate-artifacts.sh
+- rich preview rendering for markdown and JSON kinds
+- reject protocol-relative URLs in artifact open handler
+- the report is a measurement, not a memory
+- the cause line must claim only what was measured
+- verify the launchd units in scripts/start.sh too, via a shared helper
+- stop reporting installer steps that were never verified
+- announce the agent on the template path too
+- never delete agent dir on personality generation failure
+- a missing hook interpreter must block loudly, not exit 127
+- one quoted hook-command builder + escaped wired-check + tests
+- hook commands use absolute node path (bare node = silent gate bypass on nvm)
+- resolve the real agent id before asking for pending pairings (#802)
+- make the whole chain follow WEB_PORT, not a fixed 3420 (#800)
+- give the SERVICES an auth credential, and fail closed if they have none (#799)
+- derive the fetch allowlist from the owner's egress gate (#797)
+- pin launchd services to node@22 (#793)
+- npm-prefix writability pre-flight + error-translation layer (NPMPERM1) (#790)
+- macOS version pre-flight before relying on Homebrew (MACOSOLD1) (#789)
+- stop re-alerting the owner every 30 minutes about a still-dead agent (#786)
+- make the stuck-task threshold per task, not one global number (#785)
+- hide Team tab on main agent panel (#784)
+- raise the Ollama embedding timeout to 90s so large memories vectorize (#783)
+- replay the handover record after a crash restart, and for the main agent (#782)
+- execute occurrences missed while the scheduler was down (#781)
+- a document attachment is not a voice message (#780)
+- full accents in the customer-facing launch error message
+- distinguish broken-install from booting on the launch absent-session branch
+- create the channels session when absent instead of respawn-pane (ONBTMUX1)
+- permitopen + bundle follow the actual WEB_PORT (INSTUX1 root cause) (#778)
+- scaffold memoria-heartbeat task when new agent is created
+- use AutoTokenizer+AutoModel for correct sentence-pair encoding
+- import setFederatedPeerStatus and federatedAgentEntries from agents.js
+- add missing settings.desc for the memory rerank toggle
+- count embedding_blob in getMemoryStats vector total
+- use mainAgentId() for model-change kanban card assignee
+- forward argv across the self-reclone exec (#760)
+- name kanban cards by bracketed id and forbid invented explanations (#771)
+- make the wizard rename take effect everywhere -- BOT_NAME is display-only (WIZNAME1) (#758)
+- restart the unauthenticated channels session after the first Claude auth save (#752)
+- let the main agent's model come from .env, not a tracked file (#768)
+- repair stale /mcp plugin-row matcher that left the channel mute (#727)
+- prefer the tailnet address when pairing (#769)
+- isolate worker home by agent id, gate all worker starts on WEB_ONLY (#765)
+- never let a blind recovery keystroke reach the model consent dialog (#756)
+- the working-on-it placeholder should not push-notify (#772)
+- serve a fresh and complete agent memory listing (#749)
+- rename claude-sonnet-4-6 references to claude-sonnet-5 (#751)
+- stop self-pace gate false positives and fix sub-agent token path (#720)
+- busy pane is never stuck -- add SCHEDDUP1 busy exclusion
+- allow owner as sender on dashboard Messages page
+- ESM-compatible sqlite-vec load + BigInt PK binding
+- rename migration 0005->0006 to avoid version conflict
+- move to seed-scheduled-tasks + dashboard-toggle docs
+- add memory modal tab labels to hu/en
+- use NULL context in seed to satisfy CHECK constraint
+- seed existing memories on migration to prevent mass cold-demotion
+- guard warm->cold with created_at to protect fresh memories
+- revert to Rick-approved warm-only auto-cold + 30-day cold-to-warm
+- align F2 implementation with Rick spec (#37)
+- prevent ownership corruption in updateMemory() (#37)
+- remove auto-span-read from search; add batch read-event (#37)
+- inject renderTeamEditor via initAgents DI -- fixes sub-agent modal regression
+- wrap loadMcpScope and per-server render in try/catch
+- restore two wiring lines lost in mid-session reset
+- add tabMcpScope to switchAgentTab (lost in mid-session reset)
+- add esc alias for escapeHtml -- pre-existing ReferenceError
+- broaden agent-id regex to include digits and hyphens
+- fix TypeScript errors in F3b test files (build + typecheck clean)
+- patch agents-helpers mocks to include assertAgentExists (F3a compat)
+- declare @vitest/coverage-v8 as devDependency
+- close SSH revocation gap when device key is revoked (REFS #31)
+- SKILL.md content blank -- skills.js missing renderMarkdown import
+- grandchildren collapse toggle invisible due to CSS cascade
+- re-point source-grep tests to agents-process.ts after Menet 3
+- generation guard prevents concurrent loadSettings() from clobbering authCard
+- call wireAuthBanner/initAuthBanner on settings open, not module-eval
+- export+import populateAvatarGrid/loadAvailableModels/agentApiName -- fixes dead nav from S-6
+- renumber target column on reorder so a moved card lands at the drop position
+- serve /modules/*.js + fix app.js cache-bust regex for type=module
+- add missing settings.desc.* translations for 6 new registry keys
+- explicit credential-kind allowlists on access-granting endpoints (#723)
+- handle snake_case session_id in SDK 0.3 init event
+- platform-correct the remaining two main-restart call sites, and stop the guard from restarting main in a loop (#719)
+- stop the calibrated limit from blinding its own thresholds (#716)
+- reorder overview zones per Jónás feedback (#282)
+- KPI 'Költség ma' -> #tokenUsage (konzisztencia fix)
+- restart the main session on hosts without launchd (#713)
+- respawn sub-agents on their own channel provider (#711)
+- read unread from Mail SQLite envelope index, drop AppleScript (#710)
+- reject an unusable SCHEDULER_TZ instead of scheduling into a void (#708)
+- report the cron timezone the scheduler actually uses (#707)
+- make cards movable on touch devices (#709)
+- let the auth setup banner actually honour [hidden] (#702)
+- pin --branch main on every branchless marveen clone (#703)
+- check the branch the checkout follows, not a hardcoded main (#701)
+- isolate channel-less Claude-OAuth agents from the rotating shared credential (#700)
+- break the parked-input typing-deadlock that permanently mutes the main channel (#699)
+- remote-enroll host key multi-path + ssh-keyscan fallback, hard-fail without it (#693)
+- eliminate main-bot 401 outage -- Linux isolated-config + 401-detecting watchdog (#686)
+- SOUL.md and SKILL.md generators ignore the no-em-dash rule (#684)
+- keep main-agent controls consistent (#683)
+- pre-stamp Fable overage consent + answer model-switch dialog (config-vs-active model drift root fix) (#682)
+- exclude done cards from urgent-title kanban query (#680)
+- close email-send-gate coverage gap for graph-mail CLI (#679)
+- macOS support -- launchd, BSD stat, all five auth legs, gated heartbeat warning (#678)
+
+### Changed
+
+- replace stringly-typed not-ready detection with discriminated union (673)
+- drop restart TOCTOU hint override, propagate stop hint as-is
+- **[API]** normalise error response shapes in agents and messages
+- remove pruneStaleBlackboardActive entirely
+- extract stripMarkup to shared import-utils.ts
+- add Host header validation to block DNS-rebinding attacks
+- neutralize javascript:/data:/vbscript: links in mdInline
+- store embeddings as Float32 BLOB instead of JSON text
+- docs link pinned to sidebar bottom via .sidebar-docs
+- naplo moves from TUDAS to RENDSZER group
+- collapsible sidebar groups (5 groups, declarative re-parenting)
+- add back button on Archived page leading to kanban
+- move Archived from sidebar into Kanban header
+- add DEFAULT_AGENT_MODEL config-registry setting
+- fix context-guard restart storm for 1M-context model sessions
+- fix chat_id:0 sentinel in scheduled task prompt builder
+- extract assertAgentExists/readJsonBody helpers, knip config, pino-pretty devdep
+- consolidate escapeHtml/mainAgentId/escapeAttr into util.js
+- replace 42-handler if-chain with RouteDispatcher (Menet 7)
+- dead-import cleanup in agents.ts + RouteDispatcher (Menet 6)
+- extract agents-crud.ts from agents.ts (Menet 5)
+- extract agents-channels.ts (managed settings + channels setup/access)
+- remove dead imports from agents.ts after process extraction
+- extract process-control routes to agents-process.ts
+- extract model/openrouter/claude-plans routes to agents-models.ts
+- extract shared helpers from agents.ts to agents-helpers.ts
+- replace inline DDL in initDatabase with applyMigrations()
+- consolidate readClaudeCodeOauthJson into claude-credentials.ts
+- remove dead legacy /telegram/ URL routes from agents.ts
+- cacheable avatars + gzip for heavy responses (#698)
 
 ### Documentation
 
+- clarify why JS tenant filter in memories listing is not redundant
+- update fork-diff for overview tenant scoping
+- restore CHANGELOG, update README shadow-mode text, extend OpenAPI descriptions
+- update fork-diff for compact-monitor pending flag (#675)
+- **[API]** canonicalise upstream_error + managed_settings_missing in openapi
+- update fork-diff for API error normalisation (#209-#224)
+- add B11 ops-normalise API entry
+- correct B6 entry -- managed_settings_missing was included
+- add B3a API error normalisation entries
+- clarify code-fence protection in fork-diff summary
+- rewrite fork-diff section as grouped functional summary
+- update fork-diff for Error schema hint/field addition
+- **[API]** add hint and field to Error schema
+- **[API]** document admin tenants and partner-senders endpoints
+- update fork-diff state SHA to c89e775
+- fix two typos in model-fallback entry
+- add model-unavailability detection to fork-diff list
+- add SYSTEM_SENDER_IDS and shouldNotifyDelegator entries
+- add xlsx/xls/docx to format strings and write import-formats.md
+- add RBAC and multi-tenant isolation reference
+- expand SECURITY.md with guidelines for new subsystems (HU+EN)
+- add fork-diff entries for deploy-readiness subtasks 5-8
+- **[API]** add API deprecation policy
 - add fork-diff entries for deploy-readiness subtasks 1-4
-- expand SECURITY.md with guidelines for CSS modularization, OpenAPI/SDK contract, CI gates, 12-factor secret management, and API versioning/deprecation (HU+EN)
+- add JS lazy-load feature entry to README
+- move backup/audit entry into the fork-diff feature list
+- update fork-diff for backup-audit-security
+- update fork-diff for cross-fleet link pure-cosine ranking
+- update fork-diff for import auto-embed/link + Unicode keywords
+- update fork-diff for import-link crossscan fix
+- update fork-diff for timeline latest-node emphasis
+- update fork-diff SHA and cross-agent linking note
+- update fork-diff for import tier fix and HTML strip
+- update fork-diff SHA and import shadow backfill note
+- update fork-diff for import node detail panel
+- update fork-diff for shadow row pipeline (0013 migration)
+- update fork-diff for import-memories feature
+- update fork-diff for HTML artifact download fix
+- fix fork tip SHA after rebase onto develop
+- update README fork-diff for OTEL JSON exporter (card ed91cbbd)
+- update fork-diff for #46146829 IPv6 host-guard edge cases
+- update fork-diff for startup reconciliation
+- update fork-diff for upstream Kat2+3 port batch
+- update fork-diff for upstream Kat1 port batch
+- add skill agent placeholder system entry to README fork-diff
+- update fork-diff for the canonical artifact-sync hook change
+- update fork-diff for Host header validation security hardening
+- update fork-diff for context-compact setup script
+- add context-compact monitor entry to fork-diff list
+- add timeline video-export entry to README fork-diff list
+- add memory node detail card entry to README fork-diff list
+- add memgraph fork-diff entry (#95-#98) + update fork SHA
+- add provider-dispatch and auto-skillify to fork-diff
+- update fork-diff for hooks-ledger-message-id-936
+- update fork-diff for upstream port batch #854-#940
+- update fork-diff for artifact-rename PATCH endpoint
+- update fork-diff SHA after merge with develop
+- update fork-diff SHA after merge with develop
+- update fork-diff SHA after merge with develop
+- update fork-diff SHA after merge with develop
+- update fork-diff for #938 context-restart-gate
+- update fork-diff for #933/#934/#942/#943 deferred-MCP ToolSearch
+- update fork-diff for upstream #838 MCP isolated config fix
+- update fork-diff for upstream #866 model-id injection fix
+- update fork-diff for delivery-intent gate
+- add artifact cloud-sync hook to fork-diff section
+- add artifact store to fork-diff section
+- update fork-diff for upstream port batch
+- keep the boot-race comment install-agnostic, and fix its inverted claim (#805)
+- update fork-diff for reranker sentence-pair encoding fix
+- update fork-diff for hybrid post-fusion reranker
+- update fork-diff for memory semantic recall (F0-F5)
+- update fork-diff for upstream batch port 2026-07-30
+- update fork-diff for ANN semantic search
+- update fork-diff for token-usage aggregation
+- remove internal issue refs from memory-system chapter
+- update memory-system.md with span tracing, stale-read, versions, auto-resort
+- update fork-diff for #37 memory span tracing (F1+F2)
+- add MCP capability scope documentation (#35)
+- add #35 per-agent MCP scope to fork-diff
+- update fork-diff for upstream port #729 #738 #739 #740 #741 #742 #743 #744 #746 #747 #748
+- távolítsd el a bold/backtick/issue-szám formázást a fork-diff bullet-ekből
+- tömörítsd az F2a/F3a/F3b bullet-eket a fork-diff szekcióban
+- add #31/F3b coverage-lift to fork-diff
+- update fork-diff for #31/F2b frontend-util-consolidation
+- update fork-diff for #31/F1 coverage-reporting
+- add #30 nested-subtask feature to fork-diff
+- add #3/B backend route-modularization to fork-diff, update SHA
+- add token-efficiency estimate to #3 modularization entry
+- update fork-diff for #3 frontend modularization
+- add db schema-versioning to fork-diff section
+- update fork-diff section for #5 refactor changes
+- remove upstream-behind section, trim ongoing comment
+- add contributions summary and fork-diff sections
+- mark repo as independent fork with fork-point baseline
+
+### Infrastructure
+
+- mutation guard for recentMemories SQL-level tenant filter
+- **[API]** regenerate api.ts for dashboard_users profile fields
+- fix config-key integration test to source keys from the sweeper itself
+- add integration test for BB_STALE_* config-registry key names
+- remove remaining internal ID from i18n.js comment
+- remove internal IDs from overview route comments
+- remove fleet agent names from public fork source
+- replace remaining fleet agent names with neutral fixtures
+- replace fleet agent-name fixtures with neutral 'agent-a' in new test blocks
+- update README fork status SHA to 4e82415
+- add [API] CHANGELOG entry for tenant-scoped recall and threads
+- remove internal kanban-id from code comments
+- fix stale-memories mock assertions + add block-15 tenant isolation
+- add error-token i18n consistency check (kanban 685)
+- add TTS not-installed coverage to match STT test
+- update marveen restart test to match new error contract
+- **[API]** add local-commits preflight 409 coverage to updates error-shape suite
+- **[API]** add error-shape tests for federation reveal/rotate, connectors install 500, and voice parse_error branches
+- **[API]** add mutation-verified dispatch tests for B11 status codes
+- strengthen main-agent guard assertion to survive future normalisation
+- **[API]** route-level guard for addDesiredAgent on conflict path
+- consolidate 15 single-purpose test files into existing suites
+- add the fleet skill-repository commit helper
+- cover streak reset on unreadable pane
+- add OWNER_EMAIL empty-config guard tests
+- add mutation-proof regression guard for task_ref passthrough
+- verify done write preserves non-null task_ref
+- restore package-lock.json to develop baseline
+- apply system table style to run log
+- shared-case conformance binds the two mail-gate implementations (SUBGATEPOZ822) (#1044)
+- bump the minor-and-patch group across 1 directory with 3 updates
+- add route-level integration tests for scoped callers
+- add RBAC and cross-tenant isolation test suite
+- **[API]** add breaking-change detection for OpenAPI spec
+- update cache_size assertion to -8192 (8 MB)
+- remove dead NAV_I18N and PAGE_HEADER_I18N entries
+- update F3 contract tests to new CUBE selectors
+- bump @types/better-sqlite3 from 7.6.13 to 9.6.0
+- bump the minor-and-patch group with 4 updates
+- bump @hono/node-server from 1.19.14 to 1.19.17
+- bump the minor-and-patch group with 4 updates
+- add integration tests for detection -> spawn -> reconnect chain
+- add unit tests for ledger-outbound message_id extraction
+- bump fast-uri from 3.1.4 to 3.1.5
+- bump hono from 4.12.32 to 4.13.0
+- bump ip-address from 10.2.0 to 10.4.0
+- bump better-sqlite3 from 11.10.0 to 13.0.2
+- bump the minor-and-patch group with 2 updates
+- accept both bash 3.2 and 5.x ERR-trap line-blame
+- adapt upstream tests for fork's modular architecture
+- regression guard for the destructive create-rollback
+- suggested commands on their own copyable line (NPMPERM1 follow-up) (#791)
+- replace brand-specific names in added test fixtures
+- fix two test regressions from #758 currentBotName migration
+- use generic agent id in tests/docs and drop internal refs
+- prove ownership safety -- modifiedBy never overwrites agent_id (#37)
+- add unit + contract tests for span tracing (#37)
+- run Python unit tests in the pipeline
+- route-level tests for mcpScope GET + PUT endpoints
+- add UI contract tests for MCP scope tab
+- add mcp-tool-registry unit tests (20 cases, synthetic fixtures)
+- fix test suite for ported upstream PRs
+- add UI contract tests for 3-level subtask feature (#30)
+- add migration runner tests + fix ledger schema test
+- bump Node.js from 20 to 22 (deprecation warning fix)
+- bump typescript from 5.9.3 to 7.0.2
+- bump esbuild and vitest
+- bump vite and vitest
+- bump vitest from 2.1.9 to 4.1.10
+- bump pino from 9.14.0 to 10.3.1
+- bump @types/node from 22.19.12 to 26.1.1
+- bump body-parser from 2.2.2 to 2.3.0
+- bump hono from 4.12.26 to 4.12.32
+- bump postcss from 8.5.15 to 8.5.23
+- bump fast-uri from 3.1.2 to 3.1.4
+- bump the minor-and-patch group across 1 directory with 4 updates
+- bump pyasn1 from 0.6.3 to 0.6.4 in /scripts
+- make tests CI-safe (dist exclude + external binary stubs)
+- add GitHub Actions build/typecheck/test workflow
+- governance files (CODEOWNERS, LICENSE, README fork-rationale) -- Refs #4
+- restore classify security comment + drop orphan import (#705 follow-up) (#706)
 
 ## [1.33.0] - 2026-08-18
 

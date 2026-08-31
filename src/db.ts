@@ -4057,10 +4057,13 @@ export function deleteTenant(tenantId: string): { memoriesDeleted: number } {
       db.prepare('DELETE FROM memories WHERE id = ?').run(id)
     }
 
-    // 8. Drop tenant_agent_availability (SQLite FK enforcement is off by default)
+    // 8. Drop artifacts
+    db.prepare('DELETE FROM artifacts WHERE tenant_id = ?').run(tenantId)
+
+    // 9. Drop tenant_agent_availability (SQLite FK enforcement is off by default)
     db.prepare('DELETE FROM tenant_agent_availability WHERE tenant_id = ?').run(tenantId)
 
-    // 9. Drop the tenant row
+    // 10. Drop the tenant row
     db.prepare('DELETE FROM tenants WHERE id = ?').run(tenantId)
 
     return { memoriesDeleted: memIds.length }
