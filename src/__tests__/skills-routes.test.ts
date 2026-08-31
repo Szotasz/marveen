@@ -98,6 +98,19 @@ vi.mock('../logger.js', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }))
 
+vi.mock('../db.js', () => ({
+  getSkill: vi.fn().mockReturnValue(undefined),
+  createSkill: vi.fn().mockImplementation((opts: any) => ({ ...opts, is_global: opts.is_global ? 1 : 0, created_by: null, created_at: 0, updated_at: 0 })),
+  updateSkill: vi.fn().mockReturnValue(undefined),
+  deleteSkill: vi.fn().mockReturnValue(true),
+  seedSkillIfAbsent: vi.fn().mockReturnValue(true),
+  listSkillsForTenant: vi.fn().mockReturnValue([]),
+  listAllSkills: vi.fn().mockReturnValue([]),
+  grantSkillAccess: vi.fn(),
+  revokeSkillAccess: vi.fn().mockReturnValue(true),
+  listSkillAccess: vi.fn().mockReturnValue([]),
+}))
+
 import { tryHandleSkills } from '../web/routes/skills.js'
 
 afterAll(() => {

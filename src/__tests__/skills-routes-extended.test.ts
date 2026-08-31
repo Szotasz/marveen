@@ -69,6 +69,19 @@ vi.mock('../config.js', async (importOriginal) => {
   return { ...actual, MAIN_AGENT_ID: 'marveen', PROJECT_ROOT: FAKE_HOME }
 })
 
+vi.mock('../db.js', () => ({
+  getSkill: vi.fn().mockReturnValue(undefined),
+  createSkill: vi.fn().mockImplementation((opts: any) => ({ ...opts, is_global: opts.is_global ? 1 : 0, created_by: null, created_at: 0, updated_at: 0 })),
+  updateSkill: vi.fn().mockReturnValue(undefined),
+  deleteSkill: vi.fn().mockReturnValue(true),
+  seedSkillIfAbsent: vi.fn().mockReturnValue(true),
+  listSkillsForTenant: vi.fn().mockReturnValue([]),
+  listAllSkills: vi.fn().mockReturnValue([]),
+  grantSkillAccess: vi.fn(),
+  revokeSkillAccess: vi.fn().mockReturnValue(true),
+  listSkillAccess: vi.fn().mockReturnValue([]),
+}))
+
 import { tryHandleSkills } from '../web/routes/skills.js'
 
 function makeCtx(method: string, path: string, body?: object): {

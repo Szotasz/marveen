@@ -13,7 +13,7 @@ import { readBody, json } from '../http-helpers.js'
 import { sanitizeSkillName, shellEscape } from '../sanitize.js'
 import type { RouteContext } from './types.js'
 import {
-  createSkill, getSkill, updateSkill, deleteSkill,
+  createSkill, getSkill, updateSkill, deleteSkill, seedSkillIfAbsent,
   listSkillsForTenant, listAllSkills,
   grantSkillAccess, revokeSkillAccess, listSkillAccess,
 } from '../../db.js'
@@ -372,16 +372,33 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       return true
     }
     if (existsSync(skillDir)) { json(res, { error: 'conflict', hint: 'Skill already exists' }, 409); return true }
-    mkdirSync(skillDir, { recursive: true })
 
+    let skillMd: string
     try {
-      const skillMd = await generateSkillMd(skillName, description)
-      atomicWriteFileSync(join(skillDir, 'SKILL.md'), skillMd)
-    } catch (err) {
-      rmSync(skillDir, { recursive: true, force: true })
+      skillMd = await generateSkillMd(skillName, description)
+    } catch {
       json(res, { error: 'internal_error', hint: 'Failed to generate skill' }, 500)
       return true
     }
+
+    const sqlId = `global/${skillName}`
+    try {
+      createSkill({ id: sqlId, name: skillName, description, content: skillMd, tenant_id: 'fleet', is_global: true })
+    } catch {
+      json(res, { error: 'conflict', hint: 'Skill already exists' }, 409)
+      return true
+    }
+
+    try {
+      mkdirSync(skillDir, { recursive: true })
+      atomicWriteFileSync(join(skillDir, 'SKILL.md'), skillMd)
+    } catch (err) {
+      deleteSkill(sqlId)
+      rmSync(skillDir, { recursive: true, force: true })
+      json(res, { error: 'internal_error', hint: 'Failed to create skill file' }, 500)
+      return true
+    }
+
     json(res, { ok: true, name: skillName })
     return true
   }
@@ -463,6 +480,17 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
         }
         json(res, { error: 'invalid_value', field: 'file', hint: 'No valid skill (SKILL.md) found in archive' }, 400)
         return true
+      }
+
+      for (const dirName of extracted) {
+        const skillMdPath = join(skillsDir, dirName, 'SKILL.md')
+        const content = readFileOr(skillMdPath, '')
+        const desc = parseFrontmatterField(content, 'description')
+        try {
+          seedSkillIfAbsent({ id: `global/${dirName}`, name: dirName, description: desc, content, tenant_id: 'fleet', is_global: true })
+        } catch (sqlErr) {
+          logger.warn({ dirName, err: sqlErr }, 'Failed to upsert imported skill into SQL')
+        }
       }
 
       logger.info({ skills: extracted }, 'Global skill(s) imported')
@@ -550,6 +578,13 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       const body = await readBody(req)
       const { content } = JSON.parse(body.toString()) as { content: string }
       if (typeof content !== 'string') { json(res, { error: 'required', field: 'content', hint: 'content is required' }, 400); return true }
+      const agentSqlId = `agent/${agentPutParam}/${skillName}`
+      const agentDesc = parseFrontmatterField(content, 'description')
+      if (getSkill(agentSqlId)) {
+        updateSkill(agentSqlId, { content, description: agentDesc })
+      } else {
+        createSkill({ id: agentSqlId, name: skillName, description: agentDesc, content, tenant_id: 'fleet', is_global: false })
+      }
       atomicWriteFileSync(skillMdPath, content)
       logger.info({ skillName, agentId: agentPutParam }, 'Agent-local skill updated via dashboard')
       json(res, { ok: true })
@@ -567,6 +602,13 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { content } = JSON.parse(body.toString()) as { content: string }
     if (typeof content !== 'string') { json(res, { error: 'required', field: 'content', hint: 'content is required' }, 400); return true }
+    const globalSqlId = `global/${skillName}`
+    const globalDesc = parseFrontmatterField(content, 'description')
+    if (getSkill(globalSqlId)) {
+      updateSkill(globalSqlId, { content, description: globalDesc })
+    } else {
+      createSkill({ id: globalSqlId, name: skillName, description: globalDesc, content, tenant_id: 'fleet', is_global: true })
+    }
     atomicWriteFileSync(skillMdPath, content)
     logger.info({ skillName }, 'Skill updated via dashboard')
     json(res, { ok: true })
