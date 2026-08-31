@@ -4637,3 +4637,26 @@ export function listSkillAccess(skillId: string): SkillTenantAccessRow[] {
   return db.prepare('SELECT * FROM skill_tenant_access WHERE skill_id = ?').all(skillId) as SkillTenantAccessRow[]
 }
 
+// INSERT OR IGNORE: materialize a file-based skill only if no row with this id
+// exists yet. Safe to run repeatedly -- never overwrites hand-edited DB rows.
+export function seedSkillIfAbsent(opts: {
+  id: string
+  name: string
+  description: string
+  content: string
+  tenant_id: string
+  is_global: boolean
+  created_at?: number
+}): boolean {
+  const now = opts.created_at ?? Math.floor(Date.now() / 1000)
+  const result = db.prepare(`
+    INSERT OR IGNORE INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+  `).run(opts.id, opts.name, opts.description, opts.content, opts.tenant_id, opts.is_global ? 1 : 0, now, now)
+  return result.changes > 0
+}
+
+export function countSkills(): number {
+  return (db.prepare('SELECT COUNT(*) AS n FROM skills').get() as { n: number }).n
+}
+
