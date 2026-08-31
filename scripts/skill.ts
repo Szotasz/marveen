@@ -3,12 +3,11 @@
  * `npm run skill -- <alparancs>` -- a marveen.io skill-parancs (MIOCLISKILL831).
  *
  * HAROM ALPARANCS:
- *   enroll   EGYSZERI bekotes: attest-kulcs kerese es HELYI tarolasa (0600).
- *            A skillek/szabalyok NEM innen jonnek: a telepitessel es a
- *            frissitessel erkeznek (seed-skills/), nem HTTP-n.
+ *   enroll   EGYSZERI bekotes: attest-kulcs kerese es HELYI tarolasa (0600),
+ *            majd a hasznalati szabalyok lehuzasa a szerverrol.
  *   upload   feltoltes: beolvas -> LEFUTTATJA A HELYI SZKENT -> talalatnal
  *            TAGAD -> ha tiszta: HMAC-alairas + felkuldes.
- *   update   tavoli skill-csomag ujrahuzasa, HA valaha lesz ilyen.
+ *   update   a skillek/szabalyok ujrahuzasa a szerverrol.
  *
  * MIERT A CLI SAJAT FOLYAMATABAN SZKENNEL (spec, msg 16930/b): a hatokor
  * MINDEN app.marveen.io-s regisztralo, nem csak a Claude Code alatt futo
@@ -104,8 +103,7 @@ function sugo(): void {
       Helyi szken, majd tiszta eredmeny eseten alairt feltoltes.
 
   npm run skill -- update [--user|--project]
-      Tavoli skill-csomag ujrahuzasa, HA van ilyen. A beepitett skillek es
-      szabalyok a telepitessel/frissitessel erkeznek, nem innen.
+      A skillek es a hasznalati szabalyok ujrahuzasa a szerverrol.
 
   npm run skill -- status
       Mi van bekotve, hova, es milyen jogosultsaggal.`)
@@ -203,9 +201,12 @@ async function enroll(args: Args): Promise<void> {
     console.log(`Tarolva: ${ut} (0600)`)
     // A skilleket ezen az uton NEM toltjuk le: ahhoz felhasznaloi token kell,
     // es ez az ut epp azt kerulte meg. Ezt kimondjuk, nem hallgatjuk el.
-    // Ugyanaz a pontossag, mint a fenti agon: NEM kuldjuk a tagot egy
-    // parancsra, ami ma nem tud mit csinalni.
-    console.log('A hasznalati szabalyok es a skillek a telepitessel es a frissitessel erkeznek.')
+    // EZEN AZ UTON A SZABALYOK NEM JONNEK LE, es ezt ki kell mondani: a
+    // csomag lekerese felhasznaloi tokent igenyel, ez az ut viszont EPP azt
+    // kerulte meg (a gepnek nincs bejelentkezese). Ha van tokenje, az
+    // `update` lehuzza -- ez valodi ut, nem vigaszdij.
+    console.log('A hasznalati szabalyok ezen az uton NEM jonnek le: a lekeresukhoz bejelentkezes kell.')
+    console.log('Ha van hozzaferesi tokened: npm run skill -- update --access-token <token>')
     return
   }
 
@@ -262,27 +263,29 @@ async function skillekLetoltese(args: Args, token: string): Promise<void> {
     headers: { Authorization: `Bearer ${token}` },
   })
   if (!res.ok) {
-    // NINCS TAVOLI SKILL-CSOMAG, ES EZT KI KELL MONDANI. Korabban ez a sor a
-    // `npm run skill -- update`-re kuldte a tagot -- egy parancsra, ami
-    // UGYANEZT a nem letezo vegpontot hivja, tehat garantaltan nem csinal
-    // semmit. Egy nem-letezo utra iranyitas rosszabb, mint a hiany
-    // kimondasa: a tag azt hiszi, van meg egy lepese.
-    //
-    // A hasznalati szabalyok es a skillek a TELEPITESSEL es a FRISSITESSEL
-    // erkeznek (seed-skills/), nem HTTP-n. A fetch-ag azert marad, mert ha
-    // valaha lesz kuratalt, koddal NEM utazo skill-csomag, ez a hely varja.
-    console.log('A bekotes kesz, feltoltesre keszen allsz.')
-    console.log('A hasznalati szabalyok es a skillek a telepitessel es a frissitessel erkeznek;')
-    console.log('tavoli skill-csomag jelenleg nincs.')
+    // A csomag LETEZIK, csak most nem jott le. Ezert itt VALODI kovetkezo
+    // lepes all, nem egy garantaltan hatastalan parancs: az `update` ugyanezt
+    // a vegpontot hivja ujra. (Korabban ez a sor a seedelt szabalyokra
+    // hivatkozott -- azok mar nem utaznak a koddal.)
+    console.log(`A bekotes kesz, feltoltesre keszen allsz. A hasznalati szabalyok most nem jottek le (HTTP ${res.status}).`)
+    console.log('Ujraprobalhatod barmikor: npm run skill -- update')
     return
   }
-  const body = (await res.json()) as { files?: Array<{ path: string; content: string }> }
+  const body = (await res.json()) as {
+    version?: string
+    files?: Array<{ path: string; content: string }>
+  }
   const cel = skillTargetDir(args.scope)
   const kiirt = writeSkillFiles(
     cel,
     (body.files ?? []).map((f) => ({ relPath: f.path, content: f.content })),
   )
-  console.log(`${kiirt.length} skill-fajl kiirva ide: ${cel}`)
+  // A VERZIO KIIRASA: enelkul a tag latja, hogy "3 fajl kiirva", de nem tudja
+  // MIT kapott -- egy ujrahuzas utan sem tudna megmondani, valtozott-e
+  // barmi. A szerver a csomag tartalmanak sha256-jat adja; a rovid alak eleg
+  // az osszevetesre, es ez az, ami egy hibajelentesbe is bekerulhet.
+  const verzio = body.version ? ` (csomag-verzio: ${body.version.slice(0, 8)})` : ''
+  console.log(`${kiirt.length} skill-fajl kiirva ide: ${cel}${verzio}`)
 }
 
 async function upload(args: Args): Promise<void> {
