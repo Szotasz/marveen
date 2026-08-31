@@ -1,10 +1,38 @@
 import { describe, it, expect, beforeAll } from 'vitest'
+import { EventEmitter } from 'node:events'
 import {
   initDatabase,
   createSkill, getSkill, updateSkill, deleteSkill,
   listSkillsForTenant, listAllSkills,
   grantSkillAccess, revokeSkillAccess, listSkillAccess,
 } from '../db.js'
+import { tryHandleSkills } from '../web/routes/skills.js'
+import type { RouteContext } from '../web/routes/types.js'
+
+function makeSkillCtx(
+  method: string, path: string,
+  opts: { role?: string; tenantId?: string | null; body?: object } = {},
+): { ctx: RouteContext; out: { status: number; body: unknown } } {
+  const buf = opts.body ? Buffer.from(JSON.stringify(opts.body)) : Buffer.alloc(0)
+  const req = new EventEmitter() as any
+  req.method = method
+  req.headers = {}
+  setImmediate(() => { req.emit('data', buf); req.emit('end') })
+  const out = { status: 200, body: null as unknown }
+  const res = {
+    writeHead(s: number) { out.status = s },
+    end(b?: string) { try { out.body = JSON.parse(b ?? '{}') } catch { out.body = b } },
+    setHeader: () => {},
+    pipe: () => {},
+  } as any
+  const url = new URL(`http://localhost:3420${path}`)
+  const ctx = {
+    req, res, path: url.pathname, method, url,
+    role: opts.role ?? 'viewer',
+    tenantId: opts.tenantId !== undefined ? opts.tenantId : 'default-tenant',
+  } as RouteContext
+  return { ctx, out }
+}
 
 // Integration tests: real SQLite in-memory, all migrations applied.
 // Verifies tenant isolation for SQL-backed skills (716).
@@ -94,5 +122,29 @@ describe('SQL skills tenant isolation (716)', () => {
     createSkill({ id: 'idempotent-skill', name: 'Idempotent', content: 'c', tenant_id: 'iso-acme' })
     grantSkillAccess('idempotent-skill', 'iso-corp', 'admin')
     expect(() => grantSkillAccess('idempotent-skill', 'iso-corp', 'admin')).not.toThrow()
+  })
+})
+
+describe('SQL skills route: IDOR null-tenant guard (716 security)', () => {
+  it('GET /api/skills/sql/:id returns 404 when caller has no tenant scope (fail-closed)', async () => {
+    createSkill({ id: 'idor-test-skill', name: 'IDOR Test', content: 'secret', tenant_id: 'victim-tenant' })
+    const { ctx, out } = makeSkillCtx('GET', '/api/skills/sql/idor-test-skill', { role: 'viewer', tenantId: null })
+    await tryHandleSkills(ctx)
+    expect(out.status).toBe(404)
+  })
+
+  it('GET /api/skills/sql/:id returns skill when caller has matching tenant', async () => {
+    createSkill({ id: 'idor-own-skill', name: 'Own Skill', content: 'mine', tenant_id: 'my-tenant' })
+    const { ctx, out } = makeSkillCtx('GET', '/api/skills/sql/idor-own-skill', { role: 'viewer', tenantId: 'my-tenant' })
+    await tryHandleSkills(ctx)
+    expect(out.status).toBe(200)
+    expect((out.body as { id: string }).id).toBe('idor-own-skill')
+  })
+
+  it('GET /api/skills/sql/:id returns 404 for cross-tenant without grant (mutation-proof)', async () => {
+    createSkill({ id: 'idor-other-skill', name: 'Other Skill', content: 'theirs', tenant_id: 'other-tenant' })
+    const { ctx, out } = makeSkillCtx('GET', '/api/skills/sql/idor-other-skill', { role: 'viewer', tenantId: 'attacker-tenant' })
+    await tryHandleSkills(ctx)
+    expect(out.status).toBe(404)
   })
 })

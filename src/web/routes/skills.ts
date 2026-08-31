@@ -613,9 +613,12 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const id = sqlSkillIdMatch[1]
     const row = getSkill(id)
     if (!row) { json(res, { error: 'not_found' }, 404); return true }
-    if (!isAdmin && callerTenantId && row.tenant_id !== callerTenantId) {
-      const grants = listSkillAccess(id)
-      if (!grants.some(g => g.tenant_id === callerTenantId)) { json(res, { error: 'not_found' }, 404); return true }
+    if (!isAdmin) {
+      if (!callerTenantId) { json(res, { error: 'not_found' }, 404); return true }
+      if (row.tenant_id !== callerTenantId) {
+        const grants = listSkillAccess(id)
+        if (!grants.some(g => g.tenant_id === callerTenantId)) { json(res, { error: 'not_found' }, 404); return true }
+      }
     }
     json(res, row)
     return true
