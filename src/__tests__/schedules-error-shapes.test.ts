@@ -57,6 +57,14 @@ vi.mock('../db.js', () => ({
   listPendingTaskRetries: vi.fn().mockReturnValue([]),
   deletePendingTaskRetryById: vi.fn().mockReturnValue(false),
   listTaskRunHistory: vi.fn().mockReturnValue([]),
+  // Schedules DB layer (SQL-backed): default to 0 so tests use the file-based path
+  countSchedules:    vi.fn().mockReturnValue(0),
+  getScheduleFromDb: vi.fn().mockReturnValue(undefined),
+  listSchedulesFromDb: vi.fn().mockReturnValue([]),
+  deleteSchedule:    vi.fn(),
+  setScheduleEnabled: vi.fn(),
+  patchSchedule:     vi.fn(),
+  upsertSchedule:    vi.fn(),
 }))
 
 vi.mock('../agent.js', () => ({

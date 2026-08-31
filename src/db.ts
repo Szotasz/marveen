@@ -4357,6 +4357,157 @@ export function isTenantAgentEnabled(tenantId: string, agentId: string): boolean
   return row?.enabled === 1
 }
 
+// ---------------------------------------------------------------------------
+// Schedules (SQL-backed, replaces file-based scheduled-tasks-io)
+// ---------------------------------------------------------------------------
+
+export interface ScheduleRow {
+  id: string
+  prompt: string
+  description: string
+  schedule: string
+  agent: string
+  type: 'task' | 'heartbeat' | 'command'
+  enabled: number
+  tenant_id: string | null
+  skip_if_busy: number
+  force_send: number
+  target_session: string | null
+  command: string | null
+  timeout_ms: number | null
+  fail_threshold: number | null
+  pre_check: string | null
+  catch_up_max_age_minutes: number | null
+  stuck_after_minutes: number | null
+  requires: string | null   // JSON blob
+  created_at: number
+  updated_at: number
+}
+
+export function countSchedules(): number {
+  const row = db.prepare('SELECT COUNT(*) as n FROM schedules').get() as { n: number }
+  return row.n
+}
+
+export function listSchedulesFromDb(opts: { tenantId?: string | null; includeFleet?: boolean } = {}): ScheduleRow[] {
+  if (opts.tenantId !== undefined && opts.tenantId !== null) {
+    // Non-admin: only their own tenant's tasks
+    return db.prepare('SELECT * FROM schedules WHERE tenant_id = ? ORDER BY created_at DESC').all(opts.tenantId) as ScheduleRow[]
+  }
+  if (opts.includeFleet) {
+    // Admin with no filter: all rows
+    return db.prepare('SELECT * FROM schedules ORDER BY created_at DESC').all() as ScheduleRow[]
+  }
+  // Admin with fleet-only: tenant_id IS NULL
+  return db.prepare('SELECT * FROM schedules WHERE tenant_id IS NULL ORDER BY created_at DESC').all() as ScheduleRow[]
+}
+
+export function getScheduleFromDb(id: string): ScheduleRow | undefined {
+  return db.prepare('SELECT * FROM schedules WHERE id = ?').get(id) as ScheduleRow | undefined
+}
+
+export interface UpsertScheduleOpts {
+  prompt: string
+  description: string
+  schedule: string
+  agent: string
+  type: 'task' | 'heartbeat' | 'command'
+  enabled: boolean
+  tenant_id: string | null
+  skip_if_busy: boolean
+  force_send: boolean
+  target_session?: string | null
+  command?: string | null
+  timeout_ms?: number | null
+  fail_threshold?: number | null
+  pre_check?: string | null
+  catch_up_max_age_minutes?: number | null
+  stuck_after_minutes?: number | null
+  requires?: string | null
+  created_at?: number
+}
+
+export function upsertSchedule(id: string, opts: UpsertScheduleOpts): ScheduleRow {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(`
+    INSERT INTO schedules (
+      id, prompt, description, schedule, agent, type, enabled, tenant_id,
+      skip_if_busy, force_send, target_session, command, timeout_ms, fail_threshold,
+      pre_check, catch_up_max_age_minutes, stuck_after_minutes, requires,
+      created_at, updated_at
+    ) VALUES (
+      ?, ?, ?, ?, ?, ?, ?, ?,
+      ?, ?, ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?
+    )
+    ON CONFLICT(id) DO UPDATE SET
+      prompt                   = excluded.prompt,
+      description              = excluded.description,
+      schedule                 = excluded.schedule,
+      agent                    = excluded.agent,
+      type                     = excluded.type,
+      enabled                  = excluded.enabled,
+      tenant_id                = excluded.tenant_id,
+      skip_if_busy             = excluded.skip_if_busy,
+      force_send               = excluded.force_send,
+      target_session           = excluded.target_session,
+      command                  = excluded.command,
+      timeout_ms               = excluded.timeout_ms,
+      fail_threshold           = excluded.fail_threshold,
+      pre_check                = excluded.pre_check,
+      catch_up_max_age_minutes = excluded.catch_up_max_age_minutes,
+      stuck_after_minutes      = excluded.stuck_after_minutes,
+      requires                 = excluded.requires,
+      updated_at               = excluded.updated_at
+  `).run(
+    id, opts.prompt, opts.description, opts.schedule, opts.agent,
+    opts.type, opts.enabled ? 1 : 0, opts.tenant_id ?? null,
+    opts.skip_if_busy ? 1 : 0, opts.force_send ? 1 : 0,
+    opts.target_session ?? null, opts.command ?? null,
+    opts.timeout_ms ?? null, opts.fail_threshold ?? null,
+    opts.pre_check ?? null, opts.catch_up_max_age_minutes ?? null,
+    opts.stuck_after_minutes ?? null, opts.requires ?? null,
+    opts.created_at ?? now, now,
+  )
+  return db.prepare('SELECT * FROM schedules WHERE id = ?').get(id) as ScheduleRow
+}
+
+const PATCH_SCHEDULE_ALLOWED_COLS = new Set([
+  'prompt', 'description', 'schedule', 'agent', 'type', 'enabled', 'tenant_id',
+  'skip_if_busy', 'force_send', 'target_session', 'command', 'timeout_ms',
+  'fail_threshold', 'pre_check', 'catch_up_max_age_minutes', 'stuck_after_minutes', 'requires',
+])
+
+export function patchSchedule(id: string, patch: Partial<Omit<UpsertScheduleOpts, 'created_at'>>): ScheduleRow | null {
+  const existing = getScheduleFromDb(id)
+  if (!existing) return null
+  const now = Math.floor(Date.now() / 1000)
+  const sets: string[] = ['updated_at = ?']
+  const vals: unknown[] = [now]
+  const boolCols = new Set(['enabled', 'skip_if_busy', 'force_send'])
+  for (const [k, v] of Object.entries(patch)) {
+    const col = k.replace(/([A-Z])/g, '_$1').toLowerCase()
+    if (!PATCH_SCHEDULE_ALLOWED_COLS.has(col)) continue
+    sets.push(`${col} = ?`)
+    vals.push(boolCols.has(col) && typeof v === 'boolean' ? (v ? 1 : 0) : (v ?? null))
+  }
+  vals.push(id)
+  db.prepare(`UPDATE schedules SET ${sets.join(', ')} WHERE id = ?`).run(...vals)
+  return db.prepare('SELECT * FROM schedules WHERE id = ?').get(id) as ScheduleRow
+}
+
+export function deleteSchedule(id: string): boolean {
+  return db.prepare('DELETE FROM schedules WHERE id = ?').run(id).changes > 0
+}
+
+export function setScheduleEnabled(id: string, enabled: boolean): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  return db.prepare('UPDATE schedules SET enabled = ?, updated_at = ? WHERE id = ?').run(enabled ? 1 : 0, now, id).changes > 0
+}
+
+
+
 // --- SQL-backed Skills (716) -----------------------------------------------
 
 export interface SkillRow {

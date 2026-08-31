@@ -15,7 +15,7 @@
 
 > **Fork.** Ez a repó a [Szotasz/marveen](https://github.com/Szotasz/marveen) önálló forkja, amely `fork-point` (2026-07-26, baseline: upstream `55ecbc6`) óta függetlenül fejlődik. Az upstream javításokat szelektíven vesszük át (`git fetch upstream` + cherry-pick). Hozzájárulásokat ehhez a forkhoz várunk PR-ként. Az AI által generált monolitikus kódot felhagyva, modularizált verzió alkotása a célom, amelyben nagyságrendekkel kisebb tokenhasználatot emészt fel magának a keretrendszernek a használata és robosztusabb kialakítása révén hosszútávon stabilabb működést biztosít.
 >
-> Állapot: upstream `d4f9ff6` vs fork `7a1010c`, 2026-08-31
+> Állapot: upstream `62ea642` vs fork `be4d91f`, 2026-08-31
 
 ## Jónás Gergő (cett) hozzájárulásai az eredeti Marveen repóhoz
 
@@ -67,7 +67,7 @@ A skill-kezelés SQL-alapra vált (0030-as migráció): a `skills` + `skill_tena
 
 A `docs/openapi.yaml` (OpenAPI 3.1, 70+ végpont) az egyetlen referencia az API-felületre: az `Error` séma tartalmazza a korábban dokumentálatlan `hint` és `field` opcionális mezőket, a végpontok három tier-be vannak sorolva (teljes séma, közepes részletesség, `x-internal`). A generált `src/generated/api.ts` CI-gate garantálja, hogy a kliens mindig szinkronban legyen a speccel; az `oasdiff` step megakadályozza, hogy inkompatibilis változás észrevétlenül bekerüljön. Az URL-verziózás kanonikus `/api/v1/*` útvonalakat vezet be; a korábbi `/api/*` aliasok `Deprecation` + `Sunset` (RFC 8594) headerekkel élnek tovább a minimum 6 hónapos deprecation-ablak lejártáig, amelyet a `docs/api-deprecation-policy.md` rögzít. Az OTEL JSON exporter a span-adatokat Grafana Tempo/Jaeger formátumban adja ki.
 
-Az összes API-hibaválasz egységesített, gépi-olvasható szerződést követ: az `error` mező egy kanonikus snake_case tokent tartalmaz (`not_found`, `required`, `invalid_value`, `forbidden`, `unauthorized`, `conflict`, `limit_exceeded`, `internal_error`, `parse_error`, `not_supported`, `timeout`, `disabled`, `managed_settings_missing`), a human-readable magyarázat a `hint`-ben, a hibás mező neve a `field`-ben jelenik meg, a HTTP státuszkód a tokenhez igazodik. A magyar felhasználói üzenetek a `hint`-ben megőrzöttek. A normalizálás 16 fork-PR (#209-#224) alatt, az `openapi.yaml`-t és a `CHANGELOG.md`-t végigkísérve valósult meg; az upstream ezt a lépést nem tette meg.
+Az összes API-hibaválasz egységesített, gépi-olvasható szerződést követ: az `error` mező egy kanonikus snake_case tokent tartalmaz (`not_found`, `required`, `invalid_value`, `forbidden`, `unauthorized`, `conflict`, `limit_exceeded`, `internal_error`, `parse_error`, `not_supported`, `timeout`, `disabled`, `managed_settings_missing`), a human-readable magyarázat a `hint`-ben, a hibás mező neve a `field`-ben jelenik meg, a HTTP státuszkód a tokenhez igazodik. A magyar felhasználói üzenetek a `hint`-ben megőrzöttek. A normalizálás 16 fork-PR (#209-#224) alatt, az `openapi.yaml`-t és a `CHANGELOG.md`-t végigkísérve valósult meg; az upstream ezt a lépést nem tette meg. A `PUT /api/memories/:id` végpont korábban 500-at adott érvénytelen JSON body vagy hiányzó `content` mező esetén; most `400 parse_error`, illetve `400 required` választ ad, a katalógus szerinti `hint` és `field` mezőkkel.
 
 **Fejlesztői alapinfrastruktúra**
 
@@ -76,7 +76,7 @@ A DB migration runner checksum-ellenőrzéssel és per-migrációs tranzakciókk
 ## A fork létrehozása óta átvett - cherry-pick - javítások:
 #720, #727, #729, #738, #739, #740, #741, #742, #743, #744, #746, #747, #749, #751, #752, #753, #756, #757, #758, #763, #760, #765, #768, #769, #771, #772, #776, #777, #778, #779, #780, #781, #782, #783, #784, #785, #786, #789, #790, #791, #793, #795, #797, #799, #800, #801, #802, #803, #805, #821, #822, #826, #828, #829, #832, #838, #866, #833, #933, #934, #942, #943, #938, #854, #855, #871, #879, #888, #889, #906, #911, #926, #929, #940, #936, #973, #877, #964, #842, #857, #861, #885, #895, #896, #843, #876, #957, #1001, #1000, #982, #899, #939, #955, #992, #988, #985, #1007, #1010, #1013, #995, 
 
-Állapot: upstream `d4f9ff6` vs fork `7a1010c`, 2026-08-31
+Állapot: upstream `62ea642` vs fork `be4d91f`, 2026-08-31
 
 <!-- ONGOING: Minden jövőbeli fork-PR leadásakor (Zack -> Jarvis) frissítsd ezt a szakaszt
      a friss git log alapján:

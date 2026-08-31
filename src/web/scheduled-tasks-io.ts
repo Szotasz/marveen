@@ -3,6 +3,11 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { MAIN_AGENT_ID } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import {
+  countSchedules, listSchedulesFromDb, getScheduleFromDb, upsertSchedule, deleteSchedule,
+  setScheduleEnabled, patchSchedule,
+  type ScheduleRow,
+} from '../db.js'
 
 export const SCHEDULED_TASKS_DIR = join(homedir(), '.claude', 'scheduled-tasks')
 
@@ -153,7 +158,19 @@ export function parseRequires(raw: { mcp_servers?: unknown } | undefined): Sched
   return servers.length ? { mcp_servers: servers } : undefined
 }
 
+// Returns all tasks for the scheduler (no tenant filter -- runner sees all).
+// DB is the primary source once it has been seeded by the migration script;
+// falls back to the file system so the runner keeps firing during the
+// transition window and after a rollback (just clear the schedules table).
 export function listScheduledTasks(): ScheduledTask[] {
+  if (countSchedules() > 0) {
+    return listSchedulesFromDb({ includeFleet: true }).map(rowToTask)
+  }
+  return listScheduledTasksFromFiles()
+}
+
+// File-system fallback (unchanged original logic, kept for transition/rollback).
+export function listScheduledTasksFromFiles(): ScheduledTask[] {
   if (!existsSync(SCHEDULED_TASKS_DIR)) return []
   const dirs = readdirSync(SCHEDULED_TASKS_DIR).filter(f => {
     try { return statSync(join(SCHEDULED_TASKS_DIR, f)).isDirectory() } catch { return false }
@@ -166,42 +183,102 @@ export function listScheduledTasks(): ScheduledTask[] {
   return tasks.sort((a, b) => b.createdAt - a.createdAt)
 }
 
+function rowToTask(row: ScheduleRow): ScheduledTask {
+  return {
+    name: row.id,
+    description: row.description,
+    prompt: row.prompt,
+    schedule: row.schedule,
+    agent: row.agent,
+    enabled: row.enabled === 1,
+    createdAt: row.created_at,
+    type: row.type,
+    skipIfBusy: row.skip_if_busy === 1,
+    forceSend: row.force_send === 1,
+    targetSession: row.target_session ?? undefined,
+    command: row.command ?? undefined,
+    timeoutMs: row.timeout_ms ?? undefined,
+    failThreshold: row.fail_threshold ?? undefined,
+    preCheck: row.pre_check ?? undefined,
+    catchUpMaxAgeMinutes: row.catch_up_max_age_minutes ?? undefined,
+    stuckAfterMinutes: row.stuck_after_minutes ?? undefined,
+    requires: parseRequires(row.requires ? (() => { try { return JSON.parse(row.requires!) } catch { return undefined } })() : undefined),
+  }
+}
+
 export function writeScheduledTask(
   taskName: string,
-  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number },
+  data: {
+    description?: string; prompt?: string; schedule?: string; agent?: string;
+    enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean;
+    targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number;
+    preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number;
+    tenantId?: string | null; requires?: { mcp_servers?: string[] };
+  },
+): void {
+  const existing = countSchedules() > 0
+    ? (getScheduleFromDb(taskName) ? rowToTask(getScheduleFromDb(taskName)!) : null)
+    : readScheduledTask(taskName)
+
+  const merged = {
+    prompt:                   data.prompt                   ?? existing?.prompt                   ?? '',
+    description:              data.description              ?? existing?.description              ?? '',
+    schedule:                 data.schedule                 ?? existing?.schedule                 ?? '0 9 * * *',
+    agent:                    data.agent                    ?? existing?.agent                    ?? MAIN_AGENT_ID,
+    type:                     (data.type as 'task' | 'heartbeat' | 'command') ?? existing?.type ?? 'task',
+    enabled:                  data.enabled                  ?? existing?.enabled                  ?? true,
+    skip_if_busy:             data.skipIfBusy               ?? existing?.skipIfBusy               ?? false,
+    force_send:               data.forceSend                ?? existing?.forceSend                ?? false,
+    target_session:           data.targetSession            ?? existing?.targetSession            ?? null,
+    command:                  data.command                  ?? existing?.command                  ?? null,
+    timeout_ms:               data.timeoutMs                ?? existing?.timeoutMs                ?? null,
+    fail_threshold:           data.failThreshold            ?? existing?.failThreshold            ?? null,
+    pre_check:                data.preCheck                 ?? existing?.preCheck                 ?? null,
+    catch_up_max_age_minutes: data.catchUpMaxAgeMinutes     ?? existing?.catchUpMaxAgeMinutes     ?? null,
+    stuck_after_minutes:      data.stuckAfterMinutes        ?? existing?.stuckAfterMinutes        ?? null,
+    requires:                 data.requires !== undefined
+                                ? (data.requires ? JSON.stringify(data.requires) : null)
+                                : (existing?.requires ? JSON.stringify(existing.requires) : null),
+    tenant_id:                data.tenantId !== undefined ? (data.tenantId ?? null) : null,
+  }
+
+  upsertSchedule(taskName, merged)
+
+  // Keep files in sync as safety-net (allows rollback: just clear the DB table).
+  _writeScheduledTaskFiles(taskName, merged)
+}
+
+function _writeScheduledTaskFiles(
+  taskName: string,
+  merged: {
+    prompt: string; description: string; schedule: string; agent: string;
+    type: string; enabled: boolean; skip_if_busy: boolean; force_send: boolean;
+    target_session: string | null | undefined; command: string | null | undefined;
+    timeout_ms: number | null | undefined; fail_threshold: number | null | undefined;
+    pre_check: string | null | undefined; catch_up_max_age_minutes: number | null | undefined;
+    stuck_after_minutes: number | null | undefined;
+  },
 ): void {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   mkdirSync(dir, { recursive: true })
-
-  const skillPath = join(dir, 'SKILL.md')
-  const configPath = join(dir, 'task-config.json')
-
-  // Read existing if updating
-  const existing = readScheduledTask(taskName)
-
-  // Write SKILL.md
-  const desc = data.description ?? existing?.description ?? ''
-  const prompt = data.prompt ?? existing?.prompt ?? ''
-  const skillContent = `---\nname: ${taskName}\ndescription: ${desc}\n---\n\n${prompt}\n`
-  atomicWriteFileSync(skillPath, skillContent)
-
-  // Write/update config
-  let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch { /* use empty */ }
-  if (data.schedule !== undefined) config.schedule = data.schedule
-  if (data.agent !== undefined) config.agent = data.agent
-  if (data.enabled !== undefined) config.enabled = data.enabled
-  if (data.type !== undefined) config.type = data.type
-  if (data.skipIfBusy !== undefined) config.skipIfBusy = data.skipIfBusy
-  if (data.forceSend !== undefined) config.forceSend = data.forceSend
-  if (data.targetSession !== undefined) config.targetSession = data.targetSession
-  if (data.command !== undefined) config.command = data.command
-  if (data.timeoutMs !== undefined) config.timeoutMs = data.timeoutMs
-  if (data.failThreshold !== undefined) config.failThreshold = data.failThreshold
-  if (data.preCheck !== undefined) config.preCheck = data.preCheck
-  if (data.catchUpMaxAgeMinutes !== undefined) config.catchUpMaxAgeMinutes = data.catchUpMaxAgeMinutes
-  if (data.stuckAfterMinutes !== undefined) config.stuckAfterMinutes = data.stuckAfterMinutes
-  if (data.description !== undefined) config.description = data.description
-  if (!config.createdAt) config.createdAt = Math.floor(Date.now() / 1000)
-  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+  const skillContent = `---\nname: ${taskName}\ndescription: ${merged.description}\n---\n\n${merged.prompt}\n`
+  atomicWriteFileSync(join(dir, 'SKILL.md'), skillContent)
+  const config: Record<string, unknown> = {
+    schedule:              merged.schedule,
+    agent:                 merged.agent,
+    enabled:               merged.enabled,
+    type:                  merged.type,
+    skipIfBusy:            merged.skip_if_busy,
+    forceSend:             merged.force_send,
+    description:           merged.description,
+    createdAt:             Math.floor(Date.now() / 1000),
+  }
+  if (merged.target_session)           config.targetSession           = merged.target_session
+  if (merged.command)                  config.command                 = merged.command
+  if (merged.timeout_ms != null)       config.timeoutMs               = merged.timeout_ms
+  if (merged.fail_threshold != null)   config.failThreshold           = merged.fail_threshold
+  if (merged.pre_check)                config.preCheck                = merged.pre_check
+  if (merged.catch_up_max_age_minutes != null) config.catchUpMaxAgeMinutes = merged.catch_up_max_age_minutes
+  if (merged.stuck_after_minutes != null) config.stuckAfterMinutes    = merged.stuck_after_minutes
+  atomicWriteFileSync(join(dir, 'task-config.json'), JSON.stringify(config, null, 2))
 }

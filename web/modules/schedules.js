@@ -11,6 +11,7 @@ import { showToast } from './toast.js'
 import { t } from './i18n.js'
 import { getErrorMessage } from './error-message.js'
 import { avatarBust } from './agents.js'
+import { initTenantSelector } from './tenant-selector.js'
 
 // ─── Local utilities ─────────────────────────────────────────────────────────
 
@@ -28,10 +29,12 @@ function trashIcon() {
 // ─── DI callbacks (injected by initSchedules) ─────────────────────────────────
 let _openModal = null
 let _closeModal = null
+let _tenantGetter = null
 
-export function initSchedules({ openModal, closeModal } = {}) {
+export async function initSchedules({ openModal, closeModal } = {}) {
   _openModal = openModal
   _closeModal = closeModal
+  _tenantGetter = await initTenantSelector('schedulesTenantSelectorContainer', () => loadSchedules())
 }
 
 // === Schedules ===
@@ -289,8 +292,12 @@ export async function loadScheduleAgents() {
 
 export async function loadSchedules() {
   try {
+    const params = new URLSearchParams()
+    const tenant = _tenantGetter?.()
+    if (tenant) params.set('tenant', tenant)
+    const url = params.size ? `/api/schedules?${params}` : '/api/schedules'
     const [schedulesRes] = await Promise.all([
-      fetch('/api/schedules'),
+      fetch(url),
       loadScheduleAgents(),
     ])
     schedules = await schedulesRes.json()
