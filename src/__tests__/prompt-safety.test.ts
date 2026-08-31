@@ -194,6 +194,29 @@ describe('TRUSTED_PEER_PREAMBLE', () => {
     expect(TRUSTED_PEER_PREAMBLE).toMatch(/examples/i)
     expect(TRUSTED_PEER_PREAMBLE).toMatch(/escalate/i)
   })
+
+  // Fleet discipline, added 2026-08-16. The asymmetry it fixes: agents answer a
+  // delegation with a NEW message and leave the original row open, so every
+  // delegation round grows the DELEGATOR's open-outbound pile until their
+  // fail-closed context-restart gate refuses a restart they need (measured:
+  // 356 genuinely open task rows on the main agent in one day). The wrap
+  // already carries msg_id; what was missing was saying it must be closed.
+  it('tells the receiver to CLOSE the msg_id row, and that a reply is not a close', () => {
+    expect(TRUSTED_PEER_PREAMBLE).toMatch(/msg_id/)
+    expect(TRUSTED_PEER_PREAMBLE).toMatch(/PUT \/api\/messages/)
+    expect(TRUSTED_PEER_PREAMBLE).toMatch(/does NOT close it/)
+    // The consequence must stay in the text: without the "why", this reads as
+    // bureaucracy and gets skipped.
+    expect(TRUSTED_PEER_PREAMBLE).toMatch(/fail-closed|gate/i)
+  })
+
+  it('exempts receipts, so closing does not become busywork', () => {
+    // Receipts arrive already closed (both delivery paths auto-close them). An
+    // agent PUTting one again only overwrites the record of why it closed --
+    // observed live the same day this shipped.
+    expect(TRUSTED_PEER_PREAMBLE).toMatch(/\[Eredmény\]/)
+    expect(TRUSTED_PEER_PREAMBLE).toMatch(/do NOT PUT it/i)
+  })
 })
 
 describe('sanitizeCapabilityTag', () => {

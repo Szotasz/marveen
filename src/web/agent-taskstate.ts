@@ -85,8 +85,8 @@ export function isEmptyTaskState(r: Pick<AgentTaskState, 'doneSteps' | 'alreadyD
 
 /**
  * Pure decision: should this record be re-injected at SessionStart?
- * Replays ONLY when: record exists, not yet consumed, source is compact|resume
- * (never cold startup), within TTL, and the record actually holds a task.
+ * Replays ONLY when: record exists, not yet consumed, source is one of
+ * REPLAY_SOURCES, within TTL, and the record actually holds a task.
  */
 export function shouldReplayTaskState(
   record: AgentTaskState | null,

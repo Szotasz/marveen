@@ -294,16 +294,25 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       // Notify the delegator: create a reverse message from executor → delegator so
       // they learn the result without polling. See shouldNotifyDelegator for which
       // senders are skipped and why.
+      //
+      // SAJAT KIEGESZITES (2026-08-16 merese): az upstream resultSummary a
+      // CIMZETTNEK mondja meg, hogy volt vagas es hogyan olvassa el a teljeset.
+      // A KULDO viszont semmit nem lat belole, pedig o az, aki ujra tudja
+      // kuldeni az elveszett reszt. Ezert a valaszban is visszaadjuk.
+      let dropped = 0
       if (done && shouldNotifyDelegator(done.from_agent, done.to_agent, done.content)) {
         // A vagas NE legyen nema, ES legyen KOVETHETO: lasd resultSummary().
         const summary = resultSummary(id, result)
+        dropped = result && result.length > RESULT_NOTIFY_MAX ? result.length - RESULT_NOTIFY_MAX : 0
         createAgentMessage(
           done.to_agent,
           done.from_agent,
           `${COMPLETION_REPORT_PREFIX} msg_id:${id} status:${newStatus}\n\n${summary}`,
         )
       }
-      json(res, { ok: true }); return true
+      // Tell the CALLER too. The receiver now sees the marker in the report, but
+      // the sender is the one who can still resend what was lost.
+      json(res, dropped > 0 ? { ok: true, resultTruncated: dropped } : { ok: true }); return true
     }
     json(res, { error: 'Message not found or invalid status' }, 404)
     return true

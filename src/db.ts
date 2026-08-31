@@ -2551,6 +2551,27 @@ export interface DispatchedPendingStats {
  */
 export const COMPLETION_REPORT_PREFIX = '[Eredmény]'
 
+/**
+ * Pure decision: is this message a RECEIPT rather than dispatched work?
+ *
+ * Lives here, next to the prefix and the gate's own filter, because BOTH
+ * delivery paths need it -- the router's tmux push (sub-agents) and the main
+ * agent's drain-inbox pull. A copy in either one would be a bug the day they
+ * drift: the fix would hold for sub-agents and silently miss the main agent.
+ *
+ * Both paths close a receipt at delivery. Nobody answers a receipt, so nobody
+ * ever closes one, and it sits at 'delivered' forever -- measured 2026-08-16 on
+ * the main agent: 184 open receipts, one minted per close, every delegation
+ * round producing a fresh batch.
+ *
+ * Match is a strict prefix on the exact sentinel the PUT route emits, so an
+ * agent's own hand-written report that merely mentions the word (or spells it
+ * without the accent) stays dispatched work and is never swallowed.
+ */
+export function isCompletionReceipt(content: string): boolean {
+  return content.startsWith(COMPLETION_REPORT_PREFIX)
+}
+
 export function getDispatchedPendingStats(
   fromAgent: string,
   nowMs: number,

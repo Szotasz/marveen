@@ -17,6 +17,7 @@
       "Bash(ls:*)",
       "Bash(cat:*)",
       "Bash(pwd:*)",
+      "Bash(gh api:*)",
       "Bash(curl:*)",
       "WebFetch(*)",
       "WebSearch(*)"

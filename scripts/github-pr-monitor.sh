@@ -73,8 +73,25 @@ CUR=""
 # covering new PRs the day it is written, and keeps polling merged ones forever.
 PRS="${GITHUB_PR_MONITOR_PRS:-}"
 if [ -z "$PRS" ]; then
-  PRS="$(gh pr list --repo "$REPO" --author "@me" --state open --limit 30 \
-         --json number --jq '.[].number' 2>/dev/null | tr '\n' ' ')"
+  # BOOTKORI HALAL (javitva 2026-08-13). A `gh` halozat nelkul nem-nullaval ter vissza,
+  # es a fenti `set -euo pipefail` miatt a script NEMAN meghalt itt, mielott barmit
+  # naplozott volna: a unit `failed` allapotba ment minden bootkor (08-12 00:53 es
+  # 08-13 00:24, mindketto ~3 masodperccel a user-manager indulasa utan), majd a 20
+  # perccel kesobbi kor magatol rendbe hozta. Nulla log-sor, ezert nem lehetett latni.
+  #
+  # Egy bootkori halozat-hiany NEM monitor-hiba, a kovetkezo kor ugyis lefedi -> exit 0.
+  # DE nem nyelunk el mindent: ha a GitHub ELERHETO es a gh megis bukik, az valodi baj
+  # (tipikusan lejart PAT), es annak LATHATO hibanak kell maradnia.
+  if ! PRS_RAW="$(gh pr list --repo "$REPO" --author "@me" --state open --limit 30 \
+                  --json number --jq '.[].number' 2>&1)"; then
+    if curl -s -m 10 -o /dev/null https://api.github.com 2>/dev/null; then
+      echo "ERROR: 'gh pr list' elbukott, de a GitHub elerheto -- ez VALODI hiba (token lejart?): ${PRS_RAW}" >&2
+      exit 1
+    fi
+    echo "WARN: nincs halozat (a GitHub nem erheto el), ezt a kort kihagyom -- a kovetkezo lefedi" >&2
+    exit 0
+  fi
+  PRS="$(printf '%s' "$PRS_RAW" | tr '\n' ' ')"
 fi
 if [ -z "${PRS// /}" ]; then
   echo "no open PRs of ours on $REPO, nothing to watch"

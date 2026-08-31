@@ -488,6 +488,8 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     injectKanbanWriteGate(existing)
     injectDigestProvenanceGate(existing)
   }
+  // Sajat, upstreamben nem letezo kapu (2026-08-20 ota): a gh CLI csak olvashat.
+  if (agentGetsGovernanceGates(name)) injectGhReadonlyGate(existing)
   injectEgressGate(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
@@ -664,6 +666,36 @@ export function injectEgressGate(existing: Record<string, unknown>): void {
   ]
 }
 
+// Idempotently wire the gh-read-only gate (blocks the WRITING forms of `gh`:
+// `gh api` with -X/--method POST|PUT|PATCH|DELETE or a field flag, plus the
+// obvious writing sub-commands like `gh pr create`). Applied to sub-agents only
+// -- the main agent is the approval path for writes.
+//
+// Why a hook and not a deny rule: permission patterns are prefix-matched, so
+// `Bash(gh api:*)` cannot tell a read from a write (`gh api "repos/x" -X POST`
+// starts the same way). The allow rule grants the read; this hook draws the
+// line, because it sees the whole command string. (2026-08-17: a sub-agent hit
+// six permission prompts in five minutes on one public-read task, and every
+// panel offered the tempting "don't ask again for gh api" -- which would have
+// handed it write access to the fleet's GitHub token.)
+export function injectGhReadonlyGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'gh-api-readonly-gate.mjs'))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('gh-api-readonly-gate.mjs')),
+    entry,
+  ]
+}
+
 // Idempotent migration: ensure every agent's settings.json carries the egress
 // gate hook. Called at server startup (alongside ensureAgentStalenessHook) so
 // the hook is applied to both existing and newly-created agents without a full
@@ -769,10 +801,25 @@ function isInwardDashQuad(label: string): boolean {
 export function ownerAllowedDomains(storeDir = STORE_DIR): string[] {
   try {
     const raw = JSON.parse(readFileSync(join(storeDir, 'egress-allowlist.json'), 'utf-8'))
-    const list = Array.isArray(raw?.domains) ? raw.domains : []
-    return list.filter((d: unknown): d is string => typeof d === 'string')
-      .map((d: string) => d.trim())
-      .filter((d: string) => isPublicFetchHost(d))
+    // BOTH tiers belong in the reader's definition. `domains` is what any agent
+    // may fetch; `quarantine_domains` is what ONLY this sub-agent may fetch --
+    // so if anything, the quarantine tier is the one it must know about. The
+    // egress-gate hook enforces the split (main agent still blocked on the
+    // quarantine tier); this list is the sub-agent's own copy of the promise,
+    // and the hook's comment says to keep the two in step.
+    //
+    // Omitting quarantine_domains here made the narrow tier undeliverable: the
+    // hook would allow the fetch, but the reader refuses unknown domains from
+    // its prompt BEFORE any request, so nothing even reached the hook and the
+    // block left no log line. Measured 2026-08-12, after a re-render silently
+    // dropped seven domains added by hand.
+    const named = ['domains', 'quarantine_domains'] as const
+    const list = named.flatMap((k) => (Array.isArray(raw?.[k]) ? raw[k] : []))
+    return [...new Set(
+      list.filter((d: unknown): d is string => typeof d === 'string')
+        .map((d: string) => d.trim())
+        .filter((d: string) => isPublicFetchHost(d)),
+    )]
   } catch {
     return []   // no file, unreadable, or malformed: ship the template as-is
   }

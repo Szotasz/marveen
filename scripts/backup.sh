@@ -7,6 +7,8 @@
 #   repo/   -> extract under the project root (this repo)
 #     store/claudeclaw.db (+ -shm/-wal; WAL-checkpointed before copy)
 #     store/.dashboard-token   (dashboard bearer)
+#     store/vault.json         (credential vault, encrypted)
+#     store/.vault-key         (vault master key -- without it vault.json is noise)
 #     .env                     (project root secrets)
 #     scheduled-tasks.json     (legacy, if present)
 #     assets/meetings/**       (meeting transcripts/memos)
@@ -65,6 +67,10 @@ add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db
 add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db-shm
 add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db-wal
 add_if "${REPOLIST}" "${REPO_ROOT}" store/.dashboard-token
+# The credential vault: ciphertext and the key that opens it. Both are needed
+# to restore, and neither is reconstructible from anything else in the archive.
+add_if "${REPOLIST}" "${REPO_ROOT}" store/vault.json
+add_if "${REPOLIST}" "${REPO_ROOT}" store/.vault-key
 add_if "${REPOLIST}" "${REPO_ROOT}" store/config-overrides.json
 add_if "${REPOLIST}" "${REPO_ROOT}" .env
 add_if "${REPOLIST}" "${REPO_ROOT}" scheduled-tasks.json

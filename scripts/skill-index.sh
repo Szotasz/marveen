@@ -65,7 +65,13 @@ index_skills_dir() {
     fi
 
     local desc
-    desc=$(grep -m1 "^description:" "$skill_md" 2>/dev/null | sed 's/^description: *//' | tr -d '"' | tr -d "'" | cut -c1-120)
+    # A cut -c a C/POSIX locale-ban BAJT-ot szamol, nem karaktert (a systemd/cron kornyezet
+    # ilyen), ezert a 120. bajtnal ketto-harom bajtos ekezetes karakter kozepen vagott.
+    # Az igy keletkezo ervenytelen bajt miatt a grep BINARISNAK minositette a teljes indexet
+    # es elnyelte a talalatokat -- vagyis a "keresd meg az indexben van-e mar lefedo skill"
+    # lepes neman nem-talalatot adott. (Merve 2026-08-16.) Az iconv -c ledobja a csonka
+    # karakter-maradekot, locale-tol fuggetlenul.
+    desc=$(grep -m1 "^description:" "$skill_md" 2>/dev/null | sed 's/^description: *//' | tr -d '"' | tr -d "'" | cut -c1-120 | iconv -c -f UTF-8 -t UTF-8 2>/dev/null)
     if [ -z "$desc" ]; then
       desc="(nincs leírás)"
     fi

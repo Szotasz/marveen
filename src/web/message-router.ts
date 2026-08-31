@@ -13,6 +13,7 @@ import {
   countNewerMessagesFromSameSender,
   stampMessageTrace,
   upsertOtelSpan,
+  isCompletionReceipt,
   type AgentMessage,
 } from '../db.js'
 import { isQualifiedId } from './federation/address.js'
@@ -68,6 +69,7 @@ const MAX_INJECT_FAILURES = 3
 export function shouldGiveUpOnInject(failCount: number, maxFailures: number): boolean {
   return failCount >= maxFailures
 }
+
 
 /**
  * Never-silent handoff-failure signal. When a sub-agent message is finally
@@ -706,8 +708,26 @@ export async function runMessageRouterTick(): Promise<void> {
         // Inline preamble so a fresh session (post hard-restart) doesn't miss
         // the context that explains the tag semantics.
         await sendPromptToSession(session, prefix + wrapped, host)
-        if (!markMessageDelivered(msg.id)) {
-          logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
+        // A completion report is a RECEIPT, not dispatched work. Closing an
+        // inbound message auto-creates one back to the sender (PUT
+        // /api/messages/:id), and by definition nobody answers a receipt -- so
+        // nobody ever closes it either, and it sits at 'delivered' forever.
+        // Measured 2026-08-16 on the main agent: 184 open receipts, one per
+        // close, every big delegation round minting a fresh batch. Close it at
+        // delivery instead of waiting for a reply that cannot come.
+        //
+        // This is BOOKKEEPING ONLY, deliberately not a gate change: the
+        // context-restart gate already excludes receipts from its count
+        // (getDispatchedPendingStats filters `content NOT LIKE '[Eredmény]%'`),
+        // so the fail-closed behaviour is untouched. What it fixes is every
+        // OTHER open-message query -- the ones that have no such filter and
+        // therefore read a pile of receipts as work in flight.
+        const isReceipt = isCompletionReceipt(msg.content)
+        const marked = isReceipt
+          ? markMessageDone(msg.id, 'auto-closed on delivery: completion report, no reply expected')
+          : markMessageDelivered(msg.id)
+        if (!marked) {
+          logger.warn({ id: msg.id, isReceipt }, 'delivery status update affected 0 rows (deleted concurrently?)')
         }
         // Propagate trace context: the receiving agent inherits this trace_id
         // and span_id so its next outbound message continues the same chain.

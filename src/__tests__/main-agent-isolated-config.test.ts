@@ -105,6 +105,50 @@ describe('ensureMainAgentIsolatedConfigDir', () => {
     expect(after.model).toBe('agent-only-model')
   })
 
+  // `hooks` defeats the key rescue above: the shared file almost always defines
+  // it, so the KEY exists and the whole object used to be copied over -- taking
+  // every isolated-only hook with it, on every start. Measured 2026-08-14: the
+  // memory-recall hook was registered into .channels-config/settings.json and
+  // was gone by the next restart, silently, for 26 hours.
+  it('keeps an isolated-only hook entry even though shared defines hooks', () => {
+    writeFileSync(join(HOME, '.claude', 'settings.json'), JSON.stringify({
+      hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'shared.py' }] }] },
+    }))
+    const dir = ensureMainAgentIsolatedConfigDir(undefined, 'linux')!
+    const own = join(dir, 'settings.json')
+    writeFileSync(own, JSON.stringify({
+      hooks: {
+        UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'agent-only.py' }] }],
+        SessionStart: [{ matcher: 'clear', hooks: [{ type: 'command', command: 'digest.py' }] }],
+      },
+    }, null, 2) + '\n')
+
+    ensureMainAgentIsolatedConfigDir(undefined, 'linux')
+
+    const after = JSON.parse(readFileSync(own, 'utf-8')) as any
+    const ups = after.hooks.UserPromptSubmit.flatMap((g: any) => g.hooks).map((h: any) => h.command)
+    expect(ups).toContain('shared.py')      // shared still applies
+    expect(ups).toContain('agent-only.py')  // and the isolated-only one survives
+    // An event the shared file does not mention at all comes along too.
+    expect(after.hooks.SessionStart[0].hooks[0].command).toBe('digest.py')
+  })
+
+  it('does not duplicate a hook both files define', () => {
+    const entry = { type: 'command', command: 'both.py' }
+    writeFileSync(join(HOME, '.claude', 'settings.json'), JSON.stringify({
+      hooks: { UserPromptSubmit: [{ hooks: [entry] }] },
+    }))
+    const dir = ensureMainAgentIsolatedConfigDir(undefined, 'linux')!
+    const own = join(dir, 'settings.json')
+    writeFileSync(own, JSON.stringify({ hooks: { UserPromptSubmit: [{ hooks: [entry] }] } }, null, 2) + '\n')
+
+    ensureMainAgentIsolatedConfigDir(undefined, 'linux')
+
+    const after = JSON.parse(readFileSync(own, 'utf-8')) as any
+    const cmds = after.hooks.UserPromptSubmit.flatMap((g: any) => g.hooks).map((h: any) => h.command)
+    expect(cmds.filter((c: string) => c === 'both.py')).toHaveLength(1)
+  })
+
   it('lets the shared file win for every key it DOES define', () => {
     writeFileSync(join(HOME, '.claude', 'settings.json'), JSON.stringify({ model: 'shared-model' }))
     const dir = ensureMainAgentIsolatedConfigDir(undefined, 'linux')!

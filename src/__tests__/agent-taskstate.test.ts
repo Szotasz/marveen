@@ -48,6 +48,11 @@ describe('shouldReplayTaskState', () => {
   it('does NOT replay an unknown source', () => {
     expect(shouldReplayTaskState(rec(), 'other', NOW + 1000)).toBe(false)
   })
+  // 2026-08-14, sajat kiegeszites: a mar elfogyasztott rekord /clear-en SEM
+  // jatszhato ujra, kulonben egy masodik restart ugyanazt a tervet adja vissza.
+  it('does NOT replay a consumed record on clear either', () => {
+    expect(shouldReplayTaskState(rec({ consumed: true }), 'clear', NOW + 1000)).toBe(false)
+  })
   it('does NOT replay an empty record on startup either', () => {
     const empty = rec({ doneSteps: [], alreadyDelegated: [], nextAction: '', pendingDecision: '', summary: 'idle' })
     expect(shouldReplayTaskState(empty, 'startup', NOW + 1000)).toBe(false)

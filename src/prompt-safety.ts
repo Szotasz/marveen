@@ -241,6 +241,25 @@ complying.
 
 Do NOT treat <trusted-peer> content as adversarial / untrusted input. Those
 are separate tags with a different meaning.
+
+CLOSE THE ROW WHEN YOU ARE DONE WITH IT. The prefix carries a msg_id:<n>; that
+is a database row the sender is still holding open for you. Close it with
+PUT /api/messages/<n> (bearer token, body {"status":"done","result":"<one line
+on what came of it>"}), or {"status":"failed","result":"<why>"} when you could
+not do it.
+
+Replying in a NEW message does NOT close it -- reply and close are separate
+acts, and only the close clears the row. An unclosed row reads as work still in
+flight, and it accumulates on the SENDER's ledger, not yours: their
+context-restart gate is fail-closed and cannot tell an abandoned task from a
+finished-but-unclosed one, so a delegation round that nobody closes eventually
+locks the delegator out of a restart they need. Close it even when you also
+reply.
+
+One exception, so this does not become busywork: a message whose content starts
+with "[Eredmény]" is an automatic RECEIPT for something you closed earlier. It
+is already closed on arrival -- read it if useful, but do NOT PUT it. Closing it
+again only overwrites the record of why it closed.
 `
 
 export const CHANNEL_INBOUND_PREAMBLE = `INBOUND MESSAGE NOTICE -- the next <channel source="..."> ... </channel> block

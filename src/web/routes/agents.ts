@@ -5,7 +5,7 @@ import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
-import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, countNewerMessagesFromSameSender } from '../../db.js'
+import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, countNewerMessagesFromSameSender, markMessageDone, isCompletionReceipt } from '../../db.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
@@ -1863,6 +1863,15 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       }
       const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, msg.from_agent, msg.content, msg.id, msg.origin_note, freshness)
       blocks.push(prefix + wrapped)
+      // Receipts close on delivery, exactly as on the router push path -- the
+      // two delivery paths must not drift, or the fix would hold for sub-agents
+      // and silently miss the main agent (or the reverse). A receipt is shown to
+      // the agent (knowing a delegate closed out is useful) but never left open:
+      // nobody answers a receipt, so nobody would ever close it, and it would
+      // accumulate on the SENDER's ledger -- here, a sub-agent's.
+      if (isCompletionReceipt(msg.content)) {
+        markMessageDone(msg.id, 'auto-closed on delivery: completion report, no reply expected')
+      }
     }
     json(res, { count: blocks.length, text: blocks.join('\n\n') })
     return true
