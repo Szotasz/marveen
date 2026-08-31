@@ -2,23 +2,43 @@ import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   listPendingTaskRetries, deletePendingTaskRetryById, listTaskRunHistory,
+  getScheduleFromDb, listSchedulesFromDb, deleteSchedule, setScheduleEnabled, countSchedules,
 } from '../../db.js'
 import { MAIN_AGENT_ID, currentBotName } from '../../config.js'
 import { runAgent } from '../../agent.js'
 import { logger } from '../../logger.js'
 import { toPendingRetryView } from '../../pending-retries.js'
-import { atomicWriteFileSync } from '../atomic-write.js'
 import { isValidCronShape } from '../cron.js'
 import { readBody, json, RequestBodyTooLargeError } from '../http-helpers.js'
 import { sanitizeScheduleName, safeJoin } from '../sanitize.js'
 import { listAgentNames } from '../agent-config.js'
-import { readFileOr } from '../agent-config.js'
 import {
   SCHEDULED_TASKS_DIR, MAX_SCHEDULED_TASK_PROMPT_LEN,
-  listScheduledTasks, writeScheduledTask,
+  listScheduledTasks, listScheduledTasksFromFiles, writeScheduledTask,
 } from '../scheduled-tasks-io.js'
 import { runScheduledTaskNow } from '../schedule-runner.js'
 import type { RouteContext } from './types.js'
+
+// Tenant scope helpers (mirrors artifacts/kanban pattern):
+// - Admin with no ?tenant= filter sees all tenants (effectiveTenantId = null → all).
+// - Admin with ?tenant=<id> sees only that tenant.
+// - Non-admin is restricted to their own tenant; fleet tasks (tenant_id IS NULL) hidden.
+function effectiveTenant(ctx: RouteContext): string | null | 'fleet' {
+  if (ctx.role === 'admin') {
+    const param = ctx.url.searchParams.get('tenant')
+    if (param === 'fleet') return 'fleet'
+    return param ?? null  // null = all
+  }
+  return ctx.tenantId ?? 'default'
+}
+
+function crossTenantBlocked(ctx: RouteContext, scheduleTenantId: string | null): boolean {
+  if (ctx.role === 'admin') return false
+  const callerTenant = ctx.tenantId ?? 'default'
+  // Fleet tasks (tenant_id IS NULL) are not visible to non-admin tenant users
+  if (scheduleTenantId === null) return true
+  return scheduleTenantId !== callerTenant
+}
 
 // Resolve a URL-supplied schedule name to an on-disk dir, blocking path
 // traversal. sanitizeScheduleName strips everything outside [a-z0-9-] (so no
@@ -110,7 +130,21 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
   }
 
   if (path === '/api/schedules' && method === 'GET') {
-    json(res, listScheduledTasks())
+    const useDb = countSchedules() > 0
+    if (useDb) {
+      const scope = effectiveTenant(ctx)
+      let rows
+      if (scope === null) {
+        rows = listSchedulesFromDb({ includeFleet: true })
+      } else if (scope === 'fleet') {
+        rows = listSchedulesFromDb({ includeFleet: false })
+      } else {
+        rows = listSchedulesFromDb({ tenantId: scope })
+      }
+      json(res, rows)
+    } else {
+      json(res, listScheduledTasksFromFiles())
+    }
     return true
   }
 
@@ -126,7 +160,9 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       throw err
     }
     const data = JSON.parse(body.toString()) as {
-      name: string; description: string; prompt: string; schedule: string; agent?: string; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string
+      name: string; description: string; prompt: string; schedule: string; agent?: string;
+      type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string;
+      tenant_id?: string
     }
     const name = sanitizeScheduleName(data.name || '')
     if (!name) { json(res, { error: 'required', field: 'name', hint: 'Name is required' }, 400); return true }
@@ -140,8 +176,16 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     if (!data.schedule?.trim()) { json(res, { error: 'required', field: 'schedule', hint: 'Schedule is required' }, 400); return true }
     if (!isValidCronShape(data.schedule)) { json(res, { error: 'invalid_value', field: 'schedule', hint: 'Invalid cron expression' }, 400); return true }
 
-    const dir = join(SCHEDULED_TASKS_DIR, name)
-    if (existsSync(dir)) { json(res, { error: 'conflict', hint: 'Schedule already exists' }, 409); return true }
+    const useDb = countSchedules() > 0
+    const existing = useDb ? getScheduleFromDb(name) : existsSync(join(SCHEDULED_TASKS_DIR, name))
+    if (existing) { json(res, { error: 'conflict', hint: 'Schedule already exists' }, 409); return true }
+
+    // Tenant stamp: non-admin callers always get their own tenant_id;
+    // admin may pass explicit tenant_id (or omit for fleet/null scope).
+    const isAdmin = ctx.role === 'admin'
+    const tenantId: string | null = isAdmin
+      ? (data.tenant_id?.trim() || null)
+      : (ctx.tenantId ?? 'default')
 
     writeScheduledTask(name, {
       description: data.description || '',
@@ -153,8 +197,9 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       skipIfBusy: data.skipIfBusy === true,
       forceSend: data.forceSend === true,
       targetSession: data.targetSession || undefined,
+      tenantId,
     })
-    logger.info({ name, schedule: data.schedule }, 'Scheduled task created')
+    logger.info({ name, schedule: data.schedule, tenantId }, 'Scheduled task created')
     json(res, { ok: true, name })
     return true
   }
@@ -164,7 +209,11 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const resolved = resolveScheduleDir(scheduleUpdateMatch[1])
     if (!resolved) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     const { name, dir } = resolved
-    if (!existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+
+    const useDb = countSchedules() > 0
+    const dbRow = useDb ? getScheduleFromDb(name) : null
+    if (useDb ? !dbRow : !existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+    if (useDb && crossTenantBlocked(ctx, dbRow?.tenant_id ?? null)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
 
     let body: Buffer
     try {
@@ -199,8 +248,15 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const resolved = resolveScheduleDir(scheduleUpdateMatch[1])
     if (!resolved) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     const { name, dir } = resolved
-    if (!existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
-    rmSync(dir, { recursive: true, force: true })
+
+    const useDb = countSchedules() > 0
+    const dbRow = useDb ? getScheduleFromDb(name) : null
+    if (useDb ? !dbRow : !existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+    if (useDb && crossTenantBlocked(ctx, dbRow?.tenant_id ?? null)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+
+    if (useDb) deleteSchedule(name)
+    // Always remove files too (keeps FS in sync with DB; noop if files missing)
+    if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
     logger.info({ name }, 'Scheduled task deleted')
     json(res, { ok: true })
     return true
@@ -211,14 +267,28 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const resolved = resolveScheduleDir(scheduleToggleMatch[1])
     if (!resolved) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     const { name, dir } = resolved
-    if (!existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
 
-    const configPath = join(dir, 'task-config.json')
-    let config: Record<string, unknown> = {}
-    try { config = JSON.parse(readFileOr(configPath, '{}')) } catch { /* use empty */ }
-    const newEnabled = !(config.enabled !== false)
-    config.enabled = newEnabled
-    atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+    const useDb = countSchedules() > 0
+    const dbRow = useDb ? getScheduleFromDb(name) : null
+    if (useDb ? !dbRow : !existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+    if (useDb && crossTenantBlocked(ctx, dbRow?.tenant_id ?? null)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+
+    let newEnabled: boolean
+    if (useDb && dbRow) {
+      newEnabled = dbRow.enabled === 0
+      setScheduleEnabled(name, newEnabled)
+      // Mirror to file
+      writeScheduledTask(name, { enabled: newEnabled })
+    } else {
+      const configPath = join(dir, 'task-config.json')
+      let config: Record<string, unknown> = {}
+      try {
+        const { readFileOr: rfo } = await import('../agent-config.js')
+        config = JSON.parse(rfo(configPath, '{}'))
+      } catch { /* use empty */ }
+      newEnabled = !(config.enabled !== false)
+      writeScheduledTask(name, { enabled: newEnabled })
+    }
     logger.info({ name, enabled: newEnabled }, 'Scheduled task toggled')
     json(res, { ok: true, enabled: newEnabled })
     return true
@@ -229,7 +299,12 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const resolved = resolveScheduleDir(scheduleRunMatch[1])
     if (!resolved) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     const { name, dir } = resolved
-    if (!existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+
+    const useDb = countSchedules() > 0
+    const dbRow = useDb ? getScheduleFromDb(name) : null
+    if (useDb ? !dbRow : !existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+    if (useDb && crossTenantBlocked(ctx, dbRow?.tenant_id ?? null)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+
     const result = await runScheduledTaskNow(name)
     if (!result.ok) {
       const status = result.error === 'not_found' ? 404 : result.error === 'disabled' ? 409 : 400
@@ -253,7 +328,12 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const resolved = resolveScheduleDir(scheduleRunsMatch[1])
     if (!resolved) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     const { name, dir } = resolved
-    if (!existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+
+    const useDb = countSchedules() > 0
+    const dbRow = useDb ? getScheduleFromDb(name) : null
+    if (useDb ? !dbRow : !existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+    if (useDb && crossTenantBlocked(ctx, dbRow?.tenant_id ?? null)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+
     const runs = listTaskRunHistory(name, 10)
     json(res, runs)
     return true
