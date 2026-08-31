@@ -2181,7 +2181,9 @@
         <h1 data-i18n="nav.workspaceDocs">Munkadokumentumok</h1>
       </div>
       <div class="filters-row" id="wdFilters" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
-        <input type="text" id="wdAgentFilter" placeholder="Agent ID" style="width:140px">
+        <select id="wdAgentFilter">
+          <option value="">Mind (agent)</option>
+        </select>
         <select id="wdTypeFilter">
           <option value="">Mind (típus)</option>
           <option value="plan">Plan</option>
@@ -2195,7 +2197,11 @@
           <option value="code">Code</option>
           <option value="binary">Binary</option>
         </select>
-        <input type="text" id="wdTenantFilter" placeholder="Tenant ID" style="width:120px">
+        <span id="wdTenantFilterWrap" hidden>
+          <select id="wdTenantFilter">
+            <option value="">Mind (tenant)</option>
+          </select>
+        </span>
         <button class="btn" data-variant="secondary" data-size="compact" id="wdSearchBtn">Keresés</button>
       </div>
       <div id="wdList" style="margin-bottom:16px"></div>

@@ -764,7 +764,7 @@ registerPage('workspaceDocs', {
   enter: async () => {
     const m = await lazyLoad('workspace-docs', () => import('./modules/workspace-docs.js'))
     if (!_moduleCache.get('workspaceDocs_inited')) {
-      m.initWorkspaceDocs()
+      await m.initWorkspaceDocs()
       _moduleCache.set('workspaceDocs_inited', true)
     }
     await m.loadWorkspaceDocs()

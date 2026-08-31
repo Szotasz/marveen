@@ -9,6 +9,7 @@ const agentFilter       = () => document.getElementById('wdAgentFilter')
 const typeFilter        = () => document.getElementById('wdTypeFilter')
 const contentTypeFilter = () => document.getElementById('wdContentTypeFilter')
 const tenantFilter      = () => document.getElementById('wdTenantFilter')
+const tenantFilterWrap  = () => document.getElementById('wdTenantFilterWrap')
 const searchBtn         = () => document.getElementById('wdSearchBtn')
 const listEl            = () => document.getElementById('wdList')
 const emptyEl           = () => document.getElementById('wdEmpty')
@@ -186,13 +187,59 @@ async function deleteWorkspaceDoc(id) {
   }
 }
 
+// ── Filter population ────────────────────────────────────────────────────────
+
+async function populateAgentFilter() {
+  const sel = agentFilter()
+  if (!sel) return
+  try {
+    const r = await fetch('/api/agents')
+    if (!r.ok) return
+    const agents = await r.json()
+    if (!Array.isArray(agents)) return
+    agents.forEach(a => {
+      const opt = document.createElement('option')
+      opt.value = a.name
+      opt.textContent = a.displayName || a.name
+      sel.appendChild(opt)
+    })
+  } catch {}
+}
+
+async function populateTenantFilter() {
+  let auth = null
+  try { auth = await fetch('/api/auth/status').then(r => r.ok ? r.json() : null) } catch {}
+  const isAdmin = auth?.role === 'admin' && auth?.tenant_id === null
+  if (!isAdmin) return  // non-admin: tenant wrapper stays hidden
+
+  const wrap = tenantFilterWrap()
+  const tenSel = tenantFilter()
+  if (!wrap || !tenSel) return
+
+  try {
+    const r = await fetch('/api/admin/tenants')
+    if (!r.ok) return
+    const data = await r.json()
+    const tenants = data.items ?? []
+    tenants.forEach(ten => {
+      const opt = document.createElement('option')
+      opt.value = ten.id
+      opt.textContent = ten.display_name || ten.id
+      tenSel.appendChild(opt)
+    })
+    wrap.hidden = false
+  } catch {}
+}
+
 // ── Event wiring (called once on page enter) ──────────────────────────────────
 
 let _wired = false
 
-export function initWorkspaceDocs() {
+export async function initWorkspaceDocs() {
   if (_wired) return
   _wired = true
+
+  await Promise.all([populateAgentFilter(), populateTenantFilter()])
 
   searchBtn()?.addEventListener('click', loadWorkspaceDocs)
 
