@@ -22,6 +22,7 @@ import { startMessageRouter } from './web/message-router.js'
 import { startUpdateChecker } from './web/update-checker.js'
 import { startBlackboardStaleSweeper } from './web/blackboard-stale-sweeper.js'
 import { startScheduleRunner } from './web/schedule-runner.js'
+import { seedSchedulesFromFilesIfEmpty } from './web/scheduled-tasks-io.js'
 import { startChannelPluginMonitor } from './web/channel-monitor.js'
 import { startInboundProber } from './web/inbound-probe.js'
 import { startChannelHealthMonitor } from './web/channel-health-monitor.js'
@@ -614,6 +615,12 @@ export function startWebServer(port = 3420): http.Server {
       logger.info('Default scheduled tasks seeded')
     } catch (err) {
       logger.warn({ err }, 'Scheduled tasks seed skipped')
+    }
+    try {
+      const seeded = seedSchedulesFromFilesIfEmpty()
+      if (seeded > 0) logger.info({ seeded }, 'Schedules table seeded from files')
+    } catch (err) {
+      logger.warn({ err }, 'Schedule DB seed skipped')
     }
   }
 

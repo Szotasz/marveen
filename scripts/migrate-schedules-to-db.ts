@@ -3,21 +3,22 @@
  * One-time migration: read all file-based scheduled tasks from
  * ~/.claude/scheduled-tasks/ and insert them into the `schedules` DB table.
  *
- * Idempotent: uses INSERT OR IGNORE so re-running is safe.
+ * Idempotent: uses INSERT OR IGNORE (seedScheduleIfAbsent) so re-running
+ * never overwrites rows that have been hand-edited in the DB since the last run.
  * Fleet tasks get tenant_id = NULL.
  *
  * Usage:
  *   npx tsx scripts/migrate-schedules-to-db.ts [--dry-run]
  */
 import { listScheduledTasksFromFiles } from '../src/web/scheduled-tasks-io.js'
-import { upsertSchedule, countSchedules } from '../src/db.js'
+import { seedScheduleIfAbsent, countSchedules } from '../src/db.js'
 
 const dryRun = process.argv.includes('--dry-run')
 
 const tasks = listScheduledTasksFromFiles()
 console.log(`Found ${tasks.length} file-based scheduled tasks.`)
 if (dryRun) {
-  console.log('[dry-run] Would insert:')
+  console.log('[dry-run] Would seed (INSERT OR IGNORE):')
   for (const t of tasks) console.log(`  ${t.name} (agent=${t.agent}, type=${t.type})`)
   process.exit(0)
 }
@@ -26,7 +27,7 @@ let inserted = 0
 let skipped = 0
 for (const t of tasks) {
   try {
-    upsertSchedule(t.name, {
+    const seeded = seedScheduleIfAbsent(t.name, {
       prompt:                   t.prompt ?? '',
       description:              t.description ?? '',
       schedule:                 t.schedule,
@@ -46,13 +47,17 @@ for (const t of tasks) {
       requires:                 t.requires ? JSON.stringify(t.requires) : null,
       created_at:               t.createdAt || Math.floor(Date.now() / 1000),
     })
-    console.log(`  OK  ${t.name}`)
-    inserted++
+    if (seeded) {
+      console.log(`  NEW  ${t.name}`)
+      inserted++
+    } else {
+      console.log(`  SKIP ${t.name} (already in DB, not overwritten)`)
+      skipped++
+    }
   } catch (err) {
     console.error(`  ERR ${t.name}: ${err}`)
-    skipped++
   }
 }
 
-console.log(`\nDone: ${inserted} inserted/updated, ${skipped} errors.`)
+console.log(`\nDone: ${inserted} newly inserted, ${skipped} already existed (preserved).`)
 console.log(`DB now has ${countSchedules()} schedule rows.`)

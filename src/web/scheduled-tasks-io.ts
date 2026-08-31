@@ -5,7 +5,7 @@ import { MAIN_AGENT_ID } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import {
   countSchedules, listSchedulesFromDb, getScheduleFromDb, upsertSchedule, deleteSchedule,
-  setScheduleEnabled, patchSchedule,
+  setScheduleEnabled, patchSchedule, seedScheduleIfAbsent,
   type ScheduleRow,
 } from '../db.js'
 
@@ -156,6 +156,40 @@ export function parseRequires(raw: { mcp_servers?: unknown } | undefined): Sched
   if (!raw || !Array.isArray(raw.mcp_servers)) return undefined
   const servers = raw.mcp_servers.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
   return servers.length ? { mcp_servers: servers } : undefined
+}
+
+// Seed the DB from the file system if the schedules table is empty.
+// Uses INSERT OR IGNORE so re-running at startup never overwrites a row that
+// was hand-edited in the DB since the last boot.
+// Returns the number of newly inserted rows (0 on a warm boot with seeded DB).
+export function seedSchedulesFromFilesIfEmpty(): number {
+  if (countSchedules() > 0) return 0
+  const fileTasks = listScheduledTasksFromFiles()
+  let inserted = 0
+  for (const task of fileTasks) {
+    const seeded = seedScheduleIfAbsent(task.name, {
+      prompt:                   task.prompt,
+      description:              task.description,
+      schedule:                 task.schedule,
+      agent:                    task.agent,
+      type:                     task.type ?? 'task',
+      enabled:                  task.enabled,
+      tenant_id:                null,
+      skip_if_busy:             task.skipIfBusy ?? false,
+      force_send:               task.forceSend ?? false,
+      target_session:           task.targetSession ?? null,
+      command:                  task.command ?? null,
+      timeout_ms:               task.timeoutMs ?? null,
+      fail_threshold:           task.failThreshold ?? null,
+      pre_check:                task.preCheck ?? null,
+      catch_up_max_age_minutes: task.catchUpMaxAgeMinutes ?? null,
+      stuck_after_minutes:      task.stuckAfterMinutes ?? null,
+      requires:                 task.requires ? JSON.stringify(task.requires) : null,
+      created_at:               task.createdAt || undefined,
+    })
+    if (seeded) inserted++
+  }
+  return inserted
 }
 
 // Returns all tasks for the scheduler (no tenant filter -- runner sees all).
