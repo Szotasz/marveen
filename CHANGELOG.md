@@ -9,6 +9,10 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
+### Fixed
+
+- **[API]** `PUT /api/memories/:id` returns `400 parse_error` on invalid JSON body and `400 required` when `content` is absent or whitespace-only; previously threw unhandled exception (500)
+
 ### Added
 
 - workspace docs dashboard page (list, view, delete)
