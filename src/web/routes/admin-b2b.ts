@@ -19,6 +19,7 @@ import {
   deleteTenant,
   provisionDashboardUser,
   getDashboardUserById,
+  deleteDashboardUser,
   listDashboardUsersFiltered,
   adminPatchDashboardUser,
   countActiveAdmins,
@@ -284,6 +285,26 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     if (!updated) { json(res, { error: 'not_found', field: 'userId', hint: 'User not found' }, 404); return true }
     auditAdmin(ctx, 'admin.user.update', userId, { username: existing.username, ...patch, password_hash: patch.password_hash ? '[redacted]' : undefined })
     json(res, userToPublic(updated))
+    return true
+  }
+
+  if (userPatchMatch && method === 'DELETE') {
+    const userId = parseInt(userPatchMatch[1], 10)
+    const existing = getDashboardUserById(userId)
+    if (!existing) { json(res, { error: 'not_found', field: 'userId', hint: 'User not found' }, 404); return true }
+
+    const actor = ctx.auth?.user
+    if (actor && existing.username.toLowerCase() === actor.toLowerCase()) {
+      json(res, { error: 'forbidden', hint: 'Cannot delete your own account' }, 403); return true
+    }
+    if (existing.role === 'admin' && countActiveAdmins() <= 1) {
+      json(res, { error: 'forbidden', hint: 'Cannot remove the last administrator' }, 403); return true
+    }
+
+    const deleted = deleteDashboardUser(existing.username)
+    if (!deleted) { json(res, { error: 'not_found', hint: 'User not found' }, 404); return true }
+    auditAdmin(ctx, 'admin.user.delete', userId, { username: existing.username, role: existing.role })
+    json(res, { ok: true })
     return true
   }
 

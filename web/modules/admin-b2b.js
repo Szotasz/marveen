@@ -102,6 +102,9 @@ function renderTenantList() {
         <button class="btn" data-variant="secondary" data-size="compact" data-action="show-agents" data-id="${esc(ten.id)}">
           Agentkezelés
         </button>
+        <button class="btn" data-variant="secondary" data-size="compact" data-action="delete-tenant" data-id="${esc(ten.id)}" ${ten.id === 'default' ? 'disabled' : ''} style="color:var(--danger)">
+          Törlés
+        </button>
       </div>
     </div>
   `).join('')
@@ -116,6 +119,18 @@ async function toggleTenant(id, currentlyDisabled) {
     })
     if (!r.ok) { const e = await r.json(); throw new Error(e.hint || e.error) }
     showToast(currentlyDisabled ? 'Tenant engedélyezve' : 'Tenant letiltva')
+    await loadTenants()
+  } catch (err) {
+    showToast('Hiba: ' + err.message, 'error')
+  }
+}
+
+async function deleteTenant(id) {
+  if (!confirm(`Biztosan törlöd a(z) "${id}" tenantet? Ez visszafordíthatatlan, minden kapcsolódó adat törlődik!`)) return
+  try {
+    const r = await fetch(`/api/admin/tenants/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    if (!r.ok) { const e = await r.json(); throw new Error(e.hint || e.error) }
+    showToast('Tenant törölve')
     await loadTenants()
   } catch (err) {
     showToast('Hiba: ' + err.message, 'error')
@@ -237,6 +252,18 @@ function renderUserList() {
           data-action="toggle-user" data-id="${u.id}" data-disabled="${u.disabled ? '1' : '0'}">
           ${u.disabled ? 'Engedélyez' : 'Letilt'}
         </button>
+        <button class="btn" data-variant="secondary" data-size="compact"
+          data-action="edit-user" data-id="${u.id}"
+          data-username="${esc(u.username)}" data-display-name="${esc(u.display_name || '')}"
+          data-email="${esc(u.email || '')}" data-role="${esc(u.role)}"
+          data-tenant-id="${esc(u.tenant_id || '')}">
+          Szerkeszt
+        </button>
+        <button class="btn" data-variant="secondary" data-size="compact"
+          data-action="delete-user" data-id="${u.id}" data-username="${esc(u.username)}"
+          style="color:var(--danger)">
+          Törlés
+        </button>
       </div>
     </div>
   `).join('')
@@ -266,6 +293,62 @@ async function toggleUser(id, currentlyDisabled) {
     })
     if (!r.ok) { const e = await r.json(); throw new Error(e.hint || e.error) }
     showToast(currentlyDisabled ? 'Felhasználó engedélyezve' : 'Felhasználó letiltva')
+    await loadUsers($('userTenantFilter')?.value || undefined)
+  } catch (err) {
+    showToast('Hiba: ' + err.message, 'error')
+  }
+}
+
+async function deleteUser(id, username) {
+  if (!confirm(`Biztosan véglegesen törlöd a(z) "${username}" felhasználót? Ez visszafordíthatatlan!`)) return
+  try {
+    const r = await fetch(`/api/admin/users/${id}`, { method: 'DELETE' })
+    if (!r.ok) { const e = await r.json(); throw new Error(e.hint || e.error) }
+    showToast('Felhasználó törölve')
+    await loadUsers($('userTenantFilter')?.value || undefined)
+  } catch (err) {
+    showToast('Hiba: ' + err.message, 'error')
+  }
+}
+
+let _editUserId = null
+let _editUserOrigRole = null
+
+function populateEditUserTenantSelect(selectedId) {
+  const sel = $('editUserTenantId')
+  if (!sel) return
+  sel.innerHTML = _tenants.filter(t => !t.disabled_at)
+    .map(ten => `<option value="${esc(ten.id)}" ${ten.id === selectedId ? 'selected' : ''}>${esc(ten.display_name)} (${esc(ten.id)})</option>`).join('')
+}
+
+function openUserEditModal(btn) {
+  _editUserId = Number(btn.dataset.id)
+  _editUserOrigRole = btn.dataset.role
+  if ($('editUserDisplayName')) $('editUserDisplayName').value = btn.dataset.displayName || ''
+  if ($('editUserEmail')) $('editUserEmail').value = btn.dataset.email || ''
+  const roleEl = $('editUserRole')
+  if (roleEl) roleEl.value = btn.dataset.role || 'viewer'
+  const tenantGroup = $('editUserTenantGroup')
+  if (tenantGroup) tenantGroup.hidden = btn.dataset.role === 'admin'
+  populateEditUserTenantSelect(btn.dataset.tenantId || '')
+  openModal('userEditModal')
+}
+
+async function saveUserEdit() {
+  if (!_editUserId) return
+  const displayName = $('editUserDisplayName')?.value.trim() || null
+  const email = $('editUserEmail')?.value.trim() || null
+  const role = $('editUserRole')?.value
+  const tenantId = role === 'admin' ? null : ($('editUserTenantId')?.value || null)
+  try {
+    const r = await fetch(`/api/admin/users/${_editUserId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ display_name: displayName, email, role, tenant_id: tenantId }),
+    })
+    if (!r.ok) { const e = await r.json(); throw new Error(e.hint || e.error) }
+    closeModal('userEditModal')
+    showToast('Felhasználó frissítve')
     await loadUsers($('userTenantFilter')?.value || undefined)
   } catch (err) {
     showToast('Hiba: ' + err.message, 'error')
@@ -402,6 +485,7 @@ export async function initAdminB2b() {
     const id = btn.dataset.id
     if (btn.dataset.action === 'toggle-tenant') await toggleTenant(id, btn.dataset.disabled === '1')
     if (btn.dataset.action === 'show-agents') await showAgentMatrix(id)
+    if (btn.dataset.action === 'delete-tenant') await deleteTenant(id)
   })
 
   $('agentMatrix')?.addEventListener('change', async (e) => {
@@ -419,10 +503,17 @@ export async function initAdminB2b() {
     const btn = e.target.closest('[data-action]')
     if (!btn) return
     if (btn.dataset.action === 'toggle-user') await toggleUser(Number(btn.dataset.id), btn.dataset.disabled === '1')
+    if (btn.dataset.action === 'edit-user') openUserEditModal(btn)
+    if (btn.dataset.action === 'delete-user') await deleteUser(Number(btn.dataset.id), btn.dataset.username)
   })
   $('userTenantFilter')?.addEventListener('change', (e) => loadUsers(e.target.value || undefined))
   $('userAddBtn')?.addEventListener('click', () => openModal('userAddModal'))
   $('userAddConfirmBtn')?.addEventListener('click', addUser)
+  $('userEditConfirmBtn')?.addEventListener('click', saveUserEdit)
+  $('editUserRole')?.addEventListener('change', (e) => {
+    const tenantGroup = $('editUserTenantGroup')
+    if (tenantGroup) tenantGroup.hidden = e.target.value === 'admin'
+  })
 
   // Device keys: event delegation for tenant assign select
   $('deviceKeyList')?.addEventListener('change', async (e) => {

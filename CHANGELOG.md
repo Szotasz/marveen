@@ -11,6 +11,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- **[API]** B2B admin hard-delete tenant+user: DELETE /api/admin/tenants/:id (cascade), DELETE /api/admin/users/:id (self/last-admin guard), user-edit PATCH extended with display_name/email/role; openapi docs for full /admin/users CRUD
 - workspace docs dashboard page (list, view, delete)
 - add DELETE /api/admin/tenants/:id with full cascade
 - self-service profile page for session-authenticated dashboard users

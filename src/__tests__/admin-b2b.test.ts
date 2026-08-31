@@ -23,6 +23,7 @@ vi.mock('../db.js', () => ({
   getDashboardUserById: vi.fn(),
   listDashboardUsersFiltered: vi.fn(),
   adminPatchDashboardUser: vi.fn(),
+  deleteDashboardUser: vi.fn(),
   countActiveAdmins: vi.fn(),
   listPartnerSenders: vi.fn(),
   createPartnerSender: vi.fn(),
@@ -418,6 +419,47 @@ describe('PATCH /api/v1/admin/users/:id -- profile fields', () => {
     expect(out.status).toBe(400)
     expect(out.body.error).toBe('invalid_value')
     expect(out.body.field).toBe('email')
+  })
+})
+
+// ── DELETE /api/v1/admin/users/:id ───────────────────────────────────────────
+
+describe('DELETE /api/v1/admin/users/:id', () => {
+  it('hard-deletes user and returns 200', async () => {
+    vi.mocked(db.getDashboardUserById).mockReturnValue(SAMPLE_USER as any)
+    vi.mocked(db.deleteDashboardUser).mockReturnValue(true)
+    const { ctx, out } = makeCtx('DELETE', '/api/v1/admin/users/5')
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body.ok).toBe(true)
+    expect(vi.mocked(db.deleteDashboardUser)).toHaveBeenCalledWith(SAMPLE_USER.username)
+  })
+
+  it('returns 404 for unknown user', async () => {
+    vi.mocked(db.getDashboardUserById).mockReturnValue(undefined)
+    const { ctx, out } = makeCtx('DELETE', '/api/v1/admin/users/999')
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(404)
+    expect(out.body.error).toBe('not_found')
+  })
+
+  it('returns 403 when deleting own account', async () => {
+    const self = { ...SAMPLE_USER, username: 'admin-user' }
+    vi.mocked(db.getDashboardUserById).mockReturnValue(self as any)
+    const { ctx, out } = makeCtx('DELETE', '/api/v1/admin/users/5')
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(403)
+    expect(out.body.error).toBe('forbidden')
+  })
+
+  it('returns 403 when deleting the last admin', async () => {
+    const lastAdmin = { ...SAMPLE_USER, username: 'other-admin', role: 'admin', tenant_id: null }
+    vi.mocked(db.getDashboardUserById).mockReturnValue(lastAdmin as any)
+    vi.mocked(db.countActiveAdmins).mockReturnValue(1)
+    const { ctx, out } = makeCtx('DELETE', '/api/v1/admin/users/5')
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(403)
+    expect(out.body.error).toBe('forbidden')
   })
 })
 
