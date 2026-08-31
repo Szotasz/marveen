@@ -4357,3 +4357,109 @@ export function isTenantAgentEnabled(tenantId: string, agentId: string): boolean
   return row?.enabled === 1
 }
 
+// --- SQL-backed Skills (716) -----------------------------------------------
+
+export interface SkillRow {
+  id: string
+  name: string
+  description: string
+  content: string
+  tenant_id: string
+  is_global: number
+  created_by: string | null
+  created_at: number
+  updated_at: number
+}
+
+export interface CreateSkillOpts {
+  id: string
+  name: string
+  description?: string
+  content: string
+  tenant_id: string
+  is_global?: boolean
+  created_by?: string | null
+}
+
+export function createSkill(opts: CreateSkillOpts): SkillRow {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(`
+    INSERT INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    opts.id, opts.name, opts.description ?? '', opts.content,
+    opts.tenant_id, opts.is_global ? 1 : 0, opts.created_by ?? null, now, now,
+  )
+  return getSkill(opts.id) as SkillRow
+}
+
+export function getSkill(id: string): SkillRow | undefined {
+  return db.prepare('SELECT * FROM skills WHERE id = ?').get(id) as SkillRow | undefined
+}
+
+export function updateSkill(id: string, patch: { name?: string; description?: string; content?: string; is_global?: boolean }): SkillRow | undefined {
+  const now = Math.floor(Date.now() / 1000)
+  const sets: string[] = ['updated_at = ?']
+  const vals: unknown[] = [now]
+  if (patch.name !== undefined)        { sets.push('name = ?');        vals.push(patch.name) }
+  if (patch.description !== undefined) { sets.push('description = ?'); vals.push(patch.description) }
+  if (patch.content !== undefined)     { sets.push('content = ?');     vals.push(patch.content) }
+  if (patch.is_global !== undefined)   { sets.push('is_global = ?');   vals.push(patch.is_global ? 1 : 0) }
+  vals.push(id)
+  const changes = db.prepare(`UPDATE skills SET ${sets.join(', ')} WHERE id = ?`).run(...vals).changes
+  return changes > 0 ? getSkill(id) : undefined
+}
+
+export function deleteSkill(id: string): boolean {
+  return db.prepare('DELETE FROM skills WHERE id = ?').run(id).changes > 0
+}
+
+/**
+ * List skills visible to a caller:
+ * - own skills (tenant_id = callerTenantId)
+ * - skills explicitly granted via skill_tenant_access
+ *
+ * Fleet skills (tenant_id = 'fleet') are NOT included unless explicitly
+ * granted. Pass callerTenantId = 'fleet' (admin) to see fleet skills.
+ */
+export function listSkillsForTenant(callerTenantId: string): SkillRow[] {
+  return db.prepare(`
+    SELECT s.* FROM skills s
+    WHERE s.tenant_id = ?
+    UNION
+    SELECT s.* FROM skills s
+    JOIN skill_tenant_access sta ON sta.skill_id = s.id
+    WHERE sta.tenant_id = ?
+    ORDER BY name
+  `).all(callerTenantId, callerTenantId) as SkillRow[]
+}
+
+/** Admin: list all skills regardless of tenant. */
+export function listAllSkills(): SkillRow[] {
+  return db.prepare('SELECT * FROM skills ORDER BY tenant_id, name').all() as SkillRow[]
+}
+
+export interface SkillTenantAccessRow {
+  skill_id: string
+  tenant_id: string
+  granted_by: string | null
+  granted_at: number
+}
+
+export function grantSkillAccess(skillId: string, tenantId: string, grantedBy?: string): void {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(`
+    INSERT INTO skill_tenant_access (skill_id, tenant_id, granted_by, granted_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(skill_id, tenant_id) DO NOTHING
+  `).run(skillId, tenantId, grantedBy ?? null, now)
+}
+
+export function revokeSkillAccess(skillId: string, tenantId: string): boolean {
+  return db.prepare('DELETE FROM skill_tenant_access WHERE skill_id = ? AND tenant_id = ?').run(skillId, tenantId).changes > 0
+}
+
+export function listSkillAccess(skillId: string): SkillTenantAccessRow[] {
+  return db.prepare('SELECT * FROM skill_tenant_access WHERE skill_id = ?').all(skillId) as SkillTenantAccessRow[]
+}
+

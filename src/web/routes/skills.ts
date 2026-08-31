@@ -12,6 +12,11 @@ import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
 import { sanitizeSkillName, shellEscape } from '../sanitize.js'
 import type { RouteContext } from './types.js'
+import {
+  createSkill, getSkill, updateSkill, deleteSkill,
+  listSkillsForTenant, listAllSkills,
+  grantSkillAccess, revokeSkillAccess, listSkillAccess,
+} from '../../db.js'
 
 function parseFrontmatterField(content: string, field: string): string {
   const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---/)
@@ -564,6 +569,110 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (typeof content !== 'string') { json(res, { error: 'required', field: 'content', hint: 'content is required' }, 400); return true }
     atomicWriteFileSync(skillMdPath, content)
     logger.info({ skillName }, 'Skill updated via dashboard')
+    json(res, { ok: true })
+    return true
+  }
+
+  // --- SQL-backed B2B skills (716) ------------------------------------------
+  // Auth: admin sees everything; tenant session sees own + granted skills.
+  // Endpoints: /api/skills/sql[/:id[/access[/:tenantId]]]
+
+  const isAdmin = ctx.role === 'admin'
+  const callerTenantId = ctx.tenantId ?? null
+
+  const sqlSkillsBase = path === '/api/skills/sql' || path === '/api/v1/skills/sql'
+  const sqlSkillIdMatch = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)$/)
+  const sqlAccessBase = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/access$/)
+  const sqlAccessItem = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/access\/([^/]+)$/)
+
+  if (sqlSkillsBase && method === 'GET') {
+    const rows = isAdmin ? listAllSkills() : (callerTenantId ? listSkillsForTenant(callerTenantId) : [])
+    json(res, { skills: rows })
+    return true
+  }
+
+  if (sqlSkillsBase && method === 'POST') {
+    if (!isAdmin && !callerTenantId) { json(res, { error: 'forbidden', hint: 'No tenant scope' }, 403); return true }
+    const body = await readBody(req)
+    let parsed: { name?: string; description?: string; content?: string; is_global?: boolean } = {}
+    try { parsed = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
+    const { name, description, content, is_global } = parsed
+    if (typeof name !== 'string' || !name.trim()) { json(res, { error: 'required', field: 'name', hint: 'name is required' }, 400); return true }
+    if (typeof content !== 'string' || !content.trim()) { json(res, { error: 'required', field: 'content', hint: 'content is required' }, 400); return true }
+    if (is_global && !isAdmin) { json(res, { error: 'forbidden', hint: 'Only admin can set is_global' }, 403); return true }
+    const tenantId = callerTenantId ?? 'fleet'
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64)
+    const id = `${tenantId}-${slug}`
+    if (getSkill(id)) { json(res, { error: 'conflict', hint: 'A skill with this name already exists for this tenant' }, 409); return true }
+    const row = createSkill({ id, name: name.trim(), description: description ?? '', content, tenant_id: tenantId, is_global: is_global ?? false, created_by: ctx.auth?.kind === 'session' ? (ctx.auth.user ?? null) : null })
+    json(res, { ok: true, skill: row }, 201)
+    return true
+  }
+
+  if (sqlSkillIdMatch && method === 'GET') {
+    const id = sqlSkillIdMatch[1]
+    const row = getSkill(id)
+    if (!row) { json(res, { error: 'not_found' }, 404); return true }
+    if (!isAdmin && callerTenantId && row.tenant_id !== callerTenantId) {
+      const grants = listSkillAccess(id)
+      if (!grants.some(g => g.tenant_id === callerTenantId)) { json(res, { error: 'not_found' }, 404); return true }
+    }
+    json(res, row)
+    return true
+  }
+
+  if (sqlSkillIdMatch && method === 'PUT') {
+    const id = sqlSkillIdMatch[1]
+    const existing = getSkill(id)
+    if (!existing) { json(res, { error: 'not_found' }, 404); return true }
+    if (!isAdmin && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
+    const body = await readBody(req)
+    let parsed: { name?: string; description?: string; content?: string; is_global?: boolean } = {}
+    try { parsed = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
+    if (parsed.is_global !== undefined && !isAdmin) { json(res, { error: 'forbidden', hint: 'Only admin can set is_global' }, 403); return true }
+    const updated = updateSkill(id, parsed)
+    json(res, { ok: true, skill: updated })
+    return true
+  }
+
+  if (sqlSkillIdMatch && method === 'DELETE') {
+    const id = sqlSkillIdMatch[1]
+    const existing = getSkill(id)
+    if (!existing) { json(res, { error: 'not_found' }, 404); return true }
+    if (!isAdmin && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
+    deleteSkill(id)
+    json(res, { ok: true })
+    return true
+  }
+
+  if (sqlAccessBase && method === 'GET') {
+    const id = sqlAccessBase[1]
+    if (!isAdmin) { json(res, { error: 'forbidden', hint: 'Admin only' }, 403); return true }
+    const existing = getSkill(id)
+    if (!existing) { json(res, { error: 'not_found' }, 404); return true }
+    json(res, { access: listSkillAccess(id) })
+    return true
+  }
+
+  if (sqlAccessBase && method === 'POST') {
+    const id = sqlAccessBase[1]
+    if (!isAdmin) { json(res, { error: 'forbidden', hint: 'Admin only' }, 403); return true }
+    const existing = getSkill(id)
+    if (!existing) { json(res, { error: 'not_found' }, 404); return true }
+    const body = await readBody(req)
+    let parsed: { tenant_id?: string } = {}
+    try { parsed = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
+    if (typeof parsed.tenant_id !== 'string' || !parsed.tenant_id) { json(res, { error: 'required', field: 'tenant_id', hint: 'tenant_id is required' }, 400); return true }
+    grantSkillAccess(id, parsed.tenant_id, ctx.auth?.kind === 'session' ? ctx.auth.user : undefined)
+    json(res, { ok: true })
+    return true
+  }
+
+  if (sqlAccessItem && method === 'DELETE') {
+    const [, id, tenantId] = sqlAccessItem
+    if (!isAdmin) { json(res, { error: 'forbidden', hint: 'Admin only' }, 403); return true }
+    const ok = revokeSkillAccess(id, tenantId)
+    if (!ok) { json(res, { error: 'not_found' }, 404); return true }
     json(res, { ok: true })
     return true
   }
