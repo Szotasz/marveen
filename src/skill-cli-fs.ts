@@ -83,7 +83,11 @@ export function loadCredentials(): SkillCredentials | null {
   return JSON.parse(readFileSync(ut, 'utf8')) as SkillCredentials
 }
 
-/** Hova kerulnek a letoltott skillek. Projekt-hatokor az alapertelmezes. */
+/**
+ * Hova kerulnek a letoltott skillek. USER-HATOKOR az alapertelmezes
+ * (`~/.claude/skills`), a `--project` kapcsoloval a munkakonyvtar
+ * `.claude/skills` mappaja. A hivo dont; ez a fuggveny csak feloldja az utat.
+ */
 export function skillTargetDir(scope: 'project' | 'user', cwd = process.cwd()): string {
   return scope === 'user'
     ? join(homedir(), '.claude', 'skills')
