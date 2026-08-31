@@ -338,6 +338,19 @@ Each task lives in its own folder with two files. Detailed description: [schedul
 | `~/.claude/channels/telegram/access.json` | Telegram allowFrom list, paired senders |
 | `~/.claude/channels/slack/access.json` | Slack allowFrom list |
 
+**Multiple installs on one host:** the main agent's channel state lives in a
+per-install directory (`~/.claude/channels/<provider>-<MAIN_AGENT_ID>`), otherwise
+a second install would take over the first one's bot token and overwrite its
+`access.json`. Resolution order -- followed by the channel plugin, the dashboard
+and the `channels.sh` watchdog alike:
+
+1. the `<PROVIDER>_STATE_DIR` environment variable (e.g. `TELEGRAM_STATE_DIR`),
+2. `CLAUDE_CONFIG_DIR/channels/<provider>` (the isolated config dir),
+3. `~/.claude/channels/<provider>` -- the path in the table above, for a single install.
+
+Nothing changes on an existing single-install host: the per-install directory is
+only used once it exists.
+
 ---
 
 ## .mcp.json -- MCP Servers

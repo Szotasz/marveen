@@ -358,6 +358,19 @@ Minden feladat egy önálló mappa, benne két fájl. Részletes leírás: [sche
 | `~/.claude/channels/telegram/access.json` | Telegram allowFrom lista, párosított senderek |
 | `~/.claude/channels/slack/access.json` | Slack allowFrom lista |
 
+**Több telepítés egy gépen:** a fő ágens csatorna-állapota telepítésenként külön
+könyvtárban él (`~/.claude/channels/<provider>-<MAIN_AGENT_ID>`), különben a
+második telepítés átvenné az első bot-tokenjét és felülírná az `access.json`-ját.
+A feloldás sorrendje -- ezt követi a csatorna-plugin, a dashboard és a
+`channels.sh` watchdog is:
+
+1. `<PROVIDER>_STATE_DIR` környezeti változó (pl. `TELEGRAM_STATE_DIR`),
+2. `CLAUDE_CONFIG_DIR/channels/<provider>` (az izolált config dir),
+3. `~/.claude/channels/<provider>` -- a fenti táblázat útja, egyetlen telepítésnél.
+
+Meglévő, egytelepítéses gépen semmi nem változik: a telepítésenkénti könyvtárra
+csak akkor vált át, ha az már létezik.
+
 ---
 
 ## .mcp.json -- MCP szerverek
