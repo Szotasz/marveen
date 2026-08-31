@@ -458,6 +458,12 @@ MODEL_FLAG=""
 # prints nothing, CFG_ENV stays EMPTY and the agent keeps the shared ~/.claude --
 # strict no-op for existing installs (no setting, no fleet token, no dist build).
 CFG_ENV=""
+# hu: A kiszamolt izolalt CLAUDE_CONFIG_DIR tartos masolata -- a _cfg_dir a blokk
+#     vegen unset-elodik, a csatorna-allapot konyvtar feloldasahoz viszont kesobb
+#     is kell (lasd resolve_main_chan_state_dir).
+# en: Durable copy of the resolved isolated CLAUDE_CONFIG_DIR; _cfg_dir is unset
+#     at the end of the block but the channel-state resolution needs it later.
+MAIN_CFG_DIR=""
 mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
 _node_bin="$(command -v node || true)"
 if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
@@ -465,6 +471,7 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   _cfg_mode="${_cfg_line%%	*}"
   _cfg_dir="${_cfg_line#*	}"
   if [ -n "$_cfg_line" ] && [ -d "$_cfg_dir" ]; then
+    MAIN_CFG_DIR="$_cfg_dir"
     if [ "$_cfg_mode" = "explicit" ]; then
       CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && "
     else
@@ -577,7 +584,6 @@ $TMUX kill-session -t "$SESSION" 2>/dev/null
 # poller env contains *_STATE_DIR=<this main agent's channel dir>; argv does
 # not, so `pkill -f` against the env var never matches. We grep `ps eww -e`
 # instead, which surfaces each process environment on macOS BSD ps.
-MAIN_CHAN_DIR="$INSTALL_DIR/.claude/channels/$CHANNEL_PROVIDER"
 case "$CHANNEL_PROVIDER" in
   slack)    STATE_ENV_VAR="SLACK_STATE_DIR" ;;
   whatsapp) STATE_ENV_VAR="WHATSAPP_STATE_DIR" ;;
@@ -585,6 +591,41 @@ case "$CHANNEL_PROVIDER" in
   discord)  STATE_ENV_VAR="DISCORD_STATE_DIR" ;;
   *)        STATE_ENV_VAR="TELEGRAM_STATE_DIR" ;;
 esac
+
+# hu: A FO ugynok csatorna-allapot konyvtara. A csatorna-plugin sajat feloldasi
+#     sorrendjet tukrozi (a plugin server.ts-eben:
+#     <PROVIDER>_STATE_DIR ?? CLAUDE_CONFIG_DIR/channels/<provider>), hogy a
+#     plugin es a watchdog UGYANARRA a konyvtarra nezzen.
+#
+#     Miert nem fix $HOME-ut: egy gepen tobb telepites is futhat (kulon WEB_PORT,
+#     kulon bot). Fix $HOME/.claude/channels/<provider> mellett mindket telepites
+#     fo ugynoke ugyanazt a .env-t, bot.pid-et es access.json-t hasznalta -- a
+#     masodik telepito felulirta az elso bot-tokenjet, a plugin orphan-killere a
+#     kozos bot.pid alapjan kiloette a masik pollert, a watchdog pedig a masik
+#     telepites PID-jenek eltuneset latta sajat halalanak es ujraindult.
+#     Az izolalt CLAUDE_CONFIG_DIR telepitesenkent kulon (.channels-config), ezert
+#     ez valasztja szet a ket telepitest kod-modositas nelkul is.
+# en: Main agent's channel state dir, mirroring the plugin's own resolution order
+#     so plugin and watchdog look at the SAME directory. A fixed $HOME path made
+#     two installs on one host share one .env/bot.pid/access.json -- token
+#     overwrite, mutual orphan-kill, and a watchdog restart loop.
+# $1 = provider, $2 = state env var name, $3 = isolated CLAUDE_CONFIG_DIR ("" if none)
+resolve_main_chan_state_dir() {
+  _rmcsd_env="$(eval "printf '%s' \"\${$2-}\"")"
+
+  if [ -n "$_rmcsd_env" ]; then
+    printf '%s' "$_rmcsd_env"
+  elif [ -n "$3" ]; then
+    printf '%s' "$3/channels/$1"
+  else
+    printf '%s' "$HOME/.claude/channels/$1"
+  fi
+
+  unset _rmcsd_env
+}
+
+MAIN_CHAN_STATE_DIR="$(resolve_main_chan_state_dir "$CHANNEL_PROVIDER" "$STATE_ENV_VAR" "$MAIN_CFG_DIR")"
+MAIN_CHAN_DIR="$MAIN_CHAN_STATE_DIR"
 ORPHAN_PIDS="$(/bin/ps eww -e 2>/dev/null | awk -v needle="${STATE_ENV_VAR}=${MAIN_CHAN_DIR}" '$0 ~ needle { print $1 }')"
 if [ -n "$ORPHAN_PIDS" ]; then
   # shellcheck disable=SC2086
@@ -956,9 +997,11 @@ START_TS=$(date +%s)
 # Thresholds are deliberately COARSER than the dashboard monitor's (~60-120s)
 # so in normal operation the dashboard acts FIRST and this only fires when the
 # dashboard couldn't -- avoids double-restart races. bot.pid lives at the
-# main-agent channelStateDir(): ~/.claude/channels/<provider>/bot.pid (HOME-,
-# not INSTALL_DIR-relative; see src/channel-provider.ts channelStateDir()).
-MAIN_BOT_PID_FILE="$HOME/.claude/channels/$CHANNEL_PROVIDER/bot.pid"
+# main-agent channel state dir resolved above (resolve_main_chan_state_dir),
+# which mirrors the plugin's own order: <PROVIDER>_STATE_DIR >
+# CLAUDE_CONFIG_DIR/channels/<provider> > $HOME/.claude/channels/<provider>.
+# Telepitesenkent kulon -- lasd src/channel-provider.ts channelStateDir().
+MAIN_BOT_PID_FILE="$MAIN_CHAN_STATE_DIR/bot.pid"
 # Never-started budget: generous so a slow cold-start (WSL first-run, MCP
 # handshake + /mcp unlock retries) is never killed prematurely. The plugin
 # normally writes bot.pid within ~1-2 min; 10 min is a safe ceiling.

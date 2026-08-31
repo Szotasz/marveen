@@ -292,6 +292,34 @@ function maybeAlertSharedConfigCollision(name: string): void {
 // falls back to the shared ~/.claude (degraded, but never a launch failure).
 const ISOLATED_CONFIG_SKIP = new Set(['settings.json', 'plugins', '.credentials.json'])
 
+/**
+ * hu: A FO ugynok csatorna-allapot konyvtaranak celja az izolalt config dirben.
+ *     Egy gepen tobb telepites is futhat, ezert a cel telepitesenkent kulon:
+ *     ~/.claude/channels/<provider>-<agentId> (ugyanaz a nevkonvencio, amit a
+ *     voice-directive.ts is ismer).
+ *
+ *     null-t ad, ha a konyvtar MEG NEM letezik -- ilyenkor a hivo a korabbi
+ *     globalis ~/.claude/channels symlinket hagyja meg. Enelkul egy meglevo
+ *     telepites a frissites utan egy URES konyvtarba nezne, nem talalna a
+ *     bot-tokent, es a csatorna NEMA maradna.
+ * <br />
+ * en: Target for the MAIN agent's channel state inside the isolated config dir,
+ *     per install: ~/.claude/channels/<provider>-<agentId>. Returns null while
+ *     that directory does not exist yet, so an existing install keeps the global
+ *     link instead of pointing at an empty dir and losing its bot token.
+ */
+export function mainAgentChannelsLinkTarget(
+  provider: ChannelProviderType,
+  agentId: string,
+  existsFn: (path: string) => boolean = existsSync,
+): string | null {
+  if (!agentId) return null
+
+  const target = join(homedir(), '.claude', 'channels', `${provider}-${agentId}`)
+
+  return existsFn(target) ? target : null
+}
+
 export function ensureIsolatedChannelConfigDir(
   name: string,
   // null = channel-less agent: provision the isolated dir with EVERY channel
@@ -346,6 +374,7 @@ export function ensureMainAgentIsolatedConfigDir(
     PROJECT_ROOT,
     getProviderType(provider),
     MAIN_AGENT_ID,
+    true,
   )
 }
 
@@ -457,6 +486,9 @@ function provisionIsolatedConfigDir(
   cwd: string,
   providerType: ChannelProviderType | null,
   name: string,
+  // hu: true CSAK a fo ugynokre -- a csatorna-allapot telepitesenkenti kotese
+  //     ra vonatkozik. en: true for the MAIN agent only.
+  isMain = false,
 ): string | null {
   try {
     const realClaude = join(homedir(), '.claude')
@@ -468,6 +500,34 @@ function provisionIsolatedConfigDir(
     //    stale non-symlink (e.g. a prior copy, or a .credentials.json left by an
     //    earlier build) is removed so it can never shadow the env-var auth.
     for (const entry of readdirSync(realClaude)) {
+      // A fo ugynok csatorna-allapota telepitesenkent kulon konyvtar, ha az mar
+      // letezik. A globalis symlink itt azert veszelyes, mert ez a provisioning
+      // MINDEN indulaskor lefut -- egy kezzel szetvalasztott allapotot
+      // visszaallitana a kozosre, es a ket telepites ismet egy .env-en es egy
+      // bot.pid-en osztozna (kolcsonos orphan-kill + watchdog restart-ciklus).
+      // A sub-agentek nem ide tartoznak: ok a spawn-kori TELEGRAM_STATE_DIR
+      // env-bol dolgoznak (lasd agent-process spawn), a symlink naluk kozombos.
+      if (entry === 'channels' && isMain && providerType) {
+        const chanTarget = mainAgentChannelsLinkTarget(providerType, name)
+
+        if (chanTarget) {
+          const chanDir = join(cfg, entry)
+          try {
+            if (lstatSync(chanDir).isSymbolicLink()) rmSync(chanDir, { force: true })
+          } catch { /* absent -> create */ }
+          mkdirSync(chanDir, { recursive: true })
+          const provLink = join(chanDir, providerType)
+          let ok = false
+          try { ok = lstatSync(provLink).isSymbolicLink() && realpathSync(provLink) === chanTarget }
+          catch { /* absent or broken -> relink */ }
+          if (!ok) {
+            try { rmSync(provLink, { recursive: true, force: true }) } catch { /* absent */ }
+            try { symlinkSync(chanTarget, provLink) }
+            catch (err) { logger.warn({ err, name, chanTarget }, 'isolated-config: per-install channels symlink failed') }
+          }
+          continue
+        }
+      }
       if (ISOLATED_CONFIG_SKIP.has(entry)) {
         // Defensively drop a real .credentials.json that an older build may have
         // symlinked/copied here, so the env-var token is the only auth source.

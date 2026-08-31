@@ -19,8 +19,14 @@ if [ "$CHANNEL_PROVIDER" != "telegram" ]; then
 fi
 
 # Load bot token
-if [ -f "$HOME/.claude/channels/telegram/.env" ]; then
-  BOT_TOKEN=$(grep TELEGRAM_BOT_TOKEN "$HOME/.claude/channels/telegram/.env" | cut -d= -f2)
+# hu: A csatorna-allapot konyvtar telepitesenkent kulon lehet (tobb Marveen egy
+#     gepen). A TELEGRAM_STATE_DIR-t a channels.sh adja at; enelkul a regi
+#     globalis ut marad.
+# en: The channel state dir is per-install; TELEGRAM_STATE_DIR comes from
+#     channels.sh, else the previous global path.
+CHAN_STATE_DIR="${TELEGRAM_STATE_DIR:-$HOME/.claude/channels/telegram}"
+if [ -f "$CHAN_STATE_DIR/.env" ]; then
+  BOT_TOKEN=$(grep TELEGRAM_BOT_TOKEN "$CHAN_STATE_DIR/.env" | cut -d= -f2)
 elif [ -f "$INSTALL_DIR/.env" ]; then
   BOT_TOKEN=$(grep TELEGRAM_BOT_TOKEN "$INSTALL_DIR/.env" | cut -d= -f2)
 fi

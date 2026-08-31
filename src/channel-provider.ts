@@ -595,16 +595,64 @@ export function getProviderType(envValue: string | undefined): ChannelProviderTy
   return 'telegram'
 }
 
+/**
+ * hu: A fo ugynok csatorna-allapotat felulbiralo env-valtozo providerenkent.
+ *     Ugyanaz a nev, amit a csatorna-plugin maga is elsobbseggel olvas
+ *     (server.ts: TELEGRAM_STATE_DIR ?? CLAUDE_CONFIG_DIR/channels/telegram),
+ *     igy a plugin es a dashboard ugyanoda mutat.
+ * <br />
+ * en: Per-provider env override for the MAIN agent's channel state dir. Same
+ *     name the channel plugin itself reads with priority, so plugin and
+ *     dashboard resolve to one and the same directory.
+ */
+const CMainStateDirEnvVar: Record<ChannelProviderType, string> = {
+  telegram: 'TELEGRAM_STATE_DIR',
+  slack: 'SLACK_STATE_DIR',
+  discord: 'DISCORD_STATE_DIR',
+  googlechat: 'GOOGLECHAT_STATE_DIR',
+  teams: 'TEAMS_STATE_DIR',
+}
+
+/**
+ * hu: Egy csatorna allapot-konyvtara. Sub-agentnel az agentDir dont; a FO
+ *     ugynoknel a providerenkenti STATE_DIR env, ha be van allitva, kulonben a
+ *     globalis ~/.claude/channels/<provider>.
+ *
+ *     Miert kell az env-ag: egy gepen tobb telepites is futhat (kulon WEB_PORT,
+ *     kulon bot). A fix globalis ut miatt ket telepites fo ugynoke UGYANAZT a
+ *     .env-t, bot.pid-et es access.json-t hasznalta -- a masodik telepito
+ *     felulirta az elso bot-tokenjet, a plugin orphan-killere pedig a kozos
+ *     bot.pid alapjan kiloette a masik telepites polleret (kolcsonos restart-ciklus).
+ *
+ *     Az env a SUB-AGENT agat SZANDEKOSAN nem birlja felul: a dashboard a fo
+ *     session kornyezetebol orokli a valtozot, es ugyanaz a folyamat szamolja a
+ *     fejek utjat is -- felulbiralva minden fej egyetlen konyvtarba omlana.
+ * <br />
+ * en: A channel's state directory. For a sub-agent the agentDir decides; for the
+ *     MAIN agent the per-provider STATE_DIR env wins when set, else the global
+ *     ~/.claude/channels/<provider>. The env deliberately does NOT override the
+ *     sub-agent branch: the dashboard inherits it from the main session, and the
+ *     same process resolves every agent's path -- overriding would collapse the
+ *     whole fleet into one directory.
+ */
 export function channelStateDir(provider: ChannelProviderType, agentDir?: string): string {
-  const base = agentDir
-    ? join(agentDir, '.claude', 'channels')
-    : join(homedir(), '.claude', 'channels')
   const subdir =
     provider === 'slack' ? 'slack'
     : provider === 'discord' ? 'discord'
     : provider === 'googlechat' ? 'googlechat'
     : provider === 'teams' ? 'teams'
     : 'telegram'
+
+  if (!agentDir) {
+    const override = process.env[CMainStateDirEnvVar[provider]]?.trim()
+
+    if (override) return override
+  }
+
+  const base = agentDir
+    ? join(agentDir, '.claude', 'channels')
+    : join(homedir(), '.claude', 'channels')
+
   return join(base, subdir)
 }
 
