@@ -315,8 +315,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/kanban' && method === 'POST') {
     const body = await readBody(req)
     const data = JSON.parse(body.toString())
-    const id = randomUUID().slice(0, 8)
-    createKanbanCard({ id, ...data })
+    // The caller may supply its own id (we use readable slugs for long-lived cards).
+    // Resolve it BEFORE the spread so the stored id and the reported id are the same
+    // value: `{ id, ...data }` let a caller-supplied id win in the row while the
+    // response still echoed the generated one, so anything referencing the returned
+    // id pointed at a card that does not exist -- with HTTP 200.
+    const suppliedId = typeof data.id === 'string' ? data.id.trim() : ''
+    const id = suppliedId || randomUUID().slice(0, 8)
+    createKanbanCard({ ...data, id })
     json(res, { ok: true, id })
     return true
   }
