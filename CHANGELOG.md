@@ -9,6 +9,10 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ## [Unreleased]
 
+### Fixed
+
+- **[API]** `PUT /api/memories/:id` returns `400 parse_error` on invalid JSON body and `400 required` when `content` is absent or whitespace-only; previously threw unhandled exception (500)
+
 ### Added
 
 - **[API]** B2B admin hard-delete tenant+user: DELETE /api/admin/tenants/:id (cascade), DELETE /api/admin/users/:id (self/last-admin guard), user-edit PATCH extended with display_name/email/role; openapi docs for full /admin/users CRUD

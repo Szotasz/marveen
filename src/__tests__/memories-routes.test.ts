@@ -233,6 +233,42 @@ describe('tryHandleMemories', () => {
     expect(out.status).toBe(404)
   })
 
+  it('PUT /api/memories/1 returns 400 for invalid JSON body', async () => {
+    const raw = Buffer.from('{not valid json')
+    const req = new EventEmitter() as any
+    req.method = 'PUT'
+    req.headers = {}
+    setImmediate(() => { req.emit('data', raw); req.emit('end') })
+    const out = { status: 200, body: null as any }
+    const res = {
+      writeHead(s: number) { out.status = s },
+      end(b?: string) { try { out.body = JSON.parse(b || '{}') } catch { out.body = b } },
+    } as any
+    const url = new URL('http://localhost:3420/api/memories/1')
+    const ctx = { req, res, path: url.pathname, method: 'PUT', url, role: 'admin' } as RouteContext
+    const handled = await tryHandleMemories(ctx)
+    expect(handled).toBe(true)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toBe('parse_error')
+  })
+
+  it('PUT /api/memories/1 returns 400 when content is missing', async () => {
+    const { ctx, out } = makeCtx('PUT', '/api/memories/1', { category: 'warm' })
+    const handled = await tryHandleMemories(ctx)
+    expect(handled).toBe(true)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toBe('required')
+    expect(out.body.field).toBe('content')
+  })
+
+  it('PUT /api/memories/1 returns 400 when content is empty string', async () => {
+    const { ctx, out } = makeCtx('PUT', '/api/memories/1', { content: '   ' })
+    const handled = await tryHandleMemories(ctx)
+    expect(handled).toBe(true)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toBe('required')
+  })
+
   it('DELETE /api/memories/1 returns ok when found', async () => {
     const db = await import('../db.js')
     vi.mocked(db.getDb).mockReturnValueOnce({

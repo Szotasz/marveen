@@ -710,7 +710,18 @@ Respond ONLY with JSON, nothing else:
       }
     }
     const body = await readBody(req)
-    const { content, category, tier, agent_id, keywords } = JSON.parse(body.toString()) as { content: string; category?: string; tier?: string; agent_id?: string; keywords?: string }
+    let parsed: { content: string; category?: string; tier?: string; agent_id?: string; keywords?: string }
+    try {
+      parsed = JSON.parse(body.toString())
+    } catch {
+      json(res, { error: 'parse_error', hint: 'Request body is not valid JSON' }, 400)
+      return true
+    }
+    const { content, category, tier, agent_id, keywords } = parsed
+    if (typeof content !== 'string' || content.trim() === '') {
+      json(res, { error: 'required', field: 'content', hint: 'content is required and must be a non-empty string' }, 400)
+      return true
+    }
     if (updateMemory(id, content, tier || category, agent_id, keywords)) { json(res, { ok: true }); return true }
     json(res, { error: 'not_found' }, 404)
     return true
