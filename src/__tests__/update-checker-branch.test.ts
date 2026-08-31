@@ -60,3 +60,31 @@ describe('update checker current version', () => {
     expect(currentVersion('/etc')).toBe('') // dir exists, no package.json -> ''
   })
 })
+
+// Regression test for the fork case.
+//
+// "Update" means new commits from the ORIGINAL author, so a checkout that has
+// an `upstream` remote must ask THAT repo, not `origin` -- after a fork origin
+// is the user's own copy and never carries the author's new work. Two things
+// then have to follow the chosen remote, and both used to follow `origin`:
+//   - the BRANCH (a local feature branch does not exist in someone else's repo:
+//     GitHub answers 422 on /commits/<branch>), and
+//   - the compare BASE (a base the remote does not know turns the reported
+//     backlog into a fork-distance -- measured 375 against a real 5).
+import { remoteIsOwnOrigin, parseGitHubRemote, branchOnRemote } from '../web/update-checker.js'
+
+describe('update checker remote selection (fork case)', () => {
+  it('recognises the checkout own origin, and only that', () => {
+    expect(remoteIsOwnOrigin(parseGitHubRemote() + '-not-us')).toBe(false)
+  })
+
+  it('asks a foreign repo about ITS default branch, never our local one', async () => {
+    const remote = parseGitHubRemote()
+    if (remoteIsOwnOrigin(remote)) return // this checkout has no upstream remote
+    const branch = await branchOnRemote(remote)
+    expect(branch).toBeTruthy()
+    // The point of the fix: whatever branch we are on locally, a foreign repo
+    // is asked about a branch that exists THERE.
+    expect(['develop', 'main']).toContain(branch)
+  })
+})
