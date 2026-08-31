@@ -11,6 +11,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Added
 
+- **[API]** SQL-backed skill storage with tenant isolation (migration 0030): `skills` + `skill_tenant_access` tables; `/api/skills/sql/*` CRUD endpoints with grant/revoke access management; fleet skills hidden from B2B tenants by default
 - **[API]** B2B admin hard-delete tenant+user: DELETE /api/admin/tenants/:id (cascade), DELETE /api/admin/users/:id (self/last-admin guard), user-edit PATCH extended with display_name/email/role; openapi docs for full /admin/users CRUD
 - workspace docs dashboard page (list, view, delete)
 - add DELETE /api/admin/tenants/:id with full cascade
