@@ -2,9 +2,23 @@
 // a temporary filesystem fixture. Proves the endpoint actually returns skills
 // for the main agent (PROJECT_ROOT path) and for a sub-agent, not just that
 // the source text contains the right patterns.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+
+vi.mock('../db.js', () => ({
+  getSkill: vi.fn().mockReturnValue(undefined),
+  createSkill: vi.fn().mockImplementation((opts: any) => ({ ...opts, is_global: opts.is_global ? 1 : 0, created_by: null, created_at: 0, updated_at: 0 })),
+  updateSkill: vi.fn().mockReturnValue(undefined),
+  deleteSkill: vi.fn().mockReturnValue(true),
+  seedSkillIfAbsent: vi.fn().mockReturnValue(true),
+  listSkillsForTenant: vi.fn().mockReturnValue([]),
+  listAllSkills: vi.fn().mockReturnValue([]),
+  grantSkillAccess: vi.fn(),
+  revokeSkillAccess: vi.fn().mockReturnValue(true),
+  listSkillAccess: vi.fn().mockReturnValue([]),
+}))
+
 import { tryHandleSkills } from '../web/routes/skills.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
 import { agentDir } from '../web/agent-config.js'

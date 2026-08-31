@@ -12,6 +12,7 @@ import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
 import { sanitizeAgentName, sanitizeSkillName, safeJoin } from '../sanitize.js'
 import type { RouteContext } from './types.js'
+import { createSkill, deleteSkill, seedSkillIfAbsent } from '../../db.js'
 
 // Marveen's skills live at the global ~/.claude/skills/ path (shared with
 // the operator's Claude Code install); sub-agents under their own
@@ -137,6 +138,20 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
         return true
       }
 
+      const importIsGlobal = name === MAIN_AGENT_ID
+      for (const dirName of extracted) {
+        const skillMdPath = join(skillsDir, dirName, 'SKILL.md')
+        let content = ''
+        try { content = readFileSync(skillMdPath, 'utf-8') } catch { /* best effort */ }
+        const desc = readSkillDescription(join(skillsDir, dirName))
+        const importSqlId = importIsGlobal ? `global/${dirName}` : `agent/${name}/${dirName}`
+        try {
+          seedSkillIfAbsent({ id: importSqlId, name: dirName, description: desc, content, tenant_id: 'fleet', is_global: importIsGlobal })
+        } catch (sqlErr) {
+          logger.warn({ dirName, err: sqlErr }, 'Failed to upsert imported skill into SQL')
+        }
+      }
+
       logger.info({ name, skills: extracted }, 'Skill(s) imported')
       json(res, { ok: true, imported: extracted })
       return true
@@ -168,6 +183,8 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
       return true
     }
     if (!existsSync(skillDir)) { json(res, { error: 'not_found', hint: 'Skill not found' }, 404); return true }
+    const deleteSqlId = name === MAIN_AGENT_ID ? `global/${skillName}` : `agent/${name}/${skillName}`
+    deleteSkill(deleteSqlId)
     rmSync(skillDir, { recursive: true, force: true })
     json(res, { ok: true })
     return true
@@ -210,14 +227,31 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
 
     const skillDir = join(skillsRootFor(agentName), skillName)
     if (existsSync(skillDir)) { json(res, { error: 'conflict', hint: 'Skill already exists' }, 409); return true }
-    mkdirSync(skillDir, { recursive: true })
+
+    let skillMd: string
+    try {
+      skillMd = await generateSkillMd(skillName, description)
+    } catch {
+      json(res, { error: 'internal_error', hint: 'Failed to generate skill' }, 500)
+      return true
+    }
+
+    const agentSqlId = agentName === MAIN_AGENT_ID ? `global/${skillName}` : `agent/${agentName}/${skillName}`
+    const agentIsGlobal = agentName === MAIN_AGENT_ID
+    try {
+      createSkill({ id: agentSqlId, name: skillName, description, content: skillMd, tenant_id: 'fleet', is_global: agentIsGlobal })
+    } catch {
+      json(res, { error: 'conflict', hint: 'Skill already exists' }, 409)
+      return true
+    }
 
     try {
-      const skillMd = await generateSkillMd(skillName, description)
+      mkdirSync(skillDir, { recursive: true })
       atomicWriteFileSync(join(skillDir, 'SKILL.md'), skillMd)
     } catch (err) {
+      deleteSkill(agentSqlId)
       rmSync(skillDir, { recursive: true, force: true })
-      json(res, { error: 'internal_error', hint: 'Failed to generate skill' }, 500)
+      json(res, { error: 'internal_error', hint: 'Failed to create skill file' }, 500)
       return true
     }
 
