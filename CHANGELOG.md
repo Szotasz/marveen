@@ -16,6 +16,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 ### Added
 
 - **[API]** SQL-backed skill storage with tenant isolation (migration 0030): `skills` + `skill_tenant_access` tables; `/api/skills/sql/*` CRUD endpoints with grant/revoke access management; fleet skills hidden from B2B tenants by default
+- `scripts/materialize-skills.ts` one-time idempotent script to seed file-based skills (global `~/.claude/skills/` and agent-local `.claude/skills/`) into the SQL `skills` table via INSERT OR IGNORE; supports `--dry-run`
 - **[API]** scheduled tasks SQL-backed store: new `schedules` table (migration 0029) replaces file-based runner source; GET /api/schedules tenant-scoped for non-admin callers, POST auto-stamps tenant_id, DELETE/PUT/toggle/run enforce cross-tenant 404 guard; fleet tasks (tenant_id=null) visible to admin only; `scripts/migrate-schedules-to-db.ts` for one-time seeding; dashboard schedules page gains tenant-selector for global admin
 - **[API]** B2B admin hard-delete tenant+user: DELETE /api/admin/tenants/:id (cascade), DELETE /api/admin/users/:id (self/last-admin guard), user-edit PATCH extended with display_name/email/role; openapi docs for full /admin/users CRUD
 - workspace docs dashboard page (list, view, delete)
