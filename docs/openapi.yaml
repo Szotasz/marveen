@@ -3407,6 +3407,234 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+    delete:
+      tags: [admin-tenants]
+      operationId: deleteTenant
+      summary: Hard-delete a tenant
+      description: |
+        Permanently deletes a tenant and all associated data (memories, artifacts,
+        users, partner senders, device-key assignments). The `default` tenant
+        cannot be deleted. Requires `admin:all` role.
+      parameters:
+        - name: tenant_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Tenant deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  tenant_id:
+                    type: string
+                  memories_deleted:
+                    type: integer
+        "403":
+          description: "`forbidden` — cannot delete the default tenant"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "`not_found`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /admin/users:
+    post:
+      tags: [admin-tenants]
+      operationId: createUser
+      summary: Create a dashboard user
+      description: Creates a scoped (tenant) or global admin user. Requires `admin:all` role.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password, role]
+              properties:
+                username:
+                  type: string
+                  minLength: 3
+                  maxLength: 64
+                password:
+                  type: string
+                  minLength: 12
+                role:
+                  type: string
+                  enum: [viewer, read_only, agent, admin]
+                tenant_id:
+                  type: string
+                  nullable: true
+                  description: "Required for non-admin roles; must be null for admin role."
+                email:
+                  type: string
+                  nullable: true
+                display_name:
+                  type: string
+                  nullable: true
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardUserPublic"
+        "400":
+          description: "`invalid_value` or `required`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: "`conflict` — username already exists"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    get:
+      tags: [admin-tenants]
+      operationId: listUsers
+      summary: List dashboard users
+      description: Returns dashboard users. Pass `tenant_id` to filter by tenant. Requires `admin:all` role.
+      parameters:
+        - name: tenant_id
+          in: query
+          schema:
+            type: string
+        - name: include_disabled
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: User list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DashboardUserPublic"
+                  total:
+                    type: integer
+
+  /admin/users/{userId}:
+    patch:
+      tags: [admin-tenants]
+      operationId: updateUser
+      summary: Update a dashboard user
+      description: |
+        Partial update — at least one field required. Validates final state
+        (merged submitted + existing) for role/tenant_id consistency.
+        Requires `admin:all` role.
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role:
+                  type: string
+                  enum: [viewer, read_only, agent, admin]
+                tenant_id:
+                  type: string
+                  nullable: true
+                password:
+                  type: string
+                  minLength: 12
+                  description: Plain-text password; server hashes it.
+                disabled:
+                  type: boolean
+                email:
+                  type: string
+                  nullable: true
+                display_name:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardUserPublic"
+        "400":
+          description: "`required` or `invalid_value`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "`forbidden` — self-disable or last-admin protection"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "`not_found`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    delete:
+      tags: [admin-tenants]
+      operationId: deleteUser
+      summary: Hard-delete a dashboard user
+      description: |
+        Permanently removes the user. Cannot delete your own account or the
+        last active admin. Requires `admin:all` role.
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: User deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        "403":
+          description: "`forbidden` — self-delete or last-admin protection"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "`not_found`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /admin/partner-senders:
     post:
       tags: [admin-partner-senders]

@@ -2416,6 +2416,40 @@
       </div>
     </div>
 
+    <!-- User edit modal -->
+    <div class="modal-overlay" id="userEditModal" hidden>
+      <div class="modal" style="max-width:480px">
+        <h2>Felhasználó szerkesztése</h2>
+        <div style="display:grid;gap:12px;margin-top:16px">
+          <div class="form-group">
+            <label class="form-label">Megjelenített név</label>
+            <input type="text" id="editUserDisplayName" class="input">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Email</label>
+            <input type="email" id="editUserEmail" class="input">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Szerepkör</label>
+            <select id="editUserRole" class="admin-b2b-select">
+              <option value="viewer">viewer</option>
+              <option value="read_only">read_only</option>
+              <option value="agent">agent</option>
+              <option value="admin">admin</option>
+            </select>
+          </div>
+          <div class="form-group" id="editUserTenantGroup">
+            <label class="form-label">Tenant</label>
+            <select id="editUserTenantId" class="admin-b2b-select"></select>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px">
+          <button class="btn" data-variant="secondary" data-close="userEditModal">Mégse</button>
+          <button class="btn" data-variant="primary" id="userEditConfirmBtn">Mentés</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Modal: Backup törlés megerősítés -->
     <div class="modal-overlay" id="backupsDeleteModal" hidden>
       <div class="modal" style="max-width:420px">

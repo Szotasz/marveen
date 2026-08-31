@@ -428,6 +428,10 @@ export type CreateTenantResponse = Tenant
 
 export type UpdateTenantResponse = Tenant
 
+export type CreateUserResponse = DashboardUserPublic
+
+export type UpdateUserResponse = DashboardUserPublic
+
 export type CreatePartnerSenderResponse = PartnerSender
 
 export type DisablePartnerSenderResponse = OkResponse
