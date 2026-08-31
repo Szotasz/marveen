@@ -53,6 +53,15 @@ function fail(uzenet: string): never {
 interface Args {
   parancs: string
   fajl?: string
+  /**
+   * HOVA kerulnek a letoltott skillek. AZ ALAPERTELMEZES A USER-HATOKOR, es ez
+   * termek-dontes, nem kenyelmi: az ugynok MUNKAKONYVTARA valtozik, ez a
+   * szabaly viszont MINDENHOL ervenyes kell legyen. Ha a projekt-hatokor lenne
+   * az alap, a szabaly csak abban az egy konyvtarban letezne, ahol a bekotes
+   * futott -- masutt az ugynok nem tudna rola, es HTTP-zne a parancs helyett.
+   * A projekt-hatokor kapcsolokent marad, ha valaki szandekosan egy repohoz
+   * akarja kotni.
+   */
   scope: 'project' | 'user'
   apiBase: string
   accessToken?: string
@@ -66,7 +75,7 @@ interface Args {
 function parseArgs(argv: string[]): Args {
   const args: Args = {
     parancs: argv[0] || '',
-    scope: 'project',
+    scope: 'user',
     apiBase: ALAP_API,
     rotate: false,
     accessToken: process.env.MARVEEN_ACCESS_TOKEN,
@@ -90,7 +99,7 @@ function parseArgs(argv: string[]): Args {
 function sugo(): void {
   console.log(`marveen skill -- skillek es feltoltes a marveen.io kozossegbe
 
-  npm run skill -- enroll [--user|--project] [--rotate]
+  npm run skill -- enroll [--project] [--rotate]
       Egyszeri bekotes: attest-kulcs kerese es helyi tarolas (0600).
       Hitelesites: MARVEEN_ACCESS_TOKEN vagy --access-token; enelkul email+jelszo bekerese.
 
@@ -102,8 +111,12 @@ function sugo(): void {
   npm run skill -- upload <fajl>
       Helyi szken, majd tiszta eredmeny eseten alairt feltoltes.
 
-  npm run skill -- update [--user|--project]
+  npm run skill -- update [--project]
       A skillek es a hasznalati szabalyok ujrahuzasa a szerverrol.
+
+  A skillek alapbol a FELHASZNALOI mappaba kerulnek (~/.claude/skills), hogy a
+  szabaly minden munkakonyvtarban ervenyes legyen. A --project kapcsoloval az
+  aktualis konyvtar .claude/skills mappajaba irja oket.
 
   npm run skill -- status
       Mi van bekotve, hova, es milyen jogosultsaggal.`)
