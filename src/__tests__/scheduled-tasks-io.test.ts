@@ -35,6 +35,16 @@ vi.mock('../web/atomic-write.js', () => ({
     require('node:fs').writeFileSync(path, content)
   }),
 }))
+// DB layer mock: countSchedules=0 forces file-based path (tests test the file IO)
+vi.mock('../db.js', () => ({
+  countSchedules:    vi.fn().mockReturnValue(0),
+  getScheduleFromDb: vi.fn().mockReturnValue(undefined),
+  upsertSchedule:    vi.fn(),
+  listSchedulesFromDb: vi.fn().mockReturnValue([]),
+  deleteSchedule:    vi.fn(),
+  setScheduleEnabled: vi.fn(),
+  patchSchedule:     vi.fn(),
+}))
 
 import {
   parseSkillMdFrontmatter,
