@@ -1,0 +1,28 @@
+{
+  "id": "marketer-permissive",
+  "label": "Marketinges (permissive)",
+  "description": "Mint a marketer profil (ugyanaz az allow/deny guardrail), de permissive modban fut -> nem ker engedelyt minden tool-hivasnal. A deny-lista (sudo/rm/.ssh/.env/POST) a bypass ELOTT fut, tehat tovabbra is tiltva. Prompt-injection kockazat magasabb mint strictnel; egress-gate + deny a kompenzalo kontroll.",
+  "permissionMode": "permissive",
+  "filesystem": {
+    "allow": [
+      "Read(${AGENT_DIR}/**)",
+      "Write(${AGENT_DIR}/**)",
+      "Edit(${AGENT_DIR}/**)",
+      "Read(${HOME}/Downloads/**)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "WebFetch(*)",
+      "WebSearch(*)"
+    ],
+    "deny": [
+      "Read(${HOME}/.ssh/**)",
+      "Read(${HOME}/.aws/**)",
+      "Read(${HOME}/.gnupg/**)",
+      "Read(${HOME}/.env)",
+      "Read(**/.env)",
+      "Bash(sudo:*)",
+      "Bash(rm:*)",
+      "Bash(curl -X POST:*)"
+    ]
+  }
+}
