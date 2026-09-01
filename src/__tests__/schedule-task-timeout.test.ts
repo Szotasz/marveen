@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { decideTaskTimeout, resolveStuckTimeoutMs, TASK_FIRE_GRACE_MS, TASK_FIRE_TIMEOUT_MS } from '../web/schedule-runner.js'
+import { decideTaskTimeout, resolveStuckTimeoutMs, TASK_FIRE_GRACE_MS, TASK_FIRE_TIMEOUT_MS, isTaskCompletionEvidence } from '../web/schedule-runner.js'
 import type { TaskInflightEntry } from '../web/schedule-runner.js'
 
 // Tests for the post-fire timeout watchdog.
@@ -259,5 +259,46 @@ describe('resolveStuckTimeoutMs: the threshold is per task', () => {
     const src = readFileSync(join(__dirname, '../web/schedule-runner.ts'), 'utf-8')
     expect(src).toMatch(/timeoutMs: entry\.timeoutMs,/)
     expect(src).toMatch(/timeoutMs: resolveStuckTimeoutMs\(task\),/)
+  })
+})
+
+// reauth-healer.ts's recent-task liveness sanity check (2026-08-24
+// false-restart incident) relies on
+// getLastTaskCompletedAt() only ever recording a GENUINE completion (idle),
+// never a stuck task that got evicted after maxTrackMs without ever going
+// idle -- that eviction is the opposite of liveness proof, and must not
+// silently start counting as one via a careless refactor (e.g. swapping the
+// call site to key off `decision === 'clear'`, which fires on BOTH paths).
+//
+// decideTaskTimeout's own 'lost' delivery tracking (sawTurn, 2026-08-23
+// incident) covers a DIFFERENT bug -- a session wedged at 100% context
+// accepts keystrokes and reads idle forever without ever running the task.
+// isTaskCompletionEvidence takes a second parameter (sawTurn) so that same
+// "idle but never actually ran" state cannot ALSO be misread as reauth-healer
+// liveness proof -- the two checks guard against different symptoms of the
+// same underlying gap (idle alone is not proof of anything) and need to stay
+// consistent with each other.
+describe('isTaskCompletionEvidence', () => {
+  it('idle WITH sawTurn is completion evidence', () => {
+    expect(isTaskCompletionEvidence('idle', true)).toBe(true)
+  })
+
+  it('idle WITHOUT sawTurn is NOT completion evidence -- the "lost" case, task never actually ran', () => {
+    expect(isTaskCompletionEvidence('idle', false)).toBe(false)
+  })
+
+  it('busy is NOT completion evidence (task still running, or evicted while busy)', () => {
+    expect(isTaskCompletionEvidence('busy', true)).toBe(false)
+    expect(isTaskCompletionEvidence('busy', false)).toBe(false)
+  })
+
+  it('null pane state is NOT completion evidence (capture failed)', () => {
+    expect(isTaskCompletionEvidence(null, true)).toBe(false)
+    expect(isTaskCompletionEvidence(null, false)).toBe(false)
+  })
+
+  it('the sweep only records completion on genuine idle+sawTurn, not on the raw clear decision (fix-revert guard)', () => {
+    const src = readFileSync(join(__dirname, '../web/schedule-runner.ts'), 'utf-8')
+    expect(src).toMatch(/if \(isTaskCompletionEvidence\(state, entry\.sawTurn\)\) \{\s*\n\s*lastTaskCompletedAtMs\.set\(entry\.session, now\)/)
   })
 })

@@ -9,6 +9,7 @@ import { quarantineFleetTokenIfDead } from './claude-credentials-guard.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { detectReauthNeeded } from './reauth-detect.js'
+import { getLastTaskCompletedAt } from './schedule-runner.js'
 import { loginSequence, literalKeyArgs, specialKeyArgs } from './tmux-keys.js'
 import { withSessionSendLock } from './session-send-lock.js'
 
@@ -41,6 +42,12 @@ const DEAD_PROBE_THRESHOLD = 3          // ~9 min of consecutive dead-token prob
 // (owner request 2026-07-30: "elég pár óránként jelezni" -- a 30 min cadence
 // produced ~10 identical alerts in one morning).
 const ESCALATION_COOLDOWN_MS = 3 * 60 * 60 * 1000 // 1 alert / agent / 3h (re-alerts if still dead)
+// A completed scheduled task counts as liveness proof for this long after it
+// finished (main agent only).
+// Deliberately much shorter than ESCALATION_COOLDOWN_MS so a genuinely dead
+// token is never masked for long: it only takes effect while there is
+// recent, real evidence of a working session.
+const RECENT_TASK_LIVENESS_WINDOW_MS = 20 * 60 * 1000 // 20 min
 
 export interface ReauthHealerState {
   consecutiveDead: number
@@ -68,6 +75,15 @@ export interface ReauthHealerInput {
    * restart -- startAgentProcess re-seeds hasCompletedOnboarding.
    */
   isFirstRunGate?: boolean
+  /**
+   * Milliseconds since a scheduled task last cleanly completed on this
+   * session, or null if unknown. Only consulted for the main agent (isMain)
+   * -- sub-agents keep the existing behavior unchanged, this is scoped to
+   * the 2026-08-24 main-session false-restart incident. A session that just
+   * finished an LLM-backed task cannot simultaneously have a dead OAuth token, so this
+   * overrides a marker-based dead reading.
+   */
+  msSinceLastCompletedTask: number | null
   prev: ReauthHealerState
   nowMs: number
 }
@@ -75,6 +91,8 @@ export interface ReauthHealerInput {
 export interface ReauthHealerThresholds {
   threshold: number
   cooldownMs: number
+  /** Window within which a completed task counts as liveness proof (main agent only). */
+  recentTaskLivenessWindowMs: number
 }
 
 export interface ReauthHealerDecision {
@@ -95,10 +113,24 @@ export const NO_REAUTH_STATE: ReauthHealerState = { consecutiveDead: 0, lastActi
  * into the session every tick) and never fires for the main agent.
  */
 export function decideReauthAction(input: ReauthHealerInput, t: ReauthHealerThresholds): ReauthHealerDecision {
-  const { isDeadToken, sessionAlive, isMain, canInteractiveLogin, isFirstRunGate, prev, nowMs } = input
+  const { isDeadToken, sessionAlive, isMain, canInteractiveLogin, isFirstRunGate, msSinceLastCompletedTask, prev, nowMs } = input
 
   // Clean / not-applicable: end the spell, allow a fresh alert next time.
   if (!isDeadToken || !sessionAlive) {
+    return { sendKeys: false, restartAgent: false, restartMain: false, escalate: false, next: NO_REAUTH_STATE }
+  }
+
+  // Sanity check (main agent only, István döntése 2026-08-25): a session
+  // that demonstrably just finished a scheduled task's LLM turn cannot
+  // simultaneously have a dead OAuth token -- the marker-based "dead"
+  // reading is a false positive in that case (root cause: reauth-detect.ts
+  // falls back to a context-blind scrollback tail-scan whenever no input
+  // box is visible, i.e. exactly while a task is actively generating -- the
+  // 2026-08-24 incident this fixes. Treated exactly like a clean probe: the spell ends, no
+  // restart/escalation fires from this reading. Re-evaluated fresh on the
+  // next probe, so a genuinely still-dead token is not masked for long --
+  // the liveness window is far shorter than the escalation cooldown.
+  if (isMain && msSinceLastCompletedTask != null && msSinceLastCompletedTask <= t.recentTaskLivenessWindowMs) {
     return { sendKeys: false, restartAgent: false, restartMain: false, escalate: false, next: NO_REAUTH_STATE }
   }
 
@@ -283,9 +315,20 @@ function checkSession(label: string, session: string, isMain: boolean, quiet: bo
   // The reasons produced by the two first-run-gate markers in reauth-detect.
   const isFirstRunGate = /onboarding picker|sign-in screen/i.test(reauth.reason ?? '')
 
+  const nowMs = Date.now()
+  const lastCompleted = isMain ? getLastTaskCompletedAt(session) : null
+  const msSinceLastCompletedTask = lastCompleted != null ? nowMs - lastCompleted : null
+
+  if (isMain && reauth.needsReauth && sessionAlive && msSinceLastCompletedTask != null && msSinceLastCompletedTask <= RECENT_TASK_LIVENESS_WINDOW_MS) {
+    logger.info(
+      { label, session, reason: reauth.reason, msSinceLastCompletedTask },
+      'reauth-healer: dead-token reading overridden -- session completed a scheduled task within the liveness window',
+    )
+  }
+
   const decision = decideReauthAction(
-    { isDeadToken: reauth.needsReauth, sessionAlive, isMain, canInteractiveLogin: hostCanInteractiveLogin(), isFirstRunGate, prev, nowMs: Date.now() },
-    { threshold: DEAD_PROBE_THRESHOLD, cooldownMs: ESCALATION_COOLDOWN_MS },
+    { isDeadToken: reauth.needsReauth, sessionAlive, isMain, canInteractiveLogin: hostCanInteractiveLogin(), isFirstRunGate, msSinceLastCompletedTask, prev, nowMs },
+    { threshold: DEAD_PROBE_THRESHOLD, cooldownMs: ESCALATION_COOLDOWN_MS, recentTaskLivenessWindowMs: RECENT_TASK_LIVENESS_WINDOW_MS },
   )
 
   if (decision.next.consecutiveDead === 0) {

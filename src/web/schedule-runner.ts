@@ -151,6 +151,46 @@ export function resolveStuckTimeoutMs(
 // Active task/heartbeat injections keyed by `${taskName}@${agentName}`.
 const taskInflightMap = new Map<string, TaskInflightEntry>()
 
+// Session -> ms-epoch of the last time a scheduled task on it cleanly
+// finished (pane returned to idle after injection). Consumed by
+// reauth-healer.ts as a sanity check before a main-agent force-restart on a
+// "dead OAuth token" reading -- a session that just completed an LLM-backed
+// task cannot simultaneously have a dead token (2026-08-25 false-restart
+// incident).
+const lastTaskCompletedAtMs = new Map<string, number>()
+
+/**
+ * Milliseconds-epoch timestamp of the last time a scheduled task on this
+ * session cleanly finished (pane returned to idle after injection) -- NOT
+ * when it merely fired, and NOT when it was evicted via maxTrackMs (that is
+ * the "never went idle, probably stuck" path, the opposite of liveness
+ * evidence). null if unknown/never observed since process start.
+ */
+export function getLastTaskCompletedAt(session: string): number | null {
+  return lastTaskCompletedAtMs.get(session) ?? null
+}
+
+/**
+ * True when a pane state constitutes genuine "task finished successfully"
+ * evidence -- idle only. Deliberately excludes the maxTrackMs-eviction
+ * 'clear' path in decideTaskTimeout() (a task that never went idle within
+ * the tracking window, i.e. probably stuck/abandoned -- the opposite of
+ * liveness proof), AND excludes origin/main's 'lost' path below (idle with
+ * no sawTurn evidence -- the delivery silently never started a turn, the
+ * OPPOSITE of a completed task, even though the pane also reads idle there).
+ * Exported so this distinction is unit-testable without tmux I/O or the
+ * full sweep loop.
+ */
+export function isTaskCompletionEvidence(paneState: PaneState | null, sawTurn: boolean): boolean {
+  // idle alone is NOT enough: a session wedged at 100% context accepts the
+  // injected keystrokes and reads idle before, during, and forever after
+  // (the 2026-08-23 'lost' incident -- see decideTaskTimeout below). Without
+  // sawTurn, a genuinely-stuck session would be recorded as "just completed a
+  // task", which is exactly the false liveness signal reauth-healer's sanity
+  // check must not receive.
+  return paneState === 'idle' && sawTurn
+}
+
 export type TaskTimeoutDecision = 'clear' | 'alert' | 'hold' | 'lost'
 
 // Pure: decide what the watchdog should do for a single in-flight entry this
@@ -1327,6 +1367,16 @@ export function startScheduleRunner(): NodeJS.Timeout {
           const mtime = readTranscriptMtimeFromProjectDir(entry.workingDir, entry.configDir)
           if (mtime != null && mtime > entry.injectedAt) entry.sawTurn = true
         }
+      }
+      // Genuine completion evidence -- deliberately separate from the
+      // decideTaskTimeout() 'clear' decision below, which ALSO fires on
+      // maxTrackMs eviction (a task that never went idle, i.e. probably
+      // stuck/abandoned -- the opposite of liveness proof) AND on a 'lost'
+      // delivery (idle, but sawTurn never true -- see isTaskCompletionEvidence's
+      // own doc comment). Recorded before the decision so a stuck-then-evicted
+      // or lost-then-cleared entry never touches this map.
+      if (isTaskCompletionEvidence(state, entry.sawTurn)) {
+        lastTaskCompletedAtMs.set(entry.session, now)
       }
       const decision = decideTaskTimeout(entry, state, now, {
         graceMs: TASK_FIRE_GRACE_MS,

@@ -1,12 +1,13 @@
 import { describe, it, expect } from 'vitest'
 import { decideReauthAction, NO_REAUTH_STATE, type ReauthHealerState } from '../web/reauth-healer.js'
 
-const T = { threshold: 3, cooldownMs: 30 * 60 * 1000 }
+const T = { threshold: 3, cooldownMs: 30 * 60 * 1000, recentTaskLivenessWindowMs: 20 * 60 * 1000 }
 const base = (over: Partial<Parameters<typeof decideReauthAction>[0]> = {}) => ({
   isDeadToken: true,
   sessionAlive: true,
   isMain: false,
   canInteractiveLogin: true,
+  msSinceLastCompletedTask: null,
   prev: NO_REAUTH_STATE,
   nowMs: 1_000_000,
   ...over,
@@ -182,6 +183,58 @@ describe('decideReauthAction: restartMain (main agent dead-token restart)', () =
       isMain: true,
       prev: { consecutiveDead: 12, lastActionAtMs },
       nowMs: lastActionAtMs + 31 * 60 * 1000,
+    }), T)
+    expect(d.restartMain).toBe(true)
+    expect(d.escalate).toBe(true)
+  })
+})
+
+// 2026-08-24 false-restart incident: 4 main-agent restarts in one day, all
+// exactly ESCALATION_COOLDOWN_MS apart, all reason "Not logged in", while
+// scheduled tasks demonstrably completed successfully minutes before each
+// one -- proof the session was never actually dead. Fix: a session that just finished a
+// scheduled task's LLM turn cannot simultaneously have a dead OAuth token,
+// so recent completion evidence overrides a marker-based dead reading for
+// the main agent, exactly like a clean probe.
+describe('decideReauthAction: recent-task sanity check (main agent only)', () => {
+  it('recent task completion (5min ago) overrides a dead reading -- ends the spell', () => {
+    const d = decideReauthAction(base({
+      isMain: true,
+      msSinceLastCompletedTask: 5 * 60 * 1000,
+      prev: { consecutiveDead: 5, lastActionAtMs: null },
+    }), T)
+    expect(d.restartMain).toBe(false)
+    expect(d.escalate).toBe(false)
+    expect(d.next).toEqual(NO_REAUTH_STATE)
+  })
+
+  it('stale task completion (25min ago, outside the window) does not override -- normal logic applies', () => {
+    const d = decideReauthAction(base({
+      isMain: true,
+      msSinceLastCompletedTask: 25 * 60 * 1000,
+      prev: { consecutiveDead: 2, lastActionAtMs: null },
+      nowMs: 2_000_000,
+    }), T)
+    expect(d.restartMain).toBe(true)
+    expect(d.escalate).toBe(true)
+  })
+
+  it('does NOT apply to sub-agents, even with recent completion evidence', () => {
+    const d = decideReauthAction(base({
+      isMain: false,
+      msSinceLastCompletedTask: 5 * 60 * 1000,
+      prev: { consecutiveDead: 2, lastActionAtMs: null },
+    }), T)
+    expect(d.escalate).toBe(true)
+    expect(d.sendKeys).toBe(true)
+  })
+
+  it('null completion evidence (never observed) does not override -- normal logic applies', () => {
+    const d = decideReauthAction(base({
+      isMain: true,
+      msSinceLastCompletedTask: null,
+      prev: { consecutiveDead: 2, lastActionAtMs: null },
+      nowMs: 2_000_000,
     }), T)
     expect(d.restartMain).toBe(true)
     expect(d.escalate).toBe(true)
