@@ -1609,6 +1609,7 @@ window._i18n.hu = {
   'projects.title':              'Projektek',
   'projects.subtitle':           'Ember-nyelvű áttekintés a Kanban-táblán élő projektekről',
   'projects.empty':              'Egyetlen kanban-kártyához sincs még projekt hozzárendelve.',
+  'projects.filter_empty':       'A kiválasztott szűrőknek egyik projekt sem felel meg.',
   'projects.load_error':         'A projekt-áttekintés betöltése sikertelen.',
   'projects.save_error':         'A leírás mentése sikertelen.',
   'projects.no_description':     'Még nincs leírás -- kattints a szerkesztésre.',
@@ -1621,6 +1622,8 @@ window._i18n.hu = {
   'projects.no_assignee':        'nincs hozzárendelve',
   'projects.view_in_kanban':     'Megnyitás a Kanban táblán →',
   'projects.cards_done':         '{done}/{total} kész',
+  'projects.filter.done':        'Elkészült',
+  'projects.filter.in_progress': 'Folyamatban',
   'kanban.filter.group_priority':'Prioritás szerint',
 
   // --- Kanban Gantt/idővonal nézet ---

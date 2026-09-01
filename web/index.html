@@ -1131,9 +1131,13 @@
 
 <!-- === Projects Page === -->
     <div class="page" id="projectsPage" hidden>
-      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px;">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
         <h2 style="margin:0" data-i18n="projects.title">Projektek</h2>
         <span style="font-size:12px;color:var(--text-muted)" data-i18n="projects.subtitle">Ember-nyelvű áttekintés a Kanban-táblán élő projektekről</span>
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:16px;">
+        <button class="view-btn active" id="projectsFilterDone" style="width:auto;padding:0 12px;" data-i18n="projects.filter.done">Elkészült</button>
+        <button class="view-btn active" id="projectsFilterInProgress" style="width:auto;padding:0 12px;" data-i18n="projects.filter.in_progress">Folyamatban</button>
       </div>
       <div id="projectsEmpty" class="schedule-empty" hidden data-i18n="projects.empty">Egyetlen kanban-kártyához sincs még projekt hozzárendelve.</div>
       <div class="projects-grid" id="projectsGrid"></div>

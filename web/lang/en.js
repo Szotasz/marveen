@@ -1607,6 +1607,7 @@ window._i18n.en = {
   'projects.title':              'Projects',
   'projects.subtitle':           'Human-readable overview of the live projects on the Kanban board',
   'projects.empty':              'No kanban card has a project assigned yet.',
+  'projects.filter_empty':       'No project matches the current filters.',
   'projects.load_error':         'Failed to load the project overview.',
   'projects.save_error':         'Failed to save the description.',
   'projects.no_description':     'No description yet -- click to edit.',
@@ -1619,6 +1620,8 @@ window._i18n.en = {
   'projects.no_assignee':        'unassigned',
   'projects.view_in_kanban':     'Open on the Kanban board →',
   'projects.cards_done':         '{done}/{total} done',
+  'projects.filter.done':        'Done',
+  'projects.filter.in_progress': 'In progress',
 
   // --- Kanban Gantt/timeline view ---
   'kanban.view.board':              'Board',

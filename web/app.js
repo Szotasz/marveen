@@ -11611,6 +11611,22 @@ function formatRelative(ts) {
 // kanbanAssignees (populated by loadKanban()) so the page works correctly
 // even if the user opens Projects before ever visiting Kanban.
 let _projectsAssignees = []
+// Last fetched summaries, kept so the status filter toggles below can
+// re-render instantly without a round trip -- the summary endpoint already
+// carries everything the filter needs (cardTotal/cardDone), so this is a
+// pure client-side filter, no new API.
+let _projectsLastSummaries = []
+let projectsShowDone = true
+let projectsShowInProgress = true
+
+// A project's overall state, derived the same way the card-count badge is:
+// "done" once every one of its (non-archived) cards is done, and only once
+// it has at least one card -- a project with zero live cards never reaches
+// here anyway (listKanbanProjectSummaries excludes it), but cardTotal===0
+// is guarded regardless so a future zero-card summary can't misreport as done.
+function projectOverallStatus(p) {
+  return p.cardTotal > 0 && p.cardDone === p.cardTotal ? 'done' : 'in_progress'
+}
 
 async function loadProjects() {
   const grid = document.getElementById('projectsGrid')
@@ -11622,15 +11638,31 @@ async function loadProjects() {
       fetch('/api/kanban/assignees'),
     ])
     if (!summaryRes.ok) throw new Error('HTTP ' + summaryRes.status)
-    const summaries = await summaryRes.json()
+    _projectsLastSummaries = await summaryRes.json()
     _projectsAssignees = assigneesRes.ok ? await assigneesRes.json() : []
-    renderProjects(summaries)
+    renderProjects()
   } catch (err) {
     console.error('loadProjects failed:', err)
     grid.innerHTML = ''
     if (empty) { empty.hidden = false; empty.textContent = t('projects.load_error') }
   }
 }
+
+function setProjectsFilterBtn(btnId, active) {
+  const btn = document.getElementById(btnId)
+  if (btn) btn.classList.toggle('active', active)
+}
+
+document.getElementById('projectsFilterDone')?.addEventListener('click', () => {
+  projectsShowDone = !projectsShowDone
+  setProjectsFilterBtn('projectsFilterDone', projectsShowDone)
+  renderProjects()
+})
+document.getElementById('projectsFilterInProgress')?.addEventListener('click', () => {
+  projectsShowInProgress = !projectsShowInProgress
+  setProjectsFilterBtn('projectsFilterInProgress', projectsShowInProgress)
+  renderProjects()
+})
 
 // Case-insensitive match against the assignee list (mirrors
 // kanbanSwimlaneKeyFor's own resolution rule) so display names/avatar colors
@@ -11646,13 +11678,26 @@ function projectAssigneeMeta(rawName) {
     : { label: raw, type: 'unknown' }
 }
 
-function renderProjects(summaries) {
+function renderProjects() {
   const grid = document.getElementById('projectsGrid')
   const empty = document.getElementById('projectsEmpty')
   if (!grid) return
   grid.innerHTML = ''
-  if (!Array.isArray(summaries) || summaries.length === 0) {
+  const all = Array.isArray(_projectsLastSummaries) ? _projectsLastSummaries : []
+  if (all.length === 0) {
     if (empty) { empty.hidden = false; empty.textContent = t('projects.empty') }
+    return
+  }
+  const summaries = all.filter((p) => {
+    const status = projectOverallStatus(p)
+    if (status === 'done') return projectsShowDone
+    return projectsShowInProgress
+  })
+  if (summaries.length === 0) {
+    // Projects exist, but the current filter combination hides all of
+    // them -- a different message from "no project at all", so the user
+    // does not read this as an empty board.
+    if (empty) { empty.hidden = false; empty.textContent = t('projects.filter_empty') }
     return
   }
   if (empty) empty.hidden = true
