@@ -28,6 +28,30 @@ case "$(uname -s)" in
   *) echo "  channelsEnabled: nem tamogatott OS ($(uname -s)); kihagyva."; echo "MARVEEN_CHANNELS_GATE=ok"; exit 0 ;;
 esac
 
+# Idempotent: already true -> nothing to do.
+#
+# Deliberately UNPRIVILEGED, and deliberately BEFORE the sudo handling below.
+# The managed file is world-readable (it is org policy, not a secret), so
+# answering "is this already configured?" never needs a privilege the caller
+# might not have. Resolving sudo first meant a host where the key was ALREADY
+# set, but the invoking user had no sudo, reported
+#   ! channelsEnabled: nem root es nincs sudo -- kihagyva.
+#   MARVEEN_CHANNELS_GATE=manual
+# and sent the operator off to fix something that was already correct. Ask the
+# question that costs nothing first; only a WRITE needs privilege.
+if [ -f "$MANAGED_FILE" ] && python3 - "$MANAGED_FILE" 2>/dev/null <<'PY'
+import json, sys
+try:
+    sys.exit(0 if json.load(open(sys.argv[1])).get("channelsEnabled") is True else 1)
+except Exception:
+    sys.exit(1)
+PY
+then
+  echo "  channelsEnabled: mar be van kapcsolva ($MANAGED_FILE)"
+  echo "MARVEEN_CHANNELS_GATE=ok"
+  exit 0
+fi
+# A write is needed from here on, so now resolve privilege.
 # Root-aware privilege prefix. The managed dir is root-owned on both platforms.
 SUDO=""
 if [ "$(id -u)" -ne 0 ]; then
@@ -42,19 +66,6 @@ if [ "$(id -u)" -ne 0 ]; then
   fi
 fi
 
-# Idempotent: already true -> nothing to do.
-if [ -f "$MANAGED_FILE" ] && $SUDO python3 - "$MANAGED_FILE" 2>/dev/null <<'PY'
-import json, sys
-try:
-    sys.exit(0 if json.load(open(sys.argv[1])).get("channelsEnabled") is True else 1)
-except Exception:
-    sys.exit(1)
-PY
-then
-  echo "  channelsEnabled: mar be van kapcsolva ($MANAGED_FILE)"
-  echo "MARVEEN_CHANNELS_GATE=ok"
-  exit 0
-fi
 
 if ! $SUDO mkdir -p "$(dirname "$MANAGED_FILE")" 2>/dev/null; then
   echo "  ! channelsEnabled: nem sikerult letrehozni $(dirname "$MANAGED_FILE") -- kezi root-lepes szukseges:"
