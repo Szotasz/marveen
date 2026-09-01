@@ -1,7 +1,6 @@
 import { execFile } from 'node:child_process'
-import { join } from 'node:path'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT, RESPAWN_ENABLED, APP_TZ } from '../config.js'
+import { MAIN_AGENT_ID, RESPAWN_ENABLED, APP_TZ } from '../config.js'
 import { resolveFromPath } from '../platform.js'
 import { listAgentNames } from './agent-config.js'
 import { isAgentRunning, capturePane, startAgentProcess } from './agent-process.js'
@@ -9,7 +8,12 @@ import { quarantineFleetTokenIfDead } from './claude-credentials-guard.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { detectReauthNeeded } from './reauth-detect.js'
-import { getLastTaskCompletedAt } from './schedule-runner.js'
+import {
+  getLastTaskCompletedAt,
+  resolveSchedulerAlertToken,
+  resolveSchedulerOwnerChat,
+  sendSchedulerAlertMessage,
+} from './schedule-runner.js'
 import { loginSequence, literalKeyArgs, specialKeyArgs } from './tmux-keys.js'
 import { withSessionSendLock } from './session-send-lock.js'
 
@@ -23,8 +27,9 @@ import { withSessionSendLock } from './session-send-lock.js'
 // human browser authorize step, and a restart yields another unauthenticated
 // session (cf. issue #248). So this loop is, honestly: autonomous DETECTION +
 // best-effort /login (which recovers only the rare transient/refreshable case)
-// + LOUD escalation to the owner via notify.sh (plugin-independent Bot API, so
-// it reaches the owner even when the channel plugin is also wedged).
+// + LOUD escalation to the owner via a direct channel-provider API call
+// (plugin-independent, so it reaches the owner even when the channel plugin
+// is also wedged).
 //
 // Scope (Marveen-approved): sub-agents get best-effort /login send-keys +
 // escalate; the MAIN agent (always-on channels session) is escalate-ONLY -- we
@@ -32,7 +37,6 @@ import { withSessionSendLock } from './session-send-lock.js'
 // only (RESPAWN_ENABLED), like the other recovery loops.
 
 const TMUX = resolveFromPath('tmux')
-const NOTIFY_SCRIPT = join(PROJECT_ROOT, 'scripts', 'notify.sh')
 
 const PROBE_INTERVAL_MS = 3 * 60 * 1000 // 3 min
 const INITIAL_DELAY_MS = 90_000         // after boot-grace, offset from other watchers
@@ -99,7 +103,7 @@ export interface ReauthHealerDecision {
   sendKeys: boolean   // best-effort autonomous /login (sub-agents only)
   restartAgent: boolean // first-run-gate heal: restart the sub-agent (re-seeds the onboarding flag)
   restartMain: boolean // GAP 1 landed: a dead-token main respawn now legitimately fixes it (main only)
-  escalate: boolean   // notify.sh alert to the owner
+  escalate: boolean   // direct channel-provider alert to the owner
   next: ReauthHealerState
 }
 
@@ -301,9 +305,43 @@ export function flushQuietSummary(
   for (const e of stillDead) stampAlert(e.session)
 }
 
+// 2026-08-29: this used to shell out via execFile to the project's Bash
+// owner-notify script (scripts/notify.sh). The main agent's own OAuth token
+// died for about two hours that day; the healer correctly detected it on
+// every ~3-min probe and correctly tried to escalate every time, but EVERY
+// invocation of that script failed with an unexplained exit code 1 -- the
+// owner never got the alert, only noticed once they tried to message the
+// agent and got no reply. Isolated reproduction attempts (a standalone bash
+// run and a 1:1 execFile call, both under the same restricted systemd
+// environment) did NOT reproduce the failure, so the precise root cause
+// inside that bash/execFile path stays unconfirmed.
+//
+// Rather than keep chasing a non-reproducible shell-subprocess failure, this
+// sends directly through the same channel-provider abstraction the scheduler
+// alerts already use (resolveSchedulerAlertToken / resolveSchedulerOwnerChat
+// / sendSchedulerAlertMessage) -- one fewer process boundary to fail in an
+// unexplained way, any future delivery failure now surfaces the real
+// provider error instead of a bare exit code, and this escalation is no
+// longer hardcoded to Telegram: it follows CHANNEL_PROVIDER like every other
+// system-level alert.
+//
+// Scope note: scripts/notify.sh is still called from other sites (e.g.
+// channel-coordinator.ts) -- deliberately NOT touched here, no evidence
+// those paths share this failure mode, and worth a separate look if the
+// same symptom shows up there.
 function sendNotify(msg: string): void {
-  execFile('/bin/bash', [NOTIFY_SCRIPT, msg], { timeout: 10_000 }, (err) => {
-    if (err) logger.warn({ err }, 'reauth-healer: notify.sh escalation failed')
+  const token = resolveSchedulerAlertToken()
+  if (!token) {
+    logger.warn('reauth-healer: escalation suppressed -- no channel bot token (config error)')
+    return
+  }
+  const ownerChat = resolveSchedulerOwnerChat()
+  if (!ownerChat) {
+    logger.warn('reauth-healer: escalation suppressed -- no owner chat resolved (config error)')
+    return
+  }
+  sendSchedulerAlertMessage(token, ownerChat, msg).catch((err) => {
+    logger.warn({ err }, 'reauth-healer: escalation delivery failed')
   })
 }
 

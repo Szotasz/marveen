@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { decideReauthAction, NO_REAUTH_STATE, type ReauthHealerState } from '../web/reauth-healer.js'
 
 const T = { threshold: 3, cooldownMs: 30 * 60 * 1000, recentTaskLivenessWindowMs: 20 * 60 * 1000 }
@@ -238,5 +240,26 @@ describe('decideReauthAction: recent-task sanity check (main agent only)', () =>
     }), T)
     expect(d.restartMain).toBe(true)
     expect(d.escalate).toBe(true)
+  })
+})
+
+// 2026-08-29: the escalation delivery mechanism itself was silently failing
+// (notify.sh via execFile -- the main agent's own dead OAuth token was
+// correctly detected on every probe, but every escalation attempt to notify
+// the owner failed with an unexplained exit code 1, and it only surfaced
+// once the owner tried to message the agent and got no reply). Fixed by
+// switching to the same channel-provider abstraction schedule-runner.ts's
+// own alerts already use successfully. This is a source-scan guard, not a
+// runtime one, because sendNotify() is a private fire-and-forget function
+// with no return value to assert on -- if this reverted back to shelling
+// out through notify.sh, the test below would turn red.
+describe('fix-revert guard: reauth-healer escalation no longer shells out to notify.sh', () => {
+  it('sendNotify uses the channel-provider abstraction, not execFile(.../notify.sh)', () => {
+    const src = readFileSync(join(__dirname, '../web/reauth-healer.ts'), 'utf-8')
+    expect(src).toMatch(/sendSchedulerAlertMessage\(token, ownerChat, msg\)/)
+    // NOTIFY_SCRIPT (the const that pointed sendNotify at scripts/notify.sh)
+    // is gone entirely; the string "notify.sh" itself may still appear in
+    // prose comments explaining the history, so it is not asserted on here.
+    expect(src).not.toMatch(/NOTIFY_SCRIPT/)
   })
 })

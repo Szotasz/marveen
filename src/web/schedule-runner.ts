@@ -1086,15 +1086,19 @@ export function resolveSchedulerAlertToken(
 // Slack install) and the paired fallback from slack/access.json (the live
 // CHANNEL_PROVIDER=slack install has no telegram access.json at all, so the
 // default path returned null and every scheduler alert was suppressed).
-function resolveSchedulerOwnerChat(): string | null {
+// Exported: reauth-healer.ts's owner escalation reuses this so its alert
+// resolves the same chat as every other system-level alert, instead of
+// keeping its own provider-blind copy.
+export function resolveSchedulerOwnerChat(): string | null {
   return resolveOwnerChatId(undefined, configuredOwnerChatFor(CHANNEL_PROVIDER), CHANNEL_PROVIDER)
 }
 
-// Send a system-level scheduler alert over the MAIN agent's bound channel. The
-// message is plain text (no markdown) as it always has been, so no formatMessage
-// pass is applied; getProvider throws on a non-2xx / ok:false response so the
+// Send a system-level alert over the MAIN agent's bound channel. The message
+// is plain text (no markdown) as it always has been, so no formatMessage pass
+// is applied; getProvider throws on a non-2xx / ok:false response so the
 // callers' try/catch + classifySendError paths work for every provider.
-function sendSchedulerAlertMessage(token: string, chatId: string, text: string): Promise<void> {
+// Exported for the same reason as resolveSchedulerOwnerChat above.
+export function sendSchedulerAlertMessage(token: string, chatId: string, text: string): Promise<void> {
   return getProvider(CHANNEL_PROVIDER).sendMessage(token, chatId, text)
 }
 
