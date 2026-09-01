@@ -11,6 +11,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- `deleteTenant()` cascade now includes the `schedules` table: tenant-scoped schedules are deleted on hard tenant removal; fleet schedules (`tenant_id IS NULL`) are unaffected
 - **[API]** `PUT /api/memories/:id` returns `400 parse_error` on invalid JSON body and `400 required` when `content` is absent or whitespace-only; previously threw unhandled exception (500)
 
 ### Added

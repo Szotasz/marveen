@@ -7,6 +7,7 @@
 //   5. api_tokens are REVOKED (not deleted) -- mutation-proof
 //   6. Memories deleted row-by-row with syncVecMemoryDelete -- mutation-proof
 //   7. Pending approvals rejected before all approvals are deleted -- order matters
+//   8. Schedules with tenant_id deleted; fleet schedules (NULL tenant_id) untouched
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type { RouteContext } from '../web/routes/types.js'
@@ -234,6 +235,13 @@ function buildDb(): Database.Database {
       created_at INTEGER NOT NULL DEFAULT (unixepoch()),
       updated_at INTEGER NOT NULL DEFAULT (unixepoch())
     );
+    CREATE TABLE IF NOT EXISTS schedules (
+      id TEXT PRIMARY KEY, prompt TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+      schedule TEXT NOT NULL, agent TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'task' CHECK(type IN ('task','heartbeat','command')),
+      enabled INTEGER NOT NULL DEFAULT 1, tenant_id TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()), updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
     INSERT INTO tenants (id, display_name, created_at) VALUES ('default', 'Fleet (default)', 0);
   `)
   return d
@@ -294,6 +302,10 @@ describe('deleteTenant cascade (integration -- real SQLite)', () => {
       INSERT INTO tenant_agent_availability (tenant_id, agent_id) VALUES ('co-y', 'agent-a');
       INSERT INTO artifacts (agent_id, tenant_id, title, kind, mime, content, meta)
         VALUES ('a', 'co-y', 'Report', 'text', 'text/plain', 'data', '{}');
+      INSERT INTO schedules (id, prompt, schedule, agent, tenant_id)
+        VALUES ('sched-tenant', 'do task', '0 * * * *', 'agent-a', 'co-y');
+      INSERT INTO schedules (id, prompt, schedule, agent, tenant_id)
+        VALUES ('sched-fleet', 'fleet heartbeat', '0 * * * *', 'agent-b', NULL);
     `)
 
     // Run the same cascade as deleteTenant()
@@ -318,6 +330,7 @@ describe('deleteTenant cascade (integration -- real SQLite)', () => {
       d.prepare('DELETE FROM memories WHERE id=?').run(id)
     }
     d.prepare('DELETE FROM artifacts WHERE tenant_id=?').run('co-y')
+    d.prepare('DELETE FROM schedules WHERE tenant_id=?').run('co-y')
     d.prepare('DELETE FROM tenant_agent_availability WHERE tenant_id=?').run('co-y')
     d.prepare('DELETE FROM tenants WHERE id=?').run('co-y')
 
@@ -333,9 +346,26 @@ describe('deleteTenant cascade (integration -- real SQLite)', () => {
     expect(d.prepare('SELECT id FROM kanban_card_events WHERE card_id=?').get('card-1')).toBeUndefined()
     expect(d.prepare('SELECT id FROM memories WHERE tenant_id=?').get('co-y')).toBeUndefined()
     expect(d.prepare('SELECT id FROM artifacts WHERE tenant_id=?').get('co-y')).toBeUndefined()
+    expect(d.prepare("SELECT id FROM schedules WHERE id='sched-tenant'").get()).toBeUndefined()
     expect(d.prepare('SELECT tenant_id FROM tenant_agent_availability WHERE tenant_id=?').get('co-y')).toBeUndefined()
     // Default tenant untouched
     expect(d.prepare("SELECT id FROM tenants WHERE id='default'").get()).toBeDefined()
+    // Fleet schedules (NULL tenant_id) must survive
+    expect(d.prepare("SELECT id FROM schedules WHERE id='sched-fleet'").get()).toBeDefined()
+  })
+
+  it('leaves fleet schedules (NULL tenant_id) intact when deleting a tenant', () => {
+    const d = buildDb()
+    d.exec(`
+      INSERT INTO tenants (id, display_name, created_at) VALUES ('co-fleet', 'Co Fleet', 1);
+      INSERT INTO schedules (id, prompt, schedule, agent, tenant_id)
+        VALUES ('fleet-sched', 'morning chain', '0 7 * * *', 'agent-a', NULL);
+      INSERT INTO schedules (id, prompt, schedule, agent, tenant_id)
+        VALUES ('tenant-sched', 'tenant task', '0 9 * * *', 'agent-b', 'co-fleet');
+    `)
+    d.prepare('DELETE FROM schedules WHERE tenant_id=?').run('co-fleet')
+    expect(d.prepare("SELECT id FROM schedules WHERE id='tenant-sched'").get()).toBeUndefined()
+    expect(d.prepare("SELECT id FROM schedules WHERE id='fleet-sched'").get()).toBeDefined()
   })
 
   it('rolls back all changes atomically when an error occurs mid-cascade', () => {
