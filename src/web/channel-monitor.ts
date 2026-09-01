@@ -1098,6 +1098,24 @@ function respawnMarveenSessionFresh(): boolean {
     writeRespawnStamp() // coordinate with the systemd-timer watchdog (covers the keepalive path too)
     return true
   } catch (err) {
+    // When the pane/session is entirely GONE (not just the claude process
+    // wedged), respawn-pane fails with 'can't find pane' and there is nothing to
+    // respawn INTO -- the hard-restart escalation then dead-ends and the main
+    // channel stays down until some external actor happens to recreate it. Fall
+    // back to the canonical session-recreate path (channels.sh via
+    // createMainChannelsSession), which builds a brand-new session with full init
+    // AND shares the cold-start grace + respawn stamp, so it does not stack with
+    // the other recovery actors. Root-caused 2026-08-06: respawn-pane looped on
+    // 'can't find pane' for hours while the session was absent.
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/can't find pane|can't find session|no server running|session not found/i.test(msg)) {
+      logger.warn(
+        { session: MAIN_CHANNELS_SESSION },
+        'Fresh respawn: pane gone -- falling back to full session recreate (channels.sh)',
+      )
+      const result = createMainChannelsSession()
+      return result === 'started' || result === 'grace'
+    }
     logger.error({ err }, 'Fresh session respawn failed')
     return false
   }

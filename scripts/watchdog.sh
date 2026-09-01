@@ -155,13 +155,29 @@ MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 MAIN_SESSION="${MAIN_AGENT_ID}-channels"
 
 if ! tmux has-session -t "$MAIN_SESSION" 2>/dev/null; then
-  echo "$(timestamp) [watchdog] $MAIN_SESSION missing, restarting..." >> "$LOG"
-  nohup "$INSTALL_DIR/scripts/channels.sh" >> "$INSTALL_DIR/logs/marveen-channels.log" 2>&1 &
-  sleep 5
-  if tmux has-session -t "$MAIN_SESSION" 2>/dev/null; then
-    echo "$(timestamp) [watchdog] $MAIN_SESSION restarted OK" >> "$LOG"
+  # Mutual-exclusion gate, mirroring channel-watchdog.sh's gate 4. The dashboard
+  # channel-monitor, channel-watchdog.sh, systemd (Restart=always) and this cron
+  # loop can all recreate the main channels session; they coordinate through the
+  # shared respawn stamp (store/.channel-last-respawn, written by channels.sh).
+  # Without this gate this loop spawned a competing channels.sh every 5 min while
+  # another actor was mid-respawn -> two claude processes contending for the same
+  # bot token (409) and rapid-exit (root-caused 2026-08-06, ~4.5h outage). Defer
+  # while a respawn is inside the grace window (same 15 min as channel-watchdog.sh);
+  # only act as the last-resort backstop once every other actor has stopped trying.
+  MAIN_RESPAWN_STAMP="$INSTALL_DIR/store/.channel-last-respawn"
+  _mlast=0
+  [ -f "$MAIN_RESPAWN_STAMP" ] && _mlast="$(stat -c %Y "$MAIN_RESPAWN_STAMP" 2>/dev/null || echo 0)"
+  if [ "$(( $(date +%s) - _mlast ))" -lt 900 ]; then
+    echo "$(timestamp) [watchdog] $MAIN_SESSION missing but a respawn is within the 900s grace -- deferring (systemd/channels.sh/channel-watchdog cover it)" >> "$LOG"
   else
-    echo "$(timestamp) [watchdog] $MAIN_SESSION restart FAILED" >> "$LOG"
+    echo "$(timestamp) [watchdog] $MAIN_SESSION missing, restarting..." >> "$LOG"
+    nohup "$INSTALL_DIR/scripts/channels.sh" >> "$INSTALL_DIR/logs/marveen-channels.log" 2>&1 &
+    sleep 5
+    if tmux has-session -t "$MAIN_SESSION" 2>/dev/null; then
+      echo "$(timestamp) [watchdog] $MAIN_SESSION restarted OK" >> "$LOG"
+    else
+      echo "$(timestamp) [watchdog] $MAIN_SESSION restart FAILED" >> "$LOG"
+    fi
   fi
 fi
 
