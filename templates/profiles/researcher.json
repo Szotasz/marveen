@@ -11,6 +11,8 @@
       "Read(${HOME}/Downloads/**)",
       "Bash(ls:*)",
       "Bash(cat:*)",
+      "Bash(find ${AGENT_DIR}:*)",
+      "Bash(/usr/bin/find ${AGENT_DIR}:*)",
       "WebFetch(*)",
       "WebSearch(*)"
     ],
