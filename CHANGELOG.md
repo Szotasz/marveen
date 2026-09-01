@@ -11,6 +11,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 ### Fixed
 
+- `adm-zip` bumped from 0.5.18 to 0.6.0 via npm override, fixing a HIGH-severity memory allocation DoS vulnerability (GHSA-xcpc-8h2w-3j85, CWE-400/789) inherited transitively through `onnxruntime-node` / `@huggingface/transformers`
 - `deleteTenant()` cascade now includes the `schedules` table: tenant-scoped schedules are deleted on hard tenant removal; fleet schedules (`tenant_id IS NULL`) are unaffected
 - **[API]** `PUT /api/memories/:id` returns `400 parse_error` on invalid JSON body and `400 required` when `content` is absent or whitespace-only; previously threw unhandled exception (500)
 
