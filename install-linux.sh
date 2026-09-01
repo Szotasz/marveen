@@ -1316,12 +1316,38 @@ if [ -d "$SEED_CONFIG_DIR" ]; then
 fi
 
 # Channel state directory setup
-CHANNEL_DIR="$HOME/.claude/channels/$CHANNEL_PROVIDER"
+# hu: A fo ugynok csatorna-allapot konyvtara -- TELEPITESENKENT kulon.
+#     Egy gepen tobb telepites is futhat (kulon WEB_PORT, kulon bot). Fix
+#     $HOME/.claude/channels/<provider> mellett a masodik telepites atvette az
+#     elso bot-tokenjet ES kitorolte az access.json csoport-engedelyeit, amitol
+#     az elso telepites csendben elnemult. Az agent-azonosito nelkuli alak a
+#     korabbi globalis utat adja vissza (visszafele kompatibilitas).
+#     Ugyanaz a nevkonvencio, amit a dashboard is hasznal
+#     (src/web/agent-process.ts mainAgentChannelsLinkTarget).
+# en: Main agent's channel state dir, PER INSTALL. A fixed path let a second
+#     install take over the first one's bot token and wipe its access.json
+#     groups. Without an agent id it returns the previous global path.
+# $1 = provider, $2 = main agent id ("" -> legacy global path)
+resolve_channel_state_dir() {
+  if [ -n "$2" ]; then
+    printf '%s' "$HOME/.claude/channels/$1-$2"
+  else
+    printf '%s' "$HOME/.claude/channels/$1"
+  fi
+}
+
+CHANNEL_DIR="$(resolve_channel_state_dir "$CHANNEL_PROVIDER" "${MAIN_AGENT_ID:-}")"
 mkdir -p "$CHANNEL_DIR"
 
 if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
   (umask 077 && echo "TELEGRAM_BOT_TOKEN=$BOT_TOKEN" >"$CHANNEL_DIR/.env")
   chmod 600 "$CHANNEL_DIR/.env"
+# hu: A meglevo access.json a parositasokat ES a jovahagyott csoportokat
+#     hordozza -- egy ujratelepites nem irhatja felul, mert az csendben
+#     elnemitana egy mar mukodo csatornat.
+# en: An existing access.json carries pairings and approved groups; a
+#     re-install must not overwrite it.
+if [ ! -f "$CHANNEL_DIR/access.json" ]; then
   cat >"$CHANNEL_DIR/access.json" <<ACCESSEOF
 {
   "dmPolicy": "pairing",
@@ -1330,6 +1356,7 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
   "pending": {}
 }
 ACCESSEOF
+fi
   ok "$(_t linux.tg_channel_configured)"
 elif [ "$CHANNEL_PROVIDER" = "slack" ] && [ -n "$SLACK_BOT_TOKEN" ]; then
   (umask 077 && cat >"$CHANNEL_DIR/.env" <<SLACKENVEOF
@@ -1338,6 +1365,12 @@ SLACK_APP_TOKEN=$SLACK_APP_TOKEN
 SLACKENVEOF
   )
   chmod 600 "$CHANNEL_DIR/.env"
+# hu: A meglevo access.json a parositasokat ES a jovahagyott csoportokat
+#     hordozza -- egy ujratelepites nem irhatja felul, mert az csendben
+#     elnemitana egy mar mukodo csatornat.
+# en: An existing access.json carries pairings and approved groups; a
+#     re-install must not overwrite it.
+if [ ! -f "$CHANNEL_DIR/access.json" ]; then
   cat >"$CHANNEL_DIR/access.json" <<ACCESSEOF
 {
   "dmPolicy": "pairing",
@@ -1346,6 +1379,7 @@ SLACKENVEOF
   "pending": {}
 }
 ACCESSEOF
+fi
   ok "$(_t linux.slack_channel_configured)"
 elif [ "$CHANNEL_PROVIDER" = "discord" ] && [ -n "$DISCORD_BOT_TOKEN" ]; then
   (umask 077 && cat >"$CHANNEL_DIR/.env" <<DISCORDENVEOF
@@ -1354,6 +1388,12 @@ DISCORD_CHANNEL_ID=$DISCORD_CHANNEL_ID
 DISCORDENVEOF
   )
   chmod 600 "$CHANNEL_DIR/.env"
+# hu: A meglevo access.json a parositasokat ES a jovahagyott csoportokat
+#     hordozza -- egy ujratelepites nem irhatja felul, mert az csendben
+#     elnemitana egy mar mukodo csatornat.
+# en: An existing access.json carries pairings and approved groups; a
+#     re-install must not overwrite it.
+if [ ! -f "$CHANNEL_DIR/access.json" ]; then
   cat >"$CHANNEL_DIR/access.json" <<ACCESSEOF
 {
   "dmPolicy": "pairing",
@@ -1362,6 +1402,7 @@ DISCORDENVEOF
   "pending": {}
 }
 ACCESSEOF
+fi
   ok "$(_t linux.discord_channel_configured)"
 fi
 
