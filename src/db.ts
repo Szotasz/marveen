@@ -4009,8 +4009,13 @@ export function updateTenant(id: string, patch: { display_name?: string; disable
 //   5. Drop agent_messages and import_memories.
 //   6. Drop kanban child tables before kanban_cards.
 //   7. Drop memories row-by-row with vec0 sync (safe path chosen 2026-08-30).
-//   8. Drop tenant_agent_availability (explicit -- SQLite FK enforcement is off by default).
-//   9. Drop the tenant row itself.
+//   8. Drop artifacts (vec_artifacts cleaned by DELETE trigger).
+//   9. Drop schedules (tenant_id IS NULL = fleet scope, untouched).
+//  10. Drop skill_tenant_access before skills (FK; SQLite FK enforcement is off by default).
+//  11. Drop skills.
+//  12. Drop vec_workspace_docs then workspace_docs (app-level vec sync, no trigger).
+//  13. Drop tenant_agent_availability.
+//  14. Drop the tenant row itself.
 // The 'default' tenant is permanently guarded and throws if passed.
 export function deleteTenant(tenantId: string): { memoriesDeleted: number } {
   if (tenantId === 'default') throw new Error('Cannot delete the default tenant')
@@ -4057,16 +4062,34 @@ export function deleteTenant(tenantId: string): { memoriesDeleted: number } {
       db.prepare('DELETE FROM memories WHERE id = ?').run(id)
     }
 
-    // 8. Drop artifacts
+    // 8. Drop artifacts (vec_artifacts kept in sync by the vec_artifacts_ad DELETE trigger)
     db.prepare('DELETE FROM artifacts WHERE tenant_id = ?').run(tenantId)
 
     // 9. Drop schedules (tenant_id IS NULL = fleet scope, those are untouched)
     db.prepare('DELETE FROM schedules WHERE tenant_id = ?').run(tenantId)
 
-    // 10. Drop tenant_agent_availability (SQLite FK enforcement is off by default)
+    // 10 & 11. Drop skill_tenant_access before skills (SQLite FK enforcement is off by default;
+    //          explicit two-pass: access grants TO this tenant, then grants FROM its skills).
+    db.prepare('DELETE FROM skill_tenant_access WHERE tenant_id = ?').run(tenantId)
+    const skillIds = (
+      db.prepare('SELECT id FROM skills WHERE tenant_id = ?').all(tenantId) as { id: string }[]
+    ).map((r) => r.id)
+    if (skillIds.length > 0) {
+      const ph = skillIds.map(() => '?').join(', ')
+      db.prepare(`DELETE FROM skill_tenant_access WHERE skill_id IN (${ph})`).run(...skillIds)
+    }
+    db.prepare('DELETE FROM skills WHERE tenant_id = ?').run(tenantId)
+
+    // 12. Drop workspace_docs -- vec_workspace_docs has no trigger, sync manually before main delete.
+    if (vecExtensionLoaded) {
+      try { db.prepare('DELETE FROM vec_workspace_docs WHERE tenant_id = ?').run(tenantId) } catch { /* vec0 unavailable */ }
+    }
+    db.prepare('DELETE FROM workspace_docs WHERE tenant_id = ?').run(tenantId)
+
+    // 13. Drop tenant_agent_availability (SQLite FK enforcement is off by default)
     db.prepare('DELETE FROM tenant_agent_availability WHERE tenant_id = ?').run(tenantId)
 
-    // 11. Drop the tenant row
+    // 14. Drop the tenant row
     db.prepare('DELETE FROM tenants WHERE id = ?').run(tenantId)
 
     return { memoriesDeleted: memIds.length }

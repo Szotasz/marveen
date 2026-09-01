@@ -8,6 +8,8 @@
 //   6. Memories deleted row-by-row with syncVecMemoryDelete -- mutation-proof
 //   7. Pending approvals rejected before all approvals are deleted -- order matters
 //   8. Schedules with tenant_id deleted; fleet schedules (NULL tenant_id) untouched
+//   9. skills and skill_tenant_access deleted (both own skills and cross-tenant grants)
+//  10. workspace_docs deleted; other-tenant workspace_docs untouched
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type { RouteContext } from '../web/routes/types.js'
@@ -242,6 +244,25 @@ function buildDb(): Database.Database {
       enabled INTEGER NOT NULL DEFAULT 1, tenant_id TEXT,
       created_at INTEGER NOT NULL DEFAULT (unixepoch()), updated_at INTEGER NOT NULL DEFAULT (unixepoch())
     );
+    CREATE TABLE IF NOT EXISTS skills (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+      content TEXT NOT NULL, tenant_id TEXT NOT NULL, is_global INTEGER NOT NULL DEFAULT 0,
+      created_by TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE TABLE IF NOT EXISTS skill_tenant_access (
+      skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+      tenant_id TEXT NOT NULL, granted_by TEXT,
+      granted_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      PRIMARY KEY (skill_id, tenant_id)
+    );
+    CREATE TABLE IF NOT EXISTS workspace_docs (
+      id TEXT NOT NULL PRIMARY KEY, agent_id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL DEFAULT 'default', doc_key TEXT, title TEXT NOT NULL,
+      content TEXT, content_type TEXT NOT NULL DEFAULT 'text',
+      type TEXT NOT NULL DEFAULT 'plan', task_ref TEXT, size_bytes INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()), updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
     INSERT INTO tenants (id, display_name, created_at) VALUES ('default', 'Fleet (default)', 0);
   `)
   return d
@@ -306,6 +327,10 @@ describe('deleteTenant cascade (integration -- real SQLite)', () => {
         VALUES ('sched-tenant', 'do task', '0 * * * *', 'agent-a', 'co-y');
       INSERT INTO schedules (id, prompt, schedule, agent, tenant_id)
         VALUES ('sched-fleet', 'fleet heartbeat', '0 * * * *', 'agent-b', NULL);
+      INSERT INTO skills (id, name, content, tenant_id) VALUES ('sk-y1', 'Skill Y1', 'x', 'co-y');
+      INSERT INTO skill_tenant_access (skill_id, tenant_id) VALUES ('sk-y1', 'co-y');
+      INSERT INTO workspace_docs (id, agent_id, tenant_id, title, content_type, type)
+        VALUES ('wdoc-y1', 'agent-a', 'co-y', 'Plan', 'text', 'plan');
     `)
 
     // Run the same cascade as deleteTenant()
@@ -331,6 +356,14 @@ describe('deleteTenant cascade (integration -- real SQLite)', () => {
     }
     d.prepare('DELETE FROM artifacts WHERE tenant_id=?').run('co-y')
     d.prepare('DELETE FROM schedules WHERE tenant_id=?').run('co-y')
+    d.prepare('DELETE FROM skill_tenant_access WHERE tenant_id=?').run('co-y')
+    const skillIds = (d.prepare('SELECT id FROM skills WHERE tenant_id=?').all('co-y') as { id: string }[]).map(r => r.id)
+    if (skillIds.length > 0) {
+      const ph = skillIds.map(() => '?').join(', ')
+      d.prepare(`DELETE FROM skill_tenant_access WHERE skill_id IN (${ph})`).run(...skillIds)
+    }
+    d.prepare('DELETE FROM skills WHERE tenant_id=?').run('co-y')
+    d.prepare('DELETE FROM workspace_docs WHERE tenant_id=?').run('co-y')
     d.prepare('DELETE FROM tenant_agent_availability WHERE tenant_id=?').run('co-y')
     d.prepare('DELETE FROM tenants WHERE id=?').run('co-y')
 
@@ -347,11 +380,68 @@ describe('deleteTenant cascade (integration -- real SQLite)', () => {
     expect(d.prepare('SELECT id FROM memories WHERE tenant_id=?').get('co-y')).toBeUndefined()
     expect(d.prepare('SELECT id FROM artifacts WHERE tenant_id=?').get('co-y')).toBeUndefined()
     expect(d.prepare("SELECT id FROM schedules WHERE id='sched-tenant'").get()).toBeUndefined()
+    expect(d.prepare('SELECT id FROM skills WHERE tenant_id=?').get('co-y')).toBeUndefined()
+    expect(d.prepare("SELECT skill_id FROM skill_tenant_access WHERE skill_id='sk-y1'").get()).toBeUndefined()
+    expect(d.prepare('SELECT id FROM workspace_docs WHERE tenant_id=?').get('co-y')).toBeUndefined()
     expect(d.prepare('SELECT tenant_id FROM tenant_agent_availability WHERE tenant_id=?').get('co-y')).toBeUndefined()
     // Default tenant untouched
     expect(d.prepare("SELECT id FROM tenants WHERE id='default'").get()).toBeDefined()
     // Fleet schedules (NULL tenant_id) must survive
     expect(d.prepare("SELECT id FROM schedules WHERE id='sched-fleet'").get()).toBeDefined()
+  })
+
+  it('deletes skills and both directions of skill_tenant_access when a tenant is removed', () => {
+    const d = buildDb()
+    d.exec(`
+      INSERT INTO tenants (id, display_name, created_at) VALUES ('co-a', 'Co A', 1);
+      INSERT INTO tenants (id, display_name, created_at) VALUES ('co-b', 'Co B', 1);
+      -- co-a owns skill-1; co-b owns skill-2
+      INSERT INTO skills (id, name, content, tenant_id) VALUES ('skill-1', 'S1', 'x', 'co-a');
+      INSERT INTO skills (id, name, content, tenant_id) VALUES ('skill-2', 'S2', 'y', 'co-b');
+      -- co-a has been granted access to co-b's skill (inbound grant to co-a)
+      INSERT INTO skill_tenant_access (skill_id, tenant_id) VALUES ('skill-2', 'co-a');
+      -- co-b has been granted access to co-a's skill (outbound grant from co-a's skill)
+      INSERT INTO skill_tenant_access (skill_id, tenant_id) VALUES ('skill-1', 'co-b');
+    `)
+
+    // Replicate the cascade from deleteTenant() for co-a
+    d.prepare('DELETE FROM skill_tenant_access WHERE tenant_id = ?').run('co-a')
+    const skillIds = (d.prepare('SELECT id FROM skills WHERE tenant_id = ?').all('co-a') as { id: string }[]).map(r => r.id)
+    if (skillIds.length > 0) {
+      const ph = skillIds.map(() => '?').join(', ')
+      d.prepare(`DELETE FROM skill_tenant_access WHERE skill_id IN (${ph})`).run(...skillIds)
+    }
+    d.prepare('DELETE FROM skills WHERE tenant_id = ?').run('co-a')
+
+    // co-a's skill is gone
+    expect(d.prepare('SELECT id FROM skills WHERE id=?').get('skill-1')).toBeUndefined()
+    // inbound grant to co-a is gone (co-a can no longer access skill-2)
+    expect(d.prepare("SELECT skill_id FROM skill_tenant_access WHERE skill_id='skill-2' AND tenant_id='co-a'").get()).toBeUndefined()
+    // outbound grant from co-a's skill to co-b is gone (co-b can no longer access skill-1)
+    expect(d.prepare("SELECT skill_id FROM skill_tenant_access WHERE skill_id='skill-1' AND tenant_id='co-b'").get()).toBeUndefined()
+    // co-b's skill and its own rows are untouched
+    expect(d.prepare('SELECT id FROM skills WHERE id=?').get('skill-2')).toBeDefined()
+    expect(d.prepare("SELECT id FROM tenants WHERE id='co-b'").get()).toBeDefined()
+  })
+
+  it('deletes workspace_docs for the deleted tenant but not for other tenants', () => {
+    const d = buildDb()
+    d.exec(`
+      INSERT INTO tenants (id, display_name, created_at) VALUES ('co-p', 'Co P', 1);
+      INSERT INTO tenants (id, display_name, created_at) VALUES ('co-q', 'Co Q', 1);
+      INSERT INTO workspace_docs (id, agent_id, tenant_id, title, content_type, type)
+        VALUES ('doc-p1', 'agent-a', 'co-p', 'Plan A', 'text', 'plan');
+      INSERT INTO workspace_docs (id, agent_id, tenant_id, title, content_type, type)
+        VALUES ('doc-p2', 'agent-b', 'co-p', 'Report A', 'text', 'report');
+      INSERT INTO workspace_docs (id, agent_id, tenant_id, title, content_type, type)
+        VALUES ('doc-q1', 'agent-a', 'co-q', 'Plan B', 'text', 'plan');
+    `)
+
+    d.prepare('DELETE FROM workspace_docs WHERE tenant_id = ?').run('co-p')
+
+    expect(d.prepare('SELECT id FROM workspace_docs WHERE tenant_id=?').get('co-p')).toBeUndefined()
+    // co-q's doc must survive
+    expect(d.prepare("SELECT id FROM workspace_docs WHERE id='doc-q1'").get()).toBeDefined()
   })
 
   it('leaves fleet schedules (NULL tenant_id) intact when deleting a tenant', () => {
