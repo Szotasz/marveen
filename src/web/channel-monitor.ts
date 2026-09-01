@@ -1272,6 +1272,53 @@ function maybeRestartWedgedMainChannel(state: StuckInputState): void {
   }
 }
 
+// --- Sub-agent overdue-guard (ALERT-ONLY level) ---
+//
+// The main channel gets a hard-restart backstop above (maybeRestartWedgedMainChannel)
+// once its soft recovery is exhausted. A sub-agent's soft recovery
+// (recoverStuckInputForSession, same MAIN_STUCK_THRESHOLDS, runs a few lines
+// above this for every session in `targets`) has NO further escalation today:
+// if it exhausts and the input is still parked, the session sits silently
+// wedged until the owner or a heartbeat happens to notice. This closes that
+// gap with an ALERT ONLY -- deliberately NOT an automatic respawn-pane: a
+// sub-agent restart has no session-resume/history
+// path back to its in-progress delegated task the way the main channel's
+// conversational UI does, so an unattended auto-restart there risks quietly
+// discarding real work. The alert gives a human (or a future, explicitly
+// approved level-2 change) the chance to decide per incident.
+export const SUBAGENT_OVERDUE_ALERT_MIN_INTERVAL_MS = 15 * 60 * 1000
+const subAgentOverdueAlertedAt: Map<string, number> = new Map()
+
+/**
+ * Pure decision: should a sub-agent's exhausted-soft-recovery wedge fire a
+ * fresh overdue-guard alert right now? Exported for unit testing (mirrors
+ * the pane-state.ts decideStuckInputRestart split: a pure decision function
+ * plus a thin impure wrapper below that owns the Map + sendAlert I/O).
+ *
+ * @param state       Current StuckInputState for the session.
+ * @param maxAttempts Soft-recovery attempt cap (MAIN_STUCK_THRESHOLDS.maxAttempts).
+ * @param lastAlertedAt Epoch ms of the last alert for this session, or 0 if never.
+ * @param nowMs       Current time (injected so tests don't depend on the clock).
+ * @param minIntervalMs Minimum gap between alerts for the same session.
+ */
+export function shouldAlertStuckSubAgent(
+  state: StuckInputState, maxAttempts: number, lastAlertedAt: number, nowMs: number, minIntervalMs: number,
+): boolean {
+  if (state.parkedSig === null) return false
+  if (state.attempts < maxAttempts) return false
+  return nowMs - lastAlertedAt >= minIntervalMs
+}
+
+function maybeAlertStuckSubAgent(session: string, agentName: string | null, state: StuckInputState): void {
+  const last = subAgentOverdueAlertedAt.get(session) ?? 0
+  const now = Date.now()
+  if (!shouldAlertStuckSubAgent(state, MAIN_STUCK_THRESHOLDS.maxAttempts, last, now, SUBAGENT_OVERDUE_ALERT_MIN_INTERVAL_MS)) return
+  subAgentOverdueAlertedAt.set(session, now)
+  const label = agentName ?? session
+  logger.error({ session, agentName, attempts: state.attempts }, 'Sub-agent stuck input survived soft recovery -- overdue-guard alert (no auto-restart)')
+  sendAlert(`⚠️ A(z) ${label} session bemenete beragadt, ${state.attempts} automatikus próbálkozás sem szabadította ki (kb. 4-4.5 perce). Kézi ellenőrzés javasolt: \`tmux attach -t ${session}\`, szükség esetén \`tmux respawn-pane -k -t ${session}\`.`)
+}
+
 // --- Keep-alive staleness watchdog (deafness safety net, decision #3) ---
 //
 // The keep-alive (a scheduled edit_message round-trip from the channels
@@ -1781,8 +1828,13 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
       if (t.isMarveen) continue
       const prev = agentStuckInput.get(t.session) ?? { parkedSig: null, firstSeenAt: null, lastRecoverAt: null, attempts: 0 }
       const next = await recoverStuckInputForSession(t.session, prev, MAIN_STUCK_THRESHOLDS, true)
-      if (next.parkedSig === null) agentStuckInput.delete(t.session)
-      else agentStuckInput.set(t.session, next)
+      if (next.parkedSig === null) {
+        agentStuckInput.delete(t.session)
+        subAgentOverdueAlertedAt.delete(t.session) // spell ended -> next wedge starts a fresh alert window
+      } else {
+        agentStuckInput.set(t.session, next)
+        maybeAlertStuckSubAgent(t.session, t.agentName ?? null, next)
+      }
     }
 
     for (const t of targets) {
