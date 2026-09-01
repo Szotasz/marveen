@@ -639,8 +639,25 @@ async function attemptFireTask(
   lateCatchUpMs?: number,
 ): Promise<'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing' | 'first-run'> {
   const { session, host } = resolveTaskTarget(task, agentName)
+  // resolveTaskTarget() computes this internally but does not expose it (it
+  // only returns {session, host}) -- recompute the same cheap check here
+  // rather than widening that function's return type for this one caller.
+  const isMainAgent = agentName === MAIN_AGENT_ID
 
   if (!sessionExistsOnHost(host, session)) {
+    // The main channels session is service-managed (systemd/launchd via
+    // channels.sh), not a directory under AGENTS_BASE_DIR -- startAgentProcess
+    // below checks existsSync(agentDir(name)) and misreports "Agent not
+    // found" for it, a real config-error read on what is actually a
+    // transient respawn (channel-monitor's own down-cascade, watchdog.sh and
+    // the service manager all already own bringing it back). Return
+    // 'starting' directly instead of hitting that misreport -- never restart
+    // the session itself here, which would race those other recovery actors.
+    if (isMainAgent) {
+      logger.info({ task: task.name, agent: agentName, session }, 'Schedule target is the main agent session, currently down; will deliver on retry')
+      return 'starting'
+    }
+
     // Auto-start the agent, then deliver on a later tick. A daily batch agent
     // (e.g. a `0 2 * * *` digest) has no 24/7 session, so a cron fire used to
     // just skip here -- the task never ran. Launch the session now and return
