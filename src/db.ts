@@ -4060,10 +4060,13 @@ export function deleteTenant(tenantId: string): { memoriesDeleted: number } {
     // 8. Drop artifacts
     db.prepare('DELETE FROM artifacts WHERE tenant_id = ?').run(tenantId)
 
-    // 9. Drop tenant_agent_availability (SQLite FK enforcement is off by default)
+    // 9. Drop schedules (tenant_id IS NULL = fleet scope, those are untouched)
+    db.prepare('DELETE FROM schedules WHERE tenant_id = ?').run(tenantId)
+
+    // 10. Drop tenant_agent_availability (SQLite FK enforcement is off by default)
     db.prepare('DELETE FROM tenant_agent_availability WHERE tenant_id = ?').run(tenantId)
 
-    // 10. Drop the tenant row
+    // 11. Drop the tenant row
     db.prepare('DELETE FROM tenants WHERE id = ?').run(tenantId)
 
     return { memoriesDeleted: memIds.length }
