@@ -131,7 +131,10 @@ export function agentSettingsPath(name: string): string {
 const _TMP_PREFIXES = ['/tmp/', '/var/tmp/', '/private/tmp/', '/dev/shm/']
 
 // Shared hook-entry type used by ensureAgentHooks and upgradeLegacyHookCommands.
-type HookEntry = { hooks?: Array<{ command?: string; timeout?: number; [k: string]: unknown }> }
+type HookEntry = {
+  matcher?: string
+  hooks?: Array<{ command?: string; timeout?: number; [k: string]: unknown }>
+}
 
 /**
  * Returns true when the command is unsafe to register in shared settings:
@@ -204,6 +207,44 @@ export function upgradeLegacyHookCommands(
 // file is permissions-only. Merge the template's hooks block in place.
 // Also handles the main agent (MAIN_AGENT_ID) whose settings.json is at
 // ~/.claude/settings.json -- voice hook is added alongside existing hooks.
+/**
+ * Converge the MATCHER of existing hook groups on the template's matcher.
+ *
+ * Without this an install keeps the matcher it was created with forever. The
+ * add pass in `ensureAgentHooks` only fires when a COMMAND is missing, so
+ * widening a matcher in the template reaches new installs and never the running
+ * ones. That is how the SessionStart task-state replay stayed dead on existing
+ * installs after the source list grew: the hook was registered all along, just
+ * not for the sources that had come to matter.
+ *
+ * Only groups whose every command comes from this template entry are converged.
+ * A group that also holds a hook we did not put there (a hand-added notifier,
+ * say) keeps its own matcher, because widening it would silently change when
+ * that foreign hook runs.
+ *
+ * Exported for unit tests. Mutates `existEntries`; returns true if it changed
+ * anything.
+ */
+export function syncHookMatchers(existEntries: HookEntry[], tplEntry: HookEntry): boolean {
+  const tplCommands = new Set(
+    (tplEntry.hooks ?? []).map((h) => h.command).filter(Boolean) as string[],
+  )
+  if (tplCommands.size === 0) return false
+  let changed = false
+  for (const existEntry of existEntries) {
+    const existCommands = (existEntry.hooks ?? [])
+      .map((h) => h.command)
+      .filter(Boolean) as string[]
+    if (existCommands.length === 0) continue
+    if (!existCommands.every((c) => tplCommands.has(c))) continue
+    if (existEntry.matcher === tplEntry.matcher) continue
+    if (tplEntry.matcher == null) delete existEntry.matcher
+    else existEntry.matcher = tplEntry.matcher
+    changed = true
+  }
+  return changed
+}
+
 export function ensureAgentHooks(name: string): boolean {
   const settingsPath = agentSettingsPath(name)
   const tplPath = join(PROJECT_ROOT, 'templates', 'settings.json.template')
@@ -246,6 +287,8 @@ export function ensureAgentHooks(name: string): boolean {
     //   2. If the event exists: add any template hook commands not yet present
     //      as a new hook group entry (preserves existing hooks like telegram_progress.py).
     //   3. Sync the timeout of any command hook whose command matches but timeout differs.
+    //   4. Sync the matcher of any group the template fully owns, so an install
+    //      created with an older matcher converges instead of keeping it forever.
     const existingHooks = existing.hooks as Record<string, unknown>
     let changed = upgradeLegacyHookCommands(existingHooks, tplHooks)
     for (const [event, handlers] of Object.entries(tplHooks)) {
@@ -280,6 +323,7 @@ export function ensureAgentHooks(name: string): boolean {
               }
             }
           }
+          if (syncHookMatchers(existEntries, tplEntry)) changed = true
         }
       }
     }

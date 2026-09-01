@@ -37,7 +37,16 @@ export const TASKSTATE_TTL_MS = 12 * 60 * 60 * 1000
 // planned restart right after finishing work replays nothing (the record was
 // either consumed or is empty), and at worst a stale-but-unconsumed record
 // costs one short injected block that the agent can discard.
-const REPLAY_SOURCES = new Set(['compact', 'resume', 'startup'])
+// 'clear' IS included (2026-08-14): the context-restart gate restarts an agent
+// by sending /clear (context-restart-gate-runner.ts), which the harness reports
+// as source=clear. Excluding it meant the gate -- OUR primary restart path --
+// silently dropped the task-state on every restart it performed, while the
+// ledger and daily-log hooks (registered for clear) still injected theirs. The
+// symptom is invisible: a fresh session with chat history and no task list.
+// Exported so the template's SessionStart matcher can be asserted to COVER this
+// set (containment, not equality) -- an equality assertion would pass today and
+// drift silently the next time a source is added here but not to the template.
+export const REPLAY_SOURCES = new Set(['compact', 'resume', 'startup', 'clear'])
 
 export interface AgentTaskState {
   agent: string
@@ -76,8 +85,8 @@ export function isEmptyTaskState(r: Pick<AgentTaskState, 'doneSteps' | 'alreadyD
 
 /**
  * Pure decision: should this record be re-injected at SessionStart?
- * Replays ONLY when: record exists, not yet consumed, source is compact|resume
- * (never cold startup), within TTL, and the record actually holds a task.
+ * Replays ONLY when: record exists, not yet consumed, source is one of
+ * REPLAY_SOURCES, within TTL, and the record actually holds a task.
  */
 export function shouldReplayTaskState(
   record: AgentTaskState | null,
