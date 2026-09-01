@@ -1964,11 +1964,37 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
 
   ACCESS_FILE="$CHANNEL_DIR/access.json"
 
+  # Is the Telegram bridge actually running?
+  #
+  # `systemctl --user is-active` alone answers a NARROWER question than this
+  # step needs -- "does a systemd USER unit for it exist and run" -- and the two
+  # answers diverge on exactly the hosts the [7/7] step already handles. There,
+  # `pidof systemd` / `systemctl --user status` failing is not an error: the
+  # installer falls back to a direct nohup launch and prints
+  #   "Channels (Telegram bridge) fut (nohup, pid N)"
+  # ...and then this check called the very bridge it had just started "not
+  # started", skipped pairing, and left the install with ALLOWED_CHAT_ID=0 plus
+  # a red warning telling the operator to pair by hand. WSL is a documented
+  # supported platform and has no systemd user session by default, so this is
+  # not an exotic shape.
+  #
+  # Ask the same three ways start.sh/stop.sh already distinguish -- user unit,
+  # system unit, direct launch -- so pairing works wherever the launch worked.
+  _bridge_is_up() {
+    systemctl --user is-active --quiet "${CHAN_UNIT}" 2>/dev/null && return 0
+    systemctl is-active --quiet "${CHAN_UNIT}" 2>/dev/null && return 0
+    # The pidfile start.sh writes on its no-systemd branch. `kill -0` only
+    # probes for existence; it sends no signal.
+    local _pid
+    _pid="$(cat "$INSTALL_DIR/store/channels.pid" 2>/dev/null)" || return 1
+    [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null
+  }
+
   # Megvarjuk amig a channels service tenyleg valaszol (max 15 mp)
   echo -e "  Varakozas a Telegram bridge elindulasara..."
   BRIDGE_OK=false
   for i in $(seq 1 15); do
-    if systemctl --user is-active --quiet "${CHAN_UNIT}" 2>/dev/null; then
+    if _bridge_is_up; then
       BRIDGE_OK=true
       break
     fi
@@ -1976,9 +2002,10 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
   done
 
   if [ "$BRIDGE_OK" = "false" ]; then
-    warn "A ${CHAN_UNIT} service nem indult el. Parositas kihagyva."
-    echo -e "  ${DIM}Ellenorizd: journalctl --user -u ${CHAN_UNIT} -n 30${NC}"
-    echo -e "  ${DIM}Kesobb: systemctl --user start ${CHAN_UNIT}, majd irj a botodnak${NC}"
+    warn "A Telegram bridge nem indult el. Parositas kihagyva."
+    echo -e "  ${DIM}systemd-vel:  journalctl --user -u ${CHAN_UNIT} -n 30${NC}"
+    echo -e "  ${DIM}anelkul:      tail -n 30 $INSTALL_DIR/store/channels.log${NC}"
+    echo -e "  ${DIM}Kesobb: ./scripts/start.sh, majd irj a botodnak${NC}"
   else
     ok "Telegram bridge fut"
     echo ""
