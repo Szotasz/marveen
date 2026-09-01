@@ -68,6 +68,7 @@ window._i18n.hu = {
   // --- Navigation ---
   'nav.overview':     'Áttekintés',
   'nav.kanban':       'Kanban',
+  'nav.projects':     'Projektek',
   'nav.archived':     'Archivált',
   'nav.agents':       'Ügynökök',
   'nav.activity':     'Aktivitás',
@@ -1603,6 +1604,23 @@ window._i18n.hu = {
   'kanban.filter.all_cols_hidden': 'Minden oszlop rejtve -- kattints egy oszlop-chipen a visszaállításhoz',
   'kanban.filter.group_none':    'Nincs',
   'kanban.filter.group_assignee':'Felelős szerint',
+
+  // --- Projects overview ---
+  'projects.title':              'Projektek',
+  'projects.subtitle':           'Ember-nyelvű áttekintés a Kanban-táblán élő projektekről',
+  'projects.empty':              'Egyetlen kanban-kártyához sincs még projekt hozzárendelve.',
+  'projects.load_error':         'A projekt-áttekintés betöltése sikertelen.',
+  'projects.save_error':         'A leírás mentése sikertelen.',
+  'projects.no_description':     'Még nincs leírás -- kattints a szerkesztésre.',
+  'projects.edit':               'Szerkesztés',
+  'projects.save':               'Mentés',
+  'projects.cancel':             'Mégse',
+  'projects.no_activity':        'nincs aktivitás',
+  'projects.last_activity':      'Utolsó frissítés: {when}',
+  'projects.assignees_label':    'Dolgozik rajta:',
+  'projects.no_assignee':        'nincs hozzárendelve',
+  'projects.view_in_kanban':     'Megnyitás a Kanban táblán →',
+  'projects.cards_done':         '{done}/{total} kész',
   'kanban.filter.group_priority':'Prioritás szerint',
 
   // --- Kanban Gantt/idővonal nézet ---

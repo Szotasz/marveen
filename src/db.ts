@@ -226,6 +226,24 @@ export function initDatabase(dbPathOverride?: string): void {
   } catch (err) {
     logger.warn({ err }, 'kanban_cards testing-status migration failed -- continuing')
   }
+  // Kanban project summaries: a small, separate table for the one thing that
+  // cannot be derived from kanban_cards -- the human-written project
+  // description. Everything else the project-overview page needs (card
+  // counts, last activity, who is on it) is computed live from kanban_cards
+  // by GROUP BY project (see listKanbanProjectSummaries), so there is exactly
+  // one source of truth for card state and the two tables can never drift out
+  // of sync. `project` is the same free-text string already stored on
+  // kanban_cards.project (no surrogate id, no foreign key -- a project can
+  // exist here before any card is tagged with it, or vice versa).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kanban_projects (
+      project TEXT PRIMARY KEY,
+      description TEXT,
+      description_updated_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
   // Migration: add agent_id, category, auto_generated columns to memories
   try {
     db.exec("ALTER TABLE memories ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'marveen'")
@@ -1893,6 +1911,111 @@ export function listKanbanProjects(): string[] {
     "SELECT DISTINCT project FROM kanban_cards WHERE project IS NOT NULL AND project != '' AND archived_at IS NULL ORDER BY project"
   ).all() as Array<{ project: string }>
   return rows.map(r => r.project)
+}
+
+export interface KanbanProjectSummary {
+  project: string
+  /** Human-written 1-2 sentence description; null when no one has set one yet. */
+  description: string | null
+  descriptionUpdatedAt: number | null
+  cardTotal: number
+  cardDone: number
+  /** MAX(updated_at) across the project's non-archived cards. */
+  lastActivityAt: number | null
+  /** Distinct assignees on cards currently in_progress/testing; falls back to
+   *  every assignee who has ever touched the project when nothing is in
+   *  flight right now, so the summary is never blank between active pushes. */
+  activeAssignees: string[]
+}
+
+/**
+ * One summary row per project that has at least one non-archived card.
+ * Everything except `description`/`descriptionUpdatedAt` is computed live
+ * from kanban_cards -- never stored -- so it can never drift from the board
+ * itself. Fully-archived projects (e.g. a wrapped-up initiative where every
+ * card was archived) intentionally do not appear here: this mirrors
+ * listKanbanProjects()'s own archived_at IS NULL filter, and keeps the
+ * overview to "what has live work", not a permanent project registry.
+ */
+export function listKanbanProjectSummaries(): KanbanProjectSummary[] {
+  const rows = db.prepare(`
+    SELECT
+      kc.project AS project,
+      COUNT(*) AS cardTotal,
+      SUM(CASE WHEN kc.status = 'done' THEN 1 ELSE 0 END) AS cardDone,
+      MAX(kc.updated_at) AS lastActivityAt,
+      kp.description AS description,
+      kp.description_updated_at AS descriptionUpdatedAt
+    FROM kanban_cards kc
+    LEFT JOIN kanban_projects kp ON kp.project = kc.project
+    WHERE kc.archived_at IS NULL AND kc.project IS NOT NULL AND kc.project != ''
+    GROUP BY kc.project
+    ORDER BY kc.project
+  `).all() as Array<{
+    project: string; cardTotal: number; cardDone: number; lastActivityAt: number | null
+    description: string | null; descriptionUpdatedAt: number | null
+  }>
+
+  // Active assignees are a second, per-project query rather than a
+  // GROUP_CONCAT in the query above: the "in-flight, else ever-touched"
+  // fallback needs two different WHERE filters, which GROUP_CONCAT cannot
+  // express in one pass without a much less readable CASE-inside-aggregate.
+  // Both statements are prepared once, outside the loop, and reused per row.
+  const activeStmt = db.prepare(
+    `SELECT DISTINCT assignee FROM kanban_cards
+     WHERE project = ? AND archived_at IS NULL AND assignee IS NOT NULL
+       AND status IN ('in_progress', 'testing')`
+  )
+  const everStmt = db.prepare(
+    `SELECT DISTINCT assignee FROM kanban_cards
+     WHERE project = ? AND archived_at IS NULL AND assignee IS NOT NULL`
+  )
+
+  return rows.map((r) => {
+    let assignees = (activeStmt.all(r.project) as Array<{ assignee: string }>).map((a) => a.assignee)
+    if (assignees.length === 0) {
+      assignees = (everStmt.all(r.project) as Array<{ assignee: string }>).map((a) => a.assignee)
+    }
+    return {
+      project: r.project,
+      description: r.description ?? null,
+      descriptionUpdatedAt: r.descriptionUpdatedAt ?? null,
+      cardTotal: r.cardTotal,
+      cardDone: r.cardDone,
+      lastActivityAt: r.lastActivityAt,
+      activeAssignees: assignees,
+    }
+  })
+}
+
+/**
+ * Upsert a project's human-written description. A no-op write (submitted text
+ * identical to what is already stored) does NOT bump description_updated_at
+ * or updated_at -- so re-saving the same text does not make the project card
+ * look freshly edited. Returns whether the stored value actually changed.
+ */
+export function upsertKanbanProjectDescription(project: string, description: string): { changed: boolean } {
+  const trimmed = description.trim()
+  const existing = db.prepare('SELECT description FROM kanban_projects WHERE project = ?').get(project) as
+    | { description: string | null }
+    | undefined
+  if (!existing && trimmed === '') {
+    // Nothing stored, nothing meaningful to store -- do not create a blank row.
+    return { changed: false }
+  }
+  if (existing && (existing.description ?? '') === trimmed) {
+    return { changed: false }
+  }
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(`
+    INSERT INTO kanban_projects (project, description, description_updated_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(project) DO UPDATE SET
+      description = excluded.description,
+      description_updated_at = excluded.description_updated_at,
+      updated_at = excluded.updated_at
+  `).run(project, trimmed, now, now, now)
+  return { changed: true }
 }
 
 export function deleteKanbanCard(id: string): boolean {

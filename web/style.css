@@ -583,6 +583,60 @@ main {
 @media (max-width: 1000px) {
   .overview-grid { grid-template-columns: 1fr; }
 }
+
+/* === Projects overview === */
+.projects-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+.project-card-progress {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+  margin: 10px 0;
+}
+.project-card-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width var(--transition);
+}
+.project-card-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+  min-height: 1.4em;
+  margin: 8px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.project-card-desc-edit {
+  width: 100%;
+  min-height: 56px;
+  font-size: 13px;
+  font-family: inherit;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  resize: vertical;
+  box-sizing: border-box;
+}
+.project-card-assignees {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.project-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
 .overview-card {
   padding: 20px;
   border: 1px solid var(--border);
