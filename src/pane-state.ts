@@ -538,7 +538,24 @@ export type FirstRunGateKind = 'trust' | 'bypass-permissions' | 'login' | 'theme
 // Claude Code" banner, so the more specific matches must win before the
 // generic welcome fallback.
 const FIRST_RUN_GATES: Array<{ kind: FirstRunGateKind; rx: RegExp }> = [
-  { kind: 'trust', rx: /Do you trust the files in this folder\?/ },
+  // TRUSTGATE901 (2026-09-01): ALTERNATION, not a replacement. Claude Code
+  // 2.1.246 rewrote this dialog -- the old question is GONE and the panel now
+  // opens with a marketing line ("Quick safety check: Is this a project you
+  // created or one you trust? ..."). Measured on the installed binary with a
+  // known-positive/known-negative control: "Do you trust the files in this
+  // folder" occurs ZERO times in 2.1.246, "Yes, I trust this folder" twice.
+  //
+  // The anchor is the OPTION TEXT, not the prose: the option is the functional
+  // element the dialog cannot drop, while the sentence above it is exactly the
+  // kind of copy a vendor rewrites (it just did). The old question stays for
+  // installs still on an older CLI -- note the old panel's option read
+  // "Yes, proceed", so neither string alone covers both versions.
+  //
+  // Why this mattered more than a missed classification: a null here does not
+  // merely skip the answer (answerFirstRunGates reports 'unchanged'), it hands
+  // the pane to the GENERIC blocking-menu recovery, which sends Escape -- and
+  // on this dialog Escape IS "No, exit". A fresh install quit on startup.
+  { kind: 'trust', rx: /Do you trust the files in this folder\?|Yes, I trust this folder/ },
   { kind: 'bypass-permissions', rx: /Bypass Permissions mode/ },
   { kind: 'login', rx: /Select login method/ },
   { kind: 'theme', rx: /Choose the text style/ },

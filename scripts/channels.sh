@@ -679,7 +679,16 @@ $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
 # soha nem toltodne be. Tobb fajta dialog elofordulhat:
 #  - "Bypass Permissions mode" (--dangerously-skip-permissions confirmation,
 #    valasz: 2 Enter = "Yes, I accept")
-#  - "Do you trust the files in this folder?" / "trust" prompts (Y Enter)
+#  - a folder-trust dialogus (valasz: 1 Enter). KET szoveget kell nezni, mert
+#    a Claude Code 2.1.246 atirta a panelt: a regi kerdes ("Do you trust the
+#    files in this folder?") ELTUNT, az uj panel a "Quick safety check: ..."
+#    mondattal kezdodik es az opcio szovege "Yes, I trust this folder".
+#    A HORGONY az OPCIO-SZOVEG, mert az a funkcionalis elem; a folotte levo
+#    mondat az, amit a szallito atir (epp most tette). A regi kerdes marad a
+#    regebbi CLI-verziok miatt -- a regi panel opcioja "Yes, proceed" volt,
+#    tehat egyik string sem fedi le onmagaban mindket verziot. (TRUSTGATE901)
+#    FIGYELEM: az uj panel NEM tartalmazza a "Welcome to Claude Code" bannert,
+#    tehat a lenti welcome-ag sem kapta el -- a session csendben parkolt.
 #  - "Welcome to Claude Code" / kezdo vezetes (Enter a folytatashoz)
 # 12 sec timeout ket retry-jal, mert WSL/tmux paint slow lehet first-run-on.
 #
@@ -723,7 +732,7 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
       sleep 1
       continue
       ;;
-    *"Do you trust the files in this folder?"*)
+    *"Do you trust the files in this folder?"*|*"Yes, I trust this folder"*)
       $TMUX send-keys -t "$SESSION" "1" Enter
       sleep 1
       continue

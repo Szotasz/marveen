@@ -97,9 +97,86 @@ const BUSY_WITH_QUOTE_PANE = [
   ' Thinking… (12s · ↓ 1.2k tokens · esc to interrupt)',
 ].join('\n')
 
+// The SAME dialog as TRUST_PANE, as Claude Code 2.1.246 actually renders it --
+// captured live on 2026-09-01 from a `claude` started in a throwaway directory
+// (tmux capture-pane), not written from memory. Only the workspace path is
+// swapped for a generic one; every other line is verbatim, including the
+// unboxed layout, the marketing lead-in and the changed option text.
+//
+// Two things changed at once, which is why one string cannot cover both
+// versions: the question "Do you trust the files in this folder?" is GONE
+// (zero occurrences in the 2.1.246 binary), and the option is no longer
+// "Yes, proceed" but "Yes, I trust this folder".
+const TRUST_PANE_2_1_246 = [
+  '────────────────────────────────────────────────────────────────',
+  ' Accessing workspace:',
+  '',
+  ' /home/gabor/marveen/agents/nova',
+  '',
+  " Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this",
+  ' folder first.',
+  '',
+  " Claude Code'll be able to read, edit, and execute files here.",
+  '',
+  ' Security guide',
+  '',
+  ' ❯ 1. Yes, I trust this folder',
+  '   2. No, exit',
+  '',
+  ' Enter to confirm · Esc to cancel',
+].join('\n')
+
+// Negative control for the NEW anchor. The option text is short and eminently
+// quotable -- an agent explaining this very incident types it into a live
+// session. A visible idle footer means the real prompt is up, so this must
+// never read as a gate (same discipline as IDLE_WITH_QUOTE_PANE above).
+const IDLE_WITH_NEW_QUOTE_PANE = [
+  ' A telepitesnel az elso opcio: "Yes, I trust this folder" -- ezt kell valaszolni.',
+  '',
+  '──────────────────────────────────────────────────',
+  ' ❯ ',
+  '──────────────────────────────────────────────────',
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
+// Negative control Marveen asked for: an ordinary working pane, no dialog of
+// any kind. If this ever classifies as a gate, the detector is matching noise.
+const ORDINARY_PANE = [
+  ' $ npm test',
+  ' Test Files  325 passed (325)',
+  '',
+  '──────────────────────────────────────────────────',
+  ' ❯ ',
+  '──────────────────────────────────────────────────',
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
 describe('detectsFirstRunGate', () => {
   it('classifies the folder-trust dialog', () => {
     expect(detectsFirstRunGate(TRUST_PANE)).toBe('trust')
+  })
+
+  // TRUSTGATE901: the 2.1.246 rewrite. This is the regression that shipped --
+  // the old pattern returns null here, the pane falls through to the generic
+  // blocking-menu recovery, and that sends Escape, which on this dialog is
+  // "No, exit". A fresh install quit at startup.
+  it('classifies the REWRITTEN folder-trust dialog (Claude Code 2.1.246)', () => {
+    expect(detectsFirstRunGate(TRUST_PANE_2_1_246)).toBe('trust')
+  })
+
+  // Both versions at once, so a later edit cannot "simplify" the alternation
+  // down to whichever string it happens to see first.
+  it('covers BOTH dialog versions, not one of them', () => {
+    expect([detectsFirstRunGate(TRUST_PANE), detectsFirstRunGate(TRUST_PANE_2_1_246)])
+      .toEqual(['trust', 'trust'])
+  })
+
+  it('does NOT flag an idle pane quoting the NEW option text', () => {
+    expect(detectsFirstRunGate(IDLE_WITH_NEW_QUOTE_PANE)).toBeNull()
+  })
+
+  it('does NOT flag an ordinary working pane', () => {
+    expect(detectsFirstRunGate(ORDINARY_PANE)).toBeNull()
   })
 
   it('classifies the bypass-permissions acceptance dialog', () => {
