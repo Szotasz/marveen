@@ -36,6 +36,10 @@ reports/
 # Logs
 *.log
 *.pid
+# Runtime log dir (watchdog/dashboard/channels logs + the watchdog flock file --
+# the lock is not a *.log, so the dir itself must be ignored to keep `git add -A`
+# from staging runtime state).
+logs/
 
 # Test artifacts
 test-results/

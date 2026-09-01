@@ -1,26 +1,37 @@
 import { logger } from '../logger.js'
 import { capturePane } from './agent-process.js'
-import { workerContexts, isWorkerSessionAlive } from './agent-worker.js'
+import { workerContexts, isWorkerSessionAlive, startWorkerSession } from './agent-worker.js'
 
-// Worker-session liveness instrument (WORKERBOOT1).
+// Worker-session liveness instrument (WORKERBOOT1) + auto-restart (2026-08-16,
+// reported gap: watchdog.sh only covers "<agent>-channels" and the per-agent
+// sub-agent sessions in agents/*/, never the two interactive
+// "<MAIN_AGENT_ID>-worker" / "-worker-fast" sessions -- so if the main agent's
+// own worker session dies while the dashboard stays up, NOTHING proactively
+// brings it back. It only self-healed reactively, the next time someone
+// happened to message the main agent (runViaWorker's own mid-request restart)
+// -- if nobody did, it stayed dead indefinitely and silently.
 //
-// The two interactive worker sessions are pre-started once at boot and then
-// never looked at again: scripts/watchdog.sh only covers "<agent>-channels",
-// channel-monitor.ts does not know about workers, and workerSessionExists() is
-// used solely for start-time idempotency and the in-request poll. So when a
-// worker dies, NOTHING notices, nothing logs it, and the operator only finds
-// out by running `tmux ls` and seeing it absent.
+// The two interactive worker sessions are pre-started once at boot; before this
+// change nothing looked at them again in between requests: channel-monitor.ts
+// does not know about workers, and workerSessionExists() was used solely for
+// start-time idempotency and the in-request poll.
 //
 // Measured on a live host 2026-07-30: both sessions were created at 11:42
 // (two "launched interactive worker session" lines, which only run AFTER a
 // successful tmux new-session), and by 18:00 neither existed -- with zero log
 // lines about them in between.
 //
-// This module does NOT try to fix or explain the death. That is deliberate:
-// with no record of when or how they die, any fix would be a guess. It only
-// answers "when did it go, how long did it live, and what was on the pane last"
-// -- which is what narrows the cause. A death within seconds points at the
-// launch line; a death after hours points somewhere else entirely.
+// This module still does not try to EXPLAIN the death (see the death-log doc
+// below) -- with no record of when or how they die, any diagnosis would be a
+// guess. But it now ALSO restarts: every sweep that finds a session missing
+// calls the canonical startWorkerSession() (agent-worker.ts, the exact
+// function the boot pre-start uses) -- not a re-derived launch command here.
+// startWorkerSession() is idempotent (checks tmux has-session per context) and
+// already respects the WEB_ONLY gate internally, so calling it unconditionally
+// on every "not alive" sweep is safe and requires no new gating in this file.
+// Restart is attempted every tick the session is missing (not just once on the
+// death transition) so a failed attempt is retried on the next poll instead of
+// leaving the worker down until the next external event.
 //
 // The pane cannot be read post mortem (the session is gone), so each poll keeps
 // the last pane seen while the worker was still alive, and the death log
@@ -149,6 +160,15 @@ export interface WorkerLivenessDeps {
   isAlive: (session: string) => boolean
   capture: (session: string) => string | null
   onDeath: (info: { session: string; lifetimeMs: number | null; lastPane: string | null; lifetimeTruncated: boolean }) => void
+  /**
+   * Called every sweep a session is found missing (not just once on the death
+   * transition), so a failed launch attempt is retried on the next poll rather
+   * than leaving the worker down until an unrelated request happens to touch
+   * it. The real wiring points this at the canonical startWorkerSession() --
+   * idempotent and per-context existence-checked, so restarting BOTH worker
+   * contexts when only one is missing is a harmless no-op for the one still up.
+   */
+  restart: () => void
   now: () => number
 }
 
@@ -171,6 +191,9 @@ export function sweepWorkerLiveness(
         lastPane: decision.lastPane,
         lifetimeTruncated: decision.lifetimeTruncated,
       })
+    }
+    if (!alive) {
+      deps.restart()
     }
   }
 }
@@ -202,9 +225,17 @@ export function startWorkerLivenessMonitor(): NodeJS.Timeout {
           lastPane,
         },
         lifetimeTruncated
-          ? 'worker-liveness: worker session disappeared (lifetime is a LOWER BOUND: the session predated this monitor, e.g. a dashboard restart)'
-          : 'worker-liveness: worker session disappeared (it was started, then died -- nothing restarts it until the next request)',
+          ? 'worker-liveness: worker session disappeared (lifetime is a LOWER BOUND: the session predated this monitor, e.g. a dashboard restart) -- restarting'
+          : 'worker-liveness: worker session disappeared (it was started, then died) -- restarting',
       )
+    },
+    restart: () => {
+      try {
+        startWorkerSession()
+        logger.info('worker-liveness: startWorkerSession() invoked to bring back a missing worker session')
+      } catch (err) {
+        logger.warn({ err }, 'worker-liveness: restart attempt failed (will retry next sweep)')
+      }
     },
   }
   let first = true

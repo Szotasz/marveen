@@ -1,7 +1,6 @@
 import { execFile } from 'node:child_process'
-import { join } from 'node:path'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT, RESPAWN_ENABLED, APP_TZ } from '../config.js'
+import { MAIN_AGENT_ID, RESPAWN_ENABLED, APP_TZ } from '../config.js'
 import { resolveFromPath } from '../platform.js'
 import { listAgentNames } from './agent-config.js'
 import { isAgentRunning, capturePane, startAgentProcess } from './agent-process.js'
@@ -9,6 +8,12 @@ import { quarantineFleetTokenIfDead } from './claude-credentials-guard.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { detectReauthNeeded } from './reauth-detect.js'
+import {
+  getLastTaskCompletedAt,
+  resolveSchedulerAlertToken,
+  resolveSchedulerOwnerChat,
+  sendSchedulerAlertMessage,
+} from './schedule-runner.js'
 import { loginSequence, literalKeyArgs, specialKeyArgs } from './tmux-keys.js'
 import { withSessionSendLock } from './session-send-lock.js'
 
@@ -22,8 +27,9 @@ import { withSessionSendLock } from './session-send-lock.js'
 // human browser authorize step, and a restart yields another unauthenticated
 // session (cf. issue #248). So this loop is, honestly: autonomous DETECTION +
 // best-effort /login (which recovers only the rare transient/refreshable case)
-// + LOUD escalation to the owner via notify.sh (plugin-independent Bot API, so
-// it reaches the owner even when the channel plugin is also wedged).
+// + LOUD escalation to the owner via a direct channel-provider API call
+// (plugin-independent, so it reaches the owner even when the channel plugin
+// is also wedged).
 //
 // Scope (Marveen-approved): sub-agents get best-effort /login send-keys +
 // escalate; the MAIN agent (always-on channels session) is escalate-ONLY -- we
@@ -31,7 +37,6 @@ import { withSessionSendLock } from './session-send-lock.js'
 // only (RESPAWN_ENABLED), like the other recovery loops.
 
 const TMUX = resolveFromPath('tmux')
-const NOTIFY_SCRIPT = join(PROJECT_ROOT, 'scripts', 'notify.sh')
 
 const PROBE_INTERVAL_MS = 3 * 60 * 1000 // 3 min
 const INITIAL_DELAY_MS = 90_000         // after boot-grace, offset from other watchers
@@ -41,6 +46,12 @@ const DEAD_PROBE_THRESHOLD = 3          // ~9 min of consecutive dead-token prob
 // (owner request 2026-07-30: "elég pár óránként jelezni" -- a 30 min cadence
 // produced ~10 identical alerts in one morning).
 const ESCALATION_COOLDOWN_MS = 3 * 60 * 60 * 1000 // 1 alert / agent / 3h (re-alerts if still dead)
+// A completed scheduled task counts as liveness proof for this long after it
+// finished (main agent only).
+// Deliberately much shorter than ESCALATION_COOLDOWN_MS so a genuinely dead
+// token is never masked for long: it only takes effect while there is
+// recent, real evidence of a working session.
+const RECENT_TASK_LIVENESS_WINDOW_MS = 20 * 60 * 1000 // 20 min
 
 export interface ReauthHealerState {
   consecutiveDead: number
@@ -68,6 +79,15 @@ export interface ReauthHealerInput {
    * restart -- startAgentProcess re-seeds hasCompletedOnboarding.
    */
   isFirstRunGate?: boolean
+  /**
+   * Milliseconds since a scheduled task last cleanly completed on this
+   * session, or null if unknown. Only consulted for the main agent (isMain)
+   * -- sub-agents keep the existing behavior unchanged, this is scoped to
+   * the 2026-08-24 main-session false-restart incident. A session that just
+   * finished an LLM-backed task cannot simultaneously have a dead OAuth token, so this
+   * overrides a marker-based dead reading.
+   */
+  msSinceLastCompletedTask: number | null
   prev: ReauthHealerState
   nowMs: number
 }
@@ -75,13 +95,15 @@ export interface ReauthHealerInput {
 export interface ReauthHealerThresholds {
   threshold: number
   cooldownMs: number
+  /** Window within which a completed task counts as liveness proof (main agent only). */
+  recentTaskLivenessWindowMs: number
 }
 
 export interface ReauthHealerDecision {
   sendKeys: boolean   // best-effort autonomous /login (sub-agents only)
   restartAgent: boolean // first-run-gate heal: restart the sub-agent (re-seeds the onboarding flag)
   restartMain: boolean // GAP 1 landed: a dead-token main respawn now legitimately fixes it (main only)
-  escalate: boolean   // notify.sh alert to the owner
+  escalate: boolean   // direct channel-provider alert to the owner
   next: ReauthHealerState
 }
 
@@ -95,10 +117,24 @@ export const NO_REAUTH_STATE: ReauthHealerState = { consecutiveDead: 0, lastActi
  * into the session every tick) and never fires for the main agent.
  */
 export function decideReauthAction(input: ReauthHealerInput, t: ReauthHealerThresholds): ReauthHealerDecision {
-  const { isDeadToken, sessionAlive, isMain, canInteractiveLogin, isFirstRunGate, prev, nowMs } = input
+  const { isDeadToken, sessionAlive, isMain, canInteractiveLogin, isFirstRunGate, msSinceLastCompletedTask, prev, nowMs } = input
 
   // Clean / not-applicable: end the spell, allow a fresh alert next time.
   if (!isDeadToken || !sessionAlive) {
+    return { sendKeys: false, restartAgent: false, restartMain: false, escalate: false, next: NO_REAUTH_STATE }
+  }
+
+  // Sanity check (main agent only, István döntése 2026-08-25): a session
+  // that demonstrably just finished a scheduled task's LLM turn cannot
+  // simultaneously have a dead OAuth token -- the marker-based "dead"
+  // reading is a false positive in that case (root cause: reauth-detect.ts
+  // falls back to a context-blind scrollback tail-scan whenever no input
+  // box is visible, i.e. exactly while a task is actively generating -- the
+  // 2026-08-24 incident this fixes. Treated exactly like a clean probe: the spell ends, no
+  // restart/escalation fires from this reading. Re-evaluated fresh on the
+  // next probe, so a genuinely still-dead token is not masked for long --
+  // the liveness window is far shorter than the escalation cooldown.
+  if (isMain && msSinceLastCompletedTask != null && msSinceLastCompletedTask <= t.recentTaskLivenessWindowMs) {
     return { sendKeys: false, restartAgent: false, restartMain: false, escalate: false, next: NO_REAUTH_STATE }
   }
 
@@ -269,9 +305,43 @@ export function flushQuietSummary(
   for (const e of stillDead) stampAlert(e.session)
 }
 
+// 2026-08-29: this used to shell out via execFile to the project's Bash
+// owner-notify script (scripts/notify.sh). The main agent's own OAuth token
+// died for about two hours that day; the healer correctly detected it on
+// every ~3-min probe and correctly tried to escalate every time, but EVERY
+// invocation of that script failed with an unexplained exit code 1 -- the
+// owner never got the alert, only noticed once they tried to message the
+// agent and got no reply. Isolated reproduction attempts (a standalone bash
+// run and a 1:1 execFile call, both under the same restricted systemd
+// environment) did NOT reproduce the failure, so the precise root cause
+// inside that bash/execFile path stays unconfirmed.
+//
+// Rather than keep chasing a non-reproducible shell-subprocess failure, this
+// sends directly through the same channel-provider abstraction the scheduler
+// alerts already use (resolveSchedulerAlertToken / resolveSchedulerOwnerChat
+// / sendSchedulerAlertMessage) -- one fewer process boundary to fail in an
+// unexplained way, any future delivery failure now surfaces the real
+// provider error instead of a bare exit code, and this escalation is no
+// longer hardcoded to Telegram: it follows CHANNEL_PROVIDER like every other
+// system-level alert.
+//
+// Scope note: scripts/notify.sh is still called from other sites (e.g.
+// channel-coordinator.ts) -- deliberately NOT touched here, no evidence
+// those paths share this failure mode, and worth a separate look if the
+// same symptom shows up there.
 function sendNotify(msg: string): void {
-  execFile('/bin/bash', [NOTIFY_SCRIPT, msg], { timeout: 10_000 }, (err) => {
-    if (err) logger.warn({ err }, 'reauth-healer: notify.sh escalation failed')
+  const token = resolveSchedulerAlertToken()
+  if (!token) {
+    logger.warn('reauth-healer: escalation suppressed -- no channel bot token (config error)')
+    return
+  }
+  const ownerChat = resolveSchedulerOwnerChat()
+  if (!ownerChat) {
+    logger.warn('reauth-healer: escalation suppressed -- no owner chat resolved (config error)')
+    return
+  }
+  sendSchedulerAlertMessage(token, ownerChat, msg).catch((err) => {
+    logger.warn({ err }, 'reauth-healer: escalation delivery failed')
   })
 }
 
@@ -283,9 +353,20 @@ function checkSession(label: string, session: string, isMain: boolean, quiet: bo
   // The reasons produced by the two first-run-gate markers in reauth-detect.
   const isFirstRunGate = /onboarding picker|sign-in screen/i.test(reauth.reason ?? '')
 
+  const nowMs = Date.now()
+  const lastCompleted = isMain ? getLastTaskCompletedAt(session) : null
+  const msSinceLastCompletedTask = lastCompleted != null ? nowMs - lastCompleted : null
+
+  if (isMain && reauth.needsReauth && sessionAlive && msSinceLastCompletedTask != null && msSinceLastCompletedTask <= RECENT_TASK_LIVENESS_WINDOW_MS) {
+    logger.info(
+      { label, session, reason: reauth.reason, msSinceLastCompletedTask },
+      'reauth-healer: dead-token reading overridden -- session completed a scheduled task within the liveness window',
+    )
+  }
+
   const decision = decideReauthAction(
-    { isDeadToken: reauth.needsReauth, sessionAlive, isMain, canInteractiveLogin: hostCanInteractiveLogin(), isFirstRunGate, prev, nowMs: Date.now() },
-    { threshold: DEAD_PROBE_THRESHOLD, cooldownMs: ESCALATION_COOLDOWN_MS },
+    { isDeadToken: reauth.needsReauth, sessionAlive, isMain, canInteractiveLogin: hostCanInteractiveLogin(), isFirstRunGate, msSinceLastCompletedTask, prev, nowMs },
+    { threshold: DEAD_PROBE_THRESHOLD, cooldownMs: ESCALATION_COOLDOWN_MS, recentTaskLivenessWindowMs: RECENT_TASK_LIVENESS_WINDOW_MS },
   )
 
   if (decision.next.consecutiveDead === 0) {

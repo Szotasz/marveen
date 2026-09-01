@@ -109,6 +109,7 @@ describe('sweepWorkerLiveness', () => {
       isAlive: () => true,
       capture: () => 'pane',
       onDeath: vi.fn(),
+      restart: vi.fn(),
       now: () => t0,
       ...over,
     }
@@ -131,6 +132,32 @@ describe('sweepWorkerLiveness', () => {
     const d = deps({ isAlive: () => false, capture })
     sweepWorkerLiveness(d, new Map())
     expect(capture).not.toHaveBeenCalled()
+  })
+
+  it('restarts a session found missing (WORKERBOOT1 fix: nothing else brings it back)', () => {
+    const restart = vi.fn()
+    const d = deps({ isAlive: (s) => s !== 'agent-worker', restart })
+    sweepWorkerLiveness(d, new Map())
+    // only the dead session should trigger a restart call
+    expect(restart).toHaveBeenCalledTimes(1)
+  })
+
+  it('does NOT restart sessions that are alive', () => {
+    const restart = vi.fn()
+    const d = deps({ isAlive: () => true, restart })
+    sweepWorkerLiveness(d, new Map())
+    expect(restart).not.toHaveBeenCalled()
+  })
+
+  it('retries the restart on every sweep the session stays missing, not just once', () => {
+    const restart = vi.fn()
+    const states = new Map()
+    const d = deps({ isAlive: () => false, restart })
+    sweepWorkerLiveness(d, states)
+    sweepWorkerLiveness(d, states)
+    sweepWorkerLiveness(d, states)
+    // 2 sessions x 3 sweeps -- a failed/no-op launch must be retried, not given up on
+    expect(restart).toHaveBeenCalledTimes(6)
   })
 
   it('passes the lifetime and the last pane through to the sink', () => {
@@ -195,6 +222,7 @@ describe('lifetime after a monitor restart is reported as a LOWER BOUND', () => 
       isAlive: () => alive,
       capture: () => 'pane',
       onDeath,
+      restart: vi.fn(),
       now: () => t0,
     }
     sweepWorkerLiveness(d, states, true)    // first sweep: session already there

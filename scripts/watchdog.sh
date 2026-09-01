@@ -2,6 +2,20 @@
 # Watchdog: checks sessions every 5 minutes, restarts if missing.
 # Cron: */5 * * * * ~/marveen/scripts/watchdog.sh
 
+# Cron's shell has no DBUS_SESSION_BUS_ADDRESS / XDG_RUNTIME_DIR (those are
+# only set automatically in an interactive login session), so every
+# `systemctl --user ...` call below fails with "Failed to connect to user
+# scope bus" when this script runs from cron -- silently, since the fallback
+# HTTP re-check after the failed restart often still sees the service come
+# back up via an unrelated path (systemd's own Restart=always, or a manual
+# restart), masking that THIS script's own restart attempt never worked.
+# `loginctl enable-linger` (assumed enabled for this user) keeps the user
+# manager and its bus socket alive at this fixed path with no session
+# required; naming it explicitly is enough. Root-caused and verified via
+# `env -i XDG_RUNTIME_DIR=... DBUS_SESSION_BUS_ADDRESS=...`.
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LOG="$INSTALL_DIR/logs/watchdog.log"
 mkdir -p "$INSTALL_DIR/logs"
@@ -96,6 +110,18 @@ if [ "${1:-}" = "--check-scaffolded" ]; then
   exit 0
 fi
 
+
+# Overlap guard: a cycle's per-agent restart sleeps + message replay can exceed
+# the 5-min cron interval; without this a second watchdog would start mid-restart
+# and both could spawn the same session (restart-race, 2026-08-06). NON-BLOCKING:
+# if a cycle is still running, this tick skips. `exec 9>` must succeed BEFORE
+# flock -- otherwise `flock -n 9` acts on fd 0 (stdin) and SUCCEEDS, silently
+# bypassing the lock (trap documented in stuck-modal-guard.sh). Placed AFTER the
+# --resolve-provider fast path so the provider-contract tests never take the lock.
+exec 9>"$INSTALL_DIR/logs/.watchdog.lock" || { echo "$(timestamp) [watchdog] cannot open lock file, skipping" >> "$LOG"; exit 0; }
+if command -v flock >/dev/null 2>&1; then
+  flock -n 9 || { echo "$(timestamp) [watchdog] another watchdog run in progress, skipping" >> "$LOG"; exit 0; }
+fi
 
 export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
@@ -202,7 +228,17 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
 
   ISO_ENV="$(agent_launch_env "$AGENT_DIR")"
 
-  CMD="${ISO_ENV}export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official"
+  # Mirror the safety env-vars the dashboard's own agent launcher sets, so a
+  # watchdog-spawned FALLBACK agent is not divergent from a dashboard-spawned
+  # one. Without these, a watchdog respawn runs with the claude auto-updater
+  # ENABLED (able to silently re-touch the shared global claude install),
+  # misses the prompt-suggestion opt-out, and starts its MCP servers without
+  # the batching/timeout tuning the dashboard applies. ISO_ENV above already
+  # covers the isolated-config-dir / fleet-OAuth-token pair; this only adds
+  # the vars ISO_ENV does not set.
+  SAFETY_ENV="export DISABLE_AUTOUPDATER=1 && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && export MCP_SERVER_CONNECTION_BATCH_SIZE=10 && export MCP_CONNECTION_NONBLOCKING=1 && export MCP_TIMEOUT=60000 && "
+
+  CMD="${ISO_ENV}${SAFETY_ENV}export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official"
 
   tmux new-session -d -s "$SESSION_NAME" "$CMD" 2>/dev/null
   sleep 2

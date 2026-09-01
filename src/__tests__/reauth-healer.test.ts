@@ -1,12 +1,15 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { decideReauthAction, NO_REAUTH_STATE, type ReauthHealerState } from '../web/reauth-healer.js'
 
-const T = { threshold: 3, cooldownMs: 30 * 60 * 1000 }
+const T = { threshold: 3, cooldownMs: 30 * 60 * 1000, recentTaskLivenessWindowMs: 20 * 60 * 1000 }
 const base = (over: Partial<Parameters<typeof decideReauthAction>[0]> = {}) => ({
   isDeadToken: true,
   sessionAlive: true,
   isMain: false,
   canInteractiveLogin: true,
+  msSinceLastCompletedTask: null,
   prev: NO_REAUTH_STATE,
   nowMs: 1_000_000,
   ...over,
@@ -185,5 +188,78 @@ describe('decideReauthAction: restartMain (main agent dead-token restart)', () =
     }), T)
     expect(d.restartMain).toBe(true)
     expect(d.escalate).toBe(true)
+  })
+})
+
+// 2026-08-24 false-restart incident: 4 main-agent restarts in one day, all
+// exactly ESCALATION_COOLDOWN_MS apart, all reason "Not logged in", while
+// scheduled tasks demonstrably completed successfully minutes before each
+// one -- proof the session was never actually dead. Fix: a session that just finished a
+// scheduled task's LLM turn cannot simultaneously have a dead OAuth token,
+// so recent completion evidence overrides a marker-based dead reading for
+// the main agent, exactly like a clean probe.
+describe('decideReauthAction: recent-task sanity check (main agent only)', () => {
+  it('recent task completion (5min ago) overrides a dead reading -- ends the spell', () => {
+    const d = decideReauthAction(base({
+      isMain: true,
+      msSinceLastCompletedTask: 5 * 60 * 1000,
+      prev: { consecutiveDead: 5, lastActionAtMs: null },
+    }), T)
+    expect(d.restartMain).toBe(false)
+    expect(d.escalate).toBe(false)
+    expect(d.next).toEqual(NO_REAUTH_STATE)
+  })
+
+  it('stale task completion (25min ago, outside the window) does not override -- normal logic applies', () => {
+    const d = decideReauthAction(base({
+      isMain: true,
+      msSinceLastCompletedTask: 25 * 60 * 1000,
+      prev: { consecutiveDead: 2, lastActionAtMs: null },
+      nowMs: 2_000_000,
+    }), T)
+    expect(d.restartMain).toBe(true)
+    expect(d.escalate).toBe(true)
+  })
+
+  it('does NOT apply to sub-agents, even with recent completion evidence', () => {
+    const d = decideReauthAction(base({
+      isMain: false,
+      msSinceLastCompletedTask: 5 * 60 * 1000,
+      prev: { consecutiveDead: 2, lastActionAtMs: null },
+    }), T)
+    expect(d.escalate).toBe(true)
+    expect(d.sendKeys).toBe(true)
+  })
+
+  it('null completion evidence (never observed) does not override -- normal logic applies', () => {
+    const d = decideReauthAction(base({
+      isMain: true,
+      msSinceLastCompletedTask: null,
+      prev: { consecutiveDead: 2, lastActionAtMs: null },
+      nowMs: 2_000_000,
+    }), T)
+    expect(d.restartMain).toBe(true)
+    expect(d.escalate).toBe(true)
+  })
+})
+
+// 2026-08-29: the escalation delivery mechanism itself was silently failing
+// (notify.sh via execFile -- the main agent's own dead OAuth token was
+// correctly detected on every probe, but every escalation attempt to notify
+// the owner failed with an unexplained exit code 1, and it only surfaced
+// once the owner tried to message the agent and got no reply). Fixed by
+// switching to the same channel-provider abstraction schedule-runner.ts's
+// own alerts already use successfully. This is a source-scan guard, not a
+// runtime one, because sendNotify() is a private fire-and-forget function
+// with no return value to assert on -- if this reverted back to shelling
+// out through notify.sh, the test below would turn red.
+describe('fix-revert guard: reauth-healer escalation no longer shells out to notify.sh', () => {
+  it('sendNotify uses the channel-provider abstraction, not execFile(.../notify.sh)', () => {
+    const src = readFileSync(join(__dirname, '../web/reauth-healer.ts'), 'utf-8')
+    expect(src).toMatch(/sendSchedulerAlertMessage\(token, ownerChat, msg\)/)
+    // NOTIFY_SCRIPT (the const that pointed sendNotify at scripts/notify.sh)
+    // is gone entirely; the string "notify.sh" itself may still appear in
+    // prose comments explaining the history, so it is not asserted on here.
+    expect(src).not.toMatch(/NOTIFY_SCRIPT/)
   })
 })
