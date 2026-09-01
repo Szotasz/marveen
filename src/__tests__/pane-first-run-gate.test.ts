@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { detectsFirstRunGate, detectPaneState, detectsBlockingMenu } from '../pane-state.js'
+import { detectsFirstRunGate, detectPaneState, detectsBlockingMenu, trustDialogAnswerKeys } from '../pane-state.js'
 
 // Fresh-install first-run gate detection (card 5F37BB84, Oligo2000 VPS
 // 2026-07-22). A sub-agent session parked on a Claude Code first-run dialog
@@ -151,6 +151,46 @@ const ORDINARY_PANE = [
   '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
 ].join('\n')
 
+// The SAME dialog again, as Claude Code 2.1.252 renders it -- captured live on
+// 2026-09-01 from an ISOLATED install (npm install --prefix into a throwaway
+// directory; the global 2.1.246 was left alone and re-checked afterwards).
+// Only the workspace path is genericised.
+//
+// TWO further breaks on top of the reworded text, six patch releases later:
+//   * the "1." / "2." numbering is GONE, so typing "1" selects nothing;
+//   * "No, exit" is FIRST and is the highlighted option, so the Enter that
+//     followed the useless "1" CONFIRMED the exit.
+// A fresh install therefore did not park -- it quit, and our own code chose it.
+const TRUST_PANE_2_1_252 = [
+  '────────────────────────────────────────────────────────────────',
+  ' Accessing workspace:',
+  '',
+  ' /home/gabor/marveen/agents/nova',
+  '',
+  " Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this",
+  ' folder first.',
+  '',
+  " Claude Code'll be able to read, edit, and execute files here.",
+  '',
+  ' Security guide',
+  '',
+  ' ❯ No, exit',
+  '   Yes, I trust this folder',
+  '',
+  ' Enter to confirm · Esc to cancel',
+].join('\n')
+
+// A trust-shaped panel whose accept option is missing entirely: the layout is
+// not one we model, so the answer must be "send nothing".
+const TRUST_PANE_UNKNOWN_SHAPE = [
+  ' Quick safety check: Is this a project you created or one you trust?',
+  '',
+  ' ❯ Maybe later',
+  '   No, exit',
+  '',
+  ' Enter to confirm · Esc to cancel',
+].join('\n')
+
 describe('detectsFirstRunGate', () => {
   it('classifies the folder-trust dialog', () => {
     expect(detectsFirstRunGate(TRUST_PANE)).toBe('trust')
@@ -275,5 +315,39 @@ describe('first-run gate wiring contracts', () => {
     expect(stampIdx).toBeGreaterThan(0)
     // The stamp must happen BEFORE the tmux session is spawned.
     expect(launchIdx).toBeGreaterThan(stampIdx)
+  })
+})
+
+describe('trustDialogAnswerKeys (TRUSTGATE901)', () => {
+  // Numbered, "Yes" first and already highlighted -> confirm where we are.
+  it('2.1.246 layout: the cursor already sits on yes, so just confirm', () => {
+    expect(trustDialogAnswerKeys(TRUST_PANE_2_1_246)).toEqual(['Enter'])
+  })
+
+  // Unnumbered, "No, exit" first AND highlighted -> move down, then confirm.
+  // This is the regression that quit a fresh install.
+  it('2.1.252 layout: moves the selection onto yes before confirming', () => {
+    expect(trustDialogAnswerKeys(TRUST_PANE_2_1_252)).toEqual(['Down', 'Enter'])
+  })
+
+  // The discriminating assertion: a naive "always Enter" answer -- which is
+  // what the old code effectively did after typing a number that no longer
+  // selects anything -- is WRONG here, and this fixture is what proves it.
+  it('2.1.252 layout: a bare Enter would confirm "No, exit"', () => {
+    expect(trustDialogAnswerKeys(TRUST_PANE_2_1_252)).not.toEqual(['Enter'])
+  })
+
+  it('the older boxed dialog still resolves to a plain confirm', () => {
+    expect(trustDialogAnswerKeys(TRUST_PANE)).toEqual(['Enter'])
+  })
+
+  // Not-acting is the correct answer on an unmodelled layout: Escape is
+  // "No, exit" by the dialog's own footer and Enter confirms the highlight.
+  it('returns null when no unambiguous yes option exists (park, send nothing)', () => {
+    expect(trustDialogAnswerKeys(TRUST_PANE_UNKNOWN_SHAPE)).toBeNull()
+  })
+
+  it('returns null on a pane with no selection cursor at all', () => {
+    expect(trustDialogAnswerKeys(ORDINARY_PANE.replace('❯', ' '))).toBeNull()
   })
 })

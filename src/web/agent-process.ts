@@ -23,6 +23,7 @@ import {
   detectsModelConsentDialog,
   detectsFeedbackDraftModal,
   detectsFeedbackOptOutPrompt,
+  trustDialogAnswerKeys,
   type FirstRunGateKind,
 } from '../pane-state.js'
 import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentMemoryIsolation } from './agent-config.js'
@@ -1623,7 +1624,7 @@ const FIRST_RUN_ANSWER_SETTLE_MS = 1500
 export async function answerFirstRunGates(
   session: string,
   host: string | null = null,
-): Promise<'cleared' | 'login' | 'unchanged'> {
+): Promise<'cleared' | 'login' | 'unchanged' | 'blocked'> {
   let acted = false
   for (let i = 0; i < FIRST_RUN_ANSWER_MAX_STEPS; i++) {
     const pane = capturePane(session, host)
@@ -1632,9 +1633,26 @@ export async function answerFirstRunGates(
     if (gate === 'login') return 'login'
     try {
       if (gate === 'trust') {
-        runTmux(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
-        await delay(150)
-        runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+        // TRUSTGATE901: never by number, never by default. 2.1.252 dropped the
+        // "1."/"2." prefixes AND put "No, exit" first as the highlighted
+        // option, so the old `1` + Enter typed nothing and then CONFIRMED the
+        // exit. The keys come from the pane instead.
+        // `pane` is non-null here (gate came from it), but the narrowing does
+        // not survive the intervening checks -- and a null capture is itself a
+        // reason to park rather than guess.
+        const keys = pane != null ? trustDialogAnswerKeys(pane) : null
+        if (keys == null) {
+          // Unrecognised layout. Enter confirms whatever is highlighted and
+          // Escape is "No, exit" by the dialog's own footer, so there is no
+          // safe key to send: park and let the caller alert a human.
+          logger.warn({ session, gate },
+            'first-run trust dialog: no unambiguous "yes" option found -- parking, NO keystrokes sent')
+          return 'blocked'
+        }
+        for (const k of keys) {
+          runTmux(host, ['send-keys', '-t', session, k], { timeout: 5000 })
+          await delay(150)
+        }
       } else if (gate === 'bypass-permissions') {
         runTmux(host, ['send-keys', '-t', session, '2'], { timeout: 5000 })
         await delay(150)

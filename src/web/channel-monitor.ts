@@ -1703,6 +1703,14 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           const res = await answerFirstRunGates(t.session)
           if (res === 'login') {
             sendAlert(`🔑 A(z) ${label} agent első-indítási dialogjait továbbléptettem, de Claude-belépés kell ("Select login method"). Lépj be: tmux attach -t ${t.session}. Utána minden várakozó feladat magától kézbesítődik.`)
+          } else if (res === 'blocked') {
+            // TRUSTGATE901: the trust dialog rendered in a shape we do not
+            // model, so NO keystroke was sent -- deliberately. Neither Enter
+            // nor Escape is neutral on that panel (Escape is "No, exit", and
+            // Enter confirms whatever is highlighted, which in 2.1.252 is the
+            // exit). A human picks; we only say so, loudly.
+            logger.warn({ session: t.session, agent: label }, 'first-run trust dialog in an unrecognised shape -- parked, NO keystrokes sent')
+            sendAlert(`🛑 A(z) ${label} session a mappa-megbízhatósági dialóguson parkol, de a panel alakját nem ismerem fel, ezért NEM nyomtam meg semmit. Se az Enter, se az Escape nem semleges rajta (az Escape a "No, exit"). Válassz kézzel: tmux attach -t ${t.session}, majd a "Yes, I trust this folder" sort jelöld ki és Enter.`)
           } else {
             sendAlert(`🧭 A(z) ${label} session a Claude Code első-indítási képernyőjén parkolt (${firstRunGate}); automatikusan továbbléptettem. A várakozó ütemezett feladatok a következő körben kézbesítődnek.`)
           }

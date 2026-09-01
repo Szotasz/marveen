@@ -532,6 +532,9 @@ export function detectsBlockingMenu(pane: string): boolean {
 // detectsBlockingMenu's discipline: a busy pane is never a gate, and a visible
 // idle footer means the real prompt is live (capture-pane -p sees only the
 // visible screen, so a quoted phrase always coexists with the live footer).
+// The tmux-visible selection marker Claude Code draws on the active option.
+const CURSOR_GLYPH = '\u276f'
+
 export type FirstRunGateKind = 'trust' | 'bypass-permissions' | 'login' | 'theme' | 'welcome'
 
 // Ordered: the login picker and theme screen render UNDER the "Welcome to
@@ -561,6 +564,56 @@ const FIRST_RUN_GATES: Array<{ kind: FirstRunGateKind; rx: RegExp }> = [
   { kind: 'theme', rx: /Choose the text style/ },
   { kind: 'welcome', rx: /Welcome to Claude Code/ },
 ]
+
+/**
+ * Which keys select "yes" on the folder-trust dialog, from wherever the cursor
+ * currently sits -- or null when the pane does not say clearly enough to act.
+ *
+ * TRUSTGATE901. Answering this dialog by NUMBER or by DEFAULT is not safe, and
+ * both assumptions broke inside six patch releases:
+ *   2.1.246: "❯ 1. Yes, I trust this folder" / "  2. No, exit"
+ *   2.1.252: "❯ No, exit"                    / "  Yes, I trust this folder"
+ * In 2.1.252 the numbering is GONE (so typing "1" selects nothing) and "No,
+ * exit" is both first AND the highlighted default (so the Enter that follows
+ * CONFIRMS the exit). The old code did exactly that: it typed 1, then Enter,
+ * and thereby chose "No, exit" on a fresh install.
+ *
+ * So the answer is derived from the pane instead of assumed: find the cursor,
+ * find the "yes" option, and move the selection onto it.
+ *
+ * Returns null -- meaning PARK AND ALERT, send nothing -- when the layout is
+ * not understood. Neither Enter nor Escape is a safe default here: Escape is
+ * "No, exit" by the dialog's own footer, and Enter confirms whatever happens
+ * to be highlighted. On an unrecognised shape, not acting is the correct move.
+ */
+export function trustDialogAnswerKeys(pane: string): string[] | null {
+  if (!pane || !pane.trim()) return null
+  const lines = pane.split('\n')
+  const cursorIdx = lines.findIndex(l => l.includes(CURSOR_GLYPH))
+  if (cursorIdx < 0) return null
+
+  // The options are the contiguous run of non-blank lines around the cursor.
+  // Anchoring on the run (rather than on line numbers or on a fixed distance)
+  // is what survives a layout change: boxed or unboxed, numbered or not.
+  let first = cursorIdx
+  while (first > 0 && lines[first - 1].trim() !== '') first--
+  let last = cursorIdx
+  while (last < lines.length - 1 && lines[last + 1].trim() !== '') last++
+  const block = lines.slice(first, last + 1)
+
+  // The target is the option that accepts. Match on "yes" and exclude the
+  // refusal explicitly, so a future "Yes, exit"-shaped wording cannot be
+  // mistaken for consent.
+  const yesIdx = block.findIndex(l => /\byes\b/i.test(l) && !/\bno,\s*exit\b/i.test(l))
+  if (yesIdx < 0) return null
+  // Ambiguity is a reason to stop, not to guess: two "yes"-looking rows mean
+  // the layout is not what this function models.
+  if (block.filter(l => /\byes\b/i.test(l) && !/\bno,\s*exit\b/i.test(l)).length !== 1) return null
+
+  const delta = yesIdx - (cursorIdx - first)
+  const move = delta === 0 ? [] : Array.from({ length: Math.abs(delta) }, () => (delta > 0 ? 'Down' : 'Up'))
+  return [...move, 'Enter']
+}
 
 /**
  * Classify the pane as a Claude Code first-run gate, or null when it is a
