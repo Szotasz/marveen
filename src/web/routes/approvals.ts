@@ -136,8 +136,12 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // for reads (they use the global dashboard token, no tenant affiliation).
     // Fail-closed: a non-admin session with no tenant assignment returns 403
     // rather than silently dropping the filter and leaking all tenants' data.
+    // Admin may pass ?tenant= to narrow the view to a specific tenant.
     let tenantId: string | undefined
-    if (ctx.auth?.kind === 'session' && ctx.role !== 'admin') {
+    if (ctx.role === 'admin') {
+      const tenantParam = url.searchParams.get('tenant')
+      if (tenantParam) tenantId = tenantParam
+    } else if (ctx.auth?.kind === 'session') {
       if (!ctx.tenantId) {
         json(res, { error: 'forbidden', hint: 'No tenant scope assigned to this session' }, 403)
         return true

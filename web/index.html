@@ -266,6 +266,9 @@
     <!-- === Overview Page (default) === -->
     <div class="page" id="overviewPage">
 
+      <!-- Tenant selector: only rendered for global admin by tenant-selector.js -->
+      <div id="overviewTenantSelectorContainer" hidden></div>
+
       <!-- Zone 1: Attention Required (hidden when empty, collapsible) -->
       <div class="attention-section" id="attentionSection" hidden>
         <div class="attention-header" id="attentionHeader">
@@ -1273,6 +1276,8 @@
             Frissítés
           </button>
         </div>
+        <!-- Tenant selector: only rendered for global admin by tenant-selector.js -->
+        <div id="messagesTenantSelectorContainer" hidden></div>
       </div>
       <div class="chat-layout">
         <div class="chat-sidebar" id="chatAgentList">
@@ -1303,6 +1308,9 @@
           </button>
         </div>
       </div>
+
+      <!-- Tenant selector: only rendered for global admin by tenant-selector.js -->
+      <div id="approvalsTenantSelectorContainer" hidden></div>
 
       <div class="approvals-pending-banner" id="approvalsPendingBanner" hidden></div>
       <div class="approvals-stats" id="approvalsStats"></div>

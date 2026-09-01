@@ -96,8 +96,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     const memCats = db0.prepare(`SELECT COUNT(DISTINCT category) as c FROM memories WHERE 1=1${tc}`).get(...tp) as { c: number }
     let artifactCount = 0
     try {
-      // artifacts has no tenant_id (admin-only pilot, deferred by design decision)
-      const aRow = db0.prepare("SELECT COUNT(*) as c FROM artifacts").get() as { c: number }
+      const aRow = db0.prepare(`SELECT COUNT(*) as c FROM artifacts WHERE 1=1${tc}`).get(...tp) as { c: number }
       artifactCount = aRow.c
     } catch { /* artifacts table absent on fresh installs before migration */ }
 
@@ -217,12 +216,11 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
         })
       }
     } catch { /* ignore */ }
-    // Approval events in last 4h (approvals has no tenant_id -- admin-only pilot, deferred by design decision)
     try {
       const fourHAgoSec = Math.floor(fourHoursAgo / 1000)
       const aprRows = db0.prepare(
-        "SELECT agent_id, action_description, status, created_at FROM approvals WHERE created_at >= ? ORDER BY created_at DESC LIMIT 10"
-      ).all(fourHAgoSec) as { agent_id: string; action_description: string; status: string; created_at: number }[]
+        `SELECT agent_id, action_description, status, created_at FROM approvals WHERE created_at >= ?${tc} ORDER BY created_at DESC LIMIT 10`
+      ).all(fourHAgoSec, ...tp) as { agent_id: string; action_description: string; status: string; created_at: number }[]
       for (const r of aprRows) {
         activity.push({
           icon: 'approval',

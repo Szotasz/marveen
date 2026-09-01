@@ -2,6 +2,7 @@ import { escapeHtml, escapeAttr } from './util.js'
 import { t } from './i18n.js'
 import { showToast } from './toast.js'
 import { getErrorMessage } from './error-message.js'
+import { initTenantSelector } from './tenant-selector.js'
 
 
 
@@ -14,6 +15,7 @@ const APPROVALS_PAGE_LIMIT = 50
 let _approvalsCountdownInterval = null
 const _approvalsState = { status: '', agent: '', category: '', offset: 0 }
 let _approvalsAll = []
+let _approvalsTenantGetter = null
 
 export async function loadApprovalsPage() {
   const tbody = document.getElementById('approvalsTbody')
@@ -23,7 +25,9 @@ export async function loadApprovalsPage() {
   if (_approvalsCountdownInterval) { clearInterval(_approvalsCountdownInterval); _approvalsCountdownInterval = null }
 
   try {
-    const res = await fetch('/api/approvals?limit=500')
+    const tenant = _approvalsTenantGetter?.()
+    const url = tenant ? `/api/approvals?limit=500&tenant=${encodeURIComponent(tenant)}` : '/api/approvals?limit=500'
+    const res = await fetch(url)
     if (!res.ok) throw new Error('HTTP ' + res.status)
     _approvalsAll = await res.json()
     _renderApprovalsStats()
@@ -195,7 +199,7 @@ async function _resolveApproval(id, decision) {
   }
 }
 
-export function initApprovals() {
+export async function initApprovals() {
   document.getElementById('refreshApprovalsBtn').addEventListener('click', loadApprovalsPage)
   document.getElementById('approvalsFilterStatus').addEventListener('change', (e) => {
     _approvalsState.status = e.target.value
@@ -212,4 +216,5 @@ export function initApprovals() {
     _approvalsState.offset = 0
     _renderApprovalsTable()
   })
+  _approvalsTenantGetter = await initTenantSelector('approvalsTenantSelectorContainer', () => loadApprovalsPage())
 }

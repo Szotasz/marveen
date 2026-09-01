@@ -3,6 +3,7 @@ import { showToast } from './toast.js'
 import { t } from './i18n.js'
 import { avatarBust, setFederatedPeerStatus, federatedAgentEntries } from './agents.js'
 import { getErrorMessage } from './error-message.js'
+import { initTenantSelector } from './tenant-selector.js'
 
 
 // === Team: inter-agent message log + compose ===
@@ -37,6 +38,14 @@ let chatSelectedAgent = null
 export function getChatSelectedAgent() { return chatSelectedAgent }
 export function setChatSelectedAgent(id) { chatSelectedAgent = id }
 
+let _msgTenantGetter = null
+let _msgInited = false
+async function _ensureMessagesInited() {
+  if (_msgInited) return
+  _msgInited = true
+  _msgTenantGetter = await initTenantSelector('messagesTenantSelectorContainer', () => loadChatAgentList())
+}
+
 function chatMonogramEl(agentName, size) {
   const letter = agentName.charAt(0).toUpperCase()
   const colors = ['#d97757','#00C2A8','#818cf8','#22c55e','#f59e0b','#ec4899']
@@ -69,6 +78,7 @@ function chatAvatarHtml(agentName, size = 32) {
 }
 
 export async function loadMessagesPage() {
+  await _ensureMessagesInited()
   await loadChatAgentList()
 }
 
@@ -115,9 +125,11 @@ export async function loadChatAgentList() {
   try {
     // Load fleet agents + threads in parallel (the federation status fetch is
     // failure-proof: it must never take down the Messages page)
+    const msgTenant = _msgTenantGetter?.()
+    const threadsUrl = msgTenant ? `/api/messages/threads?tenant=${encodeURIComponent(msgTenant)}` : '/api/messages/threads'
     const [agentsRes, threadsRes, fedStatus] = await Promise.all([
       fetch('/api/agents'),
-      fetch('/api/messages/threads'),
+      fetch(threadsUrl),
       fetch('/api/federation/status').then((r) => (r.ok ? r.json() : null)).catch(() => null),
     ])
     const agentsRaw = agentsRes.ok ? await agentsRes.json() : []
@@ -271,7 +283,9 @@ async function loadChatThread(agentName) {
   // Initial load
   await fetchChatPage(agentName, null, CHAT_PAGE_SIZE, 'replace')
   // Mark thread as read (localStorage last-seen)
-  const threadData = (await fetch('/api/messages/threads').then(r => r.ok ? r.json() : []).catch(() => []))
+  const _threadTenant = _msgTenantGetter?.()
+  const _threadUrl = _threadTenant ? `/api/messages/threads?tenant=${encodeURIComponent(_threadTenant)}` : '/api/messages/threads'
+  const threadData = (await fetch(_threadUrl).then(r => r.ok ? r.json() : []).catch(() => []))
     .find(t => t.agent === agentName)
   if (threadData?.lastMessage?.id) {
     chatMarkSeen(agentName, threadData.lastMessage.id)
@@ -483,6 +497,8 @@ async function fetchChatPage(agentName, beforeId, limit, mode) {
   try {
     let url = `/api/messages?agent=${encodeURIComponent(agentName)}&limit=${limit}`
     if (beforeId) url += `&before=${beforeId}`
+    const _fetchTenant = _msgTenantGetter?.()
+    if (_fetchTenant) url += `&tenant=${encodeURIComponent(_fetchTenant)}`
     const res = await fetch(url)
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const msgs = await res.json()

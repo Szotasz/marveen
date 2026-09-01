@@ -40,7 +40,7 @@ export type Permission =
 
 // Only the admin role carries admin:all; all others are strictly scoped.
 // read_only and viewer are intentionally narrow -- no write permissions.
-// viewer omits blackboard access (internal fleet signal, not for external observers).
+// viewer includes blackboard:read so B2B users can see the fleet health bar.
 const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
   admin: new Set<Permission>([
     'memories:read',

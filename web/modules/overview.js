@@ -1,5 +1,6 @@
 import { escapeHtml } from './util.js'
 import { t } from './i18n.js'
+import { initTenantSelector } from './tenant-selector.js'
 
 
 // ============================================================
@@ -9,6 +10,14 @@ import { t } from './i18n.js'
 let _ovLoadGen = 0
 let _ovActiveAgentFilter = null
 let _bbPollTimer = null
+let _ovTenantGetter = null
+let _ovInited = false
+
+async function _ensureOverviewInited() {
+  if (_ovInited) return
+  _ovInited = true
+  _ovTenantGetter = await initTenantSelector('overviewTenantSelectorContainer', () => loadOverview())
+}
 
 function formatRelative(ts) {
   const diff = Math.max(0, Date.now() - ts)
@@ -43,9 +52,11 @@ function _ovRenderActivityFeed() {
 }
 
 export async function loadOverview() {
+  await _ensureOverviewInited()
   const gen = ++_ovLoadGen
   try {
-    const res = await fetch('/api/overview')
+    const tenant = _ovTenantGetter?.()
+    const res = await fetch(tenant ? `/api/overview?tenant=${encodeURIComponent(tenant)}` : '/api/overview')
     if (!res.ok) throw new Error('HTTP ' + res.status)
     if (gen !== _ovLoadGen) return
     const d = await res.json()

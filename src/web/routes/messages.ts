@@ -224,8 +224,10 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
 
   // Sidebar threads: one row per conversation peer (system agents excluded),
   // each with its count + most-recent message, recency computed per-peer.
+  // Admin may pass ?tenant= to narrow to a specific tenant.
   if (path === '/api/messages/threads' && method === 'GET') {
-    json(res, getAgentConversationThreads(isAdmin ? undefined : effectiveTenantId))
+    const adminTenantFilter = isAdmin ? (url.searchParams.get('tenant') || undefined) : undefined
+    json(res, getAgentConversationThreads(isAdmin ? adminTenantFilter : effectiveTenantId))
     return true
   }
 
@@ -244,7 +246,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // list -- MORE than asked for, which is the expensive direction to be wrong
     // in: a caller acting in good faith on that answer reads other agents'
     // traffic as its own. Fail loudly instead.
-    const KNOWN_PARAMS = new Set(['agent', 'status', 'limit', 'before'])
+    const KNOWN_PARAMS = new Set(['agent', 'status', 'limit', 'before', 'tenant'])
     const unknown = [...url.searchParams.keys()].filter((k) => !KNOWN_PARAMS.has(k))
     if (unknown.length) {
       json(res, {
@@ -262,7 +264,9 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
 
     // Tenant isolation pushed into SQL before LIMIT: a post-LIMIT JS filter would
     // starve tenant-scoped callers when other tenants occupy the LIMIT slots.
-    const msgTenantId = isAdmin ? undefined : effectiveTenantId
+    // Admin may pass ?tenant= to narrow to a specific tenant (omit for global view).
+    const adminTenantParam = isAdmin ? (url.searchParams.get('tenant') || undefined) : undefined
+    const msgTenantId = isAdmin ? adminTenantParam : effectiveTenantId
 
     let messages: AgentMessage[]
     if (status === 'pending' && agent) {
