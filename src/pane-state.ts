@@ -566,8 +566,9 @@ const FIRST_RUN_GATES: Array<{ kind: FirstRunGateKind; rx: RegExp }> = [
 ]
 
 /**
- * Which keys select "yes" on the folder-trust dialog, from wherever the cursor
- * currently sits -- or null when the pane does not say clearly enough to act.
+ * Which keys select the ACCEPTING option on a first-run consent dialog
+ * (folder-trust, bypass-permissions), from wherever the cursor currently
+ * sits -- or null when the pane does not say clearly enough to act.
  *
  * TRUSTGATE901. Answering this dialog by NUMBER or by DEFAULT is not safe, and
  * both assumptions broke inside six patch releases:
@@ -579,14 +580,22 @@ const FIRST_RUN_GATES: Array<{ kind: FirstRunGateKind; rx: RegExp }> = [
  * and thereby chose "No, exit" on a fresh install.
  *
  * So the answer is derived from the pane instead of assumed: find the cursor,
- * find the "yes" option, and move the selection onto it.
+ * find the accepting option, and move the selection onto it.
+ *
+ * The bypass-permissions dialog is answered the same way and for the same
+ * reason. Its own accept row ("Yes, I accept") sits SECOND behind a first,
+ * highlighted "No, exit" -- so the previously used number ("2") was one
+ * dropped prefix away from the identical failure. Measured 2026-09-01: on
+ * an existing HOME the bypass panel does not appear at all, but that says
+ * nothing about a brand-new machine, which is exactly the fresh-install
+ * path this whole card is about.
  *
  * Returns null -- meaning PARK AND ALERT, send nothing -- when the layout is
  * not understood. Neither Enter nor Escape is a safe default here: Escape is
  * "No, exit" by the dialog's own footer, and Enter confirms whatever happens
  * to be highlighted. On an unrecognised shape, not acting is the correct move.
  */
-export function trustDialogAnswerKeys(pane: string): string[] | null {
+export function firstRunAcceptKeys(pane: string): string[] | null {
   if (!pane || !pane.trim()) return null
   const lines = pane.split('\n')
   const cursorIdx = lines.findIndex(l => l.includes(CURSOR_GLYPH))

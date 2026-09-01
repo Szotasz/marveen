@@ -23,7 +23,7 @@ import {
   detectsModelConsentDialog,
   detectsFeedbackDraftModal,
   detectsFeedbackOptOutPrompt,
-  trustDialogAnswerKeys,
+  firstRunAcceptKeys,
   type FirstRunGateKind,
 } from '../pane-state.js'
 import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentMemoryIsolation } from './agent-config.js'
@@ -1640,7 +1640,7 @@ export async function answerFirstRunGates(
         // `pane` is non-null here (gate came from it), but the narrowing does
         // not survive the intervening checks -- and a null capture is itself a
         // reason to park rather than guess.
-        const keys = pane != null ? trustDialogAnswerKeys(pane) : null
+        const keys = pane != null ? firstRunAcceptKeys(pane) : null
         if (keys == null) {
           // Unrecognised layout. Enter confirms whatever is highlighted and
           // Escape is "No, exit" by the dialog's own footer, so there is no
@@ -1654,9 +1654,19 @@ export async function answerFirstRunGates(
           await delay(150)
         }
       } else if (gate === 'bypass-permissions') {
-        runTmux(host, ['send-keys', '-t', session, '2'], { timeout: 5000 })
-        await delay(150)
-        runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+        // Same rule, same reason as 'trust' above: the accept row sits behind a
+        // first, highlighted "No, exit", so answering by number is one dropped
+        // prefix away from confirming the refusal.
+        const keys = pane != null ? firstRunAcceptKeys(pane) : null
+        if (keys == null) {
+          logger.warn({ session, gate },
+            'first-run bypass dialog: no unambiguous accept option found -- parking, NO keystrokes sent')
+          return 'blocked'
+        }
+        for (const k of keys) {
+          runTmux(host, ['send-keys', '-t', session, k], { timeout: 5000 })
+          await delay(150)
+        }
       } else {
         // theme / welcome: Enter accepts the highlighted default and moves on.
         runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })

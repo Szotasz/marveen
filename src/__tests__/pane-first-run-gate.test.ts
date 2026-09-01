@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { detectsFirstRunGate, detectPaneState, detectsBlockingMenu, trustDialogAnswerKeys } from '../pane-state.js'
+import { detectsFirstRunGate, detectPaneState, detectsBlockingMenu, firstRunAcceptKeys } from '../pane-state.js'
 
 // Fresh-install first-run gate detection (card 5F37BB84, Oligo2000 VPS
 // 2026-07-22). A sub-agent session parked on a Claude Code first-run dialog
@@ -318,36 +318,61 @@ describe('first-run gate wiring contracts', () => {
   })
 })
 
-describe('trustDialogAnswerKeys (TRUSTGATE901)', () => {
+describe('firstRunAcceptKeys (TRUSTGATE901)', () => {
   // Numbered, "Yes" first and already highlighted -> confirm where we are.
   it('2.1.246 layout: the cursor already sits on yes, so just confirm', () => {
-    expect(trustDialogAnswerKeys(TRUST_PANE_2_1_246)).toEqual(['Enter'])
+    expect(firstRunAcceptKeys(TRUST_PANE_2_1_246)).toEqual(['Enter'])
   })
 
   // Unnumbered, "No, exit" first AND highlighted -> move down, then confirm.
   // This is the regression that quit a fresh install.
   it('2.1.252 layout: moves the selection onto yes before confirming', () => {
-    expect(trustDialogAnswerKeys(TRUST_PANE_2_1_252)).toEqual(['Down', 'Enter'])
+    expect(firstRunAcceptKeys(TRUST_PANE_2_1_252)).toEqual(['Down', 'Enter'])
   })
 
   // The discriminating assertion: a naive "always Enter" answer -- which is
   // what the old code effectively did after typing a number that no longer
   // selects anything -- is WRONG here, and this fixture is what proves it.
   it('2.1.252 layout: a bare Enter would confirm "No, exit"', () => {
-    expect(trustDialogAnswerKeys(TRUST_PANE_2_1_252)).not.toEqual(['Enter'])
+    expect(firstRunAcceptKeys(TRUST_PANE_2_1_252)).not.toEqual(['Enter'])
   })
 
   it('the older boxed dialog still resolves to a plain confirm', () => {
-    expect(trustDialogAnswerKeys(TRUST_PANE)).toEqual(['Enter'])
+    expect(firstRunAcceptKeys(TRUST_PANE)).toEqual(['Enter'])
   })
 
   // Not-acting is the correct answer on an unmodelled layout: Escape is
   // "No, exit" by the dialog's own footer and Enter confirms the highlight.
   it('returns null when no unambiguous yes option exists (park, send nothing)', () => {
-    expect(trustDialogAnswerKeys(TRUST_PANE_UNKNOWN_SHAPE)).toBeNull()
+    expect(firstRunAcceptKeys(TRUST_PANE_UNKNOWN_SHAPE)).toBeNull()
   })
 
   it('returns null on a pane with no selection cursor at all', () => {
-    expect(trustDialogAnswerKeys(ORDINARY_PANE.replace('❯', ' '))).toBeNull()
+    expect(firstRunAcceptKeys(ORDINARY_PANE.replace('❯', ' '))).toBeNull()
+  })
+
+  // The bypass-permissions dialog answered by the SAME rule. Its accept row is
+  // second, behind a first and highlighted "No, exit" -- the identical shape
+  // that made the trust dialog dangerous once the numbering disappeared.
+  it('bypass dialog: moves onto the accept row instead of typing its number', () => {
+    expect(firstRunAcceptKeys(BYPASS_PANE)).toEqual(['Down', 'Enter'])
+  })
+
+  // HYPOTHETICAL, and labelled as such: this layout was NOT captured from any
+  // release. It exists to prove the rule does not depend on the numbering,
+  // which is precisely what vanished from the trust dialog in 2.1.252. If the
+  // bypass panel ever loses its prefixes the same way, this is the behaviour
+  // we want -- and the old "type 2" answer would have selected nothing and
+  // then confirmed the refusal.
+  it('bypass dialog without numbering (hypothetical) still resolves correctly', () => {
+    const unnumbered = [
+      ' Bypass Permissions mode',
+      '',
+      ' ❯ No, exit',
+      '   Yes, I accept',
+      '',
+      ' Enter to confirm · Esc to cancel',
+    ].join('\n')
+    expect(firstRunAcceptKeys(unnumbered)).toEqual(['Down', 'Enter'])
   })
 })
