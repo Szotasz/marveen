@@ -22,6 +22,18 @@
 #
 # EXIT 0 = every marker present. EXIT 1 = at least one missing, DO NOT START AGENTS.
 #
+# THE WAY PAST A WRONG REFUSAL
+#   FLEET_PATCH_CHECK_OVERRIDE=1 <command>   # proceed anyway, misses printed, use logged
+#
+# It exists because this guard refuses a RESTART, and a restart is what you reach for when
+# something is already broken. A refusal you cannot get past would turn a false positive
+# into an outage. The refusal prints this line itself, so nobody has to find it here first.
+#
+# ORDERING, and it matters more than the code: the manifest below describes the fully
+# integrated tree. On a tree where those patches have not landed yet, this check reports
+# them missing -- correctly, but uselessly, because there is nothing to restore. Wire it
+# into the restart gate only once a run on the integrated tree reports 0 MISS.
+#
 # Dependency-free on purpose: sh builtins, grep, wc. No python3, no jq -- an agent profile
 # may deny those, and this has to run where the damage is.
 
@@ -114,4 +126,33 @@ echo "  rebase-proba, fleet-fixes-20260901, fork/main, fleet/agent-owns-its-os-u
 echo "Example:  cd $ROOT && git checkout rebase-proba -- <path>"
 echo
 echo "After restoring, rebuild (npm run build) and re-run this check before starting agents."
+
+# THE WAY OUT, PRINTED BY THE REFUSAL ITSELF.
+#
+# Requested in review by the repository owner, and the reasoning is stronger than the
+# feature: a guard that REFUSES A RESTART is a different risk class from one that warns.
+# If it fires wrongly, it locks the door in exactly the situation where recovery is
+# needed, and the tool for getting out of that situation IS the restart. A refusal with
+# no stated way past it turns a false positive into an outage.
+#
+# So the escape hatch is not hidden in a document: the refusal prints it, every time,
+# right under the list of what is missing. Someone who knows the markers are wrong can
+# proceed in one line -- and the override is loud, named, and leaves a record, so nobody
+# ships it as a habit.
+echo
+echo "IF THIS REFUSAL IS WRONG, this is how you get past it (one round, no editing):"
+echo "  FLEET_PATCH_CHECK_OVERRIDE=1 <the command you were running>"
+echo "The override starts the agents anyway, prints the misses above, and appends one"
+echo "line to store/fleet-patch-check-override.log so the next reader sees it was used."
+
+if [ "${FLEET_PATCH_CHECK_OVERRIDE:-}" = "1" ]; then
+  echo
+  echo "OVERRIDE ACTIVE (FLEET_PATCH_CHECK_OVERRIDE=1): exiting 0 with $MISSING marker(s) missing."
+  # Best effort: a store that is read-only (or absent) must not turn the override itself
+  # into a second failure. The point of the override is that it always works.
+  LOGLINE="$(date '+%Y-%m-%d %H:%M:%S') override used, $MISSING of $CHECKED markers missing"
+  echo "$LOGLINE" >> "$ROOT/store/fleet-patch-check-override.log" 2>/dev/null || true
+  exit 0
+fi
+
 exit 1
