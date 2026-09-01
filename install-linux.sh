@@ -1450,8 +1450,25 @@ echo ""
 echo -e "${BOLD}$(_t section_6_linux)${NC}"
 
 # --- Ollama telepites ---
+#
+# Where the RUNTIME will look. src/config.ts:331 reads OLLAMA_URL and falls back
+# to http://localhost:11434; this step used to hardcode that fallback in seven
+# places, so an install pointed at a non-default or remote Ollama probed and
+# pulled the embedding model somewhere the running fleet would never read --
+# and installed a second, local daemon it did not need. Same precedence as the
+# runtime: the environment first, then the .env this installer has already
+# written, then the historical default.
+OLLAMA_API="${OLLAMA_URL:-}"
+if [ -z "$OLLAMA_API" ] && [ -f "$INSTALL_DIR/.env" ]; then
+  OLLAMA_API="$(grep -E '^OLLAMA_URL=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2- | tr -d ' "')"
+fi
+OLLAMA_API="${OLLAMA_API:-http://localhost:11434}"
+
 echo -e "  Ollama ellenorzese (szemantikus memoria kereseshez)..."
-if command -v ollama &>/dev/null; then
+if curl -s --max-time 5 "${OLLAMA_API}/api/version" &>/dev/null; then
+  # Answering already: nothing to install, wherever it happens to run.
+  ok "ollama elerheto (${OLLAMA_API})"
+elif command -v ollama &>/dev/null; then
   ok "ollama mar telepitve"
 else
   echo -e "  Ollama telepitese..."
@@ -1471,16 +1488,18 @@ else
   fi
 fi
 
-# A service-inditas es modell-letoltes csak akkor fut, ha az ollama tenyleg telepult.
-if command -v ollama &>/dev/null; then
+# The service-start + model-pull block runs when there is a local binary to
+# start OR an API to pull through -- a remote/containerised Ollama has no local
+# binary, but the model still has to exist on it.
+if command -v ollama &>/dev/null || curl -s --max-time 5 "${OLLAMA_API}/api/version" &>/dev/null; then
 # A telepito letrehoz egy ollama.service systemd egységet és elindítja.
 # Ha megis nem futna, systemctl-lel indítjuk -- NEM ollama serve &
-if ! curl -s http://localhost:11434/api/version &>/dev/null; then
+if ! curl -s "${OLLAMA_API}/api/version" &>/dev/null; then
   echo -e "$(_t linux.ollama_starting)"
   sudo systemctl enable --now ollama 2>/dev/null || true
   # Megvarjuk amig az API valaszol (max 15 mp)
   for i in $(seq 1 15); do
-    curl -s http://localhost:11434/api/version &>/dev/null && break
+    curl -s "${OLLAMA_API}/api/version" &>/dev/null && break
     sleep 1
   done
 fi
@@ -1498,11 +1517,11 @@ ollama_pull() {
   # exits non-zero, the assignment inherits it, and the ERR trap kills the
   # install at step "ollama-whisper". So skip -- non-fatal -- whenever the API is
   # not answering, instead of trying a pull that cannot work.
-  if ! curl -s --max-time 5 http://localhost:11434/api/version &>/dev/null; then
-    warn "ollama API nem valaszol (:11434) -- $model letoltese kimarad (a szolgaltatas nem all fel). Kesobb: ollama serve && ollama pull $model"
+  if ! curl -s --max-time 5 "${OLLAMA_API}/api/version" &>/dev/null; then
+    warn "ollama API nem valaszol (${OLLAMA_API}) -- $model letoltese kimarad (a szolgaltatas nem all fel). Kesobb: ollama serve && ollama pull $model"
     return 0
   fi
-  if curl -s http://localhost:11434/api/tags | grep -q "\"$model\""; then
+  if curl -s "${OLLAMA_API}/api/tags" | grep -q "\"$model\""; then
     ok "$model mar letoltve"
     return 0
   fi
@@ -1512,7 +1531,7 @@ ollama_pull() {
   # assignment aborts the script when its pipeline exits non-zero (empty body ->
   # json.load raises -> python3 exits 1). The guard turns that into the warn path.
   status=$(curl -s --max-time 600 \
-    -X POST http://localhost:11434/api/pull \
+    -X POST "${OLLAMA_API}/api/pull" \
     -H 'Content-Type: application/json' \
     -d "{\"model\": \"$model\", \"stream\": false}" |
     python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null) || status=""
