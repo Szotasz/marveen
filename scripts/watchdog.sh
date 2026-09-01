@@ -202,7 +202,17 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
 
   ISO_ENV="$(agent_launch_env "$AGENT_DIR")"
 
-  CMD="${ISO_ENV}export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official"
+  # Mirror the safety env-vars the dashboard's own agent launcher sets, so a
+  # watchdog-spawned FALLBACK agent is not divergent from a dashboard-spawned
+  # one. Without these, a watchdog respawn runs with the claude auto-updater
+  # ENABLED (able to silently re-touch the shared global claude install),
+  # misses the prompt-suggestion opt-out, and starts its MCP servers without
+  # the batching/timeout tuning the dashboard applies. ISO_ENV above already
+  # covers the isolated-config-dir / fleet-OAuth-token pair; this only adds
+  # the vars ISO_ENV does not set.
+  SAFETY_ENV="export DISABLE_AUTOUPDATER=1 && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && export MCP_SERVER_CONNECTION_BATCH_SIZE=10 && export MCP_CONNECTION_NONBLOCKING=1 && export MCP_TIMEOUT=60000 && "
+
+  CMD="${ISO_ENV}${SAFETY_ENV}export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official"
 
   tmux new-session -d -s "$SESSION_NAME" "$CMD" 2>/dev/null
   sleep 2
