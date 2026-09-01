@@ -1229,7 +1229,17 @@ function maybeRestartWedgedMainChannel(state: StuckInputState): void {
   // view the soft recovery uses) so a dim autocomplete hint never counts.
   const parkedView = paneState === 'typing' ? captureParkedInputView(MAIN_CHANNELS_SESSION) : null
   const machineOrigin = parkedView != null && parkedMachineOriginInput(parkedView)
-  const softRemedy = parkedView != null && parkedMainInputHasRemedy(parkedView)
+  // Same registry lookup recoverStuckInputForSession() already does for the
+  // soft-recovery decision -- without it here, a scrolled parked fragment
+  // that lost BOTH its recognisable prefix and every truncated-marker phrase
+  // reads as no-remedy even when the registry proves it is a known, safe-to-
+  // clear scheduled-task tick, and the busy-guard's deadlock carve-out
+  // (machineOrigin && !softRemedy) then wrongly allows a hard restart on a
+  // routine tick instead of deferring to it (measured 2026-08-25: two false
+  // hard restarts of the main channel for exactly this shape of park).
+  const recorded = parkedView != null ? getInjectedPrompt(MAIN_CHANNELS_SESSION) : null
+  const recordedMatch = matchesInjectedPrompt(parkedView != null ? parkedInputText(parkedView) : null, recorded)
+  const softRemedy = parkedView != null && parkedMainInputHasRemedy(parkedView, recordedMatch)
   const action = applyStuckRestartBusyGuard(paneState, decideStuckInputRestart(
     parked, state.attempts, MAIN_STUCK_THRESHOLDS.maxAttempts,
     Date.now(), lastStuckRestartAt, stuckRestartCount,
