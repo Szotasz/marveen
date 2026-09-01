@@ -2,6 +2,20 @@
 # Watchdog: checks sessions every 5 minutes, restarts if missing.
 # Cron: */5 * * * * ~/marveen/scripts/watchdog.sh
 
+# Cron's shell has no DBUS_SESSION_BUS_ADDRESS / XDG_RUNTIME_DIR (those are
+# only set automatically in an interactive login session), so every
+# `systemctl --user ...` call below fails with "Failed to connect to user
+# scope bus" when this script runs from cron -- silently, since the fallback
+# HTTP re-check after the failed restart often still sees the service come
+# back up via an unrelated path (systemd's own Restart=always, or a manual
+# restart), masking that THIS script's own restart attempt never worked.
+# `loginctl enable-linger` (assumed enabled for this user) keeps the user
+# manager and its bus socket alive at this fixed path with no session
+# required; naming it explicitly is enough. Root-caused and verified via
+# `env -i XDG_RUNTIME_DIR=... DBUS_SESSION_BUS_ADDRESS=...`.
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LOG="$INSTALL_DIR/logs/watchdog.log"
 mkdir -p "$INSTALL_DIR/logs"
