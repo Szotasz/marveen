@@ -54,8 +54,19 @@ MIO_REF = _env("SUPPORT_ENTITLEMENT_MIO_REF", "fpxycpxdxgifimbmwgzj")
 PAT_VAULT_KEY = _env("SUPPORT_ENTITLEMENT_PAT_KEY", "MARVEEN-CONNECTORS-PAT")
 WEB_PORT = _env("WEB_PORT", "3420")
 
-# Strict address shape: anything outside this is rejected (-> UNDECIDED/review),
-# so it can never be an SQL-injection vector.
+# Strict address shape. This has TWO roles, and the SECOND is load-bearing:
+#   1. Validity gate: a non-matching sender -> UNDECIDED/review (not "no support").
+#   2. THE injection barrier. The Supabase Management /database/query endpoint
+#      takes a raw SQL STRING with NO parameter binding -- the email is
+#      interpolated into the query below. This character class contains no SQL
+#      metacharacter (no quote, $, ;, backslash, whitespace), so an address that
+#      passes this regex CANNOT break out of the string literal. The `''` escape
+#      further down is defense-in-depth, redundant after this regex -- it is NOT
+#      what holds the wall. DO NOT interpolate any other, non-regex-validated
+#      value (name, subject, ...) into these queries: there is no parameter
+#      binding here to catch it. If this ever moves to a parameterised path
+#      (PostgREST .eq / a bound driver), the binding becomes the barrier and this
+#      regex reverts to a pure validity gate.
 _EMAIL_RE = re.compile(r"^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$")
 
 
