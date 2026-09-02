@@ -75,11 +75,15 @@ if ! git -C "$ROOT" rev-parse --verify --quiet "$UPSTREAM_REF" >/dev/null; then
   exit 1
 fi
 
+# Only ported and skipped are DECIDED. `pending` means the opposite -- the
+# commit is still open, with a note attached -- so subtracting it here would
+# make `mark pending` the one gesture that makes you forget a commit, which is
+# the exact failure this script exists to prevent.
 HANDLED="$(python3 -c "
 import json
 d = json.load(open('$LEDGER'))
 seen = set()
-for b in ('ported', 'skipped', 'pending'):
+for b in ('ported', 'skipped'):
     v = d.get(b)
     if isinstance(v, dict):
         seen.update(v)
@@ -88,10 +92,21 @@ for b in ('ported', 'skipped', 'pending'):
 print('\n'.join(seen))
 ")"
 
+# sha<TAB>reason for every pending commit, so the listing can mark them inline.
+PENDING_FILE="$(mktemp)"
+python3 -c "
+import json
+d = json.load(open('$LEDGER'))
+v = d.get('pending')
+if isinstance(v, dict):
+    for sha, reason in v.items():
+        print(sha + '\t' + str(reason))
+" > "$PENDING_FILE" 2>/dev/null || true
+
 # Subtract with grep -F rather than a shell `case`: a case pattern's `)` inside
 # a $( ) substitution trips the parser (bash: "syntax error near unexpected token").
 HANDLED_FILE="$(mktemp)"
-trap 'rm -f "$HANDLED_FILE"' EXIT
+trap 'rm -f "$HANDLED_FILE" "$PENDING_FILE"' EXIT
 printf '%s\n' "$HANDLED" | grep -v '^$' > "$HANDLED_FILE" || true
 NEW="$(git -C "$ROOT" log --format='%H %ad %s' --date=short "HEAD..$UPSTREAM_REF" 2>/dev/null \
   | grep -vFf "$HANDLED_FILE" || true)"
@@ -108,7 +123,13 @@ echo "upstream-new: $COUNT uj / $TOTAL osszes ($UPSTREAM_REF), a tobbi mar a led
 [ "$COUNT" = "0" ] && exit 0
 echo
 printf '%s\n' "$NEW" | while read -r sha date subject; do
-  printf '  %s  %s  %s\n' "${sha:0:8}" "$date" "$subject"
+  NOTE="$(grep -F "$sha" "$PENDING_FILE" 2>/dev/null | head -1 | cut -f2- || true)"
+  if [ -n "$NOTE" ]; then
+    printf '  %s  %s  %s  [pending: %s]\n' "${sha:0:8}" "$date" "$subject" "$NOTE"
+  else
+    printf '  %s  %s  %s\n' "${sha:0:8}" "$date" "$subject"
+  fi
 done
 echo
 echo "Dontes utan:  scripts/upstream-new.sh mark ported|skipped <sha> \"egy soros indok\""
+echo "Meg nem dontod el: scripts/upstream-new.sh mark pending <sha> \"mire vartok\" -- a listan MARAD, jelolve."
