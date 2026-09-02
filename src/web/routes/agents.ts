@@ -569,6 +569,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   // markup) does not silently offer a stale set.
   if (path === '/api/models/available' && method === 'GET') {
     const hasDeepseek = getSecret('DEEPSEEK_API_KEY') !== null
+    // Direct MiniMax API (bypasses the OpenRouter markup) -- same gating pattern.
+    const hasMinimax = getSecret('MINIMAX_API_KEY') !== null
     // OpenRouter is gated behind the vault key, same as DeepSeek: surfacing the
     // options without the key would let the operator pick a model that 401s.
     const hasOpenRouter = getSecret('openrouter-fleet-key') !== null
@@ -589,6 +591,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
           ]
         : [],
       deepseekConfigured: hasDeepseek,
+      // Direct MiniMax API -- native Anthropic-compatible endpoint (no OpenRouter markup).
+      // Model id verified live against the real endpoint before this list is trusted;
+      // see agent-provider-env.test.ts + the marveen kanban card 964a9567.
+      minimax: hasMinimax ? [{ id: 'minimax-m3', label: 'MiniMax M3 (közvetlen API)' }] : [],
+      minimaxConfigured: hasMinimax,
       // OpenRouter tiers for the model picker. `auto` per tier feeds the "Auto"
       // mode (stored as `openrouter-auto:<tierKey>`, resolved weekly-fresh at
       // launch); `manual` (2 ids) feeds the "Manual" mode.

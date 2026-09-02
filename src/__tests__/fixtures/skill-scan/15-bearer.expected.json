@@ -1,0 +1,1 @@
+{"scanner": {"name": "mio-scan", "version": "1.0.0", "rulepack": "2026-08-24"}, "findings": [{"rule": "bearer-token-literal", "category": "pii", "match": "Authorization: Bearer abcdefgh12345678._-XY", "line": 2, "span": [8, 51]}]}

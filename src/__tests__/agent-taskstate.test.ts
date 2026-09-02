@@ -38,8 +38,15 @@ describe('shouldReplayTaskState', () => {
   it('replays on startup too (crash respawn mid-task)', () => {
     expect(shouldReplayTaskState(rec(), 'startup', NOW + 1000)).toBe(true)
   })
+  // A /clear restarts the session in place, so from this record's point of view
+  // it is a restart like any other. Withholding it made the context-restart
+  // gate's own path silent -- the gate sends /clear, then tells the fresh
+  // session to read a TASK-FOLYTATAS block that never got emitted.
+  it('replays on clear too (the gate restarts agents this way)', () => {
+    expect(shouldReplayTaskState(rec(), 'clear', NOW + 1000)).toBe(true)
+  })
   it('does NOT replay an unknown source', () => {
-    expect(shouldReplayTaskState(rec(), 'clear', NOW + 1000)).toBe(false)
+    expect(shouldReplayTaskState(rec(), 'other', NOW + 1000)).toBe(false)
   })
   it('does NOT replay an empty record on startup either', () => {
     const empty = rec({ doneSteps: [], alreadyDelegated: [], nextAction: '', pendingDecision: '', summary: 'idle' })

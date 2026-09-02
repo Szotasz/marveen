@@ -42,7 +42,7 @@ def main():
         payload = json.load(sys.stdin)
     except Exception:
         sys.exit(0)
-    agent_id = ledger_lib.agent_id_from_cwd(payload.get("cwd"))
+    agent_id = ledger_lib.agent_id_from_payload(payload)
     prompt = payload.get("prompt") or ""
     for m in CHANNEL_RX.finditer(prompt):
         attrs, text = m.group(1), m.group(2)

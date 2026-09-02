@@ -30,6 +30,18 @@
 export const ALERT_THRESHOLD_MS = 60 * 60 * 1000
 
 /**
+ * Additional wait AFTER the main-agent-notice threshold (ALERT_THRESHOLD_MS)
+ * before escalating directly to the operator via the channel provider. Two
+ * independent, one-shot stamps (`alert_sent_at` for the main-agent notice,
+ * `owner_alert_sent_at` for the direct escalation) both key off
+ * `first_attempt`, not off each other -- so a failure to deliver the
+ * main-agent notice (e.g. a DB hiccup) can never silently suppress the final
+ * escalation.
+ */
+export const OWNER_ESCALATION_EXTRA_MS = 75 * 60 * 1000
+export const OWNER_ALERT_THRESHOLD_MS = ALERT_THRESHOLD_MS + OWNER_ESCALATION_EXTRA_MS
+
+/**
  * Decide whether the alerting layer should fire a Telegram notification
  * for a pending retry row.
  *
@@ -152,6 +164,11 @@ export interface PendingRetryView {
   alertSentAt: number | null
   ageMs: number
   alertDue: boolean
+  // Stage 2: direct-to-owner channel escalation, only after the main-agent
+  // notice (alertDue/alertSentAt, stage 1) has had OWNER_ESCALATION_EXTRA_MS
+  // to be seen and acted on.
+  ownerAlertSentAt: number | null
+  ownerAlertDue: boolean
 }
 
 /**
@@ -169,9 +186,11 @@ export function toPendingRetryView(
     attempt_count: number
     last_reason: string | null
     alert_sent_at: number | null
+    owner_alert_sent_at?: number | null
   },
   now: number,
   thresholdMs: number = ALERT_THRESHOLD_MS,
+  ownerThresholdMs: number = OWNER_ALERT_THRESHOLD_MS,
 ): PendingRetryView {
   return {
     id: row.id,
@@ -184,5 +203,7 @@ export function toPendingRetryView(
     alertSentAt: row.alert_sent_at,
     ageMs: Math.max(0, now - row.first_attempt),
     alertDue: shouldSendAlert(now, row.first_attempt, row.alert_sent_at, thresholdMs),
+    ownerAlertSentAt: row.owner_alert_sent_at ?? null,
+    ownerAlertDue: shouldSendAlert(now, row.first_attempt, row.owner_alert_sent_at ?? null, ownerThresholdMs),
   }
 }

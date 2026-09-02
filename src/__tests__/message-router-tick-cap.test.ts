@@ -56,6 +56,9 @@ vi.mock('../web/agent-config.js', () => ({
 }))
 
 vi.mock('../web/agent-process.js', () => ({
+  // The not-ready-path modal clear: false = no modal, so every caller keeps
+  // its existing skip/busy behaviour and these fixtures are unaffected.
+  clearFeedbackModalAndRecheck: () => false,
   agentSessionName: (name: string) => `agent-${name}`,
   isSessionReadyForPrompt: vi.fn(() => false),
   clearStaleParkedInput: vi.fn(() => false),

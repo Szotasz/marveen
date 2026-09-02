@@ -122,7 +122,7 @@ def main():
     # that merely contains "reply" cannot write a bogus turn into the ledger.
     if not REPLY_TOOL_RX.match(tool):
         sys.exit(0)
-    agent_id = ledger_lib.agent_id_from_cwd(payload.get("cwd"))
+    agent_id = ledger_lib.agent_id_from_payload(payload)
     tool_input = payload.get("tool_input") or {}
     chat_id = tool_input.get("chat_id")
     chat_id = "" if chat_id is None else str(chat_id).strip()

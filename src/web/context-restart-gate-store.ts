@@ -20,9 +20,30 @@ function readConfigRaw(): Record<string, unknown> {
   } catch { return {} }
 }
 
+// Fallback key for agents with no entry of their own. Without it a newly
+// created agent silently inherited `enabled: false` and never got a gate --
+// the same hole twice: two sub-agents in a row, the second one at 545k
+// tokens before anyone noticed. An
+// agent-specific entry still wins; this only decides the starting point.
+export const DEFAULT_CONFIG_KEY = '_default'
+
+/**
+ * Pure: resolve one agent's config out of the raw config file contents.
+ * Own entry wins, then `_default`, then the built-in default. Exported for tests.
+ */
+export function pickGateConfig(raw: Record<string, unknown>, name: string): GateConfig {
+  if (name in raw) return normalizeGateConfig(raw[name])
+  if (DEFAULT_CONFIG_KEY in raw) return normalizeGateConfig(raw[DEFAULT_CONFIG_KEY])
+  return { ...DEFAULT_GATE_CONFIG }
+}
+
 export function readGateConfig(name: string): GateConfig {
-  const raw = readConfigRaw()
-  return name in raw ? normalizeGateConfig(raw[name]) : { ...DEFAULT_GATE_CONFIG }
+  return pickGateConfig(readConfigRaw(), name)
+}
+
+/** True when this agent has its own entry (not inheriting `_default`). */
+export function hasOwnGateConfig(name: string): boolean {
+  return name in readConfigRaw()
 }
 
 export function writeGateConfig(name: string, cfg: unknown): GateConfig {
@@ -42,12 +63,20 @@ export interface GateRunState {
   lastAlertAt: number | null
   /** Epoch ms when the last /clear was successfully sent. */
   lastClearAt: number | null
+  /**
+   * Epoch ms of a /clear whose wake-nudge has NOT been delivered yet; null when
+   * nothing is owed. Persisted (not just an in-memory timer) so a dashboard
+   * restart between the /clear and the nudge still leaves the fresh session
+   * woken on the next sweep instead of silently mute.
+   */
+  pendingWakeAt: number | null
 }
 
 const EMPTY_STATE: GateRunState = {
   firstBlockedAt: null,
   lastAlertAt: null,
   lastClearAt: null,
+  pendingWakeAt: null,
 }
 
 function readStateRaw(): Record<string, unknown> {
@@ -65,6 +94,7 @@ function normalizeState(raw: unknown): GateRunState {
     firstBlockedAt: msOrNull(o.firstBlockedAt),
     lastAlertAt:    msOrNull(o.lastAlertAt),
     lastClearAt:    msOrNull(o.lastClearAt),
+    pendingWakeAt:  msOrNull(o.pendingWakeAt),
   }
 }
 

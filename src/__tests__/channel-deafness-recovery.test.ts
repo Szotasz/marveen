@@ -4,6 +4,7 @@ import {
   shouldRespawnForStaleKeepalive,
   shouldDeferKeepaliveRespawn,
   shouldRefreshKeepaliveFromInbound,
+  shouldTrustLivePollerOverStaleness,
   lastMainRespawnAt,
   shouldEscalateAfterResume,
   POST_RESUME_GUARD_DELAY_MS,
@@ -252,5 +253,36 @@ describe('B2 cross-path respawn storm prevention', () => {
       msSinceLastRespawn: elapsedSinceKeepaliveRespawn,
       respawnGraceMs: GRACE_MS,
     })).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// DEAFNESS-MASK FIX CONTRACT: a live bun poller is NOT proof the MCP pipe still
+// delivers. The liveness shortcut trusted poller-liveness unconditionally and
+// skipped the respawn, which masked a deafness (live poller, dead pipe) for
+// days. The bounded trust ceiling closes that mask while preserving the trust
+// for normal idle gaps.
+// ---------------------------------------------------------------------------
+describe('shouldTrustLivePollerOverStaleness', () => {
+  const CEILING = 45 * 60 * 1000
+
+  it('trusts a live poller while the keepalive is freshly stale (within ceiling -> idle case)', () => {
+    expect(shouldTrustLivePollerOverStaleness({ keepaliveAgeMs: 20 * 60 * 1000, trustCeilingMs: CEILING })).toBe(true)
+  })
+
+  it('STOPS trusting a live poller once staleness crosses the ceiling (deafness mask closed)', () => {
+    expect(shouldTrustLivePollerOverStaleness({ keepaliveAgeMs: CEILING + 1, trustCeilingMs: CEILING })).toBe(false)
+  })
+
+  it('does not trust at exactly the ceiling (boundary is exclusive)', () => {
+    expect(shouldTrustLivePollerOverStaleness({ keepaliveAgeMs: CEILING, trustCeilingMs: CEILING })).toBe(false)
+  })
+
+  it('trusts liveness when there is no keepalive baseline yet (fresh boot -> never respawn pre-baseline)', () => {
+    expect(shouldTrustLivePollerOverStaleness({ keepaliveAgeMs: null, trustCeilingMs: CEILING })).toBe(true)
+  })
+
+  it('ceiling is comfortably above the 18-min staleness threshold (no idle false-positives)', () => {
+    expect(shouldTrustLivePollerOverStaleness({ keepaliveAgeMs: 18 * 60 * 1000 + 1, trustCeilingMs: CEILING })).toBe(true)
   })
 })
