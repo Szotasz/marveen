@@ -91,9 +91,9 @@ export function currentGitHead(): string {
 // that the update button could never deliver, while staying silent about the
 // commits that WERE coming. Falls back to `main` on a detached HEAD, which is
 // also the branch update.sh tells the operator to check out in that state.
-export function trackedBranch(): string {
+export function trackedBranch(root: string = PROJECT_ROOT): string {
   try {
-    const b = execFileSync('/usr/bin/git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' }).trim()
+    const b = execFileSync('/usr/bin/git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: root, timeout: 3000, encoding: 'utf-8' }).trim()
     return b && b !== 'HEAD' ? b : 'main'
   } catch {
     return 'main'
@@ -103,9 +103,9 @@ export function trackedBranch(): string {
 // True when `remote` is the checkout's own origin. Decides whether the branch
 // and the compare base may come from local refs (own repo) or have to be
 // resolved against someone else's default branch.
-export function remoteIsOwnOrigin(remote: string): boolean {
+export function remoteIsOwnOrigin(remote: string, root: string = PROJECT_ROOT): boolean {
   try {
-    const url = execFileSync('/usr/bin/git', ['config', '--get', 'remote.origin.url'], { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' }).trim()
+    const url = execFileSync('/usr/bin/git', ['config', '--get', 'remote.origin.url'], { cwd: root, timeout: 3000, encoding: 'utf-8' }).trim()
     const m = url.match(/github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/i)
     return !!m && m[1].toLowerCase() === remote.toLowerCase()
   } catch {
@@ -132,18 +132,26 @@ async function fetchDefaultBranch(remote: string): Promise<string> {
 // Which branch to ask the remote about: our own fork answers for the branch this
 // checkout follows (update.sh pulls exactly that), anyone else's repo answers
 // for THEIR default branch -- a local feature branch does not exist there.
-export async function branchOnRemote(remote: string): Promise<string> {
-  return remoteIsOwnOrigin(remote) ? trackedBranch() : await fetchDefaultBranch(remote)
+// `root` and `defaultBranchOf` are injected so a test can point this at a
+// throwaway git repo and decide the remote's answer without touching the
+// network. Without that seam the only measurable assertion is "some string came
+// back", which stays green even if the whole upstream preference is deleted.
+export async function branchOnRemote(
+  remote: string,
+  root: string = PROJECT_ROOT,
+  defaultBranchOf: (r: string) => Promise<string> = fetchDefaultBranch,
+): Promise<string> {
+  return remoteIsOwnOrigin(remote, root) ? trackedBranch(root) : await defaultBranchOf(remote)
 }
 
-export function parseGitHubRemote(): string {
+export function parseGitHubRemote(root: string = PROJECT_ROOT): string {
   // "Update" means new commits from the ORIGINAL author, so an `upstream` remote
   // wins over `origin` when one is configured. After a fork, `origin` points at
   // the user's own copy, which never carries the author's new work: the update
   // check then asks the fork about itself and stays silent forever.
   for (const remoteName of ['upstream', 'origin']) {
     try {
-      const url = execFileSync('/usr/bin/git', ['config', '--get', `remote.${remoteName}.url`], { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' }).trim()
+      const url = execFileSync('/usr/bin/git', ['config', '--get', `remote.${remoteName}.url`], { cwd: root, timeout: 3000, encoding: 'utf-8' }).trim()
       // Normalize "git@github.com:Owner/Repo.git" or "https://github.com/Owner/Repo.git" to "Owner/Repo"
       const m = url.match(/github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/i)
       if (m) return m[1]
