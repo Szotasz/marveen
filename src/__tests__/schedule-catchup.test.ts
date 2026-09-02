@@ -172,10 +172,27 @@ describe('the runner wires the policy in', () => {
   })
 
   it('reports both halves of the gap in one line', () => {
-    expect(SRC).toMatch(/sendCatchUpSummary\(caughtUpThisTick, staleThisTick/)
+    expect(SRC).toMatch(/logCatchUpSummary\(caughtUpThisTick, staleThisTick/)
   })
 
   it('stays silent on a tick that caught nothing up', () => {
     expect(SRC).toMatch(/if \(caughtUpThisTick\.length \|\| staleThisTick\.length\) \{/)
+  })
+
+  // 2026-09-02 (kanban 83b8c4c3): the catch-up summary fires exactly when the
+  // scheduler slept through a gap, which on this install always means the
+  // machine was asleep or off -- operator-caused downtime, not an incident.
+  // The summary is therefore LOG-ONLY: the catch-up mechanism (re-running /
+  // stale-declaring) is untouched, but no channel message ever goes out.
+  it('the catch-up summary is log-only -- no channel send on downtime recovery (fix-revert guard)', () => {
+    const fnStart = SRC.indexOf('function logCatchUpSummary')
+    expect(fnStart, 'logCatchUpSummary not found').toBeGreaterThan(0)
+    const fnEnd = SRC.indexOf('\nfunction ', fnStart + 1)
+    const fnBody = SRC.slice(fnStart, fnEnd > fnStart ? fnEnd : undefined)
+    expect(fnBody).not.toMatch(/sendSchedulerAlertMessage/)
+    expect(fnBody).not.toMatch(/resolveSchedulerAlertToken/)
+    expect(fnBody).toMatch(/logger\.info/)
+    // And no renamed send helper sneaks back in at the call site either.
+    expect(SRC).not.toMatch(/sendCatchUpSummary/)
   })
 })

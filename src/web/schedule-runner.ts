@@ -58,6 +58,7 @@ import { decideQuotaAction, type QuotaWorkClass } from '../quota-gate.js'
 import { readQuotaSnapshot } from '../quota-snapshot.js'
 import { paneShowsContextSaturation, detectsFirstRunGate, detectPaneState, type PaneState } from '../pane-state.js'
 import { withSessionSendLock } from './session-send-lock.js'
+import { startSleepWakeDetector, systemSleptBetween } from './sleep-wake-detector.js'
 
 // How many bare-Enter attempts the post-send resubmit tries before escalating
 // to a clear + re-inject, and the hard cap after which it gives up.
@@ -1111,46 +1112,40 @@ function sendSchedulerAlertMessage(token: string, chatId: string, text: string):
 }
 
 // One line about what the scheduler missed while it was down: which tasks it
-// caught up, and which were too stale to be worth running. Sent once per tick
-// that produced any such entry -- in normal operation that is never, so the
-// channel stays quiet. This is the reporting half of the catch-up policy: a
-// missed occurrence either runs or gets named, never both and never neither.
-function sendCatchUpSummary(
+// caught up, and which were too stale to be worth running. Logged once per
+// tick that produced any such entry -- in normal operation that is never.
+// This is the reporting half of the catch-up policy: a missed occurrence
+// either runs or gets named, never both and never neither.
+//
+// LOG-ONLY, deliberately (2026-09-02, kanban 83b8c4c3). This summary fires
+// exactly when the scheduler noticed a gap it slept through, which on this
+// install means one thing: the machine was asleep or powered off. That is
+// downtime the operator caused on purpose, not a fault -- pinging Telegram
+// with "Kimaradt ütemezés (X perc kiesés)" on every lid-open was pure noise.
+// The catch-up MECHANISM (re-running / stale-declaring the missed
+// occurrences) is untouched; only the channel notification is gone. The
+// per-run records (appendTaskRun) and the dashboard /Ütemezések page still
+// show what was caught up or declared stale.
+function logCatchUpSummary(
   caughtUp: Array<{ task: string; ageMs: number }>,
   stale: Array<{ task: string; ageMs: number }>,
   gapMs: number,
 ): void {
-  const token = resolveSchedulerAlertToken()
-  if (!token) {
-    logger.warn({ provider: CHANNEL_PROVIDER }, 'catch-up summary suppressed: no channel bot token (config error)')
-    return
-  }
-  const ownerChat = resolveSchedulerOwnerChat()
-  if (!ownerChat) {
-    logger.warn({ provider: CHANNEL_PROVIDER }, 'catch-up summary suppressed: no owner chat (ALLOWED_CHAT_ID unset/placeholder and no paired channel)')
-    return
-  }
   const mins = (ms: number) => `${Math.round(ms / 60000)} perc`
-  const lines = [`[${BOT_NAME} scheduler] Kimaradt ütemezés (${mins(gapMs)} kiesés).`]
+  const lines = [`Kimaradt ütemezés (${mins(gapMs)} kiesés).`]
   if (caughtUp.length) {
     // "elindítva", not "lefutott": a catch-up injection can still land in the
     // pending-retry queue if the target session is busy. It will run; it may
-    // not have run yet at the moment this line is sent.
+    // not have run yet at the moment this line is logged.
     lines.push(`Pótlás elindítva: ${caughtUp.map(e => `${e.task} (${mins(e.ageMs)} késés)`).join(', ')}`)
   }
   if (stale.length) {
     lines.push(`Nem pótolva, mert elavult: ${stale.map(e => `${e.task} (${mins(e.ageMs)})`).join(', ')}`)
-    lines.push('Ezek a dashboard /Ütemezések oldalán kézzel indíthatók.')
   }
-  const text = lines.join('\n')
-  ;(async () => {
-    try {
-      await sendSchedulerAlertMessage(token, ownerChat, text)
-      logger.info({ caughtUp: caughtUp.length, stale: stale.length, provider: CHANNEL_PROVIDER }, 'catch-up summary alert sent')
-    } catch (err) {
-      logger.warn({ err }, 'catch-up summary delivery failed')
-    }
-  })()
+  logger.info(
+    { caughtUp: caughtUp.length, stale: stale.length, gapMinutes: Math.round(gapMs / 60000) },
+    `catch-up summary (log-only, downtime is not an incident): ${lines.join(' ')}`,
+  )
 }
 
 // Build the pending-retry alert body shared by stage 1 (main agent,
@@ -1312,6 +1307,18 @@ function sendTaskInflightMainAgentNotice(entry: TaskInflightEntry, elapsedMs: nu
 // alert, not a per-agent channel notification.
 function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void {
   const ageMinutes = Math.floor(elapsedMs / 60000)
+  // SLEEP GUARD (2026-09-02, kanban 83b8c4c3): elapsedMs is wall-clock time
+  // since injection. If the machine slept anywhere inside that window, the
+  // number lies -- a 2-minute task injected just before lid-close reads as
+  // "stuck for hours" on wake (observed with ledger-live-drain). A window
+  // that contains a sleep gap proves nothing about the task, so no Telegram
+  // ping; the log line, the kanban 'waiting' move below, and the rest of the
+  // stuck handling (one-shot flag, eviction, retries) run unchanged. Genuine
+  // hangs are unaffected: their window contains no sleep gap. Trade-off,
+  // accepted: the alert is one-shot per injection, so a task that ALSO hangs
+  // for real after the wake stays Telegram-silent for that injection -- it is
+  // still visible in the log/dashboard and ages into the normal eviction path.
+  const sleptDuringWindow = systemSleptBetween(entry.injectedAt, Date.now())
   const token = resolveSchedulerAlertToken()
   if (!token) {
     logger.warn({ task: entry.taskName, agent: entry.agentName, provider: CHANNEL_PROVIDER }, 'task-timeout alert suppressed: no channel bot token (config error)')
@@ -1320,6 +1327,14 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
   const ownerChat = resolveSchedulerOwnerChat()
   if (!ownerChat) {
     logger.warn({ task: entry.taskName, agent: entry.agentName, provider: CHANNEL_PROVIDER }, 'task-timeout alert suppressed: no owner chat (ALLOWED_CHAT_ID unset/placeholder and no paired channel)')
+    return
+  }
+
+  if (sleptDuringWindow) {
+    logger.info(
+      { task: entry.taskName, agent: entry.agentName, ageMinutes, injectedAt: entry.injectedAt },
+      'task-timeout: machine slept inside the stuck-check window -- wall-clock elapsed is unreliable, Telegram alert suppressed (stuck handling continues)',
+    )
     return
   }
 
@@ -1348,6 +1363,9 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
 export const SCHEDULE_TICK_MS = 15_000
 
 export function startScheduleRunner(): NodeJS.Timeout {
+  // Sleep/wake detection for the downtime-aware alert suppression above
+  // (idempotent; the channel monitor starts it too, whichever runs first wins).
+  startSleepWakeDetector()
   // Reload the persisted last-run times so a restart inside a task's catch-up
   // window does not re-fire an already-run task.
   loadScheduleLastRun()
@@ -1727,11 +1745,12 @@ export function startScheduleRunner(): NodeJS.Timeout {
       }
     }
 
-    // Tell the operator, in one line, what the gap cost. Only fires when this
-    // tick actually caught something up or declared something too stale, which
-    // in steady state is never.
+    // Record, in one line, what the gap cost (log + dashboard only -- see
+    // logCatchUpSummary for why this never goes to the channel). Only fires
+    // when this tick actually caught something up or declared something too
+    // stale, which in steady state is never.
     if (caughtUpThisTick.length || staleThisTick.length) {
-      sendCatchUpSummary(caughtUpThisTick, staleThisTick, pendingStartupGapMs || (now - fromMs))
+      logCatchUpSummary(caughtUpThisTick, staleThisTick, pendingStartupGapMs || (now - fromMs))
     }
     pendingStartupGapMs = 0
 
