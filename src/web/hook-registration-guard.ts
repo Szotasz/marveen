@@ -42,6 +42,8 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   // The /clear continuity pair: SessionEnd capture + SessionStart replay.
   'clear-capture.py',
   'clear-replay.py',
+  // Prompt-arrival stub writer that backstops the PreCompact taskstate write.
+  'taskstate-stub.py',
 ]
 
 // Path fragment that marks a checkout as an agent worktree. Kept

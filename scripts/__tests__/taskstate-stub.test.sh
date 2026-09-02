@@ -94,10 +94,17 @@ STUB_CONSUMED="$(read_field testagent consumed)"
 assert_eq "2a-iv: consumed=false" "False" "$STUB_CONSUMED"
 
 # Replay via real API (copy stub into real store temporarily)
-if [ -n "$TOKEN" ]; then
+# ISOLATION (Szotasz review, #946): this is the only case that leaves the
+# fixture directory -- it copies a record into the LIVE store and calls the
+# running dashboard. A test suite must not mutate the install it runs on, so it
+# is now OPT-IN. The default run (and CI) skips it; the surrounding backup and
+# the EXIT trap below keep the live file safe even when it does run.
+if [ -n "$TOKEN" ] && [ "${TASKSTATE_LIVE_API_TEST:-0}" = "1" ]; then
     REAL_STATE_DIR="$INSTALL_DIR/store/agent-taskstate"
     BACKUP="$REAL_STATE_DIR/testagent.json.bak-test-$$"
     [ -f "$REAL_STATE_DIR/testagent.json" ] && cp "$REAL_STATE_DIR/testagent.json" "$BACKUP" || true
+    # Restore even on an unexpected exit between here and the manual cleanup.
+    trap 'rm -f "$REAL_STATE_DIR/testagent.json"; [ -f "$BACKUP" ] && mv "$BACKUP" "$REAL_STATE_DIR/testagent.json"' EXIT
     cp "$FAKE_STATE_DIR/testagent.json" "$REAL_STATE_DIR/testagent.json"
     REPLAY_RESP="$(curl -s -H "Authorization: Bearer $TOKEN" \
         "$API/api/agent-taskstate/testagent/replay?source=startup" 2>/dev/null)"
@@ -105,6 +112,7 @@ if [ -n "$TOKEN" ]; then
         | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('additionalContext') or '')" 2>/dev/null)"
     rm -f "$REAL_STATE_DIR/testagent.json"
     [ -f "$BACKUP" ] && mv "$BACKUP" "$REAL_STATE_DIR/testagent.json" || true
+    trap - EXIT
 
     if printf '%s' "$REPLAY_CTX" | grep -q "TASK-FOLYTATAS"; then
         pass "2a-v: GET replay?source=startup returns injection block"
@@ -112,7 +120,7 @@ if [ -n "$TOKEN" ]; then
         fail "2a-v: GET replay?source=startup missing injection block (got: ${REPLAY_CTX:0:80})"
     fi
 else
-    echo "  SKIP: 2a-v (no dashboard token)"
+    echo "  SKIP: 2a-v (needs TASKSTATE_LIVE_API_TEST=1 + a dashboard token; it touches the live store)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -218,6 +226,28 @@ import ledger_lib
 print(ledger_lib.agent_id_from_cwd('$INSTALL_DIR/agents/slarti'))
 ")"
 assert_eq "4b: agents/slarti cwd -> 'slarti'" "slarti" "$AGENT_SUB"
+
+# ---------------------------------------------------------------------------
+# (6) Exit-code invariant on an INCOMPLETE install (Szotasz review, #946)
+#
+# The class of bug this pins: a UserPromptSubmit hook that exits non-zero does
+# not merely fail, it BLOCKS THE PROMPT -- the agent goes mute. So the exit
+# code, not the written record, is this hook's load-bearing contract. The
+# import of ledger_lib is the one statement outside main()'s try/except, and an
+# install missing that module used to take the whole session down with it.
+# Simulated honestly: run the hook ALONE in a directory where its sibling
+# modules do not exist.
+# ---------------------------------------------------------------------------
+echo ""
+echo "(6) Incomplete install: missing ledger_lib -> exit 0, no write"
+LONELY_DIR="$(mktemp -d)"
+cp "$HOOK" "$LONELY_DIR/taskstate-stub.py"
+LONELY_STATE="$(mktemp -d)"
+echo '{"cwd":"'"$INSTALL_DIR"'","prompt":"Ez a prompt nem allhat meg"}'     | TASKSTATE_DIR_OVERRIDE="$LONELY_STATE" python3 "$LONELY_DIR/taskstate-stub.py" 2>/dev/null
+assert_eq "6a: missing ledger_lib -> exit 0 (prompt not blocked)" "0" "$?"
+LONELY_FILES="$(ls -A "$LONELY_STATE" | wc -l)"
+assert_eq "6b: missing ledger_lib -> no record written" "0" "$LONELY_FILES"
+rm -rf "$LONELY_DIR" "$LONELY_STATE"
 
 # ---------------------------------------------------------------------------
 echo ""

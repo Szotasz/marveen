@@ -27,7 +27,16 @@ import re
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import ledger_lib  # noqa: E402
+
+# Guarded import (fail-open). A UserPromptSubmit hook that exits non-zero
+# BLOCKS the prompt, so an incomplete install must never turn this optional
+# continuity aid into a mute agent -- the 2026-07-11 silent-freeze incident.
+# The module-level import is the one statement main()'s try/except cannot
+# cover, so it carries its own guard and the hook degrades to a no-op.
+try:
+    import ledger_lib  # noqa: E402
+except Exception:  # pragma: no cover - exercised by the exit-code corpus test
+    ledger_lib = None
 
 
 SUMMARY_MAX = 120
@@ -144,6 +153,9 @@ def main():
         payload = json.load(sys.stdin)
     except Exception:
         sys.exit(0)
+
+    if ledger_lib is None:
+        sys.exit(0)  # dependency missing -- degrade to a no-op, never block
 
     try:
         agent_id = ledger_lib.agent_id_from_cwd(payload.get("cwd"))
