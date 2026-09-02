@@ -93,71 +93,16 @@ QUOTA_WARN_PCT="${QUOTA_WARN_PCT:-90}"
 QUOTA_MAX_AGE_SEC="${QUOTA_MAX_AGE_SEC:-21600}"
 
 if [ -s "$QUOTA_FILE" ] && command -v python3 >/dev/null 2>&1; then
-  QUOTA_OUT="$(QUOTA_FILE="$QUOTA_FILE" QUOTA_WARN_PCT="$QUOTA_WARN_PCT" QUOTA_MAX_AGE_SEC="$QUOTA_MAX_AGE_SEC" python3 - <<\PYQ 2>/dev/null
-import json, os, time
-
-path = os.environ["QUOTA_FILE"]
-warn = float(os.environ["QUOTA_WARN_PCT"])
-max_age = int(os.environ["QUOTA_MAX_AGE_SEC"])
-try:
-    d = json.load(open(path))
-except Exception:
-    raise SystemExit(0)
-
-age = int(time.time()) - int(d.get("written_at") or 0)
-if age > max_age:
-    print("STALE\t%d" % age)
-    raise SystemExit(0)
-
-# Alert on crossed LEVELS, not on the raw percentage: keying the dedupe on the
-# exact number would send a fresh alert for every single point from 90 to 100.
-# Two levels are enough -- the heads-up, and the moment it is actually gone.
-levels = sorted({100.0, warn}, reverse=True)
-
-labels = {"five_hour": "5 oras keret", "seven_day": "heti keret"}
-labels_short = {"five_hour": "five_hour", "seven_day": "seven_day"}
-hits = []
-expired = []
-for key in ("five_hour", "seven_day"):
-    w = (d.get("rate_limits") or {}).get(key) or {}
-    pct = w.get("used_percentage")
-    if not isinstance(pct, (int, float)) or pct < warn:
-        continue
-    resets = w.get("resets_at")
-    # A window whose reset time has already passed describes a window that no
-    # longer exists. The numbers only move when an API response brings new ones,
-    # so after a rollover the block sits there unchanged with resets_at in the
-    # past (measured at the 22:00 rollover on 2026-08-18: 25% / "resets 22:00"
-    # still standing at 22:00:29). Alerting on it would report a spent quota
-    # that has since been handed back. Nothing real is lost by skipping: while
-    # the quota was actually spent, resets_at was in the future and the alert
-    # already went out.
-    if isinstance(resets, (int, float)) and resets <= time.time():
-        expired.append(labels_short[key])
-        continue
-    level = next((L for L in levels if pct >= L), warn)
-    when = ""
-    if isinstance(resets, (int, float)):
-        when = time.strftime("%m-%d %H:%M", time.localtime(resets))
-    hits.append((key, round(float(pct)), when, int(resets or 0), int(level)))
-
-if not hits:
-    if expired:
-        print("EXPIRED\t%s" % ",".join(expired))
-    raise SystemExit(0)
-
-# Dedupe key: window + crossed level + the reset timestamp of that window. One
-# alert per level per window; the next window (new resets_at) starts clean.
-key = "|".join("%s:%s:%s" % (k, lv, rs) for k, _p, _w, rs, lv in hits)
-lines = []
-for k, p, w, _rs, _lv in hits:
-    line = "%s: %d%% elhasznalva" % (labels[k], p)
-    if w:
-        line += " (nullazodik: %s)" % w
-    lines.append(line)
-print("HIT\t%s\t%s" % (key, " / ".join(lines)))
-PYQ
-)"
+  QUOTA_CHECK="$INSTALL_DIR/scripts/lib/quota-check.py"
+  if [ ! -f "$QUOTA_CHECK" ]; then
+    # Fail-open on purpose (the text-scan fallback below still runs), but NEVER
+    # silent: an empty quota reading and a healthy one are byte-identical from
+    # the outside, and a wordless skip would read as "nothing to alert about".
+    log "quota-check.py hianyzik ($QUOTA_CHECK), a mert quota-ut EZEN A KORON KIMARAD -- a text-fallback fut tovabb"
+    QUOTA_OUT=""
+  else
+    QUOTA_OUT="$(QUOTA_FILE="$QUOTA_FILE" QUOTA_WARN_PCT="$QUOTA_WARN_PCT" QUOTA_MAX_AGE_SEC="$QUOTA_MAX_AGE_SEC" python3 "$QUOTA_CHECK" 2>/dev/null)"
+  fi
   case "$QUOTA_OUT" in
     STALE*)
       log "quota file stale ($(printf '%s' "$QUOTA_OUT" | cut -f2)s), skipping the measured path"

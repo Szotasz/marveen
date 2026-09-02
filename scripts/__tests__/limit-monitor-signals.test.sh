@@ -25,6 +25,8 @@ new_case() {
   # is not a smaller install -- it is a BROKEN one, and the difference would
   # only show up as a silently missing send. Copy what a real install has.
   mkdir -p "$c/scripts/lib"; cp "$INSTALL_DIR/scripts/lib/send-telegram.sh" "$c/scripts/lib/"
+  # MIOHEREDOC902: the measured quota path now lives in its own file.
+  cp "$INSTALL_DIR/scripts/lib/quota-check.py" "$c/scripts/lib/"
   printf 'MAIN_AGENT_ID=probe\nALLOWED_CHAT_ID=1\n' > "$c/.env"
   echo "$c"
 }
@@ -184,6 +186,24 @@ if grep -q "quota:seven_day" "$C/store/limit-monitor.log" 2>/dev/null; then
   pass "the live weekly window still alerts beside a rolled-over one"
 else
   fail "a rolled-over window silenced the live one next to it"
+fi
+
+# MIOHEREDOC902: a missing quota-check.py must be LOUD, never a silent skip --
+# an empty quota reading and a healthy one look identical from the outside.
+C="$(new_case quota_missing_py)"
+rm -f "$C/scripts/lib/quota-check.py"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":95,"resets_at":%d}}}\n' "$now" "$reset" \
+  > "$C/store/.claude-rate-limits.json"
+run_case "$C"
+if grep -q "quota-check.py hianyzik" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "missing quota-check.py is logged loudly (fail-open, not silent)"
+else
+  fail "missing quota-check.py skipped SILENTLY"
+fi
+if alerted "$C"; then
+  fail "missing quota-check.py must not raise a quota alert"
+else
+  pass "no phantom quota alert without the checker"
 fi
 
 C="$(new_case quota_stale)"
