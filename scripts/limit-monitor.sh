@@ -93,7 +93,7 @@ QUOTA_WARN_PCT="${QUOTA_WARN_PCT:-90}"
 QUOTA_MAX_AGE_SEC="${QUOTA_MAX_AGE_SEC:-21600}"
 
 if [ -s "$QUOTA_FILE" ] && command -v python3 >/dev/null 2>&1; then
-  QUOTA_OUT="$(QUOTA_FILE="$QUOTA_FILE" QUOTA_WARN_PCT="$QUOTA_WARN_PCT" QUOTA_MAX_AGE_SEC="$QUOTA_MAX_AGE_SEC" python3 - <<'PYQ' 2>/dev/null
+  QUOTA_OUT="$(QUOTA_FILE="$QUOTA_FILE" QUOTA_WARN_PCT="$QUOTA_WARN_PCT" QUOTA_MAX_AGE_SEC="$QUOTA_MAX_AGE_SEC" python3 - <<\PYQ 2>/dev/null
 import json, os, time
 
 path = os.environ["QUOTA_FILE"]
