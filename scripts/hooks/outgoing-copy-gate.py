@@ -583,49 +583,28 @@ def accentless_evidence(words):
     return {w for w in words if w in ACCENTLESS and w not in AMBIGUOUS_TRIGGER}
 
 
-def collect_bash_body(cmd: str):
-    """Return (text, unreadable_reason). text is '' when nothing was recovered."""
-    parts = []
-    for m in re.finditer(r"--(?:body|subject)[= ]+(\"([^\"]*)\"|'([^']*)'|(\S+))", cmd):
-        val = m.group(2) or m.group(3) or m.group(4) or ""
-        # A shell-expanded --body ($(cat f), `cat f`, $VAR) reaches this hook
-        # UNEXPANDED: what we would audit is the literal command text, not the
-        # letter. That is worse than useless -- it fires on words that happen to
-        # sit in the PATH while the real copy goes uninspected. Measured
-        # 2026-08-11 on a live customer letter: `--body "$(cat .../hidli_zaro_
-        # level.txt)"` blocked on "level" from the FILENAME, and the letter
-        # itself was never read. Same fail-closed rule as the `<` branch below.
-        if re.search(r"\$\(|`|\$\{?\w", val):
-            return ("\n".join(parts),
-                    "a --body shell-behelyettesitest tartalmaz, amit a hook nem old fel "
-                    f"({val[:60]}...) -- igy a parancs szoveget vizsgalnam, nem a levelet")
-        parts.append(val)
-    # heredoc payloads sit inline in the command string
-    for m in re.finditer(r"<<-?\s*'?(\w+)'?\n(.*?)\n\1", cmd, re.S):
-        parts.append(m.group(2))
-    # A single `<` only. Without the lookarounds a heredoc (`<<'EOF'`) matches
-    # here and the quoted delimiter is taken for a filename -- caught by the
-    # first live probe of this gate, which blocked with "'EOF': No such file".
-    redirect = re.search(r"(?<!<)<(?!<)\s*([^\s|;&<>]+)", cmd)
-    if redirect:
-        raw = redirect.group(1)
-        path = os.path.expandvars(os.path.expanduser(raw))
-        if "$" in path:
-            return ("\n".join(parts), f"a torzs egy fel nem oldhato utvonalrol jon ({raw})")
-        try:
-            with open(path, encoding="utf-8", errors="replace") as fh:
-                parts.append(fh.read())
-        except OSError as exc:
-            return ("\n".join(parts), f"a torzs-fajl nem olvashato ({path}: {exc})")
-    if not parts and re.search(r"\|\s*(python3?|node|tsx)?[^|]*send", cmd):
-        return ("", "a torzs egy pipe-bol jon, a hook nem latja")
-    return ("\n".join(parts), None)
+# collect_bash_body / collect_mcp_body moved VERBATIM to email_extract.py
+# (EMAILKAPU901 PR1): the level-2 approval gate hashes the same letter this
+# gate audits, so the extraction must have exactly one implementation.
+# Byte-parity with the pre-move behavior is pinned by
+# scripts/__tests__/email-extract-parity.test.py against a golden captured
+# from the pre-move code.
+# GUARDED import: a bare ImportError would escape the __main__ net (it fires
+# during module load), exit 1, and PreToolUse treats 1 as NON-blocking -- the
+# send would run UNCHECKED. The stubs keep the email path fail-closed through
+# the existing unreadable branch, and leave the telegram path (which never
+# calls these) fail-open as designed.
+try:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from email_extract import collect_bash_body, collect_mcp_body  # noqa: E402
+except Exception as _extract_exc:  # noqa: BLE001 -- deliberate fail-closed stub
+    _EXTRACT_ERR = repr(_extract_exc)
 
+    def collect_bash_body(cmd: str):
+        return ("", f"az email_extract modul nem toltheto be ({_EXTRACT_ERR})")
 
-def collect_mcp_body(tool_input: dict):
-    fields = ("body", "text", "html", "htmlBody", "message", "subject", "content")
-    got = [str(tool_input[f]) for f in fields if tool_input.get(f)]
-    return "\n".join(got)
+    def collect_mcp_body(tool_input: dict):
+        return ""
 
 
 # --- Telegram reply (GATETG816) ---------------------------------------------
