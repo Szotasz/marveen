@@ -30,6 +30,9 @@ Anchor semantics (Marveen msg 17900, 5+1 conditions):
 
 Exit codes (PreToolUse contract): 0 = allow, 2 = block. A crash must never
 exit 1 (non-blocking) -- the __main__ net converts it to 2 on send paths.
+EVERY malformed input (unparseable stdin included) blocks: unlike the copy
+gate, which audits and stays alive on harness faults, this gate authorizes,
+so "cannot decide" is always a deny.
 """
 import hashlib
 import importlib.util
@@ -144,7 +147,15 @@ def main():
     try:
         payload = json.load(sys.stdin)
     except Exception:
-        sys.exit(0)  # unparseable payload must not wedge the session (copy-gate parity)
+        # FAIL-CLOSED, deliberately DIVERGING from the copy gate (Marveen's
+        # #1149 review): the copy gate AUDITS and chooses session-liveness on
+        # a broken harness payload; this gate AUTHORIZES, and an unreadable
+        # payload on a send-matched call must not authorize anything. Loud
+        # deny beats a silent fail-open on the one hook whose whole job is
+        # the deny. (Costs: a systematically broken harness blocks Bash on
+        # the main agent -- visible immediately, which is the point.)
+        deny("A hook-payload nem ertelmezheto (nem-JSON stdin) -- fail-closed, "
+             "mert ez a kapu ENGEDELYEZ: ertelmezhetetlen hivas nem kaphat engedelyt.")
     tool = str(payload.get("tool_name") or "")
     tool_input = payload.get("tool_input")
     tool_input = tool_input if isinstance(tool_input, dict) else {}

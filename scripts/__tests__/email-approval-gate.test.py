@@ -226,6 +226,16 @@ with tempfile.TemporaryDirectory() as td:
     check("fail-closed: non-dict tool_input -> DENIED (exit 2, never 1)",
           code == 2, f"exit={code}")
 
+    # Marveen's #1149 review: this gate AUTHORIZES, so unlike the copy gate it
+    # must fail closed on an unparseable payload too -- the docstring and the
+    # code now state the same contract.
+    env = dict(os.environ, EMAIL_APPROVAL_GATE_STORE=store,
+               OUTGOING_COPY_GATE_RULES=os.path.join(store, "no-rules.json"))
+    proc = subprocess.run([sys.executable, GATE], input=b"this is not json",
+                          capture_output=True, env=env)
+    check("fail-closed: unparseable stdin -> DENIED (exit 2, never 0/1)",
+          proc.returncode == 2, f"exit={proc.returncode}")
+
 print()
 if failed:
     print(f"{len(failed)} FAILED: {failed}", file=sys.stderr)
