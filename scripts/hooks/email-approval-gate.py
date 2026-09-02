@@ -96,6 +96,21 @@ def content_anchor(env: dict) -> str:
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
 
+# SQLite's unixepoch() only exists from 3.38 (2022-02). The hook runs under
+# the HOST's python3, whose bundled sqlite3 can be older than the one node's
+# better-sqlite3 carries -- measured 2026-09-02 on the live install: python
+# sqlite3 3.37.2, so every such call raised OperationalError. That is
+# not a crash the operator ever sees as a version problem: find_and_consume
+# raises, the caller turns any DB fault into a fail-closed deny, and the
+# message reads "approvals not available" -- i.e. at level 2 a genuinely
+# APPROVED letter is refused and the reason looks like a missing approval.
+# CI stayed green throughout because its SQLite is newer, so the suite tested
+# every host except the one the gate actually runs on.
+# strftime('%s') is present in every SQLite that ships a date function; the
+# CAST keeps the comparison integer-to-integer against resolved_at.
+NOW_S = "CAST(strftime('%s','now') AS INTEGER)"
+
+
 def find_and_consume(anchor: str):
     """Return (verdict, detail). verdict: 'allowed' (consumed approval id),
     'pending', 'consumed', 'expired', 'none', 'race'. Raises on any DB problem
@@ -107,19 +122,19 @@ def find_and_consume(anchor: str):
         con.execute("PRAGMA busy_timeout=5000")
         row = con.execute(
             "SELECT id FROM approvals WHERE category='email_send' AND status='approved'"
-            " AND content_hash=? AND consumed_at IS NULL AND resolved_at >= unixepoch()-?"
+            f" AND content_hash=? AND consumed_at IS NULL AND resolved_at >= {NOW_S}-?"
             " ORDER BY resolved_at DESC LIMIT 1", (anchor, WINDOW_S)).fetchone()
         if row:
             # Atomic one-shot: only the UPDATE that flips NULL->now wins.
             cur = con.execute(
-                "UPDATE approvals SET consumed_at=unixepoch()"
+                f"UPDATE approvals SET consumed_at={NOW_S}"
                 " WHERE id=? AND consumed_at IS NULL", (row[0],))
             con.commit()
             return ("allowed", row[0]) if cur.rowcount > 0 else ("race", row[0])
         for verdict, cond in (
             ("pending", "status='pending'"),
             ("consumed", "status='approved' AND consumed_at IS NOT NULL"),
-            ("expired", f"status='approved' AND consumed_at IS NULL AND resolved_at < unixepoch()-{int(WINDOW_S)}"),
+            ("expired", f"status='approved' AND consumed_at IS NULL AND resolved_at < {NOW_S}-{int(WINDOW_S)}"),
         ):
             hit = con.execute(
                 f"SELECT id FROM approvals WHERE category='email_send' AND content_hash=? AND {cond} LIMIT 1",
