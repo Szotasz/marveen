@@ -17,6 +17,7 @@
     "PreToolUse": [
       { "matcher": "Bash", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"", "timeout": 15 } ] },
       { "matcher": ".*send_email.*", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"", "timeout": 15 } ] },
+      { "matcher": ".*manage_email.*", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"", "timeout": 15 } ] },
       { "matcher": "mcp__plugin_telegram_telegram__reply", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"", "timeout": 15 } ] },
       { "matcher": "Bash", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"", "timeout": 10 } ] },
       { "matcher": ".*send_email.*", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"", "timeout": 10 } ] },
