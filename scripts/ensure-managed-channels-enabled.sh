@@ -30,28 +30,39 @@ esac
 
 # Idempotent: already true -> nothing to do.
 #
-# Deliberately UNPRIVILEGED, and deliberately BEFORE the sudo handling below.
-# The managed file is world-readable (it is org policy, not a secret), so
-# answering "is this already configured?" never needs a privilege the caller
-# might not have. Resolving sudo first meant a host where the key was ALREADY
-# set, but the invoking user had no sudo, reported
+# Answering "is this already configured?" is a READ, and the managed file is org
+# policy (0644, not a secret), so ask it with NO privilege and ask it BEFORE the
+# sudo handling below. Resolving sudo first meant a host where the key was
+# ALREADY set, but the invoking user had no sudo, reported
 #   ! channelsEnabled: nem root es nincs sudo -- kihagyva.
 #   MARVEEN_CHANNELS_GATE=manual
 # and sent the operator off to fix something that was already correct. Ask the
 # question that costs nothing first; only a WRITE needs privilege.
-if [ -f "$MANAGED_FILE" ] && python3 - "$MANAGED_FILE" 2>/dev/null <<'PY'
+#
+# $1 is the privilege prefix ("" or sudo). No `[ -f ]` guard: absent and
+# unreadable are the same answer here, and that test would itself need the
+# privilege we may not have.
+channels_enabled() {
+  $1 python3 - "$MANAGED_FILE" 2>/dev/null <<'PY'
 import json, sys
 try:
     sys.exit(0 if json.load(open(sys.argv[1])).get("channelsEnabled") is True else 1)
 except Exception:
     sys.exit(1)
 PY
-then
+}
+
+report_enabled() {
   echo "  channelsEnabled: mar be van kapcsolva ($MANAGED_FILE)"
   echo "MARVEEN_CHANNELS_GATE=ok"
+}
+
+if channels_enabled ""; then
+  report_enabled
   exit 0
 fi
-# A write is needed from here on, so now resolve privilege.
+
+# A write MAY be needed from here on, so now resolve privilege.
 # Root-aware privilege prefix. The managed dir is root-owned on both platforms.
 SUDO=""
 if [ "$(id -u)" -ne 0 ]; then
@@ -66,6 +77,14 @@ if [ "$(id -u)" -ne 0 ]; then
   fi
 fi
 
+# Same question, now with the privilege we just resolved. An admin who locked
+# the managed file down still gets the early exit instead of a pointless
+# privileged rewrite on every install -- the old order got that right by reading
+# as root, and an unprivileged-only check would have lost it.
+if [ -n "$SUDO" ] && channels_enabled "$SUDO"; then
+  report_enabled
+  exit 0
+fi
 
 if ! $SUDO mkdir -p "$(dirname "$MANAGED_FILE")" 2>/dev/null; then
   echo "  ! channelsEnabled: nem sikerult letrehozni $(dirname "$MANAGED_FILE") -- kezi root-lepes szukseges:"
@@ -76,7 +95,7 @@ fi
 
 # Safe JSON merge: load existing (or {}), set channelsEnabled=true, atomic write.
 if $SUDO python3 - "$MANAGED_FILE" <<'PY'
-import json, os, sys
+import json, os, shutil, sys
 p = sys.argv[1]
 try:
     d = json.load(open(p)) if os.path.exists(p) else {}
@@ -88,6 +107,15 @@ d["channelsEnabled"] = True
 tmp = p + ".tmp"
 with open(tmp, "w") as f:
     f.write(json.dumps(d, indent=2) + "\n")
+# os.replace carries the TMP file's mode, i.e. whatever the umask allowed --
+# under `umask 077` that silently turned the managed file into a root-owned
+# 0600 and broke the unprivileged read above. Match the file being replaced, so
+# an admin who deliberately locked it down keeps that; only a file this script
+# CREATES gets the 0644 the header describes.
+if os.path.exists(p):
+    shutil.copymode(p, tmp)
+else:
+    os.chmod(tmp, 0o644)
 os.replace(tmp, p)
 PY
 then
