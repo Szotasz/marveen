@@ -73,3 +73,8 @@ jobs:
       - run: bash scripts/__tests__/morning-timer-park.test.sh
       - run: bash scripts/__tests__/userbot-arming-gate.test.sh
       - run: bash scripts/__tests__/supabase-q-token-hiding.test.sh
+      # Same reasoning for the taskstate stub writer: its load-bearing contract
+      # is the EXIT CODE (a non-zero UserPromptSubmit hook blocks every prompt),
+      # and that is only asserted by this shell suite. The live-API case inside
+      # it stays opt-in, so this run touches nothing outside its fixtures.
+      - run: bash scripts/__tests__/taskstate-stub.test.sh
