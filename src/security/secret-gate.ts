@@ -123,6 +123,7 @@ export const ALLOWLISTED_PATHS: { path: string; reason: string }[] = [
   { path: 'src/__tests__/secret-gate.test.ts', reason: 'the gate\'s own tests: synthetic secrets are the subject under test' },
   { path: 'src/__tests__/channel-inbound-framing.test.ts', reason: 'channel framing test: synthetic wrapper frames with sample ids are the subject under test' },
   { path: 'scripts/__tests__/conversation-ledger.test.sh', reason: 'ledger test: synthetic wrapper frames with sample ids' },
+  { path: 'src/__tests__/agent-terminal-mask-keys.test.ts', reason: 'terminal masking test: a hand-written sk-ant- shaped fixture IS the input under test -- the assertion is that no fragment of it reaches the audit line, so a different shape would stop measuring the thing' },
   // MIOCLISKILL831 -- a `marveen skill` szkennerenek fixture-jei. A fajl
   // TARGYA egy kulcs-alaku string: a mio-scan `api-key-shaped` szabalyanak
   // kell valamin tuznie, es az aranyfajl ugyanazt a szoveget tartalmazza,

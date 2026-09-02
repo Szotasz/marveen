@@ -311,8 +311,16 @@ describe('first-run gate wiring contracts', () => {
 
   it('startAgentProcess stamps per-project trust in the config root the session boots from', () => {
     const stampIdx = AGENT_PROCESS.indexOf('stampProjectTrustForDir(\n      claudeConfigDir')
-    const launchIdx = AGENT_PROCESS.indexOf("runTmux(null, ['new-session', '-d', '-s', session, cmd]")
+    // The launch target used to be a bare `null`. Since agents can own their OS user it is
+    // `startTarget` (agentTmuxTarget(name)), so the old literal matched nothing and the
+    // assertion passed a -1 into the ordering check. The contract under test is the ORDER,
+    // not the argument, so match the current spawn line.
+    const launchIdx = AGENT_PROCESS.indexOf("runTmux(startTarget, ['new-session', '-d', '-s', session, cmd]")
     expect(stampIdx).toBeGreaterThan(0)
+    // Both anchors must actually be FOUND. Without this a renamed call site makes indexOf
+    // return -1, and the ordering assertion below goes red for the wrong reason: it reads as
+    // "the stamp moved after the launch" when the truth is "the test no longer matches".
+    expect(launchIdx).toBeGreaterThan(0)
     // The stamp must happen BEFORE the tmux session is spawned.
     expect(launchIdx).toBeGreaterThan(stampIdx)
   })

@@ -7,7 +7,7 @@ Body can also be piped on stdin if --body is omitted.
 Mailbox / hosts come from config (.env); password is pulled from the vault at
 runtime (never stored/printed). --html sends the body as an HTML alternative.
 """
-import sys, os, ssl, smtplib, argparse
+import sys, os, ssl, smtplib, argparse, imaplib, time
 from email.message import EmailMessage
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lib
@@ -49,12 +49,31 @@ def main():
     # IP ([192.168.x.x]) -> "421 4.4.2 timeout exceeded". local_hostname forces a
     # proper FQDN; derive it from the mailbox domain.
     ehlo_host = lib.EMAIL.split("@")[-1] if "@" in lib.EMAIL else "localhost"
+    pw = lib.password()
     with smtplib.SMTP_SSL(lib.SMTP_HOST, lib.SMTP_PORT,
                           local_hostname=ehlo_host,
                           context=ssl.create_default_context(), timeout=45) as s:
-        s.login(lib.EMAIL, lib.password())
+        s.login(lib.EMAIL, pw)
         s.send_message(msg, to_addrs=rcpts)
     print(f"SENT from {lib.FROM_ADDRESS} to {a.to}" + (f" cc {a.cc}" if a.cc else ""))
+
+    # AUDIT TRAIL (SUPPJOGVAK901): SMTP send alone does NOT populate the mailbox
+    # Sent folder, so an outgoing auto-reply used to leave no readable record --
+    # a later "did we ever send X to a paying customer?" question then had no
+    # source to answer from. Append a copy to Sent over IMAP so every send is
+    # auditable. Fail-safe: the mail is ALREADY sent by this point, so an append
+    # error is logged (stderr) but never raised -- the reply must not be treated
+    # as failed just because its audit copy could not be filed.
+    try:
+        M = imaplib.IMAP4_SSL(lib.IMAP_HOST, lib.IMAP_PORT,
+                              ssl_context=ssl.create_default_context())
+        M.login(lib.EMAIL, pw)
+        M.append("INBOX.Sent", "(\\Seen)",
+                 imaplib.Time2Internaldate(time.time()), msg.as_bytes())
+        M.logout()
+        print("audit: copy appended to INBOX.Sent")
+    except Exception as e:
+        print(f"audit: Sent-append FAILED (mail WAS sent to {a.to}): {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -131,7 +131,7 @@ export function agentSettingsPath(name: string): string {
 const _TMP_PREFIXES = ['/tmp/', '/var/tmp/', '/private/tmp/', '/dev/shm/']
 
 // Shared hook-entry type used by ensureAgentHooks and upgradeLegacyHookCommands.
-type HookEntry = { hooks?: Array<{ command?: string; timeout?: number; [k: string]: unknown }> }
+type HookEntry = { matcher?: string; hooks?: Array<{ command?: string; timeout?: number; [k: string]: unknown }> }
 
 /**
  * Returns true when the command is unsafe to register in shared settings:
@@ -198,6 +198,54 @@ export function upgradeLegacyHookCommands(
   return changed
 }
 
+/**
+ * In-place matcher sync: when a template hook group's MATCHER changes, carry the
+ * new matcher onto the group an earlier run wrote into an agent's settings.
+ *
+ * Without this, a matcher-only template change never reaches the existing fleet.
+ * The add pass in ensureAgentHooks dedupes on the exact COMMAND string, so a
+ * group whose command is unchanged is considered already present and its stale
+ * matcher is left in place forever -- silently, because nothing errors. That is
+ * how an existing sub-agent kept `SessionStart: compact|resume` (and stayed deaf to
+ * source=clear) while the template said otherwise.
+ *
+ * Conservative on purpose. A group is only re-matched when EVERY command in it
+ * also appears in the template group -- so a group a human extended with a hook
+ * of their own is left alone -- and a template group with no matcher never
+ * removes one.
+ *
+ * Exported for unit testing.
+ */
+export function syncHookMatchers(
+  existingHooks: Record<string, unknown>,
+  tplHooks: Record<string, unknown>,
+): boolean {
+  let changed = false
+  for (const [event, tplEntries] of Object.entries(tplHooks)) {
+    const existEntries = existingHooks[event]
+    if (!Array.isArray(existEntries) || !Array.isArray(tplEntries)) continue
+    for (const tplEntry of tplEntries as HookEntry[]) {
+      if (typeof tplEntry?.matcher !== 'string') continue
+      const tplCommands = new Set(
+        (tplEntry.hooks ?? []).map((h) => h.command).filter((c): c is string => Boolean(c)),
+      )
+      if (tplCommands.size === 0) continue
+      for (const existEntry of existEntries as HookEntry[]) {
+        if (!existEntry || typeof existEntry !== 'object') continue
+        const existCommands = (existEntry.hooks ?? [])
+          .map((h) => h.command)
+          .filter((c): c is string => Boolean(c))
+        if (existCommands.length === 0) continue
+        if (!existCommands.every((c) => tplCommands.has(c))) continue
+        if (existEntry.matcher === tplEntry.matcher) continue
+        existEntry.matcher = tplEntry.matcher
+        changed = true
+      }
+    }
+  }
+  return changed
+}
+
 // Idempotent migration: every agent's settings.json should carry the
 // PreCompact hook (memory save + skill reflection). Pre-refactor agents
 // were scaffolded before scaffoldAgentDir seeded the template, so their
@@ -248,6 +296,9 @@ export function ensureAgentHooks(name: string): boolean {
     //   3. Sync the timeout of any command hook whose command matches but timeout differs.
     const existingHooks = existing.hooks as Record<string, unknown>
     let changed = upgradeLegacyHookCommands(existingHooks, tplHooks)
+    // Matcher pass: a widened template matcher (e.g. SessionStart gaining
+    // `clear`) must reach agents whose command string is unchanged.
+    if (syncHookMatchers(existingHooks, tplHooks)) changed = true
     for (const [event, handlers] of Object.entries(tplHooks)) {
       if (!existingHooks[event]) {
         existingHooks[event] = handlers

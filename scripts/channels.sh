@@ -366,11 +366,38 @@ export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HO
 # AVX-less x86 host: the install pinned a Node-based claude (cli.js entrypoint,
 # see install-linux.sh CLAUDE_PIN) because the Bun standalone binary SIGILLs
 # without AVX. The auto-updater would swap the pin for the latest Bun binary on
-# first run, killing every session -- disable it here so all agent sessions
-# inherit the guard via tmux. No-op on AVX-capable and ARM hosts.
+# first run, killing every session. Recorded here because it also decides WHICH
+# package spec the self-heal below reinstalls: on such a host "latest" is the
+# one thing we must never install.
+CLAUDE_PIN="2.1.110"   # keep in sync with install-linux.sh / scripts/fix-avx.sh
+CLAUDE_PKG="@anthropic-ai/claude-code"
+AVX_LESS=0
 if grep -qE '^flags[[:space:]]*:' /proc/cpuinfo 2>/dev/null && ! grep -qiw avx /proc/cpuinfo 2>/dev/null; then
-  export DISABLE_AUTOUPDATER=1
+  AVX_LESS=1
+  CLAUDE_PKG="@anthropic-ai/claude-code@${CLAUDE_PIN}"
 fi
+
+# Per-session auto-updater OFF on every host, not just the AVX-less one.
+#
+# Each agent session (channels + every worker + every sub-agent) runs its own
+# auto-updater against ONE shared global npm prefix. When two of them decide to
+# update in the same second they race, and npm has no lock across processes:
+# install A rm -rf's .../node_modules/@anthropic-ai/claude-code while install
+# B's postinstall (`node install.cjs`) is cwd'd inside it -> "Error: ENOENT ...
+# uv_cwd", and B then dies on "EEXIST: symlink ... /opt/homebrew/bin/claude".
+# Both abort, and what is left behind is no package dir AND no claude binary.
+#
+# Observed 2026-08-23 10:20:35 on the Mac mini: two concurrent installs 7ms
+# apart wiped claude entirely. The machine was powered off five minutes later,
+# so nothing re-ran the updater, and at the next boot channels.sh could only
+# log "ERROR: claude not found on PATH" into a 30-second KeepAlive loop. The
+# bot was silently, permanently down until a manual `npm install -g` cleared
+# it -- the operator noticed only because the morning messages went nowhere.
+#
+# Updating now happens in exactly ONE place: claude_ensure() below. That is
+# serialized by construction (channels.sh is the single boot entry point, and
+# it runs before the tmux server exists), so the race cannot re-form.
+export DISABLE_AUTOUPDATER=1
 
 # Disable Claude Code's "Prompt Suggestions" (the grayed-out/DIM suggested command
 # shown in the input box, picked from git history / conversation). For headless
@@ -380,6 +407,42 @@ fi
 # source removes the phantom entirely. Inherited by every sub-agent via the tmux
 # global env set below.
 export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false
+
+# The single, serialized Claude Code install/update point (see the
+# DISABLE_AUTOUPDATER block above).
+#
+# Two jobs, deliberately asymmetric:
+#   * claude MISSING -> reinstall synchronously and block on it. There is
+#     nothing to run otherwise, so waiting costs nothing and this is the
+#     self-heal for an update a power-off or a race left half-finished.
+#   * claude PRESENT -> at most one update per 24h (stamp file), in the
+#     BACKGROUND. A foreground `npm install -g` would hold the Telegram
+#     channel offline for the 20-40s it takes, on every boot.
+# Failures are logged, never fatal: a stale claude still works, and a missing
+# one is retried by the next KeepAlive restart 30 seconds later.
+CLAUDE_UPDATE_STAMP="$INSTALL_DIR/store/.claude-update-stamp"
+claude_install() {
+  local why="$1"
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "$(date '+%F %T') claude install SKIPPED ($why): npm not on PATH" >&2
+    return 1
+  fi
+  echo "$(date '+%F %T') claude install START ($why): $CLAUDE_PKG" >&2
+  if npm install -g "$CLAUDE_PKG" >/dev/null 2>&1; then
+    : > "$CLAUDE_UPDATE_STAMP"
+    echo "$(date '+%F %T') claude install OK ($why)" >&2
+  else
+    echo "$(date '+%F %T') claude install FAILED ($why)" >&2
+  fi
+}
+
+if ! command -v claude >/dev/null 2>&1; then
+  claude_install "binary missing -- self-heal"
+elif [ "$AVX_LESS" = "0" ] && [ -z "$(find "$CLAUDE_UPDATE_STAMP" -mtime -1 2>/dev/null)" ]; then
+  # AVX-less hosts are excluded on purpose: their claude is pinned, and
+  # "keep it current" is exactly what breaks them.
+  claude_install "daily check" &
+fi
 
 CLAUDE="$(command -v claude)"
 TMUX="$(command -v tmux)"
@@ -650,6 +713,12 @@ if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
 fi
 # Propagate the prompt-suggestion disable to every sub-agent tmux session.
 $TMUX set-environment -g CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION false 2>/dev/null || true
+# Same for the auto-updater kill switch. A plain `export` above only reaches
+# sessions that inherit THIS shell, i.e. only when channels.sh happened to
+# create the tmux server first; the dashboard's worker sessions often win that
+# race. -g makes launch order irrelevant, which matters here because it takes
+# exactly two self-updating sessions to wipe the shared global install.
+$TMUX set-environment -g DISABLE_AUTOUPDATER 1 2>/dev/null || true
 
 # Hybrid channel-coordinator model: the native plugin stays the PRIMARY inbound
 # path (it always polls getUpdates here -- never outbound-only). The standalone

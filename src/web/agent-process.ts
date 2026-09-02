@@ -26,7 +26,7 @@ import {
   firstRunAcceptKeys,
   type FirstRunGateKind,
 } from '../pane-state.js'
-import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentMemoryIsolation } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation } from './agent-config.js'
 import { resolveAgentConfigDir } from './claude-plans.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
@@ -43,11 +43,13 @@ import {
   ensureControlDir,
   cleanStaleSshSockets,
   type AgentRunState,
+  type TmuxInvocation,
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBOX_TEE } from '../config.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
+import { readEnvFile } from '../env.js'
 import { loadProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureAutonomySection, ensureSkillsPathTrapSection } from './agent-scaffold.js'
@@ -291,7 +293,24 @@ function maybeAlertSharedConfigCollision(name: string): void {
 //
 // Idempotent and best-effort: returns the dir on success, or null so the caller
 // falls back to the shared ~/.claude (degraded, but never a launch failure).
-const ISOLATED_CONFIG_SKIP = new Set(['settings.json', 'plugins', '.credentials.json'])
+// `projects` holds each session's transcript AND the auto-memory store, and the
+// memory store is keyed by PROJECT ROOT, not by cwd. Symlinking it to the shared
+// ~/.claude/projects therefore gives every agent on this install ONE memory store --
+// the main agent's. Measured on the Acrobot install 2026-08-18: the only memory/
+// directory under the shared tree was the main agent's (30 files), an agent's note
+// landed in the MAIN agent's MEMORY.md at 16:31, and a second agent watched a memory
+// written by the main agent appear in its own index minutes later. The link is live
+// and bidirectional, not just shared history.
+//
+// Skipping it here is what makes a per-agent split possible at all: the provisioner
+// runs on EVERY spawn and, finding a real directory where it expects a symlink,
+// deletes it (rmSync below) and re-links. A split done on disk therefore survived
+// seconds -- until the next agent start undid it. Fixing this in the filesystem is
+// not possible; the code that owns the path has to leave it alone.
+//
+// Consequence for a fresh agent: no `projects` entry is provisioned, and Claude Code
+// creates its own inside the isolated config dir. That is the intended end state.
+const ISOLATED_CONFIG_SKIP = new Set(['settings.json', 'plugins', '.credentials.json', 'projects'])
 
 export function ensureIsolatedChannelConfigDir(
   name: string,
@@ -347,7 +366,31 @@ export function ensureMainAgentIsolatedConfigDir(
     PROJECT_ROOT,
     getProviderType(provider),
     MAIN_AGENT_ID,
+    readExtraChannelPluginIds(),
   )
+}
+
+// CHANNEL_PLUGINS_EXTRA -- the co-listen plugins channels.sh appends to
+// --channels so ONE main session can serve several providers at once (e.g.
+// Telegram primary + Discord). Same .env key channels.sh parses, read here so
+// the isolated-config provisioner and the launcher cannot disagree.
+//
+// 2026-08-16 (Discord co-listen, ~2h silent outage): the provisioner rewrites
+// the isolated settings.json on EVERY channels.sh start and forced
+// scopeChannelPlugins(PRIMARY) -- which sets every OTHER channel plugin to
+// false. Claude Code then refuses to load the co-listen plugin no matter what
+// --channels says, so the Discord bot came up deaf: messages to it reached
+// nothing and the owner got no reply. Two manual fixes (hand-edited registry,
+// then `claude plugin install`) both looked correct and were both erased
+// seconds later by the next restart. Keeping the extras enabled here is the
+// only place that survives, because this function is what does the erasing.
+export function readExtraChannelPluginIds(): string[] {
+  try {
+    const raw = readEnvFile(['CHANNEL_PLUGINS_EXTRA'])['CHANNEL_PLUGINS_EXTRA'] ?? ''
+    return raw.split(/\s+/).map(s => s.trim()).filter(Boolean)
+  } catch {
+    return []
+  }
 }
 
 // An EXPLICIT config dir for the main channels agent (MAIN_AGENT_CONFIG_DIR),
@@ -394,9 +437,17 @@ export function resolveMainAgentConfigDir(): string | null {
 // this reconcile is exactly the path that starts rewriting the file regularly.
 // Fall back to 0600 (not the umask) when the target does not exist yet, since
 // the content class is the same either way.
-function writeJsonAtomic(path: string, value: unknown): void {
-  let mode = 0o600
-  try { mode = statSync(path).mode & 0o777 } catch { /* new file -> owner-only */ }
+function writeJsonAtomic(path: string, value: unknown, opts: { groupShared?: boolean } = {}): void {
+  // A per-user agent's config is written by the ROUTER but read by the AGENT, and
+  // they are different OS users. An atomic write hands the new file to whoever ran
+  // it, so a plain 0600 silently locks the agent out of its own config -- Claude
+  // Code then cannot read it, writes a brand-new profile, and the freshly stamped
+  // consent flags are gone. Measured 2026-08-19 on korall: three restarts, three
+  // fresh 8-key profiles, and the login picker every time with a valid token in
+  // the environment. Group-shared writes keep both sides able to read and write.
+  let mode = opts.groupShared ? 0o660 : 0o600
+  try { mode = statSync(path).mode & 0o777 } catch { /* new file -> see above */ }
+  if (opts.groupShared) mode |= 0o060
   const tmp = `${path}.tmp-${process.pid}`
   writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', { mode })
   renameSync(tmp, path)
@@ -458,6 +509,7 @@ function provisionIsolatedConfigDir(
   cwd: string,
   providerType: ChannelProviderType | null,
   name: string,
+  extraPluginIds: string[] = [],
 ): string | null {
   try {
     const realClaude = join(homedir(), '.claude')
@@ -468,8 +520,15 @@ function provisionIsolatedConfigDir(
     //    must stay out of the isolated dir (.credentials.json -- see header). A
     //    stale non-symlink (e.g. a prior copy, or a .credentials.json left by an
     //    earlier build) is removed so it can never shadow the env-var auth.
+    // A per-user agent cannot follow a symlink into the router's private home:
+    // `~/.claude/.claude.json` is 0600 and owned by the router's user, so the
+    // agent reads nothing, Claude Code writes a brand-new profile, and every
+    // consent flag the provisioner just stamped is gone -- which is exactly how
+    // an otherwise correctly authenticated agent lands on the login picker
+    // (measured on korall, 2026-08-19). It needs a REAL file of its own here.
+    const perUserAgent = readAgentRunAsUser(name) != null
     for (const entry of readdirSync(realClaude)) {
-      if (ISOLATED_CONFIG_SKIP.has(entry)) {
+      if (ISOLATED_CONFIG_SKIP.has(entry) || (perUserAgent && entry === '.claude.json')) {
         // Defensively drop a real .credentials.json that an older build may have
         // symlinked/copied here, so the env-var token is the only auth source.
         const stale = join(cfg, entry)
@@ -503,6 +562,12 @@ function provisionIsolatedConfigDir(
       providerType,
       settings.enabledPlugins as Record<string, boolean> | undefined,
     )
+    // Re-enable the co-listen extras scopeChannelPlugins just turned off. The
+    // scope call exists to stop a SUB-agent fighting the main agent over the
+    // same poller slot; the main agent's own declared extras are the opposite
+    // case -- they are its channels, and forcing them false is what silently
+    // kills the second bot on every restart.
+    for (const pid of extraPluginIds) scopedPlugins[pid] = true
     settings.enabledPlugins = scopedPlugins
     // Keys the isolated file already carries that the shared file never
     // mentions must SURVIVE this rewrite. The rewrite runs on every main-agent
@@ -616,6 +681,9 @@ function provisionIsolatedConfigDir(
     //    Only seed when absent -- once Claude Code owns the file we leave its
     //    evolved state alone, just guaranteeing hasCompletedOnboarding stays set.
     try {
+      // Does this agent run as its own OS user? Then everything the router writes
+      // into its config dir has to stay readable AND writable for that user.
+      const perUser = readAgentRunAsUser(name) != null
       const dotClaude = join(cfg, '.claude.json')
       const sharedDot = join(homedir(), '.claude.json')
       if (!existsSync(dotClaude)) {
@@ -624,7 +692,7 @@ function provisionIsolatedConfigDir(
           try { seed = JSON.parse(readFileSync(sharedDot, 'utf-8')) as Record<string, unknown> } catch { /* keep minimal */ }
         }
         seed.hasCompletedOnboarding = true
-        writeJsonAtomic(dotClaude, seed)
+        writeJsonAtomic(dotClaude, seed, { groupShared: perUser })
       } else {
         try {
           const cur = JSON.parse(readFileSync(dotClaude, 'utf-8')) as Record<string, unknown>
@@ -634,7 +702,7 @@ function provisionIsolatedConfigDir(
             dirty = true
           }
           if (reconcileMcpServers(cur, sharedDot, name)) dirty = true
-          if (dirty) writeJsonAtomic(dotClaude, cur)
+          if (dirty) writeJsonAtomic(dotClaude, cur, { groupShared: perUser })
         } catch { /* unparseable -> leave for Claude Code to recreate */ }
       }
     } catch (err) {
@@ -900,12 +968,101 @@ export function resolveProviderEnv(
 // byte-identical to the prior direct local tmux call. Remote calls get a larger
 // default timeout because an ssh round-trip (handshake + remote exec) is slower
 // than a local fork; ServerAlive/ConnectTimeout in SSH_OPTS bound a dead host.
-function runTmux(host: string | null, tmuxArgs: string[], opts: { timeout?: number } = {}): void {
+// Where a tmux call has to land: a remote host, a local user other than the
+// router's own, or (the default everywhere today) plain local. Callers may pass
+// the bare host string they already hold; only the agent-aware call sites build
+// the full target.
+export type TmuxTarget = { host: string | null; runAsUser?: string | null }
+
+function asTarget(t: string | null | TmuxTarget): TmuxTarget {
+  return typeof t === 'string' || t === null ? { host: t } : t
+}
+
+// The tmux target for one agent: remote host if configured, otherwise the OS
+// user it runs as (null = the router's own user).
+export function agentTmuxTarget(name: string): TmuxTarget {
+  return { host: readAgentRemoteHost(name), runAsUser: readAgentRunAsUser(name) }
+}
+
+// Fallback identity resolution for the many callers that only ever knew a host.
+//
+// The router reaches an agent from a dozen places (message delivery, context
+// guard, inbox nudge, worker, channel monitor) and most of them hold nothing but
+// the SESSION NAME. Threading an agent identity through every one of those call
+// chains at once would be a large, risky change; this closes the gap without it:
+// when a local call names a session that belongs to an agent with its own OS
+// user, run it as that user.
+//
+// Deliberate limits: the session name comes from tmux's own `-t` / `-s` flag (not
+// from parsing free text), the answer comes from the agent's CONFIG (not from the
+// name itself), and it only ever applies when the caller passed no host and no
+// explicit user. An unknown session resolves to null and behaves exactly as before.
+let sessionUserCache: { at: number; map: Map<string, string> } | null = null
+
+function sessionRunAsUserMap(): Map<string, string> {
+  const now = Date.now()
+  if (sessionUserCache && now - sessionUserCache.at < 5000) return sessionUserCache.map
+  const map = new Map<string, string>()
+  try {
+    for (const n of listAgentNames()) {
+      const u = readAgentRunAsUser(n)
+      if (u) map.set(agentSessionName(n), u)
+    }
+  } catch { /* a config read failure must never break a tmux call */ }
+  sessionUserCache = { at: now, map }
+  return map
+}
+
+export function runAsUserForTmuxArgs(tmuxArgs: string[], map: Map<string, string>): string | null {
+  for (let i = 0; i < tmuxArgs.length - 1; i++) {
+    if (tmuxArgs[i] !== '-t' && tmuxArgs[i] !== '-s') continue
+    // `-t agent-x:0.1` addresses a window/pane inside the same session.
+    const session = tmuxArgs[i + 1].split(':')[0]
+    const user = map.get(session)
+    if (user) return user
+  }
+  return null
+}
+
+function resolveTarget(target: string | null | TmuxTarget, tmuxArgs: string[]): TmuxTarget {
+  const t = asTarget(target)
+  if (t.host || t.runAsUser) return t
+  return { host: null, runAsUser: runAsUserForTmuxArgs(tmuxArgs, sessionRunAsUserMap()) }
+}
+
+// The ONE place that turns tmux args into a runnable {file, args}: it resolves
+// the target (remote host, or the agent's own OS user) and hands back the exact
+// invocation runTmux would use. Exported because not every tmux call in the
+// router is synchronous -- the dashboard terminal (routes/agent-terminal.ts)
+// needs the same resolution from an async execFile.
+//
+// Why it exists (measured 2026-08-26 22:15 and again 2026-08-27 22:0x, two live
+// cases): agent-terminal.ts called the raw tmux binary, so for an agent running
+// under its own OS user BOTH the live pane stream and the /keys write failed --
+// the pane rendered empty and send-keys answered 500. The operator could not
+// answer a permission prompt from the dashboard while two agents sat blocked for
+// ten minutes. A second copy of the local-vs-remote-vs-runAsUser decision is the
+// bug; this export is the fix.
+export function tmuxInvocationFor(tmuxArgs: string[], target: string | null | TmuxTarget = null): TmuxInvocation {
+  const { host, runAsUser } = resolveTarget(target, tmuxArgs)
   // Ensure the private ControlMaster socket dir exists before ANY remote ssh
   // call (idempotent, ~free). Without this a watcher-first remote call after a
   // marveen restart would lose connection multiplexing and re-handshake each tick.
   if (host) ensureControlDir()
-  const inv = buildTmuxInvocation(host, tmuxBin(), tmuxArgs)
+  return buildTmuxInvocation(host, tmuxBin(), tmuxArgs, 'tmux', runAsUser ?? null)
+}
+
+// True when this tmux call has to be routed through another OS user or host --
+// i.e. when a raw `tmux` binary call would silently fail. Used by callers that
+// keep their own child-process plumbing but must not skip the resolution.
+export function tmuxNeedsIndirection(tmuxArgs: string[], target: string | null | TmuxTarget = null): boolean {
+  const { host, runAsUser } = resolveTarget(target, tmuxArgs)
+  return host != null || runAsUser != null
+}
+
+function runTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opts: { timeout?: number } = {}): void {
+  const { host } = resolveTarget(target, tmuxArgs)
+  const inv = tmuxInvocationFor(tmuxArgs, target)
   // stdio: capture the child's stderr into the thrown error instead of letting
   // execFileSync's default inherit it to the parent stderr. A restarting agent
   // makes tmux emit `can't find session: agent-X` / `no server running`; without
@@ -914,9 +1071,9 @@ function runTmux(host: string | null, tmuxArgs: string[], opts: { timeout?: numb
   execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), stdio: ['ignore', 'ignore', 'pipe'] })
 }
 
-function captureTmux(host: string | null, tmuxArgs: string[], opts: { timeout?: number } = {}): string {
-  if (host) ensureControlDir()
-  const inv = buildTmuxInvocation(host, tmuxBin(), tmuxArgs)
+function captureTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opts: { timeout?: number } = {}): string {
+  const { host } = resolveTarget(target, tmuxArgs)
+  const inv = tmuxInvocationFor(tmuxArgs, target)
   // stdout piped (we return it); stderr piped too so tmux's `can't find session`
   // noise lands in err.stderr on failure rather than the parent stderr / dashboard.log.
   return execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
@@ -927,9 +1084,10 @@ function captureTmux(host: string | null, tmuxArgs: string[], opts: { timeout?: 
 // an SSH drop must never read as 'stopped', which would trigger a wrong
 // auto-restart or a duplicate start). See classifyRunState.
 export function agentRunState(name: string): AgentRunState {
-  const host = readAgentRemoteHost(name)
+  const target = agentTmuxTarget(name)
+  const host = target.host
   try {
-    const out = captureTmux(host, ['list-sessions', '-F', '#{session_name}'])
+    const out = captureTmux(target, ['list-sessions', '-F', '#{session_name}'])
     return classifyRunState(out, agentSessionName(name), host != null)
   } catch (err) {
     // tmux list-sessions exits non-zero ("no server running") when there are
@@ -953,7 +1111,16 @@ export function isAgentRunning(name: string): boolean {
 // matching the local "session not found" semantics.
 export function sessionExistsOnHost(host: string | null, session: string): boolean {
   try {
-    return sessionInList(captureTmux(host, ['list-sessions', '-F', '#{session_name}']), session)
+    // `list-sessions` carries no -t/-s, so the args-based fallback cannot see
+    // whose session this is -- and a per-user agent's session lives on ITS OWN
+    // tmux server, invisible from the router's. Without this lookup the readiness
+    // check answers "no such session" for a perfectly healthy agent and every
+    // message to it stays queued forever (measured on korall, 2026-08-19: the
+    // session was up, the pane idle, and two messages sat pending).
+    const target: TmuxTarget = host
+      ? { host }
+      : { host: null, runAsUser: sessionRunAsUserMap().get(session) ?? null }
+    return sessionInList(captureTmux(target, ['list-sessions', '-F', '#{session_name}']), session)
   } catch {
     return false
   }
@@ -961,8 +1128,9 @@ export function sessionExistsOnHost(host: string | null, session: string): boole
 
 export function getAgentRunningSince(name: string): number | null {
   try {
-    const host = readAgentRemoteHost(name)
-    const out = captureTmux(host, ['display-message', '-p', '-t', agentSessionName(name), '#{session_created}']).trim()
+    const target = agentTmuxTarget(name)
+    const host = target.host
+    const out = captureTmux(target, ['display-message', '-p', '-t', agentSessionName(name), '#{session_created}']).trim()
     const ts = parseInt(out, 10)
     return Number.isFinite(ts) ? ts : null
   } catch {
@@ -1112,7 +1280,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
 
   try {
     try {
-      runTmux(null, ['kill-session', '-t', session])
+      runTmux(agentTmuxTarget(name), ['kill-session', '-t', session])
       await delay(3000)
     } catch { /* ok */ }
 
@@ -1432,10 +1600,23 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // values like `claude-opus-4-8[1m]` (1M-context suffix) from being glob-expanded AND makes a `'`
     // in the value inert rather than a quote-break -> command injection. Same escape at the three
     // ANTHROPIC_MODEL env sites above.
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
-    runTmux(null, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
+    // A per-user agent shares its directory with the router (group `fleet`), and
+    // the router still provisions into it on every start -- so files the agent
+    // creates must stay group-writable. Without this the default 022 umask writes
+    // 0600 files that the router can no longer stamp; measured 2026-08-19, that is
+    // exactly how korall lost its `hasCompletedOnboarding` flag on every restart
+    // and parked on the login picker with a perfectly good token in its env.
+    const umaskPrefix = agentTmuxTarget(name).runAsUser ? 'umask 002 && ' : ''
+    const cmd = `${umaskPrefix}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
+    // The agent's own target: for a per-user agent this is what makes the whole
+    // session (and every process inside it) belong to that uid. Passing null here
+    // silently started it as the router's user -- measured 2026-08-19: the start
+    // reported ok, no session existed under the agent's user, and the first
+    // capture-pane failed against the router's empty tmux server.
+    const startTarget = agentTmuxTarget(name)
+    runTmux(startTarget, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
 
-    logger.info({ name, session, channelDir: agentChannelDir }, 'Agent tmux session started')
+    logger.info({ name, session, channelDir: agentChannelDir, runAsUser: startTarget.runAsUser ?? null }, 'Agent tmux session started')
 
     // After a restart with --continue, a session that's been idle for >24h
     // shows the "Resume from summary" modal before the prompt input is ready
@@ -1481,10 +1662,11 @@ export async function stopAgentProcess(name: string): Promise<{ ok: boolean; err
   const session = agentSessionName(name)
   if (!isAgentRunning(name)) return { ok: false, error: 'Agent is not running' }
 
-  const host = readAgentRemoteHost(name)
+  const target = agentTmuxTarget(name)
+  const host = target.host
 
   try {
-    runTmux(host, ['kill-session', '-t', session], { timeout: 5000 })
+    runTmux(target, ['kill-session', '-t', session], { timeout: 5000 })
     await delay(2000)
     // Reap any orphaned plugin grandchild that tmux did not tear down. This is
     // a LOCAL pkill against this host's process table, so it only makes sense

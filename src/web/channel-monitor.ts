@@ -1098,6 +1098,24 @@ function respawnMarveenSessionFresh(): boolean {
     writeRespawnStamp() // coordinate with the systemd-timer watchdog (covers the keepalive path too)
     return true
   } catch (err) {
+    // When the pane/session is entirely GONE (not just the claude process
+    // wedged), respawn-pane fails with 'can't find pane' and there is nothing to
+    // respawn INTO -- the hard-restart escalation then dead-ends and the main
+    // channel stays down until some external actor happens to recreate it. Fall
+    // back to the canonical session-recreate path (channels.sh via
+    // createMainChannelsSession), which builds a brand-new session with full init
+    // AND shares the cold-start grace + respawn stamp, so it does not stack with
+    // the other recovery actors. Root-caused 2026-08-06: respawn-pane looped on
+    // 'can't find pane' for hours while the session was absent.
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/can't find pane|can't find session|no server running|session not found/i.test(msg)) {
+      logger.warn(
+        { session: MAIN_CHANNELS_SESSION },
+        'Fresh respawn: pane gone -- falling back to full session recreate (channels.sh)',
+      )
+      const result = createMainChannelsSession()
+      return result === 'started' || result === 'grace'
+    }
     logger.error({ err }, 'Fresh session respawn failed')
     return false
   }
@@ -1211,7 +1229,17 @@ function maybeRestartWedgedMainChannel(state: StuckInputState): void {
   // view the soft recovery uses) so a dim autocomplete hint never counts.
   const parkedView = paneState === 'typing' ? captureParkedInputView(MAIN_CHANNELS_SESSION) : null
   const machineOrigin = parkedView != null && parkedMachineOriginInput(parkedView)
-  const softRemedy = parkedView != null && parkedMainInputHasRemedy(parkedView)
+  // Same registry lookup recoverStuckInputForSession() already does for the
+  // soft-recovery decision -- without it here, a scrolled parked fragment
+  // that lost BOTH its recognisable prefix and every truncated-marker phrase
+  // reads as no-remedy even when the registry proves it is a known, safe-to-
+  // clear scheduled-task tick, and the busy-guard's deadlock carve-out
+  // (machineOrigin && !softRemedy) then wrongly allows a hard restart on a
+  // routine tick instead of deferring to it (measured 2026-08-25: two false
+  // hard restarts of the main channel for exactly this shape of park).
+  const recorded = parkedView != null ? getInjectedPrompt(MAIN_CHANNELS_SESSION) : null
+  const recordedMatch = matchesInjectedPrompt(parkedView != null ? parkedInputText(parkedView) : null, recorded)
+  const softRemedy = parkedView != null && parkedMainInputHasRemedy(parkedView, recordedMatch)
   const action = applyStuckRestartBusyGuard(paneState, decideStuckInputRestart(
     parked, state.attempts, MAIN_STUCK_THRESHOLDS.maxAttempts,
     Date.now(), lastStuckRestartAt, stuckRestartCount,
@@ -1242,6 +1270,53 @@ function maybeRestartWedgedMainChannel(state: StuckInputState): void {
   } else {
     logger.error({ session: MAIN_CHANNELS_SESSION, err: r.error }, 'Stuck-input hard restart failed')
   }
+}
+
+// --- Sub-agent overdue-guard (ALERT-ONLY level) ---
+//
+// The main channel gets a hard-restart backstop above (maybeRestartWedgedMainChannel)
+// once its soft recovery is exhausted. A sub-agent's soft recovery
+// (recoverStuckInputForSession, same MAIN_STUCK_THRESHOLDS, runs a few lines
+// above this for every session in `targets`) has NO further escalation today:
+// if it exhausts and the input is still parked, the session sits silently
+// wedged until the owner or a heartbeat happens to notice. This closes that
+// gap with an ALERT ONLY -- deliberately NOT an automatic respawn-pane: a
+// sub-agent restart has no session-resume/history
+// path back to its in-progress delegated task the way the main channel's
+// conversational UI does, so an unattended auto-restart there risks quietly
+// discarding real work. The alert gives a human (or a future, explicitly
+// approved level-2 change) the chance to decide per incident.
+export const SUBAGENT_OVERDUE_ALERT_MIN_INTERVAL_MS = 15 * 60 * 1000
+const subAgentOverdueAlertedAt: Map<string, number> = new Map()
+
+/**
+ * Pure decision: should a sub-agent's exhausted-soft-recovery wedge fire a
+ * fresh overdue-guard alert right now? Exported for unit testing (mirrors
+ * the pane-state.ts decideStuckInputRestart split: a pure decision function
+ * plus a thin impure wrapper below that owns the Map + sendAlert I/O).
+ *
+ * @param state       Current StuckInputState for the session.
+ * @param maxAttempts Soft-recovery attempt cap (MAIN_STUCK_THRESHOLDS.maxAttempts).
+ * @param lastAlertedAt Epoch ms of the last alert for this session, or 0 if never.
+ * @param nowMs       Current time (injected so tests don't depend on the clock).
+ * @param minIntervalMs Minimum gap between alerts for the same session.
+ */
+export function shouldAlertStuckSubAgent(
+  state: StuckInputState, maxAttempts: number, lastAlertedAt: number, nowMs: number, minIntervalMs: number,
+): boolean {
+  if (state.parkedSig === null) return false
+  if (state.attempts < maxAttempts) return false
+  return nowMs - lastAlertedAt >= minIntervalMs
+}
+
+function maybeAlertStuckSubAgent(session: string, agentName: string | null, state: StuckInputState): void {
+  const last = subAgentOverdueAlertedAt.get(session) ?? 0
+  const now = Date.now()
+  if (!shouldAlertStuckSubAgent(state, MAIN_STUCK_THRESHOLDS.maxAttempts, last, now, SUBAGENT_OVERDUE_ALERT_MIN_INTERVAL_MS)) return
+  subAgentOverdueAlertedAt.set(session, now)
+  const label = agentName ?? session
+  logger.error({ session, agentName, attempts: state.attempts }, 'Sub-agent stuck input survived soft recovery -- overdue-guard alert (no auto-restart)')
+  sendAlert(`⚠️ A(z) ${label} session bemenete beragadt, ${state.attempts} automatikus próbálkozás sem szabadította ki (kb. 4-4.5 perce). Kézi ellenőrzés javasolt: \`tmux attach -t ${session}\`, szükség esetén \`tmux respawn-pane -k -t ${session}\`.`)
 }
 
 // --- Keep-alive staleness watchdog (deafness safety net, decision #3) ---
@@ -1761,8 +1836,13 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
       if (t.isMarveen) continue
       const prev = agentStuckInput.get(t.session) ?? { parkedSig: null, firstSeenAt: null, lastRecoverAt: null, attempts: 0 }
       const next = await recoverStuckInputForSession(t.session, prev, MAIN_STUCK_THRESHOLDS, true)
-      if (next.parkedSig === null) agentStuckInput.delete(t.session)
-      else agentStuckInput.set(t.session, next)
+      if (next.parkedSig === null) {
+        agentStuckInput.delete(t.session)
+        subAgentOverdueAlertedAt.delete(t.session) // spell ended -> next wedge starts a fresh alert window
+      } else {
+        agentStuckInput.set(t.session, next)
+        maybeAlertStuckSubAgent(t.session, t.agentName ?? null, next)
+      }
     }
 
     for (const t of targets) {

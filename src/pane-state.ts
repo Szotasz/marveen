@@ -1793,7 +1793,18 @@ export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputActi
 // defer forever or the channel goes permanently mute (2026-07-25 hermes
 // incident: parked multi-row scheduled-task -> hold + 'typing' deferred both
 // the stuck-input hard restart AND the keepalive-staleness respawn).
-export function parkedMainInputHasRemedy(pane: string): boolean {
+// recordedMatch defaults to false (conservative: claiming a remedy that was
+// not actually verified would let a genuinely wedged main session defer its
+// hard restart forever, the same risk as the hermes incident above). A
+// caller that has session context -- and so can consult the injected-prompt
+// registry via getInjectedPrompt/matchesInjectedPrompt -- should pass the
+// real result: without it, a scrolled parked fragment that lost BOTH its
+// recognisable prefix and every MACHINE_ORIGIN_TRUNCATED_MARKERS boilerplate
+// phrase reads as a no-remedy hold even when the registry proves it is a
+// known, safely-clearable machine injection (measured 2026-08-25: the main
+// channel hard-restarted twice for exactly this shape of parked input, a
+// routine scheduled-task tick whose visible fragment held neither marker).
+export function parkedMainInputHasRemedy(pane: string, recordedMatch = false): boolean {
   const block = parkedChannelInput(pane)
   const facts: StuckInputActionFacts = {
     escalate: true,
@@ -1805,12 +1816,7 @@ export function parkedMainInputHasRemedy(pane: string): boolean {
     hasPlainText: false,
     scheduledTaskBlock: parkedScheduledTaskInput(pane),
     machineOrigin: parkedMachineOriginInput(pane),
-    // Deliberately false: this helper takes only a pane, not a session, so it
-    // cannot consult the injected-prompt registry. Claiming a remedy we have
-    // not verified would let a genuinely wedged main session defer its
-    // hard restart forever (the 2026-07-25 hermes incident). Under-claiming
-    // only costs a restart that the soft path might also have fixed.
-    recordedMatch: false,
+    recordedMatch,
   }
   return decideStuckInputAction(facts) !== 'hold'
 }
