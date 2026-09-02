@@ -123,6 +123,24 @@ export const ALLOWLISTED_PATHS: { path: string; reason: string }[] = [
   { path: 'src/__tests__/secret-gate.test.ts', reason: 'the gate\'s own tests: synthetic secrets are the subject under test' },
   { path: 'src/__tests__/channel-inbound-framing.test.ts', reason: 'channel framing test: synthetic wrapper frames with sample ids are the subject under test' },
   { path: 'scripts/__tests__/conversation-ledger.test.sh', reason: 'ledger test: synthetic wrapper frames with sample ids' },
+  // MIOCLISKILL831 -- a `marveen skill` szkennerenek fixture-jei. A fajl
+  // TARGYA egy kulcs-alaku string: a mio-scan `api-key-shaped` szabalyanak
+  // kell valamin tuznie, es az aranyfajl ugyanazt a szoveget tartalmazza,
+  // mert az EREDETI Python szkenner kimenete.
+  //
+  // A LISTA MERESBOL JON, NEM A CI ELSO HIBAJABOL: lefuttattam a gate-et a
+  // TELJES fixture-mappara (`--all`, 896 fajl), es PONTOSAN ez a ket fajl
+  // akad fenn. A tobbi szandekos fixture (13-card-shaped, 16-hu-taj,
+  // 17-secret-assignment) MAS alakot hordoz, amit ez a gate nem is keres --
+  // azokat ezert NEM vettem fel: egy nem-szukseges bejegyzes csak elvakitana
+  // a gate-et olyan fajlokon, amiket ma meg ellenoriz.
+  //
+  // EGY TOROKENYSEG KIMONDVA: a `15-bearer.md` CSAK HAJSZALLAL nem akad fenn.
+  // A `bearer token literal` minta 24 karaktertol figyel, az ottani token 21.
+  // Ha az a fixture valaha hosszabb lesz, vagy a kuszob csokken, fel fog
+  // akadni -- akkor ide kerul, ugyanezzel az indokkal.
+  { path: 'src/__tests__/fixtures/skill-scan/14-api-key-shaped.md', reason: 'skill-scan fixture: an api-key-shaped string is the subject under test' },
+  { path: 'src/__tests__/fixtures/skill-scan/14-api-key-shaped.expected.json', reason: 'skill-scan golden output from the original Python scanner: it quotes the fixture above' },
 ];
 
 /**

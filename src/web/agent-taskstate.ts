@@ -37,7 +37,16 @@ export const TASKSTATE_TTL_MS = 12 * 60 * 60 * 1000
 // planned restart right after finishing work replays nothing (the record was
 // either consumed or is empty), and at worst a stale-but-unconsumed record
 // costs one short injected block that the agent can discard.
-const REPLAY_SOURCES = new Set(['compact', 'resume', 'startup'])
+//
+// 'clear' IS included: a /clear wipes the session in place and the
+// harness restarts it with source=clear, so it is a restart like any other from
+// this record's point of view. Excluding it made the context-restart gate's own
+// path silent -- the gate sends /clear deliberately, then tells the fresh
+// session to read a TASK-FOLYTATAS block that the replay was refusing to emit.
+// The gate additionally never fires while a FRESH record is in flight (see
+// hasLiveTaskStateFile), so what a clear can replay is by construction a
+// settled thread, not work interrupted mid-step.
+const REPLAY_SOURCES = new Set(['compact', 'resume', 'startup', 'clear'])
 
 export interface AgentTaskState {
   agent: string
@@ -104,9 +113,9 @@ export function buildTaskStateInjection(r: AgentTaskState): string {
   const lines: string[] = [
     SENTINEL,
     // Source-neutral wording: the same record is replayed after a compact, a
-    // resume AND a crash respawn (source=startup, added 2026-07-27), so it must
-    // not claim a compact happened.
-    'A sessiond ujraindult egy FOLYAMATBAN LEVO feladat kozben (tomorites, resume vagy osszeomlas utani ujraindulas). Ez NEM uj feladat -- FOLYTASD onnan ahol abbamaradt. NE INDITSD ujra a mar kesz lepeseket, es NE delegald ujra amit mar atadtal.',
+    // resume, a /clear AND a crash respawn (source=startup, added 2026-07-27),
+    // so it must not claim a compact happened.
+    'A sessiond ujraindult egy FOLYAMATBAN LEVO feladat kozben (tomorites, resume, /clear vagy osszeomlas utani ujraindulas). Ez NEM uj feladat -- FOLYTASD onnan ahol abbamaradt. NE INDITSD ujra a mar kesz lepeseket, es NE delegald ujra amit mar atadtal.',
   ]
   if (r.summary.trim()) lines.push(`FELADAT: ${r.summary.trim()}`)
   if (r.doneSteps.length) lines.push('MAR KESZ (NE ismeteld meg):\n' + r.doneSteps.map((s) => `  - ${s}`).join('\n'))

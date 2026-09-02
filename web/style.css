@@ -1529,6 +1529,20 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .agent-model-badge.sonnet { background: var(--info-soft); color: var(--info); }
 .agent-model-badge.haiku { background: var(--success-soft); color: var(--success); }
 
+/* Context-window-used badge (Agents grid card). Tiers mirror context-guard's
+   own default actPct/hardPct (90%/97%) -- see contextPctBadgeHtml in app.js. */
+.agent-ctx-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.agent-ctx-badge.ok { background: var(--success-soft); color: var(--success); }
+.agent-ctx-badge.warning { background: rgba(212,165,44,0.12); color: var(--warning, #d4a52c); }
+.agent-ctx-badge.danger { background: var(--danger-soft); color: var(--danger); }
+
 /* === Per-agent tmux attach copy buttons (running agents only) === */
 .agent-tmux-cmds {
   display: flex;

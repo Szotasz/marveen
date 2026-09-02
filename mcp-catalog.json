@@ -24,21 +24,26 @@
     "args": ["-y", "gmail-mcp-server"],
     "env": {},
     "authType": "oauth",
-    "authNote": "Első használatkor OAuth bejelentkezés szükséges a böngészőben",
-    "infoUrl": "https://github.com/ArtyMcLabin/Gmail-MCP-Server"
+    "authNote": "Google Cloud OAuth kliens kell hozzá (client ID + secret). UGYANAZ az OAuth-app használható a Naptár összekötőhöz is.",
+    "infoUrl": "https://github.com/ArtyMcLabin/Gmail-MCP-Server",
+    "verifiedAt": "2026-08-27",
+    "verifiedNote": "npm-csomag ellenőrizve: gmail-mcp-server v1.0.30 létezik."
   },
   {
     "id": "google-calendar",
     "name": "Google Calendar",
     "description": "Naptár események létrehozása, módosítása, lekérdezése, meghívók kezelése",
-    "type": "remote",
+    "type": "local",
     "category": "productivity",
     "icon": "📅",
-    "url": "https://gcal.mcp.claude.com/mcp",
+    "command": "npx",
+    "args": ["-y", "@cocal/google-calendar-mcp"],
     "env": {},
     "authType": "oauth",
-    "authNote": "Első használatkor a Claude.ai-on kell engedélyezni a Calendar hozzáférést",
-    "infoUrl": "https://docs.anthropic.com/en/docs/agents-and-tools/remote-mcp-servers"
+    "authNote": "Google Cloud OAuth kliens kell hozzá (client ID + secret). UGYANAZ az OAuth-app használható a Gmail összekötőhöz is, tehát elég egyszer regisztrálni.",
+    "infoUrl": "https://github.com/nspady/google-calendar-mcp",
+    "verifiedAt": "2026-08-27",
+    "verifiedNote": "A korábbi remote bejegyzés (https://gcal.mcp.claude.com/mcp) HALOTT volt: a host DNS-ben nem oldható fel (ENOTFOUND), a telepítés mégis sikeresnek látszott. Lecserélve ellenőrzött npm-csomagra: @cocal/google-calendar-mcp v2.6.2, utolsó frissítés 2026-06-01."
   },
   {
     "id": "notion",

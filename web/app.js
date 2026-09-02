@@ -2503,6 +2503,11 @@ const AVATARS = [
 let selectedAvatar = null
 let selectedAvatarFile = null // custom upload chosen in the create wizard (deferred until the agent exists)
 let agents = []
+// Agent name -> measured context-window fraction (0..1), from /api/context-guard.
+// Refreshed alongside the agent list (loadAgents), not on its own poll timer --
+// the underlying measurement reads each agent's transcript from disk, so it is
+// only worth paying for when the Agents page is actually being (re)drawn.
+let contextGuardPct = {}
 let currentAgent = null
 // API-safe agent id for the currently open detail modal. Sub-agents key off
 // their name; the main agent's detail object carries name:'marveen' for legacy
@@ -2896,13 +2901,23 @@ async function loadAgents() {
     // The federation status fetch is deliberately failure-proof (.catch ->
     // null): it must NEVER take down the Agents page -- including on an
     // older backend where the route 404s.
-    const [agentsRes, marveenRes, fedStatus] = await Promise.all([
+    const [agentsRes, marveenRes, fedStatus, ctxGuard] = await Promise.all([
       fetch('/api/agents'),
       fetch('/api/marveen'),
       fetch('/api/federation/status').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      // Same failure-proofing as federation status above: an older backend or a
+      // transient error here must not take down the whole Agents page over a
+      // badge.
+      fetch('/api/context-guard').then((r) => (r.ok ? r.json() : null)).catch(() => null),
     ])
     agents = await agentsRes.json()
     if (fedStatus && Array.isArray(fedStatus.peers)) federatedPeerStatus = fedStatus.peers
+    contextGuardPct = {}
+    if (ctxGuard && Array.isArray(ctxGuard.agents)) {
+      for (const g of ctxGuard.agents) {
+        if (typeof g.pct === 'number' && isFinite(g.pct)) contextGuardPct[g.agent] = g.pct
+      }
+    }
     if (marveenRes.ok) {
       window._marveen = await marveenRes.json()
       // A backend CHANNEL_PROVIDER-éhez igazitsuk a kliens-default-ot,
@@ -2926,6 +2941,24 @@ function formatContextTokens(n) {
   if (n < 1000) return `${n} token`
   const k = n / 1000
   return `≈${k < 10 ? k.toFixed(1) : Math.round(k)}k token`
+}
+
+// Small "context window used" badge for an Agents-grid card, sourced from
+// contextGuardPct (populated in loadAgents from /api/context-guard -- the
+// same measurement the context-guard runner itself acts on, so this reads
+// the identical number a [CONTEXT-GUARD] restart would fire on, not a
+// second, potentially-drifting calculation).
+// Empty string when there is nothing to show (guard disabled, agent not
+// running, or the measurement genuinely failed) -- no badge is better than a
+// misleading "0%".
+function contextPctBadgeHtml(agentName) {
+  const pct = contextGuardPct[agentName]
+  if (typeof pct !== 'number' || !isFinite(pct) || pct < 0) return ''
+  const pctRound = Math.round(pct * 100)
+  // Mirrors context-guard's own default tiers (actPct 0.90, hardPct 0.97):
+  // green under act, amber from act to hard, red at/over hard.
+  const tier = pct >= 0.97 ? 'danger' : pct >= 0.90 ? 'warning' : 'ok'
+  return `<span class="agent-ctx-badge ${tier}" title="${escapeHtml(t('agents.context_tip', { pct: pctRound }))}">${pctRound}%</span>`
 }
 
 // Populate the auto-restart controls + context display from an agent payload.
@@ -3241,6 +3274,7 @@ function renderAgents() {
       </div>
       <div class="agent-card-footer">
         <span class="agent-model-badge ${escapeHtml(mainModelClass)}">${escapeHtml(mainModelLabel)}</span>
+        ${contextPctBadgeHtml(mainAgentId())}
         <span class="process-indicator" title="${t('agents.marveen_process_tip')}"><span class="process-dot running"></span>${t('agents.status.running')}</span>
         <span class="tg-status" title="${t('agents.marveen_channel_tip')}"><span class="tg-dot connected"></span>${t('agents.status.online')}</span>
       </div>
@@ -3297,6 +3331,7 @@ function renderAgents() {
       </div>
       <div class="agent-card-footer">
         <span class="agent-model-badge ${escapeHtml(modelClass)}">${escapeHtml(modelLabel)}</span>
+        ${contextPctBadgeHtml(agent.name)}
         <span class="process-indicator" title="${escapeHtml(processTip(isRunning))}"><span class="process-dot ${runDotClass}"></span>${runLabel}</span>
         <span class="tg-status" title="${escapeHtml(channelTip(chConnected))}"><span class="tg-dot ${chDotClass}"></span>${chLabel}</span>
       </div>
@@ -4005,6 +4040,27 @@ async function loadAvailableModels() {
       }
     }
     if (hint) hint.style.display = deepseekModels.length === 0 ? 'block' : 'none'
+
+    // MiniMax: direct Anthropic-compatible API (no OpenRouter markup), gated
+    // behind MINIMAX_API_KEY same as DeepSeek. Empty array -> hide the group.
+    const minimaxModels = Array.isArray(data.minimax) ? data.minimax : []
+    const editMinimaxGroup = document.getElementById('minimaxModelGroup')
+    const wizardMinimaxGroup = document.getElementById('agentModelMinimaxGroup')
+    for (const group of [editMinimaxGroup, wizardMinimaxGroup]) {
+      if (!group) continue
+      group.innerHTML = ''
+      if (minimaxModels.length === 0) {
+        group.style.display = 'none'
+        continue
+      }
+      group.style.display = ''
+      for (const m of minimaxModels) {
+        const opt = document.createElement('option')
+        opt.value = m.id
+        opt.textContent = m.label
+        group.appendChild(opt)
+      }
+    }
 
     // OpenRouter: two optgroups per select (Auto = weekly-fresh tier
     // recommendation, value `openrouter-auto:<tier>`; Manual = the 2 concrete

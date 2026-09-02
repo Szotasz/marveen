@@ -11,12 +11,19 @@ description: Minden körben átnézi az ELŐZŐ KÖR ÓTA történteket, menti a
 
 Nézd át, mi történt **az előző memória-kör óta**. Két dolgot csinálj:
 
-> **AZ ABLAK "AZ ELŐZŐ KÖR ÓTA", NEM FIX PERCSZÁM -- MÉRVE 2026-08-22.** A szöveg korábban két
-> helyen is fix "30 perc"-et mondott, miközben a tényleges kadencia (a `task_runs` közökből mérve)
-> 15 perc volt: a 2x-es eltérés miatt **minden kör újranézte azt az ablakot, amit az előző már
-> feldolgozott** -- ez strukturálisan duplikált memória-írást és duplikált skill-patchet hív elő,
-> mert a friss kontextus nem tudja, hogy az előző kör már lezárta. A fix percszám a konfigurált
-> kadenciával együtt avul; "az előző kör óta" nem.
+> **AZ ABLAK "AZ ELŐZŐ KÖR ÓTA", NEM FIX PERCSZÁM -- MÉRVE 2026-08-22, ÚJRAMÉRVE 2026-08-27.**
+> A szöveg korábban fix percszámot mondott, és a rögzített szám KÉTSZER is elavult. Ezért nincs
+> benne szám többé: **a fix percszám a konfigurált kadenciával együtt avul, "az előző kör óta" nem.**
+>
+> **AMIT 2026-08-27-EN MEGMERTEM, ha valaki mégis a számra kíváncsi (és ne erre építs):**
+> a `task-config.json` `*/15 * * * *`-ot mond, de a `skipIfBusy: true` miatt a hozzám ELJUTÓ
+> kadencia **30 perc**. A `task_runs` tökéletesen váltakozik: :00 skipped, :15 fired, :30 skipped,
+> :45 fired -- 24 órában 43 fired / 53 skipped, és 17 egymást követő fired-köz pontosan 1800-1803 mp.
+> A :00 és :30 slot rendszeresen ütközik az órás heartbeat-digesttel és a drain-körökkel.
+> Vagyis a KONFIGURÁLT (15) és a KÉZBESÍTETT (30) kadencia két külön szám, és a 2026-08-22-i
+> "a kadencia 15 perc" javítás a konfiguráltat mérte, nem azt, ami ideér.
+> **Következmény, amit érdemes tudni:** ez a kör soha nem fut :00-kor és :30-kor, tehát az óra
+> tetején történtek a következő (:15 vagy :45) körben jönnek fel. Ez nem hiba, csak fáziseltolás.
 > **HA MÉGIS ÁTFEDÉST LÁTSZ:** a mérce nem az idő, hanem hogy *lezártad-e már*. Ha egy munkára már
 > írtál memóriát vagy patcheltél skillt az előző körben, az KÉSZ -- ne írd meg újra más szavakkal.
 

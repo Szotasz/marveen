@@ -1,16 +1,13 @@
 import { execFile, execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { resolveFromPath } from '../../platform.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { agentDir } from '../agent-config.js'
-import { agentSessionName, isAgentRunning } from '../agent-process.js'
+import { agentSessionName, isAgentRunning, tmuxInvocationFor } from '../agent-process.js'
 import { isMainChannelsAgent, MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { literalKeyArgs, specialKeyArgs, loginSequence, type LoginStep } from '../tmux-keys.js'
 import { readTerminalInputEnabled, writeTerminalInputEnabled } from '../terminal-input-store.js'
 import type { RouteContext } from './types.js'
-
-const TMUX = resolveFromPath('tmux')
 
 // Per-agent dashboard terminal: live pane stream (SSE), keystroke injection,
 // and the scripted /login flow. All gated by the dashboard token (the SSE
@@ -23,7 +20,8 @@ function sleep(ms: number): Promise<void> {
 
 function isTmuxSessionAlive(session: string): boolean {
   try {
-    execFileSync(TMUX, ['has-session', '-t', session], { timeout: 3000, stdio: 'ignore' })
+    const inv = tmuxInvocationFor(['has-session', '-t', session])
+    execFileSync(inv.file, inv.args, { timeout: 3000, stdio: 'ignore' })
     return true
   } catch {
     return false
@@ -44,9 +42,17 @@ function resolveTarget(name: string): SessionTarget {
 
 // Run a single `tmux <args>` invocation. Rejects on non-zero exit so the
 // caller can surface a 500 rather than silently swallowing a tmux failure.
+//
+// Goes through tmuxInvocationFor (agent-process.ts) rather than the raw binary:
+// an agent that owns its OS user lives on its OWN tmux server, and a cross-user
+// connection is refused even when the socket permissions allow it. Calling the
+// bare binary here made every /keys and /login write answer 500 for exactly the
+// agents most likely to need one -- measured twice on this install, 2026-08-26
+// and 2026-08-27, while the operator was trying to clear a permission prompt.
 function tmux(args: string[]): Promise<void> {
+  const inv = tmuxInvocationFor(args)
   return new Promise((resolve, reject) => {
-    execFile(TMUX, args, { timeout: 5000 }, (err) => {
+    execFile(inv.file, inv.args, { timeout: 5000 }, (err) => {
       if (err) reject(err)
       else resolve()
     })
@@ -142,7 +148,12 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
       // the visible pane) so the frontend can offer scroll-back; the frontend
       // repaints the full snapshot (clear-scrollback + clear + home) each changed
       // frame and only when the user is at the bottom, so scrolling up is stable.
-      execFile(TMUX, ['capture-pane', '-t', session, '-S', '-2000', '-e', '-p'], { timeout: 3000, encoding: 'utf-8', maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+      // Same resolution as the write path: for a per-user agent the pane lives on
+      // that user's tmux server, and a raw binary call returns nothing -- which
+      // the stream renders as a blank terminal rather than an error. That blank
+      // pane is what the operator reported as "nem jelenit meg semmit".
+      const capture = tmuxInvocationFor(['capture-pane', '-t', session, '-S', '-2000', '-e', '-p'])
+      execFile(capture.file, capture.args, { timeout: 3000, encoding: 'utf-8', maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
         inFlight = false
         if (closed) return
         const pane = err ? '' : (stdout ?? '')

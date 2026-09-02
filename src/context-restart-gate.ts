@@ -1,8 +1,8 @@
 // Pure logic for the proactive context-restart gate.
 //
-// The ledger-replay, taskstate-replay, and daily-log-digest SessionStart hooks
-// can inject a rich context snapshot into every fresh session -- but only when
-// the session STARTS. This gate decides when a /clear (soft restart via the
+// The clear-replay, taskstate-replay and ledger-replay SessionStart hooks can
+// inject a context snapshot into every fresh session -- but only when the
+// session STARTS. This gate decides when a /clear (soft restart via the
 // send lane) is appropriate so those hooks carry the agent forward cheaply,
 // before the context grows deep enough that the in-TUI auto-compact has to do
 // it the hard (expensive, lossy) way.

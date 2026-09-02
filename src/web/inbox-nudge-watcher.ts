@@ -49,7 +49,7 @@ import { MAIN_AGENT_ID } from '../config.js'
 import { getPendingMessages } from '../db.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-import { isSessionReadyForPrompt, sendPromptToSession, sessionExistsOnHost } from './agent-process.js'
+import { isSessionReadyForPrompt, sendPromptToSession, sessionExistsOnHost, clearFeedbackModalAndRecheck } from './agent-process.js'
 import { sendAlert } from './channel-monitor.js'
 
 export const INBOX_NUDGE_INITIAL_DELAY_MS = 55_000 // free slot (taken: 5/10/20/25/30/35/40/45/50/90s)
@@ -230,7 +230,12 @@ async function tick(): Promise<void> {
     }
     if (state.absenceLogged) state = { ...state, absenceLogged: false }
 
-    if (!(await isSessionReadyForPrompt(MAIN_CHANNELS_SESSION, null))) {
+    if (!(await isSessionReadyForPrompt(MAIN_CHANNELS_SESSION, null))
+      // A self-drafted feedback modal reads as not-ready and would otherwise
+      // park the nudge forever: the pre-flight dismissal lives in the send
+      // path, which this branch never reaches. Same three-line shape as the
+      // other injectors -- see clearFeedbackModalAndRecheck.
+      && !(await clearFeedbackModalAndRecheck(MAIN_CHANNELS_SESSION, null))) {
       // Busy is the NORMAL skip path (silent); surface a long busy-wait spell
       // at a slow rate so it is distinguishable from a dead watcher.
       if (now - state.lastBusyLogAt > BUSY_WAIT_LOG_INTERVAL_MS) {

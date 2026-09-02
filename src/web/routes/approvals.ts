@@ -162,7 +162,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
   // POST /api/approvals -- create new approval request
   if (path === '/api/approvals' && method === 'POST') {
-    let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown; timeout_seconds?: unknown }
+    let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown; timeout_seconds?: unknown; content_hash?: unknown }
     try {
       body = JSON.parse((await readBody(req)).toString())
     } catch {
@@ -170,7 +170,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const { agent_id, category, action_description, action_payload, timeout_seconds } = body
+    const { agent_id, category, action_description, action_payload, timeout_seconds, content_hash } = body
     if (typeof agent_id !== 'string' || !agent_id.trim()) {
       json(res, { error: 'agent_id is required' }, 400)
       return true
@@ -187,6 +187,14 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'action_payload must be a string (JSON) if provided' }, 400)
       return true
     }
+    // EMAILKAPU901 PR2: the email-approval-gate hook hands the requesting
+    // agent this exact sha256 anchor (to+cc+subject+body); a malformed value
+    // could never match the gate's recomputation, so reject it loudly here
+    // instead of storing a row that silently authorizes nothing.
+    if (content_hash !== undefined && (typeof content_hash !== 'string' || !/^[0-9a-f]{64}$/.test(content_hash))) {
+      json(res, { error: 'content_hash must be a 64-char lowercase sha256 hex string if provided' }, 400)
+      return true
+    }
 
     const id = randomUUID()
     const timeout_at = computeTimeoutAt(category, timeout_seconds)
@@ -197,6 +205,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       action_description: action_description.trim(),
       action_payload: typeof action_payload === 'string' ? action_payload : null,
       timeout_at,
+      content_hash: typeof content_hash === 'string' ? content_hash : null,
     })
 
     notifyOwner(approval)

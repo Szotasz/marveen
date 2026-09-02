@@ -1,0 +1,1 @@
+{"scanner": {"name": "mio-scan", "version": "1.0.0", "rulepack": "2026-08-24"}, "findings": [{"rule": "secret-assignment", "category": "pii", "match": "jelszó: masikTitok456", "line": 5, "span": [204, 225]}]}
