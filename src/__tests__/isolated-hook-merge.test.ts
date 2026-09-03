@@ -84,6 +84,35 @@ describe('isDurableIsolatedHook', () => {
     const wt = join(homedir(), 'marveen-review-copy', 'scripts', 'hooks', 'ledger-replay.py')
     expect(isDurableIsolatedHook({ type: 'command', command: `python3 ${wt}` })).toBe(false)
   })
+
+  // The blind spot found in review (2026-09-03): the common operator shape is a
+  // hook body that names its script through a variable. The tail of such a body
+  // looks like an absolute path but exists nowhere, so judging it literally
+  // dropped the entry -- the very disappearance this merge prevents.
+  it('keeps an entry whose script path comes from a variable', () => {
+    for (const cmd of [
+      'python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py"',
+      'python3 "${CLAUDE_PROJECT_DIR}/scripts/hooks/outgoing-copy-gate.py"',
+      'bash $HOME/.claude/hooks/notify.sh',
+      'node "$(dirname "$0")/../hooks/gate.mjs"',
+    ]) {
+      expect(isDurableIsolatedHook({ type: 'command', command: cmd })).toBe(true)
+    }
+  })
+
+  // Skipping the unresolvable half must not soften the literal half: a body that
+  // ALSO pins an interpreter that no longer exists is still a zombie.
+  it('still drops a variable-pathed entry whose literal interpreter is gone', () => {
+    const cmd = 'test -x "/usr/lib/node-22.3.0/bin/node" || exit 2; node "$CLAUDE_PROJECT_DIR/scripts/hooks/gate.mjs"'
+    expect(isDurableIsolatedHook({ type: 'command', command: cmd })).toBe(false)
+  })
+
+  // A variable is not a way around the transient-root rule either, when the
+  // transient part is stated literally.
+  it('still drops a literal /tmp path that sits beside a variable one', () => {
+    const cmd = 'python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/gate.py" --aux /tmp/staging/helper.py'
+    expect(isDurableIsolatedHook({ type: 'command', command: cmd })).toBe(false)
+  })
 })
 
 describe('mergeIsolatedHooks upgrade path', () => {

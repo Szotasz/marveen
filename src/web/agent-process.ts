@@ -469,6 +469,35 @@ const _ABS_PATH_RX = /\/(?:[\w.@+-]+\/)*[\w.@+-]+/g
 const _SCRIPT_RX = /\.(?:py|mjs|cjs|js|sh)$/
 
 /**
+ * Absolute paths a hook body states LITERALLY -- the only ones we may judge.
+ *
+ * A body written as `python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/gate.py"` is the
+ * common shape for an operator-registered hook, and `_ABS_PATH_RX` sees the tail
+ * `/scripts/hooks/gate.py` in it: a path that exists nowhere on its own. Judged
+ * as a literal it fails both tests below, so the entry would be dropped in
+ * silence -- producing exactly the disappearance this merge exists to prevent.
+ *
+ * We do not resolve the variable either. `$CLAUDE_PROJECT_DIR` is per-agent and
+ * only bound when the hook runs, so substituting anything here would be a guess
+ * that reads as certainty. A path we cannot see is left alone, not condemned.
+ *
+ * Detection is positional: a real absolute path starts a token, so what precedes
+ * it is whitespace, a quote, `=`, `(` or the start of the body. A word character,
+ * `}` or `)` before the leading slash means the slash continues something else --
+ * `$HOME`, `${CLAUDE_PROJECT_DIR}`, `$(dirname "$0")` -- and that path is not
+ * literal.
+ */
+function literalAbsolutePaths(body: string): string[] {
+  const out: string[] = []
+  for (const m of body.matchAll(_ABS_PATH_RX)) {
+    const before = m.index > 0 ? body[m.index - 1] : ''
+    if (before && /[\w})]/.test(before)) continue
+    out.push(m[0])
+  }
+  return out
+}
+
+/**
  * Roots an isolated hook's SCRIPT may durably live under: the install itself,
  * and the operator's own `~/.claude`. A git worktree or a staging checkout sits
  * under `$HOME` too, so "somewhere in home" is not a usable test -- the path has
@@ -495,6 +524,11 @@ function durableScriptRoots(): string[] {
  *     is written into the durable config. So: a script path outside the durable
  *     roots does not come along either.
  *
+ * Both tests apply to the paths a body states LITERALLY. A body that reaches its
+ * script through `$CLAUDE_PROJECT_DIR` or `$HOME` cannot be judged without
+ * guessing at values that are only bound when the hook runs, and guessing here
+ * would drop a working operator hook in silence -- see `literalAbsolutePaths`.
+ *
  * Deliberately NOT reusing `isUnsafeHookCommand` from agent-scaffold: importing
  * it here would pull the scaffold's module graph (and `runAgent` with it) into
  * process startup. The rule is small enough to state twice.
@@ -507,7 +541,7 @@ export function isDurableIsolatedHook(entry: unknown): boolean {
     typeof entry.command === 'string' ? entry.command :
     typeof entry.prompt === 'string' ? entry.prompt : ''
   if (!body.trim()) return false
-  const paths = body.match(_ABS_PATH_RX) ?? []
+  const paths = literalAbsolutePaths(body)
   for (const p of paths) {
     if (_TRANSIENT_PREFIXES.some((prefix) => p.startsWith(prefix))) return false
     if (_SCRIPT_RX.test(p) && !durableScriptRoots().some((root) => p.startsWith(root + '/'))) {
@@ -524,6 +558,8 @@ function hookScriptBasename(entry: unknown): string | null {
   const body =
     typeof entry.command === 'string' ? entry.command :
     typeof entry.prompt === 'string' ? entry.prompt : ''
+  // Basename only, so a `$VAR`-prefixed path still identifies its script here --
+  // this is used to supersede older variants, not to judge durability.
   const script = (body.match(_ABS_PATH_RX) ?? []).find((p) => _SCRIPT_RX.test(p))
   return script ? script.slice(script.lastIndexOf('/') + 1) : null
 }
