@@ -55,9 +55,45 @@ describe('generateClaudeMd: the inviolable rules survive refactors', () => {
     expect(src).toMatch(/RENDSZER forráskódját viszont NEM fejleszted/)
   })
 
-  it('points at the fleet-hygiene skill for the rules that moved out', () => {
+  it('points at the fleet-hygiene skill for the DETAIL behind the rules', () => {
     // The split is only safe if the generated file SAYS where the rest lives;
-    // otherwise an agent reads three rules and assumes that is all of them.
+    // otherwise an agent reads a short list and assumes that is all of it.
     expect(src).toContain('fleet-hygiene')
+  })
+
+  // Review finding (Szotasz, 2026-09-03, PR #1061): the first shape of this
+  // split moved three rules OUT of the always-present prompt and into an
+  // on-demand skill, leaving only a parenthetical pointer behind. Two of the
+  // three are inviolable (credential escalation, another principal's data),
+  // and skills load progressively: at Level 0 only the name and description
+  // are present. A rule that is sometimes absent from the context is a weaker
+  // guarantee than a sentence that is always there -- and a POINTER is not the
+  // rule: it says where to look, not what is forbidden.
+  //
+  // The agreed shape splits by SIZE, not by location: the one-line binding
+  // form of every rule stays in the generated CLAUDE.md, the rationale and
+  // edge cases go to the skill. These cases pin the one-line forms, because
+  // that is the half a future cleanup would be tempted to move out again.
+  it('keeps the credential-escalation rule as a binding one-liner, not only a skill pointer', () => {
+    expect(src).toContain('Login-automatizálás, külső credential vagy futtatható szkript előtt ELŐBB szólj')
+    expect(src).toMatch(/Credentialt SOHA ne égess nyersen kódba/)
+  })
+
+  it('keeps the other-principal-data taboo as a binding one-liner', () => {
+    expect(src).toContain('Más megbízó postája, adata és credentialje TABU')
+    // The teeth: not just "do not share" but also "do not fetch from another agent".
+    expect(src).toMatch(/más ügynöktől sem kéred le/)
+  })
+
+  it('keeps the Drive write scope as a binding one-liner', () => {
+    expect(src).toContain('Drive-írás CSAK a kijelölt helyre')
+    expect(src).toMatch(/"My Drive"\) meghajtóra írni TILOS/)
+  })
+
+  it('states that the skill is the explanation and the listed lines bind on their own', () => {
+    // Without this sentence the same objection returns: a reader could take
+    // the pointer as permission to treat the skill as the source of truth.
+    expect(src).toMatch(/a skill a MAGYARÁZAT, nem a szabály/)
+    expect(src).toMatch(/akkor is kötelezőek, ha a skill nincs betöltve/)
   })
 })
