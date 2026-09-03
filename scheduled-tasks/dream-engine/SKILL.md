@@ -33,16 +33,20 @@ sqlite3 {{INSTALL_DIR}}/store/claudeclaw.db "SELECT COUNT(*) as total, COUNT(emb
 curl -s -X POST http://localhost:{{WEB_PORT}}/api/memories/backfill -H "Authorization: Bearer $(cat {{INSTALL_DIR}}/store/.dashboard-token)"
 
 # Antikvált hot-tier (>7 napos hot, nem hivatkozott a memories_fts-en az elmúlt 24h-ban)
-# FIGYELEM -- a CAST KÖTELEZŐ: a created_at/accessed_at INTEGER, a strftime TEXT-et ad, és
-# SQLite-ban az `integer < text` MINDIG IGAZ -> CAST nélkül a feltétel MINDEN hot sorra illeszkedik.
-# (2026-07-30: pontosan ez történt, mind a 148 hot memória cold-ba került, köztük az aznapiak.)
+# FIGYELEM -- a CAST és a COALESCE MINDKETTŐ KÖTELEZŐ, ne vedd ki:
+#   a created_at/accessed_at INTEGER, a strftime('%s',...) viszont TEXT-et ad,
+#   és SQLite-ban az `integer < text` MINDIG IGAZ (típus-sorrend: INTEGER < TEXT).
+#   CAST nélkül ez a lekérdezés AZ ÖSSZES hot memóriát visszaadja, a mai aktívakat is.
+#   Az accessed_at ráadásul NULL is lehet -> COALESCE kell, különben a sor kiesik.
+#   Kétszer okozott kárt: 2026-07-30 (148 sor cold-ba, köztük aznapiak) és 2026-07-31 (35 sor).
 sqlite3 {{INSTALL_DIR}}/store/claudeclaw.db "SELECT id, content, accessed_at FROM memories WHERE category='hot' AND COALESCE(accessed_at, created_at) < CAST(strftime('%s', 'now', '-7 days') AS INTEGER)"
 ```
 
 **A TÖMEGES UPDATE ELŐTT KÖTELEZŐ:** először futtasd le a fenti `SELECT`-et, nézd meg a
 DARABSZÁMOT és egy MINTÁT (a legfrissebb találat dátumát!), és az `UPDATE` PONTOSAN azon az
 id-halmazon fusson (`WHERE id IN (...)`), ne a predikátumot ismételd meg. Ha a legfrissebb találat
-a mai nap, a predikátum hibás -- állj meg.
+a mai nap, a predikátum hibás -- állj meg. (ID-lista nélkül a művelet nem fordítható vissza
+pontosan: 2026-07-31-én emiatt csak tartalmi mintára lehetett helyreállítani.)
 
 Műveletek:
 1. Vektorizálatlan memóriák: jelezd hányat találtál (a fire-and-forget embedding-job amúgy megcsinálja, de itt ellenőrzöd).
@@ -90,7 +94,12 @@ Hetente 1-2 alkalommal (NEM minden éjszaka — kerüljük a zajos napi javaslat
 - Recent activity (utolsó 90 napban commit)
 - README clarity (skill mit csinál, hogyan kell telepíteni)
 
-Limitáció: ha az utolsó 7 napban már volt ajánlás (nézd a DREAM.md utolsó 7 napos archívumát vagy egy `external-ops-last-run` markerfile-t), skip-eld.
+Limitáció: ha az utolsó 7 napban már volt ajánlás, skip-eld. A mérvadó forrás a DREAM.md ELŐZŐ
+éjszakai példánya (az "External opportunity" szekciója kimondja az utolsó futás dátumát), NEM egy
+`.external-ops-last-run` markerfájl: a markert semmi nem írja, tehát önmagában minden éjjel
+újrafuttatná a keresést (2026-07-27-én mérve: a marker 06-07-én megállt). Ha egyszer a markert
+tesszük hivatalossá, akkor a bucket végén ÍRNI is kell (`date -u +%F > .external-ops-last-run`),
+különben marad a DREAM.md archívum.
 
 Output (max 1 ajánlás): repo URL + 1 mondat indok hogy MIÉRT releváns {{OWNER_NAME}}nak (figyelembe véve: AI tartalomgyártás, magyar piac, fejlesztési flotta menedzsment, marketing).
 

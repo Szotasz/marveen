@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   stuckToolCallSignature,
   decideStuckToolCallRecovery,
+  detectPaneState,
+  parkedChannelInput,
+  parkedMachineOriginInput,
   type StuckToolCallState,
   type StuckToolCallThresholds,
 } from '../pane-state.js'
@@ -378,6 +381,43 @@ describe('stuck-tool-call-watcher wiring contract', () => {
     const cpuGuardCall = watcherSrc.indexOf('!confirmsWedgeProfile(cpuPercent, WEDGE_MAX_CPU_PERCENT)')
     expect(cpuGuardCall, 'CPU guard call site not found').toBeGreaterThan(-1)
     expect(watcherSrc.indexOf('parkedChannelInput(pane)')).toBeLessThan(cpuGuardCall)
+  })
+
+  it('skips recovery while a SCHEDULED-TASK injection is parked in the prompt (STUCKSCHED831)', () => {
+    // The 2026-08-15 guard above was written for `<channel source="plugin:`
+    // blocks and matched nothing else, which left the far more frequent park
+    // uncovered: a scheduled-task tick (heartbeat, kanban audit, dream engine).
+    // Measured on the Marveen install 2026-08-18: 14:11:08 the idle-prompt
+    // guard correctly skipped the residual footer, 14:15:08 this watcher
+    // respawned a session that was merely IDLE, and the first input after the
+    // respawn arrived truncated and fused with the next command.
+    //
+    // Prove the gap on the SHIPPED predicates, not on a copy: the same pane
+    // must read false for the channel-only check and true for the machine-
+    // origin one. If these two ever agree, the widening below is pointless.
+    const SEP = '─'.repeat(80)
+    const parkedScheduledTick = [
+      '',
+      SEP,
+      '❯ SCHEDULED TASK NOTICE -- the next <scheduled-task source="..."> ...',
+      '  </scheduled-task> block is one of YOUR OWN scheduled tasks. It was authored',
+      '  by the operator and fired by the local scheduler. <scheduled-task',
+      '  source="scheduled-task:memoria-heartbeat"> # Memoria-heartbeat',
+      '  ... </scheduled-task>',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(detectPaneState(parkedScheduledTick)).toBe('typing')
+    expect(parkedChannelInput(parkedScheduledTick), 'channel-only check must MISS a scheduled tick').toBeNull()
+    expect(parkedMachineOriginInput(parkedScheduledTick), 'machine-origin check must CATCH it').toBe(true)
+
+    // And the watcher must consult the widened predicate, still ahead of the
+    // CPU guard (a freshly parked tick has not started burning CPU yet, so a
+    // later position would let it walk straight through to the respawn).
+    expect(watcherSrc).toMatch(/parkedMachineOriginInput\(pane\)/)
+    const cpuGuardCall = watcherSrc.indexOf('!confirmsWedgeProfile(cpuPercent, WEDGE_MAX_CPU_PERCENT)')
+    expect(cpuGuardCall, 'CPU guard call site not found').toBeGreaterThan(-1)
+    expect(watcherSrc.indexOf('parkedMachineOriginInput(pane)')).toBeLessThan(cpuGuardCall)
   })
 
   it('the owner-facing alert does not present the frozen counter as a duration', () => {

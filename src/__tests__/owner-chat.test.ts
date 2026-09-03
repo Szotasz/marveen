@@ -12,7 +12,7 @@
 // out to fail. These tests assert BOTH halves, because they are different
 // claims: that a real id gets through, AND that the placeholder never does.
 import { describe, expect, it } from 'vitest'
-import { normalizeChatId, resolveOwnerChatId } from '../owner-chat.js'
+import { normalizeChatId, resolveOwnerChatId, configuredOwnerChatFor } from '../owner-chat.js'
 
 const REAL = '1268077055'
 
@@ -70,6 +70,18 @@ describe('resolveOwnerChatId', () => {
     expect(resolveOwnerChatId(reader({ allowFrom: [], groups: { '-100999': {} } }), '0')).toBe('-100999')
   })
 
+  it('falls back to a Slack channel binding (`channels` map) when there is no DM entry', () => {
+    // Slack access.json keeps channel bindings under `channels`, not `groups`
+    // (routes/agents.ts channel-request approval writes access.channels[id]).
+    // A main agent bound only to a channel must still have an owner chat for
+    // the scheduler alerts, the same way chatIdFromAccessConfig resolves the
+    // task-prompt delivery.
+    expect(resolveOwnerChatId(reader({ allowFrom: [], channels: { C0000000001: {} } }), '', 'slack')).toBe('C0000000001')
+    // The DM allowlist still wins over any channel, and groups over channels.
+    expect(resolveOwnerChatId(reader({ allowFrom: ['U0000000001'], channels: { C0000000001: {} } }), '', 'slack')).toBe('U0000000001')
+    expect(resolveOwnerChatId(reader({ allowFrom: [], groups: { '-100999': {} }, channels: { C0000000001: {} } }), '')).toBe('-100999')
+  })
+
   it('returns null when this install genuinely has no owner chat', () => {
     // Null is a real answer, not a failure: callers must SKIP the send. The
     // alternative -- passing "0" on -- is what produced silent 400s.
@@ -95,5 +107,31 @@ describe('resolveOwnerChatId', () => {
       expect(got, `${JSON.stringify(body)} + env=${JSON.stringify(env)}`).not.toBe('0')
       expect(got).toBeNull()
     }
+  })
+})
+
+// SLACKAWARE: the scheduler alerts resolve the owner for the MAIN agent's
+// provider. The configured half must come from the provider's own .env key --
+// a Slack install routinely keeps a stale numeric Telegram id in
+// ALLOWED_CHAT_ID, and feeding that to chat.postMessage is a permanent
+// channel_not_found (stamp kept, alert dead after one warn).
+describe('configuredOwnerChatFor', () => {
+  const env = { allowedChatId: REAL, channelChatId: 'C0000000001' }
+
+  it('telegram keeps ALLOWED_CHAT_ID (existing installs unchanged)', () => {
+    expect(configuredOwnerChatFor('telegram', env)).toBe(REAL)
+  })
+
+  it('every other provider uses its own CHANNEL_CHAT_ID, never the Telegram id', () => {
+    for (const p of ['slack', 'discord', 'googlechat', 'teams'] as const) {
+      expect(configuredOwnerChatFor(p, env), p).toBe('C0000000001')
+    }
+  })
+
+  it('a stale Telegram ALLOWED_CHAT_ID on a Slack install does not leak into the owner chat', () => {
+    // The reported hazard, end to end: SLACK_CHANNEL_ID unset, ALLOWED_CHAT_ID
+    // still numeric from an earlier Telegram setup, slack/access.json paired.
+    const configured = configuredOwnerChatFor('slack', { allowedChatId: REAL, channelChatId: '' })
+    expect(resolveOwnerChatId(reader({ allowFrom: ['U0000000001'] }), configured, 'slack')).toBe('U0000000001')
   })
 })

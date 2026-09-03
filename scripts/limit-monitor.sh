@@ -7,8 +7,18 @@
 # Zero Claude tokens.
 #
 # Signals: rate-limit / usage-limit / 429 / "resets at" in the channels+dashboard
-# logs AND in the live channels tmux pane (where Claude Code prints the limit msg).
-# Dedupes via a state hash so the same event isn't re-alerted.
+# logs AND in the live tmux panes of the WHOLE fleet (where Claude Code prints
+# the limit banner). Dedupes via a state hash so the same event isn't re-alerted.
+#
+# Two things measured on 2026-08-18 shaped this:
+#   - The plan quota is shared by every agent on the subscription, but the
+#     banner is printed in whichever pane made the request that hit it. Watching
+#     only the main channels pane means a sub-agent can hit the wall silently.
+#   - The wordings closest to what the owner actually asks about ("5-hour limit
+#     reached", "Approaching Opus weekly limit", "Session limit reached") did
+#     NOT match the old pattern. A missed limit is silent; that is the failure
+#     that matters here, so the pattern errs wide and the pane match is confined
+#     to the bottom region instead.
 
 set -u
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -40,11 +50,112 @@ if [ -z "$CHAT_ID" ]; then
   exit 0
 fi
 
-# Collect candidate text: recent log lines + live tmux pane
+# ---------------------------------------------------------------------------
+# Owner alert, Bot API only. No Claude invocation anywhere in this path -- the
+# whole point is that it still works when the quota is gone.
+# ---------------------------------------------------------------------------
+# Both alert paths go through this, and it returns the TRUE outcome: the shared
+# contract (curl exit 0 AND "ok":true), never a bare curl exit. The old body
+# ignored the response entirely and logged "ALERT sent" unconditionally -- an
+# HTTP 200 carrying {"ok":false} (bad chat_id, blocked bot, mangled .env) was
+# indistinguishable from a delivered alert. That is the failure mode this whole
+# script exists to avoid: the one alert that matters is the one nobody gets.
+# Callers MUST stamp their dedupe state only when this returns 0.
+. "$INSTALL_DIR/scripts/lib/send-telegram.sh"
+
+send_alert() {
+  local msg="$1" tag="$2" token
+  token="$(grep -oE '[0-9]+:[A-Za-z0-9_-]+' "$HOME/.claude/channels/telegram/.env" 2>/dev/null | head -1)"
+  if [ -z "$token" ]; then
+    log "ALERT wanted but no bot token found: $tag"
+    return 1
+  fi
+  if send_telegram_message "$token" "$CHAT_ID" "$msg" \
+       --data-urlencode "disable_web_page_preview=true" 2>>"$LOG"; then
+    log "ALERT sent to $CHAT_ID: $tag"
+    return 0
+  fi
+  log "ALERT send FAILED (nothing was delivered): $tag"
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# (1) The measured path: the quota numbers Claude Code itself hands out.
+# ---------------------------------------------------------------------------
+# scripts/statusline-ratelimit.sh stores rate_limits.{five_hour,seven_day} on
+# every status-line render (see that file for why). Percentages and reset
+# timestamps beat guessing at banner wording, so this runs first and the text
+# scan below stays only as a fallback for installs without the status line.
+QUOTA_FILE="$STORE/.claude-rate-limits.json"
+QUOTA_WARN_PCT="${QUOTA_WARN_PCT:-90}"
+# Older than this and the numbers describe a window that may have reset since;
+# alerting on them would cry wolf, so they are logged and skipped instead.
+QUOTA_MAX_AGE_SEC="${QUOTA_MAX_AGE_SEC:-21600}"
+
+if [ -s "$QUOTA_FILE" ] && command -v python3 >/dev/null 2>&1; then
+  QUOTA_CHECK="$INSTALL_DIR/scripts/lib/quota-check.py"
+  if [ ! -f "$QUOTA_CHECK" ]; then
+    # Fail-open on purpose (the text-scan fallback below still runs), but NEVER
+    # silent: an empty quota reading and a healthy one are byte-identical from
+    # the outside, and a wordless skip would read as "nothing to alert about".
+    log "quota-check.py hianyzik ($QUOTA_CHECK), a mert quota-ut EZEN A KORON KIMARAD -- a text-fallback fut tovabb"
+    QUOTA_OUT=""
+  else
+    QUOTA_OUT="$(QUOTA_FILE="$QUOTA_FILE" QUOTA_WARN_PCT="$QUOTA_WARN_PCT" QUOTA_MAX_AGE_SEC="$QUOTA_MAX_AGE_SEC" python3 "$QUOTA_CHECK" 2>/dev/null)"
+  fi
+  case "$QUOTA_OUT" in
+    STALE*)
+      log "quota file stale ($(printf '%s' "$QUOTA_OUT" | cut -f2)s), skipping the measured path"
+      ;;
+    EXPIRED*)
+      # Said out loud on purpose: an alert withheld must not look the same as a
+      # quiet, healthy reading.
+      log "window(s) already past their reset, not alerting: $(printf '%s' "$QUOTA_OUT" | cut -f2)"
+      ;;
+    HIT*)
+      QKEY="$(printf '%s' "$QUOTA_OUT" | cut -f2)"
+      QTEXT="$(printf '%s' "$QUOTA_OUT" | cut -f3)"
+      QSTATE="$STORE/.limit-monitor-quota-state"
+      if [ "$QKEY" = "$(cat "$QSTATE" 2>/dev/null)" ]; then
+        log "quota signal unchanged, already alerted"
+      else
+        # The stamp is written AFTER a confirmed delivery, never before: a failed
+        # alert buried by its own suppression stamp is lost forever, and the next
+        # tick would report "quota signal unchanged, already alerted".
+        if send_alert "‼️ CLAUDE KERET ($BOT_NAME monitor)
+
+$QTEXT
+
+Ezt Claude nelkul mertem, a status line altal kiadott szamokbol. Ha elfogy, az agensek nem tudnak valaszolni a keret nullazodasaig." "quota:$QKEY"; then
+          printf '%s' "$QKEY" > "$QSTATE"
+        else
+          log "quota alert NOT delivered, stamp withheld -- the next tick retries: $QKEY"
+        fi
+      fi
+      ;;
+  esac
+fi
+
+# Only the bottom of a pane is inspected. The banner is printed there, while an
+# ordinary conversation ABOUT limits (this monitor does get discussed in chat)
+# scrolls up -- so quoted text cannot raise a false alarm.
+PANE_TAIL=15
+
+# Every fleet session, plus the main channels one explicitly so a rename is
+# still followed even when tmux cannot be listed.
+pane_text() {
+  tmux capture-pane -t "$SESSION" -p 2>/dev/null | tail -n "$PANE_TAIL"
+  tmux list-sessions -F '#{session_name}' 2>/dev/null | while read -r s; do
+    [ "$s" = "$SESSION" ] && continue
+    tmux capture-pane -t "$s" -p 2>/dev/null | tail -n "$PANE_TAIL"
+  done
+}
+
+# Collect candidate text: recent log lines + the fleet's live tmux panes
 CANDIDATE="$(
   { tail -n 200 "$STORE/channels.log" "$STORE/channels.error.log" "$STORE/dashboard.log" 2>/dev/null;
-    tmux capture-pane -t "$SESSION" -p 2>/dev/null;
-  } | grep -iE "usage limit reached|reached your (usage|plan|weekly) limit|your limit will reset|approaching your usage limit|rate_limit_error|429 too many requests|quota exceeded|out of (usage|credits)" \
+    pane_text;
+  } | grep -iE "usage limit reached|reached your (usage|plan|weekly) limit|your limit will reset|approaching your usage limit|approaching[^|]*(weekly|usage) limit|[0-9]+-hour limit reached|(weekly|session) limit reached|rate_limit_error|429 too many requests|quota exceeded|out of (usage|credits)" \
     | grep -viE "rate.?limit.?error class|no rate|within limit|limit-monitor|LIMIT-FIGYELMEZT|email/nap|req/nap|/nap free|kérés/hó|/hó\b|approaching\.\*limit"
 )"
 
@@ -54,17 +165,33 @@ if [ -z "$CANDIDATE" ]; then
   exit 0
 fi
 
-# Dedupe: hash the signal; only alert if new
-HASH="$(printf '%s' "$CANDIDATE" | md5sum | awk '{print $1}')"
-PREV="$(cat "$STATE" 2>/dev/null)"
-if [ "$HASH" = "$PREV" ]; then
-  log "signal unchanged, already alerted ($HASH)"
-  exit 0
-fi
-echo "$HASH" > "$STATE"
+# Dedupe: hash the signal; only alert if new. The stamp is written ONLY after
+# a confirmed send (below): stamping up front buried every failed alert under
+# its own dedupe -- the send failed, the hash said "already alerted", and the
+# warning was lost forever, precisely during quota/network degradation
+# (NOTIFYVAKSWEEP826, the worst row of the sweep).
+#
+# The hash comes from the shared existence-checked helper (MD5SUMHIANY826):
+# the old bare `md5sum` pipeline yielded an EMPTY hash on macOS (no md5sum),
+# empty == empty compared "unchanged", and every alert was silently swallowed
+# on the flagship host. If NO hashing tool exists at all, this path fails
+# OPEN: a duplicate alert on every tick is recoverable, a swallowed limit
+# warning is not.
+. "$INSTALL_DIR/scripts/lib/content-hash.sh"
+HASH="$(printf '%s' "$CANDIDATE" | dedupe_check "$STATE")"
+case $? in
+  0) : ;; # new signal -> alert below
+  1)
+    log "signal unchanged, already alerted ($HASH)"
+    exit 0
+    ;;
+  *)
+    HASH=""
+    log "content_hash UNAVAILABLE -- dedupe disabled for this tick, alerting anyway (fail-open)"
+    ;;
+esac
 
-# Alert the owner via Bot API (token-free path; no Claude invocation)
-TOKEN="$(grep -oE '[0-9]+:[A-Za-z0-9_-]+' "$HOME/.claude/channels/telegram/.env" 2>/dev/null | head -1)"
+# (2) Fallback path: text signals in the logs and the live panes.
 SNIP="$(printf '%s' "$CANDIDATE" | head -3)"
 MSG="⚠️ LIMIT-FIGYELMEZTETÉS ($BOT_NAME monitor)
 A logokban/sessionben limit-jel jelent meg:
@@ -72,12 +199,13 @@ A logokban/sessionben limit-jel jelent meg:
 $SNIP
 
 Lehet hogy közeledünk vagy elértük a Claude előfizetés keretét. Ha kell, ritkítom a heartbeatet vagy szünetet tartok. Nézd meg a sessiont ha tudod."
-if [ -n "$TOKEN" ]; then
-  curl -s -m 15 "https://api.telegram.org/bot$TOKEN/sendMessage" \
-    --data-urlencode "chat_id=$CHAT_ID" \
-    --data-urlencode "text=$MSG" \
-    --data-urlencode "disable_web_page_preview=true" -o /dev/null
-  log "ALERT sent to $CHAT_ID: $HASH"
+# Both alert paths now share ONE contract via send_alert(): honest send, and the
+# dedupe stamp written ONLY after a confirmed delivery, so a failed alert retries
+# on the next timer tick instead of vanishing behind its own suppression stamp.
+if send_alert "$MSG" "${HASH:-nohash}"; then
+  # No stamp on an empty hash (fail-open tick): an empty state file is the exact
+  # shape the MD5SUMHIANY826 bug hid behind.
+  [ -n "$HASH" ] && echo "$HASH" > "$STATE"
 else
-  log "ALERT wanted but no bot token found: $HASH"
+  log "ALERT send FAILED (will retry next tick, stamp NOT written): ${HASH:-nohash}"
 fi

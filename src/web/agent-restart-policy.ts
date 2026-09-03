@@ -105,7 +105,7 @@ export type DownAgentAction = 'restart' | 'alert' | 'alert-busy' | 'skip'
 // respawn-pane, or an auth/token fault the watchdog cannot repair -- is
 // hard-restarted forever. Every sub-agent restart is a FRESH session, so the
 // agent loses all of its working context on each cycle (observed: a sub-agent
-// hard-restarted ~10x/hour, re-running /name every time). After this many
+// hard-restarted ~10x/hour, re-running /rename every time). After this many
 // consecutive failed attempts the watchdog stops restarting and alerts the
 // operator instead, turning a silent infinite loop into one actionable ping.
 export const AGENT_MAX_RESTART_ATTEMPTS = 5

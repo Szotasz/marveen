@@ -230,3 +230,89 @@ describe('the refresh runs where it can reach an already-current machine', () =>
     expect(UPDATE).toMatch(/REGEN_CLAUDEMD/)   // the flag still exists, unchanged
   })
 })
+
+// SEEDREFRESH826: the TOP-LEVEL scheduled-tasks/ dir was a one-shot seed --
+// ensureDefaultScheduledTasks copies missing dirs at boot, update.sh never
+// refreshed them, so every shipped fix reached new installs only (measured:
+// 5/5 live seeded copies drifted on the reference host). Same untouched-only
+// rule, plus the {{PROJECT_ROOT}} alias the node seeder resolves.
+describe('top-level scheduled-tasks/ refresh (SEEDREFRESH826)', () => {
+  function makeTopLevelFixture() {
+    const base = mkdtempSync(join(tmpdir(), 'seedrefresh-top-'))
+    const install = join(base, 'install')
+    const home = join(base, 'home')
+    mkdirSync(join(install, 'scheduled-tasks', 'demo-top'), { recursive: true })
+    mkdirSync(join(home, '.claude', 'scheduled-tasks'), { recursive: true })
+    git(install, ['init', '-q'])
+    git(install, ['config', 'user.email', 'test@example.invalid'])
+    git(install, ['config', 'user.name', 'test'])
+    const task = join(install, 'scheduled-tasks', 'demo-top', 'SKILL.md')
+    const versions = [
+      'top v1: cat {{PROJECT_ROOT}}/DREAM.md ({{MAIN_AGENT_ID}})\n',
+      'top v2: cat {{PROJECT_ROOT}}/DREAM.md ({{MAIN_AGENT_ID}})\n',
+    ]
+    for (let i = 0; i < versions.length; i++) {
+      writeFileSync(task, versions[i])
+      git(install, ['add', 'scheduled-tasks/demo-top/SKILL.md'])
+      git(install, ['commit', '-q', '-m', `top v${i + 1}`])
+    }
+    // What the NODE seeder wrote at install time: v1 with PROJECT_ROOT and
+    // MAIN_AGENT_ID resolved -- exactly the on-disk shape update.sh meets.
+    const rendered = (s: string) => s.replaceAll('{{PROJECT_ROOT}}', install).replaceAll('{{MAIN_AGENT_ID}}', 'marveen')
+    const liveDir = join(home, '.claude', 'scheduled-tasks', 'demo-top')
+    mkdirSync(liveDir, { recursive: true })
+    return { base, install, home, versions, rendered, livePath: join(liveDir, 'SKILL.md') }
+  }
+
+  function runRefreshAsMain(install: string, home: string): { out: string; code: number } {
+    const script = join(install, 'probe-top.sh')
+    writeFileSync(script, [
+      'set -u',
+      'GREEN=""; NC=""',
+      `INSTALL_DIR="${install}"`,
+      `HOME="${home}"`,
+      'MAIN_AGENT_ID="marveen"; BOT_NAME="Bot"; OWNER_NAME="Owner"; WEB_PORT="3420"',
+      FUNCS,
+      'run_seed_refresh',
+    ].join('\n') + '\n')
+    try {
+      return { out: execFileSync('bash', [script], { encoding: 'utf-8' }).trim(), code: 0 }
+    } catch (e) {
+      const err = e as { stdout?: string; stderr?: string; status?: number }
+      return { out: `${String(err.stdout ?? '')}${String(err.stderr ?? '')}`.trim(), code: err.status ?? -1 }
+    }
+  }
+
+  it('an untouched node-seeded copy (old version, PROJECT_ROOT resolved) is refreshed to current', () => {
+    const f = makeTopLevelFixture()
+    try {
+      writeFileSync(f.livePath, f.rendered(f.versions[0]))
+      const r = runRefreshAsMain(f.install, f.home)
+      expect(r.code).toBe(0)
+      const after = readFileSync(f.livePath, 'utf-8')
+      expect(after).toBe(f.rendered(f.versions[1]))
+      expect(after).not.toContain('{{PROJECT_ROOT}}') // the alias renders, not leaks
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('a locally modified top-level task copy survives byte-for-byte', () => {
+    const f = makeTopLevelFixture()
+    try {
+      const edited = f.rendered(f.versions[0]) + '# helyi tanulsag, nem veszhet el\n'
+      writeFileSync(f.livePath, edited)
+      const r = runRefreshAsMain(f.install, f.home)
+      expect(r.code).toBe(0)
+      expect(readFileSync(f.livePath, 'utf-8')).toBe(edited)
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('RED-BEFORE property: without the new source line, the top-level dir is out of scope', () => {
+    // The pre-fix run_seed_refresh listed only seed-skills + seed-scheduled-tasks;
+    // this pins that the fix is the source line, not an accident of the fixture.
+    expect(FUNCS).toContain('refresh_untouched_seeds "scheduled-tasks"')
+  })
+})

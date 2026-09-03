@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterAll } from 'vitest'
 import {
   getProvider,
   getProviderType,
@@ -216,5 +216,77 @@ describe('checkTelegramTokenBusy', () => {
     expect(src).toMatch(/checkTelegramTokenBusy\(botToken\.trim\(\)\)/)
     expect(src).toMatch(/botToken\.trim\(\) !== currentToken/)
     expect(src.indexOf('checkTelegramTokenBusy(botToken')).toBeGreaterThan(src.indexOf('findBotTokenDuplicate'))
+  })
+})
+
+// readChannelToken is the single parser behind the scheduler-alert token
+// fallback (marveen/.env -> channel .env), agentHasChannel/hasChannel and ten
+// other call sites. Its regex used to be unanchored, so a commented-out
+// `# SLACK_BOT_TOKEN=old` in marveen/.env matched first and shadowed the live
+// token in the channel .env -- exactly the fallback the alert path relies on
+// after a token rotation.
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { readChannelToken } from '../channel-provider.js'
+
+describe('readChannelToken (anchored, whole-line match)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'read-channel-token-'))
+  const envFile = (body: string): string => {
+    const p = join(dir, `${Math.random().toString(36).slice(2)}.env`)
+    writeFileSync(p, body)
+    return p
+  }
+  afterAll(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('reads the provider key from a plain line, tolerating indentation and CRLF', () => {
+    expect(readChannelToken('slack', envFile('SLACK_BOT_TOKEN=xoxb-live\n'))).toBe('xoxb-live')
+    expect(readChannelToken('telegram', envFile('  TELEGRAM_BOT_TOKEN=111:live  \r\n'))).toBe('111:live')
+  })
+
+  it('ignores a commented-out key (a dead token must not shadow the fallback)', () => {
+    expect(readChannelToken('slack', envFile('# SLACK_BOT_TOKEN=xoxb-dead\n'))).toBeNull()
+    expect(readChannelToken('slack', envFile('# SLACK_BOT_TOKEN=xoxb-dead\nSLACK_BOT_TOKEN=xoxb-live\n'))).toBe('xoxb-live')
+    expect(readChannelToken('slack', envFile('SLACK_BOT_TOKEN=xoxb-live\n# SLACK_BOT_TOKEN=xoxb-dead\n'))).toBe('xoxb-live')
+  })
+
+  it('ignores a key that merely ends with the provider key', () => {
+    expect(readChannelToken('telegram', envFile('OLD_TELEGRAM_BOT_TOKEN=111:old\n'))).toBeNull()
+    expect(readChannelToken('telegram', envFile('OLD_TELEGRAM_BOT_TOKEN=111:old\nTELEGRAM_BOT_TOKEN=222:live\n'))).toBe('222:live')
+  })
+
+  it('does not confuse SLACK_APP_TOKEN with SLACK_BOT_TOKEN', () => {
+    expect(readChannelToken('slack', envFile('SLACK_APP_TOKEN=xapp-1\n'))).toBeNull()
+    // Neither of these two pins the anchor: on the unanchored regex both were
+    // already null (`SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN_OLD` contain no
+    // `SLACK_BOT_TOKEN=` substring). They guard naming drift. The case that
+    // DOES pin it is `OLD_TELEGRAM_BOT_TOKEN=` above -- a key ENDING with ours.
+    expect(readChannelToken('slack', envFile('SLACK_BOT_TOKEN_OLD=xoxb-old\n'))).toBeNull()
+  })
+
+  it('ignores a comment written without a space after the hash', () => {
+    // `sed -i 's/^KEY=/#KEY=/'` -- the form an operator actually produces when
+    // disabling a token by hand, and the one measured on the live install.
+    expect(readChannelToken('telegram', envFile('#TELEGRAM_BOT_TOKEN=111:dead\n'))).toBeNull()
+    expect(readChannelToken('telegram', envFile('#TELEGRAM_BOT_TOKEN=111:dead\nTELEGRAM_BOT_TOKEN=222:live\n'))).toBe('222:live')
+    expect(readChannelToken('telegram', envFile('   # TELEGRAM_BOT_TOKEN=111:dead\n'))).toBeNull()
+  })
+
+  it('an empty value is not a token, so the caller falls through to the next location', () => {
+    // Documents behaviour rather than guarding the anchor (`(.+)` already
+    // refused an empty value before the fix): resolveSchedulerAlertToken
+    // chains marveen/.env || channel .env, and a key left with no value must
+    // not win that chain.
+    expect(readChannelToken('telegram', envFile('TELEGRAM_BOT_TOKEN=\n'))).toBeNull()
+    expect(readChannelToken('telegram', envFile('TELEGRAM_BOT_TOKEN=\nTELEGRAM_BOT_TOKEN=222:live\n'))).toBe('222:live')
+  })
+
+  it('a commented-out presence key no longer counts as a configured channel', () => {
+    // hasChannel/agentHasChannel use the same reader for creds-based providers.
+    expect(readChannelToken('googlechat', envFile('# GOOGLECHAT_PROJECT_ID=p1\n'))).toBeNull()
+    expect(readChannelToken('googlechat', envFile('GOOGLECHAT_PROJECT_ID=p1\n'))).toBe('p1')
+  })
+
+  it('missing file -> null', () => {
+    expect(readChannelToken('slack', join(dir, 'nope.env'))).toBeNull()
   })
 })

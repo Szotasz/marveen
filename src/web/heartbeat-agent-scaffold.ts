@@ -33,7 +33,7 @@
 // CLAUDE.md (owner, main-agent name, store path, calendar account) comes
 // from config via currentHeartbeatIdentity().
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   PROJECT_ROOT,
@@ -46,6 +46,7 @@ import {
   HEARTBEAT_CALENDAR_ACCOUNT,
   APP_TZ,
   DASHBOARD_PUBLIC_URL,
+  AGENT_API_ORIGIN,
 } from '../config.js'
 import { resolveDashboardOrigin } from './agent-scaffold.js'
 import { logger } from '../logger.js'
@@ -96,7 +97,7 @@ export interface HeartbeatIdentity {
   // Dashboard origin for the inter-agent message POST, e.g.
   // http://localhost:3420.
   dashboardOrigin: string
-  // Google Calendar account to summarise, or '' to let the calendar MCP
+  // Google Calendar account to summarise (display only), or '' to let the
   // server use whatever account it is authenticated as.
   calendarAccount: string
   // Absolute path to scripts/heartbeat-metrics.sh -- the round's single
@@ -115,7 +116,7 @@ export function currentHeartbeatIdentity(): HeartbeatIdentity {
     botName: BOT_NAME,
     mainAgentId: MAIN_AGENT_ID,
     storeDir: STORE_DIR,
-    dashboardOrigin: resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT),
+    dashboardOrigin: resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT, AGENT_API_ORIGIN),
     calendarAccount: HEARTBEAT_CALENDAR_ACCOUNT,
     metricsScript: join(PROJECT_ROOT, 'scripts', 'heartbeat-metrics.sh'),
   }
@@ -143,7 +144,7 @@ export function shouldBootHeartbeatAgent(opts: { respawnEnabled: boolean; agentE
 export function renderHeartbeatClaudeMd(id: HeartbeatIdentity): string {
   const calendarTarget = id.calendarAccount
     ? `against \`${id.calendarAccount}\``
-    : 'against your primary calendar (whatever account the calendar MCP server is authenticated as)'
+    : 'against the calendar the dashboard is configured for (HEARTBEAT_CALENDAR_ID)'
   return `# Heartbeat agent
 
 You are the **heartbeat agent** -- a dedicated, headless worker that
@@ -181,37 +182,26 @@ When you receive the heartbeat prompt:
    1h") is read against it, so an hour of drift silently moves the
    window as well as the label.
 
-1. **Collect** the four data sources:
-   - **Calendar (next 2 hours)** -- use the
-     \`mcp__server-google-calendar-mcp__list-events\` tool
-     ${calendarTarget}, timeMin=now, timeMax=now+2h.
-     Call it as a TOOL, directly. Do not try to reach an MCP server
-     from Bash, python, curl or any other subprocess: MCP tools exist
-     only in your own tool list, so a subprocess will always come back
-     empty and that emptiness says nothing about the server.
+1. **Collect** the data -- everything, calendar included, comes from
+   the ONE instrument below:
+   - **Calendar (next 2 hours)** -- comes from the SAME instrument as
+     every other number: the \`CALENDAR_EVENTS\` / \`CAL_EVENT\` /
+     \`ERROR calendar:\` lines of its output (measured server-side on
+     \`${id.dashboardOrigin}/api/heartbeat/calendar\`
+     ${calendarTarget}). You never fetch the calendar yourself: no MCP
+     tool, no curl, no python -- the history of every agent-side fetch
+     variant is a month of migrating symptoms (HBCALMCP808 "tool not
+     available"; then 5E0A32B0: one probe against a NONEXISTENT
+     endpoint on 2026-09-02 15:00 whose failure line was copy-forwarded
+     for a day as "calendar fetch failed: API error" with ZERO real
+     attempts -- the digest lied about the fact of measurement itself).
 
-     DEFERRED LOADING (2026-08-09, HBCALMCP808): MCP tools may arrive
-     DEFERRED -- their names appear in a system-reminder listing but
-     the schema is not loaded, and a direct call fails as if the tool
-     did not exist. That failure is NOT absence. Before concluding
-     anything, run:
-
-     ToolSearch with query "select:mcp__server-google-calendar-mcp__list-events"
-
-     and then call the tool normally. Between 2026-08-08 20:00 and
-     2026-08-09 every hourly round reported "calendar tool not
-     available" while all 13 calendar tools sat in the deferred list
-     of the very same session -- the section went empty for a day
-     because this step was missing.
-
-     You may say "calendar tool not available in this session" ONLY
-     when ToolSearch itself cannot surface the tool either -- that is
-     a different fact from a failed direct call on a deferred tool,
-     and a different fact again from a failed call (token revoked /
-     401), which only the loaded tool can produce.
-     If the call fails (token revoked / 401), record the failure
-     reason rather than the events; the main agent can act on the
-     failure.
+     The two calendar end-states are DIFFERENT lines, keep them apart:
+     \`CALENDAR_EVENTS n=0\` is a MEASURED empty calendar -> report
+     "no upcoming events"; \`ERROR calendar: <reason>\` is a failed
+     query -> report "calendar fetch failed: <reason>" with the reason
+     verbatim, so the main agent can act on it (an expired token must
+     surface as an expired token, not as a quiet free morning).
    - **Metrics (kanban + tasks + memory + DB size)** -- ONE fixed,
      on-disk instrument. Run it EXACTLY as written and copy its output
      lines VERBATIM into the report sections below; never recompose any
@@ -290,9 +280,9 @@ When you receive the heartbeat prompt:
    ## Heartbeat <the string step 0 measured> (${APP_TZ})
 
    ### Calendar (next 2h)
-   - HH:MM -- <summary> (<attendees>)
-   - <or: "no upcoming events">
-   - <or: "calendar fetch failed: <reason>">
+   - HH:MM -- <summary> (attendees=N)   <one line per CAL_EVENT, verbatim>
+   - <or: "no upcoming events"          -- ONLY from CALENDAR_EVENTS n=0>
+   - <or: "calendar fetch failed: <reason>" -- ONLY from ERROR calendar: of THIS round>
 
    ### Kanban
    - urgent: <N from COUNTS> (<short titles from the URGENT lines>)
@@ -315,6 +305,16 @@ When you receive the heartbeat prompt:
    A value carried over from an earlier round makes its line constant,
    and a line that always says the same thing stops being read -- at
    which point a real change looks exactly like the noise around it.
+   This is not hypothetical: between 2026-09-02 15:00 and 2026-09-03
+   09:00 every round re-sent "calendar fetch failed: API error" from
+   the previous round's text while making no calendar attempt at all
+   (5E0A32B0) -- the reader believed a query had failed THAT morning
+   when no query had happened. FRESHNESS CHECK, mechanical: the
+   instrument's own \`ts=\` stamp (sentinel line) must fall in the same
+   hour as the step-0 clock string. If it does not, the output in your
+   context is a PREVIOUS round's -- run the instrument again; if the
+   re-run still mismatches, report \`muszer-hiba: stale instrument
+   output (ts=<value>)\` in every section instead of any number.
 
 3. **Send** that string to the main agent via the dashboard API:
 
@@ -368,19 +368,32 @@ function renderAgentConfigJson(): string {
   return JSON.stringify(HEARTBEAT_AGENT_CONFIG, null, 2) + '\n'
 }
 
-function renderClaudeSettingsJson(): string {
-  return JSON.stringify({ enabledPlugins: CHANNEL_PLUGIN_DISABLES }, null, 2) + '\n'
+// The project-scope settings must MERGE, never overwrite (HBGATEWIRE826):
+// the hook-seeding pass (web.ts) writes gate hooks into this SAME file, and
+// this scaffold reruns at every boot after it -- the previous wholesale
+// rewrite deleted every seeded hook, which was one half of how the heartbeat
+// worker ran with ZERO dashboard-side hooks (the kanban-write-gate included)
+// while every test stayed green. Only the key this scaffold OWNS
+// (enabledPlugins) is enforced; everything else (hooks, permissions) is
+// preserved. Exported pure so the wiring test can pin the contract.
+export function mergeClaudeSettingsJson(existingRaw: string | null): string {
+  let existing: Record<string, unknown> = {}
+  if (existingRaw) {
+    try { existing = JSON.parse(existingRaw) as Record<string, unknown> } catch { existing = {} }
+  }
+  existing.enabledPlugins = CHANNEL_PLUGIN_DISABLES
+  return JSON.stringify(existing, null, 2) + '\n'
 }
 
-// Files we ALWAYS rewrite. Settings + agent-config are recreated to
-// keep them in sync with the constants in this file; if the operator
-// hand-edited the on-disk copy, our boot rewrite wins. CLAUDE.md is
-// re-rendered every boot for the same reason: the canonical source of
-// truth for the agent's instructions lives here, not on disk.
+// Files we ALWAYS rewrite wholesale. Agent-config is recreated to keep it in
+// sync with the constants in this file; if the operator hand-edited the
+// on-disk copy, our boot rewrite wins. CLAUDE.md is re-rendered every boot
+// for the same reason: the canonical source of truth for the agent's
+// instructions lives here, not on disk. settings.json is deliberately NOT
+// here -- it is merge-written (see mergeClaudeSettingsJson).
 const ALWAYS_WRITE: ReadonlyArray<readonly [string, () => string]> = [
   ['CLAUDE.md', () => renderHeartbeatClaudeMd(currentHeartbeatIdentity())],
   ['agent-config.json', renderAgentConfigJson],
-  [join('.claude', 'settings.json'), renderClaudeSettingsJson],
 ] as const
 
 // Files we write only when missing. The sentinel is a marker, not a
@@ -409,6 +422,9 @@ export function ensureHeartbeatAgent(): void {
     for (const [relPath, render] of ALWAYS_WRITE) {
       writeFileSync(join(HEARTBEAT_AGENT_DIR, relPath), render())
     }
+    const settingsPath = join(claudeDir, 'settings.json')
+    const existingRaw = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf-8') : null
+    writeFileSync(settingsPath, mergeClaudeSettingsJson(existingRaw))
     for (const [relPath, body] of SENTINEL_FILES) {
       const p = join(HEARTBEAT_AGENT_DIR, relPath)
       if (!existsSync(p)) writeFileSync(p, body)

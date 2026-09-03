@@ -11,7 +11,7 @@
 //      (The prose side is fail-safe too -- sentinel rule -- but that only
 //      makes the breakage visible, not impossible.)
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { execFile, spawnSync } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
 import { accessSync, constants, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -26,6 +26,10 @@ const TOKEN = 'test-token-abc'
 // Mutable fixtures the server serves; individual tests reshape them.
 let summaryBody: unknown
 let schedulesBody: unknown
+// Calendar default: measured-empty. Tests that probe the calendar reshape it;
+// the beforeEach below restores the default so pollution cannot leak forward.
+let calendarBody: unknown = { ok: true, events: [] }
+beforeEach(() => { calendarBody = { ok: true, events: [] } })
 let server: Server
 let origin: string
 let storeDir: string
@@ -100,6 +104,7 @@ con.commit()
     const body =
       req.url === '/api/kanban/heartbeat-summary' ? summaryBody
       : req.url === '/api/schedules' ? schedulesBody
+      : req.url === '/api/heartbeat/calendar' ? calendarBody
       : undefined
     if (body === undefined) {
       res.writeHead(404).end('{}')
@@ -152,6 +157,7 @@ describe('positive control: full fixture', () => {
     )
     expect(r.stdout).toContain('URGENT CARD1 first urgent')
     expect(r.stdout).toContain('WAITING CARD2 a waiting card')
+    expect(r.stdout).toContain('CALENDAR_EVENTS n=0 window=2h')
     expect(r.stdout).toContain('SCHEDULES enabled=2')
     expect(r.stdout).not.toContain('ERROR')
   })
@@ -163,6 +169,49 @@ describe('positive control: full fixture', () => {
     // 2 recent ms rows in; the 2h-old ms row and the seconds-unit row out.
     // A seconds-cutoff regression reports total=4 here.
     expect(r.stdout).toContain('TASK_RUNS_1H total=2 fired=2')
+  })
+})
+
+// 5E0A32B0: the calendar's two end-states must stay two DIFFERENT lines --
+// collapsing "queried, calendar free" and "could not query" into one look is
+// exactly what let a fossil failure line pass as a fresh measurement.
+describe('calendar section: measured empty vs failed query vs events', () => {
+  it('renders timed and all-day events with a count line', async () => {
+    summaryBody = FULL_SUMMARY()
+    schedulesBody = []
+    calendarBody = {
+      ok: true,
+      events: [
+        { start: { dateTime: '2026-09-03T14:30:00+02:00' }, end: { dateTime: '2026-09-03T15:00:00+02:00' }, summary: 'Ruszkovszki telepites', attendees: 2 },
+        { start: { date: '2026-09-03' }, end: { date: '2026-09-04' }, summary: 'Nevnap', attendees: 0 },
+      ],
+    }
+    const r = await runScript()
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain('CALENDAR_EVENTS n=2 window=2h')
+    expect(r.stdout).toContain('CAL_EVENT 14:30 Ruszkovszki telepites attendees=2')
+    expect(r.stdout).toContain('CAL_EVENT all-day Nevnap')
+  })
+
+  it('a failed query is an ERROR calendar: line + non-zero exit, never an empty list', async () => {
+    summaryBody = FULL_SUMMARY()
+    schedulesBody = [{ enabled: true }]
+    calendarBody = { ok: false, error: 'Token refresh failed: 400' }
+    const r = await runScript()
+    expect(r.status).not.toBe(0)
+    expect(r.stdout).toContain('ERROR calendar: Token refresh failed: 400')
+    expect(r.stdout).not.toContain('CALENDAR_EVENTS')
+    // Partial output stays usable: the unaffected sections still print.
+    expect(r.stdout).toContain('SCHEDULES enabled=1')
+  })
+
+  it('an unrecognized response shape is an instrument failure, not a quiet skip', async () => {
+    summaryBody = FULL_SUMMARY()
+    schedulesBody = []
+    calendarBody = { something: 'else' }
+    const r = await runScript()
+    expect(r.status).not.toBe(0)
+    expect(r.stdout).toContain('ERROR calendar: unrecognized response shape')
   })
 })
 

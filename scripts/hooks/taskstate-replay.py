@@ -20,6 +20,13 @@ import os
 import json
 import urllib.request
 
+# Agent identity comes from the ledger library -- ONE resolver for every hook
+# (LEDGERCWD828: the cwd is mutable within a session, so this file's private
+# cwd-based copy could re-attribute a session that merely cd-ed somewhere; the
+# shared resolver anchors on the session's transcript_path instead).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ledger_lib  # noqa: E402
+
 def _project_root():
     # scripts/hooks/ -> project root is two up.
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -66,27 +73,6 @@ def _main_agent_id():
     return "marveen"
 
 
-def _agent_id_from_cwd(cwd):
-    # agents/<name>/... -> <name>; the project root -> the MAIN agent.
-    #
-    # The main agent used to return None here, i.e. it silently never got its
-    # task-state back (2026-07-27). That was never a deliberate exclusion: the
-    # record is written per agent_id and the main agent writes one exactly like
-    # a sub-agent does, so there was nothing to protect against -- only a
-    # missing branch. It matters most for the main agent, which is the one
-    # holding the owner-facing threads when a respawn hits.
-    if not cwd:
-        return None
-    root = os.path.normpath(_project_root())
-    norm = os.path.normpath(cwd)
-    parts = norm.split(os.sep)
-    if "agents" in parts:
-        i = parts.index("agents")
-        if i + 1 < len(parts):
-            return parts[i + 1]
-    if norm == root:
-        return _main_agent_id()
-    return None
 
 
 def _req(method, path, token):
@@ -102,7 +88,7 @@ def main():
     except Exception:
         sys.exit(0)
     source = payload.get("source") or ""
-    agent = _agent_id_from_cwd(payload.get("cwd"))
+    agent = ledger_lib.agent_id_from_payload(payload)
     if not agent:
         sys.exit(0)  # main agent / unknown -> not a sub-agent task-state target
     token = _token()

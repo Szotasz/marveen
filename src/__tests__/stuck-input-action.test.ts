@@ -51,6 +51,7 @@ function facts(over: Partial<StuckInputActionFacts>): StuckInputActionFacts {
     hasPlainText: false,
     scheduledTaskBlock: false,
     machineOrigin: false,
+    recordedMatch: false,
     ...over,
   }
 }

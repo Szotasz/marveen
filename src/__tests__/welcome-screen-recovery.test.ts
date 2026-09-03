@@ -69,6 +69,9 @@ describe('welcome-screen wedge: detection -> recovery decision (real fixture)', 
       hasPlainText: parkedInputText(QWEN_WELCOME_WEDGE) != null,
       scheduledTaskBlock: false,
       machineOrigin: false, // computed: no prefix, no truncated marker survives
+      // No registry record for this fixture: the scrape stays unproven, so the
+      // STUCKINPUT827 rescue must NOT fire and the wedge still holds.
+      recordedMatch: false,
     })
     expect(action).toBe('hold')
   })

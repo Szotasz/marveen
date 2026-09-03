@@ -43,7 +43,7 @@ const TMUX = resolveFromPath('tmux')
 // Mirror of scripts/channels.sh post-init grace. The plugin handshake
 // (bun spawn + Telegram getMe + sendMessage) usually completes within 15s
 // of the claude TUI being interactive. After scheduleIdentitySetup's
-// 8s modal-dismiss + 5s /name + a ~1s safety buffer, the prompt is ready
+// 8s modal-dismiss + 5s /rename + a ~1s safety buffer, the prompt is ready
 // around T+15s. We wait another 20s on top of that so a healthy plugin
 // has time to write its bot.pid and spawn the bun child before we read.
 // Total: T+35s post-respawn.

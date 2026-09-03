@@ -55,12 +55,15 @@ CHAT_ID="$(grep -E '^ALLOWED_CHAT_ID=' .env | cut -d= -f2- | tr -d '"'"'"' ')"
 
 send_telegram() {
   local text="$1"
-  [ -n "${BOT_TOKEN:-}" ] && [ -n "${CHAT_ID:-}" ] || return 0
-  curl -s -m 20 -o /dev/null \
-    -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-    --data-urlencode "chat_id=${CHAT_ID}" \
-    --data-urlencode "text=${text}" \
-    --data-urlencode "disable_web_page_preview=true" || true
+  if [ -z "${BOT_TOKEN:-}" ] || [ -z "${CHAT_ID:-}" ]; then
+    echo "send_telegram: no BOT_TOKEN/CHAT_ID configured, alert skipped" >&2
+    return 0
+  fi
+  # Honest send (NOTIFYVAKSWEEP826): the old fire-and-forget curl let a failed
+  # alert vanish while the state snapshot below marked the change as reported.
+  . "$(cd "$(dirname "$0")" && pwd)/lib/send-telegram.sh"
+  send_telegram_message "$BOT_TOKEN" "$CHAT_ID" "$text" \
+    --data-urlencode "disable_web_page_preview=true"
 }
 
 # --- fetch current signatures -------------------------------------------
@@ -119,12 +122,22 @@ while IFS=$'\t' read -r pr sig; do
   fi
 done <<< "$CUR"
 
+PERSIST=1
 if [ -n "$CHANGES" ]; then
-  send_telegram "GitHub PR valtozas (reagalt valaki?):
+  if send_telegram "GitHub PR valtozas (reagalt valaki?):
 ${CHANGES}
-https://github.com/${REPO}/pulls"
-  echo "change detected, alerted"
+https://github.com/${REPO}/pulls"; then
+    echo "change detected, alerted"
+  else
+    # Snapshot NOT persisted on a failed alert (NOTIFYVAKSWEEP826): persisting
+    # consumed the diff, so the change was marked reported while nobody saw
+    # it. Keeping the old snapshot makes the next tick re-diff and retry.
+    echo "change detected but the alert did NOT deliver -- snapshot kept, will retry" >&2
+    PERSIST=0
+  fi
 fi
 
-# always persist the freshest non-error snapshot
-printf '%s' "$CUR" > "$STATE_FILE"
+# persist the freshest non-error snapshot (unless a failed alert must retry)
+if [ "$PERSIST" = 1 ]; then
+  printf '%s' "$CUR" > "$STATE_FILE"
+fi

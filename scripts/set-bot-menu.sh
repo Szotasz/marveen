@@ -33,7 +33,11 @@ fi
 # Wait for plugin to set its commands first
 sleep 15
 
-curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setMyCommands" \
+# Honest call (NOTIFYVAKSWEEP826): the old fire-and-forget curl printed
+# "Bot menu updated" on transport failure and ok:false alike.
+. "$INSTALL_DIR/scripts/lib/send-telegram.sh"
+if telegram_api_call "$BOT_TOKEN" "setMyCommands" \
+  -X POST \
   -H "Content-Type: application/json" \
   -d '{
     "commands": [
@@ -48,6 +52,9 @@ curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setMyCommands" \
       {"command": "status", "description": "Futó feladatok állapota"},
       {"command": "cancel", "description": "Futó feladat megszakítása"}
     ]
-  }' > /dev/null 2>&1
-
-echo "Bot menu updated"
+  }'; then
+  echo "Bot menu updated"
+else
+  echo "Bot menu update FAILED (see error above)" >&2
+  exit 1
+fi

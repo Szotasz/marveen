@@ -24,6 +24,15 @@ import json
 import urllib.request
 import urllib.error
 
+# Agent identity comes from the ledger library -- ONE resolver for every hook.
+# This file used to carry its own _agent_id_from_cwd() copy, which drifted:
+# it missed the install-subdirectory case (only `cwd == install` mapped to the
+# main agent) and kept the basename fallback, so skill_usage rows got an agent
+# id INVENTED from the directory name. A drifted private copy is exactly how
+# that class of bug survives -- delegate instead of duplicating.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ledger_lib  # noqa: E402
+
 
 def _install_dir() -> str:
     here = os.path.dirname(os.path.abspath(__file__))
@@ -52,37 +61,10 @@ def _dashboard_token() -> str:
         return ""
 
 
-def _main_agent_id() -> str:
-    v = os.environ.get("MAIN_AGENT_ID")
-    if v and v.strip():
-        return v.strip()
-    try:
-        with open(os.path.join(_install_dir(), ".env")) as f:
-            for line in f:
-                if line.startswith("MAIN_AGENT_ID="):
-                    return line.split("=", 1)[1].strip()
-    except Exception:
-        pass
-    return "marveen"
-
-
-def _agent_id_from_cwd(cwd: str) -> str:
-    """Derive agent_id from the session working directory.
-
-    <install>/agents/<id>  -> <id>       (sub-agent: zack, rick, ...)
-    <install>               -> MAIN_AGENT_ID
-    """
-    cwd = (cwd or "").rstrip("/")
-    install = _install_dir().rstrip("/")
-    agents_root = os.path.join(install, "agents")
-    if cwd.startswith(agents_root + os.sep):
-        rel = cwd[len(agents_root) + 1:]
-        seg = rel.split(os.sep)[0]
-        return seg if seg else _main_agent_id()
-    if cwd == install:
-        return _main_agent_id()
-    base = os.path.basename(cwd)
-    return base if base else _main_agent_id()
+# Kept as a module-level alias for the tests (they pin that this file has no
+# private copy of the resolver); the hook itself resolves from the PAYLOAD
+# (transcript-anchored, LEDGERCWD828), not from this cwd-only fallback.
+_agent_id_from_cwd = ledger_lib.agent_id_from_cwd
 
 
 # ~/.claude/skills/<name>/SKILL.md  (expand ~ for the running user)
@@ -121,7 +103,7 @@ def main() -> None:
         sys.exit(0)
 
     skill_name, trigger_type = result
-    agent_id = _agent_id_from_cwd(cwd)
+    agent_id = ledger_lib.agent_id_from_payload(payload)
 
     token = _dashboard_token()
     if not token:

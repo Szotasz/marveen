@@ -42,13 +42,14 @@ def _is_main_session(payload):
     """Return True when running inside the main agent session.
 
     Resolution order (mirrors inbox-drain.py / ledger_lib.agent_id_from_cwd):
-    1. ledger_lib.agent_id_from_cwd + main_agent_id() comparison (preferred).
+    1. ledger_lib.agent_id_from_payload + main_agent_id() comparison (preferred;
+       transcript-anchored, LEDGERCWD828 -- the cwd mutates within a session).
     2. Fallback: MAIN_AGENT_ID env var vs cwd-derived agent name.
     """
     cwd = (payload or {}).get("cwd") or ""
     if _HAS_LEDGER:
         try:
-            agent_id = ledger_lib.agent_id_from_cwd(cwd)
+            agent_id = ledger_lib.agent_id_from_payload(payload)
             return agent_id == ledger_lib.main_agent_id()
         except Exception:
             pass

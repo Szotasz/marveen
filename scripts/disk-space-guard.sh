@@ -131,9 +131,18 @@ alert_owner() {
   if [ -z "$token" ] || [ -z "$chat" ]; then
     log "ALERT (no bot token or owner chat id configured, could not Telegram): $msg"; return 1
   fi
-  curl -s -m 10 -o /dev/null "https://api.telegram.org/bot${token}/sendMessage" \
-    --data-urlencode "chat_id=${chat}" --data-urlencode "text=${msg}" \
-    && log "owner alerted via direct Bot API" || log "ALERT sendMessage FAILED: $msg"
+  # Honest send (NOTIFYVAKSWEEP826): curl exit 0 alone is not delivery -- an
+  # HTTP 200 with {"ok":false} logged "owner alerted" here while nothing
+  # arrived. Return reflects CONFIRMED delivery so the caller's cooldown stamp
+  # can depend on it.
+  . "$(cd "$(dirname "$0")" && pwd)/lib/send-telegram.sh"
+  local send_err
+  if send_err="$(send_telegram_message "$token" "$chat" "$msg" 2>&1)"; then
+    log "owner alerted via direct Bot API (delivery confirmed)"
+    return 0
+  fi
+  log "ALERT sendMessage FAILED: ${send_err}"
+  return 1
 }
 
 main() {
@@ -161,8 +170,14 @@ main() {
     last=0; [ -f "$ALERT_STAMP" ] && last="$(cat "$ALERT_STAMP" 2>/dev/null || echo 0)"
     case "$last" in (''|*[!0-9]*) last=0;; esac
     if [ $(( now - last )) -ge "$ALERT_COOLDOWN" ]; then
-      alert_owner "🔴 Disk space critical: ${DISK_PATH} is at ${usage}% after reaping ${removed} scratch item(s). Manual cleanup needed -- a full disk can wedge the channel session (deafness)."
-      echo "$now" > "$ALERT_STAMP" 2>/dev/null || true
+      # Cooldown stamp ONLY on confirmed delivery: a stamp written after a
+      # failed send suppressed the retry for an hour -- exactly when a full
+      # disk was already wedging the primary channel (NOTIFYVAKSWEEP826).
+      if alert_owner "🔴 Disk space critical: ${DISK_PATH} is at ${usage}% after reaping ${removed} scratch item(s). Manual cleanup needed -- a full disk can wedge the channel session (deafness)."; then
+        echo "$now" > "$ALERT_STAMP" 2>/dev/null || true
+      else
+        log "alert not delivered -- cooldown stamp NOT written, will retry next tick"
+      fi
     else
       log "disk ${usage}% critical but within alert cooldown ($(( now - last ))s) -- skip alert"
     fi

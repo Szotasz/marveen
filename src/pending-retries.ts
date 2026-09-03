@@ -30,6 +30,18 @@
 export const ALERT_THRESHOLD_MS = 60 * 60 * 1000
 
 /**
+ * Additional wait AFTER the main-agent-notice threshold (ALERT_THRESHOLD_MS)
+ * before escalating directly to the operator via the channel provider. Two
+ * independent, one-shot stamps (`alert_sent_at` for the main-agent notice,
+ * `owner_alert_sent_at` for the direct escalation) both key off
+ * `first_attempt`, not off each other -- so a failure to deliver the
+ * main-agent notice (e.g. a DB hiccup) can never silently suppress the final
+ * escalation.
+ */
+export const OWNER_ESCALATION_EXTRA_MS = 75 * 60 * 1000
+export const OWNER_ALERT_THRESHOLD_MS = ALERT_THRESHOLD_MS + OWNER_ESCALATION_EXTRA_MS
+
+/**
  * Decide whether the alerting layer should fire a Telegram notification
  * for a pending retry row.
  *
@@ -54,31 +66,87 @@ export function shouldSendAlert(
 }
 
 /**
- * Classify a Telegram send failure as transient (worth retrying) or
+ * Classify a channel send failure as transient (worth retrying) or
  * permanent (a config / client error that will fail identically every
- * tick). sendTelegramMessage throws `Error("Telegram API <status>: ...")`
- * on a non-2xx response and a bare network error (TypeError "fetch
- * failed") when the request never reaches Telegram.
+ * tick). Provider-agnostic entry point: the scheduler alert path sends over
+ * whatever channel the main agent is bound to (Telegram or Slack), so this
+ * dispatches on the provider prefix to a per-provider classifier below.
+ *
+ * Telegram (channel-provider telegramProvider / sendTelegramMessage) throws
+ * `Error("Telegram API <status>: ...")` on a non-2xx response. Slack
+ * (slackProvider.sendMessage) throws `Error("Slack API HTTP <status>")` on a
+ * transport-level non-2xx and `Error("Slack API error: <code>")` when the
+ * API returns `ok:false`. A bare network error (TypeError "fetch failed")
+ * carries no status on either provider.
  *
  *   - transient: network failure (no status), HTTP 429 (rate limited),
- *     or any 5xx. The next 60s tick should retry, so the caller clears
- *     the per-attempt stamp.
+ *     any 5xx, or a Slack `ratelimited`/`internal_error`-class code. The
+ *     next tick should retry, so the caller clears the per-attempt stamp.
  *   - permanent: HTTP 4xx other than 429 (400 bad chat_id, 401/404 bad
- *     token, 403 blocked). Retrying every tick just spams the log with
- *     the identical failure, so the caller KEEPS the stamp to stop the
- *     alert from re-firing until the underlying config is fixed.
+ *     token, 403 blocked), or a Slack config code (channel_not_found,
+ *     invalid_auth, token_revoked, not_in_channel, ...). Retrying every
+ *     tick just spams the log with the identical failure, so the caller
+ *     KEEPS the stamp until the underlying config is fixed.
  *
  * Pure (takes the error message string) so it is unit-testable without a
- * live Telegram endpoint.
+ * live endpoint.
  */
-export function classifyTelegramSendError(errMessage: string): 'transient' | 'permanent' {
-  const m = /Telegram API (\d{3})\b/.exec(errMessage)
-  if (!m) return 'transient' // no HTTP status -> network-level failure
-  const status = Number(m[1])
+export function classifySendError(errMessage: string): 'transient' | 'permanent' {
+  if (errMessage.includes('Telegram API')) return classifyTelegramError(errMessage)
+  if (errMessage.includes('Slack API')) return classifySlackError(errMessage)
+  if (errMessage.includes('Discord API')) return classifyDiscordError(errMessage)
+  return 'transient' // no recognized provider prefix -> network-level failure
+}
+
+/** Shared HTTP-status policy: 429 and 5xx retry, other 4xx is config. */
+function classifyHttpStatus(status: number): 'transient' | 'permanent' {
   if (status === 429 || status >= 500) return 'transient'
   if (status >= 400) return 'permanent'
   return 'transient'
 }
+
+/** Telegram: "Telegram API <status>: ...". */
+function classifyTelegramError(errMessage: string): 'transient' | 'permanent' {
+  const match = /Telegram API (\d{3})\b/.exec(errMessage)
+  return match ? classifyHttpStatus(Number(match[1])) : 'transient'
+}
+
+/** Discord (discordProvider.sendMessage): "Discord API <status>: <body>".
+ *  Same HTTP-status policy -- without this branch a bad channel id / revoked
+ *  bot token (4xx) fell through as "transient" and respun every 60s. */
+function classifyDiscordError(errMessage: string): 'transient' | 'permanent' {
+  const match = /Discord API (\d{3})\b/.exec(errMessage)
+  return match ? classifyHttpStatus(Number(match[1])) : 'transient'
+}
+
+/**
+ * Slack application-level error codes that are worth retrying; everything
+ * else (bad channel/token/scope) is a config error that will fail
+ * identically next tick.
+ */
+const SLACK_TRANSIENT_CODES = new Set([
+  'ratelimited', 'rate_limited', 'internal_error', 'service_unavailable',
+  'fatal_error', 'request_timeout', 'timeout',
+])
+
+/**
+ * Slack: "Slack API HTTP <status>" (transport-level non-2xx) or
+ * "Slack API error: <code>" (API returned ok:false).
+ */
+function classifySlackError(errMessage: string): 'transient' | 'permanent' {
+  const httpStatus = /Slack API HTTP (\d{3})\b/.exec(errMessage)
+  if (httpStatus) return classifyHttpStatus(Number(httpStatus[1]))
+  const code = /Slack API error:\s*([a-z_]+)/i.exec(errMessage)
+  if (code) return SLACK_TRANSIENT_CODES.has(code[1].toLowerCase()) ? 'transient' : 'permanent'
+  return 'transient'
+}
+
+/**
+ * Backward-compatible alias. The classifier is provider-agnostic now
+ * (see classifySendError); the old name is kept so existing call sites and
+ * tests continue to resolve.
+ */
+export const classifyTelegramSendError = classifySendError
 
 /**
  * Shape of a pending retry used by the UI + the alert layer. A small
@@ -96,6 +164,11 @@ export interface PendingRetryView {
   alertSentAt: number | null
   ageMs: number
   alertDue: boolean
+  // Stage 2: direct-to-owner channel escalation, only after the main-agent
+  // notice (alertDue/alertSentAt, stage 1) has had OWNER_ESCALATION_EXTRA_MS
+  // to be seen and acted on.
+  ownerAlertSentAt: number | null
+  ownerAlertDue: boolean
 }
 
 /**
@@ -113,9 +186,11 @@ export function toPendingRetryView(
     attempt_count: number
     last_reason: string | null
     alert_sent_at: number | null
+    owner_alert_sent_at?: number | null
   },
   now: number,
   thresholdMs: number = ALERT_THRESHOLD_MS,
+  ownerThresholdMs: number = OWNER_ALERT_THRESHOLD_MS,
 ): PendingRetryView {
   return {
     id: row.id,
@@ -128,5 +203,7 @@ export function toPendingRetryView(
     alertSentAt: row.alert_sent_at,
     ageMs: Math.max(0, now - row.first_attempt),
     alertDue: shouldSendAlert(now, row.first_attempt, row.alert_sent_at, thresholdMs),
+    ownerAlertSentAt: row.owner_alert_sent_at ?? null,
+    ownerAlertDue: shouldSendAlert(now, row.first_attempt, row.owner_alert_sent_at ?? null, ownerThresholdMs),
   }
 }

@@ -32,6 +32,9 @@ vi.mock('../web/agent-config.js', () => ({
 
 const mockCapturePane = vi.fn<(session: string) => string | null>()
 vi.mock('../web/agent-process.js', () => ({
+  // The not-ready-path modal clear: false = no modal, so every caller keeps
+  // its existing skip/busy behaviour and these fixtures are unaffected.
+  clearFeedbackModalAndRecheck: () => false,
   agentSessionName: (name: string) => `agent-${name}`,
   capturePane: (session: string) => mockCapturePane(session),
 }))

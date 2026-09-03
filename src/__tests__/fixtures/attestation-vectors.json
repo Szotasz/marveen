@@ -1,0 +1,48 @@
+{
+  "generator": "python json.dumps(sort_keys=True, separators=(',',':'), ensure_ascii=False) + hmac-sha256; the mio-upload client's exact calls",
+  "key": "vector-test-attest-key-0001",
+  "valid": {
+    "attestation": {
+      "v": 1,
+      "key_id": "kid-vector-1",
+      "member_id": "6b1f0d3e-8a24-4c1b-9f70-2f1a3c5d7e90",
+      "content_sha256": "d47e6b4b60c905509609d3baf87185482061ad402730d51ba630cdbca7151732",
+      "scanner": {
+        "name": "mio-scan",
+        "version": "1.2.0",
+        "rulepack": "2026-08-20"
+      },
+      "checks": [
+        {
+          "id": "prompt_injection",
+          "result": "clean",
+          "hits": 0
+        },
+        {
+          "id": "pii",
+          "result": "clean",
+          "hits": 0
+        }
+      ],
+      "scanned_at": "2026-08-25T05:00:00Z",
+      "hmac": "84ac50a27134bd7e381942fc4a47846e26aa512ecd2b093b3972a6b099fcafdc"
+    },
+    "canonical_without_hmac": "{\"checks\":[{\"hits\":0,\"id\":\"prompt_injection\",\"result\":\"clean\"},{\"hits\":0,\"id\":\"pii\",\"result\":\"clean\"}],\"content_sha256\":\"d47e6b4b60c905509609d3baf87185482061ad402730d51ba630cdbca7151732\",\"key_id\":\"kid-vector-1\",\"member_id\":\"6b1f0d3e-8a24-4c1b-9f70-2f1a3c5d7e90\",\"scanned_at\":\"2026-08-25T05:00:00Z\",\"scanner\":{\"name\":\"mio-scan\",\"rulepack\":\"2026-08-20\",\"version\":\"1.2.0\"},\"v\":1}",
+    "hmac": "84ac50a27134bd7e381942fc4a47846e26aa512ecd2b093b3972a6b099fcafdc",
+    "content_utf8": "hello skill upload\n"
+  },
+  "nonascii_algorithm_case": {
+    "value": {
+      "b": "árvíztűrő tükörfúrógép ☃",
+      "a": [
+        1,
+        {
+          "y": "ő",
+          "x": "u"
+        }
+      ]
+    },
+    "canonical": "{\"a\":[1,{\"x\":\"u\",\"y\":\"ő\"}],\"b\":\"árvíztűrő tükörfúrógép ☃\"}",
+    "hmac": "a7bacdca3f78223bf08fd442328717c4370c8240c2403196d0858c94ec210220"
+  }
+}

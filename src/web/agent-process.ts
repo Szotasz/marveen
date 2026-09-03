@@ -21,9 +21,12 @@ import {
   idleConsideringDimGhost,
   detectsFirstRunGate,
   detectsModelConsentDialog,
+  detectsFeedbackDraftModal,
+  detectsFeedbackOptOutPrompt,
+  firstRunAcceptKeys,
   type FirstRunGateKind,
 } from '../pane-state.js'
-import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentMemoryIsolation, readAgentCustomProvider } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentCustomProvider } from './agent-config.js'
 import { loadCustomProvider } from './custom-providers.js'
 import { resolveAgentConfigDir } from './claude-plans.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
@@ -41,15 +44,18 @@ import {
   ensureControlDir,
   cleanStaleSshSockets,
   type AgentRunState,
+  type TmuxInvocation,
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBOX_TEE } from '../config.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
+import { readEnvFile } from '../env.js'
 import { loadProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
-import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureAutonomySection, ensureSkillsPathTrapSection } from './agent-scaffold.js'
+import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
+import { recordInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
@@ -288,7 +294,24 @@ function maybeAlertSharedConfigCollision(name: string): void {
 //
 // Idempotent and best-effort: returns the dir on success, or null so the caller
 // falls back to the shared ~/.claude (degraded, but never a launch failure).
-const ISOLATED_CONFIG_SKIP = new Set(['settings.json', 'plugins', '.credentials.json'])
+// `projects` holds each session's transcript AND the auto-memory store, and the
+// memory store is keyed by PROJECT ROOT, not by cwd. Symlinking it to the shared
+// ~/.claude/projects therefore gives every agent on this install ONE memory store --
+// the main agent's. Measured on the Acrobot install 2026-08-18: the only memory/
+// directory under the shared tree was the main agent's (30 files), an agent's note
+// landed in the MAIN agent's MEMORY.md at 16:31, and a second agent watched a memory
+// written by the main agent appear in its own index minutes later. The link is live
+// and bidirectional, not just shared history.
+//
+// Skipping it here is what makes a per-agent split possible at all: the provisioner
+// runs on EVERY spawn and, finding a real directory where it expects a symlink,
+// deletes it (rmSync below) and re-links. A split done on disk therefore survived
+// seconds -- until the next agent start undid it. Fixing this in the filesystem is
+// not possible; the code that owns the path has to leave it alone.
+//
+// Consequence for a fresh agent: no `projects` entry is provisioned, and Claude Code
+// creates its own inside the isolated config dir. That is the intended end state.
+const ISOLATED_CONFIG_SKIP = new Set(['settings.json', 'plugins', '.credentials.json', 'projects'])
 
 export function ensureIsolatedChannelConfigDir(
   name: string,
@@ -344,7 +367,31 @@ export function ensureMainAgentIsolatedConfigDir(
     PROJECT_ROOT,
     getProviderType(provider),
     MAIN_AGENT_ID,
+    readExtraChannelPluginIds(),
   )
+}
+
+// CHANNEL_PLUGINS_EXTRA -- the co-listen plugins channels.sh appends to
+// --channels so ONE main session can serve several providers at once (e.g.
+// Telegram primary + Discord). Same .env key channels.sh parses, read here so
+// the isolated-config provisioner and the launcher cannot disagree.
+//
+// 2026-08-16 (Discord co-listen, ~2h silent outage): the provisioner rewrites
+// the isolated settings.json on EVERY channels.sh start and forced
+// scopeChannelPlugins(PRIMARY) -- which sets every OTHER channel plugin to
+// false. Claude Code then refuses to load the co-listen plugin no matter what
+// --channels says, so the Discord bot came up deaf: messages to it reached
+// nothing and the owner got no reply. Two manual fixes (hand-edited registry,
+// then `claude plugin install`) both looked correct and were both erased
+// seconds later by the next restart. Keeping the extras enabled here is the
+// only place that survives, because this function is what does the erasing.
+export function readExtraChannelPluginIds(): string[] {
+  try {
+    const raw = readEnvFile(['CHANNEL_PLUGINS_EXTRA'])['CHANNEL_PLUGINS_EXTRA'] ?? ''
+    return raw.split(/\s+/).map(s => s.trim()).filter(Boolean)
+  } catch {
+    return []
+  }
 }
 
 // An EXPLICIT config dir for the main channels agent (MAIN_AGENT_CONFIG_DIR),
@@ -391,9 +438,17 @@ export function resolveMainAgentConfigDir(): string | null {
 // this reconcile is exactly the path that starts rewriting the file regularly.
 // Fall back to 0600 (not the umask) when the target does not exist yet, since
 // the content class is the same either way.
-function writeJsonAtomic(path: string, value: unknown): void {
-  let mode = 0o600
-  try { mode = statSync(path).mode & 0o777 } catch { /* new file -> owner-only */ }
+function writeJsonAtomic(path: string, value: unknown, opts: { groupShared?: boolean } = {}): void {
+  // A per-user agent's config is written by the ROUTER but read by the AGENT, and
+  // they are different OS users. An atomic write hands the new file to whoever ran
+  // it, so a plain 0600 silently locks the agent out of its own config -- Claude
+  // Code then cannot read it, writes a brand-new profile, and the freshly stamped
+  // consent flags are gone. Measured 2026-08-19 on korall: three restarts, three
+  // fresh 8-key profiles, and the login picker every time with a valid token in
+  // the environment. Group-shared writes keep both sides able to read and write.
+  let mode = opts.groupShared ? 0o660 : 0o600
+  try { mode = statSync(path).mode & 0o777 } catch { /* new file -> see above */ }
+  if (opts.groupShared) mode |= 0o060
   const tmp = `${path}.tmp-${process.pid}`
   writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', { mode })
   renameSync(tmp, path)
@@ -455,6 +510,7 @@ function provisionIsolatedConfigDir(
   cwd: string,
   providerType: ChannelProviderType | null,
   name: string,
+  extraPluginIds: string[] = [],
 ): string | null {
   try {
     const realClaude = join(homedir(), '.claude')
@@ -465,8 +521,15 @@ function provisionIsolatedConfigDir(
     //    must stay out of the isolated dir (.credentials.json -- see header). A
     //    stale non-symlink (e.g. a prior copy, or a .credentials.json left by an
     //    earlier build) is removed so it can never shadow the env-var auth.
+    // A per-user agent cannot follow a symlink into the router's private home:
+    // `~/.claude/.claude.json` is 0600 and owned by the router's user, so the
+    // agent reads nothing, Claude Code writes a brand-new profile, and every
+    // consent flag the provisioner just stamped is gone -- which is exactly how
+    // an otherwise correctly authenticated agent lands on the login picker
+    // (measured on korall, 2026-08-19). It needs a REAL file of its own here.
+    const perUserAgent = readAgentRunAsUser(name) != null
     for (const entry of readdirSync(realClaude)) {
-      if (ISOLATED_CONFIG_SKIP.has(entry)) {
+      if (ISOLATED_CONFIG_SKIP.has(entry) || (perUserAgent && entry === '.claude.json')) {
         // Defensively drop a real .credentials.json that an older build may have
         // symlinked/copied here, so the env-var token is the only auth source.
         const stale = join(cfg, entry)
@@ -500,6 +563,12 @@ function provisionIsolatedConfigDir(
       providerType,
       settings.enabledPlugins as Record<string, boolean> | undefined,
     )
+    // Re-enable the co-listen extras scopeChannelPlugins just turned off. The
+    // scope call exists to stop a SUB-agent fighting the main agent over the
+    // same poller slot; the main agent's own declared extras are the opposite
+    // case -- they are its channels, and forcing them false is what silently
+    // kills the second bot on every restart.
+    for (const pid of extraPluginIds) scopedPlugins[pid] = true
     settings.enabledPlugins = scopedPlugins
     // Keys the isolated file already carries that the shared file never
     // mentions must SURVIVE this rewrite. The rewrite runs on every main-agent
@@ -613,6 +682,9 @@ function provisionIsolatedConfigDir(
     //    Only seed when absent -- once Claude Code owns the file we leave its
     //    evolved state alone, just guaranteeing hasCompletedOnboarding stays set.
     try {
+      // Does this agent run as its own OS user? Then everything the router writes
+      // into its config dir has to stay readable AND writable for that user.
+      const perUser = readAgentRunAsUser(name) != null
       const dotClaude = join(cfg, '.claude.json')
       const sharedDot = join(homedir(), '.claude.json')
       if (!existsSync(dotClaude)) {
@@ -621,7 +693,7 @@ function provisionIsolatedConfigDir(
           try { seed = JSON.parse(readFileSync(sharedDot, 'utf-8')) as Record<string, unknown> } catch { /* keep minimal */ }
         }
         seed.hasCompletedOnboarding = true
-        writeJsonAtomic(dotClaude, seed)
+        writeJsonAtomic(dotClaude, seed, { groupShared: perUser })
       } else {
         try {
           const cur = JSON.parse(readFileSync(dotClaude, 'utf-8')) as Record<string, unknown>
@@ -631,7 +703,7 @@ function provisionIsolatedConfigDir(
             dirty = true
           }
           if (reconcileMcpServers(cur, sharedDot, name)) dirty = true
-          if (dirty) writeJsonAtomic(dotClaude, cur)
+          if (dirty) writeJsonAtomic(dotClaude, cur, { groupShared: perUser })
         } catch { /* unparseable -> leave for Claude Code to recreate */ }
       }
     } catch (err) {
@@ -834,7 +906,7 @@ export function buildCustomProviderLaunchEnv(agentName: string): CustomProviderL
 // Root cause chain (2026-07-23, card b71fc541): a config root without
 // fableOverageConsentV2[<orgUuid>] parks the first Fable 5 turn on a TUI
 // dialog whose DEFAULT option is "Switch to Sonnet 5 and continue". The
-// fleet's own blind Enters (identity /name, sendPromptToSession retry-Enter)
+// fleet's own blind Enters (identity /rename, sendPromptToSession retry-Enter)
 // accept that default, silently switching the session to Sonnet while
 // agent-config still says claude-fable-5 -- the long-unexplained
 // model/activeModel drift. Fleet policy (owner decision 2026-07-23): the
@@ -895,7 +967,7 @@ export function stampFableOverageConsentSharedRoots(): void {
   }
 }
 
-function resolveAgentProvider(name: string): ChannelProviderType {
+export function resolveAgentProvider(name: string): ChannelProviderType {
   const perAgent = readAgentChannelProvider(name)
   if (perAgent === 'slack' || perAgent === 'telegram' || perAgent === 'discord' || perAgent === 'googlechat' || perAgent === 'teams') return perAgent
   return CHANNEL_PROVIDER
@@ -918,17 +990,168 @@ export function shSingleQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
+/**
+ * hu: A modell-azonosító alapján eldönti, melyik providerhez tartozik, és felépíti a shell
+ * export-láncot, ami a Claude Code CLI-t az adott provider Anthropic-kompatibilis végpontjára
+ * téríti. Tiszta függvény (nincs I/O) -- a titkot a hívó adja át `secretLookup`-on keresztül,
+ * hogy vault nélkül tesztelhető legyen.
+ * <br />
+ * en: Resolves which provider a model id belongs to and builds the shell export chain that
+ * redirects the Claude Code CLI to that provider's Anthropic-compatible endpoint. Pure function
+ * (no I/O) -- the caller supplies secrets via `secretLookup` so this is testable without a vault.
+ */
+export type ProviderKind = 'claude' | 'deepseek' | 'minimax' | 'openrouter' | 'ollama'
+
+export function resolveProviderEnv(
+  model: string,
+  secretLookup: (id: string) => string | null,
+): { provider: ProviderKind; exportsStr: string } {
+  const isClaude = model.startsWith('claude-')
+  const isDeepseek = model.startsWith('deepseek-')
+  const isMinimax = model.startsWith('minimax-')
+  // OpenRouter model ids are `provider/model` (contain '/'); Ollama tags use
+  // ':' and no '/'. This discriminator keeps OpenRouter ids off the Ollama path.
+  const isOpenRouter = !isClaude && !isDeepseek && !isMinimax && model.includes('/')
+  const isOllama = !isClaude && !isDeepseek && !isMinimax && !isOpenRouter
+
+  if (isDeepseek) {
+    const key = secretLookup('DEEPSEEK_API_KEY') ?? ''
+    return {
+      provider: 'deepseek',
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+    }
+  }
+  if (isMinimax) {
+    const key = secretLookup('MINIMAX_API_KEY') ?? ''
+    // MiniMax's own /anthropic compat layer misreports a 200K context window in
+    // its model metadata instead of M3's real 1M (MiniMax-AI/MiniMax-M2.7#46,
+    // confirmed live 2026-08-19: two independently running fleet agents on
+    // minimax-m3 converged on a measured ~200-203k ceiling). Claude Code trusts
+    // that metadata and auto-compacts at ~167k as a result. This env var is the
+    // vendor-documented workaround -- it tells the CLI the real number instead
+    // of the compat layer's wrong one.
+    return {
+      provider: 'minimax',
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && export CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 && `,
+    }
+  }
+  if (isOpenRouter) {
+    // Anthropic-compatible endpoint at https://openrouter.ai/api (the SDK appends /v1/messages).
+    const key = secretLookup('openrouter-fleet-key') ?? ''
+    return {
+      provider: 'openrouter',
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+    }
+  }
+  if (isOllama) {
+    return {
+      provider: 'ollama',
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=ollama && export ANTHROPIC_BASE_URL=${OLLAMA_URL} && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+    }
+  }
+  return { provider: 'claude', exportsStr: '' }
+}
+
 // All tmux operations route through these two wrappers so the local-vs-remote
 // (ssh) decision and the quoting live in ONE place (ssh-tmux.ts). host=null is
 // byte-identical to the prior direct local tmux call. Remote calls get a larger
 // default timeout because an ssh round-trip (handshake + remote exec) is slower
 // than a local fork; ServerAlive/ConnectTimeout in SSH_OPTS bound a dead host.
-function runTmux(host: string | null, tmuxArgs: string[], opts: { timeout?: number } = {}): void {
+// Where a tmux call has to land: a remote host, a local user other than the
+// router's own, or (the default everywhere today) plain local. Callers may pass
+// the bare host string they already hold; only the agent-aware call sites build
+// the full target.
+export type TmuxTarget = { host: string | null; runAsUser?: string | null }
+
+function asTarget(t: string | null | TmuxTarget): TmuxTarget {
+  return typeof t === 'string' || t === null ? { host: t } : t
+}
+
+// The tmux target for one agent: remote host if configured, otherwise the OS
+// user it runs as (null = the router's own user).
+export function agentTmuxTarget(name: string): TmuxTarget {
+  return { host: readAgentRemoteHost(name), runAsUser: readAgentRunAsUser(name) }
+}
+
+// Fallback identity resolution for the many callers that only ever knew a host.
+//
+// The router reaches an agent from a dozen places (message delivery, context
+// guard, inbox nudge, worker, channel monitor) and most of them hold nothing but
+// the SESSION NAME. Threading an agent identity through every one of those call
+// chains at once would be a large, risky change; this closes the gap without it:
+// when a local call names a session that belongs to an agent with its own OS
+// user, run it as that user.
+//
+// Deliberate limits: the session name comes from tmux's own `-t` / `-s` flag (not
+// from parsing free text), the answer comes from the agent's CONFIG (not from the
+// name itself), and it only ever applies when the caller passed no host and no
+// explicit user. An unknown session resolves to null and behaves exactly as before.
+let sessionUserCache: { at: number; map: Map<string, string> } | null = null
+
+function sessionRunAsUserMap(): Map<string, string> {
+  const now = Date.now()
+  if (sessionUserCache && now - sessionUserCache.at < 5000) return sessionUserCache.map
+  const map = new Map<string, string>()
+  try {
+    for (const n of listAgentNames()) {
+      const u = readAgentRunAsUser(n)
+      if (u) map.set(agentSessionName(n), u)
+    }
+  } catch { /* a config read failure must never break a tmux call */ }
+  sessionUserCache = { at: now, map }
+  return map
+}
+
+export function runAsUserForTmuxArgs(tmuxArgs: string[], map: Map<string, string>): string | null {
+  for (let i = 0; i < tmuxArgs.length - 1; i++) {
+    if (tmuxArgs[i] !== '-t' && tmuxArgs[i] !== '-s') continue
+    // `-t agent-x:0.1` addresses a window/pane inside the same session.
+    const session = tmuxArgs[i + 1].split(':')[0]
+    const user = map.get(session)
+    if (user) return user
+  }
+  return null
+}
+
+function resolveTarget(target: string | null | TmuxTarget, tmuxArgs: string[]): TmuxTarget {
+  const t = asTarget(target)
+  if (t.host || t.runAsUser) return t
+  return { host: null, runAsUser: runAsUserForTmuxArgs(tmuxArgs, sessionRunAsUserMap()) }
+}
+
+// The ONE place that turns tmux args into a runnable {file, args}: it resolves
+// the target (remote host, or the agent's own OS user) and hands back the exact
+// invocation runTmux would use. Exported because not every tmux call in the
+// router is synchronous -- the dashboard terminal (routes/agent-terminal.ts)
+// needs the same resolution from an async execFile.
+//
+// Why it exists (measured 2026-08-26 22:15 and again 2026-08-27 22:0x, two live
+// cases): agent-terminal.ts called the raw tmux binary, so for an agent running
+// under its own OS user BOTH the live pane stream and the /keys write failed --
+// the pane rendered empty and send-keys answered 500. The operator could not
+// answer a permission prompt from the dashboard while two agents sat blocked for
+// ten minutes. A second copy of the local-vs-remote-vs-runAsUser decision is the
+// bug; this export is the fix.
+export function tmuxInvocationFor(tmuxArgs: string[], target: string | null | TmuxTarget = null): TmuxInvocation {
+  const { host, runAsUser } = resolveTarget(target, tmuxArgs)
   // Ensure the private ControlMaster socket dir exists before ANY remote ssh
   // call (idempotent, ~free). Without this a watcher-first remote call after a
   // marveen restart would lose connection multiplexing and re-handshake each tick.
   if (host) ensureControlDir()
-  const inv = buildTmuxInvocation(host, tmuxBin(), tmuxArgs)
+  return buildTmuxInvocation(host, tmuxBin(), tmuxArgs, 'tmux', runAsUser ?? null)
+}
+
+// True when this tmux call has to be routed through another OS user or host --
+// i.e. when a raw `tmux` binary call would silently fail. Used by callers that
+// keep their own child-process plumbing but must not skip the resolution.
+export function tmuxNeedsIndirection(tmuxArgs: string[], target: string | null | TmuxTarget = null): boolean {
+  const { host, runAsUser } = resolveTarget(target, tmuxArgs)
+  return host != null || runAsUser != null
+}
+
+function runTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opts: { timeout?: number } = {}): void {
+  const { host } = resolveTarget(target, tmuxArgs)
+  const inv = tmuxInvocationFor(tmuxArgs, target)
   // stdio: capture the child's stderr into the thrown error instead of letting
   // execFileSync's default inherit it to the parent stderr. A restarting agent
   // makes tmux emit `can't find session: agent-X` / `no server running`; without
@@ -937,9 +1160,9 @@ function runTmux(host: string | null, tmuxArgs: string[], opts: { timeout?: numb
   execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), stdio: ['ignore', 'ignore', 'pipe'] })
 }
 
-function captureTmux(host: string | null, tmuxArgs: string[], opts: { timeout?: number } = {}): string {
-  if (host) ensureControlDir()
-  const inv = buildTmuxInvocation(host, tmuxBin(), tmuxArgs)
+function captureTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opts: { timeout?: number } = {}): string {
+  const { host } = resolveTarget(target, tmuxArgs)
+  const inv = tmuxInvocationFor(tmuxArgs, target)
   // stdout piped (we return it); stderr piped too so tmux's `can't find session`
   // noise lands in err.stderr on failure rather than the parent stderr / dashboard.log.
   return execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
@@ -950,9 +1173,10 @@ function captureTmux(host: string | null, tmuxArgs: string[], opts: { timeout?: 
 // an SSH drop must never read as 'stopped', which would trigger a wrong
 // auto-restart or a duplicate start). See classifyRunState.
 export function agentRunState(name: string): AgentRunState {
-  const host = readAgentRemoteHost(name)
+  const target = agentTmuxTarget(name)
+  const host = target.host
   try {
-    const out = captureTmux(host, ['list-sessions', '-F', '#{session_name}'])
+    const out = captureTmux(target, ['list-sessions', '-F', '#{session_name}'])
     return classifyRunState(out, agentSessionName(name), host != null)
   } catch (err) {
     // tmux list-sessions exits non-zero ("no server running") when there are
@@ -976,7 +1200,16 @@ export function isAgentRunning(name: string): boolean {
 // matching the local "session not found" semantics.
 export function sessionExistsOnHost(host: string | null, session: string): boolean {
   try {
-    return sessionInList(captureTmux(host, ['list-sessions', '-F', '#{session_name}']), session)
+    // `list-sessions` carries no -t/-s, so the args-based fallback cannot see
+    // whose session this is -- and a per-user agent's session lives on ITS OWN
+    // tmux server, invisible from the router's. Without this lookup the readiness
+    // check answers "no such session" for a perfectly healthy agent and every
+    // message to it stays queued forever (measured on korall, 2026-08-19: the
+    // session was up, the pane idle, and two messages sat pending).
+    const target: TmuxTarget = host
+      ? { host }
+      : { host: null, runAsUser: sessionRunAsUserMap().get(session) ?? null }
+    return sessionInList(captureTmux(target, ['list-sessions', '-F', '#{session_name}']), session)
   } catch {
     return false
   }
@@ -984,8 +1217,9 @@ export function sessionExistsOnHost(host: string | null, session: string): boole
 
 export function getAgentRunningSince(name: string): number | null {
   try {
-    const host = readAgentRemoteHost(name)
-    const out = captureTmux(host, ['display-message', '-p', '-t', agentSessionName(name), '#{session_created}']).trim()
+    const target = agentTmuxTarget(name)
+    const host = target.host
+    const out = captureTmux(target, ['display-message', '-p', '-t', agentSessionName(name), '#{session_created}']).trim()
     const ts = parseInt(out, 10)
     return Number.isFinite(ts) ? ts : null
   } catch {
@@ -1135,7 +1369,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
 
   try {
     try {
-      runTmux(null, ['kill-session', '-t', session])
+      runTmux(agentTmuxTarget(name), ['kill-session', '-t', session])
       await delay(3000)
     } catch { /* ok */ }
 
@@ -1195,11 +1429,6 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     const authMode = readAgentAuthMode(name)
 
     const isClaude = !isCustom && model.startsWith('claude-')
-    const isDeepseek = !isCustom && model.startsWith('deepseek-')
-    // OpenRouter model ids are `provider/model` (contain '/'); Ollama tags use
-    // ':' and no '/'. This discriminator keeps OpenRouter ids off the Ollama path.
-    const isOpenRouter = !isCustom && !isClaude && !isDeepseek && model.includes('/')
-    const isOllama = !isCustom && !isClaude && !isDeepseek && !isOpenRouter
 
     // Generic custom-provider env: build from the provider definition stored in
     // store/custom-providers.json. Only Anthropic-Messages-compatible endpoints
@@ -1230,7 +1459,11 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
       }
       customEnv = `export ANTHROPIC_BASE_URL="${customProviderDef.baseUrl}" && ${headerExport}export ANTHROPIC_MODEL='${model}' && `
     }
-
+    // For custom providers, bypass resolveProviderEnv entirely -- the custom env
+    // above already exports the correct BASE_URL, token, and model. Running
+    // resolveProviderEnv on a custom model id (e.g. `gpt-4o` or `mistral:7b`)
+    // would misclassify it as OpenRouter or Ollama and export wrong credentials.
+    const { exportsStr: providerEnv } = isCustom ? { exportsStr: '' } : resolveProviderEnv(model, getSecret)
     // ANTHROPIC_MODEL is REQUIRED for non-Claude models: the interactive TUI
     // validates the `--model` flag against known Anthropic models and silently
     // falls back to the built-in default (claude-opus-...) for an unrecognized
@@ -1238,13 +1471,8 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // the custom ANTHROPIC_BASE_URL ("model does not exist"). The env var is
     // authoritative and bypasses that validation. (`--print` honors --model, but
     // the agents run the TUI.) Single-quoted so a `:` in the tag is shell-safe.
-    const ollamaEnv = isOllama ? `export ANTHROPIC_AUTH_TOKEN=ollama && export ANTHROPIC_BASE_URL=${OLLAMA_URL} && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
-    const deepseekKey = isDeepseek ? (getSecret('DEEPSEEK_API_KEY') ?? '') : ''
-    const deepseekEnv = isDeepseek ? `export ANTHROPIC_AUTH_TOKEN="${deepseekKey}" && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
-    // OpenRouter: Anthropic-compatible endpoint at https://openrouter.ai/api
-    // (the SDK appends /v1/messages). Key from the vault (openrouter-fleet-key).
-    const openrouterKey = isOpenRouter ? (getSecret('openrouter-fleet-key') ?? '') : ''
-    const openrouterEnv = isOpenRouter ? `export ANTHROPIC_AUTH_TOKEN="${openrouterKey}" && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
+    // Provider discriminator + env-export chain live in resolveProviderEnv (pure,
+    // unit-tested in agent-provider-env.test.ts) so a new provider is one branch there.
     // When authMode is 'api', the agent uses its own ANTHROPIC_API_KEY from
     // the vault instead of the host's OAuth. The vault entry ID follows the
     // convention `agent-{name}-api-key`. We inject it as an env var so Claude
@@ -1268,6 +1496,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     ensureFleetRosterSection(name)
     ensureAutonomySection(name)
     ensureSkillsPathTrapSection(name)
+    ensureSystemDirectiveAuthSection(name)
     // A sub-agent must load ONLY its own channel plugin. The user-scope
     // enabledPlugins would otherwise make EVERY sub-agent spawn a telegram
     // (and slack/discord) poller that falls back to the main agent's bot
@@ -1550,10 +1779,23 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // values like `claude-opus-4-8[1m]` (1M-context suffix) from being glob-expanded AND makes a `'`
     // in the value inert rather than a quote-break -> command injection. Same escape at the three
     // ANTHROPIC_MODEL env sites above.
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${customEnv}${ollamaEnv}${deepseekEnv}${openrouterEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
-    runTmux(null, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
+    // A per-user agent shares its directory with the router (group `fleet`), and
+    // the router still provisions into it on every start -- so files the agent
+    // creates must stay group-writable. Without this the default 022 umask writes
+    // 0600 files that the router can no longer stamp; measured 2026-08-19, that is
+    // exactly how korall lost its `hasCompletedOnboarding` flag on every restart
+    // and parked on the login picker with a perfectly good token in its env.
+    const umaskPrefix = agentTmuxTarget(name).runAsUser ? 'umask 002 && ' : ''
+    const cmd = `${umaskPrefix}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${customEnv}${providerEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
+    // The agent's own target: for a per-user agent this is what makes the whole
+    // session (and every process inside it) belong to that uid. Passing null here
+    // silently started it as the router's user -- measured 2026-08-19: the start
+    // reported ok, no session existed under the agent's user, and the first
+    // capture-pane failed against the router's empty tmux server.
+    const startTarget = agentTmuxTarget(name)
+    runTmux(startTarget, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
 
-    logger.info({ name, session, channelDir: agentChannelDir }, 'Agent tmux session started')
+    logger.info({ name, session, channelDir: agentChannelDir, runAsUser: startTarget.runAsUser ?? null }, 'Agent tmux session started')
 
     // After a restart with --continue, a session that's been idle for >24h
     // shows the "Resume from summary" modal before the prompt input is ready
@@ -1599,10 +1841,11 @@ export async function stopAgentProcess(name: string): Promise<{ ok: boolean; err
   const session = agentSessionName(name)
   if (!isAgentRunning(name)) return { ok: false, error: 'Agent is not running' }
 
-  const host = readAgentRemoteHost(name)
+  const target = agentTmuxTarget(name)
+  const host = target.host
 
   try {
-    runTmux(host, ['kill-session', '-t', session], { timeout: 5000 })
+    runTmux(target, ['kill-session', '-t', session], { timeout: 5000 })
     await delay(2000)
     // Reap any orphaned plugin grandchild that tmux did not tear down. This is
     // a LOCAL pkill against this host's process table, so it only makes sense
@@ -1689,6 +1932,64 @@ export async function dismissResumeSummaryModalIfPresent(session: string, host: 
   }
 }
 
+// Claude Code drafts feedback reports on its own and parks them in a bordered
+// modal above the prompt input ("Bug report drafted: …" + "1 to review · 2 to
+// send · 0 to dismiss"). It swallows the next keystroke exactly like the
+// session-rating modal, but it is NASTIER to detect: it leaves the normal idle
+// footer on screen, so detectPaneState() reports the pane idle, deliveries are
+// marked delivered, and the messages pile up in the input box unsent. Measured
+// live on agent-samu 2026-08-31: 10 minutes not-ready, 5 queued messages, and
+// a peer's report parked unsubmitted in the prompt.
+//
+// Dismissal takes TWO steps, measured on that same pane: "0" closes the draft,
+// then Claude Code immediately offers "Turn off Claude-drafted feedback? 0 to
+// turn off · Esc to keep". A second "0" there would silently disable feedback
+// drafting for that agent, so the follow-up is answered with Esc (keep) -- and
+// only when its own detector fires, never blind: a bare Esc into a prompt box
+// that holds a parked delivery is not a keystroke worth firing on spec.
+// The not-ready-path companion to the pre-flight dismissal above, and the
+// reason it exists: every prompt injector asks isSessionReadyForPrompt FIRST
+// and gives up before any send is attempted, so a dismissal that lives only in
+// the send path never runs for the case it was written for (measured twice on
+// 2026-08-31 -- see the detector's note in pane-state.ts). Four injectors share
+// that shape: message-router, schedule-runner, inbox-nudge-watcher and
+// telegram-inbox-wake. They call this on their refusal branch instead of each
+// re-implementing the probe, so the fifth injector added later has one obvious
+// thing to call rather than three lines to remember.
+//
+// Returns true only if the modal was actually there AND the pane became ready
+// after clearing it -- a false keeps the caller on its existing skip path, so
+// nothing about the busy case changes.
+export async function clearFeedbackModalAndRecheck(session: string, host: string | null = null): Promise<boolean> {
+  try {
+    const pane = capturePane(session, host)
+    if (pane == null || !detectsFeedbackDraftModal(pane)) return false
+    logger.warn({ session }, 'pane held by a Claude Code feedback-draft modal on the not-ready path, dismissing')
+    await dismissFeedbackDraftModalIfPresent(session, host)
+    return await isSessionReadyForPrompt(session, host)
+  } catch (err) {
+    logger.warn({ err, session }, 'Failed to clear the feedback-draft modal on the not-ready path')
+    return false
+  }
+}
+
+export async function dismissFeedbackDraftModalIfPresent(session: string, host: string | null = null): Promise<void> {
+  try {
+    const pane = captureTmux(host, ['capture-pane', '-t', session, '-p'])
+    if (!detectsFeedbackDraftModal(pane)) return
+    runTmux(host, ['send-keys', '-t', session, '0'], { timeout: 5000 })
+    await delay(300)
+    const after = captureTmux(host, ['capture-pane', '-t', session, '-p'])
+    if (detectsFeedbackOptOutPrompt(after)) {
+      runTmux(host, ['send-keys', '-t', session, 'Escape'], { timeout: 5000 })
+      await delay(300)
+    }
+    logger.info({ session }, 'Dismissed Claude Code feedback-draft modal before sending prompt (feedback drafting left ON)')
+  } catch (err) {
+    logger.warn({ err, session }, 'Failed to probe/dismiss feedback-draft modal')
+  }
+}
+
 // Runtime backstop for the model overage-consent dialog ("Fable 5 now uses
 // usage credits" -- see detectsModelConsentDialog in pane-state.ts for the
 // full anatomy and the drift root cause). The stampFableOverageConsent
@@ -1737,7 +2038,7 @@ const FIRST_RUN_ANSWER_SETTLE_MS = 1500
 export async function answerFirstRunGates(
   session: string,
   host: string | null = null,
-): Promise<'cleared' | 'login' | 'unchanged'> {
+): Promise<'cleared' | 'login' | 'unchanged' | 'blocked'> {
   let acted = false
   for (let i = 0; i < FIRST_RUN_ANSWER_MAX_STEPS; i++) {
     const pane = capturePane(session, host)
@@ -1746,13 +2047,40 @@ export async function answerFirstRunGates(
     if (gate === 'login') return 'login'
     try {
       if (gate === 'trust') {
-        runTmux(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
-        await delay(150)
-        runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+        // TRUSTGATE901: never by number, never by default. 2.1.252 dropped the
+        // "1."/"2." prefixes AND put "No, exit" first as the highlighted
+        // option, so the old `1` + Enter typed nothing and then CONFIRMED the
+        // exit. The keys come from the pane instead.
+        // `pane` is non-null here (gate came from it), but the narrowing does
+        // not survive the intervening checks -- and a null capture is itself a
+        // reason to park rather than guess.
+        const keys = pane != null ? firstRunAcceptKeys(pane) : null
+        if (keys == null) {
+          // Unrecognised layout. Enter confirms whatever is highlighted and
+          // Escape is "No, exit" by the dialog's own footer, so there is no
+          // safe key to send: park and let the caller alert a human.
+          logger.warn({ session, gate },
+            'first-run trust dialog: no unambiguous "yes" option found -- parking, NO keystrokes sent')
+          return 'blocked'
+        }
+        for (const k of keys) {
+          runTmux(host, ['send-keys', '-t', session, k], { timeout: 5000 })
+          await delay(150)
+        }
       } else if (gate === 'bypass-permissions') {
-        runTmux(host, ['send-keys', '-t', session, '2'], { timeout: 5000 })
-        await delay(150)
-        runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+        // Same rule, same reason as 'trust' above: the accept row sits behind a
+        // first, highlighted "No, exit", so answering by number is one dropped
+        // prefix away from confirming the refusal.
+        const keys = pane != null ? firstRunAcceptKeys(pane) : null
+        if (keys == null) {
+          logger.warn({ session, gate },
+            'first-run bypass dialog: no unambiguous accept option found -- parking, NO keystrokes sent')
+          return 'blocked'
+        }
+        for (const k of keys) {
+          runTmux(host, ['send-keys', '-t', session, k], { timeout: 5000 })
+          await delay(150)
+        }
       } else {
         // theme / welcome: Enter accepts the highlighted default and moves on.
         runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
@@ -1769,12 +2097,15 @@ export async function answerFirstRunGates(
 }
 
 // Post-(re)start identity setup. Every freshly spawned Claude Code session is
-// given `/name` so it is identifiable. (`/remote-control` was dropped: the
+// given `/rename <name>` so it is identifiable. NOT `/name`: no such Claude
+// Code command exists (the CLI answers "Unknown command: /name. Did you mean
+// /rename?"), and the failed line then sits PARKED in the input box until the
+// turn ends -- which makes the router read the session as busy. (`/remote-control` was dropped: the
 // operator no longer uses Remote Control, and the agent's inference-only OAuth
 // token can't satisfy it anyway.) Pure helper for the exact slash commands so
 // they are unit-tested; scheduleIdentitySetup wires them to tmux after a wait.
 export function identitySlashCommands(displayName: string): string[] {
-  return [`/name ${displayName}`]
+  return [`/rename ${displayName}`]
 }
 
 // Delays mirror the observed Claude Code first-render timing: the first-run /
@@ -1784,7 +2115,7 @@ const MODAL_DISMISS_DELAY_MS = 8000
 const IDENTITY_SEND_DELAY_MS = 5000
 
 // Schedule the identity setup for a freshly (re)spawned session: once it has
-// had time to render, dismiss any first-run/resume modals, then send `/name`.
+// had time to render, dismiss any first-run/resume modals, then send `/rename`.
 // Shared by startAgentProcess and the channel-monitor recovery respawns
 // (resumeMarveenSession / respawnMarveenSessionFresh), which previously left the
 // main session without its identity after auto-recovery. Fire-and-forget; all
@@ -1796,6 +2127,7 @@ export async function scheduleIdentitySetup(session: string, displayName: string
         await dismissSurveyModalIfPresent(session, host)
         await dismissResumeSummaryModalIfPresent(session, host)
         await dismissModelConsentDialogIfPresent(session, host)
+        await dismissFeedbackDraftModalIfPresent(session, host)
       } catch (err) {
         logger.warn({ err, session }, 'Post-restart modal dismiss failed')
       }
@@ -1806,9 +2138,9 @@ export async function scheduleIdentitySetup(session: string, displayName: string
               runTmux(host, ['send-keys', '-t', session, cmd, 'Enter'], { timeout: 5000 })
               await delay(1000)
             }
-            logger.info({ session, displayName }, 'Set session /name')
+            logger.info({ session, displayName }, 'Set session /rename')
           } catch (err) {
-            logger.warn({ err, session, displayName }, 'Failed to set session /name')
+            logger.warn({ err, session, displayName }, 'Failed to set session /rename')
           }
         })()
       }, IDENTITY_SEND_DELAY_MS)
@@ -1978,6 +2310,7 @@ export async function sendPromptToSession(
     await dismissSurveyModalIfPresent(session, host)
     await dismissResumeSummaryModalIfPresent(session, host)
     await dismissModelConsentDialogIfPresent(session, host)
+    await dismissFeedbackDraftModalIfPresent(session, host)
   } else {
     const releaseDismissLane = tryAcquireSessionSendLane(session, host)
     if (releaseDismissLane) {
@@ -1985,6 +2318,7 @@ export async function sendPromptToSession(
         await dismissSurveyModalIfPresent(session, host)
         await dismissResumeSummaryModalIfPresent(session, host)
         await dismissModelConsentDialogIfPresent(session, host)
+        await dismissFeedbackDraftModalIfPresent(session, host)
       } finally {
         releaseDismissLane()
       }
@@ -2049,6 +2383,11 @@ export async function sendPromptToSession(
   }
 
   const oneLine = text.replace(/\r?\n/g, ' ')
+  // STUCKINPUT827: remember the EXACT byte stream we are about to type. If the
+  // submitting Enter does not land, the stuck-input watcher re-injects THIS
+  // instead of guessing from a lossy screen scrape. Recorded before the send so
+  // a delivery that parks mid-stream is recoverable too.
+  recordInjectedPrompt(session, oneLine)
   const CHUNK = 80
   // Stream oneLine into the pane as CHUNK-sized literal send-keys writes,
   // followed by a submitting Enter. Extracted as a closure so the

@@ -13,7 +13,8 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { respawnMainSessionFresh } from './channel-monitor.js'
 import { paneLooksIdle } from '../pane-state.js'
 import { readAutoRestartConfig } from './auto-restart-store.js'
-import { restartDue, dailyDueAtMs, parseHHMM, mainRestartMechanism, type AutoRestartConfig } from '../auto-restart.js'
+import { restartDue, dailyDueAtMs, parseHHMM, mainRestartMechanism, restartBlockedBy, deferralOverride, type AutoRestartConfig } from '../auto-restart.js'
+import { hasOpenInboundQuestion } from '../db.js'
 
 // Drives per-agent scheduled restarts (see src/auto-restart.ts for the why and
 // the pure due-logic). Mirrors the other watcher loops: a 60s sweep, started
@@ -34,6 +35,13 @@ const INTERVAL_MS = 60_000
 // restart) so a past-due daily slot does not fire at startup. In-memory: a
 // dashboard restart re-seeds, at worst skipping one slot -- never double-fires.
 const lastRestart = new Map<string, number>()
+
+// agent name -> the current open-question deferral streak: when the condition
+// was first seen (ms) and how many due restarts it has deferred so far.
+// Cleared when the question is answered or a restart runs. In-memory like
+// lastRestart: a dashboard restart resets the streak, at worst deferring one
+// extra window -- never overriding early.
+const openQuestionDeferrals = new Map<string, { sinceMs: number; count: number }>()
 
 function localMidnightMs(nowMs: number): number {
   const d = new Date(nowMs)
@@ -132,14 +140,51 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
 
   const session = sessionFor(name)
   const host = name === MAIN_AGENT_ID ? null : readAgentRemoteHost(name)
-  if (!paneIsIdle(session, host)) {
-    logger.info({ name, session }, 'auto-restart: due but pane is busy, deferring to next tick')
-    return
+  // An agent waiting on the owner's answer is idle precisely then -- so the
+  // idle-guard alone lets a due restart swallow the pending exchange. The
+  // ledger's open-question signal covers that case; a ledger read failure
+  // counts as no-question (same fail-open as the context-restart gate) so a
+  // broken ledger cannot pin restarts forever.
+  const openQuestion = (() => {
+    try { return hasOpenInboundQuestion(name) }
+    catch { return false }
+  })()
+  // Track how long the open question has been deferring this agent. The signal
+  // itself is clockless (an unanswered question stays open forever), so the
+  // streak is what bounds the deferral.
+  if (openQuestion) {
+    if (!openQuestionDeferrals.has(name)) openQuestionDeferrals.set(name, { sinceMs: nowMs, count: 0 })
+  } else {
+    openQuestionDeferrals.delete(name)
+  }
+  const blocked = restartBlockedBy({ paneIdle: paneIsIdle(session, host), openQuestion })
+  if (blocked) {
+    const streak = openQuestionDeferrals.get(name) ?? null
+    const capMs = cfg.openQuestionDeferralCapHours * 60 * 60 * 1000
+    if (!deferralOverride(blocked, streak?.sinceMs ?? null, nowMs, capMs)) {
+      if (streak !== null) streak.count += 1
+      logger.info({ name, session, blocked,
+        deferredCount: streak?.count ?? null,
+        deferredForMs: streak === null ? null : nowMs - streak.sinceMs },
+        'auto-restart: due but deferred to next tick')
+      return
+    }
+    // The deferral must have an end AND a voice: past the cap the restart
+    // proceeds, and the override is logged at warn so a permanently
+    // unanswered question is distinguishable from normal operation.
+    logger.warn({ name, session,
+      deferredCount: (streak as { count: number }).count,
+      deferredForMs: nowMs - (streak as { sinceMs: number }).sinceMs,
+      capHours: cfg.openQuestionDeferralCapHours },
+      'auto-restart: open-question deferral exceeded cap, restarting anyway')
   }
 
   try {
     await performRestart(name, cfg)
     lastRestart.set(name, nowMs)
+    // A restart does not answer the question -- reset the streak so the next
+    // due slot gets a full deferral window again instead of overriding at once.
+    openQuestionDeferrals.delete(name)
     logger.info({ name, mode: name === MAIN_AGENT_ID ? 'fresh(main)' : cfg.mode }, 'auto-restart: restarted session')
   } catch (err) {
     logger.warn({ err, name }, 'auto-restart: restart failed')

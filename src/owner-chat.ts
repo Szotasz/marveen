@@ -29,8 +29,23 @@
 //    migration, and must never ship in the same release as this.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { ALLOWED_CHAT_ID, MAIN_AGENT_ID } from './config.js'
-import { channelStateDir } from './channel-provider.js'
+import { ALLOWED_CHAT_ID, CHANNEL_CHAT_ID, MAIN_AGENT_ID } from './config.js'
+import { channelStateDir, type ChannelProviderType } from './channel-provider.js'
+
+/**
+ * The .env value that names the owner chat for a given provider. ALLOWED_CHAT_ID
+ * is the Telegram key; every other provider has its own (SLACK_CHANNEL_ID,
+ * DISCORD_CHANNEL_ID, ... -- getChannelChatId), surfaced as CHANNEL_CHAT_ID.
+ * A Slack-bound install routinely keeps a stale numeric Telegram id in
+ * ALLOWED_CHAT_ID; feeding that to chat.postMessage earns a permanent
+ * `channel_not_found`, so the provider's own key must win there.
+ */
+export function configuredOwnerChatFor(
+  provider: ChannelProviderType,
+  env: { allowedChatId: string; channelChatId: string } = { allowedChatId: ALLOWED_CHAT_ID, channelChatId: CHANNEL_CHAT_ID },
+): string {
+  return provider === 'telegram' ? env.allowedChatId : env.channelChatId
+}
 
 /**
  * Normalise a configured chat id to "set" or "not set".
@@ -65,11 +80,17 @@ export function normalizeChatId(raw: string | null | undefined): string | null {
 export function resolveOwnerChatId(
   readAccessFile: (path: string) => string = (p) => readFileSync(p, 'utf-8'),
   configured: string | null = ALLOWED_CHAT_ID,
+  provider: ChannelProviderType = 'telegram',
 ): string | null {
   const fromEnv = normalizeChatId(configured)
   if (fromEnv) return fromEnv
   try {
-    const raw = JSON.parse(readAccessFile(join(channelStateDir('telegram'), 'access.json'))) as Record<string, unknown>
+    // `provider` defaults to 'telegram' so every existing caller (daily digest,
+    // welcome/avatar messages, command-task, inbound-probe) is byte-identical.
+    // The schedule-runner passes CHANNEL_PROVIDER so a Slack-bound main agent
+    // resolves the owner from its slack/access.json instead of a (missing)
+    // telegram one.
+    const raw = JSON.parse(readAccessFile(join(channelStateDir(provider), 'access.json'))) as Record<string, unknown>
     // Same shape and same "first allowlist entry" heuristic as
     // schedule-runner's resolveBoundChatId, which already resolves the main
     // agent from this exact file. access.json has no owner field; with more
@@ -81,8 +102,15 @@ export function resolveOwnerChatId(
         if (id) return id
       }
     }
-    if (raw.groups && typeof raw.groups === 'object') {
-      for (const key of Object.keys(raw.groups as Record<string, unknown>)) {
+    // Telegram/Discord keep allowed groups under `groups`, Slack under
+    // `channels` -- the same allowFrom -> groups -> channels heuristic as
+    // schedule-runner's chatIdFromAccessConfig, so a Slack main agent bound
+    // only to a channel (empty DM allowlist) resolves an owner here too, not
+    // just in the task-prompt path.
+    for (const mapKey of ['groups', 'channels'] as const) {
+      const map = raw[mapKey]
+      if (!map || typeof map !== 'object') continue
+      for (const key of Object.keys(map as Record<string, unknown>)) {
         const id = normalizeChatId(key)
         if (id) return id
       }

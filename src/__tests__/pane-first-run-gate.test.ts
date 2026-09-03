@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { detectsFirstRunGate, detectPaneState, detectsBlockingMenu } from '../pane-state.js'
+import { detectsFirstRunGate, detectPaneState, detectsBlockingMenu, firstRunAcceptKeys } from '../pane-state.js'
 
 // Fresh-install first-run gate detection (card 5F37BB84, Oligo2000 VPS
 // 2026-07-22). A sub-agent session parked on a Claude Code first-run dialog
@@ -97,9 +97,126 @@ const BUSY_WITH_QUOTE_PANE = [
   ' Thinking… (12s · ↓ 1.2k tokens · esc to interrupt)',
 ].join('\n')
 
+// The SAME dialog as TRUST_PANE, as Claude Code 2.1.246 actually renders it --
+// captured live on 2026-09-01 from a `claude` started in a throwaway directory
+// (tmux capture-pane), not written from memory. Only the workspace path is
+// swapped for a generic one; every other line is verbatim, including the
+// unboxed layout, the marketing lead-in and the changed option text.
+//
+// Two things changed at once, which is why one string cannot cover both
+// versions: the question "Do you trust the files in this folder?" is GONE
+// (zero occurrences in the 2.1.246 binary), and the option is no longer
+// "Yes, proceed" but "Yes, I trust this folder".
+const TRUST_PANE_2_1_246 = [
+  '────────────────────────────────────────────────────────────────',
+  ' Accessing workspace:',
+  '',
+  ' /home/gabor/marveen/agents/nova',
+  '',
+  " Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this",
+  ' folder first.',
+  '',
+  " Claude Code'll be able to read, edit, and execute files here.",
+  '',
+  ' Security guide',
+  '',
+  ' ❯ 1. Yes, I trust this folder',
+  '   2. No, exit',
+  '',
+  ' Enter to confirm · Esc to cancel',
+].join('\n')
+
+// Negative control for the NEW anchor. The option text is short and eminently
+// quotable -- an agent explaining this very incident types it into a live
+// session. A visible idle footer means the real prompt is up, so this must
+// never read as a gate (same discipline as IDLE_WITH_QUOTE_PANE above).
+const IDLE_WITH_NEW_QUOTE_PANE = [
+  ' A telepitesnel az elso opcio: "Yes, I trust this folder" -- ezt kell valaszolni.',
+  '',
+  '──────────────────────────────────────────────────',
+  ' ❯ ',
+  '──────────────────────────────────────────────────',
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
+// Negative control Marveen asked for: an ordinary working pane, no dialog of
+// any kind. If this ever classifies as a gate, the detector is matching noise.
+const ORDINARY_PANE = [
+  ' $ npm test',
+  ' Test Files  325 passed (325)',
+  '',
+  '──────────────────────────────────────────────────',
+  ' ❯ ',
+  '──────────────────────────────────────────────────',
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
+// The SAME dialog again, as Claude Code 2.1.252 renders it -- captured live on
+// 2026-09-01 from an ISOLATED install (npm install --prefix into a throwaway
+// directory; the global 2.1.246 was left alone and re-checked afterwards).
+// Only the workspace path is genericised.
+//
+// TWO further breaks on top of the reworded text, six patch releases later:
+//   * the "1." / "2." numbering is GONE, so typing "1" selects nothing;
+//   * "No, exit" is FIRST and is the highlighted option, so the Enter that
+//     followed the useless "1" CONFIRMED the exit.
+// A fresh install therefore did not park -- it quit, and our own code chose it.
+const TRUST_PANE_2_1_252 = [
+  '────────────────────────────────────────────────────────────────',
+  ' Accessing workspace:',
+  '',
+  ' /home/gabor/marveen/agents/nova',
+  '',
+  " Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this",
+  ' folder first.',
+  '',
+  " Claude Code'll be able to read, edit, and execute files here.",
+  '',
+  ' Security guide',
+  '',
+  ' ❯ No, exit',
+  '   Yes, I trust this folder',
+  '',
+  ' Enter to confirm · Esc to cancel',
+].join('\n')
+
+// A trust-shaped panel whose accept option is missing entirely: the layout is
+// not one we model, so the answer must be "send nothing".
+const TRUST_PANE_UNKNOWN_SHAPE = [
+  ' Quick safety check: Is this a project you created or one you trust?',
+  '',
+  ' ❯ Maybe later',
+  '   No, exit',
+  '',
+  ' Enter to confirm · Esc to cancel',
+].join('\n')
+
 describe('detectsFirstRunGate', () => {
   it('classifies the folder-trust dialog', () => {
     expect(detectsFirstRunGate(TRUST_PANE)).toBe('trust')
+  })
+
+  // TRUSTGATE901: the 2.1.246 rewrite. This is the regression that shipped --
+  // the old pattern returns null here, the pane falls through to the generic
+  // blocking-menu recovery, and that sends Escape, which on this dialog is
+  // "No, exit". A fresh install quit at startup.
+  it('classifies the REWRITTEN folder-trust dialog (Claude Code 2.1.246)', () => {
+    expect(detectsFirstRunGate(TRUST_PANE_2_1_246)).toBe('trust')
+  })
+
+  // Both versions at once, so a later edit cannot "simplify" the alternation
+  // down to whichever string it happens to see first.
+  it('covers BOTH dialog versions, not one of them', () => {
+    expect([detectsFirstRunGate(TRUST_PANE), detectsFirstRunGate(TRUST_PANE_2_1_246)])
+      .toEqual(['trust', 'trust'])
+  })
+
+  it('does NOT flag an idle pane quoting the NEW option text', () => {
+    expect(detectsFirstRunGate(IDLE_WITH_NEW_QUOTE_PANE)).toBeNull()
+  })
+
+  it('does NOT flag an ordinary working pane', () => {
+    expect(detectsFirstRunGate(ORDINARY_PANE)).toBeNull()
   })
 
   it('classifies the bypass-permissions acceptance dialog', () => {
@@ -194,9 +311,76 @@ describe('first-run gate wiring contracts', () => {
 
   it('startAgentProcess stamps per-project trust in the config root the session boots from', () => {
     const stampIdx = AGENT_PROCESS.indexOf('stampProjectTrustForDir(\n      claudeConfigDir')
-    const launchIdx = AGENT_PROCESS.indexOf("runTmux(null, ['new-session', '-d', '-s', session, cmd]")
+    // The launch target used to be a bare `null`. Since agents can own their OS user it is
+    // `startTarget` (agentTmuxTarget(name)), so the old literal matched nothing and the
+    // assertion passed a -1 into the ordering check. The contract under test is the ORDER,
+    // not the argument, so match the current spawn line.
+    const launchIdx = AGENT_PROCESS.indexOf("runTmux(startTarget, ['new-session', '-d', '-s', session, cmd]")
     expect(stampIdx).toBeGreaterThan(0)
+    // Both anchors must actually be FOUND. Without this a renamed call site makes indexOf
+    // return -1, and the ordering assertion below goes red for the wrong reason: it reads as
+    // "the stamp moved after the launch" when the truth is "the test no longer matches".
+    expect(launchIdx).toBeGreaterThan(0)
     // The stamp must happen BEFORE the tmux session is spawned.
     expect(launchIdx).toBeGreaterThan(stampIdx)
+  })
+})
+
+describe('firstRunAcceptKeys (TRUSTGATE901)', () => {
+  // Numbered, "Yes" first and already highlighted -> confirm where we are.
+  it('2.1.246 layout: the cursor already sits on yes, so just confirm', () => {
+    expect(firstRunAcceptKeys(TRUST_PANE_2_1_246)).toEqual(['Enter'])
+  })
+
+  // Unnumbered, "No, exit" first AND highlighted -> move down, then confirm.
+  // This is the regression that quit a fresh install.
+  it('2.1.252 layout: moves the selection onto yes before confirming', () => {
+    expect(firstRunAcceptKeys(TRUST_PANE_2_1_252)).toEqual(['Down', 'Enter'])
+  })
+
+  // The discriminating assertion: a naive "always Enter" answer -- which is
+  // what the old code effectively did after typing a number that no longer
+  // selects anything -- is WRONG here, and this fixture is what proves it.
+  it('2.1.252 layout: a bare Enter would confirm "No, exit"', () => {
+    expect(firstRunAcceptKeys(TRUST_PANE_2_1_252)).not.toEqual(['Enter'])
+  })
+
+  it('the older boxed dialog still resolves to a plain confirm', () => {
+    expect(firstRunAcceptKeys(TRUST_PANE)).toEqual(['Enter'])
+  })
+
+  // Not-acting is the correct answer on an unmodelled layout: Escape is
+  // "No, exit" by the dialog's own footer and Enter confirms the highlight.
+  it('returns null when no unambiguous yes option exists (park, send nothing)', () => {
+    expect(firstRunAcceptKeys(TRUST_PANE_UNKNOWN_SHAPE)).toBeNull()
+  })
+
+  it('returns null on a pane with no selection cursor at all', () => {
+    expect(firstRunAcceptKeys(ORDINARY_PANE.replace('❯', ' '))).toBeNull()
+  })
+
+  // The bypass-permissions dialog answered by the SAME rule. Its accept row is
+  // second, behind a first and highlighted "No, exit" -- the identical shape
+  // that made the trust dialog dangerous once the numbering disappeared.
+  it('bypass dialog: moves onto the accept row instead of typing its number', () => {
+    expect(firstRunAcceptKeys(BYPASS_PANE)).toEqual(['Down', 'Enter'])
+  })
+
+  // HYPOTHETICAL, and labelled as such: this layout was NOT captured from any
+  // release. It exists to prove the rule does not depend on the numbering,
+  // which is precisely what vanished from the trust dialog in 2.1.252. If the
+  // bypass panel ever loses its prefixes the same way, this is the behaviour
+  // we want -- and the old "type 2" answer would have selected nothing and
+  // then confirmed the refusal.
+  it('bypass dialog without numbering (hypothetical) still resolves correctly', () => {
+    const unnumbered = [
+      ' Bypass Permissions mode',
+      '',
+      ' ❯ No, exit',
+      '   Yes, I accept',
+      '',
+      ' Enter to confirm · Esc to cancel',
+    ].join('\n')
+    expect(firstRunAcceptKeys(unnumbered)).toEqual(['Down', 'Enter'])
   })
 })

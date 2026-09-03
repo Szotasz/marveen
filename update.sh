@@ -327,15 +327,26 @@ OLD_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 # of NEW, so reset --hard $OLD_VERSION_FULL reverts without a force-push.
 OLD_VERSION_FULL=$(git rev-parse HEAD 2>/dev/null || echo "")
 
-# Ahead-detect: local commits not on upstream make ff-only refuse. Report it
-# actionably instead of dying silently under set -e (the dominant failure).
+# Divergence-detect: ff-only refuses only when the two sides have BOTH moved.
+# Being merely AHEAD is not a divergence -- it is the normal state of an install
+# that also develops locally, and there is nothing to fast-forward TO, so the
+# pull below is a no-op ("Already up to date") rather than a failure. Refusing
+# on ahead alone locked such an install out of its own updater: the operator's
+# checkout sat 53 commits ahead / 0 behind on 2026-08-30, having just merged
+# upstream, and the updater still would not run -- no build, no migration, no
+# restart, on a tree that was in fact current. Only ahead AND behind together
+# mean the histories have parted and a human has to reconcile them.
 RESULT_PHASE="pull"
 AHEAD=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
-if [ "${AHEAD:-0}" -gt 0 ]; then
-  RESULT_MSG="A helyi checkout ${AHEAD} committal elore van az upstreamhez kepest; a fast-forward frissites nem lehetseges. Nezd meg: git log @{u}..HEAD"
-  echo -e "${RED}HIBA:${NC} a helyi checkout ${AHEAD} committal elore van az upstreamhez kepest; fast-forward nem lehetseges. Nezd: git log @{u}..HEAD"
+BEHIND=$(git rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
+if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
+  RESULT_MSG="A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van az upstreamhez kepest (szetvalt elozmeny); a fast-forward frissites nem lehetseges. Nezd meg: git log @{u}..HEAD"
+  echo -e "${RED}HIBA:${NC} a helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van (szetvalt elozmeny); fast-forward nem lehetseges. Nezd: git log @{u}..HEAD"
   restore_stash_before_exit
   exit 5
+fi
+if [ "${AHEAD:-0}" -gt 0 ]; then
+  echo -e "  ${ORANGE}Megjegyzes:${NC} a helyi checkout ${AHEAD} committal elore van, lemaradas nincs -- a letoltes nem hoz ujat, a frissites folytatodik."
 fi
 
 # Pull latest, NON-fatal under set -e so a diverged/network failure is reported.
@@ -469,10 +480,15 @@ SEED_REFRESH_KEPT=0
 # Render a template stream the same way the seeder does. Keep in sync with the
 # sed blocks in the seeding loops below and in install-linux.sh.
 render_seed_template() {
+  # {{PROJECT_ROOT}} is the node seeder's alias for {{INSTALL_DIR}}
+  # (substituteTemplatePlaceholders) -- without it here, any shipped task using
+  # that form (ledger-live-drain does) hash-mismatches every rendered historical
+  # version and is permanently classified "touched", so it never refreshes.
   sed -e "s/{{MAIN_AGENT_ID}}/${MAIN_AGENT_ID:-}/g" \
       -e "s/{{BOT_NAME}}/${BOT_NAME:-}/g" \
       -e "s/{{OWNER_NAME}}/${OWNER_NAME:-}/g" \
       -e "s|{{INSTALL_DIR}}|${INSTALL_DIR}|g" \
+      -e "s|{{PROJECT_ROOT}}|${INSTALL_DIR}|g" \
       -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g"
 }
 
@@ -555,6 +571,12 @@ run_seed_refresh() {
   refresh_untouched_seeds "seed-skills" "$HOME/.claude/skills" "verbatim"
   if [ -n "${MAIN_AGENT_ID:-}" ]; then
     refresh_untouched_seeds "seed-scheduled-tasks" "$HOME/.claude/scheduled-tasks" "template"
+    # SEEDREFRESH826: the TOP-LEVEL scheduled-tasks/ dir (dream-engine,
+    # memoria-heartbeat, reggeli-napindito, ledger-live-drain) was seeded by
+    # ensureDefaultScheduledTasks but never refreshed -- a one-shot seed, so
+    # every shipped fix reached new installs only. Measured on the reference
+    # host: 5/5 live seeded copies had drifted. Same untouched-only rule.
+    refresh_untouched_seeds "scheduled-tasks" "$HOME/.claude/scheduled-tasks" "template"
   fi
   if [ "$SEED_REFRESH_UPDATED" -gt 0 ]; then
     echo -e "  ${GREEN}✓${NC} Szallitott skill/feladat frissitve: ${SEED_REFRESH_UPDATED} (erintetlen masolat); megtartva: ${SEED_REFRESH_KEPT} (helyben modositott)"

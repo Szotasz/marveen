@@ -7,6 +7,7 @@ export const TOOL_TIMEOUTS = {
   'telegram':        10_000,
   'github':          10_000,
   'slack':           10_000,
+  'discord':         10_000,
   // CPU-only Ollama embeds a ~1500-char memory in 40-60s, which overran the
   // former 30s deadline and left large memories permanently un-vectorized
   // (search silently fell back to FTS). 90s covers the slow CPU path.

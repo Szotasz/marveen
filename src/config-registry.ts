@@ -267,6 +267,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'AGENT_API_ORIGIN',
+    type: 'string',
+    default: '',
+    description: 'Az a cím, amin az ÜGYNÖKÖK érik el a dashboard API-ját onnan, ahol futnak (pl. http://localhost:3420 egy gépes telepítésnél, vagy egy belső szolgáltatás-név k8s-en). Üres = a régi viselkedés: DASHBOARD_PUBLIC_URL, annak hiányában localhost. Ez NEM a böngészőnek szóló publikus cím.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     key: 'OLLAMA_URL',
     type: 'string',
     default: 'http://localhost:11434',
@@ -311,9 +320,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
     key: 'HEARTBEAT_AGENT_ENABLED',
     type: 'string',
-    default: '1',
+    // OFF by default, matching config.ts: an unset key resolves to false there
+    // (deliberate opt-in -- a fresh/upgrading install must not silently spawn a
+    // sub-agent that reads the operator's calendar and database). The registry
+    // previously advertised '1', so the settings UI showed the feature as
+    // enabled while it never booted -- a silent mismatch that can hide for
+    // months.
+    default: '0',
     valueSet: ['0', '1'],
-    description: 'Heartbeat sub-ágens engedélyezése. 1 = bekapcsolva (újraindítás után lép életbe).',
+    description: 'Heartbeat sub-ágens engedélyezése. 1 = bekapcsolva (újraindítás után lép életbe). Alapértelmezés: kikapcsolva.',
     module: 'heartbeat',
     secret: false,
     requiresRestart: true,

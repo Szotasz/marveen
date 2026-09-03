@@ -18,12 +18,45 @@
     ],
     "SessionStart": [
       {
-        "matcher": "compact|resume",
+        "matcher": "compact|resume|clear",
         "hooks": [
           {
             "type": "command",
             "command": "python3 {{PROJECT_ROOT}}/scripts/hooks/taskstate-replay.py",
             "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 {{PROJECT_ROOT}}/scripts/hooks/clear-replay.py",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 {{PROJECT_ROOT}}/scripts/hooks/clear-capture.py",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Skill|Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/skill-usage-capture.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/skill-usage-capture.py; exit 0'",
+            "timeout": 10
           }
         ]
       }
@@ -34,6 +67,11 @@
           {
             "type": "command",
             "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/staleness-guard.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/staleness-guard.py; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/provenance-gate.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/provenance-gate.py; exit 0'",
             "timeout": 10
           },
           {

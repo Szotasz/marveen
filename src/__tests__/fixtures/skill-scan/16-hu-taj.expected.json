@@ -1,0 +1,1 @@
+{"scanner": {"name": "mio-scan", "version": "1.0.0", "rulepack": "2026-08-24"}, "findings": [{"rule": "hu-taj-shaped", "category": "pii", "match": "123 456 789", "line": 1, "span": [5, 16]}, {"rule": "hu-taj-shaped", "category": "pii", "match": "987-654-321", "line": 2, "span": [28, 39]}]}

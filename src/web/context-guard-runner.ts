@@ -4,15 +4,16 @@ import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS } from './channel-monitor.js'
 import { shouldDeferForRecentRespawn } from './stuck-tool-call-watcher.js'
-import { listAgentNames, listAllAgentNames, agentDir, readAgentModel, readAgentClaudeConfigDir, readAgentRemoteHost } from './agent-config.js'
+import { listAgentNames, listAllAgentNames, agentDir, readAgentModel, readAgentRemoteHost } from './agent-config.js'
+import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import {
   agentRunState,
   agentSessionName,
   restartAgentProcess,
   capturePane,
-  sendPromptToSession,
   isSessionReadyForPrompt,
 } from './agent-process.js'
+import { sendSystemDirective } from './system-directive.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { detectPaneState, paneShowsContextSaturation } from '../pane-state.js'
 import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir } from './active-model.js'
@@ -196,7 +197,10 @@ export function resumePrompt(
 }
 
 function configDirFor(name: string): string | undefined {
-  return name === MAIN_AGENT_ID ? undefined : (readAgentClaudeConfigDir(name) ?? undefined)
+  // resolveAgentConfigDirForRead, not readAgentClaudeConfigDir: an agent whose
+  // config dir was auto-provisioned by the launcher has no field to read, and
+  // reading the host default silently returns another agent's absence.
+  return name === MAIN_AGENT_ID ? undefined : (resolveAgentConfigDirForRead(name) ?? undefined)
 }
 
 /** Raw observed context size (tokens) for the idle-flush tier's absolute threshold. */
@@ -378,7 +382,12 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   try {
     switch (decision.action) {
       case 'request-handoff':
-        await sendPromptToSession(
+        // GUARDHITELES903: through the authenticated-directive primitive, not
+        // bare sendPromptToSession -- this text asks the agent to drop work
+        // and STOP, which without a queue anchor is indistinguishable from a
+        // prompt injection (measured 2026-09-03: Boni correctly refused it).
+        await sendSystemDirective(
+          name,
           session,
           decision.reason.startsWith(STALE_REFRESH_REASON_PREFIX)
             // The handoff exists but went stale while we waited for an idle
@@ -441,7 +450,10 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         const hadHandoff = inputs.handoffMtime !== null || handoffMtime(name) !== null
         // Staleness was measured at RESTART time and rode here in the state;
         // measuring now would be meaningless (the old session is gone).
-        await sendPromptToSession(
+        // GUARDHITELES903: anchored like the handoff request -- the resume
+        // prompt steers a fresh session's entire first turn.
+        await sendSystemDirective(
+          name,
           session,
           resumePrompt(name, handoffPathFor(name), hadHandoff, state.handoffStaleMinutes),
         )

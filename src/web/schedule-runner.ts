@@ -1,17 +1,18 @@
 import { join, isAbsolute } from 'node:path'
-import { homedir } from 'node:os'
 import { checkTaskMcpRequirements } from './schedule-mcp-precheck.js'
 import { existsSync, readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { logger } from '../logger.js'
+import { decideDesktopGate, readDesktopLock, recordDesktopSkip } from './desktop-lock.js'
 import {
   PROJECT_ROOT,
   MAIN_AGENT_ID,
   BOT_NAME,
   APP_TZ_INVALID,
+  CHANNEL_PROVIDER,
 } from '../config.js'
-import { resolveOwnerChatId } from '../owner-chat.js'
+import { resolveOwnerChatId, configuredOwnerChatFor } from '../owner-chat.js'
 import {
   appendTaskRun,
   listPendingTaskRetries,
@@ -20,9 +21,12 @@ import {
   insertPendingTaskRetryIfNew,
   markPendingTaskRetryAlert,
   clearPendingTaskRetryAlert,
+  markPendingTaskRetryOwnerAlert,
+  clearPendingTaskRetryOwnerAlert,
   markScheduledTaskKanbanWaiting,
+  createAgentMessage,
 } from '../db.js'
-import { toPendingRetryView, classifyTelegramSendError, type PendingRetryView } from '../pending-retries.js'
+import { toPendingRetryView, classifySendError, OWNER_ESCALATION_EXTRA_MS, type PendingRetryView } from '../pending-retries.js'
 import {
   SCHEDULED_TASK_PREAMBLE,
   wrapScheduledTask,
@@ -35,7 +39,7 @@ import {
 } from './scheduled-tasks-io.js'
 import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir, readAgentClaudeConfigDir } from './agent-config.js'
 import { readTranscriptMtimeFromProjectDir } from './active-model.js'
-import { channelStateDir } from '../channel-provider.js'
+import { channelStateDir, getProvider, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import {
   agentSessionName,
   isAgentRunning,
@@ -46,9 +50,10 @@ import {
   capturePane,
   sendEnterToSession,
   clearStaleParkedInput,
+  resolveAgentProvider,
+  clearFeedbackModalAndRecheck,
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-import { sendTelegramMessage } from './telegram.js'
 import { runCommandTask } from './command-task.js'
 import { decideQuotaAction, type QuotaWorkClass } from '../quota-gate.js'
 import { readQuotaSnapshot } from '../quota-snapshot.js'
@@ -100,7 +105,14 @@ export interface TaskInflightEntry {
   session: string
   host: string | null
   injectedAt: number
+  // Stage 1: inter-agent notice sent to the main agent (was, until this
+  // change, a direct channel alert).
   alerted: boolean
+  // Stage 2: direct-to-owner channel escalation, only after the main agent
+  // has had OWNER_ESCALATION_EXTRA_MS since the stage-1 notice to react. In-memory
+  // only, same as `alerted` -- does not survive a dashboard restart (an
+  // accepted, pre-existing limitation of this map, not a new one).
+  ownerAlerted: boolean
   // Evidence that the injected prompt was actually PICKED UP -- the pane was
   // observed 'busy' at some sweep, or the target session's transcript advanced
   // after injectedAt. Set by the sweep, never at injection time: a session that
@@ -150,16 +162,24 @@ export function resolveStuckTimeoutMs(
 // Active task/heartbeat injections keyed by `${taskName}@${agentName}`.
 const taskInflightMap = new Map<string, TaskInflightEntry>()
 
-export type TaskTimeoutDecision = 'clear' | 'alert' | 'hold' | 'lost'
+export type TaskTimeoutDecision = 'clear' | 'alert' | 'escalate' | 'hold' | 'lost'
 
 // Pure: decide what the watchdog should do for a single in-flight entry this
 // tick. Exported so it can be unit-tested without tmux I/O.
 //
-// clear -- remove the entry (task ran, or entry too stale)
-// alert -- send a one-shot Telegram alert (session busy past timeout threshold)
-// lost  -- the injection never started a turn: re-deliver instead of counting
-//          it as done (see below)
-// hold  -- no action this tick
+// clear    -- remove the entry (task ran, i.e. idle with sawTurn evidence; or
+//             entry too stale)
+// alert    -- stage 1: one-shot inter-agent notice to the main agent (session
+//             busy past timeout threshold)
+// escalate -- stage 2: one-shot direct-to-owner channel alert, only once the
+//             main agent has already been notified (alert fired) AND a
+//             further OWNER_ESCALATION_EXTRA_MS has elapsed since injection
+//             with the session still busy. Keyed off `injectedAt`, not off
+//             the stage-1 send succeeding, so a failed stage-1 notice (e.g. a
+//             DB hiccup) can never silently suppress the stage-2 escalation.
+// lost     -- the injection never started a turn: re-deliver instead of
+//             counting it as done (see below)
+// hold     -- no action this tick
 //
 // THE 'lost' CASE (2026-08-23 incident). This function used to return 'clear'
 // for ANY idle pane, on the reasoning "idle = the task completed". That is only
@@ -186,11 +206,18 @@ export type TaskTimeoutDecision = 'clear' | 'alert' | 'hold' | 'lost'
 //   - 'typing': post-send resubmit loop is already active.
 // Clearing on these states would drop the entry before the 300s timeout can
 // fire, producing false-negative coverage for genuinely stuck tasks.
+//
+// Known limitation, not addressed here: opts.ownerExtraMs added on top of a
+// task configured with a stuckAfterMinutes already close to maxTrackMs can
+// push the escalate threshold past maxTrackMs, in which case the entry is
+// evicted ('clear') before escalate is ever reached. Accepted -- a task
+// legitimately configured to run for hours AND stuck long enough to hit
+// that ceiling is an extreme edge case outside this change's scope.
 export function decideTaskTimeout(
-  entry: Pick<TaskInflightEntry, 'injectedAt' | 'alerted' | 'sawTurn'>,
+  entry: Pick<TaskInflightEntry, 'injectedAt' | 'alerted' | 'ownerAlerted' | 'sawTurn'>,
   paneState: PaneState | null,
   now: number,
-  opts: { graceMs: number; timeoutMs: number; maxTrackMs: number },
+  opts: { graceMs: number; timeoutMs: number; maxTrackMs: number; ownerExtraMs: number },
 ): TaskTimeoutDecision {
   const elapsed = now - entry.injectedAt
   if (elapsed >= opts.maxTrackMs) return 'clear'
@@ -202,9 +229,18 @@ export function decideTaskTimeout(
     if (elapsed < opts.graceMs) return 'hold'
     return 'lost'
   }
-  if (entry.alerted) return 'hold'
+  // NOTE: no early `if (entry.alerted) return 'hold'` here -- that was
+  // correct back when stage 1 was terminal (a single alert, nothing further
+  // to decide), but with the stage-2 escalate path below it would silently
+  // swallow every escalate opportunity for an already-alerted entry. The
+  // alerted/ownerAlerted branching further down now owns that decision.
   if (elapsed < opts.graceMs) return 'hold'
-  if (paneState === 'busy' && elapsed >= opts.timeoutMs) return 'alert'
+  if (paneState !== 'busy') return 'hold'
+  if (!entry.alerted) {
+    if (elapsed >= opts.timeoutMs) return 'alert'
+    return 'hold'
+  }
+  if (!entry.ownerAlerted && elapsed >= opts.timeoutMs + opts.ownerExtraMs) return 'escalate'
   return 'hold'
 }
 
@@ -441,18 +477,28 @@ function persistLastTickMs(nowMs: number): void {
 //   non-zero exit            → log warning, run LLM anyway (fail-open)
 // --- Bound-channel chat id resolution for scheduled-task prompts ---
 //
-// The prompt prefix used to carry a "chat_id: 0" sentinel meaning "the running
+// TELEGRAM: The prompt prefix used to carry a "chat_id: 0" sentinel meaning "the running
 // agent's own bound channel". The convention belonged to an earlier channel
-// implementation; the official Telegram plugin (0.0.6) knows nothing about it:
-// its reply tool calls assertAllowedChat(chat_id) first, "0" is never on the
-// allowlist, so every non-heartbeat scheduled task threw at delivery time
-// (Zara, 2026-07-27; all 32 task-configs affected -- none carries a chat_id).
-// The sentinel's INTENT stays correct (a sub-agent's result must go to its own
-// owner, never the boss's chat), so the fix resolves the concrete chat id at
-// prompt-build time from the same place the plugin enforces it: the agent's
-// own channel access.json allowlist.
+// implementation; the official Telegram plugin (0.0.6) knows nothing about it: the reply
+// tool calls assertAllowedChat(chat_id) first, "0" is never on the allowlist, so
+// every non-heartbeat scheduled task threw at delivery time (Zara, 2026-07-27;
+// all 32 task-configs affected -- none carries a chat_id). The sentinel's INTENT
+// stays correct (a sub-agent's result must go to its own owner, never the boss's
+// chat), so the fix resolves the concrete chat id at prompt-build time from the
+// same place the plugin enforces it: the agent's own channel access.json.
+//
+// SLACK: the resolution is now provider-aware. The main agent and each
+// sub-agent can be bound to Telegram OR Slack (CHANNEL_PROVIDER / per-agent
+// agent-config.json channelProvider), and the access.json lives under the
+// matching provider subdir. Reading telegram/access.json unconditionally meant a
+// Slack-bound agent (no telegram/access.json at all) resolved to null and its
+// scheduled tasks silently shipped with NO delivery instruction (measured on the
+// live CHANNEL_PROVIDER=slack install: telegram/access.json absent, so every
+// scheduled task result had nowhere to go).
 
-/** Pure core: first DM allowlist entry, else first allowed group, else null. */
+/** Pure core: first DM allowlist entry, else first allowed group/channel, else
+ *  null. Handles both the Telegram/Discord `groups` map and the Slack `channels`
+ *  map so one helper covers every provider's access.json shape. */
 export function chatIdFromAccessConfig(raw: unknown): string | null {
   if (!raw || typeof raw !== 'object') return null
   const o = raw as Record<string, unknown>
@@ -461,23 +507,55 @@ export function chatIdFromAccessConfig(raw: unknown): string | null {
     if (typeof first === 'string' && first.trim()) return first.trim()
     if (typeof first === 'number') return String(first)
   }
-  if (o.groups && typeof o.groups === 'object') {
-    const keys = Object.keys(o.groups as Record<string, unknown>)
-    if (keys.length > 0) return keys[0]
+  for (const key of ['groups', 'channels'] as const) {
+    const map = o[key]
+    if (map && typeof map === 'object') {
+      const keys = Object.keys(map as Record<string, unknown>)
+      if (keys.length > 0) return keys[0]
+    }
   }
   return null
 }
 
-/** The agent's own bound Telegram chat, or null when no binding exists.
- *  Reads <agent channels dir>/telegram/access.json -- the exact file the
- *  plugin's assertAllowedChat enforces, so a resolved id is deliverable by
- *  construction. Deliberately NOT falling back to ALLOWED_CHAT_ID: that is
- *  the boss's chat, and pointing a sub-agent's result there is the precise
- *  bug the old sentinel existed to avoid. */
-export function resolveBoundChatId(agentName: string): string | null {
+/** How a scheduled-task prompt names the delivery channel, in Hungarian, for
+ *  the "kuldd el <ide>" instruction. The reply tool itself is the same across
+ *  providers -- only the channel noun and the chat_id format differ. */
+export function channelDeliveryName(provider: ChannelProviderType): string {
+  switch (provider) {
+    case "slack":
+      return "Slacken";
+    case "discord":
+      return "Discordon";
+    case "googlechat":
+      return "Google Chaten";
+    case "teams":
+      return "Teamsen";
+    case "telegram":
+      return "Telegramon";
+    // No default: the switch is exhaustive over ChannelProviderType, so a new
+    // provider is a compile error here instead of silently reading "Telegramon".
+  }
+}
+
+export interface BoundChannel {
+  /** The provider the agent is bound to (main: CHANNEL_PROVIDER; sub-agent:
+   *  its agent-config.json channelProvider, falling back to CHANNEL_PROVIDER). */
+  provider: ChannelProviderType
+  /** The agent's own bound chat id, or null when no binding exists. */
+  chatId: string | null
+}
+
+/** The agent's own bound channel + chat, or {provider, chatId:null} when no
+ *  binding exists. Reads <agent channels dir>/<provider>/access.json -- the
+ *  exact file the plugin's assertAllowedChat enforces, so a resolved id is
+ *  deliverable by construction. Deliberately NOT falling back to
+ *  ALLOWED_CHAT_ID: that is the boss's chat, and pointing a sub-agent's result
+ *  there is the precise bug the old sentinel existed to avoid. */
+export function resolveBoundChannel(agentName: string): BoundChannel {
+  const provider = resolveAgentProvider(agentName)
   const dir = agentName === MAIN_AGENT_ID
-    ? channelStateDir('telegram')
-    : channelStateDir('telegram', agentDir(agentName))
+    ? channelStateDir(provider)
+    : channelStateDir(provider, agentDir(agentName))
   try {
     const raw = JSON.parse(readFileSync(join(dir, 'access.json'), 'utf-8')) as Record<string, unknown>
     const chosen = chatIdFromAccessConfig(raw)
@@ -489,10 +567,10 @@ export function resolveBoundChatId(agentName: string): string | null {
     // log line; behaviour is unchanged (Marveen, msg 7002).
     const candidates = Array.isArray(raw?.allowFrom) ? raw.allowFrom.length : 0
     if (chosen && candidates > 1) {
-      logger.warn({ agent: agentName, candidates, chosen }, 'bound-chat resolution is ambiguous: multiple DM allowlist entries, using the first')
+      logger.warn({ agent: agentName, provider, candidates, chosen }, 'bound-chat resolution is ambiguous: multiple DM allowlist entries, using the first')
     }
-    return chosen
-  } catch { return null }
+    return { provider, chatId: chosen }
+  } catch { return { provider, chatId: null } }
 }
 
 // What a scheduled task costs the shared quota pool, for the gate in
@@ -596,8 +674,25 @@ async function attemptFireTask(
   lateCatchUpMs?: number,
 ): Promise<'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing' | 'first-run'> {
   const { session, host } = resolveTaskTarget(task, agentName)
+  // resolveTaskTarget() computes this internally but does not expose it (it
+  // only returns {session, host}) -- recompute the same cheap check here
+  // rather than widening that function's return type for this one caller.
+  const isMainAgent = agentName === MAIN_AGENT_ID
 
   if (!sessionExistsOnHost(host, session)) {
+    // The main channels session is service-managed (systemd/launchd via
+    // channels.sh), not a directory under AGENTS_BASE_DIR -- startAgentProcess
+    // below checks existsSync(agentDir(name)) and misreports "Agent not
+    // found" for it, a real config-error read on what is actually a
+    // transient respawn (channel-monitor's own down-cascade, watchdog.sh and
+    // the service manager all already own bringing it back). Return
+    // 'starting' directly instead of hitting that misreport -- never restart
+    // the session itself here, which would race those other recovery actors.
+    if (isMainAgent) {
+      logger.info({ task: task.name, agent: agentName, session }, 'Schedule target is the main agent session, currently down; will deliver on retry')
+      return 'starting'
+    }
+
     // Auto-start the agent, then deliver on a later tick. A daily batch agent
     // (e.g. a `0 2 * * *` digest) has no 24/7 session, so a cron fire used to
     // just skip here -- the task never ran. Launch the session now and return
@@ -638,8 +733,19 @@ async function attemptFireTask(
       logger.warn({ task: task.name, agent: agentName, session, gate }, 'Schedule target session parked on a Claude Code first-run dialog, deferring to retry queue')
       return 'first-run'
     }
-    logger.warn({ task: task.name, agent: agentName, session }, 'Schedule target session busy or has pending input, will retry')
-    return 'busy'
+    // A self-drafted feedback modal reads as not-ready here, and the pre-flight
+    // dismissal in sendPromptToSession never gets the chance to clear it --
+    // this gate short-circuits first. Measured twice on 2026-08-31: agent-samu
+    // sat not-ready for 10 minutes with 10 queued messages while the modal held
+    // the pane, AFTER the pre-flight dismissal had already shipped. So the
+    // dismissal has to live on the refusal path too, the same way the first-run
+    // gate is answered above, and readiness is then re-read ONCE.
+    if (await clearFeedbackModalAndRecheck(session, host)) {
+      logger.info({ task: task.name, agent: agentName, session }, 'Feedback-draft modal cleared, session is ready -- proceeding')
+    } else {
+      logger.warn({ task: task.name, agent: agentName, session }, 'Schedule target session busy or has pending input, will retry')
+      return 'busy'
+    }
   }
 
   if (task.forceSend) {
@@ -721,18 +827,20 @@ async function attemptFireTask(
       // ALLOWED_CHAT_ID. The latter is the main/admin chat; injecting it here
       // pointed every sub-agent's task result at the boss's chat instead of its
       // own owner (e.g. attilamarveenja -> Papp Attila). The old "chat_id: 0"
-      // sentinel encoded the same intent, but the official Telegram plugin
-      // rejects it (assertAllowedChat: "0" is never allowlisted), so the
-      // binding is resolved to a CONCRETE id here at prompt-build time. No
-      // binding -> no Telegram instruction at all: better to skip delivery
-      // than to deliver to the wrong chat, and the warn below makes the
-      // config gap visible. The system-level pending-retry alert further
-      // down still uses ALLOWED_CHAT_ID by design.
-      const boundChatId = resolveBoundChatId(agentName)
-      if (boundChatId) {
-        prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el Telegramon (chat_id: ${boundChatId}, reply tool). `
+      // sentinel encoded the same intent, but the official Telegram plugin rejects it
+      // (assertAllowedChat: "0" is never allowlisted), so the binding is
+      // resolved to a CONCRETE id here at prompt-build time.
+      // SLACK: the resolution follows the agent's actual provider (Telegram or Slack) and
+      // the instruction names that channel + uses its chat_id format. No
+      // binding -> no delivery instruction at all: better to skip delivery than
+      // to deliver to the wrong chat, and the warn below makes the config gap
+      // visible. The system-level pending-retry alert further down uses the
+      // owner chat by design.
+      const bound = resolveBoundChannel(agentName)
+      if (bound.chatId) {
+        prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el ${channelDeliveryName(bound.provider)} (chat_id: ${bound.chatId}, reply tool). `
       } else {
-        logger.warn({ task: task.name, agent: agentName }, 'scheduled task: agent has no bound telegram chat (access.json missing/empty) -- prompt omits the Telegram delivery instruction')
+        logger.warn({ task: task.name, agent: agentName, provider: bound.provider }, 'scheduled task: agent has no bound channel (access.json missing/empty) -- prompt omits the delivery instruction')
         prefix = `[Utemezett feladat: ${task.name}] `
       }
     }
@@ -793,6 +901,7 @@ async function attemptFireTask(
       host,
       injectedAt: now,
       alerted: false,
+      ownerAlerted: false,
       sawTurn: false,
       workingDir: agentName === MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(agentName),
       configDir: agentName === MAIN_AGENT_ID ? undefined : (readAgentClaudeConfigDir(agentName) ?? undefined),
@@ -948,25 +1057,58 @@ export async function runScheduledTaskNow(
   return { ok: true, result: summary.join(', ') }
 }
 
-// Fire a Telegram alert when a pending retry has been stuck past the
-// threshold. Stamps `alert_sent_at` BEFORE the network call so concurrent
-// ticks and crash-restarts cannot race into double-alerting on the same
-// attempt. If the send fails, the stamp is cleared so the next tick can
-// retry -- that way a transient Telegram outage or a bad token doesn't
-// silently suppress every future alert on this row. Net semantics:
-// exactly-one stamp per delivery attempt, at-least-once delivery with a
-// 60s retry cadence until success.
+// Fire an owner alert when a pending retry has been stuck past the threshold.
+// The alert goes over the main agent's bound channel (CHANNEL_PROVIDER:
+// Telegram or Slack). Stamps `alert_sent_at` BEFORE the network call so
+// concurrent ticks and crash-restarts cannot race into double-alerting on the
+// same attempt. If the send fails, the stamp is cleared so the next tick can
+// retry -- that way a transient channel outage or a bad token doesn't silently
+// suppress every future alert on this row. Net semantics: exactly-one stamp per
+// delivery attempt, at-least-once delivery with a 60s retry cadence until success.
 // Bot token for the system-level scheduler alerts (pending-retry, task-timeout,
-// catch-up summary). Since the channels migration the token lives in the
-// telegram plugin's env, not marveen/.env (2026-07-08: every scheduler alert
-// was silently suppressed on such hosts), so both locations are tried -- same
-// fallback order as scripts/notify.sh.
-function resolveSchedulerAlertToken(): string | undefined {
-  const envContent = readFileOr(join(PROJECT_ROOT, '.env'), '')
-  const token = envContent.match(/TELEGRAM_BOT_TOKEN=(.+)/)?.[1]?.trim()
-  if (token) return token
-  const channelEnv = readFileOr(join(homedir(), '.claude', 'channels', 'telegram', '.env'), '')
-  return channelEnv.match(/TELEGRAM_BOT_TOKEN=(.+)/)?.[1]?.trim()
+// catch-up summary). SLACKAWARE: the alerts go over whatever channel the MAIN
+// agent is bound to (CHANNEL_PROVIDER), so the token is resolved for that
+// provider. Every provider keeps the historical dual-location lookup:
+// marveen/.env first, then the main agent's channel .env (2026-07-08: every
+// scheduler alert was silently suppressed on hosts where the token had moved
+// to the plugin env after the channels migration -- that fallback must hold
+// for Telegram and Slack alike). readChannelToken maps the provider to its
+// env key (TELEGRAM_BOT_TOKEN / SLACK_BOT_TOKEN / ...). A creds-based
+// provider (Google Chat/Teams) has no bot token and no direct send path, so
+// the alert falls back to the log-only path in each caller.
+// `provider` and `readToken` are injectable for the unit test only (lookup
+// order + empty-value fall-through); production callers use the defaults.
+export function resolveSchedulerAlertToken(
+  provider: ChannelProviderType = CHANNEL_PROVIDER,
+  readToken: (provider: ChannelProviderType, envFilePath: string) => string | null = readChannelToken,
+): string | undefined {
+  if (provider === "googlechat" || provider === "teams") return undefined;
+
+  return (
+    readToken(provider, join(PROJECT_ROOT, ".env")) ||
+    readToken(provider, join(channelStateDir(provider), ".env")) ||
+    undefined
+  );
+}
+
+// Resolve the owner chat for the MAIN agent's bound provider. The default
+// resolveOwnerChatId() reads ALLOWED_CHAT_ID + telegram/access.json; the
+// scheduler alerts must follow CHANNEL_PROVIDER on BOTH halves: the configured
+// id comes from the provider's own .env key (SLACK_CHANNEL_ID etc. via
+// configuredOwnerChatFor -- a stale Telegram ALLOWED_CHAT_ID must not win on a
+// Slack install) and the paired fallback from slack/access.json (the live
+// CHANNEL_PROVIDER=slack install has no telegram access.json at all, so the
+// default path returned null and every scheduler alert was suppressed).
+function resolveSchedulerOwnerChat(): string | null {
+  return resolveOwnerChatId(undefined, configuredOwnerChatFor(CHANNEL_PROVIDER), CHANNEL_PROVIDER)
+}
+
+// Send a system-level scheduler alert over the MAIN agent's bound channel. The
+// message is plain text (no markdown) as it always has been, so no formatMessage
+// pass is applied; getProvider throws on a non-2xx / ok:false response so the
+// callers' try/catch + classifySendError paths work for every provider.
+function sendSchedulerAlertMessage(token: string, chatId: string, text: string): Promise<void> {
+  return getProvider(CHANNEL_PROVIDER).sendMessage(token, chatId, text)
 }
 
 // One line about what the scheduler missed while it was down: which tasks it
@@ -981,12 +1123,12 @@ function sendCatchUpSummary(
 ): void {
   const token = resolveSchedulerAlertToken()
   if (!token) {
-    logger.warn('catch-up summary suppressed: no TELEGRAM_BOT_TOKEN (config error)')
+    logger.warn({ provider: CHANNEL_PROVIDER }, 'catch-up summary suppressed: no channel bot token (config error)')
     return
   }
-  const ownerChat = resolveOwnerChatId()
+  const ownerChat = resolveSchedulerOwnerChat()
   if (!ownerChat) {
-    logger.warn('catch-up summary suppressed: no owner chat (ALLOWED_CHAT_ID unset/placeholder and no paired channel)')
+    logger.warn({ provider: CHANNEL_PROVIDER }, 'catch-up summary suppressed: no owner chat (ALLOWED_CHAT_ID unset/placeholder and no paired channel)')
     return
   }
   const mins = (ms: number) => `${Math.round(ms / 60000)} perc`
@@ -1004,19 +1146,82 @@ function sendCatchUpSummary(
   const text = lines.join('\n')
   ;(async () => {
     try {
-      await sendTelegramMessage(token, ownerChat, text)
-      logger.info({ caughtUp: caughtUp.length, stale: stale.length }, 'catch-up summary Telegram alert sent')
+      await sendSchedulerAlertMessage(token, ownerChat, text)
+      logger.info({ caughtUp: caughtUp.length, stale: stale.length, provider: CHANNEL_PROVIDER }, 'catch-up summary alert sent')
     } catch (err) {
       logger.warn({ err }, 'catch-up summary delivery failed')
     }
   })()
 }
 
-function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
-  // Stamp first. If another tick raced us, markPendingTaskRetryAlert
-  // returns false (the WHERE alert_sent_at IS NULL guards it) and we
-  // skip the send entirely.
+// Build the pending-retry alert body shared by stage 1 (main agent,
+// inter-agent) and stage 2 (owner, channel) -- the substance (which task,
+// why stuck, how long) is identical, only the delivery channel differs.
+function pendingRetryAlertText(view: PendingRetryView, prefix: string, ageMinutes: number, firstAttempt: string): string {
+  // A retry stuck on a dead required MCP names the server(s): the operator's
+  // fix is restarting an MCP, not freeing up a busy session.
+  const mcpMissing = view.lastReason?.startsWith('mcp-missing')
+    ? view.lastReason.slice('mcp-missing:'.length) || 'ismeretlen'
+    : null
+  // A first-run-gated session (fresh install: mappa-trust dialog / belépés-
+  // választó) needs the operator to know the ACTUAL blocker: the fix is a
+  // one-time login/consent on the agent session, not waiting for a busy
+  // session to free up.
+  const firstRunStuck = view.lastReason === 'first-run'
+  return (mcpMissing
+    ? [
+        `${prefix} A(z) "${view.taskName}" (${view.agentName}) feladat NEM tud lefutni: a szükséges MCP szerver(ek) nem futnak a cél-sessionben: ${mcpMissing}.`,
+        `Első próbálkozás: ${firstAttempt} (${ageMinutes} perce).`,
+        'Amint az MCP szerver újra elérhető, a feladat magától lefut; a dashboard /Ütemezések oldalán visszavonható.',
+      ]
+    : firstRunStuck
+    ? [
+        `${prefix} A(z) "${view.taskName}" (${view.agentName}) feladat NEM tud lefutni: az agent session a Claude Code első-indítási képernyőjén áll (mappa-jóváhagyás vagy belépés szükséges).`,
+        `Első próbálkozás: ${firstAttempt} (${ageMinutes} perce).`,
+        `A rendszer a jóváhagyás-dialogokat magától továbblépteti; ha belépés kell: tmux attach -t agent-${view.agentName}, majd válaszd ki a belépési módot. Utána a feladat magától lefut.`,
+      ]
+    : [
+        `${prefix} A(z) "${view.taskName}" (${view.agentName}) ütemezett feladat ${ageMinutes} perce várakozik.`,
+        `Első próbálkozás: ${firstAttempt}.`,
+        'A rendszer tovább próbálkozik; a dashboard /Ütemezések oldalán visszavonható.',
+      ]).join('\n')
+}
+
+// Stage 1: inter-agent notice to the main agent once a pending retry crosses
+// ALERT_THRESHOLD_MS. This used to go straight to the operator's channel
+// (see sendPendingRetryAlert below, now the stage-2 escalation) -- too
+// eager: a handful of tasks that all resolved themselves within the hour
+// each fired a direct alert for nothing.
+function sendPendingRetryMainAgentNotice(view: PendingRetryView, nowMs: number): void {
+  // Stamp first, same claim-before-send guard as the channel path: if
+  // another tick raced us, markPendingTaskRetryAlert returns false (the
+  // WHERE alert_sent_at IS NULL guards it) and we skip the send entirely.
   const claimed = markPendingTaskRetryAlert(view.taskName, view.agentName, nowMs)
+  if (!claimed) return
+
+  const ageMinutes = Math.floor(view.ageMs / 60000)
+  const firstAttempt = new Date(view.firstAttempt).toLocaleString('hu-HU')
+  const text = pendingRetryAlertText(view, '[scheduler]', ageMinutes, firstAttempt) +
+    '\nHa nem oldodik meg, az uzemeltető direkt ertesitest kap ha ez tovabb tart.'
+  try {
+    createAgentMessage('system', MAIN_AGENT_ID, text)
+    logger.info({ task: view.taskName, agent: view.agentName, ageMinutes }, 'Pending-retry main-agent notice sent')
+  } catch (err) {
+    // A failed DB insert here does not block stage-2 escalation -- see
+    // sendTaskInflightMainAgentNotice for the same rationale on the other path.
+    logger.warn({ err, task: view.taskName, agent: view.agentName }, 'Pending-retry main-agent notice failed, clearing stamp for retry')
+    clearPendingTaskRetryAlert(view.taskName, view.agentName)
+  }
+}
+
+// Stage 2: direct-to-owner channel alert, only once the main agent has
+// already been notified (stage 1 above) and OWNER_ESCALATION_EXTRA_MS has
+// additionally elapsed with the row still pending.
+function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
+  // Stamp first. If another tick raced us, markPendingTaskRetryOwnerAlert
+  // returns false (the WHERE owner_alert_sent_at IS NULL guards it) and we
+  // skip the send entirely.
+  const claimed = markPendingTaskRetryOwnerAlert(view.taskName, view.agentName, nowMs)
   if (!claimed) return
 
   // Validate the delivery config BEFORE building/sending. A missing token
@@ -1030,58 +1235,33 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
   // itself keeps retrying regardless -- only this alert is suppressed.
   const token = resolveSchedulerAlertToken()
   if (!token) {
-    logger.warn({ task: view.taskName, agent: view.agentName }, 'Pending-retry alert suppressed: no TELEGRAM_BOT_TOKEN (config error, stamp kept to avoid 60s spin)')
+    logger.warn({ task: view.taskName, agent: view.agentName, provider: CHANNEL_PROVIDER }, 'Pending-retry alert suppressed: no channel bot token (config error, stamp kept to avoid 60s spin)')
     return
   }
-  const ownerChat = resolveOwnerChatId()
+  const ownerChat = resolveSchedulerOwnerChat()
   if (!ownerChat) {
-    logger.warn({ task: view.taskName, agent: view.agentName }, 'Pending-retry alert suppressed: no owner chat (ALLOWED_CHAT_ID unset/placeholder and no paired channel; stamp kept to avoid 60s spin)')
+    logger.warn({ task: view.taskName, agent: view.agentName, provider: CHANNEL_PROVIDER }, 'Pending-retry alert suppressed: no owner chat (ALLOWED_CHAT_ID unset/placeholder and no paired channel; stamp kept to avoid 60s spin)')
     return
   }
 
   const ageMinutes = Math.floor(view.ageMs / 60000)
   const firstAttempt = new Date(view.firstAttempt).toLocaleString('hu-HU')
-  // A retry stuck on a dead required MCP names the server(s): the operator's
-  // fix is restarting an MCP, not freeing up a busy session.
-  const mcpMissing = view.lastReason?.startsWith('mcp-missing')
-    ? view.lastReason.slice('mcp-missing:'.length) || 'ismeretlen'
-    : null
-  // A first-run-gated session (fresh install: mappa-trust dialog / belépés-
-  // választó) needs the operator to know the ACTUAL blocker: the fix is a
-  // one-time login/consent on the agent session, not waiting for a busy
-  // session to free up.
-  const firstRunStuck = view.lastReason === 'first-run'
-  const text = (mcpMissing
-    ? [
-        `[${BOT_NAME} scheduler] A(z) "${view.taskName}" (${view.agentName}) feladat NEM tud lefutni: a szükséges MCP szerver(ek) nem futnak a cél-sessionben: ${mcpMissing}.`,
-        `Első próbálkozás: ${firstAttempt} (${ageMinutes} perce).`,
-        'Amint az MCP szerver újra elérhető, a feladat magától lefut; a dashboard /Ütemezések oldalán visszavonható.',
-      ]
-    : firstRunStuck
-    ? [
-        `[${BOT_NAME} scheduler] A(z) "${view.taskName}" (${view.agentName}) feladat NEM tud lefutni: az agent session a Claude Code első-indítási képernyőjén áll (mappa-jóváhagyás vagy belépés szükséges).`,
-        `Első próbálkozás: ${firstAttempt} (${ageMinutes} perce).`,
-        `A rendszer a jóváhagyás-dialogokat magától továbblépteti; ha belépés kell: tmux attach -t agent-${view.agentName}, majd válaszd ki a belépési módot. Utána a feladat magától lefut.`,
-      ]
-    : [
-        `[${BOT_NAME} scheduler] A(z) "${view.taskName}" (${view.agentName}) ütemezett feladat ${ageMinutes} perce várakozik.`,
-        `Első próbálkozás: ${firstAttempt}.`,
-        'A rendszer tovább próbálkozik; a dashboard /Ütemezések oldalán visszavonható.',
-      ]).join('\n')
+  const text = pendingRetryAlertText(view, `[${BOT_NAME} scheduler]`, ageMinutes, firstAttempt) +
+    `\n${BOT_NAME} mar ertesitve volt errol, de nem oldodott meg.`
   ;(async () => {
     try {
-      await sendTelegramMessage(token, ownerChat, text)
-      logger.info({ task: view.taskName, agent: view.agentName, ageMinutes }, 'Pending-retry Telegram alert sent')
+      await sendSchedulerAlertMessage(token, ownerChat, text)
+      logger.info({ task: view.taskName, agent: view.agentName, ageMinutes, provider: CHANNEL_PROVIDER }, 'Pending-retry alert sent')
     } catch (err) {
       // Distinguish a transient failure (network blip, 429, 5xx) from a
       // permanent one (4xx: bad chat_id / revoked token). Transient ->
       // clear the per-attempt stamp so the next tick retries. Permanent
       // -> KEEP the stamp; retrying every 60s would just repeat the same
       // rejection and spam the log until the config is fixed.
-      const kind = classifyTelegramSendError(err instanceof Error ? err.message : String(err))
+      const kind = classifySendError(err instanceof Error ? err.message : String(err))
       if (kind === 'transient') {
         logger.warn({ err, task: view.taskName, agent: view.agentName }, 'Pending-retry alert delivery failed (transient), clearing stamp for retry')
-        clearPendingTaskRetryAlert(view.taskName, view.agentName)
+        clearPendingTaskRetryOwnerAlert(view.taskName, view.agentName)
       } else {
         logger.warn({ err, task: view.taskName, agent: view.agentName }, 'Pending-retry alert delivery failed (permanent), stamp kept to avoid 60s spin')
       }
@@ -1089,28 +1269,59 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
   })()
 }
 
-// One-shot Telegram alert when a fired task/heartbeat has been continuously
-// busy past TASK_FIRE_TIMEOUT_MS. Follows the same token-resolution and
-// ALLOWED_CHAT_ID path as sendPendingRetryAlert: this is a system-level
-// scheduler alert, not a per-agent channel notification.
+// Stage 1: one-shot inter-agent notice to the main agent when a fired
+// task/heartbeat has been continuously busy past TASK_FIRE_TIMEOUT_MS. This
+// used to go straight to the operator's channel (see sendTaskTimeoutAlert
+// below, now the stage-2 escalation) -- a handful of tasks that all resolved
+// themselves within the hour each fired a direct operator alert for nothing.
+//
+// Moves the matching kanban card to 'waiting' here (stage 1), not in the
+// stage-2 escalation -- the board should reflect a stuck task as soon as the
+// main agent is told, independent of whether it later escalates to the
+// operator.
+function sendTaskInflightMainAgentNotice(entry: TaskInflightEntry, elapsedMs: number): void {
+  const ageMinutes = Math.floor(elapsedMs / 60000)
+
+  const movedCardId = markScheduledTaskKanbanWaiting(entry.taskName)
+  if (movedCardId) {
+    logger.info({ task: entry.taskName, agent: entry.agentName, cardId: movedCardId }, 'task-timeout: matching kanban card moved to waiting')
+  }
+
+  const thresholdMinutes = Math.round(entry.timeoutMs / 60000)
+  const text = [
+    `[scheduler] A(z) "${entry.taskName}" (${entry.agentName}) ütemezett feladat ${ageMinutes} perce fut -- lehetséges beakadás (küszöb: ${thresholdMinutes} perc).`,
+    'Ha jogosan fut ennél tovább, allitsd a task-config.json "stuckAfterMinutes" mezojet.',
+    'Ellenőrizd az ágenst; ha nem oldódik meg, az uzemeltető direkt ertesitest kap ha ez tovabb tart.',
+  ].join('\n')
+  try {
+    createAgentMessage('system', MAIN_AGENT_ID, text)
+    logger.info({ task: entry.taskName, agent: entry.agentName, ageMinutes }, 'task-timeout main-agent notice sent')
+  } catch (err) {
+    // A failed DB insert here does not block stage-2 escalation -- that
+    // check is independent (keyed off injectedAt, not off this call
+    // succeeding), so a broken stage-1 notice path can never silently
+    // suppress the final owner escalation.
+    logger.warn({ err, task: entry.taskName, agent: entry.agentName }, 'task-timeout main-agent notice failed')
+  }
+}
+
+// Stage 2: one-shot direct-to-owner channel alert, only once the main agent
+// has already been notified (stage 1 above) and OWNER_ESCALATION_EXTRA_MS
+// has additionally elapsed with the session still busy. Follows the same
+// token-resolution and owner-chat path as sendPendingRetryAlert
+// (provider-aware, over CHANNEL_PROVIDER): this is a system-level scheduler
+// alert, not a per-agent channel notification.
 function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void {
   const ageMinutes = Math.floor(elapsedMs / 60000)
   const token = resolveSchedulerAlertToken()
   if (!token) {
-    logger.warn({ task: entry.taskName, agent: entry.agentName }, 'task-timeout alert suppressed: no TELEGRAM_BOT_TOKEN (config error)')
+    logger.warn({ task: entry.taskName, agent: entry.agentName, provider: CHANNEL_PROVIDER }, 'task-timeout alert suppressed: no channel bot token (config error)')
     return
   }
-  const ownerChat = resolveOwnerChatId()
+  const ownerChat = resolveSchedulerOwnerChat()
   if (!ownerChat) {
-    logger.warn({ task: entry.taskName, agent: entry.agentName }, 'task-timeout alert suppressed: no owner chat (ALLOWED_CHAT_ID unset/placeholder and no paired channel)')
+    logger.warn({ task: entry.taskName, agent: entry.agentName, provider: CHANNEL_PROVIDER }, 'task-timeout alert suppressed: no owner chat (ALLOWED_CHAT_ID unset/placeholder and no paired channel)')
     return
-  }
-  // If there is an active kanban card whose title matches the task name, move it
-  // to 'waiting' so the board reflects the stuck state. No-op when no matching
-  // card exists (the task was never on the board, or has already been archived).
-  const movedCardId = markScheduledTaskKanbanWaiting(entry.taskName)
-  if (movedCardId) {
-    logger.info({ task: entry.taskName, agent: entry.agentName, cardId: movedCardId }, 'task-timeout: matching kanban card moved to waiting')
   }
 
   // Naming the threshold turns "possible hang" into something the operator can
@@ -1118,14 +1329,14 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
   // then one config line away, instead of a recurring 3am mystery.
   const thresholdMinutes = Math.round(entry.timeoutMs / 60000)
   const text = [
-    `[${BOT_NAME} scheduler] A(z) "${entry.taskName}" (${entry.agentName}) ütemezett feladat ${ageMinutes} perce fut -- lehetséges beakadás.`,
+    `[${BOT_NAME} scheduler] A(z) "${entry.taskName}" (${entry.agentName}) ütemezett feladat ${ageMinutes} perce fut -- lehetséges beakadás. A(z) fő-agent mar ertesitve volt errol, de nem oldodott meg.`,
     `A riasztási küszöb ennél a feladatnál ${thresholdMinutes} perc; ha ez a feladat jogosan fut ennél tovább, allitsd a task-config.json "stuckAfterMinutes" mezojet.`,
     'Az ágensben megtekintheted; a dashboard /Ütemezések oldalán visszavonható ha kell.',
   ].join('\n')
   ;(async () => {
     try {
-      await sendTelegramMessage(token, ownerChat, text)
-      logger.info({ task: entry.taskName, agent: entry.agentName, ageMinutes }, 'task-timeout Telegram alert sent')
+      await sendSchedulerAlertMessage(token, ownerChat, text)
+      logger.info({ task: entry.taskName, agent: entry.agentName, ageMinutes, provider: CHANNEL_PROVIDER }, 'task-timeout alert sent')
     } catch (err) {
       logger.warn({ err, task: entry.taskName, agent: entry.agentName }, 'task-timeout alert delivery failed')
     }
@@ -1243,12 +1454,16 @@ export function startScheduleRunner(): NodeJS.Timeout {
         graceMs: TASK_FIRE_GRACE_MS,
         timeoutMs: entry.timeoutMs,
         maxTrackMs: TASK_FIRE_MAX_TRACK_MS,
+        ownerExtraMs: OWNER_ESCALATION_EXTRA_MS,
       })
       if (decision === 'clear') {
         taskInflightMap.delete(key)
       } else if (decision === 'alert') {
-        sendTaskTimeoutAlert(entry, now - entry.injectedAt)
+        sendTaskInflightMainAgentNotice(entry, now - entry.injectedAt)
         entry.alerted = true
+      } else if (decision === 'escalate') {
+        sendTaskTimeoutAlert(entry, now - entry.injectedAt)
+        entry.ownerAlerted = true
       } else if (decision === 'lost') {
         // The prompt was typed into a session that never acted on it. Undo the
         // success bookkeeping: overwrite the run record and drop the lastRun
@@ -1334,7 +1549,8 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // do not alert.
       const reason = result === 'mcp-missing' ? mcpMissingReason(row.task_name, row.agent_name) : result
       const stillPresent = updatePendingTaskRetry(row.task_name, row.agent_name, now, reason)
-      if (stillPresent && view.alertDue) sendPendingRetryAlert(view, now)
+      if (stillPresent && view.alertDue) sendPendingRetryMainAgentNotice(view, now)
+      if (stillPresent && view.ownerAlertDue) sendPendingRetryAlert(view, now)
 
       // SCHEDPARK814 stale-parked-input janitor. A 'busy' verdict that keeps
       // repeating past the threshold is the one case worth a second look: the
@@ -1458,6 +1674,47 @@ export function startScheduleRunner(): NodeJS.Timeout {
           appendTaskRun(task.name, agentName, 'skipped')
         }
         continue
+      }
+
+      // DESKTOP GATE. Only rounds that drive the screen wait for the lock;
+      // everything else (email, kanban, memory, watchdogs) keeps running. A
+      // blanket suspension would produce blanket silence, and silence is what
+      // nobody questions.
+      //
+      // The skip is RECORDED, never silent: a dropped tick with no trace is
+      // indistinguishable from "there was nothing to do", which is exactly how
+      // a missed customer message disappears. Observed the day this was built:
+      // two consecutive WhatsApp rounds were lost behind two GUI rounds and
+      // only a human noticing the gap brought them back.
+      if (task.requiresDesktop) {
+        const gate = decideDesktopGate({
+          requiresDesktop: true,
+          lock: readDesktopLock(),
+          now,
+          agent: task.agent === 'all' ? null : (task.agent || MAIN_AGENT_ID),
+        })
+        if (gate.action === 'skip') {
+          logger.info({ task: task.name, reason: gate.reason }, 'Schedule skipped: desktop locked')
+          scheduleLastRun.set(task.name, now)
+          persistScheduleLastRun()
+          for (const agentName of targetAgents) {
+            appendTaskRun(task.name, agentName, 'skipped-desktop-lock')
+            recordDesktopSkip({
+              task: task.name,
+              agent: agentName,
+              at: now,
+              lockOwner: gate.lockOwner ?? null,
+              lockedUntil: gate.lockedUntil ?? null,
+              reason: gate.reason,
+            })
+          }
+          continue
+        }
+        if (gate.action === 'run-lock-expired') {
+          // Not a skip: we run. But an expired lock is a finding (bad estimate
+          // or a holder that died), so it is never passed over quietly.
+          logger.warn({ task: task.name, reason: gate.reason }, 'Schedule ran through an EXPIRED desktop lock')
+        }
       }
 
       for (const agentName of targetAgents) {
