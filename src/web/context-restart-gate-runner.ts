@@ -6,7 +6,8 @@ import { makeLazyBinResolver } from '../platform.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { listAgentNames } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
-import { agentSessionName, capturePane, sendPromptToSession } from './agent-process.js'
+import { agentSessionName, capturePane } from './agent-process.js'
+import { sendSystemDirective } from './system-directive.js'
 import { detectPaneState } from '../pane-state.js'
 import { detectsUsageLimit } from '../model-fallback.js'
 import { readContextTokensFromProjectDir, projectsDirFor } from './active-model.js'
@@ -564,7 +565,11 @@ async function deliverPendingWake(name: string, session: string, nowMs: number):
   }
 
   try {
-    const outcome = await sendPromptToSession(session, gateWakePrompt(), null, {
+    // GUARDHITELES903: anchored in agent_messages so the fresh session can
+    // authenticate the "continue from the restored blocks" instruction. Same
+    // outcome contract as sendPromptToSession; a deferred (busy) attempt
+    // marks its anchor row failed and the retry creates a fresh one.
+    const outcome = await sendSystemDirective(name, session, gateWakePrompt(), null, {
       waitForIdle: true, onBusyTimeout: 'abort',
     })
     if (outcome === 'sent') {
