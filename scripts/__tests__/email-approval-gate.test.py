@@ -23,10 +23,15 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import tokenize
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GATE = os.path.join(os.path.dirname(HERE), "hooks", "email-approval-gate.py")
+HOOKS = os.path.join(os.path.dirname(HERE), "hooks")
+GATE = os.path.join(HOOKS, "email-approval-gate.py")
 WINDOW = 1800
+# Same portability constraint as the gate: this file drives the gate through
+# the HOST's python3, so its own fixtures must not need SQLite 3.38 either.
+NOW_S = "CAST(strftime('%s','now') AS INTEGER)"
 
 failed = []
 
@@ -59,7 +64,7 @@ def make_store(td, level=2, max_level=None, config="ok"):
         action_description TEXT NOT NULL, action_payload TEXT,
         status TEXT NOT NULL DEFAULT 'pending',
         timeout_at INTEGER, telegram_message_id INTEGER,
-        requested_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        requested_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
         resolved_at INTEGER, resolved_by TEXT,
         content_hash TEXT, consumed_at INTEGER)""")
     con.commit()
@@ -90,7 +95,7 @@ def approve(store, anchor, resolved_ago=0, status="approved", consumed=None):
         "INSERT INTO approvals (id, agent_id, category, action_description, status,"
         " requested_at, resolved_at, resolved_by, content_hash, consumed_at)"
         " VALUES (hex(randomblob(6)), 'marveen', 'email_send', 'Email teszt', ?,"
-        " unixepoch()-?-60, CASE WHEN ?='pending' THEN NULL ELSE unixepoch()-? END,"
+        f" {NOW_S}-?-60, CASE WHEN ?='pending' THEN NULL ELSE {NOW_S}-? END,"
         " 'szabi', ?, ?)",
         (status, resolved_ago, status, resolved_ago, anchor, consumed))
     con.commit()
@@ -235,6 +240,39 @@ with tempfile.TemporaryDirectory() as td:
                           capture_output=True, env=env)
     check("fail-closed: unparseable stdin -> DENIED (exit 2, never 0/1)",
           proc.returncode == 2, f"exit={proc.returncode}")
+
+    # SQLite-version portability, kept as a STATIC check on purpose. The
+    # behavioural cases above only catch the bad call on a host whose sqlite is
+    # older than 3.38 -- on CI (newer) they stay green while the live install
+    # denies every approved letter. So assert the function is absent from the
+    # source, which fails on every host once it is reintroduced. Measured
+    # 2026-09-02: host python sqlite3 3.37.2, gate raised OperationalError,
+    # and the fail-closed deny read as "no approval" rather than a version
+    # fault. The 'unixepoch' MODIFIER (date(x,'unixepoch')) is ancient and
+    # fine -- only the bare function call is banned.
+    #
+    # COMMENTS ARE STRIPPED before matching, and the pattern is assembled from
+    # fragments: otherwise this file's own prose (and the pattern itself) would
+    # register as a violation and the check would fail for a reason that has
+    # nothing to do with any SQL. Strings are KEPT -- that is where the SQL is.
+    banned = re.compile(r"(?<!')\b" + "unix" + r"epoch\s*\(")
+
+    def code_without_comments(path):
+        with open(path, "rb") as fh:
+            return "".join(t.string for t in tokenize.tokenize(fh.readline)
+                           if t.type != tokenize.COMMENT)
+
+    hook_srcs = [os.path.join(HOOKS, f) for f in sorted(os.listdir(HOOKS)) if f.endswith(".py")]
+    offenders = [os.path.basename(p) for p in hook_srcs + [os.path.abspath(__file__)]
+                 if banned.search(code_without_comments(p))]
+    check("portability: no bare SQLite unixepoch function call (needs 3.38+) in the hooks",
+          not offenders, f"offenders={offenders}")
+    # Control: the check can actually fail. Without this, a broken matcher
+    # would report a clean tree forever and read exactly like a passing gate.
+    check("control: the same matcher DOES flag the old expression",
+          bool(banned.search("SELECT unix" + "epoch()-60")))
+    check("control: the host's own sqlite3 really executes the replacement expression",
+          sqlite3.connect(":memory:").execute(f"SELECT {NOW_S}").fetchone()[0] > 1_700_000_000)
 
 print()
 if failed:
