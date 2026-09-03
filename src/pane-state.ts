@@ -661,7 +661,7 @@ export function detectsFirstRunGate(pane: string): FirstRunGateKind | null {
 //   ❯ 2. Switch to Sonnet 5 and continue
 //   Enter to confirm · Esc to cancel
 // with the DEFAULT CURSOR ON THE SWITCH OPTION. Any blind Enter reaching the
-// pane (the post-spawn identity /name, sendPromptToSession's retry-Enter,
+// pane (the post-spawn identity /rename, sendPromptToSession's retry-Enter,
 // a human reflex) silently switches the session to Sonnet. The dialog is
 // detected here (pure, unit-testable) and answered in agent-process.ts by
 // actively selecting option 1 ("Continue with <model>") -- never the switch

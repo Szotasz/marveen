@@ -773,7 +773,7 @@ export function respawnMainSessionFresh(): void {
   writeRespawnStamp()
 
   logger.warn({ provider: provider.type }, 'Main session respawned FRESH (scheduled auto-restart)')
-  // The respawned claude is a brand-new process: it has neither the /name
+  // The respawned claude is a brand-new process: it has neither the /rename
   // identity nor a guaranteed-loaded channel plugin. Both follow-ups mirror the
   // resume path; skipping them is how a restarted session comes back nameless
   // or with the plugin stuck in `◯ disabled`.
@@ -862,7 +862,7 @@ export async function resumeMarveenSession(): Promise<boolean> {
     }
 
     logger.warn({ provider: provider.type }, 'Marveen session respawned with --continue')
-    // Re-establish /name on the brand-new claude process (the prior session's
+    // Re-establish /rename on the brand-new claude process (the prior session's
     // identity is gone after respawn-pane; channels.sh sets it on a normal
     // start). /remote-control was dropped (the operator no longer uses it).
     // scheduleIdentitySetup only SCHEDULES delayed timers and returns immediately;
@@ -1011,7 +1011,7 @@ function checkExternalMainRespawn(): void {
 // works even with the service disabled.
 const CHANNELS_SCRIPT = join(PROJECT_ROOT, 'scripts', 'channels.sh')
 // channels.sh creates the session, runs the first-run dialog auto-accept, sets
-// /name, and brings up the channel plugin -- a cold start that takes minutes.
+// /rename, and brings up the channel plugin -- a cold start that takes minutes.
 // Throttle relaunches so a session that is still booting is not torn down and
 // recreated on the next 60s poll.
 const MAIN_SESSION_CREATE_GRACE_MS = 360_000
@@ -1090,7 +1090,7 @@ function respawnMarveenSessionFresh(): boolean {
     })
     execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
     logger.warn({ provider: provider.type }, 'Hard restart: marveen session respawned fresh (no --continue)')
-    // Re-establish /name on the fresh process (see note in resumeMarveenSession).
+    // Re-establish /rename on the fresh process (see note in resumeMarveenSession).
     // scheduleIdentitySetup only schedules delayed timers -> fire-and-forget.
     void scheduleIdentitySetup(MAIN_CHANNELS_SESSION, BOT_NAME)
     // Same channels.sh-bypass concern as in resumeMarveenSession: this respawn

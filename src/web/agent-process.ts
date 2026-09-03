@@ -817,7 +817,7 @@ export function stampProjectTrustForDir(dotClaudePath: string, projectDir: strin
 // Root cause chain (2026-07-23, card b71fc541): a config root without
 // fableOverageConsentV2[<orgUuid>] parks the first Fable 5 turn on a TUI
 // dialog whose DEFAULT option is "Switch to Sonnet 5 and continue". The
-// fleet's own blind Enters (identity /name, sendPromptToSession retry-Enter)
+// fleet's own blind Enters (identity /rename, sendPromptToSession retry-Enter)
 // accept that default, silently switching the session to Sonnet while
 // agent-config still says claude-fable-5 -- the long-unexplained
 // model/activeModel drift. Fleet policy (owner decision 2026-07-23): the
@@ -1919,12 +1919,15 @@ export async function answerFirstRunGates(
 }
 
 // Post-(re)start identity setup. Every freshly spawned Claude Code session is
-// given `/name` so it is identifiable. (`/remote-control` was dropped: the
+// given `/rename <name>` so it is identifiable. NOT `/name`: no such Claude
+// Code command exists (the CLI answers "Unknown command: /name. Did you mean
+// /rename?"), and the failed line then sits PARKED in the input box until the
+// turn ends -- which makes the router read the session as busy. (`/remote-control` was dropped: the
 // operator no longer uses Remote Control, and the agent's inference-only OAuth
 // token can't satisfy it anyway.) Pure helper for the exact slash commands so
 // they are unit-tested; scheduleIdentitySetup wires them to tmux after a wait.
 export function identitySlashCommands(displayName: string): string[] {
-  return [`/name ${displayName}`]
+  return [`/rename ${displayName}`]
 }
 
 // Delays mirror the observed Claude Code first-render timing: the first-run /
@@ -1934,7 +1937,7 @@ const MODAL_DISMISS_DELAY_MS = 8000
 const IDENTITY_SEND_DELAY_MS = 5000
 
 // Schedule the identity setup for a freshly (re)spawned session: once it has
-// had time to render, dismiss any first-run/resume modals, then send `/name`.
+// had time to render, dismiss any first-run/resume modals, then send `/rename`.
 // Shared by startAgentProcess and the channel-monitor recovery respawns
 // (resumeMarveenSession / respawnMarveenSessionFresh), which previously left the
 // main session without its identity after auto-recovery. Fire-and-forget; all
@@ -1957,9 +1960,9 @@ export async function scheduleIdentitySetup(session: string, displayName: string
               runTmux(host, ['send-keys', '-t', session, cmd, 'Enter'], { timeout: 5000 })
               await delay(1000)
             }
-            logger.info({ session, displayName }, 'Set session /name')
+            logger.info({ session, displayName }, 'Set session /rename')
           } catch (err) {
-            logger.warn({ err, session, displayName }, 'Failed to set session /name')
+            logger.warn({ err, session, displayName }, 'Failed to set session /rename')
           }
         })()
       }, IDENTITY_SEND_DELAY_MS)
