@@ -509,6 +509,58 @@ export function detectsBlockingMenu(pane: string): boolean {
   return MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)
 }
 
+// A TOOL-PERMISSION prompt is NOT a stalled session, and it is NOT a menu.
+//
+// Claude Code asks for approval when a tool call needs the operator's consent
+// (a deny rule matches, a command leaves the resolvable working directory,
+// etc). The pane then shows the tool card, the reason, "Do you want to
+// proceed?" and a numbered Yes/No list, with an `Esc to cancel · Tab to amend`
+// footer -- no spinner, no idle footer.
+//
+// From the queue's side that is indistinguishable from a wedged session, and
+// on 2026-09-03 the fleet handled it twice in the WRONG way:
+//   - the session-stuck alert took the not-ready branch, whose text tells the
+//     owner to "restart the agent if it is wedged". Restarting would have
+//     thrown away two running sub-agents (~165k tokens of work) and left the
+//     actual cause -- an unanswered question -- in place.
+//   - the blocking-menu recovery matched it (the footer really does say
+//     "Esc to cancel") and would send a blind Escape. On a permission prompt
+//     Escape is not "pop back to the prompt": it CANCELS the request, i.e. it
+//     answers a consent question with "no" on the owner's behalf, while the
+//     alert text tells them their session was stuck "in a menu (e.g. /mcp)".
+//
+// So this gets its own detector, and callers must treat it as "a person has to
+// answer", never as a restart target and never as a blind-Escape target.
+// Answering it automatically is out of scope by design: choosing "Yes" would
+// be the machine granting itself a permission the owner deliberately gated.
+//
+// Matching follows detectsBlockingMenu's discipline: a busy pane is never a
+// prompt, a visible idle footer means the real prompt is live, and the
+// question + option list must sit in the live footer region so a message body
+// that merely quotes "Do you want to proceed?" cannot trigger it.
+const PERMISSION_QUESTION_RX = /\bDo you want to (?:proceed|create|make|run)\b/i
+const PERMISSION_OPTION_RX = /^\s*(?:❯\s*)?1\.\s*Yes\b/m
+const PERMISSION_FOOTER_REGION_LINES = 12
+
+/**
+ * True when the pane is parked on a Claude Code tool-permission prompt.
+ *
+ * Pure + dependency-free. Recognises the shape measured on a live pane
+ * (see src/__tests__/fixtures/pane/permission-prompt-bash-grep.txt): the
+ * "Do you want to proceed?" question plus a numbered "1. Yes" option.
+ */
+export function detectsPermissionPrompt(pane: string): boolean {
+  if (!pane || !pane.trim()) return false
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(pane)) return false
+  }
+  const lines = pane.split('\n')
+  const footerRegion = lines.slice(-PERMISSION_FOOTER_REGION_LINES).join('\n')
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
+  if (IDLE_FOOTER_RX.test(pane)) return false
+  return PERMISSION_QUESTION_RX.test(footerRegion) && PERMISSION_OPTION_RX.test(footerRegion)
+}
+
 // Claude Code FIRST-RUN gates: the interactive dialogs a brand-new install
 // parks on before the prompt ever renders -- the per-project "Do you trust the
 // files in this folder?" consent, the --dangerously-skip-permissions "Bypass

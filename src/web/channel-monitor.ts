@@ -36,7 +36,7 @@ import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
 import { getInjectedPrompt, matchesInjectedPrompt } from './injected-prompt-registry.js'
 import {
-  detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, detectsFirstRunGate, detectsModelConsentDialog, type PaneErrorAlertState, type PaneState,
+  detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, detectsFirstRunGate, detectsModelConsentDialog, detectsPermissionPrompt, type PaneErrorAlertState, type PaneState,
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
   parkedInputText, shouldClearTruncatedPreamble,
   parkedInputRowCount, submitLanded, decideStuckInputAction,
@@ -1803,7 +1803,21 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // first and answer it safely (option 1, keep the configured model);
           // only a genuine menu gets the blind Escape.
           const paneNow = capturePane(t.session)
-          if (paneNow != null && detectsModelConsentDialog(paneNow)) {
+          // A TOOL-PERMISSION prompt reaches this branch because its footer
+          // really does read "Esc to cancel" -- but Escape there is not the
+          // menu's "pop back to the prompt". It CANCELS the request, which is
+          // this process answering a consent question "no" on the owner's
+          // behalf, while the alert below would tell them their session was
+          // stuck "in an interactive menu (e.g. /mcp)". Measured on a live
+          // pane 2026-09-03 (agent-voicedev): detectsBlockingMenu true,
+          // detectsModelConsentDialog false -- nothing else stopped the blind
+          // Escape. Alert instead and leave the decision where it belongs.
+          // Auto-answering "Yes" is deliberately NOT an option: that would be
+          // the fleet granting itself a permission the owner gated.
+          if (paneNow != null && detectsPermissionPrompt(paneNow)) {
+            logger.warn({ session: t.session, agent: label }, 'Session parked on a tool-permission prompt -- owner decision needed, alerting (no keystrokes sent)')
+            sendAlert(`🔐 A(z) ${label} agent egy eszköz-engedélyre vár (a panelen "Do you want to proceed?" kérdés áll). Ez NEM beragadt session: egy tool-hívás igent vagy nemet vár, és azt csak te adhatod meg. Ne indítsd újra, mert a futó munka elveszik. Válaszolj a panelen: tmux attach -t ${t.session}`)
+          } else if (paneNow != null && detectsModelConsentDialog(paneNow)) {
             logger.warn({ session: t.session, agent: label }, 'Blocking "menu" is the model usage-credit consent dialog -- answering it safely instead of Escape')
             await dismissModelConsentDialogIfPresent(t.session)
             sendAlert(`🎛️ A(z) ${label} session a modell-hozzájárulás dialóguson parkolt; az 1-es opcióval (a beállított modell megtartása) továbbléptettem. Modellváltás NEM történt.`)
