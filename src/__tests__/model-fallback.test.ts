@@ -25,6 +25,14 @@ describe('detectsUsageLimit', () => {
     expect(detectsUsageLimit('You hit the session limit')).toBe(true)
   })
 
+  it('matches the weekly and session wordings too', () => {
+    // The owner asks about "the weekly or the 5-hour limit", so both have to be
+    // caught; these three were measured silent before 2026-08-18.
+    expect(detectsUsageLimit("You've reached your weekly limit for Opus.")).toBe(true)
+    expect(detectsUsageLimit('Approaching Opus weekly limit ∙ 5% left')).toBe(true)
+    expect(detectsUsageLimit('Session limit reached ∙ resets at 2am')).toBe(true)
+  })
+
   it('does NOT match a transient API 429 / generic rate limit', () => {
     expect(detectsUsageLimit('  ⎿  API Error: 429 rate_limit_error: too many requests')).toBe(false)
     expect(detectsUsageLimit('  ⎿  API Error: 429 overloaded_error: server busy, retrying')).toBe(false)

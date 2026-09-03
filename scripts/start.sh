@@ -30,6 +30,9 @@ source "${INSTALL_DIR}/install-lang.sh"
 # blocks every UserPromptSubmit, creating a silent fleet lockout (2026-07-14 incident).
 INSTALL_DIR="$INSTALL_DIR" python3 "${INSTALL_DIR}/scripts/boot-hook-prune.py" 2>&1 | grep -v '^$' | sed 's/^/[boot-hook-prune] /' || true
 
+# Timestamp every run: this script appends to store/boot.log across reboots,
+# and without a date the log cannot tell "started once" from "started twice".
+echo "=== $(date '+%Y-%m-%d %H:%M:%S %Z') ==="
 echo "${BOT_NAME:-Marveen} $(_t start.starting)"
 OS="$(uname -s)"
 LAUNCHD_FAILED=""
@@ -75,11 +78,85 @@ elif [ "$OS" = "Linux" ]; then
       echo "ERROR: no real node found on PATH (bun cannot run better-sqlite3)." >&2
       exit 1
     fi
+    # Idempotent launch. On WSL two independent autostart hooks can reach this
+    # script on the same boot -- the wsl.conf [boot] command and a Windows
+    # ONLOGON task -- and a plain relaunch would put a second dashboard on the
+    # same port and, far worse, a second channels.sh polling the same bot token,
+    # which splits incoming messages between two pollers with no error anywhere.
+    # flock serializes the two hooks; the pidfile checks below make the loser a
+    # no-op. fd 9 is closed in the children so the lock is released when this
+    # script exits, not when the daemons do.
+    #
+    # The critical section is "ensure built, THEN ensure running". `npm run build`
+    # writes into the shared dist/, so two hooks arriving on the same boot would
+    # otherwise run two concurrent compilers over the same output and the loser
+    # could launch from a half-written dist/index.js. A full build of this project
+    # measures ~10s here, well inside the wait below.
+    #
+    # The lock is taken on store/ ITSELF, so it introduces no file of its own.
+    # It is deliberately NOT taken on a pidfile: stop.sh unlinks those, and flock
+    # binds to the inode, not the name -- so a lock held on an unlinked pidfile
+    # silently stops being a mutex. Measured 2026-09-02: with the pidfile removed
+    # mid-flight the waiting hook's `exec 9>` created a FRESH inode, flock
+    # returned at once, and both hooks entered the critical section together.
+    # This is also not the mkdir-style "lock directory" idiom, which really does
+    # leave an orphaned lock behind after kill -9; here the directory is only an
+    # fd and carries no state, and the kernel drops the flock when the holder
+    # dies -- on kill -9 and on power loss alike -- so no boot can inherit a
+    # stale lock.
+    #
+    # Every way of NOT getting the lock says so. The bug this guard exists for is
+    # invisible by nature -- two pollers splitting one bot's messages, with no
+    # error anywhere -- so silently running without the guard would reintroduce
+    # exactly the failure it prevents, minus the evidence. Falling through is
+    # still the right choice: the pidfile checks below are the actual protection,
+    # and refusing to start would risk leaving the box with nothing running.
+    #
+    # "Already running" is decided from the pidfile, NOT from `pgrep -f`. An
+    # existence check on the process table cannot tell a live service from one
+    # that is still winding down, and stop.sh's callers hit exactly that: the
+    # update finalizer runs stop.sh then start.sh back to back, so a pgrep check
+    # sees the dying dashboard, skips the launch, and leaves the box with
+    # nothing running once it finally exits -- the update then fails its health
+    # check and rolls back. stop.sh removes the pidfile once the process is
+    # confirmed gone, so a deliberate stop is unambiguous here. The pid is
+    # cross-checked against /proc/<pid>/cmdline because a pidfile that survived a
+    # reboot can point at an unrelated recycled pid.
+    _service_live() { # $1 pidfile, $2 cmdline needle
+      local _pid
+      [ -f "$1" ] || return 1
+      _pid="$(cat "$1" 2>/dev/null)"
+      case "$_pid" in ''|*[!0-9]*) return 1 ;; esac
+      kill -0 "$_pid" 2>/dev/null || return 1
+      tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null | grep -qF "$2"
+    }
+    _lock_held=""
+    if ! command -v flock >/dev/null 2>&1; then
+      echo "  flock not found (util-linux); starting WITHOUT the start lock -- the pidfile checks below still apply." >&2
+    elif ! exec 9<"$INSTALL_DIR/store"; then
+      echo "  cannot open $INSTALL_DIR/store for locking; starting WITHOUT the start lock." >&2
+    elif flock -w 120 9; then
+      _lock_held=1
+    else
+      echo "  another start.sh held the start lock for 120s; continuing WITHOUT it." >&2
+    fi
     [ -f "$INSTALL_DIR/dist/index.js" ] || (cd "$INSTALL_DIR" && npm run build)
-    nohup "$NODE_BIN" "$INSTALL_DIR/dist/index.js" > "$INSTALL_DIR/store/dashboard.log" 2>&1 &
-    echo $! > "$INSTALL_DIR/store/dashboard.pid"
-    nohup bash "$INSTALL_DIR/scripts/channels.sh" > "$INSTALL_DIR/store/channels.log" 2>&1 &
-    echo $! > "$INSTALL_DIR/store/channels.pid"
+    if _service_live "$INSTALL_DIR/store/dashboard.pid" "dist/index.js"; then
+      echo "Dashboard mar fut, ujrainditas kihagyva."
+    else
+      nohup "$NODE_BIN" "$INSTALL_DIR/dist/index.js" > "$INSTALL_DIR/store/dashboard.log" 2>&1 9>&- &
+      echo $! > "$INSTALL_DIR/store/dashboard.pid"
+    fi
+    if _service_live "$INSTALL_DIR/store/channels.pid" "channels.sh"; then
+      echo "Csatorna mar fut, ujrainditas kihagyva."
+    else
+      nohup bash "$INSTALL_DIR/scripts/channels.sh" > "$INSTALL_DIR/store/channels.log" 2>&1 9>&- &
+      echo $! > "$INSTALL_DIR/store/channels.pid"
+    fi
+    # Released here (not on daemon exit): the pidfiles are already written, so a
+    # second hook waking up now sees a live service and correctly no-ops.
+    [ -n "$_lock_held" ] && exec 9<&-
+    unset _lock_held
   fi
 fi
 

@@ -329,6 +329,35 @@ export function readAgentRemoteHost(name: string): string | null {
   return readAgentRemoteConfig(name).host
 }
 
+// A POSIX-ish account name. Deliberately narrow: this value is passed to
+// `sudo -u`, so anything outside [a-z0-9_-] (and a leading letter/underscore)
+// is rejected rather than escaped. 32 chars is the useradd limit.
+const RUN_AS_USER_ALLOWED = /^[a-z_][a-z0-9_-]{0,31}$/
+
+// Pure resolver: which OS user this agent's tmux server belongs to, or null when
+// the agent shares the router's own user (today's default for every agent).
+//
+// Why this exists: tmux refuses a cross-user connection even when the socket
+// permissions allow it (measured 2026-08-19: "access not allowed"), so reaching
+// an agent that runs under its own uid means running tmux AS that user. The
+// value is only ever used with `sudo -n -u <user> tmux ...`, backed by a
+// per-agent sudoers rule that grants that one binary and nothing else.
+export function resolveRunAsUser(rawConfigJson: string): string | null {
+  let config: unknown
+  try { config = JSON.parse(rawConfigJson) } catch { return null }
+  if (!config || typeof config !== 'object') return null
+  const raw = (config as Record<string, unknown>).runAsUser
+  if (typeof raw !== 'string') return null
+  const user = raw.trim()
+  if (!user || !RUN_AS_USER_ALLOWED.test(user)) return null
+  return user
+}
+
+export function readAgentRunAsUser(name: string): string | null {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  return resolveRunAsUser(readFileOr(configPath, '{}'))
+}
+
 // Validate-and-persist the remote config. Empty strings clear the fields
 // (revert the agent to local). Returns the resolved config on success, or an
 // error string when a non-empty value fails validation.

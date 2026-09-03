@@ -61,10 +61,23 @@ describe('ensureIsolatedChannelConfigDir', () => {
     expect(cfg).toBe(join(SANDBOX, 'agents', 'testagent', '.claude-config'))
   })
 
-  it('symlinks shared transcripts so --continue stays shared', () => {
+  // UPDATED 2026-08-18: `projects` is no longer symlinked, and that is the whole
+  // point of the change. That directory holds each session's transcript AND the
+  // auto-memory store, and the memory store is keyed by PROJECT ROOT rather than
+  // by cwd -- so a shared link gave every agent on the install ONE memory store,
+  // the main agent's. Measured on this install: an agent's note landed in the
+  // MAIN agent's MEMORY.md, and a second agent saw a memory written by the main
+  // agent appear in its own index minutes later. Live and bidirectional, not just
+  // shared history.
+  //
+  // It could not be fixed on disk either: the provisioner runs on EVERY spawn and,
+  // finding a real directory where it expected a symlink, deleted it and re-linked.
+  // A manual split survived seconds. Leaving the path alone is the fix.
+  it('does NOT provision projects at all, so each agent keeps its own memory store', () => {
     const cfg = ensureIsolatedChannelConfigDir('testagent', 'telegram')!
-    expect(lstatSync(join(cfg, 'projects')).isSymbolicLink()).toBe(true)
-    expect(readlinkSync(join(cfg, 'projects'))).toBe(join(SANDBOX, 'home', '.claude', 'projects'))
+    expect(existsSync(join(cfg, 'projects'))).toBe(false)
+    // The shared root's own transcripts must be left untouched by provisioning.
+    expect(existsSync(join(SANDBOX, 'home', '.claude', 'projects'))).toBe(true)
   })
 
   it('does NOT symlink or copy .credentials.json (auth via CLAUDE_CODE_OAUTH_TOKEN env)', () => {
@@ -127,8 +140,10 @@ describe('ensureIsolatedChannelConfigDir', () => {
   it('channel-less provisioning still carries NO .credentials.json', () => {
     const cfg = ensureIsolatedChannelConfigDir('testagent', null)!
     expect(existsSync(join(cfg, '.credentials.json'))).toBe(false)
-    // and the auth-independent parts are intact
-    expect(lstatSync(join(cfg, 'projects')).isSymbolicLink()).toBe(true)
+    // and the auth-independent parts are intact: settings.json is written, and
+    // projects is deliberately absent (see the memory-store note above).
+    expect(existsSync(join(cfg, 'settings.json'))).toBe(true)
+    expect(existsSync(join(cfg, 'projects'))).toBe(false)
   })
 
   it('is idempotent: a second call leaves a valid isolated dir', () => {

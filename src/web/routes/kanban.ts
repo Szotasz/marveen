@@ -20,7 +20,7 @@ import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
-import { resolveKanbanDispatchTarget } from '../../kanban-dispatch.js'
+import { resolveKanbanDispatch } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
@@ -100,7 +100,7 @@ function fireKanbanDispatch(id: string, actor?: string | null): void {
   try {
     const card = getKanbanCard(id)
     if (!card || card.dispatched_at) return
-    const target = resolveKanbanDispatchTarget(card.assignee, {
+    const decision = resolveKanbanDispatch(card.assignee, {
       ownerName: OWNER_NAME,
       botName: BOT_NAME,
       mainAgentId: MAIN_AGENT_ID,
@@ -108,7 +108,14 @@ function fireKanbanDispatch(id: string, actor?: string | null): void {
       isRunning: isAgentRunning,
       actor,
     })
-    if (!target) return
+    const target = decision.target
+    if (!target) {
+      // 'not-dispatchable' (no/unknown assignee, human owner) and 'self-move'
+      // are DELIBERATE no-dispatch cases -- staying quiet is correct, and
+      // alerting on them would bury the one case that matters.
+      if (decision.reason === 'session-down') reportUndeliveredDispatch(id, decision.unreachable ?? String(card.assignee))
+      return
+    }
     const desc = (card.description ?? '').trim()
     const content = `[Kanban feladat #${id}]: ${card.title}${desc ? ' — ' + desc : ''}\n\n${kanbanMoveInstructions(id, target)}`
     createAgentMessage(MAIN_AGENT_ID, target, content)
@@ -116,6 +123,43 @@ function fireKanbanDispatch(id: string, actor?: string | null): void {
     logger.info({ id, target, assignee: card.assignee }, 'Kanban in_progress dispatch fired')
   } catch (err) {
     logger.warn({ err, id }, 'Kanban dispatch failed (card move still succeeded)')
+    reportUndeliveredDispatch(id, 'a kiosztás hibára futott')
+  }
+}
+
+// A card that reached in_progress without its assignee being woken must never
+// stay silent: the board shows it running, status-driven monitoring skips on
+// exactly that status, and the false in_progress SUSTAINS ITSELF -- a single
+// missed dispatch can hold a card open for hours behind a green log. So the
+// failure is written where both readers look: a comment on
+// the card (the board) and a notice in the main agent's inbox (the delegator,
+// who triages and can put the card back).
+//
+// Best-effort by construction: this runs inside the move request, and the move
+// itself has already succeeded. A throw here (db locked, inbox write failing)
+// must not turn a completed move into a 500, so it is swallowed after a log --
+// the same contract as the dispatch it reports on.
+function reportUndeliveredDispatch(id: string, unreachable: string): void {
+  logger.warn({ id, unreachable }, 'Kanban card is in_progress but its assignee was NOT woken')
+  try {
+    addKanbanComment(
+      id,
+      'system',
+      `A kártya in_progress lett, de a kiosztott ügynök (${unreachable}) NEM kapott üzenetet -- a session nem fut, vagy a kiosztás hibára futott. ` +
+      'A kártya NEM fut: tedd vissza planned-re, vagy indítsd el az ügynököt és húzd újra in_progress-re.',
+    )
+  } catch (err) {
+    logger.warn({ err, id }, 'Undelivered-dispatch card comment failed')
+  }
+  try {
+    createAgentMessage(
+      'system',
+      MAIN_AGENT_ID,
+      `[kanban-dispatch] A(z) #${id} kártya in_progress lett, de a kiosztott ügynök (${unreachable}) NEM kapott üzenetet. ` +
+      'A tábla futónak mutatja, közben senki nem dolgozik rajta. Tedd vissza planned-re, vagy indítsd el az ügynököt és aktiváld újra.',
+    )
+  } catch (err) {
+    logger.warn({ err, id }, 'Undelivered-dispatch inbox notice failed')
   }
 }
 
@@ -315,8 +359,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/kanban' && method === 'POST') {
     const body = await readBody(req)
     const data = JSON.parse(body.toString())
-    const id = randomUUID().slice(0, 8)
-    createKanbanCard({ id, ...data })
+    // The caller may supply its own id (we use readable slugs for long-lived cards).
+    // Resolve it BEFORE the spread so the stored id and the reported id are the same
+    // value: `{ id, ...data }` let a caller-supplied id win in the row while the
+    // response still echoed the generated one, so anything referencing the returned
+    // id pointed at a card that does not exist -- with HTTP 200.
+    const suppliedId = typeof data.id === 'string' ? data.id.trim() : ''
+    const id = suppliedId || randomUUID().slice(0, 8)
+    createKanbanCard({ ...data, id })
     json(res, { ok: true, id })
     return true
   }
@@ -325,8 +375,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanCardMatch && method === 'PUT') {
     const id = decodeURIComponent(kanbanCardMatch[1])
     const body = await readBody(req)
-    const data = JSON.parse(body.toString())
-    if (updateKanbanCard(id, data)) { json(res, { ok: true }); return true }
+    // `actor` is metadata for the audit event, not a card column -- keep it out
+    // of the field set so it can never be mistaken for one. Same name the /move
+    // route already accepts, so callers do not have to learn a second spelling.
+    const { actor, ...data } = JSON.parse(body.toString()) as Record<string, unknown> & { actor?: string }
+    if (updateKanbanCard(id, data, actor)) { json(res, { ok: true }); return true }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
   }
@@ -395,6 +448,29 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   }
   if (kanbanCommentsMatch && method === 'POST') {
     const cardId = decodeURIComponent(kanbanCommentsMatch[1])
+    // A comment for a card that does not exist used to be STORED, with HTTP 200:
+    // `addKanbanComment` writes whatever card_id it is handed, and this branch
+    // never looked the card up. The row then hangs off an id no board view
+    // resolves -- the comment is invisible -- while the caller's only success
+    // signal says it landed. The `/breakdown` branch below has always guarded
+    // this way; the comment branch had not.
+    //
+    // This is not a hypothetical typo. `templates/CLAUDE.md.template` hands the
+    // agent a curl with a literal `KARTYA_ID` to substitute; an agent that
+    // forgets to substitute it gets a 200 and a comment on a card called
+    // "KARTYA_ID". The same shape reaches the endpoint from a truncated id
+    // column, or from a loop whose body kept its placeholder. Every one of
+    // those is silent today.
+    //
+    // The lookup is exact, matching `getKanbanCard` everywhere else: no caller
+    // in this repo constructs a prefix id (the dispatch instructions in
+    // `kanbanMoveInstructions` interpolate the full id), so rejecting a
+    // non-resolving id turns away only writes that were already lost.
+    const card = getKanbanCard(cardId)
+    if (!card) {
+      json(res, { error: `Kártya nem található: ${cardId}. A komment NEM jött létre. Teljes azonosító kell, a rövidített (prefix) alak nem működik.` }, 404)
+      return true
+    }
     const body = await readBody(req)
     const { author, content } = JSON.parse(body.toString())
     if (!author || !content) { json(res, { error: 'Szerző és tartalom kötelező' }, 400); return true }

@@ -33,6 +33,9 @@ vi.mock('../web/channel-monitor.js', () => ({
 }))
 vi.mock('../web/stuck-tool-call-watcher.js', () => ({ shouldDeferForRecentRespawn: () => false }))
 vi.mock('../web/agent-process.js', () => ({
+  // The not-ready-path modal clear: false = no modal, so every caller keeps
+  // its existing skip/busy behaviour and these fixtures are unaffected.
+  clearFeedbackModalAndRecheck: () => false,
   agentRunState: () => 'stopped',
   agentSessionName: (n: string) => `agent-${n}`,
   restartAgentProcess: vi.fn(),

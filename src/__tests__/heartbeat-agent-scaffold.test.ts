@@ -58,9 +58,9 @@ describe('renderHeartbeatClaudeMd', () => {
     expect(out).toContain('against `nina@example.com`')
   })
 
-  it('falls back to the MCP primary calendar when no account is set', () => {
+  it('falls back to the dashboard-configured calendar when no account is set', () => {
     const out = renderHeartbeatClaudeMd({ ...ID, calendarAccount: '' })
-    expect(out).toContain('your primary calendar')
+    expect(out).toContain('the calendar the dashboard is configured for')
     // No dangling "against `<empty>`" -- the empty case must not emit a
     // backtick-quoted account at all.
     expect(out).not.toContain('against `')
@@ -163,19 +163,33 @@ describe('renderHeartbeatClaudeMd', () => {
     expect(out).not.toContain('## Heartbeat YYYY-MM-DD HH:MM')
   })
 
-  it('requires the calendar MCP to be called as a tool, never from a subprocess', () => {
-    // Same round: the agent tried to reach the MCP server from a python
-    // subprocess and reported "not accessible in subprocess context" while the
-    // server was a live child of its own session.
+  it('forbids ANY agent-side calendar fetch -- the instrument is the only source (5E0A32B0)', () => {
+    // A month of agent-side fetch variants ended in a fossil: one probe
+    // against a nonexistent endpoint, copy-forwarded round after round as
+    // "calendar fetch failed: API error" with zero real attempts.
     const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toContain('Call it as a TOOL, directly.')
-    expect(out).toMatch(/Do not try to reach an MCP server\s+from Bash, python, curl or any other subprocess/)
+    expect(out).toContain('You never fetch the calendar yourself')
+    expect(out).toContain('/api/heartbeat/calendar')
+    // The old MCP-tool instructions must be gone -- prose telling the agent
+    // to fetch is exactly the surface the fossil grew on.
+    expect(out).not.toContain('mcp__server-google-calendar-mcp__list-events')
   })
 
-  it('separates "tool absent" from "call failed" so the two are not reported alike', () => {
+  it('separates "measured empty" from "failed query" so the two are not reported alike', () => {
     const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toContain('calendar tool not available in this session')
+    // no-events may only come from a measured n=0 line...
+    expect(out).toMatch(/no upcoming events[\s\S]{0,40}CALENDAR_EVENTS n=0/)
+    // ...and the failure line only from THIS round's ERROR calendar: line.
     expect(out).toContain('calendar fetch failed: <reason>')
+    expect(out).toMatch(/calendar fetch failed: <reason>"\s*--\s*ONLY from ERROR calendar: of THIS round/)
+  })
+
+  it('pins the mechanical freshness check on the instrument ts= stamp', () => {
+    // The anti-fossil prose existed before 5E0A32B0 and was ignored; the
+    // ts=-vs-step-0-clock comparison is the mechanical form of it.
+    const out = renderHeartbeatClaudeMd(ID)
+    expect(out).toMatch(/ts=.*stamp[\s\S]{0,120}same\s+hour as the step-0 clock/)
+    expect(out).toContain('stale instrument')
   })
 
   // Same investigation: the Tasks section read the `scheduled_tasks` table,
@@ -297,16 +311,16 @@ describe('no unfalsifiable warnings metric (HBWARN807)', () => {
   })
 })
 
-describe('deferred MCP tools (HBCALMCP808)', () => {
-  it('the calendar step teaches the ToolSearch select protocol', () => {
+describe('instrument-fed calendar (5E0A32B0, supersedes HBCALMCP808)', () => {
+  it('the calendar section names the instrument lines it may be built from', () => {
     const md = renderHeartbeatClaudeMd(ID)
-    // The load-bearing line: without it, a deferred calendar tool reads as
-    // absent and the section silently goes empty (measured 2026-08-08/09:
-    // 13 not-available reports, zero ToolSearch calls, all 13 tools present
-    // in the session's own deferred list).
-    expect(md).toContain('select:mcp__server-google-calendar-mcp__list-events')
-    // "not available" may only be claimed after ToolSearch also failed.
-    expect(md).toMatch(/ONLY[\s\S]{0,80}ToolSearch itself cannot surface/)
+    // With the fetch moved server-side, the ToolSearch/deferred-MCP protocol
+    // (HBCALMCP808) has no remaining subject; what replaces it is the line
+    // vocabulary of the instrument, which is the ONLY sanctioned source.
+    expect(md).toContain('CALENDAR_EVENTS')
+    expect(md).toContain('CAL_EVENT')
+    expect(md).toContain('ERROR calendar:')
+    expect(md).not.toContain('ToolSearch')
   })
 })
 

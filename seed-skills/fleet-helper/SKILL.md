@@ -25,6 +25,13 @@ No secrets or personal data are baked in: the dashboard token is read from
 ## Scripts
 - `scripts/fleet.py` - dashboard API + kanban read helpers + MarkdownV2 escaper
   (CLI and importable module).
+  - **KET escaper van, es a rossz valasztas nemitja a formazast (2026-08-28-i meres).**
+    `mdv2` MINDENT escapel, a `*`-ot IS: az `*felkover*` markereidbol `\*felkover\*`
+    lesz, tehat sima szoveg. Ez akkor helyes, ha PROGRAMBOL rakod ossze az uzenetet
+    (escapeled a dinamikus reszt, aztan te teszed ra a `*`-ot). KEZZEL IRT hosszu
+    uzenethez (reggeli napindito) `mdv2b` kell: az a `*`-ot meghagyja, minden mast
+    escapel, ES kuldes elott lefuttatja az `outgoing_gate_check`-et (em dash,
+    ` -- `, paratlan csillag). Ha talal valamit, exit 2 es NEM ad kimenetet.
 - `scripts/mail_triage.py` - rule-based unread Mail.app filter (macOS), JSON out,
   never sends and never marks read.
 - `scripts/gate_example.py` - reference heartbeat gate; its shell invocation IS
@@ -47,7 +54,8 @@ agents each ran a root-level `find / -iname fleet.py` trying to locate this
 script -- a 10+ minute runaway search under macOS/iCloud folders.)
 ```bash
 P=../../seed-skills/fleet-helper/scripts
-python3 $P/fleet.py mdv2 "Tomorrow (8:00) - report!"   # escaped MarkdownV2
+python3 $P/fleet.py mdv2 "Tomorrow (8:00) - report!"   # escaped MarkdownV2 (kills *bold*)
+cat brief.txt | python3 $P/fleet.py mdv2b            # keeps *bold*, refuses em dash / " -- "
 python3 $P/fleet.py kanban-due
 python3 $P/mail_triage.py 90                            # unread <= 90 min -> JSON
 ```

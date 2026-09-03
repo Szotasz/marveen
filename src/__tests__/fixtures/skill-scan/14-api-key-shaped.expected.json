@@ -1,0 +1,1 @@
+{"scanner": {"name": "mio-scan", "version": "1.0.0", "rulepack": "2026-08-24"}, "findings": [{"rule": "api-key-shaped", "category": "pii", "match": "sk_live_ABCDEFGHIJKLMNOPQRSTUV", "line": 1, "span": [7, 37]}, {"rule": "api-key-shaped", "category": "pii", "match": "pk-test-0123456789abcdefgh", "line": 1, "span": [41, 67]}]}

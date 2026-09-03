@@ -1,6 +1,6 @@
 {
   "name": "marveen",
-  "version": "1.34.1",
+  "version": "1.36.0",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -14,7 +14,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "syntax-check": "node --check web/app.js web/sw.js",
-    "smoke": "playwright test --config=playwright.config.ts"
+    "smoke": "playwright test --config=playwright.config.ts",
+    "skill": "tsx scripts/skill.ts"
   },
   "engines": {
     "node": ">=20 <24"
