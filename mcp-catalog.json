@@ -20,14 +20,12 @@
     "type": "local",
     "category": "productivity",
     "icon": "📧",
-    "command": "npx",
-    "args": ["-y", "gmail-mcp-server"],
+    "command": "node",
+    "args": ["vendor/gmail-mcp-server/dist/index.js", "--multi-user"],
     "env": {},
     "authType": "oauth",
-    "authNote": "Google Cloud OAuth kliens kell hozzá (client ID + secret). UGYANAZ az OAuth-app használható a Naptár összekötőhöz is.",
-    "infoUrl": "https://github.com/ArtyMcLabin/Gmail-MCP-Server",
-    "verifiedAt": "2026-08-27",
-    "verifiedNote": "npm-csomag ellenőrizve: gmail-mcp-server v1.0.30 létezik."
+    "authNote": "Google Cloud OAuth kliens kell hozzá (client ID + secret), ugyanaz az OAuth-app használható a Naptár összekötőhöz is. Első használatkor böngészőben kell bejelentkezni. A publikált npm csomag --multi-user módja hibás volt (userId figyelmen kívül hagyva minden olvasás/keresés/küldés hívásnál), ezért a vendor/gmail-mcp-server alatti, javított másolatot használjuk helyette, lásd ATTRIBUTIONS.md és vendor/gmail-mcp-server/MARVEEN_PATCH.md.",
+    "infoUrl": "https://github.com/ArtyMcLabin/Gmail-MCP-Server"
   },
   {
     "id": "google-calendar",

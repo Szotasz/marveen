@@ -1,0 +1,61 @@
+{
+  "name": "gmail-mcp-server",
+  "version": "1.0.30",
+  "description": "Gmail MCP Server with on-demand authentication for SIYA/Claude Desktop. Complete Gmail integration with multi-user support and OAuth2 security.",
+  "main": "dist/index.js",
+  "type": "module",
+  "bin": {
+    "gmail-mcp-server": "bin/cli.js"
+  },
+  "scripts": {
+    "test": "npx @modelcontextprotocol/inspector node dist/index.js",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "postinstall": "node install.js",
+    "prepare": "chmod +x bin/cli.js && npm run build",
+    "install-global": "npm install -g .",
+    "postpublish": "echo 'Package published! Note: Users can test with: npx gmail-mcp-server --help'",
+    "test-npx": "cd /tmp && npx -y gmail-mcp-server@latest --help",
+    "version-bump": "node scripts/version-bump.js"
+  },
+  "keywords": [
+    "mcp",
+    "gmail",
+    "email",
+    "google",
+    "api",
+    "oauth2",
+    "claude",
+    "claude-desktop",
+    "siya",
+    "siya-desktop",
+    "on-demand",
+    "authentication",
+    "multi-user",
+    "model-context-protocol"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.18.1",
+    "googleapis": "^140.0.1",
+    "mime-types": "^3.0.1",
+    "open": "^10.2.0",
+    "typescript": "^5.7.2"
+  },
+  "devDependencies": {
+    "@types/mime-types": "^2.1.4",
+    "@types/node": "^20.2.3",
+    "ts-node": "^10.9.1",
+    "tsx": "^4.19.4"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "README.md",
+    "install.js"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
