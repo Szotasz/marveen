@@ -294,6 +294,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  {
+    key: 'OWNER_DRIVE_FOLDER',
+    type: 'string',
+    default: '',
+    description: 'A flotta közös Google Drive mappájának ID-je (a mappa-URL /folders/ utáni része). A generált kolléga-asszisztensek ide írják az eredmény-fájlokat. Üres = a generált agent a tulajdonostól kéri el a mappát. Hot-reload: agent-generáláskor olvasódik, nem igényel újraindítást.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
   // --- Heartbeat module (hot-reload via settings-store) ---
   {
     key: 'HEARTBEAT_START_HOUR',
