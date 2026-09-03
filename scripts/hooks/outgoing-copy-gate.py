@@ -440,24 +440,54 @@ _LOCAL_RULES = os.environ.get(
 )
 
 
+# CLCOPYGATEHIANY902 (owner decision, TG 14442): a MISSING rules file is not
+# the same thing as a BROKEN one, and until now both produced the same
+# email-blocking outcome. The file is deliberately NOT shipped (it names a
+# private person), so on every fresh customer install it is absent -- and the
+# old fail-closed email path made a paying customer's agent unable to send
+# mail at all (reported by Nova, 2026-09-02). New policy:
+#   "missing"/"empty" -> the name check is OFF: fail-OPEN with a LOUD,
+#                        user-visible warning on every send (the customer
+#                        must know the check is not protecting them);
+#   "invalid"         -> the file EXISTS but cannot be used (bad JSON, wrong
+#                        schema, uncompilable regex): the operator tried to
+#                        configure it and something is wrong -- the email
+#                        path stays fail-CLOSED until it is fixed;
+#   "ok"              -> patterns loaded, the check enforces as before.
 def load_bad_name():
+    """Return (compiled_regex_or_None, state) -- state in ok/missing/empty/invalid."""
     try:
         with open(_LOCAL_RULES, encoding="utf-8") as fh:
-            pats = json.load(fh).get("bad_name_patterns") or []
-        if pats:
-            return re.compile("|".join(pats))
-    except OSError:
-        pass
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            state = "invalid"
+        else:
+            pats = data.get("bad_name_patterns") or []
+            if not isinstance(pats, list) or not all(isinstance(x, str) for x in pats):
+                state = "invalid"
+            elif not pats:
+                state = "empty"
+            else:
+                return (re.compile("|".join(pats)), "ok")
+    except FileNotFoundError:
+        state = "missing"
     except Exception:
-        pass
+        # Present but unusable: unreadable (permissions), unparseable JSON,
+        # or an uncompilable pattern. All of these mean someone TRIED to
+        # configure the rule and failed -- that must stay loud AND closed.
+        state = "invalid"
+    # ONE logging tail for EVERY non-ok state (Marveen review on #1156: the
+    # first cut logged only the exception branches, so empty/schema-invalid
+    # left no log line while missing did -- same event class, inconsistent
+    # ledger).
     try:
         log_path = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
         with open(log_path, "a", encoding="utf-8") as fh:
-            fh.write(f"outgoing-copy-gate: NEV-SZABALY FAJL HIANYZIK/URES ({_LOCAL_RULES}) -- "
-                     "a nev-ellenorzes NEM fut; potold a store/outgoing-copy-gate-rules.json-t.\n")
+            fh.write(f"outgoing-copy-gate: NEV-SZABALY {state.upper()} ({_LOCAL_RULES}) -- "
+                     "a nev-ellenorzes NEM fut.\n")
     except OSError:
         pass
-    return None
+    return (None, state)
 
 
 def _name_correction() -> str:
@@ -469,7 +499,7 @@ def _name_correction() -> str:
         return ""
 
 
-BAD_NAME = load_bad_name()
+BAD_NAME, RULES_STATE = load_bad_name()
 ACCENTED = set("áéíóöőúüűÁÉÍÓÖŐÚÜŰ")
 TAG = re.compile(r"<[^>]+>")
 
@@ -771,12 +801,16 @@ def main():
     # csendben lealit nev-ellenorzes mellett kuldeni rosszabb, mint megvarni a
     # szabaly-fajl potlasat. (A telegram-ag fail-open marad systemMessage
     # figyelmeztetessel: az a felugyeleti csatorna, ott a nemulas a dragabb.)
-    if BAD_NAME is None:
+    if RULES_STATE == "invalid":
+        # The file EXISTS but cannot be used: someone configured it and got it
+        # wrong. Silent enforcement-loss here would be invisible, so this stays
+        # fail-closed until the file is repaired (negative control in tests).
         sys.stderr.write(
-            "KIMENO-SZOVEG KAPU: TILTVA -- a NEV-SZABALY fajl hianyzik/ures "
-            f"({_LOCAL_RULES}), igy a nev-ellenorzes nem tud lefutni.\n"
-            "Email fail-closed: potold a store/outgoing-copy-gate-rules.json-t "
-            "(bad_name_patterns + correction), aztan kuldd ujra.\n"
+            "KIMENO-SZOVEG KAPU: TILTVA -- a NEV-SZABALY fajl LETEZIK, de "
+            f"ervenytelen ({_LOCAL_RULES}): nem parse-olhato JSON, rossz sema "
+            "vagy hibas regex.\n"
+            "Javitsd a fajlt (bad_name_patterns: [regex, ...] + correction), "
+            "aztan kuldd ujra.\n"
         )
         sys.exit(2)
 
@@ -790,6 +824,16 @@ def main():
         )
         sys.exit(2)
 
+    if RULES_STATE in ("missing", "empty"):
+        # Fail-OPEN, but never silent: the send goes out WITHOUT the name
+        # check, and the user must see that on the surface they are using --
+        # a log line nobody reads is the same as nothing (CLCOPYGATEHIANY902).
+        print(json.dumps({"systemMessage":
+            "outgoing-copy-gate: a NEV-SZABALY fajl "
+            + ("HIANYZIK" if RULES_STATE == "missing" else "URES (nincs minta)")
+            + f" ({_LOCAL_RULES}) -- ez a level a nev-ellenorzes NELKUL ment ki. "
+            "Ha kell a vedelem, hozd letre a fajlt: "
+            '{"bad_name_patterns": ["<python-regex>"], "correction": "<helyes alak>"}.'}))
     sys.exit(0)
 
 
