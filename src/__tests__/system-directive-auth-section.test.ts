@@ -18,6 +18,10 @@ vi.mock('../config.js', () => ({
   WEB_PORT: 3420,
   OWNER_DRIVE_FOLDER: '',
   DASHBOARD_PUBLIC_URL: '',
+  // Forward-compat for #1157 (AGENT_API_ORIGIN): the strict config mock
+  // must carry the key BEFORE that PR lands -- unread until then, and the
+  // merge stays green the minute agent-scaffold starts importing it.
+  AGENT_API_ORIGIN: '',
 }))
 
 vi.mock('../web/agent-config.js', () => ({
