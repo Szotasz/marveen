@@ -50,6 +50,14 @@ vi.mock('../db.js', () => ({
   stampMessageTrace: (..._a: unknown[]) => false,
   upsertOtelSpan: (..._a: unknown[]) => undefined,
   closeOtelSpan: (..._a: unknown[]) => false,
+  // Forward-compatible: this mock declares an EXPLICIT export list, so any db
+  // helper a future router path calls has to appear here or the module resolves
+  // it as undefined and the tick dies silently -- the delivery simply never
+  // happens and the assertion reads as "spy called 0 times".
+  // Added ahead of #1104 (superseded-message marking), whose router path calls
+  // this helper. Nothing reads the value until that lands; until then it is an
+  // unused key, which is why this is safe to ship on its own.
+  countNewerMessagesFromSameSender: (..._a: unknown[]) => 0,
 }))
 
 vi.mock('../web/voice-directive.js', () => ({
