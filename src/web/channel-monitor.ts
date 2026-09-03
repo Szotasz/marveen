@@ -29,6 +29,7 @@ import {
   answerFirstRunGates,
   shSingleQuote,
 } from './agent-process.js'
+import { sendSystemDirective } from './system-directive.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence } from './channel-poller-reap.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
@@ -559,7 +560,10 @@ async function triggerMarveenMemorySave(): Promise<void> {
     'Ha kesz vagy, irj egy rovid napi naplo bejegyzest is a /api/daily-log-ra. Utana eleg.',
   ].join(' ')
   try {
-    await sendPromptToSession(MAIN_CHANNELS_SESSION, prompt)
+    // GUARDHITELES903: the "save your memory NOW, restart in 60s" order is an
+    // action-requesting system directive -- anchored so the main agent can
+    // tell it from an injected fake urging it to dump state.
+    await sendSystemDirective(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, prompt)
     logger.info(`${BOT_NAME} memory-save prompt dispatched before hard restart`)
   } catch (err) {
     logger.warn({ err }, `Failed to dispatch ${BOT_NAME} memory-save prompt`)
