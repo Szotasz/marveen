@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
 """PostToolUse hook: log every tool call to /api/tool-log for the activity dashboard.
 
-REGISTRATION IS PER-AGENT ON PURPOSE. This hook is shipped in
-templates/settings.json.template, which ensureAgentHooks merges into each
-agent's OWN settings.json (agents/<name>/.claude/settings.json). Do NOT
-"improve" this by hoisting the entry into the shared marveen/.claude or
-~/.claude settings so it "works for every session". That change looks like a
-fix and is the opposite: the per-agent placement is the ONLY thing keeping the
-owner's own Claude Code sessions out of tool_call_log. A session that is not an
-agent never loads an agent's settings.json, so it never reaches this hook --
-that is the whole defence, and hoisting the entry removes it.
+REGISTRATION IS PER-AGENT, WITH ONE EXCEPTION THAT IS NOT A LEAK TO FIX BY
+MOVING FILES. This hook is shipped in templates/settings.json.template, which
+ensureAgentHooks merges into the file agentSettingsPath(name) returns. For a
+sub-agent that is the agent's OWN settings.json
+(agents/<name>/.claude/settings.json). For MAIN_AGENT_ID that function returns
+~/.claude/settings.json (agent-scaffold.ts), and web.ts starts the scaffold
+loop with the main agent -- so on the owner's machine this entry DOES sit in
+the global settings file, and every Claude Code session started there loads it,
+including the owner's own sessions. That is the current, measured behaviour:
+skill-usage-capture.py already rides the same PostToolUse path in that same
+file. Do not read the per-agent placement as a filter on who gets logged.
+
+What the per-agent placement does buy is scope on OTHER machines and for
+sub-agents: a session that never loads a given agent's settings.json never
+reaches this hook under that agent's name. If the owner's own sessions must be
+kept out of tool_call_log, the filter belongs IN this hook (identity is already
+resolved below, so the check is cheap) and needs a test -- moving the entry
+between settings files will not do it, because the main agent's settings file
+IS the global one.
 
 Identity comes from ledger_lib.agent_id_from_payload (LEDGERCWD828 / #1100):
 the session transcript path first, then MARVEEN_AGENT_ID, then cwd. The
