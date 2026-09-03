@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, STORE_DIR } from '../config.js'
+import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, AGENT_API_ORIGIN, STORE_DIR } from '../config.js'
 import { channelStateDir } from '../channel-provider.js'
 import { runAgent } from '../agent.js'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -12,16 +12,31 @@ import { resolveProfilePlaceholders, type ProfileTemplate } from './profiles.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
 
 // Resolve the base URL agents should use to reach the dashboard API.
-// DASHBOARD_PUBLIC_URL wins when set (distributed / k3s deployment); falls
-// back to localhost for single-host installs. Exported so heartbeat-agent-
-// scaffold and tests can import the same logic without duplicating it.
-export function resolveDashboardOrigin(publicUrl: string, port: number | string): string {
-  return (publicUrl || `http://localhost:${port}`).replace(/\/$/, '')
+//
+// Precedence: AGENT_API_ORIGIN > DASHBOARD_PUBLIC_URL > localhost:port.
+//
+// AGENT_API_ORIGIN exists because the previous two-step fallback answered the
+// wrong question. DASHBOARD_PUBLIC_URL means "where does the BROWSER reach the
+// dashboard" (it also feeds the CORS allowlist in web.ts); "where does an AGENT
+// reach the API from where it runs" is a separate question, and on a
+// single-host install behind NAT the answers differ. Measured 2026-09-03 on a
+// live install: the public name resolved, but its 443 was unreachable FROM THE
+// HOST (hairpin NAT), so all 73 generated curl examples across 18 agent
+// CLAUDE.md files pointed at a dead address -- `curl exit 7`, meaning the agent
+// receives nothing at all, not an error it could surface. Meanwhile the same
+// URL was perfectly reachable from a phone.
+//
+// Empty AGENT_API_ORIGIN keeps the old behaviour byte-for-byte, so k3s and
+// other distributed installs that rely on the public URL are unaffected: this
+// only gives the operator a way to say the agent-side answer out loud when it
+// differs. Exported so heartbeat-agent-scaffold and tests share one resolver.
+export function resolveDashboardOrigin(publicUrl: string, port: number | string, agentApiOrigin = ''): string {
+  return (agentApiOrigin || publicUrl || `http://localhost:${port}`).replace(/\/$/, '')
 }
 
-// Resolved once at module load; DASHBOARD_PUBLIC_URL requires a restart
-// (see config-registry.ts `requiresRestart` flag), so a const is safe.
-const dashboardOrigin = resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT)
+// Resolved once at module load; both keys are `requiresRestart` in
+// config-registry.ts, so a const is safe.
+const dashboardOrigin = resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT, AGENT_API_ORIGIN)
 // Dashboard token path emitted into generated CLAUDE.md curl examples.
 // MUST be absolute: sub-agents run from agents/<name>/, where a relative
 // `store/.dashboard-token` does not exist -- curl then sends an empty Bearer
