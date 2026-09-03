@@ -322,6 +322,16 @@ export const KANBAN_WIP_OVER_COLOR = env['KANBAN_WIP_OVER_COLOR'] ?? '#c53030'
 // requiresRestart registry keys: read through the override layer so a value
 // saved on the Settings page takes effect on the next restart.
 export const DASHBOARD_PUBLIC_URL = cfg('DASHBOARD_PUBLIC_URL') ?? ''
+// Where the AGENTS reach the dashboard API from wherever they run. This is a
+// DIFFERENT question from DASHBOARD_PUBLIC_URL, which answers "where does the
+// BROWSER reach the dashboard" and feeds the CORS allowlist. On a single-host
+// install the two answers differ: measured 2026-09-03, the public name resolves
+// but its 443 is unreachable from the host itself (hairpin NAT), so every
+// generated curl example pointed at a dead address -- `curl exit 7`, i.e. the
+// agent gets nothing, not an error it could report. Deriving one answer from
+// the other cannot be correct for both deployment shapes, so it is its own key.
+// Empty preserves the previous behaviour exactly (public URL, else localhost).
+export const AGENT_API_ORIGIN = cfg('AGENT_API_ORIGIN') ?? ''
 // Extra browser origins allowed to make state-changing dashboard requests
 // (CORS + CSRF allowlist), comma-separated, e.g. for VPN/LAN addresses that
 // aren't covered by WEB_HOST or DASHBOARD_PUBLIC_URL. Empty by default so
