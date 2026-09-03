@@ -51,12 +51,18 @@ set -u
 # found. Restricted to the bottom 15 lines so scrollback or message bodies that
 # merely quote the phrase do not produce false positives.
 # Mirrors src/model-fallback.ts detectsUsageLimit() and the USAGE_LIMIT_RX
-# constant; kept in sync with stuck-modal-guard.sh classify_pane step 4.
+# constant. That claim is not left to the comment: the alternatives below are
+# the ERE transcription of USAGE_LIMIT_RX, and
+# src/__tests__/channel-watchdog-limit-parity.test.ts runs BOTH implementations
+# over the same banner table and fails if they ever disagree. Reviewers found
+# the drift the hard way (2026-09-03): four weekly/session banners matched in TS
+# and not here, so on a weekly-limit banner the hold below would not engage and
+# the watchdog would respawn -- the exact failure this gate exists to prevent.
 if [ "${1:-}" = "--check-limit" ]; then
   _pane="$(cat)"
   _bottom="$(printf '%s' "$_pane" | tail -15)"
   if printf '%s' "$_bottom" | grep -qiE \
-      'usage limit reached|reached your usage limit|hit (your|the) (session|usage) limit|approaching (your )?usage limit|usage limit (will )?reset|limit will reset at|[0-9]+-hour limit reached|upgrade to increase your usage limit'; then
+      'usage limit reached|reached your (usage|weekly) limit|hit (your|the) (session|usage) limit|approaching (your )?([[:alnum:]_]+ )?(usage|weekly) limit|usage limit (will )?reset|limit will reset at|[0-9]+-hour limit reached|(weekly|session) limit reached|upgrade to increase your usage limit'; then
     exit 1  # usage-limit banner detected
   fi
   exit 0  # no banner
