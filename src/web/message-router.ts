@@ -28,7 +28,7 @@ import {
   capturePane,
   clearFeedbackModalAndRecheck,
 } from './agent-process.js'
-import { detectPaneState, detectsPermissionPrompt, type PaneState } from '../pane-state.js'
+import { detectPaneState, detectsPermissionPrompt, permissionPromptSummary, type PaneState, type PermissionPromptSummary } from '../pane-state.js'
 import { setLastInboundModality } from './voice-modality.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
@@ -92,6 +92,7 @@ export function formatStuckSessionAlert(
   pendingCount: number,
   paneState: PaneState | null = null,
   awaitingPermission = false,
+  permissionAsk: PermissionPromptSummary | null = null,
 ): string | null {
   if (agent === mainAgentId) return null
   const min = Math.round(stuckMs / 60000)
@@ -103,7 +104,11 @@ export function formatStuckSessionAlert(
   // nobody had answered. A prompt needs an ANSWER, not a restart, so it gets
   // its own sentence -- and the alert says who has to act.
   if (awaitingPermission) {
-    return `[session-stuck] Agent '${agent}' (tmux ${session}) is parked on a TOOL-PERMISSION PROMPT for ${min} min with ${queue}. This is NOT a wedged session: a tool call is waiting for a yes/no answer, and only the owner can give it. Do NOT restart (that discards the running work and leaves the question unanswered) and do NOT send a blind Escape (that answers "no" on the owner's behalf). Open the pane and answer it: tmux attach -t ${session}`
+    // Carry WHAT is being asked. The orchestrator answered two of these by
+    // hand on 2026-09-03 and both times the deciding step was opening the
+    // pane to read the question; an alert that quotes it saves that step.
+    const ask = permissionAsk ? ` It asks: ${permissionAsk.title} -- ${permissionAsk.reason}` : ''
+    return `[session-stuck] Agent '${agent}' (tmux ${session}) is parked on a TOOL-PERMISSION PROMPT for ${min} min with ${queue}.${ask} This is NOT a wedged session: a tool call is waiting for a yes/no answer, and only a person can give it. Do NOT restart (that discards the running work and leaves the question unanswered) and do NOT send a blind Escape (that answers "no" on the asker's behalf). Answer it in the pane: tmux attach -t ${session}`
   }
   // A busy pane means the session is working, so the alert must not read like
   // "wedged, restart it" -- that framing is what turned the earlier busy-pane
@@ -115,9 +120,9 @@ export function formatStuckSessionAlert(
   return `[session-stuck] Agent '${agent}' (tmux ${session}) has been not-ready for ${min} min with ${queue}. Run the delivery-stall diagnosis: check the pane (busy vs idle vs full context) and restart the agent if it is wedged.`
 }
 
-function notifyOrchestratorOfStuckSession(agent: string, session: string, stuckMs: number, pendingCount: number, paneState: PaneState | null, awaitingPermission = false): void {
+function notifyOrchestratorOfStuckSession(agent: string, session: string, stuckMs: number, pendingCount: number, paneState: PaneState | null, awaitingPermission = false, permissionAsk: PermissionPromptSummary | null = null): void {
   try {
-    const alert = formatStuckSessionAlert(agent, MAIN_AGENT_ID, session, stuckMs, pendingCount, paneState, awaitingPermission)
+    const alert = formatStuckSessionAlert(agent, MAIN_AGENT_ID, session, stuckMs, pendingCount, paneState, awaitingPermission, permissionAsk)
     if (!alert) return
     createAgentMessage('system', MAIN_AGENT_ID, alert)
     logger.info({ agent, session, stuckMs, pendingCount, paneState, awaitingPermission }, 'session-stuck surfaced to orchestrator')
@@ -612,7 +617,8 @@ export async function runMessageRouterTick(): Promise<void> {
             // the reader has to DO (answer it) instead of what would destroy
             // the work (restart it).
             const awaitingPermission = pane != null && detectsPermissionPrompt(pane)
-            notifyOrchestratorOfStuckSession(msg.to_agent, session, stuckMs, pendingMsgCount, paneState, awaitingPermission)
+            const permissionAsk = awaitingPermission && pane != null ? permissionPromptSummary(pane) : null
+            notifyOrchestratorOfStuckSession(msg.to_agent, session, stuckMs, pendingMsgCount, paneState, awaitingPermission, permissionAsk)
             // Reset timer so we don't spam every tick; re-escalate after another window.
             agentStuckSince.set(msg.to_agent, now)
           } else {

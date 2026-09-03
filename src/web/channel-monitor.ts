@@ -36,7 +36,7 @@ import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
 import { getInjectedPrompt, matchesInjectedPrompt } from './injected-prompt-registry.js'
 import {
-  detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, detectsFirstRunGate, detectsModelConsentDialog, detectsPermissionPrompt, type PaneErrorAlertState, type PaneState,
+  detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, detectsFirstRunGate, detectsModelConsentDialog, detectsPermissionPrompt, permissionPromptSummary, type PaneErrorAlertState, type PaneState,
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
   parkedInputText, shouldClearTruncatedPreamble,
   parkedInputRowCount, submitLanded, decideStuckInputAction,
@@ -1815,8 +1815,10 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // Auto-answering "Yes" is deliberately NOT an option: that would be
           // the fleet granting itself a permission the owner gated.
           if (paneNow != null && detectsPermissionPrompt(paneNow)) {
-            logger.warn({ session: t.session, agent: label }, 'Session parked on a tool-permission prompt -- owner decision needed, alerting (no keystrokes sent)')
-            sendAlert(`🔐 A(z) ${label} agent egy eszköz-engedélyre vár (a panelen "Do you want to proceed?" kérdés áll). Ez NEM beragadt session: egy tool-hívás igent vagy nemet vár, és azt csak te adhatod meg. Ne indítsd újra, mert a futó munka elveszik. Válaszolj a panelen: tmux attach -t ${t.session}`)
+            const ask = permissionPromptSummary(paneNow)
+            logger.warn({ session: t.session, agent: label, ask }, 'Session parked on a tool-permission prompt -- a person has to decide, alerting (no keystrokes sent)')
+            const askLine = ask ? ` Ezt kérdezi: ${ask.title} -- ${ask.reason}` : ''
+            sendAlert(`🔐 A(z) ${label} agent egy eszköz-engedélyre vár.${askLine} Ez NEM beragadt session: egy tool-hívás igent vagy nemet vár, és azt csak ember adhatja meg. Ne indítsd újra, mert a futó munka elveszik. Válaszolj a panelen: tmux attach -t ${t.session}`)
           } else if (paneNow != null && detectsModelConsentDialog(paneNow)) {
             logger.warn({ session: t.session, agent: label }, 'Blocking "menu" is the model usage-credit consent dialog -- answering it safely instead of Escape')
             await dismissModelConsentDialogIfPresent(t.session)
