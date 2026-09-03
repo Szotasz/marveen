@@ -11,9 +11,9 @@ The `email_send.level` in store/autonomy-config.json becomes a real switch:
   level 1  -> hard deny (signal-only autonomy).
   level 2  -> CHECK-BEFORE-SEND: the send is allowed only against an APPROVED,
               UNCONSUMED, IN-WINDOW approval whose content_hash equals the
-              sha256 anchor of THIS letter's four fields (to + cc + subject +
+              sha256 anchor of THIS letter's envelope (to + cc + bcc + subject +
               body). A body+subject hash alone would let an approved letter be
-              re-sent to a different recipient -- hence all four (msg 17936).
+              re-sent to a different recipient -- hence every recipient field, bcc included (msg 17936, EMAILBCCHORGONY903).
   level 3  -> allow (autonomous; the outgoing-copy-gate still audits copy).
 
 Anchor semantics (Marveen msg 17900, 5+1 conditions):
@@ -88,11 +88,25 @@ def read_email_level():
 
 
 def content_anchor(env: dict) -> str:
-    """sha256 over the four-field envelope. Canonical JSON so the same letter
-    always yields the same anchor; `text` is subject+body exactly as the copy
-    gate audits it, from the shared extractor."""
-    canon = json.dumps({"to": env["to"], "cc": env["cc"], "text": env["text"]},
-                       ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    """sha256 over the envelope: to + cc + bcc + text (subject+body exactly as
+    the copy gate audits it, from the shared extractor). Canonical JSON so the
+    same letter always yields the same anchor.
+
+    EMAILBCCHORGONY903: bcc joins the canon, but ONLY when non-empty. Two
+    reasons, both load-bearing:
+      - the gap this closes: without bcc in the hash, to=[owner], cc=[],
+        bcc=[stranger] anchored identically to the approved bcc-less letter,
+        so one approval could deliver to a recipient nobody approved;
+      - the conditional inclusion keeps every bcc-less anchor BYTE-IDENTICAL
+        to the pre-fix value, so open approvals (recorded before this change)
+        stay valid for the letters they approved. There is no ambiguity to
+        exploit: the extractor decides bcc deterministically, and any
+        non-empty bcc changes the hash -- fail-closed in the only direction
+        that matters."""
+    fields = {"to": env["to"], "cc": env["cc"], "text": env["text"]}
+    if env.get("bcc"):
+        fields["bcc"] = env["bcc"]
+    canon = json.dumps(fields, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
 
@@ -231,7 +245,7 @@ def main():
     }
     deny(prefix +
          f"email_send level 2 (CHECK-BEFORE-SEND). {reasons[verdict]}\n"
-         f"Tartalom-horgony (sha256; to+cc+targy+torzs): {anchor}\n"
+         f"Tartalom-horgony (sha256; to+cc+bcc+targy+torzs): {anchor}\n"
          f"{summarize(env)}\n"
          "Jovahagyas kerese: POST /api/approvals a sajat agent_id-ddal, "
          'category="email_send", content_hash=a fenti horgony, action_description='

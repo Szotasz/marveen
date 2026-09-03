@@ -128,34 +128,48 @@ with tempfile.TemporaryDirectory() as td:
           proc.returncode == 2, f"exit={proc.returncode}")
 
 # --- 4. recipient extraction (new surface; deterministic-or-deny) ------------
-to, cc, reason = mod.collect_bash_recipients(
+to, cc, bcc, reason = mod.collect_bash_recipients(
     'send.py --to a@b.hu --cc "c@d.hu" --to=\'e@f.hu\' --subject x')
 check("bash recipients: quoted/unquoted/= forms, order kept",
-      (to, cc, reason) == (["a@b.hu", "e@f.hu"], ["c@d.hu"], None),
-      f"got {(to, cc, reason)!r}")
+      (to, cc, bcc, reason) == (["a@b.hu", "e@f.hu"], ["c@d.hu"], [], None),
+      f"got {(to, cc, bcc, reason)!r}")
 
-to, cc, reason = mod.collect_bash_recipients('send.py --to "$DEST" --cc c@d.hu')
+# EMAILBCCHORGONY903: --bcc is a recipient field like any other -- without it
+# in the envelope, an approved letter re-sent WITH a bcc anchored identically.
+to, cc, bcc, reason = mod.collect_bash_recipients(
+    'send.py --to a@b.hu --bcc "rejtett@x.hu" --subject x')
+check("bash recipients: --bcc collected (EMAILBCCHORGONY903)",
+      (to, cc, bcc, reason) == (["a@b.hu"], [], ["rejtett@x.hu"], None),
+      f"got {(to, cc, bcc, reason)!r}")
+
+to, cc, bcc, reason = mod.collect_bash_recipients('send.py --bcc "$HIDDEN"')
+check("bash recipients: $VAR in --bcc -> unreadable_reason",
+      reason is not None and "--bcc" in reason, f"got {reason!r}")
+
+to, cc, bcc, reason = mod.collect_bash_recipients('send.py --to "$DEST" --cc c@d.hu')
 check("bash recipients: $VAR in --to -> unreadable_reason (never approximate)",
       reason is not None and "shell-behelyettesites" in reason, f"got {reason!r}")
 
-to, cc, reason = mod.collect_bash_recipients('send.py --cc "$(get-cc)"')
+to, cc, bcc, reason = mod.collect_bash_recipients('send.py --cc "$(get-cc)"')
 check("bash recipients: $(cmd) in --cc -> unreadable_reason",
       reason is not None and "--cc" in reason, f"got {reason!r}")
 
-check("mcp recipients: list + string + missing",
+check("mcp recipients: list + string + missing (+bcc)",
       mod.collect_mcp_recipients({"to": ["a@b.hu", "b@c.hu"], "cc": "c@d.hu"})
-      == (["a@b.hu", "b@c.hu"], ["c@d.hu"], None)
-      and mod.collect_mcp_recipients({}) == ([], [], None))
+      == (["a@b.hu", "b@c.hu"], ["c@d.hu"], [], None)
+      and mod.collect_mcp_recipients({"to": "a@b.hu", "bcc": ["h@x.hu"]})
+      == (["a@b.hu"], [], ["h@x.hu"], None)
+      and mod.collect_mcp_recipients({}) == ([], [], [], None))
 
 # --- 5. envelope composition (the PR2 hash input) ----------------------------
 env = mod.collect_email_envelope(
     "mcp__server-gmail-autoauth-mcp__send_email",
     {"to": ["a@b.hu"], "cc": ["x@y.hu"], "subject": "MCP tárgy",
      "body": "MCP törzs ékezettel: űrhajó."})
-check("envelope/mcp: four fields present, text == copy-gate text",
+check("envelope/mcp: envelope fields present (bcc included), text == copy-gate text",
       env["to"] == ["a@b.hu"] and env["cc"] == ["x@y.hu"]
       and env["text"] == golden["mcp"]["mcp-body-subject"]["text"]
-      and env["unreadable_reason"] is None, f"got {env!r}")
+      and env["bcc"] == [] and env["unreadable_reason"] is None, f"got {env!r}")
 
 env = mod.collect_email_envelope(
     "Bash", {"command": 'send.py --to a@b.hu --subject "Teszt tárgy ékezettel" '

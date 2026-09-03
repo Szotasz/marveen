@@ -241,6 +241,46 @@ with tempfile.TemporaryDirectory() as td:
     check("fail-closed: unparseable stdin -> DENIED (exit 2, never 0/1)",
           proc.returncode == 2, f"exit={proc.returncode}")
 
+    # --- EMAILBCCHORGONY903: bcc is part of the anchor -----------------------
+    # The gap this pins closed: with a to+cc+text anchor, an approved letter
+    # could be re-sent with an ADDED bcc -- identical hash, the approval was
+    # consumed, and a recipient nobody approved got the letter. Both send
+    # paths are covered, plus the backward-compat golden below.
+    store = make_store(os.path.join(td, "bcc-mcp"))
+    _, _, err = run_gate(store, mcp_send())          # harvest the letter's anchor
+    bccless_anchor = anchor_from_stderr(err)
+    approve(store, bccless_anchor)
+    bcc_payload = mcp_send()
+    bcc_payload["tool_input"]["bcc"] = ["rejtett@idegen.example"]
+    code, _, _ = run_gate(store, bcc_payload)
+    check("bcc/MCP: approved bcc-less letter re-sent WITH bcc -> DENIED",
+          code == 2, f"exit={code}")
+    code, _, _ = run_gate(store, mcp_send())
+    check("bcc/MCP: the bcc-less letter itself still sends on that approval",
+          code == 0, f"exit={code}")
+
+    store = make_store(os.path.join(td, "bcc-bash"))
+    bash_cmd = ('python3 scripts/send.py --to "a@b.hu" --subject "Teszt tárgy" '
+                '--body "Kedves Ügyfelünk! Törzs."')
+    _, _, err = run_gate(store, {"tool_name": "Bash", "tool_input": {"command": bash_cmd}})
+    approve(store, anchor_from_stderr(err))
+    code, _, _ = run_gate(store, {"tool_name": "Bash",
+                                  "tool_input": {"command": bash_cmd + ' --bcc "rejtett@idegen.example"'}})
+    check("bcc/Bash: approved bcc-less command re-sent WITH --bcc -> DENIED",
+          code == 2, f"exit={code}")
+    code, _, _ = run_gate(store, {"tool_name": "Bash", "tool_input": {"command": bash_cmd}})
+    check("bcc/Bash: the bcc-less command itself still sends on that approval",
+          code == 0, f"exit={code}")
+
+    # Backward-compat golden: the bcc-less canon is BYTE-STABLE across the bcc
+    # fix (bcc joins the hash ONLY when non-empty), so approvals recorded
+    # before the change stay valid for the letters they approved. If this hash
+    # ever changes, EVERY open approval silently invalidates -- that must be a
+    # loud, deliberate decision failing here, never a side effect.
+    check("bcc/golden: bcc-less anchor is byte-stable across the bcc fix",
+          bccless_anchor == "de87bdb699dcab419b68811bb57b6fab44b34e2fe16bff11cf90b2a5848f82ec",
+          f"got {bccless_anchor}")
+
     # SQLite-version portability, kept as a STATIC check on purpose. The
     # behavioural cases above only catch the bad call on a host whose sqlite is
     # older than 3.38 -- on CI (newer) they stay green while the live install
