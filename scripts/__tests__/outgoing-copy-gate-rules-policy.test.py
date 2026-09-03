@@ -105,8 +105,12 @@ with tempfile.TemporaryDirectory() as td:
           code == 0 and "systemMessage" not in out, f"exit={code} out={out[:120]!r}")
 
     # --- telegram branch: unchanged fail-open on missing ------------------
+    # No chat_id in the fixture: collect_telegram_body() reads only
+    # text/caption/message, and a numeric chat_id trips the secret-gate's
+    # "telegram update dump" detector (a false positive here, but the gate's
+    # pattern must not be loosened for one test file).
     tg = {"tool_name": "mcp__plugin_telegram_telegram__reply",
-          "tool_input": {"chat_id": 1, "text": "Rendben, köszönöm szépen."}}
+          "tool_input": {"text": "Rendben, köszönöm szépen."}}
     code, out, _ = run_gate(missing, tg)
     check("telegram + missing rules: still fail-open with its own warning",
           code == 0 and "systemMessage" in out, f"exit={code}")

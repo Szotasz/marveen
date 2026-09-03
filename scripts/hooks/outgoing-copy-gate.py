@@ -460,13 +460,15 @@ def load_bad_name():
         with open(_LOCAL_RULES, encoding="utf-8") as fh:
             data = json.load(fh)
         if not isinstance(data, dict):
-            return (None, "invalid")
-        pats = data.get("bad_name_patterns") or []
-        if not isinstance(pats, list) or not all(isinstance(x, str) for x in pats):
-            return (None, "invalid")
-        if not pats:
-            return (None, "empty")
-        return (re.compile("|".join(pats)), "ok")
+            state = "invalid"
+        else:
+            pats = data.get("bad_name_patterns") or []
+            if not isinstance(pats, list) or not all(isinstance(x, str) for x in pats):
+                state = "invalid"
+            elif not pats:
+                state = "empty"
+            else:
+                return (re.compile("|".join(pats)), "ok")
     except FileNotFoundError:
         state = "missing"
     except Exception:
@@ -474,6 +476,10 @@ def load_bad_name():
         # or an uncompilable pattern. All of these mean someone TRIED to
         # configure the rule and failed -- that must stay loud AND closed.
         state = "invalid"
+    # ONE logging tail for EVERY non-ok state (Marveen review on #1156: the
+    # first cut logged only the exception branches, so empty/schema-invalid
+    # left no log line while missing did -- same event class, inconsistent
+    # ledger).
     try:
         log_path = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
         with open(log_path, "a", encoding="utf-8") as fh:
