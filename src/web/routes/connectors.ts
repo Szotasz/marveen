@@ -664,7 +664,15 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
           .map(([k, v]) => `-e ${shellEscape(k)}=${shellEscape(v as string)}`)
           .join(' ')
 
-        const argsStr = (item.args || []).map((a: string) => shellEscape(a)).join(' ')
+        // Catalog args pointing into the repo (e.g. our vendored gmail-mcp-server)
+        // are relative to PROJECT_ROOT, but `claude mcp add --scope user` writes
+        // them verbatim into ~/.claude.json, and the MCP server later spawns from
+        // its own session cwd (agents/<name>), not the repo root -- so a relative
+        // path resolves to nothing there. Absolutize before registering.
+        const resolvedArgs = (item.args || []).map((a: string) =>
+          a.startsWith('vendor/') ? join(PROJECT_ROOT, a) : a,
+        )
+        const argsStr = resolvedArgs.map((a: string) => shellEscape(a)).join(' ')
         const cmd = `claude mcp add --scope user ${shellEscape(cliName)} ${envFlags} -- ${shellEscape(item.command)} ${argsStr} 2>&1`
         execSync(cmd, { timeout: 30000, encoding: 'utf-8' })
         if (Object.keys(userSecrets).length) {

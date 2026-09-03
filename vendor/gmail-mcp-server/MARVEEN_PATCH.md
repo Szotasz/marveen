@@ -58,6 +58,14 @@ sends through whichever account was authenticated first, via `gmail_authenticate
   `~/.gmail-mcp` (its actual per-user tokens live in `user-sessions.json`
   there anyway, written by `multi-user-auth.js`, which was NOT changed).
 
+- `dist/utils/gmail-auth.js`: the OAuth consent-screen prompt changed from
+  `prompt: 'consent'` to `prompt: 'select_account consent'` in all three auth
+  URL builders. In `--multi-user` mode, each new `gmail_authenticate_user`
+  call needs to let the person pick which Google account to sign in with;
+  plain `'consent'` skips the account chooser and reuses whatever Google
+  session is already active in the browser, which defeats the point of
+  authenticating a second/third account.
+
 ## If you ever refresh this vendor copy from a newer npm release
 
 Re-check whether `dist/index.js` and `dist/utils/gmail-operations.js` /

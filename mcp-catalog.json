@@ -25,7 +25,9 @@
     "env": {},
     "authType": "oauth",
     "authNote": "Google Cloud OAuth kliens kell hozzá (client ID + secret), ugyanaz az OAuth-app használható a Naptár összekötőhöz is. Első használatkor böngészőben kell bejelentkezni. A publikált npm csomag --multi-user módja hibás volt (userId figyelmen kívül hagyva minden olvasás/keresés/küldés hívásnál), ezért a vendor/gmail-mcp-server alatti, javított másolatot használjuk helyette, lásd ATTRIBUTIONS.md és vendor/gmail-mcp-server/MARVEEN_PATCH.md.",
-    "infoUrl": "https://github.com/ArtyMcLabin/Gmail-MCP-Server"
+    "infoUrl": "https://www.npmjs.com/package/gmail-mcp-server",
+    "verifiedAt": "2026-09-03",
+    "verifiedNote": "Vendorolt másolat ellenőrizve: gmail-mcp-server@1.0.30 (npm) és a vendor/gmail-mcp-server alatti kód között 4 fájl tér el (dist/index.js, dist/utils/gmail-operations.js, dist/utils/multi-user-auth.js, dist/utils/gmail-auth.js), mindegyik a MARVEEN_PATCH.md-ben dokumentált userId-bugfix vagy OAuth-prompt módosítás. Titok-sweep tiszta, nem-Google végpont nincs benne."
   },
   {
     "id": "google-calendar",
