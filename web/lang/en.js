@@ -68,6 +68,7 @@ window._i18n.en = {
   // --- Navigation ---
   'nav.overview':     'Overview',
   'nav.kanban':       'Kanban',
+  'nav.projects':     'Projects',
   'nav.archived':     'Archived',
   'nav.agents':       'Agents',
   'nav.activity':     'Activity',
@@ -1602,6 +1603,26 @@ window._i18n.en = {
   'kanban.filter.group_none':    'None',
   'kanban.filter.group_assignee':'By assignee',
   'kanban.filter.group_priority':'By priority',
+
+  // --- Projects overview ---
+  'projects.title':              'Projects',
+  'projects.subtitle':           'Human-readable overview of the live projects on the Kanban board',
+  'projects.empty':              'No kanban card has a project assigned yet.',
+  'projects.filter_empty':       'No project matches the current filters.',
+  'projects.load_error':         'Failed to load the project overview.',
+  'projects.save_error':         'Failed to save the description.',
+  'projects.no_description':     'No description yet -- click to edit.',
+  'projects.edit':               'Edit',
+  'projects.save':               'Save',
+  'projects.cancel':             'Cancel',
+  'projects.no_activity':        'no activity',
+  'projects.last_activity':      'Last update: {when}',
+  'projects.assignees_label':    'Worked on by:',
+  'projects.no_assignee':        'unassigned',
+  'projects.view_in_kanban':     'Open on the Kanban board →',
+  'projects.cards_done':         '{done}/{total} done',
+  'projects.filter.done':        'Done',
+  'projects.filter.in_progress': 'In progress',
 
   // --- Kanban Gantt/timeline view ---
   'kanban.view.board':              'Board',

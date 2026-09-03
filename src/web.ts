@@ -49,6 +49,7 @@ import { tryHandleDailyLog } from './web/routes/daily-log.js'
 import { tryHandleMemories } from './web/routes/memories.js'
 import { tryHandleMigrate } from './web/routes/migrate.js'
 import { tryHandleKanban } from './web/routes/kanban.js'
+import { tryHandleKanbanProjects } from './web/routes/kanban-projects.js'
 import { tryHandleSchedules } from './web/routes/schedules.js'
 import { tryHandleConnectors } from './web/routes/connectors.js'
 import { tryHandleDocs } from './web/routes/docs.js'
@@ -183,6 +184,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleMemories(routeCtx)) return
       if (await tryHandleMigrate(routeCtx)) return
       if (await tryHandleKanban(routeCtx)) return
+      if (await tryHandleKanbanProjects(routeCtx)) return
       if (await tryHandleSchedules(routeCtx)) return
       if (await tryHandleConnectorsHu(routeCtx)) return
       if (await tryHandleConnectors(routeCtx)) return
