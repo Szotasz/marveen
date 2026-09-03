@@ -25,6 +25,7 @@ import {
   detectsFeedbackOptOutPrompt,
   firstRunAcceptKeys,
   stuckInputSignature,
+  mcpTrustAcceptKeys,
   type FirstRunGateKind,
 } from '../pane-state.js'
 import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel } from './agent-config.js'
@@ -1461,7 +1462,13 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
           env: { WORKSOURCE_AGENT_ID: name, WORKSOURCE_DIR: worksourceRootFor(name) },
         }
         writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2))
-        worksourceFlags = ' --channels server:worksource --dangerously-load-development-channels'
+        // The dev-channels flag takes a TAGGED LIST (`server:<name>` for a manually
+        // configured MCP server, `plugin:<name>@<marketplace>` for a plugin one).
+        // Measured by the reviewer on the PR head: without the value the CLI exits
+        // with `option '--dangerously-load-development-channels <servers...>'
+        // argument missing`, i.e. a worksourceChannel agent could not start AT ALL
+        // -- not "the plugin is skipped", the process died. (2026-09-03, PR #1099.)
+        worksourceFlags = ' --channels server:worksource --dangerously-load-development-channels server:worksource'
         logger.info({ name, serverPath }, 'worksource channel wired for agent')
       } catch (err) {
         // Fail OPEN, on purpose: a worksource agent that comes up without its
@@ -1957,6 +1964,22 @@ export async function answerFirstRunGates(
         if (keys == null) {
           logger.warn({ session, gate },
             'first-run bypass dialog: no unambiguous accept option found -- parking, NO keystrokes sent')
+          return 'blocked'
+        }
+        for (const k of keys) {
+          runTmux(host, ['send-keys', '-t', session, k], { timeout: 5000 })
+          await delay(150)
+        }
+      } else if (gate === 'mcp-trust') {
+        // MCP server-approval dialog. Cursor-relative, never by number, and
+        // never option 2 ("all future MCP servers") -- see mcpTrustAcceptKeys.
+        const keys = pane != null ? mcpTrustAcceptKeys(pane) : null
+        if (keys == null) {
+          // No unambiguous "use THIS server" row. Enter would confirm whatever
+          // is highlighted (option 3 is "Continue without using this MCP
+          // server", i.e. a silently channel-less agent), so park instead.
+          logger.warn({ session, gate },
+            'MCP approval dialog: no unambiguous "use this server" option found -- parking, NO keystrokes sent')
           return 'blocked'
         }
         for (const k of keys) {

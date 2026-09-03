@@ -18,6 +18,8 @@ import {
   parkedInputRowCount,
   submitLanded,
   paneShowsContextSaturation,
+  mcpTrustAcceptKeys,
+  detectsFirstRunGate,
 } from '../pane-state.js'
 
 // Realistic pane fixtures modelled on actual `tmux capture-pane -p`
@@ -2166,5 +2168,55 @@ describe('parkedPasteSignature (stuck [Pasted text #N] recovery)', () => {
     ].join('\n')
     expect(stuckInputSignature(auraShape)).toBeNull()
     expect(parkedPasteSignature(auraShape)).not.toBeNull()
+  })
+})
+
+// MCP server-approval dialog (2026-09-03, PR #1099 review). The reviewer
+// measured this pane in a real tmux session: detectPaneState read 'unknown',
+// detectsFirstRunGate returned null, detectsBlockingMenu was false -- nothing
+// answered it and nothing alerted, while the router kept queueing work.
+describe('detectsFirstRunGate / mcpTrustAcceptKeys: the MCP approval dialog', () => {
+  const MCP_PANE = [
+    '',
+    'New MCP server found in this project: worksource',
+    'MCP servers may execute code or access system resources. All tool calls require approval.',
+    '',
+    '❯ 1. Use this MCP server',
+    '  2. Use this and all future MCP servers in this project',
+    '  3. Continue without using this MCP server',
+    '',
+    'Enter to confirm · Esc to cancel',
+  ].join('\n')
+
+  it('classifies it as a first-run gate instead of returning null', () => {
+    expect(detectsFirstRunGate(MCP_PANE)).toBe('mcp-trust')
+  })
+
+  it('selects THIS server with cursor-relative keys, never by number', () => {
+    // Cursor already on option 1 -> confirm without moving.
+    expect(mcpTrustAcceptKeys(MCP_PANE)).toEqual(['Enter'])
+  })
+
+  it('walks UP to option 1 when the cursor starts on the refusal', () => {
+    const onRefusal = MCP_PANE
+      .replace('❯ 1. Use this MCP server', '  1. Use this MCP server')
+      .replace('  3. Continue without', '❯ 3. Continue without')
+    expect(mcpTrustAcceptKeys(onRefusal)).toEqual(['Up', 'Up', 'Enter'])
+  })
+
+  it('never targets "all future MCP servers" -- that pre-approves unseen servers', () => {
+    const keys = mcpTrustAcceptKeys(MCP_PANE)
+    // From option 1, a single Down would land on the "all future" row.
+    expect(keys).not.toContain('Down')
+  })
+
+  it('parks (null) when no unambiguous "use this server" row exists', () => {
+    const reworded = MCP_PANE.replace('❯ 1. Use this MCP server', '❯ 1. Approve the server')
+    expect(mcpTrustAcceptKeys(reworded)).toBeNull()
+  })
+
+  it('a busy pane quoting the dialog is never the dialog', () => {
+    const quoted = `New MCP server found in this project: worksource\n  1. Use this MCP server\n\n✻ Thinking… (esc to interrupt)`
+    expect(detectsFirstRunGate(quoted)).toBeNull()
   })
 })

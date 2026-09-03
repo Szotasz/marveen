@@ -116,13 +116,45 @@ describe('wiring contracts (source-level)', () => {
   const routerSrc = readFileSync(join(process.cwd(), 'src/web/message-router.ts'), 'utf8')
   const processSrc = readFileSync(join(process.cwd(), 'src/web/agent-process.ts'), 'utf8')
 
-  it('the router skips the tmux-shaped gates for a worksource agent', () => {
+  it('the router skips the tmux-shaped gates for a worksource agent that is SERVING its queue', () => {
     // "absent", "busy" and "stuck" are all statements about a keyboard. Applying
     // them to a queue invents a failure that does not exist -- and the stuck one
     // escalates with a restart suggestion.
-    expect(routerSrc).toContain('!usesWorksource && shouldAbandon(')
-    expect(routerSrc).toContain('!usesWorksource && !sessionExists')
-    expect(routerSrc).toContain('!usesWorksource && !(await isSessionReadyForPrompt(')
+    //
+    // But the carve-out keys off `worksourceServing`, not off the opt-in flag
+    // (review, 2026-09-03): opting in says the agent WANTS the queue, not that
+    // anything is reading it. See the next case for why that distinction is the
+    // whole point.
+    expect(routerSrc).toContain('!worksourceServing && shouldAbandon(')
+    expect(routerSrc).toContain('!worksourceServing && !sessionExists')
+    expect(routerSrc).toContain('!worksourceServing && !(await isSessionReadyForPrompt(')
+    // The flag alone must never be what disarms a gate.
+    expect(routerSrc).not.toContain('!usesWorksource && shouldAbandon(')
+    expect(routerSrc).not.toContain('!usesWorksource && !sessionExists')
+    expect(routerSrc).not.toContain('!usesWorksource && !(await isSessionReadyForPrompt(')
+  })
+
+  it('the carve-out demands POSITIVE evidence that the queue is served, not just the opt-in flag', () => {
+    // The hole the reviewer measured: a worksource agent parks on the MCP
+    // server-approval dialog at startup, the router keeps writing to pending/,
+    // and every stall gate is already switched off underneath it -- so the item
+    // looks delivered and nobody is working on it. That is the failure this PR
+    // exists to remove, reintroduced by its own launch path.
+    //
+    // Evidence in the weakest form that still closes it: session EXISTS and is
+    // NOT parked on a first-run/approval dialog.
+    expect(routerSrc).toContain('const worksourceServing = usesWorksource && sessionExists && parkedGate == null')
+    expect(routerSrc).toContain('detectsFirstRunGate(')
+    // And a parked worksource agent must be visible, not silently re-gated.
+    expect(routerSrc).toMatch(/worksource agent is not serving its queue/)
+  })
+
+  it('the launcher passes the dev-channels flag with its TAGGED value', () => {
+    // Measured by the reviewer on the PR head: without a value the CLI exits
+    // with `option '--dangerously-load-development-channels <servers...>'
+    // argument missing`. Not "the plugin is skipped" -- the process died, so a
+    // worksourceChannel agent could not start at all.
+    expect(processSrc).toContain('--dangerously-load-development-channels server:worksource')
   })
 
   it('the router still marks the message delivered through the DB helper', () => {
