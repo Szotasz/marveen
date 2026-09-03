@@ -186,7 +186,10 @@ export async function getCalendarEvents(
     })
     if (retry.status !== 200) {
       logger.error({ status: retry.status, body: retry.data }, 'Google Calendar API error after refresh')
-      return []
+      // 5E0A32B0: throw, never return []. An API failure that returns an
+      // empty list is indistinguishable from a genuinely free calendar --
+      // the caller must be able to say "couldn't query" vs "no events".
+      throw new Error(`Google Calendar API error after refresh: ${retry.status}`)
     }
     const parsed: CalendarListResponse = JSON.parse(retry.data)
     return parsed.items ?? []
@@ -194,7 +197,7 @@ export async function getCalendarEvents(
 
   if (status !== 200) {
     logger.error({ status, body: data }, 'Google Calendar API error')
-    return []
+    throw new Error(`Google Calendar API error: ${status}`)
   }
 
   const parsed: CalendarListResponse = JSON.parse(data)

@@ -19,9 +19,19 @@
 #   COUNTS urgent=N in_progress=N waiting=N planned=N new_hot_memories_1h=N db_size_mb=N waiting_shown=N
 #   URGENT <id> <title>            (0..n lines)
 #   WAITING <id> <title>           (0..n lines)
+#   CALENDAR_EVENTS n=N window=2h  (measured; n=0 is a MEASURED empty calendar)
+#   CAL_EVENT <HH:MM|all-day> <summary> [attendees=N]   (0..n lines)
 #   SCHEDULES enabled=N
 #   TASK_RUNS_1H total=N [<status>=N ...]
 #   ERROR <section>: <reason>      (any failed measurement)
+#
+# 5E0A32B0: the calendar is measured HERE (server-side /api/heartbeat/calendar,
+# which reaches Google through the dashboard's own OAuth path), never by the
+# agent. The two calendar end-states are deliberately distinct lines:
+# CALENDAR_EVENTS n=0 means "queried, calendar free"; ERROR calendar: means
+# "could not query". A month of migrating agent-side symptoms ended in a
+# fossil (one 404 on a nonexistent endpoint copy-forwarded round after round),
+# and collapsing these two states is exactly how it stayed invisible.
 #
 # Fail-closed (the load-bearing property): a missing or null field NEVER
 # prints as 0 -- it prints an ERROR line and the exit code is non-zero.
@@ -52,7 +62,7 @@ echo "HB_METRICS_V1 ts=$(TZ="$TZNAME" date +'%Y-%m-%d %H:%M')"
 # piped data is silently lost; here the heredoc IS the program and nothing
 # is piped). python3's sqlite3 module replaces the sqlite3 CLI, which does
 # not exist on a stock Linux install (exit 127).
-STORE_DIR="$STORE_DIR" ORIGIN="$ORIGIN" python3 - <<'PY'
+STORE_DIR="$STORE_DIR" ORIGIN="$ORIGIN" TZNAME="$TZNAME" python3 - <<'PY'
 import json, os, sqlite3, sys, urllib.request
 
 store = os.environ['STORE_DIR']
@@ -105,6 +115,45 @@ if tok is not None:
                 print('WAITING', x.get('id'), x.get('title'))
     except Exception as e:
         err('summary', repr(e))
+
+    # Calendar (next 2h) -- measured server-side on /api/heartbeat/calendar
+    # (5E0A32B0). The endpoint answers 200 with {ok:true, events} OR
+    # {ok:false, error}: a failed query is a RESULT to relay, not an empty
+    # list. n=0 therefore always means "queried, calendar free".
+    try:
+        d = get('/api/heartbeat/calendar')
+        if d.get('ok') is True and isinstance(d.get('events'), list):
+            evs = d['events']
+            print('CALENDAR_EVENTS n=%d window=2h' % len(evs))
+            def hhmm(part):
+                # dateTime carries its own offset; render in CLAW_TZ. An
+                # all-day event has only `date`. On any parse trouble print
+                # the raw value -- wrong-looking beats silently dropped.
+                if not isinstance(part, dict):
+                    return '?'
+                if part.get('dateTime'):
+                    try:
+                        from datetime import datetime
+                        from zoneinfo import ZoneInfo
+                        dt = datetime.fromisoformat(part['dateTime'])
+                        return dt.astimezone(ZoneInfo(os.environ.get('TZNAME', 'Europe/Budapest'))).strftime('%H:%M')
+                    except Exception:
+                        return str(part['dateTime'])
+                if part.get('date'):
+                    return 'all-day'
+                return '?'
+            for e in evs:
+                att = e.get('attendees') or 0
+                print('CAL_EVENT %s %s%s' % (
+                    hhmm(e.get('start')),
+                    e.get('summary') or '(nincs cim)',
+                    (' attendees=%d' % att) if att else ''))
+        elif d.get('ok') is False:
+            err('calendar', str(d.get('error') or 'unknown'))
+        else:
+            err('calendar', 'unrecognized response shape: %s' % json.dumps(d)[:120])
+    except Exception as e:
+        err('calendar', repr(e))
 
     # The live schedule registry -- NOT the scheduled_tasks table, which is
     # empty on this deployment and would report 0 forever.
