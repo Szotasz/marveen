@@ -71,7 +71,7 @@ describe('update checker current version', () => {
 //     GitHub answers 422 on /commits/<branch>), and
 //   - the compare BASE (a base the remote does not know turns the reported
 //     backlog into a fork-distance -- measured 375 against a real 5).
-import { remoteIsOwnOrigin, parseGitHubRemote, branchOnRemote, branchExistsOnOrigin, originHasTrackingRefs } from '../web/update-checker.js'
+import { remoteIsOwnOrigin, parseGitHubRemote, branchOnRemote, branchExistsOnOrigin, originHasTrackingRefs, upstreamMergeBase } from '../web/update-checker.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 
@@ -209,5 +209,39 @@ describe('the branch we ask upstream about is answerable', () => {
     const asked = await branchOnRemote(remote, PROJECT_ROOT, async () => 'develop')
     // Either it is a branch origin really has, or it is the injected default.
     expect(branchExistsOnOrigin(asked, PROJECT_ROOT) || asked === 'develop').toBe(true)
+  })
+})
+
+// The twin half of UPDATEBRANCH904. branchOnRemote decides WHICH branch we ask
+// about; upstreamMergeBase decides which commit we measure the distance FROM.
+// Both used the same `origin` naming convention, so both resolved to a ref
+// that has never existed here -- and an empty base does not fail loudly, it
+// produces a nonsense distance (161 reported against a real backlog of 4,
+// measured 2026-09-04). A number nobody can act on is worse than an error.
+describe('upstreamMergeBase resolves a base the remote actually knows', () => {
+  it('returns a real commit for the branch we ask the remote about', () => {
+    const base = upstreamMergeBase(parseGitHubRemote(PROJECT_ROOT), 'develop')
+    expect(base).toMatch(/^[0-9a-f]{40}$/)
+  })
+
+  it('the base is an ancestor of the ref it claims to compare against', () => {
+    const base = upstreamMergeBase(parseGitHubRemote(PROJECT_ROOT), 'develop')
+    // If the base were picked from a ref the remote does not carry, this fails:
+    // merge-base --is-ancestor exits non-zero.
+    const ok = (() => {
+      try {
+        execFileSync('/usr/bin/git', ['merge-base', '--is-ancestor', base, 'origin/develop'],
+          { cwd: PROJECT_ROOT, timeout: 3000 })
+        return true
+      } catch { return false }
+    })()
+    expect(ok).toBe(true)
+  })
+
+  it('never returns an empty base while origin/develop exists', () => {
+    // The empty string is the failure that produced the nonsense count; it must
+    // not come back silently on a checkout that plainly has the ref.
+    expect(branchExistsOnOrigin('develop', PROJECT_ROOT)).toBe(true)
+    expect(upstreamMergeBase(parseGitHubRemote(PROJECT_ROOT), 'develop')).not.toBe('')
   })
 })
