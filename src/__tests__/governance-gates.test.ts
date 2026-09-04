@@ -1,11 +1,17 @@
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { gateDecision as selfPaceDecision, stripDataPayloads, stripGitCommitMessages, stripHeredocBodies, stripProseArguments } from '../../scripts/self-pace-gate.mjs'
+// @ts-expect-error -- plain .mjs hook script, no types
+import { bashViolation } from '../../scripts/readonly-repo-gate.mjs'
 import {
   agentGetsGovernanceGates,
+  agentGetsReadonlyRepoGate,
+  injectReadonlyRepoGate,
   injectSelfPaceGate,
 } from '../web/agent-scaffold.js'
 import { MAIN_AGENT_ID } from '../config.js'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
 // --- self-pace-gate: blocks the agent from scheduling its own future turns ---
 describe('self-pace-gate gateDecision', () => {
@@ -518,5 +524,77 @@ describe('self-pace-gate: quoted prose cannot fake a command position', () => {
   it('fails CLOSED on an UNQUOTED heredoc tag whose body substitutes', () => {
     // <<PY (no quotes) expands the body, so its contents are not inert.
     expect(selfPaceDecision('Bash', { command: 'cat <<PY\n$(crontab -r)\nPY' }).deny).toBe(true)
+  })
+})
+
+// --- readonly-repo-gate: the install exemption must exempt installs ONLY ---
+//
+// INSTALL_RX marks a segment as "this is a dependency install, do not inspect
+// it" -- package managers only ever write artifacts. The yarn branch used to
+// read `yarn\s+(install)?\b`: the optional group plus the word boundary made
+// it match `yarn ` + anything, so `yarn add`, `yarn exec` and `yarn dlx`
+// inherited a blanket skip that was never meant for them. Found in review on
+// #770 (2026-09-03). The other five branches all require their subcommand,
+// which is why only yarn slipped.
+describe('readonly-repo-gate: INSTALL_RX exempts installs, not every yarn call', () => {
+  // ROOTS defaults to <home>/projects, resolved when the module loads.
+  const repoFile = join(homedir(), 'projects', 'app', 'install.log')
+
+  it('still exempts the real installs, per package manager', () => {
+    for (const cmd of [
+      `npm ci > ${repoFile}`,
+      `npm install > ${repoFile}`,
+      `pnpm install > ${repoFile}`,
+      `yarn install > ${repoFile}`,
+      `pip install -r requirements.txt > ${repoFile}`,
+      `poetry install > ${repoFile}`,
+      `bundle install > ${repoFile}`,
+    ]) {
+      expect(bashViolation(cmd), cmd).toBeNull()
+    }
+  })
+
+  it('no longer waves through a non-install yarn subcommand (the regression)', () => {
+    for (const cmd of [
+      `yarn add left-pad > ${repoFile}`,
+      `yarn exec tsx build.ts > ${repoFile}`,
+      `yarn dlx some-codemod > ${repoFile}`,
+      `yarn run build > ${repoFile}`,
+    ]) {
+      expect(bashViolation(cmd), cmd).not.toBeNull()
+    }
+  })
+
+  it('the exemption is per-segment, so a chained non-install is still judged', () => {
+    expect(bashViolation(`yarn install && yarn add left-pad > ${repoFile}`)).not.toBeNull()
+  })
+})
+
+// --- readonly-repo-gate wiring: opt-in by profile FLAG, not by profile name ---
+describe('agentGetsReadonlyRepoGate', () => {
+  it('wires only for a profile that opts in', () => {
+    expect(agentGetsReadonlyRepoGate({ readonlyRepo: true })).toBe(true)
+    expect(agentGetsReadonlyRepoGate({ readonlyRepo: false })).toBe(false)
+    expect(agentGetsReadonlyRepoGate({})).toBe(false)
+  })
+
+  it('injects one PreToolUse entry and stays idempotent', () => {
+    const settings: Record<string, unknown> = {}
+    injectReadonlyRepoGate(settings)
+    injectReadonlyRepoGate(settings)
+    const pre = (settings.hooks as Record<string, unknown>).PreToolUse as unknown[]
+    const mine = pre.filter((e) => JSON.stringify(e).includes('readonly-repo-gate.mjs'))
+    expect(mine).toHaveLength(1)
+    expect(JSON.stringify(mine[0])).toContain('Bash|Write|Edit|NotebookEdit')
+  })
+
+  it('preserves unrelated PreToolUse entries', () => {
+    const settings: Record<string, unknown> = {
+      hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'node other.mjs' }] }] },
+    }
+    injectReadonlyRepoGate(settings)
+    const pre = (settings.hooks as Record<string, unknown>).PreToolUse as unknown[]
+    expect(pre).toHaveLength(2)
+    expect(JSON.stringify(pre[0])).toContain('other.mjs')
   })
 })
