@@ -13315,6 +13315,21 @@ function renderBridgeEnrollSection(body) {
   document.getElementById('authBridgeEnrollBtn').addEventListener('click', bridgeEnrollFromUi)
 }
 
+// The pairing endpoint answers with a stable `code` beside its English
+// `error` sentence. Translate on the code, never on the sentence: the wording
+// is free to change, the code is the contract. An unknown code falls back to
+// the server's own sentence rather than to a blank line or a raw key, so a
+// server error added later degrades to English instead of disappearing.
+function bridgeEnrollErrorText(data) {
+  const code = data && typeof data.code === 'string' ? data.code : ''
+  if (code) {
+    const key = `auth.bridge.err.${code}`
+    const translated = t(key, (data && data.params) || {})
+    if (translated !== key) return translated
+  }
+  return (data && data.error) || t('auth.card.err_generic')
+}
+
 async function bridgeEnrollFromUi() {
   const msg = document.getElementById('authBridgeMsg')
   const out = document.getElementById('authBridgeBundle')
@@ -13334,7 +13349,7 @@ async function bridgeEnrollFromUi() {
       body: JSON.stringify(hostOverride ? { key_line: keyLine, name, host: hostOverride } : { key_line: keyLine, name }),
     })
     const data = await r.json().catch(() => ({}))
-    if (!r.ok) { msg.classList.add('err'); msg.textContent = data.error || t('auth.card.err_generic'); return }
+    if (!r.ok) { msg.classList.add('err'); msg.textContent = bridgeEnrollErrorText(data); return }
     msg.classList.add('ok')
     msg.textContent = (data.action === 'replaced' ? t('auth.bridge.repaired') : t('auth.bridge.paired')) +
       (data.warnings && data.warnings.length ? ` (${data.warnings.join('; ')})` : '')
