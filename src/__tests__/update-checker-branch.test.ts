@@ -195,20 +195,72 @@ describe('branchOnRemote does not trust a branch the remote has never seen', () 
   })
 })
 
-// The end-to-end shape of UPDATEBRANCH904, asserted against THIS checkout:
-// whatever branch we end up asking the upstream remote about, it must be one
-// that remote could actually answer for. A branch only this machine has ever
-// seen is the 422 that produced the silent `behind: 0`.
+// The end-to-end shape of UPDATEBRANCH904, asserted against a checkout whose
+// remote-tracking refs we build ourselves.
+//
+// The first version of this asserted against PROJECT_ROOT and passed on the
+// workstation, then failed on CI: `actions/checkout` fetches the PR ref alone,
+// so `refs/remotes/origin/develop` is not there and every claim about "this
+// checkout has origin refs" is a claim about the checkout, not about the code.
+// The fixture below carries real refs -- a real bare origin, a real clone, real
+// `refs/remotes/origin/*` -- so the assertions measure git behaviour and stay
+// true wherever they run.
+function clonedRepoWithTrackingRefs(): { root: string; cleanup: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), 'update-checker-clone-'))
+  const origin = join(dir, 'origin.git')
+  const root = join(dir, 'work')
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync('/usr/bin/git', args, { cwd, timeout: 5000, encoding: 'utf-8' })
+
+  // A real remote with a real `develop`, published the way a remote is.
+  const seed = join(dir, 'seed')
+  execFileSync('/usr/bin/git', ['init', '-q', '-b', 'develop', seed], { timeout: 5000 })
+  git(seed, '-c', 'user.email=t@example.invalid', '-c', 'user.name=t',
+      'commit', '-q', '--allow-empty', '-m', 'upstream base')
+  execFileSync('/usr/bin/git', ['init', '-q', '--bare', origin], { timeout: 5000 })
+  // The bare repo's HEAD defaults to the git build's init.defaultBranch, which
+  // is not necessarily `develop`; a clone then checks nothing out and the
+  // branch made below has no ancestry with origin/develop -- an empty
+  // merge-base produced by the FIXTURE would look exactly like the bug.
+  execFileSync('/usr/bin/git', ['symbolic-ref', 'HEAD', 'refs/heads/develop'], { cwd: origin, timeout: 5000 })
+  git(seed, 'remote', 'add', 'origin', origin)
+  git(seed, 'push', '-q', 'origin', 'develop')
+
+  // ...and a clone of it, which is what a real install looks like: HEAD on its
+  // own branch, `refs/remotes/origin/develop` present because it was fetched.
+  execFileSync('/usr/bin/git', ['clone', '-q', origin, root], { timeout: 15000 })
+  git(root, 'remote', 'set-url', 'origin', 'https://github.com/TheAuthor/marveen.git')
+  git(root, 'checkout', '-q', '-b', 'a-local-feature-branch')
+  git(root, '-c', 'user.email=t@example.invalid', '-c', 'user.name=t',
+      'commit', '-q', '--allow-empty', '-m', 'local work never pushed')
+
+  return { root, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+}
+
 describe('the branch we ask upstream about is answerable', () => {
-  it('this checkout has origin tracking refs, so the probe carries evidence', () => {
-    expect(originHasTrackingRefs(PROJECT_ROOT)).toBe(true)
+  const fixture = clonedRepoWithTrackingRefs()
+  afterAll(() => fixture.cleanup())
+
+  it('a fetched clone carries origin tracking refs, so the probe carries evidence', () => {
+    expect(originHasTrackingRefs(fixture.root)).toBe(true)
+    expect(branchExistsOnOrigin('develop', fixture.root)).toBe(true)
+  })
+
+  // Control: the probe answers about THIS checkout, so a branch that was never
+  // fetched must come back false. Without it, a probe that always said true
+  // would make the claim above pass for the wrong reason.
+  it('a branch the clone never fetched is reported absent', () => {
+    expect(branchExistsOnOrigin('a-local-feature-branch', fixture.root)).toBe(false)
+    expect(branchExistsOnOrigin('no-such-branch-9f3a1c', fixture.root)).toBe(false)
   })
 
   it('never asks upstream about a branch that is not on origin', async () => {
-    const remote = parseGitHubRemote(PROJECT_ROOT)
-    const asked = await branchOnRemote(remote, PROJECT_ROOT, async () => 'develop')
+    const remote = parseGitHubRemote(fixture.root)
+    const asked = await branchOnRemote(remote, fixture.root, async () => 'develop')
     // Either it is a branch origin really has, or it is the injected default.
-    expect(branchExistsOnOrigin(asked, PROJECT_ROOT) || asked === 'develop').toBe(true)
+    expect(branchExistsOnOrigin(asked, fixture.root) || asked === 'develop').toBe(true)
+    // The local-only branch is exactly the 422 this fix removed.
+    expect(asked).not.toBe('a-local-feature-branch')
   })
 })
 
@@ -219,19 +271,22 @@ describe('the branch we ask upstream about is answerable', () => {
 // produces a nonsense distance (161 reported against a real backlog of 4,
 // measured 2026-09-04). A number nobody can act on is worse than an error.
 describe('upstreamMergeBase resolves a base the remote actually knows', () => {
+  const fixture = clonedRepoWithTrackingRefs()
+  afterAll(() => fixture.cleanup())
+
   it('returns a real commit for the branch we ask the remote about', () => {
-    const base = upstreamMergeBase(parseGitHubRemote(PROJECT_ROOT), 'develop')
+    const base = upstreamMergeBase(parseGitHubRemote(fixture.root), 'develop', fixture.root)
     expect(base).toMatch(/^[0-9a-f]{40}$/)
   })
 
   it('the base is an ancestor of the ref it claims to compare against', () => {
-    const base = upstreamMergeBase(parseGitHubRemote(PROJECT_ROOT), 'develop')
+    const base = upstreamMergeBase(parseGitHubRemote(fixture.root), 'develop', fixture.root)
     // If the base were picked from a ref the remote does not carry, this fails:
     // merge-base --is-ancestor exits non-zero.
     const ok = (() => {
       try {
         execFileSync('/usr/bin/git', ['merge-base', '--is-ancestor', base, 'origin/develop'],
-          { cwd: PROJECT_ROOT, timeout: 3000 })
+          { cwd: fixture.root, timeout: 3000 })
         return true
       } catch { return false }
     })()
@@ -241,7 +296,19 @@ describe('upstreamMergeBase resolves a base the remote actually knows', () => {
   it('never returns an empty base while origin/develop exists', () => {
     // The empty string is the failure that produced the nonsense count; it must
     // not come back silently on a checkout that plainly has the ref.
-    expect(branchExistsOnOrigin('develop', PROJECT_ROOT)).toBe(true)
-    expect(upstreamMergeBase(parseGitHubRemote(PROJECT_ROOT), 'develop')).not.toBe('')
+    expect(branchExistsOnOrigin('develop', fixture.root)).toBe(true)
+    expect(upstreamMergeBase(parseGitHubRemote(fixture.root), 'develop', fixture.root)).not.toBe('')
+  })
+
+  // The failure itself: no ref for the queried branch anywhere, so there is
+  // nothing to measure from and the honest answer is the empty string -- the
+  // caller turns that into "unknown", never into a distance.
+  it('returns empty rather than inventing a base when no ref matches', () => {
+    const bare = repoWithRemotes({ origin: 'https://github.com/TheAuthor/marveen.git' })
+    try {
+      expect(upstreamMergeBase('TheAuthor/marveen', 'develop', bare)).toBe('')
+    } finally {
+      rmSync(bare, { recursive: true, force: true })
+    }
   })
 })

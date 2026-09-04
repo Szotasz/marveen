@@ -288,7 +288,7 @@ export function groupByRelease(commits: UpdateCommit[], fullMessages: string[]):
 // the fork point -- an actual upstream commit -- so it can be compared on
 // GitHub even though the local HEAD itself never landed there. Empty string
 // when there is no local upstream ref.
-export function upstreamMergeBase(remote: string, remoteBranch: string): string {
+export function upstreamMergeBase(remote: string, remoteBranch: string, root: string = PROJECT_ROOT): string {
   // The base has to be a commit the queried remote KNOWS, otherwise the compare
   // call is meaningless. Asking `origin/<local branch>` while querying someone
   // else's repo picks our own pushed commit as the base and reports a
@@ -305,7 +305,7 @@ export function upstreamMergeBase(remote: string, remoteBranch: string): string 
   const refs = [
     `upstream/${remoteBranch}`,
     `origin/${remoteBranch}`,
-    ...(remoteIsOwnOrigin(remote) ? [`origin/${trackedBranch()}`] : []),
+    ...(remoteIsOwnOrigin(remote, root) ? [`origin/${trackedBranch(root)}`] : []),
     'upstream/develop', 'origin/develop',
     'upstream/main', 'origin/main',
   ]
@@ -315,8 +315,8 @@ export function upstreamMergeBase(remote: string, remoteBranch: string): string 
       // ambiguous or partially-valid name can also resolve to something we did
       // not mean. Verify, then measure.
       execFileSync('/usr/bin/git', ['show-ref', '--verify', '--quiet', `refs/remotes/${ref}`],
-        { cwd: PROJECT_ROOT, timeout: 3000 })
-      const base = execFileSync('/usr/bin/git', ['merge-base', 'HEAD', ref], { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' }).trim()
+        { cwd: root, timeout: 3000 })
+      const base = execFileSync('/usr/bin/git', ['merge-base', 'HEAD', ref], { cwd: root, timeout: 3000, encoding: 'utf-8' }).trim()
       if (base) return base
     } catch { /* try the next ref */ }
   }
