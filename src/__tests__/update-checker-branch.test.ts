@@ -71,7 +71,7 @@ describe('update checker current version', () => {
 //     GitHub answers 422 on /commits/<branch>), and
 //   - the compare BASE (a base the remote does not know turns the reported
 //     backlog into a fork-distance -- measured 375 against a real 5).
-import { remoteIsOwnOrigin, parseGitHubRemote, branchOnRemote } from '../web/update-checker.js'
+import { remoteIsOwnOrigin, parseGitHubRemote, branchOnRemote, branchExistsOnOrigin, originHasTrackingRefs } from '../web/update-checker.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 
@@ -139,5 +139,75 @@ describe('update checker remote selection (fork case)', () => {
     const root = mk({ origin: 'git@github.com:TheFork/marveen.git' })
     const branch = await branchOnRemote('TheFork/marveen', root, async () => 'never-used')
     expect(branch).toBe('a-local-feature-branch')
+  })
+})
+
+// UPDATEBRANCH904: "origin is our own repo" is a naming CONVENTION, and this
+// fork inverts it -- `origin` points at the original author (Szotasz/marveen)
+// and the fork pushes to a second remote. branchOnRemote then asked the
+// AUTHOR's repo for OUR local feature branch, GitHub answered 422, the throw
+// was swallowed into `behind: 0`, and the dashboard reported "up to date" for
+// nine days while 66 upstream commits piled up. A silent zero is the worst
+// possible answer here: it looks exactly like being current.
+describe('branchOnRemote does not trust a branch the remote has never seen', () => {
+  const OURS = 'Owner/Repo'
+  const ownOrigin = (r: string) => r === OURS
+
+  it('uses the local branch when the remote actually has it', async () => {
+    const branch = await branchOnRemote(
+      OURS, PROJECT_ROOT,
+      async () => 'develop',
+      () => true,
+      ownOrigin,
+      () => true,
+    )
+    expect(branch).toBe(trackedBranch())
+  })
+
+  it('falls back to the default branch when the remote has no such branch', async () => {
+    const branch = await branchOnRemote(
+      OURS, PROJECT_ROOT,
+      async () => 'develop',
+      () => false,
+      ownOrigin,
+      () => true,
+    )
+    expect(branch).toBe('develop')
+    expect(branch).not.toBe(trackedBranch())
+  })
+
+  it('asks a foreign remote for its own default branch, never ours', async () => {
+    const branch = await branchOnRemote(
+      'SomeoneElse/repo', PROJECT_ROOT,
+      async () => 'main',
+      () => true, // even if a same-named local ref existed, it is not theirs
+      ownOrigin,
+      () => true,
+    )
+    expect(branch).toBe('main')
+  })
+
+  // Control: the existence probe answers about THIS checkout, so a branch that
+  // cannot exist must come back false. Without this, a probe stubbed to always
+  // return true would make the first test pass for the wrong reason.
+  it('the real existence probe rejects a branch that cannot exist', () => {
+    expect(branchExistsOnOrigin('no-such-branch-9f3a1c', PROJECT_ROOT)).toBe(false)
+  })
+})
+
+// The end-to-end shape of UPDATEBRANCH904, asserted against THIS checkout:
+// whatever branch we end up asking the upstream remote about, it must be one
+// that remote could actually answer for. A branch only this machine has ever
+// seen is the 422 that produced the silent `behind: 0`.
+describe('the branch we ask upstream about is answerable', () => {
+  it('this checkout has origin tracking refs, so the probe carries evidence', () => {
+    expect(originHasTrackingRefs(PROJECT_ROOT)).toBe(true)
+  })
+
+  it('never asks upstream about a branch that is not on origin', async () => {
+    const remote = parseGitHubRemote(PROJECT_ROOT)
+    const asked = await branchOnRemote(remote, PROJECT_ROOT, async () => 'develop')
+    // Either it is a branch origin really has, or it is the injected default.
+    expect(branchExistsOnOrigin(asked, PROJECT_ROOT) || asked === 'develop').toBe(true)
   })
 })

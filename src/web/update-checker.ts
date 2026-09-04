@@ -113,6 +113,35 @@ export function remoteIsOwnOrigin(remote: string, root: string = PROJECT_ROOT): 
   }
 }
 
+// Does `branch` exist on the `origin` remote? Answered from the local
+// remote-tracking refs, which the periodic fetch keeps current, so this costs
+// no network call and stays truthful offline. Absent ref -> treat as absent
+// branch: the fallback (the remote's default branch) is always answerable,
+// while a wrong branch name is a silent 422.
+export function branchExistsOnOrigin(branch: string, root: string = PROJECT_ROOT): boolean {
+  try {
+    execFileSync('/usr/bin/git', ['show-ref', '--verify', '--quiet', `refs/remotes/origin/${branch}`],
+      { cwd: root, timeout: 3000 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+// Has this checkout any remote-tracking refs for origin at all? The absence of
+// ONE branch is evidence; the absence of ALL of them is not -- a clone that has
+// never fetched knows nothing, and reading that silence as "the branch is gone"
+// would send every fresh install down the fallback for no reason.
+export function originHasTrackingRefs(root: string = PROJECT_ROOT): boolean {
+  try {
+    const out = execFileSync('/usr/bin/git', ['for-each-ref', '--count=1', '--format=%(refname)', 'refs/remotes/origin/'],
+      { cwd: root, timeout: 3000, encoding: 'utf-8' })
+    return out.trim().length > 0
+  } catch {
+    return false
+  }
+}
+
 // The remote's own default branch, asked of GitHub. Only needed when we are NOT
 // checking our own fork -- our local branch name means nothing over there.
 async function fetchDefaultBranch(remote: string): Promise<string> {
@@ -140,8 +169,24 @@ export async function branchOnRemote(
   remote: string,
   root: string = PROJECT_ROOT,
   defaultBranchOf: (r: string) => Promise<string> = fetchDefaultBranch,
+  branchExists: (branch: string, root: string) => boolean = branchExistsOnOrigin,
+  isOwnOrigin: (remote: string, root: string) => boolean = remoteIsOwnOrigin,
+  hasTrackingRefs: (root: string) => boolean = originHasTrackingRefs,
 ): Promise<string> {
-  return remoteIsOwnOrigin(remote, root) ? trackedBranch(root) : await defaultBranchOf(remote)
+  if (isOwnOrigin(remote, root)) {
+    // "origin is ours" is a naming CONVENTION, not a fact. A fork that keeps
+    // `origin` pointed at the original author and pushes to a second remote
+    // (`fork`) inverts it, and then the local branch name is exactly the thing
+    // the author's repo has never heard of. Measured here 2026-09-04: the
+    // check asked Szotasz/marveen for `fix/email-gate-mcp-matcher`, GitHub
+    // answered 422, the error was swallowed into `behind: 0`, and the install
+    // reported itself up to date for nine days while 66 commits piled up.
+    // Verify before trusting the convention; a branch nobody has ever pushed
+    // cannot be the one to compare against.
+    const local = trackedBranch(root)
+    if (!hasTrackingRefs(root) || branchExists(local, root)) return local
+  }
+  return await defaultBranchOf(remote)
 }
 
 export function parseGitHubRemote(root: string = PROJECT_ROOT): string {
