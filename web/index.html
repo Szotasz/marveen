@@ -92,10 +92,9 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
             <span class="sb-label">Ügynökök</span>
           </a>
-          <a href="#" class="sb-link" data-page="activity">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
-            <span class="sb-label">Aktivitás</span>
-          </a>
+          <!-- The separate Activity page was folded into the Agents page as a
+               card-content mode (Adatlap / Aktivitás), so it no longer has its
+               own nav entry or URL. -->
           <a href="#" class="sb-link" data-page="messages">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
             <span class="sb-label">Üzenetek</span>
@@ -404,16 +403,24 @@
             <p class="subtitle" data-i18n="agents.page_subtitle">AI csapattagok kezelése</p>
           </div>
           <div class="header-actions">
+            <!-- Three views, one row. "Kártyák" and "Aktivitás" are the SAME
+                 grid with different card bodies; only "Org chart" is a
+                 different layout. See _setAgentsView() in app.js. -->
             <div class="view-toggle" id="agentsViewToggle" role="group" aria-label="Nézet váltás">
-              <button class="btn-secondary btn-compact view-toggle-btn active" id="agentsViewGrid" data-view="grid" title="Kártyák">
+              <button class="btn-secondary btn-compact view-toggle-btn active" id="agentsViewGrid" data-view="grid" title="Kártyák" data-i18n="agents.view.cards" data-i18n-title="agents.view.cards">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
                 Kártyák
               </button>
-              <button class="btn-secondary btn-compact view-toggle-btn" id="agentsViewTree" data-view="tree" title="Org chart">
+              <button class="btn-secondary btn-compact view-toggle-btn" id="agentsViewActivity" data-view="activity" title="Aktivitás" data-i18n="agents.view.activity" data-i18n-title="agents.view.activity">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
+                Aktivitás
+              </button>
+              <button class="btn-secondary btn-compact view-toggle-btn" id="agentsViewTree" data-view="tree" title="Org chart" data-i18n="agents.view.org_chart" data-i18n-title="agents.view.org_chart">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"/><path d="M12 8v4"/><circle cx="5" cy="18" r="3"/><circle cx="19" cy="18" r="3"/><path d="M12 12l-7 6M12 12l7 6"/></svg>
                 Org chart
               </button>
             </div>
+            <span class="header-divider" aria-hidden="true"></span>
             <button class="btn-secondary btn-compact" id="exportAllAgentsBtn">Összes exportálása</button>
             <button class="btn-secondary btn-compact" id="importAgentBtn">Ügynök importálása</button>
             <input type="file" id="importAgentFile" accept=".gz,.tgz,application/gzip" hidden>
@@ -438,27 +445,15 @@
       <!-- Tree / org-chart view (merged from separate Team page) -->
       <div id="agentsTreeView" hidden>
         <div id="teamGraph" class="team-graph"></div>
-        <p style="color:var(--text-muted);font-size:12px;margin-top:16px">
+        <p id="teamHint" class="team-hint">
           A szerep és a beosztott/vezető kapcsolatok az ügynök részletek &gt; Csapat fülén szerkeszthetők.
+          Egérrel is átrendezheted: fogd meg az ügynököt és húzd rá arra, akinek ezután jelentenie kell.
         </p>
       </div>
     </div>
 
-    <!-- === Activity (live agent status) Page === -->
-    <div class="page" id="activityPage" hidden>
-      <div class="page-header">
-        <div class="page-header-row">
-          <div>
-            <h1 data-i18n="activity.page_title">Aktivitás</h1>
-            <p class="subtitle" data-i18n="activity.page_subtitle">Mit csinál épp minden ügynök: élő nézet, 3 mp-enként frissül</p>
-          </div>
-          <div class="activity-meta"><span id="activityUpdated" class="activity-updated"></span></div>
-        </div>
-      </div>
-      <div class="activity-list" id="activityList">
-        <p class="activity-empty" data-i18n="activity.loading">Betöltés…</p>
-      </div>
-    </div>
+    <!-- The Activity page lives on inside the Agents page: its per-agent live
+         status is the "Aktivitás" card mode there, same data and behaviour. -->
 
     <!-- === Tasks (Schedules) Page === -->
     <div class="page" id="tasksPage" hidden>

@@ -289,6 +289,9 @@ window._i18n.hu = {
 
   // --- Agents ---
   'agents.page_title':           'Csapat',
+  'agents.view.cards':           'Kártyák',
+  'agents.view.activity':        'Aktivitás',
+  'agents.view.org_chart':       'Org chart',
   'agents.page_subtitle':        'AI csapattagok kezelése',
   'agents.detail.select_avatar':   'Válassz új avatart',
   'agents.detail.modal_title':      'Ügynök részletek',
@@ -466,15 +469,10 @@ window._i18n.hu = {
   'agents.btn.reconnect':          'Újracsatlakozás...',
   'agents.btn.running':            'Futtatás...',
   // --- Activity ---
-  'activity.page_title':         'Aktivitás',
-  'activity.page_subtitle':      'Mit csinál épp minden ügynök: élő nézet, 3 mp-enként frissül',
+  'agents.card.no_output':       'nincs friss kimenet',
+  'agents.card.not_running':     'a session nem fut',
 
-  'activity.updated':            'Frissítve: {time}',
-  'activity.error_load':         'Nem sikerült lekérni az aktivitást',
-  'activity.empty':              'Nincs ügynök.',
-  'activity.badge.main':         'fő',
   'activity.tooltip.mode':       'Jogosultsági mód: {mode}. Ebben a módban az ágens megáll és jóváhagyásra vár, mielőtt eszközt hívna -- ha senki nem figyeli, órákig állhat úgy, hogy közben tétlennek látszik.',
-  'activity.loading':            'Betöltés…',
   'activity.state.working':      'dolgozik',
   'activity.state.idle':         'várakozik',
   'activity.state.unknown':      'ismeretlen',
@@ -926,14 +924,14 @@ window._i18n.hu = {
   'team.role.main':              'főügynök',
   'team.role.leader':            'csapatvezető',
   'team.role.member':            'beosztott',
-  'team.running':                '● Fut',
-  'team.stopped':                '○ Leállva',
+  'team.running':                'Fut',
+  'team.stopped':                'Leállva',
   'team.empty':                  'Nincs sub-agent létrehozva.',
   'team.reports_to_empty':       '(főügynök)',
   'team.loading':                'Betöltés...',
   'team.error':                  'Hiba: {msg}',
   'team.btn.refresh':            'Frissítés',
-  'team.hint':                   'Húzz egy ügynököt egy másik alá, hogy annak beosztottja legyen. A szerep és a finomabb beállítások az ügynök részletek > Csapat fülén érhetők el.',
+  'team.hint':                   'A szerep és a beosztott/vezető kapcsolatok az ügynök részletek > Csapat fülén szerkeszthetők. Egérrel is átrendezheted: fogd meg az ügynököt és húzd rá arra, akinek ezután jelentenie kell.',
   'team.drop.saved':             '{child} mostantól {parent} beosztottja',
   'team.drop.cycle':             'Egy vezetőt nem tehetsz a saját beosztottja alá.',
   'team.drop.error':             'A kapcsolat mentése nem sikerült.',
@@ -1627,7 +1625,6 @@ window._i18n.hu = {
   'kanban.gantt.nav_next':          'Következő',
 
   // --- Activity tooltip ---
-  'activity.tooltip.terminal':   'Terminal megnyitása',
 
   // --- Connectors tooltips ---
   'connectors.tooltip.installed_mcp': 'Bekötve a .mcp.json-ban (a Connectors listán kezelhető)',
