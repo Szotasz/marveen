@@ -1,12 +1,14 @@
 import { defineConfig, configDefaults } from 'vitest/config'
 
-// The Playwright smoke suite (tests/smoke/**) is driven by `npm run smoke`
-// (playwright.config.ts), not by `vitest run`. Playwright's test() API throws
-// when collected under vitest, which fails the unit gate. Keep all vitest
-// defaults; only carve out the e2e directory.
+// The Playwright suites are driven by their own configs, not by `vitest run`:
+// tests/smoke/** by `npm run smoke` (playwright.config.ts, a running dashboard)
+// and tests/browser/** by `npm run browser-verify`
+// (playwright.browser.config.ts, the static front end). Playwright's test() API
+// throws when collected under vitest, which fails the unit gate. Keep all
+// vitest defaults; only carve out the e2e directories.
 export default defineConfig({
   test: {
-    exclude: [...configDefaults.exclude, 'tests/smoke/**'],
+    exclude: [...configDefaults.exclude, 'tests/smoke/**', 'tests/browser/**'],
     // Hard gates, run in every worker before any test module is imported:
     //  - assert-not-live-install: refuse to run inside a live install (see that
     //    setup file's header for the 2026-07-27 incident it prevents).
