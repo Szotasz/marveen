@@ -14,6 +14,11 @@ export interface ProfileTemplate {
   description: string
   permissionMode: 'strict' | 'permissive'
   filesystem: { allow: string[]; deny: string[] }
+  // Opt-in: this role analyses or tests a repo but must never change its
+  // source, so the readonly-repo-gate PreToolUse hook is wired for agents
+  // scaffolded from it. A flag rather than a hardcoded id list, so the
+  // enforcement is not tied to the profile names of any one install.
+  readonlyRepo?: boolean
 }
 
 export const PROFILES_DIR = join(PROJECT_ROOT, 'templates', 'profiles')

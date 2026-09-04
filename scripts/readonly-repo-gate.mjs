@@ -48,7 +48,14 @@ function isArtifactPath(p) {
 
 // Package managers only ever write artifacts (node_modules, lockfile refresh),
 // so they are allowed wholesale rather than path-checked.
-const INSTALL_RX = /\b(npm\s+(ci|install|i)\b|pnpm\s+(install|i)\b|yarn\s+(install)?\b|pip\s+install\b|poetry\s+install\b|bundle\s+install\b)/
+// Every branch REQUIRES its subcommand. The yarn branch used to read
+// `yarn\s+(install)?\b`, and the optional group made the pattern match bare
+// `yarn ` + anything -- `yarn add`, `yarn exec`, `yarn dlx` all skipped the
+// gate's inspection, which is the opposite of what an install-only exemption
+// is for. (Found in review on #770, 2026-09-03.) Bare `yarn` (Yarn 1's
+// implicit install) is no longer exempted either: it carries no redirect and
+// no mutating verb, so it passes on its own merits rather than by blanket skip.
+const INSTALL_RX = /\b(npm\s+(ci|install|i)\b|pnpm\s+(install|i)\b|yarn\s+install\b|pip\s+install\b|poetry\s+install\b|bundle\s+install\b)/
 
 // Branch movement is not a source edit -- a QA worker needs it for baseline
 // comparison. `git checkout -- <path>` / `git restore <path>` IS a working-tree
