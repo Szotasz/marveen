@@ -80,6 +80,15 @@ fi
 # home/ group (relative to $HOME)
 add_if "${HOMELIST}" "${HOME}" .claude/skills
 add_if "${HOMELIST}" "${HOME}" .claude/scheduled-tasks
+# The file-based auto-memory. Until 2026-09-04 this was NOT in the archive, and
+# a restore test that day proved what that costs: 490 markdown memories for the
+# main agent alone, none of them in the tarball. The SQLite copy is not a
+# substitute -- it holds the prose, not the frontmatter, the type or the
+# [[links]] between memories. Only the memory/ directories are taken, not the
+# whole projects/ tree, which is full of transcripts and tool-result dumps.
+if [[ -d "${HOME}/.claude/projects" ]]; then
+  ( cd "${HOME}" && find .claude/projects -maxdepth 2 -type d -name memory -print ) >> "${HOMELIST}"
+fi
 # MAIN orchestrator channel tokens + pairing state, per provider. bot.pid and
 # inbox/ are runtime/transient and intentionally excluded.
 if [[ -d "${HOME}/.claude/channels" ]]; then
