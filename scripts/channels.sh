@@ -43,6 +43,13 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   # Claude Code auth: pass API key or OAuth token so the tmux-spawned
   # claude process can authenticate. These are safe to export -- unlike
   # TELEGRAM_BOT_TOKEN they don't cause cross-session conflicts.
+  # ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL redirect the CLI to an
+  # Anthropic-compatible provider (2026-09-04: Z.ai GLM, to spare the
+  # Anthropic Max weekly limit). Same safety class as the API key.
+  _auth_token="$(grep -E '^ANTHROPIC_AUTH_TOKEN=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
+  [ -n "$_auth_token" ] && export ANTHROPIC_AUTH_TOKEN="$_auth_token"
+  _base_url="$(grep -E '^ANTHROPIC_BASE_URL=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
+  [ -n "$_base_url" ] && export ANTHROPIC_BASE_URL="$_base_url"
   _api_key="$(grep -E '^ANTHROPIC_API_KEY=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
   [ -n "$_api_key" ] && export ANTHROPIC_API_KEY="$_api_key"
   _oauth="$(grep -E '^CLAUDE_CODE_OAUTH_TOKEN=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
@@ -54,8 +61,14 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   if [ -z "$_oauth" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then
     _oauth="$(cat "$INSTALL_DIR/store/.claude-oauth-token")"
   fi
-  [ -n "$_oauth" ] && export CLAUDE_CODE_OAUTH_TOKEN="$_oauth"
-  unset _api_key _oauth
+  # An exported CLAUDE_CODE_OAUTH_TOKEN puts the CLI in OAuth authMode, where
+  # a custom ANTHROPIC_BASE_URL is silently IGNORED -- so when an API-key auth
+  # is configured the OAuth token must NOT reach the claude process, else the
+  # provider redirect never happens.
+  if [ -z "$_api_key" ] && [ -z "$_auth_token" ]; then
+    [ -n "$_oauth" ] && export CLAUDE_CODE_OAUTH_TOKEN="$_oauth"
+  fi
+  unset _api_key _oauth _auth_token _base_url
 fi
 CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
 SESSION="${MAIN_AGENT_ID:-marveen}-channels"
@@ -904,6 +917,16 @@ if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
 fi
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   $TMUX set-environment -g ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY" 2>/dev/null || true
+fi
+if [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
+  $TMUX set-environment -g ANTHROPIC_AUTH_TOKEN "$ANTHROPIC_AUTH_TOKEN" 2>/dev/null || true
+  # API-key authMode: a stale OAuth token in the shared server env would flip
+  # the claude processes back to OAuth mode, where the custom base URL is
+  # ignored. Scrub it globally (-gu), mirroring the channel-token scrub.
+  $TMUX set-environment -gu CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
+fi
+if [ -n "${ANTHROPIC_BASE_URL:-}" ]; then
+  $TMUX set-environment -g ANTHROPIC_BASE_URL "$ANTHROPIC_BASE_URL" 2>/dev/null || true
 fi
 # Propagate the prompt-suggestion disable to every sub-agent tmux session.
 $TMUX set-environment -g CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION false 2>/dev/null || true

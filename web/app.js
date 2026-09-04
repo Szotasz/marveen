@@ -4344,6 +4344,27 @@ async function loadAvailableModels() {
       }
     }
 
+    // Z.ai GLM: direct Anthropic-compatible API, gated behind ZAI_API_KEY same
+    // as DeepSeek/MiniMax. Empty array -> hide the group.
+    const zaiModels = Array.isArray(data.zai) ? data.zai : []
+    const editZaiGroup = document.getElementById('zaiModelGroup')
+    const wizardZaiGroup = document.getElementById('agentModelZaiGroup')
+    for (const group of [editZaiGroup, wizardZaiGroup]) {
+      if (!group) continue
+      group.innerHTML = ''
+      if (zaiModels.length === 0) {
+        group.style.display = 'none'
+        continue
+      }
+      group.style.display = ''
+      for (const m of zaiModels) {
+        const opt = document.createElement('option')
+        opt.value = m.id
+        opt.textContent = m.label
+        group.appendChild(opt)
+      }
+    }
+
     // OpenRouter: two optgroups per select (Auto = weekly-fresh tier
     // recommendation, value `openrouter-auto:<tier>`; Manual = the 2 concrete
     // ids per tier). Backend gates the whole block behind the vault key, so a

@@ -44,6 +44,33 @@ describe('resolveProviderEnv', () => {
     expect(r.exportsStr).not.toContain('CLAUDE_CODE_MAX_CONTEXT_TOKENS')
   })
 
+  it('routes glm- models to the Z.ai Anthropic-compatible endpoint with ZAI_API_KEY', () => {
+    const seen: string[] = []
+    const r = resolveProviderEnv('glm-5.3', (id) => {
+      seen.push(id)
+      return 'zai-secret'
+    })
+    expect(r.provider).toBe('zai')
+    expect(seen).toEqual(['ZAI_API_KEY'])
+    expect(r.exportsStr).toContain('ANTHROPIC_AUTH_TOKEN="zai-secret"')
+    expect(r.exportsStr).toContain('ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic')
+    expect(r.exportsStr).toContain(`ANTHROPIC_MODEL='glm-5.3'`)
+  })
+
+  it('routes [1m]-suffixed and mixed-case GLM ids to zai, not Ollama', () => {
+    for (const model of ['glm-5.3[1m]', 'glm-5.3-flash[1m]', 'GLM-5.3']) {
+      const r = resolveProviderEnv(model, () => 'zai-secret')
+      expect(r.provider).toBe('zai')
+      expect(r.exportsStr).toContain('ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic')
+    }
+  })
+
+  it('still routes z-ai/glm ids (containing "/") to OpenRouter, not zai', () => {
+    const r = resolveProviderEnv('z-ai/glm-5.3', () => 'or-secret')
+    expect(r.provider).toBe('openrouter')
+    expect(r.exportsStr).toContain('ANTHROPIC_BASE_URL=https://openrouter.ai/api')
+  })
+
   it('routes provider/model ids (containing "/") to OpenRouter, not minimax or ollama', () => {
     const seen: string[] = []
     const r = resolveProviderEnv('minimax/minimax-m3', (id) => {

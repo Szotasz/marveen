@@ -1119,19 +1119,32 @@ export function shSingleQuote(value: string): string {
  * redirects the Claude Code CLI to that provider's Anthropic-compatible endpoint. Pure function
  * (no I/O) -- the caller supplies secrets via `secretLookup` so this is testable without a vault.
  */
-export type ProviderKind = 'claude' | 'deepseek' | 'minimax' | 'openrouter' | 'ollama'
+export type ProviderKind = 'claude' | 'deepseek' | 'minimax' | 'openrouter' | 'ollama' | 'zai'
 
 export function resolveProviderEnv(
   model: string,
   secretLookup: (id: string) => string | null,
 ): { provider: ProviderKind; exportsStr: string } {
-  const isClaude = model.startsWith('claude-')
-  const isDeepseek = model.startsWith('deepseek-')
-  const isMinimax = model.startsWith('minimax-')
+  // Case-insensitive: the stored agent-config.json `model` value can end up
+  // mixed-case (measured live 2026-08-20: mag's config held "MiniMax-M3"
+  // instead of the canonical "minimax-m3"). A case-sensitive `.startsWith`
+  // here silently misroutes a mixed-case minimax- id to the Ollama branch
+  // (wrong ANTHROPIC_BASE_URL, and the CLAUDE_CODE_MAX_CONTEXT_TOKENS
+  // override below never fires -- the session then hits the compat layer's
+  // misreported 200K ceiling and gets stuck once a compaction is attempted).
+  // `model` itself (original casing) still goes into the ANTHROPIC_MODEL
+  // export below -- only the routing decision is case-insensitive.
+  const lower = model.toLowerCase()
+  const isClaude = lower.startsWith('claude-')
+  const isDeepseek = lower.startsWith('deepseek-')
+  const isMinimax = lower.startsWith('minimax-')
+  // Z.ai GLM Coding Plan ids are `glm-*` (docs.z.ai/devpack/latest-model):
+  // glm-5.3, glm-5.3-flash, with an optional [1m] context suffix.
+  const isZai = lower.startsWith('glm-')
   // OpenRouter model ids are `provider/model` (contain '/'); Ollama tags use
   // ':' and no '/'. This discriminator keeps OpenRouter ids off the Ollama path.
-  const isOpenRouter = !isClaude && !isDeepseek && !isMinimax && model.includes('/')
-  const isOllama = !isClaude && !isDeepseek && !isMinimax && !isOpenRouter
+  const isOpenRouter = !isClaude && !isDeepseek && !isMinimax && !isZai && model.includes('/')
+  const isOllama = !isClaude && !isDeepseek && !isMinimax && !isZai && !isOpenRouter
 
   if (isDeepseek) {
     const key = secretLookup('DEEPSEEK_API_KEY') ?? ''
@@ -1152,6 +1165,16 @@ export function resolveProviderEnv(
     return {
       provider: 'minimax',
       exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && export CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 && `,
+    }
+  }
+  if (isZai) {
+    // Z.ai GLM Coding Plan -- official Anthropic-compatible endpoint
+    // (docs.z.ai/devpack/tool/claude). Key is vault-gated (ZAI_API_KEY), same
+    // read-at-launch pattern as DeepSeek/MiniMax.
+    const key = secretLookup('ZAI_API_KEY') ?? ''
+    return {
+      provider: 'zai',
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
     }
   }
   if (isOpenRouter) {
