@@ -5,8 +5,8 @@
 # where each file belongs (see docs/MIGRATION.md):
 #
 #   repo/   -> extract under the project root (this repo)
-#     store/claudeclaw.db (+ -shm/-wal; WAL-checkpointed before copy)
-#     store/.dashboard-token   (dashboard bearer)
+#     store/**                 (DB WAL-checkpointed first; minus models,
+#                               virtualenvs, browser profile and logs)
 #     .env                     (project root secrets)
 #     scheduled-tasks.json     (legacy, if present)
 #     assets/meetings/**       (meeting transcripts/memos)
@@ -62,11 +62,30 @@ add_if() {
 }
 
 # repo/ group (relative to REPO_ROOT)
-add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db
-add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db-shm
-add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db-wal
-add_if "${REPOLIST}" "${REPO_ROOT}" store/.dashboard-token
-add_if "${REPOLIST}" "${REPO_ROOT}" store/config-overrides.json
+# store/ -- everything EXCEPT the bulky, regenerable and transient parts.
+# Until 2026-09-04 this was a five-name whitelist (the DB, its -shm/-wal, the
+# dashboard token, config-overrides.json) and every OTHER file in store/ sat
+# outside the archive without ever saying so: the credential vault, the
+# verified-recipients ledger that gates every outgoing letter, the egress
+# allowlist, the autonomy levels, the per-service API tokens, and hand-made
+# data that exists nowhere else (the mail-partner categorisation, the SEO
+# baselines, the webshop change log). A whitelist is silent about every file
+# added after it was written, so the rule is inverted here: take store/ and
+# name only what must stay OUT.
+#   whisper, health, cowork, venv-*, dhl-chrome-profile, fedex-labels,
+#   fedex-vam, archery-basis  -- models, exports, virtualenvs, a browser
+#     profile and generated PDFs: 3.2 GB, all re-downloadable or reproducible
+#   *.log, *.out, *.pid       -- runtime noise, worthless in a restore
+# What remains is ~4 MB next to the DB, so the archive stays small.
+STORE_SKIP=" whisper health cowork venv-garmin venv-pdf dhl-chrome-profile fedex-labels fedex-vam archery-basis "
+if [[ -d store ]]; then
+  while IFS= read -r _entry; do
+    _name="$(basename "${_entry}")"
+    case "${STORE_SKIP}" in *" ${_name} "*) continue ;; esac
+    case "${_name}" in *.log|*.out|*.pid) continue ;; esac
+    echo "store/${_name}" >> "${REPOLIST}"
+  done < <(find store -mindepth 1 -maxdepth 1)
+fi
 add_if "${REPOLIST}" "${REPO_ROOT}" .env
 add_if "${REPOLIST}" "${REPO_ROOT}" scheduled-tasks.json
 add_if "${REPOLIST}" "${REPO_ROOT}" assets/meetings
