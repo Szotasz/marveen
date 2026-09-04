@@ -24,6 +24,7 @@ import {
   detectsFeedbackDraftModal,
   detectsFeedbackOptOutPrompt,
   firstRunAcceptKeys,
+  stuckInputSignature,
   type FirstRunGateKind,
 } from '../pane-state.js'
 import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentMemoryIsolation } from './agent-config.js'
@@ -1855,18 +1856,43 @@ export async function waitForPaneIdle(
 // instead of replacing it, which is how a box accumulates tick after tick until
 // nothing can be submitted at all. Keys are sent by name (no `-l` literal flag)
 // so tmux interprets them as control sequences.
-export async function clearInputBuffer(session: string, host: string | null = null): Promise<void> {
-  try {
-    const pane = capturePane(session, host)
-    for (const key of parkedClearSequence(pane != null ? parkedInputRowCount(pane) : 0)) {
-      runTmux(host, ['send-keys', '-t', session, key], { timeout: 5000 })
+// How many times the clear is attempted before we accept that the box will not
+// empty. Each pass re-reads the row count, so a partially-cleared multi-row
+// buffer gets a correctly-sized second sequence.
+const CLEAR_INPUT_MAX_ATTEMPTS = 3
+
+export async function clearInputBuffer(session: string, host: string | null = null): Promise<boolean> {
+  for (let attempt = 1; attempt <= CLEAR_INPUT_MAX_ATTEMPTS; attempt++) {
+    try {
+      const pane = capturePane(session, host)
+      for (const key of parkedClearSequence(pane != null ? parkedInputRowCount(pane) : 0)) {
+        runTmux(host, ['send-keys', '-t', session, key], { timeout: 5000 })
+      }
+      // Settle briefly so the next send-keys lands in the freshly cleared
+      // buffer rather than racing the clear.
+      await delay(100)
+    } catch (err) {
+      logger.warn({ err, session, attempt }, 'Failed to clear pane input buffer before send')
+      return false
     }
-    // Settle briefly so the next send-keys lands in the freshly cleared
-    // buffer rather than racing the clear.
-    await delay(100)
-  } catch (err) {
-    logger.warn({ err, session }, 'Failed to clear pane input buffer before send')
+    // VERIFY (2026-09-04 incident): the clear used to be fire-and-forget. On
+    // 09-03 the clear-scheduled path fired, left a truncated fragment of the
+    // parked tick behind, and that leftover no longer matched any delivery
+    // wrapper -- so every later restart decision read machineOrigin=false and
+    // deferred. The session sat wedged 25.4h. An unverified clear is the actual
+    // root cause; the restart hard cap only bounds the damage.
+    const after = capturePane(session, host)
+    if (after == null || stuckInputSignature(after) == null) return true
+    logger.warn(
+      { session, attempt, max: CLEAR_INPUT_MAX_ATTEMPTS },
+      'Input buffer still not empty after clear -- retrying',
+    )
   }
+  logger.error(
+    { session },
+    'Input buffer could not be emptied -- a leftover fragment stays parked (escalation will have to restart the pane)',
+  )
+  return false
 }
 
 // How many Ctrl-C presses the placeholder-discard will attempt before giving

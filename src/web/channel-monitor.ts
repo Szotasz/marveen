@@ -438,14 +438,22 @@ async function performStuckInputAction(
         submitted = true
         break
       }
-      case 'clear-preamble':
+      case 'clear-preamble': {
         logger.warn({ session, attempt }, 'Stuck input -- truncated safety preamble, clearing buffer (no re-inject)')
-        await clearInputBuffer(session)
+        const cleared = await clearInputBuffer(session)
+        if (!cleared) logger.warn({ session, attempt }, 'Stuck input -- clear-preamble left text in the box; the leftover stays parked')
         break
-      case 'clear-scheduled':
+      }
+      case 'clear-scheduled': {
         logger.warn({ session, attempt }, 'Stuck input -- parked scheduled-task tick, clearing buffer (no re-inject; next schedule fire re-delivers)')
-        await clearInputBuffer(session)
+        const cleared = await clearInputBuffer(session)
+        // A half-cleared tick is the 2026-09-03 wedge: the fragment left behind
+        // stops matching a delivery wrapper, so every later restart decision
+        // reads it as a human draft. Say so in the log rather than reporting a
+        // clean clear that did not happen.
+        if (!cleared) logger.warn({ session, attempt }, 'Stuck input -- clear-scheduled left a fragment in the box; expect machineOrigin=false on the next tick')
         break
+      }
       case 'enter':
         // FABLEFALL1: same guard as the reinject-plain fallback above -- a bare
         // Enter must never reach the model consent dialog (its default SWITCHES
