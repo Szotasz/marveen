@@ -45,7 +45,16 @@ import json
 import subprocess
 import time
 
-REPO_ROOT = "/home/ubuntu/marveen"
+# Derived from this file's own location (scripts/hooks/ -> repo root), never a
+# shipped absolute path: on any install but the author's, a hardcoded root
+# would make the hook miss the repo, and it would fail the WORST way -- the
+# chat gets the generic error while the hook still exits 2, so the owner is
+# told "it did not work" and nothing says a path is simply missing.
+# CLAUDE_PROJECT_DIR (set by Claude Code for hooks) wins when present, so an
+# install that runs the hook from outside the checkout can still point at it.
+REPO_ROOT = os.environ.get("CLAUDE_PROJECT_DIR") or os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 USAGE_SCRIPT = os.path.join(REPO_ROOT, "scripts", "usage-collect.py")
 
 CHANNEL_RX = re.compile(r'<channel\s+([^>]*)>(.*?)</channel>', re.DOTALL)
@@ -60,6 +69,7 @@ WINDOW_LABELS = [
 ]
 
 GENERIC_ERROR_REPLY = "Nem sikerult lekerdezni a keret-allapotot (a lekerdezo script hibara futott). Nezd meg a naplot: progress/usage-hook.log"
+MISSING_SCRIPT_REPLY = "Nem sikerult lekerdezni a keret-allapotot: a lekerdezo script nincs meg ezen a telepitesen (scripts/usage-collect.py). Nezd meg a naplot: progress/usage-hook.log"
 
 
 def state_dir():
@@ -190,6 +200,17 @@ def main():
     if not tok:
         log(sd, "no bot token found, letting the prompt through")
         sys.exit(0)
+
+    if not os.path.isfile(USAGE_SCRIPT):
+        # Named separately from the generic failure: a missing path is the one
+        # cause the owner can actually act on, and the old wording hid it.
+        log(sd, f"usage-collect.py not found at {USAGE_SCRIPT}")
+        try:
+            api(tok, "sendMessage", {"chat_id": chat_id, "text": MISSING_SCRIPT_REPLY})
+        except Exception as e:
+            log(sd, f"sendMessage failed: {type(e).__name__}")
+        clear_stray_placeholder(sd, tok, sid)
+        sys.exit(2)
 
     try:
         out = subprocess.run(
