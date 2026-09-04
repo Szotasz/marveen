@@ -231,6 +231,16 @@ const MAIN_STUCK_THRESHOLDS: StuckInputThresholds = {
 // wedge a restart cannot clear never becomes a restart loop.
 const STUCK_RESTART_MIN_INTERVAL_MS = 5 * 60 * 1000
 const STUCK_RESTART_MAX_CONSECUTIVE = 3
+// HARD CAP (2026-09-04 incident): the 'typing' defer below has no upper bound of
+// its own, so a parked block the heuristic reads as a human draft
+// (machineOrigin=false) defers FOREVER. Measured: jezus-channels sat wedged
+// 2026-09-03 08:45 -> 2026-09-04 10:07, 25.4h, 2667 consecutive
+// 'restart deferred' lines, every scheduled task silently skipped and inbound
+// Telegram dropped. Past this age the same parked signature is no longer a
+// plausible live draft -- nobody holds one unsent for a quarter of an hour --
+// so the carve-out stops applying and the normal escalation runs. Losing half a
+// typed sentence is cheaper than a silent day.
+export const STUCK_RESTART_HARD_CAP_MS = 15 * 60 * 1000
 let stuckRestartCount = 0
 let lastStuckRestartAt = 0
 
@@ -283,12 +293,15 @@ export function decideStuckInputRestart(
 export function applyStuckRestartBusyGuard(
   paneState: PaneState | null,
   decision: 'restart' | 'alert' | 'skip',
-  opts?: { machineOrigin: boolean; softRemedy: boolean },
+  opts?: { machineOrigin: boolean; softRemedy: boolean; parkedForMs?: number },
 ): 'restart' | 'alert' | 'skip' {
   if (paneState === 'busy') return 'skip'
   if (paneState === 'typing') {
     const unrecoverable = opts != null && opts.machineOrigin && !opts.softRemedy
-    return unrecoverable ? decision : 'skip'
+    // Age override: the same signature parked past the hard cap is a wedge, not
+    // a draft, whatever the origin heuristic thinks. See STUCK_RESTART_HARD_CAP_MS.
+    const pastHardCap = opts?.parkedForMs != null && opts.parkedForMs >= STUCK_RESTART_HARD_CAP_MS
+    return unrecoverable || pastHardCap ? decision : 'skip'
   }
   return decision
 }
@@ -1212,11 +1225,20 @@ function maybeRestartWedgedMainChannel(state: StuckInputState): void {
   const parkedView = paneState === 'typing' ? captureParkedInputView(MAIN_CHANNELS_SESSION) : null
   const machineOrigin = parkedView != null && parkedMachineOriginInput(parkedView)
   const softRemedy = parkedView != null && parkedMainInputHasRemedy(parkedView)
+  // How long THIS parked signature has been sitting there (firstSeenAt resets
+  // whenever the parked text changes, so a fresh draft never inherits the age).
+  const parkedForMs = state.firstSeenAt != null ? Date.now() - state.firstSeenAt : 0
   const action = applyStuckRestartBusyGuard(paneState, decideStuckInputRestart(
     parked, state.attempts, MAIN_STUCK_THRESHOLDS.maxAttempts,
     Date.now(), lastStuckRestartAt, stuckRestartCount,
     STUCK_RESTART_MIN_INTERVAL_MS, STUCK_RESTART_MAX_CONSECUTIVE,
-  ), { machineOrigin, softRemedy })
+  ), { machineOrigin, softRemedy, parkedForMs })
+  if (action !== 'skip' && paneState === 'typing' && !(machineOrigin && !softRemedy)) {
+    logger.warn(
+      { paneState, parkedForMs, capMs: STUCK_RESTART_HARD_CAP_MS },
+      'Stuck-input hard cap reached -- parked input looked like a human draft but has not moved, escalating anyway',
+    )
+  }
   if (action === 'skip' && shouldDeferKeepaliveRespawn(paneState)) {
     logger.info(
       { paneState, attempts: state.attempts, machineOrigin, softRemedy },

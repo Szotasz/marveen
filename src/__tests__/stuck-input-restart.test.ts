@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { decideStuckInputRestart, applyStuckRestartBusyGuard } from '../web/channel-monitor.js'
+import { decideStuckInputRestart, applyStuckRestartBusyGuard, STUCK_RESTART_HARD_CAP_MS } from '../web/channel-monitor.js'
 
 // The reliable backstop: when soft stuck-input recovery (Enter + clear+re-inject)
 // is exhausted but the main channel input is STILL parked, escalate to a hard
@@ -84,6 +84,46 @@ describe('applyStuckRestartBusyGuard', () => {
   it('never invents an action -- a skip stays a skip regardless of pane state', () => {
     expect(applyStuckRestartBusyGuard('idle', 'skip')).toBe('skip')
     expect(applyStuckRestartBusyGuard('busy', 'skip')).toBe('skip')
+  })
+
+  // HARD CAP (2026-09-04 incident): the carve-out above only fires for
+  // machine-origin text. A parked block the heuristic reads as a human draft
+  // (machineOrigin=false) deferred with no upper bound -- jezus-channels sat
+  // wedged 25.4h, every scheduled task skipped, inbound Telegram dropped. Past
+  // the cap the age decides, not the origin heuristic.
+  describe('hard cap on the human-draft defer', () => {
+    const CAP = STUCK_RESTART_HARD_CAP_MS
+
+    it('keeps deferring a human-looking draft below the cap', () => {
+      expect(applyStuckRestartBusyGuard('typing', 'restart',
+        { machineOrigin: false, softRemedy: false, parkedForMs: CAP - 1 })).toBe('skip')
+    })
+
+    it('escalates a human-looking draft once it is parked past the cap', () => {
+      expect(applyStuckRestartBusyGuard('typing', 'restart',
+        { machineOrigin: false, softRemedy: false, parkedForMs: CAP })).toBe('restart')
+      expect(applyStuckRestartBusyGuard('typing', 'alert',
+        { machineOrigin: false, softRemedy: false, parkedForMs: CAP + 60_000 })).toBe('alert')
+    })
+
+    it('overrides the soft-remedy defer too -- 15 minutes of unsuccessful soft recovery is a wedge', () => {
+      expect(applyStuckRestartBusyGuard('typing', 'restart',
+        { machineOrigin: true, softRemedy: true, parkedForMs: CAP })).toBe('restart')
+    })
+
+    it('still never invents an action: a rate-limited skip stays a skip past the cap', () => {
+      expect(applyStuckRestartBusyGuard('typing', 'skip',
+        { machineOrigin: false, softRemedy: false, parkedForMs: CAP * 100 })).toBe('skip')
+    })
+
+    it('leaves the busy branch alone -- a generating pane is working, not wedged', () => {
+      expect(applyStuckRestartBusyGuard('busy', 'restart',
+        { machineOrigin: false, softRemedy: false, parkedForMs: CAP * 100 })).toBe('skip')
+    })
+
+    it('behaves as before when the age is not supplied', () => {
+      expect(applyStuckRestartBusyGuard('typing', 'restart', { machineOrigin: false, softRemedy: false })).toBe('skip')
+    })
   })
 
   // Deadlock carve-out (2026-07-25 hermes incident): a parked machine-injected
