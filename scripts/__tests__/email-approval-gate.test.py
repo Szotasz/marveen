@@ -311,6 +311,29 @@ with tempfile.TemporaryDirectory() as td:
                                    "tool_input": {"operation": 42}})
     check("manage_email with a non-string operation is DENIED (fail-closed)", code == 2,
           f"exit={code}")
+    # MANAGEDRAFT905: a send OPERATION carrying an explicit draft:true is a
+    # DRAFT, not a send -- `{"operation":"reply","draft":true}` is the only way
+    # to write a threaded draft with this tool, and the sibling gate
+    # (email-send-gate.mjs) lets exactly that shape through. Without this the
+    # draft-only workflow was blocked at level 1 by its own guard.
+    for op in ("send", "reply", "reply_all", "replyAll", "forward"):
+        for flag in (True, "true"):
+            code, _, _ = run_gate(store1, manage(op, draft=flag))
+            check(f"manage_email operation={op} draft={flag!r} passes at level 1 (a draft is not a send)",
+                  code == 0, f"exit={code}")
+    # Fail-closed stays: anything but an explicit true is still a send.
+    for flag in (False, "false", "yes", 1, None, "", "True "):
+        code, _, _ = run_gate(store1, manage("reply", draft=flag))
+        check(f"manage_email operation=reply draft={flag!r} is DENIED (not an explicit draft)",
+              code == 2, f"exit={code}")
+    # Control: the draft exemption is scoped to the multiplexer, not to the
+    # dedicated send tool -- a draft flag must not buy send_email a pass.
+    code, _, _ = run_gate(store1, {"tool_name": "mcp__x__send_email",
+                                   "tool_input": {"to": ["a@b.hu"], "subject": "T",
+                                                  "body": "Torzs.", "draft": True}})
+    check("control: send_email with draft:true is still DENIED at level 1", code == 2,
+          f"exit={code}")
+
     # Control: send_email has no operations and must stay gated unconditionally,
     # otherwise the scoping above could quietly exempt the real send tool too.
     code, _, _ = run_gate(store1, mcp_send())
