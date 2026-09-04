@@ -52,7 +52,8 @@ REPOLIST="$(mktemp -t claudeclaw-repo.XXXXXX)"
 HOMELIST="$(mktemp -t claudeclaw-home.XXXXXX)"
 MANIFEST="$(mktemp -t claudeclaw-manifest.XXXXXX)"
 STAGE="$(mktemp -d -t claudeclaw-stage.XXXXXX)"
-trap 'rm -f "${REPOLIST}" "${HOMELIST}" "${MANIFEST}"; rm -rf "${STAGE}"' EXIT
+BUNDLE=""
+trap 'rm -f "${REPOLIST}" "${HOMELIST}" "${MANIFEST}"; [[ -n "${BUNDLE}" ]] && rm -f "${BUNDLE}"; rm -rf "${STAGE}"' EXIT
 
 # add_if <listfile> <base> <relpath>  -- append relpath when <base>/<relpath> exists.
 add_if() {
@@ -115,6 +116,29 @@ if [[ -d "${HOME}/Library/LaunchAgents" ]]; then
   ( cd "${HOME}" && find Library/LaunchAgents -maxdepth 1 -name "com.${MAIN_AGENT_ID}.*.plist" -print ) >> "${HOMELIST}"
 fi
 
+# --- Local commits that live on no remote. ---------------------------------
+# This archive deliberately carries unversioned state, not the source: the
+# source is supposed to live on a git remote. On 2026-09-04 that assumption
+# broke -- nine days of work sat committed locally and pushed nowhere, so the
+# only copy was this disk, and the tarball did not hold it either. A bundle of
+# every local branch that origin does not already have closes the gap for a few
+# hundred KB (the full history is 26 MB, but the shared part is recoverable by
+# cloning origin). Restore, after cloning origin:
+#   git fetch <restored>/repo/local-commits.bundle 'refs/heads/*:refs/heads/*'
+if command -v git >/dev/null 2>&1 && [[ -d "${REPO_ROOT}/.git" ]]; then
+  BUNDLE="$(mktemp -t claudeclaw-bundle.XXXXXX)"
+  # An empty ref set makes `git bundle` refuse with "empty bundle", which is
+  # the GOOD case (everything is already pushed), not an error -- so a failure
+  # here just drops the file instead of failing the backup.
+  if git -C "${REPO_ROOT}" bundle create "${BUNDLE}" \
+       --branches --not --remotes=origin >/dev/null 2>&1; then
+    echo "backup: local-commits.bundle $(wc -c < "${BUNDLE}" | awk '{print $1}') bytes"
+  else
+    rm -f "${BUNDLE}"; BUNDLE=""
+    echo "backup: no local-only commits to bundle"
+  fi
+fi
+
 if [[ ! -s "${REPOLIST}" && ! -s "${HOMELIST}" ]]; then
   echo "backup: nothing to archive" >&2
   exit 0
@@ -128,6 +152,9 @@ fi
   echo "Restore: tar -xpzf <archive> -C <tmp>; copy repo/* -> project root, home/* -> \$HOME."
   echo "See docs/MIGRATION.md for the full runbook (TCC, launchd paths, one-bot-one-poller, venv rebuild)."
   echo "--- repo/ ---"; sed 's,^,repo/,' "${REPOLIST}" 2>/dev/null || true
+  if [[ -n "${BUNDLE}" ]]; then
+    echo "repo/local-commits.bundle   (git bundle: local branches absent from origin)"
+  fi
   echo "--- home/ ---"; sed 's,^,home/,' "${HOMELIST}" 2>/dev/null || true
 } > "${MANIFEST}"
 
@@ -154,6 +181,12 @@ stage_group() {  # stage_group <listfile> <base> <group>
 
 stage_group "${REPOLIST}" "${REPO_ROOT}" repo
 stage_group "${HOMELIST}" "${HOME}" home
+
+if [[ -n "${BUNDLE}" ]]; then
+  mkdir -p "${STAGE}/repo"
+  cp -p "${BUNDLE}" "${STAGE}/repo/local-commits.bundle"
+  chmod 600 "${STAGE}/repo/local-commits.bundle"
+fi
 
 # Archive only the top-level entries that exist (a group dir is absent when
 # its list was empty), so tar never errors on a missing entry and the names
