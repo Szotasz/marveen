@@ -2450,6 +2450,59 @@
             </small>
             <button class="btn-secondary btn-compact agent-save-section" id="saveAutoRestartBtn" style="margin-top:10px" data-i18n="common.btn.save">Mentés</button>
           </div>
+          <div class="form-group" id="contextGuardGroup">
+            <label data-i18n="agents.settings.ctx_guard_label">Kontextus-limit alapú újraindítás</label>
+            <p style="margin:4px 0 10px;font-size:12.5px;line-height:1.5;color:var(--text-muted)">
+              Token-limit alapú guard: ha az ágens kontextusa eléri a beállított küszöböt, HANDOFF.md-t ír,
+              majd friss kontextussal folytatja. A 100%-os telítettséget mindig figyeli (saturation net) és
+              automatikusan újraindítja az ágensbe ragadt pane-t.
+            </p>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:12.5px;color:var(--text-muted)">
+              <input type="checkbox" id="cgSaturationNet" checked disabled style="cursor:default">
+              <span data-i18n="agents.settings.ctx_guard_sat_net">Saturation net: mindig aktív, 100%-os kontextusnál automatikusan újraindul (nem kapcsolható ki)</span>
+            </div>
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:10px;cursor:pointer">
+              <input type="checkbox" id="cgEnabled"> <span data-i18n="agents.settings.ctx_guard_enabled">Proaktív limit-figyelő (küszöb alapú handoff)</span>
+            </label>
+            <div id="cgAdvancedWrap" hidden>
+              <div class="form-row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+                <div class="form-group" style="flex:1;min-width:160px;margin-bottom:0">
+                  <label for="cgLimitTokens" style="font-size:12px;color:var(--text-muted)" data-i18n="agents.settings.ctx_guard_limit_tokens">Token-limit</label>
+                  <input type="number" id="cgLimitTokens" min="10000" step="10000" placeholder="modell alapértelmezése" style="width:100%">
+                </div>
+                <div class="form-group" style="margin-bottom:0">
+                  <label for="cgActPct" style="font-size:12px;color:var(--text-muted)" data-i18n="agents.settings.ctx_guard_act_pct">Handoff küszöb (%)</label>
+                  <input type="number" id="cgActPct" min="50" max="99" value="90" style="width:80px">
+                </div>
+                <div class="form-group" style="margin-bottom:0">
+                  <label for="cgHardPct" style="font-size:12px;color:var(--text-muted)" data-i18n="agents.settings.ctx_guard_hard_pct">Kényszer-újraindítás (%)</label>
+                  <input type="number" id="cgHardPct" min="50" max="99" value="97" style="width:80px">
+                </div>
+                <div class="form-group" style="margin-bottom:0">
+                  <label for="cgCooldownMinutes" style="font-size:12px;color:var(--text-muted)" data-i18n="agents.settings.ctx_guard_cooldown">Hűtési idő (perc)</label>
+                  <input type="number" id="cgCooldownMinutes" min="1" max="180" value="15" style="width:80px">
+                </div>
+              </div>
+              <details style="margin-top:10px">
+                <summary style="font-size:12px;color:var(--text-muted);cursor:pointer;user-select:none" data-i18n="agents.settings.ctx_guard_advanced">Haladó beállítások</summary>
+                <div class="form-row" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
+                  <div class="form-group" style="margin-bottom:0">
+                    <label for="cgHandoffTimeout" style="font-size:12px;color:var(--text-muted)" data-i18n="agents.settings.ctx_guard_timeout">Handoff timeout (perc)</label>
+                    <input type="number" id="cgHandoffTimeout" min="1" max="120" value="20" style="width:80px">
+                  </div>
+                </div>
+                <small style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px;line-height:1.5" data-i18n="agents.settings.ctx_guard_timeout_hint">
+                  Ha az ágens nem ír HANDOFF.md-t a timeout-on belül, kényszer-újraindítás következik.
+                </small>
+              </details>
+              <small id="cgValidationHint" style="display:none;margin-top:6px;color:var(--accent-warning, #f59e0b);font-size:12px" data-i18n="agents.settings.ctx_guard_pct_hint">
+                A kényszer-küszöb nem lehet kisebb a handoff-küszöbnél.
+              </small>
+            </div>
+            <div id="cgLiveStatus" style="display:none;margin-top:10px;padding:6px 10px;border-radius:6px;background:var(--surface-hover);font-size:12px;color:var(--text-muted)">
+              <span data-i18n="agents.settings.ctx_guard_status_prefix">Állapot:</span> <strong id="cgPhaseDisplay">-</strong> &middot; <span data-i18n="agents.settings.ctx_guard_status_ctx">Kontextus:</span> <strong id="cgPctDisplay">-</strong>
+            </div>
+            <button class="btn-secondary btn-compact agent-save-section" id="saveContextGuardBtn" style="margin-top:10px" data-i18n="common.btn.save">Mentés</button>
           <div class="form-group" id="idleFlushGroup">
             <label data-i18n="agents.settings.idle_flush_label">Tétlen-ürítés</label>
             <p style="margin:4px 0 10px;font-size:12.5px;line-height:1.5;color:var(--text-muted)" data-i18n="agents.settings.idle_flush_desc">
@@ -2612,6 +2665,7 @@
             <textarea id="editMcpJson" class="code-textarea" rows="8"></textarea>
             <button class="btn-secondary btn-compact agent-save-section" id="saveMcpJsonBtn" data-i18n="common.btn.save">Mentés</button>
           </div>
+        </div>
         </div>
 
         <!-- Tab: Channel -->

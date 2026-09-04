@@ -1316,7 +1316,23 @@ window._i18n.hu = {
   'agents.toast.restart_state_error': 'Az újraindítás állapotát nem tudtam visszaolvasni, ellenőrizd a sessiont',
   'agents.toast.idle_flush_saved': 'Tétlen-ürítés beállítás mentve',
   'agents.toast.auto_restart_saved': 'Auto-restart beállítás mentve',
+  'agents.toast.ctx_guard_saved':   'Kontextus-guard beállítás mentve',
   'agents.toast.auth_mode_saved':'Hitelesítési mód mentve (újraindítás szükséges)',
+
+  // --- Context guard settings ---
+  'agents.settings.ctx_guard_label':       'Kontextus-limit alapú újraindítás',
+  'agents.settings.ctx_guard_sat_net':     'Saturation net: mindig aktív, 100%-os kontextusnál automatikusan újraindul (nem kapcsolható ki)',
+  'agents.settings.ctx_guard_enabled':     'Proaktív limit-figyelő (küszöb alapú handoff)',
+  'agents.settings.ctx_guard_limit_tokens':'Token-limit',
+  'agents.settings.ctx_guard_act_pct':     'Handoff küszöb (%)',
+  'agents.settings.ctx_guard_hard_pct':    'Kényszer-újraindítás (%)',
+  'agents.settings.ctx_guard_cooldown':    'Hűtési idő (perc)',
+  'agents.settings.ctx_guard_advanced':    'Haladó beállítások',
+  'agents.settings.ctx_guard_timeout':     'Handoff timeout (perc)',
+  'agents.settings.ctx_guard_timeout_hint':'Ha az ágens nem ír HANDOFF.md-t a timeout-on belül, kényszer-újraindítás következik.',
+  'agents.settings.ctx_guard_pct_hint':    'A kényszer-küszöb nem lehet kisebb a handoff-küszöbnél.',
+  'agents.settings.ctx_guard_status_prefix':'Állapot:',
+  'agents.settings.ctx_guard_status_ctx':  'Kontextus:',
 
   // --- Agent status/labels ---
   'agents.channel.connected':    'Csatlakozva',

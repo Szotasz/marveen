@@ -1313,7 +1313,23 @@ window._i18n.en = {
   'agents.toast.restart_state_error': 'Could not read restart state, check the session',
   'agents.toast.idle_flush_saved': 'Idle flush setting saved',
   'agents.toast.auto_restart_saved': 'Auto-restart setting saved',
+  'agents.toast.ctx_guard_saved':   'Context guard setting saved',
   'agents.toast.auth_mode_saved':'Auth mode saved (restart required)',
+
+  // --- Context guard settings ---
+  'agents.settings.ctx_guard_label':       'Context-limit restart',
+  'agents.settings.ctx_guard_sat_net':     'Saturation net: always active, restarts automatically at 100% context (cannot be disabled)',
+  'agents.settings.ctx_guard_enabled':     'Proactive limit watcher (threshold-based handoff)',
+  'agents.settings.ctx_guard_limit_tokens':'Token limit',
+  'agents.settings.ctx_guard_act_pct':     'Handoff threshold (%)',
+  'agents.settings.ctx_guard_hard_pct':    'Force-restart threshold (%)',
+  'agents.settings.ctx_guard_cooldown':    'Cooldown (minutes)',
+  'agents.settings.ctx_guard_advanced':    'Advanced settings',
+  'agents.settings.ctx_guard_timeout':     'Handoff timeout (minutes)',
+  'agents.settings.ctx_guard_timeout_hint':'If the agent does not write HANDOFF.md within the timeout, a force-restart follows.',
+  'agents.settings.ctx_guard_pct_hint':    'Force-restart threshold cannot be lower than handoff threshold.',
+  'agents.settings.ctx_guard_status_prefix':'Status:',
+  'agents.settings.ctx_guard_status_ctx':  'Context:',
 
   // --- Agent status/labels ---
   'agents.channel.connected':    'Connected',
