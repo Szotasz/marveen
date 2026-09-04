@@ -56,6 +56,29 @@ from email_extract import collect_email_envelope  # noqa: E402
 
 _SEND_TOOL = re.compile(r"send_email|manage_email", re.I)
 
+# manage_email is a MULTIPLEXER, not a send tool: the same MCP tool searches the
+# mailbox, reads a thread, writes a draft AND sends. Scoping this gate on the
+# tool NAME alone therefore denies reading the inbox whenever email_send sits at
+# level 1 -- measured on a live install 2026-09-04, where `operation=search` and
+# `operation=draft` were both refused with "a kuldes tiltott". That is not the
+# gate this is meant to be: a draft-only workflow REQUIRES reading and drafting,
+# and the level exists to stop the SEND.
+#
+# So manage_email is in scope only for the operations that actually put a letter
+# on the wire. Anything else passes. Fail-closed on doubt: a missing or
+# unreadable operation counts as a send, because that is the case where we
+# cannot prove it is not one. `send_email` needs no such test -- it only sends.
+_MULTIPLEX_TOOL = re.compile(r"manage_email", re.I)
+_MANAGE_EMAIL_SEND_OPS = {"send", "reply", "reply_all", "replyall", "forward"}
+
+
+def manage_email_is_send(tool_input: dict) -> bool:
+    """Is this manage_email call a send? Unreadable operation -> True (closed)."""
+    op = tool_input.get("operation")
+    if not isinstance(op, str) or not op.strip():
+        return True
+    return op.strip().lower().replace("-", "_") in _MANAGE_EMAIL_SEND_OPS
+
 
 def _load_is_send_invocation():
     """Import is_send_invocation from outgoing-copy-gate.py (dashed filename,
@@ -190,7 +213,10 @@ def main():
     tool_input = tool_input if isinstance(tool_input, dict) else {}
 
     if _SEND_TOOL.search(tool):
-        pass  # MCP email send: always in scope
+        # A multiplexer tool is in scope only when the call is a send; a search,
+        # a read or a draft is not what email_send levels.
+        if _MULTIPLEX_TOOL.search(tool) and not manage_email_is_send(tool_input):
+            sys.exit(0)
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
         if not _load_is_send_invocation()(cmd):
