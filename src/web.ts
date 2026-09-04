@@ -83,6 +83,7 @@ import { tryHandleVaultSsh } from './web/routes/vault-ssh.js'
 import { tryHandleFleet } from './web/routes/fleet.js'
 import { tryHandleVaultSshKeys } from './web/routes/vault-ssh-keys.js'
 import type { RouteContext } from './web/routes/types.js'
+import { isMalformedBodyError } from './web/malformed-body.js'
 
 const WEB_DIR = join(PROJECT_ROOT, 'web')
 
@@ -225,7 +226,27 @@ export function startWebServer(port = 3420): http.Server {
       res.writeHead(404)
       res.end('Not found')
     } catch (err) {
-      logger.error({ err }, 'Web szerver hiba')
+      // A malformed JSON body is the CALLER's mistake, and until 2026-09-04
+      // this handler hid both that fact and its location: it logged `err`
+      // alone (no route, no size) and answered 500, so a curl that lost a
+      // write to an unescaped newline in `content` looked like a server
+      // crash with nothing but a character offset to identify it. Two such
+      // writes are in the log from that week -- one daily-log entry and one
+      // kanban POST -- and neither caller had any way to notice. Name the
+      // route, and answer 400 so `curl -f` and every HTTP-status check see a
+      // client error instead of a server one.
+      const isBadJson = isMalformedBodyError(err)
+      if (isBadJson) {
+        logger.warn(
+          { method, path, bytes: req.headers['content-length'] ?? '?', reason: (err as Error).message },
+          'Hibas JSON torzs -- a keres NEM hajtodott vegre',
+        )
+        json(res, {
+          error: 'Hibas JSON torzs, a keres nem hajtodott vegre. Sortores es idezojel a szoveges mezokben escape-elve kell legyen.',
+        }, 400)
+        return
+      }
+      logger.error({ err, method, path }, 'Web szerver hiba')
       json(res, { error: 'Szerver hiba' }, 500)
     }
   })
