@@ -483,6 +483,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // actual incident vector -- an agent answering its OWN posed question -- is
   // covered by the self-pace block + the #0 CLAUDE.md doctrine.
   if (agentGetsEmailGate(name)) injectEmailSendGate(existing)
+  if (agentGetsReadonlyRepoGate(profile)) injectReadonlyRepoGate(existing)
   if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
   if (agentGetsKanbanWriteGate(name)) {
     injectKanbanWriteGate(existing)
@@ -558,6 +559,41 @@ const SELF_PACE_TOOL_DENY = ['ScheduleWakeup', 'CronCreate', 'CronDelete', 'Cron
 // so the main-exempt guarantee is unit-testable.
 export function agentGetsGovernanceGates(name: string): boolean {
   return name !== MAIN_AGENT_ID
+}
+
+// Read-only-repo gate. Roles that analyse or test a repo but must not change it
+// cannot be held to that by permissions alone: a strict profile enforces the
+// deny but PROMPTS on things like `cd repo && git ...` (the cd-guard), and an
+// unattended worker hangs on a prompt instead of working. A permissive profile
+// never prompts but launches with --dangerously-skip-permissions, which
+// bypasses allow/deny entirely. Hooks run in both modes, so the enforcement
+// lives here and the profile stays permissive.
+//
+// Keyed on a profile FLAG, not on profile ids: which roles are read-only is a
+// property of the role, and no shipped profile should have to be named in this
+// file for the mechanism to work.
+export function agentGetsReadonlyRepoGate(profile: Pick<ProfileTemplate, 'readonlyRepo'>): boolean {
+  return profile.readonlyRepo === true
+}
+
+export function injectReadonlyRepoGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  // hookCommand(), not a bare `node <path>`: develop since landed the rule that
+  // an injected hook must carry a quoted absolute interpreter, so a PATH-less
+  // launchd/systemd environment cannot turn the gate into a silent 127.
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'readonly-repo-gate.mjs'))
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash|Write|Edit|NotebookEdit',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('readonly-repo-gate.mjs')),
+    entry,
+  ]
 }
 
 // Idempotently wire the self-pace-gate PreToolUse hook (blocks ScheduleWakeup /
