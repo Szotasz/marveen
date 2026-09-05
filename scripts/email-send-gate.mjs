@@ -27,6 +27,7 @@
 import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { loadLedger, isVerifiedIn, splitAddresses, SOURCE_HELP } from './recipient-ledger.mjs'
 
 // Bash command patterns that send mail. SUBGATEPOZ822 (2026-08-22): these are
 // no longer the primary trigger -- they matched CONTENT anywhere in the
@@ -189,16 +190,61 @@ export function isSendInvocation(cmd, depth = 0) {
 // these sends for real unless the call explicitly asks for a draft.
 const MANAGE_EMAIL_SEND_OPS = new Set(['send', 'reply', 'replyall', 'forward'])
 
+// Draft-creating MCP tools. Drafting is allowed (that is the whole point of the
+// draft-required rule), but the ADDRESS in a draft still has to be verified:
+// the owner presses send on what we typed, so an invented address reaches the
+// outside world through a draft just as surely as through a send.
+const DRAFT_TOOL_RE = /(^|__)(create_draft|draft_email|update_draft)$/i
+
+// Tool-input fields that carry recipient addresses across the mail tools we
+// have. A reply that only names a messageId has none of these -- it is
+// addressed by the thread, not by us, so there is nothing to invent.
+const RECIPIENT_FIELDS = ['to', 'cc', 'bcc', 'recipients', 'recipient', 'recipient_email']
+
+// Every address in this call that the ledger does not know. Pure: the lookup is
+// injected so tests never touch the real ledger file.
+export function unverifiedRecipients(toolInput, isVerified) {
+  const out = []
+  for (const field of RECIPIENT_FIELDS) {
+    const value = toolInput?.[field]
+    if (value === undefined || value === null || value === '') continue
+    for (const addr of splitAddresses(value)) {
+      if (!isVerified(addr) && !out.includes(addr)) out.push(addr)
+    }
+  }
+  return out
+}
+
+// Default lookup for the live hook: read the ledger once per invocation. A
+// missing or corrupt ledger means nothing is verified, so the gate blocks --
+// an evidence store that cannot be read must never open the gate silently.
+function ledgerLookup() {
+  const ledger = loadLedger()
+  return (addr) => isVerifiedIn(ledger, addr)
+}
+
 // Pure decision: does this tool call send (or attempt to send) email?
 // Returns { deny, kind? }. `kind` selects the deny wording at the hook
 // entrypoint: 'draft-required' is the manage_email case (drafting is fine,
 // only the actual send is refused), everything else is the sub-agent
 // governance block.
-export function gateDecision(toolName, toolInput) {
+export function gateDecision(toolName, toolInput, isVerified = null) {
   const name = String(toolName ?? '')
+  // Lazy: only build the ledger lookup when a call actually carries addresses,
+  // so a read-shaped tool call never pays a file read.
+  const verify = isVerified ?? (() => {
+    let cached = null
+    return (addr) => (cached ??= ledgerLookup())(addr)
+  })()
   // Any MCP send_email tool, name-agnostic (gmail or a differently-named
   // server in a customer install -> the matcher + this both key on send_email).
   if (/send_email/i.test(name)) return { deny: true }
+  // Drafting is allowed, but only to an address with a recorded source.
+  if (DRAFT_TOOL_RE.test(name)) {
+    const bad = unverifiedRecipients(toolInput, verify)
+    if (bad.length) return { deny: true, kind: 'unverified-recipient', addresses: bad }
+    return { deny: false }
+  }
   // @aaronsb/google-workspace-mcp multiplexes read, draft and send behind one
   // manage_email tool, so the tool NAME cannot decide this one -- the operation
   // plus the draft flag can. This is what replaces the server's own
@@ -208,6 +254,10 @@ export function gateDecision(toolName, toolInput) {
   if (/(^|__)manage_email$/i.test(name)) {
     const op = String(toolInput?.operation ?? '').toLowerCase()
     if (!MANAGE_EMAIL_SEND_OPS.has(op)) return { deny: false }
+    // The address check runs before the draft rule, so it applies to the send
+    // AND to the draft the deny message would send us back to write.
+    const bad = unverifiedRecipients(toolInput, verify)
+    if (bad.length) return { deny: true, kind: 'unverified-recipient', addresses: bad }
     // Fail safe: only an explicit draft request passes. A missing/ambiguous
     // flag is treated as a real send, even though the server would itself
     // force a draft when attachments are present.
@@ -231,6 +281,27 @@ export function buildDraftOnlyMsg(ownerName) {
     'Ird meg ugyanezt draft: true kapcsoloval, es jelezd a tulajdonosnak ' +
     `(${ownerName}), hogy a Gmail piszkozatok kozott varja a jovahagyasat. ` +
     'Csak VERIFIKALT cimre. A kuldes gombot ember nyomja meg.'
+  )
+}
+
+// Deny wording for an address the ledger does not know. This is the one deny
+// the agent can clear on its own -- by going and finding where the address
+// actually comes from. It names the exact command, so the cheap path is the
+// correct path and not "write it anyway".
+export function buildUnverifiedRecipientMsg(addresses) {
+  const list = addresses.join(', ')
+  const first = addresses[0] ?? 'cim@pelda.hu'
+  return (
+    `Nem igazolt cimzett: ${list}. ` +
+    'Ez a kapu azert van, mert egy kitalalt cimre meno level neman elveszik ' +
+    '(support@connectors.hu, 2026-08-14, 550 User doesn\'t exist). ' +
+    'Ne talalgass es ne a support@/info@ szokast hasznald: keresd meg a cimet ' +
+    'egy valodi forrasban -- a toluk kapott level From fejleceben ' +
+    '(manage_email search: from:<domain> in:anywhere), az elo oldalukon, ' +
+    'a Woo rendelesben vagy a Notion lapon. Aztan vedd fel a ledgerbe:\n' +
+    `  node scripts/recipient-ledger.mjs add ${first} --source <forras> --note "<honnan>"\n` +
+    `  --source: ${SOURCE_HELP}\n` +
+    'Ha nem talalsz forrast, a cim NINCS meg: mondd meg a gazdanak, ne kuldj levelet.'
   )
 }
 
@@ -305,9 +376,10 @@ if (isInvokedDirectly()) {
   } catch {
     allow() // malformed/empty input must never break the agent's tool calls
   }
-  const { deny: shouldDeny, kind } = gateDecision(payload?.tool_name, payload?.tool_input)
+  const { deny: shouldDeny, kind, addresses } = gateDecision(payload?.tool_name, payload?.tool_input)
   if (shouldDeny) {
     const { botName, ownerName } = readBrandEnv()
+    if (kind === 'unverified-recipient') deny(buildUnverifiedRecipientMsg(addresses ?? []))
     deny(kind === 'draft-required' ? buildDraftOnlyMsg(ownerName) : buildGateMsg(botName, ownerName))
   }
   allow()
