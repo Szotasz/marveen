@@ -440,43 +440,78 @@ _LOCAL_RULES = os.environ.get(
 )
 
 
-# CLCOPYGATEHIANY902 (owner decision, TG 14442): a MISSING rules file is not
-# the same thing as a BROKEN one, and until now both produced the same
-# email-blocking outcome. The file is deliberately NOT shipped (it names a
-# private person), so on every fresh customer install it is absent -- and the
-# old fail-closed email path made a paying customer's agent unable to send
-# mail at all (reported by Nova, 2026-09-02). New policy:
-#   "missing"/"empty" -> the name check is OFF: fail-OPEN with a LOUD,
-#                        user-visible warning on every send (the customer
-#                        must know the check is not protecting them);
-#   "invalid"         -> the file EXISTS but cannot be used (bad JSON, wrong
-#                        schema, uncompilable regex): the operator tried to
-#                        configure it and something is wrong -- the email
-#                        path stays fail-CLOSED until it is fixed;
-#   "ok"              -> patterns loaded, the check enforces as before.
+# CLCOPYGATEHIANY902 (owner decision, TG 14442) MERGED WITH GATEPERSIST816/3
+# (PDB install, 2026-08-19). Two independent fixes to the same question, from
+# opposite directions, so the merged policy has FIVE states:
+#
+#   "ok"         -> patterns loaded, the name check enforces as before.
+#   "sanctioned" -> the file EXISTS and explicitly says "no_name_rule": true.
+#                   Reported by the PDB install, 2026-08-19: their rules file
+#                   was lost with no backup, and the owner decided not to
+#                   reconstruct it. That is a taken decision, not a loss, and
+#                   an install that has made it should not be nagged about it
+#                   on every send. So this state is silent
+#                   EVERYWHERE: no log line, no systemMessage, no block. Note
+#                   the early return BELOW, which deliberately skips the
+#                   logging tail. An ordinary empty list WITHOUT the flag does
+#                   NOT reach this state, so a file emptied by accident can
+#                   never masquerade as the sanctioned one.
+#   "empty"      -> no patterns and no flag: the check is OFF.
+#   "missing"    -> file absent, which is EVERY fresh customer install, since
+#                   the file names a private person and is deliberately not
+#                   shipped. Both of these fail-OPEN with a LOUD, user-visible
+#                   warning on every send: the old fail-closed email path left
+#                   a paying customer unable to send mail at all (Nova,
+#                   2026-09-02).
+#   "invalid"    -> the file EXISTS but cannot be used (bad JSON, wrong schema,
+#                   uncompilable regex). Somebody TRIED to configure it and got
+#                   it wrong: the email path stays fail-CLOSED until repaired.
+#
+# WHY THE MERGE IS NOT A CHOICE BETWEEN THE TWO: without the sanctioned state,
+# a live rules file carrying the flag with an empty pattern list reads as
+# "empty", and a loud warning gets stamped on EVERY outgoing letter, customer
+# mail included. Without the missing/empty/invalid split, a fresh install with
+# no file at all cannot send mail at all. Each half is wrong exactly where the
+# other one is right, which is why both are here.
+RULES_OK = "ok"
+RULES_SANCTIONED = "sanctioned"
+RULES_EMPTY = "empty"
+RULES_MISSING = "missing"
+RULES_INVALID = "invalid"
+
+# The states where the name check does not run AND that is not a taken
+# decision: the ones that must stay loud.
+RULES_LOUD = (RULES_MISSING, RULES_EMPTY, RULES_INVALID)
+
+
 def load_bad_name():
-    """Return (compiled_regex_or_None, state) -- state in ok/missing/empty/invalid."""
+    """Return (compiled_regex_or_None, state) -- see the RULES_* names above."""
     try:
         with open(_LOCAL_RULES, encoding="utf-8") as fh:
             data = json.load(fh)
         if not isinstance(data, dict):
-            state = "invalid"
+            state = RULES_INVALID
         else:
             pats = data.get("bad_name_patterns") or []
             if not isinstance(pats, list) or not all(isinstance(x, str) for x in pats):
-                state = "invalid"
-            elif not pats:
-                state = "empty"
+                state = RULES_INVALID
+            elif pats:
+                return (re.compile("|".join(pats)), RULES_OK)
+            elif data.get("no_name_rule") is True:
+                # Returns HERE, before the logging tail, on purpose: a taken
+                # decision must not write a "the protection is gone" line into
+                # the ledger on every single run.
+                return (None, RULES_SANCTIONED)
             else:
-                return (re.compile("|".join(pats)), "ok")
+                state = RULES_EMPTY
     except FileNotFoundError:
-        state = "missing"
+        state = RULES_MISSING
     except Exception:
         # Present but unusable: unreadable (permissions), unparseable JSON,
         # or an uncompilable pattern. All of these mean someone TRIED to
         # configure the rule and failed -- that must stay loud AND closed.
-        state = "invalid"
-    # ONE logging tail for EVERY non-ok state (Marveen review on #1156: the
+        state = RULES_INVALID
+    # ONE logging tail for EVERY loud state (Marveen review on #1156: the
     # first cut logged only the exception branches, so empty/schema-invalid
     # left no log line while missing did -- same event class, inconsistent
     # ledger).
@@ -687,7 +722,10 @@ def telegram_gate(tool_input: dict) -> None:
     # de a figyelmeztetes ODA megy, ahol a session tenyleg latja -- a hook
     # stdout systemMessage mezoje a futo sessionben jelenik meg, nem egy
     # logfajlban, amit senki nem olvas.
-    if BAD_NAME is None:
+    # GATEPERSIST816/3: a tudatosan felfuggesztett szabaly (RULES_SANCTIONED)
+    # mar nem veszteseg, nincs mit jelezni, a Telegram-ag ott csendben marad.
+    # Minden mas nem-ok allapot (missing/empty/invalid) figyelmeztetest kap.
+    if RULES_STATE in RULES_LOUD:
         print(json.dumps({"systemMessage":
             "outgoing-copy-gate: a NEV-SZABALY fajl hianyzik/ures "
             f"({_LOCAL_RULES}) -- a nev-ellenorzes NEM fut a kimeno uzeneteken. "
@@ -801,7 +839,7 @@ def main():
     # csendben lealit nev-ellenorzes mellett kuldeni rosszabb, mint megvarni a
     # szabaly-fajl potlasat. (A telegram-ag fail-open marad systemMessage
     # figyelmeztetessel: az a felugyeleti csatorna, ott a nemulas a dragabb.)
-    if RULES_STATE == "invalid":
+    if RULES_STATE == RULES_INVALID:
         # The file EXISTS but cannot be used: someone configured it and got it
         # wrong. Silent enforcement-loss here would be invisible, so this stays
         # fail-closed until the file is repaired (negative control in tests).
@@ -824,13 +862,13 @@ def main():
         )
         sys.exit(2)
 
-    if RULES_STATE in ("missing", "empty"):
+    if RULES_STATE in (RULES_MISSING, RULES_EMPTY):
         # Fail-OPEN, but never silent: the send goes out WITHOUT the name
         # check, and the user must see that on the surface they are using --
         # a log line nobody reads is the same as nothing (CLCOPYGATEHIANY902).
         print(json.dumps({"systemMessage":
             "outgoing-copy-gate: a NEV-SZABALY fajl "
-            + ("HIANYZIK" if RULES_STATE == "missing" else "URES (nincs minta)")
+            + ("HIANYZIK" if RULES_STATE == RULES_MISSING else "URES (nincs minta)")
             + f" ({_LOCAL_RULES}) -- ez a level a nev-ellenorzes NELKUL ment ki. "
             "Ha kell a vedelem, hozd letre a fajlt: "
             '{"bad_name_patterns": ["<python-regex>"], "correction": "<helyes alak>"}.'}))
