@@ -1178,6 +1178,48 @@ function schedulePostResumePluginGuard(provider: ChannelProviderType): void {
   logger.info({ delayMs: POST_RESUME_GUARD_DELAY_MS }, 'Post-resume plugin guard scheduled after --continue resume')
 }
 
+// --- launchd restart EFFECT check (LAUNCHDNOEFFECT904) ------------------------
+//
+// `launchctl unload` + `load` exiting 0 says the COMMAND ran, not that the
+// session restarted. Measured on 2026-09-04: the guard's saturation net fired
+// four times in one morning (12:10:20, 12:40:20, 13:15:20 ...), logged
+// "Hard restart: launchctl reload" every time and announced a restart to the
+// operator -- while the main pane's claude process kept the SAME pid for 34
+// hours. `launchctl print gui/<uid>/com.jarvis.channels` read
+// `state = not running`, `active count = 0` and, decisively, `runs = 0`: the
+// job had never been spawned since registration, so `unload` had nothing to
+// stop and the live process (started outside launchd) was never touched.
+// store/channels.log and channels.error.log confirm it -- neither grew during
+// any of those "restarts".
+//
+// The exit code is therefore the wrong signal. Measure the effect instead: the
+// pid of the claude process in the main pane. Unchanged pid = nothing
+// restarted, whatever launchctl returned, and we fall through to the
+// respawn-pane path that replaces the process directly.
+const LAUNCHD_EFFECT_POLL_MS = 1000
+const LAUNCHD_EFFECT_TIMEOUT_MS = 8000
+
+// Pure: did the launchd bounce actually replace the process?
+// A null reading (pane gone, tmux unreadable) is NOT evidence of a restart --
+// treat only an observed, different pid as one, so an unreadable pane falls
+// through to respawn-pane rather than reporting a success we cannot see.
+export function launchdRestartTookEffect(before: number | null, after: number | null): boolean {
+  if (before === null || after === null) return false
+  return before !== after
+}
+
+// pid of the claude process in the main channels pane, or null when unreadable.
+function mainPaneClaudePid(): number | null {
+  try {
+    const raw = execFileSync(tmuxBin(), ['list-panes', '-t', MAIN_CHANNELS_SESSION, '-F', '#{pane_pid}'],
+      { timeout: 3000, encoding: 'utf-8' })
+    const pid = parseInt(raw.trim().split('\n')[0] ?? '', 10)
+    return Number.isFinite(pid) && pid > 0 ? pid : null
+  } catch {
+    return null
+  }
+}
+
 export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
   // FABLEFALL1: the restarted session boots from the main/worker shared config
   // roots, which the per-agent spawn-time stamp never covers -- stamp them now
@@ -1190,21 +1232,40 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
   // The previous unconditional launchctl call was a silent no-op: launchctl
   // accepts a non-existent plist with exit 0, leaving the session untouched.
   if (process.platform !== 'linux' && existsSync(MAIN_CHANNELS_PLIST)) {
+    const pidBefore = mainPaneClaudePid()
     try {
       execFileSync('/bin/launchctl', ['unload', MAIN_CHANNELS_PLIST], { timeout: 5000 })
       execFileSync('/bin/sleep', ['2'], { timeout: 4000 })
       execFileSync('/bin/launchctl', ['load', MAIN_CHANNELS_PLIST], { timeout: 5000 })
-      logger.warn(`Hard restart: launchctl reload of com.${SERVICE_ID}.channels`)
-      marveenLastHardRestart = Date.now()
-      writeRespawnStamp() // coordinate with the systemd-timer watchdog
-      return { ok: true }
     } catch (err) {
       logger.error({ err }, 'Hard restart failed (launchctl)')
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
+    // The command returned 0. Now measure whether anything actually restarted:
+    // launchd needs a moment to tear the old process down and spawn the new one,
+    // so poll rather than read once.
+    let pidAfter = mainPaneClaudePid()
+    const deadline = Date.now() + LAUNCHD_EFFECT_TIMEOUT_MS
+    while (!launchdRestartTookEffect(pidBefore, pidAfter) && Date.now() < deadline) {
+      try { execFileSync('/bin/sleep', [String(LAUNCHD_EFFECT_POLL_MS / 1000)], { timeout: 4000 }) } catch { break }
+      pidAfter = mainPaneClaudePid()
+    }
+    if (launchdRestartTookEffect(pidBefore, pidAfter)) {
+      logger.warn({ pidBefore, pidAfter }, `Hard restart: launchctl reload of com.${SERVICE_ID}.channels`)
+      marveenLastHardRestart = Date.now()
+      writeRespawnStamp() // coordinate with the systemd-timer watchdog
+      return { ok: true }
+    }
+    logger.warn(
+      { pidBefore, pidAfter, plist: MAIN_CHANNELS_PLIST },
+      'Hard restart: launchctl reload exited 0 but the pane claude pid did not change -- launchd does not own this session; falling through to respawn-pane',
+    )
+    // fall through to the respawn-pane path below
   }
 
-  if (process.platform !== 'linux') {
+  // Plist-absent case only: the no-effect fall-through above logs its own,
+  // different reason, and claiming "plist absent" there would be false.
+  if (process.platform !== 'linux' && !existsSync(MAIN_CHANNELS_PLIST)) {
     logger.warn({ plist: MAIN_CHANNELS_PLIST }, 'Hard restart: launchd channels plist absent -- falling back to respawn-pane')
   }
 
