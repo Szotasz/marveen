@@ -46,6 +46,7 @@ import {
 } from '../pane-state.js'
 import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST } from './main-agent.js'
 import { notifyChannel } from '../notify.js'
+import { sendRoutineAlert } from './routine-alert.js'
 import { getProvider, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { attemptChannelMcpReconnect } from './channel-mcp-reconnect.js'
 import { readLastIngestionTimestamp, TRANSCRIPT_DIR } from './inbound-probe.js'
@@ -1066,7 +1067,7 @@ export function createMainChannelsSession(): MainSessionCreateResult {
     // boot instead of stacking a respawn on a session that is still coming up.
     writeRespawnStamp()
     logger.warn({ session: MAIN_CHANNELS_SESSION }, 'Main channels session absent -- recreating via channels.sh')
-    sendAlert(`♻️ A ${MAIN_CHANNELS_SESSION} session eltunt -- ujrainditom (channels.sh). Enelkul minden utemezett feladat csendben kimaradna.`)
+    sendRoutineAlert('main-session-recreate', `♻️ A ${MAIN_CHANNELS_SESSION} session eltunt -- ujrainditom (channels.sh). Enelkul minden utemezett feladat csendben kimaradna.`)
     return 'started'
   } catch (err) {
     logger.error({ err }, 'Failed to recreate main channels session via channels.sh')
@@ -1169,7 +1170,7 @@ function schedulePostResumePluginGuard(provider: ChannelProviderType): void {
         return
       }
       logger.warn({ provider }, 'Post-resume guard: --continue resume came up WITHOUT the channels plugin (CC 2.1.193) -- escalating to fresh respawn (context dropped, memory persists)')
-      sendAlert(`⚠️ A --continue resume suketen jott fel (nincs channel plugin). Fresh respawn most a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik, memoria marad).`)
+      sendRoutineAlert('post-resume-fresh-respawn', `⚠️ A --continue resume suketen jott fel (nincs channel plugin). Fresh respawn most a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik, memoria marad).`)
       respawnMarveenSessionFresh()
     } catch (err) {
       logger.warn({ err }, 'Post-resume guard probe failed (leaving recovery to the down-cascade)')
@@ -1583,7 +1584,7 @@ function checkMainKeepaliveStaleness(): void {
   }
   const ageMin = Math.round((ageMs ?? 0) / 60000)
   logger.warn({ ageMs, paneState }, 'Channel keep-alive stale -- main session likely wedged/deaf, respawning via respawn-pane')
-  sendAlert(`⚠️ A fő channel keep-alive ${ageMin} perce nem frissült -- respawn-pane a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik, memoria marad).`)
+  sendRoutineAlert('keepalive-respawn', `⚠️ A fő channel keep-alive ${ageMin} perce nem frissült -- respawn-pane a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik, memoria marad).`)
   if (respawnMarveenSessionFresh()) {
     marveenLastKeepaliveRespawn = now
     // Suppress the process-down handler during the respawn window (reuses the
@@ -1860,7 +1861,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
             logger.warn({ session: t.session, agent: label }, 'first-run trust dialog in an unrecognised shape -- parked, NO keystrokes sent')
             sendAlert(`🛑 A(z) ${label} session a mappa-megbízhatósági dialóguson parkol, de a panel alakját nem ismerem fel, ezért NEM nyomtam meg semmit. Se az Enter, se az Escape nem semleges rajta (az Escape a "No, exit"). Válassz kézzel: tmux attach -t ${t.session}, majd a "Yes, I trust this folder" sort jelöld ki és Enter.`)
           } else {
-            sendAlert(`🧭 A(z) ${label} session a Claude Code első-indítási képernyőjén parkolt (${firstRunGate}); automatikusan továbbléptettem. A várakozó ütemezett feladatok a következő körben kézbesítődnek.`)
+            sendRoutineAlert(`firstrun-gate:${label}`, `🧭 A(z) ${label} session a Claude Code első-indítási képernyőjén parkolt (${firstRunGate}); automatikusan továbbléptettem. A várakozó ütemezett feladatok a következő körben kézbesítődnek.`)
           }
         } else {
           // FABLEFALL1: the model usage-credit consent dialog is indistinguishable
@@ -1875,7 +1876,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           if (paneNow != null && detectsModelConsentDialog(paneNow)) {
             logger.warn({ session: t.session, agent: label }, 'Blocking "menu" is the model usage-credit consent dialog -- answering it safely instead of Escape')
             await dismissModelConsentDialogIfPresent(t.session)
-            sendAlert(`🎛️ A(z) ${label} session a modell-hozzájárulás dialóguson parkolt; az 1-es opcióval (a beállított modell megtartása) továbbléptettem. Modellváltás NEM történt.`)
+            sendRoutineAlert(`model-consent:${label}`, `🎛️ A(z) ${label} session a modell-hozzájárulás dialóguson parkolt; az 1-es opcióval (a beállított modell megtartása) továbbléptettem. Modellváltás NEM történt.`)
           } else {
             logger.warn({ session: t.session, agent: label }, 'Session parked in a blocking interactive menu -- sending Escape to recover')
             try {
@@ -1883,7 +1884,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
             } catch (err) {
               logger.warn({ err, session: t.session }, 'Menu-recovery Escape failed')
             }
-            sendAlert(`⌨️ A(z) ${label} session beragadt egy interaktív menübe (pl. /mcp) és nem dolgozott fel üzeneteket. Kiküldtem egy Escape-et, visszatérítettem a prompthoz. Ha ismétlődik: tmux attach -t ${t.session}`)
+            sendRoutineAlert(`menu-escape:${label}`, `⌨️ A(z) ${label} session beragadt egy interaktív menübe (pl. /mcp) és nem dolgozott fel üzeneteket. Kiküldtem egy Escape-et, visszatérítettem a prompthoz. Ha ismétlődik: tmux attach -t ${t.session}`)
           }
         }
       }
