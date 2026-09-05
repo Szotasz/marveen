@@ -173,6 +173,32 @@ describe('isolated config dir: mcpServers reconcile', () => {
     expect(servers().gmail).toEqual({ command: 'npx', args: ['gmail-mcp'] })
   })
 
+  it('skips the collision on the RECONCILE path too, not only on first seed', () => {
+    // Provision first WITHOUT any project-scope servers: the dir now exists,
+    // so every later call takes the reconcile (gap-fill) branch -- the exact
+    // branch the measured 12-hour outage came from (startup write-back).
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
+    expect(Object.keys(servers())).toEqual(['gmail'])
+
+    // The agent then defines `cortex` at project scope with its own token,
+    // and the router's shared config later grows a same-named entry.
+    writeFileSync(
+      join(SANDBOX, 'agents', AGENT, '.mcp.json'),
+      JSON.stringify({ mcpServers: { cortex: { url: 'https://cortex.example/mcp', headers: { Authorization: 'Bearer agent-own-token' } } } }),
+    )
+    writeShared({
+      gmail: { command: 'npx', args: ['gmail-mcp'] },
+      cortex: { url: 'https://cortex.example/mcp', headers: { Authorization: 'Bearer router-token' } },
+      'google-drive': { command: 'npx', args: ['gdrive-mcp'] },
+    })
+
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
+
+    // The genuine gap arrives, the collision does not.
+    expect(servers().cortex).toBeUndefined()
+    expect(Object.keys(servers()).sort()).toEqual(['gmail', 'google-drive'])
+  })
+
   it('still gap-fills when the agent has no readable .mcp.json', () => {
     // No .mcp.json at all: nothing can collide, so every shared server is a gap.
     writeShared({ gmail: { command: 'npx', args: ['gmail-mcp'] }, extra: { command: 'x' } })
