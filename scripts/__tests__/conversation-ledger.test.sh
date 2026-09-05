@@ -97,6 +97,21 @@ print(json.dumps(payload))
 PYEOF
 }
 
+# Emit an inbound payload that quotes an earlier message (reply_to_message_id).
+emit_inbound_replyto() { # chat_id message_id text reply_to_message_id [cwd]
+    python3 - "$@" <<'PYEOF'
+import json, sys
+chat_id, message_id, text, reply_to = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+block = (f'<channel source="plugin:telegram:telegram" chat_id="{chat_id}" '
+         f'message_id="{message_id}" user="x" reply_to_message_id="{reply_to}" '
+         f'ts="2026-06-02T14:20:25.000Z">\n{text}\n</channel>')
+payload = {"hook_event_name": "UserPromptSubmit", "prompt": block}
+if len(sys.argv) > 5:
+    payload["cwd"] = sys.argv[5]
+print(json.dumps(payload))
+PYEOF
+}
+
 # Emit a Telegram reply PostToolUse payload.
 emit_reply() { # chat_id text [cwd]
     python3 - "$@" <<'PYEOF'
@@ -185,6 +200,15 @@ assert_eq "inbound capture: message_id" "1054" \
     "$(db_scalar "$DB_A" "SELECT message_id FROM conversation_log")"
 assert_eq "inbound capture: text recorded" "Jok a Fokusz e-mail cimek" \
     "$(db_scalar "$DB_A" "SELECT text FROM conversation_log")"
+assert_eq "inbound capture: no quote -> reply_to_message_id is NULL" "NULL" \
+    "$(db_scalar "$DB_A" "SELECT reply_to_message_id FROM conversation_log")"
+
+# A message that quotes an earlier one records which message_id it quoted
+# (df3b48a7) -- and never the quoted text itself, only the id.
+DB_A2="$TMPDIR_BASE/a2.db"
+emit_inbound_replyto 10000000001 2001 "lezarhato" 1999 | run_hook ledger-capture.py "$DB_A2"
+assert_eq "inbound capture: reply_to_message_id recorded" "1999" \
+    "$(db_scalar "$DB_A2" "SELECT reply_to_message_id FROM conversation_log")"
 
 # ---------------------------------------------------------------------------
 # (b) OUTBOUND CAPTURE -> conversation_log direction='out'

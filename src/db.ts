@@ -270,14 +270,17 @@ export function initDatabase(dbPathOverride?: string): void {
       created_at INTEGER NOT NULL,
       attachment_kind TEXT,
       attachment_file_id TEXT,
+      reply_to_message_id TEXT,
       UNIQUE(agent_id, chat_id, direction, message_id)
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_convlog_agent ON conversation_log(agent_id, created_at)`)
   // Migration for pre-existing DBs: transcript-less voice/video_note inbounds
   // keep their attachment identity so a respawned session can still download
-  // and transcribe them (mirrors _MIGRATION_COLUMNS in scripts/hooks/ledger_lib.py).
-  for (const col of ['attachment_kind', 'attachment_file_id']) {
+  // and transcribe them; reply_to_message_id lets an inbound quote be
+  // retraced after the fact (df3b48a7) (mirrors _MIGRATION_COLUMNS in
+  // scripts/hooks/ledger_lib.py).
+  for (const col of ['attachment_kind', 'attachment_file_id', 'reply_to_message_id']) {
     const cols = db.prepare("PRAGMA table_info(conversation_log)").all() as { name: string }[]
     if (!cols.some(c => c.name === col)) {
       db.exec(`ALTER TABLE conversation_log ADD COLUMN ${col} TEXT`)
