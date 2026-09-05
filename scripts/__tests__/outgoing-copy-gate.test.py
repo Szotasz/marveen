@@ -198,6 +198,34 @@ def main():
         code, out, err = run_hook(email_payload(CLEAN_HU_OK), rules_file=active)
         check("fully clean body passes (exit 0)", code, 0)
 
+        # --- 6. #1184: manage_email dispatch + telegram codeblock gate ------
+        # COPYGATEMATCHER904: the multiplexed manage_email must be classified
+        # by OPERATION. Before the fix every letter fell through to exit 0.
+        def manage_payload(op, **kw):
+            return {"tool_name": "mcp__google-workspace__manage_email",
+                    "tool_input": {"operation": op, **kw}}
+
+        code, out, err = run_hook(manage_payload("send", body=CLEAN_HU_OK + " — mégis."),
+                                  rules_file=active)
+        check("manage_email send with em dash blocks (exit 2)", code, 2)
+        code, out, err = run_hook(manage_payload("send", body=CLEAN_HU_OK), rules_file=active)
+        check("manage_email send clean passes (exit 0)", code, 0)
+        code, out, err = run_hook(manage_payload("search", query="— rossz — szoveg"),
+                                  rules_file=active)
+        check("manage_email search is not audited (exit 0)", code, 0)
+        code, out, err = run_hook(manage_payload("forward", message_id="x"), rules_file=active)
+        check("manage_email bare forward passes (exit 0)", code, 0)
+
+        # GATECOPY827: a code block without format=markdownv2 has no copy
+        # button on the phone -- machine gate, not memory.
+        fenced = "Íme:\n```\nls -la\n```\nfuttasd le kérlek."
+        code, out, err = run_hook(telegram_payload(fenced), rules_file=active)
+        check("telegram codeblock without markdownv2 blocks (exit 2)", code, 2)
+        payload = telegram_payload(fenced)
+        payload["tool_input"]["format"] = "markdownv2"
+        code, out, err = run_hook(payload, rules_file=active)
+        check("telegram codeblock WITH markdownv2 passes (exit 0)", code, 0)
+
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)
         sys.exit(1)
