@@ -25,7 +25,7 @@ the Docker volumes (3) are **separate** and must be moved on their own.
 - `assets/meetings/**` — meeting transcripts/memos
 - `agents/*/CLAUDE.md`, `SOUL.md`, `.mcp.json` — per-agent identity
 - `agents/*/.claude/channels/*/.env`, `access.json` — sub-agent channel tokens + pairing
-- `local-commits.bundle` — every local git branch that `origin` does not have
+- `local-commits.bundle`: every local git branch that `origin` does not have
   (the source itself is NOT in the archive; it is expected on the remote). Restore:
   clone the upstream repo, then
   `git fetch <restored>/repo/local-commits.bundle 'refs/heads/*:refs/heads/*'`.
