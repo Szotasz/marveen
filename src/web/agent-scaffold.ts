@@ -275,13 +275,72 @@ export function syncHookMatchers(
   return changed
 }
 
+/**
+ * True when `command`'s script is ALREADY registered under the same hook `event`
+ * in the OTHER settings scope the same session loads -- so adding it here would
+ * make it run twice.
+ *
+ * Claude Code merges the user scope (~/.claude/settings.json) with the project
+ * scope (<cwd>/.claude/settings.json) and runs BOTH; it does not dedupe. Measured
+ * 2026-09-04 on the main agent: a single prompt produced two identical
+ * PROVENANCE-KAPU blocks, i.e. a doubled process spawn and a doubled ~1.4KB
+ * context injection on every flagged prompt. Removing the entry by hand did not
+ * hold -- ensureAgentHooks merged the template back in on the next dashboard
+ * start (measured 07:50: removed -> 0, restart -> 1 again).
+ *
+ * Compares SCRIPT BASENAME, not the command string: the two scopes spell the same
+ * gate differently (`bash -c '[ -f /abs/x.py ] && exec python3 /abs/x.py; exit 0'`
+ * in the template vs `python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/x.py"` in the
+ * repo's project settings), so an exact-string check would never match and the
+ * duplicate would survive.
+ *
+ * Deliberately ONE-WAY: it only suppresses a write into the SHARED user scope
+ * when the project scope already carries the script. The reverse must never
+ * happen -- an agent's project settings are the authoritative copy, while the
+ * user scope it sees may be a per-spawn COPY of ~/.claude/settings.json
+ * (agent-process.ts clones it into each agent's isolated .claude-config), so
+ * letting a derived file suppress the authoritative one would silently drop the
+ * hook the next time that copy is re-provisioned.
+ *
+ * Exported for unit testing.
+ */
+export function hookScriptAlreadyEffectiveInOtherScope(
+  settingsPath: string,
+  event: string,
+  command: string,
+  scopes?: { user: string; project: string },
+): boolean {
+  const userScope = scopes?.user ?? join(homedir(), '.claude', 'settings.json')
+  const projectScope = scopes?.project ?? join(PROJECT_ROOT, '.claude', 'settings.json')
+  if (settingsPath !== userScope) return false
+  if (projectScope === userScope) return false
+  const bn = _hookScriptBasename(command)
+  if (!bn) return false
+  try {
+    if (!existsSync(projectScope)) return false
+    const parsed = JSON.parse(readFileSync(projectScope, 'utf-8')) as { hooks?: Record<string, unknown> }
+    const entries = parsed?.hooks?.[event]
+    if (!Array.isArray(entries)) return false
+    return (entries as HookEntry[]).some((e) =>
+      (e?.hooks ?? []).some((h) => typeof h?.command === 'string' && _hookScriptBasename(h.command) === bn),
+    )
+  } catch { return false }
+}
+
 // Idempotent migration: every agent's settings.json should carry the
 // PreCompact hook (memory save + skill reflection). Pre-refactor agents
 // were scaffolded before scaffoldAgentDir seeded the template, so their
 // file is permissions-only. Merge the template's hooks block in place.
 // Also handles the main agent (MAIN_AGENT_ID) whose settings.json is at
 // ~/.claude/settings.json -- voice hook is added alongside existing hooks.
-export function ensureAgentHooks(name: string): boolean {
+export function ensureAgentHooks(
+  name: string,
+  // Test seam only: overrides the two settings scopes the cross-scope dedupe
+  // guard compares. Production callers pass nothing and get the real
+  // ~/.claude + PROJECT_ROOT/.claude pair, so the guard cannot be tested by
+  // writing into the operator's real home.
+  scopes?: { user: string; project: string },
+): boolean {
   const settingsPath = agentSettingsPath(name)
   const tplPath = join(PROJECT_ROOT, 'templates', 'settings.json.template')
   if (!existsSync(tplPath)) return false
@@ -330,8 +389,21 @@ export function ensureAgentHooks(name: string): boolean {
     if (syncHookMatchers(existingHooks, tplHooks)) changed = true
     for (const [event, handlers] of Object.entries(tplHooks)) {
       if (!existingHooks[event]) {
-        existingHooks[event] = handlers
-        changed = true
+        // Wholesale add of a missing event still has to respect the cross-scope
+        // guard, or the very first merge writes the duplicate the add pass below
+        // would have skipped.
+        const entries = (handlers as HookEntry[])
+          .map((entry) => ({
+            ...entry,
+            hooks: (entry.hooks ?? []).filter(
+              (h) => !h.command || !hookScriptAlreadyEffectiveInOtherScope(settingsPath, event, h.command, scopes),
+            ),
+          }))
+          .filter((entry) => (entry.hooks?.length ?? 0) > 0)
+        if (entries.length > 0) {
+          existingHooks[event] = entries
+          changed = true
+        }
       } else {
         const tplEntries = handlers as HookEntry[]
         const existEntries = existingHooks[event] as HookEntry[]
@@ -342,7 +414,8 @@ export function ensureAgentHooks(name: string): boolean {
         for (const tplEntry of tplEntries) {
           // Add hooks that are missing AND safe to register (registration guard).
           const newHooks = (tplEntry.hooks ?? []).filter(
-            (h) => h.command && !existingCommands.has(h.command) && !isUnsafeHookCommand(h.command),
+            (h) => h.command && !existingCommands.has(h.command) && !isUnsafeHookCommand(h.command)
+              && !hookScriptAlreadyEffectiveInOtherScope(settingsPath, event, h.command, scopes),
           )
           if (newHooks.length > 0) {
             existEntries.push({ ...tplEntry, hooks: newHooks })
@@ -370,7 +443,11 @@ export function ensureAgentHooks(name: string): boolean {
     for (const [event, entries] of Object.entries(tplHooks)) {
       const safeEntries = (entries as HookEntry[]).map((entry) => ({
         ...entry,
-        hooks: (entry.hooks ?? []).filter((h) => !h.command || !isUnsafeHookCommand(h.command)),
+        hooks: (entry.hooks ?? []).filter(
+          (h) => !h.command
+            || (!isUnsafeHookCommand(h.command)
+              && !hookScriptAlreadyEffectiveInOtherScope(settingsPath, event, h.command, scopes)),
+        ),
       })).filter((entry) => (entry.hooks?.length ?? 0) > 0)
       if (safeEntries.length > 0) safeHooks[event] = safeEntries
     }
