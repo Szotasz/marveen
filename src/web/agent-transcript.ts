@@ -1,6 +1,7 @@
 import { closeSync, existsSync, fstatSync, openSync, readdirSync, readSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { PROJECT_ROOT } from '../config.js'
+import { SECRET_PATTERNS } from '../security/secret-gate.js'
 import { readFileOr } from './agent-config.js'
 import { projectsDirFor } from './active-model.js'
 
@@ -93,9 +94,37 @@ const STANDALONE_SECRETS: RegExp[] = [
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
 ]
 
+// SHAPE-ONLY secrets, from this repo's OWN detector set (review condition on
+// #1095, 2026-09-05). The two lists above need either a label ("Bearer x") or a
+// vendor prefix; a credential that is merely SHAPED like one slipped through --
+// untagged JWTs, AWS access key ids, Stripe live keys in their UNDERSCORE form
+// (the standalone entry above covers only the hyphen spelling) and private-key
+// block headers. That gap matters here specifically because our transcripts are
+// where our own measurement output lands, so they measurably do contain keys.
+//
+// Reusing SECRET_PATTERNS instead of restating the shapes is the point: one
+// list to keep current, and the commit-gate and the mask cannot drift apart.
+// (Restating them is not even possible here without tripping that same gate --
+// this comment first named the shapes literally and the commit was blocked,
+// which is the gate doing exactly its job.)
+//
+// Two adaptations, both deliberate:
+//  - GLOBAL copies. The gate only asks "is there one?" so its patterns are
+//    single-match; a mask must replace EVERY occurrence or the second key in a
+//    line survives.
+//  - Whole-match replacement. A few entries (the vendor key headers, the
+//    Supabase service-role hint) carry their label inside the match and expose
+//    no capture group, so the label goes with it. That loses a little context
+//    the labelled pass above preserves -- accepted: a mask that leaks is worse
+//    than a mask that reads tersely. The labelled pass runs FIRST, so wherever
+//    a label can be kept, it already was.
+const SHAPED_SECRETS: RegExp[] = SECRET_PATTERNS.map(({ pattern }) =>
+  new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g'))
+
 export function maskSecrets(text: string): string {
   let out = text.replace(LABELLED_SECRET, (m, secret: string) => m.replace(secret, '<REDACTED>'))
   for (const re of STANDALONE_SECRETS) out = out.replace(re, '<REDACTED>')
+  for (const re of SHAPED_SECRETS) out = out.replace(re, '<REDACTED>')
   return out
 }
 
