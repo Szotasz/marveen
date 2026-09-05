@@ -2206,25 +2206,38 @@ export interface KanbanComment {
   created_at: number
 }
 
+// A PURE READ, deliberately: the archive sweep that used to run here moved to
+// sweepArchivedKanbanCards() above. See card 681ab82c.
+//
 // `includeArchived` exists because this function used to hard-code the filter with
 // no way for a caller to ask otherwise, while being named `list`. /api/kanban therefore
 // answered "all cards" with a narrowed set, and an audit reading it saw no error -- only
 // a missing row, which is the failure mode that hides longest. Default stays false so
 // the board keeps its current behaviour; only a caller that asks gets the wider set.
-export function listKanbanCards(opts: { includeArchived?: boolean } = {}): KanbanCard[] {
+/**
+ * Archive `done` cards older than KANBAN_ARCHIVE_DONE_DAYS. Returns how many it archived.
+ *
+ * This used to run inside listKanbanCards(), which made READING the board WRITE to it: an
+ * audit changed the set it was about to report. It is now a scheduled job
+ * (src/web/kanban-archive-runner.ts) and the read path no longer touches archived_at.
+ */
+export function sweepArchivedKanbanCards(): number {
   const archiveDays = Number(getEffectiveSettingValue('KANBAN_ARCHIVE_DONE_DAYS'))
   const archiveCutoff = Math.floor(Date.now() / 1000) - archiveDays * 86400
-  // Auto-archive done cards older than KANBAN_ARCHIVE_DONE_DAYS days
-  db.prepare(
+  const res = db.prepare(
     "UPDATE kanban_cards SET archived_at = ? WHERE status = 'done' AND archived_at IS NULL AND updated_at < ?"
   ).run(Math.floor(Date.now() / 1000), archiveCutoff)
-  // last_status_at: when the card LAST CHANGED COLUMN, not when its row was
-  // last touched. These are not the same thing, and the difference is a real
-  // blind spot: addKanbanComment() sets updated_at, so a card that has not
-  // moved in weeks looks fresh the moment anyone comments on it. The main agent
-  // comments more than anyone, so ageing measured on updated_at is mostly
-  // measuring the watcher, not the work. Falls back to created_at for cards
-  // that have never moved (no event rows), which is the honest age for those.
+  return res.changes
+}
+
+// last_status_at: when the card LAST CHANGED COLUMN, not when its row was
+// last touched. These are not the same thing, and the difference is a real
+// blind spot: addKanbanComment() sets updated_at, so a card that has not
+// moved in weeks looks fresh the moment anyone comments on it. The main agent
+// comments more than anyone, so ageing measured on updated_at is mostly
+// measuring the watcher, not the work. Falls back to created_at for cards
+// that have never moved (no event rows), which is the honest age for those.
+export function listKanbanCards(opts: { includeArchived?: boolean } = {}): KanbanCard[] {
   const where = opts.includeArchived ? '' : 'WHERE c.archived_at IS NULL '
   return db
     .prepare(`SELECT c.rowid AS seq, c.*,

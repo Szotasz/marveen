@@ -10,9 +10,9 @@
 //   the DATA layer hard-coded the filter with no parameter (listKanbanCards had no args)
 //   the ROUTE dropped an unrecognised parameter instead of honouring or refusing it
 //
-// Note the auto-archive sweep inside listKanbanCards(): reading the list is what archives
-// stale done cards. Both tests below therefore archive explicitly rather than relying on
-// the sweep, so they measure the FILTER and not the clock.
+// The sweep that used to run inside listKanbanCards() now lives in
+// sweepArchivedKanbanCards() (card 681ab82c), so listing no longer writes. These tests
+// archive explicitly either way, so they measure the FILTER and not the clock.
 
 import { describe, it, expect, beforeEach } from 'vitest'
 import { initDatabase, createKanbanCard, archiveKanbanCard, listKanbanCards } from '../db.js'
