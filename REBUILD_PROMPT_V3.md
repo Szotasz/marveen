@@ -362,7 +362,7 @@ Az utemezett feladatok a `~/.claude/scheduled-tasks/` mappaban elnek, SKILL.md +
 |---------|---------|--------|
 | `/api/messages` | POST | Uzenet kuldese (from, to, content) |
 | `/api/messages` | GET | Uzenetek listazasa (?agent=, ?status=pending, ?limit=) |
-| `/api/messages/:id` | PUT | Uzenet statusz frissites (status: done/failed, result) |
+| `/api/messages/:id` | PUT | Uzenet statusz frissites (status: done/failed, result, notify) -- `notify: false` eseten NEM keletkezik `[Eredmeny]` visszajelzes a kuldonek (delegalt feladatnal hasznos, bejovo jelentesnel felesleges); elhagyva a mai viselkedes marad |
 
 ### MCP Konnektorok
 
