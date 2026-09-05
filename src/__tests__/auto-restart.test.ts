@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   parseHHMM,
   normalizeAutoRestartConfig,
@@ -9,6 +11,9 @@ import {
   OPEN_QUESTION_DEFERRAL_CAP_MS,
   DEFAULT_AUTO_RESTART,
 } from '../auto-restart.js'
+
+// Repo root from this test file: src/__tests__ -> ../..
+const ROOT = join(__dirname, '..', '..')
 
 describe('parseHHMM', () => {
   it('parses valid times to minutes since midnight', () => {
@@ -31,12 +36,12 @@ describe('normalizeAutoRestartConfig', () => {
     expect(normalizeAutoRestartConfig({})).toEqual(DEFAULT_AUTO_RESTART)
   })
   it('keeps a valid daily config and clears interval (daily wins)', () => {
-    const c = normalizeAutoRestartConfig({ enabled: true, mode: 'fresh', dailyTime: '03:00', intervalHours: 6, handoff: true })
-    expect(c).toEqual({ enabled: true, mode: 'fresh', dailyTime: '03:00', intervalHours: null, handoff: true, openQuestionDeferralCapHours: 24 })
+    const c = normalizeAutoRestartConfig({ enabled: true, mode: 'fresh', dailyTime: '03:00', intervalHours: 6 })
+    expect(c).toEqual({ enabled: true, mode: 'fresh', dailyTime: '03:00', intervalHours: null, openQuestionDeferralCapHours: 24 })
   })
   it('keeps a valid interval config when no daily time', () => {
     const c = normalizeAutoRestartConfig({ enabled: true, mode: 'continue', intervalHours: 8 })
-    expect(c).toEqual({ enabled: true, mode: 'continue', dailyTime: null, intervalHours: 8, handoff: false, openQuestionDeferralCapHours: 24 })
+    expect(c).toEqual({ enabled: true, mode: 'continue', dailyTime: null, intervalHours: 8, openQuestionDeferralCapHours: 24 })
   })
   it('drops an invalid dailyTime and non-positive interval', () => {
     const c = normalizeAutoRestartConfig({ enabled: true, dailyTime: '99:99', intervalHours: 0 })
@@ -129,5 +134,46 @@ describe('deferralOverride', () => {
   it('respects an explicit cap argument', () => {
     expect(deferralOverride('open-question', now - 2 * day, now, 3 * day)).toBe(false)
     expect(deferralOverride('open-question', now - 3 * day, now, 3 * day)).toBe(true)
+  })
+})
+
+
+// The `handoff` field was declared here as "Phase 2" and never wired: it sat in
+// every agent's stored config, the PUT accepted it and a GET echoed it back,
+// while the restart path never read it. It has been removed, and these
+// guard the removal from both directions -- that the key is gone, and that no
+// key like it can quietly come back and be believed.
+describe('the auto-restart config carries no unwired handoff switch', () => {
+  it('drops a legacy handoff key instead of storing it', () => {
+    const c = normalizeAutoRestartConfig({ enabled: true, mode: 'fresh', dailyTime: '04:00', handoff: true })
+    expect('handoff' in c).toBe(false)
+    // The rest of the config still normalizes exactly as before.
+    expect(c).toEqual({ enabled: true, mode: 'fresh', dailyTime: '04:00', intervalHours: null, openQuestionDeferralCapHours: 24 })
+  })
+
+  it('has no handoff-shaped key under ANY name in the defaults', () => {
+    expect(Object.keys(DEFAULT_AUTO_RESTART).filter((k) => /handoff/i.test(k))).toEqual([])
+  })
+
+  // The claim this file cannot make from behavior: a config field can only
+  // influence the restart if some code on the restart path READS it, and there
+  // is no runtime path here to observe its absence. So assert the absence
+  // structurally, on the executable source with comments stripped -- the prose
+  // above deliberately says "handoff" many times, and only code counts.
+  it('no code on the restart path reads a handoff field', () => {
+    const stripComments = (src: string): string =>
+      src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
+    const files = [
+      'src/auto-restart.ts',
+      'src/web/auto-restart-runner.ts',
+      'src/web/agent-process.ts',
+    ]
+    for (const f of files) {
+      const code = stripComments(readFileSync(join(ROOT, f), 'utf-8'))
+      // The one allowed mention is the legacy-key list itself, which exists to
+      // ACCEPT the field at the API edge and then throw it away.
+      const hits = code.split('\n').filter((l) => /handoff/i.test(l) && !l.includes('LEGACY_AUTO_RESTART_FIELDS'))
+      expect(hits, `${f} references handoff on the restart path`).toEqual([])
+    }
   })
 })

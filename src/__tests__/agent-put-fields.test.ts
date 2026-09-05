@@ -1,7 +1,14 @@
 import { describe, it, expect } from 'vitest'
 import { checkAgentPutFields, checkConfigPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../web/agent-put-fields.js'
 import { DEFAULT_CONTEXT_GUARD } from '../context-guard.js'
-import { DEFAULT_AUTO_RESTART } from '../auto-restart.js'
+import { DEFAULT_AUTO_RESTART, LEGACY_AUTO_RESTART_FIELDS } from '../auto-restart.js'
+import { EventEmitter } from 'node:events'
+import { mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { beforeAll, afterAll } from 'vitest'
+import { MAIN_AGENT_ID, PROJECT_ROOT, STORE_DIR } from '../config.js'
+import { tryHandleAgents } from '../web/routes/agents.js'
+import type { RouteContext } from '../web/routes/types.js'
 
 // PUT /api/agents/:name answered 200 {ok:true} to fields it did not understand
 // and quietly dropped them. A securityProfile was set that way four times on
@@ -132,10 +139,9 @@ describe('checkConfigPutFields', () => {
   it('accepts the exact payloads the dashboard sends', () => {
     // Pinned from the real call sites in web/app.js. These are the only live
     // callers of these two endpoints, so a check that rejects one of them
-    // breaks the settings pane -- and the auto-restart payload carries
-    // `handoff`, a field the UI sends on every save and nothing else does.
+    // breaks the settings pane.
     expect(checkConfigPutFields(
-      { enabled: true, mode: 'fresh', dailyTime: '03:00', intervalHours: null, handoff: false },
+      { enabled: true, mode: 'fresh', dailyTime: '03:00', intervalHours: null },
       Object.keys(DEFAULT_AUTO_RESTART),
     ).ok).toBe(true)
     // The idle-flush save merges its three fields over a freshly-read config,
@@ -144,6 +150,23 @@ describe('checkConfigPutFields', () => {
       { ...DEFAULT_CONTEXT_GUARD, idleFlushEnabled: true, idleFlushTokens: 400_000, idleMinutes: 20 },
       guardFields,
     ).ok).toBe(true)
+  })
+
+  // The auto-restart endpoint's known set is the config keys PLUS the legacy
+  // ones. `handoff` used to be a stored field that the UI sent
+  // on every save; removing it from the config would make the endpoint reject
+  // the payload of any dashboard page still open in a browser with the old
+  // app.js -- a save failing with a 400 for a field WE sent. It is accepted
+  // here and dropped by normalizeAutoRestartConfig: tolerated, never stored.
+  it('still accepts an auto-restart payload from a stale dashboard page', () => {
+    const endpointFields = [...Object.keys(DEFAULT_AUTO_RESTART), ...LEGACY_AUTO_RESTART_FIELDS]
+    expect(checkConfigPutFields(
+      { enabled: true, mode: 'fresh', dailyTime: '03:00', intervalHours: null, handoff: false },
+      endpointFields,
+    ).ok).toBe(true)
+    // Tolerating the legacy key must not turn the check into a pushover: a real
+    // typo is still rejected.
+    expect(checkConfigPutFields({ enabled: true, handof: false }, endpointFields).ok).toBe(false)
   })
 
   it('rejects a body that is not an object at all', () => {
@@ -161,5 +184,66 @@ describe('checkConfigPutFields', () => {
       'limitTokens', 'cooldownMinutes', 'handoffTimeoutMinutes',
       'idleFlushEnabled', 'idleFlushTokens', 'idleMinutes',
     ])
+  })
+})
+
+
+// The field-list checks above prove what the ENDPOINT'S KNOWN SET does. They say
+// nothing about which set the route actually passes -- measured: dropping
+// LEGACY_AUTO_RESTART_FIELDS from the call site left every one of them green.
+// So drive the route itself: a stale dashboard page's payload must still save.
+async function putAutoRestart(name: string, body: unknown): Promise<{ status: number; body: any }> {
+  const req = new EventEmitter() as unknown as RouteContext['req']
+  ;(req as unknown as { headers: Record<string, string> }).headers = {}
+  const out: { status: number; body: any } = { status: 0, body: null }
+  const res = {
+    writeHead(status: number) { out.status = status; return res },
+    end(chunk?: string) { if (chunk) out.body = JSON.parse(chunk) },
+    setHeader() {},
+  }
+  const url = new URL(`http://localhost:3420/api/agents/${encodeURIComponent(name)}/auto-restart`)
+  process.nextTick(() => {
+    ;(req as unknown as EventEmitter).emit('data', Buffer.from(JSON.stringify(body)))
+    ;(req as unknown as EventEmitter).emit('end')
+  })
+  const handled = await tryHandleAgents(
+    { req, res, path: url.pathname, method: 'PUT', url } as unknown as RouteContext,
+    join(PROJECT_ROOT, 'web'),
+  )
+  expect(handled).toBe(true)
+  return { status: out.status || 200, body: out.body }
+}
+
+// The route writes the real store file, so save and restore it: a developer
+// running the suite in a checkout that has one must not find their own
+// auto-restart config rewritten by a test.
+const STORE_FILE = join(STORE_DIR, 'auto-restart.json')
+let storeBefore: string | null = null
+
+beforeAll(() => {
+  mkdirSync(STORE_DIR, { recursive: true })
+  storeBefore = existsSync(STORE_FILE) ? readFileSync(STORE_FILE, 'utf-8') : null
+})
+
+afterAll(() => {
+  if (storeBefore !== null) writeFileSync(STORE_FILE, storeBefore)
+  else rmSync(STORE_FILE, { force: true })
+})
+
+describe('PUT /api/agents/:name/auto-restart -- the legacy handoff key', () => {
+  it('saves a payload carrying the removed field instead of 400-ing on it', async () => {
+    const r = await putAutoRestart(MAIN_AGENT_ID, {
+      enabled: false, mode: 'continue', dailyTime: null, intervalHours: null, handoff: false,
+    })
+    expect(r.status).toBe(200)
+    expect(r.body?.ok).toBe(true)
+    // Accepted, and dropped: the stored config must not carry it back.
+    expect('handoff' in (r.body?.autoRestart ?? {})).toBe(false)
+  })
+
+  it('still rejects a genuinely unknown field', async () => {
+    const r = await putAutoRestart(MAIN_AGENT_ID, { enabled: false, handof: false })
+    expect(r.status).toBe(400)
+    expect(r.body?.rejected).toEqual(['handof'])
   })
 })
