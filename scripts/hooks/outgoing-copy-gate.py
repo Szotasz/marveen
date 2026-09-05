@@ -863,7 +863,11 @@ def main():
     tool = str(payload.get("tool_name") or "")
     tool_input = payload.get("tool_input") or {}
 
-    if re.search(r"telegram.*__reply$", tool, re.I):
+    # GATECOPY828 (#1184): the scaffold wires this hook onto reply AND
+    # edit_message (an edit can replace a working code block with a broken
+    # one). The dispatch must recognise BOTH, or the edit half of the matcher
+    # invokes a hook that exits 0 without auditing anything.
+    if re.search(r"telegram.*__(reply|edit_message)$", tool, re.I):
         telegram_gate(tool_input)  # exits; never falls through
     # COPYGATEMATCHER904: the hook is REGISTERED for manage_email, create_draft,
     # update_draft and the Gmail connector's reply/send_message/forward tools,

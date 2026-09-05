@@ -226,6 +226,21 @@ def main():
         code, out, err = run_hook(payload, rules_file=active)
         check("telegram codeblock WITH markdownv2 passes (exit 0)", code, 0)
 
+        # edit_message goes through the same telegram gate as reply: the
+        # scaffold matcher (#1184) wires both, so both must actually audit.
+        edit_bad = {"tool_name": "mcp__plugin_telegram_telegram__edit_message",
+                    "tool_input": {"message_id": "1", "text": CLEAN_HU_OK + " — mégis."}}
+        code, out, err = run_hook(edit_bad, rules_file=active)
+        check("edit_message with em dash blocks (exit 2)", code, 2)
+        edit_fence = {"tool_name": "mcp__plugin_telegram_telegram__edit_message",
+                      "tool_input": {"message_id": "1", "text": "```\nls\n``` légy szíves."}}
+        code, out, err = run_hook(edit_fence, rules_file=active)
+        check("edit_message codeblock without markdownv2 blocks (exit 2)", code, 2)
+        edit_ok = {"tool_name": "mcp__plugin_telegram_telegram__edit_message",
+                   "tool_input": {"message_id": "1", "text": CLEAN_HU_OK}}
+        code, out, err = run_hook(edit_ok, rules_file=active)
+        check("edit_message clean passes (exit 0)", code, 0)
+
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)
         sys.exit(1)
