@@ -439,6 +439,27 @@ _LOCAL_RULES = os.environ.get(
                  "store", "outgoing-copy-gate-rules.json"),
 )
 
+_GATE_LOG = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
+
+
+def _gate_log(message: str) -> None:
+    """Append one TIMESTAMPED line to the gate log.
+
+    The log used to carry bare text. Measured 2026-09-05: 8005 lines, four
+    distinct messages, and one of them recorded a FAIL-OPEN pass-through on the
+    Telegram branch -- a message that went out unaudited -- with no way to tell
+    which day it happened on, let alone which message it was. A gate log whose
+    entries cannot be placed in time cannot be used to check anything. Local
+    time with the offset, never UTC.
+    """
+    try:
+        from datetime import datetime
+        stamp = datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
+        with open(_GATE_LOG, "a", encoding="utf-8") as fh:
+            fh.write(f"{stamp} {message.rstrip()}\n")
+    except OSError:
+        pass
+
 
 # CLCOPYGATEHIANY902 (owner decision, TG 14442) MERGED WITH GATEPERSIST816/3
 # (PDB install, 2026-08-19). Two independent fixes to the same question, from
@@ -527,13 +548,8 @@ def load_bad_name():
     # first cut logged only the exception branches, so empty/schema-invalid
     # left no log line while missing did -- same event class, inconsistent
     # ledger).
-    try:
-        log_path = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
-        with open(log_path, "a", encoding="utf-8") as fh:
-            fh.write(f"outgoing-copy-gate: NEV-SZABALY {state.upper()} ({_LOCAL_RULES}) -- "
-                     "a nev-ellenorzes NEM fut.\n")
-    except OSError:
-        pass
+    _gate_log(f"outgoing-copy-gate: NEV-SZABALY {state.upper()} ({_LOCAL_RULES}) -- "
+              "a nev-ellenorzes NEM fut.")
     return (None, state)
 
 
@@ -735,15 +751,9 @@ def telegram_gate(tool_input: dict) -> None:
     except SystemExit:
         raise
     except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-open path
-        warn = f"outgoing-copy-gate: TELEGRAM-ag belso hiba, FAIL-OPEN atengedes: {exc!r}\n"
-        sys.stderr.write(warn)
-        try:
-            log_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-                os.path.abspath(__file__)))), "store", "outgoing-copy-gate.log")
-            with open(log_path, "a", encoding="utf-8") as fh:
-                fh.write(warn)
-        except OSError:
-            pass
+        warn = f"outgoing-copy-gate: TELEGRAM-ag belso hiba, FAIL-OPEN atengedes: {exc!r}"
+        sys.stderr.write(warn + "\n")
+        _gate_log(warn)
         sys.exit(0)
     if problems:
         sys.stderr.write(
@@ -862,6 +872,33 @@ def main():
 
     tool = str(payload.get("tool_name") or "")
     tool_input = payload.get("tool_input") or {}
+    # A tool_input that is not a dict crashed every branch on its first .get(),
+    # which the Telegram arm then reported as an internal gate error and passed
+    # through fail-open. Measured 2026-09-05: the log holds exactly one such
+    # line, AttributeError("'int' object has no attribute 'get'"), and a payload
+    # with an integer tool_input reproduces it byte for byte. Name the real
+    # cause instead of the symptom, and keep each arm's designed failure
+    # direction: nothing of ours is readable, so Telegram (the owner's only
+    # supervision channel) still passes, email still blocks.
+    if not isinstance(tool_input, dict):
+        shape = type(tool_input).__name__
+        gated = (re.search(r"telegram.*__reply$", tool, re.I)
+                 or re.search(r"(^|__)manage_email$", tool, re.I)
+                 or EMAIL_TOOL_RE.search(tool)
+                 or tool == "Bash")
+        if not gated:
+            sys.exit(0)  # not a send: the net must never widen the gate
+        _gate_log(f"outgoing-copy-gate: a tool_input nem szotar, hanem {shape} "
+                  f"-- a vizsgalat nem futtathato (tool={tool!r}).")
+        if re.search(r"telegram.*__reply$", tool, re.I):
+            sys.exit(0)  # Telegram stays fail-open by design
+        sys.stderr.write(
+            "KIMENO-SZOVEG KAPU: TILTVA, a hivas tool_input mezoje nem szotar, hanem "
+            f"{shape} -- a kimeno szoveg igy nem olvashato ki, tehat nem vizsgalhato.\n"
+            "Fail-closed: egy vizsgalhatatlan kuldes pont a kaput utne ki. "
+            "Hivd ujra rendes parameterekkel.\n"
+        )
+        sys.exit(2)
 
     # GATECOPY828 (#1184): the scaffold wires this hook onto reply AND
     # edit_message (an edit can replace a working code block with a broken
