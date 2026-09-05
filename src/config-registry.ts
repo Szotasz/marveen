@@ -159,7 +159,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     default: 30,
     min: 1,
     max: 365,
-    description: 'Ennyi napnál régebbi "done" kártyák automatikusan archiválódnak a listKanbanCards() hívásakor.',
+    description: 'Ennyi napnál régebbi "done" kártyák automatikusan archiválódnak. Az óránként futó kanban-archiváló runner végzi (nem a lekérdezés).',
     module: 'kanban',
     secret: false,
     requiresRestart: false,
