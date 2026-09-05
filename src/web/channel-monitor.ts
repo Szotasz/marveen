@@ -54,6 +54,7 @@ import { decideDownAgentAction, AGENT_MAX_RESTART_ATTEMPTS, parseEtimeToSeconds 
 // module so the standalone channel-coordinator reuses the exact same probe.
 import { getClaudePidForSession, hasChannelPluginAlive, probeChannelPluginLiveness, classifyRespawnStampAdvance } from '../channel-coordinator/liveness.js'
 import { getDesiredAgents } from './agent-desired-state.js'
+import { startSleepWakeDetector, systemSleptBetween } from './sleep-wake-detector.js'
 
 // Lazily resolved (see makeLazyBinResolver): a module-level `resolveFromPath`
 // const throws at IMPORT time, so any environment where the binary is not
@@ -1521,8 +1522,20 @@ function checkMainKeepaliveStaleness(): void {
     return
   }
   const ageMin = Math.round((ageMs ?? 0) / 60000)
-  logger.warn({ ageMs, paneState }, 'Channel keep-alive stale -- main session likely wedged/deaf, respawning via respawn-pane')
-  sendAlert(`⚠️ A fő channel keep-alive ${ageMin} perce nem frissült -- respawn-pane a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik, memoria marad).`)
+  // SLEEP GUARD (2026-09-02, kanban 83b8c4c3): a keepalive that went stale
+  // because the machine was asleep is not deafness -- every writer of that
+  // file was suspended right along with the poller. The respawn below still
+  // runs (harmless self-healing, it re-establishes the keepalive), but the
+  // Telegram alert is suppressed: waking the laptop should not ping the owner
+  // about an "outage" they caused by closing the lid. The staleness window is
+  // exactly [mtime, now], so a sleep gap overlapping it explains the age.
+  // Genuine wedge-while-running has no sleep gap in that window and alerts
+  // as before.
+  const staleDueToSleep = ageMs != null && systemSleptBetween(now - ageMs, now)
+  logger.warn({ ageMs, paneState, staleDueToSleep }, 'Channel keep-alive stale -- main session likely wedged/deaf, respawning via respawn-pane')
+  if (!staleDueToSleep) {
+    sendAlert(`⚠️ A fő channel keep-alive ${ageMin} perce nem frissült -- respawn-pane a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik, memoria marad).`)
+  }
   if (respawnMarveenSessionFresh()) {
     marveenLastKeepaliveRespawn = now
     // Suppress the process-down handler during the respawn window (reuses the
@@ -1683,6 +1696,10 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
   // per-agent spawn path never reaches, so an already-running unstamped install
   // heals on the next dashboard boot instead of never.
   try { stampFableOverageConsentSharedRoots() } catch { /* backstop handlers remain */ }
+
+  // Sleep/wake detection for the keepalive-staleness alert suppression
+  // (idempotent; the schedule runner starts it too, whichever runs first wins).
+  startSleepWakeDetector()
 
   const mainProvider = getMainAgentProvider()
 
