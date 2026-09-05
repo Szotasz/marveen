@@ -264,11 +264,19 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
         json(res, { error: 'store/ is not writable; cannot run the updater safely.', reason: 'store-unwritable' }, 500)
         return true
       }
+      // NODE_ENV must not reach update.sh: with NODE_ENV=production npm defaults
+      // to omit=dev, the pruned tree loses tsc, and every update build fails and
+      // rolls back forever (AUTOUPDNODEENV905). Deleting it here shields the
+      // OLD update.sh copies already deployed at customers, which lack the
+      // script-side --include=dev fix and can only receive it through a run
+      // this spawn starts.
+      const updateEnv: NodeJS.ProcessEnv = { ...process.env, AUTO_STASH: autoStash ? '1' : '0' }
+      delete updateEnv['NODE_ENV']
       const child = spawn('/bin/bash', [join(PROJECT_ROOT, 'update.sh')], {
         cwd: PROJECT_ROOT,
         detached: true,
         stdio: ['ignore', outFd, outFd],
-        env: { ...process.env, AUTO_STASH: autoStash ? '1' : '0' },
+        env: updateEnv,
       })
       child.on('error', (err) => {
         logger.error({ err }, 'update.sh spawn reported an async error')
