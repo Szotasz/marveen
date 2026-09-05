@@ -53,10 +53,12 @@ export type MainConfigDecision = {
 }
 
 /** The same file scripts/channels.sh writes to, on purpose: an operator looking
- *  into a silent-channel morning should find every launch path in ONE place. */
-const FAILURES_LOG = join(PROJECT_ROOT, 'store', 'channels-failures.log')
+ *  into a silent-channel morning should find every launch path in ONE place.
+ *  Resolved per call, not at module load: a path captured at import time is one
+ *  a test can never redirect, and an untestable emitter is how we got here. */
+const failuresLog = () => join(PROJECT_ROOT, 'store', 'channels-failures.log')
 /** Suppresses only the MESSAGE, never the log line -- see noteState(). */
-const WARN_STAMP = join(PROJECT_ROOT, 'store', '.main-config-guard-warned')
+const warnStamp = () => join(PROJECT_ROOT, 'store', '.main-config-guard-warned')
 const WARN_COOLDOWN_MS = 6 * 60 * 60 * 1000
 
 const HU_ADVICE: Record<Exclude<MainSharedConfigTrigger, null>, string> = {
@@ -68,7 +70,7 @@ const HU_ADVICE: Record<Exclude<MainSharedConfigTrigger, null>, string> = {
 
 function line(text: string): void {
   const ts = new Date().toLocaleString('sv-SE').replace('T', ' ')
-  appendFileSync(FAILURES_LOG, `${ts} ${text}\n`)
+  appendFileSync(failuresLog(), `${ts} ${text}\n`)
 }
 
 /** True at most once per WARN_COOLDOWN_MS. The hard restart can fire in a loop
@@ -76,10 +78,10 @@ function line(text: string): void {
  *  the same shape as the handoff-failure chain of 2026-08-10. */
 function warnDueNow(): boolean {
   try {
-    const prev = Number(readFileSync(WARN_STAMP, 'utf-8').trim())
+    const prev = Number(readFileSync(warnStamp(), 'utf-8').trim())
     if (Number.isFinite(prev) && Date.now() - prev < WARN_COOLDOWN_MS) return false
   } catch { /* no stamp yet -> due */ }
-  try { writeFileSync(WARN_STAMP, String(Date.now())) } catch { /* best effort */ }
+  try { writeFileSync(warnStamp(), String(Date.now())) } catch { /* best effort */ }
   return true
 }
 
