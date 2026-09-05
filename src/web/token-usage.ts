@@ -1,4 +1,4 @@
-import { statSync, readdirSync, existsSync } from 'node:fs'
+import { statSync, readdirSync, existsSync, realpathSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { homedir } from 'node:os'
 import { createReadStream } from 'node:fs'
@@ -17,6 +17,18 @@ const PROJECTS_DIR = join(homedir(), '.claude', 'projects')
 // the agent calls itself.
 function encodeProjectPath(p: string): string {
   return p.replace(/[^a-zA-Z0-9-]/g, '-')
+}
+
+// True when `dir` is the shared ~/.claude/projects wearing another name,
+// reached through a symlink. Compared by realpath, so a symlinked parent
+// counts too. A missing path is not the shared root. `sharedRoot` is a
+// parameter only so the test can point both sides at a fixture.
+export function resolvesToSharedProjectsRoot(dir: string, sharedRoot: string = PROJECTS_DIR): boolean {
+  try {
+    return realpathSync(dir) === realpathSync(sharedRoot)
+  } catch {
+    return false
+  }
 }
 
 interface AgentTranscriptSource {
@@ -77,6 +89,22 @@ export function discoverAgentSources(projectRootOverride?: string): AgentTranscr
     if (!configDir) continue
     const isolatedProjects = join(configDir, 'projects')
     if (!existsSync(isolatedProjects)) continue
+    // ...unless the agent was never actually migrated, in which case
+    // agents/<name>/.claude-config/projects is a SYMLINK back to the shared
+    // ~/.claude/projects. Then the comment below is false: the dir holds
+    // EVERY agent's work, and all of it gets booked under this one name.
+    //
+    // MEASURED 2026-09-04 18:40 on a live install: three sub-agents each
+    // reported the whole fleet's consumption, byte-identical down to the
+    // field (43844 calls, 28.5M output, 8.82G cache-read, 636 sessions),
+    // because all three symlinks resolve to the same root; only the main
+    // agent's row was real. 73% of the table was duplicate.
+    // The cursor table cannot absorb it either, being keyed by file path, and
+    // the same transcript reached the parser under three different paths.
+    //
+    // Skipping it loses nothing: the shared root is walked in the loop above,
+    // where attribution comes from the encoded directory name.
+    if (resolvesToSharedProjectsRoot(isolatedProjects)) continue
     let entries: string[]
     try { entries = readdirSync(isolatedProjects) } catch { continue }
     for (const entry of entries) {
