@@ -677,6 +677,46 @@ const MODEL_CONSENT_TITLE_RX = /(?:now uses|runs on|requires) usage credits/
 const MODEL_CONSENT_CONTINUE_RX = /1\.\s*Continue with /
 const MODEL_CONSENT_CONFIRM_RX = /Enter to confirm/
 
+// Tool-permission prompt. Claude Code asks for one even under
+// --dangerously-skip-permissions when the target is its OWN configuration
+// (~/.claude/**: skills, settings, scheduled-tasks) -- the second option says
+// so literally: "Yes, and allow Claude to edit its own settings for this
+// session". Measured 2026-09-05 on a live session: a write to ~/.claude/ opens
+// the dialog, while a write to an ordinary path outside the project does NOT,
+// so "outside the project" is not the trigger; Claude's own config is.
+//
+// Out here the prompt is indistinguishable from a stuck menu: its footer says
+// "Esc to cancel", so detectsBlockingMenu matches it (verified against a real
+// captured pane). But Escape on a permission prompt is not a harmless dismiss
+// -- it is NO. The watchdog therefore DENIED the agent's own requests ~45s
+// after they appeared, silently, while the operator believed they had approved
+// them (confirmed by the operator: "Ment allow"). Five skill-file writes died
+// this way, which is why self-improvement in particular kept failing: the
+// skills live under ~/.claude/, so they are the writes that open the dialog.
+//
+// Same reasoning as TRUSTGATE901: no keystroke is neutral here, so the monitor
+// must send none and say so loudly instead. Detection deliberately errs BROAD
+// (footer marker OR question+Yes shape): a false positive only means a genuine
+// stuck menu is alerted instead of Escaped -- the operator still learns of it
+// -- while a false negative silently answers NO on the operator's behalf.
+const PERMISSION_AMEND_RX = /\bTab to amend\b/
+const PERMISSION_QUESTION_RX = /Do you want to [^\n?]{0,80}\?/
+const PERMISSION_YES_RX = /(?:^|\n)\s*[\u276f>]?\s*1\.\s*Yes\b/
+
+export function detectsPermissionDialog(pane: string): boolean {
+  if (!pane || !pane.trim()) return false
+  const lines = pane.split('\n')
+  const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(busyRegion)) return false
+  }
+  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
+  if (IDLE_FOOTER_RX.test(pane)) return false
+  return PERMISSION_AMEND_RX.test(footerRegion)
+    || (PERMISSION_QUESTION_RX.test(pane) && PERMISSION_YES_RX.test(pane))
+}
+
 export function detectsModelConsentDialog(pane: string): boolean {
   if (!pane || !pane.trim()) return false
   const lines = pane.split('\n')
