@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, readdirSync, mkdirSync, writeFileSync, unlinkSync, rmSync, statSync, lstatSync } from 'node:fs'
+import { createReadStream, existsSync, readdirSync, mkdirSync, writeFileSync, unlinkSync, rmSync, statSync, lstatSync, readFileSync } from 'node:fs'
 import { join, sep, basename } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
@@ -6,12 +6,13 @@ import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { AGENTS_BASE_DIR, listAgentNames, readFileOr, agentDir } from '../agent-config.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT, STORE_DIR } from '../../config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
 import { sanitizeSkillName, shellEscape } from '../sanitize.js'
 import type { RouteContext } from './types.js'
+
 
 function parseFrontmatterField(content: string, field: string): string {
   const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---/)
@@ -567,5 +568,72 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // GET /api/skill-access -- return full access config
+  if (path === '/api/skill-access' && method === 'GET') {
+    json(res, readSkillAccessConfig())
+    return true
+  }
+
+  // PUT /api/skill-access -- update one skill's access list
+  // Body: { skill: string, agents: string[] | null }
+  // agents=null means "remove restriction" (open to all)
+  if (path === '/api/skill-access' && method === 'PUT') {
+    const body = await readBody(req)
+    let parsed: { skill?: string; agents?: string[] | null }
+    try {
+      parsed = JSON.parse(body.toString())
+    } catch {
+      json(res, { error: 'Invalid JSON' }, 400)
+      return true
+    }
+    const { skill: skillName, agents } = parsed
+    if (typeof skillName !== 'string' || !skillName) {
+      json(res, { error: 'skill is required' }, 400)
+      return true
+    }
+    if (agents !== null && !Array.isArray(agents)) {
+      json(res, { error: 'agents must be an array or null' }, 400)
+      return true
+    }
+
+    const configPath = join(STORE_DIR, 'skill-access.json')
+    const current = readSkillAccessConfig()
+
+    if (agents === null || agents.length === 0) {
+      // Remove restriction: delete the entry
+      delete current[skillName]
+    } else {
+      // Ensure MAIN_AGENT_ID is always in the list (fail-safe)
+      const list = agents.filter((a): a is string => typeof a === 'string')
+      if (!list.includes(MAIN_AGENT_ID)) list.push(MAIN_AGENT_ID)
+      current[skillName] = list
+    }
+
+    atomicWriteFileSync(configPath, JSON.stringify(current, null, 2))
+    logger.info({ skillName, agents }, 'Skill access config updated')
+    json(res, { ok: true, config: current })
+    return true
+  }
+
   return false
+}
+
+export function readSkillAccessConfig(): Record<string, string[]> {
+  const configPath = join(STORE_DIR, 'skill-access.json')
+  try {
+    const raw = readFileSync(configPath, 'utf-8').trim()
+    if (!raw) return {}
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {}
+    const config: Record<string, string[]> = {}
+    for (const [skill, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!Array.isArray(value)) continue
+      const list = (value as unknown[]).filter((a): a is string => typeof a === 'string')
+      if (!list.includes(MAIN_AGENT_ID)) list.push(MAIN_AGENT_ID)
+      config[skill] = list
+    }
+    return config
+  } catch {
+    return {}
+  }
 }

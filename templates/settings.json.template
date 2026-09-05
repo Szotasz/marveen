@@ -49,6 +49,17 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/skill-access-gate.mjs ] && exec node {{PROJECT_ROOT}}/scripts/hooks/skill-access-gate.mjs; exit 0'",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Skill|Read",

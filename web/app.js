@@ -10659,6 +10659,112 @@ if (skillsPageNewBtn) {
   })
 }
 
+// === Skill Access Matrix ===
+
+let skillsAccessPanelOpen = false
+const skillsAccessPanel = document.getElementById('skillsAccessPanel')
+const skillsAccessBtn = document.getElementById('skillsAccessBtn')
+
+if (skillsAccessBtn) {
+  skillsAccessBtn.addEventListener('click', async () => {
+    skillsAccessPanelOpen = !skillsAccessPanelOpen
+    skillsAccessBtn.classList.toggle('active', skillsAccessPanelOpen)
+    if (skillsAccessPanelOpen) {
+      await renderSkillAccessMatrix()
+      skillsAccessPanel.hidden = false
+    } else {
+      skillsAccessPanel.hidden = true
+      skillsAccessPanel.innerHTML = ''
+    }
+  })
+}
+
+async function renderSkillAccessMatrix() {
+  if (!skillsAccessPanel) return
+  skillsAccessPanel.innerHTML = '<div class="connector-loading"><span class="spinner"></span> Betöltés...</div>'
+  try {
+    const [configRes, agentsRes] = await Promise.all([
+      fetch('/api/skill-access'),
+      fetch('/api/agents'),
+    ])
+    const accessConfig = configRes.ok ? await configRes.json() : {}
+    const agentsData = agentsRes.ok ? await agentsRes.json() : []
+    const agentIds = agentsData.map(a => a.name || a.id).filter(Boolean)
+
+    // Only user-source skills
+    const userSkills = globalSkills.filter(s => s.source === 'user')
+    if (!userSkills.length) {
+      skillsAccessPanel.innerHTML = '<p style="padding:12px;color:var(--muted)">Nincsenek user-source skillek.</p>'
+      return
+    }
+
+    const rows = userSkills.map(skill => {
+      const restricted = accessConfig[skill.name]
+      const cells = agentIds.map(agentId => {
+        const isMain = agentId === mainAgentId()
+        const checked = !restricted || restricted.includes(agentId)
+        return `<td style="text-align:center;padding:4px 8px">
+          <input type="checkbox" class="sac-cb"
+            data-skill="${escapeHtml(skill.name)}"
+            data-agent="${escapeHtml(agentId)}"
+            ${checked ? 'checked' : ''}
+            ${isMain ? 'disabled title="Main agent always has access"' : ''}
+          >
+        </td>`
+      }).join('')
+      return `<tr>
+        <td style="padding:4px 12px 4px 0;white-space:nowrap;font-family:var(--font-mono,monospace);font-size:12px">${escapeHtml(skill.name)}</td>
+        ${cells}
+      </tr>`
+    }).join('')
+
+    const headerCells = agentIds.map(id =>
+      `<th style="padding:4px 8px;font-size:11px;font-weight:600;text-align:center;white-space:nowrap">${escapeHtml(id)}</th>`
+    ).join('')
+
+    skillsAccessPanel.innerHTML = `
+      <div style="position:relative;overflow-x:auto;border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--surface)">
+        <button id="sac-close-btn" style="position:absolute;top:8px;right:8px;background:none;border:none;cursor:pointer;font-size:16px;color:var(--muted);line-height:1" title="Bezárás">✕</button>
+        <div style="font-size:13px;font-weight:600;margin-bottom:8px">Access matrix <span style="font-weight:400;color:var(--muted);font-size:11px">(✓ = can use)</span></div>
+        <table style="border-collapse:collapse;font-size:12px">
+          <thead><tr><th style="text-align:left;padding:4px 12px 4px 0">Skill</th>${headerCells}</tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`
+
+    skillsAccessPanel.querySelector('#sac-close-btn')?.addEventListener('click', () => {
+      skillsAccessPanelOpen = false
+      skillsAccessBtn.classList.remove('active')
+      skillsAccessPanel.hidden = true
+      skillsAccessPanel.innerHTML = ''
+    })
+
+    skillsAccessPanel.querySelectorAll('.sac-cb').forEach(cb => {
+      cb.addEventListener('change', async (e) => {
+        const skillName = e.target.dataset.skill
+        const agentId = e.target.dataset.agent
+        // Rebuild the full allowed list from current checkbox states
+        const allCbs = [...skillsAccessPanel.querySelectorAll(`.sac-cb[data-skill="${CSS.escape(skillName)}"]`)]
+        const checkedAgents = allCbs.filter(c => c.checked).map(c => c.dataset.agent)
+        const allChecked = checkedAgents.length === agentIds.length
+        const body = { skill: skillName, agents: allChecked ? null : checkedAgents }
+        const res = await fetch('/api/skill-access', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        if (!res.ok) {
+          showToast('Hiba a mentésnél')
+          e.target.checked = !e.target.checked // revert
+        }
+      })
+    })
+  } catch (err) {
+    console.error('Skill access matrix error:', err)
+    skillsAccessPanel.innerHTML = '<p style="padding:12px;color:var(--danger)">Hiba a betöltésnél.</p>'
+  }
+}
+
 async function loadGlobalSkills() {
   skillsGrid.innerHTML = `<div class="connector-loading"><span class="spinner"></span> ${t('skills.loading')}</div>`
   skillsStats.innerHTML = ''
@@ -10732,11 +10838,14 @@ function renderSkillsSidebar() {
 
   // For the 'agent' filter, category counts come from localAgentSkills so the
   // sidebar stays populated. All other filters draw from globalSkills as before.
-  const sourceFiltered = skillsActiveFilter === 'agent'
-    ? localAgentSkills
-    : skillsActiveFilter === 'all'
-      ? globalSkills
-      : globalSkills.filter(s => s.source === skillsActiveFilter)
+  const _agentSpecific = skillsActiveFilter.startsWith('agent:') ? skillsActiveFilter.slice(6) : null
+  const sourceFiltered = _agentSpecific
+    ? localAgentSkills.filter(s => s.agentId === _agentSpecific)
+    : skillsActiveFilter === 'agent'
+      ? localAgentSkills
+      : skillsActiveFilter === 'all'
+        ? globalSkills
+        : globalSkills.filter(s => s.source === skillsActiveFilter)
 
   const catCounts = new Map()
   for (const s of sourceFiltered) {
@@ -10781,12 +10890,26 @@ function renderGlobalSkills() {
   skillsActiveCategory = 'all'
   renderSkillsSidebar()
   renderGlobalSkillsGrid()
+
+  const _agentIds = [...new Set(localAgentSkills.map(s => s.agentId).filter(Boolean))].sort()
+  const _filterBtns = document.getElementById('skillsFilterBtns')
+  if (_filterBtns) {
+    _filterBtns.querySelectorAll('.skills-filter-btn--agent').forEach(b => b.remove())
+    _agentIds.forEach(id => {
+      const btn = document.createElement('button')
+      btn.className = 'skills-filter-btn skills-filter-btn--agent'
+      btn.dataset.filter = 'agent:' + id
+      btn.textContent = id
+      _filterBtns.appendChild(btn)
+    })
+  }
 }
 
 function renderGlobalSkillsGrid() {
   skillsGrid.innerHTML = ''
 
-  const isAgentFilter = skillsActiveFilter === 'agent'
+  const _agentSpec = skillsActiveFilter.startsWith('agent:') ? skillsActiveFilter.slice(6) : null
+  const isAgentFilter = skillsActiveFilter === 'agent' || !!_agentSpec
 
   // When 'agent' filter is active, show only local agent skills; otherwise show global/plugin.
   const filteredGlobal = isAgentFilter ? [] : globalSkills.filter(s => {
@@ -10799,6 +10922,7 @@ function renderGlobalSkillsGrid() {
 
   // Local agent skills: always merged in for 'all' or filtered to 'agent'.
   const filteredLocal = (skillsActiveFilter === 'all' || isAgentFilter) ? localAgentSkills.filter(s => {
+    if (_agentSpec && s.agentId !== _agentSpec) return false
     if (skillsActiveCategory !== 'all' && deriveSkillCategory(s.name) !== skillsActiveCategory) return false
     if (!skillsSearchQuery) return true
     const haystack = [s.name, s.label, s.description, s.agentId, ...(s.keywords || [])].join(' ').toLowerCase()

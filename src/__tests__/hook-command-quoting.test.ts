@@ -8,6 +8,7 @@ import {
   injectEmailSendGate,
   injectSelfPaceGate,
   injectEgressGate,
+  injectSkillAccessGate,
   ensureEgressGate,
   ensureGovernanceGateCommands,
   emailGateMatcherStale,
@@ -190,5 +191,24 @@ describe('emailGateMatcherStale', () => {
     expect(emailGateMatcherStale([{ matcher: 'WebFetch', hooks: [{ type: 'command', command: 'x egress-gate.mjs' }] }])).toBe(false)
     expect(emailGateMatcherStale([])).toBe(false)
     expect(emailGateMatcherStale(undefined)).toBe(false)
+  })
+})
+
+// FIX 3: skill-access-gate must carry a 'Skill' matcher so node is not
+// spawned for every tool call.
+// injectSkillAccessGate guards against /tmp-prefixed paths (isUnsafeHookCommand),
+// so it cannot be called in worktree tests. We verify the matcher is present by
+// inspecting the injector source directly.
+describe('injectSkillAccessGate source: Skill matcher', () => {
+  it('injectSkillAccessGate source wires matcher: Skill on the entry it appends', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const src = readFileSync(join(PROJECT_ROOT, 'src', 'web', 'agent-scaffold.ts'), 'utf-8')
+    // The entry written by injectSkillAccessGate must contain matcher: 'Skill'
+    // so node is only spawned on Skill tool calls (FIX 3).
+    const injectFnMatch = src.match(/export function injectSkillAccessGate[\s\S]+?^}/m)
+    expect(injectFnMatch).not.toBeNull()
+    const fnBody = injectFnMatch![0]
+    expect(fnBody).toContain("matcher: 'Skill'")
   })
 })

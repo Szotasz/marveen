@@ -47,7 +47,7 @@ const tokenPath = join(PROJECT_ROOT, 'store', '.dashboard-token')
 // Hook commands run under `/bin/sh -c` with a NON-interactive PATH. On nvm
 // installs a bare `node` is not on that PATH, so the hook exits 127 -- which
 // Claude Code treats as a NON-blocking error and lets the tool call through:
-// the gate silently never enforces (atlas incident, 2026-07-30). process.execPath
+// the gate silently never enforces (a prior silent-no-enforce incident). process.execPath
 // is the absolute binary of the node running this server, which by definition
 // exists on the host that spawns the agents. Exported for unit tests.
 export const HOOK_NODE_BIN = process.execPath
@@ -687,6 +687,51 @@ export function ensureEgressGate(name: string): boolean {
   if (ptuJson.includes('egress-gate.mjs') && hookCommandWired(ptuJson, command)) return false
   if (isUnsafeHookCommand(command)) return false
   injectEgressGate(settings)
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
+// Idempotently wire the skill-access-gate PreToolUse hook. Applied to ALL agents
+// so that any agent trying to invoke a restricted skill is blocked regardless of
+// their own settings. The gate reads store/skill-access.json at call-time; no
+// restart is needed when the config changes.
+export function injectSkillAccessGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const scriptPath = join(PROJECT_ROOT, 'scripts', 'hooks', 'skill-access-gate.mjs')
+  // Bash-guarded form matches the settings.json.template entry: fail-open when
+  // the hook script is absent so a missing file never silently blocks skill calls.
+  const command = `bash -c '[ -f ${scriptPath} ] && exec node ${scriptPath}; exit 0'`
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Skill',
+    hooks: [{ type: 'command', command, timeout: 5 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('skill-access-gate.mjs')),
+    entry,
+  ]
+}
+
+export function ensureSkillAccessGate(name: string): boolean {
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const scriptPath = join(PROJECT_ROOT, 'scripts', 'hooks', 'skill-access-gate.mjs')
+  const command = `bash -c '[ -f ${scriptPath} ] && exec node ${scriptPath}; exit 0'`
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const ptuJson = JSON.stringify(ptu)
+  if (ptuJson.includes('skill-access-gate.mjs') && hookCommandWired(ptuJson, command)) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectSkillAccessGate(settings)
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
