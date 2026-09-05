@@ -497,10 +497,22 @@ def load_bad_name():
                 state = RULES_INVALID
             elif pats:
                 return (re.compile("|".join(pats)), RULES_OK)
-            elif data.get("no_name_rule") is True:
+            elif data.get("no_name_rule") is True or data.get("name_check_disabled") is True:
                 # Returns HERE, before the logging tail, on purpose: a taken
                 # decision must not write a "the protection is gone" line into
-                # the ledger on every single run.
+                # the ledger on every single run. An alarm that can never be
+                # answered is the one people learn to ignore -- it was drowning
+                # the real signals in the same log (571 lines here by
+                # 2026-09-04, CLCOPYGATEDONTES904).
+                # TWO spellings of the SAME decision are accepted, because two
+                # installs each documented one before the branches met:
+                #   {"no_name_rule": true, "no_name_rule_reason": "why"}
+                #     (GATEPERSIST816/3, the PDB install)
+                #   {"bad_name_patterns": [], "name_check_disabled": true,
+                #    "decided_at": "2026-09-04", "note": "why"}
+                #     (CLCOPYGATEDONTES904)
+                # Dropping either spelling would silently turn that install's
+                # recorded decision back into a loud "empty".
                 return (None, RULES_SANCTIONED)
             else:
                 state = RULES_EMPTY
@@ -696,6 +708,29 @@ def telegram_gate(tool_input: dict) -> None:
         text = collect_telegram_body(tool_input)
         if not text.strip():
             sys.exit(0)  # files-only reply or empty text: nothing to audit
+        # GATECOPY827: a masolhato kodblokk CSAK markdownv2 modban lesz
+        # kodblokk. A reply tool `format` parametere alapertelmezesben "text",
+        # es plain textben a Telegram nem parsolja a harom backtickot, tehat
+        # nincs copy gomb -- a szoveg nyersen, a backslash-escape-ekkel egyutt
+        # jelenik meg. Ez 2026-08-17 ota OTSZOR ment ki igy (a memoriaban
+        # feedback_telegram_codeblock_needs_markdownv2, plusz a kotelezove tett
+        # telegram-copy-gomb skill), es egyik alkalommal sem tudashiany volt,
+        # hanem kihagyott lepes. Ezert innentol gepi kapu allitja meg, nem
+        # emlekezet. A vizsgalat a NYERS szovegen fut, mert a fence-t a
+        # MDV2_ESCAPE feloldas nem erinti.
+        raw = "\n".join(str(tool_input[f]) for f in ("text", "caption", "message")
+                        if tool_input.get(f))
+        if "```" in raw and str(tool_input.get("format", "")).lower() != "markdownv2":
+            sys.stderr.write(
+                "KIMENO-SZOVEG KAPU (Telegram): TILTVA, a kodblokk nem lenne masolhato.\n\n"
+                "  - A szoveg harom backtickes kodblokkot tartalmaz, de a hivasban\n"
+                "    format=\"" + str(tool_input.get("format") or "text") + "\". Plain textben a Telegram nem ad copy gombot,\n"
+                "    es a MarkdownV2 escape-ek (\\. \\- \\() nyersen latszanak.\n\n"
+                "Kuldd ujra ugyanezt a szoveget format=\"markdownv2\"-vel. Kodblokkon\n"
+                "belul csak a backtickot es a backslasht kell escapelni, a blokkon\n"
+                "kivuli prozat viszont teljesen (_*[]()~`>#+-=|{}.!).\n"
+            )
+            sys.exit(2)
         problems = audit(text)
     except SystemExit:
         raise
@@ -722,9 +757,10 @@ def telegram_gate(tool_input: dict) -> None:
     # de a figyelmeztetes ODA megy, ahol a session tenyleg latja -- a hook
     # stdout systemMessage mezoje a futo sessionben jelenik meg, nem egy
     # logfajlban, amit senki nem olvas.
-    # GATEPERSIST816/3: a tudatosan felfuggesztett szabaly (RULES_SANCTIONED)
-    # mar nem veszteseg, nincs mit jelezni, a Telegram-ag ott csendben marad.
-    # Minden mas nem-ok allapot (missing/empty/invalid) figyelmeztetest kap.
+    # GATEPERSIST816/3 + CLCOPYGATEDONTES904: a tudatosan felfuggesztett
+    # szabaly (RULES_SANCTIONED, barmelyik flag-irassal) mar nem veszteseg,
+    # nincs mit jelezni, a Telegram-ag ott csendben marad. Minden mas nem-ok
+    # allapot (missing/empty/invalid) figyelmeztetest kap.
     if RULES_STATE in RULES_LOUD:
         print(json.dumps({"systemMessage":
             "outgoing-copy-gate: a NEV-SZABALY fajl hianyzik/ures "
@@ -802,6 +838,22 @@ def audit(text: str):
     return problems
 
 
+# Outbound-shaped operations of the multiplexed manage_email tool. Everything
+# else it does (search, read, labels, trash, getAttachment...) produces no text
+# of ours, so the gate must not touch it -- classifying those as sends is how
+# the sibling email gate once denied plain mailbox READS (MANAGEOP904).
+MANAGE_EMAIL_OUTBOUND_OPS = {"send", "reply", "replyall", "forward"}
+
+# Dedicated (non-multiplexed) outbound tools: the draft tools and the Gmail
+# connector's three separate send-shaped tools. Kept in step with the matcher
+# this hook is registered under in settings.json.
+EMAIL_TOOL_RE = re.compile(
+    r"(send_email|create_draft|draft_email|update_draft"
+    r"|(^|__)gmail__(reply|reply_all|send_message|forward)$)",
+    re.I,
+)
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -813,7 +865,27 @@ def main():
 
     if re.search(r"telegram.*__reply$", tool, re.I):
         telegram_gate(tool_input)  # exits; never falls through
-    if re.search(r"send_email", tool, re.I):
+    # COPYGATEMATCHER904: the hook is REGISTERED for manage_email, create_draft,
+    # update_draft and the Gmail connector's reply/send_message/forward tools,
+    # but this dispatch only ever recognised a tool NAME containing
+    # "send_email" -- so on an install whose email tool is the multiplexed
+    # mcp__google-workspace__manage_email, every letter fell through to
+    # sys.exit(0) and the copy audit NEVER ran on an outgoing email. Measured
+    # 2026-09-04: an em dash in a manage_email draft body passed the gate,
+    # while the same text was blocked on the Telegram path. Same class as the
+    # email-send-gate's MANAGEOP904 fix: a multiplexer cannot be classified by
+    # its name, only by the operation it was asked to perform.
+    if re.search(r"(^|__)manage_email$", tool, re.I):
+        op = str(tool_input.get("operation") or tool_input.get("action") or "").strip().lower()
+        if op not in MANAGE_EMAIL_OUTBOUND_OPS:
+            sys.exit(0)  # search/read/labels/trash...: no outgoing text of ours
+        # A bare forward carries someone else's text and an EMPTY note: there is
+        # nothing of ours to audit, and the fail-closed "unreadable" branch below
+        # would block it for no reason.
+        if op == "forward" and not str(tool_input.get("body") or "").strip():
+            sys.exit(0)
+        text, unreadable = collect_mcp_body(tool_input), None
+    elif EMAIL_TOOL_RE.search(tool):
         text, unreadable = collect_mcp_body(tool_input), None
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
