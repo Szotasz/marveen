@@ -56,6 +56,57 @@ from email_extract import collect_email_envelope  # noqa: E402
 
 _SEND_TOOL = re.compile(r"send_email|manage_email", re.I)
 
+# manage_email is a MULTIPLEXER, not a send tool: the same MCP tool searches the
+# mailbox, reads a thread, writes a draft AND sends. Scoping this gate on the
+# tool NAME alone therefore denies reading the inbox whenever email_send sits at
+# level 1 -- measured on a live install 2026-09-04, where `operation=search` and
+# `operation=draft` were both refused with "a kuldes tiltott". That is not the
+# gate this is meant to be: a draft-only workflow REQUIRES reading and drafting,
+# and the level exists to stop the SEND.
+#
+# So manage_email is in scope only for the calls that actually put a letter on
+# the wire: a send operation WITHOUT an explicit draft:true. Anything else
+# passes, drafts included (MANAGEDRAFT905). Fail-closed on doubt: a missing or
+# unreadable operation counts as a send, because that is the case where we
+# cannot prove it is not one. `send_email` needs no such test -- it only sends.
+_MULTIPLEX_TOOL = re.compile(r"manage_email", re.I)
+_MANAGE_EMAIL_SEND_OPS = {"send", "reply", "reply_all", "replyall", "forward"}
+
+
+def _is_explicit_draft(tool_input: dict) -> bool:
+    """Did the call EXPLICITLY ask for a draft? Only a literal true (bool) or the
+    exact string "true" counts; everything else is treated as a send.
+
+    Deliberately the SAME strict test as the sibling gate
+    (scripts/email-send-gate.mjs: `draft === true || draft === 'true'`), so a
+    call cannot be a draft for one gate and a send for the other. Anything
+    fuzzier ("True", "yes", 1) stays a send: fail-closed."""
+    draft = tool_input.get("draft")
+    return draft is True or draft == "true"
+
+
+def manage_email_is_send(tool_input: dict) -> bool:
+    """Is this manage_email call a send? Unreadable operation -> True (closed).
+
+    MANAGEDRAFT905: the send OPERATIONS are also the only way to write a
+    THREADED draft with this MCP tool -- `{"operation":"reply","draft":true}`
+    is the exact call the sibling gate (scripts/email-send-gate.mjs) sends the
+    agent back to write, and which it lets through on `draft === true`. Keying
+    on the operation alone therefore denied the draft-only workflow itself at
+    level 1: measured on the live install 2026-09-04, a reply draft to a
+    customer thread was refused with "a kuldes tiltott", and the only way
+    around it would have been an untreaded new letter -- the very thing the
+    reply-as-new gate stops. A draft puts nothing on the wire; the level exists
+    to stop the SEND. Fail-closed stays: only an explicit draft:true passes,
+    a missing/ambiguous flag is a send.
+    """
+    op = tool_input.get("operation")
+    if not isinstance(op, str) or not op.strip():
+        return True
+    if op.strip().lower().replace("-", "_") not in _MANAGE_EMAIL_SEND_OPS:
+        return False
+    return not _is_explicit_draft(tool_input)
+
 
 def _load_is_send_invocation():
     """Import is_send_invocation from outgoing-copy-gate.py (dashed filename,
@@ -190,7 +241,10 @@ def main():
     tool_input = tool_input if isinstance(tool_input, dict) else {}
 
     if _SEND_TOOL.search(tool):
-        pass  # MCP email send: always in scope
+        # A multiplexer tool is in scope only when the call is a send; a search,
+        # a read or a draft is not what email_send levels.
+        if _MULTIPLEX_TOOL.search(tool) and not manage_email_is_send(tool_input):
+            sys.exit(0)
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
         if not _load_is_send_invocation()(cmd):
