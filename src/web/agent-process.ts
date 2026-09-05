@@ -501,6 +501,218 @@ function reconcileMcpServers(
   return true
 }
 
+/**
+ * Identity of ONE hook entry: what it runs, not where it sits in the file.
+ * Command hooks are identified by their command line, `agent` hooks by their
+ * prompt. Anything without either is unidentifiable and never merged.
+ */
+export function hookEntryId(entry: unknown): string | null {
+  if (!isPlainObject(entry)) return null
+  const type = typeof entry.type === 'string' ? entry.type : ''
+  const body =
+    typeof entry.command === 'string' ? entry.command :
+    typeof entry.prompt === 'string' ? entry.prompt : ''
+  if (!body.trim()) return null
+  return `${type} ${body}`
+}
+
+// Volatile roots: a hook body pointing here is transient by construction.
+const _TRANSIENT_PREFIXES = ['/tmp/', '/var/tmp/', '/private/tmp/', '/dev/shm/']
+
+// Any absolute path in a hook body, script or interpreter alike.
+const _ABS_PATH_RX = /\/(?:[\w.@+-]+\/)*[\w.@+-]+/g
+// The subset that is a script we ship or an operator wrote.
+const _SCRIPT_RX = /\.(?:py|mjs|cjs|js|sh)$/
+
+/**
+ * Absolute paths a hook body states LITERALLY -- the only ones we may judge.
+ *
+ * A body written as `python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/gate.py"` is the
+ * common shape for an operator-registered hook, and `_ABS_PATH_RX` sees the tail
+ * `/scripts/hooks/gate.py` in it: a path that exists nowhere on its own. Judged
+ * as a literal it fails both tests below, so the entry would be dropped in
+ * silence -- producing exactly the disappearance this merge exists to prevent.
+ *
+ * We do not resolve the variable either. `$CLAUDE_PROJECT_DIR` is per-agent and
+ * only bound when the hook runs, so substituting anything here would be a guess
+ * that reads as certainty. A path we cannot see is left alone, not condemned.
+ *
+ * Detection is positional: a real absolute path starts a token, so what precedes
+ * it is whitespace, a quote, `=`, `(` or the start of the body. A word character,
+ * `}` or `)` before the leading slash means the slash continues something else --
+ * `$HOME`, `${CLAUDE_PROJECT_DIR}`, `$(dirname "$0")` -- and that path is not
+ * literal.
+ */
+function literalAbsolutePaths(body: string): string[] {
+  const out: string[] = []
+  for (const m of body.matchAll(_ABS_PATH_RX)) {
+    const before = m.index > 0 ? body[m.index - 1] : ''
+    if (before && /[\w})]/.test(before)) continue
+    out.push(m[0])
+  }
+  return out
+}
+
+/**
+ * Roots an isolated hook's SCRIPT may durably live under: the install itself,
+ * and the operator's own `~/.claude`. A git worktree or a staging checkout sits
+ * under `$HOME` too, so "somewhere in home" is not a usable test -- the path has
+ * to be inside the install that will still be there next month.
+ */
+function durableScriptRoots(): string[] {
+  return [PROJECT_ROOT, join(homedir(), '.claude')]
+}
+
+/**
+ * Should this entry from the ISOLATED file be carried into the merged config?
+ *
+ * Two failure modes, both measured, both permanent once they land:
+ *
+ *  1. **A zombie that fails closed.** A hook that pins an interpreter path and
+ *     ends in `test -x || exit 2` is safe only while something rewrites it. Once
+ *     an isolated copy is retained, that rewrite no longer reaches it, so a
+ *     routine interpreter upgrade leaves a hook whose path no longer resolves --
+ *     and it blocks every call rather than degrading. So: if any absolute path
+ *     in the body does not exist right now, the entry does not come along.
+ *
+ *  2. **A transient path made permanent.** Anything picked up from `/tmp`, a git
+ *     worktree or a staging checkout outlives the directory it came from once it
+ *     is written into the durable config. So: a script path outside the durable
+ *     roots does not come along either.
+ *
+ * Both tests apply to the paths a body states LITERALLY. A body that reaches its
+ * script through `$CLAUDE_PROJECT_DIR` or `$HOME` cannot be judged without
+ * guessing at values that are only bound when the hook runs, and guessing here
+ * would drop a working operator hook in silence -- see `literalAbsolutePaths`.
+ *
+ * Deliberately NOT reusing `isUnsafeHookCommand` from agent-scaffold: importing
+ * it here would pull the scaffold's module graph (and `runAgent` with it) into
+ * process startup. The rule is small enough to state twice.
+ *
+ * Exported for unit tests.
+ */
+export function isDurableIsolatedHook(entry: unknown): boolean {
+  if (!isPlainObject(entry)) return false
+  const body =
+    typeof entry.command === 'string' ? entry.command :
+    typeof entry.prompt === 'string' ? entry.prompt : ''
+  if (!body.trim()) return false
+  const paths = literalAbsolutePaths(body)
+  for (const p of paths) {
+    if (_TRANSIENT_PREFIXES.some((prefix) => p.startsWith(prefix))) return false
+    if (_SCRIPT_RX.test(p) && !durableScriptRoots().some((root) => p.startsWith(root + '/'))) {
+      return false
+    }
+    if (!existsSync(p)) return false
+  }
+  return true
+}
+
+/** Basename of the script a hook body runs, used to supersede older variants. */
+function hookScriptBasename(entry: unknown): string | null {
+  if (!isPlainObject(entry)) return null
+  const body =
+    typeof entry.command === 'string' ? entry.command :
+    typeof entry.prompt === 'string' ? entry.prompt : ''
+  // Basename only, so a `$VAR`-prefixed path still identifies its script here --
+  // this is used to supersede older variants, not to judge durability.
+  const script = (body.match(_ABS_PATH_RX) ?? []).find((p) => _SCRIPT_RX.test(p))
+  return script ? script.slice(script.lastIndexOf('/') + 1) : null
+}
+
+/**
+ * Merge the isolated dir's OWN hooks into the shared ones, keeping entries that
+ * exist only in the isolated file.
+ *
+ * WHY (2026-08-14): the target-only-KEY rescue above cannot help `hooks`. The
+ * shared file almost always defines `hooks`, so the key exists and the whole
+ * object is copied over -- taking every isolated-only hook with it, on every
+ * main-agent start. A hook registered for the channel agent alone therefore
+ * survives exactly until the next restart, and the symptom is silence: the
+ * agent starts fine, the hook simply never runs again. Measured: the
+ * memory-recall hook was registered 2026-08-13 21:20 into
+ * .channels-config/settings.json and was gone by the next start; nobody
+ * noticed for 26 hours, and the operator had been told it was live.
+ *
+ * Semantics mirror the key merge: shared is the source of truth (its groups
+ * come first, unchanged), the isolated file may only ADD. An entry present in
+ * both is kept once, in its shared position.
+ *
+ * Deliberate trade-off, same as the key merge: this cannot tell "the operator
+ * removed it from shared" from "it was never there". An entry deleted from the
+ * shared file but still present in an isolated file keeps running for that
+ * agent until it is removed there too. Additive is the safe direction here --
+ * the failure it replaces is silent loss, and the kept entries are logged.
+ */
+export function mergeIsolatedHooks(
+  shared: unknown,
+  own: unknown,
+): { hooks: Record<string, unknown> | undefined; kept: string[] } {
+  const sharedObj = isPlainObject(shared) ? shared : undefined
+  const ownObj = isPlainObject(own) ? own : undefined
+  if (!ownObj) return { hooks: sharedObj, kept: [] }
+
+  // Shallow-clone every group (and its hooks array): the merge below appends to
+  // matching groups, and mutating the parsed SHARED object would leak this
+  // agent's own hooks into whatever else holds a reference to it.
+  const out: Record<string, unknown> = {}
+  for (const [event, groups] of Object.entries(sharedObj ?? {})) {
+    out[event] = Array.isArray(groups)
+      ? groups.map((g) => (isPlainObject(g) && Array.isArray(g.hooks)
+        ? { ...g, hooks: [...g.hooks] }
+        : g))
+      : groups
+  }
+
+  const kept: string[] = []
+  for (const [event, ownGroups] of Object.entries(ownObj)) {
+    if (!Array.isArray(ownGroups)) {
+      if (!(event in out)) { out[event] = ownGroups; kept.push(`${event}:<non-array>`) }
+      continue
+    }
+    const outGroups: unknown[] = Array.isArray(out[event]) ? [...(out[event] as unknown[])] : []
+    const seen = new Set<string>()
+    // Script basenames the SHARED side already provides for this event. A newer
+    // shared entry supersedes an older isolated variant of the same hook, so a
+    // stale pinned path cannot survive alongside the fresh one.
+    const sharedScripts = new Set<string>()
+    for (const group of outGroups) {
+      if (!isPlainObject(group) || !Array.isArray(group.hooks)) continue
+      for (const entry of group.hooks) {
+        const id = hookEntryId(entry)
+        if (id) seen.add(id)
+        const base = hookScriptBasename(entry)
+        if (base) sharedScripts.add(base)
+      }
+    }
+    for (const group of ownGroups) {
+      if (!isPlainObject(group) || !Array.isArray(group.hooks)) continue
+      const fresh = group.hooks.filter((entry) => {
+        const id = hookEntryId(entry)
+        if (id === null || seen.has(id)) return false
+        const base = hookScriptBasename(entry)
+        if (base && sharedScripts.has(base)) return false
+        return isDurableIsolatedHook(entry)
+      })
+      if (!fresh.length) continue
+      for (const entry of fresh) {
+        const id = hookEntryId(entry)!
+        seen.add(id)
+        kept.push(`${event}:${id.slice(id.indexOf(' ') + 1).slice(0, 80)}`)
+      }
+      // Land next to an identical matcher when there is one, so the merged file
+      // keeps the shape a human would have written by hand.
+      const twin = outGroups.find((g) =>
+        isPlainObject(g) && Array.isArray(g.hooks) && g.matcher === group.matcher) as
+        Record<string, unknown> | undefined
+      if (twin) twin.hooks = [...(twin.hooks as unknown[]), ...fresh]
+      else outGroups.push({ ...group, hooks: fresh })
+    }
+    out[event] = outGroups
+  }
+  return { hooks: out, kept }
+}
+
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
@@ -603,6 +815,18 @@ function provisionIsolatedConfigDir(
             if (key !== 'enabledPlugins' && !(key in settings)) {
               settings[key] = value
               inherited.push(key)
+            }
+          }
+          // `hooks` needs more than the key rescue above: the shared file
+          // almost always defines it, so the key EXISTS and the whole object
+          // is copied over -- dropping every isolated-only hook on each start.
+          // Merge per hook entry instead. See mergeIsolatedHooks.
+          if ('hooks' in own) {
+            const merged = mergeIsolatedHooks(settings.hooks, own.hooks)
+            if (merged.hooks !== undefined) settings.hooks = merged.hooks
+            if (merged.kept.length) {
+              logger.info({ name, path: ownSettingsPath, hooks: merged.kept },
+                'isolated-config: kept target-only hook entries')
             }
           }
           // Additive merges must not be silent: the whole point of this block

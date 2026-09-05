@@ -1,0 +1,439 @@
+
+ RUN  v2.1.9 /home/janos/wt-978
+
+ ✓ src/__tests__/context-guard.test.ts (58 tests) 62ms
+ ✓ src/__tests__/process-lock.test.ts (63 tests) 71ms
+ ✓ src/__tests__/pane-state.test.ts (217 tests) 132ms
+ ✓ src/__tests__/governance-gates.test.ts (76 tests) 78ms
+ ✓ src/__tests__/stuck-tool-call.test.ts (35 tests) 39ms
+ ✓ src/__tests__/prompt-injection-defense.test.ts (58 tests) 37ms
+ ✓ src/__tests__/context-restart-gate.test.ts (62 tests) 51ms
+ ✓ src/__tests__/mcp-list-parser.test.ts (59 tests) 108ms
+ ✓ src/__tests__/token-usage.test.ts (23 tests) 215ms
+ ✓ src/__tests__/remote-enroll-core.test.ts (44 tests) 61ms
+ ✓ src/__tests__/federation-lifecycle.test.ts (18 tests) 165ms
+ ✓ src/__tests__/federation-config.test.ts (27 tests) 74ms
+[23:52:56.143] [32mINFO[39m (978396): [36mdashboard user created[39m
+    [35musername[39m: "alice"
+[23:52:56.596] [32mINFO[39m (978396): [36mdashboard user created[39m
+    [35musername[39m: "alice"
+[23:52:57.098] [32mINFO[39m (978396): [36mdashboard user created[39m
+    [35musername[39m: "alice"
+[23:52:57.762] [32mINFO[39m (978396): [36mdashboard user created[39m
+    [35musername[39m: "alice"
+[23:52:58.448] [32mINFO[39m (978396): [36mdashboard user created[39m
+    [35musername[39m: "alice"
+[23:52:59.441] [32mINFO[39m (978396): [36mdashboard user created[39m
+    [35musername[39m: "alice"
+[23:53:00.406] [32mINFO[39m (978396): [36mdashboard user created[39m
+    [35musername[39m: "alice"
+[23:53:01.698] [32mINFO[39m (978396): [36mdashboard user created[39m
+    [35musername[39m: "alice"
+ ✓ src/__tests__/fleet-transfer.test.ts (17 tests) 7417ms
+   ✓ encrypt/decrypt round-trip > decrypts to the original plaintext 2145ms
+   ✓ encrypt/decrypt round-trip > throws on wrong password (GCM auth tag mismatch) 1364ms
+   ✓ encrypt/decrypt round-trip > produces a non-trivially-parseable blob that differs from plaintext JSON 644ms
+   ✓ importFleet: encrypted wrapper detection > returns error DiffReport when encrypted but no password given 663ms
+   ✓ importFleet: encrypted wrapper detection > returns error DiffReport on wrong password (no file writes) 1296ms
+   ✓ importFleet: encrypted wrapper detection > succeeds (dry-run) with correct password 1286ms
+ ✓ src/__tests__/bridge-enroll.test.ts (13 tests) 137ms
+ ✓ src/__tests__/template-identity-hygiene.test.ts (10 tests) 196ms
+ ✓ src/__tests__/channel-mcp-reconnect.test.ts (27 tests) 29ms
+[23:53:03.846] [32mINFO[39m (978396): [36mdashboard user created[39m
+    [35musername[39m: "alice"
+[23:53:04.565] [32mINFO[39m (978396): [36mdashboard user created[39m
+    [35musername[39m: "alice"
+ ✓ src/__tests__/channel-coordinator.test.ts (31 tests) 66ms
+ ✓ src/__tests__/db.test.ts (30 tests) 132ms
+[23:53:06.439] [32mINFO[39m (978396): [36mdashboard user created[39m
+    [35musername[39m: "alice"
+[23:53:06.814] [33mWARN[39m (978396): [36mbreak-glass password reset via bearer token[39m
+    [35musername[39m: "alice"
+  prune: python3 /tmp/scratchpad/staleness-guard.py
+boot-hook-prune: pruned 1 stale hook(s) from /tmp/boot-prune-test-h4lOY4/.claude/settings.json (backup: /tmp/boot-prune-test-h4lOY4/.claude/settings.json.bak)
+boot-hook-prune: 1 stale hook(s) removed across 1 file(s)
+  prune: python3 /opt/removed-checkout/scripts/hooks/staleness-guard.py
+boot-hook-prune: pruned 1 stale hook(s) from /tmp/boot-prune-test-56Ings/.claude/settings.json (backup: /tmp/boot-prune-test-56Ings/.claude/settings.json.bak)
+boot-hook-prune: 1 stale hook(s) removed across 1 file(s)
+ ✓ src/__tests__/hook-path-guard.test.ts (18 tests) 279ms
+ ❯ src/__tests__/installer-start-and-fallback.test.ts (26 tests | 1 failed) 10503ms
+   × the ERR-trap abort is real (guards the premise of the tests above) > an unguarded capture aborts, and bash blames the enclosing `fi` 31ms
+     → expected 'TRAP:5' to be 'TRAP:6' // Object.is equality
+   ✓ install-macos.sh -- launchd units must be verified, not assumed > never trusts load/bootstrap alone -- it always kickstarts 2058ms
+   ✓ install-macos.sh -- launchd units must be verified, not assumed > returns the pid once the unit is actually up 2051ms
+   ✓ install-macos.sh -- launchd units must be verified, not assumed > returns NOTHING when the spawn stays pended, so the caller can fail loudly 2060ms
+   ✓ install-macos.sh -- launchd units must be verified, not assumed > returns NOTHING for a crash-looping unit whose first pid was transient 2107ms
+   ✓ install-macos.sh -- launchd units must be verified, not assumed > does not abort the installer when launchd refuses to start the unit 2071ms
+[23:53:07.587] [32mINFO[39m (978396): [36mdashboard user created[39m
+    [35musername[39m: "alice"
+ ✓ src/__tests__/claude-config-dir.test.ts (41 tests) 28ms
+ ✓ src/__tests__/serve-file-cache.test.ts (25 tests) 50ms
+ ✓ src/__tests__/channels-never-started-backoff.test.ts (12 tests) 356ms
+ ✓ src/__tests__/heartbeat-agent-scaffold.test.ts (32 tests) 57ms
+
+gzip: stdin: not in gzip format
+tar: Child returned status 1
+tar: Error is not recoverable: exiting now
+ ✓ src/__tests__/agent-bundle.test.ts (16 tests) 289ms
+ ✓ src/__tests__/channel-deafness-recovery.test.ts (33 tests) 38ms
+ ✓ src/__tests__/auth-device-keys.test.ts (24 tests) 104ms
+[23:53:09.982] [32mINFO[39m (978396): [36mdashboard user created[39m
+    [35musername[39m: "alice"
+[23:53:10.467] [32mINFO[39m (978396): [36mdashboard user created[39m
+    [35musername[39m: "alice"
+[23:53:11.015] [32mINFO[39m (978396): [36mdashboard user created[39m
+    [35musername[39m: "alice"
+ ✓ src/__tests__/kanban-breakdown.test.ts (25 tests) 69ms
+ ✓ src/__tests__/agent-restart-policy.test.ts (45 tests) 27ms
+[23:53:11.545] [32mINFO[39m (978396): [36mdashboard user created[39m
+    [35musername[39m: "alice"
+ ✓ src/__tests__/update-preflight.test.ts (40 tests) 23ms
+[23:53:12.041] [32mINFO[39m (978396): [36mdashboard user deleted[39m
+    [35musername[39m: "alice"
+    [35mremaining[39m: 0
+[23:53:12.559] [32mINFO[39m (978396): [36mdashboard user created[39m
+    [35musername[39m: "alice"
+ ✓ src/__tests__/hook-registration-guard.test.ts (23 tests) 37ms
+ ✓ src/__tests__/federation-inbox.test.ts (13 tests) 84ms
+[23:53:13.010] [32mINFO[39m (978396): [36mdashboard user created[39m
+    [35musername[39m: "bob"
+[23:53:13.011] [32mINFO[39m (978396): [36mdashboard user deleted[39m
+    [35musername[39m: "bob"
+    [35mremaining[39m: 1
+[23:53:13.528] [32mINFO[39m (978396): [36mdashboard user created[39m
+    [35musername[39m: "alice"
+ ✓ src/__tests__/federation-onboarding.test.ts (17 tests) 79ms
+ ✓ src/__tests__/skills-local-api.test.ts (14 tests) 58ms
+ ✓ src/__tests__/model-suggest.test.ts (29 tests) 35ms
+[23:53:14.473] [32mINFO[39m (978396): [36mdashboard user created[39m
+    [35musername[39m: "alice"
+ ✓ src/__tests__/federation-capabilities.test.ts (16 tests) 66ms
+ ✓ src/__tests__/model-id-injection.test.ts (14 tests) 84ms
+[23:53:15.480] [32mINFO[39m (978396): [36mdashboard user created[39m
+    [35musername[39m: "alice"
+ ✓ src/__tests__/refactor-config-widget-index.test.ts (17 tests) 102ms
+[23:53:16.370] [32mINFO[39m (978396): [36mdashboard user created[39m
+    [35musername[39m: "alice"
+ ✓ src/__tests__/auth-routes.test.ts (24 tests) 21197ms
+   ✓ GET /api/auth/status > reports login_available once a user exists and unauth for no principal 499ms
+   ✓ GET /api/auth/status > reports session method + user for a session principal 452ms
+   ✓ POST /api/auth/login > sets HttpOnly; SameSite=Strict; Path=/ and NO Secure over plain http 839ms
+   ✓ POST /api/auth/login > adds Secure only under x-forwarded-proto: https 644ms
+   ✓ POST /api/auth/login > mints a fresh session id on every login (fixation defence) 1032ms
+   ✓ POST /api/auth/login > revokes a presented (valid) session cookie on login 976ms
+   ✓ POST /api/auth/login > returns IDENTICAL 401 bodies for bad user vs bad password 1279ms
+   ✓ POST /api/auth/login > 429s once the per-username lock trips, with retry_after_s 2091ms
+   ✓ POST /api/auth/logout > clears the cookie and revokes the row 750ms
+   ✓ POST /api/auth/password > requires a correct current_password on the session path 1828ms
+   ✓ POST /api/auth/password > does NOT require current_password on the token break-glass path 1136ms
+   ✓ POST /api/auth/password > revokes OTHER sessions on password change but keeps the caller 2307ms
+   ✓ POST /api/auth/password > enforces the password policy on the new password 501ms
+   ✓ users CRUD > rejects a duplicate username with 409 483ms
+   ✓ users CRUD > lists users without password hashes 549ms
+   ✓ users CRUD > deletes a user and revokes their sessions (back to token-only) 1025ms
+   ✓ users CRUD > still allows a SESSION principal to manage users (existing behavior) 968ms
+   ✓ credential-kind allowlists (default-deny for future kinds) > denies future device kind on users GET/POST/DELETE and break-glass password reset 993ms
+   ✓ credential-kind allowlists (default-deny for future kinds) > denies federation kind on users GET/POST/DELETE and break-glass password reset 1008ms
+   ✓ credential-kind allowlists (default-deny for future kinds) > denies missing principal on users GET/POST/DELETE and break-glass password reset 932ms
+   ✓ credential-kind allowlists (default-deny for future kinds) > keeps the token break-glass reset working (allowlist did not over-tighten) 853ms
+ ✓ src/__tests__/costops-ledger.test.ts (14 tests) 272ms
+ ✓ src/__tests__/pane-first-run-gate.test.ts (17 tests) 20ms
+ ✓ src/__tests__/channels-unit-restart-policy.test.ts (13 tests) 2072ms
+   ✓ update.sh migration for already-installed machines > rewrites an existing on-failure channels unit and leaves no backup file 594ms
+   ✓ update.sh migration for already-installed machines > is idempotent: a second run changes nothing and reports nothing 732ms
+   ✓ update.sh migration for already-installed machines > migrates a renamed install too (unit name derives from the bot name) 639ms
+ ✓ src/__tests__/pane-looks-idle.test.ts (25 tests) 30ms
+ ✓ src/__tests__/federation-poller.test.ts (15 tests) 91ms
+ ✓ src/__tests__/prompt-safety.test.ts (37 tests) 40ms
+ ✓ src/__tests__/seed-refresh-untouched-only.test.ts (11 tests) 4033ms
+   ✓ seed refresh touches only provably untouched copies > refreshes a copy that matches an OLDER shipped version (two releases behind) 441ms
+   ✓ seed refresh touches only provably untouched copies > NEVER overwrites a locally modified copy -- the failure that would be silent 532ms
+   ✓ seed refresh touches only provably untouched copies > a one-character edit is enough to be left alone 519ms
+   ✓ seed refresh touches only provably untouched copies > handles the TEMPLATED task copies in rendered form 543ms
+   ✓ seed refresh touches only provably untouched copies > leaves a modified TEMPLATED copy alone too 557ms
+   ✓ seed refresh touches only provably untouched copies > is idempotent: a second pass changes nothing and reports nothing 834ms
+ ✓ src/__tests__/main-restart-platform.test.ts (15 tests) 24ms
+ ✓ src/__tests__/schedule-task-timeout.test.ts (24 tests) 25ms
+ ✓ src/__tests__/channel-plugin-unlock.test.ts (13 tests) 19ms
+[23:53:21.728] [32mINFO[39m (980322): [36mdashboard user created[39m
+    [35musername[39m: "alice"
+[23:53:22.202] [33mWARN[39m (980322): [36mbreak-glass password reset via bearer token[39m
+    [35musername[39m: "alice"
+ ✓ src/__tests__/isolated-channel-config.test.ts (18 tests) 60ms
+[23:53:22.693] [32mINFO[39m (980322): [36mdashboard user created[39m
+    [35musername[39m: "bob"
+ ✓ src/__tests__/stuck-input-action.test.ts (22 tests) 18ms
+ ✓ src/__tests__/auth-recovery.test.ts (7 tests) 2436ms
+   ✓ HTTP break-glass password reset audit > writes an audit row with the target username on the token path 995ms
+   ✓ HTTP break-glass password reset audit > does NOT audit a normal session-path password change as break-glass 1340ms
+ ✓ src/__tests__/reauth-detect.test.ts (18 tests) 25ms
+ ✓ src/__tests__/otel-distributed-tracing.test.ts (11 tests) 42ms
+ ✓ src/__tests__/installer-noninteractive-apt.test.ts (8 tests) 164ms
+ ✓ src/__tests__/ghost-suggestion-strip.test.ts (12 tests) 30ms
+ ✓ src/__tests__/worker-liveness.test.ts (17 tests) 53ms
+ ✓ src/__tests__/cron.test.ts (19 tests) 4542ms
+   ✓ sparse-cron starvation is fixed under realistic tick drift > fires a daily cron exactly once over 24h despite 61s tick drift 1907ms
+   ✓ sparse-cron starvation is fixed under realistic tick drift > fires a twice-daily cron exactly twice over 24h despite drift 1299ms
+   ✓ sparse-cron starvation is fixed under realistic tick drift > fires a */15 interval cron on essentially every occurrence (tz-invariant survivor) 741ms
+   ✓ sparse-cron starvation is fixed under realistic tick drift > a 3-minute tick gap still catches a daily occurrence (exactly once) 458ms
+ ✓ src/__tests__/provider-poller-match.test.ts (23 tests) 29ms
+ ✓ src/__tests__/channel-monitor-resume-recovery.test.ts (11 tests) 735ms
+   ✓ channel-monitor: periodic detached-claude reap (CB6CF755 durable fix) > shouldRunPeriodicReap fires only once the interval has elapsed 724ms
+ ✓ src/__tests__/inbound-probe.test.ts (14 tests) 28ms
+ ✓ src/__tests__/background-tasks.test.ts (10 tests) 42ms
+ ✓ src/__tests__/liveness-masking.test.ts (11 tests) 18ms
+ ✓ src/__tests__/agent-scaffold-dashboard-origin.test.ts (21 tests) 26ms
+ ✓ src/__tests__/channel-inbound-framing.test.ts (15 tests) 41ms
+ ✓ src/__tests__/main-model-resolution-parity.test.ts (15 tests) 1003ms
+ ✓ src/__tests__/federation-ui-contract.test.ts (12 tests) 228ms
+ ✓ src/__tests__/model-profiles.test.ts (21 tests) 24ms
+ ✓ src/__tests__/approvals.test.ts (22 tests) 672ms
+ ✓ src/__tests__/reauth-healer.test.ts (19 tests) 26ms
+ ✓ src/__tests__/agent-put-fields.test.ts (15 tests) 19ms
+ ✓ src/__tests__/channel-poller-reap.test.ts (14 tests) 39ms
+ ✓ src/__tests__/claude-credentials-guard.test.ts (19 tests) 255ms
+ ✓ src/__tests__/team-trust.test.ts (23 tests) 16ms
+ ✓ src/__tests__/brand-completeness.test.ts (15 tests) 72ms
+ ✓ src/__tests__/schedule-catchup.test.ts (25 tests) 143ms
+ ✓ src/__tests__/channel-monitor-session-recreate.test.ts (11 tests) 27ms
+ ✓ src/__tests__/federation-bridge.test.ts (15 tests) 87ms
+ ✓ src/__tests__/channel-provider.test.ts (27 tests) 38ms
+ ✓ src/__tests__/skill-usage.test.ts (16 tests) 65ms
+ ✓ src/__tests__/main-agent-isolated-config.test.ts (9 tests) 40ms
+ ✓ src/__tests__/installer-service-auth-gate.test.ts (27 tests) 228ms
+ ✓ src/__tests__/scope-channel-plugins.test.ts (18 tests) 20ms
+ ✓ src/__tests__/isolated-config-mcp-reconcile.test.ts (9 tests) 58ms
+ ✓ src/__tests__/configurable-brand.test.ts (18 tests) 25ms
+ ✓ src/__tests__/isolated-hook-merge.test.ts (17 tests) 29ms
+ ✓ src/__tests__/managed-settings.test.ts (14 tests) 366ms
+ ✓ src/__tests__/skill-index.test.ts (12 tests) 945ms
+ ✓ src/__tests__/port-chain-no-hardcode.test.ts (22 tests) 338ms
+ ✓ src/__tests__/quarantine-allowlist-render.test.ts (21 tests) 49ms
+ ✓ src/__tests__/channel-stability-contract.test.ts (20 tests) 46ms
+ ✓ src/__tests__/egress-gate.test.ts (18 tests) 43ms
+ ✓ src/__tests__/heartbeat-urgent-open-only.test.ts (10 tests) 40ms
+ ✓ src/__tests__/parked-machine-input.test.ts (17 tests) 33ms
+ ✓ src/__tests__/reauth-quiet-hours.test.ts (11 tests) 35ms
+ ✓ src/__tests__/agent-worker.test.ts (18 tests) 22ms
+ ✓ src/__tests__/schedule-runner-retry-missing.test.ts (3 tests) 481ms
+   ✓ schedule runner: pending retry survives a missing target session > keeps the retry row on 'missing' and logs the transition once across ticks 319ms
+ ✓ src/__tests__/auth-gate.test.ts (20 tests) 66ms
+ ✓ src/__tests__/installer-node22-abi.test.ts (4 tests) 190ms
+ ✓ src/__tests__/installer-apt-lock-set-e.test.ts (6 tests) 68ms
+ ✓ src/__tests__/inbox-nudge.test.ts (10 tests) 22ms
+ ✓ src/__tests__/onboarding-channel-live-wait.test.ts (8 tests) 62ms
+ ✓ src/__tests__/auth-sessions.test.ts (12 tests) 257ms
+ ✓ src/__tests__/autonomy-section.test.ts (8 tests) 48ms
+ ✓ src/__tests__/recall.test.ts (33 tests) 257ms
+ ✓ src/__tests__/queued-messages-not-idle.test.ts (5 tests) 16ms
+ ✓ src/__tests__/update-unit-maintenance-order.test.ts (6 tests) 3256ms
+   ✓ the maintenance itself, executed for real > repairs BOTH unit kinds in one pass 1548ms
+   ✓ the maintenance itself, executed for real > is idempotent: the second pass changes nothing and says nothing 1662ms
+ ✓ src/__tests__/silent-degradation-alert.test.ts (17 tests) 19ms
+ ✓ src/__tests__/context-guard-hidden-worker.test.ts (5 tests) 30ms
+ ✓ src/__tests__/session-send-lock.test.ts (7 tests) 129ms
+ ✓ src/__tests__/shipped-recipes-no-sqlite-cli.test.ts (6 tests) 20ms
+ ✓ src/__tests__/approvals-ui-contract.test.ts (11 tests) 111ms
+ ✓ src/__tests__/heartbeat-oauth-token.test.ts (10 tests | 1 skipped) 18ms
+ ✓ src/__tests__/wizard-pending-agent-id.test.ts (9 tests) 25ms
+ ✓ src/__tests__/hook-command-quoting.test.ts (9 tests) 43ms
+ ❯ src/__tests__/memory-performance.test.ts (11 tests | 2 failed) 10146ms
+   × backfillEmbeddings > returns 0 when all memories already have embeddings or Ollama is unreachable 5016ms
+     → Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+   × backfillEmbeddings > processes rows without embeddings and updates them when Ollama responds 5013ms
+     → Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ✓ src/__tests__/router-stuck-alert.test.ts (10 tests) 24ms
+ ✓ src/__tests__/fable-overage-consent.test.ts (15 tests) 40ms
+ ✓ src/__tests__/model-profiles-wiring.test.ts (9 tests) 30ms
+ ✓ src/__tests__/memory-listing-staleness.test.ts (6 tests) 237ms
+ ✓ src/__tests__/federation-directory.test.ts (4 tests) 114ms
+ ✓ src/__tests__/schedule-runner-precheck.test.ts (12 tests) 89ms
+ ✓ src/__tests__/platform-bin-resolve.test.ts (12 tests) 36ms
+ ✓ src/__tests__/test-run-marker.test.ts (9 tests) 51ms
+ ✓ src/__tests__/agent-taskstate.test.ts (19 tests) 49ms
+ ✓ src/__tests__/schedule-runner-resubmit-escalation.test.ts (14 tests) 17ms
+ ✓ src/__tests__/pane-writers-under-send-lock.test.ts (10 tests) 37ms
+ ✓ src/__tests__/installer-token-probe.test.ts (9 tests) 154ms
+ ✓ src/__tests__/research-routes.test.ts (8 tests) 30ms
+ ✓ src/__tests__/tool-call-audit-metadata.test.ts (9 tests) 276ms
+ ✓ src/__tests__/scheduled-task-kanban-waiting.test.ts (12 tests) 345ms
+ ✓ src/__tests__/federation-delegation-feedback.test.ts (4 tests) 70ms
+ ✓ src/__tests__/model-fallback.test.ts (18 tests) 23ms
+ ✓ src/__tests__/remote-enroll-fs.test.ts (8 tests) 45ms
+ ✓ src/__tests__/installer-ollama-nonfatal.test.ts (3 tests) 537ms
+   ✓ install-linux.sh: ollama+model step is non-fatal (BC100FAIL810) > an empty / non-JSON pull response does not abort the install 438ms
+ ✓ src/__tests__/stuck-input-restart.test.ts (16 tests) 42ms
+ ✓ src/__tests__/installer-whisper-optional.test.ts (4 tests) 70ms
+ ✓ src/__tests__/main-model-env-precedence.test.ts (8 tests) 24ms
+ ✓ src/__tests__/owner-chat-fresh-install.test.ts (2 tests) 276ms
+ ✓ src/__tests__/agent-scaffold-tasks.test.ts (5 tests) 17ms
+ ✓ src/__tests__/email-send-gate.test.ts (10 tests) 30ms
+ ✓ src/__tests__/channel-request.test.ts (14 tests) 60ms
+ ✓ src/__tests__/costops-api.test.ts (5 tests) 175ms
+ ✓ src/__tests__/pending-retries.test.ts (19 tests) 24ms
+ ✓ src/__tests__/config-app-tz.test.ts (12 tests) 116ms
+ ✓ src/__tests__/messages-view-display-name.test.ts (9 tests) 16ms
+ ✓ src/__tests__/installer-auth-deferred-marker.test.ts (4 tests) 34ms
+ ✓ src/__tests__/kanban-archive-stale-updated-at.test.ts (6 tests) 267ms
+ ✓ src/__tests__/scheduled-resubmit-stuck.test.ts (8 tests) 10ms
+ ✓ src/__tests__/egress-gate-port-validation.test.ts (6 tests) 1815ms
+   ✓ egress-gate dashboard-port validation (cards 266d8248, 417cf07a) > a rejected port cannot put a foreign host on the allowlist, and falls back to the default 1385ms
+ ✓ src/__tests__/approvals-prompt-contract.test.ts (9 tests) 15ms
+ ✓ src/__tests__/owner-chat.test.ts (8 tests) 27ms
+ ✓ src/__tests__/message-router-tick-cap.test.ts (2 tests) 15ms
+ ✓ src/__tests__/wizard-rename.test.ts (9 tests) 1118ms
+   ✓ identitySavePlan (identity-save decision core) > mid-setup rename with the fleet up restarts the channels session (the VPS wizard path) 925ms
+ ✓ src/__tests__/approvals-notify.test.ts (3 tests) 133ms
+ ✓ src/__tests__/agent-scaffold-claude-md-prompt.test.ts (4 tests) 10ms
+ ✓ src/__tests__/agent-delete-clears-desired.test.ts (3 tests) 73ms
+ ✓ src/__tests__/heartbeat-claude-json-bridge.test.ts (9 tests) 15ms
+ ✓ src/__tests__/default-agent-model.test.ts (11 tests) 21ms
+ ✓ src/__tests__/channel-watchdog-busy-guard.test.ts (12 tests) 17ms
+ ✓ src/__tests__/heartbeat-worker-isolation.test.ts (9 tests) 13ms
+ ✓ src/__tests__/agent-create-no-destructive-rollback.test.ts (5 tests) 25ms
+ ✓ src/__tests__/skills-local-on-page.test.ts (12 tests) 31ms
+ ✓ src/__tests__/slack-half-configured-onboarding.test.ts (4 tests) 10ms
+ ✓ src/__tests__/ssh-tmux.test.ts (14 tests) 23ms
+ ✓ src/__tests__/schedule-mcp-precheck.test.ts (9 tests) 27ms
+ ✓ src/__tests__/agent-conversation.test.ts (7 tests) 53ms
+ ✓ src/__tests__/dual-worker.test.ts (16 tests) 15ms
+ ✓ src/__tests__/settings-store.test.ts (8 tests) 14ms
+ ✓ src/__tests__/remote-launch-command.test.ts (14 tests) 18ms
+ ✓ src/__tests__/bridge-enroll-host.test.ts (10 tests) 16ms
+ ✓ src/__tests__/worker-firstrun-cc202.test.ts (10 tests) 20ms
+ ✓ src/__tests__/kanban-dispatch.test.ts (13 tests) 18ms
+ ✓ src/__tests__/delivered-needs-timestamp.test.ts (5 tests) 53ms
+ ✓ src/__tests__/channels-reap-scope.test.ts (5 tests) 49ms
+ ✓ src/__tests__/parked-clear-sequence.test.ts (9 tests) 15ms
+ ✓ src/__tests__/format.test.ts (23 tests) 50ms
+ ✓ src/__tests__/memory-recency-weighting.test.ts (7 tests) 86ms
+ ✓ src/__tests__/kanban-labels.test.ts (11 tests) 350ms
+ ✓ src/__tests__/settings-heartbeat-calendar.test.ts (7 tests) 17ms
+ ✓ src/__tests__/update-release-grouping.test.ts (6 tests) 13ms
+ ✓ src/__tests__/send-prompt-force-send-gate.test.ts (5 tests) 11ms
+ ✓ src/__tests__/verify-channels-health-static.test.ts (5 tests) 7ms
+ ✓ src/__tests__/lsof-path.test.ts (6 tests) 64ms
+ ✓ src/__tests__/fleet-roster-section.test.ts (5 tests) 17ms
+ ✓ src/__tests__/full-width-layout-css-contract.test.ts (10 tests) 21ms
+ ✓ src/__tests__/channel-health-monitor.test.ts (4 tests) 22ms
+ ✓ src/__tests__/channel-inbound-tee.test.ts (2 tests) 140ms
+ ✓ src/__tests__/welcome-screen-recovery.test.ts (2 tests) 14ms
+ ✓ src/__tests__/service-label.test.ts (13 tests) 14ms
+ ✓ src/__tests__/staleness-guard.test.ts (8 tests) 278ms
+ ✓ src/__tests__/config-registry.test.ts (11 tests) 18ms
+ ✓ src/__tests__/vault-ssh-keys-import.test.ts (1 test) 243ms
+ ✓ src/__tests__/parked-input-escalation.test.ts (3 tests) 11249ms
+   ✓ clearStaleParkedInput > NEVER auto-clears the main agent box, and (escalation muted) never notifies 8030ms
+   ✓ clearStaleParkedInput > attempts the Ctrl-U clear for a SUB-agent box with a REAL parked line 3207ms
+ ✓ src/__tests__/telegram-inbox-wake.test.ts (11 tests) 15ms
+ ✓ src/__tests__/memories-get-agent-id-alias.test.ts (3 tests) 85ms
+ ✓ src/__tests__/completion-notification.test.ts (5 tests) 52ms
+ ✓ src/__tests__/stuck-input-fast-recovery.test.ts (4 tests) 15ms
+ ✓ src/__tests__/main-agent-detail-guards.test.ts (5 tests) 41ms
+ ✓ src/__tests__/bridge-enroll-host-validation.test.ts (5 tests) 31ms
+ ✓ src/__tests__/channel-conflict-probe.test.ts (6 tests) 36ms
+ ✓ src/__tests__/main-agent-config-dir.test.ts (8 tests) 26ms
+ ✓ src/__tests__/schedule-runner-injection-priority.test.ts (6 tests) 14ms
+ ✓ src/__tests__/hidden-attribute-css-contract.test.ts (2 tests) 21ms
+ ✓ src/__tests__/schedule-runner-autostart.test.ts (4 tests) 9ms
+ ✓ src/__tests__/agent-delete-stops-session.test.ts (2 tests) 11ms
+ ✓ src/__tests__/federation-address.test.ts (13 tests) 20ms
+ ✓ src/__tests__/federation-classify.test.ts (8 tests) 11ms
+ ✓ src/__tests__/autonomy-standalone-removal.test.ts (8 tests) 33ms
+ ✓ src/__tests__/kanban-move-audit.test.ts (5 tests) 183ms
+ ✓ src/__tests__/auto-restart.test.ts (13 tests) 26ms
+ ✓ src/__tests__/token-usage-collapse.test.ts (5 tests) 15ms
+ ✓ src/__tests__/activity-no-main-duplicate.test.ts (6 tests) 16ms
+ ✓ src/__tests__/agent-result-classification.test.ts (8 tests) 15ms
+ ✓ src/__tests__/google-api-token-cache.test.ts (5 tests) 13ms
+ ✓ src/__tests__/remote-api.test.ts (6 tests) 34ms
+ ✓ src/__tests__/session-title-banner.test.ts (7 tests) 15ms
+ ✓ src/__tests__/kanban-ref-normalize.test.ts (8 tests) 13ms
+ ✓ src/__tests__/kanban-delete-fk.test.ts (4 tests) 135ms
+ ✓ src/__tests__/password-hash.test.ts (10 tests) 5146ms
+   ✓ hashPassword / verifyPassword > produces a PHC scrypt string and round-trips 1187ms
+   ✓ hashPassword / verifyPassword > rejects the wrong password 1436ms
+   ✓ hashPassword / verifyPassword > uses a unique salt per hash (no deterministic output) 2020ms
+   ✓ hashPassword / verifyPassword > verifies against the STORED params, not the current defaults 487ms
+ ✓ src/__tests__/poller-evidence.test.ts (6 tests) 16ms
+ ✓ src/__tests__/worker-selfheal.test.ts (7 tests) 19ms
+ ✓ src/__tests__/shared-claude-onboarded.test.ts (6 tests) 72ms
+ ✓ src/__tests__/login-throttle.test.ts (9 tests) 1348ms
+   ✓ known vs unknown username indistinguishability > runDummyVerify resolves without throwing (timing equalizer path) 1314ms
+ ✓ src/__tests__/schedule-runner-bound-chatid.test.ts (8 tests) 17ms
+ ✓ src/__tests__/dashboard-modal-css-contract.test.ts (4 tests) 11ms
+ ✓ src/__tests__/claude-plans.test.ts (7 tests) 23ms
+ ✓ src/__tests__/update-checker-branch.test.ts (6 tests) 116ms
+ ✓ src/__tests__/slack-manifest.test.ts (12 tests) 22ms
+ ✓ src/__tests__/lang-parity.test.ts (4 tests) 304ms
+ ✓ src/__tests__/channel-monitor-keepalive-shortcircuit.test.ts (3 tests) 20ms
+ ✓ src/__tests__/command-task-eval.test.ts (6 tests) 41ms
+ ✓ src/__tests__/network-info.test.ts (8 tests) 23ms
+ ✓ src/__tests__/csrf-origin.test.ts (12 tests) 19ms
+ ✓ src/__tests__/env.test.ts (5 tests) 27ms
+ ✓ src/__tests__/remote-config.test.ts (10 tests) 27ms
+ ✓ src/__tests__/pending-backlog-by-agent.test.ts (3 tests) 88ms
+ ✓ src/__tests__/origin-note-sanitize.test.ts (5 tests) 19ms
+ ✓ src/__tests__/tmux-keys.test.ts (9 tests) 85ms
+ ✓ src/__tests__/remote-routing.test.ts (4 tests) 16ms
+ ✓ src/__tests__/schedule-runner-heartbeat-prefix.test.ts (4 tests) 37ms
+ ✓ src/__tests__/mcp-list-no-boot-warmup.test.ts (2 tests) 41ms
+ ✓ src/__tests__/memory-boundary.test.ts (5 tests) 226ms
+ ✓ src/__tests__/conversation-ledger-schema.test.ts (5 tests) 57ms
+ ✓ src/__tests__/auto-update-seed-task.test.ts (6 tests) 22ms
+ ✓ src/__tests__/router-abandon.test.ts (4 tests) 12ms
+ ✓ src/__tests__/agent-scaffold-formatting-rules.test.ts (9 tests) 26ms
+ ✓ src/__tests__/janitor-parked-input.test.ts (3 tests) 13ms
+ ✓ src/__tests__/security-profile-resolution.test.ts (4 tests) 19ms
+ ✓ src/__tests__/liveness-probe-retry.test.ts (5 tests) 21ms
+ ✓ src/__tests__/remote-status-cache.test.ts (5 tests) 15ms
+ ✓ src/__tests__/heartbeat-card-labels.test.ts (5 tests) 17ms
+ ✓ src/__tests__/voice-inbound-audio.test.ts (6 tests) 12ms
+ ✓ src/__tests__/schedule-run-now.test.ts (4 tests) 12ms
+ ✓ src/__tests__/update-agent-capability.test.ts (8 tests) 16ms
+ ✓ src/__tests__/team-cycle.test.ts (6 tests) 13ms
+ ✓ src/__tests__/validate-discord-channel-id.test.ts (12 tests) 17ms
+ ✓ src/__tests__/router-inject-retry.test.ts (3 tests) 16ms
+ ✓ src/__tests__/graph-mail.test.ts (6 tests) 22ms
+ ✓ src/__tests__/md-rendering-unify.test.ts (5 tests) 22ms
+ ✓ src/__tests__/kanban-dispatch-instructions.test.ts (3 tests) 12ms
+ ✓ src/__tests__/auto-restart-main-mechanism.test.ts (3 tests) 23ms
+ ✓ src/__tests__/claim-pending-for-agent.test.ts (2 tests) 55ms
+ ✓ src/__tests__/post-rollback-diagnose-seed.test.ts (3 tests) 12ms
+ ✓ src/__tests__/active-model.test.ts (5 tests) 14ms
+ ✓ src/__tests__/agent-restart-routing.test.ts (3 tests) 7ms
+ ✓ src/__tests__/config-change-log.test.ts (2 tests) 42ms
+ ✓ src/__tests__/agent-terminal-sanitize.test.ts (6 tests) 22ms
+ ✓ src/__tests__/agent-identity-setup.test.ts (2 tests) 10ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/installer-start-and-fallback.test.ts > the ERR-trap abort is real (guards the premise of the tests above) > an unguarded capture aborts, and bash blames the enclosing `fi`
+AssertionError: expected 'TRAP:5' to be 'TRAP:6' // Object.is equality
+
+Expected: "TRAP:6"
+Received: "TRAP:5"
+
+ ❯ src/__tests__/installer-start-and-fallback.test.ts:118:19
+    116|   it('an unguarded capture aborts, and bash blames the enclosing `fi`'…
+    117|     const r = runScriptFile([...TRAP, 'if [ -n "x" ]; then', '  out="$…
+    118|     expect(r.out).toBe('TRAP:6')
+       |                   ^
+    119|     expect(r.out).not.toContain('REACHED')
+    120|     expect(r.code).toBe(9)
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  src/__tests__/memory-performance.test.ts > backfillEmbeddings > returns 0 when all memories already have embeddings or Ollama is unreachable
+ FAIL  src/__tests__/memory-performance.test.ts > backfillEmbeddings > processes rows without embeddings and updates them when Ollama responds
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ Test Files  2 failed | 267 passed (269)
+      Tests  3 failed | 3624 passed | 1 skipped (3628)
+   Start at  23:52:49
+   Duration  121.40s (transform 9.49s, setup 3.49s, collect 86.47s, tests 106.66s, environment 143ms, prepare 54.71s)
+
