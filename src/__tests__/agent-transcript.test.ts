@@ -50,4 +50,50 @@ describe('maskSecrets', () => {
     const text = 'token: abc'
     expect(maskSecrets(text)).toBe(text)
   })
+
+  // SHAPE-ONLY credentials -- the review condition on this PR (2026-09-05).
+  // Each of these carries NO label and NO prefix the earlier passes look for,
+  // so before wiring maskSecrets to SECRET_PATTERNS every one of them came out
+  // of the endpoint verbatim. One test per named shape, so a future narrowing
+  // of the pattern set fails here loudly instead of silently leaking.
+  it('redacts an untagged JWT', () => {
+    const jwt = ['eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4ifQ',
+                 'dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk'].join('.')
+    const out = maskSecrets(`response body: ${jwt} (200)`)
+    expect(out).not.toContain(jwt)
+    expect(out).toContain('response body:')
+    expect(out).toContain('(200)')
+  })
+
+  it('redacts an AWS access key id', () => {
+    const akia = `AKIA${'ABCDEFGHIJKLMNOP'}`
+    const out = maskSecrets(`aws configure set aws_access_key_id ${akia}`)
+    expect(out).not.toContain(akia)
+    expect(out).toContain('aws configure set')
+  })
+
+  // The UNDERSCORE form: the standalone list only had `sk-`, so `sk_live_`
+  // walked straight through. Assembled at run time like the gh/slack fixtures.
+  it('redacts an sk_live_ key (underscore form)', () => {
+    const key = ['sk', 'live', 'A1b2C3d4E5f6G7h8I9j0'].join('_')
+    const out = maskSecrets(`stripe call failed with ${key}`)
+    expect(out).not.toContain(key)
+    expect(out).toContain('stripe call failed with')
+  })
+
+  it('redacts a private key block header', () => {
+    const out = maskSecrets('cat id_rsa -> -----BEGIN RSA PRIVATE KEY----- ...')
+    expect(out).not.toContain('BEGIN RSA PRIVATE KEY')
+    expect(out).toContain('cat id_rsa')
+  })
+
+  // Guard against the adaptation itself: SECRET_PATTERNS entries are
+  // single-match, so a non-global copy would mask only the FIRST occurrence.
+  it('redacts every occurrence, not just the first', () => {
+    const a = `AKIA${'ABCDEFGHIJKLMNOP'}`
+    const b = `AKIA${'QRSTUVWXYZ012345'}`
+    const out = maskSecrets(`${a} and later ${b}`)
+    expect(out).not.toContain(a)
+    expect(out).not.toContain(b)
+  })
 })
