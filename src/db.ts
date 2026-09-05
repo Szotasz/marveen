@@ -2206,7 +2206,12 @@ export interface KanbanComment {
   created_at: number
 }
 
-export function listKanbanCards(): KanbanCard[] {
+// `includeArchived` exists because this function used to hard-code the filter with
+// no way for a caller to ask otherwise, while being named `list`. /api/kanban therefore
+// answered "all cards" with a narrowed set, and an audit reading it saw no error -- only
+// a missing row, which is the failure mode that hides longest. Default stays false so
+// the board keeps its current behaviour; only a caller that asks gets the wider set.
+export function listKanbanCards(opts: { includeArchived?: boolean } = {}): KanbanCard[] {
   const archiveDays = Number(getEffectiveSettingValue('KANBAN_ARCHIVE_DONE_DAYS'))
   const archiveCutoff = Math.floor(Date.now() / 1000) - archiveDays * 86400
   // Auto-archive done cards older than KANBAN_ARCHIVE_DONE_DAYS days
@@ -2220,11 +2225,12 @@ export function listKanbanCards(): KanbanCard[] {
   // comments more than anyone, so ageing measured on updated_at is mostly
   // measuring the watcher, not the work. Falls back to created_at for cards
   // that have never moved (no event rows), which is the honest age for those.
+  const where = opts.includeArchived ? '' : 'WHERE c.archived_at IS NULL '
   return db
     .prepare(`SELECT c.rowid AS seq, c.*,
                      COALESCE((SELECT MAX(e.created_at) FROM kanban_card_events e
                                WHERE e.card_id = c.id), c.created_at) AS last_status_at
-              FROM kanban_cards c WHERE c.archived_at IS NULL ORDER BY c.sort_order ASC`)
+              FROM kanban_cards c ${where}ORDER BY c.sort_order ASC`)
     .all() as KanbanCard[]
 }
 
