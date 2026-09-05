@@ -19,14 +19,14 @@ let stage: string
 
 // The script resolves .env relative to its own location, so stage a full copy
 // of the script one level below a temp root that carries the fake .env.
-function stageScript(): { scriptCopy: string } {
+function stageScript(chatId = '42'): { scriptCopy: string } {
   const scriptsDir = join(stage, 'scripts')
   mkdirSync(join(scriptsDir, 'lib'), { recursive: true })
   const scriptCopy = join(scriptsDir, 'notify.sh')
   execFileSync('/bin/cp', [SCRIPT, scriptCopy])
   // notify.sh sources the shared send contract from its own lib/ sibling.
   execFileSync('/bin/cp', [join(ROOT, 'scripts', 'lib', 'send-telegram.sh'), join(scriptsDir, 'lib', 'send-telegram.sh')])
-  writeFileSync(join(stage, '.env'), `TELEGRAM_BOT_TOKEN=${FAKE_TOKEN}\nALLOWED_CHAT_ID=42\nMAIN_AGENT_ID=mainbot\n`)
+  writeFileSync(join(stage, '.env'), `TELEGRAM_BOT_TOKEN=${FAKE_TOKEN}\nALLOWED_CHAT_ID=${chatId}\nMAIN_AGENT_ID=mainbot\n`)
   return { scriptCopy }
 }
 
@@ -39,8 +39,8 @@ function writeCurlStub(dir: string): void {
   chmodSync(stub, 0o755)
 }
 
-function runNotify(env: Record<string, string>): { status: number | null; stdout: string; stderr: string } {
-  const { scriptCopy } = stageScript()
+function runNotify(env: Record<string, string>, chatId = '42'): { status: number | null; stdout: string; stderr: string } {
+  const { scriptCopy } = stageScript(chatId)
   const binDir = join(stage, 'bin')
   mkdirSync(binDir, { recursive: true })
   writeCurlStub(binDir)
@@ -90,5 +90,47 @@ describe('notify.sh delivery honesty (NOTIFYVAK826)', () => {
     const r = runNotify({ CURL_STUB_EXIT: '6' })
     expect(r.stderr).not.toContain(FAKE_TOKEN)
     expect(r.stderr).toContain('<token>')
+  })
+})
+
+// CHATID0. notify.sh is the FALLBACK channel: it fires precisely when the
+// Telegram plugin is down. Its guard was `[ -z "$CHAT_ID" ]`, and the
+// installer's ALLOWED_CHAT_ID=0 placeholder is not empty -- so on an install
+// with no chat bound, the primary path AND the fallback both posted to
+// chat_id=0. Each case below hands the script a curl stub that would report
+// SUCCESS if it were reached, so a passing test proves the send was prevented
+// rather than merely failing downstream.
+describe('notify.sh rejects the ALLOWED_CHAT_ID placeholder (CHATID0)', () => {
+  const WOULD_SUCCEED = { CURL_STUB_BODY: '{"ok":true,"result":{"message_id":7}}' }
+
+  it('refuses to send when the chat id is "0"', () => {
+    const r = runNotify(WOULD_SUCCEED, '0')
+    expect(r.status).toBe(1)
+    expect(r.stdout).not.toContain('Ertesites elkuldve.')
+  })
+
+  it('names ALLOWED_CHAT_ID so the operator knows what to set', () => {
+    const r = runNotify(WOULD_SUCCEED, '0')
+    expect(r.stdout + r.stderr).toContain('ALLOWED_CHAT_ID')
+  })
+
+  it('still refuses an empty chat id (unchanged behaviour)', () => {
+    const r = runNotify(WOULD_SUCCEED, '')
+    expect(r.status).toBe(1)
+    expect(r.stdout).not.toContain('Ertesites elkuldve.')
+  })
+
+  // Guard against over-matching: only the bare placeholder is rejected, not
+  // any id that merely contains a zero or starts with one.
+  it('does NOT reject a real id that contains zeros', () => {
+    const r = runNotify(WOULD_SUCCEED, '5040302010')
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain('Ertesites elkuldve.')
+  })
+
+  it('does NOT reject an id that merely begins with a zero', () => {
+    const r = runNotify(WOULD_SUCCEED, '0123456789')
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain('Ertesites elkuldve.')
   })
 })
