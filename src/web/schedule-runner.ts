@@ -37,7 +37,8 @@ import {
   SCHEDULED_TASKS_DIR,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
-import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir, readAgentClaudeConfigDir } from './agent-config.js'
+import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir } from './agent-config.js'
+import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { readTranscriptMtimeFromProjectDir } from './active-model.js'
 import { channelStateDir, getProvider, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import {
@@ -904,7 +905,19 @@ async function attemptFireTask(
       ownerAlerted: false,
       sawTurn: false,
       workingDir: agentName === MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(agentName),
-      configDir: agentName === MAIN_AGENT_ID ? undefined : (readAgentClaudeConfigDir(agentName) ?? undefined),
+      // resolveAgentConfigDirForRead, not readAgentClaudeConfigDir -- same
+      // reason the context-guard and restart-gate runners use it. Since the
+      // fleet auth rule (2026-07-01) an agent's config dir is AUTO-PROVISIONED
+      // at <agentDir>/.claude-config and there is no `claudeConfigDir` field to
+      // read, so readAgentClaudeConfigDir returns null. That null made the
+      // sawTurn transcript probe look under ~/.claude/projects/<encoded>, a
+      // path that does not exist for such an agent -- so the probe returned
+      // null on every sweep, sawTurn stayed false, and any task that finished
+      // between two sweeps (i.e. any FAST task) was declared 'lost' and
+      // re-fired. Measured 2026-09-04 on cortex-voip-insight: 2069 false-lost
+      // re-injections in 24h from a */5 task (288 expected), a 7.5x
+      // amplification running unnoticed since 2026-08-27.
+      configDir: agentName === MAIN_AGENT_ID ? undefined : (resolveAgentConfigDirForRead(agentName) ?? undefined),
       timeoutMs: resolveStuckTimeoutMs(task),
     })
 
