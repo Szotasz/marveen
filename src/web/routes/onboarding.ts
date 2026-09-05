@@ -408,7 +408,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     const probe = await liveProbeAuth(token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : { ANTHROPIC_API_KEY: apiKey })
     if (probe === 'auth-rejected') {
       logger.warn({ mode: token ? 'oauth' : 'apikey' }, 'onboarding: Claude auth REJECTED by live probe; nothing persisted')
-      json(res, { error: 'A megadott token/kulcs nem ervenyes (a proba-hivast a szerver elutasitotta). Ellenorizd, hogy a teljes setup-tokent illesztetted-e be.', reason: 'verify-failed', verified: false }, 400)
+      json(res, { error: 'A megadott token/kulcs nem érvényes (a próba-hívást a szerver elutasította). Ellenőrizd, hogy a teljes setup-tokent illesztetted-e be.', reason: 'verify-failed', verified: false }, 400)
       return true
     }
     const verified = probe === 'ok'

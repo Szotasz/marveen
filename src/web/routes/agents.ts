@@ -1770,7 +1770,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       if (authUrl) {
         json(res, { ok: true, authUrl })
       } else {
-        json(res, { ok: false, error: 'Auth URL nem jelent meg 12 masodpercen belul. Probald ujra, vagy nezd a tmux session-t.' })
+        json(res, { ok: false, error: 'Auth URL nem jelent meg 12 másodpercen belül. Próbáld újra, vagy nézd a tmux session-t.' })
       }
     } catch (err) {
       logger.error({ err, name }, 'Auth init failed')
