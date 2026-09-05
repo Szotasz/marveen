@@ -359,6 +359,46 @@ describe('correlateWithKanban', () => {
     // Cleanup
     db.prepare("DELETE FROM kanban_cards WHERE id = 'test-kanban-1'").run()
   })
+
+  it('attributes the spend to the subcard, not to the parent that shares its timestamp', async () => {
+    // Since a subcard write also stamps its ancestors (db.ts, touchAncestorChain), a parent and
+    // its child carry the SAME updated_at. This correlation treats consecutive card timestamps as
+    // work windows, so a tie used to hand the tokens to whichever row the scan returned first --
+    // an ordering, not a fact. The parent is a container; the leaf is what was worked on.
+    const db = getDb()
+    const ts = 1716400000
+
+    // The correlation only considers cards whose updated_at falls inside the agent's token-row
+    // window, so the spend has to straddle the cards: one row before, one after.
+    const usage = db.prepare(`
+      INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, content_preview, task_title)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    usage.run('test-thread', 'sess-thread', ts, 100, 50, 0, 0, 'before', null)
+    usage.run('test-thread', 'sess-thread', ts + 10, 100, 50, 0, 0, 'work', null)
+
+    const card = db.prepare(`
+      INSERT INTO kanban_cards (id, title, status, priority, assignee, project, parent_id, created_at, updated_at, sort_order)
+      VALUES (?, ?, 'in_progress', 'normal', 'test-thread', 'test-project', ?, ?, ?, 0)
+    `)
+    card.run('test-thread-parent', 'Parent thread', null, ts, ts + 5)
+    card.run('test-thread-child', 'Subtask actually worked on', 'test-thread-parent', ts, ts + 5)
+
+    // Cleanup in `finally`: these tests share one database, so rows left behind by a failing
+    // assertion surface as a failure in an unrelated test further down the file.
+    try {
+      const { correlateWithKanban } = await import('../web/token-usage.js')
+      correlateWithKanban()
+
+      const row = db.prepare(
+        "SELECT task_title FROM token_usage WHERE agent = 'test-thread' AND timestamp = ?",
+      ).get(ts + 10) as { task_title: string | null }
+      expect(row.task_title).toBe('Subtask actually worked on')
+    } finally {
+      db.prepare("DELETE FROM kanban_cards WHERE id IN ('test-thread-parent', 'test-thread-child')").run()
+      db.prepare("DELETE FROM token_usage WHERE agent = 'test-thread'").run()
+    }
+  })
 })
 
 describe('tryHandleTokenUsage route handler', () => {
@@ -431,5 +471,44 @@ describe('tryHandleTokenUsage route handler', () => {
     const { ctx } = makeCtx('/api/token-usage/collect', 'GET')
     const handled = await tryHandleTokenUsage(ctx)
     expect(handled).toBe(false)
+  })
+})
+
+// An agent that was never migrated to its own OS user still has an
+// agents/<name>/.claude-config/projects entry, but it is a SYMLINK back to
+// the shared ~/.claude/projects. Walking it books the whole fleet's
+// transcripts under that one agent, which is how three sub-agents came to
+// report byte-identical totals on 2026-09-04.
+describe('resolvesToSharedProjectsRoot', () => {
+  const ROOT = join(TEST_DIR, 'shared-root-probe')
+  const shared = join(ROOT, 'shared-projects')
+  const symlinked = join(ROOT, 'agent-projects-symlink')
+  const ownDir = join(ROOT, 'agent-projects-real')
+
+  beforeAll(async () => {
+    const { symlinkSync } = await import('node:fs')
+    rmSync(ROOT, { recursive: true, force: true })
+    mkdirSync(shared, { recursive: true })
+    mkdirSync(ownDir, { recursive: true })
+    symlinkSync(shared, symlinked)
+  })
+
+  afterAll(() => {
+    rmSync(ROOT, { recursive: true, force: true })
+  })
+
+  it('detects a projects dir that is a symlink to the shared root', async () => {
+    const { resolvesToSharedProjectsRoot } = await import('../web/token-usage.js')
+    expect(resolvesToSharedProjectsRoot(symlinked, shared)).toBe(true)
+  })
+
+  it('leaves a genuinely isolated projects dir alone', async () => {
+    const { resolvesToSharedProjectsRoot } = await import('../web/token-usage.js')
+    expect(resolvesToSharedProjectsRoot(ownDir, shared)).toBe(false)
+  })
+
+  it('treats a missing path as not shared', async () => {
+    const { resolvesToSharedProjectsRoot } = await import('../web/token-usage.js')
+    expect(resolvesToSharedProjectsRoot(join(ROOT, 'nope'), shared)).toBe(false)
   })
 })

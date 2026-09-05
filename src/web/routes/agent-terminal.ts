@@ -1,16 +1,13 @@
 import { execFile, execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { resolveFromPath } from '../../platform.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { agentDir } from '../agent-config.js'
-import { agentSessionName, isAgentRunning } from '../agent-process.js'
+import { agentSessionName, isAgentRunning, tmuxInvocationFor } from '../agent-process.js'
 import { isMainChannelsAgent, MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { literalKeyArgs, specialKeyArgs, loginSequence, type LoginStep } from '../tmux-keys.js'
 import { readTerminalInputEnabled, writeTerminalInputEnabled } from '../terminal-input-store.js'
 import type { RouteContext } from './types.js'
-
-const TMUX = resolveFromPath('tmux')
 
 // Per-agent dashboard terminal: live pane stream (SSE), keystroke injection,
 // and the scripted /login flow. All gated by the dashboard token (the SSE
@@ -23,7 +20,8 @@ function sleep(ms: number): Promise<void> {
 
 function isTmuxSessionAlive(session: string): boolean {
   try {
-    execFileSync(TMUX, ['has-session', '-t', session], { timeout: 3000, stdio: 'ignore' })
+    const inv = tmuxInvocationFor(['has-session', '-t', session])
+    execFileSync(inv.file, inv.args, { timeout: 3000, stdio: 'ignore' })
     return true
   } catch {
     return false
@@ -44,9 +42,17 @@ function resolveTarget(name: string): SessionTarget {
 
 // Run a single `tmux <args>` invocation. Rejects on non-zero exit so the
 // caller can surface a 500 rather than silently swallowing a tmux failure.
+//
+// Goes through tmuxInvocationFor (agent-process.ts) rather than the raw binary:
+// an agent that owns its OS user lives on its OWN tmux server, and a cross-user
+// connection is refused even when the socket permissions allow it. Calling the
+// bare binary here made every /keys and /login write answer 500 for exactly the
+// agents most likely to need one -- measured twice on this install, 2026-08-26
+// and 2026-08-27, while the operator was trying to clear a permission prompt.
 function tmux(args: string[]): Promise<void> {
+  const inv = tmuxInvocationFor(args)
   return new Promise((resolve, reject) => {
-    execFile(TMUX, args, { timeout: 5000 }, (err) => {
+    execFile(inv.file, inv.args, { timeout: 5000 }, (err) => {
       if (err) reject(err)
       else resolve()
     })
@@ -69,6 +75,26 @@ export function sanitizeLiteralKeys(keys: string): string {
   const noPasteMarkers = keys.replace(/\x1b\[20[01]~/g, '')
   const singleLine = noPasteMarkers.replace(/[\r\n]+/g, '')
   return singleLine.replace(/^\s+|\s+$/g, '')
+}
+
+/**
+ * Az audit-naplóba kerülő leírás egy beírt szövegről -- a szöveg TARTALMA NÉLKÜL.
+ *
+ * MIÉRT (kanban dashboard-key-logging, jelezve 2026-08-02, javítva 2026-08-11): ez a sor
+ * korábban a nyers payloadot írta a naplóba (`keys:"..."`), és 806 ilyen sor gyűlt össze a
+ * store/dashboard.log-ban. A súlyt kimértük: a 11 hosszú érték MIND különböző volt, és egyik
+ * SEM a hosszú életű titkaink közül való -- a vault egyszer használatos, 15 percig élő
+ * beviteli-link tokenjeire illettek. Tehát tartós titok nem szivárgott ki, és rotálni sem
+ * kellett. A kockázat viszont ELŐRE mutat: aki valaha egy valódi jelszót másol a
+ * webterminálba, azt eddig szó szerint naplóztuk volna.
+ *
+ * Amit az auditnak tudnia kell, az NEM a tartalom, hanem hogy TÖRTÉNT-E injektálás, mekkora
+ * volt, és -- egy hamisított prompt visszakereséséhez -- hogyan kezdődött. Négy karakter ehhez
+ * elég, és önmagában nem használható titokként.
+ */
+export function maskKeysPreview(keys: string): string {
+  const head = keys.slice(0, 4).replace(/\s/g, ' ')
+  return `keys:len=${keys.length} head=${JSON.stringify(head)}${keys.length > 4 ? '…(maszkolva)' : ''}`
 }
 
 async function runLoginSteps(session: string, steps: LoginStep[]): Promise<void> {
@@ -142,7 +168,12 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
       // the visible pane) so the frontend can offer scroll-back; the frontend
       // repaints the full snapshot (clear-scrollback + clear + home) each changed
       // frame and only when the user is at the bottom, so scrolling up is stable.
-      execFile(TMUX, ['capture-pane', '-t', session, '-S', '-2000', '-e', '-p'], { timeout: 3000, encoding: 'utf-8', maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+      // Same resolution as the write path: for a per-user agent the pane lives on
+      // that user's tmux server, and a raw binary call returns nothing -- which
+      // the stream renders as a blank terminal rather than an error. That blank
+      // pane is what the operator reported as "nem jelenit meg semmit".
+      const capture = tmuxInvocationFor(['capture-pane', '-t', session, '-S', '-2000', '-e', '-p'])
+      execFile(capture.file, capture.args, { timeout: 3000, encoding: 'utf-8', maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
         inFlight = false
         if (closed) return
         const pane = err ? '' : (stdout ?? '')
@@ -210,12 +241,22 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
       json(res, { error: 'Provide {keys:string} or an allow-listed {special}' }, 400)
       return true
     }
-    // AUDIT every accepted injection. Preview reflects the SANITIZED payload
-    // actually sent (truncated so a long paste does not bloat the log, but
-    // present so a forged prompt is traceable).
+    // AUDIT every accepted injection. Preview describes the SANITIZED payload actually sent,
+    // but it MUST NOT contain the payload itself.
+    //
+    // MIÉRT MASZKOLVA (kanban dashboard-key-logging, 2026-08-02 jelzés, 2026-08-11 javítás):
+    // ez a sor korábban a nyers szöveget írta a naplóba (`keys:"..."`), és 806 ilyen sor gyűlt
+    // össze. A súlyt kimértük: a 11 hosszú érték MIND különböző volt, és egyik SEM a hosszú
+    // életű titkaink közül való — a vault egyszer használatos, 15 percig élő beviteli-link
+    // tokenjeire illettek, tehát nem szivárgott ki tartós titok. A kockázat viszont ELŐRE
+    // mutat: aki valaha egy valódi jelszót másol a webterminálba, azt szó szerint naplózzuk.
+    //
+    // Amit a naplónak tudnia kell, az NEM a tartalom, hanem hogy TÖRTÉNT-E injektálás, mikor,
+    // kitől és mekkora. A hossz és az első néhány karakter elég ahhoz, hogy egy hamisított
+    // prompt nyomon követhető legyen; a teljes szöveg csak kárt tud okozni.
     const preview = parsed.special
       ? `special:${parsed.special}`
-      : `keys:${JSON.stringify((literalKeys ?? '').slice(0, 120))}${(literalKeys ?? '').length > 120 ? '…' : ''}`
+      : maskKeysPreview(literalKeys ?? '')
     logger.info({ name, remote, xff, ua, preview }, 'agent-terminal: KEYS INJECTION ACCEPTED')
     try {
       await tmux(args)

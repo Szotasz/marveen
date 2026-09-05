@@ -29,6 +29,12 @@ export interface ScheduledTask {
   // skipIfBusy false (default) so the queue + alert path catches a
   // long-running busy state and nothing business-critical is lost.
   skipIfBusy?: boolean
+  // When true, this task drives the shared desktop (GUI automation,
+  // computer-use). While another agent holds the desktop lock, its ticks are
+  // skipped -- and the skip is RECORDED, never silent. Marked per task rather
+  // than matched against a list of task names in the runner: a hand-kept list
+  // is a blind spot the day someone adds a GUI round and forgets it.
+  requiresDesktop?: boolean
   // When true, skip the busy-state check entirely and inject the prompt
   // via tmux send-keys regardless. The Claude session will process it at
   // the next idle slot. Useful for critical tasks that must never be
@@ -61,7 +67,7 @@ export interface ScheduledTask {
   // limit are recorded as a 'missed' run and reported, never silently dropped.
   catchUpMaxAgeMinutes?: number
   // How long this task may run before the post-fire watchdog calls it stuck and
-  // alerts the operator. Unset uses the global TASK_FIRE_TIMEOUT_MS (5 min),
+  // alerts the operator. Unset uses the global TASK_FIRE_TIMEOUT_MS (45 min),
   // which is right for a short-cadence heartbeat and wrong for a task whose job
   // is to think for a while. Clamped at both ends, see resolveStuckTimeoutMs.
   // DISTINCT from catchUpMaxAgeMinutes: that one judges a MISSED occurrence's
@@ -104,7 +110,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = hasSkill ? readFileOr(skillPath, '') : ''
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown } } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; requiresDesktop?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown } } = {}
   try {
     config = JSON.parse(readFileOr(configPath, '{}'))
   } catch { /* use defaults */ }
@@ -119,6 +125,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     createdAt: config.createdAt || 0,
     type: (config.type as 'task' | 'heartbeat' | 'command') || 'task',
     skipIfBusy: config.skipIfBusy === true,
+    requiresDesktop: config.requiresDesktop === true,
     forceSend: config.forceSend === true,
     targetSession: config.targetSession || undefined,
     command: config.command,

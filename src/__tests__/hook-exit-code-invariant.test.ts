@@ -41,6 +41,7 @@ interface HookCase {
 const HOOKS: HookCase[] = [
   // PreToolUse gates
   { script: 'scripts/hooks/outgoing-copy-gate.py', runner: 'python3', cls: 'gate', tool: 'mcp__x__send_email' },
+  { script: 'scripts/hooks/email-approval-gate.py', runner: 'python3', cls: 'gate', tool: 'mcp__x__send_email' },
   { script: 'scripts/hooks/egress-gate.mjs', runner: 'node', cls: 'gate', tool: 'WebFetch' },
   { script: 'scripts/email-send-gate.mjs', runner: 'node', cls: 'gate', tool: 'mcp__x__send_email' },
   { script: 'scripts/self-pace-gate.mjs', runner: 'node', cls: 'gate', tool: 'Bash' },

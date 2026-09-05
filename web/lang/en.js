@@ -289,6 +289,9 @@ window._i18n.en = {
 
   // --- Agents ---
   'agents.page_title':           'Team',
+  'agents.view.cards':           'Cards',
+  'agents.view.activity':        'Activity',
+  'agents.view.org_chart':       'Org chart',
   'agents.page_subtitle':        'Manage AI team members',
   'agents.detail.select_avatar':   'Select new avatar',
   'agents.detail.modal_title':      'Agent Details',
@@ -326,9 +329,8 @@ window._i18n.en = {
   'agents.toast.avatar_error':   'Error saving avatar',
 
   // --- Activity ---
-  'activity.page_title':         'Activity',
-  'activity.page_subtitle':      'What each agent is doing: live view, updates every 3 sec',
-  'activity.loading':            'Loading…',
+  'agents.card.no_output':       'no recent output',
+  'agents.card.not_running':     'session not running',
   'activity.state.working':      'working',
   'activity.state.idle':         'idle',
   'activity.state.unknown':      'unknown',
@@ -655,7 +657,7 @@ window._i18n.en = {
   'team.page_title':             'Team',
   'team.page_subtitle':          'Who reports to whom and who delegates to whom',
   'team.btn.refresh':            'Refresh',
-  'team.hint':                   'Drag an agent onto another to make it a subordinate. Roles and finer settings live on the agent detail > Team tab.',
+  'team.hint':                   'Roles and the report/manager links are editable on the agent detail > Team tab. You can also rearrange with the mouse: grab an agent and drop it onto the one it should report to.',
   'team.drop.saved':             '{child} now reports to {parent}',
   'team.drop.cycle':             "Can't place a manager under its own subordinate.",
   'team.drop.error':             'Failed to save the reporting change.',
@@ -912,11 +914,7 @@ window._i18n.en = {
   'updates.toast.error':         'Error: {msg}',
 
   // --- Additional parity keys ---
-  'activity.badge.main':			'main',
   'activity.tooltip.mode':		'Permission mode: {mode}. In this mode the agent stops and waits for approval before calling a tool -- with nobody watching it can sit there for hours while still looking idle.',
-  'activity.empty':			'No agents.',
-  'activity.error_load':			'Failed to load activity',
-  'activity.updated':			'Updated: {time}',
   'agents.api_key.missing':			'No API key configured',
   'agents.api_key.ok':			'API key configured in vault',
   'agents.btn.conversation':			'Conversation',
@@ -945,6 +943,7 @@ window._i18n.en = {
   'agents.stopped_tip':            'Stopped: no live tmux session for this agent. Source: tmux list-sessions.',
   'agents.online_tip':             'Online: a channel token is configured (own bot). Note: this is not a live connection check, only confirms the token exists.',
   'agents.offline_tip':            'Offline: no channel configured (channel-less, inter-agent only).',
+  'agents.context_tip':            'Context window used: {pct}%. Same measurement the context-guard handoff/restart decision is based on.',
   'agents.tmux_copy_aria':         'Copy tmux attach command',
   'agents.tmux_copied':            'copied',
   'agents.tmux_copy_failed':       'Copy failed',
@@ -1209,8 +1208,8 @@ window._i18n.en = {
   'team.role.leader':			'team leader',
   'team.role.main':			'main agent',
   'team.role.member':			'member',
-  'team.running':			'● Running',
-  'team.stopped':			'○ Stopped',
+  'team.running':			'Running',
+  'team.stopped':			'Stopped',
   'team.save_saving':            'Saving...',
   'team.save_done':              '✓ Saved',
   'team.save_ok':                'Team saved',
@@ -1314,7 +1313,23 @@ window._i18n.en = {
   'agents.toast.restart_state_error': 'Could not read restart state, check the session',
   'agents.toast.idle_flush_saved': 'Idle flush setting saved',
   'agents.toast.auto_restart_saved': 'Auto-restart setting saved',
+  'agents.toast.ctx_guard_saved':   'Context guard setting saved',
   'agents.toast.auth_mode_saved':'Auth mode saved (restart required)',
+
+  // --- Context guard settings ---
+  'agents.settings.ctx_guard_label':       'Context-limit restart',
+  'agents.settings.ctx_guard_sat_net':     'Saturation net: always active, restarts automatically at 100% context (cannot be disabled)',
+  'agents.settings.ctx_guard_enabled':     'Proactive limit watcher (threshold-based handoff)',
+  'agents.settings.ctx_guard_limit_tokens':'Token limit',
+  'agents.settings.ctx_guard_act_pct':     'Handoff threshold (%)',
+  'agents.settings.ctx_guard_hard_pct':    'Force-restart threshold (%)',
+  'agents.settings.ctx_guard_cooldown':    'Cooldown (minutes)',
+  'agents.settings.ctx_guard_advanced':    'Advanced settings',
+  'agents.settings.ctx_guard_timeout':     'Handoff timeout (minutes)',
+  'agents.settings.ctx_guard_timeout_hint':'If the agent does not write HANDOFF.md within the timeout, a force-restart follows.',
+  'agents.settings.ctx_guard_pct_hint':    'Force-restart threshold cannot be lower than handoff threshold.',
+  'agents.settings.ctx_guard_status_prefix':'Status:',
+  'agents.settings.ctx_guard_status_ctx':  'Context:',
 
   // --- Agent status/labels ---
   'agents.channel.connected':    'Connected',
@@ -1623,7 +1638,6 @@ window._i18n.en = {
   'kanban.gantt.nav_next':          'Next',
 
   // --- Activity tooltip ---
-  'activity.tooltip.terminal':   'Open terminal',
 
   // --- Connectors tooltips ---
   'connectors.tooltip.installed_mcp': 'Wired in .mcp.json (manageable in Connectors list)',
@@ -1771,5 +1785,34 @@ window._i18n.en = {
   'auth.bridge.repaired':          'Device re-paired (its previous key was revoked).',
   'auth.bridge.bundle_hint':       'Copy it now and paste it into the Bridge -- the bundle cannot be displayed again. Target host: {host}.',
   'auth.bridge.err_empty':         'Both the key line and the device name are required.',
+  // Pairing endpoint failures. The server sends a stable code beside its
+  // English sentence; the UI translates on the code and falls back to that
+  // sentence when a code has no key here.
+  'auth.bridge.err.host_key_missing':            'This machine\'s SSH host key is not available, so pairing cannot finish. Turn on remote login (macOS: System Settings > General > Sharing > Remote Login), then try again.',
+  'auth.bridge.err.line_required':               'The key line is required. Paste the line shown in the Bridge app.',
+  'auth.bridge.err.line_empty':                  'The key line is empty. Paste the line shown in the Bridge app.',
+  'auth.bridge.err.line_multiline':              'The key line must be a single line. Paste it again without a line break.',
+  'auth.bridge.err.line_fields':                 'The key line has exactly three parts: type, key, comment. Copy the whole line again from the Bridge app and add nothing to it.',
+  'auth.bridge.err.key_type':                    'The key type must be exactly {expected}. Copy the whole line again from the Bridge app.',
+  'auth.bridge.err.key_not_base64':              'The pasted key line is damaged (the key body is not valid base64). Copy the whole line again from the Bridge app.',
+  'auth.bridge.err.blob_too_short':              'The pasted key line is cut short. Copy the whole line again from the Bridge app.',
+  'auth.bridge.err.blob_type_field':             'The pasted key line is damaged (bad type field in the key). Copy the whole line again from the Bridge app.',
+  'auth.bridge.err.blob_type_mismatch':          'The key type should be {expected}, but the pasted line carries \"{found}\". Copy the whole line again from the Bridge app.',
+  'auth.bridge.err.blob_truncated':              'The pasted key line breaks off. Copy the whole line again from the Bridge app.',
+  'auth.bridge.err.key_length':                  'The key length is wrong (an ed25519 key is exactly 32 bytes). Copy the whole line again from the Bridge app.',
+  'auth.bridge.err.blob_trailing':               'The pasted key line is damaged (trailing or missing bytes). Copy the whole line again from the Bridge app.',
+  'auth.bridge.err.comment_prefix':              'The comment at the end of the line must start with \"{prefix}\". Copy the whole line again from the Bridge app.',
+  'auth.bridge.err.comment_uuid':                'The comment at the end of the line must read marveen-remote:<uuid>. Copy the whole line again from the Bridge app.',
+  'auth.bridge.err.host_empty':                  'The target address is empty. Leave it blank to use this machine\'s own address, or type the IP address.',
+  'auth.bridge.err.host_too_long':               'The target address is too long ({length} characters, {max} at most).',
+  'auth.bridge.err.host_email':                  '\"{seen}\" looks like an email address. The target address is the machine\'s IP address or hostname; with Tailscale it is the address starting with 100, not the email address of the Tailscale account.',
+  'auth.bridge.err.host_url':                    '\"{seen}\" is a URL. Enter only the address, without http:// or a path.',
+  'auth.bridge.err.host_invalid':                '\"{seen}\" is not a valid IP address or hostname.',
+  'auth.bridge.err.forbidden_credential':        'This sign-in may not pair a device. Log in to the dashboard and start the pairing from there.',
+  'auth.bridge.err.invalid_json':                'The request was malformed. Reload the page and try again.',
+  'auth.bridge.err.key_line_required':           'The key line is required. Paste the ssh-ed25519 ... marveen-remote:... line shown in the Bridge app.',
+  'auth.bridge.err.invalid_name':                'The device name may be 1-64 characters: letters, digits, space, and . _ -',
+  'auth.bridge.err.invalid_ssh_port':            'The SSH port must be a number between 1 and 65535.',
+  'auth.bridge.err.enroll_failed':               'Pairing failed. Check the dashboard log and try again.',
 
 }

@@ -45,11 +45,13 @@ import { capturePane } from './agent-process.js'
 import { readTranscriptMtimeFromProjectDir } from './active-model.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { resumeMarveenSession, sendAlert, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS } from './channel-monitor.js'
+import { sendRoutineAlert } from './routine-alert.js'
 import {
   stuckToolCallSignature,
   decideStuckToolCallRecovery,
   detectPaneState,
   parkedChannelInput,
+  parkedMachineOriginInput,
   type StuckToolCallState,
   type StuckToolCallThresholds,
 } from '../pane-state.js'
@@ -231,10 +233,26 @@ async function checkSession(label: string, session: string): Promise<void> {
     // about to be driven, and that case belongs to stuck-input-watcher, which
     // has its own escalation (Enter -> clear+re-inject -> respawn). Clear the
     // stale spell so the residual cannot re-arm on the next poll.
-    if (pane != null && parkedChannelInput(pane) != null) {
+    // STUCKSCHED831: the guard was CHANNEL-ONLY, and that is narrower than the
+    // reason it exists. parkedChannelInput() matches `<channel source="plugin:`
+    // and nothing else, so a parked SCHEDULED-TASK injection (heartbeat, audit,
+    // dream-engine) slipped through every gate: the pane is no longer 'idle'
+    // (so the idle-prompt guard above stops applying), it is not a channel
+    // block (so this guard missed it), and CPU is still low because the turn
+    // has not started yet. Measured on this install 2026-08-18: 14:11:08 the
+    // idle-prompt guard correctly skipped, 14:15:08 the watcher respawned an
+    // idle session, and the first input after the respawn came back TRUNCATED
+    // and fused with the next command -- the same damage shape as the
+    // 2026-08-15 channel-message case this guard was written for.
+    // The discriminator was never "is it a channel message" but "is something
+    // machine-injected parked in the box", i.e. the session is about to be
+    // driven. parkedMachineOriginInput() is exactly that predicate and is a
+    // strict superset (its prefix list includes the channel regex), so the
+    // 2026-08-15 behaviour is preserved.
+    if (pane != null && (parkedChannelInput(pane) != null || parkedMachineOriginInput(pane))) {
       logger.info(
         { label, session, tag: next.tag, seconds: next.lastSeconds, spellPeakSeconds: next.spellPeakSeconds },
-        'stuck-tool-call-watcher: counter stagnant but an inbound channel message is parked in the prompt (stuck-input-watcher owns this) -- skipping recovery',
+        'stuck-tool-call-watcher: counter stagnant but machine-injected input is parked in the prompt (stuck-input-watcher owns this) -- skipping recovery',
       )
       watchState.delete(session)
       return
@@ -316,16 +334,22 @@ async function checkSession(label: string, session: string): Promise<void> {
     // messaging into the void and then spent the morning pasting logs. One
     // proactive report replaces that whole loop. Sent on both outcomes -- a
     // FAILED recovery is exactly when the owner must know.
-    sendAlert(
-      ok
-        // A számot ne úgy írjuk ki, mintha időtartam lenne: a lastSeconds a
-        // KIJELZŐN BEFAGYOTT számláló értéke, a beavatkozás küszöbe viszont a
-        // stagnálás wall-clock hossza (freezeSeconds). A korábbi szöveg ("49s óta
-        // nem haladt") azt sugallta a tulajnak, hogy 49 másodperc után
-        // újraindítunk -- 2026-08-15-én pontosan ezt kérdezte vissza.
-        ? `🔧 A fő session beragadt: a kijelző számlálója ${Math.round(next.lastSeconds ?? 0)}s-nál megállt, és több mint ${THRESHOLDS.freezeSeconds}s-ig nem mozdult. Automatikusan újraindítottam a beszélgetés megtartásával. Ha volt megválaszolatlan üzeneted, mindjárt válaszolok rá.`
-        : `🚨 A fő session beragadt, és az automatikus újraindítás NEM sikerült. Kézi beavatkozás kellhet: tmux attach -t ${session}, vagy scripts/stop.sh && scripts/start.sh a marveen mappából.`,
-    )
+    // A SUCCEEDED recovery is routine: throttled, so a session that keeps
+    // wedging reports once with a count instead of once per wedge. A FAILED
+    // recovery is never throttled -- that is exactly when the owner must know.
+    if (ok) {
+      // A számot ne úgy írjuk ki, mintha időtartam lenne: a lastSeconds a
+      // KIJELZŐN BEFAGYOTT számláló értéke, a beavatkozás küszöbe viszont a
+      // stagnálás wall-clock hossza (freezeSeconds). A korábbi szöveg ("49s óta
+      // nem haladt") azt sugallta a tulajnak, hogy 49 másodperc után
+      // újraindítunk -- 2026-08-15-én pontosan ezt kérdezte vissza.
+      sendRoutineAlert(
+        `main-stuck-tool-call:${session}`,
+        `🔧 A fő session beragadt: a kijelző számlálója ${Math.round(next.lastSeconds ?? 0)}s-nál megállt, és több mint ${THRESHOLDS.freezeSeconds}s-ig nem mozdult. Automatikusan újraindítottam a beszélgetés megtartásával. Ha volt megválaszolatlan üzeneted, mindjárt válaszolok rá.`,
+      )
+    } else {
+      sendAlert(`🚨 A fő session beragadt, és az automatikus újraindítás NEM sikerült. Kézi beavatkozás kellhet: tmux attach -t ${session}, vagy scripts/stop.sh && scripts/start.sh a marveen mappából.`)
+    }
   }
 }
 

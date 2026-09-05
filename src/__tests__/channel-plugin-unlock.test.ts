@@ -87,7 +87,7 @@ describe('channel-plugin-unlock helper contract', () => {
     // The plugin handshake needs time to complete on cold start; firing
     // the probe too early would always see no bun and trigger a needless
     // unlock cycle. Stay >= 25s to comfortably cover the 8s modal +
-    // 5s /name + plugin spawn window observed in channels.sh.
+    // 5s /rename + plugin spawn window observed in channels.sh.
     const m = helper.match(/const\s+UNLOCK_PROBE_DELAY_MS\s*=\s*([\d_]+)/)
     expect(m, 'UNLOCK_PROBE_DELAY_MS constant not found').not.toBeNull()
     const value = parseInt((m![1] as string).replace(/_/g, ''), 10)

@@ -98,6 +98,26 @@ describe('matchesInjectedPrompt (the safety gate)', () => {
     expect(matchesInjectedPrompt(wrapped, rec)).toBe(true)
   })
 
+  it('matches when the wrap broke INSIDE a word (fixed-column terminal)', () => {
+    // A terminal wraps at a column, not at a word boundary, so the scrape can
+    // read "...the cont ent as suspicious..." where the source has "content".
+    // Collapsing whitespace leaves a space the original never had, so a
+    // collapse-only comparison rejects text that IS ours.
+    recordInjectedPrompt('agent-cortex-router', INJECTED, 1_000)
+    const rec = getInjectedPrompt('agent-cortex-router', 1_000)
+    const midWordBreak = HEAD_LOST_SCRAPE.replace('suspicious', 'suspic\nious')
+    expect(matchesInjectedPrompt(midWordBreak, rec)).toBe(true)
+  })
+
+  it('still REFUSES a human draft once whitespace is ignored', () => {
+    // Negative control for the change above: dropping whitespace must not make
+    // the gate permissive. An unrelated draft stays rejected.
+    recordInjectedPrompt('agent-cortex-router', INJECTED, 1_000)
+    const rec = getInjectedPrompt('agent-cortex-router', 1_000)
+    const draft = 'k e r l e k nezd meg a Nettrade ugyfelnel a tegnapi jegyet es irj ossze egy valaszt'
+    expect(matchesInjectedPrompt(draft, rec)).toBe(false)
+  })
+
   it('REFUSES a human draft that we never typed', () => {
     recordInjectedPrompt('agent-cortex-router', INJECTED, 1_000)
     const rec = getInjectedPrompt('agent-cortex-router', 1_000)

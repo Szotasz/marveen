@@ -34,7 +34,7 @@ export async function tryHandleSecurity(ctx: RouteContext): Promise<boolean> {
   if (path !== '/api/security/bridge-enroll' || method !== 'POST') return false
 
   if (auth === undefined || !ENROLL_KINDS.includes(auth.kind as (typeof ENROLL_KINDS)[number])) {
-    json(res, { error: 'Forbidden for this credential type' }, 403)
+    json(res, { error: 'Forbidden for this credential type', code: 'forbidden_credential' }, 403)
     return true
   }
 
@@ -44,18 +44,24 @@ export async function tryHandleSecurity(ctx: RouteContext): Promise<boolean> {
     const parsed = raw ? JSON.parse(raw) : {}
     body = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {}
   } catch {
-    json(res, { error: 'Invalid JSON' }, 400)
+    json(res, { error: 'Invalid JSON', code: 'invalid_json' }, 400)
     return true
   }
 
   const keyLine = str(body.key_line).trim()
   const name = str(body.name).trim()
   if (!keyLine) {
-    json(res, { error: 'key_line is required (the ssh-ed25519 ... marveen-remote:<uuid> line shown by the Bridge)' }, 400)
+    json(res, {
+      error: 'key_line is required (the ssh-ed25519 ... marveen-remote:<uuid> line shown by the Bridge)',
+      code: 'key_line_required',
+    }, 400)
     return true
   }
   if (!NAME_RE.test(name)) {
-    json(res, { error: 'Invalid device name (1-64 chars: letters, digits, space, . _ -)' }, 400)
+    json(res, {
+      error: 'Invalid device name (1-64 chars: letters, digits, space, . _ -)',
+      code: 'invalid_name',
+    }, 400)
     return true
   }
   // Empty stays empty: the field is optional and bridgeEnroll then fills in the
@@ -65,7 +71,11 @@ export async function tryHandleSecurity(ctx: RouteContext): Promise<boolean> {
   if (host !== undefined) {
     const checked = checkEnrollHost(host, isIP)
     if (!checked.ok) {
-      json(res, { error: `Invalid host: ${checked.reason}` }, 400)
+      json(res, {
+        error: `Invalid host: ${checked.reason}`,
+        code: checked.code,
+        params: checked.params,
+      }, 400)
       return true
     }
   }
@@ -73,7 +83,7 @@ export async function tryHandleSecurity(ctx: RouteContext): Promise<boolean> {
   if (body.ssh_port !== undefined && body.ssh_port !== null && body.ssh_port !== '') {
     const n = Number(body.ssh_port)
     if (!Number.isInteger(n) || n < 1 || n > 65535) {
-      json(res, { error: 'Invalid ssh_port (1-65535)' }, 400)
+      json(res, { error: 'Invalid ssh_port (1-65535)', code: 'invalid_ssh_port' }, 400)
       return true
     }
     sshPort = n
@@ -105,11 +115,11 @@ export async function tryHandleSecurity(ctx: RouteContext): Promise<boolean> {
     }, 201)
   } catch (err) {
     if (err instanceof RemoteEnrollError) {
-      json(res, { error: err.message }, 400)
+      json(res, { error: err.message, code: err.code, params: err.params }, 400)
       return true
     }
     logger.error({ err }, 'bridge enroll failed')
-    json(res, { error: 'Enrollment failed' }, 500)
+    json(res, { error: 'Enrollment failed', code: 'enroll_failed' }, 500)
   }
   return true
 }

@@ -95,7 +95,9 @@ LATEST_PATH = os.path.join(STORE_DIR, "usage-latest.json")
 STATE_PATH = os.path.join(STORE_DIR, "usage-alert-state.json")
 ENV_PATH = os.path.join(REPO_ROOT, ".env")
 
-BUDAPEST = ZoneInfo("Europe/Budapest")
+# Display timezone for reset stamps. Defaults to the project's Europe/Budapest;
+# override with MARVEEN_TZ for an install whose owner lives elsewhere.
+LOCAL_TZ = ZoneInfo(os.environ.get("MARVEEN_TZ", "Europe/Budapest"))
 
 TOKEN_FIELDS = (
     "input_tokens",
@@ -118,7 +120,7 @@ def fmt_reset(resets_at, now_utc=None):
     except (ValueError, OSError, OverflowError, TypeError):
         return "unknown", "unknown"
     now_utc = now_utc or datetime.now(timezone.utc)
-    local_str = dt_utc.astimezone(BUDAPEST).strftime("%Y-%m-%d %H:%M %Z")
+    local_str = dt_utc.astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M %Z")
     secs = (dt_utc - now_utc).total_seconds()
     if secs <= 0:
         rel = "now"
@@ -589,7 +591,7 @@ def build_snapshot():
     now = datetime.now(timezone.utc)
     return {
         "generated_at": now.isoformat(),
-        "generated_at_local": now.astimezone(BUDAPEST).strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "generated_at_local": now.astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M:%S %Z"),
         "codex": collect_codex(),
         "claude": collect_claude(),
     }

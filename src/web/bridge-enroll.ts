@@ -178,6 +178,7 @@ export async function bridgeEnroll(
   if (resolved === null) {
     throw new RemoteEnrollError(
       "could not obtain this machine's ssh-ed25519 host key; ensure the SSH server is running (macOS: System Settings > General > Sharing > Remote Login)",
+      'host_key_missing',
     )
   }
 

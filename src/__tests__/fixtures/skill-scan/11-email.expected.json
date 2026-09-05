@@ -1,0 +1,1 @@
+{"scanner": {"name": "mio-scan", "version": "1.0.0", "rulepack": "2026-08-24"}, "findings": [{"rule": "email-address", "category": "pii", "match": "valaki.teszt+cim@pelda-domain.hu", "line": 1, "span": [9, 41]}, {"rule": "email-address", "category": "pii", "match": "admin@x.co", "line": 1, "span": [47, 57]}]}

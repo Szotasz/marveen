@@ -18,6 +18,10 @@ vi.mock('../config.js', () => ({
   WEB_PORT: 3420,
   OWNER_DRIVE_FOLDER: '',
   DASHBOARD_PUBLIC_URL: '',
+  // Empty = the resolver falls through to the public URL, then to
+  // localhost -- i.e. exactly the behaviour these tests asserted
+  // before AGENT_API_ORIGIN existed.
+  AGENT_API_ORIGIN: '',
   APP_TZ: 'Europe/Budapest',
 }))
 

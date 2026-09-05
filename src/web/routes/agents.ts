@@ -5,7 +5,7 @@ import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
-import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed,
+import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, countNewerMessagesFromSameSender,
   getAgentToolActivity, getAgentMessageActivity, getAgentCurrentCards } from '../../db.js'
 import { deriveAgentStatus, AGENT_STATUS_THRESHOLDS } from '../agent-status.js'
 import type { AgentStatusSignals, AgentStatusRow } from '../agent-status.js'
@@ -584,6 +584,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   // markup) does not silently offer a stale set.
   if (path === '/api/models/available' && method === 'GET') {
     const hasDeepseek = getSecret('DEEPSEEK_API_KEY') !== null
+    // Direct MiniMax API (bypasses the OpenRouter markup) -- same gating pattern.
+    const hasMinimax = getSecret('MINIMAX_API_KEY') !== null
     // OpenRouter is gated behind the vault key, same as DeepSeek: surfacing the
     // options without the key would let the operator pick a model that 401s.
     const hasOpenRouter = getSecret('openrouter-fleet-key') !== null
@@ -604,6 +606,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
           ]
         : [],
       deepseekConfigured: hasDeepseek,
+      // Direct MiniMax API -- native Anthropic-compatible endpoint (no OpenRouter markup).
+      // Model id verified live against the real endpoint before this list is trusted;
+      // see agent-provider-env.test.ts + the marveen kanban card 964a9567.
+      minimax: hasMinimax ? [{ id: 'minimax-m3', label: 'MiniMax M3 (közvetlen API)' }] : [],
+      minimaxConfigured: hasMinimax,
       // OpenRouter tiers for the model picker. `auto` per tier feeds the "Auto"
       // mode (stored as `openrouter-auto:<tierKey>`, resolved weekly-fresh at
       // launch); `manual` (2 ids) feeds the "Manual" mode.
@@ -1835,7 +1842,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       if (authUrl) {
         json(res, { ok: true, authUrl })
       } else {
-        json(res, { ok: false, error: 'Auth URL nem jelent meg 12 masodpercen belul. Probald ujra, vagy nezd a tmux session-t.' })
+        json(res, { ok: false, error: 'Auth URL nem jelent meg 12 másodpercen belül. Próbáld újra, vagy nézd a tmux session-t.' })
       }
     } catch (err) {
       logger.error({ err, name }, 'Auth init failed')
@@ -1918,7 +1925,15 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         }
         continue
       }
-      const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, msg.from_agent, msg.content, msg.id, msg.origin_note)
+      // Freshness/supersession signal (mirror the router path): flag a claimed
+      // message that is old and/or superseded by newer messages from the same
+      // sender, so a main-agent inbox drain after a busy gap cannot silently act
+      // on stale instructions.
+      const freshness = {
+        ageMs: Date.now() - msg.created_at * 1000,
+        newerFromSameSender: countNewerMessagesFromSameSender(msg.from_agent, msg.to_agent, msg.id),
+      }
+      const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, msg.from_agent, msg.content, msg.id, msg.origin_note, freshness)
       blocks.push(prefix + wrapped)
     }
     json(res, { count: blocks.length, text: blocks.join('\n\n') })

@@ -532,18 +532,97 @@ export function detectsBlockingMenu(pane: string): boolean {
 // detectsBlockingMenu's discipline: a busy pane is never a gate, and a visible
 // idle footer means the real prompt is live (capture-pane -p sees only the
 // visible screen, so a quoted phrase always coexists with the live footer).
+// The tmux-visible selection marker Claude Code draws on the active option.
+const CURSOR_GLYPH = '\u276f'
+
 export type FirstRunGateKind = 'trust' | 'bypass-permissions' | 'login' | 'theme' | 'welcome'
 
 // Ordered: the login picker and theme screen render UNDER the "Welcome to
 // Claude Code" banner, so the more specific matches must win before the
 // generic welcome fallback.
 const FIRST_RUN_GATES: Array<{ kind: FirstRunGateKind; rx: RegExp }> = [
-  { kind: 'trust', rx: /Do you trust the files in this folder\?/ },
+  // TRUSTGATE901 (2026-09-01): ALTERNATION, not a replacement. Claude Code
+  // 2.1.246 rewrote this dialog -- the old question is GONE and the panel now
+  // opens with a marketing line ("Quick safety check: Is this a project you
+  // created or one you trust? ..."). Measured on the installed binary with a
+  // known-positive/known-negative control: "Do you trust the files in this
+  // folder" occurs ZERO times in 2.1.246, "Yes, I trust this folder" twice.
+  //
+  // The anchor is the OPTION TEXT, not the prose: the option is the functional
+  // element the dialog cannot drop, while the sentence above it is exactly the
+  // kind of copy a vendor rewrites (it just did). The old question stays for
+  // installs still on an older CLI -- note the old panel's option read
+  // "Yes, proceed", so neither string alone covers both versions.
+  //
+  // Why this mattered more than a missed classification: a null here does not
+  // merely skip the answer (answerFirstRunGates reports 'unchanged'), it hands
+  // the pane to the GENERIC blocking-menu recovery, which sends Escape -- and
+  // on this dialog Escape IS "No, exit". A fresh install quit on startup.
+  { kind: 'trust', rx: /Do you trust the files in this folder\?|Yes, I trust this folder/ },
   { kind: 'bypass-permissions', rx: /Bypass Permissions mode/ },
   { kind: 'login', rx: /Select login method/ },
   { kind: 'theme', rx: /Choose the text style/ },
   { kind: 'welcome', rx: /Welcome to Claude Code/ },
 ]
+
+/**
+ * Which keys select the ACCEPTING option on a first-run consent dialog
+ * (folder-trust, bypass-permissions), from wherever the cursor currently
+ * sits -- or null when the pane does not say clearly enough to act.
+ *
+ * TRUSTGATE901. Answering this dialog by NUMBER or by DEFAULT is not safe, and
+ * both assumptions broke inside six patch releases:
+ *   2.1.246: "❯ 1. Yes, I trust this folder" / "  2. No, exit"
+ *   2.1.252: "❯ No, exit"                    / "  Yes, I trust this folder"
+ * In 2.1.252 the numbering is GONE (so typing "1" selects nothing) and "No,
+ * exit" is both first AND the highlighted default (so the Enter that follows
+ * CONFIRMS the exit). The old code did exactly that: it typed 1, then Enter,
+ * and thereby chose "No, exit" on a fresh install.
+ *
+ * So the answer is derived from the pane instead of assumed: find the cursor,
+ * find the accepting option, and move the selection onto it.
+ *
+ * The bypass-permissions dialog is answered the same way and for the same
+ * reason. Its own accept row ("Yes, I accept") sits SECOND behind a first,
+ * highlighted "No, exit" -- so the previously used number ("2") was one
+ * dropped prefix away from the identical failure. Measured 2026-09-01: on
+ * an existing HOME the bypass panel does not appear at all, but that says
+ * nothing about a brand-new machine, which is exactly the fresh-install
+ * path this whole card is about.
+ *
+ * Returns null -- meaning PARK AND ALERT, send nothing -- when the layout is
+ * not understood. Neither Enter nor Escape is a safe default here: Escape is
+ * "No, exit" by the dialog's own footer, and Enter confirms whatever happens
+ * to be highlighted. On an unrecognised shape, not acting is the correct move.
+ */
+export function firstRunAcceptKeys(pane: string): string[] | null {
+  if (!pane || !pane.trim()) return null
+  const lines = pane.split('\n')
+  const cursorIdx = lines.findIndex(l => l.includes(CURSOR_GLYPH))
+  if (cursorIdx < 0) return null
+
+  // The options are the contiguous run of non-blank lines around the cursor.
+  // Anchoring on the run (rather than on line numbers or on a fixed distance)
+  // is what survives a layout change: boxed or unboxed, numbered or not.
+  let first = cursorIdx
+  while (first > 0 && lines[first - 1].trim() !== '') first--
+  let last = cursorIdx
+  while (last < lines.length - 1 && lines[last + 1].trim() !== '') last++
+  const block = lines.slice(first, last + 1)
+
+  // The target is the option that accepts. Match on "yes" and exclude the
+  // refusal explicitly, so a future "Yes, exit"-shaped wording cannot be
+  // mistaken for consent.
+  const yesIdx = block.findIndex(l => /\byes\b/i.test(l) && !/\bno,\s*exit\b/i.test(l))
+  if (yesIdx < 0) return null
+  // Ambiguity is a reason to stop, not to guess: two "yes"-looking rows mean
+  // the layout is not what this function models.
+  if (block.filter(l => /\byes\b/i.test(l) && !/\bno,\s*exit\b/i.test(l)).length !== 1) return null
+
+  const delta = yesIdx - (cursorIdx - first)
+  const move = delta === 0 ? [] : Array.from({ length: Math.abs(delta) }, () => (delta > 0 ? 'Down' : 'Up'))
+  return [...move, 'Enter']
+}
 
 /**
  * Classify the pane as a Claude Code first-run gate, or null when it is a
@@ -582,7 +661,7 @@ export function detectsFirstRunGate(pane: string): FirstRunGateKind | null {
 //   ❯ 2. Switch to Sonnet 5 and continue
 //   Enter to confirm · Esc to cancel
 // with the DEFAULT CURSOR ON THE SWITCH OPTION. Any blind Enter reaching the
-// pane (the post-spawn identity /name, sendPromptToSession's retry-Enter,
+// pane (the post-spawn identity /rename, sendPromptToSession's retry-Enter,
 // a human reflex) silently switches the session to Sonnet. The dialog is
 // detected here (pure, unit-testable) and answered in agent-process.ts by
 // actively selecting option 1 ("Continue with <model>") -- never the switch
@@ -598,6 +677,46 @@ const MODEL_CONSENT_TITLE_RX = /(?:now uses|runs on|requires) usage credits/
 const MODEL_CONSENT_CONTINUE_RX = /1\.\s*Continue with /
 const MODEL_CONSENT_CONFIRM_RX = /Enter to confirm/
 
+// Tool-permission prompt. Claude Code asks for one even under
+// --dangerously-skip-permissions when the target is its OWN configuration
+// (~/.claude/**: skills, settings, scheduled-tasks) -- the second option says
+// so literally: "Yes, and allow Claude to edit its own settings for this
+// session". Measured 2026-09-05 on a live session: a write to ~/.claude/ opens
+// the dialog, while a write to an ordinary path outside the project does NOT,
+// so "outside the project" is not the trigger; Claude's own config is.
+//
+// Out here the prompt is indistinguishable from a stuck menu: its footer says
+// "Esc to cancel", so detectsBlockingMenu matches it (verified against a real
+// captured pane). But Escape on a permission prompt is not a harmless dismiss
+// -- it is NO. The watchdog therefore DENIED the agent's own requests ~45s
+// after they appeared, silently, while the operator believed they had approved
+// them (confirmed by the operator: "Ment allow"). Five skill-file writes died
+// this way, which is why self-improvement in particular kept failing: the
+// skills live under ~/.claude/, so they are the writes that open the dialog.
+//
+// Same reasoning as TRUSTGATE901: no keystroke is neutral here, so the monitor
+// must send none and say so loudly instead. Detection deliberately errs BROAD
+// (footer marker OR question+Yes shape): a false positive only means a genuine
+// stuck menu is alerted instead of Escaped -- the operator still learns of it
+// -- while a false negative silently answers NO on the operator's behalf.
+const PERMISSION_AMEND_RX = /\bTab to amend\b/
+const PERMISSION_QUESTION_RX = /Do you want to [^\n?]{0,80}\?/
+const PERMISSION_YES_RX = /(?:^|\n)\s*[\u276f>]?\s*1\.\s*Yes\b/
+
+export function detectsPermissionDialog(pane: string): boolean {
+  if (!pane || !pane.trim()) return false
+  const lines = pane.split('\n')
+  const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(busyRegion)) return false
+  }
+  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
+  if (IDLE_FOOTER_RX.test(pane)) return false
+  return PERMISSION_AMEND_RX.test(footerRegion)
+    || (PERMISSION_QUESTION_RX.test(pane) && PERMISSION_YES_RX.test(pane))
+}
+
 export function detectsModelConsentDialog(pane: string): boolean {
   if (!pane || !pane.trim()) return false
   const lines = pane.split('\n')
@@ -611,6 +730,87 @@ export function detectsModelConsentDialog(pane: string): boolean {
   return MODEL_CONSENT_TITLE_RX.test(pane)
     && MODEL_CONSENT_CONTINUE_RX.test(pane)
     && MODEL_CONSENT_CONFIRM_RX.test(footerRegion)
+}
+
+// Claude Code's self-drafted feedback modal (first observed 2026-08-31 on
+// agent-samu, which sat not-ready for 10 minutes with 5 inter-agent messages
+// queued behind it). When the model drafts a feedback report it parks the TUI
+// on a bordered box above the prompt:
+//   ╭──────────────────────────────────────────────╮
+//   │ ✻ Bug report drafted: <one-line summary>…    │
+//   │ 1 to review · 2 to send · 0 to dismiss       │
+//   ╰──────────────────────────────────────────────╯
+// Unlike the resume/consent modals this one leaves the NORMAL IDLE FOOTER on
+// screen ("bypass permissions on … · 1 feedback draft"), so detectPaneState
+// still reads the pane as idle and delivery keeps "succeeding" into a pane
+// that swallows the keystrokes. IDLE_FOOTER_RX is therefore NOT usable as a
+// negative guard here, and quote-proofing has to come from somewhere else:
+// the option line must sit INSIDE the modal's box border. A message that
+// merely quotes "1 to review · 2 to send · 0 to dismiss" renders in the
+// prompt input (no box border on that line) and can never trigger a
+// keystroke. The busy guard follows detectsModelConsentDialog's discipline:
+// a pane mid-turn is never an actionable modal.
+//
+// The border alone is NOT enough, and the hole was found in review: an option
+// line quoted WITH its border ("  │ 1 to review · 2 to send · 0 to dismiss  │")
+// matches it -- and the very code comment above is that shape, so a diff of
+// this file pasted into a prompt would arm the detector against its author.
+// Two further conditions close it:
+//   1. POSITION. The real modal renders ABOVE the prompt input; anything a
+//      person or agent parks in the box renders at or below the `❯` marker.
+//      The option line must therefore precede the last prompt marker.
+//   2. ADJACENCY. The modal sits directly on top of the input (measured: 6
+//      lines up); scrollback quotes drift further away. Scoping to the live
+//      region keeps an old transcript quote from arming anything.
+// Residual vector, stated rather than hidden: a faithfully bordered
+// reproduction rendered in the live region ABOVE the prompt still matches.
+// The blast radius is one stray "0" character typed into an idle prompt --
+// the Esc follow-up cannot fire without its own detector -- which is the
+// cheaper failure. Gating on the footer's "N feedback draft" counter would
+// prune it, but that string TRUNCATES on a narrow pane, and a false negative
+// here costs a 10-minute silent stall.
+const FEEDBACK_DRAFT_OPTIONS_RX = /^[^\S\n]*│.*?\d+ to review\b.*?\d+ to send\b.*?\d+ to dismiss\b/
+const PROMPT_MARKER_RX = /^[^\S\n]*❯/
+
+export function detectsFeedbackDraftModal(pane: string): boolean {
+  if (!pane || !pane.trim()) return false
+  const lines = pane.split('\n')
+  const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(busyRegion)) return false
+  }
+  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
+
+  const liveFrom = Math.max(0, lines.length - BUSY_LIVE_REGION_LINES)
+  let optionsAt = -1
+  for (let i = lines.length - 1; i >= liveFrom; i--) {
+    if (FEEDBACK_DRAFT_OPTIONS_RX.test(lines[i])) { optionsAt = i; break }
+  }
+  if (optionsAt < 0) return false
+
+  let lastPromptAt = -1
+  for (let i = lines.length - 1; i > optionsAt; i--) {
+    if (PROMPT_MARKER_RX.test(lines[i])) { lastPromptAt = i; break }
+  }
+  // No prompt marker below the box means the option line is inside the input
+  // box (or the pane is mid-render): not an actionable modal.
+  return lastPromptAt > optionsAt
+}
+
+// The follow-up Claude Code shows immediately after the draft modal is
+// dismissed: "Turn off Claude-drafted feedback? 0 to turn off · Esc to keep".
+// Only ever consulted in the frame right after we send the dismiss key. It
+// renders ABOVE the prompt box (measured: ~7 lines up from the footer, so
+// LIVE_FOOTER_REGION_LINES is too narrow for it) and is scoped to the live
+// region so a quoted mention in scrollback cannot answer it. Answering it with a second "0" would silently disable
+// feedback drafting for that agent -- the dismisser answers Esc (keep).
+const FEEDBACK_OPTOUT_RX = /Turn off Claude-drafted feedback/
+
+export function detectsFeedbackOptOutPrompt(pane: string): boolean {
+  if (!pane || !pane.trim()) return false
+  const liveRegion = pane.split('\n').slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  return FEEDBACK_OPTOUT_RX.test(liveRegion)
 }
 
 export interface DetectPaneStateOptions {
@@ -1633,7 +1833,18 @@ export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputActi
 // defer forever or the channel goes permanently mute (2026-07-25 hermes
 // incident: parked multi-row scheduled-task -> hold + 'typing' deferred both
 // the stuck-input hard restart AND the keepalive-staleness respawn).
-export function parkedMainInputHasRemedy(pane: string): boolean {
+// recordedMatch defaults to false (conservative: claiming a remedy that was
+// not actually verified would let a genuinely wedged main session defer its
+// hard restart forever, the same risk as the hermes incident above). A
+// caller that has session context -- and so can consult the injected-prompt
+// registry via getInjectedPrompt/matchesInjectedPrompt -- should pass the
+// real result: without it, a scrolled parked fragment that lost BOTH its
+// recognisable prefix and every MACHINE_ORIGIN_TRUNCATED_MARKERS boilerplate
+// phrase reads as a no-remedy hold even when the registry proves it is a
+// known, safely-clearable machine injection (measured 2026-08-25: the main
+// channel hard-restarted twice for exactly this shape of parked input, a
+// routine scheduled-task tick whose visible fragment held neither marker).
+export function parkedMainInputHasRemedy(pane: string, recordedMatch = false): boolean {
   const block = parkedChannelInput(pane)
   const facts: StuckInputActionFacts = {
     escalate: true,
@@ -1645,12 +1856,7 @@ export function parkedMainInputHasRemedy(pane: string): boolean {
     hasPlainText: false,
     scheduledTaskBlock: parkedScheduledTaskInput(pane),
     machineOrigin: parkedMachineOriginInput(pane),
-    // Deliberately false: this helper takes only a pane, not a session, so it
-    // cannot consult the injected-prompt registry. Claiming a remedy we have
-    // not verified would let a genuinely wedged main session defer its
-    // hard restart forever (the 2026-07-25 hermes incident). Under-claiming
-    // only costs a restart that the soft path might also have fixed.
-    recordedMatch: false,
+    recordedMatch,
   }
   return decideStuckInputAction(facts) !== 'hold'
 }

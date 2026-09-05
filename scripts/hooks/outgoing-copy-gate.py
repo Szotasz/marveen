@@ -440,24 +440,54 @@ _LOCAL_RULES = os.environ.get(
 )
 
 
+# CLCOPYGATEHIANY902 (owner decision, TG 14442): a MISSING rules file is not
+# the same thing as a BROKEN one, and until now both produced the same
+# email-blocking outcome. The file is deliberately NOT shipped (it names a
+# private person), so on every fresh customer install it is absent -- and the
+# old fail-closed email path made a paying customer's agent unable to send
+# mail at all (reported by Nova, 2026-09-02). New policy:
+#   "missing"/"empty" -> the name check is OFF: fail-OPEN with a LOUD,
+#                        user-visible warning on every send (the customer
+#                        must know the check is not protecting them);
+#   "invalid"         -> the file EXISTS but cannot be used (bad JSON, wrong
+#                        schema, uncompilable regex): the operator tried to
+#                        configure it and something is wrong -- the email
+#                        path stays fail-CLOSED until it is fixed;
+#   "ok"              -> patterns loaded, the check enforces as before.
 def load_bad_name():
+    """Return (compiled_regex_or_None, state) -- state in ok/missing/empty/invalid."""
     try:
         with open(_LOCAL_RULES, encoding="utf-8") as fh:
-            pats = json.load(fh).get("bad_name_patterns") or []
-        if pats:
-            return re.compile("|".join(pats))
-    except OSError:
-        pass
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            state = "invalid"
+        else:
+            pats = data.get("bad_name_patterns") or []
+            if not isinstance(pats, list) or not all(isinstance(x, str) for x in pats):
+                state = "invalid"
+            elif not pats:
+                state = "empty"
+            else:
+                return (re.compile("|".join(pats)), "ok")
+    except FileNotFoundError:
+        state = "missing"
     except Exception:
-        pass
+        # Present but unusable: unreadable (permissions), unparseable JSON,
+        # or an uncompilable pattern. All of these mean someone TRIED to
+        # configure the rule and failed -- that must stay loud AND closed.
+        state = "invalid"
+    # ONE logging tail for EVERY non-ok state (Marveen review on #1156: the
+    # first cut logged only the exception branches, so empty/schema-invalid
+    # left no log line while missing did -- same event class, inconsistent
+    # ledger).
     try:
         log_path = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
         with open(log_path, "a", encoding="utf-8") as fh:
-            fh.write(f"outgoing-copy-gate: NEV-SZABALY FAJL HIANYZIK/URES ({_LOCAL_RULES}) -- "
-                     "a nev-ellenorzes NEM fut; potold a store/outgoing-copy-gate-rules.json-t.\n")
+            fh.write(f"outgoing-copy-gate: NEV-SZABALY {state.upper()} ({_LOCAL_RULES}) -- "
+                     "a nev-ellenorzes NEM fut.\n")
     except OSError:
         pass
-    return None
+    return (None, state)
 
 
 def _name_correction() -> str:
@@ -469,7 +499,7 @@ def _name_correction() -> str:
         return ""
 
 
-BAD_NAME = load_bad_name()
+BAD_NAME, RULES_STATE = load_bad_name()
 ACCENTED = set("áéíóöőúüűÁÉÍÓÖŐÚÜŰ")
 TAG = re.compile(r"<[^>]+>")
 
@@ -583,49 +613,28 @@ def accentless_evidence(words):
     return {w for w in words if w in ACCENTLESS and w not in AMBIGUOUS_TRIGGER}
 
 
-def collect_bash_body(cmd: str):
-    """Return (text, unreadable_reason). text is '' when nothing was recovered."""
-    parts = []
-    for m in re.finditer(r"--(?:body|subject)[= ]+(\"([^\"]*)\"|'([^']*)'|(\S+))", cmd):
-        val = m.group(2) or m.group(3) or m.group(4) or ""
-        # A shell-expanded --body ($(cat f), `cat f`, $VAR) reaches this hook
-        # UNEXPANDED: what we would audit is the literal command text, not the
-        # letter. That is worse than useless -- it fires on words that happen to
-        # sit in the PATH while the real copy goes uninspected. Measured
-        # 2026-08-11 on a live customer letter: `--body "$(cat .../hidli_zaro_
-        # level.txt)"` blocked on "level" from the FILENAME, and the letter
-        # itself was never read. Same fail-closed rule as the `<` branch below.
-        if re.search(r"\$\(|`|\$\{?\w", val):
-            return ("\n".join(parts),
-                    "a --body shell-behelyettesitest tartalmaz, amit a hook nem old fel "
-                    f"({val[:60]}...) -- igy a parancs szoveget vizsgalnam, nem a levelet")
-        parts.append(val)
-    # heredoc payloads sit inline in the command string
-    for m in re.finditer(r"<<-?\s*'?(\w+)'?\n(.*?)\n\1", cmd, re.S):
-        parts.append(m.group(2))
-    # A single `<` only. Without the lookarounds a heredoc (`<<'EOF'`) matches
-    # here and the quoted delimiter is taken for a filename -- caught by the
-    # first live probe of this gate, which blocked with "'EOF': No such file".
-    redirect = re.search(r"(?<!<)<(?!<)\s*([^\s|;&<>]+)", cmd)
-    if redirect:
-        raw = redirect.group(1)
-        path = os.path.expandvars(os.path.expanduser(raw))
-        if "$" in path:
-            return ("\n".join(parts), f"a torzs egy fel nem oldhato utvonalrol jon ({raw})")
-        try:
-            with open(path, encoding="utf-8", errors="replace") as fh:
-                parts.append(fh.read())
-        except OSError as exc:
-            return ("\n".join(parts), f"a torzs-fajl nem olvashato ({path}: {exc})")
-    if not parts and re.search(r"\|\s*(python3?|node|tsx)?[^|]*send", cmd):
-        return ("", "a torzs egy pipe-bol jon, a hook nem latja")
-    return ("\n".join(parts), None)
+# collect_bash_body / collect_mcp_body moved VERBATIM to email_extract.py
+# (EMAILKAPU901 PR1): the level-2 approval gate hashes the same letter this
+# gate audits, so the extraction must have exactly one implementation.
+# Byte-parity with the pre-move behavior is pinned by
+# scripts/__tests__/email-extract-parity.test.py against a golden captured
+# from the pre-move code.
+# GUARDED import: a bare ImportError would escape the __main__ net (it fires
+# during module load), exit 1, and PreToolUse treats 1 as NON-blocking -- the
+# send would run UNCHECKED. The stubs keep the email path fail-closed through
+# the existing unreadable branch, and leave the telegram path (which never
+# calls these) fail-open as designed.
+try:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from email_extract import collect_bash_body, collect_mcp_body  # noqa: E402
+except Exception as _extract_exc:  # noqa: BLE001 -- deliberate fail-closed stub
+    _EXTRACT_ERR = repr(_extract_exc)
 
+    def collect_bash_body(cmd: str):
+        return ("", f"az email_extract modul nem toltheto be ({_EXTRACT_ERR})")
 
-def collect_mcp_body(tool_input: dict):
-    fields = ("body", "text", "html", "htmlBody", "message", "subject", "content")
-    got = [str(tool_input[f]) for f in fields if tool_input.get(f)]
-    return "\n".join(got)
+    def collect_mcp_body(tool_input: dict):
+        return ""
 
 
 # --- Telegram reply (GATETG816) ---------------------------------------------
@@ -792,12 +801,16 @@ def main():
     # csendben lealit nev-ellenorzes mellett kuldeni rosszabb, mint megvarni a
     # szabaly-fajl potlasat. (A telegram-ag fail-open marad systemMessage
     # figyelmeztetessel: az a felugyeleti csatorna, ott a nemulas a dragabb.)
-    if BAD_NAME is None:
+    if RULES_STATE == "invalid":
+        # The file EXISTS but cannot be used: someone configured it and got it
+        # wrong. Silent enforcement-loss here would be invisible, so this stays
+        # fail-closed until the file is repaired (negative control in tests).
         sys.stderr.write(
-            "KIMENO-SZOVEG KAPU: TILTVA -- a NEV-SZABALY fajl hianyzik/ures "
-            f"({_LOCAL_RULES}), igy a nev-ellenorzes nem tud lefutni.\n"
-            "Email fail-closed: potold a store/outgoing-copy-gate-rules.json-t "
-            "(bad_name_patterns + correction), aztan kuldd ujra.\n"
+            "KIMENO-SZOVEG KAPU: TILTVA -- a NEV-SZABALY fajl LETEZIK, de "
+            f"ervenytelen ({_LOCAL_RULES}): nem parse-olhato JSON, rossz sema "
+            "vagy hibas regex.\n"
+            "Javitsd a fajlt (bad_name_patterns: [regex, ...] + correction), "
+            "aztan kuldd ujra.\n"
         )
         sys.exit(2)
 
@@ -811,6 +824,16 @@ def main():
         )
         sys.exit(2)
 
+    if RULES_STATE in ("missing", "empty"):
+        # Fail-OPEN, but never silent: the send goes out WITHOUT the name
+        # check, and the user must see that on the surface they are using --
+        # a log line nobody reads is the same as nothing (CLCOPYGATEHIANY902).
+        print(json.dumps({"systemMessage":
+            "outgoing-copy-gate: a NEV-SZABALY fajl "
+            + ("HIANYZIK" if RULES_STATE == "missing" else "URES (nincs minta)")
+            + f" ({_LOCAL_RULES}) -- ez a level a nev-ellenorzes NELKUL ment ki. "
+            "Ha kell a vedelem, hozd letre a fajlt: "
+            '{"bad_name_patterns": ["<python-regex>"], "correction": "<helyes alak>"}.'}))
     sys.exit(0)
 
 
