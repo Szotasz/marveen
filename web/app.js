@@ -360,9 +360,6 @@ function switchPage(pageId) {
   openSidebarGroupForPage(pageId)
   // Kanban needs full-width layout (overrides main's max-width: 1200px)
   document.querySelector('main').classList.toggle('kanban-active', pageId === 'kanban')
-  // Activity page runs a live poll; stop it whenever we navigate away.
-  if (pageId !== 'activity') stopActivityPoll()
-  if (pageId === 'activity') startActivityPoll()
   // Agents page tints each Terminal button green while that agent is working;
   // same 3s poll + source as Activity. Stop it when we leave the page.
   if (pageId !== 'agents') stopAgentsBusyPoll()
@@ -431,7 +428,9 @@ const SIDEBAR_GROUPS_LS_KEY = 'marveen.sidebarGroups'
 // into their group containers per this map, so regrouping a page (say, moving
 // naplo under system) or relabeling a group is a one-line change right here.
 const SIDEBAR_GROUPS = [
-  { key: 'team',        labelKey: 'nav.group.team',        pages: ['agents', 'activity', 'messages', 'tasks', 'bgTasks'] },
+  // 'activity' is gone: the live per-agent status is now the Agents page's
+  // "Aktivitás" card mode, so it has no page, no nav entry and no URL.
+  { key: 'team',        labelKey: 'nav.group.team',        pages: ['agents', 'messages', 'tasks', 'bgTasks'] },
   { key: 'knowledge',   labelKey: 'nav.group.knowledge',   pages: ['memories', 'skills', 'research', 'ideas'] },
   { key: 'stats',       labelKey: 'nav.group.stats',       pages: ['costs', 'tokenUsage'] },
   { key: 'system',      labelKey: 'nav.group.system',      pages: ['status', 'naplo', 'updates', 'settings', 'vault'] },
@@ -536,7 +535,6 @@ const STATIC_I18N_MAP = {
 // Page id -> { title key, subtitle key (or null) }
 const PAGE_HEADER_I18N = {
   agentsPage:     { title: 'agents.page_title',     sub: 'agents.page_subtitle' },
-  activityPage:   { title: 'activity.page_title',   sub: 'activity.page_subtitle' },
   tasksPage:      { title: 'tasks.page_title',       sub: 'tasks.page_subtitle' },
   skillsPage:     { title: 'skills.page_title',      sub: 'skills.page_subtitle' },
   memoriesPage:   { title: 'memories.page_title',    sub: 'memories.page_subtitle' },
@@ -589,8 +587,10 @@ function renderStaticI18n() {
   // Messages empty state
   const chatEmpty = document.querySelector('.chat-thread-empty p')
   if (chatEmpty) chatEmpty.textContent = t('messages.select_agent')
-  // Team hint
-  const teamHint = document.querySelector('#teamPage > p')
+  // Team hint. Lives under the Agents page org-chart view since the separate
+  // Team page was merged in; the old '#teamPage > p' selector matched nothing
+  // and left the hint stuck on its hard-coded Hungarian.
+  const teamHint = document.getElementById('teamHint')
   if (teamHint) teamHint.textContent = t('team.hint')
 
   // Overview stat labels (siblings of statAgents, statTasks, statMemories, statSkills)
@@ -681,8 +681,9 @@ if (document.readyState !== 'loading') {
 // === Activity (live agent status) ===
 // ============================================================
 
-let activityTimer = null
-
+// The Activity page is gone -- its live per-agent status is the Agents page's
+// "Aktivitás" card mode (see renderAgentCardActivity). This table is the shared
+// vocabulary: the same states, labels, colours and tooltips as before.
 const ACTIVITY_STATE_META = {
   working: { label: () => t('activity.state.working'), cls: 'act-working', tip: 'Élő állapot (a tmux pane tartalmából, 3 másodpercenként): éppen dolgozik / gondolkodik.' },
   idle: { label: () => t('activity.state.idle'), cls: 'act-idle', tip: 'Élő állapot (3 másodpercenként): fut, de épp nem csinál semmit.' },
@@ -715,87 +716,38 @@ document.addEventListener('visibilitychange', () => {
   }
 })
 
-function startActivityPoll() {
-  loadActivity()
-  if (activityTimer) clearInterval(activityTimer)
-  activityTimer = setInterval(loadActivity, 3000)
-}
+// Permission-mode chip. Shown for every mode EXCEPT the ones that let the agent
+// work on its own -- inverted on purpose: an unfamiliar mode is exactly the one
+// worth surfacing, so a future Claude Code mode shows up here instead of hiding
+// behind a list nobody remembered to extend. Without this an agent parked in an
+// ask-first mode renders as plain 'idle', which is how one sat unusable for
+// hours on 2026-07-27.
+const AUTONOMOUS_MODES = ['bypass permissions', 'accept edits', 'auto mode']
 
-function stopActivityPoll() {
-  if (activityTimer) {
-    clearInterval(activityTimer)
-    activityTimer = null
-  }
+// The live status body of one agent card in "Aktivitás" mode: the state badge,
+// the permission-mode chip and the last few lines of the agent's pane. Same
+// markup the Activity page used, minus the name row -- the card already carries
+// the avatar, name and description above it.
+function agentActivityBodyHtml(entry) {
+  const metaRaw = ACTIVITY_STATE_META[entry.state] || ACTIVITY_STATE_META.unknown
+  const label = typeof metaRaw.label === 'function' ? metaRaw.label() : metaRaw.label
+  const tail = (entry.tail || []).map((l) => escapeHtml(l)).join('\n')
+  const modeChip = entry.mode && !AUTONOMOUS_MODES.includes(entry.mode)
+    ? '<span class="act-mode-badge" title="' + escapeHtml(t('activity.tooltip.mode', { mode: entry.mode })) + '">' + escapeHtml(entry.mode) + '</span>'
+    : ''
+  const termIcon = entry.running
+    ? '<svg class="act-term-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>'
+    : ''
+  return (
+    '<div class="agent-act-head">' +
+      '<span class="activity-badge ' + metaRaw.cls + '" title="' + escapeHtml(metaRaw.tip || '') + '">' + (entry.state === 'working' ? '<span class="act-orb" aria-hidden="true"></span>' : '') + escapeHtml(label) + '</span>' +
+      '<span class="agent-act-head-right">' + modeChip + termIcon + '</span>' +
+    '</div>' +
+    (tail
+      ? '<pre class="activity-tail">' + tail + '</pre>'
+      : '<p class="activity-tail-empty">' + (entry.running ? t('agents.card.no_output') : t('agents.card.not_running')) + '</p>')
+  )
 }
-
-async function loadActivity() {
-  try {
-    const res = await fetch('/api/agents/activity')
-    if (!res.ok) throw new Error('HTTP ' + res.status)
-    const entries = await res.json()
-    renderActivity(entries)
-    const upd = document.getElementById('activityUpdated')
-    if (upd) upd.textContent = t('activity.updated', { time: new Date().toLocaleTimeString('hu-HU') })
-  } catch (e) {
-    const list = document.getElementById('activityList')
-    if (list) list.innerHTML = '<p class="activity-empty">' + t('activity.error_load') + ': ' + escapeHtml(String(e.message || e)) + '</p>'
-  }
-}
-
-function renderActivity(entries) {
-  const list = document.getElementById('activityList')
-  if (!list) return
-  if (!Array.isArray(entries) || entries.length === 0) {
-    list.innerHTML = '<p class="activity-empty">' + t('activity.empty') + '</p>'
-    return
-  }
-  list.innerHTML = entries.map((a) => {
-    const metaRaw = ACTIVITY_STATE_META[a.state] || ACTIVITY_STATE_META.unknown
-    const meta = { ...metaRaw, label: typeof metaRaw.label === 'function' ? metaRaw.label() : metaRaw.label }
-    const tail = (a.tail || []).map((l) => escapeHtml(l)).join('\n')
-    const mainBadge = a.isMain ? '<span class="act-main-badge">' + t('activity.badge.main') + '</span>' : ''
-    // Permission-mode chip. Shown for every mode EXCEPT the ones that let the
-    // agent work on its own -- inverted on purpose: an unfamiliar mode is
-    // exactly the one worth surfacing, so a future Claude Code mode shows up
-    // here instead of hiding behind a list nobody remembered to extend.
-    // Without this an agent parked in an ask-first mode renders as plain
-    // 'idle', which is how one sat unusable for hours on 2026-07-27.
-    const AUTONOMOUS_MODES = ['bypass permissions', 'accept edits', 'auto mode']
-    const modeChip = a.mode && !AUTONOMOUS_MODES.includes(a.mode)
-      ? '<span class="act-mode-badge" title="' + escapeHtml(t('activity.tooltip.mode', { mode: a.mode })) + '">' + escapeHtml(a.mode) + '</span>'
-      : ''
-    const canOpen = !!a.running
-    const termIcon = canOpen
-      ? '<svg class="act-term-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" title="' + t('activity.tooltip.terminal') + '"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>'
-      : ''
-    return (
-      '<div class="activity-card ' + meta.cls + (canOpen ? ' act-clickable' : '') + '" data-agent="' + escapeHtml(a.name) + '">' +
-        '<div class="activity-card-head">' +
-          '<span class="activity-name">' + escapeHtml(a.name) + mainBadge + '</span>' +
-          '<span style="display:flex;align-items:center;gap:8px">' +
-            modeChip +
-            termIcon +
-            '<span class="activity-badge ' + meta.cls + '" title="' + escapeHtml(meta.tip || '') + '">' + (a.state === 'working' ? '<span class="act-orb" aria-hidden="true"></span>' : '') + meta.label + '</span>' +
-          '</span>' +
-        '</div>' +
-        (tail
-          ? '<pre class="activity-tail">' + tail + '</pre>'
-          : '<p class="activity-tail-empty">' + (a.running ? 'nincs friss kimenet' : 'a session nem fut') + '</p>') +
-      '</div>'
-    )
-  }).join('')
-}
-
-// Event delegation: clicking a running activity-card opens the terminal modal
-;(() => {
-  const actList = document.getElementById('activityList')
-  if (actList) {
-    actList.addEventListener('click', (e) => {
-      const card = e.target.closest('.activity-card.act-clickable[data-agent]')
-      if (card) openTerminalModal(card.dataset.agent)
-    })
-  }
-})()
 
 
 // ============================================================
@@ -2999,6 +2951,146 @@ function setupAutoRestartUI(agent) {
   }
 }
 
+// ---- context-guard UI -------------------------------------------------------
+
+const CG_PHASE_LABELS = {
+  idle: 'idle',
+  'await-handoff': 'handoff',
+  'await-ready': 'restarting',
+  cooldown: 'cooldown',
+}
+
+async function setupContextGuardUI(agentName) {
+  const cgEnabled = document.getElementById('cgEnabled')
+  const cgAdvancedWrap = document.getElementById('cgAdvancedWrap')
+  if (!cgEnabled || !cgAdvancedWrap) return
+
+  if (cgEnabled.dataset.wired !== '1') {
+    cgEnabled.addEventListener('change', () => {
+      cgAdvancedWrap.hidden = !cgEnabled.checked
+    })
+    cgEnabled.dataset.wired = '1'
+  }
+
+  const cgActPct = document.getElementById('cgActPct')
+  const cgHardPct = document.getElementById('cgHardPct')
+  const cgValidationHint = document.getElementById('cgValidationHint')
+  const validatePcts = () => {
+    const invalid = Number(cgHardPct.value) < Number(cgActPct.value)
+    if (cgValidationHint) cgValidationHint.style.display = invalid ? '' : 'none'
+  }
+  if (cgActPct && cgActPct.dataset.cgwired !== '1') {
+    cgActPct.addEventListener('input', validatePcts)
+    cgHardPct.addEventListener('input', validatePcts)
+    cgActPct.dataset.cgwired = '1'
+  }
+
+  try {
+    const r = await fetch(`/api/agents/${encodeURIComponent(agentName)}/context-guard`)
+    if (!r.ok) return
+    const body = await r.json()
+    const cfg = body.contextGuard || {}
+    cgEnabled.checked = cfg.enabled === true
+    cgAdvancedWrap.hidden = !cgEnabled.checked
+    const cgLimitTokens = document.getElementById('cgLimitTokens')
+    if (cgLimitTokens) cgLimitTokens.value = cfg.limitTokens ? String(cfg.limitTokens) : ''
+    if (cgActPct) cgActPct.value = cfg.actPct != null ? Math.round(cfg.actPct * 100) : 90
+    if (cgHardPct) cgHardPct.value = cfg.hardPct != null ? Math.round(cfg.hardPct * 100) : 97
+    const cgCooldownMinutes = document.getElementById('cgCooldownMinutes')
+    if (cgCooldownMinutes) cgCooldownMinutes.value = cfg.cooldownMinutes ?? 15
+    const cgHandoffTimeout = document.getElementById('cgHandoffTimeout')
+    if (cgHandoffTimeout) cgHandoffTimeout.value = cfg.handoffTimeoutMinutes ?? 20
+  } catch { /* silent */ }
+
+  updateContextGuardLiveStatus(agentName)
+}
+
+function updateContextGuardLiveStatus(agentName) {
+  const liveEl = document.getElementById('cgLiveStatus')
+  const phaseEl = document.getElementById('cgPhaseDisplay')
+  const pctEl = document.getElementById('cgPctDisplay')
+  if (!liveEl || !phaseEl || !pctEl) return
+  fetch('/api/context-guard')
+    .then(r => r.ok ? r.json() : null)
+    .then(body => {
+      if (!body || !Array.isArray(body.agents)) return
+      const entry = body.agents.find(a => a.agent === agentName)
+      if (!entry) return
+      liveEl.style.display = ''
+      phaseEl.textContent = CG_PHASE_LABELS[entry.phase] || entry.phase || '-'
+      pctEl.textContent = typeof entry.pct === 'number' ? Math.round(entry.pct * 100) + '%' : '-'
+    })
+    .catch(() => {})
+}
+
+;(function startContextGuardPoll() {
+  function poll() {
+    fetch('/api/context-guard')
+      .then(r => r.ok ? r.json() : null)
+      .then(body => {
+        if (!body || !Array.isArray(body.agents)) return
+        body.agents.forEach(entry => {
+          const card = document.querySelector(`.agent-card[data-name="${CSS.escape(entry.agent)}"]`)
+          if (!card) return
+          let badge = card.querySelector('.ctx-guard-badge')
+          const active = entry.phase && entry.phase !== 'idle'
+          if (!active) { if (badge) badge.remove(); return }
+          if (!badge) {
+            badge = document.createElement('span')
+            badge.className = 'ctx-guard-badge'
+            badge.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:10px;background:var(--accent-warning,#f59e0b);color:#000;margin-left:4px;font-weight:600'
+            const footer = card.querySelector('.agent-card-footer')
+            if (footer) footer.appendChild(badge)
+          }
+          const pctStr = typeof entry.pct === 'number' ? ' ' + Math.round(entry.pct * 100) + '%' : ''
+          badge.textContent = (CG_PHASE_LABELS[entry.phase] || entry.phase) + pctStr
+        })
+        if (currentAgent && document.getElementById('cgLiveStatus')) {
+          updateContextGuardLiveStatus(currentAgent.autoRestartId || currentAgent.name)
+        }
+      })
+      .catch(() => {})
+  }
+  setInterval(poll, 30_000)
+})()
+
+document.getElementById('saveContextGuardBtn').addEventListener('click', async () => {
+  if (!currentAgent) return
+  const id = currentAgent.autoRestartId || currentAgent.name
+  const cgEnabled = document.getElementById('cgEnabled')
+  const cgActPct = document.getElementById('cgActPct')
+  const cgHardPct = document.getElementById('cgHardPct')
+  const cgCooldownMinutes = document.getElementById('cgCooldownMinutes')
+  const cgHandoffTimeout = document.getElementById('cgHandoffTimeout')
+  const cgLimitTokensEl = document.getElementById('cgLimitTokens')
+
+  const actPct = Number(cgActPct.value) / 100
+  const hardPct = Number(cgHardPct.value) / 100
+  if (hardPct < actPct) {
+    showToast(t('agents.settings.ctx_guard_pct_hint'))
+    return
+  }
+
+  const limitTokensRaw = cgLimitTokensEl ? cgLimitTokensEl.value.trim() : ''
+  const cfg = {
+    enabled: cgEnabled.checked,
+    actPct,
+    hardPct,
+    cooldownMinutes: Number(cgCooldownMinutes.value) || 15,
+    handoffTimeoutMinutes: Number(cgHandoffTimeout.value) || 20,
+    limitTokens: limitTokensRaw ? Number(limitTokensRaw) : null,
+  }
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(id)}/context-guard`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    })
+    if (!res.ok) throw new Error()
+    showToast(t('agents.toast.ctx_guard_saved'))
+  } catch { showToast(t('common.error_save')) }
+})
+
 // Populate the idle-flush controls from an agent payload. Same source as
 // setupAutoRestartUI (the agent detail carries contextGuard alongside
 // autoRestart), so the settings pane needs no extra fetch.
@@ -3057,6 +3149,7 @@ async function openMarveenDetail() {
   // Reuse the agent detail modal for Marveen
   currentAgent = { ...m, name: mainAgentId(), claudeMd: '', soulMd: '', mcpJson: '', skills: [] }
   setupAutoRestartUI(currentAgent)
+  setupContextGuardUI(agentApiName())
   setupIdleFlushUI(currentAgent)
 
   const displayName = m.name || 'Marveen'
@@ -3288,6 +3381,7 @@ function renderAgents() {
           Terminal
         </button>
       </div>
+      <div class="agent-card-activity"></div>
     `
     mCard.querySelector('.agent-terminal-btn')?.addEventListener('click', (e) => {
       e.stopPropagation(); openTerminalModal(mainAgentId())
@@ -3295,11 +3389,16 @@ function renderAgents() {
     mCard.querySelector('.agent-conversation-btn')?.addEventListener('click', (e) => {
       e.stopPropagation(); openConversationModal(mainAgentId(), t('agents.marveen_boss'))
     })
-    mCard.addEventListener('click', () => openMarveenDetail())
+    mCard.addEventListener('click', () => onAgentCardClick(mainAgentId(), openMarveenDetail))
     agentsGrid.insertBefore(mCard, addBtn)
   }
 
   for (const agent of agents) {
+    // Skip the main agent — it is already rendered as the dedicated Marveen
+    // card above (window._marveen block). Without this guard a second card
+    // appears once the agents/atlas/ config directory is created.
+    if (agent.name === mainAgentId()) continue
+
     // agent.name is the sanitized id (API/filesystem); displayName keeps the
     // original accented/cased input the user typed.
     const label = agent.displayName || agent.name
@@ -3350,6 +3449,7 @@ function renderAgents() {
           Terminal
         </button>
       </div>
+      <div class="agent-card-activity"></div>
     `
     // Login button handler (start → confirm flow)
     card.querySelectorAll('.agent-login-btn').forEach(btn => {
@@ -3363,7 +3463,7 @@ function renderAgents() {
     card.querySelector('.agent-conversation-btn')?.addEventListener('click', (e) => {
       e.stopPropagation(); openConversationModal(agent.name, label)
     })
-    card.addEventListener('click', () => openAgentDetail(agent.name))
+    card.addEventListener('click', () => onAgentCardClick(agent.name, () => openAgentDetail(agent.name)))
     // Only running agents have a live session to look at, so only they get the
     // copy-the-tmux-command buttons.
     if (isRunning) attachTmuxCopyButtons(card, agent)
@@ -3384,6 +3484,14 @@ function renderAgents() {
 // endpoint. The main (Marveen) card matches on mainAgentId(); sub-agent cards
 // match on their data-name.
 let agentsBusyTimer = null
+// Last known 'working' ids from the poll below. Shared with the org chart so a
+// re-render (which rebuilds every node) keeps the active border instead of
+// blinking it off until the next 3s tick.
+let _workingAgentIds = new Set()
+// Ids whose tmux session is up. Decides whether an "Aktivitás"-mode card opens
+// the terminal on click, the same rule the Activity page used (a stopped agent
+// has no session to look at, so its card was not clickable).
+let _liveAgentIds = new Set()
 function startAgentsBusyPoll() {
   refreshAgentTerminalBusy()
   if (agentsBusyTimer) clearInterval(agentsBusyTimer)
@@ -3393,7 +3501,6 @@ function stopAgentsBusyPoll() {
   if (agentsBusyTimer) { clearInterval(agentsBusyTimer); agentsBusyTimer = null }
 }
 async function refreshAgentTerminalBusy() {
-  if (!agentsGrid) return
   let entries
   try {
     const res = await fetch('/api/agents/activity')
@@ -3401,15 +3508,39 @@ async function refreshAgentTerminalBusy() {
     entries = await res.json()
   } catch { return }
   if (!Array.isArray(entries)) return
-  const stateByName = new Map(entries.map((e) => [e.name, e.state]))
+  const byName = new Map(entries.filter((e) => e && e.name).map((e) => [e.name, e]))
+  _workingAgentIds = new Set(entries.filter((e) => e && e.state === 'working').map((e) => e.name))
+  _liveAgentIds = new Set(entries.filter((e) => e && e.running).map((e) => e.name))
   const mainId = mainAgentId()
-  agentsGrid.querySelectorAll('.agent-card:not(.add-card)').forEach((card) => {
-    const btn = card.querySelector('.agent-terminal-btn')
-    if (!btn) return
-    const id = card.classList.contains('marveen-card') ? mainId : card.dataset.name
-    const working = !!id && stateByName.get(id) === 'working'
-    btn.classList.toggle('agent-terminal-btn--busy', working)
-  })
+  if (agentsGrid) {
+    agentsGrid.querySelectorAll('.agent-card:not(.add-card):not(.federated-agent-card)').forEach((card) => {
+      const id = card.classList.contains('marveen-card') ? mainId : card.dataset.name
+      const entry = id ? byName.get(id) : null
+      const working = !!entry && entry.state === 'working'
+      const btn = card.querySelector('.agent-terminal-btn')
+      if (btn) btn.classList.toggle('agent-terminal-btn--busy', working)
+      // "Aktivitás" card mode: the live body plus the state colour and the
+      // clickable affordance. Written on every tick regardless of the current
+      // mode, so switching modes shows the current state instead of a blank
+      // card waiting for the next poll.
+      const body = card.querySelector('.agent-card-activity')
+      if (body) body.innerHTML = entry ? agentActivityBodyHtml(entry) : ''
+      const stateCls = entry ? (ACTIVITY_STATE_META[entry.state] || ACTIVITY_STATE_META.unknown).cls : 'act-unknown'
+      for (const meta of Object.values(ACTIVITY_STATE_META)) card.classList.remove(meta.cls)
+      card.classList.add(stateCls)
+      card.classList.toggle('agent-card-act-clickable', !!entry && !!entry.running)
+    })
+  }
+  // Org-chart view: same signal, painted as the node's border. Toggled in place
+  // rather than re-rendering, so an in-progress drag survives the tick.
+  // Scoped to #teamGraph on purpose -- the overview's mini graph is a snapshot
+  // and has no poll keeping it honest.
+  const treeGraph = document.getElementById('teamGraph')
+  if (treeGraph) {
+    treeGraph.querySelectorAll('.team-node[data-agent-id]').forEach((el) => {
+      el.classList.toggle('team-node-active', _workingAgentIds.has(el.dataset.agentId))
+    })
+  }
 }
 
 // Federated (remote-system) agents from the manifest-poller cache. Kept in a
@@ -3554,6 +3685,7 @@ async function openAgentDetail(agentName) {
 
   // Auto-restart settings + live context size
   setupAutoRestartUI(currentAgent)
+  setupContextGuardUI(currentAgent.autoRestartId || currentAgent.name)
   setupIdleFlushUI(currentAgent)
 
   // Telegram tab
@@ -10918,7 +11050,10 @@ async function loadTeamGraph() {
     const res = await fetch('/api/team/graph')
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const data = await res.json()
-    renderTeamGraph(container, data, { editable: true })
+    // Seed the active border from the last poll so it is right on first paint,
+    // then let the 3s agents-page poll keep it current.
+    renderTeamGraph(container, data, { editable: true, activeIds: _workingAgentIds })
+    if (agentsBusyTimer) refreshAgentTerminalBusy()
   } catch (err) {
     container.innerHTML = `<div class="team-empty">${t('team.error', { msg: err.message || err })}</div>`
   }
@@ -10951,6 +11086,7 @@ async function saveTeamReportsTo(childId, parentId, ctx) {
 
 function renderTeamGraph(container, data, opts = {}) {
   const editable = !!opts.editable
+  const activeIds = opts.activeIds instanceof Set ? opts.activeIds : new Set()
   const { nodes, edges, mainAgentId } = data
   container.innerHTML = ''
   const byId = new Map(nodes.map(n => [n.id, n]))
@@ -10983,7 +11119,15 @@ function renderTeamGraph(container, data, opts = {}) {
     if (node.role === 'main') div.classList.add('main')
     else if (node.role === 'leader') div.classList.add('leader')
     const roleLabel = node.role === 'main' ? t('team.role.main') : (node.role === 'leader' ? t('team.role.leader') : t('team.role.member'))
-    const running = node.running ? t('team.running') : t('team.stopped')
+    // Same pulsing dot the agent cards use, instead of the '●' that used to be
+    // baked into the translation -- a static glyph read as "stopped" next to a
+    // card whose dot was breathing.
+    const runLabel = node.running ? t('team.running') : t('team.stopped')
+    const runDotClass = node.running ? 'running' : 'stopped'
+    // Marked by refreshTeamGraphActivity() from /api/agents/activity, so the
+    // node carries its id for the class toggle that runs without a re-render.
+    div.dataset.agentId = node.id
+    if (activeIds.has(node.id)) div.classList.add('team-node-active')
     const avatarUrl = node.id === mainAgentId
       ? `/api/marveen/avatar${avatarBust()}`
       : `/api/agents/${encodeURIComponent(node.id)}/avatar${avatarBust()}`
@@ -10991,7 +11135,7 @@ function renderTeamGraph(container, data, opts = {}) {
       <div class="team-node-avatar"><img src="${avatarUrl}" alt="${escapeHtml(node.label || node.id)}" onerror="this.style.display='none'"></div>
       <div class="team-node-name">${escapeHtml(node.label || node.id)}</div>
       <div class="team-node-meta">${escapeHtml(roleLabel)}</div>
-      <div class="team-node-meta">${running}</div>
+      <div class="team-node-meta team-node-status"><span class="process-dot ${runDotClass}"></span>${escapeHtml(runLabel)}</div>
     `
     if (node.id !== mainAgentId) {
       div.addEventListener('click', () => openAgentDetail(node.id))
@@ -11100,30 +11244,49 @@ function renderTeamGraph(container, data, opts = {}) {
   }
 }
 
-// === Agents page: grid / org-chart view toggle ===
+// === Agents page: view toggle (cards / activity / org chart) ===
+// Three views, but only TWO layouts: 'grid' and 'activity' are the same card
+// grid with different card bodies ('grid' is the original card -- model badge,
+// run + channel status, actions; 'activity' replaces everything below the
+// avatar/name/description with the live pane status that used to be its own
+// Activity page), and 'tree' is the org chart. The card body follows from the
+// view, so the CSS keeps its data-card-mode hook without a second piece of
+// state to keep in sync.
 // Persists the chosen view for the session so navigating away and back keeps
 // the last selection. Defaults to 'grid'.
 let _agentsActiveView = 'grid'
 
-function _setAgentsView(view) {
-  _agentsActiveView = view
-  const gridView = document.getElementById('agentsGridView')
-  const treeView = document.getElementById('agentsTreeView')
-  const gridBtn  = document.getElementById('agentsViewGrid')
-  const treeBtn  = document.getElementById('agentsViewTree')
-  if (!gridView || !treeView) return
-  const showGrid = view === 'grid'
-  gridView.hidden = !showGrid
-  treeView.hidden = showGrid
-  if (gridBtn) gridBtn.classList.toggle('active', showGrid)
-  if (treeBtn) treeBtn.classList.toggle('active', !showGrid)
-  if (!showGrid) loadTeamGraph()
+// A card click means "open this agent" in card view and "look at what it is
+// doing" in activity view -- the same split the Activity page had, where only a
+// running agent's card was clickable.
+function onAgentCardClick(id, openDetail) {
+  if (_agentsActiveView === 'activity') {
+    if (id && _liveAgentIds.has(id)) openTerminalModal(id)
+    return
+  }
+  openDetail()
 }
 
-const _agentsViewGridBtn = document.getElementById('agentsViewGrid')
-const _agentsViewTreeBtn = document.getElementById('agentsViewTree')
-if (_agentsViewGridBtn) _agentsViewGridBtn.addEventListener('click', () => _setAgentsView('grid'))
-if (_agentsViewTreeBtn) _agentsViewTreeBtn.addEventListener('click', () => _setAgentsView('tree'))
+function _setAgentsView(view) {
+  _agentsActiveView = view === 'activity' || view === 'tree' ? view : 'grid'
+  const gridView = document.getElementById('agentsGridView')
+  const treeView = document.getElementById('agentsTreeView')
+  if (!gridView || !treeView) return
+  const showTree = _agentsActiveView === 'tree'
+  gridView.hidden = showTree
+  treeView.hidden = !showTree
+  if (agentsGrid) agentsGrid.dataset.cardMode = _agentsActiveView === 'activity' ? 'activity' : 'profile'
+  for (const btn of document.querySelectorAll('#agentsViewToggle [data-view]')) {
+    btn.classList.toggle('active', btn.dataset.view === _agentsActiveView)
+  }
+  // Repaint immediately rather than waiting up to 3s for the next tick.
+  if (!showTree && agentsBusyTimer) refreshAgentTerminalBusy()
+  if (showTree) loadTeamGraph()
+}
+
+for (const btn of document.querySelectorAll('#agentsViewToggle [data-view]')) {
+  btn.addEventListener('click', () => _setAgentsView(btn.dataset.view))
+}
 
 // === Team: inter-agent message log + compose ===
 // View the /api/messages queue and let the operator send a message to an agent
@@ -13315,6 +13478,21 @@ function renderBridgeEnrollSection(body) {
   document.getElementById('authBridgeEnrollBtn').addEventListener('click', bridgeEnrollFromUi)
 }
 
+// The pairing endpoint answers with a stable `code` beside its English
+// `error` sentence. Translate on the code, never on the sentence: the wording
+// is free to change, the code is the contract. An unknown code falls back to
+// the server's own sentence rather than to a blank line or a raw key, so a
+// server error added later degrades to English instead of disappearing.
+function bridgeEnrollErrorText(data) {
+  const code = data && typeof data.code === 'string' ? data.code : ''
+  if (code) {
+    const key = `auth.bridge.err.${code}`
+    const translated = t(key, (data && data.params) || {})
+    if (translated !== key) return translated
+  }
+  return (data && data.error) || t('auth.card.err_generic')
+}
+
 async function bridgeEnrollFromUi() {
   const msg = document.getElementById('authBridgeMsg')
   const out = document.getElementById('authBridgeBundle')
@@ -13334,7 +13512,7 @@ async function bridgeEnrollFromUi() {
       body: JSON.stringify(hostOverride ? { key_line: keyLine, name, host: hostOverride } : { key_line: keyLine, name }),
     })
     const data = await r.json().catch(() => ({}))
-    if (!r.ok) { msg.classList.add('err'); msg.textContent = data.error || t('auth.card.err_generic'); return }
+    if (!r.ok) { msg.classList.add('err'); msg.textContent = bridgeEnrollErrorText(data); return }
     msg.classList.add('ok')
     msg.textContent = (data.action === 'replaced' ? t('auth.bridge.repaired') : t('auth.bridge.paired')) +
       (data.warnings && data.warnings.length ? ` (${data.warnings.join('; ')})` : '')

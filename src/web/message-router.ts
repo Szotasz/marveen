@@ -28,7 +28,7 @@ import {
   capturePane,
   clearFeedbackModalAndRecheck,
 } from './agent-process.js'
-import { detectPaneState, detectsPermissionPrompt, permissionPromptSummary, type PaneState, type PermissionPromptSummary } from '../pane-state.js'
+import { detectPaneState, detectsPermissionDialog, permissionPromptSummary, type PaneState, type PermissionPromptSummary } from '../pane-state.js'
 import { setLastInboundModality } from './voice-modality.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
@@ -616,7 +616,7 @@ export async function runMessageRouterTick(): Promise<void> {
             // fact an unanswered permission prompt, so the alert can say what
             // the reader has to DO (answer it) instead of what would destroy
             // the work (restart it).
-            const awaitingPermission = pane != null && detectsPermissionPrompt(pane)
+            const awaitingPermission = pane != null && detectsPermissionDialog(pane)
             const permissionAsk = awaitingPermission && pane != null ? permissionPromptSummary(pane) : null
             notifyOrchestratorOfStuckSession(msg.to_agent, session, stuckMs, pendingMsgCount, paneState, awaitingPermission, permissionAsk)
             // Reset timer so we don't spam every tick; re-escalate after another window.

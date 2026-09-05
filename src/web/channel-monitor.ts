@@ -36,7 +36,7 @@ import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
 import { getInjectedPrompt, matchesInjectedPrompt } from './injected-prompt-registry.js'
 import {
-  detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, detectsFirstRunGate, detectsModelConsentDialog, detectsPermissionPrompt, permissionPromptSummary, type PaneErrorAlertState, type PaneState,
+  detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, detectsPermissionDialog, detectsFirstRunGate, detectsModelConsentDialog, type PaneErrorAlertState, type PaneState,
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
   parkedInputText, shouldClearTruncatedPreamble,
   parkedInputRowCount, submitLanded, decideStuckInputAction,
@@ -46,6 +46,7 @@ import {
 } from '../pane-state.js'
 import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST } from './main-agent.js'
 import { notifyChannel } from '../notify.js'
+import { sendRoutineAlert } from './routine-alert.js'
 import { getProvider, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { attemptChannelMcpReconnect } from './channel-mcp-reconnect.js'
 import { readLastIngestionTimestamp, TRANSCRIPT_DIR } from './inbound-probe.js'
@@ -439,14 +440,22 @@ async function performStuckInputAction(
         submitted = true
         break
       }
-      case 'clear-preamble':
+      case 'clear-preamble': {
         logger.warn({ session, attempt }, 'Stuck input -- truncated safety preamble, clearing buffer (no re-inject)')
-        await clearInputBuffer(session)
+        const cleared = await clearInputBuffer(session)
+        if (!cleared) logger.warn({ session, attempt }, 'Stuck input -- clear-preamble left text in the box; the leftover stays parked')
         break
-      case 'clear-scheduled':
+      }
+      case 'clear-scheduled': {
         logger.warn({ session, attempt }, 'Stuck input -- parked scheduled-task tick, clearing buffer (no re-inject; next schedule fire re-delivers)')
-        await clearInputBuffer(session)
+        const cleared = await clearInputBuffer(session)
+        // A half-cleared tick is the 2026-09-03 wedge: the fragment left behind
+        // stops matching a delivery wrapper, so every later restart decision
+        // reads it as a human draft. Say so in the log rather than reporting a
+        // clean clear that did not happen.
+        if (!cleared) logger.warn({ session, attempt }, 'Stuck input -- clear-scheduled left a fragment in the box; expect machineOrigin=false on the next tick')
         break
+      }
       case 'enter':
         // FABLEFALL1: same guard as the reinject-plain fallback above -- a bare
         // Enter must never reach the model consent dialog (its default SWITCHES
@@ -1058,7 +1067,7 @@ export function createMainChannelsSession(): MainSessionCreateResult {
     // boot instead of stacking a respawn on a session that is still coming up.
     writeRespawnStamp()
     logger.warn({ session: MAIN_CHANNELS_SESSION }, 'Main channels session absent -- recreating via channels.sh')
-    sendAlert(`♻️ A ${MAIN_CHANNELS_SESSION} session eltunt -- ujrainditom (channels.sh). Enelkul minden utemezett feladat csendben kimaradna.`)
+    sendRoutineAlert('main-session-recreate', `♻️ A ${MAIN_CHANNELS_SESSION} session eltunt -- ujrainditom (channels.sh). Enelkul minden utemezett feladat csendben kimaradna.`)
     return 'started'
   } catch (err) {
     logger.error({ err }, 'Failed to recreate main channels session via channels.sh')
@@ -1161,13 +1170,55 @@ function schedulePostResumePluginGuard(provider: ChannelProviderType): void {
         return
       }
       logger.warn({ provider }, 'Post-resume guard: --continue resume came up WITHOUT the channels plugin (CC 2.1.193) -- escalating to fresh respawn (context dropped, memory persists)')
-      sendAlert(`⚠️ A --continue resume suketen jott fel (nincs channel plugin). Fresh respawn most a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik, memoria marad).`)
+      sendRoutineAlert('post-resume-fresh-respawn', `⚠️ A --continue resume suketen jott fel (nincs channel plugin). Fresh respawn most a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik, memoria marad).`)
       respawnMarveenSessionFresh()
     } catch (err) {
       logger.warn({ err }, 'Post-resume guard probe failed (leaving recovery to the down-cascade)')
     }
   }, POST_RESUME_GUARD_DELAY_MS)
   logger.info({ delayMs: POST_RESUME_GUARD_DELAY_MS }, 'Post-resume plugin guard scheduled after --continue resume')
+}
+
+// --- launchd restart EFFECT check (LAUNCHDNOEFFECT904) ------------------------
+//
+// `launchctl unload` + `load` exiting 0 says the COMMAND ran, not that the
+// session restarted. Measured on 2026-09-04: the guard's saturation net fired
+// four times in one morning (12:10:20, 12:40:20, 13:15:20 ...), logged
+// "Hard restart: launchctl reload" every time and announced a restart to the
+// operator -- while the main pane's claude process kept the SAME pid for 34
+// hours. `launchctl print gui/<uid>/com.jarvis.channels` read
+// `state = not running`, `active count = 0` and, decisively, `runs = 0`: the
+// job had never been spawned since registration, so `unload` had nothing to
+// stop and the live process (started outside launchd) was never touched.
+// store/channels.log and channels.error.log confirm it -- neither grew during
+// any of those "restarts".
+//
+// The exit code is therefore the wrong signal. Measure the effect instead: the
+// pid of the claude process in the main pane. Unchanged pid = nothing
+// restarted, whatever launchctl returned, and we fall through to the
+// respawn-pane path that replaces the process directly.
+const LAUNCHD_EFFECT_POLL_MS = 1000
+const LAUNCHD_EFFECT_TIMEOUT_MS = 8000
+
+// Pure: did the launchd bounce actually replace the process?
+// A null reading (pane gone, tmux unreadable) is NOT evidence of a restart --
+// treat only an observed, different pid as one, so an unreadable pane falls
+// through to respawn-pane rather than reporting a success we cannot see.
+export function launchdRestartTookEffect(before: number | null, after: number | null): boolean {
+  if (before === null || after === null) return false
+  return before !== after
+}
+
+// pid of the claude process in the main channels pane, or null when unreadable.
+function mainPaneClaudePid(): number | null {
+  try {
+    const raw = execFileSync(tmuxBin(), ['list-panes', '-t', MAIN_CHANNELS_SESSION, '-F', '#{pane_pid}'],
+      { timeout: 3000, encoding: 'utf-8' })
+    const pid = parseInt(raw.trim().split('\n')[0] ?? '', 10)
+    return Number.isFinite(pid) && pid > 0 ? pid : null
+  } catch {
+    return null
+  }
 }
 
 export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
@@ -1182,21 +1233,40 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
   // The previous unconditional launchctl call was a silent no-op: launchctl
   // accepts a non-existent plist with exit 0, leaving the session untouched.
   if (process.platform !== 'linux' && existsSync(MAIN_CHANNELS_PLIST)) {
+    const pidBefore = mainPaneClaudePid()
     try {
       execFileSync('/bin/launchctl', ['unload', MAIN_CHANNELS_PLIST], { timeout: 5000 })
       execFileSync('/bin/sleep', ['2'], { timeout: 4000 })
       execFileSync('/bin/launchctl', ['load', MAIN_CHANNELS_PLIST], { timeout: 5000 })
-      logger.warn(`Hard restart: launchctl reload of com.${SERVICE_ID}.channels`)
-      marveenLastHardRestart = Date.now()
-      writeRespawnStamp() // coordinate with the systemd-timer watchdog
-      return { ok: true }
     } catch (err) {
       logger.error({ err }, 'Hard restart failed (launchctl)')
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
+    // The command returned 0. Now measure whether anything actually restarted:
+    // launchd needs a moment to tear the old process down and spawn the new one,
+    // so poll rather than read once.
+    let pidAfter = mainPaneClaudePid()
+    const deadline = Date.now() + LAUNCHD_EFFECT_TIMEOUT_MS
+    while (!launchdRestartTookEffect(pidBefore, pidAfter) && Date.now() < deadline) {
+      try { execFileSync('/bin/sleep', [String(LAUNCHD_EFFECT_POLL_MS / 1000)], { timeout: 4000 }) } catch { break }
+      pidAfter = mainPaneClaudePid()
+    }
+    if (launchdRestartTookEffect(pidBefore, pidAfter)) {
+      logger.warn({ pidBefore, pidAfter }, `Hard restart: launchctl reload of com.${SERVICE_ID}.channels`)
+      marveenLastHardRestart = Date.now()
+      writeRespawnStamp() // coordinate with the systemd-timer watchdog
+      return { ok: true }
+    }
+    logger.warn(
+      { pidBefore, pidAfter, plist: MAIN_CHANNELS_PLIST },
+      'Hard restart: launchctl reload exited 0 but the pane claude pid did not change -- launchd does not own this session; falling through to respawn-pane',
+    )
+    // fall through to the respawn-pane path below
   }
 
-  if (process.platform !== 'linux') {
+  // Plist-absent case only: the no-effect fall-through above logs its own,
+  // different reason, and claiming "plist absent" there would be false.
+  if (process.platform !== 'linux' && !existsSync(MAIN_CHANNELS_PLIST)) {
     logger.warn({ plist: MAIN_CHANNELS_PLIST }, 'Hard restart: launchd channels plist absent -- falling back to respawn-pane')
   }
 
@@ -1514,7 +1584,7 @@ function checkMainKeepaliveStaleness(): void {
   }
   const ageMin = Math.round((ageMs ?? 0) / 60000)
   logger.warn({ ageMs, paneState }, 'Channel keep-alive stale -- main session likely wedged/deaf, respawning via respawn-pane')
-  sendAlert(`⚠️ A fő channel keep-alive ${ageMin} perce nem frissült -- respawn-pane a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik, memoria marad).`)
+  sendRoutineAlert('keepalive-respawn', `⚠️ A fő channel keep-alive ${ageMin} perce nem frissült -- respawn-pane a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik, memoria marad).`)
   if (respawnMarveenSessionFresh()) {
     marveenLastKeepaliveRespawn = now
     // Suppress the process-down handler during the respawn window (reuses the
@@ -1736,7 +1806,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
       if (decision.alert) {
         const label = t.isMarveen ? BOT_NAME : (t.agentName ?? t.session)
         logger.error({ session: t.session, agent: label }, 'Agent wedged on thinking-block API error -- manual reset needed')
-        sendAlert(`🚨 A(z) ${label} agens elakadt egy thinking-block API hibaban (a session-history korrupt, minden uj prompt ugyanazt a 400-at adja). Kezi reset kell: allitsd le es inditsd ujra, friss session indul. Reszletek: tmux attach -t ${t.session}`)
+        sendAlert(`🚨 A(z) ${label} ágens elakadt egy thinking-block API hibában (a session-history korrupt, minden új prompt ugyanazt a 400-at adja). Kézi reset kell: állítsd le és indítsd újra, friss session indul. Részletek: tmux attach -t ${t.session}`)
       }
     }
 
@@ -1791,7 +1861,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
             logger.warn({ session: t.session, agent: label }, 'first-run trust dialog in an unrecognised shape -- parked, NO keystrokes sent')
             sendAlert(`🛑 A(z) ${label} session a mappa-megbízhatósági dialóguson parkol, de a panel alakját nem ismerem fel, ezért NEM nyomtam meg semmit. Se az Enter, se az Escape nem semleges rajta (az Escape a "No, exit"). Válassz kézzel: tmux attach -t ${t.session}, majd a "Yes, I trust this folder" sort jelöld ki és Enter.`)
           } else {
-            sendAlert(`🧭 A(z) ${label} session a Claude Code első-indítási képernyőjén parkolt (${firstRunGate}); automatikusan továbbléptettem. A várakozó ütemezett feladatok a következő körben kézbesítődnek.`)
+            sendRoutineAlert(`firstrun-gate:${label}`, `🧭 A(z) ${label} session a Claude Code első-indítási képernyőjén parkolt (${firstRunGate}); automatikusan továbbléptettem. A várakozó ütemezett feladatok a következő körben kézbesítődnek.`)
           }
         } else {
           // FABLEFALL1: the model usage-credit consent dialog is indistinguishable
@@ -1803,26 +1873,19 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // first and answer it safely (option 1, keep the configured model);
           // only a genuine menu gets the blind Escape.
           const paneNow = capturePane(t.session)
-          // A TOOL-PERMISSION prompt reaches this branch because its footer
-          // really does read "Esc to cancel" -- but Escape there is not the
-          // menu's "pop back to the prompt". It CANCELS the request, which is
-          // this process answering a consent question "no" on the owner's
-          // behalf, while the alert below would tell them their session was
-          // stuck "in an interactive menu (e.g. /mcp)". Measured on a live
-          // pane 2026-09-03 (agent-voicedev): detectsBlockingMenu true,
-          // detectsModelConsentDialog false -- nothing else stopped the blind
-          // Escape. Alert instead and leave the decision where it belongs.
-          // Auto-answering "Yes" is deliberately NOT an option: that would be
-          // the fleet granting itself a permission the owner gated.
-          if (paneNow != null && detectsPermissionPrompt(paneNow)) {
-            const ask = permissionPromptSummary(paneNow)
-            logger.warn({ session: t.session, agent: label, ask }, 'Session parked on a tool-permission prompt -- a person has to decide, alerting (no keystrokes sent)')
-            const askLine = ask ? ` Ezt kérdezi: ${ask.title} -- ${ask.reason}` : ''
-            sendAlert(`🔐 A(z) ${label} agent egy eszköz-engedélyre vár.${askLine} Ez NEM beragadt session: egy tool-hívás igent vagy nemet vár, és azt csak ember adhatja meg. Ne indítsd újra, mert a futó munka elveszik. Válaszolj a panelen: tmux attach -t ${t.session}`)
-          } else if (paneNow != null && detectsModelConsentDialog(paneNow)) {
+          if (paneNow != null && detectsModelConsentDialog(paneNow)) {
             logger.warn({ session: t.session, agent: label }, 'Blocking "menu" is the model usage-credit consent dialog -- answering it safely instead of Escape')
             await dismissModelConsentDialogIfPresent(t.session)
-            sendAlert(`🎛️ A(z) ${label} session a modell-hozzájárulás dialóguson parkolt; az 1-es opcióval (a beállított modell megtartása) továbbléptettem. Modellváltás NEM történt.`)
+            sendRoutineAlert(`model-consent:${label}`, `🎛️ A(z) ${label} session a modell-hozzájárulás dialóguson parkolt; az 1-es opcióval (a beállított modell megtartása) továbbléptettem. Modellváltás NEM történt.`)
+          } else if (paneNow != null && detectsPermissionDialog(paneNow)) {
+            // PERMDENY905: a tool-permission prompt also says "Esc to cancel",
+            // so detectsBlockingMenu matches it -- but Escape there is NO, not a
+            // dismiss. This monitor was therefore DENYING the agent's own
+            // requests ~45s after they appeared, while the operator believed
+            // they had approved them. Same rule as the unrecognised trust dialog
+            // above: no keystroke is neutral, so send none and say so, loudly.
+            logger.warn({ session: t.session, agent: label }, 'Blocking "menu" is a tool-permission prompt -- a human decides, NO keystrokes sent')
+            sendAlert(`🔐 A(z) ${label} session egy engedélykérésen vár, és NEM nyomtam meg semmit: ott az Escape NEM-et jelentene. Döntsd el te: tmux attach -t ${t.session}`)
           } else {
             logger.warn({ session: t.session, agent: label }, 'Session parked in a blocking interactive menu -- sending Escape to recover')
             try {
@@ -1830,7 +1893,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
             } catch (err) {
               logger.warn({ err, session: t.session }, 'Menu-recovery Escape failed')
             }
-            sendAlert(`⌨️ A(z) ${label} session beragadt egy interaktiv menube (pl. /mcp) es nem dolgozott fel uzeneteket. Kikuldtem egy Escape-et, visszateritettem a prompthoz. Ha ismetlodik: tmux attach -t ${t.session}`)
+            sendRoutineAlert(`menu-escape:${label}`, `⌨️ A(z) ${label} session beragadt egy interaktív menübe (pl. /mcp) és nem dolgozott fel üzeneteket. Kiküldtem egy Escape-et, visszatérítettem a prompthoz. Ha ismétlődik: tmux attach -t ${t.session}`)
           }
         }
       }
@@ -1980,7 +2043,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // leave it deaf. Ask the operator once, then keep deferring.
           if (!agentBusyDeferAlerted.has(t.session)) {
             logger.error({ agent: t.agentName, provider: t.provider, msDown }, 'Agent channel plugin down past busy-defer cap -- agent still working, alerting operator instead of killing it')
-            sendAlert(`⚠️ A(z) ${t.agentName} agens ${t.provider} csatornaja ${Math.round(msDown / 60000)} perce halott, de az agens KOZBEN DOLGOZIK. Nem inditom ujra (a restart FRISS session -- elveszne a folyamatban levo munkaja). Dontsd el: varjuk meg amig vegez (akkor magatol ujraindul), vagy kezzel allitsd meg. Session: ${t.session}.`)
+            sendAlert(`⚠️ A(z) ${t.agentName} ágens ${t.provider} csatornája ${Math.round(msDown / 60000)} perce halott, de az ágens KÖZBEN DOLGOZIK. Nem indítom újra (a restart FRISS session -- elveszne a folyamatban lévő munkája). Döntsd el: várjuk meg amíg végez (akkor magától újraindul), vagy kézzel állítsd meg. Session: ${t.session}.`)
             agentBusyDeferAlerted.add(t.session)
           }
           continue
@@ -2002,8 +2065,8 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // alert for a future down-spell).
           logger.error({ agent: t.agentName, provider: t.provider, failures, absentConfirmed }, 'Agent channel plugin down after max restart attempts -- giving up, alerting operator')
           sendAlert(absentConfirmed
-            ? `⛔ A(z) ${t.agentName} agens ${t.provider} plugin-je BE SEM TOLTODOTT (absent a /mcp listabol), a fresh-restart ezt nem javitja -- tovabb nem probalom (minden restart elveszi a session kontextusat). Kezi TISZTA ujrainditas kell (uresen, mas agens indulasaval nem atlapolva): ${t.session}.`
-            : `⛔ A(z) ${t.agentName} agens ${t.provider} csatornaja ${AGENT_MAX_RESTART_ATTEMPTS} automatikus ujrainditas utan sem allt helyre. Tovabb nem indinitom ujra (minden restart elveszi a session kontextusat). Kezi beavatkozas kell: nezd meg a ${t.session} session-t es a ${SERVICE_ID} csatorna-plugint.`)
+            ? `⛔ A(z) ${t.agentName} ágens ${t.provider} plugin-je BE SEM TÖLTŐDÖTT (absent a /mcp listából), a fresh-restart ezt nem javítja -- tovább nem próbálom (minden restart elveszi a session kontextusát). Kézi TISZTA újraindítás kell (üresen, más ágens indulásával nem átlapolva): ${t.session}.`
+            : `⛔ A(z) ${t.agentName} ágens ${t.provider} csatornája ${AGENT_MAX_RESTART_ATTEMPTS} automatikus újraindítás után sem állt helyre. Tovább nem indítom újra (minden restart elveszi a session kontextusát). Kézi beavatkozás kell: nézd meg a ${t.session} session-t és a ${SERVICE_ID} csatorna-plugint.`)
           agentRestartFailures.set(t.agentName!, failures + 1)
           savePersistedAgentFailures(t.agentName!, failures + 1)
           agentDownSince.delete(t.session)

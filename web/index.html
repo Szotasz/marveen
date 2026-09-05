@@ -92,10 +92,9 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
             <span class="sb-label">Ügynökök</span>
           </a>
-          <a href="#" class="sb-link" data-page="activity">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
-            <span class="sb-label">Aktivitás</span>
-          </a>
+          <!-- The separate Activity page was folded into the Agents page as a
+               card-content mode (Adatlap / Aktivitás), so it no longer has its
+               own nav entry or URL. -->
           <a href="#" class="sb-link" data-page="messages">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
             <span class="sb-label">Üzenetek</span>
@@ -404,16 +403,24 @@
             <p class="subtitle" data-i18n="agents.page_subtitle">AI csapattagok kezelése</p>
           </div>
           <div class="header-actions">
+            <!-- Three views, one row. "Kártyák" and "Aktivitás" are the SAME
+                 grid with different card bodies; only "Org chart" is a
+                 different layout. See _setAgentsView() in app.js. -->
             <div class="view-toggle" id="agentsViewToggle" role="group" aria-label="Nézet váltás">
-              <button class="btn-secondary btn-compact view-toggle-btn active" id="agentsViewGrid" data-view="grid" title="Kártyák">
+              <button class="btn-secondary btn-compact view-toggle-btn active" id="agentsViewGrid" data-view="grid" title="Kártyák" data-i18n="agents.view.cards" data-i18n-title="agents.view.cards">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
                 Kártyák
               </button>
-              <button class="btn-secondary btn-compact view-toggle-btn" id="agentsViewTree" data-view="tree" title="Org chart">
+              <button class="btn-secondary btn-compact view-toggle-btn" id="agentsViewActivity" data-view="activity" title="Aktivitás" data-i18n="agents.view.activity" data-i18n-title="agents.view.activity">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
+                Aktivitás
+              </button>
+              <button class="btn-secondary btn-compact view-toggle-btn" id="agentsViewTree" data-view="tree" title="Org chart" data-i18n="agents.view.org_chart" data-i18n-title="agents.view.org_chart">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"/><path d="M12 8v4"/><circle cx="5" cy="18" r="3"/><circle cx="19" cy="18" r="3"/><path d="M12 12l-7 6M12 12l7 6"/></svg>
                 Org chart
               </button>
             </div>
+            <span class="header-divider" aria-hidden="true"></span>
             <button class="btn-secondary btn-compact" id="exportAllAgentsBtn">Összes exportálása</button>
             <button class="btn-secondary btn-compact" id="importAgentBtn">Ügynök importálása</button>
             <input type="file" id="importAgentFile" accept=".gz,.tgz,application/gzip" hidden>
@@ -438,27 +445,15 @@
       <!-- Tree / org-chart view (merged from separate Team page) -->
       <div id="agentsTreeView" hidden>
         <div id="teamGraph" class="team-graph"></div>
-        <p style="color:var(--text-muted);font-size:12px;margin-top:16px">
+        <p id="teamHint" class="team-hint">
           A szerep és a beosztott/vezető kapcsolatok az ügynök részletek &gt; Csapat fülén szerkeszthetők.
+          Egérrel is átrendezheted: fogd meg az ügynököt és húzd rá arra, akinek ezután jelentenie kell.
         </p>
       </div>
     </div>
 
-    <!-- === Activity (live agent status) Page === -->
-    <div class="page" id="activityPage" hidden>
-      <div class="page-header">
-        <div class="page-header-row">
-          <div>
-            <h1 data-i18n="activity.page_title">Aktivitás</h1>
-            <p class="subtitle" data-i18n="activity.page_subtitle">Mit csinál épp minden ügynök: élő nézet, 3 mp-enként frissül</p>
-          </div>
-          <div class="activity-meta"><span id="activityUpdated" class="activity-updated"></span></div>
-        </div>
-      </div>
-      <div class="activity-list" id="activityList">
-        <p class="activity-empty" data-i18n="activity.loading">Betöltés…</p>
-      </div>
-    </div>
+    <!-- The Activity page lives on inside the Agents page: its per-agent live
+         status is the "Aktivitás" card mode there, same data and behaviour. -->
 
     <!-- === Tasks (Schedules) Page === -->
     <div class="page" id="tasksPage" hidden>
@@ -2455,6 +2450,59 @@
             </small>
             <button class="btn-secondary btn-compact agent-save-section" id="saveAutoRestartBtn" style="margin-top:10px" data-i18n="common.btn.save">Mentés</button>
           </div>
+          <div class="form-group" id="contextGuardGroup">
+            <label data-i18n="agents.settings.ctx_guard_label">Kontextus-limit alapú újraindítás</label>
+            <p style="margin:4px 0 10px;font-size:12.5px;line-height:1.5;color:var(--text-muted)">
+              Token-limit alapú guard: ha az ágens kontextusa eléri a beállított küszöböt, HANDOFF.md-t ír,
+              majd friss kontextussal folytatja. A 100%-os telítettséget mindig figyeli (saturation net) és
+              automatikusan újraindítja az ágensbe ragadt pane-t.
+            </p>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:12.5px;color:var(--text-muted)">
+              <input type="checkbox" id="cgSaturationNet" checked disabled style="cursor:default">
+              <span data-i18n="agents.settings.ctx_guard_sat_net">Saturation net: mindig aktív, 100%-os kontextusnál automatikusan újraindul (nem kapcsolható ki)</span>
+            </div>
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:10px;cursor:pointer">
+              <input type="checkbox" id="cgEnabled"> <span data-i18n="agents.settings.ctx_guard_enabled">Proaktív limit-figyelő (küszöb alapú handoff)</span>
+            </label>
+            <div id="cgAdvancedWrap" hidden>
+              <div class="form-row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+                <div class="form-group" style="flex:1;min-width:160px;margin-bottom:0">
+                  <label for="cgLimitTokens" style="font-size:12px;color:var(--text-muted)" data-i18n="agents.settings.ctx_guard_limit_tokens">Token-limit</label>
+                  <input type="number" id="cgLimitTokens" min="10000" step="10000" placeholder="modell alapértelmezése" style="width:100%">
+                </div>
+                <div class="form-group" style="margin-bottom:0">
+                  <label for="cgActPct" style="font-size:12px;color:var(--text-muted)" data-i18n="agents.settings.ctx_guard_act_pct">Handoff küszöb (%)</label>
+                  <input type="number" id="cgActPct" min="50" max="99" value="90" style="width:80px">
+                </div>
+                <div class="form-group" style="margin-bottom:0">
+                  <label for="cgHardPct" style="font-size:12px;color:var(--text-muted)" data-i18n="agents.settings.ctx_guard_hard_pct">Kényszer-újraindítás (%)</label>
+                  <input type="number" id="cgHardPct" min="50" max="99" value="97" style="width:80px">
+                </div>
+                <div class="form-group" style="margin-bottom:0">
+                  <label for="cgCooldownMinutes" style="font-size:12px;color:var(--text-muted)" data-i18n="agents.settings.ctx_guard_cooldown">Hűtési idő (perc)</label>
+                  <input type="number" id="cgCooldownMinutes" min="1" max="180" value="15" style="width:80px">
+                </div>
+              </div>
+              <details style="margin-top:10px">
+                <summary style="font-size:12px;color:var(--text-muted);cursor:pointer;user-select:none" data-i18n="agents.settings.ctx_guard_advanced">Haladó beállítások</summary>
+                <div class="form-row" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
+                  <div class="form-group" style="margin-bottom:0">
+                    <label for="cgHandoffTimeout" style="font-size:12px;color:var(--text-muted)" data-i18n="agents.settings.ctx_guard_timeout">Handoff timeout (perc)</label>
+                    <input type="number" id="cgHandoffTimeout" min="1" max="120" value="20" style="width:80px">
+                  </div>
+                </div>
+                <small style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px;line-height:1.5" data-i18n="agents.settings.ctx_guard_timeout_hint">
+                  Ha az ágens nem ír HANDOFF.md-t a timeout-on belül, kényszer-újraindítás következik.
+                </small>
+              </details>
+              <small id="cgValidationHint" style="display:none;margin-top:6px;color:var(--accent-warning, #f59e0b);font-size:12px" data-i18n="agents.settings.ctx_guard_pct_hint">
+                A kényszer-küszöb nem lehet kisebb a handoff-küszöbnél.
+              </small>
+            </div>
+            <div id="cgLiveStatus" style="display:none;margin-top:10px;padding:6px 10px;border-radius:6px;background:var(--surface-hover);font-size:12px;color:var(--text-muted)">
+              <span data-i18n="agents.settings.ctx_guard_status_prefix">Állapot:</span> <strong id="cgPhaseDisplay">-</strong> &middot; <span data-i18n="agents.settings.ctx_guard_status_ctx">Kontextus:</span> <strong id="cgPctDisplay">-</strong>
+            </div>
+            <button class="btn-secondary btn-compact agent-save-section" id="saveContextGuardBtn" style="margin-top:10px" data-i18n="common.btn.save">Mentés</button>
           <div class="form-group" id="idleFlushGroup">
             <label data-i18n="agents.settings.idle_flush_label">Tétlen-ürítés</label>
             <p style="margin:4px 0 10px;font-size:12.5px;line-height:1.5;color:var(--text-muted)" data-i18n="agents.settings.idle_flush_desc">
@@ -2617,6 +2665,7 @@
             <textarea id="editMcpJson" class="code-textarea" rows="8"></textarea>
             <button class="btn-secondary btn-compact agent-save-section" id="saveMcpJsonBtn" data-i18n="common.btn.save">Mentés</button>
           </div>
+        </div>
         </div>
 
         <!-- Tab: Channel -->

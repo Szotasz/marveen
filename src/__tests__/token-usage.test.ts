@@ -473,3 +473,42 @@ describe('tryHandleTokenUsage route handler', () => {
     expect(handled).toBe(false)
   })
 })
+
+// An agent that was never migrated to its own OS user still has an
+// agents/<name>/.claude-config/projects entry, but it is a SYMLINK back to
+// the shared ~/.claude/projects. Walking it books the whole fleet's
+// transcripts under that one agent, which is how three sub-agents came to
+// report byte-identical totals on 2026-09-04.
+describe('resolvesToSharedProjectsRoot', () => {
+  const ROOT = join(TEST_DIR, 'shared-root-probe')
+  const shared = join(ROOT, 'shared-projects')
+  const symlinked = join(ROOT, 'agent-projects-symlink')
+  const ownDir = join(ROOT, 'agent-projects-real')
+
+  beforeAll(async () => {
+    const { symlinkSync } = await import('node:fs')
+    rmSync(ROOT, { recursive: true, force: true })
+    mkdirSync(shared, { recursive: true })
+    mkdirSync(ownDir, { recursive: true })
+    symlinkSync(shared, symlinked)
+  })
+
+  afterAll(() => {
+    rmSync(ROOT, { recursive: true, force: true })
+  })
+
+  it('detects a projects dir that is a symlink to the shared root', async () => {
+    const { resolvesToSharedProjectsRoot } = await import('../web/token-usage.js')
+    expect(resolvesToSharedProjectsRoot(symlinked, shared)).toBe(true)
+  })
+
+  it('leaves a genuinely isolated projects dir alone', async () => {
+    const { resolvesToSharedProjectsRoot } = await import('../web/token-usage.js')
+    expect(resolvesToSharedProjectsRoot(ownDir, shared)).toBe(false)
+  })
+
+  it('treats a missing path as not shared', async () => {
+    const { resolvesToSharedProjectsRoot } = await import('../web/token-usage.js')
+    expect(resolvesToSharedProjectsRoot(join(ROOT, 'nope'), shared)).toBe(false)
+  })
+})

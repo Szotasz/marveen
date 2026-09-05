@@ -597,7 +597,7 @@ function alertWorkerStuck(ctx: WorkerCtx, paneTail: string): void {
   if (Date.now() - ctx.lastStuckAlert < WORKER_STUCK_ALERT_COOLDOWN_MS) return
   ctx.lastStuckAlert = Date.now()
   void notifyChannel(
-    `⚠️ Marveen worker [${ctx.session}]: a hatter-worker session nem all keszen (beragadt dialogus vagy ismeretlen kepernyo). Onjavitas lefutott (Escape + restart), de a keszenlet nem allt helyre. Erintett: agens-generalas, capability-osszefoglalo, heartbeat, digest. Nezz ra: tmux attach -t ${ctx.session}`,
+    `⚠️ Marveen worker [${ctx.session}]: a háttér-worker session nem áll készen (beragadt dialógus vagy ismeretlen képernyő). Önjavítás lefutott (Escape + restart), de a készenlét nem állt helyre. Érintett: ágens-generálás, capability-összefoglaló, heartbeat, digest. Nézz rá: tmux attach -t ${ctx.session}`,
   ).catch(() => { /* notifyChannel logs internally */ })
 }
 

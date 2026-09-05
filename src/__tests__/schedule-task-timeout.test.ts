@@ -17,7 +17,7 @@ import { OWNER_ESCALATION_EXTRA_MS } from '../pending-retries.js'
 // guards against the test becoming a false guard.
 
 const GRACE = TASK_FIRE_GRACE_MS   // 30_000
-const TIMEOUT = TASK_FIRE_TIMEOUT_MS // 300_000
+const TIMEOUT = TASK_FIRE_TIMEOUT_MS // 2_700_000 (45 min)
 const MAX_TRACK = 6 * 60 * 60_000   // 6 hours
 const OWNER_EXTRA = OWNER_ESCALATION_EXTRA_MS // 75 minutes, shared with the pending-retry escalation
 

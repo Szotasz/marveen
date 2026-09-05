@@ -4,6 +4,7 @@ import {
   detectPermissionMode,
   detectsThinkingBlockError,
   detectsBlockingMenu,
+  detectsPermissionDialog,
   detectsPastePlaceholder,
   isReadyForPrompt,
   shouldRetrySubmit,
@@ -1836,6 +1837,142 @@ describe('detectsBlockingMenu', () => {
       '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
     ].join('\n')
     expect(detectsBlockingMenu(quoted)).toBe(false)
+  })
+})
+
+describe('detectsPermissionDialog', () => {
+  // Captured live from the bond session on 2026-09-05 with
+  // `tmux capture-pane -p`. The session runs with
+  // --dangerously-skip-permissions, yet this prompt still appeared: the edit
+  // targets a file under ~/.claude/, i.e. Claude Code's OWN configuration,
+  // which the flag deliberately does not cover. Option 2's wording is the
+  // giveaway. An identical edit to a path outside the project but outside
+  // ~/.claude/ produced NO dialog, so "outside the project" is not the trigger.
+  const PERMISSION_DIALOG = [
+    ' ../../home/marveen/.claude/bond-teszt.txt',
+    '╌'.repeat(100),
+    ' 1 -proba',
+    ' 1 +modositva',
+    '╌'.repeat(100),
+    ' Do you want to make this edit to bond-teszt.txt?',
+    ' ❯ 1. Yes',
+    '   2. Yes, and allow Claude to edit its own settings for this session',
+    '   3. No',
+    '',
+    ' Esc to cancel · Tab to amend',
+  ].join('\n')
+
+  // A command-permission prompt: no "Tab to amend" in the footer, so only the
+  // question+Yes shape identifies it.
+  const BASH_PERMISSION_DIALOG = [
+    ' Bash command',
+    '   rm -rf ./build',
+    '   Remove the build directory',
+    '',
+    ' Do you want to proceed?',
+    ' ❯ 1. Yes',
+    "   2. Yes, and don't ask again for rm commands in /home/marveen/marveen",
+    '   3. No, and tell Claude what to do differently (esc)',
+    '',
+    ' Esc to cancel',
+  ].join('\n')
+
+  // A genuine wedged modal: Escape here IS the right recovery and must stay.
+  const GENUINE_MENU = [
+    '   Manage MCP servers',
+    '   5 servers',
+    '',
+    '   ❯ claude.ai Canva · ✔ connected · 39 tools',
+    '',
+    '   ↑/↓ to navigate · Enter to confirm · Esc to cancel',
+  ].join('\n')
+
+  // The usage-credit consent dialog, answered by its own branch. It offers
+  // "1. Continue with ...", never "1. Yes", so the two must not overlap.
+  const CONSENT_DIALOG = [
+    '  Fable 5 now uses usage credits',
+    '  Fable 5 runs on usage credits, purchased separately from your plan.',
+    '    1. Continue with Fable 5',
+    '  ❯ 2. Switch to Sonnet 5 and continue',
+    '  Enter to confirm · Esc to cancel',
+  ].join('\n')
+
+  it('detects the live edit-permission prompt', () => {
+    expect(detectsPermissionDialog(PERMISSION_DIALOG)).toBe(true)
+  })
+
+  it('detects a command-permission prompt with no "Tab to amend" footer', () => {
+    expect(detectsPermissionDialog(BASH_PERMISSION_DIALOG)).toBe(true)
+  })
+
+  // PERMDENY905 regression anchor. The permission prompt ALSO satisfies the
+  // generic stuck-menu detector, because its footer says "Esc to cancel" --
+  // that shadowing is the entire bug. The menu-recovery branch sent Escape
+  // here, and on this dialog Escape is NO, so the watchdog silently denied the
+  // agent's own requests ~45s after they appeared while the operator believed
+  // they had approved them. If this assertion ever fails because
+  // detectsBlockingMenu stopped matching, the ordering guard in
+  // channel-monitor.ts has become redundant rather than wrong.
+  it('is also matched by detectsBlockingMenu (this is why the guard exists)', () => {
+    expect(detectsBlockingMenu(PERMISSION_DIALOG)).toBe(true)
+    expect(detectsBlockingMenu(BASH_PERMISSION_DIALOG)).toBe(true)
+  })
+
+  it('leaves a genuine blocking menu to the Escape recovery', () => {
+    expect(detectsPermissionDialog(GENUINE_MENU)).toBe(false)
+    expect(detectsBlockingMenu(GENUINE_MENU)).toBe(true)
+  })
+
+  it('does not claim the model-consent dialog', () => {
+    expect(detectsPermissionDialog(CONSENT_DIALOG)).toBe(false)
+  })
+
+  it('is false for a normal idle prompt (bypass/strict)', () => {
+    expect(detectsPermissionDialog(IDLE_BYPASS)).toBe(false)
+    expect(detectsPermissionDialog(IDLE_STRICT)).toBe(false)
+  })
+
+  it('is false for a busy turn even if it renders esc-to-interrupt', () => {
+    expect(detectsPermissionDialog(BUSY_FULL_FOOTER)).toBe(false)
+    expect(detectsPermissionDialog(BUSY_TOKENS_ONLY)).toBe(false)
+  })
+
+  // The alert-spam case: the operator answered Yes, the turn is running, and
+  // the answered question is still in scrollback. Re-alerting here would fire
+  // on every dialog the operator has already dealt with.
+  it('is false once the prompt has been answered and the turn is running', () => {
+    const answered = [
+      ' Do you want to make this edit to bond-teszt.txt?',
+      ' ❯ 1. Yes',
+      '   3. No',
+      '',
+      '✢ Combobulating… (12s · ↓ 340 tokens)',
+      '',
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt',
+    ].join('\n')
+    expect(detectsPermissionDialog(answered)).toBe(false)
+  })
+
+  // Prose quoting the dialog above a live prompt must not read as one.
+  it('does not trigger on a reply that merely quotes the dialog', () => {
+    const quoted = [
+      '  A dialogus igy nez ki: "Do you want to make this edit to x.txt?"',
+      '  1. Yes / 2. ... / 3. No -- ezek a valaszthato opciok.',
+      '',
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(detectsPermissionDialog(quoted)).toBe(false)
+  })
+
+  it('is false for an empty pane', () => {
+    expect(detectsPermissionDialog('')).toBe(false)
+    expect(detectsPermissionDialog('   \n  ')).toBe(false)
   })
 })
 

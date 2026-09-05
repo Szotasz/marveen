@@ -45,6 +45,7 @@ import { capturePane } from './agent-process.js'
 import { readTranscriptMtimeFromProjectDir } from './active-model.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { resumeMarveenSession, sendAlert, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS } from './channel-monitor.js'
+import { sendRoutineAlert } from './routine-alert.js'
 import {
   stuckToolCallSignature,
   decideStuckToolCallRecovery,
@@ -333,16 +334,22 @@ async function checkSession(label: string, session: string): Promise<void> {
     // messaging into the void and then spent the morning pasting logs. One
     // proactive report replaces that whole loop. Sent on both outcomes -- a
     // FAILED recovery is exactly when the owner must know.
-    sendAlert(
-      ok
-        // A számot ne úgy írjuk ki, mintha időtartam lenne: a lastSeconds a
-        // KIJELZŐN BEFAGYOTT számláló értéke, a beavatkozás küszöbe viszont a
-        // stagnálás wall-clock hossza (freezeSeconds). A korábbi szöveg ("49s óta
-        // nem haladt") azt sugallta a tulajnak, hogy 49 másodperc után
-        // újraindítunk -- 2026-08-15-én pontosan ezt kérdezte vissza.
-        ? `🔧 A fő session beragadt: a kijelző számlálója ${Math.round(next.lastSeconds ?? 0)}s-nál megállt, és több mint ${THRESHOLDS.freezeSeconds}s-ig nem mozdult. Automatikusan újraindítottam a beszélgetés megtartásával. Ha volt megválaszolatlan üzeneted, mindjárt válaszolok rá.`
-        : `🚨 A fő session beragadt, és az automatikus újraindítás NEM sikerült. Kézi beavatkozás kellhet: tmux attach -t ${session}, vagy scripts/stop.sh && scripts/start.sh a marveen mappából.`,
-    )
+    // A SUCCEEDED recovery is routine: throttled, so a session that keeps
+    // wedging reports once with a count instead of once per wedge. A FAILED
+    // recovery is never throttled -- that is exactly when the owner must know.
+    if (ok) {
+      // A számot ne úgy írjuk ki, mintha időtartam lenne: a lastSeconds a
+      // KIJELZŐN BEFAGYOTT számláló értéke, a beavatkozás küszöbe viszont a
+      // stagnálás wall-clock hossza (freezeSeconds). A korábbi szöveg ("49s óta
+      // nem haladt") azt sugallta a tulajnak, hogy 49 másodperc után
+      // újraindítunk -- 2026-08-15-én pontosan ezt kérdezte vissza.
+      sendRoutineAlert(
+        `main-stuck-tool-call:${session}`,
+        `🔧 A fő session beragadt: a kijelző számlálója ${Math.round(next.lastSeconds ?? 0)}s-nál megállt, és több mint ${THRESHOLDS.freezeSeconds}s-ig nem mozdult. Automatikusan újraindítottam a beszélgetés megtartásával. Ha volt megválaszolatlan üzeneted, mindjárt válaszolok rá.`,
+      )
+    } else {
+      sendAlert(`🚨 A fő session beragadt, és az automatikus újraindítás NEM sikerült. Kézi beavatkozás kellhet: tmux attach -t ${session}, vagy scripts/stop.sh && scripts/start.sh a marveen mappából.`)
+    }
   }
 }
 

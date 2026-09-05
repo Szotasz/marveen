@@ -509,58 +509,6 @@ export function detectsBlockingMenu(pane: string): boolean {
   return MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)
 }
 
-// A TOOL-PERMISSION prompt is NOT a stalled session, and it is NOT a menu.
-//
-// Claude Code asks for approval when a tool call needs the operator's consent
-// (a deny rule matches, a command leaves the resolvable working directory,
-// etc). The pane then shows the tool card, the reason, "Do you want to
-// proceed?" and a numbered Yes/No list, with an `Esc to cancel · Tab to amend`
-// footer -- no spinner, no idle footer.
-//
-// From the queue's side that is indistinguishable from a wedged session, and
-// on 2026-09-03 the fleet handled it twice in the WRONG way:
-//   - the session-stuck alert took the not-ready branch, whose text tells the
-//     owner to "restart the agent if it is wedged". Restarting would have
-//     thrown away two running sub-agents (~165k tokens of work) and left the
-//     actual cause -- an unanswered question -- in place.
-//   - the blocking-menu recovery matched it (the footer really does say
-//     "Esc to cancel") and would send a blind Escape. On a permission prompt
-//     Escape is not "pop back to the prompt": it CANCELS the request, i.e. it
-//     answers a consent question with "no" on the owner's behalf, while the
-//     alert text tells them their session was stuck "in a menu (e.g. /mcp)".
-//
-// So this gets its own detector, and callers must treat it as "a person has to
-// answer", never as a restart target and never as a blind-Escape target.
-// Answering it automatically is out of scope by design: choosing "Yes" would
-// be the machine granting itself a permission the owner deliberately gated.
-//
-// Matching follows detectsBlockingMenu's discipline: a busy pane is never a
-// prompt, a visible idle footer means the real prompt is live, and the
-// question + option list must sit in the live footer region so a message body
-// that merely quotes "Do you want to proceed?" cannot trigger it.
-const PERMISSION_QUESTION_RX = /\bDo you want to (?:proceed|create|make|run)\b/i
-const PERMISSION_OPTION_RX = /^\s*(?:❯\s*)?1\.\s*Yes\b/m
-const PERMISSION_FOOTER_REGION_LINES = 12
-
-/**
- * True when the pane is parked on a Claude Code tool-permission prompt.
- *
- * Pure + dependency-free. Recognises the shape measured on a live pane
- * (see src/__tests__/fixtures/pane/permission-prompt-bash-grep.txt): the
- * "Do you want to proceed?" question plus a numbered "1. Yes" option.
- */
-export function detectsPermissionPrompt(pane: string): boolean {
-  if (!pane || !pane.trim()) return false
-  for (const rx of BUSY_INDICATORS) {
-    if (rx.test(pane)) return false
-  }
-  const lines = pane.split('\n')
-  const footerRegion = lines.slice(-PERMISSION_FOOTER_REGION_LINES).join('\n')
-  if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
-  if (IDLE_FOOTER_RX.test(pane)) return false
-  return PERMISSION_QUESTION_RX.test(footerRegion) && PERMISSION_OPTION_RX.test(footerRegion)
-}
-
 // What the prompt is ASKING, in one line, for an alert that has to be
 // actionable without opening the pane.
 //
@@ -586,6 +534,10 @@ export function detectsPermissionPrompt(pane: string): boolean {
 // Returns null when either piece is missing: an alert with a half-parsed
 // question is worse than an alert that just says "open the pane".
 const PERMISSION_RULE_LINE_RX = /^\s*─{8,}\s*$/
+// The question line the summary anchors on. detectsPermissionDialog (added on
+// develop by PR #1190) decides WHETHER a prompt is up; this module only has to
+// find the question again to quote it.
+const PERMISSION_SUMMARY_QUESTION_RX = /\bDo you want to (?:proceed|create|make|run)\b/i
 const PERMISSION_QUOTE_PREFIX_RX = /^\s*│\s?/
 const PERMISSION_REASON_MAX = 220
 
@@ -600,13 +552,13 @@ export interface PermissionPromptSummary {
  * Extract a one-line summary of what a permission prompt is asking.
  *
  * Pure + dependency-free. Only meaningful on a pane where
- * detectsPermissionPrompt() is true; returns null when the expected parts are
+ * detectsPermissionDialog() is true; returns null when the expected parts are
  * not both present.
  */
 export function permissionPromptSummary(pane: string): PermissionPromptSummary | null {
   if (!pane) return null
   const lines = pane.split('\n')
-  const questionIdx = lines.findIndex((l) => PERMISSION_QUESTION_RX.test(l))
+  const questionIdx = lines.findIndex((l) => PERMISSION_SUMMARY_QUESTION_RX.test(l))
   if (questionIdx < 0) return null
 
   // Title: first non-empty line after the horizontal rule that opens the card.
@@ -811,6 +763,46 @@ export function detectsFirstRunGate(pane: string): FirstRunGateKind | null {
 const MODEL_CONSENT_TITLE_RX = /(?:now uses|runs on|requires) usage credits/
 const MODEL_CONSENT_CONTINUE_RX = /1\.\s*Continue with /
 const MODEL_CONSENT_CONFIRM_RX = /Enter to confirm/
+
+// Tool-permission prompt. Claude Code asks for one even under
+// --dangerously-skip-permissions when the target is its OWN configuration
+// (~/.claude/**: skills, settings, scheduled-tasks) -- the second option says
+// so literally: "Yes, and allow Claude to edit its own settings for this
+// session". Measured 2026-09-05 on a live session: a write to ~/.claude/ opens
+// the dialog, while a write to an ordinary path outside the project does NOT,
+// so "outside the project" is not the trigger; Claude's own config is.
+//
+// Out here the prompt is indistinguishable from a stuck menu: its footer says
+// "Esc to cancel", so detectsBlockingMenu matches it (verified against a real
+// captured pane). But Escape on a permission prompt is not a harmless dismiss
+// -- it is NO. The watchdog therefore DENIED the agent's own requests ~45s
+// after they appeared, silently, while the operator believed they had approved
+// them (confirmed by the operator: "Ment allow"). Five skill-file writes died
+// this way, which is why self-improvement in particular kept failing: the
+// skills live under ~/.claude/, so they are the writes that open the dialog.
+//
+// Same reasoning as TRUSTGATE901: no keystroke is neutral here, so the monitor
+// must send none and say so loudly instead. Detection deliberately errs BROAD
+// (footer marker OR question+Yes shape): a false positive only means a genuine
+// stuck menu is alerted instead of Escaped -- the operator still learns of it
+// -- while a false negative silently answers NO on the operator's behalf.
+const PERMISSION_AMEND_RX = /\bTab to amend\b/
+const PERMISSION_QUESTION_RX = /Do you want to [^\n?]{0,80}\?/
+const PERMISSION_YES_RX = /(?:^|\n)\s*[\u276f>]?\s*1\.\s*Yes\b/
+
+export function detectsPermissionDialog(pane: string): boolean {
+  if (!pane || !pane.trim()) return false
+  const lines = pane.split('\n')
+  const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(busyRegion)) return false
+  }
+  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
+  if (IDLE_FOOTER_RX.test(pane)) return false
+  return PERMISSION_AMEND_RX.test(footerRegion)
+    || (PERMISSION_QUESTION_RX.test(pane) && PERMISSION_YES_RX.test(pane))
+}
 
 export function detectsModelConsentDialog(pane: string): boolean {
   if (!pane || !pane.trim()) return false

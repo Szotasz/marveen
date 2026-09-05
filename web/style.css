@@ -448,6 +448,21 @@ nav { display: flex; gap: 4px; }
 .team-node:hover { border-color: var(--accent); transform: translateY(-1px); }
 .team-node.main { background: var(--accent-soft); border-color: var(--accent); }
 .team-node.leader { border-color: var(--accent); }
+/* Live "working" state, same signal and green as the Activity page's left
+   border. Declared after .main/.leader so an active main or leader shows the
+   working colour rather than its role accent. */
+.team-node.team-node-active {
+  border-color: #22c55e;
+  box-shadow: 0 0 0 1px #22c55e;
+}
+.team-node.team-node-active:hover { border-color: #22c55e; }
+/* Run-state line: the pulsing dot the agent cards use, next to Fut / Leállva. */
+.team-node-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
 /* Drag-and-drop reporting edit (Team page). */
 .team-node.team-draggable { cursor: grab; }
 .team-node.team-dragging { opacity: 0.45; cursor: grabbing; }
@@ -496,6 +511,12 @@ nav { display: flex; gap: 4px; }
   font-size: 13px;
   text-align: center;
   padding: 24px;
+}
+.team-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-top: 16px;
+  text-align: center;
 }
 
 .theme-toggle {
@@ -1414,7 +1435,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   align-items: center;
 }
 
-/* Agents page: grid / org-chart view toggle */
+/* Agents page: cards / activity / org-chart view toggle */
 .view-toggle {
   display: flex;
   gap: 4px;
@@ -1425,12 +1446,55 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   border-color: var(--accent);
   background: var(--accent-soft);
 }
+/* Thin vertical rule separating clusters of header buttons. */
+.header-divider {
+  align-self: stretch;
+  width: 1px;
+  min-height: 20px;
+  margin: 0 4px;
+  background: var(--border);
+  flex-shrink: 0;
+}
 
 /* === Agent Grid === */
 .agents-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 16px;
+}
+
+/* === Agents grid: "Aktivitás" card mode ===
+   Swaps everything below the avatar/name/description block for the live pane
+   status that used to live on its own Activity page. The header stays, so the
+   card never stops saying which agent it is. */
+.agent-card-activity { display: none; }
+.agents-grid[data-card-mode="activity"] .agent-card-footer,
+.agents-grid[data-card-mode="activity"] .agent-card-actions,
+.agents-grid[data-card-mode="activity"] .agent-reauth-banner,
+.agents-grid[data-card-mode="activity"] .agent-tmux-cmds { display: none; }
+.agents-grid[data-card-mode="activity"] .agent-card-activity { display: block; margin-top: 14px; }
+/* Cards that carry no live state: the add button and federated (remote-system)
+   agents, which the activity endpoint does not know about. */
+.agents-grid[data-card-mode="activity"] .add-card,
+.agents-grid[data-card-mode="activity"] .federated-agent-card { display: none; }
+.agent-act-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.agent-act-head-right { display: flex; align-items: center; gap: 8px; }
+/* State colour, mirroring the Activity page's left border. Only in activity
+   mode -- in profile mode these classes are present but must not paint. */
+.agents-grid[data-card-mode="activity"] .agent-card { border-left-width: 4px; }
+.agents-grid[data-card-mode="activity"] .agent-card.act-working { border-left-color: #22c55e; }
+.agents-grid[data-card-mode="activity"] .agent-card.act-idle    { border-left-color: #9ca3af; }
+.agents-grid[data-card-mode="activity"] .agent-card.act-error   { border-left-color: #ef4444; }
+.agents-grid[data-card-mode="activity"] .agent-card.act-unknown { border-left-color: #eab308; }
+.agents-grid[data-card-mode="activity"] .agent-card.act-stopped { border-left-color: #6b7280; opacity: 0.7; }
+/* A stopped agent has no session to open, so its card is not clickable -- same
+   rule the Activity page used. */
+.agents-grid[data-card-mode="activity"] .agent-card { cursor: default; }
+.agents-grid[data-card-mode="activity"] .agent-card.agent-card-act-clickable { cursor: pointer; }
+.agents-grid[data-card-mode="activity"] .agent-card:not(.agent-card-act-clickable):hover {
+  background: var(--bg-card);
+  border-color: var(--border);
+  box-shadow: none;
 }
 
 /* === Agent Card === */
