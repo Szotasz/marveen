@@ -222,15 +222,46 @@ export function buildHeartbeatSummaryResponse(
   }
 }
 
+/**
+ * Parse the `includeArchived` query parameter.
+ *
+ * Three-valued on purpose: true / false / null-meaning-REJECT. The bug this replaces was
+ * a two-valued read where every unrecognised input collapsed into "false" -- which is how
+ * `?includeArchived=1` came back with the archived cards missing and no complaint.
+ *
+ * Bare presence (`?includeArchived` or `=`) reads as TRUE: that is the common URL idiom,
+ * and it errs toward returning MORE rows, which is the safe direction here -- the failure
+ * we are fixing was rows going missing.
+ */
+export function parseIncludeArchived(raw: string | null): boolean | null {
+  if (raw === null) return false
+  const v = raw.trim().toLowerCase()
+  if (v === '' || v === '1' || v === 'true' || v === 'yes' || v === 'on') return true
+  if (v === '0' || v === 'false' || v === 'no' || v === 'off') return false
+  return null
+}
+
 export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
   if (path === '/api/kanban' && method === 'GET') {
+    // includeArchived is honoured or REFUSED -- never silently dropped. Ignoring it was
+    // the actual defect: a caller had evidence it asked for archived cards, the response
+    // had evidence it did not, and nothing reconciled the two.
+    const includeArchived = parseIncludeArchived(ctx.url.searchParams.get('includeArchived'))
+    if (includeArchived === null) {
+      json(res, {
+        error: 'Az includeArchived értéke érvénytelen. Elfogadott: 1, true, yes, on, ' +
+               '0, false, no, off (vagy érték nélkül = igaz).',
+      }, 400)
+      return true
+    }
     // Embed each card's labels in one extra JOIN query (getLabelsForAllCards)
     // instead of an N+1 per-card lookup, so the footer-pill UI gets
     // everything it needs in a single round trip.
     const labelsByCard = getLabelsForAllCards()
-    const cards = listKanbanCards().map((card) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
+    const cards = listKanbanCards({ includeArchived })
+      .map((card) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
     jsonMaybeGzip(req, res, cards)
     return true
   }

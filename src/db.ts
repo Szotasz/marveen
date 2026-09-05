@@ -1775,15 +1775,21 @@ export interface KanbanComment {
   created_at: number
 }
 
-export function listKanbanCards(): KanbanCard[] {
+// `includeArchived` exists because this function used to hard-code the filter with
+// no way for a caller to ask otherwise, while being named `list`. /api/kanban therefore
+// answered "all cards" with a narrowed set, and an audit reading it saw no error -- only
+// a missing row, which is the failure mode that hides longest. Default stays false so
+// the board keeps its current behaviour; only a caller that asks gets the wider set.
+export function listKanbanCards(opts: { includeArchived?: boolean } = {}): KanbanCard[] {
   const archiveDays = Number(getEffectiveSettingValue('KANBAN_ARCHIVE_DONE_DAYS'))
   const archiveCutoff = Math.floor(Date.now() / 1000) - archiveDays * 86400
   // Auto-archive done cards older than KANBAN_ARCHIVE_DONE_DAYS days
   db.prepare(
     "UPDATE kanban_cards SET archived_at = ? WHERE status = 'done' AND archived_at IS NULL AND updated_at < ?"
   ).run(Math.floor(Date.now() / 1000), archiveCutoff)
+  const where = opts.includeArchived ? '' : 'WHERE archived_at IS NULL '
   return db
-    .prepare('SELECT rowid AS seq, * FROM kanban_cards WHERE archived_at IS NULL ORDER BY sort_order ASC')
+    .prepare(`SELECT rowid AS seq, * FROM kanban_cards ${where}ORDER BY sort_order ASC`)
     .all() as KanbanCard[]
 }
 
