@@ -396,6 +396,75 @@ export function readExtraChannelPluginIds(): string[] {
   }
 }
 
+/**
+ * Which shared-root regression this main-agent launch is, if any.
+ *
+ * THE SHAPE THIS ANSWERS, AND WHY IT IS A FUNCTION AND NOT AN `if`. The same two
+ * triggers already live in scripts/channels.sh (the LOUD REGRESSION GUARD, two
+ * blocks): that path shouts when the main agent comes up on the shared
+ * ~/.claude. Every OTHER way the main session starts -- the nightly respawn, the
+ * stage-3 recovery resume, the hard restart -- bypasses channels.sh entirely and
+ * was therefore silent, which is what kanban card `guard-respawn-vak` is about.
+ * The 2026-08-04 outage ran from 03:00 to 07:58 unnoticed for exactly that
+ * reason: the one path that runs at night with nobody watching is the one path
+ * that could not speak.
+ *
+ * Deliberately PURE and state-injected: the caller reads the three facts, this
+ * decides. That keeps it testable without a filesystem, and -- more to the point
+ * -- keeps the DECISION in one place while the EMISSION stays at the call site,
+ * so a test of the decision can never be mistaken for proof that anyone acts on
+ * it.
+ *
+ * `null` means "nothing to warn about", which covers TWO different situations:
+ * isolation is on and working, OR this is a plain default install that never
+ * ran isolated and holds no fleet token. The second is the common case and must
+ * stay silent, or the guard becomes noise on every stock install.
+ */
+export type MainSharedConfigTrigger =
+  /** A fleet setup-token exists but the resolution came back empty: the setting
+   *  is missing, not declined. Shape of issue #835; the isolation-lost trigger
+   *  is structurally blind to it because there is no .channels-config dir yet. */
+  | 'fleet-token-unused'
+  /** This install HAS run isolated (its .channels-config is still on disk), yet
+   *  this launch resolved to the shared root -- so the setting was LOST, e.g.
+   *  store/config-overrides.json deleted with no .env key behind it. */
+  | 'isolation-lost'
+  | null
+
+export function mainSharedConfigTrigger(state: {
+  /** The resolved isolated CLAUDE_CONFIG_DIR, or null for the shared root. */
+  isolatedConfigDir: string | null
+  /** store/.claude-oauth-token present and non-empty. */
+  fleetToken: boolean
+  /** PROJECT_ROOT/.channels-config exists on disk. */
+  isolatedDirExists: boolean
+}): MainSharedConfigTrigger {
+  // Running isolated -- the whole point of the guard is already satisfied.
+  if (state.isolatedConfigDir) return null
+  // Order matters, and it mirrors channels.sh: the dir on disk is the stronger
+  // evidence (isolation demonstrably worked here once), so it wins when both
+  // could apply. Swapping these would report a LOST setting as a fresh install
+  // and send the operator to the wrong fix.
+  if (state.isolatedDirExists) return 'isolation-lost'
+  if (state.fleetToken) return 'fleet-token-unused'
+  return null
+}
+
+/** Reads the three facts mainSharedConfigTrigger decides on. Separate from the
+ *  decision so the decision needs no filesystem, and separate from the emitter
+ *  so the emitter can be swapped in a test. */
+export function readMainSharedConfigState(isolatedConfigDir: string | null): {
+  isolatedConfigDir: string | null
+  fleetToken: boolean
+  isolatedDirExists: boolean
+} {
+  return {
+    isolatedConfigDir,
+    fleetToken: hasFleetOauthToken(),
+    isolatedDirExists: existsSync(join(PROJECT_ROOT, '.channels-config')),
+  }
+}
+
 // An EXPLICIT config dir for the main channels agent (MAIN_AGENT_CONFIG_DIR),
 // for the operator who already keeps a separate Claude login for the main bot --
 // e.g. a personal subscription for the bot and a different one for the fleet.
