@@ -21,7 +21,10 @@ if [ -z "$TOKEN" ]; then
   exit 1
 fi
 
-if [ -z "$CHAT_ID" ]; then
+# CHATID0: "0" is the installer placeholder, not a chat. Without this the
+# FALLBACK channel fails exactly where it is needed most -- it fires when the
+# plugin is down, and on a placeholder install it would post to chat_id=0.
+if [ -z "$CHAT_ID" ] || [ "$CHAT_ID" = "0" ]; then
   echo "Hiba: ALLOWED_CHAT_ID nincs beallitva"
   exit 1
 fi
