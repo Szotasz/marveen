@@ -32,6 +32,7 @@ import {
 } from './agent-process.js'
 import { sendSystemDirective } from './system-directive.js'
 import { isRestartInFlight, beginRestart, endRestart } from './restart-lock.js'
+import { resolveMainConfigDecision, type MainConfigDecision } from './main-config-decision.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence } from './channel-poller-reap.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
@@ -756,23 +757,18 @@ export function buildMainSessionRespawnCmd(opts: {
   model: string
   continueSession: boolean
   /**
-   * When set (macOS main-agent isolation on), the respawn exports this isolated
-   * CLAUDE_CONFIG_DIR plus the fleet setup-token -- parity with channels.sh CFG_ENV.
-   * Without it the RECOVERY respawn brings the main agent up on the shared
-   * ~/.claude, which on macOS authenticates from the rotating Keychain OAuth
-   * session and periodically 401s ("Please run /login"). null/undefined => keep
-   * the shared root (unchanged behaviour for installs with isolation off).
+   * What this launch does about CLAUDE_CONFIG_DIR, and whether that is worth
+   * shouting about. REQUIRED, and obtainable in production only from
+   * resolveMainConfigDecision(), which reports as it resolves -- see
+   * main-config-decision.ts for why the guard is wired as a value rather than a
+   * callback. `isolatedConfigDir` set => export the isolated dir plus the fleet
+   * setup-token (parity with channels.sh CFG_ENV); null with `fleetToken` =>
+   * export the token alone, which is what keeps a wizard-entered token reaching
+   * a respawned main session at all (2026-07-15 bootcamp, bug 2 latent path);
+   * null with no token => the shared root, unchanged for installs with
+   * isolation off.
    */
-  isolatedConfigDir?: string | null
-  /**
-   * When true (fleet setup-token file present) and there is NO isolated config
-   * dir, the respawn still exports CLAUDE_CODE_OAUTH_TOKEN from the fleet token
-   * file. On Linux the isolatedConfigDir is always null (macOS-only), so before
-   * this leg a wizard-entered token never reached a respawned main session at
-   * all -- it fell back to ~/.claude/.credentials.json (2026-07-15 bootcamp,
-   * bug 2 latent path). Keeps main + sub-agents on the SAME auth source.
-   */
-  fleetToken?: boolean
+  config: MainConfigDecision
   /**
    * Secondary plugin ids to co-listen on alongside `pluginId`, from
    * readExtraChannelPluginIds(). Omitting them is what silently half-mutes every
@@ -793,9 +789,9 @@ export function buildMainSessionRespawnCmd(opts: {
     '&& export MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000',
     // macOS main-agent config isolation -- parity with channels.sh CFG_ENV. The
     // token is read at launch via $(cat) so the secret never lands in argv/`ps`.
-    ...(opts.isolatedConfigDir
-      ? [`&& export CLAUDE_CONFIG_DIR='${opts.isolatedConfigDir}' && export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`]
-      : opts.fleetToken
+    ...(opts.config.isolatedConfigDir
+      ? [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`]
+      : opts.config.fleetToken
         ? [`&& export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`]
         : []),
     '&&', opts.claudePath,
@@ -849,8 +845,7 @@ export function respawnMainSessionFresh(): void {
     // The main session always starts a new conversation -- this is the whole
     // point of the nightly restart (drop the accumulated context).
     continueSession: false,
-    isolatedConfigDir: ensureMainAgentIsolatedConfigDir(),
-    fleetToken: hasFleetOauthToken(),
+    config: resolveMainConfigDecision(),
   })
   execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
   // Stamp IMMEDIATELY after the respawn, before the scheduling follow-ups.
@@ -921,8 +916,7 @@ export async function resumeMarveenSession(): Promise<boolean> {
       // isolated CLAUDE_CONFIG_DIR (macOS), else it re-authenticates from the
       // rotating Keychain and 401s. Returns null when isolation is off/no token,
       // preserving the prior shared-root behaviour.
-      isolatedConfigDir: ensureMainAgentIsolatedConfigDir(),
-      fleetToken: hasFleetOauthToken(),
+      config: resolveMainConfigDecision(),
     })
     execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
 
@@ -1175,8 +1169,7 @@ function respawnMarveenSessionFresh(): boolean {
       // Same channels.sh-bypass concern as resumeMarveenSession: this fresh
       // respawn also skips channels.sh, so it must carry the isolated config
       // itself or it 401s on the rotating macOS Keychain. null when off/no token.
-      isolatedConfigDir: ensureMainAgentIsolatedConfigDir(),
-      fleetToken: hasFleetOauthToken(),
+      config: resolveMainConfigDecision(),
     })
     execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
     logger.warn({ provider: provider.type }, 'Hard restart: marveen session respawned fresh (no --continue)')

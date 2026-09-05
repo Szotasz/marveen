@@ -9,6 +9,7 @@ import { MODEL_ID_RE, isValidModelId, InvalidModelIdError } from '../model-id.js
 import { writeAgentModel } from '../web/agent-config.js'
 import { shSingleQuote } from '../web/agent-process.js'
 import { buildMainSessionRespawnCmd } from '../web/channel-monitor.js'
+import { mainConfigDecisionForTest } from '../web/main-config-decision.js'
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -163,7 +164,7 @@ describe('the launch string the fix produces is safe end-to-end', () => {
 // escape is the only guard on this path. (The other four sinks live in agent-process/ssh-tmux/
 // agent-worker and use shSingleQuote/shQuote/shArg; this one was the last raw-quoted holdout.)
 describe('the real launch builder escapes the model AT the sink (not only at the validator)', () => {
-  const OPTS = { claudePath: 'claude', pluginId: 'telegram', continueSession: false }
+  const OPTS = { claudePath: 'claude', pluginId: 'telegram', continueSession: false, config: mainConfigDecisionForTest() }
 
   it('buildMainSessionRespawnCmd single-quote-escapes a hostile model id at --model', () => {
     const hostile = "x'; touch PWNED #"
