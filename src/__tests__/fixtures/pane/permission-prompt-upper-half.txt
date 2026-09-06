@@ -1,0 +1,41 @@
+
+  The reviewer question before the merge is predictable: full target both sides. The
+  baseline for it is ready (0000000, 7 stable red + 3 flaky).
+
+✻ Waiting for 2 background agents to finish
+
+────────────────────────────────────────────────────────────────────────────────
+ Bash command · from the general-purpose agent
+
+   │ cd /Users/OPERATOR/Developer/Projects/example-wt/app/Example
+   │ && ls Example/Resources 2>/dev/null; find . -name "*.xcstrings" -o
+   │ -name "Localizable.strings" | head; echo "=== Sending / Working
+   │ occurrences ==="; grep -rn "Sending…\|Working…" --include "*.swift" . |
+   │ head
+   Check localization files
+
+ │ Compound command contains cd with a relative file read while a Read() deny
+ │ rule exists
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to amend
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
