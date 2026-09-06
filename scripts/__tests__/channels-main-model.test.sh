@@ -91,6 +91,45 @@ migr_fallback "claude-opus-5[1m]"
 expect_model ".env override beats the distribution-default fallback" \
   'MAIN_AGENT_MODEL=claude-sonnet-5' '' 'claude-sonnet-5'
 
+
+# MODELMIGRATE806 review (Marveen): the third link's failure must be NAMED to
+# the failure log, never a silent empty -- the jq-gap's sibling. Missing dist
+# (channels started before a rebuild) is the realistic case.
+migr_missing_dist_is_logged() {
+  local root got log
+  root="$(mktemp -d)"; mkdir -p "$root/scripts" "$root/store"   # NO dist/ dir
+  cp "$SRC" "$root/scripts/channels.sh"
+  got="$(bash "$root/scripts/channels.sh" --resolve-main-model 2>/dev/null | head -1)"
+  log="$(cat "$root/store/channels-failures.log" 2>/dev/null)"
+  rm -rf "$root"
+  if [ -z "$got" ] && printf '%s' "$log" | grep -q "dist/config-registry.js missing"; then
+    pass "missing dist -> empty BUT a named log line (not a silent empty)"
+  else
+    fail "missing dist logs a named failure" "empty + 'dist...missing' log" "got=[$got] log=[$log]"
+  fi
+}
+migr_missing_dist_is_logged
+
+# The fallback resolves the default on a jq-FREE PATH (the WSL/Debian case the
+# whole chain exists for): node present, jq absent. The bin carries every tool
+# channels.sh touches EXCEPT jq -- note dirname, which the script needs early
+# for INSTALL_DIR (leaving it out silently broke this test's first cut).
+migr_fallback_jq_free() {
+  local root got node bin
+  node="$(command -v node)"; [ -z "$node" ] && { pass "node absent on test host; skip"; return; }
+  root="$(mktemp -d)"; mkdir -p "$root/scripts" "$root/dist" "$root/store"
+  cp "$SRC" "$root/scripts/channels.sh"
+  printf 'exports.DISTRIBUTION_DEFAULT_AGENT_MODEL="claude-opus-5[1m]";\n' > "$root/dist/config-registry.js"
+  bin="$(mktemp -d)"
+  for t in bash sh cat rm mkdir cp printf head tail grep sed cut tr wc ls env dirname basename expr mktemp python3; do
+    p="/bin/$t"; [ -x "$p" ] || p="/usr/bin/$t"; [ -x "$p" ] && ln -sf "$p" "$bin/$t"
+  done
+  ln -sf "$node" "$bin/node"   # node present, jq deliberately absent
+  got="$(PATH="$bin" bash "$root/scripts/channels.sh" --resolve-main-model 2>/dev/null | head -1)"
+  rm -rf "$root" "$bin"
+  if [ "$got" = "claude-opus-5[1m]" ]; then pass "distribution-default fallback resolves on a jq-free PATH (node present)"; else fail "jq-free fallback" "claude-opus-5[1m]" "$got"; fi
+}
+migr_fallback_jq_free
 # THE SHIPPED-DEFAULT CONTRACT (MODELDRIFT807, 2026-08-07): a fresh install
 # CLONES the repo, so the .claude/settings.json a customer gets is the TRACKED
 # file itself -- NO installer copies the template (or anything else) over it
