@@ -139,6 +139,30 @@ const BUSY_INDICATORS: RegExp[] = [
 const BUSY_ESC_TO_INTERRUPT_RX = /\besc to interrupt\b/
 const LIVE_FOOTER_REGION_LINES = 5
 
+/**
+ * The last `count` lines that still have content, ignoring a blank tail.
+ *
+ * Every footer probe in this file used to count back from the last LINE of
+ * the capture. A pane whose prompt sits high on the screen with empty rows
+ * below it -- what a fresh session shows when its FIRST tool call needs
+ * consent -- then had its footer fall outside the window, and the probe
+ * reported nothing at all: no menu, no permission prompt, and a pane state of
+ * `unknown`. Measured 2026-09-06 on the shipped code: a live consent prompt
+ * with an 18-line blank tail read `detectsBlockingMenu=false` AND
+ * `detectsPermissionDialog=false`, so the monitor neither alerted nor
+ * recovered. It just sat there.
+ *
+ * Counting from the last line with content keeps the window size honest (the
+ * footer really is within a few lines of the last thing drawn) while making
+ * the prompt's POSITION on screen stop mattering.
+ */
+function liveTailRegion(lines: string[], count: number): string {
+  let end = lines.length
+  while (end > 0 && lines[end - 1].trim() === '') end--
+  if (end === 0) return ''
+  return lines.slice(Math.max(0, end - count), end).join('\n')
+}
+
 // How many trailing lines the BUSY_INDICATORS (spinner / token-counter)
 // scan inspects. During a live turn the status line renders just above the
 // input box (footer ~3 lines + box ~2 lines + the spinner line + a little
@@ -503,7 +527,7 @@ export function detectsBlockingMenu(pane: string): boolean {
     if (rx.test(pane)) return false
   }
   const lines = pane.split('\n')
-  const footerRegion = lines.slice(-MENU_FOOTER_REGION_LINES).join('\n')
+  const footerRegion = liveTailRegion(lines, MENU_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
   if (IDLE_FOOTER_RX.test(pane)) return false
   return MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)
@@ -635,7 +659,7 @@ export function detectsFirstRunGate(pane: string): FirstRunGateKind | null {
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(busyRegion)) return null
   }
-  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return null
   if (IDLE_FOOTER_RX.test(pane)) return null
   for (const g of FIRST_RUN_GATES) {
@@ -710,7 +734,7 @@ export function detectsPermissionDialog(pane: string): boolean {
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(busyRegion)) return false
   }
-  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
   if (IDLE_FOOTER_RX.test(pane)) return false
   return PERMISSION_AMEND_RX.test(footerRegion)
@@ -724,7 +748,7 @@ export function detectsModelConsentDialog(pane: string): boolean {
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(busyRegion)) return false
   }
-  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
   if (IDLE_FOOTER_RX.test(pane)) return false
   return MODEL_CONSENT_TITLE_RX.test(pane)
@@ -779,7 +803,7 @@ export function detectsFeedbackDraftModal(pane: string): boolean {
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(busyRegion)) return false
   }
-  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
 
   const liveFrom = Math.max(0, lines.length - BUSY_LIVE_REGION_LINES)
@@ -1390,7 +1414,7 @@ export function parkedPasteSignature(pane: string): string | null {
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(busyRegion)) return null
   }
-  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return null
   if (!detectsPastePlaceholder(pane)) return null
   const sig = pastePlaceholderRegion(pane).replace(/\s+/g, ' ').trim()
