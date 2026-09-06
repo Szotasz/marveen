@@ -354,6 +354,63 @@ def main():
     check('25 a kulso nev SZO SZERINT kerult be', felelos('KULSONEV906') == 'UjSzerzo',
           f'kapott: {felelos("KULSONEV906")}')
 
+    # ---------------------------------------------------------------------------
+    # A #1211 VERIFY KIKOTESE (Samu, 2026-09-06) + a ket teszteletlen hatar.
+    # ---------------------------------------------------------------------------
+
+    # 26. HOMOGLIFA A FELELOS-NEVBEN. A szures a cimre, leirasra, uzenetre es kommentre futott,
+    #     a FELELOSRE nem -- ket kulon agon kellett volna kimondani, es a masodik kimaradt.
+    #     Elo probaval merve a fix elott: MINDKET agon beirodott a tablara.
+    #     A felelos a legrosszabb hely erre: a nev helyesnek LATSZIK, a kartya viszont sajat,
+    #     egy-elemu oszlopba kerul, es a "kinel all a dontes" kerdesre a tabla rosszul valaszol.
+    CIRILL_A = '\u0430'
+    hamis_nev = 's' + CIRILL_A + 'mmu'
+    seed('HOMOGA906', assignee='samu')
+    p = comment('HOMOGA906', 'Kartya HOMOGA906: homoglifas nev.', ('--assignee', hamis_nev, '--assignee-uj'))
+    check('26 megtagadva a homoglifas felelos (mozgato ag)',
+          p.returncode != 0 and 'vegyes irasrendszeru' in (p.stdout + p.stderr), p.stdout + p.stderr)
+    check('26 a felelos valtozatlan', felelos('HOMOGA906') == 'samu', f'kapott: {felelos("HOMOGA906")!r}')
+    check('26 a komment sem irodott be', comments('HOMOGA906') == [])
+
+    # 27. UGYANAZ A LETREHOZO AGON. A kapu a KOZOS feloldasban all, nem a ket hivonal --
+    #     pont ez a megoszlas hasadt el egyszer mar.
+    p = subprocess.run([sys.executable, SCRIPT, '--id', 'HOMOGB906', '--assignee', hamis_nev,
+                        '--title', 'HOMOGB906 homoglifa a letrehozo agon', '--no-msg'],
+                       capture_output=True, text=True, env=env, timeout=30)
+    check('27 megtagadva a homoglifas felelos (letrehozo ag)',
+          p.returncode != 0 and 'vegyes irasrendszeru' in (p.stdout + p.stderr), p.stdout + p.stderr)
+    check('27 kartyat sem hozott letre', card('HOMOGB906') is None)
+
+    # 28. A TISZTA ASCII NEV NEM BUKIK. Kontroll-proba: enelkul a 26/27 attol is zold lenne,
+    #     ha a kapu MINDEN nevet megtagadna.
+    seed('HOMOGC906', assignee='samu')
+    p = comment('HOMOGC906', 'Kartya HOMOGC906: tiszta nev.', ('--assignee', 'TisztaNev', '--assignee-uj'))
+    check('28 a tiszta ASCII nev atmegy', p.returncode == 0, p.stdout + p.stderr)
+    check('28 be is irodott', felelos('HOMOGC906') == 'TisztaNev')
+
+    # 29. A GAZDA-SOR HAZIRENDJE KIMONDVA (nem kapu). A tabla-szabaly szerint a gazdanal csak
+    #     az a kartya all, amit MA el tud donteni; a mozgatas legitim, de ne csusszon oda nyom
+    #     nelkul. FIGYELMEZTETES, nem megtagadas: a dontes-kartya valodi eset.
+    seed('GAZDASOR906', assignee='samu')
+    p = comment('GAZDASOR906', 'Kartya GAZDASOR906: dontes-kartya a gazdanak.', ('--assignee', 'szabolcs'))
+    check('29 lefutott (nem kapu)', p.returncode == 0, p.stdout + p.stderr)
+    check('29 a felelos tenyleg szabolcs lett', felelos('GAZDASOR906') == 'szabolcs')
+    check('29 kimondja a gazda-sor szabalyat', 'MA el tud donteni' in p.stdout, p.stdout)
+
+    # 30. A "MASIK KARTYA MAR ALL EZEN A NEVEN" ELLENORZES ESET-ERZEKENY (Samu tengelye: egy
+    #     case-insensitive mutacio alatt mind a 45 allitas zold maradt, tehat a hatar teszteletlen
+    #     volt). "TisztaNev" all a tablan a 28-bol; a "tisztanev" alak NEM ugyanaz az oszlop.
+    seed('ESETA906', assignee='samu')
+    p = comment('ESETA906', 'Kartya ESETA906: mas kis/nagybetuvel.', ('--assignee', 'tisztanev'))
+    check('30 a mas eset-alak NEM szamit letezonek',
+          p.returncode != 0 and 'nem ismert' in (p.stdout + p.stderr), p.stdout + p.stderr)
+    check('30 a felelos valtozatlan', felelos('ESETA906') == 'samu')
+
+    # 31. A KOZELI-JAVASLAT LISTA tenyleg a LETEZO neveket sorolja (nit, de a megtagadas
+    #     hasznalhatosaga ezen all: enelkul csak azt mondjuk "nem jo", azt nem, hogy mi a jo).
+    check('31 a megtagadas felajanlja a letezo TisztaNev-et', 'TisztaNev' in (p.stdout + p.stderr),
+          p.stdout + p.stderr)
+
     os.remove(DB_PATH)
     if FAILS:
         sys.stderr.write('\nBUKOTT: ' + ', '.join(FAILS) + '\n')

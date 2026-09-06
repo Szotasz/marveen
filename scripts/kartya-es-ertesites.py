@@ -97,7 +97,15 @@ ISMERT_FELELOSOK = FLEET | {COORDINATOR, GAZDA}
 
 
 def _felelos_feloldas(nyers):
-    """A felelos KANONIKUS alakja. Flotta/gazda nev -> kisbetus (ez a tabla bevett alakja).
+    """A felelos KANONIKUS alakja, ES a rea vonatkozo kapuk EGY helyen.
+
+    A KAPU AZERT ITT ALL, ES NEM A KET HIVONAL (Samu lelete a #1211 verifyben): a homoglifa-
+    szures a cimre, a leirasra, az uzenetre es a kommentre futott, a FELELOSRE nem, mert ket
+    kulon agon kellett volna kimondani -- es a masodikat elfelejtettem. Elo probaval merve:
+    egy cirill a-t tartalmazo nev MINDKET agon beirodott a tablara. Egy megoszlo kapu pontosan
+    igy hasad el, ezert a kozos feloldas kapuz, es minden jovobeli ag ingyen megkapja.
+
+    A KANONIKUS ALAK: flotta/gazda nev -> kisbetus (ez a tabla bevett alakja).
     MINDEN MAS nev SZO SZERINT marad.
 
     MERVE (2026-09-06, elo tabla): a nem-flotta felelosok kulso GitHub-nevek, es TOBB VEGYES
@@ -106,6 +114,23 @@ def _felelos_feloldas(nyers):
     tool-lal felvett kartya kulon oszlopba kerult volna ugyanattol a szerzotol. A kisbetusites
     ezert a FLOTTA-nevekre szol, ahol az a bevett alak, es nem a tablatol idegen normalizalas."""
     nev = nyers.strip()
+    if not nev:
+        sys.exit('MEGTAGADVA: ures felelos-nev.')
+    # HOMOGLIFA: a felelos-mezo a legrosszabb hely egy lathatatlan betucserere -- a nev
+    # HELYESNEK LATSZIK, a kartya viszont sajat, egy-elemu oszlopba kerul, es a "kinel all
+    # a dontes" kerdesre a tabla csendben rosszul valaszol. Ugyanaz a szures, mint a cimen.
+    if (h := gyanus(nev)):
+        sys.exit(f'MEGTAGADVA: vegyes irasrendszeru betu a felelos-nevben: {h[:5]}\n'
+                 f'A nev helyesnek LATSZIK, de nem az, amit a tabla tobbi kartyaja hordoz.\n'
+                 f'Gepeld ujra a nevet, ne masold be.')
+    if nev.lower() == GAZDA:
+        # NEM kapu, hanem a hazirend kimondasa (gazda-keres, 2026-09-04): a gazda soran CSAK
+        # az a kartya all, amit MA EL TUD DONTENI -- egy mondatban feltehato kerdes, ket
+        # kimenettel. Nem tiltjuk, mert a dontes-kartya legitim; de nyom nelkul ne csusszon oda.
+        print(f'FIGYELEM: a felelos "{GAZDA}" lesz. A tabla-szabaly szerint a gazda soran csak az\n'
+              f'a kartya all, amit MA el tud donteni: egy mondatban feltehato kerdes, KET kimenettel,\n'
+              f'es a valasz ma is szamit. Ha elobb MERNI vagy KESZITENI kell valamit, a kartya a\n'
+              f'vegrehajtoe marad, es a fo-agens viszi a gazda ele kotegben.')
     return nev.lower() if nev.lower() in ISMERT_FELELOSOK else nev
 
 
@@ -266,8 +291,6 @@ def komment_mod(a):
     uj_felelos = None
     if a.assignee is not None:
         uj_felelos = _felelos_feloldas(a.assignee)
-        if not uj_felelos:
-            sys.exit('MEGTAGADVA: ures felelos-nev.')
         if uj_felelos != elotte['assignee'] and uj_felelos not in ISMERT_FELELOSOK and not a.assignee_uj:
             # TIPUS-KAPU, NEM NEV-HALMAZ (Marveen merese, 2026-09-06): a felelos-oszlop NEM zart
             # halmaz -- 40 kulonbozo ertek all rajta, tobbsegukben kulso GitHub-nevek. Egy zart
@@ -395,8 +418,6 @@ def main():
     # UGYANAZ A KANONIKUS ALAK, mint a mozgato agon -- kulonben a ket ut ugyanarra a nevre
     # KET KULONBOZO erteket irna a tablara.
     who = _felelos_feloldas(a.assignee)
-    if not who:
-        sys.exit('MEGTAGADVA: ures felelos-nev.')
     # A FELADO: kimondva (--from), vagy a szerzobol. Az alapertelmezes az --author kisbetusitve,
     # tehat a korabbi viselkedes (--author nelkul: 'marveen') valtozatlan marad.
     frm = (a.from_agent or a.author).strip().lower()
