@@ -10,8 +10,9 @@
 // Two-tier allowlist:
 //   1. Built-in (ALLOWED_PREFIXES): hard-coded, always enforced.
 //   2. Runtime (store/egress-allowlist.json): operator-managed, loaded on each
-//      invocation. Shape: { "domains": ["example.com"], "prefixes": ["https://host/path/"] }
-//      Both keys are optional. Missing file or malformed JSON -> treated as empty
+//      invocation. Shape: { "domains": ["example.com"], "prefixes": ["https://host/path/"],
+//      "quarantine_domains": ["feeds.example.org"], "quarantine_reader_posture": "allowlist"|"denylist" }
+//      All keys are optional. Missing file or malformed JSON -> treated as empty
 //      lists (FAIL-OPEN on the file, FAIL-SAFE on the decision: the built-in list
 //      still guards; no extra URLs are allowed merely because the file is missing).
 //
@@ -132,6 +133,99 @@ const QUARANTINE_DOMAINS = [
   { domain: 'www.reddit.com', path: (p) => p.endsWith('.rss') },
 ]
 
+// The reader's posture is an OPERATOR SWITCH, not a code-level decision.
+//
+// First proposed as an unconditional inversion (allowlist -> denylist); the
+// upstream owner asked for both behaviours to coexist behind one setting, with
+// the allowlist as the default, and his reasoning is recorded here because it
+// is the contract this code keeps: the two failure directions are not
+// symmetric. An allowlist that errs refuses a legitimate read, and a human
+// hears about it. A denylist that errs lets something in, and nobody hears
+// anything. A default that silently flips on update pushes every install
+// toward the quieter failure without anyone having decided that -- so the
+// flip must be an explicit, per-install operator act:
+//
+//   store/egress-allowlist.json: { "quarantine_reader_posture": "denylist" }
+//
+// Anything other than the literal string "denylist" (missing key, missing
+// file, typo, wrong type) means "allowlist" -- the stricter, louder default.
+// An untouched install behaves byte-identically to before this change.
+//
+// Why the open posture is defensible for THIS tier and no other: the posture
+// applies only to the quarantine-reader, a sub-agent whose definition grants
+// it `tools: WebFetch` and nothing else. No shell, no filesystem, no store
+// access -- it holds nothing to leak, and what it returns is data the caller
+// must wrap before use. The main agent's own WebFetch path is unaffected by
+// the switch in either position.
+//
+// What the deny rules below must stop in the open posture is therefore NOT
+// exfiltration but SSRF: a poisoned page talking the caller into aiming the
+// reader at our own network. Hence literal internal hosts, internal-only name
+// suffixes, and private/link-local/loopback address literals.
+const QUARANTINE_DENY_HOSTS = new Set([
+  'localhost',
+  'localhost.localdomain',
+  'broadcasthost',
+  '0.0.0.0',
+  '::',
+  '::1',
+  '[::]',
+  '[::1]',
+  'metadata.google.internal',
+  'instance-data',
+])
+
+const QUARANTINE_DENY_SUFFIXES = ['.localhost', '.local', '.internal', '.home.arpa', '.lan']
+
+// Private / link-local / loopback IPv4 literals, plus the cloud metadata
+// address (169.254.169.254 is inside the link-local range and thus covered).
+function isPrivateIPv4(host) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
+  if (!m) return false
+  const [a, b] = [Number(m[1]), Number(m[2])]
+  if (m.slice(1).some((x) => Number(x) > 255)) return true // malformed -> deny
+  if (a === 10 || a === 127 || a === 0) return true
+  if (a === 172 && b >= 16 && b <= 31) return true
+  if (a === 192 && b === 168) return true
+  if (a === 169 && b === 254) return true
+  if (a === 100 && b >= 64 && b <= 127) return true // CGNAT
+  return false
+}
+
+// IPv6 loopback / unique-local / link-local, with or without brackets.
+function isPrivateIPv6(host) {
+  const h = host.replace(/^\[|\]$/g, '').toLowerCase()
+  if (!h.includes(':')) return false
+  if (h === '::1' || h === '::') return true
+  if (h.startsWith('fc') || h.startsWith('fd')) return true // unique-local
+  if (h.startsWith('fe80')) return true // link-local
+  // IPv4-mapped (::ffff:10.0.0.1) -- reuse the v4 rules on the tail.
+  const tail = h.split(':').pop() ?? ''
+  if (tail.includes('.')) return isPrivateIPv4(tail)
+  return false
+}
+
+// KNOWN LIMIT, stated rather than papered over: this checks the hostname as
+// written. A public name that RESOLVES to a private address (DNS rebinding)
+// still passes, because the hook sees the URL, not the socket. Closing that
+// needs resolution at fetch time, which is not this layer's job.
+export function isQuarantineDenied(url) {
+  let parsed
+  try {
+    parsed = new URL(url)
+  } catch {
+    return true // unparseable -> deny
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return true
+  const host = parsed.hostname.toLowerCase()
+  if (!host) return true
+  if (QUARANTINE_DENY_HOSTS.has(host)) return true
+  if (QUARANTINE_DENY_SUFFIXES.some((s) => host.endsWith(s))) return true
+  if (isPrivateIPv4(host)) return true
+  if (isPrivateIPv6(host)) return true
+  return false
+}
+
 function matchesQuarantineDomain(url, extraDomains = []) {
   let parsed
   try {
@@ -167,10 +261,14 @@ export function loadRuntimeAllowlist() {
       quarantineDomains: Array.isArray(parsed.quarantine_domains)
         ? parsed.quarantine_domains.filter((d) => typeof d === 'string')
         : [],
+      // The reader-posture switch. ONLY the literal string "denylist" opens
+      // the reader; any other value -- absent key, typo, wrong type -- is the
+      // allowlist default. Fail-closed to the louder failure direction.
+      quarantinePosture: parsed.quarantine_reader_posture === 'denylist' ? 'denylist' : 'allowlist',
     }
   } catch {
     // Missing file or JSON parse error: treat as empty, never propagate.
-    return { domains: [], prefixes: [], quarantineDomains: [] }
+    return { domains: [], prefixes: [], quarantineDomains: [], quarantinePosture: 'allowlist' }
   }
 }
 
@@ -197,6 +295,22 @@ export function egressDecision(
   if (toolName !== 'WebFetch') return { blocked: false, tier: 'not-webfetch' }
   const url = String(toolInput?.url ?? '')
   if (!url) return { blocked: false, tier: 'no-url' }
+
+  const openReader = String(agentType ?? '') === QUARANTINE_AGENT_TYPE
+    && (runtimeList.quarantinePosture ?? 'allowlist') === 'denylist'
+
+  // 0. Reader deny rules, BEFORE every allow path -- in the denylist posture
+  //    only, so the default posture stays byte-identical to the pre-switch
+  //    gate. Order matters and was found by a test, not by reading: the
+  //    built-in prefixes include this install's own dashboard
+  //    (http://localhost:PORT/), so with the deny rules consulted only in
+  //    step 4 an open reader would have reached localhost through step 1 --
+  //    the one address the deny rules exist to refuse. An allowlist that
+  //    predates the switch must not be able to re-open what the open posture
+  //    walls off.
+  if (openReader && isQuarantineDenied(url)) {
+    return { blocked: true, tier: 'quarantine-denied' }
+  }
 
   // 1. Built-in prefix check (startsWith is correct here: the prefix already
   //    includes the trailing slash so a prefix-extension attack is impossible,
@@ -226,9 +340,22 @@ export function egressDecision(
   // 4. Quarantine tier -- the ONLY tier a main agent cannot reach. Exact
   //    agent_type match required (fail-closed: anything else falls through to
   //    the block below).
+  //
+  //    In the allowlist posture (the default) the named domains are the whole
+  //    grant, exactly as before the switch existed. In the denylist posture
+  //    two sub-cases, in this order:
+  //    (a) the shipped feeds and operator additions -- allowed as before, so
+  //        flipping the posture can never break a long-standing source;
+  //    (b) anything else -- allowed UNLESS the deny rules catch it. The
+  //        re-check is defence in depth: step 0 already refused denied URLs,
+  //        and this keeps that true even if someone later reorders the steps.
   if (String(agentType ?? '') === QUARANTINE_AGENT_TYPE) {
     if (matchesQuarantineDomain(url, runtimeList.quarantineDomains ?? [])) {
       return { blocked: false, tier: 'quarantine' }
+    }
+    if (openReader) {
+      if (!isQuarantineDenied(url)) return { blocked: false, tier: 'quarantine-open' }
+      return { blocked: true, tier: 'quarantine-denied' }
     }
   }
 
