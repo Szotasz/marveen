@@ -961,6 +961,23 @@ export function initDatabase(dbPathOverride?: string): void {
   // computed by scripts/hooks/email-approval-gate.py); consumed_at is flipped
   // atomically by the gate on the first allowed send, so an approval can never
   // authorize two sends.
+  // --- System directives (GUARDHITELES903) ---
+  // A machine-originated, action-requesting instruction typed into an agent's
+  // tmux pane is indistinguishable from a prompt injection unless the agent
+  // can verify it INDEPENDENTLY. Every such directive is recorded here FIRST,
+  // and the injected text carries the row id -- an injection can copy the
+  // wrapper, but it cannot place this row.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS system_directives (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      payload TEXT,
+      prompt_excerpt TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `)
+
   try { db.exec('ALTER TABLE approvals ADD COLUMN content_hash TEXT') } catch { /* already exists */ }
   try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_at INTEGER') } catch { /* already exists */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_hash ON approvals(content_hash)`)
@@ -3612,6 +3629,40 @@ export function createApproval(params: {
     content_hash: params.content_hash ?? null,
     consumed_at: null,
   }
+}
+
+export interface SystemDirective {
+  id: number
+  agent: string
+  kind: string
+  payload: string | null
+  prompt_excerpt: string | null
+  created_at: number
+}
+
+// GUARDHITELES903: in-process insert on purpose -- NOT the /api/messages POST
+// path, whose sender validation rightly rejects unknown sender names. A
+// directive is not a conversation message; it is a verifiable receipt.
+export function createSystemDirective(params: {
+  agent: string
+  kind: string
+  payload?: Record<string, unknown> | null
+  prompt_excerpt?: string | null
+}): number {
+  const res = db.prepare(`
+    INSERT INTO system_directives (agent, kind, payload, prompt_excerpt)
+    VALUES (?, ?, ?, ?)
+  `).run(
+    params.agent,
+    params.kind,
+    params.payload ? JSON.stringify(params.payload) : null,
+    params.prompt_excerpt ?? null,
+  )
+  return Number(res.lastInsertRowid)
+}
+
+export function getSystemDirective(id: number): SystemDirective | undefined {
+  return db.prepare('SELECT * FROM system_directives WHERE id = ?').get(id) as SystemDirective | undefined
 }
 
 export function getApproval(id: string): Approval | undefined {
