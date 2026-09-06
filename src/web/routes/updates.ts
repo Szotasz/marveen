@@ -199,6 +199,17 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
       try { unlinkSync(UPDATE_PIDFILE) } catch { /* already gone */ }
       lockHeld = false
     }
+    const countRevs = (range: string): number => {
+      try {
+        const out = execFileSync(
+          '/usr/bin/git',
+          ['rev-list', '--count', range],
+          { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' },
+        ).trim()
+        const n = parseInt(out, 10)
+        return Number.isFinite(n) ? n : 0
+      } catch { return 0 }
+    }
     const git: GitRunner = {
       currentBranch: () => execFileSync(
         '/usr/bin/git',
@@ -210,16 +221,25 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
         ['status', '--porcelain', '--untracked-files=no'],
         { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' },
       ),
-      aheadCount: () => {
+      aheadCount: () => countRevs('@{u}..HEAD'),
+      behindCount: () => countRevs('HEAD..@{u}'),
+      // Mirrors update.sh guard 2. `git ls-remote --exit-code --heads` exits
+      // 2 for "no such branch" and 128 for a transport/auth failure -- the
+      // difference matters: only 2 is evidence, 128 is an unknown we must not
+      // block on. status is undefined when the spawn itself failed (timeout,
+      // git missing), which is likewise unknown.
+      originHasBranch: (branch: string) => {
         try {
-          const out = execFileSync(
+          execFileSync(
             '/usr/bin/git',
-            ['rev-list', '--count', '@{u}..HEAD'],
-            { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' },
-          ).trim()
-          const n = parseInt(out, 10)
-          return Number.isFinite(n) ? n : 0
-        } catch { return 0 }
+            ['ls-remote', '--exit-code', '--heads', 'origin', branch],
+            { cwd: PROJECT_ROOT, timeout: 15000, stdio: 'ignore' },
+          )
+          return 'yes' as const
+        } catch (err) {
+          const status = (err as { status?: number }).status
+          return status === 2 ? ('no' as const) : ('unknown' as const)
+        }
       },
     }
     let preflight
