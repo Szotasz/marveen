@@ -47,6 +47,7 @@ import {
   type StuckInputActionFacts,
 } from '../pane-state.js'
 import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST } from './main-agent.js'
+import { recordChannelEvent } from './channel-event-log.js'
 import { notifyChannel } from '../notify.js'
 import { sendRoutineAlert } from './routine-alert.js'
 import { getProvider, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
@@ -2071,6 +2072,13 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
         } else {
           if (agentDownSince.has(t.session)) {
             logger.info({ session: t.session, provider: t.provider }, 'Agent channel plugin recovered')
+            recordChannelEvent({
+              at: Date.now(),
+              agent: t.agentName ?? t.session,
+              provider: t.provider,
+              event: 'recovered',
+              detail: { downMs: Date.now() - (agentDownSince.get(t.session) ?? Date.now()) },
+            })
             agentDownSince.delete(t.session)
           }
           // Healthy observation clears the exponential back-off so the next
@@ -2089,6 +2097,15 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
       } else {
         if (!agentDownSince.has(t.session)) {
           agentDownSince.set(t.session, Date.now())
+          // Countable record, once per spell: dashboard.log tells the story of
+          // a drop, but its lines carry no date, so it cannot answer "how
+          // often". See channel-event-log.
+          recordChannelEvent({
+            at: Date.now(),
+            agent: t.agentName ?? t.session,
+            provider: t.provider,
+            event: 'down',
+          })
           // First down observation of this spell: capture WHY before anything is
           // torn down. Without this the restart destroys the evidence and the
           // log can only say "down" -- which is exactly why the 10x/day churn
@@ -2162,6 +2179,13 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // fires exactly once; a later healthy sweep resets it (re-arming the
           // alert for a future down-spell).
           logger.error({ agent: t.agentName, provider: t.provider, failures, absentConfirmed }, 'Agent channel plugin down after max restart attempts -- giving up, alerting operator')
+          recordChannelEvent({
+            at: Date.now(),
+            agent: t.agentName ?? t.session,
+            provider: t.provider,
+            event: 'gave-up',
+            detail: { failures, absentConfirmed },
+          })
           sendAlert(absentConfirmed
             ? `⛔ A(z) ${t.agentName} ágens ${t.provider} plugin-je BE SEM TÖLTŐDÖTT (absent a /mcp listából), a fresh-restart ezt nem javítja -- tovább nem próbálom (minden restart elveszi a session kontextusát). Kézi TISZTA újraindítás kell (üresen, más ágens indulásával nem átlapolva): ${t.session}.`
             : `⛔ A(z) ${t.agentName} ágens ${t.provider} csatornája ${AGENT_MAX_RESTART_ATTEMPTS} automatikus újraindítás után sem állt helyre. Tovább nem indítom újra (minden restart elveszi a session kontextusát). Kézi beavatkozás kell: nézd meg a ${t.session} session-t és a ${SERVICE_ID} csatorna-plugint.`)
@@ -2194,6 +2218,13 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           continue
         }
         logger.warn({ agent: t.agentName, provider: t.provider, failures }, 'Agent channel plugin down -- auto-restarting')
+        recordChannelEvent({
+          at: Date.now(),
+          agent: t.agentName ?? t.session,
+          provider: t.provider,
+          event: 'restart',
+          detail: { failures },
+        })
         try {
           await stopAgentProcess(t.agentName!)
           // Settle before the fresh start. stopAgentProcess already reaps this
