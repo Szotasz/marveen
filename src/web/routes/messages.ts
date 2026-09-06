@@ -279,7 +279,30 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   if (msgUpdateMatch && method === 'PUT') {
     const id = parseInt(msgUpdateMatch[1], 10)
     const body = await readBody(req)
-    const { status: newStatus, result } = JSON.parse(body.toString()) as { status: string; result?: string }
+    const { status: newStatus, result, notify } = JSON.parse(body.toString()) as
+      { status: string; result?: string; notify?: boolean }
+
+    // `notify` lets the CLOSER decide whether the reverse [Eredmény] message is
+    // worth an agent turn at the other end. The two cases share this one code
+    // path and cannot be told apart from here:
+    //   - closing a DELEGATED task   -> the delegator is waiting, the ack IS the result;
+    //   - closing an INCOMING report -> the sender already knows it sent it, and the ack
+    //     (typically the 52-char "(nincs eredmény)" form) only lengthens the very queue
+    //     whose delay made the report late. Measured on a live install: several such acks
+    //     sat queued behind an agent whose delivery was already lagging, so closing the
+    //     reports made the queue that the reports arrive in longer still.
+    // Absent (or null) keeps today's behavior, so no existing caller changes.
+    // Rejected BEFORE the status write, not coerced: a truthy `"false"` string would send
+    // exactly the notification the caller asked to skip, and a half-applied close (status
+    // written, unwanted ack sent) is worse than an actionable error the caller can retry
+    // -- the same reason the GET list handler rejects unknown query params.
+    if (notify !== undefined && notify !== null && typeof notify !== 'boolean') {
+      json(res, {
+        error: 'notify must be a boolean',
+        hint: 'omit it for the default (notify the sender), or send JSON true/false -- not a string',
+      }, 400)
+      return true
+    }
 
     let ok = false
     if (newStatus === 'done') ok = markMessageDone(id, result)
@@ -294,7 +317,10 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       // Notify the delegator: create a reverse message from executor → delegator so
       // they learn the result without polling. See shouldNotifyDelegator for which
       // senders are skipped and why.
-      if (done && shouldNotifyDelegator(done.from_agent, done.to_agent, done.content)) {
+      // `notify: false` suppresses it; `notify: true` is only the default spelled out --
+      // it does NOT override shouldNotifyDelegator, whose guards stop undeliverable and
+      // ping-pong acks, not merely expensive ones.
+      if (done && notify !== false && shouldNotifyDelegator(done.from_agent, done.to_agent, done.content)) {
         // A vagas NE legyen nema, ES legyen KOVETHETO: lasd resultSummary().
         const summary = resultSummary(id, result)
         createAgentMessage(
