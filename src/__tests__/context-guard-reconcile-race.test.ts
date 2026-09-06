@@ -39,3 +39,35 @@ describe('context-guard / reconcile restart race (DANICTXHUROK906)', () => {
     expect(isWithinRestartGrace(name, t0 + 91_000)).toBe(false)
   })
 })
+
+// SOURCE-LEVEL COVERAGE of the WIRING, not just the predicate. Mutation review
+// (Marveen, 2026-09-06) removed the guard-side markAgentRestartPending(name)
+// call and all four behavioural tests above still passed -- they exercise the
+// predicate, and the bug was in the CALL SITE. This asserts the wiring the same
+// way the copy-gate coverage test does: read the guard source and require that,
+// on the non-main branch of performRestart, the grace is claimed BEFORE the
+// restart. If someone deletes that one line, this fails.
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+
+describe('context-guard restart wiring (DANICTXHUROK906, source-level)', () => {
+  const guardSrc = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'context-guard-runner.ts'),
+    'utf-8',
+  )
+
+  it('claims the reconcile grace BEFORE restarting a non-main agent', () => {
+    // Scope to the else (non-main) branch of performRestart so the assertion is
+    // about the sub-agent path, not the main-agent hardRestart path.
+    const perf = guardSrc.slice(guardSrc.indexOf('async function performRestart'))
+    const elseIdx = perf.indexOf('} else {')
+    expect(elseIdx).toBeGreaterThan(-1)
+    const elseBranch = perf.slice(elseIdx)
+    const markIdx = elseBranch.indexOf('markAgentRestartPending(name)')
+    const restartIdx = elseBranch.indexOf('restartAgentProcess(name')
+    expect(markIdx).toBeGreaterThan(-1)   // the grace-claim line exists
+    expect(restartIdx).toBeGreaterThan(-1)
+    expect(markIdx).toBeLessThan(restartIdx)  // and it runs BEFORE the restart
+  })
+})
