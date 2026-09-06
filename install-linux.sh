@@ -23,6 +23,126 @@ warn() { echo -e "  ${ORANGE}!${NC} $*"; }
 
 INSTALL_STEP="init"
 
+# --- INSTWIZ1 headless-install helpers (contract) BEGIN ---
+# Non-interactive mode: MARVEEN_NONINTERACTIVE=1 skips EVERY stdin prompt and
+# takes the value from a MARVEEN_* preset env var (when one is defined for the
+# prompt) or from the documented default -- no `read` may ever touch stdin in
+# this mode (a bare read would EOF-abort a curl|ssh bootstrap).
+# Machine progress: MARVEEN_JSON_PROGRESS=1 emits one
+#   MARVEEN_PROGRESS {"step":"<id>","status":"start|ok|fail","detail":"..."}
+# line per step transition on stdout, and exactly one closing
+#   MARVEEN_RESULT {"ok":...,"dashboardPort":...,"enrollBundle":...}
+# line at the end (success AND failure paths -- fail()/ERR trap/EXIT trap).
+# Secrets (tokens, passwords, dashboard-token URLs) must NEVER appear in a
+# MARVEEN_PROGRESS line; emit_progress scrubs suspicious detail strings.
+
+# prompt_or_preset VAR "prompt" "noninteractive-default" ["PRESET_ENV"] ["noraw"]
+# Interactive mode is byte-identical to the read -rp / read -p it replaces
+# (any post-read `VAR=${VAR:-default}` line at the call site stays as-is and
+# keeps applying the interactive default).
+prompt_or_preset() {
+  local __var="$1" __prompt="$2" __ni_default="$3" __preset_env="${4:-}" __readmode="${5:-raw}"
+  if [ "${MARVEEN_NONINTERACTIVE:-0}" = "1" ]; then
+    local __val=""
+    if [ -n "$__preset_env" ]; then
+      __val="${!__preset_env:-}"
+    fi
+    if [ -z "$__val" ]; then
+      __val="$__ni_default"
+    fi
+    printf -v "$__var" '%s' "$__val"
+    return 0
+  fi
+  if [ "$__readmode" = "noraw" ]; then
+    read -p "$__prompt" "$__var"
+  else
+    read -rp "$__prompt" "$__var"
+  fi
+}
+
+# Minimal JSON string escaping for progress lines (backslash, double quote;
+# newlines/tabs flattened to spaces, CR dropped).
+json_escape() {
+  local s="$1"
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/ }
+  s=${s//$'\r'/}
+  s=${s//$'\t'/ }
+  printf '%s' "$s"
+}
+
+# Redact anything that even smells like a credential before it can reach a
+# progress/result line. Over-redaction is fine; leaking is not.
+scrub_secretish() {
+  local s="$1"
+  case "$s" in
+    *sk-ant-*|*token=*|*TOKEN=*|*password*|*Password*|*jelszo*) printf '[redacted]' ;;
+    *) printf '%s' "$s" ;;
+  esac
+}
+
+emit_progress() {
+  if [ "${MARVEEN_JSON_PROGRESS:-0}" != "1" ]; then return 0; fi
+  local step="$1" status="$2" detail="${3:-}"
+  detail="$(scrub_secretish "$detail")"
+  if [ -n "$detail" ]; then
+    printf 'MARVEEN_PROGRESS {"step":"%s","status":"%s","detail":"%s"}\n' \
+      "$(json_escape "$step")" "$(json_escape "$status")" "$(json_escape "$detail")"
+  else
+    printf 'MARVEEN_PROGRESS {"step":"%s","status":"%s"}\n' \
+      "$(json_escape "$step")" "$(json_escape "$status")"
+  fi
+}
+
+MARVEEN_RESULT_EMITTED=0
+# emit_result <true|false> [error-message] [enrollBundle]
+# Emits at most ONE MARVEEN_RESULT line per install run (first caller wins).
+emit_result() {
+  if [ "${MARVEEN_JSON_PROGRESS:-0}" != "1" ]; then return 0; fi
+  if [ "$MARVEEN_RESULT_EMITTED" = "1" ]; then return 0; fi
+  MARVEEN_RESULT_EMITTED=1
+  local ok="$1" err="${2:-}" bundle="${3:-}" port="${WEB_PORT:-3420}" bundle_json="null"
+  if ! [[ "$port" =~ ^[0-9]+$ ]]; then port=3420; fi
+  if [ -n "$bundle" ]; then bundle_json="\"$(json_escape "$bundle")\""; fi
+  if [ "$ok" = "true" ]; then
+    printf 'MARVEEN_RESULT {"ok":true,"dashboardPort":%s,"enrollBundle":%s}\n' "$port" "$bundle_json"
+  else
+    err="$(scrub_secretish "$err")"
+    printf 'MARVEEN_RESULT {"ok":false,"dashboardPort":%s,"enrollBundle":%s,"error":"%s"}\n' \
+      "$port" "$bundle_json" "$(json_escape "$err")"
+  fi
+}
+
+# Step transition: close the previous step (ok) and open the new one (start).
+set_step() {
+  if [ -n "${INSTALL_STEP:-}" ] && [ "$INSTALL_STEP" != "init" ] && [ "$INSTALL_STEP" != "$1" ]; then
+    emit_progress "$INSTALL_STEP" ok
+  fi
+  INSTALL_STEP="$1"
+  emit_progress "$INSTALL_STEP" start
+}
+
+# Safety net: any exit path that did not already emit a MARVEEN_RESULT line
+# (e.g. a stray `exit 1` outside fail()/on_error()) still closes the protocol.
+# A successful `exec` (repo re-bootstrap) does not run the EXIT trap, which is
+# correct -- the re-executed installer owns the protocol from there.
+on_exit_emit_result() {
+  local __code=$?
+  if [ "$__code" -ne 0 ]; then
+    emit_result false "installer exited with code ${__code} at step ${INSTALL_STEP:-init}"
+  else
+    # Code 0 but no result yet = an early exit that never reached the normal
+    # completion (e.g. --help, or an aborted MCP prompt that exits 0). The
+    # normal success path emits `true` before returning, so the once-only guard
+    # makes this a no-op there; here it guarantees the machine consumer still
+    # gets exactly one closing MARVEEN_RESULT on every exit path.
+    emit_result false "installer exited early without completing (step ${INSTALL_STEP:-init})"
+  fi
+}
+trap on_exit_emit_result EXIT
+# --- INSTWIZ1 headless-install helpers (contract) END ---
+
 # shellcheck source=install-lang.sh
 source "$(dirname "$0")/install-lang.sh"
 
@@ -35,7 +155,7 @@ offer_claude_fallback() {
   echo -e "${ORANGE}Claude Code elerheto a gepen.${NC}"
   local prompt="Marveen installer failed at step \"${step}\". Error: ${err_msg}. Script: install-linux.sh${line_info}. Repo: https://github.com/Szotasz/marveen. OS: $(lsb_release -ds 2>/dev/null || cat /etc/os-release 2>/dev/null | head -1 || echo Linux). Node: $(node -v 2>/dev/null || echo missing). Dir: ${INSTALL_DIR}. Your task: diagnose this Marveen installer failure. The install scripts are install.sh (macOS) and install-linux.sh. Read the relevant section, check for missing dependencies or permission issues, and suggest concrete shell commands to fix."
   if [ -t 0 ]; then
-    read -rp "$(_t prompt_open_claude)" OPEN_CLAUDE
+    prompt_or_preset OPEN_CLAUDE "$(_t prompt_open_claude)" "n"
     OPEN_CLAUDE=${OPEN_CLAUDE:-n}
     if [[ "$OPEN_CLAUDE" == "i" || "$OPEN_CLAUDE" == "y" ]]; then
       # `claude` az inicialis promptot pozicionalis argumentumkent veszi.
@@ -51,6 +171,8 @@ offer_claude_fallback() {
 fail() {
   echo -e "  ${RED}✗${NC} $*"
   explain_install_error "${INSTALL_ERRLOG:-}"
+  emit_progress "$INSTALL_STEP" fail "$*"
+  emit_result false "step ${INSTALL_STEP}: $*"
   offer_claude_fallback "$INSTALL_STEP" "$*" "${BASH_LINENO[0]}"
   exit 1
 }
@@ -59,6 +181,8 @@ on_error() {
   echo ""
   echo -e "${RED}Varatlan hiba a(z) '${INSTALL_STEP}' lepesben (sor: $1).${NC}"
   explain_install_error "${INSTALL_ERRLOG:-}"
+  emit_progress "$INSTALL_STEP" fail "Unexpected error at line $1"
+  emit_result false "unexpected error at line $1 (step ${INSTALL_STEP})"
   offer_claude_fallback "$INSTALL_STEP" "Unexpected error at line $1" "$1"
   exit 1
 }
@@ -162,7 +286,7 @@ case "$INSTALL_DIR" in
     ;;
 esac
 
-INSTALL_STEP="prerequisites"
+set_step "prerequisites"
 # ─────────────────────────────────────────────
 # [1/7] Elofeltetelek
 # ─────────────────────────────────────────────
@@ -333,7 +457,7 @@ if command -v free &>/dev/null; then
     warn "$(_t linux.low_ram_prefix) ${TOTAL_RAM_MB} MB RAM + ${TOTAL_SWAP_MB} MB swap = ${TOTAL_AVAIL} MB"
     echo -e "  ${ORANGE}Az npm build legalabb 2 GB memoriat igenyel.${NC}"
     if [ "$TOTAL_SWAP_MB" -lt 1024 ]; then
-      read -rp "$(_t prompt_swap)" CREATE_SWAP
+      prompt_or_preset CREATE_SWAP "$(_t prompt_swap)" "i"
       CREATE_SWAP=${CREATE_SWAP:-i}
       if [ "$CREATE_SWAP" = "i" ]; then
         echo -e "  Swap letrehozasa (sudo szukseges)..."
@@ -468,6 +592,17 @@ ok "zstd $(zstd --version | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
 # package.json nelkuli mappaban futna (ENOENT: /root/package.json). Ilyenkor
 # klonozzuk a repot egy stabil helyre es ujrafuttatjuk magunkat onnan.
 # git itt mar garantaltan telepitve van (lasd fentebb a [1/7] lepest).
+# INSTWIZ1 headless guard: this derived script must run from INSIDE the
+# marveen checkout (the paid provisioner clones the repo and overlays this
+# script there, so package.json is present). The self-reclone block below is
+# intentional DEAD CODE on that path. If this script is ever run standalone
+# from OUTSIDE the repo under the headless protocol, the reclone would fetch
+# the PUBLIC interactive installer and exec it, silently dropping headless
+# mode under a closed stdin. Fail loud instead. Do NOT "fix" the reclone back.
+if { [ "${MARVEEN_JSON_PROGRESS:-0}" = "1" ] || [ "${MARVEEN_NONINTERACTIVE:-0}" = "1" ]; } && [ ! -f "$INSTALL_DIR/package.json" ]; then
+  emit_result false "headless install must be run from inside the marveen checkout (no package.json at $INSTALL_DIR)"
+  exit 4
+fi
 if [ ! -f "$INSTALL_DIR/package.json" ]; then
   warn "A telepito a repon kivulrol fut (nincs package.json itt: $INSTALL_DIR)."
   TARGET_DIR="$HOME/marveen"
@@ -488,7 +623,7 @@ if [ ! -f "$INSTALL_DIR/package.json" ]; then
   exec bash "$TARGET_DIR/install-linux.sh" "$@"
 fi
 
-INSTALL_STEP="claude-bun-install"
+set_step "claude-bun-install"
 # ─────────────────────────────────────────────
 # [2/7] Claude Code + Bun telepitese
 # ─────────────────────────────────────────────
@@ -617,7 +752,7 @@ fi
 ensure_in_rc 'BUN_INSTALL' 'export BUN_INSTALL="$HOME/.bun"'
 ensure_in_rc '.bun/bin' 'export PATH="$BUN_INSTALL/bin:$PATH"'
 
-INSTALL_STEP="claude-auth"
+set_step "claude-auth"
 # ─────────────────────────────────────────────
 # [3/7] Claude bejelentkezes
 # ─────────────────────────────────────────────
@@ -657,17 +792,17 @@ else
   echo -e "  ${BOLD}3.${NC} Kihagyas ${DIM}(kesobb allitod be)${NC}"
   echo ""
   if [ "$IS_HEADLESS" = "true" ]; then
-    read -rp "$(_t prompt_auth_mode)" AUTH_MODE
+    prompt_or_preset AUTH_MODE "$(_t prompt_auth_mode)" "3" "MARVEEN_AUTH_MODE"
     AUTH_MODE=${AUTH_MODE:-2}
   else
-    read -rp "$(_t prompt_auth_mode)" AUTH_MODE
+    prompt_or_preset AUTH_MODE "$(_t prompt_auth_mode)" "3" "MARVEEN_AUTH_MODE"
     AUTH_MODE=${AUTH_MODE:-3}
   fi
 
   if [ "$AUTH_MODE" = "1" ]; then
     echo ""
     echo -e "  ${DIM}API kulcsot itt talalod: https://console.anthropic.com/settings/keys${NC}"
-    read -p "  ANTHROPIC_API_KEY (sk-ant-...): " ANTHROPIC_API_KEY_INPUT
+    prompt_or_preset ANTHROPIC_API_KEY_INPUT "  ANTHROPIC_API_KEY (sk-ant-...): " "" "MARVEEN_API_KEY" noraw
     if [ -n "$ANTHROPIC_API_KEY_INPUT" ]; then
       export ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY_INPUT"
       ensure_in_rc 'ANTHROPIC_API_KEY' "export ANTHROPIC_API_KEY=\"$ANTHROPIC_API_KEY_INPUT\""
@@ -685,7 +820,7 @@ else
     echo -e "  ${BOLD}3.${NC} A bongeszo megnyilik, jelentkezz be a Claude fiokoddal"
     echo -e "  ${BOLD}4.${NC} Masold vissza ide a kiirt tokent:"
     echo ""
-    read -p "  OAuth token: " OAUTH_TOKEN_INPUT
+    prompt_or_preset OAUTH_TOKEN_INPUT "  OAuth token: " "" "MARVEEN_OAUTH_TOKEN" noraw
     if [ -n "$OAUTH_TOKEN_INPUT" ]; then
       export CLAUDE_CODE_OAUTH_TOKEN="$OAUTH_TOKEN_INPUT"
       ensure_in_rc 'CLAUDE_CODE_OAUTH_TOKEN' "export CLAUDE_CODE_OAUTH_TOKEN=\"$OAUTH_TOKEN_INPUT\""
@@ -800,13 +935,13 @@ except Exception:
 PYEOF
 echo -e "  ${GREEN}✓${NC} Claude Code first-run beallitas kesz"
 
-INSTALL_STEP="personal-info"
+set_step "personal-info"
 # ─────────────────────────────────────────────
 # [4/7] Szemelyes beallitasok
 # ─────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}$(_t section_4_linux)${NC}"
-read -rp "$(_t prompt_your_name)" OWNER_NAME
+prompt_or_preset OWNER_NAME "$(_t prompt_your_name)" "Owner" "MARVEEN_OWNER_NAME"
 # Chat ID is NOT asked here -- the user doesn't know it yet.
 # It will be set automatically during the Telegram pairing flow.
 CHAT_ID="0"
@@ -823,7 +958,9 @@ if [ "$IS_HEADLESS" = "true" ]; then
   echo -e "  ${BOLD}Javasoljuk:${NC} lepj be a claude.ai Settings oldalara es"
   echo -e "  tiltsd le a felesleges MCP-ket telepites elott."
   echo -e "${ORANGE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-  read -rp "$(_t prompt_vps_continue)" CONTINUE_MCP
+  # Non-interactive: ALWAYS "i" (no preset env on purpose) -- a headless
+  # bootstrap must never abort here.
+  prompt_or_preset CONTINUE_MCP "$(_t prompt_vps_continue)" "i"
   CONTINUE_MCP=${CONTINUE_MCP:-i}
   if [ "$CONTINUE_MCP" != "i" ]; then
     echo -e "  ${DIM}Telepites megszakitva. Tiltsd le a felesleges MCP-ket, majd futtasd ujra.${NC}"
@@ -839,7 +976,7 @@ echo -e "  ${BOLD}1.${NC} Telegram (alapertelmezett)"
 echo -e "  ${BOLD}2.${NC} Slack"
 echo -e "  ${BOLD}3.${NC} Discord"
 echo ""
-read -rp "$(_t prompt_channel_select_linux)" PROVIDER_CHOICE
+prompt_or_preset PROVIDER_CHOICE "$(_t prompt_channel_select_linux)" "1" "MARVEEN_PROVIDER"
 PROVIDER_CHOICE=${PROVIDER_CHOICE:-1}
 if [ "$PROVIDER_CHOICE" = "2" ]; then
   CHANNEL_PROVIDER="slack"
@@ -902,7 +1039,7 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   echo -e "${DIM}  3. Adj nevet a botodnak${NC}"
   echo -e "${DIM}  4. Masold ide a kapott tokent:${NC}"
   echo ""
-  read -rp "$(_t prompt_telegram_token)" BOT_TOKEN
+  prompt_or_preset BOT_TOKEN "$(_t prompt_telegram_token)" "" "MARVEEN_BOT_TOKEN"
   probe_telegram_token "$BOT_TOKEN"
 elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   echo ""
@@ -914,12 +1051,12 @@ elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   echo -e "${DIM}  5. Masold ki a csatorna ID-jet (Developer Mode > jobb klikk > Copy Channel ID)${NC}"
   echo -e "${DIM}  6. Sajat (operator) user ID: jobb klikk a nevedre > Copy User ID${NC}"
   echo ""
-  read -rp "$(_t prompt_discord_bot_token)" DISCORD_BOT_TOKEN
-  read -rp "$(_t prompt_discord_channel_id)" DISCORD_CHANNEL_ID
+  prompt_or_preset DISCORD_BOT_TOKEN "$(_t prompt_discord_bot_token)" "" "MARVEEN_DISCORD_BOT_TOKEN"
+  prompt_or_preset DISCORD_CHANNEL_ID "$(_t prompt_discord_channel_id)" "" "MARVEEN_DISCORD_CHANNEL_ID"
   echo ""
   echo -e "${DIM}  Az operator user ID-re a parositashoz kell: amikor egy uj felhasznalo${NC}"
   echo -e "${DIM}  DM-et ir a botnak, a bot ezen az ID-n ertesit teged jovahagyasert.${NC}"
-  read -rp "$(_t prompt_discord_user_id)" OPERATOR_DISCORD_USER_ID
+  prompt_or_preset OPERATOR_DISCORD_USER_ID "$(_t prompt_discord_user_id)" "" "MARVEEN_DISCORD_USER_ID"
 else
   echo ""
   echo -e "${DIM}  Az AI asszisztensed Slack-en kommunikal veled.${NC}"
@@ -933,11 +1070,11 @@ else
   echo -e "${DIM}     app_mention, message.channels, message.groups, message.im${NC}"
   echo -e "${DIM}  5. Installald a workspace-be${NC}"
   echo ""
-  read -rp "$(_t prompt_slack_bot_token)" SLACK_BOT_TOKEN
-  read -rp "$(_t prompt_slack_app_token)" SLACK_APP_TOKEN
+  prompt_or_preset SLACK_BOT_TOKEN "$(_t prompt_slack_bot_token)" "" "MARVEEN_SLACK_BOT_TOKEN"
+  prompt_or_preset SLACK_APP_TOKEN "$(_t prompt_slack_app_token)" "" "MARVEEN_SLACK_APP_TOKEN"
 fi
 
-read -rp "$(_t prompt_bot_name)" BOT_NAME
+prompt_or_preset BOT_NAME "$(_t prompt_bot_name)" "Marveen" "MARVEEN_BOT_NAME"
 BOT_NAME=${BOT_NAME:-"Marveen"}
 
 # Derive the ASCII slug the backend uses everywhere (tmux sessions, systemd
@@ -964,7 +1101,7 @@ fi
 BRAND_NAME="$BOT_NAME"
 SERVICE_ID="$MAIN_AGENT_ID"
 
-INSTALL_STEP="npm-install"
+set_step "npm-install"
 # ─────────────────────────────────────────────
 # [5/7] Fuggosegek telepitese + konfiguracic
 # ─────────────────────────────────────────────
@@ -991,7 +1128,7 @@ fi
 rm -f "$_NPM_CI_LOG"
 ok "npm csomagok telepitve"
 
-INSTALL_STEP="typescript-build"
+set_step "typescript-build"
 echo -e "  TypeScript forditas..."
 if ! npm run build --loglevel warn; then
   fail "TypeScript forditas sikertelen. Ellenorizd a hibauzeneteket fentebb."
@@ -1015,7 +1152,7 @@ mkdir -p "$INSTALL_DIR/store"
 mkdir -p "$INSTALL_DIR/agents"
 ok "Konyvtarak letrehozva"
 
-INSTALL_STEP="configuration"
+set_step "configuration"
 # .env letrehozasa
 echo ""
 echo -e "${BOLD}  Konfiguracio letrehozasa...${NC}"
@@ -1442,7 +1579,7 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
   fi
 fi
 
-INSTALL_STEP="ollama-whisper"
+set_step "ollama-whisper"
 # ─────────────────────────────────────────────
 # [6/7] Ollama + Whisper
 # ─────────────────────────────────────────────
@@ -1552,7 +1689,7 @@ echo -e "  Whisper telepites (beszed -> szoveg leirat, opcionalis)..."
 if command -v whisper &>/dev/null; then
   ok "whisper mar telepitve"
 else
-  read -rp "$(_t prompt_whisper)" DO_WHISPER
+  prompt_or_preset DO_WHISPER "$(_t prompt_whisper)" "n"
   DO_WHISPER=${DO_WHISPER:-n}
   if [ "$DO_WHISPER" = "i" ]; then
     pipx install openai-whisper 2>/dev/null &&
@@ -1563,7 +1700,7 @@ else
   fi
 fi
 
-INSTALL_STEP="bumblebee"
+set_step "bumblebee"
 # ─────────────────────────────────────────────
 # Go + bumblebee (supply-chain scanner)
 # ─────────────────────────────────────────────
@@ -1658,7 +1795,7 @@ else
   echo -e "  ${DIM}  Kezzel: sudo snap install go --classic && git clone https://github.com/perplexityai/bumblebee /tmp/bb && (cd /tmp/bb && go build -o ~/.local/bin/bumblebee ./cmd/bumblebee)${NC}"
 fi
 
-INSTALL_STEP="systemd"
+set_step "systemd"
 # ─────────────────────────────────────────────
 # [7/7] Automatikus inditas (systemd)
 # ─────────────────────────────────────────────
@@ -2032,7 +2169,7 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
     echo -e "  ${BOLD}2.${NC} A bot valaszol egy parosito kodot"
     echo -e "  ${BOLD}3.${NC} Masold ide a kapott kodot:"
     echo ""
-    read -rp "$(_t prompt_pair_code)" PAIR_CODE
+    prompt_or_preset PAIR_CODE "$(_t prompt_pair_code)" ""
 
     if [ -n "$PAIR_CODE" ]; then
       if [ ! -f "$ACCESS_FILE" ]; then
@@ -2093,7 +2230,7 @@ fi
 echo ""
 echo -e "${BOLD}Korabbi rendszer koltoztetese${NC}"
 echo -e "${DIM}  Ha volt korabbi AI asszisztensed (OpenClaw, egyeni bot), atmigralhato a memoriai.${NC}"
-read -rp "$(_t prompt_migrate)" DO_MIGRATE
+prompt_or_preset DO_MIGRATE "$(_t prompt_migrate)" "n"
 DO_MIGRATE=${DO_MIGRATE:-n}
 if [ "$DO_MIGRATE" = "i" ]; then
   if [ -f "$INSTALL_DIR/scripts/migrate.sh" ]; then
@@ -2117,6 +2254,40 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ "$CHAT_ID" = "0" ]; then
   echo -e "  2. Masold a kapott parosito kodot"
   echo -e "  3. Futtasd: ${BOLD}claude${NC}, majd ${BOLD}/telegram:access pair AKOD${NC}"
   echo -e "${ORANGE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+fi
+
+# ─────────────────────────────────────────────
+# Auto-enroll (Bridge headless provisioning) -- INSTWIZ1 contract point 3
+# ─────────────────────────────────────────────
+# When MARVEEN_ENROLL_PUBKEY is set, enroll that SSH public key via the
+# existing remote-enroll flow and surface the base64 connection bundle in the
+# MARVEEN_RESULT line. remote-access-enroll.ts prints the bundle between
+# "----- BEGIN/END CONNECTION BUNDLE -----" marker lines on stdout; all
+# diagnostics go to stderr (captured to store/enroll.stderr.log). The bundle
+# is a secret by design (it may carry the dashboard token) -- it goes ONLY
+# into the MARVEEN_RESULT enrollBundle field, never into a progress line.
+ENROLL_BUNDLE=""
+if [ -n "${MARVEEN_ENROLL_PUBKEY:-}" ]; then
+  set_step "enroll"
+  echo ""
+  echo -e "${BOLD}Remote eszkoz enroll (Bridge)${NC}"
+  ENROLL_OUT="$(cd "$INSTALL_DIR" && npm run --silent remote-enroll -- "$MARVEEN_ENROLL_PUBKEY" 2>"$INSTALL_DIR/store/enroll.stderr.log")" || ENROLL_OUT=""
+  ENROLL_BUNDLE="$(printf '%s\n' "$ENROLL_OUT" | awk '/^----- BEGIN CONNECTION BUNDLE -----$/{f=1;next} /^----- END CONNECTION BUNDLE -----$/{f=0} f{printf "%s",$0}')"
+  if [ -n "$ENROLL_BUNDLE" ]; then
+    ok "Remote enroll kesz (connection bundle generalva)"
+  else
+    warn "Remote enroll sikertelen -- reszletek: $INSTALL_DIR/store/enroll.stderr.log"
+    emit_progress "enroll" fail "remote-enroll produced no bundle"
+    # The install itself completed, but the caller asked for an enroll bundle
+    # and did not get one -- report failure so the Bridge can offer a retry
+    # instead of silently proceeding without a way to connect. EXIT here so the
+    # run does not fall through to the success banner and a trailing
+    # `emit_progress "$INSTALL_STEP" ok` that would repaint the failed enroll
+    # step green (the MARVEEN_RESULT is already false and the once-only guard
+    # keeps it authoritative).
+    emit_result false "remote-enroll failed: MARVEEN_ENROLL_PUBKEY was set but no connection bundle was produced (see store/enroll.stderr.log on the host)"
+    exit 1
+  fi
 fi
 
 # ─────────────────────────────────────────────
@@ -2175,3 +2346,8 @@ if [ "${INSTALL_AUTH_STATE:-UNKNOWN}" != "OK" ]; then
   echo -e "  ${BOLD}  Javitas: ${BLUE}bash \"$INSTALL_DIR/scripts/auth.sh\"${NC}${BOLD} majd ${BLUE}bash \"$INSTALL_DIR/scripts/channels.sh\" restart${NC}"
   echo ""
 fi
+
+# INSTWIZ1: close the machine progress protocol. emit_result is once-only, so
+# if the enroll leg above already reported a failure this stays a no-op.
+emit_progress "$INSTALL_STEP" ok
+emit_result true "" "$ENROLL_BUNDLE"
