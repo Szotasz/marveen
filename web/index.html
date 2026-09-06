@@ -2227,7 +2227,13 @@
               </optgroup>
               <optgroup label="🏠 Ollama (lokális)" id="agentModelOllamaGroup" style="display:none">
               </optgroup>
+              <optgroup label="🔧 Egyéni provider" id="agentModelCustomProviderGroup" style="display:none">
+              </optgroup>
             </select>
+            <div id="agentModelCustomModelRow" style="display:none;margin-top:6px">
+              <input type="text" id="agentModelCustomModelId" class="input" placeholder="Model ID (pl. claude-3-opus-20240229)" style="width:100%">
+              <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">Anthropic Messages API (/v1/messages) kompatibilis végpont szükséges. Tiszta OpenAI végponthoz proxy kell.</small>
+            </div>
           </div>
           <div class="form-group">
             <label for="agentProfile" data-i18n="agents.wizard.profile_label">Biztonsági profil</label>
@@ -2400,7 +2406,13 @@
               </optgroup>
               <optgroup label="🏠 Ollama (lokális)" id="ollamaModelGroup">
               </optgroup>
+              <optgroup label="🔧 Egyéni provider" id="editAgentModelCustomProviderGroup" style="display:none">
+              </optgroup>
             </select>
+            <div id="editAgentModelCustomModelRow" style="display:none;margin-top:6px">
+              <input type="text" id="editAgentModelCustomModelId" class="input" placeholder="Model ID (pl. claude-3-opus-20240229)" style="width:100%">
+              <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">Anthropic Messages API (/v1/messages) kompatibilis végpont szükséges. Tiszta OpenAI végponthoz proxy kell.</small>
+            </div>
             <button class="btn-secondary btn-compact agent-save-section" id="saveModelBtn" data-i18n="common.btn.save">Mentés</button>
             <button class="btn-secondary btn-compact" id="modelSuggestBtn" style="margin-left:6px" data-i18n="agents.settings.model_suggest_btn">Javaslat</button>
             <button class="btn-secondary btn-compact" id="openrouterBrowseBtn" style="margin-left:6px;display:none" title="Kézi OpenRouter modellek listájának szerkesztése (pipával)">🔀 OpenRouter kézi lista</button>
