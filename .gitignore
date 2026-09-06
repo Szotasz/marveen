@@ -1,6 +1,12 @@
 # Dependencies & build
 node_modules
 dist/
+# Vendored gmail-mcp-server ships its patched build under its own dist/ --
+# carve it out of the blanket dist/ ignore above (same directory-vs-contents
+# gotcha as .claude/ further down: needs the directory itself un-ignored
+# before the negation can reach its contents).
+!vendor/gmail-mcp-server/dist/
+!vendor/gmail-mcp-server/dist/**
 
 # Python bytecode cache (e.g. scripts/hooks/__pycache__/*.pyc)
 __pycache__/

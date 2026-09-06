@@ -19,6 +19,13 @@ A Marveen saját licensze: [LICENSE](./LICENSE) (MIT).
 - **Hol a Marveen-ben**: `seed-skills/handoff/`, `seed-skills/retrospective/`, `seed-skills/skill-management/`
 - **Mit csinál nálunk**: a skill-csontváz a Marveen flotta-architektúrájára adaptálva. Az 5-szekciós handoff struktúra (Goal, Current Progress, What Worked, What Didn't Work, Next Steps), a sub-agent retrospective minta, és a skill-rot életciklus-kezelés koncepció mind Zhutov csomagjából származik. A megvalósítás TypeScript-ben újraírva, integrálva a Marveen checkpoint, DREAM, memória és inter-agent message rendszereivel.
 
+### gmail-mcp-server (Gmail MCP szerver, több-fiókos javítással)
+- **Forrás**: https://www.npmjs.com/package/gmail-mcp-server (npm, nincs publikus GitHub repo a csomaghoz)
+- **Szerző**: uhbarp-ayis / SIYA (prabhu@siya.com)
+- **Licensz**: MIT
+- **Hol a Marveen-ben**: `vendor/gmail-mcp-server/` (v1.0.30-ból vendorolva 2026-08-23-án)
+- **Mit csinál nálunk**: a Gmail integráció (email keresés/olvasás/küldés/draftok) MCP szervere. A csomag `--multi-user` módja a publikált verzióban félkész volt: a tool-sémák `userId` paramétert hirdettek, de a search/read/send/draft/attachment/label kezelők ezt sosem használták ténylegesen, mindig az egyetlen legacy fiókra mentek, `userId`-tól függetlenül (a `send_email` még a user-specifikus klienst is lekérte, aztán eldobta). Helyben javítottuk: az `overrideClient` paraméter végigvezetve mind a ~18 `GmailOperations` metóduson és mind a 9 érintett tool-handleren, a `getGmailClientForUser` pedig mostantól emailcímmel is kereshető (nem csak a generált userId hash-sel). `userId` hiányában a hívás a korábbi, alapértelmezett fiókra esik vissza (nem dob hibát), így a flottában meglévő, `userId`-t nem ismerő hívók (pl. a könyvelő ágens) törés nélkül tovább működnek.
+
 ### printing-press (agent-CLI generátor)
 - **Forrás**: https://github.com/mvanhorn/cli-printing-press
 - **Szerző**: Mike Van Horn
