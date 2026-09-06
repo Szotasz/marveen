@@ -15303,6 +15303,13 @@ let ideasAll = []
 let ideasPromoteId = null
 let ideaEditId = null
 let ideaDetailId = null
+const IDEA_SCOPE_STORAGE_KEY = 'ideas-scope-filter'
+let ideaScope = (() => {
+  try {
+    const saved = localStorage.getItem(IDEA_SCOPE_STORAGE_KEY)
+    return ['munka', 'szemelyes', 'all'].includes(saved) ? saved : 'munka'
+  } catch { return 'munka' }
+})()
 const STATUS_COLORS = { new: 'var(--accent)', reviewed: '#f59e0b', kanban: '#22c55e', rejected: '#ef4444' }
 const STATUS_LABELS = { new: () => t('ideas.status.new'), reviewed: () => t('ideas.status.reviewed'), kanban: () => t('ideas.status.kanban'), rejected: () => t('ideas.status.rejected') }
 
@@ -15315,6 +15322,7 @@ async function loadIdeasPage() {
   // first promote the "Kanbanban" box showed 0 with the item hidden, which read
   // as data loss on the first live promote (2026-08-20).
   if (categoryFilter) params.set('category', categoryFilter)
+  if (ideaScope !== 'all') params.set('scope', ideaScope)
   const [ideasRes, catsRes] = await Promise.all([fetch('/api/ideas?' + params), fetch('/api/ideas/categories')])
   ideasAll = await ideasRes.json()
   if (statusFilter === 'active') ideas = ideasAll.filter(i => i.status === 'new' || i.status === 'reviewed')
@@ -15328,7 +15336,48 @@ async function loadIdeasPage() {
   }
   renderIdeasStats()
   renderIdeasList()
+  document.querySelectorAll('#ideaScopeFilter [data-scope]').forEach(button => button.classList.toggle('active', button.dataset.scope === ideaScope))
 }
+
+document.getElementById('ideaUploadInput')?.addEventListener('change', async (event) => {
+  const input = event.target
+  const files = Array.from(input.files || [])
+  const button = document.getElementById('ideaUploadBtn')
+  let uploaded = 0
+  const failures = []
+  input.disabled = true
+  button.disabled = true
+  try {
+    for (const file of files) {
+      button.textContent = t('ideas.upload.uploading', { name: file.name })
+      const form = new FormData()
+      form.append('file', file)
+      form.append('scope', ideaScope === 'all' ? 'munka' : ideaScope)
+      try {
+        const res = await fetch('/api/ideas/upload', { method: 'POST', body: form })
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}))
+          throw new Error(data.error || t('ideas.upload.error'))
+        }
+        uploaded++
+      } catch (err) {
+        failures.push(`${file.name}: ${err.message || t('ideas.upload.error')}`)
+      }
+    }
+    if (files.length) {
+      const summary = t('ideas.upload.summary', { uploaded, failed: failures.length })
+      showToast(failures.length ? `${summary} (${failures.join('; ')})` : summary, failures.length ? 'error' : undefined)
+      await loadIdeasPage()
+    }
+  } finally {
+    input.value = ''
+    input.disabled = false
+    button.disabled = false
+    button.textContent = t('ideas.upload.button')
+  }
+})
+
+document.getElementById('ideaUploadBtn')?.addEventListener('click', () => document.getElementById('ideaUploadInput')?.click())
 
 function renderIdeasStats() {
   const counts = { new: 0, reviewed: 0, kanban: 0, rejected: 0 }
@@ -15396,7 +15445,7 @@ function renderIdeaCard(idea) {
 
 function applyIdeaModalI18n() {
   const labels = document.querySelectorAll('#ideaModalOverlay .form-label')
-  const keys = ['ideas.modal.title_label', 'ideas.modal.desc_label', 'ideas.modal.category_label', 'ideas.modal.impact_label', 'ideas.modal.effort_label']
+  const keys = ['ideas.modal.title_label', 'ideas.modal.desc_label', 'ideas.scope.label', 'ideas.modal.category_label', 'ideas.modal.impact_label', 'ideas.modal.effort_label']
   labels.forEach((el, i) => { if (keys[i]) el.textContent = t(keys[i]) })
   const saveBtn = document.getElementById('ideaModalSave')
   const cancelBtn = document.getElementById('ideaModalCancel')
@@ -15409,6 +15458,7 @@ function openIdeaNew() {
   document.getElementById('ideaModalTitle').textContent = t('ideas.modal.title_new')
   document.getElementById('ideaTitleInput').value = ''
   document.getElementById('ideaDescInput').value = ''
+  document.getElementById('ideaScopeInput').value = ideaScope === 'all' ? 'munka' : ideaScope
   applyIdeaModalI18n()
   openModal(document.getElementById('ideaModalOverlay'))
 }
@@ -15421,6 +15471,7 @@ function openIdeaEdit(id) {
   document.getElementById('ideaTitleInput').value = idea.title
   document.getElementById('ideaDescInput').value = idea.description || ''
   document.getElementById('ideaCategoryInput').value = idea.category
+  document.getElementById('ideaScopeInput').value = idea.scope
   document.getElementById('ideaImpactInput').value = idea.impact ?? ''
   document.getElementById('ideaEffortInput').value = idea.effort ?? ''
   openModal(document.getElementById('ideaModalOverlay'))
@@ -15435,6 +15486,7 @@ async function saveIdea() {
     title,
     description: document.getElementById('ideaDescInput').value.trim() || undefined,
     category: document.getElementById('ideaCategoryInput').value,
+    scope: document.getElementById('ideaScopeInput').value,
     source: 'manual',
     impact: impactRaw ? parseInt(impactRaw) : null,
     effort: effortRaw ? parseInt(effortRaw) : null,
@@ -15464,13 +15516,90 @@ async function openIdeaDetail(id) {
   document.getElementById('ideaDetailTitle').textContent = idea.title
   document.getElementById('ideaDetailMeta').textContent = `${idea.category} · ${statusLabel}`
   document.getElementById('ideaDetailDesc').textContent = idea.description || t('ideas.no_description')
+  const otherScope = idea.scope === 'munka' ? 'szemelyes' : 'munka'
+  document.getElementById('ideaDetailScope').textContent = t('ideas.scope.current', { scope: t(`ideas.scope.${idea.scope}`) })
+  document.getElementById('ideaDetailScopeMove').textContent = t('ideas.scope.move', { scope: t(`ideas.scope.${otherScope}`) })
+  document.getElementById('ideaDetailScopeMove').dataset.scope = otherScope
   document.getElementById('ideaDetailImpact').value = idea.impact ?? ''
   document.getElementById('ideaDetailEffort').value = idea.effort ?? ''
   updateDetailScoreChip()
   document.getElementById('ideaCommentsList').innerHTML = ''
+  document.getElementById('ideaAttachmentsList').innerHTML = ''
+  document.getElementById('ideaAttachmentStatus').style.display = 'none'
   document.getElementById('ideaCommentContent').value = ''
   openModal(document.getElementById('ideaDetailOverlay'))
-  await loadIdeaComments(id)
+  await Promise.all([loadIdeaComments(id), loadIdeaAttachments(id)])
+}
+
+function formatIdeaAttachmentSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+async function loadIdeaAttachments(id) {
+  const list = document.getElementById('ideaAttachmentsList')
+  try {
+    const res = await fetch(`/api/ideas/${encodeURIComponent(id)}/attachments`)
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const data = await res.json()
+    if (!data.attachments || !data.attachments.length) {
+      list.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:3px 0">${t('ideas.detail.attach.empty')}</div>`
+      return
+    }
+    list.innerHTML = data.attachments.map(a => `
+      <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px solid var(--border)">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(a.filename)}">${escapeHtml(a.filename)}</div>
+          <div style="font-size:11px;color:var(--text-muted)">${formatIdeaAttachmentSize(a.size)}${a.has_text ? ` · <span title="${t('ideas.detail.attach.has_text')}" style="color:var(--success)">✓ ${t('ideas.detail.attach.text_marker')}</span>` : ''}</div>
+        </div>
+        <a class="btn-secondary btn-compact" style="font-size:11px;text-decoration:none" href="/api/ideas/attachments/${encodeURIComponent(a.id)}/download">${t('ideas.detail.attach.download')}</a>
+        <button class="btn-secondary btn-compact" style="font-size:11px;color:var(--danger)" onclick="deleteIdeaAttachmentItem('${encodeURIComponent(a.id)}')">${t('ideas.detail.attach.delete')}</button>
+      </div>`).join('')
+  } catch {
+    list.innerHTML = `<div style="color:var(--danger);font-size:12px">${t('ideas.detail.attach.load_error')}</div>`
+  }
+}
+
+document.getElementById('ideaAttachmentInput')?.addEventListener('change', async (event) => {
+  if (!ideaDetailId) return
+  const input = event.target
+  const files = Array.from(input.files || [])
+  const label = document.getElementById('ideaAttachmentUploadLabel')
+  const status = document.getElementById('ideaAttachmentStatus')
+  input.disabled = true
+  label.style.opacity = '0.6'
+  status.style.display = ''
+  try {
+    for (const file of files) {
+      status.textContent = t('ideas.detail.attach.uploading', { name: file.name })
+      const form = new FormData()
+      form.append('file', file)
+      const res = await fetch(`/api/ideas/${encodeURIComponent(ideaDetailId)}/attachments`, { method: 'POST', body: form })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || t('ideas.detail.attach.upload_error'))
+      }
+    }
+    if (files.length) showToast(t('ideas.detail.attach.uploaded'))
+    await loadIdeaAttachments(ideaDetailId)
+  } catch (err) {
+    showToast(err.message || t('ideas.detail.attach.upload_error'), 'error')
+  } finally {
+    input.value = ''
+    input.disabled = false
+    label.style.opacity = ''
+    status.style.display = 'none'
+  }
+})
+
+async function deleteIdeaAttachmentItem(encodedId) {
+  if (!confirm(t('ideas.detail.attach.confirm_delete'))) return
+  try {
+    const res = await fetch(`/api/ideas/attachments/${encodedId}`, { method: 'DELETE' })
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    if (ideaDetailId) await loadIdeaAttachments(ideaDetailId)
+  } catch { showToast(t('ideas.detail.attach.delete_error'), 'error') }
 }
 
 function updateDetailScoreChip() {
@@ -15559,6 +15688,18 @@ document.getElementById('ideaDetailEditBtn')?.addEventListener('click', () => {
   closeModal(document.getElementById('ideaDetailOverlay'))
   openIdeaEdit(ideaDetailId)
 })
+document.getElementById('ideaDetailScopeMove')?.addEventListener('click', async (event) => {
+  if (!ideaDetailId) return
+  const scope = event.currentTarget.dataset.scope
+  try {
+    const res = await fetch(`/api/ideas/${encodeURIComponent(ideaDetailId)}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope }),
+    })
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    closeModal(document.getElementById('ideaDetailOverlay'))
+    await loadIdeasPage()
+  } catch { showToast(t('ideas.scope.move_error'), 'error') }
+})
 
 function openIdeaPromote(id) {
   ideasPromoteId = id
@@ -15622,6 +15763,13 @@ document.getElementById('ideaPromoteDetail')?.addEventListener('click', () => pr
 document.getElementById('ideaPromotePlan')?.addEventListener('click', () => promoteIdea('plan'))
 document.getElementById('ideaStatusFilter')?.addEventListener('change', loadIdeasPage)
 document.getElementById('ideaCategoryFilter')?.addEventListener('change', loadIdeasPage)
+document.getElementById('ideaScopeFilter')?.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-scope]')
+  if (!button) return
+  ideaScope = button.dataset.scope
+  try { localStorage.setItem(IDEA_SCOPE_STORAGE_KEY, ideaScope) } catch { /* storage blocked */ }
+  loadIdeasPage()
+})
 
 
 // === Agent reauth login flow ===

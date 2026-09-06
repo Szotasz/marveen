@@ -751,6 +751,7 @@ export function initDatabase(dbPathOverride?: string): void {
       title TEXT NOT NULL,
       description TEXT,
       category TEXT NOT NULL DEFAULT 'Egyéb',
+      scope TEXT NOT NULL DEFAULT 'munka',
       status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new','reviewed','kanban','rejected')),
       source TEXT NOT NULL DEFAULT 'marveen',
       kanban_id TEXT,
@@ -763,6 +764,8 @@ export function initDatabase(dbPathOverride?: string): void {
   // impact/effort scoring -- added after initial release; safe ALTER on existing DBs
   try { db.exec('ALTER TABLE idea_box ADD COLUMN impact INTEGER') } catch { /* already exists */ }
   try { db.exec('ALTER TABLE idea_box ADD COLUMN effort INTEGER') } catch { /* already exists */ }
+  // Migration: existing idea boxes predate the work/personal boundary.
+  try { db.exec("ALTER TABLE idea_box ADD COLUMN scope TEXT NOT NULL DEFAULT 'munka'") } catch { /* column already exists */ }
 
   // --- Idea Comments ---
   db.exec(`
@@ -775,6 +778,21 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_idea_comments_idea ON idea_comments(idea_id)`)
+
+  // --- Idea Attachments ---
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS idea_attachments (
+      id TEXT PRIMARY KEY,
+      idea_id TEXT NOT NULL,
+      filename TEXT NOT NULL,
+      stored_path TEXT NOT NULL,
+      mime TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      extracted_text TEXT,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_idea_attachments_idea ON idea_attachments(idea_id)`)
 
   // --- Idea Status Log ---
   db.exec(`
@@ -3188,6 +3206,7 @@ export interface IdeaBoxRow {
   title: string
   description: string | null
   category: string
+  scope: 'munka' | 'szemelyes'
   status: 'new' | 'reviewed' | 'kanban' | 'rejected'
   source: string
   kanban_id: string | null
@@ -3197,11 +3216,12 @@ export interface IdeaBoxRow {
   updated_at: number
 }
 
-export function listIdeas(opts?: { status?: string; category?: string }): IdeaBoxRow[] {
+export function listIdeas(opts?: { status?: string; category?: string; scope?: IdeaBoxRow['scope'] }): IdeaBoxRow[] {
   let q = 'SELECT * FROM idea_box WHERE 1=1'
   const params: string[] = []
   if (opts?.status) { q += ' AND status = ?'; params.push(opts.status) }
   if (opts?.category) { q += ' AND category = ?'; params.push(opts.category) }
+  if (opts?.scope) { q += ' AND scope = ?'; params.push(opts.scope) }
   q += ' ORDER BY created_at DESC'
   return db.prepare(q).all(...params) as IdeaBoxRow[]
 }
@@ -3209,18 +3229,19 @@ export function listIdeas(opts?: { status?: string; category?: string }): IdeaBo
 export function createIdea(idea: Omit<IdeaBoxRow, 'created_at' | 'updated_at'>): void {
   const now = Math.floor(Date.now() / 1000)
   db.prepare(
-    `INSERT INTO idea_box (id, title, description, category, status, source, kanban_id, impact, effort, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(idea.id, idea.title, idea.description ?? null, idea.category, idea.status, idea.source, idea.kanban_id ?? null, idea.impact ?? null, idea.effort ?? null, now, now)
+    `INSERT INTO idea_box (id, title, description, category, scope, status, source, kanban_id, impact, effort, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(idea.id, idea.title, idea.description ?? null, idea.category, idea.scope, idea.status, idea.source, idea.kanban_id ?? null, idea.impact ?? null, idea.effort ?? null, now, now)
 }
 
-export function updateIdea(id: string, patch: Partial<Pick<IdeaBoxRow, 'title' | 'description' | 'category' | 'status' | 'kanban_id' | 'impact' | 'effort'>>): boolean {
+export function updateIdea(id: string, patch: Partial<Pick<IdeaBoxRow, 'title' | 'description' | 'category' | 'scope' | 'status' | 'kanban_id' | 'impact' | 'effort'>>): boolean {
   const now = Math.floor(Date.now() / 1000)
   const sets: string[] = ['updated_at = ?']
   const params: unknown[] = [now]
   if (patch.title !== undefined) { sets.push('title = ?'); params.push(patch.title) }
   if (patch.description !== undefined) { sets.push('description = ?'); params.push(patch.description) }
   if (patch.category !== undefined) { sets.push('category = ?'); params.push(patch.category) }
+  if (patch.scope !== undefined) { sets.push('scope = ?'); params.push(patch.scope) }
   if (patch.status !== undefined) { sets.push('status = ?'); params.push(patch.status) }
   if (patch.kanban_id !== undefined) { sets.push('kanban_id = ?'); params.push(patch.kanban_id) }
   if (patch.impact !== undefined) { sets.push('impact = ?'); params.push(patch.impact) }
@@ -3230,7 +3251,11 @@ export function updateIdea(id: string, patch: Partial<Pick<IdeaBoxRow, 'title' |
 }
 
 export function deleteIdea(id: string): boolean {
-  return db.prepare('DELETE FROM idea_box WHERE id = ?').run(id).changes > 0
+  const remove = db.transaction(() => {
+    db.prepare('DELETE FROM idea_attachments WHERE idea_id = ?').run(id)
+    return db.prepare('DELETE FROM idea_box WHERE id = ?').run(id).changes > 0
+  })
+  return remove()
 }
 
 export function listIdeaCategories(): string[] {
@@ -3258,6 +3283,38 @@ export function addIdeaComment(ideaId: string, author: string, content: string):
   ).run(ideaId, author, content, now)
   db.prepare('UPDATE idea_box SET updated_at = ? WHERE id = ?').run(now, ideaId)
   return { id: Number(info.lastInsertRowid), idea_id: ideaId, author, content, created_at: now }
+}
+
+// --- Idea Attachments ---
+
+export interface IdeaAttachmentRow {
+  id: string
+  idea_id: string
+  filename: string
+  stored_path: string
+  mime: string
+  size: number
+  extracted_text: string | null
+  created_at: number
+}
+
+export function listIdeaAttachments(ideaId: string): IdeaAttachmentRow[] {
+  return db.prepare('SELECT * FROM idea_attachments WHERE idea_id = ? ORDER BY created_at ASC').all(ideaId) as IdeaAttachmentRow[]
+}
+
+export function getIdeaAttachment(id: string): IdeaAttachmentRow | undefined {
+  return db.prepare('SELECT * FROM idea_attachments WHERE id = ?').get(id) as IdeaAttachmentRow | undefined
+}
+
+export function addIdeaAttachment(row: IdeaAttachmentRow): void {
+  db.prepare(
+    `INSERT INTO idea_attachments (id, idea_id, filename, stored_path, mime, size, extracted_text, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(row.id, row.idea_id, row.filename, row.stored_path, row.mime, row.size, row.extracted_text ?? null, row.created_at)
+}
+
+export function deleteIdeaAttachment(id: string): boolean {
+  return db.prepare('DELETE FROM idea_attachments WHERE id = ?').run(id).changes > 0
 }
 
 // --- Idea Status Log ---
@@ -4035,4 +4092,3 @@ export function listOtelTraces(limit = 50): OtelTraceSummary[] {
     LIMIT ?
   `).all(limit) as OtelTraceSummary[]
 }
-
