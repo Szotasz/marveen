@@ -51,13 +51,20 @@ def fresh_db(path):
     db.close()
 
 
-def seed(card_id, status='planned', priority='normal'):
+def seed(card_id, status='planned', priority='normal', assignee='boni'):
     db = sqlite3.connect(DB_PATH)
     now = int(time.time())
     db.execute('INSERT INTO kanban_cards (id,title,status,assignee,priority,created_at,updated_at)'
-               ' VALUES (?,?,?,?,?,?,?)', (card_id, f'teszt {card_id}', status, 'boni', priority, now, now))
+               ' VALUES (?,?,?,?,?,?,?)', (card_id, f'teszt {card_id}', status, assignee, priority, now, now))
     db.commit()
     db.close()
+
+
+def felelos(card_id):
+    db = sqlite3.connect(DB_PATH)
+    r = db.execute('SELECT assignee FROM kanban_cards WHERE id=?', (card_id,)).fetchone()
+    db.close()
+    return r[0] if r else None
 
 
 def comment(card_id, text, extra=()):
@@ -150,7 +157,7 @@ def main():
     env['CLAUDECLAW_ROOT'] = SANDBOX_ROOT
     env['KARTYA_API'] = 'http://127.0.0.1:1/api/messages'
     p = subprocess.run([sys.executable, SCRIPT, '--id', 'UJKARTYA906', '--assignee', 'marveen',
-                        '--title', 'uj kartya teszt', '--no-msg'],
+                        '--title', 'UJKARTYA906 uj kartya teszt', '--no-msg'],
                        capture_output=True, text=True, env=env, timeout=30)
     check('7 letrehozo ag lefutott', p.returncode == 0, p.stdout + p.stderr)
     check('7 alapertelmezes planned/normal maradt', card('UJKARTYA906') == ('planned', 'normal'),
@@ -217,6 +224,192 @@ def main():
     # 13. A visszaolvasas MONDJA KI, melyik tarolobol olvasott (Boni kikotese): egy rossz gyoker
     #     mellett a visszaolvasas onmagaban konzisztens lenne, csak nem az eles tablan.
     check('13 a visszaolvasas megnevezi a DB-t', DB_PATH in p.stdout, p.stdout)
+
+    # ---------------------------------------------------------------------------
+    # KARTYAKULDO906 FOLLOW-UP (2026-09-06): negy tetel a #1204 merge utan.
+    # ---------------------------------------------------------------------------
+
+    # 14. FELELOS-MOZGATAS (4. tetel). A lelet sajat hasznalatbol: a CONNMKT906-ot le kellett
+    #     vennem a gazda sorarol, es az eszkoz nem tudta -- nyers sqlite3-hoz kellett nyulni,
+    #     pont ahhoz az uthoz, amit nyugdijazni akar.
+    seed('FELELOSA906', assignee='szabolcs')
+    p = comment('FELELOSA906', 'Kartya FELELOSA906: a dontes visszakerul a vegrehajtohoz.',
+                ('--assignee', 'samu'))
+    check('14 lefutott', p.returncode == 0, p.stdout + p.stderr)
+    check('14 a felelos TENYLEG samu lett', felelos('FELELOSA906') == 'samu', f'kapott: {felelos("FELELOSA906")}')
+    check('14 a kimenet kimondja a mozgatast', 'MEZOMOZGATAS OK' in p.stdout, p.stdout)
+    check('14 a nyom-komment nevezi a felelos-valtast',
+          any('assignee' in c and 'szabolcs' in c and 'samu' in c
+              for c in comments('FELELOSA906')), f'kapott: {comments("FELELOSA906")}')
+
+    # 15. A KEVERES-KAPUT ki kellett engedni az --assignee-hoz. Ha ez visszazarul, a 14. teszt
+    #     bukik -- de a --desc-file/--msg-file TOVABBRA IS tiltott komment-modban.
+    d = tempfile.mkdtemp(prefix='kartya-m5-')
+    df = os.path.join(d, 'd.txt'); open(df, 'w', encoding='utf-8').write('leiras')
+    seed('KEVER906')
+    p = comment('KEVER906', 'Kartya KEVER906: keveres.', ('--desc-file', df))
+    check('15 a --desc-file tovabbra is tiltott komment-modban',
+          p.returncode != 0 and 'nem keverheto' in (p.stdout + p.stderr), p.stdout + p.stderr)
+
+    # 16. ISMERETLEN NEV, amin MASIK kartya sem all: megtagadas. A felelos-oszlop NEM zart halmaz
+    #     (merve: 40 kulonbozo ertek), ezert nem nev-halmazt kapuzunk, hanem azt, hogy a nev
+    #     letezik-e mar a tablan. Egy elgepeles kulonben sajat, egy-elemu oszlopot nyit.
+    seed('FELELOSB906', assignee='samu')
+    p = comment('FELELOSB906', 'Kartya FELELOSB906: elgepelt nev.', ('--assignee', 'samuu'))
+    check('16 megtagadva az ismeretlen nev', p.returncode != 0 and 'nem ismert' in (p.stdout + p.stderr),
+          p.stdout + p.stderr)
+    check('16 a felelos valtozatlan', felelos('FELELOSB906') == 'samu')
+    check('16 a komment SEM irodott be', comments('FELELOSB906') == [], f'kapott: {comments("FELELOSB906")}')
+    check('16 felajanlja a hasonlo LETEZO nevet', 'samu' in p.stdout + p.stderr)
+
+    # 17. UGYANAZ A NEV, KIMONDVA (--assignee-uj): atmegy, es a KIS/NAGYBETU SZO SZERINT marad.
+    #     A tablan a kulso GitHub-nevek vegyes alakban allnak (Vlbbtabs, KratoBal); a feltetel
+    #     nelkuli .lower() mas ertekre irna, mint ami a tablan van.
+    seed('FELELOSC906', assignee='samu')
+    p = comment('FELELOSC906', 'Kartya FELELOSC906: uj kulso szerzo.', ('--assignee', 'UjSzerzo', '--assignee-uj'))
+    check('17 lefutott a kimondott uj nevvel', p.returncode == 0, p.stdout + p.stderr)
+    check('17 a nev SZO SZERINT maradt', felelos('FELELOSC906') == 'UjSzerzo', f'kapott: {felelos("FELELOSC906")}')
+
+    # 18. ISMERETLEN, DE A TABLAN MAR LETEZO nev: flag nelkul is atmegy (a 17. hozta letre).
+    seed('FELELOSD906', assignee='samu')
+    p = comment('FELELOSD906', 'Kartya FELELOSD906: ugyanaz a kulso szerzo.', ('--assignee', 'UjSzerzo'))
+    check('18 letezo kulso nev flag nelkul is atmegy', p.returncode == 0, p.stdout + p.stderr)
+    check('18 a felelos tenyleg atallt', felelos('FELELOSD906') == 'UjSzerzo')
+
+    # 19. FLOTTA-NEV kisbetusites: "Samu" -> "samu", tehat a mar-ezen-az-erteken ag sul el,
+    #     nem egy latszolagos mozgatas.
+    seed('FELELOSE906', assignee='samu')
+    p = comment('FELELOSE906', 'Kartya FELELOSE906: ugyanaz nagybetuvel.', ('--assignee', 'Samu'))
+    check('19 lefutott', p.returncode == 0, p.stdout + p.stderr)
+    check('19 kimondja hogy mar ezen az erteken all', 'mar ezen az erteken all' in p.stdout, p.stdout)
+    check('19 nem keletkezett mozgatas-nyom',
+          not any('Mezomozgatas' in c for c in comments('FELELOSE906')), f'{comments("FELELOSE906")}')
+
+    # 20. ID-HORGONY a CIM-MOZGATASON (1. tetel, Boni). A 411 kartyas migracio azon allt vagy
+    #     bukott, hogy az ID ott van-e a cimben; egy cim-mozgatas csendben leveheti.
+    seed('HORGONY906')
+    regi = title('HORGONY906')
+    p = comment('HORGONY906', 'Kartya HORGONY906: horgony nelkuli uj cim.',
+                ('--title', 'Valami egeszen mas cim, azonosito nelkul.'))
+    check('20 megtagadva a horgony nelkuli cim',
+          p.returncode != 0 and 'nem tartalmazza a kartya sajat ID' in (p.stdout + p.stderr), p.stdout + p.stderr)
+    check('20 a cim valtozatlan', title('HORGONY906') == regi)
+    check('20 a komment SEM irodott be', comments('HORGONY906') == [])
+
+    # 21. A KAPU NORMALIZAL, es ez nem kenyelmi kerdes: a nyers `id not in title` a tabla bevett
+    #     PR-kartya-konvenciojat tagadna meg (id PR1195, cim "PR #1195 (...)"). Merve az utolso het
+    #     354 kartyajan: nyers 52 elutasitas (14,7%), normalizalt 13 (3,7%).
+    seed('PR1195')
+    p = comment('PR1195', 'Kartya PR1195: a bevett PR-cim-alak.',
+                ('--title', 'PR #1195 (Samu): copy-gate -- az edit_message is a kapun belul.'))
+    check('21 a "PR #1195" alak ATMEGY a PR1195 id-hez', p.returncode == 0, p.stdout + p.stderr)
+    check('21 a cim tenyleg valtozott', title('PR1195').startswith('PR #1195'), f'kapott: {title("PR1195")}')
+
+    # 22. UGYANAZ A KAPU A LETREHOZO AGON. Ha csak a mozgatason allna, a horgony nelkuli cim
+    #     egyszeruen a letrehozaskor kerulne be, es a kapu semmit nem vedene.
+    env = dict(os.environ)
+    env['KARTYA_DB'] = DB_PATH; env['CLAUDECLAW_ROOT'] = SANDBOX_ROOT
+    env['KARTYA_API'] = 'http://127.0.0.1:1/api/messages'
+    p = subprocess.run([sys.executable, SCRIPT, '--id', 'HORGONYUJ906', '--assignee', 'marveen',
+                        '--title', 'cim azonosito nelkul', '--no-msg'],
+                       capture_output=True, text=True, env=env, timeout=30)
+    check('22 a letrehozo ag is megtagadja a horgony nelkuli cimet',
+          p.returncode != 0 and 'nem tartalmazza a kartya sajat ID' in (p.stdout + p.stderr), p.stdout + p.stderr)
+    check('22 kartyat sem hozott letre', card('HORGONYUJ906') is None)
+
+    # 23. A LETEZO-DE-URES DB (2. tetel, Samu lelete a #1204 verifyben): korabban ATMENT a kapun
+    #     (az csak os.path.exists-t nezett), es nyers Python-tracebacket adott a szep MEGTAGADVA
+    #     helyett. Nem hamis siker volt, de hasznalhatatlan hibauzenet.
+    ures_db = os.path.join(tempfile.mkdtemp(prefix='kartya-uresdb-'), 'ures.db')
+    open(ures_db, 'wb').close()
+    d = tempfile.mkdtemp(prefix='kartya-m6-')
+    cf = os.path.join(d, 'c.txt'); open(cf, 'w', encoding='utf-8').write('Kartya MOZGA906: ures DB-re.')
+    env2 = dict(env); env2['KARTYA_DB'] = ures_db
+    p = subprocess.run([sys.executable, SCRIPT, '--id', 'MOZGA906', '--comment-file', cf, '--author', 'Boni'],
+                       capture_output=True, text=True, env=env2, timeout=30)
+    ki = p.stdout + p.stderr
+    check('23 megtagadva a letezo-de-ures DB', p.returncode != 0 and 'MEGTAGADVA' in ki, ki)
+    check('23 NEM nyers traceback', 'Traceback' not in ki, ki)
+    # A puszta 'kanban_cards' elofordulas NEM megkulonbozteto: a kapu NELKULI valtozat
+    # tracebackje is tartalmazza ("no such table: kanban_cards"). A MEGTAGADVA-sorra allitunk.
+    check('23 a MEGTAGADVA-uzenet nevezi meg a hianyzo tablat',
+          any('MEGTAGADVA' in l or 'kanban_cards tabla' in l
+              for l in ki.splitlines() if 'kanban_cards' in l), ki)
+
+    # 24. Az --assignee-uj a LETREHOZO agon ertelmetlen -- egy nem hato kapcsolo pont az a
+    #     hibaosztaly, amit ez az eszkoz ket kore zar (a --status csendes elvesztese).
+    p = subprocess.run([sys.executable, SCRIPT, '--id', 'UJFLAG906', '--assignee', 'marveen',
+                        '--title', 'UJFLAG906 teszt', '--no-msg', '--assignee-uj'],
+                       capture_output=True, text=True, env=env, timeout=30)
+    check('24 megtagadva az --assignee-uj a letrehozo agon',
+          p.returncode != 0 and 'csak komment-modban' in (p.stdout + p.stderr), p.stdout + p.stderr)
+    check('24 kartyat sem hozott letre', card('UJFLAG906') is None)
+
+    # 25. A LETREHOZO AG IS MEGORZI a kulso nev kis/nagybetujet (a kozos feloldas kovetkezmenye).
+    #     Korabban a feltetel nelkuli .lower() mas erteket irt volna, mint ami a tablan all.
+    p = subprocess.run([sys.executable, SCRIPT, '--id', 'KULSONEV906', '--assignee', 'UjSzerzo',
+                        '--title', 'KULSONEV906 kulso szerzo kartyaja', '--no-msg'],
+                       capture_output=True, text=True, env=env, timeout=30)
+    check('25 a letrehozo ag lefutott', p.returncode == 0, p.stdout + p.stderr)
+    check('25 a kulso nev SZO SZERINT kerult be', felelos('KULSONEV906') == 'UjSzerzo',
+          f'kapott: {felelos("KULSONEV906")}')
+
+    # ---------------------------------------------------------------------------
+    # A #1211 VERIFY KIKOTESE (Samu, 2026-09-06) + a ket teszteletlen hatar.
+    # ---------------------------------------------------------------------------
+
+    # 26. HOMOGLIFA A FELELOS-NEVBEN. A szures a cimre, leirasra, uzenetre es kommentre futott,
+    #     a FELELOSRE nem -- ket kulon agon kellett volna kimondani, es a masodik kimaradt.
+    #     Elo probaval merve a fix elott: MINDKET agon beirodott a tablara.
+    #     A felelos a legrosszabb hely erre: a nev helyesnek LATSZIK, a kartya viszont sajat,
+    #     egy-elemu oszlopba kerul, es a "kinel all a dontes" kerdesre a tabla rosszul valaszol.
+    CIRILL_A = '\u0430'
+    hamis_nev = 's' + CIRILL_A + 'mmu'
+    seed('HOMOGA906', assignee='samu')
+    p = comment('HOMOGA906', 'Kartya HOMOGA906: homoglifas nev.', ('--assignee', hamis_nev, '--assignee-uj'))
+    check('26 megtagadva a homoglifas felelos (mozgato ag)',
+          p.returncode != 0 and 'vegyes irasrendszeru' in (p.stdout + p.stderr), p.stdout + p.stderr)
+    check('26 a felelos valtozatlan', felelos('HOMOGA906') == 'samu', f'kapott: {felelos("HOMOGA906")!r}')
+    check('26 a komment sem irodott be', comments('HOMOGA906') == [])
+
+    # 27. UGYANAZ A LETREHOZO AGON. A kapu a KOZOS feloldasban all, nem a ket hivonal --
+    #     pont ez a megoszlas hasadt el egyszer mar.
+    p = subprocess.run([sys.executable, SCRIPT, '--id', 'HOMOGB906', '--assignee', hamis_nev,
+                        '--title', 'HOMOGB906 homoglifa a letrehozo agon', '--no-msg'],
+                       capture_output=True, text=True, env=env, timeout=30)
+    check('27 megtagadva a homoglifas felelos (letrehozo ag)',
+          p.returncode != 0 and 'vegyes irasrendszeru' in (p.stdout + p.stderr), p.stdout + p.stderr)
+    check('27 kartyat sem hozott letre', card('HOMOGB906') is None)
+
+    # 28. A TISZTA ASCII NEV NEM BUKIK. Kontroll-proba: enelkul a 26/27 attol is zold lenne,
+    #     ha a kapu MINDEN nevet megtagadna.
+    seed('HOMOGC906', assignee='samu')
+    p = comment('HOMOGC906', 'Kartya HOMOGC906: tiszta nev.', ('--assignee', 'TisztaNev', '--assignee-uj'))
+    check('28 a tiszta ASCII nev atmegy', p.returncode == 0, p.stdout + p.stderr)
+    check('28 be is irodott', felelos('HOMOGC906') == 'TisztaNev')
+
+    # 29. A GAZDA-SOR HAZIRENDJE KIMONDVA (nem kapu). A tabla-szabaly szerint a gazdanal csak
+    #     az a kartya all, amit MA el tud donteni; a mozgatas legitim, de ne csusszon oda nyom
+    #     nelkul. FIGYELMEZTETES, nem megtagadas: a dontes-kartya valodi eset.
+    seed('GAZDASOR906', assignee='samu')
+    p = comment('GAZDASOR906', 'Kartya GAZDASOR906: dontes-kartya a gazdanak.', ('--assignee', 'szabolcs'))
+    check('29 lefutott (nem kapu)', p.returncode == 0, p.stdout + p.stderr)
+    check('29 a felelos tenyleg szabolcs lett', felelos('GAZDASOR906') == 'szabolcs')
+    check('29 kimondja a gazda-sor szabalyat', 'MA el tud donteni' in p.stdout, p.stdout)
+
+    # 30. A "MASIK KARTYA MAR ALL EZEN A NEVEN" ELLENORZES ESET-ERZEKENY (Samu tengelye: egy
+    #     case-insensitive mutacio alatt mind a 45 allitas zold maradt, tehat a hatar teszteletlen
+    #     volt). "TisztaNev" all a tablan a 28-bol; a "tisztanev" alak NEM ugyanaz az oszlop.
+    seed('ESETA906', assignee='samu')
+    p = comment('ESETA906', 'Kartya ESETA906: mas kis/nagybetuvel.', ('--assignee', 'tisztanev'))
+    check('30 a mas eset-alak NEM szamit letezonek',
+          p.returncode != 0 and 'nem ismert' in (p.stdout + p.stderr), p.stdout + p.stderr)
+    check('30 a felelos valtozatlan', felelos('ESETA906') == 'samu')
+
+    # 31. A KOZELI-JAVASLAT LISTA tenyleg a LETEZO neveket sorolja (nit, de a megtagadas
+    #     hasznalhatosaga ezen all: enelkul csak azt mondjuk "nem jo", azt nem, hogy mi a jo).
+    check('31 a megtagadas felajanlja a letezo TisztaNev-et', 'TisztaNev' in (p.stdout + p.stderr),
+          p.stdout + p.stderr)
 
     os.remove(DB_PATH)
     if FAILS:

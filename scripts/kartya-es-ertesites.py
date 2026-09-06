@@ -28,11 +28,20 @@ KOORDINATORHOZ (marveen) -- kimondva, a kimeneten es az uzenet elso soraban is.
 KOMMENT-ONLY MOD (KARTYAIRASESZKOZ905, 2026-09-05): komment egy MEGLEVO kartyara,
 ERTESITES NELKUL, ugyanazokkal a kapukkal es kotelezo visszaolvasassal:
   kartya-es-ertesites.py --id X905 --comment-file /path [--author Samu] [--dry-run]
-MEZOMOZGATAS (KARTYASTATUSZ906, Boni lelete 2026-09-06): komment-modban a --title, a --status es a
---priority MEGLEVO kartyat mozgat, elotte-pillanatkeppel es FUGGETLEN visszaolvasassal:
+MEZOMOZGATAS (KARTYASTATUSZ906, Boni lelete 2026-09-06): komment-modban a lenti mezok MEGLEVO
+kartyat mozgatnak, elotte-pillanatkeppel es FUGGETLEN visszaolvasassal:
   kartya-es-ertesites.py --id X905 --status waiting --comment-file /path --author Boni
-Korabban ez a ket kapcsolo komment-modban SZO NELKUL ELVESZETT: a kimenet OK-t mondott, a kartya
-nem mozdult. A mozgatas SZANDEKOSAN a komment-modhoz van kotve -- statusz nem valtozhat nyom nelkul.
+
+  A MOZGATHATO MEZOK TELJES LISTAJA (ez az egyetlen hely, ahol fel van sorolva):
+    --title      a kartya cime      (300 karakteres kapu + ID-horgony kapu)
+    --status     planned | in_progress | testing | waiting | done
+    --priority   low | normal | high | urgent
+    --assignee   a felelos          (KARTYAKULDO906 4. tetel, 2026-09-06)
+
+Korabban a --status es a --priority komment-modban SZO NELKUL ELVESZETT: a kimenet OK-t mondott, a
+kartya nem mozdult. A mozgatas SZANDEKOSAN a komment-modhoz van kotve -- egyik mezo sem valtozhat
+nyom nelkul. A FELELOS kulon indoka (Marveen, sajat hasznalatbol): a felelos-mezo a tablankon nem
+cimke, hanem azt mondja meg, KINEL all a dontes -- a mozgatasa allapot-valtoztatas, nem adminisztracio.
 
 Ket fuggetlen hibaosztalyt zar ugyanez az egy ut: (1) a nyers sqlite3-quoting otodik
 elofordulasa utan a quoting az eszkoz dolga (parameterkotes); (2) a fejlec-idot a
@@ -56,14 +65,98 @@ DB = os.environ.get('KARTYA_DB') or os.path.join(ROOT, 'store', 'claudeclaw.db')
 def _db_kapu():
     """A NEM LETEZO DB a legveszelyesebb alak: az sqlite3.connect LETREHOZNA egy ures fajlt,
     es a futas 'no such table'-lel halna el -- vagy ami rosszabb, egy MASOLATBA irna. Ezert a
-    hianyzo fajl MEGTAGADAS, a feloldott utvonal kimondasaval."""
+    hianyzo fajl MEGTAGADAS, a feloldott utvonal kimondasaval.
+
+    SAMU LELETE a #1204 verifyben: a kapu CSAK a letezest nezte, ezert egy LETEZO-de-ures
+    (0 byte, vagy kanban_cards nelkuli) fajl ATMENT rajta, es a futas nyers Python-tracebacket
+    adott a szep MEGTAGADVA helyett. Nem volt hamis siker es rossz helyre sem irt -- de a
+    hibauzenet volt hasznalhatatlan. Ezert a kapu MOST A TABLAT IS MEGNEZI."""
     if not os.path.exists(DB):
         sys.exit(f'MEGTAGADVA: a kanban DB nem letezik ezen az utvonalon:\n  {DB}\n'
                  f'(gyoker: {ROOT})\nA kanban EGY elo tarolo, nem worktree-nkenti. Ha innen akarsz\n'
                  f'irni, mondd ki: CLAUDECLAW_ROOT=<a fo fa> vagy KARTYA_DB=<a db utvonala>.')
+    try:
+        db = sqlite3.connect(f'file:{DB}?mode=ro', uri=True)
+        van = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_cards'").fetchone()
+        db.close()
+    except sqlite3.Error as e:
+        sys.exit(f'MEGTAGADVA: a fajl letezik, de nem olvashato kanban DB-kent:\n  {DB}\n'
+                 f'(gyoker: {ROOT})\nsqlite: {e}')
+    if not van:
+        sys.exit(f'MEGTAGADVA: a fajl letezik, de NINCS BENNE kanban_cards tabla:\n  {DB}\n'
+                 f'(gyoker: {ROOT})\nEz jellemzoen egy korabbi rossz ut-feloldas hagyta ott. Mondd ki:\n'
+                 f'CLAUDECLAW_ROOT=<a fo fa> vagy KARTYA_DB=<a db utvonala>.')
     return DB
 FLEET = {'samu','zara','boni','iris','dani','geri','deeper','qwen','mira','tomi','jumanji','hidli'}
 COORDINATOR = 'marveen'
+GAZDA = 'szabolcs'
+# Ismert FELELOS-nevek. NEM zart halmaz: a tablan 2026-09-06-an 40 kulonbozo felelos allt, es a
+# tobbsegi nem-flotta ertek kulso GitHub-felhasznalonev (PR-kartyak szerzoi). Ezert a nem-ismert
+# nev nem automatikusan hiba -- lasd _felelos_feloldas.
+ISMERT_FELELOSOK = FLEET | {COORDINATOR, GAZDA}
+
+
+def _felelos_feloldas(nyers):
+    """A felelos KANONIKUS alakja, ES a rea vonatkozo kapuk EGY helyen.
+
+    A KAPU AZERT ITT ALL, ES NEM A KET HIVONAL (Samu lelete a #1211 verifyben): a homoglifa-
+    szures a cimre, a leirasra, az uzenetre es a kommentre futott, a FELELOSRE nem, mert ket
+    kulon agon kellett volna kimondani -- es a masodikat elfelejtettem. Elo probaval merve:
+    egy cirill a-t tartalmazo nev MINDKET agon beirodott a tablara. Egy megoszlo kapu pontosan
+    igy hasad el, ezert a kozos feloldas kapuz, es minden jovobeli ag ingyen megkapja.
+
+    A KANONIKUS ALAK: flotta/gazda nev -> kisbetus (ez a tabla bevett alakja).
+    MINDEN MAS nev SZO SZERINT marad.
+
+    MERVE (2026-09-06, elo tabla): a nem-flotta felelosok kulso GitHub-nevek, es TOBB VEGYES
+    KISBETUS-NAGYBETUS alakban allnak (Vlbbtabs, KratoBal, PCha0s, palvolgyidigital). A korabbi
+    feltetel nelkuli .lower() ezeket MAS ertekke alakitotta, mint ami a tablan all -- vagyis a
+    tool-lal felvett kartya kulon oszlopba kerult volna ugyanattol a szerzotol. A kisbetusites
+    ezert a FLOTTA-nevekre szol, ahol az a bevett alak, es nem a tablatol idegen normalizalas."""
+    nev = nyers.strip()
+    if not nev:
+        sys.exit('MEGTAGADVA: ures felelos-nev.')
+    # HOMOGLIFA: a felelos-mezo a legrosszabb hely egy lathatatlan betucserere -- a nev
+    # HELYESNEK LATSZIK, a kartya viszont sajat, egy-elemu oszlopba kerul, es a "kinel all
+    # a dontes" kerdesre a tabla csendben rosszul valaszol. Ugyanaz a szures, mint a cimen.
+    if (h := gyanus(nev)):
+        sys.exit(f'MEGTAGADVA: vegyes irasrendszeru betu a felelos-nevben: {h[:5]}\n'
+                 f'A nev helyesnek LATSZIK, de nem az, amit a tabla tobbi kartyaja hordoz.\n'
+                 f'Gepeld ujra a nevet, ne masold be.')
+    if nev.lower() == GAZDA:
+        # NEM kapu, hanem a hazirend kimondasa (gazda-keres, 2026-09-04): a gazda soran CSAK
+        # az a kartya all, amit MA EL TUD DONTENI -- egy mondatban feltehato kerdes, ket
+        # kimenettel. Nem tiltjuk, mert a dontes-kartya legitim; de nyom nelkul ne csusszon oda.
+        print(f'FIGYELEM: a felelos "{GAZDA}" lesz. A tabla-szabaly szerint a gazda soran csak az\n'
+              f'a kartya all, amit MA el tud donteni: egy mondatban feltehato kerdes, KET kimenettel,\n'
+              f'es a valasz ma is szamit. Ha elobb MERNI vagy KESZITENI kell valamit, a kartya a\n'
+              f'vegrehajtoe marad, es a fo-agens viszi a gazda ele kotegben.')
+    return nev.lower() if nev.lower() in ISMERT_FELELOSOK else nev
+
+
+def _horgony(s):
+    """Osszehasonlitasi alak az ID-horgonyhoz: csak betuk/szamok, nagybetusen."""
+    return re.sub(r'[^0-9A-Za-z]', '', s).upper()
+
+
+def _horgony_kapu(card_id, cim):
+    """A CIM TARTALMAZZA A KARTYA SAJAT ID-JET (Boni lelete, KARTYAKULDO906 1. tetel).
+
+    MIERT KAPU: nalunk a cim-horgony az ID -- a 2026-08-24-i 411 kartyas migracio azon allt vagy
+    bukott, hogy az ID ott van-e a cimben; aminek nem volt horgonya, az kezi bucket lett. Egy
+    cim-mozgatas csendben leveheti a horgonyt, es a kovetkezo migracio fizeti meg.
+
+    MIERT NORMALIZALT, ES NEM NYERS `id not in title` (Marveen merese, 2026-09-06): a nyers alak a
+    tabla BEVETT PR-kartya-konvenciojat tagadna meg -- az id `PR1195`, a cim "PR #1195 (...)", tehat
+    a horgony OTT VAN, csak szokozzel es kettoskereszttel. Az utolso het 354 kartyajan merve: a nyers
+    feltetel 52-t (14,7%) utasitana el, a normalizalt 13-at (3,7%) -- es ez a 13 tulnyomoreszt pont a
+    celzott hiba (hex-ID a DB-ben, tole fuggetlen szemantikus horgony a cimben)."""
+    if _horgony(card_id) not in _horgony(cim):
+        sys.exit(f'MEGTAGADVA: a cim nem tartalmazza a kartya sajat ID-jet ({card_id}).\n'
+                 f'  cim:        {cim[:120]}\n'
+                 f'  osszevetve: "{_horgony(card_id)}" nincs benne ebben: "{_horgony(cim)[:120]}"\n'
+                 f'A cim-horgony nalunk az ID: ami horgony nelkul marad, az a kovetkezo migracioban\n'
+                 f'kezi bucket lesz. Az irasjelek nem szamitanak ("PR #1195" jo a PR1195 id-hez).')
 # A kanban_cards CHECK-jei. Kapuban is szerepelnek, hogy egy elgepelt ertek olvashato
 # uzenetet adjon, ne nyers sqlite3 IntegrityError-t.
 STATUSZOK = ('planned','in_progress','testing','waiting','done')
@@ -180,6 +273,7 @@ def komment_mod(a):
                      f'A cim EGY sor legyen (lelet + gazda + hatarido), a reszletek a leirasba.')
         if (h := gyanus(a.title)):
             sys.exit(f'MEGTAGADVA: vegyes irasrendszeru szo a cimben: {h[:5]}')
+        _horgony_kapu(a.id, a.title)
     if a.status is not None and a.status not in STATUSZOK:
         sys.exit(f'MEGTAGADVA: ervenytelen statusz ("{a.status}"). Ervenyes: {", ".join(STATUSZOK)}.')
     if a.priority is not None and a.priority not in PRIORITASOK:
@@ -191,8 +285,36 @@ def komment_mod(a):
         sys.exit(f'MEGTAGADVA: a(z) {a.id} kartya NEM LETEZIK -- komment-only mod csak meglevo kartyara ir.\n'
                  f'Uj kartyahoz a letrehozo mod valo (--assignee/--title).')
     # ELOTTE-PILLANATKEP: enelkul a visszaolvasas nem meres, csak egy ertek felolvasasa.
-    elotte = {'status': card[1], 'priority': card[3], 'title': card[4]}
-    mozgatas = {k: v for k, v in (('status', a.status), ('priority', a.priority), ('title', a.title))
+    elotte = {'status': card[1], 'priority': card[3], 'title': card[4], 'assignee': card[2]}
+    # A FELELOS FELOLDASA a kartya ismereteben: a kanonikus alakot hasonlitjuk az elotte-erteknek,
+    # kulonben egy "Samu" -> "samu" no-op valodi mozgatasnak latszana.
+    uj_felelos = None
+    if a.assignee is not None:
+        uj_felelos = _felelos_feloldas(a.assignee)
+        if uj_felelos != elotte['assignee'] and uj_felelos not in ISMERT_FELELOSOK and not a.assignee_uj:
+            # TIPUS-KAPU, NEM NEV-HALMAZ (Marveen merese, 2026-09-06): a felelos-oszlop NEM zart
+            # halmaz -- 40 kulonbozo ertek all rajta, tobbsegukben kulso GitHub-nevek. Egy zart
+            # halmazu kapu ezert a legitim mozgatasok tobbseget tagadna meg. Amit viszont meg
+            # tudunk merni: all-e MAR MASIK kartya pontosan ezen a neven. Ha nem, az tipikusan
+            # elgepeles, ami csendben egy sajat, egy-elemu oszlopba viszi a kartyat.
+            # ISMERT HATAR: ARCHIVALT kartya is szamit. Igy egy regi elgepeles onmagat
+            # legitimalja (merve: a tablan 44 archivalt kartya all "Samu" es 2 a
+            # "Marveen+Samu+Zara" erteken). Szandekos: a szigoritas a legitim, regota hasznalt
+            # kulso neveket is elutasitana, ami gyakoribb eset, mint a regi elgepeles ujra-
+            # felhasznalasa. A kapu celja az UJ elgepeles kiszurese, nem a tortenet takaritasa.
+            masik = db.execute('SELECT COUNT(*) FROM kanban_cards WHERE assignee=? AND id<>?',
+                               (uj_felelos, a.id)).fetchone()[0]
+            if not masik:
+                kozeli = [r[0] for r in db.execute(
+                    'SELECT DISTINCT assignee FROM kanban_cards WHERE assignee IS NOT NULL'
+                    ' AND lower(assignee) LIKE ? ORDER BY assignee LIMIT 5',
+                    ('%' + uj_felelos.lower()[:4] + '%',)).fetchall()]
+                sys.exit(f'MEGTAGADVA: "{uj_felelos}" nem ismert flotta-nev, es MASIK kartya sem all rajta.\n'
+                         f'Ez tipikusan elgepeles, ami sajat, egy-elemu oszlopba viszi a kartyat.\n'
+                         + (f'Hasonlo, MAR LETEZO nevek: {", ".join(kozeli)}\n' if kozeli else '')
+                         + 'Ha tenyleg uj nev (pl. uj kulso PR-szerzo), mondd ki: --assignee-uj.')
+    mozgatas = {k: v for k, v in (('status', a.status), ('priority', a.priority), ('title', a.title),
+                                  ('assignee', uj_felelos))
                 if v is not None}
     valtozik = {k: v for k, v in mozgatas.items() if v != elotte[k]}
     valtozatlan = {k: v for k, v in mozgatas.items() if v == elotte[k]}
@@ -235,8 +357,8 @@ def komment_mod(a):
         sys.exit(f'HIBA: a mezomozgatas {cur.rowcount} sort erintett (1 helyett) -- a komment MAR BEIRT.')
     # FUGGETLEN visszaolvasas: uj SELECT, nem a cursor allitasa. A 0-talalatos UPDATE
     # es a sikeres UPDATE kulonben megkulonboztethetetlen lenne.
-    utana = db.execute('SELECT status,priority,title FROM kanban_cards WHERE id=?', (a.id,)).fetchone()
-    kapott = {'status': utana[0], 'priority': utana[1], 'title': utana[2]}
+    utana = db.execute('SELECT status,priority,title,assignee FROM kanban_cards WHERE id=?', (a.id,)).fetchone()
+    kapott = {'status': utana[0], 'priority': utana[1], 'title': utana[2], 'assignee': utana[3]}
     for k, v in valtozik.items():
         if kapott[k] != v:
             sys.exit(f'HIBA: a(z) {k} visszaolvasva "{kapott[k]}", nem a kert "{v}". Az iras NEM ert celba.')
@@ -263,6 +385,8 @@ def main():
     # megkulonboztetni a KIMONDOTT erteket a nem-adottol. A letrehozo ag lentebb tolti fel.
     p.add_argument('--status', default=None); p.add_argument('--no-msg', action='store_true')
     p.add_argument('--comment-file', help='KOMMENT-ONLY mod: komment meglevo kartyara, ertesites nelkul')
+    p.add_argument('--assignee-uj', action='store_true', dest='assignee_uj',
+                   help='komment-mod: kimondva uj (a tablan meg nem szereplo) felelos-nev')
     p.add_argument('--author', default='Marveen', help='komment-mod: a komment szerzoje')
     p.add_argument('--from', dest='from_agent', default=None,
                    help='az ertesites feladoja (alapertelmezes: az --author kisbetusitve)')
@@ -270,12 +394,17 @@ def main():
     a = p.parse_args()
 
     if a.comment_file:
-        if a.assignee or a.msg_file or a.desc_file:
+        # A KEVERES-KAPUT KI KELL ENGEDNI az uj mezohoz, kulonben az uj kod ELERHETETLEN, es a
+        # bovites "kesz"-nek latszik ugy, hogy soha nem fut le (Boni kikotese a cim-bovitesnel).
+        if a.msg_file or a.desc_file:
             sys.exit('MEGTAGADVA: a --comment-file nem keverheto a letrehozo mod kapcsoloival\n'
-                     '(--assignee/--desc-file/--msg-file) -- egy futas egy muvelet.\n'
-                     'A --title/--status/--priority viszont MOZGATJA a meglevo kartyat.')
+                     '(--desc-file/--msg-file) -- egy futas egy muvelet.\n'
+                     'A --title/--status/--priority/--assignee viszont MOZGATJA a meglevo kartyat.')
         komment_mod(a)
         return
+    if a.assignee_uj:
+        sys.exit('MEGTAGADVA: az --assignee-uj csak komment-modban (mezomozgatas) ertelmes.\n'
+                 'A letrehozo ag a kimondott felelos-nevet szo szerint elfogadja.')
     if not a.assignee or not a.title:
         sys.exit('MEGTAGADVA: letrehozo modhoz --assignee es --title kell (komment-modhoz --comment-file).')
 
@@ -286,7 +415,9 @@ def main():
     if a.priority not in PRIORITASOK:
         sys.exit(f'MEGTAGADVA: ervenytelen prioritas ("{a.priority}"). Ervenyes: {", ".join(PRIORITASOK)}.')
 
-    who = a.assignee.strip().lower()
+    # UGYANAZ A KANONIKUS ALAK, mint a mozgato agon -- kulonben a ket ut ugyanarra a nevre
+    # KET KULONBOZO erteket irna a tablara.
+    who = _felelos_feloldas(a.assignee)
     # A FELADO: kimondva (--from), vagy a szerzobol. Az alapertelmezes az --author kisbetusitve,
     # tehat a korabbi viselkedes (--author nelkul: 'marveen') valtozatlan marad.
     frm = (a.from_agent or a.author).strip().lower()
@@ -315,6 +446,9 @@ def main():
     if len(a.title) > 300:
         sys.exit(f'MEGTAGADVA: a cim {len(a.title)} karakter (max 300). A trigger levagna es kommentbe tenne.\n'
                  f'A cim EGY sor legyen (lelet + gazda + hatarido), a reszletek a leirasba.')
+    # 2a. ID-HORGONY: ugyanaz a kapu, mint a cim-mozgatason. Ha csak a mozgatasra allna, a
+    # horgony nelkuli cim egyszeruen a LETREHOZASKOR kerulne be, es a kapu semmit nem vedene.
+    _horgony_kapu(a.id, a.title)
 
     # 2b. AZ UZENET NEVEZZE MEG A KARTYAT (2026-09-05, az eszkoz ELSO eles hasznalata bukott el rajta).
     # Az ORSZEMROUTING905 uzenete kiment es meg is erkezett, de a szovege SEHOL nem irta le a kartya
