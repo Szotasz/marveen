@@ -39,6 +39,7 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'channel-inbox-drain.py',
   'ledger-capture.py',
   'skill-usage-capture.py',
+  'tool-log-capture.py',
   // The /clear continuity pair: SessionEnd capture + SessionStart replay.
   'clear-capture.py',
   'clear-replay.py',
