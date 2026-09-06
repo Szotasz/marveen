@@ -1,0 +1,13 @@
+{
+  "_doc": "CostOps v0.3 collectors config EXAMPLE. Copy to store/costops-collectors.json (gitignored) to enable a collector. NEVER put an API key or raw account id here -- only a 'vault:<id>' secret_ref. The real Admin key goes into the Vault (src/web/vault.ts) via the secure handover, never into this file, a log, or a transcript. enabled=false and no live call until explicitly approved.",
+  "version": 1,
+  "fx_usd_huf": 0,
+  "collectors": [
+    {
+      "provider": "anthropic",
+      "enabled": false,
+      "secret_ref": "vault:costops.anthropic_admin_key",
+      "account_ref_hash": null
+    }
+  ]
+}
