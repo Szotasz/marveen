@@ -50,7 +50,39 @@ export function kanbanMoveInstructions(id: string, target: string): string {
   // not to the human).
   const isMainAgent = target === MAIN_AGENT_ID
   const escalateTo = isMainAgent ? OWNER_NAME : MAIN_AGENT_ID
+  // FIRST line on purpose: this dispatch is fired ONCE, at the moment the card
+  // enters in_progress, and the status is correct then -- the `dispatched_at`
+  // guard is right and is not what needs fixing. What can slip is DELIVERY: the
+  // message rides the normal inter-agent queue, and a busy session may only read
+  // it after finishing that round, by which time the card has moved on. Observed
+  // on a live install, on more than one card.
+  //
+  // A status check at dispatch time therefore cannot help (the card is not yet
+  // `testing` when the message is written), so the guard has to travel WITH the
+  // message and be re-evaluated by the reader. The wasted round is the mild
+  // outcome; the expensive one is a second attempt producing parallel work on the
+  // same target -- a SECOND test file for one controller, with its own fixture,
+  // maintained in two places. The receiving agent's own rules already forbid that,
+  // but they cannot fire on a task the agent has no reason to think is finished.
+  //
+  // The check is handed over as a runnable command, like every other step here:
+  // an instruction the reader has to compose is one it can skip. There is no
+  // single-card GET endpoint, hence the board fetch plus a one-field extract.
+  //
+  // The isinstance(list) branch is not defensive padding: measured while writing
+  // this, an unreadable token makes the endpoint answer with an error OBJECT, and
+  // iterating that dict yields its KEYS, so the naive one-liner dies on a Python
+  // TypeError. A traceback is the one answer this line must never give -- the
+  // reader would have no status and no idea why, and the likeliest reaction to a
+  // broken pre-flight check is to skip it. Echoing the server's own error keeps it
+  // actionable.
+  const statusProbe =
+    `  curl -s ${auth} ${base}/api/kanban | python3 -c "import sys,json;d=json.load(sys.stdin);print(next((c['status'] for c in d if c.get('id')=='${id}'),'nincs ilyen kartya') if isinstance(d,list) else 'ismeretlen -- a szerver nem kartya-listat adott: '+str(d)[:120])"`
   return [
+    'MIELŐTT NEKIKEZDESZ: nézd meg a kártya AKTUÁLIS státuszát. Ez az üzenet egy foglalt session sorában KÉSHET, és közben a munka elkészülhetett:',
+    statusProbe,
+    'Ha a válasz már "testing" vagy "done", NE kezdj bele -- az üzenet későn ért ide, a munka már áll. Egy második nekifutás párhuzamos, két helyen karbantartott munkát szül (például egy MÁSODIK teszt-fájlt ugyanarra a vezérlőre). Ilyenkor jelezd a delegálódnak, és ne írj kódot.',
+    '',
     'A kártyát in_progress-re húzták. Amikor VÉGEZTÉL, két lépés (mindkettő a kártyára kerül, a web UI-ban látszik):',
     '',
     '1) Írj egy rövid eredmény-összefoglalót kommentként (1-2 mondat: mi lett a vége):',
