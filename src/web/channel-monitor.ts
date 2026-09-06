@@ -92,6 +92,29 @@ function resolveAgentProvider(name: string): ChannelProviderType {
 
 const agentDownSince: Map<string, number> = new Map()
 const agentLastRestart: Map<string, number> = new Map()
+
+// DANICTXHUROK906 (2026-09-06): the context-guard's own restart path
+// (context-guard-runner.ts) stop+fresh-starts an agent, but that stop is
+// INVISIBLE to this reconcile loop -- the guard never wrote agentLastRestart,
+// so in the ~1s window between the guard's stop and its fresh start,
+// reconcileDesiredAgents saw the agent "down" and re-launched it via
+// startAgentProcess() with NO opts -> fresh=false, i.e. --continue for a
+// channel-less agent. The guard's own fresh start then no-op'd ("already
+// running") and the heavy prior context was resumed (measured: dani hit 94% in
+// 25min on zero inbound). The guard now calls markAgentRestartPending() BEFORE
+// its stop, so this loop defers for the grace window and the guard's fresh
+// start wins the race.
+export function markAgentRestartPending(name: string): void {
+  agentLastRestart.set(name, Date.now())
+}
+
+// The reconcile grace predicate, pulled out so it is unit-testable without
+// driving the whole loop. True = a (re)start for `name` happened within the
+// grace window, so reconcile must NOT launch a second (non-fresh) session.
+export function isWithinRestartGrace(name: string, nowMs: number = Date.now()): boolean {
+  const last = agentLastRestart.get(name)
+  return last != null && nowMs - last < AGENT_RESTART_GRACE_MS
+}
 // Agents already warned about a missing channel token, so the per-sweep probe
 // does not repeat the identical WARN every minute forever (observed 2026-07-20:
 // teamer, an agent with no channel token bound, emitted the same line ~1440x/day
@@ -2202,8 +2225,7 @@ async function reconcileDesiredAgents(): Promise<void> {
   try {
     for (const name of down) {
       if (isAgentRunning(name)) continue
-      const last = agentLastRestart.get(name)
-      if (last != null && Date.now() - last < AGENT_RESTART_GRACE_MS) continue
+      if (isWithinRestartGrace(name)) continue
       if (!memGateAllowsStart(name)) continue   // Commit 3 v1: safe-mode / memory gate
       logger.warn({ agent: name }, 'Desired agent not running -- auto-starting (reconcile)')
       try {
