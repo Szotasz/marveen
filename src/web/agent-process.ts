@@ -61,6 +61,7 @@ import { resolveOpenRouterModel } from './openrouter-models.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { notifyChannel } from '../notify.js'
+import { memoryPressureGate } from './memory-pressure-gate.js'
 
 // Lazy so a transient PATH gap at import time (e.g. the 04:00 auto-update
 // restart, where the finalizer omits the bin dir from PATH) cannot hard-crash
@@ -1312,6 +1313,17 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
 
 
   if (isAgentRunning(name)) return { ok: false, error: 'Agent is already running' }
+
+  // P0 MEMORY-PRESSURE GATE (component B, card Istvan-approved plan 2026-07-20).
+  // Fail-closed: a broken gate blocks non-core starts, opposite of the existing
+  // fail-open memGate (fleet-memory-gate.sh). Core agents (explicit config) pass
+  // through; non-core starts are forbidden during warning/critical/emergency.
+  // This single gate covers all 12 start/restart paths through startAgentProcess.
+  const pressureGate = memoryPressureGate(name)
+  if (!pressureGate.allowed) {
+    logger.warn({ name, reason: pressureGate.reason }, 'Memory-pressure gate BLOCKED agent start')
+    return { ok: false, error: `Memory pressure: ${pressureGate.reason}` }
+  }
 
   const agentProvider = resolveAgentProvider(name)
   const provider = getProvider(agentProvider)
