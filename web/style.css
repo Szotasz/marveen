@@ -564,6 +564,56 @@ main {
 .subtitle { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
 
 /* === Overview page === */
+/* Subscription quota strip (overview page, above the stat cards). Deliberately
+   flat and narrow: it is a glance, not a card, and must not compete with the
+   stats below it. Colour follows the status line -- >=80% danger, >=60% accent
+   -- so the terminal and the dashboard cannot disagree about the same number. */
+.quota-strip {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  padding: 10px 14px;
+  margin-bottom: 14px;
+}
+.quota-strip-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.quota-strip-title { font-size: 12px; font-weight: 500; color: var(--text-muted); }
+.quota-strip-age { font-size: 11px; color: var(--text-muted); }
+.quota-bars { display: flex; flex-direction: column; gap: 6px; }
+.quota-bar {
+  display: grid;
+  grid-template-columns: 56px 1fr auto;
+  align-items: center;
+  gap: 10px;
+}
+.quota-bar-label { font-size: 12px; color: var(--text-muted); }
+.quota-bar-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-input);
+  overflow: hidden;
+}
+.quota-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--success);
+  transition: width var(--transition);
+}
+.quota-bar-fill.warn { background: var(--accent); }
+.quota-bar-fill.danger { background: var(--danger); }
+/* Stale or rolled over: the numbers stay visible but must not read as current. */
+.quota-bar.muted .quota-bar-fill { background: var(--text-muted); }
+.quota-bar.muted .quota-bar-value { color: var(--text-muted); }
+.quota-bar-value { font-size: 12px; color: var(--text); font-variant-numeric: tabular-nums; }
+.quota-bar-reset { color: var(--text-muted); }
+.quota-strip-note { margin-top: 8px; font-size: 11px; color: var(--text-muted); }
+.quota-strip-note.warn { color: var(--danger); }
+
 .overview-stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));

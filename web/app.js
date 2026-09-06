@@ -11949,6 +11949,88 @@ function formatRelative(ts) {
   return t('common.time.day_abbr', { n: day })
 }
 
+// Forward-looking duration, reusing the same abbreviations formatRelative uses
+// so the strip does not invent a second time vocabulary.
+function formatDurationShort(sec) {
+  if (sec < 60) return t('common.time.min_abbr', { n: 1 })
+  const min = Math.floor(sec / 60)
+  if (min < 60) return t('common.time.min_abbr', { n: min })
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return t('common.time.hour_abbr', { h: hr })
+  return t('common.time.day_abbr', { n: Math.floor(hr / 24) })
+}
+
+// Same thresholds as the status line's rl_pct(): >=80 danger, >=60 caution.
+// The dashboard palette has no yellow token, so the accent stands in for it.
+function quotaLevelClass(pct) {
+  if (pct >= 80) return 'danger'
+  if (pct >= 60) return 'warn'
+  return ''
+}
+
+// Render the subscription quota strip from /api/overview's `quota` block.
+//
+// The rule this follows: a quota reading is only worth showing while it is
+// fresh, and an absent strip must never look like a healthy one. So a missing
+// file still renders the strip -- with one quiet line saying why there is no
+// data -- and a stale or already-reset reading keeps its numbers but drops the
+// colour, because a green bar from six hours ago reassures exactly as much as
+// a green bar from six seconds ago.
+function renderQuotaStrip(q) {
+  const strip = document.getElementById('quotaStrip')
+  const bars = document.getElementById('quotaBars')
+  const note = document.getElementById('quotaStripNote')
+  const age = document.getElementById('quotaStripAge')
+  if (!strip || !bars || !note || !age) return
+  strip.hidden = false
+  bars.innerHTML = ''
+  note.hidden = true
+  note.className = 'quota-strip-note'
+  age.textContent = ''
+
+  if (!q || q.status === 'missing') {
+    const reason = q && q.reason ? q.reason : 'no-file'
+    note.textContent = t('overview.quota.none.' + reason.replace(/-/g, '_'))
+    note.hidden = false
+    return
+  }
+
+  const stale = q.status === 'stale'
+  const nowSec = Math.floor(Date.now() / 1000)
+  const windows = [
+    ['overview.quota.five_hour', q.fiveHour],
+    ['overview.quota.seven_day', q.sevenDay],
+  ]
+  for (const [labelKey, w] of windows) {
+    if (!w) continue
+    const pct = Math.max(0, Math.min(100, Math.round(w.usedPercentage)))
+    const muted = stale || w.expired
+    const row = document.createElement('div')
+    row.className = 'quota-bar' + (muted ? ' muted' : '')
+    let tail = ''
+    if (w.expired) {
+      tail = ' · ' + t('overview.quota.expired')
+    } else if (typeof w.resetsAt === 'number' && w.resetsAt > nowSec) {
+      tail = ' · ' + t('overview.quota.resets_in', { d: formatDurationShort(w.resetsAt - nowSec) })
+    }
+    row.innerHTML = `
+      <div class="quota-bar-label">${escapeHtml(t(labelKey))}</div>
+      <div class="quota-bar-track"><div class="quota-bar-fill ${muted ? '' : quotaLevelClass(pct)}" style="width:${pct}%"></div></div>
+      <div class="quota-bar-value">${pct}%<span class="quota-bar-reset">${escapeHtml(tail)}</span></div>
+    `
+    bars.appendChild(row)
+  }
+
+  if (typeof q.ageSec === 'number') {
+    age.textContent = t('overview.quota.measured', { age: formatRelative(Date.now() - q.ageSec * 1000) })
+  }
+  if (stale) {
+    note.textContent = t('overview.quota.stale')
+    note.className = 'quota-strip-note warn'
+    note.hidden = false
+  }
+}
+
 async function loadOverview() {
   try {
     const res = await fetch('/api/overview')
@@ -11964,6 +12046,7 @@ async function loadOverview() {
     document.getElementById('statMemoriesSub').textContent = `${t('overview.stat.sub.memories')} · ${d.memories.categories} category`
     document.getElementById('statSkills').textContent = d.skills.count
     document.getElementById('statSkillsSub').textContent = d.skills.today > 0 ? t('overview.stat.skills_today', { n: d.skills.today }) : ''
+    renderQuotaStrip(d.quota)
     // Team: reuse the hierarchy graph renderer so the overview card shows
     // exactly what the Csapat page does (avatars + reports-to tree).
     try {
