@@ -1407,12 +1407,28 @@ function createCardEl(card, embeddedChildren = []) {
     ? `<span class="kanban-card-seq" style="font-family:monospace;font-size:11px;color:var(--muted);margin-right:5px">#${card.seq}</span>`
     : ''
 
+  // Blocked marker: only counts blockers that are not done yet. A card whose
+  // blockers have all closed is not blocked any more, and a badge that stayed
+  // put would be exactly the kind of lie the board is supposed to prevent.
+  const openBlockers = Array.isArray(card.blockers)
+    ? card.blockers.filter((b) => b.status !== 'done')
+    : []
+  const blockedHtml = openBlockers.length > 0
+    ? `<span class="kanban-card-blocked" title="${escapeHtml(t('kanban.blocker.card_tooltip', { n: openBlockers.length }))}">${t('kanban.blocker.card_badge')}${openBlockers.length > 1 ? ' ' + openBlockers.length : ''}</span>`
+    : ''
+
   // Card aging: left stripe + top-right badge based on hours since last update.
   // Skipped for done cards. Config thresholds and colours come from window._marveen.kanbanAging.
   let agingBadgeHtml = ''
   const agingCfg = window._marveen?.kanbanAging
-  if (agingCfg && card.updated_at && card.status !== 'done') {
-    const hoursOld = (Date.now() / 1000 - card.updated_at) / 3600
+  // Age from the last STATUS CHANGE, not from updated_at. A comment sets
+  // updated_at (see addKanbanComment in src/db.ts), so a card that has not
+  // moved in weeks used to look fresh as soon as anyone wrote on it -- and the
+  // main agent writes on cards more than anyone. Falls back to updated_at only
+  // if the API is older than this field.
+  const agingBasis = card.last_status_at ?? card.updated_at
+  if (agingCfg && agingBasis && card.status !== 'done') {
+    const hoursOld = (Date.now() / 1000 - agingBasis) / 3600
     let agingLevel = null
     let agingColor = null
     if (hoursOld >= agingCfg.criticalH) {
@@ -1425,7 +1441,7 @@ function createCardEl(card, embeddedChildren = []) {
     if (agingLevel) {
       const days = Math.floor(hoursOld / 24)
       const ageLabel = days >= 1 ? `${days}d` : `${Math.floor(hoursOld)}h`
-      const exact = new Date(card.updated_at * 1000).toLocaleString('hu-HU')
+      const exact = new Date(agingBasis * 1000).toLocaleString('hu-HU')
       agingBadgeHtml = `<span class="kanban-card-aging-badge kanban-card-aging-${agingLevel}" style="color:${agingColor}" title="${t('kanban.aging.tooltip', { exact })}">⏳ ${ageLabel}</span>`
       el.dataset.aging = agingLevel
       el.style.setProperty('--card-aging-color', agingColor)
@@ -1450,7 +1466,7 @@ function createCardEl(card, embeddedChildren = []) {
   el.innerHTML = `
     ${projectHtml}
     <div class="kanban-card-title">${seqHtml}${escapeHtml(card.title)}</div>
-    <div class="kanban-card-footer">${assigneeHtml}${dueHtml}</div>
+    <div class="kanban-card-footer">${assigneeHtml}${dueHtml}${blockedHtml}</div>
     ${labelsHtml}
     <div class="kanban-card-actions">
       <button class="card-breakdown-btn" title="${t('kanban.btn.breakdown')}" aria-label="${t('kanban.btn.breakdown')}">⚡</button>
@@ -1941,6 +1957,118 @@ async function renderCardLabelsSection(card) {
   }
 }
 
+// === Card blockers (in the detail modal) ===
+// Renders both directions from one GET: what this card waits on, and what waits
+// on it. The reverse list is read-only on purpose -- a block is removed from the
+// card that carries it, so there is exactly one place to clear each link.
+async function renderCardBlockersSection(card) {
+  const listEl = document.getElementById('cardBlockerList')
+  const addSelect = document.getElementById('cardBlockerAdd')
+  const blockingWrap = document.getElementById('cardBlockingWrap')
+  const blockingListEl = document.getElementById('cardBlockingList')
+  if (!listEl || !addSelect) return
+
+  let blockers = []
+  let blocking = []
+  try {
+    const data = await (await fetch(`/api/kanban/${encodeURIComponent(card.id)}/blockers`)).json()
+    blockers = Array.isArray(data.blockers) ? data.blockers : []
+    blocking = Array.isArray(data.blocking) ? data.blocking : []
+  } catch { /* leave empty -- the lists just stay blank */ }
+
+  // A blocker whose card is done no longer holds anything up. It stays listed
+  // (the link is history worth seeing) but reads as cleared, so a glance at the
+  // list answers "am I still waiting?" without opening each card.
+  const isCleared = (ref) => ref.status === 'done'
+
+  const refRow = (ref, removable) => {
+    const row = document.createElement('div')
+    row.className = 'blocker-row' + (isCleared(ref) ? ' blocker-cleared' : '')
+    const seq = ref.seq != null ? `#${ref.seq} ` : ''
+    const link = document.createElement('button')
+    link.className = 'blocker-link'
+    link.type = 'button'
+    link.textContent = `${seq}${ref.title}`
+    link.title = t('kanban.blocker.open_hint')
+    link.addEventListener('click', () => {
+      const target = kanbanCards.find((c) => c.id === ref.id)
+      if (target) showCardDetail(target)
+      else showToast(t('kanban.toast.blocker_not_on_board'))
+    })
+    row.appendChild(link)
+    const state = document.createElement('span')
+    state.className = 'blocker-state'
+    state.textContent = t(`kanban.status.${ref.status}`)
+    row.appendChild(state)
+    if (removable) {
+      const rm = document.createElement('button')
+      rm.className = 'blocker-remove'
+      rm.type = 'button'
+      rm.innerHTML = '&times;'
+      rm.title = t('kanban.blocker.remove_btn')
+      rm.setAttribute('aria-label', t('kanban.blocker.remove_btn'))
+      rm.addEventListener('click', async () => {
+        try {
+          await fetch(`/api/kanban/${encodeURIComponent(card.id)}/blockers/${encodeURIComponent(ref.id)}`, { method: 'DELETE' })
+          renderCardBlockersSection(card)
+          loadKanban()
+        } catch { showToast(t('kanban.toast.blocker_remove_error')) }
+      })
+      row.appendChild(rm)
+    }
+    return row
+  }
+
+  listEl.innerHTML = ''
+  if (blockers.length === 0) {
+    const empty = document.createElement('div')
+    empty.className = 'blocker-empty'
+    empty.textContent = t('kanban.blocker.none')
+    listEl.appendChild(empty)
+  } else {
+    for (const ref of blockers) listEl.appendChild(refRow(ref, true))
+  }
+
+  blockingListEl.innerHTML = ''
+  blockingWrap.style.display = blocking.length > 0 ? '' : 'none'
+  for (const ref of blocking) blockingListEl.appendChild(refRow(ref, false))
+
+  // Candidates: every other open card on the board that is not already linked.
+  // Cards this one blocks are excluded too -- adding one would close a cycle,
+  // and the server refuses it; offering it in the list would only produce an error.
+  const attachedIds = new Set(blockers.map((b) => b.id))
+  const blockingIds = new Set(blocking.map((b) => b.id))
+  addSelect.innerHTML = `<option value="">-- ${t('kanban.blocker.add_placeholder_short')} --</option>`
+  for (const other of kanbanCards) {
+    if (other.id === card.id || attachedIds.has(other.id) || blockingIds.has(other.id)) continue
+    if (other.status === 'done') continue
+    const opt = document.createElement('option')
+    opt.value = other.id
+    opt.textContent = (other.seq != null ? `#${other.seq} ` : '') + other.title.slice(0, 70)
+    addSelect.appendChild(opt)
+  }
+  addSelect.onchange = async () => {
+    const blockerId = addSelect.value
+    if (!blockerId) return
+    try {
+      const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/blockers`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ blockerId }),
+      })
+      if (!r.ok) {
+        // The server's message names the actual reason (cycle, missing card);
+        // surfacing it beats a generic failure the operator has to guess at.
+        const err = await r.json().catch(() => ({}))
+        showToast(err.error || t('kanban.toast.blocker_add_error'))
+        addSelect.value = ''
+        return
+      }
+      renderCardBlockersSection(card)
+      loadKanban()
+    } catch { showToast(t('kanban.toast.blocker_add_error')) }
+  }
+}
+
 // === Card detail ===
 async function showCardDetail(card) {
   // Running number (#N) in the title bar, plus the stable hex id in the meta.
@@ -2086,6 +2214,7 @@ async function showCardDetail(card) {
   document.getElementById('cardDetailDesc').textContent = card.description || ''
 
   renderCardLabelsSection(card)
+  renderCardBlockersSection(card)
 
   // #115: Parent meta row — dropdown replaces the old read-only display; shown only when editable
   const parentMetaItem = document.getElementById('parentMetaItem')

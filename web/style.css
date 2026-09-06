@@ -7476,3 +7476,76 @@ body {
   vertical-align: middle;
 }
 
+
+/* === Card blockers ("blocked by") ============================================
+   Rows rather than pills: a blocker carries a whole card title, which a pill
+   would truncate to uselessness. The cleared state keeps a finished blocker
+   visible (the link is history) while making it obvious it no longer holds
+   anything up. */
+.blocker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 22px;
+}
+.blocker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  font-size: 13px;
+}
+.blocker-link {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.blocker-link:hover { text-decoration: underline; }
+.blocker-state {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: lowercase;
+}
+.blocker-remove {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 2px;
+  opacity: 0.7;
+}
+.blocker-remove:hover { opacity: 1; color: var(--danger, #dc2626); }
+.blocker-cleared .blocker-link { text-decoration: line-through; color: var(--text-muted); }
+.blocker-empty { font-size: 12px; color: var(--text-muted); padding: 2px 0; }
+
+/* Board badge. Sits in the card footer next to assignee/due, so a blocked card
+   is readable without opening it. */
+.kanban-card-blocked {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #b45309;
+  background: color-mix(in srgb, #f59e0b 18%, transparent);
+  border: 1px solid color-mix(in srgb, #f59e0b 45%, transparent);
+}

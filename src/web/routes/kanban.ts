@@ -9,6 +9,8 @@ import {
   getKanbanSeqByIdPrefix,
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
+  addCardBlocker, removeCardBlocker, getBlockersForCard, getBlockedByCard,
+  getBlockersForAllCards, blockerWouldCycle,
   listArchivedKanbanCards,
   revertIdeaFromKanban,
   getHeartbeatKanbanSummary,
@@ -262,7 +264,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // instead of an N+1 per-card lookup, so the footer-pill UI gets
     // everything it needs in a single round trip.
     const labelsByCard = getLabelsForAllCards()
-    const cards = listKanbanCards().map((card) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
+    // Blockers ride along in the same round trip as labels: the board needs
+    // them to mark a blocked card, and a per-card fetch would be an N+1 on
+    // every poll.
+    const blockersByCard = getBlockersForAllCards()
+    const cards = listKanbanCards().map((card) => ({
+      ...card,
+      labels: labelsByCard.get(card.id) ?? [],
+      blockers: blockersByCard.get(card.id) ?? [],
+    }))
     jsonMaybeGzip(req, res, cards)
     return true
   }
@@ -370,6 +380,49 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const labelId = decodeURIComponent(cardLabelDeleteMatch[2])
     if (removeLabelFromCard(cardId, labelId)) { json(res, { ok: true }); return true }
     json(res, { error: 'A kártyán nincs ilyen címke' }, 404)
+    return true
+  }
+
+  // --- Blockers: "this card is blocked by that card" ---
+  // GET returns both directions in one payload. The reverse list (what waits on
+  // THIS card) is the half that changes behaviour: it is what tells the operator
+  // that leaving a card open is holding up three others.
+  const cardBlockersMatch = path.match(/^\/api\/kanban\/([^/]+)\/blockers$/)
+  if (cardBlockersMatch && method === 'GET') {
+    const cardId = decodeURIComponent(cardBlockersMatch[1])
+    if (!getKanbanCard(cardId)) { json(res, { error: 'Kártya nem található' }, 404); return true }
+    json(res, { blockers: getBlockersForCard(cardId), blocking: getBlockedByCard(cardId) })
+    return true
+  }
+  if (cardBlockersMatch && method === 'POST') {
+    const cardId = decodeURIComponent(cardBlockersMatch[1])
+    if (!getKanbanCard(cardId)) { json(res, { error: 'Kártya nem található' }, 404); return true }
+    const body = await readBody(req)
+    // `id` is accepted as an alias for `blockerId` for the same reason the label
+    // route accepts it: GET /api/kanban returns cards keyed by `id`.
+    const parsed = JSON.parse(body.toString()) as { blockerId?: string; id?: string }
+    const blockerId = parsed.blockerId ?? parsed.id
+    if (!blockerId) { json(res, { error: 'blockerId mező kötelező' }, 400); return true }
+    if (!getKanbanCard(blockerId)) { json(res, { error: 'A blokkoló kártya nem található' }, 404); return true }
+    // A cycle is refused rather than stored: a block that can never clear is
+    // not information, it is a deadlock the board would render as normal.
+    if (blockerWouldCycle(cardId, blockerId)) {
+      json(res, { error: blockerId === cardId
+        ? 'Egy kártya nem blokkolhatja saját magát'
+        : 'Ez a kapcsolat kört zárna be (a két kártya kölcsönösen egymásra várna)' }, 409)
+      return true
+    }
+    addCardBlocker(cardId, blockerId)
+    json(res, { ok: true })
+    return true
+  }
+
+  const cardBlockerDeleteMatch = path.match(/^\/api\/kanban\/([^/]+)\/blockers\/([^/]+)$/)
+  if (cardBlockerDeleteMatch && method === 'DELETE') {
+    const cardId = decodeURIComponent(cardBlockerDeleteMatch[1])
+    const blockerId = decodeURIComponent(cardBlockerDeleteMatch[2])
+    if (removeCardBlocker(cardId, blockerId)) { json(res, { ok: true }); return true }
+    json(res, { error: 'A kártyán nincs ilyen blokkoló' }, 404)
     return true
   }
 

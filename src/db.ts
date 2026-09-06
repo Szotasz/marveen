@@ -508,6 +508,22 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_card_labels_label ON kanban_card_labels(label_id)`)
 
+  // Blocker links: "this card is blocked by that card". A join table rather
+  // than a single blocked_by column because a card genuinely waits on more
+  // than one thing, and every schema change here costs a rebuild + a dashboard
+  // restart the operator has to approve -- so the wider shape is paid for once.
+  // Rows are deleted with either endpoint card (see deleteKanbanCard), so a
+  // removed card cannot leave a dangling block on the board.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kanban_card_blockers (
+      card_id TEXT NOT NULL,
+      blocker_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (card_id, blocker_id)
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_card_blockers_blocker ON kanban_card_blockers(blocker_id)`)
+
   // --- Agent Messages ---
   db.exec(`
     CREATE TABLE IF NOT EXISTS agent_messages (
@@ -1760,11 +1776,25 @@ export interface KanbanCard {
   sort_order: number
   created_at: number
   updated_at: number
+  // Unix seconds of the card's last STATUS CHANGE (from kanban_card_events),
+  // falling back to created_at when it has never moved. Use this for ageing and
+  // stuck detection; updated_at is reset by comments and edits.
+  last_status_at?: number
   archived_at: number | null
   // Set the first time the card is moved to in_progress and the assigned agent
   // is woken (kanban -> agent dispatch). NULL = never dispatched; the once-only
   // guard so re-dragging a card does not re-prompt the agent.
   dispatched_at: number | null
+}
+
+// A card as referenced FROM another card (blocker links). Deliberately narrow:
+// the detail panel needs a name and a state to render a link, never the whole row.
+export interface KanbanCardRef {
+  id: string
+  seq?: number
+  title: string
+  status: KanbanCard['status']
+  archived_at: number | null
 }
 
 export interface KanbanComment {
@@ -1782,8 +1812,18 @@ export function listKanbanCards(): KanbanCard[] {
   db.prepare(
     "UPDATE kanban_cards SET archived_at = ? WHERE status = 'done' AND archived_at IS NULL AND updated_at < ?"
   ).run(Math.floor(Date.now() / 1000), archiveCutoff)
+  // last_status_at: when the card LAST CHANGED COLUMN, not when its row was
+  // last touched. These are not the same thing, and the difference is a real
+  // blind spot: addKanbanComment() sets updated_at, so a card that has not
+  // moved in weeks looks fresh the moment anyone comments on it. The main agent
+  // comments more than anyone, so ageing measured on updated_at is mostly
+  // measuring the watcher, not the work. Falls back to created_at for cards
+  // that have never moved (no event rows), which is the honest age for those.
   return db
-    .prepare('SELECT rowid AS seq, * FROM kanban_cards WHERE archived_at IS NULL ORDER BY sort_order ASC')
+    .prepare(`SELECT c.rowid AS seq, c.*,
+                     COALESCE((SELECT MAX(e.created_at) FROM kanban_card_events e
+                               WHERE e.card_id = c.id), c.created_at) AS last_status_at
+              FROM kanban_cards c WHERE c.archived_at IS NULL ORDER BY c.sort_order ASC`)
     .all() as KanbanCard[]
 }
 
@@ -2042,6 +2082,10 @@ export function deleteKanbanCard(id: string): boolean {
   return db.transaction((cardId: string) => {
     db.prepare('DELETE FROM kanban_comments WHERE card_id = ?').run(cardId)
     db.prepare('DELETE FROM kanban_card_labels WHERE card_id = ?').run(cardId)
+    // Both directions: the card's own blockers AND the links where it blocks
+    // someone else. Dropping only the first would leave another card marked
+    // "blocked by" a card that no longer exists -- a block nobody can clear.
+    db.prepare('DELETE FROM kanban_card_blockers WHERE card_id = ? OR blocker_id = ?').run(cardId, cardId)
     db.prepare('UPDATE kanban_cards SET parent_id = NULL WHERE parent_id = ?').run(cardId)
     return db.prepare('DELETE FROM kanban_cards WHERE id = ?').run(cardId).changes > 0
   })(id) as boolean
@@ -2194,6 +2238,90 @@ export function getLabelsForAllCards(): Map<string, Label[]> {
     const list = map.get(card_id)
     if (list) list.push(label)
     else map.set(card_id, [label])
+  }
+  return map
+}
+
+// === Card blockers ===
+// "Card A is blocked by card B": one row per (card_id = A, blocker_id = B).
+
+// A blocker link is only useful while it can eventually clear. A cycle (A waits
+// on B, B waits on A) can never clear, so it is refused at insert time rather
+// than rendered as a permanent deadlock. Walks the existing links from the
+// proposed blocker: if the card being blocked is already reachable from it, the
+// new link would close a loop. Iterative with a seen-set, so a pre-existing
+// cycle in the data cannot hang the walk.
+export function blockerWouldCycle(cardId: string, blockerId: string): boolean {
+  if (cardId === blockerId) return true
+  const stmt = db.prepare('SELECT blocker_id FROM kanban_card_blockers WHERE card_id = ?')
+  const seen = new Set<string>([blockerId])
+  const stack = [blockerId]
+  while (stack.length > 0) {
+    const current = stack.pop() as string
+    for (const row of stmt.all(current) as Array<{ blocker_id: string }>) {
+      if (row.blocker_id === cardId) return true
+      if (seen.has(row.blocker_id)) continue
+      seen.add(row.blocker_id)
+      stack.push(row.blocker_id)
+    }
+  }
+  return false
+}
+
+export function addCardBlocker(cardId: string, blockerId: string): void {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(
+    'INSERT OR IGNORE INTO kanban_card_blockers (card_id, blocker_id, created_at) VALUES (?, ?, ?)'
+  ).run(cardId, blockerId, now)
+}
+
+export function removeCardBlocker(cardId: string, blockerId: string): boolean {
+  return db.prepare(
+    'DELETE FROM kanban_card_blockers WHERE card_id = ? AND blocker_id = ?'
+  ).run(cardId, blockerId).changes > 0
+}
+
+// The cards THIS card waits on. Archived blockers are kept in the result: a
+// blocker that was archived without being finished still blocks, and hiding it
+// would silently clear the block.
+export function getBlockersForCard(cardId: string): KanbanCardRef[] {
+  return db.prepare(`
+    SELECT c.id, c.rowid AS seq, c.title, c.status, c.archived_at
+    FROM kanban_card_blockers b
+    JOIN kanban_cards c ON c.id = b.blocker_id
+    WHERE b.card_id = ?
+    ORDER BY b.created_at ASC
+  `).all(cardId) as KanbanCardRef[]
+}
+
+// The reverse view: the cards waiting on THIS one. Shown on the detail panel so
+// the operator can see the cost of leaving a card open before closing the modal.
+export function getBlockedByCard(cardId: string): KanbanCardRef[] {
+  return db.prepare(`
+    SELECT c.id, c.rowid AS seq, c.title, c.status, c.archived_at
+    FROM kanban_card_blockers b
+    JOIN kanban_cards c ON c.id = b.card_id
+    WHERE b.blocker_id = ?
+    ORDER BY b.created_at ASC
+  `).all(cardId) as KanbanCardRef[]
+}
+
+// Bulk variant for the board list view -- one JOIN query instead of an N+1
+// per-card lookup, the same shape as getLabelsForAllCards.
+export function getBlockersForAllCards(): Map<string, KanbanCardRef[]> {
+  const rows = db.prepare(`
+    SELECT b.card_id AS card_id, c.id AS id, c.rowid AS seq, c.title AS title,
+           c.status AS status, c.archived_at AS archived_at
+    FROM kanban_card_blockers b
+    JOIN kanban_cards c ON c.id = b.blocker_id
+    ORDER BY b.created_at ASC
+  `).all() as Array<KanbanCardRef & { card_id: string }>
+  const map = new Map<string, KanbanCardRef[]>()
+  for (const row of rows) {
+    const { card_id, ...ref } = row
+    const list = map.get(card_id)
+    if (list) list.push(ref)
+    else map.set(card_id, [ref])
   }
   return map
 }
