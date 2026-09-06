@@ -894,7 +894,14 @@ export function detectPaneState(
   // Spinner / token-counter busy signals, scoped to the live bottom region.
   // Whole-pane scanning let a completed turn's stale token-counter line pin
   // an idle session busy (see BUSY_LIVE_REGION_LINES).
-  const busyRegion = paneLines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  // liveTailRegion, not slice(-N): a pane drawn high with empty rows below it --
+  // what tmux capture-pane returns whenever the content is shorter than the pane --
+  // pushed BOTH live windows off the footer, and this function then read a running
+  // turn as idle. Measured 2026-09-06 on a real capture of a busy fleet agent: with
+  // an 18-line blank tail appended, detectPaneState went busy -> idle, and the router
+  // would have delivered into a live turn. #1205 fixed this shape for the prompt
+  // probes; these two windows are the same shape in the function that routes.
+  const busyRegion = liveTailRegion(paneLines, BUSY_LIVE_REGION_LINES)
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(busyRegion)) return 'busy'
   }
@@ -903,7 +910,7 @@ export function detectPaneState(
   // Checking the whole pane would let a scrollback quote of the phrase
   // (e.g. in a watchdog report or a log analysis) permanently classify
   // an idle session as busy.
-  const footerRegion = paneLines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  const footerRegion = liveTailRegion(paneLines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return 'busy'
 
   // Pending-paste placeholder check runs BEFORE the idle-footer gate. The
@@ -1131,12 +1138,12 @@ export function shouldRetrySubmit(
   // Busy pane: the turn is mid-flight, no retry needed. Region-scoped (same
   // as detectPaneState) so a stale token-counter line does not suppress a
   // legitimate retry on an idle pane.
-  const retryBusyRegion = retryPaneLines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  const retryBusyRegion = liveTailRegion(retryPaneLines, BUSY_LIVE_REGION_LINES)
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(retryBusyRegion)) return false
   }
   // Footer-region `esc to interrupt` check (same scoping as detectPaneState).
-  const retryFooterRegion = retryPaneLines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  const retryFooterRegion = liveTailRegion(retryPaneLines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(retryFooterRegion)) return false
 
   // Path 1: placeholder is unambiguous, retry regardless of hint -- and it is
