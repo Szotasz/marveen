@@ -263,10 +263,29 @@ export function payloadKeySignature(payload) {
 // an agent-type name from a fixed set -- not content, not a url, not a secret
 // -- and without it a denied sub-agent call cannot be told apart from a denied
 // main-agent one, which is exactly the distinction this log now exists to make.
+// Verifying this gate by hand -- piping a payload into it after an allowlist
+// change -- writes an ALLOWED_QUARANTINE line for a request that never left the
+// machine. fetch-budget.py then counts it against the source's daily allowance,
+// and its own comment says the opposite: "Only fetches that actually left the
+// machine count against a source." Measured 2026-08-28: seven such phantom
+// lines, one on every domain approved that morning, and the caller read them
+// back as real traffic before starting a sweep.
+//
+// EGRESS_GATE_SELFTEST=1 prefixes the log kind with SELFTEST_ so those lines
+// are visibly not traffic. It NEVER touches the decision -- allow and deny come
+// out exactly the same with it set or unset -- because a gate with a switch
+// that changes what it permits is not a gate.
+//
+// If the variable is ever left set in a live session, real fetches log as
+// SELFTEST_ and go uncounted. That fails quiet, so fetch-budget.py should say
+// out loud when it skips SELFTEST_ lines rather than silently reporting less.
+const SELFTEST = process.env.EGRESS_GATE_SELFTEST === '1'
+
 function logLine(kind, url, detail, keys = '', agentType = '') {
   try {
     mkdirSync(join(REPO_ROOT, 'store'), { recursive: true })
     const ts = new Date().toISOString()
+    if (SELFTEST) kind = `SELFTEST_${kind}`
     const keyPart = keys ? ` payload_keys="${keys}"` : ''
     const agentPart = agentType ? ` agent_type="${agentType}"` : ''
     appendFileSync(EGRESS_BLOCK_LOG, `${ts} ${kind} url="${url}" ${detail}${agentPart}${keyPart}\n`, 'utf-8')
