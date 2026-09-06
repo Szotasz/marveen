@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shouldAutoRestartDownAgent, effectiveRestartGraceMs, parseEtimeToSeconds, decideDownAgentAction } from '../web/agent-restart-policy.js'
+import { shouldAutoRestartDownAgent, effectiveRestartGraceMs, parseEtimeToSeconds, decideDownAgentAction, GIVE_UP_REALERT_MS } from '../web/agent-restart-policy.js'
 
 const STARTUP = 180_000
 const RESTART = 90_000
@@ -287,9 +287,18 @@ describe('decideDownAgentAction', () => {
     expect(decideDownAgentAction({ ...restartable, consecutiveFailures: MAX }, MAX)).toBe('alert')
   })
 
-  it("skips (silent) once the counter has been ticked past the cap", () => {
-    expect(decideDownAgentAction({ ...restartable, consecutiveFailures: MAX + 1 }, MAX)).toBe('skip')
-    expect(decideDownAgentAction({ ...restartable, consecutiveFailures: MAX + 9 }, MAX)).toBe('skip')
+  // CONTRACT CHANGE (card a664f9b2): past the cap this used to be silent for
+  // the rest of the spell, and the spell had no end -- the counter is only
+  // cleared by a healthy observation, which needs a restart, which the counter
+  // itself prevents. Finy sat there for five days on one alert. It now repeats
+  // on a cadence; silence holds only INSIDE that cadence.
+  it("stays silent past the cap only until the re-alert interval is due", () => {
+    expect(decideDownAgentAction({ ...restartable, consecutiveFailures: MAX + 1, msSinceGiveUpAlert: 60_000 }, MAX)).toBe('skip')
+    expect(decideDownAgentAction({ ...restartable, consecutiveFailures: MAX + 9, msSinceGiveUpAlert: 60_000 }, MAX)).toBe('skip')
+  })
+
+  it("speaks again once the re-alert interval has elapsed", () => {
+    expect(decideDownAgentAction({ ...restartable, consecutiveFailures: MAX + 1, msSinceGiveUpAlert: GIVE_UP_REALERT_MS }, MAX)).toBe('alert')
   })
 
   it("skips (does not restart) within back-off even under the cap", () => {
@@ -326,8 +335,10 @@ describe('decideDownAgentAction', () => {
       // After that restart ticked the counter to 1, the next confirmed-absent
       // sweep escalates instead of nuking the agent's context again.
       expect(decideDownAgentAction({ ...restartable, consecutiveFailures: 1 }, ABSENT_MAX)).toBe('alert')
-      // And stays silent thereafter.
-      expect(decideDownAgentAction({ ...restartable, consecutiveFailures: 2 }, ABSENT_MAX)).toBe('skip')
+      // And stays silent thereafter -- until the re-alert interval is due, at
+      // which point the standing "I have given up" fact is repeated.
+      expect(decideDownAgentAction({ ...restartable, consecutiveFailures: 2, msSinceGiveUpAlert: 60_000 }, ABSENT_MAX)).toBe('skip')
+      expect(decideDownAgentAction({ ...restartable, consecutiveFailures: 2, msSinceGiveUpAlert: GIVE_UP_REALERT_MS }, ABSENT_MAX)).toBe('alert')
     })
 
     it("still honours the startup grace on the first attempt", () => {
