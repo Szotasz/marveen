@@ -1226,6 +1226,7 @@ resolve_service_node
 # operator picked a distinct brand above.
 DASHBOARD_PLIST="com.${SERVICE_ID}.dashboard"
 CHANNELS_PLIST="com.${SERVICE_ID}.channels"
+REPLY_PATCH_PLIST="com.${SERVICE_ID}.reply-to-patch"
 
 # Dashboard service
 cat > "$PLIST_DIR/${DASHBOARD_PLIST}.plist" << PLISTEOF
@@ -1281,7 +1282,21 @@ cat > "$PLIST_DIR/${CHANNELS_PLIST}.plist" << PLISTEOF
   <string>${CHANNELS_PLIST}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${INSTALL_DIR}/scripts/channels.sh</string>
+    <string>/bin/bash</string>
+    <string>-c</string>
+    <!-- ExecStartPre-equivalent: launchd has no ExecStartPre, so wrap the start.
+         Reapply the local Telegram reply-to patch (upstream issue #929 workaround)
+         BEFORE channels.sh comes up, so a channel (re)start right after a plugin
+         update serves the patched server.ts instead of waiting for the periodic
+         reply-to-patch job. node is invoked by its resolved absolute path (not the
+         shebang) so an nvm/PATH gap can't make it silently skip. Best-effort: the
+         '|| true' mirrors the systemd unit's leading '-' so a patch hiccup never
+         blocks the channel bridge from starting. exec hands the process slot to
+         channels.sh so launchd's KeepAlive keeps tracking the bridge, not the shell.
+         No shell redirection here on purpose: '2>&1' would be invalid raw XML in a
+         plist string; the patcher inherits fd 1/2, so launchd routes its output to
+         this service's StandardOut/ErrorPath (store/channels*.log) automatically. -->
+    <string>"${NODE_PATH}" "${INSTALL_DIR}/scripts/patch-telegram-reply-to.mjs" || true; exec "${INSTALL_DIR}/scripts/channels.sh"</string>
   </array>
   <key>WorkingDirectory</key>
   <string>${INSTALL_DIR}</string>
@@ -1312,6 +1327,49 @@ cat > "$PLIST_DIR/${CHANNELS_PLIST}.plist" << PLISTEOF
 </plist>
 PLISTEOF
 
+# Reply-to patch reapply service (macOS analog of the Linux channel-watchdog
+# every-tick reapply). A plugin update writes a fresh, unpatched server.ts; this
+# periodic job re-runs the idempotent patcher so the reply-to fix is restored
+# without a channel restart. We run ONLY the patcher here (not the whole
+# channel-watchdog.sh, which uses GNU `stat -c` and other Linux-isms) -- the patch
+# is the sole cross-platform concern that needs periodic reapply on macOS. Paired
+# with the channels-plist wrapper above, this mirrors the Linux ExecStartPre +
+# systemd-timer pair: start-time reapply AND periodic reapply. node is pinned to
+# its absolute path so an nvm/PATH gap can't silently skip the patch.
+cat > "$PLIST_DIR/${REPLY_PATCH_PLIST}.plist" << PLISTEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${REPLY_PATCH_PLIST}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${NODE_PATH}</string>
+    <string>${INSTALL_DIR}/scripts/patch-telegram-reply-to.mjs</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${INSTALL_DIR}</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- Every 5 min, matching the Linux channel-watchdog cadence. -->
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>StandardOutPath</key>
+  <string>${INSTALL_DIR}/store/reply-to-patch.log</string>
+  <key>StandardErrorPath</key>
+  <string>${INSTALL_DIR}/store/reply-to-patch.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>${NODE_BIN_DIR}:${HOME}/.local/bin:/opt/homebrew/bin:${HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>HOME</key>
+    <string>${HOME}</string>
+  </dict>
+</dict>
+</plist>
+PLISTEOF
+
 echo -e "  ${GREEN}✓${NC} $(_t macos.launchagents_created)"
 
 # Load AND START the LaunchAgents -- loading is not starting. The rationale and
@@ -1321,6 +1379,17 @@ echo -e "  ${GREEN}✓${NC} $(_t macos.launchagents_created)"
 
 DASHBOARD_PID="$(start_launchd_unit "$DASHBOARD_PLIST")"
 CHANNELS_PID="$(start_launchd_unit "$CHANNELS_PLIST")"
+
+# The reply-to patch unit is a periodic RunAtLoad job (StartInterval 300), not a
+# long-running service: it applies the patch and exits, so start_launchd_unit's
+# persistent-pid verify would count it as failed. Register it the modern way
+# (bootstrap, since `launchctl load` alone leaves a RunAtLoad job merely pended
+# on current macOS -- see launchd-unit.sh) and kickstart the first run; no pid
+# check, because a healthy run has no lasting pid.
+launchctl bootstrap "gui/$(id -u)" "$PLIST_DIR/${REPLY_PATCH_PLIST}.plist" 2>/dev/null \
+  || launchctl load "$PLIST_DIR/${REPLY_PATCH_PLIST}.plist" 2>/dev/null \
+  || true
+launchctl kickstart "gui/$(id -u)/${REPLY_PATCH_PLIST}" >/dev/null 2>&1 || true
 if [ -n "$DASHBOARD_PID" ] && [ -n "$CHANNELS_PID" ]; then
   echo -e "  ${GREEN}✓${NC} Szolgaltatasok elinditva (dashboard pid $DASHBOARD_PID, channels pid $CHANNELS_PID)"
 else
