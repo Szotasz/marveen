@@ -1825,6 +1825,115 @@ export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputActi
   return multiRow ? 'hold' : 'enter'
 }
 
+// =============================================================================
+// Stale no-remedy hold: last-resort unwedge (2026-08-12)
+// =============================================================================
+//
+// decideStuckInputAction ends in 'hold' whenever the parked text can neither be
+// submitted (multi-row: a bare Enter inserts a newline) nor re-injected (the
+// pane scrape is a lossy tail, so re-typing it would deliver a corrupted
+// message) nor safely cleared by one of the identified-origin branches. That
+// hold is CORRECT as a per-tick move -- but it was also the FINAL state: the
+// attempts budget runs out, the watcher alerts "probably needs a manual
+// restart", and the box stays full FOREVER. A sub-agent in that state is
+// silently mute: every later delivery parks behind the wedge, and only a human
+// Ctrl-C brings it back.
+//
+// Measured 2026-08-12 on this install: 100 `multi-row plain re-inject
+// SUPPRESSED ... holding` lines in store/dashboard.log, hitting every sub-agent
+// (aura, blitz, iris). Aura had been wedged for hours and had missed its own
+// 03:00 restart when the owner reported it -- the same complaint had recurred
+// for weeks, each time ended by a manual keystroke.
+//
+// The trade the hold was protecting -- "never destroy a payload that has no
+// re-delivery" -- is not the real trade, because by the time we get here the
+// payload is ALREADY corrupted (head-lost / tail-scraped) and cannot be
+// delivered by anyone. What the hold actually buys is a human being able to
+// read it off the pane. So the fix keeps that and drops the wedge: DUMP the
+// parked text to disk first, then clear. Nothing is lost that was not already
+// lost, and the agent is live again within one tick.
+//
+// Gated hard, because clearing is destructive:
+//   - SUB-AGENTS ONLY (isSubAgent -- the caller's allowPlainReinject flag). The
+//     MAIN session's box can hold a HUMAN draft mid-composition; MAIN keeps its
+//     existing owner-alert + channel-monitor restart path.
+//   - Only after the text has sat UNCHANGED past the stale window. A live
+//     delivery or a human still typing changes the signature, which resets
+//     firstSeenAt and so restarts this clock.
+//   - Only when the chosen action is 'hold'. Every branch that still has a real
+//     move (enter / reinject-* / clear-*) runs first and is untouched.
+//   - Cooldown between clears, so an unclearable box cannot turn into a Ctrl-C
+//     storm against a live session.
+export const STALE_HOLD_CLEAR_MS = 5 * 60 * 1000
+export const STALE_HOLD_CLEAR_COOLDOWN_MS = 5 * 60 * 1000
+/** How long to let the TUI settle before checking whether the last-resort
+ * bare Enter submitted the parked text. Long enough for the box to repaint
+ * (the submit is one frame), short enough that a failed attempt still leaves
+ * the clear inside the same watcher tick. */
+export const STALE_HOLD_ENTER_SETTLE_MS = 1500
+
+export interface StaleHoldFacts {
+  /** The move decideStuckInputAction chose for this pane at full escalation. */
+  action: StuckInputAction
+  /** True for a sub-agent session; MAIN must never auto-clear (human drafts). */
+  isSubAgent: boolean
+  /** How long the SAME text has been parked (now - firstSeenAt). */
+  parkedForMs: number
+  /** Since the last stale-hold clear on this session, or null if never. */
+  sinceLastClearMs: number | null
+}
+
+/** Pure: may the watcher dump-and-clear a box wedged in the no-remedy hold? */
+export function shouldClearStaleHold(f: StaleHoldFacts): boolean {
+  if (f.action !== 'hold') return false
+  if (!f.isSubAgent) return false
+  if (f.parkedForMs < STALE_HOLD_CLEAR_MS) return false
+  if (f.sinceLastClearMs !== null && f.sinceLastClearMs < STALE_HOLD_CLEAR_COOLDOWN_MS) return false
+  return true
+}
+
+// Did the last-resort bare Enter actually SUBMIT the parked text? (2026-08-13)
+//
+// WHY THIS EXISTS. The stale-hold unwedge used to go straight from "dump" to
+// "Ctrl-C", on the premise that the parked payload was already unrecoverable:
+// the pane scrape is lossy, so nobody could deliver it anyway. That premise is
+// FALSE, measured 2026-08-13:
+//
+//   1. sendPromptToSession flattens every prompt to ONE logical line before
+//      typing it (`const oneLine = text.replace(/\r?\n/g, ' ')`), so a
+//      system-injected parked payload never contains a real newline -- the
+//      reason Enter was banned on multi-row boxes ("it inserts a newline")
+//      does not apply to it.
+//   2. The TUI *buffer* keeps the whole payload even when the visible box
+//      shows only its tail. Measured on agent-kiddo at 14:07: a 1087-char
+//      parked message (box shows ~360 chars) was released with a single
+//      `tmux send-keys Enter`, and the receiving agent acted on a paragraph
+//      from the message's FIRST THIRD -- i.e. outside the visible tail.
+//
+// So the clear was destroying a fully deliverable message. This predicate lets
+// the caller TRY the non-destructive move first and verify the outcome, rather
+// than reasoning about what is in the buffer.
+//
+// OUTCOME-BASED ON PURPOSE. We do not try to prove "the box holds one logical
+// line" -- that is not decidable from the pane (measured the same day: the TUI
+// word-wraps with REAL newlines and a 2-space indent, so `capture-pane -J`
+// cannot tell a wrapped line from a genuinely multi-line one). Instead we look
+// at what the Enter DID: the parked text is gone from the box only if the pane
+// is no longer 'typing'. If Enter merely inserted a newline, the box is still
+// 'typing' and this returns false -- the caller then falls back to the exact
+// dump+clear it would have done anyway, so the failure mode is no worse than
+// the status quo.
+//
+// Note it deliberately does NOT reuse submitLanded(): that compares signatures,
+// and an inserted newline CHANGES the signature -- it would report a landed
+// submit for the one case we must catch.
+export function staleHoldEnterSubmitted(paneAfter: string | null): boolean {
+  // No capture -> cannot confirm -> treat as not submitted (fall through to
+  // the clear). Never assume success from missing evidence.
+  if (paneAfter == null) return false
+  return stuckInputSignature(paneAfter) == null
+}
+
 // Would the soft stuck-input recovery have ANY submitting/clearing move for
 // the MAIN session's parked input at full escalation, or is it wedged in the
 // no-remedy 'hold' branch? Used by the hard-restart busy-guard: a 'typing'

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync, writeFileSync, utimesSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, utimesSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync, spawn } from 'node:child_process'
@@ -14,6 +14,7 @@ import {
   capturePane,
   captureParkedInputView,
   clearInputBuffer,
+  discardPlaceholderBuffer,
   dismissResumeSummaryModalIfPresent,
   dismissModelConsentDialogIfPresent,
   stampFableOverageConsentSharedRoots,
@@ -27,6 +28,7 @@ import {
   hasFleetOauthToken,
   FLEET_OAUTH_TOKEN_PATH,
   answerFirstRunGates,
+  sendEnterToSession,
   shSingleQuote,
 } from './agent-process.js'
 import { sendSystemDirective } from './system-directive.js'
@@ -41,6 +43,7 @@ import {
   parkedInputText, shouldClearTruncatedPreamble,
   parkedInputRowCount, submitLanded, decideStuckInputAction,
   parkedScheduledTaskInput, parkedMachineOriginInput, parkedMainInputHasRemedy,
+  shouldClearStaleHold, staleHoldEnterSubmitted, STALE_HOLD_ENTER_SETTLE_MS,
   type StuckInputState, type StuckInputThresholds, type StuckInputAction,
   type StuckInputActionFacts,
 } from '../pane-state.js'
@@ -334,6 +337,146 @@ export function applyStuckRestartBusyGuard(
 //      (e.g. an inter-agent notification) -> clear + re-inject the collapsed
 //      text. A sub-agent's input box never holds a human draft, so this is
 //      safe; the main session stays conservative (Enter / <channel>-only).
+// Last stale-hold clear per session, for the cooldown. Module-level (not part
+// of StuckInputState) because the state map is owned by the CALLERS
+// (stuck-input-watcher + the channel-monitor tick) and both drive this same
+// function -- a per-caller field would let two callers clear twice in a row.
+const staleHoldClearedAt = new Map<string, number>()
+
+/** Test seam: forget the stale-hold cooldowns. */
+export function resetStaleHoldClears(): void {
+  staleHoldClearedAt.clear()
+}
+
+const PARKED_DUMP_DIR = join(PROJECT_ROOT, 'store', 'parked-input')
+
+// Write the parked text to disk BEFORE clearing it. This is the whole reason
+// the clear is allowed: the hold existed so a human could still read the box,
+// and a dump preserves exactly that (more, in fact -- it survives the next
+// screen repaint). Best-effort: a dump failure must not block the unwedge,
+// because a wedged agent is the worse outcome. Returns the path, or null.
+function dumpParkedInput(session: string, pane: string): string | null {
+  try {
+    mkdirSync(PARKED_DUMP_DIR, { recursive: true })
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const path = join(PARKED_DUMP_DIR, `${session}-${stamp}.txt`)
+    const flat = parkedInputText(pane)
+    writeFileSync(
+      path,
+      `# Parked input auto-cleared by the stale-hold unwedge\n`
+        + `# session: ${session}\n# at: ${new Date().toISOString()}\n`
+        + `# NOTE: the pane scrape is LOSSY -- the TUI drops head rows of an\n`
+        + `# overfull box, so this may be a tail fragment, not the whole payload.\n\n`
+        + `## flattened parked text\n${flat ?? '(none)'}\n\n## raw pane view\n${pane}\n`,
+    )
+    return path
+  } catch (err) {
+    logger.warn({ err, session }, 'Stale-hold unwedge: could not dump the parked input (clearing anyway)')
+    return null
+  }
+}
+
+// A sub-agent box wedged in the no-remedy 'hold' past the stale window: dump
+// and clear it so the session is live again. See the STALE-HOLD block in
+// pane-state.ts for why this is safe and why 'hold' alone was not enough.
+async function maybeClearStaleHold(
+  session: string,
+  pane: string,
+  state: StuckInputState,
+  allowPlainReinject: boolean,
+): Promise<void> {
+  const now = Date.now()
+  const lastClear = staleHoldClearedAt.get(session)
+  const block = parkedChannelInput(pane)
+  // escalate: true -- by the time the stale window has elapsed the attempts
+  // budget is long spent, so the full-escalation move is the honest question.
+  const facts: StuckInputActionFacts = {
+    escalate: true,
+    rowCount: parkedInputRowCount(pane),
+    blockComplete: block != null && block.complete && block.block != null,
+    blockTruncated: block != null && !block.complete,
+    truncatedPreamble: shouldClearTruncatedPreamble(pane),
+    allowPlainReinject,
+    hasPlainText: allowPlainReinject && parkedInputText(pane) != null,
+    scheduledTaskBlock: parkedScheduledTaskInput(pane),
+    machineOrigin: parkedMachineOriginInput(pane),
+  }
+  const parkedForMs = state.firstSeenAt == null ? 0 : now - state.firstSeenAt
+  if (!shouldClearStaleHold({
+    action: decideStuckInputAction(facts),
+    isSubAgent: allowPlainReinject,
+    parkedForMs,
+    sinceLastClearMs: lastClear == null ? null : now - lastClear,
+  })) return
+
+  // Stamp BEFORE acting: if the clear throws or cannot confirm, the cooldown
+  // still holds and the next attempt waits a full window instead of pressing
+  // Ctrl-C on every 15s tick.
+  staleHoldClearedAt.set(session, now)
+  const dump = dumpParkedInput(session, pane)
+  const minutes = Math.round(parkedForMs / 60_000)
+  logger.warn(
+    { session, parkedForMs, rowCount: facts.rowCount, dump },
+    'Stuck input -- no-remedy hold past the stale window; dumped the parked text and clearing the box',
+  )
+
+  // NON-DESTRUCTIVE ATTEMPT FIRST (2026-08-13). Before Ctrl-C, try a bare
+  // Enter: the TUI buffer holds the WHOLE payload even when the box only
+  // shows its tail, and system-injected text is a single logical line, so a
+  // submit delivers the message intact instead of destroying it. Full
+  // reasoning + the measurements: staleHoldEnterSubmitted in pane-state.ts.
+  //
+  // Ordering matters: the dump above already happened, so a human draft that
+  // this Enter submits is still on disk, and the cooldown is already stamped.
+  // If the Enter does nothing (or inserts a newline), we fall through to the
+  // identical clear below.
+  //
+  // SCOPE OF THE RESIDUAL RISK, stated precisely because it is NOT nil: the
+  // justification above (system-injected text is one logical line) holds for a
+  // MACHINE payload -- and the 'hold' branch is exactly the bucket where the
+  // origin could NOT be established (machineOrigin: false). So on this branch a
+  // human's half-typed draft can be submitted rather than destroyed. That is a
+  // safe non-action turned into an action, which is why the submit branch MUST
+  // alert (below): the risk stays narrow, but it must not also be unobservable.
+  if (sendEnterToSession(session)) {
+    await delay(STALE_HOLD_ENTER_SETTLE_MS)
+    if (staleHoldEnterSubmitted(captureParkedInputView(session))) {
+      logger.warn(
+        { session, parkedForMs, dump },
+        'Stale-hold unwedge: a bare Enter SUBMITTED the parked text -- message delivered, no clear needed',
+      )
+      // ALERT ON THE CONSEQUENTIAL BRANCH TOO (#962 review). Without this the
+      // LESS consequential outcome (cleared, nothing acted on it) was loud and
+      // the MORE consequential one (an agent just received an instruction
+      // nobody pressed Enter on) was silent -- exactly backwards.
+      sendAlert(
+        `📨 A(z) ${session} bemenetében ${minutes} perce állt egy szöveg, amit sem elküldeni, sem újraküldeni nem lehetett. `
+          + `Egy Enterrel ELKÜLDTEM az agensnek, tehát mostantol abbol dolgozik. `
+          + (dump != null ? `A szöveg elmentve: ${dump}. ` : 'A szöveget nem sikerült fájlba menteni. ')
+          + 'Ha ez a TE félbehagyott vázlatod volt, nézd meg -- ezen az agon nem tudtuk igazolni a gep-eredetet.',
+      )
+      return
+    }
+    logger.warn(
+      { session },
+      'Stale-hold unwedge: the bare Enter did not submit (text still parked); falling back to the clear',
+    )
+  }
+
+  const cleared = await discardPlaceholderBuffer(session)
+  if (!cleared) {
+    logger.warn({ session }, 'Stale-hold unwedge: could not confirm the box was emptied; retrying after the cooldown')
+    return
+  }
+  logger.warn({ session, dump }, 'Stale-hold unwedge: box cleared, session accepting input again')
+  sendAlert(
+    `🧹 A(z) ${session} bemenete ${minutes} perce beragadt egy kibogozhatatlan szövegen (nem lehetett sem elküldeni, sem újraküldeni). `
+      + `Kitakarítottam, az agens újra fogad üzenetet. `
+      + (dump != null ? `A beragadt szöveg elmentve: ${dump}` : 'A szöveget nem sikerült fájlba menteni.')
+      + ' Ütemezett feladat esetén a következő futás újraküldi; ha inter-agent üzenet volt, a küldő nem kapott visszajelzést.',
+  )
+}
+
 export async function recoverStuckInputForSession(
   session: string,
   prev: StuckInputState,
@@ -346,6 +489,15 @@ export async function recoverStuckInputForSession(
   const pane = captureParkedInputView(session)
   const sig = pane != null ? stuckInputSignature(pane) : null
   const decision = decideStuckInputRecovery(sig, prev, Date.now(), thresholds)
+  // STALE HOLD (2026-08-12): the attempts budget is spent long before a wedged
+  // box is noticed, and decideStuckInputRecovery then returns recover=false on
+  // every later tick -- so without this branch the ONLY code path that can look
+  // at a no-remedy hold is the one that already gave up. Evaluate the stale
+  // clear on the not-recovering ticks; it is separately time-gated and cannot
+  // race the active escalation (which owns the recovering ticks).
+  if (!decision.recover && pane != null && sig != null) {
+    await maybeClearStaleHold(session, pane, decision.next, allowPlainReinject)
+  }
   if (decision.recover && pane != null) {
     const attempt = decision.next.attempts
     const block = parkedChannelInput(pane)
