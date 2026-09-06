@@ -143,11 +143,19 @@ SHIPPED_SETTINGS="$INSTALL_DIR/.claude/settings.json"
 
 # (1) The tracked settings file pins NO model. A hand-set model on a live
 # install still wins (covered above) -- this is about what we SHIP.
-shipped_model="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("model") or "")' "$SHIPPED_SETTINGS")"
-if [ -z "$shipped_model" ]; then
-  pass "shipped .claude/settings.json pins no model (distribution default stays live)"
+# File-existence FIRST: json.load(open(...)) on a missing file throws, $() eats
+# the stderr and yields "", and the -z check below would then PASS -- i.e. a
+# DELETED settings file would satisfy "pins no model". Assert the file is there
+# before reading it, so absence fails instead of passing silently.
+if [ ! -f "$SHIPPED_SETTINGS" ]; then
+  fail "shipped .claude/settings.json exists" "$SHIPPED_SETTINGS" "MISSING"
 else
-  fail "shipped .claude/settings.json pins no model" "(empty)" "$shipped_model"
+  shipped_model="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("model") or "")' "$SHIPPED_SETTINGS")"
+  if [ -z "$shipped_model" ]; then
+    pass "shipped .claude/settings.json pins no model (distribution default stays live)"
+  else
+    fail "shipped .claude/settings.json pins no model" "(empty)" "$shipped_model"
+  fi
 fi
 
 # (2) The resolver over the REAL shipped settings file falls through to the
@@ -178,11 +186,19 @@ fi
 # (4) The template must not resurrect a second model source: no installer ships
 # it as .claude/settings.json, so a model field in it is dead code that a future
 # test could again mistake for the live contract.
-template_model="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("model") or "")' "$INSTALL_DIR/templates/settings.json.template")"
-if [ -z "$template_model" ]; then
-  pass "settings template pins no model (single source: config-registry)"
+# Same fail-open as (1): a missing template makes json.load throw, $() yields "",
+# and -z would PASS -- a deleted template would "satisfy" the no-model contract.
+# Assert existence first (Marveen's find, 2026-09-06).
+_tmpl="$INSTALL_DIR/templates/settings.json.template"
+if [ ! -f "$_tmpl" ]; then
+  fail "settings.json.template exists" "$_tmpl" "MISSING"
 else
-  fail "settings template pins no model" "(empty)" "$template_model"
+  template_model="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("model") or "")' "$_tmpl")"
+  if [ -z "$template_model" ]; then
+    pass "settings template pins no model (single source: config-registry)"
+  else
+    fail "settings template pins no model" "(empty)" "$template_model"
+  fi
 fi
 
 echo
