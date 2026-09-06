@@ -5,8 +5,8 @@
 # where each file belongs (see docs/MIGRATION.md):
 #
 #   repo/   -> extract under the project root (this repo)
-#     store/claudeclaw.db (+ -shm/-wal; WAL-checkpointed before copy)
-#     store/.dashboard-token   (dashboard bearer)
+#     store/**                 (DB WAL-checkpointed first; minus models,
+#                               virtualenvs, browser profile and logs)
 #     .env                     (project root secrets)
 #     scheduled-tasks.json     (legacy, if present)
 #     assets/meetings/**       (meeting transcripts/memos)
@@ -54,7 +54,8 @@ REPOLIST="$(mktemp -t claudeclaw-repo.XXXXXX)"
 HOMELIST="$(mktemp -t claudeclaw-home.XXXXXX)"
 MANIFEST="$(mktemp -t claudeclaw-manifest.XXXXXX)"
 STAGE="$(mktemp -d -t claudeclaw-stage.XXXXXX)"
-trap 'rm -f "${REPOLIST}" "${HOMELIST}" "${MANIFEST}"; rm -rf "${STAGE}"' EXIT
+BUNDLE=""
+trap 'rm -f "${REPOLIST}" "${HOMELIST}" "${MANIFEST}"; [[ -n "${BUNDLE}" ]] && rm -f "${BUNDLE}"; rm -rf "${STAGE}"' EXIT
 
 # add_if <listfile> <base> <relpath>  -- append relpath when <base>/<relpath> exists.
 add_if() {
@@ -63,11 +64,30 @@ add_if() {
 }
 
 # repo/ group (relative to REPO_ROOT)
-add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db
-add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db-shm
-add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db-wal
-add_if "${REPOLIST}" "${REPO_ROOT}" store/.dashboard-token
-add_if "${REPOLIST}" "${REPO_ROOT}" store/config-overrides.json
+# store/ -- everything EXCEPT the bulky, regenerable and transient parts.
+# Until 2026-09-04 this was a five-name whitelist (the DB, its -shm/-wal, the
+# dashboard token, config-overrides.json) and every OTHER file in store/ sat
+# outside the archive without ever saying so: the credential vault, the
+# verified-recipients ledger that gates every outgoing letter, the egress
+# allowlist, the autonomy levels, the per-service API tokens, and hand-made
+# data that exists nowhere else (the mail-partner categorisation, the SEO
+# baselines, the webshop change log). A whitelist is silent about every file
+# added after it was written, so the rule is inverted here: take store/ and
+# name only what must stay OUT.
+#   whisper, health, cowork, venv-*, dhl-chrome-profile, fedex-labels,
+#   fedex-vam, archery-basis  -- models, exports, virtualenvs, a browser
+#     profile and generated PDFs: 3.2 GB, all re-downloadable or reproducible
+#   *.log, *.out, *.pid       -- runtime noise, worthless in a restore
+# What remains is ~4 MB next to the DB, so the archive stays small.
+STORE_SKIP=" whisper health cowork venv-garmin venv-pdf dhl-chrome-profile fedex-labels fedex-vam archery-basis "
+if [[ -d store ]]; then
+  while IFS= read -r _entry; do
+    _name="$(basename "${_entry}")"
+    case "${STORE_SKIP}" in *" ${_name} "*) continue ;; esac
+    case "${_name}" in *.log|*.out|*.pid) continue ;; esac
+    echo "store/${_name}" >> "${REPOLIST}"
+  done < <(find store -mindepth 1 -maxdepth 1)
+fi
 add_if "${REPOLIST}" "${REPO_ROOT}" .env
 add_if "${REPOLIST}" "${REPO_ROOT}" scheduled-tasks.json
 add_if "${REPOLIST}" "${REPO_ROOT}" assets/meetings
@@ -82,6 +102,15 @@ fi
 # home/ group (relative to $HOME)
 add_if "${HOMELIST}" "${HOME}" .claude/skills
 add_if "${HOMELIST}" "${HOME}" .claude/scheduled-tasks
+# The file-based auto-memory. Until 2026-09-04 this was NOT in the archive, and
+# a restore test that day proved what that costs: 490 markdown memories for the
+# main agent alone, none of them in the tarball. The SQLite copy is not a
+# substitute -- it holds the prose, not the frontmatter, the type or the
+# [[links]] between memories. Only the memory/ directories are taken, not the
+# whole projects/ tree, which is full of transcripts and tool-result dumps.
+if [[ -d "${HOME}/.claude/projects" ]]; then
+  ( cd "${HOME}" && find .claude/projects -maxdepth 2 -type d -name memory -print ) >> "${HOMELIST}"
+fi
 # MAIN orchestrator channel tokens + pairing state, per provider. bot.pid and
 # inbox/ are runtime/transient and intentionally excluded.
 if [[ -d "${HOME}/.claude/channels" ]]; then
@@ -108,6 +137,29 @@ if [[ -d "${HOME}/Library/LaunchAgents" ]]; then
   ( cd "${HOME}" && find Library/LaunchAgents -maxdepth 1 -name "com.${MAIN_AGENT_ID}.*.plist" -print ) >> "${HOMELIST}"
 fi
 
+# --- Local commits that live on no remote. ---------------------------------
+# This archive deliberately carries unversioned state, not the source: the
+# source is supposed to live on a git remote. On 2026-09-04 that assumption
+# broke -- nine days of work sat committed locally and pushed nowhere, so the
+# only copy was this disk, and the tarball did not hold it either. A bundle of
+# every local branch that origin does not already have closes the gap for a few
+# hundred KB (the full history is 26 MB, but the shared part is recoverable by
+# cloning origin). Restore, after cloning origin:
+#   git fetch <restored>/repo/local-commits.bundle 'refs/heads/*:refs/heads/*'
+if command -v git >/dev/null 2>&1 && [[ -d "${REPO_ROOT}/.git" ]]; then
+  BUNDLE="$(mktemp -t claudeclaw-bundle.XXXXXX)"
+  # An empty ref set makes `git bundle` refuse with "empty bundle", which is
+  # the GOOD case (everything is already pushed), not an error -- so a failure
+  # here just drops the file instead of failing the backup.
+  if git -C "${REPO_ROOT}" bundle create "${BUNDLE}" \
+       --branches --not --remotes=origin >/dev/null 2>&1; then
+    echo "backup: local-commits.bundle $(wc -c < "${BUNDLE}" | awk '{print $1}') bytes"
+  else
+    rm -f "${BUNDLE}"; BUNDLE=""
+    echo "backup: no local-only commits to bundle"
+  fi
+fi
+
 if [[ ! -s "${REPOLIST}" && ! -s "${HOMELIST}" ]]; then
   echo "backup: nothing to archive" >&2
   exit 0
@@ -121,6 +173,9 @@ fi
   echo "Restore: tar -xpzf <archive> -C <tmp>; copy repo/* -> project root, home/* -> \$HOME."
   echo "See docs/MIGRATION.md for the full runbook (TCC, launchd paths, one-bot-one-poller, venv rebuild)."
   echo "--- repo/ ---"; sed 's,^,repo/,' "${REPOLIST}" 2>/dev/null || true
+  if [[ -n "${BUNDLE}" ]]; then
+    echo "repo/local-commits.bundle   (git bundle: local branches absent from origin)"
+  fi
   echo "--- home/ ---"; sed 's,^,home/,' "${HOMELIST}" 2>/dev/null || true
 } > "${MANIFEST}"
 
@@ -147,6 +202,12 @@ stage_group() {  # stage_group <listfile> <base> <group>
 
 stage_group "${REPOLIST}" "${REPO_ROOT}" repo
 stage_group "${HOMELIST}" "${HOME}" home
+
+if [[ -n "${BUNDLE}" ]]; then
+  mkdir -p "${STAGE}/repo"
+  cp -p "${BUNDLE}" "${STAGE}/repo/local-commits.bundle"
+  chmod 600 "${STAGE}/repo/local-commits.bundle"
+fi
 
 # Archive only the top-level entries that exist (a group dir is absent when
 # its list was empty), so tar never errors on a missing entry and the names
