@@ -75,48 +75,54 @@ _SHELL_SUBST = re.compile(r"\$\(|`|\$\{?\w")
 
 
 def collect_bash_recipients(cmd: str):
-    """Return (to, cc, unreadable_reason); to/cc are lists of literal values."""
-    to, cc = [], []
-    for m in re.finditer(r"--(to|cc)[= ]+(\"([^\"]*)\"|'([^']*)'|(\S+))", cmd):
+    """Return (to, cc, bcc, unreadable_reason); recipient lists hold literal
+    values. bcc is part of the envelope since EMAILBCCHORGONY903: an anchor
+    that ignores it lets an approved letter be re-sent WITH an added --bcc,
+    delivering to a recipient nobody approved."""
+    to, cc, bcc = [], [], []
+    buckets = {"to": to, "cc": cc, "bcc": bcc}
+    for m in re.finditer(r"--(to|cc|bcc)[= ]+(\"([^\"]*)\"|'([^']*)'|(\S+))", cmd):
         val = m.group(3) or m.group(4) or m.group(5) or ""
         if _SHELL_SUBST.search(val):
-            return (to, cc,
+            return (to, cc, bcc,
                     f"a --{m.group(1)} shell-behelyettesitest tartalmaz, amit a hook "
                     f"nem old fel ({val[:60]}...) -- a cimzett futasidoben dol el")
-        (to if m.group(1) == "to" else cc).append(val)
-    return (to, cc, None)
+        buckets[m.group(1)].append(val)
+    return (to, cc, bcc, None)
 
 
 def collect_mcp_recipients(tool_input: dict):
-    """Return (to, cc, unreadable_reason). Values are kept RAW (no splitting,
-    no lowercasing): the hash anchor needs exact bytes, not address semantics."""
+    """Return (to, cc, bcc, unreadable_reason). Values are kept RAW (no
+    splitting, no lowercasing): the hash anchor needs exact bytes, not address
+    semantics. bcc: see collect_bash_recipients (EMAILBCCHORGONY903)."""
     def norm(v):
         if v is None or v == "":
             return []
         if isinstance(v, (list, tuple)):
             return [str(x) for x in v]
         return [str(v)]
-    return (norm(tool_input.get("to")), norm(tool_input.get("cc")), None)
+    return (norm(tool_input.get("to")), norm(tool_input.get("cc")),
+            norm(tool_input.get("bcc")), None)
 
 
 def collect_email_envelope(tool_name: str, tool_input: dict):
-    """PR2 entry point: one dict for the four-field hash anchor, built from the
+    """PR2 entry point: one dict for the recipient+content hash anchor (to/cc/bcc/text), built from the
     SAME collectors the copy gate runs (no second extraction implementation).
-    Returns {"to", "cc", "text", "unreadable_reason"}; text is the combined
+    Returns {"to", "cc", "bcc", "text", "unreadable_reason"}; text is the combined
     subject+body exactly as the copy gate audits it. The CALLER decides policy
     (e.g. an empty recipient list on a send is itself grounds to deny)."""
     if re.search(r"send_email", tool_name or "", re.I):
         ti = tool_input if isinstance(tool_input, dict) else {}
         text = collect_mcp_body(ti)
-        to, cc, reason = collect_mcp_recipients(ti)
+        to, cc, bcc, reason = collect_mcp_recipients(ti)
     elif tool_name == "Bash":
         cmd = str((tool_input or {}).get("command") or "") if isinstance(tool_input, dict) else ""
         text, reason = collect_bash_body(cmd)
         if not reason:
-            to, cc, reason = collect_bash_recipients(cmd)
+            to, cc, bcc, reason = collect_bash_recipients(cmd)
         else:
-            to, cc = [], []
+            to, cc, bcc = [], [], []
     else:
-        return {"to": [], "cc": [], "text": "",
+        return {"to": [], "cc": [], "bcc": [], "text": "",
                 "unreadable_reason": f"nem email-kuldo tool ({tool_name!r})"}
-    return {"to": to, "cc": cc, "text": text, "unreadable_reason": reason}
+    return {"to": to, "cc": cc, "bcc": bcc, "text": text, "unreadable_reason": reason}

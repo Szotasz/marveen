@@ -289,6 +289,9 @@ window._i18n.hu = {
 
   // --- Agents ---
   'agents.page_title':           'Csapat',
+  'agents.view.cards':           'Kártyák',
+  'agents.view.activity':        'Aktivitás',
+  'agents.view.org_chart':       'Org chart',
   'agents.page_subtitle':        'AI csapattagok kezelése',
   'agents.detail.select_avatar':   'Válassz új avatart',
   'agents.detail.modal_title':      'Ügynök részletek',
@@ -466,15 +469,10 @@ window._i18n.hu = {
   'agents.btn.reconnect':          'Újracsatlakozás...',
   'agents.btn.running':            'Futtatás...',
   // --- Activity ---
-  'activity.page_title':         'Aktivitás',
-  'activity.page_subtitle':      'Mit csinál épp minden ügynök: élő nézet, 3 mp-enként frissül',
+  'agents.card.no_output':       'nincs friss kimenet',
+  'agents.card.not_running':     'a session nem fut',
 
-  'activity.updated':            'Frissítve: {time}',
-  'activity.error_load':         'Nem sikerült lekérni az aktivitást',
-  'activity.empty':              'Nincs ügynök.',
-  'activity.badge.main':         'fő',
   'activity.tooltip.mode':       'Jogosultsági mód: {mode}. Ebben a módban az ágens megáll és jóváhagyásra vár, mielőtt eszközt hívna -- ha senki nem figyeli, órákig állhat úgy, hogy közben tétlennek látszik.',
-  'activity.loading':            'Betöltés…',
   'activity.state.working':      'dolgozik',
   'activity.state.idle':         'várakozik',
   'activity.state.unknown':      'ismeretlen',
@@ -926,14 +924,14 @@ window._i18n.hu = {
   'team.role.main':              'főügynök',
   'team.role.leader':            'csapatvezető',
   'team.role.member':            'beosztott',
-  'team.running':                '● Fut',
-  'team.stopped':                '○ Leállva',
+  'team.running':                'Fut',
+  'team.stopped':                'Leállva',
   'team.empty':                  'Nincs sub-agent létrehozva.',
   'team.reports_to_empty':       '(főügynök)',
   'team.loading':                'Betöltés...',
   'team.error':                  'Hiba: {msg}',
   'team.btn.refresh':            'Frissítés',
-  'team.hint':                   'Húzz egy ügynököt egy másik alá, hogy annak beosztottja legyen. A szerep és a finomabb beállítások az ügynök részletek > Csapat fülén érhetők el.',
+  'team.hint':                   'A szerep és a beosztott/vezető kapcsolatok az ügynök részletek > Csapat fülén szerkeszthetők. Egérrel is átrendezheted: fogd meg az ügynököt és húzd rá arra, akinek ezután jelentenie kell.',
   'team.drop.saved':             '{child} mostantól {parent} beosztottja',
   'team.drop.cycle':             'Egy vezetőt nem tehetsz a saját beosztottja alá.',
   'team.drop.error':             'A kapcsolat mentése nem sikerült.',
@@ -1318,7 +1316,23 @@ window._i18n.hu = {
   'agents.toast.restart_state_error': 'Az újraindítás állapotát nem tudtam visszaolvasni, ellenőrizd a sessiont',
   'agents.toast.idle_flush_saved': 'Tétlen-ürítés beállítás mentve',
   'agents.toast.auto_restart_saved': 'Auto-restart beállítás mentve',
+  'agents.toast.ctx_guard_saved':   'Kontextus-guard beállítás mentve',
   'agents.toast.auth_mode_saved':'Hitelesítési mód mentve (újraindítás szükséges)',
+
+  // --- Context guard settings ---
+  'agents.settings.ctx_guard_label':       'Kontextus-limit alapú újraindítás',
+  'agents.settings.ctx_guard_sat_net':     'Saturation net: mindig aktív, 100%-os kontextusnál automatikusan újraindul (nem kapcsolható ki)',
+  'agents.settings.ctx_guard_enabled':     'Proaktív limit-figyelő (küszöb alapú handoff)',
+  'agents.settings.ctx_guard_limit_tokens':'Token-limit',
+  'agents.settings.ctx_guard_act_pct':     'Handoff küszöb (%)',
+  'agents.settings.ctx_guard_hard_pct':    'Kényszer-újraindítás (%)',
+  'agents.settings.ctx_guard_cooldown':    'Hűtési idő (perc)',
+  'agents.settings.ctx_guard_advanced':    'Haladó beállítások',
+  'agents.settings.ctx_guard_timeout':     'Handoff timeout (perc)',
+  'agents.settings.ctx_guard_timeout_hint':'Ha az ágens nem ír HANDOFF.md-t a timeout-on belül, kényszer-újraindítás következik.',
+  'agents.settings.ctx_guard_pct_hint':    'A kényszer-küszöb nem lehet kisebb a handoff-küszöbnél.',
+  'agents.settings.ctx_guard_status_prefix':'Állapot:',
+  'agents.settings.ctx_guard_status_ctx':  'Kontextus:',
 
   // --- Agent status/labels ---
   'agents.channel.connected':    'Csatlakozva',
@@ -1627,7 +1641,6 @@ window._i18n.hu = {
   'kanban.gantt.nav_next':          'Következő',
 
   // --- Activity tooltip ---
-  'activity.tooltip.terminal':   'Terminal megnyitása',
 
   // --- Connectors tooltips ---
   'connectors.tooltip.installed_mcp': 'Bekötve a .mcp.json-ban (a Connectors listán kezelhető)',
@@ -1774,5 +1787,34 @@ window._i18n.hu = {
   'auth.bridge.repaired':          'Eszköz újrapárosítva (a korábbi kulcsa visszavonva).',
   'auth.bridge.bundle_hint':       'Másold ki most, és illeszd be a Bridge-be -- a csomag többé nem jeleníthető meg. Cél-cím: {host}.',
   'auth.bridge.err_empty':         'A kulcs-sor és az eszköznév is kötelező.',
+  // Pairing endpoint failures. The server sends a stable code beside its
+  // English sentence; the UI translates on the code and falls back to that
+  // sentence when a code has no key here.
+  'auth.bridge.err.host_key_missing':            'Ezen a gépen nem érhető el az SSH kulcs, ezért a párosítás nem fejezhető be. Kapcsold be a távoli bejelentkezést (macOS: Rendszerbeállítások > Általános > Megosztás > Távoli bejelentkezés), majd próbáld újra.',
+  'auth.bridge.err.line_required':               'A kulcs-sor kötelező. Illeszd be a Bridge alkalmazásban megjelenő sort.',
+  'auth.bridge.err.line_empty':                  'A kulcs-sor üres. Illeszd be a Bridge alkalmazásban megjelenő sort.',
+  'auth.bridge.err.line_multiline':              'A kulcs-sornak egyetlen sorból kell állnia. Illeszd be újra, sortörés nélkül.',
+  'auth.bridge.err.line_fields':                 'A kulcs-sor pontosan három részből áll: típus, kulcs, megjegyzés. Másold ki újra a teljes sort a Bridge alkalmazásból, és ne írj hozzá semmit.',
+  'auth.bridge.err.key_type':                    'A kulcs típusa pontosan {expected} kell legyen. Másold ki újra a teljes sort a Bridge alkalmazásból.',
+  'auth.bridge.err.key_not_base64':              'A beillesztett kulcs-sor sérült (a kulcs törzse nem érvényes base64). Másold ki újra a teljes sort a Bridge alkalmazásból.',
+  'auth.bridge.err.blob_too_short':              'A beillesztett kulcs-sor csonka. Másold ki újra a teljes sort a Bridge alkalmazásból.',
+  'auth.bridge.err.blob_type_field':             'A beillesztett kulcs-sor sérült (hibás típusmező a kulcsban). Másold ki újra a teljes sort a Bridge alkalmazásból.',
+  'auth.bridge.err.blob_type_mismatch':          'A kulcs típusa {expected} kellene legyen, de a beillesztett sorban \"{found}\" áll. Másold ki újra a teljes sort a Bridge alkalmazásból.',
+  'auth.bridge.err.blob_truncated':              'A beillesztett kulcs-sor félbeszakadt. Másold ki újra a teljes sort a Bridge alkalmazásból.',
+  'auth.bridge.err.key_length':                  'A kulcs hossza nem megfelelő (az ed25519 kulcs pontosan 32 bájt). Másold ki újra a teljes sort a Bridge alkalmazásból.',
+  'auth.bridge.err.blob_trailing':               'A beillesztett kulcs-sor sérült (fölösleges vagy hiányzó bájtok). Másold ki újra a teljes sort a Bridge alkalmazásból.',
+  'auth.bridge.err.comment_prefix':              'A sor végi megjegyzésnek \"{prefix}\" előtaggal kell kezdődnie. Másold ki újra a teljes sort a Bridge alkalmazásból.',
+  'auth.bridge.err.comment_uuid':                'A sor végi megjegyzés alakja marveen-remote:<uuid> kell legyen. Másold ki újra a teljes sort a Bridge alkalmazásból.',
+  'auth.bridge.err.host_empty':                  'A cél-cím üres. Hagyd üresen, hogy a gép saját címe kerüljön bele, vagy add meg az IP-címet.',
+  'auth.bridge.err.host_too_long':               'A cél-cím túl hosszú ({length} karakter, legfeljebb {max} lehet).',
+  'auth.bridge.err.host_email':                  '\"{seen}\" email címnek tűnik. A cél-cím a gép IP-címe vagy gépneve; Tailscale esetén a 100-zal kezdődő IP-cím kell ide, nem a Tailscale-fiók email címe.',
+  'auth.bridge.err.host_url':                    '\"{seen}\" egy URL. Csak a címet add meg, http:// és útvonal nélkül.',
+  'auth.bridge.err.host_invalid':                '\"{seen}\" nem érvényes IP-cím vagy gépnév.',
+  'auth.bridge.err.forbidden_credential':        'Ez a bejelentkezés nem jogosult párosításra. Jelentkezz be a dashboardra, és onnan indítsd a párosítást.',
+  'auth.bridge.err.invalid_json':                'A kérés hibás formátumú. Töltsd újra az oldalt, és próbáld újra.',
+  'auth.bridge.err.key_line_required':           'A kulcs-sor kötelező. Illeszd be a Bridge alkalmazásban megjelenő ssh-ed25519 ... marveen-remote:... sort.',
+  'auth.bridge.err.invalid_name':                'Az eszköz neve 1-64 karakter lehet: betű, számjegy, szóköz, valamint a . _ - jelek.',
+  'auth.bridge.err.invalid_ssh_port':            'Az SSH-port 1 és 65535 közötti szám lehet.',
+  'auth.bridge.err.enroll_failed':               'A párosítás nem sikerült. Nézd meg a dashboard naplóját, és próbáld újra.',
 
 }

@@ -24,6 +24,7 @@ import {
   detectsFeedbackDraftModal,
   detectsFeedbackOptOutPrompt,
   firstRunAcceptKeys,
+  stuckInputSignature,
   type FirstRunGateKind,
 } from '../pane-state.js'
 import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation } from './agent-config.js'
@@ -471,11 +472,27 @@ function writeJsonAtomic(path: string, value: unknown, opts: { groupShared?: boo
 //   - a server removed from the shared config is left in place,
 //   - a non-object mcpServers on either side means we do not touch it at all,
 //     because we cannot merge what we do not understand.
+//
+// AND NEVER ACROSS A SCOPE COLLISION (2026-09-05, measured 12-hour outage).
+// Claude Code resolves `local` scope (.claude.json) BEFORE `project` scope
+// (<cwd>/.mcp.json). Copying a shared entry whose name the agent already defines
+// in its own .mcp.json therefore does not fill a gap -- it SHADOWS the agent's
+// definition with the router's, credentials included. The failure is silent and
+// total: our shared `cortex` entry carried a token that is valid for the router
+// and unknown to the server, so every agent session that started after the
+// write-back answered the handshake with 401 and registered ZERO cortex tools,
+// while its own .mcp.json looked perfectly correct and the backend was healthy.
+// A restart never helped -- startup is what writes the shadow back. Two agents
+// lost the toolset for ~12 hours; the two whose sessions predated the write-back
+// kept working, which is what made it read as flaky client-side registration
+// instead of a config collision.
+// A name the agent already owns at project scope is NOT a gap. Skip it.
 // Returns true if the caller should persist `cur`.
 function reconcileMcpServers(
   cur: Record<string, unknown>,
   sharedDot: string,
   name: string,
+  cwd: string,
 ): boolean {
   if (!existsSync(sharedDot)) return false
   let shared: Record<string, unknown>
@@ -488,16 +505,63 @@ function reconcileMcpServers(
     return false
   }
   const own = isPlainObject(cur.mcpServers) ? cur.mcpServers : {}
+  const projectScoped = projectScopedServerNames(cwd)
   const added: string[] = []
+  const shadowed: string[] = []
   for (const [key, def] of Object.entries(shared.mcpServers)) {
     if (key in own) continue
+    if (projectScoped.has(key)) { shadowed.push(key); continue }
     own[key] = def
     added.push(key)
+  }
+  // Log the skips even when nothing was added: a silent skip is how this class
+  // of bug stays invisible, and the name alone tells the next reader where the
+  // agent's real definition lives.
+  if (shadowed.length > 0) {
+    logger.info(
+      { name, shadowed },
+      'isolated-config: skipped shared MCP servers the agent already defines in its own .mcp.json',
+    )
   }
   if (added.length === 0) return false
   cur.mcpServers = own
   logger.info({ name, added }, 'isolated-config: added missing MCP servers from the shared config')
   return true
+}
+
+// Drop from a to-be-written config every mcpServers entry whose name the agent
+// already owns at project scope. Used on the FIRST-SEED path, where the whole
+// shared config is copied: without this the very first launch of a new agent
+// starts out shadowed, which is the same outage as the gap-fill one, just
+// earlier. Mutates `cfg` in place.
+function stripProjectScopedCollisions(cfg: Record<string, unknown>, cwd: string, name: string): void {
+  const projectScoped = projectScopedServerNames(cwd)
+  if (projectScoped.size === 0) return
+  const dropped: string[] = []
+  if (isPlainObject(cfg.mcpServers)) {
+    for (const key of Object.keys(cfg.mcpServers)) {
+      if (projectScoped.has(key)) { delete (cfg.mcpServers as Record<string, unknown>)[key]; dropped.push(key) }
+    }
+  }
+  if (dropped.length > 0) {
+    logger.info(
+      { name, dropped },
+      'isolated-config: seed dropped shared MCP servers the agent defines in its own .mcp.json',
+    )
+  }
+}
+
+// Server names the agent already gets from its own project-scope <cwd>/.mcp.json.
+// A missing or unreadable file is not an error here: it just means the agent has
+// no project-scope servers, so nothing can collide.
+function projectScopedServerNames(cwd: string): Set<string> {
+  try {
+    const parsed = JSON.parse(readFileSync(join(cwd, '.mcp.json'), 'utf-8')) as Record<string, unknown>
+    if (!isPlainObject(parsed.mcpServers)) return new Set()
+    return new Set(Object.keys(parsed.mcpServers))
+  } catch {
+    return new Set()
+  }
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -692,6 +756,11 @@ function provisionIsolatedConfigDir(
           try { seed = JSON.parse(readFileSync(sharedDot, 'utf-8')) as Record<string, unknown> } catch { /* keep minimal */ }
         }
         seed.hasCompletedOnboarding = true
+        // The seed is a FULL copy of the shared config, so it carries the same
+        // scope-collision risk as the gap-fill below: a shared entry whose name
+        // the agent owns in its own .mcp.json would arrive at local scope and
+        // shadow it, credentials included. Strip those before writing.
+        stripProjectScopedCollisions(seed, cwd, name)
         writeJsonAtomic(dotClaude, seed, { groupShared: perUser })
       } else {
         try {
@@ -701,7 +770,7 @@ function provisionIsolatedConfigDir(
             cur.hasCompletedOnboarding = true
             dirty = true
           }
-          if (reconcileMcpServers(cur, sharedDot, name)) dirty = true
+          if (reconcileMcpServers(cur, sharedDot, name, cwd)) dirty = true
           if (dirty) writeJsonAtomic(dotClaude, cur, { groupShared: perUser })
         } catch { /* unparseable -> leave for Claude Code to recreate */ }
       }
@@ -2041,18 +2110,43 @@ export async function waitForPaneIdle(
 // instead of replacing it, which is how a box accumulates tick after tick until
 // nothing can be submitted at all. Keys are sent by name (no `-l` literal flag)
 // so tmux interprets them as control sequences.
-export async function clearInputBuffer(session: string, host: string | null = null): Promise<void> {
-  try {
-    const pane = capturePane(session, host)
-    for (const key of parkedClearSequence(pane != null ? parkedInputRowCount(pane) : 0)) {
-      runTmux(host, ['send-keys', '-t', session, key], { timeout: 5000 })
+// How many times the clear is attempted before we accept that the box will not
+// empty. Each pass re-reads the row count, so a partially-cleared multi-row
+// buffer gets a correctly-sized second sequence.
+const CLEAR_INPUT_MAX_ATTEMPTS = 3
+
+export async function clearInputBuffer(session: string, host: string | null = null): Promise<boolean> {
+  for (let attempt = 1; attempt <= CLEAR_INPUT_MAX_ATTEMPTS; attempt++) {
+    try {
+      const pane = capturePane(session, host)
+      for (const key of parkedClearSequence(pane != null ? parkedInputRowCount(pane) : 0)) {
+        runTmux(host, ['send-keys', '-t', session, key], { timeout: 5000 })
+      }
+      // Settle briefly so the next send-keys lands in the freshly cleared
+      // buffer rather than racing the clear.
+      await delay(100)
+    } catch (err) {
+      logger.warn({ err, session, attempt }, 'Failed to clear pane input buffer before send')
+      return false
     }
-    // Settle briefly so the next send-keys lands in the freshly cleared
-    // buffer rather than racing the clear.
-    await delay(100)
-  } catch (err) {
-    logger.warn({ err, session }, 'Failed to clear pane input buffer before send')
+    // VERIFY (2026-09-04 incident): the clear used to be fire-and-forget. On
+    // 09-03 the clear-scheduled path fired, left a truncated fragment of the
+    // parked tick behind, and that leftover no longer matched any delivery
+    // wrapper -- so every later restart decision read machineOrigin=false and
+    // deferred. The session sat wedged 25.4h. An unverified clear is the actual
+    // root cause; the restart hard cap only bounds the damage.
+    const after = capturePane(session, host)
+    if (after == null || stuckInputSignature(after) == null) return true
+    logger.warn(
+      { session, attempt, max: CLEAR_INPUT_MAX_ATTEMPTS },
+      'Input buffer still not empty after clear -- retrying',
+    )
   }
+  logger.error(
+    { session },
+    'Input buffer could not be emptied -- a leftover fragment stays parked (escalation will have to restart the pane)',
+  )
+  return false
 }
 
 // How many Ctrl-C presses the placeholder-discard will attempt before giving

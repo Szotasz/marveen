@@ -11,9 +11,9 @@ The `email_send.level` in store/autonomy-config.json becomes a real switch:
   level 1  -> hard deny (signal-only autonomy).
   level 2  -> CHECK-BEFORE-SEND: the send is allowed only against an APPROVED,
               UNCONSUMED, IN-WINDOW approval whose content_hash equals the
-              sha256 anchor of THIS letter's four fields (to + cc + subject +
+              sha256 anchor of THIS letter's envelope (to + cc + bcc + subject +
               body). A body+subject hash alone would let an approved letter be
-              re-sent to a different recipient -- hence all four (msg 17936).
+              re-sent to a different recipient -- hence every recipient field, bcc included (msg 17936, EMAILBCCHORGONY903).
   level 3  -> allow (autonomous; the outgoing-copy-gate still audits copy).
 
 Anchor semantics (Marveen msg 17900, 5+1 conditions):
@@ -56,6 +56,57 @@ from email_extract import collect_email_envelope  # noqa: E402
 
 _SEND_TOOL = re.compile(r"send_email|manage_email", re.I)
 
+# manage_email is a MULTIPLEXER, not a send tool: the same MCP tool searches the
+# mailbox, reads a thread, writes a draft AND sends. Scoping this gate on the
+# tool NAME alone therefore denies reading the inbox whenever email_send sits at
+# level 1 -- measured on a live install 2026-09-04, where `operation=search` and
+# `operation=draft` were both refused with "a kuldes tiltott". That is not the
+# gate this is meant to be: a draft-only workflow REQUIRES reading and drafting,
+# and the level exists to stop the SEND.
+#
+# So manage_email is in scope only for the calls that actually put a letter on
+# the wire: a send operation WITHOUT an explicit draft:true. Anything else
+# passes, drafts included (MANAGEDRAFT905). Fail-closed on doubt: a missing or
+# unreadable operation counts as a send, because that is the case where we
+# cannot prove it is not one. `send_email` needs no such test -- it only sends.
+_MULTIPLEX_TOOL = re.compile(r"manage_email", re.I)
+_MANAGE_EMAIL_SEND_OPS = {"send", "reply", "reply_all", "replyall", "forward"}
+
+
+def _is_explicit_draft(tool_input: dict) -> bool:
+    """Did the call EXPLICITLY ask for a draft? Only a literal true (bool) or the
+    exact string "true" counts; everything else is treated as a send.
+
+    Deliberately the SAME strict test as the sibling gate
+    (scripts/email-send-gate.mjs: `draft === true || draft === 'true'`), so a
+    call cannot be a draft for one gate and a send for the other. Anything
+    fuzzier ("True", "yes", 1) stays a send: fail-closed."""
+    draft = tool_input.get("draft")
+    return draft is True or draft == "true"
+
+
+def manage_email_is_send(tool_input: dict) -> bool:
+    """Is this manage_email call a send? Unreadable operation -> True (closed).
+
+    MANAGEDRAFT905: the send OPERATIONS are also the only way to write a
+    THREADED draft with this MCP tool -- `{"operation":"reply","draft":true}`
+    is the exact call the sibling gate (scripts/email-send-gate.mjs) sends the
+    agent back to write, and which it lets through on `draft === true`. Keying
+    on the operation alone therefore denied the draft-only workflow itself at
+    level 1: measured on the live install 2026-09-04, a reply draft to a
+    customer thread was refused with "a kuldes tiltott", and the only way
+    around it would have been an untreaded new letter -- the very thing the
+    reply-as-new gate stops. A draft puts nothing on the wire; the level exists
+    to stop the SEND. Fail-closed stays: only an explicit draft:true passes,
+    a missing/ambiguous flag is a send.
+    """
+    op = tool_input.get("operation")
+    if not isinstance(op, str) or not op.strip():
+        return True
+    if op.strip().lower().replace("-", "_") not in _MANAGE_EMAIL_SEND_OPS:
+        return False
+    return not _is_explicit_draft(tool_input)
+
 
 def _load_is_send_invocation():
     """Import is_send_invocation from outgoing-copy-gate.py (dashed filename,
@@ -88,11 +139,25 @@ def read_email_level():
 
 
 def content_anchor(env: dict) -> str:
-    """sha256 over the four-field envelope. Canonical JSON so the same letter
-    always yields the same anchor; `text` is subject+body exactly as the copy
-    gate audits it, from the shared extractor."""
-    canon = json.dumps({"to": env["to"], "cc": env["cc"], "text": env["text"]},
-                       ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    """sha256 over the envelope: to + cc + bcc + text (subject+body exactly as
+    the copy gate audits it, from the shared extractor). Canonical JSON so the
+    same letter always yields the same anchor.
+
+    EMAILBCCHORGONY903: bcc joins the canon, but ONLY when non-empty. Two
+    reasons, both load-bearing:
+      - the gap this closes: without bcc in the hash, to=[owner], cc=[],
+        bcc=[stranger] anchored identically to the approved bcc-less letter,
+        so one approval could deliver to a recipient nobody approved;
+      - the conditional inclusion keeps every bcc-less anchor BYTE-IDENTICAL
+        to the pre-fix value, so open approvals (recorded before this change)
+        stay valid for the letters they approved. There is no ambiguity to
+        exploit: the extractor decides bcc deterministically, and any
+        non-empty bcc changes the hash -- fail-closed in the only direction
+        that matters."""
+    fields = {"to": env["to"], "cc": env["cc"], "text": env["text"]}
+    if env.get("bcc"):
+        fields["bcc"] = env["bcc"]
+    canon = json.dumps(fields, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
 
@@ -176,7 +241,10 @@ def main():
     tool_input = tool_input if isinstance(tool_input, dict) else {}
 
     if _SEND_TOOL.search(tool):
-        pass  # MCP email send: always in scope
+        # A multiplexer tool is in scope only when the call is a send; a search,
+        # a read or a draft is not what email_send levels.
+        if _MULTIPLEX_TOOL.search(tool) and not manage_email_is_send(tool_input):
+            sys.exit(0)
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
         if not _load_is_send_invocation()(cmd):
@@ -231,7 +299,7 @@ def main():
     }
     deny(prefix +
          f"email_send level 2 (CHECK-BEFORE-SEND). {reasons[verdict]}\n"
-         f"Tartalom-horgony (sha256; to+cc+targy+torzs): {anchor}\n"
+         f"Tartalom-horgony (sha256; to+cc+bcc+targy+torzs): {anchor}\n"
          f"{summarize(env)}\n"
          "Jovahagyas kerese: POST /api/approvals a sajat agent_id-ddal, "
          'category="email_send", content_hash=a fenti horgony, action_description='

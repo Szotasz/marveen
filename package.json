@@ -15,7 +15,8 @@
     "typecheck": "tsc --noEmit",
     "syntax-check": "node --check web/app.js web/sw.js",
     "smoke": "playwright test --config=playwright.config.ts",
-    "skill": "tsx scripts/skill.ts"
+    "skill": "tsx scripts/skill.ts",
+    "browser-verify": "playwright test --config=playwright.browser.config.ts"
   },
   "engines": {
     "node": ">=20 <24"
@@ -37,6 +38,6 @@
     "@types/node": "^22.10.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
-    "vitest": "^2.1.0"
+    "vitest": "^4.1.10"
   }
 }

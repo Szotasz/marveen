@@ -2,7 +2,7 @@ import { statSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
-import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS } from './channel-monitor.js'
+import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS, markAgentRestartPending } from './channel-monitor.js'
 import { shouldDeferForRecentRespawn } from './stuck-tool-call-watcher.js'
 import { listAgentNames, listAllAgentNames, agentDir, readAgentModel, readAgentRemoteHost } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
@@ -260,6 +260,11 @@ async function performRestart(name: string): Promise<void> {
     const res = hardRestartMarveenChannels()
     if (!res.ok) throw new Error(res.error ?? 'main channels hard restart failed')
   } else {
+    // DANICTXHUROK906: claim the reconcile grace window BEFORE the stop, so
+    // reconcileDesiredAgents() does not see the agent "down" mid-restart and
+    // re-launch it non-fresh (--continue), which would defeat the whole point
+    // of a context-guard restart -- dropping the saturated context.
+    markAgentRestartPending(name)
     await restartAgentProcess(name, { fresh: true })
   }
 }

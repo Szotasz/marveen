@@ -16,6 +16,16 @@
 
 set -u
 
+# LINUX ONLY. stop.sh/start.sh branch on `uname -s`, and on Darwin they take the
+# launchd path, where a faked systemctl on PATH is never consulted -- all nine
+# systemd assertions then fail for a reason that has nothing to do with the code
+# under test. A test that CANNOT pass where it is run is worse than no test: it
+# is permanently red, so a real failure in it stops being news. Skip loudly.
+if [ "$(uname -s)" != "Linux" ]; then
+  echo "SKIP: stop-start-system-unit -- systemd branch, ez a gep $(uname -s)."
+  exit 0
+fi
+
 PASS=0; FAIL=0
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT

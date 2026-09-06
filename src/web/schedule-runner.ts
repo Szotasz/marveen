@@ -37,7 +37,8 @@ import {
   SCHEDULED_TASKS_DIR,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
-import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir, readAgentClaudeConfigDir } from './agent-config.js'
+import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir } from './agent-config.js'
+import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { readTranscriptMtimeFromProjectDir } from './active-model.js'
 import { channelStateDir, getProvider, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import {
@@ -96,7 +97,18 @@ const RESUBMIT_LANE_BUSY_MAX_SKIPS = 20
 // Maximum tracking age: entries that age past TASK_FIRE_MAX_TRACK_MS are
 // evicted regardless, so a permanently stuck agent does not accumulate entries.
 export const TASK_FIRE_GRACE_MS = 30_000
-export const TASK_FIRE_TIMEOUT_MS = 300_000
+// 2026-09-01: raised from 5 minutes to 45. Five minutes measures "the session
+// is still busy", not "the task is wedged", and those two are the same thing
+// only when the agent does nothing else. In practice the owner talks to the
+// agent mid-task, so a heartbeat that fired at 12:00 is still the in-flight
+// entry at 12:40 while the session is busy with a conversation -- and every one
+// of those produced a "possible hang" Telegram alert. The owner got four or
+// five of them in a single morning (2026-09-01) and asked for it to stop,
+// which is the correct reading: an alert that fires on normal work is noise,
+// and noise is what makes a real hang invisible. 45 minutes still catches a
+// genuinely wedged tool call well inside the 6-hour tracking window, and a
+// task that legitimately needs longer sets stuckAfterMinutes.
+export const TASK_FIRE_TIMEOUT_MS = 2_700_000
 const TASK_FIRE_MAX_TRACK_MS = 6 * 60 * 60_000
 
 export interface TaskInflightEntry {
@@ -133,9 +145,8 @@ export interface TaskInflightEntry {
 }
 
 // How long a fired task may stay busy before the watchdog calls it stuck.
-// TASK_FIRE_TIMEOUT_MS is the right default for the common case -- a
-// short-cadence heartbeat still running after 5 minutes is a real signal --
-// but it is wrong for a task whose whole job is to think for a while. The
+// TASK_FIRE_TIMEOUT_MS is the default; it is wrong for a task whose whole job
+// is to think for a while, and for one the owner interrupts with a conversation. The
 // nightly analysis run tripped it at 02:12 on 2026-07-30 while working
 // normally and finished fine six minutes later: a false "possible hang" alert
 // on a task doing exactly what it was written to do. Per-task override:
@@ -904,7 +915,19 @@ async function attemptFireTask(
       ownerAlerted: false,
       sawTurn: false,
       workingDir: agentName === MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(agentName),
-      configDir: agentName === MAIN_AGENT_ID ? undefined : (readAgentClaudeConfigDir(agentName) ?? undefined),
+      // resolveAgentConfigDirForRead, not readAgentClaudeConfigDir -- same
+      // reason the context-guard and restart-gate runners use it. Since the
+      // fleet auth rule (2026-07-01) an agent's config dir is AUTO-PROVISIONED
+      // at <agentDir>/.claude-config and there is no `claudeConfigDir` field to
+      // read, so readAgentClaudeConfigDir returns null. That null made the
+      // sawTurn transcript probe look under ~/.claude/projects/<encoded>, a
+      // path that does not exist for such an agent -- so the probe returned
+      // null on every sweep, sawTurn stayed false, and any task that finished
+      // between two sweeps (i.e. any FAST task) was declared 'lost' and
+      // re-fired. Measured 2026-09-04 on cortex-voip-insight: 2069 false-lost
+      // re-injections in 24h from a */5 task (288 expected), a 7.5x
+      // amplification running unnoticed since 2026-08-27.
+      configDir: agentName === MAIN_AGENT_ID ? undefined : (resolveAgentConfigDirForRead(agentName) ?? undefined),
       timeoutMs: resolveStuckTimeoutMs(task),
     })
 

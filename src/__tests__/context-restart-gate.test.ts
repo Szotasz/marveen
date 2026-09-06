@@ -8,6 +8,7 @@ import {
   isNonWorkHelperProcess,
   parseEtimeSeconds,
   commBasename,
+  openQuestionBlocks,
   TASKSTATE_FRESH_WINDOW_MS,
 } from '../web/context-restart-gate-runner.js'
 import {
@@ -765,3 +766,35 @@ describe('gateWakePrompt', () => {
     expect(gateWakePrompt()).toContain('ne talalj ki magadnak feladatot')
   })
 })
+
+// LEDGERACK905: an unanswered inbound holds the gate only until the drain has
+// actually put it in front of the agent. Laszlo's bare "ok" on 2026-09-04
+// 22:24 held it for eight hours at 630% of the threshold, and the only escape
+// would have been a midnight reply nobody needed. His call: block until
+// surfaced, not on a timer.
+describe('openQuestionBlocks', () => {
+  it('does not block when nothing is open', () => {
+    expect(openQuestionBlocks(null, null)).toBe(false)
+    expect(openQuestionBlocks(null, '8246')).toBe(false)
+  })
+
+  it('blocks an open question the drain has not surfaced yet', () => {
+    expect(openQuestionBlocks('8246', null)).toBe(true)
+  })
+
+  it('stops blocking once the drain surfaced THAT message', () => {
+    expect(openQuestionBlocks('8246', '8246')).toBe(false)
+  })
+
+  it('still blocks when the drain last surfaced a DIFFERENT message', () => {
+    expect(openQuestionBlocks('8250', '8246')).toBe(true)
+  })
+
+  it('holds when the open question carries no identifiable message id', () => {
+    // Unknown id cannot be matched against a marker, and "unknown" must read
+    // as "the agent has not seen it".
+    expect(openQuestionBlocks('', '8246')).toBe(true)
+    expect(openQuestionBlocks('', null)).toBe(true)
+  })
+})
+

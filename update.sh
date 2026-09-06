@@ -658,7 +658,12 @@ fi
 if git diff "$OLD_VERSION" "$NEW_VERSION" --name-only | grep -qE "^package(-lock)?\.json$"; then
   echo -e "  Fuggosegek frissitese (lock-strict)..."
   RESULT_PHASE="npm-ci"
-  if ! retry 3 3 npm ci --silent; then
+  # --include=dev is load-bearing (AUTOUPDNODEENV905): with NODE_ENV=production
+  # in the caller's environment npm defaults to omit=dev, which prunes the
+  # TypeScript compiler and makes the build below fail -> rollback -> the same
+  # failure next run, forever (the rollback also reverts the freshly pulled
+  # update.sh, so a fix can never arrive through this path on its own).
+  if ! retry 3 3 npm ci --silent --include=dev; then
     echo -e "  HIBA: npm ci sikertelen. Valoszinuleg a package-lock.json nincs szinkronban."
     echo -e "  Reszletekert futtasd: npm ci"
     exit 1
@@ -697,6 +702,11 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
     echo -e "${RED}HIBA:${NC} build sikertelen. Visszaallitas a korabbi verziora (${OLD_VERSION})..."
     if [ -n "$OLD_VERSION_FULL" ]; then
       git reset --hard "$OLD_VERSION_FULL" >/dev/null 2>&1 || true
+      # Restore the dependency tree of the OLD version before rebuilding it: the
+      # failed `npm ci` above may have pruned dev deps (NODE_ENV=production),
+      # and without the compiler this rollback build would also fail silently,
+      # leaving git=OLD + node_modules=pruned (AUTOUPDNODEENV905 finding A).
+      npm ci --silent --include=dev 2>/dev/null || true
       npm rebuild better-sqlite3 --build-from-source --silent 2>/dev/null || true
       npm run build --silent 2>/dev/null || true
       [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
@@ -1087,7 +1097,10 @@ if _health; then _finish success restart 0 ""; fi
 # restart that, so the box ends on a WORKING old version.
 if [ -n "$OLD_FULL" ]; then
   git reset --hard "$OLD_FULL" >/dev/null 2>&1 || true
-  npm ci --silent 2>/dev/null || true
+  # --include=dev: same reason as the main npm ci (AUTOUPDNODEENV905) -- under
+  # NODE_ENV=production a plain ci prunes the compiler and the rebuild below
+  # dies silently, re-creating the pruned tree this rollback tries to escape.
+  npm ci --silent --include=dev 2>/dev/null || true
   npm rebuild better-sqlite3 --build-from-source --silent 2>/dev/null || true
   npm run build --silent 2>/dev/null || true
   [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_FULL" > "$BUILT"

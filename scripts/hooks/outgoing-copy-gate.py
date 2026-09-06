@@ -439,54 +439,117 @@ _LOCAL_RULES = os.environ.get(
                  "store", "outgoing-copy-gate-rules.json"),
 )
 
+_GATE_LOG = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
 
-# CLCOPYGATEHIANY902 (owner decision, TG 14442): a MISSING rules file is not
-# the same thing as a BROKEN one, and until now both produced the same
-# email-blocking outcome. The file is deliberately NOT shipped (it names a
-# private person), so on every fresh customer install it is absent -- and the
-# old fail-closed email path made a paying customer's agent unable to send
-# mail at all (reported by Nova, 2026-09-02). New policy:
-#   "missing"/"empty" -> the name check is OFF: fail-OPEN with a LOUD,
-#                        user-visible warning on every send (the customer
-#                        must know the check is not protecting them);
-#   "invalid"         -> the file EXISTS but cannot be used (bad JSON, wrong
-#                        schema, uncompilable regex): the operator tried to
-#                        configure it and something is wrong -- the email
-#                        path stays fail-CLOSED until it is fixed;
-#   "ok"              -> patterns loaded, the check enforces as before.
+
+def _gate_log(message: str) -> None:
+    """Append one TIMESTAMPED line to the gate log.
+
+    The log used to carry bare text. Measured 2026-09-05: 8005 lines, four
+    distinct messages, and one of them recorded a FAIL-OPEN pass-through on the
+    Telegram branch -- a message that went out unaudited -- with no way to tell
+    which day it happened on, let alone which message it was. A gate log whose
+    entries cannot be placed in time cannot be used to check anything. Local
+    time with the offset, never UTC.
+    """
+    try:
+        from datetime import datetime
+        stamp = datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
+        with open(_GATE_LOG, "a", encoding="utf-8") as fh:
+            fh.write(f"{stamp} {message.rstrip()}\n")
+    except OSError:
+        pass
+
+
+# CLCOPYGATEHIANY902 (owner decision, TG 14442) MERGED WITH GATEPERSIST816/3
+# (PDB install, 2026-08-19). Two independent fixes to the same question, from
+# opposite directions, so the merged policy has FIVE states:
+#
+#   "ok"         -> patterns loaded, the name check enforces as before.
+#   "sanctioned" -> the file EXISTS and explicitly says "no_name_rule": true.
+#                   Reported by the PDB install, 2026-08-19: their rules file
+#                   was lost with no backup, and the owner decided not to
+#                   reconstruct it. That is a taken decision, not a loss, and
+#                   an install that has made it should not be nagged about it
+#                   on every send. So this state is silent
+#                   EVERYWHERE: no log line, no systemMessage, no block. Note
+#                   the early return BELOW, which deliberately skips the
+#                   logging tail. An ordinary empty list WITHOUT the flag does
+#                   NOT reach this state, so a file emptied by accident can
+#                   never masquerade as the sanctioned one.
+#   "empty"      -> no patterns and no flag: the check is OFF.
+#   "missing"    -> file absent, which is EVERY fresh customer install, since
+#                   the file names a private person and is deliberately not
+#                   shipped. Both of these fail-OPEN with a LOUD, user-visible
+#                   warning on every send: the old fail-closed email path left
+#                   a paying customer unable to send mail at all (Nova,
+#                   2026-09-02).
+#   "invalid"    -> the file EXISTS but cannot be used (bad JSON, wrong schema,
+#                   uncompilable regex). Somebody TRIED to configure it and got
+#                   it wrong: the email path stays fail-CLOSED until repaired.
+#
+# WHY THE MERGE IS NOT A CHOICE BETWEEN THE TWO: without the sanctioned state,
+# a live rules file carrying the flag with an empty pattern list reads as
+# "empty", and a loud warning gets stamped on EVERY outgoing letter, customer
+# mail included. Without the missing/empty/invalid split, a fresh install with
+# no file at all cannot send mail at all. Each half is wrong exactly where the
+# other one is right, which is why both are here.
+RULES_OK = "ok"
+RULES_SANCTIONED = "sanctioned"
+RULES_EMPTY = "empty"
+RULES_MISSING = "missing"
+RULES_INVALID = "invalid"
+
+# The states where the name check does not run AND that is not a taken
+# decision: the ones that must stay loud.
+RULES_LOUD = (RULES_MISSING, RULES_EMPTY, RULES_INVALID)
+
+
 def load_bad_name():
-    """Return (compiled_regex_or_None, state) -- state in ok/missing/empty/invalid."""
+    """Return (compiled_regex_or_None, state) -- see the RULES_* names above."""
     try:
         with open(_LOCAL_RULES, encoding="utf-8") as fh:
             data = json.load(fh)
         if not isinstance(data, dict):
-            state = "invalid"
+            state = RULES_INVALID
         else:
             pats = data.get("bad_name_patterns") or []
             if not isinstance(pats, list) or not all(isinstance(x, str) for x in pats):
-                state = "invalid"
-            elif not pats:
-                state = "empty"
+                state = RULES_INVALID
+            elif pats:
+                return (re.compile("|".join(pats)), RULES_OK)
+            elif data.get("no_name_rule") is True or data.get("name_check_disabled") is True:
+                # Returns HERE, before the logging tail, on purpose: a taken
+                # decision must not write a "the protection is gone" line into
+                # the ledger on every single run. An alarm that can never be
+                # answered is the one people learn to ignore -- it was drowning
+                # the real signals in the same log (571 lines here by
+                # 2026-09-04, CLCOPYGATEDONTES904).
+                # TWO spellings of the SAME decision are accepted, because two
+                # installs each documented one before the branches met:
+                #   {"no_name_rule": true, "no_name_rule_reason": "why"}
+                #     (GATEPERSIST816/3, the PDB install)
+                #   {"bad_name_patterns": [], "name_check_disabled": true,
+                #    "decided_at": "2026-09-04", "note": "why"}
+                #     (CLCOPYGATEDONTES904)
+                # Dropping either spelling would silently turn that install's
+                # recorded decision back into a loud "empty".
+                return (None, RULES_SANCTIONED)
             else:
-                return (re.compile("|".join(pats)), "ok")
+                state = RULES_EMPTY
     except FileNotFoundError:
-        state = "missing"
+        state = RULES_MISSING
     except Exception:
         # Present but unusable: unreadable (permissions), unparseable JSON,
         # or an uncompilable pattern. All of these mean someone TRIED to
         # configure the rule and failed -- that must stay loud AND closed.
-        state = "invalid"
-    # ONE logging tail for EVERY non-ok state (Marveen review on #1156: the
+        state = RULES_INVALID
+    # ONE logging tail for EVERY loud state (Marveen review on #1156: the
     # first cut logged only the exception branches, so empty/schema-invalid
     # left no log line while missing did -- same event class, inconsistent
     # ledger).
-    try:
-        log_path = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
-        with open(log_path, "a", encoding="utf-8") as fh:
-            fh.write(f"outgoing-copy-gate: NEV-SZABALY {state.upper()} ({_LOCAL_RULES}) -- "
-                     "a nev-ellenorzes NEM fut.\n")
-    except OSError:
-        pass
+    _gate_log(f"outgoing-copy-gate: NEV-SZABALY {state.upper()} ({_LOCAL_RULES}) -- "
+              "a nev-ellenorzes NEM fut.")
     return (None, state)
 
 
@@ -661,19 +724,36 @@ def telegram_gate(tool_input: dict) -> None:
         text = collect_telegram_body(tool_input)
         if not text.strip():
             sys.exit(0)  # files-only reply or empty text: nothing to audit
+        # GATECOPY827: a masolhato kodblokk CSAK markdownv2 modban lesz
+        # kodblokk. A reply tool `format` parametere alapertelmezesben "text",
+        # es plain textben a Telegram nem parsolja a harom backtickot, tehat
+        # nincs copy gomb -- a szoveg nyersen, a backslash-escape-ekkel egyutt
+        # jelenik meg. Ez 2026-08-17 ota OTSZOR ment ki igy (a memoriaban
+        # feedback_telegram_codeblock_needs_markdownv2, plusz a kotelezove tett
+        # telegram-copy-gomb skill), es egyik alkalommal sem tudashiany volt,
+        # hanem kihagyott lepes. Ezert innentol gepi kapu allitja meg, nem
+        # emlekezet. A vizsgalat a NYERS szovegen fut, mert a fence-t a
+        # MDV2_ESCAPE feloldas nem erinti.
+        raw = "\n".join(str(tool_input[f]) for f in ("text", "caption", "message")
+                        if tool_input.get(f))
+        if "```" in raw and str(tool_input.get("format", "")).lower() != "markdownv2":
+            sys.stderr.write(
+                "KIMENO-SZOVEG KAPU (Telegram): TILTVA, a kodblokk nem lenne masolhato.\n\n"
+                "  - A szoveg harom backtickes kodblokkot tartalmaz, de a hivasban\n"
+                "    format=\"" + str(tool_input.get("format") or "text") + "\". Plain textben a Telegram nem ad copy gombot,\n"
+                "    es a MarkdownV2 escape-ek (\\. \\- \\() nyersen latszanak.\n\n"
+                "Kuldd ujra ugyanezt a szoveget format=\"markdownv2\"-vel. Kodblokkon\n"
+                "belul csak a backtickot es a backslasht kell escapelni, a blokkon\n"
+                "kivuli prozat viszont teljesen (_*[]()~`>#+-=|{}.!).\n"
+            )
+            sys.exit(2)
         problems = audit(text)
     except SystemExit:
         raise
     except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-open path
-        warn = f"outgoing-copy-gate: TELEGRAM-ag belso hiba, FAIL-OPEN atengedes: {exc!r}\n"
-        sys.stderr.write(warn)
-        try:
-            log_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-                os.path.abspath(__file__)))), "store", "outgoing-copy-gate.log")
-            with open(log_path, "a", encoding="utf-8") as fh:
-                fh.write(warn)
-        except OSError:
-            pass
+        warn = f"outgoing-copy-gate: TELEGRAM-ag belso hiba, FAIL-OPEN atengedes: {exc!r}"
+        sys.stderr.write(warn + "\n")
+        _gate_log(warn)
         sys.exit(0)
     if problems:
         sys.stderr.write(
@@ -687,7 +767,11 @@ def telegram_gate(tool_input: dict) -> None:
     # de a figyelmeztetes ODA megy, ahol a session tenyleg latja -- a hook
     # stdout systemMessage mezoje a futo sessionben jelenik meg, nem egy
     # logfajlban, amit senki nem olvas.
-    if BAD_NAME is None:
+    # GATEPERSIST816/3 + CLCOPYGATEDONTES904: a tudatosan felfuggesztett
+    # szabaly (RULES_SANCTIONED, barmelyik flag-irassal) mar nem veszteseg,
+    # nincs mit jelezni, a Telegram-ag ott csendben marad. Minden mas nem-ok
+    # allapot (missing/empty/invalid) figyelmeztetest kap.
+    if RULES_STATE in RULES_LOUD:
         print(json.dumps({"systemMessage":
             "outgoing-copy-gate: a NEV-SZABALY fajl hianyzik/ures "
             f"({_LOCAL_RULES}) -- a nev-ellenorzes NEM fut a kimeno uzeneteken. "
@@ -764,6 +848,22 @@ def audit(text: str):
     return problems
 
 
+# Outbound-shaped operations of the multiplexed manage_email tool. Everything
+# else it does (search, read, labels, trash, getAttachment...) produces no text
+# of ours, so the gate must not touch it -- classifying those as sends is how
+# the sibling email gate once denied plain mailbox READS (MANAGEOP904).
+MANAGE_EMAIL_OUTBOUND_OPS = {"send", "reply", "replyall", "forward"}
+
+# Dedicated (non-multiplexed) outbound tools: the draft tools and the Gmail
+# connector's three separate send-shaped tools. Kept in step with the matcher
+# this hook is registered under in settings.json.
+EMAIL_TOOL_RE = re.compile(
+    r"(send_email|create_draft|draft_email|update_draft"
+    r"|(^|__)gmail__(reply|reply_all|send_message|forward)$)",
+    re.I,
+)
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -772,10 +872,61 @@ def main():
 
     tool = str(payload.get("tool_name") or "")
     tool_input = payload.get("tool_input") or {}
+    # A tool_input that is not a dict crashed every branch on its first .get(),
+    # which the Telegram arm then reported as an internal gate error and passed
+    # through fail-open. Measured 2026-09-05: the log holds exactly one such
+    # line, AttributeError("'int' object has no attribute 'get'"), and a payload
+    # with an integer tool_input reproduces it byte for byte. Name the real
+    # cause instead of the symptom, and keep each arm's designed failure
+    # direction: nothing of ours is readable, so Telegram (the owner's only
+    # supervision channel) still passes, email still blocks.
+    if not isinstance(tool_input, dict):
+        shape = type(tool_input).__name__
+        gated = (re.search(r"telegram.*__reply$", tool, re.I)
+                 or re.search(r"(^|__)manage_email$", tool, re.I)
+                 or EMAIL_TOOL_RE.search(tool)
+                 or tool == "Bash")
+        if not gated:
+            sys.exit(0)  # not a send: the net must never widen the gate
+        _gate_log(f"outgoing-copy-gate: a tool_input nem szotar, hanem {shape} "
+                  f"-- a vizsgalat nem futtathato (tool={tool!r}).")
+        if re.search(r"telegram.*__reply$", tool, re.I):
+            sys.exit(0)  # Telegram stays fail-open by design
+        sys.stderr.write(
+            "KIMENO-SZOVEG KAPU: TILTVA, a hivas tool_input mezoje nem szotar, hanem "
+            f"{shape} -- a kimeno szoveg igy nem olvashato ki, tehat nem vizsgalhato.\n"
+            "Fail-closed: egy vizsgalhatatlan kuldes pont a kaput utne ki. "
+            "Hivd ujra rendes parameterekkel.\n"
+        )
+        sys.exit(2)
 
-    if re.search(r"telegram.*__reply$", tool, re.I):
+    # GATECOPY828 (#1184): the scaffold wires this hook onto reply AND
+    # edit_message (an edit can replace a working code block with a broken
+    # one). The dispatch must recognise BOTH, or the edit half of the matcher
+    # invokes a hook that exits 0 without auditing anything.
+    if re.search(r"telegram.*__(reply|edit_message)$", tool, re.I):
         telegram_gate(tool_input)  # exits; never falls through
-    if re.search(r"send_email", tool, re.I):
+    # COPYGATEMATCHER904: the hook is REGISTERED for manage_email, create_draft,
+    # update_draft and the Gmail connector's reply/send_message/forward tools,
+    # but this dispatch only ever recognised a tool NAME containing
+    # "send_email" -- so on an install whose email tool is the multiplexed
+    # mcp__google-workspace__manage_email, every letter fell through to
+    # sys.exit(0) and the copy audit NEVER ran on an outgoing email. Measured
+    # 2026-09-04: an em dash in a manage_email draft body passed the gate,
+    # while the same text was blocked on the Telegram path. Same class as the
+    # email-send-gate's MANAGEOP904 fix: a multiplexer cannot be classified by
+    # its name, only by the operation it was asked to perform.
+    if re.search(r"(^|__)manage_email$", tool, re.I):
+        op = str(tool_input.get("operation") or tool_input.get("action") or "").strip().lower()
+        if op not in MANAGE_EMAIL_OUTBOUND_OPS:
+            sys.exit(0)  # search/read/labels/trash...: no outgoing text of ours
+        # A bare forward carries someone else's text and an EMPTY note: there is
+        # nothing of ours to audit, and the fail-closed "unreadable" branch below
+        # would block it for no reason.
+        if op == "forward" and not str(tool_input.get("body") or "").strip():
+            sys.exit(0)
+        text, unreadable = collect_mcp_body(tool_input), None
+    elif EMAIL_TOOL_RE.search(tool):
         text, unreadable = collect_mcp_body(tool_input), None
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
@@ -801,7 +952,7 @@ def main():
     # csendben lealit nev-ellenorzes mellett kuldeni rosszabb, mint megvarni a
     # szabaly-fajl potlasat. (A telegram-ag fail-open marad systemMessage
     # figyelmeztetessel: az a felugyeleti csatorna, ott a nemulas a dragabb.)
-    if RULES_STATE == "invalid":
+    if RULES_STATE == RULES_INVALID:
         # The file EXISTS but cannot be used: someone configured it and got it
         # wrong. Silent enforcement-loss here would be invisible, so this stays
         # fail-closed until the file is repaired (negative control in tests).
@@ -824,13 +975,13 @@ def main():
         )
         sys.exit(2)
 
-    if RULES_STATE in ("missing", "empty"):
+    if RULES_STATE in (RULES_MISSING, RULES_EMPTY):
         # Fail-OPEN, but never silent: the send goes out WITHOUT the name
         # check, and the user must see that on the surface they are using --
         # a log line nobody reads is the same as nothing (CLCOPYGATEHIANY902).
         print(json.dumps({"systemMessage":
             "outgoing-copy-gate: a NEV-SZABALY fajl "
-            + ("HIANYZIK" if RULES_STATE == "missing" else "URES (nincs minta)")
+            + ("HIANYZIK" if RULES_STATE == RULES_MISSING else "URES (nincs minta)")
             + f" ({_LOCAL_RULES}) -- ez a level a nev-ellenorzes NELKUL ment ki. "
             "Ha kell a vedelem, hozd letre a fajlt: "
             '{"bad_name_patterns": ["<python-regex>"], "correction": "<helyes alak>"}.'}))

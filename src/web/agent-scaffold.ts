@@ -83,6 +83,20 @@ export function hookCommand(scriptPath: string): string {
   return `test -x "${HOOK_NODE_BIN}" || { echo "${miss}" >&2; exit 2; }; "${HOOK_NODE_BIN}" "${scriptPath}"`
 }
 
+// The python twin of hookCommand(). The outgoing-copy-gate is a .py script, so
+// it cannot reuse HOOK_NODE_BIN. Resolving the interpreter at RUNTIME with
+// `command -v` rather than burning in an absolute path is deliberate and is the
+// better half of the lesson in hookCommand above: the burnt-in node path goes
+// dangling on a `brew upgrade`, and a python path would rot the same way (a
+// pyenv shim, a brew python bump, an Xcode CLT reinstall). What must not happen
+// is the 127 exit, because Claude Code treats 127 as NON-blocking and lets the
+// tool call through -- a gate that silently stops enforcing. So the interpreter
+// is probed first and a miss exits 2, which blocks.
+export function pythonHookCommand(scriptPath: string): string {
+  const miss = 'governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.'
+  return `command -v python3 >/dev/null 2>&1 || { echo "${miss}" >&2; exit 2; }; python3 "${scriptPath}"`
+}
+
 // Wired-already predicate for the ensure* migrations: is `command` present in
 // the serialized PreToolUse array? The command must be JSON-escaped before the
 // includes() -- comparing the RAW string disagrees with the serialized form on
@@ -261,13 +275,72 @@ export function syncHookMatchers(
   return changed
 }
 
+/**
+ * True when `command`'s script is ALREADY registered under the same hook `event`
+ * in the OTHER settings scope the same session loads -- so adding it here would
+ * make it run twice.
+ *
+ * Claude Code merges the user scope (~/.claude/settings.json) with the project
+ * scope (<cwd>/.claude/settings.json) and runs BOTH; it does not dedupe. Measured
+ * 2026-09-04 on the main agent: a single prompt produced two identical
+ * PROVENANCE-KAPU blocks, i.e. a doubled process spawn and a doubled ~1.4KB
+ * context injection on every flagged prompt. Removing the entry by hand did not
+ * hold -- ensureAgentHooks merged the template back in on the next dashboard
+ * start (measured 07:50: removed -> 0, restart -> 1 again).
+ *
+ * Compares SCRIPT BASENAME, not the command string: the two scopes spell the same
+ * gate differently (`bash -c '[ -f /abs/x.py ] && exec python3 /abs/x.py; exit 0'`
+ * in the template vs `python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/x.py"` in the
+ * repo's project settings), so an exact-string check would never match and the
+ * duplicate would survive.
+ *
+ * Deliberately ONE-WAY: it only suppresses a write into the SHARED user scope
+ * when the project scope already carries the script. The reverse must never
+ * happen -- an agent's project settings are the authoritative copy, while the
+ * user scope it sees may be a per-spawn COPY of ~/.claude/settings.json
+ * (agent-process.ts clones it into each agent's isolated .claude-config), so
+ * letting a derived file suppress the authoritative one would silently drop the
+ * hook the next time that copy is re-provisioned.
+ *
+ * Exported for unit testing.
+ */
+export function hookScriptAlreadyEffectiveInOtherScope(
+  settingsPath: string,
+  event: string,
+  command: string,
+  scopes?: { user: string; project: string },
+): boolean {
+  const userScope = scopes?.user ?? join(homedir(), '.claude', 'settings.json')
+  const projectScope = scopes?.project ?? join(PROJECT_ROOT, '.claude', 'settings.json')
+  if (settingsPath !== userScope) return false
+  if (projectScope === userScope) return false
+  const bn = _hookScriptBasename(command)
+  if (!bn) return false
+  try {
+    if (!existsSync(projectScope)) return false
+    const parsed = JSON.parse(readFileSync(projectScope, 'utf-8')) as { hooks?: Record<string, unknown> }
+    const entries = parsed?.hooks?.[event]
+    if (!Array.isArray(entries)) return false
+    return (entries as HookEntry[]).some((e) =>
+      (e?.hooks ?? []).some((h) => typeof h?.command === 'string' && _hookScriptBasename(h.command) === bn),
+    )
+  } catch { return false }
+}
+
 // Idempotent migration: every agent's settings.json should carry the
 // PreCompact hook (memory save + skill reflection). Pre-refactor agents
 // were scaffolded before scaffoldAgentDir seeded the template, so their
 // file is permissions-only. Merge the template's hooks block in place.
 // Also handles the main agent (MAIN_AGENT_ID) whose settings.json is at
 // ~/.claude/settings.json -- voice hook is added alongside existing hooks.
-export function ensureAgentHooks(name: string): boolean {
+export function ensureAgentHooks(
+  name: string,
+  // Test seam only: overrides the two settings scopes the cross-scope dedupe
+  // guard compares. Production callers pass nothing and get the real
+  // ~/.claude + PROJECT_ROOT/.claude pair, so the guard cannot be tested by
+  // writing into the operator's real home.
+  scopes?: { user: string; project: string },
+): boolean {
   const settingsPath = agentSettingsPath(name)
   const tplPath = join(PROJECT_ROOT, 'templates', 'settings.json.template')
   if (!existsSync(tplPath)) return false
@@ -316,8 +389,21 @@ export function ensureAgentHooks(name: string): boolean {
     if (syncHookMatchers(existingHooks, tplHooks)) changed = true
     for (const [event, handlers] of Object.entries(tplHooks)) {
       if (!existingHooks[event]) {
-        existingHooks[event] = handlers
-        changed = true
+        // Wholesale add of a missing event still has to respect the cross-scope
+        // guard, or the very first merge writes the duplicate the add pass below
+        // would have skipped.
+        const entries = (handlers as HookEntry[])
+          .map((entry) => ({
+            ...entry,
+            hooks: (entry.hooks ?? []).filter(
+              (h) => !h.command || !hookScriptAlreadyEffectiveInOtherScope(settingsPath, event, h.command, scopes),
+            ),
+          }))
+          .filter((entry) => (entry.hooks?.length ?? 0) > 0)
+        if (entries.length > 0) {
+          existingHooks[event] = entries
+          changed = true
+        }
       } else {
         const tplEntries = handlers as HookEntry[]
         const existEntries = existingHooks[event] as HookEntry[]
@@ -328,7 +414,8 @@ export function ensureAgentHooks(name: string): boolean {
         for (const tplEntry of tplEntries) {
           // Add hooks that are missing AND safe to register (registration guard).
           const newHooks = (tplEntry.hooks ?? []).filter(
-            (h) => h.command && !existingCommands.has(h.command) && !isUnsafeHookCommand(h.command),
+            (h) => h.command && !existingCommands.has(h.command) && !isUnsafeHookCommand(h.command)
+              && !hookScriptAlreadyEffectiveInOtherScope(settingsPath, event, h.command, scopes),
           )
           if (newHooks.length > 0) {
             existEntries.push({ ...tplEntry, hooks: newHooks })
@@ -356,7 +443,11 @@ export function ensureAgentHooks(name: string): boolean {
     for (const [event, entries] of Object.entries(tplHooks)) {
       const safeEntries = (entries as HookEntry[]).map((entry) => ({
         ...entry,
-        hooks: (entry.hooks ?? []).filter((h) => !h.command || !isUnsafeHookCommand(h.command)),
+        hooks: (entry.hooks ?? []).filter(
+          (h) => !h.command
+            || (!isUnsafeHookCommand(h.command)
+              && !hookScriptAlreadyEffectiveInOtherScope(settingsPath, event, h.command, scopes)),
+        ),
       })).filter((entry) => (entry.hooks?.length ?? 0) > 0)
       if (safeEntries.length > 0) safeHooks[event] = safeEntries
     }
@@ -488,6 +579,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     injectKanbanWriteGate(existing)
     injectDigestProvenanceGate(existing)
   }
+  if (agentGetsTelegramCopyGate(name)) injectTelegramCopyGate(existing)
   injectEgressGate(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
@@ -662,6 +754,84 @@ export function injectEgressGate(existing: Record<string, unknown>): void {
     ...prev.filter((e) => !JSON.stringify(e).includes('egress-gate.mjs')),
     entry,
   ]
+}
+
+// Which Telegram tools carry copyable text out of the install. `reply` is the
+// send route; `edit_message` rewrites a message already on the phone and can
+// just as easily replace a working code block with a broken one.
+export const TELEGRAM_COPY_GATE_MATCHER =
+  'mcp__plugin_telegram_telegram__reply|mcp__plugin_telegram_telegram__edit_message'
+
+// Which agents get the outgoing-copy gate on their Telegram send tools: every
+// sub-agent. The MAIN agent is exempt HERE only because it already carries the
+// same hook in its own committed project settings (.claude/settings.json);
+// injecting a second copy from the scaffold would duplicate it.
+//
+// GATECOPY828, 2026-08-28. The gate script has checked "code block without
+// format=markdownv2" since 2026-08-27, and the memory plus the mandatory
+// telegram-copy-gomb skill both describe it as done. It was not done for the
+// sub-agents: NONE of them had a PreToolUse matcher binding a Telegram tool to
+// this script, so the check never ran outside the main agent. The social agent
+// sent yet another unusable code block that day and the owner had to notice it
+// again. A gate that exists only in the main agent's settings is not a gate,
+// it is a habit that happens to be enforced in one place.
+export function agentGetsTelegramCopyGate(name: string): boolean {
+  return name !== MAIN_AGENT_ID
+}
+
+// Idempotently wire the outgoing-copy-gate PreToolUse hook onto the Telegram
+// send tools. Same shape + dedupe discipline as injectEmailSendGate, with one
+// deliberate difference: the dedupe filter is scoped to entries that carry BOTH
+// this script AND this matcher. The same script is legitimately wired under
+// other matchers (Bash, the email tools) in the main agent's settings, and a
+// basename-only filter would silently delete those on any future pass.
+export function injectTelegramCopyGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: TELEGRAM_COPY_GATE_MATCHER,
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => {
+      const j = JSON.stringify(e)
+      if (!j.includes('outgoing-copy-gate.py')) return true
+      return (e as { matcher?: unknown })?.matcher !== TELEGRAM_COPY_GATE_MATCHER
+    }),
+    entry,
+  ]
+}
+
+// Idempotent migration for the EXISTING fleet: the scaffold only rewrites a
+// sub-agent's settings on spawn, so without this the gate would reach the three
+// running agents no sooner than their next respawn. Returns true if written.
+export function ensureTelegramCopyGate(name: string): boolean {
+  if (!agentGetsTelegramCopyGate(name)) return false
+  const settingsPath = agentSettingsPath(name)
+  if (!existsSync(settingsPath)) return false
+  let settings: Record<string, unknown> = {}
+  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : []
+  // Two failure modes, same as the email gate: not wired at all, or wired under
+  // a matcher that no longer names the Telegram tools.
+  const wiredHere = ptu.some((e) => {
+    const j = JSON.stringify(e)
+    return j.includes('outgoing-copy-gate.py')
+      && (e as { matcher?: unknown })?.matcher === TELEGRAM_COPY_GATE_MATCHER
+  })
+  if (wiredHere && hookCommandWired(JSON.stringify(ptu), command)) return false
+  injectTelegramCopyGate(settings)
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
 }
 
 // Idempotent migration: ensure every agent's settings.json carries the egress
