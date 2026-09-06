@@ -151,12 +151,40 @@ resolve_main_model() {
   # WITHOUT this fallback they would silently keep the CLI default forever. We do
   # NOT write the value into a per-install file -- that would pin an inherited
   # default and cut those machines off from the NEXT bump. The shipped TS
-  # constant stays the single source of truth; node reads it (node is already a
-  # hard dependency on this launch path, and the read is ~one-time per restart).
-  # The .env override above still wins, so a hand-set model is untouched.
-  if command -v node >/dev/null 2>&1 && [ -f "$INSTALL_DIR/dist/config-registry.js" ]; then
-    node -e 'try { process.stdout.write(String(require(process.argv[1]).DISTRIBUTION_DEFAULT_AGENT_MODEL || "")) } catch (e) {}' "$INSTALL_DIR/dist/config-registry.js" 2>/dev/null
+  # constant stays the single source of truth; node reads it (~one-time per
+  # restart). The .env override above still wins, so a hand-set model is untouched.
+  #
+  # EVERY failure here is NAMED to store/channels-failures.log, never a silent
+  # empty (Marveen review, the jq-gap's sibling): a missing node, a missing/stale
+  # dist (channels can start before the update rebuilds it), or an empty read all
+  # get a log line so the operator sees WHY the model is unset instead of it
+  # looking like nothing was configured.
+  local _fail_log="$INSTALL_DIR/store/channels-failures.log"
+  # Node may not be on the (narrow launchd) PATH at this point; try the standard
+  # install locations too -- the same ones line ~287 adds to PATH -- so this does
+  # not depend on the launcher having widened PATH before this runs.
+  local _node
+  _node="$(command -v node 2>/dev/null || true)"
+  if [ -z "$_node" ]; then
+    for _c in /opt/homebrew/bin/node /usr/local/bin/node "$HOME/.bun/bin/node" "$HOME/.local/bin/node" /home/linuxbrew/.linuxbrew/bin/node; do
+      [ -x "$_c" ] && { _node="$_c"; break; }
+    done
   fi
+  if [ -z "$_node" ]; then
+    echo "resolve_main_model: node not found on PATH or standard locations; main-agent model left UNSET (would run the CLI default)" >>"$_fail_log" 2>/dev/null || true
+    return 0
+  fi
+  if [ ! -f "$INSTALL_DIR/dist/config-registry.js" ]; then
+    echo "resolve_main_model: dist/config-registry.js missing (build not present yet?); main-agent model left UNSET" >>"$_fail_log" 2>/dev/null || true
+    return 0
+  fi
+  local _def
+  _def="$("$_node" -e 'try { process.stdout.write(String(require(process.argv[1]).DISTRIBUTION_DEFAULT_AGENT_MODEL || "")) } catch (e) { process.exit(3) }' "$INSTALL_DIR/dist/config-registry.js" 2>/dev/null)"
+  if [ -z "$_def" ]; then
+    echo "resolve_main_model: read of DISTRIBUTION_DEFAULT_AGENT_MODEL was empty (stale or broken dist/config-registry.js); main-agent model left UNSET" >>"$_fail_log" 2>/dev/null || true
+    return 0
+  fi
+  printf '%s' "$_def"
 }
 
 # Test seam: print the resolved model and exit before any side effect.
