@@ -535,12 +535,29 @@ export function detectsBlockingMenu(pane: string): boolean {
 // The tmux-visible selection marker Claude Code draws on the active option.
 const CURSOR_GLYPH = '\u276f'
 
-export type FirstRunGateKind = 'trust' | 'bypass-permissions' | 'login' | 'theme' | 'welcome'
+export type FirstRunGateKind = 'trust' | 'bypass-permissions' | 'login' | 'theme' | 'welcome' | 'mcp-trust'
 
 // Ordered: the login picker and theme screen render UNDER the "Welcome to
 // Claude Code" banner, so the more specific matches must win before the
 // generic welcome fallback.
 const FIRST_RUN_GATES: Array<{ kind: FirstRunGateKind; rx: RegExp }> = [
+  // MCP server-approval dialog (2026-09-03, PR #1099 review). A worksource
+  // agent gets its queue as a project-scope MCP server, and on the first start
+  // after that server appears Claude Code parks the TUI on:
+  //   New MCP server found in this project: worksource
+  //   ❯ 1. Use this MCP server
+  //     2. Use this and all future MCP servers in this project
+  //     3. Continue without using this MCP server
+  // Measured by the reviewer in a real tmux pane: detectPaneState read
+  // 'unknown', detectsFirstRunGate returned null and detectsBlockingMenu was
+  // false -- so nothing answered it and nothing alerted, while the router kept
+  // writing items into pending/. That is the exact failure the worksource PR
+  // exists to remove, reintroduced by its own launch path.
+  //
+  // Anchored on the OPTION TEXT for the same reason as the trust gate: the
+  // heading is vendor copy (it just changed once for trust), the option is the
+  // functional element the dialog cannot drop.
+  { kind: 'mcp-trust', rx: /Use this MCP server/i },
   // TRUSTGATE901 (2026-09-01): ALTERNATION, not a replacement. Claude Code
   // 2.1.246 rewrote this dialog -- the old question is GONE and the panel now
   // opens with a marketing line ("Quick safety check: Is this a project you
@@ -595,6 +612,42 @@ const FIRST_RUN_GATES: Array<{ kind: FirstRunGateKind; rx: RegExp }> = [
  * "No, exit" by the dialog's own footer, and Enter confirms whatever happens
  * to be highlighted. On an unrecognised shape, not acting is the correct move.
  */
+// Cursor-relative keys that select "Use this MCP server" on the MCP
+// server-approval dialog. Same discipline as firstRunAcceptKeys and for the
+// same reason: never by number. The dialog's option prefixes are vendor copy,
+// and a dropped "1." would make a blind `1` type nothing and then let Enter
+// confirm whatever happens to be highlighted.
+//
+// Deliberately targets option 1 (THIS server) and never option 2 ("all future
+// MCP servers in this project"). Option 2 would stop the dialog returning, but
+// it pre-approves servers nobody has seen yet; a new server appearing IS a
+// decision, and this code may not make it. Option 3 ("Continue without") is
+// excluded explicitly so a reworded layout cannot land on the refusal.
+export function mcpTrustAcceptKeys(pane: string): string[] | null {
+  if (!pane || !pane.trim()) return null
+  const lines = pane.split('\n')
+  const cursorIdx = lines.findIndex(l => l.includes(CURSOR_GLYPH))
+  if (cursorIdx < 0) return null
+  let first = cursorIdx
+  while (first > 0 && lines[first - 1].trim() !== '') first--
+  let last = cursorIdx
+  while (last < lines.length - 1 && lines[last + 1].trim() !== '') last++
+  const block = lines.slice(first, last + 1)
+
+  const isTarget = (l: string) =>
+    /use this MCP server/i.test(l) && !/all future/i.test(l) && !/continue without/i.test(l)
+  const idx = block.findIndex(isTarget)
+  if (idx < 0) return null
+  // Ambiguity is a reason to stop, not to guess.
+  if (block.filter(isTarget).length !== 1) return null
+
+  const delta = idx - (cursorIdx - first)
+  const keys: string[] = []
+  for (let i = 0; i < Math.abs(delta); i++) keys.push(delta > 0 ? 'Down' : 'Up')
+  keys.push('Enter')
+  return keys
+}
+
 export function firstRunAcceptKeys(pane: string): string[] | null {
   if (!pane || !pane.trim()) return null
   const lines = pane.split('\n')

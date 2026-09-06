@@ -18,7 +18,8 @@ import {
 import { isQualifiedId } from './federation/address.js'
 import { sendFederatedMessage } from './federation/bridge.js'
 import { getFederationConfig, abandonWindowMsForPeer } from './federation/config.js'
-import { readAgentRemoteHost, readAgentVoiceConfig } from './agent-config.js'
+import { readAgentRemoteHost, readAgentVoiceConfig, readAgentWorksourceChannel } from './agent-config.js'
+import { enqueueWorksourceItem, worksourceItemId } from './worksource-queue.js'
 import {
   agentSessionName,
   isSessionReadyForPrompt,
@@ -28,7 +29,7 @@ import {
   capturePane,
   clearFeedbackModalAndRecheck,
 } from './agent-process.js'
-import { detectPaneState, type PaneState } from '../pane-state.js'
+import { detectPaneState, detectsFirstRunGate, type PaneState } from '../pane-state.js'
 import { setLastInboundModality } from './voice-modality.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
@@ -449,12 +450,15 @@ export async function runMessageRouterTick(): Promise<void> {
     const absentNow = new Set<string>()
     const presentNow = new Set<string>()
     // agent -> {exists: bool, host, session} cached lookup for the main loop.
-    const agentSessionCache = new Map<string, {host: string | null, session: string, exists: boolean}>()
+    const agentSessionCache = new Map<string, {host: string | null, session: string, exists: boolean, worksource: boolean}>()
     for (const agent of receiversInTick) {
       const host = readAgentRemoteHost(agent)
       const session = agentSessionName(agent)
       const exists = sessionExistsOnHost(host, session)
-      agentSessionCache.set(agent, { host, session, exists })
+      // Read once per receiver per tick, not once per message: the flag decides
+      // the whole delivery path below and a per-message read would re-open the
+      // same config file for every queued item.
+      agentSessionCache.set(agent, { host, session, exists, worksource: readAgentWorksourceChannel(agent) })
       if (exists) {
         presentNow.add(agent)
       } else {
@@ -463,6 +467,12 @@ export async function runMessageRouterTick(): Promise<void> {
     }
     // Reconnect detection: agent was absent on the last tick, now present.
     for (const agent of presentNow) {
+      // Worksource agents are exempt: backlog batching exists because a tmux
+      // pane that was gone missed everything and typing 40 messages in a row
+      // would wedge it. A queue directory misses nothing -- the items are still
+      // in pending/ and get handed over one at a time, acknowledged one at a
+      // time. Summarising them away would DISCARD work that was never lost.
+      if (agentSessionCache.get(agent)?.worksource) continue
       if (agentWasAbsent.has(agent) && !agentBatchedThisReconnect.has(agent)) {
         // Check if this agent qualifies for backlog batching.
         const agentPending = getPendingMessages(agent)
@@ -534,8 +544,40 @@ export async function runMessageRouterTick(): Promise<void> {
       const session = cached?.session ?? agentSessionName(msg.to_agent)
       const host = isMainAgent ? null : cached?.host ?? readAgentRemoteHost(msg.to_agent)
       const sessionExists = cached?.exists ?? sessionExistsOnHost(host, session)
+      // Opt-in queue delivery. EVERY tmux-shaped gate below is skipped for these
+      // agents, and that is the point rather than a shortcut: "session absent",
+      // "session busy" and "session stuck" are all statements about a KEYBOARD.
+      // An item written into the queue directory waits there for an agent that
+      // is busy, and is still there for an agent that has not started yet -- so
+      // abandoning it, or counting the wait as a stall, would invent a failure
+      // the queue does not have. The stuck escalation is the sharpest case: it
+      // tells the operator to consider a restart, and firing it at a merely busy
+      // worksource agent would be a false alarm with a destructive suggestion.
+      const usesWorksource = cached?.worksource ?? readAgentWorksourceChannel(msg.to_agent)
 
-      if (shouldAbandon(sessionExists, ageMs, MESSAGE_ABANDON_WINDOW_MS)) {
+      // ...BUT the carve-out needs POSITIVE EVIDENCE that the queue is actually
+      // being served, not just that the agent opted in (2026-09-03, PR #1099
+      // review). The reviewer measured the hole: a worksource agent parks on
+      // the MCP server-approval dialog at startup, the router keeps writing to
+      // pending/, and every stall gate is already switched off underneath it --
+      // so from the outside the item looks delivered and nobody is working on
+      // it. That is the exact failure this PR set out to remove.
+      //
+      // Evidence, in the weakest form that still closes the hole: the session
+      // must EXIST and must not be parked on a first-run/approval dialog. A
+      // parked pane means the channel is not up, so the tmux-shaped gates
+      // (abandon / not-running / not-ready) must apply again -- they are the
+      // only thing that will report it.
+      const parkedGate = usesWorksource && sessionExists
+        ? detectsFirstRunGate(capturePane(session, host) ?? '')
+        : null
+      const worksourceServing = usesWorksource && sessionExists && parkedGate == null
+      if (usesWorksource && !worksourceServing) {
+        logger.warn({ id: msg.id, to: msg.to_agent, session, sessionExists, parkedGate },
+          'worksource agent is not serving its queue (session absent or parked on a startup dialog) -- keeping the tmux stall gates armed')
+      }
+
+      if (!worksourceServing && shouldAbandon(sessionExists, ageMs, MESSAGE_ABANDON_WINDOW_MS)) {
         logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent, ageMs }, 'Agent message abandoned: target session absent for full retry window')
         if (!markMessageFailed(msg.id, 'Abandoned: target session absent for full retry window')) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
@@ -546,7 +588,7 @@ export async function runMessageRouterTick(): Promise<void> {
         continue
       }
 
-      if (!sessionExists) {
+      if (!worksourceServing && !sessionExists) {
         if (!routerLoggedMisses.has(msg.id)) {
           logger.warn({ id: msg.id, to: msg.to_agent, session }, 'Agent message target session not running, will retry')
           routerLoggedMisses.add(msg.id)
@@ -554,7 +596,7 @@ export async function runMessageRouterTick(): Promise<void> {
         continue
       }
 
-      if (!(await isSessionReadyForPrompt(session, host))) {
+      if (!worksourceServing && !(await isSessionReadyForPrompt(session, host))) {
         // A self-drafted feedback modal ("Bug report drafted ... 0 to dismiss")
         // holds the pane in a not-ready state, and the pre-flight dismissal in
         // sendPromptToSession never runs because this gate short-circuits
@@ -705,7 +747,36 @@ export async function runMessageRouterTick(): Promise<void> {
         const { prefix, wrapped } = wrapAgentMessageForDelivery(category, safeFromAgent, msg.from_agent, content, msg.id, msg.origin_note, freshness)
         // Inline preamble so a fresh session (post hard-restart) doesn't miss
         // the context that explains the tag semantics.
-        await sendPromptToSession(session, prefix + wrapped, host)
+        if (usesWorksource) {
+          // Hand it to the queue instead of the keyboard. The reader turns the
+          // file into a real turn and takes an acknowledgment back.
+          //
+          // WHAT 'delivered' MEANS HERE, stated plainly because it is weaker
+          // than it sounds and stronger than what it replaces: it means the item
+          // is durably queued, NOT that the agent has processed it. That is a
+          // strict improvement on the tmux path, where 'delivered' has always
+          // meant "we pressed some keys at a pane" -- which is exactly the claim
+          // that turned out to be false on the two cortex-router wedges. An item
+          // the agent never acknowledges is re-offered by the reader after its
+          // ack timeout, so a lost hand-off self-heals; the DB row does not have
+          // to model that.
+          //
+          // enqueue returns false when the id is already in pending/active/done.
+          // That is not an error: a tick that could not confirm its own write
+          // retries, and re-queueing would hand the agent the same work twice.
+          const itemId = worksourceItemId(msg.id)
+          const queued = enqueueWorksourceItem(msg.to_agent, itemId, prefix + wrapped, {
+            from: safeFromAgent,
+            category,
+            message_id: msg.id,
+            ...(traceCtx ?? {}),
+          })
+          logger.info({ id: msg.id, to: msg.to_agent, itemId, queued }, queued
+            ? 'message-router: queued to worksource'
+            : 'message-router: worksource item already present, not re-queued')
+        } else {
+          await sendPromptToSession(session, prefix + wrapped, host)
+        }
         if (!markMessageDelivered(msg.id)) {
           logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
         }
