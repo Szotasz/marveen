@@ -103,6 +103,7 @@ import {
   agentSessionName,
   sendPromptToSession,
   capturePane,
+  paneCurrentCommand,
   delay,
 } from '../agent-process.js'
 import { addDesiredAgent, removeDesiredAgent } from '../agent-desired-state.js'
@@ -110,6 +111,7 @@ import { RemoteStatusCache } from '../remote-status-cache.js'
 import type { AgentRunState } from '../ssh-tmux.js'
 import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
 import { detectPaneState, detectPermissionMode } from '../../pane-state.js'
+import { activityState } from '../pane-liveness.js'
 import { checkAgentPutFields, checkConfigPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../agent-put-fields.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
@@ -682,14 +684,16 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   // fleet, not just sub-agents. Restored after #226 dropped this route while the
   // frontend kept calling /api/agents/activity (which then 404'd the panel).
   if (path === '/api/agents/activity' && method === 'GET') {
-    const label = (running: boolean, pane: string | null): string => {
-      if (!running) return 'stopped'
-      if (pane === null) return 'unknown'
-      const s = detectPaneState(pane)
-      if (s === 'busy' || s === 'typing') return 'working'
-      if (s === 'idle') return 'idle'
-      return s // 'unknown' | 'error'
-    }
+    // A session that still exists is not an agent that still answers: when the
+    // CLI exits, tmux leaves a bare shell in the pane and the old label read
+    // that as a perfectly healthy 'idle'. activityState pairs the pane text
+    // with the pane's foreground command so that corpse is named 'dead'.
+    //
+    // The command is read for LOCAL sessions only. A remote agent would need a
+    // second ssh round-trip per 3s poll; it keeps the previous behaviour
+    // (paneCommand null => never 'dead') rather than paying that on every tick.
+    const label = (running: boolean, pane: string | null, paneCommand: string | null = null): string =>
+      activityState({ running, pane, paneCommand })
     const tailOf = (pane: string | null): string[] =>
       pane === null
         ? []
@@ -713,11 +717,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     {
       const mainPane = capturePane(MAIN_CHANNELS_SESSION)
       const running = mainPane !== null
+      const mainPaneCommand = running ? paneCurrentCommand(MAIN_CHANNELS_SESSION) : null
       entries.push({
         name: MAIN_AGENT_ID,
         isMain: true,
         running,
-        state: label(running, mainPane),
+        state: label(running, mainPane, mainPaneCommand),
         mode: modeOf(running, mainPane),
         tail: tailOf(mainPane),
       })
@@ -735,7 +740,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
           ? remotePaneCache.getOrRefresh(name, Date.now(), () => capturePane(agentSessionName(name), host), null)
           : capturePane(agentSessionName(name))
       }
-      const state = runState === 'unreachable' ? 'unreachable' : label(running, pane)
+      const paneCommand = running && !host ? paneCurrentCommand(agentSessionName(name)) : null
+      const state = runState === 'unreachable' ? 'unreachable' : label(running, pane, paneCommand)
       entries.push({ name, isMain: false, running, state, mode: modeOf(running, pane), tail: tailOf(pane) })
     }
 
