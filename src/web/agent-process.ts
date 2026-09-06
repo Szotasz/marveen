@@ -2453,6 +2453,25 @@ export function capturePane(session: string, host: string | null = null): string
   }
 }
 
+/**
+ * Foreground command of a session's first pane (`claude.exe` on a healthy agent,
+ * the shell name once the CLI has exited). Feeds classifyPaneLiveness so the
+ * dashboard can tell a dead session from an idle one -- `tmux list-sessions`
+ * cannot, it lists the leftover shell exactly like a live agent.
+ *
+ * Returns null on any failure: an unreadable pane must degrade to "unknown",
+ * never to a false death sentence.
+ */
+export function paneCurrentCommand(session: string, host: string | null = null): string | null {
+  try {
+    const out = captureTmux(host, ['list-panes', '-t', session, '-F', '#{pane_current_command}'])
+    const first = out.split('\n').map(line => line.trim()).find(line => line.length > 0)
+    return first ?? null
+  } catch {
+    return null
+  }
+}
+
 // Capture a pane for STUCK-INPUT detection, with the editor's dim "ghost
 // suggestion" autocomplete removed. Captures WITH colour (`-e`) and strips the
 // SGR-2 (dim) ghost + all ANSI, so a hint shown in an empty input box is never

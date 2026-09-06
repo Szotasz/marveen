@@ -1485,6 +1485,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .agents-grid[data-card-mode="activity"] .agent-card.act-working { border-left-color: #22c55e; }
 .agents-grid[data-card-mode="activity"] .agent-card.act-idle    { border-left-color: #9ca3af; }
 .agents-grid[data-card-mode="activity"] .agent-card.act-error   { border-left-color: #ef4444; }
+.agents-grid[data-card-mode="activity"] .agent-card.act-dead    { border-left-color: #b91c1c; }
 .agents-grid[data-card-mode="activity"] .agent-card.act-unknown { border-left-color: #eab308; }
 .agents-grid[data-card-mode="activity"] .agent-card.act-stopped { border-left-color: #6b7280; opacity: 0.7; }
 /* A stopped agent has no session to open, so its card is not clickable -- same
@@ -6522,6 +6523,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .activity-card.act-working { border-left-color: #22c55e; }
 .activity-card.act-idle    { border-left-color: #9ca3af; }
 .activity-card.act-error   { border-left-color: #ef4444; }
+.activity-card.act-dead    { border-left-color: #b91c1c; }
 .activity-card.act-unknown { border-left-color: #eab308; }
 .activity-card.act-stopped { border-left-color: #6b7280; opacity: 0.7; }
 .activity-card.act-clickable { cursor: pointer; transition: background 0.15s, box-shadow 0.15s; }
@@ -6548,6 +6550,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 .activity-badge.act-idle    { background: rgba(156,163,175,0.18); color: #6b7280; }
 .activity-badge.act-error   { background: rgba(239,68,68,0.15); color: #dc2626; }
+.activity-badge.act-dead    { background: rgba(185,28,28,0.18); color: #b91c1c; font-weight: 600; }
 .activity-badge.act-unknown { background: rgba(234,179,8,0.18); color: #ca8a04; }
 .activity-badge.act-stopped { background: rgba(107,114,128,0.15); color: #6b7280; }
 

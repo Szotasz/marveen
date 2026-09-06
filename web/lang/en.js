@@ -333,6 +333,7 @@ window._i18n.en = {
   'agents.card.not_running':     'session not running',
   'activity.state.working':      'working',
   'activity.state.idle':         'idle',
+  'activity.state.dead':         'dead',
   'activity.state.unknown':      'unknown',
   'activity.state.error':        'error',
   'activity.state.stopped':      'stopped',
