@@ -7,6 +7,7 @@ import {
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
+import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import type { RouteContext } from './types.js'
 
 // Canonical memory categories. Kept in sync with the DB CHECK constraint in
@@ -57,6 +58,16 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       data.keywords || undefined,
       true
     )
+    // Warn-only homoglyph check (GATEHOMOGLIFSWEEP816): the save above already
+    // happened -- legitimate Cyrillic/Greek content (quotes, foreign records)
+    // must never be lost, so the finding rides the response instead of a 4xx.
+    const homoglyphs = detectHomoglyphs(data.content)
+    if (homoglyphs.length > 0) {
+      const warning = formatHomoglyphWarning(homoglyphs)
+      logger.warn({ agent: data.agent_id, memoryId: result.id }, `memory saved with ${warning}`)
+      json(res, { ok: true, id: result.id, homoglyph_warning: warning })
+      return true
+    }
     json(res, { ok: true, id: result.id })
     return true
   }
