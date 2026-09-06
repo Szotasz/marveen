@@ -228,6 +228,12 @@ function report(result: GateResult, mode: string, entries: Entry[]): void {
     for (const l of links) line(`  - ${l.path}`);
   }
 
+  if (result.exceptions.length) {
+    line();
+    line(`Fixture exceptions applied (${result.exceptions.length}) -- ONE literal each, the rest of the file still scanned:`);
+    for (const e of result.exceptions) line(`  - ${e.file}${e.line ? `:${e.line}` : ''}  [${e.detector}]  <- ${e.reason}`);
+  }
+
   if (result.allowlisted.length) {
     line();
     line('Allowlisted by path (NOT scanned, on purpose):');
