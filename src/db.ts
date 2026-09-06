@@ -3214,6 +3214,100 @@ export function getRecentToolCalls(sinceSecs: number): ToolCallLogRow[] {
   return db.prepare('SELECT * FROM tool_call_log WHERE created_at >= ? ORDER BY created_at ASC').all(cutoff) as ToolCallLogRow[]
 }
 
+// Per-agent tool-call telemetry for the status view, in ONE query.
+//
+// `total` distinguishes the two answers the view must never conflate: an agent
+// missing from this map has NO telemetry (the hook is not registered for it),
+// which is not the same as an agent that made zero calls since it started.
+// `sinceWork` counts only the calls after the given per-agent start time.
+export function getAgentToolActivity(
+  windowSecs: number,
+  workStartByAgent: Record<string, number | null> = {},
+): Record<string, { total: number; sinceWork: number; lastAt: number }> {
+  const cutoff = Math.floor(Date.now() / 1000) - windowSecs
+  const rows = db.prepare(
+    `SELECT agent_id, COUNT(*) AS total, MAX(created_at) AS last_at
+     FROM tool_call_log
+     WHERE created_at >= ? AND agent_id IS NOT NULL
+     GROUP BY agent_id`
+  ).all(cutoff) as { agent_id: string; total: number; last_at: number }[]
+
+  const out: Record<string, { total: number; sinceWork: number; lastAt: number }> = {}
+  const sinceStmt = db.prepare(
+    'SELECT COUNT(*) AS n FROM tool_call_log WHERE agent_id = ? AND created_at >= ?'
+  )
+  for (const r of rows) {
+    const start = workStartByAgent[r.agent_id]
+    const sinceWork = start == null
+      ? r.total
+      : (sinceStmt.get(r.agent_id, Math.max(start, cutoff)) as { n: number }).n
+    out[r.agent_id] = { total: r.total, sinceWork, lastAt: r.last_at }
+  }
+  return out
+}
+
+// Last inbound (task handed TO the agent) and last outbound (the agent itself
+// reporting) per agent. delivered_at is the honest inbound stamp: a row exists
+// from the moment it is queued, but it only reached the agent once delivered.
+export function getAgentMessageActivity(): Record<string, {
+  lastInboundAt: number | null
+  lastOutboundAt: number | null
+  lastInboundSubject: string | null
+}> {
+  const out: Record<string, { lastInboundAt: number | null; lastOutboundAt: number | null; lastInboundSubject: string | null }> = {}
+  const ensure = (a: string) => (out[a] ??= { lastInboundAt: null, lastOutboundAt: null, lastInboundSubject: null })
+
+  const inbound = db.prepare(
+    `SELECT to_agent AS agent, MAX(delivered_at) AS at
+     FROM agent_messages WHERE delivered_at IS NOT NULL GROUP BY to_agent`
+  ).all() as { agent: string; at: number }[]
+  for (const r of inbound) ensure(r.agent).lastInboundAt = r.at
+
+  const outbound = db.prepare(
+    `SELECT from_agent AS agent, MAX(created_at) AS at
+     FROM agent_messages GROUP BY from_agent`
+  ).all() as { agent: string; at: number }[]
+  for (const r of outbound) ensure(r.agent).lastOutboundAt = r.at
+
+  const subjectStmt = db.prepare(
+    `SELECT content FROM agent_messages
+     WHERE to_agent = ? AND delivered_at IS NOT NULL
+     ORDER BY delivered_at DESC LIMIT 1`
+  )
+  for (const agent of Object.keys(out)) {
+    if (out[agent].lastInboundAt === null) continue
+    const row = subjectStmt.get(agent) as { content: string } | undefined
+    if (row) out[agent].lastInboundSubject = row.content.split('\n')[0].slice(0, 120)
+  }
+  return out
+}
+
+// The card each agent currently has in_progress, with the moment it entered
+// that status. enteredStatusAt comes from kanban_card_events and is null for
+// cards whose transition predates the event log covering this path -- null, not
+// a guess: updated_at moves on every edit and would silently misreport age.
+export function getAgentCurrentCards(): Record<string, { id: string; title: string; enteredStatusAt: number | null }> {
+  const cards = db.prepare(
+    `SELECT id, title, assignee FROM kanban_cards
+     WHERE status = 'in_progress' AND archived_at IS NULL AND assignee IS NOT NULL
+     ORDER BY updated_at DESC`
+  ).all() as { id: string; title: string; assignee: string }[]
+
+  const enteredStmt = db.prepare(
+    `SELECT MAX(created_at) AS at FROM kanban_card_events
+     WHERE card_id = ? AND to_status = 'in_progress'`
+  )
+  const out: Record<string, { id: string; title: string; enteredStatusAt: number | null }> = {}
+  for (const c of cards) {
+    // One row per agent: the most recently touched card wins, matching the
+    // one-in_progress-card-at-a-time rule the fleet already works under.
+    if (out[c.assignee]) continue
+    const at = (enteredStmt.get(c.id) as { at: number | null } | undefined)?.at ?? null
+    out[c.assignee] = { id: c.id, title: c.title, enteredStatusAt: at }
+  }
+  return out
+}
+
 export function analyzeWorkflowCandidates(sinceSecs = 3600, minToolCalls = 5, gapSecs = 300): WorkflowCandidate[] {
   const calls = getRecentToolCalls(sinceSecs)
   if (calls.length === 0) return []

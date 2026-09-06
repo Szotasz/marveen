@@ -5,7 +5,10 @@ import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
-import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, countNewerMessagesFromSameSender } from '../../db.js'
+import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, countNewerMessagesFromSameSender,
+  getAgentToolActivity, getAgentMessageActivity, getAgentCurrentCards } from '../../db.js'
+import { deriveAgentStatus, AGENT_STATUS_THRESHOLDS } from '../agent-status.js'
+import type { AgentStatusSignals, AgentStatusRow } from '../agent-status.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
@@ -552,6 +555,18 @@ function listAgentSummaries(): AgentSummary[] {
 // turn absorbs, mirroring the router's MAX_MESSAGES_PER_TICK.
 const INBOX_DRAIN_CAP = 10
 
+// Pane -> coarse activity label. Shared by /api/agents/activity and
+// /api/agents/status so the two surfaces can never drift into disagreeing
+// about whether the same agent is working.
+function paneActivityLabel(running: boolean, pane: string | null): string {
+  if (!running) return 'stopped'
+  if (pane === null) return 'unknown'
+  const s = detectPaneState(pane)
+  if (s === 'busy' || s === 'typing') return 'working'
+  if (s === 'idle') return 'idle'
+  return s // 'unknown' | 'error'
+}
+
 export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -682,14 +697,6 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   // fleet, not just sub-agents. Restored after #226 dropped this route while the
   // frontend kept calling /api/agents/activity (which then 404'd the panel).
   if (path === '/api/agents/activity' && method === 'GET') {
-    const label = (running: boolean, pane: string | null): string => {
-      if (!running) return 'stopped'
-      if (pane === null) return 'unknown'
-      const s = detectPaneState(pane)
-      if (s === 'busy' || s === 'typing') return 'working'
-      if (s === 'idle') return 'idle'
-      return s // 'unknown' | 'error'
-    }
     const tailOf = (pane: string | null): string[] =>
       pane === null
         ? []
@@ -717,7 +724,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         name: MAIN_AGENT_ID,
         isMain: true,
         running,
-        state: label(running, mainPane),
+        state: paneActivityLabel(running, mainPane),
         mode: modeOf(running, mainPane),
         tail: tailOf(mainPane),
       })
@@ -735,11 +742,76 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
           ? remotePaneCache.getOrRefresh(name, Date.now(), () => capturePane(agentSessionName(name), host), null)
           : capturePane(agentSessionName(name))
       }
-      const state = runState === 'unreachable' ? 'unreachable' : label(running, pane)
+      const state = runState === 'unreachable' ? 'unreachable' : paneActivityLabel(running, pane)
       entries.push({ name, isMain: false, running, state, mode: modeOf(running, pane), tail: tailOf(pane) })
     }
 
     jsonMaybeGzip(req, res, entries)
+    return true
+  }
+
+  // Per-agent status: what each agent is on, since when, and how long since it
+  // last did anything. Sits BESIDE /api/agents/activity (which stays unchanged);
+  // that one answers "is it working", this one answers "on what, and since when".
+  //
+  // All I/O is here; the derivation is the pure deriveAgentStatus so the rules
+  // stay unit-testable. Deliberately no completion percentage -- see agent-status.ts.
+  if (path === '/api/agents/status' && method === 'GET') {
+    const nowSec = Math.floor(Date.now() / 1000)
+    const cards = getAgentCurrentCards()
+    const messages = getAgentMessageActivity()
+    // Count tool calls from the moment the current work started, so the number
+    // answers "how much has it done on THIS", not "how busy was it today".
+    const workStart: Record<string, number | null> = {}
+    for (const [agent, card] of Object.entries(cards)) workStart[agent] = card.enteredStatusAt
+    for (const [agent, m] of Object.entries(messages)) {
+      if (workStart[agent] == null) workStart[agent] = m.lastInboundAt
+    }
+    const tools = getAgentToolActivity(AGENT_STATUS_THRESHOLDS.TOOL_DATA_WINDOW_SEC, workStart)
+
+    const signalsFor = (name: string, isMain: boolean, running: boolean, pane: string | null, runState: string): AgentStatusSignals => {
+      const paneLabel = runState === 'unreachable' ? 'unreachable' : paneActivityLabel(running, pane)
+      const tool = tools[name]
+      const msg = messages[name]
+      return {
+        agent: name,
+        isMain,
+        running,
+        paneState: paneLabel as AgentStatusSignals['paneState'],
+        // Passed through uninterpreted -- no state is derived from it. See the
+        // permissionMode note in agent-status.ts for why.
+        permissionMode: running && pane !== null ? detectPermissionMode(pane) : null,
+        toolDataAvailable: tool !== undefined,
+        toolCallsSinceStart: tool?.sinceWork ?? 0,
+        lastToolCallAt: tool?.lastAt ?? null,
+        lastInboundAt: msg?.lastInboundAt ?? null,
+        lastOutboundAt: msg?.lastOutboundAt ?? null,
+        lastInboundSubject: msg?.lastInboundSubject ?? null,
+        currentCard: cards[name] ?? null,
+        nowSec,
+      }
+    }
+
+    const rows: AgentStatusRow[] = []
+    {
+      const mainPane = capturePane(MAIN_CHANNELS_SESSION)
+      const running = mainPane !== null
+      rows.push(deriveAgentStatus(signalsFor(MAIN_AGENT_ID, true, running, mainPane, running ? 'running' : 'stopped')))
+    }
+    for (const name of withoutMainAgent(listAgentNames())) {
+      const host = readAgentRemoteHost(name)
+      const runState = agentRunStateCached(name, host != null)
+      const running = runState === 'running'
+      let pane: string | null = null
+      if (running) {
+        pane = host
+          ? remotePaneCache.getOrRefresh(name, Date.now(), () => capturePane(agentSessionName(name), host), null)
+          : capturePane(agentSessionName(name))
+      }
+      rows.push(deriveAgentStatus(signalsFor(name, false, running, pane, runState)))
+    }
+
+    jsonMaybeGzip(req, res, rows)
     return true
   }
 
