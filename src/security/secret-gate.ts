@@ -142,6 +142,7 @@ export const ALLOWLISTED_PATHS: { path: string; reason: string }[] = [
   // akadni -- akkor ide kerul, ugyanezzel az indokkal.
   { path: 'src/__tests__/fixtures/skill-scan/14-api-key-shaped.md', reason: 'skill-scan fixture: an api-key-shaped string is the subject under test' },
   { path: 'src/__tests__/fixtures/skill-scan/14-api-key-shaped.expected.json', reason: 'skill-scan golden output from the original Python scanner: it quotes the fixture above' },
+  { path: 'src/__tests__/agent-transcript.test.ts', reason: 'transcript masking test: the synthetic credentials ARE the subject under test -- each one asserts that maskSecrets() removes it' },
 ];
 
 /**

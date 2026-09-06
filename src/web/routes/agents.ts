@@ -145,6 +145,16 @@ import type { RouteContext } from './types.js'
 import { suggestForAgent, type AgentSignals } from '../model-suggest.js'
 import { getTokenSummary } from '../token-usage.js'
 import { listScheduledTasks } from '../scheduled-tasks-io.js'
+import { readAgentTranscript, isTranscriptAllowed } from '../agent-transcript.js'
+import { kindAllowed, FORBIDDEN_KIND } from './auth.js'
+
+// Which credential kinds may read a transcript. NAMED principals only: a
+// logged-in human, or a key enrolled to that human's own device. Deliberately
+// excludes the shared dashboard 'token' (the fleet credential every sub-agent
+// reads) and 'federation' (a peer must never reach a transcript). Kept as a
+// named constant next to the route so the decision is greppable, not buried
+// in a boolean.
+const TRANSCRIPT_CALLER_KINDS = ['session', 'device'] as const
 
 const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'discord', 'googlechat', 'teams'])
 
@@ -553,7 +563,7 @@ function listAgentSummaries(): AgentSummary[] {
 const INBOX_DRAIN_CAP = 10
 
 export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promise<boolean> {
-  const { req, res, path, method } = ctx
+  const { req, res, path, method, url } = ctx
 
   // Lists every model the dashboard is willing to serve up to an agent.
   // Claude IDs are static. DeepSeek is gated behind a vault secret because
@@ -1281,6 +1291,63 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     writeAgentSecurityProfile(name, requested)
     writeAgentSettingsFromProfile(name, profile)
     json(res, { ok: true, requiresRestart: isAgentRunning(name) })
+    return true
+  }
+
+  // GET /api/agents/:name/transcript -- read-only tail of the agent's live
+  // session log, so an operator can see whether it is working or stuck.
+  //
+  // TWO gates, and they answer DIFFERENT questions. This split came out of the
+  // review (Szotasz, 2026-09-03): the first shape had only the allowlist, and
+  // the PR's own security claim ("a decision about WHO MAY READ WHOSE
+  // material") was therefore only half true. The allowlist decides WHOSE log
+  // is readable. It says nothing about WHO is reading -- and `/api/*` auth is
+  // a single SHARED Bearer token that every sub-agent in the fleet reads out
+  // of store/.dashboard-token, by its own standing instructions, every day.
+  // So without a caller-side gate, "enabling" one agent would have exposed
+  // that agent's log to every holder of the fleet token.
+  //
+  // 1. CALLER: named principals only -- 'session' (a logged-in human) and
+  //    'device' (a key enrolled to the invoking user's own device, i.e. the
+  //    owner checking from his phone, which is the stated use case). The
+  //    shared 'token' is refused: it is the fleet credential, not a person.
+  //    'federation' is refused too -- a peer must never reach a transcript --
+  //    and it could not get here anyway, the federation token is scoped to
+  //    two wire endpoints. Fail-closed: anything not listed, including a
+  //    missing auth, is a 403.
+  // 2. TARGET: the explicit allowlist below.
+  //
+  // Why the caller gate is the load-bearing one: the response is NOT truncated
+  // (whole events by design), plus `since` paging, so a caller who gets in can
+  // walk the entire log. Adding a name to store/transcript-allowlist.json is a
+  // decision about whose material becomes readable, and it is not routine
+  // config -- but it is only meaningful once the reader is a person.
+  //
+  // An agent that is not on the list gets 403, not an empty list: an empty
+  // result would let a caller enumerate which agents exist.
+  const transcriptMatch = path.match(/^\/api\/agents\/([^/]+)\/transcript$/)
+  if (transcriptMatch && method === 'GET') {
+    const name = decodeURIComponent(transcriptMatch[1])
+    // Caller gate BEFORE the 404: a shared-token holder must not be able to
+    // probe which agents exist by reading the not-found/forbidden difference.
+    if (!kindAllowed(ctx.auth, TRANSCRIPT_CALLER_KINDS)) {
+      json(res, FORBIDDEN_KIND, 403)
+      return true
+    }
+    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!isTranscriptAllowed(name)) {
+      json(res, { error: 'Transcript access is not enabled for this agent' }, 403)
+      return true
+    }
+    const workingDir = name === MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(name)
+    const bytesRaw = Number(url.searchParams.get('bytes'))
+    const sinceRaw = url.searchParams.get('since')
+    json(res, readAgentTranscript(name, {
+      workingDir,
+      configDir: resolveAgentConfigDir(name).configDir ?? undefined,
+      tailBytes: Number.isFinite(bytesRaw) && bytesRaw > 0 ? bytesRaw : undefined,
+      since: sinceRaw ?? undefined,
+    }))
     return true
   }
 
