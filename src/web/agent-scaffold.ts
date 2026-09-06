@@ -159,6 +159,26 @@ export function agentSettingsPath(name: string): string {
 // the 2026-07-14 silent fleet-freeze incident.
 const _TMP_PREFIXES = ['/tmp/', '/var/tmp/', '/private/tmp/', '/dev/shm/']
 
+// FLEET-ONLY GATES: hooks the template seeds for sub-agents but MUST NOT reach the
+// main agent. agentSettingsPath(MAIN_AGENT_ID) resolves to the user-global
+// ~/.claude/settings.json, and ensureAgentHooks() is called for MAIN_AGENT_ID on
+// every boot (src/web.ts) -- so a template entry lands in front of EVERY Claude Code
+// session on the owner's machine, including projects unrelated to this repo.
+//
+// Measured 2026-09-03: live-branch-switch-gate.py was wired in all six fleet agents
+// but missing from the template. Copying it into the template closes that gap, but
+// without this filter it would also register a PreToolUse(Bash) hook globally. The
+// gate's own rationale is per-agent: the main agent's transcripts held ten branch
+// creations, ALL in worktrees (zero real cases); both real incidents were a sub-agent's.
+//
+// Add a basename here when a gate is meant for sub-agents only. Everything else in
+// the template continues to reach the main agent unchanged.
+const FLEET_ONLY_HOOK_SCRIPTS = ['live-branch-switch-gate.py']
+
+export function isFleetOnlyHookCommand(command: string): boolean {
+  return FLEET_ONLY_HOOK_SCRIPTS.some((s) => command.includes(`/hooks/${s}`))
+}
+
 // Shared hook-entry type used by ensureAgentHooks and upgradeLegacyHookCommands.
 type HookEntry = { matcher?: string; hooks?: Array<{ command?: string; timeout?: number; [k: string]: unknown }> }
 
@@ -330,8 +350,20 @@ export function ensureAgentHooks(name: string): boolean {
     if (syncHookMatchers(existingHooks, tplHooks)) changed = true
     for (const [event, handlers] of Object.entries(tplHooks)) {
       if (!existingHooks[event]) {
-        existingHooks[event] = handlers
-        changed = true
+        // Adding a whole missing event must obey the fleet-only filter too: the
+        // template's PreToolUse block did not exist before 2026-09-03, so the
+        // wholesale-add path is exactly how a fleet-only gate would reach the
+        // main agent's global settings.
+        const seeded = (handlers as HookEntry[]).map((entry) => ({
+          ...entry,
+          hooks: (entry.hooks ?? []).filter(
+            (h) => !h.command || !(name === MAIN_AGENT_ID && isFleetOnlyHookCommand(h.command)),
+          ),
+        })).filter((entry) => (entry.hooks?.length ?? 0) > 0)
+        if (seeded.length > 0) {
+          existingHooks[event] = seeded
+          changed = true
+        }
       } else {
         const tplEntries = handlers as HookEntry[]
         const existEntries = existingHooks[event] as HookEntry[]
@@ -342,7 +374,8 @@ export function ensureAgentHooks(name: string): boolean {
         for (const tplEntry of tplEntries) {
           // Add hooks that are missing AND safe to register (registration guard).
           const newHooks = (tplEntry.hooks ?? []).filter(
-            (h) => h.command && !existingCommands.has(h.command) && !isUnsafeHookCommand(h.command),
+            (h) => h.command && !existingCommands.has(h.command) && !isUnsafeHookCommand(h.command)
+              && !(name === MAIN_AGENT_ID && isFleetOnlyHookCommand(h.command)),
           )
           if (newHooks.length > 0) {
             existEntries.push({ ...tplEntry, hooks: newHooks })
@@ -370,7 +403,8 @@ export function ensureAgentHooks(name: string): boolean {
     for (const [event, entries] of Object.entries(tplHooks)) {
       const safeEntries = (entries as HookEntry[]).map((entry) => ({
         ...entry,
-        hooks: (entry.hooks ?? []).filter((h) => !h.command || !isUnsafeHookCommand(h.command)),
+        hooks: (entry.hooks ?? []).filter((h) => !h.command || (!isUnsafeHookCommand(h.command)
+          && !(name === MAIN_AGENT_ID && isFleetOnlyHookCommand(h.command)))),
       })).filter((entry) => (entry.hooks?.length ?? 0) > 0)
       if (safeEntries.length > 0) safeHooks[event] = safeEntries
     }

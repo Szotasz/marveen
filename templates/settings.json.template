@@ -49,6 +49,18 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/live-branch-switch-gate.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/live-branch-switch-gate.py; exit 0'",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Skill|Read",

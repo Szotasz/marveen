@@ -47,3 +47,4 @@ jobs:
       # regression guard that only runs manually rots exactly like a one-shot
       # seed. Runs natively here (ubuntu = the Linux branch it asserts).
       - run: bash scripts/__tests__/stop-start-system-unit.test.sh
+      - run: bash scripts/__tests__/live-branch-switch-gate.test.sh
