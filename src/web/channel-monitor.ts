@@ -8,6 +8,8 @@ import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, SERVICE_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT, RESPAWN_ENABLED } from '../config.js'
 import { DISTRIBUTION_DEFAULT_AGENT_MODEL } from '../config-registry.js'
 import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-config.js'
+import { listKanbanCards } from '../db.js'
+import { buildRecoveryBrief, parseGitStatusShort, type RecoveryFacts } from './restart-recovery-brief.js'
 import {
   agentHasChannel,
   agentSessionName,
@@ -1755,6 +1757,79 @@ function shouldEscalateMarveenDown(): boolean {
   return now - marveenSuspectFirstSeen >= MARVEEN_DOWN_CONFIRM_MS
 }
 
+// ---- recovery brief after a fresh restart (card 3a64403b) -------------------
+// A watchdog restart brings the agent back on a FRESH session: the plugin
+// reloads, the conversation does not. The agent then sits at an empty prompt
+// while its uncommitted branch and its in_progress card wait for it. These
+// three pieces close that gap; the decision of WHETHER to speak lives in the
+// pure buildRecoveryBrief (no facts -> no message, so an idle agent restarted
+// for plugin reasons is never interrupted).
+
+// How many changed files the brief lists before it says "and more". A restart
+// after a long spell can leave dozens; the brief is a pointer, not a diff.
+const RECOVERY_BRIEF_MAX_FILES = 12
+// Wait before typing the brief into the fresh session. The restart path
+// already schedules modal dismissal and the plugin-unlock probe; this sits
+// after both so the brief does not race a dialog or the probe's keystrokes.
+// sendPromptToSession still waits for idle on its own -- this delay is about
+// ORDER, not about hoping the session happens to be ready.
+const RECOVERY_BRIEF_DELAY_MS = 90_000
+
+// Collect what the fleet knew about an agent at restart time. Every failure is
+// swallowed into a null/empty field: a brief is a convenience, and a monitor
+// sweep must never fall over because a directory is missing or git is unhappy.
+function gatherRecoveryFacts(agent: string): RecoveryFacts {
+  let branch: string | null = null
+  let dirty: RecoveryFacts['dirty'] = []
+  let dirtyTruncated = false
+  try {
+    const dir = agentDir(agent)
+    if (existsSync(join(dir, '.git'))) {
+      try {
+        branch = execFileSync('git', ['-C', dir, 'rev-parse', '--abbrev-ref', 'HEAD'], { timeout: 5000 }).toString().trim() || null
+      } catch { /* detached HEAD or no repo -- the brief works without a branch */ }
+      const out = execFileSync('git', ['-C', dir, 'status', '--short'], { timeout: 5000 }).toString()
+      const parsed = parseGitStatusShort(out, RECOVERY_BRIEF_MAX_FILES)
+      dirty = parsed.dirty
+      dirtyTruncated = parsed.truncated
+    }
+  } catch (err) {
+    logger.debug({ err, agent }, 'recovery-brief: git facts unavailable')
+  }
+
+  let inProgress: RecoveryFacts['inProgress'] = []
+  try {
+    inProgress = listKanbanCards()
+      .filter((c) => c.assignee === agent && c.status === 'in_progress' && c.archived_at == null)
+      .map((c) => ({ id: c.id, title: c.title }))
+  } catch (err) {
+    logger.debug({ err, agent }, 'recovery-brief: kanban facts unavailable')
+  }
+
+  return { agent, branch, dirty, dirtyTruncated, inProgress }
+}
+
+// After a fresh restart, tell the new session what it was in the middle of.
+// Fire-and-forget: scheduled, never awaited by the sweep.
+export function scheduleRecoveryBrief(agent: string, session: string): void {
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const facts = gatherRecoveryFacts(agent)
+        const brief = buildRecoveryBrief(facts)
+        if (!brief) {
+          logger.info({ agent, session }, 'recovery-brief: nothing in flight, staying quiet')
+          return
+        }
+        const res = await sendPromptToSession(session, brief, null, { lockMode: 'deliver' })
+        logger.info({ agent, session, res, cards: facts.inProgress.length, dirty: facts.dirty.length }, 'recovery-brief sent after restart')
+      } catch (err) {
+        logger.warn({ err, agent, session }, 'recovery-brief could not be delivered')
+      }
+    })()
+  }, RECOVERY_BRIEF_DELAY_MS)
+}
+
 export function startChannelPluginMonitor(): NodeJS.Timeout | null {
   // Respawn/keep-alive is production-only. On any non-production host (e.g. a
   // local dev checkout) we never respawn the main agent or auto-restart
@@ -2138,6 +2213,10 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // and no poller (verified: continue -> "Plugin not found" in /mcp; fresh
           // -> plugin loads + poller attaches). Context is dropped, memory persists.
           await startAgentProcess(t.agentName!, { fresh: true })
+          // The fresh session has no memory of what it was doing. If work was
+          // in flight, tell it -- once, after the modal/probe traffic settles,
+          // and only when there is something concrete to say.
+          scheduleRecoveryBrief(t.agentName!, t.session)
           agentLastRestart.set(t.agentName!, Date.now())
           agentDownSince.delete(t.session)
           agentBusyDeferAlerted.delete(t.session)
