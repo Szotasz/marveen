@@ -11,6 +11,8 @@
 // email-send-gate hook still applies to any programmatic use elsewhere.
 
 import { listMessages, sendMail, verifyAccess } from '../src/graph-mail.js'
+import { readFileSync } from 'node:fs'
+import { basename } from 'node:path'
 
 function flag(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`)
@@ -47,6 +49,10 @@ async function main(): Promise<void> {
       break
     }
     case 'send': {
+      const attachPath = flag('attach')
+      const attachments = attachPath
+        ? [{ name: basename(attachPath), contentBytes: readFileSync(attachPath).toString('base64') }]
+        : undefined
       const to = flag('to')
       const subject = flag('subject')
       const body = flag('body')
@@ -55,6 +61,7 @@ async function main(): Promise<void> {
         process.exit(2)
       }
       await sendMail({
+        attachments,
         to: to.split(','),
         subject,
         body,

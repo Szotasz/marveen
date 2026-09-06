@@ -50,6 +50,8 @@ export interface SendMailOptions {
   contentType?: 'Text' | 'HTML'
   /** Persist the sent message to the mailbox Sent Items. Default true. */
   saveToSentItems?: boolean
+  /** File attachments; content is base64. Graph caps a simple sendMail at ~3MB total. */
+  attachments?: { name: string; contentBytes: string; contentType?: string }[]
 }
 
 export interface ListMessagesOptions {
@@ -227,6 +229,14 @@ export async function sendMail(options: SendMailOptions): Promise<void> {
     toRecipients: toRecipientList(options.to),
   }
   if (options.cc) message.ccRecipients = toRecipientList(options.cc)
+  if (options.attachments?.length) {
+    message.attachments = options.attachments.map((a) => ({
+      '@odata.type': '#microsoft.graph.fileAttachment',
+      name: a.name,
+      contentType: a.contentType ?? 'application/octet-stream',
+      contentBytes: a.contentBytes,
+    }))
+  }
   const res = await graphFetch(`${mailboxPath()}/sendMail`, {
     method: 'POST',
     body: JSON.stringify({ message, saveToSentItems: options.saveToSentItems ?? true }),

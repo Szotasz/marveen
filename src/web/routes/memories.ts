@@ -235,11 +235,30 @@ Respond ONLY with JSON, nothing else:
   }
 
   const memUpdateMatch = path.match(/^\/api\/memories\/(\d+)$/)
-  if (memUpdateMatch && method === 'PUT') {
+  if (memUpdateMatch && (method === 'PUT' || method === 'PATCH')) {
     const id = parseInt(memUpdateMatch[1], 10)
     const body = await readBody(req)
-    const { content, category, tier, agent_id, keywords } = JSON.parse(body.toString()) as { content: string; category?: string; tier?: string; agent_id?: string; keywords?: string }
-    if (updateMemory(id, content, tier || category, agent_id, keywords)) { json(res, { ok: true }); return true }
+    const { content, category, tier, agent_id, keywords } = JSON.parse(body.toString()) as { content?: string; category?: string; tier?: string; agent_id?: string; keywords?: string }
+    const newCategory = (tier || category || '').toLowerCase() || undefined
+    if (newCategory && !MEMORY_CATEGORIES.has(newCategory)) {
+      json(res, { error: `Invalid category "${newCategory}". Allowed: ${[...MEMORY_CATEGORIES].join(', ')}` }, 400)
+      return true
+    }
+    // Partial update: a category-only change (the hot->cold tier move) must not
+    // require re-sending the content. updateMemory() always SETs content, so an
+    // omitted content is backfilled from the existing row -- previously an
+    // undefined content made the SQL bind throw and the endpoint 500'd, which
+    // left tier moves impossible via the API (Dream Engine blocker, 2026-07-30).
+    let effectiveContent = content
+    if (effectiveContent === undefined) {
+      const row = getDb().prepare('SELECT content FROM memories WHERE id = ?').get(id) as { content: string } | undefined
+      if (!row) { json(res, { error: 'Memory not found' }, 404); return true }
+      effectiveContent = row.content
+    } else if (containsSuspiciousContent(effectiveContent)) {
+      json(res, { error: 'Content rejected by security filter' }, 400)
+      return true
+    }
+    if (updateMemory(id, effectiveContent, newCategory, agent_id, keywords)) { json(res, { ok: true }); return true }
     json(res, { error: 'Memory not found' }, 404)
     return true
   }
