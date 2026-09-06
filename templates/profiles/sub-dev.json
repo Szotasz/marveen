@@ -4,7 +4,9 @@
   "description": "Full-stack sub-developer under the tech-lead. Permissive like default, but the account-level Supabase MCP is denied -- no direct prod-Supabase write/read. DB work = migration file -> the applier-pool (tech-lead/PM) reviews + applies. The applier-pool is NOT on this profile.",
   "permissionMode": "permissive",
   "filesystem": {
-    "allow": [],
+    "allow": [
+      "Read(${HOME}/marveen/exchange/**)"
+    ],
     "deny": [
       "mcp__claude_ai_Supabase__*"
     ]

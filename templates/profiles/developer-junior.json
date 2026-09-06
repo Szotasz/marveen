@@ -6,6 +6,7 @@
   "filesystem": {
     "allow": [
       "Read(${AGENT_DIR}/**)",
+      "Read(${HOME}/marveen/exchange/**)",
       "Write(${AGENT_DIR}/**)",
       "Edit(${AGENT_DIR}/**)",
       "Read(/tmp/**)",

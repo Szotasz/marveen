@@ -4,7 +4,9 @@
   "description": "The owner's tech-lead/PM applier-pool. Permissive like default but explicitly NO Supabase MCP deny -- these agents are the applier-pool for prod Supabase (review+apply). Sub-devs and non-applier agents use the denied default/sub-dev profiles.",
   "permissionMode": "permissive",
   "filesystem": {
-    "allow": [],
+    "allow": [
+      "Read(${HOME}/marveen/exchange/**)"
+    ],
     "deny": []
   }
 }
