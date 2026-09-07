@@ -108,3 +108,39 @@ export function summarize(rows) {
   }
   return { closed: rows.length, merged, rejected, live };
 }
+
+/** gh stderr shape for a plain 404 -- used to tell "no develop branch" from a
+ *  real failure. Anything that does not match is treated as DEGRADED. */
+export function isGhNotFound(errText) {
+  return /HTTP 404/.test(String(errText ?? ''));
+}
+
+/** Full upsert: every field, is_live/live_since included (healthy path). */
+export const UPSERT_FULL_SQL = `
+    INSERT INTO pr_ledger (repo, number, closed_date, base_branch, author, additions, deletions, files, state, title, is_live, live_since, measured_at)
+    VALUES (@repo, @number, @closed_date, @base_branch, @author, @additions, @deletions, @files, @state, @title, @is_live, @live_since, @measured_at)
+    ON CONFLICT(repo, number) DO UPDATE SET
+      closed_date=excluded.closed_date, base_branch=excluded.base_branch,
+      author=excluded.author, additions=excluded.additions, deletions=excluded.deletions,
+      files=excluded.files, state=excluded.state, title=excluded.title,
+      is_live=excluded.is_live, live_since=excluded.live_since, measured_at=excluded.measured_at
+`;
+
+/**
+ * Degraded-mode upsert for develop-based rows when the unreleased set could
+ * NOT be measured (Marveen's review blocker on #1234): an empty set would
+ * silently flip every waiting develop merge to live -- 102 stored rows on the
+ * day it was measured. So on failure the stored is_live/live_since are LEFT
+ * ALONE; a brand-new row enters conservatively as not-live (is_live=0) and the
+ * next healthy run corrects it. Main/master/feature rows never depend on the
+ * set and keep using the full upsert even in degraded mode.
+ */
+export const UPSERT_PRESERVE_LIVE_SQL = `
+    INSERT INTO pr_ledger (repo, number, closed_date, base_branch, author, additions, deletions, files, state, title, is_live, live_since, measured_at)
+    VALUES (@repo, @number, @closed_date, @base_branch, @author, @additions, @deletions, @files, @state, @title, 0, NULL, @measured_at)
+    ON CONFLICT(repo, number) DO UPDATE SET
+      closed_date=excluded.closed_date, base_branch=excluded.base_branch,
+      author=excluded.author, additions=excluded.additions, deletions=excluded.deletions,
+      files=excluded.files, state=excluded.state, title=excluded.title,
+      measured_at=excluded.measured_at
+`;

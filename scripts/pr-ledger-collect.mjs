@@ -21,7 +21,7 @@ import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PR_LEDGER_SCHEMA, mapPr, prNumbersFromMessages, decideLive } from './pr-ledger-lib.mjs';
+import { PR_LEDGER_SCHEMA, UPSERT_FULL_SQL, UPSERT_PRESERVE_LIVE_SQL, isGhNotFound, mapPr, prNumbersFromMessages, decideLive } from './pr-ledger-lib.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(path.join(here, '..', 'package.json'));
@@ -65,14 +65,28 @@ function listClosedPrs(repo) {
 }
 
 // The not-yet-released PR set: commit subjects in main...develop. Compare API,
-// so no clone is needed. A repo without a develop branch (or main) simply has
-// an empty set -- every one of its merges is judged by its base branch alone.
-function unreleasedSet(repo) {
+// so no clone is needed (--paginate is load-bearing: the commits[] array is
+// capped at 250 per page, and v1.25.1...develop measured 389).
+//
+// FAILURE SEMANTICS (Marveen review blocker on #1234): an empty set means
+// "nothing waits for a release" and flips every develop merge live -- so a
+// FAILED measurement must NEVER masquerade as an empty one. The develop
+// branch's EXISTENCE is measured separately (branches/develop): a clean 404
+// there is the legit no-develop case (empty set, ok). Anything else that
+// fails -> { ok: false }, and the caller leaves the stored is_live of that
+// repo's develop rows alone.
+function unreleasedInfo(repo) {
+  try {
+    gh(['api', `repos/${OWNER}/${repo}/branches/develop`, '--jq', '.name']);
+  } catch (e) {
+    if (isGhNotFound(e?.stderr ?? e)) return { ok: true, set: new Set(), noDevelop: true };
+    return { ok: false };
+  }
   try {
     const raw = gh(['api', `repos/${OWNER}/${repo}/compare/main...develop`, '--paginate', '--jq', '.commits[].commit.message | split("\n")[0]']);
-    return prNumbersFromMessages(raw.split('\n'));
+    return { ok: true, set: prNumbersFromMessages(raw.split('\n')) };
   } catch {
-    return new Set();
+    return { ok: false };
   }
 }
 
@@ -82,46 +96,50 @@ function main() {
   db.exec(PR_LEDGER_SCHEMA);
   db.exec('CREATE INDEX IF NOT EXISTS idx_pr_ledger_date ON pr_ledger(closed_date)');
 
-  const upsert = db.prepare(`
-    INSERT INTO pr_ledger (repo, number, closed_date, base_branch, author, additions, deletions, files, state, title, is_live, live_since, measured_at)
-    VALUES (@repo, @number, @closed_date, @base_branch, @author, @additions, @deletions, @files, @state, @title, @is_live, @live_since, @measured_at)
-    ON CONFLICT(repo, number) DO UPDATE SET
-      closed_date=excluded.closed_date, base_branch=excluded.base_branch,
-      author=excluded.author, additions=excluded.additions, deletions=excluded.deletions,
-      files=excluded.files, state=excluded.state, title=excluded.title,
-      is_live=excluded.is_live, live_since=excluded.live_since, measured_at=excluded.measured_at
-  `);
+  const upsertFull = db.prepare(UPSERT_FULL_SQL);
+  const upsertPreserveLive = db.prepare(UPSERT_PRESERVE_LIVE_SQL);
 
   const now = Math.floor(Date.now() / 1000);
   const repos = listRepos();
   let written = 0, reposWithPrs = 0;
+  const degradedRepos = [];
 
   for (const repo of repos) {
     let prs;
     try {
       prs = listClosedPrs(repo);
     } catch (e) {
+      degradedRepos.push(`${repo}:pr-list`);
       process.stderr.write(`SKIP ${repo}: gh pr list failed: ${String(e).slice(0, 120)}\n`);
       continue;
     }
     if (prs.length === 0) continue;
     reposWithPrs++;
-    const unreleased = unreleasedSet(repo);
+    const unreleased = unreleasedInfo(repo);
+    if (!unreleased.ok) degradedRepos.push(`${repo}:unreleased-set`);
     const tx = db.transaction((items) => {
       for (const pr of items) {
         const row = mapPr(repo, pr);
         if (!row) continue;
-        const live = decideLive(row, unreleased);
-        upsert.run({ ...row, ...live, measured_at: now });
+        if (!unreleased.ok && row.base_branch === 'develop') {
+          // Degraded: the release state of develop rows is UNKNOWN this run --
+          // update the facts, leave the stored is_live/live_since alone.
+          upsertPreserveLive.run({ ...row, measured_at: now });
+        } else {
+          const live = decideLive(row, unreleased.ok ? unreleased.set : new Set());
+          upsertFull.run({ ...row, ...live, measured_at: now });
+        }
         written++;
       }
     });
     tx(prs);
-    process.stderr.write(`OK ${repo}: ${prs.length} closed PR, unreleased-set ${unreleased.size}\n`);
+    process.stderr.write(`OK ${repo}: ${prs.length} closed PR, unreleased-set ${unreleased.ok ? unreleased.set.size : 'DEGRADED'}\n`);
   }
 
   const total = db.prepare('SELECT COUNT(*) c FROM pr_ledger').get().c;
-  console.log(JSON.stringify({ ok: true, repos_scanned: repos.length, repos_with_prs: reposWithPrs, rows_upserted: written, rows_total: total, measured_at: now }));
+  // degraded_repos on STDOUT, not stderr: the daily task's stderr goes unread,
+  // and a degraded measurement must be visible where the result is.
+  console.log(JSON.stringify({ ok: true, repos_scanned: repos.length, repos_with_prs: reposWithPrs, rows_upserted: written, rows_total: total, degraded_repos: degradedRepos, measured_at: now }));
   db.close();
 }
 

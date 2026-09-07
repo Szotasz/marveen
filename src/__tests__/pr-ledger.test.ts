@@ -7,7 +7,7 @@ import type { RouteContext } from '../web/routes/types.js'
 // The collector's pure logic -- imported directly, so the decisions the daily
 // run makes are the ones under test, not a re-implementation.
 // @ts-expect-error plain .mjs module without type declarations
-import { mapPr, prNumbersFromMessages, decideLive, isoDay } from '../../scripts/pr-ledger-lib.mjs'
+import { mapPr, prNumbersFromMessages, decideLive, isoDay, isGhNotFound, UPSERT_FULL_SQL, UPSERT_PRESERVE_LIVE_SQL } from '../../scripts/pr-ledger-lib.mjs'
 
 const ROOT = join(__dirname, '..', '..')
 
@@ -149,5 +149,50 @@ describe('GET /api/pr-ledger', () => {
   it('other methods and paths fall through untouched', async () => {
     const { ctx } = fakeGet('/api/pr-ledger-not-this')
     expect(await tryHandlePrLedger(ctx)).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Degraded-mode upsert (Marveen review blocker on #1234): a FAILED unreleased
+// measurement must never flip stored develop rows live. The preserve statement
+// updates the facts but leaves is_live/live_since untouched; the full one
+// overwrites both (that is what makes releases retroactive).
+// ---------------------------------------------------------------------------
+describe('degraded-mode upsert semantics', () => {
+  const base = { repo: 'marveen', closed_date: '2026-09-01', base_branch: 'develop', author: 'a', additions: 1, deletions: 1, files: 1, state: 'merged', title: 'eredeti' }
+
+  beforeEach(() => { initDatabase(':memory:') })
+
+  it('preserve: an existing NOT-live develop row stays not-live, the facts still update', () => {
+    getDb().prepare(UPSERT_FULL_SQL).run({ ...base, number: 1, is_live: 0, live_since: null, measured_at: 1 })
+    getDb().prepare(UPSERT_PRESERVE_LIVE_SQL).run({ ...base, number: 1, title: 'frissult', measured_at: 2 })
+    const r = getDb().prepare('SELECT is_live, live_since, title, measured_at FROM pr_ledger WHERE number = 1').get() as any
+    expect(r).toMatchObject({ is_live: 0, live_since: null, title: 'frissult', measured_at: 2 })
+  })
+
+  it('preserve: an existing LIVE row keeps is_live=1 and its live_since', () => {
+    getDb().prepare(UPSERT_FULL_SQL).run({ ...base, number: 2, is_live: 1, live_since: '2026-08-20', measured_at: 1 })
+    getDb().prepare(UPSERT_PRESERVE_LIVE_SQL).run({ ...base, number: 2, measured_at: 2 })
+    const r = getDb().prepare('SELECT is_live, live_since FROM pr_ledger WHERE number = 2').get() as any
+    expect(r).toEqual({ is_live: 1, live_since: '2026-08-20' })
+  })
+
+  it('preserve: a brand-new row enters conservatively as not-live', () => {
+    getDb().prepare(UPSERT_PRESERVE_LIVE_SQL).run({ ...base, number: 3, measured_at: 2 })
+    const r = getDb().prepare('SELECT is_live, live_since FROM pr_ledger WHERE number = 3').get() as any
+    expect(r).toEqual({ is_live: 0, live_since: null })
+  })
+
+  it('full: overwrites is_live in both directions (releases are retroactive)', () => {
+    getDb().prepare(UPSERT_FULL_SQL).run({ ...base, number: 4, is_live: 0, live_since: null, measured_at: 1 })
+    getDb().prepare(UPSERT_FULL_SQL).run({ ...base, number: 4, is_live: 1, live_since: null, measured_at: 2 })
+    expect((getDb().prepare('SELECT is_live FROM pr_ledger WHERE number = 4').get() as any).is_live).toBe(1)
+  })
+
+  it('isGhNotFound: a clean 404 is the legit no-develop shape, everything else is not', () => {
+    expect(isGhNotFound('gh: Not Found (HTTP 404)')).toBe(true)
+    expect(isGhNotFound('gh: rate limit exceeded (HTTP 403)')).toBe(false)
+    expect(isGhNotFound('connect ETIMEDOUT')).toBe(false)
+    expect(isGhNotFound(null)).toBe(false)
   })
 })
