@@ -32,10 +32,17 @@
 // The log is separate from the main Marveen log so operators can grep it
 // independently: `tail -f store/egress-blocked.log`
 //
-// Scope: this guard covers the Claude Code WebFetch tool only. It does NOT
-// intercept WebSearch, curl/Bash network calls, or MCP-server outbound
-// requests. Those channels are out of scope for this hook mechanism and require
-// separate controls if needed.
+// Scope: this guard covers the Claude Code WebFetch tool only -- it is wired
+// with matcher "WebFetch" and sees no other tool. It does NOT intercept
+// WebSearch or MCP-server outbound requests.
+//
+// The SHELL half is a separate control: BASH_EGRESS_DENY in
+// src/web/agent-scaffold.ts puts a small permissions.deny list on every agent
+// (curl to https://, plus wget/nc/ncat/telnet outright), because a fetched page
+// telling an agent to run a curl would otherwise walk straight past this file.
+// That list is a deny list, not a sandbox, and its limits are written down in
+// docs/security-hardening.md. The two halves are deliberately separate: this
+// one decides on a URL, that one on a command string.
 
 import { readFileSync, appendFileSync, mkdirSync } from 'node:fs'
 import { realpathSync } from 'node:fs'
