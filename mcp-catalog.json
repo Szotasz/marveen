@@ -7,7 +7,10 @@
     "category": "productivity",
     "icon": "📁",
     "command": "npx",
-    "args": ["-y", "@piotr-agier/google-drive-mcp"],
+    "args": [
+      "-y",
+      "@piotr-agier/google-drive-mcp"
+    ],
     "env": {},
     "authType": "oauth",
     "authNote": "Első használatkor a böngészőben kell bejelentkezni a Google fiókba",
@@ -21,13 +24,34 @@
     "category": "productivity",
     "icon": "📧",
     "command": "npx",
-    "args": ["-y", "gmail-mcp-server"],
+    "args": [
+      "-y",
+      "gmail-mcp-server"
+    ],
     "env": {},
     "authType": "oauth",
     "authNote": "Google Cloud OAuth kliens kell hozzá (client ID + secret). UGYANAZ az OAuth-app használható a Naptár összekötőhöz is.",
     "infoUrl": "https://github.com/ArtyMcLabin/Gmail-MCP-Server",
     "verifiedAt": "2026-08-27",
     "verifiedNote": "npm-csomag ellenőrizve: gmail-mcp-server v1.0.30 létezik."
+  },
+  {
+    "id": "gmail-v2",
+    "name": "Gmail v2 (fork, parhuzamos proba)",
+    "type": "local",
+    "icon": "📧",
+    "command": "bash",
+    "args": [
+      "vendor/gmail-mcp-fork/run.sh"
+    ],
+    "env": {
+      "GMAIL_MCP_TOOL_PREFIX": "v2_"
+    },
+    "authType": "oauth",
+    "authNote": "ArtyMcLabin/Gmail-MCP-Server fork FORRASBOL vendorolva, pinelt commit 83e8dafebc87dd3e6a26c04acb5ec6e199c1636e (2026-08-12) -- verzio-emeles SOHA nem csendes bump: uj commit + diff + build + parhuzamos igazolasi kor kell (VENDOR.md). Sajat config-konyvtar: ~/.gmail-mcp-v2/ (a regi ~/.gmail-mcp-hez NEM nyul). A v2_ tool-prefix az atmeneti parhuzamos futashoz; a regi gmail-MCP kivetele elott Marveen GO kell.",
+    "infoUrl": "https://github.com/ArtyMcLabin/Gmail-MCP-Server",
+    "verifiedAt": "2026-09-07",
+    "verifiedNote": "Forras-audit: process-en beluli tobb-fiok NINCS (singleton kliens, 28x userId:'me'), tobb fiok = instance-per-account TOOL_PREFIX-szel; kimeno host csak googleapis; build nalunk a pinelt forrasbol, dist/ a repoban a mi buildunk."
   },
   {
     "id": "google-calendar",
@@ -37,7 +61,10 @@
     "category": "productivity",
     "icon": "📅",
     "command": "npx",
-    "args": ["-y", "@cocal/google-calendar-mcp"],
+    "args": [
+      "-y",
+      "@cocal/google-calendar-mcp"
+    ],
     "env": {},
     "authType": "oauth",
     "authNote": "Google Cloud OAuth kliens kell hozzá (client ID + secret). UGYANAZ az OAuth-app használható a Gmail összekötőhöz is, tehát elég egyszer regisztrálni.",
@@ -79,8 +106,13 @@
     "category": "search",
     "icon": "🔍",
     "command": "npx",
-    "args": ["-y", "@modelcontextprotocol/server-brave-search"],
-    "env": {"BRAVE_API_KEY": ""},
+    "args": [
+      "-y",
+      "@modelcontextprotocol/server-brave-search"
+    ],
+    "env": {
+      "BRAVE_API_KEY": ""
+    },
     "authType": "apikey",
     "authNote": "API kulcs: https://brave.com/search/api/",
     "infoUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/brave-search"
@@ -93,7 +125,11 @@
     "category": "system",
     "icon": "💾",
     "command": "npx",
-    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/"],
+    "args": [
+      "-y",
+      "@modelcontextprotocol/server-filesystem",
+      "/"
+    ],
     "env": {},
     "authType": "none",
     "infoUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem"
@@ -106,8 +142,13 @@
     "category": "development",
     "icon": "🐙",
     "command": "npx",
-    "args": ["-y", "@modelcontextprotocol/server-github"],
-    "env": {"GITHUB_TOKEN": ""},
+    "args": [
+      "-y",
+      "@modelcontextprotocol/server-github"
+    ],
+    "env": {
+      "GITHUB_TOKEN": ""
+    },
     "authType": "apikey",
     "authNote": "Personal Access Token: GitHub Settings -> Developer Settings -> Personal Access Tokens",
     "infoUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/github"
@@ -159,8 +200,13 @@
     "category": "ai",
     "icon": "🔊",
     "command": "npx",
-    "args": ["-y", "elevenlabs-mcp"],
-    "env": {"ELEVENLABS_API_KEY": ""},
+    "args": [
+      "-y",
+      "elevenlabs-mcp"
+    ],
+    "env": {
+      "ELEVENLABS_API_KEY": ""
+    },
     "authType": "apikey",
     "authNote": "API kulcs: https://elevenlabs.io - Settings -> API Keys",
     "infoUrl": "https://github.com/elevenlabs/elevenlabs-mcp"
@@ -173,7 +219,11 @@
     "category": "productivity",
     "icon": "🎙️",
     "command": "npx",
-    "args": ["-y", "mcp-remote", "https://api.fireflies.ai/mcp"],
+    "args": [
+      "-y",
+      "mcp-remote",
+      "https://api.fireflies.ai/mcp"
+    ],
     "env": {},
     "authType": "oauth",
     "authNote": "Első használatkor OAuth bejelentkezés (Google/Microsoft fiók) a böngészőben",
@@ -187,7 +237,10 @@
     "category": "automation",
     "icon": "🌐",
     "command": "npx",
-    "args": ["-y", "@playwright/mcp@latest"],
+    "args": [
+      "-y",
+      "@playwright/mcp@latest"
+    ],
     "env": {},
     "authType": "none",
     "authNote": "Nincs auth. Headed mode-hoz adjuk hozzá az --headed flag-et az args-hoz.",
