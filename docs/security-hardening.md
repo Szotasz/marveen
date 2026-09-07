@@ -84,10 +84,27 @@ without covering the operator, so **nothing is written** and the startup log
 says so. Giving the main agent its own config dir is the fix; picking a side
 quietly is not this code's call.
 
-A user-scope `settings.json` is read when a session starts and is not re-read
-while it runs (the project scope is -- both measured 2026-09-07). A newly
-written rule therefore binds the main agent from its next restart, not
-immediately.
+## The trap for whoever measures this next
+
+The two scopes do not behave the same way, and the difference is invisible until
+it misleads you (both measured 2026-09-07):
+
+- The **project scope** (`<cwd>/.claude/settings.json` and `settings.local.json`)
+  is re-read while a session runs. A rule written there fires immediately, which
+  makes it a fine live test bench: drop a narrow, unique rule in, probe it, then
+  delete the file.
+- The **user scope** (the `settings.json` in the session's `CLAUDE_CONFIG_DIR`)
+  is read when the session STARTS and is not re-read afterwards. A rule written
+  there while the session runs does nothing at all.
+
+So a probe that works perfectly on the project scope reports a confident
+"allowed" on the user scope, and the honest-looking conclusion -- "the rule does
+not work" -- is wrong. What it means is "this session has not read it yet".
+Measure a user-scope rule from a session that started AFTER the write, or after
+the next restart.
+
+The same asymmetry is why a newly written rule binds the main agent from its
+next restart rather than immediately.
 
 ## Limits, stated out loud
 
