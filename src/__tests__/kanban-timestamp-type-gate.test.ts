@@ -118,3 +118,55 @@ describe('kanban_cards_timestamp_type_gate triggers', () => {
     expect(Math.abs(t.updated_at - NOW)).toBeLessThan(120)
   })
 })
+
+// The same defect from the same evening lived in kanban_comments too: fifteen
+// TEXT rows beside the twelve card rows. Gating only the cards would leave the
+// protection half-built -- and a comment timestamp is what orders a card's
+// history, so a TEXT one sorts above every integer sibling and the "newest"
+// comment becomes whichever one went in wrong.
+describe('kanban_comments_timestamp_type_gate triggers', () => {
+  function commentType(id: number): { t: string; created_at: number } {
+    const row = getDb().prepare('SELECT typeof(created_at) t, created_at FROM kanban_comments WHERE id = ?')
+      .get(id) as { t: string; created_at: number }
+    return row
+  }
+
+  it('known positive on INSERT: a datetime(\'now\')-shaped comment is normalised', () => {
+    const info = getDb().prepare(
+      `INSERT INTO kanban_comments (card_id, author, content, created_at)
+       VALUES ('c-1', 'agent', 'raw sql comment', datetime('now'))`
+    ).run()
+    const row = commentType(Number(info.lastInsertRowid))
+    expect(row.t).toBe('integer')
+    expect(Math.abs(row.created_at - NOW)).toBeLessThan(120)
+  })
+
+  it('known positive on UPDATE, and known negative: an integer comment is left alone', () => {
+    const db = getDb()
+    const info = db.prepare(
+      `INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES ('c-2', 'agent', 'x', ?)`
+    ).run(1788721449)
+    const id = Number(info.lastInsertRowid)
+    expect(commentType(id)).toMatchObject({ t: 'integer', created_at: 1788721449 })
+
+    db.prepare(`UPDATE kanban_comments SET created_at = datetime('now') WHERE id = ?`).run(id)
+    const after = commentType(id)
+    expect(after.t).toBe('integer')
+    expect(Math.abs(after.created_at - NOW)).toBeLessThan(120)
+  })
+
+  // The ordering consequence, pinned: this is WHY a comment timestamp's type
+  // matters, not just that it is untidy.
+  it('a TEXT comment would sort above every integer sibling -- the gate is what stops it', () => {
+    const db = getDb()
+    db.prepare(`INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES ('c-3', 'a', 'old', ?)`)
+      .run(NOW - 100)
+    db.prepare(`INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES ('c-3', 'a', 'raw', datetime('now', '-30 days'))`)
+      .run()
+    const newest = db.prepare(
+      `SELECT content FROM kanban_comments WHERE card_id = 'c-3' ORDER BY created_at DESC LIMIT 1`
+    ).get() as { content: string }
+    // Without the gate the 30-day-old raw row would win this ordering.
+    expect(newest.content).toBe('old')
+  })
+})

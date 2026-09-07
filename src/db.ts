@@ -582,6 +582,35 @@ export function initDatabase(dbPathOverride?: string): void {
     ${tsGateBody}
   `)
 
+  // Same defect, same evening, same writer: kanban_comments.created_at carried
+  // fifteen TEXT rows next to the twelve card rows -- one agent's ad-hoc
+  // sqlite3 session, not an application path. Gating only the cards would leave
+  // the protection half-built against a hazard that is demonstrably table-wide,
+  // and a comment timestamp is what orders a card's history and dates its
+  // entries; a TEXT one sorts above every integer sibling, so the newest
+  // comment on such a card is whichever one went in wrong.
+  //
+  // Comments have no updated_at, so the gate is single-column; everything else
+  // (self-healing over CHECK, loop safety, CAST for REAL, now() fallback over
+  // NULL) is the argument written above, unchanged.
+  const commentTsGateBody = `
+    BEGIN
+      UPDATE kanban_comments SET created_at = ${tsNormalise('created_at')} WHERE id = NEW.id;
+    END
+  `
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS kanban_comments_timestamp_type_gate_insert
+    AFTER INSERT ON kanban_comments
+    FOR EACH ROW WHEN typeof(NEW.created_at) != 'integer'
+    ${commentTsGateBody}
+  `)
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS kanban_comments_timestamp_type_gate_update
+    AFTER UPDATE OF created_at ON kanban_comments
+    FOR EACH ROW WHEN typeof(NEW.created_at) != 'integer'
+    ${commentTsGateBody}
+  `)
+
   // --- Kanban labels (tags) -----------------------------------------------
   // Labels are a separate registry (not hardcoded per-card strings) so the
   // same label can be reused across many cards and recolored in one place.
