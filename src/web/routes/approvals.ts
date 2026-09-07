@@ -9,6 +9,8 @@ import {
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
+import { isKnownAgent } from '../agent-config.js'
+import { deviceIdentityMismatch } from '../auth-gate.js'
 import { resolveOwnerChatId } from '../../owner-chat.js'
 import { sendTelegramMessage } from '../telegram.js'
 import type { RouteContext } from './types.js'
@@ -175,6 +177,29 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'agent_id is required' }, 400)
       return true
     }
+    // DEVICEIDENTITY829: a device-key caller may only request approval as
+    // itself -- see auth-gate.ts. Checked before REQUESTORGUARD829 below,
+    // which stays as the fallback for 'token' callers during migration.
+    const approvalDeviceMismatch = deviceIdentityMismatch(ctx.auth, agent_id.trim())
+    if (approvalDeviceMismatch) {
+      logger.warn({ agent_id, device: ctx.auth?.device }, 'Approval request rejected: device identity mismatch')
+      json(res, { error: approvalDeviceMismatch }, 403)
+      return true
+    }
+    // REQUESTORGUARD829: the requesting agent_id was accepted verbatim, same
+    // class of hole as AGENTRESOLVE826 (resolved_by) in this same file -- any
+    // caller holding the shared bearer token could open an approval request
+    // under another fleet agent's name (or an invented one). Unlike resolved_by
+    // (a human decision source) or kanban comment author (owner/system may also
+    // post), an approval REQUEST only ever originates from a fleet agent -- the
+    // owner does not ask itself for permission -- so no owner/system exemption
+    // applies here.
+    // Found by Sentinel Bon 2026-08-29 during the shared-token audit (ae2a0d2a).
+    if (!isKnownAgent(agent_id.trim())) {
+      logger.warn({ agent_id }, 'Approval request rejected: agent_id is not a known fleet agent')
+      json(res, { error: `unknown agent '${agent_id.trim()}' -- agent_id must be a registered fleet agent id` }, 403)
+      return true
+    }
     if (typeof category !== 'string' || !category.trim()) {
       json(res, { error: 'category is required' }, 400)
       return true
@@ -260,6 +285,27 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const msgId = typeof telegram_message_id === 'number' ? telegram_message_id : null
+
+    // AGENTRESOLVE826: no agent may resolve an approval -- not its own, not anyone
+    // else's. The self-approval guard below only compared resolved_by against the
+    // REQUESTING agent, so any agent could clear its own level-2 request simply by
+    // naming a different fleet member ("resolved_by":"angel"). All fleet agents share
+    // one bearer token, so the server cannot tell which process sent the PATCH; what
+    // it CAN do is refuse a resolver identity that belongs to an agent at all.
+    //
+    // Resolving is a HUMAN act, and resolved_by names the SOURCE of that decision
+    // ("telegram_text", "dashboard"), never a fleet member -- see the
+    // approval-request-handling skill. So an agent name in this field is always
+    // either impersonation or a mistake, and both should fail loudly.
+    //
+    // Found by Sentinel Bon 2026-08-26 while auditing the shared-token exposure, and
+    // confirmed against this file: without it, the whole level-2 "approval required"
+    // autonomy tier existed on paper only.
+    if (isKnownAgent(resolved_by.trim())) {
+      logger.warn({ resolved_by, approval: idMatch[1] }, 'Approval resolve rejected: resolved_by names a fleet agent')
+      json(res, { error: 'resolved_by must identify the human decision source (e.g. "telegram_text"), not a fleet agent' }, 403)
+      return true
+    }
 
     // Self-approval guard: the requesting agent cannot approve its own request.
     // This is a best-effort check on the self-declared resolved_by value (all fleet
