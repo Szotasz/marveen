@@ -284,6 +284,33 @@ export function initDatabase(dbPathOverride?: string): void {
     }
   }
 
+  // --- Fleet PR-throughput ledger (PRLEDGER907) ----------------------------
+  // One row per CLOSED pull request across the owner's repos; the collector
+  // (scripts/pr-ledger-collect.mjs) upserts daily and re-derives is_live,
+  // because a release retroactively makes earlier develop merges live. The
+  // schema is defined in TWO places on purpose (same dual-writer contract as
+  // conversation_log / ledger_lib.py): the collector may run standalone before
+  // the dashboard ever migrated. Kept in sync by pr-ledger-schema.test.ts.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pr_ledger (
+      repo TEXT NOT NULL,
+      number INTEGER NOT NULL,
+      closed_date TEXT NOT NULL,
+      base_branch TEXT NOT NULL,
+      author TEXT,
+      additions INTEGER,
+      deletions INTEGER,
+      files INTEGER,
+      state TEXT NOT NULL,
+      title TEXT,
+      is_live INTEGER NOT NULL DEFAULT 0,
+      live_since TEXT,
+      measured_at INTEGER NOT NULL,
+      UNIQUE(repo, number)
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_pr_ledger_date ON pr_ledger(closed_date)`)
+
   // Migration: hot/warm/cold/shared tier system with an enforced CHECK.
   // Rebuilds the table whenever its current schema doesn't include the
   // canonical CHECK -- covers both the legacy ('user_pref'...) and the
@@ -4124,4 +4151,39 @@ export function listOtelTraces(limit = 50): OtelTraceSummary[] {
     ORDER BY s.start_ms DESC
     LIMIT ?
   `).all(limit) as OtelTraceSummary[]
+}
+
+// --- Fleet PR-throughput ledger (PRLEDGER907) --------------------------------
+
+export interface PrLedgerRow {
+  repo: string
+  number: number
+  closed_date: string
+  base_branch: string
+  author: string | null
+  additions: number | null
+  deletions: number | null
+  files: number | null
+  state: 'merged' | 'closed'
+  title: string | null
+  is_live: number
+  live_since: string | null
+  measured_at: number
+}
+
+export interface PrLedgerSummary { closed: number; merged: number; rejected: number; live: number }
+
+/**
+ * Read-only window query over the ledger: inclusive [from, to] on closed_date
+ * (YYYY-MM-DD), optional repo filter. The summary is derived from the SAME
+ * row set the caller gets, so the numbers and the list cannot disagree.
+ */
+export function listPrLedger(from: string, to: string, repo?: string): { rows: PrLedgerRow[]; summary: PrLedgerSummary } {
+  const rows = (repo
+    ? db.prepare('SELECT * FROM pr_ledger WHERE closed_date BETWEEN ? AND ? AND repo = ? ORDER BY closed_date DESC, repo, number DESC').all(from, to, repo)
+    : db.prepare('SELECT * FROM pr_ledger WHERE closed_date BETWEEN ? AND ? ORDER BY closed_date DESC, repo, number DESC').all(from, to)
+  ) as PrLedgerRow[]
+  let merged = 0, live = 0
+  for (const r of rows) { if (r.state === 'merged') merged++; if (r.is_live) live++ }
+  return { rows, summary: { closed: rows.length, merged, rejected: rows.length - merged, live } }
 }
