@@ -119,3 +119,29 @@ export function resolveAuth(
 
   return { kind: 'none' }
 }
+
+// DEVICEIDENTITY829: shared bearer token is still the only credential every
+// fleet agent has, so a body-declared identity field (from/agent_id/author/
+// resolved_by) can always be forged by any holder -- the isKnownAgent guards
+// in each route only reject an UNKNOWN name, not a stolen KNOWN one. A device
+// key closes that: it is a hashed, per-caller credential (auth-device-keys.ts),
+// so when a request authenticates as one, the caller cannot legitimately claim
+// any identity but its own. Once every fleet agent holds a device key, this
+// makes body-declared identity redundant for those callers; while migration is
+// in progress (some callers still on the shared token), this only tightens the
+// device-authenticated ones and leaves 'token' callers exactly as before.
+//
+// Route usage: call BEFORE the existing isKnownAgent-family guard, with the
+// identity value the route is about to persist. Returns an error string to
+// send as 403, or null to fall through to the existing guard unchanged.
+// Takes the flattened `RouteContext['auth']` shape (not `AuthResult` directly)
+// since that is what every route handler actually holds.
+// Sentinel Bon + Logra Bon, device-key migration plan, 2026-08-29.
+export function deviceIdentityMismatch(
+  auth: { kind: string; device?: string } | undefined,
+  claimed: string,
+): string | null {
+  if (!auth || auth.kind !== 'device') return null
+  if (auth.device === claimed) return null
+  return `device key '${auth.device}' may not act as '${claimed}'`
+}
