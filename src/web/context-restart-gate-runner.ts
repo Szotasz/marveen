@@ -456,9 +456,9 @@ function hasLiveChildProcesses(session: string, mcpPatterns: string[]): boolean 
  * snapshot only shows whatever the terminal painted last. Between two tool
  * calls the pane reads idle; the transcript does not.
  */
-function msSinceTranscriptWrite(workingDir: string, nowMs: number): number | null {
+export function msSinceTranscriptWrite(workingDir: string, nowMs: number, configDir?: string): number | null {
   try {
-    const dir = projectsDirFor(workingDir)
+    const dir = projectsDirFor(workingDir, configDir)
     if (!existsSync(dir)) return null
     let newest = 0
     for (const f of readdirSync(dir)) {
@@ -632,7 +632,7 @@ export function gatherGateInputs(name: string, nowMs: number): GateSnapshot {
     pendingOutboundCount:   dispatchedStats === null ? 1 : dispatchedStats.count,
     hasStaleOutbound:       dispatchedStats?.hasStale ?? false,
     hasChildProcesses:      childProcesses,
-    msSinceTranscriptWrite: msSinceTranscriptWrite(workingDir, nowMs),
+    msSinceTranscriptWrite: msSinceTranscriptWrite(workingDir, nowMs, configDirFor(name)),
     hasOpenQuestion:        openQuestion,
     hasLiveTaskState:       liveTaskState,
   }

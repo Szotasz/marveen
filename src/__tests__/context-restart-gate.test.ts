@@ -1,4 +1,7 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
 import {
   gateWakePrompt,
   isInfrastructureChild,
@@ -9,6 +12,7 @@ import {
   parseEtimeSeconds,
   commBasename,
   TASKSTATE_FRESH_WINDOW_MS,
+  msSinceTranscriptWrite,
 } from '../web/context-restart-gate-runner.js'
 import {
   decideGate,
@@ -763,5 +767,41 @@ describe('gateWakePrompt', () => {
   // Guard against the nudge itself becoming a source of invented work.
   it('tells the agent that "nothing in flight" is a complete state', () => {
     expect(gateWakePrompt()).toContain('ne talalj ki magadnak feladatot')
+  })
+})
+
+describe('msSinceTranscriptWrite -- configDir routing', () => {
+  let tmpRoot: string
+  let workingDir: string
+  let configDir: string
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), 'gate-test-'))
+    workingDir = '/home/agent/testproject'
+    configDir = join(tmpRoot, 'config')
+    // projectsDirFor encodes workingDir as workingDir.replace(/[/.]/g, '-')
+    const encoded = workingDir.replace(/[/.]/g, '-')
+    const projectsDir = join(configDir, 'projects', encoded)
+    mkdirSync(projectsDir, { recursive: true })
+    writeFileSync(join(projectsDir, 'session.jsonl'), '{"type":"test"}\n')
+  })
+
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true })
+  })
+
+  it('returns null when configDir is not provided and transcript is under a custom root', () => {
+    // Without configDir the function looks in ~/.claude/projects, not in our
+    // tmpRoot -- so it must return null (can't find the file).
+    const result = msSinceTranscriptWrite(workingDir, Date.now())
+    expect(result).toBeNull()
+  })
+
+  it('returns a non-null age when configDir points to the correct root', () => {
+    // With configDir the function looks in configDir/projects/<encoded>, finds
+    // the jsonl file, and returns milliseconds since its mtime.
+    const result = msSinceTranscriptWrite(workingDir, Date.now(), configDir)
+    expect(result).not.toBeNull()
+    expect(typeof result).toBe('number')
   })
 })
