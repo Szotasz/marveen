@@ -43,6 +43,13 @@ function gh(ghArgs) {
   return execFileSync('gh', ghArgs, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 }
 
+// SCOPE RULE (Marveen 21996, the measured mistake behind the snapshot's
+// missing repos): the question is NEVER "does the repo have OPEN PRs" --
+// hideghivas-oktatas-web had none and was still the period's most active
+// repo (116 closed rows). The right question is "did any PR CLOSE there",
+// and this collector asks it by construction: it scans EVERY repo of the
+// owner and lets the closed-PR listing decide. Do not "optimise" this into
+// an open-PR or recently-pushed prefilter; that is the trap.
 function listRepos() {
   const raw = gh(['repo', 'list', OWNER, '--limit', '200', '--json', 'name']);
   return JSON.parse(raw).map((r) => r.name);
