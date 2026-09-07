@@ -245,7 +245,9 @@ cp "$HOOK" "$LONELY_DIR/taskstate-stub.py"
 LONELY_STATE="$(mktemp -d)"
 echo '{"cwd":"'"$INSTALL_DIR"'","prompt":"Ez a prompt nem allhat meg"}'     | TASKSTATE_DIR_OVERRIDE="$LONELY_STATE" python3 "$LONELY_DIR/taskstate-stub.py" 2>/dev/null
 assert_eq "6a: missing ledger_lib -> exit 0 (prompt not blocked)" "0" "$?"
-LONELY_FILES="$(ls -A "$LONELY_STATE" | wc -l)"
+# assert_eq compares as strings, and BSD wc (macOS) pads its count with leading
+# spaces -- "       0" != "0" -- so the count is stripped before comparison.
+LONELY_FILES="$(ls -A "$LONELY_STATE" | wc -l | tr -d '[:space:]')"
 assert_eq "6b: missing ledger_lib -> no record written" "0" "$LONELY_FILES"
 rm -rf "$LONELY_DIR" "$LONELY_STATE"
 
