@@ -518,6 +518,70 @@ export function initDatabase(dbPathOverride?: string): void {
     ${titleGateBody}
   `)
 
+  // Timestamp TYPE gate. SQLite's INTEGER affinity converts a numeric string
+  // ('1788721449') on the way in, so strftime('%s','now') lands as an integer
+  // and nobody notices the difference -- but datetime('now') yields
+  // '2026-08-29 18:29:48', which is not a well-formed integer, so it is stored
+  // AS TEXT in a column declared INTEGER NOT NULL.
+  //
+  // Why that is not cosmetic: every sweep and every audit detector on this
+  // table compares a timestamp with an integer (`updated_at < strftime(...)`),
+  // and SQLite compares a TEXT value with an INTEGER by TYPE ORDER, not by
+  // value -- text always sorts above numbers. So a TEXT row silently lands on
+  // the same side of EVERY such comparison: it always looks fresh, never looks
+  // stuck, and quietly drops out of the stale-card sweeps and the audit
+  // instead of raising anything. The failure has no exception and no log line,
+  // which is why it survived from 2026-08-29 to 2026-09-07 unnoticed.
+  //
+  // The write path cannot be fixed at a call site: the application writers all
+  // pass Date.now()/1000, and the rows that went wrong were written by an
+  // agent's own ad-hoc `sqlite3 ... INSERT` with datetime('now') -- measured
+  // 2026-09-07, twelve cards and fifteen comments from one evening, all
+  // carrying UTC datetime strings. The writer is "anyone with a shell", so the
+  // guard belongs to the table.
+  //
+  // Self-healing rather than a CHECK constraint, for the reason already stated
+  // above the title gate: agents write this table with raw sqlite3 and rarely
+  // inspect exit codes, so a rejected INSERT would lose the card silently.
+  // Normalising keeps the row AND makes it comparable.
+  //
+  // Loop safety, same argument as the title gate: the corrective UPDATE writes
+  // integers, so the re-fired WHEN clause is false even with
+  // PRAGMA recursive_triggers=ON.
+  //
+  // A REAL is cast, not parsed: strftime() would read a bare number as a
+  // Julian day and turn 1788721449 into a date in the year 4.8 million. Text
+  // that strftime cannot parse falls back to now() rather than to NULL, which
+  // the NOT NULL column would reject -- losing the whole write to save a
+  // timestamp.
+  const tsNormalise = (col: string) => `
+    CASE typeof(NEW.${col})
+      WHEN 'integer' THEN NEW.${col}
+      WHEN 'real' THEN CAST(NEW.${col} AS INTEGER)
+      ELSE CAST(COALESCE(strftime('%s', NEW.${col}), strftime('%s','now')) AS INTEGER)
+    END`
+  const tsGateWhen = `typeof(NEW.created_at) != 'integer' OR typeof(NEW.updated_at) != 'integer'`
+  const tsGateBody = `
+    BEGIN
+      UPDATE kanban_cards SET
+        created_at = ${tsNormalise('created_at')},
+        updated_at = ${tsNormalise('updated_at')}
+      WHERE id = NEW.id;
+    END
+  `
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS kanban_cards_timestamp_type_gate_insert
+    AFTER INSERT ON kanban_cards
+    FOR EACH ROW WHEN ${tsGateWhen}
+    ${tsGateBody}
+  `)
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS kanban_cards_timestamp_type_gate_update
+    AFTER UPDATE OF created_at, updated_at ON kanban_cards
+    FOR EACH ROW WHEN ${tsGateWhen}
+    ${tsGateBody}
+  `)
+
   // --- Kanban labels (tags) -----------------------------------------------
   // Labels are a separate registry (not hardcoded per-card strings) so the
   // same label can be reused across many cards and recolored in one place.
