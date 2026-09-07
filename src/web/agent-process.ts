@@ -375,6 +375,27 @@ export function ensureMainAgentIsolatedConfigDir(
   )
 }
 
+// READ-ONLY sibling of the two resolvers above: which config dir will the main
+// agent actually use, without provisioning anything. `null` means the shared
+// ~/.claude root, i.e. the same file the operator's own interactive sessions
+// read -- and a caller that must not touch the operator's shell has to treat
+// that as "no place of my own to write" rather than falling back to it.
+//
+// Same gates as ensureMainAgentIsolatedConfigDir (explicit dir wins; otherwise
+// the setting AND the fleet token AND the dir actually existing), deliberately
+// without its side effects, so a boot-time migration can ask the question
+// before the launcher has run.
+export function mainAgentConfigDirIfSeparate(): string | null {
+  const explicit = resolveMainAgentConfigDir()
+  if (explicit) return explicit
+  let enabled = false
+  try { enabled = String(getEffectiveSettingValue('MAIN_AGENT_ISOLATED_CONFIG')) === '1' } catch { return null }
+  if (!enabled) return null
+  if (!hasFleetOauthToken()) return null
+  const dir = join(PROJECT_ROOT, '.channels-config')
+  return existsSync(dir) ? dir : null
+}
+
 // CHANNEL_PLUGINS_EXTRA -- the co-listen plugins channels.sh appends to
 // --channels so ONE main session can serve several providers at once (e.g.
 // Telegram primary + Discord). Same .env key channels.sh parses, read here so

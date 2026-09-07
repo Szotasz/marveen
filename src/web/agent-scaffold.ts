@@ -774,14 +774,53 @@ export function mergeBashEgressDeny(settings: Record<string, unknown>): boolean 
   return true
 }
 
+// WHICH FILE the egress deny is written to -- the part that is not obvious, so
+// it is a pure function with its own tests.
+//
+// A sub-agent is simple: its own settings.json.
+//
+// The MAIN agent is not, and getting it wrong inverts the whole guard. Its
+// settings path is the shared ~/.claude/settings.json, and that file is ALSO
+// the owner's own interactive sessions. The owner decided (2026-09-07) that
+// their own shell must stay unrestricted while the fleet stays gated, so the
+// shared file is off limits: writing there would restrict the owner, and
+// deleting from there would un-gate the main agent -- which is the one agent
+// that reads untrusted web content on the owner's behalf.
+//
+// The way out is measured, not assumed: when the install gives the main agent a
+// config dir of its own (an explicit one, or the provisioned isolated dir), the
+// agent reads ITS settings.json as the user scope and the owner's shell does
+// not. The two are genuinely separate files -- and the separation survives
+// restarts, because the provisioner rebuilds that file from the shared one but
+// keeps keys the shared file never mentions, and `permissions` is exactly such
+// a key.
+//
+// Returns null when the main agent runs on the shared root: there is no scope
+// that covers it without covering the owner, so this writes NOTHING and the
+// caller reports it. A silent fallback either way would be a decision this code
+// is not entitled to make.
+export function bashEgressDenyTargetPath(name: string, mainAgentConfigDir: string | null): string | null {
+  if (name !== MAIN_AGENT_ID) return agentSettingsPath(name)
+  return mainAgentConfigDir ? join(mainAgentConfigDir, 'settings.json') : null
+}
+
 // Idempotent migration for the EXISTING fleet: writeAgentSettingsFromProfile
-// only rewrites a sub-agent's settings on spawn, and the main agent's
-// ~/.claude/settings.json is not written by it at all. Called at server startup
-// alongside ensureEgressGate so the rules reach every agent -- main included,
-// because the main agent is hijackable through fetched content exactly like a
-// sub-agent. Returns true if the file was updated.
-export function ensureBashEgressDeny(name: string): boolean {
-  const settingsPath = agentSettingsPath(name)
+// only rewrites a sub-agent's settings on spawn, and the main agent's settings
+// are not written by it at all. Called at server startup alongside
+// ensureEgressGate so the rules reach every agent -- the main one included,
+// because it is hijackable through fetched content exactly like a sub-agent.
+//
+// `mainAgentConfigDir` is the main agent's own config dir, or null when it runs
+// on the shared root; it is ignored for sub-agents. Returns true if a file was
+// written, false if nothing was needed OR there was no place to write it.
+//
+// NOTE the scope loads at session start: a user-scope settings.json is read
+// when the session boots and is NOT re-read while it runs (the project scope
+// is -- measured 2026-09-07, both directions). So a freshly written rule binds
+// the main agent from its next restart, not immediately.
+export function ensureBashEgressDeny(name: string, mainAgentConfigDir: string | null = null): boolean {
+  const settingsPath = bashEgressDenyTargetPath(name, mainAgentConfigDir)
+  if (!settingsPath) return false
   let settings: Record<string, unknown> = {}
   if (existsSync(settingsPath)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }

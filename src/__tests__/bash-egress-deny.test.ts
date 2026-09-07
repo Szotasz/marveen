@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync, existsSync, rmSync } from 'node:fs'
+import { tmpdir, homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { BASH_EGRESS_DENY, mergeBashEgressDeny } from '../web/agent-scaffold.js'
+import { BASH_EGRESS_DENY, mergeBashEgressDeny, bashEgressDenyTargetPath, ensureBashEgressDeny } from '../web/agent-scaffold.js'
+import { MAIN_AGENT_ID } from '../config.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -151,5 +153,70 @@ describe('template parity', () => {
   it('templates/settings.json.template carries exactly the same rules', () => {
     const tpl = JSON.parse(readFileSync(join(ROOT, 'templates', 'settings.json.template'), 'utf-8'))
     expect(tpl.permissions?.deny).toEqual(BASH_EGRESS_DENY)
+  })
+})
+
+// WHERE the main agent's rules are written is the whole point of the second
+// round. The shared user root is also the operator's own interactive shell, and
+// the operator asked to stay out of the rule while the fleet stays in it. So
+// the main agent is covered ONLY through a config dir of its own, and when
+// there is none this must write nothing at all rather than pick a side.
+describe('bashEgressDenyTargetPath', () => {
+  it('sends a sub-agent to its own settings.json', () => {
+    const p = bashEgressDenyTargetPath('some-agent', null)
+    expect(p).toContain(join('some-agent', '.claude', 'settings.json'))
+  })
+
+  it('sends the main agent to ITS OWN config dir when it has one', () => {
+    expect(bashEgressDenyTargetPath(MAIN_AGENT_ID, '/somewhere/.channels-config'))
+      .toBe(join('/somewhere/.channels-config', 'settings.json'))
+  })
+
+  it('returns null for the main agent on the shared root -- never the operator\'s file', () => {
+    expect(bashEgressDenyTargetPath(MAIN_AGENT_ID, null)).toBe(null)
+  })
+
+  // The regression that would invert the guard: writing to the shared root
+  // restricts the operator's own shell and still leaves the main agent open on
+  // an install where it has a config dir of its own.
+  it('never targets the shared home settings for the main agent', () => {
+    const shared = join(homedir(), '.claude', 'settings.json')
+    expect(bashEgressDenyTargetPath(MAIN_AGENT_ID, null)).not.toBe(shared)
+    expect(bashEgressDenyTargetPath(MAIN_AGENT_ID, '/somewhere/.channels-config')).not.toBe(shared)
+  })
+})
+
+describe('ensureBashEgressDeny for the main agent', () => {
+  it('writes the rules into the config dir it was given', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'marveen-egress-'))
+    try {
+      expect(ensureBashEgressDeny(MAIN_AGENT_ID, dir)).toBe(true)
+      const written = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf-8'))
+      expect(written.permissions.deny).toEqual(BASH_EGRESS_DENY)
+      // Idempotent: a second boot must not append the same rules again.
+      expect(ensureBashEgressDeny(MAIN_AGENT_ID, dir)).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps the config dir\'s other keys -- the file is rebuilt on every start and only its own keys survive', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'marveen-egress-'))
+    try {
+      writeFileSync(join(dir, 'settings.json'), JSON.stringify({ hooks: { PreCompact: [] }, enabledPlugins: { x: true } }))
+      ensureBashEgressDeny(MAIN_AGENT_ID, dir)
+      const written = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf-8'))
+      expect(Object.keys(written).sort()).toEqual(['enabledPlugins', 'hooks', 'permissions'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('writes NOTHING when there is no separate config dir', () => {
+    const shared = join(homedir(), '.claude', 'settings.json')
+    const before = existsSync(shared) ? readFileSync(shared, 'utf-8') : null
+    expect(ensureBashEgressDeny(MAIN_AGENT_ID, null)).toBe(false)
+    const after = existsSync(shared) ? readFileSync(shared, 'utf-8') : null
+    expect(after).toBe(before)
   })
 })
