@@ -29,6 +29,9 @@ export const MODEL_ALIASES: Record<string, string> = {
   'opus-5': 'claude-opus-5',
   'opus5': 'claude-opus-5',
   'haiku': 'claude-haiku-4-5-20251001',
+  'fable': 'claude-fable-5',
+  'fable-5': 'claude-fable-5',
+  'fable5': 'claude-fable-5',
   'inherit': DEFAULT_MODEL,
 }
 
