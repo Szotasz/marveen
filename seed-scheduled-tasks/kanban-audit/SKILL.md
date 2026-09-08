@@ -267,9 +267,48 @@ for c in json.load(sys.stdin):
 7. **Telegram csak akkor írj ha**:
    - 3+ beakadt task van (kritikus)
    - Új blokker (waiting > 48h)
+   - **TULAJDONOSRA VÁRÓ KEMÉNY BLOKKOLÓ, státusztól és kortól függetlenül.**
+     A fenti két küszöb szűk, mert mindkettő ÁLLAPOTOT vagy KORT néz, a
+     blokkoló viszont lehet friss és lehet `planned` is. 2026-08-11: egy
+     kártya arról, hogy elfogyott egy szolgáltató előrefizetett kerete és
+     minden hívás 429-cel tér vissza, `planned` státuszban, 100 perce
+     létezett, tehát SEM a "3+ beakadt", SEM a "waiting > 48h" nem fogta meg.
+     Közben négy szálat állított meg, és csak a tulajdonos tudta feloldani,
+     mert számlázás.
+     A szabály: ha egy kártya (a) kemény megállást ír le, (b) az assignee-je a
+     tulajdonos, vagy a leírása szerint csak ő tudja elvégezni, és (c) nem
+     látszik, hogy szólt volna neki bárki, akkor kimegy Telegramon.
+     A (c) ellenőrzése: nézd meg, kérte-e valaki inter-agent üzenetben a
+     továbbítást, és fusd át a saját kimenő üzeneteidet. Ha kétséges, inkább
+     szólj: a kétszer elmondott blokkoló olcsóbb, mint a négy órát álló flotta.
    - Egyébként csendben (heartbeat-stílus)
 
 ## Buktatók
+- **A saját kommentelésed elrejti a kártyát a kor-alapú metrikák elől.** Egy
+  komment (és minden kártya-írás) frissíti az `updated_at`-et, tehát a
+  `waiting > 48h` lista ÜRESRE válthat attól, hogy az előző körben te magad
+  írtál a kártyára. 2026-08-11, saját mérés: egy kártya 307 órája várt, 12:00-kor
+  kommenteltem rá, és a 16:00-s auditon már 0 volt a `waiting > 48h` -- nem
+  azért, mert megoldódott, hanem mert én nyúltam hozzá. A hiba iránya
+  megnyugtató, és ettől veszélyes: néma nulla, ami sikernek látszik.
+  Ha "0 blokkolót" mérsz, nézd meg, mozgott-e a kártya az előző audit óta ÉS ki
+  mozgatta:
+  ```bash
+  python3 -c "
+  import sqlite3
+  c=sqlite3.connect('store/claudeclaw.db')
+  r=c.execute(\"select author from kanban_comments where card_id=? order by created_at desc limit 1\", ('<id>',)).fetchone()
+  print(r[0] if r else '(nincs komment)')"
+  ```
+  Az `updated_at` az utolsó ÍRÁS ideje, nem a munka utolsó valódi mozgásáé.
+  **A VALÓS kort a `created_at`-tel vesd össze, ha az `updated_at` a te írásod.**
+  2026-08-25: egy kártya 162,5 órásnak mérődött, de az `updated_at` egy héttel
+  korábbi saját kommentem volt; a kártya 14 napja készült. A kétszeres eltérés
+  eldönti, halasztható-e még egy napot, ezért a jelentésben a valós kort mondd,
+  a mérttel együtt.
+  Ebből következik egy tartózkodás is: **ne kommentelj a kártyára pusztán azért,
+  hogy rögzítsd, hogy megnézted.** Ha csak ellenőriztél, a csatornán jelezd, ne a
+  táblán. Kommentet akkor írj, ha MÉRTÉL valamit, ami a kártyán maradandó.
 - **NE `sqlite3` CLI-t és NE `jq`-t használj.** Egyik sincs telepítve egy átlagos Linux
   gépen (a telepítő függőségei: ffmpeg, git, tmux, lsof, curl, python3, pipx, unzip), és a
   hívás ott `exit 127`-tel elhal -- ez a lépés némán kimarad, miközben az audit sikeresnek
