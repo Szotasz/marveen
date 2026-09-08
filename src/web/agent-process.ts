@@ -27,6 +27,7 @@ import {
   stuckInputSignature,
   type FirstRunGateKind,
 } from '../pane-state.js'
+import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
 import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation } from './agent-config.js'
 import { resolveAgentConfigDir } from './claude-plans.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
@@ -1282,6 +1283,27 @@ function startRemoteAgentProcess(
   }
 }
 
+/**
+ * Does a start that just happened deserve a recovery brief?
+ *
+ * Only a FRESH start: a --continue resume still has the conversation, so the
+ * agent already knows what it was doing, and a brief there would repeat it.
+ * And only a start that actually succeeded -- briefing a session that never
+ * came up would type into whatever is on that tmux target next.
+ *
+ * Card 3a64403b covered the channel-monitor door. The measurement that
+ * followed found three more (context-guard restart, auto-restart in fresh
+ * mode, and the dashboard's own restart button), which is why the decision
+ * now lives here, at the one place all of them pass through, rather than at
+ * each caller.
+ */
+export function shouldBriefAfterStart(
+  opts: { fresh?: boolean },
+  result: { ok: boolean },
+): boolean {
+  return opts.fresh === true && result.ok
+}
+
 export async function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
@@ -1719,6 +1741,16 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // takes this path (it comes up via channels.sh) but guard defensively.
     if (hasChannel && name !== MAIN_AGENT_ID) {
       schedulePluginUnlockAfterRespawn(session, provider.type)
+    }
+
+    // A fresh session has no memory of what the agent was doing. Every fresh
+    // door passes here -- the channel monitor's watchdog, the context guard,
+    // auto-restart in fresh mode, and the dashboard button -- so the brief is
+    // scheduled once, at the door, instead of at each caller (card 3a64403b).
+    if (shouldBriefAfterStart(opts, { ok: true })) {
+      scheduleRecoveryBrief(name, session, (target, text) =>
+        sendPromptToSession(target, text, null, { lockMode: 'deliver' }),
+      )
     }
 
     return { ok: true }
