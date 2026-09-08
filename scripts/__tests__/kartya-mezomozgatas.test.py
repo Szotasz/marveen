@@ -23,6 +23,11 @@ FAILS = []
 SANDBOX_ROOT = tempfile.mkdtemp(prefix='kartya-sandbox-')
 
 
+# AZ --author MINDEN LETREHOZO HIVASBAN KIMONDOTT (KARTYAKULDO908, 2026-09-08). Nem stilus:
+# 2026-09-08 ota a letrehozo ag kimondott feladot kovetel, es kimondott szerzo NELKUL ezek a
+# futasok MAR A FELADO-KAPUN halnanak el. A tesztek tovabbra is zoldek maradnanak (a legtobbjuk
+# megtagadast var), csak MAS OKBOL -- vagyis a homoglifa-, horgony- es felelos-kapuk, amiket
+# merni akarnak, SOSEM futnanak le. Egy teszt, ami a rossz kapun zold, rosszabb, mint egy piros.
 def check(name, cond, detail=''):
     print(('PASS  ' if cond else 'FAIL  ') + name + (('  -- ' + detail) if detail and not cond else ''))
     if not cond:
@@ -156,7 +161,7 @@ def main():
     env['KARTYA_DB'] = DB_PATH
     env['CLAUDECLAW_ROOT'] = SANDBOX_ROOT
     env['KARTYA_API'] = 'http://127.0.0.1:1/api/messages'
-    p = subprocess.run([sys.executable, SCRIPT, '--id', 'UJKARTYA906', '--assignee', 'marveen',
+    p = subprocess.run([sys.executable, SCRIPT, '--id', 'UJKARTYA906', '--assignee', 'marveen', '--author', 'Boni',
                         '--title', 'UJKARTYA906 uj kartya teszt', '--no-msg'],
                        capture_output=True, text=True, env=env, timeout=30)
     check('7 letrehozo ag lefutott', p.returncode == 0, p.stdout + p.stderr)
@@ -167,7 +172,7 @@ def main():
     d = tempfile.mkdtemp(prefix='kartya-m3-')
     mf = os.path.join(d, 'm.txt')
     open(mf, 'w', encoding='utf-8').write('Kartya ELLENT906: ellentmondo kapcsolok.')
-    p = subprocess.run([sys.executable, SCRIPT, '--id', 'ELLENT906', '--assignee', 'marveen',
+    p = subprocess.run([sys.executable, SCRIPT, '--id', 'ELLENT906', '--assignee', 'marveen', '--author', 'Boni',
                         '--title', 'ellentmondas teszt', '--msg-file', mf, '--no-msg'],
                        capture_output=True, text=True, env=env, timeout=30)
     # A puszta nem-nulla exit itt NEM eleg: a kapu nelkul is elbukna az uzenetkuldesen (a
@@ -310,7 +315,7 @@ def main():
     env = dict(os.environ)
     env['KARTYA_DB'] = DB_PATH; env['CLAUDECLAW_ROOT'] = SANDBOX_ROOT
     env['KARTYA_API'] = 'http://127.0.0.1:1/api/messages'
-    p = subprocess.run([sys.executable, SCRIPT, '--id', 'HORGONYUJ906', '--assignee', 'marveen',
+    p = subprocess.run([sys.executable, SCRIPT, '--id', 'HORGONYUJ906', '--assignee', 'marveen', '--author', 'Boni',
                         '--title', 'cim azonosito nelkul', '--no-msg'],
                        capture_output=True, text=True, env=env, timeout=30)
     check('22 a letrehozo ag is megtagadja a horgony nelkuli cimet',
@@ -338,7 +343,7 @@ def main():
 
     # 24. Az --assignee-uj a LETREHOZO agon ertelmetlen -- egy nem hato kapcsolo pont az a
     #     hibaosztaly, amit ez az eszkoz ket kore zar (a --status csendes elvesztese).
-    p = subprocess.run([sys.executable, SCRIPT, '--id', 'UJFLAG906', '--assignee', 'marveen',
+    p = subprocess.run([sys.executable, SCRIPT, '--id', 'UJFLAG906', '--assignee', 'marveen', '--author', 'Boni',
                         '--title', 'UJFLAG906 teszt', '--no-msg', '--assignee-uj'],
                        capture_output=True, text=True, env=env, timeout=30)
     check('24 megtagadva az --assignee-uj a letrehozo agon',
@@ -347,7 +352,7 @@ def main():
 
     # 25. A LETREHOZO AG IS MEGORZI a kulso nev kis/nagybetujet (a kozos feloldas kovetkezmenye).
     #     Korabban a feltetel nelkuli .lower() mas erteket irt volna, mint ami a tablan all.
-    p = subprocess.run([sys.executable, SCRIPT, '--id', 'KULSONEV906', '--assignee', 'UjSzerzo',
+    p = subprocess.run([sys.executable, SCRIPT, '--id', 'KULSONEV906', '--assignee', 'UjSzerzo', '--author', 'Boni',
                         '--title', 'KULSONEV906 kulso szerzo kartyaja', '--no-msg'],
                        capture_output=True, text=True, env=env, timeout=30)
     check('25 a letrehozo ag lefutott', p.returncode == 0, p.stdout + p.stderr)
@@ -374,7 +379,7 @@ def main():
 
     # 27. UGYANAZ A LETREHOZO AGON. A kapu a KOZOS feloldasban all, nem a ket hivonal --
     #     pont ez a megoszlas hasadt el egyszer mar.
-    p = subprocess.run([sys.executable, SCRIPT, '--id', 'HOMOGB906', '--assignee', hamis_nev,
+    p = subprocess.run([sys.executable, SCRIPT, '--id', 'HOMOGB906', '--assignee', hamis_nev, '--author', 'Boni',
                         '--title', 'HOMOGB906 homoglifa a letrehozo agon', '--no-msg'],
                        capture_output=True, text=True, env=env, timeout=30)
     check('27 megtagadva a homoglifas felelos (letrehozo ag)',

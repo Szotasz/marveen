@@ -16,7 +16,9 @@ Amit garantal:
 
 Hasznalat:
   kartya-es-ertesites.py --id X905 --assignee boni --title "..." --desc-file /path
-      --msg-file /path [--priority normal] [--status planned] [--dry-run]
+      --msg-file /path --author Boni [--priority normal] [--status planned] [--dry-run]
+A felado MINDKET modban KIMONDOTT (KARTYAKULDO908, 2026-09-08): a letrehozo agon --author vagy
+--from kell, kulonben megtagadas. Korabban csendben 'marveen' lett belole.
 Az onmagunknak (marveen) vagy a gazdanak (szabolcs) szolo kartya ertesites nelkul is mehet:
 ott a --no-msg kapcsolo kell, KIMONDVA.
 
@@ -464,14 +466,22 @@ def main():
     # UGYANAZ A KANONIKUS ALAK, mint a mozgato agon -- kulonben a ket ut ugyanarra a nevre
     # KET KULONBOZO erteket irna a tablara.
     who = _felelos_feloldas(a.assignee)
-    # A FELADO: kimondva (--from), vagy a szerzobol. Az alapertelmezes az --author kisbetusitve,
-    # tehat a korabbi viselkedes (--author nelkul: 'marveen') valtozatlan marad.
-    # A 'Marveen' MOST ITT all, es nem az argparse default-jaban: a komment-ag szerzo-kapuja
-    # csak ugy tud kulonbseget tenni a kimondott es a nem-adott ertek kozott, ha a default
-    # None. A LETREHOZO agon SZANDEKOSAN nem szigoritunk: a kartya-ertesites-felado teszt 3.
-    # ellenorzese ezt a viselkedest REGRESSZIO-KONTROLLKENT rogziti (--author es --from nelkul
-    # a felado marveen). Ha ez valtozik, az szerzodes-valtas, es a teszttel egyutt kell donteni.
-    frm = (a.from_agent or a.author or 'Marveen').strip().lower()
+    # A FELADO KIMONDOTT (KARTYAKULDO908, 2026-09-08). Korabban itt egy 'Marveen' tartalek allt:
+    # --author es --from nelkul az ertesites CSENDBEN a koordinator neveben ment ki. Mira merte
+    # 2026-09-07-en (21680), mi tortenik ilyenkor: Tomi olyan feladat-kiosztast kapott, ami ugy
+    # nezett ki, mintha a FO-AGENS adta volna, holott a kartya Mirae volt. Az attribucios hiba
+    # iranya a rossz: FELFELE mutat, tehat SULYT ad egy kerésnek, amit nem a koordinator kuldott,
+    # es a cimzett neki is valaszolna vissza.
+    # A #1237 ezt a komment-agon mar lezarta; ez a kapu ugyanaz a LETREHOZO agon. A ket agat
+    # SZANDEKOSAN kulon PR zarja: a regi viselkedest egy KIADOTT teszt rogzitette
+    # regresszio-kontrollkent (kartya-ertesites-felado, 3. ellenorzes), es egy ilyen szerzodest
+    # nem irunk at egy masik javitas mellekhatasakent -- kulon dontesbol, a teszttel egyutt.
+    if not a.from_agent and not a.author:
+        sys.exit('MEGTAGADVA: a letrehozo agon is KIMONDOTT a felado: add meg az --author-t\n'
+                 '(a kartya szerzoje) vagy a --from-ot (az ertesites feladoja).\n'
+                 'Korabban ez csendben "marveen"-re esett vissza, tehat a cimzett ugy latta,\n'
+                 'mintha a koordinator kerte volna -- es neki is valaszolt volna vissza.')
+    frm = (a.from_agent or a.author).strip().lower()
     if frm not in KULDOK:
         sys.exit(f'MEGTAGADVA: ismeretlen felado ("{frm}"). Ervenyes: {", ".join(sorted(KULDOK))}.\n'
                  f'Ha az --author nem agens-nev (pl. "Marveen (Boni lelete)"), add meg kimondva: --from <agens>.')
