@@ -4,7 +4,9 @@
   "description": "Bizalmi profil: permissive módban fut, minden parancs engedélyezve, kivéve a deny-listát (sudo, SSH/AWS/GnuPG kulcsok olvasása, force-push, rm -rf $HOME). Csak olyan ágensnek add, amit ugyanannyira megbízol mint magadat. Nem sandbox. Sandboxolt profilért lásd developer-junior.",
   "permissionMode": "permissive",
   "filesystem": {
-    "allow": [],
+    "allow": [
+      "Read(${HOME}/marveen/exchange/**)"
+    ],
     "deny": [
       "Read(${HOME}/.ssh/**)",
       "Read(${HOME}/.aws/**)",
