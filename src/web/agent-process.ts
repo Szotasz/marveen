@@ -1196,11 +1196,11 @@ export function sessionExistsOnHost(host: string | null, session: string): boole
   }
 }
 
-export function getAgentRunningSince(name: string): number | null {
+export function getAgentRunningSince(name: string, session: string = agentSessionName(name)): number | null {
   try {
     const target = agentTmuxTarget(name)
     const host = target.host
-    const out = captureTmux(target, ['display-message', '-p', '-t', agentSessionName(name), '#{session_created}']).trim()
+    const out = captureTmux(target, ['display-message', '-p', '-t', session, '#{session_created}']).trim()
     const ts = parseInt(out, 10)
     return Number.isFinite(ts) ? ts : null
   } catch {

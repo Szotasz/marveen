@@ -12,7 +12,7 @@ import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID } from '../../channel-coordinator/ingest.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
-import { OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
+import { MAIN_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
@@ -214,7 +214,17 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // error at creation time (see above) -- give the local path the same
     // courtesy, as a non-breaking warning field rather than a status change, so
     // existing callers keep working.
-    if (!storedTo.includes('/') && !isAgentRunning(sanitizeAgentIdent(storedTo))) {
+    // The MAIN agent is exempt (MSGWARN908): its session is
+    // `${MAIN_AGENT_ID}-channels`, so isAgentRunning() -- which probes
+    // `agent-<name>` -- always says stopped, and the router never abandons a
+    // main-agent message anyway (pull model: the main agent drains its own
+    // inbox each turn). The warning below was therefore always false for it,
+    // and on 2026-09-08 the false "not running" state reached the owner as a
+    // system-down report. The worst reaction it invites -- starting a second
+    // main instance -- is exactly what the pull model must never see.
+    if (!storedTo.includes('/')
+        && sanitizeAgentIdent(storedTo) !== sanitizeAgentIdent(MAIN_AGENT_ID)
+        && !isAgentRunning(sanitizeAgentIdent(storedTo))) {
       logger.warn({ id: msg.id, to: msg.to_agent }, 'Agent message queued for a STOPPED agent -- likely to be abandoned')
       json(res, {
         ...msg,
