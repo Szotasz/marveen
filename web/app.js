@@ -3089,6 +3089,15 @@ const CG_PHASE_LABELS = {
   cooldown: 'cooldown',
 }
 
+// One-sentence tooltips for the phase badge (CGBADGE908) -- the context badge
+// already had one (agents.context_tip), the phase badge had none, and the
+// owner had to ask what "cooldown" meant.
+const CG_PHASE_TIPS = {
+  'await-handoff': 'agents.guard_phase_tip_handoff',
+  'await-ready': 'agents.guard_phase_tip_restarting',
+  cooldown: 'agents.guard_phase_tip_cooldown',
+}
+
 async function setupContextGuardUI(agentName) {
   const cgEnabled = document.getElementById('cgEnabled')
   const cgAdvancedWrap = document.getElementById('cgAdvancedWrap')
@@ -3171,8 +3180,20 @@ function updateContextGuardLiveStatus(agentName) {
             const footer = card.querySelector('.agent-card-footer')
             if (footer) footer.appendChild(badge)
           }
-          const pctStr = typeof entry.pct === 'number' ? ' ' + Math.round(entry.pct * 100) + '%' : ''
-          badge.textContent = (CG_PHASE_LABELS[entry.phase] || entry.phase) + pctStr
+          // CGBADGE908: the phase badge never appends the context pct -- the
+          // card already has its own context badge, and "cooldown 19%" read as
+          // a cooldown position while 19 was the context fill measured at a
+          // different poll instant (so the same number appeared twice on one
+          // card with two values). In cooldown the number is what the word
+          // promises: the remaining time.
+          let cgLabel = CG_PHASE_LABELS[entry.phase] || entry.phase
+          if (entry.phase === 'cooldown' && typeof entry.cooldownUntilMs === 'number') {
+            const minLeft = Math.max(0, Math.ceil((entry.cooldownUntilMs - Date.now()) / 60000))
+            cgLabel += ` ${minLeft}m`
+          }
+          badge.textContent = cgLabel
+          const cgTipKey = CG_PHASE_TIPS[entry.phase]
+          badge.title = cgTipKey ? t(cgTipKey) : ''
         })
         if (currentAgent && document.getElementById('cgLiveStatus')) {
           updateContextGuardLiveStatus(currentAgent.autoRestartId || currentAgent.name)

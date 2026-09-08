@@ -543,19 +543,35 @@ export function getContextGuardStatus(): Array<{
   pct: number | null
   enabled: boolean
   saturationRestart: boolean
+  cooldownUntilMs?: number
 }> {
   const names = [MAIN_AGENT_ID, ...listAgentNames()]
   return names.map((name) => {
+    const state = guardStates.get(name)
     const cfg = readContextGuardConfig(name)
     const remote = name !== MAIN_AGENT_ID && !!readAgentRemoteHost(name)
     return {
       agent: name,
-      phase: guardStates.get(name)?.phase ?? 'idle',
+      phase: state?.phase ?? 'idle',
       pct: cfg.enabled && !remote ? measurePct(name, cfg.limitTokens) : null,
       enabled: cfg.enabled,
       saturationRestart: cfg.saturationRestart,
+      ...cooldownStatusExtra(state),
     }
   })
+}
+
+/** CGBADGE908: in cooldown the UI shows the REMAINING TIME, because that is
+ * what the word promises -- the badge used to append the context pct instead,
+ * and "cooldown 19%" read as a cooldown position. The field is sent ONLY in
+ * the cooldown phase so no consumer mistakes a stale timestamp for a live
+ * timer. Exported so the test pins both branches. */
+export function cooldownStatusExtra(
+  state: { phase: string; cooldownUntilMs: number } | undefined,
+): { cooldownUntilMs?: number } {
+  return state?.phase === 'cooldown' && state.cooldownUntilMs > 0
+    ? { cooldownUntilMs: state.cooldownUntilMs }
+    : {}
 }
 
 /**
