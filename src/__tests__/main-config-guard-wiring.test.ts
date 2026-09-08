@@ -125,18 +125,39 @@ describe('NO PRODUCTION MODULE MAY BUILD A DECISION WITHOUT REPORTING IT', () =>
     expect(offenders).toEqual([])
   })
 
-  it('the respawn module does not cast its way around the brand either', () => {
+  it('no src/web module casts its way around the brand either', () => {
     // The brand makes forgetting impossible, not bypassing. A cast is the one
-    // remaining way through, so it is spelled out here rather than left to be
-    // discovered later.
-    const src = readFileSync(join(__dirname, '..', 'web', 'channel-monitor.ts'), 'utf-8')
-    expect(src).not.toContain('as MainConfigDecision')
+    // remaining way through.
+    //
+    // This walks the directory for the same reason (2) does. It used to name
+    // channel-monitor.ts alone -- true today, because the type has exactly two
+    // mentions, but the FIRST new caller falls outside a one-file check, and a
+    // hand-maintained list of places to look is the very shape this file rejects
+    // two paragraphs above its own assertion.
+    const dir = join(__dirname, '..', 'web')
+    const offenders = readdirSync(dir)
+      .filter((f) => f.endsWith('.ts') && f !== 'main-config-decision.ts')
+      .filter((f) => readFileSync(join(dir, f), 'utf-8').includes('as MainConfigDecision'))
+    expect(offenders).toEqual([])
   })
 
-  it('POSITIVE CONTROL: the forbidden token IS findable where it legitimately lives', () => {
-    // Without this, a typo in the token would make both assertions above pass
-    // while searching for a string that occurs nowhere at all.
-    const own = readFileSync(join(__dirname, '..', 'web', 'main-config-decision.ts'), 'utf-8')
-    expect(own).toContain('mainConfigDecisionForTest')
+  it('POSITIVE CONTROL: BOTH forbidden tokens are findable in CODE where they legitimately live', () => {
+    // Without this, a typo in either token would make the bans above pass while
+    // searching for a string that occurs nowhere at all. Both are covered: the
+    // factory ban and the cast ban fail silently in exactly the same way, and
+    // covering only one of them leaves the other's typo undetectable.
+    //
+    // COMMENTS ARE STRIPPED FIRST, and that is the whole point of this version.
+    // Measured while writing it: renaming BOTH real casts still left the control
+    // green, because the module's own header PROSE spells the token out. A
+    // positive control satisfied by a sentence about the code is not a control --
+    // it is the same false green it exists to prevent.
+    const raw = readFileSync(join(__dirname, '..', 'web', 'main-config-decision.ts'), 'utf-8')
+    const code = raw
+      .split('\n')
+      .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+      .join('\n')
+    expect(code).toContain('mainConfigDecisionForTest')
+    expect(code).toContain('as MainConfigDecision')
   })
 })
