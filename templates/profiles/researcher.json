@@ -1,8 +1,8 @@
 {
   "id": "researcher",
   "label": "Kutató",
-  "description": "Piackutatás, versenytárs-elemzés, webes források olvasása. Prompt injection szempontból ugyanúgy kiemelt mint a marketinges. Draft-only: riportot ír a mappájába, nem küld magától kifelé. A globális skillek olvasása és a notify.sh/agent-post.sh futtatása engedélyezett.",
-  "permissionMode": "strict",
+  "description": "Piackutatas, versenytars-elemzes, webes forrasok olvasasa. Prompt injection szempontbol kiemelt felulet, ezert a deny-lista (SSH/AWS/.env, sudo, rm, curl -X POST, git push) VALTOZATLANUL all. A permissionMode viszont permissive a gazda 2026-09-07-i dontese szerint (TG 14764): strict alatt az agens minden tool-hivasnal engedelykero parbeszedre allt meg, amire nem-interaktiv agensben senki nem valaszol, tehat egyaltalan nem tudott dolgozni. Draft-only marad: riportot ir a sajat mappajaba, nem kuld magatol kifele.",
+  "permissionMode": "permissive",
   "filesystem": {
     "allow": [
       "Read(${AGENT_DIR}/**)",

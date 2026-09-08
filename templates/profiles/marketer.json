@@ -1,8 +1,8 @@
 {
   "id": "marketer",
   "label": "Marketinges",
-  "description": "Email-vázlat, hírlevél, social tartalom. Mivel webes tartalmat olvas (prompt injection felület), szigorúan korlátozott: csak a saját mappájába írhat, SSH/AWS/.env tiltva, semmilyen Bash-pusztító parancs. A globális skillek olvasása és a notify.sh/agent-post.sh futtatása engedélyezett.",
-  "permissionMode": "strict",
+  "description": "Email-vazlat, hirlevel, social tartalom. Webes tartalmat olvas (prompt injection felulet), ezert a deny-lista (SSH/AWS/.env, sudo, rm, curl -X POST, git push) VALTOZATLANUL all. A permissionMode viszont permissive a gazda 2026-09-07-i dontese szerint (TG 14764): strict alatt az agens minden tool-hivasnal engedelykero parbeszedre allt meg, amire nem-interaktiv agensben senki nem valaszol. Csak a sajat mappajaba ir.",
+  "permissionMode": "permissive",
   "filesystem": {
     "allow": [
       "Read(${AGENT_DIR}/**)",

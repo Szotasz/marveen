@@ -45,17 +45,23 @@ describe('resolveProfilePlaceholders rule normalization', () => {
 })
 
 describe('web-reading profile posture (TMPLPERM908)', () => {
-  // Both profiles read web content (prompt-injection surface). strict is what
-  // makes the deny list enforceable at all: permissive launches with
-  // --dangerously-skip-permissions. The capability gaps that motivated the
-  // 2026-09 uncommitted permissive flip (skills read, notify.sh, agent-post.sh)
-  // are covered by explicit allow entries instead. Loosening the mode again is
-  // an owner decision, not a template edit -- see card TMPLPERM908.
+  // Both profiles read web content (prompt-injection surface), and strict is
+  // what makes the deny list enforceable: permissive launches with
+  // --dangerously-skip-permissions. The owner nevertheless chose permissive,
+  // twice -- 2026-09-07 (TG 14764, card PROFILSTRICT904) and again 2026-09-08
+  // (TG 15115, card PROFILREGRESS908) after this test's predecessor reverted
+  // the first, uncommitted flip. Measured reason: under strict the agent stops
+  // on a permission dialog at EVERY tool call, including read-only ones, and no
+  // one answers it in a non-interactive agent -- orsi filed two session-stuck
+  // alarms in 25 minutes and did zero work. The deny list still carries the
+  // real posture (SSH/AWS/.env, sudo, rm, curl -X POST, git push); it is simply
+  // advisory under permissive. Tightening the mode again is an OWNER decision,
+  // not a template edit, and it must land with the agents' work rerouted first.
   for (const id of ['marketer', 'researcher']) {
-    it(`${id} stays strict and carries the measured capability allows`, () => {
+    it(`${id} stays permissive (owner decision) and carries the measured capability allows`, () => {
       const p = loadProfileTemplate(id)
       expect(p.id).toBe(id) // guard against the default-profile fallback
-      expect(p.permissionMode).toBe('strict')
+      expect(p.permissionMode).toBe('permissive')
       expect(p.filesystem.allow).toContain('Read(${HOME}/.claude/skills/**)')
       expect(p.filesystem.allow).toContain('Bash(${PROJECT_ROOT}/scripts/notify.sh:*)')
       expect(p.filesystem.allow).toContain('Bash(${PROJECT_ROOT}/scripts/agent-post.sh:*)')
