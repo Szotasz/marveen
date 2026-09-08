@@ -6,8 +6,10 @@ import {
 } from '../../db.js'
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config.js'
 import { logger } from '../../logger.js'
+import { isKnownAgent } from '../agent-config.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
+import { deviceIdentityMismatch } from '../auth-gate.js'
 import type { RouteContext } from './types.js'
 
 // Canonical memory categories. Kept in sync with the DB CHECK constraint in
@@ -34,10 +36,41 @@ function containsSuspiciousContent(content: string): boolean {
 export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
+  // MEMOWNER826: agent_id was accepted verbatim on both POST and PUT -- any string,
+  // existing agent or invented. Content had a suspicious-pattern filter; identity had
+  // nothing, so a memory could be written under another agent's name and would later
+  // be read back as that agent's own recollection. messages.ts already gates its
+  // "from" field with isKnownAgent (see its comment: not impersonation-proof between
+  // fleet agents, which share a token, but it closes the unknown-sender path); this
+  // brings the knowledge store up to the same floor.
+  //
+  // Found by Sentinel Bon 2026-08-26, alongside the approval-resolve hole.
+  const rejectUnknownAgent = (agentId: unknown): boolean => {
+    if (agentId === undefined || agentId === null || agentId === '') return false
+    if (typeof agentId === 'string' && isKnownAgent(agentId.trim())) return false
+    logger.warn({ agent: agentId }, 'Memory write rejected: agent_id is not a known fleet agent')
+    return true
+  }
+
+  // DEVICEIDENTITY829: a device-key caller may only write memories under its
+  // own name -- see auth-gate.ts. No-op when agent_id is absent (unattributed
+  // memory, unchanged) or the caller authenticated with the shared token.
+  const deviceAgentMismatch = (agentId: unknown): string | null => {
+    if (agentId === undefined || agentId === null || agentId === '') return null
+    if (typeof agentId !== 'string') return null
+    return deviceIdentityMismatch(ctx.auth, agentId.trim())
+  }
+
   if (path === '/api/memories' && method === 'POST') {
     const body = await readBody(req)
     const data = JSON.parse(body.toString()) as { agent_id?: string; content: string; tier?: string; category?: string; keywords?: string }
     if (!data.content?.trim()) { json(res, { error: 'Content is required' }, 400); return true }
+    const memMismatch = deviceAgentMismatch(data.agent_id)
+    if (memMismatch) { json(res, { error: memMismatch }, 403); return true }
+    if (rejectUnknownAgent(data.agent_id)) {
+      json(res, { error: 'agent_id must be a known fleet agent' }, 403)
+      return true
+    }
     if (containsSuspiciousContent(data.content)) {
       logger.warn({ agent: data.agent_id }, 'Memory content rejected: suspicious pattern')
       json(res, { error: 'Content rejected by security filter' }, 400)
@@ -250,6 +283,12 @@ Respond ONLY with JSON, nothing else:
     const id = parseInt(memUpdateMatch[1], 10)
     const body = await readBody(req)
     const { content, category, tier, agent_id, keywords } = JSON.parse(body.toString()) as { content: string; category?: string; tier?: string; agent_id?: string; keywords?: string }
+    const memUpdateMismatch = deviceAgentMismatch(agent_id)
+    if (memUpdateMismatch) { json(res, { error: memUpdateMismatch }, 403); return true }
+    if (rejectUnknownAgent(agent_id)) {
+      json(res, { error: 'agent_id must be a known fleet agent' }, 403)
+      return true
+    }
     if (updateMemory(id, content, tier || category, agent_id, keywords)) { json(res, { ok: true }); return true }
     json(res, { error: 'Memory not found' }, 404)
     return true

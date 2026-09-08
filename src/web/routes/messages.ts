@@ -18,6 +18,7 @@ import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
+import { deviceIdentityMismatch } from '../auth-gate.js'
 import type { RouteContext } from './types.js'
 
 // Should closing a message produce a reverse "[Eredmény]" notification to its sender?
@@ -148,6 +149,15 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // channel the moment this guard ships -- observed here: an external case
     // manager pushed 4182 messages, then every call 403'd for nine days while
     // its fail-soft caller logged nothing.
+    // DEVICEIDENTITY829: a device-key caller may only ever write its own name.
+    // Checked before the shared-token guards below, which stay untouched for
+    // 'token' callers during migration -- see auth-gate.ts.
+    const deviceMismatch = deviceIdentityMismatch(ctx.auth, from.trim())
+    if (deviceMismatch) {
+      logger.warn({ from: from.trim(), to: to.trim(), device: ctx.auth?.device }, 'Rejected /api/messages POST: device identity mismatch')
+      json(res, { error: deviceMismatch }, 403)
+      return true
+    }
     const isOwnerSender = sanitizeAgentIdent(from) === sanitizeAgentIdent(OWNER_NAME)
     const isSystemSender = SYSTEM_SENDERS.has(sanitizeAgentIdent(from))
     if (!isOwnerSender && !isSystemSender && !isKnownAgent(sanitizeAgentIdent(from))) {

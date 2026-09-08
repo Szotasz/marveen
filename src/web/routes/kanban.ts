@@ -19,8 +19,10 @@ import {
   getDbFileSizeMb,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
-import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
-import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
+import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
+import { sanitizeAgentIdent } from '../../prompt-safety.js'
+import { listAgentNames, readAgentDisplayName, isKnownAgent } from '../agent-config.js'
+import { deviceIdentityMismatch } from '../auth-gate.js'
 import { isAgentRunning } from '../agent-process.js'
 import { resolveKanbanDispatch } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
@@ -559,6 +561,31 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { author, content } = JSON.parse(body.toString())
     if (!author || !content) { json(res, { error: 'Szerző és tartalom kötelező' }, 400); return true }
+    // DEVICEIDENTITY829: a device-key caller may only comment as itself -- see
+    // auth-gate.ts. Checked before AUTHORGUARD829 below, which stays as the
+    // fallback for 'token' callers during migration.
+    const kanbanDeviceMismatch = deviceIdentityMismatch(ctx.auth, sanitizeAgentIdent(String(author)))
+    if (kanbanDeviceMismatch) {
+      logger.warn({ author, cardId, device: ctx.auth?.device }, 'Kanban comment rejected: device identity mismatch')
+      json(res, { error: kanbanDeviceMismatch }, 403)
+      return true
+    }
+    // AUTHORGUARD829: `author` was accepted verbatim, same hole as the memories/
+    // messages agent_id fields before AGENTRESOLVE826/MEMOWNER826 -- any caller
+    // holding the shared bearer token could write a comment under any fleet
+    // agent's name (or an invented one), and it would read back indistinguishable
+    // from that agent's own words on a shared, human-read board. Same allowance
+    // set as messages.ts: a known fleet agent, the human owner (dashboard
+    // "Comments" UI posts as OWNER_NAME), or an opted-in SYSTEM_SENDER_IDS entry.
+    // Found by Sentinel Bon 2026-08-29 during the shared-token audit (ae2a0d2a).
+    const authorIdent = sanitizeAgentIdent(String(author))
+    const isOwnerAuthor = authorIdent === sanitizeAgentIdent(OWNER_NAME)
+    const isSystemAuthor = parseSystemSenderIds(SYSTEM_SENDER_IDS, sanitizeAgentIdent).has(authorIdent)
+    if (!isOwnerAuthor && !isSystemAuthor && !isKnownAgent(authorIdent)) {
+      logger.warn({ author, cardId }, 'Kanban comment rejected: author is not a known fleet agent')
+      json(res, { error: `unknown agent '${String(author).trim()}' -- author must be a registered fleet agent id` }, 403)
+      return true
+    }
     // Code-side kanban-ref enforcement: rewrite `#<hex8>` references that map
     // to a real card into the human-facing `#<seq>` form before persistence
     // (#75 Cuzcoo dispatch). Random hex / non-matching tokens pass through.
