@@ -58,6 +58,14 @@ export interface AgentRestartDecisionInput {
   // decision escalates to the operator ('alert-busy') rather than deferring for
   // ever OR killing the work. Omitted = defer indefinitely while busy.
   busyDeferMaxMs?: number
+  // Time since the operator was last told this agent had been given up on, in
+  // milliseconds. null/omitted means "no alert on record", which counts as due:
+  // an unknown last-alert must never buy silence, because the state this
+  // measures is an agent nobody is going to restart.
+  msSinceGiveUpAlert?: number | null
+  // How often the give-up state re-announces itself while it lasts. Omitted
+  // uses GIVE_UP_REALERT_MS.
+  giveUpRealertMs?: number
 }
 
 // The restart grace after applying exponential back-off for repeated failed
@@ -110,6 +118,50 @@ export type DownAgentAction = 'restart' | 'alert' | 'alert-busy' | 'skip'
 // operator instead, turning a silent infinite loop into one actionable ping.
 export const AGENT_MAX_RESTART_ATTEMPTS = 5
 
+// How often the watchdog repeats "I have given up on this agent" while the
+// give-up state lasts.
+//
+// The old behaviour was one alert per down-spell, and the comment on
+// decideDownAgentAction said so plainly -- but the counter that ends the spell
+// is only reset when the plugin is observed healthy, and nothing restarts it
+// any more, so the spell has no natural end. Finy spent five days there on a
+// single 2026-07-09 alert. One message about a permanently deaf agent is a
+// message that will be scrolled past.
+//
+// Three hours, matching the fleet's other "stopped / dead" re-alert cadence
+// (the owner asked for a few hours rather than tens of minutes: often enough to
+// stay visible, rare enough to stay signal). The card that asked for this
+// suggested six; three is the cadence the rest of the fleet settled on since.
+export const GIVE_UP_REALERT_MS = 3 * 60 * 60 * 1000
+
+// A persisted failure count older than this is treated as 0 on load.
+//
+// The count lives in store/.agent-failures-<agent> so a dashboard restart does
+// not forgive a plugin that has already been given up on. The cost of that
+// durability was a counter that could sit above the cap for ever: the only
+// thing that clears it is a healthy observation, which requires a restart,
+// which the count itself prevents. A TTL breaks the loop from the other side --
+// after a day with nothing written to it, the watchdog is allowed to try again.
+export const AGENT_FAILURE_COUNT_TTL_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Is a persisted failure count too old to still describe the present?
+ *
+ * `mtimeMs` is when the count was last written; null or NaN means we could not
+ * read it. Unknown age is NOT proof of staleness, so it keeps the count: the
+ * durable-counter behaviour is the safe default, and only positive evidence of
+ * age may override it. A timestamp in the future (clock skew, a restored
+ * backup) is likewise not evidence.
+ */
+export function isFailureCountStale(
+  mtimeMs: number | null | undefined,
+  nowMs: number,
+  ttlMs: number,
+): boolean {
+  if (mtimeMs == null || !Number.isFinite(mtimeMs)) return false
+  return nowMs - (mtimeMs as number) > ttlMs
+}
+
 // Decide what to do about a sub-agent whose channel plugin is observed down.
 // Wraps shouldAutoRestartDownAgent with a consecutive-failure cap so the
 // watchdog escalates to a human instead of churning the session indefinitely:
@@ -133,7 +185,16 @@ export function decideDownAgentAction(
     ? Math.floor(input.consecutiveFailures as number)
     : 0
   if (maxRestartAttempts > 0 && failures >= maxRestartAttempts) {
-    return failures === maxRestartAttempts ? 'alert' : 'skip'
+    if (failures === maxRestartAttempts) return 'alert'
+    // Past the cap the watchdog has stopped acting, so the only thing that can
+    // still change is the operator's knowledge. Repeat on a cadence rather than
+    // falling silent for the rest of the spell -- there is no other end to it.
+    const realertMs = Number.isFinite(input.giveUpRealertMs) && (input.giveUpRealertMs as number) > 0
+      ? (input.giveUpRealertMs as number)
+      : GIVE_UP_REALERT_MS
+    const sinceAlert = input.msSinceGiveUpAlert
+    if (sinceAlert == null || !Number.isFinite(sinceAlert)) return 'alert'
+    return (sinceAlert as number) >= realertMs ? 'alert' : 'skip'
   }
   // Confirmation window: one down sample is a suspicion, not a verdict.
   const msDown = Number.isFinite(input.msDown) ? (input.msDown as number) : 0

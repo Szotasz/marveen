@@ -8,7 +8,13 @@ import { defineConfig, configDefaults } from 'vitest/config'
 // vitest defaults; only carve out the e2e directories.
 export default defineConfig({
   test: {
-    exclude: [...configDefaults.exclude, 'tests/smoke/**', 'tests/browser/**'],
+    // vendor/**: vendored third-party trees carry their OWN test files with
+    // their own dependencies (the gmail fork's tests import nodemailer etc.,
+    // which the root npm ci never installs) -- collecting them makes CI red
+    // with zero failing tests, just three unloadable files (Marveen, #1224).
+    // Running a vendor's suite is a separate workflow with the vendor's own
+    // install, never this one.
+    exclude: [...configDefaults.exclude, 'tests/smoke/**', 'tests/browser/**', 'vendor/**'],
     // vitest 4 enforces the 5s default testTimeout on tests that vitest 2 let
     // run long. Three subprocess-spawning tests (send-honesty-final,
     // send-honesty-round2) legitimately take 15-30s: they shell out to

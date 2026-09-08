@@ -612,6 +612,14 @@ describe('detectPaneState', () => {
     // "Accomplishing… (Ns · ↓ N tokens)" frame lingered well above the idle
     // input box. The token-counter scan is region-scoped, so a counter that
     // has scrolled out of the live bottom region must not pin the pane busy.
+    //
+    // NOTE (2026-09-06): this fixture's counter is MINUTE-shaped ("3m 8s"), a
+    // shape the counter regex could not match until the TURN_ELAPSED fix. Until
+    // then the test passed for the wrong reason -- no region scoping required,
+    // because nothing matched anywhere -- which is why a mutation that widened
+    // the busy scan to the whole pane left the whole suite green. It is a real
+    // scope test only from this commit on; the sibling test below pins the
+    // other side of the same boundary.
     const staleCounter = [
       '✶ Accomplishing… (3m 8s · ↓ 9.3k tokens)',
       '⏺ Done: rebuilt and restarted the dashboard.',
@@ -2303,5 +2311,87 @@ describe('parkedPasteSignature (stuck [Pasted text #N] recovery)', () => {
     ].join('\n')
     expect(stuckInputSignature(auraShape)).toBeNull()
     expect(parkedPasteSignature(auraShape)).not.toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// PANESPINPERC906 -- a turn longer than a minute must still read as busy.
+//
+// Claude Code stops rendering a flat second count at 60s and switches to
+// "1m 16s". Both busy regexes required `\d+s` directly after the paren, so
+// from the 60th second of every turn the spinner/token-counter signal went
+// silent and only the footer's `esc to interrupt` was left. That footer is
+// exactly the signal these patterns exist to backstop: between a submit and
+// the next spinner frame it is briefly absent, and a scheduler tick landing
+// in that window reads 'idle' and injects a prompt into a working pane.
+//
+// The minute-form fixture below is a verbatim capture from a live fleet pane
+// (marveen-channels, 2026-09-06 17:31), not a retyped lookalike.
+// ---------------------------------------------------------------------------
+describe('detectPaneState: minute- and hour-shaped turn durations', () => {
+  const liveTurn = (statusLine: string) =>
+    [
+      '⏺ Reading the router source to find the delivery loop.',
+      '',
+      statusLine,
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+
+  it('reads a minute-shaped token counter as busy (verbatim live capture)', () => {
+    expect(detectPaneState(liveTurn('✻ (1m 16s · ↓ 4.0k tokens)'))).toBe('busy')
+  })
+
+  it('reads a minute-shaped labelled spinner frame as busy', () => {
+    expect(detectPaneState(liveTurn('✢ Combobulating… (2m 0s · ↓ 9.3k tokens)'))).toBe('busy')
+  })
+
+  it('reads an hour-shaped counter as busy', () => {
+    // Defensive, not measured: no fleet turn ran an hour. Pinned so the shape
+    // is a decision in the code rather than an accident of the regex.
+    expect(detectPaneState(liveTurn('✻ (1h 4m 2s · ↓ 210k tokens)'))).toBe('busy')
+  })
+
+  it('still reads the seconds-only shape as busy', () => {
+    // The widened pattern must not lose the shape it already covered.
+    expect(detectPaneState(liveTurn('✻ (52s · ↓ 2.6k tokens)'))).toBe('busy')
+  })
+
+  it('does NOT read a minute-shaped duration without the ↓-tokens tail as busy', () => {
+    // Prose control. "Thinking… (2m 3s)" can appear in reply text; the `· ↓N`
+    // chrome tail is what separates a rendered spinner from quoted prose, and
+    // widening the duration must not weaken that.
+    expect(detectPaneState(liveTurn('  Thinking… (2m 3s) about the schema'))).toBe('idle')
+  })
+
+  it('does NOT read a minute-shaped counter above the live region as busy', () => {
+    // The other side of the boundary pinned by the 2026-06-30 stale-counter
+    // test: same minute shape, but scrolled out of BUSY_LIVE_REGION_LINES.
+    // Together the two tests make the busy-scan SCOPE measurable -- widening
+    // the scan to the whole pane now turns this red instead of staying green.
+    const stale = [
+      '✻ Accomplishing… (1m 16s · ↓ 4.0k tokens)',
+      '⏺ Done: restarted the dashboard.',
+      '⏺ Verified the endpoints.',
+      '⏺ Trailing scrollback line one.',
+      '⏺ Trailing scrollback line two.',
+      '⏺ Trailing scrollback line three.',
+      '⏺ Trailing scrollback line four.',
+      '⏺ Trailing scrollback line five.',
+      '',
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(detectPaneState(stale)).toBe('idle')
+  })
+
+  it('blocks a prompt to a pane in a minute-long turn', () => {
+    // The verdict is what the scheduler acts on: isReadyForPrompt is the call
+    // site that decides whether a prompt gets injected.
+    expect(isReadyForPrompt(liveTurn('✻ (1m 16s · ↓ 4.0k tokens)'))).toBe(false)
   })
 })

@@ -20,6 +20,8 @@
  * the original leak through.
  */
 
+import { createHash } from 'node:crypto';
+
 export type Severity = 'blocked' | 'unscannable';
 
 export interface Finding {
@@ -46,6 +48,9 @@ export interface GateResult {
   scannedCount: number;
   /** Files the gate deliberately let through, with the reason. Always reported. */
   allowlisted: { file: string; reason: string }[];
+  /** Single literals cleared by a fixture exception. Always reported: an
+   *  exception nobody sees is an exception nobody re-reads. */
+  exceptions: { file: string; line?: number; detector: string; reason: string }[];
 }
 
 /**
@@ -156,6 +161,99 @@ export const ALLOWLISTED_PATHS: { path: string; reason: string }[] = [
 export const WRAPPER_TAG = /<\s*(channel|trusted-peer)\b[^>]*\bsource\s*=\s*["'][^"']+["'][^>]*>/i;
 export const WRAPPED_PAYLOAD = /\bmessage_id\s*[:=]?\s*\d{2,}|"(update_id|chat_id|from_user)"\s*:\s*\d+/;
 
+/**
+ * A fixture exception: ONE secret-shaped literal, in ONE test file, cleared by
+ * name, with the rest of the file still scanned.
+ *
+ * WHY THIS EXISTS ALONGSIDE ALLOWLISTED_PATHS. An allowlist entry blinds a
+ * WHOLE FILE. That is the right trade when the file's entire subject is
+ * synthetic secrets (the gate's own tests), and the wrong one for an ordinary
+ * test file that happens to need one key-shaped literal: from then on nothing
+ * in it is checked, including the parts nobody was thinking about.
+ *
+ * Found on PR #628 (2026-09-06). Two costops collector tests carry an `sk-`
+ * shaped fixture, and both literals are load-bearing: one drives the assertion
+ * that a RAW secret in `secret_ref` must be rejected in favour of a `vault:`
+ * reference, the other drives "the secret never reaches the report". Replacing
+ * them with a neutral string would leave the tests passing while measuring
+ * something weaker than their names claim. Blinding both whole files to keep
+ * two lines is the other bad trade. Hence this: the narrowest exception that
+ * still lets the gate do its job.
+ *
+ * THE KEY IS A HASH OF THE MATCHED TEXT, NOT A LINE NUMBER AND NOT THE LITERAL.
+ *  - A line number goes stale the moment anyone edits above it, and a stale
+ *    exception either stops working or, worse, starts covering a different line.
+ *  - The literal itself cannot live here: this file is scanned too, and writing
+ *    a secret shape into the scanner to excuse a secret shape elsewhere is how
+ *    the exception becomes the leak.
+ *  - A hash is exact and fails closed: change the fixture and the exception
+ *    simply stops applying, so the gate goes red and a human looks again.
+ */
+export interface FixtureException {
+  /** Test file the fixture lives in. A non-test path is REFUSED, loudly. */
+  path: string;
+  /** sha256 (hex, latin1 bytes) of the EXACT text the detector matched. */
+  sha256: string;
+  /** Why this literal must keep its secret shape. Not optional. */
+  reason: string;
+}
+
+/** Only these paths may carry a fixture exception. */
+const TEST_PATH = /(^|\/)(__tests__|tests)\//;
+
+export const FIXTURE_EXCEPTIONS: readonly FixtureException[] = Object.freeze([
+  {
+    path: 'src/__tests__/costops-collectors-dryrun.test.ts',
+    sha256: '8e11255764528986c15d1063a0bbafc4663de6f1c4e40c5d5e60bd5ff0e99454',
+    reason: 'costops collector dry-run: the SECRET constant is asserted NOT to appear in the report, the audit row or the DB dump. A neutral string would still pass while proving less -- the shape is what makes the leak test meaningful.',
+  },
+  {
+    path: 'src/__tests__/costops-collectors.test.ts',
+    sha256: 'db8f43c042cf5bdf36abda27c6fb50a1eac827489a10916a552531b93cb548cd',
+    reason: 'collectors config validation: this literal IS the input to "rejects a raw secret in secret_ref (must be vault:)". Its raw-secret shape is the subject under test.',
+  },
+]);
+
+export type ExceptionProblem = { path: string; reason: string };
+
+/** Exceptions that are not allowed to apply, with why. Reported, never silent. */
+export function invalidFixtureExceptions(
+  list: readonly FixtureException[] = FIXTURE_EXCEPTIONS,
+): ExceptionProblem[] {
+  const seen = new Set<string>();
+  const bad: ExceptionProblem[] = [];
+  for (const e of list) {
+    const key = `${e.path}#${e.sha256}`;
+    if (!TEST_PATH.test(e.path)) {
+      bad.push({ path: e.path, reason: 'fixture exceptions are TEST-ONLY, and this path is not under __tests__/ or tests/' });
+    }
+    if (!/^[0-9a-f]{64}$/.test(e.sha256)) {
+      bad.push({ path: e.path, reason: 'sha256 must be 64 lowercase hex characters' });
+    }
+    if (!e.reason || e.reason.trim().length < 20) {
+      bad.push({ path: e.path, reason: 'an exception without a real written reason is a hole nobody can review' });
+    }
+    if (seen.has(key)) bad.push({ path: e.path, reason: 'duplicate exception entry' });
+    seen.add(key);
+  }
+  return bad;
+}
+
+/** The reason this exact matched text is excepted in this exact file, or null.
+ *
+ *  The list is a parameter so the mechanism can be tested against SYNTHETIC
+ *  entries. Testing it only through the real entries would mean writing their
+ *  literals into a test file to reproduce the hashes -- putting the very
+ *  secret-shaped strings this exists to contain into one more place. */
+export function fixtureExceptionReason(
+  path: string, matched: string, list: readonly FixtureException[] = FIXTURE_EXCEPTIONS,
+): string | null {
+  if (!TEST_PATH.test(path)) return null;
+  const digest = createHash('sha256').update(matched, 'latin1').digest('hex');
+  const hit = list.find((e) => e.path === path && e.sha256 === digest);
+  return hit ? hit.reason : null;
+}
+
 export function allowlistReason(path: string): string | null {
   const hit = ALLOWLISTED_PATHS.find((a) => a.path === path);
   return hit ? hit.reason : null;
@@ -165,10 +263,25 @@ function lineOf(text: string, index: number): number {
   return text.slice(0, index).split('\n').length;
 }
 
-/** All findings for ONE file. An allowlisted path yields none. */
+export interface ScanOutcome {
+  findings: Finding[];
+  exceptions: { file: string; line?: number; detector: string; reason: string }[];
+}
+
+/** All findings for ONE file. An allowlisted path yields none.
+ *  Kept for callers that only want the findings. */
 export function scanFile(input: ScanInput): Finding[] {
+  return scanFileDetailed(input).findings;
+}
+
+/** Findings AND the fixture exceptions that were applied, so the caller can
+ *  report what was let through rather than quietly not mentioning it. */
+export function scanFileDetailed(
+  input: ScanInput, list: readonly FixtureException[] = FIXTURE_EXCEPTIONS,
+): ScanOutcome {
   const { path } = input;
-  if (allowlistReason(path)) return [];
+  const exceptions: ScanOutcome['exceptions'] = [];
+  if (allowlistReason(path)) return { findings: [], exceptions };
 
   const findings: Finding[] = [];
 
@@ -188,21 +301,27 @@ export function scanFile(input: ScanInput): Finding[] {
       severity: 'unscannable',
       reason: `${input.unreadable.reason} -- the gate could not read this file, so it cannot clear it. Allowlist the path if it is intentional.`,
     });
-    return findings;
+    return { findings, exceptions };
   }
 
   const text = input.content ?? '';
   for (const { name, pattern } of SECRET_PATTERNS) {
     const m = pattern.exec(text);
-    if (m) {
-      findings.push({
-        file: path,
-        detector: 'content',
-        severity: 'blocked',
-        line: lineOf(text, m.index),
-        reason: `secret shape: ${name}`,
-      });
+    if (!m) continue;
+    // Keyed on THIS matched text in THIS file. Every other pattern, and every
+    // other match in the same file, is still scanned.
+    const excused = fixtureExceptionReason(path, m[0], list);
+    if (excused) {
+      exceptions.push({ file: path, line: lineOf(text, m.index), detector: `secret shape: ${name}`, reason: excused });
+      continue;
     }
+    findings.push({
+      file: path,
+      detector: 'content',
+      severity: 'blocked',
+      line: lineOf(text, m.index),
+      reason: `secret shape: ${name}`,
+    });
   }
   const tag = WRAPPER_TAG.exec(text);
   if (tag && WRAPPED_PAYLOAD.test(text)) {
@@ -216,17 +335,21 @@ export function scanFile(input: ScanInput): Finding[] {
   }
   for (const { name, pattern } of TRANSCRIPT_PATTERNS) {
     const m = pattern.exec(text);
-    if (m) {
-      findings.push({
-        file: path,
-        detector: 'transcript',
-        severity: 'blocked',
-        line: lineOf(text, m.index),
-        reason: `channel material: ${name}`,
-      });
+    if (!m) continue;
+    const excused = fixtureExceptionReason(path, m[0], list);
+    if (excused) {
+      exceptions.push({ file: path, line: lineOf(text, m.index), detector: `channel material: ${name}`, reason: excused });
+      continue;
     }
+    findings.push({
+      file: path,
+      detector: 'transcript',
+      severity: 'blocked',
+      line: lineOf(text, m.index),
+      reason: `channel material: ${name}`,
+    });
   }
-  return findings;
+  return { findings, exceptions };
 }
 
 /**
@@ -242,11 +365,20 @@ export function runGate(inputs: ScanInput[]): GateResult {
     .map((i) => ({ file: i.path, reason: allowlistReason(i.path) }))
     .filter((a): a is { file: string; reason: string } => a.reason !== null);
 
+  // A malformed exception must never be an invisible widening of the gate.
+  const badExceptions = invalidFixtureExceptions().map((b): Finding => ({
+    file: `(fixture exception) ${b.path}`,
+    detector: 'unscannable',
+    severity: 'unscannable',
+    reason: `${b.reason} -- the gate refuses to run with an exception it cannot justify`,
+  }));
+
   if (inputs.length === 0) {
     return {
       ok: false,
       scannedCount: 0,
       allowlisted,
+      exceptions: [],
       findings: [{
         file: '(file set)',
         detector: 'unscannable',
@@ -256,6 +388,8 @@ export function runGate(inputs: ScanInput[]): GateResult {
     };
   }
 
-  const findings = inputs.flatMap(scanFile);
-  return { ok: findings.length === 0, findings, scannedCount: inputs.length, allowlisted };
+  const outcomes = inputs.map((i) => scanFileDetailed(i));
+  const findings = [...badExceptions, ...outcomes.flatMap((o) => o.findings)];
+  const exceptions = outcomes.flatMap((o) => o.exceptions);
+  return { ok: findings.length === 0, findings, scannedCount: inputs.length, allowlisted, exceptions };
 }

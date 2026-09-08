@@ -103,6 +103,33 @@ const IDLE_FOOTER_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\)| �
 // prevent prose-quoting false positives. A future Claude Code release
 // that renames the spinner labels will miss the label regex but still
 // be caught by the tokens pattern.
+
+// Elapsed-time shape inside the turn marker. Claude Code does NOT render a
+// flat second count once a turn passes a minute: it switches to `1m 16s`, and
+// the seconds-only pattern that used to sit in both regexes below simply
+// stopped matching there. Measured on a live fleet pane 2026-09-06:
+//
+//   seconds form   "(52s · ↓ 2.6k tokens)"     -> matched before and still does
+//   minute form    "(1m 16s · ↓ 4.0k tokens)"  -> did NOT match before this fix
+//
+// The minute form above is the verbatim capture from a busy fleet pane, not a
+// retyped lookalike.
+//
+// The gap was not cosmetic. These patterns exist to cover the frame-level
+// window where the footer has not yet re-rendered `· esc to interrupt`, so
+// for the whole of a turn longer than 60 seconds the pane had ONE busy signal
+// instead of two -- and a long turn is exactly when a mis-detected 'idle'
+// costs the most (a prompt injected into a working pane).
+//
+// The hour segment is defensive, not measured: no live pane in the fleet ran
+// long enough to render one. It widens nothing dangerous, because every use
+// still requires the `· ↓N` chrome tail that prose cannot produce.
+//
+// One fragment, one definition: both patterns below and all eight busy-scan
+// call sites read the same shape, so the next rendering change is a one-line
+// edit rather than a hunt for copies.
+const TURN_ELAPSED = String.raw`(?:\d+h\s*)?(?:\d+m\s*)?\d+s`
+
 const BUSY_INDICATORS: RegExp[] = [
   // NOTE: /\besc to interrupt\b/ is NOT in this list.
   // It is checked separately via BUSY_ESC_TO_INTERRUPT_RX scoped to the
@@ -120,13 +147,15 @@ const BUSY_INDICATORS: RegExp[] = [
   // 2026-06-30). The live spinner/token line renders just above the input
   // box during a real turn, so the bottom-region scope still catches it.
   //
-  // Tokens-down-arrow counter: "(52s · ↓ 2.6k tokens ..."
-  /\(\s*\d+s\s*·\s*↓\s*\d/,
+  // Tokens-down-arrow counter: "(52s · ↓ 2.6k tokens ...", "(1m 16s · ↓ 4.0k tokens)"
+  new RegExp(String.raw`\(\s*${TURN_ELAPSED}\s*·\s*↓\s*\d`),
   // Known spinner labels paired with the turn-scoped `(Ns · ↓` tail on
   // the same line. The tail requirement kills the "Thinking…" prose
   // false positive. Non-exhaustive by design; the bare tokens pattern
   // above is the authoritative fallback.
-  /\b(?:Combobulating|Beaming|Thinking|Pondering|Reticulating|Configuring|Noodling|Ruminating|Percolating|Cogitating|Deliberating|Contemplating|Musing|Brewing|Synthesizing|Distilling|Refining|Simmering|Crafting|Formulating|Consulting|Unfurling|Unspooling|Unraveling)…\s*\(\s*\d+s\s*·\s*↓/,
+  new RegExp(
+    String.raw`\b(?:Combobulating|Beaming|Thinking|Pondering|Reticulating|Configuring|Noodling|Ruminating|Percolating|Cogitating|Deliberating|Contemplating|Musing|Brewing|Synthesizing|Distilling|Refining|Simmering|Crafting|Formulating|Consulting|Unfurling|Unspooling|Unraveling)…\s*\(\s*${TURN_ELAPSED}\s*·\s*↓`,
+  ),
 ]
 
 // `esc to interrupt` is a footer-region-only busy signal: Claude Code

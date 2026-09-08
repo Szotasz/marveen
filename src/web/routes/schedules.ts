@@ -35,6 +35,18 @@ function resolveScheduleDir(rawName: string): { name: string; dir: string } | nu
   } catch { return null }
 }
 
+// HBSCHEDSZAM903: the hourly heartbeat digest's "enabled schedules" figure was
+// the ONE number the agent computed itself (counting enabled:true in the raw
+// /api/schedules array), and it drifted to a 13x error (376 reported vs 29
+// real). Serve the counts pre-computed so the digest copies a number instead
+// of deriving one. Pure and exported so the counting rule is unit-testable.
+export function summarizeScheduledTasks(tasks: Array<{ enabled?: boolean }>): { total: number; enabled: number; disabled: number } {
+  // The same rule the toggle route uses: a task is enabled unless enabled is
+  // explicitly false (absent field = enabled).
+  const enabled = tasks.filter(t => t.enabled !== false).length
+  return { total: tasks.length, enabled, disabled: tasks.length - enabled }
+}
+
 export async function tryHandleSchedules(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -111,6 +123,11 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
 
   if (path === '/api/schedules' && method === 'GET') {
     json(res, listScheduledTasks())
+    return true
+  }
+
+  if (path === '/api/schedules/summary' && method === 'GET') {
+    json(res, summarizeScheduledTasks(listScheduledTasks()))
     return true
   }
 

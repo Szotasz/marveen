@@ -130,3 +130,25 @@ describe('summarizeByDay', () => {
     expect(summary['2026-09-06']).toEqual({ down: 1 })
   })
 })
+
+// Merge-resolution guard (#1216 x #1215, resolved by the fleet): since #1215
+// the give-up ALERT repeats every GIVE_UP_REALERT_MS, but the give-up EVENT is
+// one per down-spell. Recording it on every re-alert cadence would inflate the
+// very rate this log exists to measure. The gate lives inline in the monitor
+// loop, so this pins it at the source: the 'gave-up' recordChannelEvent call
+// must sit inside an `if (!isRepeat)` block. FIXED window on purpose -- an
+// anchor that grows until it matches cannot fail.
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+describe('gave-up event is first-fire-only (merge-resolution guard)', () => {
+  it('the gave-up record call is gated on !isRepeat within 12 lines', () => {
+    const src = readFileSync(join(__dirname, '../web/channel-monitor.ts'), 'utf-8')
+    const srcLines = src.split('\n')
+    const callIdx = srcLines.findIndex(l => l.includes("event: 'gave-up'"))
+    expect(callIdx, "channel-monitor no longer records a 'gave-up' event").toBeGreaterThan(0)
+    const windowBefore = srcLines.slice(Math.max(0, callIdx - 12), callIdx).join('\n')
+    expect(windowBefore, "the 'gave-up' record is no longer gated on first fire (!isRepeat)")
+      .toContain('if (!isRepeat)')
+  })
+})

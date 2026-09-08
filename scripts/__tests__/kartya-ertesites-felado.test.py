@@ -117,11 +117,39 @@ def main():
     check('2 felado az --author-bol == boni', POSTED and POSTED[0]['from'] == 'boni',
           f'kapott: {POSTED[0]["from"] if POSTED else "semmi"}')
 
+    # 3. A CSENDES 'marveen' ALAPERTELMEZES SZANDEKOSAN MEGSZUNT (KARTYAKULDO908, 2026-09-08).
+    #    EZ AZ ELLENORZES KORABBAN AZ ELLENKEZOJET ALLITOTTA, es a megfordulasa DONTES, nem elirás:
+    #    2026-09-07-ig a --author es --from nelkuli futas felado nelkul is kikuldte az ertesitest,
+    #    a koordinator (marveen) neveben. Mira merte (21680), mi ennek az ara: Tomi olyan
+    #    feladat-kiosztast kapott, ami ugy nezett ki, mintha a FO-AGENS adta volna, holott a
+    #    kartya Mirae volt -- es visszakerdezni is a koordinatornak kerdezett volna vissza.
+    #    A hiba iranya a rossz: FELFELE attribual, tehat SULYT ad egy kerésnek, amit nem az
+    #    kuldott, akinek latszik.
+    #    A KOMMENT-AGON ezt a #1237 mar lezarta; ez a sor a LETREHOZO ag ugyanezen kapuja.
+    #    A ket agat szandekosan ket PR zarta: a regi viselkedest EZ a sor rogzitette
+    #    regresszio-kontrollkent, es egy ilyen szerzodest nem irunk at egy masik javitas
+    #    mellekhatasakent. Ha valaki a jovoben visszaallitana az alapertelmezest, ELOSZOR
+    #    ezt a kommentet olvassa el: a csend nem kenyelem, hanem rossz nevre kuldott uzenet.
     POSTED.clear()
-    p = run('KULDOC906', 'samu', 'Kartya: KULDOC906 -- alapertelmezes valtozatlan.', port)
-    check('3 lefutott', p.returncode == 0, p.stdout + p.stderr)
-    check('3 alapertelmezett felado marveen (regresszio-kontroll)',
-          POSTED and POSTED[0]['from'] == 'marveen')
+    p = run('KULDOC906', 'samu', 'Kartya: KULDOC906 -- kimondott felado nelkul.', port)
+    check('3 MEGTAGADVA kimondott felado nelkul (2026-09-08 ota)', p.returncode != 0,
+          f'exit={p.returncode} out={p.stdout + p.stderr!r}')
+    check('3 a megtagadas megnevezi a ket kapcsolot',
+          '--author' in (p.stdout + p.stderr) and '--from' in (p.stdout + p.stderr),
+          p.stdout + p.stderr)
+    check('3 semmit nem kuldott ki', not POSTED)
+    db = sqlite3.connect(DB_PATH)
+    n3 = db.execute('SELECT count(*) FROM kanban_cards WHERE id=?', ('KULDOC906',)).fetchone()[0]
+    db.close()
+    check('3 a kartya sem jott letre', n3 == 0)
+    # NEGATIV KONTROLL a megfordult ellenorzes melle: enelkul a 3. attol is zold lenne, ha a kapu
+    # MINDEN letrehozo futast megtagadna. Ugyanaz a hivas, csak kimondott szerzovel -> zold.
+    POSTED.clear()
+    p = run('KULDOC2906', 'samu', 'Kartya: KULDOC2906 -- kimondott szerzovel.', port,
+            extra=('--author', 'Boni'))
+    check('3 kimondott szerzovel ugyanaz a futas zold', p.returncode == 0, p.stdout + p.stderr)
+    check('3 es a felado boni, nem marveen', POSTED and POSTED[0]['from'] == 'boni',
+          f'kapott: {POSTED[0]["from"] if POSTED else "semmi"}')
 
     # 4. ONHUROK: felado == felelos -> a koordinatorhoz megy, es ki is mondja.
     POSTED.clear()

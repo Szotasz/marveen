@@ -9,7 +9,6 @@ import { MAIN_AGENT_ID, SERVICE_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT, RE
 import { DISTRIBUTION_DEFAULT_AGENT_MODEL } from '../config-registry.js'
 import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-config.js'
 import { listKanbanCards } from '../db.js'
-import { buildRecoveryBrief, parseGitStatusShort, type RecoveryFacts } from './restart-recovery-brief.js'
 import {
   agentHasChannel,
   agentSessionName,
@@ -53,7 +52,14 @@ import { sendRoutineAlert } from './routine-alert.js'
 import { getProvider, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { attemptChannelMcpReconnect } from './channel-mcp-reconnect.js'
 import { readLastIngestionTimestamp, TRANSCRIPT_DIR } from './inbound-probe.js'
-import { decideDownAgentAction, AGENT_MAX_RESTART_ATTEMPTS, parseEtimeToSeconds } from './agent-restart-policy.js'
+import {
+  decideDownAgentAction,
+  AGENT_MAX_RESTART_ATTEMPTS,
+  AGENT_FAILURE_COUNT_TTL_MS,
+  GIVE_UP_REALERT_MS,
+  isFailureCountStale,
+  parseEtimeToSeconds,
+} from './agent-restart-policy.js'
 // getClaudePidForSession + hasChannelPluginAlive live in the shared liveness
 // module so the standalone channel-coordinator reuses the exact same probe.
 import { getClaudePidForSession, hasChannelPluginAlive, probeChannelPluginLiveness, classifyRespawnStampAdvance } from '../channel-coordinator/liveness.js'
@@ -143,13 +149,61 @@ function agentFailuresPath(agentName: string): string {
   return join(PROJECT_ROOT, 'store', `.agent-failures-${agentName}`)
 }
 
+function giveUpAlertPath(agentName: string): string {
+  return join(PROJECT_ROOT, 'store', `.agent-giveup-alert-${agentName}`)
+}
+
 function loadPersistedAgentFailures(agentName: string): number {
+  const path = agentFailuresPath(agentName)
   try {
-    const n = parseInt(readFileSync(agentFailuresPath(agentName), 'utf-8').trim(), 10)
-    return Number.isFinite(n) && n >= 0 ? n : 0
+    const n = parseInt(readFileSync(path, 'utf-8').trim(), 10)
+    if (!Number.isFinite(n) || n < 0) return 0
+    if (n === 0) return 0
+    // A count nobody has written to for a day describes an incident that is
+    // over, or one whose own persistence is what keeps it alive: past the cap
+    // nothing restarts the plugin, so nothing can ever observe it healthy and
+    // clear the count. Finy's sat at 6 from 2026-07-09 for five days. Ageing
+    // it out lets the watchdog try again instead of honouring a frozen verdict.
+    let mtimeMs: number | null = null
+    try {
+      mtimeMs = statSync(path).mtimeMs
+    } catch {
+      mtimeMs = null
+    }
+    if (isFailureCountStale(mtimeMs, Date.now(), AGENT_FAILURE_COUNT_TTL_MS)) {
+      logger.info(
+        { agent: agentName, failures: n, ageHours: mtimeMs != null ? Math.round((Date.now() - mtimeMs) / 3600000) : null },
+        'channel-monitor: persisted restart failure count is stale -- starting the agent with a clean slate',
+      )
+      return 0
+    }
+    return n
   } catch {
     return 0
   }
+}
+
+function loadGiveUpAlertAt(agentName: string): number | null {
+  try {
+    const n = parseInt(readFileSync(giveUpAlertPath(agentName), 'utf-8').trim(), 10)
+    return Number.isFinite(n) && n > 0 ? n : null
+  } catch {
+    return null
+  }
+}
+
+function saveGiveUpAlertAt(agentName: string, atMs: number): void {
+  try {
+    writeFileSync(giveUpAlertPath(agentName), String(atMs))
+  } catch (err) {
+    logger.debug({ err, agentName }, 'Failed to persist give-up alert timestamp (non-fatal)')
+  }
+}
+
+function clearGiveUpAlertAt(agentName: string): void {
+  try {
+    writeFileSync(giveUpAlertPath(agentName), '0')
+  } catch { /* best effort */ }
 }
 
 function savePersistedAgentFailures(agentName: string, count: number): void {
@@ -1758,79 +1812,6 @@ function shouldEscalateMarveenDown(): boolean {
   return now - marveenSuspectFirstSeen >= MARVEEN_DOWN_CONFIRM_MS
 }
 
-// ---- recovery brief after a fresh restart (card 3a64403b) -------------------
-// A watchdog restart brings the agent back on a FRESH session: the plugin
-// reloads, the conversation does not. The agent then sits at an empty prompt
-// while its uncommitted branch and its in_progress card wait for it. These
-// three pieces close that gap; the decision of WHETHER to speak lives in the
-// pure buildRecoveryBrief (no facts -> no message, so an idle agent restarted
-// for plugin reasons is never interrupted).
-
-// How many changed files the brief lists before it says "and more". A restart
-// after a long spell can leave dozens; the brief is a pointer, not a diff.
-const RECOVERY_BRIEF_MAX_FILES = 12
-// Wait before typing the brief into the fresh session. The restart path
-// already schedules modal dismissal and the plugin-unlock probe; this sits
-// after both so the brief does not race a dialog or the probe's keystrokes.
-// sendPromptToSession still waits for idle on its own -- this delay is about
-// ORDER, not about hoping the session happens to be ready.
-const RECOVERY_BRIEF_DELAY_MS = 90_000
-
-// Collect what the fleet knew about an agent at restart time. Every failure is
-// swallowed into a null/empty field: a brief is a convenience, and a monitor
-// sweep must never fall over because a directory is missing or git is unhappy.
-function gatherRecoveryFacts(agent: string): RecoveryFacts {
-  let branch: string | null = null
-  let dirty: RecoveryFacts['dirty'] = []
-  let dirtyTruncated = false
-  try {
-    const dir = agentDir(agent)
-    if (existsSync(join(dir, '.git'))) {
-      try {
-        branch = execFileSync('git', ['-C', dir, 'rev-parse', '--abbrev-ref', 'HEAD'], { timeout: 5000 }).toString().trim() || null
-      } catch { /* detached HEAD or no repo -- the brief works without a branch */ }
-      const out = execFileSync('git', ['-C', dir, 'status', '--short'], { timeout: 5000 }).toString()
-      const parsed = parseGitStatusShort(out, RECOVERY_BRIEF_MAX_FILES)
-      dirty = parsed.dirty
-      dirtyTruncated = parsed.truncated
-    }
-  } catch (err) {
-    logger.debug({ err, agent }, 'recovery-brief: git facts unavailable')
-  }
-
-  let inProgress: RecoveryFacts['inProgress'] = []
-  try {
-    inProgress = listKanbanCards()
-      .filter((c) => c.assignee === agent && c.status === 'in_progress' && c.archived_at == null)
-      .map((c) => ({ id: c.id, title: c.title }))
-  } catch (err) {
-    logger.debug({ err, agent }, 'recovery-brief: kanban facts unavailable')
-  }
-
-  return { agent, branch, dirty, dirtyTruncated, inProgress }
-}
-
-// After a fresh restart, tell the new session what it was in the middle of.
-// Fire-and-forget: scheduled, never awaited by the sweep.
-export function scheduleRecoveryBrief(agent: string, session: string): void {
-  setTimeout(() => {
-    void (async () => {
-      try {
-        const facts = gatherRecoveryFacts(agent)
-        const brief = buildRecoveryBrief(facts)
-        if (!brief) {
-          logger.info({ agent, session }, 'recovery-brief: nothing in flight, staying quiet')
-          return
-        }
-        const res = await sendPromptToSession(session, brief, null, { lockMode: 'deliver' })
-        logger.info({ agent, session, res, cards: facts.inProgress.length, dirty: facts.dirty.length }, 'recovery-brief sent after restart')
-      } catch (err) {
-        logger.warn({ err, agent, session }, 'recovery-brief could not be delivered')
-      }
-    })()
-  }, RECOVERY_BRIEF_DELAY_MS)
-}
-
 export function startChannelPluginMonitor(): NodeJS.Timeout | null {
   // Respawn/keep-alive is production-only. On any non-production host (e.g. a
   // local dev checkout) we never respawn the main agent or auto-restart
@@ -2085,6 +2066,10 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // down-spell starts again at the base grace.
           agentRestartFailures.delete(t.agentName!)
           clearPersistedAgentFailures(t.agentName!)
+          // The re-alert clock belongs to the spell, not to the agent: a future
+          // give-up must announce itself immediately rather than inheriting the
+          // cadence of the last one.
+          clearGiveUpAlertAt(t.agentName!)
           agentBusyDeferAlerted.delete(t.session)
           // Retire any stale absent verdict too, so a future down-spell starts
           // with the full restart budget rather than the absent-capped one.
@@ -2151,6 +2136,11 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           downConfirmMs: AGENT_DOWN_CONFIRM_MS,
           agentBusy,
           busyDeferMaxMs: AGENT_BUSY_DEFER_MAX_MS,
+          msSinceGiveUpAlert: (() => {
+            const at = loadGiveUpAlertAt(t.agentName!)
+            return at != null ? Date.now() - at : null
+          })(),
+          giveUpRealertMs: GIVE_UP_REALERT_MS,
         }, maxRestartAttempts)
         if (action === 'alert-busy') {
           // The channel has been down past the deferral cap while the agent kept
@@ -2175,22 +2165,42 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
         if (action === 'alert') {
           // The cap is reached: restarting is not bringing the plugin back, and
           // each restart costs the agent its whole session context. Stop the
-          // loop and hand it to a human. Tick the counter past the cap so this
-          // fires exactly once; a later healthy sweep resets it (re-arming the
-          // alert for a future down-spell).
-          logger.error({ agent: t.agentName, provider: t.provider, failures, absentConfirmed }, 'Agent channel plugin down after max restart attempts -- giving up, alerting operator')
-          recordChannelEvent({
-            at: Date.now(),
-            agent: t.agentName ?? t.session,
-            provider: t.provider,
-            event: 'gave-up',
-            detail: { failures, absentConfirmed },
-          })
+          // loop and hand it to a human -- and keep saying so. The counter that
+          // would end this spell is only cleared by a healthy observation, and
+          // nothing restarts the plugin any more, so silence here lasts until
+          // someone happens to look. Finy's did for five days.
+          const isRepeat = failures > maxRestartAttempts
+          const downSinceMs = agentDownSince.get(t.session)
+          const spellHours = downSinceMs != null ? Math.round((Date.now() - downSinceMs) / 3600000) : null
+          logger.error({ agent: t.agentName, provider: t.provider, failures, absentConfirmed, isRepeat, spellHours }, 'Agent channel plugin down after max restart attempts -- giving up, alerting operator')
+          // The give-up ALERT repeats every GIVE_UP_REALERT_MS since #1215, but
+          // the give-up EVENT is one per down-spell: recording it on every
+          // re-alert cadence would inflate the very rate this log exists to
+          // measure. First fire only; the healthy-sweep reset re-arms both.
+          if (!isRepeat) {
+            recordChannelEvent({
+              at: Date.now(),
+              agent: t.agentName ?? t.session,
+              provider: t.provider,
+              event: 'gave-up',
+              detail: { failures, absentConfirmed },
+            })
+          }
+          const stillPrefix = isRepeat
+            ? `⛔ MÉG MINDIG: a(z) ${t.agentName} ágens ${t.provider} csatornája halott, és nem próbálom újraindítani. `
+            : ''
           sendAlert(absentConfirmed
-            ? `⛔ A(z) ${t.agentName} ágens ${t.provider} plugin-je BE SEM TÖLTŐDÖTT (absent a /mcp listából), a fresh-restart ezt nem javítja -- tovább nem próbálom (minden restart elveszi a session kontextusát). Kézi TISZTA újraindítás kell (üresen, más ágens indulásával nem átlapolva): ${t.session}.`
-            : `⛔ A(z) ${t.agentName} ágens ${t.provider} csatornája ${AGENT_MAX_RESTART_ATTEMPTS} automatikus újraindítás után sem állt helyre. Tovább nem indítom újra (minden restart elveszi a session kontextusát). Kézi beavatkozás kell: nézd meg a ${t.session} session-t és a ${SERVICE_ID} csatorna-plugint.`)
-          agentRestartFailures.set(t.agentName!, failures + 1)
-          savePersistedAgentFailures(t.agentName!, failures + 1)
+            ? `${stillPrefix}⛔ A(z) ${t.agentName} ágens ${t.provider} plugin-je BE SEM TÖLTŐDÖTT (absent a /mcp listából), a fresh-restart ezt nem javítja -- tovább nem próbálom (minden restart elveszi a session kontextusát). Kézi TISZTA újraindítás kell (üresen, más ágens indulásával nem átlapolva): ${t.session}.`
+            : `${stillPrefix}⛔ A(z) ${t.agentName} ágens ${t.provider} csatornája ${AGENT_MAX_RESTART_ATTEMPTS} automatikus újraindítás után sem állt helyre. Tovább nem indítom újra (minden restart elveszi a session kontextusát). Kézi beavatkozás kell: nézd meg a ${t.session} session-t és a ${SERVICE_ID} csatorna-plugint.`)
+          // Only the FIRST alert of a spell ticks the counter past the cap.
+          // Later ones are the same standing fact repeated on a cadence, and
+          // incrementing there would inflate a number the operator reads as
+          // "restart attempts".
+          if (failures === maxRestartAttempts) {
+            agentRestartFailures.set(t.agentName!, failures + 1)
+            savePersistedAgentFailures(t.agentName!, failures + 1)
+          }
+          saveGiveUpAlertAt(t.agentName!, Date.now())
           agentDownSince.delete(t.session)
           agentBusyDeferAlerted.delete(t.session)
           continue
@@ -2243,11 +2253,11 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // the --channels plugin MCP server, so the agent comes up with no plugin
           // and no poller (verified: continue -> "Plugin not found" in /mcp; fresh
           // -> plugin loads + poller attaches). Context is dropped, memory persists.
+          // startAgentProcess schedules the recovery brief itself for any
+          // fresh start (see agent-process): this path is no longer the only
+          // door onto a fresh session, so the brief lives at the door rather
+          // than at each caller.
           await startAgentProcess(t.agentName!, { fresh: true })
-          // The fresh session has no memory of what it was doing. If work was
-          // in flight, tell it -- once, after the modal/probe traffic settles,
-          // and only when there is something concrete to say.
-          scheduleRecoveryBrief(t.agentName!, t.session)
           agentLastRestart.set(t.agentName!, Date.now())
           agentDownSince.delete(t.session)
           agentBusyDeferAlerted.delete(t.session)

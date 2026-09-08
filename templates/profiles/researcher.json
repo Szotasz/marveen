@@ -1,18 +1,20 @@
 {
   "id": "researcher",
   "label": "Kutató",
-  "description": "Piackutatás, versenytárs-elemzés, webes források olvasása. Prompt injection szempontból ugyanúgy kiemelt mint a marketinges. Draft-only: riportot ír a mappájába, nem küld magától kifelé.",
+  "description": "Piackutatás, versenytárs-elemzés, webes források olvasása. Prompt injection szempontból ugyanúgy kiemelt mint a marketinges. Draft-only: riportot ír a mappájába, nem küld magától kifelé. A globális skillek olvasása és a notify.sh/agent-post.sh futtatása engedélyezett.",
   "permissionMode": "strict",
   "filesystem": {
     "allow": [
       "Read(${AGENT_DIR}/**)",
-      "Write(${AGENT_DIR}/**)",
       "Edit(${AGENT_DIR}/**)",
       "Read(${HOME}/Downloads/**)",
       "Bash(ls:*)",
       "Bash(cat:*)",
       "WebFetch(*)",
-      "WebSearch(*)"
+      "WebSearch(*)",
+      "Read(${HOME}/.claude/skills/**)",
+      "Bash(${PROJECT_ROOT}/scripts/agent-post.sh:*)",
+      "Bash(${PROJECT_ROOT}/scripts/notify.sh:*)"
     ],
     "deny": [
       "Read(${HOME}/.ssh/**)",

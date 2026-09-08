@@ -285,6 +285,16 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'TELEGRAM_PROGRESS_MODE',
+    type: 'string',
+    default: 'indicator',
+    valueSet: ['silent', 'indicator', 'verbose'],
+    description: 'Mennyit lásson a tulajdonos Telegramon a munkából. silent = semmi; indicator = egy eltűnő "gondolkodom" üzenet élő token-számlálóval, ami a kör végén törlődik; verbose = ugyanez, plusz a gondolatmenet megmaradó üzenetekben. Ez a flotta alapértelmezése -- egy ügynök felülírhatja a store/progress-config.json-ban.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
     key: 'DASHBOARD_LANG',
     type: 'string',
     default: 'hu',

@@ -49,8 +49,16 @@ export function loadProfileTemplate(id: string): ProfileTemplate {
 }
 
 export function resolveProfilePlaceholders(value: string, ctx: { HOME: string; AGENT_DIR: string }): string {
-  return value
+  const resolved = value
     .replace(/\$\{HOME\}/g, ctx.HOME)
     .replace(/\$\{AGENT_DIR\}/g, ctx.AGENT_DIR)
     .replace(/\$\{WORKDIR\}/g, ctx.AGENT_DIR)
+    .replace(/\$\{PROJECT_ROOT\}/g, PROJECT_ROOT)
+  // File-permission rules (Read/Edit/Write) treat a single leading '/' as
+  // PROJECT-RELATIVE (gitignore semantics): Read(/Users/x/.ssh/**) silently
+  // never matches, so every ${HOME}-based deny in the strict profiles was
+  // inert (measured 2026-09-08, TMPLPERM908). A true absolute path needs
+  // '//'. Normalize here so template authors keep writing ${HOME}/${AGENT_DIR}
+  // naturally; Bash rules are command-prefix matches and must stay untouched.
+  return resolved.replace(/^(Read|Edit|Write)\(\/(?!\/)/, '$1(//')
 }
