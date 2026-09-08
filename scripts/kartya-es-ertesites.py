@@ -10,7 +10,9 @@ Amit garantal:
   - megnevezett flotta-gazdas kartya NEM jon letre ertesites nelkul (a szkript megtagadja);
   - mindket iras VISSZA VAN OLVASVA (a kartya SELECT-tel, az uzenet a visszakapott id-vel);
   - a 300 karakteres cim-kaput ELORE jelzi, nem utolag a trigger;
-  - --dry-run: mindent ellenoriz, semmit nem ir.
+  - --dry-run: mindent ellenoriz, semmit nem ir -- ES UGYANAZOKAT A KAPUKAT futtatja, mint az
+    eles ag (letezes, token). Egy dry-run, ami megengedobb az eles futasnal, rosszabb, mint
+    a semmi: zoldet ad arra, amit a rendszer megtagad. Ezt a kartya-dryrun-paritas teszt meri.
 
 Hasznalat:
   kartya-es-ertesites.py --id X905 --assignee boni --title "..." --desc-file /path
@@ -27,7 +29,9 @@ KOORDINATORHOZ (marveen) -- kimondva, a kimeneten es az uzenet elso soraban is.
 
 KOMMENT-ONLY MOD (KARTYAIRASESZKOZ905, 2026-09-05): komment egy MEGLEVO kartyara,
 ERTESITES NELKUL, ugyanazokkal a kapukkal es kotelezo visszaolvasassal:
-  kartya-es-ertesites.py --id X905 --comment-file /path [--author Samu] [--dry-run]
+  kartya-es-ertesites.py --id X905 --comment-file /path --author Samu [--dry-run]
+Az --author itt KOTELEZO (KARTYADRYRUN907, 2026-09-08): korabban csendben 'Marveen'-re esett,
+tehat a kartyan MAS neve allt, mint aki irta. A letrehozo agon az alapertelmezes valtozatlan.
 MEZOMOZGATAS (KARTYASTATUSZ906, Boni lelete 2026-09-06): komment-modban a lenti mezok MEGLEVO
 kartyat mozgatnak, elotte-pillanatkeppel es FUGGETLEN visszaolvasassal:
   kartya-es-ertesites.py --id X905 --status waiting --comment-file /path --author Boni
@@ -87,6 +91,30 @@ def _db_kapu():
                  f'(gyoker: {ROOT})\nEz jellemzoen egy korabbi rossz ut-feloldas hagyta ott. Mondd ki:\n'
                  f'CLAUDECLAW_ROOT=<a fo fa> vagy KARTYA_DB=<a db utvonala>.')
     return DB
+def _token_kapu(dry_run):
+    """A dashboard-token feloldasa, EGY helyen -- hogy a dry-run ES az eles ag UGYANAZT a
+    kaput fussa. A ket ag CSAK a mondatban ter el, mert a KOVETKEZMENY ter el: az eles agon
+    a kartya EKKOR MAR LETREJOTT (a token-kapu az 5. lepesben all, a 4. lepes irasa utan),
+    a dry-run agon meg semmi nem irodott -- ezert ott felteteles modban mondjuk ki, hogy
+    eles futasban MAR LETREJONNE. Ez a hianyzo mondat volt a dry-run legdragabb hazugsaga:
+    zoldet adott arra a futasra, aminek a vege pontosan az az allapot, amit az egesz eszkoz
+    megelozni hivatott -- a NEMA KARTYA."""
+    tok = os.environ.get('KARTYA_TOKEN')
+    if tok is not None:
+        return tok
+    tokpath = os.path.join(ROOT, 'store', '.dashboard-token')
+    if not os.path.exists(tokpath):
+        elozmeny = ('MEGTAGADVA (dry-run): eles futasban A KARTYA MAR LETREJONNE, DE AZ UZENET NEM MENNE KI:'
+                    if dry_run else
+                    'A KARTYA LETREJOTT, DE AZ UZENET NEM MENT KI:')
+        sys.exit(f'{elozmeny} nincs dashboard-token itt:\n'
+                 f'  {tokpath}\n(gyoker: {ROOT}). Mondd ki: CLAUDECLAW_ROOT=<a fo fa> vagy KARTYA_TOKEN=<token>.\n'
+                 + ('A dry-run ezert PIROS: az eles futas reszlegesen irna (kartya igen, uzenet nem).'
+                    if dry_run else
+                    'Kuldd el kezzel az uzenetet, kulonben a kartya nema marad.'))
+    return open(tokpath).read().strip()
+
+
 FLEET = {'samu','zara','boni','iris','dani','geri','deeper','qwen','mira','tomi','jumanji','hidli'}
 COORDINATOR = 'marveen'
 GAZDA = 'szabolcs'
@@ -230,6 +258,19 @@ GEPI_FEJLEC_RX = re.compile(r'^\s*\[[^\]\n]*\d{1,2}:\d{2}, rendszerora\]\s*\n?')
 
 def komment_mod(a):
     """Komment egy MEGLEVO kartyara, ertesites nelkul. Kapuk + kotelezo visszaolvasas."""
+    # SZERZO-KAPU (KARTYADRYRUN907, 2026-09-08). Boni es Zara egymastol fuggetlenul
+    # merte 2026-09-07-en (21700, 21701), hogy --author nelkul a fejlec ES a
+    # kanban_comments.author mezo CSENDBEN 'Marveen'-re esett. A javitas akkor egy
+    # VERZIOKOVETETLEN peldanyba ment, es a v1.37.0 kiadas nemán visszaallitotta a hibat
+    # (a kartya kozben done-on allt, tehat senki nem olvasta ujra). Ezert all itt fail-closed
+    # kapu FELSZOLITAS helyett: a kapu akkor is vedd, ha senki nem olvassa el a korlevelet.
+    # MIERT NEM ELEG A HELYES ALAPERTELMEZES: a komment SZERZOJE attribucio, nem kenyelem --
+    # a rossz nev irANYA is rossz, mert FELFELE, a koordinatorra mutat, tehat SULYT ad egy
+    # mondatnak, amit nem o irt.
+    if a.author is None:
+        sys.exit('MEGTAGADVA: komment-modban a szerzo KIMONDOTT: add meg az --author-t\n'
+                 '(pl. --author Boni). Korabban ez csendben "Marveen"-re esett vissza, tehat\n'
+                 'a kartyan MAS neve allt, mint aki irta -- es a kimenet kozben OK-t mondott.')
     text = open(a.comment_file, encoding='utf-8').read().strip()
     if not text:
         sys.exit('MEGTAGADVA: ures komment-fajl.')
@@ -387,7 +428,12 @@ def main():
     p.add_argument('--comment-file', help='KOMMENT-ONLY mod: komment meglevo kartyara, ertesites nelkul')
     p.add_argument('--assignee-uj', action='store_true', dest='assignee_uj',
                    help='komment-mod: kimondva uj (a tablan meg nem szereplo) felelos-nev')
-    p.add_argument('--author', default='Marveen', help='komment-mod: a komment szerzoje')
+    # NINCS CSENDES ALAPERTELMEZES (KARTYADRYRUN907, 2026-09-08). Korabban itt
+    # default='Marveen' allt, tehat egy --author nelkuli komment SZO NELKUL a
+    # koordinatort nevezte meg szerzokent -- a kimenet OK-t mondott, a kartyan pedig
+    # MAS neve allt. A None azert kell, hogy a komment-ag meg tudja KULONBOZTETNI a
+    # kimondott erteket a nem-adottol; a letrehozo ag alapertelmezese lentebb, KIMONDVA all.
+    p.add_argument('--author', default=None, help='a komment szerzoje (komment-modban KOTELEZO)')
     p.add_argument('--from', dest='from_agent', default=None,
                    help='az ertesites feladoja (alapertelmezes: az --author kisbetusitve)')
     p.add_argument('--dry-run', action='store_true')
@@ -420,7 +466,12 @@ def main():
     who = _felelos_feloldas(a.assignee)
     # A FELADO: kimondva (--from), vagy a szerzobol. Az alapertelmezes az --author kisbetusitve,
     # tehat a korabbi viselkedes (--author nelkul: 'marveen') valtozatlan marad.
-    frm = (a.from_agent or a.author).strip().lower()
+    # A 'Marveen' MOST ITT all, es nem az argparse default-jaban: a komment-ag szerzo-kapuja
+    # csak ugy tud kulonbseget tenni a kimondott es a nem-adott ertek kozott, ha a default
+    # None. A LETREHOZO agon SZANDEKOSAN nem szigoritunk: a kartya-ertesites-felado teszt 3.
+    # ellenorzese ezt a viselkedest REGRESSZIO-KONTROLLKENT rogziti (--author es --from nelkul
+    # a felado marveen). Ha ez valtozik, az szerzodes-valtas, es a teszttel egyutt kell donteni.
+    frm = (a.from_agent or a.author or 'Marveen').strip().lower()
     if frm not in KULDOK:
         sys.exit(f'MEGTAGADVA: ismeretlen felado ("{frm}"). Ervenyes: {", ".join(sorted(KULDOK))}.\n'
                  f'Ha az --author nem agens-nev (pl. "Marveen (Boni lelete)"), add meg kimondva: --from <agens>.')
@@ -466,8 +517,30 @@ def main():
             sys.exit(f'MEGTAGADVA: vegyes irasrendszeru szo a(z) {cimke}-ban: {h[:5]}')
 
     if a.dry_run:
-        _db_kapu()
-        print(f'DRY-RUN OK (DB: {DB}): minden ellenorzes atment.\n  id={a.id} gazda={who} statusz={a.status} '
+        # PARITAS-KAPU (KARTYADRYRUN907; Mira lelete 2026-09-07, UJRA ELO 2026-09-08 a kiadott
+        # peldanyban). A dry-run KORABBAN ITT tert vissza: a 4. lepes letezes-ellenorzese ES az
+        # 5. lepes token-kapuja ELOTT. Ezert zoldet adott ket olyan futasra, amit az eles ag
+        # megtagad vagy elront:
+        #   - LETEZO id-re "minden ellenorzes atment" (az eles ag: MEGTAGADVA, MAR LETEZIK);
+        #   - token nelkul, uzenettel szinten zold (az eles ag: a kartya letrejon, az uzenet nem).
+        # Egy dry-run, ami MEGENGEDOBB az eles agnal, rosszabb, mintha nem lenne: pont az a
+        # hasznalat dol be, amiert a kapcsolo letezik ("atmenne-e?"). A kapcsolo erteke a
+        # PARITAS, nem a szigor -- ezert a lenti ket kapu ugyanaz, mint az eles agon, es ezert
+        # meri a kartya-dryrun-paritas teszt MINDKET IRANYT (a hamis zoldet es a hamis pirosat is).
+        # IRNI TOVABBRA SEM IR: a letezes-ellenorzes READ-ONLY kapcsolaton megy, igy a dry-run
+        # meg egy hianyzo DB-fajlt sem hozhat letre.
+        dbro = sqlite3.connect(f'file:{_db_kapu()}?mode=ro', uri=True)
+        letezik = dbro.execute('SELECT 1 FROM kanban_cards WHERE id=?', (a.id,)).fetchone()
+        dbro.close()
+        if letezik:
+            # SZO SZERINT ugyanaz a mondat, mint az eles agon (a paritas-teszt 3. ellenorzese
+            # pont ezt meri): ha a ket ag MAS okot mond ugyanarra, az olvasoja nem tudja
+            # eldonteni, hogy ugyanaz a kapu fogta-e meg.
+            sys.exit(f'MEGTAGADVA: a(z) {a.id} kartya MAR LETEZIK.')
+        if msg:
+            _token_kapu(dry_run=True)
+        print(f'DRY-RUN OK (DB: {DB}): minden ellenorzes atment (a letezes- es a token-kaput is'
+              f' beleertve).\n  id={a.id} gazda={who} statusz={a.status} '
               f'prio={a.priority}\n  cim {len(a.title)} kar | leiras {len(desc)} kar | uzenet {len(msg)} kar')
         return
 
@@ -503,14 +576,7 @@ def main():
 
     # A token a gyokerbol jon, tehat ugyanaz a feloldas vonatkozik ra. KARTYA_TOKEN: teszt-horog
     # es kimondott felulbiralas, ugyanabban az alakban, mint a KARTYA_DB/KARTYA_API.
-    tokpath = os.path.join(ROOT, 'store', '.dashboard-token')
-    tok = os.environ.get('KARTYA_TOKEN')
-    if tok is None:
-        if not os.path.exists(tokpath):
-            sys.exit(f'A KARTYA LETREJOTT, DE AZ UZENET NEM MENT KI: nincs dashboard-token itt:\n'
-                     f'  {tokpath}\n(gyoker: {ROOT}). Mondd ki: CLAUDECLAW_ROOT=<a fo fa> vagy KARTYA_TOKEN=<token>.\n'
-                     f'Kuldd el kezzel az uzenetet, kulonben a kartya nema marad.')
-        tok = open(tokpath).read().strip()
+    tok = _token_kapu(dry_run=False)
     req = urllib.request.Request(API,
         data=json.dumps({'from': frm, 'to': cimzett, 'content': msg}).encode(),
         headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + tok}, method='POST')

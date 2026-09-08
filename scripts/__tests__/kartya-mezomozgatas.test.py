@@ -411,6 +411,44 @@ def main():
     check('31 a megtagadas felajanlja a letezo TisztaNev-et', 'TisztaNev' in (p.stdout + p.stderr),
           p.stdout + p.stderr)
 
+    # 32. A SZERZO KIMONDOTT (KARTYADRYRUN907, 2026-09-08). Komment-modban az --author korabban
+    #     CSENDBEN 'Marveen'-re esett: a kimenet OK-t mondott, a kartyan pedig MAS neve allt.
+    #     A javitas 2026-09-07-en egy VERZIOKOVETETLEN peldanyba ment, es a v1.37.0 kiadas
+    #     nemán visszaallitotta -- ezert all ITT, a repoban, egy teszt: enelkul a kovetkezo
+    #     kiadas ugyanugy vissza tudja hozni, es semmi nem szol rola.
+    seed('SZERZO907', assignee='samu')
+    d = tempfile.mkdtemp(prefix='kartya-m-')
+    cf = os.path.join(d, 'c.txt')
+    with open(cf, 'w', encoding='utf-8') as f:
+        f.write('Kartya SZERZO907: szerzo nelkuli komment.')
+    p = subprocess.run([sys.executable, SCRIPT, '--id', 'SZERZO907', '--comment-file', cf],
+                       capture_output=True, text=True, env=env, timeout=30)
+    check('32 --author nelkul a komment MEGTAGADVA',
+          p.returncode != 0 and '--author' in (p.stdout + p.stderr), p.stdout + p.stderr)
+    check('32 a komment nem irodott be', comments('SZERZO907') == [])
+    # A MEZOMOZGATAS SEM CSUSZHAT AT a szerzo-kapun: a kapu a komment-ag ELEJEN all, tehat a
+    # statusz-valtas is elhal vele. Enelkul a kartya nyom nelkul mozdulna el.
+    p = subprocess.run([sys.executable, SCRIPT, '--id', 'SZERZO907', '--comment-file', cf,
+                        '--status', 'done'], capture_output=True, text=True, env=env, timeout=30)
+    check('32 a mezomozgatas sem ment at szerzo nelkul', p.returncode != 0, p.stdout + p.stderr)
+    check('32 a statusz valtozatlan', card('SZERZO907')[0] == 'planned', f'kapott: {card("SZERZO907")}')
+
+    # 33. NEGATIV KONTROLL: az or nem tulzottan szeles -- KIMONDOTT szerzovel ugyanaz a futas zold,
+    #     es a fejlec ES a kanban_comments.author is AZT a nevet hordozza, nem a koordinatoret.
+    p = comment('SZERZO907', 'Kartya SZERZO907: kimondott szerzovel.')
+    check('33 kimondott --author-ral zold', p.returncode == 0, p.stdout + p.stderr)
+    c = comments('SZERZO907')
+    check('33 a fejlec Boni-t nevezi, nem Marveent',
+          c and c[-1].startswith('[Boni '), f'kapott: {c[-1][:40] if c else None!r}')
+    # A FEJLEC ES AZ OSZLOP KET KULON HELY: 2026-09-07-en MINDKETTO 'Marveen'-re esett, tehat
+    # egy fejlec-only ellenorzes zold maradna, ha csak az oszlop romlana el.
+    _db = sqlite3.connect(DB_PATH)
+    _szerzo = _db.execute("SELECT author FROM kanban_comments WHERE card_id='SZERZO907'"
+                          ' ORDER BY id DESC LIMIT 1').fetchone()
+    _db.close()
+    check('33 a kanban_comments.author oszlop is Boni', _szerzo and _szerzo[0] == 'Boni',
+          f'kapott: {_szerzo!r}')
+
     os.remove(DB_PATH)
     if FAILS:
         sys.stderr.write('\nBUKOTT: ' + ', '.join(FAILS) + '\n')
