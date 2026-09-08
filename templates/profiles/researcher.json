@@ -1,12 +1,11 @@
 {
   "id": "researcher",
   "label": "Kutató",
-  "description": "Piackutatas, versenytars-elemzes, webes forrasok olvasasa. Prompt-injekcio szempontjabol ugyanugy kiemelt, mint a marketinges. A fajl-tiltasok a permissive mod miatt NEM ervenyesulnek, a vedelmet a hookok adjak (email-kapu, egress-kapu, self-pace kapu).",
-  "permissionMode": "permissive",
+  "description": "Piackutatás, versenytárs-elemzés, webes források olvasása. Prompt injection szempontból ugyanúgy kiemelt mint a marketinges. Draft-only: riportot ír a mappájába, nem küld magától kifelé. A globális skillek olvasása és a notify.sh/agent-post.sh futtatása engedélyezett.",
+  "permissionMode": "strict",
   "filesystem": {
     "allow": [
       "Read(${AGENT_DIR}/**)",
-      "Write(${AGENT_DIR}/**)",
       "Edit(${AGENT_DIR}/**)",
       "Read(${HOME}/Downloads/**)",
       "Bash(ls:*)",
@@ -14,8 +13,8 @@
       "WebFetch(*)",
       "WebSearch(*)",
       "Read(${HOME}/.claude/skills/**)",
-      "Bash(${HOME}/**/scripts/agent-post.sh:*)",
-      "Bash(${HOME}/**/scripts/notify.sh:*)"
+      "Bash(${PROJECT_ROOT}/scripts/agent-post.sh:*)",
+      "Bash(${PROJECT_ROOT}/scripts/notify.sh:*)"
     ],
     "deny": [
       "Read(${HOME}/.ssh/**)",
