@@ -9,6 +9,7 @@ import {
   PROJECT_ROOT,
   MAIN_AGENT_ID,
   BOT_NAME,
+  APP_TZ,
   APP_TZ_INVALID,
   CHANNEL_PROVIDER,
 } from '../config.js'
@@ -594,6 +595,36 @@ export function quotaWorkClass(task: Pick<ScheduledTask, 'type'>): QuotaWorkClas
   if (task.type === 'command') return 'free'
   if (task.type === 'heartbeat') return 'background'
   return 'owner-facing'
+}
+
+// NIGHT LOCK (idozar, kert 2026-09-09). Between these hours no scheduled task
+// is started at all: the owner asked for a window where the fleet initiates
+// nothing. 22 is inclusive, 5 is exclusive, so 22:00-04:59 local is locked and
+// 05:00 opens the gate.
+//
+// The bound is the SCHEDULER's zone (APP_TZ), not the process default -- the
+// cron matcher already runs in APP_TZ, and a gate on a different clock would
+// let a task through at 22:30 whenever the host zone drifted from the
+// configured one.
+export const NIGHT_LOCK_START_HOUR = 22
+export const NIGHT_LOCK_END_HOUR = 5
+
+// Pure, so the boundary hours are testable without a clock.
+export function isNightLocked(hourLocal: number): boolean {
+  return hourLocal >= NIGHT_LOCK_START_HOUR || hourLocal < NIGHT_LOCK_END_HOUR
+}
+
+export function schedulerLocalHour(nowMs: number, tz: string = APP_TZ): number {
+  try {
+    return Number(
+      new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: tz })
+        .format(new Date(nowMs)),
+    ) % 24
+  } catch {
+    // An unusable zone must not silently lock (or unlock) the whole night:
+    // fall back to the host clock, which is what cron would use anyway.
+    return new Date(nowMs).getHours()
+  }
 }
 
 export function runPreCheck(task: ScheduledTask): { skip: boolean; prefix?: string } {
@@ -1671,6 +1702,23 @@ export function startScheduleRunner(): NodeJS.Timeout {
         targetAgents = [MAIN_AGENT_ID, ...running]
       } else {
         targetAgents = [task.agent || MAIN_AGENT_ID]
+      }
+
+      // NIGHT LOCK. Nothing is started inside the window. The skip is
+      // RECORDED (never silent) for the same reason as the desktop gate: a
+      // dropped tick with no trace looks exactly like "there was nothing to
+      // do". lastRun is stamped so the morning catch-up does not replay the
+      // whole night at 05:00 -- the owner asked for the rounds to be skipped,
+      // not deferred into a burst.
+      if (isNightLocked(schedulerLocalHour(now))) {
+        logger.info(
+          { task: task.name, hour: schedulerLocalHour(now), tz: APP_TZ },
+          `Schedule skipped: night lock ${NIGHT_LOCK_START_HOUR}:00-0${NIGHT_LOCK_END_HOUR}:00`,
+        )
+        scheduleLastRun.set(task.name, now)
+        persistScheduleLastRun()
+        for (const agentName of targetAgents) appendTaskRun(task.name, agentName, 'skipped-night-lock')
+        continue
       }
 
       // Quota gate. Every heartbeat across the fleet spends from the same
