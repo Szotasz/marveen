@@ -9,6 +9,11 @@
   --text: #141413;
   --text-secondary: #30302e;
   --text-muted: #87867f;
+  /* Dimmed body text that still has to be READ, not just noticed: transcript
+     metadata, notes, action lines. Distinct from --text-muted, which sits at
+     3.5:1 on this background and is fine for a label next to something else,
+     but not for a line someone has to follow. Measured 5.4:1 here. GH #426. */
+  --text-dim: #68675f;
   --border: #d1cfc5;
   --border-focus: #d97757;
   --accent: #d97757;
@@ -40,6 +45,7 @@
   --text: #faf9f5;
   --text-secondary: #b0aea5;
   --text-muted: #73726c;
+  --text-dim: #9a9890;   /* 6.4:1 on --bg. See the light-theme note. */
   --border: #3d3d3a;
   --shadow-sm: 0 1px 3px rgba(0,0,0,0.2);
   --shadow-md: 0 4px 16px rgba(0,0,0,0.25);
@@ -6951,13 +6957,31 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .conv-bubble { max-width: 78%; padding: 8px 12px; border-radius: 12px; font-size: 13.5px; line-height: 1.45; }
 .conv-in .conv-bubble { background: var(--info-soft); border-bottom-left-radius: 3px; }
 .conv-out .conv-bubble { background: var(--success-soft); border-bottom-right-radius: 3px; }
-.conv-meta { font-size: 10.5px; opacity: .6; margin-bottom: 3px; }
+/* GH #426: these four lines used to dim with `opacity`, which is theme-blind.
+   Opacity composites the text toward whatever is BEHIND it, so the same value
+   that stays legible on the dark background washes near-black text out toward
+   the page in light mode. Measured on the real tokens:
+
+     rule                opacity   light      dark
+     .conv-action-text     .5      3.45:1     5.07:1
+     .conv-action-ts       .3*     1.97:1     2.63:1
+     .conv-note-text       .55     4.03:1     5.91:1
+     .conv-meta            .6      4.72:1     6.80:1
+     (* .6 nested inside the parent's .5)
+
+   Three of four fail 4.5:1 in light mode and the timestamp fails in BOTH, which
+   is why the reporter could only read these rows by selecting them: the
+   selection highlight paints a solid background behind the text. A dimmed COLOUR
+   is the same visual intent without the theme dependence. */
+.conv-meta { font-size: 10.5px; color: var(--text-dim); margin-bottom: 3px; }
 .conv-text { white-space: normal; word-break: break-word; }
 .conv-row.conv-note { justify-content: center; }
-.conv-note-text { font-size: 12px; opacity: .55; font-style: italic; max-width: 88%; }
+.conv-note-text { font-size: 12px; color: var(--text-dim); font-style: italic; max-width: 88%; }
 .conv-row.conv-action { justify-content: flex-start; }
-.conv-action-text { font-size: 11.5px; opacity: .5; font-family: 'JetBrains Mono', monospace; display: flex; gap: 8px; align-items: baseline; }
-.conv-action-ts { opacity: .6; font-size: 10px; }
+.conv-action-text { font-size: 11.5px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; display: flex; gap: 8px; align-items: baseline; }
+/* No second dimming step here: nesting one opacity inside another is what took
+   the timestamp to 1.97:1. It is separated by size, not by fading. */
+.conv-action-ts { font-size: 10px; }
 /* === Mobile login QR modal === */
 .mobile-login-qr {
   width: 240px;
