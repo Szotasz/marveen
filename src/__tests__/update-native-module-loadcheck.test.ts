@@ -44,4 +44,18 @@ describe('update.sh native-module handling (#950)', () => {
     // EBADENGINE (#735) and hit the ABI trap (#950).
     expect(PKG.engines.node).not.toContain('<24')
   })
+
+  it('keeps the lower bound at Node 22 (better-sqlite3 13.x requires >=22)', () => {
+    expect(PKG.engines.node).toMatch(/>=\s*22/)
+  })
+
+  it('the rollback path names the running Node version so a Node 20 host learns why', () => {
+    // Anchor on the restart gate (not the earlier prebuild rebuild that shares
+    // the native_module_loads guard).
+    const gate = UPDATE.indexOf('verify the native module actually loads before we restart')
+    expect(gate).toBeGreaterThan(-1)
+    const tail = UPDATE.slice(gate, gate + 1400)
+    expect(tail).toContain('node -v')
+    expect(tail).toContain('Node 22')
+  })
 })

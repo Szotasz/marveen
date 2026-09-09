@@ -738,6 +738,10 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
   # that cannot open its database.
   if ! native_module_loads; then
     echo -e "${RED}HIBA:${NC} a better-sqlite3 modul nem toltheto be a frissites utan. Visszaallitas (${OLD_VERSION})..."
+    # #950 follow-up: name the Node version and the requirement, so a host still
+    # on Node 20 learns WHY every update rolls back (better-sqlite3 13.x needs
+    # Node >=22) instead of only seeing "the module cannot load".
+    echo -e "  ${DIM}Futo Node: $(node -v 2>/dev/null || echo '?'). A better-sqlite3 13.x Node 22 vagy ujabbat igenyel; ha ez alatt futsz, frissitsd a Node-ot es futtasd ujra a frissitest.${NC}"
     if [ -n "$OLD_VERSION_FULL" ]; then
       git reset --hard "$OLD_VERSION_FULL" >/dev/null 2>&1 || true
       npm ci --silent --include=dev 2>/dev/null || true
@@ -746,7 +750,7 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
       [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
     fi
     RESULT_STATUS="rolled-back"
-    RESULT_MSG="A frissites utan a natv adatbazis-modul nem toltodott be; a rendszer visszaallt a korabbi mukodo verziora (${OLD_VERSION}). A frissites nem ment ki."
+    RESULT_MSG="A frissites utan a natv adatbazis-modul nem toltodott be (futo Node: $(node -v 2>/dev/null || echo ?); a better-sqlite3 13.x Node 22 vagy ujabbat igenyel). A rendszer visszaallt a korabbi mukodo verziora (${OLD_VERSION}). A frissites nem ment ki."
     restore_stash_before_exit
     exit 6
   fi
