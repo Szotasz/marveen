@@ -1570,10 +1570,15 @@ export function decayMemories(): void {
   db.prepare('UPDATE memories SET salience = MAX(salience * 0.995, 0.01) WHERE created_at < ?').run(oneWeekAgo)
 }
 
-export function getMemoriesForChat(chatId: string, limit = 10): Memory[] {
+export function getMemoriesForChat(chatId: string, limit = 10, offset = 0): Memory[] {
+  // id DESC tie-break (#947): accessed_at has 1-second granularity, so a bulk
+  // import leaves hundreds of rows sharing one value; without a stable
+  // secondary sort SQLite may order the ties differently between queries, and
+  // LIMIT/OFFSET over them can repeat a row on one page and never return
+  // another. id is the unique insertion order, so it makes paging total.
   return db
-    .prepare('SELECT * FROM memories WHERE chat_id = ? ORDER BY accessed_at DESC LIMIT ?')
-    .all(chatId, limit) as Memory[]
+    .prepare('SELECT * FROM memories WHERE chat_id = ? ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?')
+    .all(chatId, limit, offset) as Memory[]
 }
 
 // --- In-process memory cache (TTL-based) ---
@@ -1660,17 +1665,21 @@ export function saveAgentMemory(
 // accessed memories" instead of "the N most recent <category> memories", so an
 // older-but-still-active memory would drop out of the list with no truncation
 // signal -- invisible to the caller, and worst right after a restart.
-export function getAgentMemories(agentId: string, limit: number = 20, category?: string): Memory[] {
-  const key = `${agentId}:${limit}:${category ?? ''}`
+export function getAgentMemories(agentId: string, limit: number = 20, category?: string, offset: number = 0): Memory[] {
+  // offset is part of the cache key (#947): without it page 2 would be served
+  // page 1's cached rows for up to MEMORY_CACHE_TTL_MS. id DESC tie-break for
+  // the same reason getMemoriesForChat has one -- accessed_at ties are common
+  // after a bulk import and make LIMIT/OFFSET non-total without it.
+  const key = `${agentId}:${limit}:${category ?? ''}:${offset}`
   const cached = memoryCacheGet(key)
   if (cached) return cached
   const result = (category
     ? db.prepare(
-        "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? ORDER BY accessed_at DESC LIMIT ?"
-      ).all(agentId, category, limit)
+        "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?"
+      ).all(agentId, category, limit, offset)
     : db.prepare(
-        "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') ORDER BY accessed_at DESC LIMIT ?"
-      ).all(agentId, limit)) as Memory[]
+        "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?"
+      ).all(agentId, limit, offset)) as Memory[]
   memoryCacheSet(key, result)
   return result
 }

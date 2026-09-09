@@ -83,6 +83,21 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     const tier = url.searchParams.get('tier') || url.searchParams.get('category') || ''
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
     const mode = url.searchParams.get('mode') || 'fts'
+    // #947: offset is honoured on the LISTING branches only. A negative or
+    // non-numeric value is clamped to 0 (no page skip) rather than erroring --
+    // the failure this fixes was a SILENT one, and a hard 400 on a stray value
+    // would trade it for a different surprise.
+    const offsetRaw = parseInt(url.searchParams.get('offset') || '0', 10)
+    const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? offsetRaw : 0
+    // offset makes no sense on a relevance-ranked search: hybridSearch fuses two
+    // rankings and searchAgentMemories oversamples FTS then re-ranks in JS, so a
+    // SQL OFFSET would page over a DIFFERENT ranking than page 1 returned.
+    // Reject the combination loudly instead of dropping offset silently --
+    // silently dropping the parameter is the class of bug #947 is about.
+    if (offset > 0 && q) {
+      json(res, { error: 'offset is not supported together with q (search results are relevance-ranked, not a stable page order)' }, 400)
+      return true
+    }
 
     let results: Memory[]
     // GH #1025: a hybrid answer built entirely by the vector branch looks the
@@ -106,9 +121,9 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       }
     } else if (agentId) {
       // Category goes into the query, not a post-filter: see getAgentMemories.
-      results = getAgentMemories(agentId, limit, tier || undefined)
+      results = getAgentMemories(agentId, limit, tier || undefined, offset)
     } else {
-      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit)
+      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, offset)
     }
 
     // Still needed for the search branches above, which rank by relevance and
