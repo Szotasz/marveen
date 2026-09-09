@@ -2144,6 +2144,16 @@ export function createKanbanCard(card: {
 // agent and every script uses -- wrote none. Measured 2026-08-29: 8 events in
 // the whole table, the newest 6 weeks old, so "when did this card become
 // in_progress" was unanswerable for essentially every card on the board.
+// The columns updateKanbanCard actually writes. Exported so the HTTP boundary
+// (PUT /api/kanban/:id) can validate a body against exactly this set instead of
+// duplicating the list -- a field that is not here is silently dropped by the
+// spread below, which is the #1023 data-loss bug when the caller believed it
+// was writing one (e.g. `description_append`).
+export const KANBAN_WRITABLE_FIELDS = [
+  'title', 'description', 'status', 'assignee', 'priority', 'project',
+  'parent_id', 'due_date', 'sort_order', 'archived_at',
+] as const
+
 export function updateKanbanCard(
   id: string,
   fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>,
@@ -2153,6 +2163,14 @@ export function updateKanbanCard(
   if (!card) return false
   const now = Math.floor(Date.now() / 1000)
   const f = { ...card, ...fields, updated_at: now }
+  // #1023: bump updated_at ONLY when a writable column actually changes. The
+  // UPDATE below always matches the row, so a no-op PUT (an unknown field, or a
+  // known field echoed back unchanged) used to stamp updated_at=now and report
+  // success -- destroying the exact "this card is stale, go look" signal the
+  // failed write should have preserved. A no-op is not a failure: return true
+  // (the card exists) but touch nothing.
+  const realChange = KANBAN_WRITABLE_FIELDS.some((k) => f[k] !== card[k])
+  if (!realChange) return true
   const changed = db.prepare(
     `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
      WHERE id=?`
