@@ -112,12 +112,21 @@ if [[ -d "${HOME}/.claude/projects" ]]; then
   ( cd "${HOME}" && find .claude/projects -maxdepth 2 -type d -name memory -print ) >> "${HOMELIST}"
 fi
 # MAIN orchestrator channel tokens + pairing state, per provider. bot.pid and
-# inbox/ are runtime/transient and intentionally excluded.
+# inbox/ are runtime/transient and intentionally excluded. Since #915 the
+# main state dir is install-scoped (<repo>/.claude/channels/<provider>); the
+# HOME base only still holds it on an unmigrated install -- take both, each
+# from its own list so restore puts them back where they came from.
 if [[ -d "${HOME}/.claude/channels" ]]; then
   ( cd "${HOME}" && find .claude/channels -maxdepth 2 \
       \( -name '.env' -o -name 'access.json' -o -name 'invites.json' \) \
       -print ) >> "${HOMELIST}"
   ( cd "${HOME}" && find .claude/channels -maxdepth 2 -type d -name 'approved' -print ) >> "${HOMELIST}"
+fi
+if [[ -d "${REPO_ROOT}/.claude/channels" ]]; then
+  ( cd "${REPO_ROOT}" && find .claude/channels -maxdepth 2 \
+      \( -name '.env' -o -name 'access.json' -o -name 'invites.json' \) \
+      -print ) >> "${REPOLIST}"
+  ( cd "${REPO_ROOT}" && find .claude/channels -maxdepth 2 -type d -name 'approved' -print ) >> "${REPOLIST}"
 fi
 # launchd jobs for this fleet. The job labels are com.<MAIN_AGENT_ID>.<service>
 # (see src/web/main-agent.ts), so resolve MAIN_AGENT_ID the way the app does

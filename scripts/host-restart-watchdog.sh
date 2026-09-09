@@ -22,7 +22,15 @@ set -uo pipefail
 
 STATE_DIR="${MARVEEN_STORE:-$HOME/marveen/store}"
 STATE_FILE="$STATE_DIR/.last-btime"
-ENV_FILE="${TELEGRAM_ENV:-$HOME/.claude/channels/telegram/.env}"
+INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# #915: main channel state is install-scoped once migrated; the legacy shared
+# path only serves unmigrated installs.
+TG_CHAN_DIR="${TELEGRAM_STATE_DIR:-}"
+if [ -z "$TG_CHAN_DIR" ]; then
+  TG_CHAN_DIR="$INSTALL_DIR/.claude/channels/telegram"
+  [ -f "$TG_CHAN_DIR/.env" ] || TG_CHAN_DIR="$HOME/.claude/channels/telegram"
+fi
+ENV_FILE="${TELEGRAM_ENV:-$TG_CHAN_DIR/.env}"
 # Alert target chat-id -- MUST come from the install's own config; there is
 # deliberately NO hardcoded fallback (a hardcoded id would make every downstream
 # install send its host-stability alerts to that one private chat).

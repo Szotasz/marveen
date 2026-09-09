@@ -51,6 +51,9 @@ import datetime, os, glob, json, time, subprocess, urllib.request
 FLEET_ROOT = os.environ.get("MARVEEN_ROOT") or os.path.expanduser("~/marveen")
 SCAN_GLOBS = [
     os.path.join(FLEET_ROOT, "agents", "*", ".claude", "channels", "telegram", "progress"),
+    # #915: the main agent's state dir is install-scoped once migrated; scan
+    # both bases -- at most one holds live progress markers.
+    os.path.join(FLEET_ROOT, ".claude", "channels", "telegram", "progress"),
     os.path.expanduser("~/.claude/channels/telegram/progress"),
 ]
 DOWN_GRACE_SEC = 120        # agent down + placeholder older than this -> fire

@@ -11,5 +11,10 @@ if [[ -f "$SCRIPT_DIR/_vtools.py" ]]; then
   DEST="$SCRIPT_DIR"
 fi
 FID="${1:?usage: stt.sh <file_id> [state_dir]}"
-STATE_DIR="${2:-$HOME/.claude/channels/telegram}"
+# #915: arg, then env override, then install-scoped once migrated, then legacy.
+STATE_DIR="${2:-${TELEGRAM_STATE_DIR:-}}"
+if [ -z "$STATE_DIR" ]; then
+  STATE_DIR="$(cd "$(dirname "$0")/../.." && pwd)/.claude/channels/telegram"
+  [ -f "$STATE_DIR/.env" ] || STATE_DIR="$HOME/.claude/channels/telegram"
+fi
 exec "$DEST/venv/bin/python" "$DEST/_vtools.py" transcribe "$FID" "$STATE_DIR"

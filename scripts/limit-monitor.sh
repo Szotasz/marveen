@@ -65,7 +65,13 @@ fi
 
 send_alert() {
   local msg="$1" tag="$2" token
-  token="$(grep -oE '[0-9]+:[A-Za-z0-9_-]+' "$HOME/.claude/channels/telegram/.env" 2>/dev/null | head -1)"
+  # #915: install-scoped state dir once migrated, legacy shared otherwise.
+  local chan_dir="${TELEGRAM_STATE_DIR:-}"
+  if [ -z "$chan_dir" ]; then
+    chan_dir="$INSTALL_DIR/.claude/channels/telegram"
+    [ -f "$chan_dir/.env" ] || chan_dir="$HOME/.claude/channels/telegram"
+  fi
+  token="$(grep -oE '[0-9]+:[A-Za-z0-9_-]+' "$chan_dir/.env" 2>/dev/null | head -1)"
   if [ -z "$token" ]; then
     log "ALERT wanted but no bot token found: $tag"
     return 1

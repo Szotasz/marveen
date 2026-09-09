@@ -74,12 +74,19 @@ OBSERVE_FLAG="$STATE_DIR/.fleet-memgate-observe"  # if present -> observe-only
 # file flag (touch/rm store/.fleet-memgate-observe) or MARVEEN_MEM_GATE_OBSERVE=1.
 OBSERVE=0
 if [[ "${MARVEEN_MEM_GATE_OBSERVE:-0}" == "1" || -f "$OBSERVE_FLAG" ]]; then OBSERVE=1; fi
-ENV_FILE="${TELEGRAM_ENV:-$HOME/.claude/channels/telegram/.env}"
+# #915: main channel state is install-scoped once migrated; the legacy shared
+# path only serves unmigrated installs.
+TG_CHAN_DIR="${TELEGRAM_STATE_DIR:-}"
+if [ -z "$TG_CHAN_DIR" ]; then
+  TG_CHAN_DIR="$INSTALL_DIR/.claude/channels/telegram"
+  [ -f "$TG_CHAN_DIR/.env" ] || TG_CHAN_DIR="$HOME/.claude/channels/telegram"
+fi
+ENV_FILE="${TELEGRAM_ENV:-$TG_CHAN_DIR/.env}"
 # Alert target: the owner's chat id. Resolve from the channel access.json (the
 # first allow-listed sender) so no chat-id is ever hardcoded; override with
 # MARVEEN_ALERT_CHAT_ID. Empty -> the Telegram alert is skipped (log only), never
 # sent to a stranger.
-ACCESS_JSON="${TELEGRAM_ACCESS:-$HOME/.claude/channels/telegram/access.json}"
+ACCESS_JSON="${TELEGRAM_ACCESS:-$TG_CHAN_DIR/access.json}"
 CHAT_ID="${MARVEEN_ALERT_CHAT_ID:-}"
 if [[ -z "$CHAT_ID" && -f "$ACCESS_JSON" ]] && command -v python3 >/dev/null 2>&1; then
   CHAT_ID="$(python3 -c 'import json,sys

@@ -145,6 +145,13 @@ def config(state=None):
 
 def channel_dir(agent):
     if agent == MAIN_AGENT:
+        # #915: env override, then install-scoped once migrated, then legacy shared.
+        d = os.environ.get("TELEGRAM_STATE_DIR")
+        if d:
+            return d
+        inst = os.path.join(ROOT, ".claude", "channels", "telegram")
+        if os.path.isfile(os.path.join(inst, ".env")):
+            return inst
         return os.path.expanduser("~/.claude/channels/telegram")
     return os.path.join(ROOT, "agents", agent, ".claude", "channels", "telegram")
 

@@ -16,6 +16,7 @@ import {
   randomBytes, createCipheriv, createDecipheriv, scryptSync,
 } from 'node:crypto'
 import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, BOT_NAME, BRAND_NAME, OWNER_NAME, CHANNEL_PROVIDER } from '../config.js'
+import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { updateEnvFile } from '../env.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
@@ -477,6 +478,19 @@ function exportChannelsAccess(channelsDir: string): Record<string, unknown> {
   return channelsAccess
 }
 
+// Per-provider main-agent access.json via the #915 resolver. Only providers
+// whose resolved dir actually holds an access.json appear, mirroring
+// exportChannelsAccess's behaviour.
+function exportMainChannelAccessResolved(): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  const providers: ChannelProviderType[] = ['telegram', 'slack', 'discord', 'googlechat', 'teams']
+  for (const provider of providers) {
+    const accessPath = join(channelStateDir(provider), 'access.json')
+    if (existsSync(accessPath)) out[provider] = safeReadJson(accessPath)
+  }
+  return out
+}
+
 // Main agent lives at PROJECT_ROOT -- exported separately since it's not under agents/.
 function exportMainAgent(
   bindingLookup: Map<string, Map<string, Map<string, string>>>,
@@ -505,8 +519,14 @@ function exportMainAgent(
     }
   }
 
-  // Main agent channel access lives at ~/.claude/channels/<provider>/access.json
-  const channelsAccess = exportChannelsAccess(join(homedir(), '.claude', 'channels'))
+  // Main agent channel access lives at <state dir>/access.json per provider.
+  // channelStateDir (#915) resolves env override, then the legacy shared
+  // ~/.claude path while unmigrated, then the install-scoped dir -- merge the
+  // legacy base first so a migrated provider's install-scoped copy wins.
+  const channelsAccess = {
+    ...exportChannelsAccess(join(homedir(), '.claude', 'channels')),
+    ...exportMainChannelAccessResolved(),
+  }
 
   return {
     agentId: MAIN_AGENT_ID,
@@ -921,11 +941,15 @@ function writeMainAgentFiles(ma: MainAgentExport, tracker: WriteTracker): void {
   trackedWrite(join(PROJECT_ROOT, '.mcp.json'), JSON.stringify(deplaceholderMcp(ma.mcp), null, 2), tracker)
   trackedWrite(join(claudeDir, 'settings.json'), JSON.stringify(ma.settings, null, 2), tracker)
 
-  // Main agent channel access: ~/.claude/channels/<provider>/access.json
-  // B1: provider names validated by validateNames() before this is called
+  // Main agent channel access: written into the #915-resolved state dir for
+  // known providers (install-scoped on a fresh target), legacy shared base for
+  // anything else. B1: provider names validated by validateNames() first.
   const channelsBase = join(homedir(), '.claude', 'channels')
+  const knownProviders = new Set(['telegram', 'slack', 'discord', 'googlechat', 'teams'])
   for (const [provider, access] of Object.entries(ma.channelsAccess ?? {})) {
-    const provDir = safeJoin(channelsBase, provider)
+    const provDir = knownProviders.has(provider)
+      ? channelStateDir(provider as ChannelProviderType)
+      : safeJoin(channelsBase, provider)
     trackedMkdir(provDir, tracker)
     trackedWrite(join(provDir, 'access.json'), JSON.stringify(access, null, 2), tracker)
   }

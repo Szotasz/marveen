@@ -73,9 +73,15 @@ MISSING_SCRIPT_REPLY = "Nem sikerult lekerdezni a keret-allapotot: a lekerdezo s
 
 
 def state_dir():
+    # #915: env override, then the install-scoped dir once it holds the .env,
+    # then the legacy shared path (unmigrated installs only).
     d = os.environ.get("TELEGRAM_STATE_DIR")
     if d:
         return d
+    _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    _inst = os.path.join(_root, ".claude", "channels", "telegram")
+    if os.path.isfile(os.path.join(_inst, ".env")):
+        return _inst
     return os.path.expanduser("~/.claude/channels/telegram")
 
 

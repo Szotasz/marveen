@@ -366,8 +366,10 @@ unset _p
 
 # Extra safety net for existing installs whose tmux server already has a
 # polluted global env -- scrub channel tokens so new child sessions don't
-# inherit them. The main agent's plugin will still load its token from
-# ~/.claude/channels/<provider>/.env via the plugin's own bootstrap.
+# inherit them. The main agent's plugin will still load its token from the
+# install-scoped state dir (see the #915 migration below) via the exported
+# *_STATE_DIR, falling back to ~/.claude/channels/<provider>/.env only on an
+# unmigrated install.
 command -v tmux >/dev/null 2>&1 && tmux set-environment -g -u TELEGRAM_BOT_TOKEN 2>/dev/null || true
 command -v tmux >/dev/null 2>&1 && tmux set-environment -g -u SLACK_BOT_TOKEN 2>/dev/null || true
 command -v tmux >/dev/null 2>&1 && tmux set-environment -g -u DISCORD_BOT_TOKEN 2>/dev/null || true
@@ -712,6 +714,51 @@ if [ -n "$ORPHAN_PIDS2" ]; then
   /bin/kill -KILL $ORPHAN_PIDS2 2>/dev/null || true
 fi
 
+# #915: install-scoped main-agent channel state. The shared
+# ~/.claude/channels/<provider>/ default meant any OTHER Claude Code session on
+# this host (CLI, desktop app) loaded the same bot token, SIGTERMed the pid in
+# bot.pid and took the bot over -- silently: no reply, empty transcript, no log
+# line anywhere. Sub-agents were never affected because their launcher exports
+# *_STATE_DIR; the main agent gets the same treatment now.
+#
+# One-time migration: MOVE (never copy) the legacy state into $MAIN_CHAN_DIR.
+# A token left behind in the shared path keeps the hijack window open, so the
+# legacy dir must end up with no live .env. The whole directory moves --
+# access.json (pairing allowlist), inbox/, progress/, invites.json -- because
+# a fresh-born state dir would silently drop the allowlist and delivery state.
+# Runs AFTER the session kill + orphan reaps above, so nothing is polling out
+# of the legacy dir while it moves. Idempotent: a migrated install skips both
+# branches.
+LEGACY_CHAN_DIR="$HOME/.claude/channels/$CHANNEL_PROVIDER"
+if [ "$LEGACY_CHAN_DIR" != "$MAIN_CHAN_DIR" ] && [ -f "$LEGACY_CHAN_DIR/.env" ]; then
+  if [ ! -f "$MAIN_CHAN_DIR/.env" ]; then
+    mkdir -p "$(dirname "$MAIN_CHAN_DIR")"
+    if [ ! -e "$MAIN_CHAN_DIR" ] && mv "$LEGACY_CHAN_DIR" "$MAIN_CHAN_DIR" 2>/dev/null; then
+      echo "[channels] #915: migrated $LEGACY_CHAN_DIR -> $MAIN_CHAN_DIR"
+    else
+      # Target already exists (partial earlier run): move entry by entry.
+      mkdir -p "$MAIN_CHAN_DIR"
+      for _entry in "$LEGACY_CHAN_DIR"/.[!.]* "$LEGACY_CHAN_DIR"/*; do
+        [ -e "$_entry" ] || continue
+        mv "$_entry" "$MAIN_CHAN_DIR/" 2>/dev/null || true
+      done
+      echo "[channels] #915: merged $LEGACY_CHAN_DIR into $MAIN_CHAN_DIR"
+    fi
+  else
+    # Both hold a .env (e.g. a fresh onboarding already wrote install-scoped):
+    # the shared-path token must not stay live -- park it next to the new one,
+    # keeping the file instead of deleting history.
+    mv "$LEGACY_CHAN_DIR/.env" "$MAIN_CHAN_DIR/.env.legacy-$(date +%s)" 2>/dev/null || true
+    echo "[channels] #915: parked stale legacy .env from $LEGACY_CHAN_DIR"
+  fi
+fi
+# Export for this script AND build the launch-command prefix for the spawned
+# session: the plugin honours *_STATE_DIR, and with it exported the main
+# session's poller does carry it (measured in #915) -- the old comment claiming
+# otherwise described the unexported state.
+export "$STATE_ENV_VAR"="$MAIN_CHAN_DIR"
+STATE_DIR_ENV="export ${STATE_ENV_VAR}='${MAIN_CHAN_DIR}' && "
+
 # P1 FIX: put the Claude auth token into the tmux SERVER global env BEFORE
 # new-session. A new session inherits the tmux SERVER's global environment, not
 # this shell's. The tmux server is SHARED across every agent, so if a sub-agent
@@ -769,7 +816,7 @@ $TMUX set-environment -g DISABLE_AUTOUPDATER 1 2>/dev/null || true
 # otherwise new-session below fails with "duplicate session".
 $TMUX kill-session -t "$SESSION" 2>/dev/null || true
 $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
-  "${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+  "${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
 
 # Session startup guard: a Claude Code first-run dialogusait auto-accept-eljuk
 # kulonben a headless session orokre parkolna a prompton es a Telegram plugin
@@ -843,7 +890,7 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
         # entry); see the PR description / card 7EB18437.
         [ -e "$INSTALL_DIR/CLAUDE.md" ] && ln -sf "$INSTALL_DIR/CLAUDE.md" "$_CHANNELS_STARTDIR/CLAUDE.md" 2>/dev/null || true
         $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" \
-          "${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+          "${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
         unset _CHANNELS_STARTDIR
       fi
       continue
@@ -1085,10 +1132,11 @@ START_TS=$(date +%s)
 #
 # Thresholds are deliberately COARSER than the dashboard monitor's (~60-120s)
 # so in normal operation the dashboard acts FIRST and this only fires when the
-# dashboard couldn't -- avoids double-restart races. bot.pid lives at the
-# main-agent channelStateDir(): ~/.claude/channels/<provider>/bot.pid (HOME-,
-# not INSTALL_DIR-relative; see src/channel-provider.ts channelStateDir()).
-MAIN_BOT_PID_FILE="$HOME/.claude/channels/$CHANNEL_PROVIDER/bot.pid"
+# dashboard couldn't -- avoids double-restart races. bot.pid lives in the
+# main-agent state dir -- install-scoped since the #915 migration above, which
+# has already run by the time this executes (see src/channel-provider.ts
+# channelStateDir() for the matching server-side resolution).
+MAIN_BOT_PID_FILE="$MAIN_CHAN_DIR/bot.pid"
 # Never-started budget: generous so a slow cold-start (WSL first-run, MCP
 # handshake + /mcp unlock retries) is never killed prematurely. The plugin
 # normally writes bot.pid within ~1-2 min; 10 min is a safe ceiling.

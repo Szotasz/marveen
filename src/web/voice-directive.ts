@@ -3,17 +3,24 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { STORE_DIR, WEB_PORT } from '../config.js'
 import { AGENTS_BASE_DIR } from './agent-config.js'
+import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
+
+const KNOWN_PROVIDERS = new Set<string>(['telegram', 'slack', 'discord', 'googlechat', 'teams'])
 
 // Resolve the directory where an agent's channel plugin stores its bot .env.
 // Search order:
 //   1. <AGENTS_BASE_DIR>/<agentId>/.claude/channels/<provider>   (sub-agent own channel)
 //   2. ~/.claude/channels/<provider>-<agentId>                   (alternative naming)
-//   3. ~/.claude/channels/<provider>                             (global fallback / main agent)
+//   3. channelStateDir(provider)                                 (main agent -- env override,
+//      then legacy shared path while unmigrated, then install-scoped; #915)
 export function resolveAgentChannelStateDir(agentId: string, provider: string): string {
+  const mainDir = KNOWN_PROVIDERS.has(provider)
+    ? channelStateDir(provider as ChannelProviderType)
+    : join(homedir(), '.claude', 'channels', provider)
   const candidates = [
     join(AGENTS_BASE_DIR, agentId, '.claude', 'channels', provider),
     join(homedir(), '.claude', 'channels', `${provider}-${agentId}`),
-    join(homedir(), '.claude', 'channels', provider),
+    mainDir,
   ]
   return candidates.find((d) => existsSync(join(d, '.env'))) ?? candidates[candidates.length - 1]
 }

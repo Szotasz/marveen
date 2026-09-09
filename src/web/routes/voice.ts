@@ -36,14 +36,18 @@ const SAFE_FILE_ID_RE = /^[A-Za-z0-9_\-]{10,200}$/
 // Known agent channel dirs -- only these are accepted as state_dir.
 // The channel plugin stores its .env (bot token) here.
 const CHANNELS_BASE = join(homedir(), '.claude', 'channels')
+// Install-scoped main-agent base (#915): <install>/.claude/channels/<provider>.
+const INSTALL_CHANNELS_BASE = join(PROJECT_ROOT, '.claude', 'channels')
 
-// Safe paths: ~/.claude/channels/<provider>/  OR  <AGENTS_BASE_DIR>/<name>/.claude/channels/<provider>/
-// Both must contain a .env file. '..' traversal always rejected.
+// Safe paths: ~/.claude/channels/<provider>/, <install>/.claude/channels/<provider>/
+// OR <AGENTS_BASE_DIR>/<name>/.claude/channels/<provider>/
+// All must contain a .env file. '..' traversal always rejected.
 function isSafeStateDir(dir: string): boolean {
   const resolved = dir.replace(/\/$/, '')
   if (resolved.includes('..')) return false
   if (!existsSync(join(resolved, '.env'))) return false
   if (resolved.startsWith(CHANNELS_BASE + '/') || resolved === CHANNELS_BASE) return true
+  if (resolved.startsWith(INSTALL_CHANNELS_BASE + '/') || resolved === INSTALL_CHANNELS_BASE) return true
   if (resolved.startsWith(AGENTS_BASE_DIR + '/')) {
     // Must match: <AGENTS_BASE_DIR>/<agentName>/.claude/channels/<provider>
     const rel = resolved.slice(AGENTS_BASE_DIR.length + 1)

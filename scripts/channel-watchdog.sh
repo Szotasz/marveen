@@ -202,7 +202,22 @@ fi
 
 # Full PATH with .bun/bin -- without it the respawned bun telegram bridge does
 # not come up and the session is channel-less.
-RESPAWN_CMD="export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && ${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${CHANNEL_PROVIDER}@claude-plugins-official${EXTRA_CHANNELS}"
+#
+# #915: the respawned session must carry the same install-scoped *_STATE_DIR
+# channels.sh exports at spawn, or the plugin falls back to the shared
+# ~/.claude/channels/<provider>/ and the hijack window reopens on the first
+# watchdog respawn. Mirror channels.sh's STATE_ENV_VAR mapping.
+case "$CHANNEL_PROVIDER" in
+  slack)    STATE_ENV_VAR="SLACK_STATE_DIR" ;;
+  whatsapp) STATE_ENV_VAR="WHATSAPP_STATE_DIR" ;;
+  teams)    STATE_ENV_VAR="TEAMS_STATE_DIR" ;;
+  discord)  STATE_ENV_VAR="DISCORD_STATE_DIR" ;;
+  *)        STATE_ENV_VAR="TELEGRAM_STATE_DIR" ;;
+esac
+MAIN_CHAN_DIR="$INSTALL_DIR/.claude/channels/$CHANNEL_PROVIDER"
+STATE_DIR_ENV=""
+[ -f "$MAIN_CHAN_DIR/.env" ] && STATE_DIR_ENV="export ${STATE_ENV_VAR}='${MAIN_CHAN_DIR}' && "
+RESPAWN_CMD="export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && ${STATE_DIR_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${CHANNEL_PROVIDER}@claude-plugins-official${EXTRA_CHANNELS}"
 
 reason="keepalive stale ${age}s"
 [ "$STALE" != true ] && reason=""
