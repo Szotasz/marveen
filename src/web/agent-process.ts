@@ -2696,6 +2696,61 @@ const SUBAGENT_PARKED_ESCALATE_AFTER = 6  // ~3min for a sub-agent whose auto-cl
 // the first threshold, per the spec).
 export const MAIN_PARKED_HEARTBEAT_AFTER = 6
 export const MAIN_PARKED_OWNER_AFTER = 12
+// One more stage past the owner notification (~6 min at UNWEDGE_COOLDOWN_MS),
+// so the operator has had a full stage with the manual fix in hand before the
+// box is rescued and cleared for them. GH #890.
+export const MAIN_PARKED_RESCUE_AFTER = 24
+
+// Where a rescued parked line is written before the box is cleared.
+export const PARKED_RESCUE_DIR = join(STORE_DIR, 'parked-input')
+
+/**
+ * Write the parked text to disk and READ IT BACK before reporting success.
+ *
+ * The read-back is the whole point, not diligence theatre. Clearing an input box
+ * destroys the only copy of whatever was in it; a save whose success nobody
+ * checked is indistinguishable from no save at all, and it would turn this
+ * function into a delete with extra steps. Returns the path only when the file
+ * exists and its content matches what we meant to store; on any failure the
+ * caller must leave the box alone.
+ *
+ * The saved text is a SCRAPE of the VISIBLE box, and that limit is written into
+ * the file itself: an overfull box drops its head rows in the TUI, so the rescue
+ * can be a tail fragment. Better a labelled fragment on disk than a silent
+ * total loss, but the label has to travel with it or the next reader will treat
+ * a fragment as the whole message.
+ */
+export function rescueParkedInput(
+  session: string,
+  text: string,
+  nowMs: number = Date.now(),
+): string | null {
+  try {
+    mkdirSync(PARKED_RESCUE_DIR, { recursive: true })
+    const stamp = new Date(nowMs).toISOString().replace(/[:.]/g, '-')
+    const safeSession = session.replace(/[^A-Za-z0-9._-]/g, '_')
+    const path = join(PARKED_RESCUE_DIR, `${safeSession}-${stamp}.txt`)
+    const body =
+      `# Parked input rescued before the box was cleared\n` +
+      `# session: ${session}\n` +
+      `# saved:   ${new Date(nowMs).toISOString()}\n` +
+      `# NOTE: this is a scrape of the VISIBLE input box. An overfull box drops\n` +
+      `#       its head rows in the TUI, so this may be the tail of a longer line.\n` +
+      `\n${text}\n`
+    writeFileSync(path, body, 'utf-8')
+    // Read back: the file has to exist AND hold what we wrote. A partial write,
+    // a full disk or a read-only store all land here rather than in a clear.
+    const readBack = readFileSync(path, 'utf-8')
+    if (!readBack.includes(text)) {
+      logger.error({ session, path }, 'parked-input rescue: read-back did not match, refusing to clear the box')
+      return null
+    }
+    return path
+  } catch (err) {
+    logger.error({ session, err }, 'parked-input rescue: save failed, refusing to clear the box')
+    return null
+  }
+}
 
 // Pure decision, exported for tests: which escalation stage applies. 'owner'
 // fires once per episode (ownerNotified latches via the record's escalated
@@ -2703,7 +2758,22 @@ export const MAIN_PARKED_OWNER_AFTER = 12
 export function decideMainParkedEscalation(
   fails: number,
   ownerNotified: boolean,
-): 'none' | 'heartbeat' | 'owner' {
+): 'none' | 'heartbeat' | 'owner' | 'rescue-and-clear' {
+  // GH #890: past the owner-notify stage the box has held the SAME text for
+  // roughly MAIN_PARKED_RESCUE_AFTER cooldown rounds, and every scheduled task
+  // in the meantime has been deferred -- the reporter's symptom, and measured
+  // again on 2026-09-09 as 22 skipped tasks in one hour. Leaving it parked is
+  // not neutral: it is a silent, open-ended stall of the whole scheduler.
+  //
+  // Clearing it is only acceptable because the text is rescued to disk and the
+  // save is read back FIRST (rescueParkedInput). That is what separates this
+  // from the move rejected in GH #717: submitting an operator's half-typed line
+  // is irreversible, clearing a line whose verified copy sits in store/ is not.
+  //
+  // The threshold sits AFTER the owner notification on purpose. The operator has
+  // already been told, with the manual fix, and has had a full stage to act. A
+  // human composing a message for two minutes is never in this branch.
+  if (fails >= MAIN_PARKED_RESCUE_AFTER) return 'rescue-and-clear'
   if (fails >= MAIN_PARKED_OWNER_AFTER && !ownerNotified) return 'owner'
   if (fails >= MAIN_PARKED_HEARTBEAT_AFTER) return 'heartbeat'
   return 'none'
@@ -2805,11 +2875,38 @@ export async function clearStaleParkedInput(session: string, host: string | null
       logger.warn({ session, parked: parked.slice(0, 60), fails }, 'message-router: main-agent parked input -- owner notified with manual fix (box untouched)')
     } else if (stage === 'heartbeat') {
       logger.warn({ session, parked: parked.slice(0, 60), fails }, 'message-router: main-agent parked input -- persisting; visible to the heartbeat round (box untouched)')
-    } else {
+    } else if (stage !== 'rescue-and-clear') {
       logger.debug({ session, parked: parked.slice(0, 60), fails }, 'message-router: main-agent parked input -- left untouched')
     }
-    unwedgeAttempts.set(key, { last: nowMs, sig: parked, fails, escalated })
-    return false
+
+    // GH #890: the box has held the same text past the owner-notify stage and
+    // is stalling every scheduled task behind it. Rescue the line to disk, and
+    // clear ONLY if that save read back intact. If the save fails we keep the
+    // old behaviour exactly -- untouched box, escalation record, no keystroke.
+    if (stage === 'rescue-and-clear') {
+      const rescuedPath = rescueParkedInput(session, parked, nowMs)
+      if (rescuedPath == null) {
+        logger.warn(
+          { session, parked: parked.slice(0, 60), fails },
+          'message-router: main-agent parked input -- rescue save failed, box left untouched (a clear without a verified copy is a delete)',
+        )
+        unwedgeAttempts.set(key, { last: nowMs, sig: parked, fails, escalated })
+        return false
+      }
+      notifyChannel(
+        `🧹 A fo agens (${session}) input-mezojeben ~${Math.round((fails * UNWEDGE_COOLDOWN_MS) / 60000)} perce allt egy parkolt sor, ` +
+        `es emiatt minden utemezett feladat varakozott. A sort KIMENTETTUK es a mezot kitisztitottuk, ` +
+        `hogy a csatorna ujra dolgozzon. A szoveg itt van: ${rescuedPath}`,
+      ).catch(() => { /* notify is best-effort */ })
+      logger.warn(
+        { session, parked: parked.slice(0, 60), fails, rescuedPath },
+        'message-router: main-agent parked input rescued to disk, clearing the box',
+      )
+      // Fall through to the shared clear sequence below.
+    } else {
+      unwedgeAttempts.set(key, { last: nowMs, sig: parked, fails, escalated })
+      return false
+    }
   }
 
   // Forward deletion, budgeted by the visible row count -- see the rationale and
