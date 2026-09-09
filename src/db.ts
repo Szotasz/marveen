@@ -1403,7 +1403,7 @@ export function saveMemory(
 // search terms. We also cap the number and length of tokens to bound query
 // cost (the sanitizer previously allowed an arbitrary-length prefix expansion
 // that could make a single request scan the entire index).
-export function buildFtsMatchExpression(query: string): string {
+export function buildFtsMatchExpression(query: string, join: 'AND' | 'OR' = 'AND'): string {
   const MAX_TOKENS = 20
   const MAX_TOKEN_LEN = 64
   const sanitized = query
@@ -1419,7 +1419,35 @@ export function buildFtsMatchExpression(query: string): string {
     .filter((t) => t.length > 0)
     .slice(0, MAX_TOKENS)
     .map((t) => t.slice(0, MAX_TOKEN_LEN) + '*')
-  return tokens.join(' ')
+  // A space between FTS5 terms is an implicit AND, so the default keeps the
+  // strict behaviour. 'OR' is the relaxed pass used by ftsWithOrFallback.
+  return join === 'OR' ? tokens.join(' OR ') : tokens.join(' ')
+}
+
+/**
+ * Run an FTS query strictly first, and only if that finds nothing, run it again
+ * with the tokens ORed together.
+ *
+ * Why a fallback and not a plain OR: joining with a space makes every word of
+ * the question mandatory, so a naturally phrased question returns zero rows
+ * while its keywords return the right memory at rank 1 (GH #1025 measured
+ * "meddig tart a felmondasi ido" -> 0 results, "felmondasi ido" -> the correct
+ * memory, first place; the store contained the answer, and the word "meddig"
+ * simply appears in no memory). Switching to OR outright would relax every
+ * query that works today, including the ones AND already answers well. This
+ * keeps AND's precision where AND has an answer and only relaxes where the
+ * alternative is nothing at all, which is what the caller was getting.
+ *
+ * A single-token query has nothing to relax, so it runs once.
+ */
+function ftsWithOrFallback<T>(query: string, run: (terms: string) => T[]): { rows: T[]; relaxed: boolean } {
+  const strict = buildFtsMatchExpression(query)
+  if (!strict) return { rows: [], relaxed: false }
+  const rows = run(strict)
+  if (rows.length > 0) return { rows, relaxed: false }
+  const relaxedTerms = buildFtsMatchExpression(query, 'OR')
+  if (relaxedTerms === strict) return { rows, relaxed: false }
+  return { rows: run(relaxedTerms), relaxed: true }
 }
 
 // -- Recency-weighted retrieval (Roitman 17.4.2) --
@@ -1476,19 +1504,19 @@ function withoutRank<T extends { rank: number }>(rows: T[]): Omit<T, 'rank'>[] {
 }
 
 export function searchMemories(query: string, chatId: string, limit = 3): Memory[] {
-  const terms = buildFtsMatchExpression(query)
-  if (!terms) return []
   try {
-    const candidates = db
-      .prepare(
-        `SELECT m.*, f.rank AS rank FROM memories m
-         JOIN memories_fts f ON m.id = f.rowid
-         WHERE f.content MATCH ? AND m.chat_id = ?
-         ORDER BY rank
-         LIMIT ?`
-      )
-      .all(terms, chatId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
-    return withoutRank(reRankByRecency(candidates, limit)) as Memory[]
+    const { rows } = ftsWithOrFallback(query, (terms) =>
+      db
+        .prepare(
+          `SELECT m.*, f.rank AS rank FROM memories m
+           JOIN memories_fts f ON m.id = f.rowid
+           WHERE f.content MATCH ? AND m.chat_id = ?
+           ORDER BY rank
+           LIMIT ?`
+        )
+        .all(terms, chatId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
+    )
+    return withoutRank(reRankByRecency(rows, limit)) as Memory[]
   } catch {
     return []
   }
@@ -1632,17 +1660,18 @@ export function getAgentMemories(agentId: string, limit: number = 20, category?:
   return result
 }
 
-export function searchAgentMemories(agentId: string, query: string, limit: number = 10): Memory[] {
-  const terms = buildFtsMatchExpression(query)
-  if (!terms) return []
+export function searchAgentMemories(agentId: string, query: string, limit: number = 10, trace?: { relaxed: boolean }): Memory[] {
   try {
-    const candidates = db.prepare(
-      `SELECT m.*, f.rank AS rank FROM memories m
-       JOIN memories_fts f ON m.id = f.rowid
-       WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')
-       ORDER BY rank LIMIT ?`
-    ).all(terms, agentId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
-    return withoutRank(reRankByRecency(candidates, limit)) as Memory[]
+    const { rows, relaxed } = ftsWithOrFallback(query, (terms) =>
+      db.prepare(
+        `SELECT m.*, f.rank AS rank FROM memories m
+         JOIN memories_fts f ON m.id = f.rowid
+         WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')
+         ORDER BY rank LIMIT ?`
+      ).all(terms, agentId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
+    )
+    if (trace) trace.relaxed = relaxed
+    return withoutRank(reRankByRecency(rows, limit)) as Memory[]
   } catch {
     return db.prepare(
       "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?"
@@ -1756,10 +1785,9 @@ export function recallByDateRange(from: string, to: string, agentId?: string): R
 }
 
 export function recallSearch(query: string, agentId?: string, limit = 50): RecallResult {
-  const terms = buildFtsMatchExpression(query)
   let memories: Memory[] = []
   const escaped = escapeLike(query)
-  if (terms) {
+  if (buildFtsMatchExpression(query)) {
     try {
       // Was ORDER BY created_at DESC (pure recency, relevance ignored); now the
       // same λ-blend as the other search paths, so a strongly matching older
@@ -1767,10 +1795,12 @@ export function recallSearch(query: string, agentId?: string, limit = 50): Recal
       const sql = agentId
         ? `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared') ORDER BY rank LIMIT ?`
         : `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? ORDER BY rank LIMIT ?`
-      const candidates = agentId
-        ? db.prepare(sql).all(terms, agentId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
-        : db.prepare(sql).all(terms, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
-      memories = withoutRank(reRankByRecency(candidates, limit)) as Memory[]
+      const { rows } = ftsWithOrFallback(query, (terms) =>
+        agentId
+          ? db.prepare(sql).all(terms, agentId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
+          : db.prepare(sql).all(terms, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
+      )
+      memories = withoutRank(reRankByRecency(rows, limit)) as Memory[]
     } catch {
       const sql = agentId
         ? "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY created_at DESC LIMIT ?"
@@ -3236,15 +3266,50 @@ function vectorSearch(agentId: string, queryEmbedding: number[], limit: number =
   return scored.slice(0, limit).map(s => s.memory)
 }
 
-export async function hybridSearch(agentId: string, query: string, limit: number = 10): Promise<Memory[]> {
+/**
+ * What a hybrid search actually did. GH #1025: when the FTS branch returns
+ * nothing, RRF does not return nothing -- the vector branch fills the whole
+ * result list on its own, and the caller gets confident-looking rows with no
+ * lexical support and no sign that half the search failed. The trace makes that
+ * case observable instead of leaving the caller to infer it.
+ */
+export interface HybridSearchTrace {
+  ftsHits: number
+  vectorHits: number
+  /** The FTS branch found nothing with AND and was retried with OR. */
+  ftsRelaxed: boolean
+  /** Every returned row came from the vector branch alone. */
+  vectorOnly: boolean
+}
+
+export async function hybridSearch(
+  agentId: string,
+  query: string,
+  limit: number = 10,
+  trace?: HybridSearchTrace,
+): Promise<Memory[]> {
   const k = 60 // RRF constant
 
   // FTS5 results
-  const ftsResults = searchAgentMemories(agentId, query, limit * 2)
+  const ftsTrace = { relaxed: false }
+  const ftsResults = searchAgentMemories(agentId, query, limit * 2, ftsTrace)
 
   // Vector results
   const queryEmbedding = await generateEmbedding(query)
   const vecResults = queryEmbedding ? vectorSearch(agentId, queryEmbedding, limit * 2) : []
+
+  if (trace) {
+    trace.ftsHits = ftsResults.length
+    trace.vectorHits = vecResults.length
+    trace.ftsRelaxed = ftsTrace.relaxed
+    trace.vectorOnly = ftsResults.length === 0 && vecResults.length > 0
+  }
+  if (ftsResults.length === 0 && vecResults.length > 0) {
+    logger.warn(
+      { agentId, query, vectorHits: vecResults.length },
+      'hybrid search: the keyword branch found nothing, the answer comes from the vector branch alone',
+    )
+  }
 
   // Reciprocal Rank Fusion
   const scores: Map<number, number> = new Map()

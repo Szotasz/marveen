@@ -8,6 +8,7 @@ import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
+import type { HybridSearchTrace } from '../../db.js'
 import type { RouteContext } from './types.js'
 
 // Canonical memory categories. Kept in sync with the DB CHECK constraint in
@@ -84,8 +85,12 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     const mode = url.searchParams.get('mode') || 'fts'
 
     let results: Memory[]
+    // GH #1025: a hybrid answer built entirely by the vector branch looks the
+    // same as one with lexical support. The trace rides the response so the
+    // caller can tell them apart.
+    const hybridTrace: HybridSearchTrace = { ftsHits: 0, vectorHits: 0, ftsRelaxed: false, vectorOnly: false }
     if (q && mode === 'hybrid') {
-      results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit)
+      results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit, hybridTrace)
     } else if (q && agentId) {
       results = searchAgentMemories(agentId, q, limit)
       if (results.length === 0) {
@@ -124,6 +129,15 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       created_label: new Date(m.created_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
       accessed_label: new Date(m.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
     }))
+    // The body of this endpoint is a bare array and several callers index into
+    // it, so the trace rides a header rather than changing the shape.
+    if (q && mode === 'hybrid') {
+      res.setHeader(
+        'X-Memory-Search',
+        `fts=${hybridTrace.ftsHits}; vector=${hybridTrace.vectorHits};` +
+          ` relaxed=${hybridTrace.ftsRelaxed}; vector-only=${hybridTrace.vectorOnly}`,
+      )
+    }
     jsonMaybeGzip(req, res, formatted)
     return true
   }
