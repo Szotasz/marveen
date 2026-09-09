@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile } from 'node:fs'
+import { readRemovedDefaultTasks } from './scheduled-tasks-io.js'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, AGENT_API_ORIGIN, STORE_DIR } from '../config.js'
@@ -1270,10 +1271,16 @@ export function ensureDefaultScheduledTasks(): void {
   const destRoot = join(homedir(), '.claude', 'scheduled-tasks')
   mkdirSync(destRoot, { recursive: true })
 
+  // #796: an operator who deleted a shipped default must not have it silently
+  // re-seeded on the next dashboard start. The DELETE route records the removal
+  // in this tombstone; honor it here (a later re-create via the UI clears it).
+  const removed = readRemovedDefaultTasks()
+
   for (const taskName of readdirSync(repoTasks)) {
     const src = join(repoTasks, taskName)
     const dest = join(destRoot, taskName)
     if (!statSync(src).isDirectory()) continue
+    if (removed.has(taskName)) continue
     if (existsSync(dest)) continue
     mkdirSync(dest, { recursive: true })
     for (const file of readdirSync(src)) {

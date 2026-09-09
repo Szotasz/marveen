@@ -13,6 +13,41 @@ export const SCHEDULED_TASKS_DIR = join(homedir(), '.claude', 'scheduled-tasks')
 // legitimate schedule prompt -- real ones are usually <1k chars.
 export const MAX_SCHEDULED_TASK_PROMPT_LEN = 50_000
 
+// #796: a deleted DEFAULT scheduled task must stay deleted. Seeding is
+// skip-if-missing at three points -- ensureDefaultScheduledTasks() on every
+// dashboard start, and the install/update shell seed loops -- so without a
+// record of the deletion, a shipped task the operator removed reappears on the
+// next restart or update. This tombstone is a newline-separated list of task
+// names that all three seed points consult; the DELETE route appends to it and
+// (re)creating a task clears its entry. Kept as a plain dotfile in the tasks
+// dir (not a subdirectory) so listScheduledTasks -- which filters to dirs --
+// never treats it as a task, and the shell seeders can read it with grep.
+export const REMOVED_DEFAULTS_FILE = join(SCHEDULED_TASKS_DIR, '.removed-defaults')
+
+export function readRemovedDefaultTasks(): Set<string> {
+  try {
+    return new Set(
+      readFileSync(REMOVED_DEFAULTS_FILE, 'utf-8')
+        .split('\n').map(l => l.trim()).filter(l => l.length > 0),
+    )
+  } catch { return new Set<string>() }
+}
+
+export function markDefaultTaskRemoved(taskName: string): void {
+  const names = readRemovedDefaultTasks()
+  if (names.has(taskName)) return
+  names.add(taskName)
+  mkdirSync(SCHEDULED_TASKS_DIR, { recursive: true })
+  atomicWriteFileSync(REMOVED_DEFAULTS_FILE, [...names].sort().join('\n') + '\n')
+}
+
+export function clearDefaultTaskRemoved(taskName: string): void {
+  const names = readRemovedDefaultTasks()
+  if (!names.delete(taskName)) return
+  const body = [...names].sort().join('\n')
+  atomicWriteFileSync(REMOVED_DEFAULTS_FILE, body.length > 0 ? body + '\n' : '')
+}
+
 export interface ScheduledTask {
   name: string
   description: string
@@ -179,6 +214,9 @@ export function writeScheduledTask(
 ): void {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   mkdirSync(dir, { recursive: true })
+  // (Re)creating a task with this name is a deliberate act -- lift any tombstone
+  // so a later restart's seeding treats it as present, not as removed (#796).
+  clearDefaultTaskRemoved(taskName)
 
   const skillPath = join(dir, 'SKILL.md')
   const configPath = join(dir, 'task-config.json')

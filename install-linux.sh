@@ -1259,11 +1259,18 @@ if [ -d "$SEED_SCHED_DIR" ]; then
   mkdir -p "$SCHED_TARGET_DIR"
   SCHED_NEW=0
   SCHED_SKIP=0
+  SCHED_TOMBSTONE="$SCHED_TARGET_DIR/.removed-defaults"
   for tpl in "$SEED_SCHED_DIR"/*/; do
     [ -d "$tpl" ] || continue
     task_name=$(basename "$tpl")
     [[ "$task_name" == "bumblebee-hygiene-scan" ]] && continue
     target="$SCHED_TARGET_DIR/$task_name"
+    # #796: a reinstall over an existing box must honor the dashboard's record
+    # of a deleted default (.removed-defaults); a UI re-create clears it.
+    if [ -f "$SCHED_TOMBSTONE" ] && grep -qxF "$task_name" "$SCHED_TOMBSTONE" 2>/dev/null; then
+      SCHED_SKIP=$((SCHED_SKIP + 1))
+      continue
+    fi
     if [ -d "$target" ]; then
       SCHED_SKIP=$((SCHED_SKIP + 1))
       continue

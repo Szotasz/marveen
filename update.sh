@@ -806,10 +806,18 @@ if [ -d "$SEED_SCHED_DIR" ]; then
     # content (SKILL.md + task-config.json). Task RUN-STATE lives in store/ (not
     # in the task dir), so it is preserved across a force-reseed. Tasks the user
     # authored themselves have no seed-scheduled-tasks/ source -> never visited.
+    SCHED_TOMBSTONE="$SCHED_TARGET_DIR/.removed-defaults"
     for tpl in "$SEED_SCHED_DIR"/*/; do
       [ -d "$tpl" ] || continue
       task_name=$(basename "$tpl")
       target="$SCHED_TARGET_DIR/$task_name"
+      # #796: an operator who deleted a shipped default must not have it
+      # re-seeded here. The dashboard records deletions in .removed-defaults;
+      # a UI re-create clears the entry. Honored even under --reseed-fleet
+      # (resurrection is a deliberate UI action, not a content refresh).
+      if [ -f "$SCHED_TOMBSTONE" ] && grep -qxF "$task_name" "$SCHED_TOMBSTONE" 2>/dev/null; then
+        SCHED_SKIP=$((SCHED_SKIP + 1)); continue
+      fi
       forced=0
       if [ -d "$target" ]; then
         if [ "$RESEED_FLEET" = "1" ]; then

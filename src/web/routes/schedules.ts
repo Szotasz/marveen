@@ -15,7 +15,7 @@ import { listAgentNames } from '../agent-config.js'
 import { readFileOr } from '../agent-config.js'
 import {
   SCHEDULED_TASKS_DIR, MAX_SCHEDULED_TASK_PROMPT_LEN,
-  listScheduledTasks, writeScheduledTask,
+  listScheduledTasks, writeScheduledTask, markDefaultTaskRemoved,
 } from '../scheduled-tasks-io.js'
 import { runScheduledTaskNow } from '../schedule-runner.js'
 import type { RouteContext } from './types.js'
@@ -218,6 +218,10 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const { name, dir } = resolved
     if (!existsSync(dir)) { json(res, { error: 'Schedule not found' }, 404); return true }
     rmSync(dir, { recursive: true, force: true })
+    // #796: remember the removal so a shipped default is not re-seeded on the
+    // next restart/update. Harmless for a user-authored task (the seeders only
+    // ever revisit shipped names); a later re-create with this name clears it.
+    markDefaultTaskRemoved(name)
     logger.info({ name }, 'Scheduled task deleted')
     json(res, { ok: true })
     return true
