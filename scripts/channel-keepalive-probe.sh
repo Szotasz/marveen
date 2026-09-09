@@ -91,14 +91,31 @@ descends_from_pane() {
 
 alive=0
 # Candidate pollers: bun/node processes whose argv references a /telegram/
-# plugin dir. Anchored on path separators to avoid matching an unrelated argv.
+# plugin dir.
+#
+# RUNTIME_TOKEN_RX below is the portable ERE spelling of the TS side's
+# /\b(bun|node)\b/ (src/channel-coordinator/provider-poller-match.ts). It must
+# stay equivalent to it: two detectors that disagree about the same process is
+# the defect GH #1147 reported, not a detail. The previous pattern here was
+# '(^| )(bun|node)( |$|.*/)', which required a SPACE or line start before the
+# runtime token, so a poller launched from a full path -- the shape the official
+# bun installer produces, /home/USER/.bun/bin/bun -- never matched, the probe
+# reported "no live telegram poller", and the keepalive was never advanced. With
+# the 45 minute liveness ceiling that turns a quiet-but-healthy session into a
+# fresh respawn every 15 minutes: the reporter measured 41 of them in one night,
+# each losing the main agent's conversation.
+#
+# \b is NOT used here on purpose: BSD grep (macOS) does not support it reliably,
+# and this probe runs on both. The character-class form is the portable
+# equivalent.
+RUNTIME_TOKEN_RX='(^|[^A-Za-z0-9_])(bun|node)([^A-Za-z0-9_]|$)'
 while read -r cand; do
   [ -z "$cand" ] && continue
   if descends_from_pane "$cand"; then
     alive=1
     break
   fi
-done < <(ps -axo pid,command 2>/dev/null | grep -E '(^| )(bun|node)( |$|.*/)' | grep -E '/telegram/' | grep -v grep | awk '{print $1}')
+done < <(ps -axo pid,command 2>/dev/null | grep -E "$RUNTIME_TOKEN_RX" | grep -E '/telegram/' | grep -v grep | awk '{print $1}')
 
 if [ "$alive" -ne 1 ]; then
   # Do NOT advance the keepalive: a dead pipe must stay visibly stale so a real
