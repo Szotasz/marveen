@@ -378,9 +378,10 @@ export function applyStuckRestartBusyGuard(
 
 // Session-agnostic stuck-input recovery: capture the pane, and if a channel
 // notification is parked at the ❯ prompt, get it SUBMITTED (Enter-first, then
-// clear + verbatim re-inject of the COMPLETE block). The gate fires ONLY for a
-// parked <channel> block, so a human's own draft is never touched. Returns the
-// next StuckInputState. Used for the main session AND every sub-agent session.
+// clear + verbatim re-inject of the COMPLETE block). The gate tracks ANY parked
+// text; the ORIGIN check lives in decideStuckInputAction, which refuses every
+// move -- keystroke included -- on a park it cannot attribute to us (GH #717).
+// Returns the next StuckInputState. Used for the main session AND every sub-agent session.
 // Recover a channel/inter-agent message stranded at the ❯ prompt by getting it
 // SUBMITTED. Tracks ANY parked input (stuckInputSignature), Enter-first, then
 // escalates after MAIN_STUCK_ENTER_ATTEMPTS. Escalation has three safe paths:
@@ -1981,9 +1982,12 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
     }
 
     // Stuck channel-input recovery (main + sub-agents). Recover a channel
-    // notification stranded at the ❯ prompt by getting it SUBMITTED. The gate
-    // (parkedChannelInput != null) fires ONLY for a parked <channel> block, so
-    // a human's own hand-typed draft is never touched. Enter-first (faithful);
+    // notification stranded at the ❯ prompt by getting it SUBMITTED. The entry
+    // gate is ANY parked text (stuckInputSignature); what protects a human's
+    // hand-typed draft is decideStuckInputAction, which since GH #717 makes no
+    // move at all without positive machine origin. The older wording here
+    // claimed the gate itself was origin-scoped, which it never was, and that
+    // claim is how the Enter branch kept submitting operator drafts. Enter-first (faithful);
     // escalate to clear+re-inject only after MAIN_STUCK_ENTER_ATTEMPTS, and
     // only when the captured block looks COMPLETE -- a truncated capture stays
     // on Enter rather than risk a partial re-inject to the wrong chat_id.

@@ -1884,7 +1884,9 @@ export interface StuckInputActionFacts {
  *   - A TRUNCATED <channel> block (chat_id unrecoverable) must not be
  *     re-injected; multi-row truncated holds (awaiting the keystroke fix),
  *     single-row keeps the harmless legacy Enter.
- *   - Otherwise a bare Enter is the swallowed-Enter remedy, but only single-row.
+ *   - A bare Enter is the swallowed-Enter remedy, but only single-row AND only
+ *     with positive machine origin: an unidentified park may be the operator's
+ *     own draft, and Enter would submit it half-typed (GH #717).
  */
 export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputAction {
   const multiRow = f.rowCount > 1
@@ -1932,10 +1934,36 @@ export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputActi
   // Truncated safety preamble: clear only (never re-inject a stale preamble).
   if (f.truncatedPreamble && f.escalate) return 'clear-preamble'
   // Truncated <channel> block: hold a multi-row (Enter would corrupt; re-inject
-  // would answer the wrong chat_id), keep the harmless legacy Enter single-row.
+  // would answer the wrong chat_id), keep the Enter single-row. The Enter is
+  // safe here for the same reason the branches above are: a <channel> block,
+  // even a truncated one, IS positive evidence that we put the text there.
   if (f.blockTruncated) return multiRow ? 'hold' : 'enter'
-  // Default swallowed-Enter remedy -- never on multi-row.
-  return multiRow ? 'hold' : 'enter'
+  // Nothing above identified the park. GH #717: this default used to bare-Enter
+  // any single-row box, which submits an operator's half-typed draft the moment
+  // they pause past the confirm window. The reporter measured it repeatedly from
+  // a `tmux attach` on the main session; the remaining text is lost from the
+  // prompt and the agent answers a fragment.
+  //
+  // Every branch above establishes origin before it acts -- a channel block, a
+  // scheduled-task tick, a registry match, or an explicit machine-origin marker
+  // -- and the plain re-inject path already refuses to touch an uncertain park
+  // for exactly this reason ("a human's text has no re-delivery"). That rule was
+  // applied to the branches that clear or re-type and not to the one that
+  // presses Enter, even though submitting a half-typed draft destroys the same
+  // work. This closes that gap: no positive origin, no keystroke.
+  //
+  // What this costs, stated plainly: a genuine swallowed-Enter delivery whose
+  // parked text carries no recognisable marker is no longer rescued by the
+  // watcher. That failure is a DELAY and it has a safety net -- the ledger
+  // live-drain returns unanswered inbound to the running session on its own
+  // cycle. Submitting an operator's unfinished sentence is irreversible and
+  // goes out under the owner's name. The two are not the same weight.
+  //
+  // The hard-restart busy-guard is unaffected: applyStuckRestartBusyGuard only
+  // allows a restart on a 'typing' pane when machineOrigin is true, so an
+  // unidentified park (a suspected human draft) still yields 'skip' there --
+  // the same signal now gates both paths, which is the point.
+  return !multiRow && f.machineOrigin ? 'enter' : 'hold'
 }
 
 // Would the soft stuck-input recovery have ANY submitting/clearing move for
