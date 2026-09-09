@@ -113,6 +113,146 @@ case "$SAN" in
 esac
 
 # ---------------------------------------------------------------------------
+# (g) Classifier: session usage-limit banner -> limited (NOT stuck/idle)
+# ---------------------------------------------------------------------------
+echo ""
+echo "(g) Session usage-limit pane is 'limited' (not stuck, never Escape/respawn)"
+
+# Exact text observed by bigme on 2026-08-08.
+LIMIT_OBSERVED='You hit your session limit · resets 5:50pm
+
+> Start new session'
+assert_eq "limited: observed 'hit your session limit' banner" "limited" "$(classify "$LIMIT_OBSERVED")"
+
+# Canonical 5-hour variant from src/model-fallback.ts USAGE_LIMIT_RX.
+LIMIT_5H='5-hour limit reached ∙ resets 3pm'
+assert_eq "limited: '5-hour limit reached' banner" "limited" "$(classify "$LIMIT_5H")"
+
+# decide: limited -> hold (NEVER start-confirm/act; Escape and respawn must not fire)
+assert_eq "decide: limited -> hold (no Escape, no respawn)" "hold" "$(decide limited 0 1000)"
+assert_eq "decide: limited -> hold even when firstseen is set" "hold" "$(decide limited 800 1000)"
+
+# B3 regression: limit text in scrollback but idle footer also present -> idle wins.
+# The guard must NEVER send Escape/respawn against a live session.
+LIMIT_WITH_IDLE='You hit your session limit · resets 5:50pm
+Some scrollback text here.
+                                                      ⏵⏵ bypass permissions on (shift+tab to cycle)'
+assert_eq "B3 regression: limit text + idle footer -> idle (not limited)" "idle" "$(classify "$LIMIT_WITH_IDLE")"
+
+# ---------------------------------------------------------------------------
+# (h) parse-reset-epoch and is-overdue (B5: midnight-rollover guard)
+# ---------------------------------------------------------------------------
+echo ""
+echo "(h) parse-reset-epoch / is-overdue (midnight-rollover guard)"
+
+# Parseable format ("resets 5:50pm") -> non-empty epoch
+PR_RESULT="$(bash "$GUARD" parse-reset-epoch "You hit your session limit · resets 5:50pm")"
+case "$PR_RESULT" in
+  ''|*[!0-9]*) fail "parse-reset-epoch: parseable input returned empty or non-numeric: '$PR_RESULT'" ;;
+  *) pass "parse-reset-epoch: parseable 'resets 5:50pm' -> epoch '$PR_RESULT'" ;;
+esac
+
+# Unparseable / no reset string -> empty
+PR_EMPTY="$(bash "$GUARD" parse-reset-epoch "You hit your session limit")"
+assert_eq "parse-reset-epoch: no reset time -> empty" "" "$PR_EMPTY"
+
+PR_JUNK="$(bash "$GUARD" parse-reset-epoch "junk pane with no time")"
+assert_eq "parse-reset-epoch: junk pane -> empty" "" "$PR_JUNK"
+
+# B5 regression: "resets 1am" observed at 19:00 must NOT be overdue.
+# date -d "1am" always returns today's 01:00, which is 18h in the past.
+# Without the rollover fix this would produce overdue=1 (false escalation).
+RESET_EP_1AM="$(bash "$GUARD" parse-reset-epoch "You hit your session limit · resets 1am")"
+ANCHOR_1900="$(date -d "19:00 today" +%s 2>/dev/null || date -d "today 19:00" +%s)"
+NOW_1929="$(date -d "19:29 today" +%s 2>/dev/null || date -d "today 19:29" +%s)"
+assert_eq "B5: 'resets 1am' at 19:29 with 19:00 anchor -> NOT overdue (rollover guard)" \
+  "0" "$(bash "$GUARD" is-overdue "$RESET_EP_1AM" "$ANCHOR_1900" "$NOW_1929")"
+
+# Normal overdue: "resets 5:50pm", first detection 16:00, now 19:00 -> overdue.
+RESET_EP_550="$(bash "$GUARD" parse-reset-epoch "You hit your session limit · resets 5:50pm")"
+ANCHOR_1600="$(date -d "16:00 today" +%s 2>/dev/null || date -d "today 16:00" +%s)"
+NOW_1900="$(date -d "19:00 today" +%s 2>/dev/null || date -d "today 19:00" +%s)"
+assert_eq "B5: 'resets 5:50pm' at 19:00 with 16:00 anchor -> overdue" \
+  "1" "$(bash "$GUARD" is-overdue "$RESET_EP_550" "$ANCHOR_1600" "$NOW_1900")"
+
+# Not yet overdue: reset is in the future.
+RESET_EP_550_FUTURE="$(bash "$GUARD" parse-reset-epoch "resets 5:50pm")"
+ANCHOR_1530="$(date -d "15:30 today" +%s 2>/dev/null || date -d "today 15:30" +%s)"
+NOW_1540="$(date -d "15:40 today" +%s 2>/dev/null || date -d "today 15:40" +%s)"
+assert_eq "B5: 'resets 5:50pm' at 15:40 -> not yet overdue" \
+  "0" "$(bash "$GUARD" is-overdue "$RESET_EP_550_FUTURE" "$ANCHOR_1530" "$NOW_1540")"
+
+# B6 regression: leading-zero minutes and hours must not trigger octal parse error.
+# bash treats 08/09 as invalid octal in $(( )) without explicit 10# prefix.
+PR_908PM="$(bash "$GUARD" parse-reset-epoch "resets 9:08pm")"
+case "$PR_908PM" in
+  ''|*[!0-9]*) fail "B6: 'resets 9:08pm' (leading-zero minute) returned empty/non-numeric: '$PR_908PM'" ;;
+  *) pass "B6: 'resets 9:08pm' leading-zero minute -> numeric epoch '$PR_908PM'" ;;
+esac
+
+PR_0830PM="$(bash "$GUARD" parse-reset-epoch "resets 08:30pm")"
+case "$PR_0830PM" in
+  ''|*[!0-9]*) fail "B6: 'resets 08:30pm' (leading-zero hour) returned empty/non-numeric: '$PR_0830PM'" ;;
+  *) pass "B6: 'resets 08:30pm' leading-zero hour -> numeric epoch '$PR_0830PM'" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# (i) Portability: BSD fallback paths for parse-reset-epoch and stat-mtime
+# ---------------------------------------------------------------------------
+echo ""
+echo "(i) Portability: BSD fallback paths"
+
+FAKE_BIN="$(mktemp -d)"
+cleanup_fake_bin() { rm -rf "$FAKE_BIN"; }
+trap cleanup_fake_bin EXIT
+
+# parse-reset-epoch must NOT use 'date -d' at all after the portability fix.
+# Verify by placing a fake 'date' that fails on any -d invocation.
+cat > "$FAKE_BIN/date" << 'FAKE_DATE'
+#!/bin/sh
+# Mock BSD date: rejects any -d flag (GNU-only option)
+for arg; do
+  case "$arg" in -d) echo "date: illegal option -- d" >&2; exit 1 ;; esac
+done
+exec /usr/bin/date "$@"
+FAKE_DATE
+chmod +x "$FAKE_BIN/date"
+
+PR_BSD="$(PATH="$FAKE_BIN:$PATH" bash "$GUARD" parse-reset-epoch "resets 5:50pm")"
+case "$PR_BSD" in
+  ''|*[!0-9]*) fail "parse-reset-epoch: BSD (no date -d) returned empty/non-numeric: '$PR_BSD'" ;;
+  *) pass "parse-reset-epoch: works without GNU 'date -d' (BSD path)" ;;
+esac
+
+PR_BSD_EMPTY="$(PATH="$FAKE_BIN:$PATH" bash "$GUARD" parse-reset-epoch "no reset string")"
+assert_eq "parse-reset-epoch: BSD path, no reset string -> empty" "" "$PR_BSD_EMPTY"
+
+# stat-mtime: primary path (native stat, whichever dialect the host has)
+TMPFILE_I="$(mktemp)"
+MTIME_NATIVE="$(stat -c %Y "$TMPFILE_I" 2>/dev/null || stat -f %m "$TMPFILE_I" 2>/dev/null)"
+MTIME_GUARD="$(bash "$GUARD" stat-mtime "$TMPFILE_I")"
+assert_eq "stat-mtime: native dialect returns correct mtime" "$MTIME_NATIVE" "$MTIME_GUARD"
+
+# stat-mtime: python3 fallback when both GNU and BSD stat fail.
+# On Linux 'stat -f' means filesystem info (not BSD format), so we cannot
+# mock the BSD dialect by forwarding -- instead block ALL stat and let the
+# python3 fallback handle it.
+cat > "$FAKE_BIN/stat" << 'FAKE_STAT'
+#!/bin/sh
+# Mock: both GNU (-c) and BSD (-f %m) unavailable; python3 fallback must fire
+echo "stat: not available in this environment" >&2
+exit 1
+FAKE_STAT
+chmod +x "$FAKE_BIN/stat"
+
+MTIME_PY="$(PATH="$FAKE_BIN:$PATH" bash "$GUARD" stat-mtime "$TMPFILE_I")"
+assert_eq "stat-mtime: python3 fallback when both stat dialects fail" "$MTIME_NATIVE" "$MTIME_PY"
+rm -f "$TMPFILE_I"
+
+trap - EXIT
+rm -rf "$FAKE_BIN"
+
+# ---------------------------------------------------------------------------
 # (f) F1 — a missing state dir is created (no flock defer-forever, cold install)
 # ---------------------------------------------------------------------------
 echo ""
