@@ -50,6 +50,14 @@ retry() {
   done
 }
 
+# #950: the honest test that the better-sqlite3 native binding is usable is
+# whether it LOADS, not whether a rebuild exited 0. better-sqlite3 13.x ships a
+# Node-API prebuilt binary (stable ABI), so a plain install/rebuild uses the
+# prebuild and there is nothing to compile per Node version.
+native_module_loads() {
+  node -e "new (require('better-sqlite3'))(':memory:').close()" >/dev/null 2>&1
+}
+
 health_ok() {
   local port="${WEB_PORT:-3420}" i=0
   while [ "$i" -lt 20 ]; do
@@ -692,7 +700,14 @@ fi
 # compiled tree did not change, only the seeded skills/tasks need refreshing.
 if [ "${SKIP_BUILD:-0}" != "1" ]; then
   RESULT_PHASE="build"
-  retry 2 3 npm rebuild better-sqlite3 --build-from-source --silent || true
+  # #950: prefer the Node-API prebuild; only rebuild if it does not load, and
+  # NEVER --build-from-source. A source build under a Node the toolchain cannot
+  # target (24/26) failed AND deleted the working binary, and the update then
+  # restarted with no native module; the old rollback ran the same failing
+  # command. The load check below is the real gate.
+  if ! native_module_loads; then
+    retry 2 3 npm rebuild better-sqlite3 --silent || true
+  fi
 
   # Rebuild. On failure, auto-rollback to the pre-update commit (safe ff-only
   # ancestor) and rebuild that, leaving the box on a WORKING old version rather
@@ -707,12 +722,31 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
       # and without the compiler this rollback build would also fail silently,
       # leaving git=OLD + node_modules=pruned (AUTOUPDNODEENV905 finding A).
       npm ci --silent --include=dev 2>/dev/null || true
-      npm rebuild better-sqlite3 --build-from-source --silent 2>/dev/null || true
+      npm rebuild better-sqlite3 --silent 2>/dev/null || true
       npm run build --silent 2>/dev/null || true
       [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
     fi
     RESULT_STATUS="rolled-back"
     RESULT_MSG="A build elbukott; a rendszer visszaallt a korabbi mukodo verziora (${OLD_VERSION}). A frissites nem ment ki."
+    restore_stash_before_exit
+    exit 6
+  fi
+
+  # #950: verify the native module actually loads before we restart anything.
+  # If it does not, roll back to the previous working version (whose prebuild
+  # loads) WHILE IT IS STILL RUNNING, rather than restarting into a dashboard
+  # that cannot open its database.
+  if ! native_module_loads; then
+    echo -e "${RED}HIBA:${NC} a better-sqlite3 modul nem toltheto be a frissites utan. Visszaallitas (${OLD_VERSION})..."
+    if [ -n "$OLD_VERSION_FULL" ]; then
+      git reset --hard "$OLD_VERSION_FULL" >/dev/null 2>&1 || true
+      npm ci --silent --include=dev 2>/dev/null || true
+      npm rebuild better-sqlite3 --silent 2>/dev/null || true
+      npm run build --silent 2>/dev/null || true
+      [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
+    fi
+    RESULT_STATUS="rolled-back"
+    RESULT_MSG="A frissites utan a natv adatbazis-modul nem toltodott be; a rendszer visszaallt a korabbi mukodo verziora (${OLD_VERSION}). A frissites nem ment ki."
     restore_stash_before_exit
     exit 6
   fi
@@ -1101,7 +1135,7 @@ if [ -n "$OLD_FULL" ]; then
   # NODE_ENV=production a plain ci prunes the compiler and the rebuild below
   # dies silently, re-creating the pruned tree this rollback tries to escape.
   npm ci --silent --include=dev 2>/dev/null || true
-  npm rebuild better-sqlite3 --build-from-source --silent 2>/dev/null || true
+  npm rebuild better-sqlite3 --silent 2>/dev/null || true
   npm run build --silent 2>/dev/null || true
   [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_FULL" > "$BUILT"
   _restart
