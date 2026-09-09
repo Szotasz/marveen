@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { existsSync, readFileSync, rmSync, mkdirSync, chmodSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, mkdirSync, statSync, readdirSync, utimesSync, chmodSync } from 'node:fs'
 import { join, dirname, basename, resolve } from 'node:path'
 import {
   rescueParkedInput,
@@ -109,5 +109,64 @@ describe('decideMainParkedEscalation: the rescue stage', () => {
   it('keeps the ladder ordered: heartbeat < owner < rescue', () => {
     expect(MAIN_PARKED_HEARTBEAT_AFTER).toBeLessThan(MAIN_PARKED_OWNER_AFTER)
     expect(MAIN_PARKED_OWNER_AFTER).toBeLessThan(MAIN_PARKED_RESCUE_AFTER)
+  })
+})
+
+describe('rescueParkedInput: file permissions and retention', () => {
+  it('writes the rescue 0600 and the directory 0700, matching the rest of store/', () => {
+    // Measured on a live install: .dashboard-token, claudeclaw.db and
+    // .claude-oauth-token are all 0600. A 0644 file sitting next to them later
+    // reads as a deliberate exception, and nobody remembers that it was not.
+    const path = rescueParkedInput('marveen-channels', 'gazda gepelt mondata')
+    cleanup.push(path!)
+    expect(statSync(path!).mode & 0o777).toBe(0o600)
+    expect(statSync(PARKED_RESCUE_DIR).mode & 0o777).toBe(0o700)
+  })
+
+  it('tightens a directory that already exists at the old default', () => {
+    // mkdirSync's mode only applies on creation. An install that already ran
+    // the first version of the rescue has the directory at 0755 and would
+    // silently keep it, so the new mode would apply to nobody who needs it.
+    mkdirSync(PARKED_RESCUE_DIR, { recursive: true })
+    chmodSync(PARKED_RESCUE_DIR, 0o755)
+    expect(statSync(PARKED_RESCUE_DIR).mode & 0o777).toBe(0o755)
+    const path = rescueParkedInput('mode-upgrade', 'x')
+    cleanup.push(path!)
+    expect(statSync(PARKED_RESCUE_DIR).mode & 0o777).toBe(0o700)
+  })
+
+  it('keeps the newest rescues and drops the ones beyond the cap', () => {
+    // Write comfortably more than the cap, oldest first.
+    const written: string[] = []
+    for (let i = 0; i < 55; i++) {
+      const p = rescueParkedInput('cap-test', `sor ${i}`, 1_700_000_000_000 + i * 1000)
+      expect(p).not.toBeNull()
+      written.push(p!)
+    }
+    const left = readdirSync(PARKED_RESCUE_DIR).filter((f) => f.startsWith('cap-test-'))
+    expect(left.length).toBeLessThanOrEqual(50)
+    // The most recent write must survive: losing the newest would defeat the
+    // whole point of writing it.
+    expect(existsSync(written[written.length - 1])).toBe(true)
+    for (const f of left) rmSync(join(PARKED_RESCUE_DIR, f), { force: true })
+  })
+
+  it('drops a rescue older than the retention window', () => {
+    const old = rescueParkedInput('age-test', 'regi', 1_700_000_000_000)
+    cleanup.push(old!)
+    utimesSync(old!, new Date(Date.now() - 40 * 24 * 60 * 60 * 1000), new Date(Date.now() - 40 * 24 * 60 * 60 * 1000))
+    // The next rescue prunes at write time.
+    const fresh = rescueParkedInput('age-test', 'uj')
+    cleanup.push(fresh!)
+    expect(existsSync(old!)).toBe(false)
+    expect(existsSync(fresh!)).toBe(true)
+  })
+
+  it('a failing prune never stops the rescue from being written', () => {
+    // The prune runs only after the read-back succeeded, so even a throwing
+    // prune leaves the file it was asked to protect.
+    const path = rescueParkedInput('prune-safety', 'megmarad')
+    cleanup.push(path!)
+    expect(existsSync(path!)).toBe(true)
   })
 })

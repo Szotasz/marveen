@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { execFileSync } from 'node:child_process'
@@ -2704,6 +2704,46 @@ export const MAIN_PARKED_RESCUE_AFTER = 24
 // Where a rescued parked line is written before the box is cleared.
 export const PARKED_RESCUE_DIR = join(STORE_DIR, 'parked-input')
 
+// The rescued text is whatever the owner had typed. It is not a secret by
+// design, but it is private by accident, and the rest of store/ already treats
+// per-install state that way: .dashboard-token, claudeclaw.db and
+// .claude-oauth-token are all 0600 (measured). Matching that is not about
+// today's threat model -- we run as one OS user and we know it -- it is that a
+// file sitting at 0644 next to three at 0600 later reads as a deliberate
+// exception, and nobody remembers that it was not.
+const RESCUE_FILE_MODE = 0o600
+const RESCUE_DIR_MODE = 0o700
+
+// How many rescues to keep. Every rescue is a new file and nothing removed them,
+// so the directory only grew. This is a rare event, so a scheduled sweep would
+// be machinery for a handful of files a year; pruning at write time costs one
+// readdir on an event that already does disk I/O, and cannot drift out of sync
+// with the writer because it IS the writer.
+const RESCUE_KEEP_FILES = 50
+const RESCUE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
+
+/**
+ * Drop rescues that are older than RESCUE_MAX_AGE_MS, and any beyond the newest
+ * RESCUE_KEEP_FILES. Best effort by design: a failure to prune must never stop
+ * a rescue from being written, because the rescue is what protects the text.
+ */
+function pruneRescueDir(nowMs: number): void {
+  try {
+    const entries = readdirSync(PARKED_RESCUE_DIR)
+      .filter((f) => f.endsWith('.txt'))
+      .map((f) => {
+        const full = join(PARKED_RESCUE_DIR, f)
+        return { full, mtimeMs: statSync(full).mtimeMs }
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    for (const [i, e] of entries.entries()) {
+      if (i >= RESCUE_KEEP_FILES || nowMs - e.mtimeMs > RESCUE_MAX_AGE_MS) {
+        rmSync(e.full, { force: true })
+      }
+    }
+  } catch { /* pruning is best effort: never block a rescue */ }
+}
+
 /**
  * Write the parked text to disk and READ IT BACK before reporting success.
  *
@@ -2726,7 +2766,11 @@ export function rescueParkedInput(
   nowMs: number = Date.now(),
 ): string | null {
   try {
-    mkdirSync(PARKED_RESCUE_DIR, { recursive: true })
+    mkdirSync(PARKED_RESCUE_DIR, { recursive: true, mode: RESCUE_DIR_MODE })
+    // mkdirSync's mode only applies when it CREATES the directory. An install
+    // that already ran the first version of this rescue has the directory at
+    // the default 0755, and would silently keep it. Tighten it explicitly.
+    try { chmodSync(PARKED_RESCUE_DIR, RESCUE_DIR_MODE) } catch { /* best effort */ }
     const stamp = new Date(nowMs).toISOString().replace(/[:.]/g, '-')
     const safeSession = session.replace(/[^A-Za-z0-9._-]/g, '_')
     const path = join(PARKED_RESCUE_DIR, `${safeSession}-${stamp}.txt`)
@@ -2737,7 +2781,7 @@ export function rescueParkedInput(
       `# NOTE: this is a scrape of the VISIBLE input box. An overfull box drops\n` +
       `#       its head rows in the TUI, so this may be the tail of a longer line.\n` +
       `\n${text}\n`
-    writeFileSync(path, body, 'utf-8')
+    writeFileSync(path, body, { encoding: 'utf-8', mode: RESCUE_FILE_MODE })
     // Read back: the file has to exist AND hold what we wrote. A partial write,
     // a full disk or a read-only store all land here rather than in a clear.
     const readBack = readFileSync(path, 'utf-8')
@@ -2745,6 +2789,9 @@ export function rescueParkedInput(
       logger.error({ session, path }, 'parked-input rescue: read-back did not match, refusing to clear the box')
       return null
     }
+    // Only after the rescue is safely on disk: a prune that threw would
+    // otherwise take the rescue down with it.
+    pruneRescueDir(nowMs)
     return path
   } catch (err) {
     logger.error({ session, err }, 'parked-input rescue: save failed, refusing to clear the box')
