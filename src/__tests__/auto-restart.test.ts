@@ -163,17 +163,27 @@ describe('the auto-restart config carries no unwired handoff switch', () => {
   it('no code on the restart path reads a handoff field', () => {
     const stripComments = (src: string): string =>
       src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
-    const files = [
-      'src/auto-restart.ts',
-      'src/web/auto-restart-runner.ts',
-      'src/web/agent-process.ts',
-    ]
-    for (const f of files) {
+    // Zero mentions at all: neither of these files has any business naming a
+    // handoff, and the only tolerated exception is the legacy-key list, which
+    // exists to ACCEPT the field at the API edge and then throw it away.
+    for (const f of ['src/auto-restart.ts', 'src/web/agent-process.ts']) {
       const code = stripComments(readFileSync(join(ROOT, f), 'utf-8'))
-      // The one allowed mention is the legacy-key list itself, which exists to
-      // ACCEPT the field at the API edge and then throw it away.
       const hits = code.split('\n').filter((l) => /handoff/i.test(l) && !l.includes('LEGACY_AUTO_RESTART_FIELDS'))
       expect(hits, `${f} references handoff on the restart path`).toEqual([])
     }
+    // The runner is different since the daily-handoff tier landed: it must
+    // NAME the guard's tier in order to stand aside for it, so a blanket
+    // "no line says handoff" would forbid the very delegation that keeps the
+    // two mechanisms from double-restarting one agent.
+    //
+    // The claim being defended was never "the word is absent" -- it is that no
+    // handoff FIELD of the auto-restart config can influence the restart. So
+    // match the field-access shapes (`cfg.handoff`, `handoff:`, `'handoff'`)
+    // rather than the word, and let a named call into the guard through.
+    // Verified by mutation: restoring `if (cfg.handoff)` here fails this.
+    const runner = stripComments(readFileSync(join(ROOT, 'src/web/auto-restart-runner.ts'), 'utf-8'))
+    const fieldShape = /(\.\s*handoff\b|\bhandoff\s*:|['"`]handoff['"`])/i
+    const fieldHits = runner.split('\n').filter((l) => fieldShape.test(l) && !l.includes('LEGACY_AUTO_RESTART_FIELDS'))
+    expect(fieldHits, 'auto-restart-runner.ts reads a handoff field').toEqual([])
   })
 })

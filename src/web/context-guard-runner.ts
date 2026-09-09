@@ -19,6 +19,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { detectPaneState, paneShowsContextSaturation } from '../pane-state.js'
 import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir } from './active-model.js'
 import { readContextGuardConfig } from './context-guard-store.js'
+import { localMidnightMs } from '../auto-restart.js'
 import { recordRescueFailure, clearRescueFailures } from './rescue-failure-tracker.js'
 import { createAgentMessage } from '../db.js'
 import {
@@ -26,6 +27,8 @@ import {
   contextLimitForModel,
   calibrateLimit,
   handoffStaleMinutes,
+  dailyHandoffDue,
+  DAILY_HANDOFF_REASON_PREFIX,
   IDLE_FLUSH_REASON_PREFIX,
   INITIAL_GUARD_STATE,
   STALE_REFRESH_REASON_PREFIX,
@@ -53,6 +56,15 @@ const INTERVAL_MS = 300_000
 // agent at 'idle', which is safe -- the worst case is a repeated handoff
 // request, and cooldown prevents restart loops within a run.
 const guardStates = new Map<string, GuardState>()
+
+// agent name -> when the daily-handoff tier last fired (ms). Seeded on first
+// sight WITHOUT firing, so a slot that already passed before the dashboard
+// started does not trigger a handoff cycle at boot -- the same seed rule, for
+// the same reason, as the nightly auto-restart's lastRestart map. In-memory
+// like that one: a dashboard restart re-seeds and at worst skips one slot,
+// which is the safe direction (a missed daily handoff costs one day of
+// context; a spurious one ends a live conversation).
+const lastDailyHandoff = new Map<string, number>()
 const remoteSkipLogged = new Set<string>()
 
 // Per-agent observed-context high-water mark, persisted across dashboard
@@ -130,6 +142,27 @@ export function idleFlushHandoffPrompt(tokens: number, idleMinutes: number, hand
     `[CONTEXT-GUARD] Rutin karbantartás, nem vészhelyzet. A sessionöd kontextusa ~${Math.round(tokens / 1000)}k token, ` +
     `és ${idleMinutes} perce nincs benne aktivitás, ezért friss kontextussal indítalak újra -- így olcsóbb és gyorsabb lesz a következő kör. ` +
     `EGYETLEN dolgod: írj HANDOFF.md-t a /handoff skill struktúrája szerint ide: ${handoffPath} ` +
+    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal). ` +
+    `Ha nincs félbehagyott feladatod, írd bele hogy nincs -- az is teljes értékű válasz. ` +
+    `Utána ÁLLJ MEG; a rendszer újraindít és a HANDOFF.md-ből folytatod.`
+  )
+}
+
+/**
+ * Handoff request for the daily tier.
+ *
+ * A fourth wording, for the same reason the idle tier needed a third: this
+ * agent's context is not critical (the act tier would have fired) and not
+ * expensive (the idle tier would have), so both of those texts would state
+ * something untrue about its session. What IS true is the only thing this
+ * prompt claims: the scheduled restart is about to happen, and whatever is
+ * not written down will not survive it.
+ */
+export function dailyHandoffPrompt(atTime: string, handoffPath: string): string {
+  return (
+    `[CONTEXT-GUARD] Ütemezett napi újraindítás (${atTime}), nem vészhelyzet és nem hiba. ` +
+    `A sessionöd hamarosan friss kontextussal indul újra, és ami nincs leírva, az nem éli túl. ` +
+    `EGYETLEN dolgod ebben a körben: írj HANDOFF.md-t a /handoff skill struktúrája szerint ide: ${handoffPath} ` +
     `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal). ` +
     `Ha nincs félbehagyott feladatod, írd bele hogy nincs -- az is teljes értékű válasz. ` +
     `Utána ÁLLJ MEG; a rendszer újraindít és a HANDOFF.md-ből folytatod.`
@@ -294,10 +327,17 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   const cfg = readContextGuardConfig(name)
   const state = guardStates.get(name) ?? INITIAL_GUARD_STATE
 
-  // Fully disarmed only when BOTH the proactive tiers and the always-on
-  // saturation net are off; the net alone keeps the sweep alive so a
-  // 100%-context pane (which dispatch refuses to prompt) still gets rescued.
-  if (!cfg.enabled && !cfg.saturationRestart && !cfg.idleFlushEnabled) {
+  // Fully disarmed only when EVERY tier and the always-on saturation net are
+  // off; the net alone keeps the sweep alive so a 100%-context pane (which
+  // dispatch refuses to prompt) still gets rescued.
+  //
+  // Every tier that can act has to appear in this list. This is the THIRD
+  // copy of the same condition (decideGuard's short-circuit and its
+  // await-handoff stand-down are the other two), and the daily tier was
+  // missing from exactly this one: an operator who turned the saturation net
+  // off and the daily tier on would have been skipped here, before
+  // decideGuard ever saw the agent, with no log line to say so.
+  if (!cfg.enabled && !cfg.saturationRestart && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled) {
     guardStates.delete(name)
     return
   }
@@ -347,9 +387,30 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     // (handoffStaleMinutes) needs the transcript mtime on every decision path
     // that can restart, and the probe is a single stat().
     idleMs: running && needPct ? measureIdleMs(name, nowMs) : null,
+    // Seed-on-first-sight: an agent we have not seen this process is recorded
+    // as served NOW and is never due on the same sweep. dailyHandoffDue is
+    // therefore false on the first tick by construction, not by luck.
+    dailyHandoffDue: (() => {
+      if (!running || state.phase !== 'idle') return false
+      const last = lastDailyHandoff.get(name)
+      if (last === undefined) {
+        lastDailyHandoff.set(name, nowMs)
+        return false
+      }
+      return dailyHandoffDue(cfg, localMidnightMs(nowMs), last, nowMs)
+    })(),
   }
 
   const decision = decideGuard(state, inputs, cfg)
+
+  // Mark the slot served at DECISION time, not after the prompt lands. If the
+  // directive fails to send, the machine is already in await-handoff and its
+  // timeout force-restarts the agent anyway -- the slot really was consumed.
+  // Marking it later would let a send failure re-fire the tier every sweep
+  // until midnight.
+  if (decision.reason.startsWith(DAILY_HANDOFF_REASON_PREFIX)) {
+    lastDailyHandoff.set(name, nowMs)
+  }
 
   // Post-respawn grace for the main session. Making the Linux restart path work
   // (above) also makes it repeatable: measured on 2026-07-26, the saturation net
@@ -424,7 +485,12 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
               // tiers, so the alarming percentage-based prompt would read "~0%
               // -- critical". The idle tier states the token count it measured.
               ? idleFlushHandoffPrompt(inputs.contextTokens ?? 0, cfg.idleMinutes, handoffPathFor(name))
-              : handoffPrompt(pctRound ?? 0, handoffPathFor(name)),
+              : decision.reason.startsWith(DAILY_HANDOFF_REASON_PREFIX)
+                // Same trap as the idle tier: pct is null for a daily-only
+                // agent, so the percentage prompt would announce "~0% --
+                // critical" at 04:00 to a session that is perfectly healthy.
+                ? dailyHandoffPrompt(cfg.dailyHandoffTime ?? '', handoffPathFor(name))
+                : handoffPrompt(pctRound ?? 0, handoffPathFor(name)),
         )
         break
       case 'restart': {

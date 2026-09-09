@@ -183,6 +183,11 @@ describe('checkConfigPutFields', () => {
       'enabled', 'saturationRestart', 'actPct', 'hardPct',
       'limitTokens', 'cooldownMinutes', 'handoffTimeoutMinutes',
       'idleFlushEnabled', 'idleFlushTokens', 'idleMinutes',
+      // Daily-handoff tier. Listed here because the dashboard must be able to
+      // SAVE them: a field with a default that never reaches the endpoint's
+      // known set is refused by checkConfigPutFields, which is the mismatch
+      // this pin exists to catch.
+      'dailyHandoffEnabled', 'dailyHandoffTime',
     ])
   })
 })

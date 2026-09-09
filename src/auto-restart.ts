@@ -155,6 +155,20 @@ export function dailyDueAtMs(
 }
 
 /**
+ * Start-of-local-day timestamp for the day containing `nowMs`.
+ *
+ * Lives here, next to dailyDueAtMs, because TWO runners now schedule on a
+ * daily wall-clock slot: the nightly auto-restart and the context-guard's
+ * daily-handoff tier. A second private copy of this would be a second place
+ * for a midnight boundary to drift.
+ */
+export function localMidnightMs(nowMs: number): number {
+  const d = new Date(nowMs)
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
+/**
  * Why a due restart must still be deferred, or null when it may proceed.
  * Pure so the invariants are unit-testable:
  *   - a busy pane defers (never cut off a live turn), and
