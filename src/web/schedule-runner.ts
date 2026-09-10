@@ -1016,8 +1016,10 @@ async function attemptFireTask(
             // is off because the box is 'typing', not idle -- the pre-flight gate
             // would otherwise burn its whole budget and time out every attempt.
             // lockMode 'held': we are already inside this pane's lane; taking
-            // the lock again would deadlock the promise-chain mutex.
-            if (await clearStaleParkedInput(session, host)) {
+            // the lock again would deadlock the promise-chain mutex. That goes
+            // for the clear too (PANEWRITERS910): its own acquire would see
+            // OUR lane busy and skip, so this call site must say it holds it.
+            if (await clearStaleParkedInput(session, host, { lockMode: 'held' })) {
               await sendPromptToSession(session, fullPrompt, host, { waitForIdle: false, lockMode: 'held' })
               logger.info({ task: task.name, session, attempt }, 'Scheduled prompt re-injected after swallowed Enter')
             } else {

@@ -271,6 +271,71 @@ if [ "${1:-}" = "--classify-unlock-residue" ]; then
   exit 0
 fi
 
+# CHEXIT910: EVERY exit of the real run leaves a row -- exit 0 included.
+#
+# Why: this script has SEVEN `exit 0` paths and channels-failures.log, true to
+# its name, records only failures -- so a clean self-exit leaves NO trace
+# anywhere (measured on hermes 2026-09-09 20:25:03: the service's main process
+# exited 0, systemd's Restart=on-failure did not restart it, and the box lost
+# its supervisor with nothing to read afterwards; journald had no line either,
+# because leftover cgroup processes suppressed the usual "Deactivated" record).
+# Marveen's ordering decision (msg 23453): exit LOGGING lands first; only then
+# is a Restart-policy change even discussable, because until the exit is
+# measured, `on-failure` is the last remaining signal.
+#
+# Scope, stated: an EXIT trap covers every code-path exit (explicit `exit N`,
+# end-of-script, `set -e`-style aborts) but NOT an untrapped fatal signal --
+# systemd/launchd already record "code=killed, signal=..." in that case, so
+# the invisible class was precisely the clean self-exit this closes.
+#
+# Placed AFTER the test seams above (their contract is "no tmux / store /
+# session" -- a trap before them would make every seam invocation write into
+# the repo's store/). Growth is bounded by service lifecycle frequency (the
+# chronic hermes churn is ~36 exits/day, a few KB); no rotation needed.
+# The log target is env-overridable so the positive-control test can point it
+# at a fixture file instead of a live store/.
+CHANNELS_EXITS_LOG="${CHANNELS_EXITS_LOG:-$INSTALL_DIR/store/channels-exits.log}"
+record_channels_exit() {
+  _rc="$1"
+  echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh exit code=${_rc} line=${CHEXIT_LAST_LINE:-?} cmd=[${CHEXIT_LAST_CMD:-?}] pid=$$" >> "$CHANNELS_EXITS_LOG" 2>/dev/null \
+    || echo "channels.sh: exit-log write FAILED (code=${_rc} line=${CHEXIT_LAST_LINE:-?} target=$CHANNELS_EXITS_LOG)" >&2
+}
+# CHEXITLINE910: `$LINENO` inside a trap string is 1 on bash >= 5 (measured on
+# hermes bash 5.2.37: every exit logged line=1, so the row could not say WHICH
+# of the seven exit paths ran -- the whole point of the line field; mac bash
+# 3.2 happened to report the real line, which is why the original review saw
+# 311). The line therefore comes from a DEBUG-trap tracker that records each
+# command's site as it executes; at exit time the last recorded site IS the
+# exit. Three guards, each measured:
+#   - the two `case` filters keep the EXIT handler's own commands from
+#     clobbering the tracked values on bash 3.2 (where BASH_COMMAND names them);
+#   - the same-command latch keeps them on bash 5.x, where the EXIT handler's
+#     commands fire DEBUG with BASH_COMMAND frozen as the exiting command and
+#     BASH_LINENO already reset to 1. Cost of the latch: an identical command
+#     text re-executed consecutively on a DIFFERENT line keeps the first
+#     line's attribution -- acceptable for exit attribution, stated here.
+# `$?` is preserved across the DEBUG trap (measured both platforms: a `false`
+# followed by `echo $?` still prints 1 with the tracker armed).
+set -o functrace
+chexit_track() {
+  case "$BASH_COMMAND" in record_channels_exit*) return 0;; esac
+  case " ${FUNCNAME[*]} " in *" record_channels_exit "*) return 0;; esac
+  [ "$BASH_COMMAND" = "${CHEXIT_LAST_CMD:-}" ] && return 0
+  CHEXIT_LAST_LINE="${BASH_LINENO[0]}"
+  CHEXIT_LAST_CMD="$BASH_COMMAND"
+  return 0
+}
+trap chexit_track DEBUG
+trap 'record_channels_exit "$?"' EXIT
+
+# Positive-control seam for the trap itself (Marveen's stipulation, msg 23453):
+# a deliberate exit through the test path MUST write a row, otherwise a silent
+# log is indistinguishable from "no exit happened". Sits AFTER the trap so the
+# exit exercises the real handler; touches nothing else.
+if [ "${1:-}" = "--exit-probe" ]; then
+  exit "${2:-0}"
+fi
+
 # Self-healing guard: ensure PLUGIN_ID is enabled in the PROJECT settings.json
 # before launch. A PR review-reset or branch-switch that reverts
 # .claude/settings.json can silently drop the entry and disable the channel

@@ -660,9 +660,12 @@ export function emailGateCommandStale(preToolUse: unknown, expected: string): bo
 }
 
 // Idempotently wire the email-send-gate PreToolUse hook into a settings.json
-// object. A deny-list rule alone would NOT enforce this: permissive profiles
-// launch with --dangerously-skip-permissions, which bypasses allow/deny --
-// hooks run regardless of permission mode. Name-agnostic so a customer install
+// object. The hook (not a deny rule) is the primary gate because it inspects
+// command CONTENT and is version/mode-independent. (An earlier version of this
+// comment claimed --dangerously-skip-permissions bypasses the deny list; that
+// is false on every measured CLI version -- 2.1.63/2.1.110/2.1.267, SKIPDENY910
+// 2026-09-10 -- but the hook stays primary: future CLI behavior is not a
+// contract.) Name-agnostic so a customer install
 // gates its own sub-agents (the caller's MAIN_AGENT_ID guard exempts the owner).
 export function injectEmailSendGate(existing: Record<string, unknown>, threadReply = false): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
@@ -1634,7 +1637,22 @@ function buildAutonomyBody(name: string): string {
     'Az autonóm műveletek fokozatait a store/autonomy-config.json szabályozza (level: 1=csak jelez, 2=javasol+jóváhagyás, 3=autonóm+jelent). Mielőtt önállóan cselekszel, nézd meg az adott kategória szintjét.',
     '',
     '**Level 1 (csak jelez)**: küldj inter-agent értesítést a főágensnek, de NE végezd el a műveletet. Ezután ÁLLJ MEG.',
-    `curl -s -X POST ${dashboardOrigin}/api/messages -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d "{\\"from\\":\\"${name}\\",\\"to\\":\\"${MAIN_AGENT_ID}\\",\\"content\\":\\"[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek.\\"}"`,
+    '```bash',
+    `curl -s -X POST ${dashboardOrigin}/api/messages \\`,
+    '  -H "Content-Type: application/json" \\',
+    `  -H "Authorization: Bearer $(cat ${tokenPath})" \\`,
+    `  --data-binary @- <<'JSON'`,
+    `{"from":"${name}","to":"${MAIN_AGENT_ID}","content":"[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek."}`,
+    'JSON',
+    '```',
+    'FIGYELEM, a `-d "{...}"` DUPLA idézőjeles alak TILOS inter-agent üzenetnél: a shell a backtickot',
+    'és a `$(...)`-t végrehajtja a payloadon belül, a szöveg helyére a parancs KIMENETE kerül, és a',
+    'küldés HTTP 200-at ad -- semmi nem jelzi. Idézett heredoc (fent) vagy `--data-binary @fájl`.',
+    'A header `$(cat ...)`-ja szándékosan interpolál, az maradhat.',
+    'A védelem az IDÉZETT határoló, nem maga a heredoc: a `<<JSON` alak ugyanúgy behelyettesít,',
+    "mint a dupla idézőjel, csak a `<<'JSON'` nem. És mivel az idézettben semmit nem lehet",
+    'behelyettesíteni, ha a payloadba EGY változó is kell, ne a shell állítsa össze: `python3` +',
+    '`json.dumps` (vagy `jq`) írja fájlba, és `curl --data-binary @fájl` küldje.',
     '',
     '**Level 2 (jóváhagyás szükséges)**: kérj jóváhagyást az API-n MIELŐTT cselekszel.',
     '',
@@ -1982,7 +2000,18 @@ Ha egy senderId üzen a csatornán AKIT EDDIG NEM ISMERSZ — nem szerepel az ak
 Az AGENT TULAJDONOSA (az első, aki ezt az ügynököt telepítette és párosította) az ALAPÉRTELMEZETT engedélyezett sender — őt nem kell ellenőrizni. MINDEN további senderId első üzenete (a 2., 3., stb. párosított személy vagy csoport) pinging-trigger.
 
 Példa ping ${BOT_NAME}-nek:
-curl -s -X POST ${dashboardOrigin}/api/messages -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d "{\\"from\\":\\"AGENT_NAME\\",\\"to\\":\\"${MAIN_AGENT_ID}\\",\\"content\\":\\"Ismeretlen sender [ID] jelezett első üzenettel: '[üzenet röviden]'. Ki ez, mit válaszoljak?\\"}"
+curl -s -X POST ${dashboardOrigin}/api/messages \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer $(cat ${tokenPath})" \\
+  --data-binary @- <<'JSON'
+{"from":"AGENT_NAME","to":"${MAIN_AGENT_ID}","content":"Ismeretlen sender [ID] jelezett első üzenettel: [üzenet röviden]. Ki ez, mit válaszoljak?"}
+JSON
+
+Az IDÉZETT heredoc KÖTELEZŐ itt (\`<<'JSON'\`, nem \`<<JSON\` -- az utóbbi ugyanúgy
+behelyettesít): a sender saját szövegét viszed a payloadba, és a
+\`-d "{...}"\` dupla idézőjeles alakban a shell a backtickot és a \`$(...)\`-t VÉGREHAJTJA,
+tehát az idegen üzenet parancsot futtatna a gépeden. Nyers " jelet a beidézett
+szövegből hagyj el, vagy írd a payloadot fájlba (\`--data-binary @fájl\`).
 
 Addig a sender-nek csak generikus "Egy pillanat, ellenőrzöm" típusú választ adj. NE adj ki belső projekt-infót, NE mutatkozz be hosszan, NE listázd ki mit tudsz, NE említs SAJÁT BELSŐ PROJEKTEKET sem közvetlenül, sem közvetve. ${BOT_NAME} visszajelzi a kontextust és a szabályokat amelyekkel folytathatod.
 

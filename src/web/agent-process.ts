@@ -1997,12 +1997,28 @@ export async function dismissResumeSummaryModalIfPresent(session: string, host: 
 // Returns true only if the modal was actually there AND the pane became ready
 // after clearing it -- a false keeps the caller on its existing skip path, so
 // nothing about the busy case changes.
+//
+// PANEWRITERS910: the dismissal keystrokes run under the per-pane send lane,
+// fail-closed (same contract as sendPromptToSession's pre-emit dismissals and
+// scheduleIdentitySetup's modal span). All four refusal-branch callers run on
+// their own timers, so without the lane this could press '0'/Escape into a
+// pane mid-delivery. A busy lane returns false: the holder is a delivery,
+// which runs its own pre-emit dismissals, so skipping loses nothing.
 export async function clearFeedbackModalAndRecheck(session: string, host: string | null = null): Promise<boolean> {
   try {
     const pane = capturePane(session, host)
     if (pane == null || !detectsFeedbackDraftModal(pane)) return false
-    logger.warn({ session }, 'pane held by a Claude Code feedback-draft modal on the not-ready path, dismissing')
-    await dismissFeedbackDraftModalIfPresent(session, host)
+    const releaseLane = tryAcquireSessionSendLane(session, host)
+    if (!releaseLane) {
+      logger.info({ session }, 'feedback-draft modal dismissal skipped -- a delivery holds this pane send lane (fail-closed)')
+      return false
+    }
+    try {
+      logger.warn({ session }, 'pane held by a Claude Code feedback-draft modal on the not-ready path, dismissing')
+      await dismissFeedbackDraftModalIfPresent(session, host)
+    } finally {
+      releaseLane()
+    }
     return await isSessionReadyForPrompt(session, host)
   } catch (err) {
     logger.warn({ err, session }, 'Failed to clear the feedback-draft modal on the not-ready path')
@@ -2167,34 +2183,90 @@ export function identitySlashCommands(displayName: string): string[] {
 const MODAL_DISMISS_DELAY_MS = 8000
 const IDENTITY_SEND_DELAY_MS = 5000
 
+// How many times the identity send retries when the pane's send lane is held
+// by a live delivery, and how long it waits between tries. Unlike the modal
+// dismissals (skip-on-busy is harmless -- a modal that is really up keeps the
+// pane non-idle and the next writer's own gate handles it), a SKIPPED /rename
+// leaves the session unnamed for its whole life, so this one waits its turn.
+// 5 x 3s spans a typical chunked delivery without holding the lane itself.
+const IDENTITY_LANE_RETRY_MS = 3000
+const IDENTITY_LANE_MAX_ATTEMPTS = 5
+
 // Schedule the identity setup for a freshly (re)spawned session: once it has
 // had time to render, dismiss any first-run/resume modals, then send `/rename`.
 // Shared by startAgentProcess and the channel-monitor recovery respawns
 // (resumeMarveenSession / respawnMarveenSessionFresh), which previously left the
 // main session without its identity after auto-recovery. Fire-and-forget; all
 // errors are swallowed/logged so a missed setup never tears down the caller.
+//
+// IDENTLANE910: both pane-touching spans run INSIDE the per-pane send lane.
+// This writer was the one DELIVLOCK805 (#885) and PANEWRITERS805 (#895) missed:
+// it typed `/rename <name>` with a bare `runTmux(['send-keys', ...])` on a
+// fire-and-forget timer, outside the lane. Measured 2026-09-10 09:40:01: an
+// update.sh restart fired identity setup while the scheduler was chunk-pasting
+// a task prompt into the SAME pane, and `/rename Marveen_is` spliced into the
+// MIDDLE of that prompt -- between two words of a python expression on line 100
+// of the task's SKILL.md. The prompt file on disk was clean, so the splice
+// happened in transit. Reading agent saw an unprovenanced self-rename command
+// embedded in its own instructions; it did not execute it, but a writer that
+// can inject arbitrary text into another writer's framed message is exactly the
+// defect class #885 closed for deliveries.
 export async function scheduleIdentitySetup(session: string, displayName: string, host: string | null = null): Promise<void> {
   setTimeout(() => {
     void (async () => {
-      try {
-        await dismissSurveyModalIfPresent(session, host)
-        await dismissResumeSummaryModalIfPresent(session, host)
-        await dismissModelConsentDialogIfPresent(session, host)
-        await dismissFeedbackDraftModalIfPresent(session, host)
-      } catch (err) {
-        logger.warn({ err, session }, 'Post-restart modal dismiss failed')
+      // Modal dismissals: fail-closed acquire, same as sendPromptToSession's
+      // pre-emit dismissals. Skipping on a busy lane is safe here -- a delivery
+      // holding the lane runs its OWN dismissals before emitting.
+      const releaseDismissLane = tryAcquireSessionSendLane(session, host)
+      if (releaseDismissLane) {
+        try {
+          await dismissSurveyModalIfPresent(session, host)
+          await dismissResumeSummaryModalIfPresent(session, host)
+          await dismissModelConsentDialogIfPresent(session, host)
+          await dismissFeedbackDraftModalIfPresent(session, host)
+        } catch (err) {
+          logger.warn({ err, session }, 'Post-restart modal dismiss failed')
+        } finally {
+          releaseDismissLane()
+        }
+      } else {
+        logger.info({ session }, 'Identity setup: modal dismissals skipped -- a delivery holds this pane send lane')
       }
       setTimeout(() => {
         void (async () => {
-          try {
-            for (const cmd of identitySlashCommands(displayName)) {
-              runTmux(host, ['send-keys', '-t', session, cmd, 'Enter'], { timeout: 5000 })
-              await delay(1000)
+          // The /rename itself: retry-until-free rather than skip. The lane is
+          // re-acquired here (not held across the 5s render wait) so we never
+          // block a delivery while merely waiting.
+          for (let attempt = 1; attempt <= IDENTITY_LANE_MAX_ATTEMPTS; attempt++) {
+            const releaseIdentityLane = tryAcquireSessionSendLane(session, host)
+            if (!releaseIdentityLane) {
+              logger.info(
+                { session, displayName, attempt, max: IDENTITY_LANE_MAX_ATTEMPTS },
+                'Identity /rename deferred -- a delivery holds this pane send lane; retrying',
+              )
+              await delay(IDENTITY_LANE_RETRY_MS)
+              continue
             }
-            logger.info({ session, displayName }, 'Set session /rename')
-          } catch (err) {
-            logger.warn({ err, session, displayName }, 'Failed to set session /rename')
+            try {
+              for (const cmd of identitySlashCommands(displayName)) {
+                runTmux(host, ['send-keys', '-t', session, cmd, 'Enter'], { timeout: 5000 })
+                await delay(1000)
+              }
+              logger.info({ session, displayName, attempt }, 'Set session /rename')
+            } catch (err) {
+              logger.warn({ err, session, displayName }, 'Failed to set session /rename')
+            } finally {
+              releaseIdentityLane()
+            }
+            return
           }
+          // Gave up: the display name stays default. Cosmetic, and strictly
+          // better than splicing `/rename` into someone else's message. Logged
+          // loudly because a skip nobody logs is not a skip.
+          logger.warn(
+            { session, displayName, max: IDENTITY_LANE_MAX_ATTEMPTS },
+            'Identity /rename abandoned -- pane send lane stayed busy; session keeps its default name',
+          )
         })()
       }, IDENTITY_SEND_DELAY_MS)
     })()
@@ -2878,7 +2950,23 @@ const unwedgeAttempts = new Map<string, { last: number; sig: string; fails: numb
 // parked text -- never 'busy'/processing) AND the text is unchanged across a
 // short settle, so input a human or agent is actively typing is never clobbered.
 // Returns true if it cleared something (caller should retry delivery next tick).
-export async function clearStaleParkedInput(session: string, host: string | null = null): Promise<boolean> {
+//
+// PANEWRITERS910: the settle-confirm and the clearing keystrokes run under the
+// per-pane send lane, fail-closed. The callers (message-router janitor and the
+// schedule-runner's two janitor sites) tick on independent timers, so without
+// the lane the Ctrl-U/C-k sequence could fire into a pane holding a delivery's
+// half-typed message -- a chunked send pausing past the 2s stability window
+// reads exactly like a stale parked line (same defect class as IDENTLANE910).
+// A busy lane returns false: if a delivery owns the pane, the "parked" text is
+// in-transit, not stale. lockMode 'held' is for the ONE caller already inside
+// the lane (schedule-runner's reinject path, which runs in its delivery's
+// withSessionSendLock span) -- acquiring again there would self-deadlock into
+// a false skip.
+export async function clearStaleParkedInput(
+  session: string,
+  host: string | null = null,
+  opts: { lockMode?: 'acquire' | 'held' } = {},
+): Promise<boolean> {
   const a = capturePane(session, host)
   if (a == null || detectPaneState(a) !== 'typing') return false
   // DIM-GUARD (2026-06-30, Szabi insight): extract the parked TEXT from the
@@ -2902,6 +2990,33 @@ export async function clearStaleParkedInput(session: string, host: string | null
   const prev = unwedgeAttempts.get(key)
   if (prev && prev.sig === parked && nowMs - prev.last < UNWEDGE_COOLDOWN_MS) return false
 
+  if ((opts.lockMode ?? 'acquire') === 'held') {
+    return clearStaleParkedInputInLane(session, host, a, parked, key, nowMs, prev)
+  }
+  const releaseLane = tryAcquireSessionSendLane(session, host)
+  if (!releaseLane) {
+    logger.info({ session }, 'stale-parked-input janitor skipped -- a delivery holds this pane send lane (the box likely holds in-transit text, not a wedge)')
+    return false
+  }
+  try {
+    return await clearStaleParkedInputInLane(session, host, a, parked, key, nowMs, prev)
+  } finally {
+    releaseLane()
+  }
+}
+
+// The lane-holding tail of clearStaleParkedInput: stability confirm, main-agent
+// escalation bookkeeping, and the clearing keystrokes. Split out so the lane
+// release lives in ONE finally regardless of which of the many exits runs.
+async function clearStaleParkedInputInLane(
+  session: string,
+  host: string | null,
+  a: string,
+  parked: string,
+  key: string,
+  nowMs: number,
+  prev: { last: number; sig: string; fails: number; escalated: boolean } | undefined,
+): Promise<boolean> {
   await delay(PARKED_STABLE_CONFIRM_MS)
   const b = capturePane(session, host)
   // Changed (someone is typing) or already cleared -> leave it alone, and do not
