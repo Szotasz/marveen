@@ -285,6 +285,45 @@ assert_eq "install-scoped dir: backstop delivery" "1" "$(count chat.postMessage)
 assert_eq "install-scoped dir: state file removed" "no" "$(pend_exists "$PK")"
 
 # ---------------------------------------------------------------------------
+# (l) Install language: the error rewrite follows <root>/.lang, MARVEEN_LANG wins
+# ---------------------------------------------------------------------------
+echo ""
+echo "(l) Language: .lang=en -> English error text; MARVEEN_LANG overrides"
+printf 'en\n' > "$TMP/root/.lang"
+PL="$(make_case wl noans 100)"
+run_wd 1 1
+assert_eq "lang=en: one error edit" "1" "$(count chat.update)"
+assert_eq "lang=en: English error text" "yes" "$(body_has "Something got stuck")"
+assert_eq "lang=en: no Hungarian text" "no" "$(body_has "Valami elakadt")"
+PL2="$(make_case wl2 noans 100)"
+: > "$REQLOG"
+HOME="$TMP" MARVEEN_ROOT="$TMP/root" SLACK_API_BASE="$API_BASE" MARVEEN_LANG=hu \
+  SLACK_WATCHDOG_FORCE_AGENT_UP=1 SLACK_WATCHDOG_WEDGED_UP_SEC=1 python3 "$WATCHDOG"
+assert_eq "MARVEEN_LANG=hu overrides .lang: Hungarian text" "yes" "$(body_has "Valami elakadt")"
+rm -f "$TMP/root/.lang"
+
+# ---------------------------------------------------------------------------
+# (m) Submit hook: the placeholder text follows the same language resolution
+# ---------------------------------------------------------------------------
+echo ""
+echo "(m) Submit hook placeholder: hu default, en via .lang"
+SUBMIT="$INSTALL_DIR/scripts/hooks/slack_progress.py"
+SM="$TMP/root/agents/wm/.claude/channels/slack"; mkdir -p "$SM"
+printf 'SLACK_BOT_TOKEN=xoxb-TESTTOKEN\n' > "$SM/.env"
+PROMPT='<channel source="plugin:slack-channel:slack" chat_id="C0BJTESTCHAN" ts="1700000000.000200">hello</channel>'
+: > "$REQLOG"
+printf '{"session_id":"sm1","prompt":"%s"}' "$(printf '%s' "$PROMPT" | sed 's/"/\\"/g')" \
+  | SLACK_STATE_DIR="$SM" SLACK_API_BASE="$API_BASE" python3 "$SUBMIT"
+assert_eq "submit: one placeholder posted" "1" "$(count chat.postMessage)"
+assert_eq "submit: Hungarian placeholder by default" "yes" "$(body_has "Dolgozom rajta")"
+printf 'en\n' > "$TMP/root/.lang"
+: > "$REQLOG"
+printf '{"session_id":"sm2","prompt":"%s"}' "$(printf '%s' "$PROMPT" | sed 's/"/\\"/g')" \
+  | SLACK_STATE_DIR="$SM" SLACK_API_BASE="$API_BASE" python3 "$SUBMIT"
+assert_eq "submit: English placeholder with .lang=en" "yes" "$(body_has "Working on it")"
+rm -f "$TMP/root/.lang"
+
+# ---------------------------------------------------------------------------
 echo ""
 echo "==========================="
 TOTAL=$((PASS + FAIL))

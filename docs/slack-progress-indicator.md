@@ -119,6 +119,14 @@ check that the tool name contains `slack` and `reply`, so a slightly-off
 matcher still degrades gracefully (the PostToolUse hook simply won't fire,
 leaving the Stop hook and watchdog as backstops) instead of erroring.
 
+## Language
+
+The user-facing texts (the placeholder, the watchdog's error rewrite) and the
+Stop hook's block instruction come in Hungarian and English. Resolution, per
+hook run: `MARVEEN_LANG` env if set, else the install's `.lang` file (written
+by `install.sh` at the install root, found by walking up from the agent's state
+dir), else `hu`. Values: `hu`, `en`.
+
 ## Tuning
 
 - `slack_progress_watchdog.py`: `DOWN_GRACE_SEC` (default 120s), `WEDGED_SEC`

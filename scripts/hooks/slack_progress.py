@@ -25,7 +25,34 @@ globally across agents with different bots.
 """
 import sys, os, json, re, urllib.request
 
-PLACEHOLDER = "✍️ Dolgozom rajta…"  # same wording as the Telegram placeholder
+# Same wording as the Telegram placeholder, per install language.
+TEXTS = {
+    "hu": {"placeholder": "✍️ Dolgozom rajta…"},
+    "en": {"placeholder": "✍️ Working on it…"},
+}
+
+
+def lang(sd):
+    """Install language: MARVEEN_LANG env, else the install's `.lang` file
+    (written by install.sh at the install root; found by walking up from the
+    state dir, which is <root>/.claude/channels/slack or
+    <root>/agents/<name>/.claude/channels/slack), else hu (the repo default)."""
+    v = (os.environ.get("MARVEEN_LANG") or "").strip().lower()
+    if v in TEXTS:
+        return v
+    d = os.path.abspath(sd)
+    for _ in range(6):
+        try:
+            v = open(os.path.join(d, ".lang"), encoding="utf-8").read().strip().lower()
+            if v in TEXTS:
+                return v
+        except Exception:
+            pass
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return "hu"
 
 
 def state_dir():
@@ -116,6 +143,7 @@ def main():
     if not tok:
         log(sd, "[submit] no token found")
         return
+    placeholder = TEXTS[lang(sd)]["placeholder"]
 
     pending = []
     for b in blocks:
@@ -131,7 +159,7 @@ def main():
         if not claim(os.path.join(sd, "progress"), sid, src):
             log(sd, f"[submit] dedup skip src={src}")
             continue
-        payload = {"channel": chat_id, "text": PLACEHOLDER}
+        payload = {"channel": chat_id, "text": placeholder}
         if thread_ts:
             payload["thread_ts"] = thread_ts
         try:
