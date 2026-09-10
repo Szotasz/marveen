@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes, randomUUID } from 'node:crypto'
@@ -137,5 +137,36 @@ describe('INSTUX1: enroll paths follow WEB_PORT on a NON-default port', () => {
     const outcome = await bridgeEnroll({ keyLine: line, name: 'Port próba' }, testDeps())
     const bundle = decodeBundle(outcome.bundle)
     expect(bundle.remotePort).toBe(PORT)
+  })
+
+  it('the import-guard still runs main() through a SYMLINKED absolute path (realpath guard)', () => {
+    // Marveen review (msg 23506, measured): a bare URL comparison silently
+    // no-ops on a symlinked ABSOLUTE invocation -- exit 0, zero output, which
+    // the installer reads as "no bundle": the exact silent-failure family of
+    // this card. The guard therefore realpaths both sides; this test invokes
+    // that precise shape. main() running shows as the usage error on stderr
+    // with exit 1 -- a silent guard shows as exit 0 with neither.
+    // Negative control (performed and reverted): argv[1] left un-realpathed
+    // in the guard -> this test goes RED (exit 0, empty stderr).
+    const dir = mkdtempSync(join(tmpdir(), 'enroll-symlink-'))
+    try {
+      symlinkSync(ROOT, join(dir, 'repo'))
+      const script = join(dir, 'repo', 'scripts', 'remote-access-enroll.ts')
+      let stderr = ''
+      let status = 0
+      try {
+        execFileSync(join(ROOT, 'node_modules', '.bin', 'tsx'), [script], {
+          encoding: 'utf-8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'],
+        })
+      } catch (e) {
+        const err = e as { status?: number; stderr?: string }
+        status = err.status ?? -1
+        stderr = err.stderr ?? ''
+      }
+      expect(status).toBe(1)
+      expect(stderr).toContain('missing public key line')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

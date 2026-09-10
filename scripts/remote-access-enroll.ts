@@ -23,7 +23,7 @@
 // Pass --no-dashboard-token to emit a token-free bundle (the device user must
 // then obtain the dashboard access URL out of band).
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { homedir, hostname, userInfo, networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -253,11 +253,29 @@ async function main(): Promise<void> {
   process.stdout.write('----- END CONNECTION BUNDLE -----\n')
 }
 
-// Import-guard (same idiom as channel-coordinator.ts): run the CLI only when
-// this file IS the invoked script. The INSTUX1 regression test imports
-// defaultWebPort above, and an unguarded main() would execute the whole
-// enrollment (host-key scan, authorized_keys write) at import time.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Import-guard (channel-coordinator idiom): run the CLI only when this file
+// IS the invoked script. The INSTUX1 regression test imports defaultWebPort
+// above, and an unguarded main() would execute the whole enrollment
+// (host-key scan, authorized_keys write) at import time.
+//
+// Realpath on BOTH sides (Marveen review, msg 23506, measured): a bare URL
+// comparison silently no-ops when the script is invoked through a SYMLINKED
+// ABSOLUTE path -- exit 0, zero output, and the installer reads that as
+// "no bundle", which is exactly the silent-failure family this card exists
+// for. On a realpath failure fall back to the URL comparison rather than
+// going silent: an exotic fs must degrade to the old behaviour, not to a
+// CLI that never runs.
+function isInvokedDirectly(): boolean {
+  const argv1 = process.argv[1]
+  if (!argv1) return false
+  try {
+    return realpathSync(argv1) === realpathSync(fileURLToPath(import.meta.url))
+  } catch {
+    return import.meta.url === pathToFileURL(argv1).href
+  }
+}
+
+if (isInvokedDirectly()) {
   main().catch((err) => {
     process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`)
     process.exit(1)
