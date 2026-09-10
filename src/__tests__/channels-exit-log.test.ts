@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -33,7 +33,14 @@ function runExitProbe(code: string, logPath: string): number {
 }
 
 describe('channels.sh exit logging (CHEXIT910)', () => {
-  it('POSITIVE CONTROL: a deliberate exit 0 writes a row -- the invisible class', () => {
+  // CHEXITLINE910: the line must be the exit's OWN source line -- `line=\d+`
+  // alone let line=1 pass on bash 5 (where $LINENO in a trap string is always
+  // 1), which is exactly the value that cannot say which exit path ran. The
+  // expected number is read from the script source, so the pin survives edits
+  // above the seam.
+  const probeExitLine = CHANNELS.slice(0, CHANNELS.indexOf('exit "${2:-0}"')).split('\n').length
+
+  it('POSITIVE CONTROL: a deliberate exit 0 writes a row with the REAL exit line -- the invisible class', () => {
     const dir = mkdtempSync(join(tmpdir(), 'chexit-'))
     try {
       const log = join(dir, 'exits.log')
@@ -41,18 +48,44 @@ describe('channels.sh exit logging (CHEXIT910)', () => {
       expect(existsSync(log)).toBe(true)
       const rows = readFileSync(log, 'utf-8').trim().split('\n')
       expect(rows).toHaveLength(1)
-      expect(rows[0]).toMatch(/channels\.sh exit code=0 line=\d+ pid=\d+/)
+      expect(rows[0]).toMatch(new RegExp(`channels\\.sh exit code=0 line=${probeExitLine} cmd=\\[exit "\\$\\{2:-0\\}"\\] pid=\\d+`))
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
   })
 
-  it('a non-zero exit is recorded with ITS code, and the trap does not clobber the exit status', () => {
+  it('a non-zero exit is recorded with ITS code and line, and the trap does not clobber the exit status', () => {
     const dir = mkdtempSync(join(tmpdir(), 'chexit-'))
     try {
       const log = join(dir, 'exits.log')
       expect(runExitProbe('7', log)).toBe(7)
-      expect(readFileSync(log, 'utf-8')).toMatch(/exit code=7 line=\d+/)
+      expect(readFileSync(log, 'utf-8')).toMatch(new RegExp(`exit code=7 line=${probeExitLine} `))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('the DEBUG tracker preserves $? for the script itself (real tracker source, sliced)', () => {
+    // A tracker that ate $? would silently rewrite every `if [ $? -eq 0 ]`
+    // decision in the script -- worse than the bug it fixes. Run the REAL
+    // tracker (sliced from the source, same pattern as the never-started
+    // tests) with a failing command and read $? on the next line.
+    const fnStart = CHANNELS.indexOf('chexit_track() {')
+    const fnEnd = CHANNELS.indexOf('\n}', fnStart)
+    const tracker = CHANNELS.slice(fnStart, fnEnd + 2)
+    const dir = mkdtempSync(join(tmpdir(), 'chexit-'))
+    try {
+      const probe = join(dir, 'probe.sh')
+      writeFileSync(probe, [
+        '#!/bin/bash',
+        'set -o functrace',
+        tracker,
+        'trap chexit_track DEBUG',
+        'false',
+        'echo "status=$?"',
+      ].join('\n') + '\n')
+      const out = execFileSync('bash', [probe], { encoding: 'utf-8' }).trim()
+      expect(out).toBe('status=1')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
