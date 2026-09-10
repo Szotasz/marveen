@@ -27,7 +27,7 @@ import { isAgentRunning } from '../agent-process.js'
 import { resolveKanbanDispatch } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
-import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
+import { readBody, json, jsonMaybeGzip, methodNotAllowed } from '../http-helpers.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import type { RouteContext } from './types.js'
 
@@ -295,6 +295,11 @@ export function buildHeartbeatSummaryResponse(
     waiting_shown: Math.min(summary.waiting.length, HEARTBEAT_SUMMARY_WAITING_CAP),
   }
 }
+
+// The methods the single-card path actually serves. One source, so the Allow
+// header can never drift from the branches above it -- advertising a method
+// that is not routed would send the caller one step further into the same fog.
+const KANBAN_CARD_METHODS = ['PUT', 'DELETE'] as const
 
 export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
@@ -692,6 +697,20 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (childrenMatch && method === 'GET') {
     const parentId = decodeURIComponent(childrenMatch[1])
     json(res, getChildCards(parentId))
+    return true
+  }
+
+  // Last, deliberately: every other single-card matcher above has had its turn,
+  // including the fixed paths that also happen to be one segment long
+  // (/api/kanban/archived among them). Placing this earlier would answer 405
+  // for those before their own handler ran.
+  //
+  // Reached only when the path IS a single-card path and the method is not one
+  // this route serves. Without it the request falls through to the server's
+  // catch-all 404, whose body cannot be told apart from "no such card" -- an
+  // ambiguity that has twice pointed a caller at the wrong bug.
+  if (path.match(/^\/api\/kanban\/([^/]+)$/)) {
+    methodNotAllowed(res, method, KANBAN_CARD_METHODS)
     return true
   }
 
