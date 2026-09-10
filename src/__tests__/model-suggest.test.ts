@@ -249,3 +249,24 @@ describe('MODELSUGGEST807 -- top tier is the shipped distribution default', () =
     expect(humanModelLabel('claude-sonnet-5')).toBe('Sonnet 5')
   })
 })
+
+// GATECTX910: the contextTokens the suggestion runs on must be read from the
+// place the session actually writes its transcript. A bare agentDir() read is
+// blind to an isolated config root (false 0 in the signals) AND to the main
+// agent, which runs in PROJECT_ROOT (its listing row measured null live,
+// 2026-09-10). Source contract: every contextTokens read in routes/agents.ts
+// goes through resolveTranscriptLocation, never through a bare `dir`.
+describe('GATECTX910 -- contextTokens reads resolve the real transcript location', () => {
+  it('routes/agents.ts has no readContextTokensFromProjectDir call on a bare dir', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const src = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '../web/routes/agents.ts'), 'utf-8')
+    const calls = src.match(/readContextTokensFromProjectDir\([^)]*\)/g) ?? []
+    expect(calls.length).toBeGreaterThan(0)
+    for (const call of calls) {
+      expect(call).toContain('transcript.workingDir, transcript.configDir')
+    }
+  })
+})

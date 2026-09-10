@@ -560,7 +560,11 @@ function getAgentSummary(name: string): AgentSummary {
     hasAvatar: findAvatarForAgent(name) !== null,
     autoRestart: readAutoRestartConfig(name),
     contextGuard: readContextGuardConfig(name),
-    contextTokens: running ? readContextTokensFromProjectDir(dir, resolveAgentConfigDir(name).configDir ?? undefined) : null,
+    // GATECTX910: same location the activeModel read above uses. The previous
+    // `dir` + configured-config-dir pair was blind to the MAIN agent (which
+    // runs in PROJECT_ROOT with the .channels-config probe): its listing row
+    // showed contextTokens null while a live transcript sat right there.
+    contextTokens: running ? readContextTokensFromProjectDir(transcript.workingDir, transcript.configDir) : null,
     needsReauth: reauth.needsReauth,
     reauthReason: reauth.reason,
   }
@@ -940,7 +944,15 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       const personaMd = existsSync(personaPath) ? readFileSync(personaPath, 'utf-8') : ''
       const personaText = [claudeMd, personaMd].filter(Boolean).join('\n')
       const currentModel = readAgentModel(name)
-      const contextTokens = readContextTokensFromProjectDir(dir) ?? 0
+      // GATECTX910: read the transcript where the session actually writes it.
+      // The bare `dir` read had two blind spots: an agent with an isolated
+      // config root (CLAUDE_CONFIG_DIR) read as a false 0, and the MAIN agent
+      // -- which runs in PROJECT_ROOT, not agents/<name> -- always read as 0
+      // (measured live 2026-09-10: contextTokens null on the listing's own
+      // main row for the same reason). resolveTranscriptLocation answers both,
+      // and is what the activeModel read above already uses.
+      const transcript = resolveTranscriptLocation(name)
+      const contextTokens = readContextTokensFromProjectDir(transcript.workingDir, transcript.configDir) ?? 0
 
       const kanban = kanbanMap.get(name)
       const signals: AgentSignals = {
