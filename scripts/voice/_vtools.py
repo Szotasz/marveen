@@ -76,7 +76,7 @@ def _token(state_dir):
 def _whisper(path):
     from faster_whisper import WhisperModel
     m = WhisperModel("small", device="cpu", compute_type="int8")
-    segs, _ = m.transcribe(path, language="hu", beam_size=5)
+    segs, _ = m.transcribe(path, language="hu", beam_size=5, condition_on_previous_text=False)
     print(" ".join(s.text.strip() for s in segs).strip())
 
 
@@ -157,7 +157,7 @@ def canary(voice_onnx, expected_text):
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         from faster_whisper import WhisperModel
         m = WhisperModel("small", device="cpu", compute_type="int8")
-        segs, _ = m.transcribe(wav, language="hu", beam_size=5)
+        segs, _ = m.transcribe(wav, language="hu", beam_size=5, condition_on_previous_text=False)
         transcript = " ".join(s.text.strip() for s in segs).strip()
         exp_words = _normalize(expected_text).split()
         got_words = set(_normalize(transcript).split())
