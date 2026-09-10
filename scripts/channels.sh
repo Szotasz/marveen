@@ -271,6 +271,46 @@ if [ "${1:-}" = "--classify-unlock-residue" ]; then
   exit 0
 fi
 
+# CHEXIT910: EVERY exit of the real run leaves a row -- exit 0 included.
+#
+# Why: this script has SEVEN `exit 0` paths and channels-failures.log, true to
+# its name, records only failures -- so a clean self-exit leaves NO trace
+# anywhere (measured on hermes 2026-09-09 20:25:03: the service's main process
+# exited 0, systemd's Restart=on-failure did not restart it, and the box lost
+# its supervisor with nothing to read afterwards; journald had no line either,
+# because leftover cgroup processes suppressed the usual "Deactivated" record).
+# Marveen's ordering decision (msg 23453): exit LOGGING lands first; only then
+# is a Restart-policy change even discussable, because until the exit is
+# measured, `on-failure` is the last remaining signal.
+#
+# Scope, stated: an EXIT trap covers every code-path exit (explicit `exit N`,
+# end-of-script, `set -e`-style aborts) but NOT an untrapped fatal signal --
+# systemd/launchd already record "code=killed, signal=..." in that case, so
+# the invisible class was precisely the clean self-exit this closes.
+#
+# Placed AFTER the test seams above (their contract is "no tmux / store /
+# session" -- a trap before them would make every seam invocation write into
+# the repo's store/). Growth is bounded by service lifecycle frequency (the
+# chronic hermes churn is ~36 exits/day, a few KB); no rotation needed.
+# The log target is env-overridable so the positive-control test can point it
+# at a fixture file instead of a live store/.
+CHANNELS_EXITS_LOG="${CHANNELS_EXITS_LOG:-$INSTALL_DIR/store/channels-exits.log}"
+record_channels_exit() {
+  _rc="$1"
+  _line="$2"
+  echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh exit code=${_rc} line=${_line} pid=$$" >> "$CHANNELS_EXITS_LOG" 2>/dev/null \
+    || echo "channels.sh: exit-log write FAILED (code=${_rc} line=${_line} target=$CHANNELS_EXITS_LOG)" >&2
+}
+trap 'record_channels_exit "$?" "$LINENO"' EXIT
+
+# Positive-control seam for the trap itself (Marveen's stipulation, msg 23453):
+# a deliberate exit through the test path MUST write a row, otherwise a silent
+# log is indistinguishable from "no exit happened". Sits AFTER the trap so the
+# exit exercises the real handler; touches nothing else.
+if [ "${1:-}" = "--exit-probe" ]; then
+  exit "${2:-0}"
+fi
+
 # Self-healing guard: ensure PLUGIN_ID is enabled in the PROJECT settings.json
 # before launch. A PR review-reset or branch-switch that reverts
 # .claude/settings.json can silently drop the entry and disable the channel
