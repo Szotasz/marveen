@@ -27,7 +27,7 @@ import { readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { homedir, hostname, userInfo, networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { isIP } from 'node:net'
 import {
   validatePublicKeyLine,
@@ -58,7 +58,7 @@ interface Args {
  * manual `remote-enroll` with no --web-port still targets the real port instead
  * of the 3420 default. Explicit --web-port overrides. Falls back to REMOTE_PORT
  * only when .env carries no WEB_PORT (config already applies that default). */
-function defaultWebPort(): number {
+export function defaultWebPort(): number {
   const n = ENV_WEB_PORT
   return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : REMOTE_PORT
 }
@@ -253,7 +253,13 @@ async function main(): Promise<void> {
   process.stdout.write('----- END CONNECTION BUNDLE -----\n')
 }
 
-main().catch((err) => {
-  process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`)
-  process.exit(1)
-})
+// Import-guard (same idiom as channel-coordinator.ts): run the CLI only when
+// this file IS the invoked script. The INSTUX1 regression test imports
+// defaultWebPort above, and an unguarded main() would execute the whole
+// enrollment (host-key scan, authorized_keys write) at import time.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`)
+    process.exit(1)
+  })
+}
