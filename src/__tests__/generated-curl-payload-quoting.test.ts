@@ -100,6 +100,22 @@ describe('generated autonomy block: no shell-expanding curl payload', () => {
     const level1 = block.slice(block.indexOf('Level 1'), block.indexOf('Level 2'))
     expect(level1).toContain(`--data-binary @- <<'JSON'`)
   })
+
+  // Carried over from the earlier CURLQUOTE909 branch, which fixed the same two
+  // lines and never shipped. Its level 1 assertion pinned a single-quoted payload,
+  // which the heredoc supersedes -- but the two protections underneath it are
+  // real and were not otherwise covered here.
+  it('the level 1 payload names the agent itself, not a placeholder', () => {
+    const block = writtenAutonomyBlock('named-agent')
+    const level1 = block.slice(block.indexOf('Level 1'), block.indexOf('Level 2'))
+    expect(level1).toContain('"from":"named-agent"')
+    expect(level1).not.toContain('AGENT_NAME')
+  })
+
+  it('the token read in the header still interpolates -- do not quote that away', () => {
+    const block = writtenAutonomyBlock('token-agent')
+    expect(block).toContain('$(cat ')
+  })
 })
 
 describe('generateClaudeMd source: no shell-expanding curl payload', () => {
@@ -120,5 +136,24 @@ describe('generateClaudeMd source: no shell-expanding curl payload', () => {
     const body = src.slice(fnStart, fnEnd)
     const offenders = body.split('\n').filter((l) => SHELL_EXPANDING_PAYLOAD.test(l))
     expect(offenders, `shell-expanding payload in generateClaudeMd:\n${offenders.join('\n')}`).toEqual([])
+  })
+
+  it('the stranger-sender block ships the quoted heredoc, whatever the sender wrote', () => {
+    const body = src.slice(fnStart, fnEnd)
+    const blockStart = body.indexOf('## Új ismeretlen sender első üzenete')
+    expect(blockStart, 'stranger-sender block not found').toBeGreaterThan(0)
+    const rest = body.slice(blockStart + 5)
+    const nextHeader = rest.indexOf('\n## ')
+    const block = body.slice(blockStart, blockStart + 5 + (nextHeader > 0 ? nextHeader : rest.length))
+    expect(block).toContain(`--data-binary @- <<'JSON'`)
+  })
+
+  // Widest of the source assertions, and the reason it is here: a third curl
+  // example added anywhere else in this file would escape the two scoped checks
+  // above. The earlier branch had this one; the scoped checks alone would not
+  // have caught a new offender outside both blocks.
+  it('no curl example anywhere in the scaffold uses a double-quoted payload', () => {
+    const offenders = src.split('\n').filter((l) => l.includes('curl ') && SHELL_EXPANDING_PAYLOAD.test(l))
+    expect(offenders, `shell-expanding payload in agent-scaffold.ts:\n${offenders.join('\n')}`).toEqual([])
   })
 })
