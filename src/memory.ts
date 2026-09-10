@@ -79,7 +79,10 @@ export async function buildMemoryContext(
   chatId: string,
   userMessage: string
 ): Promise<string> {
-  const ftsResults = searchMemories(userMessage, chatId, 3)
+  // Relaxed kept for the conversational recall path: this is a suggestion
+  // surfaced next to a live message, not an answer to "do we know this".
+  // Changing it is a separate decision from the endpoint's strict default.
+  const ftsResults = searchMemories(userMessage, chatId, 3, true)
   const recent = recentMemories(chatId, 5)
 
   const seen = new Set<number>()

@@ -1541,11 +1541,38 @@ export function buildFtsMatchExpression(query: string, join: 'AND' | 'OR' = 'AND
  *
  * A single-token query has nothing to relax, so it runs once.
  */
-function ftsWithOrFallback<T>(query: string, run: (terms: string) => T[]): { rows: T[]; relaxed: boolean } {
+/**
+ * Strict AND first, then -- only when the caller allows it -- an OR pass.
+ *
+ * The OR pass is genuinely useful and genuinely dangerous, and which one it is
+ * depends entirely on whether the caller is told it happened. Measured: a query
+ * whose every real term matched nothing still returned a row, because dropping
+ * the terms left two ordinary filler words that occur in unrelated memories.
+ * A caller reading that answer sees a recall; there was none.
+ *
+ * So the relaxation STAYS ON by default, and the strictness is what a caller
+ * opts into. That order matters and was measured the hard way: the relaxation
+ * exists because a naturally phrased question ("meddig tart a felmondasi ido")
+ * found nothing while the memory sat there, and turning it off by default
+ * would bring that back -- a false negative on real knowledge, which is worse
+ * than a generous answer that says it was generous.
+ *
+ * What was missing is not strictness, it is the LABEL: whether a relaxation
+ * happened has to reach the caller, so "we have no memory of this" can be
+ * distinguished from "the search worked hard to find something". Callers that
+ * need the hard answer pass allowRelaxed=false and get silence when there is
+ * no strict match.
+ */
+function ftsWithOrFallback<T>(
+  query: string,
+  run: (terms: string) => T[],
+  allowRelaxed = true,
+): { rows: T[]; relaxed: boolean } {
   const strict = buildFtsMatchExpression(query)
   if (!strict) return { rows: [], relaxed: false }
   const rows = run(strict)
   if (rows.length > 0) return { rows, relaxed: false }
+  if (!allowRelaxed) return { rows, relaxed: false }
   const relaxedTerms = buildFtsMatchExpression(query, 'OR')
   if (relaxedTerms === strict) return { rows, relaxed: false }
   return { rows: run(relaxedTerms), relaxed: true }
@@ -1604,7 +1631,7 @@ function withoutRank<T extends { rank: number }>(rows: T[]): Omit<T, 'rank'>[] {
   return rows.map(({ rank: _rank, ...rest }) => rest)
 }
 
-export function searchMemories(query: string, chatId: string, limit = 3): Memory[] {
+export function searchMemories(query: string, chatId: string, limit = 3, allowRelaxed = true): Memory[] {
   try {
     const { rows } = ftsWithOrFallback(query, (terms) =>
       db
@@ -1616,7 +1643,7 @@ export function searchMemories(query: string, chatId: string, limit = 3): Memory
            LIMIT ?`
         )
         .all(terms, chatId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
-    )
+      , allowRelaxed)
     return withoutRank(reRankByRecency(rows, limit)) as Memory[]
   } catch {
     return []
@@ -1770,7 +1797,13 @@ export function getAgentMemories(agentId: string, limit: number = 20, category?:
   return result
 }
 
-export function searchAgentMemories(agentId: string, query: string, limit: number = 10, trace?: { relaxed: boolean }): Memory[] {
+export function searchAgentMemories(
+  agentId: string,
+  query: string,
+  limit: number = 10,
+  trace?: { relaxed: boolean },
+  allowRelaxed = true,
+): Memory[] {
   try {
     const { rows, relaxed } = ftsWithOrFallback(query, (terms) =>
       db.prepare(
@@ -1779,7 +1812,7 @@ export function searchAgentMemories(agentId: string, query: string, limit: numbe
          WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')
          ORDER BY rank LIMIT ?`
       ).all(terms, agentId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
-    )
+    , allowRelaxed)
     if (trace) trace.relaxed = relaxed
     return withoutRank(reRankByRecency(rows, limit)) as Memory[]
   } catch {
@@ -3597,7 +3630,10 @@ export async function hybridSearch(
 
   // FTS5 results
   const ftsTrace = { relaxed: false }
-  const ftsResults = searchAgentMemories(agentId, query, limit * 2, ftsTrace)
+  // Relaxed on purpose, and unchanged by the strict default introduced for the
+  // endpoint: the hybrid answer fuses two rankings and already reports which
+  // branch produced it, so a loose lexical hit here is labelled, not silent.
+  const ftsResults = searchAgentMemories(agentId, query, limit * 2, ftsTrace, true)
 
   // Vector results
   const queryEmbedding = await generateEmbedding(query)
