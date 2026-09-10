@@ -15,10 +15,17 @@
 // string) and claims no more. Our sub-agents are not adversaries; if that
 // assumption ever changes, this gate is the wrong tool.
 //
-// Why a hook and not a permissions deny-list: permissive security profiles
-// launch Claude Code with --dangerously-skip-permissions, which BYPASSES the
-// settings.json allow/deny list. A PreToolUse hook runs regardless of
-// permission mode, so it is the only reliable mode-independent gate.
+// Why a hook and not a permissions deny-list: the hook is version- and
+// mode-independent, and it can analyze command CONTENT (the Bash send-shape
+// heuristics below), which a name/prefix deny rule cannot express.
+// CORRECTION (SKIPDENY910, measured 2026-09-10): this comment used to claim
+// that --dangerously-skip-permissions BYPASSES the settings.json deny list.
+// That is false on every CLI version we measured (2.1.63, 2.1.110, 2.1.267;
+// marker-file ground truth, deny arm vs no-deny control, -p AND interactive
+// TUI): the deny list IS enforced under the flag, and a tool-name deny is
+// enforced by removing the tool from the session entirely. The hook remains
+// the primary gate anyway -- future CLI behavior is not a contract, and the
+// deny list stays a second, independent layer, not the load-bearing one.
 //
 // This file is wired into every sub-agent's .claude/settings.json by
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by

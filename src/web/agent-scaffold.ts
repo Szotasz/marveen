@@ -656,9 +656,12 @@ export function emailGateCommandStale(preToolUse: unknown, expected: string): bo
 }
 
 // Idempotently wire the email-send-gate PreToolUse hook into a settings.json
-// object. A deny-list rule alone would NOT enforce this: permissive profiles
-// launch with --dangerously-skip-permissions, which bypasses allow/deny --
-// hooks run regardless of permission mode. Name-agnostic so a customer install
+// object. The hook (not a deny rule) is the primary gate because it inspects
+// command CONTENT and is version/mode-independent. (An earlier version of this
+// comment claimed --dangerously-skip-permissions bypasses the deny list; that
+// is false on every measured CLI version -- 2.1.63/2.1.110/2.1.267, SKIPDENY910
+// 2026-09-10 -- but the hook stays primary: future CLI behavior is not a
+// contract.) Name-agnostic so a customer install
 // gates its own sub-agents (the caller's MAIN_AGENT_ID guard exempts the owner).
 export function injectEmailSendGate(existing: Record<string, unknown>, threadReply = false): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
