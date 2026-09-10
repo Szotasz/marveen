@@ -23,7 +23,7 @@ import { atomicWriteFileSync } from './atomic-write.js'
 
 // Hook script filenames this app registers into settings.json files
 // (templates/settings.json.template, ensureAgentStalenessHook, the
-// PreToolUse gates, and the telegram-progress installer). Used to decide
+// PreToolUse gates, and the telegram/slack-progress installers). Used to decide
 // whether a missing-file hook entry is OURS (prunable) or foreign (kept).
 export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'taskstate-replay.py',
@@ -35,6 +35,11 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'telegram_progress.py',
   'telegram_progress_clear.py',
   'telegram_progress_watchdog.py',
+  // The Slack counterpart (scripts/install-slack-progress-hook.sh).
+  'slack_progress.py',
+  'slack_progress_clear.py',
+  'slack_progress_reply_clear.py',
+  'slack_progress_watchdog.py',
   'inbox-drain.py',
   'channel-inbox-drain.py',
   'ledger-capture.py',

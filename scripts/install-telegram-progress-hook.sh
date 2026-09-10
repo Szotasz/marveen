@@ -70,6 +70,14 @@ if [ -z "$PY" ]; then
   exit 1
 fi
 
+# --- Retire the other provider's progress plumbing -------------------------
+# Installing Telegram does not automatically unwire Slack: after a migration
+# both hook sets stayed in settings.json and BOTH watchdog timers kept firing,
+# the dead one scanning state dirs that no longer existed 1440x/day. Exactly
+# one provider's progress machinery should be live -- the one in
+# CHANNEL_PROVIDER. Never fatal: a failure here must not block the install.
+bash "$INSTALL_DIR/scripts/retire-progress-watchdog.sh" slack || true
+
 # --- Install the watchdog daemon -------------------------------------------
 OS="$(uname -s)"
 if [ "$OS" = "Darwin" ]; then
