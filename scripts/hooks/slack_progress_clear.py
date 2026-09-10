@@ -27,14 +27,48 @@ default).
 """
 import sys, os, json, glob, urllib.request
 
-INSTRUCTION = (
-    "KÖTELEZŐ: erre a Slack-üzenetre még NEM küldtél választ a Slack "
-    "`reply` tool-lal (chat_id=%s). A CLI/transzkript szöveget a felhasználó a "
-    "Slacken NEM látja — onnan nézve csak befagytál. Küldd el a válaszodat "
-    "MOST a `reply` tool-lal a megfelelő chat_id-vel (és thread_ts-szel, ha "
-    "volt). Ha tényleg nincs érdemi válasz, akkor is küldj egy rövid "
-    "visszaigazolást."
-)
+# The block reason is addressed to the agent, in the install language.
+TEXTS = {
+    "hu": {"instruction": (
+        "KÖTELEZŐ: erre a Slack-üzenetre még NEM küldtél választ a Slack "
+        "`reply` tool-lal (chat_id=%s). A CLI/transzkript szöveget a felhasználó a "
+        "Slacken NEM látja — onnan nézve csak befagytál. Küldd el a válaszodat "
+        "MOST a `reply` tool-lal a megfelelő chat_id-vel (és thread_ts-szel, ha "
+        "volt). Ha tényleg nincs érdemi válasz, akkor is küldj egy rövid "
+        "visszaigazolást."
+    )},
+    "en": {"instruction": (
+        "MANDATORY: you have NOT yet answered this Slack message with the Slack "
+        "`reply` tool (chat_id=%s). The user does NOT see CLI/transcript text on "
+        "Slack — from their side you simply froze. Send your answer NOW with the "
+        "`reply` tool using the right chat_id (and thread_ts, if there was one). "
+        "If there is genuinely nothing substantive to say, still send a short "
+        "acknowledgement."
+    )},
+}
+
+
+def lang(sd):
+    """Install language: MARVEEN_LANG env, else the install's `.lang` file
+    (written by install.sh at the install root; found by walking up from the
+    state dir, which is <root>/.claude/channels/slack or
+    <root>/agents/<name>/.claude/channels/slack), else hu (the repo default)."""
+    v = (os.environ.get("MARVEEN_LANG") or "").strip().lower()
+    if v in TEXTS:
+        return v
+    d = os.path.abspath(sd)
+    for _ in range(6):
+        try:
+            v = open(os.path.join(d, ".lang"), encoding="utf-8").read().strip().lower()
+            if v in TEXTS:
+                return v
+        except Exception:
+            pass
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return "hu"
 
 
 def state_dir():
@@ -160,7 +194,8 @@ def main():
             pass
         chats = ", ".join(sorted({str(p.get("chat_id")) for p in pend}))
         log(sd, f"[enforce] blocking stop, no reply sent sid={sid} chats={chats}")
-        print(json.dumps({"decision": "block", "reason": INSTRUCTION % chats}))
+        instruction = TEXTS[lang(sd)]["instruction"]
+        print(json.dumps({"decision": "block", "reason": instruction % chats}))
         return
 
     answer = last_assistant_text(transcript)

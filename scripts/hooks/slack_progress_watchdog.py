@@ -70,8 +70,36 @@ TURN_ANCHOR_SLACK_SEC = 120
 # Far below WEDGED_SEC because the hung-reply signal is precise. Env-tunable so
 # a live install can adjust without a code change.
 DEFAULT_WEDGED_UP_SEC = 180
-ERROR_TEXT = ("⚠️ Valami elakadt, és erre nem érkezett válasz. "
-              "Lehet, hogy újra kell indítani az ügynököt, vagy próbáld újra kicsit később.")
+# Generic-error rewrite, per install language (resolved per state dir).
+TEXTS = {
+    "hu": {"error": ("⚠️ Valami elakadt, és erre nem érkezett válasz. "
+                     "Lehet, hogy újra kell indítani az ügynököt, vagy próbáld újra kicsit később.")},
+    "en": {"error": ("⚠️ Something got stuck and this message never got an answer. "
+                     "The agent may need a restart, or try again a bit later.")},
+}
+
+
+def lang(sd):
+    """Install language: MARVEEN_LANG env, else the install's `.lang` file
+    (written by install.sh at the install root; found by walking up from the
+    state dir, which is <root>/.claude/channels/slack or
+    <root>/agents/<name>/.claude/channels/slack), else hu (the repo default)."""
+    v = (os.environ.get("MARVEEN_LANG") or "").strip().lower()
+    if v in TEXTS:
+        return v
+    d = os.path.abspath(sd)
+    for _ in range(6):
+        try:
+            v = open(os.path.join(d, ".lang"), encoding="utf-8").read().strip().lower()
+            if v in TEXTS:
+                return v
+        except Exception:
+            pass
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return "hu"
 
 
 def _env_int(name, default):
@@ -295,7 +323,7 @@ def delete_placeholder(tok, p, progress_dir, label):
         log(progress_dir, f"{label} delete failed (ts={p.get('ts')}): {e}")
 
 
-def deliver(tok, chat_id, ts, thread_ts, answer, progress_dir):
+def deliver(tok, chat_id, ts, thread_ts, answer, progress_dir, error_text):
     """Deliver the real answer if we have one (chat.postMessage + drop the
     placeholder via chat.delete), else rewrite the placeholder into a
     generic error (chat.update). Returns a short label for logging."""
@@ -312,7 +340,7 @@ def deliver(tok, chat_id, ts, thread_ts, answer, progress_dir):
         return "real-answer"
     # No recoverable answer -> generic error, keep the (edited) placeholder.
     try:
-        api(tok, "chat.update", {"channel": chat_id, "ts": ts, "text": ERROR_TEXT})
+        api(tok, "chat.update", {"channel": chat_id, "ts": ts, "text": error_text})
     except Exception as e:
         log(progress_dir, f"error edit failed (ts={ts}): {e}")
     return "generic-error"
@@ -333,6 +361,7 @@ def handle_dir(progress_dir):
     tok = None
     up_sec = wedged_up_sec()
     max_age = stale_sec()
+    error_text = TEXTS[lang(state_dir)]["error"]
     for path in glob.glob(os.path.join(progress_dir, "*.json")):
         try:
             age = now - os.path.getmtime(path)
@@ -415,7 +444,8 @@ def handle_dir(progress_dir):
         modes = []
         for p in pend:
             modes.append(deliver(tok, p.get("chat_id"), p.get("ts"),
-                                 p.get("thread_ts"), answer, progress_dir))
+                                 p.get("thread_ts"), answer, progress_dir,
+                                 error_text))
         try:
             os.remove(path)
         except Exception:
