@@ -1976,12 +1976,28 @@ export async function dismissResumeSummaryModalIfPresent(session: string, host: 
 // Returns true only if the modal was actually there AND the pane became ready
 // after clearing it -- a false keeps the caller on its existing skip path, so
 // nothing about the busy case changes.
+//
+// PANEWRITERS910: the dismissal keystrokes run under the per-pane send lane,
+// fail-closed (same contract as sendPromptToSession's pre-emit dismissals and
+// scheduleIdentitySetup's modal span). All four refusal-branch callers run on
+// their own timers, so without the lane this could press '0'/Escape into a
+// pane mid-delivery. A busy lane returns false: the holder is a delivery,
+// which runs its own pre-emit dismissals, so skipping loses nothing.
 export async function clearFeedbackModalAndRecheck(session: string, host: string | null = null): Promise<boolean> {
   try {
     const pane = capturePane(session, host)
     if (pane == null || !detectsFeedbackDraftModal(pane)) return false
-    logger.warn({ session }, 'pane held by a Claude Code feedback-draft modal on the not-ready path, dismissing')
-    await dismissFeedbackDraftModalIfPresent(session, host)
+    const releaseLane = tryAcquireSessionSendLane(session, host)
+    if (!releaseLane) {
+      logger.info({ session }, 'feedback-draft modal dismissal skipped -- a delivery holds this pane send lane (fail-closed)')
+      return false
+    }
+    try {
+      logger.warn({ session }, 'pane held by a Claude Code feedback-draft modal on the not-ready path, dismissing')
+      await dismissFeedbackDraftModalIfPresent(session, host)
+    } finally {
+      releaseLane()
+    }
     return await isSessionReadyForPrompt(session, host)
   } catch (err) {
     logger.warn({ err, session }, 'Failed to clear the feedback-draft modal on the not-ready path')
@@ -2913,7 +2929,23 @@ const unwedgeAttempts = new Map<string, { last: number; sig: string; fails: numb
 // parked text -- never 'busy'/processing) AND the text is unchanged across a
 // short settle, so input a human or agent is actively typing is never clobbered.
 // Returns true if it cleared something (caller should retry delivery next tick).
-export async function clearStaleParkedInput(session: string, host: string | null = null): Promise<boolean> {
+//
+// PANEWRITERS910: the settle-confirm and the clearing keystrokes run under the
+// per-pane send lane, fail-closed. The callers (message-router janitor and the
+// schedule-runner's two janitor sites) tick on independent timers, so without
+// the lane the Ctrl-U/C-k sequence could fire into a pane holding a delivery's
+// half-typed message -- a chunked send pausing past the 2s stability window
+// reads exactly like a stale parked line (same defect class as IDENTLANE910).
+// A busy lane returns false: if a delivery owns the pane, the "parked" text is
+// in-transit, not stale. lockMode 'held' is for the ONE caller already inside
+// the lane (schedule-runner's reinject path, which runs in its delivery's
+// withSessionSendLock span) -- acquiring again there would self-deadlock into
+// a false skip.
+export async function clearStaleParkedInput(
+  session: string,
+  host: string | null = null,
+  opts: { lockMode?: 'acquire' | 'held' } = {},
+): Promise<boolean> {
   const a = capturePane(session, host)
   if (a == null || detectPaneState(a) !== 'typing') return false
   // DIM-GUARD (2026-06-30, Szabi insight): extract the parked TEXT from the
@@ -2937,6 +2969,33 @@ export async function clearStaleParkedInput(session: string, host: string | null
   const prev = unwedgeAttempts.get(key)
   if (prev && prev.sig === parked && nowMs - prev.last < UNWEDGE_COOLDOWN_MS) return false
 
+  if ((opts.lockMode ?? 'acquire') === 'held') {
+    return clearStaleParkedInputInLane(session, host, a, parked, key, nowMs, prev)
+  }
+  const releaseLane = tryAcquireSessionSendLane(session, host)
+  if (!releaseLane) {
+    logger.info({ session }, 'stale-parked-input janitor skipped -- a delivery holds this pane send lane (the box likely holds in-transit text, not a wedge)')
+    return false
+  }
+  try {
+    return await clearStaleParkedInputInLane(session, host, a, parked, key, nowMs, prev)
+  } finally {
+    releaseLane()
+  }
+}
+
+// The lane-holding tail of clearStaleParkedInput: stability confirm, main-agent
+// escalation bookkeeping, and the clearing keystrokes. Split out so the lane
+// release lives in ONE finally regardless of which of the many exits runs.
+async function clearStaleParkedInputInLane(
+  session: string,
+  host: string | null,
+  a: string,
+  parked: string,
+  key: string,
+  nowMs: number,
+  prev: { last: number; sig: string; fails: number; escalated: boolean } | undefined,
+): Promise<boolean> {
   await delay(PARKED_STABLE_CONFIRM_MS)
   const b = capturePane(session, host)
   // Changed (someone is typing) or already cleared -> leave it alone, and do not
