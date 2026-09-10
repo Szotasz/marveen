@@ -33,6 +33,7 @@ const REGISTRATION_SURFACES = [
   '.claude/settings.json',
   'src/web/agent-scaffold.ts',
   'scripts/install-telegram-progress-hook.sh',
+  'scripts/install-slack-progress-hook.sh',
   'scripts/install-channel-image-hook.sh',
 ]
 

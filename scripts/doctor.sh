@@ -19,6 +19,10 @@ MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' .env 2>/dev/null | head -1 | cut -d= 
 WEB_PORT="${WEB_PORT:-$(grep -E '^WEB_PORT=' "$(dirname "$0")/../.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')}"
 WEB_PORT="${WEB_PORT:-3420}"
 MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
+# Active channel provider (telegram default) -- the progress-watchdog section
+# below compares the live hook/timer plumbing against it.
+CHANNEL_PROVIDER="$(grep -E '^CHANNEL_PROVIDER=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')"
+CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
 
 echo -e "\n${BOLD}Marveen Doctor${RESET}: $(date '+%Y-%m-%d %H:%M:%S')\n"
 
@@ -106,6 +110,36 @@ elif [ -f "$MANAGED_FILE" ] && python3 -c "import json,sys; sys.exit(0 if json.l
 else
   warn "channelsEnabled: HIANYZIK -- team/enterprise orgnal a bejovo channel-uzenetek eldobodhatnak. Fix: bash scripts/ensure-managed-channels-enabled.sh"
 fi
+
+# --- Progress-watchdog drift ---
+# Only the ACTIVE provider's progress plumbing should be live. A migration
+# (telegram -> slack) leaves the old provider's hooks wired in settings.json
+# and its watchdog timer enabled; both then run forever against state dirs
+# that no longer exist -- silent waste that nothing else reports.
+# Diagnostic only (warn, not fail): the fix is a separate, explicit command.
+echo -e "\n${BOLD}Progress watchdog${RESET}"
+SERVICE_ID_DOC="$(grep -E '^SERVICE_ID=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')"
+SERVICE_ID_DOC="${SERVICE_ID_DOC:-$MAIN_AGENT_ID}"
+for prov in telegram slack; do
+  stale=""
+  if [ "$(uname -s)" = "Darwin" ]; then
+    [ -f "$HOME/Library/LaunchAgents/com.${SERVICE_ID_DOC}.${prov}-progress-watchdog.plist" ] && stale="daemon"
+  else
+    [ -f "$HOME/.config/systemd/user/${SERVICE_ID_DOC}-${prov}-progress-watchdog.timer" ] && stale="daemon"
+  fi
+  if [ -f "$HOME/.claude/settings.json" ] && grep -q "${prov}_progress" "$HOME/.claude/settings.json" 2>/dev/null; then
+    stale="${stale:+$stale + }hooks"
+  fi
+  if [ "$prov" = "$CHANNEL_PROVIDER" ]; then
+    if [ -n "$stale" ]; then
+      ok "$prov (aktiv): progress plumbing telepitve ($stale)"
+    else
+      warn "$prov (aktiv): NINCS progress plumbing -- a beragadt korokrol nem szol semmi. Fix: bash scripts/install-${prov}-progress-hook.sh"
+    fi
+  elif [ -n "$stale" ]; then
+    warn "$prov (NEM aktiv): elavult progress plumbing meg el ($stale) -- feleslegesen fut. Fix: bash scripts/retire-progress-watchdog.sh $prov"
+  fi
+done
 
 # --- Channel keepalive ---
 echo -e "\n${BOLD}Keepalive${RESET}"
