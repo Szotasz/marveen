@@ -116,6 +116,22 @@ describe('generated autonomy block: no shell-expanding curl payload', () => {
     const block = writtenAutonomyBlock('token-agent')
     expect(block).toContain('$(cat ')
   })
+
+  // The warning that ships with the fix recommends a heredoc. A heredoc whose
+  // delimiter is NOT quoted expands exactly like a double-quoted string, so a
+  // reader who needs one variable in the payload reaches for `<<JSON` and
+  // reopens the hole the block just closed. A warning that tells half of this
+  // is worse than none, because it is trusted.
+  it('the warning names the unquoted heredoc as the same hazard', () => {
+    const block = writtenAutonomyBlock('unquoted-warning-agent')
+    expect(block).toContain('<<JSON')
+  })
+
+  it('the warning says how to build a payload that needs a variable', () => {
+    const block = writtenAutonomyBlock('payload-build-agent')
+    expect(block).toMatch(/json\.dumps|jq/)
+    expect(block).toContain('--data-binary @')
+  })
 })
 
 describe('generateClaudeMd source: no shell-expanding curl payload', () => {

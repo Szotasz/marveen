@@ -1508,6 +1508,10 @@ function buildAutonomyBody(name: string): string {
     'és a `$(...)`-t végrehajtja a payloadon belül, a szöveg helyére a parancs KIMENETE kerül, és a',
     'küldés HTTP 200-at ad -- semmi nem jelzi. Idézett heredoc (fent) vagy `--data-binary @fájl`.',
     'A header `$(cat ...)`-ja szándékosan interpolál, az maradhat.',
+    'A védelem az IDÉZETT határoló, nem maga a heredoc: a `<<JSON` alak ugyanúgy behelyettesít,',
+    "mint a dupla idézőjel, csak a `<<'JSON'` nem. És mivel az idézettben semmit nem lehet",
+    'behelyettesíteni, ha a payloadba EGY változó is kell, ne a shell állítsa össze: `python3` +',
+    '`json.dumps` (vagy `jq`) írja fájlba, és `curl --data-binary @fájl` küldje.',
     '',
     '**Level 2 (jóváhagyás szükséges)**: kérj jóváhagyást az API-n MIELŐTT cselekszel.',
     '',
@@ -1862,7 +1866,8 @@ curl -s -X POST ${dashboardOrigin}/api/messages \\
 {"from":"AGENT_NAME","to":"${MAIN_AGENT_ID}","content":"Ismeretlen sender [ID] jelezett első üzenettel: [üzenet röviden]. Ki ez, mit válaszoljak?"}
 JSON
 
-Az idézett heredoc KÖTELEZŐ itt: a sender saját szövegét viszed a payloadba, és a
+Az IDÉZETT heredoc KÖTELEZŐ itt (\`<<'JSON'\`, nem \`<<JSON\` -- az utóbbi ugyanúgy
+behelyettesít): a sender saját szövegét viszed a payloadba, és a
 \`-d "{...}"\` dupla idézőjeles alakban a shell a backtickot és a \`$(...)\`-t VÉGREHAJTJA,
 tehát az idegen üzenet parancsot futtatna a gépeden. Nyers " jelet a beidézett
 szövegből hagyj el, vagy írd a payloadot fájlba (\`--data-binary @fájl\`).
