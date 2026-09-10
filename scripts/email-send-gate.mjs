@@ -27,6 +27,7 @@
 import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { homedir } from 'node:os'
 
 // Bash command patterns that send mail. SUBGATEPOZ822 (2026-08-22): these are
 // no longer the primary trigger -- they matched CONTENT anywhere in the
@@ -192,13 +193,14 @@ const MANAGE_EMAIL_SEND_OPS = new Set(['send', 'reply', 'replyall', 'forward'])
 // Pure decision: does this tool call send (or attempt to send) email?
 // Returns { deny, kind? }. `kind` selects the deny wording at the hook
 // entrypoint: 'draft-required' is the manage_email case (drafting is fine,
-// only the actual send is refused), everything else is the sub-agent
-// governance block.
+// only the actual send is refused), 'send_email' is the direct MCP send tool
+// (the only path the thread-reply capability below can narrow), everything
+// else is the sub-agent governance block.
 export function gateDecision(toolName, toolInput) {
   const name = String(toolName ?? '')
   // Any MCP send_email tool, name-agnostic (gmail or a differently-named
   // server in a customer install -> the matcher + this both key on send_email).
-  if (/send_email/i.test(name)) return { deny: true }
+  if (/send_email/i.test(name)) return { deny: true, kind: 'send_email' }
   // @aaronsb/google-workspace-mcp multiplexes read, draft and send behind one
   // manage_email tool, so the tool NAME cannot decide this one -- the operation
   // plus the draft flag can. This is what replaces the server's own
@@ -270,6 +272,143 @@ export function readBrandEnv(readFile = (p) => readFileSync(p, 'utf-8')) {
   }
 }
 
+// --- thread-scoped reply (BONIMAIL910) --------------------------------------
+// Owner decision 2026-09-10: ONE named agent may send outbound email, but ONLY
+// into an EXISTING Gmail thread and ONLY to addresses that already appear in
+// that thread's headers. The capability is granted per agent in code
+// (agent-scaffold.ts appends --allow-thread-reply to this hook's command when
+// the agent's capability list contains EMAIL_THREAD_REPLY_CAPABILITY); every
+// other agent keeps the unconditional deny above.
+//
+// Why THREAD-MEMBERSHIP and not a topic rule: the 2026-06-25 incident that
+// created this gate was a sub-agent mailing a FABRICATED address in the
+// owner's name. Membership in an existing thread is checkable in code; "is
+// this financial" is not. The narrowing closes exactly the failure shape that
+// created the rule: a new address can never be introduced.
+//
+// Every branch below fails CLOSED: missing threadId, unparseable recipient,
+// empty participant list, credential/fetch/HTTP error, timeout -> deny.
+
+// One address token. Deliberately simple: it must match what appears both in
+// the tool input and in Gmail's From/To/Cc header values.
+const ADDR_TOKEN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi
+
+// Parse one recipient entry ("addr" or "Name <addr>") to a bare lowercase
+// address. Returns '' when the entry is not a single clean address -- the
+// caller treats that as deny (an unparseable recipient must never slip past
+// the membership check).
+export function extractAddress(raw) {
+  const s = String(raw ?? '').trim()
+  const angle = s.match(/<([^<>]+)>$/)
+  const cand = (angle ? angle[1] : s).trim()
+  return /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i.test(cand) ? cand.toLowerCase() : ''
+}
+
+// Validate the send_email tool input as a thread-reply request. Pure.
+// Returns { ok: true, threadId, recipients } or { ok: false, reason }.
+export function threadReplyRequest(toolInput) {
+  const threadId = toolInput?.threadId
+  if (typeof threadId !== 'string' || !threadId.trim()) {
+    return { ok: false, reason: 'threadId hianyzik (uj szal nyitasa tiltott)' }
+  }
+  const raw = [toolInput?.to, toolInput?.cc, toolInput?.bcc]
+    .flatMap((v) => (Array.isArray(v) ? v : v == null ? [] : [v]))
+  if (!raw.length) return { ok: false, reason: 'nincs cimzett' }
+  const recipients = []
+  for (const r of raw) {
+    const addr = extractAddress(r)
+    if (!addr) return { ok: false, reason: `ertelmezhetetlen cimzett: ${String(r)}` }
+    recipients.push(addr)
+  }
+  return { ok: true, threadId: threadId.trim(), recipients }
+}
+
+// The membership decision itself. Pure. Empty participant list denies: a
+// thread we could not read participants from authorizes nothing.
+export function threadMembershipDecision(recipients, participants) {
+  const set = new Set((participants ?? []).map((p) => String(p).toLowerCase()).filter(Boolean))
+  if (!set.size) return { allow: false, reason: 'a szal resztvevo-listaja ures (fail-closed)' }
+  for (const r of recipients) {
+    if (!set.has(r)) return { allow: false, reason: `cimzett nincs a szalban: ${r}` }
+  }
+  return { allow: true }
+}
+
+// Collect every address that appears in the thread's From/To/Cc/Reply-To
+// headers. Pure over the Gmail API thread payload (format=metadata).
+export function extractParticipants(threadData) {
+  const out = new Set()
+  for (const msg of threadData?.messages ?? []) {
+    for (const h of msg?.payload?.headers ?? []) {
+      const n = String(h?.name ?? '').toLowerCase()
+      if (n === 'from' || n === 'to' || n === 'cc' || n === 'reply-to') {
+        for (const m of String(h?.value ?? '').matchAll(ADDR_TOKEN)) out.add(m[0].toLowerCase())
+      }
+    }
+  }
+  return [...out]
+}
+
+// Fetch the thread's participant addresses with the same credentials the Gmail
+// MCP server uses (same mailbox the send would go through, so the gate and the
+// send see the same thread). Path resolution mirrors the MCP server's own:
+// GMAIL_CREDENTIALS_PATH / GMAIL_OAUTH_PATH env overrides, else ~/.gmail-mcp.
+// Throws on ANY failure; per-request timeouts keep the whole check well under
+// the hook's 10s budget (a hook timeout would be a NON-blocking error, i.e.
+// fail-open -- the script must always decide first).
+export async function fetchThreadParticipants(threadId, opts = {}) {
+  const fetchImpl = opts.fetchImpl ?? fetch
+  const readFile = opts.readFile ?? ((p) => readFileSync(p, 'utf-8'))
+  const now = opts.now ?? (() => Date.now())
+  const home = process.env.HOME || homedir()
+  const credPath = process.env.GMAIL_CREDENTIALS_PATH || join(home, '.gmail-mcp', 'credentials.json')
+  const keysPath = process.env.GMAIL_OAUTH_PATH || join(home, '.gmail-mcp', 'gcp-oauth.keys.json')
+  const creds = JSON.parse(readFile(credPath))
+  let accessToken = creds.access_token
+  const fresh = typeof creds.expiry_date === 'number' && creds.expiry_date > now() + 60_000
+  if (!fresh) {
+    const keys = JSON.parse(readFile(keysPath))
+    const k = keys.installed ?? keys.web
+    if (!k?.client_id || !k?.client_secret || !creds.refresh_token) {
+      throw new Error('gmail credentials incomplete')
+    }
+    const res = await fetchImpl(k.token_uri || 'https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: k.client_id,
+        client_secret: k.client_secret,
+        refresh_token: creds.refresh_token,
+        grant_type: 'refresh_token',
+      }).toString(),
+      signal: AbortSignal.timeout(3500),
+    })
+    if (!res.ok) throw new Error(`token refresh failed: ${res.status}`)
+    accessToken = (await res.json())?.access_token
+  }
+  if (!accessToken) throw new Error('no gmail access token')
+  const url = 'https://gmail.googleapis.com/gmail/v1/users/me/threads/'
+    + encodeURIComponent(threadId)
+    + '?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Reply-To'
+  const res = await fetchImpl(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(3500),
+  })
+  if (!res.ok) throw new Error(`thread fetch failed: ${res.status}`)
+  return extractParticipants(await res.json())
+}
+
+// Deny wording for the thread-reply case: the agent HAS a send right, the
+// specific call fell outside it. Says what the right covers and the way out.
+export function buildThreadDenyMsg(botName, detail) {
+  return (
+    'Kimeno email ezzel a jogosultsaggal CSAK meglevo szalba mehet, es csak a ' +
+    `szalban mar szereplo cimzettnek (szal-kapu). Elutasitva: ${detail}. ` +
+    `Uj cimzetthez vagy uj szalhoz kuldd a tervezett emailt ${botName}nek ` +
+    'inter-agent uzenetben jovahagyasra.'
+  )
+}
+
 function allow() { process.exit(0) }
 
 function deny(reason) {
@@ -308,7 +447,25 @@ if (isInvokedDirectly()) {
   const { deny: shouldDeny, kind } = gateDecision(payload?.tool_name, payload?.tool_input)
   if (shouldDeny) {
     const { botName, ownerName } = readBrandEnv()
-    deny(kind === 'draft-required' ? buildDraftOnlyMsg(ownerName) : buildGateMsg(botName, ownerName))
+    if (kind === 'draft-required') deny(buildDraftOnlyMsg(ownerName))
+    // Thread-scoped narrowing: only when the scaffold wired this agent's hook
+    // command with the flag (capability-driven, regenerated on every spawn),
+    // and only for the direct send_email tool. Bash send routes and
+    // manage_email stay fully gated even for the capable agent.
+    if (kind === 'send_email' && process.argv.includes('--allow-thread-reply')) {
+      const req = threadReplyRequest(payload?.tool_input)
+      if (!req.ok) deny(buildThreadDenyMsg(botName, req.reason))
+      let verdict
+      try {
+        const participants = await fetchThreadParticipants(req.threadId)
+        verdict = threadMembershipDecision(req.recipients, participants)
+      } catch {
+        verdict = { allow: false, reason: 'a szal resztvevoi nem olvashatok (fail-closed)' }
+      }
+      if (verdict.allow) allow()
+      deny(buildThreadDenyMsg(botName, verdict.reason))
+    }
+    deny(buildGateMsg(botName, ownerName))
   }
   allow()
 }

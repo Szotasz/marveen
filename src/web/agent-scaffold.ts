@@ -575,7 +575,9 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // authorizes those autonomously (so test/deploy runs are never blocked); the
   // actual incident vector -- an agent answering its OWN posed question -- is
   // covered by the self-pace block + the #0 CLAUDE.md doctrine.
-  if (agentGetsEmailGate(name)) injectEmailSendGate(existing)
+  if (agentGetsEmailGate(name)) {
+    injectEmailSendGate(existing, hasThreadReplyCapability(name, readAgentCapabilities(name)))
+  }
   if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
   if (agentGetsKanbanWriteGate(name)) {
     injectKanbanWriteGate(existing)
@@ -593,6 +595,26 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
 // rule). Pure + exported so the main-exempt guarantee is unit-testable.
 export function agentGetsEmailGate(name: string): boolean {
   return name !== MAIN_AGENT_ID
+}
+
+// Owner decision 2026-09-10 (BONIMAIL910): a single named agent may send
+// outbound email, narrowed to THREAD-SCOPED REPLIES ONLY -- into an existing
+// Gmail thread, to addresses already present in that thread. The grant is a
+// per-agent CAPABILITY (agent-config.json "capabilities" / persona
+// frontmatter), not a hardcoded agent name (distribution-hardcode rule) and
+// not a hand-edit of settings.json (which writeAgentSettingsFromProfile
+// silently reverts on the next spawn). The scaffold turns the capability into
+// a --allow-thread-reply flag on the gate hook command; the gate script
+// enforces thread membership fail-closed. The main agent never needs it, and
+// for every agent without the capability the gate is byte-identical to before.
+export const EMAIL_THREAD_REPLY_CAPABILITY = 'email:thread-reply'
+export const EMAIL_THREAD_REPLY_FLAG = '--allow-thread-reply'
+
+// Pure predicate (capabilities passed in, so the rule is unit-testable without
+// touching the filesystem): the main agent is exempt from the gate entirely,
+// so the capability is meaningless there and never emits a flag.
+export function hasThreadReplyCapability(name: string, capabilities: string[]): boolean {
+  return name !== MAIN_AGENT_ID && capabilities.includes(EMAIL_THREAD_REPLY_CAPABILITY)
 }
 
 // The matcher is a FULL-match regex against the tool name, and an MCP tool's
@@ -617,18 +639,39 @@ export function emailGateMatcherStale(preToolUse: unknown): boolean {
   })
 }
 
+// Does an existing email-gate entry carry a command OTHER than the expected
+// one? Needed because hookCommandWired() is a substring check: the flagged
+// thread-reply command CONTAINS the unflagged one, so after a capability
+// revocation the wiring check alone would report the stale flagged entry as
+// healthy forever. Exact comparison of the inner command settles both
+// directions (grant not yet applied, grant since revoked).
+export function emailGateCommandStale(preToolUse: unknown, expected: string): boolean {
+  if (!Array.isArray(preToolUse)) return false
+  return preToolUse.some((e) => {
+    if (!JSON.stringify(e).includes('email-send-gate.mjs')) return false
+    const inner = (e as { hooks?: unknown }).hooks
+    if (!Array.isArray(inner)) return true
+    return inner.some((h) => (h as { command?: unknown })?.command !== expected)
+  })
+}
+
 // Idempotently wire the email-send-gate PreToolUse hook into a settings.json
 // object. A deny-list rule alone would NOT enforce this: permissive profiles
 // launch with --dangerously-skip-permissions, which bypasses allow/deny --
 // hooks run regardless of permission mode. Name-agnostic so a customer install
 // gates its own sub-agents (the caller's MAIN_AGENT_ID guard exempts the owner).
-export function injectEmailSendGate(existing: Record<string, unknown>): void {
+export function injectEmailSendGate(existing: Record<string, unknown>, threadReply = false): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'))
+  const base = hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'))
   // Registration guard: a /tmp or missing path must never enter shared settings.
-  if (isUnsafeHookCommand(command)) return
+  if (isUnsafeHookCommand(base)) return
+  // The thread-reply capability rides on the hook COMMAND, so the grant lives
+  // in the same regenerated-on-every-spawn settings.json as the gate itself:
+  // revoking the capability removes the flag at the next spawn, and a manual
+  // settings edit can neither grant nor keep it.
+  const command = threadReply ? `${base} ${EMAIL_THREAD_REPLY_FLAG}` : base
   const entry = {
     matcher: EMAIL_GATE_MATCHER,
     hooks: [{ type: 'command', command, timeout: 10 }],
@@ -1126,13 +1169,17 @@ export function ensureGovernanceGateCommands(name: string): boolean {
   // wired at all, or it IS wired but under a pre-2026-08-10 matcher that cannot
   // match a qualified MCP tool name. The second one is why the wiring check
   // alone is not enough -- it would report the gate healthy forever.
+  const threadReply = hasThreadReplyCapability(name, readAgentCapabilities(name))
+  const emailCmdExpected = threadReply ? `${emailCmd} ${EMAIL_THREAD_REPLY_FLAG}` : emailCmd
   const needEmail = agentGetsEmailGate(name)
-    && (!hookCommandWired(ptuJson, emailCmd) || emailGateMatcherStale(ptu))
+    && (!hookCommandWired(ptuJson, emailCmdExpected)
+      || emailGateMatcherStale(ptu)
+      || emailGateCommandStale(ptu, emailCmdExpected))
   const needPace = agentGetsGovernanceGates(name) && !hookCommandWired(ptuJson, paceCmd)
   if (!needEmail && !needPace) return false
   // The injectors dedupe by script basename, so a stale bare-`node` entry is
   // replaced in place rather than accumulated.
-  if (needEmail) injectEmailSendGate(settings)
+  if (needEmail) injectEmailSendGate(settings, threadReply)
   if (needPace) injectSelfPaceGate(settings)
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
