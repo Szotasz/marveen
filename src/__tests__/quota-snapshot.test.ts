@@ -86,6 +86,19 @@ describe('readQuotaSnapshot', () => {
     expect(snap.fiveHour?.usedPercentage).toBe(62)
   })
 
+  // The boundary itself, pinned: quota.ts asks `ageSec > maxAgeSec` and
+  // quota-check.py asks `age > max_age`, both strict, so a reading sitting
+  // exactly on the threshold is fresh on both sides. That agreement is the
+  // whole reason the strip and the monitor's alert cannot contradict each
+  // other, and without this assertion it holds only by coincidence -- one
+  // side relaxing to `>=` would pass every other test here.
+  it('treats a reading exactly at the threshold as fresh, like the monitor does', () => {
+    write(healthy({ written_at: NOW - DEFAULT_MAX_AGE_SEC }))
+    const snap = readQuotaSnapshot(file, NOW)
+    expect(snap.status).toBe('ok')
+    expect(snap.ageSec).toBe(DEFAULT_MAX_AGE_SEC)
+  })
+
   it('honours a caller-supplied threshold, matching the monitor knob', () => {
     write(healthy({ written_at: NOW - 100 }))
     expect(readQuotaSnapshot(file, NOW, 60).status).toBe('stale')
