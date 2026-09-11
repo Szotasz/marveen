@@ -823,8 +823,13 @@ class TestClaudeTokenSources(unittest.TestCase):
 
     def test_keychain_beats_env_file(self):
         """The .env token answers 403, so it must never win over the keychain."""
+        # `exists` must NOT be True for the credentials path: expanduser is real,
+        # so a blanket True opens the machine's own ~/.claude/.credentials.json
+        # and assertEqual prints its token on failure (a real-token leak on any
+        # host that HAS the file). Say the intent instead: credentials absent,
+        # env present -- keychain still wins over env.
         with patch.object(uc.sys, "platform", "darwin"), \
-             patch.object(uc.os.path, "exists", return_value=True), \
+             patch.object(uc.os.path, "exists", side_effect=lambda p: p == self._tmp.name), \
              patch.object(uc, "ENV_PATH", self._tmp.name), \
              patch.object(uc.subprocess, "run", return_value=self._security_ok()):
             token, source = uc._read_claude_token()
