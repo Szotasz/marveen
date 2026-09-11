@@ -8,10 +8,15 @@
 #   (c) does NOT execute code from a $(...) value in .env
 #   (d) correctly reads SERVICE_ID / BOT_NAME with and without quoting
 #   (e) falls back to defaults when .env is absent
-#   (f) copies hook files to the destination (core behaviour preserved)
+#   (f) MAIN_AGENT_ID fallback when SERVICE_ID absent
+#   (g) copies hook files to the destination (core behaviour preserved)
+#   (h) provider gate: CHANNEL_PROVIDER=slack -> installs NOTHING and retires
+#       any leftover Telegram plumbing (sync-hooks runs every installer)
 #
 # All filesystem operations use a fully isolated temp tree -- the real
-# ~/.claude directory and the real INSTALL_DIR are never touched.
+# ~/.claude directory and the real INSTALL_DIR are never touched. The full-run
+# cases feed the installer a temp .env via MARVEEN_ENV_FILE (the installer's
+# test hook) so they do not depend on whatever the checkout's own .env says.
 
 set -u
 
@@ -161,7 +166,14 @@ assert_eq   "MAIN_AGENT_ID fallback: SERVICE_ID resolves to myagent" \
 # project .claude/settings.json. The only thing it installs is the watchdog
 # daemon, whose unit must run the REPO copy of telegram_progress_watchdog.py.
 # launchctl/systemctl/pidof are stubbed via PATH so no real daemon is (un)loaded.
+# The .env is handed in via MARVEEN_ENV_FILE (the installer's test hook) with
+# CHANNEL_PROVIDER=telegram, so the case depends neither on the checkout's own
+# .env nor on a hard-coded /tmp path, and the provider gate lets it through.
 # ---------------------------------------------------------------------------
+export DBUS_SESSION_BUS_ADDRESS="unix:path=/nonexistent-marveen-test"
+export XDG_RUNTIME_DIR="$TMP/run"
+mkdir -p "$XDG_RUNTIME_DIR"
+
 echo ""
 echo "(g) Full script: no ~/.claude write, watchdog unit targets the repo"
 CASE="$TMP/case-g"
@@ -169,15 +181,23 @@ HOME_G="$CASE/home"
 BIN_G="$CASE/bin"
 mkdir -p "$HOME_G/.claude/hooks" "$BIN_G"
 for stub in launchctl systemctl pidof; do
-  printf '#!/bin/bash\nexit 1\n' > "$BIN_G/$stub"
+  printf '#!/bin/bash
+exit 1
+' > "$BIN_G/$stub"
   chmod +x "$BIN_G/$stub"
 done
 SETTINGS_BEFORE='{"hooks":{"marker":"untouched"}}'
 printf '%s' "$SETTINGS_BEFORE" > "$HOME_G/.claude/settings.json"
+ENV_G="$CASE/env"
+printf 'SERVICE_ID=testbot
+OWNER_NAME=Foo Bar
+BOT_NAME=TestBot
+CHANNEL_PROVIDER=telegram
+' > "$ENV_G"
 
-OUT="$(HOME="$HOME_G" PATH="$BIN_G:$PATH" bash "$SCRIPT" 2>&1)"
+OUT="$(HOME="$HOME_G" MARVEEN_ENV_FILE="$ENV_G" PATH="$BIN_G:$PATH" bash "$SCRIPT" 2>&1)"
 EXIT=$?
-assert_zero "full script: exits 0" $EXIT
+assert_zero "full script: exits 0 with a spaced OWNER_NAME in .env" $EXIT
 
 for f in telegram_progress.py telegram_progress_clear.py \
           telegram_progress_reply_clear.py telegram_progress_watchdog.py \
@@ -207,6 +227,55 @@ if [ -n "$UNIT_FILE" ]; then
   fi
 else
   fail "full script: no daemon unit file written"
+fi
+
+# ---------------------------------------------------------------------------
+# (h) Provider gate: CHANNEL_PROVIDER=slack -> nothing installed, leftover
+# Telegram plumbing retired. sync-hooks.sh runs this installer on every update
+# of a Slack install too (and it runs LAST, after the Slack installer), so
+# without the gate every update re-wired telegram_progress*.py and re-enabled
+# the Telegram timer next to the live Slack set.
+# ---------------------------------------------------------------------------
+echo ""
+echo "(h) Provider gate: CHANNEL_PROVIDER=slack -> nothing installed, leftover Telegram plumbing retired"
+CASE="$TMP/case-h"
+HOME_H="$CASE/home"
+mkdir -p "$HOME_H/.claude/hooks" "$HOME_H/.config/systemd/user"
+cat > "$HOME_H/.claude/settings.json" <<'JSONEOF'
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {"hooks": [
+        {"type": "command", "command": "/usr/bin/python3 /h/.claude/hooks/slack_progress.py"},
+        {"type": "command", "command": "/usr/bin/python3 /h/.claude/hooks/telegram_progress.py"}
+      ]}
+    ],
+    "PostToolUse": [
+      {"matcher": "telegram.*reply",
+       "hooks": [{"type": "command", "command": "/usr/bin/python3 /h/.claude/hooks/telegram_progress_reply_clear.py"}]}
+    ]
+  }
+}
+JSONEOF
+printf '[Timer]\n' > "$HOME_H/.config/systemd/user/testbot-telegram-progress-watchdog.timer"
+printf '[Service]\n' > "$HOME_H/.config/systemd/user/testbot-telegram-progress-watchdog.service"
+ENV_H="$CASE/env"
+printf 'SERVICE_ID=testbot\nBOT_NAME=TestBot\nCHANNEL_PROVIDER=slack\n' > "$ENV_H"
+OUT3="$(HOME="$HOME_H" MARVEEN_ENV_FILE="$ENV_H" bash "$SCRIPT" 2>&1)"
+EXIT=$?
+assert_zero "provider gate: exits 0" $EXIT
+assert_absent "$HOME_H/.claude/hooks/telegram_progress.py" "provider gate: no Telegram hook file copied"
+assert_absent "$HOME_H/.config/systemd/user/testbot-telegram-progress-watchdog.timer" "provider gate: leftover Telegram timer removed"
+assert_absent "$HOME_H/.config/systemd/user/testbot-telegram-progress-watchdog.service" "provider gate: leftover Telegram service removed"
+if grep -q 'telegram_progress' "$HOME_H/.claude/settings.json"; then
+  fail "provider gate: leftover Telegram hooks still wired"
+else
+  pass "provider gate: leftover Telegram hooks unwired"
+fi
+if grep -q 'slack_progress\.py' "$HOME_H/.claude/settings.json"; then
+  pass "provider gate: Slack hooks left alone"
+else
+  fail "provider gate: Slack hooks were destroyed"
 fi
 
 # ---------------------------------------------------------------------------

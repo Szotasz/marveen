@@ -49,10 +49,13 @@ SETTINGS="$HOME/.claude/settings.json"
 # Read a single key from .env without sourcing it -- an unquoted value with
 # spaces or a $(...) value would otherwise run arbitrary code. Mirrors the
 # read_env in both install-*-progress-hook.sh scripts.
+# MARVEEN_ENV_FILE is set only by the tests (same as in the installers, which
+# call this script); when unset, the install's own .env is read as before.
 read_env() {
-  [ -f "$INSTALL_DIR/.env" ] || return 0
+  local f="${MARVEEN_ENV_FILE:-$INSTALL_DIR/.env}"
+  [ -f "$f" ] || return 0
   local v
-  v="$(grep -E "^${1}=" "$INSTALL_DIR/.env" | tail -1)" || return 0
+  v="$(grep -E "^${1}=" "$f" | tail -1)" || return 0
   v="${v#*=}"
   case "$v" in
     '"'*) v="${v#\"}"; v="${v%\"}" ;;
