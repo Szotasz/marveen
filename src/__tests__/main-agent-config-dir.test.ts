@@ -65,6 +65,7 @@ describe('resolveMainAgentConfigDir', () => {
 describe('launcher wiring', () => {
   const HELPER = readFileSync(join(__dirname, '../../scripts/main-agent-isolated-config.mjs'), 'utf-8')
   const CHANNELS = readFileSync(join(__dirname, '../../scripts/channels.sh'), 'utf-8')
+  const WATCHDOG = readFileSync(join(__dirname, '../../scripts/channel-watchdog.sh'), 'utf-8')
 
   it('the helper prefers the explicit dir over the isolated one', () => {
     expect(HELPER).toMatch(/const explicit = resolveMainAgentConfigDir\(\)[\s\S]*if \(explicit\)/)
@@ -73,6 +74,31 @@ describe('launcher wiring', () => {
   it('the helper tags each path with its mode so the caller knows how to authenticate', () => {
     expect(HELPER).toMatch(/explicit\\t/)
     expect(HELPER).toMatch(/isolated\\t/)
+  })
+
+  // 2026-09-12 outage. The helper imports a pino-logging dist module, and pino
+  // writes to fd 1 from its own handle (a pino-pretty transport does it from a
+  // worker thread, so the script cannot intercept it). When #1218 added
+  // `permissions` to the isolated settings.json only, the resulting
+  // "kept target-only settings keys" line rode along on stdout, `_cfg_dir`
+  // became multi-line, `[ -d ]` failed, and the main agent silently kept the
+  // shared ~/.claude -- losing both the fleet-token auth and its own egress deny.
+  it('the contract rides fd 3, not stdout, so a library log line cannot break it', () => {
+    expect(HELPER).toMatch(/let CONTRACT_FD = 3/)
+    expect(HELPER).toMatch(/writeSync\(CONTRACT_FD/)
+    // stdout stays a usable fallback for a hand-run, but nothing writes the
+    // contract through process.stdout.write -- patching it does not catch pino.
+    expect(HELPER).not.toMatch(/process\.stdout\.write\(`(explicit|isolated)/)
+  })
+
+  it('every caller opens fd 3 AND filters for a contract line', () => {
+    // Both files spawn the helper; a caller that drifts reintroduces the outage
+    // on exactly the path that matters (channel-watchdog.sh respawns when the
+    // dashboard is down).
+    for (const [name, sh] of [['channels.sh', CHANNELS], ['channel-watchdog.sh', WATCHDOG]] as const) {
+      expect(sh, name).toMatch(/main-agent-isolated-config\.mjs[^\n]*3>&1/)
+      expect(sh, name).toMatch(/grep -m1 -E '\^\(explicit\|isolated\)/)
+    }
   })
 
   it('channels.sh never injects the fleet token for an explicit dir', () => {

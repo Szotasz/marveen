@@ -186,7 +186,16 @@ MODEL_FLAG=""
 # via ps/pane history otherwise).
 CFG_ENV=""
 if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
-  _cfg_line="$("$NODE_BIN" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$CHANNEL_PROVIDER" 2>>"$STORE/channels-failures.log" || true)"
+  # Contract on fd 3, never stdout -- see scripts/main-agent-isolated-config.mjs
+  # and channels.sh: the helper imports a pino-logging module that writes to fd 1
+  # from a worker thread, and one such line silently dropped the main agent back
+  # onto the shared ~/.claude on 2026-09-12. This caller must stay in step with
+  # channels.sh, or a watchdog respawn reintroduces exactly that outage.
+  _cfg_raw="$("$NODE_BIN" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$CHANNEL_PROVIDER" 3>&1 2>>"$STORE/channels-failures.log" 1>&2 || true)"
+  _cfg_line="$(printf '%s\n' "$_cfg_raw" | grep -m1 -E '^(explicit|isolated)	/' || true)"
+  if [ -n "$_cfg_raw" ] && [ -z "$_cfg_line" ]; then
+    log "WARN main-agent-isolated-config.mjs printed output with NO contract line -- respawn without isolation"
+  fi
   _cfg_mode="${_cfg_line%%	*}"
   _cfg_dir="${_cfg_line#*	}"
   if [ -n "$_cfg_line" ] && [ -d "$_cfg_dir" ]; then
@@ -197,7 +206,7 @@ if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
     fi
     log "main-agent $_cfg_mode CLAUDE_CONFIG_DIR=$_cfg_dir"
   fi
-  unset _cfg_line _cfg_mode _cfg_dir
+  unset _cfg_raw _cfg_line _cfg_mode _cfg_dir
 fi
 
 # Full PATH with .bun/bin -- without it the respawned bun telegram bridge does

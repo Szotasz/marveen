@@ -20,9 +20,29 @@
 // Usage: node scripts/main-agent-isolated-config.mjs [provider]
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { writeSync, fstatSync } from 'node:fs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projectRoot = join(__dirname, '..')
+
+// THE CONTRACT DOES NOT TRAVEL ON STDOUT (2026-09-12 outage). The imported dist
+// module logs through pino, and pino writes to fd 1 from its own handle -- a
+// pino-pretty transport does it from a WORKER THREAD, so patching
+// process.stdout.write in this thread does not catch it (measured). One such
+// line ("isolated-config: kept target-only settings keys", newly firing because
+// #1218 added `permissions` to the isolated settings.json only) was enough to
+// make channels.sh's `[ -d "$_cfg_dir" ]` fail on a multi-line value, and the
+// main agent silently kept the shared ~/.claude -- losing BOTH the stable
+// fleet-token auth (401 risk) and the isolated dir's own Bash egress deny.
+//
+// So the callers hand us a THIRD descriptor for the contract (`3>&1 2>>log 1>&2`)
+// and let fd 1 and 2 both land in channels-failures.log: the module's diagnostics
+// stay readable -- they are deliberately loud, see agent-process.ts -- while
+// nothing it prints can reach the contract. Run by hand without that redirection
+// (no fd 3), we fall back to stdout so the script stays usable interactively.
+let CONTRACT_FD = 3
+try { fstatSync(CONTRACT_FD) } catch { CONTRACT_FD = 1 }
+const emitContract = (line) => writeSync(CONTRACT_FD, line)
 
 const { ensureMainAgentIsolatedConfigDir, resolveMainAgentConfigDir } = await import(
   join(projectRoot, 'dist', 'web', 'agent-process.js')
@@ -35,9 +55,9 @@ const { ensureMainAgentIsolatedConfigDir, resolveMainAgentConfigDir } = await im
 // while an `isolated` dir carries none and needs the fleet setup-token exported.
 const explicit = resolveMainAgentConfigDir()
 if (explicit) {
-  process.stdout.write(`explicit\t${explicit}\n`)
+  emitContract(`explicit\t${explicit}\n`)
 } else {
   const provider = process.argv[2] || undefined
   const dir = ensureMainAgentIsolatedConfigDir(provider)
-  if (dir) process.stdout.write(`isolated\t${dir}\n`)
+  if (dir) emitContract(`isolated\t${dir}\n`)
 }

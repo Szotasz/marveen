@@ -629,7 +629,23 @@ CFG_ENV=""
 mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
 _node_bin="$(command -v node || true)"
 if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
-  _cfg_line="$("$_node_bin" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$CHANNEL_PROVIDER" 2>>"$INSTALL_DIR/store/channels-failures.log" || true)"
+  # The helper's stdout is a CONTRACT ("<mode>\t<path>", or nothing), but it
+  # imports a dist module that logs through pino -- whose default destination is
+  # fd 1 (from a worker thread, so the script cannot intercept it). On 2026-09-12 one such line ("kept target-only settings keys", newly
+  # firing because #1218 added `permissions` to the isolated settings.json only)
+  # rode along on stdout, `_cfg_dir` became a multi-line value, `[ -d ]` failed,
+  # and the main agent silently dropped to the shared ~/.claude -- losing both the
+  # fleet-token auth and its own Bash egress deny. The contract now rides fd 3
+  # (`3>&1 2>>log 1>&2` below, so the module's own stdout AND stderr both land in
+  # the failures log); this filter is the fail-safe that does not depend on that,
+  # for ANY future writer to the contract descriptor. Anything that is not the contract line is ignored,
+  # and a non-empty output with no contract line in it is reported LOUDLY, because
+  # that is the shape that silently disables isolation.
+  _cfg_raw="$("$_node_bin" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$CHANNEL_PROVIDER" 3>&1 2>>"$INSTALL_DIR/store/channels-failures.log" 1>&2 || true)"
+  _cfg_line="$(printf '%s\n' "$_cfg_raw" | grep -m1 -E '^(explicit|isolated)	/' || true)"
+  if [ -n "$_cfg_raw" ] && [ -z "$_cfg_line" ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN main-agent-isolated-config.mjs printed output with NO contract line -- isolation skipped. Raw first line: $(printf '%s\n' "$_cfg_raw" | head -1)" >> "$INSTALL_DIR/store/channels-failures.log"
+  fi
   _cfg_mode="${_cfg_line%%	*}"
   _cfg_dir="${_cfg_line#*	}"
   if [ -n "$_cfg_line" ] && [ -d "$_cfg_dir" ]; then
@@ -707,7 +723,7 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
       unset _guard_port _guard_http
     fi
   fi
-  unset _cfg_line _cfg_mode _cfg_dir
+  unset _cfg_raw _cfg_line _cfg_mode _cfg_dir
 fi
 unset _node_bin
 
