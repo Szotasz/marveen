@@ -19,9 +19,33 @@ import { join } from 'node:path'
 const ROOT = join(__dirname, '..', '..')
 const SOURCE = join(ROOT, 'scripts', 'voice', '_vtools.py')
 
-/** Every `<model>.transcribe(...)` call with its argument text, multi-line safe. */
+/**
+ * Every `<model>.transcribe(...)` call with its full argument text: multi-line
+ * safe, and paren-balanced, so an argument like `vad_parameters=dict(...)`
+ * placed before the flag does not cut the capture short (a lazy match up to
+ * the first `)` would report a false red there, and a false red is how a
+ * guard gets deleted). `def transcribe(` and the bare `transcribe(` call are
+ * not matched: only the method call on the model carries the leading dot.
+ */
 function transcribeCalls(body: string): string[] {
-  return [...body.matchAll(/\.transcribe\(([\s\S]*?)\)/g)].map((m) => m[1])
+  const calls: string[] = []
+  const open = '.transcribe('
+  let from = 0
+  while (true) {
+    const at = body.indexOf(open, from)
+    if (at < 0) break
+    let depth = 1
+    let i = at + open.length
+    while (i < body.length && depth > 0) {
+      if (body[i] === '(') depth++
+      else if (body[i] === ')') depth--
+      i++
+    }
+    expect(depth, `${SOURCE}: unbalanced parentheses after offset ${at}`).toBe(0)
+    calls.push(body.slice(at + open.length, i - 1))
+    from = i
+  }
+  return calls
 }
 
 describe('VOICEWHISPER910: every whisper call site pins condition_on_previous_text=False', () => {
