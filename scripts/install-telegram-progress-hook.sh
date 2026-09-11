@@ -18,6 +18,10 @@
 #   down: it rewrites an orphaned "Dolgozom rajta…" placeholder into a clear
 #   error.
 #
+# Provider gate: sync-hooks.sh runs EVERY install-*-hook.sh on every update, so
+# an installer whose provider is not the active CHANNEL_PROVIDER retires ITSELF
+# and exits 0 before writing any unit -- see the gate block below.
+#
 # Idempotent: safe to re-run (e.g. from sync-hooks.sh on every update).
 # Cleanup of the old ~/.claude/hooks copies and stale user-global settings
 # entries belongs to the global-prune round, not here.
@@ -38,10 +42,14 @@ INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # Sourcing executes the file: an unquoted value with spaces (e.g. OWNER_NAME=Foo Bar)
 # causes bash to run the trailing word as a command; a $(...) value runs arbitrary code.
 # This function uses grep + pure string manipulation -- no eval, no subshell execution.
+# MARVEEN_ENV_FILE is set only by the tests (scripts/__tests__/*progress-hook*),
+# which hand the installer a temp .env this way; when unset, the install's own
+# .env is read as before.
 read_env() {
-  [ -f "$INSTALL_DIR/.env" ] || return 0
+  local f="${MARVEEN_ENV_FILE:-$INSTALL_DIR/.env}"
+  [ -f "$f" ] || return 0
   local v
-  v="$(grep -E "^${1}=" "$INSTALL_DIR/.env" | tail -1)" || return 0
+  v="$(grep -E "^${1}=" "$f" | tail -1)" || return 0
   v="${v#*=}"
   case "$v" in
     '"'*) v="${v#\"}"; v="${v%\"}" ;;
@@ -54,6 +62,29 @@ MAIN_AGENT_ID_ENV="$(read_env MAIN_AGENT_ID)"
 BOT_NAME="$(read_env BOT_NAME)"
 SERVICE_ID="${SERVICE_ID:-${MAIN_AGENT_ID_ENV:-marveen}}"
 BOT_NAME="${BOT_NAME:-Marveen}"
+
+
+# --- Provider gate (order-independent) --------------------------------------
+# sync-hooks.sh runs EVERY install-*-hook.sh on every update, in glob order
+# (slack first, telegram last). Each installer used to write its own watchdog
+# unit unconditionally and only the cross-retire below was guarded, so a Slack
+# install ended every update with BOTH providers live: the Telegram installer
+# re-enabled its timer right after this script had retired it (its retire of
+# slack was refused by the active-provider guard). Exactly one provider's
+# progress machinery may be live -- the one in CHANNEL_PROVIDER -- so an
+# installer whose provider is not the active one retires ITSELF and stops here,
+# before writing any unit. Resolution mirrors src/channel-provider.ts: exact
+# known value, anything else (empty, "none", typo) means telegram.
+ACTIVE_PROVIDER="$(read_env CHANNEL_PROVIDER | tr -d ' \t\r')"
+case "$ACTIVE_PROVIDER" in
+  telegram|slack|discord|googlechat|teams) ;;
+  *) ACTIVE_PROVIDER="telegram" ;;
+esac
+if [ "$ACTIVE_PROVIDER" != "telegram" ]; then
+  echo "⊙ CHANNEL_PROVIDER=$ACTIVE_PROVIDER -- Telegram progress indicator not installed; retiring any leftover Telegram plumbing"
+  bash "$INSTALL_DIR/scripts/retire-progress-watchdog.sh" telegram || true
+  exit 0
+fi
 
 # The daemon runs the repo copy directly -- no drift-prone ~/.claude/hooks copy.
 WATCHDOG="$SRC_DIR/telegram_progress_watchdog.py"

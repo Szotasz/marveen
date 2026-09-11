@@ -91,6 +91,17 @@ thing it installs is the watchdog, as a **launchd** agent (macOS) or
 **systemd** user service+timer (Linux), running every ~60s straight from the
 repo checkout.
 
+Before any of that it applies a **provider gate**: if `CHANNEL_PROVIDER` in the
+install `.env` resolves to anything but `telegram` (exact known value; empty or
+unknown means `telegram`), the installer retires any leftover Telegram plumbing
+and exits 0 without touching anything else. `sync-hooks.sh` runs every installer
+on every update, so this is what keeps a Slack install from getting the Telegram
+watchdog timer re-enabled each time. See the Slack doc for the full story.
+
+When the gate passes, the installer also retires the Slack progress plumbing
+(`scripts/retire-progress-watchdog.sh slack`) so exactly one provider's
+indicator is live.
+
 ## Tuning
 
 - `telegram_progress_watchdog.py`: `DOWN_GRACE_SEC` (default 120s — agent down +

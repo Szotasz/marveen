@@ -119,6 +119,17 @@ bash ~/ClaudeClaw/scripts/install-slack-progress-hook.sh
 Idempotent, auto-run by `scripts/sync-hooks.sh` on every update (any
 `scripts/install-*-hook.sh` is picked up automatically). It:
 
+0. **Provider gate.** Reads `CHANNEL_PROVIDER` from the install `.env`
+   (resolved like `src/channel-provider.ts`: exact known value, anything
+   else — empty, `none`, a typo — means `telegram`). If it is not `slack`,
+   the installer retires any leftover Slack plumbing and exits 0 without
+   touching anything else. The Telegram installer has the mirror gate.
+   This is what makes the pair order-independent under `sync-hooks.sh`,
+   which runs *every* installer on *every* update, Slack first and Telegram
+   last: without the gate a Slack install ended each update with both hook
+   sets wired and both watchdog timers enabled — the Telegram installer
+   re-wired its hooks right after the Slack one had retired them (its own
+   retire of Slack being refused by the active-provider guard).
 1. Copies the four hook scripts to `~/.claude/hooks/`.
 2. Patches `~/.claude/settings.json` (UserPromptSubmit / PostToolUse / Stop).
 3. Retires the Telegram progress plumbing (`scripts/retire-progress-watchdog.sh telegram`)
@@ -127,6 +138,10 @@ Idempotent, auto-run by `scripts/sync-hooks.sh` on every update (any
    `CHANNEL_PROVIDER` and the wired hooks/timers.
 4. Installs the watchdog as a **launchd** agent (macOS) or **systemd** user
    service+timer (Linux), running every ~60s.
+
+`MARVEEN_ENV_FILE=<path>` makes the installers (and the retire script) read
+that file instead of `<install>/.env` — a test hook only, so the contract
+tests never depend on the checkout's own `.env`.
 
 ### The PostToolUse matcher
 
@@ -166,8 +181,10 @@ dir), else `hu`. Values: `hu`, `en`.
 
 ```bash
 bash scripts/__tests__/install-slack-progress-hook.test.sh
+bash scripts/__tests__/slack-reply-clear.test.sh
 bash scripts/__tests__/slack-watchdog-wedged.test.sh
 bash scripts/__tests__/retire-progress-watchdog.test.sh
+bash scripts/__tests__/sync-hooks-provider-gate.test.sh   # both installers, glob order, both providers
 ```
 
 ## Remove
@@ -180,3 +197,9 @@ This unwires the four hooks from `~/.claude/settings.json` and stops +
 removes the watchdog daemon (launchd agent on macOS, systemd user timer on
 Linux). The hook files under `~/.claude/hooks/` are left in place; they are
 inert once unwired.
+
+Note that while `CHANNEL_PROVIDER=slack`, the next update's `sync-hooks.sh`
+re-installs the indicator (the installer is meant to keep the active
+provider's plumbing live). A removal that should survive updates means
+switching `CHANNEL_PROVIDER` — the provider gate then retires the Slack
+plumbing on the next update by itself.

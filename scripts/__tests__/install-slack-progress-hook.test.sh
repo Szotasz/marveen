@@ -11,9 +11,16 @@
 #   (f) MAIN_AGENT_ID fallback when SERVICE_ID absent
 #   (g) copies hook files to the destination + patches settings.json with the
 #       PostToolUse matcher (core behaviour preserved)
+#   (h) SLACK_REPLY_TOOL_MATCHER override is honored
+#   (i) installing Slack retires the Telegram progress hooks
+#   (j) provider gate: CHANNEL_PROVIDER=telegram -> installs NOTHING and
+#       retires any leftover Slack hooks (sync-hooks runs every installer)
+#   (k) provider gate: missing / unknown CHANNEL_PROVIDER resolves to telegram
 #
 # All filesystem operations use a fully isolated temp tree -- the real
-# ~/.claude directory and the real INSTALL_DIR are never touched.
+# ~/.claude directory and the real INSTALL_DIR are never touched. The full-run
+# cases feed the installer a temp .env via MARVEEN_ENV_FILE (the installer's
+# test hook) so they do not depend on whatever the checkout's own .env says.
 
 set -u
 
@@ -32,6 +39,17 @@ assert_absent() { if [ ! -e "$1" ]; then pass "$2"; else fail "$2 (should not ex
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SCRIPT="$REPO_ROOT/scripts/install-slack-progress-hook.sh"
+
+# Neutralise systemctl for the full-run cases: `systemctl --user` talks to the
+# real user manager regardless of $HOME, so with no reachable manager the
+# installer only writes unit files and never enables a timer on the dev box.
+export DBUS_SESSION_BUS_ADDRESS="unix:path=/nonexistent-marveen-test"
+export XDG_RUNTIME_DIR="$TMP/run"
+mkdir -p "$XDG_RUNTIME_DIR"
+
+# A temp .env that makes Slack the active provider for the full-run cases.
+ENV_SLACK="$TMP/env-slack"
+printf 'SERVICE_ID=testbot\nBOT_NAME=TestBot\nCHANNEL_PROVIDER=slack\n' > "$ENV_SLACK"
 
 echo ""
 echo "(a) Static check: .env must NOT be sourced"
@@ -136,7 +154,7 @@ HOME_G="$CASE/home"
 mkdir -p "$HOME_G/.claude/hooks"
 echo '{"hooks":{}}' > "$HOME_G/.claude/settings.json"
 
-OUT2="$(HOME="$HOME_G" bash "$SCRIPT" 2>&1)"
+OUT2="$(HOME="$HOME_G" MARVEEN_ENV_FILE="$ENV_SLACK" bash "$SCRIPT" 2>&1)"
 EXIT=$?
 assert_zero "full script: exits 0" $EXIT
 for f in slack_progress.py slack_progress_clear.py \
@@ -160,7 +178,7 @@ CASE="$TMP/case-h"
 HOME_H="$CASE/home"
 mkdir -p "$HOME_H/.claude/hooks"
 echo '{"hooks":{}}' > "$HOME_H/.claude/settings.json"
-OUT3="$(HOME="$HOME_H" SLACK_REPLY_TOOL_MATCHER='mcp__plugin.custom.custom__reply' bash "$SCRIPT" 2>&1)"
+OUT3="$(HOME="$HOME_H" MARVEEN_ENV_FILE="$ENV_SLACK" SLACK_REPLY_TOOL_MATCHER='mcp__plugin.custom.custom__reply' bash "$SCRIPT" 2>&1)"
 EXIT=$?
 assert_zero "matcher override: exits 0" $EXIT
 if grep -q 'mcp__plugin.custom.custom__reply' "$HOME_H/.claude/settings.json"; then
@@ -195,7 +213,7 @@ cat > "$HOME_I/.claude/settings.json" <<'JSONEOF'
   }
 }
 JSONEOF
-OUT4="$(HOME="$HOME_I" bash "$SCRIPT" 2>&1)"
+OUT4="$(HOME="$HOME_I" MARVEEN_ENV_FILE="$ENV_SLACK" bash "$SCRIPT" 2>&1)"
 EXIT=$?
 assert_zero "retire-on-install: exits 0" $EXIT
 if grep -q 'telegram_progress' "$HOME_I/.claude/settings.json"; then
@@ -213,6 +231,77 @@ if grep -q 'unrelated\.py' "$HOME_I/.claude/settings.json"; then
 else
   fail "retire-on-install: unrelated hook was destroyed"
 fi
+
+echo ""
+echo "(j) Provider gate: CHANNEL_PROVIDER=telegram -> nothing installed, leftover Slack plumbing retired"
+# sync-hooks.sh runs this installer on every update of a Telegram install too.
+# It must not wire Slack hooks or write a Slack timer there, and it must clean
+# up any Slack plumbing an earlier (ungated) update left behind.
+CASE="$TMP/case-j"
+HOME_J="$CASE/home"
+mkdir -p "$HOME_J/.claude/hooks" "$HOME_J/.config/systemd/user"
+cat > "$HOME_J/.claude/settings.json" <<'JSONEOF'
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {"hooks": [
+        {"type": "command", "command": "/usr/bin/python3 /h/.claude/hooks/telegram_progress.py"},
+        {"type": "command", "command": "/usr/bin/python3 /h/.claude/hooks/slack_progress.py"}
+      ]}
+    ],
+    "PostToolUse": [
+      {"matcher": "slack.*reply",
+       "hooks": [{"type": "command", "command": "/usr/bin/python3 /h/.claude/hooks/slack_progress_reply_clear.py"}]}
+    ]
+  }
+}
+JSONEOF
+printf '[Timer]\n' > "$HOME_J/.config/systemd/user/testbot-slack-progress-watchdog.timer"
+printf '[Service]\n' > "$HOME_J/.config/systemd/user/testbot-slack-progress-watchdog.service"
+ENV_TG="$TMP/env-telegram"
+printf 'SERVICE_ID=testbot\nBOT_NAME=TestBot\nCHANNEL_PROVIDER=telegram\n' > "$ENV_TG"
+OUT5="$(HOME="$HOME_J" MARVEEN_ENV_FILE="$ENV_TG" bash "$SCRIPT" 2>&1)"
+EXIT=$?
+assert_zero "provider gate: exits 0" $EXIT
+assert_absent "$HOME_J/.claude/hooks/slack_progress.py" "provider gate: no Slack hook file copied"
+assert_absent "$HOME_J/.config/systemd/user/testbot-slack-progress-watchdog.timer" "provider gate: leftover Slack timer removed"
+assert_absent "$HOME_J/.config/systemd/user/testbot-slack-progress-watchdog.service" "provider gate: leftover Slack service removed"
+if grep -q 'slack_progress' "$HOME_J/.claude/settings.json"; then
+  fail "provider gate: leftover Slack hooks still wired"
+else
+  pass "provider gate: leftover Slack hooks unwired"
+fi
+if grep -q 'telegram_progress\.py' "$HOME_J/.claude/settings.json"; then
+  pass "provider gate: Telegram hooks left alone"
+else
+  fail "provider gate: Telegram hooks were destroyed"
+fi
+
+echo ""
+echo "(k) Provider gate: missing / unknown CHANNEL_PROVIDER resolves to telegram"
+# Mirrors src/channel-provider.ts: an empty or unrecognised value means the
+# install runs on Telegram, so the Slack installer must stand down.
+for label in "missing" "none" "Slack"; do
+  CASE="$TMP/case-k-$label"
+  HOME_K="$CASE/home"
+  mkdir -p "$HOME_K/.claude/hooks"
+  echo '{"hooks":{}}' > "$HOME_K/.claude/settings.json"
+  ENV_K="$CASE/env"
+  if [ "$label" = "missing" ]; then
+    printf 'SERVICE_ID=testbot\n' > "$ENV_K"
+  else
+    printf 'SERVICE_ID=testbot\nCHANNEL_PROVIDER=%s\n' "$label" > "$ENV_K"
+  fi
+  OUT6="$(HOME="$HOME_K" MARVEEN_ENV_FILE="$ENV_K" bash "$SCRIPT" 2>&1)"
+  EXIT=$?
+  assert_zero "provider gate ($label): exits 0" $EXIT
+  assert_absent "$HOME_K/.claude/hooks/slack_progress.py" "provider gate ($label): no Slack hook file copied"
+  if grep -q 'slack_progress' "$HOME_K/.claude/settings.json"; then
+    fail "provider gate ($label): Slack hooks wired"
+  else
+    pass "provider gate ($label): Slack hooks not wired"
+  fi
+done
 
 echo ""
 echo "===================================================="
