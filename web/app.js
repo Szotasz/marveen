@@ -11997,7 +11997,7 @@ function quotaLevelClass(pct) {
 // data -- and a stale or already-reset reading keeps its numbers but drops the
 // colour, because a green bar from six hours ago reassures exactly as much as
 // a green bar from six seconds ago.
-function renderQuotaStrip(q) {
+function renderQuotaStrip(q, fable) {
   const strip = document.getElementById('quotaStrip')
   const bars = document.getElementById('quotaBars')
   const note = document.getElementById('quotaStripNote')
@@ -12019,13 +12019,20 @@ function renderQuotaStrip(q) {
   const stale = q.status === 'stale'
   const nowSec = Math.floor(Date.now() / 1000)
   const windows = [
-    ['overview.quota.five_hour', q.fiveHour],
-    ['overview.quota.seven_day', q.sevenDay],
+    ['overview.quota.five_hour', q.fiveHour, stale],
+    ['overview.quota.seven_day', q.sevenDay, stale],
   ]
-  for (const [labelKey, w] of windows) {
+  // Fable/Opus comes from a different collector with its own freshness --
+  // muted independently of the statusLine-sourced `stale` above. Silently
+  // omitted (like any other null window here) when there's simply no
+  // reading yet -- non-tiered accounts never get one.
+  if (fable && fable.window) {
+    windows.push(['overview.quota.fable', fable.window, fable.status !== 'ok'])
+  }
+  for (const [labelKey, w, muted0] of windows) {
     if (!w) continue
     const pct = Math.max(0, Math.min(100, Math.round(w.usedPercentage)))
-    const muted = stale || w.expired
+    const muted = muted0 || w.expired
     const row = document.createElement('div')
     row.className = 'quota-bar' + (muted ? ' muted' : '')
     let tail = ''
@@ -12067,7 +12074,7 @@ async function loadOverview() {
     document.getElementById('statMemoriesSub').textContent = `${t('overview.stat.sub.memories')} · ${d.memories.categories} category`
     document.getElementById('statSkills').textContent = d.skills.count
     document.getElementById('statSkillsSub').textContent = d.skills.today > 0 ? t('overview.stat.skills_today', { n: d.skills.today }) : ''
-    renderQuotaStrip(d.quota)
+    renderQuotaStrip(d.quota, d.quotaFable)
     // Team: reuse the hierarchy graph renderer so the overview card shows
     // exactly what the Csapat page does (avatars + reports-to tree).
     try {
