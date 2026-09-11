@@ -88,6 +88,14 @@ class TestParseIsoToEpoch(unittest.TestCase):
         expected = datetime(2026, 7, 22, 16, 29, 59, 627285, tzinfo=timezone.utc).timestamp()
         self.assertAlmostEqual(epoch, expected, delta=0.001)
 
+    def test_z_suffix_parses(self):
+        # USAGE401DIAG910: Codex event timestamps end in 'Z'; fromisoformat
+        # rejects that on Python < 3.11, so the parser normalises it.
+        epoch = uc._parse_iso_to_epoch("2026-04-26T12:03:04.051Z")
+        self.assertIsNotNone(epoch)
+        # 2026-04-26T12:03:04Z == the same instant as +00:00
+        self.assertAlmostEqual(epoch, uc._parse_iso_to_epoch("2026-04-26T12:03:04.051+00:00"), places=3)
+
     def test_iso_without_offset_assumes_utc(self):
         epoch = uc._parse_iso_to_epoch("2026-07-22T16:29:59")
         expected = datetime(2026, 7, 22, 16, 29, 59, tzinfo=timezone.utc).timestamp()
@@ -233,6 +241,19 @@ class TestCollectClaudeAuthoritative(unittest.TestCase):
         self.assertEqual(err_kind, "permanent")
         self.assertIn("403", err)
 
+    def test_401_returns_permanent_kind(self):
+        # USAGE401DIAG910: 401 (expired/invalid token) must NOT be transient --
+        # a transient classification serves the stale authoritative cache and
+        # hides that the token needs refreshing. It was misclassified before.
+        http_err = urllib.error.HTTPError("https://api.anthropic.com/api/oauth/usage", 401, "Unauthorized", {}, None)
+        with patch.object(uc, "_read_claude_token", return_value=("fake-token", "test")), \
+             patch.object(uc, "_claude_cli_version", return_value="1.2.3"), \
+             patch("urllib.request.urlopen", side_effect=http_err):
+            windows, err, err_kind = uc._collect_claude_authoritative()
+        self.assertIsNone(windows)
+        self.assertEqual(err_kind, "permanent")
+        self.assertIn("401", err)
+
     def test_429_returns_transient_kind(self):
         http_err = urllib.error.HTTPError("https://api.anthropic.com/api/oauth/usage", 429, "Too Many Requests", {}, None)
         with patch.object(uc, "_read_claude_token", return_value=("fake-token", "test")), \
@@ -360,6 +381,28 @@ class TestCollectClaudeCacheFallback(unittest.TestCase):
             self.assertEqual(result["windows"], cached_windows)
             self.assertIn("cache_age_minutes", result)
             self.assertLess(result["cache_age_minutes"], 10)
+
+    def test_401_with_fresh_cache_still_falls_back_to_estimate(self):
+        # USAGE401DIAG910, the load-bearing case: even with a FRESH cache, a 401
+        # must NOT be served from it (that would report the last good numbers as
+        # current and mask the expired token). It goes to the estimate instead.
+        with tempfile.TemporaryDirectory() as tmp:
+            latest_path = os.path.join(tmp, "usage-latest.json")
+            fresh_ts = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+            self._write_latest(latest_path, "authoritative", {"five_hour": {"used_percent": 11.0, "resets_at": 1234.0}}, fresh_ts)
+
+            http_err = urllib.error.HTTPError("url", 401, "Unauthorized", {}, None)
+            with patch.object(uc, "LATEST_PATH", latest_path), \
+                 patch.object(uc, "_read_claude_token", return_value=("fake-token", "test")), \
+                 patch.object(uc, "_claude_cli_version", return_value="1.2.3"), \
+                 patch("urllib.request.urlopen", side_effect=http_err), \
+                 patch.object(uc, "_collect_claude_estimate", return_value={"seven_day_est_tokens": 42}) as mock_estimate:
+                result = uc.collect_claude()
+
+            mock_estimate.assert_called_once()
+            self.assertEqual(result["source"], "estimate")
+            self.assertNotEqual(result["source"], "authoritative_cached")
+            self.assertIn("401", result.get("auth_error", ""))
 
     def test_429_with_stale_cache_falls_back_to_estimate(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -880,6 +923,77 @@ class TestClaudeTokenSources(unittest.TestCase):
         with patch.object(uc.sys, "platform", "linux"), \
              patch.object(uc.os.path, "exists", return_value=False):
             self.assertEqual(uc._read_claude_token(), (None, None))
+
+
+class TestCodexSnapshotFreshness(unittest.TestCase):
+    """USAGE401DIAG910 (c): the Codex numbers come from a rollout file on disk,
+    which can be hours or months old. collect_codex() must capture the event's
+    timestamp, and render_summary() must show the numbers WITH their age -- or
+    say the freshness is unknown -- so no % is read as current when it is not."""
+
+    def _rollout(self, tmp, ts):
+        path = os.path.join(tmp, "rollout-x.jsonl")
+        event = {"type": "event", "payload": {"rate_limits": {
+            "plan_type": "pro",
+            "primary": {"used_percent": 12.5, "window_minutes": 10080, "resets_at": 1234.0},
+        }}}
+        if ts is not None:
+            event["timestamp"] = ts
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(event) + "\n")
+        return path
+
+    def test_collect_codex_captures_snapshot_at_and_age(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ts = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat().replace("+00:00", "Z")
+            path = self._rollout(tmp, ts)
+            with patch.object(uc.glob, "glob", return_value=[path]):
+                result = uc.collect_codex()
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["snapshot_at"], ts)
+            self.assertIsNotNone(result["snapshot_age_hours"])
+            self.assertAlmostEqual(result["snapshot_age_hours"], 3.0, delta=0.2)
+
+    def test_collect_codex_no_timestamp_leaves_snapshot_at_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._rollout(tmp, None)
+            with patch.object(uc.glob, "glob", return_value=[path]):
+                result = uc.collect_codex()
+            self.assertTrue(result["ok"])
+            self.assertIsNone(result["snapshot_at"])
+            self.assertIsNone(result["snapshot_age_hours"])
+
+    def _snapshot(self, codex):
+        return {
+            "generated_at_local": "2026-09-11 14:00:00 CEST",
+            "codex": codex,
+            "claude": {"ok": True, "source": "estimate", "files_scanned": 0},
+        }
+
+    def test_render_shows_stale_marker_for_old_snapshot(self):
+        codex = {"ok": True, "source": "authoritative", "plan_type": "pro",
+                 "windows": {"weekly": {"used_percent": 12.5, "window_minutes": 10080, "resets_at": 1234.0}},
+                 "snapshot_at": "2026-04-26T12:03:04.051Z", "snapshot_age_hours": 24 * 138.0}
+        out = uc.render_summary(self._snapshot(codex))
+        self.assertIn("snapshot:", out)
+        self.assertIn("[STALE]", out)
+        self.assertIn("days old", out)
+
+    def test_render_says_freshness_unknown_without_timestamp(self):
+        codex = {"ok": True, "source": "authoritative", "plan_type": "pro",
+                 "windows": {"weekly": {"used_percent": 12.5, "window_minutes": 10080, "resets_at": 1234.0}},
+                 "snapshot_at": None, "snapshot_age_hours": None}
+        out = uc.render_summary(self._snapshot(codex))
+        self.assertIn("freshness unknown", out)
+
+    def test_render_fresh_snapshot_has_no_stale_marker(self):
+        codex = {"ok": True, "source": "authoritative", "plan_type": "pro",
+                 "windows": {"weekly": {"used_percent": 12.5, "window_minutes": 10080, "resets_at": 1234.0}},
+                 "snapshot_at": "2026-09-11T12:00:00Z", "snapshot_age_hours": 2.0}
+        out = uc.render_summary(self._snapshot(codex))
+        self.assertIn("snapshot:", out)
+        self.assertNotIn("[STALE]", out)
+        self.assertIn("h old", out)
 
 
 if __name__ == "__main__":
