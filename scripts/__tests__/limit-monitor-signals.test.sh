@@ -296,10 +296,21 @@ C="$(new_case quota_age_not_a_number)"
 printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}\n' "$old_written" "$((now + 3600))" \
   > "$C/store/.claude-rate-limits.json"
 run_case_age "$C" abc
+# NOT "did it stay quiet": on the pre-fix code it stayed quiet too, because the
+# checker died before printing anything. Silence is what both the fallback and
+# the crash look like, so asserting silence would pass for the wrong reason
+# (measured: this exact assertion was green against the old source). What
+# separates them is whether the run reached a VERDICT with the default in
+# force -- the day-old reading must come out stale.
+if grep -q "quota file stale" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "a non-numeric QUOTA_MAX_AGE_SEC falls back to the default, and the default is applied"
+else
+  fail "a non-numeric QUOTA_MAX_AGE_SEC left the round without a verdict"
+fi
 if alerted "$C"; then
   fail "a non-numeric QUOTA_MAX_AGE_SEC let a day-old reading raise an alert"
 else
-  pass "a non-numeric QUOTA_MAX_AGE_SEC falls back to the default"
+  pass "and no alert is raised from the day-old reading"
 fi
 if grep -q "nem szam" "$C/store/limit-monitor.log" 2>/dev/null; then
   pass "a non-numeric value is reported instead of dying into /dev/null"
