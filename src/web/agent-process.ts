@@ -1768,7 +1768,18 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // re-submitted and cancelled a live invoice; an earlier ghost emailed a family
     // member. Killing the suggestion at the source removes the ghost the recovery
     // misreads. Env var verified present in claude.exe (CLAUDE_CODE_ENABLE_*).
-    const promptSuggestionEnv = 'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && '
+    // Same class, second source: the optional session-feedback survey
+    // ("How is Claude doing this session?  1: Bad  2: Fine  3: Good  0: Dismiss")
+    // waits on a keypress, and in an unattended agent nobody ever presses one --
+    // the session then takes no further turn at all. Measured 2026-09-11: FOUR
+    // agents stood frozen on it at the same time, one of them for 23 HOURS, while
+    // every external indicator stayed green -- running=true, messages
+    // status='delivered' (which only means the text was written INTO THE PANE, not
+    // that it was processed), pending=0, no error, scheduler silent. Three
+    // restarts did not clear it; one keypress did. Env var verified present in the
+    // shipped binary's CLAUDE_CODE_DISABLE_* table (2.1.205).
+    const promptSuggestionEnv =
+      'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 && '
     // Disable Claude Code's in-place auto-updater for every spawned agent. A
     // running agent whose updater fires does an in-place global reinstall into the
     // shared package prefix; a half-completed update can leave a broken stub and
