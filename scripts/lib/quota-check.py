@@ -23,9 +23,15 @@ DEFAULT_MAX_AGE_SEC = 21600
 # a confident green for a weeks-old number and the monitor stays quiet. Measured
 # on 2026-09-10: a 30-day-old reading with QUOTA_MAX_AGE_SEC=216000000 produced
 # NO output at all, i.e. one mistyped zero silently switches the guard off.
-# The ceiling is not an arbitrary round number: seven days is the longest quota
-# window that exists, so a reading older than that describes a window that has
-# certainly rolled over, whatever the config claims.
+# Where 604800 comes from, stated as what it actually is -- OUR operating
+# decision, not a claim about the provider's product. This monitor tracks
+# exactly two windows, and they are the two its own writer produces:
+# statusline-ratelimit.sh writes rate_limits.five_hour and rate_limits.seven_day,
+# and the loop below reads those same two. Seven days is therefore the longest
+# window WE HAVE A NUMBER FOR, so a reading older than that cannot be checked
+# against anything we track, whatever the config claims. Whether some longer
+# window exists upstream is not measured here and the ceiling does not depend
+# on it: past a week the reading is unusable for this monitor either way.
 MAX_AGE_CEILING_SEC = 604800
 
 
@@ -51,7 +57,7 @@ def resolve_max_age(raw):
             % (value, DEFAULT_MAX_AGE_SEC))
     if value > MAX_AGE_CEILING_SEC:
         return DEFAULT_MAX_AGE_SEC, (
-            "QUOTA_MAX_AGE_SEC=%d nagyobb a %d masodperces felso hatarnal (a leghosszabb kvota-ablak), "
+            "QUOTA_MAX_AGE_SEC=%d nagyobb a %d masodperces felso hatarnal (a leghosszabb ablak, amit ez a monitor kovet), "
             "ezert nem hasznalom; helyette a default %d masodperc"
             % (value, MAX_AGE_CEILING_SEC, DEFAULT_MAX_AGE_SEC))
     return value, None
