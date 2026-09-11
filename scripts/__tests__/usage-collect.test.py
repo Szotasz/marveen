@@ -954,6 +954,23 @@ class TestCodexSnapshotFreshness(unittest.TestCase):
             self.assertIsNotNone(result["snapshot_age_hours"])
             self.assertAlmostEqual(result["snapshot_age_hours"], 3.0, delta=0.2)
 
+    def test_collect_codex_no_rate_limits_fails_closed_with_named_state(self):
+        # Regression guard (Marveen review of #1287): the edit that added the
+        # timestamp capture must NOT drop the "no rate_limits entries" raise.
+        # An empty/absent rate_limits payload must fail closed (ok False) with a
+        # message that NAMES THE STATE ("rate_limits") -- so a later round sees
+        # "look at the rollout file", not a bare Python AttributeError.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "rollout-x.jsonl")
+            with open(path, "w", encoding="utf-8") as f:
+                # a line that mentions rate_limits (so the scan enters the branch)
+                # but whose payload rate_limits is empty -> rate_limits stays None
+                f.write(json.dumps({"type": "event", "payload": {"rate_limits": {}}}) + "\n")
+            with patch.object(uc.glob, "glob", return_value=[path]):
+                result = uc.collect_codex()
+            self.assertFalse(result["ok"])
+            self.assertIn("rate_limits", result.get("error", ""))
+
     def test_collect_codex_no_timestamp_leaves_snapshot_at_none(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = self._rollout(tmp, None)

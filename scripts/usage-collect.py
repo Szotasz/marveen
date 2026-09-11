@@ -287,6 +287,9 @@ def collect_codex():
                     # as current when it is not.
                     rate_limits_ts = obj.get("timestamp")
 
+        if rate_limits is None:
+            raise ValueError("no rate_limits entries in newest rollout file")
+
         windows = {}
         for key in ("primary", "secondary"):
             w = rate_limits.get(key)
