@@ -55,13 +55,39 @@ So each piece stays correct per-agent.
 | `slack_progress_clear.py` | `Stop` hook | Delete any placeholder still recorded at turn end, **and enforce delivery** (same one-nudge-then-fallback contract as the Telegram Stop hook). |
 | `slack_progress_watchdog.py` | launchd / systemd, ~60s | Scan every agent's per-agent state dir; for an orphan (agent down + placeholder old, OR a hung reply-tool call, OR a generic wedged backstop) either deliver the recovered answer for real, or rewrite the placeholder into the error text via `chat.update`. |
 
-### Why match on `(chat_id, thread_ts)`, not just `chat_id`
+### Why the thread is part of the key — and why loosely
 
 Telegram's `chat_id` already identifies a single DM or group, so matching on
 it alone is precise. A Slack **channel** can have several concurrent threads
 in flight, each with its own placeholder — matching on `chat_id` alone in the
-reply-clear hook could delete the wrong thread's placeholder. The reply-clear
-hook therefore matches on the pair.
+reply-clear hook could delete the wrong thread's placeholder. So the thread
+takes part in the key.
+
+Strict equality on the pair was wrong, though: a legitimate reply often
+carries a `thread_ts` that is not byte-equal to the inbound block's. An
+install's outbound rules may tell the agent to answer a threaded inbound
+**without** `thread_ts`; the optional parameter is sometimes passed as `""`;
+and a reply threaded *under the inbound message itself* carries that
+message's `ts`, which the entry never used to record. Every one of those
+missed, left the placeholder pending, and drove the Stop hook into the
+duplicate-reply + transcript-dump cascade (the `slack-progress-hook-loop`
+incident).
+
+The hook therefore filters by `chat_id` first, then narrows by thread in
+three tiers, taking the first non-empty one:
+
+1. **exact** — same thread, or threaded under the inbound message
+   (`thread_ts` equals the entry's `src_ts`, now recorded by
+   `slack_progress.py`);
+2. **loose** — either side is top-level (`""` and missing both normalise to
+   `None`);
+3. **fallback** — nothing matched but this chat has pending placeholders; a
+   reply to the chat is still the answer to that turn.
+
+The asymmetry is deliberate. Clearing one placeholder too eagerly removes a
+"working on it" marker; leaving one behind corrupts the conversation with a
+duplicate reply and a raw transcript. Contract test:
+`scripts/__tests__/slack-reply-clear.test.sh`.
 
 ### Reply enforcement
 

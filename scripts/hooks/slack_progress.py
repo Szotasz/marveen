@@ -172,6 +172,11 @@ def main():
                 entry = {"chat_id": chat_id, "ts": pts}
                 if thread_ts:
                     entry["thread_ts"] = thread_ts
+                # The inbound message's own ts: a reply threaded UNDER a
+                # top-level inbound message carries thread_ts == src_ts,
+                # and the reply-clear hook must recognise that as the answer.
+                if src:
+                    entry["src_ts"] = src
                 if transcript_path:
                     entry["transcript_path"] = transcript_path
                 pending.append(entry)

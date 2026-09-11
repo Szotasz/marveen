@@ -11,10 +11,28 @@ lingers for the whole (possibly very long) turn even though the user already
 got an answer. Clearing on the reply tool makes the placeholder disappear
 exactly when the answer appears.
 
-Matches on (chat_id, thread_ts): a Slack channel can have several concurrent
-threads, each with its own placeholder, so chat_id alone is not a precise
-enough key (unlike Telegram, where chat_id already identifies a single DM
-or group).
+Matching is keyed on chat_id first, then narrowed by thread — a Slack channel
+can have several concurrent threads, each with its own placeholder, so chat_id
+alone is not a precise enough key (unlike Telegram, where chat_id already
+identifies a single DM or group). Thread narrowing is deliberately TOLERANT,
+in three tiers, because a legitimate reply often carries a thread_ts that is
+not byte-equal to the inbound block's:
+
+  tier 1 (exact)    same thread, or threaded under the inbound message itself
+                    (reply thread_ts == the entry's src_ts);
+  tier 2 (loose)    either side is top-level ("" and missing both normalise to
+                    None) — an install's outbound rules may tell the agent to
+                    answer a threaded inbound WITHOUT thread_ts, and the
+                    optional param is sometimes passed as an empty string;
+  tier 3 (fallback) nothing matched but this chat has pending placeholders — a
+                    reply to the chat is still the answer to that turn.
+
+A miss here is not cosmetic: the placeholder stays pending, the Stop hook
+blocks the turn claiming no reply was sent, the agent replies a second time,
+and the second Stop dumps the raw transcript into Slack (the
+slack-progress-hook-loop incident). Clearing one placeholder too eagerly
+merely removes a "working on it" marker; leaving one behind corrupts the
+conversation.
 
 Fires after the Slack `reply` tool. Silent on stdout. Honors SLACK_STATE_DIR
 (per-agent token) like the others.
@@ -60,6 +78,37 @@ def api(tok, method, payload):
         return json.loads(r.read().decode())
 
 
+def norm_ts(v):
+    """Empty, None and missing thread_ts all mean "no thread"; else a str key."""
+    if v is None:
+        return None
+    v = str(v).strip()
+    return v or None
+
+
+def split_pending(pend, chat_id, thread_ts):
+    """Return (keep, drop) for a reply into chat_id / thread_ts.
+
+    Entries of other chats are always kept. Within the chat, the first
+    non-empty tier wins: exact thread match, then loose (either side
+    top-level), then every pending entry of the chat."""
+    same_chat = [p for p in pend if str(p.get("chat_id")) == chat_id]
+
+    def entry_thread(p):
+        return norm_ts(p.get("thread_ts"))
+
+    exact = [p for p in same_chat
+             if thread_ts == entry_thread(p)
+             or (thread_ts is not None and thread_ts == norm_ts(p.get("src_ts")))]
+    loose = [p for p in same_chat
+             if thread_ts is None or entry_thread(p) is None]
+    fallback = same_chat
+    drop = exact or loose or fallback
+    id_set = {id(p) for p in drop}
+    keep = [p for p in pend if id(p) not in id_set]
+    return keep, drop
+
+
 def main():
     try:
         ev = json.loads(sys.stdin.read())
@@ -73,7 +122,7 @@ def main():
     if chat_id is None:
         return
     chat_id = str(chat_id)
-    thread_ts = ti.get("thread_ts")
+    thread_ts = norm_ts(ti.get("thread_ts"))
     sid = ev.get("session_id") or "default"
     sd = state_dir()
     path = os.path.join(sd, "progress", f"{sid}.json")
@@ -81,10 +130,9 @@ def main():
         pend = json.load(open(path))
     except Exception:
         return
-    keep, drop = [], []
-    for p in pend:
-        match = str(p.get("chat_id")) == chat_id and p.get("thread_ts") == thread_ts
-        (drop if match else keep).append(p)
+    if not isinstance(pend, list):
+        return
+    keep, drop = split_pending(pend, chat_id, thread_ts)
     if not drop:
         return
     tok = token(sd)
