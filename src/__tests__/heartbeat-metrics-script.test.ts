@@ -133,14 +133,15 @@ describe('path binding (a rename must fail in CI, not at 22:00 on the host)', ()
     expect(src).toMatch(/'scripts',\s*'heartbeat-metrics\.sh'/)
   })
 
-  it('script and scaffold agree on the sentinel version', () => {
-    // The reporter accepts ONLY the known sentinel; if the script ever
-    // bumps to V2, the prose must move in the same commit or every round
-    // reads as instrument failure.
+  it('script and the worker-side renderer agree on the sentinel version', () => {
+    // The consumer moved from the prose to heartbeat-metrics-inject.ts
+    // (HBMETRICSWIRE910); the invariant is unchanged: if the script ever
+    // bumps to V2, the renderer must move in the same commit or every round
+    // carries an instrument-failure block.
     const script = readFileSync(SCRIPT, 'utf8')
-    const scaffold = readFileSync(join(REPO_ROOT, 'src', 'web', 'heartbeat-agent-scaffold.ts'), 'utf8')
+    const inject = readFileSync(join(REPO_ROOT, 'src', 'web', 'heartbeat-metrics-inject.ts'), 'utf8')
     expect(script).toContain('echo "HB_METRICS_V1 ')
-    expect(scaffold).toContain('HB_METRICS_V1')
+    expect(inject).toContain("HB_METRICS_SENTINEL = 'HB_METRICS_V1'")
   })
 })
 

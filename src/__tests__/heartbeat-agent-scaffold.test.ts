@@ -37,14 +37,13 @@ describe('renderHeartbeatClaudeMd', () => {
     expect(out).toContain('"from":"heartbeat"')
   })
 
-  it('uses the supplied store dir (absolute) for the instrument env and the token path', () => {
+  it('uses the supplied store dir only for the step-3 token path -- no instrument env in the prose', () => {
     const out = renderHeartbeatClaudeMd(ID)
-    // The DB path itself no longer appears in the prose: the metrics
-    // instrument derives it from CLAW_STORE_DIR, so the only store-dir
-    // surfaces left are the instrument's env prefix and the step-3
-    // message POST's token read.
-    expect(out).toContain('CLAW_STORE_DIR=/srv/app/store')
+    // HBMETRICSWIRE910: the WORKER runs the instrument, so the prose ships
+    // no CLAW_* env prefix and no DB path -- the only store-dir surface
+    // left is the message POST's token read.
     expect(out).toContain('cat /srv/app/store/.dashboard-token')
+    expect(out).not.toContain('CLAW_STORE_DIR=')
     expect(out).not.toContain('claudeclaw.db')
   })
 
@@ -111,9 +110,10 @@ describe('renderHeartbeatClaudeMd', () => {
     // `priority='urgent' AND status != 'done'`. That instruction was present and
     // correct since #680, and the 09:00 report on 2026-08-04 still listed three
     // `done` cards out of five: a filter the model must re-apply every hour is
-    // not a mechanism. The agent now calls an endpoint that can only return open
-    // cards, so the guarantee moved from "it was told to" to "it cannot".
-    expect(out).toContain('/api/kanban/heartbeat-summary')
+    // not a mechanism. Since HBMETRICSWIRE910 the agent does not even call the
+    // endpoint -- the WORKER does -- so the prose names no queryable surface
+    // for kanban at all.
+    expect(out).not.toContain('/api/kanban/heartbeat-summary')
     expect(out).not.toContain("priority='urgent' AND status != 'done'")
     expect(out).not.toMatch(/SELECT[^\n]*FROM kanban_cards/i)
   })
@@ -132,8 +132,9 @@ describe('renderHeartbeatClaudeMd', () => {
     expect(a).not.toBe(b)
     expect(b).toContain("across Omar's systems")
     expect(b).toContain('"to":"atlas"')
-    expect(b).toContain('CLAW_STORE_DIR=/data/store')
-    expect(b).toContain('bash /data/scripts/heartbeat-metrics.sh')
+    // The instrument path appears as provenance only (no `bash` invocation,
+    // see the runnable-call test below), but it must still be the identity's.
+    expect(b).toContain('/data/scripts/heartbeat-metrics.sh')
     expect(b).toContain('http://localhost:9000/api/messages')
   })
 
@@ -163,57 +164,40 @@ describe('renderHeartbeatClaudeMd', () => {
     expect(out).not.toContain('## Heartbeat YYYY-MM-DD HH:MM')
   })
 
-  it('forbids ANY agent-side calendar fetch -- the instrument is the only source (5E0A32B0)', () => {
+  it('forbids ANY agent-side calendar fetch -- the block is the only source (5E0A32B0 -> HBMETRICSWIRE910)', () => {
     // A month of agent-side fetch variants ended in a fossil: one probe
     // against a nonexistent endpoint, copy-forwarded round after round as
-    // "calendar fetch failed: API error" with zero real attempts.
+    // "calendar fetch failed: API error" with zero real attempts. The
+    // measured-empty vs failed-query distinction now lives in the renderer
+    // (heartbeat-metrics-inject.test.ts); the prose's job is only the ban.
     const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toContain('You never fetch the calendar yourself')
-    expect(out).toContain('/api/heartbeat/calendar')
+    expect(out).toMatch(/NEVER rebuild any of its numbers[\s\S]{0,120}calendar/)
     // The old MCP-tool instructions must be gone -- prose telling the agent
     // to fetch is exactly the surface the fossil grew on.
     expect(out).not.toContain('mcp__server-google-calendar-mcp__list-events')
   })
 
-  it('separates "measured empty" from "failed query" so the two are not reported alike', () => {
-    const out = renderHeartbeatClaudeMd(ID)
-    // no-events may only come from a measured n=0 line...
-    expect(out).toMatch(/no upcoming events[\s\S]{0,40}CALENDAR_EVENTS n=0/)
-    // ...and the failure line only from THIS round's ERROR calendar: line.
-    expect(out).toContain('calendar fetch failed: <reason>')
-    expect(out).toMatch(/calendar fetch failed: <reason>"\s*--\s*ONLY from ERROR calendar: of THIS round/)
-  })
-
-  it('pins the mechanical freshness check on the instrument ts= stamp', () => {
+  it('pins the freshness surface on the worker-stamped ts, carried into the report', () => {
     // The anti-fossil prose existed before 5E0A32B0 and was ignored; the
-    // ts=-vs-step-0-clock comparison is the mechanical form of it.
+    // mechanical form is now the `merve:` line that copies the block's
+    // worker-stamped ts into the digest, so staleness is visible to the
+    // READER instead of depending on the round's arithmetic.
     const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toMatch(/ts=.*stamp[\s\S]{0,120}same\s+hour as the step-0 clock/)
-    expect(out).toContain('stale instrument')
+    expect(out).toContain('merve:')
+    expect(out).toMatch(/ts= value from the block/)
+    expect(out).toMatch(/two timestamps side by side ARE the finding/)
   })
 
-  // Same investigation: the Tasks section read the `scheduled_tasks` table,
-  // which holds 0 rows on this deployment while /api/schedules lists 25
-  // enabled entries -- so every report said "active: 0, next: (none
-  // scheduled)". A line that is always the same stops being read, which is
-  // the failure this file already warns about elsewhere.
-  it('reads the schedule count from the live registry, not the empty table', () => {
+  // Same investigation: the Tasks section once read the `scheduled_tasks`
+  // table, which holds 0 rows on this deployment -- every report said
+  // "active: 0". The live-registry read now lives in the instrument (its own
+  // conformance test pins it); the prose must simply ship NO schedule or
+  // task_runs query surface at all.
+  it('ships no schedules or task_runs query surface in the prose', () => {
     const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toContain('http://localhost:3420/api/schedules')
+    expect(out).not.toContain('/api/schedules')
     expect(out).not.toContain('count active rows in')
     expect(out).not.toContain('next_run_at')
-  })
-
-  it('names the task_runs milliseconds trap but ships no runnable SQL for it', () => {
-    // ts is epoch MILLISECONDS; a seconds comparison matches every row and
-    // silently turns "last hour" into "since the beginning". This assertion
-    // REPLACES the older one that required the literal
-    // `(unixepoch()-3600)*1000` query in the prose: the cutoff now lives in
-    // scripts/heartbeat-metrics.sh (asserted by its own conformance test),
-    // and the prose only names the trap so nobody re-derives it by hand.
-    const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toContain('MILLISECONDS')
-    expect(out).toMatch(/\*1000[^\n]*cutoff/)
     expect(out).not.toMatch(/sqlite3 [^\n]*task_runs/)
   })
 })
@@ -246,30 +230,26 @@ describe('shouldBootHeartbeatAgent', () => {
 // computed server-side (countNewHotMemories, served as
 // counts.new_hot_memories_1h on /api/kanban/heartbeat-summary) and the
 // scaffold tells the agent to COPY it -- there is no query left to rewrite.
-describe('hot-memory metric is an endpoint number, never an agent-run query (HBMEMBLIND819)', () => {
-  it('points the agent at counts.new_hot_memories_1h from the heartbeat-summary call', () => {
-    const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toContain('counts.new_hot_memories_1h')
-  })
-
+describe('hot-memory metric is never an agent-run query (HBMEMBLIND819 -> HBMETRICSWIRE910)', () => {
   it('ships NO runnable hot-memory SQL anywhere in the prompt', () => {
     const out = renderHeartbeatClaudeMd(ID)
     // The exact surface that drifted twice: a memories/hot query the agent
     // could run (and, measured, rewrite). Shape-agnostic: any SQL touching
-    // the memories table near a hot filter is out of contract.
+    // the memories table near a hot filter is out of contract. Since the
+    // worker injects the numbers, even the endpoint field name is gone.
     expect(out).not.toMatch(/FROM memories[\s\S]{0,120}category='hot'/)
     expect(out).not.toContain('do not rewrite the query')
+    expect(out).not.toContain('counts.new_hot_memories_1h')
   })
 
-  it('degrades a missing field to "no data", never to a self-run query or a zero', () => {
-    // Phrase updated with the instrument contract: the missing-field case
-    // now surfaces as an ERROR line from the script, and the report writes
-    // "nincs adat (muszer-hiba)" -- the load-bearing part is that the
-    // degradation path exists and is named, and that fabricating a 0 is
-    // called out as the defect.
+  it('names the fabricated-zero defect and keeps muszer-hiba lines verbatim', () => {
+    // The degradation path (ERROR line -> muszer-hiba in the block) now
+    // renders worker-side; the prose's remaining duty is to forbid the round
+    // from "fixing" it: a failure line is a measured result to copy through,
+    // and a 0 the block does not contain is always the round's defect.
     const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toContain('nincs adat (muszer-hiba)')
-    expect(out).toMatch(/fabricated 0 is the defect/)
+    expect(out).toMatch(/muszer-hiba[\s\S]{0,200}IS the measured result/)
+    expect(out).toMatch(/fabricated 0/)
   })
 })
 
@@ -312,14 +292,14 @@ describe('no unfalsifiable warnings metric (HBWARN807)', () => {
 })
 
 describe('instrument-fed calendar (5E0A32B0, supersedes HBCALMCP808)', () => {
-  it('the calendar section names the instrument lines it may be built from', () => {
+  it('ships no instrument line vocabulary -- the block arrives pre-rendered', () => {
     const md = renderHeartbeatClaudeMd(ID)
-    // With the fetch moved server-side, the ToolSearch/deferred-MCP protocol
-    // (HBCALMCP808) has no remaining subject; what replaces it is the line
-    // vocabulary of the instrument, which is the ONLY sanctioned source.
-    expect(md).toContain('CALENDAR_EVENTS')
-    expect(md).toContain('CAL_EVENT')
-    expect(md).toContain('ERROR calendar:')
+    // With HBMETRICSWIRE910 the round never parses instrument output, so the
+    // line vocabulary (CALENDAR_EVENTS / CAL_EVENT / ERROR calendar:) left
+    // the prose too -- it lives in heartbeat-metrics-inject.ts and its
+    // tests. Prose mentioning parse rules is prose that can be recomposed.
+    expect(md).not.toContain('CALENDAR_EVENTS')
+    expect(md).not.toContain('CAL_EVENT')
     expect(md).not.toContain('ToolSearch')
   })
 })
@@ -339,56 +319,45 @@ describe('instrument-fed calendar (5E0A32B0, supersedes HBCALMCP808)', () => {
 // extraction now lives in scripts/heartbeat-metrics.sh (its own conformance
 // test exercises it); the prose ships NO extractor at all, only the
 // instrument call and the sentinel rule.
-describe('metrics come from the on-disk instrument, never from prose the agent can recompose', () => {
-  it('ships the instrument call with identity-derived env and path', () => {
+// HBMETRICSWIRE910: the fourth failed layer of the same metric ended the
+// run-it-yourself contract entirely. The prompt now carries the numbers
+// PRE-RENDERED by the worker; the sentinel rule, the extractor, and the
+// heredoc ban all moved out of the prose (into heartbeat-metrics-inject.ts,
+// where the tests exercise them as code, not as instructions).
+describe('metrics arrive pre-rendered in the prompt, never via prose the agent can recompose', () => {
+  it('ships NO runnable instrument call -- the path appears as provenance only', () => {
     const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toContain(
-      'CLAW_STORE_DIR=/srv/app/store CLAW_DASHBOARD_ORIGIN=http://localhost:3420'
-    )
-    expect(out).toContain('bash /srv/app/scripts/heartbeat-metrics.sh')
+    expect(out).toContain('/srv/app/scripts/heartbeat-metrics.sh')
+    expect(out).not.toMatch(/bash [^\n]*heartbeat-metrics\.sh/)
+    expect(out).not.toContain('CLAW_DASHBOARD_ORIGIN=')
   })
 
-  it('ships NO runnable extractor -- the copy-surface that drifted three times', () => {
+  it('ships NO runnable extractor and no endpoint to fetch', () => {
     const out = renderHeartbeatClaudeMd(ID)
     expect(out).not.toContain('python3 -c "import json,urllib.request')
     expect(out).not.toMatch(/COUNTS urgent=%s/)
-    // The endpoint may be NAMED (as the server-side source of the numbers)
-    // but never fetched from the prose.
-    expect(out).toContain('/api/kanban/heartbeat-summary')
+    expect(out).not.toContain('/api/kanban/heartbeat-summary')
     expect(out).not.toMatch(/curl[^\n]*heartbeat-summary/)
   })
 
-  it('states the sentinel rule: known sentinel or instrument failure, never "looks like output"', () => {
+  it('states the block rule: marker-led block or muszer-hiba, never "looks like a report"', () => {
     const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toContain('HB_METRICS_V1')
-    // The unknown-version branch is named explicitly (a future V2 under
-    // these instructions must read as instrument failure, not be accepted
-    // silently) -- Marveen's stipulation on HBMEMBLIND819, 2026-08-25.
-    expect(out).toContain('HB_METRICS_V2')
+    expect(out).toContain('[HB-METRIKA-BLOKK')
     expect(out).toContain('muszer-hiba')
-    expect(out).toMatch(/NEVER write 0/)
+    // The missing-block branch is named explicitly: no marker in the prompt
+    // means the report says so in every section, never a self-measured fill.
+    expect(out).toMatch(/hianyzo metrika-blokk/)
+    expect(out).toMatch(/copied VERBATIM/)
   })
 
-  it('the ONLY python3-heredoc mention is the quoted example inside the ban text', () => {
+  it('bans self-measurement class-wide and names the measured history', () => {
     const out = renderHeartbeatClaudeMd(ID)
-    // The ban must quote the forbidden shape (so the agent can recognise
-    // it), and NOTHING else in the prompt may contain one. Class-level, not
-    // variant-enumerated: on one line, `python3` is never followed by `<<`
-    // outside the ban sentence.
-    const matches = [...out.matchAll(/python3[^\n]*<</g)]
-    expect(matches.length).toBe(1)
-    const banStart = out.indexOf('THE SENTINEL RULE (HBMEMBLIND819)')
-    expect(banStart).toBeGreaterThanOrEqual(0)
-    const banEnd = out.indexOf('If the output contains', banStart)
-    expect(banEnd).toBeGreaterThan(banStart)
-    const idx = matches[0].index ?? -1
-    expect(idx).toBeGreaterThan(banStart)
-    expect(idx).toBeLessThan(banEnd)
-  })
-
-  it('names the heredoc incident so the ban survives paraphrase', () => {
-    const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toContain('HBHEREDOC819')
-    expect(out).toMatch(/heredoc becomes python3's stdin/)
+    // Class-level ban (curl/python3/sqlite3/du/ls/stat/calendar), plus the
+    // four dated failures that justify it -- the history is what keeps the
+    // ban from being "simplified" away in a later edit.
+    expect(out).toMatch(/NEVER rebuild any of its numbers/)
+    expect(out).toContain('HBMEMBLIND807')
+    expect(out).toContain('HBMEMBLIND819')
+    expect(out).toMatch(/du-shaped DB\s+size 488/)
   })
 })

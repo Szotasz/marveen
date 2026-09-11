@@ -100,14 +100,15 @@ describe('wiring contract: the number flows endpoint -> agent, never agent -> qu
     expect(builder).toMatch(/new_hot_memories_1h:\s*newHotMemories1h/)
   })
 
-  it('the scaffold tells the agent to COPY the field and forbids running a query for it', () => {
-    expect(SCAFFOLD).toMatch(/counts\.new_hot_memories_1h/)
-    // The memory bullet must not prescribe (or even show) a runnable
-    // hot-memory SQL anymore -- that is the exact surface that drifted twice.
+  it('the field flows endpoint -> worker renderer; the agent prose carries no query surface', () => {
+    // HBMETRICSWIRE910: the consuming surface moved from the prose to the
+    // worker-side renderer; the prose must not even name the field, let
+    // alone show a runnable query -- the exact surface that drifted twice.
+    const INJECT = readFileSync(join(ROOT, 'src', 'web', 'heartbeat-metrics-inject.ts'), 'utf-8')
+    expect(INJECT).toMatch(/new_hot_memories_1h/)
+    expect(SCAFFOLD).not.toMatch(/counts\.new_hot_memories_1h/)
     expect(SCAFFOLD).not.toMatch(/FROM memories[\s\S]{0,120}category='hot'/)
-    // Missing field degrades to "no data", never to a self-run query or a 0.
-    // (Phrase updated with the HBMEMBLIND819 third contract: the missing
-    // field now surfaces as the instrument's ERROR line.)
-    expect(SCAFFOLD).toMatch(/nincs adat \(muszer-hiba\)/)
+    // A failure arrives as a muszer-hiba line the round must carry verbatim.
+    expect(SCAFFOLD).toMatch(/muszer-hiba/)
   })
 })

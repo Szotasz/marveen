@@ -135,27 +135,38 @@ describe('there is ONE definition, and both consumers read it', () => {
   })
 })
 
-describe('the heartbeat AGENT is handed the list, not a filter to re-apply', () => {
+describe('the heartbeat AGENT is handed the rendered block, not a filter to re-apply', () => {
+  // HBMETRICSWIRE910: the kanban fetch moved out of the agent prose
+  // entirely -- the WORKER's instrument calls the endpoint, the worker-side
+  // renderer prints the final lines, and the agent copies the block.
   const SCAFFOLD_SRC = readFileSync(join(ROOT, 'src', 'web', 'heartbeat-agent-scaffold.ts'), 'utf-8')
-  // The kanban step lives inside the single Metrics instrument bullet since
-  // the HBMEMBLIND819 third contract; the window is that bullet's own bounds.
-  const kanbanBlock = SCAFFOLD_SRC.slice(
-    SCAFFOLD_SRC.indexOf('- **Metrics ('),
-    SCAFFOLD_SRC.indexOf('2. **Format**'),
-  )
 
-  it('the kanban step is one endpoint call', () => {
-    expect(kanbanBlock).toContain('/api/kanban/heartbeat-summary')
+  it('the endpoint call lives in the instrument, not in the agent prose', () => {
+    const script = readFileSync(join(ROOT, 'scripts', 'heartbeat-metrics.sh'), 'utf-8')
+    expect(script).toContain('/api/kanban/heartbeat-summary')
+    expect(SCAFFOLD_SRC).not.toContain('/api/kanban/heartbeat-summary')
   })
 
-  it('that step no longer asks the agent to compose SQL or to run sqlite3', () => {
-    expect(kanbanBlock).not.toMatch(/sqlite3 \$\{id\.storeDir\}/)
-    expect(kanbanBlock).not.toMatch(/SELECT .* FROM kanban_cards/i)
-    expect(kanbanBlock).not.toMatch(/status != 'done'/)
+  it('the prose no longer asks the agent to compose SQL or to run sqlite3', () => {
+    expect(SCAFFOLD_SRC).not.toMatch(/sqlite3 \$\{id\.storeDir\}/)
+    expect(SCAFFOLD_SRC).not.toMatch(/SELECT .* FROM kanban_cards/i)
+    expect(SCAFFOLD_SRC).not.toMatch(/status != 'done'/)
   })
 
-  it('it says out loud that an empty list stays empty', () => {
-    expect(kanbanBlock).toMatch(/report it as empty/i)
-    expect(kanbanBlock).toMatch(/Do not widen the query|do not fall back|do not fill/i)
+  it('an empty list stays empty in the rendered block -- nothing to fill it with', async () => {
+    // Pin 3 of this file, carried to the new mechanism: an empty urgent list
+    // renders as a bare count with NO parenthetical, and there is no prose
+    // step left where an agent could pad it with closed cards.
+    const { renderHeartbeatMetricsBlock } = await import('../web/heartbeat-metrics-inject.js')
+    const out = renderHeartbeatMetricsBlock([
+      'HB_METRICS_V1 ts=2026-09-11 12:00',
+      'COUNTS urgent=0 in_progress=0 waiting=0 planned=3 new_hot_memories_1h=0 db_size_mb=100 waiting_shown=0',
+      'CALENDAR_EVENTS n=0 window=2h',
+      'SCHEDULES enabled=1',
+      'TASK_RUNS_1H total=0',
+    ].join('\n'))
+    expect(out).toContain('- urgent: 0\n')
+    expect(out).toContain('- waiting: 0\n')
+    expect(out).not.toContain('- muszer-hiba')
   })
 })

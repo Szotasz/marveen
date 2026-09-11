@@ -90,12 +90,16 @@ describe('wiring: the endpoint serves the pure builder, the scaffold forbids cou
     expect(handler).toMatch(/countPlannedKanbanCards\(\)/)
   })
 
-  it('the scaffold says numbers come from the COUNTS line only and names the drift incident', () => {
-    // Wording moved with the HBMEMBLIND819 third contract: the copy-surface
-    // is now the instrument's COUNTS line (fed by counts.*), and the ban on
-    // counting the capped lists is stated next to it.
-    expect(SCAFFOLD).toMatch(/EVERY number comes from this line and nowhere else/)
-    expect(SCAFFOLD).toMatch(/HBKANBANDRIFT819/)
-    expect(SCAFFOLD).toMatch(/counting list items once\s+reported waiting: 12 against a real 280/)
+  it('the count/list separation moved into the worker renderer; the prose carries no COUNTS surface', () => {
+    // HBMETRICSWIRE910: the agent never sees a COUNTS line to (mis)count
+    // from -- the renderer prints the count from COUNTS and appends the
+    // capped id list as a parenthetical only. The behavioural pin lives in
+    // heartbeat-metrics-inject.test.ts (waiting: 371 rendered beside 2
+    // WAITING lines, the HBKANBANDRIFT819 shape); here we pin that the
+    // prose retired the countable surface instead of re-instructing it.
+    expect(SCAFFOLD).not.toMatch(/EVERY number comes from this line/)
+    expect(SCAFFOLD).not.toContain('COUNTS')
+    const INJECT = readFileSync(join(ROOT, 'src', 'web', 'heartbeat-metrics-inject.ts'), 'utf-8')
+    expect(INJECT).toMatch(/HBKANBANDRIFT819/)
   })
 })
