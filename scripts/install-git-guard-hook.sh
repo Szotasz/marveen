@@ -10,7 +10,15 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HOOK_DIR="$(cd "$(git -C "$ROOT" rev-parse --git-common-dir)" && pwd)/hooks"
+# `rev-parse --git-common-dir` answers RELATIVE TO THE REPO (".git"), so the
+# `git -C "$ROOT"` above only looks safe: resolving that answer with a bare `cd`
+# resolves it against the CALLER's cwd. Measured: started from another checkout
+# this installer wrote the force-push guard into THAT repository and printed its
+# success line, leaving this repo unprotected -- silent non-enforcement, which
+# is the one failure a guard must not have.
+GIT_COMMON_DIR="$(git -C "$ROOT" rev-parse --git-common-dir)"
+case "$GIT_COMMON_DIR" in /*) ;; *) GIT_COMMON_DIR="$ROOT/$GIT_COMMON_DIR" ;; esac
+HOOK_DIR="$(cd "$GIT_COMMON_DIR" && pwd)/hooks"
 DISPATCH="$HOOK_DIR/pre-push"
 GUARD="$HOOK_DIR/pre-push.d/10-no-force-push-protected"
 MARK="marveen-pre-push-dispatcher"

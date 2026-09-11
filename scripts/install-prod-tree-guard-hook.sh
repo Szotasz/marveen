@@ -27,7 +27,15 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HOOK_DIR="$(cd "$(git -C "$ROOT" rev-parse --git-common-dir)" && pwd)/hooks"
+# `rev-parse --git-common-dir` answers RELATIVE TO THE REPO (".git"), so the
+# `git -C "$ROOT"` above only looks safe: resolving that answer with a bare `cd`
+# resolves it against the CALLER's cwd. Measured: started from another checkout
+# this installer wrote the guard into THAT repository and printed its success
+# line, leaving the tree it was meant to protect unguarded -- the silent
+# non-enforcement this hook exists to prevent.
+GIT_COMMON_DIR="$(git -C "$ROOT" rev-parse --git-common-dir)"
+case "$GIT_COMMON_DIR" in /*) ;; *) GIT_COMMON_DIR="$ROOT/$GIT_COMMON_DIR" ;; esac
+HOOK_DIR="$(cd "$GIT_COMMON_DIR" && pwd)/hooks"
 DISPATCH="$HOOK_DIR/pre-commit"
 GUARD="$HOOK_DIR/pre-commit.d/05-prod-tree-guard"
 DISPATCH_MARK="marveen-pre-commit-dispatcher"
