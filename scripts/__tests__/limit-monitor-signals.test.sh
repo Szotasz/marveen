@@ -52,6 +52,11 @@ deliver_case() {
   echo "$c"
 }
 run_case() { (cd "$1" && HOME="$1/fakehome" PATH="$1/fakebin:$PATH" bash scripts/limit-monitor.sh >/dev/null 2>&1); }
+# Same, with QUOTA_MAX_AGE_SEC set: that knob reaches the monitor through the
+# process environment, not through .env like MAIN_AGENT_ID, so a case cannot
+# set it by writing a file.
+#   run_case_age <case_dir> <value>
+run_case_age() { (cd "$1" && HOME="$1/fakehome" PATH="$1/fakebin:$PATH" QUOTA_MAX_AGE_SEC="$2" bash scripts/limit-monitor.sh >/dev/null 2>&1); }
 # An alert was RAISED -- deliberately independent of whether it was delivered.
 # The old form grepped only "ALERT wanted", the line for a case with no bot
 # token, so the moment a case could actually deliver, the same true state read
@@ -259,6 +264,65 @@ if [ -s "$CO/store/.limit-monitor-quota-state" ]; then
   pass "a delivered alert does write the dedupe stamp"
 else
   fail "a delivered alert left no dedupe stamp -- alerts would repeat forever"
+fi
+
+echo "(e) QUOTAFELSOHATAR910: the staleness window must have a CEILING, not just a floor"
+# The floor already behaved: any too-small or negative value made a fresh
+# reading look stale, which is loud and harmless. The missing side was the
+# ceiling, and it fails the dangerous way -- one mistyped zero and a DEAD
+# reading passes as fresh, so the monitor alerts on numbers that describe a
+# window which has since rolled over, or stays quiet about a real one. Measured
+# 2026-09-10: QUOTA_MAX_AGE_SEC=216000000 produced no output at all.
+# The fixture below is the shape that actually hurts: a day-old file that still
+# claims a reset in the FUTURE, so with the guard switched off it alerts.
+old_written=$((now - 90000))
+
+C="$(new_case quota_age_too_big)"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}\n' "$old_written" "$((now + 3600))" \
+  > "$C/store/.claude-rate-limits.json"
+run_case_age "$C" 216000000
+if alerted "$C"; then
+  fail "an out-of-range QUOTA_MAX_AGE_SEC let a day-old reading raise an alert"
+else
+  pass "an out-of-range QUOTA_MAX_AGE_SEC cannot switch the staleness guard off"
+fi
+if grep -q "felso hatarnal" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "the rejected value is named in the log, with what is used instead"
+else
+  fail "the value was rejected SILENTLY -- the operator still believes it applies"
+fi
+
+C="$(new_case quota_age_not_a_number)"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}\n' "$old_written" "$((now + 3600))" \
+  > "$C/store/.claude-rate-limits.json"
+run_case_age "$C" abc
+if alerted "$C"; then
+  fail "a non-numeric QUOTA_MAX_AGE_SEC let a day-old reading raise an alert"
+else
+  pass "a non-numeric QUOTA_MAX_AGE_SEC falls back to the default"
+fi
+if grep -q "nem szam" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "a non-numeric value is reported instead of dying into /dev/null"
+else
+  fail "a non-numeric value killed the checker silently (traceback swallowed)"
+fi
+
+# Positive control, so neither case above can pass for the wrong reason: a value
+# INSIDE the range must be accepted, and must add no line to the log. Without
+# this a checker that rejected everything would look perfect.
+C="$(new_case quota_age_in_range)"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}\n' "$old_written" "$((now + 3600))" \
+  > "$C/store/.claude-rate-limits.json"
+run_case_age "$C" 7200
+if grep -qE "nem szam|felso hatarnal|nem pozitiv" "$C/store/limit-monitor.log" 2>/dev/null; then
+  fail "an in-range QUOTA_MAX_AGE_SEC was rejected -- the guard rejects everything"
+else
+  pass "an in-range QUOTA_MAX_AGE_SEC is accepted without noise"
+fi
+if grep -q "quota file stale" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "and it is the value actually in force (the day-old reading is stale)"
+else
+  fail "an in-range value was accepted but not applied"
 fi
 
 echo ""

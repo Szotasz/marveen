@@ -96,7 +96,10 @@ QUOTA_FILE="$STORE/.claude-rate-limits.json"
 QUOTA_WARN_PCT="${QUOTA_WARN_PCT:-90}"
 # Older than this and the numbers describe a window that may have reset since;
 # alerting on them would cry wolf, so they are logged and skipped instead.
-QUOTA_MAX_AGE_SEC="${QUOTA_MAX_AGE_SEC:-21600}"
+# QUOTAFELSOHATAR910: the default and the accepted RANGE both live in
+# quota-check.py now, and this line no longer carries a second copy of the
+# number. An unset value reaches the checker empty and it applies its own
+# default; an out-of-range or non-numeric one is rejected THERE, out loud.
 
 if [ -s "$QUOTA_FILE" ] && command -v python3 >/dev/null 2>&1; then
   QUOTA_CHECK="$INSTALL_DIR/scripts/lib/quota-check.py"
@@ -107,7 +110,18 @@ if [ -s "$QUOTA_FILE" ] && command -v python3 >/dev/null 2>&1; then
     log "quota-check.py hianyzik ($QUOTA_CHECK), a mert quota-ut EZEN A KORON KIMARAD -- a text-fallback fut tovabb"
     QUOTA_OUT=""
   else
-    QUOTA_OUT="$(QUOTA_FILE="$QUOTA_FILE" QUOTA_WARN_PCT="$QUOTA_WARN_PCT" QUOTA_MAX_AGE_SEC="$QUOTA_MAX_AGE_SEC" python3 "$QUOTA_CHECK" 2>/dev/null)"
+    # stderr is CAPTURED, not discarded. It used to go to /dev/null, which made
+    # two very different things look identical from here: a healthy run with
+    # nothing to report, and a checker that died on the first line (a
+    # non-numeric QUOTA_MAX_AGE_SEC raised a traceback). Both left QUOTA_OUT
+    # empty, and the `case` below has no empty branch -- so the measured quota
+    # path could drop out of a round without a single word in the log.
+    QUOTA_ERR="$STORE/.quota-check.stderr"
+    QUOTA_OUT="$(QUOTA_FILE="$QUOTA_FILE" QUOTA_WARN_PCT="$QUOTA_WARN_PCT" QUOTA_MAX_AGE_SEC="${QUOTA_MAX_AGE_SEC:-}" python3 "$QUOTA_CHECK" 2>"$QUOTA_ERR")"
+    if [ -s "$QUOTA_ERR" ]; then
+      log "quota-check.py uzenete: $(tr '\n' ' ' < "$QUOTA_ERR")"
+    fi
+    rm -f "$QUOTA_ERR"
   fi
   case "$QUOTA_OUT" in
     STALE*)

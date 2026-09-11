@@ -10,11 +10,60 @@ exits 2 at parse time and Linux CI (bash >= 4) is structurally blind to it
 (measured on the PR #1080 verify). With the body in its own file the
 hazard class is gone and comments may use normal punctuation.
 """
-import json, os, time
+import json, os, sys, time
+
+# The ONE place the staleness window is decided for the measured quota path.
+# limit-monitor.sh used to carry its own copy of the default; it no longer does,
+# so these two numbers cannot drift apart from the code that enforces them.
+DEFAULT_MAX_AGE_SEC = 21600
+
+# QUOTAFELSOHATAR910. The guard had a floor but no CEILING, and the missing side
+# is the dangerous one: too small only makes a fresh reading look stale (loud,
+# harmless), while too large makes a DEAD reading look fresh -- the strip shows
+# a confident green for a weeks-old number and the monitor stays quiet. Measured
+# on 2026-09-10: a 30-day-old reading with QUOTA_MAX_AGE_SEC=216000000 produced
+# NO output at all, i.e. one mistyped zero silently switches the guard off.
+# The ceiling is not an arbitrary round number: seven days is the longest quota
+# window that exists, so a reading older than that describes a window that has
+# certainly rolled over, whatever the config claims.
+MAX_AGE_CEILING_SEC = 604800
+
+
+def resolve_max_age(raw):
+    """Return (seconds, note). A note means the value was rejected.
+
+    Rejected values fall back to the default and SAY SO on stderr (the monitor
+    logs it). Silently repairing a bad config would keep exactly the silence
+    this guard exists to remove: the operator would go on believing the number
+    they typed is the number in force.
+    """
+    if raw is None or raw.strip() == "":
+        return DEFAULT_MAX_AGE_SEC, None
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_MAX_AGE_SEC, (
+            "QUOTA_MAX_AGE_SEC=%r nem szam, ezert nem hasznalom; helyette a default %d masodperc"
+            % (raw, DEFAULT_MAX_AGE_SEC))
+    if value <= 0:
+        return DEFAULT_MAX_AGE_SEC, (
+            "QUOTA_MAX_AGE_SEC=%d nem pozitiv, ezert nem hasznalom; helyette a default %d masodperc"
+            % (value, DEFAULT_MAX_AGE_SEC))
+    if value > MAX_AGE_CEILING_SEC:
+        return DEFAULT_MAX_AGE_SEC, (
+            "QUOTA_MAX_AGE_SEC=%d nagyobb a %d masodperces felso hatarnal (a leghosszabb kvota-ablak), "
+            "ezert nem hasznalom; helyette a default %d masodperc"
+            % (value, MAX_AGE_CEILING_SEC, DEFAULT_MAX_AGE_SEC))
+    return value, None
+
 
 path = os.environ["QUOTA_FILE"]
 warn = float(os.environ["QUOTA_WARN_PCT"])
-max_age = int(os.environ["QUOTA_MAX_AGE_SEC"])
+max_age, max_age_note = resolve_max_age(os.environ.get("QUOTA_MAX_AGE_SEC"))
+if max_age_note:
+    # stderr, not stdout: stdout carries the single STALE / EXPIRED / HIT line
+    # the monitor parses, and a second line there would break its `case`.
+    print(max_age_note, file=sys.stderr)
 try:
     d = json.load(open(path))
 except Exception:
