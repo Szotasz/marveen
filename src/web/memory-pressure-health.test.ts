@@ -458,10 +458,37 @@ async function run(): Promise<void> {
       healthB.failureMode === "MONITOR_STATE_STALE", healthB.failureMode);
   }
   {
-    // Scenario C: no state file at all → gate blocks non-core (existing behavior, preserved)
+    // Scenario C: no state file at all. Since the three-state split (review #4)
+    // the answer depends on whether the guard is INSTALLED, so this test states
+    // which host it simulates instead of inheriting the box it runs on. It used
+    // to assert fail-closed unconditionally: green on a dev host that has the
+    // real timer unit, red on the CI runner that has none (PR #775 review,
+    // 2026-09-11).
     teardown();
-    const rC = memoryPressureGate("non-core-agent");
-    ok("T6c: no state file → non-core blocked (fail-closed, pre-existing behavior)", !rC.allowed, rC);
+    const prevUnitPath = process.env.MARVEEN_MEM_PRESSURE_TEST_UNIT_PATH;
+    const prevPlatform = process.env.MARVEEN_MEM_PRESSURE_TEST_PLATFORM;
+    const unitDir = mkdtempSync(join(tmpdir(), "mp-unit-"));
+    const fakeUnit = join(unitDir, "marveen-memory-monitor.timer");
+    writeFileSync(fakeUnit, "[Timer]\n");
+    try {
+      process.env.MARVEEN_MEM_PRESSURE_TEST_PLATFORM = "linux";
+
+      // Installed but silent: the case the guard exists for. Still fail-closed.
+      process.env.MARVEEN_MEM_PRESSURE_TEST_UNIT_PATH = fakeUnit;
+      const rC = memoryPressureGate("non-core-agent");
+      ok("T6c: no state file + guard installed → non-core blocked (fail-closed)", !rC.allowed, rC);
+
+      // Never installed: nothing to gate on. Allowed, and says why.
+      process.env.MARVEEN_MEM_PRESSURE_TEST_UNIT_PATH = "";
+      const rC2 = memoryPressureGate("non-core-agent");
+      ok("T6c: no state file + guard never installed → allowed (gate-absent, review #4)",
+        rC2.allowed && rC2.reason.startsWith("gate-absent"), rC2);
+    } finally {
+      if (prevUnitPath === undefined) delete process.env.MARVEEN_MEM_PRESSURE_TEST_UNIT_PATH;
+      else process.env.MARVEEN_MEM_PRESSURE_TEST_UNIT_PATH = prevUnitPath;
+      if (prevPlatform === undefined) delete process.env.MARVEEN_MEM_PRESSURE_TEST_PLATFORM;
+      else process.env.MARVEEN_MEM_PRESSURE_TEST_PLATFORM = prevPlatform;
+    }
 
     // ── T7: release mismatch → unhealthy (Istvan requirement 3, 2026-07-20) ──
     // A state file can be fresh, recent and status=ok and STILL be written by a
