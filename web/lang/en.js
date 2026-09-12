@@ -778,7 +778,7 @@ window._i18n.en = {
   'settings.claude_plans.form.add_btn':     '+ New plan',
   'settings.claude_plans.form.error_required': 'Id, label and CLAUDE_CONFIG_DIR are required.',
   'settings.claude_plans.form.error_generic':  'Could not save the plan.',
-  'settings.desc.CLAUDE_ROTATION_ENABLED': 'Automatic Claude key rotation: if the main agent\'s active subscription runs out, automatically switch to another registered plan. Requires MAIN_AGENT_ISOLATED_CONFIG=1 and at least 2 registered plans. The actual rotation logic is not wired up yet -- this toggle currently has no effect.',
+  'settings.desc.CLAUDE_ROTATION_ENABLED': 'Automatic Claude key rotation: if the main agent\'s active subscription runs out, automatically switch to another registered plan. Requires MAIN_AGENT_ISOLATED_CONFIG=1 and at least 2 registered plans. Switching restarts the main agent\'s session.',
   'settings.col.key':            'Key',
   'settings.col.value':          'Value',
   'settings.col.description':    'Description',

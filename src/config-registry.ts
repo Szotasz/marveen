@@ -477,16 +477,18 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
       'claude-haiku-4-5-20251001',
     ],
   },
-  // --- Claude plans module (PR2b) ---
-  // Inert until PR2c ships the rotation wiring that reads it -- see
-  // docs/superpowers/specs/2026-09-11-claude-key-rotation-design.md section 7.
-  // Shipping the toggle now lets the dashboard UI (plan list + this switch)
-  // land as one reviewable unit; flipping it to '1' today has no effect yet.
+  // --- Claude plans module (PR2b/PR2c) ---
+  // Gates BOTH POST /api/claude-plans/rotate (returns 409 while off) and the
+  // heartbeat script's decision to call it (scripts/claude-plan-rotate-check.ts)
+  // -- see docs/superpowers/specs/2026-09-11-claude-key-rotation-design.md
+  // sections 6-7. Default OFF: staging verification (live session-restart,
+  // the riskiest part of this feature) happens before an operator ever flips
+  // this to '1'.
   {
     key: 'CLAUDE_ROTATION_ENABLED',
     type: 'boolean',
     default: '0',
-    description: 'Automata Claude-kulcs rotáció: ha a fő agent aktív előfizetése kifogy, automatikusan váltson egy másik regisztrált planre. Előfeltétel: MAIN_AGENT_ISOLATED_CONFIG=1 és legalább 2 regisztrált plan a claude-plans.json-ban. A tényleges rotációs logika (PR2c) még nincs bekötve -- ez a kapcsoló egyelőre hatástalan.',
+    description: 'Automata Claude-kulcs rotáció: ha a fő agent aktív előfizetése kifogy, automatikusan váltson egy másik regisztrált planre. Előfeltétel: MAIN_AGENT_ISOLATED_CONFIG=1 és legalább 2 regisztrált plan a claude-plans.json-ban. A váltás a fő agent session-jének újraindításával jár.',
     module: 'claude-plans',
     secret: false,
     requiresRestart: false,

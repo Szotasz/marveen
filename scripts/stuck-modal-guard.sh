@@ -301,7 +301,7 @@ run_guard() {
     _cfg_mode="${_cfg_line%%	*}"
     _cfg_dir="${_cfg_line#*	}"
     if [ -n "$_cfg_line" ] && [ -d "$_cfg_dir" ]; then
-      if [ "$_cfg_mode" = "explicit" ]; then
+      if [ "$_cfg_mode" = "explicit" ] || [ "$_cfg_mode" = "rotated" ]; then
         CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && "
       else
         CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "

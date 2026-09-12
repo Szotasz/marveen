@@ -67,12 +67,20 @@ describe('launcher wiring', () => {
   const CHANNELS = readFileSync(join(__dirname, '../../scripts/channels.sh'), 'utf-8')
   const WATCHDOG = readFileSync(join(__dirname, '../../scripts/channel-watchdog.sh'), 'utf-8')
 
-  it('the helper prefers the explicit dir over the isolated one', () => {
-    expect(HELPER).toMatch(/const explicit = resolveMainAgentConfigDir\(\)[\s\S]*if \(explicit\)/)
+  it('the helper prefers explicit over rotated over isolated', () => {
+    // explicit (an operator's own separate login) always wins: design 6.2
+    // says it is never part of the rotation pool. rotated (PR2c, a
+    // registered plan the state side-car points the main agent at) wins over
+    // the generic isolated flotta fallback because it is the more specific
+    // signal.
+    expect(HELPER).toMatch(
+      /const explicit = resolveMainAgentConfigDir\(\)[\s\S]*if \(explicit\)[\s\S]*const rotated = resolveMainAgentRotatedConfigDir\(\)[\s\S]*if \(rotated\)/,
+    )
   })
 
   it('the helper tags each path with its mode so the caller knows how to authenticate', () => {
     expect(HELPER).toMatch(/explicit\\t/)
+    expect(HELPER).toMatch(/rotated\\t/)
     expect(HELPER).toMatch(/isolated\\t/)
   })
 
@@ -88,25 +96,30 @@ describe('launcher wiring', () => {
     expect(HELPER).toMatch(/writeSync\(CONTRACT_FD/)
     // stdout stays a usable fallback for a hand-run, but nothing writes the
     // contract through process.stdout.write -- patching it does not catch pino.
-    expect(HELPER).not.toMatch(/process\.stdout\.write\(`(explicit|isolated)/)
+    expect(HELPER).not.toMatch(/process\.stdout\.write\(`(explicit|rotated|isolated)/)
   })
 
-  it('every caller opens fd 3 AND filters for a contract line', () => {
+  it('every caller opens fd 3 AND filters for a contract line, including the rotated mode (PR2c)', () => {
     // Both files spawn the helper; a caller that drifts reintroduces the outage
     // on exactly the path that matters (channel-watchdog.sh respawns when the
-    // dashboard is down).
+    // dashboard is down). A caller whose filter still only matches
+    // explicit|isolated would silently drop a rotated plan back onto either
+    // the shared ~/.claude or the wrong (fleet-token) auth mode -- exactly the
+    // outage class this contract exists to prevent, just for the new mode.
     for (const [name, sh] of [['channels.sh', CHANNELS], ['channel-watchdog.sh', WATCHDOG]] as const) {
       expect(sh, name).toMatch(/main-agent-isolated-config\.mjs[^\n]*3>&1/)
-      expect(sh, name).toMatch(/grep -m1 -E '\^\(explicit\|isolated\)/)
+      expect(sh, name).toMatch(/grep -m1 -E '\^\(explicit\|rotated\|isolated\)/)
     }
   })
 
-  it('channels.sh never injects the fleet token for an explicit dir', () => {
-    // The explicit dir carries its OWN .credentials.json -- exporting the fleet
-    // token there would silently authenticate the bot as the fleet.
-    const explicitBranch = CHANNELS.match(/if \[ "\$_cfg_mode" = "explicit" \]; then\n([\s\S]*?)\n\s*else/)
-    expect(explicitBranch).not.toBeNull()
-    expect(explicitBranch?.[1]).not.toMatch(/CLAUDE_CODE_OAUTH_TOKEN/)
-    expect(explicitBranch?.[1]).toMatch(/CLAUDE_CONFIG_DIR/)
+  it('channels.sh never injects the fleet token for an explicit OR rotated dir', () => {
+    // Both carry their OWN .credentials.json (an operator-logged-in dir for
+    // explicit, a registered plan's dir for rotated -- design 6.5/4) --
+    // exporting the fleet token for either would silently authenticate the
+    // bot as the fleet identity instead.
+    const branch = CHANNELS.match(/if \[ "\$_cfg_mode" = "explicit" \] \|\| \[ "\$_cfg_mode" = "rotated" \]; then\n([\s\S]*?)\n\s*else/)
+    expect(branch).not.toBeNull()
+    expect(branch?.[1]).not.toMatch(/CLAUDE_CODE_OAUTH_TOKEN/)
+    expect(branch?.[1]).toMatch(/CLAUDE_CONFIG_DIR/)
   })
 })

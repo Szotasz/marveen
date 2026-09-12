@@ -1091,7 +1091,7 @@ window._i18n.hu = {
   'settings.claude_plans.form.add_btn':     '+ Új plan',
   'settings.claude_plans.form.error_required': 'Azonosító, címke és CLAUDE_CONFIG_DIR kötelező.',
   'settings.claude_plans.form.error_generic':  'Nem sikerült menteni a plant.',
-  'settings.desc.CLAUDE_ROTATION_ENABLED': 'Automata Claude-kulcs rotáció: ha a fő agent aktív előfizetése kifogy, automatikusan váltson egy másik regisztrált planre. Előfeltétel: MAIN_AGENT_ISOLATED_CONFIG=1 és legalább 2 regisztrált plan. A tényleges rotációs logika még nincs bekötve -- ez a kapcsoló egyelőre hatástalan.',
+  'settings.desc.CLAUDE_ROTATION_ENABLED': 'Automata Claude-kulcs rotáció: ha a fő agent aktív előfizetése kifogy, automatikusan váltson egy másik regisztrált planre. Előfeltétel: MAIN_AGENT_ISOLATED_CONFIG=1 és legalább 2 regisztrált plan. A váltás a fő agent session-jének újraindításával jár.',
   'settings.col.key':            'Kulcs',
   'settings.col.value':          'Érték',
   'settings.col.description':    'Leírás',
