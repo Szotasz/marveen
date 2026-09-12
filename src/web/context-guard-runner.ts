@@ -181,6 +181,18 @@ export function resumePrompt(
     base + source +
     `Utána ellenőrizd a kanban tábládat (in_progress kártyák, assignee=${name}) és a hot memóriáidat, ` +
     `és FOLYTASD a megkezdett munkát magadtól. Ne kezdd elölről ami a handoff szerint már kész. ` +
+    // ORSICTX912: msg 23670 was delivered SEVEN SECONDS after the guard kill
+    // started, into the dying session -- the queue marked it delivered, the
+    // fresh session had no reason to look, and completed_at is unused (0/37
+    // measured), so the loss is invisible from the queue. The re-read must
+    // ride in the resume prompt (the fresh session's only context), and the
+    // ack-to-sender is the OBSERVABLE trace: without it, verifying this very
+    // instruction would run into the same blindness it exists to fix.
+    `RESTART-ABLAK: az előző session utolsó ~15 percében kézbesített inter-agent üzenet elveszhetett. ` +
+    `Olvasd vissza a saját sorodat erre az ablakra (GET /api/messages?agent=${name}, created_at szerint szűrve), ` +
+    `és minden ott talált, még el nem intézett kérést kezelj újként. KÖTELEZŐ MEGFIGYELHETŐ NYOM: minden ` +
+    `visszaolvasott tételről küldj rövid nyugtát a feladónak ("[RESTART-ABLAK] <id> felvéve a friss sessionben"), ` +
+    `akkor is, ha nincs belőle teendő -- e nélkül a visszaolvasás a sorból láthatatlan. ` +
     // RESPAWNZAJ822/PRODFAAG822: a fresh session acting on a resume goal is
     // exactly the actor that branch-switched and committed on the live prod
     // tree (2026-08-22 10:10, PR #1036 duplicate). The constraint must ride in
