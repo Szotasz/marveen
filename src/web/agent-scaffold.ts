@@ -11,6 +11,7 @@ import { logger } from '../logger.js'
 import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities } from './agent-config.js'
 import { resolveProfilePlaceholders, type ProfileTemplate } from './profiles.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
+import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
 
 // Resolve the base URL agents should use to reach the dashboard API.
 //
@@ -158,7 +159,8 @@ export function agentSettingsPath(name: string): string {
 // When the /tmp directory disappears on the next reboot the referenced script
 // is gone, python3/node exits non-zero, and Claude Code blocks every prompt --
 // the 2026-07-14 silent fleet-freeze incident.
-const _TMP_PREFIXES = ['/tmp/', '/var/tmp/', '/private/tmp/', '/dev/shm/']
+// The list itself lives in tmp-root-prefixes.ts, because the suite gate needs the
+// SAME list and a second copy would drift (2026-09-12).
 
 // Shared hook-entry type used by ensureAgentHooks and upgradeLegacyHookCommands.
 type HookEntry = { matcher?: string; hooks?: Array<{ command?: string; timeout?: number; [k: string]: unknown }> }
