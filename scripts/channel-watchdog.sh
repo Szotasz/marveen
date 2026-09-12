@@ -192,21 +192,32 @@ if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   # onto the shared ~/.claude on 2026-09-12. This caller must stay in step with
   # channels.sh, or a watchdog respawn reintroduces exactly that outage.
   _cfg_raw="$("$NODE_BIN" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$CHANNEL_PROVIDER" 3>&1 2>>"$STORE/channels-failures.log" 1>&2 || true)"
-  _cfg_line="$(printf '%s\n' "$_cfg_raw" | grep -m1 -E '^(explicit|rotated|isolated)	/' || true)"
+  _cfg_line="$(printf '%s\n' "$_cfg_raw" | grep -m1 -E '^(explicit|rotated|isolated|token)	/' || true)"
   if [ -n "$_cfg_raw" ] && [ -z "$_cfg_line" ]; then
     log "WARN main-agent-isolated-config.mjs printed output with NO contract line -- respawn without isolation"
   fi
   _cfg_mode="${_cfg_line%%	*}"
-  _cfg_dir="${_cfg_line#*	}"
+  _cfg_rest="${_cfg_line#*	}"
+  if [ "$_cfg_mode" = "token" ]; then
+    _cfg_dir="${_cfg_rest%%	*}"
+    _cfg_token_secret="${_cfg_rest#*	}"
+  else
+    _cfg_dir="$_cfg_rest"
+    _cfg_token_secret=""
+  fi
   if [ -n "$_cfg_line" ] && [ -d "$_cfg_dir" ]; then
     if [ "$_cfg_mode" = "explicit" ] || [ "$_cfg_mode" = "rotated" ]; then
       CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && "
+    elif [ "$_cfg_mode" = "token" ]; then
+      # Token-mode rotated plan -- same credential-less dir as `isolated`, but
+      # export THAT plan's vault-stored token. See channels.sh's identical branch.
+      CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(printf 'T=%s' '$_cfg_token_secret' | \"$NODE_BIN\" '$INSTALL_DIR/scripts/vault-resolve.mjs' | cut -d= -f2-)\" && "
     else
       CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "
     fi
     log "main-agent $_cfg_mode CLAUDE_CONFIG_DIR=$_cfg_dir"
   fi
-  unset _cfg_raw _cfg_line _cfg_mode _cfg_dir
+  unset _cfg_raw _cfg_line _cfg_mode _cfg_rest _cfg_dir _cfg_token_secret
 fi
 
 # Full PATH with .bun/bin -- without it the respawned bun telegram bridge does

@@ -33,11 +33,15 @@ describe('every shell respawn path carries the main-agent config decision (CFGDI
   it.each(SHELL_RESPAWNERS)('%s asks the one helper for the config dir', (name) => {
     const src = read(name)
     expect(src).toContain('main-agent-isolated-config.mjs')
-    // The helper's two modes must BOTH be handled: an `explicit` dir carries its
-    // own credentials (injecting the fleet token there would swap the identity),
-    // an `isolated` one needs the token. A script that only handles one of them
-    // is half-fixed, and the half it misses is the half that authenticates.
+    // The helper's modes must ALL be handled: an `explicit`/`rotated` dir
+    // carries its own credentials (injecting the fleet token there would swap
+    // the identity), `token` shares the isolated dir but needs a PLAN token
+    // resolved via vault-resolve.mjs, and plain `isolated` needs the flotta
+    // token. A script that only handles some of them is half-fixed, and the
+    // half it misses is the half that authenticates.
     expect(src).toContain('explicit')
+    expect(src).toContain('"token"')
+    expect(src).toContain('vault-resolve.mjs')
     expect(src).toContain('CLAUDE_CODE_OAUTH_TOKEN')
   })
 
