@@ -29,7 +29,20 @@ for var in $(env | grep '=vault:' | cut -d= -f1); do
 done
 
 if [ -n "$REFS" ]; then
-  RESOLVED=$(printf '%s' "$REFS" | "$NODE" "$PROJECT_ROOT/scripts/vault-resolve.mjs")
+  # VAULTNEMA912: vault-resolve now fails LOUD (exit 2 = malformed ref line,
+  # exit 3 = missing secret) instead of silent success. DELIBERATE CHOICE
+  # (option a, measured with Marveen): the MCP server still starts. This
+  # wrapper's job is launching; a stale vault: reference must not become a
+  # fleet-wide startup failure. The truth goes to stderr (vault-resolve has
+  # already named the offending label/line there), and the RESOLVED SUBSET is
+  # still exported -- vault-resolve keeps printing the good lines in a mixed
+  # batch. The `|| RC=$?` shape is what keeps `set -e` from killing the
+  # wrapper before `exec` under the new contract.
+  RC=0
+  RESOLVED=$(printf '%s' "$REFS" | "$NODE" "$PROJECT_ROOT/scripts/vault-resolve.mjs") || RC=$?
+  if [ "$RC" -ne 0 ]; then
+    echo "vault-env-wrapper: vault-resolve exit $RC -- not every vault: reference resolved; starting anyway with the resolved subset" >&2
+  fi
   while IFS='=' read -r key value; do
     [ -n "$key" ] && export "$key"="$value"
   done <<< "$RESOLVED"
