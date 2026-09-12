@@ -12019,17 +12019,17 @@ function renderQuotaStrip(q, fable) {
   const stale = q.status === 'stale'
   const nowSec = Math.floor(Date.now() / 1000)
   const windows = [
-    ['overview.quota.five_hour', q.fiveHour, stale],
-    ['overview.quota.seven_day', q.sevenDay, stale],
+    ['overview.quota.five_hour', q.fiveHour, stale, null],
+    ['overview.quota.seven_day', q.sevenDay, stale, null],
   ]
   // Fable/Opus comes from a different collector with its own freshness --
   // muted independently of the statusLine-sourced `stale` above. Silently
   // omitted (like any other null window here) when there's simply no
   // reading yet -- non-tiered accounts never get one.
   if (fable && fable.window) {
-    windows.push(['overview.quota.fable', fable.window, fable.status !== 'ok'])
+    windows.push(['overview.quota.fable', fable.window, fable.status !== 'ok', fable.ageSec])
   }
-  for (const [labelKey, w, muted0] of windows) {
+  for (const [labelKey, w, muted0, ageSecForRow] of windows) {
     if (!w) continue
     const pct = Math.max(0, Math.min(100, Math.round(w.usedPercentage)))
     const muted = muted0 || w.expired
@@ -12040,6 +12040,13 @@ function renderQuotaStrip(q, fable) {
       tail = ' · ' + t('overview.quota.expired')
     } else if (typeof w.resetsAt === 'number' && w.resetsAt > nowSec) {
       tail = ' · ' + t('overview.quota.resets_in', { d: formatDurationShort(w.resetsAt - nowSec) })
+    }
+    // This row's own collector age travels with it: the shared age line
+    // below (q.ageSec) only covers the statusLine source, so it says nothing
+    // about a row fed by a different collector -- without this a muted row
+    // reads as "might be old" with no way to tell minutes from days.
+    if (typeof ageSecForRow === 'number') {
+      tail += ' · ' + t('overview.quota.measured', { age: formatRelative(Date.now() - ageSecForRow * 1000) })
     }
     row.innerHTML = `
       <div class="quota-bar-label">${escapeHtml(t(labelKey))}</div>
