@@ -6330,6 +6330,73 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   flex-basis: 100%;
 }
 
+/* === Claude plans (PR2b) === */
+.claude-plan-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+}
+.claude-plan-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 14px;
+}
+.claude-plan-row-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  font-family: var(--font-mono, monospace);
+}
+.claude-plan-active-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  flex-shrink: 0;
+}
+.claude-plan-badge {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+.claude-plan-badge-muted { color: var(--text-muted); }
+.claude-plan-delete {
+  background: none;
+  border: none;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 6px;
+  flex-shrink: 0;
+}
+.claude-plan-delete:hover { opacity: 0.7; }
+.claude-plans-add-form {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.claude-plans-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.claude-plans-checkbox-row input { width: auto; }
+
 /* === connectors.hu cross-promo banner === */
 .cxhu-banner {
   margin-bottom: 16px;

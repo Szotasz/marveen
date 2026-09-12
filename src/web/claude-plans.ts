@@ -8,9 +8,14 @@
 // agents can share one login and the operator can re-point an agent from the
 // dashboard with a single field.
 //
-// This module is the READ + VALIDATE half (PR1). It does NOT wire the main
-// agent (channels.sh) or do drift detection -- those are separate, gated
-// follow-ups. The launch integration for regular agents lives in
+// This module was the READ + VALIDATE half in PR1. PR2b (see
+// docs/superpowers/specs/2026-09-11-claude-key-rotation-design.md section 7)
+// adds the WRITE half: writeClaudePlans() + the exported validatePlan(), used
+// by the dashboard CRUD route so a malformed entry can never reach disk
+// through a different gate than the one resolveClaudePlans() reads back
+// through. It still does NOT wire the main agent (channels.sh), do drift
+// detection, or perform any rotation -- those stay separate, gated follow-ups
+// (PR2c / PR3). The launch integration for regular agents lives in
 // agent-process.ts and is strictly additive: no plan set => existing
 // behaviour.
 //
@@ -19,10 +24,11 @@
 // kept pure (raw JSON string + homeDir in, validated array out) so it unit-
 // tests without the fs, mirroring resolveClaudeConfigDir in agent-config.ts.
 
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { PROJECT_ROOT } from '../config.js'
+import { atomicWriteFileSync } from './atomic-write.js'
 import {
   expandAndValidateConfigDir,
   readAgentClaudeConfigDir,
@@ -64,7 +70,12 @@ function isNonEmptyString(v: unknown): v is string {
 // Validate a single raw entry into a ClaudePlan, or null if malformed. A bad
 // entry is dropped rather than throwing so one typo in the registry cannot
 // take down plan resolution for every other agent.
-function validatePlan(raw: unknown, homeDir: string): ClaudePlan | null {
+//
+// Exported for the write API (PR2b, src/web/routes/claude-plans.ts): the
+// route layer runs every create/update body through this exact function
+// before it ever reaches writeClaudePlans(), so the write side accepts
+// nothing that resolveClaudePlans() would then drop reading it back.
+export function validatePlan(raw: unknown, homeDir: string): ClaudePlan | null {
   if (!raw || typeof raw !== 'object') return null
   const o = raw as Record<string, unknown>
 
@@ -140,6 +151,19 @@ export function readClaudePlans(): ClaudePlan[] {
   }
   plansCache = { mtimeMs, plans }
   return plans
+}
+
+// Atomic overwrite of the whole registry (PR2b write API: create/update/
+// delete all read-modify-write the full array and call this once). The mtime
+// cache is reset immediately rather than left to the next statSync() to
+// notice a bumped mtime -- two calls within the same filesystem timestamp
+// resolution window would otherwise serve the pre-write cache straight back
+// to a caller that just wrote fresh data (e.g. the route's own response, or a
+// second write racing right behind it).
+export function writeClaudePlans(plans: ClaudePlan[]): void {
+  mkdirSync(dirname(CLAUDE_PLANS_PATH), { recursive: true })
+  atomicWriteFileSync(CLAUDE_PLANS_PATH, JSON.stringify(plans, null, 2) + '\n')
+  plansCache = null
 }
 
 // Resolve a single plan id to its plan, or null when the id is blank/unknown.
