@@ -61,18 +61,12 @@ REALARM_EVERY=$(( 30 * 60 ))     # reminder cadence while still down
 
 log() { printf '%s [channel-outage-alarm] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"; }
 
-# Portable mtime. channel-watchdog.sh hard-codes `stat -c %Y`, which is GNU
-# only: on macOS it exits non-zero and the caller's `|| echo 0` turns a FRESH
-# file into an infinitely stale one. Measured 2026-09-12 -- that single flag is
-# why installing that watchdog here would have respawned the channels pane every
-# five minutes instead of protecting it. Never spell mtime one way.
-mtime_of() {
-  local f="$1" m=""
-  m="$(stat -f %m "$f" 2>/dev/null)" || m=""
-  [ -n "$m" ] || m="$(stat -c %Y "$f" 2>/dev/null)" || m=""
-  [ -n "$m" ] || m=0
-  printf '%s\n' "$m"
-}
+# Portable mtime, from the one implementation the repo has (PORTSTAT912). This
+# unit deliberately shares no RUNTIME dependency with what it watches -- no
+# dashboard, no session, no plugin -- but a source file is not a runtime
+# dependency, and a second private copy of this helper is a second thing that
+# can be wrong about the very file the whole alarm hangs on.
+. "$INSTALL_DIR/scripts/lib/portable-stat.sh"
 
 read_token() {
   local f tok=""
@@ -186,7 +180,7 @@ if [ -n "$boot_epoch" ] && [ "$boot_epoch" -gt 0 ] 2>/dev/null; then
   uptime_s=$(( now - boot_epoch ))
   seen_boot="$(cat "$BOOT_MARKER" 2>/dev/null || echo '')"
   if [ "$seen_boot" != "$boot_epoch" ] && [ "$uptime_s" -ge "$BOOT_REPORT_AFTER" ]; then
-    ka_now=0; [ -f "$KEEPALIVE_FILE" ] && ka_now="$(mtime_of "$KEEPALIVE_FILE")"
+    ka_now=0; [ -f "$KEEPALIVE_FILE" ] && ka_now="$(file_mtime "$KEEPALIVE_FILE")"
     if [ "$ka_now" -gt 0 ] && [ $(( now - ka_now )) -lt "$STALE_AFTER" ]; then
       verdict="a Telegram-csatorna el"
     else
@@ -208,7 +202,7 @@ if [ ! -f "$KEEPALIVE_FILE" ]; then
   exit 0
 fi
 
-ka="$(mtime_of "$KEEPALIVE_FILE")"
+ka="$(file_mtime "$KEEPALIVE_FILE")"
 age=$(( now - ka ))
 
 if [ "$age" -lt "$STALE_AFTER" ]; then
