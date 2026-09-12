@@ -488,6 +488,42 @@ export function initDatabase(dbPathOverride?: string): void {
     END
   `)
 
+  // KARTYAFRISSMEZO912: the bump above covered ONLY status, so a title edit
+  // (or assignee/priority/description/project/due_date) left updated_at
+  // untouched -- measured on MIOORSZEM831: title rewritten 2026-09-12, the
+  // card still dated 2026-09-08. Audits and cleanups bucket on this column
+  // ("fresh / 7-30d / 30d+"), so the half-maintained field lied in both
+  // directions. Same self-healing shape as the status trigger.
+  //
+  // Deliberately NOT a blanket AFTER UPDATE: sort_order changes are drag
+  // reordering (whole columns get renumbered at once -- bumping would make
+  // every card look fresh), and archived_at is the archive sweep itself,
+  // which MEASURES updated_at to pick its victims; bumping there would
+  // reward the sweep with fake freshness. Column comparisons use IS NOT,
+  // not !=: assignee/description/project/due_date are nullable, and
+  // NULL != 'x' is NULL, which would silently skip every NULL<->value edit.
+  //
+  // No recursion: the bump's own UPDATE touches only updated_at, which is
+  // not in the OF list. The title-gate truncation (an UPDATE OF title from
+  // inside a trigger) can re-fire this one under PRAGMA recursive_triggers=ON,
+  // but that truncation only ever follows a real title edit, so the extra
+  // bump lands on an already-fresh timestamp -- same value, no loop.
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS kanban_cards_fields_bump_updated_at
+    AFTER UPDATE OF title, description, assignee, priority, project, due_date ON kanban_cards
+    FOR EACH ROW WHEN (
+      NEW.title IS NOT OLD.title OR
+      NEW.description IS NOT OLD.description OR
+      NEW.assignee IS NOT OLD.assignee OR
+      NEW.priority IS NOT OLD.priority OR
+      NEW.project IS NOT OLD.project OR
+      NEW.due_date IS NOT OLD.due_date
+    ) AND NEW.updated_at = OLD.updated_at
+    BEGIN
+      UPDATE kanban_cards SET updated_at = CAST(strftime('%s','now') AS INTEGER) WHERE id = NEW.id;
+    END
+  `)
+
   // KANBANCTXDEAD824 follow-up: paragraph-length card titles cost tokens in
   // every agent that reads the board, and the 2026-08-24 sweep moved ~1.3 MB
   // of accreted title text into comments by hand. These triggers automate that
