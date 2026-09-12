@@ -44,20 +44,34 @@ let CONTRACT_FD = 3
 try { fstatSync(CONTRACT_FD) } catch { CONTRACT_FD = 1 }
 const emitContract = (line) => writeSync(CONTRACT_FD, line)
 
-const { ensureMainAgentIsolatedConfigDir, resolveMainAgentConfigDir } = await import(
+const { ensureMainAgentIsolatedConfigDir, resolveMainAgentConfigDir, resolveMainAgentRotatedConfigDir } = await import(
   join(projectRoot, 'dist', 'web', 'agent-process.js')
 )
 
 // Output contract (consumed by scripts/channels.sh): "<mode>\t<path>", or nothing
-// at all when neither path applies. The mode decides how the caller authenticates
-// the agent: an `explicit` dir carries its OWN .credentials.json (login already
-// done there -- do NOT inject the fleet token, that would swap the identity),
-// while an `isolated` dir carries none and needs the fleet setup-token exported.
+// at all when none of the three paths apply. The mode decides how the caller
+// authenticates the agent:
+//   explicit -- MAIN_AGENT_CONFIG_DIR, a dir the operator logged into by hand.
+//   rotated  -- (PR2c) store/claude-plans-state.json points the main agent at
+//               a registered plan. Also carries ITS OWN .credentials.json
+//               (design 6.5/4: every plan is a real, already-logged-in dir),
+//               so it needs the exact same "do not inject the fleet token"
+//               handling as `explicit` -- see resolveMainAgentRotatedConfigDir.
+//   isolated -- the credential-less flotta dir, needs the fleet setup-token.
+// Precedence: explicit wins outright (it is a deliberate, permanent identity
+// choice, never part of the rotation pool -- design 6.2). Rotated wins over
+// plain isolated because a recorded rotation is a stronger, more specific
+// signal than the generic flotta fallback.
 const explicit = resolveMainAgentConfigDir()
 if (explicit) {
   emitContract(`explicit\t${explicit}\n`)
 } else {
-  const provider = process.argv[2] || undefined
-  const dir = ensureMainAgentIsolatedConfigDir(provider)
-  if (dir) emitContract(`isolated\t${dir}\n`)
+  const rotated = resolveMainAgentRotatedConfigDir()
+  if (rotated) {
+    emitContract(`rotated\t${rotated}\n`)
+  } else {
+    const provider = process.argv[2] || undefined
+    const dir = ensureMainAgentIsolatedConfigDir(provider)
+    if (dir) emitContract(`isolated\t${dir}\n`)
+  }
 }

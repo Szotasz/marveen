@@ -144,3 +144,29 @@ export function decideRotationAction(input: {
 
   return { action: 'rotate', targetPlanId: target, reason: `pressure:${usedPct}%->${target}` }
 }
+
+// Reactive path (design 6.3 addendum, Kobza Attila 2026-09-11): a live 429 /
+// "quota exceeded" response during a session should trigger rotation
+// immediately, without waiting for the next proactive heartbeat tick. The
+// design left the exact detection SITE open ("hol figyeljük a 429-et...
+// implementációs kérdés") -- this PR ships only the pure classifier; wiring
+// it into a live tmux-output watcher is a separate, riskier follow-up (it
+// means parsing a running session's output, not just reading a JSON
+// snapshot) and is intentionally NOT part of this PR. See the PR description.
+//
+// Deliberately conservative: false negatives (missing a real quota error) are
+// safe -- the proactive path still catches it within one heartbeat cycle.
+// False positives are not: this string match must not fire on a plain error
+// message that happens to mention "limit" for an unrelated reason, so it
+// requires one of a short list of high-specificity phrases rather than any
+// single common word.
+const QUOTA_EXCEEDED_PATTERNS = [
+  /\b429\b/,
+  /quota[\s_-]?exceeded/i,
+  /usage[\s_-]?limit[\s_-]?reached/i,
+  /rate[\s_-]?limit[\s_-]?exceeded/i,
+] as const
+
+export function isQuotaExceededError(text: string): boolean {
+  return QUOTA_EXCEEDED_PATTERNS.some((re) => re.test(text))
+}

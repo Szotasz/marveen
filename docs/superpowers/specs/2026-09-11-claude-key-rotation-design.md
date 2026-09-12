@@ -454,6 +454,74 @@ classifier részeket fedik, a live restartot nem.
    rejtett szűrési szabály amit ki kellene találni.
 
 Implementáció ELINDULT 2026-09-12: PR2a (`src/claude-plan-rotation.ts` +
-`src/__tests__/claude-plan-rotation.test.ts`) kész, tesztek zöldek,
-`tsc --noEmit` tiszta. PR2b/PR2c (write API, UI, wiring, agentenkénti state)
-még nincs elkezdve.
+`src/__tests__/claude-plan-rotation.test.ts`) kész. PR2b (write API +
+dashboard UI, `src/web/routes/claude-plans.ts`, `src/web/claude-plans-state.ts`
+olvasó fele) szintén kész. PR2c most készült el -- lásd alább a menet közben
+hozott döntéseket.
+
+## 11. PR2c döntések (implementáció közben, 2026-09-12)
+
+A tervben nyitva hagyott vagy pontatlanul rögzített pontok, amiket az
+implementáció közben kellett eldönteni (a "MIND ELDÖNTVE" #1-#5 kérdéseket
+NEM nyitottuk újra -- ezek azok alkalmazását pontosítják):
+
+1. **`claude-plans-state.json` sémája ténylegesen agentenkénti lett**:
+   `activePlanId: string|null` -> `activePlanByAgent: Record<string,string>`
+   (döntés #1 megvalósítása). A PR2b-ben már megépült dashboard kártya-UI
+   (`web/app.js`) ehhez igazítva: a "aktív" jelzés a fő agent
+   (`activePlanByAgent[mainAgentId()]`) bejegyzését nézi.
+2. **A heartbeat wiring EBBEN a PR-ben csak a FŐ (channels.sh) agentre köti be
+   a tényleges rotációt.** A state-séma agentenkénti (1. pont), és a
+   `POST /api/claude-plans/rotate` route agent-agnosztikus (bármelyik agentId-t
+   elfogad, sub-agent esetén `writeAgentClaudePlan` + `restartAgentProcess`-en
+   megy át) -- de a `scripts/claude-plan-rotate-check.ts` heartbeat-script
+   MAGA egyelőre csak a fő agentre fut le, nem loopol végig minden sub-agenten.
+   A teljes sub-agent-loop (minden csatornás sub-agent saját heartbeat-ciklusa)
+   külön, gyors follow-up, nem ebbe a (már így is legkockázatosabb) PR-be
+   csomagolva.
+3. **Ki hívja ténylegesen a rotate endpointot és küldi a Telegram-jelzést**:
+   a design 6.6 ezt "a heartbeat" feladataként írja le, a 6.4 viszont
+   kifejezetten a c3po `reply` tool-t követeli meg a jelzéshez -- egy sima
+   node-script nem tud MCP tool-t hívni. Megoldás: a heartbeat-script
+   (`claude-plan-rotate-check.ts`) csak DÖNT és a state-et frissíti, majd egy
+   strukturált sort ír stdout-ra (`ROTATE ...` / `NO_ALTERNATIVE ...` / semmi).
+   Az ágens (akinek a scheduled task prompt-ja meghívja a scriptet) olvassa ezt
+   és MAGA küldi a Telegram-jelzést, majd (ROTATE esetén) hívja a
+   `POST /api/claude-plans/rotate`-ot -- ugyanaz a minta, mint a meglévő
+   `scripts/hooks/ledger-live-drain.py` OPEN_QUESTION heartbeat.
+4. **A "bootstrap" kérdés (6.5/4 megjegyzése) külön kód nélkül oldódott meg**:
+   egy agent ELSŐ plan-hozzárendelése ugyanaz a művelet mint egy későbbi
+   rotáció (`applyRotation` akkor is csak beszúr, ha korábban nem volt aktív
+   plan) -- nincs külön "bootstrap" endpoint/ág. Ebből következik: a heartbeat
+   script NEM tud magától elindulni egy olyan agentre, akinek még sosem volt
+   `activePlanByAgent` bejegyzése (nem tudja kitalálni melyik plan-t futtatja
+   ÉPPEN) -- ehhez Attilának egyszer, kézzel kell hívnia a rotate endpointot
+   a jelenleg futó plan id-jével, utána a heartbeat már karbantartja.
+5. **`channels.sh` dinamikus configDir-ága a meglévő `explicit`/`isolated`
+   kontraktust bővíti egy HARMADIK móddal (`rotated`)**, nem külön ágat épít:
+   `scripts/main-agent-isolated-config.mjs` új
+   `resolveMainAgentRotatedConfigDir()`-t hív (agent-process.ts), és
+   `rotated\t<dir>`-t ír a fd3 kontraktusra, ha a state egy planre mutat. A
+   `rotated` mód a `explicit`-tel EGY ágon fut `channels.sh`-ban (nincs fleet
+   token injektálva, mert a plan configDir-ja saját, valódi bejelentkezést
+   hordoz -- design 6.5/4). Precedencia: explicit > rotated > isolated.
+   FONTOS: a `channels.sh`-n kívül két másik respawn-út (`channel-watchdog.sh`,
+   `stuck-modal-guard.sh`) IS lekérdezi ugyanezt a kontraktust
+   (CFGDIR686/`main-config-dir-parity.test.ts` erre külön strukturális
+   tesztet is tart fenn) -- mindkettőt frissítettük, különben egy watchdog-
+   respawn néma módon visszaejtette volna a rotált identitást a megosztott
+   `~/.claude`-ra.
+6. **Ismert, nem javított, e PR-től független rés**: `stuck-modal-guard.sh`
+   a kontraktust NEM a fd3-on olvassa (nincs `3>&1 ... 1>&2` átirányítása),
+   ellentétben `channels.sh`/`channel-watchdog.sh`-val a CFGCONTRACT912
+   javítás (#1289) után. Ez azt jelenti, hogy egy pino log-sor ugyanúgy
+   eltörheti nála a kontraktust, mint a 2026-09-12-i csatorna-kiesésben --
+   csak épp a `explicit`/`isolated`/`rotated` egyikére sem specifikus, tehát
+   nem ez a PR vezette be. Külön, gyors fix-jelölt egy jövőbeli PR-nek.
+7. **A reaktív (429-alapú azonnali) út (6.3 kiegészítés) csak a pure
+   detektor szintjéig készült el** (`isQuotaExceededError` a
+   `claude-plan-rotation.ts`-ben, tesztelve). A tényleges élő
+   tmux/session-kimenet figyelése (hol/hogyan halásszuk ki a 429-et a futó
+   `claude` process outputjából) NINCS bekötve -- ez élő, futó session
+   kimenetének feldolgozását jelentené, nagyobb és kockázatosabb darab, külön
+   follow-up-nak jelölve.

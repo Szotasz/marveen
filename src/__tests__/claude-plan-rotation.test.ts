@@ -3,6 +3,7 @@ import {
   estimateWindowFree,
   pickRotationTarget,
   decideRotationAction,
+  isQuotaExceededError,
   ROTATION_GATE,
   type ObservedWindow,
   type RotationCandidate,
@@ -136,5 +137,26 @@ describe('decideRotationAction', () => {
       nowMs: NOW,
     })
     expect(result.action).toBe('no-alternative')
+  })
+})
+
+describe('isQuotaExceededError', () => {
+  it.each([
+    'HTTP 429 Too Many Requests',
+    'Error: quota exceeded for this window',
+    'quota_exceeded',
+    'Usage limit reached for your plan',
+    'rate limit exceeded, retry later',
+  ])('matches a real quota-exhaustion signal: %s', (text) => {
+    expect(isQuotaExceededError(text)).toBe(true)
+  })
+
+  it.each([
+    '',
+    'connection refused',
+    'the file limit for this directory was 42 entries',
+    'a random 4295 in some unrelated log line',
+  ])('does not match unrelated text: %s', (text) => {
+    expect(isQuotaExceededError(text)).toBe(false)
   })
 })
