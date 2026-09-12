@@ -124,7 +124,7 @@ import type { ContextGuardConfig } from '../../context-guard.js'
 // Derived from the DEFAULT config objects, not hand-listed: a field added to
 // the interface is added to its default too, so the accepted-key set cannot
 // drift away from what normalize*Config() actually reads.
-import { DEFAULT_AUTO_RESTART } from '../../auto-restart.js'
+import { DEFAULT_AUTO_RESTART, LEGACY_AUTO_RESTART_FIELDS } from '../../auto-restart.js'
 import { DEFAULT_CONTEXT_GUARD } from '../../context-guard.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
 import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
@@ -1464,7 +1464,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const body = await readBody(req)
     let data: unknown
     try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'invalid JSON' }, 400); return true }
-    const arFields = checkConfigPutFields(data, Object.keys(DEFAULT_AUTO_RESTART))
+    // Legacy keys are accepted (and dropped by normalization), never stored --
+    // see LEGACY_AUTO_RESTART_FIELDS for why rejecting them would break a save
+    // from a dashboard page that is already open.
+    const arFields = checkConfigPutFields(data, [...Object.keys(DEFAULT_AUTO_RESTART), ...LEGACY_AUTO_RESTART_FIELDS])
     if (!arFields.ok) {
       json(res, { error: arFields.message, rejected: arFields.rejected, known: Object.keys(DEFAULT_AUTO_RESTART) }, 400)
       return true

@@ -41,8 +41,6 @@ export interface AutoRestartConfig {
   /** Restart every N hours, or null. Exactly one of dailyTime/intervalHours is
    *  meaningful; dailyTime wins if both are somehow set. */
   intervalHours: number | null
-  /** Phase 2: run the handoff skill to persist context before a fresh restart. */
-  handoff: boolean
   /** Hours an unanswered inbound question may keep deferring a due restart
    *  before the restart proceeds anyway. See OPEN_QUESTION_DEFERRAL_CAP_HOURS. */
   openQuestionDeferralCapHours: number
@@ -50,12 +48,35 @@ export interface AutoRestartConfig {
 
 export const OPEN_QUESTION_DEFERRAL_CAP_HOURS = 24
 
+/**
+ * Config keys this endpoint still ACCEPTS but no longer stores.
+ *
+ * `handoff` was declared here as "Phase 2: run the handoff skill before a fresh
+ * restart" and was never wired: the restart path (auto-restart-runner,
+ * agent-process) contained zero references to it, and performRestart passed only
+ * `{ fresh }`. So the field read as a switch -- it is in every agent's stored
+ * config, the PUT accepted it, a GET echoed it back -- while setting it to true
+ * changed nothing. That is worse than a missing feature: the obvious remedy for a
+ * nightly restart losing uncommitted context is "turn handoff on for the working
+ * agents", and it would have looked done while doing nothing.
+ *
+ * Handoffs have ONE owner, and it is not this module: the context-guard writes
+ * HANDOFF.md through its own await-handoff state machine, with a timeout and a
+ * staleness refresh. Do not re-add a handoff flag here without wiring it; if the
+ * nightly restart should request a handoff, that belongs in the context-guard as
+ * another trigger, not as a second machine racing the first over the same file.
+ *
+ * Kept in the accepted set purely so an already-loaded dashboard page (whose
+ * cached app.js still sends `handoff: false`) does not start failing its save
+ * with a 400. normalizeAutoRestartConfig drops it, so it is never persisted.
+ */
+export const LEGACY_AUTO_RESTART_FIELDS = ['handoff'] as const
+
 export const DEFAULT_AUTO_RESTART: AutoRestartConfig = {
   enabled: false,
   mode: 'continue',
   dailyTime: null,
   intervalHours: null,
-  handoff: false,
   openQuestionDeferralCapHours: OPEN_QUESTION_DEFERRAL_CAP_HOURS,
 }
 
@@ -96,7 +117,6 @@ export function normalizeAutoRestartConfig(raw: unknown): AutoRestartConfig {
     mode,
     dailyTime,
     intervalHours,
-    handoff: o.handoff === true,
     openQuestionDeferralCapHours,
   }
 }
@@ -132,6 +152,20 @@ export function dailyDueAtMs(
   minutesSinceMidnight: number,
 ): number {
   return localMidnightMs + minutesSinceMidnight * 60_000
+}
+
+/**
+ * Start-of-local-day timestamp for the day containing `nowMs`.
+ *
+ * Lives here, next to dailyDueAtMs, because TWO runners now schedule on a
+ * daily wall-clock slot: the nightly auto-restart and the context-guard's
+ * daily-handoff tier. A second private copy of this would be a second place
+ * for a midnight boundary to drift.
+ */
+export function localMidnightMs(nowMs: number): number {
+  const d = new Date(nowMs)
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
 }
 
 /**
