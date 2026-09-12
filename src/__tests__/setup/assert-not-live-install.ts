@@ -15,6 +15,7 @@
 // worker; per-file guards cannot be forgotten this way).
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { isTmpRootedPath, TMP_ROOT_PREFIXES } from '../../web/tmp-root-prefixes.js'
 
@@ -58,13 +59,23 @@ if (found.length > 0) {
 //
 // Nothing automated runs from here: the only suite runners are the two CI
 // workflows, both on a home-rooted checkout (measured 2026-09-12).
+// DERIVED, never hardcoded. This file ships to every install, so a literal
+// `/Users/<someone>/...` would be wrong on all but one machine -- and there is
+// essentially no such literal left in non-test source. Building it from the running
+// home makes it concrete on every machine, which is what the verify note on #1297
+// actually asked for: a path the reader can paste, not an example to adapt.
+// (Deriving it from the current checkout's NAME was the first attempt and was worse:
+// from a scratchpad worktree it suggested `<home>/wt775-wt`, which is nobody's
+// convention.)
+const suggested = join(homedir(), 'claw-suite')
+
 if (isTmpRootedPath(repoRoot)) {
   throw new Error(
     `REFUSING TO RUN TESTS: ${repoRoot} is on TRANSIENT storage (${TMP_ROOT_PREFIXES.join(', ')}). ` +
       'This is not about losing files: the hook-path registration guard deliberately rejects ' +
       'tmp-rooted hook commands, so the hook and gate test files would go FALSELY RED here, ' +
       'and a false red about the shared baseline is worse than no run at all. ' +
-      'Run from a worktree UNDER YOUR HOME, e.g. `git worktree add ~/claw-test && cd ~/claw-test && npm test`. ' +
+      `Run from a worktree UNDER YOUR HOME: \`git worktree add ${suggested} && cd ${suggested} && npm ci && npm test\`. ` +
       'Fleet agents: your scratchpad is tmp-rooted, so it is never a valid place to measure the suite.',
   )
 }
