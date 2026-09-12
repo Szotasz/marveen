@@ -47,3 +47,8 @@ jobs:
       # regression guard that only runs manually rots exactly like a one-shot
       # seed. Runs natively here (ubuntu = the Linux branch it asserts).
       - run: bash scripts/__tests__/stop-start-system-unit.test.sh
+      # Same reasoning for the taskstate stub writer: its load-bearing contract
+      # is the EXIT CODE (a non-zero UserPromptSubmit hook blocks every prompt),
+      # and that is only asserted by this shell suite. The live-API case inside
+      # it stays opt-in, so this run touches nothing outside its fixtures.
+      - run: bash scripts/__tests__/taskstate-stub.test.sh
