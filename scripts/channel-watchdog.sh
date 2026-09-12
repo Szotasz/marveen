@@ -61,6 +61,40 @@ AUTH_DEAD_THRESHOLD_TICKS=3     # consecutive dead-token ticks (~15min @ 5min/ti
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*"; }
 
+# PORTSTAT912: mtime in epoch seconds, portable across BSD (macOS) and GNU
+# (Linux) stat. `stat -c %Y` is GNU-only: on macOS it exits 1 with "illegal
+# option -- c", the old `|| echo 0` fallback turned that into mtime=0, and a
+# BRAND NEW keepalive file then measured as infinitely old. STALE was therefore
+# true on every single tick, so installing this watchdog on a Mac would not have
+# protected the main agent -- it would have respawned its channels pane every
+# 5 minutes up to MAX_CONSECUTIVE. The same zero also defeats the respawn-grace
+# gate below, which is the brake meant to stop exactly that storm, so the two
+# failures compound instead of cancelling.
+#
+# Both guards are needed, not just the exit code: under GNU stat `-f` is a
+# valid but DIFFERENT option (file-system status), so a wrong-platform call can
+# print something that is not an mtime. A value is only accepted if the command
+# succeeded AND the output is all digits; 0 is returned only when neither form
+# yielded one, which keeps the historical "unknown means act" behaviour.
+file_mtime() {
+  local _f="$1" _m=""
+  _m=$(stat -f %m "$_f" 2>/dev/null) || _m=""
+  case "$_m" in (''|*[!0-9]*) _m="";; esac
+  if [ -z "$_m" ]; then
+    _m=$(stat -c %Y "$_f" 2>/dev/null) || _m=""
+    case "$_m" in (''|*[!0-9]*) _m="";; esac
+  fi
+  printf '%s\n' "${_m:-0}"
+}
+
+# Debug entry point for the regression test: print one file's resolved mtime and
+# exit before any session lookup, .env read or tmux call, so the helper can be
+# measured on a host where the watchdog itself cannot run.
+if [ "${1:-}" = "--file-mtime" ]; then
+  file_mtime "${2:-}"
+  exit 0
+fi
+
 # --- resolve the channels session + provider (launch-order / rename independent) ---
 MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
 MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
@@ -113,7 +147,7 @@ if [ ! -f "$KEEPALIVE_FILE" ]; then
   # keepalive probe itself was never configured.
   log "no keepalive file yet ($KEEPALIVE_FILE) -- keep-alive task not established, STALE=false"
 else
-  ka_mtime=$(stat -c %Y "$KEEPALIVE_FILE" 2>/dev/null || echo 0)
+  ka_mtime=$(file_mtime "$KEEPALIVE_FILE")
   age=$(( now - ka_mtime ))
   [ "$age" -ge "$STALE_SECONDS" ] && STALE=true
 fi
@@ -150,7 +184,7 @@ fi
 
 # --- gate 4: respawn grace (shared with the dashboard watchdog) ---
 if [ -f "$RESPAWN_STAMP" ]; then
-  last=$(stat -c %Y "$RESPAWN_STAMP" 2>/dev/null || echo 0)
+  last=$(file_mtime "$RESPAWN_STAMP")
   if [ $(( now - last )) -lt "$GRACE_SECONDS" ]; then
     log "problem detected (STALE=$STALE AUTHDEAD=$AUTHDEAD) but within respawn grace -- deferring"
     exit 0

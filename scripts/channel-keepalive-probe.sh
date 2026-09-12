@@ -34,17 +34,26 @@ LOG_TAG="channel-keepalive-probe"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*"; }
 
-# Whether a dedicated channel-watchdog recovery owner is actually installed on
-# THIS host. The probe declines to recover a dead pipe on purpose -- but only a
-# real, installed watchdog legitimately "owns recovery". The systemd
-# channel-watchdog timer has NO launchd twin, so on macOS it is simply absent
-# (CHANWDOG818): claiming an owner that isn't there turns a genuine outage into
-# silence. Fail loud instead when nothing owns recovery.
-channel_watchdog_installed() {
+# Whether a dedicated recovery owner is actually installed on THIS host. The
+# probe declines to recover a dead pipe on purpose -- but only a real, installed
+# unit legitimately "owns recovery". The systemd channel-watchdog timer has NO
+# launchd twin, so on macOS it is simply absent (CHANWDOG818): claiming an owner
+# that isn't there turns a genuine outage into silence. Fail loud instead when
+# nothing owns recovery.
+#
+# More than one unit can hold that role. channel-outage-alarm is the macOS
+# launchd owner (180s timer, one restart per outage plus a direct Bot API alert
+# to the owner); recognising only the systemd name made the probe log a FALSE
+# "no recovery unit" WARN on a host that in fact had one. The label is matched
+# anchored at end of line -- launchctl prints it last -- so a longer name that
+# merely starts with an accepted one cannot pass as a match.
+recovery_owner_installed() {
   if [ "$(uname -s)" = "Darwin" ]; then
-    launchctl list 2>/dev/null | grep -q 'com\.marveen\.channel-watchdog'
+    launchctl list 2>/dev/null \
+      | grep -qE '(com\.marveen\.channel-watchdog|com\.marveen\.channel-outage-alarm)$'
   else
-    systemctl --user is-enabled channel-watchdog.timer >/dev/null 2>&1
+    systemctl --user is-enabled channel-watchdog.timer >/dev/null 2>&1 \
+      || systemctl --user is-enabled channel-outage-alarm.timer >/dev/null 2>&1
   fi
 }
 
@@ -120,10 +129,10 @@ done < <(ps -axo pid,command 2>/dev/null | grep -E "$RUNTIME_TOKEN_RX" | grep -E
 if [ "$alive" -ne 1 ]; then
   # Do NOT advance the keepalive: a dead pipe must stay visibly stale so a real
   # recovery owner can act. But only claim an owner that actually exists here.
-  if channel_watchdog_installed; then
-    log "no live telegram poller under $SESSION (pane $pane_pid) -- pipe may be down; not touching (channel-watchdog owns recovery)"
+  if recovery_owner_installed; then
+    log "no live telegram poller under $SESSION (pane $pane_pid) -- pipe may be down; not touching (an installed recovery unit owns it)"
   else
-    log "WARN no live telegram poller under $SESSION (pane $pane_pid) -- pipe may be down AND no channel-watchdog recovery unit is installed on this host (CHANWDOG818); automatic recovery relies only on process-death KeepAlive + the dashboard channel-monitor, so a FROZEN session while the dashboard is also down is NOT auto-recovered"
+    log "WARN no live telegram poller under $SESSION (pane $pane_pid) -- pipe may be down AND no recovery unit (channel-watchdog / channel-outage-alarm) is installed on this host (CHANWDOG818); automatic recovery relies only on process-death KeepAlive + the dashboard channel-monitor, so a FROZEN session while the dashboard is also down is NOT auto-recovered"
   fi
   exit 0
 fi
