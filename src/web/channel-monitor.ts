@@ -762,12 +762,16 @@ export function buildMainSessionRespawnCmd(opts: {
    * shouting about. REQUIRED, and obtainable in production only from
    * resolveMainConfigDecision(), which reports as it resolves -- see
    * main-config-decision.ts for why the guard is wired as a value rather than a
-   * callback. `isolatedConfigDir` set => export the isolated dir plus the fleet
-   * setup-token (parity with channels.sh CFG_ENV); null with `fleetToken` =>
-   * export the token alone, which is what keeps a wizard-entered token reaching
-   * a respawned main session at all (2026-07-15 bootcamp, bug 2 latent path);
-   * null with no token => the shared root, unchanged for installs with
-   * isolation off.
+   * callback. `isolatedConfigDir` set with `ownCredentials` => export ONLY the
+   * dir (it carries its own .credentials.json -- explicit or a rotated
+   * claude-plans entry; injecting the fleet token on top would swap that
+   * login for the flotta's shared one, CLAUDEPLANWATCHDOG912); `isolatedConfigDir`
+   * set without `ownCredentials` => export the dir plus the fleet setup-token
+   * (parity with channels.sh CFG_ENV, the credential-less flotta dir); null
+   * with `fleetToken` => export the token alone, which is what keeps a
+   * wizard-entered token reaching a respawned main session at all (2026-07-15
+   * bootcamp, bug 2 latent path); null with no token => the shared root,
+   * unchanged for installs with isolation off.
    */
   config: MainConfigDecision
   /**
@@ -790,8 +794,13 @@ export function buildMainSessionRespawnCmd(opts: {
     '&& export MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000',
     // macOS main-agent config isolation -- parity with channels.sh CFG_ENV. The
     // token is read at launch via $(cat) so the secret never lands in argv/`ps`.
+    // An own-credential dir (explicit or a rotated claude-plans entry) gets NO
+    // token: it already has its own .credentials.json, and injecting the fleet
+    // token on top would authenticate as the flotta instead of that login.
     ...(opts.config.isolatedConfigDir
-      ? [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`]
+      ? (opts.config.ownCredentials
+          ? [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}'`]
+          : [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`])
       : opts.config.fleetToken
         ? [`&& export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`]
         : []),

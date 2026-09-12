@@ -33,6 +33,8 @@ import { logger } from '../logger.js'
 import { createAgentMessage } from '../db.js'
 import {
   ensureMainAgentIsolatedConfigDir,
+  resolveMainAgentConfigDir,
+  resolveMainAgentRotatedConfigDir,
   readMainSharedConfigState,
   mainSharedConfigTrigger,
   type MainSharedConfigTrigger,
@@ -48,6 +50,17 @@ declare const MAIN_CONFIG_DECISION: unique symbol
 export type MainConfigDecision = {
   readonly [MAIN_CONFIG_DECISION]: true
   readonly isolatedConfigDir: string | null
+  /** True when isolatedConfigDir came from resolveMainAgentConfigDir() (explicit)
+   *  or resolveMainAgentRotatedConfigDir() (rotated) -- both carry their OWN
+   *  .credentials.json, same as scripts/main-agent-isolated-config.mjs's
+   *  `explicit`/`rotated` modes. The fleet token must NOT be injected on top of
+   *  either: that would swap the dir's real login for the flotta's shared one,
+   *  which is exactly the CLAUDEPLANWATCHDOG912 bug this field closes (a
+   *  rotated plan silently reverting to the flotta identity on the next
+   *  watchdog/keep-alive respawn, because this decision used to know only
+   *  about the plain isolated dir). False for the generic credential-less
+   *  isolated dir, which DOES need the token. */
+  readonly ownCredentials: boolean
   readonly fleetToken: boolean
   readonly trigger: MainSharedConfigTrigger
 }
@@ -97,7 +110,7 @@ function noteState(d: Omit<MainConfigDecision, typeof MAIN_CONFIG_DECISION>): vo
   try {
     if (!d.trigger) {
       line(d.isolatedConfigDir
-        ? `main-agent respawn: isolated CLAUDE_CONFIG_DIR=${d.isolatedConfigDir}`
+        ? `main-agent respawn: ${d.ownCredentials ? 'own-credential' : 'isolated'} CLAUDE_CONFIG_DIR=${d.isolatedConfigDir}`
         : 'main-agent respawn: shared ~/.claude (no isolation configured, no fleet token) -- expected for a stock install')
       return
     }
@@ -119,12 +132,23 @@ function noteState(d: Omit<MainConfigDecision, typeof MAIN_CONFIG_DECISION>): vo
  * production source of a MainConfigDecision.
  */
 export function resolveMainConfigDecision(): MainConfigDecision {
-  const state = readMainSharedConfigState(ensureMainAgentIsolatedConfigDir())
+  // Same precedence as scripts/main-agent-isolated-config.mjs (the shell
+  // respawners' single source of truth): an explicit dir is a deliberate,
+  // permanent identity choice and wins outright; a rotated plan is the next
+  // strongest, more specific signal than the generic flotta fallback. Only
+  // ensureMainAgentIsolatedConfigDir() PROVISIONS anything on disk, so it is
+  // deliberately the last one tried -- neither explicit nor rotated needs
+  // (or should get) a freshly-provisioned credential-less dir.
+  const explicit = resolveMainAgentConfigDir()
+  const rotated = explicit ? null : resolveMainAgentRotatedConfigDir()
+  const ownDir = explicit ?? rotated
+  const state = readMainSharedConfigState(ownDir ?? ensureMainAgentIsolatedConfigDir())
   // isolatedDirExists is an INPUT to the verdict, not part of it: carrying it
   // along would invite a later reader to re-derive the trigger from the
   // decision and quietly disagree with mainSharedConfigTrigger.
   const d = {
     isolatedConfigDir: state.isolatedConfigDir,
+    ownCredentials: ownDir != null,
     fleetToken: state.fleetToken,
     trigger: mainSharedConfigTrigger(state),
   }
@@ -143,8 +167,10 @@ export function mainConfigDecisionForTest(
 ): MainConfigDecision {
   const isolatedConfigDir = partial.isolatedConfigDir ?? null
   const fleetToken = partial.fleetToken ?? false
+  const ownCredentials = partial.ownCredentials ?? false
   return {
     isolatedConfigDir,
+    ownCredentials,
     fleetToken,
     trigger: partial.trigger ?? mainSharedConfigTrigger({ isolatedConfigDir, fleetToken, isolatedDirExists: false }),
   } as MainConfigDecision

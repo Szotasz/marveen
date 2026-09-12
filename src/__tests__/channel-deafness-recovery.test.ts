@@ -78,6 +78,21 @@ describe('buildMainSessionRespawnCmd', () => {
     expect(cmd).not.toContain('CLAUDE_CODE_OAUTH_TOKEN')
     expect(cmd).not.toContain('CLAUDE_CONFIG_DIR')
   })
+
+  // CLAUDEPLANWATCHDOG912: an own-credential dir (explicit MAIN_AGENT_CONFIG_DIR,
+  // or a rotated claude-plans entry) carries its OWN .credentials.json. Injecting
+  // the fleet token on top of it authenticates as the flotta instead of that
+  // login -- exactly the bug that silently undid a live plan rotation on the
+  // next watchdog respawn (observed 2026-09-12, solarforce-ai host).
+  it('exports ONLY the config dir, no fleet token, when the dir carries its own credentials (rotated/explicit)', () => {
+    const cmd = buildMainSessionRespawnCmd({
+      ...base,
+      continueSession: false,
+      config: mainConfigDecisionForTest({ isolatedConfigDir: '/home/solarforce/.claude-second', ownCredentials: true, fleetToken: true }),
+    })
+    expect(cmd).toContain("export CLAUDE_CONFIG_DIR='/home/solarforce/.claude-second'")
+    expect(cmd).not.toContain('CLAUDE_CODE_OAUTH_TOKEN')
+  })
 })
 
 // CONTRACT: the post-resume guard (CC 2.1.193) escalates to a fresh respawn iff
