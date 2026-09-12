@@ -738,15 +738,6 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     return true
   }
 
-  // Named Claude subscription registry (store/claude-plans.json), resolved +
-  // validated. Feeds the per-agent plan dropdown; empty array when no registry
-  // file exists (opt-in feature). Read-only in PR1 -- editing the registry is a
-  // separate surface.
-  if (path === '/api/claude-plans' && method === 'GET') {
-    json(res, readClaudePlans())
-    return true
-  }
-
   // Live activity panel: per-agent "what is it doing right now". Read-only,
   // polled by the dashboard every 3s; uses the same pane-state detector as the
   // scheduler (detectPaneState) and returns the last few output lines as a tail.
