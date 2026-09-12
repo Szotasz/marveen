@@ -102,7 +102,31 @@ else
   fail "missing file: falls back to 0" "0" "[$got]"
 fi
 
-# --- case 4: the red-capable control -----------------------------------------
+# --- case 4: the SECOND copy of the helper ------------------------------------
+# channel-outage-alarm.sh carries its own mtime_of(). The duplication is
+# deliberate -- that unit exists precisely to share nothing with what it
+# watches -- but a second copy is a second thing that can be wrong, and this
+# one reads the keepalive file the whole alarm hangs on. Pull the function out
+# of the shipped file and hold it to the same contract.
+ALARM_SRC="$INSTALL_DIR/scripts/channel-outage-alarm.sh"
+if [ ! -f "$ALARM_SRC" ]; then
+  fail "alarm copy: channel-outage-alarm.sh is present" "the shipped file" "absent"
+else
+  awk '/^mtime_of\(\)/,/^}/' "$ALARM_SRC" > "$BOX/alarm-mtime.sh"
+  if ! grep -q 'stat ' "$BOX/alarm-mtime.sh"; then
+    fail "alarm copy: mtime_of extracted" "a function body calling stat" "[$(head -1 "$BOX/alarm-mtime.sh")]"
+  else
+    got="$(bash -c "source '$BOX/alarm-mtime.sh'; mtime_of '$fresh'" 2>/dev/null)"
+    want="$(mtime_oracle "$fresh")"
+    if [ "$got" = "$want" ] && [ "$got" != "0" ]; then
+      pass "alarm copy: mtime_of agrees with the oracle"
+    else
+      fail "alarm copy: mtime_of agrees with the oracle" "$want" "[$got]"
+    fi
+  fi
+fi
+
+# --- case 5: the red-capable control -----------------------------------------
 # Exactly one of the two single-form implementations is wrong on any given
 # host. Naming which one, on every run, is what keeps the cases above from
 # being green for free -- and it is the pre-fix expression verbatim, including
