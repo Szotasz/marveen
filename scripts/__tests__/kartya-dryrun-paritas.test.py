@@ -136,6 +136,53 @@ dry_nomsg = run('TOKENUJ3', ('--no-msg', '--dry-run'), root=NOTOKEN_ROOT)
 check('10 token nelkul, de --no-msg mellett zold (az or az UZENET-utra szol)',
       dry_nomsg.returncode == 0, f'exit={dry_nomsg.returncode} err={dry_nomsg.stderr!r}')
 
+# --- 5. ELOZMENY-FIGYELMEZTETES: A DRY-RUN AG NEM LEHET VAKABB AZ ELESNEL ---
+# Mira lelete, 2026-09-11: a figyelmeztetes eloszor CSAK az eles agon futott, mert a
+# komment-mod dry-run `return`-je elotte allt. Ezzel EPP a gondos hasznalot buntette --
+# aki elovigyazatossagbol dry-runol egy mezomozgatas elott, kevesebbet latott, mint aki
+# gondolkodas nelkul nekifutott. A paritas itt nem elmeleti: a negyedik utkozest pont az
+# elozetes ellenorzes elozne meg.
+seed('ELOZM1')
+# elso mozgatas MARVEEN neveben (eles), hogy legyen elozmeny-nyom
+run('ELOZM1', ('--comment-file', msgfile('ELOZM1'), '--author', 'Marveen', '--status', 'in_progress'))
+# majd MIRA neveben dry-run: MAS szerzo, 30 percen belul -> HANGOS figyelmeztetes kell
+d = run('ELOZM1', ('--comment-file', msgfile('ELOZM1'), '--author', 'Mira', '--status', 'planned', '--dry-run'))
+out_d = d.stdout + d.stderr
+check('11 a dry-run ag is kiirja az elozmeny-figyelmeztetest',
+      'AZ ELOZO MEZOMOZGATAS' in out_d, f'{out_d!r}')
+check('12 es a dry-run NEM allitja, hogy vegrehajtja',
+      'most semmi nem irodik' in out_d and 'A mozgatast VEGREHAJTOM' not in out_d, f'{out_d!r}')
+# NEGATIV KONTROLL: ugyanaz a szerzo -> csak a halk sor, hangos NEM
+d2 = run('ELOZM1', ('--comment-file', msgfile('ELOZM1'), '--author', 'Marveen', '--status', 'planned', '--dry-run'))
+out_d2 = d2.stdout + d2.stderr
+check('13 NEGATIV KONTROLL: sajat elozmenynel nincs hangos figyelmeztetes',
+      'AZ ELOZO MEZOMOZGATAS' not in out_d2 and 'elozo mezomozgatas:' in out_d2, f'{out_d2!r}')
+
+# --- 6. A TAROLT NYOM A TELJES REGI ERTEKET ORZI ---
+# A valtoztatas LENYEGE: a kartya-mezo egyerteku, aki utoljara ir, felulir. A rovidített
+# (60 karakteres) nyomból egy felulirt hosszu cimet nem lehetett visszaallitani -- pont
+# akkor nem, amikor kellett volna. A konzol marad rovid, a TAROLT nyom teljes.
+# A CIM HORGONYA (KARTYAHORGONY906) a kartya ID-jet koveteli -- enelkul a futas MAR A
+# HORGONY-KAPUN elhalna, es ez a ket ellenorzes a ROSSZ OKBOL lenne piros.
+HOSSZU = ('TELJES1 EREDETI HOSSZU CIM, amit vissza kell tudni allitani: '
+          + 'x' * 120 + ' -- a vege is szamit')
+seed('TELJES1')
+_db = sqlite3.connect(DB_PATH)
+_db.execute('UPDATE kanban_cards SET title=?, assignee=NULL WHERE id=?', (HOSSZU, 'TELJES1'))
+_db.commit(); _db.close()
+run('TELJES1', ('--comment-file', msgfile('TELJES1'), '--author', 'Marveen',
+                '--title', 'TELJES1 uj rovid cim', '--assignee', 'samu'))
+_db = sqlite3.connect(DB_PATH)
+_nyom = _db.execute("SELECT content FROM kanban_comments WHERE card_id='TELJES1' AND "
+                    "content LIKE '[kartya-es-ertesites.py] Mezomozgatas%' "
+                    "ORDER BY created_at DESC LIMIT 1").fetchone()
+_db.close()
+_nyom = _nyom[0] if _nyom else ''
+check('14 a tarolt nyom a TELJES regi cimet orzi (nem a 60 karakteres rovidítest)',
+      HOSSZU in _nyom, f'{_nyom!r}')
+check('15 a NULL regi ertek megkulonboztetheto az ures szotol',
+      '(ures -- NULL volt)' in _nyom, f'{_nyom!r}')
+
 print()
 if FAILS:
     print(f'BUKOTT: {len(FAILS)} -- {", ".join(FAILS)}', file=sys.stderr)
