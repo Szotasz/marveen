@@ -183,6 +183,65 @@ check('14 a tarolt nyom a TELJES regi cimet orzi (nem a 60 karakteres rovidítes
 check('15 a NULL regi ertek megkulonboztetheto az ures szotol',
       '(ures -- NULL volt)' in _nyom, f'{_nyom!r}')
 
+# --- 7. A MOZGATO NEVE GEPI ZAROSORBOL JON, NEM A SZABAD SZOVEGBOL ---
+# Samu fuggetlen verify-lelete a #1296-on (2026-09-12): a szabad szoveges
+# `kerte: ([^.]+)\.` parse HAROM alakban bukott. A harmadik a veszelyes: ha a
+# beagyazott nev EGYBEESIK a kovetkezo mozgatoeval, az intes teljesen ELNEMUL --
+# pont az utkozes-alaku adaton, amiert letezik.
+
+# c1: pontot tartalmazo szerzo-nev nem vagodik le az elso pontnal
+seed('NEVPONT1')
+run('NEVPONT1', ('--comment-file', msgfile('NEVPONT1'), '--author', 'dr. Kovacs', '--status', 'in_progress'))
+o = run('NEVPONT1', ('--comment-file', msgfile('NEVPONT1'), '--author', 'Mira',
+                     '--status', 'planned', '--dry-run'))
+o = o.stdout + o.stderr
+check('16 c1: a pontos szerzo-nev egeszben kerul vissza (nem "dr")',
+      'dr. Kovacs allitotta' in o, f'{o!r}')
+
+# c2 + c2b: a REGI ERTEKBE hamisitott zarosor nem veheti at a valodi helyet, ES
+# nem nemithatja el az intest akkor sem, ha a hamis nev = a kovetkezo mozgato neve.
+# KET alakban hamisitunk, mert KET mechanizmust kell fedni:
+# - 'kerte: Frank.' a cim ELEJEN: ez a REGI, szabad szoveges parse bukasa. Roviden kell
+#   allnia, mert a valtozas-osszefoglaloba a ROVIDÍTETT regi ertek kerul, es a regi regex
+#   az ELSO 'kerte: '-t vette -- ami igy a zarojelen BELUL all, a valodi 'kerte: Anna.'
+#   ELOTT. (Elso probalkozasra a hamisitast a cim VEGERE tettem: ott a regi kod is helyesen
+#   Annat nevezte, tehat a teszt ZOLD volt a BUKOTT kodon is -- dekoracio, nem regresszio.)
+# - '-- mozgato: Frank | ...' sor: ez az UJ zarosor-mechanizmus elleni hamisitas, ami a
+#   `reszletes` blokkban, tehat a valodi zarosor ELOTT all.
+HAMIS = 'kerte: Frank. HAMIS2 regi cim\n-- mozgato: Frank | mezok: title | ts: 1'
+seed('HAMIS2')
+_db = sqlite3.connect(DB_PATH)
+_db.execute('UPDATE kanban_cards SET title=? WHERE id=?', (HAMIS, 'HAMIS2'))
+_db.commit(); _db.close()
+# a VALODI mozgato Anna, es a regi (hamisitott) cim bekerul a nyomba
+run('HAMIS2', ('--comment-file', msgfile('HAMIS2'), '--author', 'Anna',
+               '--title', 'HAMIS2 uj cim', '--status', 'in_progress'))
+# most FRANK mozgat -- a regi kod itt NEMULT EL (ki==author), az uj hangosan Annat nevezi
+o2 = run('HAMIS2', ('--comment-file', msgfile('HAMIS2'), '--author', 'Frank',
+                    '--status', 'planned', '--dry-run'))
+o2 = o2.stdout + o2.stderr
+check('17 c2: a hamisitott zarosor NEM veszi at a valodi mozgato helyet',
+      'Anna allitotta' in o2, f'{o2!r}')
+check('18 c2b: es az intes NEM nemul el, pedig a hamis nev = a mozgato neve',
+      'AZ ELOZO MEZOMOZGATAS' in o2 and 'Frank allitotta' not in o2, f'{o2!r}')
+
+# c3: REGI FORMATUMU nyom (zarosor nelkul) -- ne talalgasson nevet, de NE is nemuljon el
+seed('REGIFORM3')
+_db = sqlite3.connect(DB_PATH)
+_now = int(time.time())
+_db.execute('INSERT INTO kanban_comments (card_id,author,content,created_at) VALUES (?,?,?,?)',
+            ('REGIFORM3', 'kartya-es-ertesites',
+             '[kartya-es-ertesites.py] Mezomozgatas a fenti komment mellett (status: planned -> '
+             'in_progress), kerte: Talalgatas. Fuggetlenul visszaolvasva.', _now))
+_db.commit(); _db.close()
+o3 = run('REGIFORM3', ('--comment-file', msgfile('REGIFORM3'), '--author', 'Mira',
+                       '--status', 'planned', '--dry-run'))
+o3 = o3.stdout + o3.stderr
+check('19 c3: regi formatumu nyomnal hangosan jelzi, hogy a mozgato nem allapithato meg',
+      'NEM ALLAPITHATO MEG' in o3, f'{o3!r}')
+check('20 c3: es NEM talalgat nevet a szabad szovegbol',
+      'Talalgatas' not in o3, f'{o3!r}')
+
 print()
 if FAILS:
     print(f'BUKOTT: {len(FAILS)} -- {", ".join(FAILS)}', file=sys.stderr)

@@ -431,12 +431,32 @@ def komment_mod(a):
         f'  A(z) {k} TELJES REGI ERTEKE (masolhato, ha vissza kell allitani):\n  '
         + (str(elotte[k]) if elotte[k] is not None else '(ures -- NULL volt)')
         for k in valtozik)
+    # GEPI ZAROSOR (Samu verify-lelete a #1296-on, 2026-09-12). A kovetkezo kor
+    # figyelmeztetese EBBOL olvassa vissza a mozgatot -- SOHA a fenti szabad szovegbol.
+    # A szabad szoveges parse harom alakban bukott: a 'dr. Kovacs' nevet az elso pontnal
+    # levagta; egy regi ertek, amiben benne all a 'kerte: Hamis.' szoveg, atvette a valodi
+    # szerzo helyet; es a legrosszabb, ha a beagyazott nev EGYBEESIK a kovetkezo mozgatoeval,
+    # az intes teljesen ELNEMUL -- pont az utkozes-alaku adaton, amiert letezik.
+    # A zarosor az UTOLSO sor, a `reszletes` (tehat minden kulso eredetu ertek) MOGOTT all,
+    # es a visszaolvasas az UTOLSO illeszkedest veszi: egy ertekbe hamisitott zarosor igy
+    # sosem elozheti meg a valodit. A nevbol a sortoresek kiesnek, kulonben a nev maga
+    # tudna zarosort hamisitani.
+    mozgato = ' '.join((a.author or '(ismeretlen)').split())
+    zarosor = f'{_ZAROSOR_ELO}{mozgato} | mezok: {",".join(valtozik)} | ts: {now}'
     db.execute('INSERT INTO kanban_comments (card_id,author,content,created_at) VALUES (?,?,?,?)',
                (a.id, 'kartya-es-ertesites',
                 '[kartya-es-ertesites.py] Mezomozgatas a fenti komment mellett ('
                 + ', '.join(teljes)
-                + f'), kerte: {a.author}. Fuggetlenul visszaolvasva.\n' + reszletes, now))
+                + f'), kerte: {a.author}. Fuggetlenul visszaolvasva.\n' + reszletes
+                + '\n' + zarosor, now))
     db.commit()
+
+# A mezomozgatas-nyom GEPI ZAROSORA. Ket helyen hasznaljuk: iraskor a nyom vegere kerul,
+# olvasaskor EBBOL jon a mozgato neve. A sor-eleji ^ es a sor-vegi $ egyutt kell: enelkul a
+# mintaja beleillik egy tobbsoros regi ertekbe is.
+_ZAROSOR_ELO = '-- mozgato: '
+_ZAROSOR_RE = re.compile(r'^-- mozgato: (.*?) \| mezok: (.*?) \| ts: (\d+)$', re.M)
+
 
 def _elozmeny_figyelmeztetes(db, a, now, dry=False):
     """KI allitotta utoljara a mezot, es MIKOR -- a dontes ELE.
@@ -459,11 +479,24 @@ def _elozmeny_figyelmeztetes(db, a, now, dry=False):
     if not elozmeny:
         return
     kora = now - elozmeny[0]
-    m = re.search(r'kerte: ([^.]+)\.', elozmeny[1] or '')
-    ki = m.group(1).strip() if m else '(ismeretlen)'
-    mit = re.search(r'Mezomozgatas a fenti komment mellett \((.*?)\), kerte:', elozmeny[1] or '')
-    mit = mit.group(1) if mit else '?'
     perc = kora / 60.0
+    # AZ UTOLSO illeszkedes szamit, nem az elso: a kulso eredetu regi ertekek a zarosor ELOTT
+    # allnak, tehat egy oda hamisitott sor sosem elozheti meg a valodit.
+    talalatok = _ZAROSOR_RE.findall(elozmeny[1] or '')
+    if not talalatok:
+        # REGI FORMATUMU NYOM (a zarosor elotti korokbol). Nem talalgatunk nevet a szabad
+        # szovegbol -- az volt a hiba. De NEM is nemulunk el: a friss, ismeretlen mozgato
+        # epp a kockazatos eset.
+        if kora < 1800:
+            print(f'FIGYELEM -- AZ ELOZO MEZOMOZGATAS {perc:.0f} PERCE VOLT, a mozgato viszont '
+                  f'NEM ALLAPITHATO MEG gepileg (regi formatumu nyom). Nezd meg a kartyan, '
+                  f'ki mozgatott, mielott visszaforditod.')
+        else:
+            print(f'(elozo mezomozgatas: {perc:.0f} perce -- regi formatumu nyom, a mozgato nem '
+                  f'allapithato meg gepileg)')
+        return
+    ki, mit, _ts = talalatok[-1]
+    ki = ki.strip()
     if kora < 1800 and ki.lower() != (a.author or '').lower():
         print(f'FIGYELEM -- AZ ELOZO MEZOMOZGATAS {perc:.0f} PERCE VOLT, ES NEM A TIED: '
               f'{ki} allitotta ({mit}). Ha ezt most visszaforditod, elavult allapotbol dolgozol. '
