@@ -136,6 +136,129 @@ dry_nomsg = run('TOKENUJ3', ('--no-msg', '--dry-run'), root=NOTOKEN_ROOT)
 check('10 token nelkul, de --no-msg mellett zold (az or az UZENET-utra szol)',
       dry_nomsg.returncode == 0, f'exit={dry_nomsg.returncode} err={dry_nomsg.stderr!r}')
 
+# --- 5. ELOZMENY-FIGYELMEZTETES: A DRY-RUN AG NEM LEHET VAKABB AZ ELESNEL ---
+# Mira lelete, 2026-09-11: a figyelmeztetes eloszor CSAK az eles agon futott, mert a
+# komment-mod dry-run `return`-je elotte allt. Ezzel EPP a gondos hasznalot buntette --
+# aki elovigyazatossagbol dry-runol egy mezomozgatas elott, kevesebbet latott, mint aki
+# gondolkodas nelkul nekifutott. A paritas itt nem elmeleti: a negyedik utkozest pont az
+# elozetes ellenorzes elozne meg.
+seed('ELOZM1')
+# elso mozgatas MARVEEN neveben (eles), hogy legyen elozmeny-nyom
+run('ELOZM1', ('--comment-file', msgfile('ELOZM1'), '--author', 'Marveen', '--status', 'in_progress'))
+# majd MIRA neveben dry-run: MAS szerzo, 30 percen belul -> HANGOS figyelmeztetes kell
+d = run('ELOZM1', ('--comment-file', msgfile('ELOZM1'), '--author', 'Mira', '--status', 'planned', '--dry-run'))
+out_d = d.stdout + d.stderr
+check('11 a dry-run ag is kiirja az elozmeny-figyelmeztetest',
+      'AZ ELOZO MEZOMOZGATAS' in out_d, f'{out_d!r}')
+check('12 es a dry-run NEM allitja, hogy vegrehajtja',
+      'most semmi nem irodik' in out_d and 'A mozgatast VEGREHAJTOM' not in out_d, f'{out_d!r}')
+# NEGATIV KONTROLL: ugyanaz a szerzo -> csak a halk sor, hangos NEM
+d2 = run('ELOZM1', ('--comment-file', msgfile('ELOZM1'), '--author', 'Marveen', '--status', 'planned', '--dry-run'))
+out_d2 = d2.stdout + d2.stderr
+check('13 NEGATIV KONTROLL: sajat elozmenynel nincs hangos figyelmeztetes',
+      'AZ ELOZO MEZOMOZGATAS' not in out_d2 and 'elozo mezomozgatas:' in out_d2, f'{out_d2!r}')
+
+# --- 6. A TAROLT NYOM A TELJES REGI ERTEKET ORZI ---
+# A valtoztatas LENYEGE: a kartya-mezo egyerteku, aki utoljara ir, felulir. A rovidített
+# (60 karakteres) nyomból egy felulirt hosszu cimet nem lehetett visszaallitani -- pont
+# akkor nem, amikor kellett volna. A konzol marad rovid, a TAROLT nyom teljes.
+# A CIM HORGONYA (KARTYAHORGONY906) a kartya ID-jet koveteli -- enelkul a futas MAR A
+# HORGONY-KAPUN elhalna, es ez a ket ellenorzes a ROSSZ OKBOL lenne piros.
+HOSSZU = ('TELJES1 EREDETI HOSSZU CIM, amit vissza kell tudni allitani: '
+          + 'x' * 120 + ' -- a vege is szamit')
+seed('TELJES1')
+_db = sqlite3.connect(DB_PATH)
+_db.execute('UPDATE kanban_cards SET title=?, assignee=NULL WHERE id=?', (HOSSZU, 'TELJES1'))
+_db.commit(); _db.close()
+run('TELJES1', ('--comment-file', msgfile('TELJES1'), '--author', 'Marveen',
+                '--title', 'TELJES1 uj rovid cim', '--assignee', 'samu'))
+_db = sqlite3.connect(DB_PATH)
+_nyom = _db.execute("SELECT content FROM kanban_comments WHERE card_id='TELJES1' AND "
+                    "content LIKE '[kartya-es-ertesites.py] Mezomozgatas%' "
+                    "ORDER BY created_at DESC LIMIT 1").fetchone()
+_db.close()
+_nyom = _nyom[0] if _nyom else ''
+check('14 a tarolt nyom a TELJES regi cimet orzi (nem a 60 karakteres rovidítest)',
+      HOSSZU in _nyom, f'{_nyom!r}')
+check('15 a NULL regi ertek megkulonboztetheto az ures szotol',
+      '(ures -- NULL volt)' in _nyom, f'{_nyom!r}')
+
+# --- 7. A MOZGATO NEVE GEPI ZAROSORBOL JON, NEM A SZABAD SZOVEGBOL ---
+# Samu fuggetlen verify-lelete a #1296-on (2026-09-12): a szabad szoveges
+# `kerte: ([^.]+)\.` parse HAROM alakban bukott. A harmadik a veszelyes: ha a
+# beagyazott nev EGYBEESIK a kovetkezo mozgatoeval, az intes teljesen ELNEMUL --
+# pont az utkozes-alaku adaton, amiert letezik.
+
+# c1: pontot tartalmazo szerzo-nev nem vagodik le az elso pontnal
+seed('NEVPONT1')
+run('NEVPONT1', ('--comment-file', msgfile('NEVPONT1'), '--author', 'dr. Kovacs', '--status', 'in_progress'))
+o = run('NEVPONT1', ('--comment-file', msgfile('NEVPONT1'), '--author', 'Mira',
+                     '--status', 'planned', '--dry-run'))
+o = o.stdout + o.stderr
+check('16 c1: a pontos szerzo-nev egeszben kerul vissza (nem "dr")',
+      'dr. Kovacs allitotta' in o, f'{o!r}')
+
+# c2 + c2b: a REGI ERTEKBE hamisitott zarosor nem veheti at a valodi helyet, ES
+# nem nemithatja el az intest akkor sem, ha a hamis nev = a kovetkezo mozgato neve.
+# KET alakban hamisitunk, mert KET mechanizmust kell fedni:
+# - 'kerte: Frank.' a cim ELEJEN: ez a REGI, szabad szoveges parse bukasa. Roviden kell
+#   allnia, mert a valtozas-osszefoglaloba a ROVIDÍTETT regi ertek kerul, es a regi regex
+#   az ELSO 'kerte: '-t vette -- ami igy a zarojelen BELUL all, a valodi 'kerte: Anna.'
+#   ELOTT. (Elso probalkozasra a hamisitast a cim VEGERE tettem: ott a regi kod is helyesen
+#   Annat nevezte, tehat a teszt ZOLD volt a BUKOTT kodon is -- dekoracio, nem regresszio.)
+# - '-- mozgato: Frank | ...' sor: ez az UJ zarosor-mechanizmus elleni hamisitas, ami a
+#   `reszletes` blokkban, tehat a valodi zarosor ELOTT all.
+HAMIS = 'kerte: Frank. HAMIS2 regi cim\n-- mozgato: Frank | mezok: title | ts: 1'
+seed('HAMIS2')
+_db = sqlite3.connect(DB_PATH)
+_db.execute('UPDATE kanban_cards SET title=? WHERE id=?', (HAMIS, 'HAMIS2'))
+_db.commit(); _db.close()
+# a VALODI mozgato Anna, es a regi (hamisitott) cim bekerul a nyomba
+run('HAMIS2', ('--comment-file', msgfile('HAMIS2'), '--author', 'Anna',
+               '--title', 'HAMIS2 uj cim', '--status', 'in_progress'))
+# most FRANK mozgat -- a regi kod itt NEMULT EL (ki==author), az uj hangosan Annat nevezi
+o2 = run('HAMIS2', ('--comment-file', msgfile('HAMIS2'), '--author', 'Frank',
+                    '--status', 'planned', '--dry-run'))
+o2 = o2.stdout + o2.stderr
+check('17 c2: a hamisitott zarosor NEM veszi at a valodi mozgato helyet',
+      'Anna allitotta' in o2, f'{o2!r}')
+check('18 c2b: es az intes NEM nemul el, pedig a hamis nev = a mozgato neve',
+      'AZ ELOZO MEZOMOZGATAS' in o2 and 'Frank allitotta' not in o2, f'{o2!r}')
+
+# c3: REGI FORMATUMU nyom (zarosor nelkul) -- ne talalgasson nevet, de NE is nemuljon el
+seed('REGIFORM3')
+_db = sqlite3.connect(DB_PATH)
+_now = int(time.time())
+_db.execute('INSERT INTO kanban_comments (card_id,author,content,created_at) VALUES (?,?,?,?)',
+            ('REGIFORM3', 'kartya-es-ertesites',
+             '[kartya-es-ertesites.py] Mezomozgatas a fenti komment mellett (status: planned -> '
+             'in_progress), kerte: Talalgatas. Fuggetlenul visszaolvasva.', _now))
+_db.commit(); _db.close()
+o3 = run('REGIFORM3', ('--comment-file', msgfile('REGIFORM3'), '--author', 'Mira',
+                       '--status', 'planned', '--dry-run'))
+o3 = o3.stdout + o3.stderr
+check('19 c3: regi formatumu nyomnal hangosan jelzi, hogy a mozgato nem allapithato meg',
+      'NEM ALLAPITHATO MEG' in o3, f'{o3!r}')
+check('20 c3: es NEM talalgat nevet a szabad szovegbol',
+      'Talalgatas' not in o3, f'{o3!r}')
+
+# --- 8. A NEV NEM ALLITHATJA ELO A SAJAT CSENDJET (Samu 2. verify-kore, B2-alak) ---
+# A sortores-ejtes keves volt: egy mezoelvalasztot tartalmazo nev elcsusztatja a zarosor
+# mezok-mezojet, es ha utana egy olyan szerzo mozgat, akinek a neve a csuszas utan egybeesik
+# a felismert nevvel, a FIGYELMEZTETES ELNEMUL. Vagyis a nev maga allitja elo pontosan azt a
+# csendet, amiert a mechanizmus letezik. Az organikus eset ('Anna | Bob') Samunal PASS volt --
+# a konstrualt ('Silent | mezok: z') nem.
+seed('PIPE1')
+run('PIPE1', ('--comment-file', msgfile('PIPE1'), '--author', 'Silent | mezok: z',
+              '--status', 'in_progress'))
+o = run('PIPE1', ('--comment-file', msgfile('PIPE1'), '--author', 'Silent',
+                  '--status', 'planned', '--dry-run'))
+o = o.stdout + o.stderr
+check('21 B2: a mezoelvalasztos nev NEM nemitja el a figyelmeztetest',
+      'AZ ELOZO MEZOMOZGATAS' in o, f'{o!r}')
+check('22 B2: es a nev egeszben jon vissza, a szerkezet serulese nelkul',
+      'Silent / mezok: z' in o, f'{o!r}')
+
 print()
 if FAILS:
     print(f'BUKOTT: {len(FAILS)} -- {", ".join(FAILS)}', file=sys.stderr)

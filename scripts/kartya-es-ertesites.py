@@ -371,6 +371,8 @@ def komment_mod(a):
               f'  fejlec: {fejlec} | szoveg {len(text)} kar | ertesites: NINCS (komment-only)\n'
               f'  mezomozgatas: {terv}'
               + (f' | mar ezen az erteken all: {valtozatlan}' if valtozatlan else ''))
+        if valtozik:
+            _elozmeny_figyelmeztetes(db, a, now, dry=True)
         return
 
     cur = db.execute('INSERT INTO kanban_comments (card_id,author,content,created_at) VALUES (?,?,?,?)',
@@ -392,6 +394,8 @@ def komment_mod(a):
         if mozgatas:
             print('MEZOMOZGATAS: nincs teendo (minden kimondott ertek mar ez volt).')
         return
+    _elozmeny_figyelmeztetes(db, a, now)
+
     sets = ', '.join(f'{k}=?' for k in valtozik)
     cur = db.execute(f'UPDATE kanban_cards SET {sets}, updated_at=? WHERE id=?',
                      (*valtozik.values(), now, a.id))
@@ -412,12 +416,99 @@ def komment_mod(a):
           + ', '.join(f'{k}: {rov(elotte[k])} -> {rov(kapott[k])}' for k in valtozik))
     # A MOZGATAS NYOMA A KARTYAN: a komment szovege Bonie, ez a sor a gepe. Enelkul a
     # tabla olvasoja latja az uj statuszt, de nem latja, hogy KI es MIKOR mozgatta.
+    #
+    # A REGI ERTEK TELJES EGESZEBEN IDE KERUL (2026-09-11, Mira lelete). A kartya-mezo
+    # EGYERTEKU: aki utoljara ir, felulir, es a regi ertek ELVESZIK. A rovidített nyom
+    # ma nem volt eleg: egy felulirt cimet nem lehetett belole visszaallitani, mert a
+    # naplo csak 60 karaktert orzott. (Ugyanaznap HAROM ilyen utkozes volt, mind
+    # kartya-mezon -- mikozben a KOZOS SKILL-FAJLBA harman irtak egy oran belul nulla
+    # utkozessel, mert az a szerkezet HOZZAFUZHETO, nem egyerteku.)
+    # A konzol-kimenet marad rovid (olvashatosag); a TAROLT nyom teljes.
+    teljes = [f'{k}: {rov(elotte[k])} -> {rov(kapott[k])}' for k in valtozik]
+    # A NULL-t KIIRVA kell megkulonboztetni az ures szotol: a visszaallito ember kulonben
+    # a 'None' szot masolna vissza egy mezobe, ami eredetileg NULL volt.
+    reszletes = '\n'.join(
+        f'  A(z) {k} TELJES REGI ERTEKE (masolhato, ha vissza kell allitani):\n  '
+        + (str(elotte[k]) if elotte[k] is not None else '(ures -- NULL volt)')
+        for k in valtozik)
+    # GEPI ZAROSOR (Samu verify-lelete a #1296-on, 2026-09-12). A kovetkezo kor
+    # figyelmeztetese EBBOL olvassa vissza a mozgatot -- SOHA a fenti szabad szovegbol.
+    # A szabad szoveges parse harom alakban bukott: a 'dr. Kovacs' nevet az elso pontnal
+    # levagta; egy regi ertek, amiben benne all a 'kerte: Hamis.' szoveg, atvette a valodi
+    # szerzo helyet; es a legrosszabb, ha a beagyazott nev EGYBEESIK a kovetkezo mozgatoeval,
+    # az intes teljesen ELNEMUL -- pont az utkozes-alaku adaton, amiert letezik.
+    # A zarosor az UTOLSO sor, a `reszletes` (tehat minden kulso eredetu ertek) MOGOTT all,
+    # es a visszaolvasas az UTOLSO illeszkedest veszi: egy ertekbe hamisitott zarosor igy
+    # sosem elozheti meg a valodit. A nevbol a sortoresek kiesnek, kulonben a nev maga
+    # tudna zarosort hamisitani.
+    # A NEVBOL A SORTORES ES A MEZOELVALASZTO IS KIESIK (Samu 2. verify-kore, B2-alak).
+    # A sortores-ejtes onmagaban keves volt: egy 'Silent | mezok: z' alaku nev ELCSUSZTATJA a
+    # mezok-mezot, es ha utana egy tenyleg 'Silent' nevu szerzo mozgat, a FIGYELMEZTETES ELNEMUL --
+    # vagyis a nev maga allitja elo pontosan azt a csendet, amiert ez a mechanizmus letezik.
+    # A '|' ejtese ugyanaz az elv, mint a sortorese: a zarosor szerkezetet a NEV nem irhatja felul.
+    mozgato = ' '.join((a.author or '(ismeretlen)').replace('|', '/').split())
+    zarosor = f'{_ZAROSOR_ELO}{mozgato} | mezok: {",".join(valtozik)} | ts: {now}'
     db.execute('INSERT INTO kanban_comments (card_id,author,content,created_at) VALUES (?,?,?,?)',
                (a.id, 'kartya-es-ertesites',
                 '[kartya-es-ertesites.py] Mezomozgatas a fenti komment mellett ('
-                + ', '.join(f'{k}: {rov(elotte[k])} -> {rov(kapott[k])}' for k in valtozik)
-                + f'), kerte: {a.author}. Fuggetlenul visszaolvasva.', now))
+                + ', '.join(teljes)
+                + f'), kerte: {a.author}. Fuggetlenul visszaolvasva.\n' + reszletes
+                + '\n' + zarosor, now))
     db.commit()
+
+# A mezomozgatas-nyom GEPI ZAROSORA. Ket helyen hasznaljuk: iraskor a nyom vegere kerul,
+# olvasaskor EBBOL jon a mozgato neve. A sor-eleji ^ es a sor-vegi $ egyutt kell: enelkul a
+# mintaja beleillik egy tobbsoros regi ertekbe is.
+_ZAROSOR_ELO = '-- mozgato: '
+_ZAROSOR_RE = re.compile(r'^-- mozgato: (.*?) \| mezok: (.*?) \| ts: (\d+)$', re.M)
+
+
+def _elozmeny_figyelmeztetes(db, a, now, dry=False):
+    """KI allitotta utoljara a mezot, es MIKOR -- a dontes ELE.
+
+    A no-op fogas csak azt latja, ha az ertek MAR ez. Azt NEM, ha valaki MAS
+    percekkel korabban allitotta at, es most valaki visszafordul. 2026-09-11-en
+    HAROMSZOR tortent meg egy oran belul, ugyanattol a szokastol: masfel oras
+    tabla-pillanatkepbol dolgozni. Ez NEM kapu -- a visszaallitas sokszor jogos.
+
+    A DRY-RUN AGON IS FUT (Mira lelete, 2026-09-11): eloszor csak az eles agon
+    futott, es ezzel EPP A GONDOS HASZNALOT buntette -- aki elovigyazatossagbol
+    dry-runol egy mezomozgatas elott, kevesebb informaciot kapott, mint aki
+    gondolkodas nelkul nekifutott. A negyedik utkozest pont az elozetes
+    ellenorzes elozne meg, es az az ut volt a vak.
+    """
+    elozmeny = db.execute(
+        "SELECT created_at, content FROM kanban_comments WHERE card_id=? "
+        "AND content LIKE '[kartya-es-ertesites.py] Mezomozgatas%' ORDER BY created_at DESC LIMIT 1",
+        (a.id,)).fetchone()
+    if not elozmeny:
+        return
+    kora = now - elozmeny[0]
+    perc = kora / 60.0
+    # AZ UTOLSO illeszkedes szamit, nem az elso: a kulso eredetu regi ertekek a zarosor ELOTT
+    # allnak, tehat egy oda hamisitott sor sosem elozheti meg a valodit.
+    talalatok = _ZAROSOR_RE.findall(elozmeny[1] or '')
+    if not talalatok:
+        # REGI FORMATUMU NYOM (a zarosor elotti korokbol). Nem talalgatunk nevet a szabad
+        # szovegbol -- az volt a hiba. De NEM is nemulunk el: a friss, ismeretlen mozgato
+        # epp a kockazatos eset.
+        if kora < 1800:
+            print(f'FIGYELEM -- AZ ELOZO MEZOMOZGATAS {perc:.0f} PERCE VOLT, a mozgato viszont '
+                  f'NEM ALLAPITHATO MEG gepileg (regi formatumu nyom). Nezd meg a kartyan, '
+                  f'ki mozgatott, mielott visszaforditod.')
+        else:
+            print(f'(elozo mezomozgatas: {perc:.0f} perce -- regi formatumu nyom, a mozgato nem '
+                  f'allapithato meg gepileg)')
+        return
+    ki, mit, _ts = talalatok[-1]
+    ki = ki.strip()
+    if kora < 1800 and ki.lower() != (a.author or '').lower():
+        print(f'FIGYELEM -- AZ ELOZO MEZOMOZGATAS {perc:.0f} PERCE VOLT, ES NEM A TIED: '
+              f'{ki} allitotta ({mit}). Ha ezt most visszaforditod, elavult allapotbol dolgozol. '
+              + ('Eles futasban a mozgatas VEGREHAJTODNA -- most semmi nem irodik.'
+                 if dry else 'A mozgatast VEGREHAJTOM, de a kartyan lasd az o indokat is.'))
+    else:
+        print(f'(elozo mezomozgatas: {ki}, {perc:.0f} perce -- {mit})')
 
 def main():
     p = argparse.ArgumentParser()
