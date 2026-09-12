@@ -73,11 +73,24 @@ def _token(state_dir):
     return m.group(1).strip().strip('"').strip("'")
 
 
-def _whisper(path):
+def _whisper(path, words=False):
+    # ADDITIV (2026-09-12): a words=False ag VALTOZATLAN -- a stt.sh es a canary erre epul, es a
+    # repetition-teszt a stdoutjat kapja el. A words=True ag KULON kimenet (JSON), uj hivoknak:
+    # a vagas-hatar ellenorzeshez SZO-SZINTU `end` ido kell, amit a szoveges alak nem hordoz.
     from faster_whisper import WhisperModel
     m = WhisperModel("small", device="cpu", compute_type="int8")
-    segs, _ = m.transcribe(path, language="hu", beam_size=5, condition_on_previous_text=False)
-    print(" ".join(s.text.strip() for s in segs).strip())
+    segs, _ = m.transcribe(path, language="hu", beam_size=5, condition_on_previous_text=False,
+                           word_timestamps=words)
+    segs = list(segs)
+    if not words:
+        print(" ".join(s.text.strip() for s in segs).strip())
+        return
+    out = []
+    for s_ in segs:
+        for w in (getattr(s_, "words", None) or []):
+            out.append({"word": w.word.strip(), "start": round(w.start, 3), "end": round(w.end, 3)})
+    print(json.dumps({"text": " ".join(s_.text.strip() for s_ in segs).strip(), "words": out},
+                     ensure_ascii=False))
 
 
 def transcribe(file_id, state_dir):
@@ -180,7 +193,11 @@ if __name__ == "__main__":
         transcribe(sys.argv[2], sys.argv[3])
     elif cmd == "speak":
         speak(sys.argv[2], sys.argv[3], sys.argv[4], " ".join(sys.argv[5:]))
+    elif cmd == "transcribe-words":
+        # Lokalis fajl -> JSON szo-szintu idokkel. Telegram file_id-t NEM fogad: a hivoi (pl. a
+        # vagas-hatar verify) maguk vagjak ki a klipet ffmpeg-gel.
+        _whisper(sys.argv[2], words=True)
     elif cmd == "canary":
         canary(sys.argv[2], " ".join(sys.argv[3:]))
     else:
-        sys.exit("usage: _vtools.py transcribe <file_id> <state_dir> | speak <voice_onnx> <state_dir> <chat_id> <text...> | canary <voice_onnx> <expected_text...>")
+        sys.exit("usage: _vtools.py transcribe <file_id> <state_dir> | transcribe-words <file> | speak <voice_onnx> <state_dir> <chat_id> <text...> | canary <voice_onnx> <expected_text...>")
