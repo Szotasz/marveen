@@ -44,24 +44,36 @@ let CONTRACT_FD = 3
 try { fstatSync(CONTRACT_FD) } catch { CONTRACT_FD = 1 }
 const emitContract = (line) => writeSync(CONTRACT_FD, line)
 
-const { ensureMainAgentIsolatedConfigDir, resolveMainAgentConfigDir, resolveMainAgentRotatedConfigDir } = await import(
-  join(projectRoot, 'dist', 'web', 'agent-process.js')
-)
+const {
+  ensureMainAgentIsolatedConfigDir,
+  ensureMainAgentIsolatedConfigDirForRotatedToken,
+  resolveMainAgentConfigDir,
+  resolveMainAgentRotatedConfigDir,
+  resolveMainAgentRotatedTokenSecretId,
+} = await import(join(projectRoot, 'dist', 'web', 'agent-process.js'))
 
-// Output contract (consumed by scripts/channels.sh): "<mode>\t<path>", or nothing
-// at all when none of the three paths apply. The mode decides how the caller
+// Output contract (consumed by scripts/channels.sh, channel-watchdog.sh,
+// stuck-modal-guard.sh): "<mode>\t<path>" for three modes, or
+// "token\t<path>\t<tokenSecretId>" (THREE fields) for the fourth. Nothing at
+// all when none of the four apply. The mode decides how the caller
 // authenticates the agent:
 //   explicit -- MAIN_AGENT_CONFIG_DIR, a dir the operator logged into by hand.
 //   rotated  -- (PR2c) store/claude-plans-state.json points the main agent at
-//               a registered plan. Also carries ITS OWN .credentials.json
-//               (design 6.5/4: every plan is a real, already-logged-in dir),
-//               so it needs the exact same "do not inject the fleet token"
-//               handling as `explicit` -- see resolveMainAgentRotatedConfigDir.
+//               a CONFIGDIR-mode registered plan. Carries ITS OWN
+//               .credentials.json (design 6.5/4), so it needs the exact same
+//               "do not inject the fleet token" handling as `explicit`.
+//   token    -- store/claude-plans-state.json points the main agent at a
+//               TOKEN-mode registered plan (ClaudePlan.tokenSecretId). Shares
+//               the SAME generic isolated dir as `isolated` below, but the
+//               caller must export THAT plan's vault-stored token (resolved
+//               via vault-resolve.mjs at launch) instead of the flotta's.
 //   isolated -- the credential-less flotta dir, needs the fleet setup-token.
 // Precedence: explicit wins outright (it is a deliberate, permanent identity
-// choice, never part of the rotation pool -- design 6.2). Rotated wins over
-// plain isolated because a recorded rotation is a stronger, more specific
-// signal than the generic flotta fallback.
+// choice, never part of the rotation pool -- design 6.2). A rotated plan
+// (configDir- or token-mode) wins over plain isolated because a recorded
+// rotation is a stronger, more specific signal than the generic flotta
+// fallback -- configDir-mode is tried first only because it is the older,
+// more specific case; a plan is never both modes at once (validatePlan).
 const explicit = resolveMainAgentConfigDir()
 if (explicit) {
   emitContract(`explicit\t${explicit}\n`)
@@ -71,7 +83,13 @@ if (explicit) {
     emitContract(`rotated\t${rotated}\n`)
   } else {
     const provider = process.argv[2] || undefined
-    const dir = ensureMainAgentIsolatedConfigDir(provider)
-    if (dir) emitContract(`isolated\t${dir}\n`)
+    const tokenSecretId = resolveMainAgentRotatedTokenSecretId()
+    if (tokenSecretId) {
+      const dir = ensureMainAgentIsolatedConfigDirForRotatedToken(provider)
+      if (dir) emitContract(`token\t${dir}\t${tokenSecretId}\n`)
+    } else {
+      const dir = ensureMainAgentIsolatedConfigDir(provider)
+      if (dir) emitContract(`isolated\t${dir}\n`)
+    }
   }
 }

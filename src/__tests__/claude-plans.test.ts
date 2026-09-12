@@ -82,4 +82,36 @@ describe('resolveClaudePlans', () => {
     expect(bare.expectedOrgType).toBeUndefined()
     expect(bare.expectedEmail).toBeUndefined()
   })
+
+  // Token-mode (2026-09-12): a plan can carry a vault tokenSecretId instead of
+  // a configDir, so the operator never has to run an interactive
+  // `claude setup-token` ON the target host -- see ClaudePlan.tokenSecretId.
+  describe('token-mode plans', () => {
+    function tokenPlan(over: Record<string, unknown> = {}): Record<string, unknown> {
+      const { configDir: _drop, ...rest } = plan()
+      return { ...rest, tokenSecretId: 'claude-plan-token-pro', ...over }
+    }
+
+    it('accepts a plan with tokenSecretId and no configDir', () => {
+      const plans = resolveClaudePlans(JSON.stringify([tokenPlan()]), HOME)
+      expect(plans).toHaveLength(1)
+      expect(plans[0]).toMatchObject({ id: 'pro', tokenSecretId: 'claude-plan-token-pro' })
+      expect(plans[0].configDir).toBeUndefined()
+    })
+
+    it('rejects a plan with BOTH configDir and tokenSecretId', () => {
+      const raw = JSON.stringify([plan({ id: 'both', tokenSecretId: 'claude-plan-token-both' })])
+      expect(resolveClaudePlans(raw, HOME)).toEqual([])
+    })
+
+    it('rejects a plan with NEITHER configDir nor tokenSecretId', () => {
+      const { configDir: _drop, ...rest } = plan({ id: 'neither' })
+      expect(resolveClaudePlans(JSON.stringify([rest]), HOME)).toEqual([])
+    })
+
+    it('rejects a tokenSecretId outside the safe charset (it doubles as a shell-interpolated vault id)', () => {
+      const raw = JSON.stringify([tokenPlan({ id: 'bad', tokenSecretId: "claude-plan-token-'; rm -rf" })])
+      expect(resolveClaudePlans(raw, HOME)).toEqual([])
+    })
+  })
 })

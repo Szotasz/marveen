@@ -34,14 +34,19 @@ vi.mock('../db.js', async (orig) => ({
 
 let fakeExplicit: string | null = null
 let fakeRotated: string | null = null
+let fakeRotatedTokenSecretId: string | null = null
 let fakeIsolated: string | null = null
+let fakeIsolatedForToken: string | null = null
 let isolatedCalls = 0
+let isolatedForTokenCalls = 0
 
 vi.mock('../web/agent-process.js', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   resolveMainAgentConfigDir: () => fakeExplicit,
   resolveMainAgentRotatedConfigDir: () => fakeRotated,
+  resolveMainAgentRotatedTokenSecretId: () => fakeRotatedTokenSecretId,
   ensureMainAgentIsolatedConfigDir: () => { isolatedCalls++; return fakeIsolated },
+  ensureMainAgentIsolatedConfigDirForRotatedToken: () => { isolatedForTokenCalls++; return fakeIsolatedForToken },
   readMainSharedConfigState: (dir: string | null) => ({
     isolatedConfigDir: dir,
     fleetToken: true,
@@ -56,8 +61,11 @@ beforeEach(() => {
   mkdirSync(join(ROOT, 'store'), { recursive: true })
   fakeExplicit = null
   fakeRotated = null
+  fakeRotatedTokenSecretId = null
   fakeIsolated = '/srv/m/.channels-config'
+  fakeIsolatedForToken = '/srv/m/.channels-config'
   isolatedCalls = 0
+  isolatedForTokenCalls = 0
 })
 afterEach(() => { rmSync(ROOT, { recursive: true, force: true }) })
 
@@ -88,5 +96,27 @@ describe('resolveMainConfigDecision precedence (CLAUDEPLANWATCHDOG912)', () => {
     expect(d.isolatedConfigDir).toBe('/srv/m/.channels-config')
     expect(d.ownCredentials).toBe(false)
     expect(isolatedCalls).toBe(1)
+  })
+
+  it('a token-mode rotated plan wins over the plain isolated dir, and is NOT flagged own-credential', () => {
+    fakeRotatedTokenSecretId = 'claude-plan-token-marketing'
+    const d = resolveMainConfigDecision()
+    expect(d.isolatedConfigDir).toBe('/srv/m/.channels-config')
+    expect(d.tokenSecretId).toBe('claude-plan-token-marketing')
+    expect(d.ownCredentials).toBe(false)
+    expect(d.trigger).toBeNull()
+    // Token mode provisions via the token-specific helper (no fleet-token
+    // gate), never the fleet-gated one.
+    expect(isolatedForTokenCalls).toBe(1)
+    expect(isolatedCalls).toBe(0)
+  })
+
+  it('a configDir-mode rotated plan wins over a token-mode signal (should the two ever both resolve)', () => {
+    fakeRotated = '/home/solarforce/.claude-second'
+    fakeRotatedTokenSecretId = 'claude-plan-token-marketing'
+    const d = resolveMainConfigDecision()
+    expect(d.isolatedConfigDir).toBe('/home/solarforce/.claude-second')
+    expect(d.ownCredentials).toBe(true)
+    expect(d.tokenSecretId).toBeNull()
   })
 })

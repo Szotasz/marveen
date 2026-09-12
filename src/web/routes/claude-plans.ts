@@ -19,7 +19,8 @@ import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID } from '../../config.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
-import { readClaudePlans, writeClaudePlans, validatePlan } from '../claude-plans.js'
+import { readClaudePlans, writeClaudePlans, validatePlan, PLAN_ID_ALLOWED } from '../claude-plans.js'
+import { setSecret, deleteSecret } from '../vault.js'
 import { readClaudePlansState, writeClaudePlansState, applyRotation } from '../claude-plans-state.js'
 import { agentDir, writeAgentClaudePlan } from '../agent-config.js'
 import { restartAgentProcess } from '../agent-process.js'
@@ -32,6 +33,42 @@ function isRotationEnabled(): boolean {
 
 function isMainAgentIsolated(): boolean {
   try { return String(getEffectiveSettingValue('MAIN_AGENT_ISOLATED_CONFIG')) === '1' } catch { return false }
+}
+
+// Stable vault secret id for a plan's token-mode credential. Derived from the
+// plan id (not random) so PUT-ing a new token for the same plan overwrites the
+// same vault entry instead of orphaning the old one.
+const tokenSecretIdFor = (planId: string) => `claude-plan-token-${planId}`
+
+// A raw `token` combined with configDir or tokenSecretId is ambiguous -- the
+// caller almost certainly meant only one of them. Rejected explicitly rather
+// than silently dropping `token` (which would otherwise sail through as an
+// unrecognized field while validatePlan happily accepts the configDir/
+// tokenSecretId that WAS present, masking the caller's mistake).
+function hasAmbiguousTokenField(raw: Record<string, unknown>): boolean {
+  return typeof raw.token === 'string' && raw.token.trim().length > 0
+    && (Boolean(raw.configDir) || Boolean(raw.tokenSecretId))
+}
+
+// Token-mode convenience: the caller sends a raw `token` field (the literal
+// `claude setup-token` output) instead of pre-populating the vault and
+// passing tokenSecretId directly -- this is the whole point of token-mode
+// (see ClaudePlan.tokenSecretId): no separate vault-management step, paste
+// the token and go. The raw value is written to the vault and stripped from
+// the object handed to validatePlan(); it must never reach store/claude-plans.json
+// or a GET response. Callers must check hasAmbiguousTokenField() first.
+function withTokenPromotedToVault(
+  raw: Record<string, unknown>,
+  planId: string,
+): { candidate: Record<string, unknown>; wroteSecretId: string | null } {
+  if (typeof raw.token !== 'string' || !raw.token.trim()) {
+    return { candidate: raw, wroteSecretId: null }
+  }
+  if (!planId || !PLAN_ID_ALLOWED.test(planId)) return { candidate: raw, wroteSecretId: null }
+  const secretId = tokenSecretIdFor(planId)
+  setSecret(secretId, `Claude plan token: ${typeof raw.label === 'string' ? raw.label : planId}`, raw.token.trim())
+  const { token: _discard, ...rest } = raw
+  return { candidate: { ...rest, tokenSecretId: secretId }, wroteSecretId: secretId }
 }
 
 export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> {
@@ -54,22 +91,32 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
       return true
     }
 
-    const plan = validatePlan(body, homedir())
+    const rawBody = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>
+    if (hasAmbiguousTokenField(rawBody)) {
+      json(res, { error: 'Invalid plan: token cannot be combined with configDir or tokenSecretId' }, 400)
+      return true
+    }
+    const rawId = typeof rawBody.id === 'string' ? rawBody.id.trim() : ''
+    const { candidate, wroteSecretId } = withTokenPromotedToVault(rawBody, rawId)
+
+    const plan = validatePlan(candidate, homedir())
     if (!plan) {
+      if (wroteSecretId) deleteSecret(wroteSecretId)
       json(res, {
-        error: 'Invalid plan: id (letters/digits/_.- only), label, configDir (safe absolute or ~-prefixed path, no traversal/spaces), planType (personal|team) and channelsAllowed (boolean) are all required',
+        error: 'Invalid plan: id (letters/digits/_.- only), label, exactly one of configDir (safe absolute or ~-prefixed path, no traversal/spaces) or token (raw claude setup-token output), planType (personal|team) and channelsAllowed (boolean) are all required',
       }, 400)
       return true
     }
 
     const current = readClaudePlans()
     if (current.some((p) => p.id === plan.id)) {
+      if (wroteSecretId) deleteSecret(wroteSecretId)
       json(res, { error: `Plan id already exists: ${plan.id}` }, 409)
       return true
     }
 
     writeClaudePlans([...current, plan])
-    logger.info({ id: plan.id }, 'Claude plan created')
+    logger.info({ id: plan.id, mode: plan.tokenSecretId ? 'token' : 'configDir' }, 'Claude plan created')
     json(res, plan, 201)
     return true
   }
@@ -200,19 +247,33 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
       return true
     }
 
-    const candidate = { ...(body && typeof body === 'object' ? body : {}), id: idMatch[1] }
+    const rawBody = { ...(body && typeof body === 'object' ? body : {}), id: idMatch[1] } as Record<string, unknown>
+    if (hasAmbiguousTokenField(rawBody)) {
+      json(res, { error: 'Invalid plan: token cannot be combined with configDir or tokenSecretId' }, 400)
+      return true
+    }
+    const { candidate, wroteSecretId } = withTokenPromotedToVault(rawBody, idMatch[1])
     const plan = validatePlan(candidate, homedir())
     if (!plan) {
+      if (wroteSecretId) deleteSecret(wroteSecretId)
       json(res, {
-        error: 'Invalid plan: label, configDir (safe absolute or ~-prefixed path, no traversal/spaces), planType (personal|team) and channelsAllowed (boolean) are all required',
+        error: 'Invalid plan: label, exactly one of configDir (safe absolute or ~-prefixed path, no traversal/spaces) or token (raw claude setup-token output), planType (personal|team) and channelsAllowed (boolean) are all required',
       }, 400)
       return true
+    }
+
+    // Switching a plan OUT of token-mode (or onto a different vault entry
+    // entirely) must not orphan the old secret -- the vault-hygiene guarantee
+    // the SSH-key store already gives (docs/vault.md).
+    const previousTokenSecretId = current[idx].tokenSecretId
+    if (previousTokenSecretId && previousTokenSecretId !== plan.tokenSecretId) {
+      deleteSecret(previousTokenSecretId)
     }
 
     const next = [...current]
     next[idx] = plan
     writeClaudePlans(next)
-    logger.info({ id: plan.id }, 'Claude plan updated')
+    logger.info({ id: plan.id, mode: plan.tokenSecretId ? 'token' : 'configDir' }, 'Claude plan updated')
     json(res, plan)
     return true
   }
@@ -222,12 +283,14 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
   // already handles that) -- deleting here does not touch any agent config.
   if (idMatch && method === 'DELETE') {
     const current = readClaudePlans()
+    const removed = current.find((p) => p.id === idMatch[1])
     const next = current.filter((p) => p.id !== idMatch[1])
     if (next.length === current.length) {
       json(res, { error: 'Not found' }, 404)
       return true
     }
 
+    if (removed?.tokenSecretId) deleteSecret(removed.tokenSecretId)
     writeClaudePlans(next)
     logger.info({ id: idMatch[1] }, 'Claude plan deleted')
     json(res, { ok: true })
