@@ -441,7 +441,12 @@ def komment_mod(a):
     # es a visszaolvasas az UTOLSO illeszkedest veszi: egy ertekbe hamisitott zarosor igy
     # sosem elozheti meg a valodit. A nevbol a sortoresek kiesnek, kulonben a nev maga
     # tudna zarosort hamisitani.
-    mozgato = ' '.join((a.author or '(ismeretlen)').split())
+    # A NEVBOL A SORTORES ES A MEZOELVALASZTO IS KIESIK (Samu 2. verify-kore, B2-alak).
+    # A sortores-ejtes onmagaban keves volt: egy 'Silent | mezok: z' alaku nev ELCSUSZTATJA a
+    # mezok-mezot, es ha utana egy tenyleg 'Silent' nevu szerzo mozgat, a FIGYELMEZTETES ELNEMUL --
+    # vagyis a nev maga allitja elo pontosan azt a csendet, amiert ez a mechanizmus letezik.
+    # A '|' ejtese ugyanaz az elv, mint a sortorese: a zarosor szerkezetet a NEV nem irhatja felul.
+    mozgato = ' '.join((a.author or '(ismeretlen)').replace('|', '/').split())
     zarosor = f'{_ZAROSOR_ELO}{mozgato} | mezok: {",".join(valtozik)} | ts: {now}'
     db.execute('INSERT INTO kanban_comments (card_id,author,content,created_at) VALUES (?,?,?,?)',
                (a.id, 'kartya-es-ertesites',

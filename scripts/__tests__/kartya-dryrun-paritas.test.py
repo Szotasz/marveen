@@ -242,6 +242,23 @@ check('19 c3: regi formatumu nyomnal hangosan jelzi, hogy a mozgato nem allapith
 check('20 c3: es NEM talalgat nevet a szabad szovegbol',
       'Talalgatas' not in o3, f'{o3!r}')
 
+# --- 8. A NEV NEM ALLITHATJA ELO A SAJAT CSENDJET (Samu 2. verify-kore, B2-alak) ---
+# A sortores-ejtes keves volt: egy mezoelvalasztot tartalmazo nev elcsusztatja a zarosor
+# mezok-mezojet, es ha utana egy olyan szerzo mozgat, akinek a neve a csuszas utan egybeesik
+# a felismert nevvel, a FIGYELMEZTETES ELNEMUL. Vagyis a nev maga allitja elo pontosan azt a
+# csendet, amiert a mechanizmus letezik. Az organikus eset ('Anna | Bob') Samunal PASS volt --
+# a konstrualt ('Silent | mezok: z') nem.
+seed('PIPE1')
+run('PIPE1', ('--comment-file', msgfile('PIPE1'), '--author', 'Silent | mezok: z',
+              '--status', 'in_progress'))
+o = run('PIPE1', ('--comment-file', msgfile('PIPE1'), '--author', 'Silent',
+                  '--status', 'planned', '--dry-run'))
+o = o.stdout + o.stderr
+check('21 B2: a mezoelvalasztos nev NEM nemitja el a figyelmeztetest',
+      'AZ ELOZO MEZOMOZGATAS' in o, f'{o!r}')
+check('22 B2: es a nev egeszben jon vissza, a szerkezet serulese nelkul',
+      'Silent / mezok: z' in o, f'{o!r}')
+
 print()
 if FAILS:
     print(f'BUKOTT: {len(FAILS)} -- {", ".join(FAILS)}', file=sys.stderr)
