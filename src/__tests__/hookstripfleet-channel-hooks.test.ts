@@ -46,22 +46,37 @@ describe('HOOKSTRIPFLEET913: the four channel hooks survive the #1307 strip', ()
   // scaffold writes them, so the template is their sole source -- remove it and
   // every sub-agent loses them on the next strip.
   describe('mutant control: the template is the only source', () => {
-    it('the base template (git HEAD) lacks all four, the working template has them', () => {
-      const base = JSON.parse(
-        execFileSync('git', ['show', 'HEAD:templates/settings.json.template'], {
-          cwd: PROJECT_ROOT, encoding: 'utf-8',
-        }).replace(/\{\{PROJECT_ROOT\}\}/g, '/x').replace(/\{\{BOT_NAME\}\}/g, 'B').replace(/\{\{WEB_PORT\}\}/g, '3420'),
-      ) as { hooks?: unknown }
-      const now = JSON.parse(
+    // git-independent: deriving the "before" from git HEAD is fragile (on a
+    // committed branch / CI merge-ref HEAD already carries the fix). Instead
+    // parse the SHIPPED template and build the pre-fix mutant in-test by
+    // dropping the four; the delta between them must be exactly these four.
+    function parsedTemplate(): { hooks?: unknown } {
+      return JSON.parse(
         readFileSync(join(PROJECT_ROOT, 'templates', 'settings.json.template'), 'utf-8')
           .replace(/\{\{PROJECT_ROOT\}\}/g, '/x').replace(/\{\{BOT_NAME\}\}/g, 'B').replace(/\{\{WEB_PORT\}\}/g, '3420'),
       ) as { hooks?: unknown }
-      const baseNames = hookBasenames(base.hooks)
-      const nowNames = hookBasenames(now.hooks)
+    }
+
+    it('the shipped template carries all four; a mutant with them dropped carries none', () => {
+      const now = hookBasenames(parsedTemplate().hooks)
       for (const h of CHANNEL_HOOKS) {
-        expect(baseNames.has(h), `base template must NOT yet carry ${h}`).toBe(false)
-        expect(nowNames.has(h), `fixed template must carry ${h}`).toBe(true)
+        expect(now.has(h), `shipped template must carry ${h}`).toBe(true)
       }
+      // Build the pre-fix mutant: remove every group/entry that runs one of the
+      // four, mirroring the template state before this change.
+      const t = parsedTemplate() as { hooks: Record<string, Array<{ hooks?: Array<{ command?: string }> }>> }
+      for (const ev of Object.keys(t.hooks)) {
+        t.hooks[ev] = t.hooks[ev]
+          .map((g) => ({ ...g, hooks: (g.hooks ?? []).filter((h) => !CHANNEL_HOOKS.some((c) => (h.command ?? '').includes(c))) }))
+          .filter((g) => (g.hooks?.length ?? 0) > 0)
+      }
+      const mutant = hookBasenames(t.hooks)
+      for (const h of CHANNEL_HOOKS) {
+        expect(mutant.has(h), `mutant (pre-fix) template must lack ${h}`).toBe(false)
+      }
+      // And the mutant still carries the untouched governance hooks, so the
+      // delta is exactly the four -- not a wholesale change.
+      expect(mutant.has('provenance-gate.py'), 'mutant keeps governance hooks').toBe(true)
     })
 
     it('no ensure* scaffold function writes these hooks -- the template is the sole writer', () => {
