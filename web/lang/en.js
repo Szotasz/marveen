@@ -41,6 +41,7 @@ window._i18n.en = {
   'overview.quota.title':           'Subscription quota',
   'overview.quota.five_hour':       '5-hour',
   'overview.quota.seven_day':       'Weekly',
+  'overview.quota.fable':           'Fable (weekly)',
   'overview.quota.resets_in':       'resets in {d}',
   'overview.quota.expired':         'window already reset',
   'overview.quota.measured':        'measured {age} ago',

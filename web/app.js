@@ -11996,7 +11996,7 @@ function quotaLevelClass(pct) {
 // data -- and a stale or already-reset reading keeps its numbers but drops the
 // colour, because a green bar from six hours ago reassures exactly as much as
 // a green bar from six seconds ago.
-function renderQuotaStrip(q) {
+function renderQuotaStrip(q, fable) {
   const strip = document.getElementById('quotaStrip')
   const bars = document.getElementById('quotaBars')
   const note = document.getElementById('quotaStripNote')
@@ -12018,13 +12018,20 @@ function renderQuotaStrip(q) {
   const stale = q.status === 'stale'
   const nowSec = Math.floor(Date.now() / 1000)
   const windows = [
-    ['overview.quota.five_hour', q.fiveHour],
-    ['overview.quota.seven_day', q.sevenDay],
+    ['overview.quota.five_hour', q.fiveHour, stale, null],
+    ['overview.quota.seven_day', q.sevenDay, stale, null],
   ]
-  for (const [labelKey, w] of windows) {
+  // Fable/Opus comes from a different collector with its own freshness --
+  // muted independently of the statusLine-sourced `stale` above. Silently
+  // omitted (like any other null window here) when there's simply no
+  // reading yet -- non-tiered accounts never get one.
+  if (fable && fable.window) {
+    windows.push(['overview.quota.fable', fable.window, fable.status !== 'ok', fable.ageSec])
+  }
+  for (const [labelKey, w, muted0, ageSecForRow] of windows) {
     if (!w) continue
     const pct = Math.max(0, Math.min(100, Math.round(w.usedPercentage)))
-    const muted = stale || w.expired
+    const muted = muted0 || w.expired
     const row = document.createElement('div')
     row.className = 'quota-bar' + (muted ? ' muted' : '')
     let tail = ''
@@ -12032,6 +12039,13 @@ function renderQuotaStrip(q) {
       tail = ' · ' + t('overview.quota.expired')
     } else if (typeof w.resetsAt === 'number' && w.resetsAt > nowSec) {
       tail = ' · ' + t('overview.quota.resets_in', { d: formatDurationShort(w.resetsAt - nowSec) })
+    }
+    // This row's own collector age travels with it: the shared age line
+    // below (q.ageSec) only covers the statusLine source, so it says nothing
+    // about a row fed by a different collector -- without this a muted row
+    // reads as "might be old" with no way to tell minutes from days.
+    if (typeof ageSecForRow === 'number') {
+      tail += ' · ' + t('overview.quota.measured', { age: formatRelative(Date.now() - ageSecForRow * 1000) })
     }
     row.innerHTML = `
       <div class="quota-bar-label">${escapeHtml(t(labelKey))}</div>
@@ -12066,7 +12080,7 @@ async function loadOverview() {
     document.getElementById('statMemoriesSub').textContent = `${t('overview.stat.sub.memories')} · ${d.memories.categories} category`
     document.getElementById('statSkills').textContent = d.skills.count
     document.getElementById('statSkillsSub').textContent = d.skills.today > 0 ? t('overview.stat.skills_today', { n: d.skills.today }) : ''
-    renderQuotaStrip(d.quota)
+    renderQuotaStrip(d.quota, d.quotaFable)
     // Team: reuse the hierarchy graph renderer so the overview card shows
     // exactly what the Csapat page does (avatars + reports-to tree).
     try {
