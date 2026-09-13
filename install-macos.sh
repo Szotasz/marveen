@@ -595,28 +595,73 @@ except: sys.exit(1)
 " 2>/dev/null && echo "yes" || echo "no")
     if [ "$HAS_ALL" = "no" ]; then
       echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_update)"
-      echo "$REQUIRED_JSON" | sudo python3 -c "
-import json, sys
-new = json.loads(sys.stdin.read())
+      # Safe JSON merge (same shape as the Discord branch / #1306): tmp file +
+      # copymode + os.replace, so no interruption can leave a truncated
+      # managed-settings behind. And an org-policy file is NEVER rebuilt from
+      # scratch: on a parse failure we say so and leave it untouched -- the old
+      # empty-object fallback silently dropped every OTHER managed key
+      # (channelsEnabled, other allowlists) host-wide. The old shape also
+      # piped through `sudo tee`, which TRUNCATES the file even when the merge
+      # process fails -- a failed merge left an EMPTY org-policy file behind.
+      if sudo python3 - "$MANAGED_FILE" <<'SLACKMERGEPY'
+import json, os, shutil, sys
+p = sys.argv[1]
+required = [
+    {'plugin': 'slack-channel', 'marketplace': 'marveen-marketplace'},
+    {'plugin': 'telegram', 'marketplace': 'claude-plugins-official'},
+    {'plugin': 'teams', 'marketplace': 'marveen-marketplace'},
+    {'plugin': 'discord', 'marketplace': 'claude-plugins-official'},
+]
 try:
-  with open('$MANAGED_FILE') as f: existing = json.load(f)
-except: existing = {}
-plugins = existing.get('allowedChannelPlugins', [])
-for entry in new['allowedChannelPlugins']:
-  if not any(p.get('plugin')==entry['plugin'] and p.get('marketplace')==entry['marketplace'] for p in plugins):
-    plugins.append(entry)
-existing['allowedChannelPlugins'] = plugins
-print(json.dumps(existing, indent=2))
-" | sudo tee "$MANAGED_FILE" > /dev/null
-      echo -e "  ${GREEN}✓${NC} $(_t macos.managed_updated)"
+    d = json.load(open(p))
+except Exception as e:
+    print(f"managed-settings parse failed, NOT writing: {e}", file=sys.stderr)
+    sys.exit(1)
+if not isinstance(d, dict):
+    print("managed-settings root is not an object, NOT writing", file=sys.stderr)
+    sys.exit(1)
+plugins = d.get('allowedChannelPlugins', [])
+for entry in required:
+    if not any(p2.get('plugin') == entry['plugin'] and p2.get('marketplace') == entry['marketplace'] for p2 in plugins):
+        plugins.append(entry)
+d['allowedChannelPlugins'] = plugins
+tmp = p + '.tmp'
+with open(tmp, 'w') as f:
+    f.write(json.dumps(d, indent=2) + "\n")
+shutil.copymode(p, tmp)
+os.replace(tmp, p)
+SLACKMERGEPY
+      then
+        echo -e "  ${GREEN}✓${NC} $(_t macos.managed_updated)"
+      else
+        echo -e "  ${RED}✗${NC} A managed-settings.json nem volt biztonsagosan frissitheto -- a fajl ERINTETLEN maradt."
+        echo -e "  ${DIM}Kezi potlas (root): add az allowedChannelPlugins tombhoz a hianyzo bejegyzeseket:${NC}"
+        echo -e "  ${DIM}  $REQUIRED_JSON${NC}"
+      fi
     else
       echo -e "  ${GREEN}✓${NC} $(_t macos.managed_has_slack)"
     fi
   else
     echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_create)"
     sudo mkdir -p "$MANAGED_DIR"
-    echo "$REQUIRED_JSON" | python3 -c "import json,sys; print(json.dumps(json.loads(sys.stdin.read()),indent=2))" | sudo tee "$MANAGED_FILE" > /dev/null
-    echo -e "  ${GREEN}✓${NC} $(_t macos.managed_created)"
+    # Fresh file: still tmp + os.replace, so an interrupted install can never
+    # leave a truncated/empty org-policy file that a later run would then
+    # refuse to touch (the merge above declines unparseable files by design).
+    if echo "$REQUIRED_JSON" | sudo python3 -c "
+import json, os, sys
+p = '$MANAGED_FILE'
+data = json.load(sys.stdin)
+tmp = p + '.tmp'
+with open(tmp, 'w') as f:
+    f.write(json.dumps(data, indent=2) + \"\n\")
+os.replace(tmp, p)
+"
+    then
+      echo -e "  ${GREEN}✓${NC} $(_t macos.managed_created)"
+    else
+      echo -e "  ${RED}✗${NC} A managed-settings.json letrehozasa nem sikerult -- kezi potlas (root):"
+      echo -e "  ${DIM}  echo '$REQUIRED_JSON' > \"$MANAGED_FILE\"${NC}"
+    fi
   fi
 fi
 
