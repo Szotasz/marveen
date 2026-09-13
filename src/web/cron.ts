@@ -129,6 +129,153 @@ export function cronPrevOccurrence(cron: string, fromMs: number, toMs: number, t
   }
 }
 
+// --- Tick-gap catch-up window ------------------------------------------------
+//
+// The runner scans the half-open (previous tick, now] interval, so the windows
+// are contiguous and no occurrence can slip between two ticks. That is right
+// while the ticks keep coming -- but it also means a tick that arrives HOURS
+// late scans hours of schedule in one go, and ticks do NOT survive a host
+// SUSPEND. A host that sleeps through the evening and wakes at 03:00 replays
+// every backlog occurrence still inside its staleness budget into a sleeping
+// operator's chat -- for a command-type task that budget is 24h, and a custom
+// catchUpMaxAgeMinutes can be anything -- and records/alerts everything past
+// its budget as missed, which is chat noise about slots whose whole point was
+// to run last night. The staleness policy is per-TYPE and night-blind; it has
+// no notion that a 20:15 slot recovered at 03:00 should not exist. Nothing is lost
+// here -- the loss case is the process being DOWN, which the persisted tick
+// stamp already covers -- what is wrong is the timing of what comes back.
+//
+// So the size of the gap has to be a decision rather than an accident. A tick
+// more than TICK_GAP_THRESHOLD_MS after the previous one is a "gap-resume"
+// tick, and its window is trimmed to the part of the gap still worth acting on:
+//
+//   * The window NEVER reaches into the quiet band (QUIET_BAND_START_HOUR ->
+//     QUIET_BAND_END_HOUR, operator-local). A morning resume scans back to the
+//     band end only -- the night's slots were night slots and staying missed IS
+//     the correct outcome. A resume INSIDE the band gets no catch-up at all.
+//   * Everything outside the band keeps today's behaviour: an ordinary tick,
+//     and a gap lying entirely within the working day, get the full
+//     (previous tick, now] window untouched.
+//   * The COLD-START window is deliberately NOT gated here. Real process
+//     downtime is owned by the persisted tick stamp (see computeCatchUpStart in
+//     schedule-runner), which is capped separately and reported to the operator.
+//   * In-memory only, by design -- the caller holds lastTickMs. A restart is
+//     covered by that persisted stamp, and a suspend keeps the process, and
+//     therefore the variable, alive.
+
+// The window a tick gets when nothing was enlarged: one 60 s tick of tolerance
+// around a slot. Exported so the runner and this module cannot drift apart on
+// what "not enlarged" means -- the runner clamps its scan window only when the
+// value computed here is a real, band-safe catch-up.
+export const NORMAL_CATCH_UP_MS = 60_000
+
+// A tick this much later than the previous one is treated as a host-sleep gap
+// rather than ordinary scheduler jitter. Well above the tick cadence plus the
+// worst realistic tick duration (blocking tmux captures + idle waits), well
+// below any schedule cadence anyone runs.
+export const TICK_GAP_THRESHOLD_MS = 5 * 60_000
+
+// Quiet band in operator-local wall-clock time: no catch-up fires inside it,
+// and no catch-up window may reach back into it. Overnight a replayed slot is
+// pure cost -- the work behind it waits for the morning anyway, so the only
+// thing the fire buys is a woken operator.
+export const QUIET_BAND_START_HOUR = 22 // inclusive
+export const QUIET_BAND_END_HOUR = 6 // exclusive
+
+export interface CatchUpWindow {
+  /** Window to scan on this tick. Never below NORMAL_CATCH_UP_MS. */
+  catchUpMs: number
+  /** Wall-clock distance from the previous tick (0 when there was none). */
+  gapMs: number
+  /** True when the window was enlarged because of a tick gap. */
+  gapResume: boolean
+  /** True when a real gap was detected but suppressed by the quiet band. */
+  quietSkipped: boolean
+}
+
+// Local wall-clock hour/minute/second in `timeZone`. Returns null if the zone
+// is unusable (a typo'd SCHEDULER_TZ makes Intl throw) so the caller can fall
+// back to the conservative no-catch-up answer instead of killing the tick.
+function localWallClock(
+  ms: number,
+  timeZone: string,
+): { hour: number; minute: number; second: number } | null {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hourCycle: 'h23',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    }).formatToParts(new Date(ms))
+    const get = (type: string): number => Number(parts.find(p => p.type === type)?.value ?? NaN)
+    const hour = get('hour')
+    const minute = get('minute')
+    const second = get('second')
+    if (!Number.isFinite(hour) || !Number.isFinite(minute) || !Number.isFinite(second)) return null
+    return { hour, minute, second }
+  } catch {
+    return null
+  }
+}
+
+// Decide the catch-up window for a tick. Pure: everything time-dependent is a
+// parameter, so the quiet-band and gap edges are unit-tested without waiting
+// for a real 06:00.
+//
+// lastTickMs is null on the very first tick of a process; the cold-start window
+// seeded from the persisted tick stamp owns that case, so we return the normal
+// one and the caller leaves its own window alone.
+export function computeCatchUpWindow(
+  nowMs: number,
+  lastTickMs: number | null,
+  timeZone: string = CRON_TZ,
+): CatchUpWindow {
+  const normal: CatchUpWindow = {
+    catchUpMs: NORMAL_CATCH_UP_MS,
+    gapMs: 0,
+    gapResume: false,
+    quietSkipped: false,
+  }
+  if (lastTickMs == null || !Number.isFinite(lastTickMs)) return normal
+
+  const gapMs = nowMs - lastTickMs
+  if (gapMs <= TICK_GAP_THRESHOLD_MS) return { ...normal, gapMs: Math.max(gapMs, 0) }
+
+  const local = localWallClock(nowMs, timeZone)
+  // Unusable zone -> we cannot prove we are outside the quiet band, so we do
+  // not catch up. Losing a catch-up is recoverable; firing the night's backlog
+  // into the operator's chat is not.
+  if (!local) return { ...normal, gapMs, quietSkipped: true }
+
+  if (local.hour >= QUIET_BAND_START_HOUR || local.hour < QUIET_BAND_END_HOUR) {
+    // The gap-resume tick itself landed in the quiet band (the host woke at
+    // 03:00). No catch-up at all: the missed slots were night slots.
+    return { ...normal, gapMs, quietSkipped: true }
+  }
+
+  // Most recent local QUIET_BAND_END_HOUR:00:00 at or before now. We are
+  // provably outside the quiet band here, so that boundary is today's. Derived
+  // by subtracting the elapsed local time-of-day rather than by inverting the
+  // zone offset: exact for every zone whose UTC offset does not change between
+  // 06:00 and 22:00 local (i.e. all of them in practice -- DST transitions run
+  // at night), and a 1 h window-size error, not a wrong decision, if one ever did.
+  const sinceBandEndMs =
+    ((local.hour - QUIET_BAND_END_HOUR) * 3600 + local.minute * 60 + local.second) * 1000
+    + (nowMs % 1000)
+  const bandEndMs = nowMs - sinceBandEndMs
+  const catchUpStart = Math.max(lastTickMs, bandEndMs)
+  const catchUpMs = Math.max(NORMAL_CATCH_UP_MS, nowMs - catchUpStart)
+  return {
+    catchUpMs,
+    gapMs,
+    // A gap whose window collapses back to the normal one (the host woke a few
+    // seconds past 06:00) is not a catch-up tick -- nothing was enlarged.
+    gapResume: catchUpMs > NORMAL_CATCH_UP_MS,
+    quietSkipped: false,
+  }
+}
+
 // Back-compat shim faithful to the old fixed-window semantics -- "did an
 // occurrence happen in the last catchUpMs". Kept for callers/tests that ask
 // the question that way; the scheduler loop itself uses cronDueBetween with
