@@ -47,8 +47,36 @@ via TELEGRAM_API_BASE (tests point it at a local stub).
 import datetime, os, glob, json, time, subprocess, urllib.request
 
 # State dirs to scan: per-agent dirs under the fleet, plus the default dir.
-# No hardcoded user paths -- derive from $HOME (override with MARVEEN_ROOT).
-FLEET_ROOT = os.environ.get("MARVEEN_ROOT") or os.path.expanduser("~/marveen")
+#
+# TGWDOGVAK913: this daemon is launched by launchd/systemd, and launchd does NOT
+# pass the operator's shell environment to a job -- the plist EnvironmentVariables
+# holds only what the installer writes. So MARVEEN_ROOT is NOT set in the
+# daemon's environment unless the installer put it there, and the old
+# `~/marveen` default pointed at a directory that does not exist on the real
+# install (root: /Users/<user>/ClaudeClaw). The watchdog then scanned two
+# non-existent globs and its log stayed 0 bytes -- a sentry that guards nothing.
+#
+# The durable fix is self-location: when the daemon runs the repo copy at
+# <root>/scripts/hooks/telegram_progress_watchdog.py (where the installer points
+# the plist), the root is two directories up, needing no environment at all.
+# MARVEEN_ROOT still wins as an explicit override; ~/marveen stays as the
+# last-resort legacy fallback.
+def _derive_fleet_root():
+    env = os.environ.get("MARVEEN_ROOT")
+    if env:
+        return env
+    here = os.path.dirname(os.path.abspath(__file__))
+    # <root>/scripts/hooks/telegram_progress_watchdog.py -> <root>
+    if os.path.basename(here) == "hooks" and os.path.basename(os.path.dirname(here)) == "scripts":
+        cand = os.path.dirname(os.path.dirname(here))
+        # Confirm it looks like an install root, so a stray copy in some other
+        # scripts/hooks/ tree does not silently capture the scan.
+        if os.path.isdir(os.path.join(cand, ".claude")) or os.path.isdir(os.path.join(cand, "agents")):
+            return cand
+    return os.path.expanduser("~/marveen")
+
+
+FLEET_ROOT = _derive_fleet_root()
 SCAN_GLOBS = [
     os.path.join(FLEET_ROOT, "agents", "*", ".claude", "channels", "telegram", "progress"),
     # #915: the main agent's state dir is install-scoped once migrated; scan
