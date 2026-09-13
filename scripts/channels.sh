@@ -60,6 +60,34 @@ fi
 CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
 SESSION="${MAIN_AGENT_ID:-marveen}-channels"
 
+# hu: Szingleton-zar a SESSION nevere. Ket fuggetlen felugyelo -- launchd
+# com.marveen.channels (KeepAlive=true) es a dashboard channel-monitor.ts
+# createMainChannelsSession() -- egyszerre is elindithatja ezt a scriptet
+# ugyanarra a SESSION-re; a lenti "Regi session takaritas" feltetel nelkul
+# kill-session-el, tehat a kesobb indulo megolne a korabban indult, mar elo
+# sessiont (mert teny). A zar a teljes script elettartamara szol (trap EXIT),
+# igy csak EGY channels.sh peldany kezelheti
+# ugyanazt a SESSION-t egyszerre; a masodik azonnal, a kill-session ELOTT
+# kilep, a session-t erintetlenul hagyja.
+# en: Singleton lock on SESSION. Two independent supervisors -- launchd
+# com.marveen.channels (KeepAlive=true) and the dashboard's
+# channel-monitor.ts createMainChannelsSession() -- can both start this
+# script for the same SESSION at the same time; the "old session cleanup"
+# below kill-sessions unconditionally, so the later starter would kill the
+# already-live session the earlier one just created (measured fact). The
+# lock is held for the script's whole lifetime (trap EXIT), so only ONE
+# channels.sh instance may manage a given SESSION
+# at a time; the second exits immediately, BEFORE the kill-session, leaving
+# the live session untouched.
+mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
+. "$INSTALL_DIR/scripts/lib/singleton-lock.sh"
+CHANNELS_LOCK_DIR="$INSTALL_DIR/store/.channels-lock-$SESSION"
+if ! acquire_singleton_lock "$CHANNELS_LOCK_DIR"; then
+  echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: singleton lock for session $SESSION held by a live process -- another supervisor is already starting/running it, exiting without touching the session" >> "$INSTALL_DIR/store/channels-failures.log"
+  exit 0
+fi
+trap 'release_singleton_lock "$CHANNELS_LOCK_DIR"' EXIT
+
 # Resolve plugin ID from provider.
 #
 # PLUGIN_ID is the marketplace-qualified id the `--channels` flag takes.
