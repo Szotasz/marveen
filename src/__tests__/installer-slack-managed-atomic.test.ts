@@ -21,14 +21,16 @@ import { join } from 'node:path'
 const ROOT = join(__dirname, '..', '..')
 const MAC = readFileSync(join(ROOT, 'install-macos.sh'), 'utf-8')
 
-function slackMergeSource(): string {
-  const open = MAC.indexOf("<<'SLACKMERGEPY'")
+function heredocSource(marker: string): string {
+  const open = MAC.indexOf(`<<'${marker}'`)
   const start = MAC.indexOf('\n', open) + 1
-  const end = MAC.indexOf('\nSLACKMERGEPY', start)
-  expect(open, 'SLACKMERGEPY heredoc present').toBeGreaterThan(-1)
+  const end = MAC.indexOf(`\n${marker}`, start)
+  expect(open, `${marker} heredoc present`).toBeGreaterThan(-1)
   expect(end).toBeGreaterThan(start)
   return MAC.slice(start, end)
 }
+const slackMergeSource = (): string => heredocSource('SLACKMERGEPY')
+const slackCreateSource = (): string => heredocSource('SLACKCREATEPY')
 
 describe('slack-branch managed-settings write is atomic and refuses to rebuild (SLACKMGDATOM913)', () => {
   it('the old unsafe shapes are gone from the shipped installer', () => {
@@ -44,9 +46,31 @@ describe('slack-branch managed-settings write is atomic and refuses to rebuild (
     expect(block).toContain('NOT writing')
   })
 
-  it('the create branch also writes via tmp + os.replace', () => {
-    const createBlock = MAC.slice(MAC.indexOf('macos.managed_create'), MAC.indexOf('Channel inbound org-policy gate'))
+  it('the create branch also writes via tmp + os.replace, with the mode pinned', () => {
+    const createBlock = slackCreateSource()
     expect(createBlock).toContain('os.replace(tmp, p)')
+    // Review condition (#1308): a fresh tmp inherits the caller's umask, and
+    // under umask 077 a root-owned 0600 policy is unreadable to the session --
+    // the channel policy silently never takes effect. Same pin as
+    // scripts/ensure-managed-channels-enabled.sh.
+    expect(createBlock).toContain('os.chmod(tmp, 0o644)')
+  })
+
+  it('the extracted create script writes a 0644 policy even under umask 077', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'slackmgd-'))
+    try {
+      const target = join(dir, 'managed-settings.json')
+      execFileSync('bash', ['-c', 'umask 077; exec python3 - "$0"', target], {
+        input: slackCreateSource(), stdio: ['pipe', 'pipe', 'pipe'],
+      })
+      const parsed = JSON.parse(readFileSync(target, 'utf-8')) as { allowedChannelPlugins: Array<{ plugin: string }> }
+      expect(parsed.allowedChannelPlugins.map((p) => p.plugin).sort())
+        .toEqual(['discord', 'slack-channel', 'teams', 'telegram'])
+      expect(statSync(target).mode & 0o777).toBe(0o644)
+      expect(readdirSync(dir)).toEqual(['managed-settings.json'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   describe('the extracted merge script, executed for real', () => {

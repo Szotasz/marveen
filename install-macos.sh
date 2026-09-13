@@ -647,15 +647,25 @@ SLACKMERGEPY
     # Fresh file: still tmp + os.replace, so an interrupted install can never
     # leave a truncated/empty org-policy file that a later run would then
     # refuse to touch (the merge above declines unparseable files by design).
-    if echo "$REQUIRED_JSON" | sudo python3 -c "
+    if sudo python3 - "$MANAGED_FILE" <<'SLACKCREATEPY'
 import json, os, sys
-p = '$MANAGED_FILE'
-data = json.load(sys.stdin)
+p = sys.argv[1]
+required = [
+    {'plugin': 'slack-channel', 'marketplace': 'marveen-marketplace'},
+    {'plugin': 'telegram', 'marketplace': 'claude-plugins-official'},
+    {'plugin': 'teams', 'marketplace': 'marveen-marketplace'},
+    {'plugin': 'discord', 'marketplace': 'claude-plugins-official'},
+]
 tmp = p + '.tmp'
 with open(tmp, 'w') as f:
-    f.write(json.dumps(data, indent=2) + \"\n\")
+    f.write(json.dumps({'allowedChannelPlugins': required}, indent=2) + "\n")
+# A fresh tmp inherits the caller's umask; under `umask 077` that leaves a
+# root-owned 0600 policy the unprivileged session cannot read, so the channel
+# policy silently never takes effect (the exact trap documented in
+# scripts/ensure-managed-channels-enabled.sh) -- pin the world-readable mode.
+os.chmod(tmp, 0o644)
 os.replace(tmp, p)
-"
+SLACKCREATEPY
     then
       echo -e "  ${GREEN}✓${NC} $(_t macos.managed_created)"
     else
