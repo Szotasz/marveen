@@ -13,14 +13,23 @@
 #   large / multi-line content may come from STDIN when the 3rd arg is "-":
 #     echo "<long text>" | bash scripts/agent-msg.sh <from> <to> -
 # Output: success -> "OK id=<n>"; failure -> "FAIL <reason>" + a line in store/agent-msg-failures.log, exit 1.
-# Env: MARVEEN_WEB_PORT (default 3420).
+# Env:
+#   MARVEEN_API_BASE   full base URL, e.g. https://marveen.example.com (overrides host+port)
+#   MARVEEN_WEB_PORT   port for the default localhost base (default 3420)
+#   MARVEEN_TOKEN_FILE bearer token file (default <repo>/store/.dashboard-token)
+# MEASURED 2026-09-13: a remote agent runs this helper OUTSIDE this repo, where localhost:3420
+# does not exist -- it had to fall back to raw curl, i.e. exactly the unchecked pattern this file was
+# written to eliminate. A hardcoded base URL silently un-installs the helper for everyone not on this
+# VM, so the base is env-overridable and the two endpoints stay ONE script.
 set -uo pipefail
 
 # base dir = the parent of this script's dir (scripts/..), so it works from any CWD / any install
 BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${MARVEEN_WEB_PORT:-3420}"
-TOKEN_FILE="$BASE/store/.dashboard-token"
-URL="http://localhost:${PORT}/api/messages"
+API_BASE="${MARVEEN_API_BASE:-http://localhost:${PORT}}"
+API_BASE="${API_BASE%/}"
+TOKEN_FILE="${MARVEEN_TOKEN_FILE:-$BASE/store/.dashboard-token}"
+URL="${API_BASE}/api/messages"
 LOG="$BASE/store/agent-msg-failures.log"
 
 FROM="${1:?from required}"; TO="${2:?to required}"; C="${3:?content required (or - for STDIN)}"
@@ -46,6 +55,6 @@ except Exception:
   fi
   sleep 1
 done
-echo "FAIL from=$FROM to=$TO http=${CODE:-?} id='$ID' (after $max tries)"
-printf '%s\tFAIL\tfrom=%s\tto=%s\thttp=%s\tresp=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$FROM" "$TO" "${CODE:-?}" "$(printf '%s' "${JSON:-}" | head -c 200)" >> "$LOG" 2>/dev/null || true
+echo "FAIL from=$FROM to=$TO url=$URL http=${CODE:-?} id='$ID' (after $max tries)"
+printf '%s\tFAIL\tfrom=%s\tto=%s\turl=%s\thttp=%s\tresp=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$FROM" "$TO" "$URL" "${CODE:-?}" "$(printf '%s' "${JSON:-}" | head -c 200)" >> "$LOG" 2>/dev/null || true
 exit 1
