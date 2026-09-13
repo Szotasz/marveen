@@ -21,6 +21,7 @@
 #   WAITING <id> <title>           (0..n lines)
 #   CALENDAR_EVENTS n=N window=2h  (measured; n=0 is a MEASURED empty calendar)
 #   CAL_EVENT <HH:MM|all-day> <summary> [attendees=N]   (0..n lines)
+#   TOKEN_PRUNE state=ok|stale|empty retention_days=N lag_hours=N tolerance_hours=N
 #   SCHEDULES enabled=N
 #   TASK_RUNS_1H total=N [<status>=N ...]
 #   ERROR <section>: <reason>      (any failed measurement)
@@ -113,6 +114,19 @@ if tok is not None:
                 print('URGENT', x.get('id'), x.get('title'))
             for x in d.get('waiting') or []:
                 print('WAITING', x.get('id'), x.get('title'))
+        # HBDBKUSZOB823: the prune-lag state is computed server-side too
+        # (db.ts getTokenPruneLag) -- the retention resolution is
+        # override > .env > registry default, and re-implementing that chain
+        # here would be a second source of truth. Fail-closed like the rest:
+        # a missing block is an ERROR line, never a cheerful default.
+        tp = d.get('token_prune')
+        if not isinstance(tp, dict) or tp.get('state') is None:
+            err('token_prune', 'token_prune missing from response')
+        else:
+            print('TOKEN_PRUNE state=%s retention_days=%s lag_hours=%s '
+                  'tolerance_hours=%s'
+                  % (tp['state'], tp.get('retention_days'),
+                     tp.get('lag_hours'), tp.get('tolerance_hours')))
     except Exception as e:
         err('summary', repr(e))
 

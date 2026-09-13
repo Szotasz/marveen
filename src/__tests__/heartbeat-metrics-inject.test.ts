@@ -17,6 +17,7 @@ const HAPPY = [
   'CALENDAR_EVENTS n=2 window=2h',
   'CAL_EVENT all-day Stay somewhere nice attendees=1',
   'CAL_EVENT 08:00 Új esemény',
+  'TOKEN_PRUNE state=ok retention_days=90 lag_hours=0.27 tolerance_hours=48',
   'SCHEDULES enabled=34',
   'TASK_RUNS_1H total=41 fired=12 skipped=29',
 ].join('\n')
@@ -113,9 +114,66 @@ describe('fail-closed rendering -- a value the instrument did not print never be
     ].join('\n')
     const out = renderHeartbeatMetricsBlock(raw)
     const hits = out.match(/muszer-hiba: ERROR token/g) ?? []
-    // calendar + kanban + schedules + memory = 4 sections; task_runs measured.
-    expect(hits.length).toBe(4)
+    // calendar + kanban + schedules + memory + token_prune = 5 sections;
+    // task_runs measured. HBDBKUSZOB823 added the fifth: the prune verdict is
+    // API-backed too, so an API-wide failure must take it down VISIBLY instead
+    // of leaving a reassuring silence where the health line belongs.
+    expect(hits.length).toBe(5)
     expect(out).toContain('- last hour: TASK_RUNS_1H total=3 fired=3')
+  })
+})
+
+describe('TOKEN_PRUNE -- the health line that replaced the DB-size threshold (HBDBKUSZOB823)', () => {
+  const withPrune = (line: string) => renderHeartbeatMetricsBlock([
+    'HB_METRICS_V1 ts=2026-09-13 10:00',
+    'COUNTS urgent=0 in_progress=0 waiting=0 planned=0 new_hot_memories_1h=0 db_size_mb=481.7 waiting_shown=0',
+    line,
+    'SCHEDULES enabled=34',
+    'TASK_RUNS_1H total=3 fired=3',
+  ].join('\n'))
+
+  it('ok renders quietly, WITH the numbers that make it checkable', () => {
+    const out = withPrune('TOKEN_PRUNE state=ok retention_days=90 lag_hours=0.27 tolerance_hours=48')
+    expect(out).toContain('- token_usage prune: rendben (0.27 ora lemaradas, tures 48 ora)')
+    expect(out).not.toContain('FIGYELEM')
+  })
+
+  it('stale is loud, and says the sweep is not running -- not merely that a number is high', () => {
+    const out = withPrune('TOKEN_PRUNE state=stale retention_days=90 lag_hours=61.2 tolerance_hours=48')
+    expect(out).toContain('FIGYELEM, token_usage NYESES ELMARADT')
+    expect(out).toContain('61.2 ora lemaradas')
+    expect(out).toContain('A napi decay-sweep nem fut')
+  })
+
+  it('empty is its own line -- a fresh install is not a healthy verdict', () => {
+    const out = withPrune('TOKEN_PRUNE state=empty retention_days=90 lag_hours=none tolerance_hours=48')
+    expect(out).toContain('nincs meg sor (uj telepites)')
+    expect(out).not.toContain('rendben')
+  })
+
+  it('FAIL-CLOSED: an output with NO TOKEN_PRUNE line renders muszer-hiba, never silence', () => {
+    // The shape that matters in practice: an older instrument paired with a
+    // newer injector. A health signal that simply vanishes when the contract
+    // drifts is worse than the threshold this replaced -- that one at least
+    // printed something.
+    const out = renderHeartbeatMetricsBlock([
+      'HB_METRICS_V1 ts=2026-09-13 10:00',
+      'COUNTS urgent=0 in_progress=0 waiting=0 planned=0 new_hot_memories_1h=0 db_size_mb=481.7 waiting_shown=0',
+      'SCHEDULES enabled=34',
+      'TASK_RUNS_1H total=3 fired=3',
+    ].join('\n'))
+    expect(out).toContain('muszer-hiba')
+    expect(out).not.toContain('token_usage prune: rendben')
+  })
+
+  it('MUTATION CONTROL: the rendered verdict follows the state, not the DB size', () => {
+    // Same 481.7 MB in both renders -- if the two outputs did not diverge, the
+    // line would be decoration re-deriving the old always-true size alarm.
+    const ok = withPrune('TOKEN_PRUNE state=ok retention_days=90 lag_hours=0.27 tolerance_hours=48')
+    const stale = withPrune('TOKEN_PRUNE state=stale retention_days=90 lag_hours=61.2 tolerance_hours=48')
+    expect(ok).toContain('481.7 MB')
+    expect(stale).toContain('481.7 MB')
+    expect(ok).not.toBe(stale)
   })
 })
 
