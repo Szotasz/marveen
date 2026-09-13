@@ -1,12 +1,12 @@
-# Channels (Telegram / Slack / WhatsApp / Teams)
+# Channels (Telegram / Slack / Discord / WhatsApp / Teams)
 
-> Ott éred el ahol amúgy is írsz. Telegram vagy Slack — proaktív értesítésekkel, nem csak válaszokkal.
+> Ott éred el ahol amúgy is írsz. Telegram, Slack vagy Discord — proaktív értesítésekkel, nem csak válaszokkal.
 
 ---
 
 ## 🎯 Mit tud / miért érdekes
 
-Marveennel ott beszélgetsz, ahol kényelmes: **Telegramon** vagy **Slacken**. Nem webfelület, nem külön app — a meglévő üzenetküldődben él. De nem csak válaszol: magától ír, ha valami fontos. Reggeli összefoglaló (email, naptár, AI-hírek), beakadt feladatnál értesítés, hosszú munka végén "kész" — érzed, hogy van valaki a másik oldalon, nem csak egy chatbox.
+Marveennel ott beszélgetsz, ahol kényelmes: **Telegramon**, **Slacken** vagy **Discordon**. Nem webfelület, nem külön app — a meglévő üzenetküldődben él. De nem csak válaszol: magától ír, ha valami fontos. Reggeli összefoglaló (email, naptár, AI-hírek), beakadt feladatnál értesítés, hosszú munka végén "kész" — érzed, hogy van valaki a másik oldalon, nem csak egy chatbox.
 
 Hangüzenetet is megért (átírja szöveggé), képet és fájlt küld-fogad — pl. egy kész videót attachmentként, vagy egy táblázatot, ami épp elkészült.
 
@@ -18,7 +18,7 @@ Hangüzenetet is megért (átírja szöveggé), képet és fájlt küld-fogad �
 
 ### Architektúra
 
-A csatorna-integráció Claude Code **plugin**-ként fut (Telegram, Slack, WhatsApp és Teams plugin). Az inbound üzenetek `<channel source="..." chat_id="..." user="..." ts="...">` formátumban érkeznek; a válasz a `reply` tool-on megy vissza (a `chat_id`-vel). Kép: `image_path` attribútum → beolvasás; egyéb attachment: `download_attachment`.
+A csatorna-integráció Claude Code **plugin**-ként fut (Telegram, Slack, Discord, WhatsApp és Teams plugin). Az inbound üzenetek `<channel source="..." chat_id="..." user="..." ts="...">` formátumban érkeznek; a válasz a `reply` tool-on megy vissza (a `chat_id`-vel). Kép: `image_path` attribútum → beolvasás; egyéb attachment: `download_attachment`.
 
 ### Időkezelés
 
@@ -84,6 +84,21 @@ Beüzemelés:
    { "plugin": "teams", "marketplace": "marveen-marketplace" }
    ```
 3. **Párosítás + zárolás.** A párosítás és az allowlist-policy a `/teams:access` paranccsal állítható, a tulajdonos termináljából (csatornán érkező engedély-kérést a rendszer sosem hajt végre magától).
+
+### Discord-specifikum
+
+A Discord csatorna a hivatalos `discord@claude-plugins-official` plugin. `CHANNEL_PROVIDER=discord` -> a `channels.sh` a discord plugint indítja, az állapot a `~/.claude/channels/discord/` mappában (a `DISCORD_STATE_DIR` env-en keresztül). A provider-elágazások (PLUGIN_ID, state-dir, plugin-watchdog) ugyanúgy viselkednek mint a többi providernél, külön kezelés nélkül. A telepítő a Linux ÉS a macOS úton is felkínálja (3. opció).
+
+Beüzemelés:
+
+1. **Discord alkalmazás.** Hozz létre egy alkalmazást a [discord.com/developers/applications](https://discord.com/developers/applications) oldalon, a Bot fülön add hozzá a botot és másold ki a tokent. Kapcsold be a Privileged Gateway Intents alatt a MESSAGE CONTENT INTENT-et, majd az OAuth2 > URL Generatorral (bot scope) hívd meg a szerveredre.
+2. **Csatorna és operátor azonosítók.** Developer Mode-dal másold ki a csatorna ID-jét (jobb klikk a csatornán > Copy Channel ID) és a saját user ID-det (jobb klikk a nevedre > Copy User ID). A telepítő ezeket bekéri; a `.env` kulcsok: `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID`, `OPERATOR_DISCORD_USER_ID`.
+3. **`allowedChannelPlugins` engedélyezés (csak ha van managed-settings).** Friss telepítésnél a hivatalos marketplace-es plugin allowlist-fájl nélkül is fut. Ha viszont a gépen MÁR van `managed-settings.json` (pl. egy korábbi Slack/Teams telepítés írta), az allowlist a benne nem szereplő plugint csendben eldobja (a bot online-nak látszik, de sosem válaszol). A macOS telepítő discord-ágon ezt install-time érzékeli és felveszi a `discord` bejegyzést. Kézi pótlásnál ugyanaz a menet, mint a Teamsnél, a bejegyzés:
+
+   ```json
+   { "plugin": "discord", "marketplace": "claude-plugins-official" }
+   ```
+4. **Párosítás + zárolás.** A DM-policy alapból `pairing`; az engedélyezés a `/discord:access` paranccsal, a tulajdonos termináljából történik (csatornán érkező engedély-kérést a rendszer sosem hajt végre magától).
 
 ### Biztonság
 
