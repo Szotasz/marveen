@@ -59,6 +59,7 @@ interface ParsedMetrics {
   calEvents: string[] // rendered "- <time> -- <summary>" lines
   schedulesEnabled: string | null
   taskRuns: string | null // the TASK_RUNS_1H line, verbatim
+  tokenPrune: Record<string, string> | null
   errors: Map<string, string> // section -> full ERROR line
 }
 
@@ -73,6 +74,7 @@ function parseInstrumentOutput(lines: string[]): ParsedMetrics {
     calEvents: [],
     schedulesEnabled: null,
     taskRuns: null,
+    tokenPrune: null,
     errors: new Map(),
   }
   const tsMatch = lines[0]?.match(/^HB_METRICS_V1 ts=(.+)$/)
@@ -106,6 +108,12 @@ function parseInstrumentOutput(lines: string[]): ParsedMetrics {
     } else if (line.startsWith('SCHEDULES ')) {
       const m = line.match(/enabled=(\d+)/)
       p.schedulesEnabled = m ? m[1] : null
+    } else if (line.startsWith('TOKEN_PRUNE ')) {
+      const kv: Record<string, string> = {}
+      for (const m of line.slice('TOKEN_PRUNE '.length).matchAll(/(\w+)=(\S+)/g)) {
+        kv[m[1]] = m[2]
+      }
+      p.tokenPrune = kv
     } else if (line.startsWith('TASK_RUNS_1H ')) {
       p.taskRuns = line
     } else if (line.startsWith('ERROR ')) {
@@ -126,6 +134,20 @@ function hibaLine(p: ParsedMetrics, section: string, firstLine: string): string 
   const token = p.errors.get('token')
   if (token) return `- muszer-hiba: ${token}`
   return `- muszer-hiba: ${firstLine}`
+}
+
+// The prune verdict as ONE line. 'stale' is the only loud state, and it says
+// what to do rather than what is broken: the daily decay sweep has not run.
+function renderTokenPruneLine(p: ParsedMetrics, firstLine: string): string {
+  const tp = p.tokenPrune
+  if (!tp || !tp['state']) return hibaLine(p, 'token_prune', firstLine)
+  if (tp['state'] === 'empty') return '- token_usage prune: nincs meg sor (uj telepites)'
+  if (tp['state'] === 'stale') {
+    return `- FIGYELEM, token_usage NYESES ELMARADT: ${tp['lag_hours']} ora lemaradas `
+      + `(tures ${tp['tolerance_hours']} ora = ket sweep-ciklus). A napi decay-sweep nem fut -- `
+      + `a token-naplo ettol korlatlanul no.`
+  }
+  return `- token_usage prune: rendben (${tp['lag_hours']} ora lemaradas, tures ${tp['tolerance_hours']} ora)`
 }
 
 function renderSections(p: ParsedMetrics, firstLine: string): string {
@@ -179,6 +201,12 @@ function renderSections(p: ParsedMetrics, firstLine: string): string {
   } else {
     out.push(hibaLine(p, 'summary', firstLine))
   }
+  // HBDBKUSZOB823: the DB size above is a bounded number (the token ledger is
+  // pruned daily), so it cannot carry a health verdict on its own -- this line
+  // is the verdict. Absent TOKEN_PRUNE renders as muszer-hiba, never as
+  // silence: a health signal that disappears when the instrument changes shape
+  // is the failure mode this whole module exists to close.
+  out.push(renderTokenPruneLine(p, firstLine))
 
   return out.join('\n')
 }

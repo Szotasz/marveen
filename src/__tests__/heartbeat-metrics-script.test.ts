@@ -43,6 +43,11 @@ const FULL_SUMMARY = () => ({
     new_hot_memories_1h: 0,
     db_size_mb: 166.6,
   },
+  // HBDBKUSZOB823: the prune verdict rides in the same payload, computed
+  // server-side like every other number here (the retention resolution is
+  // override > .env > registry default -- re-deriving it in the script would
+  // be a second source of truth).
+  token_prune: { state: 'ok', retention_days: 90, lag_hours: 0.27, tolerance_hours: 48 },
   waiting_shown: 8,
   urgent: [{ id: 'CARD1', title: 'first urgent' }],
   waiting: [{ id: 'CARD2', title: 'a waiting card' }],
@@ -160,7 +165,38 @@ describe('positive control: full fixture', () => {
     expect(r.stdout).toContain('WAITING CARD2 a waiting card')
     expect(r.stdout).toContain('CALENDAR_EVENTS n=0 window=2h')
     expect(r.stdout).toContain('SCHEDULES enabled=2')
+    expect(r.stdout).toContain('TOKEN_PRUNE state=ok retention_days=90 lag_hours=0.27 tolerance_hours=48')
     expect(r.stdout).not.toContain('ERROR')
+  })
+
+  it('carries a stale prune verdict through verbatim (HBDBKUSZOB823)', async () => {
+    const body = FULL_SUMMARY() as Record<string, unknown>
+    body.token_prune = { state: 'stale', retention_days: 90, lag_hours: 61.2, tolerance_hours: 48 }
+    summaryBody = body
+    schedulesBody = []
+    const r = await runScript()
+    expect(r.stdout).toContain('TOKEN_PRUNE state=stale retention_days=90 lag_hours=61.2 tolerance_hours=48')
+    // The instrument REPORTS the state; it is not the alarm's judge. A stale
+    // prune is a finding for the reader, not a broken measurement, so the
+    // exit code stays 0 -- conflating the two would make every stale round
+    // look like an instrument failure.
+    expect(r.status).toBe(0)
+  })
+
+  it('FAIL-CLOSED: a payload without token_prune is an ERROR and a non-zero exit', async () => {
+    // The realistic shape: an older dashboard paired with this script. The
+    // health line must never quietly disappear -- that is precisely how the
+    // threshold it replaces stayed invisible for weeks.
+    const body = FULL_SUMMARY() as Record<string, unknown>
+    delete body.token_prune
+    summaryBody = body
+    schedulesBody = []
+    const r = await runScript()
+    expect(r.stdout).toContain('ERROR token_prune: token_prune missing from response')
+    expect(r.stdout).not.toContain('TOKEN_PRUNE state=')
+    expect(r.status).not.toBe(0)
+    // NEGATIVE CONTROL on the blast radius: the other sections still measure.
+    expect(r.stdout).toContain('COUNTS urgent=2')
   })
 
   it('counts only the millisecond rows inside the hour (the *1000 cutoff, behaviourally)', async () => {
