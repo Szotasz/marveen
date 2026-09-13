@@ -24,6 +24,7 @@ import { startChannelPluginMonitor } from './web/channel-monitor.js'
 import { startInboundProber } from './web/inbound-probe.js'
 import { startChannelHealthMonitor } from './web/channel-health-monitor.js'
 import { startChannelIntakeMonitor } from './web/channel-intake-monitor.js'
+import { startSchemaWatch } from './web/schema-watch.js'
 import { startStuckInputWatcher } from './web/stuck-input-watcher.js'
 import { startInboxNudgeWatcher } from './web/inbox-nudge-watcher.js'
 import { startStuckToolCallWatcher } from './web/stuck-tool-call-watcher.js'
@@ -423,6 +424,14 @@ export function startWebServer(port = 3420): http.Server {
   const channelIntakeInterval = webOnly ? undefined : startChannelIntakeMonitor(PROJECT_ROOT)
   if (!webOnly) logger.info('Channel intake monitor started (5min poll, 100s offset)')
 
+  // The VoiceMailAI backend checks its own schema at boot and publishes the
+  // verdict at GET /health/schema. It cannot push the result here (it runs on
+  // Railway, this runs on localhost), so the fleet asks -- once a day, and it
+  // only speaks up for a real `missing`, or for an endpoint that has stayed
+  // unreadable long enough that its silence has stopped being informative.
+  const schemaWatchInterval = webOnly ? undefined : startSchemaWatch()
+  if (!webOnly) logger.info('Schema watch started (daily poll of /health/schema)')
+
   // CostOps: reflect the local config's fixed costs into the ledger once at boot + every
   // 10 minutes. Deliberately NOT done inside the GET /api/costs/summary handler -- a read
   // endpoint must not write (was flagged in review); this is the one place that does.
@@ -635,6 +644,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     if (workerLivenessInterval) clearInterval(workerLivenessInterval)
     clearInterval(channelHealthInterval)
     if (channelIntakeInterval) clearInterval(channelIntakeInterval)
+    if (schemaWatchInterval) clearInterval(schemaWatchInterval)
     if (costsSyncInterval) clearInterval(costsSyncInterval)
     clearInterval(stuckInputInterval)
     clearInterval(stuckToolCallInterval)
