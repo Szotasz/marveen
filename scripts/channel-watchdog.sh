@@ -61,6 +61,32 @@ AUTH_DEAD_THRESHOLD_TICKS=3     # consecutive dead-token ticks (~15min @ 5min/ti
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*"; }
 
+# --- auto-reapply the local Telegram reply-to patch (issue #929 workaround) ---
+# The upstream telegram plugin drops quote-reply metadata; scripts/patch-telegram-
+# reply-to.mjs injects it back. A plugin update writes a fresh, unpatched
+# server.ts, so we re-run the (idempotent, cheap) patcher every tick here -- this
+# is the heartbeat that notices a reverted patch and reapplies it. The patcher is
+# silent unless it actually changes something, so this only logs on (re)apply.
+# Best-effort: never let a patch hiccup block the health checks below.
+REPLY_PATCH="$INSTALL_DIR/scripts/patch-telegram-reply-to.mjs"
+if [ -f "$REPLY_PATCH" ]; then
+  REPLY_RUNNER=""
+  if command -v node >/dev/null 2>&1; then REPLY_RUNNER="node"
+  elif command -v bun >/dev/null 2>&1; then REPLY_RUNNER="bun"
+  fi
+  if [ -n "$REPLY_RUNNER" ]; then
+    REPLY_OUT="$("$REPLY_RUNNER" "$REPLY_PATCH" 2>&1)" || true
+    [ -n "$REPLY_OUT" ] && log "reply-to patch: $REPLY_OUT"
+  else
+    # No node/bun on PATH -- the patcher could not even start. This is the exact
+    # silent-failure mode of an nvm-installed node under a minimal service PATH
+    # (systemd ExecStartPre's leading '-' or launchd's default PATH would swallow
+    # it): the patch just never runs and quote-replies keep getting dropped with
+    # no trace. Log it here so a reverted patch is visible instead of silent.
+    log "reply-to patch: SKIPPED -- no node/bun on PATH, patcher did not start ($REPLY_PATCH)"
+  fi
+fi
+
 # --- resolve the channels session + provider (launch-order / rename independent) ---
 MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
 MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
