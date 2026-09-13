@@ -49,6 +49,10 @@ const EXEMPT: Record<string, string> = {
     'legacy: referenced only by a historical rebuild prompt, wired nowhere; kept pending a maintainer decision to remove it',
   'telegram-ack.py':
     'unreferenced anywhere in the repo; dead code kept pending a maintainer decision to remove it',
+  'telegram_fallback_send.py':
+    'agent-invoked CLI (manual Bot API fallback sender, see scripts/lib/send-telegram.sh), not a settings hook; since #1305 the progress installer no longer copies or names it',
+  'telegram-image-resize.sh':
+    'legacy predecessor of channel-image-resize.sh; only its old installer migration path named it, and since #1305 that installer is a no-op stub -- kept pending a maintainer decision to remove it',
 }
 
 function registrationCorpus(): string {

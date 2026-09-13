@@ -105,7 +105,7 @@ describe('ensureIsolatedChannelConfigDir', () => {
     expect(s.enabledPlugins[TG]).toBe(true)
     expect(s.enabledPlugins[SL]).toBe(false)
     expect(s.enabledPlugins[DI]).toBe(false)
-    expect(s.hooks).toEqual({ Stop: [] }) // shared non-plugin settings preserved
+    expect(s.hooks).toBeUndefined() // #1305: hooks never ride the clone (see isolated-config-hook-strip)
   })
 
   it('a slack agent enables ONLY slack in its isolated settings', () => {
@@ -134,7 +134,7 @@ describe('ensureIsolatedChannelConfigDir', () => {
     expect(s.enabledPlugins[TG]).toBe(false)
     expect(s.enabledPlugins[SL]).toBe(false)
     expect(s.enabledPlugins[DI]).toBe(false)
-    expect(s.hooks).toEqual({ Stop: [] }) // shared non-plugin settings preserved
+    expect(s.hooks).toBeUndefined() // #1305: hooks never ride the clone (see isolated-config-hook-strip)
   })
 
   it('channel-less provisioning still carries NO .credentials.json', () => {

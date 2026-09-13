@@ -746,6 +746,15 @@ function provisionIsolatedConfigDir(
       try { settings = JSON.parse(readFileSync(sharedSettings, 'utf-8')) as Record<string, unknown> }
       catch { settings = {} }
     }
+    // #1305: hooks never ride the clone. Fleet hooks live in the PROJECT scope
+    // (tracked <root>/.claude/settings.json for the main agent, agents/<n>/
+    // .claude/ for sub-agents), which Claude Code loads by cwd regardless of
+    // CLAUDE_CONFIG_DIR. Copying the shared file's hooks here is what made the
+    // isolated dirs carry a second, derived copy of the user-global entries --
+    // it double-fired every gate (measured 2026-09-04: two identical
+    // PROVENANCE-KAPU blocks per prompt) and made the global file look load-
+    // bearing when it was not.
+    delete settings.hooks
     const scopedPlugins = scopeChannelPlugins(
       providerType,
       settings.enabledPlugins as Record<string, boolean> | undefined,
@@ -787,7 +796,11 @@ function provisionIsolatedConfigDir(
         if (isPlainObject(own)) {
           const inherited: string[] = []
           for (const [key, value] of Object.entries(own)) {
-            if (key !== 'enabledPlugins' && !(key in settings)) {
+            // 'hooks' is excluded here too: the shared copy just dropped it
+            // (#1305), so without this exclusion an isolated dir that already
+            // carries the old derived hooks would inherit them right back as a
+            // "target-only" key on every re-provision.
+            if (key !== 'enabledPlugins' && key !== 'hooks' && !(key in settings)) {
               settings[key] = value
               inherited.push(key)
             }

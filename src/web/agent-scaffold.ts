@@ -146,12 +146,27 @@ export function resolveTemplatePlaceholders(content: string): string {
 }
 
 // Return the settings.json path for an agent.
-// The main agent's settings live at ~/.claude/settings.json (not inside agents/).
-// Exported so the startup self-heal (hook-registration-guard) can prune stale
-// entries from the same files this module writes.
+// The main agent's path still names ~/.claude/settings.json, but since
+// ISSUE1305HOOKSCOPE that file is READ-ONLY territory for this module: the
+// startup self-heal (hook-registration-guard) may still prune stale entries
+// out of it, while every WRITE path below refuses the main agent -- its hooks
+// are repo-shipped in the tracked <PROJECT_ROOT>/.claude/settings.json
+// (project scope, portable $CLAUDE_PROJECT_DIR form). Writing fleet hooks
+// into the user-global file is what made them fire in the owner's own,
+// unrelated Claude Code sessions (#1305: blocked WebFetch there, plus a
+// prompt-injection surface and foreign content reaching fleet memory).
 export function agentSettingsPath(name: string): string {
   if (name === MAIN_AGENT_ID) return join(homedir(), '.claude', 'settings.json')
   return join(agentDir(name), '.claude', 'settings.json')
+}
+
+// The single gate for the #1305 class: no scaffold write may target the
+// user-global settings. Main-agent hooks ship in the repo's project settings;
+// sub-agents keep their per-agent project files (agents/<n>/.claude/).
+function refuseMainAgentHookWrite(name: string, fn: string): boolean {
+  if (name !== MAIN_AGENT_ID) return false
+  logger.debug({ fn }, 'hook write skipped for main agent: hooks are repo-shipped project settings (#1305)')
+  return true
 }
 
 // Volatile tmpfs prefixes: a hook command referencing these directories is
@@ -344,6 +359,7 @@ export function ensureAgentHooks(
   // writing into the operator's real home.
   scopes?: { user: string; project: string },
 ): boolean {
+  if (refuseMainAgentHookWrite(name, 'ensureAgentHooks')) return false
   const settingsPath = agentSettingsPath(name)
   const tplPath = join(PROJECT_ROOT, 'templates', 'settings.json.template')
   if (!existsSync(tplPath)) return false
@@ -479,6 +495,7 @@ const _stalenessScript = join(PROJECT_ROOT, 'scripts', 'hooks', 'staleness-guard
 const STALENESS_HOOK_CMD = `bash -c '[ -f ${_stalenessScript} ] && exec python3 ${_stalenessScript}; exit 0'`
 
 export function ensureAgentStalenessHook(name: string): boolean {
+  if (refuseMainAgentHookWrite(name, 'ensureAgentStalenessHook')) return false
   // agentSettingsPath() maps MAIN_AGENT_ID to ~/.claude/settings.json; using
   // agentDir() directly here would create a spurious agents/<main> dir and make
   // the main agent show up as a phantom "down" agent on the dashboard.
@@ -521,6 +538,7 @@ const _provenanceScript = join(PROJECT_ROOT, 'scripts', 'hooks', 'provenance-gat
 const PROVENANCE_HOOK_CMD = `bash -c '[ -f ${_provenanceScript} ] && exec python3 ${_provenanceScript}; exit 0'`
 
 export function ensureAgentProvenanceHook(name: string): boolean {
+  if (refuseMainAgentHookWrite(name, 'ensureAgentProvenanceHook')) return false
   const settingsPath = agentSettingsPath(name)
   let settings: Record<string, unknown> = {}
   if (existsSync(settingsPath)) {
@@ -1030,6 +1048,11 @@ export function ensureTelegramCopyGate(name: string): boolean {
 // the hook is applied to both existing and newly-created agents without a full
 // respawn. Returns true if the file was updated, false if already wired.
 export function ensureEgressGate(name: string): boolean {
+  // #1305: the main agent's egress gate is repo-shipped in the tracked project
+  // settings (portable, fail-CLOSED `command -v node` form). Writing the
+  // machine-pinned node path into ~/.claude/settings.json is exactly what
+  // blocked WebFetch in the owner's own unrelated sessions.
+  if (refuseMainAgentHookWrite(name, 'ensureEgressGate')) return false
   const settingsPath = agentSettingsPath(name)
   let settings: Record<string, unknown> = {}
   if (existsSync(settingsPath)) {
