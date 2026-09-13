@@ -16,7 +16,7 @@ vi.mock('../settings-store.js', async (orig) => {
   }
 })
 
-let plans: Array<{ id: string; configDir: string }> = []
+let plans: Array<{ id: string; configDir?: string; tokenSecretId?: string }> = []
 vi.mock('../web/claude-plans.js', () => ({
   readClaudePlans: () => plans,
   getClaudePlan: (id: string | null | undefined) => plans.find((p) => p.id === id) ?? null,
@@ -27,7 +27,7 @@ vi.mock('../web/claude-plans-state.js', () => ({
   readClaudePlansState: () => ({ activePlanByAgent, plans: {} }),
 }))
 
-const { resolveMainAgentRotatedConfigDir } = await import('../web/agent-process.js')
+const { resolveMainAgentRotatedConfigDir, resolveMainAgentRotatedTokenSecretId } = await import('../web/agent-process.js')
 
 beforeEach(() => {
   isolationSetting = '1'
@@ -66,5 +66,45 @@ describe('resolveMainAgentRotatedConfigDir', () => {
   it('is keyed by MAIN_AGENT_ID, not any sub-agent entry in the same state file', () => {
     activePlanByAgent = { someSubAgent: 'pro' }
     expect(resolveMainAgentRotatedConfigDir()).toBeNull()
+  })
+})
+
+// Token-mode counterpart (2026-09-12): same gating (resolveActiveMainPlan),
+// answers "which token" instead of "which dir".
+describe('resolveMainAgentRotatedTokenSecretId', () => {
+  beforeEach(() => {
+    plans = [
+      { id: 'pro', configDir: '/opt/claude-pro' },
+      { id: 'team', tokenSecretId: 'claude-plan-token-team' },
+    ]
+    activePlanByAgent = { [MAIN_AGENT_ID]: 'team' }
+  })
+
+  it('returns the active plan tokenSecretId when it is token-mode', () => {
+    expect(resolveMainAgentRotatedTokenSecretId()).toBe('claude-plan-token-team')
+  })
+
+  it('returns null when the active plan is configDir-mode instead', () => {
+    activePlanByAgent = { [MAIN_AGENT_ID]: 'pro' }
+    expect(resolveMainAgentRotatedTokenSecretId()).toBeNull()
+  })
+
+  it('shares every gate with resolveMainAgentRotatedConfigDir: off isolation, <2 plans, no active id, unknown id', () => {
+    isolationSetting = '0'
+    expect(resolveMainAgentRotatedTokenSecretId()).toBeNull()
+    isolationSetting = '1'
+
+    plans = [{ id: 'team', tokenSecretId: 'claude-plan-token-team' }]
+    expect(resolveMainAgentRotatedTokenSecretId()).toBeNull()
+    plans = [
+      { id: 'pro', configDir: '/opt/claude-pro' },
+      { id: 'team', tokenSecretId: 'claude-plan-token-team' },
+    ]
+
+    activePlanByAgent = {}
+    expect(resolveMainAgentRotatedTokenSecretId()).toBeNull()
+
+    activePlanByAgent = { [MAIN_AGENT_ID]: 'gone' }
+    expect(resolveMainAgentRotatedTokenSecretId()).toBeNull()
   })
 })

@@ -642,18 +642,34 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   # and a non-empty output with no contract line in it is reported LOUDLY, because
   # that is the shape that silently disables isolation.
   _cfg_raw="$("$_node_bin" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$CHANNEL_PROVIDER" 3>&1 2>>"$INSTALL_DIR/store/channels-failures.log" 1>&2 || true)"
-  _cfg_line="$(printf '%s\n' "$_cfg_raw" | grep -m1 -E '^(explicit|rotated|isolated)	/' || true)"
+  _cfg_line="$(printf '%s\n' "$_cfg_raw" | grep -m1 -E '^(explicit|rotated|isolated|token)	/' || true)"
   if [ -n "$_cfg_raw" ] && [ -z "$_cfg_line" ]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN main-agent-isolated-config.mjs printed output with NO contract line -- isolation skipped. Raw first line: $(printf '%s\n' "$_cfg_raw" | head -1)" >> "$INSTALL_DIR/store/channels-failures.log"
   fi
   _cfg_mode="${_cfg_line%%	*}"
-  _cfg_dir="${_cfg_line#*	}"
+  _cfg_rest="${_cfg_line#*	}"
+  # `token` mode carries a THIRD field (the vault secret id) after the dir;
+  # every other mode's rest IS the dir.
+  if [ "$_cfg_mode" = "token" ]; then
+    _cfg_dir="${_cfg_rest%%	*}"
+    _cfg_token_secret="${_cfg_rest#*	}"
+  else
+    _cfg_dir="$_cfg_rest"
+    _cfg_token_secret=""
+  fi
   if [ -n "$_cfg_line" ] && [ -d "$_cfg_dir" ]; then
     if [ "$_cfg_mode" = "explicit" ] || [ "$_cfg_mode" = "rotated" ]; then
       # Both carry their OWN .credentials.json (an operator-logged-in dir for
       # `explicit`, a registered plan's dir for `rotated` -- design 6.5/4) --
       # neither wants the fleet token injected below.
       CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && "
+    elif [ "$_cfg_mode" = "token" ]; then
+      # Token-mode rotated plan: same credential-less dir as `isolated`, but
+      # export THAT plan's vault-stored token instead of the flotta's.
+      # vault-resolve.mjs is evaluated in the launched shell (same "never
+      # lands in argv/ps" property as the $(cat) below); the secret id itself
+      # is not secret, only its resolved value is.
+      CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(printf 'T=%s' '$_cfg_token_secret' | \"$_node_bin\" '$INSTALL_DIR/scripts/vault-resolve.mjs' | cut -d= -f2-)\" && "
     else
       # Seed the token from the SAME 0600 file the isolated dir is gated on, so
       # the config dir and the active token always match (the isolated dir carries

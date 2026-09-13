@@ -44,8 +44,30 @@ export interface ClaudePlan {
   id: string
   /** Human label shown in the dashboard dropdown. */
   label: string
-  /** Absolute, launcher-validated CLAUDE_CONFIG_DIR for this login. */
-  configDir: string
+  /** Absolute, launcher-validated CLAUDE_CONFIG_DIR for this login. Mutually
+   *  exclusive with tokenSecretId -- see validatePlan(). */
+  configDir?: string
+  /** Vault secret id (src/web/vault.ts) holding a raw, portable long-lived
+   *  token (`claude setup-token`'s printed output, `sk-ant-oat01-...`), as an
+   *  alternative to configDir. Mutually exclusive with configDir.
+   *
+   *  Why: a configDir-mode plan needs an INTERACTIVE `claude setup-token` run
+   *  ON the machine that will use it -- fine for a plan registered where it
+   *  runs, painful for a remote/headless install (2026-09-12 incident: two
+   *  plans got registered on a remote host with no credentials ever placed in
+   *  their configDir, because the setup-token step was never run there, and
+   *  the dashboard registration alone gave no signal that anything was
+   *  missing). A token-mode plan needs no per-host step at all: the operator
+   *  can run `claude setup-token` ANYWHERE with a browser and paste the
+   *  resulting string into the plan.
+   *
+   *  Every token-mode plan shares the SAME generic isolated CLAUDE_CONFIG_DIR
+   *  (ensureMainAgentIsolatedConfigDir, credential-less) -- rotation only
+   *  changes which token is exported as CLAUDE_CODE_OAUTH_TOKEN at launch,
+   *  exactly like the flotta's own token already works. See
+   *  resolveMainAgentRotatedTokenSecretId() and
+   *  buildMainSessionRespawnCmd()'s ownCredentials/tokenSecretId handling. */
+  tokenSecretId?: string
   /** Personal subscription vs. company/team seat. */
   planType: ClaudePlanType
   /** Whether external Channels (Telegram etc.) may run on this plan. Team
@@ -57,9 +79,10 @@ export interface ClaudePlan {
   expectedEmail?: string
 }
 
-// Plan ids are used as HTML option values and looked up by string equality;
-// keep them to a boring, injection-proof charset.
-const PLAN_ID_ALLOWED = /^[A-Za-z0-9_.-]+$/
+// Plan ids (and token-mode's tokenSecretId, which doubles as a vault secret
+// id) are used as HTML option values / shell-interpolated / looked up by
+// string equality; keep them to a boring, injection-proof charset.
+export const PLAN_ID_ALLOWED = /^[A-Za-z0-9_.-]+$/
 
 const VALID_PLAN_TYPES = new Set<ClaudePlanType>(['personal', 'team'])
 
@@ -83,11 +106,27 @@ export function validatePlan(raw: unknown, homeDir: string): ClaudePlan | null {
   if (!id || !PLAN_ID_ALLOWED.test(id)) return null
 
   if (!isNonEmptyString(o.label)) return null
-  if (!isNonEmptyString(o.configDir)) return null
-  // Same shell-safety gauntlet as the raw per-agent claudeConfigDir: the path
-  // is inlined into the tmux launch command.
-  const configDir = expandAndValidateConfigDir(o.configDir, homeDir)
-  if (!configDir) return null
+
+  // Exactly one of configDir / tokenSecretId -- never both, never neither.
+  // Both-set is rejected rather than silently preferring one: a caller that
+  // sent both almost certainly has a bug, and guessing hides it.
+  const hasConfigDir = isNonEmptyString(o.configDir)
+  const hasTokenSecretId = isNonEmptyString(o.tokenSecretId)
+  if (hasConfigDir === hasTokenSecretId) return null
+
+  let configDir: string | undefined
+  let tokenSecretId: string | undefined
+  if (hasConfigDir) {
+    // Same shell-safety gauntlet as the raw per-agent claudeConfigDir: the
+    // path is inlined into the tmux launch command.
+    const expanded = expandAndValidateConfigDir(o.configDir as string, homeDir)
+    if (!expanded) return null
+    configDir = expanded
+  } else {
+    const tid = (o.tokenSecretId as string).trim()
+    if (!PLAN_ID_ALLOWED.test(tid)) return null
+    tokenSecretId = tid
+  }
 
   const planType = o.planType
   if (typeof planType !== 'string' || !VALID_PLAN_TYPES.has(planType as ClaudePlanType)) {
@@ -98,10 +137,11 @@ export function validatePlan(raw: unknown, homeDir: string): ClaudePlan | null {
   const plan: ClaudePlan = {
     id,
     label: o.label.trim(),
-    configDir,
     planType: planType as ClaudePlanType,
     channelsAllowed: o.channelsAllowed,
   }
+  if (configDir) plan.configDir = configDir
+  if (tokenSecretId) plan.tokenSecretId = tokenSecretId
   if (isNonEmptyString(o.expectedOrgType)) plan.expectedOrgType = o.expectedOrgType.trim()
   if (isNonEmptyString(o.expectedEmail)) plan.expectedEmail = o.expectedEmail.trim()
   return plan
@@ -186,7 +226,11 @@ export function resolveAgentConfigDir(
   const planId = readAgentClaudePlan(name)
   if (planId) {
     const plan = getClaudePlan(planId)
-    if (plan) return { configDir: plan.configDir, planUnresolved: false }
+    if (plan?.configDir) return { configDir: plan.configDir, planUnresolved: false }
+    // Token-mode plans (ClaudePlan.tokenSecretId) are main-agent-only for now
+    // -- there is no per-agent configDir to hand back for one, same shape as a
+    // removed/renamed plan, so this reads as unresolved rather than silently
+    // returning an undefined dir.
     return { configDir: readAgentClaudeConfigDir(name), planUnresolved: true }
   }
   return { configDir: readAgentClaudeConfigDir(name), planUnresolved: false }

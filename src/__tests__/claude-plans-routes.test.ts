@@ -5,7 +5,7 @@
 // atomic-write path. hardRestartMarveenChannels/restartAgentProcess are
 // mocked -- this test must NEVER touch a real tmux session or process.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mkdtempSync, rmSync, existsSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -30,6 +30,16 @@ const restartAgentProcess = vi.fn(
   async (_name: string): Promise<{ ok: boolean; pid?: number; error?: string }> => ({ ok: true, pid: 123 }),
 )
 vi.mock('../web/agent-process.js', () => ({ restartAgentProcess: (name: string) => restartAgentProcess(name) }))
+
+// Fake vault: a plain in-memory Map, never touches the real encrypted store or
+// macOS Keychain (see vault-master-key.test.ts for that machinery's own
+// tests). This route's job is the PROMOTION lifecycle (raw token in -> vault
+// reference out, cleaned up on failure/replacement/delete), not vault.ts
+// itself.
+const vaultSecrets = new Map<string, string>()
+const setSecret = vi.fn((id: string, _label: string, value: string) => { vaultSecrets.set(id, value) })
+const deleteSecret = vi.fn((id: string) => vaultSecrets.delete(id))
+vi.mock('../web/vault.js', () => ({ setSecret, deleteSecret }))
 
 const { tryHandleClaudePlans } = await import('../web/routes/claude-plans.js')
 const { CLAUDE_PLANS_PATH } = await import('../web/claude-plans.js')
@@ -66,6 +76,9 @@ function plan(over: Record<string, unknown> = {}): Record<string, unknown> {
 describe('tryHandleClaudePlans', () => {
   beforeEach(() => {
     if (existsSync(CLAUDE_PLANS_PATH)) rmSync(CLAUDE_PLANS_PATH)
+    vaultSecrets.clear()
+    setSecret.mockClear()
+    deleteSecret.mockClear()
   })
 
   it('GET returns an empty list when no registry exists', async () => {
@@ -159,6 +172,76 @@ describe('tryHandleClaudePlans', () => {
     const { ctx, out } = fakeCtx('GET', '/api/claude-plans/state')
     await tryHandleClaudePlans(ctx)
     expect(out.body).toEqual({ activePlanByAgent: {}, plans: {} })
+  })
+
+  // Token-mode (2026-09-12): POST/PUT accept a raw `token` field as a
+  // convenience over pre-populating the vault -- see ClaudePlan.tokenSecretId.
+  describe('token-mode plans (raw token -> vault promotion)', () => {
+    function tokenPlan(over: Record<string, unknown> = {}): Record<string, unknown> {
+      return {
+        id: 'marketing',
+        label: 'Marketing Max 20x',
+        token: 'test-fixture-not-a-real-token-marketing',
+        planType: 'personal',
+        channelsAllowed: true,
+        ...over,
+      }
+    }
+
+    it('POST promotes a raw token to the vault and never returns it', async () => {
+      const { ctx, out } = fakeCtx('POST', '/api/claude-plans', tokenPlan())
+      await tryHandleClaudePlans(ctx)
+      expect(out.status).toBe(201)
+      expect(out.body.tokenSecretId).toBe('claude-plan-token-marketing')
+      expect(out.body.token).toBeUndefined()
+      expect(vaultSecrets.get('claude-plan-token-marketing')).toBe('test-fixture-not-a-real-token-marketing')
+
+      const onDisk = JSON.parse(readFileSync(CLAUDE_PLANS_PATH, 'utf8'))
+      expect(onDisk[0].token).toBeUndefined()
+      expect(onDisk[0].tokenSecretId).toBe('claude-plan-token-marketing')
+    })
+
+    it('POST cleans up the vault secret when the rest of the plan is invalid', async () => {
+      const { ctx, out } = fakeCtx('POST', '/api/claude-plans', tokenPlan({ planType: 'enterprise' }))
+      await tryHandleClaudePlans(ctx)
+      expect(out.status).toBe(400)
+      expect(vaultSecrets.has('claude-plan-token-marketing')).toBe(false)
+    })
+
+    it('POST cleans up the vault secret on a duplicate id (409)', async () => {
+      await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', tokenPlan()).ctx)
+      vaultSecrets.clear() // isolate the second call's own write
+      const dup = fakeCtx('POST', '/api/claude-plans', tokenPlan({ label: 'Second' }))
+      await tryHandleClaudePlans(dup.ctx)
+      expect(dup.out.status).toBe(409)
+      expect(vaultSecrets.has('claude-plan-token-marketing')).toBe(false)
+    })
+
+    it('DELETE removes the associated vault secret too (no orphan)', async () => {
+      await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', tokenPlan()).ctx)
+      expect(vaultSecrets.has('claude-plan-token-marketing')).toBe(true)
+
+      await tryHandleClaudePlans(fakeCtx('DELETE', '/api/claude-plans/marketing').ctx)
+      expect(vaultSecrets.has('claude-plan-token-marketing')).toBe(false)
+    })
+
+    it('PUT switching a plan FROM token-mode TO configDir-mode deletes the now-orphaned secret', async () => {
+      await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', tokenPlan()).ctx)
+      const { ctx, out } = fakeCtx('PUT', '/api/claude-plans/marketing', {
+        label: 'Marketing Max 20x', configDir: '/opt/claude-marketing', planType: 'personal', channelsAllowed: true,
+      })
+      await tryHandleClaudePlans(ctx)
+      expect(out.status).toBe(200)
+      expect(out.body.configDir).toBe('/opt/claude-marketing')
+      expect(vaultSecrets.has('claude-plan-token-marketing')).toBe(false)
+    })
+
+    it('rejects a plan with both token and configDir (400), without writing a vault secret', async () => {
+      const { ctx, out } = fakeCtx('POST', '/api/claude-plans', tokenPlan({ configDir: '/opt/claude-marketing' }))
+      await tryHandleClaudePlans(ctx)
+      expect(out.status).toBe(400)
+      expect(vaultSecrets.size).toBe(0)
+    })
   })
 })
 
