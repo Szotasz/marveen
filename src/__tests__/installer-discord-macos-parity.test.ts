@@ -53,6 +53,19 @@ describe('macOS installer offers Discord with Linux parity', () => {
     expect(MAC).toContain('"plugin":"discord","marketplace":"claude-plugins-official"')
   })
 
+  it('the managed merge is atomic and never rebuilds the policy from scratch', () => {
+    // Review condition (#1306): an in-place json.dump truncates the file
+    // before writing, and a {} parse-failure fallback would re-create the org
+    // policy with ONLY discord in it -- muting every other channel host-wide.
+    // The shipped shape is the repo's safe merge: tmp + copymode + os.replace,
+    // and on a parse failure it exits without writing.
+    const block = MAC.slice(MAC.indexOf('DISCORDMERGEPY'), MAC.lastIndexOf('DISCORDMERGEPY'))
+    expect(block).toContain('os.replace(tmp, p)')
+    expect(block).toContain('shutil.copymode(p, tmp)')
+    expect(block).toContain('NOT writing')
+    expect(block).not.toContain("d = {}")
+  })
+
   it('the bun advisory covers discord, not only telegram', () => {
     expect(MAC).toMatch(/"\$CHANNEL_PROVIDER" = "telegram" \] \|\| \[ "\$CHANNEL_PROVIDER" = "discord"/)
   })

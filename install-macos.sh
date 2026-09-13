@@ -515,20 +515,41 @@ except: sys.exit(1)
 " 2>/dev/null && echo "yes" || echo "no")
     if [ "$HAS_DISCORD" = "no" ]; then
       echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_update)"
-      sudo python3 -c "
-import json
-path = '$MANAGED_FILE'
+      # Safe JSON merge (same shape as ensure-managed-channels-enabled.sh):
+      # tmp file + copymode + os.replace, so no interruption can leave a
+      # truncated managed-settings behind. And an org-policy file is NEVER
+      # rebuilt from scratch: on a parse failure we say so and leave it
+      # untouched -- a {} fallback would silently drop the OTHER channels'
+      # allowlist entries, muting them host-wide.
+      if sudo python3 - "$MANAGED_FILE" <<'DISCORDMERGEPY'
+import json, os, shutil, sys
+p = sys.argv[1]
 try:
-  d = json.load(open(path))
-except Exception:
-  d = {}
+    d = json.load(open(p))
+except Exception as e:
+    print(f"managed-settings parse failed, NOT writing: {e}", file=sys.stderr)
+    sys.exit(1)
+if not isinstance(d, dict):
+    print("managed-settings root is not an object, NOT writing", file=sys.stderr)
+    sys.exit(1)
 plugins = d.get('allowedChannelPlugins', [])
 entry = {'plugin': 'discord', 'marketplace': 'claude-plugins-official'}
 if entry not in plugins:
-  plugins.append(entry)
+    plugins.append(entry)
 d['allowedChannelPlugins'] = plugins
-json.dump(d, open(path, 'w'), indent=2)
-" && echo -e "  ${GREEN}✓${NC} Discord engedelyezve a managed-settings allowlistben"
+tmp = p + '.tmp'
+with open(tmp, 'w') as f:
+    f.write(json.dumps(d, indent=2) + "\n")
+shutil.copymode(p, tmp)
+os.replace(tmp, p)
+DISCORDMERGEPY
+      then
+        echo -e "  ${GREEN}✓${NC} Discord engedelyezve a managed-settings allowlistben"
+      else
+        echo -e "  ${RED}✗${NC} A managed-settings.json nem volt biztonsagosan frissitheto -- a fajl ERINTETLEN maradt."
+        echo -e "  ${DIM}Kezi potlas (root): add az allowedChannelPlugins tombhoz:${NC}"
+        echo -e "  ${DIM}  {\"plugin\":\"discord\",\"marketplace\":\"claude-plugins-official\"}${NC}"
+      fi
     fi
   fi
 else
