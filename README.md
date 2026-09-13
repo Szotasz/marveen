@@ -13,13 +13,13 @@
 
 > AI csapatod, ami fut amíg te alszol.
 
-Marveen egy AI asszisztens keretrendszer, ami Claude Code-ra épül. Saját AI csapatot építhetsz, akik Telegramon vagy Slacken kommunikálnak veled, önállóan dolgoznak, és egymással is együttműködnek.
+Marveen egy AI asszisztens keretrendszer, ami Claude Code-ra épül. Saját AI csapatot építhetsz, akik Telegramon, Slacken vagy Discordon kommunikálnak veled, önállóan dolgoznak, és egymással is együttműködnek.
 
-Marveen is a self-hostable **agent harness** for Claude Code: it runs a team of AI agents, each with its own chat channel (Telegram or Slack), persistent memory, scheduled tasks, and MCP tools, lets them delegate work to one another, and gives you a web dashboard to watch and steer them.
+Marveen is a self-hostable **agent harness** for Claude Code: it runs a team of AI agents, each with its own chat channel (Telegram, Slack or Discord), persistent memory, scheduled tasks, and MCP tools, lets them delegate work to one another, and gives you a web dashboard to watch and steer them.
 
 ## Funkciók
 
-- **AI Csapat**: Több ágens, mindegyik saját csatornával (Telegram vagy Slack), személyiséggel és memóriával
+- **AI Csapat**: Több ágens, mindegyik saját csatornával (Telegram, Slack vagy Discord), személyiséggel és memóriával
 - **Mission Control**: Web dashboard (http://localhost:3420) a csapat kezeléséhez
 - **Inter-agent kommunikáció**: Az ágensek delegálhatnak egymásnak feladatokat
 - **Ütemezések**: Cron-alapú feladatok automatikus futtatása
@@ -42,7 +42,7 @@ Részletes, funkciónkénti leírások a [`docs/`](docs/README.md) mappában —
 | Ügynök-flotta + inter-agent | [docs/agent-fleet.md](docs/agent-fleet.md) |
 | Föderáció (több példány összekötése, dashboard-menüvel) | [docs/federation.md](docs/federation.md) |
 | Skill-factory (öntanulás) | [docs/skill-factory.md](docs/skill-factory.md) |
-| Channels (Telegram / Slack) | [docs/channels.md](docs/channels.md) |
+| Channels (Telegram / Slack / Discord) | [docs/channels.md](docs/channels.md) |
 | Printing-press CLI-k | [docs/printing-press-cli.md](docs/printing-press-cli.md) |
 | Skool CLI | [docs/skool-cli.md](docs/skool-cli.md) |
 | connectors.hu | [docs/connectors-hu.md](docs/connectors-hu.md) |
@@ -146,9 +146,9 @@ A `MAIN_AGENT_ID` és `SERVICE_ID` értékeket a telepítő automatikusan szárm
 ### Dashboard
 Nyisd meg: http://localhost:3420
 
-### Csatorna (Telegram vagy Slack)
+### Csatorna (Telegram, Slack vagy Discord)
 
-A telepítés során választhatsz csatorna providert. Az alapértelmezett a Telegram.
+A telepítés során választhatsz csatorna providert (Linuxon és macOS-en is). Az alapértelmezett a Telegram.
 
 #### Telegram (alapértelmezett)
 Írj a botodnak Telegramon -- Marveen válaszol.
@@ -171,6 +171,27 @@ Slack használatához a telepítő automatikusan végigvezet, de manuálisan is 
    SLACK_CHANNEL_ID=C01234ABCDE
    ```
 8. A Slack channel plugin automatikusan települ: `slack@jeremylongshore/claude-code-slack-channel`
+
+
+#### Discord (alternatív)
+
+A telepítő végigvezet (Linuxon és macOS-en is a 3. opció), de manuálisan is beállíthatod:
+
+1. Hozz létre egy alkalmazást a [Discord Developer Portalon](https://discord.com/developers/applications)
+2. A Bot fülön add hozzá a botot és másold ki a tokent
+3. Privileged Gateway Intents: kapcsold be a MESSAGE CONTENT INTENT-et
+4. OAuth2 > URL Generator: bot scope, majd hívd meg a botot a szerveredre
+5. Developer Mode-dal másold ki a csatorna ID-t és a saját (operátor) user ID-det
+6. A `.env` fájlban állítsd be:
+   ```
+   CHANNEL_PROVIDER=discord
+   DISCORD_BOT_TOKEN=...
+   DISCORD_CHANNEL_ID=...
+   OPERATOR_DISCORD_USER_ID=...
+   ```
+7. A Discord channel plugin automatikusan települ: `discord@claude-plugins-official`
+
+Részletek (managed-settings allowlist, párosítás): [docs/channels.md](docs/channels.md).
 
 A csatorna váltáshoz futtasd újra a `./install.sh`-t vagy szerkeszd a `.env` fájlt manuálisan.
 

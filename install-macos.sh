@@ -412,11 +412,14 @@ echo -e "${BOLD}$(_t section_4_macos)${NC}"
 echo -e "${DIM}$(_t macos.channel_select_hint)${NC}"
 echo -e "  ${BOLD}1.${NC} $(_t macos.channel_option_1)"
 echo -e "  ${BOLD}2.${NC} Slack"
+echo -e "  ${BOLD}3.${NC} Discord"
 echo ""
 read -rp "$(_t prompt_channel_select_macos)" PROVIDER_CHOICE
 PROVIDER_CHOICE=${PROVIDER_CHOICE:-1}
 if [ "$PROVIDER_CHOICE" = "2" ]; then
   CHANNEL_PROVIDER="slack"
+elif [ "$PROVIDER_CHOICE" = "3" ]; then
+  CHANNEL_PROVIDER="discord"
 else
   CHANNEL_PROVIDER="telegram"
 fi
@@ -462,6 +465,9 @@ probe_telegram_token() {
 BOT_TOKEN=""
 SLACK_BOT_TOKEN=""
 SLACK_APP_TOKEN=""
+DISCORD_BOT_TOKEN=""
+DISCORD_CHANNEL_ID=""
+OPERATOR_DISCORD_USER_ID=""
 
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   echo ""
@@ -473,6 +479,58 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   echo ""
   read -rp "$(_t prompt_telegram_token)" BOT_TOKEN
   probe_telegram_token "$BOT_TOKEN"
+elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
+  echo ""
+  echo -e "${DIM}  Az AI asszisztensed Discordon kommunikal veled.${NC}"
+  echo -e "${DIM}  1. Hozz letre egy alkalmazast: discord.com/developers/applications${NC}"
+  echo -e "${DIM}  2. Bot fulon: Add Bot, majd masold ki a Tokent${NC}"
+  echo -e "${DIM}  3. Privileged Gateway Intents: kapcsold be a MESSAGE CONTENT INTENT-et${NC}"
+  echo -e "${DIM}  4. OAuth2 > URL Generator: bot scope, majd hivd meg a szerveredre${NC}"
+  echo -e "${DIM}  5. Masold ki a csatorna ID-jet (Developer Mode > jobb klikk > Copy Channel ID)${NC}"
+  echo -e "${DIM}  6. Sajat (operator) user ID: jobb klikk a nevedre > Copy User ID${NC}"
+  echo ""
+  read -rp "$(_t prompt_discord_bot_token)" DISCORD_BOT_TOKEN
+  read -rp "$(_t prompt_discord_channel_id)" DISCORD_CHANNEL_ID
+  echo ""
+  echo -e "${DIM}  Az operator user ID-re a parositashoz kell: amikor egy uj felhasznalo${NC}"
+  echo -e "${DIM}  DM-et ir a botnak, a bot ezen az ID-n ertesit teged jovahagyasert.${NC}"
+  read -rp "$(_t prompt_discord_user_id)" OPERATOR_DISCORD_USER_ID
+
+  # A previously written managed allowlist (a slack/teams install writes one)
+  # BLOCKS every channel plugin missing from it -- measured on the fleet host:
+  # /Library/Application Support/ClaudeCode/managed-settings.json lists
+  # slack-channel + telegram + teams, no discord, so a discord plugin on such a
+  # machine goes silently mute. A fresh telegram-only install never creates the
+  # file and the official-marketplace plugin runs fine without it, so we only
+  # MERGE when the file already exists -- never create it here.
+  MANAGED_FILE="/Library/Application Support/ClaudeCode/managed-settings.json"
+  if [ -f "$MANAGED_FILE" ]; then
+    HAS_DISCORD=$(sudo python3 -c "
+import json, sys
+try:
+  d = json.load(open('$MANAGED_FILE'))
+  have = {(p.get('plugin'),p.get('marketplace')) for p in d.get('allowedChannelPlugins', [])}
+  sys.exit(0 if ('discord','claude-plugins-official') in have else 1)
+except: sys.exit(1)
+" 2>/dev/null && echo "yes" || echo "no")
+    if [ "$HAS_DISCORD" = "no" ]; then
+      echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_update)"
+      sudo python3 -c "
+import json
+path = '$MANAGED_FILE'
+try:
+  d = json.load(open(path))
+except Exception:
+  d = {}
+plugins = d.get('allowedChannelPlugins', [])
+entry = {'plugin': 'discord', 'marketplace': 'claude-plugins-official'}
+if entry not in plugins:
+  plugins.append(entry)
+d['allowedChannelPlugins'] = plugins
+json.dump(d, open(path, 'w'), indent=2)
+" && echo -e "  ${GREEN}✓${NC} Discord engedelyezve a managed-settings allowlistben"
+    fi
+  fi
 else
   echo ""
   echo -e "${DIM}  Az AI asszisztensed Slack-en kommunikal veled.${NC}"
@@ -495,7 +553,8 @@ else
   SLACK_ENTRY='{"plugin":"slack-channel","marketplace":"marveen-marketplace"}'
   TELEGRAM_ENTRY='{"plugin":"telegram","marketplace":"claude-plugins-official"}'
   TEAMS_ENTRY='{"plugin":"teams","marketplace":"marveen-marketplace"}'
-  REQUIRED_JSON="{\"allowedChannelPlugins\":[$SLACK_ENTRY,$TELEGRAM_ENTRY,$TEAMS_ENTRY]}"
+  DISCORD_ENTRY='{"plugin":"discord","marketplace":"claude-plugins-official"}'
+  REQUIRED_JSON="{\"allowedChannelPlugins\":[$SLACK_ENTRY,$TELEGRAM_ENTRY,$TEAMS_ENTRY,$DISCORD_ENTRY]}"
 
   if [ -f "$MANAGED_FILE" ]; then
     # Gate on ALL required plugins being present (not just slack) -- otherwise an
@@ -505,7 +564,7 @@ else
     # at install time, so no manual managed-settings edit is needed later.
     HAS_ALL=$(sudo python3 -c "
 import json, sys
-required = [('slack-channel','marveen-marketplace'),('telegram','claude-plugins-official'),('teams','marveen-marketplace')]
+required = [('slack-channel','marveen-marketplace'),('telegram','claude-plugins-official'),('teams','marveen-marketplace'),('discord','claude-plugins-official')]
 try:
   d = json.load(open('$MANAGED_FILE'))
   plugins = d.get('allowedChannelPlugins', [])
@@ -723,6 +782,10 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   if [ "${CHAT_ID}" != "0" ] || [ -z "$_existing_chat" ]; then
     env_merge_key ALLOWED_CHAT_ID "${CHAT_ID}"
   fi
+elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
+  env_keep_or_set DISCORD_BOT_TOKEN "${DISCORD_BOT_TOKEN}"
+  env_keep_or_set DISCORD_CHANNEL_ID "${DISCORD_CHANNEL_ID}"
+  env_keep_or_set OPERATOR_DISCORD_USER_ID "${OPERATOR_DISCORD_USER_ID}"
 else
   env_keep_or_set SLACK_BOT_TOKEN "${SLACK_BOT_TOKEN}"
   env_keep_or_set SLACK_APP_TOKEN "${SLACK_APP_TOKEN}"
@@ -911,6 +974,22 @@ SLACKENVEOF
 }
 ACCESSEOF
   echo -e "  ${GREEN}✓${NC} $(_t macos.slack_channel_configured)"
+elif [ "$CHANNEL_PROVIDER" = "discord" ] && [ -n "$DISCORD_BOT_TOKEN" ]; then
+  (umask 077 && cat > "$CHANNEL_DIR/.env" << DISCORDENVEOF
+DISCORD_BOT_TOKEN=$DISCORD_BOT_TOKEN
+DISCORD_CHANNEL_ID=$DISCORD_CHANNEL_ID
+DISCORDENVEOF
+  )
+  chmod 600 "$CHANNEL_DIR/.env"
+  cat > "$CHANNEL_DIR/access.json" << ACCESSEOF
+{
+  "dmPolicy": "pairing",
+  "allowFrom": [],
+  "channels": {},
+  "pending": {}
+}
+ACCESSEOF
+  echo -e "  ${GREEN}✓${NC} $(_t macos.discord_channel_configured)"
 fi
 
 # Install channel plugin
@@ -918,6 +997,10 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   PLUGIN_MARKETPLACE="anthropics/claude-plugins-official"
   PLUGIN_ID="telegram@claude-plugins-official"
   PLUGIN_SHORT="telegram"
+elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
+  PLUGIN_MARKETPLACE="anthropics/claude-plugins-official"
+  PLUGIN_ID="discord@claude-plugins-official"
+  PLUGIN_SHORT="discord"
 else
   PLUGIN_MARKETPLACE="Szotasz/marveen-marketplace"
   PLUGIN_ID="slack-channel@marveen-marketplace"
@@ -1362,8 +1445,8 @@ fi
 sleep 3
 echo ""
 echo -e "${BOLD}$(_t section_checks)${NC}"
-if [ "$CHANNEL_PROVIDER" = "telegram" ] && ! command -v bun &>/dev/null; then
-  echo -e "  ${RED}✗${NC} Bun nem talalhato. A Telegram plugin nem fog mukodni."
+if { [ "$CHANNEL_PROVIDER" = "telegram" ] || [ "$CHANNEL_PROVIDER" = "discord" ]; } && ! command -v bun &>/dev/null; then
+  echo -e "  ${RED}✗${NC} Bun nem talalhato. A ${CHANNEL_PROVIDER} plugin nem fog mukodni."
   echo -e "  ${BOLD}Javitas:${NC} curl -fsSL https://bun.sh/install | bash"
   echo -e "  ${DIM}Utana: source ~/.zshrc && ./scripts/start.sh${NC}"
 fi
