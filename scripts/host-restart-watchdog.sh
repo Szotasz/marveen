@@ -23,6 +23,11 @@ set -uo pipefail
 STATE_DIR="${MARVEEN_STORE:-$HOME/marveen/store}"
 STATE_FILE="$STATE_DIR/.last-btime"
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+# PORTSTAT912: mtime must not be spelled `stat -c %Y` (GNU-only). On macOS that
+# exits non-zero and the old `|| echo 0` turned a fresh file into an infinitely
+# old one -- which tips every grace/staleness gate below to the permissive side.
+. "$INSTALL_DIR/scripts/lib/portable-stat.sh"
 # #915: main channel state is install-scoped once migrated; the legacy shared
 # path only serves unmigrated installs.
 TG_CHAN_DIR="${TELEGRAM_STATE_DIR:-}"
@@ -85,7 +90,7 @@ boot_local="$(date -d "@$btime" '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || echo "@$b
 last_alive=0
 if compgen -G "$STATE_DIR/*.log" >/dev/null 2>&1; then
   for f in "$STATE_DIR"/*.log; do
-    m="$(stat -c '%Y' "$f" 2>/dev/null || echo 0)"
+    m="$(file_mtime "$f")"
     if (( m < btime && m > last_alive )); then last_alive="$m"; fi
   done
 fi

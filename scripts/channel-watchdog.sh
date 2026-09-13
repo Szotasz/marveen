@@ -61,6 +61,21 @@ AUTH_DEAD_THRESHOLD_TICKS=3     # consecutive dead-token ticks (~15min @ 5min/ti
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*"; }
 
+# PORTSTAT912: mtime has exactly one spelling in this repo, and it is not
+# inline. `stat -c %Y` is GNU-only; on macOS it exits non-zero and the old
+# `|| echo 0` turned a fresh keepalive into an infinitely stale one -- STALE on
+# every tick, and the respawn-grace gate below (the brake for exactly that
+# storm) read zero too and never deferred. The library carries the full account.
+. "$INSTALL_DIR/scripts/lib/portable-stat.sh"
+
+# Debug entry point for the regression test: print one file's resolved mtime and
+# exit before any session lookup, .env read or tmux call, so the helper can be
+# measured on a host where the watchdog itself cannot run.
+if [ "${1:-}" = "--file-mtime" ]; then
+  file_mtime "${2:-}"
+  exit 0
+fi
+
 # --- resolve the channels session + provider (launch-order / rename independent) ---
 MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
 MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
@@ -113,7 +128,7 @@ if [ ! -f "$KEEPALIVE_FILE" ]; then
   # keepalive probe itself was never configured.
   log "no keepalive file yet ($KEEPALIVE_FILE) -- keep-alive task not established, STALE=false"
 else
-  ka_mtime=$(stat -c %Y "$KEEPALIVE_FILE" 2>/dev/null || echo 0)
+  ka_mtime=$(file_mtime "$KEEPALIVE_FILE")
   age=$(( now - ka_mtime ))
   [ "$age" -ge "$STALE_SECONDS" ] && STALE=true
 fi
@@ -150,7 +165,7 @@ fi
 
 # --- gate 4: respawn grace (shared with the dashboard watchdog) ---
 if [ -f "$RESPAWN_STAMP" ]; then
-  last=$(stat -c %Y "$RESPAWN_STAMP" 2>/dev/null || echo 0)
+  last=$(file_mtime "$RESPAWN_STAMP")
   if [ $(( now - last )) -lt "$GRACE_SECONDS" ]; then
     log "problem detected (STALE=$STALE AUTHDEAD=$AUTHDEAD) but within respawn grace -- deferring"
     exit 0
