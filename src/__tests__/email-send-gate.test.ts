@@ -12,6 +12,22 @@ describe('gateDecision', () => {
     expect(gateDecision('mcp__some_other_gmail__send_email', {}).deny).toBe(true)
   })
 
+  // GMAILCONNECTOR914: the claude.ai Gmail connector has no send_email at all
+  // (send_message / reply / forward), and a sub-agent could send through it
+  // with no gate. The reads and the drafts stay open, the three sends close,
+  // and the kind is NOT 'send_email' so the thread-reply narrowing (which
+  // reads send_email-shaped fields) never applies to a connector call.
+  it('blocks the claude.ai Gmail connector send-shaped tools, keeps its reads and drafts', () => {
+    for (const tool of ['send_message', 'reply', 'forward']) {
+      const verdict = gateDecision(`mcp__claude_ai_Gmail__${tool}`, { messageId: 'm1', body: 'x' })
+      expect(verdict.deny, tool).toBe(true)
+      expect(verdict.kind, tool).toBe('connector-send')
+    }
+    for (const tool of ['search_threads', 'get_message', 'get_thread', 'create_draft', 'update_draft', 'label_message']) {
+      expect(gateDecision(`mcp__claude_ai_Gmail__${tool}`, {}).deny, tool).toBe(false)
+    }
+  })
+
   it('allows email READ/draft tools (only sending is gated)', () => {
     expect(gateDecision('mcp__server-gmail-autoauth-mcp__search_emails', {}).deny).toBe(false)
     expect(gateDecision('mcp__server-gmail-autoauth-mcp__read_email', {}).deny).toBe(false)
@@ -112,7 +128,7 @@ describe('injectEmailSendGate', () => {
     injectEmailSendGate(s)
     const hooks = (s.hooks as Record<string, unknown>).PreToolUse as Array<Record<string, unknown>>
     expect(hooks).toHaveLength(1)
-    expect(hooks[0].matcher).toBe('Bash|.*send_email.*|.*manage_email.*')
+    expect(hooks[0].matcher).toBe('Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail__.*')
     const inner = (hooks[0].hooks as Array<{ command: string }>)[0]
     expect(inner.command).toContain('email-send-gate.mjs')
   })

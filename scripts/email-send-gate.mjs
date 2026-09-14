@@ -208,6 +208,15 @@ export function gateDecision(toolName, toolInput) {
   // Any MCP send_email tool, name-agnostic (gmail or a differently-named
   // server in a customer install -> the matcher + this both key on send_email).
   if (/send_email/i.test(name)) return { deny: true, kind: 'send_email' }
+  // The claude.ai Gmail connector (mcp__claude_ai_Gmail__*) has no send_email:
+  // its sends are send_message / reply / forward. Drafts stay allowed and the
+  // reads are not sends, only the three send-shaped tools are denied
+  // (GMAILCONNECTOR914 -- before this line a sub-agent could send through the
+  // connector with no gate at all).
+  // Kind is NOT 'send_email' on purpose: the thread-reply narrowing at the
+  // entrypoint reads send_email-shaped fields (threadId/to), which a connector
+  // reply does not carry, so the connector stays fully gated for every agent.
+  if (/gmail__(reply|reply_all|send_message|forward)$/i.test(name)) return { deny: true, kind: 'connector-send' }
   // @aaronsb/google-workspace-mcp multiplexes read, draft and send behind one
   // manage_email tool, so the tool NAME cannot decide this one -- the operation
   // plus the draft flag can. This is what replaces the server's own

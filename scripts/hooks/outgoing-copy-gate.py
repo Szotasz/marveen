@@ -888,9 +888,14 @@ MANAGE_EMAIL_OUTBOUND_OPS = {"send", "reply", "replyall", "forward"}
 # Dedicated (non-multiplexed) outbound tools: the draft tools and the Gmail
 # connector's three separate send-shaped tools. Kept in step with the matcher
 # this hook is registered under in settings.json.
+# GMAILCONNECTOR914: the server segment is NOT always exactly "gmail" -- the
+# claude.ai connector is mcp__claude_ai_Gmail__send_message, one underscore
+# before Gmail, and `(^|__)gmail__` never matched it, so its sends fell through
+# to sys.exit(0) with no audit (measured 2026-08-30, 2026-09-08). Anything
+# ending in "gmail__<send-shaped tool>" is a send now, whatever the prefix.
 EMAIL_TOOL_RE = re.compile(
     r"(send_email|create_draft|draft_email|update_draft"
-    r"|(^|__)gmail__(reply|reply_all|send_message|forward)$)",
+    r"|gmail__(reply|reply_all|send_message|forward)$)",
     re.I,
 )
 
