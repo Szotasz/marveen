@@ -276,6 +276,21 @@ def main():
         code, out, err = run_hook(esc, rules_file=active)
         check("escape-elt jelolo NEM blokkol es nem tunik el", code, 0)
 
+        # A FENTI SOR ONMAGABAN NEM ELEG, ES EZT SAMU MERTE MEG (#1320 review):
+        # csak exit 0-t asszertal, ezert MINDKET sorrenddel zold -- vagyis nem
+        # bizonyitja azt, amit a kommentje allit. Ez a fog viszont diszkriminal
+        # (fuggetlenul visszamerve, True/False):
+        #   HELYES sorrend  -> a dekodolt spanban OTT a tiltott jel      -> exit 2
+        #   CSERELT sorrend -> a span TAGGE dekodolodik, a TAG.sub a jellel
+        #                      EGYUTT torli                             -> exit 0, CSENDES atengedes
+        # Vagyis pontosan az a veszely, amit a hook kommentje leir: a kapu nem
+        # hibat jelez, hanem mast vizsgal, mint amit kuldunk.
+        span = {"tool_name": "mcp__plugin_telegram_telegram__reply",
+                "tool_input": {"text": "Szia! A jelölés: &lt;határidő — péntek&gt; formában áll, köszönöm."}}
+        code, out, err = run_hook(span, rules_file=active)
+        check("escape-elt SPAN-ben rejtett gondolatjel blokkol (sorrend-fog)", code, 2)
+        check("...es a GONDOLATJEL indokkal", "GONDOLATJEL" in (err or ""), True)
+
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)
         sys.exit(1)
