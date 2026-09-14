@@ -52,7 +52,7 @@ cd "$INSTALL_DIR"
 # the run must print SENTINEL as its last line, which it is told to do ONLY
 # after a reply tool call actually succeeded; no sentinel means no stamp, so the
 # next trigger tries again.
-SENTINEL="MORNING_SENT_OK"
+SENTINEL="MORNING_SENT_OK_PROBE_CONFLICT_914"  # MERESI PROBA, NEM SZALLITANDO
 RUN_OUT="$(mktemp)"
 trap 'rm -f "$RUN_OUT"' EXIT
 
