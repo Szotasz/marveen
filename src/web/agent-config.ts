@@ -645,18 +645,25 @@ export function writeAgentVoiceConfig(name: string, patch: Partial<AgentVoiceCon
 
 // Does this identifier refer to a registered agent? MAIN_AGENT_ID always
 // counts (it lives outside agents/ but is a first-class peer). Sub-agents
-// need a directory on disk. One fs stat per call -- the router calls this
-// twice per pending message on its 5s tick, roughly 10-20 stats per tick
-// in practice, no memoisation needed.
+// need a directory on disk.
+//
+// Comparison is case-insensitive, on purpose: this used to be a direct
+// existsSync/statSync(agentDir(name)) check, which silently inherited
+// whatever case-sensitivity the underlying filesystem happened to have --
+// case-sensitive on Linux (every fleet install), case-insensitive by default
+// on APFS (Mac). An identity guard whose answer depends on the host OS is not
+// a guard; the exact same caller name would 403 in production and pass in a
+// local Mac dev run. Normalizing both sides to lowercase makes the check
+// deterministic everywhere. (Maintainer review, PR #1230, point 3.)
+//
+// readdirSync + one statSync per entry is more syscalls than the old direct
+// stat, but the agent list is tiny (~6-10 today) and this already ran on a
+// 5s tick before this change (10-20 stats/tick), so the delta is noise.
 export function isKnownAgent(name: string): boolean {
   if (!name) return false
-  if (name === MAIN_AGENT_ID) return true
-  try {
-    const dir = agentDir(name)
-    return existsSync(dir) && statSync(dir).isDirectory()
-  } catch {
-    return false
-  }
+  const normalized = name.toLowerCase()
+  if (normalized === MAIN_AGENT_ID.toLowerCase()) return true
+  return listAllAgentNames().some((dir) => dir.toLowerCase() === normalized)
 }
 
 // Parse YAML frontmatter capabilities from a persona file.
