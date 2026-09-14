@@ -291,6 +291,32 @@ def main():
         check("escape-elt SPAN-ben rejtett gondolatjel blokkol (sorrend-fog)", code, 2)
         check("...es a GONDOLATJEL indokkal", "GONDOLATJEL" in (err or ""), True)
 
+        # --- GMAILCONNECTOR914: the claude.ai Gmail connector ----------------
+        # mcp__claude_ai_Gmail__send_message carries ONE underscore before Gmail,
+        # so the old (^|__)gmail__ alternative never matched and the send fell
+        # through to exit 0 with no audit (measured 2026-08-30, 2026-09-08).
+        for tool in ("send_message", "reply", "forward"):
+            bad = {"tool_name": f"mcp__claude_ai_Gmail__{tool}",
+                   "tool_input": {"to": ["a@b.hu"], "messageId": "m1", "subject": "Teszt",
+                                  "body": CLEAN_HU_OK + " — mégis."}}
+            code, out, err = run_hook(bad, rules_file=active)
+            check(f"connector {tool} with em dash blocks (exit 2)", code, 2)
+            ok = {"tool_name": f"mcp__claude_ai_Gmail__{tool}",
+                  "tool_input": {"to": ["a@b.hu"], "messageId": "m1", "subject": "Teszt", "body": CLEAN_HU_OK}}
+            code, out, err = run_hook(ok, rules_file=active)
+            check(f"connector {tool} clean passes (exit 0)", code, 0)
+        fwd = {"tool_name": "mcp__claude_ai_Gmail__forward",
+               "tool_input": {"to": ["a@b.hu"], "messageId": "m1", "forwardText": "Nézd meg — fontos."}}
+        code, out, err = run_hook(fwd, rules_file=active)
+        check("connector forward: forwardText is audited too (exit 2)", code, 2)
+        draft_only = {"tool_name": "mcp__claude_ai_Gmail__send_message", "tool_input": {"draftId": "d1"}}
+        code, out, err = run_hook(draft_only, rules_file=active)
+        check("connector send of a draftId: body unreadable, fail-closed (exit 2)", code, 2)
+        for tool in ("search_threads", "get_thread", "label_message"):
+            code, out, err = run_hook({"tool_name": f"mcp__claude_ai_Gmail__{tool}", "tool_input": {"q": "x — y"}},
+                                      rules_file=active)
+            check(f"connector {tool} is a read: passes untouched (exit 0)", code, 0)
+
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)
         sys.exit(1)

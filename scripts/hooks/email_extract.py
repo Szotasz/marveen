@@ -63,7 +63,7 @@ def collect_bash_body(cmd: str):
 
 
 def collect_mcp_body(tool_input: dict):
-    fields = ("body", "text", "html", "htmlBody", "message", "subject", "content")
+    fields = ("body", "text", "html", "htmlBody", "message", "subject", "content", "forwardText")
     got = [str(tool_input[f]) for f in fields if tool_input.get(f)]
     return "\n".join(got)
 
@@ -105,16 +105,27 @@ def collect_mcp_recipients(tool_input: dict):
             norm(tool_input.get("bcc")), None)
 
 
+# The claude.ai Gmail connector's send-shaped tools (mcp__claude_ai_Gmail__*):
+# no "send_email" in the name, so the name-based test above never saw them.
+CONNECTOR_SEND_RE = re.compile(r"gmail__(reply|reply_all|send_message|forward)$", re.I)
+
+
 def collect_email_envelope(tool_name: str, tool_input: dict):
     """PR2 entry point: one dict for the recipient+content hash anchor (to/cc/bcc/text), built from the
     SAME collectors the copy gate runs (no second extraction implementation).
     Returns {"to", "cc", "bcc", "text", "unreadable_reason"}; text is the combined
     subject+body exactly as the copy gate audits it. The CALLER decides policy
     (e.g. an empty recipient list on a send is itself grounds to deny)."""
-    if re.search(r"send_email", tool_name or "", re.I):
+    if re.search(r"send_email", tool_name or "", re.I) or CONNECTOR_SEND_RE.search(tool_name or ""):
         ti = tool_input if isinstance(tool_input, dict) else {}
         text = collect_mcp_body(ti)
         to, cc, bcc, reason = collect_mcp_recipients(ti)
+        # A connector reply/forward addresses the ORIGINAL message: its
+        # recipient is fixed by messageId, not by a `to` field, so the id is
+        # the recipient anchor (GMAILCONNECTOR914). Same bytes-exact rule as
+        # the addresses: an approval for one message cannot answer another.
+        if not to and ti.get("messageId"):
+            to = [f"messageId:{ti['messageId']}"]
     elif tool_name == "Bash":
         cmd = str((tool_input or {}).get("command") or "") if isinstance(tool_input, dict) else ""
         text, reason = collect_bash_body(cmd)
