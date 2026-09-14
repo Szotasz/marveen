@@ -241,6 +241,41 @@ def main():
         code, out, err = run_hook(edit_ok, rules_file=active)
         check("edit_message clean passes (exit 0)", code, 0)
 
+        # --- COPYGATEENT914: HTML-ENTITAS NEM KERULHETI MEG A GONDOLATJEL-TILTAST ---
+        # Marveen merese 2026-09-14, egy VALODI vevo-levelen: a hook a TAGEKET
+        # szedte ki, de az entitast sehol nem dekodolta, igy a `&mdash;` atment
+        # es a cimzettnel gondolatjelkent renderelt. A kapu zoldet mondott arra,
+        # amit tilt. Merve MIND A HAROM alakon, nem csak a bejelentettre.
+        #
+        # A SZOVEG SZANDEKOSAN TELJESEN EKEZETES. Az elso valtozatom ekezet
+        # nelkuli volt, ezert a HIANYZO-EKEZET szabaly is tuzelt, es az exit 2
+        # AKKOR IS teljesult, amikor a dekodolast visszavettem -- a teszt jonak
+        # latszott, kozben nem az entitas-utat merte. A mutans-kontroll fogta meg.
+        for nev, alak in (("nevesitett &mdash;", "&mdash;"),
+                          ("szamos &#8212;", "&#8212;"),
+                          ("hex &#x2014;", "&#x2014;")):
+            ent = {"tool_name": "mcp__plugin_telegram_telegram__reply",
+                   "tool_input": {"text": f"Szia! A határidő {alak} péntek, köszönöm."}}
+            code, out, err = run_hook(ent, rules_file=active)
+            check(f"HTML-entitas gondolatjel blokkol ({nev})", code, 2)
+            check_true(f"...es a GONDOLATJEL indokkal, nem masert ({nev})",
+                       "GONDOLATJEL" in (err or ""), detail=(err or "")[:120])
+
+        # NEGATIV KONTROLL: a dekodolas nem tehet minden `&`-t gyanussa.
+        amp = {"tool_name": "mcp__plugin_telegram_telegram__reply",
+               "tool_input": {"text": "Szia! Kovács &amp; Társa Kft. ajánlata megérkezett."}}
+        code, out, err = run_hook(amp, rules_file=active)
+        check("&amp; onmagaban NEM blokkol", code, 0)
+
+        # A SORREND KONTROLLJA: tag-kiszedes ELOSZOR, dekodolas AZUTAN. Forditva
+        # egy szovegkent mutatott, escape-elt jelolo valodi tagge dekodolodna, es
+        # a TAG.sub kitorolne a szoveg egy darabjat -- a kapu nem hibat jelezne,
+        # hanem CSENDBEN mast vizsgalna, mint amit kuldunk.
+        esc = {"tool_name": "mcp__plugin_telegram_telegram__reply",
+               "tool_input": {"text": "Szia! Írd ki: &lt;b&gt;vastag&lt;/b&gt; szöveggel, köszönöm."}}
+        code, out, err = run_hook(esc, rules_file=active)
+        check("escape-elt jelolo NEM blokkol es nem tunik el", code, 0)
+
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)
         sys.exit(1)

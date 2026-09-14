@@ -28,6 +28,7 @@ mean "let it through". The block message says how to make it inspectable.
 Contract: PreToolUse. Reads the hook payload on stdin, exit 0 = allow,
 exit 2 = block (stderr goes back to the model).
 """
+import html
 import json
 import os
 import re
@@ -812,7 +813,15 @@ def telegram_gate(tool_input: dict) -> None:
 
 def audit(text: str):
     """Return a list of human-readable problems."""
-    plain = TAG.sub(" ", text)
+    # COPYGATEENT914 (Marveen merese, 2026-09-14, egy VALODI vevo-levelen): a
+    # tag-kiszedes onmagaban megkerulheto HTML-ENTITASSAL. A `&mdash;` (es a
+    # szamos `&#8212;` / hex `&#x2014;` alak) atment a kapun, a cimzettnel
+    # viszont gondolatjelkent renderel -- vagyis a kapu zoldet mondott arra,
+    # amit tilt. Merve mind a harom alakon.
+    # A SORREND SZANDEKOS: eloszor a tageket szedjuk ki, AZUTAN dekodolunk.
+    # Forditva egy szovegkent mutatott, escape-elt jelolo (`&lt;b&gt;`) valodi
+    # tagge dekodolodna, es a TAG.sub kitorolne a szoveg egy darabjat.
+    plain = html.unescape(TAG.sub(" ", text))
     problems = []
     if EM_DASH in plain:
         problems.append(
