@@ -52,4 +52,17 @@ describe('main-agent email hook matchers cover the canonical EMAIL_GATE_MATCHER'
     expect(CANONICAL).toContain('.*send_email.*')
     expect(CANONICAL).toContain('Bash')
   })
+
+  it('the canonical matcher reaches the claude.ai Gmail connector (GMAILCONNECTOR914)', () => {
+    // Full-match regex against the qualified tool name, as the harness does.
+    // The connector's segment is claude_ai_Gmail (one underscore before Gmail),
+    // which neither .*send_email.* nor .*manage_email.* ever matched.
+    const full = new RegExp(`^(${EMAIL_GATE_MATCHER})$`)
+    for (const tool of ['send_message', 'reply', 'forward', 'create_draft', 'update_draft']) {
+      expect(full.test(`mcp__claude_ai_Gmail__${tool}`), tool).toBe(true)
+    }
+    expect(full.test('mcp__gmail__send_email')).toBe(true)
+    expect(full.test('mcp__plugin_telegram_telegram__reply')).toBe(false)
+    expect(full.test('Read')).toBe(false)
+  })
 })

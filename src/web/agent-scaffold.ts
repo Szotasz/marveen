@@ -648,7 +648,15 @@ export function hasThreadReplyCapability(name: string, capabilities: string[]): 
 // payload, because the hook never ran). The `.*` wrappers are what make the gate
 // reach MCP tools at all. Exported so the startup migration can recognize a
 // stale matcher on an already-scaffolded agent.
-export const EMAIL_GATE_MATCHER = 'Bash|.*send_email.*|.*manage_email.*'
+// GMAILCONNECTOR914: the claude.ai Gmail connector names its tools
+// mcp__claude_ai_Gmail__{send_message,reply,forward,create_draft,...} -- no
+// "send_email", no "manage_email" -- so neither alternative above ever fired
+// on it and a connector send reached the wire with no gate at all (measured
+// 2026-08-30 and again after v1.37.0 on 2026-09-08: exit 0, zero output). The
+// alternative is deliberately the whole server (`.*[Gg]mail__.*`), not a list
+// of send-shaped names: the hooks classify by the OPERATION (a search or a
+// read exits 0 in every gate), and a name list is exactly what drifted here.
+export const EMAIL_GATE_MATCHER = 'Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail__.*'
 
 // Does an existing PreToolUse array carry an email-gate entry whose matcher is
 // NOT the current one? Pure + exported: this is the predicate that lets
