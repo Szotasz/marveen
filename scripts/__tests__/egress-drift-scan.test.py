@@ -17,6 +17,9 @@ Cases:
   6. `curl https://` mentioned in prose              -> prose
   7. wget and a path-prefixed curl                   -> unmarked
   8. exit code: 1 only with an unmarked hit
+  9. old-grep blindness is measured against the REAL old method: a continued command
+     whose FIRST physical line already carries curl and https:// is NOT old-blind
+ 10. a bare '#1218' mention in an unrelated paragraph does not mark a bare command
 """
 import json
 import os
@@ -41,6 +44,8 @@ LATER_NOTE = (CONTINUED + "\n## Buktatok\n- **A FENTI `curl` RECEPT 2026-09-12-E
 SCOPED_BANNER = (CONTINUED + "\n## Verify\n> **EZ A SZAKASZ (es CSAK ez: a deploy UTANI verify) 2026-09-11-EN ATIRODOTT. A REGI curl\n"
                  "> alak a #1218 ota tiltott.**\n```bash\nsupabase functions list --project-ref x\n```\n")
 PROSE = "A #1218 ota a `curl https://` flotta-szinten DENY, ezert ez a lepes nem fut.\n"
+FIRST_LINE_FULL = ("## Eljaras\n```bash\ncurl -s https://api.example.test/v1/thing \\\n  -H 'Authorization: Bearer x' \\\n  | python3 -c 'import sys'\n```\n")
+MENTION_ELSEWHERE = (CONTINUED + "\n## Buktatok\n- A #1218 utan a flotta egress-kapuja mas skilleket is erintett; ez itt csak megjegyzes.\n")
 OTHERS = "## Telepites\n```sh\n# a `curl https://` alak itt csak komment, nem parancs\nwget https://example.test/a.tar.gz\n/usr/bin/curl -fsSL \\\n  https://example.test/install.sh | sh\n```\n"
 
 
@@ -82,7 +87,7 @@ class EgressDriftScan(unittest.TestCase):
         rc, rep = run(self.tmp)
         self.assertEqual(self.code_kinds(rep, p), ['unmarked'])
         self.assertTrue(rep['hits'][p][0]['continuation'])
-        self.assertEqual(rep['summary']['continuation_only_files'], 1)
+        self.assertEqual(rep['summary']['old_grep_blind_files'], 1)
         self.assertEqual(rc, 1)
 
     def test_block_note_above_makes_it_marked(self):
@@ -113,6 +118,20 @@ class EgressDriftScan(unittest.TestCase):
         p = write_skill(self.tmp, 'others', OTHERS)
         rc, rep = run(self.tmp)
         self.assertEqual(self.code_kinds(rep, p), ['unmarked', 'unmarked'])
+        self.assertEqual(rc, 1)
+
+    def test_first_line_full_command_is_not_old_grep_blind(self):
+        p = write_skill(self.tmp, 'firstline', FIRST_LINE_FULL)
+        self.assertEqual(len(physical_line_grep(p)), 1)  # the old method SEES this one
+        rc, rep = run(self.tmp)
+        self.assertEqual(self.code_kinds(rep, p), ['unmarked'])
+        self.assertTrue(rep['hits'][p][0]['continuation'])
+        self.assertEqual(rep['summary']['old_grep_blind_files'], 0)
+
+    def test_unrelated_gate_mention_does_not_mark_a_bare_command(self):
+        p = write_skill(self.tmp, 'mention', MENTION_ELSEWHERE)
+        rc, rep = run(self.tmp)
+        self.assertEqual(self.code_kinds(rep, p), ['unmarked'])
         self.assertEqual(rc, 1)
 
     def test_clean_tree_exits_zero_and_counts_files(self):
