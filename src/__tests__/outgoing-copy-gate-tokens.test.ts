@@ -87,3 +87,49 @@ describe('outgoing-copy gate tokenization: a suffix attached to a number is not 
     expect(probs[0]).toContain('a dokumentum es a melleklet')
   })
 })
+
+// GATEIDEZET822 (2026-08-22): the gate blocked its OWN outgoing message because
+// the message QUOTED the accent-stripped sentence from the incident it was
+// explaining. The gate audits the author's own prose; a verbatim quote is not
+// the author's writing, and showing the wrong form is often the whole point.
+// Quoted spans are therefore masked out of every check -- but the masking must
+// not become a bypass: the same wrong form in the author's own sentence still
+// blocks, and a masked-away finding is written to the gate log, never silent.
+function auditAll(text: string): string[] {
+  const out = execFileSync('python3', ['-c', `
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("gate", ${JSON.stringify(GATE)})
+g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)
+print(json.dumps(g.audit(sys.argv[1])))
+`, text], { encoding: 'utf-8' })
+  return JSON.parse(out.trim())
+}
+
+describe('outgoing-copy gate: quoted spans are the author\'s evidence, not the author\'s prose (GATEIDEZET822)', () => {
+  it('an accent-stripped sentence inside Hungarian quotes passes', () => {
+    expect(auditAll('A tegnapi levélben ez ment ki: „itt van a licenckulcsod es a telepito”. Ezt javítottuk, köszönjük a jelzést.')).toEqual([])
+  })
+
+  it('the same accent-stripped words in the author\'s own sentence still fail', () => {
+    const probs = auditAll('Itt van a licenckulcsod es a telepito, kerlek jelezz ha megjott, koszonom.')
+    expect(probs.some((p) => p.includes('HIANYZO EKEZETEK'))).toBe(true)
+  })
+
+  it('straight double quotes mask too', () => {
+    expect(auditAll('A hibás alak, amit kerülünk: "es a telepito". Helyesen és a telepítő.')).toEqual([])
+  })
+
+  it('a markdown blockquote line is masked', () => {
+    expect(auditAll('A panasz szövege így szólt:\n> a felulet nem mukodik es nem jon valasz\n\nEzt kivizsgáljuk, köszönjük a jelzést.')).toEqual([])
+  })
+
+  it('an unclosed quote does not swallow the rest of the message', () => {
+    const probs = auditAll('Idézem: „ez a mondat sosem zárul le, es a telepito hibas maradt, kerlek nezd meg.')
+    expect(probs.some((p) => p.includes('HIANYZO EKEZETEK'))).toBe(true)
+  })
+
+  it('a paragraph break inside a quote pair cancels the masking', () => {
+    const probs = auditAll('Idézem: „első rész\n\nes a telepito hibas maradt, kerlek nezd meg” vége.')
+    expect(probs.some((p) => p.includes('HIANYZO EKEZETEK'))).toBe(true)
+  })
+})
