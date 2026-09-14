@@ -8,7 +8,7 @@ import { runAgent } from '../agent.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
-import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities } from './agent-config.js'
+import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities, readAgentToolDeny } from './agent-config.js'
 import { resolveProfilePlaceholders, type ProfileTemplate } from './profiles.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
 import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
@@ -583,6 +583,15 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // function replaces permissions wholesale on each spawn, so without it a
   // respawn would silently drop what ensureBashEgressDeny() merged in.
   denyList.push(...BASH_EGRESS_DENY)
+  // Per-agent tool-name deny (agent-config.json "toolDeny"): merged LAST and
+  // on EVERY spawn, because this function replaces the deny list wholesale --
+  // a name written straight into settings.json disappears at the next respawn
+  // (ORSIKTXRATA914, measured 2026-09-14). A whole-tool-name deny also drops
+  // the tool's schema from the prompt, which is the point: it is the context
+  // handle for a sub-agent that never needs Artifact/Workflow/etc.
+  for (const tool of readAgentToolDeny(name)) {
+    if (!denyList.includes(tool)) denyList.push(tool)
+  }
   existing.permissions = {
     allow: profile.filesystem.allow.map(p => resolveProfilePlaceholders(p, ctx)),
     deny: denyList,

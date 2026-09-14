@@ -691,6 +691,53 @@ export function readAgentCapabilities(name: string): string[] {
   return parsePersonaCapabilities(name)
 }
 
+// ---- per-agent tool-name deny --------------------------------------------
+//
+// ORSIKTXRATA914 / 2026-09-14 (Iris measured, Dani confirmed): a whole-tool-name
+// deny in the agent's .claude/settings.json (e.g. "Artifact") does not only
+// block the tool, it REMOVES the tool schema from the prompt -- on Orsi that
+// was 56% of a 64.7k-token base load. But writeAgentSettingsFromProfile()
+// replaces permissions.deny WHOLESALE from the security profile on every
+// spawn, so a hand-edited deny silently reverts at the next respawn (Orsi
+// respawns 2-3x a day). Same class as PROFILREGRESS908: settings.json is a
+// DERIVED file here, not a durable one.
+//
+// The durable per-agent home is agent-config.json "toolDeny" -- the same
+// place "capabilities" lives -- which the scaffold merges into the deny list
+// on every spawn. Putting the names into the shared profile template instead
+// would hit every agent on that profile (and every customer install): a
+// per-agent experiment belongs in per-agent config.
+//
+// Only bare tool names are accepted (Claude Code rule shape "ToolName" or
+// "mcp__server__tool"), never a "Tool(pattern)" rule: this field can only
+// ever WIDEN the deny list, and a name-shaped whitelist keeps a mistyped or
+// injected value from becoming a pattern rule with surprising reach.
+const TOOL_DENY_NAME_RE = /^[A-Za-z][A-Za-z0-9_]{0,127}$/
+export const TOOL_DENY_MAX_PER_AGENT = 64
+
+export function sanitizeToolDenyList(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return []
+  const out: string[] = []
+  for (const v of raw) {
+    if (typeof v !== 'string') continue
+    const t = v.trim()
+    if (!TOOL_DENY_NAME_RE.test(t) || out.includes(t)) continue
+    out.push(t)
+    if (out.length >= TOOL_DENY_MAX_PER_AGENT) break
+  }
+  return out
+}
+
+export function readAgentToolDeny(name: string): string[] {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    return sanitizeToolDenyList(config.toolDeny)
+  } catch {
+    return []
+  }
+}
+
 export function writeAgentCapabilities(name: string, capabilities: string[]): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
