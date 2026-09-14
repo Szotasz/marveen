@@ -521,10 +521,74 @@ EOF
   return 0
 }
 
+# Morning-timer parking (MORNTIMERPARK914 -- the missing half of the locked
+# MORNCONS1 decision, 2026-07-27). The #1313 installer change stops ENABLING
+# the 07:27 morning timer on NEW installs, but every already-installed Linux
+# host still fires it daily: a paid headless `claude -p` run whose config root
+# carries no channel allowlist, so its reply tool rejects the owner's chat_id
+# and the run refuses itself -- burning money and delivering nothing. On a host
+# whose headless config DOES carry an allowlist it is worse: a second briefing
+# 3 minutes before the runner-task one.
+#
+# Two MORNCONS1 conditions, both enforced here:
+#   1. The runner-side task must be PROVABLY present and enabled on THIS host
+#      before the timer stops -- otherwise the operator loses their briefing on
+#      the very morning after the update. The gate reads the LIVE task config
+#      (seeded by ensureDefaultScheduledTasks() on every dashboard start), not
+#      the repo copy; a host where the operator deleted the task (#796
+#      tombstone) keeps its timer and says so loudly.
+#   2. Noisy in the update log, silent toward the user: every branch below
+#      prints to update.sh's own output only -- nothing here can reach Telegram.
+#
+# ONE-SHOT migration, not a standing rule: #1313 documents manual re-enable
+# (`systemctl --user enable --now <id>-morning.timer`) as the supported
+# operator path, and an unconditional park would fight that operator on every
+# update check. The marker below records that the migration ran once; after
+# that, an enabled timer is treated as a deliberate choice and left alone.
+park_morning_timer() {
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  marker="$INSTALL_DIR/store/.morning-timer-parked"
+  [ -f "$marker" ] && return 0
+  [ -d "$units_dir" ] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  task_cfg="$HOME/.claude/scheduled-tasks/reggeli-napindito/task-config.json"
+  _park_blocked=0
+  _parked_units=""
+  for morn_timer in "$units_dir/"*-morning.timer; do
+    [ -f "$morn_timer" ] || continue
+    _mt_unit="$(basename "$morn_timer")"
+    _mt_state="$(systemctl --user is-enabled "$_mt_unit" 2>/dev/null || true)"
+    [ "$_mt_state" = "enabled" ] || continue
+    if [ ! -f "$task_cfg" ] || ! grep -q '"enabled"[[:space:]]*:[[:space:]]*true' "$task_cfg" 2>/dev/null; then
+      # MORNCONS1 condition 1: without the runner task this timer is the only
+      # briefing path -- do NOT park it, do NOT write the marker (retry on the
+      # next update check, once the dashboard has seeded the task).
+      echo -e "  FIGYELEM: ${_mt_unit} engedelyezve marad -- a reggeli-napindito runner-task nincs jelen/engedelyezve ezen a hoston, es a timer az egyetlen napindito-ut (MORNCONS1 kapu)."
+      _park_blocked=1
+      continue
+    fi
+    if systemctl --user disable --now "$_mt_unit" >/dev/null 2>&1; then
+      echo -e "  Reggeli 07:27 timer leallitva -- a napinditot a 07:30-as runner-task viszi az elo csatorna-munkamenetbol (MORNCONS1): ${_mt_unit}"
+      echo -e "  ${DIM:-}Visszakapcsolas, ha megis a timer-ut kell: systemctl --user enable --now ${_mt_unit}${NC:-}"
+      _parked_units="$_parked_units $_mt_unit"
+    else
+      echo -e "  FIGYELEM: ${_mt_unit} disable nem sikerult -- kezzel: systemctl --user disable --now ${_mt_unit}"
+      _park_blocked=1
+    fi
+  done
+  # Settle the migration only when nothing was left behind: a blocked or
+  # failed park must retry on the next run instead of being recorded as done.
+  if [ "$_park_blocked" = "0" ]; then
+    echo "parked_at=$(date +%FT%T%z) units:${_parked_units:- none-needed}" > "$marker" 2>/dev/null || true
+  fi
+  return 0
+}
+
 run_unit_maintenance() {
   repair_morning_timer "$@"
   migrate_channels_restart "$@"
   install_keepalive_probe_timer "$@"
+  park_morning_timer "$@"
   return 0
 }
 run_unit_maintenance

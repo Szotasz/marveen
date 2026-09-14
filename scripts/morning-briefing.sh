@@ -52,7 +52,14 @@ cd "$INSTALL_DIR"
 # the run must print SENTINEL as its last line, which it is told to do ONLY
 # after a reply tool call actually succeeded; no sentinel means no stamp, so the
 # next trigger tries again.
-SENTINEL="MORNING_SENT_OK"
+#
+# Per-run nonce suffix: the sentinel is spelled out inside the prompt, so a
+# fixed constant is a control trigger that matches its own instruction text --
+# a run that QUOTES the instruction ("...print MORNING_SENT_OK...") on a bare
+# line would stamp a day that was never delivered. With the nonce, the only
+# string that stamps is the one THIS run was asked to print, and yesterday's
+# transcript (or a hardcoded echo) can never satisfy today's gate.
+SENTINEL="MORNING_SENT_OK_$(date +%s)_$$"
 RUN_OUT="$(mktemp)"
 trap 'rm -f "$RUN_OUT"' EXIT
 
