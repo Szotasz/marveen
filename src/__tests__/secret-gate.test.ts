@@ -89,6 +89,29 @@ describe('detector 2: content', () => {
     expect(runGate([f('docs/b.md', `k = ${kotojel}`)]).ok).toBe(false);
   });
 
+  it('catches the Supabase PERSONAL access token, in the shape we actually leak (SBPMINTAHIANY914)', () => {
+    // MERT ELOZMENY (2026-09-14): a keszletben mar allt egy Supabase-tetel (a
+    // service_role JWT), amitol a Supabase lefedettnek LATSZOTT -- kozben a masik,
+    // nalunk tenylegesen szivargo Supabase-hitelesitoadat (a fiok-szintu PAT)
+    // kimaradt. Aznap 167 elofordulasa volt, ebbol 164 atiratban, es a kapu
+    // MINDEGYIKET atengedte. A szomszedos tetel jelenlete megnyugtatobb, mint egy
+    // ures lista -- ez a fajta vaksag nem tunik fel maganak a listanak.
+    //
+    // A FIXTURE OSSZEFUZESSEL EPUL, ahogy a tobbi is ebben a fajlban: egy valodi
+    // FORMATUMU hamis titok ugyanugy titoknak latszik, es a GitHub push-protection
+    // ma egy ilyen fixture miatt utasitott el egy pusht. A literal igy sosem all
+    // itt egyben.
+    const sbp = 'sbp_' + 'a1b2c3d4'.repeat(5); // sbp_ + 40 hex, a valodi alak
+    // (1) A MI szivargas-alakunk, szo szerint: a 21 tool_call_log sor mind ilyen.
+    expect(runGate([f('scripts/x.sh', `export SUPABASE_ACCESS_TOKEN="${sbp}"`)]).ok).toBe(false);
+    // (2) Csupaszon is, cimke nelkul -- kulonben csak a kornyezetet merjuk, nem a mintat.
+    expect(runGate([f('docs/a.md', `a kulcs ${sbp} volt`)]).ok).toBe(false);
+    // (3) NEGATIV KONTROLL: a rovidebb alak NEM PAT, es nem is szabad fognia.
+    expect(runGate([f('docs/b.md', 'sbp_' + 'a1b2c3d4'.repeat(4))]).ok).toBe(true);
+    // (4) NEGATIV KONTROLL: az `sbp_` mint sima szotoredek nem lelet.
+    expect(runGate([f('docs/c.md', 'a sbp_ prefix onmagaban semmit nem jelent')]).ok).toBe(true);
+  });
+
   it('does NOT fire on the placeholders this repo is full of (measured 2026-08-18)', () => {
     // 64 tracked files contain `Bearer ${token}`; 25 contain `sk_` inside words
     // like task_name and skipIfBusy. A gate that flags these gets bypassed.
