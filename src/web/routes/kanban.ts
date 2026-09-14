@@ -327,6 +327,25 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // includeArchived is honoured or REFUSED -- never silently dropped. Ignoring it was
     // the actual defect: a caller had evidence it asked for archived cards, the response
     // had evidence it did not, and nothing reconciled the two.
+    // ⛔ ISMERETLEN PARAM -> HANGOS 400, a /api/messages mintajara (39a46ab7). Harom vegpont
+    // adott harom kulonbozo valaszt ugyanarra a hibara: az egyik hangosan elutasitott, a masik
+    // ketto neman eldobta. A nema elfogadas TANITJA a talalgatast -- merve: hat agens HAROM
+    // kulonbozo neven probalta ugyanazt (includeArchived 16x, archived 6x, include_archived 6x),
+    // plusz ?id= 4x es ?limit= 1x. Egyik sem kapott visszajelzest, ezert probaltak tovabb.
+    // ⛔ SZIGORU halmaz, ALIAS NELKUL (ugyvezetoi dontes, msg 12768): egy alias eletben tartana a
+    // talalgatast; a hibauzenetbol viszont megtanulhato a helyes nev.
+    const KNOWN_PARAMS = new Set(['agent', 'assignee', 'includeArchived'])
+    const unknown = [...ctx.url.searchParams.keys()].filter((k) => !KNOWN_PARAMS.has(k))
+    if (unknown.length) {
+      json(res, {
+        error: 'unknown query parameter',
+        unknown,
+        known: [...KNOWN_PARAMS],
+        hint: 'a lapok szurese "agent" (vagy "assignee"); EGY lapot a /api/kanban/<id> utvonal ad, '
+            + 'nem a ?id= parameter',
+      }, 400)
+      return true
+    }
     const includeArchived = parseIncludeArchived(ctx.url.searchParams.get('includeArchived'))
     if (includeArchived === null) {
       json(res, {
@@ -338,12 +357,18 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // Embed each card's labels in one extra JOIN query (getLabelsForAllCards)
     // instead of an N+1 per-card lookup, so the footer-pill UI gets
     // everything it needs in a single round trip.
+    // Az `assignee=` ugyanazt jelenti, mint az `agent=`: a dashboard es az agens-CLAUDE.md
+    // kulonbozo nevet tanit ugyanarra, es a KETTO kozul egyik sem volt hibas -- csak nem
+    // mukodott egyik sem.
+    const agent = ctx.url.searchParams.get('agent')
+      ?? ctx.url.searchParams.get('assignee')
+      ?? undefined
     const labelsByCard = getLabelsForAllCards()
     // Blockers ride along in the same round trip as labels: the board needs
     // them to mark a blocked card, and a per-card fetch would be an N+1 on
     // every poll.
     const blockersByCard = getBlockersForAllCards()
-    const cards = listKanbanCards({ includeArchived }).map((card) => ({
+    const cards = listKanbanCards({ includeArchived, agent }).map((card) => ({
       ...card,
       labels: labelsByCard.get(card.id) ?? [],
       blockers: blockersByCard.get(card.id) ?? [],
