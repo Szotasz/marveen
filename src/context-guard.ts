@@ -307,6 +307,72 @@ export const INITIAL_GUARD_STATE: GuardState = {
  *  frame -- clears by the next sweep. */
 export const SATURATION_CONFIRM_SWEEPS = 2
 
+/**
+ * Below this MEASURED context fraction a PERCENTAGE-shaped saturation banner is
+ * not believable.
+ *
+ * The banner is a CLAIM the CLI computes with its OWN denominator; pct is a
+ * MEASUREMENT from the transcript over contextLimitForModel's denominator (the
+ * 1M families plus the runner's persisted high-water mark). When a model id
+ * reaches the CLI WITHOUT the [1m] marker the CLI sizes its status line to 200k
+ * and prints "100% context used" at ~179k, while the session keeps working --
+ * 998 856 tokens observed in one session on this host. Believing the claim
+ * there executes a WORKING agent mid-turn: 318 numeric "pane saturated" hard
+ * restarts over nine days across four agents, measured context min 18 / median
+ * 19 / max 43 percent, not one above 90.
+ *
+ * 0.5 sits in the EMPTY BAND between the measured false positives (max 0.43)
+ * and any believable genuine saturation: per the CALIBRATION_OVERSHOOT_TOLERANCE
+ * note, 11 sessions that the CLI itself flagged "100% context used" measured
+ * 0.89-1.07. The margin is deliberately asymmetric towards safety (16% of
+ * headroom towards the false readings, 78% towards the genuine ones): when in
+ * doubt we believe the banner. A standalone constant, NOT derived from
+ * cfg.actPct -- lowering actPct must never widen the band in which the net
+ * stands down.
+ */
+export const SATURATION_CREDIBLE_MIN_PCT = 0.5
+
+/**
+ * Does the measurement support the pane's saturation banner?
+ *
+ * `bannerIsHardError` is what keeps this safe, and it is why the parameter is
+ * required rather than defaulted. Only the PERCENTAGE-shaped banners ("100%
+ * context used", "Context low (N% remaining)") take their truth from the CLI's
+ * status-line denominator and can therefore be wrong. The error-shaped ones
+ * ("Context limit reached", "context ... full", "auto-compact required") are
+ * painted only after a turn ACTUALLY failed at the real limit -- in CLI 2.1.205
+ * "Context limit reached" renders in color:"error" off the API's own "input
+ * length and max_tokens exceed context limit" -- so no denominator is involved
+ * and nothing measured here may overrule them. Overruling one would stand the
+ * net down on a genuinely wedged pane AND open the dispatch gate to it, turning
+ * a ~10 minute rescue into silent message loss. See
+ * paneShowsContextSaturationHardError in pane-state.ts.
+ *
+ * `pct === null` (unreadable transcript) => TRUE: there is no evidence against
+ * the banner, and that is the case the net was originally built for (samu,
+ * 2026-07-18). Only a real measurement may overrule a real banner.
+ *
+ * There is deliberately NO time-based valve for the mirror-image failure (a
+ * denominator wrong UPWARDS, e.g. [1m] pinned on a genuinely 200k model),
+ * because that case self-corrects through bannerIsHardError: the gate is open
+ * for such a session, so the next dispatched prompt starts a turn, the turn
+ * fails at the real limit, the CLI paints "Context limit reached", and the
+ * following sweep restarts it. An idle-time valve was written and then removed:
+ * idleMs cannot tell a wedged session from a merely quiet one, so it would hard
+ * restart every healthy personal assistant that goes silent overnight -- which
+ * is the exact failure this function exists to remove.
+ */
+export function saturationBannerCredible(
+  paneSaturated: boolean,
+  bannerIsHardError: boolean,
+  pct: number | null,
+): boolean {
+  if (!paneSaturated) return false
+  if (bannerIsHardError) return true
+  if (pct === null) return true
+  return pct >= SATURATION_CREDIBLE_MIN_PCT
+}
+
 export interface GuardInputs {
   nowMs: number
   /** Live context fraction (0..1+), or null when unmeasurable (no transcript / not running). */

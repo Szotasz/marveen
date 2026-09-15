@@ -2262,11 +2262,53 @@ export function decideStuckToolCallRecovery(
 // turn a warning into a restart trigger; matching only the last two percent
 // keeps this a saturation predicate.
 const CTX_SAT_FOOTER_REGION_LINES = 8
-const CTX_SAT_RX = /100% context used|context (?:is |limit reached|window )?full\b|context limit|auto-?compact required|context low \([0-2]% remaining\)/i
+
+// TWO shapes of banner land here, and only ONE of them can be wrong about the
+// pane. Callers that hold an independent measurement need to tell them apart.
+//
+// PERCENTAGE CLAIMS -- "100% context used", "Context low (N% remaining)" -- are
+// computed by the CLI from ITS OWN denominator: the status line is sized from
+// the model id the CLI was launched with. A model whose real window is 1M but
+// whose id reaches the CLI without the [1m] marker gets a status line sized to
+// 200k, so the CLI prints "100% context used" at ~179k while the session keeps
+// working -- 998 856 tokens observed in one session (isapp06, 2026-09-15).
+// Their truth depends on that denominator, so a measurement CAN disprove them.
+//
+// HARD-ERROR banners -- "Context limit reached", "context ... full",
+// "auto-compact required" -- are painted only after a turn has ACTUALLY failed
+// against the real limit. Verified in the shipped CLI 2.1.205: the string
+// "Context limit reached" is rendered with color:"error", driven by the API's
+// own "input length and max_tokens exceed context limit: N + M > LIMIT". The
+// CLI's status-line denominator plays no part, so NO measurement may overrule
+// one of these -- doing so would stand the saturation net down on a genuinely
+// wedged pane while the dispatch gate keeps prompting it.
+//
+// paneShowsContextSaturation() matches BOTH and is unchanged: any of them means
+// the pane cannot do useful work. paneShowsContextSaturationHardError() exposes
+// the second class alone. Both regexes are built from the same two sources, so
+// the union can never drift away from its parts.
+const CTX_SAT_PCT_CLAIM_SOURCE = '100% context used|context low \\([0-2]% remaining\\)'
+const CTX_SAT_HARD_ERROR_SOURCE =
+  'context (?:is |limit reached|window )?full\\b|context limit|auto-?compact required'
+const CTX_SAT_RX = new RegExp(`${CTX_SAT_PCT_CLAIM_SOURCE}|${CTX_SAT_HARD_ERROR_SOURCE}`, 'i')
+const CTX_SAT_HARD_ERROR_RX = new RegExp(CTX_SAT_HARD_ERROR_SOURCE, 'i')
+
+function ctxSatFooterRegion(capture: string): string | null {
+  if (!capture || !capture.trim()) return null
+  const lines = capture.split('\n')
+  return lines.slice(-CTX_SAT_FOOTER_REGION_LINES).join('\n')
+}
 
 export function paneShowsContextSaturation(capture: string): boolean {
-  if (!capture || !capture.trim()) return false
-  const lines = capture.split('\n')
-  const footerRegion = lines.slice(-CTX_SAT_FOOTER_REGION_LINES).join('\n')
-  return CTX_SAT_RX.test(footerRegion)
+  const footerRegion = ctxSatFooterRegion(capture)
+  return footerRegion !== null && CTX_SAT_RX.test(footerRegion)
+}
+
+/** The saturation banners whose truth does NOT come from the CLI's status-line
+ *  denominator: the CLI paints these only after a turn actually failed at the
+ *  real limit. A caller reconciling the banner against its own measurement must
+ *  treat these as final -- see the note above. */
+export function paneShowsContextSaturationHardError(capture: string): boolean {
+  const footerRegion = ctxSatFooterRegion(capture)
+  return footerRegion !== null && CTX_SAT_HARD_ERROR_RX.test(footerRegion)
 }

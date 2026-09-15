@@ -18,6 +18,7 @@ import {
   stripSessionTitleBanner,
   stripAllAnsi,
   paneShowsContextSaturation,
+  paneShowsContextSaturationHardError,
   idleConsideringDimGhost,
   detectsFirstRunGate,
   detectsModelConsentDialog,
@@ -2854,7 +2855,68 @@ export function captureParkedInputView(session: string, host: string | null = nu
 // dependency-free readiness check. NOTE the refusal is part of a deadlock by
 // design: Claude Code's auto-compact only runs when a new turn starts, and
 // this refusal is exactly what prevents a new turn -- so a saturated session
-// never self-heals and MUST be restarted from outside.
+// never self-heals and MUST be restarted from outside. The refusal therefore
+// applies ONLY while the banner is CREDIBLE -- see the override block below.
+
+// --- Saturation-banner override (context-guard -> dispatch) ----------------
+// The refusal above is safe only because the context-guard's saturation net
+// restarts the pane we will not prompt, so the two have to agree about what
+// "saturated" means. The guard's sweep is the only place that holds BOTH the
+// banner and the calibrated transcript measurement; when the measurement
+// contradicts an OVERRIDABLE (percentage-shaped) banner it stands the net down
+// and calls in here, because from that moment on refusing would silence a
+// working agent that nothing is going to restart. Which banners may be
+// overruled, and why an error-shaped one never may, is argued once -- on
+// saturationBannerCredible() in context-guard.ts.
+//
+// Deliberately in-process and TTL-bounded: the guard refreshes the entry on
+// every sweep, so if the guard stops (webOnly mode, guard disabled, crash,
+// dashboard restart) or the session genuinely fills up, the entry lapses within
+// ~3 sweeps and this gate returns to refusing. Fail-closed: an empty map (fresh
+// dashboard) is exactly today's behaviour.
+const saturationOverrideUntil = new Map<string, number>()
+
+/** Called by the context-guard runner when the measurement contradicts the
+ *  banner. */
+export function noteSaturationBannerUntrusted(session: string, untilMs: number): void {
+  saturationOverrideUntil.set(session, untilMs)
+}
+
+/** Called by the same runner on every sweep that LOOKED at the pane and found
+ *  the banner absent or credible. */
+export function clearSaturationBannerOverride(session: string): void {
+  saturationOverrideUntil.delete(session)
+}
+
+/** May we believe this session's pane saturation banner? Exported so the
+ *  fail-closed expiry is testable. */
+export function saturationBannerTrusted(session: string): boolean {
+  const until = saturationOverrideUntil.get(session)
+  if (until === undefined) return true
+  if (Date.now() >= until) {
+    saturationOverrideUntil.delete(session)
+    return true
+  }
+  return false
+}
+
+/** Does this capture refuse dispatch? The one question every injector asks.
+ *
+ *  The override above is keyed by SESSION, so it cannot know WHICH banner is on
+ *  screen -- which is exactly why the hard-error class is settled HERE, on the
+ *  capture itself, AHEAD of it. The reachable sequence this closes: a mis-tagged
+ *  agent's percentage banner is found not credible and an override entry is
+ *  written; the SAME agent later wedges for real and the CLI paints "Context
+ *  limit reached"; without this arm the still-valid entry would hold the gate
+ *  open and we would inject into a pane that cannot act -- one sweep at best,
+ *  the whole TTL at worst. Only a percentage claim is ever overridable; see
+ *  saturationBannerCredible() in context-guard.ts. */
+export function saturationRefusesDispatch(capture: string, session: string): boolean {
+  if (!paneShowsContextSaturation(capture)) return false
+  if (paneShowsContextSaturationHardError(capture)) return true
+  return saturationBannerTrusted(session)
+}
+
 export async function isSessionReadyForPrompt(session: string, host: string | null = null): Promise<boolean> {
   // Dim-ghost tolerant idle read: CC >=2.1.202 paints a dim placeholder into
   // the empty input box, which a plain capture reads as parked text. Only when
@@ -2865,7 +2927,7 @@ export async function isSessionReadyForPrompt(session: string, host: string | nu
     idleConsideringDimGhost(plain, detectPaneState(plain) === 'typing' ? captureParkedInputView(session, host) : null)
   const first = capturePane(session, host)
   if (first == null) return false
-  if (paneShowsContextSaturation(first)) {
+  if (saturationRefusesDispatch(first, session)) {
     logger.warn({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
     return false
   }
@@ -2875,7 +2937,7 @@ export async function isSessionReadyForPrompt(session: string, host: string | nu
 
   const second = capturePane(session, host)
   if (second == null) return false
-  if (paneShowsContextSaturation(second)) {
+  if (saturationRefusesDispatch(second, session)) {
     logger.warn({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
     return false
   }

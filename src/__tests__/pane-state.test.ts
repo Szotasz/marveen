@@ -19,6 +19,7 @@ import {
   parkedInputRowCount,
   submitLanded,
   paneShowsContextSaturation,
+  paneShowsContextSaturationHardError,
   mcpTrustAcceptKeys,
   detectsFirstRunGate,
 } from '../pane-state.js'
@@ -2283,6 +2284,84 @@ describe('paneShowsContextSaturation', () => {
       '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
     ].join('\n')
     expect(paneShowsContextSaturation(quoted)).toBe(false)
+  })
+})
+
+// Two shapes of banner reach the predicate, and only one of them can be WRONG.
+//
+// A percentage claim ("100% context used", "Context low (N% remaining)") is
+// computed by the CLI from its own denominator, which is sized from the model
+// id it was launched with -- a 1M model whose id arrives without the [1m]
+// marker gets a 200k status line and prints the banner at ~179k while the
+// session keeps working. A caller holding an independent measurement can, and
+// on 2026-09-15 had to, disprove that.
+//
+// An error-shaped banner cannot be disproved by anything: the CLI paints it
+// only after a turn ACTUALLY failed at the real limit (CLI 2.1.205 renders
+// "Context limit reached" with color:"error", driven by the API's own "input
+// length and max_tokens exceed context limit"). Splitting them here is what
+// lets the context-guard overrule the first without ever touching the second.
+describe('paneShowsContextSaturationHardError', () => {
+  const footer = (banner: string) => [
+    '  some prior assistant output',
+    '',
+    banner,
+    SEP,
+    '❯ ',
+    SEP,
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+  ].join('\n')
+
+  const HARD_ERRORS = [
+    'Context limit reached · use /compact or /clear to continue',
+    'Context window full',
+    'context is full',
+    'Auto-compact required',
+    'autocompact required',
+  ]
+  const PCT_CLAIMS = [
+    '                                                              100% context used',
+    'Context low (0% remaining) · Run /compact to compact & continue',
+    'Context low (2% remaining)',
+  ]
+
+  it('is true for every error-shaped banner', () => {
+    for (const b of HARD_ERRORS) {
+      expect(paneShowsContextSaturationHardError(footer(b))).toBe(true)
+    }
+  })
+
+  it('is FALSE for the percentage-shaped banners -- the ones a measurement may overrule', () => {
+    for (const b of PCT_CLAIMS) {
+      expect(paneShowsContextSaturationHardError(footer(b))).toBe(false)
+    }
+  })
+
+  it('the union predicate still matches BOTH classes (the split did not narrow it)', () => {
+    // paneShowsContextSaturation's own behaviour must be byte-identical after
+    // the regex was rebuilt from two sources: every alternative still fires.
+    for (const b of HARD_ERRORS.concat(PCT_CLAIMS)) {
+      expect(paneShowsContextSaturation(footer(b))).toBe(true)
+    }
+  })
+
+  it('is tail-scoped and empty-safe like the union predicate', () => {
+    const quoted = [
+      '  Postmortem: the pane said "Context limit reached" at 09:14.',
+      ...Array.from({ length: 10 }, () => '  more scrollback padding'),
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(paneShowsContextSaturationHardError(quoted)).toBe(false)
+    expect(paneShowsContextSaturationHardError('')).toBe(false)
+    expect(paneShowsContextSaturationHardError('   \n  ')).toBe(false)
+  })
+
+  it('is false on ordinary panes', () => {
+    expect(paneShowsContextSaturationHardError(IDLE_BYPASS)).toBe(false)
+    expect(paneShowsContextSaturationHardError(BUSY_FULL_FOOTER)).toBe(false)
   })
 })
 
