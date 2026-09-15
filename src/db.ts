@@ -903,6 +903,11 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec(`ALTER TABLE task_runs ADD COLUMN completed_at INTEGER`) } catch { /* already present */ }
   try { db.exec(`ALTER TABLE task_runs ADD COLUMN outcome TEXT`) } catch { /* already present */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_task_runs_open ON task_runs(completed_at, ts)`)
+  // Backfill for SCHEDLOST915: terminal marker rows (lost, skipped, ...) were
+  // inserted with completed_at NULL and so looked open for ever. A marker ends
+  // when it is written. Idempotent: matches nothing once applied.
+  db.exec(`UPDATE task_runs SET completed_at = ts
+           WHERE completed_at IS NULL AND status NOT IN ('fired', 'fired_late')`)
 
   // --- Pending Scheduled Task Retries ---
   // Busy-skipped scheduled tasks used to live in an in-memory Map. On a
@@ -3186,6 +3191,10 @@ export interface TaskRunHistoryEntry {
 
 const TASK_RUN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
+// Dispatch statuses that open a run (closed later by markTaskRunCompleted or
+// reconcileOpenTaskRuns). Must match reconcileOpenTaskRuns' own filter.
+export const OPEN_TASK_RUN_STATUSES: ReadonlySet<string> = new Set(['fired', 'fired_late'])
+
 /**
  * Record that a run was dispatched. Returns the row id so the caller can close
  * the run later with markTaskRunCompleted -- without it there is no way to
@@ -3193,7 +3202,13 @@ const TASK_RUN_TTL_MS = 30 * 24 * 60 * 60 * 1000
  */
 export function appendTaskRun(name: string, agent: string, status = 'fired'): number {
   const now = Date.now()
-  const info = db.prepare('INSERT INTO task_runs (name, agent, ts, status) VALUES (?, ?, ?, ?)').run(name, agent, now, status)
+  // Only a dispatch opens a run the watchdog will later close. Every other
+  // status (lost, lost-giveup, skipped, missed, error, ...) is a terminal marker
+  // with nothing to wait for, so it is closed at insert. Left NULL, each of them
+  // read as "still running" to any open-run query, for ever: 1127 'lost' rows on
+  // the reference install, the oldest 13 days, none ever closed (SCHEDLOST915).
+  const completedAt = OPEN_TASK_RUN_STATUSES.has(status) ? null : now
+  const info = db.prepare('INSERT INTO task_runs (name, agent, ts, status, completed_at) VALUES (?, ?, ?, ?, ?)').run(name, agent, now, status, completedAt)
   // Opportunistic TTL prune: cheap indexed DELETE, keeps the table bounded.
   db.prepare('DELETE FROM task_runs WHERE ts < ?').run(now - TASK_RUN_TTL_MS)
   return Number(info.lastInsertRowid)
