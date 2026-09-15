@@ -90,6 +90,14 @@ export const SECRET_PATTERNS: { name: string; pattern: RegExp }[] = [
   { name: 'generic vendor secret key (sk_ or sk-)', pattern: /\bsk[-_][A-Za-z0-9_-]{24,}/ },
   { name: 'AWS access key id', pattern: /\bAKIA[0-9A-Z]{16}\b/ },
   { name: 'Supabase service_role JWT hint', pattern: /service_role["'\s:=]+eyJ/ },
+  // SBPMINTAHIANY914 (2026-09-14): a Supabase PERSONAL ACCESS TOKEN alakja. A sor
+  // FOLOTT mar allt egy Supabase-tetel (a service_role JWT), amitol a Supabase
+  // "lefedettnek" latszott -- kozben a masik, nalunk TENYLEGESEN szivargo
+  // Supabase-hitelesitoadat kimaradt. Merve ugyanaznap: 167 elofordulas, ebbol 164
+  // atiratban, es a kapu mindegyiket atengedte. Egy lista, amiben a SZOMSZEDOS
+  // tetel ott van, megnyugtatobb, mint egy ures lista -- ezert kerult ide, kozvetlenul
+  // a masik Supabase-minta melle.
+  { name: 'Supabase personal access token', pattern: /\bsbp_[0-9a-f]{40}\b/ },
 ];
 
 /**
