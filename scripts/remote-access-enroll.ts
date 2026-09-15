@@ -25,7 +25,7 @@
 
 import { readFileSync, realpathSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
-import { homedir, hostname, userInfo, networkInterfaces } from 'node:os'
+import { hostname, userInfo, networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { isIP } from 'node:net'
@@ -43,6 +43,7 @@ import {
   type ConnectionBundleInput,
 } from '../src/remote-enroll-core.js'
 import { enrollAuthorizedKey } from '../src/remote-enroll-fs.js'
+import { resolveSshDir } from '../src/ssh-dir.js'
 import { WEB_PORT as ENV_WEB_PORT } from '../src/config.js'
 
 interface Args {
@@ -182,7 +183,15 @@ async function main(): Promise<void> {
   }
 
   const restrictedLine = buildRestrictedLine(parsed, args.webPort)
-  const sshDir = join(homedir(), '.ssh')
+  // ENROLL813: this CLI used to hardcode homedir()/.ssh and did not know the
+  // MARVEEN_SSH_DIR seam at all (grep -c MARVEEN_SSH_DIR on this file was 0).
+  // Nothing automated calls it today -- but any future automated caller would
+  // have written the operator's real authorized_keys with no way to redirect it,
+  // which is the same shape as the leak this change closes. One resolver for
+  // every writer, or the next copy drifts again.
+  const sshDir = resolveSshDir((dir) => {
+    process.stderr.write(`warning: MARVEEN_SSH_DIR override active -- writing to ${dir}, not the real ~/.ssh\n`)
+  })
 
   const result = await enrollAuthorizedKey({
     sshDir,
