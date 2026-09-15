@@ -367,6 +367,13 @@ export function ensureMainAgentIsolatedConfigDir(
   try { enabled = String(getEffectiveSettingValue('MAIN_AGENT_ISOLATED_CONFIG')) === '1' } catch { enabled = false }
   if (!enabled) return null
   if (!hasFleetOauthToken()) return null
+  return provisionMainIsolatedConfigDir(provider)
+}
+
+// Shared provisioning call for the generic isolated dir, factored out so the
+// fleet-token-gated path (above) and the token-mode-rotation path (below)
+// cannot drift on what they actually provision.
+function provisionMainIsolatedConfigDir(provider?: string): string | null {
   return provisionIsolatedConfigDir(
     join(PROJECT_ROOT, '.channels-config'),
     PROJECT_ROOT,
@@ -374,6 +381,21 @@ export function ensureMainAgentIsolatedConfigDir(
     MAIN_AGENT_ID,
     readExtraChannelPluginIds(),
   )
+}
+
+// Same generic isolated dir as ensureMainAgentIsolatedConfigDir, but for a
+// TOKEN-MODE rotated claude-plans entry (ClaudePlan.tokenSecretId): gated
+// only on MAIN_AGENT_ISOLATED_CONFIG=1, NOT on hasFleetOauthToken(). A
+// token-mode plan supplies its OWN token at launch (see
+// resolveMainAgentRotatedTokenSecretId) instead of the flotta's, so requiring
+// a flotta token to even provision the shared dir would be the wrong gate --
+// an install with rotation configured but no flotta token registered should
+// still be able to run token-mode plans.
+export function ensureMainAgentIsolatedConfigDirForRotatedToken(provider?: string): string | null {
+  let enabled = false
+  try { enabled = String(getEffectiveSettingValue('MAIN_AGENT_ISOLATED_CONFIG')) === '1' } catch { enabled = false }
+  if (!enabled) return null
+  return provisionMainIsolatedConfigDir(provider)
 }
 
 // READ-ONLY sibling of the two resolvers above: which config dir will the main
@@ -530,7 +552,9 @@ export function resolveMainAgentConfigDir(): string | null {
 // either threshold this returns null even if a stale activePlanByAgent entry
 // exists on disk, so turning rotation off (or dropping back to one plan)
 // cannot strand the main agent on a dir nobody is maintaining anymore.
-export function resolveMainAgentRotatedConfigDir(): string | null {
+// Shared by both resolveMainAgentRotatedConfigDir and
+// resolveMainAgentRotatedTokenSecretId, so the two can never gate differently.
+function resolveActiveMainPlan(): ReturnType<typeof getClaudePlan> {
   let isolationEnabled = false
   try { isolationEnabled = String(getEffectiveSettingValue('MAIN_AGENT_ISOLATED_CONFIG')) === '1' } catch { return null }
   if (!isolationEnabled) return null
@@ -540,8 +564,24 @@ export function resolveMainAgentRotatedConfigDir(): string | null {
   const activeId = readClaudePlansState().activePlanByAgent[MAIN_AGENT_ID]
   if (!activeId) return null
 
-  const plan = getClaudePlan(activeId)
-  return plan ? plan.configDir : null
+  return getClaudePlan(activeId)
+}
+
+export function resolveMainAgentRotatedConfigDir(): string | null {
+  return resolveActiveMainPlan()?.configDir ?? null
+}
+
+// The main agent's token-mode rotation counterpart: the vault secret id
+// holding the active plan's raw CLAUDE_CODE_OAUTH_TOKEN, when the active plan
+// is token-mode (ClaudePlan.tokenSecretId set) rather than configDir-mode.
+// Every token-mode plan shares the SAME generic isolated CLAUDE_CONFIG_DIR
+// (ensureMainAgentIsolatedConfigDir) -- this resolver answers ONLY "which
+// token", never "which dir". See ClaudePlan.tokenSecretId for why token-mode
+// exists at all (2026-09-12 incident: a configDir-mode plan registered but
+// never actually logged into, on a remote host, wedged the main session on an
+// interactive OAuth-code prompt no headless session can complete).
+export function resolveMainAgentRotatedTokenSecretId(): string | null {
+  return resolveActiveMainPlan()?.tokenSecretId ?? null
 }
 
 // Shared provisioning core for BOTH the sub-agents (ensureIsolatedChannelConfigDir)
