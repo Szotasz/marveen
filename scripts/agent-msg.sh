@@ -36,13 +36,33 @@ while [ "$attempt" -lt "$max" ]; do
   RESP="$(curl -s -X POST "$URL" -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$BODY" -w $'\n%{http_code}' 2>/dev/null || true)"
   CODE="$(printf '%s' "$RESP" | tail -n1)"
   JSON="$(printf '%s' "$RESP" | sed '$d')"
-  ID="$(printf '%s' "$JSON" | python3 -c 'import sys,json
+  # An id ALONE is not delivery. The router answers 200 WITH an id even when the
+  # recipient is not running, and says so in a separate `warning` field
+  # (src/web/routes/messages.ts) whose text spells out that such a message is
+  # LOST rather than queued. This helper read only the id, so it printed
+  # "OK id=..." for a message that never arrived -- the exact failure the header
+  # above says it exists to prevent, one field further in. The exit code stays 0
+  # on purpose: the row really was accepted, so this is not a send failure. It
+  # just must not be silent.
+  read -r ID WARN <<EOF
+$(printf '%s' "$JSON" | python3 -c 'import sys,json
 try:
-  d=json.load(sys.stdin); print(d.get("id","") if isinstance(d,dict) else "")
+  d=json.load(sys.stdin)
+  if not isinstance(d,dict): d={}
 except Exception:
-  print("")' 2>/dev/null)"
+  d={}
+w=" ".join(str(d.get("warning","")).split())
+print((d.get("id","") or "-"), w)' 2>/dev/null)
+EOF
+  [ "$ID" = "-" ] && ID=""
   if { [ "$CODE" = "200" ] || [ "$CODE" = "201" ]; } && [ -n "$ID" ]; then
-    echo "OK id=$ID"; exit 0
+    if [ -n "${WARN:-}" ]; then
+      echo "OK id=$ID  WARNING: $WARN" >&2
+      echo "OK id=$ID (warning)"
+    else
+      echo "OK id=$ID"
+    fi
+    exit 0
   fi
   sleep 1
 done
