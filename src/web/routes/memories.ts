@@ -4,7 +4,7 @@ import {
   searchMemories, getMemoriesForChat, getDb, touchMemoriesAccessed,
   type Memory,
 } from '../../db.js'
-import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config.js'
+import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, MEMORY_IMPORT_CATEGORIZE_MODEL, APP_TZ } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
@@ -170,21 +170,25 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     const stats = { hot: 0, warm: 0, cold: 0, shared: 0 }
     let imported = 0
 
+    // Opt-in only: the model is never guessed. Picking "whatever Ollama lists
+    // first" landed on a 1.3B code model that scored no better than all-warm
+    // while loading the GPU for ~8s per chunk.
     let categorizeModel: string | null = null
-    try {
-      const ollamaModels = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(3000) })
+    if (MEMORY_IMPORT_CATEGORIZE_MODEL) {
+      const installed = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(3000) })
         .then(r => r.json())
-        .then((d: any) => (d.models || []).filter((m: any) => !m.name.includes('embed')).map((m: any) => m.name))
+        .then((d: any) => (d.models || []).map((m: any) => m.name) as string[])
         .catch(() => [] as string[])
-      categorizeModel = ollamaModels.find((m: string) => m.includes('gemma4')) || ollamaModels[0] || null
-    } catch {
-      categorizeModel = null
-    }
-
-    if (categorizeModel) {
-      logger.info({ model: categorizeModel }, 'Migráció: AI kategorizálás modell kiválasztva')
+      const wanted = MEMORY_IMPORT_CATEGORIZE_MODEL
+      const tagged = wanted.includes(':') ? wanted : `${wanted}:latest`
+      categorizeModel = installed.find(m => m === wanted || m === tagged) ?? null
+      if (categorizeModel) {
+        logger.info({ model: categorizeModel }, 'Migráció: AI kategorizálás modell kiválasztva')
+      } else {
+        logger.warn({ model: wanted, ollamaUrl: OLLAMA_URL }, 'Migráció: a beállított kategorizáló modell nem elérhető, alapértelmezett warm besorolás')
+      }
     } else {
-      logger.info('Migráció: nincs elérhető Ollama modell, alapértelmezett warm besorolás')
+      logger.info('Migráció: MEMORY_IMPORT_CATEGORIZE_MODEL nincs beállítva, alapértelmezett warm besorolás')
     }
 
     for (let i = 0; i < chunks.length; i++) {

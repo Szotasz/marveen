@@ -147,6 +147,7 @@ Every dashboard-editable setting is a registry entry with the following fields:
 |-----|------|---------|-------------|---------|
 | `DASHBOARD_PUBLIC_URL` | string | (empty) | Publicly accessible URL of the dashboard | yes |
 | `OLLAMA_URL` | string | `http://localhost:11434` | Ollama API base URL | yes |
+| `MEMORY_IMPORT_CATEGORIZE_MODEL` | string | (empty) | Ollama model that tiers memories on import; empty = all warm | yes |
 
 **Registry -- Heartbeat module:**
 
