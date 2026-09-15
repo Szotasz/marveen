@@ -30,6 +30,14 @@
 
 set -euo pipefail
 
+# The archive carries live secrets (store/.claude-oauth-token, .dashboard-token,
+# the vault master key next to vault.json, every channel .env). It must be
+# born 0600 -- not chmod-ed afterwards, because a crash between tar and chmod
+# would leave a world-readable copy (BACKUPTITOK915: measured 0644 on the
+# owner host under the default umask 022). umask 077 covers the archive, the
+# backups/ dir, the staging dir and every temp file this script creates.
+umask 077
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Overridable so a test can build a throwaway archive without touching the
 # real backup directory (and its retention sweep).
