@@ -1767,7 +1767,15 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // stable token instead -- this is what makes the Linux credentials-guard
     // rename safe (a shared sub-agent with no env token would otherwise be
     // locked out once credentials.json is moved aside). No-op without a token.
-    if (!claudeConfigDir && hasFleetOauthToken()) {
+    // authMode 'own_team' (OWNTEAMVAK914): the operator explicitly opted this
+    // agent OUT of the fleet credential -- it authenticates from its OWN
+    // /login credential (dashboard auth-flow -> /login in the agent's tmux).
+    // The fleet token must therefore never be exported for it: Claude Code
+    // falls back to CLAUDE_CODE_OAUTH_TOKEN whenever the on-disk/Keychain
+    // credential is absent or expired, which would silently put the agent
+    // back on the shared identity -- exactly what own_team excludes.
+    const isOwnTeam = isClaude && authMode === 'own_team'
+    if (!claudeConfigDir && hasFleetOauthToken() && !isOwnTeam) {
       oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
     }
     // Isolation must also cover CHANNEL-LESS Claude-OAuth agents, not just
@@ -1780,9 +1788,35 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // 2026-07-25). Only agents that never touch Anthropic OAuth stay on the
     // shared root: local/BYO-endpoint models (Ollama/DeepSeek/OpenRouter) and
     // per-agent API-key (authMode 'api') agents.
-    const needsFleetOauth = isClaude && authMode !== 'api'
-    if (!claudeConfigDir && (hasChannel || needsFleetOauth) && name !== MAIN_AGENT_ID) {
-      if (hasFleetOauthToken()) {
+    const needsFleetOauth = isClaude && authMode !== 'api' && !isOwnTeam
+    if (!claudeConfigDir && (hasChannel || needsFleetOauth || isOwnTeam) && name !== MAIN_AGENT_ID) {
+      if (isOwnTeam) {
+        // own_team isolates WITHOUT the fleet token: the isolated dir is where
+        // the agent's own /login credential lives (macOS Keychain scopes the
+        // entry per CLAUDE_CONFIG_DIR -- service name carries a sha256 prefix
+        // of the dir -- and on Linux the provisioner deliberately never
+        // touches .credentials.json, see ISOLATED_CONFIG_SKIP), so the
+        // isolation gate must NOT be hasFleetOauthToken() here.
+        const isolated = ensureIsolatedChannelConfigDir(name, hasChannel ? agentProvider : null)
+        if (isolated) {
+          claudeConfigDir = isolated
+          // Linux keeps the credential as a file, so its absence is reliably
+          // detectable; on macOS it lives in the Keychain (service-name
+          // convention is Claude Code internal, probing it each spawn would
+          // false-alarm across versions), so first-run there surfaces as the
+          // login screen plus this info line.
+          if (process.platform !== 'darwin' && !existsSync(join(isolated, '.credentials.json'))) {
+            logger.warn({ name }, 'own_team auth: no .credentials.json in the isolated config dir yet -- run the dashboard auth flow (/login) or the agent parks on the login screen')
+          } else {
+            logger.info({ name }, 'own_team auth: fleet token not exported; agent authenticates from its own login credential in the isolated config dir')
+          }
+        } else {
+          // Falling back to the shared ~/.claude would put the agent on the
+          // OWNER's rotating credential -- the opposite of own_team. Loud.
+          logger.warn({ name }, 'own_team auth: isolated config dir provisioning failed; agent falls back to the shared ~/.claude and will use the HOST credential, not its own Team login')
+          if (hasChannel) maybeAlertSharedConfigCollision(name)
+        }
+      } else if (hasFleetOauthToken()) {
         // Token present -> isolation works; any earlier degradation is resolved,
         // so re-arm the one-shot alert for a future token loss.
         resetSharedConfigCollisionAlert()
