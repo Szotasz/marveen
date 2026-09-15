@@ -58,13 +58,14 @@ import {
   clearStaleParkedInput,
   resolveAgentProvider,
   clearFeedbackModalAndRecheck,
+  saturationRefusesDispatch,
 } from './agent-process.js'
 import { isRestartInFlight } from './restart-lock.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { runCommandTask } from './command-task.js'
 import { decideQuotaAction, type QuotaWorkClass } from '../quota-gate.js'
 import { readQuotaSnapshot } from '../quota-snapshot.js'
-import { paneShowsContextSaturation, detectsFirstRunGate, detectPaneState, type PaneState } from '../pane-state.js'
+import { detectsFirstRunGate, detectPaneState, type PaneState } from '../pane-state.js'
 import { withSessionSendLock } from './session-send-lock.js'
 
 // How many bare-Enter attempts the post-send resubmit tries before escalating
@@ -820,7 +821,7 @@ async function attemptFireTask(
     // retry lands on the first tick after the session has been rescued. All
     // other busy states keep the bypass.
     const pane = capturePane(session, host)
-    if (pane != null && paneShowsContextSaturation(pane)) {
+    if (pane != null && saturationRefusesDispatch(pane, session)) {
       logger.warn({ task: task.name, agent: agentName, session }, 'forceSend target session is context-saturated (100%) -- deferring to retry queue instead of injecting into a wedged session')
       return 'busy'
     }

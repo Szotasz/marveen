@@ -58,12 +58,19 @@ describe('taskInjectionRank: forceSend outranks tasks outranks heartbeats', () =
 })
 
 describe('forceSend defers on context saturation instead of injecting', () => {
-  it('checks paneShowsContextSaturation inside the forceSend branch and returns busy', () => {
+  it('asks saturationRefusesDispatch inside the forceSend branch and returns busy', () => {
     const idx = SRC.indexOf('if (task.forceSend) {')
     expect(idx).toBeGreaterThan(0)
     const branch = SRC.slice(idx, idx + 1800)
-    expect(branch).toMatch(/paneShowsContextSaturation/)
+    // The deferral must read the SAME verdict the context-guard net and the
+    // dispatch gate read. Left on the raw banner it would build a new deadlock
+    // with no way out: forceSend tasks queued forever (banner true) while the
+    // guard never restarts the agent (corrected verdict false). And it must be
+    // the shared predicate, not the override alone -- that one is session-keyed
+    // and blind to the hard-error banner it must never overrule.
+    expect(branch).toMatch(/saturationRefusesDispatch\(pane, session\)/)
     expect(branch).toMatch(/return 'busy'/)
+    expect(branch).not.toMatch(/paneShowsContextSaturation\(pane\)/)
   })
 
   it('the skipIfBusy drop exempts forceSend so the deferral queues a retry', () => {

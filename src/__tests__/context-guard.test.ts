@@ -10,6 +10,8 @@ import {
   INITIAL_GUARD_STATE,
   READY_TIMEOUT_MS,
   SATURATION_CONFIRM_SWEEPS,
+  SATURATION_CREDIBLE_MIN_PCT,
+  saturationBannerCredible,
   STALE_REFRESH_REASON_PREFIX,
   type ContextGuardConfig,
   type GuardInputs,
@@ -728,5 +730,108 @@ describe('normalizeContextGuardConfig -- idle-flush fields', () => {
     expect(normalizeContextGuardConfig({ idleMinutes: 0 }).idleMinutes).toBe(20)
     expect(normalizeContextGuardConfig({ idleMinutes: -5 }).idleMinutes).toBe(20)
     expect(normalizeContextGuardConfig({ idleMinutes: 45 }).idleMinutes).toBe(45)
+  })
+})
+
+// The pane banner and the transcript measurement are two claims about the same
+// fact, and on 2026-09-15 (isapp06) they disagreed for nine days: 318 numeric
+// "pane saturated" hard restarts across four agents, measured context 18-43%,
+// never once above 90%. Cause: a model id that reaches the CLI WITHOUT the
+// `[1m]` marker makes the CLI size its status line to 200k and print
+// "100% context used" at ~179k, while the session keeps working to ~1M.
+// saturationBannerCredible is the referee -- a real measurement may overrule a
+// real PERCENTAGE claim, and nothing else may be overruled at all.
+describe('saturationBannerCredible', () => {
+  it('rejects a percentage banner at the measured false-positive percentages (the 318 kills)', () => {
+    // min / median / max of the production incident, pinned as numbers.
+    expect(saturationBannerCredible(true, false, 0.18)).toBe(false)
+    expect(saturationBannerCredible(true, false, 0.19)).toBe(false)
+    expect(saturationBannerCredible(true, false, 0.43)).toBe(false)
+  })
+
+  it('NEVER overrules an ERROR-shaped banner, at any measurement', () => {
+    // "Context limit reached", "context ... full" and "auto-compact required"
+    // are painted only after a turn ACTUALLY failed at the real limit (CLI
+    // 2.1.205 renders "Context limit reached" in color:"error" off the API's
+    // own "input length and max_tokens exceed context limit"), so no
+    // denominator is involved and no measurement may second-guess them.
+    //
+    // This is the load-bearing case. A turn that dies on a context-limit error
+    // leaves the transcript's last recorded usage at the value BEFORE the
+    // failed turn, which can easily be under 0.5 -- so treating these like a
+    // percentage claim would stand the net down on a genuinely wedged pane AND
+    // open the dispatch gate to it, turning today's ~10 minute rescue into
+    // hours of silent message loss.
+    for (const pct of [0, 0.01, 0.18, 0.19, 0.43, 0.49]) {
+      expect(saturationBannerCredible(true, true, pct)).toBe(true)
+    }
+    expect(saturationBannerCredible(true, true, null)).toBe(true)
+  })
+
+  it('TRUSTS the banner when the context is unmeasurable (the net\'s original purpose)', () => {
+    // 129 of the observed events had pct null. This is the samu 2026-07-18
+    // case the net was built for: an unreadable transcript is not evidence
+    // against the banner, so behaviour there must stay byte-identical.
+    expect(saturationBannerCredible(true, false, null)).toBe(true)
+  })
+
+  it('pins the credibility threshold exactly', () => {
+    expect(saturationBannerCredible(true, false, SATURATION_CREDIBLE_MIN_PCT)).toBe(true)
+    expect(saturationBannerCredible(true, false, 0.5)).toBe(true)
+    expect(saturationBannerCredible(true, false, 0.49)).toBe(false)
+  })
+
+  it('trusts the banner across the measured range of GENUINELY full sessions', () => {
+    // The band recorded in the CALIBRATION_OVERSHOOT_TOLERANCE note: 11 sessions
+    // the CLI itself marked "100% context used" measured 0.89-1.07. If anyone
+    // raises the threshold far enough to reach this band, this fails.
+    expect(saturationBannerCredible(true, false, 0.89)).toBe(true)
+    expect(saturationBannerCredible(true, false, 0.93)).toBe(true)
+    expect(saturationBannerCredible(true, false, 1.07)).toBe(true)
+    expect(SATURATION_CREDIBLE_MIN_PCT).toBeLessThan(0.89)
+    expect(SATURATION_CREDIBLE_MIN_PCT).toBeGreaterThan(0.43)
+  })
+
+  it('never invents a banner that is not there', () => {
+    expect(saturationBannerCredible(false, false, 0.99)).toBe(false)
+    expect(saturationBannerCredible(false, false, null)).toBe(false)
+    // Not even the hard-error flag may manufacture a banner: the caller reads
+    // both predicates off the same capture, so "hard error but not saturated"
+    // is unreachable -- and if it ever became reachable it must stay inert.
+    expect(saturationBannerCredible(false, true, null)).toBe(false)
+  })
+})
+
+// decideGuard is UNCHANGED by this fix; these cases prove what the corrected
+// INPUT buys us: with the banner overruled, neither the net nor the
+// await-handoff trapdoor can fire on a session that is 19% full.
+describe('decideGuard with a corrected saturation input (no kill, no handoff)', () => {
+  it('idle: a 19%-full agent with the banner overruled does nothing at all', () => {
+    const d = decideGuard(
+      INITIAL_GUARD_STATE,
+      inputs({ paneSaturated: false, pct: 0.19, paneIdle: true }),
+      CFG,
+    )
+    expect(d.action).toBe('none')
+    expect(d.reason).toBe('below threshold')
+    expect(d.nextState.phase).toBe('idle')
+    // No streak accumulates, so no confirmation sweep can ever complete.
+    expect(d.nextState.saturatedStreak).toBe(0)
+  })
+
+  it('await-handoff: the debounce-free saturation trapdoor cannot spring', () => {
+    // This is the branch that had NO confirmation sweep: one corrected input is
+    // the whole difference between "keep waiting" and an immediate restart.
+    const awaiting: GuardState = {
+      phase: 'await-handoff',
+      handoffMtimeAtRequest: 100,
+      deadlineMs: NOW + 60_000,
+      cooldownUntilMs: 0,
+      saturatedStreak: 0,
+      handoffStaleMinutes: null,
+    }
+    const d = decideGuard(awaiting, inputs({ paneSaturated: false, pct: 0.19 }), CFG)
+    expect(d.action).toBe('none')
+    expect(d.reason).toBe('waiting for handoff')
   })
 })
