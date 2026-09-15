@@ -44,7 +44,9 @@ agent behaviour (which can fail or restart).
    message can also be lost in an **already-running** session (a mid-session
    deafness gap): capture still records it, yet the live session never sees it
    until the next respawn. `scripts/hooks/ledger-live-drain.py` (run every ~2 min
-   by the `ledger-live-drain` scheduled task in the live session) re-surfaces the
+   by the `ledger-live-drain` scheduled task in the live session; its scheduler
+   `preCheck`, `ledger-live-drain-precheck.sh`, runs the drain in a non-recording
+   `--precheck` mode first, so an empty tick costs no model turn) re-surfaces the
    still-unanswered inbound — `OPEN_QUESTION chat_id=… message_id=…\n<text>` on
    stdout — so the running agent answers it without waiting for a respawn. Two
    safety rails: a **grace window** (`GRACE_SECONDS = 60` — never fight an in-flight

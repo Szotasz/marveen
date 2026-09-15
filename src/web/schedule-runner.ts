@@ -618,11 +618,21 @@ export function quotaWorkClass(task: Pick<ScheduledTask, 'type'>): QuotaWorkClas
   return 'owner-facing'
 }
 
+// Where a task's preCheck script lives. Relative -> beside the task's SKILL.md;
+// absolute -> as given; a leading {{PROJECT_ROOT}} / {{INSTALL_DIR}} -> the
+// install root. The placeholder form exists for SHIPPED tasks that gate on a
+// repo script: the node seeder copies task-config.json without template
+// rendering, and update.sh's seed refresh never adds a new file to an existing
+// task dir, so neither a hard-coded path nor a script beside the SKILL.md would
+// reach every install.
+export function resolvePreCheckPath(taskName: string, preCheck: string): string {
+  const rooted = preCheck.replace(/^\{\{(PROJECT_ROOT|INSTALL_DIR)\}\}(?=\/)/, PROJECT_ROOT)
+  return isAbsolute(rooted) ? rooted : join(SCHEDULED_TASKS_DIR, taskName, rooted)
+}
+
 export function runPreCheck(task: ScheduledTask): { skip: boolean; prefix?: string } {
   if (!task.preCheck) return { skip: false }
-  const scriptPath = isAbsolute(task.preCheck)
-    ? task.preCheck
-    : join(SCHEDULED_TASKS_DIR, task.name, task.preCheck)
+  const scriptPath = resolvePreCheckPath(task.name, task.preCheck)
   if (!existsSync(scriptPath)) {
     logger.warn({ task: task.name, scriptPath }, 'pre-check script not found, running LLM anyway')
     return { skip: false }

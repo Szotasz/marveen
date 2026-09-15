@@ -66,6 +66,10 @@ function registrationCorpus(): string {
     for (const task of readdirSync(tasksDir)) {
       const skill = join(tasksDir, task, 'SKILL.md')
       if (existsSync(skill)) corpus += readFileSync(skill, 'utf-8')
+      // A task's preCheck script is a schedule registration too: the scheduler
+      // runs it on every tick (ledger-live-drain-precheck.sh).
+      const config = join(tasksDir, task, 'task-config.json')
+      if (existsSync(config)) corpus += readFileSync(config, 'utf-8')
     }
   }
   return corpus

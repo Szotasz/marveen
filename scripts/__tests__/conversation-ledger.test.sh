@@ -49,6 +49,13 @@ run_drain() { # db
         MAIN_AGENT_ID="marveen" python3 "$HOOKS_DIR/ledger-live-drain.py" )
 }
 
+# The task's scheduler preCheck, run through the shipped wrapper from a foreign
+# cwd: the wrapper itself must pin cwd to the install root.
+run_drain_precheck() { # db
+    ( cd / && LEDGER_DB_PATH="$1" LEDGER_OWNER_CHAT="10000000001" \
+        MAIN_AGENT_ID="marveen" bash "$HOOKS_DIR/ledger-live-drain-precheck.sh" )
+}
+
 # Age every row in a ledger DB backwards so an open question clears the grace window.
 age_rows() { # db seconds
     python3 - "$1" "$2" <<'PYEOF'
@@ -513,6 +520,27 @@ mkdir -p "$TMPDIR_BASE/ld4"; DB_LD4="$TMPDIR_BASE/ld4/x.db"
 emit_inbound 10000000001 1131 "Epp most erkezett" | run_hook ledger-capture.py "$DB_LD4"
 OUT_G4="$(run_drain "$DB_LD4")"
 assert_eq "live drain: in-flight question (within grace) is not surfaced" "" "$OUT_G4"
+
+# (g5) preCheck: nothing to surface -> SKIP (no model turn); covers the
+#      answered, in-flight and already-surfaced cases with the drain's own rules
+assert_eq "drain precheck: answered question -> SKIP" "SKIP" "$(run_drain_precheck "$DB_LD3")"
+assert_eq "drain precheck: in-flight question -> SKIP" "SKIP" "$(run_drain_precheck "$DB_LD4")"
+assert_eq "drain precheck: already surfaced -> SKIP" "SKIP" "$(run_drain_precheck "$DB_LD1")"
+
+# (g6) preCheck: something to surface -> empty stdout (the turn runs), and the
+#      statefile is NOT written: the scheduler's busy gate may still drop this
+#      tick, and a recorded id would dedup the question away for good
+mkdir -p "$TMPDIR_BASE/ld6"; DB_LD6="$TMPDIR_BASE/ld6/x.db"
+emit_inbound 10000000001 1140 "Precheck utan is felszinre kell jonnie" | run_hook ledger-capture.py "$DB_LD6"
+age_rows "$DB_LD6" 120
+assert_eq "drain precheck: open question -> empty stdout (run the turn)" "" "$(run_drain_precheck "$DB_LD6")"
+assert_eq "drain precheck: never records the surfaced id" "" \
+    "$(cat "$TMPDIR_BASE/ld6/.ledger-drain-marveen" 2>/dev/null)"
+if printf '%s' "$(run_drain "$DB_LD6")" | grep -q "message_id=1140"; then
+    pass "drain precheck: the real drain still surfaces the question afterwards"
+else
+    fail "drain precheck: the question was lost after a precheck"
+fi
 
 # ---------------------------------------------------------------------------
 # (h) SECOND CHANNEL PROVIDER -- the ledger must not be blind to a non-Telegram

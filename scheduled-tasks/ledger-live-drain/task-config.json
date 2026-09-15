@@ -4,5 +4,6 @@
   "enabled": true,
   "type": "heartbeat",
   "skipIfBusy": true,
+  "preCheck": "{{PROJECT_ROOT}}/scripts/hooks/ledger-live-drain-precheck.sh",
   "createdAt": 1787580000
 }
