@@ -32,6 +32,7 @@ import subprocess
 import tempfile
 import urllib.request
 import urllib.parse
+import urllib.error
 
 # api.telegram.org publishes an AAAA record that is not routable from every host, and
 # Python's urllib has no happy-eyeballs fallback: each fresh connection stalls on the
@@ -117,6 +118,79 @@ def transcribe(file_id, state_dir):
             pass
 
 
+
+class VoiceSendError(RuntimeError):
+    """sendVoice failed, and the message carries the reason the API gave.
+
+    e39b8f7b: the caller used to see only ``HTTP Error 400: Bad Request``,
+    because ``urlopen`` raises before anyone reads the response body -- and the
+    body is where Telegram puts ``description`` ("chat not found", "VOICE_
+    MESSAGES_FORBIDDEN", "file must be non-empty"). That string is the whole
+    diagnosis, and it was thrown away at the one place it existed.
+    """
+
+
+def _http_error_detail(err):
+    """Pull Telegram's own ``description`` out of a 4xx/5xx body.
+
+    The body is read ONCE (it is a stream) and every failure mode below falls
+    back to something still useful -- a diagnostic path that raises its own
+    exception would hide the very error it is reporting.
+
+    NOT included, deliberately: the request URL. It carries the bot token in the
+    path (``/bot<token>/sendVoice``), so putting it in a log line or an
+    exception message would leak the credential into places that get copied
+    around (kanban comments, inter-agent messages, CI output).
+    """
+    try:
+        raw = err.read()
+    except Exception:  # noqa: BLE001 - the stream may already be consumed/closed
+        raw = b""
+    text = raw.decode("utf-8", "replace").strip()
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict) and payload.get("description"):
+        return str(payload["description"])
+    if text:
+        # Not JSON (proxy/HTML error page): keep a bounded excerpt, not the lot.
+        return text[:300]
+    return "(the response had no body)"
+
+
+def _post_voice(token, chat_id, ogg):
+    """POST the ogg to sendVoice and return the parsed JSON answer.
+
+    Two guards, both from e39b8f7b:
+      * an EMPTY ogg is caught here, before the network call. Telegram answers a
+        zero-byte upload with a 400 whose text does not say "your file is
+        empty", so the useful error has to be produced on our side -- and the
+        call is skipped, not just annotated.
+      * a 4xx/5xx is turned into VoiceSendError carrying the API's description,
+        and the same line goes to stderr so it survives in the job log even if
+        the caller swallows the exception.
+    """
+    size = os.path.getsize(ogg)
+    if size <= 0:
+        raise VoiceSendError(
+            "the synthesized voice file is empty (0 bytes) -- not sending; "
+            "the TTS/ffmpeg step produced no audio"
+        )
+    b = "----fleetvoice"
+    fd = open(ogg, "rb").read()
+    body = (("--" + b + "\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n" + str(chat_id) + "\r\n").encode()
+            + ("--" + b + "\r\nContent-Disposition: form-data; name=\"voice\"; filename=\"v.ogg\"\r\nContent-Type: audio/ogg\r\n\r\n").encode()
+            + fd + b"\r\n" + ("--" + b + "--\r\n").encode())
+    req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendVoice", data=body)
+    req.add_header("Content-Type", "multipart/form-data; boundary=" + b)
+    try:
+        return json.load(urllib.request.urlopen(req, timeout=30))
+    except urllib.error.HTTPError as e:
+        detail = _http_error_detail(e)
+        print("sendVoice failed: HTTP %s -- %s" % (e.code, detail), file=sys.stderr)
+        raise VoiceSendError("sendVoice failed: HTTP %s -- %s" % (e.code, detail)) from e
+
 def speak(voice_onnx, state_dir, chat_id, text):
     token = _token(state_dir)
     fd_wav, wav = tempfile.mkstemp(suffix=".wav")
@@ -137,14 +211,7 @@ def speak(voice_onnx, state_dir, chat_id, text):
             af = ["-af", "asetrate=22050*%s,aresample=22050" % pitch]
         subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
                         "-i", wav, *af, "-c:a", "libopus", "-b:a", "32k", ogg], check=True)
-        b = "----fleetvoice"
-        fd = open(ogg, "rb").read()
-        body = (("--" + b + "\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n" + str(chat_id) + "\r\n").encode()
-                + ("--" + b + "\r\nContent-Disposition: form-data; name=\"voice\"; filename=\"v.ogg\"\r\nContent-Type: audio/ogg\r\n\r\n").encode()
-                + fd + b"\r\n" + ("--" + b + "--\r\n").encode())
-        req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendVoice", data=body)
-        req.add_header("Content-Type", "multipart/form-data; boundary=" + b)
-        r = json.load(urllib.request.urlopen(req, timeout=30))
+        r = _post_voice(token, chat_id, ogg)
         print("ok=%s id=%s" % (r.get("ok"), (r.get("result") or {}).get("message_id")))
     finally:
         for p in (wav, ogg):
