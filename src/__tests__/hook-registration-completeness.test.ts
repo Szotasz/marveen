@@ -51,6 +51,8 @@ const EXEMPT: Record<string, string> = {
     'unreferenced anywhere in the repo; dead code kept pending a maintainer decision to remove it',
   'telegram_fallback_send.py':
     'agent-invoked CLI (manual Bot API fallback sender, see scripts/lib/send-telegram.sh), not a settings hook; since #1305 the progress installer no longer copies or names it',
+  'channel-process-gate.py':
+    'scheduled/CLI gate (--only / --notify / --json), not a settings hook: it compares the channels a session DECLARES against the plugin processes actually alive under it, which is a periodic check rather than a per-tool-call one',
   'telegram-image-resize.sh':
     'legacy predecessor of channel-image-resize.sh; only its old installer migration path named it, and since #1305 that installer is a no-op stub -- kept pending a maintainer decision to remove it',
 }
