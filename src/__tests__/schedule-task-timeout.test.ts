@@ -338,4 +338,25 @@ describe('resolveStuckTimeoutMs: the threshold is per task', () => {
     expect(src).toMatch(/timeoutMs: entry\.timeoutMs,/)
     expect(src).toMatch(/timeoutMs: resolveStuckTimeoutMs\(task\),/)
   })
+
+  // Heartbeats must never reach the owner's Telegram from THIS alert path.
+  // Measured 2026-09-01: 40 timeout alerts landed on the owner's phone, 18 of
+  // them from `memoria-heartbeat` -- a task that is both `type: heartbeat` and
+  // `skipIfBusy: true`. This is the second time heartbeat noise had to be
+  // filtered out (2026-08-24 was the catch-up summary), hence a guard.
+  it('sendTaskTimeoutAlert bails out for heartbeat tasks (fix-revert guard)', () => {
+    const src = readFileSync(join(__dirname, '../web/schedule-runner.ts'), 'utf-8')
+    // The type must be captured on the entry at injection time...
+    expect(src).toMatch(/taskType: task\.type,/)
+    expect(src).toMatch(/taskType: string \| undefined/)
+    // ...and the alert must return before any network call when it is a heartbeat.
+    const fn = src.slice(src.indexOf('function sendTaskTimeoutAlert'))
+    const guardAt = fn.indexOf("entry.taskType === 'heartbeat'")
+    // Upstream made the alert channel-agnostic (sendTelegramMessage ->
+    // sendSchedulerAlertMessage); accept either so the guard outlives a rename.
+    const sendAt = Math.max(fn.indexOf('sendSchedulerAlertMessage'), fn.indexOf('sendTelegramMessage'))
+    expect(guardAt).toBeGreaterThan(-1)
+    expect(sendAt).toBeGreaterThan(-1)
+    expect(guardAt).toBeLessThan(sendAt)
+  })
 })
