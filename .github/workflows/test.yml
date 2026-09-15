@@ -53,6 +53,11 @@ jobs:
       # DASHAUDITZAJ915: the dash audit's classifier is a gate instrument too --
       # same rot argument as the line above.
       - run: python3 scripts/__tests__/dash-audit-scan.test.py
+      # ORSICTX912: the sentinel preCheck's SKIP is "no model turn" -- an
+      # error path that said SKIP would silence the community sentinel for
+      # good, so its fail-direction cases are gate instruments (hermetic:
+      # stubbed vault/supabase, throwaway dirs).
+      - run: python3 scripts/__tests__/mio-orszem-precheck.test.py
       # MEMLINKAUDIT915: the audit's own footer calls UNRESOLVED the repair
       # queue, so an over-report sends someone to rewrite working links. The
       # over-report GROWS with every consolidation round, which is why this

@@ -1833,7 +1833,13 @@ export function startScheduleRunner(): NodeJS.Timeout {
         scheduleLastRun.set(task.name, now)
         persistScheduleLastRun()
         for (const agentName of targetAgents) {
-          appendTaskRun(task.name, agentName, 'skipped')
+          // 'skipped-precheck', not plain 'skipped': a stall detector reading
+          // task_runs must be able to tell "the preCheck measured nothing to
+          // do" (a healthy quiet round -- the state file legitimately stays
+          // stale) from a busy/quota skip, which can just as well be masking
+          // a stuck agent. Same reason 'skipped-desktop-lock' is its own
+          // status; the run-history UI falls back to the raw string.
+          appendTaskRun(task.name, agentName, 'skipped-precheck')
         }
         continue
       }
