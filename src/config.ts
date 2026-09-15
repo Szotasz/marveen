@@ -431,3 +431,30 @@ export const SUBAGENT_TELEGRAM_WAKE_ENABLED =
 export const HEARTBEAT_CALENDAR_ACCOUNT = (cfg('HEARTBEAT_CALENDAR_ACCOUNT') ?? '').trim()
 export const HEARTBEAT_END_HOUR = parseInt(env['HEARTBEAT_END_HOUR'] ?? '23', 10)
 export const HEARTBEAT_CALENDAR_ID = (cfg('HEARTBEAT_CALENDAR_ID') ?? '').trim()
+
+// The embedding model is deliberately NOT tied to OLLAMA_URL or to the chat
+// model. agent-process.ts feeds OLLAMA_URL into ANTHROPIC_BASE_URL for
+// ollama-backed agents, and memories/connectors/migrate all call the NATIVE
+// ollama API on it -- five consumers in total -- so repointing that one key to
+// change the embedding endpoint drags four unrelated callers along with it.
+//
+// EMBED_DIMS implements Matryoshka truncation: slicing the native vector and
+// letting cosine renormalise. Measured on a 1073-memory corpus, vector-only
+// retrieval, 2026-08-12: 1024 dims held hit@5 at 83% while cutting the stored
+// vector text from 94 MB to ~24 MB and the per-search parse from 291 ms to
+// ~73 ms.
+//
+// Empty EMBED_URL = use OLLAMA_URL and EMBED_DIMS 0 = no truncation, so an
+// install that sets nothing keeps exactly the previous behaviour.
+export const EMBED_URL = cfg('EMBED_URL') || OLLAMA_URL
+export const EMBED_MODEL = cfg('EMBED_MODEL') ?? 'nomic-embed-text'
+const rawEmbedDims = parseInt(cfg('EMBED_DIMS') ?? '0', 10)
+export const EMBED_DIMS = Number.isFinite(rawEmbedDims) && rawEmbedDims > 0 ? rawEmbedDims : 0
+
+// The base URL an OLLAMA-CLASSED agent talks to is not the same thing as the
+// ollama API this install uses elsewhere. agent-process.ts only needs an
+// ANTHROPIC-compatible /v1/messages endpoint; the other four OLLAMA_URL
+// callers need the native ollama API (/api/tags, /api/generate), which an
+// Anthropic-compatible proxy does not serve at all. Empty = fall back to
+// OLLAMA_URL, so an install whose local agent really is ollama is unaffected.
+export const AGENT_LOCAL_BASE_URL = cfg('AGENT_LOCAL_BASE_URL') || OLLAMA_URL

@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync, statSync } from 'node:fs'
-import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from './config.js'
+import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ, EMBED_URL, EMBED_MODEL, EMBED_DIMS } from './config.js'
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
@@ -3372,25 +3372,32 @@ export function clearPendingTaskRetryOwnerAlert(taskName: string, agentName: str
     .run(taskName, agentName).changes > 0
 }
 
-// --- Vector Search (Ollama + nomic-embed-text) ---
-
-const EMBED_MODEL = 'nomic-embed-text'
+// --- Vector Search (Ollama, model + endpoint configurable) ---
+// The model and endpoint come from config (EMBED_MODEL / EMBED_URL /
+// EMBED_DIMS) instead of a hardcoded literal; see the rationale block in
+// config.ts. Defaults reproduce the previous behaviour exactly.
 
 export async function generateEmbedding(text: string): Promise<number[] | null> {
   try {
-    const resp = await fetch(`${OLLAMA_URL}/api/embeddings`, {
+    const resp = await fetch(`${EMBED_URL}/api/embeddings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: EMBED_MODEL, prompt: text.slice(0, 2000) }),
       signal: AbortSignal.timeout(TOOL_TIMEOUTS['ollama-embedding']),
     })
     const data = await resp.json() as { embedding?: number[] }
-    return data.embedding || null
+    if (!data.embedding || data.embedding.length === 0) return null
+    // Matryoshka truncation. Only ever CUT, never pad: slicing a vector that is
+    // already shorter than EMBED_DIMS would silently store a dimension that
+    // does not match what the model produces.
+    return EMBED_DIMS > 0 && data.embedding.length > EMBED_DIMS
+      ? data.embedding.slice(0, EMBED_DIMS)
+      : data.embedding
   } catch (err) {
     // Debug-level so it doesn't spam default INFO logs when Ollama isn't
     // running (the common case on most user machines). Enables "why does
     // hybrid search only return FTS results?" diagnostics without noise.
-    logger.debug({ err, ollamaUrl: OLLAMA_URL }, 'Embedding generation failed (Ollama not running?)')
+    logger.debug({ err, embedUrl: EMBED_URL, embedModel: EMBED_MODEL }, 'Embedding generation failed (Ollama not running?)')
     return null
   }
 }
@@ -3410,12 +3417,19 @@ function vectorSearch(agentId: string, queryEmbedding: number[], limit: number =
     "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared')"
   ).all(agentId) as Memory[]
 
-  const scored = rows.map(m => {
+  // A vector written by a DIFFERENT model has a different length, and the
+  // cosine loop walks the QUERY's length: the missing entries read as undefined
+  // and the score comes back NaN. NaN compares false against everything, so it
+  // neither sorts to the top nor raises -- the search quietly returns junk.
+  // Drop the mismatches instead, so a half-migrated table degrades to "fewer
+  // results" rather than "wrong results".
+  const scored = rows.flatMap(m => {
     try {
       const emb = JSON.parse(m.embedding!) as number[]
-      return { memory: m, score: cosineSimilarity(queryEmbedding, emb) }
+      if (emb.length !== queryEmbedding.length) return []
+      return [{ memory: m, score: cosineSimilarity(queryEmbedding, emb) }]
     } catch {
-      return { memory: m, score: 0 }
+      return [{ memory: m, score: 0 }]
     }
   })
 

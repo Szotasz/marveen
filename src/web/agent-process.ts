@@ -2,7 +2,7 @@ import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatS
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { execFileSync } from 'node:child_process'
-import { OLLAMA_URL } from '../config.js'
+import { AGENT_LOCAL_BASE_URL } from '../config.js'
 import { makeLazyBinResolver } from '../platform.js'
 import { logger } from '../logger.js'
 import {
@@ -1163,7 +1163,12 @@ export function resolveProviderEnv(
   if (isOllama) {
     return {
       provider: 'ollama',
-      exportsStr: `export ANTHROPIC_AUTH_TOKEN=ollama && export ANTHROPIC_BASE_URL=${OLLAMA_URL} && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+      // AGENT_LOCAL_BASE_URL, not OLLAMA_URL: this endpoint only has to speak
+      // the Anthropic /v1/messages shape, while OLLAMA_URL's other callers need
+      // the native ollama API. Empty AGENT_LOCAL_BASE_URL falls back to
+      // OLLAMA_URL, so nothing changes for an install whose local agent really
+      // is ollama.
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=ollama && export ANTHROPIC_BASE_URL=${AGENT_LOCAL_BASE_URL} && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
     }
   }
   return { provider: 'claude', exportsStr: '' }
