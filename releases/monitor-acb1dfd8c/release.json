@@ -1,0 +1,13 @@
+{
+  "releaseId": "monitor-acb1dfd8c",
+  "commit": "acb1dfd8ccb333f30a6091e18eb32a5045e0b584",
+  "installedAt": "2026-08-01T20:51:21Z",
+  "builtFrom": "scripts/install-monitor.sh",
+  "files": [
+    "memory-pressure-monitor.js",
+    "memory-pressure-types.js",
+    "memory-pressure-gate.js",
+    "memory-pressure-health.js",
+    "list-agent-rss.sh"
+  ]
+}
