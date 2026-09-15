@@ -278,7 +278,11 @@ Respond ONLY with JSON, nothing else:
   if (memUpdateMatch && (method === 'PUT' || method === 'PATCH')) {
     const id = parseInt(memUpdateMatch[1], 10)
     const body = await readBody(req)
-    const { content, category, tier, agent_id, keywords } = JSON.parse(body.toString()) as { content?: string; category?: string; tier?: string; agent_id?: string; keywords?: string }
+    // MEMIRASNYOM915: updated_by is the writer's self-reported identity for
+    // the write-trace. It is distinct from agent_id, which means "reassign
+    // the row to this agent" -- an editor updating someone else's memory
+    // attributes the WRITE without changing the OWNER.
+    const { content, category, tier, agent_id, keywords, updated_by } = JSON.parse(body.toString()) as { content?: string; category?: string; tier?: string; agent_id?: string; keywords?: string; updated_by?: string }
     const newCategory = (tier || category || '').toLowerCase() || undefined
     if (newCategory && !MEMORY_CATEGORIES.has(newCategory)) {
       json(res, { error: `Invalid category "${newCategory}". Allowed: ${[...MEMORY_CATEGORIES].join(', ')}` }, 400)
@@ -298,7 +302,7 @@ Respond ONLY with JSON, nothing else:
       json(res, { error: 'Content rejected by security filter' }, 400)
       return true
     }
-    if (updateMemory(id, effectiveContent, newCategory, agent_id, keywords)) { json(res, { ok: true }); return true }
+    if (updateMemory(id, effectiveContent, newCategory, agent_id, keywords, updated_by)) { json(res, { ok: true }); return true }
     json(res, { error: 'Memory not found' }, 404)
     return true
   }
