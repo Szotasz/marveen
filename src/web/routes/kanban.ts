@@ -114,6 +114,16 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     `    -H 'Content-Type: application/json' \\`,
     `    -d '{"status":"done","actor":"${target}"}'`,
     '',
+    // `done` is right for almost every card, so this template keeps it as the
+    // default -- but not for every board PROGRAM. A program can give its cards
+    // their own closing status (for example a review status, so the delegator
+    // checks the work before the card closes), and that rule lives in the CARD
+    // text. Two rules, no stated ranking: an agent either spends a round
+    // deciding which one wins, or (worse) quietly follows this template and the
+    // work closes unreviewed. One sentence fixes it; swapping the default
+    // globally would break the close everywhere else.
+    'Ha a KÁRTYA SZÖVEGE más záró-státuszt ír elő (például `testing`, hogy a delegálód átnézze a munkát), AZ az irányadó: a kártya program-specifikus szabálya erősebb ennél a sablonnál. Ilyenkor a fenti hívásban a "done" helyére azt a státuszt írd, az "actor" mezőt ugyanúgy küldve. Ha a kártya nem ír elő mást, a "done" az alapértelmezés.',
+    '',
     // The "actor" field is not decoration: it is what tells the board WHO moved
     // the card. Without it a self-pickup (agent -> in_progress on its own card)
     // is indistinguishable from an assignment, and the dispatcher echoes the
