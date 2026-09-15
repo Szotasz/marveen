@@ -65,7 +65,8 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { runCommandTask } from './command-task.js'
 import { decideQuotaAction, type QuotaWorkClass } from '../quota-gate.js'
 import { readQuotaSnapshot } from '../quota-snapshot.js'
-import { detectsFirstRunGate, detectPaneState, type PaneState } from '../pane-state.js'
+import { detectsFirstRunGate, detectPaneState, overfullParkedInputTail, type PaneState } from '../pane-state.js'
+import { getInjectedPrompt, matchesInjectedPrompt, type InjectedPromptRecord } from './injected-prompt-registry.js'
 import { withSessionSendLock } from './session-send-lock.js'
 
 // How many bare-Enter attempts the post-send resubmit tries before escalating
@@ -170,6 +171,10 @@ export interface TaskInflightEntry {
   // re-send (SCHEDLOST915: kanban-audit 2026-09-15, delivered twice, the second
   // copy with spliced sentences).
   deliveryPending: boolean
+  // Set once the sweep has pressed its single recovery Enter for a prompt parked
+  // in an overfull input box, so a second 'lost' verdict on this entry takes the
+  // ordinary lost path instead of Enter-looping.
+  parkedEnterSent?: boolean
 }
 
 // How long a fired task may stay busy before the watchdog calls it stuck.
@@ -405,6 +410,18 @@ export function isScheduledPromptStuck(pane: string | null, marker: string): boo
   if (idx < 0) return false
   const inputRegion = pane.slice(idx)
   return /❯\s+\S/.test(inputRegion) && inputRegion.includes(marker)
+}
+
+// isScheduledPromptStuck's blind spot: a prompt taller than the pane. The ❯
+// glyph and the marker scroll off the capture with the box's top, so the
+// check above reads "not parked" while our prompt sits unsent (SCHEDLOST915,
+// see overfullParkedInputTail). The visible tail must match what this process
+// typed into the pane (injected-prompt registry) -- that match, not the shape,
+// is what makes a recovery Enter safe: it can only submit our own text, never
+// a human draft or someone else's message.
+export function isOwnPromptParkedOverfull(pane: string | null, record: InjectedPromptRecord | null): boolean {
+  if (!pane) return false
+  return matchesInjectedPrompt(overfullParkedInputTail(pane), record)
 }
 
 // --- Schedule Runner ---
@@ -1112,6 +1129,7 @@ async function attemptFireTask(
           // Enter hit the laptop session, not a (nonexistent) local one.
           const pane = capturePane(session, host)
           const stuck = isScheduledPromptStuck(pane, marker)
+            || isOwnPromptParkedOverfull(pane, getInjectedPrompt(session))
           const action = decideScheduledResubmitAction(attempt, stuck)
           if (action === 'none') return 'done'
           if (action === 'giveup') {
@@ -1735,6 +1753,23 @@ export function startScheduleRunner(): NodeJS.Timeout {
       } else if (decision === 'escalate') {
         sendTaskTimeoutAlert(entry, now - entry.injectedAt)
         entry.ownerAlerted = true
+      } else if (decision === 'lost' && !entry.parkedEnterSent && isOwnPromptParkedOverfull(pane, getInjectedPrompt(entry.session))) {
+        // Not lost: our prompt is parked in a box taller than the pane, where
+        // every idle probe is blind (SCHEDLOST915). Re-queueing here typed the
+        // redelivery ON TOP of the parked copy and the round later ran with the
+        // prompt twice. One Enter submits it (settled bare Enter recovered 3/3
+        // parked rounds in the reproduction). Once per entry: if it still has
+        // not started a turn by the next sweep, the ordinary lost path runs.
+        entry.parkedEnterSent = true
+        const res = await withSessionSendLock(entry.session, entry.host, 'recover', async (): Promise<boolean> => {
+          const fresh = capturePane(entry.session, entry.host)
+          if (!isOwnPromptParkedOverfull(fresh, getInjectedPrompt(entry.session))) return false
+          return sendEnterToSession(entry.session, entry.host)
+        })
+        logger.warn(
+          { task: entry.taskName, agent: entry.agentName, session: entry.session, elapsedMs: now - entry.injectedAt, entered: res.ran ? res.value : false },
+          'Scheduled prompt parked in an overfull input box -- pressed Enter instead of recording lost',
+        )
       } else if (decision === 'lost') {
         // The prompt was typed into a session that never acted on it. Undo the
         // success bookkeeping: overwrite the run record and drop the lastRun

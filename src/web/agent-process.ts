@@ -2728,6 +2728,15 @@ export async function sendPromptToSession(
       i = end
       if (i < oneLine.length) await delay(30)
     }
+    // A multi-chunk prompt gets its Enter only once the TUI has stopped
+    // redrawing. Sent straight after the last chunk, the Enter races the
+    // TUI still ingesting the burst and is dropped: measured 2026-09-15
+    // (SCHEDLOST915) on Claude Code 2.1.110, 80x24 pane, 6735-char scheduled
+    // prompt -- immediate Enter submitted 3/6 rounds, settle-then-Enter 6/6.
+    // The parked copy was invisible to the retry loop below (the box was
+    // taller than the pane, see overfullParkedInputTail), so nothing
+    // re-pressed it. Single-chunk prompts keep the immediate Enter.
+    if (oneLine.length > CHUNK) await waitForPaneSettle(() => capturePane(session, host))
     runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
   }
   await sendChunks()
@@ -2836,6 +2845,30 @@ export function sendEnterToSession(session: string, host: string | null = null):
 
 // Capture a pane snapshot with an execSync timeout. Null on any error so
 // the caller can treat "capture failed" as "not ready".
+// Resolve once two consecutive captures `pollMs` apart are identical (true), or
+// after `maxMs` of continuous change (false; the caller proceeds anyway, as it
+// did before this wait existed). A null capture never counts as settled.
+// Capture, sleep and clock are injectable so the loop is unit-tested without
+// tmux or real time.
+export async function waitForPaneSettle(
+  capture: () => string | null,
+  opts: { pollMs?: number; maxMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number } = {},
+): Promise<boolean> {
+  const pollMs = opts.pollMs ?? 250
+  const maxMs = opts.maxMs ?? 5000
+  const sleep = opts.sleep ?? delay
+  const now = opts.now ?? Date.now
+  const deadline = now() + maxMs
+  let prev = capture()
+  while (now() < deadline) {
+    await sleep(pollMs)
+    const cur = capture()
+    if (cur != null && cur === prev) return true
+    prev = cur
+  }
+  return false
+}
+
 export function capturePane(session: string, host: string | null = null): string | null {
   try {
     // Capture WITH colour, strip a trailing /rename session-title banner, then
