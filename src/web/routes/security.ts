@@ -16,6 +16,7 @@ import { logger } from '../../logger.js'
 import { logConfigChange } from '../../db.js'
 import { notifySecurityEvent } from '../../notify.js'
 import { bridgeEnroll, sshDirOverride, RemoteEnrollError } from '../bridge-enroll.js'
+import { isSshDirGuardError } from '../../ssh-dir.js'
 import { checkEnrollHost } from '../../remote-enroll-core.js'
 import { isIP } from 'node:net'
 import type { RouteContext } from './types.js'
@@ -116,6 +117,20 @@ export async function tryHandleSecurity(ctx: RouteContext): Promise<boolean> {
   } catch (err) {
     if (err instanceof RemoteEnrollError) {
       json(res, { error: err.message, code: err.code, params: err.params }, 400)
+      return true
+    }
+    if (isSshDirGuardError(err)) {
+      // The only 500 on this route with a specific, actionable cause: a test
+      // signal (VITEST / NODE_ENV=test) reached a LIVE install, so the ENROLL813
+      // guard refused to touch authorized_keys. Its full diagnostic names the
+      // operator's real home directory, so that text stays in the log -- but the
+      // CODE goes on the wire, or the operator sees a bare "Enrollment failed"
+      // with nothing to search for. Own code, hence own translation
+      // (auth.bridge.err.enroll813 in web/lang/{hu,en}.js): this route's codes
+      // carry a coverage contract, checked by bridge-pairing-i18n.test.ts, and a
+      // code without a message is how the pairing UI fell back to English before.
+      logger.error({ err }, 'bridge enroll refused by the ENROLL813 ssh-dir guard')
+      json(res, { error: 'Enrollment failed', code: 'enroll813' }, 500)
       return true
     }
     logger.error({ err }, 'bridge enroll failed')

@@ -1881,5 +1881,6 @@ window._i18n.en = {
   'auth.bridge.err.invalid_name':                'The device name may be 1-64 characters: letters, digits, space, and . _ -',
   'auth.bridge.err.invalid_ssh_port':            'The SSH port must be a number between 1 and 65535.',
   'auth.bridge.err.enroll_failed':               'Pairing failed. Check the dashboard log and try again.',
+  'auth.bridge.err.enroll813':                   'Pairing stopped at a safety check: this install looks like a test environment (VITEST or NODE_ENV=test), so authorized_keys was left untouched. Remove the test signal from the service environment, then try again.',
 
 }

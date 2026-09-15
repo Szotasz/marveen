@@ -1883,5 +1883,6 @@ window._i18n.hu = {
   'auth.bridge.err.invalid_name':                'Az eszköz neve 1-64 karakter lehet: betű, számjegy, szóköz, valamint a . _ - jelek.',
   'auth.bridge.err.invalid_ssh_port':            'Az SSH-port 1 és 65535 közötti szám lehet.',
   'auth.bridge.err.enroll_failed':               'A párosítás nem sikerült. Nézd meg a dashboard naplóját, és próbáld újra.',
+  'auth.bridge.err.enroll813':                   'A párosítás egy biztonsági ellenőrzésen állt meg: ez a telepítés teszt-környezetnek látszik (VITEST vagy NODE_ENV=test), ezért a rendszer hozzá sem nyúlt az authorized_keys fájlhoz. Vedd ki a teszt-jelzést a szolgáltatás környezetéből, majd próbáld újra.',
 
 }
