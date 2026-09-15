@@ -139,6 +139,28 @@ TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || echo)"
 BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo ismeretlen)"
 case "$BRANCH" in develop|main|master) exit 0 ;; esac
 [ "${MARVEEN_PROD_CHECKOUT_OK:-0}" = "1" ] && exit 0
+# A rebase's (merge/cherry-pick/bisect's) FIRST step is a checkout to detached
+# HEAD -- abbrev-ref reports the literal string "HEAD", which matches nothing
+# in the case above, so an in-progress operation hit this guard mid-flight and
+# got auto-reverted to the home branch, pulling the tree out from under the
+# very operation that just checked it out (msg 3042-3045: four rebase attempts,
+# always "index contains uncommitted changes" from a provably clean index --
+# the index was fine, the tree under it had just been yanked back to main).
+# The guard's job is to catch an UNNOTICED switch, not to interrupt a running
+# multi-step git operation -- detect one and skip the revert, but still alert.
+GIT_DIR_CUR="$(git rev-parse --git-dir 2>/dev/null || echo)"
+OP=""
+if [ -n "$GIT_DIR_CUR" ]; then
+  if [ -d "$GIT_DIR_CUR/rebase-merge" ] || [ -d "$GIT_DIR_CUR/rebase-apply" ]; then
+    OP="rebase"
+  elif [ -f "$GIT_DIR_CUR/CHERRY_PICK_HEAD" ]; then
+    OP="cherry-pick"
+  elif [ -f "$GIT_DIR_CUR/MERGE_HEAD" ]; then
+    OP="merge"
+  elif [ -f "$GIT_DIR_CUR/BISECT_LOG" ]; then
+    OP="bisect"
+  fi
+fi
 # Revert target: the deployment's default branch, derived, not assumed.
 HOME_BRANCH=""
 for b in develop main master; do
@@ -151,7 +173,9 @@ done
 # fire (measured 2026-08-22). Recursion is self-limiting: the revert lands on
 # the home branch, where this hook exits at the case-guard above.
 REVERTED="nem"
-if [ -z "$HOME_BRANCH" ]; then
+if [ -n "$OP" ]; then
+  REVERTED="nem (folyamatban levo git-muvelet: $OP -- a guard nem szakitja meg)"
+elif [ -z "$HOME_BRANCH" ]; then
   REVERTED="nem (nincs develop/main/master ag)"
 elif [ -z "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
   if git checkout "$HOME_BRANCH" -q 2>/dev/null; then
