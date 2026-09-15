@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { decideTaskTimeout, resolveStuckTimeoutMs, TASK_FIRE_GRACE_MS, TASK_FIRE_TIMEOUT_MS } from '../web/schedule-runner.js'
+import {
+  decideTaskTimeout,
+  decideLostRedeliveryAction,
+  MAX_LOST_REDELIVERIES,
+  resolveStuckTimeoutMs,
+  TASK_FIRE_GRACE_MS,
+  TASK_FIRE_TIMEOUT_MS,
+} from '../web/schedule-runner.js'
 import type { TaskInflightEntry } from '../web/schedule-runner.js'
 import { OWNER_ESCALATION_EXTRA_MS } from '../pending-retries.js'
 
@@ -145,6 +152,23 @@ describe('decideTaskTimeout: injection that never started a turn', () => {
     const entry = makeEntry({ injectedAt: 0, sawTurn: false })
     const now = TIMEOUT + 1
     expect(decideTaskTimeout(entry, 'busy', now, BASE_OPTS)).toBe('alert')
+  })
+
+  // SCHEDLOST915: the resubmit chain was still clearing a paste placeholder
+  // when the sweep called 'lost' and queued a second copy on top of it.
+  it('holds past grace while the post-send resubmit chain still owns the delivery', () => {
+    const entry = { ...makeEntry({ injectedAt: 0, sawTurn: false }), deliveryPending: true }
+    expect(decideTaskTimeout(entry, 'idle', GRACE + 15_000, BASE_OPTS)).toBe('hold')
+  })
+
+  it('reports lost again once the resubmit chain has ended', () => {
+    const entry = { ...makeEntry({ injectedAt: 0, sawTurn: false }), deliveryPending: false }
+    expect(decideTaskTimeout(entry, 'idle', GRACE + 15_000, BASE_OPTS)).toBe('lost')
+  })
+
+  it('a pending delivery does not outlive max tracking age', () => {
+    const entry = { ...makeEntry({ injectedAt: 0, sawTurn: false }), deliveryPending: true }
+    expect(decideTaskTimeout(entry, 'idle', MAX_TRACK + 1, BASE_OPTS)).toBe('abandoned')
   })
 })
 
@@ -358,5 +382,119 @@ describe('resolveStuckTimeoutMs: the threshold is per task', () => {
     expect(guardAt).toBeGreaterThan(-1)
     expect(sendAt).toBeGreaterThan(-1)
     expect(guardAt).toBeLessThan(sendAt)
+  })
+})
+
+// --- Bounded 'lost' redelivery ---
+//
+// Regression guard for an unbounded self-refire loop, measured live
+// 2026-09-12 on the main channels agent: 'lost' used to always drop the
+// scheduleLastRun stamp and enqueue a fresh retry with no memory of how many
+// times this exact occurrence had already been declared lost. The main
+// agent's transcript-mtime evidence was blind (see the configDir fix in
+// schedule-runner.ts, which reuses agent-process.ts's
+// mainAgentConfigDirIfSeparate), so sawTurn depended entirely on catching the
+// pane 'busy' in a snapshot -- any sweep that missed a fast heartbeat's busy
+// window declared it 'lost' and re-delivered, every ~30s (TASK_FIRE_GRACE_MS),
+// indefinitely. Even with correct evidence a single retry is worth keeping (a
+// sweep can still land inside the grace window by bad luck), but past
+// MAX_LOST_REDELIVERIES the sweep must give up instead of looping forever.
+describe('decideLostRedeliveryAction: bounded lost-injection redelivery', () => {
+  it('retries on the first lost verdict (zero prior attempts)', () => {
+    expect(decideLostRedeliveryAction(0)).toBe('retry')
+  })
+
+  it('gives up once prior attempts reach the cap', () => {
+    expect(decideLostRedeliveryAction(MAX_LOST_REDELIVERIES)).toBe('giveup')
+  })
+
+  it('never returns "retry" past the cap, however high prior attempts climb', () => {
+    expect(decideLostRedeliveryAction(MAX_LOST_REDELIVERIES + 5)).toBe('giveup')
+  })
+
+  it('honours an explicit cap override rather than the module default', () => {
+    expect(decideLostRedeliveryAction(0, 3)).toBe('retry')
+    expect(decideLostRedeliveryAction(2, 3)).toBe('retry')
+    expect(decideLostRedeliveryAction(3, 3)).toBe('giveup')
+  })
+
+  it('the default cap is a small positive number, not accidentally 0 or unbounded', () => {
+    // A cap of 0 would give up on the very first 'lost' verdict (no retry ever
+    // survives a single blind sweep); this constant is a deliberate policy
+    // choice, not a stray default, so pin it against silent drift in either
+    // direction.
+    expect(MAX_LOST_REDELIVERIES).toBeGreaterThan(0)
+    expect(MAX_LOST_REDELIVERIES).toBeLessThanOrEqual(3)
+  })
+})
+
+// --- Wiring: the sweep's 'lost' branch actually consults the cap ---
+//
+// decideLostRedeliveryAction is pure and covered above; these guard that the
+// imperative sweep (which owns the in-memory attempt counter and cannot be
+// unit-tested without a full tmux/DB harness) is actually wired to it, the
+// same source-text-guard style already used for the per-task-threshold fix
+// above and for the main-agent-missing branch in
+// schedule-runner-main-agent-missing.test.ts.
+describe('lost-redelivery wiring in the watchdog sweep', () => {
+  const SRC = readFileSync(join(__dirname, '../web/schedule-runner.ts'), 'utf-8')
+  const lostBranchIdx = SRC.indexOf("} else if (decision === 'lost') {")
+  const doneBranchIdx = SRC.indexOf("if (decision === 'done' || decision === 'abandoned') {")
+
+  it('the lost branch consults decideLostRedeliveryAction before re-queueing', () => {
+    expect(lostBranchIdx).toBeGreaterThan(0)
+    const lostBranch = SRC.slice(lostBranchIdx, lostBranchIdx + 3600)
+    expect(lostBranch).toMatch(/decideLostRedeliveryAction\(priorAttempts\)/)
+  })
+
+  it("give-up records 'lost-giveup' and does NOT enqueue another pending retry", () => {
+    const lostBranch = SRC.slice(lostBranchIdx, lostBranchIdx + 3600)
+    const giveupIdx = lostBranch.indexOf("=== 'giveup'")
+    expect(giveupIdx).toBeGreaterThan(0)
+    const giveupBlock = lostBranch.slice(giveupIdx, lostBranch.indexOf('} else {', giveupIdx))
+    expect(giveupBlock).toMatch(/'lost-giveup'/)
+    expect(giveupBlock).toMatch(/sendLostRedeliveryGiveUpNotice/)
+    expect(giveupBlock).not.toMatch(/insertPendingTaskRetryIfNew/)
+  })
+
+  it('a plain retry (not yet at the cap) still enqueues the pending retry, unchanged from before', () => {
+    const lostBranch = SRC.slice(lostBranchIdx, lostBranchIdx + 3600)
+    const elseIdx = lostBranch.indexOf('} else {')
+    const retryBlock = lostBranch.slice(elseIdx, lostBranch.indexOf('}', elseIdx + 8))
+    expect(retryBlock).toMatch(/insertPendingTaskRetryIfNew\(entry\.taskName, entry\.agentName, now, 'lost-injection'\)/)
+  })
+
+  it('done only forgets the attempt count on genuine success, not on max-track abandonment', () => {
+    expect(doneBranchIdx).toBeGreaterThan(0)
+    expect(doneBranchIdx).toBeLessThan(lostBranchIdx)
+    const doneBlock = SRC.slice(doneBranchIdx, SRC.indexOf("} else if (decision === 'alert')", doneBranchIdx))
+    // The delete must be conditioned on decision === 'done' specifically -- an
+    // 'abandoned' entry never proved a turn happened, so the next occurrence of
+    // the same task@agent must not start over with a fresh budget on a session
+    // that may still be silently swallowing prompts.
+    expect(doneBlock).toMatch(/if \(decision === 'done'\) \{\s*\n\s*lostRedeliveryCounts\.delete/)
+  })
+})
+
+// SCHEDLOST915 wiring: the grace window starts at submit, and every exit of the
+// resubmit chain ends the delivery phase (otherwise a pending flag stuck at
+// true would turn every real loss into a silent hold until max-track age).
+describe('in-flight registration wiring', () => {
+  const SRC = readFileSync(join(__dirname, '../web/schedule-runner.ts'), 'utf-8')
+
+  it('injectedAt is the submit time, not the tick start', () => {
+    const sendIdx = SRC.indexOf('await sendPromptToSession(session, fullPrompt, host, { waitForIdle: !task.forceSend })')
+    const stampIdx = SRC.indexOf('const submittedAt = Date.now()')
+    expect(sendIdx).toBeGreaterThan(0)
+    expect(stampIdx).toBeGreaterThan(sendIdx)
+    expect(SRC).toMatch(/injectedAt: submittedAt,/)
+    expect(SRC).not.toMatch(/injectedAt: now,/)
+  })
+
+  it('registers the entry with deliveryPending and clears it on every resubmit exit', () => {
+    expect(SRC).toMatch(/deliveryPending: true,\s*\n\s*\}\s*\n\s*taskInflightMap\.set/)
+    expect(SRC).toMatch(/if \(res\.value === 'done'\) \{ endDelivery\(\); return \}/)
+    expect(SRC).toMatch(/'lane-busy'\)\s*\n\s*endDelivery\(\)\s*\n\s*return/)
+    expect(SRC).toMatch(/'Post-send resubmit failed'\)\s*\n\s*endDelivery\(\)/)
   })
 })
