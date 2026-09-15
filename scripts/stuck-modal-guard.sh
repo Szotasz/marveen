@@ -38,6 +38,11 @@
 set -u
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+# PORTSTAT912: mtime must not be spelled `stat -c %Y` (GNU-only). On macOS that
+# exits non-zero and the old `|| echo 0` turned a fresh file into an infinitely
+# old one -- which tips every grace/staleness gate below to the permissive side.
+. "$INSTALL_DIR/scripts/lib/portable-stat.sh"
 STORE="${STUCK_MODAL_STATE_DIR:-$INSTALL_DIR/store}"
 FIRSTSEEN_STAMP="$STORE/.stuck-modal-firstseen"
 RESPAWN_STAMP="$STORE/.channel-last-respawn"           # SHARED with channel-watchdog.sh
@@ -235,7 +240,7 @@ run_guard() {
   fi
 
   if [ -f "$RESPAWN_STAMP" ]; then
-    local last; last="$(stat -c %Y "$RESPAWN_STAMP" 2>/dev/null || echo 0)"
+    local last; last="$(file_mtime "$RESPAWN_STAMP")"
     if [ $(( now - last )) -lt "$GRACE_SECONDS" ]; then
       log "Escape failed but a respawn happened $(( now - last ))s ago (< grace) -- deferring"
       return 0
@@ -245,7 +250,7 @@ run_guard() {
   case "$count" in (*[!0-9]*|'') count=0;; esac
   if [ "$count" -ge "$MAX_CONSECUTIVE" ]; then
     log "ALERT: stuck modal after $count respawns -- backing off, manual check needed"
-    local bstamp=0; [ -f "$BACKOFF_STAMP" ] && bstamp="$(stat -c %Y "$BACKOFF_STAMP" 2>/dev/null || echo 0)"
+    local bstamp=0; [ -f "$BACKOFF_STAMP" ] && bstamp="$(file_mtime "$BACKOFF_STAMP")"
     if [ $(( now - bstamp )) -ge 3600 ]; then
       # Backoff stamp ONLY on confirmed delivery (NOTIFYVAKSWEEP826): this is
       # the "your messages may be lost, resend" alert -- burying its own
