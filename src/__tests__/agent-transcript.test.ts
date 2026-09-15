@@ -87,6 +87,18 @@ describe('maskSecrets', () => {
     expect(out).toContain('cat id_rsa')
   })
 
+  // Review condition on #1095 (2026-09-14), found by running THIS function
+  // against fake values. The env-var form is the one that matters: written as a
+  // sentence (`a token sbp_...`) the labelled pass masks it by accident, so a
+  // sentence-shaped test stays green even with the pattern broken.
+  // `SUPABASE_ACCESS_TOKEN=` ends in an underscore, so `\btoken` does not match.
+  it('redacts a Supabase PAT in its environment-variable form', () => {
+    const pat = `sbp_${'0123456789abcdef0123456789abcdef01234567'}`
+    const out = maskSecrets(`export SUPABASE_ACCESS_TOKEN="${pat}"`)
+    expect(out).not.toContain(pat)
+    expect(out).toContain('SUPABASE_ACCESS_TOKEN')
+  })
+
   // Guard against the adaptation itself: SECRET_PATTERNS entries are
   // single-match, so a non-global copy would mask only the FIRST occurrence.
   it('redacts every occurrence, not just the first', () => {

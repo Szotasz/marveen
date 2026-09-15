@@ -85,6 +85,21 @@ export const SECRET_PATTERNS: { name: string; pattern: RegExp }[] = [
   { name: 'generic vendor secret key (sk_ or sk-)', pattern: /\bsk[-_][A-Za-z0-9_-]{24,}/ },
   { name: 'AWS access key id', pattern: /\bAKIA[0-9A-Z]{16}\b/ },
   { name: 'Supabase service_role JWT hint', pattern: /service_role["'\s:=]+eyJ/ },
+  // Review condition on #1095 (2026-09-14). Found by running this repo's own
+  // maskSecrets() against fake values: in a SENTENCE (`a token sbp_...`) the
+  // labelled pass caught it by accident, but in its real environment-variable
+  // form the `\btoken` word boundary does not match -- `SUPABASE_ACCESS_TOKEN=`
+  // ends in an underscore -- so the shape walked through. A sentence-shaped test
+  // would be green either way; the env form is the one that proves the pattern.
+  //
+  // NOT global, unlike the line as suggested in review. These entries are used
+  // as `pattern.exec(text)` once per file (runGate -> inputs.flatMap(scanFile))
+  // on these very objects, and a /g regex carries `lastIndex` between calls:
+  // file 1 matches, file 2 resumes past the end and returns null. That is a
+  // false negative, the one failure mode a gate must not have -- and it is
+  // pinned by a test below. The mask needs every occurrence and adds the flag
+  // itself (agent-transcript.ts), so globality belongs there, not here.
+  { name: 'Supabase PAT', pattern: /\bsbp_[0-9a-f]{40}\b/ },
 ];
 
 /**
