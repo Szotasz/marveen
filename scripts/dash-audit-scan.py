@@ -48,7 +48,10 @@ import re
 import subprocess
 import sys
 
-EM_DASH = '—'
+# A konvencio KOD-szabalya sajat magara is all: a szkenner a kodpont-alakot
+# hasznalja, kulonben az eszkoz a sajat forrasat jelentene bare-doc leletkent
+# (es egy --gate futas sosem lehetne zold a sajat instrumentuma miatt).
+EM_DASH = '\u2014'
 MARKER_RX = re.compile(r'dash-audit:\s*literal\s+indokolt', re.I)
 TEST_PATH_RX = re.compile(r'(^|/)__tests__/|\.test\.|_test\.|(^|/)tests?/')
 # Vendor/harness: not ours to fix, and counting it makes the number lie about
