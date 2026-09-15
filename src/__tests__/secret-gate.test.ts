@@ -109,6 +109,52 @@ describe('detector 2: content', () => {
   });
 });
 
+describe('detector 2b: Telegram bot token (TGBOTPAT915)', () => {
+  // Osszerakva futasidoben, mint a tobbi szintetikus titok ebben a fajlban.
+  const botId = '80' + '12345678';
+  const secret = 'AAHd9xKpQ2mWvZ7nR4tLbY' + '6cE1sJfG3hUiO'; // 35 karakter
+  const full = `${botId}:${secret}`;
+
+  it('fogja a TELJES tokent -- ez ment at a keszleten 2026-09-15-ig', () => {
+    const hits = scanFile(f('docs/x.md', `token: ${full}`));
+    expect(hits.length).toBeGreaterThan(0);
+  });
+
+  it('fogja az env-sor alakot, ahogy egy .env-ben allna', () => {
+    const hits = scanFile(f('docs/x.md', `TELEGRAM_BOT_TOKEN=${full}`));
+    expect(hits.length).toBeGreaterThan(0);
+  });
+
+  it('fogja a titkos felet is, HA van mellette kulcs-nev', () => {
+    const hits = scanFile(f('docs/x.md', `bot_token: ${secret}`));
+    expect(hits.length).toBeGreaterThan(0);
+  });
+
+  it('KIMONDOTT HATAR: a titkos fel KONTEXTUS NELKUL nem lelet', () => {
+    // Szandekos: egy csupasz 35 karakteres alnum sztring a base64-darabok es a
+    // minified valtozonevek alakja is. A kontextus nelkuli felismerest az
+    // ALAK-alapu detektor viszi (OCR-ut, Iris), nem ez a keszlet -- a ketto
+    // egyutt fedez, es egyik sem reszhalmaza a masiknak.
+    expect(scanFile(f('docs/x.md', `value: ${secret}`))).toHaveLength(0);
+  });
+
+  it('a HOSSZ resze a kontraktusnak: egy roviditett titok-alak NEM lelet', () => {
+    // A Telegram formatuma szerint a titkos resz PONTOSAN 35 karakter. Ez a
+    // teszt azert all itt, mert egy mutans-kontroll megmutatta, hogy nelkule a
+    // 35 -> {20,} lazitas MINDEN tesztet zolden hagy -- vagyis a hossz nem lenne
+    // lekotve, es egy kesobbi "legyen megengedobb" modositas csendben megnovelne
+    // a hamis pozitivakat (a sajat repon a szigoru minta ma NULLA talalatot ad).
+    const rovid = 'AAHd9xKpQ2mWvZ7nR4tLbY'; // 22 karakter, nem 35
+    expect(scanFile(f('docs/x.md', `token: ${'80' + '12345678'}:${rovid}`))).toHaveLength(0);
+    expect(scanFile(f('docs/x.md', `bot_token: ${rovid}`))).toHaveLength(0);
+  });
+
+  it('NEM tuzel ket egyszeru zaj-alakra', () => {
+    expect(scanFile(f('docs/x.md', 'idopont 20260915:reggel'))).toHaveLength(0);
+    expect(scanFile(f('docs/x.md', `sha: ${'a1b2c3d4'.repeat(5)}`))).toHaveLength(0);
+  });
+});
+
 describe('detector 3: channel material (the one that would have caught 2026-07)', () => {
   it('blocks a quoted channel message even when it carries NO known secret shape', () => {
     // This is the 2026-07 case with the key removed: had the gate only known

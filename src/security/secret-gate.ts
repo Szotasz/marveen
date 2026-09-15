@@ -89,6 +89,18 @@ export const SECRET_PATTERNS: { name: string; pattern: RegExp }[] = [
   // around "32 hex" would have missed it.
   { name: 'generic vendor secret key (sk_ or sk-)', pattern: /\bsk[-_][A-Za-z0-9_-]{24,}/ },
   { name: 'AWS access key id', pattern: /\bAKIA[0-9A-Z]{16}\b/ },
+  // TGBOTPAT915: a Telegram bot token MINDHAROM alakban atment ezen a keszleten
+  // (teljes `<id>:<titok>`, csak a titkos fel, es a `TELEGRAM_BOT_TOKEN=` env-sor)
+  // -- merve a keszlet ELO peldanyan, harom ismert alak pozitiv kontrollja mellett.
+  // Nem elmeleti: 2026-09-15-en pontosan ez a token volt olvashato egy oktatovideo
+  // nyers felvetelen, es a maszkolo kapu is atengedte, mert az OCR a KETTOSPONTNAL
+  // vagta kette a sztringet, igy egyetlen token-minta sem illeszkedett.
+  // A ket ag KULON kell: a teljes alak a kettospont miatt nem illeszkedik a
+  // titkos felre irt mintara, a titkos fel pedig onmagaban is titok (az OCR-ut
+  // pont azt allitja elo). A titkos resz a Telegram formatuma szerint pontosan
+  // 35 karakter [A-Za-z0-9_-] halmazbol.
+  { name: 'Telegram bot token', pattern: /\b[0-9]{8,10}:[A-Za-z0-9_-]{35}\b/ },
+  { name: 'Telegram bot token secret half', pattern: /(?:TELEGRAM[A-Z_]*TOKEN|bot_token|botToken)["'\s:=]+[A-Za-z0-9_-]{35}\b/i },
   { name: 'Supabase service_role JWT hint', pattern: /service_role["'\s:=]+eyJ/ },
 ];
 
