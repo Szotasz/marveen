@@ -592,9 +592,14 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   for (const tool of readAgentToolDeny(name)) {
     if (!denyList.includes(tool)) denyList.push(tool)
   }
+  const extraDirs = (profile.filesystem.additionalDirectories ?? [])
+    .map(p => resolveProfilePlaceholders(p, ctx))
   existing.permissions = {
     allow: profile.filesystem.allow.map(p => resolveProfilePlaceholders(p, ctx)),
     deny: denyList,
+    // Only emitted when the profile asks for it: an empty key would still be a
+    // statement, and a profile that grants nothing should say nothing.
+    ...(extraDirs.length ? { additionalDirectories: extraDirs } : {}),
   }
   // Governance hard-gates: every sub-agent (NOT the main agent) gets PreToolUse
   // hooks. Re-applied on every spawn (this function regenerates settings.json),

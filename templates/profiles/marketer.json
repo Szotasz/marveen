@@ -24,7 +24,12 @@
       "Read(**/.env)",
       "Bash(sudo:*)",
       "Bash(rm:*)",
-      "Bash(curl -X POST:*)"
+      "Bash(curl -X POST:*)",
+      "Read(${HOME}/.claude/.credentials.json)",
+      "Read(${HOME}/.claude/**/.credentials.json)"
+    ],
+    "additionalDirectories": [
+      "${HOME}/.claude"
     ]
   }
 }

@@ -13,7 +13,13 @@ export interface ProfileTemplate {
   label: string
   description: string
   permissionMode: 'strict' | 'permissive'
-  filesystem: { allow: string[]; deny: string[] }
+  // `additionalDirectories`: paths OUTSIDE the agent's working directory that
+  // the file tools may still read. Needed because an agent's isolated
+  // `.claude-config` is a tree of symlinks into `~/.claude`, and following one
+  // counts as a read outside the working directory -- which a strict agent
+  // cannot approve, so it hangs on an unanswerable prompt (measured 2026-09-13:
+  // an MCP-enabled agent stalled 53 minutes reading mcp-needs-auth-cache.json).
+  filesystem: { allow: string[]; deny: string[]; additionalDirectories?: string[] }
 }
 
 export const PROFILES_DIR = join(PROJECT_ROOT, 'templates', 'profiles')
