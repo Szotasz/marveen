@@ -13,12 +13,14 @@
       { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/channel-inbox-drain.py\"", "timeout": 5 } ] },
       { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/voice-reply-directive.py\"", "timeout": 180 } ] },
       { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram_progress.py\"", "timeout": 15 } ] },
+      { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/slack_progress.py\"", "timeout": 15 } ] },
       { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/claude-usage.py\"", "timeout": 45 } ] }
     ],
     "PostToolUse": [
       { "matcher": "mcp__plugin_telegram_telegram__reply", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/ledger-outbound.py\"", "timeout": 15 } ] },
       { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/tool-log-capture.py\"", "timeout": 5 } ] },
       { "matcher": "telegram.*reply", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram_progress_reply_clear.py\"", "timeout": 15 } ] },
+      { "matcher": "slack.*reply", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/slack_progress_reply_clear.py\"", "timeout": 15 } ] },
       { "matcher": "Skill|Read", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/skill-usage-capture.py\"", "timeout": 10 } ] }
     ],
     "PostToolUseFailure": [
@@ -43,7 +45,8 @@
     ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram-reply-guard.py\"", "timeout": 10 } ] },
-      { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram_progress_clear.py\"", "timeout": 15 } ] }
+      { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram_progress_clear.py\"", "timeout": 15 } ] },
+      { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/slack_progress_clear.py\"", "timeout": 15 } ] }
     ],
     "SessionStart": [
       { "matcher": "startup|resume|clear", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/ledger-replay.py\"", "timeout": 15 } ] },

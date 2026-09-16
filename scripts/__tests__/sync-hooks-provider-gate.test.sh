@@ -59,7 +59,10 @@ run_sync() { # home env_file
 }
 
 # Seed a HOME that looks like an install after an UNGATED update: both hook
-# sets wired and both providers' units present.
+# sets wired and both providers' units present. The wired entries are pre-#1305
+# user-global leftovers now; the active provider's three must survive untouched
+# (only the retire script removes entries, and only the inactive provider's).
+SEEDED_ACTIVE_ENTRIES=3
 seed_home() { # home
   local home="$1"
   mkdir -p "$home/.claude/hooks" "$home/$UNITS_REL" "$home/$PLIST_REL"
@@ -105,28 +108,21 @@ unit_of() { # home provider
   fi
 }
 
-# Since #1305 (ISSUE1305HOOKSCOPE) the Telegram installer no longer writes the
-# user-global settings.json and no longer copies hook files into
-# ~/.claude/hooks -- its three settings hooks are repo-shipped in the tracked
-# project .claude/settings.json. The Slack installer still does both. What this
-# test is about (the provider gate) is identical either way; only the
-# user-global surface an active installer is expected to create differs.
-writes_user_global() { [ "$1" != "telegram" ]; }
-
+# Since #1305 (ISSUE1305HOOKSCOPE) neither installer writes the user-global
+# settings.json and neither copies hook files into ~/.claude/hooks -- the three
+# settings hooks of both providers are repo-shipped in the tracked project
+# .claude/settings.json. What is left for an installer to create, and therefore
+# what the provider gate has to gate, is the watchdog daemon unit; what it has
+# to clean up is the retired provider's unit plus any pre-#1305 user-global
+# leftovers.
 check_end_state() { # label home active inactive
   local label="$1" home="$2" active="$3" inactive="$4"
   local settings="$home/.claude/settings.json"
-  if writes_user_global "$active"; then
-    assert_grep   "$label: ${active} UserPromptSubmit hook wired" "${active}_progress.py"           "$settings"
-    assert_grep   "$label: ${active} Stop hook wired"             "${active}_progress_clear.py"     "$settings"
-    assert_grep   "$label: ${active} PostToolUse hook wired"      "${active}_progress_reply_clear"  "$settings"
-    assert_exists "$home/.claude/hooks/${active}_progress.py"     "$label: ${active} hook files installed"
-  else
-    # Repo-shipped hooks: the installer must leave the seeded user-global
-    # entries of its own provider exactly as they were (it neither adds nor
-    # removes them) and must copy nothing into ~/.claude/hooks.
-    assert_absent "$home/.claude/hooks/${active}_progress.py"                   "$label: ${active} hook files NOT copied (repo-shipped since #1305)"
-  fi
+  # Repo-shipped hooks: the active installer copies nothing into
+  # ~/.claude/hooks and leaves the seeded user-global entries of its own
+  # provider exactly as they were -- it neither adds nor removes them.
+  assert_absent "$home/.claude/hooks/${active}_progress.py"                 "$label: ${active} hook files NOT copied (repo-shipped since #1305)"
+  assert_grep   "$label: ${active} pre-#1305 user-global entry left alone"                 "${active}_progress.py" "$settings"
   assert_no_grep "$label: no ${inactive} hooks wired"            "${inactive}_progress"            "$settings"
   assert_grep    "$label: unrelated hook preserved"              "unrelated.py"                    "$settings"
   assert_exists "$(unit_of "$home" "$active")"   "$label: ${active} watchdog unit present"
@@ -135,12 +131,12 @@ check_end_state() { # label home active inactive
   # Every ${inactive}_progress* entry must be gone, but the count of the
   # active provider's entries must be exactly 3 -- one per event, no
   # duplicates stacked by re-runs.
-  if writes_user_global "$active"; then
-    local n
-    n="$(grep -o "${active}_progress[a-z_]*\.py" "$settings" | sort -u | wc -l | tr -d ' ')"
-    if [ "$n" = "3" ]; then pass "$label: exactly 3 distinct ${active} hook entries"
-    else fail "$label: expected 3 distinct ${active} hook entries, got $n"; fi
-  fi
+  # No installer may stack duplicate entries on a re-run; the seeded
+  # user-global set must stay exactly as many as seed_home planted.
+  local n
+  n="$(grep -o "${active}_progress[a-z_]*\.py" "$settings" | sort -u | wc -l | tr -d ' ')"
+  if [ "$n" = "$SEEDED_ACTIVE_ENTRIES" ]; then pass "$label: no duplicate ${active} hook entries stacked"
+  else fail "$label: expected $SEEDED_ACTIVE_ENTRIES distinct ${active} hook entries, got $n"; fi
 }
 
 for ACTIVE in slack telegram; do

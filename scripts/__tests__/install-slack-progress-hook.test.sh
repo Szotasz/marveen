@@ -9,9 +9,12 @@
 #   (d) correctly reads SERVICE_ID / BOT_NAME with and without quoting
 #   (e) falls back to defaults when .env is absent
 #   (f) MAIN_AGENT_ID fallback when SERVICE_ID absent
-#   (g) copies hook files to the destination + patches settings.json with the
-#       PostToolUse matcher (core behaviour preserved)
-#   (h) SLACK_REPLY_TOOL_MATCHER override is honored
+#   (g) #1305 contract: writes NOTHING under ~/.claude -- no hook copies, no
+#       user-global settings.json edit -- and points the watchdog unit at the
+#       REPO copy of slack_progress_watchdog.py
+#   (h) the three settings hooks are repo-shipped in the tracked project
+#       .claude/settings.json ($CLAUDE_PROJECT_DIR form), so there is nothing
+#       for the installer to wire
 #   (i) installing Slack retires the Telegram progress hooks
 #   (j) provider gate: CHANNEL_PROVIDER=telegram -> installs NOTHING and
 #       retires any leftover Slack hooks (sync-hooks runs every installer)
@@ -36,6 +39,7 @@ assert_eq() {
 }
 assert_zero()   { if [ "$2" -eq 0 ]; then pass "$1"; else fail "$1 (exit=$2)"; fi; }
 assert_absent() { if [ ! -e "$1" ]; then pass "$2"; else fail "$2 (should not exist: $1)"; fi; }
+assert_exists() { if [ -e "$1" ]; then pass "$2"; else fail "$2 (missing: $1)"; fi; }
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SCRIPT="$REPO_ROOT/scripts/install-slack-progress-hook.sh"
@@ -148,44 +152,92 @@ assert_eq   "MAIN_AGENT_ID fallback: SERVICE_ID resolves to myagent" \
             "SERVICE_ID=myagent" "$(echo "$OUT" | grep '^SERVICE_ID=')"
 
 echo ""
-echo "(g) Full script: hooks copied + PostToolUse matcher patched"
+echo "(g) Full script: no ~/.claude write, watchdog unit targets the repo"
+# #1305 contract: the installer must not copy anything into ~/.claude/hooks and
+# must not touch ~/.claude/settings.json -- the settings hooks are repo-shipped
+# in the tracked project .claude/settings.json. The only thing it installs is
+# the watchdog daemon, whose unit must run the REPO copy of
+# slack_progress_watchdog.py. launchctl/systemctl/pidof are stubbed via PATH so
+# no real daemon is (un)loaded.
 CASE="$TMP/case-g"
 HOME_G="$CASE/home"
-mkdir -p "$HOME_G/.claude/hooks"
-echo '{"hooks":{}}' > "$HOME_G/.claude/settings.json"
+BIN_G="$CASE/bin"
+mkdir -p "$HOME_G/.claude/hooks" "$BIN_G"
+for stub in launchctl systemctl pidof; do
+  printf '#!/bin/bash
+exit 1
+' > "$BIN_G/$stub"
+  chmod +x "$BIN_G/$stub"
+done
+SETTINGS_BEFORE='{"hooks":{"marker":"untouched"}}'
+printf '%s' "$SETTINGS_BEFORE" > "$HOME_G/.claude/settings.json"
 
-OUT2="$(HOME="$HOME_G" MARVEEN_ENV_FILE="$ENV_SLACK" bash "$SCRIPT" 2>&1)"
+OUT2="$(HOME="$HOME_G" MARVEEN_ENV_FILE="$ENV_SLACK" PATH="$BIN_G:$PATH" bash "$SCRIPT" 2>&1)"
 EXIT=$?
 assert_zero "full script: exits 0" $EXIT
-for f in slack_progress.py slack_progress_clear.py \
-          slack_progress_reply_clear.py slack_progress_watchdog.py; do
-  if [ -f "$HOME_G/.claude/hooks/$f" ]; then pass "full script: $f copied"
-  else fail "full script: $f NOT copied"; fi
+for f in slack_progress.py slack_progress_clear.py           slack_progress_reply_clear.py slack_progress_watchdog.py; do
+  assert_absent "$HOME_G/.claude/hooks/$f" "full script: $f NOT copied to ~/.claude/hooks"
 done
-# The default matcher is the LOOSE regex "slack.*reply" (see the header comment
-# in the installer): it matches mcp__plugin_slack-channel_slack__reply whatever
-# the exact plugin id turns out to be. This assertion used to demand the old
-# literal tool name and so failed against every current install.
-if grep -q 'slack\.\*reply' "$HOME_G/.claude/settings.json"; then
-  pass "full script: PostToolUse matcher patched into settings.json"
+
+SETTINGS_AFTER="$(cat "$HOME_G/.claude/settings.json")"
+assert_eq "full script: user-global settings.json untouched"           "$SETTINGS_BEFORE" "$SETTINGS_AFTER"
+
+# The daemon unit (plist on Darwin, systemd service on Linux) must reference
+# the repo watchdog, never a ~/.claude/hooks copy.
+UNIT_FILE="$(find "$HOME_G/Library/LaunchAgents" "$HOME_G/.config/systemd/user"              -type f \( -name '*.plist' -o -name '*.service' \) 2>/dev/null | head -1)"
+if [ -n "$UNIT_FILE" ]; then
+  pass "full script: daemon unit written ($(basename "$UNIT_FILE"))"
+  if grep -q "$REPO_ROOT/scripts/hooks/slack_progress_watchdog.py" "$UNIT_FILE"; then
+    pass "full script: unit runs the REPO watchdog"
+  else
+    fail "full script: unit does not reference the repo watchdog path"
+  fi
+  if grep -q "$HOME_G/.claude/hooks" "$UNIT_FILE"; then
+    fail "full script: unit still references a ~/.claude/hooks copy"
+  else
+    pass "full script: unit has no ~/.claude/hooks reference"
+  fi
+  if grep -q 'MARVEEN_ROOT' "$UNIT_FILE"; then
+    pass "full script: unit pins MARVEEN_ROOT (TGWDOGVAK913 belt)"
+  else
+    fail "full script: unit does not pin MARVEEN_ROOT"
+  fi
 else
-  fail "full script: PostToolUse matcher missing from settings.json"
+  fail "full script: no daemon unit file written"
 fi
 
 echo ""
-echo "(h) SLACK_REPLY_TOOL_MATCHER override is honored"
-CASE="$TMP/case-h"
-HOME_H="$CASE/home"
-mkdir -p "$HOME_H/.claude/hooks"
-echo '{"hooks":{}}' > "$HOME_H/.claude/settings.json"
-OUT3="$(HOME="$HOME_H" MARVEEN_ENV_FILE="$ENV_SLACK" SLACK_REPLY_TOOL_MATCHER='mcp__plugin.custom.custom__reply' bash "$SCRIPT" 2>&1)"
-EXIT=$?
-assert_zero "matcher override: exits 0" $EXIT
-if grep -q 'mcp__plugin.custom.custom__reply' "$HOME_H/.claude/settings.json"; then
-  pass "matcher override: custom matcher present in settings.json"
+echo "(h) The three settings hooks are repo-shipped, not installed"
+# The counterpart of (g): what the installer stopped writing must actually be
+# present in the tracked project settings, or the indicator is wired NOWHERE
+# and the suite would still be green. $CLAUDE_PROJECT_DIR form, because a
+# project-scope hook is resolved against the project dir, not $HOME.
+REPO_SETTINGS="$REPO_ROOT/.claude/settings.json"
+assert_exists "$REPO_SETTINGS" "repo-shipped: .claude/settings.json is tracked"
+for h in slack_progress.py slack_progress_clear.py slack_progress_reply_clear.py; do
+  if grep -q "\$CLAUDE_PROJECT_DIR/scripts/hooks/$h" "$REPO_SETTINGS"; then
+    pass "repo-shipped: $h wired in project scope"
+  else
+    fail "repo-shipped: $h NOT wired in .claude/settings.json"
+  fi
+done
+# The PostToolUse matcher is fixed now that it lives in the tracked file; it
+# must stay the loose regex that matches mcp__plugin_slack-channel_slack__reply
+# whatever the plugin id is.
+if grep -q '"matcher": "slack\.\*reply"' "$REPO_SETTINGS"; then
+  pass "repo-shipped: PostToolUse matcher is the loose slack.*reply regex"
 else
-  fail "matcher override: custom matcher missing from settings.json"
+  fail "repo-shipped: PostToolUse matcher missing or too strict"
 fi
+# Seeded agents get the same three hooks from the template (existence-guarded).
+TEMPLATE="$REPO_ROOT/templates/settings.json.template"
+for h in slack_progress.py slack_progress_clear.py slack_progress_reply_clear.py; do
+  if grep -q "scripts/hooks/$h" "$TEMPLATE"; then
+    pass "seeded agents: $h present in settings.json.template"
+  else
+    fail "seeded agents: $h missing from settings.json.template"
+  fi
+done
 
 echo ""
 echo "(i) Installing Slack retires the Telegram progress hooks"
@@ -221,11 +273,7 @@ if grep -q 'telegram_progress' "$HOME_I/.claude/settings.json"; then
 else
   pass "retire-on-install: telegram hooks unwired"
 fi
-if grep -q 'slack_progress\.py' "$HOME_I/.claude/settings.json"; then
-  pass "retire-on-install: slack hooks wired"
-else
-  fail "retire-on-install: slack hooks missing"
-fi
+assert_absent "$HOME_I/.claude/hooks/slack_progress.py"               "retire-on-install: no Slack hook file copied (repo-shipped since #1305)"
 if grep -q 'unrelated\.py' "$HOME_I/.claude/settings.json"; then
   pass "retire-on-install: unrelated hook preserved"
 else
