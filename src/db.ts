@@ -2840,6 +2840,19 @@ export function createAgentMessage(
   }
 }
 
+// The router's pre-delivery re-read: the CURRENT status of one row, or null if
+// the row is gone.
+//
+// Deliberately not getAgentMessage(): that is a SELECT * on a table whose
+// `content` column routinely holds thousands of characters, and the delivery
+// loop needs exactly one short string. This keeps the check to an indexed
+// primary-key lookup of a single column, so it can sit on the hot path without
+// being felt.
+export function getMessageStatus(id: number): string | null {
+  const row = db.prepare('SELECT status FROM agent_messages WHERE id = ?').get(id) as { status: string } | undefined
+  return row ? row.status : null
+}
+
 export function getPendingMessages(toAgent?: string): AgentMessage[] {
   if (toAgent) {
     return db.prepare("SELECT * FROM agent_messages WHERE status = 'pending' AND to_agent = ? ORDER BY created_at ASC")

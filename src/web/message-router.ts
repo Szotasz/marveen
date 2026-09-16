@@ -4,6 +4,7 @@ import { MAIN_AGENT_ID } from '../config.js'
 import { resolveAgentChannelStateDir } from './voice-directive.js'
 import {
   getPendingMessages,
+  getMessageStatus,
   markMessageDelivered,
   markMessageDone,
   markMessageFailed,
@@ -734,6 +735,34 @@ export async function runMessageRouterTick(): Promise<void> {
       }
 
       try {
+        // RE-READ before sending. The work set of this tick is a SNAPSHOT taken
+        // at the top (getPendingMessages into an array), and everything below
+        // has been working from that copy: session lookups, the readiness gate,
+        // voice STT -- which the re-entrancy guard notes can hold a tick for up
+        // to 65 seconds on its own. With up to MAX_MESSAGES_PER_TICK rows sent
+        // serially, the gap between reading a row and sending it is the length
+        // of the tick, not an instant.
+        //
+        // Anything that closed the row in that gap is invisible to the snapshot:
+        // a sender withdrawing its own queued message, an operator fixing a row,
+        // a concurrent path closing it. The message goes out regardless, which
+        // is the one outcome nobody asked for -- the row already says it should
+        // not be delivered.
+        //
+        // One indexed lookup of one column, placed as late as possible (after
+        // STT, immediately before the send) so the blind window it leaves is as
+        // small as the code allows. A row that is no longer 'pending' -- or no
+        // longer there at all -- is skipped and NOT re-closed: it already has a
+        // terminal state and, usually, a reason; overwriting that would erase
+        // who closed it and why.
+        const liveStatus = getMessageStatus(msg.id)
+        if (liveStatus !== 'pending') {
+          logger.info(
+            { id: msg.id, from: msg.from_agent, to: msg.to_agent, liveStatus },
+            'message-router: row is no longer pending at send time, skipping delivery',
+          )
+          continue
+        }
         // channel-inbound carries the STT-applied deliveryContent; the agent
         // wrap (trusted/untrusted) carries the raw content. Single-source frame.
         // msgId passed so receiving agents can write back via PUT /api/messages/:id.
