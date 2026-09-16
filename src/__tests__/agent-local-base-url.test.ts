@@ -56,7 +56,15 @@ describe('AGENT_LOCAL_BASE_URL: the local-agent endpoint is its own key', () => 
     // re-verified by hand and re-ported to the new shape (2 lines: the config
     // import and the ollama branch's exportsStr). The anchor is now the ollama
     // auth token, which is what actually marks that branch.
-    const line = src.split('\n').find(l => l.includes('ANTHROPIC_AUTH_TOKEN=ollama'))
+    // ANCHOR TIGHTENED (custom-provider feature): a generic custom provider
+    // configured with authHeader=none ALSO emits the literal 'ANTHROPIC_AUTH_
+    // TOKEN=ollama' placeholder on its own line (mirroring Ollama's own
+    // no-real-auth convention), so the loose substring match now matches two
+    // lines. The ollama branch's exportsStr is the one that sets BOTH the auth
+    // token AND ANTHROPIC_BASE_URL on the same line; the custom-provider one
+    // sets its base URL separately, so requiring both substrings on one line
+    // disambiguates without weakening the guard's actual intent.
+    const line = src.split('\n').find(l => l.includes('ANTHROPIC_AUTH_TOKEN=ollama') && l.includes('ANTHROPIC_BASE_URL'))
     expect(line, 'the ollama exportsStr line is gone -- upstream restructured it again, re-verify the patch by hand').toBeDefined()
     expect(line).toContain('ANTHROPIC_BASE_URL=${AGENT_LOCAL_BASE_URL}')
     expect(line).not.toContain('${OLLAMA_URL}')

@@ -198,8 +198,15 @@ describe('isolated-config launcher wiring', () => {
     // the isolation branch. A fleet-token fallback would silently put the
     // agent back on the shared identity whenever its own credential expires --
     // exactly what the operator opted out of by picking own_team.
+    //
+    // own_team exclusion is folded into needsFleetOauth (BYOCUSTFOAUTH805:
+    // `isClaude && authMode !== 'api' && !isOwnTeam`) rather than spelled out
+    // as a separate `!isOwnTeam` at the export site -- the same guard also has
+    // to exclude BYO/custom-endpoint agents (Ollama/DeepSeek/OpenRouter/custom),
+    // and one shared boolean keeps both exclusions from drifting apart.
     expect(SRC).toMatch(/const isOwnTeam = isClaude && authMode === 'own_team'/)
-    expect(SRC).toMatch(/!claudeConfigDir && hasFleetOauthToken\(\) && !isOwnTeam/)
+    expect(SRC).toMatch(/const needsFleetOauth = isClaude && authMode !== 'api' && !isOwnTeam/)
+    expect(SRC).toMatch(/!claudeConfigDir && hasFleetOauthToken\(\) && needsFleetOauth/)
     // The own_team isolation branch comes BEFORE the hasFleetOauthToken() gate
     // (isolation must not require the fleet token for own_team) and contains
     // no token export.
