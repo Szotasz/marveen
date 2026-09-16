@@ -8,7 +8,12 @@
 #     15-min backstop and gets the agent's REAL answer, in-thread;
 #   - a legitimately long task (no hung reply) is left alone before the backstop;
 #   - TGORPHAN908 guards: stale upper bound, round-scoped answer attribution,
-#     no resend when the round's reply already reached the channel.
+#     no resend when the round's reply already reached the channel;
+#   - delivery failures are never success: Slack's HTTP-200 {"ok":false},
+#     HTTP 429/5xx and an unreachable API are all observable through the stub
+#     (stub_mode); a RETRYABLE failure keeps the marker with its mtime intact
+#     and the next tick delivers, a TERMINAL rejection falls through to the
+#     generic-error rewrite, a partial failure keeps only the failed entry.
 #
 # Fully hermetic: HOME and MARVEEN_ROOT are pinned to a temp tree so the
 # watchdog only ever scans test dirs (never the real ~/.claude), and all Web
@@ -28,29 +33,59 @@ TMP="$(mktemp -d)"
 trap 'kill "$STUB_PID" 2>/dev/null; rm -rf "$TMP"' EXIT
 
 # --- Local Web API stub (logs "<method> <body>" per request) -----------------
-REQLOG="$TMP/requests.log"; PORTFILE="$TMP/port"
+# Failure injection: MODEFILE holds lines "<method|*> <mode> [count]" with
+# mode = ok | ok_false:<error> | http:<status>. The first matching line answers
+# a request; a line with a count is consumed by that many requests and then
+# skipped. No file / no match = {"ok": true}. Slack reports application errors
+# as HTTP 200 + {"ok": false, "error": ...}, so a stub that can only say ok:true
+# leaves the suite blind to every real failure shape (review task #3).
+REQLOG="$TMP/requests.log"; PORTFILE="$TMP/port"; MODEFILE="$TMP/stub-mode"
 cat > "$TMP/stub.py" <<'PYEOF'
 import json, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
-reqlog = sys.argv[1]
+reqlog, portfile, modefile = sys.argv[1:4]
+def pick_mode(method):
+    try:
+        lines = [l.split() for l in open(modefile, encoding="utf-8").read().splitlines() if l.strip()]
+    except Exception:
+        return "ok"
+    mode, chosen, rest = "ok", False, []
+    for parts in lines:
+        m, md = parts[0], parts[1]
+        n = int(parts[2]) if len(parts) > 2 else None
+        if not chosen and m in ("*", method) and (n is None or n > 0):
+            mode, chosen = md, True
+            if n is not None:
+                n -= 1
+        rest.append(" ".join([m, md] + ([str(n)] if n is not None else [])))
+    if chosen:
+        with open(modefile, "w", encoding="utf-8") as f:
+            f.write("\n".join(rest) + "\n")
+    return mode
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(n).decode("utf-8") if n else ""
         method = self.path.rsplit("/", 1)[-1]
+        mode = pick_mode(method)
         with open(reqlog, "a", encoding="utf-8") as f:
             f.write(f"{method} {body}\n")
-        out = {"ok": True, "ts": "1700000000.900100"}
+        status, out = 200, {"ok": True, "ts": "1700000000.900100"}
+        if mode.startswith("ok_false:"):
+            out = {"ok": False, "error": mode.split(":", 1)[1]}
+        elif mode.startswith("http:"):
+            status = int(mode.split(":", 1)[1])
+            out = {"ok": False, "error": f"http_{status}"}
         payload = json.dumps(out).encode()
-        self.send_response(200); self.send_header("Content-Type", "application/json")
+        self.send_response(status); self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload))); self.end_headers()
         self.wfile.write(payload)
 srv = HTTPServer(("127.0.0.1", 0), H)
-with open(sys.argv[2], "w") as f: f.write(str(srv.server_address[1]))
+with open(portfile, "w") as f: f.write(str(srv.server_address[1]))
 srv.serve_forever()
 PYEOF
-python3 "$TMP/stub.py" "$REQLOG" "$PORTFILE" &
+python3 "$TMP/stub.py" "$REQLOG" "$PORTFILE" "$MODEFILE" &
 STUB_PID=$!
 for _ in $(seq 1 50); do [ -s "$PORTFILE" ] && break; sleep 0.1; done
 PORT="$(cat "$PORTFILE" 2>/dev/null)"
@@ -103,6 +138,12 @@ run_wd() { # force_up wedged_up_sec
       SLACK_WATCHDOG_FORCE_AGENT_UP="$1" SLACK_WATCHDOG_WEDGED_UP_SEC="$2" \
       python3 "$WATCHDOG"
 }
+# Failure injection for the stub: each argument is one "<method|*> <mode>
+# [count]" line (see the stub header); no arguments = everything answers ok.
+stub_mode() { : > "$MODEFILE"; local l; for l in "$@"; do printf '%s\n' "$l" >> "$MODEFILE"; done; }
+mtime_of() { python3 -c 'import os,sys; print(int(os.path.getmtime(sys.argv[1])))' "$1"; }
+log_has() { grep -q "$2" "$1/debug.log" 2>/dev/null && echo yes || echo no; }
+pend_count() { python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$1/SID.json" 2>/dev/null || echo 0; }
 
 echo "slack-watchdog-wedged tests"
 echo "==========================="
@@ -312,16 +353,145 @@ SM="$TMP/root/agents/wm/.claude/channels/slack"; mkdir -p "$SM"
 printf 'SLACK_BOT_TOKEN=xoxb-TESTTOKEN\n' > "$SM/.env"
 PROMPT='<channel source="plugin:slack-channel:slack" chat_id="C0BJTESTCHAN" ts="1700000000.000200">hello</channel>'
 : > "$REQLOG"
-printf '{"session_id":"sm1","prompt":"%s"}' "$(printf '%s' "$PROMPT" | sed 's/"/\\"/g')" \
-  | SLACK_STATE_DIR="$SM" SLACK_API_BASE="$API_BASE" python3 "$SUBMIT"
+OUT_M="$(printf '{"session_id":"sm1","prompt":"%s"}' "$(printf '%s' "$PROMPT" | sed 's/"/\\"/g')" \
+  | SLACK_STATE_DIR="$SM" SLACK_API_BASE="$API_BASE" python3 "$SUBMIT")"
 assert_eq "submit: one placeholder posted" "1" "$(count chat.postMessage)"
 assert_eq "submit: Hungarian placeholder by default" "yes" "$(body_has "Dolgozom rajta")"
+# UserPromptSubmit stdout is injected into the model prompt: it must be empty.
+assert_eq "submit: silent stdout" "" "$OUT_M"
+assert_eq "submit: state entry stored with the placeholder ts" "yes" \
+  "$(grep -q '"ts": "1700000000.900100"' "$SM/progress/sm1.json" && echo yes || echo no)"
 printf 'en\n' > "$TMP/root/.lang"
 : > "$REQLOG"
 printf '{"session_id":"sm2","prompt":"%s"}' "$(printf '%s' "$PROMPT" | sed 's/"/\\"/g')" \
   | SLACK_STATE_DIR="$SM" SLACK_API_BASE="$API_BASE" python3 "$SUBMIT"
 assert_eq "submit: English placeholder with .lang=en" "yes" "$(body_has "Working on it")"
 rm -f "$TMP/root/.lang"
+
+echo ""
+echo "(m2) Submit hook: a rejected placeholder (ok:false) stores no state"
+stub_mode "chat.postMessage ok_false:not_in_channel"
+: > "$REQLOG"
+OUT_M3="$(printf '{"session_id":"sm3","prompt":"%s"}' "$(printf '%s' "$PROMPT" | sed 's/"/\\"/g')" \
+  | SLACK_STATE_DIR="$SM" SLACK_API_BASE="$API_BASE" python3 "$SUBMIT")"
+assert_eq "submit ok:false: one attempt" "1" "$(count chat.postMessage)"
+assert_eq "submit ok:false: no state file (nothing to clear later)" "no" \
+  "$([ -f "$SM/progress/sm3.json" ] && echo yes || echo no)"
+assert_eq "submit ok:false: silent stdout" "" "$OUT_M3"
+stub_mode
+
+# ---------------------------------------------------------------------------
+# Delivery failures (review task #3). Slack answers application errors with
+# HTTP 200 + {"ok": false, "error": ...}; the Telegram Bot API uses HTTP 4xx,
+# so the ported watchdog silently treated a rejected post as delivered:
+# "real-answer" in the log, placeholder deleted, marker dropped, user got
+# nothing. The stub can now say ok:false / 429 / 5xx, and the watchdog must
+# neither claim success nor lose the orphan.
+# ---------------------------------------------------------------------------
+echo ""
+echo "(n) postMessage ok:false TERMINAL (channel_not_found): generic error instead, marker dropped"
+PN="$(make_case wn hung 100)"
+stub_mode "chat.postMessage ok_false:channel_not_found"
+run_wd 1 1
+assert_eq "terminal: one postMessage attempt" "1" "$(count chat.postMessage)"
+assert_eq "terminal: placeholder NOT deleted (nothing was delivered)" "0" "$(count chat.delete)"
+assert_eq "terminal: placeholder rewritten into the generic error" "1" "$(count chat.update)"
+assert_eq "terminal: error text used" "yes" "$(body_has "Valami elakadt")"
+assert_eq "terminal: marker dropped (retrying cannot help)" "no" "$(pend_exists "$PN")"
+assert_eq "terminal: the Slack error is in the log" "yes" "$(log_has "$PN" "channel_not_found")"
+assert_eq "terminal: log says rejected, no retry" "yes" "$(log_has "$PN" "rejected, no retry")"
+assert_eq "terminal: log never claims real-answer" "no" "$(log_has "$PN" "delivered=real-answer")"
+stub_mode
+
+echo ""
+echo "(o) postMessage HTTP 429 (RETRYABLE): nothing touched, marker kept with its mtime; next tick delivers"
+PO="$(make_case wo hung 100)"
+MT_BEFORE="$(mtime_of "$PO/SID.json")"
+stub_mode "chat.postMessage http:429"
+run_wd 1 1
+assert_eq "429: one postMessage attempt" "1" "$(count chat.postMessage)"
+assert_eq "429: placeholder NOT deleted" "0" "$(count chat.delete)"
+assert_eq "429: no error edit either (a retry may still deliver the answer)" "0" "$(count chat.update)"
+assert_eq "429: marker KEPT for the next tick" "yes" "$(pend_exists "$PO")"
+assert_eq "429: marker mtime preserved (age + round anchor stand)" "$MT_BEFORE" "$(mtime_of "$PO/SID.json")"
+assert_eq "429: log says will retry" "yes" "$(log_has "$PO" "will retry")"
+stub_mode
+run_wd 1 1
+assert_eq "429 then ok: the retry delivers the real answer" "1" "$(count chat.postMessage)"
+assert_eq "429 then ok: real answer text" "yes" "$(body_has "EZ_A_VALODI_VALASZ")"
+assert_eq "429 then ok: placeholder deleted" "1" "$(count chat.delete)"
+assert_eq "429 then ok: marker removed" "no" "$(pend_exists "$PO")"
+
+echo ""
+echo "(p) postMessage ok:false ratelimited / HTTP 503: retryable too"
+PP="$(make_case wp hung 100)"
+stub_mode "chat.postMessage ok_false:ratelimited"
+run_wd 1 1
+assert_eq "ratelimited: marker kept" "yes" "$(pend_exists "$PP")"
+assert_eq "ratelimited: placeholder untouched" "0" "$(count chat.delete)"
+rm -f "$PP/SID.json"
+PP2="$(make_case wp2 hung 100)"
+stub_mode "chat.postMessage http:503"
+run_wd 1 1
+assert_eq "503: marker kept" "yes" "$(pend_exists "$PP2")"
+assert_eq "503: placeholder untouched" "0" "$(count chat.delete)"
+rm -f "$PP2/SID.json"
+stub_mode
+
+echo ""
+echo "(q) Generic-error path: chat.update terminal -> logged, marker dropped; chat.update 5xx -> marker kept"
+PQ="$(make_case wq noans 100)"
+stub_mode "chat.update ok_false:message_not_found"
+run_wd 1 1
+assert_eq "update terminal: one edit attempt" "1" "$(count chat.update)"
+assert_eq "update terminal: marker dropped (nothing more to do)" "no" "$(pend_exists "$PQ")"
+assert_eq "update terminal: logged with the Slack error" "yes" "$(log_has "$PQ" "message_not_found")"
+PQ2="$(make_case wq2 noans 100)"
+stub_mode "chat.update http:502"
+run_wd 1 1
+assert_eq "update 502: marker kept for a retry" "yes" "$(pend_exists "$PQ2")"
+assert_eq "update 502: log says will retry" "yes" "$(log_has "$PQ2" "error edit failed, will retry")"
+rm -f "$PQ2/SID.json"
+stub_mode
+
+echo ""
+echo "(r) API unreachable (connection refused): retryable, marker kept, nothing claimed"
+PR="$(make_case wr hung 100)"
+DEAD_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+: > "$REQLOG"
+HOME="$TMP" MARVEEN_ROOT="$TMP/root" SLACK_API_BASE="http://127.0.0.1:$DEAD_PORT" \
+  SLACK_WATCHDOG_FORCE_AGENT_UP=1 SLACK_WATCHDOG_WEDGED_UP_SEC=1 python3 "$WATCHDOG"
+assert_eq "dead API: marker kept" "yes" "$(pend_exists "$PR")"
+assert_eq "dead API: log says will retry" "yes" "$(log_has "$PR" "will retry")"
+assert_eq "dead API: no success claimed" "no" "$(log_has "$PR" "delivered=real-answer")"
+rm -f "$PR/SID.json"
+
+echo ""
+echo "(s) Two pending entries, first send fails retryable: only the failed one stays, mtime preserved"
+PS_="$(make_case ws hung 100)"
+TR_S="$TMP/root/agents/ws/.claude/channels/slack/transcript.jsonl"
+printf '[{"chat_id":"%s","ts":"%s","transcript_path":"%s"},{"chat_id":"C0BJSECOND","ts":"1700000000.000300","transcript_path":"%s"}]\n' \
+    "$CHAT" "$PH_TS" "$TR_S" "$TR_S" > "$PS_/SID.json"
+python3 - "$PS_/SID.json" 100 <<'PY'
+import os, sys, time
+os.utime(sys.argv[1], (time.time()-int(sys.argv[2]),)*2)
+PY
+MT_BEFORE="$(mtime_of "$PS_/SID.json")"
+stub_mode "chat.postMessage http:429 1"
+run_wd 1 1
+assert_eq "partial: two postMessage attempts" "2" "$(count chat.postMessage)"
+assert_eq "partial: the delivered entry's placeholder deleted" "1" "$(count chat.delete)"
+assert_eq "partial: second chat's answer delivered" "yes" "$(body_has "\"channel\": \"C0BJSECOND\"")"
+assert_eq "partial: marker kept" "yes" "$(pend_exists "$PS_")"
+assert_eq "partial: only the failed entry remains" "1" "$(pend_count "$PS_")"
+assert_eq "partial: the remaining entry is the failed one" "yes" \
+  "$(grep -q "\"$PH_TS\"" "$PS_/SID.json" && echo yes || echo no)"
+assert_eq "partial: mtime preserved after the rewrite" "$MT_BEFORE" "$(mtime_of "$PS_/SID.json")"
+stub_mode
+run_wd 1 1
+assert_eq "partial then ok: exactly one more postMessage (no duplicate for the delivered chat)" "1" "$(count chat.postMessage)"
+assert_eq "partial then ok: it goes to the failed chat" "yes" "$(body_has "\"channel\": \"$CHAT\"")"
+assert_eq "partial then ok: marker removed" "no" "$(pend_exists "$PS_")"
 
 # ---------------------------------------------------------------------------
 echo ""
