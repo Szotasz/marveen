@@ -143,7 +143,24 @@ bash ~/ClaudeClaw/scripts/install-slack-progress-hook.sh
 ```
 
 Idempotent, auto-run by `scripts/sync-hooks.sh` on every update (any
-`scripts/install-*-hook.sh` is picked up automatically). It:
+`scripts/install-*-hook.sh` is picked up automatically).
+
+> **The guarantee: the active provider's installer wins on every update.**
+> `sync-hooks.sh` runs *every* `install-*-progress-hook.sh` on *every* update,
+> in glob order (Slack first, Telegram last). Each installer first reads
+> `CHANNEL_PROVIDER` and, if it is not its own provider, retires its own
+> leftovers and exits -- so whatever order they run in, an update ends with
+> exactly one provider's watchdog live: the one in `CHANNEL_PROVIDER`. Nothing
+> done by hand survives this: a `--force` retire of the active provider is
+> re-installed by the next update, and there is deliberately no flag to
+> install the inactive one -- two watchdogs on a box whose `.env` names one
+> provider is exactly the state the gate exists to prevent. Change
+> `CHANNEL_PROVIDER` if you want a different end state. Contract:
+> `scripts/__tests__/sync-hooks-provider-gate.test.sh`
+> runs both installers in glob order for both providers, twice, and asserts
+> the second run is a byte-identical no-op.
+
+It:
 
 0. **Provider gate.** Reads `CHANNEL_PROVIDER` from the install `.env`
    (resolved like `src/channel-provider.ts`: exact known value, anything
