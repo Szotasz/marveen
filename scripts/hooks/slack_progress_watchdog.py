@@ -39,11 +39,28 @@ The recovered answer is scoped to the round that posted the placeholder (see
 read_transcript): the transcript keeps growing after that round, so its last
 text may be a later internal turn's monologue -- never deliverable here.
 
+Delivery failures are NOT success. Slack signals application errors with
+HTTP 200 + {"ok": false, "error": "..."} (the Telegram Bot API uses HTTP 4xx,
+which urlopen raises on by itself), so api() raises on an ok:false envelope
+and every send/edit/delete failure is visible to the caller. Two classes:
+  - RETRYABLE (HTTP 429/5xx, connection errors/timeouts, Slack "ratelimited",
+    "internal_error", "service_unavailable", "fatal_error"): nothing reached
+    Slack and waiting may fix it -> the marker is KEPT (mtime preserved, so
+    its age and round anchor stand) and the next tick retries; the 24h stale
+    bound still caps the retries.
+  - TERMINAL (everything else: channel_not_found, not_in_channel, is_archived,
+    invalid_auth, thread_not_found, msg_too_long, ...): waiting cannot fix
+    it -> fall through to the generic-error rewrite so the user at least sees
+    a failure instead of an eternal "working...", and drop the marker.
+Before this, a rejected chat.postMessage was logged as "real-answer", the
+placeholder deleted and the marker dropped: no answer, no error, a log that
+claimed success.
+
 Standalone: scans every agent's per-agent Slack state dir. No marveen src
 dependency; only Python stdlib + the `tmux` binary. API base overridable via
 SLACK_API_BASE (tests point it at a local stub).
 """
-import datetime, os, glob, json, time, subprocess, urllib.request
+import datetime, os, glob, json, time, subprocess, urllib.error, urllib.request
 
 # State dirs to scan: per-agent dirs under the fleet, plus the default dir.
 #
@@ -165,6 +182,28 @@ def token(state_dir):
     return None
 
 
+# Slack error codes that mean "try again later", not "this cannot be delivered".
+RETRYABLE_SLACK_ERRORS = {"ratelimited", "internal_error", "service_unavailable",
+                          "fatal_error", "request_timeout"}
+
+
+class SlackApiError(Exception):
+    """An HTTP-200 envelope with ok:false (or a malformed body)."""
+    def __init__(self, method, error):
+        super().__init__(f"{method}: {error}")
+        self.method, self.error = method, error
+        self.retryable = error in RETRYABLE_SLACK_ERRORS
+
+
+def retryable(e):
+    """True when a failed call is worth another attempt on a later tick."""
+    if isinstance(e, SlackApiError):
+        return e.retryable
+    if isinstance(e, urllib.error.HTTPError):
+        return e.code == 429 or e.code >= 500
+    return True  # URLError / timeout / connection reset: transient by nature
+
+
 def api(tok, method, payload):
     url = f"{api_base()}/{method}"
     data = json.dumps(payload).encode()
@@ -173,7 +212,11 @@ def api(tok, method, payload):
         "Authorization": f"Bearer {tok}",
     })
     with urllib.request.urlopen(req, timeout=8) as r:
-        return json.loads(r.read().decode())
+        resp = json.loads(r.read().decode())
+    if not isinstance(resp, dict) or not resp.get("ok"):
+        err = resp.get("error") if isinstance(resp, dict) else None
+        raise SlackApiError(method, err or "malformed-response")
+    return resp
 
 
 def agent_name_from(progress_dir):
@@ -354,7 +397,14 @@ def delete_placeholder(tok, p, progress_dir, label):
 def deliver(tok, chat_id, ts, thread_ts, answer, progress_dir, error_text):
     """Deliver the real answer if we have one (chat.postMessage + drop the
     placeholder via chat.delete), else rewrite the placeholder into a
-    generic error (chat.update). Returns a short label for logging."""
+    generic error (chat.update). Returns a short label for logging:
+      "real-answer"   the answer is in the channel (a failed follow-up
+                      chat.delete is only logged: the answer got through);
+      "generic-error" the placeholder now shows the error text -- or a
+                      TERMINAL rejection left nothing more to do;
+      "send-failed"   a RETRYABLE failure: nothing reached Slack and the
+                      placeholder is untouched; the caller keeps the marker
+                      so the next tick tries again."""
     if answer:
         payload = {"channel": chat_id, "text": answer[:4000]}
         if thread_ts:
@@ -362,16 +412,44 @@ def deliver(tok, chat_id, ts, thread_ts, answer, progress_dir, error_text):
         try:
             api(tok, "chat.postMessage", payload)
         except Exception as e:
-            log(progress_dir, f"real-answer send failed (ts={ts}): {e}")
-            return "send-failed"
-        delete_placeholder(tok, {"chat_id": chat_id, "ts": ts}, progress_dir, "placeholder")
-        return "real-answer"
+            if retryable(e):
+                log(progress_dir, f"real-answer send failed, will retry (ts={ts}): {e}")
+                return "send-failed"
+            # Terminal: the answer cannot be posted this way. Say so on the
+            # placeholder instead of leaving "working..." there forever.
+            log(progress_dir, f"real-answer rejected, no retry (ts={ts}): {e} -> generic error")
+        else:
+            delete_placeholder(tok, {"chat_id": chat_id, "ts": ts}, progress_dir, "placeholder")
+            return "real-answer"
     # No recoverable answer -> generic error, keep the (edited) placeholder.
     try:
         api(tok, "chat.update", {"channel": chat_id, "ts": ts, "text": error_text})
     except Exception as e:
-        log(progress_dir, f"error edit failed (ts={ts}): {e}")
+        if retryable(e):
+            log(progress_dir, f"error edit failed, will retry (ts={ts}): {e}")
+            return "send-failed"
+        log(progress_dir, f"error edit rejected, no retry (ts={ts}): {e}")
     return "generic-error"
+
+
+def keep_for_retry(path, pend, retry, progress_dir):
+    """Keep the marker for the entries whose delivery must be retried.
+
+    When only some entries failed, the marker is rewritten with just those, so
+    a later tick cannot re-deliver the ones that got through (duplicates). The
+    mtime is preserved on purpose: it is the marker's AGE (the fire thresholds
+    and the 24h stale bound read it) and the round anchor for read_transcript
+    -- a fresh mtime would restart the clock and re-anchor the transcript
+    window on the wrong round."""
+    if len(retry) == len(pend):
+        return  # every entry retries: the file is already exactly right
+    try:
+        st = os.stat(path)
+        with open(path, "w") as f:
+            json.dump(retry, f)
+        os.utime(path, (st.st_atime, st.st_mtime))
+    except Exception as e:
+        log(progress_dir, f"retry keep failed ({os.path.basename(path)}): {e}")
 
 
 def handle_dir(progress_dir):
@@ -469,18 +547,27 @@ def handle_dir(progress_dir):
                               f"age={int(age)}s delivered=none")
             continue
 
-        modes = []
+        modes, retry = [], []
         for p in pend:
-            modes.append(deliver(tok, p.get("chat_id"), p.get("ts"),
-                                 p.get("thread_ts"), answer, progress_dir,
-                                 error_text))
-        try:
-            os.remove(path)
-        except Exception:
-            pass
+            mode = deliver(tok, p.get("chat_id"), p.get("ts"), p.get("thread_ts"),
+                           answer, progress_dir, error_text)
+            modes.append(mode)
+            if mode == "send-failed":
+                retry.append(p)
+        if retry:
+            # Retryable failure(s): the marker stays (with only the failed
+            # entries) and the next tick tries again; the stale bound above
+            # is what eventually gives up.
+            keep_for_retry(path, pend, retry, progress_dir)
+        else:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
         log(progress_dir, f"orphan handled ({reason}): {os.path.basename(path)} "
                           f"agent_up={agent_up} age={int(age)}s "
-                          f"delivered={','.join(modes)}")
+                          f"delivered={','.join(modes)}"
+                          + (f" retry={len(retry)} (marker kept for the next tick)" if retry else ""))
 
 
 def main():

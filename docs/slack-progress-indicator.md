@@ -110,6 +110,32 @@ answer is delivered as a guaranteed fallback via `chat.postMessage`.
   the marker is leftover bookkeeping — the placeholder is cleared silently,
   nothing is resent.
 
+### Delivery failures (Slack-specific, not shared with Telegram)
+
+Slack reports application errors as **HTTP 200 + `{"ok": false, "error":
+"..."}`**; the Telegram Bot API uses HTTP 4xx, which `urlopen` raises on by
+itself. A straight port therefore treated a rejected `chat.postMessage` as
+delivered: `delivered=real-answer` in the log, placeholder deleted, marker
+dropped -- the user got neither the answer nor an error, and nothing said so.
+The watchdog's `api()` now raises on an `ok:false` envelope, and every
+failure is classified:
+
+| Class | What | Watchdog reaction |
+| --- | --- | --- |
+| **retryable** | HTTP 429 / 5xx, connection errors and timeouts, Slack `ratelimited`, `internal_error`, `service_unavailable`, `fatal_error` | nothing reached Slack: the placeholder is untouched and the **marker is kept** (with only the entries that failed, and with its mtime preserved -- the mtime is the marker's age and the round anchor for the transcript window). The next tick retries; the 24h stale bound is what eventually gives up. |
+| **terminal** | everything else: `channel_not_found`, `not_in_channel`, `is_archived`, `invalid_auth`, `thread_not_found`, `msg_too_long`, ... | waiting cannot help: the placeholder is rewritten into the generic error (`chat.update`) so the user sees a failure instead of an eternal "working...", the Slack error goes to `debug.log`, and the marker is dropped. |
+
+A failed `chat.delete` after a successful post is only logged (the answer got
+through). A failed generic-error `chat.update` follows the same split:
+retryable keeps the marker, terminal is logged and dropped. Contract cases
+(n)-(s) in `scripts/__tests__/slack-watchdog-wedged.test.sh`, driven by the
+stub's failure injection (`stub_mode "<method|*> <mode> [count]"`, mode =
+`ok` | `ok_false:<error>` | `http:<status>`).
+
+The `Stop` hook's fallback path (`slack_progress_clear.py`) still uses a plain
+`api()` and is covered by its own review items (timeout budget, round
+scoping); it is not changed here.
+
 ## Install
 
 ```bash
@@ -205,7 +231,7 @@ dir), else `hu`. Values: `hu`, `en`.
 ```bash
 bash scripts/__tests__/install-slack-progress-hook.test.sh
 bash scripts/__tests__/slack-reply-clear.test.sh
-bash scripts/__tests__/slack-watchdog-wedged.test.sh
+bash scripts/__tests__/slack-watchdog-wedged.test.sh              # incl. delivery-failure cases (n)-(s)
 bash scripts/__tests__/retire-progress-watchdog.test.sh
 bash scripts/__tests__/sync-hooks-provider-gate.test.sh   # both installers, glob order, both providers
 ```
