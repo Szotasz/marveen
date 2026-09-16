@@ -87,7 +87,12 @@ add_if() {
 #     profile and generated PDFs: 3.2 GB, all re-downloadable or reproducible
 #   *.log, *.out, *.pid       -- runtime noise, worthless in a restore
 # What remains is ~4 MB next to the DB, so the archive stays small.
-STORE_SKIP=" whisper health cowork venv-garmin venv-pdf dhl-chrome-profile fedex-labels fedex-vam archery-basis "
+#   backups                   -- store/backups holds OTHER machines' tarballs (two 2026-07-13
+#     hermes dumps, 701 MB): a backup inside the backup, and not this host's state
+#   darwin-relay              -- relay.log (87 MB): a log, not state; nothing restores from it
+#   (measured 2026-09-16: these two were 788 MB of a 948 MB archive; excluding them
+#    leaves ~150 MB. STORE_SKIP does not delete anything -- the files stay on disk.)
+STORE_SKIP=" whisper health cowork venv-garmin venv-pdf dhl-chrome-profile fedex-labels fedex-vam archery-basis backups darwin-relay "
 if [[ -d store ]]; then
   while IFS= read -r _entry; do
     _name="$(basename "${_entry}")"
