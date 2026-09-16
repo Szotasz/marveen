@@ -164,11 +164,18 @@ describe('the auto-restart config carries no unwired handoff switch', () => {
     const stripComments = (src: string): string =>
       src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
     // Zero mentions at all: neither of these files has any business naming a
-    // handoff, and the only tolerated exception is the legacy-key list, which
-    // exists to ACCEPT the field at the API edge and then throw it away.
+    // handoff FIELD, and the tolerated exceptions are the legacy-key list
+    // (ACCEPTS the field at the API edge and throws it away) and
+    // ensureThinChiefHandoffSection -- a per-spawn CLAUDE.md scaffolding call
+    // (agent-scaffold.ts), unconditional and unrelated to the auto-restart
+    // config: it writes the THIN CHIEF handoff PROTOCOL doc section, the same
+    // shape as its sibling ensureAgentIdHeaderSection call right above it, and
+    // reads no config field so it cannot influence a restart decision.
     for (const f of ['src/auto-restart.ts', 'src/web/agent-process.ts']) {
       const code = stripComments(readFileSync(join(ROOT, f), 'utf-8'))
-      const hits = code.split('\n').filter((l) => /handoff/i.test(l) && !l.includes('LEGACY_AUTO_RESTART_FIELDS'))
+      const hits = code
+        .split('\n')
+        .filter((l) => /handoff/i.test(l) && !l.includes('LEGACY_AUTO_RESTART_FIELDS') && !l.includes('ensureThinChiefHandoffSection'))
       expect(hits, `${f} references handoff on the restart path`).toEqual([])
     }
     // The runner is different since the daily-handoff tier landed: it must
