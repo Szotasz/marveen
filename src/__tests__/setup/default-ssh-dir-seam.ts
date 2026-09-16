@@ -17,10 +17,20 @@
 // wrote the operator's authorized_keys. A checkout-scoped gate cannot protect a
 // home-scoped asset; this seam is the home-scoped half.
 //
-// This one line alone would have prevented all 62 keys -- which is why it is a
-// setupFile (every worker, before any test module imports) and not a per-file
-// beforeEach somebody can forget. The fail-closed guards in src/ssh-dir.ts and
-// src/remote-enroll-fs.ts are the backstop for the case where a test unsets it.
+// This seam alone would NOT have prevented all 62 keys, and the measurement says
+// so: with this file ON and the fail-closed guards OFF, the original test file
+// still wrote one key to the real ~/.ssh/authorized_keys (13 tests green). The
+// reason is the original afterEach, which does an unconditional
+// `delete process.env.MARVEEN_SSH_DIR` -- that drops the suite-level default
+// after the first test, and the positive control then falls back to the home
+// directory. Point 4 of the PR body describes the same hole; this comment used
+// to contradict it.
+//
+// What actually holds is the combination: this seam, PLUS the afterEach that
+// restores the previous value instead of deleting it, PLUS the fail-closed
+// guards in src/ssh-dir.ts and src/remote-enroll-fs.ts. It is a setupFile (every
+// worker, before any test module imports) rather than a per-file beforeEach
+// somebody can forget, which is what gives it the reach -- not sufficiency.
 //
 // Scoped, not blanket: an existing MARVEEN_SSH_DIR is respected, so a test that
 // wants its own directory keeps it.
