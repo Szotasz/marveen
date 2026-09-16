@@ -130,14 +130,38 @@ Idempotent, auto-run by `scripts/sync-hooks.sh` on every update (any
    sets wired and both watchdog timers enabled — the Telegram installer
    re-wired its hooks right after the Slack one had retired them (its own
    retire of Slack being refused by the active-provider guard).
-1. Copies the four hook scripts to `~/.claude/hooks/`.
-2. Patches `~/.claude/settings.json` (UserPromptSubmit / PostToolUse / Stop).
-3. Retires the Telegram progress plumbing (`scripts/retire-progress-watchdog.sh telegram`)
+1. Retires the Telegram progress plumbing (`scripts/retire-progress-watchdog.sh telegram`)
    so exactly one provider's indicator is live. The Telegram installer does
    the same in reverse; `scripts/doctor.sh` warns about drift between
-   `CHANNEL_PROVIDER` and the wired hooks/timers.
-4. Installs the watchdog as a **launchd** agent (macOS) or **systemd** user
-   service+timer (Linux), running every ~60s.
+   `CHANNEL_PROVIDER` and the live watchdog timers.
+2. Installs the watchdog as a **launchd** agent (macOS) or **systemd** user
+   service+timer (Linux), running every ~60s **straight from the repo
+   checkout** — no `~/.claude/hooks` copy, so the daemon can never drift from
+   the repo. The unit also pins `MARVEEN_ROOT` to the install root: launchd
+   and systemd pass no shell environment to a job, and the watchdog's own
+   self-location (two directories up from
+   `<root>/scripts/hooks/slack_progress_watchdog.py`) is the primary mechanism
+   with this as the belt (TGWDOGVAK913).
+
+### Where the settings hooks live (#1305)
+
+The installer does **not** install the three settings hooks, and since #1305
+(ISSUE1305HOOKSCOPE) it must not: writing fleet hooks into the user-global
+`~/.claude/settings.json` made them fire in the owner's own, unrelated Claude
+Code sessions. They are repo-shipped instead:
+
+| Surface | What it wires |
+| --- | --- |
+| `.claude/settings.json` (tracked, project scope, `$CLAUDE_PROJECT_DIR` form) | the main agent |
+| `templates/settings.json.template` (existence-guarded `[ -f … ] && exec`) | every seeded agent |
+
+Both carry the same three: `UserPromptSubmit -> slack_progress.py`,
+`PostToolUse("slack.*reply") -> slack_progress_reply_clear.py`,
+`Stop -> slack_progress_clear.py`. The Telegram set sits next to them
+unconditionally; that costs nothing, because each hook is provider-scoped
+internally and no-ops on the other provider's turns. Only the **watchdog
+daemon** — which polls on a timer whether or not a turn is in flight — has to
+be gated to the active provider.
 
 `MARVEEN_ENV_FILE=<path>` makes the installers (and the retire script) read
 that file instead of `<install>/.env` — a test hook only, so the contract
@@ -145,15 +169,14 @@ tests never depend on the checkout's own `.env`.
 
 ### The PostToolUse matcher
 
-The default matcher is the loose regex `slack.*reply`: it matches the real
-reply tool name `mcp__plugin_slack-channel_slack__reply` regardless of the
-exact plugin id, mirroring the Telegram matcher `telegram.*reply`. If a given
-install needs a stricter or different matcher, override before installing:
-
-```bash
-SLACK_REPLY_TOOL_MATCHER='mcp__plugin_<your-id>_slack__reply' \
-  bash scripts/install-slack-progress-hook.sh
-```
+The matcher is the loose regex `slack.*reply`, fixed in the two settings
+surfaces above: it matches the real reply tool name
+`mcp__plugin_slack-channel_slack__reply` regardless of the exact plugin id,
+mirroring the Telegram matcher `telegram.*reply`. An install that needs a
+stricter or different matcher edits `.claude/settings.json` (and the template
+for seeded agents) — there is no installer flag any more, because the
+installer no longer writes any settings file. The pre-#1305
+`SLACK_REPLY_TOOL_MATCHER` environment override is gone.
 
 The hook scripts themselves are more forgiving than the matcher: they only
 check that the tool name contains `slack` and `reply`, so a slightly-off
@@ -193,9 +216,12 @@ bash scripts/__tests__/sync-hooks-provider-gate.test.sh   # both installers, glo
 bash scripts/retire-progress-watchdog.sh slack --force
 ```
 
-This unwires the four hooks from `~/.claude/settings.json` and stops +
-removes the watchdog daemon (launchd agent on macOS, systemd user timer on
-Linux). The hook files under `~/.claude/hooks/` are left in place; they are
+This stops + removes the watchdog daemon (launchd agent on macOS, systemd user
+timer on Linux) and unwires any `slack_progress*` entry from the **user-global**
+`~/.claude/settings.json` — a pre-#1305 leftover, since nothing writes there any
+more. It never touches the repo-shipped `.claude/settings.json`: those hooks are
+tracked files, removed by editing the repo, not by a script. The hook files
+under `~/.claude/hooks/` (also pre-#1305 leftovers) are left in place; they are
 inert once unwired.
 
 Note that while `CHANNEL_PROVIDER=slack`, the next update's `sync-hooks.sh`

@@ -93,6 +93,16 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "matcher": "slack.*reply",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/slack_progress_reply_clear.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/slack_progress_reply_clear.py; exit 0'",
+            "timeout": 15
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -128,6 +138,11 @@
             "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram_progress.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/telegram_progress.py; exit 0'",
             "timeout": 15
           }
+          ,{
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/slack_progress.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/slack_progress.py; exit 0'",
+            "timeout": 15
+          }
         ]
       }
     ],
@@ -149,6 +164,11 @@
           {
             "type": "command",
             "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram_progress_clear.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/telegram_progress_clear.py; exit 0'",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/slack_progress_clear.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/slack_progress_clear.py; exit 0'",
             "timeout": 15
           }
         ]
