@@ -5,6 +5,7 @@ import {
   markMessageDone, markMessageFailed, getAgentMessage,
   closeOtelSpan,
   getPendingBacklogByAgent,
+  countNewerMessagesForRows,
   COMPLETION_REPORT_PREFIX,
   type AgentMessage,
 } from '../../db.js'
@@ -17,6 +18,7 @@ import { isAgentRunning } from '../agent-process.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { stampHeartbeatHeader } from '../heartbeat-header-stamp.js'
+import { buildFreshnessInfo, type MessageFreshness } from '../agent-message-wrap.js'
 import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
 import type { RouteContext } from './types.js'
@@ -83,6 +85,34 @@ export function resultSummary(id: number, result: string | undefined | null): st
     `\n... [levágva, még ${maradt} karakter. A teljes szöveg a(z) ${id}. üzenet result mezőjében áll` +
     ` -- ez NEM ennek az üzenetnek az id-je. Kérd le: bash scripts/agent-msg-get.sh ${id}]`
   )
+}
+
+// Every JSON read of a message body carries the same freshness / supersession
+// state the router stamps on the delivered text.
+//
+// WHY THE READ PATH NEEDS IT AT ALL. Reading the pending mailbox is a SUPPORTED
+// move, not a workaround: the pull drain-inbox path exists precisely because it
+// hands the main agent its messages in seconds where the router's push can take
+// many minutes. So the answer to an early read acting on stale orders is
+// emphatically NOT to forbid the read -- that would break a working mechanism
+// over a missing annotation. It is to make the two paths say the same thing.
+// Until now they did not: a row read from this endpoint arrived bare, and if its
+// sender corrected or revoked it in the interval before delivery, the reader had
+// nothing to go on. The annotation sat on the path the early read bypasses.
+//
+// Added as a SEPARATE `freshness` object rather than folded into `content`: the
+// row is evidence (the system-directive rule compares `content` byte for byte
+// against the quoted directive), so the body must stay untouched.
+export type AgentMessageWithFreshness = AgentMessage & { freshness: MessageFreshness }
+
+export function attachFreshness(messages: AgentMessage[]): AgentMessageWithFreshness[] {
+  const nowMs = Date.now()
+  // One query per distinct (from, to) partition, not one per row.
+  const newer = countNewerMessagesForRows(messages)
+  return messages.map((m) => ({
+    ...m,
+    freshness: buildFreshnessInfo(nowMs - m.created_at * 1000, newer.get(m.id) ?? 0),
+  }))
 }
 
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
@@ -295,7 +325,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       messages = listAgentMessages(limit)
     }
 
-    jsonMaybeGzip(req, res, messages)
+    jsonMaybeGzip(req, res, attachFreshness(messages))
     return true
   }
 
@@ -306,7 +336,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   if (msgUpdateMatch && method === 'GET') {
     const one = getAgentMessage(parseInt(msgUpdateMatch[1], 10))
     if (!one) { json(res, { error: 'Message not found' }, 404); return true }
-    json(res, one)
+    json(res, attachFreshness([one])[0])
     return true
   }
   if (msgUpdateMatch && method === 'PUT') {

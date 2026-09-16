@@ -72,6 +72,35 @@ export function formatFreshnessSuffix(ageMs?: number, newerFromSameSender?: numb
   return ''
 }
 
+// The same signal, shaped for a JSON reader instead of an injected prefix.
+// The freshness annotation belongs to the message CONTENT, not to one delivery
+// path: a recipient that reads its own still-pending mailbox over
+// `GET /api/messages` receives the row well before the router injects it, and
+// used to receive it stripped of exactly the warning the router would have
+// attached. That gap is long enough for a sender to send a correction, or to
+// revoke the instruction outright, between the read and the delivery -- and the
+// early reader had no way to see that it had happened.
+//
+// `note` is the ROUTER's own string, trimmed -- deliberately not a second
+// wording. If the delivered text and the API text ever disagree about what is
+// stale, the one that is wrong is whichever drifted, so there is only one.
+// The raw numbers travel alongside it because a machine consumer should not
+// have to parse Hungarian prose to learn that two newer messages exist.
+export type MessageFreshness = {
+  ageMinutes: number
+  newerFromSameSender: number
+  note: string
+}
+
+export function buildFreshnessInfo(ageMs: number, newerFromSameSender: number): MessageFreshness {
+  const safeAge = Math.max(0, ageMs)
+  return {
+    ageMinutes: Math.floor(safeAge / 60000),
+    newerFromSameSender,
+    note: formatFreshnessSuffix(safeAge, newerFromSameSender).trim(),
+  }
+}
+
 // Classify an inter-agent message's delivery category, in priority order on the
 // SANITIZED from-id. Returns null when the from_agent collapses to empty after
 // sanitize (the caller must reject/fail such a message, never wrap it).

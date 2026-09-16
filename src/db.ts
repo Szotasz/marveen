@@ -2885,6 +2885,54 @@ export function countNewerMessagesFromSameSender(fromAgent: string, toAgent: str
   return row.n
 }
 
+// Batch form of the above for a LIST of rows: the JSON mailbox endpoints
+// annotate every row they return, up to a full page of them.
+//
+// Not a loop over countNewerMessagesFromSameSender: that function is a
+// per-partition scan (see the note above it), so calling it per row turns one
+// list read into N scans of the same few partitions -- the classic N+1, and on
+// the exact endpoint the dashboard polls. Instead we read each distinct
+// (from_agent, to_agent) partition ONCE, from the oldest id we care about
+// upward, and count in memory. Same answer, same 'failed'-excluded rule.
+export function countNewerMessagesForRows(
+  rows: { id: number; from_agent: string; to_agent: string }[],
+): Map<number, number> {
+  const out = new Map<number, number>()
+  if (!rows.length) return out
+
+  const partitions = new Map<string, { from: string; to: string; ids: number[] }>()
+  for (const r of rows) {
+    // \u0000 as the separator: an agent id cannot contain a NUL, so two
+    // different (from, to) pairs can never collide into one key.
+    const key = `${r.from_agent}\u0000${r.to_agent}`
+    const p = partitions.get(key)
+    if (p) p.ids.push(r.id)
+    else partitions.set(key, { from: r.from_agent, to: r.to_agent, ids: [r.id] })
+  }
+
+  const stmt = db.prepare(
+    "SELECT id FROM agent_messages WHERE from_agent = ? AND to_agent = ? AND id > ? AND status != 'failed' ORDER BY id"
+  )
+  for (const p of partitions.values()) {
+    const oldest = Math.min(...p.ids)
+    // Ascending ids of everything strictly newer than the oldest row of interest.
+    const newerIds = (stmt.all(p.from, p.to, oldest) as { id: number }[]).map((r) => r.id)
+    for (const id of p.ids) {
+      // How many of those are strictly newer than THIS row: binary search for
+      // the first index past `id`, the rest of the array is the answer.
+      let lo = 0
+      let hi = newerIds.length
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1
+        if (newerIds[mid] <= id) lo = mid + 1
+        else hi = mid
+      }
+      out.set(id, newerIds.length - lo)
+    }
+  }
+  return out
+}
+
 // Per-agent backlog: how many messages are waiting, and how old the oldest one
 // is. The queue only surfaces when somebody opens a pane and notices, which is
 // how an 18-row backlog went unseen on 2026-07-27 and got mistaken for data
