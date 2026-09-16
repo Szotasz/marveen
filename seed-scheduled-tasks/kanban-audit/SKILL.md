@@ -238,7 +238,27 @@ except Exception: print(0)
 
 5. **State-fájl frissítés** (a futás VÉGÉN): `store/kanban-audit-state.json` -> `{"last_audit_at": <current Unix timestamp>}`.
 
-6. **Delegálatlan kártyák**: in_progress/waiting/planned amiknek assignee NULL/üres -> log + Telegram csak akkor ha 3+ ilyen van.
+6. **Delegálatlan kártyák**: minden nem archivált, NEM `done` kártya (kizárással szűrj, ne a státuszok felsorolásával), aminek assignee NULL/üres -> log + Telegram csak akkor ha 3+ ilyen van.
+
+6a. **Detektorral nem fedett státuszú kártyák** (KANBANSTATUSZVAK916, KÖTELEZŐ minden körben): a többi
+   detektor a `planned`, `in_progress`, `waiting`, `done` négyesre szűr, a tábla viszont ennél többet enged
+   (a `kanban_cards` séma CHECK-je szerint a `testing` is érvényes). Az ilyen kártya SEMELYIK detektorban
+   nem jelenik meg (mért eset 2026-09-16: `17d07456`, `testing`, 2026-09-05 óta), az audit számára nem létezik.
+   ```bash
+   curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:$PORT/api/kanban" | python3 -c "
+import json,sys,time
+COVERED={'planned','in_progress','waiting','done'}
+for c in json.load(sys.stdin):
+    if c.get('archived_at') or c.get('status') in COVERED: continue
+    age=(time.time()-(c.get('updated_at') or 0))/86400
+    print(c['id'][:8],'|',c.get('status'),'|',round(age,1),'napja nem mozdult |',(c.get('title') or '')[:50])
+"
+   ```
+   **Ha van találat:** a kör jelentésébe ID-vel, státusszal és korral kerüljön bele, és Telegramon is
+   menjen ki (7. pont), mert ezekre a kártyákra a stuck- és a
+   delegálatlan-mérés nem érvényes. **Ha 0:** a jelentésben is 0-ként szerepeljen, ne maradjon ki,
+   különben nem látszik, hogy a lépés lefutott. A `COVERED` halmazt csak akkor bővítsd, ha
+   az új státuszt egy detektor ténylegesen méri, különben a bővítés újra elrejti a kártyát.
 
 6b. **ELŐRE-DATÁLT CÍM-BÉLYEG detektor** (2026-08-25-én vezetve be, mert a hiba negyedszer fordult elő):
    a kártyacímbe írt óra BECSÜLT lehet, és hosszú munkamenetben MONOTON NÖVEKVŐ eltérést halmoz
@@ -267,6 +287,7 @@ for c in json.load(sys.stdin):
 7. **Telegram csak akkor írj ha**:
    - 3+ beakadt task van (kritikus)
    - Új blokker (waiting > 48h)
+   - Detektorral nem fedett státuszú kártya (6a): ugyanarról a kártyáról naponta legfeljebb egyszer, a többi körben csak a jelentésben
    - **TULAJDONOSRA VÁRÓ KEMÉNY BLOKKOLÓ, státusztól és kortól függetlenül.**
      A fenti két küszöb szűk, mert mindkettő ÁLLAPOTOT vagy KORT néz, a
      blokkoló viszont lehet friss és lehet `planned` is. 2026-08-11: egy
