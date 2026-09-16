@@ -14,6 +14,16 @@ export interface ProfileTemplate {
   description: string
   permissionMode: 'strict' | 'permissive'
   filesystem: { allow: string[]; deny: string[] }
+  // Directories OUTSIDE the agent's own working directory that it may touch.
+  // MEASURED 2026-09-06 (gembaecho): an `allow` entry alone is NOT enough for a
+  // path outside the agent cwd -- Claude Code asks for approval on every single
+  // `ls`/`cat`/`grep`/Write against it even when `Bash(ls:*)` and
+  // `Read(<path>/**)` are both allowlisted. The extra scope has to be declared
+  // as `permissions.additionalDirectories`; with it the identical command runs
+  // silently. Placeholders (${AGENT_DIR}, ${HOME}) are resolved like the
+  // allow/deny lists. Optional -- a profile that stays inside its own dir
+  // needs none.
+  additionalDirectories?: string[]
 }
 
 export const PROFILES_DIR = join(PROJECT_ROOT, 'templates', 'profiles')
