@@ -1,20 +1,55 @@
 {
   "id": "researcher",
   "label": "Kutató",
-  "description": "Piackutatas, versenytars-elemzes, webes forrasok olvasasa. Prompt injection szempontbol kiemelt felulet, ezert a deny-lista (SSH/AWS/.env, sudo, rm, curl -X POST, git push) VALTOZATLANUL all. A permissionMode viszont permissive a gazda 2026-09-07-i dontese szerint (TG 14764): strict alatt az agens minden tool-hivasnal engedelykero parbeszedre allt meg, amire nem-interaktiv agensben senki nem valaszol, tehat egyaltalan nem tudott dolgozni. Draft-only marad: riportot ir a sajat mappajaba, nem kuld magatol kifele.",
+  "description": "Kutatas, forrasfeltaras, webes es tudomanyos forrasok olvasasa. Prompt injection szempontbol kiemelt: kulso tartalom CSAK a quarantine-reader sub-agensen at johet, adatkent. Draft-only: riportot ir a mappajaba, nem kuld magatol kifele. A curl -X POST tiltas MEGMARAD (kifele nem POST-olhat); a helyi dashboard API es az agent-msg.sh helper kulon engedelyt kapott, mert enelkul a memoria-mentes es a fonoknek valo valaszadas mind blokkol. A permissionMode permissive a gazda 2026-09-07-i dontese szerint (TG 14764): strict alatt az agens minden tool-hivasnal engedelykero parbeszedre allt meg, amire nem-interaktiv agensben senki nem valaszol.",
   "permissionMode": "permissive",
   "filesystem": {
     "allow": [
       "Read(${AGENT_DIR}/**)",
+      "Write(${AGENT_DIR}/**)",
       "Edit(${AGENT_DIR}/**)",
+      "Read(${AGENT_DIR}/.claude-config/**)",
+      "Read(${HOME}/marveen/research-inbox/**)",
+      "Read(${HOME}/marveen/agents/*/research/**)",
       "Read(${HOME}/Downloads/**)",
+      "Read(/mnt/c/Users/*/Downloads/**)",
+      "Read(${HOME}/.claude/skills/**)",
       "Bash(ls:*)",
       "Bash(cat:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(sort:*)",
+      "Bash(date:*)",
+      "Bash(python3:*)",
+      "Bash(dumppdf.py:*)",
+      "Bash(pdf2txt.py:*)",
+      "Bash(/home/istvan/.local/bin/pdf2txt.py:*)",
+      "Bash(/home/istvan/.local/bin/dumppdf.py:*)",
+      "Bash(${HOME}/.local/bin/pdf2txt.py:*)",
+      "Bash(${HOME}/.local/bin/dumppdf.py:*)",
+      "Bash(bash ${HOME}/marveen/scripts/agent-msg.sh:*)",
+      "Bash(bash /home/istvan/marveen/scripts/agent-msg.sh:*)",
+      "Bash(bash ${HOME}/marveen/scripts/agent-mem.sh:*)",
+      "Bash(bash /home/istvan/marveen/scripts/agent-mem.sh:*)",
+      "Bash(cd ${HOME}/marveen && bash scripts/agent-mem.sh:*)",
+      "Bash(bash scripts/agent-mem.sh:*)",
+      "Bash(cd ${HOME}/marveen && bash scripts/agent-msg.sh:*)",
+      "Bash(cd /home/istvan/marveen && bash scripts/agent-msg.sh:*)",
+      "Bash(curl -s -X POST http://localhost:3420/api/*)",
+      "Bash(curl -s -H \"Authorization: Bearer $(cat /home/istvan/marveen/store/.dashboard-token)\" \"http://localhost:3420/api/*)",
+      "Bash(${PROJECT_ROOT}/scripts/notify.sh:*)",
       "WebFetch(*)",
       "WebSearch(*)",
-      "Read(${HOME}/.claude/skills/**)",
-      "Bash(${PROJECT_ROOT}/scripts/agent-post.sh:*)",
-      "Bash(${PROJECT_ROOT}/scripts/notify.sh:*)"
+      "Write(${HOME}/marveen/research-inbox/**)",
+      "Edit(${HOME}/marveen/research-inbox/**)",
+      "Bash(mkdir:*)",
+      "Write(${AGENT_DIR}/.claude/skills/**)",
+      "Edit(${AGENT_DIR}/.claude/skills/**)",
+      "/mnt/e/03_LEAN Library/**",
+      "/home/istvan/marveen/store/egress-allowlist.json"
     ],
     "deny": [
       "Read(${HOME}/.ssh/**)",
@@ -27,5 +62,11 @@
       "Bash(curl -X POST:*)",
       "Bash(git push:*)"
     ]
-  }
+  },
+  "additionalDirectories": [
+    "${HOME}/marveen/research-inbox",
+    "${HOME}/marveen/scripts",
+    "${HOME}/marveen/store",
+    "/mnt/e/03_LEAN Library"
+  ]
 }
