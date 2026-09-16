@@ -170,25 +170,49 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     const stats = { hot: 0, warm: 0, cold: 0, shared: 0 }
     let imported = 0
 
-    // Opt-in only: the model is never guessed. Picking "whatever Ollama lists
-    // first" landed on a 1.3B code model that scored no better than all-warm
-    // while loading the GPU for ~8s per chunk.
+    // The model is never GUESSED -- and the feature is never silently switched
+    // off either. Two rules, in this order:
+    //
+    //   1. MEMORY_IMPORT_CATEGORIZE_MODEL is an OVERRIDE, not a switch: when
+    //      set, exactly that model runs (a bare name matches its `:latest`
+    //      tag). If it is not installed, nothing is substituted -- warm, and a
+    //      warning that names the missing model.
+    //   2. With nothing set, `gemma4*` is auto-detected: the intended model,
+    //      named in this code since the feature shipped. A correctly
+    //      provisioned host keeps categorizing with no configuration at all.
+    //
+    // What is gone is the old `?? installed[0]` fallback. On a host WITHOUT
+    // gemma4 it picked whatever Ollama happened to list first; measured on a
+    // 4 GB host that was deepseek-coder:1.3b, which scored 4/12 on a
+    // hand-labelled set -- exactly what tagging everything warm scores --
+    // returned unparseable output half the time and held the GPU ~8s per
+    // chunk. No categorization is better than that; a wrong tier is worse than
+    // an honest default.
+    //
+    // Embedding models are excluded from the auto-detect on purpose: they
+    // cannot answer /api/generate at all, so matching one would be a silent
+    // no-op dressed up as a working categorizer.
     let categorizeModel: string | null = null
-    if (MEMORY_IMPORT_CATEGORIZE_MODEL) {
-      const installed = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(3000) })
-        .then(r => r.json())
-        .then((d: any) => (d.models || []).map((m: any) => m.name) as string[])
-        .catch(() => [] as string[])
-      const wanted = MEMORY_IMPORT_CATEGORIZE_MODEL
+    const wanted = MEMORY_IMPORT_CATEGORIZE_MODEL
+    const installed = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(3000) })
+      .then(r => r.json())
+      .then((d: any) => (d.models || []).map((m: any) => m.name) as string[])
+      .catch(() => [] as string[])
+    if (wanted) {
       const tagged = wanted.includes(':') ? wanted : `${wanted}:latest`
       categorizeModel = installed.find(m => m === wanted || m === tagged) ?? null
       if (categorizeModel) {
-        logger.info({ model: categorizeModel }, 'Migráció: AI kategorizálás modell kiválasztva')
+        logger.info({ model: categorizeModel }, 'Migráció: AI kategorizálás modell kiválasztva (beállítás)')
       } else {
         logger.warn({ model: wanted, ollamaUrl: OLLAMA_URL }, 'Migráció: a beállított kategorizáló modell nem elérhető, alapértelmezett warm besorolás')
       }
     } else {
-      logger.info('Migráció: MEMORY_IMPORT_CATEGORIZE_MODEL nincs beállítva, alapértelmezett warm besorolás')
+      categorizeModel = installed.find(m => /^gemma4(?:[:\-]|$)/.test(m) && !m.includes('embed')) ?? null
+      if (categorizeModel) {
+        logger.info({ model: categorizeModel }, 'Migráció: AI kategorizálás modell felismerve (gemma4)')
+      } else {
+        logger.info({ ollamaUrl: OLLAMA_URL }, 'Migráció: nincs telepített gemma4 és nincs MEMORY_IMPORT_CATEGORIZE_MODEL, alapértelmezett warm besorolás')
+      }
     }
 
     for (let i = 0; i < chunks.length; i++) {

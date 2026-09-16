@@ -33,7 +33,13 @@ vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 }))
 
-const INSTALLED = ['nomic-embed-text:latest', 'deepseek-coder:1.3b', 'gemma3:4b']
+// The reference host's shape: the intended model IS installed, next to an
+// embedding model and two unrelated ones.
+const INSTALLED = ['nomic-embed-text:latest', 'deepseek-coder:1.3b', 'gemma3:4b', 'gemma4:31b']
+// A host without the intended model. The old code picked the first non-embed
+// entry here (deepseek-coder:1.3b) -- the regression this suite pins.
+const INSTALLED_NO_GEMMA4 = ['nomic-embed-text:latest', 'deepseek-coder:1.3b', 'gemma3:4b']
+let installedList: string[] = INSTALLED
 const fetchMock = vi.fn()
 
 function generateCalls(): string[] {
@@ -61,10 +67,11 @@ beforeAll(() => {
 
 beforeEach(() => {
   fetchMock.mockReset()
+  installedList = INSTALLED
   fetchMock.mockImplementation(async (url: string) => {
     const u = String(url)
     if (u.endsWith('/api/tags')) {
-      return { json: async () => ({ models: INSTALLED.map(name => ({ name })) }) }
+      return { json: async () => ({ models: installedList.map(name => ({ name })) }) }
     }
     if (u.endsWith('/api/generate')) {
       return { json: async () => ({ response: '{"tier": "hot", "keywords": "deadline, pr"}' }) }
@@ -79,12 +86,38 @@ afterAll(() => {
 })
 
 describe('POST /api/memories/import categorize model', () => {
-  it('unset: makes no model call and tiers everything warm', async () => {
+  it('unset: auto-detects the installed gemma4 and categorizes with it', async () => {
     state.model = ''
+    const out = await runImport('agent-auto', ['Holnap 10-kor döntés a PR-ról.'])
+    expect(generateCalls()).toEqual(['gemma4:31b'])
+    expect(out.stats.hot).toBe(1)
+  })
+
+  it('unset without gemma4: no model call, everything warm', async () => {
+    state.model = ''
+    installedList = INSTALLED_NO_GEMMA4
     const out = await runImport('agent-unset', ['Holnap 10-kor döntés a PR-ról.'])
     expect(out.stats).toEqual({ hot: 0, warm: 1, cold: 0, shared: 0 })
     expect(generateCalls()).toEqual([])
-    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/api/tags'))).toBe(false)
+  })
+
+  // The regression itself: with no gemma4 present, the old code ran
+  // deepseek-coder:1.3b, which scored no better than all-warm. Absence of a
+  // categorizer must never turn into "run whatever is installed".
+  it('unset without gemma4: never falls back to an arbitrary installed model', async () => {
+    state.model = ''
+    installedList = INSTALLED_NO_GEMMA4
+    await runImport('agent-nofallback', ['Holnap 10-kor döntés a PR-ról.'])
+    expect(generateCalls()).toEqual([])
+  })
+
+  // An embedding model cannot answer /api/generate; matching one would be a
+  // silent no-op dressed up as a working categorizer.
+  it('unset: an embedding model is never auto-detected', async () => {
+    state.model = ''
+    installedList = ['gemma4-embed:latest', 'nomic-embed-text:latest']
+    await runImport('agent-embed', ['Holnap 10-kor döntés a PR-ról.'])
+    expect(generateCalls()).toEqual([])
   })
 
   it('set but not installed: never substitutes another model', async () => {

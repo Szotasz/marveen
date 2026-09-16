@@ -147,7 +147,7 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 |-------|-------|-----------|--------|-------------|
 | `DASHBOARD_PUBLIC_URL` | string | (üres) | A dashboard nyilvánosan elérhető URL-je | igen |
 | `OLLAMA_URL` | string | `http://localhost:11434` | Ollama API alap-URL | igen |
-| `MEMORY_IMPORT_CATEGORIZE_MODEL` | string | (üres) | Memória-import besoroló Ollama modellje; üres = minden warm | igen |
+| `MEMORY_IMPORT_CATEGORIZE_MODEL` | string | (üres) | Memória-import besoroló Ollama modellje (felülbírálás); üres = telepített `gemma4` felismerése, olyan híján minden warm | igen |
 
 **Registry -- Heartbeat modul:**
 
