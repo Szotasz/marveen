@@ -32,7 +32,15 @@ notify branch is measurable without speaking to the owner.
 """
 import argparse, json, os, re, subprocess, sys, time, urllib.request, urllib.error
 
-STATE = os.path.expanduser("~/marveen/store/.channel-process-gate-state.json")
+# The install root, NOT the home directory. The earlier `~/marveen/...` default
+# assumed the checkout lives at a fixed path under $HOME; on an install rooted
+# elsewhere it silently CREATED an orphan `~/marveen/store` (os.makedirs is
+# permissive) and parked the state where nobody looks. Derive it from this file
+# instead, with the harness override winning when present.
+INSTALL_ROOT = os.environ.get("CLAUDE_PROJECT_DIR") or os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+STATE = os.path.join(INSTALL_ROOT, "store", ".channel-process-gate-state.json")
 CH_DIR = os.path.join(os.path.expanduser("~"), ".claude", "channels")
 
 DECL_RE = re.compile(r"plugin:([A-Za-z0-9_.-]+)@([A-Za-z0-9_.-]+)")
@@ -141,7 +149,7 @@ def owner_dm_id():
     return str(allow[0]) if allow else None
 
 
-ALERT_TARGETS = os.path.expanduser("~/marveen/store/alert-targets.json")
+ALERT_TARGETS = os.path.join(INSTALL_ROOT, "store", "alert-targets.json")
 
 
 def alert_target(channel):
@@ -247,7 +255,18 @@ def load_state():
 
 
 def save_state(st):
-    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    # Do not conjure a store/ in a tree we do not own: a missing store/ means the
+    # root resolved wrong, and creating it is exactly how the orphan directory
+    # appeared. Fail loudly instead.
+    state_dir = os.path.dirname(STATE)
+    if not os.path.isdir(state_dir):
+        print(f"MERESI HIBA: a store konyvtar nem letezik: {state_dir} "
+              f"(INSTALL_ROOT={INSTALL_ROOT}). Allitsd a CLAUDE_PROJECT_DIR-t a telepites gyokerere.",
+              file=sys.stderr)
+        # SystemExit, not `return`: save_state()'s return value is not checked by
+        # its caller, so a plain return would drop the state write SILENTLY and
+        # the gate would still exit 0/1 as if it had persisted.
+        raise SystemExit(2)
     tmp = STATE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(st, fh, indent=1, sort_keys=True)

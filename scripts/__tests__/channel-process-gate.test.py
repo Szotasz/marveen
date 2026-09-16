@@ -35,6 +35,12 @@ OTHER_BUN = ("2972962 2972889 bun run --cwd /home/user/.claude/plugins/cache/"
 HEADER = "    PID    PPID COMMAND"
 NOISE = ("3008580 3004904 /bin/bash -c grep -v "
          "plugins/cache/claude-plugins-official/telegram/ ps.txt")
+# A child of OUR session whose --cwd carries the plugin-shaped tail but does NOT
+# live under plugins/cache. Upstream review (2026-09-15) measured that removing
+# the `plugins/cache` filter leaves all 16 tests green, i.e. any child started
+# with a --cwd could pass as a live worker. This row is what makes that mutant red.
+MASQUERADE = ("3005022 3004904 bun run --cwd /home/user/.local/share/"
+              "claude-plugins-official/telegram/0.0.7 --shell=bun --silent start")
 
 
 def run(ps_rows, extra=()):
@@ -78,6 +84,18 @@ class GateTest(unittest.TestCase):
         stolen = BUN_TG.replace("3005020 3004904", "3005020 2972889")
         r = run([CLAUDE_BOTH, BUN_DC, stolen, OTHER, OTHER_BUN])
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+
+    def test_a_child_outside_plugins_cache_does_not_count_as_a_worker(self):
+        """Only children running FROM the plugin cache count as live workers.
+
+        Without the `plugins/cache` filter the path tail alone would satisfy the
+        <marketplace>/<plugin> extraction, so a child started with any --cwd could
+        mask a genuinely missing worker. Closes the third point of the upstream
+        review: that mutant used to stay green across all 16 tests.
+        """
+        r = run([CLAUDE_BOTH, BUN_DC, MASQUERADE, OTHER, OTHER_BUN])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("HIANYZO=claude-plugins-official/telegram", r.stdout)
         self.assertIn("HIANYZO=claude-plugins-official/telegram", r.stdout)
 
     def test_empty_ps_is_measurement_error_not_green(self):
@@ -243,6 +261,56 @@ class NotifyBranchTest(unittest.TestCase):
             r = self._run([CLAUDE_BOTH, BUN_TG, OTHER, OTHER_BUN], home)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertEqual(self.seen[0][1]["chat_id"], "876500")
+
+
+class DefaultStatePathTest(unittest.TestCase):
+    """The default state path must come from the INSTALL ROOT, not from $HOME.
+
+    Why this class exists (upstream review, 2026-09-15): the old default was
+    `~/marveen/store/...`, which assumes the checkout sits at a fixed path under
+    the home directory. On an install rooted elsewhere the gate CREATED an orphan
+    `~/marveen/store` -- os.makedirs is permissive -- and parked its state where
+    nobody looks.
+
+    It is a separate class because every other test in this file passes
+    `--state`, so the DEFAULT path is otherwise never exercised: reverting the
+    fix leaves the suite 16/16 green. Measured.
+    """
+
+    def _run(self, root, home):
+        with tempfile.TemporaryDirectory() as d:
+            ps = os.path.join(d, "ps.txt")
+            tm = os.path.join(d, "tmux.txt")
+            with open(ps, "w") as fh:
+                fh.write("\n".join([HEADER, CLAUDE_BOTH, BUN_TG, BUN_DC]) + "\n")
+            with open(tm, "w") as fh:
+                fh.write(TMUX)
+            env = dict(os.environ)
+            env["CLAUDE_PROJECT_DIR"] = root
+            env["HOME"] = home
+            # No --state: this is the point of the class.
+            return subprocess.run([sys.executable, GATE, "--ps-file", ps, "--tmux-file", tm],
+                                  capture_output=True, text=True, env=env)
+
+    def test_state_lands_under_the_install_root_not_under_home(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as home:
+            os.makedirs(os.path.join(root, "store"))
+            r = self._run(root, home)
+            self.assertIn(r.returncode, (0, 1), r.stdout + r.stderr)
+            self.assertTrue(
+                os.path.exists(os.path.join(root, "store", ".channel-process-gate-state.json")),
+                "the state did not land under the install root: " + r.stdout + r.stderr)
+            self.assertFalse(os.path.exists(os.path.join(home, "marveen")),
+                             "the gate conjured an orphan ~/marveen")
+
+    def test_missing_store_is_a_measurement_error_and_creates_nothing(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as home:
+            r = self._run(root, home)  # no store/ under root
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertFalse(os.path.exists(os.path.join(root, "store")),
+                             "the gate created store/ in a tree it does not own")
+            self.assertFalse(os.path.exists(os.path.join(home, "marveen")),
+                             "the gate conjured an orphan ~/marveen")
 
 
 if __name__ == "__main__":
