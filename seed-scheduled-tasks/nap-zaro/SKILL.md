@@ -56,10 +56,19 @@ for c in sorted(cards, key=lambda c: c['updated_at']):
     print(f"   {hhmm(c['updated_at'])} {c['id'][:8]} {c.get('status')} {(c.get('title') or '')[:70]!r}")
 PY
    ```
+   **Harmadik tároló: a módosított skill- és feladat-fájlok.** Az első éles futás (2026-09-16 21:47)
+   mérte: az emlékek és a kártyák NULLÁT adtak, közben két skill-patch és egy nyilvántartó-javítás
+   történt, amelyek csak fájl-módosításként hagytak nyomot. Ezért ezeket is listázd:
+```bash
+find ~/.claude/skills ~/.claude/scheduled-tasks {{INSTALL_DIR}}/.claude/skills -name 'SKILL.md' -newermt "@$SINCE" 2>/dev/null
+```
+   Ha a munkád más, tartós nyilvántartó fájlba is ír (pl. lelet-nyilvántartó a `store/` alatt), azt is nézd
+   meg a módosítási idejével. A gyorsan változó állapot-fájlokat (`*-state.json`) ne sorold fel.
+
    Ha a válasz alakja más, mint amit a szkript vár (hibaüzenet, üres lista a várt adat helyett),
    azt írd le, ne nullát: a „0 új emlék” csak akkor igaz, ha a lekérdezés sikerült.
 
-3. **Bejegyzés írása.** Ha 0 új emlék ÉS 0 mozgott kártya, akkor is írj egy egysoros bejegyzést
+3. **Bejegyzés írása.** Ha 0 új emlék, 0 mozgott kártya ÉS 0 módosított skill-fájl, akkor is írj egy egysoros bejegyzést
    (`nincs új tétel az utolsó bejegyzés óta`), mert így látszik, hogy a kör lefutott, és a csend
    nem kimaradás. Egyébként témák szerint csoportosíts, ne emlékenként listázz: minden téma egy
    rövid bekezdés, időponttal, az eredménnyel, és a kártya-azonosítóval, ha van. Ne találj ki
