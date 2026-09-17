@@ -12,8 +12,14 @@ from email.message import EmailMessage
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lib
 
-# A gazda cime: a kimeno support-levelek KOTELEZO masolati cimzettje.
-OWNER_CC = os.environ.get("SUPPORT_OWNER_CC", "szota.szabolcs@gmail.com")
+# A gazda masolati cime: a kimeno support-levelek alapertelmezett CC-je.
+# CONFIG-VEZERELT, URES ALAPERTELMEZESSEL -- a Marveen termekkent szallitodik, tehat
+# a repoban NEM allhat egyetlen telepites gazdajanak a cime sem. Aki nem allitja be,
+# annal a viselkedes bajt-azonos a korabbival (nincs CC). A mi telepitesunkon a
+# SUPPORT_OWNER_CC a .env-ben all, ami nem verziokovetett.
+# (A template-identity-hygiene teszt fogta meg az elso, hardcode-olt valtozatot --
+#  jogosan: az minden vevo telepitesen a mi cimunkre CC-zett volna.)
+OWNER_CC = lib._env("SUPPORT_OWNER_CC")
 
 
 def main():
@@ -27,8 +33,9 @@ def main():
     # Merve: a mai negy Comline-levelbol HAROM CC nelkul ment ki (INBOX.Sent fejlecek), ezert a
     # gazda a sajat postalada-jaban nem latta a megoldast, es ugy jelezte vissza, mintha az ugy
     # meg allna. Nem a szabaly volt rossz, hanem az, hogy nem volt KODUTBA kotve.
-    ap.add_argument("--cc", default=OWNER_CC,
-                    help=f"CC-cim (alapertelmezes: {OWNER_CC}); kikapcsolas: --no-owner-cc")
+    ap.add_argument("--cc", default=OWNER_CC or None,
+                    help="CC-cim (alapertelmezes: a SUPPORT_OWNER_CC config-ertek, ha be van "
+                         "allitva); kikapcsolas: --no-owner-cc")
     ap.add_argument("--no-owner-cc", action="store_true",
                     help="KIMONDOTT lemondas a gazda-CC-rol -- csak akkor, ha a cimzettnek nem szabad latnia")
     ap.add_argument("--html", action="store_true")
@@ -38,7 +45,9 @@ def main():
     # stub, which is what plain-text readers and previews then show.
     ap.add_argument("--html-wrap", action="store_true")
     a = ap.parse_args()
-    if a.no_owner_cc and a.cc == OWNER_CC:
+    # A lemondas CSAK az alapertelmezett (config-bol jott) erteket ejti ki: egy
+    # kimondott --cc-t nem dob el. Ha nincs beallitva OWNER_CC, nincs mit ejteni.
+    if a.no_owner_cc and OWNER_CC and a.cc == OWNER_CC:
         a.cc = None
     body = a.body if a.body is not None else sys.stdin.read()
 

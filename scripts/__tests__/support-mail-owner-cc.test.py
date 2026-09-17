@@ -30,18 +30,24 @@ def check(name, cond, detail=''):
 def main():
     src = open(SEND, encoding='utf-8').read()
 
-    # 1. A default a gazda cime, nem None. Ez a lenyeg: ha valaki visszaallitja
-    #    `default=None`-ra, ez a sor bukik.
-    check('a --cc defaultja a gazda-cim, nem None',
+    # 1. A default a CONFIG-bol jott ertek, nem None es nem hardcode-olt cim.
+    #    Ha valaki visszaallitja `default=None`-ra, ez a sor bukik.
+    check('a --cc defaultja az OWNER_CC config-ertek, nem None',
           re.search(r'ap\.add_argument\(\s*"--cc"\s*,\s*default=OWNER_CC', src) is not None)
-    check('OWNER_CC a gazda cimere all',
-          'szota.szabolcs@gmail.com' in src and 'OWNER_CC' in src)
+    check('az OWNER_CC a configbol jon (lib._env), nem literal',
+          re.search(r'OWNER_CC\s*=\s*lib\._env\(\s*"SUPPORT_OWNER_CC"\s*\)', src) is not None)
+    # TERMEK-KAPU: a Marveen minden vevo gepere kimegy, tehat a repoban NEM allhat
+    # egyetlen telepites gazdajanak a cime sem. Ezt a template-identity-hygiene teszt
+    # is meri; itt azert ismetlem, mert EZ A FAJL az, ahol az elso valtozat elbukott.
+    check('NINCS hardcode-olt szemelyes cim a fajlban',
+          '@gmail.com' not in src and '@aiamindennapokban.hu' not in src,
+          'a repoba nem kerulhet telepites-specifikus cim')
 
     # 2. Van KIMONDOTT lemondas, es csak az kapcsolja ki.
     check('letezik --no-owner-cc kapcsolo', '--no-owner-cc' in src)
     check('a lemondas CSAK a default erteket ejti ki',
-          re.search(r'if a\.no_owner_cc and a\.cc == OWNER_CC', src) is not None,
-          'enelkul egy KIMONDOTT --cc-t is eldobna')
+          re.search(r'if a\.no_owner_cc and OWNER_CC and a\.cc == OWNER_CC', src) is not None,
+          'enelkul egy KIMONDOTT --cc-t is eldobna, beallitatlan configon pedig hibara futna')
 
     # 3. A kimenet MONDJA KI, ha CC nelkul ment. Enelkul a hianyzo CC nema.
     check('a kimenet jelzi a CC nelkuli kuldest', 'CC NELKUL' in src)
@@ -54,14 +60,14 @@ def main():
     #    irom ide, mert egy 'funkcionalis' cimke enelkul tobbet igerne, mint amit mer.
     prog = (
         'import argparse\n'
-        'OWNER_CC = "szota.szabolcs@gmail.com"\n'
+        'OWNER_CC = "owner@example.test"\n'
         'ap = argparse.ArgumentParser()\n'
         'ap.add_argument("--to", required=True)\n'
         'ap.add_argument("--subject", required=True)\n'
-        'ap.add_argument("--cc", default=OWNER_CC)\n'
+        'ap.add_argument("--cc", default=OWNER_CC or None)\n'
         'ap.add_argument("--no-owner-cc", action="store_true")\n'
         'a = ap.parse_args()\n'
-        'if a.no_owner_cc and a.cc == OWNER_CC: a.cc = None\n'
+        'if a.no_owner_cc and OWNER_CC and a.cc == OWNER_CC: a.cc = None\n'
         'print(repr(a.cc))\n'
     )
 
@@ -70,7 +76,7 @@ def main():
         return r.stdout.strip()
 
     base = ['--to', 'x@y.hu', '--subject', 's']
-    check('CC nelkul hivva a gazda cime jon', run(base) == repr('szota.szabolcs@gmail.com'),
+    check('CC nelkul hivva a config-ertek jon', run(base) == repr('owner@example.test'),
           run(base))
     check('--no-owner-cc eseten None', run(base + ['--no-owner-cc']) == repr(None),
           run(base + ['--no-owner-cc']))
@@ -81,7 +87,7 @@ def main():
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)
         sys.exit(1)
-    print("\nOK: 8 allitas, mind zold.")
+    print("\nOK: 9 allitas, mind zold.")
 
 
 if __name__ == '__main__':
