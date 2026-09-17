@@ -1075,7 +1075,7 @@ window._i18n.hu = {
   'settings.module.autonomy':    'Autonómia',
   'settings.module.security':    'Biztonság',
   'settings.module.claude-plans': 'Claude planek',
-  'settings.claude_plans.intro':  'Regisztrált Claude-előfizetések (planek). Egy plan egy már bejelentkezett, tartós CLAUDE_CONFIG_DIR-t jelöl -- a bejelentkezést magát (claude setup-token) kézzel kell elvégezni, ide csak a regisztrációt vezeted fel. Az automata kulcs-rotáció (lásd a lenti kapcsolót) még nincs bekötve.',
+  'settings.claude_plans.intro':  'Regisztrált Claude-előfizetések (planek). Egy plan egy már bejelentkezett, tartós CLAUDE_CONFIG_DIR-t jelöl; a bejelentkezést magát (claude setup-token) kézzel kell elvégezni, ide csak a regisztrációt vezeted fel. Az automata kulcs-rotációt a lenti kapcsoló vezérli, az előfeltételeit a kapcsoló leírása mondja ki.',
   'settings.claude_plans.empty':  'Még nincs regisztrált plan.',
   'settings.claude_plans.active': 'Jelenleg aktív',
   'settings.claude_plans.no_channels': 'channels tiltva',
