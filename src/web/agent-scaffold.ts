@@ -1902,6 +1902,89 @@ export function ensureSystemDirectiveAuthSection(name: string): void {
   atomicWriteFileSync(claudeMdPath, updated)
 }
 
+// MEMKERESVAK917: the BACK-FILL half of #1380. That PR fixed the two GENERATING
+// surfaces (generateClaudeMd + templates/CLAUDE.md.template), which only run when
+// an agent is CREATED -- so on the day it merged it reached zero of the agents
+// already on disk. Measured on the owner host right after the merge: nine agent
+// CLAUDE.md files still carried the search recipe with no way to see the label.
+//
+// Hence a marker block on the same five-rule idempotency contract as the
+// sections above, applied to the main agent at dashboard start and to every
+// sub-agent on respawn.
+//
+// The "already documents it" skip is what keeps this from duplicating the text
+// for agents generated AFTER #1380: their scaffold-written section already
+// carries the label inline, and a second copy at the end of the file would be
+// pure context cost. The skip is deliberately one-directional -- once the marker
+// block is in a file it is refreshed in place forever, so a wording fix still
+// reaches the back-filled agents.
+const MEMORY_SEARCH_LABEL_BEGIN = '<!-- BEGIN GENERATED: memory-search-label (auto-generated, do not edit by hand) -->'
+const MEMORY_SEARCH_LABEL_END = '<!-- END GENERATED: memory-search-label -->'
+const MEMORY_SEARCH_LABEL_BLOCK_RE = new RegExp(
+  `${MEMORY_SEARCH_LABEL_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${MEMORY_SEARCH_LABEL_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+// Unlike the scaffold copy -- which is an LLM PROMPT carrying the literal string
+// AGENT_NAME for the model to substitute -- this body is written deterministically,
+// so the header dump file is genuinely per-agent and two agents searching at the
+// same time cannot read each other's label out of one shared /tmp path.
+export function buildMemorySearchLabelBody(name: string): string {
+  return [
+    '## Memória-keresés: a FEJLÉCET is olvasd el (KÖTELEZŐ)',
+    '',
+    'A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja őket, és a',
+    'maradék töltelékszavakra hozott sorokat adja vissza. A body ilyenkor UGYANÚGY néz ki, mint',
+    'egy valódi találat -- a különbség KIZÁRÓLAG az `X-Memory-Search` fejlécben utazik. Ezért a',
+    'keresés receptje `-D`-vel megy, és a `grep` NEM opcionális:',
+    '',
+    '```bash',
+    `curl -s -D /tmp/mem-fejlec-${name}.txt -H "Authorization: Bearer $(cat ${tokenPath})" \\`,
+    `  "${dashboardOrigin}/api/memories?agent=${name}&q=KULCSSZO"`,
+    `grep -i '^x-memory-search' /tmp/mem-fejlec-${name}.txt`,
+    '```',
+    '',
+    '- `relaxed=true` -- semmi nem illeszkedett ÚGY, AHOGY KÉRTED; amit látsz, az mentett',
+    '  közelítés, NEM bizonyíték. Egy sosem létezett minta így ötven sorral válaszol.',
+    '- `relaxed=false` -- a kérdés úgy illeszkedett, ahogy kérted. NEM jelenti azt, hogy ez',
+    '  MINDEN, és azt sem, hogy van találat: a `relaxed=false; hits=0` létező válasz.',
+    '',
+    'Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a',
+    '`&strict=1`-et: ott az üres válasz pontosan azt jelenti, aminek látszik.',
+  ].join('\n')
+}
+
+// Same five-rule idempotency contract as ensureFleetRosterSection /
+// ensureAutonomySection / ensureSkillsPathTrapSection / ensureSystemDirectiveAuthSection,
+// plus the one extra rule above: do not append where the file already documents
+// the label inline.
+export function ensureMemorySearchLabelSection(name: string): void {
+  const claudeMdPath = name === MAIN_AGENT_ID
+    ? join(PROJECT_ROOT, 'CLAUDE.md')
+    : join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  const hasBlock = MEMORY_SEARCH_LABEL_BLOCK_RE.test(existing)
+  // Already carries the label from the generating surface (#1380) and has no
+  // block of ours: nothing to back-fill, and a second copy would only cost
+  // context on every session start.
+  if (!hasBlock && /x-memory-search/i.test(existing)) return
+
+  const block = `${MEMORY_SEARCH_LABEL_BEGIN}\n${buildMemorySearchLabelBody(name)}\n${MEMORY_SEARCH_LABEL_END}`
+  const updated = hasBlock
+    ? existing.replace(MEMORY_SEARCH_LABEL_BLOCK_RE, block)
+    : existing.trimEnd() + '\n\n' + block + '\n'
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
 export async function generateClaudeMd(name: string, description: string, model: string): Promise<string> {
   // Distribution-safe default-drive line: only emit a concrete folder when this
   // install has one configured (OWNER_DRIVE_FOLDER). A fresh install with no
