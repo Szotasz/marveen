@@ -1968,8 +1968,9 @@ grep -i '^x-memory-search' /tmp/mem-fejlec-AGENT_NAME.txt
 
 A -D NEM dísz, és a fejlécet KÖTELEZŐ elolvasni. A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja őket, és a maradék töltelékszavakra hozott sorokat adja vissza. A body ilyenkor UGYANÚGY néz ki, mint egy valódi találat -- a különbség KIZÁRÓLAG az X-Memory-Search fejlécben utazik.
 relaxed=true  -> semmi nem illeszkedett ÚGY, AHOGY KÉRTED; amit látsz, az mentett közelítés, NEM bizonyíték.
-relaxed=false -> valódi találat.
+relaxed=false -> a kérdés úgy illeszkedett, ahogy kérted. NEM jelenti azt, hogy ez MINDEN, és azt sem, hogy van találat (hits=0 is lehet mellette).
 Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a &strict=1-et: ott az üres válasz pontosan azt jelenti, aminek látszik.
+ÉS A MÁSIK CSAPDA, amiről a címke HALLGAT: a &category= (tier) szűrő a LIMIT UTÁN fut, tehát csendben csonkol. Mérve: q=billingo&category=warm limit=50 -> 9 sor, limit=200 -> 39 sor, miközben a címke mindkettőre relaxed=false. Ha tier-re szűrsz, EMELD a limitet, vagy hagyd el a szűrőt.
 
 ### Átsorolás (hot -> cold/warm), amikor egy feladat lezárult
 

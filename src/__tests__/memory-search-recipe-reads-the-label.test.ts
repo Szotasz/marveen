@@ -51,9 +51,21 @@ describe.each(SURFACES)('memory-search recipe in $label', ({ path }) => {
     expect(src.toLowerCase()).toContain('x-memory-search')
   })
 
-  it('explains what relaxed=true means, not just that the header exists', () => {
+  // Named for what it measures: both labels are SPELLED OUT, so a reader meets
+  // the two values rather than only the header name. It does NOT measure that
+  // the surrounding prose is correct -- replacing the explanation with word
+  // soup keeps this green, which is why the review asked for the rename.
+  it('spells out both label values, relaxed=true and relaxed=false', () => {
     expect(src).toContain('relaxed=true')
     expect(src).toContain('relaxed=false')
+  })
+
+  // The tier filter runs AFTER the limit, so `&category=warm` truncates in
+  // silence and the label says relaxed=false either way. Measured on this host:
+  // q=billingo&category=warm gave 9 rows at limit=50 and 39 at limit=200.
+  // A recipe that hands out `&category=` without this warning is the trap.
+  it('warns that the tier filter runs after the limit', () => {
+    expect(src.toLowerCase()).toContain('limit ut')
   })
 
   it('points at strict=1 for an absence claim', () => {
