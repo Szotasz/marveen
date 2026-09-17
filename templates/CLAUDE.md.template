@@ -132,11 +132,6 @@ ki, mint egy valódi találat -- a különbség KIZÁRÓLAG az `X-Memory-Search`
 - `relaxed=false` -- a kérdés úgy illeszkedett, ahogy kérted. NEM jelenti azt, hogy ez MINDEN,
   és azt sem, hogy van találat: `relaxed=false; hits=0` létező válasz.
 
-ÉS A MÁSIK CSAPDA, amiről a címke HALLGAT: a `&category=` (tier) szűrő a LIMIT UTÁN fut, tehát
-csendben csonkol. Mérve: `q=billingo&category=warm` `limit=50` -> 9 sor, `limit=200` -> 39 sor,
-miközben a fejléc mindkettőre `relaxed=false`. Ha tier-re szűrsz, EMELD a limitet, vagy hagyd el
-a szűrőt.
-
 Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a
 `&strict=1`-et: ott az üres válasz pontosan azt jelenti, aminek látszik. Az engedékeny
 alapértelmezés SZÁNDÉKOS -- a természetesen megfogalmazott kérdés attól találja meg a meglévő

@@ -60,13 +60,16 @@ describe.each(SURFACES)('memory-search recipe in $label', ({ path }) => {
     expect(src).toContain('relaxed=false')
   })
 
-  // The tier filter runs AFTER the limit, so `&category=warm` truncates in
-  // silence and the label says relaxed=false either way. Measured on this host:
-  // q=billingo&category=warm gave 9 rows at limit=50 and 39 at limit=200.
-  // A recipe that hands out `&category=` without this warning is the trap.
-  it('warns that the tier filter runs after the limit', () => {
-    expect(src.toLowerCase()).toContain('limit ut')
-  })
+  // REMOVED, not lost: there used to be an assertion here that the recipe warns
+  // the tier filter runs after the limit and therefore truncates. #1384 pushed
+  // the filter down into the search SQL, so the warning became false and the
+  // text it pinned is gone from both surfaces. Measured on merged develop
+  // against a copy of the owner store: q=billingo&category=warm now answers 39
+  // rows at limit=50 and 39 at limit=200 -- converged, where before it was 9
+  // and 39. The PROPERTY that replaced the warning is pinned by
+  // memory-search-tier-goes-into-the-query.test.ts, which is where a regression
+  // would show up. A deleted assertion with no trace is how the reason gets
+  // lost, so this comment stays.
 
   it('points at strict=1 for an absence claim', () => {
     expect(src).toContain('strict=1')
