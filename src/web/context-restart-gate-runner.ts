@@ -12,7 +12,10 @@ import { detectPaneState } from '../pane-state.js'
 import { detectsUsageLimit } from '../model-fallback.js'
 import { readContextTokensFromProjectDir, projectsDirFor } from './active-model.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-import { mainConfigRoots } from './inbound-probe.js'
+// One copy, in a module neither runner owns (the gate imports the guard, so the
+// guard cannot import the gate back). Re-exported below because #1382's test
+// -- and any future reader -- looks for these names here.
+import { configDirFor, newestMainConfigRoot } from './main-transcript-root.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { getHardGuardPhase } from './context-guard-runner.js'
 import { readGateConfig, readGateRunState, writeGateRunState } from './context-restart-gate-store.js'
@@ -164,67 +167,7 @@ function workingDirFor(name: string): string {
   return join(PROJECT_ROOT, 'agents', name)
 }
 
-/**
- * Claude Code config root for an agent, or undefined for the host default.
- *
- * Transcripts live under <config-root>/projects/<encoded-working-dir>/, and an
- * agent launched with CLAUDE_CONFIG_DIR keeps them somewhere other than
- * ~/.claude. Reading without this looks in the default root, finds nothing, and
- * the gate's contextTokens comes back null -- which is a fail-closed BLOCK, so
- * the symptom is a gate that never opens and never says why.
- */
-export function configDirFor(name: string): string | undefined {
-  // resolveAgentConfigDirForRead, not readAgentClaudeConfigDir: the launcher
-  // auto-provisions agents/<name>/.claude-config when no field is set, and
-  // reading the host default returns a stale transcript instead of nothing --
-  // which is worse than the null this comment warns about, because the gate
-  // then believes it can see.
-  if (name !== MAIN_AGENT_ID) return resolveAgentConfigDirForRead(name) ?? undefined
-
-  // The main agent used to return undefined here, i.e. the host default root --
-  // the exact trap the comment above warns about, applied to the one agent that
-  // was exempted from it. Since the channels session runs with
-  // CLAUDE_CONFIG_DIR=<PROJECT_ROOT>/.channels-config, its live transcript is
-  // NOT under ~/.claude, while the pre-migration directory there still exists
-  // and still parses. MEASURED 2026-09-17 on this install: the gate reported
-  // 49,483 context tokens from a transcript last written 2026-09-13 07:27,
-  // while the live session file under .channels-config was 16.4 MB and seconds
-  // old -- and the same stale read made msSinceTranscriptWrite() report 4.3
-  // days of quiet, which is FAIL-OPEN: the gate would have judged a session
-  // idle while it was mid-turn. Same defect class as TOKENVAK915 (1c8f4ff),
-  // which fixed token-usage and left this gate behind.
-  //
-  // mainConfigRoots() is reused rather than re-deriving the candidate list, for
-  // the same reason token-usage reuses it: a second copy of that list is how
-  // the scheduler probe and the watchdogs drifted apart before.
-  return newestMainConfigRoot()
-}
-
-/**
- * The main agent's config root whose transcript directory was written most
- * recently, or undefined when no candidate has one (then the caller's default
- * applies, exactly as before).
- *
- * Newest-wins, not first-wins: both roots hold real history (the shared one
- * pre-migration, the isolated one since), so picking by recency follows the
- * live session across a migration without needing to know one happened.
- */
-export function newestMainConfigRoot(): string | undefined {
-  let bestRoot: string | undefined
-  let bestMtime = -1
-  for (const root of mainConfigRoots()) {
-    const dir = projectsDirFor(PROJECT_ROOT, root)
-    let entries: string[]
-    try { entries = readdirSync(dir) } catch { continue }
-    for (const f of entries) {
-      if (!f.endsWith('.jsonl')) continue
-      let m: number
-      try { m = statSync(join(dir, f)).mtimeMs } catch { continue }
-      if (m > bestMtime) { bestMtime = m; bestRoot = root }
-    }
-  }
-  return bestRoot
-}
+export { configDirFor, newestMainConfigRoot }
 
 function agentIdForLedger(name: string): string {
   // The main agent's ledger key is the MAIN_AGENT_ID (e.g. "bigme"), same as

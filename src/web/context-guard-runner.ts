@@ -5,7 +5,7 @@ import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS, markAgentRestartPending } from './channel-monitor.js'
 import { shouldDeferForRecentRespawn } from './stuck-tool-call-watcher.js'
 import { listAgentNames, listAllAgentNames, agentDir, readAgentModel, readAgentRemoteHost } from './agent-config.js'
-import { resolveAgentConfigDirForRead } from './claude-plans.js'
+import { configDirFor } from './main-transcript-root.js'
 import {
   agentRunState,
   agentSessionName,
@@ -261,15 +261,8 @@ export function resumePrompt(
   )
 }
 
-function configDirFor(name: string): string | undefined {
-  // resolveAgentConfigDirForRead, not readAgentClaudeConfigDir: an agent whose
-  // config dir was auto-provisioned by the launcher has no field to read, and
-  // reading the host default silently returns another agent's absence.
-  return name === MAIN_AGENT_ID ? undefined : (resolveAgentConfigDirForRead(name) ?? undefined)
-}
-
 /** Raw observed context size (tokens) for the idle-flush tier's absolute threshold. */
-function measureContextTokens(name: string): number | null {
+export function measureContextTokens(name: string): number | null {
   const tokens = readContextTokensFromProjectDir(workingDirFor(name), configDirFor(name))
   return tokens !== null && tokens > 0 ? tokens : null
 }
@@ -280,13 +273,13 @@ function measureContextTokens(name: string): number | null {
  * a clock change) is treated as "just now" rather than as a large idle time --
  * a wrong clock must not be able to trigger a flush.
  */
-function measureIdleMs(name: string, nowMs: number): number | null {
+export function measureIdleMs(name: string, nowMs: number): number | null {
   const mtime = readTranscriptMtimeFromProjectDir(workingDirFor(name), configDirFor(name))
   if (mtime === null) return null
   return Math.max(0, nowMs - mtime)
 }
 
-function measurePct(name: string, cfgLimit: number | null): number | null {
+export function measurePct(name: string, cfgLimit: number | null): number | null {
   const workingDir = workingDirFor(name)
   const configDir = configDirFor(name)
   const tokens = readContextTokensFromProjectDir(workingDir, configDir)
@@ -296,7 +289,10 @@ function measurePct(name: string, cfgLimit: number | null): number | null {
     limit = cfgLimit
   } else {
     const model = (name === MAIN_AGENT_ID
-      ? readActiveModelFromProjectDir(PROJECT_ROOT)
+      // Same root as the token read above: the model decides the context LIMIT,
+      // so a model read from a stale root produces a wrong pct from a right
+      // token count -- and pct is what the handoff threshold compares.
+      ? readActiveModelFromProjectDir(PROJECT_ROOT, undefined, configDirFor(name))
       : readAgentModel(name)) ?? ''
     // Calibrate against the persisted per-(agent, model) maximum, not just
     // the live reading: a fresh post-restart session must not un-learn a
@@ -421,7 +417,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           // The actionable field: this is what says WHAT to fix. Same branch as
           // measurePct's, and it only runs on this rare state change.
           model: (name === MAIN_AGENT_ID
-            ? readActiveModelFromProjectDir(PROJECT_ROOT)
+            ? readActiveModelFromProjectDir(PROJECT_ROOT, undefined, configDirFor(name))
             : readAgentModel(name)) ?? null,
         },
         // Fleet-side checks should match on the fields above (name, model, pct,
