@@ -134,3 +134,12 @@ transcripts/
 # not source. (The UI language marker .lang this commit also added has since
 # landed on develop; kept there, not duplicated here.)
 .uploads/
+
+# Scratch HOME for test runs. The suite is run as `HOME=<scratch> npx vitest`
+# because #1348 -- before it, the full suite wrote into the owner's real
+# ~/.ssh/authorized_keys. The tool leaves droppings in that HOME (npm's
+# update-notifier stamp, a 648 KB lbdb vector extension), and three PRs in the
+# MEMKERESVAK917 series would have carried the first of them into the repo.
+# No trailing slash on purpose: a trailing slash does not match a symlink, so
+# `.fakehome/` would stop ignoring it the day the scratch HOME is created as one.
+.fakehome

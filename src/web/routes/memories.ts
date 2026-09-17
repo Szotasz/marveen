@@ -110,23 +110,33 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     // caller can tell them apart.
     const hybridTrace: HybridSearchTrace = { ftsHits: 0, vectorHits: 0, ftsRelaxed: false, vectorOnly: false }
     const searchTrace: { relaxed: boolean } = { relaxed: false }
+    // MEMKERESVAK917: `tier` goes INTO the search, not on top of its answer.
+    // It used to be a post-filter applied after the search had already cut to
+    // `limit`, which meant a filtered search truncated silently -- and said
+    // relaxed=false while doing it. Every search branch below takes it now.
+    const searchCategory = tier || undefined
     if (q && mode === 'hybrid') {
-      results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit, hybridTrace)
+      results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit, hybridTrace, searchCategory)
     } else if (q && agentId) {
-      results = searchAgentMemories(agentId, q, limit, searchTrace, !strictOnly)
+      results = searchAgentMemories(agentId, q, limit, searchTrace, !strictOnly, searchCategory)
       if (results.length === 0) {
         // Substring fallback. It is NOT a second relaxation: LIKE %q% still
         // requires the query to appear literally, so a query that matches
         // nothing still returns nothing.
         const db2 = getDb()
-        results = db2.prepare("SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?")
-          .all(agentId, `%${q}%`, `%${q}%`, limit) as Memory[]
+        results = (searchCategory
+          ? db2.prepare("SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?")
+              .all(agentId, searchCategory, `%${q}%`, `%${q}%`, limit)
+          : db2.prepare("SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?")
+              .all(agentId, `%${q}%`, `%${q}%`, limit)) as Memory[]
       }
     } else if (q) {
-      results = searchMemories(q, ALLOWED_CHAT_ID, limit, !strictOnly)
+      results = searchMemories(q, ALLOWED_CHAT_ID, limit, !strictOnly, searchCategory)
       if (results.length === 0) {
         const db2 = getDb()
-        results = db2.prepare('SELECT * FROM memories WHERE content LIKE ? ORDER BY accessed_at DESC LIMIT ?').all(`%${q}%`, limit) as Memory[]
+        results = (searchCategory
+          ? db2.prepare('SELECT * FROM memories WHERE content LIKE ? AND category = ? ORDER BY accessed_at DESC LIMIT ?').all(`%${q}%`, searchCategory, limit)
+          : db2.prepare('SELECT * FROM memories WHERE content LIKE ? ORDER BY accessed_at DESC LIMIT ?').all(`%${q}%`, limit)) as Memory[]
       }
     } else if (agentId) {
       // Category goes into the query, not a post-filter: see getAgentMemories.
@@ -135,9 +145,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, offset)
     }
 
-    // Still needed for the search branches above, which rank by relevance and
-    // cannot push the category down into their own LIMIT. A no-op for the
-    // plain agent listing, which already filtered in SQL.
+    // Kept as a backstop, not as the mechanism. Since MEMKERESVAK917 every
+    // branch above filters in SQL, so this is a no-op on a correct answer --
+    // and the one thing that would still catch a branch added later that
+    // forgets to take searchCategory.
     if (tier) results = results.filter(m => m.category === tier)
 
     // A search query (q) is a genuine recall: stamp the surfaced memories as
