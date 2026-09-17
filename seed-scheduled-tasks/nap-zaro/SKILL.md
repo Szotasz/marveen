@@ -19,7 +19,7 @@ egy bejegyzésben beírja. Csendes kör: a beállított csatornára NEM küld ü
    append-only), ezért egy kétszer kézbesített prompt két bejegyzést írna. Ha a mai naplóban
    már van `Napzáró` bejegyzés, állj meg, és ne írj semmit.
    ```bash
-PORT="$(sed -n 's/^WEB_PORT=//p' {{INSTALL_DIR}}/.env 2>/dev/null | head -1 | tr -d '"')"; PORT="${PORT:-{{WEB_PORT}}}"
+PORT="$(sed -n 's/^WEB_PORT=//p' {{INSTALL_DIR}}/.env 2>/dev/null | head -1 | tr -d '"')"; PORT="${PORT:-3420}"
 TOKEN="$(cat {{INSTALL_DIR}}/store/.dashboard-token)"
 TODAY="$(date +%F)"
 curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:$PORT/api/daily-log?agent={{MAIN_AGENT_ID}}&date=$TODAY" \
