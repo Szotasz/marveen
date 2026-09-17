@@ -143,3 +143,15 @@ transcripts/
 # No trailing slash on purpose: a trailing slash does not match a symlink, so
 # `.fakehome/` would stop ignoring it the day the scratch HOME is created as one.
 .fakehome
+
+# Supabase CLI scratch state (cli-latest, linked-project.json). Written on every
+# CLI run, never source. Two of these rode into #1324 and would have been the
+# first ones in the repo -- after that they regenerate silently on every run.
+#
+# NO TRAILING SLASH, same rule and same reason as `.fakehome` above, measured
+# again for this path on 2026-09-17 in a throwaway repo, with an empty-.gitignore
+# negative control confirming the file is visible when unignored:
+#   supabase/.temp   -> ignores a real directory AND a symlink
+#   supabase/.temp/  -> ignores a real directory, MISSES the symlink (it shows in
+#                       `git status`, so the next CLI run commits it again)
+supabase/.temp
