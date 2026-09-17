@@ -63,6 +63,27 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/skill-access-gate.mjs ] && exec node {{PROJECT_ROOT}}/scripts/hooks/skill-access-gate.mjs; exit 0'",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/channel-image-resize.sh ] && exec bash {{PROJECT_ROOT}}/scripts/hooks/channel-image-resize.sh; exit 0'",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Skill|Read",
@@ -126,18 +147,6 @@
           ,{
             "type": "command",
             "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram_progress.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/telegram_progress.py; exit 0'",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Read",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/channel-image-resize.sh ] && exec bash {{PROJECT_ROOT}}/scripts/hooks/channel-image-resize.sh; exit 0'",
             "timeout": 15
           }
         ]
