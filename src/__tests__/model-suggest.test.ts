@@ -324,25 +324,13 @@ describe('suggestForAgent -- per-call context signal (MODELSUGGESTCACHE917)', ()
   // live install 2026-09-17: 14 open / 6 urgent reported, 8 / 2 actual.
   // kanbanUrgentCount >= 2 is an Opus signal, so the inflated count feeds the
   // verdict directly.
-  it('the route counts only OPEN cards as kanban load', async () => {
-    const { readFileSync } = await import('node:fs')
-    const src = readFileSync(new URL('../web/routes/agents.ts', import.meta.url), 'utf-8')
-    const kanbanQuery = /SELECT assignee, priority, COUNT\(\*\) as cnt[\s\S]*?GROUP BY assignee, priority/.exec(src)
-    expect(kanbanQuery).not.toBeNull()
-    expect(kanbanQuery![0]).toMatch(/status\s*<>\s*'done'/)
-  })
+  // The two route-level checks that used to live here read routes/agents.ts and
+  // matched it as text. They caught a reverted change, but not a wrong value:
+  // MEASURED on 6d278ea3, a mutation that kept `totalCacheRead` and
+  // `totalCacheCreation` in place and divided by `totalCalls * 1000` left all 35
+  // tests green -- the same class of defect the PR fixed. Both signals now live
+  // in web/model-suggest-signals.ts and are asserted on what they RETURN, with
+  // the kanban filter run against a real table. See
+  // __tests__/model-suggest-signals.test.ts (MODELJELTESZT917).
 
-  it('the route feeds the whole context, not the uncached remainder', async () => {
-    // The decision above is invisible from outside if the caller still passes
-    // totalInput alone -- and that caller is a route with db/tmux/fs I/O, so
-    // pin the expression itself rather than stand up the whole endpoint.
-    const { readFileSync } = await import('node:fs')
-    const src = readFileSync(new URL('../web/routes/agents.ts', import.meta.url), 'utf-8')
-    const assignment = /contextAvgPerCall:/.exec(src)
-    expect(assignment).not.toBeNull()
-    const tokenMapBlock = /tokenSummaries\.map\(([\s\S]*?)\n    \)/.exec(src)
-    expect(tokenMapBlock).not.toBeNull()
-    expect(tokenMapBlock![1]).toContain('totalCacheRead')
-    expect(tokenMapBlock![1]).toContain('totalCacheCreation')
-  })
 })
