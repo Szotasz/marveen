@@ -1167,6 +1167,8 @@ window._i18n.en = {
   'conversation.filter_label':   'Show actions/notes',
   'memories.agent_all':			'All agents',
   'memories.stat.total':			'Total',
+  'memories.relaxed.title':			'These are rescued near-misses, not hits.',
+  'memories.relaxed.body':			'No memory matched your query as asked. The list shows what the leftover filler words pulled in -- do not read it as "we have something on this".',
   'memories.stat.vectors_btn':			'Generate vectors',
   'memories.stat.vectors_gen':			'Generating...',
   'memories.toast.vector_count':			'{count} memories vectorized',

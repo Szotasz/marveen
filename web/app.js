@@ -7122,10 +7122,41 @@ async function loadMemories() {
   try {
     const res = await fetch(`/api/memories?${params}`)
     const memories = await res.json()
+    // MEMKERESVAK917: the search is deliberately forgiving. When no row matches
+    // the query as asked, the endpoint drops those terms and answers with what
+    // the leftover filler words pulled in -- a body that looks exactly like a
+    // real hit. The difference rides the X-Memory-Search header, and reading it
+    // with res.json() alone threw it away, so a viewer saw fifty rescued rows
+    // as fifty hits. The header is only set on a search (q), not on listing.
+    renderMemSearchLabel(q ? res.headers.get('X-Memory-Search') : null)
     renderMemories(memories)
   } catch (err) {
     console.error('Memória betöltés hiba:', err)
   }
+}
+
+// Shown ONLY when the answer is a rescue. A banner on every search would be
+// noise the eye learns to skip, which is the same failure in a new costume.
+// Both header shapes are handled: the fts branch sends `strict=..; relaxed=..;
+// hits=..`, the hybrid branch (the dashboard default) sends `fts=..; vector=..;
+// relaxed=..; vector-only=..`.
+function renderMemSearchLabel(header) {
+  const el = document.getElementById('memSearchLabel')
+  if (!el) return
+  if (!header || !/relaxed=true/.test(header)) {
+    el.hidden = true
+    el.textContent = ''
+    return
+  }
+  el.hidden = false
+  el.textContent = ''
+  const strong = document.createElement('strong')
+  strong.textContent = t('memories.relaxed.title')
+  const body = document.createElement('div')
+  body.textContent = t('memories.relaxed.body')
+  const raw = document.createElement('code')
+  raw.textContent = header
+  el.append(strong, body, raw)
 }
 
 function renderMemories(memories) {
