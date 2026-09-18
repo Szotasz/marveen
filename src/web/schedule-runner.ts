@@ -34,11 +34,16 @@ import { toPendingRetryView, classifySendError, OWNER_ESCALATION_EXTRA_MS, type 
 import {
   SCHEDULED_TASK_PREAMBLE,
   wrapScheduledTask,
+  wrapScheduledTaskByReference,
 } from '../prompt-safety.js'
+import { writeScheduledRunSnapshot } from './scheduled-run-snapshot.js'
 import { cronPrevOccurrence, effectiveCronTz } from './cron.js'
 import {
   listScheduledTasks,
   SCHEDULED_TASKS_DIR,
+  SCHEDULED_TASK_INLINE_MAX_CHARS,
+  SCHEDULED_TASK_BODY_WARN_CHARS,
+  MAX_SCHEDULED_TASK_PROMPT_LEN,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
 import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir } from './agent-config.js'
@@ -447,6 +452,138 @@ function persistScheduleLastRun(): void {
   } catch (err) {
     logger.warn({ err }, 'schedule-runner: failed to persist last-run map')
   }
+}
+
+// --- SCHEDPROMPTREF917: size-guard ---
+//
+// A scheduled task's SKILL.md body grows unboundedly over time (every
+// lesson learned lands in its "Buktatók" section, spec 1.2) -- the
+// reference-based delivery below closes the CORRUPTION risk that growth used
+// to carry, but the growth itself is still worth surfacing: a bigger body
+// costs more tokens per fire and is a proxy for "this task's SKILL.md wants
+// splitting". Two tiers, both same-day-deduped per task (spec 3.5):
+//   WARN  (SCHEDULED_TASK_BODY_WARN_CHARS)  -> logger.warn + inter-agent notice
+//   ALERT (MAX_SCHEDULED_TASK_PROMPT_LEN)   -> the above + owner channel alert
+// Delivery itself is UNAFFECTED by either tier -- the task still fires.
+export type SizeGuardLevel = 'none' | 'warn' | 'alert'
+
+export function sizeGuardLevel(
+  bodyChars: number,
+  warnChars: number = SCHEDULED_TASK_BODY_WARN_CHARS,
+  alertChars: number = MAX_SCHEDULED_TASK_PROMPT_LEN,
+): SizeGuardLevel {
+  if (bodyChars >= alertChars) return 'alert'
+  if (bodyChars >= warnChars) return 'warn'
+  return 'none'
+}
+
+// Whether the task body is large enough that tmux delivery must go through
+// the fire-time snapshot + reference path instead of inline (spec 3.3).
+export function shouldSnapshotTaskBody(
+  bodyChars: number,
+  inlineMaxChars: number = SCHEDULED_TASK_INLINE_MAX_CHARS,
+): boolean {
+  return bodyChars > inlineMaxChars
+}
+
+const SIZE_GUARD_STATE_PATH = join(PROJECT_ROOT, 'store', 'scheduled-task-size-guard.json')
+// task name -> 'YYYY-MM-DD' of the last day a WARN/ALERT notice fired for it.
+const sizeGuardWarnSentDate: Map<string, string> = new Map()
+const sizeGuardAlertSentDate: Map<string, string> = new Map()
+
+function todayStamp(nowMs: number): string {
+  return new Date(nowMs).toISOString().slice(0, 10)
+}
+
+function loadSizeGuardState(): void {
+  try {
+    const raw = JSON.parse(readFileSync(SIZE_GUARD_STATE_PATH, 'utf-8'))
+    if (raw && typeof raw === 'object') {
+      const warn = (raw as Record<string, unknown>).warn
+      const alert = (raw as Record<string, unknown>).alert
+      if (warn && typeof warn === 'object') {
+        for (const [name, d] of Object.entries(warn)) if (typeof d === 'string') sizeGuardWarnSentDate.set(name, d)
+      }
+      if (alert && typeof alert === 'object') {
+        for (const [name, d] of Object.entries(alert)) if (typeof d === 'string') sizeGuardAlertSentDate.set(name, d)
+      }
+    }
+  } catch { /* no file yet / unreadable -- start empty */ }
+}
+
+function persistSizeGuardState(): void {
+  try {
+    atomicWriteFileSync(SIZE_GUARD_STATE_PATH, JSON.stringify({
+      warn: Object.fromEntries(sizeGuardWarnSentDate),
+      alert: Object.fromEntries(sizeGuardAlertSentDate),
+    }, null, 2))
+  } catch (err) {
+    logger.warn({ err }, 'schedule-runner: failed to persist size-guard state')
+  }
+}
+
+// Pure claim-and-set over an injected map: true exactly once per (task, day).
+// Split out from claimSizeGuardNotice so the same-day dedupe (test 10) is
+// directly unit-testable without touching the module's real state or disk --
+// a fresh Map plays the role of a same-day restart's reloaded stamps, an
+// empty one the role of a new day.
+export function shouldSendSizeGuardNotice(stamps: Map<string, string>, taskName: string, today: string): boolean {
+  if (stamps.get(taskName) === today) return false
+  stamps.set(taskName, today)
+  return true
+}
+
+// True exactly once per (task, level, day) -- claims the stamp as a side
+// effect so the caller only sends when this returns true (test 10: a second
+// same-day fire, or a same-day restart, must not repeat the notice).
+function claimSizeGuardNotice(taskName: string, level: 'warn' | 'alert', nowMs: number): boolean {
+  const stamps = level === 'warn' ? sizeGuardWarnSentDate : sizeGuardAlertSentDate
+  const today = todayStamp(nowMs)
+  if (!shouldSendSizeGuardNotice(stamps, taskName, today)) return false
+  persistSizeGuardState()
+  return true
+}
+
+// Fire-and-forget: never let a size-guard notice delay or fail the task
+// fire it is reporting on. WARN sends an inter-agent notice to the main
+// agent; ALERT additionally sends a direct owner channel alert (same
+// resolveSchedulerAlertToken/resolveSchedulerOwnerChat + sendSchedulerAlertMessage
+// path as the other scheduler alerts in this file).
+function maybeSendSizeGuardNotice(taskName: string, bodyChars: number, nowMs: number): void {
+  const level = sizeGuardLevel(bodyChars)
+  if (level === 'none') return
+  if (!claimSizeGuardNotice(taskName, 'warn', nowMs)) {
+    // Already warned today. An 'alert'-level body still needs its own,
+    // separately-stamped ALERT tier below, so only bail here for 'warn'.
+    if (level === 'warn') return
+  } else {
+    logger.warn({ task: taskName, bodyChars, warnChars: SCHEDULED_TASK_BODY_WARN_CHARS }, 'scheduled task body has grown past the size-guard warn threshold')
+    try {
+      createAgentMessage('system', MAIN_AGENT_ID, [
+        `[scheduler] A(z) "${taskName}" ütemezett feladat SKILL.md törzse ${bodyChars} karakter (figyelmeztetési küszöb: ${SCHEDULED_TASK_BODY_WARN_CHARS}).`,
+        'A kézbesítés emiatt nem sérülékeny (hivatkozásos küldés), de a méret növekszik. A buktatók references/ alá mozgatása csökkentené.',
+      ].join('\n'))
+    } catch (err) {
+      logger.warn({ err, task: taskName }, 'size-guard warn: inter-agent notice failed')
+    }
+  }
+  if (level !== 'alert') return
+  if (!claimSizeGuardNotice(taskName, 'alert', nowMs)) return
+  logger.warn({ task: taskName, bodyChars, alertChars: MAX_SCHEDULED_TASK_PROMPT_LEN }, 'scheduled task body has grown past the size-guard alert threshold')
+  ;(async () => {
+    const token = resolveSchedulerAlertToken()
+    if (!token) return
+    const ownerChat = resolveSchedulerOwnerChat()
+    if (!ownerChat) return
+    try {
+      await sendSchedulerAlertMessage(token, ownerChat, [
+        `[${BOT_NAME} scheduler] A(z) "${taskName}" ütemezett feladat SKILL.md törzse ${bodyChars} karakter (riasztási küszöb: ${MAX_SCHEDULED_TASK_PROMPT_LEN}).`,
+        'A kézbesítés emiatt nem sérülékeny (hivatkozásos küldés), de a méret növekszik. A buktatók references/ alá mozgatása csökkentené.',
+      ].join('\n'))
+    } catch (err) {
+      logger.warn({ err, task: taskName }, 'size-guard alert: owner channel delivery failed')
+    }
+  })()
 }
 
 // --- Downtime catch-up ---
@@ -979,10 +1116,28 @@ async function attemptFireTask(
     const taskBody = preCheckPrefix
       ? `[Pre-check eredmeny]\n${preCheckPrefix}\n\n[Feladat]\n${promptWithMetrics}`
       : promptWithMetrics
+    // SCHEDPROMPTREF917: the size-guard measures the SKILL.md body alone
+    // (task.prompt, before pre-check/metrics are spliced in) -- those two are
+    // runner-generated per fire and the task author has no control over
+    // their length, so folding them in would make the guard fire on
+    // something the operator cannot fix from the SKILL.md.
+    maybeSendSizeGuardNotice(task.name, task.prompt.length, now)
+    let scheduledTaskBlock: string
+    if (shouldSnapshotTaskBody(taskBody.length)) {
+      const skillPath = join(SCHEDULED_TASKS_DIR, task.name, 'SKILL.md')
+      const snapshot = writeScheduledRunSnapshot(task.name, taskBody, { firedAt: new Date(now), skillPath })
+      scheduledTaskBlock = snapshot
+        ? wrapScheduledTaskByReference(`scheduled-task:${task.name}`, snapshot.filePath, snapshot.sha256, snapshot.chars)
+        // Snapshot write failed (e.g. full disk) -- fall back to the inline
+        // path rather than drop the task (spec test 11).
+        : wrapScheduledTask(`scheduled-task:${task.name}`, taskBody)
+    } else {
+      scheduledTaskBlock = wrapScheduledTask(`scheduled-task:${task.name}`, taskBody)
+    }
     const fullPrompt =
       SCHEDULED_TASK_PREAMBLE + '\n' +
       prefix.trimEnd() + '\n\n' +
-      wrapScheduledTask(`scheduled-task:${task.name}`, taskBody)
+      scheduledTaskBlock
     // forceSend skips the busy-state check above; it must also skip the
     // pre-flight wait-until-idle gate inside sendPromptToSession, otherwise a
     // task aimed at a long-busy session would block on the 12s idle wait every
@@ -1594,6 +1749,9 @@ export function startScheduleRunner(): NodeJS.Timeout {
   // Reload the persisted last-run times so a restart inside a task's catch-up
   // window does not re-fire an already-run task.
   loadScheduleLastRun()
+  // Reload the size-guard's per-task-per-day notice stamps (SCHEDPROMPTREF917)
+  // so a same-day restart does not repeat a WARN/ALERT already sent (test 10).
+  loadSizeGuardState()
 
   // Surface the effective cron timezone at startup. A silent UTC fallback (no
   // SCHEDULER_TZ/TZ in the env) shifts every fixed-time cron off its intended
