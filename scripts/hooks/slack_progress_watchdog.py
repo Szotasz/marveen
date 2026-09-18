@@ -56,6 +56,15 @@ Before this, a rejected chat.postMessage was logged as "real-answer", the
 placeholder deleted and the marker dropped: no answer, no error, a log that
 claimed success.
 
+`replied` entries are delete-only. slack_progress_reply_clear.py marks an entry
+`"replied": true` when the agent's answer went out but the placeholder's
+chat.delete failed RETRYABLY; it keeps the entry so that somebody still knows
+the placeholder is there. For such an entry this watchdog retries the delete on
+every tick, whatever the marker's age or the agent's state, and never delivers
+an answer or an error rewrite for it -- the round has its reply. A retryable
+failure keeps it for the next tick, a terminal one drops it, the 24h stale
+bound caps the retries.
+
 Standalone: scans every agent's per-agent Slack state dir. No marveen src
 dependency; only Python stdlib + the `tmux` binary. API base overridable via
 SLACK_API_BASE (tests point it at a local stub).
@@ -388,10 +397,15 @@ def log(progress_dir, msg):
 
 
 def delete_placeholder(tok, p, progress_dir, label):
+    """chat.delete one placeholder. False only on a RETRYABLE failure (the
+    message is still there and a later attempt may remove it); True when it is
+    gone or a TERMINAL rejection means no attempt ever will."""
     try:
         api(tok, "chat.delete", {"channel": p.get("chat_id"), "ts": p.get("ts")})
     except Exception as e:
         log(progress_dir, f"{label} delete failed (ts={p.get('ts')}): {e}")
+        return not retryable(e)
+    return True
 
 
 def deliver(tok, chat_id, ts, thread_ts, answer, progress_dir, error_text):
@@ -432,24 +446,48 @@ def deliver(tok, chat_id, ts, thread_ts, answer, progress_dir, error_text):
     return "generic-error"
 
 
-def keep_for_retry(path, pend, retry, progress_dir):
-    """Keep the marker for the entries whose delivery must be retried.
+def _entry_key(p):
+    return (str(p.get("chat_id")), str(p.get("ts")))
 
-    When only some entries failed, the marker is rewritten with just those, so
-    a later tick cannot re-deliver the ones that got through (duplicates). The
+
+def settle(path, done, progress_dir):
+    """Take the entries this tick is finished with (`done`) out of the marker;
+    whatever else it holds stays for a later tick. Removed when nothing is
+    left, untouched when nothing was finished.
+
+    Only the finished entries leave, so a later tick cannot re-deliver the ones
+    that got through (duplicates) and still retries the ones that failed. The
     mtime is preserved on purpose: it is the marker's AGE (the fire thresholds
     and the 24h stale bound read it) and the round anchor for read_transcript
     -- a fresh mtime would restart the clock and re-anchor the transcript
-    window on the wrong round."""
-    if len(retry) == len(pend):
-        return  # every entry retries: the file is already exactly right
+    window on the wrong round.
+
+    The marker is RE-READ here, right before the write, instead of writing back
+    a list computed before the (slow) API calls. `replied` leftovers are handled
+    at any age, i.e. also while their session is live: a submit hook may have
+    appended the next turn's placeholder in the meantime, and writing the old
+    list back would orphan it for good."""
+    if not done:
+        return
+    gone = {_entry_key(p) for p in done}
     try:
         st = os.stat(path)
-        with open(path, "w") as f:
-            json.dump(retry, f)
-        os.utime(path, (st.st_atime, st.st_mtime))
+        with open(path) as f:
+            cur = json.load(f)
+    except Exception:
+        return  # a hook removed or is rewriting it: nothing of ours to settle
+    if not isinstance(cur, list):
+        cur = []
+    rest = [p for p in cur if not (isinstance(p, dict) and _entry_key(p) in gone)]
+    try:
+        if not rest:
+            os.remove(path)
+        elif len(rest) != len(cur):
+            with open(path, "w") as f:
+                json.dump(rest, f)
+            os.utime(path, (st.st_atime, st.st_mtime))
     except Exception as e:
-        log(progress_dir, f"retry keep failed ({os.path.basename(path)}): {e}")
+        log(progress_dir, f"marker update failed ({os.path.basename(path)}): {e}")
 
 
 def handle_dir(progress_dir):
@@ -498,6 +536,30 @@ def handle_dir(progress_dir):
                               f"age={int(age)}s delivered=none")
             continue
 
+        # `replied` leftovers: the reply hook answered these, only the
+        # placeholder's chat.delete failed retryably (see
+        # slack_progress_reply_clear.py). There is nothing to deliver and no
+        # fire decision to wait for -- the delete is simply retried on every
+        # tick, at any age, and NEVER followed by an answer or an error
+        # rewrite: the round HAS its reply. The stale bound above is what
+        # eventually gives up on a delete that keeps failing.
+        done = []  # entries this tick is finished with; settle() takes them out
+        owed = [p for p in pend if p.get("replied")]
+        if owed:
+            if tok is None:
+                tok = token(state_dir)
+            if tok:
+                cleared = [p for p in owed
+                           if delete_placeholder(tok, p, progress_dir, "replied placeholder")]
+                done.extend(cleared)
+                log(progress_dir, f"replied leftover(s): {len(cleared)}/{len(owed)} "
+                                  f"settled, the rest retries next tick "
+                                  f"({os.path.basename(path)}) delivered=none")
+            pend = [p for p in pend if not p.get("replied")]
+            if not pend:
+                settle(path, done, progress_dir)
+                continue
+
         # The transcript path is stamped onto the pending entries by the submit
         # hook (same for the whole turn); read the agent's answer + hung-reply
         # signal once, scoped to the round that posted this marker.
@@ -523,6 +585,7 @@ def handle_dir(progress_dir):
             fire = False
             reason = ""
         if not fire:
+            settle(path, done, progress_dir)
             continue
 
         if tok is None:
@@ -538,10 +601,7 @@ def handle_dir(progress_dir):
         if reply_delivered and not reply_hung:
             for p in pend:
                 delete_placeholder(tok, p, progress_dir, "placeholder")
-            try:
-                os.remove(path)
-            except Exception:
-                pass
+            settle(path, done + pend, progress_dir)
             log(progress_dir, f"orphan cleared (reply-already-delivered): "
                               f"{os.path.basename(path)} agent_up={agent_up} "
                               f"age={int(age)}s delivered=none")
@@ -554,16 +614,12 @@ def handle_dir(progress_dir):
             modes.append(mode)
             if mode == "send-failed":
                 retry.append(p)
-        if retry:
-            # Retryable failure(s): the marker stays (with only the failed
-            # entries) and the next tick tries again; the stale bound above
-            # is what eventually gives up.
-            keep_for_retry(path, pend, retry, progress_dir)
-        else:
-            try:
-                os.remove(path)
-            except Exception:
-                pass
+            else:
+                done.append(p)
+        # Retryable failure(s): the marker stays (with only the failed entries)
+        # and the next tick tries again; the stale bound above is what
+        # eventually gives up. Nothing left to retry: the marker goes.
+        settle(path, done, progress_dir)
         log(progress_dir, f"orphan handled ({reason}): {os.path.basename(path)} "
                           f"agent_up={agent_up} age={int(age)}s "
                           f"delivered={','.join(modes)}"

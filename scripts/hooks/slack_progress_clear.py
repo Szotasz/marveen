@@ -19,13 +19,27 @@ Stop hook — two jobs, mirroring telegram_progress_clear.py:
          to the chat as a guaranteed fallback via chat.postMessage, then
          removes the placeholder via chat.delete.
 
+`replied` entries are outside job 2. The reply hook marks an entry
+`"replied": true` when the answer DID go out but the placeholder's chat.delete
+failed retryably (rate limit, 5xx, network) -- see
+slack_progress_reply_clear.py. Such an entry must never read as "no reply was
+sent": blocking on it would make the agent answer a second time. This hook only
+retries its delete -- after the delivery work, so a slow Slack cannot eat the
+budget of the part that matters, and not at all on the Stop that blocks -- and
+if that fails retryably again, leaves the entry in the file for the watchdog.
+
 Loop safety: a per-session `enforce-<sid>.marker` guarantees we block at most
 once; `stop_hook_active` is also honored. Silent on stdout EXCEPT the single
 decision JSON when blocking. Token/state dir resolution mirrors the plugin
 (SLACK_STATE_DIR, else the install-scoped dir (#915), else the legacy shared
 default).
 """
-import sys, os, json, glob, urllib.request
+import sys, os, json, glob, http.client, urllib.error, urllib.request
+
+# Slack error codes that mean "try again later", not "this cannot be done".
+# Same set as slack_progress_watchdog.py.
+RETRYABLE_SLACK_ERRORS = {"ratelimited", "internal_error", "service_unavailable",
+                          "fatal_error", "request_timeout"}
 
 # The block reason is addressed to the agent, in the install language.
 TEXTS = {
@@ -119,6 +133,44 @@ def api(tok, method, payload):
         return json.loads(r.read().decode())
 
 
+def delete_owed(tok, p):
+    """Retry the chat.delete of one `replied` entry. True = nothing more to do
+    (deleted, or a TERMINAL rejection such as message_not_found); False = a
+    RETRYABLE failure, the entry stays. Reads the envelope itself: api() is the
+    plain one the fallback path uses and does not raise on Slack's HTTP-200
+    {"ok": false}."""
+    try:
+        resp = api(tok, "chat.delete", {"channel": p.get("chat_id"), "ts": p.get("ts")})
+    except urllib.error.HTTPError as e:
+        return not (e.code == 429 or e.code >= 500)
+    except (OSError, http.client.HTTPException):
+        return False  # URLError, timeout, connection reset: transient
+    except Exception:
+        return True
+    if isinstance(resp, dict) and not resp.get("ok"):
+        return resp.get("error") not in RETRYABLE_SLACK_ERRORS
+    return True
+
+
+def settle_owed(sd, path, owed, sid):
+    """Retry the owed deletes and leave the pending file holding exactly the
+    ones that failed retryably again (the next Stop, or the watchdog's next
+    tick, picks them up); remove it when none is left."""
+    still = []
+    if owed:
+        tok = token(sd)
+        still = [p for p in owed if not tok or not delete_owed(tok, p)]
+        log(sd, f"[stop] owed placeholder deletes: {len(owed) - len(still)} done, "
+                f"{len(still)} left for the watchdog sid={sid}")
+    try:
+        if still:
+            json.dump(still, open(path, "w"))
+        else:
+            os.remove(path)
+    except Exception:
+        pass
+
+
 def last_assistant_text(transcript_path):
     """Return the last non-empty assistant text message from the JSONL
     transcript. Empty string if none / unreadable."""
@@ -186,6 +238,18 @@ def main():
             pass
         return
 
+    # `replied` entries were answered; only their chat.delete is owed (see the
+    # docstring). They take no part in the enforcement below.
+    owed = [p for p in pend if isinstance(p, dict) and p.get("replied")]
+    pend = [p for p in pend if not (isinstance(p, dict) and p.get("replied"))]
+    if not pend:
+        settle_owed(sd, path, owed, sid)
+        try:
+            os.remove(guard)
+        except Exception:
+            pass
+        return
+
     blocked_before = os.path.exists(guard)
     if not stop_active and not blocked_before:
         try:
@@ -215,11 +279,12 @@ def main():
                 api(tok, "chat.delete", {"channel": cid, "ts": ts})
             except Exception as e:
                 log(sd, f"[stop] delete failed: {e}")
-    for f in (path, guard):
-        try:
-            os.remove(f)
-        except Exception:
-            pass
+    # Last, so a slow Slack cannot eat the budget of the delivery above.
+    settle_owed(sd, path, owed, sid)
+    try:
+        os.remove(guard)
+    except Exception:
+        pass
     log(sd, f"[enforce] fallback-delivered={bool(answer)} cleared {len(pend)} "
             f"placeholder(s) sid={sid}")
 

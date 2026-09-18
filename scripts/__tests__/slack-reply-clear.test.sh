@@ -19,6 +19,18 @@
 #   - reply to a thread nobody asked in, only threads pending -> chat cleared
 #   - reply in a different chat -> nothing cleared, state file untouched
 #   - non-reply / non-slack tool -> no-op
+# and the failed-delete contract (review #4), through the stub's failure
+# injection (stub_mode):
+#   - chat.delete RETRYABLE (HTTP 429/503, ok:false ratelimited, API down)
+#       -> entry KEPT, marked "replied": true; a partial failure keeps only
+#          the failed entry
+#   - chat.delete TERMINAL (message_not_found) -> entry dropped, error logged
+#   - a replied leftover is retried by the next reply to the chat, and never
+#     shadows a live placeholder in the tier matching
+#   - Stop hook (slack_progress_clear.py): a replied entry never blocks the
+#     turn; its delete is retried, a second retryable failure leaves it for
+#     the watchdog; next to an unanswered entry only the unanswered one is
+#     enforced
 #
 # Fully hermetic: SLACK_STATE_DIR is a temp tree and all Web API traffic is
 # routed to a local stub via SLACK_API_BASE.
@@ -37,28 +49,59 @@ TMP="$(mktemp -d)"
 trap 'kill "$STUB_PID" 2>/dev/null; rm -rf "$TMP"' EXIT
 
 # --- Local Web API stub (logs "<method> <body>" per request) -----------------
-REQLOG="$TMP/requests.log"; PORTFILE="$TMP/port"
+# Failure injection, same as slack-watchdog-wedged.test.sh: MODEFILE holds lines
+# "<method|*> <mode> [count]" with mode = ok | ok_false:<error> | http:<status>.
+# The first matching line answers a request; a line with a count is consumed by
+# that many requests and then skipped. No file / no match = {"ok": true}. Slack
+# reports application errors as HTTP 200 + {"ok": false, "error": ...}: a stub
+# that can only say ok:true left this suite blind to every failed chat.delete.
+REQLOG="$TMP/requests.log"; PORTFILE="$TMP/port"; MODEFILE="$TMP/stub-mode"
 cat > "$TMP/stub.py" <<'PYEOF'
 import json, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
-reqlog = sys.argv[1]
+reqlog, portfile, modefile = sys.argv[1:4]
+def pick_mode(method):
+    try:
+        lines = [l.split() for l in open(modefile, encoding="utf-8").read().splitlines() if l.strip()]
+    except Exception:
+        return "ok"
+    mode, chosen, rest = "ok", False, []
+    for parts in lines:
+        m, md = parts[0], parts[1]
+        n = int(parts[2]) if len(parts) > 2 else None
+        if not chosen and m in ("*", method) and (n is None or n > 0):
+            mode, chosen = md, True
+            if n is not None:
+                n -= 1
+        rest.append(" ".join([m, md] + ([str(n)] if n is not None else [])))
+    if chosen:
+        with open(modefile, "w", encoding="utf-8") as f:
+            f.write("\n".join(rest) + "\n")
+    return mode
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(n).decode("utf-8") if n else ""
         method = self.path.rsplit("/", 1)[-1]
+        mode = pick_mode(method)
         with open(reqlog, "a", encoding="utf-8") as f:
             f.write(f"{method} {body}\n")
-        payload = json.dumps({"ok": True}).encode()
-        self.send_response(200); self.send_header("Content-Type", "application/json")
+        status, out = 200, {"ok": True}
+        if mode.startswith("ok_false:"):
+            out = {"ok": False, "error": mode.split(":", 1)[1]}
+        elif mode.startswith("http:"):
+            status = int(mode.split(":", 1)[1])
+            out = {"ok": False, "error": f"http_{status}"}
+        payload = json.dumps(out).encode()
+        self.send_response(status); self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload))); self.end_headers()
         self.wfile.write(payload)
 srv = HTTPServer(("127.0.0.1", 0), H)
-with open(sys.argv[2], "w") as f: f.write(str(srv.server_address[1]))
+with open(portfile, "w") as f: f.write(str(srv.server_address[1]))
 srv.serve_forever()
 PYEOF
-python3 "$TMP/stub.py" "$REQLOG" "$PORTFILE" &
+python3 "$TMP/stub.py" "$REQLOG" "$PORTFILE" "$MODEFILE" &
 STUB_PID=$!
 for _ in $(seq 1 50); do [ -s "$PORTFILE" ] && break; sleep 0.1; done
 PORT="$(cat "$PORTFILE" 2>/dev/null)"
@@ -195,6 +238,126 @@ reset "[$ENTRY_A]"
 run_hook "mcp__plugin_telegram_telegram__reply" '{"chat_id":"'"$CHAT"'","text":"kesz"}'
 assert_eq "nothing deleted"      ""        "$(deleted_ts)"
 assert_eq "A still pending"      "$PH_A"   "$(remaining_ts)"
+
+# -----------------------------------------------------------------------------
+# A failed chat.delete is not a cleared placeholder (review #4).
+# The entry used to leave the pending file whatever chat.delete said -- the
+# exception was swallowed and Slack's HTTP-200 {"ok": false} never looked at --
+# so the placeholder stayed in Slack while nothing knew about it any more. A
+# RETRYABLE failure now keeps the entry, marked "replied": the answer went out,
+# only the cleanup is owed. The mark is the point: an UNMARKED leftover would
+# read as "no reply was sent" to the Stop hook and provoke a duplicate reply.
+# -----------------------------------------------------------------------------
+STOP_HOOK="$INSTALL_DIR/scripts/hooks/slack_progress_clear.py"
+stub_mode() { : > "$MODEFILE"; local l; for l in "$@"; do printf '%s\n' "$l" >> "$MODEFILE"; done; }
+# replied_ts -> ts values of the pending entries that carry "replied": true
+replied_ts() {
+    if [ -f "$STATEFILE" ]; then
+        python3 -c 'import sys,json; print(" ".join(p["ts"] for p in json.load(open(sys.argv[1])) if p.get("replied")))' "$STATEFILE"
+    else
+        echo ""
+    fi
+}
+log_has() { grep -q "$1" "$PROGRESS/debug.log" 2>/dev/null && echo yes || echo no; }
+# run_stop [stop_hook_active]  -> prints the Stop hook's stdout (the block decision, if any)
+run_stop() {
+    printf '{"session_id":"%s","stop_hook_active":%s}' "$SID" "${1:-false}" \
+      | SLACK_STATE_DIR="$STATE" SLACK_API_BASE="$API_BASE" python3 "$STOP_HOOK"
+}
+
+echo "== chat.delete HTTP 429 (RETRYABLE) -> entry KEPT, marked replied"
+reset "[$ENTRY_A]"
+stub_mode "chat.delete http:429"
+run_hook "$TOOL" '{"chat_id":"'"$CHAT"'","text":"kesz","thread_ts":"'"$THREAD_A"'"}'
+assert_eq "429: the delete was attempted"            "$PH_A"  "$(deleted_ts)"
+assert_eq "429: entry still in the pending file"     "$PH_A"  "$(remaining_ts)"
+assert_eq "429: and it is marked replied"            "$PH_A"  "$(replied_ts)"
+assert_eq "429: the failure is in debug.log"         "yes"    "$(log_has "kept as replied")"
+stub_mode
+
+echo "== chat.delete HTTP-200 {ok:false, ratelimited} (RETRYABLE) -> kept, replied"
+reset "[$ENTRY_A]"
+stub_mode "chat.delete ok_false:ratelimited"
+run_hook "$TOOL" '{"chat_id":"'"$CHAT"'","text":"kesz"}'
+assert_eq "ratelimited: entry kept"                  "$PH_A"  "$(remaining_ts)"
+assert_eq "ratelimited: marked replied"              "$PH_A"  "$(replied_ts)"
+stub_mode
+
+echo "== chat.delete HTTP 503 / API unreachable (RETRYABLE) -> kept, replied"
+reset "[$ENTRY_A]"
+stub_mode "chat.delete http:503"
+run_hook "$TOOL" '{"chat_id":"'"$CHAT"'","text":"kesz"}'
+assert_eq "503: entry kept, marked replied"          "$PH_A"  "$(replied_ts)"
+stub_mode
+reset "[$ENTRY_A]"
+DEAD_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+printf '{"session_id":"%s","tool_name":"%s","tool_input":{"chat_id":"%s","text":"kesz"}}' "$SID" "$TOOL" "$CHAT" \
+  | SLACK_STATE_DIR="$STATE" SLACK_API_BASE="http://127.0.0.1:$DEAD_PORT" python3 "$HOOK"
+assert_eq "dead API: entry kept, marked replied"     "$PH_A"  "$(replied_ts)"
+
+echo "== chat.delete TERMINAL rejection (message_not_found) -> dropped, waiting cannot help"
+reset "[$ENTRY_A]"
+stub_mode "chat.delete ok_false:message_not_found"
+run_hook "$TOOL" '{"chat_id":"'"$CHAT"'","text":"kesz"}'
+assert_eq "terminal: the delete was attempted"       "$PH_A"  "$(deleted_ts)"
+assert_eq "terminal: state file removed"             "(none)" "$(remaining_ts)"
+assert_eq "terminal: the Slack error is in debug.log" "yes"   "$(log_has "message_not_found")"
+stub_mode
+
+echo "== two placeholders cleared by one reply, only the FIRST delete fails -> only that one stays"
+reset "[$ENTRY_A,$ENTRY_B]"
+stub_mode "chat.delete http:429 1"
+run_hook "$TOOL" '{"chat_id":"'"$CHAT"'","text":"kesz"}'
+assert_eq "partial: both deletes attempted"          "$PH_A $PH_B" "$(deleted_ts)"
+assert_eq "partial: only the failed entry remains"   "$PH_A"  "$(remaining_ts)"
+assert_eq "partial: and it is marked replied"        "$PH_A"  "$(replied_ts)"
+stub_mode
+
+echo "== the next reply to the chat retries a replied leftover"
+reset '[{"chat_id":"'"$CHAT"'","ts":"'"$PH_A"'","thread_ts":"'"$THREAD_A"'","replied":true}]'
+run_hook "$TOOL" '{"chat_id":"'"$CHAT"'","text":"meg egy","thread_ts":"1757409999.000009"}'
+assert_eq "leftover: delete retried"                 "$PH_A"  "$(deleted_ts)"
+assert_eq "leftover: state file removed"             "(none)" "$(remaining_ts)"
+
+echo "== a replied leftover never shadows a LIVE placeholder in the tier matching"
+# Leftover: top-level, answered in an earlier turn. Live: asked in thread B.
+# A top-level reply is an EXACT match for the leftover; if the leftover took
+# part in the tiers it would win alone, the live placeholder would stay
+# pending, and the Stop hook would block on an answered message.
+reset '[{"chat_id":"'"$CHAT"'","ts":"'"$PH_A"'","replied":true},'"$ENTRY_B"']'
+run_hook "$TOOL" '{"chat_id":"'"$CHAT"'","text":"kesz"}'
+assert_eq "no shadowing: the live placeholder is cleared (and the leftover retried)" "$PH_B $PH_A" "$(deleted_ts)"
+assert_eq "no shadowing: state file removed"         "(none)" "$(remaining_ts)"
+
+echo "== Stop hook: a replied entry NEVER blocks the turn -- its delete is just retried"
+reset '[{"chat_id":"'"$CHAT"'","ts":"'"$PH_A"'","thread_ts":"'"$THREAD_A"'","replied":true}]'
+OUT_STOP="$(run_stop)"
+assert_eq "stop/replied: no block decision on stdout" ""       "$OUT_STOP"
+assert_eq "stop/replied: delete retried"              "$PH_A"  "$(deleted_ts)"
+assert_eq "stop/replied: nothing posted"              "0"      "$(grep -c '^chat.postMessage ' "$REQLOG")"
+assert_eq "stop/replied: state file removed"          "(none)" "$(remaining_ts)"
+
+echo "== Stop hook: the retry fails again (429) -> still no block, entry left for the watchdog"
+reset '[{"chat_id":"'"$CHAT"'","ts":"'"$PH_A"'","thread_ts":"'"$THREAD_A"'","replied":true}]'
+stub_mode "chat.delete http:429"
+OUT_STOP="$(run_stop)"
+assert_eq "stop/429: no block decision on stdout"     ""       "$OUT_STOP"
+assert_eq "stop/429: entry kept, still marked replied" "$PH_A" "$(replied_ts)"
+stub_mode
+
+echo "== Stop hook: a replied leftover next to an UNANSWERED entry -> enforcement sees only the unanswered one"
+reset '[{"chat_id":"'"$OTHER_CHAT"'","ts":"'"$PH_A"'","replied":true},'"$ENTRY_B"']'
+OUT_STOP="$(run_stop)"
+assert_eq "stop/mixed: blocks (the unanswered entry)" "yes" \
+  "$(printf '%s' "$OUT_STOP" | grep -q '"decision": "block"' && echo yes || echo no)"
+assert_eq "stop/mixed: the block names the unanswered chat only" "no" \
+  "$(printf '%s' "$OUT_STOP" | grep -q "$OTHER_CHAT" && echo yes || echo no)"
+assert_eq "stop/mixed: the blocking Stop touches nothing" "$PH_A $PH_B" "$(remaining_ts)"
+: > "$REQLOG"
+OUT_STOP="$(run_stop true)"
+assert_eq "stop/mixed 2nd: no second block"           ""       "$OUT_STOP"
+assert_eq "stop/mixed 2nd: both placeholders deleted" "$PH_B $PH_A" "$(deleted_ts)"
+assert_eq "stop/mixed 2nd: state file removed"        "(none)" "$(remaining_ts)"
 
 echo
 echo "Results: $PASS passed, $FAIL failed"

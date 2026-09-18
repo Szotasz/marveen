@@ -13,7 +13,11 @@
 #     HTTP 429/5xx and an unreachable API are all observable through the stub
 #     (stub_mode); a RETRYABLE failure keeps the marker with its mtime intact
 #     and the next tick delivers, a TERMINAL rejection falls through to the
-#     generic-error rewrite, a partial failure keeps only the failed entry.
+#     generic-error rewrite, a partial failure keeps only the failed entry;
+#   - `replied` leftovers (answered, only the placeholder's chat.delete failed
+#     in the reply hook) are delete-only: retried on every tick at any age,
+#     never re-answered and never rewritten into an error, and a live entry
+#     sharing the marker is left alone -- cases (t)-(x).
 #
 # Fully hermetic: HOME and MARVEEN_ROOT are pinned to a temp tree so the
 # watchdog only ever scans test dirs (never the real ~/.claude), and all Web
@@ -492,6 +496,94 @@ run_wd 1 1
 assert_eq "partial then ok: exactly one more postMessage (no duplicate for the delivered chat)" "1" "$(count chat.postMessage)"
 assert_eq "partial then ok: it goes to the failed chat" "yes" "$(body_has "\"channel\": \"$CHAT\"")"
 assert_eq "partial then ok: marker removed" "no" "$(pend_exists "$PS_")"
+
+# ---------------------------------------------------------------------------
+# `replied` leftovers (review #4). slack_progress_reply_clear.py keeps an entry
+# whose chat.delete failed RETRYABLY and marks it "replied": the answer went
+# out, only the placeholder is still there. The watchdog is the retry of last
+# resort: delete-only, on every tick, at any age -- and NEVER an answer or an
+# error rewrite, because the round has its reply.
+# ---------------------------------------------------------------------------
+# replied_case <name> <kind> <age>  -- make_case, with the entry marked replied
+replied_case() {
+    local pdir; pdir="$(make_case "$1" "$2" "$3")"
+    python3 - "$pdir/SID.json" <<'PY'
+import json, os, sys
+p = sys.argv[1]; st = os.stat(p)
+d = json.load(open(p))
+for e in d: e["replied"] = True
+json.dump(d, open(p, "w")); os.utime(p, (st.st_atime, st.st_mtime))
+PY
+    echo "$pdir"
+}
+
+echo ""
+echo "(t) replied leftover: deleted on the next tick at ANY age, nothing delivered"
+PT="$(replied_case wt work 5)"
+run_wd 1 9999
+assert_eq "replied/young: placeholder deleted" "1" "$(count chat.delete)"
+assert_eq "replied/young: deleted by its own ts" "yes" "$(body_has "\"ts\": \"$PH_TS\"")"
+assert_eq "replied/young: no answer posted" "0" "$(count chat.postMessage)"
+assert_eq "replied/young: no error rewrite" "0" "$(count chat.update)"
+assert_eq "replied/young: marker removed" "no" "$(pend_exists "$PT")"
+
+echo ""
+echo "(u) replied leftover in a WEDGED round with a recoverable answer: never re-answered"
+# Unmarked, this exact marker is case (a): the watchdog posts the transcript's
+# answer. Marked replied, that would be a duplicate of what the user already got.
+PU="$(replied_case wu hung 100)"
+run_wd 1 1
+assert_eq "replied/wedged: no duplicate answer" "0" "$(count chat.postMessage)"
+assert_eq "replied/wedged: no error rewrite" "0" "$(count chat.update)"
+assert_eq "replied/wedged: placeholder deleted" "1" "$(count chat.delete)"
+assert_eq "replied/wedged: marker removed" "no" "$(pend_exists "$PU")"
+assert_eq "replied/wedged: log says delivered=none" "yes" "$(log_has "$PU" "replied leftover(s): 1/1")"
+
+echo ""
+echo "(v) replied leftover, delete still failing (429): marker kept with its mtime; next tick clears it"
+PV="$(replied_case wv hung 100)"
+MT_BEFORE="$(mtime_of "$PV/SID.json")"
+stub_mode "chat.delete http:429"
+run_wd 1 1
+assert_eq "replied/429: one delete attempt" "1" "$(count chat.delete)"
+assert_eq "replied/429: nothing delivered instead" "0" "$(( $(count chat.postMessage) + $(count chat.update) ))"
+assert_eq "replied/429: marker KEPT for the next tick" "yes" "$(pend_exists "$PV")"
+assert_eq "replied/429: marker mtime preserved" "$MT_BEFORE" "$(mtime_of "$PV/SID.json")"
+stub_mode
+run_wd 1 1
+assert_eq "replied/429 then ok: placeholder deleted" "1" "$(count chat.delete)"
+assert_eq "replied/429 then ok: marker removed" "no" "$(pend_exists "$PV")"
+
+echo ""
+echo "(w) replied leftover, TERMINAL delete rejection (message_not_found): dropped"
+PW="$(replied_case ww work 5)"
+stub_mode "chat.delete ok_false:message_not_found"
+run_wd 1 9999
+assert_eq "replied/terminal: one delete attempt" "1" "$(count chat.delete)"
+assert_eq "replied/terminal: marker dropped (retrying cannot help)" "no" "$(pend_exists "$PW")"
+stub_mode
+
+echo ""
+echo "(x) replied leftover next to a LIVE young entry: only the leftover goes"
+PX="$(make_case wx work 5)"
+TR_X="$TMP/root/agents/wx/.claude/channels/slack/transcript.jsonl"
+printf '[{"chat_id":"%s","ts":"%s","replied":true,"transcript_path":"%s"},{"chat_id":"%s","ts":"1700000000.000400","transcript_path":"%s"}]\n' \
+    "$CHAT" "$PH_TS" "$TR_X" "$CHAT" "$TR_X" > "$PX/SID.json"
+python3 - "$PX/SID.json" 5 <<'PY'
+import os, sys, time
+os.utime(sys.argv[1], (time.time()-int(sys.argv[2]),)*2)
+PY
+MT_BEFORE="$(mtime_of "$PX/SID.json")"
+run_wd 1 9999
+assert_eq "mixed: exactly one delete (the leftover)" "1" "$(count chat.delete)"
+assert_eq "mixed: it is the leftover's ts" "yes" "$(body_has "\"ts\": \"$PH_TS\"")"
+assert_eq "mixed: the live turn is left alone (no post, no edit)" "0" "$(( $(count chat.postMessage) + $(count chat.update) ))"
+assert_eq "mixed: marker kept" "yes" "$(pend_exists "$PX")"
+assert_eq "mixed: only the live entry remains" "1" "$(pend_count "$PX")"
+assert_eq "mixed: the remaining entry is the live one" "yes" \
+  "$(grep -q '"1700000000.000400"' "$PX/SID.json" && echo yes || echo no)"
+assert_eq "mixed: mtime preserved (the live entry's age stands)" "$MT_BEFORE" "$(mtime_of "$PX/SID.json")"
+rm -f "$PX/SID.json"
 
 # ---------------------------------------------------------------------------
 echo ""
