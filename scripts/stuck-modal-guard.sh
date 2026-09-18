@@ -312,8 +312,10 @@ run_guard() {
         CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && "
       elif [ "$_cfg_mode" = "token" ]; then
         # Token-mode rotated plan -- same credential-less dir as `isolated`, but
-        # export THAT plan's vault-stored token. See channels.sh's identical branch.
-        CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(printf 'T=%s' '$_cfg_token_secret' | \"$NODE_BIN\" '$INSTALL_DIR/scripts/vault-resolve.mjs' | cut -d= -f2-)\" && "
+        # export THAT plan's vault-stored token. See channels.sh's identical
+        # branch, including the fleet-token fallback and the loud-failure gate
+        # (PR #1304 review (c)) via the bare `_plan_token=$(...)` assignment.
+        CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && _plan_token=\"\$(\"$NODE_BIN\" '$INSTALL_DIR/scripts/resolve-plan-token-env.mjs' '$_cfg_token_secret' '$INSTALL_DIR/store/.claude-oauth-token' '$INSTALL_DIR/store/channels-failures.log')\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$_plan_token\" && "
       else
         CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "
       fi

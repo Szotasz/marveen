@@ -666,10 +666,15 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
     elif [ "$_cfg_mode" = "token" ]; then
       # Token-mode rotated plan: same credential-less dir as `isolated`, but
       # export THAT plan's vault-stored token instead of the flotta's.
-      # vault-resolve.mjs is evaluated in the launched shell (same "never
-      # lands in argv/ps" property as the $(cat) below); the secret id itself
-      # is not secret, only its resolved value is.
-      CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(printf 'T=%s' '$_cfg_token_secret' | \"$_node_bin\" '$INSTALL_DIR/scripts/vault-resolve.mjs' | cut -d= -f2-)\" && "
+      # resolve-plan-token-env.mjs is evaluated in the launched shell (same
+      # "never lands in argv/ps" property as the $(cat) below); the secret id
+      # itself is not secret, only its resolved value is. It falls back to
+      # the fleet token when the plan's own secret is missing, and exits
+      # nonzero (nothing on stdout) when NEITHER is available -- the bare
+      # `_plan_token=$(...)` assignment propagates that exit status, so the
+      # `&&` chain stops here rather than launching unauthenticated (PR #1304
+      # review (c)).
+      CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && _plan_token=\"\$(\"$_node_bin\" '$INSTALL_DIR/scripts/resolve-plan-token-env.mjs' '$_cfg_token_secret' '$INSTALL_DIR/store/.claude-oauth-token' '$INSTALL_DIR/store/channels-failures.log')\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$_plan_token\" && "
     else
       # Seed the token from the SAME 0600 file the isolated dir is gated on, so
       # the config dir and the active token always match (the isolated dir carries

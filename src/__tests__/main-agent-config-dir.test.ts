@@ -126,12 +126,29 @@ describe('launcher wiring', () => {
     expect(branch?.[1]).toMatch(/CLAUDE_CONFIG_DIR/)
   })
 
-  it('channels.sh exports the PLAN token (via vault-resolve.mjs), not the fleet token, for a token-mode rotated dir', () => {
+  it('channels.sh exports the PLAN token (via resolve-plan-token-env.mjs), not the raw fleet token, for a token-mode rotated dir', () => {
     const branch = CHANNELS.match(/elif \[ "\$_cfg_mode" = "token" \]; then\n([\s\S]*?)\n\s*else/)
     expect(branch).not.toBeNull()
-    expect(branch?.[1]).toMatch(/vault-resolve\.mjs/)
+    expect(branch?.[1]).toMatch(/resolve-plan-token-env\.mjs/)
     expect(branch?.[1]).toMatch(/CLAUDE_CODE_OAUTH_TOKEN/)
     expect(branch?.[1]).toMatch(/CLAUDE_CONFIG_DIR/)
-    expect(branch?.[1]).not.toMatch(/store\/\.claude-oauth-token/)
+  })
+
+  // PR #1304 review (c): a missing plan secret must not launch with an empty
+  // token, so the token branch now ALSO passes the fleet-token path -- as the
+  // resolver's OWN fallback argument, not a direct $(cat) export like the
+  // plain `isolated` branch uses. And the resolver's exit status must gate
+  // the launch: a bare `_plan_token=$(...)` assignment (no command word
+  // before it) propagates that status into the `&&` chain, so a resolver
+  // failure (neither the plan secret nor the fleet token available) stops
+  // before `claude` ever runs.
+  it('channels.sh\'s token branch passes the fleet-token path as the resolver\'s fallback arg and gates the launch on the resolver\'s exit status', () => {
+    const branch = CHANNELS.match(/elif \[ "\$_cfg_mode" = "token" \]; then\n([\s\S]*?)\n\s*else/)
+    expect(branch).not.toBeNull()
+    expect(branch?.[1]).toMatch(/store\/\.claude-oauth-token/)
+    expect(branch?.[1]).toMatch(/channels-failures\.log/)
+    expect(branch?.[1]).toContain('_plan_token=')
+    expect(branch?.[1]).toContain('resolve-plan-token-env.mjs')
+    expect(branch?.[1]).toMatch(/export CLAUDE_CODE_OAUTH_TOKEN=.*_plan_token/)
   })
 })

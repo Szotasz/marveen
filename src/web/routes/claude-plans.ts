@@ -19,7 +19,7 @@ import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID } from '../../config.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
-import { readClaudePlans, writeClaudePlans, validatePlan, PLAN_ID_ALLOWED } from '../claude-plans.js'
+import { readClaudePlans, writeClaudePlans, validatePlan, PLAN_ID_ALLOWED, tokenSecretIdFor } from '../claude-plans.js'
 import { setSecret, deleteSecret } from '../vault.js'
 import { readClaudePlansState, writeClaudePlansState, applyRotation } from '../claude-plans-state.js'
 import { agentDir, writeAgentClaudePlan } from '../agent-config.js'
@@ -35,11 +35,6 @@ function isMainAgentIsolated(): boolean {
   try { return String(getEffectiveSettingValue('MAIN_AGENT_ISOLATED_CONFIG')) === '1' } catch { return false }
 }
 
-// Stable vault secret id for a plan's token-mode credential. Derived from the
-// plan id (not random) so PUT-ing a new token for the same plan overwrites the
-// same vault entry instead of orphaning the old one.
-const tokenSecretIdFor = (planId: string) => `claude-plan-token-${planId}`
-
 // A raw `token` combined with configDir or tokenSecretId is ambiguous -- the
 // caller almost certainly meant only one of them. Rejected explicitly rather
 // than silently dropping `token` (which would otherwise sail through as an
@@ -54,21 +49,56 @@ function hasAmbiguousTokenField(raw: Record<string, unknown>): boolean {
 // `claude setup-token` output) instead of pre-populating the vault and
 // passing tokenSecretId directly -- this is the whole point of token-mode
 // (see ClaudePlan.tokenSecretId): no separate vault-management step, paste
-// the token and go. The raw value is written to the vault and stripped from
-// the object handed to validatePlan(); it must never reach store/claude-plans.json
-// or a GET response. Callers must check hasAmbiguousTokenField() first.
-function withTokenPromotedToVault(
+// the token and go.
+//
+// PURE -- writes NOTHING to the vault. It only builds the candidate object
+// validatePlan() will see (tokenSecretId swapped in, raw `token` stripped so
+// it never reaches store/claude-plans.json or a GET response) plus what
+// WOULD be written if the caller commits it later. The caller must run
+// validatePlan() (and any other rejection check, e.g. a duplicate id) FIRST,
+// and only setSecret() the pendingToken once everything else has already
+// succeeded.
+//
+// PR #1304 review (a): the previous version wrote to the vault right here,
+// before validation. On a PUT that reuses an existing token-mode plan's id,
+// the write landed on that plan's EXISTING vault entry (same derived id) --
+// so an invalid PUT (bad token plus some unrelated bad field) overwrote the
+// live secret, validation then failed, and the failure-path cleanup deleted
+// the same id -- destroying a working credential on a 400 response.
+function prepareTokenCandidate(
   raw: Record<string, unknown>,
   planId: string,
-): { candidate: Record<string, unknown>; wroteSecretId: string | null } {
+): { candidate: Record<string, unknown>; pendingToken: { secretId: string; label: string; value: string } | null } {
   if (typeof raw.token !== 'string' || !raw.token.trim()) {
-    return { candidate: raw, wroteSecretId: null }
+    return { candidate: raw, pendingToken: null }
   }
-  if (!planId || !PLAN_ID_ALLOWED.test(planId)) return { candidate: raw, wroteSecretId: null }
+  if (!planId || !PLAN_ID_ALLOWED.test(planId)) return { candidate: raw, pendingToken: null }
   const secretId = tokenSecretIdFor(planId)
-  setSecret(secretId, `Claude plan token: ${typeof raw.label === 'string' ? raw.label : planId}`, raw.token.trim())
   const { token: _discard, ...rest } = raw
-  return { candidate: { ...rest, tokenSecretId: secretId }, wroteSecretId: secretId }
+  return {
+    candidate: { ...rest, tokenSecretId: secretId },
+    pendingToken: {
+      secretId,
+      label: `Claude plan token: ${typeof raw.label === 'string' ? raw.label : planId}`,
+      value: raw.token.trim(),
+    },
+  }
+}
+
+// Defense in depth beyond validatePlan's own derived-form check (PR #1304
+// review (b)): deleteSecret must never fire on anything but the plan's OWN
+// tokenSecretId, even if a caller somehow got a different id attached to it
+// (e.g. a hand-edited store/claude-plans.json -- validatePlan on read would
+// normally just drop such an entry, but this keeps the deletion call sites
+// safe independently of that, rather than relying on a single upstream gate
+// for a primitive this destructive).
+// Exported for a direct unit test: with validatePlan now also enforcing the
+// derived-form-only rule, a foreign tokenSecretId can no longer reach disk
+// through this route at all, so the "DELETE never removes a non-prefixed
+// secret" guarantee has no route-level path left to exercise it through --
+// this function IS the guarantee, and is tested directly.
+export function deleteOwnTokenSecret(planId: string, secretId: string | null | undefined): void {
+  if (secretId && secretId === tokenSecretIdFor(planId)) deleteSecret(secretId)
 }
 
 export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> {
@@ -97,11 +127,10 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
       return true
     }
     const rawId = typeof rawBody.id === 'string' ? rawBody.id.trim() : ''
-    const { candidate, wroteSecretId } = withTokenPromotedToVault(rawBody, rawId)
+    const { candidate, pendingToken } = prepareTokenCandidate(rawBody, rawId)
 
     const plan = validatePlan(candidate, homedir())
     if (!plan) {
-      if (wroteSecretId) deleteSecret(wroteSecretId)
       json(res, {
         error: 'Invalid plan: id (letters/digits/_.- only), label, exactly one of configDir (safe absolute or ~-prefixed path, no traversal/spaces) or token (raw claude setup-token output), planType (personal|team) and channelsAllowed (boolean) are all required',
       }, 400)
@@ -110,11 +139,13 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
 
     const current = readClaudePlans()
     if (current.some((p) => p.id === plan.id)) {
-      if (wroteSecretId) deleteSecret(wroteSecretId)
       json(res, { error: `Plan id already exists: ${plan.id}` }, 409)
       return true
     }
 
+    // Vault write happens only now, after every rejection check has already
+    // passed -- see prepareTokenCandidate's header.
+    if (pendingToken) setSecret(pendingToken.secretId, pendingToken.label, pendingToken.value)
     writeClaudePlans([...current, plan])
     logger.info({ id: plan.id, mode: plan.tokenSecretId ? 'token' : 'configDir' }, 'Claude plan created')
     json(res, plan, 201)
@@ -252,22 +283,30 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
       json(res, { error: 'Invalid plan: token cannot be combined with configDir or tokenSecretId' }, 400)
       return true
     }
-    const { candidate, wroteSecretId } = withTokenPromotedToVault(rawBody, idMatch[1])
+    const { candidate, pendingToken } = prepareTokenCandidate(rawBody, idMatch[1])
     const plan = validatePlan(candidate, homedir())
     if (!plan) {
-      if (wroteSecretId) deleteSecret(wroteSecretId)
+      // Vault untouched -- an invalid PUT (even one carrying a fresh raw
+      // token) never writes or deletes anything, so this plan's existing
+      // token-mode secret (if any) survives exactly as it was.
       json(res, {
         error: 'Invalid plan: label, exactly one of configDir (safe absolute or ~-prefixed path, no traversal/spaces) or token (raw claude setup-token output), planType (personal|team) and channelsAllowed (boolean) are all required',
       }, 400)
       return true
     }
 
-    // Switching a plan OUT of token-mode (or onto a different vault entry
-    // entirely) must not orphan the old secret -- the vault-hygiene guarantee
+    // Vault write happens only now, after validation succeeded. For an
+    // existing token-mode plan this overwrites the SAME derived id in place
+    // (setSecret upserts), which is why the orphan-check below compares
+    // against plan.tokenSecretId rather than skipping when pendingToken is set.
+    if (pendingToken) setSecret(pendingToken.secretId, pendingToken.label, pendingToken.value)
+
+    // Switching a plan OUT of token-mode (or dropping it via a PUT that omits
+    // `token`) must not orphan the old secret -- the vault-hygiene guarantee
     // the SSH-key store already gives (docs/vault.md).
     const previousTokenSecretId = current[idx].tokenSecretId
     if (previousTokenSecretId && previousTokenSecretId !== plan.tokenSecretId) {
-      deleteSecret(previousTokenSecretId)
+      deleteOwnTokenSecret(idMatch[1], previousTokenSecretId)
     }
 
     const next = [...current]
@@ -290,7 +329,7 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
       return true
     }
 
-    if (removed?.tokenSecretId) deleteSecret(removed.tokenSecretId)
+    if (removed) deleteOwnTokenSecret(removed.id, removed.tokenSecretId)
     writeClaudePlans(next)
     logger.info({ id: idMatch[1] }, 'Claude plan deleted')
     json(res, { ok: true })

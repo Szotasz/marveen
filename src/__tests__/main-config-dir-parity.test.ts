@@ -36,12 +36,14 @@ describe('every shell respawn path carries the main-agent config decision (CFGDI
     // The helper's modes must ALL be handled: an `explicit`/`rotated` dir
     // carries its own credentials (injecting the fleet token there would swap
     // the identity), `token` shares the isolated dir but needs a PLAN token
-    // resolved via vault-resolve.mjs, and plain `isolated` needs the flotta
-    // token. A script that only handles some of them is half-fixed, and the
-    // half it misses is the half that authenticates.
+    // resolved via resolve-plan-token-env.mjs (which itself falls back to the
+    // fleet token and fails loudly rather than exporting empty -- PR #1304
+    // review (c)), and plain `isolated` needs the flotta token. A script that
+    // only handles some of them is half-fixed, and the half it misses is the
+    // half that authenticates.
     expect(src).toContain('explicit')
     expect(src).toContain('"token"')
-    expect(src).toContain('vault-resolve.mjs')
+    expect(src).toContain('resolve-plan-token-env.mjs')
     expect(src).toContain('CLAUDE_CODE_OAUTH_TOKEN')
   })
 

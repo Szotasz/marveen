@@ -113,5 +113,19 @@ describe('resolveClaudePlans', () => {
       const raw = JSON.stringify([tokenPlan({ id: 'bad', tokenSecretId: "claude-plan-token-'; rm -rf" })])
       expect(resolveClaudePlans(raw, HOME)).toEqual([])
     })
+
+    // PR #1304 review (b): a well-formed but FOREIGN tokenSecretId (passes the
+    // charset, just names a different vault entry) used to be accepted --
+    // deleteSecret on plan delete/switch then made it a destructive primitive
+    // reachable by a typo. Only this plan's own derived id is valid now.
+    it('rejects a tokenSecretId that is not this plan\'s own derived id, even if charset-valid', () => {
+      const raw = JSON.stringify([tokenPlan({ id: 'good', tokenSecretId: 'MARVEEN-CONNECTORS-PAT' })])
+      expect(resolveClaudePlans(raw, HOME)).toEqual([])
+    })
+
+    it('rejects one plan\'s tokenSecretId reused verbatim on a different plan id', () => {
+      const raw = JSON.stringify([tokenPlan({ id: 'other', tokenSecretId: 'claude-plan-token-pro' })])
+      expect(resolveClaudePlans(raw, HOME)).toEqual([])
+    })
   })
 })

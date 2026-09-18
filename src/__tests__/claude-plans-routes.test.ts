@@ -242,6 +242,91 @@ describe('tryHandleClaudePlans', () => {
       expect(out.status).toBe(400)
       expect(vaultSecrets.size).toBe(0)
     })
+
+    // PR #1304 review (a): withTokenPromotedToVault used to write the new raw
+    // token to the vault BEFORE validatePlan ran. On a PUT that carries an
+    // otherwise-invalid body, the write landed on the SAME derived id as the
+    // plan's existing (valid) secret, validation then failed, and the
+    // failure-path cleanup deleted that same id -- an invalid 400 request
+    // destroyed a working credential.
+    it('an invalid PUT carrying a raw token leaves the existing secret intact', async () => {
+      await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', tokenPlan()).ctx)
+      expect(vaultSecrets.get('claude-plan-token-marketing')).toBe('test-fixture-not-a-real-token-marketing')
+      setSecret.mockClear()
+      deleteSecret.mockClear()
+
+      const { ctx, out } = fakeCtx('PUT', '/api/claude-plans/marketing', tokenPlan({
+        token: 'new-token-that-must-never-land', planType: 'enterprise',
+      }))
+      await tryHandleClaudePlans(ctx)
+      expect(out.status).toBe(400)
+
+      // Old secret survives, byte for byte -- neither overwritten nor deleted.
+      expect(vaultSecrets.get('claude-plan-token-marketing')).toBe('test-fixture-not-a-real-token-marketing')
+      expect(setSecret).not.toHaveBeenCalled()
+      expect(deleteSecret).not.toHaveBeenCalled()
+    })
+
+    it('a VALID PUT with a new raw token does replace the secret value (contrast with the invalid case above)', async () => {
+      await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', tokenPlan()).ctx)
+      const { ctx, out } = fakeCtx('PUT', '/api/claude-plans/marketing', tokenPlan({ token: 'rotated-token-value' }))
+      await tryHandleClaudePlans(ctx)
+      expect(out.status).toBe(200)
+      expect(vaultSecrets.get('claude-plan-token-marketing')).toBe('rotated-token-value')
+    })
+
+    // PR #1304 review (b): tokenSecretId must be exactly this plan's own
+    // derived id (claude-plan-token-<id>) -- nothing else, even if charset-valid.
+    it('rejects a foreign tokenSecretId on POST (not the plan\'s own derived id)', async () => {
+      const { ctx, out } = fakeCtx('POST', '/api/claude-plans', {
+        id: 'marketing', label: 'Marketing', tokenSecretId: 'MARVEEN-CONNECTORS-PAT',
+        planType: 'personal', channelsAllowed: true,
+      })
+      await tryHandleClaudePlans(ctx)
+      expect(out.status).toBe(400)
+      expect(vaultSecrets.size).toBe(0)
+    })
+
+    it('rejects a foreign tokenSecretId on PUT too, leaving the existing plan/secret untouched', async () => {
+      await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', tokenPlan()).ctx)
+      const { ctx, out } = fakeCtx('PUT', '/api/claude-plans/marketing', {
+        label: 'Marketing', tokenSecretId: 'MARVEEN-CONNECTORS-PAT', planType: 'personal', channelsAllowed: true,
+      })
+      await tryHandleClaudePlans(ctx)
+      expect(out.status).toBe(400)
+      expect(vaultSecrets.get('claude-plan-token-marketing')).toBe('test-fixture-not-a-real-token-marketing')
+      expect(deleteSecret).not.toHaveBeenCalled()
+    })
+  })
+
+  // PR #1304 review (b), third required test: "a plan DELETE never removes a
+  // non-prefixed secret". With validatePlan now rejecting any foreign
+  // tokenSecretId, that state can no longer be reached through the route at
+  // all (see the two tests above) -- so this exercises the guard function
+  // ITSELF, the thing the DELETE handler actually calls, directly.
+  describe('deleteOwnTokenSecret (PR #1304 review (b) defense in depth)', () => {
+    it('deletes the plan\'s own derived secret id', async () => {
+      const { deleteOwnTokenSecret } = await import('../web/routes/claude-plans.js')
+      vaultSecrets.set('claude-plan-token-marketing', 'x')
+      deleteOwnTokenSecret('marketing', 'claude-plan-token-marketing')
+      expect(deleteSecret).toHaveBeenCalledWith('claude-plan-token-marketing')
+      expect(vaultSecrets.has('claude-plan-token-marketing')).toBe(false)
+    })
+
+    it('never calls deleteSecret for an id that is not the plan\'s own derived id', async () => {
+      const { deleteOwnTokenSecret } = await import('../web/routes/claude-plans.js')
+      vaultSecrets.set('MARVEEN-CONNECTORS-PAT', 'live-prod-db-credential')
+      deleteOwnTokenSecret('marketing', 'MARVEEN-CONNECTORS-PAT')
+      expect(deleteSecret).not.toHaveBeenCalled()
+      expect(vaultSecrets.has('MARVEEN-CONNECTORS-PAT')).toBe(true)
+    })
+
+    it('no-ops on a null/undefined secretId', async () => {
+      const { deleteOwnTokenSecret } = await import('../web/routes/claude-plans.js')
+      deleteOwnTokenSecret('marketing', undefined)
+      deleteOwnTokenSecret('marketing', null)
+      expect(deleteSecret).not.toHaveBeenCalled()
+    })
   })
 })
 

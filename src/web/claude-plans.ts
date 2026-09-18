@@ -84,6 +84,15 @@ export interface ClaudePlan {
 // string equality; keep them to a boring, injection-proof charset.
 export const PLAN_ID_ALLOWED = /^[A-Za-z0-9_.-]+$/
 
+// Stable vault secret id for a plan's token-mode credential, derived from the
+// plan id (not random) so re-promoting a token for the same plan overwrites
+// the same vault entry instead of orphaning the old one. This is the ONLY
+// form validatePlan accepts for tokenSecretId (see below) -- PR #1304 review
+// (b): letting a plan name ANY vault entry made deleteSecret (on plan
+// delete/switch) a destructive primitive reachable by a typo, capable of
+// wiping an unrelated credential (on one install, a live-prod-DB secret).
+export const tokenSecretIdFor = (planId: string) => `claude-plan-token-${planId}`
+
 const VALID_PLAN_TYPES = new Set<ClaudePlanType>(['personal', 'team'])
 
 function isNonEmptyString(v: unknown): v is string {
@@ -123,8 +132,11 @@ export function validatePlan(raw: unknown, homeDir: string): ClaudePlan | null {
     if (!expanded) return null
     configDir = expanded
   } else {
+    // Not just charset-valid -- must be exactly THIS plan's own derived id.
+    // A well-formed but foreign id (e.g. another secret's vault label) is
+    // rejected here rather than accepted and later deleted by mistake.
     const tid = (o.tokenSecretId as string).trim()
-    if (!PLAN_ID_ALLOWED.test(tid)) return null
+    if (tid !== tokenSecretIdFor(id)) return null
     tokenSecretId = tid
   }
 
