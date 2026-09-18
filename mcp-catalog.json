@@ -26,14 +26,14 @@
     "command": "npx",
     "args": [
       "-y",
-      "gmail-mcp-server"
+      "@artymclabin/gmail-mcp"
     ],
     "env": {},
     "authType": "oauth",
     "authNote": "Google Cloud OAuth kliens kell hozzá (client ID + secret). UGYANAZ az OAuth-app használható a Naptár összekötőhöz is.",
     "infoUrl": "https://github.com/ArtyMcLabin/Gmail-MCP-Server",
-    "verifiedAt": "2026-08-27",
-    "verifiedNote": "npm-csomag ellenőrizve: gmail-mcp-server v1.0.30 létezik."
+    "verifiedAt": "2026-09-18",
+    "verifiedNote": "Azonossag ellenorizve (nem csak letezes): npm view @artymclabin/gmail-mcp -> repository.url = github.com/ArtyMcLabin/Gmail-MCP-Server, egyezik az infoUrl-lel; maintainer artymclabin; v1.2.3, 2026-07-10; nincs postinstall. KORABBAN a bejegyzes a gmail-mcp-server csomagra mutatott, ami MAS: nincs repository.url, nincs homepage, maintainer uhbarp-ayis, utolso frissites 2025-09-29, es van benne postinstall (node install.js). A regi verifiedNote csak a LETEZEST igazolta, az AZONOSSAGOT nem."
   },
   {
     "id": "gmail-v2",
