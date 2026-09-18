@@ -94,59 +94,30 @@ if [ -f "$SETTINGS" ]; then
     echo "❌ python3 not found in PATH" >&2
     exit 1
   fi
+  # The settings surgery lives in its own file, NOT in a here-document inside
+  # the command substitution below. bash 3.2 (the /bin/bash every macOS ships)
+  # does not skip a here-document body while it scans a command substitution
+  # for the closing paren, so a single apostrophe in the embedded Python made
+  # this whole script unparseable there (unexpected EOF while looking for a
+  # matching quote): it never ran on macOS, and the installers hid that behind
+  # an unconditional "or true". Keep command substitutions in this script free
+  # of here-documents; the contract test lints for it.
+  RETIRE_PY="$INSTALL_DIR/scripts/lib/retire_progress_hooks.py"
+  if [ ! -f "$RETIRE_PY" ]; then
+    echo "❌ Helper not found: $RETIRE_PY" >&2
+    exit 1
+  fi
   # Back up before touching the user's settings -- this file also carries
   # unrelated hooks and permissions.
   if [ "$DRY_RUN" -ne 1 ]; then
     cp "$SETTINGS" "$SETTINGS.bak-retire-$PROVIDER"
   fi
-  SETTINGS_OUT="$(PYTHONIOENCODING=utf-8 "$PY" - "$SETTINGS" "$PROVIDER" "$DRY_RUN" <<'PYEOF'
-import json, sys
-
-settings_path, provider, dry_run = sys.argv[1], sys.argv[2], sys.argv[3] == '1'
-with open(settings_path) as f:
-    cfg = json.load(f)
-hooks = cfg.get('hooks') or {}
-
-# Match this provider's progress hooks by the script filename they invoke:
-# <provider>_progress.py, _clear.py, _reply_clear.py, _watchdog.py. Matching on
-# the filename (not the whole command) keeps this robust to the interpreter
-# path and to any bash -c wrapper the installer may have used.
-needle = f"{provider}_progress"
-removed = []
-
-for event, groups in list(hooks.items()):
-    if not isinstance(groups, list):
-        continue
-    for group in list(groups):
-        entries = group.get('hooks')
-        if not isinstance(entries, list):
-            continue
-        keep = []
-        for entry in entries:
-            command = entry.get('command') or ''
-            if needle in command:
-                removed.append(f"{event}: {command}")
-            else:
-                keep.append(entry)
-        if len(keep) != len(entries):
-            group['hooks'] = keep
-        # Prune a group left empty -- an empty matcher group is dead weight
-        # that later installs would otherwise keep appending next to.
-        if not group.get('hooks'):
-            groups.remove(group)
-    if not groups:
-        del hooks[event]
-
-if removed and not dry_run:
-    cfg['hooks'] = hooks
-    with open(settings_path, 'w') as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
-
-for line in removed:
-    print(f"REMOVED {line}")
-print(f"COUNT {len(removed)}")
-PYEOF
-)"
+  # Stdout contract of the helper: "REMOVED <event>: <command>" lines, then
+  # "COUNT <n>".
+  if ! SETTINGS_OUT="$(PYTHONIOENCODING=utf-8 "$PY" "$RETIRE_PY" "$SETTINGS" "$PROVIDER" "$DRY_RUN")"; then
+    echo "✗ Could not unwire the $PROVIDER progress hooks from $SETTINGS (error above) -- nothing retired." >&2
+    exit 1
+  fi
   COUNT="$(echo "$SETTINGS_OUT" | grep '^COUNT ' | cut -d' ' -f2)"
   echo "$SETTINGS_OUT" | grep '^REMOVED ' | sed 's/^REMOVED /  - /' || true
   if [ "${COUNT:-0}" -gt 0 ]; then
