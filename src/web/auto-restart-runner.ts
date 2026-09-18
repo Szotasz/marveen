@@ -13,8 +13,8 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { respawnMainSessionFresh } from './channel-monitor.js'
 import { paneLooksIdle } from '../pane-state.js'
 import { readAutoRestartConfig } from './auto-restart-store.js'
-import { restartDue, dailyDueAtMs, localMidnightMs, parseHHMM, mainRestartMechanism, restartBlockedBy, deferralOverride, type AutoRestartConfig } from '../auto-restart.js'
-import { hasOpenInboundQuestion } from '../db.js'
+import { restartDue, dailyDueAtMs, localMidnightMs, parseHHMM, mainRestartMechanism, restartBlockedBy, deferralOverride, restartFailureAction, MAX_RESTART_ATTEMPTS, type AutoRestartConfig } from '../auto-restart.js'
+import { createAgentMessage, hasOpenInboundQuestion } from '../db.js'
 import { readContextGuardConfig } from './context-guard-store.js'
 import { getHardGuardPhase } from './context-guard-runner.js'
 import { dailyHandoffArmed } from '../context-guard.js'
@@ -104,6 +104,13 @@ function restartMainChannelsSession(): void {
   // orphan reaps -- a bespoke command here would silently drift from it.
   respawnMainSessionFresh()
 }
+
+// c5296a52: how many CONSECUTIVE failed restart attempts this agent had in the current due
+// window. Without a cap, a restart that cannot succeed re-fires on every idle tick: on
+// 2026-09-18 that was 176 attempts between 03:00Z and 08:01Z, because the failure left
+// lastRestart unset and the slot stayed due. The cap turns an endless retry into one named
+// event: three attempts, then the slot is released for the day AND the main agent is told.
+const restartFailures = new Map<string, number>()
 
 async function performRestart(name: string, cfg: AutoRestartConfig): Promise<void> {
   if (name === MAIN_AGENT_ID) {
@@ -216,12 +223,36 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   try {
     await performRestart(name, cfg)
     lastRestart.set(name, nowMs)
+    restartFailures.delete(name)
     // A restart does not answer the question -- reset the streak so the next
     // due slot gets a full deferral window again instead of overriding at once.
     openQuestionDeferrals.delete(name)
     logger.info({ name, mode: name === MAIN_AGENT_ID ? 'fresh(main)' : cfg.mode }, 'auto-restart: restarted session')
   } catch (err) {
-    logger.warn({ err, name }, 'auto-restart: restart failed')
+    // c5296a52: a failed restart used to leave lastRestart unset, so the slot stayed due and the
+    // next idle tick tried again -- forever, and silently, because the only symptom was a WARN
+    // line. Bounded retry instead: a few attempts, then the slot is released for today and the
+    // failure is SAID OUT LOUD to the main agent. A nightly restart that never happens must not
+    // look the same as one that did.
+    const attempts = (restartFailures.get(name) ?? 0) + 1
+    restartFailures.set(name, attempts)
+    if (restartFailureAction(attempts) === 'retry') {
+      logger.warn({ err, name, attempts, maxAttempts: MAX_RESTART_ATTEMPTS },
+        'auto-restart: restart failed, retrying on a later tick')
+      return
+    }
+    lastRestart.set(name, nowMs)
+    restartFailures.delete(name)
+    logger.error({ err, name, attempts }, 'auto-restart: restart failed repeatedly, slot released for today')
+    try {
+      createAgentMessage(
+        'auto-restart',
+        MAIN_AGENT_ID,
+        `[auto-restart] A(z) ${name} utemezett ujrainditasa ${attempts} kiserletbol sem sikerult, ezert a mai slotot elengedtem (kulonben minden ures pillanatban ujraprobalna). Hiba: ${err instanceof Error ? err.message : String(err)}. A kovetkezo utemezett slot valtozatlanul fut; ha ez ismetlodik, a restart-ut romlott el, nem a session.`,
+      )
+    } catch (msgErr) {
+      logger.warn({ err: msgErr, name }, 'auto-restart: could not queue the restart-failure notice')
+    }
   }
 }
 
