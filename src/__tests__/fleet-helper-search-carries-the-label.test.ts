@@ -66,7 +66,16 @@ function run(label: string, rows: unknown[], kwargs: Record<string, unknown>) {
   const stdout = execFileSync(
     'python3',
     ['-c', HARNESS, SCRIPT, label, JSON.stringify(rows), JSON.stringify(kwargs)],
-    { env: { ...process.env, CLAW_DIR: dir, CLAW_BASE: 'http://127.0.0.1:1' }, encoding: 'utf-8' },
+    // PYTHONDONTWRITEBYTECODE: fleet.py lives under seed-skills/, a SHIPPED
+    // template tree. Without this, importing it writes __pycache__/*.pyc into
+    // that tree, and template-identity-hygiene.test.ts -- which walks the same
+    // tree and reads every file as utf-8 -- then reports the decoded bytes as a
+    // hardcoded absolute home path. The suite fails on its own artifact, and
+    // only when this file happens to run first, so it reads as a flake.
+    {
+      env: { ...process.env, CLAW_DIR: dir, CLAW_BASE: 'http://127.0.0.1:1', PYTHONDONTWRITEBYTECODE: '1' },
+      encoding: 'utf-8',
+    },
   )
   return JSON.parse(stdout) as { url: string; out: Record<string, unknown> }
 }
