@@ -3,6 +3,7 @@ import {
   wrapUntrusted,
   wrapTrustedPeer,
   wrapScheduledTask,
+  wrapScheduledTaskByReference,
   UNTRUSTED_PREAMBLE,
   TRUSTED_PEER_PREAMBLE,
   SCHEDULED_TASK_PREAMBLE,
@@ -125,10 +126,53 @@ describe('wrapScheduledTask', () => {
   })
 })
 
+// SCHEDPROMPTREF917: the reference variant used once a task body crosses
+// SCHEDULED_TASK_INLINE_MAX_CHARS -- see scheduled-run-snapshot.ts for the
+// file it points at.
+describe('wrapScheduledTaskByReference', () => {
+  it('carries body-file/body-sha256/body-chars as attributes, not as content', () => {
+    const out = wrapScheduledTaskByReference(
+      'scheduled-task:kanban-audit',
+      '/opt/marveen/store/scheduled-runs/20260917-080000-kanban-audit-a3f9.md',
+      'deadbeef'.repeat(8),
+      48745,
+    )
+    expect(out).toMatch(/^<scheduled-task source="scheduled-task:kanban-audit" body-file="\/opt\/marveen\/store\/scheduled-runs\/20260917-080000-kanban-audit-a3f9\.md" body-sha256="deadbeef{8}" body-chars="48745">/)
+    expect(out.endsWith('</scheduled-task>')).toBe(true)
+    // The task's actual content is NOT in the block -- only the pointer + instruction.
+    expect(out).not.toMatch(/kanban-audit SKILL/)
+  })
+
+  it('tells the agent to Read the file in full and to refuse on a length mismatch', () => {
+    const out = wrapScheduledTaskByReference('scheduled-task:x', '/tmp/f.md', 'abc123', 100)
+    expect(out).toMatch(/Read/)
+    expect(out).toMatch(/body-chars/)
+  })
+
+  it('produces a short, size-independent prompt (test 3: <1200 chars for a 48745-char body)', () => {
+    const out = wrapScheduledTaskByReference(
+      'scheduled-task:kanban-audit',
+      '/opt/marveen/store/scheduled-runs/20260917-080000-kanban-audit-a3f9.md',
+      'a'.repeat(64),
+      48745,
+    )
+    expect(out.length).toBeLessThan(1200)
+  })
+
+  it('sanitizes the source the same way wrapScheduledTask does', () => {
+    const out = wrapScheduledTaskByReference('scheduled-task:x" onerror="y', '/tmp/f.md', 'abc', 1)
+    expect(out).toMatch(/<scheduled-task source="scheduled-task:xonerrory"/)
+  })
+})
+
 describe('SCHEDULED_TASK_PREAMBLE', () => {
   it('frames the block as a task to execute, not third-party data', () => {
     expect(SCHEDULED_TASK_PREAMBLE).toMatch(/EXPECTED TO CARRY OUT/)
     expect(SCHEDULED_TASK_PREAMBLE).toMatch(/NOT third-party data/)
+  })
+
+  it('documents the body-file reference variant (SCHEDPROMPTREF917)', () => {
+    expect(SCHEDULED_TASK_PREAMBLE).toMatch(/body-file/)
   })
 
   it('keeps the escalate-on-dangerous guard rail', () => {

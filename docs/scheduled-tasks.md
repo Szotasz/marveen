@@ -18,6 +18,35 @@ Kézbesítés után az ágens normál Claude Code session-ként dolgozza fel -- 
 
 ---
 
+## Kézbesítési mód: inline vagy hivatkozás (SCHEDPROMPTREF917)
+
+A tmux-on átmenő szöveg mérete okozott sérülést (összecsúszó mondatok, levágott
+fejléc) a nagyobb feladatoknál -- a hiba nem a közeli tüzelésen, hanem
+kizárólag a méreten múlt. Ezért a runner a feladat végleges szövegét
+(`SCHEDULED_TASK_INLINE_MAX_CHARS` = 1500 karakter felett) NEM közvetlenül
+gépeli be, hanem egy fájlba menti (`store/scheduled-runs/`), és csak egy
+rövid, ~800 karakteres hivatkozást küld a tmux-on, amit az ágens `Read`-del
+olvas be. A kis feladatok (pl. `ledger-live-drain`) változatlanul inline
+mennek.
+
+A fájl **immutable** (`<YYYYMMDD-HHMMSS>-<feladatnév>-<rand4>.md`), tartalmazza
+a tüzelés pillanatában érvényes teljes szöveget (pre-check + SKILL.md-törzs +
+metrics-blokk), és a jelenlegi biztonsági tag-scrub ugyanúgy lefut rajta, mint
+korábban a tmux-ra menő szövegen. Megőrzés: óránkénti takarítás, 7 nap után
+törlődik, de feladatonként a legutóbbi 20 mindig megmarad
+(`scheduled-run-snapshot.ts`). Nincs a mentésben (`scripts/backup.sh`):
+regenerálódik minden tüzeléskor.
+
+**Méret-őr.** A SKILL.md-törzs hosszát a runner minden tüzeléskor méri
+(`SCHEDULED_TASK_BODY_WARN_CHARS` = 20 000 karakter felett figyelmeztetés,
+`MAX_SCHEDULED_TASK_PROMPT_LEN` = 50 000 felett közvetlen üzemeltetői
+riasztás is, feladatonként naponta legfeljebb egyszer). A kézbesítés
+mindkét esetben megtörténik -- a hivatkozásos út miatt a méret már nem
+kézbesítési kockázat, csak jelzés, hogy a SKILL.md tanulságai (`Buktatók`
+szekció) érdemes lenne `references/` alá mozgatni.
+
+---
+
 ## Fájlstruktúra
 
 Minden feladat egy önálló mappában él:
