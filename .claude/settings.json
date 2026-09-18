@@ -32,7 +32,8 @@
       { "matcher": ".*manage_email.*", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"", "timeout": 10 } ] },
       { "matcher": ".*[Gg]mail__.*", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py\"", "timeout": 10 } ] },
       { "matcher": "Read", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/channel-image-resize.sh\"", "timeout": 15 } ] },
-      { "matcher": "WebFetch", "hooks": [ { "type": "command", "command": "command -v node >/dev/null 2>&1 || { echo \"governance-kapu: node interpreter hianyzik, a kapu BLOKKOL\" >&2; exit 2; }; node \"$CLAUDE_PROJECT_DIR/scripts/hooks/egress-gate.mjs\"", "timeout": 10 } ] }
+      { "matcher": "WebFetch", "hooks": [ { "type": "command", "command": "command -v node >/dev/null 2>&1 || { echo \"governance-kapu: node interpreter hianyzik, a kapu BLOKKOL\" >&2; exit 2; }; node \"$CLAUDE_PROJECT_DIR/scripts/hooks/egress-gate.mjs\"", "timeout": 10 } ] },
+      { "matcher": "Write|Edit|MultiEdit", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/memory-frontmatter-gate.py\"", "timeout": 10 } ] }
     ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram-reply-guard.py\"", "timeout": 10 } ] },

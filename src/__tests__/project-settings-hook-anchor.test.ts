@@ -39,7 +39,7 @@ const EXPECTED: Record<string, string[]> = {
   ],
   PreToolUse: [
     'outgoing-copy-gate.py', 'email-approval-gate.py',
-    'channel-image-resize.sh', 'egress-gate.mjs',
+    'channel-image-resize.sh', 'egress-gate.mjs', 'memory-frontmatter-gate.py',
   ],
   Stop: ['telegram-reply-guard.py', 'telegram_progress_clear.py'],
   SessionStart: ['ledger-replay.py', 'taskstate-replay.py', 'clear-replay.py'],
