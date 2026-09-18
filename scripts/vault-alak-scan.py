@@ -142,6 +142,44 @@ _ONMAGA = {
                                   "__tests__", "vault-alak-scan.test.py")),
 }
 
+# D) BEEGETETT HITELESITO KULCSNEV SZERINT. Ez az egyetlen ag, amit a regi,
+# koveteslen `untracked-titok-scan.py` fedett es ez az eszkoz NEM -- halmaz-
+# kulonbsegkent merve 2026-09-18, es NEM elmeleti: a teljes hatokoron talalt egy
+# VALODI beegetett kulcsot egy flotta-szintu skillben, amit az elotag-alapu
+# ERTEK-minta elszalasztott (nincs ismert elotagja).
+#
+# KET SZUKITES, mert hatarolatlanul ez az ag ZAJT termel. Mert: 17 nyers talalat
+# a hatokoron, ebbol 11 PROZA vagy PLACEHOLDER -- egy hibauzenetet idezo mondat
+# (`token: "No such file..."`), egy `<vault: CIMKE>` alaku helykitolto, egy
+# .env-bol olvaso grep-parancs. Egy kronikusan hamis riasztas nem hianyt okoz,
+# hanem erzeketlenseget.
+#   1. PLACEHOLDER-kizaras: `<...>`, `your`, `example`, `xxx`, `...`, `TODO`.
+#   2. ENTROPIA-kuszob: legalabb 12 KULONBOZO karakter. Egy valodi kulcs surun
+#      valtozatos; egy mondat vagy egy rovid helykitolto nem.
+# A kuszob ALATT levo talalat NEM "tiszta", csak NEM JELENTJUK -- ezert all a
+# hatokor-kiirasban, hogy amit nem merunk, arrol nem allitunk semmit.
+# A kulcsnev a SOR ELEJEN all (opcionalis behuzas + a szokasos ertekado
+# elotagok + JSON-mezo idezojele). Ez valasztja el az ERTEKADAST a PROZATOL:
+# `const POSTHOG_API_KEY = "..."` es `"api_key": "..."` benne van, de egy
+# hibauzenetet idezo mondat (`... uzenetet ad (PATH: "..."; token: "...")`)
+# NINCS. A `:` alak SZANDEKOSAN bent marad: a hitelesitok java egy JSON/YAML
+# konfigban ul, es egy `=`-re szukitett minta pont azokra vakulna meg.
+KULCSNEV = re.compile(
+    r"""^[\s>*-]*(?:(?:const|let|var|export|readonly|public|private)\s+)*["']?"""
+    r"""[A-Za-z_]*(?:password|passwd|secret|token|api_key|apikey|kulcs)["']?"""
+    r"""\s*[:=]\s*(["'])([^"'$\n]{16,})\1""",
+    re.I)
+KULCSNEV_PH = re.compile(r"your|example|xxx|placeholder|<[^>]+>|\.\.\.|TODO|FAKE|DUMMY", re.I)
+
+def beegetett_kulcs(ln: str):
+    """A sor egy beegetett hitelesitot allit-e be. None, ha nem, vagy ha zaj."""
+    m = KULCSNEV.search(ln)
+    if not m: return None
+    v = m.group(2)
+    if KULCSNEV_PH.search(v) or KULCSNEV_PH.search(ln): return None
+    if len(set(v)) < 12: return None
+    return m
+
 def fajlok():
     latott = set(_ONMAGA)
     for root in ROOTS:
@@ -154,7 +192,7 @@ def fajlok():
                 if rp in latott: continue
                 latott.add(rp); yield p
 
-A, B, C, ERT = [], [], [], []
+A, B, C, ERT, D = [], [], [], [], []
 osszes = 0
 for p in fajlok():
     osszes += 1
@@ -170,6 +208,7 @@ for p in fajlok():
         if lemez and TITOK_FORRAS.search(ln) and not PROZA.search(ln):
             C.append((p, i))
         if ERTEK.search(ln): ERT.append((p, i))     # az ERTEKET SOSEM irjuk ki
+        if beegetett_kulcs(ln): D.append((p, i))   # az ERTEKET ITT SEM irjuk ki
 
 def ki(cim, lst, hangos=True):
     print(f"\n=== {cim}: {len(lst)} sor / {len({x[0] for x in lst})} fajl ===")
@@ -187,8 +226,9 @@ if JSON_KI:
         "B_stdout_szivargas": [{"fajl": p, "sor": i} for p, i in B],
         "C_lemezre_iras": [{"fajl": p, "sor": i} for p, i in C],
         "ERTEK": [{"fajl": p, "sor": i} for p, i in ERT],
+        "D_beegetett_kulcsnev": [{"fajl": p, "sor": i} for p, i in D],
     }, ensure_ascii=False, indent=2))
-    raise SystemExit(1 if ERT else 0)
+    raise SystemExit(1 if (ERT or D) else 0)
 
 # A HATOKOR A SZAM RESZE. A 09-14-i "2027 atvizsgalt fajl, nulla" allitas azert
 # adott hamis biztonsagot, mert a szam ONMAGABAN "mindenhol"-nek olvasodott. Egy
@@ -204,3 +244,4 @@ ki("A) utasitas-alak  <vault: CIMKE>", A)
 ki("B) feloldas a STDOUT-ra  [SZIVARGO ALAK]", B)
 ki("C) feloldott titok LEMEZRE", C)
 ki("ERTEK: valodi token-alaku sztring  [ertek SOSEM kerul kiirasra]", ERT)
+ki("D) beegetett hitelesito KULCSNEV szerint  [ertek SOSEM kerul kiirasra]", D)

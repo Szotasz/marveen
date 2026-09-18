@@ -149,5 +149,61 @@ class Kilepokod(unittest.TestCase):
         self.assertEqual(proc.returncode, 0)
 
 
+class BeegetettKulcsnev(unittest.TestCase):
+    """D) ag: az EGYETLEN dolog, amit a regi, koveteslen szken fedett es ez nem.
+
+    Halmaz-kulonbsegkent merve 2026-09-18, es nem elmeleti: a teljes hatokoron
+    ez az ag talalt egy VALODI beegetett kulcsot egy flotta-szintu skillben,
+    amit az elotag-alapu ERTEK-minta elszalasztott (nincs ismert elotagja).
+    """
+    VALODI = 'phc_' + 'aB3xQ7zK9mN2pL5vR8tY4wE6uI0oS1dF'   # szintetikus, 32 egyedi-dus kar
+
+    def test_ertekadast_fog(self):
+        proc, data = futtat({'skills/a/telemetry.mjs': f'const POSTHOG_API_KEY = "{self.VALODI}";\n'})
+        self.assertEqual(len(data['D_beegetett_kulcsnev']), 1)
+
+    def test_JSON_mezot_is_fog_mert_a_titkok_java_konfigban_ul(self):
+        """A `:` alak SZANDEKOSAN bent van: egy `=`-re szukitett minta pont a
+        JSON/YAML konfigokra vakulna meg, ahol a hitelesitok java ul."""
+        proc, data = futtat({'skills/a/conf.json': f'  "api_key": "{self.VALODI}",\n'})
+        self.assertEqual(len(data['D_beegetett_kulcsnev']), 1)
+
+    def test_PROZA_nem_talalat(self):
+        """A szukites oka, merve: 17 nyers talalatbol 11 proza vagy placeholder
+        volt. Egy hibauzenetet IDEZO mondat nem beegetett hitelesito."""
+        proc, data = futtat({
+            'skills/a/SKILL.md': f'uzenetet ad (PATH: "No such file"; token: "{self.VALODI}"), tehat\n',
+            'skills/b/SKILL.md': f'a sor vegen meg egy token: "{self.VALODI}" all valahol\n',
+        })
+        self.assertEqual(len(data['D_beegetett_kulcsnev']), 0)
+
+    def test_PLACEHOLDER_nem_talalat(self):
+        proc, data = futtat({
+            'skills/a/SKILL.md': 'export TOKEN="<vault: MARVEEN-PAT-CIMKE>"\n',
+            'skills/b/SKILL.md': 'api_key = "your-api-key-here-xxxx"\n',
+            'skills/c/SKILL.md': 'secret = "example-secret-value-1"\n',
+        })
+        self.assertEqual(len(data['D_beegetett_kulcsnev']), 0)
+
+    def test_ALACSONY_ENTROPIA_nem_talalat(self):
+        """Egy rovid, ismetlodo helykitolto nem kulcs. A kuszob alatti talalat
+        NEM 'tiszta', csak NEM JELENTJUK -- ezert all a hatokor-kiirasban, hogy
+        amit nem merunk, arrol nem allitunk semmit."""
+        proc, data = futtat({'skills/a/SKILL.md': 'password = "aaaaaaaaaaaaaaaaaa"\n'})
+        self.assertEqual(len(data['D_beegetett_kulcsnev']), 0)
+
+    def test_a_D_ag_SEM_irja_ki_az_erteket(self):
+        """A kimenet-szerzodes MINDEN kategoriara all, nem csak az ERTEK-re."""
+        proc, data = futtat({'skills/a/telemetry.mjs': f'const API_KEY = "{self.VALODI}";\n'})
+        self.assertEqual(len(data['D_beegetett_kulcsnev']), 1)
+        for hol, szoveg in (('stdout', proc.stdout), ('stderr', proc.stderr)):
+            self.assertNotIn(self.VALODI, szoveg, f'AZ ERTEK KISZIVARGOTT a {hol}-ra')
+        self.assertIn('telemetry.mjs', proc.stdout)
+
+    def test_a_D_talalat_is_bukatja_a_kilepokodot(self):
+        proc, _ = futtat({'skills/a/telemetry.mjs': f'const API_KEY = "{self.VALODI}";\n'})
+        self.assertEqual(proc.returncode, 1)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
