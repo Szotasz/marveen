@@ -20,7 +20,10 @@
 #
 # Provider gate: sync-hooks.sh runs EVERY install-*-hook.sh on every update, so
 # an installer whose provider is not the active CHANNEL_PROVIDER retires ITSELF
-# and exits 0 before writing any unit -- see the gate block below.
+# and exits before writing any unit -- see the gate block below. Either retire
+# (its own in the gate, the other provider's before an install) is reported
+# when it fails and becomes the exit code: a cleanup that did not happen is
+# never silent.
 #
 # Idempotent: safe to re-run (e.g. from sync-hooks.sh on every update).
 # Cleanup of the old ~/.claude/hooks copies and stale user-global settings
@@ -63,6 +66,21 @@ BOT_NAME="$(read_env BOT_NAME)"
 SERVICE_ID="${SERVICE_ID:-${MAIN_AGENT_ID_ENV:-marveen}}"
 BOT_NAME="${BOT_NAME:-Marveen}"
 
+# Run the retire script for one provider and SAY SO when it fails; returns the
+# script's exit code. It used to be called with an unconditional "|| true",
+# which is how a retire script that the macOS /bin/bash (3.2) could not even
+# parse went unnoticed: its error vanished, the cleanup never happened, and
+# nothing reported either. A failure is still not allowed to abort this
+# installer half-way -- but it is never silent, and it reaches the exit code.
+retire_provider() {
+  local rc=0
+  bash "$INSTALL_DIR/scripts/retire-progress-watchdog.sh" "$1" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "⚠ retire-progress-watchdog.sh $1 FAILED (exit $rc) -- the $1 progress plumbing is NOT retired." >&2
+    echo "  Fix the error above, then re-run: bash $INSTALL_DIR/scripts/retire-progress-watchdog.sh $1" >&2
+  fi
+  return "$rc"
+}
 
 # --- Provider gate (order-independent) --------------------------------------
 # sync-hooks.sh runs EVERY install-*-hook.sh on every update, in glob order
@@ -82,8 +100,11 @@ case "$ACTIVE_PROVIDER" in
 esac
 if [ "$ACTIVE_PROVIDER" != "telegram" ]; then
   echo "⊙ CHANNEL_PROVIDER=$ACTIVE_PROVIDER -- Telegram progress indicator not installed; retiring any leftover Telegram plumbing"
-  bash "$INSTALL_DIR/scripts/retire-progress-watchdog.sh" telegram || true
-  exit 0
+  # The retire IS this branch's whole job, so its failure is this installer's
+  # failure: sync-hooks.sh reports a non-zero installer and carries on.
+  RETIRE_RC=0
+  retire_provider telegram || RETIRE_RC=$?
+  exit "$RETIRE_RC"
 fi
 
 # The daemon runs the repo copy directly -- no drift-prone ~/.claude/hooks copy.
@@ -106,8 +127,11 @@ fi
 # both hook sets stayed in settings.json and BOTH watchdog timers kept firing,
 # the dead one scanning state dirs that no longer existed 1440x/day. Exactly
 # one provider's progress machinery should be live -- the one in
-# CHANNEL_PROVIDER. Never fatal: a failure here must not block the install.
-bash "$INSTALL_DIR/scripts/retire-progress-watchdog.sh" slack || true
+# CHANNEL_PROVIDER. Never fatal: a failure here must not block the install --
+# the active provider's watchdog matters more than the dead one's cleanup. It
+# is reported on the spot and again at the end, where it becomes the exit code.
+RETIRE_RC=0
+retire_provider slack || RETIRE_RC=$?
 
 # --- Install the watchdog daemon -------------------------------------------
 OS="$(uname -s)"
@@ -198,3 +222,10 @@ fi
 echo ""
 echo "Done. The settings hooks are repo-shipped (.claude/settings.json, project"
 echo "scope); the watchdog daemon turns any stuck Telegram turn into a clear error."
+
+if [ "$RETIRE_RC" -ne 0 ]; then
+  echo "" >&2
+  echo "⚠ The Telegram watchdog IS installed, but retiring the Slack plumbing failed (exit $RETIRE_RC, see above):" >&2
+  echo "  both providers' progress machinery may be live until that retire succeeds." >&2
+  exit "$RETIRE_RC"
+fi

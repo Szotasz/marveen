@@ -12,6 +12,8 @@
 #   (g) copies hook files to the destination (core behaviour preserved)
 #   (h) provider gate: CHANNEL_PROVIDER=slack -> installs NOTHING and retires
 #       any leftover Telegram plumbing (sync-hooks runs every installer)
+#   (i) a failing retire (own leftovers in the gate, the other provider's before
+#       an install) is printed and reaches the exit code -- never `|| true`'d
 #
 # All filesystem operations use a fully isolated temp tree -- the real
 # ~/.claude directory and the real INSTALL_DIR are never touched. The full-run
@@ -277,6 +279,60 @@ if grep -q 'slack_progress\.py' "$HOME_H/.claude/settings.json"; then
 else
   fail "provider gate: Slack hooks were destroyed"
 fi
+
+# ---------------------------------------------------------------------------
+# (i) A failing retire is reported and reaches the exit code. The retire script
+# used to be called with `|| true`. On macOS it could not even be parsed
+# (bash 3.2), and that error -- plus the cleanup that never happened --
+# appeared nowhere: the gate's "retire leftovers and exit 0" branch was a
+# silent no-op. A user-global settings.json that is not JSON makes the retire
+# fail for real, on every platform.
+# ---------------------------------------------------------------------------
+echo ""
+echo "(i) A failing retire is reported and reaches the exit code -- never swallowed"
+if grep -nE 'retire-progress-watchdog\.sh.*\|\|[[:space:]]*true' "$SCRIPT" >/dev/null; then
+  fail "static check: the retire script is still called with '|| true'"
+else
+  pass "static check: no retire call is silenced with '|| true'"
+fi
+
+# Gate branch (CHANNEL_PROVIDER=slack): the retire is the branch's whole job.
+CASE="$TMP/case-i-gate"
+HOME_I="$CASE/home"
+mkdir -p "$HOME_I/.claude"
+printf '{ this is not json' > "$HOME_I/.claude/settings.json"
+OUT4="$(HOME="$HOME_I" MARVEEN_ENV_FILE="$ENV_H" PATH="$BIN_G:$PATH" bash "$SCRIPT" 2>&1)"
+EXIT=$?
+if [ "$EXIT" -ne 0 ]; then pass "failing retire (gate): installer exits non-zero"
+else fail "failing retire (gate): installer exited 0 -- the failure was swallowed"; fi
+case "$OUT4" in
+  *"retire-progress-watchdog.sh telegram FAILED (exit "*) pass "failing retire (gate): reported, with the exit code" ;;
+  *) fail "failing retire (gate): nothing reported (got: $OUT4)" ;;
+esac
+
+# Active provider (CHANNEL_PROVIDER=telegram): the cross-retire of Slack fails.
+# Never fatal -- the Telegram watchdog must still be installed -- but reported,
+# and the installer's exit code says the end state is not clean.
+CASE="$TMP/case-i-active"
+HOME_I="$CASE/home"
+mkdir -p "$HOME_I/.claude"
+printf '{ this is not json' > "$HOME_I/.claude/settings.json"
+OUT5="$(HOME="$HOME_I" MARVEEN_ENV_FILE="$ENV_G" PATH="$BIN_G:$PATH" bash "$SCRIPT" 2>&1)"
+EXIT=$?
+if [ "$EXIT" -ne 0 ]; then pass "failing retire (active): installer exits non-zero"
+else fail "failing retire (active): installer exited 0 -- the failure was swallowed"; fi
+case "$OUT5" in
+  *"retire-progress-watchdog.sh slack FAILED (exit "*) pass "failing retire (active): reported, with the exit code" ;;
+  *) fail "failing retire (active): nothing reported (got: $OUT5)" ;;
+esac
+UNIT_I="$(find "$HOME_I/Library/LaunchAgents" "$HOME_I/.config/systemd/user" \
+          -type f \( -name '*.plist' -o -name '*.service' \) 2>/dev/null | head -1)"
+if [ -n "$UNIT_I" ]; then pass "failing retire (active): the Telegram watchdog unit is still installed (never fatal)"
+else fail "failing retire (active): the failed retire blocked the install"; fi
+case "$OUT5" in
+  *"both providers' progress machinery may be live"*) pass "failing retire (active): the end-of-run summary repeats it" ;;
+  *) fail "failing retire (active): no end-of-run summary (got: $OUT5)" ;;
+esac
 
 # ---------------------------------------------------------------------------
 echo ""

@@ -34,11 +34,14 @@
 #
 # What it does:
 #   0. Provider gate: if CHANNEL_PROVIDER (install .env) is not "slack", it
-#      retires any leftover Slack plumbing and exits 0 -- nothing below runs.
+#      retires any leftover Slack plumbing and exits with that retire's status
+#      (0 unless it failed) -- nothing below runs.
 #      This is what keeps sync-hooks.sh (which runs every installer on every
 #      update) from resurrecting the retired provider.
 #   1. Retires the Telegram progress plumbing (hooks + watchdog) so exactly
 #      one provider's indicator is live -- see retire-progress-watchdog.sh.
+#      A failing retire never blocks step 2, but it is printed and becomes
+#      the exit code: a cleanup that did not happen is never silent.
 #   2. Installs slack_progress_watchdog.py -- the one piece that is not a
 #      Claude Code hook at all -- as a launchd agent (macOS) or systemd user
 #      service+timer (Linux), running ~every 60s straight from the repo
@@ -82,6 +85,22 @@ BOT_NAME="$(read_env BOT_NAME)"
 SERVICE_ID="${SERVICE_ID:-${MAIN_AGENT_ID_ENV:-marveen}}"
 BOT_NAME="${BOT_NAME:-Marveen}"
 
+# Run the retire script for one provider and SAY SO when it fails; returns the
+# script's exit code. It used to be called with an unconditional "|| true",
+# which is how a retire script that the macOS /bin/bash (3.2) could not even
+# parse went unnoticed: its error vanished, the cleanup never happened, and
+# nothing reported either. A failure is still not allowed to abort this
+# installer half-way -- but it is never silent, and it reaches the exit code.
+retire_provider() {
+  local rc=0
+  bash "$INSTALL_DIR/scripts/retire-progress-watchdog.sh" "$1" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "⚠ retire-progress-watchdog.sh $1 FAILED (exit $rc) -- the $1 progress plumbing is NOT retired." >&2
+    echo "  Fix the error above, then re-run: bash $INSTALL_DIR/scripts/retire-progress-watchdog.sh $1" >&2
+  fi
+  return "$rc"
+}
+
 # --- Provider gate (order-independent) --------------------------------------
 # sync-hooks.sh runs EVERY install-*-hook.sh on every update, in glob order
 # (slack first, telegram last). Each installer used to wire its own hooks and
@@ -101,8 +120,11 @@ case "$ACTIVE_PROVIDER" in
 esac
 if [ "$ACTIVE_PROVIDER" != "slack" ]; then
   echo "⊙ CHANNEL_PROVIDER=$ACTIVE_PROVIDER -- Slack progress indicator not installed; retiring any leftover Slack plumbing"
-  bash "$INSTALL_DIR/scripts/retire-progress-watchdog.sh" slack || true
-  exit 0
+  # The retire IS this branch's whole job, so its failure is this installer's
+  # failure: sync-hooks.sh reports a non-zero installer and carries on.
+  RETIRE_RC=0
+  retire_provider slack || RETIRE_RC=$?
+  exit "$RETIRE_RC"
 fi
 
 # The daemon runs the repo copy directly -- no drift-prone ~/.claude/hooks copy.
@@ -125,8 +147,11 @@ fi
 # both hook sets stayed in settings.json and BOTH watchdog timers kept firing,
 # the dead one scanning state dirs that no longer existed 1440x/day. Exactly
 # one provider's progress machinery should be live -- the one in
-# CHANNEL_PROVIDER. Never fatal: a failure here must not block the install.
-bash "$INSTALL_DIR/scripts/retire-progress-watchdog.sh" telegram || true
+# CHANNEL_PROVIDER. Never fatal: a failure here must not block the install --
+# the active provider's watchdog matters more than the dead one's cleanup. It
+# is reported on the spot and again at the end, where it becomes the exit code.
+RETIRE_RC=0
+retire_provider telegram || RETIRE_RC=$?
 
 # --- Install the watchdog daemon -------------------------------------------
 OS="$(uname -s)"
@@ -217,3 +242,10 @@ fi
 echo ""
 echo "Done. The settings hooks are repo-shipped (.claude/settings.json, project"
 echo "scope); the watchdog daemon turns any stuck Slack turn into a clear error."
+
+if [ "$RETIRE_RC" -ne 0 ]; then
+  echo "" >&2
+  echo "⚠ The Slack watchdog IS installed, but retiring the Telegram plumbing failed (exit $RETIRE_RC, see above):" >&2
+  echo "  both providers' progress machinery may be live until that retire succeeds." >&2
+  exit "$RETIRE_RC"
+fi
