@@ -6,6 +6,7 @@ import { execFileSync, spawn } from 'node:child_process'
 import { makeLazyBinResolver } from '../platform.js'
 import { WEB_PORT } from '../config.js'
 import { logger } from '../logger.js'
+import { mainRelaunchSucceeded } from '../auto-restart.js'
 import { MAIN_AGENT_ID, SERVICE_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT, RESPAWN_ENABLED } from '../config.js'
 import { DISTRIBUTION_DEFAULT_AGENT_MODEL } from '../config-registry.js'
 import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-config.js'
@@ -858,7 +859,31 @@ export function respawnMainSessionFresh(): void {
     continueSession: false,
     config: resolveMainConfigDecision(),
   })
-  execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
+  // c5296a52: the two reaps above kill the pane's claude, and channels.sh starts the session
+  // WITHOUT remain-on-exit -- so the pane and the session can already be gone by the time we get
+  // here. `respawn-pane -k` then throws "can't find pane", the caller only logs it, lastRestart
+  // stays unset, and the slot stays DUE: every idle tick tries again (176 'restart failed' lines
+  // between 03:00Z and 08:01Z on 2026-09-18, one attempt every 6-7 minutes).
+  //
+  // When the session is gone we do NOT hand-roll a tmux new-session here: createMainChannelsSession()
+  // already runs channels.sh -- the same path the guard uses -- with the first-run dialog handling,
+  // the /rename and the plugin bring-up. A second, bespoke launch command is exactly how the two
+  // paths drift apart. 'grace' means a launch is already in flight and the session is booting;
+  // that is a success for our purposes (something IS coming up), not a failure to retry.
+  if (mainChannelsSessionExists()) {
+    execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
+  } else {
+    const created = createMainChannelsSession()
+    logger.warn({ session: MAIN_CHANNELS_SESSION, created },
+      'respawnMainSessionFresh: session gone after reap, relaunched via channels.sh')
+    if (!mainRelaunchSucceeded(created)) {
+      throw new Error(`main channels session gone and relaunch failed: ${created}`)
+    }
+    // A fresh session starts its own claude: the respawn-specific follow-ups below
+    // (identity, plugin unlock) are channels.sh's job on this path, not ours.
+    writeRespawnStamp()
+    return
+  }
   // Stamp IMMEDIATELY after the respawn, before the scheduling follow-ups.
   // The stamp is a coordination contract, not bookkeeping: five watchers read
   // lastMainRespawnAt() / store/.channel-last-respawn and suppress themselves
