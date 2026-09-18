@@ -124,12 +124,26 @@ describe('selectSnapshotsToDelete (test 9: 8-day-old files, latest 20 survive)',
     expect(selectSnapshotsToDelete(entries, nowMs)).toEqual([])
   })
 
-  it('tracks each task independently', () => {
+  it('tracks each task independently: a lone 8-day-old file per task stays (within its own top-20)', () => {
     const entries = [
       { filePath: '/x/a-old.md', taskName: 'task-a', mtimeMs: nowMs - 8 * DAY },
       { filePath: '/x/b-old.md', taskName: 'task-b', mtimeMs: nowMs - 8 * DAY },
     ]
-    expect(selectSnapshotsToDelete(entries, nowMs).sort()).toEqual(['/x/a-old.md', '/x/b-old.md'])
+    expect(selectSnapshotsToDelete(entries, nowMs)).toEqual([])
+  })
+
+  it('one task over its floor and old gets pruned while another, sparser task is untouched', () => {
+    const entries = [
+      ...Array.from({ length: 25 }, (_, i) => ({
+        filePath: `/x/a-${i}.md`,
+        taskName: 'task-a',
+        mtimeMs: nowMs - 8 * DAY - i * 1000, // a-0 most recent
+      })),
+      { filePath: '/x/b-old.md', taskName: 'task-b', mtimeMs: nowMs - 8 * DAY },
+    ]
+    const deleted = selectSnapshotsToDelete(entries, nowMs)
+    expect(deleted.sort()).toEqual(['/x/a-20.md', '/x/a-21.md', '/x/a-22.md', '/x/a-23.md', '/x/a-24.md'])
+    expect(deleted).not.toContain('/x/b-old.md')
   })
 })
 
