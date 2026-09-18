@@ -137,7 +137,7 @@ describe('wrapScheduledTaskByReference', () => {
       'deadbeef'.repeat(8),
       48745,
     )
-    expect(out).toMatch(/^<scheduled-task source="scheduled-task:kanban-audit" body-file="\/opt\/marveen\/store\/scheduled-runs\/20260917-080000-kanban-audit-a3f9\.md" body-sha256="deadbeef{8}" body-chars="48745">/)
+    expect(out).toMatch(/^<scheduled-task source="scheduled-task:kanban-audit" body-file="\/opt\/marveen\/store\/scheduled-runs\/20260917-080000-kanban-audit-a3f9\.md" body-sha256="(?:deadbeef){8}" body-chars="48745">/)
     expect(out.endsWith('</scheduled-task>')).toBe(true)
     // The task's actual content is NOT in the block -- only the pointer + instruction.
     expect(out).not.toMatch(/kanban-audit SKILL/)
