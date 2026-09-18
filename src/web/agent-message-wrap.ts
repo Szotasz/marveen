@@ -28,6 +28,27 @@ const CHANNEL_COORDINATOR_AGENTS = new Set<string>([COORDINATOR_AGENT_ID, VOICE_
 
 export type AgentMessageCategory = 'channel-inbound' | 'trusted-peer' | 'untrusted' | 'federated'
 
+// True when this sender id earns the channel-inbound envelope -- "the owner is
+// speaking here, a reply is expected". Exported because /api/messages is NOT
+// the only way a row lands in agent_messages: any OTHER write path must be
+// able to refuse to MINT one of these ids, or the envelope's guarantee is only
+// as strong as the weakest door into the table.
+//
+// DESKTOPLOCKFROM918 (measured 2026-09-18): POST /api/desktop-lock took the
+// body's `owner` verbatim as from_agent and broadcast it to the whole fleet,
+// with the caller's free-text `note` inside the content. With the shared
+// dashboard token -- which every sub-agent can read -- that minted an
+// owner-framed message carrying attacker-chosen text, straight past the
+// device-key gate that /api/messages requires for the same id.
+//
+// Matched on the SANITIZED id, the same way classifyAgentMessage matches it:
+// a guard that reads the raw string lets through exactly the spellings the
+// classifier still resolves to the privileged id.
+export function isChannelInboundSender(fromAgent: string): boolean {
+  return CHANNEL_COORDINATOR_AGENTS.has(sanitizeAgentIdent(fromAgent))
+}
+
+
 // Freshness annotation (SB hardening 2026-08-22). A message that waited in the
 // queue while its target was busy/absent can be delivered LONG after it was
 // written, describing an already-closed state, while newer messages from the

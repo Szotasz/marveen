@@ -9,6 +9,7 @@ import {
   DEFAULT_ESTIMATE_MS, type DesktopLock,
 } from '../desktop-lock.js'
 import { readBody, json } from '../http-helpers.js'
+import { isChannelInboundSender } from '../agent-message-wrap.js'
 import type { RouteContext } from './types.js'
 
 // Sender label for lock traffic. Deliberately NOT the main agent's id: an
@@ -106,6 +107,27 @@ export type LockBody = {
  * request (a caller sending a harmless extra field should not be locked out of
  * the screen), but it comes back in `unknownKeys` so it cannot stay invisible.
  */
+/**
+ * Why a lock owner cannot be any string it likes (DESKTOPLOCKFROM918, 2026-09-18).
+ *
+ * `owner` is not only a label: it is handed to createAgentMessage as the
+ * from_agent of the broadcast, and the caller's free-text `note` rides inside
+ * the content. A privileged channel id (the telegram coordinator, the voice
+ * channel) classifies as `channel-inbound` at delivery -- "this is the owner,
+ * a reply is expected" -- so accepting one here would let ANY holder of the
+ * shared dashboard token mint an owner-framed message carrying its own text,
+ * bypassing the enrolled-device-key gate /api/messages requires for exactly
+ * that id.
+ *
+ * The set is read from the classifier's own constant, never re-typed here: the
+ * next channel id added there must be covered without anyone remembering this
+ * file. Returns the refusal reason, or null when the owner is acceptable.
+ */
+export function lockOwnerRefusal(owner: string): string | null {
+  if (!isChannelInboundSender(owner)) return null
+  return `owner '${owner.trim()}' is a channel identity -- it would frame this broadcast as an inbound owner message. Use your own agent id.`
+}
+
 export function parseLockBody(data: Record<string, unknown>): LockBody {
   const owner = typeof data.owner === 'string' ? data.owner.trim() : ''
   const note = typeof data.note === 'string' ? data.note.trim() : undefined
@@ -145,6 +167,13 @@ export async function tryHandleDesktopLock(ctx: RouteContext): Promise<boolean> 
     const { owner, note, minutes, unknownKeys, typo } = parseLockBody(data)
     if (!owner) {
       json(res, { error: 'owner is required' }, 400)
+      return true
+    }
+    // Before ANY state change or broadcast: see lockOwnerRefusal.
+    const refusal = lockOwnerRefusal(owner)
+    if (refusal) {
+      logger.warn({ owner }, 'desktop-lock: refused a channel identity as lock owner')
+      json(res, { error: refusal }, 403)
       return true
     }
     if (typo) {
