@@ -11,6 +11,7 @@ import {
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coordinator/ingest.js'
+import { SYSTEM_DIRECTIVE_SENDER } from '../system-directive.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
 import { MAIN_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
@@ -144,6 +145,33 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (sanitizeAgentIdent(from) === COORDINATOR_AGENT_ID) {
       logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST forging channel-coordinator id')
       json(res, { error: 'from is reserved for the in-process channel coordinator' }, 403)
+      return true
+    }
+    // System directives (SYSRESERVED918): the same shape, one level up. Every
+    // fleet agent authenticates an operational directive
+    // ([SYSTEM-DIREKTIVA msg_id:<N>]: stop, prepare to restart, drop work) by
+    // reading the referenced row back and requiring from_agent === 'system' --
+    // the header text alone is what a prompt injection would also write. That
+    // recipe is only sound while 'system' cannot be POSTed here.
+    //
+    // Before this guard it could not be -- but only by ACCIDENT: 'system' has
+    // no agents/<id>/ directory, so the known-agent check below rejected it.
+    // Two ordinary, reversible acts would have removed that: adding 'system' to
+    // SYSTEM_SENDER_IDS (an .env line whose entire PURPOSE is to exempt ids
+    // from that check), or `mkdir agents/system/`. Either one hands the shared
+    // dashboard token -- which every sub-agent reads -- the power to forge a
+    // stop order, and nothing would have announced it.
+    //
+    // So the id is RESERVED, ahead of both the SYSTEM_SENDERS exemption and the
+    // known-agent check, and on every auth lane including an enrolled device
+    // key. No legitimate path is lost: every 'system' message is written
+    // in-process via createAgentMessage (system-directive, message-router,
+    // schedule-runner, context-guard-runner, agents), never over HTTP.
+    // The other SYSTEM_SENDER_IDS entries are untouched -- they name external
+    // notifiers, and none of them is the fleet's authentication base.
+    if (sanitizeAgentIdent(from) === SYSTEM_DIRECTIVE_SENDER) {
+      logger.warn({ from: from.trim(), to: to.trim(), authKind: ctx.auth?.kind ?? 'none' }, 'Rejected /api/messages POST forging the system directive sender')
+      json(res, { error: `from '${SYSTEM_DIRECTIVE_SENDER}' is reserved for in-process system directives and can never be POSTed` }, 403)
       return true
     }
     // Voice channel (HANGCSATORNA918): the VOICE_CHANNEL_AGENT_ID also earns
