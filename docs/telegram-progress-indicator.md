@@ -94,9 +94,20 @@ repo checkout.
 Before any of that it applies a **provider gate**: if `CHANNEL_PROVIDER` in the
 install `.env` resolves to anything but `telegram` (exact known value; empty or
 unknown means `telegram`), the installer retires any leftover Telegram plumbing
-and exits 0 without touching anything else. When the gate passes, the installer
-also retires the Slack progress plumbing (`scripts/retire-progress-watchdog.sh
-slack`).
+and exits with that retire's status (0 unless it failed) without touching
+anything else. When the gate passes, the installer also retires the Slack
+progress plumbing (`scripts/retire-progress-watchdog.sh slack`).
+
+A failed retire is never silent. The retire script used to be called with
+`|| true`, which hid a script the macOS `/bin/bash` (3.2) could not even parse:
+the cleanup did not happen and nothing said so. Now a non-zero retire is
+printed with its exit code and the command to re-run; in the gate branch it is
+the installer's exit code, in the active branch the watchdog is installed
+regardless (never fatal) and the failure is repeated at the end and becomes
+the exit code. `sync-hooks.sh` reports a non-zero installer and carries on.
+Details, the bash 3.2 rule (no here-document inside `$( ... )`) and the test
+hermeticity (every installer run shimmed, both daemon branches on every
+platform) are in the Slack doc.
 
 > **The guarantee: the active provider's installer wins on every update.**
 > `sync-hooks.sh` runs every `install-*-progress-hook.sh` on every update, in

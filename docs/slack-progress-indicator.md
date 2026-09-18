@@ -51,9 +51,9 @@ So each piece stays correct per-agent.
 | Piece | Trigger | Job |
 |-------|---------|-----|
 | `slack_progress.py` | `UserPromptSubmit` hook | If the prompt contains a Slack `<channel … source="plugin:slack-channel:slack" chat_id … >` block, post the placeholder (in-thread via `thread_ts` if present) and record its `ts` in a per-session state file. |
-| `slack_progress_reply_clear.py` | `PostToolUse` hook (matcher `slack.*reply`) | Delete the placeholder(s) for the replied `(chat_id, thread_ts)` the instant a reply is sent. **Primary clear path.** |
-| `slack_progress_clear.py` | `Stop` hook | Delete any placeholder still recorded at turn end, **and enforce delivery** (same one-nudge-then-fallback contract as the Telegram Stop hook). |
-| `slack_progress_watchdog.py` | launchd / systemd, ~60s | Scan every agent's per-agent state dir; for an orphan (agent down + placeholder old, OR a hung reply-tool call, OR a generic wedged backstop) either deliver the recovered answer for real, or rewrite the placeholder into the error text via `chat.update`. |
+| `slack_progress_reply_clear.py` | `PostToolUse` hook (matcher `slack.*reply`) | Delete the placeholder(s) for the replied `(chat_id, thread_ts)` the instant a reply is sent. **Primary clear path.** A `chat.delete` that fails retryably keeps the entry, marked `replied` (see below). |
+| `slack_progress_clear.py` | `Stop` hook | Delete any placeholder still recorded at turn end, **and enforce delivery** (same one-nudge-then-fallback contract as the Telegram Stop hook). `replied` entries are outside the enforcement; their delete is only retried. |
+| `slack_progress_watchdog.py` | launchd / systemd, ~60s | Scan every agent's per-agent state dir; for an orphan (agent down + placeholder old, OR a hung reply-tool call, OR a generic wedged backstop) either deliver the recovered answer for real, or rewrite the placeholder into the error text via `chat.update`. For a `replied` entry: retry the delete on every tick, deliver nothing. |
 
 ### Why the thread is part of the key — and why loosely
 
@@ -88,6 +88,53 @@ The asymmetry is deliberate. Clearing one placeholder too eagerly removes a
 "working on it" marker; leaving one behind corrupts the conversation with a
 duplicate reply and a raw transcript. Contract test:
 `scripts/__tests__/slack-reply-clear.test.sh`.
+
+### A failed `chat.delete` is not a cleared placeholder (`replied` entries)
+
+The reply-clear hook used to take the entry out of the pending file whatever
+`chat.delete` said -- the exception was swallowed, and Slack's HTTP-200
+`{"ok": false}` was never looked at. After a rate limit or a network blip the
+placeholder stayed in Slack while the file, the only thing the Stop hook and
+the watchdog read, no longer knew about it: a permanent "working on it…"
+under an answered message.
+
+Simply keeping the entry would have been worse than the bug. An unmarked
+leftover means *"no reply was sent"* to the Stop hook -- it blocks the turn, the
+agent answers a second time, the transcript follows -- and the watchdog would
+re-post the recovered answer on top. So the hook's `api()` now raises on an
+`ok:false` envelope, the failure is classified like the watchdog's, and a kept
+entry is **marked**:
+
+| `chat.delete` outcome | Entry |
+| --- | --- |
+| deleted | dropped |
+| **terminal** rejection (`message_not_found`, `channel_not_found`, `cant_delete_message`, `invalid_auth`, ...) | dropped, the Slack error goes to `debug.log` -- waiting cannot help |
+| **retryable** failure (HTTP 429 / 5xx, connection error or timeout, `ratelimited`, `internal_error`, `service_unavailable`, `fatal_error`, `request_timeout`) | **kept, with `"replied": true`** |
+
+`replied` means *the answer went out, only the cleanup is owed*, and every
+reader treats it as delete-only:
+
+- **reply-clear hook**: a `replied` leftover takes no part in the tier matching
+  above. A top-level leftover is an *exact* match for a top-level reply and
+  would otherwise win the tier alone, shadowing the live placeholder of the
+  turn actually being answered. Its delete is simply retried whenever its chat
+  is replied to again.
+- **Stop hook**: never enforces on it -- no block, no fallback delivery. It
+  retries the delete after the delivery work (so a slow Slack cannot eat the
+  budget of the part that matters; not at all on the Stop that blocks), and a
+  second retryable failure leaves the entry in the file.
+- **watchdog**: retries the delete on every tick, at any age and whatever the
+  agent's state, and never posts an answer or an error rewrite for it.
+  Retryable keeps it (mtime preserved), terminal drops it, the 24h stale bound
+  caps the retries. Because such a marker can belong to a *live* session, the
+  watchdog re-reads the marker right before it writes (`settle()`): a
+  placeholder the submit hook appended during the API calls is never
+  overwritten.
+
+Contract: the failed-delete cases of `scripts/__tests__/slack-reply-clear.test.sh`
+(its stub now has the same failure injection as the watchdog suite's -- it
+could only say `ok:true` before, which is what hid this) and cases (t)-(x) of
+`scripts/__tests__/slack-watchdog-wedged.test.sh`.
 
 ### Reply enforcement
 
@@ -134,7 +181,8 @@ stub's failure injection (`stub_mode "<method|*> <mode> [count]"`, mode =
 
 The `Stop` hook's fallback path (`slack_progress_clear.py`) still uses a plain
 `api()` and is covered by its own review items (timeout budget, round
-scoping); it is not changed here.
+scoping); it is not changed here. The one place the Stop hook does classify a
+failure is the delete retry of a `replied` entry (previous section).
 
 ## Install
 
@@ -165,8 +213,9 @@ It:
 0. **Provider gate.** Reads `CHANNEL_PROVIDER` from the install `.env`
    (resolved like `src/channel-provider.ts`: exact known value, anything
    else — empty, `none`, a typo — means `telegram`). If it is not `slack`,
-   the installer retires any leftover Slack plumbing and exits 0 without
-   touching anything else. The Telegram installer has the mirror gate.
+   the installer retires any leftover Slack plumbing and exits with that
+   retire's status (0 unless it failed) without touching anything else. The
+   Telegram installer has the mirror gate.
    This is what makes the pair order-independent under `sync-hooks.sh`,
    which runs *every* installer on *every* update, Slack first and Telegram
    last: without the gate a Slack install ended each update with both hook
@@ -176,7 +225,9 @@ It:
 1. Retires the Telegram progress plumbing (`scripts/retire-progress-watchdog.sh telegram`)
    so exactly one provider's indicator is live. The Telegram installer does
    the same in reverse; `scripts/doctor.sh` warns about drift between
-   `CHANNEL_PROVIDER` and the live watchdog timers.
+   `CHANNEL_PROVIDER` and the live watchdog timers. A failing retire never
+   blocks step 2, but it is never silent either -- see *A failed retire is
+   never silent* below.
 2. Installs the watchdog as a **launchd** agent (macOS) or **systemd** user
    service+timer (Linux), running every ~60s **straight from the repo
    checkout** — no `~/.claude/hooks` copy, so the daemon can never drift from
@@ -185,6 +236,58 @@ It:
    self-location (two directories up from
    `<root>/scripts/hooks/slack_progress_watchdog.py`) is the primary mechanism
    with this as the belt (TGWDOGVAK913).
+
+### A failed retire is never silent
+
+Both installers used to call `retire-progress-watchdog.sh` with `|| true`, in
+the gate branch and in the cross-retire alike. That turned a broken retire
+script into a silent no-op: on macOS the script could not even be parsed (next
+section), the cross-provider retire did not happen, the gate's "retire my
+leftovers and exit 0" branch did nothing -- and no line of output said so.
+
+Both now go through `retire_provider()`:
+
+- a non-zero retire is printed on stderr with its exit code and the exact
+  command to re-run (`⚠ retire-progress-watchdog.sh <provider> FAILED (exit N)`);
+- **gate branch**: the retire is the branch's whole job, so its status is the
+  installer's exit code;
+- **active-provider branch**: still never fatal -- the active provider's
+  watchdog is installed regardless -- but the failure is repeated in the
+  end-of-run summary (*both providers' progress machinery may be live*) and
+  becomes the exit code.
+
+A non-zero installer is safe for its only caller: `sync-hooks.sh` reports it
+and carries on with the next installer, and `update.sh` does the same with
+`sync-hooks.sh`. The retire script itself fails loudly too: a user-global
+`settings.json` it cannot parse is an explicit error and a non-zero exit, not
+a traceback followed by success.
+
+### macOS: `/bin/bash` is bash 3.2
+
+Every macOS ships bash 3.2.57 as `/bin/bash`, and that is what runs these
+scripts there (their shebang, and any caller without a Homebrew `PATH`). bash
+3.2 does not skip a here-document body while it scans a command substitution
+for the closing paren, so this shape
+
+```bash
+OUT="$(python3 - "$arg" <<'PYEOF'
+# it's enough for the Python to contain ONE apostrophe
+PYEOF
+)"
+```
+
+is a parse error for the *whole script* (`unexpected EOF while looking for
+matching ''`), while bash 4+ accepts it -- every Linux run stays green. The
+retire script had exactly this, so it never ran on a Mac. Its settings surgery
+now lives in `scripts/lib/retire_progress_hooks.py`, with the same stdout
+contract the shell side parses (`REMOVED <event>: <command>` lines, then
+`COUNT <n>`). It sits under `scripts/lib/`, not `scripts/hooks/`: it is not a
+hook, and `hook-registration-completeness.test.ts` requires everything in
+`scripts/hooks/` to be registered or exempted.
+
+Rule for these scripts: **no here-document inside `$( ... )`**. The retire
+suite lints for it and runs `/bin/bash -n` on the script; the installer suites
+`bash -n` the installers the same way.
 
 ### Where the settings hooks live (#1305)
 
@@ -247,11 +350,42 @@ dir), else `hu`. Values: `hu`, `en`.
 
 ```bash
 bash scripts/__tests__/install-slack-progress-hook.test.sh
-bash scripts/__tests__/slack-reply-clear.test.sh
-bash scripts/__tests__/slack-watchdog-wedged.test.sh              # incl. delivery-failure cases (n)-(s)
+bash scripts/__tests__/install-telegram-progress-hook.test.sh
+bash scripts/__tests__/slack-reply-clear.test.sh                  # incl. the failed-delete / `replied` contract, Stop hook's part too
+bash scripts/__tests__/slack-watchdog-wedged.test.sh              # incl. delivery-failure cases (n)-(s), `replied` leftovers (t)-(x)
 bash scripts/__tests__/retire-progress-watchdog.test.sh
 bash scripts/__tests__/sync-hooks-provider-gate.test.sh   # both installers, glob order, both providers
 ```
+
+### The installer / retire suites never touch the host's service manager
+
+`launchctl` acts on the user's real launchd domain and `systemctl --user` on
+the real user manager **whatever `$HOME` says**. Run unshimmed on a Mac, these
+suites registered real jobs from their temp plists
+(`com.testbot.slack-progress-watchdog`, `com.testbot.telegram-progress-watchdog`),
+which outlived the run and kept firing every 60s against a deleted path. So:
+
+- every run of an installer or of the retire script goes through one helper
+  (`run_installer` / `run_retire`) that puts logging PATH shims for
+  `launchctl`, `systemctl` and `pidof` in front (they exit 1, like an absent
+  manager); the `DBUS_SESSION_BUS_ADDRESS` / `XDG_RUNTIME_DIR` neutralisation
+  stays underneath as a belt;
+- `uname` is shimmed too (`FAKE_UNAME`), and the full-run cases loop over
+  **both daemon branches** -- `[Linux]` systemd, `[Darwin]` launchd -- wherever
+  the suite runs, with leftovers planted in that branch's own form (plist vs
+  `.timer` + `.service`). A macOS-only defect can no longer hide on Linux, or
+  the other way round;
+- the scripts run under `/bin/bash` when there is one (bash 3.2 on a Mac, even
+  with a newer bash first in `PATH`);
+- each suite asserts that the branch under test really reached its *shimmed*
+  manager (`launchctl load <plist>` / `pidof systemd` in the shim log), has a
+  static check that no case starts a script outside the helper, and -- on a
+  host that has a launchd -- ends with the acceptance check itself:
+  `launchctl list | grep testbot` must be empty.
+
+Everything reads a temp `.env` through `MARVEEN_ENV_FILE`; no case depends on
+the checkout's own `.env` (the retire suite's active-provider case used to
+`SKIP` without one).
 
 ## Remove
 
@@ -265,7 +399,8 @@ timer on Linux) and unwires any `slack_progress*` entry from the **user-global**
 more. It never touches the repo-shipped `.claude/settings.json`: those hooks are
 tracked files, removed by editing the repo, not by a script. The hook files
 under `~/.claude/hooks/` (also pre-#1305 leftovers) are left in place; they are
-inert once unwired.
+inert once unwired. If the script cannot do its job (e.g. a user-global
+`settings.json` that is not valid JSON) it says so and exits non-zero.
 
 Note that while `CHANNEL_PROVIDER=slack`, the next update's `sync-hooks.sh`
 re-installs the indicator (the installer is meant to keep the active
