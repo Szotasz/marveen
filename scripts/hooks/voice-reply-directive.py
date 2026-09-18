@@ -121,7 +121,11 @@ def main():
     try:
         req = urllib.request.Request(url)
         req.add_header("Authorization", "Bearer " + token)
-        with urllib.request.urlopen(req, timeout=55) as r:
+        # 170 s: must stay below the hook `timeout` in settings.json (180) and
+        # above the server's STT budget (STT_TIMEOUT_MS = 180_000 in voice.ts).
+        # The shortest of the three wins; at 55 s every voice note over ~2 min
+        # was dropped with no error anywhere (measured 2026-09-18).
+        with urllib.request.urlopen(req, timeout=170) as r:
             data = json.load(r)
     except Exception:
         sys.exit(0)  # dashboard unavailable -- fail-safe, no injection
