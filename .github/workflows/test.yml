@@ -58,15 +58,6 @@ jobs:
       # good, so its fail-direction cases are gate instruments (hermetic:
       # stubbed vault/supabase, throwaway dirs).
       - run: python3 scripts/__tests__/mio-orszem-precheck.test.py
-      # EKEZETKAPU919: a kartya-eszkoz leiras-mozgatasa. A regi viselkedest (a leiras
-      # utolag JAVITHATATLAN) egy gazda ele keszulo szovegben mertuk meg, negy helyen
-      # bent maradt rossz hatarido formajaban. Az engedmeny FELTETELE, hogy a csere ne
-      # torolje a regi szoveget -- ezt a teszt meri, nem a kod-komment igeri.
-      # A MASIK NEGY kartya-teszt (mezomozgatas, dryrun-paritas, ekezet-kapu,
-      # ertesites-felado) MA NINCS ezen a listan, pedig letezik es zold: a 23 szkript-teszt
-      # kozul 10 fut itt. Ezt NEM ez a PR donti el (konyvtar-alapu ciklus vs. kezi lista),
-      # de a hianyt kimondjuk, hogy ne csendben alljon.
-      - run: python3 scripts/__tests__/kartya-leiras-mozgatas.test.py
       # MEMLINKAUDIT915: the audit's own footer calls UNRESOLVED the repair
       # queue, so an over-report sends someone to rewrite working links. The
       # over-report GROWS with every consolidation round, which is why this
