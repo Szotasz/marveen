@@ -93,6 +93,49 @@ describe('buildMainSessionRespawnCmd', () => {
     expect(cmd).toContain("export CLAUDE_CONFIG_DIR='/home/solarforce/.claude-second'")
     expect(cmd).not.toContain('CLAUDE_CODE_OAUTH_TOKEN')
   })
+
+  // Token-mode rotated plan: the generic isolated dir, but the PLAN's own
+  // vault-stored token (resolved at launch via resolve-plan-token-env.mjs)
+  // instead of the flotta's. Never the plaintext token itself in the command
+  // string -- only the vault reference id, resolved inside the launched shell.
+  it('exports the config dir plus a vault-resolved PLAN token when tokenSecretId is set', () => {
+    const cmd = buildMainSessionRespawnCmd({
+      ...base,
+      continueSession: false,
+      config: mainConfigDecisionForTest({
+        isolatedConfigDir: '/srv/m/.channels-config',
+        ownCredentials: false,
+        tokenSecretId: 'claude-plan-token-marketing',
+        fleetToken: true,
+      }),
+    })
+    expect(cmd).toContain("export CLAUDE_CONFIG_DIR='/srv/m/.channels-config'")
+    expect(cmd).toContain('resolve-plan-token-env.mjs')
+    expect(cmd).toContain("'claude-plan-token-marketing'")
+    expect(cmd).toContain('CLAUDE_CODE_OAUTH_TOKEN')
+  })
+
+  // PR #1304 review (c): a missing plan secret must not launch with an empty
+  // token. The command carries the fleet-token path too, now, as the
+  // resolver's fallback argument -- and gates the launch on the resolver's
+  // own exit status via a bare `_plan_token=$(...)` assignment, so a resolver
+  // failure (neither the plan secret nor the fleet token available) stops the
+  // `&&` chain before `claude` ever runs.
+  it('token-mode also passes the fleet-token path (as the resolver\'s fallback arg) and gates the launch on its exit status', () => {
+    const cmd = buildMainSessionRespawnCmd({
+      ...base,
+      continueSession: false,
+      config: mainConfigDecisionForTest({
+        isolatedConfigDir: '/srv/m/.channels-config',
+        ownCredentials: false,
+        tokenSecretId: 'claude-plan-token-marketing',
+        fleetToken: true,
+      }),
+    })
+    expect(cmd).toContain('.claude-oauth-token')
+    expect(cmd).toContain('channels-failures.log')
+    expect(cmd).toMatch(/_plan_token="\$\(node '[^']*resolve-plan-token-env\.mjs'[^)]*\)" && export CLAUDE_CODE_OAUTH_TOKEN="\$_plan_token"/)
+  })
 })
 
 // CONTRACT: the post-resume guard (CC 2.1.193) escalates to a fresh respawn iff

@@ -76,6 +76,15 @@ import { getDesiredAgents } from './agent-desired-state.js'
 // mirrors the pattern already used in agent-process.ts.
 const tmuxBin = makeLazyBinResolver('tmux')
 const claudeBin = makeLazyBinResolver('claude')
+// Resolves a token-mode plan's vault secret to its plaintext value at launch
+// time, inside the respawned session's own shell -- see
+// buildMainSessionRespawnCmd's tokenSecretId branch. Never invoked from THIS
+// process; only its path is interpolated into the respawn command string.
+// Falls back to the fleet token (and fails loudly rather than exporting an
+// empty token) when the plan's own secret is missing -- see the script's own
+// header and PR #1304 review (c).
+const RESOLVE_PLAN_TOKEN_PATH = join(PROJECT_ROOT, 'scripts', 'resolve-plan-token-env.mjs')
+const CHANNELS_FAILURES_LOG_PATH = join(PROJECT_ROOT, 'store', 'channels-failures.log')
 
 // How long the agent's claude process has been running. Returns -1 when it
 // cannot be determined, which the restart policy treats as "do not restart".
@@ -766,12 +775,15 @@ export function buildMainSessionRespawnCmd(opts: {
    * dir (it carries its own .credentials.json -- explicit or a rotated
    * claude-plans entry; injecting the fleet token on top would swap that
    * login for the flotta's shared one, CLAUDEPLANWATCHDOG912); `isolatedConfigDir`
-   * set without `ownCredentials` => export the dir plus the fleet setup-token
-   * (parity with channels.sh CFG_ENV, the credential-less flotta dir); null
-   * with `fleetToken` => export the token alone, which is what keeps a
-   * wizard-entered token reaching a respawned main session at all (2026-07-15
-   * bootcamp, bug 2 latent path); null with no token => the shared root,
-   * unchanged for installs with isolation off.
+   * set with `tokenSecretId` => export the dir plus THAT plan's vault-stored
+   * token instead of the fleet's (token-mode claude-plans rotation -- every
+   * token-mode plan shares this same credential-less dir, only the exported
+   * token changes); `isolatedConfigDir` set with neither => export the dir
+   * plus the fleet setup-token (parity with channels.sh CFG_ENV, the plain
+   * flotta dir); null with `fleetToken` => export the token alone, which is
+   * what keeps a wizard-entered token reaching a respawned main session at
+   * all (2026-07-15 bootcamp, bug 2 latent path); null with no token => the
+   * shared root, unchanged for installs with isolation off.
    */
   config: MainConfigDecision
   /**
@@ -796,11 +808,24 @@ export function buildMainSessionRespawnCmd(opts: {
     // token is read at launch via $(cat) so the secret never lands in argv/`ps`.
     // An own-credential dir (explicit or a rotated claude-plans entry) gets NO
     // token: it already has its own .credentials.json, and injecting the fleet
-    // token on top would authenticate as the flotta instead of that login.
+    // token on top would authenticate as the flotta instead of that login. A
+    // token-mode rotated plan gets the dir PLUS its own token, resolved via
+    // resolve-plan-token-env.mjs at launch time (same "never touches this
+    // process, never lands in argv/ps" property as FLEET_OAUTH_TOKEN_PATH's
+    // $(cat)) -- tokenSecretId is a vault reference id, not the secret itself,
+    // so it is safe to interpolate directly (PLAN_ID_ALLOWED-restricted
+    // charset). `_plan_token=$(...)` is a BARE assignment (no command word
+    // before it), so ITS exit status is the script's own -- when the plan's
+    // vault secret AND the fleet-token fallback are both unavailable, the
+    // script exits 1 and this `&&` chain stops right here, before `claude`
+    // ever launches (PR #1304 review (c): a missing secret must not start an
+    // unauthenticated session).
     ...(opts.config.isolatedConfigDir
       ? (opts.config.ownCredentials
           ? [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}'`]
-          : [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`])
+          : opts.config.tokenSecretId
+            ? [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && _plan_token="$(node '${RESOLVE_PLAN_TOKEN_PATH}' '${opts.config.tokenSecretId}' '${FLEET_OAUTH_TOKEN_PATH}' '${CHANNELS_FAILURES_LOG_PATH}')" && export CLAUDE_CODE_OAUTH_TOKEN="$_plan_token"`]
+            : [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`])
       : opts.config.fleetToken
         ? [`&& export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`]
         : []),
