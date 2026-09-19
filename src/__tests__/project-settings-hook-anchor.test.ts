@@ -27,21 +27,30 @@ const hooks: Hooks = settings.hooks ?? {}
 // The full expected registration: event -> script basenames (order-free).
 // A change here is a REVIEWED decision about what runs in the main session,
 // never a side effect.
+//
+// Both channel providers' progress hooks are listed unconditionally. That is
+// deliberate: each one is provider-scoped internally and no-ops on the other
+// provider's turns, so the cost of the idle set is a process spawn. Only the
+// watchdog DAEMON -- which polls on a timer whether or not a turn is in
+// flight -- is gated to the active CHANNEL_PROVIDER, by the two
+// install-*-progress-hook.sh scripts.
 const EXPECTED: Record<string, string[]> = {
   UserPromptSubmit: [
     'ledger-capture.py', 'inbox-drain.py', 'telegram-reply-directive.py',
     'provenance-gate.py', 'staleness-guard.py', 'channel-inbox-drain.py',
-    'voice-reply-directive.py', 'telegram_progress.py', 'claude-usage.py',
+    'voice-reply-directive.py', 'telegram_progress.py', 'slack_progress.py',
+    'claude-usage.py',
   ],
   PostToolUse: [
     'ledger-outbound.py', 'tool-log-capture.py',
-    'telegram_progress_reply_clear.py', 'skill-usage-capture.py',
+    'telegram_progress_reply_clear.py', 'slack_progress_reply_clear.py',
+    'skill-usage-capture.py',
   ],
   PreToolUse: [
     'outgoing-copy-gate.py', 'email-approval-gate.py',
     'channel-image-resize.sh', 'egress-gate.mjs', 'memory-frontmatter-gate.py',
   ],
-  Stop: ['telegram-reply-guard.py', 'telegram_progress_clear.py'],
+  Stop: ['telegram-reply-guard.py', 'telegram_progress_clear.py', 'slack_progress_clear.py'],
   SessionStart: ['ledger-replay.py', 'taskstate-replay.py', 'clear-replay.py'],
   SessionEnd: ['clear-capture.py'],
 }

@@ -1,47 +1,66 @@
 #!/bin/bash
-# Install the Telegram progress-indicator WATCHDOG (sentry) daemon.
+# Install the Slack progress-indicator WATCHDOG (sentry) daemon. Mirrors
+# install-telegram-progress-hook.sh, using the Slack Web API
+# (chat.postMessage / chat.delete / chat.update) instead of the Bot API.
+# Plugin-independent — needs no changes to the Slack channel plugin, so it
+# survives plugin updates.
+#
+# Why not Slack's "typing…" indicator: the classic RTM `type: typing` frame
+# is not available to modern (Web API / Socket Mode) Slack apps, so there is
+# no bot-side typing bubble to use — same situation as Telegram, same fix.
+#
+# What you get:
+#   - inbound Slack message    -> a "✍️ Dolgozom rajta…" placeholder appears
+#                                  (in-thread if the inbound message was)
+#   - the agent sends a reply  -> the placeholder is deleted the instant the
+#                                  answer goes out (PostToolUse), Stop as fallback
+#   - the turn never finishes   -> a watchdog rewrites the placeholder into a
+#     (crash/wedged/agent down)   clear error, so the user always gets either an
+#                                  answer or an explicit failure
 #
 # Since #1305 (ISSUE1305HOOKSCOPE) this installer no longer touches
 # ~/.claude/settings.json and no longer copies hook files into ~/.claude/hooks:
 # writing fleet hooks into the user-global settings made them fire in the
 # owner's own, unrelated Claude Code sessions. The three settings hooks
-# (UserPromptSubmit -> telegram_progress.py, PostToolUse(telegram.*reply) ->
-# telegram_progress_reply_clear.py, Stop -> telegram_progress_clear.py) are
+# (UserPromptSubmit -> slack_progress.py, PostToolUse("slack.*reply") ->
+# slack_progress_reply_clear.py, Stop -> slack_progress_clear.py) are
 # repo-shipped in the tracked <repo>/.claude/settings.json (project scope,
-# $CLAUDE_PROJECT_DIR form) -- nothing to install for them.
+# $CLAUDE_PROJECT_DIR form) and seeded into every agent from
+# templates/settings.json.template -- nothing to install for them. The fixed
+# PostToolUse matcher there is the loose regex "slack.*reply", which matches
+# the real tool name mcp__plugin_slack-channel_slack__reply regardless of the
+# exact plugin id (the hook scripts themselves only check that the tool name
+# contains "slack"+"reply", so they are robust either way).
 #
-# What REMAINS here is the piece that is not a Claude Code hook at all:
-#   telegram_progress_watchdog.py as a launchd agent (macOS) or systemd user
-#   service+timer (Linux), running ~every 60s straight from the repo checkout
-#   (no ~/.claude/hooks copy, so the daemon can never drift from the repo).
-#   The watchdog is the only layer that can speak when the agent itself is
-#   down: it rewrites an orphaned "Dolgozom rajta…" placeholder into a clear
-#   error.
-#
-# Provider gate: sync-hooks.sh runs EVERY install-*-hook.sh on every update, so
-# an installer whose provider is not the active CHANNEL_PROVIDER retires ITSELF
-# and exits 0 before writing any unit -- see the gate block below.
+# What it does:
+#   0. Provider gate: if CHANNEL_PROVIDER (install .env) is not "slack", it
+#      retires any leftover Slack plumbing and exits 0 -- nothing below runs.
+#      This is what keeps sync-hooks.sh (which runs every installer on every
+#      update) from resurrecting the retired provider.
+#   1. Retires the Telegram progress plumbing (hooks + watchdog) so exactly
+#      one provider's indicator is live -- see retire-progress-watchdog.sh.
+#   2. Installs slack_progress_watchdog.py -- the one piece that is not a
+#      Claude Code hook at all -- as a launchd agent (macOS) or systemd user
+#      service+timer (Linux), running ~every 60s straight from the repo
+#      checkout (no ~/.claude/hooks copy, so the daemon can never drift from
+#      the repo). The watchdog is the only layer that can speak when the agent
+#      itself is down.
 #
 # Idempotent: safe to re-run (e.g. from sync-hooks.sh on every update).
 # Cleanup of the old ~/.claude/hooks copies and stale user-global settings
-# entries belongs to the global-prune round, not here.
+# entries is the retire script's job, not this one's.
 #
 # Usage:
-#   bash ~/ClaudeClaw/scripts/install-telegram-progress-hook.sh
+#   bash ~/ClaudeClaw/scripts/install-slack-progress-hook.sh
 
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)/hooks"
 
-# The watchdog unit/label name keys off SERVICE_ID, matching install-linux.sh's
-# ${SERVICE_ID}-dashboard/-channels units and the macOS com.${SERVICE_ID}.*
-# launchd labels. Derive it from the install .env so a renamed install
-# (BOT_NAME != Marveen) does NOT get an orphaned marveen-* unit left behind.
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-# Read a single key from a .env file without sourcing it.
-# Sourcing executes the file: an unquoted value with spaces (e.g. OWNER_NAME=Foo Bar)
-# causes bash to run the trailing word as a command; a $(...) value runs arbitrary code.
-# This function uses grep + pure string manipulation -- no eval, no subshell execution.
+# Read a single key from a .env file without sourcing it (see
+# install-telegram-progress-hook.sh for why: sourcing an unquoted
+# space-containing or $(...) value can run arbitrary code).
 # MARVEEN_ENV_FILE is set only by the tests (scripts/__tests__/*progress-hook*),
 # which hand the installer a temp .env this way; when unset, the install's own
 # .env is read as before.
@@ -63,31 +82,31 @@ BOT_NAME="$(read_env BOT_NAME)"
 SERVICE_ID="${SERVICE_ID:-${MAIN_AGENT_ID_ENV:-marveen}}"
 BOT_NAME="${BOT_NAME:-Marveen}"
 
-
 # --- Provider gate (order-independent) --------------------------------------
 # sync-hooks.sh runs EVERY install-*-hook.sh on every update, in glob order
-# (slack first, telegram last). Each installer used to write its own watchdog
-# unit unconditionally and only the cross-retire below was guarded, so a Slack
-# install ended every update with BOTH providers live: the Telegram installer
-# re-enabled its timer right after this script had retired it (its retire of
-# slack was refused by the active-provider guard). Exactly one provider's
-# progress machinery may be live -- the one in CHANNEL_PROVIDER -- so an
-# installer whose provider is not the active one retires ITSELF and stops here,
-# before writing any unit. Resolution mirrors src/channel-provider.ts: exact
-# known value, anything else (empty, "none", typo) means telegram.
+# (slack first, telegram last). Each installer used to wire its own hooks and
+# timer unconditionally and only the cross-retire below was guarded, so a
+# Slack install ended every update with BOTH providers live: the Telegram
+# installer re-wired telegram_progress*.py and re-enabled its timer after this
+# script had retired them (its retire of slack was refused by the
+# active-provider guard). Exactly one provider's progress machinery may be
+# live -- the one in CHANNEL_PROVIDER -- so an installer whose provider is
+# not the active one retires ITSELF and stops here, before writing any unit.
+# Resolution mirrors src/channel-provider.ts: exact known
+# value, anything else (empty, "none", typo) means telegram.
 ACTIVE_PROVIDER="$(read_env CHANNEL_PROVIDER | tr -d ' \t\r')"
 case "$ACTIVE_PROVIDER" in
   telegram|slack|discord|googlechat|teams) ;;
   *) ACTIVE_PROVIDER="telegram" ;;
 esac
-if [ "$ACTIVE_PROVIDER" != "telegram" ]; then
-  echo "⊙ CHANNEL_PROVIDER=$ACTIVE_PROVIDER -- Telegram progress indicator not installed; retiring any leftover Telegram plumbing"
-  bash "$INSTALL_DIR/scripts/retire-progress-watchdog.sh" telegram || true
+if [ "$ACTIVE_PROVIDER" != "slack" ]; then
+  echo "⊙ CHANNEL_PROVIDER=$ACTIVE_PROVIDER -- Slack progress indicator not installed; retiring any leftover Slack plumbing"
+  bash "$INSTALL_DIR/scripts/retire-progress-watchdog.sh" slack || true
   exit 0
 fi
 
 # The daemon runs the repo copy directly -- no drift-prone ~/.claude/hooks copy.
-WATCHDOG="$SRC_DIR/telegram_progress_watchdog.py"
+WATCHDOG="$SRC_DIR/slack_progress_watchdog.py"
 
 if [ ! -f "$WATCHDOG" ]; then
   echo "❌ Watchdog source not found: $WATCHDOG" >&2
@@ -102,20 +121,20 @@ if [ -z "$PY" ]; then
 fi
 
 # --- Retire the other provider's progress plumbing -------------------------
-# Installing Telegram does not automatically unwire Slack: after a migration
+# Installing Slack does not automatically unwire Telegram: after a migration
 # both hook sets stayed in settings.json and BOTH watchdog timers kept firing,
 # the dead one scanning state dirs that no longer existed 1440x/day. Exactly
 # one provider's progress machinery should be live -- the one in
 # CHANNEL_PROVIDER. Never fatal: a failure here must not block the install.
-bash "$INSTALL_DIR/scripts/retire-progress-watchdog.sh" slack || true
+bash "$INSTALL_DIR/scripts/retire-progress-watchdog.sh" telegram || true
 
 # --- Install the watchdog daemon -------------------------------------------
 OS="$(uname -s)"
 if [ "$OS" = "Darwin" ]; then
   PLIST_DIR="$HOME/Library/LaunchAgents"
-  LABEL="com.${SERVICE_ID}.telegram-progress-watchdog"
+  LABEL="com.${SERVICE_ID}.slack-progress-watchdog"
   PLIST="$PLIST_DIR/$LABEL.plist"
-  LOG="$HOME/.claude/channels/telegram-progress-watchdog.log"
+  LOG="$HOME/.claude/channels/slack-progress-watchdog.log"
   mkdir -p "$PLIST_DIR" "$HOME/.claude/channels"
   cat > "$PLIST" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -132,7 +151,7 @@ if [ "$OS" = "Darwin" ]; then
     <!-- launchd's default PATH is minimal; the watchdog shells out to tmux. -->
     <!-- MARVEEN_ROOT: launchd passes no shell env to a job, so the watchdog
          cannot see the operator's environment. It self-locates from its own
-         path when run from the repo copy (see telegram_progress_watchdog.py),
+         path when run from the repo copy (see slack_progress_watchdog.py),
          but this makes the install root explicit as a belt (TGWDOGVAK913). -->
     <key>EnvironmentVariables</key>
     <dict>
@@ -158,11 +177,11 @@ PLISTEOF
 else
   # Linux: systemd user service + timer
   UNIT_DIR="$HOME/.config/systemd/user"
-  SVC="${SERVICE_ID}-telegram-progress-watchdog"
+  SVC="${SERVICE_ID}-slack-progress-watchdog"
   mkdir -p "$UNIT_DIR"
   cat > "$UNIT_DIR/$SVC.service" <<UNITEOF
 [Unit]
-Description=${BOT_NAME} Telegram progress-indicator watchdog (sentry)
+Description=${BOT_NAME} Slack progress-indicator watchdog (sentry)
 
 [Service]
 Type=oneshot
@@ -174,7 +193,7 @@ ExecStart=$PY $WATCHDOG
 UNITEOF
   cat > "$UNIT_DIR/$SVC.timer" <<TIMEREOF
 [Unit]
-Description=Run the Telegram progress watchdog every 60s
+Description=Run the Slack progress watchdog every 60s
 Requires=$SVC.service
 
 [Timer]
@@ -197,4 +216,4 @@ fi
 
 echo ""
 echo "Done. The settings hooks are repo-shipped (.claude/settings.json, project"
-echo "scope); the watchdog daemon turns any stuck Telegram turn into a clear error."
+echo "scope); the watchdog daemon turns any stuck Slack turn into a clear error."
