@@ -1993,6 +1993,77 @@ export function ensureMemorySearchLabelSection(name: string): void {
   atomicWriteFileSync(claudeMdPath, updated)
 }
 
+// AUTHSECT919: the fleet auth rule (OAuth-token env, no per-agent
+// .credentials.json, no claudeConfigDir) existed only as hand-written prose in
+// the agent CLAUDE.md files on one install. Measured 2026-09-19 on the owner
+// host: all 22 agents carried it, NO generating surface did -- not
+// generateClaudeMd, not templates/CLAUDE.md.template. So every agent created
+// from here on would have missed it, and the miss is silent: the agent only
+// finds out when it "fixes" a Not-logged-in with a credential symlink and
+// re-creates the 401 cascade the rule exists to prevent.
+//
+// A marker block (not a template line) on purpose: the template only reaches
+// agents created after the change, while this also refreshes the wording for
+// agents already on disk.
+const FLEET_AUTH_BEGIN = '<!-- BEGIN GENERATED: fleet-auth (auto-generated, do not edit by hand) -->'
+const FLEET_AUTH_END = '<!-- END GENERATED: fleet-auth -->'
+const FLEET_AUTH_BLOCK_RE = new RegExp(
+  `${FLEET_AUTH_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${FLEET_AUTH_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+// Host-agnostic on purpose: no operator name, no per-install agent names. The
+// rule is about the auth PATH, which is identical on every install.
+export function buildFleetAuthBody(): string {
+  return [
+    '## Flotta-szintű AUTH-szabály (MEGSZEGHETETLEN)',
+    '',
+    'Minden agent a `CLAUDE_CODE_OAUTH_TOKEN` úton hitelesít (`store/.claude-oauth-token`),',
+    'auto-provisionált `CLAUDE_CONFIG_DIR`-rel, per-agent `.credentials.json` NÉLKÜL. Ez',
+    'szünteti meg a visszatérő 401-kaszkádot. SOHA ne szegd meg:',
+    '',
+    '1. NE tegyél `claudeConfigDir` mezőt az `agent-config.json`-ba.',
+    '2. NE hozz létre/symlinkelj `.credentials.json`-t az agent config-dirjébe.',
+    '   (Mindkettő visszarántja a régi, race-es útra.)',
+    '3. Ha egy agent "Not logged in"-t mutat: NEM `/login`-nal vagy credential-symlinkkel',
+    '   javítod -- a token-env / `store/.claude-oauth-token` a forrás.',
+    '4. Új agent felszerelése: saját, per-agent tokenek és saját külső-szolgáltatás setup',
+    '   (saját email, egyedi port, saját creds-könyvtár, saját OAuth). SOHA ne másold másik',
+    '   agent tokenjeit/credentialjeit -- az auditálhatatlan, és más megbízó adatához is',
+    '   hozzáférést ad.',
+  ].join('\n')
+}
+
+// Same five-rule idempotency contract as the sections above, plus the
+// skip-where-already-documented rule borrowed from ensureMemorySearchLabelSection:
+// the 22 agents that got the rule by hand must not end up with two copies.
+// One-directional, like there -- once the marker block is in a file it is
+// refreshed in place forever, so a wording fix still reaches every agent.
+export function ensureFleetAuthSection(name: string): void {
+  const claudeMdPath = name === MAIN_AGENT_ID
+    ? join(PROJECT_ROOT, 'CLAUDE.md')
+    : join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  const hasBlock = FLEET_AUTH_BLOCK_RE.test(existing)
+  // Hand-written copy already present and no block of ours: leave it alone.
+  if (!hasBlock && /AUTH-szabály/i.test(existing)) return
+
+  const block = `${FLEET_AUTH_BEGIN}\n${buildFleetAuthBody()}\n${FLEET_AUTH_END}`
+  const updated = hasBlock
+    ? existing.replace(FLEET_AUTH_BLOCK_RE, block)
+    : existing.trimEnd() + '\n\n' + block + '\n'
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
 export async function generateClaudeMd(name: string, description: string, model: string): Promise<string> {
   // Distribution-safe default-drive line: only emit a concrete folder when this
   // install has one configured (OWNER_DRIVE_FOLDER). A fresh install with no
