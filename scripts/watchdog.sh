@@ -3,6 +3,11 @@
 # Cron: */5 * * * * ~/marveen/scripts/watchdog.sh
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+# PORTSTAT912: mtime must not be spelled `stat -c %Y` (GNU-only). On macOS that
+# exits non-zero and the old `|| echo 0` turned a fresh file into an infinitely
+# old one -- which tips every grace/staleness gate below to the permissive side.
+. "$INSTALL_DIR/scripts/lib/portable-stat.sh"
 LOG="$INSTALL_DIR/logs/watchdog.log"
 mkdir -p "$INSTALL_DIR/logs"
 
@@ -166,7 +171,7 @@ if ! tmux has-session -t "$MAIN_SESSION" 2>/dev/null; then
   # only act as the last-resort backstop once every other actor has stopped trying.
   MAIN_RESPAWN_STAMP="$INSTALL_DIR/store/.channel-last-respawn"
   _mlast=0
-  [ -f "$MAIN_RESPAWN_STAMP" ] && _mlast="$(stat -c %Y "$MAIN_RESPAWN_STAMP" 2>/dev/null || echo 0)"
+  [ -f "$MAIN_RESPAWN_STAMP" ] && _mlast="$(file_mtime "$MAIN_RESPAWN_STAMP")"
   if [ "$(( $(date +%s) - _mlast ))" -lt 900 ]; then
     echo "$(timestamp) [watchdog] $MAIN_SESSION missing but a respawn is within the 900s grace -- deferring (systemd/channels.sh/channel-watchdog cover it)" >> "$LOG"
   else
