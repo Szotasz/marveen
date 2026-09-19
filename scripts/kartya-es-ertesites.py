@@ -32,6 +32,15 @@ KOORDINATORHOZ (marveen) -- kimondva, a kimeneten es az uzenet elso soraban is.
 KOMMENT-ONLY MOD (KARTYAIRASESZKOZ905, 2026-09-05): komment egy MEGLEVO kartyara,
 ERTESITES NELKUL, ugyanazokkal a kapukkal es kotelezo visszaolvasassal:
   kartya-es-ertesites.py --id X905 --comment-file /path --author Samu [--dry-run]
+
+A MEZOK, AMIKET EBBEN A MODBAN MOZGATNI LEHET: --status, --priority, --title, --assignee es
+2026-09-19 ota a --desc-file is (EKEZETKAPU919). A leiras eddig az EGYETLEN kartya-mezo volt,
+amit letrehozas utan senki nem tudott javitani: egy elsore rosszul megirt leiras VEGLEGES volt,
+es ez eloszor egy gazda ele keszulo szovegben okozott kart (rossz hatarido negy helyen).
+A tiltas nem leiras-vedelem volt, hanem hianyzo UPDATE-ut. Amiert megis biztonsagos megnyitni:
+a mozgatas-nyom MINDEN valtozo mezo TELJES regi erteket kiirja egy kommentbe, tehat a csere nem
+TORLI a regi szoveget, hanem HOZZAIRJA a kartyahoz -- a leiras igy nem lesz csendes
+atiras-felulet. Ures --desc-file-t a mozgato ag megtagad.
 Az --author itt KOTELEZO (KARTYADRYRUN907, 2026-09-08): korabban csendben 'Marveen'-re esett,
 tehat a kartyan MAS neve allt, mint aki irta. A letrehozo agon az alapertelmezes valtozatlan.
 MEZOMOZGATAS (KARTYASTATUSZ906, Boni lelete 2026-09-06): komment-modban a lenti mezok MEGLEVO
@@ -409,18 +418,37 @@ def komment_mod(a):
         if (h := gyanus(a.title)):
             sys.exit(f'MEGTAGADVA: vegyes irasrendszeru szo a cimben: {h[:5]}')
         _horgony_kapu(a.id, a.title)
+    # A LEIRAS IS MOZGATHATO (EKEZETKAPU919, 2026-09-19). Marveen kikotese: a regi szoveg NE
+    # vesszen el -- ezt nem kulon kod adja, hanem a mar meglevo mozgatas-nyom, ami MINDEN valtozo
+    # mezo TELJES regi erteket kiirja egy kommentbe (lasd lent: `reszletes`). Ezert a leiras ugy
+    # kerul be, mint a tobbi mezo, es nem sajat kulon uton: egy kulon ut pont azt a nyomot kerulne
+    # meg, amiert az egesz engedmeny megadhato.
+    # AMI RAFUT ES AMI NEM: a homoglifa-kapu igen (ugyanaz a hamisitas-felulet, mint a cimen).
+    # A 300 karakteres hatar NEM: az a CIM trigger-levagasa ellen all, a leiras epp a hosszu
+    # szovege. A horgony-kapu sem: az azt meri, hogy a CIM hordozza-e a kartya azonositojat.
+    uj_leiras = None
+    if a.desc_file is not None:
+        uj_leiras = open(a.desc_file, encoding='utf-8').read()
+        if not uj_leiras.strip():
+            sys.exit('MEGTAGADVA: ures --desc-file a mozgato agon. Ez a leiras KIURITESE lenne, es\n'
+                     'egy ures leiras ugyanugy nez ki, mint egy elfelejtett. Ha tenyleg torolni\n'
+                     'akarod a tartalmat, irj be egy sort arrol, MIERT ures (a regi szoveg a\n'
+                     'mozgatas-nyomban akkor is megmarad).')
+        if (h := gyanus(uj_leiras)):
+            sys.exit(f'MEGTAGADVA: vegyes irasrendszeru szo a leirasban: {h[:5]}')
     if a.status is not None and a.status not in STATUSZOK:
         sys.exit(f'MEGTAGADVA: ervenytelen statusz ("{a.status}"). Ervenyes: {", ".join(STATUSZOK)}.')
     if a.priority is not None and a.priority not in PRIORITASOK:
         sys.exit(f'MEGTAGADVA: ervenytelen prioritas ("{a.priority}"). Ervenyes: {", ".join(PRIORITASOK)}.')
 
     db = sqlite3.connect(_db_kapu()); db.execute('PRAGMA busy_timeout=8000')
-    card = db.execute('SELECT id,status,assignee,priority,title FROM kanban_cards WHERE id=?', (a.id,)).fetchone()
+    card = db.execute('SELECT id,status,assignee,priority,title,description FROM kanban_cards WHERE id=?', (a.id,)).fetchone()
     if not card:
         sys.exit(f'MEGTAGADVA: a(z) {a.id} kartya NEM LETEZIK -- komment-only mod csak meglevo kartyara ir.\n'
                  f'Uj kartyahoz a letrehozo mod valo (--assignee/--title).')
     # ELOTTE-PILLANATKEP: enelkul a visszaolvasas nem meres, csak egy ertek felolvasasa.
-    elotte = {'status': card[1], 'priority': card[3], 'title': card[4], 'assignee': card[2]}
+    elotte = {'status': card[1], 'priority': card[3], 'title': card[4], 'assignee': card[2],
+               'description': card[5]}
     # A FELELOS FELOLDASA a kartya ismereteben: a kanonikus alakot hasonlitjuk az elotte-erteknek,
     # kulonben egy "Samu" -> "samu" no-op valodi mozgatasnak latszana.
     uj_felelos = None
@@ -449,7 +477,7 @@ def komment_mod(a):
                          + (f'Hasonlo, MAR LETEZO nevek: {", ".join(kozeli)}\n' if kozeli else '')
                          + 'Ha tenyleg uj nev (pl. uj kulso PR-szerzo), mondd ki: --assignee-uj.')
     mozgatas = {k: v for k, v in (('status', a.status), ('priority', a.priority), ('title', a.title),
-                                  ('assignee', uj_felelos))
+                                  ('assignee', uj_felelos), ('description', uj_leiras))
                 if v is not None}
     valtozik = {k: v for k, v in mozgatas.items() if v != elotte[k]}
     valtozatlan = {k: v for k, v in mozgatas.items() if v == elotte[k]}
@@ -496,8 +524,9 @@ def komment_mod(a):
         sys.exit(f'HIBA: a mezomozgatas {cur.rowcount} sort erintett (1 helyett) -- a komment MAR BEIRT.')
     # FUGGETLEN visszaolvasas: uj SELECT, nem a cursor allitasa. A 0-talalatos UPDATE
     # es a sikeres UPDATE kulonben megkulonboztethetetlen lenne.
-    utana = db.execute('SELECT status,priority,title,assignee FROM kanban_cards WHERE id=?', (a.id,)).fetchone()
-    kapott = {'status': utana[0], 'priority': utana[1], 'title': utana[2], 'assignee': utana[3]}
+    utana = db.execute('SELECT status,priority,title,assignee,description FROM kanban_cards WHERE id=?', (a.id,)).fetchone()
+    kapott = {'status': utana[0], 'priority': utana[1], 'title': utana[2], 'assignee': utana[3],
+              'description': utana[4]}
     for k, v in valtozik.items():
         if kapott[k] != v:
             sys.exit(f'HIBA: a(z) {k} visszaolvasva "{kapott[k]}", nem a kert "{v}". Az iras NEM ert celba.')
@@ -605,7 +634,15 @@ def _elozmeny_figyelmeztetes(db, a, now, dry=False):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--id', required=True); p.add_argument('--assignee')
-    p.add_argument('--title'); p.add_argument('--desc-file')
+    p.add_argument('--title')
+    # A SUGO MONDJA MEG, MIT TUD A KAPCSOLO A KET AGON (Marveen kikotese, EKEZETKAPU919).
+    # A korlatot eddig csak a keveres-kapu uzenete mutatta, amibol NEM derult ki, hogy a
+    # leiras utolag javithatatlan -- aki nekifutott, a megtagadasbol azt olvasta ki, hogy
+    # rossz kapcsolot hasznal, nem azt, hogy nincs ilyen ut.
+    p.add_argument('--desc-file',
+                   help='a kartya leirasa fajlbol. LETREHOZO modban a kezdo leiras; '
+                        '--comment-file mellett a MEGLEVO leiras CSEREJE (a regi szoveg '
+                        'teljes egeszeben bekerul a mozgatas-nyom kommentbe).')
     p.add_argument('--msg-file'); p.add_argument('--priority', default=None)
     # Az alapertelmezes SZANDEKOSAN None (nem 'planned'/'normal'): csak igy lehet
     # megkulonboztetni a KIMONDOTT erteket a nem-adottol. A letrehozo ag lentebb tolti fel.
@@ -630,10 +667,16 @@ def main():
     if a.comment_file:
         # A KEVERES-KAPUT KI KELL ENGEDNI az uj mezohoz, kulonben az uj kod ELERHETETLEN, es a
         # bovites "kesz"-nek latszik ugy, hogy soha nem fut le (Boni kikotese a cim-bovitesnel).
-        if a.msg_file or a.desc_file:
-            sys.exit('MEGTAGADVA: a --comment-file nem keverheto a letrehozo mod kapcsoloival\n'
-                     '(--desc-file/--msg-file) -- egy futas egy muvelet.\n'
-                     'A --title/--status/--priority/--assignee viszont MOZGATJA a meglevo kartyat.')
+        # A --desc-file 2026-09-19 OTA MOZGATO KAPCSOLO IS (EKEZETKAPU919). Korabban itt allt a
+        # tiltasban, es ettol a LEIRAS volt az egyetlen kartya-mezo, amit letrehozas utan SENKI
+        # nem tudott javitani -- egy elsore rosszul megirt leiras VEGLEGES volt. A tiltas nem
+        # leiras-vedelem volt, hanem hianyzo UPDATE-ut: a mozgato ag egyszeruen nem ismerte a
+        # mezot (merve 2026-09-19, Geri). A --msg-file marad tiltva: az ERTESITES, ami a
+        # letrehozashoz tartozik, nem a kartya allapotahoz.
+        if a.msg_file:
+            sys.exit('MEGTAGADVA: a --comment-file nem keverheto a --msg-file-lal -- az ERTESITES a\n'
+                     'letrehozo agé (uj kartya + gazda-ertesites egy futasban).\n'
+                     'A --title/--status/--priority/--assignee/--desc-file MOZGATJA a meglevo kartyat.')
         komment_mod(a)
         return
     if a.assignee_uj:

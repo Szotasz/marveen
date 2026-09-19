@@ -247,14 +247,27 @@ def main():
           any('assignee' in c and 'szabolcs' in c and 'samu' in c
               for c in comments('FELELOSA906')), f'kapott: {comments("FELELOSA906")}')
 
-    # 15. A KEVERES-KAPUT ki kellett engedni az --assignee-hoz. Ha ez visszazarul, a 14. teszt
-    #     bukik -- de a --desc-file/--msg-file TOVABBRA IS tiltott komment-modban.
+    # 15. A KEVERES-KAPU HATARA. Ki kellett engedni az --assignee-hoz (ha visszazarul, a 14.
+    #     teszt bukik), 2026-09-19 ota pedig a --desc-file-hoz is (EKEZETKAPU919, Marveen
+    #     dontese): a leiras volt az egyetlen mezo, amit letrehozas utan senki nem tudott
+    #     javitani. EZ A SOR KORABBAN A TILTAST ROGZITETTE, es SZANDEKOSAN, a viselkedes-
+    #     valtassal EGY PR-ben irodott at -- egy kiadott regresszio-kontrollt nem hagyunk
+    #     csendben elavulni, es nem is torlunk: a helyere az UJ szerzodes kerul.
+    #     A --desc-file viselkedeset a kartya-leiras-mozgatas teszt meri vegig; itt az marad,
+    #     ami EBBE a tesztbe tartozik: a kapu MASIK fele NEM nyilt ki vele.
     d = tempfile.mkdtemp(prefix='kartya-m5-')
     df = os.path.join(d, 'd.txt'); open(df, 'w', encoding='utf-8').write('leiras')
     seed('KEVER906')
     p = comment('KEVER906', 'Kartya KEVER906: keveres.', ('--desc-file', df))
-    check('15 a --desc-file tovabbra is tiltott komment-modban',
-          p.returncode != 0 and 'nem keverheto' in (p.stdout + p.stderr), p.stdout + p.stderr)
+    check('15 a --desc-file komment-modban MAR ATMEGY (a leiras mozgathato)',
+          p.returncode == 0, p.stdout + p.stderr)
+    #     A --msg-file viszont TOVABBRA IS tiltott: az ERTESITES a letrehozo age. Ha ez a fel
+    #     is kinyilt volna a --desc-file mellett, egy komment-futas csendben uzenetet kuldene.
+    mf = os.path.join(d, 'm.txt'); open(mf, 'w', encoding='utf-8').write('Kartya KEVEB906: ertesites.')
+    seed('KEVEB906')
+    p = comment('KEVEB906', 'Kartya KEVEB906: keveres uzenettel.', ('--msg-file', mf))
+    check('15 a --msg-file tovabbra is tiltott komment-modban',
+          p.returncode != 0 and '--msg-file' in (p.stdout + p.stderr), p.stdout + p.stderr)
 
     # 16. ISMERETLEN NEV, amin MASIK kartya sem all: megtagadas. A felelos-oszlop NEM zart halmaz
     #     (merve: 40 kulonbozo ertek), ezert nem nev-halmazt kapuzunk, hanem azt, hogy a nev
