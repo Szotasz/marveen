@@ -318,6 +318,37 @@ const STUCK_RESTART_MAX_CONSECUTIVE = 3
 let stuckRestartCount = 0
 let lastStuckRestartAt = 0
 
+// STUCKFRAGMENT915. A clear that FAILED leaves behind a fragment we KNOW is
+// machine-origin -- WE parked it and WE failed to clear it. But the fragment may
+// have lost every marker parkedMachineOriginInput matches on (the prefixes AND
+// all three MACHINE_ORIGIN_TRUNCATED_MARKERS), and the restart guard then reads
+// it as "possibly a human draft" and defers forever. That is the 2026-09-03
+// wedge (25.4h mute) and it is still live: measured on one runner lifetime,
+// 10 `Input buffer could not be emptied` errors produced 0 pane restarts, even
+// though that error's own text promises "escalation will have to restart the
+// pane".
+//
+// A better detector cannot fix this, and that is the whole point: the cut
+// destroyed the evidence, so the fact is no longer IN the bytes. It is only
+// knowable at the moment the clear failed -- so record it there.
+//
+// Lifecycle: set only where a clear returned false on a fragment WE injected
+// (clear-scheduled / clear-preamble); cleared the moment the box is proven
+// EMPTY -- which is also the only moment a human draft can begin, so the flag
+// can never be inherited by text a person typed.
+const machineFragmentLeft = new Set<string>()
+
+export function noteMachineFragmentLeft(session: string): void { machineFragmentLeft.add(session) }
+export function clearMachineFragmentLeft(session: string): void { machineFragmentLeft.delete(session) }
+export function hasMachineFragmentLeft(session: string): boolean { return machineFragmentLeft.has(session) }
+
+// Pure. The capture-derived heuristic is authoritative when it FIRES; it is its
+// SILENCE that is unreliable, so our own record can only ever add machine-origin,
+// never take it away.
+export function resolveMachineOrigin(heuristic: boolean, leftByUs: boolean): boolean {
+  return heuristic || leftByUs
+}
+
 // Pure decision for the stuck-input restart escalation.
 //   'restart' -> soft recovery exhausted + input still parked + rate-limit ok
 //   'alert'   -> restarts are not clearing the wedge (cap reached) -> surface once
@@ -526,7 +557,10 @@ async function performStuckInputAction(
       case 'clear-preamble': {
         logger.warn({ session, attempt }, 'Stuck input -- truncated safety preamble, clearing buffer (no re-inject)')
         const cleared = await clearInputBuffer(session)
-        if (!cleared) logger.warn({ session, attempt }, 'Stuck input -- clear-preamble left text in the box; the leftover stays parked')
+        if (!cleared) {
+          noteMachineFragmentLeft(session)
+          logger.warn({ session, attempt }, 'Stuck input -- clear-preamble left text in the box; the leftover stays parked (recorded as machine-origin)')
+        }
         break
       }
       case 'clear-scheduled': {
@@ -536,7 +570,10 @@ async function performStuckInputAction(
         // stops matching a delivery wrapper, so every later restart decision
         // reads it as a human draft. Say so in the log rather than reporting a
         // clean clear that did not happen.
-        if (!cleared) logger.warn({ session, attempt }, 'Stuck input -- clear-scheduled left a fragment in the box; expect machineOrigin=false on the next tick')
+        if (!cleared) {
+          noteMachineFragmentLeft(session)
+          logger.warn({ session, attempt }, 'Stuck input -- clear-scheduled left a fragment in the box; recorded as machine-origin so the restart guard does not read it as a human draft')
+        }
         break
       }
       case 'enter':
@@ -1375,7 +1412,7 @@ function maybeRestartWedgedMainChannel(state: StuckInputState): void {
   const parked = state.parkedSig !== null
   // A cleared input box ends the spell -> reset the escalation counter so the
   // next genuine wedge starts fresh (and a successful restart is not penalised).
-  if (!parked) { stuckRestartCount = 0; return }
+  if (!parked) { stuckRestartCount = 0; clearMachineFragmentLeft(MAIN_CHANNELS_SESSION); return }
   // Busy-guard: never hard-restart while the main pane is actively generating --
   // a parked <channel> block then is a busy session, not a wedge. See
   // applyStuckRestartBusyGuard. detectPaneState reads 'unknown' for an
@@ -1386,7 +1423,10 @@ function maybeRestartWedgedMainChannel(state: StuckInputState): void {
   // Deadlock carve-out facts: read from the ghost-stripped parked view (same
   // view the soft recovery uses) so a dim autocomplete hint never counts.
   const parkedView = paneState === 'typing' ? captureParkedInputView(MAIN_CHANNELS_SESSION) : null
-  const machineOrigin = parkedView != null && parkedMachineOriginInput(parkedView)
+  const machineOrigin = resolveMachineOrigin(
+    parkedView != null && parkedMachineOriginInput(parkedView),
+    hasMachineFragmentLeft(MAIN_CHANNELS_SESSION),
+  )
   // Same registry lookup recoverStuckInputForSession() already does for the
   // soft-recovery decision -- without it here, a scrolled parked fragment
   // that lost BOTH its recognisable prefix and every truncated-marker phrase
