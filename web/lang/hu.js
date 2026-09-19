@@ -41,6 +41,7 @@ window._i18n.hu = {
   'overview.quota.title':           'Előfizetési keret',
   'overview.quota.five_hour':       '5 órás',
   'overview.quota.seven_day':       'Heti',
+  'overview.quota.fable':           'Fable (heti)',
   'overview.quota.resets_in':       'nullázódik {d} múlva',
   'overview.quota.expired':         'a keret azóta nullázódott',
   'overview.quota.measured':        '{age} régi mérés',
