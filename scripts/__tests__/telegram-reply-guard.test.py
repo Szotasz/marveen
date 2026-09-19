@@ -119,6 +119,33 @@ def main():
     d, _ = run_hook(db)
     check("no inbound allows", d, None)
 
+    # 7. A reply SENT between an inbound's arrival and its (later) ledger write
+    #    -> ALLOW. Replays 2026-09-11: "hahó" arrived 08:40:21Z, the reply went
+    #    out 08:41:19Z, the inbound row was only written at 08:41:20Z.
+    now = int(time.time())
+    db = fresh_db()
+    lib = load_lib(db)
+    lib.log_outbound("marveen", "8695313113", "itt vagyok")
+    lib.log_inbound("marveen", "8695313113", "1184", "hahó",
+                    time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(now - 60)))
+    con = lib.connect()
+    con.execute("UPDATE conversation_log SET created_at=? WHERE direction='out'", (now - 2,))
+    con.commit(); con.close()
+    d, _ = run_hook(db)
+    check("reply sent before the inbound was logged allows", d, None)
+
+    # 8. A question that ARRIVED after the last reply is still open -> BLOCK.
+    db = fresh_db()
+    lib = load_lib(db)
+    lib.log_outbound("marveen", "8695313113", "korabbi valasz")
+    con = lib.connect()
+    con.execute("UPDATE conversation_log SET created_at=? WHERE direction='out'", (now - 120,))
+    con.commit(); con.close()
+    lib.log_inbound("marveen", "8695313113", "1190", "uj kerdes?",
+                    time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(now - 60)))
+    d, _ = run_hook(db)
+    check("question arriving after the last reply blocks", d, "block")
+
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)
         sys.exit(1)
