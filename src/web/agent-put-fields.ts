@@ -15,6 +15,7 @@
 export const AGENT_PUT_WRITABLE_FIELDS = [
   'claudeMd', 'soulMd', 'mcpJson', 'model',
   'authMode', 'apiKey', 'claudePlan', 'memoryIsolation',
+  'modelProfile', 'customProvider',
 ] as const
 
 // Fields that exist on the agent but belong to a different endpoint. Listed
