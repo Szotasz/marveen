@@ -35,3 +35,14 @@ preview and can be skipped with `--no-verify`, so it is not sufficient on its ow
 
 - [ ] Nincs a valtoztatasban bizonyitek-/artefaktum-mappa, titok-alaku string vagy idezett csatorna-uzenet.
       / No evidence or artifact directory, secret-shaped string, or quoted channel message in this change.
+
+## Review-nyom / Review trace
+
+Kulso szerzo PR-jet a szokasos modon hagyjuk jova (zold "Approved"). A flotta SAJAT PR-jen ez az
+allapot technikai okbol nem elerheto -- minden agens ugyanazzal a GitHub-fiokkal ir --, ezert ott a
+verdikt egy `COMMENTED` review-komment, aminek az elso sora `FLEET REVIEW -- GO` vagy `NO-GO`.
+Reszletek: [CONTRIBUTING.md](../CONTRIBUTING.md).
+
+An outside contributor's PR is approved the normal way (green "Approved"). A PR written by the fleet
+cannot carry that state, because every agent writes through the same GitHub account, so the verdict
+there is a `COMMENTED` review whose first line reads `FLEET REVIEW -- GO` or `NO-GO`.
