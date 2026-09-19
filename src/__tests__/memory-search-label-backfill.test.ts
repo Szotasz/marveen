@@ -172,4 +172,15 @@ describe('buildMemorySearchLabelBody', () => {
   it('does not equate relaxed=false with having a hit', () => {
     expect(buildMemorySearchLabelBody('agent-b')).toContain('hits=0')
   })
+
+  // A raw accented byte in q returns HTTP 400 with an empty body and NO
+  // X-Memory-Search header, so the grep prints nothing and it looks exactly
+  // like an empty hit though the search never ran. Measured 2026-09-19. The
+  // body must warn to percent-encode (or use -G --data-urlencode) so no agent
+  // reads a 400 as "no memory".
+  it('warns that a raw accented q is a silent 400, not an empty result', () => {
+    const b = buildMemorySearchLabelBody('agent-b')
+    expect(b).toContain('400')
+    expect(b).toContain('--data-urlencode')
+  })
 })
