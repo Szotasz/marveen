@@ -57,6 +57,19 @@ describe('web-reading profile posture (TMPLPERM908)', () => {
   // real posture (SSH/AWS/.env, sudo, rm, curl -X POST, git push); it is simply
   // advisory under permissive. Tightening the mode again is an OWNER decision,
   // not a template edit, and it must land with the agents' work rerouted first.
+  // The messaging grant is asserted PER PROFILE, not as one shared literal.
+  // `scripts/agent-post.sh` no longer exists in the repo (it was replaced by
+  // agent-msg.sh, the CLAUDE.md-documented inter-agent helper), and researcher
+  // was repointed at agent-msg.sh. Asserting the removed script for BOTH
+  // profiles made this case fail on researcher while still passing on marketer,
+  // which grants the stale path to this day -- that stale marketer grant is a
+  // separate question for the profile owner and is deliberately not changed
+  // here. What the case protects is unchanged: each profile must still carry a
+  // messaging-helper grant, so a silent drop of it is caught.
+  const MESSAGING_ALLOW: Record<string, string> = {
+    marketer: 'Bash(${PROJECT_ROOT}/scripts/agent-post.sh:*)',
+    researcher: 'Bash(bash ${HOME}/marveen/scripts/agent-msg.sh:*)',
+  }
   for (const id of ['marketer', 'researcher']) {
     it(`${id} stays permissive (owner decision) and carries the measured capability allows`, () => {
       const p = loadProfileTemplate(id)
@@ -64,7 +77,7 @@ describe('web-reading profile posture (TMPLPERM908)', () => {
       expect(p.permissionMode).toBe('permissive')
       expect(p.filesystem.allow).toContain('Read(${HOME}/.claude/skills/**)')
       expect(p.filesystem.allow).toContain('Bash(${PROJECT_ROOT}/scripts/notify.sh:*)')
-      expect(p.filesystem.allow).toContain('Bash(${PROJECT_ROOT}/scripts/agent-post.sh:*)')
+      expect(p.filesystem.allow).toContain(MESSAGING_ALLOW[id])
       expect(p.filesystem.deny).toContain('Read(${HOME}/.ssh/**)')
     })
   }
