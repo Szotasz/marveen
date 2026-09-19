@@ -77,9 +77,14 @@ def _whisper(path, words=False):
     # ADDITIV (2026-09-12): a words=False ag VALTOZATLAN -- a stt.sh es a canary erre epul, es a
     # repetition-teszt a stdoutjat kapja el. A words=True ag KULON kimenet (JSON), uj hivoknak:
     # a vagas-hatar ellenorzeshez SZO-SZINTU `end` ido kell, amit a szoveges alak nem hordoz.
+    # beam_size=1 + minden mag (2026-09-18): a hivo oldalon 60 s-os timeout all, es egy
+    # 2:26-os hangüzenet beam=5-tel 110 s-ig futott, tehat a valasz NEM keletkezett meg.
+    # Ugyanazon a felvetelen merve beam=1 70,6 s (1,56x), es az atirat gyakorlatilag azonos
+    # (1683 vs 1656 karakter, a kulonbseg szo-hatar). A pontossagi ar nem merheto, az
+    # idonyereseg igen, ezert a beam=1 az alapertelmezett.
     from faster_whisper import WhisperModel
-    m = WhisperModel("small", device="cpu", compute_type="int8")
-    segs, _ = m.transcribe(path, language="hu", beam_size=5, condition_on_previous_text=False,
+    m = WhisperModel("small", device="cpu", compute_type="int8", cpu_threads=os.cpu_count() or 4)
+    segs, _ = m.transcribe(path, language="hu", beam_size=1, condition_on_previous_text=False,
                            word_timestamps=words)
     segs = list(segs)
     if not words:
