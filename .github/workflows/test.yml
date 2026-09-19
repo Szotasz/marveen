@@ -47,22 +47,18 @@ jobs:
       # regression guard that only runs manually rots exactly like a one-shot
       # seed. Runs natively here (ubuntu = the Linux branch it asserts).
       - run: bash scripts/__tests__/stop-start-system-unit.test.sh
-      # TASKEGRESSDRIFT913: the egress-drift scan is a gate instrument; a guard that
-      # only runs by hand rots (the #1316 class), so its tests run here too.
-      - run: python3 scripts/__tests__/egress-drift-scan.test.py
-      # DASHAUDITZAJ915: the dash audit's classifier is a gate instrument too --
-      # same rot argument as the line above.
-      - run: python3 scripts/__tests__/dash-audit-scan.test.py
-      # ORSICTX912: the sentinel preCheck's SKIP is "no model turn" -- an
-      # error path that said SKIP would silence the community sentinel for
-      # good, so its fail-direction cases are gate instruments (hermetic:
-      # stubbed vault/supabase, throwaway dirs).
-      - run: python3 scripts/__tests__/mio-orszem-precheck.test.py
-      # MEMLINKAUDIT915: the audit's own footer calls UNRESOLVED the repair
-      # queue, so an over-report sends someone to rewrite working links. The
-      # over-report GROWS with every consolidation round, which is why this
-      # runs here and not by hand. Hermetic: throwaway fixture dir.
-      - run: python3 scripts/__tests__/memory-link-audit.test.py
+      # CITESZTLISTA919: EVERY scripts/__tests__/*.test.py runs, discovered from
+      # the directory by scripts/run-script-tests.sh -- not from a hand-kept
+      # list. The list that stood here drifted: 23 python test files existed,
+      # 4 were named (measured 2026-09-19 on f8d2db88), and none of the four
+      # kartya-es-ertesites.py gate tests were among them, so the card tool's
+      # gates were only verified when someone ran them by hand. The per-test
+      # rationale that used to sit here (TASKEGRESSDRIFT913 egress-drift scan,
+      # DASHAUDITZAJ915 dash audit, ORSICTX912 sentinel preCheck,
+      # MEMLINKAUDIT915 link audit) is unchanged: each is a gate instrument, a
+      # guard that only runs by hand rots. A test needs no wiring to run here;
+      # a deliberate skip needs a reason in scripts/__tests__/.ci-skip.
+      - run: bash scripts/run-script-tests.sh
       # MORNTIMERPARK914: the #1313 contract tests shipped without CI wiring,
       # so "CI green" said nothing about them -- the exact rot the comment
       # above warns about. All three are hermetic (stubs on PATH / CLAUDE_BIN,
