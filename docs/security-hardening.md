@@ -122,3 +122,40 @@ This is a deny list, not a sandbox.
   `https://` URL matches the `curl` rule. Single-quoted payloads do not (the
   permission engine excludes single-quoted content). Use single quotes or
   `-d @file` for such a call.
+
+# What the URL gate does not cover
+
+Both web controls are wired to **one tool**. `scripts/hooks/egress-gate.mjs`
+runs as a `PreToolUse` hook with matcher `WebFetch`, and `wrapUntrustedFetch()`
+(`src/prompt-safety.ts`) frames what that tool returns. Everything else that
+brings the outside world into an agent's context is outside both:
+
+- **`WebSearch`** -- result snippets are external text; no allowlist decided
+  which sites they came from, and nothing wraps them on the way in.
+- **Any MCP server that fetches** -- a browser server (playwright, chrome), a
+  docs server, an API connector. The agent's own `curl` is denied by
+  `BASH_EGRESS_DENY`, but an MCP server makes the request in its own process,
+  where neither control can see it.
+
+This is stated in a comment inside `egress-gate.mjs`. It was not stated here,
+which is the wrong place for it to be missing: the comment is read by whoever
+edits the gate, this file is read by whoever decides what to install. An
+operator adding a browser MCP server was therefore adding an ungated,
+unlabelled content path while reading that egress was covered.
+
+The fleet ships no browser by default, so a stock install is unaffected. But
+the fleet's own scaffolding expects browsers to appear (the largest profile is
+described as "filesystem + playwright + chrome"), so this is a normal
+deployment, not an exotic one.
+
+## Why a browser payload is the sharper case
+
+A fetched page cannot run code in the agent; it can only try to talk to it. A
+browser payload arrives the same way -- except the browser it arrives through
+holds live logged-in sessions, and the agent reading it has a shell, a
+filesystem and outbound channels. The realistic attack is not an exploit, it is
+a sentence: text on the page addressed to the agent rather than to the reader.
+
+The defence against that is framing, not filtering: content the agent knows is
+content cannot impersonate an instruction. `WebFetch` gets that framing from
+the wrapper. A browser payload gets none.
