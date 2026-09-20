@@ -461,9 +461,12 @@ export function startWebServer(port = 3420): http.Server {
   const modelFallbackInterval = webOnly ? undefined : startModelFallbackRunner()
   if (!webOnly) logger.info('Model-fallback runner started (60s poll, 50s offset)')
 
-  // Card 681ab82c: the kanban archive sweep used to ride along on every listKanbanCards()
-  // call, so reading the board wrote to it. It is a scheduled job now -- and it MUST be
-  // started here, or KANBAN_ARCHIVE_DONE_DAYS silently stops doing anything.
+  // The kanban archive sweep used to ride along on every listKanbanCards() call (measured on
+  // our install), so reading the board wrote to it. It is a scheduled job now -- and it MUST
+  // be started here, or KANBAN_ARCHIVE_DONE_DAYS silently stops doing anything. Same caveat as
+  // every neighbouring runner on this line: a web-only instance never starts it, so on a
+  // web-only deployment the setting is a silent no-op too -- same failure class this comment
+  // is about, just inherited from the webOnly gate rather than reintroduced by this change.
   const kanbanArchiveInterval = webOnly ? undefined : startKanbanArchiveRunner()
   if (!webOnly) logger.info('Kanban archive runner started (60min poll, 70s offset)')
 

@@ -2207,7 +2207,8 @@ export interface KanbanComment {
 }
 
 // A PURE READ, deliberately: the archive sweep that used to run here moved to
-// sweepArchivedKanbanCards() above. See card 681ab82c.
+// sweepArchivedKanbanCards() above (measured on our install: reading the board archived cards
+// as a side effect of reading it).
 //
 // `includeArchived` exists because this function used to hard-code the filter with
 // no way for a caller to ask otherwise, while being named `list`. /api/kanban therefore

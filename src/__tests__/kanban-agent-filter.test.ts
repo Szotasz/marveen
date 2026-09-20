@@ -1,4 +1,4 @@
-// Kartya a98d02c3. A `/api/kanban` es a `/api/messages/backlog` az `agent=` parametert NEMAN
+// Merve sajat telepitesunkon. A `/api/kanban` es a `/api/messages/backlog` az `agent=` parametert NEMAN
 // eldobta: a valasz a TELJES tablat adta vissza, es a hivonak semmi jele nem volt rola.
 //
 // ⛔ A MERT ESET, ami miatt ez tobb egy kenyelmi szuronel: egy agens 139 idegen lapot latott

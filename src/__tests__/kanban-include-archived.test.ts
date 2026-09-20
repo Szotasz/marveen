@@ -11,7 +11,7 @@
 //   the ROUTE dropped an unrecognised parameter instead of honouring or refusing it
 //
 // The sweep that used to run inside listKanbanCards() now lives in
-// sweepArchivedKanbanCards() (card 681ab82c), so listing no longer writes. These tests
+// sweepArchivedKanbanCards() (measured on our install), so listing no longer writes. These tests
 // archive explicitly either way, so they measure the FILTER and not the clock.
 
 import { describe, it, expect, beforeEach } from 'vitest'

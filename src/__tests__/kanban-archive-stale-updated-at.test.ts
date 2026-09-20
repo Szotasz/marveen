@@ -1,11 +1,11 @@
-// kanban 0664aadf: a raw SQL status write that only touches the `status`
+// Measured on our install: a raw SQL status write that only touches the `status`
 // column (no updated_at) leaves the card's OLD updated_at in place. Since
 // sweepArchivedKanbanCards() archives 'done' cards purely by
 // comparing updated_at to a cutoff, a card that was just moved to 'done'
 // this way looks like it has been sitting untouched for weeks and gets
 // archived on the very next page load -- before anyone sees it.
 //
-// ENTRY POINT CHANGED (card 681ab82c), the GUARANTEE DID NOT: the sweep used to run
+// ENTRY POINT CHANGED (measured on our install), the GUARANTEE DID NOT: the sweep used to run
 // inside listKanbanCards(), so these tests triggered it by listing. Reading the board
 // no longer writes to it, so they now call the sweep directly. Same cards archived,
 // same cards spared -- only the caller moved.

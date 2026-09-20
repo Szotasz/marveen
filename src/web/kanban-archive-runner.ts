@@ -1,9 +1,9 @@
 import { logger } from '../logger.js'
 import { sweepArchivedKanbanCards } from '../db.js'
 
-// Card 681ab82c. This sweep used to run inside listKanbanCards(), i.e. on every READ of
-// the board -- so the act of measuring the kanban changed the kanban. An audit that asked
-// "what is on the board" archived cards as a side effect of asking, and the set it then
+// Measured on our install: this sweep used to run inside listKanbanCards(), i.e. on every
+// READ of the board -- so the act of measuring the kanban changed the kanban. An audit that
+// asked "what is on the board" archived cards as a side effect of asking, and the set it then
 // reported was not the set that existed a moment earlier.
 //
 // Moving it here keeps the behaviour and drops the side effect: listKanbanCards() is now a

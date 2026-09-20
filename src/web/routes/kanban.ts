@@ -327,13 +327,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // includeArchived is honoured or REFUSED -- never silently dropped. Ignoring it was
     // the actual defect: a caller had evidence it asked for archived cards, the response
     // had evidence it did not, and nothing reconciled the two.
-    // ⛔ ISMERETLEN PARAM -> HANGOS 400, a /api/messages mintajara (39a46ab7). Harom vegpont
-    // adott harom kulonbozo valaszt ugyanarra a hibara: az egyik hangosan elutasitott, a masik
-    // ketto neman eldobta. A nema elfogadas TANITJA a talalgatast -- merve: hat agens HAROM
-    // kulonbozo neven probalta ugyanazt (includeArchived 16x, archived 6x, include_archived 6x),
-    // plusz ?id= 4x es ?limit= 1x. Egyik sem kapott visszajelzest, ezert probaltak tovabb.
-    // ⛔ SZIGORU halmaz, ALIAS NELKUL (ugyvezetoi dontes, msg 12768): egy alias eletben tartana a
-    // talalgatast; a hibauzenetbol viszont megtanulhato a helyes nev.
+    // ⛔ ISMERETLEN PARAM -> HANGOS 400, a /api/messages mintajara (sajat telepitesunkon mert
+    // korabbi eset). Harom vegpont adott harom kulonbozo valaszt ugyanarra a hibara: az egyik
+    // hangosan elutasitott, a masik ketto neman eldobta. A nema elfogadas TANITJA a
+    // talalgatast -- merve: hat agens HAROM kulonbozo neven probalta ugyanazt (includeArchived
+    // 16x, archived 6x, include_archived 6x), plusz ?id= 4x es ?limit= 1x. Egyik sem kapott
+    // visszajelzest, ezert probaltak tovabb.
+    // ⛔ SZIGORU halmaz, ALIAS NELKUL (sajat telepitesunkon hozott ugyvezetoi dontes): egy
+    // alias eletben tartana a talalgatast; a hibauzenetbol viszont megtanulhato a helyes nev.
     const KNOWN_PARAMS = new Set(['agent', 'assignee', 'includeArchived'])
     const unknown = [...ctx.url.searchParams.keys()].filter((k) => !KNOWN_PARAMS.has(k))
     if (unknown.length) {
@@ -363,6 +364,22 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const agent = ctx.url.searchParams.get('agent')
       ?? ctx.url.searchParams.get('assignee')
       ?? undefined
+    // An unrecognised agent name 400s naming the accepted set, rather than silently
+    // matching everything (`assignee = ?` against a name nothing has would just return
+    // an empty list with 200) -- the same silence-teaches-guessing argument as the
+    // KNOWN_PARAMS check above, applied to the value instead of the key. Accepted set
+    // matches /api/kanban/assignees exactly, so a caller can discover it the same way.
+    if (agent !== undefined) {
+      const knownAgents = new Set([OWNER_NAME, BOT_NAME, ...listAgentNames()])
+      if (!knownAgents.has(agent)) {
+        json(res, {
+          error: 'unknown agent',
+          agent,
+          hint: 'lásd GET /api/kanban/assignees az elfogadott nevekért',
+        }, 400)
+        return true
+      }
+    }
     const labelsByCard = getLabelsForAllCards()
     // Blockers ride along in the same round trip as labels: the board needs
     // them to mark a blocked card, and a per-card fetch would be an N+1 on

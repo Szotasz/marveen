@@ -1,4 +1,4 @@
-// Card 681ab82c. listKanbanCards() ran an UPDATE before its SELECT: every read of the
+// Measured on our install. listKanbanCards() ran an UPDATE before its SELECT: every read of the
 // board archived 'done' cards older than KANBAN_ARCHIVE_DONE_DAYS. So THE MEASUREMENT
 // CHANGED THE MEASURED SET -- an audit asking "what is on the board" archived cards as a
 // side effect of asking, and what it reported was not what existed a moment earlier.
