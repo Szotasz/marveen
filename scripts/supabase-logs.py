@@ -20,17 +20,21 @@ WHAT THE SUCCESSOR ENDPOINT NEEDS (vendor docs, changelog 48235):
     24 hours and is rounded to the minute. `--hours` (default 6, max 24)
     builds the window ending now; `--start/--end` set it explicitly.
   * The SQL is ClickHouse dialect against ONE unified `logs` table, filtered
-    per source, e.g.  select count(*) c from logs where source_name = 'edge_logs'
-    (the changelog names the column `source_name`, the reference page `source`;
-    run the count above as the POSITIVE CONTROL first and keep the one that
-    answers).
+    per source:  select count(*) c from logs where source = 'edge_logs'
+    MEASURED 2026-09-20 on the live endpoint: the column is `source`; the
+    `source_name` the changelog summary named answers HTTP 200 with
+    {"result": null, "error": "Backend error..."} (exit 4 here). Run the count
+    above as the POSITIVE CONTROL before trusting any empty result.
+  * Same-window A/B against the deprecated logs.all (--legacy), six pairs,
+    identical to the digit, incl. a LIKE '%...%' pattern on a known positive
+    row (SUPALOGS822 card, comment 16959).
   * An empty `result` is a finding ONLY next to a non-zero positive control on
     the same window; `error` non-null means the query did not run at all.
 
 EXIT CODES, three states kept apart on purpose:
   0  the request ran; the JSON body is on stdout, the HTTP status on stderr
   2  usage error
-  3  the token could not be fetched -- FAIL CLOSED, nothing is sent
+  3  the token could not be fetched, or SUPABASE_API_BASE is not loopback -- FAIL CLOSED, nothing is sent
   4  the request failed (HTTP error or network); the vendor's message on stderr
 """
 from __future__ import annotations
@@ -47,10 +51,29 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DASH = os.environ.get("CLAW_DASHBOARD_ORIGIN", "http://localhost:3420")
-# Test seam only: the hermetic test points this at a local stub. Production
-# never sets it, so the host stays api.supabase.com.
-API_BASE = os.environ.get("SUPABASE_API_BASE", "https://api.supabase.com")
+VENDOR_API = "https://api.supabase.com"
 MAX_HOURS = 24
+
+
+def _api_base() -> str:
+    """Where the PAT goes. Only the vendor host, or a LOOPBACK stub.
+
+    SUPABASE_API_BASE exists for the hermetic test (a stub on 127.0.0.1). An
+    unrestricted override would let anyone who controls the environment redirect
+    the Bearer token to a host of their choosing (review of #1427), so anything
+    that is not plain-http loopback is refused BEFORE the vault is read: exit 3,
+    nothing fetched, nothing sent.
+    """
+    raw = os.environ.get("SUPABASE_API_BASE")
+    if not raw:
+        return VENDOR_API
+    u = urllib.parse.urlsplit(raw)
+    if u.scheme == "http" and u.hostname in ("localhost", "127.0.0.1") and not u.path.strip("/"):
+        return raw.rstrip("/")
+    raise RuntimeError(
+        "FAIL-CLOSED, SUPABASE_API_BASE csak http://localhost vagy http://127.0.0.1 gyokeru lehet "
+        f"(teszt-seam); kapott: {raw!r}. Semmit nem olvastam, semmit nem kuldtem."
+    )
 
 
 def _pat(vault_key: str) -> str:
@@ -94,11 +117,11 @@ def window(hours: float | None, start: str | None, end: str | None) -> tuple[str
     return _iso(s), _iso(e)
 
 
-def query(pat: str, ref: str, sql: str, start: str, end: str, legacy: bool = False) -> tuple[int, str]:
+def query(pat: str, ref: str, sql: str, start: str, end: str, legacy: bool = False, api_base: str = VENDOR_API) -> tuple[int, str]:
     qs = urllib.parse.urlencode({"sql": sql, "iso_timestamp_start": start, "iso_timestamp_end": end})
     endpoint = "logs.all" if legacy else "logs"
     req = urllib.request.Request(
-        f"{API_BASE}/v1/projects/{urllib.parse.quote(ref, safe='')}/analytics/endpoints/{endpoint}?{qs}",
+        f"{api_base}/v1/projects/{urllib.parse.quote(ref, safe='')}/analytics/endpoints/{endpoint}?{qs}",
         headers={
             "Authorization": "Bearer " + pat,
             # The Management API rejects the default python User-Agent (403).
@@ -135,12 +158,13 @@ def main(argv: list[str]) -> int:
         print(f"supabase-logs: {ex}", file=sys.stderr)
         return 2
     try:
+        api_base = _api_base()  # destination first: a bad seam must not even read the vault
         pat = _pat(a.vault_key)
     except RuntimeError as ex:
         print(f"supabase-logs: {ex}", file=sys.stderr)
         return 3
     try:
-        status, body = query(pat, a.ref, a.sql, start, end, legacy=a.legacy)
+        status, body = query(pat, a.ref, a.sql, start, end, legacy=a.legacy, api_base=api_base)
     except Exception as ex:  # noqa: BLE001 - network/URL errors: message only, never the token
         print(f"supabase-logs: a keres nem ment el ({type(ex).__name__}: {ex})", file=sys.stderr)
         return 4

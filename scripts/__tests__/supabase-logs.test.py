@@ -26,7 +26,7 @@ REPO = Path(__file__).resolve().parents[2]
 # Deliberately NOT PAT-shaped (push-protection would rightly reject a fake sbp_).
 FAKE_PAT = "FAKE-TOKEN-FOR-TESTS-ONLY-not-a-real-supabase-pat"
 FAILS: list[str] = []
-STATE = {"vault_empty": False, "api_status": 200, "hits": []}
+STATE = {"vault_empty": False, "api_status": 200, "hits": [], "vault_hits": 0}
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:
@@ -42,6 +42,7 @@ class Stub(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urllib.parse.urlsplit(self.path)
         if u.path.startswith("/api/vault/"):
+            STATE["vault_hits"] += 1
             body = json.dumps({"value": "" if STATE["vault_empty"] else FAKE_PAT}).encode()
             self.send_response(200)
         elif "/analytics/endpoints/logs" in u.path:
@@ -68,8 +69,8 @@ class Stub(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def run(args: list[str], tmp: Path, base: str) -> subprocess.CompletedProcess:
-    env = dict(os.environ, CLAW_DASHBOARD_ORIGIN=base, SUPABASE_API_BASE=base)
+def run(args: list[str], tmp: Path, base: str, api_base: str | None = None) -> subprocess.CompletedProcess:
+    env = dict(os.environ, CLAW_DASHBOARD_ORIGIN=base, SUPABASE_API_BASE=api_base or base)
     return subprocess.run([sys.executable, str(tmp / "scripts" / "supabase-logs.py"), *args],
                          capture_output=True, text=True, env=env, timeout=30)
 
@@ -149,6 +150,22 @@ def main() -> None:
         check("[8] --legacy: exit 0", r.returncode == 0, f"rc={r.returncode}")
         check("[8] --legacy: the path is logs.all", STATE["hits"] and STATE["hits"][0]["path"].endswith("/analytics/endpoints/logs.all"), str(STATE["hits"][:1]))
         check("[8] --legacy: stderr names the deprecated endpoint", "DEPRECATED" in r.stderr, r.stderr[:120])
+
+        # 9. the env seam is LOOPBACK-ONLY (review of #1427): a non-local
+        #    SUPABASE_API_BASE must not redirect the PAT anywhere -- exit 3,
+        #    the vault is not even read, the API is not called.
+        for bad in ("https://evil.example", "http://evil.example", f"https://127.0.0.1:{srv.server_port}",
+                    "http://localhost.evil.example", f"{base}/v1/projects"):
+            STATE["hits"].clear(); STATE["vault_hits"] = 0
+            r = run(["proj-ref", "select 1"], tmp, base, api_base=bad)
+            check(f"[9] non-loopback seam {bad!r}: exit 3", r.returncode == 3, f"rc={r.returncode} err={r.stderr[:160]}")
+            check(f"[9] non-loopback seam {bad!r}: the vault was NOT read", STATE["vault_hits"] == 0, str(STATE["vault_hits"]))
+            check(f"[9] non-loopback seam {bad!r}: the API was NOT called", not STATE["hits"])
+            check(f"[9] non-loopback seam {bad!r}: the token is NOT in the output", FAKE_PAT not in (r.stdout + r.stderr))
+        # positive control for [9]: the loopback stub itself is still accepted
+        STATE["hits"].clear()
+        r = run(["proj-ref", "select 1"], tmp, base, api_base=f"http://localhost:{srv.server_port}")
+        check("[9] loopback seam (localhost): exit 0, one call", r.returncode == 0 and len(STATE["hits"]) == 1, f"rc={r.returncode} hits={len(STATE['hits'])}")
     finally:
         srv.shutdown()
         shutil.rmtree(tmp, ignore_errors=True)
