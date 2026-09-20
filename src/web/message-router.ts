@@ -775,6 +775,9 @@ export async function runMessageRouterTick(): Promise<void> {
           ? undefined
           : { ageMs, newerFromSameSender: countNewerMessagesFromSameSender(msg.from_agent, msg.to_agent, msg.id) }
         const { prefix, wrapped } = wrapAgentMessageForDelivery(category, safeFromAgent, msg.from_agent, content, msg.id, msg.origin_note, freshness)
+        // What the recipient inherits as trace context after this delivery:
+        // the head's, unless a multi-envelope batch below ends on a later row.
+        let traceCtxToRecord: { trace_id: string; span_id: string } | null = traceCtx
         // Inline preamble so a fresh session (post hard-restart) doesn't miss
         // the context that explains the tag semantics.
         if (usesWorksource) {
@@ -827,7 +830,11 @@ export async function runMessageRouterTick(): Promise<void> {
               routerLoggedMisses.delete(mate.id)
               logger.info({ id: mate.id, from: mate.from_agent, to: mate.to_agent, batchHead: msg.id }, 'Agent message delivered (multi-envelope batch)')
             }
-            if (mates.lastTraceCtx) deliveredTraceCtx.set(msg.to_agent, mates.lastTraceCtx)
+            // The recipient inherits the LAST message's trace, as it would after
+            // a serial delivery of the same rows (each of which overwrote the
+            // previous). Recorded via traceCtxToRecord so the shared line below
+            // does not put the head's context back on top of it.
+            if (mates.lastTraceCtx) traceCtxToRecord = mates.lastTraceCtx
             logger.info({ head: msg.id, to: msg.to_agent, batchSize: mates.items.length + 1, remaining: mates.remaining }, 'message-router: multi-envelope injection')
           } else {
             await sendPromptToSession(session, prefix + wrapped, host)
@@ -838,8 +845,8 @@ export async function runMessageRouterTick(): Promise<void> {
         }
         // Propagate trace context: the receiving agent inherits this trace_id
         // and span_id so its next outbound message continues the same chain.
-        if (traceCtx) {
-          deliveredTraceCtx.set(msg.to_agent, traceCtx)
+        if (traceCtxToRecord) {
+          deliveredTraceCtx.set(msg.to_agent, traceCtxToRecord)
         }
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
@@ -887,9 +894,18 @@ export async function runMessageRouterTick(): Promise<void> {
 // pending at send time is not sent), classified and wrapped with its own
 // envelope, trace-stamped, and given its OWN freshness suffix computed now --
 // so an older row whose newer sibling rides in the same batch is annotated.
-// `remaining` counts the eligible rows the cap left behind IN THIS SNAPSHOT
-// (the snapshot itself is capped at MAX_MESSAGES_PER_TICK), so the trailer
-// never claims the queue is empty when it is not.
+// `remaining` is the recipient's REAL pending count beyond this batch, read
+// from the DB at compose time -- NOT the snapshot's leftover. The snapshot is
+// `localPending.slice(0, MAX_MESSAGES_PER_TICK)`, a GLOBAL 25-row cap across
+// every recipient, so a recipient whose rows fit the batch cap inside the
+// snapshot can still have more rows past position 25; a snapshot-local count
+// would then say "nothing else waits" from a truncated view. Measured by the
+// reviewer (#1415): the pending set exceeded 25 in 38 separate episodes over
+// 30 days, peak 43, i.e. exactly in the congested moments this feature is
+// for. The DB count includes every still-pending row for the recipient
+// (channel-inbound ones too: they wait in the same queue and arrive serially),
+// and excludes rows that are no longer pending, so a mate skipped by the
+// liveness check below is not counted as waiting either.
 function collectBatchMates(
   pending: AgentMessage[],
   head: AgentMessage,
@@ -902,7 +918,6 @@ function collectBatchMates(
   if (agentSessionCache.get(head.to_agent)?.worksource) return empty
   const items: { prefix: string; wrapped: string }[] = []
   const rows: AgentMessage[] = []
-  let remaining = 0
   let lastTraceCtx: { trace_id: string; span_id: string } | null = null
   const start = pending.indexOf(head) + 1
   for (let i = start; i < pending.length; i++) {
@@ -912,7 +927,7 @@ function collectBatchMates(
     if (batchedMsgIdsThisTick.has(m.id)) continue
     const cls = classifyAgentMessage(m.from_agent, m.to_agent)
     if (!cls || cls.category === 'channel-inbound' || cls.category === 'federated') continue
-    if (items.length >= cap - 1) { remaining++; continue }
+    if (items.length >= cap - 1) break
     if (getMessageStatus(m.id) !== 'pending') continue
     const effective = m.trace_id && m.span_id
       ? { trace_id: m.trace_id, span_id: m.span_id }
@@ -923,6 +938,12 @@ function collectBatchMates(
     rows.push(m)
     if (effective) lastTraceCtx = effective
   }
+  if (items.length === 0) return empty
+  // Real count, at compose time: everything still pending for this recipient
+  // that is not in this injection. The head and the mates are still 'pending'
+  // in the DB here (they are marked delivered only after the send succeeds).
+  const inBatch = new Set<number>([head.id, ...rows.map((r) => r.id)])
+  const remaining = getPendingMessages(head.to_agent).filter((r) => !inBatch.has(r.id)).length
   return { items, rows, remaining, lastTraceCtx }
 }
 

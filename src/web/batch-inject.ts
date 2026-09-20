@@ -58,9 +58,12 @@ export function batchInjectCapFor(
   agentsEnv: string | undefined = process.env.ROUTER_BATCH_INJECT_AGENTS,
   maxEnv: string | undefined = process.env.ROUTER_BATCH_INJECT_MAX,
 ): number {
-  const list = (agentsEnv ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+  // Case-insensitive on purpose: `ROUTER_BATCH_INJECT_AGENTS=Samu` must not
+  // leave batching silently OFF for `samu` -- silence is the one failure mode
+  // a rollout flag must not have (review of #1415).
+  const list = (agentsEnv ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
   if (list.length === 0) return 0
-  if (!list.includes('*') && !list.includes(toAgent)) return 0
+  if (!list.includes('*') && !list.includes(toAgent.toLowerCase())) return 0
   const n = Number.parseInt(maxEnv ?? '', 10)
   const cap = Number.isFinite(n) && n >= 2 ? n : BATCH_INJECT_MAX_DEFAULT
   return cap

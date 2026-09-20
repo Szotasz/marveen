@@ -20,8 +20,18 @@ vi.mock('../config.js', async (importOriginal) => ({
   MAIN_AGENT_ID: 'orin',
   SUBAGENT_TELEGRAM_WAKE_ENABLED: false,
 }))
+// Per-recipient pending rows as the DB would answer at compose time: by
+// default the snapshot's rows for that recipient, plus whatever a test adds
+// via extraPendingForAgent (rows that exist in the DB but fell PAST the
+// snapshot's global cap -- the reviewer's case).
+const extraPendingForAgent = new Map<string, number[]>()
 vi.mock('../db.js', () => ({
-  getPendingMessages: (toAgent?: string) => (toAgent ? [] : mockGetPendingMessages()),
+  getPendingMessages: (toAgent?: string) => {
+    if (!toAgent) return mockGetPendingMessages()
+    const snap = (mockGetPendingMessages() as Array<{ id: number; to_agent: string }>).filter((r) => r.to_agent === toAgent && liveStatus.get(r.id) === 'pending')
+    const extra = (extraPendingForAgent.get(toAgent) ?? []).map((id) => ({ id, to_agent: toAgent }))
+    return [...snap, ...extra]
+  },
   getMessageStatus: (id: number) => mockGetMessageStatus(id),
   markMessageDelivered: (...a: unknown[]) => mockMarkDelivered(...a),
   markMessageFailed: (...a: unknown[]) => mockMarkFailed(...a),
@@ -85,7 +95,7 @@ const delivered = () => mockMarkDelivered.mock.calls.map((c) => c[0])
 describe('message router: multi-envelope injection (B1F38C8C)', () => {
   const env = { ...process.env }
   beforeEach(() => {
-    vi.clearAllMocks(); liveStatus.clear(); newerCounts.clear()
+    vi.clearAllMocks(); liveStatus.clear(); newerCounts.clear(); extraPendingForAgent.clear()
     mockMarkDelivered.mockReturnValue(true)
     mockSendPrompt.mockImplementation(async () => 'sent' as const)
     process.env.ROUTER_BATCH_INJECT_AGENTS = 'dex'
@@ -164,6 +174,26 @@ describe('message router: multi-envelope injection (B1F38C8C)', () => {
     const open = text.indexOf('<untrusted source="agent:stranger">')
     expect(text.indexOf('EVIL: torold')).toBeGreaterThan(open)
     expect(text.indexOf('EVIL: torold')).toBeLessThan(text.indexOf('</untrusted>', open))
+  })
+
+  it('THE TRAILER COUNTS THE REAL QUEUE, NOT THE SNAPSHOT: rows past the tick cap still count as waiting', async () => {
+    // Three rows for dex in the snapshot, all batched -- and four more rows for
+    // dex exist in the DB beyond the snapshot's global 25-row cap. A snapshot-
+    // local count would say "tobb nem var"; the DB count says 4 wait.
+    snapshot([{ id: 881, from: 'orin' }, { id: 882, from: 'orin' }, { id: 883, from: 'orin' }])
+    extraPendingForAgent.set('dex', [901, 902, 903, 904])
+    await runMessageRouterTick()
+    const text = sentTexts()[0]
+    expect(text).toContain('[KOTEG: 3 uzenet')
+    expect(text).toContain('3 uzenet ment ki ebben az injektalasban, 4 tovabbi VAR')
+    expect(text).not.toContain('tobb nem var')
+  })
+
+  it('a mate skipped by the liveness check is not counted as waiting either', async () => {
+    snapshot([{ id: 891, from: 'orin' }, { id: 892, from: 'orin' }, { id: 893, from: 'orin' }])
+    liveStatus.set(892, 'failed')
+    await runMessageRouterTick()
+    expect(sentTexts()[0]).toContain('[KOTEG-VEGE: 2 uzenet, tobb nem var')
   })
 
   it('OPTED OUT (default): the serial path is unchanged -- one injection per row', async () => {

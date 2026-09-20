@@ -66,6 +66,10 @@ describe('batchInjectCapFor', () => {
     expect(batchInjectCapFor('dex', 'samu, dex', undefined)).toBe(BATCH_INJECT_MAX_DEFAULT)
     expect(batchInjectCapFor('dex', '*', undefined)).toBe(BATCH_INJECT_MAX_DEFAULT)
   })
+  it('matches the recipient case-insensitively, so a capitalised flag never leaves batching silently off', () => {
+    expect(batchInjectCapFor('samu', 'Samu', undefined)).toBe(BATCH_INJECT_MAX_DEFAULT)
+    expect(batchInjectCapFor('Samu', 'samu', undefined)).toBe(BATCH_INJECT_MAX_DEFAULT)
+  })
   it('honours a sane cap and ignores a nonsensical one', () => {
     expect(batchInjectCapFor('dex', 'dex', '3')).toBe(3)
     expect(batchInjectCapFor('dex', 'dex', '1')).toBe(BATCH_INJECT_MAX_DEFAULT)
