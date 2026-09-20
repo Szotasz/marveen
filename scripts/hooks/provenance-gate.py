@@ -182,10 +182,19 @@ DIRECTIVE_SENDER = "system"
 # 100x margin over the worst legitimate case; a stale row goes to the
 # UNVERIFIABLE bucket (a real old row is not forgery evidence), and every
 # verified/stale outcome logs the measured age so the bound can be tightened
-# from real data later (env PROVENANCE_DIRECTIVE_MAX_AGE_S overrides). One-shot use was rejected on measurement: the main
-# agent's UserPromptSubmit hook runs TWICE per submission (68 duplicate audit
-# pairs, same cwd, same excerpt, <=3 s apart), so a consume-on-first-sight
-# rule would flag every real emergency directive on its own second run.
+# from real data later (env PROVENANCE_DIRECTIVE_MAX_AGE_S overrides).
+# One-shot (consume-on-first-sight) use was rejected on the ARGUMENT, not on
+# a current behaviour: its failure mode is a false alarm on a real emergency
+# directive whenever the same prompt reaches the hook twice -- and that has
+# happened. Between 2026-08-31 and 2026-09-13 the main agent's
+# UserPromptSubmit hook DID fire twice per submission (68 duplicate audit
+# pairs, same cwd, same excerpt, <=3 s apart): the gate was registered both in
+# ~/.claude/settings.json and in the project settings with two DIFFERENT
+# command strings (absolute path vs $CLAUDE_PROJECT_DIR), and the harness
+# dedupes identical commands only. #1307 (merged 2026-09-13 08:50) removed the
+# user-global entry; 2026-09-14 .. 2026-09-20: 137 lines, 0 duplicate pairs,
+# and this install has exactly one provenance-gate entry today. A time bound
+# tightened from logged ages does not depend on that ever staying true.
 DIRECTIVE_MAX_AGE_DEFAULT_S = 1800
 
 
@@ -466,9 +475,11 @@ def audit(labels, prompt, cwd):
     `directive-verified` line is a silent pass, not a flag, so "how many
     flags" is NOT `wc -l`. Count flags as lines whose label column does not
     start with `directive-verified`; count directive outcomes by that prefix.
-    And dedupe: the main agent's UserPromptSubmit hook runs twice per
-    submission (measured 2026-09-20: 68 pairs, same cwd + excerpt, <=3 s
-    apart), so per-event counts need (cwd, excerpt, ts within 3 s) collapsed.
+    And for lines dated 2026-08-31 .. 2026-09-13 collapse duplicates (same cwd,
+    same excerpt, ts within 3 s): in that window the main agent's hook fired
+    twice per submission (two settings files, two different command strings;
+    ended by #1307 on 2026-09-13; 0 duplicate pairs 09-14 .. 09-20). Lines
+    after that date count one per event.
 
     The harness-side record matters because the notify step below is carried
     out by the model, and a model that was talked into acting is exactly the
