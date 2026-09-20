@@ -282,6 +282,11 @@ export interface GuardState {
   cooldownUntilMs: number
   /** Consecutive idle-phase sweeps that saw a saturated pane (debounce). */
   saturatedStreak: number
+  /** Stale-handoff refreshes already requested in THIS await-handoff sequence.
+   *  Bounded by MAX_STALE_REFRESHES: without a bound the refresh loop cannot
+   *  converge for an agent whose own scheduled task fires more often than the
+   *  staleness slack, and it runs to the handoff timeout every time. */
+  staleRefreshCount: number
   /** Set at restart time when HANDOFF.md predates the agent's last transcript
    *  activity by more than the slack: ~minutes of work the handoff does NOT
    *  cover. Carried into await-ready so the resume prompt can say so -- a
@@ -297,6 +302,7 @@ export const INITIAL_GUARD_STATE: GuardState = {
   deadlineMs: 0,
   cooldownUntilMs: 0,
   saturatedStreak: 0,
+  staleRefreshCount: 0,
   handoffStaleMinutes: null,
 }
 
@@ -478,6 +484,36 @@ export function dailyHandoffDue(
  *  a zero-slack comparison would flag every handoff as stale. */
 export const STALE_HANDOFF_SLACK_MS = 3 * 60_000
 
+/**
+ * How many stale-handoff refreshes one await-handoff sequence may ask for.
+ *
+ * Why a bound exists at all (measured 2026-09-20, cortex-ugypasztor): staleness
+ * is `last pane activity - handoff mtime`, so it measures WHEN the last activity
+ * was, not WHAT it was. An agent whose own scheduled task fires every 5 minutes
+ * is woken between every pair of guard sweeps, which puts fresh activity ~4
+ * minutes after each handoff write -- above the 3-minute slack, every single
+ * time. The refresh condition is then structurally always true and the loop
+ * cannot converge: the agent answered all four requests, and each answer was
+ * invalidated by its own next poll before the guard looked again. It ran to the
+ * 20-minute timeout and force-restarted at 94% (from 90%).
+ *
+ * Raising or lowering handoffTimeoutMinutes does not fix that -- it only moves
+ * the ceiling on a loop that never terminates on its own. Control group from the
+ * same night: two agents whose fastest task fires every 10 and ~14 minutes entered
+ * same phase and left it in 10 minutes with ONE refresh each.
+ *
+ * One refresh still covers the case the refresh was built for (2026-08-17: a
+ * merge-gate verdict landed in the 20 minutes after a handoff write). After
+ * that we ship the handoff we have -- never silently: restartDecision carries
+ * handoffStaleMinutes into await-ready, and the resume prompt spells out how
+ * many minutes the handoff does not cover.
+ *
+ * Deliberately a constant, not a config key. The measured failure is structural,
+ * not a tuning mistake, and a new knob would invite exactly the tuning that does
+ * not help.
+ */
+export const MAX_STALE_REFRESHES = 1
+
 /** Freshness verdict for HANDOFF.md at decision time: minutes of uncovered
  *  work, 'unknown', or null (= fresh enough / no artifact to judge). */
 export type HandoffStaleness = number | 'unknown' | null
@@ -530,6 +566,7 @@ function cooldown(nowMs: number, cfg: ContextGuardConfig, reason: string): Guard
       deadlineMs: 0,
       cooldownUntilMs: nowMs + cfg.cooldownMinutes * 60_000,
       saturatedStreak: 0,
+      staleRefreshCount: 0,
       handoffStaleMinutes: null,
     },
   }
@@ -547,6 +584,7 @@ function restartDecision(nowMs: number, reason: string, staleMinutes: HandoffSta
       deadlineMs: nowMs + READY_TIMEOUT_MS,
       cooldownUntilMs: 0,
       saturatedStreak: 0,
+      staleRefreshCount: 0,
       handoffStaleMinutes: staleMinutes,
     },
   }
@@ -655,7 +693,13 @@ export function decideGuard(
         // idle pane (2026-08-17: 20 minutes of work, including a merge-gate
         // verdict, happened after the write). Existence is not freshness.
         const staleMin = handoffStaleMinutes(inputs)
-        if (typeof staleMin === 'number' && nowMs < state.deadlineMs && !(inputs.pct !== null && inputs.pct >= cfg.hardPct)) {
+        const refreshBudgetLeft = state.staleRefreshCount < MAX_STALE_REFRESHES
+        if (
+          typeof staleMin === 'number' &&
+          refreshBudgetLeft &&
+          nowMs < state.deadlineMs &&
+          !(inputs.pct !== null && inputs.pct >= cfg.hardPct)
+        ) {
           // There is still budget before the deadline and the context is not
           // yet at the hard threshold: ask for a refresh instead of shipping
           // a handoff that misses the last N minutes. Advancing the recorded
@@ -665,12 +709,23 @@ export function decideGuard(
           return {
             action: 'request-handoff',
             reason: `${STALE_REFRESH_REASON_PREFIX}: handoff written but ~${staleMin}m of work happened after it -- requesting refresh`,
-            nextState: { ...state, handoffMtimeAtRequest: inputs.handoffMtime },
+            nextState: {
+              ...state,
+              handoffMtimeAtRequest: inputs.handoffMtime,
+              staleRefreshCount: state.staleRefreshCount + 1,
+            },
           }
         }
+        // Refresh budget spent (or never applicable): ship what we have. Saying
+        // the budget is spent out loud matters -- the previous behaviour looked
+        // identical in the log to "the agent never answered", which is the
+        // opposite diagnosis.
         return restartDecision(
           nowMs,
-          typeof staleMin === 'number' ? `handoff written but STALE (~${staleMin}m of work after it)` : 'handoff written',
+          typeof staleMin === 'number'
+            ? `handoff written but STALE (~${staleMin}m of work after it)` +
+              (refreshBudgetLeft ? '' : ` -- ${state.staleRefreshCount} refresh(es) already requested, accepting as-is`)
+            : 'handoff written',
           staleMin,
         )
       }
@@ -705,6 +760,7 @@ export function decideGuard(
             deadlineMs: 0,
             cooldownUntilMs: nowMs + cfg.cooldownMinutes * 60_000,
             saturatedStreak: 0,
+            staleRefreshCount: 0,
             handoffStaleMinutes: null,
           },
         }
@@ -829,6 +885,8 @@ function handoffRequest(
       deadlineMs: nowMs + cfg.handoffTimeoutMinutes * 60_000,
       cooldownUntilMs: 0,
       saturatedStreak: 0,
+      // A NEW sequence starts with a fresh refresh budget.
+      staleRefreshCount: 0,
       handoffStaleMinutes: null,
     },
   }

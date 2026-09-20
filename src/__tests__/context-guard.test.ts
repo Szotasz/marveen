@@ -12,6 +12,7 @@ import {
   SATURATION_CONFIRM_SWEEPS,
   SATURATION_CREDIBLE_MIN_PCT,
   saturationBannerCredible,
+  MAX_STALE_REFRESHES,
   STALE_REFRESH_REASON_PREFIX,
   type ContextGuardConfig,
   type GuardInputs,
@@ -215,7 +216,7 @@ describe('decideGuard: idle', () => {
 
   it('resets to initial state when fully disarmed (guard + net off)', () => {
     const disarmed = { ...CFG, enabled: false, saturationRestart: false }
-    const stale: GuardState = { phase: 'await-handoff', handoffMtimeAtRequest: 1, deadlineMs: 2, cooldownUntilMs: 0, saturatedStreak: 0, handoffStaleMinutes: null }
+    const stale: GuardState = { phase: 'await-handoff', handoffMtimeAtRequest: 1, deadlineMs: 2, cooldownUntilMs: 0, saturatedStreak: 0, staleRefreshCount: 0, handoffStaleMinutes: null }
     const d = decideGuard(stale, inputs({ pct: 0.99, paneSaturated: true }), disarmed)
     expect(d.action).toBe('none')
     expect(d.nextState).toEqual(INITIAL_GUARD_STATE)
@@ -223,7 +224,7 @@ describe('decideGuard: idle', () => {
 
   it('stands down a stale await-handoff into cooldown when the guard is disabled mid-sequence', () => {
     const netOnly = { ...CFG, enabled: false }
-    const stale: GuardState = { phase: 'await-handoff', handoffMtimeAtRequest: 1, deadlineMs: 2, cooldownUntilMs: 0, saturatedStreak: 0, handoffStaleMinutes: null }
+    const stale: GuardState = { phase: 'await-handoff', handoffMtimeAtRequest: 1, deadlineMs: 2, cooldownUntilMs: 0, saturatedStreak: 0, staleRefreshCount: 0, handoffStaleMinutes: null }
     const d = decideGuard(stale, inputs({ pct: 0.99 }), netOnly)
     expect(d.action).toBe('none')
     expect(d.nextState.phase).toBe('cooldown')
@@ -277,6 +278,7 @@ describe('saturation net (samu 2026-07-18 stall)', () => {
       deadlineMs: NOW + 60_000,
       cooldownUntilMs: 0,
       saturatedStreak: 0,
+      staleRefreshCount: 0,
       handoffStaleMinutes: null,
     }
     const d = decideGuard(awaiting, inputs({ paneSaturated: true, paneIdle: false }), CFG)
@@ -297,6 +299,7 @@ describe('saturation net (samu 2026-07-18 stall)', () => {
       deadlineMs: 0,
       cooldownUntilMs: NOW + 60_000,
       saturatedStreak: 0,
+      staleRefreshCount: 0,
       handoffStaleMinutes: null,
     }
     const d = decideGuard(cooling, inputs({ paneSaturated: true }), netOnly)
@@ -318,6 +321,7 @@ describe('decideGuard: await-handoff', () => {
     deadlineMs: NOW + 60_000,
     cooldownUntilMs: 0,
     saturatedStreak: 0,
+    staleRefreshCount: 0,
     handoffStaleMinutes: null,
   }
 
@@ -410,6 +414,7 @@ describe('stale handoff (GUARDSTALEHO817)', () => {
     deadlineMs: NOW + 5 * 60_000,
     cooldownUntilMs: 0,
     saturatedStreak: 0,
+    staleRefreshCount: 0,
     handoffStaleMinutes: null,
   }
   // Handoff written 20 minutes ago (after the request), last transcript
@@ -460,6 +465,67 @@ describe('stale handoff (GUARDSTALEHO817)', () => {
     expect(d.nextState.handoffStaleMinutes).toBe(null)
   })
 
+  it('caps stale refreshes: an agent that invalidates every handoff it writes restarts BEFORE the deadline', () => {
+    // Measured 2026-09-20 (cortex-ugypasztor): the agent's own 5-minute
+    // scheduled task fires between every pair of guard sweeps, so the handoff
+    // it has just written is ~4m stale on the next sweep -- above the 3m slack
+    // -- EVERY time. Staleness measures when the last activity was, not what it
+    // was, so an empty poll counts the same as real work. Before the cap this
+    // looped to handoffTimeoutMinutes: 4 requests, 20 minutes, 90% -> 94%.
+    const DEADLINE_MS = NOW + 20 * 60_000
+    const SWEEP_MS = 5 * 60_000
+    let state: GuardState = {
+      phase: 'await-handoff',
+      handoffMtimeAtRequest: NOW - 30 * 60_000,
+      deadlineMs: DEADLINE_MS,
+      cooldownUntilMs: 0,
+      saturatedStreak: 0,
+      staleRefreshCount: 0,
+      handoffStaleMinutes: null,
+    }
+    const actions: string[] = []
+    let restartAtMs: number | null = null
+    let lastReason = ''
+    for (let sweep = 0; sweep < 6; sweep++) {
+      const atMs = NOW + sweep * SWEEP_MS
+      const d = decideGuard(state, inputs({
+        nowMs: atMs,
+        pct: 0.91,
+        paneIdle: true,
+        idleMs: 30_000,
+        // answered the request, then its own poll woke it again: the fresh
+        // write lands ~4 minutes before the last activity, every round.
+        handoffMtime: atMs - 30_000 - 4 * 60_000,
+      }), CFG)
+      actions.push(d.action)
+      lastReason = d.reason
+      state = d.nextState
+      if (d.action === 'restart') { restartAtMs = atMs; break }
+    }
+
+    expect(actions.filter((a) => a === 'request-handoff')).toHaveLength(MAX_STALE_REFRESHES)
+    expect(actions[actions.length - 1]).toBe('restart')
+    // the loop terminates on its own, strictly before the timeout it used to reach
+    expect(restartAtMs).not.toBeNull()
+    expect(restartAtMs as number).toBeLessThan(DEADLINE_MS)
+    // and it says WHY it stopped asking -- "spent the budget" and "never
+    // answered" used to look identical in the log, which is the opposite diagnosis
+    expect(lastReason).toContain('accepting as-is')
+    // the handoff still ships with its staleness attached, so inject-resume can say so
+    expect(state.phase).toBe('await-ready')
+    expect(state.handoffStaleMinutes).toBe(4)
+  })
+
+  it('gives every NEW await-handoff sequence a fresh refresh budget', () => {
+    // Without this, only the first sequence after a dashboard start would ever
+    // get its refresh, and the 2026-08-17 case (real work landing after the
+    // write) would silently stop being covered from the second round on.
+    const d = decideGuard(INITIAL_GUARD_STATE, inputs({ pct: 0.95 }), CFG)
+    expect(d.action).toBe('request-handoff')
+    expect(d.nextState.phase).toBe('await-handoff')
+    expect(d.nextState.staleRefreshCount).toBe(0)
+  })
+
   it('past the deadline a stale handoff restarts anyway, with the staleness said out loud', () => {
     const d = decideGuard(awaiting, inputs({ ...staleWritten, nowMs: NOW + 6 * 60_000 }), CFG)
     expect(d.action).toBe('restart')
@@ -507,6 +573,7 @@ describe('decideGuard: await-ready', () => {
     deadlineMs: NOW + 60_000,
     cooldownUntilMs: 0,
     saturatedStreak: 0,
+    staleRefreshCount: 0,
     handoffStaleMinutes: null,
   }
 
@@ -537,6 +604,7 @@ describe('decideGuard: cooldown', () => {
     deadlineMs: 0,
     cooldownUntilMs: NOW + 60_000,
     saturatedStreak: 0,
+    staleRefreshCount: 0,
     handoffStaleMinutes: null,
   }
 
@@ -687,6 +755,7 @@ describe('decideGuard -- idle-flush tier', () => {
       deadlineMs: NOW + 60_000,
       cooldownUntilMs: 0,
       saturatedStreak: 0,
+      staleRefreshCount: 0,
       handoffStaleMinutes: null,
     }
     const d = decideGuard(awaiting, inputs({ handoffMtime: NOW, paneIdle: true }), IDLE_CFG)
@@ -828,6 +897,7 @@ describe('decideGuard with a corrected saturation input (no kill, no handoff)', 
       deadlineMs: NOW + 60_000,
       cooldownUntilMs: 0,
       saturatedStreak: 0,
+      staleRefreshCount: 0,
       handoffStaleMinutes: null,
     }
     const d = decideGuard(awaiting, inputs({ paneSaturated: false, pct: 0.19 }), CFG)
