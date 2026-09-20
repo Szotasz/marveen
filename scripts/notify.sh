@@ -16,16 +16,71 @@ CHAT_ID=$(grep '^ALLOWED_CHAT_ID=' "$ENV_FILE" | cut -d= -f2-)
 MAIN_AGENT_ID=$(grep '^MAIN_AGENT_ID=' "$ENV_FILE" | head -1 | cut -d= -f2-)
 MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 
+# NOTIFYFALLBACK920, masodik fele: a bot-token sem KELL hogy a projekt .env-jeben
+# alljon. Ezen a telepitesen a channels.sh szandekosan NEM exportalja (hogy ne
+# szivarogjon a tmux kornyezetebe), a plugin sajat allapotkonyvtara tartja:
+# <CLAUDE_CONFIG_DIR>/channels/<provider>/.env (mode 600). Merve 2026-09-20: a
+# projekt .env-ben a TELEGRAM_BOT_TOKEN ures, tehat a riaszto-ut token nelkul
+# allt. Ugyanaz a forras, ahonnan a chat id is jon, tehat egy helyrol dol el,
+# hogy melyik csatornara megy a vesz-ertesites.
 if [ -z "$TOKEN" ]; then
-  echo "Hiba: TELEGRAM_BOT_TOKEN nincs beallitva"
+  _provider=$(grep '^CHANNEL_PROVIDER=' "$ENV_FILE" | head -1 | cut -d= -f2-)
+  _provider="${_provider:-telegram}"
+  _chan_env="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/channels/${_provider}/.env"
+  if [ -r "$_chan_env" ]; then
+    _key=$(printf '%s' "$_provider" | tr '[:lower:]' '[:upper:]')_BOT_TOKEN
+    TOKEN=$(grep "^${_key}=" "$_chan_env" | head -1 | cut -d= -f2-)
+  fi
+fi
+
+if [ -z "$TOKEN" ]; then
+  echo "Hiba: nincs bot-token (sem a projekt .env-ben, sem a csatorna allapotkonyvtaraban)"
   exit 1
 fi
 
 # CHATID0: "0" is the installer placeholder, not a chat. Without this the
 # FALLBACK channel fails exactly where it is needed most -- it fires when the
 # plugin is down, and on a placeholder install it would post to chat_id=0.
+#
+# NOTIFYFALLBACK920: the placeholder must not END the send, only the .env
+# branch of it. src/owner-chat.ts (resolveOwnerChatId) already falls back to the
+# channel's own access.json -- the same allowlist the plugin enforces inbound,
+# so a resolved id is deliverable by construction -- but this shell copy kept
+# the old "exit 1", and that is the one the reauth-healer calls. Measured
+# 2026-09-20 on this host: ALLOWED_CHAT_ID=0, access.json allowFrom=[<paired>],
+# and dashboard.log carries "reauth-healer: notify.sh escalation failed" -- the
+# dead-token alarm had no way out while the session was wedged. Deliberately NOT
+# fixed by writing the id into .env: memories.chat_id is written AND filtered
+# with ALLOWED_CHAT_ID, so changing it would orphan every existing memory
+# (owner-chat.ts spells this out).
 if [ -z "$CHAT_ID" ] || [ "$CHAT_ID" = "0" ]; then
-  echo "Hiba: ALLOWED_CHAT_ID nincs beallitva"
+  _provider=$(grep '^CHANNEL_PROVIDER=' "$ENV_FILE" | head -1 | cut -d= -f2-)
+  _provider="${_provider:-telegram}"
+  CHAT_ID=$(CFGDIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}" PROV="$_provider" python3 - <<'PY' 2>/dev/null
+import json, os
+path = os.path.join(os.environ['CFGDIR'], 'channels', os.environ['PROV'], 'access.json')
+try:
+    raw = json.load(open(path, encoding='utf-8'))
+except Exception:
+    raise SystemExit(0)
+def ok(v):
+    v = str(v).strip()
+    return v if v and v != '0' else None
+for entry in raw.get('allowFrom') or []:
+    if ok(entry):
+        print(ok(entry)); raise SystemExit(0)
+for key in ('groups', 'channels'):
+    m = raw.get(key)
+    if isinstance(m, dict):
+        for k in m:
+            if ok(k):
+                print(ok(k)); raise SystemExit(0)
+PY
+)
+fi
+
+if [ -z "$CHAT_ID" ] || [ "$CHAT_ID" = "0" ]; then
+  echo "Hiba: nincs gazda-chat (ALLOWED_CHAT_ID nincs beallitva es a csatorna access.json sem ad parositott azonositot)"
   exit 1
 fi
 
