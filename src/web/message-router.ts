@@ -11,6 +11,7 @@ import {
   markPendingFederatedFailed,
   setMessageResult,
   createAgentMessage,
+  lastMessageFromAgentAt,
   countNewerMessagesFromSameSender,
   stampMessageTrace,
   upsertOtelSpan,
@@ -19,7 +20,7 @@ import {
 import { isQualifiedId } from './federation/address.js'
 import { sendFederatedMessage } from './federation/bridge.js'
 import { getFederationConfig, abandonWindowMsForPeer } from './federation/config.js'
-import { readAgentRemoteHost, readAgentVoiceConfig, readAgentWorksourceChannel } from './agent-config.js'
+import { readAgentRemoteHost, readAgentVoiceConfig, readAgentWorksourceChannel, readAgentPullDelivery } from './agent-config.js'
 import { enqueueWorksourceItem, worksourceItemId } from './worksource-queue.js'
 import {
   agentSessionName,
@@ -49,6 +50,9 @@ const JANITOR_PARKED_MIN_AGE_MS = 45 * 1000
 // Log "skipping, target not ready" at most once per message id so a busy
 // receiver over many 5s ticks does not spam the log.
 const routerLoggedMisses: Set<number> = new Set()
+// Message ids whose pull-delivery staleness warning already went out, so a row
+// that legitimately waits for days warns ONCE instead of every 5s tick.
+const pullStaleNotified: Set<number> = new Set()
 // Per-message consecutive tmux-inject-failure counter. A send that THROWS
 // (send-keys hit the pane at a bad instant -- e.g. the receiver was mid-turn /
 // momentarily un-ready despite passing the readiness check) used to instant-
@@ -133,6 +137,25 @@ function notifyOrchestratorOfFailedHandoff(msg: AgentMessage, reason: string): v
     logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, reason }, 'handoff-failure surfaced to orchestrator')
   } catch (err) {
     logger.warn({ err, id: msg.id }, 'Failed to enqueue handoff-failure notification')
+  }
+}
+// A pull agent's queue is NOT a failure, so this notice deliberately does not
+// say "could not be delivered" and the row is left pending and claimable. It
+// reports the one thing the queue cannot show by itself: the agent has not
+// been heard from since the message was written, so nobody may be polling.
+function notifyOrchestratorOfPullStale(msg: AgentMessage, ageMs: number): void {
+  try {
+    if (msg.to_agent === MAIN_AGENT_ID) return
+    const hours = Math.round(ageMs / 3600000)
+    const preview = (msg.content ?? '').slice(0, 220)
+    createAgentMessage(
+      'system',
+      MAIN_AGENT_ID,
+      `[pull-stale] Message id ${msg.id} (${msg.from_agent} -> ${msg.to_agent}) has been waiting ${hours}h in the pull queue and '${msg.to_agent}' has not used the API since it was written. It is still PENDING and will be delivered the moment the agent polls -- check whether the agent is running and polling. Content preview: ${preview}`,
+    )
+    logger.info({ id: msg.id, to: msg.to_agent, ageMs }, 'pull-stale surfaced to orchestrator')
+  } catch (err) {
+    logger.warn({ err, id: msg.id }, 'Failed to enqueue pull-stale notification')
   }
 }
 // Bounce a terminal federated-delivery failure back to the SENDER's inbox as
@@ -221,6 +244,36 @@ const agentBatchedThisReconnect = new Set<string>()
  */
 export function shouldAbandon(sessionExists: boolean, ageMs: number, windowMs: number): boolean {
   return !sessionExists && ageMs > windowMs
+}
+
+// A pull agent's row is never abandoned, so the queue can grow silently if the
+// agent stops polling -- exactly the invented-success shape the worksource
+// carve-out was reviewed for (PR #1099). The honest answer is not to close the
+// row (that would hide it again, which is the bug this fixes) but to SAY SO:
+// warn the orchestrator once per message when the row is old AND the agent has
+// shown no API activity since it was written. Silence from the agent is the
+// signal; the row stays pending and deliverable the moment it polls.
+export const PULL_STALE_WARN_MS = 6 * 60 * 60 * 1000
+
+/**
+ * Pure decision: should a pending message to a PULL-delivery agent raise the
+ * staleness warning?
+ *
+ * @param ageMs        How long the message has been pending (ms).
+ * @param createdMs    When the message was created (epoch ms).
+ * @param lastSeenMs   Last API activity from the target agent (epoch ms), or null.
+ * @param windowMs     Age past which an unseen message is considered stale.
+ */
+export function shouldWarnPullStale(
+  ageMs: number,
+  createdMs: number,
+  lastSeenMs: number | null,
+  windowMs: number,
+): boolean {
+  if (ageMs <= windowMs) return false
+  // Activity AFTER the message was written means the agent is polling and has
+  // had the row in front of it; that is its business, not a delivery fault.
+  return lastSeenMs == null || lastSeenMs <= createdMs
 }
 
 // ---- Distributed trace context (card def5a189) ------------------------------
@@ -447,7 +500,10 @@ export async function runMessageRouterTick(): Promise<void> {
     // main loop can reuse them instead of re-calling sessionExistsOnHost.
     const receiversInTick = new Set<string>()
     for (const m of pending) {
-      if (m.to_agent !== MAIN_AGENT_ID) receiversInTick.add(m.to_agent)
+      // Pull-delivery receivers are excluded on purpose: they have no session
+      // here, so probing for one would only feed the absent/stuck trackers a
+      // permanent "absent" and invite a reconnect batch that can never fire.
+      if (m.to_agent !== MAIN_AGENT_ID && !readAgentPullDelivery(m.to_agent)) receiversInTick.add(m.to_agent)
     }
     const absentNow = new Set<string>()
     const presentNow = new Set<string>()
@@ -539,6 +595,25 @@ export async function runMessageRouterTick(): Promise<void> {
       // abort-on-busy send, stale-spell escalation, owner alert, hourly budget),
       // so the router simply leaves the row for the PULL path to claim.
       if (isMainAgent) continue
+
+      // PULL-delivery agents (own machine, own scoped token, no session here)
+      // skip the whole tmux path BEFORE any session lookup: there is nothing to
+      // look up, and the abandon gate below would flip the row to `failed`,
+      // which removes it from the `status=pending` inbox the agent polls. The
+      // row waits here until the agent claims it.
+      if (readAgentPullDelivery(msg.to_agent)) {
+        if (!pullStaleNotified.has(msg.id)) {
+          const lastSeen = lastMessageFromAgentAt(msg.to_agent)
+          if (shouldWarnPullStale(ageMs, msg.created_at * 1000, lastSeen == null ? null : lastSeen * 1000, PULL_STALE_WARN_MS)) {
+            pullStaleNotified.add(msg.id)
+            logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent, ageMs, lastSeen },
+              'pull-delivery agent has not polled since this message was written')
+            notifyOrchestratorOfPullStale(msg, ageMs)
+          }
+        }
+        continue
+      }
+
       // Use cached session data from the pre-pass (one sessionExistsOnHost call
       // per unique receiver per tick). Fall back to a direct call for agents not
       // in the pending set (shouldn't happen, but safe).
