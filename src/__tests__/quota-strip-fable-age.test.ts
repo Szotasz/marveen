@@ -25,6 +25,15 @@ describe('quota strip: Fable/Opus row carries its own age', () => {
     expect(APP).toMatch(/typeof ageSecForRow === 'number'\) \{[\s\S]{0,120}overview\.quota\.measured/)
   })
 
+  it('renders the age unconditionally, not gated on the row\'s muted state', () => {
+    // The point of the age is to disambiguate a MUTED row ("might be old" ->
+    // "how old"), so gating it on `muted` would defeat its own purpose. Pins
+    // the guarding `if (` line itself, not just that the block exists.
+    const guard = APP.match(/if \([^)]*typeof ageSecForRow === 'number'\) \{/)
+    expect(guard).toBeTruthy()
+    expect(guard![0]).not.toContain('muted')
+  })
+
   it('the measured-ago key exists in both locales', () => {
     expect(EN).toContain("'overview.quota.measured':")
     expect(HU).toContain("'overview.quota.measured':")
