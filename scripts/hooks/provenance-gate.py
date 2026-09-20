@@ -51,6 +51,7 @@ import os
 import re
 import json
 import unicodedata
+import time
 import sqlite3
 from datetime import datetime
 
@@ -170,6 +171,32 @@ DIRECTIVE_HEADER_RX = re.compile(
     r"\A\s*\[SYSTEM-DIREKTIVA msg_id:(\d+)(?: [^\]]*)?\]\n?(.*)\Z", re.S
 )
 DIRECTIVE_SENDER = "system"
+# Age bound on the row (review of #1411, Marveen 27288): the row proves ORIGIN,
+# not TIME. Without a bound any directive ever delivered stays replayable for
+# ever, and the verified branch is silent -- measured: the real 18-hour-old
+# [CONTEXT-GUARD] stop row 27067 pasted back into a prompt went silent on the
+# first version of this branch, while develop flagged it. The bound is chosen
+# from data, not by feel: across 258 real directive deliveries in
+# store/provenance-flagged.log (2026-08-31 .. 2026-09-19, every agent) the age
+# at hook time was min 0 s, p50 1 s, p99 17 s, max 18 s. 30 minutes is a
+# 100x margin over the worst legitimate case; a stale row goes to the
+# UNVERIFIABLE bucket (a real old row is not forgery evidence), and every
+# verified/stale outcome logs the measured age so the bound can be tightened
+# from real data later (env PROVENANCE_DIRECTIVE_MAX_AGE_S overrides). One-shot use was rejected on measurement: the main
+# agent's UserPromptSubmit hook runs TWICE per submission (68 duplicate audit
+# pairs, same cwd, same excerpt, <=3 s apart), so a consume-on-first-sight
+# rule would flag every real emergency directive on its own second run.
+DIRECTIVE_MAX_AGE_DEFAULT_S = 1800
+
+
+def directive_max_age_s():
+    """Resolved at call time (env / .env), not at import: _env_setting is defined
+    further down this file, and a NameError at import would silence the WHOLE
+    hook (exit 0 via the top-level except) -- measured on the first draft."""
+    try:
+        return int(_env_setting("PROVENANCE_DIRECTIVE_MAX_AGE_S", str(DIRECTIVE_MAX_AGE_DEFAULT_S)))
+    except Exception:
+        return DIRECTIVE_MAX_AGE_DEFAULT_S
 
 
 def _db_path():
@@ -182,6 +209,11 @@ def derive_agent_id(cwd):
     <install>/agents/<name>[/...] -> name; the install root itself -> the main
     agent id (MAIN_AGENT_ID, same resolution as the rest of this file); any
     other cwd -> None, which the caller treats as UNVERIFIABLE (fail closed).
+
+    This ASSUMES the fleet layout (agents live under <install>/agents/). An
+    install whose sessions run from some other root gets None for every real
+    directive, i.e. a flag on each one -- the safe direction, but a loud one;
+    the fix there is the layout, not this function.
     """
     try:
         install = os.path.realpath(_install_dir())
@@ -200,33 +232,45 @@ def derive_agent_id(cwd):
 
 
 def verify_directive_row(msg_id, body, agent):
-    """('verified' | 'forged' | 'unverifiable', reason). Read-only, one row."""
+    """('verified' | 'forged' | 'unverifiable', reason, age_s|None). Read-only, one row."""
     if not agent:
-        return "unverifiable", "a sajat agens-nev nem szarmaztathato a cwd-bol"
+        return "unverifiable", "a sajat agens-nev nem szarmaztathato a cwd-bol", None
     path = _db_path()
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2.0)
         try:
             row = conn.execute(
-                "SELECT from_agent, to_agent, status, content FROM agent_messages WHERE id = ?",
+                "SELECT from_agent, to_agent, status, content, created_at FROM agent_messages WHERE id = ?",
                 (int(msg_id),),
             ).fetchone()
         finally:
             conn.close()
     except Exception as exc:  # missing/locked/unreadable DB, schema drift
-        return "unverifiable", f"a sor nem olvashato ({type(exc).__name__})"
+        return "unverifiable", f"a sor nem olvashato ({type(exc).__name__})", None
     if row is None:
-        return "forged", f"a {msg_id} sor NEM LETEZIK az uzenetsorban"
-    from_agent, to_agent, status, content = row
+        return "forged", f"a {msg_id} sor NEM LETEZIK az uzenetsorban", None
+    from_agent, to_agent, status, content, created_at = row
     if from_agent != DIRECTIVE_SENDER:
-        return "forged", f"a sor feladoja '{from_agent}', nem '{DIRECTIVE_SENDER}'"
+        return "forged", f"a sor feladoja '{from_agent}', nem '{DIRECTIVE_SENDER}'", None
     if to_agent != agent:
-        return "forged", f"a sor cimzettje '{to_agent}', ez a session '{agent}'"
+        return "forged", f"a sor cimzettje '{to_agent}', ez a session '{agent}'", None
     if status == "failed":
-        return "forged", "a sor 'failed' allapotu (sosem lett kezbesitve)"
+        return "forged", "a sor 'failed' allapotu (sosem lett kezbesitve)", None
     if (content or "").rstrip() != (body or "").rstrip():
-        return "forged", "a sor tartalma NEM egyezik a fejlec utani szoveggel"
-    return "verified", "ok"
+        return "forged", "a sor tartalma NEM egyezik a fejlec utani szoveggel", None
+    # Time bound (see DIRECTIVE_MAX_AGE_S). Checked LAST so that a stale row
+    # with a wrong sender/recipient/content is still reported as forged.
+    try:
+        age = max(0, int(time.time()) - int(created_at or 0))
+    except Exception:
+        return "unverifiable", "a sor created_at mezoje olvashatatlan", None
+    limit = directive_max_age_s()
+    if age > limit:
+        return ("unverifiable",
+                f"a sor {age} mp-es, a {limit} mp-es kuszobon tul: egy regi, egyszer mar "
+                f"kezbesitett direktiva VISSZAJATSZASA is igy nez ki, es ez a kapu az idot nem tudja "
+                f"masbol igazolni", age)
+    return "verified", "ok", age
 
 
 def forged_directive_text(msg_id, reason, labels):
@@ -418,6 +462,14 @@ def matched_actions(prompt, compiled):
 def audit(labels, prompt, cwd):
     """Append one line to the gate log. Best effort; never affects the verdict.
 
+    COUNTING RECIPE (the log carries NON-flags too since CTXBORITEK919): a
+    `directive-verified` line is a silent pass, not a flag, so "how many
+    flags" is NOT `wc -l`. Count flags as lines whose label column does not
+    start with `directive-verified`; count directive outcomes by that prefix.
+    And dedupe: the main agent's UserPromptSubmit hook runs twice per
+    submission (measured 2026-09-20: 68 pairs, same cwd + excerpt, <=3 s
+    apart), so per-event counts need (cwd, excerpt, ts within 3 s) collapsed.
+
     The harness-side record matters because the notify step below is carried
     out by the model, and a model that was talked into acting is exactly the
     one that skips telling anyone. The log is the copy nobody can argue with.
@@ -525,6 +577,9 @@ def main():
 
         rules = load_rules()
         if rules.get("enabled") is False:
+            # Note: enabled=false switches off the directive branch below as
+            # well -- unchanged from before that branch existed; an install
+            # that disables the gate disables all of it.
             sys.exit(0)
 
         # System directive (CTXBORITEK919): the header points at a queue row;
@@ -536,8 +591,11 @@ def main():
             msg_id, body = dm.group(1), dm.group(2)
             cwd = payload.get("cwd") or os.getcwd()
             labels = matched_actions(prompt, compile_patterns(rules))
-            verdict, reason = verify_directive_row(msg_id, body, derive_agent_id(cwd))
-            audit([f"directive-{verdict}"] + labels, prompt, cwd)
+            verdict, reason, age = verify_directive_row(msg_id, body, derive_agent_id(cwd))
+            # The age rides in the label column ("age=12s") so the bound can be
+            # re-derived from the log later: grep 'directive-' | grep -o 'age=[0-9]*'.
+            age_label = [f"age={age}s"] if age is not None else []
+            audit([f"directive-{verdict}"] + age_label + labels, prompt, cwd)
             if verdict == "forged":
                 print(forged_directive_text(msg_id, reason, labels))
             elif verdict == "unverifiable":

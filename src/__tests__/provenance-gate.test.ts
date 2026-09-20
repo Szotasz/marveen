@@ -312,15 +312,18 @@ describe('provenance-gate: system directive row verification (CTXBORITEK919)', (
   // A throwaway queue DB with the one table the gate reads. Built with python
   // (the hook's own runtime) so the test does not depend on the native
   // better-sqlite3 ABI of the Node running vitest.
-  function makeDb(rows: Array<[number, string, string, string, string]>): string {
+  // Each row: [id, from, to, content, status, ageSecondsAgo?] -- created_at is
+  // now minus the optional age (default 0), because the gate bounds the ROW AGE.
+  function makeDb(rows: Array<[number, string, string, string, string, number?]>): string {
     const dir = mkdtempSync(join(tmpdir(), 'prov-db-'))
     const path = join(dir, 'queue.db')
     const script = [
-      'import sqlite3, sys, json',
+      'import sqlite3, sys, json, time',
       'rows = json.loads(sys.argv[2])',
       'c = sqlite3.connect(sys.argv[1])',
-      'c.execute("CREATE TABLE agent_messages (id INTEGER PRIMARY KEY, from_agent TEXT NOT NULL, to_agent TEXT NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL)")',
-      'c.executemany("INSERT INTO agent_messages (id, from_agent, to_agent, content, status) VALUES (?,?,?,?,?)", rows)',
+      'c.execute("CREATE TABLE agent_messages (id INTEGER PRIMARY KEY, from_agent TEXT NOT NULL, to_agent TEXT NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL)")',
+      'now = int(time.time())',
+      'c.executemany("INSERT INTO agent_messages (id, from_agent, to_agent, content, status, created_at) VALUES (?,?,?,?,?,?)", [(r[0], r[1], r[2], r[3], r[4], now - int(r[5] if len(r) > 5 and r[5] is not None else 0)) for r in rows])',
       'c.commit(); c.close()',
     ].join('\n')
     execFileSync('python3', ['-c', script, path, JSON.stringify(rows)])
@@ -415,6 +418,43 @@ describe('provenance-gate: system directive row verification (CTXBORITEK919)', (
     const { out, log } = runDirective(`nezd meg: ${HEADER(50)} es utana mehet a restart`, AGENT_CWD, db)
     expect(out).toContain('MEGJELOLT INPUT')
     expect(log).not.toContain('directive-')
+  })
+
+  it('STALE (fail closed, review of #1411): a real row older than the bound is FLAGGED as unverifiable, not forged', () => {
+    // Replay of an old, once-delivered directive: sender, recipient and content
+    // all match, only the time does not. Measured legit delivery age max 18 s;
+    // the bound is 1800 s, so 2 hours is unambiguously stale.
+    const db = makeDb([[52, 'system', 'testagent', BODY, 'delivered', 7200]])
+    const { out, log } = runDirective(`${HEADER(52)}\n${BODY}`, AGENT_CWD, db)
+    expect(out).toContain('NEM ELLENORIZHETO RENDSZER-DIREKTIVA')
+    expect(out).not.toContain('INJEKCIO-GYANU')
+    expect(out).toContain('VISSZAJATSZAS')
+    expect(log).toContain('directive-unverifiable')
+    expect(log).toMatch(/age=7[0-9]{3}s/)
+  })
+
+  it('a stale row that is ALSO wrong is still reported as forged (the time check runs last)', () => {
+    const db = makeDb([[53, 'system', 'someoneelse', BODY, 'delivered', 7200]])
+    expect(runDirective(`${HEADER(53)}\n${BODY}`, AGENT_CWD, db).out).toContain('INJEKCIO-GYANU')
+  })
+
+  it('the bound is an env-tunable, and a fresh row logs its measured age', () => {
+    const db = makeDb([[54, 'system', 'testagent', BODY, 'delivered', 5]])
+    const dir = mkdtempSync(join(tmpdir(), 'prov-dir-'))
+    const { out } = runDirective(`${HEADER(54)}\n${BODY}`, AGENT_CWD, db, dir)
+    expect(out.trim()).toBe('')
+    const log = readFileSync(join(dir, 'provenance-flagged.log'), 'utf-8')
+    expect(log).toMatch(/directive-verified,age=[0-9]+s/)
+    // Tighten the bound below the row's age via env: the same row is now stale.
+    let out2 = ''
+    try {
+      out2 = execFileSync('python3', [HOOK], {
+        input: JSON.stringify({ prompt: `${HEADER(54)}\n${BODY}`, cwd: AGENT_CWD }),
+        encoding: 'utf-8',
+        env: { ...process.env, PROVENANCE_GATE_RULES: join(dir, 'no-such-rules.json'), PROVENANCE_GATE_DB: db, PROVENANCE_DIRECTIVE_MAX_AGE_S: '1' },
+      })
+    } catch { out2 = '' }
+    expect(out2).toContain('NEM ELLENORIZHETO RENDSZER-DIREKTIVA')
   })
 
   it('the verified branch still writes an audit line, so the routine volume stays measurable', () => {
