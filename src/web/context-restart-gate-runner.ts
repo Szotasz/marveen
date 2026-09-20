@@ -1,3 +1,4 @@
+import { tmuxStderr } from './tmux-stderr.js'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -207,13 +208,21 @@ function capturePaneOrNull(session: string): string | null {
 //
 // On ps failure for any PID: fail-closed (return null → decideGate blocks).
 
+// TMUXWINDOWATTR920: stderr is PIPED, not inherited. Without a stdio option
+// execFileSync copies the child's stderr onto the parent's stderr as well, so
+// tmux's "can't find window/session: ..." landed in dashboard.error.log
+// undated and unattributed (133 + ~3000 such lines measured 2026-09-20). The
+// message now goes through the logger with the call site and the session.
 function getPanePid(session: string): number | null {
   try {
     const raw = execFileSync(tmuxBin(), ['list-panes', '-t', session, '-F', '#{pane_pid}'],
-      { timeout: 3000, encoding: 'utf-8' })
+      { timeout: 3000, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
     const pid = parseInt(raw.split('\n')[0]?.trim() ?? '', 10)
     return Number.isFinite(pid) && pid > 0 ? pid : null
-  } catch { return null }
+  } catch (err) {
+    logger.warn({ site: 'context-restart-gate-runner.getPanePid', session, tmux: tmuxStderr(err) }, 'tmux list-panes failed')
+    return null
+  }
 }
 
 // PORTABILITY: `ps --ppid` is GNU/procps-only. BSD ps (macOS) rejects it with

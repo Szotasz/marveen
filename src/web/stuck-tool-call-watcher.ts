@@ -39,6 +39,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { logger } from '../logger.js'
+import { tmuxStderr } from './tmux-stderr.js'
 import { resolveFromPath } from '../platform.js'
 import { PROJECT_ROOT } from '../config.js'
 import { capturePane } from './agent-process.js'
@@ -118,13 +119,15 @@ export function verdictStaleByTranscript(
 // wedge from a process actively burning CPU.
 function sampleMainClaudeCpuPercent(session: string): number | null {
   try {
-    const panePid = execFileSync(TMUX, ['list-panes', '-t', session, '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf-8' })
+    // TMUXWINDOWATTR920: stderr piped; a failure is logged with the site below.
+    const panePid = execFileSync(TMUX, ['list-panes', '-t', session, '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
       .split('\n')[0]?.trim()
     if (!panePid || !/^\d+$/.test(panePid)) return null
     const out = execFileSync('/bin/ps', ['-o', '%cpu=', '-p', panePid], { timeout: 3000, encoding: 'utf-8' }).trim()
     const cpu = parseFloat(out)
     return Number.isFinite(cpu) ? cpu : null
-  } catch {
+  } catch (err) {
+    logger.warn({ site: 'stuck-tool-call-watcher.sampleMainClaudeCpuPercent', session, tmux: tmuxStderr(err) }, 'tmux list-panes / ps failed')
     return null
   }
 }
