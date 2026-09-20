@@ -159,3 +159,74 @@ a sentence: text on the page addressed to the agent rather than to the reader.
 The defence against that is framing, not filtering: content the agent knows is
 content cannot impersonate an instruction. `WebFetch` gets that framing from
 the wrapper. A browser payload gets none.
+
+## The opt-in envelope hook
+
+`scripts/hooks/browser-content-notice.py` is a `PostToolUse` hook that wraps
+browser / search results in an `<untrusted source="..." fetch-nonce="...">`
+envelope before the model sees them -- the same framing `wrapUntrustedFetch()`
+gives the `WebFetch` path -- scrubs forged security tags out of the payload,
+names any injection patterns it matched (forged `<untrusted>` /
+`<system-reminder>` envelopes, a pre-injected scrub sentinel, instruction
+overrides, credential targets, exfil shapes) and appends the full payload to
+`store/browser-content.log` for reading outside the model's context.
+
+It is **not registered by default** -- an install with no browser gains nothing
+from it. Operators who run a browser MCP server wire it themselves, in the
+project `settings.json` or `settings.local.json`:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "mcp__playwright__browser_.*|mcp__chrome.*|WebSearch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/browser-content-notice.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### The shape rule, and the silent fallback behind it
+
+`hookSpecificOutput.updatedToolOutput` replaces a tool result before it reaches
+the model. It is not unconditional, and the condition is the important part
+(measured 2026-09-20, Claude Code 2.1.278):
+
+- **MCP tool**: a plain string replaced the result outright. The original never
+  reached the model.
+- **Built-in tool** (`WebSearch`): the replacement must match THAT TOOL'S
+  OUTPUT SHAPE. A string was rejected -- `expected: object` -- the harness
+  logged `... does not match WebSearch's output shape; using original output`,
+  and the raw payload reached the model unchanged.
+
+The rejection is an execution-error record, not part of the tool result, so
+**from the model's side a broken envelope is indistinguishable from a working
+one**: the content simply arrives unwrapped, as it always did.
+
+That is why the hook writes two layers on every call and never treats the
+first as sufficient:
+
+1. `updatedToolOutput` -- the envelope. Shape-preserving: a string stays a
+   string, MCP content blocks stay blocks with their original keys, a record
+   keeps every key and only its free-text leaves are wrapped. A shape it
+   cannot mirror confidently is left alone, because a rejected replacement
+   leaves the RAW payload in context -- declining is the safer failure.
+2. `additionalContext` -- the label, which cannot be shape-rejected. It states
+   that a payload arriving WITHOUT an envelope means the envelope was rejected,
+   so the absence is readable rather than invisible.
+
+The label quotes nothing back. Its own text is trusted framing, so echoing a
+matched line there would reopen the channel the hook exists to close. Pattern
+names and counts only; the payload itself goes to the log.
+
+`envelope_attempted` in the log records which shape the hook tried. It says
+"attempted", never "succeeded": the hook cannot observe the harness's decision,
+and a field that claimed success would be the most misleading line in the file.
