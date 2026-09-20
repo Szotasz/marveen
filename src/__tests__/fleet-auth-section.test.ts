@@ -1,11 +1,18 @@
 // Functional test for ensureFleetAuthSection() -- mirrors
-// skills-path-trap-section.test.ts. AUTHSECT919: the fleet auth rule (OAuth
-// token env, no per-agent .credentials.json, no claudeConfigDir) lived only as
-// hand-written prose in the agent CLAUDE.md files. Measured 2026-09-19 on the
+// skills-path-trap-section.test.ts. AUTHSECT919: the fleet auth rule lived only
+// as hand-written prose in the agent CLAUDE.md files. Measured 2026-09-19 on the
 // owner host: 22 agents carried it, zero generating surfaces did -- so the next
 // agent created would have missed it silently. This proves the block reaches
 // the agent file on respawn, idempotently, and does NOT duplicate the rule for
 // the agents that already got it by hand.
+//
+// The assertions below check that the three auth-path TERMS survive in the
+// generated body; they deliberately do not pin the surrounding prose, because
+// the prose is exactly what had to change in review. The first draft framed
+// `claudeConfigDir` and a per-agent `.credentials.json` as blanket
+// prohibitions; both are supported behaviour (see the scope-correction note on
+// buildFleetAuthBody), so the body now describes the real auth design and keeps
+// only the two rules that are genuinely non-negotiable.
 import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
