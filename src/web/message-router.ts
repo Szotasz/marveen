@@ -33,6 +33,7 @@ import {
 import { detectPaneState, detectsFirstRunGate, type PaneState } from '../pane-state.js'
 import { setLastInboundModality } from './voice-modality.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
+import { composeBatchInjection, batchInjectCapFor } from './batch-inject.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
 
 // A message that cannot be delivered within this window (target session never
@@ -804,7 +805,33 @@ export async function runMessageRouterTick(): Promise<void> {
             ? 'message-router: queued to worksource'
             : 'message-router: worksource item already present, not re-queued')
         } else {
-          await sendPromptToSession(session, prefix + wrapped, host)
+          // MULTI-ENVELOPE INJECTION (B1F38C8C): while the pane is free, take the
+          // OTHER pending inter-agent rows for this same recipient from the
+          // tick's snapshot and send them in this one injection, each with its
+          // own envelope. Opt-in per recipient (ROUTER_BATCH_INJECT_AGENTS), so
+          // it is measured on one agent before it is widened. Channel-inbound
+          // rows (user messages, possibly voice/STT) stay on the serial path.
+          const mates = collectBatchMates(pending, msg, now, agentSessionCache)
+          if (mates.items.length > 0) {
+            const text = composeBatchInjection([{ prefix, wrapped }, ...mates.items], mates.remaining)
+            await sendPromptToSession(session, text, host)
+            // The head row is marked delivered by the shared code below; the
+            // mates are marked here and skipped by the loop via
+            // batchedMsgIdsThisTick, exactly like the reconnect batch.
+            for (const mate of mates.rows) {
+              if (!markMessageDelivered(mate.id)) {
+                logger.warn({ id: mate.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
+              }
+              batchedMsgIdsThisTick.add(mate.id)
+              routerInjectFailures.delete(mate.id)
+              routerLoggedMisses.delete(mate.id)
+              logger.info({ id: mate.id, from: mate.from_agent, to: mate.to_agent, batchHead: msg.id }, 'Agent message delivered (multi-envelope batch)')
+            }
+            if (mates.lastTraceCtx) deliveredTraceCtx.set(msg.to_agent, mates.lastTraceCtx)
+            logger.info({ head: msg.id, to: msg.to_agent, batchSize: mates.items.length + 1, remaining: mates.remaining }, 'message-router: multi-envelope injection')
+          } else {
+            await sendPromptToSession(session, prefix + wrapped, host)
+          }
         }
         if (!markMessageDelivered(msg.id)) {
           logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
@@ -851,6 +878,52 @@ export async function runMessageRouterTick(): Promise<void> {
     // (default off); when enabled it is cheap statSync-gated so an empty fleet
     // costs one stat per agent and no tmux I/O.
     void maybeWakeSubAgentsForTelegram(now)
+}
+
+// ---- multi-envelope batch mates (B1F38C8C) ---------------------------------
+// From the tick's snapshot, the OTHER pending inter-agent rows addressed to
+// the head row's recipient, in ascending id, up to the recipient's cap. Each
+// mate is re-read for liveness (same rule as the head: a row that is no longer
+// pending at send time is not sent), classified and wrapped with its own
+// envelope, trace-stamped, and given its OWN freshness suffix computed now --
+// so an older row whose newer sibling rides in the same batch is annotated.
+// `remaining` counts the eligible rows the cap left behind IN THIS SNAPSHOT
+// (the snapshot itself is capped at MAX_MESSAGES_PER_TICK), so the trailer
+// never claims the queue is empty when it is not.
+function collectBatchMates(
+  pending: AgentMessage[],
+  head: AgentMessage,
+  now: number,
+  agentSessionCache: Map<string, {host: string | null, session: string, exists: boolean, worksource: boolean}>,
+): { items: { prefix: string; wrapped: string }[]; rows: AgentMessage[]; remaining: number; lastTraceCtx: { trace_id: string; span_id: string } | null } {
+  const empty = { items: [], rows: [], remaining: 0, lastTraceCtx: null }
+  const cap = batchInjectCapFor(head.to_agent)
+  if (cap < 2) return empty
+  if (agentSessionCache.get(head.to_agent)?.worksource) return empty
+  const items: { prefix: string; wrapped: string }[] = []
+  const rows: AgentMessage[] = []
+  let remaining = 0
+  let lastTraceCtx: { trace_id: string; span_id: string } | null = null
+  const start = pending.indexOf(head) + 1
+  for (let i = start; i < pending.length; i++) {
+    const m = pending[i]
+    if (m.to_agent !== head.to_agent) continue
+    if (m.id <= head.id) continue                 // ascending only
+    if (batchedMsgIdsThisTick.has(m.id)) continue
+    const cls = classifyAgentMessage(m.from_agent, m.to_agent)
+    if (!cls || cls.category === 'channel-inbound' || cls.category === 'federated') continue
+    if (items.length >= cap - 1) { remaining++; continue }
+    if (getMessageStatus(m.id) !== 'pending') continue
+    const effective = m.trace_id && m.span_id
+      ? { trace_id: m.trace_id, span_id: m.span_id }
+      : stampTraceOnMessage(m, now)
+    const freshness = { ageMs: now - m.created_at * 1000, newerFromSameSender: countNewerMessagesFromSameSender(m.from_agent, m.to_agent, m.id) }
+    const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, m.from_agent, m.content, m.id, m.origin_note, freshness)
+    items.push({ prefix, wrapped })
+    rows.push(m)
+    if (effective) lastTraceCtx = effective
+  }
+  return { items, rows, remaining, lastTraceCtx }
 }
 
 // ---- voice helpers (message-router level) ----------------------------------
