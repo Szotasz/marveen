@@ -191,10 +191,26 @@ def is_self_task_notice(prompt):
 #                             part the verification covers.
 # Structural match at the START of the prompt only: a quoted header in the
 # middle of a request never takes this branch.
+# The separator after the header is ONE newline (the caller's shape,
+# src/web/system-directive.ts: `envelope + "\n" + text`) or ONE space (the
+# pane's shape: sendPromptToSession maps every line break to a space before
+# typing, src/web/pane-text.ts). DIREKTIVASORTORES920, measured 2026-09-20:
+# with `\n?` here the space stayed in the body, and every real directive since
+# #1411 -- 3 of 3 -- was flagged forged over that one character, while the
+# test stayed green because it fed the gate the pre-delivery shape.
 DIRECTIVE_HEADER_RX = re.compile(
-    r"\A\s*\[SYSTEM-DIREKTIVA msg_id:(\d+)(?: [^\]]*)?\]\n?(.*)\Z", re.S
+    r"\A\s*\[SYSTEM-DIREKTIVA msg_id:(\d+)(?: [^\]]*)?\][ \n]?(.*)\Z", re.S
 )
 DIRECTIVE_SENDER = "system"
+
+
+def pane_shape(text):
+    """The delivery mapping, EXACTLY as src/web/pane-text.ts applies it: every
+    line break becomes one space. Not a general whitespace collapse -- that would
+    be a loosening; this is the one deterministic transformation the row goes
+    through on its way into the pane. 48 of 492 system rows on this host carry
+    line breaks (measured 2026-09-20), so the multi-line case is real."""
+    return re.sub(r"\r?\n", " ", text or "")
 # Age bound on the row (review of #1411, Marveen 27288): the row proves ORIGIN,
 # not TIME. Without a bound any directive ever delivered stays replayable for
 # ever, and the verified branch is silent -- measured: the real 18-hour-old
@@ -294,18 +310,24 @@ def verify_directive_row(msg_id, body, agent):
         return "forged", f"a sor cimzettje '{to_agent}', ez a session '{agent}'", None, None
     if status == "failed":
         return "forged", "a sor 'failed' allapotu (sosem lett kezbesitve)", None, None
-    row_text = (content or "").rstrip()
     body_text = body or ""
+    # Two known shapes of the same row: as the caller composed it (real line
+    # breaks) and as the pane received it (line breaks mapped to spaces by
+    # src/web/pane-text.ts). Both are deterministic; nothing else is accepted.
+    shapes = []
+    for cand in (pane_shape(content).rstrip(), (content or "").rstrip()):
+        if cand and cand not in shapes:
+            shapes.append(cand)
     trailer = None
-    if body_text.rstrip() != row_text:
+    if body_text.rstrip() not in shapes:
         # The body may START with the row and carry more (DIREKTIVAFARK920):
         # the row then verifies exactly its own text, and the remainder is
         # handed back to be gated separately. Anything else -- an altered
         # body, a body shorter than the row, an empty row -- is a mismatch.
-        if row_text and body_text.startswith(row_text):
-            trailer = body_text[len(row_text):]
-        else:
+        matched = next((c for c in shapes if body_text.startswith(c)), None)
+        if matched is None:
             return "forged", "a sor tartalma NEM egyezik a fejlec utani szoveggel", None, None
+        trailer = body_text[len(matched):]
     # Time bound (see DIRECTIVE_MAX_AGE_S). Checked LAST so that a stale row
     # with a wrong sender/recipient/content is still reported as forged.
     try:
