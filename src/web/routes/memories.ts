@@ -179,6 +179,21 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       // without asking twice. `strict=true` says the caller demanded a real
       // match, and an empty body then means exactly what it looks like.
       res.setHeader('X-Memory-Search', `strict=${strictOnly}; relaxed=${searchTrace.relaxed}; hits=${results.length}`)
+    } else {
+      // The listing branches owe a label too. Without one the caller cannot
+      // tell "this endpoint does not label its answers" from "this answer was
+      // not relaxed" -- the header's ABSENCE reads like the search header's
+      // absence did before it existed, which is the silence this label was
+      // introduced to end. There was no query here, so relaxation cannot
+      // apply and saying `relaxed=false` would imply a match that was never
+      // asked for; the honest statement is that this is a listing.
+      // `truncated` is the one thing a listing can silently lose: at hits ===
+      // limit there may be more rows behind the cut, and a caller reading the
+      // body alone cannot see that.
+      res.setHeader(
+        'X-Memory-Search',
+        `listing=true; hits=${results.length}; truncated=${results.length >= limit}`,
+      )
     }
     jsonMaybeGzip(req, res, formatted)
     return true
