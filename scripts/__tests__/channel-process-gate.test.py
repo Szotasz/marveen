@@ -123,144 +123,166 @@ class GateTest(unittest.TestCase):
 
 
 class NotifyBranchTest(unittest.TestCase):
-    """The alarm path itself, measured against a local stub -- never the owner."""
+    """The alarm path, measured against a STUB notifier -- never the owner.
+
+    CHANPROCGATE919 (2026-09-20): the send goes through scripts/notify.sh (the
+    install's fallback Telegram path), pointed here at a stub script via
+    CHANNEL_GATE_NOTIFY_CMD. The stub records every message it was handed and
+    exits with STUB_RC, so both delivery outcomes are measurable. Sending is on
+    TRANSITION against the `announced` set in the state file, and a failed send
+    must NOT advance it.
+    """
 
     def setUp(self):
-        import http.server, threading, json as _json
-        self.seen = []
-        seen = self.seen
-
-        class H(http.server.BaseHTTPRequestHandler):
-            # MERVE 2026-09-12 07:30: a valodi discord API User-Agent nelkul
-            # 403 "error code: 1010"-et ad (Cloudflare), ezert a kapu elso eles
-            # riasztasa NEM ment ki -- pedig ez a stub akkor is 200-at mondott.
-            # A stub azota ugyanugy utasit el, mint a valosag, kulonben a
-            # notify-agak zoldje semmit nem bizonyit a kezbesitesrol.
-            def do_POST(self):
-                n = int(self.headers.get("Content-Length", 0))
-                body = self.rfile.read(n).decode()
-                ua = self.headers.get("User-Agent", "")
-                if not ua or ua.startswith("Python-urllib"):
-                    seen.append((self.path, {"_rejected": "no-user-agent"}, ua))
-                    self.send_response(403)
-                    self.end_headers()
-                    self.wfile.write(b"error code: 1010")
-                    return
-                seen.append((self.path, _json.loads(body), ua))
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(b'{"ok":true}')
-
-            def log_message(self, *a):
-                pass
-
-        self.srv = http.server.HTTPServer(("127.0.0.1", 0), H)
-        self.port = self.srv.server_address[1]
-        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.dir = tempfile.mkdtemp()
+        self.log = os.path.join(self.dir, "sent.log")
+        self.stub = os.path.join(self.dir, "stub-notify.sh")
+        with open(self.stub, "w") as fh:
+            fh.write("#!/bin/bash\nprintf '%s\\n' \"$1\" >> \"$STUB_LOG\"\nexit \"${STUB_RC:-0}\"\n")
+        os.chmod(self.stub, 0o755)
+        self.state = os.path.join(self.dir, "state.json")
 
     def tearDown(self):
-        self.srv.shutdown()
-        self.srv.server_close()
+        import shutil
+        shutil.rmtree(self.dir, ignore_errors=True)
 
-    def _fake_home(self, d):
-        ch = os.path.join(d, ".claude", "channels")
-        os.makedirs(os.path.join(ch, "discord"))
-        os.makedirs(os.path.join(ch, "telegram"))
-        with open(os.path.join(ch, "discord", ".env"), "w") as fh:
-            fh.write("DISCORD_BOT_TOKEN=stub-token\nDISCORD_CHANNEL_ID=4242\n")
-        with open(os.path.join(ch, "telegram", ".env"), "w") as fh:
-            fh.write("TELEGRAM_BOT_TOKEN=stub-token\nTELEGRAM_OWNER_CHAT_ID=99\n")
-        return d
+    def sent(self):
+        try:
+            with open(self.log, encoding="utf-8") as fh:
+                return [l for l in fh.read().splitlines() if l]
+        except OSError:
+            return []
 
-    def _run(self, rows, home, extra_env=None):
-        with tempfile.TemporaryDirectory() as d:
-            ps = os.path.join(d, "ps.txt")
-            tm = os.path.join(d, "tmux.txt")
-            with open(ps, "w") as fh:
-                fh.write("\n".join([HEADER] + list(rows)) + "\n")
-            with open(tm, "w") as fh:
-                fh.write(TMUX)
-            env = dict(os.environ)
-            env["DISCORD_API_BASE"] = "http://127.0.0.1:%d" % self.port
-            env["TELEGRAM_API_BASE"] = "http://127.0.0.1:%d" % self.port
-            env["HOME"] = home
-            env.update(extra_env or {})
-            return subprocess.run(
-                [sys.executable, GATE, "--ps-file", ps, "--tmux-file", tm,
-                 "--state", os.path.join(d, "state.json"), "--notify"],
-                capture_output=True, text=True, env=env)
+    def state_of(self, key):
+        import json as _json
+        with open(self.state, encoding="utf-8") as fh:
+            return _json.load(fh)[key]
 
-    def test_dead_telegram_is_announced_on_discord(self):
-        with tempfile.TemporaryDirectory() as home:
-            self._fake_home(home)
-            r = self._run([CLAUDE_BOTH, BUN_DC, OTHER, OTHER_BUN], home)
+    def _run(self, rows, notify=True, rc=0, extra_env=None):
+        ps = os.path.join(self.dir, "ps.txt")
+        tm = os.path.join(self.dir, "tmux.txt")
+        with open(ps, "w") as fh:
+            fh.write("\n".join([HEADER] + list(rows)) + "\n")
+        with open(tm, "w") as fh:
+            fh.write(TMUX)
+        env = dict(os.environ)
+        env["CHANNEL_GATE_NOTIFY_CMD"] = self.stub
+        env["STUB_LOG"] = self.log
+        env["STUB_RC"] = str(rc)
+        env.update(extra_env or {})
+        cmd = [sys.executable, GATE, "--ps-file", ps, "--tmux-file", tm, "--state", self.state]
+        if notify:
+            cmd.append("--notify")
+        return subprocess.run(cmd, capture_output=True, text=True, env=env)
+
+    def test_dead_worker_is_announced_once_through_the_notifier(self):
+        r = self._run([CLAUDE_BOTH, BUN_DC, OTHER, OTHER_BUN])
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertEqual(len(self.seen), 1, self.seen)
-        path, body, _ua = self.seen[0]
-        self.assertIn("/channels/4242/messages", path)   # discord, not telegram
-        self.assertIn("telegram", body["content"])
-        # a kezbesites felteteke, nem stilus: UA nelkul a valodi API 403-at ad
-        self.assertTrue(_ua and not _ua.startswith("Python-urllib"), _ua)
-        self.assertIn("main-agent-channels", body["content"])
+        self.assertEqual(len(self.sent()), 1, self.sent())
+        self.assertIn("HIANYZIK", self.sent()[0])
+        self.assertIn("main-agent-channels", self.sent()[0])
+        self.assertIn("telegram", self.sent()[0])
         self.assertIn("elkuldve", r.stderr)
+        self.assertEqual(self.state_of("main-agent-channels")["announced"],
+                         ["claude-plugins-official/telegram"])
 
-    def test_dead_discord_is_announced_on_telegram(self):
-        with tempfile.TemporaryDirectory() as home:
-            self._fake_home(home)
-            r = self._run([CLAUDE_BOTH, BUN_TG, OTHER, OTHER_BUN], home)
+    def test_same_state_next_run_is_not_announced_again(self):
+        self._run([CLAUDE_BOTH, BUN_DC, OTHER, OTHER_BUN])
+        r = self._run([CLAUDE_BOTH, BUN_DC, OTHER, OTHER_BUN])
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertEqual(len(self.seen), 1, self.seen)
-        path, body, _ua = self.seen[0]
-        self.assertIn("/sendMessage", path)              # telegram, not discord
-        self.assertEqual(body["chat_id"], "99")
-        self.assertTrue(_ua and not _ua.startswith("Python-urllib"), _ua)
-        self.assertIn("discord", body["text"])
+        self.assertEqual(len(self.sent()), 1, self.sent())
+        self.assertNotIn("ERTESITES", r.stderr)
 
-    def test_green_sends_nothing(self):
-        with tempfile.TemporaryDirectory() as home:
-            self._fake_home(home)
-            r = self._run([CLAUDE_BOTH, BUN_TG, BUN_DC, OTHER, OTHER_BUN], home)
+    def test_recovery_is_announced_and_clears_the_announced_set(self):
+        self._run([CLAUDE_BOTH, BUN_DC, OTHER, OTHER_BUN])
+        r = self._run([CLAUDE_BOTH, BUN_TG, BUN_DC, OTHER, OTHER_BUN])
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.seen, [])
+        self.assertEqual(len(self.sent()), 2, self.sent())
+        self.assertIn("HELYREALLT", self.sent()[1])
+        self.assertIn("main-agent-channels", self.sent()[1])
+        self.assertEqual(self.state_of("main-agent-channels")["announced"], [])
 
-    def test_alert_targets_file_beats_the_env_channel(self):
-        """The .env id is a guild channel, not the owner DM -- it must lose."""
-        with tempfile.TemporaryDirectory() as home:
-            self._fake_home(home)
-            tgt = os.path.join(home, "targets.json")
-            with open(tgt, "w") as fh:
-                fh.write('{"discord_owner_dm": "777", "telegram_owner_dm": "888"}')
-            r = self._run([CLAUDE_BOTH, BUN_DC, OTHER, OTHER_BUN], home,
-                          extra_env={"CHANNEL_GATE_TARGETS": tgt})
+    def test_green_from_the_start_sends_nothing(self):
+        r = self._run([CLAUDE_BOTH, BUN_TG, BUN_DC, OTHER, OTHER_BUN])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.sent(), [])
+        self.assertEqual(self.state_of("main-agent-channels")["announced"], [])
+
+    def test_failed_send_is_exit_3_and_retried_next_run(self):
+        # NOTIFYVAK826: a verdict the owner did not hear is not "sent". The
+        # stub rejects, the gate says so with its own exit code, and the
+        # announced set does not move -- so the next run sends again.
+        r = self._run([CLAUDE_BOTH, BUN_DC, OTHER, OTHER_BUN], rc=1)
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("NEM ment ki", r.stderr)
+        self.assertEqual(self.state_of("main-agent-channels")["announced"], [])
+        r2 = self._run([CLAUDE_BOTH, BUN_DC, OTHER, OTHER_BUN], rc=0)
+        self.assertEqual(r2.returncode, 1, r2.stdout + r2.stderr)
+        self.assertEqual(len(self.sent()), 2, self.sent())
+        self.assertEqual(self.state_of("main-agent-channels")["announced"],
+                         ["claude-plugins-official/telegram"])
+
+    def test_without_notify_nothing_is_sent_and_announced_is_untouched(self):
+        r = self._run([CLAUDE_BOTH, BUN_DC, OTHER, OTHER_BUN], notify=False)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        path, _, _ua = self.seen[0]
-        self.assertIn("/channels/777/messages", path)
-        self.assertNotIn("/channels/4242/", path)
+        self.assertEqual(self.sent(), [])
+        st = self.state_of("main-agent-channels")
+        self.assertEqual(st["missing"], ["claude-plugins-official/telegram"])
+        self.assertEqual(st["announced"], [])
+        # ...and the first --notify run afterwards still announces it.
+        self._run([CLAUDE_BOTH, BUN_DC, OTHER, OTHER_BUN])
+        self.assertEqual(len(self.sent()), 1, self.sent())
 
-    def test_explicit_env_id_beats_everything(self):
-        with tempfile.TemporaryDirectory() as home:
-            self._fake_home(home)
-            tgt = os.path.join(home, "targets.json")
-            with open(tgt, "w") as fh:
-                fh.write('{"discord_owner_dm": "777"}')
-            r = self._run([CLAUDE_BOTH, BUN_DC, OTHER, OTHER_BUN], home,
-                          extra_env={"CHANNEL_GATE_TARGETS": tgt,
-                                     "CHANNEL_GATE_DISCORD_ID": "555"})
-        self.assertIn("/channels/555/messages", self.seen[0][0])
-
-    def test_telegram_address_falls_back_to_the_paired_sender(self):
-        """No chat id in .env: the paired sender in access.json is the DM."""
-        with tempfile.TemporaryDirectory() as home:
-            self._fake_home(home)
-            ch = os.path.join(home, ".claude", "channels", "telegram")
-            with open(os.path.join(ch, ".env"), "w") as fh:
-                fh.write("TELEGRAM_BOT_TOKEN=stub-token\n")   # no chat id
-            with open(os.path.join(ch, "access.json"), "w") as fh:
-                fh.write('{"allowFrom": ["876500"]}')
-            r = self._run([CLAUDE_BOTH, BUN_TG, OTHER, OTHER_BUN], home)
+    def test_message_is_html_safe(self):
+        # notify.sh sends with parse_mode=HTML; a bare < in a session name
+        # would be eaten as a tag or rejected by the Bot API. The tmux fixture
+        # here names the broken session with angle brackets and an ampersand.
+        ps = os.path.join(self.dir, "ps.txt")
+        tm = os.path.join(self.dir, "tmux.txt")
+        with open(ps, "w") as fh:
+            fh.write("\n".join([HEADER, CLAUDE_BOTH, BUN_DC, OTHER, OTHER_BUN]) + "\n")
+        with open(tm, "w") as fh:
+            fh.write(TMUX.replace("main-agent-channels", "main-<a&b>-channels"))
+        env = dict(os.environ, CHANNEL_GATE_NOTIFY_CMD=self.stub, STUB_LOG=self.log, STUB_RC="0")
+        r = subprocess.run([sys.executable, GATE, "--ps-file", ps, "--tmux-file", tm,
+                            "--state", self.state, "--notify"], capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertEqual(self.seen[0][1]["chat_id"], "876500")
+        self.assertEqual(len(self.sent()), 1, self.sent())
+        self.assertIn("main-&lt;a&amp;b&gt;-channels", self.sent()[0])
+        self.assertNotIn("<a&b>", self.sent()[0])
+        self.assertNotIn("**", self.sent()[0])
+
+    def test_default_notifier_is_notify_sh_under_the_install_root(self):
+        # No CHANNEL_GATE_NOTIFY_CMD: the gate must call <root>/scripts/notify.sh,
+        # the install's own fallback path -- not a fixed path, not $HOME.
+        root = os.path.join(self.dir, "root")
+        os.makedirs(os.path.join(root, "store"))
+        os.makedirs(os.path.join(root, "scripts"))
+        with open(os.path.join(root, "scripts", "notify.sh"), "w") as fh:
+            fh.write("#!/bin/bash\nprintf 'ROOT-NOTIFY %s\\n' \"$1\" >> \"$STUB_LOG\"\nexit 0\n")
+        os.chmod(os.path.join(root, "scripts", "notify.sh"), 0o755)
+        ps = os.path.join(self.dir, "ps.txt")
+        tm = os.path.join(self.dir, "tmux.txt")
+        with open(ps, "w") as fh:
+            fh.write("\n".join([HEADER, CLAUDE_BOTH, BUN_DC, OTHER, OTHER_BUN]) + "\n")
+        with open(tm, "w") as fh:
+            fh.write(TMUX)
+        env = dict(os.environ)
+        env.pop("CHANNEL_GATE_NOTIFY_CMD", None)
+        env["CLAUDE_PROJECT_DIR"] = root
+        env["STUB_LOG"] = self.log
+        r = subprocess.run([sys.executable, GATE, "--ps-file", ps, "--tmux-file", tm, "--notify"],
+                           capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(len(self.sent()), 1, self.sent())
+        self.assertTrue(self.sent()[0].startswith("ROOT-NOTIFY "), self.sent()[0])
+
+    def test_missing_notifier_is_a_failed_send_not_a_crash(self):
+        r = self._run([CLAUDE_BOTH, BUN_DC, OTHER, OTHER_BUN],
+                      extra_env={"CHANNEL_GATE_NOTIFY_CMD": os.path.join(self.dir, "no-such.sh")})
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("kuldes BUKOTT", r.stderr)
+        self.assertEqual(self.state_of("main-agent-channels")["announced"], [])
 
 
 class DefaultStatePathTest(unittest.TestCase):

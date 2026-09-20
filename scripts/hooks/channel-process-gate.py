@@ -21,16 +21,31 @@ Exit codes:
   1  at least one declared channel has NO live worker   <- the alarm
   2  measurement failed (ps/tmux unreadable, or no `claude --channels` process
      found at all -- that is "cannot tell", never "all good")
+  3  a notification was DUE and its delivery FAILED (with --notify): the
+     verdict is known, the owner is not -- the scheduler that runs this gate
+     turns a streak of these into its own alert (a second, independent path)
 
-Notification goes to THE OTHER, still-live channel of the same session: if
-telegram died, we speak on discord, and vice versa. Sending requires --notify;
-without it the gate only measures and prints (so both branches are testable).
+Notification (CHANPROCGATE919, 2026-09-20) goes through scripts/notify.sh --
+the install's fallback Telegram path (bot token + owner chat from the install
+.env, honest delivery via scripts/lib/send-telegram.sh). The first version
+spoke on "the other, still-live channel of the same session": measured on the
+fleet that runs this, every session carries telegram ONLY, so there never was
+another channel to speak on, and the alert had no address. notify.sh is the
+path the fleet already uses when the plugin is down, which is exactly the
+condition this gate detects.
+
+Sending is on TRANSITION, not on state: a session is announced when its
+MISSING set differs from the set last announced for it (`announced` in the
+state file; `changed_at` records when the measurement itself changed), and a
+"helyreallt" line goes out when the set becomes empty again. A failed send
+does not advance `announced`, so the next run retries instead of assuming the
+owner heard. Without --notify nothing is sent and `announced` is left alone.
 
 Fixtures: --ps-file / --tmux-file replace the live `ps`/`tmux` reads verbatim;
-DISCORD_API_BASE / TELEGRAM_API_BASE point the send at a local stub, so the
-notify branch is measurable without speaking to the owner.
+CHANNEL_GATE_NOTIFY_CMD points the send at a stub notifier, so the notify
+branch is measurable without speaking to the owner.
 """
-import argparse, json, os, re, subprocess, sys, time, urllib.request, urllib.error
+import argparse, json, os, re, subprocess, sys, time
 
 # The install root, NOT the home directory. The earlier `~/marveen/...` default
 # assumed the checkout lives at a fixed path under $HOME; on an install rooted
@@ -127,123 +142,32 @@ def measure(procs, tmux_map):
     return out
 
 
-def env_value(path, key):
+# The notifier is a COMMAND, not an HTTP call: scripts/notify.sh under the
+# install root (the harness override winning, same as INSTALL_ROOT), or the
+# path in CHANNEL_GATE_NOTIFY_CMD for tests. Its exit code IS the delivery
+# verdict -- notify.sh returns 0 only on curl exit 0 AND Bot API "ok":true.
+NOTIFY_CMD = os.environ.get("CHANNEL_GATE_NOTIFY_CMD") or os.path.join(
+    INSTALL_ROOT, "scripts", "notify.sh")
+
+
+def notify(text):
+    """Send through the install's fallback Telegram path. True on CONFIRMED delivery."""
     try:
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith(key + "="):
-                    return line.split("=", 1)[1].strip()
-    except OSError:
-        pass
-    return None
-
-
-def owner_dm_id():
-    """Telegram keeps no owner chat id in .env; in a DM the paired sender id IS
-    the chat id, and access.json holds exactly the senders the owner paired."""
-    try:
-        with open(f"{CH_DIR}/telegram/access.json", encoding="utf-8") as fh:
-            allow = json.load(fh).get("allowFrom") or []
-    except (OSError, ValueError):
-        return None
-    return str(allow[0]) if allow else None
-
-
-ALERT_TARGETS = os.path.join(INSTALL_ROOT, "store", "alert-targets.json")
-
-
-def alert_target(channel):
-    """Where the alarm goes, most explicit source first.
-
-    MEASURED 2026-09-12: the discord .env DISCORD_CHANNEL_ID is a guild text
-    channel ("agent"), NOT the owner's DM -- an alarm sent there gives no
-    push. So the .env is the LAST resort and says so out loud: a gate whose
-    verdict is right but whose address is wrong is still a silent gate.
-    """
-    env_key = {"discord": "CHANNEL_GATE_DISCORD_ID",
-               "telegram": "CHANNEL_GATE_TELEGRAM_ID"}[channel]
-    val = os.environ.get(env_key)
-    if val:
-        return val, env_key
-    try:
-        with open(os.environ.get("CHANNEL_GATE_TARGETS", ALERT_TARGETS),
-                  encoding="utf-8") as fh:
-            val = json.load(fh).get(f"{channel}_owner_dm")
-        if val:
-            return str(val), "alert-targets.json"
-    except (OSError, ValueError):
-        pass
-    if channel == "telegram":
-        val = env_value(f"{CH_DIR}/telegram/.env", "TELEGRAM_OWNER_CHAT_ID") \
-              or owner_dm_id()
-        return (val, "telegram access.json") if val else (None, None)
-    val = env_value(f"{CH_DIR}/discord/.env", "DISCORD_CHANNEL_ID")
-    if val:
-        sys.stderr.write("FIGYELEM: a riasztas cime a discord .env-bol jon, "
-                         "ami NEM biztos, hogy a gazda DM-je\n")
-    return (val, "discord .env") if val else (None, None)
-
-
-# MERVE 2026-09-12 07:30: a discord API User-Agent nelkul 403 / "error code: 1010"
-# (Cloudflare browser-integrity), ezert a kapu ELSO eles riasztasa NEM ment ki --
-# a verdikt jo volt, a cim jo volt, a kezbesites bukott. UA-val ugyanaz a hivas 200.
-USER_AGENT = "DiscordBot (https://github.com/anthropics/claude-code, 1.0)"
-
-
-def notify(channel, text):
-    """Send on the still-live channel. Returns True on confirmed delivery."""
-    if channel == "discord":
-        tok = env_value(f"{CH_DIR}/discord/.env", "DISCORD_BOT_TOKEN")
-        chat, src = alert_target("discord")
-        if not tok or not chat:
-            return False
-        sys.stderr.write(f"cimzett: discord {chat} ({src})\n")
-        base = os.environ.get("DISCORD_API_BASE",
-                              "https://discord.com/api/v10").rstrip("/")
-        url = f"{base}/channels/{chat}/messages"
-        req = urllib.request.Request(
-            url, data=json.dumps({"content": text[:1900]}).encode(),
-            headers={"Authorization": f"Bot {tok}",
-                     "Content-Type": "application/json",
-                     "User-Agent": USER_AGENT})
-    elif channel == "telegram":
-        tok = env_value(f"{CH_DIR}/telegram/.env", "TELEGRAM_BOT_TOKEN")
-        chat, src = alert_target("telegram")
-        if not tok or not chat:
-            return False
-        sys.stderr.write(f"cimzett: telegram {chat} ({src})\n")
-        base = os.environ.get("TELEGRAM_API_BASE",
-                              "https://api.telegram.org").rstrip("/")
-        url = f"{base}/bot{tok}/sendMessage"
-        req = urllib.request.Request(
-            url, data=json.dumps({"chat_id": chat, "text": text[:3900]}).encode(),
-            headers={"Content-Type": "application/json",
-                     "User-Agent": USER_AGENT})
-    else:
+        r = subprocess.run([NOTIFY_CMD, text], capture_output=True, text=True, timeout=45)
+    except (OSError, subprocess.SubprocessError) as e:
+        sys.stderr.write(f"kuldes BUKOTT: {type(e).__name__} {e} ({NOTIFY_CMD})\n")
         return False
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            return 200 <= resp.status < 300
-    except urllib.error.HTTPError as e:
-        body = ""
-        try:
-            body = e.read()[:200].decode("utf-8", "replace").strip()
-        except Exception:
-            pass
-        sys.stderr.write(f"kuldes BUKOTT: HTTP {e.code} {body}\n")
+    if r.returncode != 0:
+        tail = (r.stderr or r.stdout or "").strip().splitlines()[-1:] or ["-"]
+        sys.stderr.write(f"kuldes BUKOTT: {NOTIFY_CMD} exit {r.returncode}: {tail[0][:200]}\n")
         return False
-    except (urllib.error.URLError, OSError) as e:
-        sys.stderr.write(f"kuldes BUKOTT: {type(e).__name__} {e}\n")
-        return False
+    return True
 
 
-def other_live(row):
-    """Pick a channel that is still alive in the same session to speak on."""
-    for full in row["alive"]:
-        name = full.split("/")[-1]
-        if name in ("discord", "telegram"):
-            return name
-    return None
+def html_escape(text):
+    # notify.sh sends with parse_mode=HTML; a session name or plugin path with
+    # < > & would otherwise break the message or be eaten as a tag.
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def load_state():
@@ -279,7 +203,7 @@ def main():
     ap.add_argument("--tmux-file")
     ap.add_argument("--only", help="restrict to one tmux session name")
     ap.add_argument("--notify", action="store_true",
-                    help="actually send on the other live channel")
+                    help="actually send through scripts/notify.sh on a transition")
     ap.add_argument("--state", help="override state file path")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
@@ -323,24 +247,41 @@ def main():
 
     st = load_state()
     now = int(time.time())
+    send_failed = False
     for r in rows:
         key = r["session"]
-        prev = st.get(key, {}).get("missing", [])
-        changed = prev != r["missing"]
-        st[key] = {"missing": r["missing"], "checked_at": now,
-                   "changed_at": now if changed else
-                   st.get(key, {}).get("changed_at", now)}
-        if r["missing"] and changed and a.notify:
-            ch = other_live(r)
-            names = ", ".join(m.split("/")[-1] for m in r["missing"])
-            msg = (f"⚠️ Csatorna-folyamat HIANYZIK: a(z) `{key}` session "
-                   f"deklaralja a(z) **{names}** plugint, de nincs elo "
-                   f"worker-folyamata. A rajta erkezo uzenetek elvesznek. "
-                   f"(channel-process-gate, {time.strftime('%Y-%m-%d %H:%M')})")
-            ok = notify(ch, msg) if ch else False
-            print(f"ERTESITES {'elkuldve' if ok else 'NEM ment ki'} "
-                  f"({ch or 'nincs elo masik csatorna'})", file=sys.stderr)
+        old = st.get(key, {})
+        changed = old.get("missing", []) != r["missing"]
+        # `announced` is what the owner has CONFIRMED-received for this
+        # session (absent = nothing, i.e. green). It advances only on a
+        # delivered send, and never without --notify.
+        announced = old.get("announced", [])
+        entry = {"missing": r["missing"], "checked_at": now,
+                 "changed_at": now if changed else old.get("changed_at", now),
+                 "announced": announced}
+        if a.notify and r["missing"] != announced:
+            stamp = time.strftime('%Y-%m-%d %H:%M')
+            if r["missing"]:
+                names = ", ".join(m.split("/")[-1] for m in r["missing"])
+                msg = html_escape(
+                    f"⚠️ Csatorna-folyamat HIANYZIK: a(z) {key} session deklaralja "
+                    f"a(z) {names} plugint, de nincs elo worker-folyamata. A rajta "
+                    f"erkezo uzenetek elvesznek. (channel-process-gate, {stamp})")
+            else:
+                msg = html_escape(
+                    f"✅ Csatorna-folyamat HELYREALLT: a(z) {key} session minden "
+                    f"deklaralt pluginje ujra el. (channel-process-gate, {stamp})")
+            ok = notify(msg)
+            if ok:
+                entry["announced"] = r["missing"]
+            else:
+                send_failed = True
+            print(f"ERTESITES {'elkuldve' if ok else 'NEM ment ki'} ({key}: "
+                  f"{'hianyzik' if r['missing'] else 'helyreallt'})", file=sys.stderr)
+        st[key] = entry
     save_state(st)
+    if send_failed:
+        return 3
     return 1 if broken else 0
 
 
