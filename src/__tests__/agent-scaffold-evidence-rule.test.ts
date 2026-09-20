@@ -89,7 +89,14 @@ describe('evidence-rule scaffold block', () => {
 
   it('points at the mechanical half of the rule (the recipient ledger)', () => {
     expect(evidenceBody).toContain('store/verified-recipients.json')
-    expect(evidenceBody).toContain('node scripts/recipient-ledger.mjs add')
+    // RECOVERYPATH920: the command has to be runnable from the cwd of the agent
+    // it is written FOR. Sub-agents run in agents/<name>/, which has no
+    // scripts/ directory, so the relative `node scripts/recipient-ledger.mjs`
+    // died with "Cannot find module" in exactly the place the gate points at.
+    // Source-level like its siblings: the absolute path is built from
+    // PROJECT_ROOT, and the relative spelling must not come back.
+    expect(evidenceBody).toContain("join(PROJECT_ROOT, 'scripts', 'recipient-ledger.mjs')")
+    expect(evidenceBody).not.toContain('node scripts/recipient-ledger.mjs')
   })
 
   it('keeps Hungarian accents and uses no em dash, like its sibling blocks', () => {

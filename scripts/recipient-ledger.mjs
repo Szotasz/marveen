@@ -14,7 +14,7 @@
 // it proves an agent NAMED A SOURCE before using the address, and it keeps that
 // claim readable for the owner. That is the failure this gate is aimed at.
 
-import { readFileSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, realpathSync, chmodSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
@@ -104,7 +104,15 @@ export function addRecipient(address, source, note, path = ledgerPath()) {
     added_at: new Date().toISOString(),
   }
   mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, `${JSON.stringify(ledger, null, 2)}\n`)
+  // LEDGERMODE920: the ledger is a list of real customer addresses and it
+  // lands in a 0755 store/, so the default 0644 made it world-readable to
+  // every local account. 0600 keeps it to the owner the gate runs as.
+  writeFileSync(path, `${JSON.stringify(ledger, null, 2)}\n`, { mode: 0o600 })
+  // mode: on writeFileSync only applies when the file is CREATED -- an
+  // install that already has a 0644 ledger would keep it forever. chmod
+  // the existing file too, and do not fail the write if the fs says no
+  // (a mounted or foreign-owned store/ must not block adding an address).
+  try { chmodSync(path, 0o600) } catch { /* mode is best effort, the write is not */ }
   return ledger.recipients[addr]
 }
 

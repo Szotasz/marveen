@@ -665,7 +665,18 @@ export function hasThreadReplyCapability(name: string, capabilities: string[]): 
 // alternative is deliberately the whole server (`.*[Gg]mail__.*`), not a list
 // of send-shaped names: the hooks classify by the OPERATION (a search or a
 // read exits 0 in every gate), and a name list is exactly what drifted here.
-export const EMAIL_GATE_MATCHER = 'Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail__.*'
+// MATCHERGMAILSEG920: `.*[Gg]mail__.*` required the literal segment `gmail__`,
+// so it never reached the Gmail MCP the fleet actually runs, whose tools are
+// named mcp__server-gmail-autoauth-mcp__draft_email -- the segment there is
+// `gmail-autoauth-mcp__`. DRAFT_TOOL_RE in the gate was right all along; the
+// hook simply never fired for that tool, so "drafts are gated" held only for
+// the claude.ai connector and manage_email. `[Gg]mail.*__` covers any server
+// name that carries gmail in it, and the explicit draft_email alternative
+// keeps the draft surface reachable even under a server name with no gmail in
+// it at all -- a name-keyed matcher goes blind on the next new name, so the
+// draft surface is pinned by the OPERATION too, not only by the server.
+export const EMAIL_GATE_MATCHER =
+  'Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail.*__.*|.*draft_email.*'
 
 // Does an existing PreToolUse array carry an email-gate entry whose matcher is
 // NOT the current one? Pure + exported: this is the predicate that lets
@@ -1771,7 +1782,7 @@ function buildEvidenceBody(): string {
     'Kimenő levélnél ez gépi kapu is, nem csak szabály: a `to`/`cc`/`bcc` minden címét a `store/verified-recipients.json` ledgerhez méri a PreToolUse hook, és ismeretlen címre még piszkozatot sem enged. Új cím felvétele forrás megnevezésével:',
     '',
     '```bash',
-    'node scripts/recipient-ledger.mjs add <cim> --source mail:<messageId>|site:<url>|owner|crm:<ref>|order:<id>|doc:<ref> --note "<honnan>"',
+    `node ${join(PROJECT_ROOT, 'scripts', 'recipient-ledger.mjs')} add <cim> --source mail:<messageId>|site:<url>|owner|crm:<ref>|order:<id>|doc:<ref> --note "<honnan>"`,
     '```',
   ].join('\n')
 }

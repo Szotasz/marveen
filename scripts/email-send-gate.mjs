@@ -204,6 +204,16 @@ const MANAGE_EMAIL_SEND_OPS = new Set(['send', 'reply', 'replyall', 'forward'])
 // outside world through a draft just as surely as through a send.
 const DRAFT_TOOL_RE = /(^|__)(create_draft|draft_email|update_draft)$/i
 
+// RECOVERYPATH920: the recovery command in the deny message used to be the
+// relative `node scripts/recipient-ledger.mjs`. Sub-agents run with cwd
+// agents/<name>/, which has NO scripts/ directory, so from a gated agent the
+// command died with "Cannot find module .../agents/<name>/scripts/
+// recipient-ledger.mjs" -- the one path the gate offers was unreachable from
+// the only place it is ever read. Resolve it from this file's own location:
+// the gate script and the ledger CLI ship in the same directory, so this is
+// correct from any cwd.
+const LEDGER_CLI = join(dirname(fileURLToPath(import.meta.url)), 'recipient-ledger.mjs')
+
 // Tool-input fields that carry recipient addresses across the mail tools we
 // have. A reply that only names a messageId has none of these -- it is
 // addressed by the thread, not by us, so there is nothing to invent.
@@ -326,7 +336,7 @@ export function buildUnverifiedRecipientMsg(addresses) {
     'egy valodi forrasban -- a toluk kapott level From fejleceben ' +
     '(manage_email search: from:<domain> in:anywhere), az elo oldalukon, ' +
     'a Woo rendelesben vagy a Notion lapon. Aztan vedd fel a ledgerbe:\n' +
-    `  node scripts/recipient-ledger.mjs add ${first} --source <forras> --note "<honnan>"\n` +
+    `  node ${LEDGER_CLI} add ${first} --source <forras> --note "<honnan>"\n` +
     `  --source: ${SOURCE_HELP}\n` +
     'Ha nem talalsz forrast, a cim NINCS meg: mondd meg a gazdanak, ne kuldj levelet.'
   )
