@@ -25,8 +25,11 @@ describe('tmux stderr attribution (TMUXWINDOWATTR920)', () => {
     // exits 1; the child calls it via execFileSync; the PARENT (this test)
     // observes the child's stderr.
     const line = "can't find window: marveen-channels"
+    // The grandchild's code is JSON-encoded as a whole: the apostrophe in the
+    // line would otherwise end a single-quoted JS string (the first draft did).
+    const grandchild = `process.stderr.write(${JSON.stringify(line)});process.exit(1)`
     const snippet = (opts: string) =>
-      `const {execFileSync}=require('node:child_process');try{execFileSync(process.execPath,['-e','process.stderr.write(${JSON.stringify(line)});process.exit(1)'],${opts})}catch(e){process.stdout.write('caught:'+String(e.stderr||'').trim())}`
+      `const {execFileSync}=require('node:child_process');try{execFileSync(process.execPath,['-e',${JSON.stringify(grandchild)}],${opts})}catch(e){process.stdout.write('caught:'+String(e.stderr||'').trim())}`
     const leaky = spawnSync(process.execPath, ['-e', snippet("{timeout:5000,encoding:'utf-8'}")], { encoding: 'utf-8' })
     const piped = spawnSync(process.execPath, ['-e', snippet("{timeout:5000,encoding:'utf-8',stdio:['ignore','pipe','pipe']}")], { encoding: 'utf-8' })
     expect(leaky.stdout).toBe('caught:' + line)          // the caller had the line either way...
