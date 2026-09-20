@@ -8,7 +8,7 @@
 // site, so a new tmux poller written the old way goes red here.
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { tmuxStderr } from '../web/tmux-stderr.js'
@@ -17,22 +17,22 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..', '..')
 const src = (rel: string) => readFileSync(join(ROOT, 'src', 'web', rel), 'utf-8')
 
-function haveTmux(): boolean {
-  try { execFileSync('tmux', ['-V'], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 3000 }); return true } catch { return false }
-}
-
 describe('tmux stderr attribution (TMUXWINDOWATTR920)', () => {
   it('MECHANISM: without stdio the child stderr reaches the parent stderr; with a piped stderr it does not', () => {
-    if (!haveTmux()) return
-    // Each case runs in a child node so the PARENT stderr is observable here.
+    // No tmux here on purpose: CI has no tmux server (its error there is "error
+    // connecting to /tmp/tmux-…", measured on the first run), and the mechanism
+    // is Node's, not tmux's. A grandchild node writes one line to stderr and
+    // exits 1; the child calls it via execFileSync; the PARENT (this test)
+    // observes the child's stderr.
+    const line = "can't find window: marveen-channels"
     const snippet = (opts: string) =>
-      `const {execFileSync}=require('node:child_process');try{execFileSync('tmux',['list-panes','-t','nincs-ilyen-session-xyz','-F','#{pane_pid}'],${opts})}catch(e){process.stdout.write('caught:'+String(e.stderr||'').trim())}`
-    const leaky = spawnSync(process.execPath, ['-e', snippet("{timeout:3000,encoding:'utf-8'}")], { encoding: 'utf-8' })
-    const piped = spawnSync(process.execPath, ['-e', snippet("{timeout:3000,encoding:'utf-8',stdio:['ignore','pipe','pipe']}")], { encoding: 'utf-8' })
-    expect(leaky.stdout).toContain("caught:can't find window")
-    expect(leaky.stderr).toContain("can't find window")          // the leak the log was full of
-    expect(piped.stdout).toContain("caught:can't find window")   // the error is still available to the caller
-    expect(piped.stderr.trim()).toBe('')                          // ...and nothing reaches the parent stderr
+      `const {execFileSync}=require('node:child_process');try{execFileSync(process.execPath,['-e','process.stderr.write(${JSON.stringify(line)});process.exit(1)'],${opts})}catch(e){process.stdout.write('caught:'+String(e.stderr||'').trim())}`
+    const leaky = spawnSync(process.execPath, ['-e', snippet("{timeout:5000,encoding:'utf-8'}")], { encoding: 'utf-8' })
+    const piped = spawnSync(process.execPath, ['-e', snippet("{timeout:5000,encoding:'utf-8',stdio:['ignore','pipe','pipe']}")], { encoding: 'utf-8' })
+    expect(leaky.stdout).toBe('caught:' + line)          // the caller had the line either way...
+    expect(leaky.stderr).toContain(line)                  // ...but the default ALSO copied it to the parent stderr: the leak
+    expect(piped.stdout).toBe('caught:' + line)           // piped: the caller still has it
+    expect(piped.stderr.trim()).toBe('')                  // ...and nothing reaches the parent stderr
   })
 
   it('tmuxStderr() returns the one tmux line, trimmed and bounded, falling back to the message', () => {
