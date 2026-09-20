@@ -73,3 +73,7 @@ jobs:
       - run: bash scripts/__tests__/morning-timer-park.test.sh
       - run: bash scripts/__tests__/userbot-arming-gate.test.sh
       - run: bash scripts/__tests__/supabase-q-token-hiding.test.sh
+      # SUPALOGS822: the analytics-log wrapper is the successor of the removed
+      # logs.all path; its token-hiding and fail-closed contract is a gate
+      # instrument (hermetic: local stub for vault + vendor API).
+      - run: python3 scripts/__tests__/supabase-logs.test.py
