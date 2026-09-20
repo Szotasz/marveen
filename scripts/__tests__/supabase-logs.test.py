@@ -142,6 +142,13 @@ def main() -> None:
         check("[7] 200 + error field: exit 4, not 0", r.returncode == 4, f"rc={r.returncode}")
         check("[7] the error reason reaches stderr", "NEM futott le" in r.stderr and "Backend error" in r.stderr, r.stderr[:160])
         STATE["api_error"] = False
+
+        # 8. --legacy targets logs.all (transition only), default never does
+        STATE["hits"].clear()
+        r = run(["proj-ref", "select count(*) c from function_logs", "--legacy"], tmp, base)
+        check("[8] --legacy: exit 0", r.returncode == 0, f"rc={r.returncode}")
+        check("[8] --legacy: the path is logs.all", STATE["hits"] and STATE["hits"][0]["path"].endswith("/analytics/endpoints/logs.all"), str(STATE["hits"][:1]))
+        check("[8] --legacy: stderr names the deprecated endpoint", "DEPRECATED" in r.stderr, r.stderr[:120])
     finally:
         srv.shutdown()
         shutil.rmtree(tmp, ignore_errors=True)

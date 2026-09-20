@@ -94,10 +94,11 @@ def window(hours: float | None, start: str | None, end: str | None) -> tuple[str
     return _iso(s), _iso(e)
 
 
-def query(pat: str, ref: str, sql: str, start: str, end: str) -> tuple[int, str]:
+def query(pat: str, ref: str, sql: str, start: str, end: str, legacy: bool = False) -> tuple[int, str]:
     qs = urllib.parse.urlencode({"sql": sql, "iso_timestamp_start": start, "iso_timestamp_end": end})
+    endpoint = "logs.all" if legacy else "logs"
     req = urllib.request.Request(
-        f"{API_BASE}/v1/projects/{urllib.parse.quote(ref, safe='')}/analytics/endpoints/logs?{qs}",
+        f"{API_BASE}/v1/projects/{urllib.parse.quote(ref, safe='')}/analytics/endpoints/{endpoint}?{qs}",
         headers={
             "Authorization": "Bearer " + pat,
             # The Management API rejects the default python User-Agent (403).
@@ -120,6 +121,10 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--start")
     ap.add_argument("--end")
     ap.add_argument("--vault-key", default=os.environ.get("SUPABASE_VAULT_KEY", "SUPABASE_NEW_TOKEN"))
+    # TRANSITION ONLY: the deprecated logs.all endpoint (dies 2026-09-23). Lets a
+    # same-window old/new baseline be taken while it still answers. Old-style
+    # SQL (per-source tables, e.g. `from function_logs`), no unified table.
+    ap.add_argument("--legacy", action="store_true", help="call the deprecated logs.all endpoint (until 2026-09-23)")
     a = ap.parse_args(argv)
     if not a.ref or not a.sql:
         print("usage: supabase-logs.py <project-ref> <SQL> [--hours N | --start ISO --end ISO] [--vault-key KEY]", file=sys.stderr)
@@ -135,13 +140,13 @@ def main(argv: list[str]) -> int:
         print(f"supabase-logs: {ex}", file=sys.stderr)
         return 3
     try:
-        status, body = query(pat, a.ref, a.sql, start, end)
+        status, body = query(pat, a.ref, a.sql, start, end, legacy=a.legacy)
     except Exception as ex:  # noqa: BLE001 - network/URL errors: message only, never the token
         print(f"supabase-logs: a keres nem ment el ({type(ex).__name__}: {ex})", file=sys.stderr)
         return 4
     finally:
         pat = ""  # not a security boundary; just no lingering reference
-    print(f"http={status} window={start}..{end}", file=sys.stderr)
+    print(f"http={status} window={start}..{end} endpoint={'logs.all (DEPRECATED, dies 2026-09-23)' if a.legacy else 'logs'}", file=sys.stderr)
     sys.stdout.write(body if body.endswith("\n") else body + "\n")
     if not (200 <= status < 300):
         return 4
