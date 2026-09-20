@@ -1,3 +1,4 @@
+import { readEnvFile } from '../env.js'
 // Multi-envelope injection (B1F38C8C, 2026-09-20): the pure half.
 //
 // Kept in its own module on purpose: several router tests mock
@@ -48,6 +49,23 @@ export function composeBatchInjection(items: BatchInjectItem[], remaining: numbe
   return `${head}\n\n${body}\n\n${tail}`
 }
 
+// Where a rollout flag is read from: process.env first (an operator or test
+// override), then the install's .env. MEASURED 2026-09-20 on the host before
+// the first rollout step: the dashboard runs under launchd, whose plist
+// exports four variables, and NONE of the 21 keys in the install .env reach
+// process.env -- cfg()/readEnvFile read that file directly, nothing exports
+// it. A flag read from process.env alone is therefore unreachable through
+// the documented path ("put it in .env"), and the rollout step written for
+// it would have done nothing, silently -- the one failure mode the #1415
+// review said a rollout flag must not have. The .env is read fresh on each
+// call (cheap: one small file, only when a batch head is being composed), so
+// the flag takes effect on the next tick after the edit, no restart.
+function rolloutFlag(key: string): string | undefined {
+  const fromProcess = process.env[key]
+  if (fromProcess !== undefined && fromProcess.trim() !== '') return fromProcess
+  return readEnvFile([key])[key]
+}
+
 // Which recipients get batched, and how many per injection. Opt-in by
 // recipient so it can be measured on ONE agent before it is widened (the
 // decision's rollout condition): ROUTER_BATCH_INJECT_AGENTS is a comma list of
@@ -55,8 +73,8 @@ export function composeBatchInjection(items: BatchInjectItem[], remaining: numbe
 // Returns 0 when batching is off for this recipient.
 export function batchInjectCapFor(
   toAgent: string,
-  agentsEnv: string | undefined = process.env.ROUTER_BATCH_INJECT_AGENTS,
-  maxEnv: string | undefined = process.env.ROUTER_BATCH_INJECT_MAX,
+  agentsEnv: string | undefined = rolloutFlag('ROUTER_BATCH_INJECT_AGENTS'),
+  maxEnv: string | undefined = rolloutFlag('ROUTER_BATCH_INJECT_MAX'),
 ): number {
   // Case-insensitive on purpose: `ROUTER_BATCH_INJECT_AGENTS=Samu` must not
   // leave batching silently OFF for `samu` -- silence is the one failure mode

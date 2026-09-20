@@ -197,7 +197,10 @@ describe('message router: multi-envelope injection (B1F38C8C)', () => {
   })
 
   it('OPTED OUT (default): the serial path is unchanged -- one injection per row', async () => {
-    delete process.env.ROUTER_BATCH_INJECT_AGENTS
+    // A list that names nobody, not `delete`: since the flag also resolves
+    // from the install .env, an unset process.env would let a host whose
+    // .env opts an agent in flip this case. Naming nobody is OFF everywhere.
+    process.env.ROUTER_BATCH_INJECT_AGENTS = 'nobody-opted-in'
     snapshot([{ id: 861, from: 'orin' }, { id: 862, from: 'geri' }, { id: 863, from: 'orin' }])
     await runMessageRouterTick()
     expect(mockSendPrompt).toHaveBeenCalledTimes(3)
