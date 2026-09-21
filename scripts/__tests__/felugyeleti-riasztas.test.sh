@@ -117,8 +117,21 @@ check "5 POZITIV KONTROLL: a TELEGRAM_ENV override tovabbra is olvasott (fajlok:
 # ---------------------------------------------------------------------------
 # A stub ugyanugy exec-eli a parancsot, mint a valodi `systemd-run --scope`, es
 # ugyanugy NEM valaszt le terminalt -- tehat a kulonbseget KIZAROLAG a setsid adja.
-if ! command -v setsid >/dev/null 2>&1; then
-  skip "6 terminal-levalasztas viselkedes-teszt" "ezen a gepen nincs setsid (macOS); a CI Linuxon futtatja"
+# A KAPUT MAGAT IS MEG KELL TUDNI MERNI: e nelkul a "Linuxon ne hagyd ki" ag
+# ellenorizhetetlen allitas maradna. Az elso kontroll-kiserletem ROSSZ volt (a
+# PATH-bol probaltam kivenni a setsid-et, de /usr/bin bent maradt, ahol ott van),
+# ezert a detektalas egy FELULBIRALHATO nevre megy.
+SETSID_BIN="${FELUGYELET_SETSID:-setsid}"
+if ! command -v "$SETSID_BIN" >/dev/null 2>&1; then
+  # A CSENDES KIHAGYAS UGYANUGY NEZ KI, MINT EGY ZOLD FUTAS. A vitest-futtato csak
+  # bukasnal irja ki a suite sajat kimenetet, tehat a CI-naplobol NEM latszik, hogy
+  # ez az eset lefutott-e. LINUXON viszont letezik a setsid, es EZ a hiba celplatformja:
+  # ott egy kihagyas nem "kornyezeti adottsag", hanem elromlott fixtura, ezert BUKTAT.
+  if [ "$(uname -s)" = "Linux" ]; then
+    check "6 a pty-eset LINUXON nem hagyhato ki (nincs setsid -- elromlott fixtura)" 1
+  else
+    skip "6 terminal-levalasztas viselkedes-teszt" "ezen a gepen nincs setsid ($(uname -s)); a CI Linuxon futtatja"
+  fi
 else
   P="$SANDBOX/pty"; mkdir -p "$P/bin"
   cat > "$P/bin/systemd-run" <<'STUB'
@@ -251,4 +264,4 @@ check "7 ha minden unit active, NINCS drift-uzenet (nincs hamis riasztas)" \
 echo
 [ "$SKIPS" -gt 0 ] && echo "($SKIPS eset kihagyva -- lasd a SKIP sorokat)"
 if [ "$FAILS" -gt 0 ]; then echo "$FAILS FAILED a $DB allitasbol" >&2; exit 1; fi
-echo "OK: $DB allitas, mind zold."
+echo "OK: $DB allitas, mind zold. (platform: $(uname -s), pty-eset: $([ "$SKIPS" = "0" ] && echo FUTOTT || echo KIHAGYVA))"
