@@ -261,7 +261,7 @@ if [ "$CURRENT_BRANCH" = "HEAD" ] || [ -z "$CURRENT_BRANCH" ]; then
   # A merve mukodo sorrend (exit 0, ag=main, shallow=false a vegen):
   #   git remote set-branches origin <ag> && git fetch --unshallow origin && git checkout <ag>
   #
-  # AMIT A FELHASZNALO TUDJON (Samu review-lelete a #1438-on): a `set-branches`
+  # AMIT A FELHASZNALO TUDJON (a #1438 review-lelete): a `set-branches`
   # LECSERELI a fetch-refspecet, nem HOZZAFUZ -- a klon eredeti
   # `+refs/tags/<tag>:refs/tags/<tag>` sora kiesik. Az update-utra artalmatlan
   # (az ag-refbol dolgozik), de ez a parancs maradando config-valtozas.
