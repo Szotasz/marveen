@@ -36,7 +36,7 @@ import {
   wrapScheduledTask,
   wrapScheduledTaskByReference,
 } from '../prompt-safety.js'
-import { writeScheduledRunSnapshot } from './scheduled-run-snapshot.js'
+import { writeScheduledRunSnapshot, isScheduledRunReference } from './scheduled-run-snapshot.js'
 import { cronPrevOccurrence, effectiveCronTz } from './cron.js'
 import {
   listScheduledTasks,
@@ -480,7 +480,11 @@ function persistScheduleLastRun(): void {
 // costs more tokens per fire and is a proxy for "this task's SKILL.md wants
 // splitting". Two tiers, both same-day-deduped per task (spec 3.5):
 //   WARN  (SCHEDULED_TASK_BODY_WARN_CHARS)  -> logger.warn + inter-agent notice
-//   ALERT (MAX_SCHEDULED_TASK_PROMPT_LEN)   -> the above + owner channel alert
+//   ALERT (MAX_SCHEDULED_TASK_PROMPT_LEN)   -> logger.warn + a second, louder
+//                                              inter-agent notice
+// Both go to the main agent only. The size of a SKILL.md is internal
+// housekeeping; the owner channel is reserved for customer- or
+// money-impacting alerts, so the size guard never sends there.
 // Delivery itself is UNAFFECTED by either tier -- the task still fires.
 export type SizeGuardLevel = 'none' | 'warn' | 'alert'
 
@@ -501,6 +505,46 @@ export function shouldSnapshotTaskBody(
   inlineMaxChars: number = SCHEDULED_TASK_INLINE_MAX_CHARS,
 ): boolean {
   return bodyChars > inlineMaxChars
+}
+
+export interface ScheduledTaskBlockDeps {
+  writeSnapshot: typeof writeScheduledRunSnapshot
+  isValidReference: (filePath: string) => boolean
+}
+
+const DEFAULT_TASK_BLOCK_DEPS: ScheduledTaskBlockDeps = {
+  writeSnapshot: writeScheduledRunSnapshot,
+  isValidReference: (filePath) => isScheduledRunReference(filePath),
+}
+
+// Build the <scheduled-task> block for one fire: inline, or a reference to a
+// fire-time snapshot (spec 3.3). The reference path is taken only when all
+// three hold, otherwise the body goes inline and the task is never dropped:
+//   - the body crosses SCHEDULED_TASK_INLINE_MAX_CHARS;
+//   - the target session is LOCAL (host === null). The snapshot lives on the
+//     dashboard host, so a remote agent could not Read it and the task would
+//     be silently undelivered;
+//   - the snapshot was written (write failure = spec test 11) and its path
+//     passes isScheduledRunReference (a rejected path is logged there).
+export function buildScheduledTaskBlock(
+  taskName: string,
+  taskBody: string,
+  host: string | null,
+  nowMs: number,
+  deps: ScheduledTaskBlockDeps = DEFAULT_TASK_BLOCK_DEPS,
+): { block: string; delivery: 'inline' | 'reference' } {
+  const source = `scheduled-task:${taskName}`
+  const inline = { block: wrapScheduledTask(source, taskBody), delivery: 'inline' as const }
+  if (!shouldSnapshotTaskBody(taskBody.length)) return inline
+  if (host !== null) return inline
+  const skillPath = join(SCHEDULED_TASKS_DIR, taskName, 'SKILL.md')
+  const snapshot = deps.writeSnapshot(taskName, taskBody, { firedAt: new Date(nowMs), skillPath })
+  if (!snapshot) return inline
+  if (!deps.isValidReference(snapshot.filePath)) return inline
+  return {
+    block: wrapScheduledTaskByReference(source, snapshot.filePath, snapshot.sha256, snapshot.chars),
+    delivery: 'reference',
+  }
 }
 
 const SIZE_GUARD_STATE_PATH = join(PROJECT_ROOT, 'store', 'scheduled-task-size-guard.json')
@@ -561,11 +605,9 @@ function claimSizeGuardNotice(taskName: string, level: 'warn' | 'alert', nowMs: 
   return true
 }
 
-// Fire-and-forget: never let a size-guard notice delay or fail the task
-// fire it is reporting on. WARN sends an inter-agent notice to the main
-// agent; ALERT additionally sends a direct owner channel alert (same
-// resolveSchedulerAlertToken/resolveSchedulerOwnerChat + sendSchedulerAlertMessage
-// path as the other scheduler alerts in this file).
+// Never lets a size-guard notice delay or fail the task fire it is reporting
+// on: both tiers are a synchronous inter-agent row to the main agent, each
+// wrapped in its own try/catch.
 function maybeSendSizeGuardNotice(taskName: string, bodyChars: number, nowMs: number): void {
   const level = sizeGuardLevel(bodyChars)
   if (level === 'none') return
@@ -587,20 +629,14 @@ function maybeSendSizeGuardNotice(taskName: string, bodyChars: number, nowMs: nu
   if (level !== 'alert') return
   if (!claimSizeGuardNotice(taskName, 'alert', nowMs)) return
   logger.warn({ task: taskName, bodyChars, alertChars: MAX_SCHEDULED_TASK_PROMPT_LEN }, 'scheduled task body has grown past the size-guard alert threshold')
-  ;(async () => {
-    const token = resolveSchedulerAlertToken()
-    if (!token) return
-    const ownerChat = resolveSchedulerOwnerChat()
-    if (!ownerChat) return
-    try {
-      await sendSchedulerAlertMessage(token, ownerChat, [
-        `[${BOT_NAME} scheduler] A(z) "${taskName}" ütemezett feladat SKILL.md törzse ${bodyChars} karakter (riasztási küszöb: ${MAX_SCHEDULED_TASK_PROMPT_LEN}).`,
-        'A kézbesítés emiatt nem sérülékeny (hivatkozásos küldés), de a méret növekszik. A buktatók references/ alá mozgatása csökkentené.',
-      ].join('\n'))
-    } catch (err) {
-      logger.warn({ err, task: taskName }, 'size-guard alert: owner channel delivery failed')
-    }
-  })()
+  try {
+    createAgentMessage('system', MAIN_AGENT_ID, [
+      `[scheduler] RIASZTÁS: a(z) "${taskName}" ütemezett feladat SKILL.md törzse ${bodyChars} karakter (riasztási küszöb: ${MAX_SCHEDULED_TASK_PROMPT_LEN}).`,
+      'A kézbesítés emiatt nem sérülékeny (hivatkozásos küldés), de a méret növekszik. A buktatók references/ alá mozgatása csökkentené.',
+    ].join('\n'))
+  } catch (err) {
+    logger.warn({ err, task: taskName }, 'size-guard alert: inter-agent notice failed')
+  }
 }
 
 // --- Downtime catch-up ---
@@ -1139,18 +1175,7 @@ async function attemptFireTask(
     // their length, so folding them in would make the guard fire on
     // something the operator cannot fix from the SKILL.md.
     maybeSendSizeGuardNotice(task.name, task.prompt.length, now)
-    let scheduledTaskBlock: string
-    if (shouldSnapshotTaskBody(taskBody.length)) {
-      const skillPath = join(SCHEDULED_TASKS_DIR, task.name, 'SKILL.md')
-      const snapshot = writeScheduledRunSnapshot(task.name, taskBody, { firedAt: new Date(now), skillPath })
-      scheduledTaskBlock = snapshot
-        ? wrapScheduledTaskByReference(`scheduled-task:${task.name}`, snapshot.filePath, snapshot.sha256, snapshot.chars)
-        // Snapshot write failed (e.g. full disk) -- fall back to the inline
-        // path rather than drop the task (spec test 11).
-        : wrapScheduledTask(`scheduled-task:${task.name}`, taskBody)
-    } else {
-      scheduledTaskBlock = wrapScheduledTask(`scheduled-task:${task.name}`, taskBody)
-    }
+    const { block: scheduledTaskBlock } = buildScheduledTaskBlock(task.name, taskBody, host, now)
     const fullPrompt =
       SCHEDULED_TASK_PREAMBLE + '\n' +
       prefix.trimEnd() + '\n\n' +

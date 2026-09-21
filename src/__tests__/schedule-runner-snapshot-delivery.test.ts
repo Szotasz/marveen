@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
@@ -6,6 +6,7 @@ import {
   sizeGuardLevel,
   shouldSendSizeGuardNotice,
   isScheduledPromptStuck,
+  buildScheduledTaskBlock,
 } from '../web/schedule-runner.js'
 import { wrapScheduledTaskByReference } from '../prompt-safety.js'
 import { SCHEDULED_TASK_INLINE_MAX_CHARS, SCHEDULED_TASK_BODY_WARN_CHARS, MAX_SCHEDULED_TASK_PROMPT_LEN } from '../web/scheduled-tasks-io.js'
@@ -93,17 +94,75 @@ describe('wiring: attemptFireTask uses the snapshot/reference path above the thr
     expect(SRC).toMatch(/maybeSendSizeGuardNotice\(task\.name, task\.prompt\.length, now\)/)
   })
 
-  it('branches on shouldSnapshotTaskBody(taskBody.length) before building the tag', () => {
-    const idx = SRC.indexOf('if (shouldSnapshotTaskBody(taskBody.length)) {')
-    expect(idx).toBeGreaterThan(0)
-    const branch = SRC.slice(idx, idx + 700)
-    expect(branch).toMatch(/writeScheduledRunSnapshot\(task\.name, taskBody/)
-    expect(branch).toMatch(/wrapScheduledTaskByReference\(/)
-    // Write failure falls back to the inline wrap, never drops the task (test 11).
-    expect(branch).toMatch(/wrapScheduledTask\(`scheduled-task:\$\{task\.name\}`, taskBody\)/)
+  it('builds the block through buildScheduledTaskBlock with the resolved host', () => {
+    expect(SRC).toMatch(/const \{ block: scheduledTaskBlock \} = buildScheduledTaskBlock\(task\.name, taskBody, host, now\)/)
   })
 
   it('the fullPrompt still starts with SCHEDULED_TASK_PREAMBLE and the prefix, unchanged', () => {
     expect(SRC).toMatch(/const fullPrompt =\s*\n\s*SCHEDULED_TASK_PREAMBLE \+ '\\n' \+\s*\n\s*prefix\.trimEnd\(\) \+ '\\n\\n' \+\s*\n\s*scheduledTaskBlock/)
+  })
+})
+
+describe('buildScheduledTaskBlock (#1396 review: remote host, rejected reference)', () => {
+  const big = 'x'.repeat(SCHEDULED_TASK_INLINE_MAX_CHARS + 1)
+  const snapPath = '/opt/marveen/store/scheduled-runs/20260921-160000-kanban-audit-a3f9.md'
+  function deps(valid = true) {
+    return {
+      writeSnapshot: vi.fn(() => ({ filePath: snapPath, sha256: 'a'.repeat(64), chars: big.length })),
+      isValidReference: vi.fn(() => valid),
+    }
+  }
+
+  it('control: a LOCAL agent with a big body takes the reference path', () => {
+    const d = deps()
+    const r = buildScheduledTaskBlock('kanban-audit', big, null, Date.now(), d)
+    expect(r.delivery).toBe('reference')
+    expect(r.block).toContain(`body-file="${snapPath}"`)
+    expect(d.writeSnapshot).toHaveBeenCalledTimes(1)
+  })
+
+  it('a REMOTE agent with a big body goes inline and never touches the snapshot branch', () => {
+    const d = deps()
+    const r = buildScheduledTaskBlock('kanban-audit', big, 'laptop', Date.now(), d)
+    expect(r.delivery).toBe('inline')
+    expect(d.writeSnapshot).not.toHaveBeenCalled()
+    expect(r.block).not.toContain('body-file=')
+    expect(r.block).toContain(big)
+  })
+
+  it('a snapshot whose path fails validation is delivered inline, not referenced', () => {
+    const d = deps(false)
+    const r = buildScheduledTaskBlock('kanban-audit', big, null, Date.now(), d)
+    expect(d.isValidReference).toHaveBeenCalledWith(snapPath)
+    expect(r.delivery).toBe('inline')
+    expect(r.block).not.toContain('body-file=')
+  })
+
+  it('a failed snapshot write falls back inline (test 11)', () => {
+    const d = { writeSnapshot: vi.fn(() => null), isValidReference: vi.fn(() => true) }
+    const r = buildScheduledTaskBlock('kanban-audit', big, null, Date.now(), d)
+    expect(r.delivery).toBe('inline')
+    expect(d.isValidReference).not.toHaveBeenCalled()
+  })
+
+  it('a small body stays inline without writing a snapshot', () => {
+    const d = deps()
+    const r = buildScheduledTaskBlock('ledger-live-drain', 'kicsi', null, Date.now(), d)
+    expect(r.delivery).toBe('inline')
+    expect(d.writeSnapshot).not.toHaveBeenCalled()
+  })
+})
+
+describe('size-guard routing (#1396 review: no owner-channel send)', () => {
+  const start = SRC.indexOf('function maybeSendSizeGuardNotice(')
+  const body = SRC.slice(start, SRC.indexOf('\n}\n', start))
+
+  it('both tiers notify the main agent as an inter-agent message', () => {
+    expect(start).toBeGreaterThan(0)
+    expect(body.match(/createAgentMessage\('system', MAIN_AGENT_ID,/g)?.length).toBe(2)
+  })
+
+  it('never sends to the owner channel', () => {
+    expect(body).not.toMatch(/sendSchedulerAlertMessage|resolveSchedulerOwnerChat|resolveSchedulerAlertToken/)
   })
 })

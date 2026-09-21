@@ -1,4 +1,4 @@
-import { describe, expect, it, afterEach } from 'vitest'
+import { describe, expect, it, afterEach, vi } from 'vitest'
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,7 +8,9 @@ import {
   parseSnapshotFilename,
   selectSnapshotsToDelete,
   sweepScheduledRunSnapshots,
+  isScheduledRunReference,
 } from '../web/scheduled-run-snapshot.js'
+import { logger } from '../logger.js'
 
 // SCHEDPROMPTREF917: fire-time snapshot for reference-based scheduled-task
 // delivery (spec 5, tests 2/4/6/9/11). See docs/scheduled-tasks.md.
@@ -171,5 +173,54 @@ describe('sweepScheduledRunSnapshots (integration over real files)', () => {
 
   it('is a no-op on a missing directory', () => {
     expect(sweepScheduledRunSnapshots(join(tmpdir(), 'does-not-exist-' + Date.now()), Date.now())).toEqual([])
+  })
+})
+
+describe('isScheduledRunReference (#1396 review: body-file restricted to store/scheduled-runs/)', () => {
+  const dir = '/opt/marveen/store/scheduled-runs'
+  const good = `${dir}/20260921-160000-kanban-audit-a3f9.md`
+
+  afterEach(() => vi.restoreAllMocks())
+
+  it('accepts a snapshot the runner itself would write', () => {
+    expect(isScheduledRunReference(good, dir)).toBe(true)
+  })
+
+  it('accepts a real snapshot written into the dir', () => {
+    const d = tmpDir('snapref-')
+    const snap = writeScheduledRunSnapshot('kanban-audit', 'x'.repeat(2000), { dir: d })
+    expect(isScheduledRunReference(snap!.filePath, d)).toBe(true)
+  })
+
+  it('REJECTS and logs a ../ path that climbs out of the directory', () => {
+    const warn = vi.spyOn(logger, 'warn')
+    const bad = `${dir}/../../../etc/passwd`
+    expect(isScheduledRunReference(bad, dir)).toBe(false)
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ filePath: bad }),
+      expect.stringContaining('scheduled-run reference rejected'),
+    )
+  })
+
+  it('REJECTS and logs an absolute path outside the directory', () => {
+    const warn = vi.spyOn(logger, 'warn')
+    const bad = '/home/node/.claude/secrets/20260921-160000-kanban-audit-a3f9.md'
+    expect(isScheduledRunReference(bad, dir)).toBe(false)
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ filePath: bad }),
+      expect.stringContaining('scheduled-run reference rejected'),
+    )
+  })
+
+  it('rejects a ../ segment even when it resolves back inside the directory', () => {
+    expect(isScheduledRunReference(`${dir}/../scheduled-runs/20260921-160000-kanban-audit-a3f9.md`, dir)).toBe(false)
+  })
+
+  it('rejects a relative path, a subdirectory, a sibling prefix dir and a non-snapshot name', () => {
+    expect(isScheduledRunReference('store/scheduled-runs/20260921-160000-kanban-audit-a3f9.md', dir)).toBe(false)
+    expect(isScheduledRunReference(`${dir}/sub/20260921-160000-kanban-audit-a3f9.md`, dir)).toBe(false)
+    expect(isScheduledRunReference(`${dir}-evil/20260921-160000-kanban-audit-a3f9.md`, dir)).toBe(false)
+    expect(isScheduledRunReference(`${dir}/notes.md`, dir)).toBe(false)
+    expect(isScheduledRunReference(dir, dir)).toBe(false)
   })
 })

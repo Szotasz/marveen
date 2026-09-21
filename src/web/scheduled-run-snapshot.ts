@@ -15,7 +15,7 @@
 // made rarer.
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync, renameSync, chmodSync } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
-import { join } from 'node:path'
+import { join, isAbsolute, relative, resolve, sep } from 'node:path'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 import { scrubSecurityTags } from '../prompt-safety.js'
@@ -56,6 +56,26 @@ export function parseSnapshotFilename(filename: string): { timestampSegment: str
   const m = SNAPSHOT_FILENAME_RX.exec(filename)
   if (!m) return null
   return { timestampSegment: m[1], taskName: m[2] }
+}
+
+// A body-file reference is granted inline-level trust (SCHEDULED_TASK_PREAMBLE),
+// so the runner only ever sends one that points at a snapshot it could have
+// written itself: an absolute path, no `..` segment, a direct child of
+// SCHEDULED_RUNS_DIR, in the filename shape buildSnapshotFilename produces.
+// Anything else is REJECTED and logged with the offending path -- never
+// silently skipped -- and the caller delivers the task inline instead.
+export function isScheduledRunReference(filePath: string, dir: string = SCHEDULED_RUNS_DIR): boolean {
+  const reject = (reason: string): boolean => {
+    logger.warn({ filePath, dir, reason }, 'scheduled-run reference rejected: body-file must be a snapshot under store/scheduled-runs/')
+    return false
+  }
+  if (!isAbsolute(filePath)) return reject('not an absolute path')
+  if (filePath.split(/[\\/]/).includes('..')) return reject('contains a .. segment')
+  const rel = relative(resolve(dir), resolve(filePath))
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return reject('outside the scheduled-runs directory')
+  if (rel.includes(sep) || rel.includes('/')) return reject('not a direct child of the scheduled-runs directory')
+  if (!parseSnapshotFilename(rel)) return reject('not a snapshot filename')
+  return true
 }
 
 export interface ScheduledRunSnapshot {
