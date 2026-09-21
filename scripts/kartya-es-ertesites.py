@@ -21,6 +21,10 @@ A felado MINDKET modban KIMONDOTT (KARTYAKULDO908, 2026-09-08): a letrehozo agon
 --from kell, kulonben megtagadas. Korabban csendben 'marveen' lett belole.
 Az onmagunknak (marveen) vagy a gazdanak (szabolcs) szolo kartya ertesites nelkul is mehet:
 ott a --no-msg kapcsolo kell, KIMONDVA.
+A GAZDANAK --msg-file-lal is lehet kartyat adni, de az ertesites NEM megy ki (GAZDAUZENET921,
+2026-09-21): a gazda nem agens, nincs sessionje, a sor mindig failed lett (19/19), es az eszkoz
+megis zold UZENET OK-ot irt, mert a sort olvasta vissza, nem a kezbesitest. Most a kimenet
+KIMONDJA a hianyt (FIGYELEM-sor, dry-runban is), es a kartya-nyom is ezt rogziti.
 
 A KULDO NEVE (KARTYAKULDO906, Boni lelete 20254): az ertesites feladoja a --from, alapertelmezese
 az --author kisbetusitve. Korabban a from HARDCODE 'marveen' volt, tehat az eszkoz MINDEN agens
@@ -133,6 +137,22 @@ GAZDA = 'szabolcs'
 # tobbsegi nem-flotta ertek kulso GitHub-felhasznalonev (PR-kartyak szerzoi). Ezert a nem-ismert
 # nev nem automatikusan hiba -- lasd _felelos_feloldas.
 ISMERT_FELELOSOK = FLEET | {COORDINATOR, GAZDA}
+
+
+def _gazda_figyelmeztetes(conn):
+    """A gazdanak cimzett inter-agent ertesites SZERKEZETILEG nem kezbesitheto (GAZDAUZENET921,
+    2026-09-21): a gazda nem agens, nincs tmux-sessionje, amibe a router beirhatna. Merve a teljes
+    tortenetben: 19 failed / 0 delivered. Az eszkoz korabban itt is zold `UZENET OK`-ot irt, mert a
+    SORT olvasta vissza, nem a kezbesitest -- ugyanaz a csalad, mint a tool_call_log.success
+    (TOOLLOGVAKSIKER921). A szamot a hivas pillanataban UGYANABBOL a DB-bol merjuk, nem beirt
+    konstanskent, hogy a figyelmeztetes akkor is igazat mondjon, ha a viszony egyszer megvaltozik."""
+    f, d, n = conn.execute(
+        "SELECT COALESCE(SUM(status='failed'),0), COALESCE(SUM(status='delivered'),0), COUNT(*)"
+        " FROM agent_messages WHERE to_agent=?", (GAZDA,)).fetchone()
+    return (f'FIGYELEM: a felelos a GAZDA ({GAZDA}), es a gazdanak NINCS agens-sessionje, tehat az\n'
+            f'inter-agent ertesites NEM lesz kezbesitve (a sorban eddig {n} gazda-cimzettu uzenet:\n'
+            f'{f} failed, {d} delivered). Az uzenetet NEM kuldom ki. A gazdahoz TELEGRAMON szolj,\n'
+            f'vagy a fo-agens viszi ele kotegben -- a kartya letrejon, csak ertesites nelkul.')
 
 
 def _felelos_feloldas(nyers):
@@ -778,7 +798,10 @@ def main():
             # pont ezt meri): ha a ket ag MAS okot mond ugyanarra, az olvasoja nem tudja
             # eldonteni, hogy ugyanaz a kapu fogta-e meg.
             sys.exit(f'MEGTAGADVA: a(z) {a.id} kartya MAR LETEZIK.')
-        if msg:
+        if msg and who == GAZDA:
+            dbro2 = sqlite3.connect(f'file:{_db_kapu()}?mode=ro', uri=True)
+            print(_gazda_figyelmeztetes(dbro2)); dbro2.close()
+        elif msg:
             _token_kapu(dry_run=True)
         print(f'DRY-RUN OK (DB: {DB}): minden ellenorzes atment (a letezes- es a token-kaput is'
               f' beleertve).\n  id={a.id} gazda={who} statusz={a.status} '
@@ -800,6 +823,20 @@ def main():
     # 5. uzenet + VISSZAOLVASAS
     if not msg:
         print('uzenet: kihagyva (--no-msg)'); return
+    if who == GAZDA:
+        # GAZDA-KAPU (GAZDAUZENET921): nem POST-olunk egy sort, amirol tudjuk, hogy failed lesz --
+        # a zold `UZENET OK` pont ezt a sort olvasta vissza. A kanban-audit kikuldes-detektora a
+        # felelostol JOVO uzeneteket nezi (from_agent = assignee), nem a neki cimzetteket, tehat a
+        # kihagyott sor ott sem hianyzik.
+        print(_gazda_figyelmeztetes(db))
+        db.execute('INSERT INTO kanban_comments (card_id,author,content,created_at) VALUES (?,?,?,?)',
+                   (a.id, 'kartya-es-ertesites',
+                    f'[kartya-es-ertesites.py] A kartya letrejott, az ertesites NEM ment ki: a felelos a '
+                    f'gazda ({GAZDA}), akinek nincs agens-sessionje, az inter-agent uzenet szerkezetileg nem '
+                    f'kezbesitheto. A gazdahoz Telegramon kell szolni. A kartya visszaolvasva.', now))
+        db.commit()
+        print('NYOM OK: kartya-komment arrol, hogy ertesites NEM ment (gazda-cimzett)')
+        return
     # ONHUROK (Boni 20254): a sajat magara osztott kartya ertesitese visszaert a keszitohoz, es egy
     # fordulojaba kerult, mire kiderult, hogy a sajat szoveget kapta vissza. Nem elhagyjuk az uzenetet
     # (a kartya akkor nema lenne), hanem a KOORDINATORHOZ iranyitjuk -- kimondva.
