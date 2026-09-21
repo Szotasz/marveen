@@ -22,7 +22,8 @@ hook adds NO new state model -- it reuses ledger_lib.open_question_with_age):
   - If this same message_id has already been blocked MAX_BLOCKS times -> allow;
     a hard backstop so a wedged model can never be trapped in an infinite loop.
   - Otherwise -> BLOCK with a directive telling the model to send the reply via
-    mcp__plugin_telegram_telegram__reply(chat_id=...) before stopping.
+    THIS install's channel reply tool (resolved from CHANNEL_PROVIDER; see
+    _channel_provider) with chat_id=..., before stopping.
 
 Safety: any error -> allow the stop (exit 0). A guard hook must never wedge the
 session. agent_id is derived from the session cwd, so it is generic across all
@@ -69,6 +70,71 @@ def _is_ack(text):
     if not tokens:
         return True  # emoji-only acknowledgement
     return all(tok in _ACK_WORDS for tok in tokens)
+
+
+_CHANNEL_PROVIDERS = ("telegram", "discord", "slack", "googlechat", "teams")
+
+# A plugin key can be named for the provider without matching the MCP tool
+# prefix (slack-channel@... serves mcp__plugin_slack_channel_...), so the
+# provider name is what CHANNEL_PROVIDER states, not what a key happens to spell.
+_PROVIDER_ALIASES = {"slack-channel": "slack"}
+
+
+def _channel_provider():
+    """Which channel this install actually speaks on.
+
+    CHANNEL_PROVIDER in the env, then the install-dir .env -- the same resolution
+    order ledger_lib.main_agent_id()/owner_name() already use, and the only source
+    that is right regardless of how the plugins got enabled.
+
+    Only if that is missing do we fall back to enabledPlugins. That fallback reads
+    the PROJECT settings file, because this fleet runs with an isolated
+    CLAUDE_CONFIG_DIR: ~/.claude/settings.json is NOT the active user settings
+    here, and reading it was wrong even when it happened to agree. The fallback is
+    also order-dependent (a settings file listing telegram before discord picks
+    telegram), which is exactly why .env wins.
+    """
+    v = os.environ.get("CHANNEL_PROVIDER")
+    if v and v.strip():
+        return v.strip().lower()
+    try:
+        with open(os.path.join(ledger_lib._install_dir(), ".env")) as f:
+            for line in f:
+                if line.startswith("CHANNEL_PROVIDER="):
+                    name = line.split("=", 1)[1].strip()
+                    if name:
+                        return name.lower()
+    except Exception:
+        pass
+    try:
+        import json as _json
+        base = os.environ.get("CLAUDE_PROJECT_DIR") or ledger_lib._install_dir()
+        with open(os.path.join(base, ".claude", "settings.json")) as f:
+            enabled = _json.load(f).get("enabledPlugins") or {}
+        for key, on in enabled.items():
+            if not on:
+                continue
+            name = str(key).split("@", 1)[0].strip().lower()
+            name = _PROVIDER_ALIASES.get(name, name)
+            if name in _CHANNEL_PROVIDERS:
+                return name
+    except Exception:
+        pass
+    return ""
+
+
+def _reply_tool_name():
+    """Name the reply tool of the channel plugin THIS install actually speaks on.
+
+    The guard used to hardcode the Telegram tool name. On a Discord-only install
+    that directive named a tool that does not exist in the session, so the model
+    could not comply and the guard blocked on a message it had in fact answered.
+    """
+    provider = _channel_provider()
+    if provider in _CHANNEL_PROVIDERS:
+        return f"mcp__plugin_{provider}_{provider}__reply", provider
+    # Unknown/absent provider: name no specific tool rather than a wrong one.
+    return "a csatorna reply tool", "csatorna"
 
 
 def _statefile(agent_id):
@@ -138,12 +204,15 @@ def main():
     if len(snippet) > 160:
         snippet = snippet[:157] + "..."
 
+    reply_tool, provider = _reply_tool_name()
+    label = provider.upper()
+
     reason = (
-        f"⚠️ VÁLASZOLATLAN TELEGRAM-ÜZENET (chat_id={chat_id}): \"{snippet}\"\n"
-        f"A fordulót NEM zárhatod le, amíg NEM küldtél Telegram-választ a "
-        f"mcp__plugin_telegram_telegram__reply toolon keresztül (chat_id={chat_id}). "
+        f"⚠️ VÁLASZOLATLAN {label}-ÜZENET (chat_id={chat_id}): \"{snippet}\"\n"
+        f"A fordulót NEM zárhatod le, amíg NEM küldtél csatorna-választ a "
+        f"{reply_tool} toolon keresztül (chat_id={chat_id}). "
         f"A sima szöveges (assistant text) kimenet NEM jut el a felhasználóhoz -- "
-        f"ő csak a Telegramot látja. Küldd el a választ a reply toollal MOST, "
+        f"ő csak a(z) {provider} csatornát látja. Küldd el a választ a reply toollal MOST, "
         f"utána zárhatod a fordulót."
     )
     print(json.dumps({"decision": "block", "reason": reason}))
