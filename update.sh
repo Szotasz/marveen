@@ -125,14 +125,14 @@ resolve_service_node_dir() {
       done
     fi
     [ -z "$exe" ] && [ -r "/proc/$pid/exe" ] && exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null)"
-    if [ -n "$exe" ] && [ -x "$exe" ]; then dirname "$exe"; return 0; fi
+    if [ -n "$exe" ] && [ -x "$exe" ]; then printf '%s\texe\n' "$(dirname "$exe")"; return 0; fi
   fi
   local want=""
   [ -f "$INSTALL_DIR/.nvmrc" ] && want="$(tr -d ' \n' < "$INSTALL_DIR/.nvmrc")"
   if [ -n "$want" ] && [ -s "$HOME/.nvm/nvm.sh" ]; then
     local cand
     cand="$(ls -d "$HOME"/.nvm/versions/node/v"$want"* 2>/dev/null | sort -V | tail -n1)"
-    [ -n "$cand" ] && [ -x "$cand/bin/node" ] && { echo "$cand/bin"; return 0; }
+    [ -n "$cand" ] && [ -x "$cand/bin/node" ] && { printf '%s\tnvmrc\n' "$cand/bin"; return 0; }
   fi
   # Homebrew keg-only node@N. Without this, a Mac that installs node via brew
   # (no ~/.nvm at all) has no way to reach the pinned major while the service
@@ -140,15 +140,36 @@ resolve_service_node_dir() {
   if [ -n "$want" ]; then
     local brew_dir
     for brew_dir in /opt/homebrew/opt/node@"$want"/bin /usr/local/opt/node@"$want"/bin; do
-      [ -x "$brew_dir/node" ] && { echo "$brew_dir"; return 0; }
+      [ -x "$brew_dir/node" ] && { printf '%s\tbrew\n' "$brew_dir"; return 0; }
     done
   fi
   return 1
 }
-NODE_PIN_DIR="$(resolve_service_node_dir || true)"
+# The resolver returns "<dir>\t<source>". The source decides what we may CLAIM
+# (NODEPINMAC921, 2026-09-21, external report + own re-measure): on macOS the
+# exe detection routinely comes back empty (ps -o comm= gives a bare "node",
+# /proc does not exist, lsof can be unavailable), so the pin falls back to
+# .nvmrc -- and this block used to print "matches the running dashboard"
+# regardless. That sentence was not measured in the fallback branches. The
+# reporter lost 16 hours of scheduler time to it: better-sqlite3 was built
+# for the .nvmrc node while launchd started the service with another major.
+# The pin itself is unchanged; only the false confirmation goes.
+_node_pin="$(resolve_service_node_dir || true)"
+NODE_PIN_DIR="${_node_pin%%$'\t'*}"
+NODE_PIN_SOURCE="${_node_pin#*$'\t'}"
+[ "$NODE_PIN_SOURCE" = "$_node_pin" ] && NODE_PIN_SOURCE=""
 if [ -n "$NODE_PIN_DIR" ] && [ -x "$NODE_PIN_DIR/node" ]; then
   export PATH="$NODE_PIN_DIR:$PATH"
-  echo -e "  ${DIM}Node pin: $(node -v) (matches the running dashboard, better-sqlite3 ABI)${NC}"
+  case "$NODE_PIN_SOURCE" in
+    exe)
+      echo -e "  ${DIM}Node pin: $(node -v) (matches the running dashboard, better-sqlite3 ABI)${NC}" ;;
+    nvmrc)
+      echo -e "  ${DIM}Node pin: $(node -v) (from .nvmrc via nvm -- the running dashboard's node exe could NOT be detected, so this is not a measured match; if the service unit starts a different node major, better-sqlite3 will not load)${NC}" ;;
+    brew)
+      echo -e "  ${DIM}Node pin: $(node -v) (from Homebrew node@$(tr -d ' \n' < "$INSTALL_DIR/.nvmrc" 2>/dev/null) -- the running dashboard's node exe could NOT be detected, so this is not a measured match; if the service unit starts a different node major, better-sqlite3 will not load)${NC}" ;;
+    *)
+      echo -e "  ${DIM}Node pin: $(node -v) (source unknown -- not a measured match with the running dashboard)${NC}" ;;
+  esac
 fi
 
 # Pidfile gate. The dashboard's /api/updates/apply creates
