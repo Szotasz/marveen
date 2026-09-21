@@ -13,6 +13,14 @@
 #   large / multi-line content may come from STDIN when the 3rd arg is "-":
 #     echo "<long text>" | bash scripts/agent-msg.sh <from> <to> -
 # Output: success -> "OK id=<n>"; failure -> "FAIL <reason>" + a line in store/agent-msg-failures.log, exit 1.
+#
+# LOG FORMAT, store/agent-msg-failures.log (tab-separated, one line per failure):
+#   <YYYY-MM-DD HH:MM:SS>  FAIL  from=<a>  to=<b>  url=<endpoint>  http=<code>  resp=<first 200 bytes>
+# CHANGED 2026-09: the `url=` field is NEW. It was added together with the
+# env-overridable base URL, because from that point a failure can mean "posted to
+# the wrong address" and the old line could not distinguish that from a dead
+# server. A parser written against the pre-2026-09 format sees one extra field;
+# parse by the `key=` names, not by position.
 # Env:
 #   MARVEEN_API_BASE   full base URL, e.g. https://marveen.example.com (overrides host+port)
 #   MARVEEN_WEB_PORT   port for the default localhost base (default 3420)
