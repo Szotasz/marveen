@@ -37,6 +37,9 @@ const EXPECTED: Record<string, string[]> = {
     'ledger-outbound.py', 'tool-log-capture.py',
     'telegram_progress_reply_clear.py', 'skill-usage-capture.py',
   ],
+  // A failed tool call fires PostToolUseFailure, never PostToolUse
+  // (TOOLLOGVAKSIKER921): without this entry tool_call_log cannot hold a 0.
+  PostToolUseFailure: ['tool-log-capture.py'],
   PreToolUse: [
     'outgoing-copy-gate.py', 'email-approval-gate.py',
     'channel-image-resize.sh', 'egress-gate.mjs', 'memory-frontmatter-gate.py',
