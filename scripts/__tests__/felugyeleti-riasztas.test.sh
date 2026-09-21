@@ -166,10 +166,16 @@ t = threading.Thread(target=drain); t.start()
 for _ in range(100):
     if os.path.exists(os.path.join(P,"ready")): break
     time.sleep(0.2)
+stop.set(); t.join(); os.close(master)
+# A PILLANATKEP A HANGUP UTAN KESZUL, NEM ELOTTE. Elobb keszitve a meg elo, de
+# mar halalra itelt gyerek a pillanatkep es a tenyleges halala KOZOTT meg irt
+# nehany sort, es ettol a "mar nem ir" allitas idozites-fuggoen pirosodott
+# (Linuxon el is bukott). Igy a mero ablaka olyan, amiben egy halott folyamat
+# BIZTOSAN nem nohet.
+time.sleep(2)
 for n in ("regi","uj"):
     open(os.path.join(P, f"hb0-{n}"), "w").write(open(os.path.join(P, f"hb-{n}")).read())
-stop.set(); t.join(); os.close(master)
-time.sleep(3)
+time.sleep(2)
 PY
   el() { local n="$1"; local p; p="$(cat "$P/pid-$n" 2>/dev/null)"; [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
   nott() { local n="$1"; [ "$(wc -l < "$P/hb-$n")" -gt "$(wc -l < "$P/hb0-$n")" ]; }
@@ -188,13 +194,59 @@ fi
 U="$(cat "$ROOT/update.sh")"
 check "7 a systemd-ag setsid-del inditja a finalizert" \
   "$(grep -q 'setsid systemd-run --user --scope' <<<"$U" && echo 0 || echo 1)"
-check "7 a finalizer minden aga fajlba naplóz (FINALIZE_LOG)" \
-  "$([ "$(grep -c 'FINALIZE_LOG' <<<"$U")" -ge 4 ] && echo 0 || echo 1)" \
-  "FINALIZE_LOG elofordulas: $(grep -c 'FINALIZE_LOG' <<<"$U")"
-check "7 a generalt finalizer ellenorzi, hogy az enabled unitok ACTIVE-ak" \
-  "$(grep -q '_unit_drift' <<<"$U" && echo 0 || echo 1)"
-check "7 a drift JELENT, nem buktat (a sikeres ag exit-kodja 0 marad)" \
-  "$(grep -q '_finish success restart 0 "A frissites lement' <<<"$U" && echo 0 || echo 1)"
+# A DARABSZAM-KUSZOB TUL LAZA VOLT: egyetlen redirect kivetele MEGSEM pirosodott
+# (zold mutans). Most az INDITO sorokat szamoljuk, es MINDEGYIKNEK naplóznia kell.
+# KET SZAMOT VETUNK OSSZE, ES EZ SZANDEKOS: az INDITO helyek szama es a NAPLO-REDIRECTEK
+# szama. Az elso valtozat sor-alapon szamolt, es a folytatott sorok miatt alulmert; a
+# masodik osszehuzta a sorokat, es akkor a `||` fallback EGY sorba kerult az elsodlegessel,
+# tehat egy kivett redirect MEGSEM latszott (zold mutans). A darabszam-egyezes mindkettot
+# elkapja: ha barmelyik indito elveszti a naplózast, a ket szam eltavolodik.
+indit="$(grep -c 'bash "\$FINALIZE_SCRIPT" "\${FINALIZE_ARGS\[@\]}"' <<<"$U")"
+naploz="$(grep -c '>> "\$FINALIZE_LOG" 2>&1' <<<"$U")"
+check "7 MINDEN finalizer-indito a naplóba ir (indito: $indit, redirect: $naploz)" \
+  "$([ "$indit" -gt 0 ] && [ "$indit" = "$naploz" ] && echo 0 || echo 1)"
+check "7 egyetlen indito sem dobja el a kimenetet (/dev/null)" \
+  "$(grep 'FINALIZE_SCRIPT" "\${FINALIZE_ARGS\[@\]}"' <<<"$U" | grep -q '> /dev/null 2>&1' && echo 1 || echo 0)"
+# A GENERALT FINALIZERT FUTTATJUK, NEM A FORRASAT OLVASSUK. A puszta `grep _unit_drift`
+# gyenge volt: a HIVAS kivetele (a fuggvenyt a helyen hagyva) MEGSEM pirosodott.
+F="$SANDBOX/fin"; mkdir -p "$F/store" "$F/scripts" "$F/bin"
+python3 - "$ROOT/update.sh" "$F/finalize.sh" <<'EXTRACT'
+import sys
+src = open(sys.argv[1], encoding='utf-8').read()
+i = src.index("cat > \"$FINALIZE_SCRIPT\" <<'FINALIZE_EOF'")
+j = src.index("\nFINALIZE_EOF\n", i)
+open(sys.argv[2], 'w', encoding='utf-8').write(src[i:j].split('\n', 1)[1] + '\n')
+EXTRACT
+printf 'MAIN_AGENT_ID=teszt\n' > "$F/.env"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$F/scripts/stop.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$F/scripts/start.sh"
+chmod +x "$F/scripts/stop.sh" "$F/scripts/start.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$F/bin/curl"          # _health: a port valaszol
+printf '#!/usr/bin/env bash\nexit 0\n' > "$F/bin/pidof"         # systemd fut
+cat > "$F/bin/systemctl" <<'SC'
+#!/usr/bin/env bash
+# cat -> a unit letezik; is-enabled -> igen; is-active -> a DRIFT_ACTIVE dönti el
+case "${1:-}" in
+  cat) exit 0 ;;
+  is-enabled) exit 0 ;;
+  is-active) [ "${DRIFT_ACTIVE:-1}" = "1" ] && exit 0 || exit 3 ;;
+esac
+exit 0
+SC
+chmod +x "$F/bin/curl" "$F/bin/pidof" "$F/bin/systemctl"
+fin_run() {  # fin_run <DRIFT_ACTIVE>
+  ( cd "$F" && env PATH="$F/bin:$PATH" DRIFT_ACTIVE="$1" \
+      bash "$F/finalize.sh" "$F" "" "" 3420 "$F/store/res.json" "$F/store/built" "" "" 0 ) 2>&1
+}
+out="$(fin_run 0)"; rc_drift=$?
+check "7 a finalizer KIMONDJA, ha egy enabled unit nem active" \
+  "$(grep -q 'NEM active unit' <<<"$out" && echo 0 || echo 1)" "$(printf '%s' "$out" | tail -1)"
+check "7 a drift a RESULT-ba is bekerul, nem csak a stderr-re" \
+  "$(grep -q 'felugyelet nem ervenyes' "$F/store/res.json" 2>/dev/null && echo 0 || echo 1)"
+check "7 a drift JELENT, nem buktat (exit 0 marad)" "$([ "$rc_drift" = "0" ] && echo 0 || echo 1)" "rc=$rc_drift"
+out="$(fin_run 1)"
+check "7 ha minden unit active, NINCS drift-uzenet (nincs hamis riasztas)" \
+  "$(grep -q 'NEM active unit' <<<"$out" && echo 1 || echo 0)"
 
 echo
 [ "$SKIPS" -gt 0 ] && echo "($SKIPS eset kihagyva -- lasd a SKIP sorokat)"
