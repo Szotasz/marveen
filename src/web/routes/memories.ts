@@ -9,6 +9,7 @@ import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import type { HybridSearchTrace } from '../../db.js'
+import { agentTokenIdentityViolation } from '../agent-token-scope.js'
 import type { RouteContext } from './types.js'
 
 // Canonical memory categories. Kept in sync with the DB CHECK constraint in
@@ -33,7 +34,7 @@ function containsSuspiciousContent(content: string): boolean {
 }
 
 export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
-  const { req, res, path, method, url } = ctx
+  const { req, res, path, method, url, auth } = ctx
 
   if (path === '/api/memories' && method === 'POST') {
     const body = await readBody(req)
@@ -42,6 +43,17 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     if (containsSuspiciousContent(data.content)) {
       logger.warn({ agent: data.agent_id }, 'Memory content rejected: suspicious pattern')
       json(res, { error: 'Content rejected by security filter' }, 400)
+      return true
+    }
+    // Identity binding for scoped agent tokens (TOKENSZUKITES909). The memory
+    // store is read back as the agent's own recall, so an unbound agent_id would
+    // let a remote agent file text under the MAIN agent's name -- attribution
+    // laundering on the one surface that feeds straight into a prompt. An
+    // OMITTED agent_id resolves to the token's agent, never to MAIN_AGENT_ID.
+    const memViolation = agentTokenIdentityViolation(auth, data.agent_id, 'agent_id')
+    if (memViolation) {
+      logger.warn({ claimed: data.agent_id, agent: auth?.agent }, 'agent token: rejected /api/memories POST with foreign agent_id')
+      json(res, { error: memViolation }, 403)
       return true
     }
     if (data.tier && !data.category) {
@@ -53,7 +65,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const result = saveAgentMemory(
-      data.agent_id || MAIN_AGENT_ID,
+      data.agent_id || (auth?.kind === 'agent' ? auth.agent! : MAIN_AGENT_ID),
       data.content.trim(),
       category,
       data.keywords || undefined,

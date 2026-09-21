@@ -7,8 +7,10 @@ import { runLsof } from './lsof.js'
 import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID } from './config.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
+import { agentTokenAllows } from './web/agent-token-scope.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
 import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
+import { sweepExpiredAgentTokens } from './web/auth-agent-tokens.js'
 import { isBlockedCrossOriginWrite, originMatchesServedHost } from './web/csrf-origin.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
@@ -161,10 +163,22 @@ export function startWebServer(port = 3420): http.Server {
       res.end(JSON.stringify({ error: 'Unauthorized' }))
       return
     }
+    // Scoped agent tokens are default-deny: the principal authenticated, but a
+    // request outside its scope stops HERE, before any route sees it. Central
+    // on purpose -- a route added later is out of scope until someone widens a
+    // profile in agent-token-scope.ts, instead of silently inheriting access.
+    if (auth.kind === 'agent' && requiresAuth(path, method) && !agentTokenAllows(auth.scope, path, method)) {
+      logger.warn({ agent: auth.agent, scope: auth.scope, path, method }, 'agent token: out-of-scope request denied')
+      res.writeHead(403, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: `Out of scope for this agent token (scope: ${auth.scope})` }))
+      return
+    }
+
     const fedPeerForCtx: string | null = auth.kind === 'federation' ? auth.peer : null
     const ctxAuth =
       auth.kind === 'token' ? { kind: 'token' as const }
       : auth.kind === 'device' ? { kind: 'device' as const, device: auth.device, deviceId: auth.deviceId }
+      : auth.kind === 'agent' ? { kind: 'agent' as const, agent: auth.agent, tokenId: auth.tokenId }
       : auth.kind === 'session' ? { kind: 'session' as const, user: auth.user }
       : auth.kind === 'federation' ? { kind: 'federation' as const, peer: auth.peer }
       : undefined
@@ -495,6 +509,8 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       if (swept > 0) logger.info({ swept }, 'Expired auth sessions swept')
       const sweptKeys = sweepExpiredDeviceKeys()
       if (sweptKeys > 0) logger.info({ swept: sweptKeys }, 'Expired device keys swept')
+      const sweptAgentTokens = sweepExpiredAgentTokens()
+      if (sweptAgentTokens > 0) logger.info({ swept: sweptAgentTokens }, 'Expired agent tokens swept')
     } catch (err) {
       logger.warn({ err }, 'Auth session sweep failed')
     }

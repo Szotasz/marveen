@@ -13,6 +13,7 @@ import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coordinator/ingest.js'
 import { SYSTEM_DIRECTIVE_SENDER } from '../system-directive.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
+import { agentTokenIdentityViolation } from '../agent-token-scope.js'
 import { isKnownAgent } from '../agent-config.js'
 import { MAIN_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
 import { isAgentRunning } from '../agent-process.js'
@@ -116,8 +117,20 @@ export function attachFreshness(messages: AgentMessage[]): AgentMessageWithFresh
   }))
 }
 
+// Is this agent a party to the message -- sender or recipient? The `to` side
+// may carry a federation qualifier ("peer/agent"), so compare the agent segment.
+function isMessageParty(msg: { from_agent?: string; to_agent?: string }, agent: string): boolean {
+  const me = sanitizeAgentIdent(agent)
+  const party = (raw: string | undefined): boolean => {
+    if (!raw) return false
+    const seg = raw.includes('/') ? raw.slice(raw.lastIndexOf('/') + 1) : raw
+    return sanitizeAgentIdent(seg) === me
+  }
+  return party(msg.from_agent) || party(msg.to_agent)
+}
+
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
-  const { req, res, path, method, url } = ctx
+  const { req, res, path, method, url, auth } = ctx
 
   if (path === '/api/messages' && method === 'POST') {
     const body = await readBody(req)
@@ -125,6 +138,16 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       { from: string; to: string; content: string; origin_note?: string }
     if (!from?.trim() || !to?.trim() || !content?.trim()) {
       json(res, { error: 'from, to, and content are required' }, 400)
+      return true
+    }
+    // Identity binding for scoped agent tokens (TOKENSZUKITES909): the `from`
+    // claim is self-declared for every other caller, but a remote agent holding
+    // its own token may only speak in its own name. Without this it could post
+    // as the main agent and its words would arrive carrying that authority.
+    const fromViolation = agentTokenIdentityViolation(auth, from, 'from')
+    if (fromViolation) {
+      logger.warn({ claimed: from.trim(), agent: auth?.agent, to: to.trim() }, 'agent token: rejected /api/messages POST with foreign from')
+      json(res, { error: fromViolation }, 403)
       return true
     }
     // Security: the channel-coordinator id grants channel-inbound delivery
@@ -233,7 +256,14 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // device-key gated above, which is a STRONGER check than this one.
     const isVoiceChannelSender = sanitizeAgentIdent(from) === VOICE_CHANNEL_AGENT_ID
     const isSystemSender = SYSTEM_SENDERS.has(sanitizeAgentIdent(from))
-    if (!isOwnerSender && !isSystemSender && !isVoiceChannelSender && !isKnownAgent(sanitizeAgentIdent(from))) {
+    // A scoped agent token IS the registration for its own name, and a STRONGER
+    // claim than this check: the known-agent rule exists because the shared
+    // dashboard token lets any holder name any sender, while a bound token can
+    // only name the one agent it was minted for (checked above). It is also the
+    // case that matters -- a remote agent runs on ANOTHER machine and therefore
+    // has no agents/<id> directory here, by design.
+    const isBoundAgentSender = auth?.kind === 'agent' && sanitizeAgentIdent(from) === sanitizeAgentIdent(auth.agent ?? '')
+    if (!isOwnerSender && !isSystemSender && !isVoiceChannelSender && !isBoundAgentSender && !isKnownAgent(sanitizeAgentIdent(from))) {
       logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST from unregistered agent')
       json(res, { error: `unknown agent '${from.trim()}' -- from must be a registered fleet agent id` }, 403)
       return true
@@ -340,6 +370,13 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // Mailbox binding for scoped agent tokens (TOKENSZUKITES909). The list
+  // endpoint answers fleet-wide when no `agent` filter is given, and any agent
+  // id is accepted from anyone -- fine for the dashboard token, a disclosure of
+  // every other agent's traffic for a remote one. A bound token reads ONE
+  // mailbox: its own.
+  const mailboxOwner = auth?.kind === 'agent' ? (auth.agent ?? null) : null
+
   if (path === '/api/messages' && method === 'GET') {
     // An UNKNOWN filter param used to fall through to the global list: a typo,
     // or the plausible-but-wrong `agent_id`, silently returned the fleet's last
@@ -358,7 +395,16 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       }, 400)
       return true
     }
-    const agent = url.searchParams.get('agent') || ''
+    let agent = url.searchParams.get('agent') || ''
+    if (mailboxOwner) {
+      if (agent && sanitizeAgentIdent(agent) !== sanitizeAgentIdent(mailboxOwner)) {
+        logger.warn({ requested: agent, agent: mailboxOwner }, 'agent token: rejected /api/messages GET for a foreign mailbox')
+        json(res, { error: `agent must be '${mailboxOwner}' -- an agent token reads only its own mailbox` }, 403)
+        return true
+      }
+      // An omitted filter would mean "the whole fleet"; pin it instead.
+      agent = mailboxOwner
+    }
     const status = url.searchParams.get('status') || ''
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
     const beforeRaw = url.searchParams.get('before')
@@ -388,11 +434,26 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   if (msgUpdateMatch && method === 'GET') {
     const one = getAgentMessage(parseInt(msgUpdateMatch[1], 10))
     if (!one) { json(res, { error: 'Message not found' }, 404); return true }
+    // A bound token may fetch a message only if it is a party to it. 404, not
+    // 403: whether row N exists is itself fleet information.
+    if (mailboxOwner && !isMessageParty(one, mailboxOwner)) {
+      logger.warn({ id: one.id, agent: mailboxOwner }, 'agent token: rejected /api/messages/:id GET for a foreign message')
+      json(res, { error: 'Message not found' }, 404)
+      return true
+    }
     json(res, attachFreshness([one])[0])
     return true
   }
   if (msgUpdateMatch && method === 'PUT') {
     const id = parseInt(msgUpdateMatch[1], 10)
+    if (mailboxOwner) {
+      const existing = getAgentMessage(id)
+      if (!existing || !isMessageParty(existing, mailboxOwner)) {
+        logger.warn({ id, agent: mailboxOwner }, 'agent token: rejected /api/messages/:id PUT for a foreign message')
+        json(res, { error: 'Message not found' }, 404)
+        return true
+      }
+    }
     const body = await readBody(req)
     const { status: newStatus, result, notify } = JSON.parse(body.toString()) as
       { status: string; result?: string; notify?: boolean }
