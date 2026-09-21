@@ -45,6 +45,10 @@ A tiltas nem leiras-vedelem volt, hanem hianyzo UPDATE-ut. Amiert megis biztonsa
 a mozgatas-nyom MINDEN valtozo mezo TELJES regi erteket kiirja egy kommentbe, tehat a csere nem
 TORLI a regi szoveget, hanem HOZZAIRJA a kartyahoz -- a leiras igy nem lesz csendes
 atiras-felulet. Ures --desc-file-t a mozgato ag megtagad.
+A LEIRASRA 2026-09-21 OTA UGYANAZ AZ EKEZET-KAPU FUT, MINT A KOMMENTRE (EKEZETKAPU919), mindket
+agon (letrehozo ES mozgato): 300 karakter folott 4 szazalek alatti ekezet-arany MEGTAGADAS, a
+kiut a --ekezet-nelkul-szandekos. A leiras volt az utolso gazdanak szant mezo, ami ekezet nelkul
+bement. Az ERTESITES (--msg-file) NEM esik ide: az gepnek szol, nem a kanban-feluletre.
 Az --author itt KOTELEZO (KARTYADRYRUN907, 2026-09-08): korabban csendben 'Marveen'-re esett,
 tehat a kartyan MAS neve allt, mint aki irta. A letrehozo agon az alapertelmezes valtozatlan.
 MEZOMOZGATAS (KARTYASTATUSZ906, Boni lelete 2026-09-06): komment-modban a lenti mezok MEGLEVO
@@ -342,6 +346,65 @@ def gepi_idobelyeg_jelzes(szoveg, cimke='komment'):
 
 GEPI_FEJLEC_RX = re.compile(r'^\s*\[[^\]\n]*\d{1,2}:\d{2}, rendszerora\]\s*\n?')
 
+# EKEZET-JELZES, NEM KAPU (Mira merese, 2026-09-14). A gazda 2026-09-07-i szabalya szerint a
+# kanban-KOMMENTET EMBER olvassa, tehat teljes magyar ekezettel megy (a kanban-CIM nem).
+# MERVE: a komment-oldal 2676 sorbol 27 szazalekon all -- a szabaly SEHOL nem volt bekotve az
+# iras pillanataba, ezert csak egy agens tartotta. Ez ugyanaz az alak, mint a homoglifanal es a
+# memoria-indexnel: a szabaly megvan, a lepes nincs.
+# 2026-09-17 OTA KAPU, NEM JELZES -- ES AZ OK A MERES, NEM AZ ELV. A jelzes 2026-09-14 ota allt
+# itt azzal az indokkal, hogy "egy jelzes eleg". 2026-09-17-en KET agens (Mira es Marveen) futott
+# bele UGYANAZON A NAPON, es MINDKET ekezet nelkuli szoveg KIMENT. Egy kapu, ami nulla esetben
+# allit meg semmit, pontosan annyit er, mintha nem lenne ott -- a jelenlete viszont megnyugtat,
+# es ez a rosszabbik fele. (Mira javaslata, msg 26275; Marveen dontese.)
+# A REGI ELLENERV VALOS MARAD: kommentbe kod, log-reszlet es nyers DB-ertek is kerul legitim
+# modon, ott a hamis pozitiv a kapu lassu kikapcsolasa lenne. EZERT NEM "mindig allj meg", hanem
+# KIMONDOTT FELULBIRALAS: --ekezet-nelkul-szandekos. A surgos eset tovabbra is egy kapcsoloval
+# megoldhato, de nem VELETLENUL megy ki: aki atengedi, leirja, hogy tudja.
+# A CIMRE NEM VONATKOZIK: a gazda 2026-09-07-i szabalya szerint a kanban-CIM maradhat ekezet
+# nelkul, a KOMMENTET viszont EMBER olvassa.
+# A KAPU AZ IRAS ELE KERULT. Jelzeskent az INSERT UTAN allt, ami megengedheto volt; kapukent
+# ott ertelmetlen lenne (mar bent van a sor), es rosszabb a mainal: "megallitottalak" uzenetet
+# adna egy mar megtortent irasra.
+# ARANY-KAPU, NEM JELENLET-KAPU (EKEZETARANY921, 2026-09-21). Az elozo alak `any`-predikatum volt:
+# EGYETLEN ekezetes betu BARHOL a szovegben kikapcsolta a kaput az EGESZ szovegre. Merve: 831
+# karakter ekezet nelkuli szoveg atment egy ekezetes szoval a vegen (0,36 szazalek); a tabla
+# utolso 30 napjanak 300+ karakteres, "ekezetes" kommentjeibol 52 szazalek allt 0,5 szazalek
+# alatt -- vagyis a kapu a hosszu szovegeken gyakorlatilag ki volt kapcsolva. A kuszob 4 szazalek
+# (ekezetes betu / osszes betu), a Dream Engine DREAM.md-kapujanak precedense: a rendesen
+# ekezetezett magyar proza 8-12 szazalek (a sajat teszt-fixtura 10,6), az ekezet nelkuli
+# gyakorlatilag nulla, a 4 biztonsagosan a ketto kozott all. A kod/log/nyers-ertek eset
+# legitim modon alacsony aranyu: arra a --ekezet-nelkul-szandekos kiut van, ami MEGMARAD.
+EKEZET_ARANY_KUSZOB = 0.04
+
+def _ekezet_arany(szoveg):
+    EK = set('áéíóöőúüűÁÉÍÓÖŐÚÜŰ')
+    betuk = [ch for ch in szoveg if ch.isalpha()]
+    if not betuk:
+        return 0.0, 0
+    return sum(1 for ch in betuk if ch in EK) / len(betuk), len(betuk)
+
+def _ekezet_kapu(szoveg, szandekos, cimke='komment'):
+    if len(szoveg) < 300:
+        return
+    arany, betuk = _ekezet_arany(szoveg)
+    if arany >= EKEZET_ARANY_KUSZOB:
+        return
+    NAGY = cimke.upper()
+    # A magyar targyeset nem kepezheto a cimkebol gepiesen ("leiras" -> "leirast", nem "leiraset"),
+    # es egy kapu, ami rosszul beszel, kevesebbet er: aki olvassa, gepi zajnak veszi.
+    TARGY = {'komment': 'kanban-kommentet', 'leiras': 'kanban-leirast'}.get(cimke, f'kanban-{cimke}t')
+    if szandekos:
+        print(f'FIGYELEM: ekezet nelkuli {cimke} megy be (ekezet-arany {arany:.1%}, {betuk} betun), '
+              'KIMONDOTT felulbiralassal (--ekezet-nelkul-szandekos).', file=sys.stderr)
+        return
+    sys.exit(f'MEGTAGADVA: ez a(z) {cimke} EKEZET NELKULI (ekezet-arany {arany:.1%} {betuk} betun, a kuszob '
+             f'{EKEZET_ARANY_KUSZOB:.0%}), pedig a {TARGY} EMBER olvassa\n'
+             f'  (gazda-szabaly, 2026-09-07). A kanban-CIM maradhat ekezet nelkul, a {NAGY} nem.\n'
+             f'  A(z) {cimke} NEM irodott be. Ird at ekezetesen, es kuldd ujra.\n'
+             '  Ha kivetelesen indokolt (nyers log, kod-reszlet, surgos eset), add meg\n'
+             '  kimondottan: --ekezet-nelkul-szandekos')
+
+
 def komment_mod(a):
     """Komment egy MEGLEVO kartyara, ertesites nelkul. Kapuk + kotelezo visszaolvasas."""
     # SZERZO-KAPU (KARTYADRYRUN907, 2026-09-08). Boni es Zara egymastol fuggetlenul
@@ -353,59 +416,6 @@ def komment_mod(a):
     # MIERT NEM ELEG A HELYES ALAPERTELMEZES: a komment SZERZOJE attribucio, nem kenyelem --
     # a rossz nev irANYA is rossz, mert FELFELE, a koordinatorra mutat, tehat SULYT ad egy
     # mondatnak, amit nem o irt.
-    # EKEZET-JELZES, NEM KAPU (Mira merese, 2026-09-14). A gazda 2026-09-07-i szabalya szerint a
-    # kanban-KOMMENTET EMBER olvassa, tehat teljes magyar ekezettel megy (a kanban-CIM nem).
-    # MERVE: a komment-oldal 2676 sorbol 27 szazalekon all -- a szabaly SEHOL nem volt bekotve az
-    # iras pillanataba, ezert csak egy agens tartotta. Ez ugyanaz az alak, mint a homoglifanal es a
-    # memoria-indexnel: a szabaly megvan, a lepes nincs.
-    # 2026-09-17 OTA KAPU, NEM JELZES -- ES AZ OK A MERES, NEM AZ ELV. A jelzes 2026-09-14 ota allt
-    # itt azzal az indokkal, hogy "egy jelzes eleg". 2026-09-17-en KET agens (Mira es Marveen) futott
-    # bele UGYANAZON A NAPON, es MINDKET ekezet nelkuli szoveg KIMENT. Egy kapu, ami nulla esetben
-    # allit meg semmit, pontosan annyit er, mintha nem lenne ott -- a jelenlete viszont megnyugtat,
-    # es ez a rosszabbik fele. (Mira javaslata, msg 26275; Marveen dontese.)
-    # A REGI ELLENERV VALOS MARAD: kommentbe kod, log-reszlet es nyers DB-ertek is kerul legitim
-    # modon, ott a hamis pozitiv a kapu lassu kikapcsolasa lenne. EZERT NEM "mindig allj meg", hanem
-    # KIMONDOTT FELULBIRALAS: --ekezet-nelkul-szandekos. A surgos eset tovabbra is egy kapcsoloval
-    # megoldhato, de nem VELETLENUL megy ki: aki atengedi, leirja, hogy tudja.
-    # A CIMRE NEM VONATKOZIK: a gazda 2026-09-07-i szabalya szerint a kanban-CIM maradhat ekezet
-    # nelkul, a KOMMENTET viszont EMBER olvassa.
-    # A KAPU AZ IRAS ELE KERULT. Jelzeskent az INSERT UTAN allt, ami megengedheto volt; kapukent
-    # ott ertelmetlen lenne (mar bent van a sor), es rosszabb a mainal: "megallitottalak" uzenetet
-    # adna egy mar megtortent irasra.
-    # ARANY-KAPU, NEM JELENLET-KAPU (EKEZETARANY921, 2026-09-21). Az elozo alak `any`-predikatum volt:
-    # EGYETLEN ekezetes betu BARHOL a szovegben kikapcsolta a kaput az EGESZ szovegre. Merve: 831
-    # karakter ekezet nelkuli szoveg atment egy ekezetes szoval a vegen (0,36 szazalek); a tabla
-    # utolso 30 napjanak 300+ karakteres, "ekezetes" kommentjeibol 52 szazalek allt 0,5 szazalek
-    # alatt -- vagyis a kapu a hosszu szovegeken gyakorlatilag ki volt kapcsolva. A kuszob 4 szazalek
-    # (ekezetes betu / osszes betu), a Dream Engine DREAM.md-kapujanak precedense: a rendesen
-    # ekezetezett magyar proza 8-12 szazalek (a sajat teszt-fixtura 10,6), az ekezet nelkuli
-    # gyakorlatilag nulla, a 4 biztonsagosan a ketto kozott all. A kod/log/nyers-ertek eset
-    # legitim modon alacsony aranyu: arra a --ekezet-nelkul-szandekos kiut van, ami MEGMARAD.
-    EKEZET_ARANY_KUSZOB = 0.04
-
-    def _ekezet_arany(szoveg):
-        EK = set('áéíóöőúüűÁÉÍÓÖŐÚÜŰ')
-        betuk = [ch for ch in szoveg if ch.isalpha()]
-        if not betuk:
-            return 0.0, 0
-        return sum(1 for ch in betuk if ch in EK) / len(betuk), len(betuk)
-
-    def _ekezet_kapu(szoveg, szandekos):
-        if len(szoveg) < 300:
-            return
-        arany, betuk = _ekezet_arany(szoveg)
-        if arany >= EKEZET_ARANY_KUSZOB:
-            return
-        if szandekos:
-            print(f'FIGYELEM: ekezet nelkuli komment megy be (ekezet-arany {arany:.1%}, {betuk} betun), '
-                  'KIMONDOTT felulbiralassal (--ekezet-nelkul-szandekos).', file=sys.stderr)
-            return
-        sys.exit(f'MEGTAGADVA: ez a komment EKEZET NELKULI (ekezet-arany {arany:.1%} {betuk} betun, a kuszob '
-                 f'{EKEZET_ARANY_KUSZOB:.0%}), pedig a kanban-kommentet EMBER olvassa\n'
-                 '  (gazda-szabaly, 2026-09-07). A kanban-CIM maradhat ekezet nelkul, a KOMMENT nem.\n'
-                 '  A komment NEM irodott be. Ird at ekezetesen, es kuldd ujra.\n'
-                 '  Ha kivetelesen indokolt (nyers log, kod-reszlet, surgos eset), add meg\n'
-                 '  kimondottan: --ekezet-nelkul-szandekos')
 
     if a.author is None:
         sys.exit('MEGTAGADVA: komment-modban a szerzo KIMONDOTT: add meg az --author-t\n'
@@ -463,6 +473,13 @@ def komment_mod(a):
     # kerul be, mint a tobbi mezo, es nem sajat kulon uton: egy kulon ut pont azt a nyomot kerulne
     # meg, amiert az egesz engedmeny megadhato.
     # AMI RAFUT ES AMI NEM: a homoglifa-kapu igen (ugyanaz a hamisitas-felulet, mint a cimen).
+    # AZ EKEZET-KAPU IS (EKEZETKAPU919, 2026-09-21) -- ES EZ A SOR KORABBAN HALLGATOTT ROLA.
+    # A felsorolas 2026-09-19 ota itt allt "homoglifa igen, 300 karakter nem, horgony nem"
+    # alakban, es az ekezet-kaput meg sem emlitette. Nem kimaradas volt: a leirast a CIM
+    # kapuihoz igazitottam, holott a leirast a gazda ugyanugy OLVASSA, mint a kommentet.
+    # A magabiztos, hianyos felsorolas rosszabb egy kimaradasnal, mert a kovetkezo olvaso
+    # jogosan hiszi el. Most ugyanaz a 4 szazalekos arany-kapu fut ra, mint a kommentre,
+    # ugyanazzal a --ekezet-nelkul-szandekos kiuttal.
     # A 300 karakteres hatar NEM: az a CIM trigger-levagasa ellen all, a leiras epp a hosszu
     # szovege. A horgony-kapu sem: az azt meri, hogy a CIM hordozza-e a kartya azonositojat.
     uj_leiras = None
@@ -475,6 +492,7 @@ def komment_mod(a):
                      'mozgatas-nyomban akkor is megmarad).')
         if (h := gyanus(uj_leiras)):
             sys.exit(f'MEGTAGADVA: vegyes irasrendszeru szo a leirasban: {h[:5]}')
+        _ekezet_kapu(uj_leiras, a.ekezet_nelkul_szandekos, 'leiras')
     if a.status is not None and a.status not in STATUSZOK:
         sys.exit(f'MEGTAGADVA: ervenytelen statusz ("{a.status}"). Ervenyes: {", ".join(STATUSZOK)}.')
     if a.priority is not None and a.priority not in PRIORITASOK:
@@ -699,7 +717,8 @@ def main():
                    help='az ertesites feladoja (alapertelmezes: az --author kisbetusitve)')
     p.add_argument('--ekezet-nelkul-szandekos', action='store_true',
                    dest='ekezet_nelkul_szandekos',
-                   help='komment-mod: KIMONDOTT felulbiralas, ha a komment szandekosan ekezet nelkuli')
+                   help='KIMONDOTT felulbiralas, ha a komment VAGY a leiras (--desc-file, mindket agon) '
+                        'szandekosan ekezet nelkuli: nyers log, kod-reszlet, surgos eset')
     p.add_argument('--dry-run', action='store_true')
     a = p.parse_args()
 
@@ -755,6 +774,13 @@ def main():
                  f'Ha az --author nem agens-nev (pl. "Marveen (Boni lelete)"), add meg kimondva: --from <agens>.')
     desc = open(a.desc_file, encoding='utf-8').read() if a.desc_file else ''
     msg = open(a.msg_file, encoding='utf-8').read() if a.msg_file else ''
+    # EKEZET-KAPU A LEIRASON, A LETREHOZO AGON IS (EKEZETKAPU919, 2026-09-21). A ket ag kulon
+    # kodut, es a kapu eddig EGYIKEN SEM allt: a leiras volt az utolso gazdanak szant mezo, ami
+    # ekezet nelkul bement. Merve a kartyan: egy teljes leiras ment be igy, es a gazda ugyanugy
+    # olvasta, mint a kommentet. A kapu az IRAS ELE kerul, mint a kommentnel.
+    # AZ ERTESITES (--msg-file) SZANDEKOSAN NEM ESIK IDE: az nem a kanban-felulet, hanem
+    # inter-agent uzenet, es a cimzettje gep. Ha oda is kell, az kulon dontes es kulon meres.
+    _ekezet_kapu(desc, a.ekezet_nelkul_szandekos, 'leiras')
 
     # 1. KAPU: flotta-gazda ertesites nelkul -> megtagadva
     if who in FLEET and not msg and not a.no_msg:
