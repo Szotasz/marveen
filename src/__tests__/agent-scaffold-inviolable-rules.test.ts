@@ -47,6 +47,25 @@ describe('generateClaudeMd: the inviolable rules survive refactors', () => {
     expect(src).toMatch(/VÁRD meg a döntését/)
   })
 
+  // SCAFGMAIL921: the owner granted every colleague agent the right to bind its
+  // OWN principal's corporate Google account (per-user OAuth), send scope
+  // included. That permission was rolled out by hand to the existing agents'
+  // CLAUDE.md files and to templates/CLAUDE.md.template -- but NOT here, so a
+  // probe agent created two hours later came up without it. Same silent shape
+  // AUTHSECT919 names a few lines up in agent-scaffold.ts: a rule that lives
+  // only in the produced files and on no generating surface.
+  //
+  // Both halves are pinned on purpose. Without the carve-out an agent asks
+  // permission it already has, which is only slow. Without the boundary it
+  // reads "send scope granted" as "may send", which breaks the draft-only rule
+  // -- and that one is expensive and outward-facing.
+  it('keeps the Google-account carve-out AND its draft-only boundary', () => {
+    expect(src).toContain('céges Google-fiókja BEKÖTHETŐ')
+    expect(src).toMatch(/küldési JOGOSULTSÁG nem a küldés ENGEDÉLYE/)
+    // scoped to the agent's own principal, and the human clicks consent
+    expect(src).toMatch(/SAJÁT megbízód SAJÁT fiókja/)
+  })
+
   it('states that the system source code stays off limits to colleague agents', () => {
     // The 2026-07-08 wording: colleagues MAY build their own tooling, but the
     // running system's source is the owner's call. Both halves matter -- an
