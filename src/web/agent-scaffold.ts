@@ -1612,6 +1612,43 @@ const AUTONOMY_BLOCK_RE = new RegExp(
   `${AUTONOMY_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${AUTONOMY_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
+const MCPLIST_BEGIN = '<!-- BEGIN GENERATED: mcp-list-channel (auto-generated, do not edit by hand) -->'
+const MCPLIST_END = '<!-- END GENERATED: mcp-list-channel -->'
+const MCPLIST_BLOCK_RE = new RegExp(
+  `${MCPLIST_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${MCPLIST_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+/**
+ * MCPLISTCSATORNA921. Measured 2026-09-21 on a disposable channel-owning probe
+ * agent, twice, with the before-state taken in a separate round: running
+ * `claude mcp list` inside a session that owns a channel stops THAT session's
+ * channel plugin server. The other MCP servers survive, other sessions are
+ * untouched, and the command's own output says "Connected" while it happens.
+ *
+ * The warning ships to CUSTOMER machines, so it names the scope (a
+ * channel-owning session), not the command: `claude mcp list` is a useful
+ * diagnostic everywhere else, and a blanket prohibition would be false.
+ *
+ * What we did NOT measure is stated as not measured: whether an actual INCOMING
+ * message is lost. That was reported by the external submitter; we reproduced
+ * the tool/plugin side only.
+ */
+function buildMcpListChannelBody(): string {
+  return [
+    '## `claude mcp list` egy csatornát birtokló ügynökben',
+    '',
+    'Ha ez az ügynök csatornát birtokol (Telegram/Discord/Slack), a saját sessionjében NE futtasd',
+    'a `claude mcp list`-et: mérve 2026-09-21-én, a parancs leállítja ennek a sessionnek a',
+    'csatorna-plugin szerverét, és a csatorna-eszközök (reply, react, edit_message,',
+    'download_attachment) elérhetetlenné válnak. A parancs kimenete közben `Connected`-et ír, és',
+    '0-val tér vissza, tehát a hibát semmi nem jelzi. Más sessionök nem sérülnek, a többi',
+    'MCP-szerver életben marad, és a session újraindítása visszahozza a plugint.',
+    'Máshol a parancs hasznos diagnosztika: a korlát a csatornát birtokló session, nem a parancs.',
+    'A BEJÖVŐ üzenetek sorsát nem mértük (külső bejelentés); a részletes mérés:',
+    '`docs/mcp-list-channel-plugin.md`.',
+  ].join('\n')
+}
+
 const EVIDENCE_BEGIN = '<!-- BEGIN GENERATED: evidence-rule (auto-generated, do not edit by hand) -->'
 const EVIDENCE_END = '<!-- END GENERATED: evidence-rule -->'
 const EVIDENCE_BLOCK_RE = new RegExp(
@@ -1811,6 +1848,39 @@ export function ensureEvidenceSection(name: string): void {
   let updated: string
   if (EVIDENCE_BLOCK_RE.test(existing)) {
     updated = existing.replace(EVIDENCE_BLOCK_RE, block)
+  } else {
+    updated = existing.trimEnd() + '\n\n' + block + '\n'
+  }
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
+// Idempotently ensures the autonomy-wiring block is present and current in the
+// agent's CLAUDE.md. Called on every startAgentProcess() alongside
+// ensureFleetRosterSection() so that existing agents receive the block
+// automatically on respawn without manual migration.
+//
+// Idempotency contract mirrors ensureFleetRosterSection (five rules apply).
+export function ensureMcpListChannelSection(name: string): void {
+  // The main agent's CLAUDE.md lives at PROJECT_ROOT, not inside agents/<name>/.
+  const claudeMdPath = name === MAIN_AGENT_ID
+    ? join(PROJECT_ROOT, 'CLAUDE.md')
+    : join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${MCPLIST_BEGIN}\n${buildMcpListChannelBody()}\n${MCPLIST_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  let updated: string
+  if (MCPLIST_BLOCK_RE.test(existing)) {
+    updated = existing.replace(MCPLIST_BLOCK_RE, block)
   } else {
     updated = existing.trimEnd() + '\n\n' + block + '\n'
   }
