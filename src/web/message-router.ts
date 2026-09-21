@@ -151,7 +151,7 @@ function notifyOrchestratorOfPullStale(msg: AgentMessage, ageMs: number): void {
     createAgentMessage(
       'system',
       MAIN_AGENT_ID,
-      `[pull-stale] Message id ${msg.id} (${msg.from_agent} -> ${msg.to_agent}) has been waiting ${hours}h in the pull queue and '${msg.to_agent}' has not used the API since it was written. It is still PENDING and will be delivered the moment the agent polls -- check whether the agent is running and polling. Content preview: ${preview}`,
+      `[pull-stale] Message id ${msg.id} (${msg.from_agent} -> ${msg.to_agent}) has been waiting ${hours}h in the pull queue and '${msg.to_agent}' has sent no message of its own since the row was created. It is still PENDING and will be delivered the moment the agent polls -- check whether the agent is running and polling. (Nothing here can observe a READ: the agent may well be alive and writing memories or logs. The silence measured is outgoing messages only.) Content preview: ${preview}`,
     )
     logger.info({ id: msg.id, to: msg.to_agent, ageMs }, 'pull-stale surfaced to orchestrator')
   } catch (err) {
