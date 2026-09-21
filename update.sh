@@ -298,10 +298,15 @@ if [ "$CURRENT_BRANCH" = "HEAD" ] || [ -z "$CURRENT_BRANCH" ]; then
     echo "         git fetch --unshallow origin"
     echo "         git checkout main"
   else
-    # A NEM-SHALLOW ag uzenete SZO SZERINT valtozatlan (kartya-kikotes). Az, hogy
-    # ez a ket sor EN nyelven is magyarul megy, kulon lelet, es NEM ebben a PR-ben
-    # javitjuk: a kartya a regresszio-merest erre az alakra kotte ki.
-    echo "       Allj at egy release branchre, majd indithatod ujra a frissitest, pl.:"
+    # NYELV-AG (UPDATEENHU921, 2026-09-21). Korabban ez a ket sor EN nyelven is
+    # MAGYARUL ment, mikozben a folotte allo HIBA/ERROR fejlec helyesen valtott.
+    # A #1438-ban szandekosan maradt igy, mert a kartya a regresszio-merest a
+    # valtozatlan HU alakra kotte ki; a HU szoveg itt BAJTRA ugyanaz maradt.
+    if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+      echo "       Switch to a release branch, then you can start the update again, e.g.:"
+    else
+      echo "       Allj at egy release branchre, majd indithatod ujra a frissitest, pl.:"
+    fi
     echo "         git checkout main"
   fi
   exit 2
@@ -315,8 +320,17 @@ if ! git ls-remote --exit-code --heads origin "$CURRENT_BRANCH" >/dev/null 2>&1;
   else
     echo -e "${RED}HIBA:${NC} A '${CURRENT_BRANCH}' branch nem létezik az origin-on."
   fi
-  echo "       Csak az origin-on is meglevo (kovetett) branchrol lehet frissiteni."
-  echo "       Allj at egy release branchre, pl.:"
+  # UGYANAZ A LELET, A TESTVER-KAPUN (UPDATEENHU921): a fenti ERROR/HIBA fejlec
+  # nyelvfuggo volt, az alatta allo ket sor nem. Ugyanabban a kepernyoben all,
+  # mint a Guard 1 uzenete, ezert a ketto EGYUTT valt nyelvet -- egy felig javitott
+  # kepernyo rosszabb, mint egy egyseges magyar.
+  if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+    echo "       You can only update from a branch that also exists on origin (a tracked branch)."
+    echo "       Switch to a release branch, e.g.:"
+  else
+    echo "       Csak az origin-on is meglevo (kovetett) branchrol lehet frissiteni."
+    echo "       Allj at egy release branchre, pl.:"
+  fi
   echo "         git checkout main"
   exit 2
 fi
