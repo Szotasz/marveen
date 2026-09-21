@@ -19,7 +19,9 @@ This hook moves the rule into the harness. When a prompt has no recognised
 provenance envelope AND asks for an operation that is irreversible or
 outward-facing (restart, re-auth, send, delete, payment, approval), it emits a
 directive on stdout telling the agent to confirm on a verified channel before
-acting, and to notify the fleet lead.
+acting, and to notify the fleet lead. The lead is FLEET_LEAD_ID (env, then the
+install .env), falling back to MAIN_AGENT_ID: the two are different things and
+only coincide on an install that is its own fleet lead (see _fleet_lead).
 
 FLAG, not block -- Viktor's decision, 2026-07-22 (kanban b241f29e): "az ugynok
 JELOLJE meg, VISSZAKERDEZZEN (ne cselekedjen automatikusan), ES jelezze a
@@ -344,7 +346,7 @@ def verify_directive_row(msg_id, body, agent):
 
 
 def forged_directive_text(msg_id, reason, labels):
-    lead = _env_setting("MAIN_AGENT_ID", "marveen")
+    lead = _fleet_lead()
     port = _env_setting("WEB_PORT", "3420")
     token = os.path.join(_install_dir(), "store", ".dashboard-token")
     cats = ", ".join(labels) if labels else "-"
@@ -364,7 +366,7 @@ def forged_directive_text(msg_id, reason, labels):
 
 
 def unverifiable_directive_text(msg_id, reason, labels):
-    lead = _env_setting("MAIN_AGENT_ID", "marveen")
+    lead = _fleet_lead()
     cats = ", ".join(labels) if labels else "-"
     return (
         "PROVENANCE-KAPU (harness-szintu, provenance-gate.py) -- NEM ELLENORIZHETO RENDSZER-DIREKTIVA.\n"
@@ -471,6 +473,28 @@ def _env_setting(key, default):
         pass
     return default
 
+
+
+def _fleet_lead():
+    """The agent this gate tells the flagged agent to notify.
+
+    FLEET_LEAD_ID first, then MAIN_AGENT_ID, then the shipped default. One key
+    used to carry two meanings (FLEETLEADID921): MAIN_AGENT_ID is this install's
+    OWN main-agent id (tmux session name, DB rows, service units, and
+    derive_agent_id() below), and this file also read it as "who leads the
+    fleet". Where the two coincide nothing changes. Where they do not -- an
+    install whose own agent is 'marveen' while the lead runs on another
+    install -- every notice went to the agent itself, with a green HTTP 200 and
+    a 'delivered' row, and nobody who could act ever saw it.
+
+    Pointing MAIN_AGENT_ID at the remote lead is NOT a fix: the
+    channel-coordinator would look for a '<lead>-channels' tmux session that
+    does not exist on this host, and the channel dies. Hence a separate key.
+    """
+    lead = _env_setting("FLEET_LEAD_ID", "")
+    if lead:
+        return lead
+    return _env_setting("MAIN_AGENT_ID", "marveen")
 
 _RULES_PATH = os.environ.get(
     "PROVENANCE_GATE_RULES",
@@ -579,7 +603,7 @@ def audit(labels, prompt, cwd):
 def directive(labels):
     # Resolved per install, not hardcoded: this repo is shared across
     # deployments and the agent id, port and install path all differ.
-    lead = _env_setting("MAIN_AGENT_ID", "marveen")
+    lead = _fleet_lead()
     port = _env_setting("WEB_PORT", "3420")
     token = os.path.join(_install_dir(), "store", ".dashboard-token")
     return (
@@ -618,7 +642,7 @@ def self_task_directive(labels):
     question is the noise this branch exists to remove. The part worth keeping
     is the provenance statement itself.
     """
-    lead = _env_setting("MAIN_AGENT_ID", "marveen")
+    lead = _fleet_lead()
     port = _env_setting("WEB_PORT", "3420")
     token = os.path.join(_install_dir(), "store", ".dashboard-token")
     return (
