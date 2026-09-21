@@ -112,6 +112,19 @@ export async function transcribeVoiceFile(fileId: string, stateDir: string): Pro
   return result.stdout.trim()
 }
 
+/**
+ * Package-manager command for the missing system dependencies, per host
+ * platform. The command has to match the host: apt-get does not exist on macOS,
+ * where the dashboard also runs, and a command the user cannot run is worse
+ * than no suggestion -- it reads as authoritative. Homebrew ships venv inside
+ * its `python` formula, so there is no python3-venv counterpart to name there.
+ */
+export function systemDepsInstallCommand(platform: NodeJS.Platform = process.platform): string {
+  return platform === 'darwin'
+    ? 'brew install ffmpeg python'
+    : 'sudo apt-get install -y --no-install-recommends ffmpeg python3-venv python3'
+}
+
 export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -286,10 +299,7 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     const depsMissing = !depCheck.stdout.trim().endsWith('OK')
 
     if (depsMissing) {
-      json(res, {
-        needsSudo: true,
-        sudoCommand: 'sudo apt-get install -y --no-install-recommends ffmpeg python3-venv python3',
-      })
+      json(res, { needsSudo: true, sudoCommand: systemDepsInstallCommand() })
       return true
     }
 
