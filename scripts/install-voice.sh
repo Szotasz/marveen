@@ -81,7 +81,20 @@ _pass "ffmpeg + libopus OK"
 # --- Step 2: Python venv ---
 _step "[2/5] Python venv"
 mkdir -p "$DEST/voices"
-if [[ ! -d "$DEST/venv" ]]; then
+# The gate measures a WORKING venv, not a directory. A 2026-07-14 install left an
+# 8 kB stub here whose bin/ held only python symlinks and no pip at all: `-d` was
+# true for it, so every re-run SKIPped this step and step 3 died on
+# `venv/bin/pip: No such file or directory`. bin/python is not a usable probe
+# either -- the stub had it. bin/pip is what step 3 actually calls, so that is
+# what decides. A stub found here is rebuilt, not merely reported: re-running
+# could otherwise never recover the install.
+if [[ ! -x "$DEST/venv/bin/pip" ]]; then
+  if [[ -d "$DEST/venv" ]]; then
+    echo "    Unusable venv at $DEST/venv (no bin/pip) -- rebuilding"
+    # Scope: this removes the venv only. The sibling $DEST/voices holds the
+    # downloaded TTS models and must survive.
+    rm -rf "$DEST/venv"
+  fi
   python3 -m venv "$DEST/venv"
   _pass "venv created at $DEST/venv"
 else
