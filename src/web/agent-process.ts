@@ -1703,7 +1703,18 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
         // with `option '--dangerously-load-development-channels <servers...>'
         // argument missing`, i.e. a worksourceChannel agent could not start AT ALL
         // -- not "the plugin is skipped", the process died. (2026-09-03, PR #1099.)
-        worksourceFlags = ' --channels server:worksource --dangerously-load-development-channels server:worksource'
+        //
+        // AND IT MUST BE THE ONLY FLAG NAMING worksource: passing `--channels
+        // server:worksource` ALONGSIDE it silently un-does it. The CLI appends
+        // the dev list to the plain list and then resolves the entry with a
+        // `find`, so the FIRST match wins -- the plain entry, which carries no
+        // dev mark -- and a manually configured (non-plugin) server without that
+        // mark is refused by the allowlist gate. Measured on a live agent
+        // 2026-09-21 (cli 2.1.110), printed on its own startup screen:
+        //   server:worksource · server: entries need --dangerously-load-development-channels
+        // The channel was never registered, every delivery was dropped by the
+        // client, and the server still logged `delivered` for each one.
+        worksourceFlags = ' --dangerously-load-development-channels server:worksource'
         logger.info({ name, serverPath }, 'worksource channel wired for agent')
       } catch (err) {
         // Fail OPEN, on purpose: a worksource agent that comes up without its
@@ -1712,6 +1723,23 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
         // Refusing to launch would trade a delayed message for a dead agent.
         logger.warn({ err, name }, 'Could not wire worksource channel; agent starts without it')
       }
+    } else if (name !== MAIN_AGENT_ID) {
+      // Opting OUT has to un-write what opting in wrote. .mcp.json is loaded by
+      // the CLI on its own, with no flag involved, so an entry left behind keeps
+      // spawning a worksource server on every launch -- one with no channel
+      // registered and nothing feeding its queue. Harmless to the agent, but it
+      // is a process that looks like a working wire, and during the 2026-09-21
+      // debugging it cost time twice: a dangling server was mistaken for the one
+      // under test. Half-states should not survive a toggle.
+      const mcpJsonPath = join(agentDir(name), '.mcp.json')
+      try {
+        const existing = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as { mcpServers?: Record<string, unknown> }
+        if (existing?.mcpServers?.worksource) {
+          delete existing.mcpServers.worksource
+          writeFileSync(mcpJsonPath, JSON.stringify(existing, null, 2))
+          logger.info({ name }, 'worksource channel unwired for agent (opted out)')
+        }
+      } catch { /* absent or unreadable -> nothing to unwire */ }
     }
 
     if (name !== MAIN_AGENT_ID) {
