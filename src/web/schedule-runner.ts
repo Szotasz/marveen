@@ -770,6 +770,25 @@ export function runPreCheck(task: ScheduledTask): { skip: boolean; prefix?: stri
 // task@agent, so the retry-row reason and the alert can name the servers.
 const lastMcpMissing = new Map<string, string[]>()
 
+// Task names that already produced the ambiguous-recipient [FELHIVAS] notice in
+// THIS process. The notice is a CONFIG-GAP alert, not a per-run event: without
+// this guard every fire of an affected task inserted a fresh system -> main
+// message, so a */5 task on an agent with two DM contacts would wake the main
+// agent 288 times a day until someone pinned the chat id. Every other notice in
+// this runner goes through insertPendingTaskRetryIfNew for exactly that reason;
+// that table is about RETRIES, so this one keeps its own set rather than
+// borrowing a row type it does not fit.
+//
+// Two scope decisions, both deliberate:
+//   - Process lifetime. A runner restart re-alerts once, which is correct: the
+//     new process has no memory, and the config gap is still real.
+//   - The entry is dropped once the task resolves to a concrete chat id (see
+//     the bound.chatId branch), so a pin that is added and later REMOVED alerts
+//     again instead of staying silent forever.
+// The error-level log line stays per fire: logs are for the operator reading
+// them on purpose, the agent message is an interrupt.
+const ambiguousTargetAlerted = new Set<string>()
+
 function mcpMissingReason(taskName: string, agentName: string): string {
   const missing = lastMcpMissing.get(`${taskName}@${agentName}`) ?? []
   return missing.length ? `mcp-missing:${missing.join(',')}` : 'mcp-missing'
@@ -994,6 +1013,9 @@ async function attemptFireTask(
       // owner chat by design.
       const bound = resolveTaskChannelTarget(task)
       if (bound.chatId) {
+        // Resolved cleanly: forget any earlier ambiguity alert for this task so
+        // that removing the pin again is not silently swallowed.
+        ambiguousTargetAlerted.delete(task.name)
         prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el ${channelDeliveryName(bound.provider)} (chat_id: ${bound.chatId}, reply tool). `
       } else if (bound.ambiguousCandidates) {
         // WRONGRECIP819: 2+ possible human contacts and no explicit pin -- do
@@ -1002,11 +1024,14 @@ async function attemptFireTask(
         // author decision, so it gets error-level visibility plus a direct
         // nudge to fix it, instead of a log line nobody is watching.
         logger.error({ task: task.name, agent: agentName, provider: bound.provider, candidates: bound.ambiguousCandidates }, 'scheduled task: delivery target is ambiguous (2+ DM contacts, no pinned chat id) -- skipping the delivery instruction instead of guessing')
-        createAgentMessage(
-          'system',
-          MAIN_AGENT_ID,
-          `[FELHIVAS] A(z) "${task.name}" utemezett feladat (agent: ${agentName}) cimzettje bizonytalan -- ${bound.ambiguousCandidates} lehetseges kontakt van az agens allowFrom listajan, es a task-config.json-ban nincs telegramChatId megadva. A kezbesitesi utasitas kimaradt EBBOL A futasbol (nem tippeltunk). Toltsd ki a telegramChatId mezot (konkret chat_id, vagy "none" ha a taskot nem kell csatornara kuldeni) a ~/.claude/scheduled-tasks/${task.name}/task-config.json-ban.`,
-        )
+        if (!ambiguousTargetAlerted.has(task.name)) {
+          ambiguousTargetAlerted.add(task.name)
+          createAgentMessage(
+            'system',
+            MAIN_AGENT_ID,
+            `[FELHIVAS] A(z) "${task.name}" utemezett feladat (agent: ${agentName}) cimzettje bizonytalan -- ${bound.ambiguousCandidates} lehetseges kontakt van az agens allowFrom listajan, es a task-config.json-ban nincs telegramChatId megadva. A kezbesitesi utasitas kimaradt EBBOL A futasbol (nem tippeltunk). Toltsd ki a telegramChatId mezot (konkret chat_id, vagy "none" ha a taskot nem kell csatornara kuldeni) a ~/.claude/scheduled-tasks/${task.name}/task-config.json-ban.`,
+          )
+        }
         prefix = `[Utemezett feladat: ${task.name}] `
       } else {
         logger.warn({ task: task.name, agent: agentName, provider: bound.provider }, 'scheduled task: agent has no bound channel (access.json missing/empty) -- prompt omits the delivery instruction')

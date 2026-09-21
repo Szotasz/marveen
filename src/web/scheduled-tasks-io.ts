@@ -123,8 +123,9 @@ export interface ScheduledTask {
   // Explicit Telegram delivery target for this task's result (WRONGRECIP819).
   // Unset means "resolve it automatically" -- safe only when the agent's own
   // channel access.json has exactly one DM contact; with 2+ contacts the
-  // runner will no longer guess (see resolveTaskTelegramTarget in
-  // schedule-runner.ts). A real chat_id string pins the exact recipient,
+  // runner will no longer guess (see resolveTaskChannelTarget in
+  // schedule-runner.ts; the name lost its Telegram-only spelling when Slack
+  // was added). A real chat_id string pins the exact recipient,
   // overriding any allowlist-order heuristic. The literal string "none" means
   // this task has NO direct Telegram recipient at all (e.g. its result goes
   // out as an inter-agent message, or it is a self-only reminder) -- the

@@ -178,6 +178,28 @@ describe('schedule-runner source contract (sentinel removed, provider-aware)', (
     expect(nextPrefixIdx, 'ambiguous branch must fall through to the bare prefix').toBeGreaterThan(ambiguousIdx)
   })
 
+  it('the [FELHIVAS] notice is ONE-SHOT per task, while the error log stays per fire', () => {
+    // Fleet review of PR #1005: the notice is a CONFIG-GAP alert, not a
+    // per-run event. Without a guard every fire of an affected task inserted a
+    // fresh system -> main message, so a */5 task on an agent with two DM
+    // contacts would wake the main agent 288 times a day until someone pinned
+    // the chat id.
+    expect(src).toContain('const ambiguousTargetAlerted = new Set<string>()')
+    expect(src).toContain('if (!ambiguousTargetAlerted.has(task.name))')
+    expect(src).toContain('ambiguousTargetAlerted.add(task.name)')
+    // The entry is dropped once the task resolves to a concrete chat id, so a
+    // pin that is added and later REMOVED alerts again instead of staying
+    // silent forever.
+    expect(src).toContain('ambiguousTargetAlerted.delete(task.name)')
+    // The guard must wrap the MESSAGE, not the log line: a log is read on
+    // purpose, an agent message is an interrupt.
+    const guardIdx = src.indexOf('if (!ambiguousTargetAlerted.has(task.name))')
+    const logIdx = src.indexOf("'scheduled task: delivery target is ambiguous")
+    const msgIdx = src.indexOf('createAgentMessage(', guardIdx)
+    expect(logIdx, 'the error log stays OUTSIDE the one-shot guard').toBeLessThan(guardIdx)
+    expect(msgIdx, 'the agent message sits INSIDE the one-shot guard').toBeGreaterThan(guardIdx)
+  })
+
   it('resolution reads the access.json for the agent\'s own provider, not always telegram', () => {
     expect(src).toContain('resolveAgentProvider(agentName)')
     expect(src).toContain('channelStateDir(provider')
