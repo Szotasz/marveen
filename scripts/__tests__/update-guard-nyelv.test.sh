@@ -17,6 +17,8 @@
 # tovabbmenne (pull, npm, szolgaltatas-ujraindias) -- ezert az exit-kod allitas nem kenyelem,
 # hanem az, ami ezt a tesztet artalmatlanna teszi.
 #
+# A futas nem igenyel coreutilst: az idokorlat timeout/gtimeout/nincs sorrendben oldodik fel.
+#
 # Run:  bash scripts/__tests__/update-guard-nyelv.test.sh
 set -uo pipefail
 
@@ -47,12 +49,27 @@ mini_repo() {  # mini_repo <ut>
 # erteket -- `set -u` mellett ez azonnal "unbound variable"-lel elszallt. Ha nem lett volna
 # `set -u`, CSENDBEN ures maradt volna, es az exit-kod allitas -- a teszt biztonsagi kapuja --
 # nem mert volna semmit.
+# HORDOZHATOSAG (Samu review-lelete a #1444-en, merve 2026-09-21): a `timeout` macOS-en NEM
+# gyari parancs -- ezen a gepen a Homebrew coreutils adja (/opt/homebrew/bin/timeout ->
+# Cellar/coreutils), es /usr/bin/timeout NEM letezik. Coreutils nelkuli gyari macOS-en a futas
+# rc=127-tel bukott volna: HANGOSAN, tehat az irany biztonsagos volt, de a teszt a coreutilstol
+# fuggott. Itt feloldjuk: timeout -> gtimeout -> idokorlat nelkul.
+# A BIZTONSAG NEM AZ IDOKORLATON MULIK, hanem az exit-kod 2 allitasan; az idokorlat csak azt
+# akadalyozza meg, hogy egy beragadt futas a CI-t fogja. Ha egyik sincs meg, ezt KIMONDJUK,
+# hogy egy esetleges beakadas ne nevtelen legyen.
+# URES-TOMB CSAPDA: a gyari macOS bash 3.2.57, ahol `set -u` mellett a `"${TO[@]}"` egy URES
+# tombon HIBAVAL all meg. Ezert all a kifejtes `${TO[@]+"${TO[@]}"}` alakban.
+TO=()
+if command -v timeout >/dev/null 2>&1; then TO=(timeout 60)
+elif command -v gtimeout >/dev/null 2>&1; then TO=(gtimeout 60)
+else echo "MEGJEGYZES: sem timeout, sem gtimeout -- a futasok idokorlat NELKUL mennek."; fi
+
 KI=""   # az utolso futas kimeneti fajlja
 futtat() {  # futtat <ut> <nyelv>  -> a kilepesi kod a fuggveny visszaterese, a kimenet a $KI fajlban
   local d="$1" nyelv="$2"
   if [ "$nyelv" = "en" ]; then echo en > "$d/.lang"; else rm -f "$d/.lang"; fi
   KI="$SANDBOX/ki-$(basename "$d")-$nyelv.txt"
-  ( cd "$d" && timeout 60 bash update.sh ) > "$KI" 2>&1
+  ( cd "$d" && ${TO[@]+"${TO[@]}"} bash update.sh ) > "$KI" 2>&1
   return $?
 }
 
