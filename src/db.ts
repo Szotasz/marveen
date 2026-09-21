@@ -426,6 +426,19 @@ export function initDatabase(dbPathOverride?: string): void {
   // NULL-at-a-fresh-updated_at reads as "unattributed write", never as a
   // false attribution. (Known edge, conservative direction: the same author
   // rewriting within the same second gets updated_by cleared.)
+  // PORTABILITY (2026-09-21): the body used `unixepoch()`, which is SQLite 3.38+.
+  // Ubuntu 22.04 LTS ships libsqlite3 3.37.2 and its repositories offer nothing
+  // newer, so the system `python3` (and the `sqlite3` CLI) are on 3.37.2 while
+  // Node's better-sqlite3 bundles 3.53. The trigger therefore fired only on the
+  // Node side: every Python-side `UPDATE memories ...` died with
+  // `no such function: unixepoch`, which silently took the scripted maintenance
+  // path (tier-downs, dream-engine hygiene) out of service on those hosts while
+  // the dashboard kept working. `strftime('%s','now')` returns TEXT and has been
+  // present forever; the CAST keeps the column INTEGER, so the stored value is
+  // identical to what unixepoch() wrote.
+  // DROP before CREATE: `CREATE TRIGGER IF NOT EXISTS` is a no-op against the
+  // already-installed old body, so an upgrade would keep the broken trigger.
+  db.exec('DROP TRIGGER IF EXISTS memories_touch')
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS memories_touch AFTER UPDATE ON memories
     WHEN (new.content IS NOT old.content
@@ -435,7 +448,7 @@ export function initDatabase(dbPathOverride?: string): void {
      AND new.updated_at IS old.updated_at
     BEGIN
       UPDATE memories SET
-        updated_at = unixepoch(),
+        updated_at = CAST(strftime('%s','now') AS INTEGER),
         updated_by = CASE WHEN new.updated_by IS old.updated_by THEN NULL ELSE new.updated_by END
       WHERE id = new.id;
     END
@@ -481,20 +494,22 @@ export function initDatabase(dbPathOverride?: string): void {
       resolved_at INTEGER
     )
   `)
+  db.exec('DROP TRIGGER IF EXISTS homoglyph_kanban_comments_ai')
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS homoglyph_kanban_comments_ai AFTER INSERT ON kanban_comments
     WHEN ${triggerLikeClause('NEW.content')}
     BEGIN
       INSERT INTO homoglyph_findings (src_table, src_id, sample, found_at)
-      VALUES ('kanban_comments', NEW.id, substr(NEW.content, 1, 120), unixepoch());
+      VALUES ('kanban_comments', NEW.id, substr(NEW.content, 1, 120), CAST(strftime('%s','now') AS INTEGER));
     END
   `)
+  db.exec('DROP TRIGGER IF EXISTS homoglyph_kanban_cards_ai')
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS homoglyph_kanban_cards_ai AFTER INSERT ON kanban_cards
     WHEN ${triggerLikeClause('NEW.title')}
     BEGIN
       INSERT INTO homoglyph_findings (src_table, src_id, sample, found_at)
-      VALUES ('kanban_cards', NEW.id, substr(NEW.title, 1, 120), unixepoch());
+      VALUES ('kanban_cards', NEW.id, substr(NEW.title, 1, 120), CAST(strftime('%s','now') AS INTEGER));
     END
   `)
 
@@ -1240,7 +1255,7 @@ export function initDatabase(dbPathOverride?: string): void {
         CHECK(status IN ('pending','approved','rejected','timeout')),
       timeout_at INTEGER,
       telegram_message_id INTEGER,
-      requested_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      requested_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
       resolved_at INTEGER,
       resolved_by TEXT
     )
