@@ -352,17 +352,36 @@ def komment_mod(a):
     # A KAPU AZ IRAS ELE KERULT. Jelzeskent az INSERT UTAN allt, ami megengedheto volt; kapukent
     # ott ertelmetlen lenne (mar bent van a sor), es rosszabb a mainal: "megallitottalak" uzenetet
     # adna egy mar megtortent irasra.
-    def _ekezet_kapu(szoveg, szandekos):
+    # ARANY-KAPU, NEM JELENLET-KAPU (EKEZETARANY921, 2026-09-21). Az elozo alak `any`-predikatum volt:
+    # EGYETLEN ekezetes betu BARHOL a szovegben kikapcsolta a kaput az EGESZ szovegre. Merve: 831
+    # karakter ekezet nelkuli szoveg atment egy ekezetes szoval a vegen (0,36 szazalek); a tabla
+    # utolso 30 napjanak 300+ karakteres, "ekezetes" kommentjeibol 52 szazalek allt 0,5 szazalek
+    # alatt -- vagyis a kapu a hosszu szovegeken gyakorlatilag ki volt kapcsolva. A kuszob 4 szazalek
+    # (ekezetes betu / osszes betu), a Dream Engine DREAM.md-kapujanak precedense: a rendesen
+    # ekezetezett magyar proza 8-12 szazalek (a sajat teszt-fixtura 10,6), az ekezet nelkuli
+    # gyakorlatilag nulla, a 4 biztonsagosan a ketto kozott all. A kod/log/nyers-ertek eset
+    # legitim modon alacsony aranyu: arra a --ekezet-nelkul-szandekos kiut van, ami MEGMARAD.
+    EKEZET_ARANY_KUSZOB = 0.04
+
+    def _ekezet_arany(szoveg):
         EK = set('áéíóöőúüűÁÉÍÓÖŐÚÜŰ')
+        betuk = [ch for ch in szoveg if ch.isalpha()]
+        if not betuk:
+            return 0.0, 0
+        return sum(1 for ch in betuk if ch in EK) / len(betuk), len(betuk)
+
+    def _ekezet_kapu(szoveg, szandekos):
         if len(szoveg) < 300:
             return
-        if any(ch in EK for ch in szoveg):
+        arany, betuk = _ekezet_arany(szoveg)
+        if arany >= EKEZET_ARANY_KUSZOB:
             return
         if szandekos:
-            print('FIGYELEM: ekezet nelkuli komment megy be, KIMONDOTT felulbiralassal '
-                  '(--ekezet-nelkul-szandekos).', file=sys.stderr)
+            print(f'FIGYELEM: ekezet nelkuli komment megy be (ekezet-arany {arany:.1%}, {betuk} betun), '
+                  'KIMONDOTT felulbiralassal (--ekezet-nelkul-szandekos).', file=sys.stderr)
             return
-        sys.exit('MEGTAGADVA: ez a komment EKEZET NELKULI, pedig a kanban-kommentet EMBER olvassa\n'
+        sys.exit(f'MEGTAGADVA: ez a komment EKEZET NELKULI (ekezet-arany {arany:.1%} {betuk} betun, a kuszob '
+                 f'{EKEZET_ARANY_KUSZOB:.0%}), pedig a kanban-kommentet EMBER olvassa\n'
                  '  (gazda-szabaly, 2026-09-07). A kanban-CIM maradhat ekezet nelkul, a KOMMENT nem.\n'
                  '  A komment NEM irodott be. Ird at ekezetesen, es kuldd ujra.\n'
                  '  Ha kivetelesen indokolt (nyers log, kod-reszlet, surgos eset), add meg\n'
