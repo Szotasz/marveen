@@ -99,6 +99,32 @@ describe('evidence-rule scaffold block', () => {
     expect(evidenceBody).not.toContain('node scripts/recipient-ledger.mjs')
   })
 
+  // GATESCOPE921: the block used to say the hook measures "minden címet" and
+  // lets nothing unknown through, not even a draft. Measured on a live install
+  // 2026-09-21: the hook only sees a call that CARRIES to/cc/bcc. An address
+  // assembled inside a script the agent then runs (`python3 kuldes.py`) is
+  // invisible to it -- the gate's own header says so, because static analysis
+  // of arbitrary interpreter code is undecidable. The old sentence therefore
+  // told every agent it stood under machine protection on a path where it did
+  // not, and the gap is SILENT: nothing fires, the draft is simply written.
+  // The narrowed wording must not drift back on a later edit.
+  it('does not overclaim the recipient gate -- names what it cannot see', () => {
+    expect(evidenceBody).toContain('szkriptbe zárt címet')
+    expect(evidenceBody).toContain('ne olvasd védelemnek ott, ahol nincs')
+    expect(evidenceBody).not.toContain('ismeretlen címre még piszkozatot sem enged')
+  })
+
+  // Same measurement, second consequence: while the ledger file does not exist
+  // the gate is fail-closed, so every address-carrying send is denied. That is
+  // the right direction, but an approved recurring task does not disappear --
+  // the agent looks for the path the gate cannot see. Observed once already.
+  // Naming the correct recovery (add the address WITH a source) is what keeps
+  // fail-closed from teaching the workaround.
+  it('names the recovery path so the empty ledger does not teach evasion', () => {
+    expect(evidenceBody).toContain('fail-closed')
+    expect(evidenceBody).toContain('nem a kapu megkerülése')
+  })
+
   it('keeps Hungarian accents and uses no em dash, like its sibling blocks', () => {
     expect(evidenceBody).toContain('ellenőrizz')
     expect(evidenceBody).not.toContain('—')
