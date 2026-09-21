@@ -1339,9 +1339,19 @@ export function initDatabase(dbPathOverride?: string): void {
       scope TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       last_used_at INTEGER,
-      expires_at INTEGER
+      expires_at INTEGER,
+      revoked_at INTEGER
     )
   `)
+  // Soft revoke (review request on PR #1449): revoking used to DELETE the row,
+  // so an audit record naming a revoked token pointed at nothing. The row now
+  // stays and carries the moment it stopped being valid; resolveAgentToken()
+  // fails closed on it. Existing installs get the column here.
+  try {
+    db.exec('ALTER TABLE agent_tokens ADD COLUMN revoked_at INTEGER')
+  } catch {
+    // already there
+  }
   db.exec('CREATE INDEX IF NOT EXISTS idx_agent_tokens_agent ON agent_tokens(agent_id)')
 
   // --- OTel Distributed Tracing (card def5a189) ---

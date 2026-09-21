@@ -58,6 +58,8 @@ import {
 } from '../../db.js'
 import { notifySecurityEvent } from '../../notify.js'
 import {
+  AGENT_TOKEN_AGENT_ID_RE,
+  AGENT_TOKEN_LABEL_RE,
   createAgentToken,
   listAgentTokens,
   getAgentToken,
@@ -127,7 +129,6 @@ const DEVICE_KEY_NAME_RE = /^[\p{L}\p{N} ._-]{1,64}$/u
 // could mint another token (or a wider scope for itself) would defeat the
 // entire point of scoping it.
 const AGENT_TOKEN_ADMIN_KINDS = ['token', 'session'] as const
-const AGENT_TOKEN_LABEL_RE = /^[\p{L}\p{N} ._-]{1,64}$/u
 const DEVICE_KEY_MAX_EXPIRY_DAYS = 3650
 
 // { authenticated, method, user, device, login_available, setup_required }.
@@ -379,7 +380,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const agentId = str(body.agent_id).trim()
-    if (!USERNAME_RE.test(agentId)) {
+    if (!AGENT_TOKEN_AGENT_ID_RE.test(agentId)) {
       json(res, { error: 'Invalid agent_id (1-64 chars: letters, digits, . _ -)' }, 400)
       return true
     }

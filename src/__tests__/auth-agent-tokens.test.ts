@@ -11,10 +11,12 @@ import {
   createAgentToken,
   resolveAgentToken,
   listAgentTokens,
+  getAgentToken,
   revokeAgentToken,
   revokeAllAgentTokens,
   sweepExpiredAgentTokens,
   _clearAgentTokenCacheForTest,
+  AgentTokenValidationError,
 } from '../web/auth-agent-tokens.js'
 import { agentTokenAllows, agentTokenIdentityViolation } from '../web/agent-token-scope.js'
 import { MAIN_AGENT_ID } from '../config.js'
@@ -370,11 +372,61 @@ describe('revocation and expiry', () => {
     expect(listAgentTokens().map((t) => t.id)).toEqual([forever.id])
   })
 
-  it('break-glass revokes every agent token at once', () => {
-    createAgentToken('sam', 'a', 'messaging')
-    createAgentToken('sam', 'b', 'remote-agent')
+  // The route validated these before calling; web.ts mounts the same function
+  // in-process, where no route runs. The guard has to live in the function or
+  // it is missing on the path that matters (review request, PR #1449).
+  it('createAgentToken refuses a malformed agent_id even with no HTTP route in front of it', () => {
+    expect(() => createAgentToken('bad id!', 'l', 'messaging')).toThrow(AgentTokenValidationError)
+    expect(() => createAgentToken('', 'l', 'messaging')).toThrow(AgentTokenValidationError)
+    expect(() => createAgentToken('a'.repeat(65), 'l', 'messaging')).toThrow(AgentTokenValidationError)
+  })
+
+  it('createAgentToken refuses an unknown scope in-process', () => {
+    expect(() => createAgentToken('sam', 'l', 'admin' as never)).toThrow(AgentTokenValidationError)
+  })
+
+  it('createAgentToken refuses a malformed label in-process', () => {
+    expect(() => createAgentToken('sam', 'no/slashes', 'messaging')).toThrow(AgentTokenValidationError)
+  })
+
+  it('POSITIVE CONTROL: a well-formed in-process mint still works', () => {
+    const t = createAgentToken('sam', 'jo cimke', 'messaging')
+    expect(resolveAgentToken(t.token)?.agent).toBe('sam')
+  })
+
+  it('break-glass revokes every agent token at once, and the rows survive for attribution', () => {
+    const a = createAgentToken('sam', 'a', 'messaging')
+    const b = createAgentToken('sam', 'b', 'remote-agent')
     expect(revokeAllAgentTokens()).toBe(2)
-    expect(listAgentTokens()).toHaveLength(0)
+    // What matters is that neither credential works any more...
+    expect(resolveAgentToken(a.token)).toBeNull()
+    expect(resolveAgentToken(b.token)).toBeNull()
+    // ...while the rows are still there to answer "who held token 7?".
+    const rows = listAgentTokens()
+    expect(rows).toHaveLength(2)
+    expect(rows.every((t) => t.revokedAt !== null)).toBe(true)
+  })
+
+  it('a second break-glass does not re-stamp rows that were already revoked', () => {
+    createAgentToken('sam', 'a', 'messaging')
+    expect(revokeAllAgentTokens()).toBe(1)
+    expect(revokeAllAgentTokens()).toBe(0)
+  })
+
+  it('revoking one token leaves the row, kills the credential, and is idempotent', () => {
+    const t = createAgentToken('sam', 'one', 'messaging')
+    expect(resolveAgentToken(t.token)).not.toBeNull()
+    expect(revokeAgentToken(t.id)).toBe(true)
+    expect(resolveAgentToken(t.token)).toBeNull()
+    expect(getAgentToken(t.id)?.revokedAt).not.toBeNull()
+    expect(revokeAgentToken(t.id)).toBe(false)
+  })
+
+  it('a revoked token stays dead after a process restart (no cache to help it)', () => {
+    const t = createAgentToken('sam', 'restart', 'messaging')
+    revokeAgentToken(t.id)
+    _clearAgentTokenCacheForTest()
+    expect(resolveAgentToken(t.token)).toBeNull()
   })
 })
 
