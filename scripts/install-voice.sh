@@ -81,13 +81,15 @@ _pass "ffmpeg + libopus OK"
 # --- Step 2: Python venv ---
 _step "[2/5] Python venv"
 mkdir -p "$DEST/voices"
-# The gate measures a WORKING venv, not a directory. A 2026-07-14 install left an
-# 8 kB stub here whose bin/ held only python symlinks and no pip at all: `-d` was
-# true for it, so every re-run SKIPped this step and step 3 died on
-# `venv/bin/pip: No such file or directory`. bin/python is not a usable probe
-# either -- the stub had it. bin/pip is what step 3 actually calls, so that is
-# what decides. A stub found here is rebuilt, not merely reported: re-running
-# could otherwise never recover the install.
+# The gate measures a WORKING venv, not a directory. An interrupted or partial
+# earlier run can leave a few-kilobyte venv stub behind, whose bin/ holds the
+# python symlinks but no pip at all. `-d` is true for such a stub, so every
+# re-run SKIPs this step and step 3 dies on
+# `venv/bin/pip: No such file or directory` -- and retrying never helps, because
+# each attempt takes the same SKIP. bin/python is not a usable probe either; the
+# stub has it. bin/pip is what step 3 actually calls, so that is what decides.
+# A stub found here is rebuilt rather than merely reported, since re-running
+# cannot otherwise recover the install.
 if [[ ! -x "$DEST/venv/bin/pip" ]]; then
   if [[ -d "$DEST/venv" ]]; then
     echo "    Unusable venv at $DEST/venv (no bin/pip) -- rebuilding"

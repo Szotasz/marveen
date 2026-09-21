@@ -4,19 +4,21 @@ import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, existsSync, symlin
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-// The 2026-09-21 bug: the owner's voice install failed on every retry with
+// Step 2 is re-run on every install attempt, so its idempotency gate decides
+// whether a broken install can ever recover. The gate used to be
+// `[[ ! -d "$DEST/venv" ]]`, which asks whether the DIRECTORY exists rather than
+// whether the venv WORKS. An interrupted or partial earlier run can leave a
+// few-kilobyte venv stub behind -- a bin/ holding the python symlinks and no pip
+// at all -- and `-d` is true for it. Step 2 is then skipped on every single run,
+// and step 3 dies on
 //
-//     scripts/install-voice.sh: line 96: .../venv/bin/pip: No such file or directory
+//     .../venv/bin/pip: No such file or directory
 //
-// The cause was step 2's idempotency gate, `[[ ! -d "$DEST/venv" ]]`: it asks
-// whether the DIRECTORY exists, not whether the venv WORKS. A 2026-07-14 stub
-// sat at the target -- 8 kB, a bin/ holding only python symlinks, no pip at all
-// -- so the gate skipped step 2 on every single run and step 3 kept dying on the
-// missing pip. Re-running could never help; each run took the same SKIP.
+// Retrying cannot help: each attempt takes the same SKIP.
 //
 // These tests execute the REAL step 2 out of the shipped script (with a stubbed
-// DEST) rather than re-describing it, because the bug was invisible at the level
-// of reading the condition.
+// DEST) rather than re-describing it, because the fault is invisible at the
+// level of reading the condition.
 
 const ROOT = join(__dirname, '..', '..')
 const SCRIPT = join(ROOT, 'scripts', 'install-voice.sh')
@@ -56,7 +58,7 @@ function runStep2(dest: string): { code: number; out: string } {
   }
 }
 
-/** Reproduce the July stub: a venv directory whose bin/ has python but no pip. */
+/** Reproduce the stub a partial install leaves: bin/ has python, but no pip. */
 function makeBrokenVenv(dest: string): void {
   const bin = join(dest, 'venv', 'bin')
   mkdirSync(bin, { recursive: true })
