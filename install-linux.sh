@@ -1898,7 +1898,6 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=$INSTALL_DIR/scripts/host-restart-watchdog.sh
 Environment=MARVEEN_STORE=$INSTALL_DIR/store
-Environment=TELEGRAM_ENV=$HOME/.claude/channels/telegram/.env
 Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=$HOME
 ${TZ_LINE}
@@ -1919,7 +1918,6 @@ Description=${BOT_NAME} app-crash notifier for %i
 [Service]
 Type=oneshot
 ExecStart=$INSTALL_DIR/scripts/unit-fail-notify.sh %i
-Environment=TELEGRAM_ENV=$HOME/.claude/channels/telegram/.env
 Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=$HOME
 ${TZ_LINE}
