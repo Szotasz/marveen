@@ -70,10 +70,14 @@ tool- és plugin-oldalt reprodukáltuk. A két állítás nem mosható össze.
 2026-09-22-én egy rossz állítást vezettem le: azt mondtam egy flotta-sub-agentnek (Boni), hogy a
 korlát rá nem vonatkozik, mert "az ő sessionje nem birtokol csatornát".
 
-**Ő megmérte, és tévedtem:** a Telegram plugin eszközei (`mcp__plugin_telegram_telegram__reply`,
-`react`) OTT VANNAK az ő toolsetjében, ToolSearch-csel visszaigazolva, és az egyik ütemezett
-feladata szó szerint azt írja elő, hogy a SAJÁT reply tooljával küldjön a gazdának. Tehát az ő
-sessionje is birtokol csatornát, és a korlát rá is áll.
+**Ő megmérte, és tévedtem:** a Telegram plugin mind a négy eszköze (`reply`, `react`,
+`edit_message`, `download_attachment`) ott van az ő toolsetjében, és nem csak betöltődnek: ugyanazon
+a napon tényleges küldés is ment velük (a reggeli pénzügyi összefoglaló, Telegram message id 782).
+Ez a lényegi különbség, és a doksi máshol is ezt védi: a séma betöltése szükséges, de nem elégséges,
+a LEFUTÁS a bizonyíték. Ráadásul nem kivételes eset: legalább ÖT ütemezett feladatának a szövege
+írja elő, hogy a SAJÁT reply tooljával küldjön a gazdának (`napi-szamla-feldolgozas`,
+`reggeli-penzugyi-riasztasok`, `billingo-wise-egyeztetes`, `claude-viselkedes-orszem`,
+`heti-skill-audit`). Tehát az ő sessionje is birtokol csatornát, és a korlát rá is áll.
 
 **A HELYES PRÓBA, mielőtt bárkinek azt mondod, hogy rá nem vonatkozik:** nem az agens szerepe dönt
 (fő agens kontra sub-agent), hanem hogy a plugin eszközei benne vannak-e az ADOTT session
@@ -81,11 +85,12 @@ toolsetjében. Ezt ToolSearch-csel vagy a session eszközlistájából lehet meg
 lekérdezés, nem levezetés.
 
 **ÉS A KOCKÁZAT ASZIMMETRIÁJA DÖNT, NEM A FORMA:** ugyanabban a körben felmerült a session-belső
-`/mcp` slash-parancs is, mint a CLI-hívás "másik felülete". Boni nem próbálta ki, és helyesen:
-a várható haszon nulla volt (egy restart két percen belül jött és ugyanazt oldotta volna meg),
-a lefelé mutató kockázat viszont a saját Telegram-ága, és **a dokumentált hiba CSENDES** -- a
-parancs `Connected`-et ír és nullával tér vissza, miközben a plugin meghal. Nulla várható haszon
-mellett bármekkora kockázat rossz csere.
+`/mcp` slash-parancs is, mint a CLI-hívás "másik felülete". Boni nem próbálta ki, és helyesen.
+A `claude mcp list`-re MÉRT viselkedés az, hogy `Connected`-et ír, nullával tér vissza, és közben a
+plugin meghal (3. pont); a `/mcp`-re ezt NEM mértük, és épp ezért nem is lehetett rá támaszkodni.
+A döntés alapja az volt, hogy a `/mcp` ugyanabba a családba esik, a várható haszon pedig NULLA volt
+(egy restart két percen belül jött, és ugyanazt oldotta meg), a lefelé mutató kockázat viszont a
+saját Telegram-ága. Nulla várható haszon mellett bármekkora kockázat rossz csere.
 
 ## Amit ebből NE olvass ki
 
