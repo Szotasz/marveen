@@ -167,6 +167,26 @@ def main():
     check('4 a koordinator a SAJAT kartyajara ertesites nelkul is irhat',
           p.returncode == 0 and 'KOMMENT OK' in out, out)
 
+    # 4b. A HARMADIK ALLAPOT, MOSTANTOL KOTELEZO (Marveen, a mai A-lelet nyoman): egy kapcsolo-kapu
+    # suite-ja magatol a MEGADTA / NEM ADTA MEG tengelyen mer, es ettol VAK arra, hogy valaki
+    # megadta, de URESEN. A mai lelet pont ez volt: a kapu az UTVONALAT nezte, a kuldes a
+    # TARTALMAT, es egy 0 bajtos fajl befert a ketto koze -- nema kibuvo, olcsobb a kimondottnal.
+    # Itt, a koordinator-kartyan is meg kell allnia.
+    torol()
+    d = tempfile.mkdtemp(prefix='kartya-fk-ures-')
+    cf = os.path.join(d, 'k.txt'); mf = os.path.join(d, 'm.txt')
+    with open(cf, 'w', encoding='utf-8') as f:
+        f.write('Próba-komment, ékezetes szöveggel, elég hosszan.')
+    with open(mf, 'w', encoding='utf-8') as f:
+        f.write('\n   \n')
+    p = subprocess.run([sys.executable, SCRIPT, '--id', 'KOORD922', '--comment-file', cf,
+                        '--author', 'Geri', '--msg-file', mf],
+                       capture_output=True, text=True, env=kozos_env(port), timeout=30)
+    out = p.stdout + p.stderr
+    check('4b URES --msg-file a koordinator kartyajan is MEGTAGADVA (a harmadik allapot)',
+          p.returncode != 0 and 'ures --msg-file' in out, out)
+    check('4b es semmi nem ment ki', cimzettek() == [], f'cimzettek={cimzettek()}')
+
     # 5. PARITAS A LETREHOZO AGON: uj kartya a koordinator nevere, ertesites nelkul -> MEGTAGADVA.
     # A valtozas a FLEET halmazt bovitette, tehat a masik ag is orokli; ezt MERJUK, nem feltetelezzuk.
     torol()
