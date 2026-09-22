@@ -187,6 +187,31 @@ def main():
           p.returncode != 0 and 'ures --msg-file' in out, out)
     check('4b es semmi nem ment ki', cimzettek() == [], f'cimzettek={cimzettek()}')
 
+    # 4c. A FAROK-JAVITAST ALLITSA IS VALAKI (Samu lelete, 28138): a `farok or ...` mutans NEGY
+    # suite-on 0 pirosat adott, tehat a javitas MERETLEN volt. A megtagadas KET vege egymasnak
+    # mondott ellent: az eleje szerint semmi nem irodott, a vege szerint "kuldd el kezzel,
+    # kulonben a KARTYA nema marad" -- egy kartyarol, ami letre sem jott.
+    # MINDKET IRANY KELL: az UJ mondat ott legyen, a REGI pedig NE.
+    torol()
+    d = tempfile.mkdtemp(prefix='kartya-fk-tok-')
+    cf = os.path.join(d, 'k.txt'); mf = os.path.join(d, 'm.txt')
+    with open(cf, 'w', encoding='utf-8') as f:
+        f.write('Próba-komment, ékezetes szöveggel, elég hosszan.')
+    with open(mf, 'w', encoding='utf-8') as f:
+        f.write('Ertesites a KOORD922 kartyarol.')
+    env_notok = kozos_env(port)
+    env_notok.pop('KARTYA_TOKEN', None)          # token nincs, es a gyoker-fa sem hordoz egyet
+    p = subprocess.run([sys.executable, SCRIPT, '--id', 'KOORD922', '--comment-file', cf,
+                        '--author', 'Geri', '--msg-file', mf],
+                       capture_output=True, text=True, env=env_notok, timeout=30)
+    out = p.stdout + p.stderr
+    check('4c token nelkul az ELES ag MEGTAGAD, es a komment sem irodik be',
+          p.returncode != 0 and 'nincs dashboard-token' in out, out)
+    check('4c a megtagadas az UJ, ag-pontos farkat viszi ("SEMMI NEM VESZETT EL")',
+          'SEMMI NEM VESZETT EL' in out, out)
+    check('4c es NEM a letrehozo ag regi mondatat ("a kartya nema marad")',
+          'kartya nema marad' not in out, out)
+
     # 5. PARITAS A LETREHOZO AGON: uj kartya a koordinator nevere, ertesites nelkul -> MEGTAGADVA.
     # A valtozas a FLEET halmazt bovitette, tehat a masik ag is orokli; ezt MERJUK, nem feltetelezzuk.
     torol()
