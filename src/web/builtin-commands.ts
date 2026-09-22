@@ -110,6 +110,10 @@ export function modelStatusText(): string {
     choices = notMeasurable(`a model-choices.json olvashatatlan: ${err instanceof Error ? err.message : String(err)}`)
   }
   lines.push(`Választható: ${choices}`)
+  // ELSOKOR922 Phase 7 A-smoke, tulajdonosi visszajelzés (2026-09-22): a
+  // sima /model státusz nem mondta meg, HOGYAN kell váltani -- a szintaxis
+  // csak a /help-ben (a registry `usage` mezőjében) volt látható, itt nem.
+  lines.push('Váltás: /model <választás> [<idő>|keep], pl. /model opus 30m')
   return lines.join('\n')
 }
 
