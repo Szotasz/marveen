@@ -299,6 +299,41 @@ describe('marveen-commands.py', () => {
 // and paid for a full model turn to answer it AGAIN -- measured live: /board
 // and /context both got answered twice, once free (the hook) and once at
 // full token cost (the drain), 3-20 minutes apart.
+// --stop (Stop hook): a model hold that expired while the session was busy
+// gets one revert retry when the turn ends. Ordinary turn ends cost nothing.
+describe('marveen-commands.py --stop', () => {
+  function runStop(agent = 'marveen'): Promise<number | null> {
+    return new Promise((resolve) => {
+      const p = spawn('python3', [HOOK, '--stop'], {
+        env: { ...process.env, MARVEEN_INSTALL_DIR: install, MAIN_AGENT_ID: 'marveen', MARVEEN_AGENT_ID: agent, TELEGRAM_STATE_DIR: stateDir, MARVEEN_API_BASE: base, LEDGER_DB_PATH: ledgerDb },
+      })
+      p.on('close', code => resolve(code))
+      p.stdin.end(JSON.stringify({ session_id: 'sid-1', hook_event_name: 'Stop' }))
+    })
+  }
+  const holdFile = () => join(install, 'store', 'main-model-hold.json')
+  const turnEnded = () => calls.filter(c => c.path === '/api/commands/turn-ended')
+
+  it('an expired hold: the dashboard is told the turn ended; exit 0', async () => {
+    writeFileSync(holdFile(), JSON.stringify({ model: 'm', revert_to: 'b', until: Date.now() - 60_000 }))
+    try {
+      expect(await runStop()).toBe(0)
+      expect(turnEnded()).toHaveLength(1)
+    } finally { rmSync(holdFile(), { force: true }) }
+  })
+
+  it('no hold, a hold not yet expired, or a sub-agent session: no call at all', async () => {
+    expect(await runStop()).toBe(0)
+    writeFileSync(holdFile(), JSON.stringify({ model: 'm', revert_to: 'b', until: Date.now() + 60_000 }))
+    try {
+      expect(await runStop()).toBe(0)
+      writeFileSync(holdFile(), JSON.stringify({ model: 'm', revert_to: 'b', until: Date.now() - 60_000 }))
+      expect(await runStop('nova')).toBe(0)
+      expect(turnEnded()).toHaveLength(0)
+    } finally { rmSync(holdFile(), { force: true }) }
+  })
+})
+
 describe('marveen-commands.py: closes the conversation-continuity ledger', () => {
   function seedOpenQuestion(agentId: string, chatId: string, messageId: string, text: string) {
     const db = new Database(ledgerDb)

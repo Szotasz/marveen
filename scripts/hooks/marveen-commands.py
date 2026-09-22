@@ -429,6 +429,38 @@ def attr(attrs, name):
     return m.group(1) if m else None
 
 
+def run_stop():
+    """Stop hook: the main session finished a turn. If a /model hold expired
+    while the session was busy (the one-shot expiry timer found it busy), tell
+    the dashboard, which arms ONE revert retry after the switch quiet window.
+    The expiry is checked from the hold file first, so an ordinary turn end
+    costs no HTTP call. Silent, never blocks (exit 0, empty stdout)."""
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        payload = {}
+    if not is_main_session(payload):
+        sys.exit(0)
+    try:
+        with open(os.path.join(REPO_ROOT, "store", "main-model-hold.json"), encoding="utf-8") as f:
+            until = json.load(f).get("until")
+        if not isinstance(until, (int, float)) or time.time() * 1000 < until:
+            sys.exit(0)
+    except Exception:
+        sys.exit(0)
+    try:
+        with open(os.path.join(REPO_ROOT, "store", ".dashboard-token"), encoding="utf-8") as f:
+            dtok = f.read().strip()
+        req = urllib.request.Request(
+            api_base() + "/api/commands/turn-ended", data=b"{}", method="POST",
+            headers={"Authorization": "Bearer " + dtok, "Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=5).read()
+    except Exception as e:
+        log(state_dir(), f"turn-ended notify failed: {type(e).__name__}")
+    sys.exit(0)
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -503,4 +535,6 @@ def main():
 if __name__ == "__main__":
     if sys.argv[1:2] == ["--deferred"]:
         run_deferred()
+    if sys.argv[1:2] == ["--stop"]:
+        run_stop()
     main()

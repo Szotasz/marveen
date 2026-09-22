@@ -33,7 +33,7 @@ import { configDirFor } from './main-transcript-root.js'
 import { readConfiguredMainModel } from './channel-monitor.js'
 import { gatherGateInputs, sendSlashCommand, mainSessionName } from './context-restart-gate-runner.js'
 import { capturePane } from './agent-process.js'
-import { switchVerdict, type QuietVerdict } from './session-control.js'
+import { switchVerdict, SWITCH_TURN_QUIET_MS, type QuietVerdict } from './session-control.js'
 import { notifyChannel } from '../notify.js'
 import { registerCommand } from './commands.js'
 import { formatDayClock, formatSpan, modelsDiffer, formatTokens } from './system-status.js'
@@ -207,13 +207,17 @@ export interface ModelDeps {
   lastSentFile: string
   /** Count of "Set model to" lines in the visible pane; null = not capturable. */
   ackCount: () => number | null
-  /** One fixed wait after a send, for the CLI to print its answer. */
-  settle: () => Promise<void>
+  /** Pause between two ack reads (the ack wait is bounded, see sendModel). */
+  sleep: (ms: number) => Promise<void>
   /** Arm (untilMs) or disarm (null) the one-shot hold-expiry timer. */
   scheduleExpiry: (untilMs: number | null) => void
 }
 
-const ACK_SETTLE_MS = 700
+// Measured on the test pane: the CLI prints "Set model to ..." ~1.0-1.1 s after
+// the send (a fixed 0.7 s read missed it). The read stops at the first
+// increase; the bound only caps a slow or silent CLI.
+const ACK_WAIT_MS = 3000
+const ACK_STEP_MS = 250
 
 // One timer, armed at the exact hold expiry. The 5-minute sweep (the gate's
 // disabled-recheck cadence) stays as the fallback -- after a dashboard restart,
@@ -257,19 +261,35 @@ export const liveModelDeps: ModelDeps = {
   autoCompactWindow: readAutoCompactWindow,
   lastSentFile: MODEL_LAST_SENT_FILE,
   ackCount: () => countModelAcks(capturePane(mainSessionName())),
-  settle: () => new Promise(r => setTimeout(r, ACK_SETTLE_MS)),
+  sleep: (ms) => new Promise(r => setTimeout(r, ms)),
   scheduleExpiry: (untilMs) => scheduleHoldExpiry(untilMs),
 }
 
-// Send a /model and read the CLI's acknowledgement once. Records the send so a
-// status can say "switched since the last measured turn".
+// Send a /model and wait (bounded) for the CLI's acknowledgement. Records the
+// send so a status can say "switched since the last measured turn".
 async function sendModel(modelId: string, deps: ModelDeps): Promise<boolean> {
   const before = deps.ackCount()
   await deps.send(`/model ${modelId}`)
   writeLastSent(deps.lastSentFile, modelId, deps.now())
-  await deps.settle()
-  const after = deps.ackCount()
-  return before !== null && after !== null && after > before
+  if (before === null) return false
+  for (let waited = 0; waited < ACK_WAIT_MS; waited += ACK_STEP_MS) {
+    await deps.sleep(ACK_STEP_MS)
+    const after = deps.ackCount()
+    if (after !== null && after > before) return true
+  }
+  return false
+}
+
+// A hold that expired while the session was busy: the Stop hook reports the
+// end of every main-session turn (marveen-commands.py --stop -> POST
+// /api/commands/turn-ended). The revert then gets ONE retry, once the turn has
+// been quiet for the switch window -- an event, not a poll; the 5-minute sweep
+// stays the fallback.
+export function onMainTurnEnded(nowMs: number, holdFile: string = MODEL_HOLD_FILE): boolean {
+  const { state } = readHold(holdFile)
+  if (!state || nowMs < state.until) return false
+  scheduleHoldExpiry(nowMs + SWITCH_TURN_QUIET_MS, nowMs)
+  return true
 }
 
 // ---- /model [set] -------------------------------------------------------------

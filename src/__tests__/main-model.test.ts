@@ -15,6 +15,8 @@ import {
   _resetMainModelForTest,
   countModelAcks,
   readLastSent,
+  onMainTurnEnded,
+  scheduleHoldExpiry,
   BLOCK_ALERT_MS,
   type ModelDeps,
   type HoldState,
@@ -50,7 +52,7 @@ function deps(over: Partial<ModelDeps> = {}, opts: { noAck?: boolean } = {}) {
     notify: async (t) => { notes.push(t); return true },
     autoCompactWindow: () => null,
     ackCount: () => acks,
-    settle: async () => {},
+    sleep: async () => {},
     scheduleExpiry: (u) => { expiries.push(u) },
     ...over,
   }
@@ -306,6 +308,27 @@ describe('/model acknowledgement, exact expiry, stale measurement', () => {
     expect(await sweepModelHold(T0 + 61_000, d)).toBe('reverted')
     expect(d.notes[0]).toMatch(/visszaváltva .* \(a Claude Code visszaigazolta\)/)
     expect(d.expiries).toEqual([null])
+  })
+
+  it('a late acknowledgement (the CLI prints ~1 s after the send) is still caught within the bound', async () => {
+    writeChoices()
+    let acks = 0, reads = 0
+    const d = deps({
+      send: async () => {},
+      ackCount: () => { reads++; if (reads === 5) acks++; return acks }, // appears on the 4th read after the send
+    })
+    const r = await setModel(['opus', '3m'], d)
+    expect(r.text).toMatch(/^Átváltva/)
+  })
+
+  it('turn ended after an expiry the session was busy for: one retry armed; an unexpired hold arms nothing', () => {
+    const file = join(dir, 'main-model-hold.json')
+    writeHold(file, { model: 'claude-opus-5[1m]', name: 'opus', revert_to: BASE, until: T0 + 60_000, set_at: T0, verify_pending: false, blocked_since: T0 + 61_000, block_alert_at: null })
+    try {
+      expect(onMainTurnEnded(T0 + 30_000, file)).toBe(false)
+      expect(onMainTurnEnded(T0 + 90_000, file)).toBe(true)
+      expect(onMainTurnEnded(T0 + 90_000, join(dir, 'none.json'))).toBe(false)
+    } finally { scheduleHoldExpiry(null) }
   })
 
   it('countModelAcks matches only the prefix (two CLI builds print it differently)', () => {

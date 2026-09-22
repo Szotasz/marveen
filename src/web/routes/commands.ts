@@ -24,6 +24,7 @@ import type http from 'node:http'
 import { json, readBody } from '../http-helpers.js'
 import { parseCommand, resolveCommand, dispatchCommand, botCommandList, type DispatchOutcome } from '../commands.js'
 import { resolveOwnerChatId } from '../../owner-chat.js'
+import { onMainTurnEnded } from '../main-model.js'
 import { logger } from '../../logger.js'
 import type { RouteContext } from './types.js'
 
@@ -113,6 +114,13 @@ export async function tryHandleCommands(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, auth } = ctx
   if (path === '/api/commands/menu' && method === 'GET') {
     json(res, { commands: botCommandList() })
+    return true
+  }
+  // The main session's Stop hook (marveen-commands.py --stop): a turn ended.
+  // Only acts when a model hold is past its expiry (the session was busy
+  // then); it arms one revert retry -- nothing else reads this.
+  if (path === '/api/commands/turn-ended' && method === 'POST') {
+    json(res, { armed: onMainTurnEnded(Date.now()) })
     return true
   }
   if (path !== '/api/commands/dispatch') return false
