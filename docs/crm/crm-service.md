@@ -77,6 +77,10 @@ a `contact_emails` egyezése alapján).
   `SUPPORT_MAILBOX` + `SUPPORT_VAULT_KEY` a telepítés `.env`-jéből vagy env-ből, a jelszó a vaultból a
   folyamaton BELÜL; `select readonly`, `BODY.PEEK[]`, semmit nem jelöl olvasottnak). INBOX -> `in`,
   INBOX.Sent -> `out`. Konfig nélkül FAIL-CLOSED (exit 3), semmit nem tölt le.
+  A dumper gyerek-folyamat időkorlátja `CRM_IMAP_DUMP_TIMEOUT_MS` (alap 600 000 ms; mérve ~175 ms/levél,
+  tehát az első, 500-as futás két postaládán ~175 s). **A levágott vagy hibával kilépett dump sorai
+  ALKALMAZÓDNAK** (a UID csak nő, adat nem vész el), de a futás `rc 4`, a `last_error` a state-ben és a
+  `GET /api/sync/status`-ban kimondja, hogy RÉSZLEGES; `last_error` csak tiszta (exit 0, nem ölt) gyereknél null.
 - **Szál-kulcs**: `gmail:<threadId>` ha van; különben `refs:<a References-lánc gyökere>`, annak híján
   `In-Reply-To`, annak híján a saját Message-ID. **A support@ Sent-másolatnak ma nincs Message-ID-je**
   (mérve 2026-09-22): az ilyen sor `synthetic:imap_support:INBOX.Sent:<uid>` azonosítóval, szál NÉLKÜL kerül

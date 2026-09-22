@@ -15,7 +15,9 @@ import Database from 'better-sqlite3'
 import { initCrmDatabase } from '../crm/db.js'
 import { deriveThreadKey, htmlToText, parseAddresses, parseReferences, type NormalizedMail } from '../crm/mail-model.js'
 import { normalizeGmail, extractBodyText, syncGmail, type GmailApi, type GmailMessage } from '../crm/gmail-sync.js'
-import { applyImapLines, normalizeImap, parseDumpOutput, type ImapDumpLine } from '../crm/imap-sync.js'
+import { applyImapLines, applyImapDump, normalizeImap, parseDumpOutput, resolveDumpTimeoutMs, type ImapDumpLine, type ImapSyncState } from '../crm/imap-sync.js'
+import { syncStatus } from '../crm/thread-routes.js'
+import { writeFileSync } from 'node:fs'
 import { createCrmServer } from '../crm/server.js'
 
 const REPO = join(fileURLToPath(import.meta.url), '..', '..', '..')
@@ -180,5 +182,43 @@ describe('the Python dumper, offline', () => {
     let code = 0
     try { execFileSync('python3', [script], { stdio: 'pipe' }) } catch (e) { code = (e as { status: number }).status }
     expect(code).toBe(2)
+  })
+})
+
+describe('a cut or failed dump is applied but never reported clean (Samu review on #1475)', () => {
+  const freshState = (): ImapSyncState => ({ mailboxes: ['INBOX', 'INBOX.Sent'], last_uid: {}, last_run: null, last_stats: null, last_error: null })
+  it('killed child with partial stdout: the lines land, the uid advances, last_error is set, rc 4, and /api/sync/status carries it', () => {
+    const d2 = initCrmDatabase(join(tmp, 'cut.db'))
+    const state = freshState()
+    const partial = imapLines.filter((l) => l.mailbox === 'INBOX').slice(0, 1)
+    const r = applyImapDump(d2, state, { lines: partial, stderr: '', code: 1, killed: true }, NOW, 120_000)
+    expect(r.rc).toBe(4)
+    expect((d2.prepare('SELECT count(*) AS n FROM messages').get() as { n: number }).n).toBe(1)
+    expect(state.last_uid.INBOX).toBe(Number(partial[0].uid))
+    expect(state.last_error).toMatch(/^dump killed \(timeout 120000 ms\); 1 lines applied, the run is PARTIAL$/)
+    expect(r.out.partial).toBe(true)
+    const statePath = join(tmp, 'cut-state.json')
+    writeFileSync(statePath, JSON.stringify({ gmail: {}, imap: state }))
+    const st = syncStatus(d2, statePath).body as { state: { imap: { last_error: string | null } } }
+    expect(st.state.imap.last_error).not.toBeNull()
+    d2.close()
+  })
+  it('non-zero exit with lines: applied, stderr in last_error, rc 4; a clean exit 0 afterwards clears it', () => {
+    const d2 = initCrmDatabase(join(tmp, 'cut2.db'))
+    const state = freshState()
+    const r1 = applyImapDump(d2, state, { lines: imapLines, stderr: 'IMAP select failed: INBOX.Sent', code: 4, killed: false }, NOW)
+    expect(r1.rc).toBe(4)
+    expect(state.last_error).toMatch(/^IMAP select failed: INBOX.Sent; \d+ lines applied/)
+    const r2 = applyImapDump(d2, state, { lines: [], stderr: '', code: 0, killed: false }, NOW + 1)
+    expect(r2.rc).toBe(0)
+    expect(state.last_error).toBeNull()
+    expect(r2.out.partial).toBeUndefined()
+    d2.close()
+  })
+  it('the dump timeout defaults to 600 s and honours CRM_IMAP_DUMP_TIMEOUT_MS', () => {
+    expect(resolveDumpTimeoutMs(undefined)).toBe(600_000)
+    expect(resolveDumpTimeoutMs('30000')).toBe(30_000)
+    expect(resolveDumpTimeoutMs('nope')).toBe(600_000)
+    expect(resolveDumpTimeoutMs('0')).toBe(600_000)
   })
 })

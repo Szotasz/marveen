@@ -77,17 +77,50 @@ export function parseDumpOutput(stdout: string): ImapDumpLine[] {
   return out
 }
 
-/** Runs the dumper. The password never appears here: the child reads it from the vault. */
-export function runImapDump(mailboxes: string[], sinceUid: Record<string, number>, limit = 500): Promise<{ lines: ImapDumpLine[]; stderr: string; code: number }> {
+export interface ImapDumpOutcome { lines: ImapDumpLine[]; stderr: string; code: number; killed: boolean }
+
+/** execFile timeout for the dumper. Measured 2026-09-22: ~175 ms per letter, so a first run of
+ *  --limit 500 over two mailboxes is ~175 s; the old 120 s cut it and the cut looked clean. */
+export function resolveDumpTimeoutMs(raw: string | undefined): number {
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 600_000
+}
+export const IMAP_DUMP_TIMEOUT_MS = resolveDumpTimeoutMs(process.env.CRM_IMAP_DUMP_TIMEOUT_MS)
+
+/** Runs the dumper. The password never appears here: the child reads it from the vault.
+ *  A killed child (timeout) comes back as killed=true with whatever stdout it produced. */
+export function runImapDump(mailboxes: string[], sinceUid: Record<string, number>, limit = 500, timeoutMs = IMAP_DUMP_TIMEOUT_MS): Promise<ImapDumpOutcome> {
   const script = join(PROJECT_ROOT, 'scripts', 'crm', 'support-imap-dump.py')
   const args = [script]
   for (const mb of mailboxes) args.push('--mailbox', mb)
   for (const [mb, uid] of Object.entries(sinceUid)) args.push('--since', `${mb}=${uid}`)
   args.push('--limit', String(limit))
   return new Promise((resolve) => {
-    execFile('python3', args, { maxBuffer: 64 * 1024 * 1024, timeout: 120_000 }, (err, stdout, stderr) => {
+    execFile('python3', args, { maxBuffer: 64 * 1024 * 1024, timeout: timeoutMs }, (err, stdout, stderr) => {
+      const killed = Boolean(err && (err as { killed?: boolean }).killed)
       const code = err && typeof (err as { code?: unknown }).code === 'number' ? ((err as { code: number }).code) : err ? 1 : 0
-      resolve({ lines: code === 0 || stdout ? parseDumpOutput(String(stdout)) : [], stderr: String(stderr), code })
+      resolve({ lines: code === 0 || stdout ? parseDumpOutput(String(stdout)) : [], stderr: String(stderr), code, killed })
     })
   })
+}
+
+export interface ImapSyncState { mailboxes: string[]; last_uid: Record<string, number>; last_run: number | null; last_stats: SyncStats | null; last_error: string | null }
+
+/** Pure: apply a dump outcome to the store AND the state. The rule (Samu review on #1475): a cut
+ *  or failed dump still APPLIES the lines it produced (UIDs only grow, nothing is lost), but the
+ *  status must carry the failure. last_error is null ONLY for a child that exited 0 and was not
+ *  killed; anything else is rc 4 even when lines were applied. */
+export function applyImapDump(db: Database.Database, state: ImapSyncState, dump: ImapDumpOutcome, now: number, timeoutMs = IMAP_DUMP_TIMEOUT_MS): { rc: 0 | 4; out: Record<string, unknown> } {
+  const stats = applyImapLines(db, dump.lines, now)
+  for (const [mb, uid] of Object.entries(stats.maxUid)) state.last_uid[mb] = Math.max(state.last_uid[mb] ?? 0, uid)
+  state.last_run = now
+  state.last_stats = stats
+  const clean = dump.code === 0 && !dump.killed
+  if (clean) {
+    state.last_error = null
+    return { rc: 0, out: { ...stats } }
+  }
+  const why = dump.killed ? `dump killed (timeout ${timeoutMs} ms)` : (dump.stderr.trim().slice(0, 300) || `exit ${dump.code}`)
+  state.last_error = `${why}; ${dump.lines.length} lines applied, the run is PARTIAL`
+  return { rc: 4, out: { ...stats, error: state.last_error, partial: true } }
 }

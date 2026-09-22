@@ -9,11 +9,11 @@ import { join } from 'node:path'
 import { STORE_DIR } from '../config.js'
 import { initCrmDatabase } from './db.js'
 import { createLiveGmailApi, syncGmail, type SyncStats } from './gmail-sync.js'
-import { applyImapLines, runImapDump } from './imap-sync.js'
+import { applyImapDump, runImapDump, type ImapSyncState } from './imap-sync.js'
 
 export interface SyncState {
   gmail: { last_run: number | null; query: string; last_stats: SyncStats | null }
-  imap: { mailboxes: string[]; last_uid: Record<string, number>; last_run: number | null; last_stats: SyncStats | null; last_error: string | null }
+  imap: ImapSyncState
 }
 
 export const STATE_PATH = join(STORE_DIR, 'crm-sync-state.json')
@@ -58,18 +58,9 @@ async function main(): Promise<number> {
   }
   if (!args.has('--gmail-only')) {
     const dump = await runImapDump(state.imap.mailboxes, state.imap.last_uid)
-    if (dump.code !== 0 && dump.lines.length === 0) {
-      state.imap.last_error = dump.stderr.trim().slice(0, 300) || `exit ${dump.code}`
-      out.imap = { error: state.imap.last_error }
-      rc = rc || 4
-    } else {
-      const stats = applyImapLines(db, dump.lines, now)
-      for (const [mb, uid] of Object.entries(stats.maxUid)) state.imap.last_uid[mb] = Math.max(state.imap.last_uid[mb] ?? 0, uid)
-      state.imap.last_run = now
-      state.imap.last_stats = stats
-      state.imap.last_error = null
-      out.imap = stats
-    }
+    const r = applyImapDump(db, state.imap, dump, now)
+    out.imap = r.out
+    rc = rc || r.rc
   }
   const leadsAfter = (db.prepare('SELECT count(*) AS n FROM leads').get() as { n: number }).n
   out.leads = { before: leadsBefore, after: leadsAfter }
