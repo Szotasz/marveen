@@ -148,8 +148,11 @@ describe('http skeleton', () => {
     expect(maBody.leads.map((l) => l.title)).toEqual(['HTTP-uton felvett lead'])
     expect(maBody.sleeping.count).toBe(0)
 
-    // ami NEM szallt le, tovabbra is 404, es megnevezi a kartyat
-    const ismeretlen = await fetch(url('/api/leads/9999/postpone'), { method: 'POST', headers: { Authorization: `Bearer ${TOKEN}` } })
+    // ami NEM szallt le, tovabbra is 404, es megnevezi a kartyat.
+    // (Korabban a `/postpone` allt itt; az a 2. utemben LESZALLT -- CRM2SENDSTATE922 --, tehat ez
+    // az allitas mostantol a HIANYT rogzitene keszkent. Egy olyan lead-utvonal all a helyen, ami
+    // tovabbra sincs: a felelos-atallitas.)
+    const ismeretlen = await fetch(url('/api/leads/9999/assign'), { method: 'POST', headers: { Authorization: `Bearer ${TOKEN}` } })
     expect(ismeretlen.status).toBe(404)
     expect((await ismeretlen.json() as { error: string }).error).toContain(LEADS_ENDPOINT_CARD)
   })

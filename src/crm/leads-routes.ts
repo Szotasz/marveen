@@ -10,6 +10,7 @@
  */
 import type { Database } from 'better-sqlite3'
 import { checkActor, checkLeadInput, startOfLocalDay, type LeadInput } from './leads-gate.js'
+import { blockerRefusal, expiredBlockers } from './lead-flow.js'
 
 export type ApiResult = { status: number; body: Record<string, unknown> }
 
@@ -50,6 +51,17 @@ export function createLead(
     }
   }
   const szerzo = szerzoKapu.actor
+
+  // (2) A LEJÁRT KÖVETKEZŐ LÉPÉS AKADÁLY, A FELELŐS KÖVETKEZŐ ÍRÁSÁN (spec 1. szakasz, (2) pont).
+  //
+  // ITT áll, az új munka felvétele előtt, mert pont ez a mozdulat süllyeszti el a régit: aki lejárt
+  // tétel mellett vesz fel új leadet, az a régit soha nem fogja elővenni. A megtagadás NEM az
+  // olvasásra vonatkozik, és a feloldás egy mondat a lejárt tételhez (`resolveExpired`).
+  const blokkolok = expiredBlockers(db, szerzo, now)
+  if (blokkolok.length) {
+    audit(db, szerzo, 'lead', null, 'create_blocked', JSON.stringify({ blockers: blokkolok.map((b) => b.id) }))
+    return blockerRefusal(blokkolok)
+  }
 
   const kapu = checkLeadInput(body, now)
   if (!kapu.ok) {
