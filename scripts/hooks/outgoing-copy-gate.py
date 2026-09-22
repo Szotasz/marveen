@@ -663,25 +663,52 @@ def _hit_context(prose: str, pos: int, length: int) -> str:
 # ("8:09-es", "2-es", "17:06-kor") a szobontonal puszta "es"/"kor" tokenne esik
 # szet, amit a szotar hibanak lat -- pedig ott toldalek, nem szo. A javitas nem a szotarbol
 # vesz ki (az elrontana a valodi talalatokat is), hanem a technikai regiokat
-# vagja ki a vizsgalt szovegbol. A gondolatjel- es nev-ellenorzes NEM ezen fut.
-TECHNICAL = re.compile(
-    r"""https?://\S+                # URL
+# vagja ki a vizsgalt szovegbol. A gondolatjel-ellenorzes NEM ezen fut (az a nyers
+# szovegen mer), a nev-ellenorzes pedig a SAJAT, szukebb maszkjan -- lasd NAME_MASK.
+#
+# GATENEVSTRIP921 (kulso bejelentes 2026-09-21, sajat visszameres 2026-09-22):
+# KET SZABALY, AMI UGYANARRA A SZOVEGRE NEZ, NEM UGYANAZT A MASZKOT AKARJA.
+# A bejelentes az volt, hogy a nev-szabaly a NYERS szovegen fut, ezert URL-ben,
+# kod-spanban vagy utvonalban allo nevalak is megallitja a teljes uzenetet
+# (harom ilyen hamis pozitiv reprodukalva). A kezenfekvo javitas -- a nev-szabaly
+# athelyezese a strip_technical UTANRA -- viszont LYUKAT NYIT, mert az alabbi ket
+# alternativa a NEVET magat vagja ki a szovegbol a toldalekaval egyutt:
+#   "Nev-val" / "Nev-nak" / "Nev-fele"  ->  a tulajdonnev+toldalek ag eszi meg
+# Merve a sajat mintankon (kartya-komment 17237): harom prozai alakbol harom tunt
+# el a strip utan, vagyis csendben ATMENTEK volna. Ezert a nev-szabaly a kozos,
+# egyertelmuen technikai regiokat kapja meg maszknak (_TECH_COMMON), a toldalek-
+# es azonosito-agakat NEM. Ezek az agak a token- es ekezet-vizsgalatnak kellenek,
+# ahol epp az a dolguk, hogy a toldalek-toredeket ne nezzek onallo szonak.
+#
+# A KET MASZK EGY FORRASBOL EPUL, hogy ne drifteljenek szet: ha valaki uj
+# technikai regiot vesz fel, a _TECH_COMMON-ba irva MINDKET ellenorzes latja.
+_TECH_COMMON = r"""
+        https?://\S+                # URL
       | [\w.+-]+@[\w-]+\.[\w.]+     # email
       | `[^`]*`                     # kod-span
       | \b\w+(?:_\w+)+\b            # snake_case azonosito
       | \b\w+\.[A-Za-z]{2,10}(?:-[a-záéíóöőúüű]{1,4})?\b   # fajlnev / domain, magyar toldalekkal (video.mp4, marveen.io, Mail.app-ot)
       | \b[\w-]*/[\w/-]+            # utvonal / slug
-      | \d+(?:[.:,]\d+)*-[^\W\d_]+   # szam + magyar toldalek (8:09-es, 2-es, 17:06-kor)
+"""
+# CSAK a token-/ekezet-vizsgalat vaghatja ki ezeket: mindharom ag kepes egy
+# tulajdonnevet a toldalekaval egyutt elnyelni, ezert a nev-szabaly nem kapja meg.
+_TECH_SUFFIXED = r"""
+        \d+(?:[.:,]\d+)*-[^\W\d_]+   # szam + magyar toldalek (8:09-es, 2-es, 17:06-kor)
       | \b[A-ZÁÉÍÓÖŐÚÜŰ][^\W\d_]*-[a-záéíóöőúüű]{1,4}\b   # tulajdonnev + toldalek (Chrome-ot, Drive-ra)
       | \blevel\s+\d+\b            # angol "level 1" (autonomia-szint, log-szint)
       | \b[a-z]+(?:-[a-z]+){1,4}\b    # kotojeles kisbetus azonosito (feladat- es skill-nevek)
-    """,
-    re.X,
-)
+"""
+TECHNICAL = re.compile(_TECH_COMMON + "|" + _TECH_SUFFIXED, re.X)
+NAME_MASK = re.compile(_TECH_COMMON, re.X)
 
 
 def strip_technical(text: str) -> str:
     return TECHNICAL.sub(" ", text)
+
+
+def strip_for_name(text: str) -> str:
+    """A nev-ellenorzes maszkja: csak az egyertelmuen technikai regiok esnek ki."""
+    return NAME_MASK.sub(" ", text)
 
 
 def is_hungarian(text: str) -> bool:
@@ -827,7 +854,11 @@ def audit(text: str):
         problems.append(
             f"GONDOLATJEL (em dash, U+2014) {plain.count(EM_DASH)} helyen -- allo szabaly, soha nem mehet ki."
         )
-    bad = BAD_NAME.search(plain) if BAD_NAME else None
+    # GATENEVSTRIP921: a nev-szabaly a SAJAT maszkjan fut (NAME_MASK), nem a
+    # nyers szovegen es nem a strip_technical kimeneten -- lasd a NAME_MASK
+    # feletti indoklast. Igy a kod-spanban/URL-ben allo nevalak atmegy, a
+    # toldalekos prozai alak ("Nev-val") viszont tovabbra is bukik.
+    bad = BAD_NAME.search(strip_for_name(plain)) if BAD_NAME else None
     if bad:
         problems.append(
             f"HELYTELEN NEV: {bad.group(0)!r} -- a lokal nev-szabaly (store/outgoing-copy-gate-rules.json) szerint helytelen alak; a helyes irast a szabaly-fajl correction mezoje adja." + _name_correction()
