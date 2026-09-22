@@ -88,3 +88,7 @@ CREATE TABLE money_rows (
 | G2 | (2. ütemben) | Geri | send_attempts állapotgép, audit_gap + task ugyanabban a tranzakcióban, a többi három kényszer | G1 |
 
 Review: minden PR-t Samu mér a szokott recepttel (worktree, suite, mutánsok). A merge Marveené.
+
+## 4. Szerző (actor): döntés 2026-09-22 19:0x (Geri 28281, Dani 28286)
+
+(a): a KÉRÉS hordozza a szerzőt, a törzs `actor` mezőjében (nem fejlécben: a törzs kerül a nyomba). A bearer token engedélyt mond, nem nevet, ezért a szolgáltatás SOHA nem tölt ki szerzőt konfigból vagy konstansból: nincs CRM_ACTOR, nincs 'system'. Szerver-oldalon a kapu megtagadja az üres vagy csak-whitespace actor-t (trim után 1..64 karakter), ugyanez a szabály minden író végpontra (leads, contacts, tasks, később send_attempts). A felület "Ki vagy" mezője tölti, localStorage-ban nézőnként, üresen a gomb tiltott, de a szerver-oldali megtagadás az első tanú, a gomb csak kényelem. Név-allowlist az 1. ütemben nincs (a gazda saját nevét nem zárhatjuk ki); a nyomban a beírt név áll. Sorrend: Geri végpontja definiálja a szerződést (body.actor), Dani felület-PR-je a mezőt hozza, mindkettő a D1 merge után. Ezzel a séma három NOT NULL mezője (contacts.created_by, leads.created_by, audit_log.actor) mindig a kérésből töltődik.
