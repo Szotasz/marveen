@@ -2846,6 +2846,103 @@ export function countNewHotMemories(agentId: string): number {
   return row?.n ?? 0
 }
 
+// KANBANSTUCKURES916: the kanban-audit's stuck-card detector used to filter on
+// status='in_progress' alone, which on this board is structurally almost always
+// empty (started work sits on `planned`, not `in_progress`) -- so the detector
+// reported "0 stuck" every round while never actually measuring anything. A
+// backlog `planned` card with no activity is the EXPECTED steady state, not a
+// stall, so the fix cannot just widen the status filter; it needs a real
+// "started" signal, independent of status.
+//
+// A card counts as STARTED if any of: it was ever dispatched to an agent, it
+// once left `planned` (kanban_card_events), it has a comment that is not the
+// creator's immediate note (an initial comment within `creatorCommentWindowSec`
+// of creation is a description, not a work-trace -- measured window: D001,
+// 600s), or its current status is in_progress/testing. `last_activity` is the
+// max of the card's own updated_at, its latest comment, and its latest event --
+// so a fresh comment on an old card counts as activity, not a stall.
+export interface StuckKanbanCard {
+  id: string
+  seq?: number
+  title: string
+  status: KanbanCard['status']
+  assignee: string | null
+  last_activity: number
+  idle_days: number
+}
+
+export interface StuckKanbanCardsResult {
+  examined: number
+  stuck: StuckKanbanCard[]
+  by_status: Record<string, { examined: number; stuck: number }>
+}
+
+export function getStuckKanbanCards(opts: {
+  plannedDays: number
+  activeDays: number
+  creatorCommentWindowSec: number
+}): StuckKanbanCardsResult {
+  const { plannedDays, activeDays, creatorCommentWindowSec } = opts
+  const nowSec = Math.floor(Date.now() / 1000)
+  const rows = db
+    .prepare(
+      `SELECT c.rowid AS seq, c.id, c.title, c.status, c.assignee, c.created_at, c.dispatched_at,
+              MAX(
+                c.updated_at,
+                COALESCE((SELECT MAX(created_at) FROM kanban_comments m WHERE m.card_id = c.id), 0),
+                COALESCE((SELECT MAX(created_at) FROM kanban_card_events e WHERE e.card_id = c.id), 0)
+              ) AS last_activity,
+              (
+                c.dispatched_at IS NOT NULL
+                OR EXISTS(SELECT 1 FROM kanban_card_events e WHERE e.card_id = c.id AND e.to_status != 'planned')
+                OR EXISTS(SELECT 1 FROM kanban_comments m WHERE m.card_id = c.id AND m.created_at > c.created_at + ?)
+                OR c.status IN ('in_progress', 'testing')
+              ) AS started
+       FROM kanban_cards c
+       WHERE c.archived_at IS NULL AND c.status != 'done'`
+    )
+    .all(creatorCommentWindowSec) as Array<{
+    seq: number
+    id: string
+    title: string
+    status: KanbanCard['status']
+    assignee: string | null
+    created_at: number
+    dispatched_at: number | null
+    last_activity: number
+    started: 0 | 1
+  }>
+
+  const byStatus: Record<string, { examined: number; stuck: number }> = {}
+  const stuck: StuckKanbanCard[] = []
+  let examined = 0
+
+  for (const r of rows) {
+    if (!r.started) continue
+    examined++
+    const bucket = byStatus[r.status] ?? { examined: 0, stuck: 0 }
+    bucket.examined++
+    const thresholdDays = r.status === 'in_progress' || r.status === 'testing' ? activeDays : plannedDays
+    const idleSec = nowSec - r.last_activity
+    const idleDays = idleSec / 86400
+    if (idleDays >= thresholdDays) {
+      bucket.stuck++
+      stuck.push({
+        id: r.id,
+        seq: r.seq,
+        title: r.title,
+        status: r.status,
+        assignee: r.assignee,
+        last_activity: r.last_activity,
+        idle_days: Math.floor(idleDays),
+      })
+    }
+    byStatus[r.status] = bucket
+  }
+
+  return { examined, stuck, by_status: byStatus }
+}
+
 /**
  * HBDBMERET822: the heartbeat's "DB size" number is computed HERE, server-side,
  * and served over /api/kanban/heartbeat-summary -- same closure as the kanban
