@@ -157,6 +157,17 @@ export const FLEET_OAUTH_TOKEN_PATH = join(STORE_DIR, '.claude-oauth-token')
 export const LAUNCH_SECRETS_DIR = join(STORE_DIR, '.launch-secrets')
 
 /**
+ * A konyvtar es a fajl modja EGY helyen all, mert a kettonek egyutt kell mozognia.
+ *
+ * ES A `chmodSync` NEM OVATOSSAG: a `mkdirSync` a modot CSAK LETREHOZASKOR allitja be, egy MAR
+ * LETEZO konyvtaron nem valtoztat. Ezt a sajat mutansom mutatta meg: a mod 0700 -> 0755 rontasa
+ * ZOLD maradt, mert a konyvtar a korabbi futasokbol mar letezett 0700-on. Vagyis egy lazabb modon
+ * alljo konyvtar (regebbi verzio, mas umask, kezi beavatkozas) eszrevetlenul tullelne a javitast.
+ */
+export const LAUNCH_SECRETS_DIR_MODE = 0o700
+export const LAUNCH_SECRET_FILE_MODE = 0o600
+
+/**
  * hu: A titkot FAJLBA teszi, es a shell-kifejezest adja vissza, amit a launch-parancsba irunk.
  * Igy a parancs sztringben a HIVAS all, nem az ertek -- a helyettesites az INDITOTT shellben
  * tortenik, tehat a titok nem kerul a `ps`/argv sorba.
@@ -178,9 +189,10 @@ export function launchSecretRef(secretName: string, value: string): string {
   // (`..` -> a szulo konyvtar), ezert azt kulon zarjuk: ez a sajat tesztem lelete volt.
   const szurt = secretName.replace(/[^A-Za-z0-9._-]/g, '_')
   const biztonsagosNev = /^\.+$/.test(szurt) || !szurt ? 'nevtelen' : szurt
-  mkdirSync(LAUNCH_SECRETS_DIR, { recursive: true, mode: 0o700 })
+  mkdirSync(LAUNCH_SECRETS_DIR, { recursive: true, mode: LAUNCH_SECRETS_DIR_MODE })
+  chmodSync(LAUNCH_SECRETS_DIR, LAUNCH_SECRETS_DIR_MODE)
   const utvonal = join(LAUNCH_SECRETS_DIR, biztonsagosNev)
-  atomicWriteFileSync(utvonal, value, { mode: 0o600 })
+  atomicWriteFileSync(utvonal, value, { mode: LAUNCH_SECRET_FILE_MODE })
   return `"$(cat ${shSingleQuote(utvonal)})"`
 }
 

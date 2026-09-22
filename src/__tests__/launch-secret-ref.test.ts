@@ -47,6 +47,20 @@ describe('launchSecretRef: a titok fájlba megy, a parancsba csak a hivatkozás'
     rmSync(utvonal, { force: true })
   })
 
+  it('egy MAR LETEZO, lazabb konyvtarat is VISSZASZIGORIT (nem csak letrehozaskor all a mod)', async () => {
+    // A SAJAT MUTANSOM LELETE: a `mkdirSync` modja CSAK letrehozaskor hat. A konyvtar-mod
+    // rontasa ezert eloszor ZOLDEN tulelt -- a konyvtar a korabbi futasokbol mar megvolt 0700-on.
+    // Egy regebbi verziotol vagy kezi beavatkozastol lazabb konyvtar igy eszrevetlenul maradna.
+    const { launchSecretRef, LAUNCH_SECRETS_DIR, LAUNCH_SECRETS_DIR_MODE } = await import('../web/agent-process.js')
+    const { mkdirSync, chmodSync, statSync: st } = await import('node:fs')
+    mkdirSync(LAUNCH_SECRETS_DIR, { recursive: true })
+    chmodSync(LAUNCH_SECRETS_DIR, 0o777)
+    expect(st(LAUNCH_SECRETS_DIR).mode & 0o777).toBe(0o777) // pozitiv kontroll: tenyleg laza volt
+    const ref = launchSecretRef('proba.SZIGORITAS', 'x')
+    expect(st(LAUNCH_SECRETS_DIR).mode & 0o777).toBe(LAUNCH_SECRETS_DIR_MODE)
+    rmSync(/\$\(cat '(.+)'\)/.exec(ref)?.[1] ?? '', { force: true })
+  })
+
   it('a titok NEVE nem tud kitörni a könyvtárból (útvonal-bejárás zárva)', async () => {
     const { launchSecretRef, LAUNCH_SECRETS_DIR } = await import('../web/agent-process.js')
     // A MERENDO TULAJDONSAG A KONYVTAR, NEM A NEV ALAKJA. Az elso probam azt allitotta, hogy a
