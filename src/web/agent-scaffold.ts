@@ -1784,8 +1784,11 @@ function buildAutonomyBody(name: string): string {
 // `isMainAgent`: the recipient-ledger hook (scripts/email-send-gate.mjs) is
 // wired ONLY into sub-agent settings (writeAgentSettingsFromProfile, guarded by
 // `name !== MAIN_AGENT_ID`); the main agent's own sends go through the
-// approval gate (scripts/hooks/email-approval-gate.py, envelope-hash approval)
-// and the copy gate (outgoing-copy-gate.py), neither of which reads the ledger.
+// approval gate (envelope-hash approval) and the Hungarian copy gate under
+// scripts/hooks/, neither of which reads the ledger. The hook FILE NAMES are
+// deliberately not written into the generated text: the seeding-surface scan in
+// hook-registration-completeness.test.ts reads this file as a corpus and would
+// take a name mention for a registration.
 // Measured 2026-09-22 (LEDGERFOAGENS922): the main agent's settings carry no
 // email-send-gate entry and its two email hooks contain zero ledger references.
 // The same paragraph cannot be true for both audiences: for a sub-agent the
@@ -1795,7 +1798,7 @@ function buildAutonomyBody(name: string): string {
 export function buildEvidenceBody(isMainAgent = false): string {
   const gateParagraphs: string[] = isMainAgent
     ? [
-        'Kimenő levélnél a címzett-ledger (`store/verified-recipients.json`) **nálad NEM gépi kapu**: az `email-send-gate.mjs` hook csak a sub-ügynökök settingsébe van bekötve, a tiédbe nem (mérve 2026-09-22). Ami nálad fut, az a jóváhagyás-kapu (`email-approval-gate.py`: a küldés csak a boríték -- címzett, cc, bcc, tárgy, törzs -- hash-ére adott, el nem használt jóváhagyás mellett megy át) és a copy-kapu (`outgoing-copy-gate.py`). Ezek a KÜLDÉST szigorúan kapuzzák, de a **címet nem mérik a ledgerhez**: egy rossz cím pontosan úgy megy be a jóváhagyásba, ahogy te írtad. A címforrás-szabály nálad tehát szabály, nem gép -- ne olvasd védelemnek ott, ahol nincs.',
+        'Kimenő levélnél a címzett-ledger (`store/verified-recipients.json`) **nálad NEM gépi kapu**: az `email-send-gate.mjs` hook csak a sub-ügynökök settingsébe van bekötve, a tiédbe nem (mérve 2026-09-22). Ami nálad fut, az a jóváhagyás-kapu (a küldés csak a boríték -- címzett, cc, bcc, tárgy, törzs -- hash-ére adott, el nem használt jóváhagyás mellett megy át) és a magyar copy-kapu (ékezet és szöveg-QA a küldés előtt), mindkettő a `scripts/hooks/` alatt. Ezek a KÜLDÉST szigorúan kapuzzák, de a **címet nem mérik a ledgerhez**: egy rossz cím pontosan úgy megy be a jóváhagyásba, ahogy te írtad. A címforrás-szabály nálad tehát szabály, nem gép -- ne olvasd védelemnek ott, ahol nincs.',
         '',
         'A ledger ettől még a flottáé: a sub-ügynökök küldését méri, és ha nekik kell egy cím, forrással veszed fel. A ledger bekötése a fő ügynökre külön, gazda-döntés: magadtól ne kösd be, és ne is számolj vele, amíg nincs bekötve.',
       ]

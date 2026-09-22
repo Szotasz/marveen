@@ -146,8 +146,13 @@ describe('evidence-rule scaffold block', () => {
 
     it('main agent: says the ledger is NOT its machine gate, names what gates it instead', () => {
       expect(main).toContain('nálad NEM gépi kapu')
-      expect(main).toContain('email-approval-gate.py')
-      expect(main).toContain('outgoing-copy-gate.py')
+      expect(main).toContain('jóváhagyás-kapu')
+      expect(main).toContain('copy-kapu')
+      // the hook FILE NAMES must stay out of the generated text: the seeding-surface
+      // scan (hook-registration-completeness.test.ts) reads agent-scaffold.ts as a
+      // corpus and would take a mention for a registration.
+      expect(main).not.toContain('email-approval-gate.py')
+      expect(main).not.toContain('outgoing-copy-gate.py')
       expect(main).toContain('címet nem mérik a ledgerhez')
       expect(main).toContain('ne olvasd védelemnek ott, ahol nincs')
       expect(main).not.toContain('Amit a PreToolUse hook lát')
