@@ -48,6 +48,37 @@ describe('/status collectors', () => {
     expect(text).toBe('A\njó: érték\nrossz: hiba (elszállt)\nasync: később\n\nB\nrossz async: hiba (timeout)')
   })
 
+  // ELSOKOR922 Phase 7 A-smoke, tulajdonosi visszajelzés: a KERET blokk egy
+  // headless (env_file token) telepítésen mindhárom sorára "nem mérhető"-t
+  // ad, mindig -- itt ez zaj, nem jel, ezért a blokk `hideIfAllUnmeasurable`
+  // esetén EGÉSZBEN kimarad. Egy VALÓDI hiba (null value) viszont nem
+  // "nem mérhető" -- az a rendes elv szerint marad, mert az tényleg jel.
+  it('hideIfAllUnmeasurable: a block where every row is "nem mérhető(" is dropped entirely', async () => {
+    const s = await runCollectors([
+      { title: 'A', rows: [{ label: 'x', source: 's', collect: () => 'érték' }] },
+      { title: 'KERET', hideIfAllUnmeasurable: true, rows: [
+        { label: '5 órás', source: 's', collect: () => 'nem mérhető (nincs adat)' },
+        { label: 'Heti', source: 's', collect: () => 'nem mérhető (nincs adat)' },
+      ] },
+    ])
+    expect(formatSystemStatus(s)).toBe('A\nx: érték')
+  })
+  it('hideIfAllUnmeasurable: stays if even one row has real data or a thrown error', async () => {
+    const withData = await runCollectors([
+      { title: 'KERET', hideIfAllUnmeasurable: true, rows: [
+        { label: '5 órás', source: 's', collect: () => '70% van hátra' },
+        { label: 'Heti', source: 's', collect: () => 'nem mérhető (nincs adat)' },
+      ] },
+    ])
+    expect(formatSystemStatus(withData)).toContain('KERET')
+    const withError = await runCollectors([
+      { title: 'KERET', hideIfAllUnmeasurable: true, rows: [
+        { label: '5 órás', source: 's', collect: () => { throw new Error('boom') } },
+      ] },
+    ])
+    expect(formatSystemStatus(withError)).toContain('KERET')
+  })
+
   it('the live collectors never throw as a whole; every row has a value or an error', async () => {
     initDatabase(':memory:')
     const s = await getSystemStatus({ noCache: true, specs: liveBlockSpecs() })

@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os'
 import type { AddressInfo } from 'node:net'
 import { clearCommandsForTest, listCommands } from '../web/commands.js'
 import { registerBuiltinCommands } from '../web/builtin-commands.js'
+import Database from 'better-sqlite3'
 
 const ROOT = join(__dirname, '..', '..')
 const HOOK = join(ROOT, 'scripts', 'hooks', 'marveen-commands.py')
@@ -27,6 +28,7 @@ let server: http.Server
 let base = ''
 let install = ''
 let stateDir = ''
+let ledgerDb = ''
 
 beforeAll(async () => {
   server = http.createServer((req, res) => {
@@ -58,12 +60,19 @@ beforeAll(async () => {
     'import json\nprint(json.dumps({"claude": {"ok": True, "windows": {"five_hour": {"used_percent": 30, "resets_at": 0}}}}))\n')
   stateDir = mkdtempSync(join(tmpdir(), 'mcmd-state-'))
   writeFileSync(join(stateDir, '.env'), 'TELEGRAM_BOT_TOKEN=bot-tok\n')
+  // Isolates the conversation-continuity ledger from the worktree's own
+  // store/claudeclaw.db -- ledger_lib.db_path() resolves from THIS repo
+  // checkout's own scripts/hooks/ dir (not from MARVEEN_INSTALL_DIR), so
+  // without this override every hook spawn here would write real rows into
+  // the checkout's live store (gitignored, but still cross-run shared state).
+  ledgerDb = join(mkdtempSync(join(tmpdir(), 'mcmd-ledger-')), 'claudeclaw.db')
 })
 
 afterAll(() => {
   server.close()
   rmSync(install, { recursive: true, force: true })
   rmSync(stateDir, { recursive: true, force: true })
+  rmSync(join(ledgerDb, '..'), { recursive: true, force: true })
 })
 
 beforeEach(() => {
@@ -86,6 +95,7 @@ function runHook(prompt: string, apiBase = base, agent = 'marveen'): Promise<{ c
         TELEGRAM_STATE_DIR: stateDir,
         MARVEEN_API_BASE: apiBase,
         TELEGRAM_API_BASE: base,
+        LEDGER_DB_PATH: ledgerDb,
       },
     })
     let stdout = ''
@@ -257,5 +267,71 @@ describe('marveen-commands.py', () => {
     const all = new Set(builtin.map(e => e.name))
     for (const n of runnable) expect(names.has(n), `/${n} missing from BUILTIN_NAMES`).toBe(true)
     for (const n of names) expect(all.has(n), `/${n} is not a registry builtin`).toBe(true)
+  })
+})
+
+// ELSOKOR922 Phase 7 A-smoke, live-measured 2026-09-22: this hook answers
+// over the raw Bot API, never through the mcp__plugin_telegram_telegram__reply
+// tool -- so ledger-outbound.py (the PostToolUse hook that closes the
+// conversation-continuity ledger's "open question" on a real reply-tool call)
+// never sees it. Without mark_answered(), EVERY hook-answered command stayed
+// open forever, and ledger-live-drain.py (~every 2 min) surfaced it as lost
+// and paid for a full model turn to answer it AGAIN -- measured live: /board
+// and /context both got answered twice, once free (the hook) and once at
+// full token cost (the drain), 3-20 minutes apart.
+describe('marveen-commands.py: closes the conversation-continuity ledger', () => {
+  function seedOpenQuestion(agentId: string, chatId: string, messageId: string, text: string) {
+    const db = new Database(ledgerDb)
+    db.exec(`CREATE TABLE IF NOT EXISTS conversation_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, agent_id TEXT NOT NULL, chat_id TEXT NOT NULL,
+      direction TEXT NOT NULL CHECK(direction IN ('in','out')), message_id TEXT, text TEXT,
+      ts TEXT, created_at INTEGER NOT NULL, attachment_kind TEXT, attachment_file_id TEXT,
+      reply_to_message_id TEXT,
+      UNIQUE(agent_id, chat_id, direction, message_id))`)
+    // created_at is "now", not the past: isStillOpen() below only cares that
+    // this row is the LATEST for the agent (it does not replicate the
+    // live-drain's own 60s grace window, which is a separate, already-tested
+    // concern in ledger-live-drain -- this file only proves the hook closes
+    // what it answers).
+    db.prepare(
+      `INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, ts, created_at)
+       VALUES (?, ?, 'in', ?, ?, ?, ?)`,
+    ).run(agentId, chatId, messageId, text, new Date().toISOString(), Math.floor(Date.now() / 1000))
+    db.close()
+  }
+
+  function isStillOpen(agentId: string): boolean {
+    const db = new Database(ledgerDb)
+    try {
+      const last = db.prepare(
+        `SELECT id, created_at, direction FROM conversation_log WHERE agent_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
+      ).get(agentId) as { id: number; created_at: number; direction: string } | undefined
+      return last?.direction === 'in'
+    } finally {
+      db.close()
+    }
+  }
+
+  it('a hook-answered command closes the open question (no later drain re-answer)', async () => {
+    seedOpenQuestion('marveen', '42', 'oq-1', '/status')
+    expect(isStillOpen('marveen')).toBe(true)
+    dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['minden rendben'] } })
+    const r = await runHook(channel('/status'), base, 'marveen')
+    expect(r.code).toBe(2)
+    expect(isStillOpen('marveen')).toBe(false)
+  })
+
+  it('a dashboard-down error reply also closes the open question', async () => {
+    seedOpenQuestion('marveen', '42', 'oq-2', '/status')
+    const r = await runHook(channel('/status'), 'http://127.0.0.1:1')
+    expect(r.code).toBe(2)
+    expect(isStillOpen('marveen')).toBe(false)
+  })
+
+  it('handled:false (passed to the model) leaves the ledger untouched -- the model answers through the real reply tool', async () => {
+    seedOpenQuestion('marveen', '42', 'oq-3', '/kanban')
+    const r = await runHook(channel('/kanban'), base, 'marveen')
+    expect(r.code).toBe(0)
+    expect(isStillOpen('marveen')).toBe(true)
   })
 })

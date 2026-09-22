@@ -47,6 +47,8 @@ export interface StatusRow {
 export interface StatusBlock {
   title: string
   rows: StatusRow[]
+  /** See `formatSystemStatus`: the block is dropped, not just its rows blanked. */
+  hideIfAllUnmeasurable?: boolean
 }
 
 export interface SystemStatus {
@@ -63,6 +65,8 @@ export interface RowCollector {
 export interface BlockSpec {
   title: string
   rows: RowCollector[]
+  /** See `formatSystemStatus`. */
+  hideIfAllUnmeasurable?: boolean
 }
 
 export function notMeasurable(reason: string): string {
@@ -73,6 +77,7 @@ export function notMeasurable(reason: string): string {
 export async function runCollectors(specs: BlockSpec[], now = Date.now()): Promise<SystemStatus> {
   const blocks = await Promise.all(specs.map(async (b) => ({
     title: b.title,
+    hideIfAllUnmeasurable: b.hideIfAllUnmeasurable,
     rows: await Promise.all(b.rows.map(async (r): Promise<StatusRow> => {
       try {
         return { label: r.label, value: await r.collect(), source: r.source }
@@ -84,12 +89,22 @@ export async function runCollectors(specs: BlockSpec[], now = Date.now()): Promi
   return { generatedAt: now, blocks }
 }
 
+// ELSOKOR922 Phase 7 A-smoke, tulajdonosi visszajelzés (2026-09-22): a
+// fejléc-elv szerint alapból egy nem mérhető SOR a helyén marad ("egy eltűnt
+// sor úgy nézne ki, mintha nincs mit jelenteni"), de a KERET blokk a
+// legtöbb (headless szerver-) telepítésen MINDHÁROM sorára ugyanazt a
+// "nem mérhető"-t adja, állandóan -- itt a három ismételt sor maga a zaj,
+// nem egy eltűnő jel. `hideIfAllUnmeasurable` ezért a BLOKKOT dobja, nem a
+// sort: csak akkor, ha MINDEN sora "nem mérhető (" (egy valódi hiba -- null
+// value -- NEM számít annak, az marad, mert az tényleg jel).
 export function formatSystemStatus(status: SystemStatus, extraRows: Record<string, StatusRow[]> = {}): string {
   const out: string[] = []
   for (const b of status.blocks) {
+    const rows = [...b.rows, ...(extraRows[b.title] ?? [])]
+    if (b.hideIfAllUnmeasurable && rows.every(r => r.value?.startsWith('nem mérhető ('))) continue
     if (out.length) out.push('')
     out.push(b.title)
-    for (const r of [...b.rows, ...(extraRows[b.title] ?? [])]) {
+    for (const r of rows) {
       out.push(`${r.label}: ${r.value ?? `hiba (${r.error ?? 'ismeretlen'})`}`)
     }
   }
@@ -339,6 +354,7 @@ export function liveBlockSpecs(now = Date.now()): BlockSpec[] {
     },
     {
       title: 'KERET',
+      hideIfAllUnmeasurable: true,
       rows: (() => {
         const read = () => readQuotaSnapshot(
           join(STORE_DIR, '.claude-rate-limits.json'),

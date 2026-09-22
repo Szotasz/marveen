@@ -174,11 +174,38 @@ def chunks(text, limit=TELEGRAM_MAX_TEXT):
 
 
 def send(sd, tok, chat_id, text):
+    """Returns True iff at least one chunk actually went out -- the caller
+    uses this to decide whether to close the ledger's open question (a
+    send that fully failed must NOT be marked answered; the live-drain
+    should still pick it up)."""
+    sent_any = False
     for part in chunks(text):
         try:
             tg(tok, "sendMessage", {"chat_id": chat_id, "text": part})
+            sent_any = True
         except Exception as e:
             log(sd, f"sendMessage failed: {type(e).__name__}")
+    return sent_any
+
+
+def mark_answered(sd, payload, chat_id, text):
+    """Close the conversation-continuity ledger's open question for this
+    reply (fix-forward, ELSOKOR922 Phase 7 A-smoke, live-measured 2026-09-22):
+    this hook answers over the raw Bot API, never through the
+    mcp__plugin_telegram_telegram__reply tool -- so ledger-outbound.py (the
+    PostToolUse hook that closes the open question on a REAL reply-tool call)
+    never sees it. Without this, EVERY hook-answered command stays "open" in
+    conversation_log forever, and ledger-live-drain.py (every ~2 min) surfaces
+    it as lost and pays for a full model turn to answer it AGAIN -- measured
+    live: /board and /context both re-answered by the main session, 3-20
+    minutes later, doubling every reply and defeating the entire point of the
+    hook (0 model tokens). Never raises: a ledger-write failure must not
+    affect the reply that already went out."""
+    try:
+        agent_id = ledger_lib.agent_id_from_payload(payload)
+        ledger_lib.log_outbound(agent_id, chat_id, text)
+    except Exception as e:
+        log(sd, f"ledger log_outbound failed: {type(e).__name__}")
 
 
 def dispatch(text, chat_id, main_session):
@@ -337,7 +364,8 @@ def main():
         reply = DASHBOARD_DOWN_REPLY.format(name=name, why=why)
         if name == "usage":
             reply = quota_text(sd) + "\n\n" + reply
-        send(sd, tok, chat_id, reply)
+        if send(sd, tok, chat_id, reply):
+            mark_answered(sd, payload, chat_id, reply)
         clear_stray_placeholder(sd, tok, sid)
         log(sd, f"/{name}: dashboard unreachable ({why}), error reply sent, turn blocked")
         sys.exit(2)
@@ -348,8 +376,12 @@ def main():
     replies = [r for r in (result.get("replies") or []) if isinstance(r, str) and r]
     if name == "usage":
         replies = [quota_text(sd) + ("\n\n" + replies[0] if replies else "")] + replies[1:]
+    sent_any = False
     for r in replies:
-        send(sd, tok, chat_id, r)
+        if send(sd, tok, chat_id, r):
+            sent_any = True
+    if sent_any:
+        mark_answered(sd, payload, chat_id, replies[-1])
     clear_stray_placeholder(sd, tok, sid)
     log(sd, f"/{name} answered ({result.get('outcome')}) chat={chat_id} sid={sid}")
     sys.exit(2)  # block: the model never sees this turn
