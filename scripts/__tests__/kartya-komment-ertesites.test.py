@@ -88,7 +88,7 @@ def main():
     out = p.stdout + p.stderr
     check('1 mas flotta-felelosu kartyan a komment MEGTAGADVA', p.returncode != 0 and 'MEGTAGADVA' in out, out)
     check('1 a megtagadas MEGNEVEZI a felelost', 'samu' in out, out)
-    check('1 a megtagadas megadja a HELYES utat is (agent-msg-send.sh)', 'agent-msg-send.sh' in out, out)
+    check('1 a megtagadas megadja a HELYES utat is (agent-msg.sh)', 'agent-msg.sh' in out, out)
     check('1 a megtagadas megnevezi a kimondott kapcsolot',
           '--nincs-ertesites-szandekos' in out, out)
     check('1 es a komment NEM irodott be (a kapu az IRAS ELOTT all)', kommentek('MASE922') == 0,

@@ -172,11 +172,21 @@ def main():
     p = run('SORREND922', 'Geri', port, with_msg=False)
     out = p.stdout + p.stderr
     i_msg = out.find('--msg-file')
-    i_script = out.find('agent-msg-send.sh')
+    i_script = out.find('agent-msg.sh')
     i_flag = out.find('--nincs-ertesites-szandekos')
     check('7 a megtagadas mindharom utat megnevezi', min(i_msg, i_script, i_flag) >= 0, out)
     check('7 a --msg-file all ELOL (a legolcsobb ut a helyes)', 0 <= i_msg < i_script, out)
     check('7 a kimondott kihagyas van UTOLSO helyen', i_flag > i_script, out)
+
+    # 7b. A MEGNEVEZETT HELPER LETEZIK ES KOVETETT. Samu lelete a #1466-on: az elozo szoveg a
+    # scripts/agent-msg-send.sh-ra mutatott, ami CSAK a gazda gepen letezik (untracked), tehat
+    # minden mas telepitesen egy nem letezo parancsot ajanlott volna. Ezt a suite most MERI:
+    # nem eleg, hogy a fajl ott van a fejlesztoi gepen, a REPONAK kell hordoznia.
+    import subprocess as _sp
+    _ls = _sp.run(['git', 'ls-files', '--error-unmatch', 'scripts/agent-msg.sh'],
+                  cwd=ROOT, capture_output=True, text=True)
+    check('7b a megtagadasban ajanlott helper a repoban van (nem csak a gazda gepen)',
+          _ls.returncode == 0, _ls.stderr.strip())
 
     # 8. NYOM A KARTYAN: a trace-komment megnevezi a msg-id-ket ES a cimzetteket.
     torol_uzenetek()

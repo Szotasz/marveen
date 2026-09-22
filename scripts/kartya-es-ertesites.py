@@ -559,7 +559,8 @@ def komment_mod(a):
     if a.msg_file and not _ertesitendo:
         sys.exit('MEGTAGADVA: --msg-file, de NINCS kit ertesiteni ezen a kartyan: a felelos vagy te magad\n'
                  'vagy ("' + str(a.author) + '"), vagy nem flotta-agens. Nem talalunk ki cimzettet.\n'
-                 'Ha egy KONKRET agensnek akarsz irni, az a kulon ut: scripts/agent-msg-send.sh <cimzett> <fajl>.')
+                 'Ha egy KONKRET agensnek akarsz irni, az a kulon ut:\n'
+                 '  bash scripts/agent-msg.sh <felado> <cimzett> "<szoveg>"')
     if _ertesitendo and not a.msg_file and not a.nincs_ertesites_szandekos:
         _kik = ', '.join(_ertesitendo)
         sys.exit('MEGTAGADVA: a kartya felelose "' + _kik + '" (flotta-agens), te pedig "'
@@ -568,7 +569,8 @@ def komment_mod(a):
                  'a tablan, hogy a felelos nem tud rola.\n'
                  '  EZ A LEGEGYSZERUBB UT: add hozza a --msg-file <fajl> kapcsolot, es UGYANEZ a futas\n'
                  '    elkuldi az ertesitest ide: ' + _kik + '\n'
-                 '  Ha kulon lepesben szolnal: scripts/agent-msg-send.sh ' + _ertesitendo[0] + ' <fajl>\n'
+                 '  Ha kulon lepesben szolnal: bash scripts/agent-msg.sh '
+                 + (a.from_agent or a.author).strip().lower() + ' ' + _ertesitendo[0] + ' "<szoveg>"\n'
                  '  Ha csak NYOMOT hagysz a jovonek, es a felelosnek nem kell tudnia rola:\n'
                  '    mondd ki a --nincs-ertesites-szandekos kapcsoloval.')
     if a.nincs_ertesites_szandekos and _ertesitendo:
