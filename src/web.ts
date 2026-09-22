@@ -45,6 +45,7 @@ import { registerBuiltinCommands } from './web/builtin-commands.js'
 import { tryHandleCommands } from './web/routes/commands.js'
 import { initCustomCommands } from './web/custom-commands.js'
 import { sweepModelHold, armHoldExpiryFromFile } from './web/main-model.js'
+import { runPendingWrite } from './web/pending-write.js'
 import { tryHandleCustomCommands } from './web/routes/custom-commands.js'
 import { startCapabilitySummaryRunner } from './web/federation/capability-runner.js'
 import { ensureFederationClaudeMdSection } from './web/federation/onboarding.js'
@@ -562,7 +563,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     // here from a hold that survived a restart), with the gate's main sweep as
     // the fallback for a busy session at expiry.
     armHoldExpiryFromFile()
-    setMainSweepHook(async (nowMs) => { await sweepModelHold(nowMs) })
+    setMainSweepHook(async (nowMs) => { await sweepModelHold(nowMs); await runPendingWrite(nowMs) })
   }
 
   // Backfill the PreCompact hook into existing agents' settings.json so the

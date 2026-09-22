@@ -78,6 +78,8 @@ export const liveDeps: SessionControlDeps = {
 export interface ClearResult {
   cleared: boolean
   text: string
+  /** Refused only because the session was busy: worth retrying at turn end. */
+  busy?: boolean
 }
 
 export async function contextClear(nowMs: number, deps: SessionControlDeps = liveDeps): Promise<ClearResult> {
@@ -87,7 +89,8 @@ export async function contextClear(nowMs: number, deps: SessionControlDeps = liv
   if (!verdict.quiet) {
     return {
       cleared: false,
-      text: `Nem töröltem: a session foglalt (${verdict.reason}). Mi fut: /runs`,
+      busy: true,
+      text: `Nem töröltem: a session foglalt (${verdict.reason}).`,
     }
   }
   await deps.softClear(MAIN_AGENT_ID, deps.session(), nowMs, before)

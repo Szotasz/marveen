@@ -41,7 +41,8 @@ describe('/context clear (CMD920 test 10)', () => {
     const { d, softClear } = deps(inputs({ paneState: 'busy' }))
     const r = await contextClear(NOW, d)
     expect(r.cleared).toBe(false)
-    expect(r.text).toMatch(/Nem töröltem: a session foglalt \(pane-busy.*\/runs/)
+    expect(r.text).toMatch(/Nem töröltem: a session foglalt \(pane-busy/)
+    expect(r.busy).toBe(true)   // queued for the end of the turn
     expect(softClear).not.toHaveBeenCalled()
   })
 

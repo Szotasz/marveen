@@ -158,7 +158,8 @@ describe('/model set (CMD920 tests 5, 6)', () => {
     const d = deps({ quiet: () => ({ quiet: false, reason: 'pane-busy' }) })
     const r = await setModel(['opus'], d)
     expect(r.ok).toBe(false)
-    expect(r.text).toMatch(/foglalt \(pane-busy\).*\/runs/)
+    expect(r.text).toMatch(/foglalt \(pane-busy\)/)
+    expect(r.busy).toBe(true)   // the caller queues it for the end of the turn
     expect(d.sent).toEqual([])
     expect(existsSync(d.holdFile)).toBe(false)
   })

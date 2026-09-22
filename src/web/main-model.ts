@@ -36,6 +36,7 @@ import { capturePane } from './agent-process.js'
 import { switchVerdict, SWITCH_TURN_QUIET_MS, type QuietVerdict } from './session-control.js'
 import { notifyChannel } from '../notify.js'
 import { registerCommand } from './commands.js'
+import { queuePendingWrite, readPendingWrite, runPendingWrite, PENDING_WRITE_TTL_MS } from './pending-write.js'
 import { formatDayClock, formatSpan, modelsDiffer, formatTokens } from './system-status.js'
 
 export const DEFAULT_HOLD_MINUTES = 120
@@ -346,10 +347,20 @@ async function sendModel(modelId: string, deps: ModelDeps): Promise<boolean> {
 // been quiet for the switch window -- an event, not a poll; the 5-minute sweep
 // stays the fallback.
 export function onMainTurnEnded(nowMs: number, holdFile: string = MODEL_HOLD_FILE): boolean {
+  let armed = false
+  // A write the session was busy for waits for exactly this moment.
+  if (readPendingWrite()) {
+    setTimeout(() => {
+      runPendingWrite(Date.now()).catch(err => logger.warn({ err }, 'main-model: pending write failed'))
+    }, SWITCH_TURN_QUIET_MS + 1000).unref?.()
+    armed = true
+  }
   const { state } = readHold(holdFile)
-  if (!state || nowMs < state.until) return false
-  scheduleHoldExpiry(nowMs + SWITCH_TURN_QUIET_MS, nowMs)
-  return true
+  if (state && nowMs >= state.until) {
+    scheduleHoldExpiry(nowMs + SWITCH_TURN_QUIET_MS, nowMs)
+    armed = true
+  }
+  return armed
 }
 
 // ---- /model [set] -------------------------------------------------------------
@@ -357,9 +368,12 @@ export function onMainTurnEnded(nowMs: number, holdFile: string = MODEL_HOLD_FIL
 export interface StepResult {
   ok: boolean
   text: string
+  /** Refused only because the session was busy: worth retrying at turn end. */
+  busy?: boolean
 }
 
 const fail = (text: string): StepResult => ({ ok: false, text })
+const failBusy = (text: string): StepResult => ({ ok: false, text, busy: true })
 const ok = (text: string): StepResult => ({ ok: true, text })
 
 export async function setModel(args: string[], deps: ModelDeps = liveModelDeps): Promise<StepResult> {
@@ -376,7 +390,7 @@ export async function setModel(args: string[], deps: ModelDeps = liveModelDeps):
   if (choice && !isValidModelId(choice.id)) return fail(`Nem váltottam: érvénytelen modell-azonosító: ${choice.id}`)
   const now = deps.now()
   const verdict = deps.quiet(now)
-  if (!verdict.quiet) return fail(`Nem váltottam: a session foglalt (${verdict.reason}). Mi fut: /runs`)
+  if (!verdict.quiet) return failBusy(`Nem váltottam: a session foglalt (${verdict.reason}).`)
 
   const lines: string[] = []
   let acked = false
@@ -434,7 +448,7 @@ export async function modelBack(deps: ModelDeps = liveModelDeps): Promise<StepRe
       writeHold(deps.holdFile, { ...state, until: now })
       return fail(`A session foglalt (${verdict.reason}); a tartás lejártra állítva, a sweep visszavált, amint csendes.`)
     }
-    return fail(`Nem váltottam: a session foglalt (${verdict.reason}). Mi fut: /runs`)
+    return failBusy(`Nem váltottam: a session foglalt (${verdict.reason}).`)
   }
   const lines: string[] = []
   // An effort-only hold has no model to put back.
@@ -463,7 +477,7 @@ export async function setEffort(level: string | undefined, deps: ModelDeps = liv
   const l = (level ?? '').toLowerCase()
   if (!(EFFORT_LEVELS as readonly string[]).includes(l)) return fail(`Használat: /model effort <${EFFORT_LEVELS.join('|')}>`)
   const verdict = deps.quiet(deps.now())
-  if (!verdict.quiet) return fail(`Nem állítottam: a session foglalt (${verdict.reason}). Mi fut: /runs`)
+  if (!verdict.quiet) return failBusy(`Nem állítottam: a session foglalt (${verdict.reason}).`)
   await deps.send(`/effort ${l}`)
   writeEffortSent(effortSentFileFor(deps.lastSentFile), l, deps.now())
   return ok(`/effort ${l} elküldve. Az effortot visszamérni nem tudjuk (a transzkript nem hordozza).`)
@@ -600,16 +614,25 @@ export function _resetMainModelForTest(): void {
 
 // ---- registration (replaces the A1 "planned" entries by usage) ----------------
 
+// A write refused only because the session was busy is queued, and run at the
+// end of the turn (pending-write.ts). The owner asked for exactly this after
+// a `/model sonnet keep` was lost to a pane-busy refusal.
+export function withRetry(text: string, r: StepResult, ctx: { ownerId: number; now: number }): string {
+  if (r.ok || !r.busy) return r.text
+  queuePendingWrite(text, ctx.ownerId, ctx.now)
+  return `${r.text} A kör végén megpróbálom, és szólok az eredményről (legfeljebb ${Math.round(PENDING_WRITE_TTL_MS / 60_000)} percig).`
+}
+
 export function registerModelWriteCommands(): void {
   registerCommand({
     name: 'model', kind: 'write', usage: `/model [<választás>] [<${EFFORT_LEVELS.join('|')}>] [<idő>|keep]`,
     description: 'modell és/vagy effort; alapból 2 óra, majd vissza; keep = tartós (.env)',
     matches: args => args.length > 0 && !['back', 'default'].includes(args[0].toLowerCase()),
-    run: async (ctx, args) => ctx.reply((await setModel(args)).text),
+    run: async (ctx, args) => ctx.reply(withRetry(`/model ${args.join(' ')}`, await setModel(args), ctx)),
   })
   registerCommand({
     name: 'model', kind: 'write', usage: '/model default', description: 'azonnal vissza az alapmodellre (és az alap effortra)',
     matches: args => ['back', 'default'].includes(args[0]?.toLowerCase() ?? ''),
-    run: async ctx => ctx.reply((await modelBack()).text),
+    run: async ctx => ctx.reply(withRetry('/model default', await modelBack(), ctx)),
   })
 }

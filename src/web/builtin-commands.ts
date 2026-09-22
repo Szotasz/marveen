@@ -47,7 +47,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { listScheduledTasks, type ScheduledTask } from './scheduled-tasks-io.js'
 import { computeNextRun } from './cron.js'
 import { getTokenSummary, getModelDistribution } from './token-usage.js'
-import { registerModelWriteCommands, readModelChoices as readChoiceList, readHold, readLastSent, readEffortSent, readConfiguredEffort, MODEL_CHOICES_FILE, MODEL_HOLD_FILE, MODEL_LAST_SENT_FILE, EFFORT_SENT_FILE, EFFORT_LEVELS, type LastSent } from './main-model.js'
+import { registerModelWriteCommands, readModelChoices as readChoiceList, readHold, readLastSent, readEffortSent, readConfiguredEffort, withRetry, MODEL_CHOICES_FILE, MODEL_HOLD_FILE, MODEL_LAST_SENT_FILE, EFFORT_SENT_FILE, EFFORT_LEVELS, type LastSent } from './main-model.js'
 import { contextClear } from './session-control.js'
 
 function clip(s: string, n: number): string {
@@ -459,7 +459,7 @@ export function registerBuiltinCommands(): void {
   registerCommand({
     name: 'context', kind: 'write', usage: '/context clear', description: 'azonnali /clear (foglalt sessionnél nem)',
     matches: args => args[0]?.toLowerCase() === 'clear',
-    run: async ctx => ctx.reply((await contextClear(ctx.now)).text),
+    run: async ctx => { const r = await contextClear(ctx.now); ctx.reply(withRetry('/context clear', { ok: r.cleared, text: r.text, busy: r.busy }, ctx)) },
   })
 
   // ÍR, megerősítéssel: planned until after the stabilization (CMD920 2.).
