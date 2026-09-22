@@ -702,6 +702,69 @@ export function diagnoseAgent(name: string, nowMs: number) {
   }
 }
 
+/**
+ * Type a slash command into a session on the send lane (the only writer to
+ * the pane while it runs). Shared by the gate's /clear and the owner's
+ * /model and /context clear, so every pane write takes the same lane.
+ */
+export async function sendSlashCommand(session: string, command: string): Promise<void> {
+  await withSessionSendLock(session, null, 'deliver', async () => {
+    execFileSync(tmuxBin(), ['send-keys', '-t', session, '-l', command], { timeout: 5000 })
+    execFileSync(tmuxBin(), ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+  })
+}
+
+/**
+ * The gate's soft restart: /clear on the send lane, the run state stamped,
+ * and the wake nudge owed to the fresh session (the SessionStart replay hooks
+ * carry the thread). Callers decide WHETHER (the gate's decision, or the
+ * owner's /context clear after the same quiet checks); this is the one
+ * code path for HOW. Throws when the send fails.
+ */
+export async function performSoftClear(
+  name: string,
+  session: string,
+  nowMs: number,
+  contextTokens: number | null,
+): Promise<void> {
+  // A pane that is truly idle should accept it immediately; the SessionStart
+  // hooks fire on the next boot and inject the fresh context snapshot.
+  await sendSlashCommand(session, '/clear')
+  logger.info({ agent: name, contextTokens }, 'context-restart-gate: /clear sent')
+  writeGateRunState(name, {
+    ...readGateRunState(name),
+    firstBlockedAt: null,
+    lastClearAt: nowMs,
+    // Owe the fresh session a wake nudge; see WAKE_DELAY_MS.
+    pendingWakeAt: nowMs,
+  })
+  // Fast path: nudge in ~25s rather than at the next sweep (5 min by
+  // default). The persisted debt above is the fallback if this is lost.
+  await sleep(WAKE_DELAY_MS)
+  await deliverPendingWake(name, session, Date.now())
+}
+
+/** The main session's tmux session name, as every runner resolves it. */
+export function mainSessionName(): string {
+  return sessionFor(MAIN_AGENT_ID)
+}
+
+// Work that shares the main agent's sweep cadence (CMD920: the model-hold
+// revert runs "on the context-restart gate's sweep"). Registered, not
+// imported, so the hook's module can import this one without a cycle. Runs on
+// every main sweep tick, whether or not the gate itself is enabled.
+let mainSweepHook: ((nowMs: number) => Promise<void>) | null = null
+
+export function setMainSweepHook(fn: ((nowMs: number) => Promise<void>) | null): void {
+  mainSweepHook = fn
+}
+
+async function runMainSweepHook(): Promise<void> {
+  if (!mainSweepHook) return
+  try { await mainSweepHook(Date.now()) }
+  catch (err) { logger.warn({ err }, 'context-restart-gate: main sweep hook failed') }
+}
+
 async function checkAgent(name: string, nowMs: number): Promise<void> {
   if (!readGateConfig(name).enabled) return   // fast-exit before any I/O
 
@@ -734,26 +797,8 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         logger.info({ agent: name },
           'context-restart-gate: opening despite stale dispatched messages (beyond staleCutoffMs)')
       }
-      // Send /clear via the send lane. A pane that is truly idle should accept
-      // it immediately; the SessionStart hooks fire on the next boot and inject
-      // the fresh context snapshot.
       try {
-        await withSessionSendLock(session, null, 'deliver', async () => {
-          execFileSync(tmuxBin(), ['send-keys', '-t', session, '-l', '/clear'], { timeout: 5000 })
-          execFileSync(tmuxBin(), ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
-        })
-        logger.info({ agent: name, contextTokens }, 'context-restart-gate: /clear sent')
-        writeGateRunState(name, {
-          ...runState,
-          firstBlockedAt: null,
-          lastClearAt: nowMs,
-          // Owe the fresh session a wake nudge; see WAKE_DELAY_MS.
-          pendingWakeAt: nowMs,
-        })
-        // Fast path: nudge in ~25s rather than at the next sweep (5 min by
-        // default). The persisted debt above is the fallback if this is lost.
-        await sleep(WAKE_DELAY_MS)
-        await deliverPendingWake(name, session, Date.now())
+        await performSoftClear(name, session, nowMs, contextTokens)
       } catch (err) {
         logger.warn({ err, agent: name }, 'context-restart-gate: /clear send failed')
       }
@@ -842,6 +887,7 @@ function scheduleSweep(name: string, delayMs: number): void {
       logger.info({ agent: name }, 'context-restart-gate: agent gone from roster, sweep retired')
       return
     }
+    if (name === MAIN_AGENT_ID) await runMainSweepHook()
     const cfg = readGateConfig(name)
     if (!cfg.enabled) {
       // Keep polling instead of self-terminating. Dropping the timer here made

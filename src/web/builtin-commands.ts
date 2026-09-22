@@ -6,9 +6,9 @@
 // the same `usage`; the nonce writes (/runs stop, /jobs on|off|run|skip,
 // /approvals approve|reject|renew) stay planned (CMD920 2.).
 
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, OWNER_NAME, APP_TZ } from '../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, OWNER_NAME, APP_TZ } from '../config.js'
 import {
   listApprovals,
   listKanbanCards,
@@ -47,6 +47,8 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { listScheduledTasks, type ScheduledTask } from './scheduled-tasks-io.js'
 import { computeNextRun } from './cron.js'
 import { getTokenSummary, getModelDistribution } from './token-usage.js'
+import { registerModelWriteCommands, readModelChoices as readChoiceList, readHold, MODEL_CHOICES_FILE, MODEL_HOLD_FILE } from './main-model.js'
+import { contextClear } from './session-control.js'
 
 function clip(s: string, n: number): string {
   const one = s.replace(/\s+/g, ' ').trim()
@@ -73,18 +75,6 @@ async function statusText(): Promise<string> {
 
 // ---- /model (status) --------------------------------------------------------
 
-export interface ModelChoice {
-  name: string
-  id: string
-  purpose?: string
-}
-
-export function readModelChoices(file = join(STORE_DIR, 'model-choices.json')): ModelChoice[] | null {
-  if (!existsSync(file)) return null
-  const parsed = JSON.parse(readFileSync(file, 'utf-8')) as Record<string, { id?: string; purpose?: string }>
-  return Object.entries(parsed).map(([name, v]) => ({ name, id: String(v?.id ?? ''), purpose: v?.purpose }))
-}
-
 function readEffortSetting(): { value: string; source: string } | null {
   if (process.env.CLAUDE_CODE_EFFORT_LEVEL) return { value: process.env.CLAUDE_CODE_EFFORT_LEVEL, source: 'env CLAUDE_CODE_EFFORT_LEVEL' }
   try {
@@ -103,25 +93,21 @@ export function modelStatusText(): string {
   if (measured && modelsDiffer(conf.model, measured)) lines.push('FIGYELEM: a futó modell eltér a beállítottól.')
   const effort = readEffortSetting()
   lines.push(`Effort:      ${effort ? `${effort.value} (${effort.source})` : 'nincs beállítva (a CLI alapértéke)'} · visszamérni nem tudjuk`)
-  const holdFile = join(STORE_DIR, 'main-model-hold.json')
-  let hold = 'nincs'
-  if (existsSync(holdFile)) {
-    try {
-      const h = JSON.parse(readFileSync(holdFile, 'utf-8')) as { model?: string; revert_to?: string; until?: number }
-      hold = `${h.model} eddig: ${h.until ? formatDayClock(h.until) : '?'}, utána vissza: ${h.revert_to}`
-    } catch {
-      hold = notMeasurable('a main-model-hold.json olvashatatlan')
-    }
-  }
+  const h = readHold(MODEL_HOLD_FILE)
+  const hold = h.error
+    ? notMeasurable(`a main-model-hold.json olvashatatlan: ${h.error}`)
+    : h.state
+      ? `${h.state.model} eddig: ${formatDayClock(h.state.until)}, utána vissza: ${h.state.revert_to}${h.state.verify_pending ? ' (a váltás még nincs visszamérve)' : ''}`
+      : 'nincs'
   lines.push(`Tartás:      ${hold}`)
   let choices: string
   try {
-    const c = readModelChoices()
-    choices = c === null
+    const c = readChoiceList(MODEL_CHOICES_FILE, conf.model)
+    choices = !c.fromFile
       ? `csak a konfigurált modell (${conf.model}); a store/model-choices.json hiányzik`
-      : c.map(x => `${x.name} = ${x.id}${x.purpose ? ` (${x.purpose})` : ''}`).join('\n             ')
-  } catch {
-    choices = notMeasurable('a model-choices.json olvashatatlan')
+      : c.choices.map(x => `${x.name} = ${x.id}${x.purpose ? ` (${x.purpose})` : ''}`).join('\n             ')
+  } catch (err) {
+    choices = notMeasurable(`a model-choices.json olvashatatlan: ${err instanceof Error ? err.message : String(err)}`)
   }
   lines.push(`Választható: ${choices}`)
   return lines.join('\n')
@@ -418,17 +404,14 @@ export function registerBuiltinCommands(): void {
   })
   registerCommand({ name: 'commands', kind: 'read', description: 'a saját parancsaid, az érvénytelenek külön', run: ctx => reply(ctx, customCommandsText()) })
 
-  // ÍR, megerősítés nélkül: the next release (A2) replaces these by usage.
+  // ÍR, megerősítés nélkül (CMD920 3.3, 3.4). /new and /clear are shipped
+  // as default CUSTOM commands (custom-commands.ts DEFAULT_COMMANDS).
+  registerModelWriteCommands()
   registerCommand({
-    name: 'model', kind: 'write', planned: true, usage: '/model [set] <választás> [<idő>|keep]',
-    description: 'váltás; alapból 2 óra, majd vissza; keep = tartós (.env)',
-    matches: args => args.length > 0 && !['back', 'effort'].includes(args[0].toLowerCase()),
+    name: 'context', kind: 'write', usage: '/context clear', description: 'azonnali /clear (foglalt sessionnél nem)',
+    matches: args => args[0]?.toLowerCase() === 'clear',
+    run: async ctx => ctx.reply((await contextClear(ctx.now)).text),
   })
-  registerCommand({ name: 'model', kind: 'write', planned: true, usage: '/model back', description: 'azonnal vissza az alapmodellre', matches: args => args[0]?.toLowerCase() === 'back' })
-  registerCommand({ name: 'model', kind: 'write', planned: true, usage: '/model effort <low|medium|high|xhigh|max>', description: 'effort beállítása', matches: args => args[0]?.toLowerCase() === 'effort' })
-  registerCommand({ name: 'context', kind: 'write', planned: true, usage: '/context clear', description: 'azonnali /clear (foglalt sessionnél nem)', matches: args => args[0]?.toLowerCase() === 'clear' })
-  registerCommand({ name: 'new', kind: 'write', planned: true, usage: '/new', description: 'a /context clear aliasa' })
-  registerCommand({ name: 'clear', kind: 'write', planned: true, usage: '/clear', description: 'a /context clear aliasa' })
 
   // ÍR, megerősítéssel: planned until after the stabilization (CMD920 2.).
   registerCommand({ name: 'runs', kind: 'write', confirm: true, planned: true, usage: '/runs stop <nonce>', description: 'a futó kör megszakítása', matches: args => args[0]?.toLowerCase() === 'stop' })

@@ -118,19 +118,21 @@ describe('/help generated from the registry (CMD920 test 3)', () => {
     expect(menu.find(m => m.command === 'model')?.description).toMatch(/futó és beállított/)
   })
 
-  it('A2 writes are planned in A1: /model opus, /model back, /context clear, /new do nothing', async () => {
-    for (const text of ['/model opus', '/model set opus 30m', '/model back', '/model effort high', '/context clear', '/new', '/clear']) {
-      const c = ctx()
-      expect(await dispatchCommand(text, c)).toBe('planned')
+  it('A2: the /model and /context writes are real (not planned); the nonce writes stay planned', () => {
+    for (const usage of ['/model [set] <választás> [<idő>|keep]', '/model back', '/model effort <low|medium|high|xhigh|max>', '/context clear']) {
+      const e = listCommands().find(x => x.usage === usage)
+      expect(e?.planned).toBeFalsy()
+      expect(typeof e?.run).toBe('function')
     }
-  })
-
-  it('CMD920 test 5 in A1: an off-list or injection-shaped model id reaches no writer at all', async () => {
-    for (const text of ["/model nincs-ilyen-modell", "/model opus'; rm -rf / #", '/model set claude-x;id keep']) {
-      const c = ctx()
-      expect(await dispatchCommand(text, c)).toBe('planned')
-      expect(c.out[0]).toMatch(/^Tervezett, még nem elérhető/)
+    expect(resolveCommand('model', ['opus', '30m'])?.usage).toBe('/model [set] <választás> [<idő>|keep]')
+    expect(resolveCommand('model', ['back'])?.usage).toBe('/model back')
+    expect(resolveCommand('model', [])?.kind).toBe('read')
+    expect(resolveCommand('context', ['clear'])?.usage).toBe('/context clear')
+    for (const usage of ['/runs stop <nonce>', '/jobs <név> on|off|run|skip <nonce>', '/approvals <n> approve|reject|renew <nonce>']) {
+      expect(listCommands().find(x => x.usage === usage)?.planned).toBe(true)
     }
+    // /new and /clear are shipped as default CUSTOM commands, not builtins
+    expect(listCommands().some(e => e.name === 'new' || e.name === 'clear')).toBe(false)
   })
 
   it('/board is read-only: no write entry is registered for it (CMD920 test 21)', async () => {

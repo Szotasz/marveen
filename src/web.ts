@@ -31,7 +31,7 @@ import { startReauthHealer } from './web/reauth-healer.js'
 import { startAutoRestartRunner } from './web/auto-restart-runner.js'
 import { startModelFallbackRunner } from './web/model-fallback-runner.js'
 import { startContextGuardRunner } from './web/context-guard-runner.js'
-import { startContextRestartGateRunner } from './web/context-restart-gate-runner.js'
+import { startContextRestartGateRunner, setMainSweepHook } from './web/context-restart-gate-runner.js'
 import { collectTokenUsage } from './web/token-usage.js'
 import { logger } from './logger.js'
 import { tryHandleAuth } from './web/routes/auth.js'
@@ -43,6 +43,9 @@ import { tryHandleFederation } from './web/routes/federation.js'
 import { startFederationPoller } from './web/federation/poller.js'
 import { registerBuiltinCommands } from './web/builtin-commands.js'
 import { tryHandleCommands } from './web/routes/commands.js'
+import { initCustomCommands } from './web/custom-commands.js'
+import { sweepModelHold } from './web/main-model.js'
+import { tryHandleCustomCommands } from './web/routes/custom-commands.js'
 import { startCapabilitySummaryRunner } from './web/federation/capability-runner.js'
 import { ensureFederationClaudeMdSection } from './web/federation/onboarding.js'
 import { tryHandleAgentTerminal } from './web/routes/agent-terminal.js'
@@ -216,6 +219,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleOnboarding(routeCtx)) return
       if (await tryHandleStatus(routeCtx)) return
       if (await tryHandleCommands(routeCtx)) return
+      if (await tryHandleCustomCommands(routeCtx)) return
       if (await tryHandleAutonomy(routeCtx)) return
       if (await tryHandleApprovals(routeCtx)) return
       if (await tryHandleDesktopLock(routeCtx)) return
@@ -552,6 +556,11 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
   // UserPromptSubmit hook (scripts/hooks/marveen-commands.py) dispatches into
   // through POST /api/commands/dispatch, answered without a main-session turn.
   registerBuiltinCommands()
+  if (!webOnly) {
+    initCustomCommands()
+    // The /model hold revert shares the gate's main sweep cadence.
+    setMainSweepHook(async (nowMs) => { await sweepModelHold(nowMs) })
+  }
 
   // Backfill the PreCompact hook into existing agents' settings.json so the
   // auto-skill / auto-memory flow runs on context compaction. No-op if the

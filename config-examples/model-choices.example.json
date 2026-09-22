@@ -1,0 +1,17 @@
+{
+  "opus": {
+    "id": "claude-opus-5[1m]",
+    "purpose": "nehéz munka, tervezés",
+    "default_hold_minutes": 120
+  },
+  "sonnet": {
+    "id": "claude-sonnet-5",
+    "purpose": "napi munka",
+    "default_hold_minutes": 240
+  },
+  "haiku": {
+    "id": "claude-haiku-4-5-20251001",
+    "purpose": "gépies, olcsó körök (200K ablak)",
+    "default_hold_minutes": 60
+  }
+}
