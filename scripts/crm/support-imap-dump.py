@@ -77,7 +77,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mailbox", action="append", default=[])
     ap.add_argument("--since", action="append", default=[], help="MAILBOX=UID, fetch strictly greater")
-    ap.add_argument("--limit", type=int, default=500)
+    ap.add_argument("--limit", type=int, default=500, help="per MAILBOX (a full INBOX must not starve INBOX.Sent)")
     ap.add_argument("--parse-file", help="offline: parse one RFC822 file and print one line")
     a = ap.parse_args()
 
@@ -119,14 +119,16 @@ def main():
             if typ != "OK" or not data or not data[0]:
                 continue
             uids = [int(u) for u in data[0].split()]
-            uids = [u for u in uids if u >= lo][: max(0, a.limit - emitted)]
+            uids = [u for u in uids if u >= lo][: a.limit]
+            box_emitted = 0
             for u in uids:
                 typ, fetched = M.uid("fetch", str(u), "(BODY.PEEK[])")
                 if typ != "OK" or not fetched or not isinstance(fetched[0], tuple):
                     continue
                 print(json.dumps(parse_message(fetched[0][1], mb, u), ensure_ascii=False), flush=True)
                 emitted += 1
-                if emitted >= a.limit:
+                box_emitted += 1
+                if box_emitted >= a.limit:
                     break
     finally:
         try:
