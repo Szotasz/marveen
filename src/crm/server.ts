@@ -12,6 +12,9 @@ import { checkBearerToken } from '../web/dashboard-auth.js'
 import { json, readBody, serveFile } from '../web/http-helpers.js'
 import { CRM_TABLES } from './db.js'
 import { createLead, todayLeads } from './leads-routes.js'
+import { checkUncertain, performSend, queueSend, recordOutcome, requestResend } from './send-routes.js'
+import { dailySummary, postponeLead, resolveExpired } from './lead-flow.js'
+import { createSendProviderStub, type SendProvider } from './send-provider-stub.js'
 
 export interface CrmServerOptions {
   token: string
@@ -19,6 +22,13 @@ export interface CrmServerOptions {
   crmDb: Database.Database
   /** The fleet store opened read-only, or null when it is not available. */
   readDb: Database.Database | null
+  /**
+   * The send provider. NO REAL SENDING IN THIS BUILD (CRM2SENDSTATE922): the default is the stub,
+   * whose fixtures mirror what we MEASURED today, not what we wish were true. A real sender is a
+   * separate, owner-approved step; until then every /api/send answer carries `stub: true` so the
+   * caller cannot mistake a fixture for a delivery.
+   */
+  sendProvider?: SendProvider
 }
 
 const STATIC_ALLOWLIST: Record<string, string> = {
@@ -30,6 +40,7 @@ export const LEADS_ENDPOINT_CARD = 'CRM1LEADKAPU922'
 
 export function createCrmServer(opts: CrmServerOptions): http.Server {
   const { token, webDir, crmDb, readDb } = opts
+  const sendProvider = opts.sendProvider ?? createSendProviderStub()
   return http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     const path = url.pathname
@@ -61,6 +72,91 @@ export function createCrmServer(opts: CrmServerOptions): http.Server {
               return
             }
             const r = createLead(crmDb, body, typeof body.actor === 'string' ? body.actor : '')
+            json(res, r.body, r.status)
+          })
+          .catch((err: Error) => {
+            json(res, { error: err.name === 'RequestBodyTooLargeError' ? 'request body too large' : 'request failed' }, 413)
+          })
+        return
+      }
+      if (path.startsWith('/api/send')) {
+        if (method !== 'POST') {
+          json(res, { error: 'Method not allowed' }, 405)
+          return
+        }
+        readBody(req, { maxBytes: 64 * 1024 })
+          .then((buf) => {
+            let body: Record<string, unknown>
+            try {
+              body = buf.length ? (JSON.parse(buf.toString('utf-8')) as Record<string, unknown>) : {}
+            } catch {
+              json(res, { error: 'invalid JSON body' }, 400)
+              return
+            }
+            const actor = typeof body.actor === 'string' ? body.actor : ''
+            const id = Number(body.attempt_id)
+            let r: { status: number; body: Record<string, unknown> }
+            if (path === '/api/send') r = performSend(crmDb, sendProvider, body, actor)
+            else if (path === '/api/send/queue') r = queueSend(crmDb, body, actor)
+            else if (path === '/api/send/outcome') {
+              // A BIZONYITEK FORRASA A SZOLGALTATOI HIVAS, NEM A KERES TORZSE (Samu lelete).
+              //
+              // MERVE a javitas elott: bearer-tokennel bekuldott `{provider_msg_id:'FAKE-1'}`
+              // elfogadott allapotba vitte a kiserletet. Ez az "elfogadva CSAK tipizalt
+              // bizonyitekkal" allitast az API-retegen hamissa tette: ugyanaz a deklaracio-kontra-
+              // tartalom alak, ami ellen az egesz modul keszult.
+              //
+              // AMIG A KULDO STUB, ez az ut NYITVA marad, mert stub-modban nincs valodi kezbesites,
+              // tehat nincs is mirol hazudni: a fixturas kimenet bekuldese a proba resze, es a
+              // valasz `stub: true`-t hoz. Amint valodi kuldo-reteg all a helyen, az ut ELTUNIK, es
+              // a kimenet csakis a hivasbol johet.
+              if (!sendProvider.isStub) {
+                json(res, { error: 'not in this build: an outcome may only come from the provider call' }, 404)
+                return
+              }
+              r = recordOutcome(crmDb, id, actor, body.outcome as never)
+            }
+            else if (path === '/api/send/check') r = checkUncertain(crmDb, id, actor, sendProvider)
+            else if (path === '/api/send/resend') r = requestResend(crmDb, id, actor, body)
+            else {
+              json(res, { error: 'Not found' }, 404)
+              return
+            }
+            // A VÁLASZ KIMONDJA, HOGY STUB. Egy "elküldve" felirat, ami mögött fixtúra áll, pont az
+            // a hamis zöld, ami ellen ez az egész modul készült.
+            json(res, { ...r.body, stub: sendProvider.isStub }, r.status)
+          })
+          .catch((err: Error) => {
+            json(res, { error: err.name === 'RequestBodyTooLargeError' ? 'request body too large' : 'request failed' }, 413)
+          })
+        return
+      }
+      if (path === '/api/leads/summary' && method === 'GET') {
+        // A SZŰRÉS ITT, A GENERÁLÁSNÁL TÖRTÉNIK, nem a megjelenítésnél: ha a nézet szűrne, egy másik
+        // felület ugyanabból az adatból megint listát csinálna, és a kényszer elveszne.
+        json(res, dailySummary(crmDb) as unknown as Record<string, unknown>)
+        return
+      }
+      // POST /api/leads/<id>/postpone es /resolve-expired
+      const leadMuvelet = /^\/api\/leads\/(\d+)\/(postpone|resolve-expired)$/.exec(path)
+      if (leadMuvelet) {
+        if (method !== 'POST') {
+          json(res, { error: 'Method not allowed' }, 405)
+          return
+        }
+        const leadId = Number(leadMuvelet[1])
+        const muvelet = leadMuvelet[2]
+        readBody(req, { maxBytes: 64 * 1024 })
+          .then((buf) => {
+            let body: Record<string, unknown>
+            try {
+              body = buf.length ? (JSON.parse(buf.toString('utf-8')) as Record<string, unknown>) : {}
+            } catch {
+              json(res, { error: 'invalid JSON body' }, 400)
+              return
+            }
+            const actor = typeof body.actor === 'string' ? body.actor : ''
+            const r = muvelet === 'postpone' ? postponeLead(crmDb, leadId, actor, body) : resolveExpired(crmDb, leadId, actor, body)
             json(res, r.body, r.status)
           })
           .catch((err: Error) => {

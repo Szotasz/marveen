@@ -520,6 +520,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
       'claude-opus-5[1m]',
       'claude-sonnet-5',
       'claude-fable-5',
+      'claude-fable-5-1',
       'claude-opus-4-8[1m]',
       'claude-haiku-4-5-20251001',
     ],
