@@ -1,6 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
 import { contextClear, clearVerdict, switchVerdict, type SessionControlDeps } from '../web/session-control.js'
 import { DEFAULT_GATE_CONFIG, type GateInputs } from '../context-restart-gate.js'
+import { readLastTurnActivityMs, projectsDirFor } from '../web/active-model.js'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 
 const NOW = Date.parse('2026-09-22T08:00:00Z')
 
@@ -81,5 +85,39 @@ describe('/context clear (CMD920 test 10)', () => {
     expect(switchVerdict(inputs({ paneState: 'busy' }), cfg).quiet).toBe(false)
     expect(switchVerdict(inputs({ msSinceTranscriptWrite: 500 }), cfg).quiet).toBe(false)
     expect(switchVerdict(inputs({ hasChildProcesses: null }), cfg).quiet).toBe(false)
+  })
+
+  // ELSOKOR922 Phase 7 A-smoke: the command's own hook-blocked prompt writes
+  // bookkeeping lines to the transcript just before the deferred command runs;
+  // the mtime then read "0s" and refused every owner write.
+  it('own blocked prompt: a fresh mtime but an old turn line does not block', () => {
+    const cfg = { ...DEFAULT_GATE_CONFIG }
+    const own = inputs({ msSinceTranscriptWrite: 500, msSinceTurnActivity: 5 * 60_000 })
+    expect(switchVerdict(own, cfg)).toEqual({ quiet: true })
+    expect(clearVerdict(own, cfg)).toEqual({ quiet: true })
+  })
+
+  it('readLastTurnActivityMs skips the blocked-prompt bookkeeping lines (the shape measured on the test transcript)', () => {
+    const cfgDir = mkdtempSync(join(tmpdir(), 'turn-'))
+    try {
+      const dir = projectsDirFor('/opt/marveen', cfgDir)
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 's.jsonl'), [
+        JSON.stringify({ type: 'assistant', timestamp: '2026-09-22T13:30:26.598Z', message: { model: 'claude-sonnet-5' } }),
+        JSON.stringify({ type: 'system', subtype: 'stop_hook_summary', hookCount: 2 }),
+        JSON.stringify({ type: 'queue-operation', timestamp: '2026-09-22T13:35:17.269Z', content: '<channel ...>/model</channel>' }),
+        JSON.stringify({ type: 'system', subtype: 'informational', timestamp: '2026-09-22T13:35:18.082Z', content: 'UserPromptSubmit operation blocked by hook' }),
+        JSON.stringify({ type: 'last-prompt' }),
+        '',
+      ].join('\n'))
+      expect(readLastTurnActivityMs('/opt/marveen', cfgDir)).toBe(Date.parse('2026-09-22T13:30:26.598Z'))
+    } finally { rmSync(cfgDir, { recursive: true, force: true }) }
+  })
+
+  it('a real turn line still blocks; the switch window is 20 s, /context clear keeps the gate 2 min', () => {
+    const cfg = { ...DEFAULT_GATE_CONFIG }
+    expect(switchVerdict(inputs({ msSinceTurnActivity: 10_000 }), cfg)).toEqual({ quiet: false, reason: 'turn-active (10s ago, need 20s)' })
+    expect(switchVerdict(inputs({ msSinceTurnActivity: 30_000 }), cfg)).toEqual({ quiet: true })
+    expect(clearVerdict(inputs({ msSinceTurnActivity: 30_000 }), cfg).quiet).toBe(false)
   })
 })

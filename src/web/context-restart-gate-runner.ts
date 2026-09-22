@@ -11,7 +11,7 @@ import { agentSessionName, capturePane } from './agent-process.js'
 import { sendSystemDirective } from './system-directive.js'
 import { detectPaneState } from '../pane-state.js'
 import { detectsUsageLimit } from '../model-fallback.js'
-import { readContextTokensFromProjectDir, projectsDirFor } from './active-model.js'
+import { readContextTokensFromProjectDir, projectsDirFor, readLastTurnActivityMs } from './active-model.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 // One copy, in a module neither runner owns (the gate imports the guard, so the
 // guard cannot import the gate back). Re-exported below because #1382's test
@@ -674,6 +674,10 @@ export function gatherGateInputs(name: string, nowMs: number): GateSnapshot {
     hasStaleOutbound:       dispatchedStats?.hasStale ?? false,
     hasChildProcesses:      childProcesses,
     msSinceTranscriptWrite: msSinceTranscriptWrite(workingDir, nowMs, configDirFor(name)),
+    msSinceTurnActivity: (() => {
+      const at = readLastTurnActivityMs(workingDir, configDirFor(name))
+      return at === null ? null : Math.max(0, nowMs - at)
+    })(),
     hasOpenQuestion:        openQuestion,
     hasLiveTaskState:       liveTaskState,
   }

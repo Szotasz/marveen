@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync, openSync, readSync, closeSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -99,6 +99,49 @@ export function readLastAssistantModel(workingDir: string, configDir?: string): 
         if (!Number.isFinite(atMs)) continue
         return { model, atMs }
       } catch { /* skip malformed JSON line */ }
+    }
+  } catch { /* fall through */ }
+  return null
+}
+
+const TURN_TAIL_BYTES = 512 * 1024
+
+// Epoch ms of the last TURN line (type user / assistant) in the newest
+// transcript; null = no transcript or no such line in the tail. Unlike the
+// file mtime, bookkeeping lines do not count: Claude Code writes a
+// queue-operation, a "UserPromptSubmit operation blocked by hook" system line
+// and last-prompt / title metadata for every prompt a hook blocks, so an owner
+// command made the transcript look "active" by its own blocked prompt
+// (ELSOKOR922 Phase 7 A-smoke: /model refused "transcript-active (0s)").
+// A running turn writes user (tool_result) and assistant lines, so the gap
+// between two tool calls -- what the quiet window guards -- still counts.
+export function readLastTurnActivityMs(workingDir: string, configDir?: string): number | null {
+  try {
+    const dir = projectsDirFor(workingDir, configDir)
+    if (!existsSync(dir)) return null
+    const newest = readdirSync(dir)
+      .filter(f => f.endsWith('.jsonl'))
+      .map(f => ({ f, mtime: statSync(join(dir, f)).mtimeMs, size: statSync(join(dir, f)).size }))
+      .sort((a, b) => b.mtime - a.mtime)[0]
+    if (!newest) return null
+    const fd = openSync(join(dir, newest.f), 'r')
+    let text: string
+    try {
+      const len = Math.min(newest.size, TURN_TAIL_BYTES)
+      const buf = Buffer.alloc(len)
+      readSync(fd, buf, 0, len, newest.size - len)
+      text = buf.toString('utf-8')
+    } finally { closeSync(fd) }
+    const lines = text.split('\n')
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim()
+      if (!line.startsWith('{')) continue
+      try {
+        const e = JSON.parse(line)
+        if (e?.type !== 'user' && e?.type !== 'assistant') continue
+        const at = typeof e.timestamp === 'string' ? new Date(e.timestamp).getTime() : NaN
+        if (Number.isFinite(at)) return at
+      } catch { /* a line cut by the tail window, or malformed */ }
     }
   } catch { /* fall through */ }
   return null
