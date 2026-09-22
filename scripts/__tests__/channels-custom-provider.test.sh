@@ -212,13 +212,30 @@ VAULT_SETUP_BEARER
 then
   printf '%s\n' '{"customProvider":"bearer-ep","model":"oc/test"}' > "$AGENT_CFG"
   printf '%s\n' "$BEARER_PROVIDER" > "$PROVIDERS_PATH"
-  EXPECTED_BEARER="unset CLAUDE_CODE_OAUTH_TOKEN && export ANTHROPIC_BASE_URL='http://127.0.0.1:4010' && export ANTHROPIC_AUTH_TOKEN='${TEST_BEARER_KEY}' && unset ANTHROPIC_API_KEY && export ANTHROPIC_MODEL='oc/test' && "
+  # A BAZIS ALATTUNK MEGVALTOZOTT (LATENSKULCSARGV920, #1478): a kulcs mar nem a parancs-sztringbe
+  # kerul, hanem 0600-as fajlba, es a parancsban a `$(cat ...)` HIVATKOZAS all. A teszt SZANDEKA
+  # valtozatlan (egy felcserelt env-nev -- API_KEY az AUTH_TOKEN helyett -- itt bukjon el, ne
+  # csusszon at a grep-eken), ezert a byte-pontos ellenorzes megmarad, csak az uj alakra.
+  EXPECTED_BEARER="unset CLAUDE_CODE_OAUTH_TOKEN && export ANTHROPIC_BASE_URL='http://127.0.0.1:4010' && export ANTHROPIC_AUTH_TOKEN=\"\$(cat '${root}/store/.launch-secrets/${TEST_AGENT}.MY_BEARER_KEY')\" && unset ANTHROPIC_API_KEY && export ANTHROPIC_MODEL='oc/test' && "
   BEARER_OUT="$(node "$root/scripts/main-agent-custom-provider.mjs" 2>/dev/null)"
   BEARER_RC=$?
   if [ "$BEARER_RC" -eq 0 ] && [ "$BEARER_OUT" = "$EXPECTED_BEARER" ]; then
     pass "Bearer happy-path: byte-exact stdout"
   else
     fail "Bearer happy-path: byte-exact stdout" "$EXPECTED_BEARER" "exit=$BEARER_RC stdout='$BEARER_OUT'"
+  fi
+  # ES A LENYEG KULON: a kulcs ERTEKE sehol nem all a kimenetben. A byte-pontos egyezes ezt ma
+  # maga utan vonja, de ha valaki kesobb fellazitja a fenti allitast, ez a sor meg mindig all.
+  if printf '%s' "$BEARER_OUT" | grep -qF "$TEST_BEARER_KEY"; then
+    fail "Bearer: a kulcs ERTEKE nem kerulhet a parancsba" "(a kulcs nem szerepel)" "$BEARER_OUT"
+  else
+    pass "Bearer: a kulcs erteke NINCS a parancs-sztringben (csak a \$(cat ...) hivatkozas)"
+  fi
+  # POZITIV KONTROLL a fenti keresesre: ugyanez a grep a VALODI kulcsra IGAZAT ad, tehat a proba lat.
+  if printf '%s' "export X='${TEST_BEARER_KEY}'" | grep -qF "$TEST_BEARER_KEY"; then
+    pass "pozitiv kontroll: a kulcs-kereses mukodik (a regi alakot megtalalna)"
+  else
+    fail "pozitiv kontroll: a kulcs-kereses mukodik" "(talal)" "(nem talal -- a proba vak)"
   fi
   # Clean up so subsequent cases don't pick up the bearer agent config
   rm -f "$AGENT_CFG" "$PROVIDERS_PATH"
@@ -264,7 +281,8 @@ then
   #
   # Implementation: a fresh temp dir per iteration (no .claude.json at all)
   # so the stamp always writes a new file and exercises the cold path.
-  EXPECTED_XKEY="unset CLAUDE_CODE_OAUTH_TOKEN && export ANTHROPIC_BASE_URL='http://127.0.0.1:4010' && export ANTHROPIC_API_KEY='${TEST_XAPIKEY}' && unset ANTHROPIC_AUTH_TOKEN && export ANTHROPIC_MODEL='oc/test' && "
+  # Ugyanaz a bazis-valtozas, mint a Bearer againal: a parancsban a hivatkozas all, nem az ertek.
+  EXPECTED_XKEY="unset CLAUDE_CODE_OAUTH_TOKEN && export ANTHROPIC_BASE_URL='http://127.0.0.1:4010' && export ANTHROPIC_API_KEY=\"\$(cat '${root}/store/.launch-secrets/${TEST_AGENT}.MY_XAPIKEY_KEY')\" && unset ANTHROPIC_AUTH_TOKEN && export ANTHROPIC_MODEL='oc/test' && "
   XKEY_FAIL=0
   for _i in 1 2 3 4 5; do
     # Fresh cfg dir: no .claude.json present -> cold stamp on every iteration.

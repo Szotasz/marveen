@@ -1226,11 +1226,18 @@ export function buildCustomProviderLaunchEnv(agentName: string): CustomProviderL
     if (!key) {
       throw new Error(`Custom provider vault key "${customProviderDef.vaultKey}" not found. Add it in the Vault tab.`)
     }
+    // A BAZIS ALATTUNK MEGVALTOZOTT (LATENSKULCSARGV920, #1478): a kulcs nem a launch-parancsban
+    // utazik, hanem 0600-as fajlbol olvassa a BEINDITOTT shell. A szerzo logikaja valtozatlan.
+    //
+    // A `customApiKeyForApproval` viszont SZANDEKOSAN a nyers kulcs marad: azt a hivo NEM a
+    // parancsba teszi, hanem a `.claude.json`-be stampeli (a CLI az utolso 20 karaktert tarolja),
+    // tehat az nem argv-kitettseg. Ket kulonbozo ut, ket kulonbozo szabaly.
+    const keyRef = launchSecretRef(`${agentName}.${customProviderDef.vaultKey}`, key)
     if (customProviderDef.authHeader === 'x-api-key') {
-      headerExport = `export ANTHROPIC_API_KEY="${key}" && `
+      headerExport = `export ANTHROPIC_API_KEY=${keyRef} && `
       customApiKeyForApproval = key
     } else {
-      headerExport = `export ANTHROPIC_AUTH_TOKEN="${key}" && `
+      headerExport = `export ANTHROPIC_AUTH_TOKEN=${keyRef} && `
     }
   }
 

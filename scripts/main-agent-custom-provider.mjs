@@ -21,12 +21,14 @@
 //   claude-config-dir: optional path to an isolated CLAUDE_CONFIG_DIR
 //     (the stamped approval lands there instead of ~/.claude.json)
 //
-// NOTE (MEDIUM-5 / known): the auth credential is emitted as a shell export in
-// the tmux new-session command string, making it visible in `ps`/`/proc`
-// cmdline -- the same exposure as the existing CFG_ENV / CLAUDE_CODE_OAUTH_TOKEN
-// export in channels.sh. Out-of-band delivery (tmux set-environment before
-// new-session, or an env-file) would eliminate the exposure but requires a
-// larger channels.sh refactor that is out of scope for this change.
+// NOTE (MEDIUM-5): RESOLVED on the rebase, by the base, not by this script. The original note
+// said the credential is emitted as a shell export in the tmux new-session command string, and
+// framed that as "the same exposure as the existing CFG_ENV / CLAUDE_CODE_OAUTH_TOKEN export in
+// channels.sh". That framing was measurably wrong even then: the OAuth export deliberately used
+// `$(cat file)` so the VALUE never reached argv, and the comment above it says so. Since #1478 the
+// fleet passes every provider key that way, so this helper does too: the key goes to a 0600 file
+// and only the `$(cat ...)` reference is interpolated. What remains true is that the file is
+// readable by any process running as the same OS user -- the same class as the OAuth token file.
 
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -40,7 +42,7 @@ const projectRoot = join(__dirname, '..')
 // into an unconditional channel abort. If any module fails to load and no
 // customProvider is configured, the pre-customProvider behavior (standard
 // Claude/OAuth backend) is the correct fallback: exit 0, empty stdout.
-let MAIN_AGENT_ID, readAgentCustomProvider, readAgentModel, loadCustomProvider, getSecret
+let MAIN_AGENT_ID, readAgentCustomProvider, readAgentModel, loadCustomProvider, getSecret, launchSecretRef
 try {
   ;({ MAIN_AGENT_ID } = await import(join(projectRoot, 'dist', 'config.js')))
   ;({ readAgentCustomProvider, readAgentModel } = await import(
@@ -50,6 +52,12 @@ try {
     join(projectRoot, 'dist', 'web', 'custom-providers.js')
   ))
   ;({ getSecret } = await import(join(projectRoot, 'dist', 'web', 'vault.js')))
+  // LATENSKULCSARGV920 (#1478): a kulcs nem a parancs-sztringben utazik, hanem 0600-as fajlbol
+  // olvassa a beinditott shell. A MECHANIZMUS EGY HELYEN all (agent-process.js), nem masolva ide:
+  // ket implementacio elobb-utobb szetcsuszna, es a titok-kezelesnel a szetcsuszas az, ami fajni fog.
+  // Ez a modul ugyanabba a vedett import-blokkba kerult, tehat egy csonka dist itt is a
+  // "standard backend" fallbackot adja, nem osszeomlast.
+  ;({ launchSecretRef } = await import(join(projectRoot, 'dist', 'web', 'agent-process.js')))
 } catch (e) {
   process.stderr.write(
     `main-agent-custom-provider: dist module load failed (${e.message}) -- skipping customProvider check, using standard backend\n`,
@@ -109,13 +117,18 @@ if (def.authHeader === 'none') {
   if (!key) {
     fatal(`vault key "${def.vaultKey}" missing for provider "${customProviderId}" -- add it in the Vault tab`)
   }
+  // A kulcs FAJLBA kerul, es a parancsba csak a hivatkozas (`"$(cat '/ut')"`). A fejlec-komment
+  // MEDIUM-5 pontja ezzel targytalanna valt: a `ps`/`/proc` sorban mar nem all a kulcs.
+  // Az `apiKeyForStamp` SZANDEKOSAN a nyers kulcs marad: az a `.claude.json`-be irodik (a CLI az
+  // utolso 20 karakteret tarolja), nem a parancsba -- mas ut, mas szabaly.
+  const keyRef = launchSecretRef(`${MAIN_AGENT_ID}.${def.vaultKey}`, key)
   if (def.authHeader === 'x-api-key') {
-    headerExport = `export ANTHROPIC_API_KEY=${sq(key)} && `
+    headerExport = `export ANTHROPIC_API_KEY=${keyRef} && `
     unsetConflict = 'unset ANTHROPIC_AUTH_TOKEN && '
     apiKeyForStamp = key
   } else {
     // Bearer
-    headerExport = `export ANTHROPIC_AUTH_TOKEN=${sq(key)} && `
+    headerExport = `export ANTHROPIC_AUTH_TOKEN=${keyRef} && `
     unsetConflict = 'unset ANTHROPIC_API_KEY && '
   }
 }
