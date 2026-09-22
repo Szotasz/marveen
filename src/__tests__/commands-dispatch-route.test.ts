@@ -72,6 +72,22 @@ describe('dispatchForChat', () => {
     expect(r.replies).toHaveLength(1)
     expect(r.replies[0]).toMatch(/^\/model csak a fő chatből írható/)
   })
+  it('deferWrites: a runnable WRITE is answered `deferred` and not run; a READ runs as usual', async () => {
+    registerCommand({ name: 'model', kind: 'write', description: 'valt', run: async () => { throw new Error('should not run') } })
+    expect(await dispatchForChat('/model opus', '42', '42', Date.now(), true, true)).toEqual({ handled: true, outcome: 'deferred', replies: [] })
+    const read = await dispatchForChat('/status', '42', '42', Date.now(), true, true)
+    expect(read.outcome).toBe('ran')
+    expect(runs).toBe(1)
+  })
+  it('deferWrites: a planned write still answers "planned" at once (nothing to defer)', async () => {
+    const r = await dispatchForChat('/runs stop abc', '42', '42', Date.now(), true, true)
+    expect(r.outcome).toBe('planned')
+  })
+  it('deferWrites: a sub-agent write is still refused, not deferred', async () => {
+    registerCommand({ name: 'model', kind: 'write', description: 'valt', run: async () => {} })
+    const r = await dispatchForChat('/model opus', '42', '42', Date.now(), false, true)
+    expect(r.outcome).toBe('sub-agent-write-refused')
+  })
   it('the main session runs the same WRITE normally', async () => {
     let ran = 0
     registerCommand({ name: 'model', kind: 'write', description: 'valt', run: async () => { ran++ } })

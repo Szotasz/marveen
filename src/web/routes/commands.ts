@@ -60,7 +60,7 @@ export function mainSessionFromBody(b: Record<string, unknown>): boolean {
 
 export interface DispatchResult {
   handled: boolean
-  outcome: DispatchOutcome | 'not-owner' | 'sub-agent-write-refused'
+  outcome: DispatchOutcome | 'not-owner' | 'sub-agent-write-refused' | 'deferred'
   replies: string[]
 }
 
@@ -73,7 +73,15 @@ export interface DispatchResult {
 // (3): the old gate lived in the Python hook and blocked every non-/usage
 // command for a sub-agent, reads included, sending them to the model at
 // full token cost instead of the free hook round trip).
-export async function dispatchForChat(text: string, chatId: string, ownerChatId: string | null, now = Date.now(), mainSession = true): Promise<DispatchResult> {
+//
+// `deferWrites`: the hook's first call. A runnable WRITE is not run now but
+// answered `deferred` -- while the UserPromptSubmit hook is still running,
+// Claude Code already shows the owner's own (about to be blocked) turn as
+// live (spinner + `esc to interrupt`), so every write's quiet gate read its
+// OWN turn as "pane-busy" and refused, every time (measured on the test bot,
+// ELSOKOR922 Phase 7). The hook then re-sends the command once, from a
+// detached watcher that wakes on the hook process's exit.
+export async function dispatchForChat(text: string, chatId: string, ownerChatId: string | null, now = Date.now(), mainSession = true, deferWrites = false): Promise<DispatchResult> {
   const parsed = parseCommand(text)
   const spec = parsed ? resolveCommand(parsed.name, parsed.args) : null
   if (!parsed || !spec) {
@@ -88,6 +96,9 @@ export async function dispatchForChat(text: string, chatId: string, ownerChatId:
       outcome: 'sub-agent-write-refused',
       replies: [`/${spec.name} csak a fő chatből írható; ez a parancs mást állítana, és ez a session nem a fő session.`],
     }
+  }
+  if (spec.kind === 'write' && !spec.planned && deferWrites) {
+    return { handled: true, outcome: 'deferred', replies: [] }
   }
   const replies: string[] = []
   const outcome = await dispatchCommand(text, {
@@ -130,7 +141,8 @@ export async function tryHandleCommands(ctx: RouteContext): Promise<boolean> {
     json(res, { error: 'text and chatId are required' }, 400)
     return true
   }
-  const result = await dispatchForChat(text, chatId, resolveOwnerChatId(), Date.now(), mainSession)
+  const deferWrites = b.deferWrites === true
+  const result = await dispatchForChat(text, chatId, resolveOwnerChatId(), Date.now(), mainSession, deferWrites)
   if (result.handled) logger.info({ command: parseCommand(text)?.name, outcome: result.outcome }, 'commands: dispatched')
   else if (result.outcome === 'not-owner') logger.warn({ chatId }, 'commands: registry command from a non-owner chat, passed to the model')
   json(res, result)

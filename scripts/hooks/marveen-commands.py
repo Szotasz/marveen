@@ -54,6 +54,7 @@ import sys
 import os
 import re
 import json
+import select
 import subprocess
 import time
 import urllib.error
@@ -208,7 +209,7 @@ def mark_answered(sd, payload, chat_id, text):
         log(sd, f"ledger log_outbound failed: {type(e).__name__}")
 
 
-def dispatch(text, chat_id, main_session):
+def dispatch(text, chat_id, main_session, defer_writes=False):
     """POST the command to the dashboard. Returns (result dict, None) or (None, why).
 
     `main_session` rides along so the server can refuse a WRITE resolved for
@@ -227,7 +228,8 @@ def dispatch(text, chat_id, main_session):
         return None, "nincs dashboard-token"
     req = urllib.request.Request(
         api_base() + "/api/commands/dispatch",
-        data=json.dumps({"text": text, "chatId": chat_id, "mainSession": main_session}).encode(),
+        data=json.dumps({"text": text, "chatId": chat_id, "mainSession": main_session,
+                         "deferWrites": defer_writes}).encode(),
         method="POST",
         headers={"Authorization": "Bearer " + dtok, "Content-Type": "application/json"},
     )
@@ -319,6 +321,109 @@ def is_main_session(payload):
         return False  # unknown identity: treated as non-main, so writes get refused
 
 
+# ---- deferred writes ----------------------------------------------------------
+#
+# While this hook runs, Claude Code already shows the owner's own (about to be
+# blocked) turn as live -- spinner + `esc to interrupt` -- so a write's quiet
+# gate, checked from inside the hook, always read its OWN turn as "pane-busy"
+# (measured on the test bot, ELSOKOR922 Phase 7: every /model refused, while a
+# direct API call with no hook running went through). The server therefore
+# answers a write on the hook's first call `deferred`, and the hook hands the
+# command to a detached watcher that wakes exactly once, when THIS process
+# exits (pidfd on Linux, kqueue on macOS -- an event, not a poll), waits
+# SETTLE_SECONDS for the pane to redraw idle, and re-sends it. The gate then
+# runs once; a genuinely busy session still gets its one-line refusal.
+
+DEFERRED_ENV = "MARVEEN_CMD_DEFERRED"
+DEFERRED_WAIT_SECONDS = 30
+SETTLE_SECONDS = 0.5
+DEFERRED_SPAWN_FAILED_REPLY = "Nem futott: /{name} -- a késleltetett végrehajtás nem indult el. Napló: progress/commands-hook.log"
+
+
+def wait_for_exit(pid, timeout):
+    """Block until `pid` exits, or `timeout` passes. True iff it exited."""
+    try:
+        fd = os.pidfd_open(pid)
+    except ProcessLookupError:
+        return True
+    except (AttributeError, OSError):
+        fd = None
+    if fd is not None:
+        try:
+            ready, _, _ = select.select([fd], [], [], timeout)
+            return bool(ready)
+        finally:
+            os.close(fd)
+    if hasattr(select, "kqueue"):
+        kq = select.kqueue()
+        try:
+            ev = select.kevent(pid, filter=select.KQ_FILTER_PROC,
+                               flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                               fflags=select.KQ_NOTE_EXIT)
+            return bool(kq.control([ev], 1, timeout))
+        except ProcessLookupError:
+            return True
+        finally:
+            kq.close()
+    return False
+
+
+def spawn_deferred(sd, payload, body, chat_id, main_session):
+    job = {
+        "pid": os.getpid(),
+        "text": body,
+        "chat_id": chat_id,
+        "main_session": main_session,
+        "payload": {k: payload.get(k) for k in ("transcript_path", "cwd", "session_id")},
+    }
+    env = dict(os.environ)
+    env[DEFERRED_ENV] = json.dumps(job)
+    try:
+        # stdio MUST NOT be inherited: Claude Code waits for the hook's pipes
+        # to close, so an inherited stdout would hold the turn open for the
+        # watcher's whole life -- the very busy state this is waiting out.
+        subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), "--deferred"],
+            env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
+        )
+        return True
+    except Exception as e:
+        log(sd, f"deferred spawn failed: {type(e).__name__}")
+        return False
+
+
+def run_deferred():
+    try:
+        job = json.loads(os.environ.get(DEFERRED_ENV) or "")
+    except Exception:
+        sys.exit(0)
+    sd = state_dir()
+    tok = env_value(os.path.join(sd, ".env"), "TELEGRAM_BOT_TOKEN")
+    if not tok:
+        sys.exit(0)
+    text, chat_id = job.get("text") or "", job.get("chat_id") or ""
+    name = (COMMAND_RX.match(text).group(1).lower() if COMMAND_RX.match(text) else "?")
+    exited = wait_for_exit(int(job.get("pid") or 0), DEFERRED_WAIT_SECONDS)
+    if not exited:
+        log(sd, f"/{name} deferred: hook did not exit within {DEFERRED_WAIT_SECONDS}s, running anyway")
+    time.sleep(SETTLE_SECONDS)
+    result, why = dispatch(text, chat_id, bool(job.get("main_session")))
+    if result is None:
+        reply = DASHBOARD_DOWN_REPLY.format(name=name, why=why)
+        replies = [reply]
+    else:
+        replies = [r for r in (result.get("replies") or []) if isinstance(r, str) and r]
+    sent_any = False
+    for r in replies:
+        if send(sd, tok, chat_id, r):
+            sent_any = True
+    if sent_any:
+        mark_answered(sd, job.get("payload") or {}, chat_id, replies[-1])
+    log(sd, f"/{name} deferred write answered ({(result or {}).get('outcome', why)}) chat={chat_id}")
+    sys.exit(0)
+
+
 def attr(attrs, name):
     m = re.search(name + r'="([^"]*)"', attrs)
     return m.group(1) if m else None
@@ -356,7 +461,15 @@ def main():
         log(sd, "no bot token found, letting the prompt through")
         sys.exit(0)
 
-    result, why = dispatch(body, chat_id, main_session)
+    result, why = dispatch(body, chat_id, main_session, defer_writes=True)
+    if result is not None and result.get("outcome") == "deferred":
+        if not spawn_deferred(sd, payload, body, chat_id, main_session):
+            reply = DEFERRED_SPAWN_FAILED_REPLY.format(name=name)
+            if send(sd, tok, chat_id, reply):
+                mark_answered(sd, payload, chat_id, reply)
+        clear_stray_placeholder(sd, tok, sid)
+        log(sd, f"/{name} deferred until the hook exits chat={chat_id} sid={sid}")
+        sys.exit(2)
     if result is None:
         if name not in BUILTIN_NAMES:
             log(sd, f"/{name}: dashboard unreachable ({why}), not a builtin, passed to the model")
@@ -388,4 +501,6 @@ def main():
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--deferred"]:
+        run_deferred()
     main()

@@ -114,7 +114,7 @@ describe('marveen-commands.py', () => {
     const r = await runHook(channel('/status'))
     expect(r.code).toBe(2)
     expect(r.stdout).toBe('')
-    expect(dispatches()[0].body).toEqual({ text: '/status', chatId: '42', mainSession: true })
+    expect(dispatches()[0].body).toEqual({ text: '/status', chatId: '42', mainSession: true, deferWrites: true })
     expect(sends()).toEqual([{ chat_id: '42', text: 'minden rendben' }])
   })
 
@@ -234,18 +234,38 @@ describe('marveen-commands.py', () => {
     dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['ok'] } })
     let r = await runHook(channel('/status'), base, 'nova')
     expect(r.code).toBe(2)
-    expect(dispatches()[0].body).toEqual({ text: '/status', chatId: '42', mainSession: false })
+    expect(dispatches()[0].body).toEqual({ text: '/status', chatId: '42', mainSession: false, deferWrites: true })
     expect(sends()).toHaveLength(1)
     r = await runHook(channel('/usage'), base, 'nova')
     expect(r.code).toBe(2)
-    expect(dispatches()[1].body).toEqual({ text: '/usage', chatId: '42', mainSession: false })
+    expect(dispatches()[1].body).toEqual({ text: '/usage', chatId: '42', mainSession: false, deferWrites: true })
     expect(sends()).toHaveLength(2)
   })
+  // ELSOKOR922 Phase 7 A-smoke: a write checked from inside the hook always
+  // saw its own live turn as "pane-busy". The server answers `deferred`; the
+  // hook exits at once, and a detached watcher re-sends the command exactly
+  // once, after THIS hook process has exited.
+  it('a deferred write: hook exits without replying, the watcher re-sends once after the hook exits', async () => {
+    dispatchReply = (body) => body.deferWrites
+      ? { status: 200, body: { handled: true, outcome: 'deferred', replies: [] } }
+      : { status: 200, body: { handled: true, outcome: 'ran', replies: ['átváltva'] } }
+    const exitedAt = await runHook(channel('/model opus 5m')).then(r => { expect(r.code).toBe(2); return Date.now() })
+    expect(sends()).toHaveLength(0)
+    const deadline = Date.now() + 5000
+    while (sends().length === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 50))
+    expect(sends()).toEqual([{ chat_id: '42', text: 'átváltva' }])
+    const d = dispatches()
+    expect(d).toHaveLength(2)
+    expect(d[0].body.deferWrites).toBe(true)
+    expect(d[1].body).toEqual({ text: '/model opus 5m', chatId: '42', mainSession: true, deferWrites: false })
+    expect(Date.now() - exitedAt).toBeGreaterThanOrEqual(400) // the settle wait ran after the exit
+  })
+
   it('the main session dispatches with mainSession:true', async () => {
     dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['ok'] } })
     const r = await runHook(channel('/status'), base, 'marveen')
     expect(r.code).toBe(2)
-    expect(dispatches()[0].body).toEqual({ text: '/status', chatId: '42', mainSession: true })
+    expect(dispatches()[0].body).toEqual({ text: '/status', chatId: '42', mainSession: true, deferWrites: true })
   })
 
   it('clears a telegram_progress placeholder posted for the blocked turn', async () => {
