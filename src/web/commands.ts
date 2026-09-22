@@ -153,7 +153,7 @@ export async function dispatchCommand(text: string, ctx: CommandContext): Promis
 }
 
 function helpLine(e: CommandSpec): string {
-  return `${usageOf(e)} — ${e.description}${e.planned ? ' (tervezett)' : ''}`
+  return `${usageOf(e)} - ${e.description}${e.planned ? ' (tervezett)' : ''}`
 }
 
 // /help text, generated from the registry. Sections follow CMD920 3.2.
@@ -163,15 +163,16 @@ export function renderHelp(): string {
   const read = builtin.filter(e => e.kind === 'read')
   const write = builtin.filter(e => e.kind === 'write' && !e.confirm)
   const confirm = builtin.filter(e => e.kind === 'write' && e.confirm)
+  // Owner feedback (ELSOKOR922 Phase 7 A-smoke): the read list needs no header
+  // of its own, and "MODOSÍT" says more than "ÍR" about what a write does.
   const out: string[] = []
-  out.push('OLVAS')
   for (const e of read) out.push(helpLine(e))
   out.push('')
-  out.push('ÍR, megerősítés nélkül')
+  out.push('MODOSÍT, megerősítés nélkül')
   if (write.length === 0) out.push('nincs')
   for (const e of write) out.push(helpLine(e))
   out.push('')
-  out.push('ÍR, megerősítéssel')
+  out.push('MODOSÍT, megerősítéssel')
   if (confirm.length === 0) out.push('nincs')
   for (const e of confirm) out.push(helpLine(e))
   out.push('')

@@ -84,14 +84,14 @@ describe('/help generated from the registry (CMD920 test 3)', () => {
       expect(help).toContain(e.usage ?? `/${e.name}`)
     }
     for (const e of listCommands().filter(x => x.planned)) {
-      expect(help).toContain(`${e.usage ?? `/${e.name}`} — ${e.description} (tervezett)`)
+      expect(help).toContain(`${e.usage ?? `/${e.name}`} - ${e.description} (tervezett)`)
     }
     // every CMD920 3.2 read command is there
     for (const name of ['help', 'status', 'queue', 'runs', 'jobs', 'approvals', 'model', 'context', 'usage', 'board', 'commands']) {
       expect(listCommands().some(e => e.name === name && e.kind === 'read' && !e.planned)).toBe(true)
     }
     // the nonce writes are planned, in the "megerősítéssel" section
-    const confirmSection = help.split('ÍR, megerősítéssel')[1].split('SAJÁT')[0]
+    const confirmSection = help.split('MODOSÍT, megerősítéssel')[1].split('SAJÁT')[0]
     expect(confirmSection).toContain('/runs stop <nonce>')
     expect(confirmSection).toContain('/jobs <név> on|off|run|skip <nonce>')
     expect(confirmSection).toContain('/approvals <n> approve|reject|renew <nonce>')
@@ -99,7 +99,7 @@ describe('/help generated from the registry (CMD920 test 3)', () => {
 
   it('a custom command registered later shows up under SAJÁT', () => {
     registerCommand({ name: 'reggel', kind: 'write', source: 'custom', description: 'reggeli összefoglaló', run: () => {} })
-    expect(renderHelp().split('SAJÁT')[1]).toContain('/reggel — reggeli összefoglaló')
+    expect(renderHelp().split('SAJÁT')[1]).toContain('/reggel - reggeli összefoglaló')
   })
 
   it('the bot menu lists runnable names once, planned-only names left out', () => {

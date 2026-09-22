@@ -142,6 +142,7 @@ export function modelStatusText(): string {
         + `${h.state.verify_pending ? ' (a váltás még nincs visszamérve)' : ''}`
       : 'nincs'
   lines.push(`Tartás: ${hold}`)
+  lines.push('')
   let choices: string
   try {
     const c = readChoiceList(MODEL_CHOICES_FILE, conf.model)
@@ -152,6 +153,7 @@ export function modelStatusText(): string {
     choices = notMeasurable(`a model-choices.json olvashatatlan: ${err instanceof Error ? err.message : String(err)}`)
   }
   lines.push(`Választható: ${choices}`)
+  lines.push('')
   // ELSOKOR922 Phase 7 A-smoke, tulajdonosi visszajelzés (2026-09-22): a
   // sima /model státusz nem mondta meg, HOGYAN kell váltani -- a szintaxis
   // csak a /help-ben (a registry `usage` mezőjében) volt látható, itt nem.
@@ -196,7 +198,7 @@ export function jobsListText(tasks: ScheduledTask[], tz: string = APP_TZ): strin
   if (tasks.length === 0) return 'nincs ütemezett feladat'
   return tasks
     .map(t => `${t.enabled ? '' : '[ki] '}${t.name} · ${t.schedule} · következő ${t.enabled ? nextRunText(t.schedule, tz) : '-'} · utolsó ${lastRunText(t.name)}`)
-    .join('\n')
+    .join('\n\n')
 }
 
 export function jobDetailText(t: ScheduledTask, tz: string = APP_TZ): string {
@@ -405,7 +407,7 @@ const reply = (ctx: CommandContext, text: string) => ctx.reply(text)
 
 export function registerBuiltinCommands(): void {
   // OLVAS
-  registerCommand({ name: 'help', kind: 'read', description: 'mit lehet kérni; a tervezett írások külön jelölve', run: ctx => reply(ctx, renderHelp()) })
+  registerCommand({ name: 'help', kind: 'read', description: 'ez a parancslista', run: ctx => reply(ctx, renderHelp()) })
   registerCommand({ name: 'status', kind: 'read', description: 'rendszer-állapot', run: async ctx => reply(ctx, await statusText()) })
   registerCommand({ name: 'queue', kind: 'read', description: 'mi vár rád, mi indul magától', run: ctx => reply(ctx, formatBlocks(collectQueue(ctx.now))) })
   registerCommand({

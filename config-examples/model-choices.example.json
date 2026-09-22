@@ -4,6 +4,11 @@
     "purpose": "nehéz munka, tervezés",
     "default_hold_minutes": 120
   },
+  "fable": {
+    "id": "claude-fable-5-1",
+    "purpose": "hosszú, önálló futás (1M ablak)",
+    "default_hold_minutes": 120
+  },
   "sonnet": {
     "id": "claude-sonnet-5",
     "purpose": "napi munka",
