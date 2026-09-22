@@ -1,0 +1,162 @@
+/**
+ * A lead-felvétel kapuja (CRM 1. ütem, G1 -- CRM1LEADKAPU922).
+ *
+ * MÉRVADÓ SPEC: workspace/CRM-GERI-KAPUK-ES-NYOM.md 6. szakasz.
+ *
+ * MIÉRT VAN EGYÁLTALÁN: mérve a saját kanban táblánkon, négy meleg lead állt 79, 81, 84 és 100
+ * napja ugyanabban az állapotban, közülük az egyiken NULLA komment 84 nap alatt. Az észlelés
+ * működött (a reggeli javaslat mind a négyet néven nevezte, 61 nappal korábban), a LEZÁRÁS nem.
+ * Egy felület, ami csak kategorizál és listáz, ezt pontosan reprodukálná. Ezért az első funkció
+ * nem a nézet, hanem ez a kapu.
+ *
+ * A KAPU A TARTALMAT MÉRI, NEM A DEKLARÁCIÓT. Ez nem stílus: 2026-09-22-én élesben mértük, hogy
+ * egy ÜRES fájl teljesített egy követelményt, miközben semmi nem történt -- a kapu az útvonalat
+ * nézte, a hatás a tartalmon múlt. Itt ugyanez két alakban állna elő: az üres szöveg és a távoli
+ * dátum. Mindkettőt itt zárjuk.
+ */
+
+/** A következő érintkezés típusai. EGY HELYEN, mert a séma CHECK-je ezt tükrözi. */
+export const NEXT_STEP_TYPES = ['email', 'call', 'meeting', 'offer'] as const
+export type NextStepType = (typeof NEXT_STEP_TYPES)[number]
+
+/**
+ * A dátum-horizont felső határa NAPBAN. A távoli dátum a kibúvó: aki "majd valamikor"-t akar
+ * rögzíteni, az ezzel kerülné meg a kaput.
+ *
+ * NYITOTT DÖNTÉS (Marveennél, 2026-09-22): az "ügyfél későbbre kérte (ébresztés)" típus, amely
+ * 12 hónapos dátumot engedne és nem számítana halasztásnak. Amíg nincs döntés, a lista négy
+ * értékű marad, és a megtagadás szövege KIMONDJA, hogy a távoli dátumos eset még nem támogatott --
+ * különben a felhasználó a hamis dátum plusz azonnali halasztás kerülőutat tanulja meg.
+ */
+export const HORIZON_DAYS = 14
+
+export type LeadInput = {
+  title?: unknown
+  origin?: unknown
+  next_step_type?: unknown
+  next_step_at?: unknown
+  next_step_text?: unknown
+  contact_id?: unknown
+  display_name?: unknown
+  email?: unknown
+  phone?: unknown
+}
+
+export const ORIGINS = ['email', 'telegram', 'phone', 'meeting', 'referral', 'other'] as const
+
+export type GateOk = {
+  ok: true
+  value: {
+    title: string
+    origin: string
+    next_step_type: NextStepType
+    next_step_at: number
+    next_step_text: string
+    contact_id: number | null
+    display_name: string | null
+    email: string | null
+    phone: string | null
+  }
+}
+export type GateRefusal = { ok: false; missing: string[]; message: string }
+
+/** Helyi nap kezdete (a felhasználó napjában mérünk, nem UTC-ben). */
+export function startOfLocalDay(at: Date): number {
+  const d = new Date(at.getFullYear(), at.getMonth(), at.getDate(), 0, 0, 0, 0)
+  return Math.floor(d.getTime() / 1000)
+}
+
+/**
+ * A dátum elfogadása NAP-alapú, nem másodperc-alapú: a "ma" és a "ma + 14 nap" is TELJES nap.
+ * Enélkül a határ a futás órájától függne, és ugyanaz a bevitel délelőtt átmenne, délután nem.
+ */
+function normalizeDate(raw: unknown, now: Date): number | null {
+  if (typeof raw === 'number' && Number.isFinite(raw)) return Math.floor(raw)
+  if (typeof raw === 'string') {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw.trim())
+    if (m) {
+      const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 0, 0, 0, 0)
+      if (Number.isNaN(d.getTime())) return null
+      return Math.floor(d.getTime() / 1000)
+    }
+    const t = Date.parse(raw)
+    if (!Number.isNaN(t)) return Math.floor(t / 1000)
+  }
+  return null
+}
+
+function asTrimmed(raw: unknown): string {
+  return typeof raw === 'string' ? raw.trim() : ''
+}
+
+/**
+ * A megtagadás szövege. A LEGOLCSÓBB ÚT LEGYEN A HELYES ÚT: ezért nemcsak tilt, hanem megnevezi,
+ * mi hiányzik, és felkínál egy működő minimumot. Ha a megtagadás csak tilt, a felhasználó a
+ * FELVÉTELT hagyja el, nem a hibát javítja.
+ */
+export function refusalMessage(missing: string[], horizonDays = HORIZON_DAYS): string {
+  const nev: Record<string, string> = {
+    next_step_type: 'a következő érintkezés típusa (levél, hívás, találkozó, ajánlat)',
+    next_step_at: `a következő lépés dátuma, a mai naptól számított ${horizonDays} napon belül`,
+    next_step_text: 'egy mondat arról, mit kell tenned',
+    title: 'a lead megnevezése',
+    origin: 'a lead forrása',
+  }
+  const lista = missing.map((k) => nev[k] ?? k).join(', ')
+  return (
+    'Ehhez a leadhez nincs teljes következő lépés, ezért nem mentem el. Hiányzik: ' + lista + '. ' +
+    'Egy lead, aminek nincs dátumozott következő lépése, két hónap múlva is ugyanitt fog állni. ' +
+    'Ha most nem tudod pontosan, az is válasz: vedd fel "ajánlás, hívás egy héten belül" formában, ' +
+    'és pontosítsd, amikor többet tudsz. ' +
+    'Távolabbi dátum (például "novemberben keressük") ebben a változatban még nem vehető fel; ' +
+    'ne írj be hamis közeli dátumot helyette, mert abból a rendszer elakadt leadet fog látni.'
+  )
+}
+
+/** A kapu maga. Tiszta függvény: nincs I/O, ezért külön mérhető és mutálható. */
+export function checkLeadInput(input: LeadInput, now: Date = new Date()): GateOk | GateRefusal {
+  const missing: string[] = []
+
+  const title = asTrimmed(input.title)
+  if (!title) missing.push('title')
+
+  const origin = asTrimmed(input.origin) || 'other'
+  if (!(ORIGINS as readonly string[]).includes(origin)) missing.push('origin')
+
+  const type = asTrimmed(input.next_step_type)
+  if (!(NEXT_STEP_TYPES as readonly string[]).includes(type)) missing.push('next_step_type')
+
+  // A SZÖVEG A TRIM UTÁN dől el. A "megadta, de üresen" a HARMADIK állapot, és ugyanúgy megtagadás,
+  // mint a hiány -- a kapcsoló-kapu suite-ja magától a megadta/nem-adta-meg tengelyen mérne.
+  const text = asTrimmed(input.next_step_text)
+  if (!text) missing.push('next_step_text')
+
+  const at = normalizeDate(input.next_step_at, now)
+  const dayStart = startOfLocalDay(now)
+  const maxDay = dayStart + HORIZON_DAYS * 86400
+  if (at === null || at < dayStart || at >= maxDay + 86400) missing.push('next_step_at')
+
+  if (missing.length) return { ok: false, missing, message: refusalMessage(missing) }
+
+  const contactIdRaw = input.contact_id
+  const contact_id =
+    typeof contactIdRaw === 'number' && Number.isInteger(contactIdRaw) ? contactIdRaw : null
+
+  return {
+    ok: true,
+    value: {
+      title,
+      origin,
+      next_step_type: type as NextStepType,
+      next_step_at: at as number,
+      next_step_text: text,
+      contact_id,
+      // E-MAIL NEM KÖTELEZŐ: a gazda kérése szó szerint tartalmazza a telefonos, találkozós és
+      // ajánlásos leadet, e-mail-cím nélkül is. Aki ide később "kötelező kapcsolat-mezőt" tesz,
+      // pont azt a felvételt teszi lehetetlenné, amiért a kézi felvétel készül.
+      display_name: asTrimmed(input.display_name) || null,
+      email: asTrimmed(input.email) || null,
+      phone: asTrimmed(input.phone) || null,
+    },
+  }
+}
