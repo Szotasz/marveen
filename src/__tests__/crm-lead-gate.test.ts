@@ -157,6 +157,39 @@ describe('CRM lead-felvétel kapuja (CRM1LEADKAPU922, spec 6.5)', () => {
   })
 })
 
+describe('a nap határa NEVESÍTETT zónában (Samu kikötése, 28263)', () => {
+  // MIÉRT KELL: ha a nap határát a futtató környezet zónája döntené el, a CI (UTC) és a gazda gépe
+  // (CEST) este 22 után MÁS napot látna -- ugyanaz a bevitel az egyik helyen átmegy, a másikon nem,
+  // és a különbség semmiből nem látszik. Ezek az állítások ezért NEM a futtató zónájától függenek.
+  it('22:30 UTC szeptemberben már a KÖVETKEZŐ budapesti nap (CEST = UTC+2)', () => {
+    const este = new Date(Date.UTC(2026, 8, 22, 22, 30, 0)) // 2026-09-23 00:30 Budapesten
+    const napKezdet = startOfLocalDay(este)
+    // a budapesti 09-23 nap kezdete = 2026-09-22 22:00 UTC
+    expect(napKezdet).toBe(Math.floor(Date.UTC(2026, 8, 22, 22, 0, 0) / 1000))
+  })
+
+  it('ugyanaz a pillanat UTC-ben MÁS napot adna: ezt a kapu NEM követi', () => {
+    const este = new Date(Date.UTC(2026, 8, 22, 22, 30, 0))
+    const utcNapKezdet = Math.floor(Date.UTC(2026, 8, 22, 0, 0, 0) / 1000)
+    expect(startOfLocalDay(este)).not.toBe(utcNapKezdet)
+  })
+
+  it('a dátum-sztring is a nevesített zónában értendő, nem a futtatóéban', () => {
+    // 2026-09-23 Budapesten = 2026-09-22 22:00 UTC
+    const r = checkLeadInput(
+      { ...ALAP, next_step_at: '2026-09-23' },
+      new Date(Date.UTC(2026, 8, 22, 22, 30, 0)),
+    )
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.value.next_step_at).toBe(Math.floor(Date.UTC(2026, 8, 22, 22, 0, 0) / 1000))
+  })
+
+  it('téli időszámításban az eltolás 1 óra, és a határ ezt követi (nem fix offset)', () => {
+    const telen = new Date(Date.UTC(2026, 11, 15, 23, 30, 0)) // 2026-12-16 00:30 Budapesten (CET)
+    expect(startOfLocalDay(telen)).toBe(Math.floor(Date.UTC(2026, 11, 15, 23, 0, 0) / 1000))
+  })
+})
+
 describe('ébresztés-típus: az "ügyfél későbbre kérte" eset (döntés 2026-09-22)', () => {
   it('a wakeup típus 12 hónapon belüli dátumot ENGED, a többi típus nem', () => {
     const ebresztes = createLead(db, { ...ALAP, next_step_type: 'wakeup', next_step_at: nap(60) }, 'geri', MOST)

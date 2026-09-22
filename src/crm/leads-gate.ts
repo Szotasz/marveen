@@ -66,10 +66,39 @@ export type GateOk = {
 }
 export type GateRefusal = { ok: false; missing: string[]; message: string }
 
-/** Helyi nap kezdete (a felhasználó napjában mérünk, nem UTC-ben). */
-export function startOfLocalDay(at: Date): number {
-  const d = new Date(at.getFullYear(), at.getMonth(), at.getDate(), 0, 0, 0, 0)
-  return Math.floor(d.getTime() / 1000)
+/**
+ * A NAP HATARA NEVESITETT ZONABAN DOL EL, NEM A PROCESSZ ZONAJABAN (Samu kikotese, 28263).
+ *
+ * MIERT: a kapu "ma" es "ma+14" kozott enged. Ha ezt a futtato korotnyezetenek zonaja donti el, a
+ * CI (UTC) es a gazda gepe (CEST) este 22 utan MAS NAPOT lat -- ugyanaz a bevitel az egyik helyen
+ * atmegy, a masikon nem, es a kulonbseg semmibol nem latszik. Ezert a zona KIMONDOTT.
+ */
+export const CRM_TZ = process.env.CRM_TZ || 'Europe/Budapest'
+
+/** Egy pillanat zona-eltolasa ezredmasodpercben, a zona sajat szabalyai szerint (nyari ido is). */
+function zonaEltolasMs(at: Date, tz: string): number {
+  const f = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  })
+  const r: Record<string, string> = {}
+  for (const p of f.formatToParts(at)) if (p.type !== 'literal') r[p.type] = p.value
+  const mintUtc = Date.UTC(
+    Number(r.year), Number(r.month) - 1, Number(r.day),
+    Number(r.hour) % 24, Number(r.minute), Number(r.second),
+  )
+  return mintUtc - at.getTime()
+}
+
+/** A megadott zona szerinti nap eleje, epoch masodpercben. */
+export function startOfLocalDay(at: Date, tz: string = CRM_TZ): number {
+  const f = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' })
+  const [y, m, d] = f.format(at).split('-').map(Number)
+  const ejfelUtcKent = Date.UTC(y, m - 1, d, 0, 0, 0)
+  // Az eltolast MAGANAK A NAPNAK a pillanatan kerdezzuk, kulonben a nyari ido valtasa napjan csusznank.
+  const eltolas = zonaEltolasMs(new Date(ejfelUtcKent), tz)
+  return Math.floor((ejfelUtcKent - eltolas) / 1000)
 }
 
 /**
@@ -81,9 +110,11 @@ function normalizeDate(raw: unknown, now: Date): number | null {
   if (typeof raw === 'string') {
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw.trim())
     if (m) {
-      const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 0, 0, 0, 0)
-      if (Number.isNaN(d.getTime())) return null
-      return Math.floor(d.getTime() / 1000)
+      // A datum-sztring IS a nevesitett zonaban ertendo, kulonben a bevitel es a hatar-szamitas
+      // ket kulonbozo naptar szerint mozogna.
+      const ejfelUtcKent = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 0, 0, 0)
+      const eltolas = zonaEltolasMs(new Date(ejfelUtcKent), CRM_TZ)
+      return Math.floor((ejfelUtcKent - eltolas) / 1000)
     }
     const t = Date.parse(raw)
     if (!Number.isNaN(t)) return Math.floor(t / 1000)
