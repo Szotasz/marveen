@@ -214,6 +214,16 @@ describe('actor field (decision 2026-09-22, section 4 of the breakdown)', () => 
     const css = await (await fetch(url('/style.css'))).text()
     expect(css).toMatch(/\.table-wrap \{[^}]*overflow-x: auto/)
   })
+  it('the served app.js never assigns markup: every innerHTML write is the empty-string clear, mail bodies and subjects go through textContent (stored-XSS pin, Samu review on #1479)', async () => {
+    const js = await (await fetch(url('/app.js'))).text()
+    const writes = [...js.matchAll(/\.innerHTML\s*=\s*([^\n;]+)/g)].map((m) => m[1].trim())
+    expect(writes.length).toBeGreaterThan(0)
+    for (const rhs of writes) expect(rhs).toBe("''")
+    expect(js).not.toMatch(/insertAdjacentHTML|outerHTML\s*=|document\.write/)
+    // the timeline body and the thread subject are text nodes, never parsed
+    expect(js).toContain("el('div', 'body', m.body_text || '(üres törzs)')")
+    expect(js).toContain("document.getElementById('szal-subject').textContent = d.thread.subject")
+  })
 })
 
 describe('port resolution', () => {
