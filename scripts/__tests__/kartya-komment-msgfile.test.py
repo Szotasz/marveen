@@ -88,6 +88,22 @@ def run(card_id, author, port, with_msg=True, extra=()):
     return subprocess.run(args + list(extra), capture_output=True, text=True, env=env, timeout=30)
 
 
+def komment_kulso(card_id, author, port):
+    """Komment --msg-file-lal, tetszoleges (akar nem flotta) szerzo neveben."""
+    d = tempfile.mkdtemp(prefix='kartya-kulso-')
+    cf = os.path.join(d, 'k.txt'); mf = os.path.join(d, 'm.txt')
+    with open(cf, 'w', encoding='utf-8') as f:
+        f.write('Próba-komment, ékezetes szöveggel, elég hosszan.')
+    with open(mf, 'w', encoding='utf-8') as f:
+        f.write('Ertesites kulso szerzotol.')
+    env = dict(os.environ)
+    env['KARTYA_DB'] = DB_PATH; env['CLAUDECLAW_ROOT'] = SANDBOX_ROOT
+    env['KARTYA_TOKEN'] = 'teszt-token'; env['KARTYA_API'] = f'http://127.0.0.1:{port}/api/messages'
+    return subprocess.run([sys.executable, SCRIPT, '--id', card_id, '--comment-file', cf,
+                           '--author', author, '--msg-file', mf],
+                          capture_output=True, text=True, env=env, timeout=30)
+
+
 def cimzettek():
     """Akihez az uzenet TENYLEGESEN ment, a DB sorabol -- nem a kimenet szovegebol."""
     db = sqlite3.connect(DB_PATH)
@@ -155,6 +171,48 @@ def main():
     check('5 --msg-file cimzett nelkul: MEGTAGADVA (nem talalunk ki cimzettet)',
           p.returncode != 0 and 'MEGTAGADVA' in out, out)
     check('5 es semmi nem ment ki', cimzettek() == [], f'cimzettek={cimzettek()}')
+
+    # 5b. URES --msg-file: a kapu a TARTALMAT nezi, nem az utvonalat (Samu lelete, 28122).
+    # Merve a javitas elott: rc=0, a komment beirodott, es NULLA uzenet ment ki -- vagyis egy ures
+    # fajl "teljesitette" a kovetelmenyt. Pontosan az a nema no-op, ami ellen a kapu all.
+    torol_uzenetek()
+    d = tempfile.mkdtemp(prefix='kartya-ures-')
+    cf = os.path.join(d, 'k.txt'); mf = os.path.join(d, 'm.txt')
+    with open(cf, 'w', encoding='utf-8') as f:
+        f.write('Próba-komment, ékezetes szöveggel, elég hosszan.')
+    with open(mf, 'w', encoding='utf-8') as f:
+        f.write('   \n  ')
+    env = dict(os.environ)
+    env['KARTYA_DB'] = DB_PATH; env['CLAUDECLAW_ROOT'] = SANDBOX_ROOT
+    env['KARTYA_TOKEN'] = 'teszt-token'; env['KARTYA_API'] = f'http://127.0.0.1:{port}/api/messages'
+    p = subprocess.run([sys.executable, SCRIPT, '--id', 'MASE922', '--comment-file', cf,
+                        '--author', 'Geri', '--msg-file', mf],
+                       capture_output=True, text=True, env=env, timeout=30)
+    out = p.stdout + p.stderr
+    db = sqlite3.connect(DB_PATH)
+    elotte_db = db.execute("SELECT count(*) FROM kanban_comments WHERE card_id='MASE922'").fetchone()[0]
+    db.close()
+    check('5b ures --msg-file: MEGTAGADVA (a kapu a tartalmat nezi)',
+          p.returncode != 0 and 'ures --msg-file' in out, out)
+    check('5b es semmi nem ment ki', cimzettek() == [], f'cimzettek={cimzettek()}')
+
+    # 5c. KULSO SZERZO --msg-file-lal: MEGTAGADVA, es a komment BE SEM irodik (Samu lelete, 28122).
+    # A letrehozo agon a KULDOK-kapu regota all; a komment-agrol hianyzott, tehat egy kulso szerzo
+    # a SAJAT neveben POST-olt volna (merve: from_agent='zollak'), es elesben az /api/messages
+    # from-hitelesitese utasitotta volna el -- a komment beirasa UTAN.
+    torol_uzenetek()
+    db = sqlite3.connect(DB_PATH)
+    elotte = db.execute("SELECT count(*) FROM kanban_comments WHERE card_id='KETTO922'").fetchone()[0]
+    db.close()
+    p = komment_kulso('KETTO922', 'zollak', port)
+    out = p.stdout + p.stderr
+    db = sqlite3.connect(DB_PATH)
+    utana = db.execute("SELECT count(*) FROM kanban_comments WHERE card_id='KETTO922'").fetchone()[0]
+    db.close()
+    check('5c kulso szerzo --msg-file-lal: MEGTAGADVA', p.returncode != 0 and 'ismeretlen felado' in out, out)
+    check('5c es a komment BE SEM irodott (a kapu az INSERT elott all)', utana == elotte,
+          f'elotte={elotte} utana={utana}')
+    check('5c es semmi nem ment ki', cimzettek() == [], f'cimzettek={cimzettek()}')
 
     # 6. FELADO-ATTRIBUCIO: a sor from_agent-je az --author kisbetusitve (KARTYAKULDO908 alak),
     # nem a koordinator. Csendes koordinator-attribucio nem keletkezhet.

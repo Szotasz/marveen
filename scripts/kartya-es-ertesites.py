@@ -110,7 +110,7 @@ def _db_kapu():
                  f'(gyoker: {ROOT})\nEz jellemzoen egy korabbi rossz ut-feloldas hagyta ott. Mondd ki:\n'
                  f'CLAUDECLAW_ROOT=<a fo fa> vagy KARTYA_DB=<a db utvonala>.')
     return DB
-def _token_kapu(dry_run):
+def _token_kapu(dry_run, elozmeny=None):
     """A dashboard-token feloldasa, EGY helyen -- hogy a dry-run ES az eles ag UGYANAZT a
     kaput fussa. A ket ag CSAK a mondatban ter el, mert a KOVETKEZMENY ter el: az eles agon
     a kartya EKKOR MAR LETREJOTT (a token-kapu az 5. lepesben all, a 4. lepes irasa utan),
@@ -123,9 +123,13 @@ def _token_kapu(dry_run):
         return tok
     tokpath = os.path.join(ROOT, 'store', '.dashboard-token')
     if not os.path.exists(tokpath):
-        elozmeny = ('MEGTAGADVA (dry-run): eles futasban A KARTYA MAR LETREJONNE, DE AZ UZENET NEM MENNE KI:'
-                    if dry_run else
-                    'A KARTYA LETREJOTT, DE AZ UZENET NEM MENT KI:')
+        # A KOMMENT-AG SAJAT MONDATOT AD AT (KOMMENTMSGFILE922): ott a token-kapu az IRAS ELOTT all,
+        # tehat a letrehozo ag mondata ("a kartya MAR letrejonne") ott egyszeruen NEM IGAZ. Egy
+        # pontatlan kapu-szoveg ugyanaz a hibaosztaly, mint egy pontatlan zold.
+        elozmeny = elozmeny or (
+            'MEGTAGADVA (dry-run): eles futasban A KARTYA MAR LETREJONNE, DE AZ UZENET NEM MENNE KI:'
+            if dry_run else
+            'A KARTYA LETREJOTT, DE AZ UZENET NEM MENT KI:')
         sys.exit(f'{elozmeny} nincs dashboard-token itt:\n'
                  f'  {tokpath}\n(gyoker: {ROOT}). Mondd ki: CLAUDECLAW_ROOT=<a fo fa> vagy KARTYA_TOKEN=<token>.\n'
                  + ('A dry-run ezert PIROS: az eles futas reszlegesen irna (kartya igen, uzenet nem).'
@@ -553,15 +557,23 @@ def komment_mod(a):
                           if x in FLEET and x != (a.author or '').strip().lower())
     # ELLENTMONDAS-KAPU, ugyanaz az alak, mint a --no-msg + --msg-file parosnal a letrehozo agon:
     # a ket szandek kozul nem talalhato ki, melyik az igazi, tehat nem valasztunk helyette.
+    # A) URES --msg-file (Samu lelete, 28122): a kapu az UTVONALAT nezte (a.msg_file), a kuldes a
+    # TARTALMAT (msg). Egy ures fajl igy TELJESITETTE a kovetelmenyt, es kozben semmi nem ment ki --
+    # merve fixturan: rc=0, komment beirva, uzenet 0. Pontosan az a nema no-op, ami ellen a kapu szol.
+    # Innentol MINDEN dontes a tartalomra megy, es az ures fajl sajat megtagadast kap.
+    if a.msg_file and not msg.strip():
+        sys.exit('MEGTAGADVA: ures --msg-file. Egy ures ertesites UGYANAZ, mint a semmi: a kapu\n'
+                 'teljesitettnek latszana, kozben a felelos nem tudna meg semmit.\n'
+                 'Vagy irj bele szoveget, vagy mondd ki: --nincs-ertesites-szandekos.')
     if a.msg_file and a.nincs_ertesites_szandekos:
         sys.exit('MEGTAGADVA: --msg-file ES --nincs-ertesites-szandekos egyszerre -- a ketto ellentmond\n'
                  'egymasnak. Vagy ertesitesz (--msg-file), vagy kimondva nem (--nincs-ertesites-szandekos).')
-    if a.msg_file and not _ertesitendo:
+    if msg.strip() and not _ertesitendo:
         sys.exit('MEGTAGADVA: --msg-file, de NINCS kit ertesiteni ezen a kartyan: a felelos vagy te magad\n'
                  'vagy ("' + str(a.author) + '"), vagy nem flotta-agens. Nem talalunk ki cimzettet.\n'
                  'Ha egy KONKRET agensnek akarsz irni, az a kulon ut:\n'
                  '  bash scripts/agent-msg.sh <felado> <cimzett> "<szoveg>"')
-    if _ertesitendo and not a.msg_file and not a.nincs_ertesites_szandekos:
+    if _ertesitendo and not msg.strip() and not a.nincs_ertesites_szandekos:
         _kik = ', '.join(_ertesitendo)
         sys.exit('MEGTAGADVA: a kartya felelose "' + _kik + '" (flotta-agens), te pedig "'
                  + str(a.author) + '" vagy,\n'
@@ -573,6 +585,25 @@ def komment_mod(a):
                  + (a.from_agent or a.author).strip().lower() + ' ' + _ertesitendo[0] + ' "<szoveg>"\n'
                  '  Ha csak NYOMOT hagysz a jovonek, es a felelosnek nem kell tudnia rola:\n'
                  '    mondd ki a --nincs-ertesites-szandekos kapcsoloval.')
+    # C) A FELADO ERVENYESSEGE ES A TOKEN AZ IRAS ELOTT (Samu lelete, 28122). A letrehozo agon a
+    # KULDOK-kapu a 874. sorban all; a komment-agon HIANYZOTT, tehat egy KULSO szerzo (pl. egy PR
+    # beküldője) uzenetet POST-olt volna a sajat neveben -- merve fixturan: from_agent='zollak'.
+    # Elesben ezt az /api/messages from-hitelesitese utasitja el, DE a komment EKKOR MAR BEIRODOTT:
+    # a futas fele irna. Ezert mindket kapu az INSERT ELE kerul, ahogy a dry-run is jelzi.
+    if msg.strip():
+        _frm = (a.from_agent or a.author).strip().lower()
+        if _frm not in KULDOK:
+            sys.exit('MEGTAGADVA: ismeretlen felado ("' + _frm + '") ertesiteshez. Ervenyes: '
+                     + ', '.join(sorted(KULDOK)) + '.\n'
+                     'Kulso szerzo nem kuld inter-agent uzenetet: a kommentet ird meg\n'
+                     '--nincs-ertesites-szandekos kapcsoloval, es a flotta tagja szoljon tovabb.')
+        # A TOKEN IS ITT DOL EL, EGY HELYEN, az IRAS ELOTT -- igy a hianya nem a futas felen derul ki.
+        _tok = _token_kapu(dry_run=a.dry_run, elozmeny=(
+            'MEGTAGADVA (dry-run): nincs token, tehat az ERTESITES nem menne ki, es ezert'
+            ' a komment SEM irodna be (a kapu az iras ELOTT all):'
+            if a.dry_run else
+            'MEGTAGADVA: nincs token, tehat az ERTESITES nem mehet ki, ezert a komment SEM'
+            ' irodott be (a kapu az iras ELOTT all):'))
     if a.nincs_ertesites_szandekos and _ertesitendo:
         # UGYANAZ A SZIMMETRIA, MINT A --no-msg-nel: a kimondott kihagyas LATSZODJON a kimeneten,
         # kulonben maga a KAPCSOLO valik szokassá -- ugyanaz a vaksag egy lepessel arrebb.
@@ -590,6 +621,9 @@ def komment_mod(a):
     fejlec = f'[{a.author} {time.strftime("%Y-%m-%d %H:%M", time.localtime(now))}, rendszerora]'
     tartalom = f'{fejlec}\n{text}'
     if a.dry_run:
+        # B) TOKEN-KAPU A DRY-RUN AGON IS (Samu lelete, 28122): enelkul a dry-run ZOLDET mondott
+        # token nelkul, az eles futas pedig FELBE irt volna (komment igen, uzenet nem). Ugyanaz a
+        # hianyzo mondat, amit a letrehozo ag mar megtanult (_token_kapu docstringje).
         terv = (', '.join(f'{k}: {str(elotte[k])[:57]} -> {str(v)[:57]}' for k, v in valtozik.items()) or 'nincs')
         print(f'DRY-RUN OK (komment-mod, DB: {DB}): kartya letezik ({card}), kapuk atmentek.\n'
               f'  fejlec: {fejlec} | szoveg {len(text)} kar | ertesites: '
@@ -619,9 +653,9 @@ def komment_mod(a):
     # kapu fent kiszamolt (_ertesitendo) -- NEM ujraszarmaztatjuk. Ha ket helyen szarmaztatnank,
     # a kapu panaszkodhatna az egyik nevre, mikozben az uzenet egy masikhoz megy, es a teszt
     # mindkettot zoldnek latna.
-    if msg:
+    if msg.strip():
         frm = (a.from_agent or a.author).strip().lower()
-        tok = _token_kapu(dry_run=False)
+        tok = _tok
         kuldott = []
         for cimzett in _ertesitendo:
             req = urllib.request.Request(API,
