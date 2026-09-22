@@ -122,4 +122,31 @@ describe('launchSecretRef: a titok fájlba megy, a parancsba csak a hivatkozás'
     // es a HELYES alaknak ott kell lennie mind a negy helyen (nem eleg, hogy a rossz eltunt)
     expect((forras.match(/launchSecretRef\(/g) ?? []).length).toBeGreaterThanOrEqual(3)
   })
+
+  it('a leállításkori takarítás MINDKÉT névsémát viszi (provider ÉS BYO)', async () => {
+    // A KET SEMAT EN OKOZTAM a ket kulon hivasi hellyel, ezert a takaritasnak kulon allitas jar:
+    // egy elotag-egyezes onmagaban a masikat NEMAN ott hagyna.
+    const { launchSecretRef, clearLaunchSecrets, LAUNCH_SECRETS_DIR } = await import('../web/agent-process.js')
+    const { existsSync: van } = await import('node:fs')
+    const provider = launchSecretRef('probaagens.DEEPSEEK_API_KEY', 'a')
+    const byo = launchSecretRef('agent-probaagens-api-key', 'b')
+    const masik = launchSecretRef('masikagens.DEEPSEEK_API_KEY', 'c')
+    const ut = (ref: string) => /\$\(cat '(.+)'\)/.exec(ref)?.[1] ?? ''
+    expect(van(ut(provider))).toBe(true)
+    expect(van(ut(byo))).toBe(true)
+
+    const torolve = clearLaunchSecrets('probaagens')
+    expect(torolve).toBe(2)
+    expect(van(ut(provider))).toBe(false)
+    expect(van(ut(byo))).toBe(false)
+    // NEGATIV KONTROLL: MAS agens titkat nem viszi el
+    expect(van(ut(masik))).toBe(true)
+    rmSync(ut(masik), { force: true })
+    expect(LAUNCH_SECRETS_DIR).toContain('.launch-secrets')
+  })
+
+  it('a takarítás hiányzó könyvtáron sem dől el (és nullát ad)', async () => {
+    const { clearLaunchSecrets } = await import('../web/agent-process.js')
+    expect(clearLaunchSecrets('nincs-ilyen-agens-soha')).toBe(0)
+  })
 })

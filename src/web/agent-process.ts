@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync } from 'node:fs'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
@@ -183,7 +183,56 @@ export const LAUNCH_SECRET_FILE_MODE = 0o600
  * string"). A szolgaltatoi kulcsok (BYO, deepseek, minimax, openrouter) voltak az egyetlen kivetelek.
  *
  * A fajl 0600, a konyvtar 0700, es az iras atomi (a tmp-fajl sem all soha 0644-en).
+ *
+ * AMI EBBOL NEM KOVETKEZIK, ES EZT KI KELL MONDANI: a kitettseg NEM SZUNT MEG, hanem ATKOLTOZOTT.
+ * Eddig a folyamatlistaban allt, amit a gep BARMELYIK usere olvashatott; mostantol egy 0600-as
+ * fajlban all, tartosan. Ez szigorubb, de nem semmi: PER-AGENS OS-USER NALUNK MEG NINCS, tehat
+ * barmelyik flotta-agens, aki shellt tud futtatni, el tudja olvasni egy MASIK agens launch-titkat.
+ * Ugyanaz az osztaly, mint a flotta OAuth-token fajlja (`store/.claude-oauth-token`), es ugyanaz
+ * zarja: az OS-user izolacio, nem egy ujabb export-alak. Aki ezt a fuggvenyt olvassa, ne vegye
+ * megoldottnak azt, ami csak SZIGORUBB lett.
+ *
+ * ES EGY UJ FUGGOSEG, amit a javitas HOZOTT LETRE (Boni lelete a review-ban): ez a kod mostantol
+ * TITKOT IR a repo alatti `store/` konyvtarba. Azt ma a `.gitignore` 17. sora zarja ki (pozitiv
+ * kontroll: ugyanazon a soron akad fenn a `store/.dashboard-token` is). Ha az a sor egyszer
+ * eltunne, a kovetkezo commit vinne a kulcsot.
  */
+/**
+ * hu: Egy agens launch-titkait torli a lemezrol (leallitaskor).
+ * <br />
+ * en: Removes an agent's launch secrets from disk (on stop).
+ *
+ * MIERT DONTES, ES NEM MULASZTAS (Marveen kikotese a #1478 review-jan): a takaritas hianya azt
+ * jelentette volna, hogy egy vaultban ROTALT kulcs REGI erteke a lemezen marad a kovetkezo
+ * inditasig, egy leallitott agens titka pedig hataridotlenul. Egy rotacio utan tovabb elo regi
+ * kulcs pont az a nyom, amit egy incidensnel keresni fogunk.
+ *
+ * KET NEVSEMAT KELL TOROLNIE, mert ket hivasi hely van: a provider-kulcs `<agens>.<SECRET_ID>`,
+ * a BYO-kulcs `agent-<agens>-api-key`. Egy takaritas, ami csak az egyik elotagra illeszt, a
+ * masikat nemán ott hagyja.
+ *
+ * AMI EZUTAN IS IGAZ: egy OSSZEOMLAS vagy kulso `kill` nem fut ezen az uton, tehat ott a fajl
+ * ott marad a kovetkezo inditasig (amikor felulirodik). Rotacio utan a HELYES LEPES az erintett
+ * agens UJRAINDITASA: az irja felul a fajlt a friss ertekkel. A torolt agens maradek fajlja
+ * kulon kartyan all (LAUNCHSECRETTAKARIT922).
+ */
+export function clearLaunchSecrets(agentName: string): number {
+  if (!existsSync(LAUNCH_SECRETS_DIR)) return 0
+  const provider = `${agentName}.`
+  const byo = `agent-${agentName}-api-key`
+  let torolve = 0
+  for (const f of readdirSync(LAUNCH_SECRETS_DIR)) {
+    if (f !== byo && !f.startsWith(provider)) continue
+    try {
+      unlinkSync(join(LAUNCH_SECRETS_DIR, f))
+      torolve += 1
+    } catch (err) {
+      logger.warn({ err, file: f }, 'launch-secret cleanup failed')
+    }
+  }
+  return torolve
+}
+
 export function launchSecretRef(secretName: string, value: string): string {
   // A `/` nem eli tul a szurest, tehat utvonal-bejaras nincs. A csupa-pont nev VISZONT elne
   // (`..` -> a szulo konyvtar), ezert azt kulon zarjuk: ez a sajat tesztem lelete volt.
@@ -2181,6 +2230,9 @@ export async function stopAgentProcess(name: string): Promise<{ ok: boolean; err
 
   try {
     runTmux(target, ['kill-session', '-t', session], { timeout: 5000 })
+    // A LAUNCH-TITKOK NEM ELIK TUL A LEALLITAST. Enelkul egy rotalt kulcs REGI erteke a lemezen
+    // maradna a kovetkezo inditasig, egy leallitott agense pedig hataridotlenul.
+    clearLaunchSecrets(name)
     await delay(2000)
     // Reap any orphaned plugin grandchild that tmux did not tear down. This is
     // a LOCAL pkill against this host's process table, so it only makes sense
