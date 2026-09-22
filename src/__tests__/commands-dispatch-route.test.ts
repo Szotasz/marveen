@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { Readable } from 'node:stream'
 import { registerCommand, clearCommandsForTest } from '../web/commands.js'
-import { dispatchForChat, tryHandleCommands } from '../web/routes/commands.js'
+import { dispatchForChat, tryHandleCommands, mainSessionFromBody } from '../web/routes/commands.js'
 import { requiresAuth, resolveAuth } from '../web/auth-gate.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -54,6 +54,42 @@ describe('dispatchForChat', () => {
     expect(await dispatchForChat('/status', '43', '42')).toEqual({ handled: false, outcome: 'not-owner', replies: [] })
     expect((await dispatchForChat('/status', '42', null)).handled).toBe(false)
     expect(runs).toBe(0)
+  })
+  // ELSOKOR922 fix-forward (3): a sub-agent's READ still dispatches (0 model
+  // tokens either way); a WRITE from a sub-agent is refused HERE, one line,
+  // without running -- the old gate lived in the Python hook and blocked
+  // every non-/usage command for a sub-agent, reads included.
+  it('a sub-agent READ dispatches and runs normally', async () => {
+    const r = await dispatchForChat('/status', '42', '42', Date.now(), false)
+    expect(r).toEqual({ handled: true, outcome: 'ran', replies: ['minden rendben'] })
+    expect(runs).toBe(1)
+  })
+  it('a sub-agent WRITE is refused, one line, and never runs', async () => {
+    registerCommand({ name: 'model', kind: 'write', description: 'valt', run: async () => { throw new Error('should not run') } })
+    const r = await dispatchForChat('/model opus', '42', '42', Date.now(), false)
+    expect(r.handled).toBe(true)
+    expect(r.outcome).toBe('sub-agent-write-refused')
+    expect(r.replies).toHaveLength(1)
+    expect(r.replies[0]).toMatch(/^\/model csak a fő chatből írható/)
+  })
+  it('the main session runs the same WRITE normally', async () => {
+    let ran = 0
+    registerCommand({ name: 'model', kind: 'write', description: 'valt', run: async () => { ran++ } })
+    const r = await dispatchForChat('/model opus', '42', '42', Date.now(), true)
+    expect(r.outcome).not.toBe('sub-agent-write-refused')
+    expect(ran).toBe(1)
+  })
+})
+
+describe('mainSessionFromBody', () => {
+  it('reads an explicit boolean', () => {
+    expect(mainSessionFromBody({ mainSession: false })).toBe(false)
+    expect(mainSessionFromBody({ mainSession: true })).toBe(true)
+  })
+  it('defaults to true when missing or non-boolean', () => {
+    expect(mainSessionFromBody({})).toBe(true)
+    expect(mainSessionFromBody({ mainSession: 'false' })).toBe(true)
+    expect(mainSessionFromBody({ mainSession: 0 })).toBe(true)
   })
 })
 

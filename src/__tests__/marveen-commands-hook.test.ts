@@ -104,7 +104,7 @@ describe('marveen-commands.py', () => {
     const r = await runHook(channel('/status'))
     expect(r.code).toBe(2)
     expect(r.stdout).toBe('')
-    expect(dispatches()[0].body).toEqual({ text: '/status', chatId: '42' })
+    expect(dispatches()[0].body).toEqual({ text: '/status', chatId: '42', mainSession: true })
     expect(sends()).toEqual([{ chat_id: '42', text: 'minden rendben' }])
   })
 
@@ -127,6 +127,45 @@ describe('marveen-commands.py', () => {
     expect(s).toHaveLength(1)
     expect(s[0].text).toMatch(/^Claude keret-allapot:\n- 5 orás: 70% van hatra/)
     expect(s[0].text).toMatch(/Token-könyvelés: 123$/)
+  })
+
+  // ELSOKOR922 fix-forward (2): the container-measured case (usage-collect.py
+  // falls back to the estimate path with no window data, HTTP 403 (env_file
+  // token) recorded in auth_error) used to render as a silent, reason-free
+  // "(nincs elerheto adat)". The quota line must now name the reason, and the
+  // token bookkeeping (the dashboard's own reply) must never be dropped.
+  it('/usage: quota unmeasurable (403 auth_error) names the reason, bookkeeping still present', async () => {
+    const usageScript = join(install, 'scripts', 'usage-collect.py')
+    const original = readFileSync(usageScript, 'utf-8')
+    writeFileSync(usageScript,
+      'import json\nprint(json.dumps({"claude": {"ok": True, "source": "estimate", "auth_error": "HTTP 403 (env_file token)"}}))\n')
+    try {
+      dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['Token-könyvelés: 456'] } })
+      const r = await runHook(channel('/usage'))
+      expect(r.code).toBe(2)
+      const s = sends()
+      expect(s).toHaveLength(1)
+      expect(s[0].text).toMatch(/^Kvóta: nem mérhető \(HTTP 403 \(env_file token\)\)\./)
+      expect(s[0].text).toMatch(/Token-könyvelés: 456$/)
+    } finally {
+      writeFileSync(usageScript, original)
+    }
+  })
+
+  it('/usage: usage-collect.py reports ok:false, quota line names the reason, bookkeeping still present', async () => {
+    const usageScript = join(install, 'scripts', 'usage-collect.py')
+    const original = readFileSync(usageScript, 'utf-8')
+    writeFileSync(usageScript,
+      'import json\nprint(json.dumps({"claude": {"ok": False, "error": "boom", "source": "estimate"}}))\n')
+    try {
+      dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['Token-könyvelés: 789'] } })
+      const r = await runHook(channel('/usage'))
+      expect(r.code).toBe(2)
+      const s = sends()
+      expect(s[0].text).toBe('Kvóta: nem mérhető (boom).\n\nToken-könyvelés: 789')
+    } finally {
+      writeFileSync(usageScript, original)
+    }
   })
 
   it('handled:false (a non-registry /word): exit 0, empty stdout, nothing sent', async () => {
@@ -175,15 +214,28 @@ describe('marveen-commands.py', () => {
     expect(sends()).toHaveLength(0)
   })
 
-  it('a sub-agent session: only /usage is answered, every other command goes to its model', async () => {
+  it('a sub-agent session: every command still dispatches, mainSession:false in the body', async () => {
+    // ELSOKOR922 fix-forward (3): the hook no longer decides read/write
+    // itself -- it always dispatches and tells the server which session it
+    // is; the server (dispatchForChat, commands-dispatch-route.test.ts)
+    // decides whether a WRITE runs or gets refused. This test only checks
+    // the hook's own contract: it dispatches (0 model tokens) and relays
+    // whatever the (stubbed) server answers, for reads and writes alike.
     dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['ok'] } })
     let r = await runHook(channel('/status'), base, 'nova')
-    expect(r.code).toBe(0)
-    expect(dispatches()).toHaveLength(0)
-    expect(sends()).toHaveLength(0)
+    expect(r.code).toBe(2)
+    expect(dispatches()[0].body).toEqual({ text: '/status', chatId: '42', mainSession: false })
+    expect(sends()).toHaveLength(1)
     r = await runHook(channel('/usage'), base, 'nova')
     expect(r.code).toBe(2)
-    expect(sends()).toHaveLength(1)
+    expect(dispatches()[1].body).toEqual({ text: '/usage', chatId: '42', mainSession: false })
+    expect(sends()).toHaveLength(2)
+  })
+  it('the main session dispatches with mainSession:true', async () => {
+    dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['ok'] } })
+    const r = await runHook(channel('/status'), base, 'marveen')
+    expect(r.code).toBe(2)
+    expect(dispatches()[0].body).toEqual({ text: '/status', chatId: '42', mainSession: true })
   })
 
   it('clears a telegram_progress placeholder posted for the blocked turn', async () => {

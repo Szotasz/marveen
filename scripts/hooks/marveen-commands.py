@@ -13,10 +13,15 @@ Absorbs the old claude-usage.py: `/usage` answers with the Claude quota
 (scripts/usage-collect.py) AND Marveen's own token bookkeeping (the
 registry's /usage) in one reply.
 
-Main session: every registry command. A sub-agent session (the hook is
-seeded fleet-wide, like claude-usage.py was) answers only /usage, on its own
-bot: the other commands act on or describe the MAIN session (/model, /context
-clear, ...), and running them from another agent's chat would be a surprise.
+Main session: every registry command, read or write. A sub-agent session
+(the hook is seeded fleet-wide, like claude-usage.py was) gets every READ
+command too -- 0 model tokens either way -- but a WRITE (/model, /context
+clear, ...) is refused with a one-line reply instead of running: those act
+on or describe the MAIN session, and running them from another agent's chat
+would be a surprise. The read/write split lives server-side (the registry's
+`kind`, src/web/commands.ts) -- this hook only tells the server which
+session it is (`mainSession` on the dispatch call) and relays whatever
+comes back.
 
 Every other message passes through untouched: exit 0, no stdout, fast.
 That includes a slash word the registry does not know (/kanban, /ujchat, ...)
@@ -176,8 +181,16 @@ def send(sd, tok, chat_id, text):
             log(sd, f"sendMessage failed: {type(e).__name__}")
 
 
-def dispatch(text, chat_id):
-    """POST the command to the dashboard. Returns (result dict, None) or (None, why)."""
+def dispatch(text, chat_id, main_session):
+    """POST the command to the dashboard. Returns (result dict, None) or (None, why).
+
+    `main_session` rides along so the server can refuse a WRITE resolved for
+    a sub-agent caller (fix-forward (3): the old gate lived only here and
+    skipped ALL non-/usage commands for a sub-agent, reads included, so a
+    sub-agent's /status went to the model at full token cost instead of the
+    free hook round trip. Reads are safe to dispatch from anywhere; only
+    writes need the session check, and the server is the one place that
+    actually knows each command's kind."""
     try:
         with open(os.path.join(REPO_ROOT, "store", ".dashboard-token"), encoding="utf-8") as f:
             dtok = f.read().strip()
@@ -187,7 +200,7 @@ def dispatch(text, chat_id):
         return None, "nincs dashboard-token"
     req = urllib.request.Request(
         api_base() + "/api/commands/dispatch",
-        data=json.dumps({"text": text, "chatId": chat_id}).encode(),
+        data=json.dumps({"text": text, "chatId": chat_id, "mainSession": main_session}).encode(),
         method="POST",
         headers={"Authorization": "Bearer " + dtok, "Content-Type": "application/json"},
     )
@@ -210,9 +223,16 @@ def fmt_reset(ts):
 
 
 def format_usage(snapshot):
+    # ELSOKOR922 D-4 fix-forward: a 403/hianyzo-token eset (a konteneres
+    # telepitesen mert eset: "HTTP 403 (env_file token)") korabban csendben
+    # esett vissza becslesre, es ha a becsleshez sem volt adat, a valasz
+    # nemtmondo "(nincs elerheto adat)" lett -- az auth_error mezo megvolt a
+    # snapshotban, csak sosem olvastuk ki. A kvota-sor most VAGY a tenyleges
+    # ablak-adatot mutatja, VAGY a konkret okot -- ures valasz sosem.
     c = snapshot.get("claude") or {}
     if not c.get("ok"):
-        return f"Nem sikerult lekerni a Claude keret-allapotot (forras: {c.get('source', 'ismeretlen')})."
+        reason = c.get("error") or c.get("auth_error") or c.get("source") or "ismeretlen hiba"
+        return f"Kvóta: nem mérhető ({reason})."
     w = c.get("windows") or {}
     lines = ["Claude keret-allapot:"]
     for key, label in WINDOW_LABELS:
@@ -225,7 +245,8 @@ def format_usage(snapshot):
             f"megujul: {fmt_reset(win.get('resets_at'))}"
         )
     if len(lines) == 1:
-        lines.append("(nincs elerheto adat)")
+        reason = c.get("auth_error") or "nincs autoritatív adat, csak becslés lenne, de az sem elérhető"
+        return f"Kvóta: nem mérhető ({reason})."
     return "\n".join(lines)
 
 
@@ -268,7 +289,7 @@ def is_main_session(payload):
     try:
         return ledger_lib.agent_id_from_payload(payload) == ledger_lib.main_agent_id()
     except Exception:
-        return False  # unknown identity: only the fleet-wide /usage runs
+        return False  # unknown identity: treated as non-main, so writes get refused
 
 
 def attr(attrs, name):
@@ -300,8 +321,7 @@ def main():
     if owner is not None and chat_id != owner:
         sys.exit(0)
     name = cm.group(1).lower()
-    if name != "usage" and not is_main_session(payload):
-        sys.exit(0)
+    main_session = is_main_session(payload)
 
     sd = state_dir()
     tok = env_value(os.path.join(sd, ".env"), "TELEGRAM_BOT_TOKEN")
@@ -309,7 +329,7 @@ def main():
         log(sd, "no bot token found, letting the prompt through")
         sys.exit(0)
 
-    result, why = dispatch(body, chat_id)
+    result, why = dispatch(body, chat_id, main_session)
     if result is None:
         if name not in BUILTIN_NAMES:
             log(sd, f"/{name}: dashboard unreachable ({why}), not a builtin, passed to the model")

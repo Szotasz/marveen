@@ -46,21 +46,48 @@ export function agentIdentityOf(req: http.IncomingMessage, body: unknown, auth: 
   return null
 }
 
+// The hook's own identity claim, not an "agent identity" in the sense
+// agentIdentityOf() above refuses -- that check is about a caller
+// impersonating a fleet agent; this one is the same hook (main or
+// sub-agent) telling the server which session it runs in, so a WRITE
+// resolved for a sub-agent can be refused server-side (see dispatchForChat).
+// Missing/non-boolean defaults to true (older hook builds that predate this
+// field, or a manual call): the strict behaviour is to trust the caller,
+// not to widen the refusal to callers that never claimed anything.
+export function mainSessionFromBody(b: Record<string, unknown>): boolean {
+  return typeof b.mainSession === 'boolean' ? b.mainSession : true
+}
+
 export interface DispatchResult {
   handled: boolean
-  outcome: DispatchOutcome | 'not-owner'
+  outcome: DispatchOutcome | 'not-owner' | 'sub-agent-write-refused'
   replies: string[]
 }
 
 // The route's decision, separated from HTTP for the tests. `ownerChatId` is
 // the owner chat this install resolves (null = none configured: nothing runs).
-export async function dispatchForChat(text: string, chatId: string, ownerChatId: string | null, now = Date.now()): Promise<DispatchResult> {
+// `mainSession` is the caller's own identity claim (the hook knows which
+// session it runs in; the server does not) -- a WRITE resolved for a
+// non-main caller is refused HERE, one line, without ever running it. A
+// sub-agent's READ commands go through unchanged (ELSOKOR922 fix-forward
+// (3): the old gate lived in the Python hook and blocked every non-/usage
+// command for a sub-agent, reads included, sending them to the model at
+// full token cost instead of the free hook round trip).
+export async function dispatchForChat(text: string, chatId: string, ownerChatId: string | null, now = Date.now(), mainSession = true): Promise<DispatchResult> {
   const parsed = parseCommand(text)
-  if (!parsed || !resolveCommand(parsed.name, parsed.args)) {
+  const spec = parsed ? resolveCommand(parsed.name, parsed.args) : null
+  if (!parsed || !spec) {
     return { handled: false, outcome: parsed ? 'unknown' : 'not-command', replies: [] }
   }
   if (!ownerChatId || chatId !== ownerChatId) {
     return { handled: false, outcome: 'not-owner', replies: [] }
+  }
+  if (spec.kind === 'write' && !mainSession) {
+    return {
+      handled: true,
+      outcome: 'sub-agent-write-refused',
+      replies: [`/${spec.name} csak a fő chatből írható; ez a parancs mást állítana, és ez a session nem a fő session.`],
+    }
   }
   const replies: string[] = []
   const outcome = await dispatchCommand(text, {
@@ -98,11 +125,12 @@ export async function tryHandleCommands(ctx: RouteContext): Promise<boolean> {
   const b = (body ?? {}) as Record<string, unknown>
   const text = typeof b.text === 'string' ? b.text : ''
   const chatId = typeof b.chatId === 'string' || typeof b.chatId === 'number' ? String(b.chatId) : ''
+  const mainSession = mainSessionFromBody(b)
   if (!text || !chatId) {
     json(res, { error: 'text and chatId are required' }, 400)
     return true
   }
-  const result = await dispatchForChat(text, chatId, resolveOwnerChatId())
+  const result = await dispatchForChat(text, chatId, resolveOwnerChatId(), Date.now(), mainSession)
   if (result.handled) logger.info({ command: parseCommand(text)?.name, outcome: result.outcome }, 'commands: dispatched')
   else if (result.outcome === 'not-owner') logger.warn({ chatId }, 'commands: registry command from a non-owner chat, passed to the model')
   json(res, result)
