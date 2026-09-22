@@ -114,6 +114,48 @@ export function resolveChoice(arg: string, list: ChoiceList): ModelChoice | null
   return list.choices.find(c => c.name.toLowerCase() === a) ?? list.choices.find(c => c.id.toLowerCase() === a) ?? null
 }
 
+export interface ModelArgs {
+  choice: ModelChoice | null
+  effort: string | null
+  hold: number | 'keep' | undefined
+}
+
+// One line, order-free: /model [<choice>] [<effort>] [<time>|keep]. The three
+// parts cannot be confused -- a choice comes from the list, an effort from the
+// fixed level set, a time is 4h / 30m / 90 / keep -- so `/model opus low 4m`,
+// `/model low 5m` (effort only, on a timer) and `/model opus` all parse. The
+// separate `/model effort <level>` form is gone: nothing shipped yet
+// (ELSOKOR922 Phase 7, owner decision 2026-09-22).
+export function parseModelArgs(args: string[], list: ChoiceList): ModelArgs | string {
+  const a = args[0]?.toLowerCase() === 'set' ? args.slice(1) : args
+  if (a.length === 0) return 'Használat: /model [<választás>] [<effort>] [<idő>|keep], pl. /model opus, /model opus low 4m, /model low 5m, /model opus keep'
+  const out: ModelArgs = { choice: null, effort: null, hold: undefined }
+  for (const raw of a) {
+    const t = raw.trim().toLowerCase()
+    if ((EFFORT_LEVELS as readonly string[]).includes(t)) {
+      if (out.effort) return `Kétszer adtál meg effortot: „${raw}”.`
+      out.effort = t
+      continue
+    }
+    const choice = resolveChoice(t, list)
+    if (choice) {
+      if (out.choice) return `Kétszer adtál meg modellt: „${raw}”.`
+      out.choice = choice
+      continue
+    }
+    const hold = parseHold(t)
+    if (hold !== null && hold !== undefined) {
+      if (out.hold !== undefined) return `Kétszer adtál meg időt: „${raw}”.`
+      out.hold = hold
+      continue
+    }
+    const names = list.choices.map(c => c.name).join(', ')
+    return `Nem értem: „${raw}”. Modell: ${names}${list.fromFile ? '' : ' (a store/model-choices.json hiányzik, csak a konfigurált modell)'} · effort: ${EFFORT_LEVELS.join('|')} · idő: 4h, 30m, keep.`
+  }
+  if (!out.choice && !out.effort) return 'Nem váltottam: adj meg modellt vagy effortot, pl. /model opus 30m vagy /model low 5m.'
+  return out
+}
+
 /** '4h' | '30m' | '90' (minutes) -> minutes; 'keep' -> 'keep'; else null. */
 export function parseHold(arg: string | undefined): number | 'keep' | null | undefined {
   if (arg === undefined) return undefined
@@ -128,9 +170,14 @@ export function parseHold(arg: string | undefined): number | 'keep' | null | und
 }
 
 export interface HoldState {
-  model: string
+  /** null: an effort-only hold (the model was not switched). */
+  model: string | null
   name: string
-  revert_to: string
+  revert_to: string | null
+  /** The effort held, and what to put back -- null when it was not part of it. */
+  effort: string | null
+  /** null with a non-null `effort`: no configured base, so it cannot be put back. */
+  revert_effort: string | null
   /** epoch ms */
   until: number
   set_at: number
@@ -145,14 +192,18 @@ export function readHold(file: string): HoldRead {
   if (!existsSync(file)) return { state: null }
   try {
     const p = JSON.parse(readFileSync(file, 'utf-8')) as Partial<HoldState>
-    if (typeof p.model !== 'string' || typeof p.revert_to !== 'string' || typeof p.until !== 'number' || !Number.isFinite(p.until)) {
-      return { state: null, error: 'hiányzó vagy hibás mező (model / revert_to / until)' }
+    const hasModel = typeof p.model === 'string' && typeof p.revert_to === 'string'
+    const hasEffort = typeof p.effort === 'string'
+    if ((!hasModel && !hasEffort) || typeof p.until !== 'number' || !Number.isFinite(p.until)) {
+      return { state: null, error: 'hiányzó vagy hibás mező (model+revert_to vagy effort, és until)' }
     }
     return {
       state: {
-        model: p.model,
-        name: typeof p.name === 'string' ? p.name : p.model,
-        revert_to: p.revert_to,
+        model: hasModel ? (p.model as string) : null,
+        name: typeof p.name === 'string' ? p.name : (p.model ?? p.effort ?? ''),
+        revert_to: hasModel ? (p.revert_to as string) : null,
+        effort: hasEffort ? (p.effort as string) : null,
+        revert_effort: typeof p.revert_effort === 'string' ? p.revert_effort : null,
         until: p.until,
         set_at: typeof p.set_at === 'number' ? p.set_at : 0,
         verify_pending: p.verify_pending === true,
@@ -208,6 +259,8 @@ export interface ModelDeps {
   notify: (text: string) => Promise<boolean>
   autoCompactWindow: () => number | null
   lastSentFile: string
+  /** The effort level configured for the session, if any (the revert target). */
+  configuredEffort: () => string | null
   /** Count of "Set model to" lines in the visible pane; null = not capturable. */
   ackCount: () => number | null
   /** Pause between two ack reads (the ack wait is bounded, see sendModel). */
@@ -263,6 +316,7 @@ export const liveModelDeps: ModelDeps = {
   notify: async (text) => { await notifyChannel(text); return true },
   autoCompactWindow: readAutoCompactWindow,
   lastSentFile: MODEL_LAST_SENT_FILE,
+  configuredEffort: () => readConfiguredEffort()?.value ?? null,
   ackCount: () => countModelAcks(capturePane(mainSessionName())),
   sleep: (ms) => new Promise(r => setTimeout(r, ms)),
   scheduleExpiry: (untilMs) => scheduleHoldExpiry(untilMs),
@@ -309,8 +363,6 @@ const fail = (text: string): StepResult => ({ ok: false, text })
 const ok = (text: string): StepResult => ({ ok: true, text })
 
 export async function setModel(args: string[], deps: ModelDeps = liveModelDeps): Promise<StepResult> {
-  const a = args[0]?.toLowerCase() === 'set' ? args.slice(1) : args
-  if (a.length === 0 || a.length > 2) return fail('Használat: /model [set] <választás> [<idő>|keep], pl. /model opus, /model opus 30m, /model opus keep')
   const configured = deps.configured()
   let list: ChoiceList
   try {
@@ -318,40 +370,51 @@ export async function setModel(args: string[], deps: ModelDeps = liveModelDeps):
   } catch (err) {
     return fail(`Nem váltottam: a választék olvashatatlan (${err instanceof Error ? err.message : String(err)}).`)
   }
-  const choice = resolveChoice(a[0], list)
-  if (!choice) {
-    const names = list.choices.map(c => c.name).join(', ')
-    return fail(`Nem váltottam: „${a[0]}” nincs a választékban. Választható: ${names}${list.fromFile ? '' : ' (a store/model-choices.json hiányzik, csak a konfigurált modell)'}.`)
-  }
-  if (!isValidModelId(choice.id)) return fail(`Nem váltottam: érvénytelen modell-azonosító: ${choice.id}`)
-  const hold = parseHold(a[1])
-  if (hold === null) return fail(`Nem értem az időt: „${a[1]}”. Példa: 4h, 30m, keep.`)
+  const parsed = parseModelArgs(args, list)
+  if (typeof parsed === 'string') return fail(parsed)
+  const { choice, effort, hold } = parsed
+  if (choice && !isValidModelId(choice.id)) return fail(`Nem váltottam: érvénytelen modell-azonosító: ${choice.id}`)
   const now = deps.now()
   const verdict = deps.quiet(now)
   if (!verdict.quiet) return fail(`Nem váltottam: a session foglalt (${verdict.reason}). Mi fut: /runs`)
 
-  const acked = await sendModel(choice.id, deps)
-  const head = acked
-    ? `Átváltva: ${choice.name} = ${choice.id} (a Claude Code visszaigazolta)`
-    : `/model ${choice.id} elküldve (a Claude Code visszaigazolását nem láttam)`
-  const warn = windowWarning(choice.id, deps.autoCompactWindow())
   const lines: string[] = []
+  let acked = false
+  if (choice) {
+    acked = await sendModel(choice.id, deps)
+    lines.push(acked
+      ? `Átváltva: ${choice.name} = ${choice.id} (a Claude Code visszaigazolta)`
+      : `/model ${choice.id} elküldve (a Claude Code visszaigazolását nem láttam)`)
+  }
+  if (effort) {
+    await deps.send(`/effort ${effort}`)
+    writeEffortSent(effortSentFileFor(deps.lastSentFile), effort, now)
+    lines.push(`Effort: ${effort} elküldve (visszamérni nem tudjuk).`)
+  }
+
+  const baseEffort = deps.configuredEffort()
   if (hold === 'keep') {
-    deps.writeEnv({ MAIN_AGENT_MODEL: choice.id })
+    if (choice) deps.writeEnv({ MAIN_AGENT_MODEL: choice.id })
     clearHold(deps.holdFile)
     deps.scheduleExpiry(null)
-    lines.push(`${head}, TARTÓS: az app .env MAIN_AGENT_MODEL sora frissítve (respawn után is ez indul).`)
+    lines.push(choice
+      ? 'TARTÓS: az app .env MAIN_AGENT_MODEL sora frissítve (respawn után is ez indul).'
+      : 'A „keep” csak a modellre vonatkozik; az effortot a CLI újraindításkor elfelejti.')
   } else {
-    const minutes = hold ?? choice.defaultHoldMinutes
+    const minutes = hold ?? choice?.defaultHoldMinutes ?? DEFAULT_HOLD_MINUTES
     const until = now + minutes * 60_000
     writeHold(deps.holdFile, {
-      model: choice.id, name: choice.name, revert_to: configured, until, set_at: now,
-      verify_pending: true, blocked_since: null, block_alert_at: null,
+      model: choice?.id ?? null, name: choice?.name ?? (effort as string), revert_to: choice ? configured : null,
+      effort: effort ?? null, revert_effort: effort ? baseEffort : null,
+      until, set_at: now, verify_pending: choice !== null, blocked_since: null, block_alert_at: null,
     })
     deps.scheduleExpiry(until)
-    lines.push(`${head}, ideiglenes: ${formatSpan(minutes * 60)} (${formatDayClock(until)}-ig), utána vissza: ${configured}. A .env nem változott.`)
+    const back = [choice ? `modell: ${configured}` : null, effort ? (baseEffort ? `effort: ${baseEffort}` : 'effort: nincs beállított alapérték, kézzel állítsd vissza') : null]
+      .filter(Boolean).join(' · ')
+    lines.push(`Ideiglenes: ${formatSpan(minutes * 60)} (${formatDayClock(until)}-ig), utána vissza -- ${back}. A .env nem változott.`)
   }
-  lines.push('A következő kör modelljét is visszamérem; ha eltér, szólok.')
+  if (choice) lines.push('A következő kör modelljét is visszamérem; ha eltér, szólok.')
+  const warn = choice ? windowWarning(choice.id, deps.autoCompactWindow()) : null
   if (warn) lines.push(warn)
   return ok(lines.join('\n'))
 }
@@ -373,10 +436,25 @@ export async function modelBack(deps: ModelDeps = liveModelDeps): Promise<StepRe
     }
     return fail(`Nem váltottam: a session foglalt (${verdict.reason}). Mi fut: /runs`)
   }
-  const acked = await sendModel(base, deps)
+  const lines: string[] = []
+  // An effort-only hold has no model to put back.
+  if (!state || state.model !== null) {
+    const acked = await sendModel(base, deps)
+    lines.push(`${acked ? `Visszaváltva: ${base} (a Claude Code visszaigazolta)` : `/model ${base} elküldve (vissza az alapmodellre; a visszaigazolást nem láttam)`}${state ? ', a tartás törölve' : ''}.`)
+  }
+  // /model default puts the effort back too, when there is a base to put back.
+  if (state?.effort) {
+    if (state.revert_effort) {
+      await deps.send(`/effort ${state.revert_effort}`)
+      writeEffortSent(effortSentFileFor(deps.lastSentFile), state.revert_effort, deps.now())
+      lines.push(`Effort vissza: ${state.revert_effort} elküldve.`)
+    } else {
+      lines.push(`Az effort (${state.effort}) marad: nincs beállított alapérték, amire visszaállíthatnék.`)
+    }
+  }
   clearHold(deps.holdFile)
   deps.scheduleExpiry(null)
-  return ok(`${acked ? `Visszaváltva: ${base} (a Claude Code visszaigazolta)` : `/model ${base} elküldve (vissza az alapmodellre; a visszaigazolást nem láttam)`}${state ? ', a tartás törölve' : ''}.`)
+  return ok(lines.join('\n'))
 }
 
 // ---- /model effort ------------------------------------------------------------
@@ -397,6 +475,16 @@ export async function setEffort(level: string | undefined, deps: ModelDeps = liv
 // session resets the CLI's effort -- the reader drops a send older than the
 // session.
 export const EFFORT_SENT_FILE = join(STORE_DIR, 'main-effort-last-sent.json')
+
+/** The configured effort for the session: env first, then .claude/settings.json. */
+export function readConfiguredEffort(): { value: string; source: string } | null {
+  if (process.env.CLAUDE_CODE_EFFORT_LEVEL) return { value: process.env.CLAUDE_CODE_EFFORT_LEVEL, source: 'env CLAUDE_CODE_EFFORT_LEVEL' }
+  try {
+    const s = JSON.parse(readFileSync(join(PROJECT_ROOT, '.claude', 'settings.json'), 'utf-8'))
+    if (typeof s?.effortLevel === 'string') return { value: s.effortLevel, source: '.claude/settings.json effortLevel' }
+  } catch { /* no settings */ }
+  return null
+}
 
 export function effortSentFileFor(lastSentFile: string): string {
   return join(dirname(lastSentFile), 'main-effort-last-sent.json')
@@ -443,12 +531,12 @@ export async function sweepModelHold(nowMs: number, deps: ModelDeps = liveModelD
 
   let s = state
   let outcome: SweepOutcome = 'waiting'
-  if (s.verify_pending) {
+  if (s.verify_pending && s.model) {
     const measured = deps.measured(Math.floor(s.set_at / 1000))
     if (measured) {
       s = { ...s, verify_pending: false }
       writeHold(deps.holdFile, s)
-      if (modelsDiffer(s.model, measured)) {
+      if (modelsDiffer(s.model as string, measured)) {
         await deps.notify(`FIGYELEM: /model ${s.model} után a mért modell ${measured}. A tartás marad, lejáratkor visszaváltok: ${s.revert_to}.`)
         outcome = 'mismatch'
       } else {
@@ -466,8 +554,8 @@ export async function sweepModelHold(nowMs: number, deps: ModelDeps = liveModelD
   // the hold) and then still names the base model -- ELSOKOR922 Phase 7
   // A-smoke: a 3-minute hold "expired, base already running", cleared without
   // sending anything, and opus stayed on.
-  const measuredNow = deps.measured(Math.floor(s.set_at / 1000))
-  if (measuredNow && !modelsDiffer(s.revert_to, measuredNow)) {
+  const measuredNow = s.revert_to ? deps.measured(Math.floor(s.set_at / 1000)) : null
+  if (measuredNow && s.revert_to && !modelsDiffer(s.revert_to, measuredNow) && !s.effort) {
     // A respawn already brought the base model back: only forget the hold.
     clearHold(deps.holdFile)
     logger.info({ model: measuredNow }, 'main-model: hold expired, base model already running (respawn); state cleared')
@@ -484,12 +572,25 @@ export async function sweepModelHold(nowMs: number, deps: ModelDeps = liveModelD
     }
     return 'blocked'
   }
-  const acked = await sendModel(s.revert_to, deps)
+  const parts: string[] = []
+  if (s.model && s.revert_to) {
+    const acked = await sendModel(s.revert_to, deps)
+    parts.push(acked
+      ? `visszaváltva ${s.model} -> ${s.revert_to} (a Claude Code visszaigazolta)`
+      : `/model ${s.revert_to} elküldve (${s.model} helyett); a visszaigazolást nem láttam, a következő kör mérése mutatja`)
+  }
+  if (s.effort) {
+    if (s.revert_effort) {
+      await deps.send(`/effort ${s.revert_effort}`)
+      writeEffortSent(effortSentFileFor(deps.lastSentFile), s.revert_effort, deps.now())
+      parts.push(`effort vissza: ${s.revert_effort}`)
+    } else {
+      parts.push(`az effort (${s.effort}) marad: nincs beállított alapérték, kézzel állítsd vissza`)
+    }
+  }
   clearHold(deps.holdFile)
   deps.scheduleExpiry(null)
-  await deps.notify(acked
-    ? `A modell-tartás lejárt: visszaváltva ${s.model} -> ${s.revert_to} (a Claude Code visszaigazolta).`
-    : `A modell-tartás lejárt: /model ${s.revert_to} elküldve (${s.model} helyett); a visszaigazolást nem láttam, a következő kör mérése mutatja.`)
+  await deps.notify(`A tartás lejárt: ${parts.join(' · ')}.`)
   return 'reverted'
 }
 
@@ -501,19 +602,14 @@ export function _resetMainModelForTest(): void {
 
 export function registerModelWriteCommands(): void {
   registerCommand({
-    name: 'model', kind: 'write', usage: '/model [set] <választás> [<idő>|keep]',
-    description: 'váltás; alapból 2 óra, majd vissza; keep = tartós (.env)',
-    matches: args => args.length > 0 && !['back', 'effort'].includes(args[0].toLowerCase()),
+    name: 'model', kind: 'write', usage: `/model [<választás>] [<${EFFORT_LEVELS.join('|')}>] [<idő>|keep]`,
+    description: 'modell és/vagy effort; alapból 2 óra, majd vissza; keep = tartós (.env)',
+    matches: args => args.length > 0 && !['back', 'default'].includes(args[0].toLowerCase()),
     run: async (ctx, args) => ctx.reply((await setModel(args)).text),
   })
   registerCommand({
-    name: 'model', kind: 'write', usage: '/model back', description: 'azonnal vissza az alapmodellre',
-    matches: args => args[0]?.toLowerCase() === 'back',
+    name: 'model', kind: 'write', usage: '/model default', description: 'azonnal vissza az alapmodellre (és az alap effortra)',
+    matches: args => ['back', 'default'].includes(args[0]?.toLowerCase() ?? ''),
     run: async ctx => ctx.reply((await modelBack()).text),
-  })
-  registerCommand({
-    name: 'model', kind: 'write', usage: '/model effort <low|medium|high|xhigh|max>', description: 'effort beállítása',
-    matches: args => args[0]?.toLowerCase() === 'effort',
-    run: async (ctx, args) => ctx.reply((await setEffort(args[1])).text),
   })
 }

@@ -47,7 +47,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { listScheduledTasks, type ScheduledTask } from './scheduled-tasks-io.js'
 import { computeNextRun } from './cron.js'
 import { getTokenSummary, getModelDistribution } from './token-usage.js'
-import { registerModelWriteCommands, readModelChoices as readChoiceList, readHold, readLastSent, readEffortSent, MODEL_CHOICES_FILE, MODEL_HOLD_FILE, MODEL_LAST_SENT_FILE, EFFORT_SENT_FILE, EFFORT_LEVELS, type LastSent } from './main-model.js'
+import { registerModelWriteCommands, readModelChoices as readChoiceList, readHold, readLastSent, readEffortSent, readConfiguredEffort, MODEL_CHOICES_FILE, MODEL_HOLD_FILE, MODEL_LAST_SENT_FILE, EFFORT_SENT_FILE, EFFORT_LEVELS, type LastSent } from './main-model.js'
 import { contextClear } from './session-control.js'
 
 function clip(s: string, n: number): string {
@@ -74,15 +74,6 @@ async function statusText(): Promise<string> {
 }
 
 // ---- /model (status) --------------------------------------------------------
-
-function readEffortSetting(): { value: string; source: string } | null {
-  if (process.env.CLAUDE_CODE_EFFORT_LEVEL) return { value: process.env.CLAUDE_CODE_EFFORT_LEVEL, source: 'env CLAUDE_CODE_EFFORT_LEVEL' }
-  try {
-    const s = JSON.parse(readFileSync(join(PROJECT_ROOT, '.claude', 'settings.json'), 'utf-8'))
-    if (typeof s?.effortLevel === 'string') return { value: s.effortLevel, source: '.claude/settings.json effortLevel' }
-  } catch { /* no settings */ }
-  return null
-}
 
 // A /model effort sent in this session wins over the configured default: the
 // CLI takes it at once, and the transcript never carries it, so the status
@@ -141,11 +132,14 @@ export function modelStatusText(): string {
   lines.push(`Beállítva:   ${conf.model} (${conf.source})`)
   if (m.warn) lines.push(m.warn)
   const since = getAgentRunningSince(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION)
-  lines.push(effortLine(readEffortSetting(), readEffortSent(EFFORT_SENT_FILE, since === null ? null : since * 1000)))
+  lines.push(effortLine(readConfiguredEffort(), readEffortSent(EFFORT_SENT_FILE, since === null ? null : since * 1000)))
   const hold = h.error
     ? notMeasurable(`a main-model-hold.json olvashatatlan: ${h.error}`)
     : h.state
-      ? `${h.state.model} eddig: ${formatDayClock(h.state.until)}, utána vissza: ${h.state.revert_to}${h.state.verify_pending ? ' (a váltás még nincs visszamérve)' : ''}`
+      ? `${[h.state.model, h.state.effort ? `effort ${h.state.effort}` : null].filter(Boolean).join(' + ')}`
+        + ` eddig: ${formatDayClock(h.state.until)}, utána vissza: `
+        + `${[h.state.revert_to, h.state.effort ? (h.state.revert_effort ? `effort ${h.state.revert_effort}` : 'effort: nincs alapérték, kézi') : null].filter(Boolean).join(' + ')}`
+        + `${h.state.verify_pending ? ' (a váltás még nincs visszamérve)' : ''}`
       : 'nincs'
   lines.push(`Tartás:      ${hold}`)
   let choices: string
@@ -161,8 +155,8 @@ export function modelStatusText(): string {
   // ELSOKOR922 Phase 7 A-smoke, tulajdonosi visszajelzés (2026-09-22): a
   // sima /model státusz nem mondta meg, HOGYAN kell váltani -- a szintaxis
   // csak a /help-ben (a registry `usage` mezőjében) volt látható, itt nem.
-  lines.push('Váltás: /model <választás> [<idő>|keep], pl. /model opus 30m')
-  lines.push(`Effort: /model effort <${EFFORT_LEVELS.join('|')}>, pl. /model effort high`)
+  lines.push(`Váltás: /model [<választás>] [<${EFFORT_LEVELS.join('|')}>] [<idő>|keep] · pl. /model opus 30m, /model opus low 4m, /model low 5m, /model opus keep`)
+  lines.push('Vissza az alapra: /model default')
   return lines.join('\n')
 }
 
