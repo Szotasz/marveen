@@ -2,14 +2,16 @@
 // same check as the dashboard (store/.dashboard-token, checkBearerToken);
 // /health is public; every /api/* path is gated; the static UI under
 // web-crm/ is served from an explicit allowlist (no path traversal by
-// construction). POST /api/leads is NOT here: that endpoint and its gate are
-// CRM1LEADKAPU922 (Geri); until it lands the path answers 404 with the card id.
+// construction). The lead endpoint and its gate landed with CRM1LEADKAPU922
+// (Geri): the handlers live in leads-routes.ts, framework-independent, so
+// this file only reads the request and hands over the parsed body.
 import http from 'node:http'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import { checkBearerToken } from '../web/dashboard-auth.js'
-import { json, serveFile } from '../web/http-helpers.js'
+import { json, readBody, serveFile } from '../web/http-helpers.js'
 import { CRM_TABLES } from './db.js'
+import { createLead, todayLeads } from './leads-routes.js'
 
 export interface CrmServerOptions {
   token: string
@@ -44,8 +46,35 @@ export function createCrmServer(opts: CrmServerOptions): http.Server {
         json(res, { error: 'Unauthorized' }, 401)
         return
       }
+      if (path === '/api/leads' && method === 'POST') {
+        // A TORZS HORDOZZA A SZERZOT (spec 4. szakasz, dontes 2026-09-22). NEM fejlec: a torzs
+        // kerul a nyomba. A szolgaltatas SOHA nem tolt szerzot konfigbol vagy konstansbol -- ha
+        // az `actor` hianyzik, a kapu megtagadja, nem "system" nevben ment.
+        // A torzs-hatar SZANDEKOSAN szuk (a 20 MB-os alapertelmezes egy lead-urlapnak ertelmetlen).
+        readBody(req, { maxBytes: 64 * 1024 })
+          .then((buf) => {
+            let body: Record<string, unknown>
+            try {
+              body = buf.length ? (JSON.parse(buf.toString('utf-8')) as Record<string, unknown>) : {}
+            } catch {
+              json(res, { error: 'invalid JSON body' }, 400)
+              return
+            }
+            const r = createLead(crmDb, body, typeof body.actor === 'string' ? body.actor : '')
+            json(res, r.body, r.status)
+          })
+          .catch((err: Error) => {
+            json(res, { error: err.name === 'RequestBodyTooLargeError' ? 'request body too large' : 'request failed' }, 413)
+          })
+        return
+      }
+      if (path === '/api/leads/today' && method === 'GET') {
+        const r = todayLeads(crmDb)
+        json(res, r.body, r.status)
+        return
+      }
       if (path === '/api/leads' || path.startsWith('/api/leads/')) {
-        json(res, { error: `not in this build: the lead endpoint and its gate are ${LEADS_ENDPOINT_CARD}` }, 404)
+        json(res, { error: `not in this build: this lead path is not implemented (${LEADS_ENDPOINT_CARD})` }, 404)
         return
       }
       if (path === '/api/status' && method === 'GET') {

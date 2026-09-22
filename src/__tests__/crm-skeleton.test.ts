@@ -98,11 +98,60 @@ describe('http skeleton', () => {
     expect(Object.keys(body.tables).sort()).toEqual([...CRM_TABLES].sort())
     expect(body.claudeclaw).toEqual({ readonly: true, kanbanCards: 2 })
   })
-  it('the lead endpoint is absent by design and says which card owns it', async () => {
-    const r = await fetch(url('/api/leads'), { method: 'POST', headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' }, body: '{}' })
-    expect(r.status).toBe(404)
-    expect((await r.json() as { error: string }).error).toContain(LEADS_ENDPOINT_CARD)
+  // A PLACEHOLDER HELYEN ALL, ES SZANDEKOSAN CSEREL (CRM1LEADKAPU922). A vaz eredeti allitasa
+  // az volt, hogy a vegpont "absent by design ... until it lands"; most leszallt, tehat ugyanaz az
+  // allitas mar a HIANYT rogzitene keszkent. A csere ELO merest tesz a helyere: a kapu a HTTP-uton
+  // at is er, nem csak a fuggvenyhivason. A kapu reszletes esetei a crm-lead-gate.test.ts-ben
+  // allnak; itt a BEILLESZTES a merendo.
+  it('the lead endpoint is live, and the gate reaches over HTTP too', async () => {
+    const ma = Math.floor(Date.now() / 1000)
+    const torzs = {
+      actor: 'geri',
+      title: 'HTTP-uton felvett lead',
+      origin: 'referral',
+      next_step_type: 'call',
+      next_step_at: ma,
+      next_step_text: 'Visszahivom ma.',
+    }
+
+    // szerzo nelkul MEGTAGADVA, es NEM keletkezik sor
+    const nevtelen = await fetch(url('/api/leads'), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...torzs, actor: '' }),
+    })
+    expect(nevtelen.status).toBe(400)
     expect((crmDb.prepare('SELECT count(*) AS n FROM leads').get() as { n: number }).n).toBe(0)
+
+    const ok = await fetch(url('/api/leads'), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(torzs),
+    })
+    expect(ok.status).toBe(201)
+    expect((crmDb.prepare('SELECT count(*) AS n FROM leads').get() as { n: number }).n).toBe(1)
+    // a NYOMBAN a keres torzsebol jott nev all, nem konstans
+    expect((crmDb.prepare('SELECT created_by FROM leads').get() as { created_by: string }).created_by).toBe('geri')
+
+    // egy holnapi tetel ATMEGY a kapun, de a Ma nezetbe NEM kerul bele
+    const holnapi = await fetch(url('/api/leads'), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...torzs, title: 'Holnapi tetel', next_step_at: ma + 86400 }),
+    })
+    expect(holnapi.status).toBe(201)
+
+    // a Ma nezet ugyanezen a tokenen at olvashato
+    const maNezet = await fetch(url('/api/leads/today'), { headers: { Authorization: `Bearer ${TOKEN}` } })
+    expect(maNezet.status).toBe(200)
+    const maBody = await maNezet.json() as { leads: Array<{ title: string }>; sleeping: { count: number } }
+    expect(maBody.leads.map((l) => l.title)).toEqual(['HTTP-uton felvett lead'])
+    expect(maBody.sleeping.count).toBe(0)
+
+    // ami NEM szallt le, tovabbra is 404, es megnevezi a kartyat
+    const ismeretlen = await fetch(url('/api/leads/9999/postpone'), { method: 'POST', headers: { Authorization: `Bearer ${TOKEN}` } })
+    expect(ismeretlen.status).toBe(404)
+    expect((await ismeretlen.json() as { error: string }).error).toContain(LEADS_ENDPOINT_CARD)
   })
   it('serves the four screens and states what the thread view cannot show', async () => {
     const r = await fetch(url('/'))
