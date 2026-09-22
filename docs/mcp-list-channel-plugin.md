@@ -64,6 +64,29 @@ The following MCP servers are configured but failed to connect -- plugin:telegra
 idején erre nem került sor. A bejövő ág halálát a külső beküldő mérte a saját telepítésén; mi a
 tool- és plugin-oldalt reprodukáltuk. A két állítás nem mosható össze.
 
+## KI SZÁMÍT "csatornát birtokló session"-nek (2026-09-22, mérve, Boni cáfolata)
+
+**Nem csak a fő agens.** Ez a dokumentum eddig hallgatólagosan a fő channels-agentről szólt, és ebből
+2026-09-22-én egy rossz állítást vezettem le: azt mondtam egy flotta-sub-agentnek (Boni), hogy a
+korlát rá nem vonatkozik, mert "az ő sessionje nem birtokol csatornát".
+
+**Ő megmérte, és tévedtem:** a Telegram plugin eszközei (`mcp__plugin_telegram_telegram__reply`,
+`react`) OTT VANNAK az ő toolsetjében, ToolSearch-csel visszaigazolva, és az egyik ütemezett
+feladata szó szerint azt írja elő, hogy a SAJÁT reply tooljával küldjön a gazdának. Tehát az ő
+sessionje is birtokol csatornát, és a korlát rá is áll.
+
+**A HELYES PRÓBA, mielőtt bárkinek azt mondod, hogy rá nem vonatkozik:** nem az agens szerepe dönt
+(fő agens kontra sub-agent), hanem hogy a plugin eszközei benne vannak-e az ADOTT session
+toolsetjében. Ezt ToolSearch-csel vagy a session eszközlistájából lehet megnézni, és a kérdés egy
+lekérdezés, nem levezetés.
+
+**ÉS A KOCKÁZAT ASZIMMETRIÁJA DÖNT, NEM A FORMA:** ugyanabban a körben felmerült a session-belső
+`/mcp` slash-parancs is, mint a CLI-hívás "másik felülete". Boni nem próbálta ki, és helyesen:
+a várható haszon nulla volt (egy restart két percen belül jött és ugyanazt oldotta volna meg),
+a lefelé mutató kockázat viszont a saját Telegram-ága, és **a dokumentált hiba CSENDES** -- a
+parancs `Connected`-et ír és nullával tér vissza, miközben a plugin meghal. Nulla várható haszon
+mellett bármekkora kockázat rossz csere.
+
 ## Amit ebből NE olvass ki
 
 Nem tiltjuk a `claude mcp list`-et. Hasznos diagnosztika, és csatorna nélküli sessionben nincs mit
