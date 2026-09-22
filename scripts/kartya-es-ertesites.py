@@ -138,7 +138,31 @@ def _token_kapu(dry_run, elozmeny=None):
     return open(tokpath).read().strip()
 
 
-FLEET = {'samu','zara','boni','iris','dani','geri','deeper','qwen','mira','tomi','jumanji','hidli'}
+# A FLOTTA: akinek a kartyajarol ERTESITES jar, mert agens-sessionje van, es az inter-agent uzenet
+# tenylegesen kezbesitheto neki.
+#
+# A KOORDINATOR (marveen) 2026-09-22 OTA BENNE VAN (FLEETKIVETEL922). Korabban kimaradt, es a
+# kihagyas a KAPUT tette dekoracciova: merve a 30 napos ablakon (kanban_comments JOIN kanban_cards,
+# a szerzo flotta-agens es nem a felelos), a cel-forgalom igy oszlott meg:
+#     marveen kartyaira 1003 (51%)  <- a kapu ATENGEDTE
+#     FLEET kartyaira    656 (33%)  <- a kapu megallt
+#     egyeb/kulso        320 (16%)  <- szandekosan atengedi
+# Vagyis a legnagyobb egyetlen celcsoport a kivetelben allt: a kapu a cel-forgalom egyharmadat
+# fedte. (Ketten, kulon mertuk: Marveen 1003/656/315, Geri 1003/656/320 -- az elteres a RELATIV
+# 30 napos ablak csuszasa a ket futas kozott, nem ket muszer kulonbsege.)
+#
+# A KIVETEL LATSZOLAG JO INDOKA -- "a fo-agens ugyis latja a tablat" -- MERHETO ESEMENYEN BUKOTT EL:
+# a fo-agens kontextusa 92%-on ujraindult (context-guard), es a kontextusba kerulo kanban-blokk a
+# kartya-ALLAPOTOT viszi, nem a KOMMENT-TORZSEKET. Egy restart-ablakban eppen a kartyara irt komment
+# az, amit nem lat.
+#
+# A GAZDA (szabolcs) SZANDEKOSAN KINT MARAD, es ez nem feledekenyseg: neki nincs agens-sessionje, az
+# inter-agent uzenet szerkezetileg NEM kezbesitheto (GAZDAUZENET921: 19 failed / 0 delivered a teljes
+# tortenetben). Merve ugyanabban az ablakban: 251 komment megy gazda-felelosu kartyara. Ha a kapu
+# rajuk is allna, 251 esetben olyat kovetelne, amit teljesiteni sem lehet -- a gazdahoz Telegramon
+# kell szolni, nem uzenetsoron.
+FLEET = {'samu','zara','boni','iris','dani','geri','deeper','qwen','mira','tomi','jumanji','hidli',
+         'marveen'}
 COORDINATOR = 'marveen'
 GAZDA = 'szabolcs'
 # Ismert FELELOS-nevek. NEM zart halmaz: a tablan 2026-09-06-an 40 kulonbozo felelos allt, es a
