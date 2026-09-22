@@ -182,11 +182,25 @@ def main():
     # scripts/agent-msg-send.sh-ra mutatott, ami CSAK a gazda gepen letezik (untracked), tehat
     # minden mas telepitesen egy nem letezo parancsot ajanlott volna. Ezt a suite most MERI:
     # nem eleg, hogy a fajl ott van a fejlesztoi gepen, a REPONAK kell hordoznia.
+    #
+    # KET MUSZER, ES KIMONDJUK, MELYIK FUTOTT (Samu eszrevetele, 28109): a git-index kerdezese egy
+    # GIT NELKULI masolaton (tarball-telepites) nem az untracked-nevet merne, hanem a git hianyat,
+    # es pirosat adna rossz okbol. Ahol van git, a KOVETETTSEG a szigorubb meres; ahol nincs, ott a
+    # kerdes ugyis az, hogy a parancs OTT VAN-E a telepitesben -- azt merjuk, es megnevezzuk.
     import subprocess as _sp
-    _ls = _sp.run(['git', 'ls-files', '--error-unmatch', 'scripts/agent-msg.sh'],
-                  cwd=ROOT, capture_output=True, text=True)
-    check('7b a megtagadasban ajanlott helper a repoban van (nem csak a gazda gepen)',
-          _ls.returncode == 0, _ls.stderr.strip())
+    _HELPER = 'scripts/agent-msg.sh'
+    _git = _sp.run(['git', 'rev-parse', '--git-dir'], cwd=ROOT, capture_output=True, text=True)
+    if _git.returncode == 0:
+        _ls = _sp.run(['git', 'ls-files', '--error-unmatch', _HELPER],
+                      cwd=ROOT, capture_output=True, text=True)
+        check('7b a megtagadasban ajanlott helper a repoban van, git-index szerint (nem csak a gazda gepen)',
+              _ls.returncode == 0, _ls.stderr.strip())
+    else:
+        # Nem skip: a git hianya nem teszi merhetetlenne a kerdest, csak gyengebbe a muszert.
+        check('7b (git-index nelkul) a megnevezett helper OTT VAN a telepitesben',
+              os.path.exists(os.path.join(ROOT, _HELPER)),
+              'nincs git index, es a fajl sincs: ' + _HELPER)
+        print('      (muszer: git-index nem elerheto, ezert a FAJL letezeset mertuk)')
 
     # 8. NYOM A KARTYAN: a trace-komment megnevezi a msg-id-ket ES a cimzetteket.
     torol_uzenetek()
