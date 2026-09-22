@@ -171,6 +171,18 @@ describe('ébresztés-típus: az "ügyfél későbbre kérte" eset (döntés 202
     expect(createLead(db, { ...ALAP, next_step_type: 'wakeup', next_step_at: nap(366) }, 'geri', MOST).status).toBe(422)
   })
 
+  // SAMU KERTE EZT A KET PONTOS ESETET a review-receptjebe (28257). A 365/366-os hataresetem a
+  // felso elt meri, ezek pedig a VARHATO hasznalatot: fel ev igen, tizenharom honap nem.
+  it('Samu esete: wakeup + 6 hónap -> mentés', () => {
+    expect(createLead(db, { ...ALAP, next_step_type: 'wakeup', next_step_at: nap(182) }, 'geri', MOST).status).toBe(201)
+  })
+
+  it('Samu esete: wakeup + 13 hónap -> megtagadás (a felső határ itt is zárt)', () => {
+    const r = createLead(db, { ...ALAP, next_step_type: 'wakeup', next_step_at: nap(395) }, 'geri', MOST)
+    expect(r.status).toBe(422)
+    expect(r.body.missing).toEqual(['next_step_at'])
+  })
+
   it('az alvó tétel NEM jelenik meg a Ma nézet listájában', () => {
     createLead(db, { ...ALAP, title: 'Novemberi', next_step_type: 'wakeup', next_step_at: nap(60) }, 'geri', MOST)
     createLead(db, { ...ALAP, title: 'Mai', next_step_at: nap(0) }, 'geri', MOST)
