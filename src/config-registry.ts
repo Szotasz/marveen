@@ -516,7 +516,6 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: true,
     valueSet: [
-      'claude-opus-5-5',
       'claude-opus-5',
       'claude-opus-5[1m]',
       'claude-sonnet-5',

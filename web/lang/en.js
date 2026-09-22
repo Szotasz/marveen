@@ -1039,7 +1039,6 @@ window._i18n.en = {
   'agents.model.inherit':        'Inherited (default)',
   'agents.model.fable51':       'Fable 5.1 (newest Fable)',
   'agents.model.fable5':         'Fable 5',
-  'agents.model.opus55':        'Opus 5.5 (newest Opus)',
   'agents.model.opus5':          'Opus 5',
   'agents.model.opus48':         'Opus 4.8 (1M context, default)',
   'agents.model.sonnet5':        'Sonnet 5 (newest Sonnet, near-Opus)',
