@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { spawn } from 'node:child_process'
 import http from 'node:http'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { AddressInfo } from 'node:net'
@@ -45,7 +45,8 @@ beforeAll(async () => {
         return
       }
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ ok: true, result: {} }))
+      // sendMessage answers with a message id (telegram_progress.py stores it)
+      res.end(JSON.stringify({ ok: true, result: (req.url ?? '').endsWith('/sendMessage') ? { message_id: 555 } : {} }))
     })
   })
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
@@ -274,6 +275,44 @@ describe('marveen-commands.py', () => {
     dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['ok'] } })
     await runHook(channel('/help'))
     expect(calls.some(c => c.path === '/botbot-tok/deleteMessage' && c.body.message_id === 99)).toBe(true)
+  })
+
+  // ELSOKOR922 Phase 7 A-smoke: "Dolgozom rajta..." hung after a /model. The
+  // two UserPromptSubmit hooks run in parallel; when this one cleared BEFORE
+  // telegram_progress.py stored its placeholder, nothing was left to delete it.
+  // The handshake: this hook leaves a marker; progress looks for it after it
+  // stores, and removes its own placeholder.
+  it('placeholder stored AFTER the command hook cleared: telegram_progress.py removes it via the marker', async () => {
+    dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['ok'] } })
+    await runHook(channel('/status', 'source="plugin:telegram:telegram" chat_id="42" message_id="31" user="owner"'))
+    expect(existsSync(join(stateDir, 'progress', 'cmd-sid-1-31.handled'))).toBe(true)
+    calls = []
+    const code = await new Promise<number | null>((resolve) => {
+      const p = spawn('python3', [join(ROOT, 'scripts', 'hooks', 'telegram_progress.py')], {
+        env: { ...process.env, TELEGRAM_STATE_DIR: stateDir, TELEGRAM_API_BASE: base },
+      })
+      p.on('close', c => resolve(c))
+      p.stdin.end(JSON.stringify({ prompt: channel('/status', 'source="plugin:telegram:telegram" chat_id="42" message_id="31" user="owner"'), session_id: 'sid-1' }))
+    })
+    expect(code).toBe(0)
+    expect(calls.some(c => c.path === '/botbot-tok/sendMessage')).toBe(true)
+    expect(calls.some(c => c.path === '/botbot-tok/deleteMessage' && c.body.message_id === 555)).toBe(true)
+    expect(existsSync(join(stateDir, 'progress', 'sid-1.json'))).toBe(false)
+    expect(existsSync(join(stateDir, 'progress', 'cmd-sid-1-31.handled'))).toBe(false)
+  })
+
+  it('an ordinary turn (no marker): telegram_progress.py keeps its placeholder for the Stop hook', async () => {
+    calls = []
+    await new Promise<void>((resolve) => {
+      const p = spawn('python3', [join(ROOT, 'scripts', 'hooks', 'telegram_progress.py')], {
+        env: { ...process.env, TELEGRAM_STATE_DIR: stateDir, TELEGRAM_API_BASE: base },
+      })
+      p.on('close', () => resolve())
+      p.stdin.end(JSON.stringify({ prompt: channel('mesélj', 'source="plugin:telegram:telegram" chat_id="42" message_id="32" user="owner"'), session_id: 'sid-2' }))
+    })
+    expect(calls.some(c => c.path === '/botbot-tok/deleteMessage')).toBe(false)
+    expect(JSON.parse(readFileSync(join(stateDir, 'progress', 'sid-2.json'), 'utf-8'))).toEqual([{ chat_id: '42', message_id: 555, src_mid: '32' }])
+    rmSync(join(stateDir, 'progress', 'sid-2.json'), { force: true })
   })
 
   it('BUILTIN_NAMES (the dashboard-down fallback) matches the registry builtins', () => {

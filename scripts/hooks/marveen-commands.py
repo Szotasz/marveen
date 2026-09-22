@@ -291,10 +291,35 @@ def quota_text(sd):
         return USAGE_ERROR_REPLY
 
 
-def clear_stray_placeholder(sd, tok, sid):
+HANDLED_MARKER_MAX_AGE = 600
+
+
+def mark_handled(sd, sid, src_mid):
+    """Handshake with telegram_progress.py (a parallel UserPromptSubmit hook):
+    it posts the placeholder, stores it, and only THEN looks for this marker.
+    Written before the clear below, so either the clear finds its stored entry
+    or it finds this marker -- no order of the two hooks leaves the placeholder
+    behind (ELSOKOR922 Phase 7 A-smoke: "Dolgozom rajta..." hung after /model)."""
+    pdir = os.path.join(sd, "progress")
+    try:
+        os.makedirs(pdir, exist_ok=True)
+        now = time.time()
+        for name in os.listdir(pdir):
+            if name.startswith("cmd-") and name.endswith(".handled"):
+                p = os.path.join(pdir, name)
+                if now - os.path.getmtime(p) > HANDLED_MARKER_MAX_AGE:
+                    os.remove(p)
+        if src_mid:
+            open(os.path.join(pdir, f"cmd-{sid}-{src_mid}.handled"), "w").close()
+    except Exception as e:
+        log(sd, f"handled marker failed: {type(e).__name__}")
+
+
+def clear_stray_placeholder(sd, tok, sid, src_mid=None):
     """telegram_progress.py may have posted a "Dolgozom rajta..." placeholder
     for this same event; its Stop-hook cleanup never fires on a blocked turn,
     so clear it here (same logic as telegram_progress_clear.py)."""
+    mark_handled(sd, sid, src_mid)
     path = os.path.join(sd, "progress", f"{sid}.json")
     try:
         pending = json.load(open(path, encoding="utf-8"))
@@ -499,7 +524,7 @@ def main():
             reply = DEFERRED_SPAWN_FAILED_REPLY.format(name=name)
             if send(sd, tok, chat_id, reply):
                 mark_answered(sd, payload, chat_id, reply)
-        clear_stray_placeholder(sd, tok, sid)
+        clear_stray_placeholder(sd, tok, sid, attr(attrs, "message_id"))
         log(sd, f"/{name} deferred until the hook exits chat={chat_id} sid={sid}")
         sys.exit(2)
     if result is None:
@@ -511,7 +536,7 @@ def main():
             reply = quota_text(sd) + "\n\n" + reply
         if send(sd, tok, chat_id, reply):
             mark_answered(sd, payload, chat_id, reply)
-        clear_stray_placeholder(sd, tok, sid)
+        clear_stray_placeholder(sd, tok, sid, attr(attrs, "message_id"))
         log(sd, f"/{name}: dashboard unreachable ({why}), error reply sent, turn blocked")
         sys.exit(2)
 
@@ -527,7 +552,7 @@ def main():
             sent_any = True
     if sent_any:
         mark_answered(sd, payload, chat_id, replies[-1])
-    clear_stray_placeholder(sd, tok, sid)
+    clear_stray_placeholder(sd, tok, sid, attr(attrs, "message_id"))
     log(sd, f"/{name} answered ({result.get('outcome')}) chat={chat_id} sid={sid}")
     sys.exit(2)  # block: the model never sees this turn
 
