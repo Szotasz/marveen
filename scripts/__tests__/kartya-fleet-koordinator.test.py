@@ -145,6 +145,20 @@ def main():
     check('3 a GAZDA kartyajan a komment tovabbra is ATMEGY (szandekos kivetel)',
           p.returncode == 0 and 'KOMMENT OK' in out, out)
     check('3 es semmi nem ment ki', cimzettek() == [], f'cimzettek={cimzettek()}')
+    # SAMU KIKOTESE (28123): a gazda-kartyan a REGI nyom az EGYETLEN jel arrol, hogy a komment nem
+    # ertesitett senkit. A suite ezert ne csak azt allitsa, hogy a marveen BEKERULT, hanem azt is,
+    # hogy a gazda-kartya KULSOKENT viselkedik, es a nyom-sor megmaradt.
+    check('3 a gazda-kartyan megmarad a regi nyom: "Ertesites: nem ment (komment-only)"',
+          'Ertesites: nem ment (komment-only)' in out, out)
+    # ELLENPROBA UGYANERRE A SOR-ALAKRA: flotta-felelosnel --msg-file-lal EZ A SOR NEM allhat ott,
+    # kulonben a nyom akkor is 'nem ment'-et mondana, amikor ment. Enelkul a fenti allitas egy
+    # olyan sztringet keresne, ami mindig ott van.
+    torol()
+    p2 = komment('KOORD922', 'Geri', port, with_msg=True)
+    out2 = p2.stdout + p2.stderr
+    check('3 ellenproba: ertesitessel a nyom-sor MAS (nem a komment-only alak)',
+          'Ertesites: nem ment (komment-only)' not in out2 and cimzettek() == ['marveen'],
+          f'cimzettek={cimzettek()} | {out2}')
 
     # 4. SAJAT KARTYA: a koordinator a sajatjara ir -- a szerzo == felelos, tehat atmegy.
     torol()

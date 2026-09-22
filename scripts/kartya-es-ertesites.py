@@ -110,7 +110,7 @@ def _db_kapu():
                  f'(gyoker: {ROOT})\nEz jellemzoen egy korabbi rossz ut-feloldas hagyta ott. Mondd ki:\n'
                  f'CLAUDECLAW_ROOT=<a fo fa> vagy KARTYA_DB=<a db utvonala>.')
     return DB
-def _token_kapu(dry_run, elozmeny=None):
+def _token_kapu(dry_run, elozmeny=None, farok=None):
     """A dashboard-token feloldasa, EGY helyen -- hogy a dry-run ES az eles ag UGYANAZT a
     kaput fussa. A ket ag CSAK a mondatban ter el, mert a KOVETKEZMENY ter el: az eles agon
     a kartya EKKOR MAR LETREJOTT (a token-kapu az 5. lepesben all, a 4. lepes irasa utan),
@@ -132,9 +132,10 @@ def _token_kapu(dry_run, elozmeny=None):
             'A KARTYA LETREJOTT, DE AZ UZENET NEM MENT KI:')
         sys.exit(f'{elozmeny} nincs dashboard-token itt:\n'
                  f'  {tokpath}\n(gyoker: {ROOT}). Mondd ki: CLAUDECLAW_ROOT=<a fo fa> vagy KARTYA_TOKEN=<token>.\n'
-                 + ('A dry-run ezert PIROS: az eles futas reszlegesen irna (kartya igen, uzenet nem).'
-                    if dry_run else
-                    'Kuldd el kezzel az uzenetet, kulonben a kartya nema marad.'))
+                 + (farok or
+                    ('A dry-run ezert PIROS: az eles futas reszlegesen irna (kartya igen, uzenet nem).'
+                     if dry_run else
+                     'Kuldd el kezzel az uzenetet, kulonben a kartya nema marad.')))
     return open(tokpath).read().strip()
 
 
@@ -627,7 +628,9 @@ def komment_mod(a):
             ' a komment SEM irodna be (a kapu az iras ELOTT all):'
             if a.dry_run else
             'MEGTAGADVA: nincs token, tehat az ERTESITES nem mehet ki, ezert a komment SEM'
-            ' irodott be (a kapu az iras ELOTT all):'))
+            ' irodott be (a kapu az iras ELOTT all):'),
+            farok=('SEMMI NEM VESZETT EL: add meg a tokent (KARTYA_TOKEN vagy CLAUDECLAW_ROOT),'
+                   ' es futtasd ujra ugyanezt a parancsot.'))
     if a.nincs_ertesites_szandekos and _ertesitendo:
         # UGYANAZ A SZIMMETRIA, MINT A --no-msg-nel: a kimondott kihagyas LATSZODJON a kimeneten,
         # kulonben maga a KAPCSOLO valik szokassá -- ugyanaz a vaksag egy lepessel arrebb.
