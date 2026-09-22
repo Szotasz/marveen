@@ -13,6 +13,7 @@
 // the generator, so the source is the only surface testable without a model.
 
 import { describe, it, expect } from 'vitest'
+import { buildEvidenceBody } from '../web/agent-scaffold.js'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -128,5 +129,56 @@ describe('evidence-rule scaffold block', () => {
   it('keeps Hungarian accents and uses no em dash, like its sibling blocks', () => {
     expect(evidenceBody).toContain('ellenőrizz')
     expect(evidenceBody).not.toContain('—')
+  })
+
+  // LEDGERFOAGENS922 (2026-09-22): the recipient-ledger hook is wired ONLY into
+  // sub-agent settings (`name !== MAIN_AGENT_ID`); the main agent's sends run
+  // through the approval gate and the copy gate, neither of which reads the
+  // ledger. Measured on the live install: the main settings carry no
+  // email-send-gate entry, the two main-agent hooks have zero ledger
+  // references. The block used to promise the SAME machine gate to the main
+  // agent, in its own instructions -- a false protection claim on the one path
+  // where the main agent writes to customers. The two audiences now get two
+  // texts, and neither may drift back.
+  describe('recipient-gate paragraph is true for BOTH audiences', () => {
+    const main = buildEvidenceBody(true)
+    const sub = buildEvidenceBody(false)
+
+    it('main agent: says the ledger is NOT its machine gate, names what gates it instead', () => {
+      expect(main).toContain('nálad NEM gépi kapu')
+      expect(main).toContain('email-approval-gate.py')
+      expect(main).toContain('outgoing-copy-gate.py')
+      expect(main).toContain('címet nem mérik a ledgerhez')
+      expect(main).toContain('ne olvasd védelemnek ott, ahol nincs')
+      expect(main).not.toContain('Amit a PreToolUse hook lát')
+      expect(main).not.toContain('ismeretlen címre nem engedi át')
+    })
+
+    it('main agent: wiring the ledger is named as a separate owner decision, not something to do alone', () => {
+      expect(main).toContain('gazda-döntés')
+      expect(main).toContain('magadtól ne kösd be')
+    })
+
+    it('sub-agent: keeps the GATESCOPE921 narrowed text unchanged', () => {
+      expect(sub).toContain('szkriptbe zárt címet')
+      expect(sub).toContain('nem a kapu megkerülése')
+      expect(sub).not.toContain('nálad NEM gépi kapu')
+    })
+
+    it('both audiences keep the ledger add command', () => {
+      for (const body of [main, sub]) expect(body).toContain('recipient-ledger.mjs')
+    })
+
+    it('both outputs keep accents and use no em dash', () => {
+      for (const body of [main, sub]) {
+        expect(body).not.toContain('\u2014')
+        expect(body).toMatch(/[áéíóöőúüű]/)
+      }
+    })
+
+    it('ensureEvidenceSection passes the main-agent flag, so the main CLAUDE.md gets the true text', () => {
+      const fn = SCAFFOLD.slice(SCAFFOLD.indexOf('export function ensureEvidenceSection('))
+      expect(fn.slice(0, 1200)).toContain('buildEvidenceBody(name === MAIN_AGENT_ID)')
+    })
   })
 })

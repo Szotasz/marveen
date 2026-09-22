@@ -1781,7 +1781,29 @@ function buildAutonomyBody(name: string): string {
 // "ezzel napok telnek el, hogyha hulyesegeket mondanak nekem, es en meg
 // elhiszem". This block is fleet-wide, not agent-specific: a guess dressed as
 // a fact costs the same wherever it comes from.
-function buildEvidenceBody(): string {
+// `isMainAgent`: the recipient-ledger hook (scripts/email-send-gate.mjs) is
+// wired ONLY into sub-agent settings (writeAgentSettingsFromProfile, guarded by
+// `name !== MAIN_AGENT_ID`); the main agent's own sends go through the
+// approval gate (scripts/hooks/email-approval-gate.py, envelope-hash approval)
+// and the copy gate (outgoing-copy-gate.py), neither of which reads the ledger.
+// Measured 2026-09-22 (LEDGERFOAGENS922): the main agent's settings carry no
+// email-send-gate entry and its two email hooks contain zero ledger references.
+// The same paragraph cannot be true for both audiences: for a sub-agent the
+// ledger IS a machine gate, for the main agent it is NOT. Wiring the ledger for
+// the main agent is a separate owner decision; this text only stops promising a
+// protection that is not there.
+export function buildEvidenceBody(isMainAgent = false): string {
+  const gateParagraphs: string[] = isMainAgent
+    ? [
+        'Kimenő levélnél a címzett-ledger (`store/verified-recipients.json`) **nálad NEM gépi kapu**: az `email-send-gate.mjs` hook csak a sub-ügynökök settingsébe van bekötve, a tiédbe nem (mérve 2026-09-22). Ami nálad fut, az a jóváhagyás-kapu (`email-approval-gate.py`: a küldés csak a boríték -- címzett, cc, bcc, tárgy, törzs -- hash-ére adott, el nem használt jóváhagyás mellett megy át) és a copy-kapu (`outgoing-copy-gate.py`). Ezek a KÜLDÉST szigorúan kapuzzák, de a **címet nem mérik a ledgerhez**: egy rossz cím pontosan úgy megy be a jóváhagyásba, ahogy te írtad. A címforrás-szabály nálad tehát szabály, nem gép -- ne olvasd védelemnek ott, ahol nincs.',
+        '',
+        'A ledger ettől még a flottáé: a sub-ügynökök küldését méri, és ha nekik kell egy cím, forrással veszed fel. A ledger bekötése a fő ügynökre külön, gazda-döntés: magadtól ne kösd be, és ne is számolj vele, amíg nincs bekötve.',
+      ]
+    : [
+        'Kimenő levélnél van gépi kapu is, de **szűkebb, mint a szabály** -- és a különbség csendes, ezért tudni kell róla. Amit a PreToolUse hook lát: a `to`/`cc`/`bcc` mezőt **hordozó** tool-hívást (küldés, piszkozat). Azt a `store/verified-recipients.json` ledgerhez méri, és ismeretlen címre nem engedi át. **Amit NEM lát: a szkriptbe zárt címet.** Ha a levelet egy futtatott szkript állítja össze (`python3 kuldes.py`), a címzett a hook elől rejtve marad; ezt a kapu forrása maga mondja ki, mert tetszőleges értelmezőkód statikus elemzése eldönthetetlen. A gépi kapu tehát a szabály EGY részét fedi le, a maradékot a szabály tartja -- **ne olvasd védelemnek ott, ahol nincs.**',
+        '',
+        'És egy következmény, ami a hiányzó ledgerből jön: amíg a `verified-recipients.json` nem létezik, a kapu fail-closed, tehát MINDEN címet hordozó küldés tiltott. Ez helyes irány, de ha egy jóváhagyott, ismétlődő feladat emiatt akad el, a helyes lépés a **cím felvétele forrással** -- nem a kapu megkerülése egy szkripttel. Ha megkerülnéd, állj meg és jelezd.',
+      ]
   return [
     '## Tények és találgatás',
     '',
@@ -1816,9 +1838,7 @@ function buildEvidenceBody(): string {
     '',
     'Ha nem találsz forrást, ez a válasz: "ezt a címet/számot nem találom sehol". Ez teljes értékű, és sokkal olcsóbb, mint egy jó levél, ami senkihez nem ér el.',
     '',
-    'Kimenő levélnél van gépi kapu is, de **szűkebb, mint a szabály** -- és a különbség csendes, ezért tudni kell róla. Amit a PreToolUse hook lát: a `to`/`cc`/`bcc` mezőt **hordozó** tool-hívást (küldés, piszkozat). Azt a `store/verified-recipients.json` ledgerhez méri, és ismeretlen címre nem engedi át. **Amit NEM lát: a szkriptbe zárt címet.** Ha a levelet egy futtatott szkript állítja össze (`python3 kuldes.py`), a címzett a hook elől rejtve marad; ezt a kapu forrása maga mondja ki, mert tetszőleges értelmezőkód statikus elemzése eldönthetetlen. A gépi kapu tehát a szabály EGY részét fedi le, a maradékot a szabály tartja -- **ne olvasd védelemnek ott, ahol nincs.**',
-    '',
-    'És egy következmény, ami a hiányzó ledgerből jön: amíg a `verified-recipients.json` nem létezik, a kapu fail-closed, tehát MINDEN címet hordozó küldés tiltott. Ez helyes irány, de ha egy jóváhagyott, ismétlődő feladat emiatt akad el, a helyes lépés a **cím felvétele forrással** -- nem a kapu megkerülése egy szkripttel. Ha megkerülnéd, állj meg és jelezd.',
+    ...gateParagraphs,
     '',
     '```bash',
     `node ${join(PROJECT_ROOT, 'scripts', 'recipient-ledger.mjs')} add <cim> --source mail:<messageId>|site:<url>|owner|crm:<ref>|order:<id>|doc:<ref> --note "<honnan>"`,
@@ -1838,7 +1858,7 @@ export function ensureEvidenceSection(name: string): void {
     : join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const block = `${EVIDENCE_BEGIN}\n${buildEvidenceBody()}\n${EVIDENCE_END}`
+  const block = `${EVIDENCE_BEGIN}\n${buildEvidenceBody(name === MAIN_AGENT_ID)}\n${EVIDENCE_END}`
 
   let existing: string
   try {
