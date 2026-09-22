@@ -103,8 +103,10 @@ a `contact_emails` egyezése alapján).
   be, és a `GET /api/messages/unthreaded` kimondja, hogy nem szálazható, amíg a küldő nem ír Message-ID-t.
 
 Végpontok (bearer): `GET /api/threads?q=<cím vagy tárgyrészlet>`, `GET /api/threads/:id`,
-`GET /api/messages/unthreaded`, `GET /api/sync/status`. **Ami NEM látszik, és a Szál nézet fejlécében
-áll:** a személyes Gmail-fiók küldöttjei és a Resend-en kimenő aiam-levelek.
+`GET /api/messages/unthreaded`, `GET /api/sync/status`. **A Szál képernyő ezekre ül** (kereső a címre vagy
+tárgyrészletre, szál-lista, idővonal be/ki iránnyal, a nem szálazható másolatok külön, a végpont mondatával);
+példaadat sehol nincs, token nélkül a listák üresek és a notice mondja meg, miért. **Ami NEM látszik, és a
+Szál nézet fejlécében áll:** a személyes Gmail-fiók küldöttjei és a Resend-en kimenő aiam-levelek.
 
 ## Amit ez az ütem NEM tartalmaz
 

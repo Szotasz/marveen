@@ -198,6 +198,22 @@ describe('actor field (decision 2026-09-22, section 4 of the breakdown)', () => 
     expect(js).not.toContain('Solymár')
     expect(js).not.toMatch(/DEMO\.leads/)
   })
+  it('the Szal view is live: the page carries the search box, the list and the unthreaded section; app.js calls the thread endpoints and ships no demo data at all', async () => {
+    const html = await (await fetch(url('/'))).text()
+    for (const id of ['szal-q', 'szal-list', 'szal-timeline', 'szal-unthreaded', 'leadek-notice']) expect(html).toContain(`id="${id}"`)
+    expect(html).toContain('élő adat (GET /api/threads)')
+    expect(html).not.toContain('ez a nézet még példaadat')
+    expect(html).toContain('A személyes Gmail-fiók küldöttjei és a Resend-en kimenő aiam-levelek most nem látszanak')
+    expect((html.match(/class="table-wrap"/g) || []).length).toBe(2)
+    const js = await (await fetch(url('/app.js'))).text()
+    expect(js).toContain("'/api/threads?q='")
+    expect(js).toContain("'/api/threads/' + id")
+    expect(js).toContain("'/api/messages/unthreaded'")
+    expect(js).not.toMatch(/\bDEMO\b/)
+    expect(js).not.toContain('pelda@example.com')
+    const css = await (await fetch(url('/style.css'))).text()
+    expect(css).toMatch(/\.table-wrap \{[^}]*overflow-x: auto/)
+  })
 })
 
 describe('port resolution', () => {

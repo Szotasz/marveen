@@ -8,7 +8,7 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">Marveen CRM <span class="tag">1. ütem, váz</span></div>
+    <div class="brand">Marveen CRM <span class="tag">1. ütem</span></div>
     <nav class="tabs" role="tablist">
       <button class="tab" data-screen="ma" aria-selected="true">Ma</button>
       <button class="tab" data-screen="leadek">Leadek</button>
@@ -58,10 +58,12 @@
         </label>
         <input id="filter-text" type="search" placeholder="keresés a címben">
       </div>
-      <table class="table">
-        <thead><tr><th>Cím</th><th>Kontakt</th><th>Eredet</th><th>Állapot</th><th>Következő lépés</th><th>Mikor</th></tr></thead>
-        <tbody id="leads-body"></tbody>
-      </table>
+      <div class="table-wrap">
+        <table class="table">
+          <thead><tr><th>Cím</th><th>Kontakt</th><th>Eredet</th><th>Állapot</th><th>Következő lépés</th><th>Mikor</th></tr></thead>
+          <tbody id="leads-body"></tbody>
+        </table>
+      </div>
     </section>
 
     <section class="screen" id="screen-felvetel" data-screen="felvetel" hidden>
@@ -89,13 +91,27 @@
 
     <section class="screen" id="screen-szal" data-screen="szal" hidden>
       <h1>Szál</h1>
-      <p class="notice" id="szal-notice">A személyes Gmail-fiók küldöttjei és a Resend-en kimenő aiam-levelek most nem látszanak. Ami látszik: az asszisztensi Gmail-fiók és a support@ IMAP levelei (a szinkron a CRM1MAILSYNC922 kártyán készül; ez a nézet még példaadat).</p>
-      <div class="thread-head">
-        <div><strong id="szal-contact">Példa Kontakt</strong> <span class="muted" id="szal-email">pelda@example.com</span></div>
-        <div class="muted" id="szal-subject">Tárgy: Marveen telepítés, időpont</div>
+      <p class="notice" id="szal-notice">A személyes Gmail-fiók küldöttjei és a Resend-en kimenő aiam-levelek most nem látszanak. Ami látszik: az asszisztensi Gmail-fiók és a support@ IMAP szinkronizált levelei, élő adat (GET /api/threads).</p>
+      <div class="filters">
+        <input id="szal-q" type="search" placeholder="keresés címre vagy tárgyrészletre">
+        <span class="muted" id="szal-count"></span>
+      </div>
+      <div class="table-wrap">
+        <table class="table" id="szal-table">
+          <thead><tr><th>Tárgy</th><th>Levelek</th><th>Kimenő</th><th>Utolsó</th></tr></thead>
+          <tbody id="szal-list"></tbody>
+        </table>
+      </div>
+      <div class="thread-head" id="szal-head" hidden>
+        <div><strong id="szal-subject"></strong></div>
+        <div class="muted" id="szal-key"></div>
       </div>
       <ol class="timeline" id="szal-timeline"></ol>
+      <h2>Nem szálazható másolatok</h2>
+      <p class="muted" id="szal-unthreaded-note"></p>
+      <ul class="rows" id="szal-unthreaded"></ul>
     </section>
+
   </main>
 
   <script src="/app.js"></script>

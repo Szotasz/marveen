@@ -51,7 +51,7 @@ export function listUnthreaded(db: Database.Database, limit = 50): ApiResult {
          FROM messages WHERE thread_id IS NULL ORDER BY sent_at DESC, id DESC LIMIT ?`,
     )
     .all(Math.max(1, Math.min(200, limit)))
-  return { status: 200, body: { messages: rows, note: 'Message-ID nelkuli masolatok (ma minden support@ Sent-masolat ilyen): nem szalazhatok, amig a kuldo nem ir Message-ID-t a kuldes elott.' } }
+  return { status: 200, body: { messages: rows, note: 'Message-ID nélküli másolatok (ma minden support@ Sent-másolat ilyen): nem szálazhatók, amíg a küldő nem ír Message-ID-t a küldés előtt.' } }
 }
 
 /** GET /api/sync/status : the state file plus live counts. */

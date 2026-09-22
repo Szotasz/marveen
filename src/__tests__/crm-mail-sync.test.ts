@@ -15,9 +15,9 @@ import Database from 'better-sqlite3'
 import { initCrmDatabase } from '../crm/db.js'
 import { deriveThreadKey, htmlToText, parseAddresses, parseReferences, type NormalizedMail } from '../crm/mail-model.js'
 import { normalizeGmail, extractBodyText, syncGmail, type GmailApi, type GmailMessage } from '../crm/gmail-sync.js'
-import { applyImapLines, applyImapDump, normalizeImap, parseDumpOutput, resolveDumpTimeoutMs, type ImapDumpLine, type ImapSyncState } from '../crm/imap-sync.js'
+import { applyImapLines, applyImapDump, normalizeImap, parseDumpOutput, resolveDumpTimeoutMs, runImapDump, type ImapDumpLine, type ImapSyncState } from '../crm/imap-sync.js'
 import { syncStatus } from '../crm/thread-routes.js'
-import { writeFileSync } from 'node:fs'
+import { writeFileSync, mkdirSync, chmodSync } from 'node:fs'
 import { createCrmServer } from '../crm/server.js'
 
 const REPO = join(fileURLToPath(import.meta.url), '..', '..', '..')
@@ -152,6 +152,7 @@ describe('thread endpoints', () => {
     expect(s.counts.unthreaded).toBe(1)
     expect(s.not_visible).toContain('Resend')
     expect((await fetch(url('/api/threads/999999'), auth)).status).toBe(404)
+    expect(((await (await fetch(url('/api/messages/unthreaded'), { headers: { Authorization: 'Bearer ' + TOKEN } })).json()) as { note: string }).note).toBe('Message-ID nélküli másolatok (ma minden support@ Sent-másolat ilyen): nem szálazhatók, amíg a küldő nem ír Message-ID-t a küldés előtt.')
   })
 })
 
@@ -221,4 +222,28 @@ describe('a cut or failed dump is applied but never reported clean (Samu review 
     expect(resolveDumpTimeoutMs('nope')).toBe(600_000)
     expect(resolveDumpTimeoutMs('0')).toBe(600_000)
   })
+})
+
+describe('end to end: a dumper that prints one line and then hangs is killed by the timeout, and the status says PARTIAL (Samu, 28431)', () => {
+  it('runImapDump reports killed=true with the partial line; applyImapDump pins the exact text', async () => {
+    const shim = join(tmp, 'shim'); mkdirSync(shim, { recursive: true })
+    const line = JSON.stringify(imapLines.filter((l) => l.mailbox === 'INBOX')[0])
+    // The stub replaces python3 on PATH: prints ONE dump line, then execs sleep so the kill closes stdout.
+    writeFileSync(join(shim, 'python3'), `#!/bin/sh\nprintf '%s\\n' '${line.replace(/'/g, "'\\''")}'\nexec sleep 30\n`)
+    chmodSync(join(shim, 'python3'), 0o755)
+    const savedPath = process.env.PATH
+    process.env.PATH = shim + ':' + (savedPath ?? '')
+    let dump
+    try { dump = await runImapDump(['INBOX'], {}, 500, 1500) } finally { process.env.PATH = savedPath }
+    expect(dump.killed).toBe(true)
+    expect(dump.code).not.toBe(0)
+    expect(dump.lines).toHaveLength(1)
+    const d2 = initCrmDatabase(join(tmp, 'e2e.db'))
+    const state: ImapSyncState = { mailboxes: ['INBOX'], last_uid: {}, last_run: null, last_stats: null, last_error: null }
+    const r = applyImapDump(d2, state, dump, NOW, 1500)
+    expect(r.rc).toBe(4)
+    expect(state.last_error).toBe('dump killed (timeout 1500 ms); 1 lines applied, the run is PARTIAL')
+    expect((d2.prepare('SELECT count(*) AS n FROM messages').get() as { n: number }).n).toBe(1)
+    d2.close()
+  }, 15_000)
 })

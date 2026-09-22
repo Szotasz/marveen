@@ -1,7 +1,8 @@
 // Marveen CRM, 1. utem (CRM1SKEL922 + the actor field, decision 2026-09-22).
 // Live: POST /api/leads (body.actor carries the author) and GET /api/leads/today.
-// Still static: the Leadek list (no list endpoint yet) and the Szal timeline
-// (CRM1MAILSYNC922). The bearer token arrives like the dashboard's: once via
+// Live too: the Szal view over the synced mail (GET /api/threads?q=,
+// /api/threads/:id, /api/messages/unthreaded; CRM1MAILSYNC922). Still static:
+// the Leadek list (no list endpoint in phase 1). The bearer token arrives like the dashboard's: once via
 // ?token=... in the URL, then from localStorage; every same-origin /api/ call
 // carries it. The service never fills the author: the "Ki vagy" field does,
 // per viewer, and the server refuses an empty one (the gate is there, the
@@ -28,14 +29,7 @@
     return fetch(path, init)
   }
 
-  // Leadek: NO demo rows. There is no list endpoint in phase 1; the table stays empty with a notice, never example data.
-  var DEMO = {
-    thread: [
-      { dir: 'in', at: '2026-09-18 09:12', from: 'pelda@example.com', text: 'Érdekelne a Marveen telepítés, mikor érnétek rá?' },
-      { dir: 'out', at: '2026-09-18 10:05', from: 'szota.szabolcs.ai@gmail.com', text: 'Jövő héten kedd vagy csütörtök délelőtt megfelel?' },
-      { dir: 'in', at: '2026-09-19 08:40', from: 'pelda@example.com', text: 'Csütörtök jó lenne, 10 órakor.' }
-    ]
-  }
+  // No demo data anywhere: every list is live or empty with a notice.
   var LABEL = {
     origin: { email: 'e-mail', telegram: 'Telegram', phone: 'telefon', meeting: 'találkozó', referral: 'ajánlás', other: 'egyéb' },
     status: { open: 'nyitott', won: 'nyert', lost: 'vesztett', parked: 'parkol' },
@@ -79,16 +73,87 @@
     var tr = document.createElement('tr'); tr.appendChild(el('td', 'muted', 'Még nincs lista-végpont: a lista üres, nem példaadat.')); body.appendChild(tr)
   }
 
-  // --- Szal: demo until CRM1MAILSYNC922 ---
-  function renderThread() {
+  // --- Szal: live over the synced mail (CRM1MAILSYNC922) ---
+  function fmtAt(epochSec) {
+    if (!epochSec) return 'ismeretlen idő'
+    var d = new Date(epochSec * 1000)
+    return fmtDay(epochSec) + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')
+  }
+  function szalAuthNotice(status) {
+    var notice = document.getElementById('szal-notice')
+    if (status === 401) { notice.textContent = 'Nincs érvényes token: nyisd meg az oldalt ?token=<dashboard token> paraméterrel. A szálak addig nem töltődnek, a lista üres, nem példaadat.'; notice.className = 'notice error'; return true }
+    return false
+  }
+  var currentThread = null
+  function renderThreadList(rows) {
+    var body = document.getElementById('szal-list'); body.innerHTML = ''
+    rows.forEach(function (t) {
+      var tr = document.createElement('tr'); tr.className = 'pick' + (currentThread === t.id ? ' picked' : ''); tr.dataset.thread = String(t.id)
+      ;[t.subject || '(tárgy nélkül)', String(t.message_count), String(t.out_count || 0), fmtAt(t.last_at)].forEach(function (v) { tr.appendChild(el('td', null, v)) })
+      tr.addEventListener('click', function () { openThread(t.id) })
+      body.appendChild(tr)
+    })
+    if (!rows.length) { var tr0 = document.createElement('tr'); tr0.appendChild(el('td', 'muted', 'Nincs szál: vagy még nem futott a szinkron, vagy a keresés nem talált.')); body.appendChild(tr0) }
+  }
+  function loadThreads() {
+    var q = document.getElementById('szal-q').value.trim()
+    var count = document.getElementById('szal-count')
+    return api('/api/threads?q=' + encodeURIComponent(q)).then(function (r) {
+      if (szalAuthNotice(r.status)) { renderThreadList([]); return }
+      if (!r.ok) throw new Error('HTTP ' + r.status)
+      return r.json().then(function (d) {
+        renderThreadList(d.threads || [])
+        count.textContent = (d.threads || []).length + ' szál' + (q ? ' a keresésre' : '') + ', ' + (d.unthreaded_messages || 0) + ' nem szálazható másolat'
+      })
+    }).catch(function (e) { count.textContent = 'A szálak nem tölthetők be: ' + e.message; renderThreadList([]) })
+  }
+  function renderTimeline(messages) {
     var ol = document.getElementById('szal-timeline'); ol.innerHTML = ''
-    DEMO.thread.forEach(function (m) {
-      var li = el('li', 'msg ' + (m.dir === 'out' ? 'out' : 'in'))
-      li.appendChild(el('div', 'meta', m.at + ' · ' + (m.dir === 'out' ? 'kimenő' : 'bejövő') + ' · ' + m.from))
-      li.appendChild(el('div', 'body', m.text))
+    messages.forEach(function (m) {
+      var li = el('li', 'msg ' + (m.direction === 'out' ? 'out' : 'in'))
+      li.appendChild(el('div', 'meta', fmtAt(m.sent_at) + ' · ' + (m.direction === 'out' ? 'kimenő' : 'bejövő') + ' · ' + (m.from_addr || '?') + ' · ' + m.source))
+      li.appendChild(el('div', 'body', m.body_text || '(üres törzs)'))
       ol.appendChild(li)
     })
+    if (!messages.length) ol.appendChild(el('li', 'muted', 'Válassz egy szálat a listából.'))
   }
+  function openThread(id) {
+    currentThread = id
+    var head = document.getElementById('szal-head')
+    return api('/api/threads/' + id).then(function (r) {
+      if (szalAuthNotice(r.status)) return
+      if (!r.ok) throw new Error('HTTP ' + r.status)
+      return r.json().then(function (d) {
+        head.hidden = false
+        document.getElementById('szal-subject').textContent = d.thread.subject || '(tárgy nélkül)'
+        document.getElementById('szal-key').textContent = 'szál-kulcs: ' + d.thread.thread_key + ' · ' + d.messages.length + ' levél'
+        renderTimeline(d.messages || [])
+        document.querySelectorAll('#szal-list tr.pick').forEach(function (tr) { tr.classList.toggle('picked', tr.dataset.thread === String(id)) })
+      })
+    }).catch(function (e) { head.hidden = false; document.getElementById('szal-subject').textContent = 'A szál nem tölthető be: ' + e.message; renderTimeline([]) })
+  }
+  function loadUnthreaded() {
+    var ul = document.getElementById('szal-unthreaded'); var note = document.getElementById('szal-unthreaded-note')
+    return api('/api/messages/unthreaded').then(function (r) {
+      if (szalAuthNotice(r.status)) return
+      if (!r.ok) throw new Error('HTTP ' + r.status)
+      return r.json().then(function (d) {
+        ul.innerHTML = ''
+        note.textContent = d.note || ''
+        ;(d.messages || []).forEach(function (m) {
+          var li = el('li', 'row')
+          li.appendChild(el('span', 'when', fmtAt(m.sent_at)))
+          li.appendChild(el('span', 'what', (m.subject || '(tárgy nélkül)')))
+          li.appendChild(el('span', 'who', (m.direction === 'out' ? 'kimenő' : 'bejövő') + ' · ' + (m.from_addr || '?') + ' -> ' + (m.to_addrs || '?') + ' · ' + m.source))
+          ul.appendChild(li)
+        })
+        if (!ul.children.length) ul.appendChild(el('li', 'muted', 'Nincs nem szálazható másolat.'))
+      })
+    }).catch(function (e) { note.textContent = 'A másolatok nem tölthetők be: ' + e.message })
+  }
+  function loadSzal() { renderTimeline([]); return Promise.all([loadThreads(), loadUnthreaded()]) }
+  var szalTimer = null
+  document.getElementById('szal-q').addEventListener('input', function () { clearTimeout(szalTimer); szalTimer = setTimeout(loadThreads, 200) })
 
   // --- actor ("Ki vagy") ---
   var actorInput = document.getElementById('actor')
@@ -146,7 +211,7 @@
     document.getElementById('status').textContent = h.ok ? ('szolgáltatás él' + (h.claudeclawReadOnly ? ', flotta-tár olvasható' : ', flotta-tár nem elérhető')) : 'szolgáltatás hiba'
   }).catch(function () { document.getElementById('status').textContent = 'szolgáltatás nem válaszol' })
 
-  renderLeads(); renderThread(); loadMa()
+  renderLeads(); loadMa(); loadSzal()
   var saved = null; try { saved = localStorage.getItem('crm.screen') } catch (e) { /* private mode */ }
   show(saved && document.querySelector('.screen[data-screen="' + saved + '"]') ? saved : 'ma')
 })()
