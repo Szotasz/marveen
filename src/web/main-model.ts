@@ -425,7 +425,12 @@ export async function sweepModelHold(nowMs: number, deps: ModelDeps = liveModelD
   }
   if (nowMs < s.until) return outcome
 
-  const measuredNow = deps.measured()
+  // Only a turn written AFTER the switch can prove a respawn put the base model
+  // back. The newest line overall may predate the switch (no turn ran during
+  // the hold) and then still names the base model -- ELSOKOR922 Phase 7
+  // A-smoke: a 3-minute hold "expired, base already running", cleared without
+  // sending anything, and opus stayed on.
+  const measuredNow = deps.measured(Math.floor(s.set_at / 1000))
   if (measuredNow && !modelsDiffer(s.revert_to, measuredNow)) {
     // A respawn already brought the base model back: only forget the hold.
     clearHold(deps.holdFile)

@@ -222,6 +222,16 @@ describe('hold sweep (CMD920 tests 7, 8)', () => {
     expect(existsSync(d.holdFile)).toBe(false)
   })
 
+  // ELSOKOR922 Phase 7 A-smoke: no turn ran during a 3-minute hold, so the
+  // newest line was the PRE-switch sonnet turn; the sweep read it as "respawn,
+  // base already running", cleared the hold without sending, and opus stayed.
+  it('no turn since the switch: a stale base-model line is NOT a respawn -- the revert is sent', async () => {
+    const d = deps({ measured: (since) => (since === undefined ? BASE : null) })
+    writeHold(d.holdFile, hold())
+    expect(await sweepModelHold(T0 + 61_000, d)).toBe('reverted')
+    expect(d.sent).toEqual([`/model ${BASE}`])
+  })
+
   it('dashboard restart during the hold: a fresh process picks the expiry up from the file', async () => {
     const first = deps()
     writeChoices()
