@@ -1,7 +1,7 @@
 // The builtin owner commands (CMD920 3.2), read side.
 //
 // Every reply is measured state with its source; what cannot be measured says
-// so. The writes of this list (/model set/back/effort, /context clear, /new,
+// so. The writes of this list (/model, /model default, /context clear, /new,
 // /clear) are registered as PLANNED here and replaced by the next release with
 // the same `usage`; the nonce writes (/runs stop, /jobs on|off|run|skip,
 // /approvals approve|reject|renew) stay planned (CMD920 2.).
@@ -83,9 +83,9 @@ export function effortLine(
   sent: { level: string; at: number } | null,
 ): string {
   const v = sent
-    ? `${sent.level} (/model effort, elküldve ${formatDayClock(sent.at)})`
+    ? `${sent.level} (elküldve ${formatDayClock(sent.at)})`
     : configured ? `${configured.value} (${configured.source})` : 'nincs beállítva (a CLI alapértéke)'
-  return `Effort:      ${v} · visszamérni nem tudjuk`
+  return `Effort: ${v} · visszamérni nem tudjuk`
 }
 
 // The "Most fut" block. A measurement is only as fresh as the last assistant
@@ -106,14 +106,14 @@ export function measuredModelLines(
     // The CLI confirmed the switch after the last measured turn: that turn's
     // model is history. Owner feedback: "Átváltva" next to a "Most fut" still
     // naming the old model read as a contradiction.
-    head.push(`Most fut:    ${lastSent.model} (váltva ${formatDayClock(lastSent.at)}, a Claude Code visszaigazolta; rajta még nem futott kör)`)
+    head.push(`Most fut: ${lastSent.model} (váltva ${formatDayClock(lastSent.at)}, a Claude Code visszaigazolta; rajta még nem futott kör)`)
   } else {
-    head.push(`Most fut:    ${measured ? `${measured.model} (utolsó kör ${formatDayClock(measured.atMs)})` : notMeasurable('nincs assistant-sor a transzkriptben')}`)
-    if (pending && lastSent) head.push(`Azóta:       /model ${lastSent.model} elküldve ${formatDayClock(lastSent.at)}, visszaigazolás nélkül; a következő kör méri`)
+    head.push(`Most fut: ${measured ? `${measured.model} (utolsó kör ${formatDayClock(measured.atMs)})` : notMeasurable('nincs assistant-sor a transzkriptben')}`)
+    if (pending && lastSent) head.push(`Azóta: /model ${lastSent.model} elküldve ${formatDayClock(lastSent.at)}, visszaigazolás nélkül; a következő kör méri`)
   }
   const expected = holdModel ?? configured
   const warn = measured && !pending && modelsDiffer(expected, measured.model)
-    ? `FIGYELEM: a futó modell eltér a ${holdModel ? 'tartásétól' : 'beállítottól'}.`
+    ? `⚠️ A futó modell eltér a ${holdModel ? 'tartásétól' : 'beállítottól'}.`
     : null
   return { head, warn }
 }
@@ -129,7 +129,7 @@ export function modelStatusText(): string {
     conf.model,
   )
   lines.push(...m.head)
-  lines.push(`Beállítva:   ${conf.model} (${conf.source})`)
+  lines.push(`Beállítva: ${conf.model} (${conf.source})`)
   if (m.warn) lines.push(m.warn)
   const since = getAgentRunningSince(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION)
   lines.push(effortLine(readConfiguredEffort(), readEffortSent(EFFORT_SENT_FILE, since === null ? null : since * 1000)))
@@ -141,13 +141,13 @@ export function modelStatusText(): string {
         + `${[h.state.revert_to, h.state.effort ? (h.state.revert_effort ? `effort ${h.state.revert_effort}` : 'effort: nincs alapérték, kézi') : null].filter(Boolean).join(' + ')}`
         + `${h.state.verify_pending ? ' (a váltás még nincs visszamérve)' : ''}`
       : 'nincs'
-  lines.push(`Tartás:      ${hold}`)
+  lines.push(`Tartás: ${hold}`)
   let choices: string
   try {
     const c = readChoiceList(MODEL_CHOICES_FILE, conf.model)
     choices = !c.fromFile
       ? `csak a konfigurált modell (${conf.model}); a store/model-choices.json hiányzik`
-      : c.choices.map(x => `${x.name} = ${x.id}${x.purpose ? ` (${x.purpose})` : ''}`).join('\n             ')
+      : '\n' + c.choices.map(x => `- ${x.name} = ${x.id}${x.purpose ? ` (${x.purpose})` : ''}`).join('\n')
   } catch (err) {
     choices = notMeasurable(`a model-choices.json olvashatatlan: ${err instanceof Error ? err.message : String(err)}`)
   }
@@ -168,9 +168,9 @@ export function contextStatusText(now = Date.now()): string {
   const state = readGateRunState(MAIN_AGENT_ID)
   const since = getAgentRunningSince(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION)
   return [
-    `Kontextus:     ${tokens === null ? notMeasurable('nincs usage a transzkriptben') : formatTokens(tokens)}`,
+    `Kontextus: ${tokens === null ? notMeasurable('nincs usage a transzkriptben') : formatTokens(tokens)}`,
     `/clear küszöb: ${gate.enabled ? formatTokens(gate.thresholdTokens) : 'a gate ki van kapcsolva'}`,
-    `Session kora:  ${since === null ? notMeasurable('a tmux session nem található') : formatDuration(Math.floor(now / 1000) - since)}`,
+    `Session kora: ${since === null ? notMeasurable('a tmux session nem található') : formatDuration(Math.floor(now / 1000) - since)}`,
     `Utolsó ürítés: ${state.lastClearAt ? formatDayClock(state.lastClearAt) : 'nincs feljegyezve'}`,
   ].join('\n')
 }
