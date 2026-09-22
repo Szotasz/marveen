@@ -38,7 +38,8 @@ const VENV_PYTHON = join(PROJECT_ROOT, '.watchdog-venv', 'bin', 'python3')
 const PROBER_SCRIPT = join(PROJECT_ROOT, 'scripts', 'watchdog-inbound-prober.py')
 
 // Transcript directory for the main channels session JSONL files. Claude Code
-// encodes a project dir by replacing '/' and '.' (not just '/') with '-' --
+// encodes a project dir by replacing every character outside [a-zA-Z0-9-]
+// with '-' (measured, src/claude-project-dir.ts) --
 // see projectsDirFor in active-model.ts, the canonical encoder already relied
 // on by schedule-runner and the context-guard/restart-gate watchdogs. A
 // hand-rolled slash-only encoder here

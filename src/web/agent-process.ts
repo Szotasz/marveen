@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync } from 'node:fs'
+import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { execFileSync } from 'node:child_process'
@@ -1866,12 +1867,16 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // Claude Code projects directory does not yet exist and `claude` exits
     // immediately with an obscure "No deferred tool marker found" error
     // that is silent inside tmux. Detect first launch by probing for the
-    // encoded project dir and skip `--continue` only then. The encoding
-    // mirrors Claude Code's own scheme: replace every `/` with `-`.
+    // encoded project dir and skip `--continue` only then. The encoding is
+    // Claude Code's own, measured (src/claude-project-dir.ts): every character
+    // outside [a-zA-Z0-9-] becomes '-', not just '/'. A slash-only copy here
+    // named a directory that never exists on a path with an underscore or a
+    // space, so every launch on such an install looked like a first launch
+    // and never continued its session.
     const projectsRoot = claudeConfigDir
       ? join(claudeConfigDir, 'projects')
       : join(homedir(), '.claude', 'projects')
-    const encodedProject = dir.replace(/\//g, '-')
+    const encodedProject = encodeClaudeProjectDir(dir)
     const hasPriorSession = existsSync(join(projectsRoot, encodedProject))
     // opts.fresh forces a brand-new conversation (auto-restart 'fresh' mode):
     // omit --continue so the heavy accumulated context is dropped. Without it

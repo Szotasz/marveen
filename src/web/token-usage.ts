@@ -1,4 +1,5 @@
 import { statSync, readdirSync, existsSync, realpathSync } from 'node:fs'
+import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join, basename } from 'node:path'
 import { homedir } from 'node:os'
 import { createReadStream } from 'node:fs'
@@ -12,13 +13,10 @@ import { mainConfigRoots } from './inbound-probe.js'
 
 const PROJECTS_DIR = join(homedir(), '.claude', 'projects')
 
-// Claude Code encodes a project's absolute path into a directory name by
-// replacing every non-alphanumeric/non-dash character with `-`. The main
-// agent's transcripts live under that exact directory, regardless of what
-// the agent calls itself.
-function encodeProjectPath(p: string): string {
-  return p.replace(/[^a-zA-Z0-9-]/g, '-')
-}
+// The main agent's transcripts live under the directory Claude Code derives
+// from PROJECT_ROOT, regardless of what the agent calls itself. The encoder is
+// the tree-wide one (src/claude-project-dir.ts); the local copy that used to
+// live here was the only correct rule in the tree, and it is now the shared one.
 
 // True when `dir` is the shared ~/.claude/projects wearing another name,
 // reached through a symlink. Compared by realpath, so a symlinked parent
@@ -44,7 +42,7 @@ interface AgentTranscriptSource {
 export function discoverAgentSources(projectRootOverride?: string): AgentTranscriptSource[] {
   const sources: AgentTranscriptSource[] = []
   if (!existsSync(PROJECTS_DIR)) return sources
-  const mainDirName = encodeProjectPath(PROJECT_ROOT)
+  const mainDirName = encodeClaudeProjectDir(PROJECT_ROOT)
   for (const entry of readdirSync(PROJECTS_DIR)) {
     const full = join(PROJECTS_DIR, entry)
     let stat
