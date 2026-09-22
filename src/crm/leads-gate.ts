@@ -16,19 +16,25 @@
  */
 
 /** A következő érintkezés típusai. EGY HELYEN, mert a séma CHECK-je ezt tükrözi. */
-export const NEXT_STEP_TYPES = ['email', 'call', 'meeting', 'offer'] as const
+export const NEXT_STEP_TYPES = ['email', 'call', 'meeting', 'offer', 'wakeup'] as const
 export type NextStepType = (typeof NEXT_STEP_TYPES)[number]
 
 /**
  * A dátum-horizont felső határa NAPBAN. A távoli dátum a kibúvó: aki "majd valamikor"-t akar
  * rögzíteni, az ezzel kerülné meg a kaput.
  *
- * NYITOTT DÖNTÉS (Marveennél, 2026-09-22): az "ügyfél későbbre kérte (ébresztés)" típus, amely
- * 12 hónapos dátumot engedne és nem számítana halasztásnak. Amíg nincs döntés, a lista négy
- * értékű marad, és a megtagadás szövege KIMONDJA, hogy a távoli dátumos eset még nem támogatott --
- * különben a felhasználó a hamis dátum plusz azonnali halasztás kerülőutat tanulja meg.
+ * A 14 NAP CSAK A CSELEKVÉSRE VONATKOZIK. A korlát két különböző dolgot mosna össze: "mikor fogok
+ * cselekedni" és "mikor érdemes cselekedni". Az elsőre jó, a másodikat HAZUGSÁGRA kényszerítené:
+ * ha az ügyfél novemberben kéri a hívást, a felvevő beírna egy közeli dátumot, amit ő sem hisz el,
+ * majd azonnal halasztana -- és a halasztás-számláló egy teljesen egészséges tételen indulna el.
+ *
+ * EZÉRT VAN A "wakeup" TÍPUS (döntés: Marveen, 2026-09-22): ott a horizont 12 hónap, a tétel ALSZIK
+ * a megadott dátumig, és NEM számít halasztásnak. A kivételt a TÍPUS hordozza, nem egy szabad
+ * szöveges indok: a típus választás, nem lehet átfogalmazni, és meg lehet számolni.
  */
 export const HORIZON_DAYS = 14
+/** Az ébresztés horizontja. Felső korlát azért van, mert a "majd valamikor" itt is kibúvó lenne. */
+export const WAKEUP_HORIZON_DAYS = 365
 
 export type LeadInput = {
   title?: unknown
@@ -97,7 +103,7 @@ function asTrimmed(raw: unknown): string {
 export function refusalMessage(missing: string[], horizonDays = HORIZON_DAYS): string {
   const nev: Record<string, string> = {
     next_step_type: 'a következő érintkezés típusa (levél, hívás, találkozó, ajánlat)',
-    next_step_at: `a következő lépés dátuma, a mai naptól számított ${horizonDays} napon belül`,
+    next_step_at: `a következő lépés dátuma, a mai naptól számított ${horizonDays} napon belül (ébresztésnél ${WAKEUP_HORIZON_DAYS} napon belül)`,
     next_step_text: 'egy mondat arról, mit kell tenned',
     title: 'a lead megnevezése',
     origin: 'a lead forrása',
@@ -108,8 +114,9 @@ export function refusalMessage(missing: string[], horizonDays = HORIZON_DAYS): s
     'Egy lead, aminek nincs dátumozott következő lépése, két hónap múlva is ugyanitt fog állni. ' +
     'Ha most nem tudod pontosan, az is válasz: vedd fel "ajánlás, hívás egy héten belül" formában, ' +
     'és pontosítsd, amikor többet tudsz. ' +
-    'Távolabbi dátum (például "novemberben keressük") ebben a változatban még nem vehető fel; ' +
-    'ne írj be hamis közeli dátumot helyette, mert abból a rendszer elakadt leadet fog látni.'
+    'Ha az ügyfél későbbre kérte (például novemberben keressük), NE írj be hamis közeli dátumot: ' +
+    'válaszd az "ébresztés" típust, és add meg a valódi dátumot. Az ilyen tétel alszik addig, ' +
+    'nem számít halasztásnak, és a darabszáma a fő nézeten látszik.'
   )
 }
 
@@ -133,7 +140,9 @@ export function checkLeadInput(input: LeadInput, now: Date = new Date()): GateOk
 
   const at = normalizeDate(input.next_step_at, now)
   const dayStart = startOfLocalDay(now)
-  const maxDay = dayStart + HORIZON_DAYS * 86400
+  // A HORIZONT A TÍPUSTÓL FÜGG: cselekvésre 14 nap, ébresztésre 12 hónap.
+  const horizont = type === 'wakeup' ? WAKEUP_HORIZON_DAYS : HORIZON_DAYS
+  const maxDay = dayStart + horizont * 86400
   if (at === null || at < dayStart || at >= maxDay + 86400) missing.push('next_step_at')
 
   if (missing.length) return { ok: false, missing, message: refusalMessage(missing) }

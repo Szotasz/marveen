@@ -118,5 +118,24 @@ export function todayLeads(db: Database, now: Date = new Date()): ApiResult {
         ORDER BY lejart DESC, next_step_at ASC, id ASC`,
     )
     .all(napKezdet, napVege)
-  return { status: 200, body: { leads: sorok } }
+
+  // AZ ALVO TETELEK SZAMA A FO NEZETRE TARTOZIK (Marveen kikotese, 2026-09-22). Az indok a gazda
+  // sajat panaszabol jon: ha az alvo halmaz csak egy masik oldalon latszik, akkor pont azt a helyet
+  // epitettuk ujra, ahol a lead leul es senki nem megy oda. Ez NEM jelenti, hogy az alvo tetelek a
+  // Ma nezetbe kerulnek: csak LATSZODJANAK onnan, egy sorban, kattinthato szammal.
+  const alvo = db
+    .prepare(
+      `SELECT count(*) AS db, min(next_step_at) AS legkozelebbi
+         FROM leads
+        WHERE status = 'open' AND next_step_type = 'wakeup' AND next_step_at >= ?`,
+    )
+    .get(napVege) as { db: number; legkozelebbi: number | null }
+
+  return {
+    status: 200,
+    body: {
+      leads: sorok,
+      sleeping: { count: alvo.db, next_wake_at: alvo.legkozelebbi },
+    },
+  }
 }

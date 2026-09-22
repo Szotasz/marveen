@@ -21,7 +21,7 @@ CREATE TABLE leads (
   origin TEXT NOT NULL CHECK(origin IN ('email','telegram','phone','meeting','referral','other')),
   status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','won','lost','parked')),
   owner TEXT NOT NULL,
-  next_step_type TEXT NOT NULL CHECK(next_step_type IN ('email','call','meeting','offer')),
+  next_step_type TEXT NOT NULL CHECK(next_step_type IN ('email','call','meeting','offer','wakeup')),
   next_step_at INTEGER NOT NULL,
   next_step_text TEXT NOT NULL CHECK(length(trim(next_step_text)) > 0),
   postpone_count INTEGER NOT NULL DEFAULT 0,
@@ -152,7 +152,46 @@ describe('CRM lead-felvétel kapuja (CRM1LEADKAPU922, spec 6.5)', () => {
       const r = createLead(db, { ...ALAP, next_step_type: t, next_step_at: nap(1) }, 'geri', MOST)
       expect(r.status, `tipus: ${t}`).toBe(201)
     }
-    const ismeretlen = checkLeadInput({ ...ALAP, next_step_type: 'wakeup', next_step_at: nap(1) }, MOST)
+    const ismeretlen = checkLeadInput({ ...ALAP, next_step_type: 'nincs-ilyen', next_step_at: nap(1) }, MOST)
     expect(ismeretlen.ok).toBe(false)
+  })
+})
+
+describe('ébresztés-típus: az "ügyfél későbbre kérte" eset (döntés 2026-09-22)', () => {
+  it('a wakeup típus 12 hónapon belüli dátumot ENGED, a többi típus nem', () => {
+    const ebresztes = createLead(db, { ...ALAP, next_step_type: 'wakeup', next_step_at: nap(60) }, 'geri', MOST)
+    expect(ebresztes.status).toBe(201)
+    const hivas = createLead(db, { ...ALAP, next_step_type: 'call', next_step_at: nap(60) }, 'geri', MOST)
+    expect(hivas.status).toBe(422)
+    expect(hivas.body.missing).toEqual(['next_step_at'])
+  })
+
+  it('a wakeup horizontjának is van felső határa: ma+366 megtagadva', () => {
+    expect(createLead(db, { ...ALAP, next_step_type: 'wakeup', next_step_at: nap(365) }, 'geri', MOST).status).toBe(201)
+    expect(createLead(db, { ...ALAP, next_step_type: 'wakeup', next_step_at: nap(366) }, 'geri', MOST).status).toBe(422)
+  })
+
+  it('az alvó tétel NEM jelenik meg a Ma nézet listájában', () => {
+    createLead(db, { ...ALAP, title: 'Novemberi', next_step_type: 'wakeup', next_step_at: nap(60) }, 'geri', MOST)
+    createLead(db, { ...ALAP, title: 'Mai', next_step_at: nap(0) }, 'geri', MOST)
+    const sorok = todayLeads(db, MOST).body.leads as Array<Record<string, unknown>>
+    expect(sorok.map((s) => s.title)).toEqual(['Mai'])
+  })
+
+  it('DE a SZÁMA ott van a fő nézeten, a legközelebbi ébredéssel (Marveen kikötése)', () => {
+    createLead(db, { ...ALAP, title: 'Novemberi', next_step_type: 'wakeup', next_step_at: nap(60) }, 'geri', MOST)
+    createLead(db, { ...ALAP, title: 'Marciusi', next_step_type: 'wakeup', next_step_at: nap(180) }, 'geri', MOST)
+    const alvo = todayLeads(db, MOST).body.sleeping as { count: number; next_wake_at: number }
+    expect(alvo.count).toBe(2)
+    // a legkozelebbi ebredes a 60 napos tetel, nem a 180 napos
+    const varhato = startOfLocalDay(new Date(MOST.getFullYear(), MOST.getMonth(), MOST.getDate() + 60))
+    expect(alvo.next_wake_at).toBe(varhato)
+  })
+
+  it('az alvó összegzés NEM számolja bele a közeli, nem-ébresztés tételeket', () => {
+    createLead(db, { ...ALAP, next_step_at: nap(3) }, 'geri', MOST)
+    const alvo = todayLeads(db, MOST).body.sleeping as { count: number; next_wake_at: number | null }
+    expect(alvo.count).toBe(0)
+    expect(alvo.next_wake_at).toBeNull()
   })
 })
