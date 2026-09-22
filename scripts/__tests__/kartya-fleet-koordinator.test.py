@@ -224,6 +224,24 @@ def main():
     check('5 ugyanaz --msg-file-lal letrejon, es az ertesites a koordinatorhoz megy',
           p.returncode == 0 and cimzettek() == ['marveen'], f'cimzettek={cimzettek()} | {out}')
 
+    # 6. A DONTES ROGZITESE, HOGY NE EGY FEJLEC-KOMMENTEN ALLJON (Marveen 28149, a sajat (a)
+    # dontesenek visszavonasa utan). A sajat magunknak nyitott kartya IS ertesitest ker, barmelyik
+    # agensnel -- mert az onhurok-ag NEM azt mondja, hogy az uzenet folosleges, hanem azt, hogy MAS
+    # a cimzettje: a KOORDINATOR. Az az uzenet VALODI JEL (valaki elindult valamin), es egy
+    # `who == frm` kivetel ezt a jelet az EGESZ flottan kioltana.
+    # Ha egy kesobbi kor "nyilvanvalo javitaskent" mégis betenne a tukrozest, ez a ket allitas
+    # PIROSRA valt -- egy dontes, ami csak kommentben all, ugyanugy elveszik, mint egy meretlen javitas.
+    torol()
+    p = letrehoz('ONHD922', 'marveen', 'Marveen', port)
+    out = p.stdout + p.stderr
+    check('6a a koordinator SAJAT kartyaja is ertesitest ker (a dontes rogzitve)',
+          p.returncode != 0 and 'MEGTAGADVA' in out, out)
+    torol()
+    p = letrehoz('ONHD2922', 'geri', 'Geri', port)
+    out = p.stdout + p.stderr
+    check('6b es ugyanez all BARMELYIK agensre (nem nev-alapu szabaly)',
+          p.returncode != 0 and 'MEGTAGADVA' in out, out)
+
     print('')
     print(f'kartya-fleet-koordinator: {DB_SZAM - len(FAILS)}/{DB_SZAM} allitas zold')
     return 1 if FAILS else 0

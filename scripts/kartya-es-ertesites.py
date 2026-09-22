@@ -19,8 +19,15 @@ Hasznalat:
       --msg-file /path --author Boni [--priority normal] [--status planned] [--dry-run]
 A felado MINDKET modban KIMONDOTT (KARTYAKULDO908, 2026-09-08): a letrehozo agon --author vagy
 --from kell, kulonben megtagadas. Korabban csendben 'marveen' lett belole.
-Az onmagunknak (marveen) vagy a gazdanak (szabolcs) szolo kartya ertesites nelkul is mehet:
-ott a --no-msg kapcsolo kell, KIMONDVA.
+A SAJAT MAGUNKNAK NYITOTT KARTYA IS ERTESITEST KER, BARMELYIK AGENSNEL (FLEETKIVETEL922,
+2026-09-22): a letrehozo kapu a FLEET minden tagjara all, es 2026-09-22 ota a koordinator
+(marveen) is a FLEET tagja. Sajat kartyahoz tehat vagy --no-msg kell, KIMONDVA, vagy --msg-file --
+utobbi ilyenkor a KOORDINATORHOZ iranyul (onhurok-atiranyitas), ami VALODI JEL: a koordinator
+megtudja, hogy valaki elindult valamin. Ezt a jelet szandekosan NEM oltuk ki egy szerzo-alapu
+kivetellel; a degeneralt eset (a koordinator SAJAT kartyaja, ahol nincs hova atiranyitani) egyetlen
+FIGYELEM-sort jelent, es az olcsobb, mint a flotta-szintu jel elvesztese.
+A GAZDANAK (szabolcs) szolo kartya MAS: o nincs a FLEET-ben, mert neki az inter-agent uzenet
+szerkezetileg nem kezbesitheto -- ott a kapu nem is all, a kimenet viszont kimondja a hianyt.
 A GAZDANAK --msg-file-lal is lehet kartyat adni, de az ertesites NEM megy ki (GAZDAUZENET921,
 2026-09-21): a gazda nem agens, nincs sessionje, a sor mindig failed lett (19/19), es az eszkoz
 megis zold UZENET OK-ot irt, mert a sort olvasta vissza, nem a kezbesitest. Most a kimenet
