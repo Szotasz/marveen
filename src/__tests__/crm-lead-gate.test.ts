@@ -199,6 +199,85 @@ describe('CRM lead-felvétel kapuja (CRM1LEADKAPU922, spec 6.5)', () => {
   })
 })
 
+describe('kontakt-dedup: az e-mail a kanonikus kulcs (Samu lelete a #1470 review-jan)', () => {
+  // MERVE A JAVITAS ELOTT: ugyanaz az e-mail ketszer -> KET contacts sor, a masodik e-mail NELKUL
+  // (az INSERT OR IGNORE csendben eldobta a UNIQUE-on), es a ket lead KET kulonbozo emberre
+  // mutatott. Minden zold volt. Ezert ez a describe a TABLAT meri, nem a valasz-kodot.
+
+  function kontaktSzam(): number {
+    return (db.prepare('SELECT count(*) AS n FROM contacts').get() as { n: number }).n
+  }
+  function leadKontaktjai(): Array<number | null> {
+    return (db.prepare('SELECT contact_id FROM leads ORDER BY id').all() as Array<{ contact_id: number | null }>)
+      .map((r) => r.contact_id)
+  }
+
+  it('ugyanaz az e-mail masodszor: UGYANAZ a kontakt, nem uj sor', () => {
+    expect(createLead(db, { ...ALAP, display_name: 'Kovács Anna', email: 'anna@pelda.hu', next_step_at: nap(1) }, 'geri', MOST).status).toBe(201)
+    expect(createLead(db, { ...ALAP, display_name: 'Kovacs A.', email: 'anna@pelda.hu', next_step_at: nap(2) }, 'geri', MOST).status).toBe(201)
+    expect(kontaktSzam()).toBe(1)
+    expect((db.prepare('SELECT count(*) AS n FROM contact_emails').get() as { n: number }).n).toBe(1)
+    const [a, b] = leadKontaktjai()
+    expect(a).toBe(b)
+  })
+
+  it('a kis/nagybetu nem szamit: a sema COLLATE NOCASE kulcsat a kereses is koveti', () => {
+    createLead(db, { ...ALAP, email: 'Anna@Pelda.hu', next_step_at: nap(1) }, 'geri', MOST)
+    createLead(db, { ...ALAP, email: 'anna@pelda.HU', next_step_at: nap(2) }, 'geri', MOST)
+    expect(kontaktSzam()).toBe(1)
+    const [a, b] = leadKontaktjai()
+    expect(a).toBe(b)
+  })
+
+  it('a megtalalt kontakt NEVET nem irjuk felul csendben', () => {
+    createLead(db, { ...ALAP, display_name: 'Kovács Anna', email: 'anna@pelda.hu', next_step_at: nap(1) }, 'geri', MOST)
+    createLead(db, { ...ALAP, display_name: 'ELGÉPELT NÉV', email: 'anna@pelda.hu', next_step_at: nap(2) }, 'geri', MOST)
+    expect((db.prepare('SELECT display_name FROM contacts').get() as { display_name: string }).display_name).toBe('Kovács Anna')
+  })
+
+  it('NEGATIV KONTROLL: MAS e-mail -> uj kontakt (a dedup nem von ossze mindenkit)', () => {
+    createLead(db, { ...ALAP, email: 'anna@pelda.hu', next_step_at: nap(1) }, 'geri', MOST)
+    createLead(db, { ...ALAP, email: 'bela@pelda.hu', next_step_at: nap(2) }, 'geri', MOST)
+    expect(kontaktSzam()).toBe(2)
+    const [a, b] = leadKontaktjai()
+    expect(a).not.toBe(b)
+  })
+
+  it('e-mail nelkul a TELEFON a kulcs, szo szerinti egyezessel', () => {
+    createLead(db, { ...ALAP, origin: 'phone', display_name: 'Kovács Anna', phone: '+36301234567', next_step_at: nap(1) }, 'geri', MOST)
+    createLead(db, { ...ALAP, origin: 'phone', display_name: 'Anna', phone: '+36301234567', next_step_at: nap(2) }, 'geri', MOST)
+    expect(kontaktSzam()).toBe(1)
+    // NEGATIV KONTROLL ugyanitt: a normalizalas NEM resze az 1. utemnek, tehat a mas alakban irt
+    // ugyanaz a szam UJ kontakt. Ezt KIMONDJUK, hogy ne velt kepessegre epuljon ra semmi.
+    createLead(db, { ...ALAP, origin: 'phone', phone: '06 30 123 4567', next_step_at: nap(3) }, 'geri', MOST)
+    expect(kontaktSzam()).toBe(2)
+  })
+
+  it('a telefonon talalt kontakthoz HOZZAKERUL a most megadott e-mail (bovites, nem feluliras)', () => {
+    createLead(db, { ...ALAP, origin: 'phone', display_name: 'Kovács Anna', phone: '+36301234567', next_step_at: nap(1) }, 'geri', MOST)
+    createLead(db, { ...ALAP, origin: 'phone', phone: '+36301234567', email: 'anna@pelda.hu', next_step_at: nap(2) }, 'geri', MOST)
+    expect(kontaktSzam()).toBe(1)
+    const sor = db.prepare('SELECT contact_id, email FROM contact_emails').get() as { contact_id: number; email: string }
+    expect(sor.email).toBe('anna@pelda.hu')
+    expect(sor.contact_id).toBe((db.prepare('SELECT id FROM contacts').get() as { id: number }).id)
+  })
+
+  it('a megadott contact_id VALTOZATLANUL nyer: a hivo dontese eros a keresesnel', () => {
+    createLead(db, { ...ALAP, display_name: 'Kovács Anna', email: 'anna@pelda.hu', next_step_at: nap(1) }, 'geri', MOST)
+    const masik = db.prepare('INSERT INTO contacts (display_name, created_at, created_by) VALUES (?,?,?)').run('Másik ember', 1, 'geri')
+    const masikId = Number(masik.lastInsertRowid)
+    createLead(db, { ...ALAP, contact_id: masikId, email: 'anna@pelda.hu', next_step_at: nap(2) }, 'geri', MOST)
+    expect(leadKontaktjai()[1]).toBe(masikId)
+  })
+
+  it('a NYOM megmondja, uj embert vettunk-e fel vagy meglevot hasznaltunk', () => {
+    createLead(db, { ...ALAP, email: 'anna@pelda.hu', next_step_at: nap(1) }, 'geri', MOST)
+    createLead(db, { ...ALAP, email: 'anna@pelda.hu', next_step_at: nap(2) }, 'geri', MOST)
+    const nyomok = auditSorok('create').map((r) => JSON.parse(String(r.detail)) as { contact: string })
+    expect(nyomok.map((n) => n.contact)).toEqual(['created', 'reused'])
+  })
+})
+
 describe('a nap határa NEVESÍTETT zónában (Samu kikötése, 28263)', () => {
   // MIÉRT KELL: ha a nap határát a futtató környezet zónája döntené el, a CI (UTC) és a gazda gépe
   // (CEST) este 22 után MÁS napot látna -- ugyanaz a bevitel az egyik helyen átmegy, a másikon nem,

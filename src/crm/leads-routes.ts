@@ -65,11 +65,49 @@ export function createLead(
 
   const tranzakcio = db.transaction(() => {
     let contactId = v.contact_id
+    let ujKontakt = false
     if (contactId === null && (v.display_name || v.email || v.phone)) {
-      const r = db
-        .prepare('INSERT INTO contacts (display_name, created_at, created_by) VALUES (?,?,?)')
-        .run(v.display_name ?? v.email ?? v.phone, most, szerzo)
-      contactId = Number(r.lastInsertRowid)
+      // A MEGLEVO KONTAKTOT MEG KELL KERESNI AZ IRAS ELOTT (Samu lelete a #1470 review-jan).
+      //
+      // MERVE a javitas elott: ugyanaz az e-mail ketszer (csak kis/nagybetuben elterve) KET
+      // contacts sort csinalt, mindketto 201-gyel, es a masodik kontakt e-mail NELKUL maradt --
+      // mert az `INSERT OR IGNORE` a UNIQUE-on CSENDBEN eldobta a sort. Vagyis a tabla ketszer
+      // tartalmazta ugyanazt az embert, es semmi nem jelezte. Pont az a hiba-alak, ami ellen ez a
+      // kartya egyaltalan letezik: minden zold, es kozben rossz az adat.
+      //
+      // A KULCS AZ E-MAIL: a `contact_emails.email` a semaban GLOBALISAN egyedi, `COLLATE NOCASE`.
+      // A telefon NEM az (a PK `(contact_id, phone)`), ezert ott tobb sor is lehet; a legkisebb
+      // azonositot vesszuk, hogy a valasztas determinisztikus legyen, ne a beszurasi sorrend dontse.
+      // A telefon-egyezes SZO SZERINTI: normalizalas (orszaghivo, szokozok) nem az 1. utem dolga,
+      // es egy fel-kesz normalizalas rosszabb lenne, mint a semmi.
+      const emailTalalat = v.email
+        ? (db
+            .prepare('SELECT contact_id FROM contact_emails WHERE email = ? COLLATE NOCASE')
+            .get(v.email) as { contact_id: number } | undefined)
+        : undefined
+      const telefonTalalat =
+        !emailTalalat && v.phone
+          ? (db
+              .prepare('SELECT contact_id FROM contact_phones WHERE phone = ? ORDER BY contact_id LIMIT 1')
+              .get(v.phone) as { contact_id: number } | undefined)
+          : undefined
+
+      const talalt = emailTalalat ?? telefonTalalat
+      if (talalt) {
+        // A MEGLEVO NEVET NEM IRJUK FELUL. Egy uj lead nem tud tobbet a kontaktrol, mint ami mar
+        // all rola: ha itt csendben felulirnank, egy elgepelt nev eltuntetne a helyeset.
+        contactId = talalt.contact_id
+      } else {
+        const r = db
+          .prepare('INSERT INTO contacts (display_name, created_at, created_by) VALUES (?,?,?)')
+          .run(v.display_name ?? v.email ?? v.phone, most, szerzo)
+        contactId = Number(r.lastInsertRowid)
+        ujKontakt = true
+      }
+
+      // A HIANYZO ELERHETOSEG HOZZAKERUL a megtalalt kontakthoz is: ez bovites, nem feluliras.
+      // Az e-mail itt biztosan szabad (ha foglalt lenne, a fenti kereses MEGTALALTA volna), tehat
+      // az `INSERT OR IGNORE` nem tud csendben nyelni egy MASIK emberhez tartozo sort.
       if (v.email) {
         db.prepare(
           'INSERT OR IGNORE INTO contact_emails (contact_id, email, is_primary) VALUES (?,?,1)',
@@ -91,7 +129,21 @@ export function createLead(
       )
       .run(contactId, v.title, v.origin, szerzo, v.next_step_type, v.next_step_at, v.next_step_text, most, szerzo, most)
     const leadId = Number(res.lastInsertRowid)
-    audit(db, szerzo, 'lead', leadId, 'create', JSON.stringify({ next_step_at: v.next_step_at, next_step_type: v.next_step_type }))
+    // A NYOM MEGMONDJA, HOGY UJ EMBER-E. A dedup enelkul nem merheto visszamenoleg: a contacts
+    // darabszama onmagaban nem valaszolja meg, hogy osszevontunk-e vagy csak kevesebbet vettunk fel.
+    audit(
+      db,
+      szerzo,
+      'lead',
+      leadId,
+      'create',
+      JSON.stringify({
+        next_step_at: v.next_step_at,
+        next_step_type: v.next_step_type,
+        contact_id: contactId,
+        contact: contactId === null ? 'none' : ujKontakt ? 'created' : 'reused',
+      }),
+    )
     return leadId
   })
 
