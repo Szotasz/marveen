@@ -47,7 +47,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { listScheduledTasks, type ScheduledTask } from './scheduled-tasks-io.js'
 import { computeNextRun } from './cron.js'
 import { getTokenSummary, getModelDistribution } from './token-usage.js'
-import { registerModelWriteCommands, readModelChoices as readChoiceList, readHold, readLastSent, MODEL_CHOICES_FILE, MODEL_HOLD_FILE, MODEL_LAST_SENT_FILE, type LastSent } from './main-model.js'
+import { registerModelWriteCommands, readModelChoices as readChoiceList, readHold, readLastSent, readEffortSent, MODEL_CHOICES_FILE, MODEL_HOLD_FILE, MODEL_LAST_SENT_FILE, EFFORT_SENT_FILE, EFFORT_LEVELS, type LastSent } from './main-model.js'
 import { contextClear } from './session-control.js'
 
 function clip(s: string, n: number): string {
@@ -82,6 +82,19 @@ function readEffortSetting(): { value: string; source: string } | null {
     if (typeof s?.effortLevel === 'string') return { value: s.effortLevel, source: '.claude/settings.json effortLevel' }
   } catch { /* no settings */ }
   return null
+}
+
+// A /model effort sent in this session wins over the configured default: the
+// CLI takes it at once, and the transcript never carries it, so the status
+// could only name the config before (ELSOKOR922 Phase 7 A-smoke).
+export function effortLine(
+  configured: { value: string; source: string } | null,
+  sent: { level: string; at: number } | null,
+): string {
+  const v = sent
+    ? `${sent.level} (/model effort, elküldve ${formatDayClock(sent.at)})`
+    : configured ? `${configured.value} (${configured.source})` : 'nincs beállítva (a CLI alapértéke)'
+  return `Effort:      ${v} · visszamérni nem tudjuk`
 }
 
 // The "Most fut" block. A measurement is only as fresh as the last assistant
@@ -127,8 +140,8 @@ export function modelStatusText(): string {
   lines.push(...m.head)
   lines.push(`Beállítva:   ${conf.model} (${conf.source})`)
   if (m.warn) lines.push(m.warn)
-  const effort = readEffortSetting()
-  lines.push(`Effort:      ${effort ? `${effort.value} (${effort.source})` : 'nincs beállítva (a CLI alapértéke)'} · visszamérni nem tudjuk`)
+  const since = getAgentRunningSince(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION)
+  lines.push(effortLine(readEffortSetting(), readEffortSent(EFFORT_SENT_FILE, since === null ? null : since * 1000)))
   const hold = h.error
     ? notMeasurable(`a main-model-hold.json olvashatatlan: ${h.error}`)
     : h.state
@@ -149,6 +162,7 @@ export function modelStatusText(): string {
   // sima /model státusz nem mondta meg, HOGYAN kell váltani -- a szintaxis
   // csak a /help-ben (a registry `usage` mezőjében) volt látható, itt nem.
   lines.push('Váltás: /model <választás> [<idő>|keep], pl. /model opus 30m')
+  lines.push(`Effort: /model effort <${EFFORT_LEVELS.join('|')}>, pl. /model effort high`)
   return lines.join('\n')
 }
 

@@ -16,12 +16,14 @@ import {
   countModelAcks,
   readLastSent,
   onMainTurnEnded,
+  effortSentFileFor,
+  readEffortSent,
   scheduleHoldExpiry,
   BLOCK_ALERT_MS,
   type ModelDeps,
   type HoldState,
 } from '../web/main-model.js'
-import { measuredModelLines } from '../web/builtin-commands.js'
+import { measuredModelLines, effortLine } from '../web/builtin-commands.js'
 import { logger } from '../logger.js'
 
 const BASE = 'claude-sonnet-5'
@@ -417,5 +419,19 @@ describe('/model back and /model effort', () => {
     expect(bad.ok).toBe(false)
     expect(bad.text).toMatch(/low\|medium\|high\|xhigh\|max/)
     expect(d.sent).toHaveLength(1)
+  })
+
+  // ELSOKOR922 Phase 7 A-smoke: after /model effort high the status still said
+  // "nincs beállítva (a CLI alapértéke)" -- the transcript never carries effort.
+  it('effort: the sent level is recorded; the status shows it until the session restarts', async () => {
+    const d = deps()
+    await setEffort('high', d)
+    const file = effortSentFileFor(d.lastSentFile)
+    expect(readEffortSent(file, null)).toEqual({ level: 'high', at: T0 })
+    expect(readEffortSent(file, T0 - 1000)).toEqual({ level: 'high', at: T0 })
+    expect(readEffortSent(file, T0 + 1000)).toBeNull() // a restart after the send resets the CLI's effort
+    expect(effortLine(null, { level: 'high', at: T0 })).toMatch(/^Effort: {6}high \(\/model effort, elküldve .*\) · visszamérni nem tudjuk$/)
+    expect(effortLine({ value: 'medium', source: '.claude/settings.json effortLevel' }, null)).toMatch(/medium \(\.claude\/settings\.json effortLevel\)/)
+    expect(effortLine(null, null)).toMatch(/nincs beállítva \(a CLI alapértéke\)/)
   })
 })

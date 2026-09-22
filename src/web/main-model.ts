@@ -387,7 +387,37 @@ export async function setEffort(level: string | undefined, deps: ModelDeps = liv
   const verdict = deps.quiet(deps.now())
   if (!verdict.quiet) return fail(`Nem állítottam: a session foglalt (${verdict.reason}). Mi fut: /runs`)
   await deps.send(`/effort ${l}`)
+  writeEffortSent(effortSentFileFor(deps.lastSentFile), l, deps.now())
   return ok(`/effort ${l} elküldve. Az effortot visszamérni nem tudjuk (a transzkript nem hordozza).`)
+}
+
+// The last /effort sent, for the /model status: the CLI's effort is not in the
+// transcript, so without this the status kept saying "nincs beállítva" right
+// after a /model effort high (ELSOKOR922 Phase 7 A-smoke). A restart of the
+// session resets the CLI's effort -- the reader drops a send older than the
+// session.
+export const EFFORT_SENT_FILE = join(STORE_DIR, 'main-effort-last-sent.json')
+
+export function effortSentFileFor(lastSentFile: string): string {
+  return join(dirname(lastSentFile), 'main-effort-last-sent.json')
+}
+
+export function readEffortSent(file: string, sessionStartMs: number | null): { level: string; at: number } | null {
+  try {
+    const p = JSON.parse(readFileSync(file, 'utf-8')) as { level?: unknown; at?: unknown }
+    if (typeof p.level !== 'string' || typeof p.at !== 'number') return null
+    if (sessionStartMs !== null && p.at < sessionStartMs) return null
+    return { level: p.level, at: p.at }
+  } catch { return null }
+}
+
+function writeEffortSent(file: string, level: string, at: number): void {
+  try {
+    mkdirSync(dirname(file), { recursive: true })
+    atomicWriteFileSync(file, JSON.stringify({ level, at }) + '\n')
+  } catch (err) {
+    logger.warn({ err, file }, 'main-model: effort marker not written')
+  }
 }
 
 // ---- the sweep (runs on the gate's main sweep) --------------------------------
