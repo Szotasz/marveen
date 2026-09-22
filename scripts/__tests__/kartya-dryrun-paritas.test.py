@@ -90,9 +90,12 @@ def run(card_id, extra=(), root=TOKEN_ROOT):
         # kulonben a futas MAR A HORGONY-KAPUN elhal, es a teszt a ROSSZ OKBOL lenne piros.
         # Ez a kapu UJABB, mint a teszt elso valtozata -- merve 2026-09-08-an: mind az ot
         # "paritas" ellenorzes ezen bukott, nem a merni kivant viselkedesen.
+        # KOMMENTERTESITES922: ez a suite a DRY-RUN PARITAST meri, nem az ertesitest. A
+        # komment-modu hivasai atadjak a kartyat mas flotta-agensnek, amit az uj
+        # ertesites-kapu megtagad -- a kapcsolo KIMONDJA, hogy itt ez szandekos.
         [sys.executable, SCRIPT, '--id', card_id, '--assignee', 'boni',
          '--title', f'{card_id} paritas teszt',
-         '--author', 'Boni', *extra],
+         '--author', 'Boni', '--nincs-ertesites-szandekos', *extra],
         capture_output=True, text=True, env=env, timeout=30)
 
 

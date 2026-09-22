@@ -533,6 +533,43 @@ def komment_mod(a):
                          f'Ez tipikusan elgepeles, ami sajat, egy-elemu oszlopba viszi a kartyat.\n'
                          + (f'Hasonlo, MAR LETEZO nevek: {", ".join(kozeli)}\n' if kozeli else '')
                          + 'Ha tenyleg uj nev (pl. uj kulso PR-szerzo), mondd ki: --assignee-uj.')
+    # ERTESITES-KAPU A KOMMENT-MODBAN (KOMMENTERTESITES922, Mira javaslata Marveen hibajara).
+    # AZ ESET: az eszkoz eddig CSAK KIIRTA, hogy `Ertesites: nem ment (komment-only)`. Marveen ezt
+    # egyetlen napon tizszer elolvasta es tovabbment; kozben egy merge-rol csak a kartyara irt, es
+    # egy tars allapot-kepe elavult. Egy jelzes, amit megszoktunk, nem kapu: a tizenegyedik
+    # alkalommal ugyanugy at lehet lepni rajta. A megoldas ezert a DONTESI PONT megszuntetese, nem
+    # a figyelmeztetes erositese -- ugyanaz a szerkezet, ami a LETREHOZO agon mar all
+    # ("flotta-gazda ertesites nelkul -> megtagadva", --no-msg-gel felulbiralva).
+    #
+    # A HATAR SZANDEKOS, es mindket negativ kontroll a tesztben all:
+    #   - SAJAT kartyara irt komment ATMEGY: a sajat nyomod nem ertesites-ugy;
+    #   - KULSO felelos (GitHub-nev, nem flotta-agens) ATMEGY: nekik nem inter-agent uzenet megy.
+    # A MOZGATAST IS NEZZUK, nem csak a jelenlegi felelost: ha ugyanez a futas ATADJA a kartyat, a
+    # REGI felelosnek epp ugy tudnia kell rola, mint az ujnak, tehat mindketto szamit.
+    _erintett = {x for x in (elotte['assignee'], uj_felelos) if x}
+    _ertesitendo = sorted(x for x in _erintett
+                          if x in FLEET and x != (a.author or '').strip().lower())
+    if _ertesitendo and not a.nincs_ertesites_szandekos:
+        _kik = ', '.join(_ertesitendo)
+        sys.exit('MEGTAGADVA: a kartya felelose "' + _kik + '" (flotta-agens), te pedig "'
+                 + str(a.author) + '" vagy,\n'
+                 'es a komment-mod NEM kuld ertesitest. A KARTYA NEM ERTESITES: ez a komment ugy\n'
+                 'allna a tablan, hogy a felelos nem tud rola.\n'
+                 '  HA SZOLSZ (ez a szokasos): ird meg a kommentet, majd kuldj uzenetet is --\n'
+                 '    scripts/agent-msg-send.sh ' + _ertesitendo[0] + ' <szoveg-fajl>\n'
+                 '  HA CSAK NYOMOT HAGYSZ a jovonek, es a felelosnek NEM kell tudnia rola:\n'
+                 '    mondd ki a --nincs-ertesites-szandekos kapcsoloval.\n'
+                 '  (A --msg-file komment-modban NEM jarhato ut: azt a keveres-kapu tiltja, mert az\n'
+                 '   ertesites a letrehozo agahoz tartozik.)')
+
+    if a.nincs_ertesites_szandekos and _ertesitendo:
+        # UGYANAZ A SZIMMETRIA, MINT A --no-msg-nel a letrehozo agon: a kimondott kihagyas
+        # LATSZODJON a kimeneten. Enelkul a kapcsolo maga valna szokassá -- ugyanaz a vaksag,
+        # amit a kapu megszuntet, csak egy lepessel arrebb tolva.
+        print('FIGYELEM: --nincs-ertesites-szandekos egy flotta-felelosu ('
+              + ', '.join(_ertesitendo) + ') kartyan. Ez KIMONDOTT kihagyas: a felelos NEM fog '
+              'tudni errol a kommentrol.')
+
     mozgatas = {k: v for k, v in (('status', a.status), ('priority', a.priority), ('title', a.title),
                                   ('assignee', uj_felelos), ('description', uj_leiras))
                 if v is not None}
@@ -704,6 +741,10 @@ def main():
     # Az alapertelmezes SZANDEKOSAN None (nem 'planned'/'normal'): csak igy lehet
     # megkulonboztetni a KIMONDOTT erteket a nem-adottol. A letrehozo ag lentebb tolti fel.
     p.add_argument('--status', default=None); p.add_argument('--no-msg', action='store_true')
+    p.add_argument('--nincs-ertesites-szandekos', action='store_true',
+                   dest='nincs_ertesites_szandekos',
+                   help='KIMONDOTT felulbiralas komment-modban: MAS flotta-agens kartyajara irsz\n'
+                        'kommentet, es szandekosan NEM ertesited ot (KOMMENTERTESITES922)')
     p.add_argument('--comment-file', help='KOMMENT-ONLY mod: komment meglevo kartyara, ertesites nelkul')
     p.add_argument('--assignee-uj', action='store_true', dest='assignee_uj',
                    help='komment-mod: kimondva uj (a tablan meg nem szereplo) felelos-nev')
