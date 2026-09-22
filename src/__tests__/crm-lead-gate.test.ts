@@ -119,6 +119,16 @@ describe('CRM lead-felvétel kapuja (CRM1LEADKAPU922, spec 6.5)', () => {
     expect(leadSzam()).toBe(0)
   })
 
+  it('a szerző a HÍVÁS paramétere, nem a törzs egy mezője (a szerződés kimondva)', () => {
+    // Dani döntése (28285): a kérés TÖRZSE hordozza az actor mezőt, és a szerver azt adja át
+    // ennek a függvénynek. A kettő nem keverhető össze: ha a kezelő CSENDBEN visszaesne a törzs
+    // actor mezőjére, akkor egy later hívó elfelejthetné átadni, és a nyom névtelenül keletkezne,
+    // miközben minden zöld. Ezért a törzsbeli actor ÖNMAGÁBAN nem elég.
+    const r = createLead(db, { ...ALAP, actor: 'geri', next_step_at: nap(1) } as never, '', MOST)
+    expect(r.status).toBe(400)
+    expect(leadSzam()).toBe(0)
+  })
+
   it('a NYOM: mentésnél ÉS megtagadásnál is keletkezik audit sor, szerzővel', () => {
     createLead(db, { ...ALAP, next_step_at: nap(1) }, 'geri', MOST)
     createLead(db, { ...ALAP, next_step_at: nap(99) }, 'boni', MOST)
