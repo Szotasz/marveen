@@ -82,7 +82,9 @@ a LEFUTÁS a bizonyíték. Ráadásul nem kivételes eset: legalább ÖT ütemez
 **A HELYES PRÓBA, mielőtt bárkinek azt mondod, hogy rá nem vonatkozik:** nem az agens szerepe dönt
 (fő agens kontra sub-agent), hanem hogy a plugin eszközei benne vannak-e az ADOTT session
 toolsetjében. Ezt ToolSearch-csel vagy a session eszközlistájából lehet megnézni, és a kérdés egy
-lekérdezés, nem levezetés.
+lekérdezés, nem levezetés. A két mérce nem mond ellent egymásnak: a HATÓKÖR-kérdéshez (vonatkozik-e
+rá a korlát) a jelenlét elég, mert ott a plugin csatoltsága a kérdés; annak BIZONYÍTÁSÁHOZ, hogy a
+csatorna tényleg él, a lefutás kell.
 
 **ÉS A KOCKÁZAT ASZIMMETRIÁJA DÖNT, NEM A FORMA:** ugyanabban a körben felmerült a session-belső
 `/mcp` slash-parancs is, mint a CLI-hívás "másik felülete". Boni nem próbálta ki, és helyesen.
