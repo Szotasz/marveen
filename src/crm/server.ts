@@ -97,7 +97,24 @@ export function createCrmServer(opts: CrmServerOptions): http.Server {
             let r: { status: number; body: Record<string, unknown> }
             if (path === '/api/send') r = performSend(crmDb, sendProvider, body, actor)
             else if (path === '/api/send/queue') r = queueSend(crmDb, body, actor)
-            else if (path === '/api/send/outcome') r = recordOutcome(crmDb, id, actor, body.outcome as never)
+            else if (path === '/api/send/outcome') {
+              // A BIZONYITEK FORRASA A SZOLGALTATOI HIVAS, NEM A KERES TORZSE (Samu lelete).
+              //
+              // MERVE a javitas elott: bearer-tokennel bekuldott `{provider_msg_id:'FAKE-1'}`
+              // elfogadott allapotba vitte a kiserletet. Ez az "elfogadva CSAK tipizalt
+              // bizonyitekkal" allitast az API-retegen hamissa tette: ugyanaz a deklaracio-kontra-
+              // tartalom alak, ami ellen az egesz modul keszult.
+              //
+              // AMIG A KULDO STUB, ez az ut NYITVA marad, mert stub-modban nincs valodi kezbesites,
+              // tehat nincs is mirol hazudni: a fixturas kimenet bekuldese a proba resze, es a
+              // valasz `stub: true`-t hoz. Amint valodi kuldo-reteg all a helyen, az ut ELTUNIK, es
+              // a kimenet csakis a hivasbol johet.
+              if (!sendProvider.isStub) {
+                json(res, { error: 'not in this build: an outcome may only come from the provider call' }, 404)
+                return
+              }
+              r = recordOutcome(crmDb, id, actor, body.outcome as never)
+            }
             else if (path === '/api/send/check') r = checkUncertain(crmDb, id, actor, sendProvider)
             else if (path === '/api/send/resend') r = requestResend(crmDb, id, actor, body)
             else {

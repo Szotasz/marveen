@@ -275,6 +275,78 @@ describe('az újraküldés kapui', () => {
   })
 })
 
+describe('az ELAVULT ellenőrzés nem elégíti ki a kaput (Samu lelete a #1472 review-ján)', () => {
+  // MERVE A JAVITAS ELOTT: queue -> outcome(no_verdict) -> check -> resend -> outcome(no_verdict)
+  // -> resend UJ CHECK NELKUL is atment, mert a kapu csak azt nezte, VAN-E valaha ellenorzes.
+  // Pont a bizonytalan -> ujrakuldes -> bizonytalan ciklus az, ahol ez szamit: ott HALMOZODIK a
+  // nema duplikalas, es minden kor utan megint kiment egy level, amirol nem tudunk semmit.
+
+  function bizonytalannaTesz(id: number): void {
+    expect(recordOutcome(db, id, 'geri', { kind: 'no_verdict', reason: 'időtúllépés' }, MOST).body.state).toBe('uncertain')
+  }
+
+  it('a MÁSODIK körben egy korábbi ellenőrzés NEM enged újraküldést', () => {
+    const id = sorbaAllit('gmail_api')
+    bizonytalannaTesz(id)
+    checkUncertain(db, id, 'geri', createSendProviderStub(), MOST)
+    expect(requestResend(db, id, 'geri', {}, MOST).status).toBe(200)
+
+    // masodik kor: megint kiment, megint nincs nyugta
+    bizonytalannaTesz(id)
+    const ujraCheckNelkul = requestResend(db, id, 'geri', {}, MOST)
+    expect(ujraCheckNelkul.status).toBe(409)
+    expect(ujraCheckNelkul.body.error).toBe('elobb ellenorzes')
+    expect(allapot(id).state).toBe('uncertain')
+    expect(String(ujraCheckNelkul.body.message)).toContain('KORÁBBI kör')
+  })
+
+  it('ÚJ ellenőrzés után a második kör is mehet', () => {
+    const id = sorbaAllit('gmail_api')
+    bizonytalannaTesz(id)
+    checkUncertain(db, id, 'geri', createSendProviderStub(), MOST)
+    requestResend(db, id, 'geri', {}, MOST)
+    bizonytalannaTesz(id)
+    checkUncertain(db, id, 'geri', createSendProviderStub(), MOST)
+    const r = requestResend(db, id, 'geri', {}, MOST)
+    expect(r.status).toBe(200)
+    expect(allapot(id).state).toBe('queued')
+  })
+
+  it('a kapu a KIMENET utánra szűkít, nem egyszerűen "két check"-et vár', () => {
+    // Ha a feltetel "legyen legalabb ket ellenorzes" lenne, ez a sor atmenne. A helyes feltetel a
+    // SORREND: az ellenorzes a legutobbi kimenet UTAN keszuljon.
+    const id = sorbaAllit('gmail_api')
+    bizonytalannaTesz(id)
+    checkUncertain(db, id, 'geri', createSendProviderStub(), MOST)
+    checkUncertain(db, id, 'geri', createSendProviderStub(), MOST)
+    requestResend(db, id, 'geri', {}, MOST)
+    bizonytalannaTesz(id)
+    expect(requestResend(db, id, 'geri', {}, MOST).status).toBe(409)
+  })
+})
+
+describe('a kimenet ALAKJA is mérendő, különben a rossz kérés más hibának látszik', () => {
+  it('hiányzó kimenet -> 400, nem összeomlás', () => {
+    const id = sorbaAllit('resend')
+    const r = recordOutcome(db, id, 'geri', undefined as never, MOST)
+    expect(r.status).toBe(400)
+    expect(r.body.error).toBe('rossz alaku kimenet')
+    expect(allapot(id).state).toBe('queued')
+  })
+
+  it('ismeretlen fajta és szám nélküli státusz -> 400', () => {
+    const id = sorbaAllit('resend')
+    expect(recordOutcome(db, id, 'geri', { kind: 'talan' } as never, MOST).status).toBe(400)
+    expect(recordOutcome(db, id, 'geri', { kind: 'response' } as never, MOST).status).toBe(400)
+    expect(recordOutcome(db, id, 'geri', { kind: 'response', http_status: '200' } as never, MOST).status).toBe(400)
+  })
+
+  it('a szöveg megkülönbözteti a TUDÁS HIÁNYÁT az ÍTÉLETTŐL', () => {
+    const id = sorbaAllit('resend')
+    expect(String(recordOutcome(db, id, 'geri', {} as never, MOST).body.message)).toContain('no_verdict')
+  })
+})
+
 describe('"nincs bizonyíték" kontra "NINCS MÉRŐESZKÖZ" (a támogatási út)', () => {
   it('a támogatási úton az ellenőrzés nem talál, de ezt NEM "nem ment ki"-ként mondja', () => {
     const id = sorbaAllit('smtp_support')
@@ -400,6 +472,38 @@ describe('HTTP-úton: a küldés-végpontok a vázban (ugyanaz a token-kapu)', (
     const r = await post('/api/send/resend', { actor: 'geri', attempt_id: id })
     expect(r.status).toBe(409)
     expect(((await r.json()) as { error: string }).error).toBe('elobb ellenorzes')
+  })
+
+  it('VALÓDI küldő mellett a /outcome ÚT ELTŰNIK: bizonyíték csak a hívásból jöhet', async () => {
+    // Ez a lelet lenyege (Samu, #1472): stub-modban a bekuldott kimenet a PROBA resze, de amint
+    // valodi kuldo all a helyen, a keres torzsebol erkezo "bizonyitek" hazugsag lenne.
+    const elesDir = mkdtempSync(join(tmpdir(), 'crm-send-eles-'))
+    const elesDb = initCrmDatabase(join(elesDir, 'crm.db'))
+    const elesSzolgaltato = { ...createSendProviderStub(), isStub: false }
+    const elesServer = createCrmServer({ token: TOKEN, webDir: join(REPO, 'web-crm'), crmDb: elesDb, readDb: null, sendProvider: elesSzolgaltato })
+    await new Promise<void>((resolve) => elesServer.listen(0, '127.0.0.1', resolve))
+    const elesPort = (elesServer.address() as { port: number }).port
+    try {
+      const r = await fetch(`http://127.0.0.1:${elesPort}/api/send/outcome`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+        body: JSON.stringify({ actor: 'geri', attempt_id: 1, outcome: { kind: 'response', http_status: 200, provider_msg_id: 'FAKE-1' } }),
+      })
+      expect(r.status).toBe(404)
+      expect((elesDb.prepare("SELECT count(*) AS n FROM send_attempts WHERE state='accepted'").get() as { n: number }).n).toBe(0)
+    } finally {
+      await new Promise<void>((resolve) => elesServer.close(() => resolve()))
+      elesDb.close()
+      rmSync(elesDir, { recursive: true, force: true })
+    }
+  })
+
+  it('hiányzó kimenet a HTTP-úton 400, NEM 413: a rossz kérés ne tűnjön túl nagy törzsnek', async () => {
+    const q = await post('/api/send/queue', { actor: 'geri', rfc_message_id: '<http-4@pelda.hu>', provider: 'resend' })
+    const id = ((await q.json()) as { id: number }).id
+    const r = await post('/api/send/outcome', { actor: 'geri', attempt_id: id })
+    expect(r.status).toBe(400)
+    expect(((await r.json()) as { error: string }).error).toBe('rossz alaku kimenet')
   })
 
   it('GET-tel nem hívható: a küldés nem olvasás', async () => {

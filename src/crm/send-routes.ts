@@ -138,6 +138,28 @@ export function recordOutcome(
   const sor = loadAttempt(db, attemptId)
   if (!sor) return { status: 404, body: { error: 'nincs ilyen kuldes-kiserlet' } }
 
+  // A KIMENET ALAKJA IS MERENDO (Samu lelete). Enelkul egy hianyzo vagy rossz alaku `outcome`
+  // TypeError-ba fut, amit a HTTP-reteg 413 "request failed"-kent mutat -- vagyis egy ROSSZ KERES
+  // ugy nez ki, mint egy tul nagy torzs, es a hivo a rossz helyen keresi a hibat.
+  const alak = outcome as Partial<ProviderOutcome> | null | undefined
+  const alakHibas =
+    !alak ||
+    typeof alak !== 'object' ||
+    (alak.kind !== 'response' && alak.kind !== 'no_verdict') ||
+    (alak.kind === 'response' && typeof (alak as { http_status?: unknown }).http_status !== 'number')
+  if (alakHibas) {
+    return {
+      status: 400,
+      body: {
+        error: 'rossz alaku kimenet',
+        message:
+          'A szolgáltatói kimenet vagy `{kind:"response", http_status:<szám>, ...}`, vagy ' +
+          '`{kind:"no_verdict", reason:"..."}`. A hiányzó válasz NEM ugyanaz, mint egy státusz-szám: ' +
+          'az egyik a tudás hiánya, a másik ítélet, és a kettő más állapotba visz.',
+      },
+    }
+  }
+
   const k = classifyOutcome(sor.provider, sor.rfc_message_id, outcome)
   if (!transitionAllowed(sor.state, k.state)) {
     return {
@@ -335,12 +357,22 @@ export function requestResend(
 
   // (2) ELŐBB ELLENŐRZÉS. Bizonytalan állapotban a "Küldés újra" nem az első gomb: ma ez a
   //     leggyakoribb néma duplikálás forrása.
+  //     AZ ELLENORZESNEK A LEGUTOBBI KIMENET UTAN KELL KESZULNIE (Samu lelete a #1472 review-jan).
+  //     MERVE a javitas elott: queue -> outcome(no_verdict) -> check -> resend -> outcome(no_verdict)
+  //     -> resend UJ CHECK NELKUL is atment, mert a lekerdezes csak azt nezte, VAN-E valaha check.
+  //     Vagyis a masodik korben egy ELAVULT ellenorzes engedte at az ujrakuldest -- es pont a
+  //     bizonytalan -> ujrakuldes -> bizonytalan ciklus az, ahol ez szamit: ott halmozodik a nema
+  //     duplikalas. A kapu ezert a LEGUTOBBI send_outcome/send_resend sor UTANI checket keresi.
   const ellenorzes = db
     .prepare(
-      `SELECT detail FROM audit_log WHERE entity = 'send_attempt' AND entity_id = ? AND action = 'send_check'
+      `SELECT detail FROM audit_log
+        WHERE entity = 'send_attempt' AND entity_id = ? AND action = 'send_check'
+          AND id > COALESCE((SELECT max(id) FROM audit_log
+                              WHERE entity = 'send_attempt' AND entity_id = ?
+                                AND action IN ('send_outcome','send_resend')), 0)
         ORDER BY id DESC LIMIT 1`,
     )
-    .get(attemptId) as { detail: string } | undefined
+    .get(attemptId, attemptId) as { detail: string } | undefined
   if (!ellenorzes) {
     return {
       status: 409,
@@ -348,7 +380,9 @@ export function requestResend(
         error: 'elobb ellenorzes',
         message:
           'Bizonytalan állapotból csak ellenőrzés után küldhető újra. Előbb az "Állapot ellenőrzése" ' +
-          'fut le a saját Message-ID-vel, különben pont ott küldenél újra, ahol a levél már kiment.',
+          'fut le a saját Message-ID-vel, különben pont ott küldenél újra, ahol a levél már kiment. ' +
+          'Egy KORÁBBI kör ellenőrzése nem számít: minden újabb kimenet után újra kell nézni, mert ' +
+          'azóta megint kiment egy levél, amiről nem tudjuk, megérkezett-e.',
       },
     }
   }
