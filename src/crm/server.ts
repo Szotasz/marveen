@@ -12,6 +12,8 @@ import { checkBearerToken } from '../web/dashboard-auth.js'
 import { json, readBody, serveFile } from '../web/http-helpers.js'
 import { CRM_TABLES } from './db.js'
 import { createLead, todayLeads } from './leads-routes.js'
+import { checkUncertain, performSend, queueSend, recordOutcome, requestResend } from './send-routes.js'
+import { createSendProviderStub, type SendProvider } from './send-provider-stub.js'
 
 export interface CrmServerOptions {
   token: string
@@ -19,6 +21,13 @@ export interface CrmServerOptions {
   crmDb: Database.Database
   /** The fleet store opened read-only, or null when it is not available. */
   readDb: Database.Database | null
+  /**
+   * The send provider. NO REAL SENDING IN THIS BUILD (CRM2SENDSTATE922): the default is the stub,
+   * whose fixtures mirror what we MEASURED today, not what we wish were true. A real sender is a
+   * separate, owner-approved step; until then every /api/send answer carries `stub: true` so the
+   * caller cannot mistake a fixture for a delivery.
+   */
+  sendProvider?: SendProvider
 }
 
 const STATIC_ALLOWLIST: Record<string, string> = {
@@ -30,6 +39,7 @@ export const LEADS_ENDPOINT_CARD = 'CRM1LEADKAPU922'
 
 export function createCrmServer(opts: CrmServerOptions): http.Server {
   const { token, webDir, crmDb, readDb } = opts
+  const sendProvider = opts.sendProvider ?? createSendProviderStub()
   return http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     const path = url.pathname
@@ -62,6 +72,41 @@ export function createCrmServer(opts: CrmServerOptions): http.Server {
             }
             const r = createLead(crmDb, body, typeof body.actor === 'string' ? body.actor : '')
             json(res, r.body, r.status)
+          })
+          .catch((err: Error) => {
+            json(res, { error: err.name === 'RequestBodyTooLargeError' ? 'request body too large' : 'request failed' }, 413)
+          })
+        return
+      }
+      if (path.startsWith('/api/send')) {
+        if (method !== 'POST') {
+          json(res, { error: 'Method not allowed' }, 405)
+          return
+        }
+        readBody(req, { maxBytes: 64 * 1024 })
+          .then((buf) => {
+            let body: Record<string, unknown>
+            try {
+              body = buf.length ? (JSON.parse(buf.toString('utf-8')) as Record<string, unknown>) : {}
+            } catch {
+              json(res, { error: 'invalid JSON body' }, 400)
+              return
+            }
+            const actor = typeof body.actor === 'string' ? body.actor : ''
+            const id = Number(body.attempt_id)
+            let r: { status: number; body: Record<string, unknown> }
+            if (path === '/api/send') r = performSend(crmDb, sendProvider, body, actor)
+            else if (path === '/api/send/queue') r = queueSend(crmDb, body, actor)
+            else if (path === '/api/send/outcome') r = recordOutcome(crmDb, id, actor, body.outcome as never)
+            else if (path === '/api/send/check') r = checkUncertain(crmDb, id, actor, sendProvider)
+            else if (path === '/api/send/resend') r = requestResend(crmDb, id, actor, body)
+            else {
+              json(res, { error: 'Not found' }, 404)
+              return
+            }
+            // A VÁLASZ KIMONDJA, HOGY STUB. Egy "elküldve" felirat, ami mögött fixtúra áll, pont az
+            // a hamis zöld, ami ellen ez az egész modul készült.
+            json(res, { ...r.body, stub: sendProvider.isStub }, r.status)
           })
           .catch((err: Error) => {
             json(res, { error: err.name === 'RequestBodyTooLargeError' ? 'request body too large' : 'request failed' }, 413)
