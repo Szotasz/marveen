@@ -422,6 +422,9 @@ def komment_mod(a):
                  '(pl. --author Boni). Korabban ez csendben "Marveen"-re esett vissza, tehat\n'
                  'a kartyan MAS neve allt, mint aki irta -- es a kimenet kozben OK-t mondott.')
     text = open(a.comment_file, encoding='utf-8').read().strip()
+    # Az ERTESITES szovege NEM esik az ekezet-kapu ala, ugyanugy, mint a letrehozo agon:
+    # az nem a kanban-felulet, hanem inter-agent uzenet.
+    msg = open(a.msg_file, encoding='utf-8').read() if a.msg_file else ''
     _ekezet_kapu(text, a.ekezet_nelkul_szandekos)
     if not text:
         sys.exit('MEGTAGADVA: ures komment-fajl.')
@@ -533,39 +536,44 @@ def komment_mod(a):
                          f'Ez tipikusan elgepeles, ami sajat, egy-elemu oszlopba viszi a kartyat.\n'
                          + (f'Hasonlo, MAR LETEZO nevek: {", ".join(kozeli)}\n' if kozeli else '')
                          + 'Ha tenyleg uj nev (pl. uj kulso PR-szerzo), mondd ki: --assignee-uj.')
-    # ERTESITES-KAPU A KOMMENT-MODBAN (KOMMENTERTESITES922, Mira javaslata Marveen hibajara).
+    # ERTESITES-KAPU A KOMMENT-MODBAN (KOMMENTERTESITES922), a KOMMENTMSGFILE922 ota UGY, hogy a
+    # LEGOLCSOBB UT A HELYES: a --msg-file all az elso helyen, es ugyanez a futas kuldi el.
     # AZ ESET: az eszkoz eddig CSAK KIIRTA, hogy `Ertesites: nem ment (komment-only)`. Marveen ezt
     # egyetlen napon tizszer elolvasta es tovabbment; kozben egy merge-rol csak a kartyara irt, es
-    # egy tars allapot-kepe elavult. Egy jelzes, amit megszoktunk, nem kapu: a tizenegyedik
-    # alkalommal ugyanugy at lehet lepni rajta. A megoldas ezert a DONTESI PONT megszuntetese, nem
-    # a figyelmeztetes erositese -- ugyanaz a szerkezet, ami a LETREHOZO agon mar all
-    # ("flotta-gazda ertesites nelkul -> megtagadva", --no-msg-gel felulbiralva).
+    # egy tars allapot-kepe elavult. Egy jelzes, amit megszoktunk, nem kapu.
     #
     # A HATAR SZANDEKOS, es mindket negativ kontroll a tesztben all:
     #   - SAJAT kartyara irt komment ATMEGY: a sajat nyomod nem ertesites-ugy;
     #   - KULSO felelos (GitHub-nev, nem flotta-agens) ATMEGY: nekik nem inter-agent uzenet megy.
-    # A MOZGATAST IS NEZZUK, nem csak a jelenlegi felelost: ha ugyanez a futas ATADJA a kartyat, a
-    # REGI felelosnek epp ugy tudnia kell rola, mint az ujnak, tehat mindketto szamit.
+    # A MOZGATAST IS NEZZUK: ha ugyanez a futas ATADJA a kartyat, a REGI felelosnek epp ugy tudnia
+    # kell rola, mint az ujnak, tehat mindketto szamit -- es az ERTESITES PONTOSAN EZT a halmazt
+    # kapja, nem egy ujraszarmaztatottat (KOMMENTMSGFILE922 b) kikotes).
     _erintett = {x for x in (elotte['assignee'], uj_felelos) if x}
     _ertesitendo = sorted(x for x in _erintett
                           if x in FLEET and x != (a.author or '').strip().lower())
-    if _ertesitendo and not a.nincs_ertesites_szandekos:
+    # ELLENTMONDAS-KAPU, ugyanaz az alak, mint a --no-msg + --msg-file parosnal a letrehozo agon:
+    # a ket szandek kozul nem talalhato ki, melyik az igazi, tehat nem valasztunk helyette.
+    if a.msg_file and a.nincs_ertesites_szandekos:
+        sys.exit('MEGTAGADVA: --msg-file ES --nincs-ertesites-szandekos egyszerre -- a ketto ellentmond\n'
+                 'egymasnak. Vagy ertesitesz (--msg-file), vagy kimondva nem (--nincs-ertesites-szandekos).')
+    if a.msg_file and not _ertesitendo:
+        sys.exit('MEGTAGADVA: --msg-file, de NINCS kit ertesiteni ezen a kartyan: a felelos vagy te magad\n'
+                 'vagy ("' + str(a.author) + '"), vagy nem flotta-agens. Nem talalunk ki cimzettet.\n'
+                 'Ha egy KONKRET agensnek akarsz irni, az a kulon ut: scripts/agent-msg-send.sh <cimzett> <fajl>.')
+    if _ertesitendo and not a.msg_file and not a.nincs_ertesites_szandekos:
         _kik = ', '.join(_ertesitendo)
         sys.exit('MEGTAGADVA: a kartya felelose "' + _kik + '" (flotta-agens), te pedig "'
                  + str(a.author) + '" vagy,\n'
-                 'es a komment-mod NEM kuld ertesitest. A KARTYA NEM ERTESITES: ez a komment ugy\n'
-                 'allna a tablan, hogy a felelos nem tud rola.\n'
-                 '  HA SZOLSZ (ez a szokasos): ird meg a kommentet, majd kuldj uzenetet is --\n'
-                 '    scripts/agent-msg-send.sh ' + _ertesitendo[0] + ' <szoveg-fajl>\n'
-                 '  HA CSAK NYOMOT HAGYSZ a jovonek, es a felelosnek NEM kell tudnia rola:\n'
-                 '    mondd ki a --nincs-ertesites-szandekos kapcsoloval.\n'
-                 '  (A --msg-file komment-modban NEM jarhato ut: azt a keveres-kapu tiltja, mert az\n'
-                 '   ertesites a letrehozo agahoz tartozik.)')
-
+                 'es igy a komment NEM ertesit senkit. A KARTYA NEM ERTESITES: ez a komment ugy allna\n'
+                 'a tablan, hogy a felelos nem tud rola.\n'
+                 '  EZ A LEGEGYSZERUBB UT: add hozza a --msg-file <fajl> kapcsolot, es UGYANEZ a futas\n'
+                 '    elkuldi az ertesitest ide: ' + _kik + '\n'
+                 '  Ha kulon lepesben szolnal: scripts/agent-msg-send.sh ' + _ertesitendo[0] + ' <fajl>\n'
+                 '  Ha csak NYOMOT hagysz a jovonek, es a felelosnek nem kell tudnia rola:\n'
+                 '    mondd ki a --nincs-ertesites-szandekos kapcsoloval.')
     if a.nincs_ertesites_szandekos and _ertesitendo:
-        # UGYANAZ A SZIMMETRIA, MINT A --no-msg-nel a letrehozo agon: a kimondott kihagyas
-        # LATSZODJON a kimeneten. Enelkul a kapcsolo maga valna szokassá -- ugyanaz a vaksag,
-        # amit a kapu megszuntet, csak egy lepessel arrebb tolva.
+        # UGYANAZ A SZIMMETRIA, MINT A --no-msg-nel: a kimondott kihagyas LATSZODJON a kimeneten,
+        # kulonben maga a KAPCSOLO valik szokassá -- ugyanaz a vaksag egy lepessel arrebb.
         print('FIGYELEM: --nincs-ertesites-szandekos egy flotta-felelosu ('
               + ', '.join(_ertesitendo) + ') kartyan. Ez KIMONDOTT kihagyas: a felelos NEM fog '
               'tudni errol a kommentrol.')
@@ -582,7 +590,9 @@ def komment_mod(a):
     if a.dry_run:
         terv = (', '.join(f'{k}: {str(elotte[k])[:57]} -> {str(v)[:57]}' for k, v in valtozik.items()) or 'nincs')
         print(f'DRY-RUN OK (komment-mod, DB: {DB}): kartya letezik ({card}), kapuk atmentek.\n'
-              f'  fejlec: {fejlec} | szoveg {len(text)} kar | ertesites: NINCS (komment-only)\n'
+              f'  fejlec: {fejlec} | szoveg {len(text)} kar | ertesites: '
+              + (f'{len(msg)} kar -> ' + ', '.join(_ertesitendo) + ' (felado: '
+                 + (a.from_agent or a.author).strip().lower() + ')' if msg else 'NINCS (komment-only)') + '\n'
               f'  mezomozgatas: {terv}'
               + (f' | mar ezen az erteken all: {valtozatlan}' if valtozatlan else ''))
         if valtozik:
@@ -599,7 +609,49 @@ def komment_mod(a):
     if back[3] != now:
         sys.exit(f'HIBA: a visszaolvasott created_at ({back[3]}) nem a fejlec ideje ({now}).')
     print(f'KOMMENT OK (visszaolvasva innen: {DB}): comment_id={back[0]} author={back[1]} '
-          f'{back[2]} kar, created_at==fejlec-ido. Ertesites: nem ment (komment-only).')
+          f'{back[2]} kar, created_at==fejlec-ido. '
+          + ('Ertesites: ugyanebben a futasban megy.' if msg else 'Ertesites: nem ment (komment-only).'))
+
+
+    # ERTESITES UGYANEBBEN A FUTASBAN (KOMMENTMSGFILE922). A CIMZETT-HALMAZ PONTOSAN az, amit a
+    # kapu fent kiszamolt (_ertesitendo) -- NEM ujraszarmaztatjuk. Ha ket helyen szarmaztatnank,
+    # a kapu panaszkodhatna az egyik nevre, mikozben az uzenet egy masikhoz megy, es a teszt
+    # mindkettot zoldnek latna.
+    if msg:
+        frm = (a.from_agent or a.author).strip().lower()
+        tok = _token_kapu(dry_run=False)
+        kuldott = []
+        for cimzett in _ertesitendo:
+            req = urllib.request.Request(API,
+                data=json.dumps({'from': frm, 'to': cimzett, 'content': msg}).encode(),
+                headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + tok},
+                method='POST')
+            try:
+                r = json.load(urllib.request.urlopen(req))
+            except Exception as e:
+                sys.exit('A KOMMENT BEIRODOTT, DE AZ UZENET NEM MENT KI (' + cimzett + '): ' + str(e)
+                         + '\nKuldd el kezzel, kulonben a felelos nem tud a kommentrol.')
+            mid = r.get('id')
+            if not mid:
+                sys.exit('A KOMMENT BEIRODOTT, de az uzenet-valasz nem ad id-t: ' + str(r)[:200])
+            sor = db.execute('SELECT id,from_agent,to_agent,status FROM agent_messages WHERE id=?',
+                             (mid,)).fetchone()
+            if not sor:
+                sys.exit('A KOMMENT BEIRODOTT, de a(z) ' + str(mid) + ' uzenet-sor NEM OLVASHATO VISSZA.')
+            # A visszaolvasas a FELADOT es a CIMZETTET is meri: a sor allhatna rossz neven.
+            if sor[1] != frm or sor[2] != cimzett:
+                sys.exit('HIBA: a sor nem azt hordozza, amit kuldtunk. Vart: ' + frm + ' -> ' + cimzett
+                         + '; kapott: ' + str(sor[1]) + ' -> ' + str(sor[2]) + '.')
+            kuldott.append((mid, cimzett))
+            print('UZENET OK (visszaolvasva a sorbol, felado is): ' + str(sor))
+        # NYOM A KARTYAN, a MERT halmazzal: egy kesobbi olvaso lassa, kihez ert el ez a komment.
+        db.execute('INSERT INTO kanban_comments (card_id,author,content,created_at) VALUES (?,?,?,?)',
+                   (a.id, 'kartya-es-ertesites',
+                    '[kartya-es-ertesites.py] A komment es az ertesites EGY futasban keszult. '
+                    + 'Ertesites: ' + ', '.join('msg ' + str(m) + ' -> ' + c for m, c in kuldott)
+                    + ' (felado: ' + frm + '). Mindket iras visszaolvasva.', now))
+        db.commit()
+        print('NYOM OK: kartya-komment az ertesites utjarol (' + ', '.join(str(m) for m, _ in kuldott) + ')')
 
     if valtozatlan:
         print(f'FIGYELEM: mar ezen az erteken all, nem mozgatom: '
@@ -771,11 +823,18 @@ def main():
         # nem tudott javitani -- egy elsore rosszul megirt leiras VEGLEGES volt. A tiltas nem
         # leiras-vedelem volt, hanem hianyzo UPDATE-ut: a mozgato ag egyszeruen nem ismerte a
         # mezot (merve 2026-09-19, Geri). A --msg-file marad tiltva: az ERTESITES, ami a
-        # letrehozashoz tartozik, nem a kartya allapotahoz.
-        if a.msg_file:
-            sys.exit('MEGTAGADVA: a --comment-file nem keverheto a --msg-file-lal -- az ERTESITES a\n'
-                     'letrehozo agé (uj kartya + gazda-ertesites egy futasban).\n'
-                     'A --title/--status/--priority/--assignee/--desc-file MOZGATJA a meglevo kartyat.')
+        # letrehozashoz tartozik, nem a kartya allapotahoz. -- LASD LENT: FELOLDVA.
+        # A --msg-file TILTASA FELOLDVA (KOMMENTMSGFILE922, 2026-09-22). A tiltas indoka az volt,
+        # hogy "az ERTESITES a letrehozashoz tartozik, nem a kartya allapotahoz". A KOMMENTERTESITES922
+        # ezt a premisszat CAFOLJA: ott mondtuk ki, hogy egy MAS flotta-agens kartyajara irt KOMMENT is
+        # ertesitest KOVETEL. Nem lehet ugyanabban az eszkozben kotelezove tenni az ertesitest es kozben
+        # tiltani a kapcsolot, ami megadja.
+        # A MASODIK, MERT OK: a megtagadas OLCSOBBA tette a kibuvot a helyes utnal -- a helyes ut egy
+        # MASIK szkript volt kulon lepessel, a kibuvo EGY kapcsolo ugyanazon a parancssoron. Aki siet,
+        # a kapcsolot valasztja, es a kapu teljesitettnek erzodik.
+        # A HARMADIK: ugyanez a tiltas mar egyszer tevedett ugyanigy. A --desc-file is itt allt, es
+        # 2026-09-19-en (EKEZETKAPU919) merve kiderult, hogy nem leiras-vedelem volt, hanem hianyzo
+        # UPDATE-ut. Mindket indok a FOGALOM birtoklasarol szolt, nem mert korlatrol.
         komment_mod(a)
         return
     if a.assignee_uj:
