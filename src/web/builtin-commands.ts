@@ -97,9 +97,16 @@ export function measuredModelLines(
   configured: string,
 ): { head: string[]; warn: string | null } {
   const head: string[] = []
-  head.push(`Most fut:    ${measured ? `${measured.model} (utolsó kör ${formatDayClock(measured.atMs)})` : notMeasurable('nincs assistant-sor a transzkriptben')}`)
   const pending = lastSent !== null && (measured === null || lastSent.at > measured.atMs)
-  if (pending && lastSent) head.push(`Azóta:       /model ${lastSent.model} elküldve ${formatDayClock(lastSent.at)}; a következő kör méri`)
+  if (pending && lastSent?.acked) {
+    // The CLI confirmed the switch after the last measured turn: that turn's
+    // model is history. Owner feedback: "Átváltva" next to a "Most fut" still
+    // naming the old model read as a contradiction.
+    head.push(`Most fut:    ${lastSent.model} (váltva ${formatDayClock(lastSent.at)}, a Claude Code visszaigazolta; rajta még nem futott kör)`)
+  } else {
+    head.push(`Most fut:    ${measured ? `${measured.model} (utolsó kör ${formatDayClock(measured.atMs)})` : notMeasurable('nincs assistant-sor a transzkriptben')}`)
+    if (pending && lastSent) head.push(`Azóta:       /model ${lastSent.model} elküldve ${formatDayClock(lastSent.at)}, visszaigazolás nélkül; a következő kör méri`)
+  }
   const expected = holdModel ?? configured
   const warn = measured && !pending && modelsDiffer(expected, measured.model)
     ? `FIGYELEM: a futó modell eltér a ${holdModel ? 'tartásétól' : 'beállítottól'}.`

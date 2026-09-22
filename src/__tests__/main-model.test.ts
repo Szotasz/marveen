@@ -309,7 +309,10 @@ describe('/model acknowledgement, exact expiry, stale measurement', () => {
     writeChoices()
     const d = deps()
     await setModel(['opus', '3m'], d)
-    expect(readLastSent(d.lastSentFile)).toEqual({ model: 'claude-opus-5[1m]', at: T0 })
+    expect(readLastSent(d.lastSentFile)).toEqual({ model: 'claude-opus-5[1m]', at: T0, acked: true })
+    const blind = deps({}, { noAck: true })
+    await setModel(['opus', '3m'], blind)
+    expect(readLastSent(blind.lastSentFile)!.acked).toBe(false)
   })
 
   it('the expiry revert reports the acknowledgement too', async () => {
@@ -351,20 +354,35 @@ describe('/model status: the measurement is shown with its age', () => {
   const at1447 = Date.parse('2026-09-22T12:47:00Z')
   const at1452 = Date.parse('2026-09-22T12:52:00Z')
 
-  it('a /model sent after the last measured turn is named, and no false "eltér"', () => {
-    const r = measuredModelLines({ model: 'claude-opus-5', atMs: at1447 }, { model: BASE, at: at1452 }, null, BASE)
-    expect(r.head[0]).toMatch(/^Most fut: {4}claude-opus-5 \(utolsó kör .*14:47\)$/)
-    expect(r.head[1]).toMatch(/^Azóta: .*\/model claude-sonnet-5 elküldve .*14:52; a következő kör méri$/)
+  // Owner feedback: "Átváltva" next to a "Most fut" naming the pre-switch model
+  // read as a contradiction -- a CLI-confirmed switch after the last turn IS
+  // what runs now; only an unconfirmed send keeps the old reading.
+  it('a CLI-confirmed switch after the last turn: "Most fut" names the new model, no "Azóta" line', () => {
+    const r = measuredModelLines({ model: 'claude-sonnet-5', atMs: at1447 }, { model: 'claude-opus-5[1m]', at: at1452, acked: true }, 'claude-opus-5[1m]', BASE)
+    expect(r.head).toHaveLength(1)
+    expect(r.head[0]).toMatch(/^Most fut: {4}claude-opus-5\[1m\] \(váltva .*14:52, a Claude Code visszaigazolta; rajta még nem futott kör\)$/)
     expect(r.warn).toBeNull()
   })
 
+  it('an unconfirmed send after the last turn: the old reading stays, the send is named, no false "eltér"', () => {
+    const r = measuredModelLines({ model: 'claude-opus-5', atMs: at1447 }, { model: BASE, at: at1452, acked: false }, null, BASE)
+    expect(r.head[0]).toMatch(/^Most fut: {4}claude-opus-5 \(utolsó kör .*14:47\)$/)
+    expect(r.head[1]).toMatch(/^Azóta: .*\/model claude-sonnet-5 elküldve .*14:52, visszaigazolás nélkül; a következő kör méri$/)
+    expect(r.warn).toBeNull()
+  })
+
+  it('a turn after the switch: the measurement wins again', () => {
+    const r = measuredModelLines({ model: 'claude-opus-5', atMs: at1452 }, { model: 'claude-opus-5[1m]', at: at1447, acked: true }, 'claude-opus-5[1m]', BASE)
+    expect(r.head[0]).toMatch(/^Most fut: {4}claude-opus-5 \(utolsó kör .*14:52\)$/)
+  })
+
   it('during a hold the expected model is the hold model, not the configured one', () => {
-    expect(measuredModelLines({ model: 'claude-opus-5', atMs: at1452 }, { model: 'claude-opus-5[1m]', at: at1447 }, 'claude-opus-5[1m]', BASE).warn).toBeNull()
+    expect(measuredModelLines({ model: 'claude-opus-5', atMs: at1452 }, { model: 'claude-opus-5[1m]', at: at1447, acked: true }, 'claude-opus-5[1m]', BASE).warn).toBeNull()
     expect(measuredModelLines({ model: 'claude-haiku-4-5', atMs: at1452 }, null, 'claude-opus-5[1m]', BASE).warn).toMatch(/eltér a tartásétól/)
   })
 
   it('no hold, nothing pending, a different measured model: the warning stays', () => {
-    expect(measuredModelLines({ model: 'claude-opus-5', atMs: at1452 }, { model: BASE, at: at1447 }, null, BASE).warn).toMatch(/eltér a beállítottól/)
+    expect(measuredModelLines({ model: 'claude-opus-5', atMs: at1452 }, { model: BASE, at: at1447, acked: true }, null, BASE).warn).toMatch(/eltér a beállítottól/)
   })
 })
 

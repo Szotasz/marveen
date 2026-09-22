@@ -47,19 +47,22 @@ export const MODEL_HOLD_FILE = join(STORE_DIR, 'main-model-hold.json')
 /** The last /model this module sent to the session: { model, at } (epoch ms). */
 export const MODEL_LAST_SENT_FILE = join(STORE_DIR, 'main-model-last-sent.json')
 
-export interface LastSent { model: string; at: number }
+/** acked: the CLI printed its "Set model to" line for this send. */
+export interface LastSent { model: string; at: number; acked: boolean }
 
 export function readLastSent(file: string): LastSent | null {
   try {
     const p = JSON.parse(readFileSync(file, 'utf-8')) as Partial<LastSent>
-    return typeof p.model === 'string' && typeof p.at === 'number' && Number.isFinite(p.at) ? { model: p.model, at: p.at } : null
+    return typeof p.model === 'string' && typeof p.at === 'number' && Number.isFinite(p.at)
+      ? { model: p.model, at: p.at, acked: p.acked === true }
+      : null
   } catch { return null }
 }
 
-function writeLastSent(file: string, model: string, at: number): void {
+function writeLastSent(file: string, model: string, at: number, acked: boolean): void {
   try {
     mkdirSync(dirname(file), { recursive: true })
-    atomicWriteFileSync(file, JSON.stringify({ model, at }) + '\n')
+    atomicWriteFileSync(file, JSON.stringify({ model, at, acked }) + '\n')
   } catch (err) {
     logger.warn({ err, file }, 'main-model: last-sent marker not written')
   }
@@ -270,14 +273,17 @@ export const liveModelDeps: ModelDeps = {
 async function sendModel(modelId: string, deps: ModelDeps): Promise<boolean> {
   const before = deps.ackCount()
   await deps.send(`/model ${modelId}`)
-  writeLastSent(deps.lastSentFile, modelId, deps.now())
-  if (before === null) return false
-  for (let waited = 0; waited < ACK_WAIT_MS; waited += ACK_STEP_MS) {
-    await deps.sleep(ACK_STEP_MS)
-    const after = deps.ackCount()
-    if (after !== null && after > before) return true
+  const sentAt = deps.now()
+  let acked = false
+  if (before !== null) {
+    for (let waited = 0; waited < ACK_WAIT_MS && !acked; waited += ACK_STEP_MS) {
+      await deps.sleep(ACK_STEP_MS)
+      const after = deps.ackCount()
+      acked = after !== null && after > before
+    }
   }
-  return false
+  writeLastSent(deps.lastSentFile, modelId, sentAt, acked)
+  return acked
 }
 
 // A hold that expired while the session was busy: the Stop hook reports the
