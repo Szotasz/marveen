@@ -173,6 +173,33 @@ describe('http skeleton', () => {
   })
 })
 
+describe('actor field (decision 2026-09-22, section 4 of the breakdown)', () => {
+  it('the served UI carries the "Ki vagy" field and a submit button that starts disabled', async () => {
+    const html = await (await fetch(url('/'))).text()
+    expect(html).toContain('data-testid="actor"')
+    expect(html).toMatch(/id="lead-submit"[^>]*disabled/)
+  })
+  it('the served app.js sends the author IN THE BODY (actor:) and the bearer token on /api/ calls', async () => {
+    const js = await (await fetch(url('/app.js'))).text()
+    expect(js).toContain('actor: a')
+    expect(js).toContain("'/api/leads'")
+    expect(js).toContain("'/api/leads/today'")
+    expect(js).toContain("'Bearer ' + sessionToken")
+    // never a config/constant author: no env, no 'system'
+    expect(js).not.toMatch(/actor:\s*['"]system['"]/)
+    expect(js).not.toContain('CRM_ACTOR')
+  })
+  it('the Leadek tab carries its notice and the served app.js ships no demo lead titles (Samu review on #1473)', async () => {
+    const html = await (await fetch(url('/'))).text()
+    expect(html).toContain('id="leadek-notice"')
+    expect(html).toContain('nem példaadat')
+    const js = await (await fetch(url('/app.js'))).text()
+    expect(js).not.toContain('Comline: voice-agent')
+    expect(js).not.toContain('Solymár')
+    expect(js).not.toMatch(/DEMO\.leads/)
+  })
+})
+
 describe('port resolution', () => {
   it('defaults to 3421 and honours CRM_PORT', () => {
     expect(CRM_DEFAULT_PORT).toBe(3421)

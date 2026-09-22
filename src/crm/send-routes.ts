@@ -363,6 +363,13 @@ export function requestResend(
   //     Vagyis a masodik korben egy ELAVULT ellenorzes engedte at az ujrakuldest -- es pont a
   //     bizonytalan -> ujrakuldes -> bizonytalan ciklus az, ahol ez szamit: ott halmozodik a nema
   //     duplikalas. A kapu ezert a LEGUTOBBI send_outcome/send_resend sor UTANI checket keresi.
+  //     A LISTA `send_resend` TAGJA MA REDUNDANS, ES SZANDEKOSAN ALL ITT (Samu merte mutanssal,
+  //     #1472 review; a tag elhagyasa TULELO, EKVIVALENS mutans). Ma ugyanis a kapu csak
+  //     `uncertain` allapotban fut, oda pedig EGYEDUL a `recordOutcome` visz, ami ugyanabban a
+  //     tranzakcioban `send_outcome` sort ir -- tehat a ket halmaz maximuma azonos. A tag azert
+  //     marad, mert a kapu nem tamaszkodhat egy MASIK fuggveny invarianciajara: ha egy kesobbi iro
+  //     kimenet-sor nelkul visz `uncertain`-be, nelkule pont az elavult-checkes ujrakuldes allna
+  //     vissza. Az ar egy SQL-tag, a kockazat egy nema duplikalas-ciklus. NE VEDD KI.
   const ellenorzes = db
     .prepare(
       `SELECT detail FROM audit_log

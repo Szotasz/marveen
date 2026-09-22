@@ -33,6 +33,22 @@ Ugyanaz a bearer token és ugyanaz az ellenőrzés, mint a dashboardon (`checkBe
 | `POST /api/leads` | bearer | 404, a kártya-azonosítóval: a végpont és a kapuja CRM1LEADKAPU922 (Geri) |
 | `/`, `/app.js`, `/style.css` | nincs | a `web-crm/` statikus váza (négy képernyő), más fájl 404 |
 
+## Token a felületen, és a szerző ("Ki vagy")
+
+A `web-crm/` ugyanúgy veszi át a tokent, mint a dashboard: egyszer az URL `?token=<dashboard token>`
+paraméteréből (a böngésző a paramétert azonnal eldobja a címsorból, a token localStorage-ba kerül,
+kulcs `marveen-crm-token`), utána minden same-origin `/api/` hívás `Authorization: Bearer`-rel megy.
+Token nélkül a Ma nézet üres és kimondja, hogy miért (401), nem példaadatot mutat.
+
+A szerző (döntés 2026-09-22, a felbontás-fájl 4. szakasza): a KÉRÉS hordozza, a törzs `actor`
+mezőjében. A fejléc "Ki vagy" mezője tölti, nézőnként localStorage-ban (`crm.actor`); üresen a
+Lead felvétele gomb tiltott, de az első tanú a szerver: üres vagy csak-whitespace `actor`-t a kapu
+400-zal megtagad. A szolgáltatás SOHA nem tölt szerzőt konfigból vagy konstansból (nincs
+`CRM_ACTOR`, nincs `system`). Ugyanez a szabály minden író végpontra.
+
+Élő a felületen: `POST /api/leads` (Lead felvétele), `GET /api/leads/today` (Ma). Még példaadat:
+a Leadek lista (nincs lista-végpont az 1. ütemben) és a Szál (CRM1MAILSYNC922).
+
 ## Bridge: a port bejegyzése (meglévő mechanizmus, új Bridge-funkció nem kell)
 
 A Bridge a hoszt loopback-szolgáltatásait ssh-alagúton éri el; hogy MELYIK portokat, azt a
