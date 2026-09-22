@@ -186,6 +186,15 @@ describe('actor field (decision 2026-09-22, section 4 of the breakdown)', () => 
     expect(js).not.toMatch(/actor:\s*['"]system['"]/)
     expect(js).not.toContain('CRM_ACTOR')
   })
+  it('the Leadek tab carries its notice and the served app.js ships no demo lead titles (Samu review on #1473)', async () => {
+    const html = await (await fetch(url('/'))).text()
+    expect(html).toContain('id="leadek-notice"')
+    expect(html).toContain('nem példaadat')
+    const js = await (await fetch(url('/app.js'))).text()
+    expect(js).not.toContain('Comline: voice-agent')
+    expect(js).not.toContain('Solymár')
+    expect(js).not.toMatch(/DEMO\.leads/)
+  })
 })
 
 describe('port resolution', () => {

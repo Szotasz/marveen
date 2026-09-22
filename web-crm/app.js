@@ -28,12 +28,8 @@
     return fetch(path, init)
   }
 
+  // Leadek: NO demo rows. There is no list endpoint in phase 1; the table stays empty with a notice, never example data.
   var DEMO = {
-    leads: [
-      { id: 1, title: 'Comline: voice-agent bővítés', contact: 'Hidli Gábor', origin: 'meeting', status: 'open', next_step_type: 'offer', next_step_at: '2026-09-19', next_step_text: 'Ajánlat kiküldése a bővítésre' },
-      { id: 2, title: 'Marveen telepítés, Solymár', contact: 'pelda@example.com', origin: 'email', status: 'open', next_step_type: 'email', next_step_at: '2026-09-22', next_step_text: 'Időpont-javaslat visszaírása' },
-      { id: 4, title: 'Előadás-felkérés, iskola', contact: 'iskola@example.org', origin: 'referral', status: 'parked', next_step_type: 'meeting', next_step_at: '2026-10-02', next_step_text: 'Találkozó egyeztetése az igazgatóval' }
-    ],
     thread: [
       { dir: 'in', at: '2026-09-18 09:12', from: 'pelda@example.com', text: 'Érdekelne a Marveen telepítés, mikor érnétek rá?' },
       { dir: 'out', at: '2026-09-18 10:05', from: 'szota.szabolcs.ai@gmail.com', text: 'Jövő héten kedd vagy csütörtök délelőtt megfelel?' },
@@ -77,20 +73,10 @@
     }).catch(function (e) { notice.textContent = 'A Ma nézet nem tölthető be: ' + e.message; notice.className = 'notice error'; renderMaRows([]) })
   }
 
-  // --- Leadek: still demo (no list endpoint in this phase) ---
+  // --- Leadek: no list endpoint in phase 1 (comes after CRM1MAILSYNC922); the table is empty, the notice says so ---
   function renderLeads() {
-    var status = document.getElementById('filter-status').value
-    var origin = document.getElementById('filter-origin').value
-    var text = document.getElementById('filter-text').value.trim().toLowerCase()
     var body = document.getElementById('leads-body'); body.innerHTML = ''
-    DEMO.leads.filter(function (l) {
-      return (!status || l.status === status) && (!origin || l.origin === origin) && (!text || l.title.toLowerCase().indexOf(text) >= 0)
-    }).forEach(function (l) {
-      var tr = document.createElement('tr')
-      ;[l.title, l.contact, LABEL.origin[l.origin], LABEL.status[l.status], LABEL.step[l.next_step_type] + ': ' + l.next_step_text, l.next_step_at].forEach(function (v) { tr.appendChild(el('td', null, v)) })
-      body.appendChild(tr)
-    })
-    if (!body.children.length) { var tr = document.createElement('tr'); tr.appendChild(el('td', 'muted', 'Nincs találat.')); body.appendChild(tr) }
+    var tr = document.createElement('tr'); tr.appendChild(el('td', 'muted', 'Még nincs lista-végpont: a lista üres, nem példaadat.')); body.appendChild(tr)
   }
 
   // --- Szal: demo until CRM1MAILSYNC922 ---
