@@ -67,7 +67,7 @@ describe('pending write', () => {
     const d = deps()
     expect(await runPendingWrite(T0 + 30_000, d)).toBe('ran')
     expect(d.ran).toEqual(['/model sonnet keep'])
-    expect(d.notes[0]).toMatch(/^\/model sonnet keep \(a foglalt session után\): Átváltva: sonnet$/)
+    expect(d.notes[0]).toMatch(/^\/model sonnet keep \(a foglalt session után, 30 mp várakozás\): Átváltva: sonnet$/)
     expect(existsSync(file)).toBe(false)
   })
 

@@ -350,6 +350,7 @@ export function onMainTurnEnded(nowMs: number, holdFile: string = MODEL_HOLD_FIL
   let armed = false
   // A write the session was busy for waits for exactly this moment.
   if (readPendingWrite()) {
+    logger.info({ inMs: SWITCH_TURN_QUIET_MS + 1000 }, 'main-model: turn ended, pending write armed')
     setTimeout(() => {
       runPendingWrite(Date.now()).catch(err => logger.warn({ err }, 'main-model: pending write failed'))
     }, SWITCH_TURN_QUIET_MS + 1000).unref?.()

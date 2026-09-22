@@ -65,6 +65,8 @@ export function queuePendingWrite(text: string, ownerId: number, nowMs: number, 
   try {
     mkdirSync(dirname(file), { recursive: true })
     atomicWriteFileSync(file, JSON.stringify({ text, ownerId, queuedAt: nowMs, deadline }) + '\n')
+    logger.info({ text, deadline: new Date(deadline).toISOString(), retry: retryingDeadline !== null },
+      'pending-write: queued (session busy)')
   } catch (err) {
     logger.warn({ err, file }, 'pending-write: not queued')
   }
@@ -94,8 +96,10 @@ export const livePendingDeps: PendingDeps = {
 export async function runPendingWrite(nowMs: number, deps: PendingDeps = livePendingDeps): Promise<PendingOutcome> {
   const pending = readPendingWrite(deps.file)
   if (!pending) return 'none'
+  const waitedMs = Math.max(0, nowMs - pending.queuedAt)
   if (nowMs > pending.deadline) {
     clearPendingWrite(deps.file)
+    logger.warn({ text: pending.text, waitedMs }, 'pending-write: deadline passed, dropped')
     await deps.notify(`Nem futott le: ${pending.text} -- a session ${Math.round(PENDING_WRITE_TTL_MS / 60_000)} percig foglalt maradt. Küldd el újra, ha még kell.`)
     return 'expired'
   }
@@ -113,7 +117,12 @@ export async function runPendingWrite(nowMs: number, deps: PendingDeps = livePen
   } finally {
     retryingDeadline = null
   }
-  if (readPendingWrite(deps.file)) return 'still-busy'   // the run re-queued it
-  await deps.notify(`${pending.text} (a foglalt session után): ${replies.join('\n')}`)
+  if (readPendingWrite(deps.file)) {
+    logger.info({ text: pending.text, waitedMs }, 'pending-write: still busy, waiting for the next turn end')
+    return 'still-busy'   // the run re-queued it
+  }
+  logger.info({ text: pending.text, waitedMs, replies: replies.length },
+    'pending-write: ran after the session went quiet')
+  await deps.notify(`${pending.text} (a foglalt session után, ${Math.round(waitedMs / 1000)} mp várakozás): ${replies.join('\n')}`)
   return 'ran'
 }
