@@ -148,8 +148,11 @@ describe('http skeleton', () => {
     expect(maBody.leads.map((l) => l.title)).toEqual(['HTTP-uton felvett lead'])
     expect(maBody.sleeping.count).toBe(0)
 
-    // ami NEM szallt le, tovabbra is 404, es megnevezi a kartyat
-    const ismeretlen = await fetch(url('/api/leads/9999/postpone'), { method: 'POST', headers: { Authorization: `Bearer ${TOKEN}` } })
+    // ami NEM szallt le, tovabbra is 404, es megnevezi a kartyat.
+    // (Korabban a `/postpone` allt itt; az a 2. utemben LESZALLT -- CRM2SENDSTATE922 --, tehat ez
+    // az allitas mostantol a HIANYT rogzitene keszkent. Egy olyan lead-utvonal all a helyen, ami
+    // tovabbra sincs: a felelos-atallitas.)
+    const ismeretlen = await fetch(url('/api/leads/9999/assign'), { method: 'POST', headers: { Authorization: `Bearer ${TOKEN}` } })
     expect(ismeretlen.status).toBe(404)
     expect((await ismeretlen.json() as { error: string }).error).toContain(LEADS_ENDPOINT_CARD)
   })
@@ -167,6 +170,33 @@ describe('http skeleton', () => {
     for (const p of ['/../package.json', '/package.json', '/index.js', '/web-crm/app.js', '/%2e%2e/package.json', '/store/crm.db']) {
       expect((await fetch(url(p))).status, p).toBe(404)
     }
+  })
+})
+
+describe('actor field (decision 2026-09-22, section 4 of the breakdown)', () => {
+  it('the served UI carries the "Ki vagy" field and a submit button that starts disabled', async () => {
+    const html = await (await fetch(url('/'))).text()
+    expect(html).toContain('data-testid="actor"')
+    expect(html).toMatch(/id="lead-submit"[^>]*disabled/)
+  })
+  it('the served app.js sends the author IN THE BODY (actor:) and the bearer token on /api/ calls', async () => {
+    const js = await (await fetch(url('/app.js'))).text()
+    expect(js).toContain('actor: a')
+    expect(js).toContain("'/api/leads'")
+    expect(js).toContain("'/api/leads/today'")
+    expect(js).toContain("'Bearer ' + sessionToken")
+    // never a config/constant author: no env, no 'system'
+    expect(js).not.toMatch(/actor:\s*['"]system['"]/)
+    expect(js).not.toContain('CRM_ACTOR')
+  })
+  it('the Leadek tab carries its notice and the served app.js ships no demo lead titles (Samu review on #1473)', async () => {
+    const html = await (await fetch(url('/'))).text()
+    expect(html).toContain('id="leadek-notice"')
+    expect(html).toContain('nem példaadat')
+    const js = await (await fetch(url('/app.js'))).text()
+    expect(js).not.toContain('Comline: voice-agent')
+    expect(js).not.toContain('Solymár')
+    expect(js).not.toMatch(/DEMO\.leads/)
   })
 })
 

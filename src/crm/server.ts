@@ -13,6 +13,7 @@ import { json, readBody, serveFile } from '../web/http-helpers.js'
 import { CRM_TABLES } from './db.js'
 import { createLead, todayLeads } from './leads-routes.js'
 import { checkUncertain, performSend, queueSend, recordOutcome, requestResend } from './send-routes.js'
+import { dailySummary, postponeLead, resolveExpired } from './lead-flow.js'
 import { createSendProviderStub, type SendProvider } from './send-provider-stub.js'
 import { listThreads, getThread, listUnthreaded, syncStatus } from './thread-routes.js'
 import { STATE_PATH } from './sync.js'
@@ -126,6 +127,39 @@ export function createCrmServer(opts: CrmServerOptions): http.Server {
             // A VÁLASZ KIMONDJA, HOGY STUB. Egy "elküldve" felirat, ami mögött fixtúra áll, pont az
             // a hamis zöld, ami ellen ez az egész modul készült.
             json(res, { ...r.body, stub: sendProvider.isStub }, r.status)
+          })
+          .catch((err: Error) => {
+            json(res, { error: err.name === 'RequestBodyTooLargeError' ? 'request body too large' : 'request failed' }, 413)
+          })
+        return
+      }
+      if (path === '/api/leads/summary' && method === 'GET') {
+        // A SZŰRÉS ITT, A GENERÁLÁSNÁL TÖRTÉNIK, nem a megjelenítésnél: ha a nézet szűrne, egy másik
+        // felület ugyanabból az adatból megint listát csinálna, és a kényszer elveszne.
+        json(res, dailySummary(crmDb) as unknown as Record<string, unknown>)
+        return
+      }
+      // POST /api/leads/<id>/postpone es /resolve-expired
+      const leadMuvelet = /^\/api\/leads\/(\d+)\/(postpone|resolve-expired)$/.exec(path)
+      if (leadMuvelet) {
+        if (method !== 'POST') {
+          json(res, { error: 'Method not allowed' }, 405)
+          return
+        }
+        const leadId = Number(leadMuvelet[1])
+        const muvelet = leadMuvelet[2]
+        readBody(req, { maxBytes: 64 * 1024 })
+          .then((buf) => {
+            let body: Record<string, unknown>
+            try {
+              body = buf.length ? (JSON.parse(buf.toString('utf-8')) as Record<string, unknown>) : {}
+            } catch {
+              json(res, { error: 'invalid JSON body' }, 400)
+              return
+            }
+            const actor = typeof body.actor === 'string' ? body.actor : ''
+            const r = muvelet === 'postpone' ? postponeLead(crmDb, leadId, actor, body) : resolveExpired(crmDb, leadId, actor, body)
+            json(res, r.body, r.status)
           })
           .catch((err: Error) => {
             json(res, { error: err.name === 'RequestBodyTooLargeError' ? 'request body too large' : 'request failed' }, 413)
