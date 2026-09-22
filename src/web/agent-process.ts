@@ -153,6 +153,37 @@ export function buildTelegramMcpServerConfig(bunBin: string, pluginDir: string, 
 // See ensureIsolatedChannelConfigDir for why.
 export const FLEET_OAUTH_TOKEN_PATH = join(STORE_DIR, '.claude-oauth-token')
 
+/** Where a launch-time secret is parked so the launch COMMAND never carries its value. */
+export const LAUNCH_SECRETS_DIR = join(STORE_DIR, '.launch-secrets')
+
+/**
+ * hu: A titkot FAJLBA teszi, es a shell-kifejezest adja vissza, amit a launch-parancsba irunk.
+ * Igy a parancs sztringben a HIVAS all, nem az ertek -- a helyettesites az INDITOTT shellben
+ * tortenik, tehat a titok nem kerul a `ps`/argv sorba.
+ * <br />
+ * en: Parks the secret in a file and returns the shell expression to interpolate into the launch
+ * command, so the command string carries the CALL and not the value.
+ *
+ * MIERT: az agens-inditas egy shell-sztring, amit a tmux `new-session -d -s <s> <cmd>` argumentumkent
+ * kap. Ami abban a sztringben all, az a folyamatlistaban olvashato, amig a pane wrapper-shellje el.
+ * A `$(cat '...')` alakot NEM ez a javitas talalta ki: a flotta OAuth-tokenje mar igy megy
+ * (`agent-process.ts` oauthTokenEnv, `agent-worker.ts:510`, es `scripts/channels.sh` -- ott a komment
+ * ki is mondja: "evaluated in the launched shell so the secret never lands in the argv/`ps` command
+ * string"). A szolgaltatoi kulcsok (BYO, deepseek, minimax, openrouter) voltak az egyetlen kivetelek.
+ *
+ * A fajl 0600, a konyvtar 0700, es az iras atomi (a tmp-fajl sem all soha 0644-en).
+ */
+export function launchSecretRef(secretName: string, value: string): string {
+  // A `/` nem eli tul a szurest, tehat utvonal-bejaras nincs. A csupa-pont nev VISZONT elne
+  // (`..` -> a szulo konyvtar), ezert azt kulon zarjuk: ez a sajat tesztem lelete volt.
+  const szurt = secretName.replace(/[^A-Za-z0-9._-]/g, '_')
+  const biztonsagosNev = /^\.+$/.test(szurt) || !szurt ? 'nevtelen' : szurt
+  mkdirSync(LAUNCH_SECRETS_DIR, { recursive: true, mode: 0o700 })
+  const utvonal = join(LAUNCH_SECRETS_DIR, biztonsagosNev)
+  atomicWriteFileSync(utvonal, value, { mode: 0o600 })
+  return `"$(cat ${shSingleQuote(utvonal)})"`
+}
+
 // True when the fleet OAuth token file exists and is non-empty. Provisioning an
 // isolated config dir WITHOUT auth would launch the sub-agent logged-out, so
 // isolation is gated on this: no token -> keep the shared ~/.claude (degraded
@@ -1113,18 +1144,29 @@ export function shSingleQuote(value: string): string {
 /**
  * hu: A modell-azonosító alapján eldönti, melyik providerhez tartozik, és felépíti a shell
  * export-láncot, ami a Claude Code CLI-t az adott provider Anthropic-kompatibilis végpontjára
- * téríti. Tiszta függvény (nincs I/O) -- a titkot a hívó adja át `secretLookup`-on keresztül,
- * hogy vault nélkül tesztelhető legyen.
+ * téríti. Tiszta függvény (nincs I/O).
  * <br />
  * en: Resolves which provider a model id belongs to and builds the shell export chain that
- * redirects the Claude Code CLI to that provider's Anthropic-compatible endpoint. Pure function
- * (no I/O) -- the caller supplies secrets via `secretLookup` so this is testable without a vault.
+ * redirects the Claude Code CLI to that provider's Anthropic-compatible endpoint. Pure function.
+ *
+ * A HIVO NEM A TITKOT ADJA AT, HANEM EGY SHELL-HIVATKOZAST RA (LATENSKULCSARGV920).
+ *
+ * Korabban a parameter a kulcs ERTEKET adta vissza, es az ide interpolalodott: `export
+ * ANTHROPIC_AUTH_TOKEN="<ertek>"`. Ez a sztring a tmux `new-session` argumentuma, tehat a kulcs a
+ * folyamatlistaban olvashato volt, amig a pane wrapper-shellje elt. A flotta OAuth-tokenje mar
+ * korabban is `$(cat fajl)` alakban ment; a szolgaltatoi kulcsok voltak az egyetlen kivetelek.
+ *
+ * A JAVITAS SZERKEZETI, NEM CSAK SZOVEGES: ez a fuggveny MEG SEM KAPJA a titkot, tehat nem is tudja
+ * kiszivarogtatni. Ami itt athalad, az egy mar shell-be irhato hivatkozas (`"$(cat '/ut/...')"`),
+ * amit a hivo a `launchSecretRef`-fel allit elo. Egy jovobeli ag, ami megint az erteket akarna
+ * beirni, eloszor a PARAMETER TIPUSAT kellene visszaallitsa -- az pedig latszik a review-ban.
  */
 export type ProviderKind = 'claude' | 'deepseek' | 'minimax' | 'openrouter' | 'ollama'
 
 export function resolveProviderEnv(
   model: string,
-  secretLookup: (id: string) => string | null,
+  /** A titok SHELL-HIVATKOZASA (pl. `"$(cat '/ut')"`), NEM az erteke. Lasd `launchSecretRef`. */
+  secretShellRef: (id: string) => string | null,
 ): { provider: ProviderKind; exportsStr: string } {
   const isClaude = model.startsWith('claude-')
   const isDeepseek = model.startsWith('deepseek-')
@@ -1135,14 +1177,14 @@ export function resolveProviderEnv(
   const isOllama = !isClaude && !isDeepseek && !isMinimax && !isOpenRouter
 
   if (isDeepseek) {
-    const key = secretLookup('DEEPSEEK_API_KEY') ?? ''
+    const keyRef = secretShellRef('DEEPSEEK_API_KEY') ?? '""'
     return {
       provider: 'deepseek',
-      exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=${keyRef} && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
     }
   }
   if (isMinimax) {
-    const key = secretLookup('MINIMAX_API_KEY') ?? ''
+    const keyRef = secretShellRef('MINIMAX_API_KEY') ?? '""'
     // MiniMax's own /anthropic compat layer misreports a 200K context window in
     // its model metadata instead of M3's real 1M (MiniMax-AI/MiniMax-M2.7#46,
     // confirmed live 2026-08-19: two independently running fleet agents on
@@ -1152,15 +1194,15 @@ export function resolveProviderEnv(
     // of the compat layer's wrong one.
     return {
       provider: 'minimax',
-      exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && export CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 && `,
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=${keyRef} && export ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && export CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 && `,
     }
   }
   if (isOpenRouter) {
     // Anthropic-compatible endpoint at https://openrouter.ai/api (the SDK appends /v1/messages).
-    const key = secretLookup('openrouter-fleet-key') ?? ''
+    const keyRef = secretShellRef('openrouter-fleet-key') ?? '""'
     return {
       provider: 'openrouter',
-      exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=${keyRef} && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
     }
   }
   if (isOllama) {
@@ -1559,7 +1601,11 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // the agents run the TUI.) Single-quoted so a `:` in the tag is shell-safe.
     // Provider discriminator + env-export chain live in resolveProviderEnv (pure,
     // unit-tested in agent-provider-env.test.ts) so a new provider is one branch there.
-    const { exportsStr: providerEnv } = resolveProviderEnv(model, getSecret)
+    // A titok FAJLBA megy, es a launch-parancsba csak a HIVATKOZAS kerul (LATENSKULCSARGV920).
+    const { exportsStr: providerEnv } = resolveProviderEnv(model, (id) => {
+      const ertek = (getSecret(id) ?? '').trim()
+      return ertek ? launchSecretRef(`${name}.${id}`, ertek) : null
+    })
     // When authMode is 'api', the agent uses its own ANTHROPIC_API_KEY from
     // the vault instead of the host's OAuth. The vault entry ID follows the
     // convention `agent-{name}-api-key`. We inject it as an env var so Claude
@@ -1568,7 +1614,9 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     if (isClaude && authMode === 'api') {
       const agentApiKey = getSecret(`agent-${name}-api-key`) ?? ''
       if (agentApiKey) {
-        apiKeyEnv = `export ANTHROPIC_API_KEY="${agentApiKey}" && `
+        // Ugyanaz a szabaly, mint a provider-againal: a kulcs FAJLBOL olvasva kerul be, hogy a
+        // launch-parancs (es vele a `ps` sora) ne hordozza az erteket (LATENSKULCSARGV920).
+        apiKeyEnv = `export ANTHROPIC_API_KEY=${launchSecretRef(`agent-${name}-api-key`, agentApiKey)} && `
       }
     }
     // Apply security profile: write allow/deny list into settings.json, and
