@@ -121,6 +121,20 @@ describe('launchSecretRef: a titok fájlba megy, a parancsba csak a hivatkozás'
 
     // es a HELYES alaknak ott kell lennie mind a negy helyen (nem eleg, hogy a rossz eltunt)
     expect((forras.match(/launchSecretRef\(/g) ?? []).length).toBeGreaterThanOrEqual(3)
+
+    // A TAKARITAS BEKOTESE A `stopAgentProcess` TORZSEBEN ALLJON, ne csak valahol a fajlban.
+    // MERT MUTANSSAL MERVE: a hivas torlese a leallitasbol eloszor ZOLDEN tulelt -- a
+    // `clearLaunchSecrets` fuggvenynek volt tesztje, a BEKOTESENEK nem. Egy olyan mutans, ami a
+    // hivast egy halott helyre teszi at, a puszta "szerepel a fajlban" allitast is kijatszana,
+    // ezert a fuggveny TORZSET vagom ki es abban merek.
+    const stopKezdet = forras.indexOf('export async function stopAgentProcess(')
+    expect(stopKezdet, 'stopAgentProcess nem talalhato').toBeGreaterThan(-1)
+    const stopVege = forras.indexOf('\nexport ', stopKezdet + 10)
+    const stopTorzs = forras.slice(stopKezdet, stopVege > 0 ? stopVege : undefined)
+    expect(stopTorzs).toContain('clearLaunchSecrets(name)')
+    // POZITIV KONTROLL A KIVAGASRA: ha a szelet uresre sikeredne, minden allitas elnemulna.
+    expect(stopTorzs).toContain("kill-session")
+    expect(stopTorzs.length).toBeGreaterThan(200)
   })
 
   it('a leállításkori takarítás MINDKÉT névsémát viszi (provider ÉS BYO)', async () => {
