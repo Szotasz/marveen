@@ -32,6 +32,7 @@ import { readActiveModelFromProjectDir } from './active-model.js'
 import { configDirFor } from './main-transcript-root.js'
 import { readConfiguredMainModel } from './channel-monitor.js'
 import { gatherGateInputs, sendSlashCommand, mainSessionName } from './context-restart-gate-runner.js'
+import { capturePane } from './agent-process.js'
 import { switchVerdict, type QuietVerdict } from './session-control.js'
 import { notifyChannel } from '../notify.js'
 import { registerCommand } from './commands.js'
@@ -43,6 +44,37 @@ export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
 export const MODEL_CHOICES_FILE = join(STORE_DIR, 'model-choices.json')
 export const MODEL_HOLD_FILE = join(STORE_DIR, 'main-model-hold.json')
+/** The last /model this module sent to the session: { model, at } (epoch ms). */
+export const MODEL_LAST_SENT_FILE = join(STORE_DIR, 'main-model-last-sent.json')
+
+export interface LastSent { model: string; at: number }
+
+export function readLastSent(file: string): LastSent | null {
+  try {
+    const p = JSON.parse(readFileSync(file, 'utf-8')) as Partial<LastSent>
+    return typeof p.model === 'string' && typeof p.at === 'number' && Number.isFinite(p.at) ? { model: p.model, at: p.at } : null
+  } catch { return null }
+}
+
+function writeLastSent(file: string, model: string, at: number): void {
+  try {
+    mkdirSync(dirname(file), { recursive: true })
+    atomicWriteFileSync(file, JSON.stringify({ model, at }) + '\n')
+  } catch (err) {
+    logger.warn({ err, file }, 'main-model: last-sent marker not written')
+  }
+}
+
+// Claude Code answers a /model with a "Set model to ..." line in the pane
+// (measured: "Set model to claude-opus-5[1m]" and, on another build,
+// "Set model to `Opus 5 (1M context)`" -- so only the prefix is matched, never
+// the name). One count before the send, one after: an increase is the CLI's
+// own acknowledgement. Visible pane only; if an old line scrolls off at the
+// same moment the count does not rise and the reply stays the cautious
+// "elküldve" -- never a false "átváltva".
+export function countModelAcks(pane: string | null): number | null {
+  return pane === null ? null : (pane.match(/Set model to\b/g) ?? []).length
+}
 
 export interface ModelChoice {
   name: string
@@ -172,6 +204,39 @@ export interface ModelDeps {
   writeEnv: (updates: Record<string, string>) => void
   notify: (text: string) => Promise<boolean>
   autoCompactWindow: () => number | null
+  lastSentFile: string
+  /** Count of "Set model to" lines in the visible pane; null = not capturable. */
+  ackCount: () => number | null
+  /** One fixed wait after a send, for the CLI to print its answer. */
+  settle: () => Promise<void>
+  /** Arm (untilMs) or disarm (null) the one-shot hold-expiry timer. */
+  scheduleExpiry: (untilMs: number | null) => void
+}
+
+const ACK_SETTLE_MS = 700
+
+// One timer, armed at the exact hold expiry. The 5-minute sweep (the gate's
+// disabled-recheck cadence) stays as the fallback -- after a dashboard restart,
+// or when the session is busy at expiry -- but it no longer decides WHEN a
+// hold ends (ELSOKOR922 Phase 7 A-smoke: a 3-minute hold reverted 5 minutes
+// late, and its confirmation arrived with the same delay).
+let expiryTimer: ReturnType<typeof setTimeout> | null = null
+
+export function scheduleHoldExpiry(untilMs: number | null, nowMs = Date.now()): void {
+  if (expiryTimer) { clearTimeout(expiryTimer); expiryTimer = null }
+  if (untilMs === null) return
+  const delay = Math.max(0, untilMs - nowMs) + 1000
+  expiryTimer = setTimeout(() => {
+    expiryTimer = null
+    sweepModelHold(Date.now()).catch(err => logger.warn({ err }, 'main-model: expiry sweep failed'))
+  }, delay)
+  expiryTimer.unref?.()
+}
+
+/** At boot: re-arm the expiry timer from a hold that survived the restart. */
+export function armHoldExpiryFromFile(file: string = MODEL_HOLD_FILE): void {
+  const { state } = readHold(file)
+  if (state) scheduleHoldExpiry(state.until)
 }
 
 export const liveModelDeps: ModelDeps = {
@@ -190,6 +255,21 @@ export const liveModelDeps: ModelDeps = {
   // the Bot API, without a main-session turn (no second bot any more).
   notify: async (text) => { await notifyChannel(text); return true },
   autoCompactWindow: readAutoCompactWindow,
+  lastSentFile: MODEL_LAST_SENT_FILE,
+  ackCount: () => countModelAcks(capturePane(mainSessionName())),
+  settle: () => new Promise(r => setTimeout(r, ACK_SETTLE_MS)),
+  scheduleExpiry: (untilMs) => scheduleHoldExpiry(untilMs),
+}
+
+// Send a /model and read the CLI's acknowledgement once. Records the send so a
+// status can say "switched since the last measured turn".
+async function sendModel(modelId: string, deps: ModelDeps): Promise<boolean> {
+  const before = deps.ackCount()
+  await deps.send(`/model ${modelId}`)
+  writeLastSent(deps.lastSentFile, modelId, deps.now())
+  await deps.settle()
+  const after = deps.ackCount()
+  return before !== null && after !== null && after > before
 }
 
 // ---- /model [set] -------------------------------------------------------------
@@ -224,13 +304,17 @@ export async function setModel(args: string[], deps: ModelDeps = liveModelDeps):
   const verdict = deps.quiet(now)
   if (!verdict.quiet) return fail(`Nem váltottam: a session foglalt (${verdict.reason}). Mi fut: /runs`)
 
-  await deps.send(`/model ${choice.id}`)
+  const acked = await sendModel(choice.id, deps)
+  const head = acked
+    ? `Átváltva: ${choice.name} = ${choice.id} (a Claude Code visszaigazolta)`
+    : `/model ${choice.id} elküldve (a Claude Code visszaigazolását nem láttam)`
   const warn = windowWarning(choice.id, deps.autoCompactWindow())
   const lines: string[] = []
   if (hold === 'keep') {
     deps.writeEnv({ MAIN_AGENT_MODEL: choice.id })
     clearHold(deps.holdFile)
-    lines.push(`/model ${choice.id} elküldve, TARTÓS: az app .env MAIN_AGENT_MODEL sora frissítve (respawn után is ez indul).`)
+    deps.scheduleExpiry(null)
+    lines.push(`${head}, TARTÓS: az app .env MAIN_AGENT_MODEL sora frissítve (respawn után is ez indul).`)
   } else {
     const minutes = hold ?? choice.defaultHoldMinutes
     const until = now + minutes * 60_000
@@ -238,9 +322,10 @@ export async function setModel(args: string[], deps: ModelDeps = liveModelDeps):
       model: choice.id, name: choice.name, revert_to: configured, until, set_at: now,
       verify_pending: true, blocked_since: null, block_alert_at: null,
     })
-    lines.push(`/model ${choice.id} elküldve, ideiglenes: ${formatSpan(minutes * 60)} (${formatDayClock(until)}-ig), utána vissza: ${configured}. A .env nem változott.`)
+    deps.scheduleExpiry(until)
+    lines.push(`${head}, ideiglenes: ${formatSpan(minutes * 60)} (${formatDayClock(until)}-ig), utána vissza: ${configured}. A .env nem változott.`)
   }
-  lines.push('Visszaigazolás mérésből: a következő assistant-sor modellje; ha eltér, szólok.')
+  lines.push('A következő kör modelljét is visszamérem; ha eltér, szólok.')
   if (warn) lines.push(warn)
   return ok(lines.join('\n'))
 }
@@ -262,9 +347,10 @@ export async function modelBack(deps: ModelDeps = liveModelDeps): Promise<StepRe
     }
     return fail(`Nem váltottam: a session foglalt (${verdict.reason}). Mi fut: /runs`)
   }
-  await deps.send(`/model ${base}`)
+  const acked = await sendModel(base, deps)
   clearHold(deps.holdFile)
-  return ok(`/model ${base} elküldve (vissza az alapmodellre)${state ? ', a tartás törölve' : ''}.`)
+  deps.scheduleExpiry(null)
+  return ok(`${acked ? `Visszaváltva: ${base} (a Claude Code visszaigazolta)` : `/model ${base} elküldve (vissza az alapmodellre; a visszaigazolást nem láttam)`}${state ? ', a tartás törölve' : ''}.`)
 }
 
 // ---- /model effort ------------------------------------------------------------
@@ -310,7 +396,9 @@ export async function sweepModelHold(nowMs: number, deps: ModelDeps = liveModelD
         await deps.notify(`FIGYELEM: /model ${s.model} után a mért modell ${measured}. A tartás marad, lejáratkor visszaváltok: ${s.revert_to}.`)
         outcome = 'mismatch'
       } else {
-        await deps.notify(`Megerősítve: a futó modell ${measured} (tartás ${formatDayClock(s.until)}-ig).`)
+        // The switch reply already carried the CLI's own acknowledgement; a
+        // matching measurement is the expected case and is logged, not sent.
+        logger.info({ model: measured }, 'main-model: hold verified by the next turn')
         outcome = 'verified'
       }
     }
@@ -335,9 +423,12 @@ export async function sweepModelHold(nowMs: number, deps: ModelDeps = liveModelD
     }
     return 'blocked'
   }
-  await deps.send(`/model ${s.revert_to}`)
+  const acked = await sendModel(s.revert_to, deps)
   clearHold(deps.holdFile)
-  await deps.notify(`A modell-tartás lejárt: visszaváltva ${s.model} -> ${s.revert_to}.`)
+  deps.scheduleExpiry(null)
+  await deps.notify(acked
+    ? `A modell-tartás lejárt: visszaváltva ${s.model} -> ${s.revert_to} (a Claude Code visszaigazolta).`
+    : `A modell-tartás lejárt: /model ${s.revert_to} elküldve (${s.model} helyett); a visszaigazolást nem láttam, a következő kör mérése mutatja.`)
   return 'reverted'
 }
 

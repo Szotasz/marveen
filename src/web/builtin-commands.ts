@@ -39,7 +39,7 @@ import {
 } from './system-status.js'
 import { fetchAnthropicStatus } from './routes/status.js'
 import { collectQueue, formatBlocks, collectRuns, formatRunsList, formatRunDetail } from './queue-view.js'
-import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from './active-model.js'
+import { readActiveModelFromProjectDir, readContextTokensFromProjectDir, readLastAssistantModel } from './active-model.js'
 import { configDirFor } from './main-transcript-root.js'
 import { readGateConfig, readGateRunState } from './context-restart-gate-store.js'
 import { getAgentRunningSince } from './agent-process.js'
@@ -47,7 +47,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { listScheduledTasks, type ScheduledTask } from './scheduled-tasks-io.js'
 import { computeNextRun } from './cron.js'
 import { getTokenSummary, getModelDistribution } from './token-usage.js'
-import { registerModelWriteCommands, readModelChoices as readChoiceList, readHold, MODEL_CHOICES_FILE, MODEL_HOLD_FILE } from './main-model.js'
+import { registerModelWriteCommands, readModelChoices as readChoiceList, readHold, readLastSent, MODEL_CHOICES_FILE, MODEL_HOLD_FILE, MODEL_LAST_SENT_FILE, type LastSent } from './main-model.js'
 import { contextClear } from './session-control.js'
 
 function clip(s: string, n: number): string {
@@ -84,16 +84,44 @@ function readEffortSetting(): { value: string; source: string } | null {
   return null
 }
 
+// The "Most fut" block. A measurement is only as fresh as the last assistant
+// line: it is shown with its time, a /model sent after it is named as not yet
+// measured, and the "eltér" warning compares against what SHOULD run now (the
+// hold's model during a hold, else the configured one) -- ELSOKOR922 Phase 7
+// A-smoke: after the 14:52 revert, /model still read "opus" from the 14:47
+// turn and warned that it differed from the configured sonnet.
+export function measuredModelLines(
+  measured: { model: string; atMs: number } | null,
+  lastSent: LastSent | null,
+  holdModel: string | null,
+  configured: string,
+): { head: string[]; warn: string | null } {
+  const head: string[] = []
+  head.push(`Most fut:    ${measured ? `${measured.model} (utolsó kör ${formatDayClock(measured.atMs)})` : notMeasurable('nincs assistant-sor a transzkriptben')}`)
+  const pending = lastSent !== null && (measured === null || lastSent.at > measured.atMs)
+  if (pending && lastSent) head.push(`Azóta:       /model ${lastSent.model} elküldve ${formatDayClock(lastSent.at)}; a következő kör méri`)
+  const expected = holdModel ?? configured
+  const warn = measured && !pending && modelsDiffer(expected, measured.model)
+    ? `FIGYELEM: a futó modell eltér a ${holdModel ? 'tartásétól' : 'beállítottól'}.`
+    : null
+  return { head, warn }
+}
+
 export function modelStatusText(): string {
   const lines: string[] = []
-  const measured = readActiveModelFromProjectDir(PROJECT_ROOT, undefined, configDirFor(MAIN_AGENT_ID))
   const conf = configuredModelWithSource()
-  lines.push(`Most fut:    ${measured ?? notMeasurable('nincs assistant-sor a transzkriptben')}`)
+  const h = readHold(MODEL_HOLD_FILE)
+  const m = measuredModelLines(
+    readLastAssistantModel(PROJECT_ROOT, configDirFor(MAIN_AGENT_ID)),
+    readLastSent(MODEL_LAST_SENT_FILE),
+    h.state?.model ?? null,
+    conf.model,
+  )
+  lines.push(...m.head)
   lines.push(`Beállítva:   ${conf.model} (${conf.source})`)
-  if (measured && modelsDiffer(conf.model, measured)) lines.push('FIGYELEM: a futó modell eltér a beállítottól.')
+  if (m.warn) lines.push(m.warn)
   const effort = readEffortSetting()
   lines.push(`Effort:      ${effort ? `${effort.value} (${effort.source})` : 'nincs beállítva (a CLI alapértéke)'} · visszamérni nem tudjuk`)
-  const h = readHold(MODEL_HOLD_FILE)
   const hold = h.error
     ? notMeasurable(`a main-model-hold.json olvashatatlan: ${h.error}`)
     : h.state

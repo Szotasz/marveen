@@ -44,7 +44,7 @@ import { startFederationPoller } from './web/federation/poller.js'
 import { registerBuiltinCommands } from './web/builtin-commands.js'
 import { tryHandleCommands } from './web/routes/commands.js'
 import { initCustomCommands } from './web/custom-commands.js'
-import { sweepModelHold } from './web/main-model.js'
+import { sweepModelHold, armHoldExpiryFromFile } from './web/main-model.js'
 import { tryHandleCustomCommands } from './web/routes/custom-commands.js'
 import { startCapabilitySummaryRunner } from './web/federation/capability-runner.js'
 import { ensureFederationClaudeMdSection } from './web/federation/onboarding.js'
@@ -558,7 +558,10 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
   registerBuiltinCommands()
   if (!webOnly) {
     initCustomCommands()
-    // The /model hold revert shares the gate's main sweep cadence.
+    // The /model hold revert: a one-shot timer at the exact expiry (re-armed
+    // here from a hold that survived a restart), with the gate's main sweep as
+    // the fallback for a busy session at expiry.
+    armHoldExpiryFromFile()
     setMainSweepHook(async (nowMs) => { await sweepModelHold(nowMs) })
   }
 

@@ -73,6 +73,37 @@ export function readActiveModelFromProjectDir(workingDir: string, sinceUnixSec?:
   return value
 }
 
+// Like readActiveModelFromProjectDir, but also says WHEN that assistant line
+// was written. The model a status shows is only as fresh as the last turn: a
+// /model sent after it has not been measured yet (ELSOKOR922 Phase 7 A-smoke:
+// the hold reverted to sonnet at 14:52, /model at 14:53 still read "opus" from
+// the 14:47 turn, with nothing saying the reading was stale).
+export function readLastAssistantModel(workingDir: string, configDir?: string): { model: string; atMs: number } | null {
+  try {
+    const dir = projectsDirFor(workingDir, configDir)
+    if (!existsSync(dir)) return null
+    const newest = readdirSync(dir)
+      .filter(f => f.endsWith('.jsonl'))
+      .map(f => ({ f, mtime: statSync(join(dir, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime)[0]
+    if (!newest) return null
+    const lines = readFileSync(join(dir, newest.f), 'utf-8').split('\n')
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim()
+      if (!line) continue
+      try {
+        const entry = JSON.parse(line)
+        const model = entry?.message?.model
+        if (typeof model !== 'string' || model.startsWith('<')) continue
+        const atMs = typeof entry?.timestamp === 'string' ? new Date(entry.timestamp).getTime() : NaN
+        if (!Number.isFinite(atMs)) continue
+        return { model, atMs }
+      } catch { /* skip malformed JSON line */ }
+    }
+  } catch { /* fall through */ }
+  return null
+}
+
 const ctxCache = new Map<string, { value: number | null; expiresAt: number }>()
 
 // Current context size of the live session, in tokens. Claude Code records a

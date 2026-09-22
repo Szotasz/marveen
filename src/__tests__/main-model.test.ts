@@ -13,10 +13,13 @@ import {
   parseHold,
   windowWarning,
   _resetMainModelForTest,
+  countModelAcks,
+  readLastSent,
   BLOCK_ALERT_MS,
   type ModelDeps,
   type HoldState,
 } from '../web/main-model.js'
+import { measuredModelLines } from '../web/builtin-commands.js'
 import { logger } from '../logger.js'
 
 const BASE = 'claude-sonnet-5'
@@ -24,24 +27,31 @@ const T0 = Date.parse('2026-09-22T08:00:00Z')
 
 let dir: string
 
-function deps(over: Partial<ModelDeps> = {}) {
+function deps(over: Partial<ModelDeps> = {}, opts: { noAck?: boolean } = {}) {
   const sent: string[] = []
   const notes: string[] = []
   const env: Array<Record<string, string>> = []
+  const expiries: Array<number | null> = []
   let now = T0
-  const d: ModelDeps & { sent: string[]; notes: string[]; env: typeof env; setNow(n: number): void } = {
-    sent, notes, env,
+  let acks = 3 // older "Set model to" lines already on the pane
+  const d: ModelDeps & { sent: string[]; notes: string[]; env: typeof env; expiries: typeof expiries; setNow(n: number): void } = {
+    sent, notes, env, expiries,
     setNow(n: number) { now = n },
     now: () => now,
     choicesFile: join(dir, 'model-choices.json'),
     holdFile: join(dir, 'main-model-hold.json'),
+    lastSentFile: join(dir, 'main-model-last-sent.json'),
     configured: () => BASE,
     measured: () => BASE,
     quiet: () => ({ quiet: true }),
-    send: async (c) => { sent.push(c) },
+    // The fake CLI prints its "Set model to" line for every /model it gets.
+    send: async (c) => { sent.push(c); if (c.startsWith('/model') && !opts.noAck) acks++ },
     writeEnv: (u) => { env.push(u) },
     notify: async (t) => { notes.push(t); return true },
     autoCompactWindow: () => null,
+    ackCount: () => acks,
+    settle: async () => {},
+    scheduleExpiry: (u) => { expiries.push(u) },
     ...over,
   }
   return d
@@ -235,7 +245,9 @@ describe('hold sweep (CMD920 tests 7, 8)', () => {
     const ok = deps({ measured: () => 'claude-opus-5' })
     writeHold(ok.holdFile, hold({ verify_pending: true }))
     expect(await sweepModelHold(T0 + 1000, ok)).toBe('verified')
-    expect(ok.notes[0]).toMatch(/Megerősítve: a futó modell claude-opus-5/)
+    // the switch reply already carried the CLI's acknowledgement: a matching
+    // measurement is not sent again, only a mismatch is
+    expect(ok.notes).toEqual([])
     expect(readHold(ok.holdFile).state!.verify_pending).toBe(false)
 
     const bad = deps({ measured: () => 'claude-sonnet-4-6' })
@@ -249,6 +261,77 @@ describe('hold sweep (CMD920 tests 7, 8)', () => {
     writeHold(d.holdFile, hold({ verify_pending: true }))
     expect(await sweepModelHold(T0 + 1000, d)).toBe('waiting')
     expect(readHold(d.holdFile).state!.verify_pending).toBe(true)
+  })
+})
+
+// ELSOKOR922 Phase 7 A-smoke findings: a switch said only "elküldve"; a
+// 3-minute hold reverted on the 5-minute sweep; after the revert /model still
+// read the pre-revert turn and warned "eltér".
+describe('/model acknowledgement, exact expiry, stale measurement', () => {
+  it("the CLI's own 'Set model to' line turns the reply into 'Átváltva'", async () => {
+    writeChoices()
+    const r = await setModel(['opus', '3m'], deps())
+    expect(r.text).toMatch(/^Átváltva: opus = claude-opus-5\[1m\] \(a Claude Code visszaigazolta\), ideiglenes: 3 perc/)
+  })
+
+  it('no acknowledgement seen: the reply stays the cautious "elküldve", never "Átváltva"', async () => {
+    writeChoices()
+    const r = await setModel(['opus', '3m'], deps({}, { noAck: true }))
+    expect(r.text).toMatch(/^\/model claude-opus-5\[1m\] elküldve \(a Claude Code visszaigazolását nem láttam\)/)
+    expect(r.text).not.toMatch(/Átváltva/)
+    const blind = await setModel(['opus', '3m'], deps({ ackCount: () => null }))
+    expect(blind.text).toMatch(/elküldve/)
+  })
+
+  it('a hold arms the one-shot expiry timer at `until`; keep and back disarm it', async () => {
+    writeChoices()
+    const d = deps()
+    await setModel(['opus', '3m'], d)
+    expect(d.expiries).toEqual([T0 + 3 * 60_000])
+    await setModel(['opus', 'keep'], d)
+    await modelBack(deps({ measured: () => 'claude-opus-5' }))
+    expect(d.expiries.at(-1)).toBeNull()
+  })
+
+  it('every sent /model is recorded with its time (the status names it as not yet measured)', async () => {
+    writeChoices()
+    const d = deps()
+    await setModel(['opus', '3m'], d)
+    expect(readLastSent(d.lastSentFile)).toEqual({ model: 'claude-opus-5[1m]', at: T0 })
+  })
+
+  it('the expiry revert reports the acknowledgement too', async () => {
+    const d = deps({ measured: () => 'claude-opus-5' })
+    writeHold(d.holdFile, { model: 'claude-opus-5[1m]', name: 'opus', revert_to: BASE, until: T0 + 60_000, set_at: T0, verify_pending: false, blocked_since: null, block_alert_at: null })
+    expect(await sweepModelHold(T0 + 61_000, d)).toBe('reverted')
+    expect(d.notes[0]).toMatch(/visszaváltva .* \(a Claude Code visszaigazolta\)/)
+    expect(d.expiries).toEqual([null])
+  })
+
+  it('countModelAcks matches only the prefix (two CLI builds print it differently)', () => {
+    expect(countModelAcks('❯ /model x\n  ⎿  Set model to claude-opus-5[1m]\n  ⎿  Set model to `Opus 5 (1M context)`')).toBe(2)
+    expect(countModelAcks(null)).toBeNull()
+  })
+})
+
+describe('/model status: the measurement is shown with its age', () => {
+  const at1447 = Date.parse('2026-09-22T12:47:00Z')
+  const at1452 = Date.parse('2026-09-22T12:52:00Z')
+
+  it('a /model sent after the last measured turn is named, and no false "eltér"', () => {
+    const r = measuredModelLines({ model: 'claude-opus-5', atMs: at1447 }, { model: BASE, at: at1452 }, null, BASE)
+    expect(r.head[0]).toMatch(/^Most fut: {4}claude-opus-5 \(utolsó kör .*14:47\)$/)
+    expect(r.head[1]).toMatch(/^Azóta: .*\/model claude-sonnet-5 elküldve .*14:52; a következő kör méri$/)
+    expect(r.warn).toBeNull()
+  })
+
+  it('during a hold the expected model is the hold model, not the configured one', () => {
+    expect(measuredModelLines({ model: 'claude-opus-5', atMs: at1452 }, { model: 'claude-opus-5[1m]', at: at1447 }, 'claude-opus-5[1m]', BASE).warn).toBeNull()
+    expect(measuredModelLines({ model: 'claude-haiku-4-5', atMs: at1452 }, null, 'claude-opus-5[1m]', BASE).warn).toMatch(/eltér a tartásétól/)
+  })
+
+  it('no hold, nothing pending, a different measured model: the warning stays', () => {
+    expect(measuredModelLines({ model: 'claude-opus-5', atMs: at1452 }, { model: BASE, at: at1447 }, null, BASE).warn).toMatch(/eltér a beállítottól/)
   })
 })
 
