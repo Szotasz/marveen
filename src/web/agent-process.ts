@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync } from 'node:fs'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
@@ -152,6 +152,98 @@ export function buildTelegramMcpServerConfig(bunBin: string, pluginDir: string, 
 // CLAUDE_CODE_OAUTH_TOKEN env var -- NOT via a copied/symlinked .credentials.json.
 // See ensureIsolatedChannelConfigDir for why.
 export const FLEET_OAUTH_TOKEN_PATH = join(STORE_DIR, '.claude-oauth-token')
+
+/** Where a launch-time secret is parked so the launch COMMAND never carries its value. */
+export const LAUNCH_SECRETS_DIR = join(STORE_DIR, '.launch-secrets')
+
+/**
+ * A konyvtar es a fajl modja EGY helyen all, mert a kettonek egyutt kell mozognia.
+ *
+ * ES A `chmodSync` NEM OVATOSSAG: a `mkdirSync` a modot CSAK LETREHOZASKOR allitja be, egy MAR
+ * LETEZO konyvtaron nem valtoztat. Ezt a sajat mutansom mutatta meg: a mod 0700 -> 0755 rontasa
+ * ZOLD maradt, mert a konyvtar a korabbi futasokbol mar letezett 0700-on. Vagyis egy lazabb modon
+ * alljo konyvtar (regebbi verzio, mas umask, kezi beavatkozas) eszrevetlenul tullelne a javitast.
+ */
+export const LAUNCH_SECRETS_DIR_MODE = 0o700
+export const LAUNCH_SECRET_FILE_MODE = 0o600
+
+/**
+ * hu: A titkot FAJLBA teszi, es a shell-kifejezest adja vissza, amit a launch-parancsba irunk.
+ * Igy a parancs sztringben a HIVAS all, nem az ertek -- a helyettesites az INDITOTT shellben
+ * tortenik, tehat a titok nem kerul a `ps`/argv sorba.
+ * <br />
+ * en: Parks the secret in a file and returns the shell expression to interpolate into the launch
+ * command, so the command string carries the CALL and not the value.
+ *
+ * MIERT: az agens-inditas egy shell-sztring, amit a tmux `new-session -d -s <s> <cmd>` argumentumkent
+ * kap. Ami abban a sztringben all, az a folyamatlistaban olvashato, amig a pane wrapper-shellje el.
+ * A `$(cat '...')` alakot NEM ez a javitas talalta ki: a flotta OAuth-tokenje mar igy megy
+ * (`agent-process.ts` oauthTokenEnv, `agent-worker.ts:510`, es `scripts/channels.sh` -- ott a komment
+ * ki is mondja: "evaluated in the launched shell so the secret never lands in the argv/`ps` command
+ * string"). A szolgaltatoi kulcsok (BYO, deepseek, minimax, openrouter) voltak az egyetlen kivetelek.
+ *
+ * A fajl 0600, a konyvtar 0700, es az iras atomi (a tmp-fajl sem all soha 0644-en).
+ *
+ * AMI EBBOL NEM KOVETKEZIK, ES EZT KI KELL MONDANI: a kitettseg NEM SZUNT MEG, hanem ATKOLTOZOTT.
+ * Eddig a folyamatlistaban allt, amit a gep BARMELYIK usere olvashatott; mostantol egy 0600-as
+ * fajlban all, tartosan. Ez szigorubb, de nem semmi: PER-AGENS OS-USER NALUNK MEG NINCS, tehat
+ * barmelyik flotta-agens, aki shellt tud futtatni, el tudja olvasni egy MASIK agens launch-titkat.
+ * Ugyanaz az osztaly, mint a flotta OAuth-token fajlja (`store/.claude-oauth-token`), es ugyanaz
+ * zarja: az OS-user izolacio, nem egy ujabb export-alak. Aki ezt a fuggvenyt olvassa, ne vegye
+ * megoldottnak azt, ami csak SZIGORUBB lett.
+ *
+ * ES EGY UJ FUGGOSEG, amit a javitas HOZOTT LETRE (Boni lelete a review-ban): ez a kod mostantol
+ * TITKOT IR a repo alatti `store/` konyvtarba. Azt ma a `.gitignore` 17. sora zarja ki (pozitiv
+ * kontroll: ugyanazon a soron akad fenn a `store/.dashboard-token` is). Ha az a sor egyszer
+ * eltunne, a kovetkezo commit vinne a kulcsot.
+ */
+/**
+ * hu: Egy agens launch-titkait torli a lemezrol (leallitaskor).
+ * <br />
+ * en: Removes an agent's launch secrets from disk (on stop).
+ *
+ * MIERT DONTES, ES NEM MULASZTAS (Marveen kikotese a #1478 review-jan): a takaritas hianya azt
+ * jelentette volna, hogy egy vaultban ROTALT kulcs REGI erteke a lemezen marad a kovetkezo
+ * inditasig, egy leallitott agens titka pedig hataridotlenul. Egy rotacio utan tovabb elo regi
+ * kulcs pont az a nyom, amit egy incidensnel keresni fogunk.
+ *
+ * KET NEVSEMAT KELL TOROLNIE, mert ket hivasi hely van: a provider-kulcs `<agens>.<SECRET_ID>`,
+ * a BYO-kulcs `agent-<agens>-api-key`. Egy takaritas, ami csak az egyik elotagra illeszt, a
+ * masikat nemán ott hagyja.
+ *
+ * AMI EZUTAN IS IGAZ: egy OSSZEOMLAS vagy kulso `kill` nem fut ezen az uton, tehat ott a fajl
+ * ott marad a kovetkezo inditasig (amikor felulirodik). Rotacio utan a HELYES LEPES az erintett
+ * agens UJRAINDITASA: az irja felul a fajlt a friss ertekkel. A torolt agens maradek fajlja
+ * kulon kartyan all (LAUNCHSECRETTAKARIT922).
+ */
+export function clearLaunchSecrets(agentName: string): number {
+  if (!existsSync(LAUNCH_SECRETS_DIR)) return 0
+  const provider = `${agentName}.`
+  const byo = `agent-${agentName}-api-key`
+  let torolve = 0
+  for (const f of readdirSync(LAUNCH_SECRETS_DIR)) {
+    if (f !== byo && !f.startsWith(provider)) continue
+    try {
+      unlinkSync(join(LAUNCH_SECRETS_DIR, f))
+      torolve += 1
+    } catch (err) {
+      logger.warn({ err, file: f }, 'launch-secret cleanup failed')
+    }
+  }
+  return torolve
+}
+
+export function launchSecretRef(secretName: string, value: string): string {
+  // A `/` nem eli tul a szurest, tehat utvonal-bejaras nincs. A csupa-pont nev VISZONT elne
+  // (`..` -> a szulo konyvtar), ezert azt kulon zarjuk: ez a sajat tesztem lelete volt.
+  const szurt = secretName.replace(/[^A-Za-z0-9._-]/g, '_')
+  const biztonsagosNev = /^\.+$/.test(szurt) || !szurt ? 'nevtelen' : szurt
+  mkdirSync(LAUNCH_SECRETS_DIR, { recursive: true, mode: LAUNCH_SECRETS_DIR_MODE })
+  chmodSync(LAUNCH_SECRETS_DIR, LAUNCH_SECRETS_DIR_MODE)
+  const utvonal = join(LAUNCH_SECRETS_DIR, biztonsagosNev)
+  atomicWriteFileSync(utvonal, value, { mode: LAUNCH_SECRET_FILE_MODE })
+  return `"$(cat ${shSingleQuote(utvonal)})"`
+}
 
 // True when the fleet OAuth token file exists and is non-empty. Provisioning an
 // isolated config dir WITHOUT auth would launch the sub-agent logged-out, so
@@ -1113,18 +1205,29 @@ export function shSingleQuote(value: string): string {
 /**
  * hu: A modell-azonosító alapján eldönti, melyik providerhez tartozik, és felépíti a shell
  * export-láncot, ami a Claude Code CLI-t az adott provider Anthropic-kompatibilis végpontjára
- * téríti. Tiszta függvény (nincs I/O) -- a titkot a hívó adja át `secretLookup`-on keresztül,
- * hogy vault nélkül tesztelhető legyen.
+ * téríti. Tiszta függvény (nincs I/O).
  * <br />
  * en: Resolves which provider a model id belongs to and builds the shell export chain that
- * redirects the Claude Code CLI to that provider's Anthropic-compatible endpoint. Pure function
- * (no I/O) -- the caller supplies secrets via `secretLookup` so this is testable without a vault.
+ * redirects the Claude Code CLI to that provider's Anthropic-compatible endpoint. Pure function.
+ *
+ * A HIVO NEM A TITKOT ADJA AT, HANEM EGY SHELL-HIVATKOZAST RA (LATENSKULCSARGV920).
+ *
+ * Korabban a parameter a kulcs ERTEKET adta vissza, es az ide interpolalodott: `export
+ * ANTHROPIC_AUTH_TOKEN="<ertek>"`. Ez a sztring a tmux `new-session` argumentuma, tehat a kulcs a
+ * folyamatlistaban olvashato volt, amig a pane wrapper-shellje elt. A flotta OAuth-tokenje mar
+ * korabban is `$(cat fajl)` alakban ment; a szolgaltatoi kulcsok voltak az egyetlen kivetelek.
+ *
+ * A JAVITAS SZERKEZETI, NEM CSAK SZOVEGES: ez a fuggveny MEG SEM KAPJA a titkot, tehat nem is tudja
+ * kiszivarogtatni. Ami itt athalad, az egy mar shell-be irhato hivatkozas (`"$(cat '/ut/...')"`),
+ * amit a hivo a `launchSecretRef`-fel allit elo. Egy jovobeli ag, ami megint az erteket akarna
+ * beirni, eloszor a PARAMETER TIPUSAT kellene visszaallitsa -- az pedig latszik a review-ban.
  */
 export type ProviderKind = 'claude' | 'deepseek' | 'minimax' | 'openrouter' | 'ollama'
 
 export function resolveProviderEnv(
   model: string,
-  secretLookup: (id: string) => string | null,
+  /** A titok SHELL-HIVATKOZASA (pl. `"$(cat '/ut')"`), NEM az erteke. Lasd `launchSecretRef`. */
+  secretShellRef: (id: string) => string | null,
 ): { provider: ProviderKind; exportsStr: string } {
   const isClaude = model.startsWith('claude-')
   const isDeepseek = model.startsWith('deepseek-')
@@ -1135,14 +1238,14 @@ export function resolveProviderEnv(
   const isOllama = !isClaude && !isDeepseek && !isMinimax && !isOpenRouter
 
   if (isDeepseek) {
-    const key = secretLookup('DEEPSEEK_API_KEY') ?? ''
+    const keyRef = secretShellRef('DEEPSEEK_API_KEY') ?? '""'
     return {
       provider: 'deepseek',
-      exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=${keyRef} && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
     }
   }
   if (isMinimax) {
-    const key = secretLookup('MINIMAX_API_KEY') ?? ''
+    const keyRef = secretShellRef('MINIMAX_API_KEY') ?? '""'
     // MiniMax's own /anthropic compat layer misreports a 200K context window in
     // its model metadata instead of M3's real 1M (MiniMax-AI/MiniMax-M2.7#46,
     // confirmed live 2026-08-19: two independently running fleet agents on
@@ -1152,15 +1255,15 @@ export function resolveProviderEnv(
     // of the compat layer's wrong one.
     return {
       provider: 'minimax',
-      exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && export CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 && `,
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=${keyRef} && export ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && export CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 && `,
     }
   }
   if (isOpenRouter) {
     // Anthropic-compatible endpoint at https://openrouter.ai/api (the SDK appends /v1/messages).
-    const key = secretLookup('openrouter-fleet-key') ?? ''
+    const keyRef = secretShellRef('openrouter-fleet-key') ?? '""'
     return {
       provider: 'openrouter',
-      exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=${keyRef} && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
     }
   }
   if (isOllama) {
@@ -1559,7 +1662,11 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // the agents run the TUI.) Single-quoted so a `:` in the tag is shell-safe.
     // Provider discriminator + env-export chain live in resolveProviderEnv (pure,
     // unit-tested in agent-provider-env.test.ts) so a new provider is one branch there.
-    const { exportsStr: providerEnv } = resolveProviderEnv(model, getSecret)
+    // A titok FAJLBA megy, es a launch-parancsba csak a HIVATKOZAS kerul (LATENSKULCSARGV920).
+    const { exportsStr: providerEnv } = resolveProviderEnv(model, (id) => {
+      const ertek = (getSecret(id) ?? '').trim()
+      return ertek ? launchSecretRef(`${name}.${id}`, ertek) : null
+    })
     // When authMode is 'api', the agent uses its own ANTHROPIC_API_KEY from
     // the vault instead of the host's OAuth. The vault entry ID follows the
     // convention `agent-{name}-api-key`. We inject it as an env var so Claude
@@ -1568,7 +1675,9 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     if (isClaude && authMode === 'api') {
       const agentApiKey = getSecret(`agent-${name}-api-key`) ?? ''
       if (agentApiKey) {
-        apiKeyEnv = `export ANTHROPIC_API_KEY="${agentApiKey}" && `
+        // Ugyanaz a szabaly, mint a provider-againal: a kulcs FAJLBOL olvasva kerul be, hogy a
+        // launch-parancs (es vele a `ps` sora) ne hordozza az erteket (LATENSKULCSARGV920).
+        apiKeyEnv = `export ANTHROPIC_API_KEY=${launchSecretRef(`agent-${name}-api-key`, agentApiKey)} && `
       }
     }
     // Apply security profile: write allow/deny list into settings.json, and
@@ -2121,6 +2230,9 @@ export async function stopAgentProcess(name: string): Promise<{ ok: boolean; err
 
   try {
     runTmux(target, ['kill-session', '-t', session], { timeout: 5000 })
+    // A LAUNCH-TITKOK NEM ELIK TUL A LEALLITAST. Enelkul egy rotalt kulcs REGI erteke a lemezen
+    // maradna a kovetkezo inditasig, egy leallitott agense pedig hataridotlenul.
+    clearLaunchSecrets(name)
     await delay(2000)
     // Reap any orphaned plugin grandchild that tmux did not tear down. This is
     // a LOCAL pkill against this host's process table, so it only makes sense

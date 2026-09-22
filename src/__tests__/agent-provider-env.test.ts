@@ -12,11 +12,12 @@ describe('resolveProviderEnv', () => {
     const seen: string[] = []
     const r = resolveProviderEnv('deepseek-v4-pro', (id) => {
       seen.push(id)
-      return 'ds-secret'
+      return `"$(cat '/tmp/ref-${id}')"`
     })
     expect(r.provider).toBe('deepseek')
     expect(seen).toEqual(['DEEPSEEK_API_KEY'])
-    expect(r.exportsStr).toContain('ANTHROPIC_AUTH_TOKEN="ds-secret"')
+    // A HIVATKOZAS megy at, nem az ertek (LATENSKULCSARGV920).
+    expect(r.exportsStr).toContain(`ANTHROPIC_AUTH_TOKEN="$(cat '/tmp/ref-DEEPSEEK_API_KEY')"`)
     expect(r.exportsStr).toContain('ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic')
     expect(r.exportsStr).toContain(`ANTHROPIC_MODEL='deepseek-v4-pro'`)
   })
@@ -25,17 +26,17 @@ describe('resolveProviderEnv', () => {
     const seen: string[] = []
     const r = resolveProviderEnv('minimax-m3', (id) => {
       seen.push(id)
-      return 'mm-secret'
+      return `"$(cat '/tmp/ref-${id}')"`
     })
     expect(r.provider).toBe('minimax')
     expect(seen).toEqual(['MINIMAX_API_KEY'])
-    expect(r.exportsStr).toContain('ANTHROPIC_AUTH_TOKEN="mm-secret"')
+    expect(r.exportsStr).toContain(`ANTHROPIC_AUTH_TOKEN="$(cat '/tmp/ref-MINIMAX_API_KEY')"`)
     expect(r.exportsStr).toContain('ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic')
     expect(r.exportsStr).toContain(`ANTHROPIC_MODEL='minimax-m3'`)
   })
 
   it('forces CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 for minimax- models -- the /anthropic compat layer misreports 200K (MiniMax-AI/MiniMax-M2.7#46), so the CLI must be told the real window explicitly', () => {
-    const r = resolveProviderEnv('minimax-m3', () => 'mm-secret')
+    const r = resolveProviderEnv('minimax-m3', () => `"$(cat '/tmp/ref')"`)
     expect(r.exportsStr).toContain('CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000')
   })
 
@@ -48,7 +49,7 @@ describe('resolveProviderEnv', () => {
     const seen: string[] = []
     const r = resolveProviderEnv('minimax/minimax-m3', (id) => {
       seen.push(id)
-      return 'or-secret'
+      return `"$(cat '/tmp/ref-${id}')"`
     })
     expect(r.provider).toBe('openrouter')
     expect(seen).toEqual(['openrouter-fleet-key'])
@@ -60,6 +61,26 @@ describe('resolveProviderEnv', () => {
     expect(r.provider).toBe('ollama')
     expect(r.exportsStr).toContain('ANTHROPIC_AUTH_TOKEN=ollama')
     expect(r.exportsStr).toContain(`ANTHROPIC_MODEL='qwen3.6:27b'`)
+  })
+
+  it('a titok ERTEKE sosem jut el a fuggvenyig: ami athalad, az hivatkozas (LATENSKULCSARGV920)', () => {
+    // NEGATIV KONTROLL a javitas lenyegere. A hivo `launchSecretRef`-et ad at, ami FAJLBA teszi a
+    // titkot; ide mar csak a `$(cat ...)` alak jon. Ha valaki visszaallitana az ertek-atadast, ez
+    // az allitas piros lesz -- es vele az a tulajdonsag bukik, hogy a launch-parancs (es a `ps`
+    // sora) nem hordozza a kulcsot.
+    const TITOK = 'PROBA-ERTEK-ez-soha-nem-lathat-a-ps-ben'
+    for (const model of ['deepseek-v4-pro', 'minimax-m3', 'minimax/minimax-m3']) {
+      const r = resolveProviderEnv(model, () => `"$(cat '/tmp/kulcs-fajl')"`)
+      expect(r.exportsStr, model).not.toContain(TITOK)
+      expect(r.exportsStr, model).toContain(`$(cat '/tmp/kulcs-fajl')`)
+    }
+  })
+
+  it('hivatkozas nelkul (nincs titok) URES ertek megy ki, nem a "null" szo', () => {
+    const r = resolveProviderEnv('deepseek-v4-pro', () => null)
+    expect(r.exportsStr).toContain('ANTHROPIC_AUTH_TOKEN=""')
+    expect(r.exportsStr).not.toContain('null')
+    expect(r.exportsStr).not.toContain('undefined')
   })
 
   it('never asks the secret lookup for a claude- model', () => {
