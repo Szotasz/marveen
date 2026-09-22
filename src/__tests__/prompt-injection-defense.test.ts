@@ -337,11 +337,86 @@ describe('ensureEgressGate', () => {
 // ---------------------------------------------------------------------------
 // 3. from-authentication: messages.ts source check
 // ---------------------------------------------------------------------------
+
+/**
+ * True when `source` imports `binding` from `module` as a VALUE (IMPORTKAPULAZ921).
+ *
+ * Co-imports, any member order and multi-line import statements all count; a
+ * type-only import does not, because it is erased at runtime and a guard that is
+ * not there at runtime is not a guard. An aliased import still reports the
+ * exported name -- the sibling assertion on the CALL is what catches an alias.
+ */
+function importsValueBinding(source: string, binding: string, module: string): boolean {
+  const spec = module.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const re = new RegExp(`import\\s+(type\\s+)?\\{([^}]*)\\}\\s*from\\s*['"]${spec}['"]`, 'g')
+  for (const m of source.matchAll(re)) {
+    if (m[1]) continue                       // `import type { ... }` -- erased at runtime
+    const members = m[2].split(',').map((raw) => raw.trim()).filter(Boolean)
+    for (const member of members) {
+      if (/^type\s/.test(member)) continue   // inline `type Foo` member
+      const exported = member.split(/\s+as\s+/)[0].trim()
+      if (exported === binding) return true
+    }
+  }
+  return false
+}
+
+// The relaxed check is itself test infrastructure: if it answered `true` too
+// easily, the assertion above would stay green with the defence gone -- a
+// formality that reassures by being present. These cases pin both directions.
+describe('importsValueBinding (the relaxed import check itself, IMPORTKAPULAZ921)', () => {
+  const M = '../agent-config.js'
+
+  it('accepts the plain import', () => {
+    expect(importsValueBinding("import { isKnownAgent } from '../agent-config.js'", 'isKnownAgent', M)).toBe(true)
+  })
+
+  it('accepts a co-import -- the exact shape that misfired on #1448', () => {
+    expect(importsValueBinding("import { isKnownAgent, readAgentPullDelivery } from '../agent-config.js'", 'isKnownAgent', M)).toBe(true)
+  })
+
+  it('accepts the binding in any position and over several lines', () => {
+    const src = "import {\n  readAgentPullDelivery,\n  isKnownAgent,\n} from '../agent-config.js'"
+    expect(importsValueBinding(src, 'isKnownAgent', M)).toBe(true)
+  })
+
+  it('rejects a missing import -- this is what keeps it a gate', () => {
+    expect(importsValueBinding("import { readAgentPullDelivery } from '../agent-config.js'", 'isKnownAgent', M)).toBe(false)
+  })
+
+  it('rejects the same name imported from a DIFFERENT module', () => {
+    expect(importsValueBinding("import { isKnownAgent } from '../somewhere-else.js'", 'isKnownAgent', M)).toBe(false)
+  })
+
+  it('rejects a type-only import: erased at runtime, so the guard is not there', () => {
+    expect(importsValueBinding("import type { isKnownAgent } from '../agent-config.js'", 'isKnownAgent', M)).toBe(false)
+    expect(importsValueBinding("import { type isKnownAgent } from '../agent-config.js'", 'isKnownAgent', M)).toBe(false)
+  })
+
+  it('rejects a name that merely CONTAINS the binding', () => {
+    expect(importsValueBinding("import { isKnownAgentCached } from '../agent-config.js'", 'isKnownAgent', M)).toBe(false)
+  })
+
+  it('does not read an unrelated mention in prose or a comment as an import', () => {
+    expect(importsValueBinding('// isKnownAgent lives in ../agent-config.js\nconst x = 1', 'isKnownAgent', M)).toBe(false)
+  })
+})
+
 describe('/api/messages from-authentication', () => {
   const src = readFileSync(join(REPO_ROOT, 'src', 'web', 'routes', 'messages.ts'), 'utf8')
 
-  it('imports isKnownAgent from agent-config', () => {
-    expect(src).toContain("import { isKnownAgent } from '../agent-config.js'")
+  it('imports isKnownAgent from agent-config, co-imports and all', () => {
+    // IMPORTKAPULAZ921: this used to assert the import line VERBATIM, so it fired
+    // on #1448 -- where the author added a SECOND symbol to the same line and the
+    // defence was untouched. That shape misfires on every future co-import, and
+    // asking an outside contributor to bend correct code around a brittle string
+    // of ours is the wrong direction.
+    //
+    // The relaxation must stay a GATE, not a formality: it still reads the value
+    // binding out of the import statement, so removing the import turns it red.
+    // A type-only import does NOT count -- it disappears at runtime, which is
+    // exactly the guard being gone.
+    expect(importsValueBinding(src, 'isKnownAgent', '../agent-config.js')).toBe(true)
   })
 
   it('calls isKnownAgent with the sanitized from field', () => {
