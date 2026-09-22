@@ -72,6 +72,40 @@ alakra íródik át; a változás a KÖVETKEZŐ ssh-kapcsolatra él (az sshd aut
 újracsatlakozik. Korlátok a szerveroldalon: csak explicit portok, 1024 alatt tilos, legfeljebb 12.
 Ha `CRM_PORT` nem 3421, ugyanezt a portot kell bejegyezni.
 
+## Levél-szinkron (CRM1MAILSYNC922)
+
+```bash
+npm run crm:sync                 # = node dist/crm/sync.js ; --gmail-only | --imap-only
+```
+
+Két forrás, egy közös alak (`src/crm/mail-model.ts`), idempotens upsert a `messages`/`threads`
+táblákba. Kulcs az RFC Message-ID (UNIQUE) ÉS `UNIQUE(source, source_uid)`; újraszinkron = frissítés,
+sosem duplikátum. **Lead SOSEM szinkronból**: a futás a `leads` darabszámát előtte-utána méri, és
+eltérésnél 5-ös kilépési kóddal bukik; kontaktot sem hoz létre (a szál csak MEGLÉVŐ kontakthoz kötődik,
+a `contact_emails` egyezése alapján).
+
+- **Gmail, az asszisztensi fiók** (`~/.gmail-mcp/credentials.json` refresh_token + `gcp-oauth.keys.json`,
+  nyers API, MCP nélkül; az access token csak a futás memóriájában él). Alapértelmezett lekérdezés
+  `newer_than:30d` (a `store/crm-sync-state.json`-ban módosítható), lapozás a végéig. A személyes fiókból
+  továbbított levél az `X-Forwarded-To` fejlécről ismerszik meg: `source = gmail_forwarded_personal`, az
+  EREDETI Message-ID-vel, tehát ugyanaz a levél a support@-on át is EGY sor marad.
+- **support@ IMAP** (`scripts/crm/support-imap-dump.py`: a `scripts/support-mail/lib.py` konfigjával,
+  `SUPPORT_MAILBOX` + `SUPPORT_VAULT_KEY` a telepítés `.env`-jéből vagy env-ből, a jelszó a vaultból a
+  folyamaton BELÜL; `select readonly`, `BODY.PEEK[]`, semmit nem jelöl olvasottnak). INBOX -> `in`,
+  INBOX.Sent -> `out`. Konfig nélkül FAIL-CLOSED (exit 3), semmit nem tölt le.
+  A dumper gyerek-folyamat időkorlátja `CRM_IMAP_DUMP_TIMEOUT_MS` (alap 600 000 ms; mérve ~175 ms/levél,
+  tehát az első, 500-as futás két postaládán ~175 s). **A levágott vagy hibával kilépett dump sorai
+  ALKALMAZÓDNAK** (a UID csak nő, adat nem vész el), de a futás `rc 4`, a `last_error` a state-ben és a
+  `GET /api/sync/status`-ban kimondja, hogy RÉSZLEGES; `last_error` csak tiszta (exit 0, nem ölt) gyereknél null.
+- **Szál-kulcs**: `gmail:<threadId>` ha van; különben `refs:<a References-lánc gyökere>`, annak híján
+  `In-Reply-To`, annak híján a saját Message-ID. **A support@ Sent-másolatnak ma nincs Message-ID-je**
+  (mérve 2026-09-22): az ilyen sor `synthetic:imap_support:INBOX.Sent:<uid>` azonosítóval, szál NÉLKÜL kerül
+  be, és a `GET /api/messages/unthreaded` kimondja, hogy nem szálazható, amíg a küldő nem ír Message-ID-t.
+
+Végpontok (bearer): `GET /api/threads?q=<cím vagy tárgyrészlet>`, `GET /api/threads/:id`,
+`GET /api/messages/unthreaded`, `GET /api/sync/status`. **Ami NEM látszik, és a Szál nézet fejlécében
+áll:** a személyes Gmail-fiók küldöttjei és a Resend-en kimenő aiam-levelek.
+
 ## Amit ez az ütem NEM tartalmaz
 
 Lead-felvétel végpont és kapu (CRM1LEADKAPU922), levél-szinkron és élő Szál (CRM1MAILSYNC922),

@@ -17,7 +17,8 @@
     "smoke": "playwright test --config=playwright.config.ts",
     "skill": "tsx scripts/skill.ts",
     "browser-verify": "playwright test --config=playwright.browser.config.ts",
-    "start:crm": "node dist/crm/index.js"
+    "start:crm": "node dist/crm/index.js",
+    "crm:sync": "node dist/crm/sync.js"
   },
   "engines": {
     "node": ">=22"
