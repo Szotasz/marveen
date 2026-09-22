@@ -189,18 +189,26 @@ def main():
     # kerdes ugyis az, hogy a parancs OTT VAN-E a telepitesben -- azt merjuk, es megnevezzuk.
     import subprocess as _sp
     _HELPER = 'scripts/agent-msg.sh'
-    _git = _sp.run(['git', 'rev-parse', '--git-dir'], cwd=ROOT, capture_output=True, text=True)
-    if _git.returncode == 0:
-        _ls = _sp.run(['git', 'ls-files', '--error-unmatch', _HELPER],
-                      cwd=ROOT, capture_output=True, text=True)
-        check('7b a megtagadasban ajanlott helper a repoban van, git-index szerint (nem csak a gazda gepen)',
+    # A MUSZER-VALASZTAS FELTETELE NEM A GIT MEGLETE, HANEM HOGY EZ A FA A REPO (Samu, 28114):
+    # egy git nelkuli masolat, ami egy MASIK repo ala van kicsomagolva (pl. egy home-konyvtar, ami
+    # maga is repo), a `rev-parse --git-dir`-re IGENT kapna, a szigoru agat venne, es 'nem kovetett'
+    # hibaval bukna -- megint rossz okbol. Merve: a szulo-repo ala masolt fan pontosan ez tortent.
+    # A pontos kerdes ezert az, hogy a munkafa TETEJE maga a ROOT-e.
+    _top = _sp.run(['git', '-C', ROOT, 'rev-parse', '--show-toplevel'], capture_output=True, text=True)
+    _sajat_repo = (_top.returncode == 0
+                   and os.path.realpath(_top.stdout.strip()) == os.path.realpath(ROOT))
+    if _sajat_repo:
+        _ls = _sp.run(['git', '-C', ROOT, 'ls-files', '--error-unmatch', _HELPER],
+                      capture_output=True, text=True)
+        check('7b [muszer: git-index] a megtagadasban ajanlott helper KOVETETT (nem csak a gazda gepen)',
               _ls.returncode == 0, _ls.stderr.strip())
     else:
         # Nem skip: a git hianya nem teszi merhetetlenne a kerdest, csak gyengebbe a muszert.
-        check('7b (git-index nelkul) a megnevezett helper OTT VAN a telepitesben',
+        check('7b [muszer: fajl-letezes, mert ez a fa nem a repo munkafaja] '
+              'a megnevezett helper OTT VAN a telepitesben',
               os.path.exists(os.path.join(ROOT, _HELPER)),
               'nincs git index, es a fajl sincs: ' + _HELPER)
-        print('      (muszer: git-index nem elerheto, ezert a FAJL letezeset mertuk)')
+        print('      (muszer: ez a fa NEM a repo munkafaja, ezert a FAJL letezeset mertuk)')
 
     # 8. NYOM A KARTYAN: a trace-komment megnevezi a msg-id-ket ES a cimzetteket.
     torol_uzenetek()
