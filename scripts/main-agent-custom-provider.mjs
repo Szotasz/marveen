@@ -121,6 +121,17 @@ if (def.authHeader === 'none') {
   // MEDIUM-5 pontja ezzel targytalanna valt: a `ps`/`/proc` sorban mar nem all a kulcs.
   // Az `apiKeyForStamp` SZANDEKOSAN a nyers kulcs marad: az a `.claude.json`-be irodik (a CLI az
   // utolso 20 karakteret tarolja), nem a parancsba -- mas ut, mas szabaly.
+  // A VEDETT IMPORT-BLOKK A MODUL HIANYAT FOGJA, NEM AZ EXPORTET (Samu merese a #1369 rebase
+  // review-jan). Egy REGI dist, amiben az `agent-process.js` LETEZIK, de meg nincs benne a
+  // `launchSecretRef`, hiba nelkul `undefined`-et ad, es a lenti hivas TypeError-ral halna meg:
+  // exit 1, stack trace a stderr-en, ures stdout. A channels.sh a nem-nulla kodra MEGSZAKITJA a
+  // fo agens inditasat, tehat a tunet egy ertelmezhetetlen osszeomlas lenne egy elavult dist miatt.
+  //
+  // ES A HELYES KIMENET ITT NEM A "standard backend" FALLBACK: az pont az a csendes rossz-backend,
+  // ami ellen a szerzo abort-aga keszult. Kimondott abort kell, ami megmondja a TEENDOT.
+  if (typeof launchSecretRef !== 'function') {
+    fatal('dist older than this helper (no launchSecretRef export) -- run `npm run build`')
+  }
   const keyRef = launchSecretRef(`${MAIN_AGENT_ID}.${def.vaultKey}`, key)
   if (def.authHeader === 'x-api-key') {
     headerExport = `export ANTHROPIC_API_KEY=${keyRef} && `
