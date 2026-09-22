@@ -914,6 +914,16 @@ $TMUX set-environment -g CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION false 2>/dev/null 
 # exactly two self-updating sessions to wipe the shared global install.
 $TMUX set-environment -g DISABLE_AUTOUPDATER 1 2>/dev/null || true
 
+# Owner commands (ELSOKOR922 spec D-4): the Telegram plugin answers /status
+# and /help itself, so those two never reach the session's command hook. Take
+# them out of every cached plugin version BEFORE the plugin is spawned.
+# Idempotent; a missing anchor (plugin update) leaves the file unchanged and
+# logs one loud line; never fails the start. A plugin version downloaded
+# during this start is patched at the next one.
+if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
+  python3 "$INSTALL_DIR/scripts/patch-telegram-plugin.py" 2>> "$INSTALL_DIR/store/channels-failures.log" || true
+fi
+
 # Hybrid channel-coordinator model: the native plugin stays the PRIMARY inbound
 # path (it always polls getUpdates here -- never outbound-only). The standalone
 # marveen-channel-coordinator only BACKFILLS while this session's plugin is

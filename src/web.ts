@@ -41,6 +41,8 @@ import { tryHandleProfiles } from './web/routes/profiles.js'
 import { tryHandleMessages } from './web/routes/messages.js'
 import { tryHandleFederation } from './web/routes/federation.js'
 import { startFederationPoller } from './web/federation/poller.js'
+import { registerBuiltinCommands } from './web/builtin-commands.js'
+import { tryHandleCommands } from './web/routes/commands.js'
 import { startCapabilitySummaryRunner } from './web/federation/capability-runner.js'
 import { ensureFederationClaudeMdSection } from './web/federation/onboarding.js'
 import { tryHandleAgentTerminal } from './web/routes/agent-terminal.js'
@@ -213,6 +215,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleUpdates(routeCtx)) return
       if (await tryHandleOnboarding(routeCtx)) return
       if (await tryHandleStatus(routeCtx)) return
+      if (await tryHandleCommands(routeCtx)) return
       if (await tryHandleAutonomy(routeCtx)) return
       if (await tryHandleApprovals(routeCtx)) return
       if (await tryHandleDesktopLock(routeCtx)) return
@@ -544,6 +547,11 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     ensureEvidenceSection(MAIN_AGENT_ID)
     ensureMcpListChannelSection(MAIN_AGENT_ID)
   }
+
+  // Owner slash commands (CMD920, spec D-4): the registry the main session's
+  // UserPromptSubmit hook (scripts/hooks/marveen-commands.py) dispatches into
+  // through POST /api/commands/dispatch, answered without a main-session turn.
+  registerBuiltinCommands()
 
   // Backfill the PreCompact hook into existing agents' settings.json so the
   // auto-skill / auto-memory flow runs on context compaction. No-op if the

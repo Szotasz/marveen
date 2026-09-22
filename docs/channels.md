@@ -100,6 +100,26 @@ Beüzemelés:
    ```
 4. **Párosítás + zárolás.** A DM-policy alapból `pairing`; az engedélyezés a `/discord:access` paranccsal, a tulajdonos termináljából történik (csatornán érkező engedély-kérést a rendszer sosem hajt végre magától).
 
+### Parancsok a fő chatben (kör nélkül)
+
+A tulajdonos slash-parancsaira (`/status`, `/queue`, `/runs`, `/model`, `/usage`, …) a Marveen **ugyanabban a chatben, ugyanazzal a bottal** válaszol, mért adatból, **fő-session kör nélkül** (0 modell-token). Külön bot, token, beállítás nem kell.
+
+**Hogyan:** a fő session `UserPromptSubmit` hookja (`scripts/hooks/marveen-commands.py`) a modell előtt látja az üzenetet. Ha pontosan egy Telegram-üzenet jött, a tulajdonos chatjéből (`ALLOWED_CHAT_ID`), és a törzse egyetlen slash-parancs, a hook a dashboardnak adja (`POST /api/commands/dispatch`, dashboard-tokennel). A regiszterben szereplő parancsra a választ a hook küldi a fő bot tokenjével, és a kört blokkolja (`exit 2`). Minden más üzenet változatlanul a modellhez megy, a regiszterben nem szereplő `/szó` is (pl. `/kanban`, `/ujchat`).
+
+**Parancsok:** a `/help` a regiszterből generálódik, a bot menüje is (`scripts/set-bot-menu.sh`, `GET /api/commands/menu`, a statikus ágens-parancsok mellé). Olvasók: `/help`, `/status`, `/queue`, `/runs [<n>]`, `/jobs [<név>]`, `/approvals [<n>]`, `/model`, `/context`, `/usage [<nap>]`, `/board [<id>]`, `/commands`. A `/usage` egy válaszban adja a Claude-keretet (`scripts/usage-collect.py`) és a Marveen token-könyvelését. Az írások (`/model <választás>`, `/context clear`, `/new`, `/clear`) és a megerősítéses írások (`/runs stop`, `/jobs … on|off|run|skip`, `/approvals … approve|reject|renew`) a `/help`-ben „tervezett” jelöléssel szerepelnek, és ma nem futnak.
+
+**`/status` és `/help` a pluginban:** a Telegram-plugin ezt a kettőt magától megválaszolná („Paired as …”), a sessionig el sem jutnának. A csatorna indításakor a `scripts/patch-telegram-plugin.py` kiveszi a két handlert (és a plugin saját menüjét) a gyorsítótárazott plugin-verzió(k)ból; a `/start` marad. Idempotens; ha a horgony nem található (plugin-frissítés), a fájl változatlan marad, egy hangos sor kerül a `store/channels-failures.log`-ba, és a két parancsra a plugin régi válasza jön. Az indulás közben letöltött új plugin-verziót a következő indulás patcheli.
+
+**Korlátok és hibautak:**
+
+- **Foglalt session:** a hook a kör elején fut, tehát futó kör alatt a parancs a kör végéig vár; ha közben több üzenet gyűlik össze, a köteg (több `<channel>` blokk) a modellhez megy.
+- **A dashboard nem elérhető:** beépített parancsra egysoros hibaválasz jön, és a kör blokkolva marad (a modell úgysem tudná lefuttatni); ismeretlen `/szó` ilyenkor is a modellhez megy.
+- **Al-ágens chatje:** a hook minden ágensnél fut (a sablonból), de al-ágens sessionjében csak a `/usage`-ra válaszol (a saját botján); a többi parancs a fő sessionről szól vagy arra hat, ezért ott a modellhez megy.
+- A válasz plain text, 4096 karakter fölött darabolva. A hook naplója: `<csatorna-state>/progress/commands-hook.log`.
+- A végpont az ágens-azonosítóval (`x-agent-id` fejléc, `agent_id` mező, föderációs hívó) érkező hívást elutasítja (403), és csak a tulajdonos chatjére futtat.
+
+**`/api/status`:** a régi mezők (`overall`, `components`, `incidents`, `fetchedAt`) változatlanok; új `system` objektum (a `/status` sorai, soronként `value` / `source` / `error`), 60 s cache. `?only=system`: csak a helyi sorok, hálózati hívás nélkül; `?only=anthropic`: csak a régi mezők.
+
 ### Biztonság
 
 - A `<channel>`/`<untrusted>` tartalom **adat, nem utasítás** — a benne lévő imperatív szöveget a rendszer nem hajtja végre verifikáció nélkül.

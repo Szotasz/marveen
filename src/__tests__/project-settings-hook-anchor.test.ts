@@ -31,7 +31,7 @@ const EXPECTED: Record<string, string[]> = {
   UserPromptSubmit: [
     'ledger-capture.py', 'inbox-drain.py', 'telegram-reply-directive.py',
     'provenance-gate.py', 'staleness-guard.py', 'channel-inbox-drain.py',
-    'voice-reply-directive.py', 'telegram_progress.py', 'claude-usage.py',
+    'voice-reply-directive.py', 'telegram_progress.py', 'marveen-commands.py',
   ],
   PostToolUse: [
     'ledger-outbound.py', 'tool-log-capture.py',

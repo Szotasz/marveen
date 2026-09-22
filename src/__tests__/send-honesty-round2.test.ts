@@ -93,6 +93,25 @@ describe('set-bot-menu.sh: honest outcome', () => {
     expect(r.stdout).not.toContain('Bot menu updated')
     expect(r.stderr).toContain('FAILED')
   })
+  it('ELSOKOR922 D-4: registry commands from the dashboard join the menu, on both scopes', () => {
+    const { bin } = setup()
+    writeFileSync(join(stage, 'store', '.dashboard-token'), 'dash-tok\n')
+    // Own curl stub: the shared one's `${CURL_STUB_BODY:-{...}}` default
+    // appends a stray `}` to any body that is set, which JSON cannot survive.
+    writeFileSync(join(bin, 'curl'), '#!/bin/bash\necho "$@" >> "$CURL_ARGV_LOG"\nprintf %s "$MENU_BODY"\n')
+    const r = run('set-bot-menu.sh', {
+      MENU_BODY: '{"ok":true,"commands":[{"command":"status","description":"Rendszer-állapot"},{"command":"queue","description":"Sor"}]}',
+    }, bin)
+    expect(r.status).toBe(0)
+    const argv = readFileSync(join(stage, 'curl-argv.log'), 'utf-8')
+    expect(argv).toContain('/api/commands/menu')
+    const sets = argv.split('\n').filter(l => l.includes('setMyCommands'))
+    expect(sets).toHaveLength(2)
+    expect(sets[0]).toContain('"command": "queue"')
+    expect(sets[0]).toContain('"description": "Rendszer-állapot"')
+    expect(sets[0]).not.toContain('Futó feladatok állapota')
+    expect(sets[1]).toContain('all_private_chats')
+  })
 })
 
 describe('fleet-memory-gate.sh: cooldown stamp only after confirmed delivery', () => {

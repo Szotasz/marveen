@@ -1,0 +1,77 @@
+// Excerpt of claude-plugins-official/telegram 0.0.7 server.ts (Apache-2.0,
+// (c) Anthropic), verbatim blocks: the /start, /help, /status handlers and
+// the polling loop's onStart setMyCommands. Test input for
+// scripts/patch-telegram-plugin.py (ELSOKOR922 spec D-4); the declarations
+// and the loop's closing lines below only make the excerpt parse on its own.
+declare const bot: any
+declare function dmCommandGate(ctx: any): any
+let botUsername = ''
+
+bot.command('start', async ctx => {
+  if (!dmCommandGate(ctx)) return
+  await ctx.reply(
+    `This bot bridges Telegram to a Claude Code session.\n\n` +
+    `To pair:\n` +
+    `1. DM me anything — you'll get a 6-char code\n` +
+    `2. In Claude Code: /telegram:access pair <code>\n\n` +
+    `After that, DMs here reach that session.`
+  )
+})
+
+bot.command('help', async ctx => {
+  if (!dmCommandGate(ctx)) return
+  await ctx.reply(
+    `Messages you send here route to a paired Claude Code session. ` +
+    `Text and photos are forwarded; replies and reactions come back.\n\n` +
+    `/start — pairing instructions\n` +
+    `/status — check your pairing state`
+  )
+})
+
+bot.command('status', async ctx => {
+  const gated = dmCommandGate(ctx)
+  if (!gated) return
+  const { access, senderId } = gated
+
+  if (access.allowFrom.includes(senderId)) {
+    const name = ctx.from!.username ? `@${ctx.from!.username}` : senderId
+    await ctx.reply(`Paired as ${name}.`)
+    return
+  }
+
+  for (const [code, p] of Object.entries(access.pending)) {
+    if (p.senderId === senderId) {
+      await ctx.reply(
+        `Pending pairing — run in Claude Code:\n\n/telegram:access pair ${code}`
+      )
+      return
+    }
+  }
+
+  await ctx.reply(`Not paired. Send me a message to get a pairing code.`)
+})
+
+void (async () => {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await bot.start({
+        onStart: info => {
+          attempt = 0
+          botUsername = info.username
+          process.stderr.write(`telegram channel: polling as @${info.username}\n`)
+          void bot.api.setMyCommands(
+            [
+              { command: 'start', description: 'Welcome and setup guide' },
+              { command: 'help', description: 'What this bot can do' },
+              { command: 'status', description: 'Check your pairing status' },
+            ],
+            { scope: { type: 'all_private_chats' } },
+          ).catch(() => {})
+        },
+      })
+      return // bot.stop() was called — clean exit from the loop
+    } catch (err) {
+      return
+    }
+  }
+})()
