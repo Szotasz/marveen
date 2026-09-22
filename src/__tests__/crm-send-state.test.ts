@@ -484,13 +484,28 @@ describe('HTTP-úton: a küldés-végpontok a vázban (ugyanaz a token-kapu)', (
     await new Promise<void>((resolve) => elesServer.listen(0, '127.0.0.1', resolve))
     const elesPort = (elesServer.address() as { port: number }).port
     try {
+      // A KISERLET VALODI: egy nem letezo azonosito UGYANUGY 404-et adna, tehat a puszta
+      // statusz-szam itt NEM bizonyitek. (Mutanssal merve: a kapu elhagyasa igy eloszor ZOLD
+      // maradt, mert a "nincs ilyen kiserlet" es az "ez az ut nincs ebben a buildben" ugyanaz
+      // a szam. Ezert all itt letezo sor, es ezert merem a SZOVEGET es a SOR ALLAPOTAT is.)
+      const q = await fetch(`http://127.0.0.1:${elesPort}/api/send/queue`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+        body: JSON.stringify({ actor: 'geri', rfc_message_id: '<eles-1@pelda.hu>', provider: 'resend' }),
+      })
+      expect(q.status).toBe(201)
+      const id = ((await q.json()) as { id: number }).id
+
       const r = await fetch(`http://127.0.0.1:${elesPort}/api/send/outcome`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
-        body: JSON.stringify({ actor: 'geri', attempt_id: 1, outcome: { kind: 'response', http_status: 200, provider_msg_id: 'FAKE-1' } }),
+        body: JSON.stringify({ actor: 'geri', attempt_id: id, outcome: { kind: 'response', http_status: 200, provider_msg_id: 'FAKE-1' } }),
       })
       expect(r.status).toBe(404)
-      expect((elesDb.prepare("SELECT count(*) AS n FROM send_attempts WHERE state='accepted'").get() as { n: number }).n).toBe(0)
+      expect(((await r.json()) as { error: string }).error).toContain('only come from the provider call')
+      const sor = elesDb.prepare('SELECT state, provider_msg_id FROM send_attempts WHERE id = ?').get(id) as { state: string; provider_msg_id: string | null }
+      expect(sor.state).toBe('queued')
+      expect(sor.provider_msg_id).toBeNull()
     } finally {
       await new Promise<void>((resolve) => elesServer.close(() => resolve()))
       elesDb.close()
