@@ -14,6 +14,8 @@ import { CRM_TABLES } from './db.js'
 import { createLead, todayLeads } from './leads-routes.js'
 import { checkUncertain, performSend, queueSend, recordOutcome, requestResend } from './send-routes.js'
 import { createSendProviderStub, type SendProvider } from './send-provider-stub.js'
+import { listThreads, getThread, listUnthreaded, syncStatus } from './thread-routes.js'
+import { STATE_PATH } from './sync.js'
 
 export interface CrmServerOptions {
   token: string
@@ -137,6 +139,28 @@ export function createCrmServer(opts: CrmServerOptions): http.Server {
       }
       if (path === '/api/leads' || path.startsWith('/api/leads/')) {
         json(res, { error: `not in this build: this lead path is not implemented (${LEADS_ENDPOINT_CARD})` }, 404)
+        return
+      }
+      // --- Szal (CRM1MAILSYNC922): read-only thread views over the synced mail ---
+      if (path === '/api/threads' && method === 'GET') {
+        const r = listThreads(crmDb, url.searchParams.get('q') ?? '', Number(url.searchParams.get('limit') ?? 50) || 50)
+        json(res, r.body, r.status)
+        return
+      }
+      const threadMatch = /^\/api\/threads\/(\d+)$/.exec(path)
+      if (threadMatch && method === 'GET') {
+        const r = getThread(crmDb, Number(threadMatch[1]))
+        json(res, r.body, r.status)
+        return
+      }
+      if (path === '/api/messages/unthreaded' && method === 'GET') {
+        const r = listUnthreaded(crmDb, Number(url.searchParams.get('limit') ?? 50) || 50)
+        json(res, r.body, r.status)
+        return
+      }
+      if (path === '/api/sync/status' && method === 'GET') {
+        const r = syncStatus(crmDb, STATE_PATH)
+        json(res, r.body, r.status)
         return
       }
       if (path === '/api/status' && method === 'GET') {
