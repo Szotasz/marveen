@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="hu">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Marveen CRM</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Marveen CRM <span class="tag">1. ütem, váz</span></div>
+    <nav class="tabs" role="tablist">
+      <button class="tab" data-screen="ma" aria-selected="true">Ma</button>
+      <button class="tab" data-screen="leadek">Leadek</button>
+      <button class="tab" data-screen="felvetel">Lead felvétele</button>
+      <button class="tab" data-screen="szal">Szál</button>
+    </nav>
+    <div class="status" id="status" title="A /health végpont válasza">…</div>
+  </header>
+
+  <main>
+    <section class="screen" id="screen-ma" data-screen="ma">
+      <h1>Ma</h1>
+      <p class="muted">Lejárt és mai következő lépések. Példaadat: a lista statikus, amíg a lead-végpont (CRM1LEADKAPU922) nem él.</p>
+      <h2>Lejárt</h2>
+      <ul class="rows" id="ma-lejart"></ul>
+      <h2>Ma</h2>
+      <ul class="rows" id="ma-mai"></ul>
+    </section>
+
+    <section class="screen" id="screen-leadek" data-screen="leadek" hidden>
+      <h1>Leadek</h1>
+      <div class="filters">
+        <label>Állapot
+          <select id="filter-status">
+            <option value="">mind</option>
+            <option value="open">nyitott</option>
+            <option value="won">nyert</option>
+            <option value="lost">vesztett</option>
+            <option value="parked">parkol</option>
+          </select>
+        </label>
+        <label>Eredet
+          <select id="filter-origin">
+            <option value="">mind</option>
+            <option value="email">e-mail</option>
+            <option value="telegram">Telegram</option>
+            <option value="phone">telefon</option>
+            <option value="meeting">találkozó</option>
+            <option value="referral">ajánlás</option>
+            <option value="other">egyéb</option>
+          </select>
+        </label>
+        <input id="filter-text" type="search" placeholder="keresés a címben">
+      </div>
+      <table class="table">
+        <thead><tr><th>Cím</th><th>Kontakt</th><th>Eredet</th><th>Állapot</th><th>Következő lépés</th><th>Mikor</th></tr></thead>
+        <tbody id="leads-body"></tbody>
+      </table>
+    </section>
+
+    <section class="screen" id="screen-felvetel" data-screen="felvetel" hidden>
+      <h1>Lead felvétele</h1>
+      <p class="muted">A gomb e-mail nélkül is működik majd. Ebben a vázban az űrlap nem küld: a végpont és a kapuja (típus, dátum ma és ma+14 között, egy mondat) a CRM1LEADKAPU922 kártyán készül.</p>
+      <form id="lead-form" class="form" autocomplete="off">
+        <label>Cím <input name="title" required placeholder="pl. Comline: voice-agent bővítés"></label>
+        <label>Kontakt (név vagy e-mail, üresen is mehet) <input name="contact" placeholder="opcionális"></label>
+        <label>Eredet
+          <select name="origin" required>
+            <option value="email">e-mail</option><option value="telegram">Telegram</option><option value="phone">telefon</option><option value="meeting">találkozó</option><option value="referral">ajánlás</option><option value="other">egyéb</option>
+          </select>
+        </label>
+        <label>Következő lépés típusa
+          <select name="next_step_type" required>
+            <option value="email">e-mail</option><option value="call">hívás</option><option value="meeting">találkozó</option><option value="offer">ajánlat</option>
+          </select>
+        </label>
+        <label>Következő lépés mikor <input name="next_step_at" type="date" required></label>
+        <label>Következő lépés egy mondatban <input name="next_step_text" required placeholder="mit teszel legközelebb"></label>
+        <button type="submit" class="primary">Lead felvétele</button>
+        <p class="hint" id="lead-form-hint"></p>
+      </form>
+    </section>
+
+    <section class="screen" id="screen-szal" data-screen="szal" hidden>
+      <h1>Szál</h1>
+      <p class="notice" id="szal-notice">A személyes Gmail-fiók küldöttjei és a Resend-en kimenő aiam-levelek most nem látszanak. Ami látszik: az asszisztensi Gmail-fiók és a support@ IMAP levelei (a szinkron a CRM1MAILSYNC922 kártyán készül; ez a nézet még példaadat).</p>
+      <div class="thread-head">
+        <div><strong id="szal-contact">Példa Kontakt</strong> <span class="muted" id="szal-email">pelda@example.com</span></div>
+        <div class="muted" id="szal-subject">Tárgy: Marveen telepítés, időpont</div>
+      </div>
+      <ol class="timeline" id="szal-timeline"></ol>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
