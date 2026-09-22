@@ -8,6 +8,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
+import { importsValueBinding } from './setup/source-imports.js'
 import { fileURLToPath } from 'node:url'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { isEgressBlocked, loadRuntimeAllowlist } from '../../scripts/hooks/egress-gate.mjs'
@@ -337,70 +338,6 @@ describe('ensureEgressGate', () => {
 // ---------------------------------------------------------------------------
 // 3. from-authentication: messages.ts source check
 // ---------------------------------------------------------------------------
-
-/**
- * True when `source` imports `binding` from `module` as a VALUE (IMPORTKAPULAZ921).
- *
- * Co-imports, any member order and multi-line import statements all count; a
- * type-only import does not, because it is erased at runtime and a guard that is
- * not there at runtime is not a guard. An aliased import still reports the
- * exported name -- the sibling assertion on the CALL is what catches an alias.
- */
-function importsValueBinding(source: string, binding: string, module: string): boolean {
-  const spec = module.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const re = new RegExp(`import\\s+(type\\s+)?\\{([^}]*)\\}\\s*from\\s*['"]${spec}['"]`, 'g')
-  for (const m of source.matchAll(re)) {
-    if (m[1]) continue                       // `import type { ... }` -- erased at runtime
-    const members = m[2].split(',').map((raw) => raw.trim()).filter(Boolean)
-    for (const member of members) {
-      if (/^type\s/.test(member)) continue   // inline `type Foo` member
-      const exported = member.split(/\s+as\s+/)[0].trim()
-      if (exported === binding) return true
-    }
-  }
-  return false
-}
-
-// The relaxed check is itself test infrastructure: if it answered `true` too
-// easily, the assertion above would stay green with the defence gone -- a
-// formality that reassures by being present. These cases pin both directions.
-describe('importsValueBinding (the relaxed import check itself, IMPORTKAPULAZ921)', () => {
-  const M = '../agent-config.js'
-
-  it('accepts the plain import', () => {
-    expect(importsValueBinding("import { isKnownAgent } from '../agent-config.js'", 'isKnownAgent', M)).toBe(true)
-  })
-
-  it('accepts a co-import -- the exact shape that misfired on #1448', () => {
-    expect(importsValueBinding("import { isKnownAgent, readAgentPullDelivery } from '../agent-config.js'", 'isKnownAgent', M)).toBe(true)
-  })
-
-  it('accepts the binding in any position and over several lines', () => {
-    const src = "import {\n  readAgentPullDelivery,\n  isKnownAgent,\n} from '../agent-config.js'"
-    expect(importsValueBinding(src, 'isKnownAgent', M)).toBe(true)
-  })
-
-  it('rejects a missing import -- this is what keeps it a gate', () => {
-    expect(importsValueBinding("import { readAgentPullDelivery } from '../agent-config.js'", 'isKnownAgent', M)).toBe(false)
-  })
-
-  it('rejects the same name imported from a DIFFERENT module', () => {
-    expect(importsValueBinding("import { isKnownAgent } from '../somewhere-else.js'", 'isKnownAgent', M)).toBe(false)
-  })
-
-  it('rejects a type-only import: erased at runtime, so the guard is not there', () => {
-    expect(importsValueBinding("import type { isKnownAgent } from '../agent-config.js'", 'isKnownAgent', M)).toBe(false)
-    expect(importsValueBinding("import { type isKnownAgent } from '../agent-config.js'", 'isKnownAgent', M)).toBe(false)
-  })
-
-  it('rejects a name that merely CONTAINS the binding', () => {
-    expect(importsValueBinding("import { isKnownAgentCached } from '../agent-config.js'", 'isKnownAgent', M)).toBe(false)
-  })
-
-  it('does not read an unrelated mention in prose or a comment as an import', () => {
-    expect(importsValueBinding('// isKnownAgent lives in ../agent-config.js\nconst x = 1', 'isKnownAgent', M)).toBe(false)
-  })
-})
 
 describe('/api/messages from-authentication', () => {
   const src = readFileSync(join(REPO_ROOT, 'src', 'web', 'routes', 'messages.ts'), 'utf8')
