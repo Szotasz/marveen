@@ -1,0 +1,11 @@
+[
+  { "toolName": "Bash", "input": { "command": "curl -H 'Authorization: Bearer abcd1234efgh5678' https://x.example.com" } },
+  { "toolName": "Bash", "input": { "command": "export API_KEY=sk-ant-abc123DEF456ghi789" } },
+  { "toolName": "Bash", "input": { "command": "echo 1234567890abcdef1234567890abcdef" } },
+  { "toolName": "Bash", "input": { "command": "ls -la /tmp" } },
+  { "toolName": "Read", "input": { "file_path": "/mnt/doc-drive/dir/marveen/worktrees/apro920/src/db.ts" } },
+  { "toolName": "Grep", "input": { "pattern": "foo", "path": "src" } },
+  { "toolName": "WebFetch", "input": { "url": "https://example.com/?token=verysecrettoken123" } },
+  { "toolName": "UnknownTool", "input": { "a": 1, "b": "hello world" } },
+  { "toolName": "Bash", "input": {} }
+]

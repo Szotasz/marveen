@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { buildWorkerPrompt, decidePoll, configDirKeychainService, workerHomeFor, workerStartAllowed } from '../web/agent-worker.js'
+import { buildWorkerPrompt, decidePoll, configDirKeychainService, workerHomeFor, workerStartAllowed, workerModelSource } from '../web/agent-worker.js'
 
 // Pure-logic tests for the interactive-tmux worker that backs runAgent on the
 // subscription (jun.15 migration). The live-session orchestration is exercised
@@ -29,6 +29,18 @@ describe('buildWorkerPrompt', () => {
   it('does not inject any persona / project voice', () => {
     const p = buildWorkerPrompt('TASK', out, done)
     expect(p).not.toMatch(/Marveen|Szabolcs|asszisztens/i)
+  })
+})
+
+// APRO920 (c)(2): the worker launch log line's source label -- which
+// config-chain element actually supplied --model.
+describe('workerModelSource', () => {
+  it('names the env var when MARVEEN_WORKER_MODEL is set', () => {
+    expect(workerModelSource({ MARVEEN_WORKER_MODEL: 'claude-opus-5' } as NodeJS.ProcessEnv)).toBe('env:MARVEEN_WORKER_MODEL')
+  })
+
+  it('falls back to "default" (the .env-backed DEFAULT_AGENT_MODEL) when unset', () => {
+    expect(workerModelSource({} as NodeJS.ProcessEnv)).toBe('default')
   })
 })
 

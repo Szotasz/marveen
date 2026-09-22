@@ -50,6 +50,12 @@ const TMUX = resolveFromPath('tmux')
 // process.env, so a MARVEEN_WORKER_MODEL line in .env was silently ignored.
 const WORKER_MODEL = process.env.MARVEEN_WORKER_MODEL || DEFAULT_AGENT_MODEL
 
+// APRO920 (c)(2): pure so the launch-model log line's source label is unit
+// testable without spinning up a real tmux session.
+export function workerModelSource(env: NodeJS.ProcessEnv = process.env): string {
+  return env.MARVEEN_WORKER_MODEL ? 'env:MARVEEN_WORKER_MODEL' : 'default'
+}
+
 // How long to wait for a freshly launched worker to reach an idle prompt.
 const WORKER_BOOT_TIMEOUT_MS = 90_000
 // Poll cadence while waiting for the <reqid>.done sentinel.
@@ -504,6 +510,12 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
     `${shArg(claudeLaunchBin)} --dangerously-skip-permissions --model ${shArg(WORKER_MODEL)}`
   execFileSync(TMUX, ['new-session', '-d', '-s', ctx.session, '-c', ctx.home, 'bash', '-lc', launch], { timeout: 8000 })
   logger.info({ session: ctx.session, cwd: ctx.home }, 'agent-worker: launched interactive worker session')
+  // APRO920 (c)(2): same rationale as startAgentProcess's model-resolved log --
+  // which config-chain element supplied the --model value.
+  logger.info(
+    { session: ctx.session, model: WORKER_MODEL, source: workerModelSource() },
+    'agent-worker: launch model resolved',
+  )
   logWorkerClaudeVersion(ctx)
 }
 
