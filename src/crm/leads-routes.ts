@@ -9,7 +9,7 @@
  * mondja meg, hogy nem ment be, azt nem, hogy MIÉRT nem, és a felhasználónak a miért kell.
  */
 import type { Database } from 'better-sqlite3'
-import { checkLeadInput, startOfLocalDay, type LeadInput } from './leads-gate.js'
+import { checkActor, checkLeadInput, startOfLocalDay, type LeadInput } from './leads-gate.js'
 
 export type ApiResult = { status: number; body: Record<string, unknown> }
 
@@ -39,18 +39,17 @@ export function createLead(
   actor: string,
   now: Date = new Date(),
 ): ApiResult {
-  const szerzo = typeof actor === 'string' ? actor.trim() : ''
-  if (!szerzo) {
+  // A SZERZO-KAPU A KOZOS MODULBAN VAN (leads-gate), mert a szabaly minden iro vegpontra all.
+  // Ha itt allna, a G2 (send_attempts.actor) sajat masolatot kapna, es a ketto eszrevetlenul
+  // csuszna szet -- pont az a hiba-alak, amit a tipus-lista egy-helyen-tartasa mar elkerult.
+  const szerzoKapu = checkActor(actor)
+  if (!szerzoKapu.ok) {
     return {
       status: 400,
-      body: {
-        error: 'nincs szerzo',
-        message:
-          'A lead felvételéhez megnevezett szerző kell. Lead sosem keletkezik szinkronból: ' +
-          'ha egy levélből akarsz leadet nyitni, az is kimondott művelet, a te nevedben.',
-      },
+      body: { error: szerzoKapu.reason === 'empty' ? 'nincs szerzo' : 'tul hosszu szerzo', message: szerzoKapu.message },
     }
   }
+  const szerzo = szerzoKapu.actor
 
   const kapu = checkLeadInput(body, now)
   if (!kapu.ok) {

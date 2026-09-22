@@ -1,42 +1,46 @@
 /**
  * CRM1LEADKAPU922: a lead-felvétel kapuja, a hat elfogadási feltétel (spec 6.5) plusz a nyom.
  *
- * A FIXTÚRA A SÉMÁT MAGA HOZZA LÉTRE (workspace/CRM-1-UTEM-FELBONTAS.md 2. szakasz), mert a D1 váz
- * még nem létezik. Így a kapu MÉRHETŐ a váz előtt, és a beillesztés után sem a váztól függ.
+ * A FIXTÚRA A VÁZ SAJÁT SÉMÁJÁT HASZNÁLJA (`initCrmDatabase`, CRM1SKEL922, mergelve 84aea701).
+ * Korábban kézzel másolt DDL állt itt, mert a váz még nem létezett; a másolat azóta drift-kockázat
+ * lett volna: ha a séma elmozdul, a kapu tesztje a RÉGI táblán maradna zöld.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import Database from 'better-sqlite3'
+import type Database from 'better-sqlite3'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createLead, todayLeads } from '../crm/leads-routes.js'
-import { checkLeadInput, startOfLocalDay, NEXT_STEP_TYPES } from '../crm/leads-gate.js'
+import { checkLeadInput, startOfLocalDay, NEXT_STEP_TYPES, ACTOR_MAX_LENGTH } from '../crm/leads-gate.js'
+import { initCrmDatabase } from '../crm/db.js'
 
-const DDL = `
-CREATE TABLE contacts (id INTEGER PRIMARY KEY, display_name TEXT, created_at INTEGER NOT NULL, created_by TEXT NOT NULL, notes TEXT);
-CREATE TABLE contact_emails (contact_id INTEGER NOT NULL REFERENCES contacts(id), email TEXT NOT NULL UNIQUE COLLATE NOCASE, is_primary INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE contact_phones (contact_id INTEGER NOT NULL REFERENCES contacts(id), phone TEXT NOT NULL, PRIMARY KEY(contact_id, phone));
-CREATE TABLE leads (
-  id INTEGER PRIMARY KEY, contact_id INTEGER REFERENCES contacts(id), title TEXT NOT NULL,
-  origin TEXT NOT NULL CHECK(origin IN ('email','telegram','phone','meeting','referral','other')),
-  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','won','lost','parked')),
-  owner TEXT NOT NULL,
-  next_step_type TEXT NOT NULL CHECK(next_step_type IN ('email','call','meeting','offer','wakeup')),
-  next_step_at INTEGER NOT NULL,
-  next_step_text TEXT NOT NULL CHECK(length(trim(next_step_text)) > 0),
-  postpone_count INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER NOT NULL, created_by TEXT NOT NULL, updated_at INTEGER NOT NULL
-);
-CREATE TABLE audit_log (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, actor TEXT NOT NULL, entity TEXT NOT NULL, entity_id INTEGER, action TEXT NOT NULL, detail TEXT);
-`
 
 let dir: string
-let db: InstanceType<typeof Database>
-const MOST = new Date(2026, 8, 22, 14, 30, 0) // 2026-09-22 14:30 helyi ido
+let db: Database.Database
+/**
+ * A PROBA IDOPONTJA ABSZOLUT PILLANAT, nem a futtato zonajaban ertett ora.
+ *
+ * MERVE 2026-09-22-en: korabban `new Date(2026, 8, 22, 14, 30)` allt itt, es a varakozasokat is
+ * futtato-lokalis `Date`-ekbol epitettem. `TZ=Pacific/Kiritimati` (UTC+14) alatt EGY allitas
+ * elbukott, pontosan 86400 masodperc elteressel -- es a hiba a MUSZERBEN volt, nem a kapuban:
+ * a varakozas futtato-lokalis pillanaton at szamolt budapesti napot. Ez pont az a fuggoseg,
+ * amiert a nap hatara nevesitett zonaban dol el, tehat a fixtura sem fugghet tole.
+ * 2026-09-22 14:30 Budapesten = 12:30 UTC.
+ */
+const MOST = new Date(Date.UTC(2026, 8, 22, 12, 30, 0))
 
+/** A proba napjatol szamitott n-edik naptari nap, `YYYY-MM-DD` alakban (bevitelnek). */
 function nap(eltolas: number): string {
-  const d = new Date(MOST.getFullYear(), MOST.getMonth(), MOST.getDate() + eltolas)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  return new Date(Date.UTC(2026, 8, 22 + eltolas)).toISOString().slice(0, 10)
+}
+
+/**
+ * Ugyanannak a napnak egy PILLANATA, delben UTC-ben. Varakozas epitesere valo: dellel a naptari
+ * nap minden futtato-zonaban ugyanaz, tehat a `startOfLocalDay` ugyanazt a budapesti nap-kezdetet
+ * adja vissza rea, futtato-fuggetlenul.
+ */
+function napDelben(eltolas: number): Date {
+  return new Date(Date.UTC(2026, 8, 22 + eltolas, 12, 0, 0))
 }
 
 const ALAP = {
@@ -48,8 +52,7 @@ const ALAP = {
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'crm-lead-'))
-  db = new Database(join(dir, 'crm.db'))
-  db.exec(DDL)
+  db = initCrmDatabase(join(dir, 'crm.db'))
 })
 afterEach(() => {
   db.close()
@@ -117,6 +120,35 @@ describe('CRM lead-felvétel kapuja (CRM1LEADKAPU922, spec 6.5)', () => {
     expect(r.status).toBe(400)
     expect(String(r.body.message)).toContain('szinkronból')
     expect(leadSzam()).toBe(0)
+  })
+
+  it('7. a szerző neve legfeljebb 64 karakter: a 64 MENTŐDIK', () => {
+    // A FELSO HATAR SAMU STRUKTURALIS DONTESE (spec 4. szakasz): trim utan 1..64 karakter.
+    // A HATARON LEVO ERTEK A POZITIV KONTROLL: e nelkul egy "63 karakternel vagj" hiba is zold
+    // maradna, mert a tul hosszu eset ugyanugy megtagadas lenne.
+    const nev = 'Á'.repeat(ACTOR_MAX_LENGTH)
+    expect(Array.from(nev)).toHaveLength(64)
+    const r = createLead(db, { ...ALAP, next_step_at: nap(1) }, nev, MOST)
+    expect(r.status).toBe(201)
+    // a nyomba a TELJES nev kerul, csonkitas nelkul
+    expect((auditSorok('create')[0] as { actor: string }).actor).toBe(nev)
+    expect((db.prepare('SELECT created_by FROM leads').get() as { created_by: string }).created_by).toBe(nev)
+  })
+
+  it('7b. 65 karakter -> MEGTAGADÁS, és a szöveg megmondja, mi a határ', () => {
+    const r = createLead(db, { ...ALAP, next_step_at: nap(1) }, 'x'.repeat(ACTOR_MAX_LENGTH + 1), MOST)
+    expect(r.status).toBe(400)
+    expect(r.body.error).toBe('tul hosszu szerzo')
+    expect(String(r.body.message)).toContain('64')
+    expect(leadSzam()).toBe(0)
+  })
+
+  it('7c. a hossz KARAKTERBEN dől el, nem bájtban: 64 ékezetes név átmegy', () => {
+    // Ez nem elmeleti: az "Á" UTF-8-ban ket bajt, tehat egy bajt-alapu hatar 32 karakternel
+    // vagna el egy magyar nevet -- es a hiba pont a mi feluletunkon jelenne meg eloszor.
+    const nev = 'Ő'.repeat(ACTOR_MAX_LENGTH)
+    expect(Buffer.byteLength(nev, 'utf8')).toBeGreaterThan(ACTOR_MAX_LENGTH)
+    expect(createLead(db, { ...ALAP, next_step_at: nap(1) }, nev, MOST).status).toBe(201)
   })
 
   it('a szerző a HÍVÁS paramétere, nem a törzs egy mezője (a szerződés kimondva)', () => {
@@ -239,7 +271,7 @@ describe('ébresztés-típus: az "ügyfél későbbre kérte" eset (döntés 202
     const alvo = todayLeads(db, MOST).body.sleeping as { count: number; next_wake_at: number }
     expect(alvo.count).toBe(2)
     // a legkozelebbi ebredes a 60 napos tetel, nem a 180 napos
-    const varhato = startOfLocalDay(new Date(MOST.getFullYear(), MOST.getMonth(), MOST.getDate() + 60))
+    const varhato = startOfLocalDay(napDelben(60))
     expect(alvo.next_wake_at).toBe(varhato)
   })
 

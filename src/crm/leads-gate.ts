@@ -36,6 +36,52 @@ export const HORIZON_DAYS = 14
 /** Az ébresztés horizontja. Felső korlát azért van, mert a "majd valamikor" itt is kibúvó lenne. */
 export const WAKEUP_HORIZON_DAYS = 365
 
+/**
+ * A SZERZO-KAPU (Samu strukturalis dontese, 2026-09-22; spec 4. szakasz).
+ *
+ * A szabaly: trim UTAN 1..64 karakter. Ket kulonbozo dolgot zar, es mindketto valodi:
+ *  - az ALSO hatar: "lead sosem szinkronbol". Egy szinkron-folyamatnak nincs szerzoje, tehat
+ *    ezen az uton nem tud leadet nyitni. A szolgaltatas SOHA nem tolt szerzot konfigbol vagy
+ *    konstansbol (nincs CRM_ACTOR, nincs 'system'), ezert az ures szerzo megtagadas, nem alapertek.
+ *  - a FELSO hatar: a nev a NYOMBA kerul, es a nyom olvashato kell maradjon. Felso hatar nelkul
+ *    egy beillesztett levelnyi szoveg is beallna nevnek, es a sor onmagat tenne olvashatatlanna.
+ *    A hatar a KAPUBAN van, nem a semaban: a sema CHECK-je csak azt mondana, hogy nem ment be,
+ *    azt nem, hogy miert -- es a felhasznalonak a miert kell.
+ *
+ * A szabaly MINDEN iro vegpontra all (leads, contacts, tasks, kesobb send_attempts.actor), ezert
+ * all itt, a tiszta modulban, es nem a lead-utvonal belsejeben.
+ */
+export const ACTOR_MAX_LENGTH = 64
+
+export type ActorOk = { ok: true; actor: string }
+export type ActorRefusal = { ok: false; reason: 'empty' | 'too_long'; message: string }
+
+export function checkActor(raw: unknown): ActorOk | ActorRefusal {
+  const actor = typeof raw === 'string' ? raw.trim() : ''
+  if (!actor) {
+    return {
+      ok: false,
+      reason: 'empty',
+      message:
+        'A lead felvételéhez megnevezett szerző kell. Lead sosem keletkezik szinkronból: ' +
+        'ha egy levélből akarsz leadet nyitni, az is kimondott művelet, a te nevedben.',
+    }
+  }
+  // A hossz KARAKTERBEN ertendo, nem bajtban: az "Ékezetes Név" nem lehet mas hosszusagu
+  // attol, hogy a tarolas UTF-8. A kodpont-szamlalas (Array.from) a helyes muszer.
+  if (Array.from(actor).length > ACTOR_MAX_LENGTH) {
+    return {
+      ok: false,
+      reason: 'too_long',
+      message:
+        `A szerző neve legfeljebb ${ACTOR_MAX_LENGTH} karakter lehet. Ez a név kerül a nyomba, ` +
+        'minden sor mellé: ha egy egész mondat áll ott, a nyom olvashatatlan lesz. ' +
+        'Írd be a neved vagy a becenevedet.',
+    }
+  }
+  return { ok: true, actor }
+}
+
 export type LeadInput = {
   title?: unknown
   origin?: unknown
