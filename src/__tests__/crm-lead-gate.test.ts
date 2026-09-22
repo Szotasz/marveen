@@ -175,12 +175,16 @@ describe('CRM lead-felvétel kapuja (CRM1LEADKAPU922, spec 6.5)', () => {
   })
 
   it('a Ma nézet: LEJÁRT elöl, aztán a mai, dátum szerint', () => {
-    // lejárt tételt csak közvetlenül lehet létrehozni: a kapu felvételkor nem enged múltbeli dátumot
+    // lejárt tételt csak közvetlenül lehet létrehozni: a kapu felvételkor nem enged múltbeli dátumot.
+    // A LEJÁRT TÉTEL FELELŐSE SZÁNDÉKOSAN MÁS (boni), mert a 2. ütem óta a saját lejárt tétel
+    // AKADÁLY a felelős következő írásán (CRM2SENDSTATE922): ha 'geri' lenne, az alatta következő
+    // createLead megtagadásba futna, és ez az állítás a Ma nézet SORRENDJÉT méri, nem az akadályt.
+    // Az akadályra külön állítások állnak a crm-lead-flow.test.ts-ben.
     const tegnap = startOfLocalDay(MOST) - 86400
     db.prepare(
       `INSERT INTO leads (contact_id,title,origin,status,owner,next_step_type,next_step_at,next_step_text,created_at,created_by,updated_at)
-       VALUES (NULL,'Lejárt tétel','other','open','geri','call',?,'Rég esedékes',?,?,?)`,
-    ).run(tegnap, tegnap, 'geri', tegnap)
+       VALUES (NULL,'Lejárt tétel','other','open','boni','call',?,'Rég esedékes',?,?,?)`,
+    ).run(tegnap, tegnap, 'boni', tegnap)
     createLead(db, { ...ALAP, title: 'Mai tétel', next_step_at: nap(0) }, 'geri', MOST)
     const sorok = todayLeads(db, MOST).body.leads as Array<Record<string, unknown>>
     expect(sorok.map((s) => s.title)).toEqual(['Lejárt tétel', 'Mai tétel'])
