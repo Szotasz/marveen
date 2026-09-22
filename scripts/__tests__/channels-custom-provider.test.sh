@@ -244,6 +244,43 @@ else
   fail "Bearer happy-path: byte-exact stdout" "(skipped)" "(vault setup failed)"
 fi
 
+# --- elavult dist: az agent-process.js megvan, de launchSecretRef EXPORT nelkul ---
+# Samu merese a #1369 rebase review-jan: a vedett import-blokk a MODUL hianyat fogja, az EXPORTET
+# nem. Regi dist eseten a helper korabban TypeError-ral halt volna meg (stack trace, ures stdout),
+# es a channels.sh a nem-nulla koddal megszakitja a fo agens inditasat -- ertelmezhetetlenul.
+if [ -f "$root/dist/web/agent-process.js" ]; then
+  cp "$root/dist/web/agent-process.js" "$root/dist/web/agent-process.js.bak"
+  # az exportot eltuntetjuk, a modul marad: pontosan a "regi dist" alak
+  sed 's/export function launchSecretRef/function launchSecretRef_elavult/' \
+    "$root/dist/web/agent-process.js.bak" > "$root/dist/web/agent-process.js"
+  printf '%s\n' '{"customProvider":"bearer-ep","model":"oc/test"}' > "$AGENT_CFG"
+  printf '%s\n' "$BEARER_PROVIDER" > "$PROVIDERS_PATH"
+  STALE_OUT="$(node "$root/scripts/main-agent-custom-provider.mjs" 2>"$root/stale.err")"
+  STALE_RC=$?
+  STALE_ERR="$(cat "$root/stale.err")"
+  mv "$root/dist/web/agent-process.js.bak" "$root/dist/web/agent-process.js"
+  rm -f "$AGENT_CFG" "$PROVIDERS_PATH" "$root/stale.err"
+  if [ "$STALE_RC" -eq 1 ] && [ -z "$STALE_OUT" ]; then
+    pass "elavult dist (nincs launchSecretRef export) -> exit 1, ures stdout"
+  else
+    fail "elavult dist -> exit 1, ures stdout" "exit=1, stdout ures" "exit=$STALE_RC stdout='$STALE_OUT'"
+  fi
+  # A TEENDOT PARANCSKENT mondja ki, ne kulcsszoval: Samu javaslata a 'rebuild' szo volt, de aki
+  # ezt a sort a naploban latja, annak a PARANCS ER valamit. Ezert erre merunk.
+  if printf '%s' "$STALE_ERR" | grep -q 'npm run build'; then
+    pass "elavult dist -> a stderr a PARANCSOT mondja (npm run build)"
+  else
+    fail "elavult dist -> a stderr a parancsot mondja" "'npm run build' a stderr-ben" "$STALE_ERR"
+  fi
+  if printf '%s' "$STALE_ERR" | grep -q 'TypeError'; then
+    fail "elavult dist -> NEM stack trace" "(kimondott abort)" "$STALE_ERR"
+  else
+    pass "elavult dist -> kimondott abort, nem TypeError-stack"
+  fi
+else
+  fail "elavult dist eset" "dist/web/agent-process.js letezik" "(nincs build)"
+fi
+
 # --- x-api-key path ---
 # Populate the hermetic vault with a known key so the helper can resolve it.
 # vault.js derives PROJECT_ROOT from the imported dist/config.js __dirname, so
