@@ -212,6 +212,28 @@ describe('az újraküldés kapui', () => {
     expect(String(r.body.message)).toContain('KIMENT')
   })
 
+  it('a nyom-hiány ÖNMAGÁBAN tilt, nem csak az "elfogadott" állapoton keresztül', () => {
+    // MERT MUTANSSAL MERVE: a `|| sor.audit_gap` tag a mai kodban REDUNDANS, mert jeloles csak
+    // elfogadott melle kerul, tehat az elso tag amugy is elkapja. A kartya szabalya viszont KET
+    // feltetelt mond ("ha audit_gap all VAGY az allapot accepted"), es a kapu nem tamaszkodhat egy
+    // masik fuggveny invarianciajara: ha egy KESOBBI iro (G3, vagy a felulet) mas allapot melle tesz
+    // jelolest, az ujrakuldesnek ugyanugy tilosnak kell lennie. Ezert itt KOZVETLENUL allitok elo
+    // ilyen sort, es a kaput magat merem, nem a mai egyuttallast.
+    const most = Math.floor(MOST.getTime() / 1000)
+    const r = db
+      .prepare(
+        `INSERT INTO send_attempts (rfc_message_id, provider, requested_at, state, audit_gap, actor)
+         VALUES (?,?,?,?,?,?)`,
+      )
+      .run(SAJAT_ID, 'smtp_support', most, 'uncertain', 'sent_folder_uid', 'geri')
+    const id = Number(r.lastInsertRowid)
+    const v = requestResend(db, id, 'geri', {}, MOST)
+    expect(v.status).toBe(409)
+    expect(v.body.error).toBe('ujrakuldes tiltott')
+    expect(v.body.audit_gap).toBe('sent_folder_uid')
+    expect(allapot(id).state).toBe('uncertain')
+  })
+
   it('sikertelen után TILOS: ott ÚJ kísérlet kell, nem ennek a sornak az átírása', () => {
     const id = sorbaAllit('resend')
     recordOutcome(db, id, 'geri', { kind: 'response', http_status: 422 }, MOST)
