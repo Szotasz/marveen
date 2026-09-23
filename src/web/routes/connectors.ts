@@ -745,6 +745,19 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   const isVaultSubroute = vaultMatch && ['bindings', 'sync', 'scan', 'import', 'ssh-servers', 'ssh-keys'].includes(vaultMatch[1])
   if (vaultMatch && !isVaultSubroute && method === 'GET') {
     const id = decodeURIComponent(vaultMatch[1])
+    // VAULTSZELES826: SSH private keys are NEVER served by this generic value route.
+    // The SSH feature reads them in-process (vault-ssh-keys.ts, getSecret) and has its own
+    // routes; the list route above only HIDES them from the secret cards (display, not
+    // protection), and the exclusion list above names literal sub-resources, not this id
+    // prefix, so without this branch GET /api/vault/ssh-key-<id> returned the private key.
+    // Measured 2026-09-23 before closing it: no legitimate caller uses this path (the SSH
+    // feature, the dashboard's reveal/edit buttons, scripts, skills, agent commands: 0).
+    // The audit row is kept so an attempt stays visible, and the key is not even decrypted.
+    if (id.startsWith('ssh-key-')) {
+      logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id))
+      json(res, { error: 'SSH private keys are not served by this route' }, 403)
+      return true
+    }
     const val = getSecret(id)
     // VAULTSZELES826 F0: one audit row per value read (id, kind, principal,
     // allowlist verdict) BEFORE the value leaves the server. Audit only: the

@@ -12,11 +12,15 @@ const logSpy = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
 vi.mock('../logger.js', () => ({ logger: logSpy, PRETTY_OPTIONS: {} }))
 
 const SECRET_VALUE = 'SECRET-VALUE-do-not-log-8f3a'
+const SSH_KEY_ID = 'ssh-key-abc123'
+// A marker, not a key-shaped string: the repo's secret-gate rightly refuses anything that looks like a real private key.
+const SSH_PRIVATE = 'SSH-PRIVATE-MARKER-do-not-serve-7c1e'
+const getSecretSpy = vi.fn((id: string) => (id === 'EXISTS' ? SECRET_VALUE : id === SSH_KEY_ID ? SSH_PRIVATE : null))
 vi.mock('../web/vault.js', () => ({
-  listSecrets: () => [],
+  listSecrets: () => [{ id: SSH_KEY_ID, label: 'test key', createdAt: '', updatedAt: '' }],
   setSecret: () => undefined,
   deleteSecret: () => false,
-  getSecret: (id: string) => (id === 'EXISTS' ? SECRET_VALUE : null),
+  getSecret: (id: string) => getSecretSpy(id),
   getSecretsForEnv: () => ({}),
 }))
 
@@ -150,5 +154,33 @@ describe('GET /api/vault/:id audit row', () => {
     logSpy.info.mockImplementation(() => undefined)
     expect(orderRowIndex).toBeGreaterThanOrEqual(0)
     expect(orderEndIndex).toBeGreaterThan(orderRowIndex)
+  })
+})
+
+describe('GET /api/vault/ssh-key-<id>: SSH private keys are never served by the generic value route', () => {
+  it('refuses with 403, returns no value, keeps the audit row, and never decrypts the key', async () => {
+    getSecretSpy.mockClear()
+    logSpy.info.mockClear()
+    const { handled, res } = await get(`/api/vault/${SSH_KEY_ID}`, { kind: 'token' })
+    expect(handled).toBe(true)
+    expect(res.statusCode).toBe(403)
+    expect(JSON.parse(res.body)).not.toHaveProperty('value')
+    expect(res.body).not.toContain(SSH_PRIVATE)
+    expect(getSecretSpy).not.toHaveBeenCalledWith(SSH_KEY_ID)
+    const rows = logSpy.info.mock.calls.filter(c => c[0]?.event === 'vault-read')
+    expect(rows).toHaveLength(1)
+    expect(rows[0][0]).toMatchObject({ id: SSH_KEY_ID, kind: 'token', found: true })
+  })
+  it('a missing ssh-key id is refused the same way (found:false), not answered by the generic 404', async () => {
+    logSpy.info.mockClear()
+    const { res } = await get('/api/vault/ssh-key-nope', { kind: 'token' })
+    expect(res.statusCode).toBe(403)
+    const rows = logSpy.info.mock.calls.filter(c => c[0]?.event === 'vault-read')
+    expect(rows[0][0]).toMatchObject({ id: 'ssh-key-nope', found: false })
+  })
+  it('positive control: an ordinary secret is still served', async () => {
+    const { res } = await get('/api/vault/EXISTS', { kind: 'token' })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ id: 'EXISTS', value: SECRET_VALUE })
   })
 })
