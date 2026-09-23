@@ -241,4 +241,50 @@ describe('the 2026-09-05 scope-collision rule survives the filter', () => {
     expect(logRows(spy, 'ket3', (o) => Array.isArray(o.dropped))).toEqual([{ name: 'ket3', dropped: ['cortex'] }])
     spy.mockRestore()
   })
+
+  // The other branch must stay silent: both labels on every refusal would be as
+  // useless for diagnosis as none. One-condition cases, on both paths.
+  it('a LISTED project-scoped server logs only the collision on the gap-fill path too', () => {
+    mkdirSync(join(SANDBOX, 'agents', 'ket4'), { recursive: true })
+    writeFileSync(join(SANDBOX, 'agents', 'ket4', '.mcp.json'), JSON.stringify({ mcpServers: { cortex: def('own-cortex') } }))
+    writeSharedDotClaude({})
+    LIST = 'cortex'
+    ensureIsolatedChannelConfigDir('ket4', 'telegram')
+    writeSharedDotClaude({ cortex: def('router-cortex') })
+    const spy = vi.spyOn(logger, 'info')
+    ensureIsolatedChannelConfigDir('ket4', 'telegram')
+    expect(logRows(spy, 'ket4', (o) => o.event === 'mcp-not-inherited')).toEqual([])
+    expect(logRows(spy, 'ket4', (o) => Array.isArray(o.shadowed))).toEqual([{ name: 'ket4', shadowed: ['cortex'] }])
+    spy.mockRestore()
+  })
+
+  it('an UNLISTED server the agent does not own logs only the list refusal (seed)', () => {
+    mkdirSync(join(SANDBOX, 'agents', 'ket5'), { recursive: true })
+    writeFileSync(join(SANDBOX, 'agents', 'ket5', '.mcp.json'), JSON.stringify({ mcpServers: { cortex: def('own-cortex') } }))
+    writeSharedDotClaude({ gmail: def('gmail') })
+    LIST = ''
+    const spy = vi.spyOn(logger, 'info')
+    ensureIsolatedChannelConfigDir('ket5', 'telegram')
+    expect(logRows(spy, 'ket5', (o) => o.event === 'mcp-not-inherited')).toEqual([
+      expect.objectContaining({ path: 'seed', notInherited: ['gmail'] }),
+    ])
+    expect(logRows(spy, 'ket5', (o) => Array.isArray(o.dropped))).toEqual([])
+    spy.mockRestore()
+  })
+
+  it('an UNLISTED server the agent does not own logs only the list refusal (gap-fill)', () => {
+    mkdirSync(join(SANDBOX, 'agents', 'ket6'), { recursive: true })
+    writeFileSync(join(SANDBOX, 'agents', 'ket6', '.mcp.json'), JSON.stringify({ mcpServers: { cortex: def('own-cortex') } }))
+    writeSharedDotClaude({})
+    LIST = ''
+    ensureIsolatedChannelConfigDir('ket6', 'telegram')
+    writeSharedDotClaude({ gmail: def('gmail') })
+    const spy = vi.spyOn(logger, 'info')
+    ensureIsolatedChannelConfigDir('ket6', 'telegram')
+    expect(logRows(spy, 'ket6', (o) => o.event === 'mcp-not-inherited')).toEqual([
+      expect.objectContaining({ path: 'gap-fill', notInherited: ['gmail'] }),
+    ])
+    expect(logRows(spy, 'ket6', (o) => Array.isArray(o.shadowed))).toEqual([])
+    spy.mockRestore()
+  })
 })
