@@ -20,6 +20,7 @@ collect_bash_body / collect_mcp_body moved here VERBATIM from
 outgoing-copy-gate.py (behavior-neutral; parity proven byte-for-byte against a
 golden captured from the pre-move code -- scripts/__tests__/email-extract-parity.test.py).
 """
+import json
 import os
 import re
 
@@ -57,9 +58,63 @@ def collect_bash_body(cmd: str):
                 parts.append(fh.read())
         except OSError as exc:
             return ("\n".join(parts), f"a torzs-fajl nem olvashato ({path}: {exc})")
+    # GATEBINVAK916: curl's `@file` payload (-d/--data/--data-binary/--json/
+    # --data-urlencode @path). Before this branch the body of such a call was
+    # never read: on the Resend path that made every @file letter -- clean ones
+    # too -- fail closed with the generic "no inspectable text" reason, and the
+    # real content was never audited. --data-raw is deliberately NOT here: it
+    # sends a literal "@path", it reads no file.
+    for m in _CURL_AT_FILE.finditer(cmd):
+        raw = m.group(2)
+        if raw == "-":
+            # stdin: a heredoc is already in `parts`; a pipe is not readable.
+            if not parts:
+                return ("", "a torzs stdin-rol jon (@-), heredoc nelkul -- a hook nem latja")
+            continue
+        path = os.path.expandvars(os.path.expanduser(raw))
+        if "$" in path:
+            return ("\n".join(parts), f"a torzs egy fel nem oldhato @utvonalrol jon (@{raw})")
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                data = fh.read()
+        except OSError as exc:
+            return ("\n".join(parts), f"a torzs-fajl (@{raw}) nem olvashato ({path}: {exc})")
+        text, reason = _payload_text(data, raw)
+        if reason:
+            return ("\n".join(parts), reason)
+        parts.append(text)
     if not parts and re.search(r"\|\s*(python3?|node|tsx)?[^|]*send", cmd):
         return ("", "a torzs egy pipe-bol jon, a hook nem latja")
     return ("\n".join(parts), None)
+
+
+# GATEBINVAK916: `-d @f`, `-d@f`, `--data-binary=@f`, optionally quoted. The
+# flag must stand alone (leading space or start), so an address like
+# x@y.hu or an @ inside a quoted payload is never taken for a file.
+_CURL_AT_FILE = re.compile(
+    r"(?:^|\s)(-d|--data|--data-binary|--data-ascii|--json|--data-urlencode)"
+    r"(?:=|\s+|(?<=-d))['\"]?@([^\s'\"|;&<>]+)"
+)
+
+# The prose fields of a JSON payload. A JSON body is audited through these,
+# DECODED: the raw file would show "\u00e1" for "a" with an accent, and the
+# accent audit would read escape sequences instead of the letter.
+_PAYLOAD_TEXT_FIELDS = ("subject", "text", "html", "body", "content", "message")
+
+
+def _payload_text(data: str, raw: str):
+    """(text, unreadable_reason) for a payload read from an @file."""
+    try:
+        obj = json.loads(data)
+    except ValueError:
+        return (data, None)  # not JSON: the file IS the text
+    if not isinstance(obj, dict):
+        return ("", f"a torzs-fajl (@{raw}) JSON, de nem objektum -- a hook nem tudja, mi benne a szoveg")
+    got = [str(obj[f]) for f in _PAYLOAD_TEXT_FIELDS if obj.get(f)]
+    if not got:
+        return ("", f"a torzs-fajl (@{raw}) JSON-jaban nincs ismert szoveg-mezo "
+                    f"({', '.join(_PAYLOAD_TEXT_FIELDS)})")
+    return ("\n".join(got), None)
 
 
 def collect_mcp_body(tool_input: dict):
