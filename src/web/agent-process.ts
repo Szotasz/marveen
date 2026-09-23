@@ -738,8 +738,15 @@ function reconcileMcpServers(
   const notInherited: string[] = []
   for (const [key, def] of Object.entries(shared.mcpServers)) {
     if (key in own) continue
-    if (allowed && !allowed.has(key)) { notInherited.push(key); continue }
-    if (projectScoped.has(key)) { shadowed.push(key); continue }
+    // Both reasons are judged independently and BOTH are logged: an unlisted
+    // server the agent also owns at project scope is a list refusal AND a
+    // collision. Recording only the first reason hid the collision trace the
+    // 2026-09-05 rule exists to leave.
+    const unlisted = allowed !== null && !allowed.has(key)
+    const collides = projectScoped.has(key)
+    if (unlisted) notInherited.push(key)
+    if (collides) shadowed.push(key)
+    if (unlisted || collides) continue
     own[key] = def
     added.push(key)
   }
@@ -764,10 +771,18 @@ function reconcileMcpServers(
 // shared config is copied: without this the very first launch of a new agent
 // starts out shadowed, which is the same outage as the gap-fill one, just
 // earlier. Mutates `cfg` in place.
-function stripProjectScopedCollisions(cfg: Record<string, unknown>, cwd: string, name: string): void {
+// `alreadyRemoved` are names an earlier filter (the inheritable list) took out of
+// `cfg` first; any of them the agent owns at project scope is still a collision
+// and is logged as one, so the trace does not depend on which rule ran first.
+function stripProjectScopedCollisions(
+  cfg: Record<string, unknown>,
+  cwd: string,
+  name: string,
+  alreadyRemoved: readonly string[] = [],
+): void {
   const projectScoped = projectScopedServerNames(cwd)
   if (projectScoped.size === 0) return
-  const dropped: string[] = []
+  const dropped: string[] = alreadyRemoved.filter((key) => projectScoped.has(key))
   if (isPlainObject(cfg.mcpServers)) {
     for (const key of Object.keys(cfg.mcpServers)) {
       if (projectScoped.has(key)) { delete (cfg.mcpServers as Record<string, unknown>)[key]; dropped.push(key) }
@@ -995,6 +1010,7 @@ function provisionIsolatedConfigDir(
       const sharedDot = join(homedir(), '.claude.json')
       if (!existsSync(dotClaude)) {
         let seed: Record<string, unknown> = { hasCompletedOnboarding: true }
+        let notInheritedOnSeed: string[] = []
         if (existsSync(sharedDot)) {
           try { seed = JSON.parse(readFileSync(sharedDot, 'utf-8')) as Record<string, unknown> } catch { /* keep minimal */ }
         }
@@ -1006,13 +1022,14 @@ function provisionIsolatedConfigDir(
         if (name !== MAIN_AGENT_ID && isPlainObject(seed.mcpServers)) {
           const { kept, dropped } = filterInheritableMcpServers(seed.mcpServers, readInheritableMcpServerNames())
           seed.mcpServers = kept
+          notInheritedOnSeed = dropped
           logNotInherited(name, 'seed', dropped)
         }
         // The seed is a FULL copy of the shared config, so it carries the same
         // scope-collision risk as the gap-fill below: a shared entry whose name
         // the agent owns in its own .mcp.json would arrive at local scope and
         // shadow it, credentials included. Strip those before writing.
-        stripProjectScopedCollisions(seed, cwd, name)
+        stripProjectScopedCollisions(seed, cwd, name, notInheritedOnSeed)
         writeJsonAtomic(dotClaude, seed, { groupShared: perUser })
       } else {
         try {
