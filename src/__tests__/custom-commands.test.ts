@@ -15,6 +15,7 @@ import {
 import {
   validateDefinition,
   runActions,
+  interruptStep,
   runPrompt,
   loadCustomCommands,
   importIfEmpty,
@@ -56,6 +57,7 @@ function runDeps(over: Partial<RunDeps> = {}) {
     model: async (a) => { calls.push(`model ${a.join(' ')}`); return { ok: true, text: `/model ${a[0]} elküldve` } },
     effort: async (l) => { calls.push(`effort ${l}`); return { ok: true, text: `/effort ${l} elküldve` } },
     clear: async () => { calls.push('clear'); return { ok: true, text: '/clear elküldve' } },
+    interrupt: async () => { calls.push('interrupt'); return { ok: true, text: 'Esc elküldve' } },
     sendPrompt: (c) => { prompts.push(c); return 77 },
     getRow: getCustomCommand,
     markRun: (name, runAt, defAt) => { getDb().prepare('UPDATE custom_commands SET last_run_at=?, last_run_definition_at=? WHERE name=?').run(runAt, defAt, name) },
@@ -321,3 +323,31 @@ describe('/api/custom-commands (CMD920 test 26)', () => {
     expect(exp.body.commands[0]).toMatchObject({ name: 'jo', kind: 'actions' })
   })
 })
+
+// /cancel as a custom command (ELSOKOR922 Phase 7, 2026-09-23): the old static
+// menu entry "Futó feladat megszakítása" had no definition anywhere. With the
+// mid-turn watcher a command reaches the dashboard while a turn runs, so an
+// `interrupt` step can actually stop it.
+describe('interrupt action', () => {
+  it('validates, and runActions calls deps.interrupt', async () => {
+    const v = validateDefinition({ name: 'cancel', kind: 'actions', body: [{ action: 'interrupt' }] }, new Set())
+    expect(v.ok).toBe(true)
+    const d = runDeps()
+    const r = await runActions([{ action: 'interrupt' }], T0, d)
+    expect(d.calls).toEqual(['interrupt'])
+    expect(r.text).toMatch(/Mind a 1 lépés kész/)
+  })
+
+  it('interruptStep: busy pane -> Esc sent; idle pane -> nothing sent; unreadable pane -> HIBA, nothing sent', async () => {
+    let sent = 0
+    const send = async () => { sent++ }
+    expect((await interruptStep('… ✻ Churning… (esc to interrupt)', send)).text).toMatch(/Esc elküldve/)
+    expect(sent).toBe(1)
+    const idle = await interruptStep('❯ \n  ⏵⏵ bypass permissions on', send)
+    expect(idle).toEqual({ ok: true, text: 'nem futott kör, nincs mit megszakítani' })
+    const blind = await interruptStep(null, send)
+    expect(blind.ok).toBe(false)
+    expect(sent).toBe(1)
+  })
+})
+

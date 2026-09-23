@@ -718,6 +718,19 @@ export async function sendSlashCommand(session: string, command: string): Promis
   })
 }
 
+// One Escape into the pane: Claude Code stops the running turn. Same send lane
+// as the slash commands, so it never lands in the middle of a typed line.
+export async function sendInterrupt(session: string): Promise<void> {
+  await withSessionSendLock(session, null, 'deliver', async () => {
+    try {
+      execFileSync(tmuxBin(), ['send-keys', '-t', session, 'Escape'], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (err) {
+      logger.warn({ site: 'context-restart-gate-runner.sendInterrupt', session, tmux: tmuxStderr(err) }, 'tmux send-keys Escape failed')
+      throw err
+    }
+  })
+}
+
 /**
  * The gate's soft restart: /clear on the send lane, the run state stamped,
  * and the wake nudge owed to the fresh session (the SessionStart replay hooks

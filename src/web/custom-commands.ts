@@ -2,7 +2,7 @@
 //
 // Two kinds:
 //   - actions: steps from a CLOSED action set (model, effort, context clear,
-//     message). The definition is data, the action is code: a new action
+//     message, interrupt). The definition is data, the action is code: a new action
 //     needs a PR.
 //   - prompt: a text template sent into the main session. It goes in through
 //     the existing channel-inbound path (agent_messages from the channel
@@ -47,6 +47,11 @@ import {
 } from './commands.js'
 import { setModel, setEffort, withRetry, EFFORT_LEVELS, type StepResult } from './main-model.js'
 import { contextClear } from './session-control.js'
+import { mainSessionName, sendInterrupt } from './context-restart-gate-runner.js'
+import { capturePane } from './agent-process.js'
+
+// Claude Code's footer while a turn runs.
+const PANE_BUSY_MARK = 'esc to interrupt'
 import { formatDayClock } from './system-status.js'
 
 export const COMMANDS_JSON = join(STORE_DIR, 'commands.json')
@@ -54,7 +59,7 @@ export const PROMPT_MAX_CHARS = 2000
 export const MESSAGE_MAX_CHARS = 500
 export const MAX_STEPS = 10
 export const CONFIRM_WINDOW_MS = 120_000
-export const ACTIONS = ['model', 'effort', 'context clear', 'message'] as const
+export const ACTIONS = ['model', 'effort', 'context clear', 'message', 'interrupt'] as const
 export type ActionName = typeof ACTIONS[number]
 
 const NAME_RE = /^[a-z][a-z0-9_]{0,31}$/
@@ -173,9 +178,19 @@ export interface RunDeps {
   model: (args: string[]) => Promise<StepResult>
   effort: (level: string) => Promise<StepResult>
   clear: (nowMs: number) => Promise<StepResult>
+  interrupt: () => Promise<StepResult>
   sendPrompt: (content: string) => number
   getRow: (name: string) => CustomCommandRow | undefined
   markRun: (name: string, runAt: number, definitionAt: number) => void
+}
+
+// Escape only when a turn is running: on an idle pane it would clear a
+// half-typed input line instead. An unreadable pane is reported, not guessed.
+export async function interruptStep(pane: string | null, send: () => Promise<void>): Promise<StepResult> {
+  if (pane === null) return { ok: false, text: 'a fő session paneljét nem tudtam kiolvasni, nem küldtem Esc-et' }
+  if (!pane.includes(PANE_BUSY_MARK)) return { ok: true, text: 'nem futott kör, nincs mit megszakítani' }
+  await send()
+  return { ok: true, text: 'Esc elküldve, a futó kör megáll' }
 }
 
 export const liveRunDeps: RunDeps = {
@@ -185,6 +200,7 @@ export const liveRunDeps: RunDeps = {
     const r = await contextClear(nowMs)
     return { ok: r.cleared, text: r.text, busy: r.busy }
   },
+  interrupt: () => interruptStep(capturePane(mainSessionName()), () => sendInterrupt(mainSessionName())),
   sendPrompt: (content) => createAgentMessage(COORDINATOR_AGENT_ID, MAIN_AGENT_ID, content, 'owner custom command').id,
   getRow: getCustomCommand,
   markRun: markCustomCommandRun,
@@ -214,6 +230,7 @@ export async function runActions(steps: ActionStep[], nowMs: number, deps: RunDe
       if (st.action === 'model') r = await deps.model([...(st.value ?? '').trim().split(/\s+/).filter(Boolean), ...(st.hold ? [st.hold] : [])])
       else if (st.action === 'effort') r = await deps.effort(st.value ?? '')
       else if (st.action === 'context clear') r = await deps.clear(nowMs)
+      else if (st.action === 'interrupt') r = await deps.interrupt()
       else r = { ok: true, text: st.value ?? '' }
     } catch (err) {
       r = { ok: false, text: err instanceof Error ? err.message : String(err) }
