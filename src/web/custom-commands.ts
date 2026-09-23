@@ -197,7 +197,9 @@ export async function runActions(steps: ActionStep[], nowMs: number, deps: RunDe
   for (const [i, st] of steps.entries()) {
     let r: StepResult
     try {
-      if (st.action === 'model') r = await deps.model([st.value ?? '', ...(st.hold ? [st.hold] : [])])
+      // The value may carry the whole /model line ("opus low 4m"), matching the
+      // command the owner types; `hold` stays supported as its own field.
+      if (st.action === 'model') r = await deps.model([...(st.value ?? '').trim().split(/\s+/).filter(Boolean), ...(st.hold ? [st.hold] : [])])
       else if (st.action === 'effort') r = await deps.effort(st.value ?? '')
       else if (st.action === 'context clear') r = await deps.clear(nowMs)
       else r = { ok: true, text: st.value ?? '' }

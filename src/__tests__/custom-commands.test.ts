@@ -78,6 +78,15 @@ describe('actions (CMD920 test 22)', () => {
     expect(out).toMatch(/1\. model opus: kész — \/model opus elküldve\n2\. effort high: kész.*\n3\. message kész a mód: kész — kész a mód\nMind a 3 lépés kész\./)
   })
 
+  // ELSOKOR922 Phase 7 A-smoke: with /model taking one order-free line, the
+  // natural definition is value: "haiku 5m" -- it used to reach setModel as a
+  // single argument and fail with "Nem értem: „haiku 5m”".
+  it('a model step may carry the whole /model line in its value', async () => {
+    const d = runDeps()
+    await runActions([{ action: 'model', value: 'haiku low 5m' }], T0, d)
+    expect(d.calls).toEqual(['model haiku low 5m'])
+  })
+
   it('a failing second step stops the rest and says how far it got', async () => {
     const d = runDeps({ effort: async () => ({ ok: false, text: 'Nem állítottam: a session foglalt (pane-busy).' }) })
     const out = await runActions([{ action: 'model', value: 'opus' }, { action: 'effort', value: 'high' }, { action: 'context clear' }], T0, d)
