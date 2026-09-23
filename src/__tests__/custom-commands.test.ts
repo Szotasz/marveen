@@ -16,6 +16,7 @@ import {
   validateDefinition,
   runActions,
   interruptStep,
+  taskStepText,
   runPrompt,
   loadCustomCommands,
   importIfEmpty,
@@ -58,6 +59,7 @@ function runDeps(over: Partial<RunDeps> = {}) {
     effort: async (l) => { calls.push(`effort ${l}`); return { ok: true, text: `/effort ${l} elküldve` } },
     clear: async () => { calls.push('clear'); return { ok: true, text: '/clear elküldve' } },
     interrupt: async () => { calls.push('interrupt'); return { ok: true, text: 'Esc elküldve' } },
+    task: async (n) => { calls.push(`task ${n}`); return { ok: true, text: `${n} elindult` } },
     sendPrompt: (c) => { prompts.push(c); return 77 },
     getRow: getCustomCommand,
     markRun: (name, runAt, defAt) => { getDb().prepare('UPDATE custom_commands SET last_run_at=?, last_run_definition_at=? WHERE name=?').run(runAt, defAt, name) },
@@ -357,6 +359,28 @@ describe('message-only commands', () => {
     expect((await runActions([{ action: 'message', value: 'Dashboard: http://x' }], T0, d)).text).toBe('Dashboard: http://x')
     expect((await runActions([{ action: 'message', value: 'a' }, { action: 'message', value: 'b' }], T0, d)).text).toBe('a\nb')
     expect((await runActions([{ action: 'message', value: 'a' }, { action: 'context clear' }], T0, d)).text).toMatch(/Mind a 2 lépés kész/)
+  })
+})
+
+describe('task action (/napindito, /heartbeat)', () => {
+  it('validates the task name; runActions calls deps.task', async () => {
+    expect(validateDefinition({ name: 'napindito', kind: 'actions', body: [{ action: 'task', value: 'reggeli-napindito' }] }, new Set()).ok).toBe(true)
+    const bad = validateDefinition({ name: 'x', kind: 'actions', body: [{ action: 'task', value: '../etc' }] }, new Set())
+    expect(bad.ok).toBe(false)
+    expect(validateDefinition({ name: 'x', kind: 'actions', body: [{ action: 'task' }] }, new Set()).ok).toBe(false)
+    const d = runDeps()
+    await runActions([{ action: 'task', value: 'memoria-heartbeat' }], T0, d)
+    expect(d.calls).toEqual(['task memoria-heartbeat'])
+  })
+
+  it('taskStepText: fired / busy (queued by the scheduler, NOT a failure) / not found', () => {
+    expect(taskStepText('reggeli-napindito', { ok: true, result: 'marveen: fired' }))
+      .toEqual({ ok: true, text: 'reggeli-napindito marveen: elindult. Az eredményt a feladat maga küldi.' })
+    const busy = taskStepText('reggeli-napindito', { ok: true, result: 'marveen: busy' })
+    expect(busy.ok).toBe(true)
+    expect(busy.text).toMatch(/foglalt, sorba állt, amint szabad, lefut/)
+    expect(taskStepText('nincs', { ok: false, error: 'Schedule not found' }))
+      .toEqual({ ok: false, text: 'a(z) nincs nem indult: Schedule not found' })
   })
 })
 

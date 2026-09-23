@@ -2,7 +2,7 @@
 //
 // Two kinds:
 //   - actions: steps from a CLOSED action set (model, effort, context clear,
-//     message, interrupt). The definition is data, the action is code: a new action
+//     message, interrupt, task). The definition is data, the action is code: a new action
 //     needs a PR.
 //   - prompt: a text template sent into the main session. It goes in through
 //     the existing channel-inbound path (agent_messages from the channel
@@ -49,6 +49,7 @@ import { setModel, setEffort, withRetry, EFFORT_LEVELS, type StepResult } from '
 import { contextClear } from './session-control.js'
 import { mainSessionName, sendInterrupt } from './context-restart-gate-runner.js'
 import { capturePane } from './agent-process.js'
+import { runScheduledTaskNow } from './schedule-runner.js'
 
 // Claude Code's footer while a turn runs.
 const PANE_BUSY_MARK = 'esc to interrupt'
@@ -59,14 +60,14 @@ export const PROMPT_MAX_CHARS = 2000
 export const MESSAGE_MAX_CHARS = 500
 export const MAX_STEPS = 10
 export const CONFIRM_WINDOW_MS = 120_000
-export const ACTIONS = ['model', 'effort', 'context clear', 'message', 'interrupt'] as const
+export const ACTIONS = ['model', 'effort', 'context clear', 'message', 'interrupt', 'task'] as const
 export type ActionName = typeof ACTIONS[number]
 
 const NAME_RE = /^[a-z][a-z0-9_]{0,31}$/
 
 export interface ActionStep {
   action: ActionName
-  /** model: choice name; effort: level; message: text. */
+  /** model: choice name; effort: level; message: text; task: scheduled task name. */
   value?: string
   /** model only: '4h' | '30m' | 'keep'. */
   hold?: string
@@ -119,6 +120,9 @@ export function validateDefinition(raw: unknown, builtinNames: ReadonlySet<strin
       }
       if (action === 'effort' && !(EFFORT_LEVELS as readonly string[]).includes(value ?? '')) {
         return { ok: false, reason: `${i + 1}. lépés: effort: value csak ${EFFORT_LEVELS.join('|')} lehet` }
+      }
+      if (action === 'task' && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(value ?? '')) {
+        return { ok: false, reason: `${i + 1}. lépés: task: value egy ütemezett feladat neve (a-z, 0-9, -, _)` }
       }
       if (action === 'message' && (!value || value.length > MESSAGE_MAX_CHARS)) {
         return { ok: false, reason: `${i + 1}. lépés: message: 1-${MESSAGE_MAX_CHARS} karakter kell` }
@@ -179,6 +183,7 @@ export interface RunDeps {
   effort: (level: string) => Promise<StepResult>
   clear: (nowMs: number) => Promise<StepResult>
   interrupt: () => Promise<StepResult>
+  task: (name: string) => Promise<StepResult>
   sendPrompt: (content: string) => number
   getRow: (name: string) => CustomCommandRow | undefined
   markRun: (name: string, runAt: number, definitionAt: number) => void
@@ -193,6 +198,22 @@ export async function interruptStep(pane: string | null, send: () => Promise<voi
   return { ok: true, text: 'Esc elküldve, a futó kör megáll' }
 }
 
+// runScheduledTaskNow already queues a busy session's run (the scheduler's
+// pending retry), so a busy result is NOT a failure and needs no withRetry.
+// Measured on the test bot: /napindito as a prompt made the model trigger the
+// run from inside its own turn, got "busy", and told the owner it had not
+// started -- while the queued run fired 19 s later.
+export function taskStepText(name: string, r: { ok: boolean; result?: string; error?: string }): StepResult {
+  if (!r.ok) return { ok: false, text: `a(z) ${name} nem indult: ${r.error ?? 'ismeretlen hiba'}` }
+  const parts = (r.result ?? '').split(', ').filter(Boolean).map(p => {
+    const [agent, how] = p.split(': ')
+    if (how === 'fired') return `${agent}: elindult`
+    if (how === 'busy' || how === 'starting' || how === 'first-run') return `${agent}: foglalt, sorba állt, amint szabad, lefut`
+    return `${agent}: ${how ?? p}`
+  })
+  return { ok: true, text: `${name} ${parts.join('; ')}. Az eredményt a feladat maga küldi.` }
+}
+
 export const liveRunDeps: RunDeps = {
   model: (args) => setModel(args),
   effort: (level) => setEffort(level),
@@ -200,6 +221,7 @@ export const liveRunDeps: RunDeps = {
     const r = await contextClear(nowMs)
     return { ok: r.cleared, text: r.text, busy: r.busy }
   },
+  task: async (name) => taskStepText(name, await runScheduledTaskNow(name)),
   interrupt: () => interruptStep(capturePane(mainSessionName()), () => sendInterrupt(mainSessionName())),
   sendPrompt: (content) => createAgentMessage(COORDINATOR_AGENT_ID, MAIN_AGENT_ID, content, 'owner custom command').id,
   getRow: getCustomCommand,
@@ -231,6 +253,7 @@ export async function runActions(steps: ActionStep[], nowMs: number, deps: RunDe
       else if (st.action === 'effort') r = await deps.effort(st.value ?? '')
       else if (st.action === 'context clear') r = await deps.clear(nowMs)
       else if (st.action === 'interrupt') r = await deps.interrupt()
+      else if (st.action === 'task') r = await deps.task(st.value ?? '')
       else r = { ok: true, text: st.value ?? '' }
     } catch (err) {
       r = { ok: false, text: err instanceof Error ? err.message : String(err) }
