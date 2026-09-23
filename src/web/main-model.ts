@@ -500,7 +500,10 @@ export async function modelBack(deps: ModelDeps = liveModelDeps): Promise<StepRe
   if (!verdict.quiet) {
     if (state) {
       writeHold(deps.holdFile, { ...state, until: now })
-      return fail(`A session foglalt (${verdict.reason}); a tartás lejártra állítva, a sweep visszavált, amint csendes.`)
+      // ok, not fail: the owner's "default" took effect (the revert is armed),
+      // so a queued model write must be dropped by withRetry -- measured on the
+      // test bot: a queued /gyors survived this reply and would have switched.
+      return ok(`A session foglalt (${verdict.reason}); a tartás lejártra állítva, a sweep visszavált, amint csendes.`)
     }
     return failBusy(`Nem váltottam: a session foglalt (${verdict.reason}).`)
   }

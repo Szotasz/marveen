@@ -577,3 +577,18 @@ describe('ack when an older ack scrolled off', () => {
   })
 })
 
+describe('/model default with a hold while the session is busy', () => {
+  it('is ok (the revert is armed, the hold expires now), so a queued model write gets dropped', async () => {
+    writeChoices()
+    const d = deps({ quiet: () => ({ quiet: false, reason: 'pane-busy' }) })
+    writeHold(d.holdFile, {
+      model: null, name: 'high', revert_to: null, effort: 'high', revert_effort: null,
+      until: T0 + 3_600_000, set_at: T0, verify_pending: false, blocked_since: null, block_alert_at: null,
+    })
+    const r = await modelBack(d)
+    expect(r).toEqual({ ok: true, text: 'A session foglalt (pane-busy); a tartás lejártra állítva, a sweep visszavált, amint csendes.' })
+    expect(readHold(d.holdFile).state?.until).toBe(T0)
+    expect(d.sent).toEqual([])
+  })
+})
+
