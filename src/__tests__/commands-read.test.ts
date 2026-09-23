@@ -30,6 +30,9 @@ import {
   collectQueue,
   callPreview,
 } from '../web/queue-view.js'
+import { isRegistryCommand, openQuestionIgnoringCommands } from '../web/open-question.js'
+import { registerCommand, clearCommandsForTest } from '../web/commands.js'
+import { MAIN_AGENT_ID } from '../config.js'
 import { computeNextRun } from '../web/cron.js'
 
 beforeEach(() => {
@@ -246,3 +249,38 @@ describe('/queue blocks (CMD920 test 16)', () => {
     expect(text).toMatch(/ÚJRAPRÓBÁLÁS\nnincs/)
   })
 })
+
+// Measured on the test bot (2026-09-23): the ledger logs the owner's /queue as
+// an inbound question before the hook answers, and /queue listed itself.
+describe('/queue: the open question is not the command being answered', () => {
+  function logIn(mid: string, text: string) {
+    getDb().prepare(`INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, ts, created_at) VALUES (?, '42', 'in', ?, ?, '', ?)`)
+      .run(MAIN_AGENT_ID, mid, text, Math.floor(Date.now() / 1000))
+  }
+  beforeEach(() => {
+    clearCommandsForTest()
+    registerCommand({ name: 'queue', kind: 'read', description: 'sor', run: async () => {} })
+  })
+
+  it('a registry command as the last inbound: no open question', () => {
+    logIn('637', '/queue extra szavak')
+    expect(formatBlocks(collectQueue())).toMatch(/VÁLASZRA VÁRÓ KÉRDÉS\nnincs/)
+  })
+
+  it('a real question (or an unknown /word) still shows', () => {
+    logIn('640', 'mikor lesz kész a riport?')
+    expect(formatBlocks(collectQueue())).toMatch(/VÁLASZRA VÁRÓ KÉRDÉS\nnyitott bejövő kérdés \(üzenet 640\)/)
+    expect(isRegistryCommand('/kanban')).toBe(false)
+    expect(isRegistryCommand('/Queue')).toBe(true)
+    expect(isRegistryCommand(null)).toBe(false)
+  })
+
+  it('the /clear gate input (openQuestionIgnoringCommands): the command is not its own blocker', () => {
+    registerCommand({ name: 'new', kind: 'write', description: 'új', run: async () => {} })
+    logIn('700', '/new')
+    expect(openQuestionIgnoringCommands(MAIN_AGENT_ID)).toBeNull()
+    logIn('701', 'és a számla?')
+    expect(openQuestionIgnoringCommands(MAIN_AGENT_ID)).toBe('701')
+  })
+})
+

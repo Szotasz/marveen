@@ -15,7 +15,6 @@ import { basename, join } from 'node:path'
 import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
 import {
   getDb,
-  openInboundQuestionMessageId,
   listApprovals,
   listPendingTaskRetries,
   getDispatchedPendingStats,
@@ -26,6 +25,7 @@ import { readGateConfig } from './context-restart-gate-store.js'
 import { listScheduledTasks } from './scheduled-tasks-io.js'
 import { computeNextRun } from './cron.js'
 import { formatDayClock, formatDuration, formatSpan } from './system-status.js'
+import { openQuestionIgnoringCommands } from './open-question.js'
 
 export const MAX_LISTED_CALLS = 5
 
@@ -288,8 +288,8 @@ export function collectQueue(now = Date.now()): QueueBlock[] {
   const nowSec = Math.floor(now / 1000)
   return [
     collectBlock('VÁLASZRA VÁRÓ KÉRDÉS', () => {
-      const id = openInboundQuestionMessageId(MAIN_AGENT_ID)
-      return id ? [`nyitott bejövő kérdés (üzenet ${id})`] : []
+      const id = openQuestionIgnoringCommands(MAIN_AGENT_ID)
+      return id === null ? [] : [`nyitott bejövő kérdés (üzenet ${id})`]
     }),
     collectBlock('JÓVÁHAGYÁS', () => listApprovals({ status: 'pending', limit: 20 }).map(a => {
       const win = a.timeout_at === null ? 'ablak nélkül'

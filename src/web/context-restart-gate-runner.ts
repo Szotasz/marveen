@@ -1,4 +1,5 @@
 import { tmuxStderr } from './tmux-stderr.js'
+import { openQuestionIgnoringCommands } from './open-question.js'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -22,7 +23,6 @@ import { getHardGuardPhase } from './context-guard-runner.js'
 import { readGateConfig, readGateRunState, writeGateRunState } from './context-restart-gate-store.js'
 import {
   getDispatchedPendingStats,
-  openInboundQuestionMessageId,
   createAgentMessage,
 } from '../db.js'
 import {
@@ -650,7 +650,7 @@ export function gatherGateInputs(name: string, nowMs: number): GateSnapshot {
   const openQuestion = (() => {
     try {
       const ledgerId = agentIdForLedger(name)
-      return openQuestionBlocks(openInboundQuestionMessageId(ledgerId),
+      return openQuestionBlocks(openQuestionIgnoringCommands(ledgerId),
                                 drainSurfacedMessageId(ledgerId))
     }
     catch { return false }
