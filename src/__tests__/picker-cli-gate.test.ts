@@ -56,7 +56,9 @@ describe('/api/models/available carries the gate', () => {
     expect(s.measured).toBe(true)
     expect(s.unsupported.map((u) => u.id).sort()).toEqual(['claude-fable-5-1', 'claude-opus-5-5'])
     const ids = (body.claude as Array<{ id: string }>).map((m) => m.id)
-    for (const id of ['claude-fable-5-1', 'claude-opus-5-5', 'claude-opus-5-5[1m]', 'claude-opus-5', 'claude-sonnet-5']) expect(ids).toContain(id)
+    for (const id of ['claude-fable-5-1', 'claude-opus-5-5[1m]', 'claude-opus-5', 'claude-sonnet-5']) expect(ids).toContain(id)
+    // Opus 5.5: ONLY the 1M variant is offered (owner decision 2026-09-23); the plain id is gone from the API too.
+    expect(ids).not.toContain('claude-opus-5-5')
     // the picker markup offers exactly the same Claude ids the API lists
     for (const id of ids) expect(indexHtml, id).toContain(`<option value="${id}"`)
   })
@@ -68,6 +70,26 @@ describe('/api/models/available carries the gate', () => {
     const s = body.claudeSupport as { measured: boolean; unsupported: unknown[] }
     expect(s.measured).toBe(false)
     expect(s.unsupported).toEqual([])
+  })
+})
+
+describe('the 1M variant is what the picker offers, and the gate applies the 2.1.280 minimum to it', () => {
+  // The table is keyed on the base id; the bracket suffix is stripped before the lookup. Now that the
+  // plain id is no longer offered, this is the variant customers actually pick, so it is pinned on its own.
+  it('MEASURED 2.1.110 and 2.1.278 list claude-opus-5-5 as unsupported, which covers the [1m] variant; 2.1.280 does not', async () => {
+    for (const v of ['2.1.110', '2.1.278']) {
+      process.env[CLI_VERSION_OVERRIDE_ENV] = v
+      const { body } = await getModels()
+      const s = body.claudeSupport as { unsupported: Array<{ id: string; minCli: string }> }
+      const hit = s.unsupported.find((u) => u.id === 'claude-opus-5-5')
+      expect(hit, v).toBeDefined()
+      expect(hit!.minCli).toBe('2.1.280')
+      expect(await refuseIfCliCannotLaunch('claude-opus-5-5[1m]'), v).not.toBeNull()
+    }
+    process.env[CLI_VERSION_OVERRIDE_ENV] = '2.1.280'
+    const { body } = await getModels()
+    expect((body.claudeSupport as { unsupported: unknown[] }).unsupported).toEqual([])
+    expect(await refuseIfCliCannotLaunch('claude-opus-5-5[1m]')).toBeNull()
   })
 })
 
@@ -99,9 +121,9 @@ describe('the writers are gated too (POST/PUT model)', () => {
 
 describe('the served client', () => {
   it('both selects offer Opus 5.5 and Opus 5.5[1m], and both carry a CLI hint element', () => {
-    for (const id of ['claude-opus-5-5', 'claude-opus-5-5[1m]']) {
-      expect(indexHtml.split(`<option value="${id}"`).length - 1, id).toBe(2)
-    }
+    expect(indexHtml.split('<option value="claude-opus-5-5[1m]"').length - 1).toBe(2)
+    // the plain claude-opus-5-5 option is NOT offered in either select (owner decision 2026-09-23)
+    expect(indexHtml.split('<option value="claude-opus-5-5"').length - 1).toBe(0)
     expect(indexHtml).toContain('id="agentModelCliHint"')
     expect(indexHtml).toContain('id="editAgentModelCliHint"')
   })
@@ -118,7 +140,7 @@ describe('the served client', () => {
     expect(loader).toContain('applyClaudeCliGate(data)')
   })
   it('both languages carry the four new keys', () => {
-    for (const k of ['agents.model.opus55', 'agents.model.opus55_1m', 'agents.model.cliUnsupported', 'agents.model.cliUnmeasured']) {
+    for (const k of ['agents.model.opus55_1m', 'agents.model.cliUnsupported', 'agents.model.cliUnmeasured']) {
       expect(hu, k).toContain(`'${k}'`)
       expect(en, k).toContain(`'${k}'`)
     }
