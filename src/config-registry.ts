@@ -508,6 +508,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     valueSet: ['Europe/London', 'Europe/Budapest', 'UTC', 'Europe/Dublin', 'Europe/Berlin', 'Europe/Bucharest', 'America/New_York'],
   },
   {
+    key: 'AGENT_INHERITED_MCP_SERVERS',
+    type: 'string',
+    default: '',
+    description: 'Vesszővel elválasztott MCP-szerver-nevek, amelyeket egy ÚJ ügynök örökölhet (pl. aiam-blog). Minden más kimarad, amíg valaki név szerint oda nem adja. Üresen hagyva az új ügynök semmilyen connectort nem örököl (szűk alapértelmezés). Két helyről örököl: a projekt-gyökér .mcp.json-jából és a közös ~/.claude.json-ból, és a lista mindkettőre vonatkozik. A meglévő ügynöktől semmit nem vesz el. A fő ügynökre nem vonatkozik.',
+    module: 'agents',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
     key: 'DEFAULT_AGENT_MODEL',
     type: 'string',
     default: DISTRIBUTION_DEFAULT_AGENT_MODEL,

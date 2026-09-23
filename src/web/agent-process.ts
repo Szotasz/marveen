@@ -61,6 +61,7 @@ import { measureClaudeCliVersion } from './claude-cli-version.js'
 import { getClaudePidForSession, probeChannelPluginLiveness } from '../channel-coordinator/liveness.js'
 import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBOX_TEE } from '../config.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
+import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
 import { readEnvFile } from '../env.js'
 import { loadProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
@@ -728,14 +729,21 @@ function reconcileMcpServers(
   }
   const own = isPlainObject(cur.mcpServers) ? cur.mcpServers : {}
   const projectScoped = projectScopedServerNames(cwd)
+  // MCPOROKLES923: a sub-agent gap-fills ONLY servers on the inheritable list
+  // (mcp-inheritance.ts). Additive as before: nothing the agent already has is
+  // removed. The main agent is exempt -- its config mirrors the operator's own.
+  const allowed = name === MAIN_AGENT_ID ? null : readInheritableMcpServerNames()
   const added: string[] = []
   const shadowed: string[] = []
+  const notInherited: string[] = []
   for (const [key, def] of Object.entries(shared.mcpServers)) {
     if (key in own) continue
+    if (allowed && !allowed.has(key)) { notInherited.push(key); continue }
     if (projectScoped.has(key)) { shadowed.push(key); continue }
     own[key] = def
     added.push(key)
   }
+  logNotInherited(name, 'gap-fill', notInherited)
   // Log the skips even when nothing was added: a silent skip is how this class
   // of bug stays invisible, and the name alone tells the next reader where the
   // agent's real definition lives.
@@ -991,6 +999,15 @@ function provisionIsolatedConfigDir(
           try { seed = JSON.parse(readFileSync(sharedDot, 'utf-8')) as Record<string, unknown> } catch { /* keep minimal */ }
         }
         seed.hasCompletedOnboarding = true
+        // MCPOROKLES923: the seed copies the shared config for its consent flags,
+        // NOT for its connectors: a sub-agent's seed keeps only the servers on the
+        // inheritable list. The main agent is exempt (its config mirrors the
+        // operator's own ~/.claude.json).
+        if (name !== MAIN_AGENT_ID && isPlainObject(seed.mcpServers)) {
+          const { kept, dropped } = filterInheritableMcpServers(seed.mcpServers, readInheritableMcpServerNames())
+          seed.mcpServers = kept
+          logNotInherited(name, 'seed', dropped)
+        }
         // The seed is a FULL copy of the shared config, so it carries the same
         // scope-collision risk as the gap-fill below: a shared entry whose name
         // the agent owns in its own .mcp.json would arrive at local scope and
