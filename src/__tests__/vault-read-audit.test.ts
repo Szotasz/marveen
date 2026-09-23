@@ -6,6 +6,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type http from 'node:http'
+import { Readable } from 'node:stream'
 import type { RouteContext } from '../web/routes/types.js'
 
 const logSpy = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
@@ -24,7 +25,7 @@ vi.mock('../web/vault.js', () => ({
   getSecretsForEnv: () => ({}),
 }))
 
-const { readVaultAcl, principalOf, evaluateVaultRead, logVaultRead } = await import('../web/vault-acl.js')
+const { readVaultAcl, principalOf, evaluateVaultRead, logVaultRead, isSshPrivateKeyId } = await import('../web/vault-acl.js')
 const { tryHandleConnectors } = await import('../web/routes/connectors.js')
 
 const tmp = mkdtempSync(join(tmpdir(), 'vault-acl-test-'))
@@ -182,5 +183,48 @@ describe('GET /api/vault/ssh-key-<id>: SSH private keys are never served by the 
     const { res } = await get('/api/vault/EXISTS', { kind: 'token' })
     expect(res.statusCode).toBe(200)
     expect(JSON.parse(res.body)).toEqual({ id: 'EXISTS', value: SECRET_VALUE })
+  })
+})
+
+describe('isSshPrivateKeyId: one predicate for every writer', () => {
+  it('matches the ssh-key- id prefix (trimmed), and nothing else', () => {
+    expect(isSshPrivateKeyId('ssh-key-abc123')).toBe(true)
+    expect(isSshPrivateKeyId('  ssh-key-abc123 ')).toBe(true)
+    expect(isSshPrivateKeyId('ssh-keys')).toBe(false)
+    expect(isSshPrivateKeyId('EXISTS')).toBe(false)
+    expect(isSshPrivateKeyId('MARVEEN-CONNECTORS-PAT')).toBe(false)
+  })
+})
+
+describe('POST /api/vault/bindings: an SSH private key cannot be bound', () => {
+  // No serverName and no targets on purpose: without the guard the handler answers
+  // 'No targets found' BEFORE any write, so even a mutant run touches no file.
+  async function post(body: unknown) {
+    const res = mkRes()
+    const req = Readable.from([Buffer.from(JSON.stringify(body))]) as unknown as http.IncomingMessage
+    ;(req as unknown as { headers: object; method: string }).headers = {}
+    ;(req as unknown as { method: string }).method = 'POST'
+    const ctx: RouteContext = {
+      req, res: res as unknown as http.ServerResponse,
+      path: '/api/vault/bindings', method: 'POST',
+      url: new URL('http://127.0.0.1:3420/api/vault/bindings'), auth: { kind: 'token' },
+    }
+    const handled = await tryHandleConnectors(ctx)
+    return { handled, res }
+  }
+  it('a header binding to an ssh-key id is refused with the SSH reason, before target discovery', async () => {
+    const { handled, res } = await post({ vaultSecretId: SSH_KEY_ID, headerName: 'Authorization', headerScheme: 'Bearer' })
+    expect(handled).toBe(true)
+    expect(res.statusCode).toBe(400)
+    expect(JSON.parse(res.body).error).toBe('SSH private keys cannot be bound to an env var or a header')
+  })
+  it('an env binding to an ssh-key id is refused the same way', async () => {
+    const { res } = await post({ vaultSecretId: SSH_KEY_ID, envVar: 'DEPLOY_KEY' })
+    expect(JSON.parse(res.body).error).toBe('SSH private keys cannot be bound to an env var or a header')
+  })
+  it('control: an ordinary id passes the guard and reaches the next check (no targets), not the SSH refusal', async () => {
+    const { res } = await post({ vaultSecretId: 'EXISTS', headerName: 'Authorization' })
+    expect(res.statusCode).toBe(400)
+    expect(JSON.parse(res.body).error).toBe('No targets found for this server')
   })
 })

@@ -16,7 +16,7 @@ import { readBody, json } from '../http-helpers.js'
 import { shellEscape } from '../sanitize.js'
 import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars } from '../dashboard-settings.js'
 import { listSecrets, setSecret, getSecret, deleteSecret } from '../vault.js'
-import { logVaultRead } from '../vault-acl.js'
+import { logVaultRead, isSshPrivateKeyId } from '../vault-acl.js'
 import {
   getBindings, addBinding, removeBinding, removeBindingsForSecret,
   syncSecret, syncAllBindings, scanMcpConfigs, unsyncBinding,
@@ -753,7 +753,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     // Measured 2026-09-23 before closing it: no legitimate caller uses this path (the SSH
     // feature, the dashboard's reveal/edit buttons, scripts, skills, agent commands: 0).
     // The audit row is kept so an attempt stays visible, and the key is not even decrypted.
-    if (id.startsWith('ssh-key-')) {
+    if (isSshPrivateKeyId(id)) {
       logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id))
       json(res, { error: 'SSH private keys are not served by this route' }, 403)
       return true
@@ -799,6 +799,14 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const bindingKey = data.headerName?.trim() || data.envVar?.trim()
     if (!data.vaultSecretId || !bindingKey) {
       json(res, { error: 'vaultSecretId and (envVar or headerName) required' }, 400)
+      return true
+    }
+    // VAULTSZELES826: an SSH private key must never be bound. A header binding would hand it
+    // to vault-headers-helper, which sends it to a REMOTE server as an HTTP header; an env
+    // binding would put it into a child process. Refused before any write or sync runs.
+    // Measured 2026-09-23: the live store/vault-bindings.json has 1 binding, 0 on an ssh-key.
+    if (isSshPrivateKeyId(data.vaultSecretId)) {
+      json(res, { error: 'SSH private keys cannot be bound to an env var or a header' }, 400)
       return true
     }
 
