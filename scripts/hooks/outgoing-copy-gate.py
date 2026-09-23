@@ -948,6 +948,152 @@ EMAIL_TOOL_RE = re.compile(
 )
 
 
+# --- Inter-agent messages: HOMOGLYPH-ONLY (INTERAGENTHOMOGLIF923) -----------
+# `curl .../api/messages` is NOT an email send (send-invocation-cases.json pins
+# it expected:false, and that stays), so none of the copy rules below ever ran
+# on it: no accent audit, no name rule, no em dash -- correctly, because the
+# fleet's internal traffic is written WITHOUT accents and the full audit would
+# block most of it. One dimension is added here and nothing else: a MIXED-SCRIPT
+# word (homoglyph). The fleet coordinates by card ids, agent names and file
+# paths passed in messages; a Cyrillic 'a' in one of those does not look wrong,
+# it silently points at something that does not exist. Measured 2026-09-16:
+# four such characters in the lead agent's own messages, caught only by a
+# manual scan.
+#
+# FAILURE DIRECTION IS THE OPPOSITE OF THE EMAIL BRANCH (Marveen, msg 28870):
+#   - homoglyph FOUND           -> BLOCK (exit 2), naming the word and the char;
+#   - body NOT INTERPRETABLE     -> PASS, with a loud named systemMessage and a
+#     (unreadable path, $-path,     gate-log line. On this channel a false block
+#     run-time substitution,        mutes an agent (the fleet's coordination
+#     non-object JSON, unknown      backbone); the threat is our own agent
+#     shape)                        emitting a lookalike by accident, not an
+#                                   attacker, so fail-open-loud is the right side.
+# All three shapes are covered, or the concept is not closed: quoted heredoc
+# (`--data-binary @- <<'JSON'`), `@file`, and inline `-d '...'`.
+_IA_TARGET = re.compile(r"^(https?://)?[^/\s]*/api/messages/?(\?\S*)?$", re.I)
+_IA_DATA_FLAGS = ("-d", "--data", "--data-binary", "--data-raw", "--data-ascii", "--json")
+_IA_SUBST = re.compile(r"\$\(|`|\$\{?\w")
+
+
+def _ia_segment(cmd: str):
+    """Tokens of the curl segment that POSTs to /api/messages, or None."""
+    try:
+        segments = _segments_tokens(cmd)
+    except ValueError:
+        return None
+    for toks in segments:
+        while toks and _ENV_ASSIGN.match(toks[0]):
+            toks = toks[1:]
+        if toks and _CURLISH.match(_basename(toks[0])) and any(_IA_TARGET.match(t) for t in toks[1:]):
+            return toks
+    return None
+
+
+# The fleet's everyday form is `S=/abs/scratch; ... --data-binary @$S/m.json`:
+# the variable is assigned a LITERAL earlier in the SAME command string. That
+# is deterministic, so it is resolved here instead of warned about. Measured
+# 2026-09-23 over 1153 real inter-agent POSTs: without this, most of the
+# warnings were exactly this shape, and a warning that fires on half the
+# traffic is noise. Only a plain literal value counts (no quotes-with-$,
+# no substitution); anything else stays unresolved and is warned about.
+_IA_ASSIGN = re.compile(r"""(?:^|[;&|\n(]\s*|\s)(?:export\s+)?([A-Za-z_]\w*)=(?:"([^"$`]*)"|'([^']*)'|([^\s;&|$`'"()]+))""")
+
+
+def _ia_resolve_local_vars(cmd: str, ref: str) -> str:
+    local = {}
+    for m in _IA_ASSIGN.finditer(cmd):
+        local[m.group(1)] = next(g for g in m.groups()[1:] if g is not None)
+    def sub(m):
+        name = m.group(1) or m.group(2)
+        return local.get(name, m.group(0))
+    return re.sub(r"\$\{(\w+)\}|\$(\w+)", sub, ref)
+
+
+def _ia_payload(cmd: str, toks):
+    """(text, unreadable_reason) of the message body, from the three shapes."""
+    raw = None
+    for i, t in enumerate(toks):
+        val = None
+        for f in _IA_DATA_FLAGS:
+            if t == f and i + 1 < len(toks):
+                val = toks[i + 1]
+            elif t.startswith(f + "="):
+                val = t[len(f) + 1:]
+            elif f == "-d" and t.startswith("-d") and len(t) > 2 and not t.startswith("--"):
+                val = t[2:]
+            if val is not None:
+                is_raw_flag = f == "--data-raw"
+                break
+        if val is None:
+            continue
+        if val.startswith("@") and not is_raw_flag:
+            ref = val[1:]
+            if ref == "-":
+                m = re.search(r"<<-?\s*'?(\w+)'?[^\n]*\n(.*?)\n\1(?=\s|$)", cmd, re.S)
+                if not m:
+                    return None, "a torzs stdin-rol jon (@-), heredoc nelkul"
+                if not re.search(r"<<-?\s*'", cmd) and _IA_SUBST.search(m.group(2)):
+                    return None, "a heredoc NEM idezett, es shell-behelyettesitest tartalmaz"
+                raw = m.group(2)
+            else:
+                path = os.path.expandvars(os.path.expanduser(_ia_resolve_local_vars(cmd, ref)))
+                if "$" in path:
+                    return None, f"a torzs fel nem oldhato @utvonalrol jon (@{ref})"
+                try:
+                    with open(path, encoding="utf-8", errors="replace") as fh:
+                        raw = fh.read()
+                except OSError as exc:
+                    return None, f"a torzs-fajl (@{ref}) nem olvashato ({exc.strerror or exc})"
+        else:
+            if _IA_SUBST.search(val):
+                return None, "az inline torzs shell-behelyettesitest tartalmaz, futasidoben dol el"
+            raw = val
+        break
+    if raw is None:
+        # No data flag at all: a GET of the queue (the most frequent call on this
+        # path) or a bare POST. Nothing is being SENT, so nothing to scan and
+        # nothing to warn about -- a warning here would fire on every queue read.
+        return "", None
+    try:
+        obj = json.loads(raw)
+    except ValueError:
+        return None, "a torzs nem ervenyes JSON"
+    if not isinstance(obj, dict):
+        return None, "a torzs JSON, de nem objektum"
+    # EVERY string field: a lookalike in `to` misroutes as silently as one in
+    # `content` misleads.
+    strings = [str(v) for v in obj.values() if isinstance(v, str)]
+    return "\n".join(strings), None
+
+
+def inter_agent_homoglyph_gate(cmd: str) -> None:
+    """Exit 2 on a homoglyph, exit 0 otherwise (loudly when unreadable).
+    Only called for a command that is NOT an email send."""
+    toks = _ia_segment(cmd)
+    if toks is None:
+        sys.exit(0)
+    text, unreadable = _ia_payload(cmd, toks)
+    if unreadable:
+        msg = ("outgoing-copy-gate (inter-agent, homoglifa): a torzs NEM vizsgalhato -- "
+               f"{unreadable}. Az uzenet ATMENT, homoglifa-ellenorzes NELKUL. "
+               "Vizsgalhato alak: idezett heredoc (--data-binary @- <<'JSON') vagy @/abszolut/ut.json.")
+        _gate_log(msg)
+        print(json.dumps({"systemMessage": msg}))
+        sys.exit(0)
+    mixed = mixed_script_words(text)
+    if mixed:
+        shown = "; ".join(f"{w!r} -- benne {name}" for w, _c, name in mixed[:5])
+        more = f" (+{len(mixed) - 5} tovabbi)" if len(mixed) > 5 else ""
+        sys.stderr.write(
+            "KIMENO-SZOVEG KAPU (inter-agent): TILTVA -- VEGYES IRASRENDSZERU SZO (homoglifa), "
+            f"{len(mixed)} db: {shown}{more}.\n"
+            "Egy kartya-azonositoban, agens-nevben vagy utvonalban ez neman felreiranyit. "
+            "Javitsd a szoveget es kuldd ujra. (Itt CSAK a homoglifa fut, ekezet- es copy-szabaly nem.)\n"
+        )
+        sys.exit(2)
+    sys.exit(0)
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -1015,7 +1161,7 @@ def main():
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
         if not is_send_invocation(cmd):
-            sys.exit(0)
+            inter_agent_homoglyph_gate(cmd)  # exits; a no-op pass for anything else
         text, unreadable = collect_bash_body(cmd)
     else:
         sys.exit(0)
