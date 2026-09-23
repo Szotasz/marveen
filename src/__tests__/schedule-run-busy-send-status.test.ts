@@ -4,6 +4,12 @@ import { join } from 'node:path'
 
 // AUDITBORITEKVESZ918 -- a busy-pane delivery must not be recorded as a clean run.
 //
+// CORRECTED 2026-09-23 (PROMPTCSONK923): the 09-18 kanban-audit prompt cited
+// below arrived INTACT -- the session transcript holds all 44448 chars with the
+// envelope. The "spliced" reading came from the pane, which shows only the
+// tail of an overfull input box. 'fired_busy' records the send condition; what
+// actually arrived is task_runs.delivery (see delivery-integrity.test.ts).
+//
 // Measured 2026-09-18 on the main session: ledger-live-drain fired at 16:00:08,
 // memoria-heartbeat at 16:00:13, kanban-audit at 16:00:26. The third one's
 // wait-until-idle gate expired (12s budget) while the agent was mid-turn, so
