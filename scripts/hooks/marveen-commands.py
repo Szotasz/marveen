@@ -217,7 +217,7 @@ def mark_answered(sd, payload, chat_id, text):
         log(sd, f"ledger log_outbound failed: {type(e).__name__}")
 
 
-def dispatch(text, chat_id, main_session, defer_writes=False, forwarded=False):
+def dispatch(text, chat_id, main_session, defer_writes=False, forwarded=False, timeout=20):
     """POST the command to the dashboard. Returns (result dict, None) or (None, why).
 
     `main_session` rides along so the server can refuse a WRITE resolved for
@@ -242,7 +242,7 @@ def dispatch(text, chat_id, main_session, defer_writes=False, forwarded=False):
         headers={"Authorization": "Bearer " + dtok, "Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=20) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode()), None
     except urllib.error.HTTPError as e:
         return None, f"HTTP {e.code}"
@@ -370,6 +370,8 @@ def is_main_session(payload):
 DEFERRED_ENV = "MARVEEN_CMD_DEFERRED"
 DEFERRED_WAIT_SECONDS = 30
 SETTLE_SECONDS = 0.5
+DEFERRED_DISPATCH_TIMEOUT = float(os.environ.get("MARVEEN_CMD_DEFERRED_TIMEOUT", "90"))
+DEFERRED_TIMEOUT_REPLY = "/{name}: elküldtem, de a dashboard {secs} mp alatt sem válaszolt, lehet, hogy lefutott. Nézd meg /status-szal, mielőtt újra kiadod."
 DEFERRED_SPAWN_FAILED_REPLY = "Nem futott: /{name} -- a késleltetett végrehajtás nem indult el. Napló: progress/commands-hook.log"
 
 
@@ -441,9 +443,16 @@ def run_deferred():
     if not exited:
         log(sd, f"/{name} deferred: hook did not exit within {DEFERRED_WAIT_SECONDS}s, running anyway")
     time.sleep(SETTLE_SECONDS)
-    result, why = dispatch(text, chat_id, bool(job.get("main_session")))
+    # Detached from Claude Code, so it can wait: /new runs a soft clear that
+    # waits for the session to restart and be woken -- 26 s measured on the
+    # test bot (2026-09-23), past the old 20 s, and a clear that WORKED was
+    # reported as "a dashboard nem érhető el".
+    result, why = dispatch(text, chat_id, bool(job.get("main_session")), timeout=DEFERRED_DISPATCH_TIMEOUT)
     if result is None:
-        reply = DASHBOARD_DOWN_REPLY.format(name=name, why=why)
+        if why == "TimeoutError":
+            reply = DEFERRED_TIMEOUT_REPLY.format(name=name, secs=int(DEFERRED_DISPATCH_TIMEOUT))
+        else:
+            reply = DASHBOARD_DOWN_REPLY.format(name=name, why=why)
         replies = [reply]
     else:
         replies = [r for r in (result.get("replies") or []) if isinstance(r, str) and r]

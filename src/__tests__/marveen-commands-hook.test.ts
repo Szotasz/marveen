@@ -23,7 +23,7 @@ const HOOK = join(ROOT, 'scripts', 'hooks', 'marveen-commands.py')
 
 interface Call { path: string; body: any }
 let calls: Call[] = []
-let dispatchReply: (body: any) => { status: number; body: unknown } = () => ({ status: 200, body: { handled: false } })
+let dispatchReply: (body: any) => { status: number; body: unknown; delayMs?: number } = () => ({ status: 200, body: { handled: false } })
 let server: http.Server
 let menuStatus = 200
 let failSends = 0
@@ -47,8 +47,10 @@ beforeAll(async () => {
       if (req.url === '/api/commands/dispatch') {
         expect(req.headers.authorization).toBe('Bearer dash-token')
         const r = dispatchReply(body)
-        res.writeHead(r.status, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify(r.body))
+        setTimeout(() => {
+          res.writeHead(r.status, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify(r.body))
+        }, r.delayMs ?? 0)
         return
       }
       if ((req.url ?? '').endsWith('/sendMessage') && failSends > 0) {
@@ -100,7 +102,7 @@ function channel(body: string, attrs = 'source="plugin:telegram:telegram" chat_i
   return `<channel ${attrs}>${body}</channel>`
 }
 
-function runHook(prompt: string, apiBase = base, agent = 'marveen', args: string[] = []): Promise<{ code: number | null; stdout: string }> {
+function runHook(prompt: string, apiBase = base, agent = 'marveen', args: string[] = [], extraEnv: Record<string, string> = {}): Promise<{ code: number | null; stdout: string }> {
   return new Promise((resolve) => {
     const p = spawn('python3', [HOOK, ...args], {
       env: {
@@ -113,6 +115,7 @@ function runHook(prompt: string, apiBase = base, agent = 'marveen', args: string
         TELEGRAM_API_BASE: base,
         LEDGER_DB_PATH: ledgerDb,
         MARVEEN_CMD_SEND_RETRY_SECONDS: '0.01',
+        ...extraEnv,
       },
     })
     let stdout = ''
@@ -519,6 +522,32 @@ describe('marveen-commands.py forwarded messages', () => {
     expect(r.code).toBe(2)
     expect(dispatches()[0].body).toEqual({ text: '/model opus keep', chatId: '42', mainSession: true, deferWrites: true, forwarded: true })
     expect(sends()).toEqual([{ chat_id: '42', text: 'Továbbított üzenetből nem futtatok parancsot: /model.' }])
+  })
+})
+
+// Measured on the test bot (2026-09-23): /new runs a soft clear that waits for
+// the session restart and the wake nudge -- 26 s -- and the deferred re-send
+// gave up at 20 s: a clear that WORKED was answered "a dashboard nem érhető el".
+describe('marveen-commands.py deferred write, slow dashboard', () => {
+  it('a timeout says "maybe it ran", never "the dashboard is down"', async () => {
+    dispatchReply = (b) => b.deferWrites
+      ? { status: 200, body: { handled: true, outcome: 'deferred', replies: [] } }
+      : { status: 200, body: { handled: true, outcome: 'ran', replies: ['kész'] }, delayMs: 1500 }
+    await runHook(channel('/new'), base, 'marveen', [], { MARVEEN_CMD_DEFERRED_TIMEOUT: '0.5' })
+    const deadline = Date.now() + 6000
+    while (sends().length === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 50))
+    expect(sends()).toEqual([{ chat_id: '42', text: '/new: elküldtem, de a dashboard 0 mp alatt sem válaszolt, lehet, hogy lefutott. Nézd meg /status-szal, mielőtt újra kiadod.' }])
+  })
+
+  it('a slow but answering dashboard (1.5 s) gets its reply through at the default timeout', async () => {
+    dispatchReply = (b) => b.deferWrites
+      ? { status: 200, body: { handled: true, outcome: 'deferred', replies: [] } }
+      : { status: 200, body: { handled: true, outcome: 'ran', replies: ['kész'] }, delayMs: 1500 }
+    await runHook(channel('/new'))
+    const deadline = Date.now() + 8000
+    while (sends().length === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 50))
+    expect(sends()).toEqual([{ chat_id: '42', text: 'kész' }])
+    expect(readFileSync(HOOK, 'utf-8')).toMatch(/MARVEEN_CMD_DEFERRED_TIMEOUT", "90"/)
   })
 })
 
