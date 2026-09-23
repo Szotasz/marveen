@@ -53,6 +53,13 @@
       "maxLevel": 3
     },
     {
+      "key": "external_skill_adoption",
+      "label": "Kulso lehetosegbol alacsony kockazatu helyi skill-adaptacio",
+      "level": 1,
+      "locked": false,
+      "maxLevel": 3
+    },
+    {
       "key": "email_send",
       "label": "Email kuldes / valasz",
       "level": 1,
