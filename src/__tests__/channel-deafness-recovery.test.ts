@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   buildMainSessionRespawnCmd,
   shouldRespawnForStaleKeepalive,
@@ -15,11 +18,13 @@ import {
 // main-config-guard-wiring.test.ts forbids in production modules.
 import { mainConfigDecisionForTest } from '../web/main-config-decision.js'
 
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+
 // CONTRACT: the respawn command MUST carry the .bun/bin PATH export -- without
 // it the respawned bun telegram bridge can't be located and the session comes
 // up channel-less. Lock it so a future refactor can't silently drop it.
 describe('buildMainSessionRespawnCmd', () => {
-  const base = { claudePath: '/usr/local/bin/claude', pluginId: 'telegram@claude-plugins-official', model: "claude-opus-4-8[1m]", config: mainConfigDecisionForTest() }
+  const base = { claudePath: '/usr/local/bin/claude', pluginId: 'telegram@claude-plugins-official', model: "claude-opus-4-8[1m]", config: mainConfigDecisionForTest(), stateDir: { envVar: 'TELEGRAM_STATE_DIR', dir: '/install/.claude/channels/telegram' } }
 
   it('always exports a PATH that includes $HOME/.bun/bin', () => {
     const cmd = buildMainSessionRespawnCmd({ ...base, continueSession: false })
@@ -45,6 +50,43 @@ describe('buildMainSessionRespawnCmd', () => {
     expect(cmd).toContain('MCP_TIMEOUT=60000')
     // Must be exported BEFORE the claude binary runs.
     expect(cmd.indexOf('MCP_SERVER_CONNECTION_BATCH_SIZE')).toBeLessThan(cmd.indexOf('--channels'))
+  })
+
+  // 2026-09-23, 26-minute Telegram outage. The 04:52 recovery respawn came up
+  // WITHOUT TELEGRAM_STATE_DIR, so the plugin looked for its token in its own
+  // ~/.claude/channels/telegram default -- a directory #915 had already moved
+  // into the install. No token, no plugin. Worse, the failed start latched
+  // itself into mcp-needs-auth-cache.json, so every later session skipped the
+  // plugin too: the channel does not come back by restarting. channels.sh has
+  // exported this since #915 (STATE_DIR_ENV); this path bypasses channels.sh
+  // and must repeat it. Two directions on purpose -- present AND before claude.
+  it('exports <PROVIDER>_STATE_DIR before launching claude (parity with channels.sh)', () => {
+    const cmd = buildMainSessionRespawnCmd({ ...base, continueSession: false })
+    expect(cmd).toContain("export TELEGRAM_STATE_DIR='/install/.claude/channels/telegram'")
+    expect(cmd.indexOf('TELEGRAM_STATE_DIR')).toBeLessThan(cmd.indexOf('--channels'))
+    expect(cmd.indexOf('TELEGRAM_STATE_DIR')).toBeLessThan(cmd.indexOf(base.claudePath))
+  })
+
+  it('carries the provider actually in use, not a hardcoded telegram', () => {
+    const cmd = buildMainSessionRespawnCmd({
+      ...base,
+      pluginId: 'discord@claude-plugins-official',
+      stateDir: { envVar: 'DISCORD_STATE_DIR', dir: '/home/u/.claude/channels/discord' },
+      continueSession: false,
+    })
+    expect(cmd).toContain("export DISCORD_STATE_DIR='/home/u/.claude/channels/discord'")
+    expect(cmd).not.toContain('TELEGRAM_STATE_DIR')
+  })
+
+  it('single-quote-escapes a state dir containing a quote or a space', () => {
+    const cmd = buildMainSessionRespawnCmd({
+      ...base,
+      stateDir: { envVar: 'TELEGRAM_STATE_DIR', dir: "/tmp/a b/it's" },
+      continueSession: false,
+    })
+    // shSingleQuote turns ' into '\\'' -- one inert shell word, so a path with
+    // a quote cannot break out of the string tmux respawn-pane hands to a shell.
+    expect(cmd).toContain("export TELEGRAM_STATE_DIR='/tmp/a b/it'\\''s'")
   })
 
   it('omits --model when no model is configured', () => {
@@ -304,5 +346,28 @@ describe('shouldTrustLivePollerOverStaleness', () => {
 
   it('ceiling is comfortably above the 18-min staleness threshold (no idle false-positives)', () => {
     expect(shouldTrustLivePollerOverStaleness({ keepaliveAgeMs: 18 * 60 * 1000 + 1, trustCeilingMs: CEILING })).toBe(true)
+  })
+})
+
+// CONTRACT (2026-09-23): the respawn builder is the launcher that bypasses
+// channels.sh, so EVERY call site must hand it the resolved channel state dir.
+// TypeScript already makes `stateDir` required; this is the second fence, for
+// the day someone makes it optional "because most callers have it anyway" --
+// that is exactly how the main session came up without TELEGRAM_STATE_DIR and
+// latched the channel off for 26 minutes.
+describe('buildMainSessionRespawnCmd call-site parity', () => {
+  it('every call site passes stateDir resolved from the provider', () => {
+    const src = readFileSync(join(REPO_ROOT, 'src', 'web', 'channel-monitor.ts'), 'utf-8')
+    // CALL sites only (`= buildMainSessionRespawnCmd({`) -- a bare substring
+    // count also matches the definition and prose mentions.
+    const sites = src.split('= buildMainSessionRespawnCmd({').length - 1
+    const wired = src.split('stateDir: { envVar: channelStateDirEnvVar(provider.type), dir: channelStateDir(provider.type) }').length - 1
+    expect(sites).toBeGreaterThanOrEqual(3)
+    expect(wired).toBe(sites)
+  })
+
+  it('the builder emits the export -- the value is not silently dropped in the join', () => {
+    const src = readFileSync(join(REPO_ROOT, 'src', 'web', 'channel-monitor.ts'), 'utf-8')
+    expect(src).toContain('export ${opts.stateDir.envVar}=${shSingleQuote(opts.stateDir.dir)}')
   })
 })

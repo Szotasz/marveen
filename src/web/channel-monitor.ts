@@ -52,7 +52,7 @@ import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST } from './main-agent.js'
 import { recordChannelEvent } from './channel-event-log.js'
 import { notifyChannel } from '../notify.js'
 import { sendRoutineAlert } from './routine-alert.js'
-import { getProvider, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
+import { getProvider, channelStateDir, channelStateDirEnvVar, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { attemptChannelMcpReconnect } from './channel-mcp-reconnect.js'
 import { readLastIngestionTimestampAcross, mainTranscriptDirs } from './inbound-probe.js'
 import {
@@ -776,6 +776,29 @@ export function buildMainSessionRespawnCmd(opts: {
    */
   config: MainConfigDecision
   /**
+   * <PROVIDER>_STATE_DIR export -- parity with channels.sh (STATE_DIR_ENV).
+   * REQUIRED, not optional, and that is the point: this respawn-pane path
+   * bypasses channels.sh, so whatever channels.sh exports into the main session
+   * has to be repeated here or the respawned session comes up with a DIFFERENT
+   * view of where the channel state lives.
+   *
+   * Since #915 the main agent's state is install-scoped
+   * (<install>/.claude/channels/<provider>), but the plugin only learns that
+   * from this env var -- without it the plugin falls back to its own
+   * ~/.claude/channels/<provider> default, and on a migrated install that
+   * directory is GONE. No token, no plugin. Measured 2026-09-23 on a live
+   * install: after a recovery respawn the Telegram channel stayed dead for 26
+   * minutes, and the failed start also latched itself into
+   * mcp-needs-auth-cache.json, so every later session skipped the plugin too.
+   * A missing env export here is not a degraded channel, it is a latched-off
+   * channel that no restart recovers.
+   *
+   * Value comes from channelStateDir(provider) so an unmigrated install (token
+   * still in the legacy shared dir) keeps resolving legacy, exactly like every
+   * other reader in this process.
+   */
+  stateDir: { envVar: string; dir: string }
+  /**
    * Secondary plugin ids to co-listen on alongside `pluginId`, from
    * readExtraChannelPluginIds(). Omitting them is what silently half-mutes every
    * non-primary channel after a recovery respawn -- see that helper's comment.
@@ -793,6 +816,11 @@ export function buildMainSessionRespawnCmd(opts: {
     // env as the channels.sh boot path, else a recovery respawn comes up
     // un-tuned and can re-starve under load.
     '&& export MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000',
+    // Channel state dir -- see the `stateDir` doc on the opts type. Single-quoted
+    // through the same escaper as the model id: this string is handed to a shell
+    // by tmux respawn-pane, so an install path with a quote or a space in it must
+    // stay one inert word.
+    `&& export ${opts.stateDir.envVar}=${shSingleQuote(opts.stateDir.dir)}`,
     // macOS main-agent config isolation -- parity with channels.sh CFG_ENV. The
     // token is read at launch via $(cat) so the secret never lands in argv/`ps`.
     // An own-credential dir (explicit or a rotated claude-plans entry) gets NO
@@ -851,6 +879,7 @@ export function respawnMainSessionFresh(): void {
   const claudeCmd = buildMainSessionRespawnCmd({
     claudePath: claudeBin(),
     pluginId: provider.pluginId,
+    stateDir: { envVar: channelStateDirEnvVar(provider.type), dir: channelStateDir(provider.type) },
     extraPluginIds: readExtraChannelPluginIds(),
     model: readConfiguredMainModel(),
     // The main session always starts a new conversation -- this is the whole
@@ -920,6 +949,7 @@ export async function resumeMarveenSession(): Promise<boolean> {
     const claudeCmd = buildMainSessionRespawnCmd({
       claudePath: claudeBin(),
       pluginId: provider.pluginId,
+      stateDir: { envVar: channelStateDirEnvVar(provider.type), dir: channelStateDir(provider.type) },
       extraPluginIds: readExtraChannelPluginIds(),
       model: readConfiguredMainModel(),
       continueSession: true,
@@ -1178,6 +1208,7 @@ function respawnMarveenSessionFresh(): boolean {
     const claudeCmd = buildMainSessionRespawnCmd({
       claudePath: claudeBin(),
       pluginId: provider.pluginId,
+      stateDir: { envVar: channelStateDirEnvVar(provider.type), dir: channelStateDir(provider.type) },
       extraPluginIds: readExtraChannelPluginIds(),
       model: readConfiguredMainModel(),
       continueSession: false,
