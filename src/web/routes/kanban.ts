@@ -10,7 +10,7 @@ import {
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
   addCardBlocker, removeCardBlocker, getBlockersForCard, getBlockedByCard,
-  getBlockersForAllCards, blockerWouldCycle,
+  getBlockersForAllCards, blockerWouldCycle, parentWouldCycle,
   listArchivedKanbanCards,
   revertIdeaFromKanban,
   getHeartbeatKanbanSummary,
@@ -529,6 +529,25 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         error: `Unknown field(s): ${unknown.join(', ')}. Accepted: ${KANBAN_WRITABLE_FIELDS.join(', ')}`,
       }, 400)
       return true
+    }
+    // A re-parent is refused rather than stored if it would close a loop, same reasoning as
+    // the blocker check above: a parent chain that loops back on itself is not a hierarchy,
+    // and touchAncestorChain (db.ts) only detects one after it already exists -- it cannot
+    // prevent the write that creates it. Clearing the parent (null/omitted) needs no check:
+    // there is nothing to walk.
+    if (typeof data.parent_id === 'string' && data.parent_id) {
+      if (!getKanbanCard(data.parent_id)) {
+        json(res, { error: 'A szülő kártya nem található' }, 404)
+        return true
+      }
+      if (parentWouldCycle(id, data.parent_id)) {
+        json(res, {
+          error: data.parent_id === id
+            ? 'Egy kártya nem lehet a saját szülője'
+            : 'Ez a szülő-kapcsolat kört zárna be',
+        }, 409)
+        return true
+      }
     }
     if (updateKanbanCard(id, data, actor)) { json(res, { ok: true }); return true }
     json(res, { error: 'Kártya nem található' }, 404)
