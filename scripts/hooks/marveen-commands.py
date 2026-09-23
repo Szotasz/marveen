@@ -445,13 +445,59 @@ def run_deferred():
             sent_any = True
     if sent_any:
         mark_answered(sd, job.get("payload") or {}, chat_id, replies[-1])
-    log(sd, f"/{name} deferred write answered ({(result or {}).get('outcome', why)}) chat={chat_id}")
+    log(sd, f"/{name} deferred write answered ({(result or {}).get('outcome', why)}) chat={chat_id} reply={json.dumps(chr(10).join(replies)[:2000], ensure_ascii=False)}")
     sys.exit(0)
 
 
 def attr(attrs, name):
     m = re.search(name + r'="([^"]*)"', attrs)
     return m.group(1) if m else None
+
+
+MIDTURN_CONTEXT = (
+    "Tulajdonosi parancsok kör közben: ha egy futó kör közben <channel> üzenet érkezik a "
+    "tulajdonostól, ami egyetlen /szó parancs a lenti listából, arra NE válaszolj, és ne "
+    "hajtsd végre: a dashboard külön, a Bot API-n válaszol rá (a kör közben érkező üzenetet a "
+    "UserPromptSubmit hook nem látja, ezért a dashboard a transzkriptből olvassa ki). "
+    "Folytasd a saját munkádat. A lista: {names}. A listán kívüli /szó a tiéd, a szokott módon."
+)
+
+
+def command_names():
+    """The registry's command names from the dashboard menu, the builtin set
+    when the dashboard is down (custom commands then missing -- stated)."""
+    try:
+        with open(os.path.join(REPO_ROOT, "store", ".dashboard-token"), encoding="utf-8") as f:
+            dtok = f.read().strip()
+        req = urllib.request.Request(api_base() + "/api/commands/menu",
+                                     headers={"Authorization": "Bearer " + dtok})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            cmds = json.loads(r.read().decode()).get("commands") or []
+        names = sorted({str(c.get("command")).lstrip("/") for c in cmds if isinstance(c, dict) and c.get("command")})
+        if names:
+            return names, None
+    except Exception as e:
+        return sorted(BUILTIN_NAMES), type(e).__name__
+    return sorted(BUILTIN_NAMES), "ures menu"
+
+
+def run_session_start():
+    """SessionStart hook (startup/resume/clear/compact): tell the MAIN session
+    which owner commands the dashboard answers when they arrive mid-turn
+    (src/web/midturn-commands.ts), so the model does not answer them a second
+    time in a paid turn. Never blocks: exit 0 on every path."""
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        payload = {}
+    if not is_main_session(payload):
+        sys.exit(0)
+    names, why = command_names()
+    text = MIDTURN_CONTEXT.format(names=", ".join("/" + n for n in names))
+    if why:
+        log(state_dir(), f"session-start: command menu unavailable ({why}), builtin names used")
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}, ensure_ascii=False))
+    sys.exit(0)
 
 
 def run_stop():
@@ -553,7 +599,7 @@ def main():
     if sent_any:
         mark_answered(sd, payload, chat_id, replies[-1])
     clear_stray_placeholder(sd, tok, sid, attr(attrs, "message_id"))
-    log(sd, f"/{name} answered ({result.get('outcome')}) chat={chat_id} sid={sid}")
+    log(sd, f"/{name} answered ({result.get('outcome')}) chat={chat_id} sid={sid} reply={json.dumps(chr(10).join(replies)[:2000], ensure_ascii=False)}")
     sys.exit(2)  # block: the model never sees this turn
 
 
@@ -562,4 +608,6 @@ if __name__ == "__main__":
         run_deferred()
     if sys.argv[1:2] == ["--stop"]:
         run_stop()
+    if sys.argv[1:2] == ["--session-start"]:
+        run_session_start()
     main()

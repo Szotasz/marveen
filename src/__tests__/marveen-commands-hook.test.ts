@@ -25,6 +25,7 @@ interface Call { path: string; body: any }
 let calls: Call[] = []
 let dispatchReply: (body: any) => { status: number; body: unknown } = () => ({ status: 200, body: { handled: false } })
 let server: http.Server
+let menuStatus = 200
 let base = ''
 let install = ''
 let stateDir = ''
@@ -37,6 +38,11 @@ beforeAll(async () => {
     req.on('end', () => {
       const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : null
       calls.push({ path: req.url ?? '', body })
+      if (req.url === '/api/commands/menu') {
+        res.writeHead(menuStatus, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ commands: [{ command: 'status', description: 'x' }, { command: 'gyors', description: 'y' }] }))
+        return
+      }
       if (req.url === '/api/commands/dispatch') {
         expect(req.headers.authorization).toBe('Bearer dash-token')
         const r = dispatchReply(body)
@@ -78,6 +84,7 @@ afterAll(() => {
 
 beforeEach(() => {
   calls = []
+  menuStatus = 200
   dispatchReply = () => ({ status: 200, body: { handled: false, outcome: 'unknown', replies: [] } })
 })
 
@@ -85,9 +92,9 @@ function channel(body: string, attrs = 'source="plugin:telegram:telegram" chat_i
   return `<channel ${attrs}>${body}</channel>`
 }
 
-function runHook(prompt: string, apiBase = base, agent = 'marveen'): Promise<{ code: number | null; stdout: string }> {
+function runHook(prompt: string, apiBase = base, agent = 'marveen', args: string[] = []): Promise<{ code: number | null; stdout: string }> {
   return new Promise((resolve) => {
-    const p = spawn('python3', [HOOK], {
+    const p = spawn('python3', [HOOK, ...args], {
       env: {
         ...process.env,
         MARVEEN_INSTALL_DIR: install,
@@ -429,3 +436,45 @@ describe('marveen-commands.py: closes the conversation-continuity ledger', () =>
     expect(isStillOpen('marveen')).toBe(true)
   })
 })
+
+// CMDHOOKMIDROUND (ELSOKOR922 Phase 7, 2026-09-23): a command that arrives
+// mid-turn never reaches UserPromptSubmit; the dashboard answers it from the
+// transcript (src/web/midturn-commands.ts). The SessionStart branch tells the
+// main session which commands those are, so it does not answer them again.
+describe('marveen-commands.py --session-start', () => {
+  it('main session: additionalContext names every registry command from the menu', async () => {
+    const r = await runHook('', base, 'marveen', ['--session-start'])
+    expect(r.code).toBe(0)
+    const out = JSON.parse(r.stdout)
+    expect(out.hookSpecificOutput.hookEventName).toBe('SessionStart')
+    expect(out.hookSpecificOutput.additionalContext).toMatch(/NE válaszolj/)
+    expect(out.hookSpecificOutput.additionalContext).toMatch(/A lista: \/gyors, \/status\./)
+  })
+
+  it('dashboard down: falls back to the builtin names, logs why, still exit 0', async () => {
+    const r = await runHook('', 'http://127.0.0.1:1', 'marveen', ['--session-start'])
+    expect(r.code).toBe(0)
+    const ctx = JSON.parse(r.stdout).hookSpecificOutput.additionalContext as string
+    expect(ctx).toMatch(/\/status/)
+    expect(ctx).toMatch(/\/board/)
+    expect(ctx).not.toMatch(/\/gyors/)
+    const log = readFileSync(join(stateDir, 'progress', 'commands-hook.log'), 'utf-8')
+    expect(log).toMatch(/session-start: command menu unavailable/)
+  })
+
+  it('a sub-agent session gets nothing (the watcher reads only the main transcript)', async () => {
+    const r = await runHook('', base, 'samu', ['--session-start'])
+    expect(r.code).toBe(0)
+    expect(r.stdout).toBe('')
+  })
+})
+
+describe('marveen-commands.py reply logging (for the command harness)', () => {
+  it('the answered line carries the reply text', async () => {
+    dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['sor1\nsor2'] } })
+    await runHook(channel('/status'))
+    const log = readFileSync(join(stateDir, 'progress', 'commands-hook.log'), 'utf-8').trim().split('\n').pop()
+    expect(log).toMatch(/\/status answered \(ran\).* reply="sor1\\nsor2"$/)
+  })
+})
+

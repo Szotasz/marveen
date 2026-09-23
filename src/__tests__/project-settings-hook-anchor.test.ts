@@ -45,7 +45,7 @@ const EXPECTED: Record<string, string[]> = {
     'channel-image-resize.sh', 'egress-gate.mjs', 'memory-frontmatter-gate.py',
   ],
   Stop: ['marveen-commands.py', 'telegram-reply-guard.py', 'telegram_progress_clear.py'],
-  SessionStart: ['ledger-replay.py', 'taskstate-replay.py', 'clear-replay.py'],
+  SessionStart: ['ledger-replay.py', 'taskstate-replay.py', 'clear-replay.py', 'marveen-commands.py'],
   SessionEnd: ['clear-capture.py'],
 }
 
