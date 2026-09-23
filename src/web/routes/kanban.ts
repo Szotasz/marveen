@@ -601,6 +601,27 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // id pointed at a card that does not exist -- with HTTP 200.
     const suppliedId = typeof data.id === 'string' ? data.id.trim() : ''
     const id = suppliedId || randomUUID().slice(0, 8)
+    // `agent` -> `assignee` alias (#1023-adjacent, card b5344b62): createKanbanCard reads
+    // named fields off this object, so a key it does not recognise is silently absent from
+    // the row -- no error, no warning, {ok:true,id} either way. Measured against the whole
+    // table: zero cards ever carried a literal `agent` column value, meaning every caller
+    // that sent `agent` instead of `assignee` got a gazdatlan (ownerless) card and never knew.
+    // Only applied when `assignee` itself is absent, so an explicit assignee always wins.
+    if (data.assignee === undefined && typeof data.agent === 'string') {
+      data.assignee = data.agent
+    }
+    delete data.agent
+    // Unknown keys are WARNED, not rejected: unlike PUT (whose callers are internal and
+    // already measured), POST's caller population is NOT measured, and a fail-closed 400
+    // here would trade a silent data-loss bug for a loud outage in card CREATION -- the one
+    // path every horgony-mechanizmus depends on. Warn now, with the key name, so a future
+    // tightening pass has real traffic to measure instead of guessing.
+    const knownPostFields = new Set<string>([...KANBAN_WRITABLE_FIELDS, 'id'])
+    for (const key of Object.keys(data)) {
+      if (!knownPostFields.has(key)) {
+        logger.warn({ id, key }, 'POST /api/kanban: ismeretlen mező, csendben eldobva')
+      }
+    }
     createKanbanCard({ ...data, id })
     json(res, { ok: true, id })
     return true
