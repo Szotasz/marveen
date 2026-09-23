@@ -88,7 +88,7 @@ describe('every run that opens also closes', () => {
   })
 
   it('a restart cannot leave rows open for ever', () => {
-    expect(RUNNER_SRC).toMatch(/reconcileOpenTaskRuns\(TASK_FIRE_MAX_TRACK_MS\)/)
+    expect(RUNNER_SRC).toMatch(/reconcileOpenTaskRuns\(\)/)
     expect(DB_SRC).toMatch(/outcome = 'interrupted'/)
     // 'interrupted', not 'done': after a restart we genuinely do not know.
     expect(DB_SRC).not.toMatch(/outcome = 'done'\s*\n\s*WHERE completed_at IS NULL/)

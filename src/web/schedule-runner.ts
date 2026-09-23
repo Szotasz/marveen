@@ -1617,14 +1617,15 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
 export const SCHEDULE_TICK_MS = 15_000
 
 export function startScheduleRunner(): NodeJS.Timeout {
-  // Close runs that the previous process was still watching when it stopped.
-  // taskInflightMap is in memory, so a restart loses every open entry and those
-  // rows would stay open for ever -- the same "cannot tell running from
-  // finished" hole this bookkeeping exists to close, just in a smaller window.
-  // They are recorded as 'interrupted', not 'done': we do not know whether they
-  // finished, and saying so beats guessing either way.
+  // Close EVERY run that the previous process was still watching when it
+  // stopped. taskInflightMap is in memory, so a restart loses every open entry
+  // and nothing else can ever close those rows (SCHEDSORZAR923: an age window
+  // here left a minutes-old run open for hours). They are recorded as
+  // 'interrupted' with a zero duration (completed_at = ts), not 'done' and not
+  // "now": we do not know whether they finished, and a "now" stamp would look
+  // like a measured duration.
   try {
-    const closed = reconcileOpenTaskRuns(TASK_FIRE_MAX_TRACK_MS)
+    const closed = reconcileOpenTaskRuns()
     if (closed > 0) logger.info({ closed }, 'Closed task runs orphaned by a restart (outcome=interrupted)')
   } catch (err) {
     logger.warn({ err }, 'task-run restart reconcile failed (non-fatal)')
