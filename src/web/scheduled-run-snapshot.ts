@@ -149,7 +149,10 @@ export function writeScheduledRunSnapshot(
         continue
       }
       renameSync(tmp, target)
-      return { filePath: target, sha256, chars: scrubbedBody.length }
+      // Code points, not UTF-16 units: the agent checks with Python len(), and
+      // a JS .length counts an emoji twice (measured live: a "7 character"
+      // mismatch on an emoji-bearing task).
+      return { filePath: target, sha256, chars: [...scrubbedBody].length }
     } catch (err) {
       try { if (existsSync(tmp)) unlinkSync(tmp) } catch { /* best-effort cleanup */ }
       logger.warn({ err, taskName, attempt }, 'scheduled-run-snapshot: write attempt failed')

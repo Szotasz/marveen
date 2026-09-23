@@ -11,6 +11,8 @@ import {
   isScheduledRunReference,
 } from '../web/scheduled-run-snapshot.js'
 import { logger } from '../logger.js'
+import { wrapScheduledTaskByReference } from '../prompt-safety.js'
+import { execFileSync } from 'node:child_process'
 
 // SCHEDPROMPTREF917: fire-time snapshot for reference-based scheduled-task
 // delivery (spec 5, tests 2/4/6/9/11). See docs/scheduled-tasks.md.
@@ -224,3 +226,31 @@ describe('isScheduledRunReference (#1396 review: body-file restricted to store/s
     expect(isScheduledRunReference(dir, dir)).toBe(false)
   })
 })
+
+// Measured on a test instance (2026-09-23): an agent checked the WHOLE file
+// (header included) against body-chars and refused a sound kanban-audit; on
+// the live instance an emoji-bearing task showed a "7 character" mismatch
+// (JS .length counts UTF-16 units, Python len() code points). The check the
+// wrapper spells out is run here, for real, on the snapshot it describes.
+describe('the integrity check the reference wrapper tells the agent to run', () => {
+  it('matches body-chars and body-sha256 on a real snapshot, emoji included', () => {
+    const dir = tmpDir('snap-')
+    const body = '# Napi riport ☀️🧹\nsor 🎯 egy\nékezet: őű\n'
+    const snap = writeScheduledRunSnapshot('reggeli-napindito', body, { dir })!
+    expect(snap.chars).toBe([...body].length)
+    expect(snap.chars).not.toBe(body.length) // the emoji really differ in the two counts
+    const wrapper = wrapScheduledTaskByReference('scheduled-task:reggeli-napindito', snap.filePath, snap.sha256, snap.chars)
+    const cmd = wrapper.split('\n').find(l => l.startsWith('python3 -c '))!
+    expect(cmd).toContain(snap.filePath)
+    const out = execFileSync('bash', ['-c', cmd], { encoding: 'utf-8' }).trim()
+    expect(out).toBe(`${snap.chars} ${snap.sha256}`)
+    expect(wrapper).toContain(`body-chars="${snap.chars}"`)
+  })
+
+  it('a path with shell metacharacters is not put into the command', () => {
+    const w = wrapScheduledTaskByReference('scheduled-task:x', "/tmp/a'; rm -rf ~; '.md", 'a'.repeat(64), 10)
+    const cmd = w.split('\n').find(l => l.startsWith('python3 -c '))!
+    expect(cmd.endsWith('<body-file>')).toBe(true)
+  })
+})
+
