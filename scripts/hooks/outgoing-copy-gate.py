@@ -679,6 +679,7 @@ NAME_TECHNICAL = re.compile(
     r"""https?://\S+                # URL
       | [\w.+-]+@[\w-]+\.[\w.]+     # email
       | `[^`]*`                     # kod-span
+      | \b\w+(?:_\w+)+\b            # snake_case azonosito
       | \b[\w-]*/[\w/-]+            # utvonal / slug
       | \b\w+\.[A-Za-z]{2,10}(?:-[a-záéíóöőúüű]{1,4})?\b   # fajlnev / domain
     """,

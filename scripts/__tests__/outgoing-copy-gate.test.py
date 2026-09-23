@@ -184,6 +184,15 @@ def main():
         code, out, err = run_hook(email_payload(span_body), rules_file=active)
         check("name pattern inside a code span: passes (exit 0)", code, 0)
 
+        hyphen_free = rules_path(tmp, "snake.json")
+        write_rules(hyphen_free, {
+            "bad_name_patterns": [r"\bteszt_elek_azonosito\b"],
+            "correction": "a helyes alak: Teszt Elemer",
+        })
+        snake_body = CLEAN_HU_OK + " A kulcs: teszt_elek_azonosito a naplóban."
+        code, out, err = run_hook(email_payload(snake_body), rules_file=hyphen_free)
+        check("name pattern inside a snake_case identifier: passes (exit 0)", code, 0)
+
         # ...and the other direction: prose still blocks (this is the check that
         # would go silently green if the scope were widened to TECHNICAL).
         code, out, err = run_hook(email_payload(CLEAN_HU_OK + " Üdvözlettel, Teszt Elek"), rules_file=active)
