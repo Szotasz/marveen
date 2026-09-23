@@ -60,13 +60,23 @@ describe('install-channel-process-gate.sh writes a unit that runs the gate', () 
       // so fall back to whatever single unit the installer wrote.
       const written = existsSync(unit)
       expect(written || out.includes('channel-process-gate')).toBe(true)
-      const path = out.match(/(\/\S*channel-process-gate[^\s,]*)/)?.[1]
-      expect(path).toBeTruthy()
-      const body = readFileSync(path!, 'utf-8')
-      expect(body).toContain('channel-process-gate.py')
-      expect(body).toContain('--notify')
+      // macOS puts the command AND the period in one plist; systemd splits
+      // them across .service (the command) and .timer (the period), so a
+      // single "first path in the output" read finds the .service and never
+      // sees the interval. Measured on CI 2026-09-23: the assertion failed on
+      // Linux against a correctly written pair of units.
+      const paths = out.match(/\/\S*channel-process-gate[^\s,]*/g) ?? []
+      expect(paths.length).toBeGreaterThan(0)
+      const exec = paths.find((f) => !f.endsWith('.timer'))
+      expect(exec).toBeTruthy()
+      const execBody = readFileSync(exec!, 'utf-8')
+      expect(execBody).toContain('channel-process-gate.py')
+      expect(execBody).toContain('--notify')
       // A monitor with no period is a monitor that runs once and stops mattering.
-      expect(body).toMatch(darwin ? /<integer>300<\/integer>/ : /OnUnitActiveSec=5min/)
+      const periodBody = darwin
+        ? execBody
+        : readFileSync(paths.find((f) => f.endsWith('.timer'))!, 'utf-8')
+      expect(periodBody).toMatch(darwin ? /<integer>300<\/integer>/ : /OnUnitActiveSec=5min/)
     } finally {
       rmSync(home, { recursive: true, force: true })
     }
