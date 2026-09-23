@@ -217,7 +217,7 @@ def mark_answered(sd, payload, chat_id, text):
         log(sd, f"ledger log_outbound failed: {type(e).__name__}")
 
 
-def dispatch(text, chat_id, main_session, defer_writes=False):
+def dispatch(text, chat_id, main_session, defer_writes=False, forwarded=False):
     """POST the command to the dashboard. Returns (result dict, None) or (None, why).
 
     `main_session` rides along so the server can refuse a WRITE resolved for
@@ -237,7 +237,7 @@ def dispatch(text, chat_id, main_session, defer_writes=False):
     req = urllib.request.Request(
         api_base() + "/api/commands/dispatch",
         data=json.dumps({"text": text, "chatId": chat_id, "mainSession": main_session,
-                         "deferWrites": defer_writes}).encode(),
+                         "deferWrites": defer_writes, "forwarded": forwarded}).encode(),
         method="POST",
         headers={"Authorization": "Bearer " + dtok, "Content-Type": "application/json"},
     )
@@ -572,7 +572,8 @@ def main():
         log(sd, "no bot token found, letting the prompt through")
         sys.exit(0)
 
-    result, why = dispatch(body, chat_id, main_session, defer_writes=True)
+    forwarded = attr(attrs, "forwarded") == "1"
+    result, why = dispatch(body, chat_id, main_session, defer_writes=True, forwarded=forwarded)
     if result is not None and result.get("outcome") == "deferred":
         if not spawn_deferred(sd, payload, body, chat_id, main_session):
             reply = DEFERRED_SPAWN_FAILED_REPLY.format(name=name)

@@ -38,6 +38,7 @@ export interface MidTurnCommand {
   chatId: string
   messageId: string | null
   text: string
+  forwarded: boolean
 }
 
 function attr(attrs: string, name: string): string | null {
@@ -64,7 +65,7 @@ export function parseQueuedChannelCommand(line: string): MidTurnCommand | null {
   if (!TELEGRAM_SOURCE_RX.test(attrs)) return null
   const chatId = attr(attrs, 'chat_id')
   if (!chatId) return null
-  return { chatId, messageId: attr(attrs, 'message_id'), text: body }
+  return { chatId, messageId: attr(attrs, 'message_id'), text: body, forwarded: attr(attrs, 'forwarded') === '1' }
 }
 
 export interface TailState {
@@ -172,7 +173,7 @@ export async function midTurnTick(state: TailState, deps: MidTurnDeps, firstRun 
     state.seen.push(key)
     if (state.seen.length > SEEN_MAX) state.seen.splice(0, state.seen.length - SEEN_MAX)
     try {
-      const result = await deps.dispatch(cmd.text, cmd.chatId, deps.ownerChatId(), deps.now(), true, false)
+      const result = await deps.dispatch(cmd.text, cmd.chatId, deps.ownerChatId(), deps.now(), true, false, cmd.forwarded)
       if (!result.handled) {
         logger.info({ text: cmd.text, outcome: result.outcome }, 'midturn-commands: not ours, left to the model')
         continue

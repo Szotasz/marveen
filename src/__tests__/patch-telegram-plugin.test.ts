@@ -47,6 +47,7 @@ describe('patch-telegram-plugin.py', () => {
     expect(text).not.toContain('Paired as')
     expect(text).toContain("bot.command('start'")
     expect(text.match(/MARVEEN-PATCH\(elsokor922-d4\)/g)).toHaveLength(3)
+    expect(text).toMatch(/ +user_id: String\(from\.id\),\n +\.\.\.\(ctx\.message\?\.forward_origin \? \{ forwarded: '1' \} : \{\}\), \/\/ MARVEEN-PATCH\(elsokor922-fwd\)/)
     expect(syntaxErrors(text)).toEqual([])
   })
 
@@ -59,13 +60,27 @@ describe('patch-telegram-plugin.py', () => {
     expect(readFileSync(server, 'utf-8')).toBe(once)
   })
 
-  it('a changed anchor (plugin update): loud line, file left byte-identical, exit 0', () => {
+  it('a changed anchor (plugin update): loud line, THAT patch left out, the other still applied, exit 0', () => {
     const changed = readFileSync(FIXTURE, 'utf-8').replace("bot.command('status', async ctx => {", "bot.command('status', async (ctx) => {")
     writeFileSync(server, changed)
     const r = run()
     expect(r.status).toBe(0)
-    expect(r.stderr).toMatch(/LOUD: status handler not found exactly once/)
-    expect(readFileSync(server, 'utf-8')).toBe(changed)
+    expect(r.stderr).toMatch(/LOUD: status handler not found exactly once.*the d4 patch left out/)
+    const text = readFileSync(server, 'utf-8')
+    expect(text).not.toContain('elsokor922-d4')
+    expect(text).toContain("bot.command('help', async ctx => {")
+    expect(text).toContain('elsokor922-fwd')
+    expect(syntaxErrors(text)).toEqual([])
+  })
+
+  it('a file patched by the d4-only version gets the forward patch on the next run', () => {
+    run()
+    const d4only = readFileSync(server, 'utf-8').replace(/\n +\.\.\.\(ctx\.message\?\.forward_origin[^\n]*/, '')
+    writeFileSync(server, d4only)
+    expect(d4only).not.toContain('elsokor922-fwd')
+    const r = run()
+    expect(r.stderr).toMatch(/patched .*\(fwd\)/)
+    expect(readFileSync(server, 'utf-8').match(/elsokor922-fwd/g)).toHaveLength(1)
   })
 
   it('no plugin cache at all: exit 0, nothing to do', () => {

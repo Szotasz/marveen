@@ -47,6 +47,12 @@ describe('dispatchForChat', () => {
     const r = await dispatchForChat('/kanban', '42', '42')
     expect(r).toEqual({ handled: false, outcome: 'unknown', replies: [] })
   })
+  it('a FORWARDED registry command is refused, nothing runs; a forwarded unknown word still goes to the model', async () => {
+    const r = await dispatchForChat('/status', '42', '42', Date.now(), true, false, true)
+    expect(r).toEqual({ handled: true, outcome: 'forwarded-refused', replies: ['Továbbított üzenetből nem futtatok parancsot: /status. Ha kell, írd be magad.'] })
+    expect(runs).toBe(0)
+    expect((await dispatchForChat('/kanban', '42', '42', Date.now(), true, false, true)).handled).toBe(false)
+  })
   it('plain text is not handled', async () => {
     expect((await dispatchForChat('szia, mi a helyzet?', '42', '42')).handled).toBe(false)
   })

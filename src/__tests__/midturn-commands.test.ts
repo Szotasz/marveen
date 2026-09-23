@@ -35,7 +35,8 @@ function enqueueLine(prompt: string): string {
 
 describe('parseQueuedChannelCommand', () => {
   it('the measured queued_command line -> the command', () => {
-    expect(parseQueuedChannelCommand(queuedLine(channelPrompt('/board')))).toEqual({ chatId: OWNER, messageId: '373', text: '/board' })
+    expect(parseQueuedChannelCommand(queuedLine(channelPrompt('/board')))).toEqual({ chatId: OWNER, messageId: '373', text: '/board', forwarded: false })
+    expect(parseQueuedChannelCommand(queuedLine(channelPrompt('/board', `source="plugin:telegram:telegram" chat_id="${OWNER}" message_id="5" forwarded="1"`)))?.forwarded).toBe(true)
   })
 
   it('a command with arguments keeps them', () => {
@@ -106,7 +107,7 @@ describe('midTurnTick', () => {
     await midTurnTick(state, deps, true)
     appendFileSync(file, queuedLine(channelPrompt('/gyors')) + '\n')
     await midTurnTick(state, deps)
-    expect(deps.dispatch).toHaveBeenCalledWith('/gyors', OWNER, OWNER, 1, true, false)
+    expect(deps.dispatch).toHaveBeenCalledWith('/gyors', OWNER, OWNER, 1, true, false, false)
   })
 
   it('the same message_id twice (a re-written line) runs once', async () => {
