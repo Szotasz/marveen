@@ -62,6 +62,11 @@ const LOCALHOST = [
   // A one-liner that builds the message and hands it to a localhost curl.
   `python3 -c 'import json,subprocess; subprocess.run(["curl","-s","http://localhost:3420/api/messages","-d",json.dumps({"c":"https://example.org"})])'`,
   `python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3420/api/health')"`,
+  // A PR link inside the -d JSON / a referer / a header VALUE is data, not a destination: this is how
+  // the fleet reports a PR over the message queue. Denied on the merged #1514 head, fixed after.
+  `curl -s -X POST http://localhost:3420/api/messages -H 'Content-Type: application/json' -d '{"from":"a","to":"b","content":"PR kint: https://github.com/o/r/pull/1"}'`,
+  `curl -s -X POST http://localhost:3420/api/messages -d "{\\"content\\":\\"https://github.com/o/r/pull/1\\"}"`,
+  'curl -s -e https://github.com/x -H "X-Source: https://example.org" http://localhost:3420/api/health',
 ]
 
 // (a) The named shapes. Every one is external egress, and each is built so the
@@ -124,6 +129,10 @@ describe('curl destinations read from the argv', () => {
     'curl -s example.org',
     'curl --url example.org',
     'curl -u x:y user@example.org/x', // userinfo must not hide the host
+    'for p in a b; do curl -s "https://example.org/raw/$p"; done', // a variable in the PATH does not hide the host
+    'curl -s "$PROTO://example.org/x"', // nor a variable scheme
+    'if true; then curl -s http://example.org/x; fi', // a curl inside an if/then body
+    'while read u; do curl -s http://example.org/$u; done < list', // and inside a while loop
     'curl --url=example.org/x',
     'curl -x example.org:8080 http://localhost:3420/',
     'curl --connect-to localhost:80:example.org:80 http://localhost/',

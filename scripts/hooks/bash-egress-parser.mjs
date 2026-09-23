@@ -41,7 +41,11 @@ const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
 const URL_RE = /\b(?:https?|ftp):\/\/[^\s'"`<>\\)]+/gi
 const INTERPRETER = /^(?:python(?:\d+(?:\.\d+)?)?|node(?:js)?|perl|ruby|php|deno|bun)$/
 const CODE_FLAG = new Set(['-c', '-e', '-E', '-r', '--eval', '-p', '--print', 'eval'])
-const PREFIX_WORDS = new Set(['env', 'sudo', 'command', 'exec', 'time', 'nohup', 'nice'])
+// Words that can stand before the real command word of a sub-command. The shell keywords are here
+// because `for p in a b; do curl ...` splits at `;` into a span that starts with `do`, and without
+// them a curl inside a loop or an if/then body was never looked at.
+const PREFIX_WORDS = new Set(['env', 'sudo', 'command', 'exec', 'time', 'nohup', 'nice',
+  'do', 'then', 'else', 'elif', '{', '(', '!'])
 // A one-liner is a DOWNLOADER only when its code uses a network primitive of the language itself.
 // Measured on 7 days of fleet commands: a one-liner that merely CARRIES a URL as data (an
 // inter-agent message built with subprocess + curl to localhost) must not be denied -- that was 4 of
@@ -238,11 +242,14 @@ export function shellWords(text) {
   push()
   return out
 }
-// The host of a curl destination, scheme optional; null when it is not a literal hostname
-// (an unexpanded $VAR, a glob, a relative path).
+// The host of a curl destination, scheme optional; null when the HOST is not a literal hostname
+// (an unexpanded $VAR in the host, a glob, a relative path). A variable in the PATH does not hide
+// the host: `curl "https://raw.githubusercontent.com/o/r/$p"` in a loop is still a known destination
+// (an earlier `value.includes('$')` check let exactly that through). The scheme may be a variable
+// too (`$PROTO://host`), so everything up to `://` is dropped.
 export function destHost(value) {
-  if (!value || value.includes('$')) return null
-  const noScheme = value.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '')
+  if (!value) return null
+  const noScheme = value.replace(/^[^/?#\s]*:\/\//, '')
   const m = /^(?:[^@/?#]*@)?(\[[^\]]*\]|[^/:?#]*)/.exec(noScheme)
   const h = m ? m[1].toLowerCase() : ''
   return HOSTNAME.test(h) ? h : null
@@ -297,12 +304,16 @@ export function classify(command, depth = 0) {
     if (cmd === 'curl') target = 'curl'
     else if (INTERPRETER.test(cmd) && mw.slice(i + 1).some((w) => CODE_FLAG.has(w)) && NET_PRIMITIVE.test(text)) target = 'one-liner'
     if (!target) continue
-    const found = [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
-    if (target === 'curl') {
-      const argv = shellWords(text)
-      const at = argv.findIndex((w) => w.split('/').pop() === 'curl')
-      if (at !== -1) found.push(...curlDestinations(argv.slice(at + 1)))
-    }
+    // curl: the destination is read from the ARGV only. A URL inside a flag VALUE (-d, -e, -H, a
+    // JSON payload) is data sent to wherever curl connects, not a destination. The fleet reports PR
+    // links with a localhost curl whose -d JSON carries a github.com URL, and scanning the whole text
+    // with URL_RE denied exactly that (#1514 re-review, measured on the merged head). An interpreter
+    // one-liner has no argv to read, so its code is still scanned with URL_RE.
+    let found
+    const argv = target === 'curl' ? shellWords(text) : null
+    const at = argv ? argv.findIndex((w) => w.split('/').pop() === 'curl') : -1
+    if (at !== -1) found = curlDestinations(argv.slice(at + 1))
+    else found = [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
     const hosts = [...new Set(found)]
     if (hosts.length) return { deny: true, reason: `${target}-external`, hosts }
   }
