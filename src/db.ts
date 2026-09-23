@@ -3431,6 +3431,12 @@ export function reconcileOpenTaskRuns(now = Date.now()): number {
  * judgement the operator can make: "running 5 min, typically finishes in 40 s"
  * says something; "running 5 min" alone does not.
  */
+/** The dispatch status of one task_runs row ('fired' | 'fired_late' | 'fired_busy' | ...), or null. */
+export function getTaskRunStatus(runId: number): string | null {
+  const row = db.prepare('SELECT status FROM task_runs WHERE id = ?').get(runId) as { status: string } | undefined
+  return row?.status ?? null
+}
+
 export function getTaskRunMedianDurationMs(name: string, minSamples = 5, limit = 50): number | null {
   const rows = db.prepare(
     `SELECT (completed_at - ts) AS d FROM task_runs

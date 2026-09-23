@@ -17,6 +17,7 @@ import { resolveOwnerChatId, configuredOwnerChatFor } from '../owner-chat.js'
 import {
   appendTaskRun,
   markTaskRunCompleted,
+  getTaskRunStatus,
   reconcileOpenTaskRuns,
   getTaskRunMedianDurationMs,
   listPendingTaskRetries,
@@ -1520,6 +1521,31 @@ function sendLostRedeliveryGiveUpNotice(entry: TaskInflightEntry, attempts: numb
 // stage-2 escalation -- the board should reflect a stuck task as soon as the
 // main agent is told, independent of whether it later escalates to the
 // operator.
+// SCHEDSORZAR923 (2): the alert says WHAT it measures. The watchdog knows one
+// thing -- the pane has been busy since the injection -- and nothing about the
+// task's own work: an agent that finished the task and went on to other work
+// keeps the pane busy, and a background-polling round leaves it idle. Measured
+// 2026-09-23: a 3.4-minute finding alerted at 25.5 minutes because the pane
+// stayed busy afterwards; a threshold was raised on such numbers. So the line
+// names the instrument, not "runs for N minutes -- possible hang", and it
+// carries the task_runs row (id + dispatch status) so the reader can look it
+// up instead of guessing. Pure, exported for the text pins.
+export function describeInflightPaneAge(
+  entry: Pick<TaskInflightEntry, 'taskName' | 'agentName' | 'runId'>,
+  elapsedMs: number,
+  runStatus: string | null,
+): string {
+  const ageMinutes = Math.floor(elapsedMs / 60000)
+  const row = entry.runId != null ? `task_runs #${entry.runId}${runStatus ? ` (${runStatus})` : ''}` : 'task_runs sor nélkül'
+  return `A(z) "${entry.taskName}" (${entry.agentName}) ütemezett feladat injektálása óta a pane ${ageMinutes} perce foglalt` +
+    ` -- ez a pane elfoglaltsága, NEM a feladat munkaideje: a feladat közben be is fejeződhetett, ha az ágens mással dolgozik tovább; ${row}.`
+}
+
+function runStatusOf(entry: Pick<TaskInflightEntry, 'runId'>): string | null {
+  if (entry.runId == null) return null
+  try { return getTaskRunStatus(entry.runId) } catch { return null }
+}
+
 function sendTaskInflightMainAgentNotice(entry: TaskInflightEntry, elapsedMs: number): void {
   const ageMinutes = Math.floor(elapsedMs / 60000)
 
@@ -1530,8 +1556,8 @@ function sendTaskInflightMainAgentNotice(entry: TaskInflightEntry, elapsedMs: nu
 
   const thresholdMinutes = Math.round(entry.timeoutMs / 60000)
   const text = [
-    `[scheduler] A(z) "${entry.taskName}" (${entry.agentName}) ütemezett feladat ${ageMinutes} perce fut -- lehetséges beakadás (küszöb: ${thresholdMinutes} perc).`,
-    'Ha jogosan fut ennél tovább, allitsd a task-config.json "stuckAfterMinutes" mezojet.',
+    `[scheduler] ${describeInflightPaneAge(entry, elapsedMs, runStatusOf(entry))} Küszöb: ${thresholdMinutes} perc pane-foglaltság.`,
+    'Ha a pane jogosan foglalt ennél tovább (hosszú feladat, vagy az ágens mással dolgozik), allitsd a task-config.json "stuckAfterMinutes" mezojet.',
     'Ellenőrizd az ágenst; ha nem oldódik meg, az uzemeltető direkt ertesitest kap ha ez tovabb tart.',
   ].join('\n')
   try {
@@ -1596,8 +1622,8 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
       ? `${Math.round(medianMs / 1000)} másodperc`
       : `${Math.round(medianMs / 60_000)} perc`
   const text = [
-    `[${BOT_NAME} scheduler] A(z) "${entry.taskName}" (${entry.agentName}) ütemezett feladat ${ageMinutes} perce fut -- lehetséges beakadás. A(z) fő-agent mar ertesitve volt errol, de nem oldodott meg.`,
-    ...(typical ? [`Ez a feladat általában ${typical} alatt lefut (a korábbi befejezett futások mediánja).`] : []),
+    `[${BOT_NAME} scheduler] ${describeInflightPaneAge(entry, elapsedMs, runStatusOf(entry))} A(z) fő-agent mar ertesitve volt errol, de a pane azota is foglalt.`,
+    ...(typical ? [`Ez a feladat általában ${typical} alatt lefut (a korábbi befejezett futások mediánja; ez is PANE-IDŐ: az injektálástól a pane első tétlen állapotáig, nem munkaidő).`] : []),
     `A riasztási küszöb ennél a feladatnál ${thresholdMinutes} perc; ha ez a feladat jogosan fut ennél tovább, allitsd a task-config.json "stuckAfterMinutes" mezojet.`,
     'Az ágensben megtekintheted; a dashboard /Ütemezések oldalán visszavonható ha kell.',
   ].join('\n')
