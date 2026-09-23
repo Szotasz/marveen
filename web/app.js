@@ -3809,6 +3809,11 @@ async function openAgentDetail(agentName) {
       sel.appendChild(opt)
     }
     sel.value = mv
+    // PICKERCLIKAPU923: re-apply the CLI gate AFTER the value is set, so the
+    // agent's current model is never the disabled option regardless of which
+    // of the two async loads finished first (measured in Chromium: a value set
+    // onto a disabled option still reads back, but the order must not matter).
+    if (lastAvailableModelsData) applyClaudeCliGate(lastAvailableModelsData)
   })
   populateProfileSelect(
     document.getElementById('editAgentProfile'),
@@ -4297,11 +4302,60 @@ async function loadOllamaModels() {
 // panel. Backend gates the list behind a vault entry, so an empty array
 // here means the operator has not configured an API key yet -- in that
 // case we hide the optgroup and surface a hint pointing to the Vault page.
+// PICKERCLIKAPU923: the INSTALLED Claude Code CLI decides which Claude ids
+// are launchable (a customer install pins 2.1.110, where claude-fable-5-1 and
+// claude-opus-5-5 answer 400 on the first prompt and the agent goes silently
+// deaf). Two branches, both deliberate:
+//   measured   -> unsupported options are disabled and labelled; the option
+//                 that is an agent's CURRENT model is never disabled, so the
+//                 edit panel keeps showing the real value and a save does not
+//                 silently rewrite it (#751 lesson).
+//   unmeasured -> nothing is filtered (a customer who can pick no model is
+//                 worse off than today) and a visible hint says so.
+let lastAvailableModelsData = null
+function applyClaudeCliGate(data) {
+  if (data) lastAvailableModelsData = data
+  const support = data && data.claudeSupport ? data.claudeSupport : null
+  const cli = data && data.cli ? data.cli : null
+  const selects = [document.getElementById('agentModel'), document.getElementById('editAgentModel')]
+  const hints = [document.getElementById('agentModelCliHint'), document.getElementById('editAgentModelCliHint')]
+  const base = (id) => String(id || '').replace(/\[[^\]]*\]$/, '')
+  const unsupported = new Map()
+  if (support && support.measured && Array.isArray(support.unsupported)) {
+    for (const u of support.unsupported) unsupported.set(u.id, u.minCli)
+  }
+  selects.forEach((sel, i) => {
+    if (!sel) return
+    const hint = hints[i]
+    if (!support || !support.measured) {
+      // Unmeasured: restore any earlier gating, show the hint, filter nothing.
+      Array.from(sel.options).forEach((opt) => {
+        if (opt.dataset.cliGated === '1') { opt.disabled = false; opt.textContent = opt.dataset.cliLabel || opt.textContent; delete opt.dataset.cliGated }
+      })
+      if (hint) { hint.textContent = t('agents.model.cliUnmeasured').replace('{err}', (cli && cli.error) || '?'); hint.style.display = '' }
+      return
+    }
+    if (hint) hint.style.display = 'none'
+    const current = sel.value
+    Array.from(sel.options).forEach((opt) => {
+      if (!String(opt.value).startsWith('claude-')) return
+      const minCli = unsupported.get(base(opt.value))
+      if (opt.dataset.cliGated === '1') { opt.disabled = false; opt.textContent = opt.dataset.cliLabel || opt.textContent; delete opt.dataset.cliGated }
+      if (!minCli) return
+      if (!opt.dataset.cliLabel) opt.dataset.cliLabel = opt.textContent
+      opt.dataset.cliGated = '1'
+      opt.textContent = opt.dataset.cliLabel + ' (' + t('agents.model.cliUnsupported').replace('{v}', support.installedVersion).replace('{min}', minCli) + ')'
+      opt.disabled = opt.value !== current
+    })
+  })
+}
+
 async function loadAvailableModels() {
   try {
     const res = await fetch('/api/models/available')
     if (!res.ok) return
     const data = await res.json()
+    applyClaudeCliGate(data)
     const deepseekModels = Array.isArray(data.deepseek) ? data.deepseek : []
     const editGroup = document.getElementById('deepseekModelGroup')
     const wizardGroup = document.getElementById('agentModelDeepseekGroup')
