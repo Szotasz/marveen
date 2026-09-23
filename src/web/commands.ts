@@ -39,6 +39,8 @@ export interface CommandSpec {
   confirm?: boolean
   /** `custom` = owner-defined command (listed under SAJÁT). */
   source?: 'builtin' | 'custom'
+  /** What a write changes. A write that runs drops a queued write touching the same thing. */
+  touches?: Array<'model' | 'context'>
   /** Claims specific argument shapes; an entry without it is the fallback. */
   matches?: (args: string[]) => boolean
   run?: (ctx: CommandContext, args: string[]) => Promise<void> | void

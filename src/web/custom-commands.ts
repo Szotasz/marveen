@@ -306,6 +306,16 @@ export async function runPrompt(
 
 // ---- load / import / export -----------------------------------------------------
 
+export function touchesOfSteps(def: CommandDefinition): Array<'model' | 'context'> {
+  if (def.kind !== 'actions') return []
+  const out = new Set<'model' | 'context'>()
+  for (const st of def.body as ActionStep[]) {
+    if (st.action === 'model' || st.action === 'effort') out.add('model')
+    if (st.action === 'context clear') out.add('context')
+  }
+  return [...out]
+}
+
 let registeredCustom: string[] = []
 
 function builtinNames(): Set<string> {
@@ -334,6 +344,7 @@ export function loadCustomCommands(deps: RunDeps = liveRunDeps, rows: CustomComm
       kind: 'write',
       source: 'custom',
       usage,
+      touches: touchesOfSteps(def),
       description: `${def.description || '(nincs leírás)'} [${def.kind}]`,
       run: async (ctx, args) => {
         if (def.kind === 'actions') {

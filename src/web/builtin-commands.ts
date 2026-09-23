@@ -459,6 +459,7 @@ export function registerBuiltinCommands(): void {
   registerCommand({
     name: 'context', kind: 'write', usage: '/context clear', description: 'azonnali /clear (foglalt sessionnél nem)',
     matches: args => args[0]?.toLowerCase() === 'clear',
+    touches: ['context'],
     run: async ctx => { const r = await contextClear(ctx.now); ctx.reply(withRetry('/context clear', { ok: r.cleared, text: r.text, busy: r.busy }, ctx)) },
   })
 

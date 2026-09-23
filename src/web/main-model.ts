@@ -35,7 +35,7 @@ import { gatherGateInputs, sendSlashCommand, mainSessionName } from './context-r
 import { capturePane } from './agent-process.js'
 import { switchVerdict, SWITCH_TURN_QUIET_MS, type QuietVerdict } from './session-control.js'
 import { notifyChannel } from '../notify.js'
-import { registerCommand } from './commands.js'
+import { registerCommand, parseCommand, resolveCommand } from './commands.js'
 import { queuePendingWrite, readPendingWrite, runPendingWrite, clearPendingWrite, PENDING_WRITE_FILE, PENDING_WRITE_TTL_MS } from './pending-write.js'
 import { formatDayClock, formatSpan, modelsDiffer, formatTokens } from './system-status.js'
 
@@ -677,6 +677,19 @@ function commandName(text: string): string {
   return (text.trim().split(/\s+/)[0] ?? '').toLowerCase()
 }
 
+// Same command, or both change the same thing (a queued /gyors that switches
+// the model vs a later /model default -- measured on the test bot: the
+// same-name rule alone kept /gyors queued against the owner's latest word).
+export function supersedes(ranText: string, queuedText: string): boolean {
+  if (commandName(ranText) === commandName(queuedText)) return true
+  const touchesOf = (t: string): string[] => {
+    const p = parseCommand(t.trim())
+    return (p && resolveCommand(p.name, p.args)?.touches) || []
+  }
+  const ran = touchesOf(ranText)
+  return touchesOf(queuedText).some(x => ran.includes(x))
+}
+
 export function withRetry(text: string, r: StepResult, ctx: { ownerId: number; now: number }, file: string = PENDING_WRITE_FILE): string {
   // The owner's latest word wins: a write that went through drops an older
   // one still queued for the turn end (measured on the test bot: a queued
@@ -684,9 +697,9 @@ export function withRetry(text: string, r: StepResult, ctx: { ownerId: number; n
   // have fired minutes later).
   if (r.ok) {
     const stale = readPendingWrite(file)
-    // Only the same command: an unrelated write (/heartbeat) must not drop a
-    // queued /model (measured: it did, in the first version of this rule).
-    if (stale && commandName(stale.text) === commandName(text)) {
+    // Not any write: an unrelated one (/heartbeat) must not drop a queued
+    // /model (measured: it did, in the first version of this rule).
+    if (stale && supersedes(text, stale.text)) {
       clearPendingWrite(file)
       logger.info({ dropped: stale.text, by: text }, 'pending-write: dropped, a later write ran')
       return `${r.text}\n(A sorban várakozó „${stale.text}” törölve: ez a parancs felülírta.)`
@@ -703,11 +716,13 @@ export function registerModelWriteCommands(): void {
     name: 'model', kind: 'write', usage: `/model [<választás>] [<${EFFORT_LEVELS.join('|')}>] [<idő>|keep]`,
     description: 'modell és/vagy effort; alapból 2 óra, majd vissza; keep = tartós (.env)',
     matches: args => args.length > 0 && !['back', 'default'].includes(args[0].toLowerCase()),
+    touches: ['model'],
     run: async (ctx, args) => ctx.reply(withRetry(`/model ${args.join(' ')}`, await setModel(args), ctx)),
   })
   registerCommand({
     name: 'model', kind: 'write', usage: '/model default', description: 'azonnal vissza az alapmodellre (és az alap effortra)',
     matches: args => ['back', 'default'].includes(args[0]?.toLowerCase() ?? ''),
+    touches: ['model'],
     run: async ctx => ctx.reply(withRetry('/model default', await modelBack(), ctx)),
   })
 }

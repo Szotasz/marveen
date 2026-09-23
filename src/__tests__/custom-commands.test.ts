@@ -37,6 +37,7 @@ import {
   renderHelp,
   type CommandContext,
 } from '../web/commands.js'
+import { supersedes } from '../web/main-model.js'
 import { registerBuiltinCommands, customCommandsText } from '../web/builtin-commands.js'
 import { tryHandleCustomCommands } from '../web/routes/custom-commands.js'
 import { classifyAgentMessage } from '../web/agent-message-wrap.js'
@@ -381,6 +382,24 @@ describe('task action (/napindito, /heartbeat)', () => {
     expect(busy.text).toMatch(/foglalt, sorba állt, amint szabad, lefut/)
     expect(taskStepText('nincs', { ok: false, error: 'Schedule not found' }))
       .toEqual({ ok: false, text: 'a(z) nincs nem indult: Schedule not found' })
+  })
+})
+
+// A write that runs drops a queued write touching the same thing (measured on
+// the test bot: a queued /gyors -- a model switch -- survived /model default).
+describe('supersedes (the latest word wins, by what the writes change)', () => {
+  it('/model default drops a queued model-switching custom command; an unrelated write does not', async () => {
+    registerBuiltinCommands()
+    insertCustomCommand({ name: 'gyors', description: '', kind: 'actions', body: JSON.stringify([{ action: 'model', value: 'haiku 5m' }]), enabled: true, updatedBy: 't' })
+    insertCustomCommand({ name: 'ujchat', description: '', kind: 'actions', body: JSON.stringify([{ action: 'context clear' }]), enabled: true, updatedBy: 't' })
+    insertCustomCommand({ name: 'heartbeat', description: '', kind: 'actions', body: JSON.stringify([{ action: 'task', value: 'memoria-heartbeat' }]), enabled: true, updatedBy: 't' })
+    loadCustomCommands(runDeps())
+    expect(supersedes('/model default', '/gyors')).toBe(true)
+    expect(supersedes('/gyors', '/model opus 30m')).toBe(true)
+    expect(supersedes('/ujchat', '/context clear')).toBe(true)
+    expect(supersedes('/heartbeat', '/model fable 10m')).toBe(false)
+    expect(supersedes('/ujchat', '/gyors')).toBe(false)
+    expect(supersedes('/model low 5m', '/model default')).toBe(true)
   })
 })
 
