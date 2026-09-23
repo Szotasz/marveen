@@ -117,13 +117,17 @@ describe('getAgentMemories in-process cache', () => {
 // 3. Embedding backfill
 // ---------------------------------------------------------------------------
 describe('backfillEmbeddings', () => {
-  it('returns 0 when all memories already have embeddings or Ollama is unreachable', async () => {
+  it('embeds nothing when all memories already have embeddings or Ollama is unreachable', async () => {
     // In the test environment Ollama is not running; the function must
-    // complete gracefully and return 0 (no memories without embeddings
-    // that it could successfully embed).
-    const count = await backfillEmbeddings()
-    expect(typeof count).toBe('number')
-    expect(count).toBeGreaterThanOrEqual(0)
+    // complete gracefully and embed nothing.
+    //
+    // BACKFILLHAMISNULLA921: this used to assert a bare number, which is the
+    // very shape that made "nothing to do" and "the embedder is dead" the same
+    // answer. The sweep now reports the backlog it saw alongside the work it
+    // did; see backfill-false-zero.test.ts for the two cases pulled apart.
+    const res = await backfillEmbeddings()
+    expect(res.embedded).toBeGreaterThanOrEqual(0)
+    expect(res.pending).toBeGreaterThanOrEqual(res.embedded)
   })
 
   it('processes rows without embeddings and updates them when Ollama responds', async () => {

@@ -454,6 +454,7 @@ window._i18n.en = {
   'memories.toast.save_error':   'Error saving',
   'memories.toast.delete_error': 'Error deleting',
   'memories.toast.vector_error': 'Error generating vector',
+  'memories.toast.vector_embedder_down': 'The embedder did not answer -- {pending} memories are still without a vector',
 
   // --- Recall / Napló ---
   'recall.page_title':           'Diary',

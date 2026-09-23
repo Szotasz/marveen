@@ -7150,7 +7150,10 @@ async function loadMemStats() {
       try {
         const r = await fetch('/api/memories/backfill', { method: 'POST' })
         const data = await r.json()
-        showToast(t('memories.toast.vector_count', { count: data.count }))
+        // "0 vectorized" reads as "all done". When the embedder never answered,
+        // say that instead (BACKFILLHAMISNULLA921).
+        if (data.embedderDown) showToast(t('memories.toast.vector_embedder_down', { pending: data.pending }))
+        else showToast(t('memories.toast.vector_count', { count: data.count }))
         loadMemStats()
       } catch { showToast(t('memories.toast.vector_error')) }
     })

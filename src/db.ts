@@ -3733,20 +3733,59 @@ export async function hybridSearch(
   return ranked.slice(0, limit).map(([id]) => byId.get(id)!)
 }
 
-export async function backfillEmbeddings(): Promise<number> {
+/**
+ * What one backfill sweep found and what it managed to do about it.
+ *
+ * BACKFILLHAMISNULLA921: the sweep used to return the SUCCESS count alone, so
+ * "nothing was waiting" and "everything was waiting and the embedder is dead"
+ * were both the number 0. Measured on the live install 2026-09-21: 2 rows with
+ * a NULL embedding, localhost:11434 unreachable, response {"ok":true,"count":0}
+ * -- a false zero the dashboard rendered as "0 memories vectorized".
+ */
+export interface BackfillResult {
+  /** Rows carrying no vector when the sweep started. */
+  pending: number
+  /** Rows that received a vector in this sweep. */
+  embedded: number
+  /** Rows the embedder refused. Bounded by the give-up streak below. */
+  failed: number
+  /** The embedder answered nothing at all, so the backlog is untouched. */
+  embedderDown: boolean
+}
+
+// Consecutive refusals, with nothing embedded yet, after which the sweep calls
+// the embedder down and stops. An embedder is up or it is not; walking a
+// 40-row backlog to collect 40 identical ECONNREFUSEDs (each followed by the
+// pacing delay) buys no information and delays startup.
+const BACKFILL_GIVE_UP_STREAK = 3
+
+export async function backfillEmbeddings(): Promise<BackfillResult> {
   const rows = db.prepare('SELECT id, content, keywords FROM memories WHERE embedding IS NULL').all() as { id: number; content: string; keywords: string | null }[]
-  let count = 0
+  const result: BackfillResult = { pending: rows.length, embedded: 0, failed: 0, embedderDown: false }
+  let streak = 0
   for (const row of rows) {
     const text = row.content + (row.keywords ? ' ' + row.keywords : '')
     const emb = await generateEmbedding(text)
     if (emb) {
       db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), row.id)
-      count++
+      result.embedded++
+      streak = 0
+    } else {
+      result.failed++
+      streak++
+      if (result.embedded === 0 && streak >= BACKFILL_GIVE_UP_STREAK) {
+        result.embedderDown = true
+        break
+      }
     }
     // Small delay to not overwhelm Ollama
     await new Promise(r => setTimeout(r, 100))
   }
-  return count
+  // A backlog that produced nothing but refusals is a dead embedder even when
+  // the backlog was shorter than the give-up streak -- two failures out of two
+  // rows is not "some rows were hard", it is "nobody answered".
+  if (result.embedded === 0 && result.failed > 0) result.embedderDown = true
+  return result
 }
 
 // --- Pending Channel Requests ---
