@@ -166,8 +166,27 @@ describe('checkTaskDeliveryIntegrity (the sweep decision)', () => {
     expect(checkTaskDeliveryIntegrity({ ...base, deliveryVerdict: 'intact' }, true, read)).toBeNull()
   })
 
-  it('a reader failure is swallowed (bookkeeping never breaks the sweep)', () => {
-    expect(checkTaskDeliveryIntegrity(base, true, () => { throw new Error('EACCES') })).toBeNull()
+  it('a reader failure is swallowed in flight, and is unverifiable at the close', () => {
+    const boom = () => { throw new Error('EACCES') }
+    expect(checkTaskDeliveryIntegrity(base, false, boom)).toBeNull()
+    expect(checkTaskDeliveryIntegrity(base, true, boom)).toBe('unverifiable')
+  })
+
+  it("the closing look never leaves it NULL: nothing arrived + readable transcript = 'not-arrived'", () => {
+    // Marveen's #1506 review: in flight "nothing yet" is right, at the close
+    // there is no "yet" -- a wholly lost prompt must not look like a row
+    // nobody checked.
+    expect(checkTaskDeliveryIntegrity(base, false, () => [], () => true)).toBeNull()
+    expect(checkTaskDeliveryIntegrity(base, true, () => [], () => true)).toBe('not-arrived')
+    expect(checkTaskDeliveryIntegrity(base, true, () => ['[Inbox] unrelated'], () => true)).toBe('not-arrived')
+  })
+
+  it("no readable transcript directory at the close = 'unverifiable', not 'not-arrived'", () => {
+    expect(checkTaskDeliveryIntegrity(base, true, () => [], () => false)).toBe('unverifiable')
+  })
+
+  it('a remote agent (no sentText) stays NULL even at the close: never checked', () => {
+    expect(checkTaskDeliveryIntegrity({ ...base, sentText: undefined }, true, () => [], () => true)).toBeNull()
   })
 
   it('end to end on disk: the 2026-09-13 shape is recorded as head-lost', () => {
@@ -190,10 +209,16 @@ describe('the sweep is wired to it (source-level: the sweep needs live tmux)', (
   const DB = readFileSync(join(__dirname, '../db.ts'), 'utf-8')
 
   it('the fire path records the typed byte stream and when typing began, for local agents only', () => {
-    const typedIdx = RUNNER.indexOf('const typedAt = Date.now()')
+    const typedIdx = RUNNER.indexOf('let typedAt = Date.now()')
     const sendIdx = RUNNER.indexOf('await sendPromptToSession(session, fullPrompt, host, {')
     expect(typedIdx).toBeGreaterThan(0)
     expect(typedIdx).toBeLessThan(sendIdx)
+    // typedAt is re-stamped at the first emitted keystroke, not at call start
+    expect(RUNNER.slice(sendIdx, sendIdx + 200)).toMatch(/onEmitStart: \(\) => \{\s*typedAt = Date\.now\(\)/)
+    const AP = readFileSync(join(__dirname, '../web/agent-process.ts'), 'utf-8')
+    const emitIdx = AP.indexOf("const emitToPane = async (): Promise<'sent'> => {")
+    expect(emitIdx).toBeGreaterThan(0)
+    expect(AP.slice(emitIdx, emitIdx + 500)).toContain('opts.onEmitStart?.()')
     expect(RUNNER).toMatch(/host == null \? \{ sentText: paneOneLine\(fullPrompt\), typedAt \} : \{\}/)
   })
 

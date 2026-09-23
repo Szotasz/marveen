@@ -326,11 +326,19 @@ export type TaskTimeoutDecision = 'done' | 'abandoned' | 'alert' | 'escalate' | 
 // the two would otherwise persist 'tail-lost' for what is really a 'split'.
 // Every other verdict is final on first sight.
 //
-// `read` is injectable so the sweep's decision is unit-tested without disk.
+// The CLOSING look never leaves the question open (Marveen's #1506 review): in
+// flight, "nothing of ours arrived" means "not yet"; at the close there is no
+// "yet". It becomes 'not-arrived' when a transcript directory was readable,
+// and 'unverifiable' when none was -- so a wholly lost prompt no longer sits
+// as NULL next to a remote agent's never-checked row.
+//
+// `read` and `dirExists` are injectable so the decision is unit-tested
+// without disk.
 export function checkTaskDeliveryIntegrity(
   entry: Pick<TaskInflightEntry, 'sentText' | 'typedAt' | 'deliveryVerdict' | 'workingDir' | 'configDirs'>,
   final: boolean,
   read: (dirs: readonly string[], sinceMs: number) => string[] = readUserPromptsSince,
+  dirExists: (dir: string) => boolean = existsSync,
 ): DeliveryVerdict | null {
   if (entry.sentText == null || entry.typedAt == null || entry.deliveryVerdict != null) return null
   const dirs = [...new Set(entry.configDirs.map((c) => projectsDirFor(entry.workingDir, c)))]
@@ -338,9 +346,10 @@ export function checkTaskDeliveryIntegrity(
   try {
     verdict = classifyDelivery(entry.sentText, read(dirs, entry.typedAt))
   } catch {
-    return null
+    return final ? 'unverifiable' : null
   }
   if (verdict === 'tail-lost' && !final) return null
+  if (verdict == null && final) return dirs.some((d) => dirExists(d)) ? 'not-arrived' : 'unverifiable'
   return verdict
 }
 
@@ -1041,6 +1050,7 @@ async function attemptFireTask(
       SCHEDULED_TASK_PREAMBLE + '\n' +
       prefix.trimEnd() + '\n\n' +
       wrapScheduledTask(`scheduled-task:${task.name}`, taskBody)
+    let typedAt = Date.now() // replaced by onEmitStart; see the note after the call
     // forceSend skips the busy-state check above; it must also skip the
     // pre-flight wait-until-idle gate inside sendPromptToSession, otherwise a
     // task aimed at a long-busy session would block on the 12s idle wait every
@@ -1052,14 +1062,25 @@ async function attemptFireTask(
     // off) while task_runs still recorded a plain 'fired'. The flag only changes
     // the recorded status below; delivery is untouched.
     let busySend = false
-    const typedAt = Date.now()
     await sendPromptToSession(session, fullPrompt, host, {
+      onEmitStart: () => {
+        typedAt = Date.now()
+      },
       waitForIdle: !task.forceSend,
       onBusySend: () => {
         busySend = true
       },
     })
     const submittedAt = Date.now()
+    // typedAt (PROMPTCSONK923) is the moment the FIRST KEYSTROKE of this prompt
+    // was emitted (onEmitStart fires inside the pane's send lock), not when the
+    // call above began: before emission sendPromptToSession runs the modal
+    // dismissals and up to 12 s of idle wait, and a prompt submitted in that
+    // window is not ours. The initial Date.now() is only a fallback for a send
+    // that threw before emitting -- the catch below then records 'error' and
+    // registers no entry. Residual, stated: a PREVIOUS copy of the same task
+    // still queued in a busy pane and dequeued after this instant would carry
+    // the same tail; the lock cannot exclude that, it is a TUI queue.
     scheduleLastRun.set(task.name, now)
     persistScheduleLastRun()
     // A lateCatchUpMs value means this tick only matched because of the

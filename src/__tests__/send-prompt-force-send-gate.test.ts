@@ -28,7 +28,7 @@ describe('sendPromptToSession waitForIdle gate', () => {
     // AUDITBORITEKVESZ918 added onBusySend: the caller learns that the prompt
     // went into a BUSY pane best-effort, so a possibly-spliced delivery is not
     // recorded as a clean run.
-    expect(sig).toMatch(/opts:\s*\{\s*waitForIdle\?:\s*boolean;\s*onBusyTimeout\?:\s*'send'\s*\|\s*'abort';\s*idleTimeoutMs\?:\s*number;\s*lockMode\?:\s*SendLockMode;\s*onBusySend\?:\s*\(\)\s*=>\s*void\s*\}/)
+    expect(sig).toMatch(/opts:\s*\{\s*waitForIdle\?:\s*boolean;\s*onBusyTimeout\?:\s*'send'\s*\|\s*'abort';\s*idleTimeoutMs\?:\s*number;\s*lockMode\?:\s*SendLockMode;\s*onBusySend\?:\s*\(\)\s*=>\s*void;\s*onEmitStart\?:\s*\(\)\s*=>\s*void\s*\}/)
   })
 
   it('the gate defaults ON (waitForIdle !== false) so all other callers keep it', () => {

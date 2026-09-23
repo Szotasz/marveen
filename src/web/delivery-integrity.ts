@@ -48,6 +48,16 @@ export type DeliveryVerdict =
   // the same self-defeating framing that once made agents refuse their own
   // scheduled tasks. Kept distinct because the fix is different.
   | 'paste-wrapped'
+  // CLOSING LOOK ONLY (never returned by classifyDelivery): the transcript was
+  // readable and nothing of this prompt ever arrived -- the whole prompt was
+  // lost (a restart mid-stream, keys eaten by a dialog) or it is still parked
+  // unsubmitted. Without it such a run kept delivery NULL, in the same bucket
+  // as "never looked" (Marveen's #1506 review).
+  | 'not-arrived'
+  // CLOSING LOOK ONLY: no transcript directory was readable for this agent, so
+  // there was nothing to compare against. Kept apart from 'not-arrived': an
+  // instrument gap is not a lost delivery.
+  | 'unverifiable'
 
 // Anchor length: long enough that an 80-char chunk boundary or a stray key
 // cannot fake a match, short enough to exist in a tiny prompt.
