@@ -16,6 +16,7 @@ import {
   _resetMainModelForTest,
   countModelAcks,
   lastRejectionMessage,
+  lastModelAck,
   readLastSent,
   onMainTurnEnded,
   effortSentFileFor,
@@ -546,6 +547,33 @@ describe('"/model effort high" (the plan\'s form) = "/model high"', () => {
     const list = readModelChoices(join(dir, 'model-choices.json'), BASE)
     expect(parseModelArgs(['effort', 'high'], list)).toEqual({ choice: null, effort: 'high', hold: undefined })
     expect(parseModelArgs(['effort', 'turbo'], list)).toMatch(/Nem értem: „turbo”/)
+  })
+})
+
+describe('ack when an older ack scrolled off', () => {
+  it('the count stays 1 but the last "Set model to" line changed: acked', async () => {
+    writeChoices()
+    let pane = '  ⎿  Set model to claude-opus-5[1m]\n'
+    const d = deps({
+      ackCount: () => (pane.match(/Set model to/g) ?? []).length,
+      pane: () => pane,
+      send: async (c) => { if (c.startsWith('/model')) pane = '  ⎿  Set model to claude-sonnet-5\n' },
+    })
+    const r = await setModel(['haiku', '5m'], d)
+    expect(r.text).toMatch(/^Átváltva: haiku/)
+  })
+
+  it('nothing changed on the pane: stays the cautious "elküldve"', async () => {
+    writeChoices()
+    const pane = '  ⎿  Set model to claude-opus-5[1m]\n'
+    const d = deps({ ackCount: () => 1, pane: () => pane, send: async () => {} })
+    const r = await setModel(['haiku', '5m'], d)
+    expect(r.text).toMatch(/elküldve \(a Claude Code visszaigazolását nem láttam\)/)
+  })
+
+  it('lastModelAck folds whitespace and takes the last line', () => {
+    expect(lastModelAck('Set model to  a\nx\n⎿ Set model to claude-sonnet-5  \n')).toBe('Set model to claude-sonnet-5')
+    expect(lastModelAck('semmi')).toBeNull()
   })
 })
 

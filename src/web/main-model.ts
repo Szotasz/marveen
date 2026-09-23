@@ -85,6 +85,16 @@ export function countModelAcks(pane: string | null): number | null {
 // version 2.1.251 or newer is required...}" (measured on the test bot,
 // 2026-09-23, /model fable). Counted like the acks: a rise after our send is
 // a refusal; its message, when readable, goes into the reply.
+// The last "Set model to ..." line on the pane (ANSI-free, whitespace-folded).
+// A change of it after our send is an ack even when the count did not rise
+// because an older ack scrolled off (measured on the test bot, 2026-09-23:
+// "/model default" switched, the reply said "a visszaigazolást nem láttam").
+export function lastModelAck(pane: string | null): string | null {
+  if (!pane) return null
+  const all = [...pane.matchAll(/Set model to[^\n]*/g)]
+  return all.length ? all[all.length - 1][0].replace(/\s+/g, ' ').trim() : null
+}
+
 export function countModelRejections(pane: string | null): number | null {
   return pane === null ? null : (pane.match(/API error: \d{3}/g) ?? []).length
 }
@@ -354,7 +364,9 @@ export interface SendOutcome {
 
 async function sendModel(modelId: string, deps: ModelDeps): Promise<SendOutcome> {
   const before = deps.ackCount()
-  const rejBefore = countModelRejections(deps.pane())
+  const paneBefore = deps.pane()
+  const rejBefore = countModelRejections(paneBefore)
+  const lastAckBefore = lastModelAck(paneBefore)
   await deps.send(`/model ${modelId}`)
   const sentAt = deps.now()
   let acked = false
@@ -363,9 +375,10 @@ async function sendModel(modelId: string, deps: ModelDeps): Promise<SendOutcome>
     for (let waited = 0; waited < ACK_WAIT_MS && !acked && rejected === null; waited += ACK_STEP_MS) {
       await deps.sleep(ACK_STEP_MS)
       const after = deps.ackCount()
-      acked = after !== null && after > before
+      const pane = deps.pane()
+      const lastAck = lastModelAck(pane)
+      acked = (after !== null && after > before) || (lastAck !== null && lastAck !== lastAckBefore)
       if (!acked && rejBefore !== null) {
-        const pane = deps.pane()
         const rej = countModelRejections(pane)
         if (rej !== null && rej > rejBefore) rejected = lastRejectionMessage(pane) ?? ''
       }
