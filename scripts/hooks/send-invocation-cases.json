@@ -255,6 +255,31 @@
       "name": "[marveen:hatar-node-execfile-list] interpreter-kodbol inditott kuldo, node execFileSync listaval",
       "cmd": "node -e \"require('child_process').execFileSync('sendmail',['-t','a@b.hu'])\"",
       "expected": true
+    },
+    {
+      "name": "SEGSPLIT923: send after a $(...) assignment and ';' (the ');' operator run)",
+      "cmd": "X=$(date); sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SEGSPLIT923: send after $(...) on the next line",
+      "cmd": "X=$(date)\nsendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SEGSPLIT923: send.py after echo $(...);",
+      "cmd": "echo $(date); python3 scripts/support-mail/send.py --to a@b.hu --body x",
+      "expected": true
+    },
+    {
+      "name": "SEGSPLIT923: send after $(...) and '&&'",
+      "cmd": "S=$(mktemp -d)&& sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SEGSPLIT923: control -- a non-send after $(...); stays false",
+      "cmd": "X=$(date); echo sendmail is mentioned here",
+      "expected": false
     }
   ]
 }

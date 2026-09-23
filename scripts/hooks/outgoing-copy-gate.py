@@ -237,7 +237,15 @@ def _segments_tokens(cmd: str):
     lex.whitespace_split = True
     segments, cur = [], []
     for tok in lex:
-        if tok in ("|", "||", "&", "&&", ";", "(", ")", ";;", "|&"):
+        # SEGSPLIT923: shlex(punctuation_chars) returns a RUN of operator
+        # characters as ONE token, so `$(date); sendmail ...` (after the
+        # subshell mask: `;date); sendmail`) yielded the token ");" -- not in
+        # the list, so it did not split, `sendmail` landed mid-segment, and the
+        # send was NOT recognised: the copy audit was silently skipped. The JS
+        # twin (email-send-gate.mjs) said true on the same input; nothing in
+        # the conformance list covered it. A token made ONLY of operator
+        # characters is always an operator sequence, so it separates.
+        if tok in ("|", "||", "&", "&&", ";", "(", ")", ";;", "|&") or (tok and set(tok) <= set("();|&")):
             if cur:
                 segments.append(cur)
             cur = []
