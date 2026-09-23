@@ -922,7 +922,7 @@ export function initDatabase(dbPathOverride?: string): void {
   // inserted with completed_at NULL and so looked open for ever. A marker ends
   // when it is written. Idempotent: matches nothing once applied.
   db.exec(`UPDATE task_runs SET completed_at = ts
-           WHERE completed_at IS NULL AND status NOT IN ('fired', 'fired_late')`)
+           WHERE completed_at IS NULL AND status NOT IN ('fired', 'fired_late', 'fired_busy')`)
 
   // --- Pending Scheduled Task Retries ---
   // Busy-skipped scheduled tasks used to live in an in-memory Map. On a
@@ -3352,7 +3352,13 @@ const TASK_RUN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
 // Dispatch statuses that open a run (closed later by markTaskRunCompleted or
 // reconcileOpenTaskRuns). Must match reconcileOpenTaskRuns' own filter.
-export const OPEN_TASK_RUN_STATUSES: ReadonlySet<string> = new Set(['fired', 'fired_late'])
+// 'fired_busy' (AUDITBORITEKVESZ918) belongs here with the other two: it is a
+// DELIVERED run whose prompt went into a busy pane, so it is open until the
+// watchdog sweep closes it. Left out, appendTaskRun would stamp completed_at at
+// injection time and a run that has not even started would read as finished --
+// and the authentication path that proves a wrapper-less prompt really came from
+// the scheduler (see docs + the boritek-nelkuli skill) looks for an OPEN run.
+export const OPEN_TASK_RUN_STATUSES: ReadonlySet<string> = new Set(['fired', 'fired_late', 'fired_busy'])
 
 /**
  * Record that a run was dispatched. Returns the row id so the caller can close
@@ -3401,8 +3407,13 @@ export function markTaskRunCompleted(runId: number, outcome: TaskRunOutcome, com
  */
 export function reconcileOpenTaskRuns(maxAgeMs: number, now = Date.now()): number {
   const info = db.prepare(
+    // 'fired_busy' (AUDITBORITEKVESZ918) is an open dispatch status like the
+    // other two, so the reconcile must be able to close it. Left out, a
+    // busy-pane run whose dashboard restarted would stay open for ever -- the
+    // exact "cannot tell running from finished" state this function exists to
+    // remove.
     `UPDATE task_runs SET completed_at = ?, outcome = 'interrupted'
-     WHERE completed_at IS NULL AND ts < ? AND status IN ('fired', 'fired_late')`
+     WHERE completed_at IS NULL AND ts < ? AND status IN ('fired', 'fired_late', 'fired_busy')`
   ).run(now, now - maxAgeMs)
   return info.changes
 }

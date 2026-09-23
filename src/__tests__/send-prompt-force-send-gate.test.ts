@@ -25,7 +25,10 @@ describe('sendPromptToSession waitForIdle gate', () => {
     // watcher (an OPTIONAL prompt aborts instead of best-effort-typing into a
     // busy pane); waitForIdle stays the first, default-ON member. DELIVLOCK805
     // added lockMode (per-pane delivery mutex: deliver/recover/held).
-    expect(sig).toMatch(/opts:\s*\{\s*waitForIdle\?:\s*boolean;\s*onBusyTimeout\?:\s*'send'\s*\|\s*'abort';\s*idleTimeoutMs\?:\s*number;\s*lockMode\?:\s*SendLockMode\s*\}/)
+    // AUDITBORITEKVESZ918 added onBusySend: the caller learns that the prompt
+    // went into a BUSY pane best-effort, so a possibly-spliced delivery is not
+    // recorded as a clean run.
+    expect(sig).toMatch(/opts:\s*\{\s*waitForIdle\?:\s*boolean;\s*onBusyTimeout\?:\s*'send'\s*\|\s*'abort';\s*idleTimeoutMs\?:\s*number;\s*lockMode\?:\s*SendLockMode;\s*onBusySend\?:\s*\(\)\s*=>\s*void\s*\}/)
   })
 
   it('the gate defaults ON (waitForIdle !== false) so all other callers keep it', () => {
@@ -50,10 +53,12 @@ describe('sendPromptToSession waitForIdle gate', () => {
   it('the forceSend scheduled-task path opts out of the idle wait', () => {
     const callIdx = SCHEDULE_RUNNER.indexOf('sendPromptToSession(session, fullPrompt, host')
     expect(callIdx).toBeGreaterThan(0)
-    const call = SCHEDULE_RUNNER.slice(callIdx, callIdx + 120)
+    const call = SCHEDULE_RUNNER.slice(callIdx, callIdx + 300)
     // waitForIdle is the negation of forceSend: ON for normal tasks, OFF for
     // forceSend so a long-busy session is not blocked on the 12s gate.
-    expect(call).toMatch(/\{\s*waitForIdle:\s*!task\.forceSend\s*\}/)
+    // The opts object is multi-line since AUDITBORITEKVESZ918 added onBusySend,
+    // so this pins the member itself, not the whole literal.
+    expect(call).toMatch(/waitForIdle:\s*!task\.forceSend/)
   })
 
   it('documents WHY forceSend skips the gate', () => {
