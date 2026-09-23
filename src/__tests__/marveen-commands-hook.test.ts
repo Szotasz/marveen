@@ -26,6 +26,7 @@ let calls: Call[] = []
 let dispatchReply: (body: any) => { status: number; body: unknown } = () => ({ status: 200, body: { handled: false } })
 let server: http.Server
 let menuStatus = 200
+let failSends = 0
 let base = ''
 let install = ''
 let stateDir = ''
@@ -48,6 +49,12 @@ beforeAll(async () => {
         const r = dispatchReply(body)
         res.writeHead(r.status, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify(r.body))
+        return
+      }
+      if ((req.url ?? '').endsWith('/sendMessage') && failSends > 0) {
+        failSends--
+        res.writeHead(502, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: false }))
         return
       }
       res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -85,6 +92,7 @@ afterAll(() => {
 beforeEach(() => {
   calls = []
   menuStatus = 200
+  failSends = 0
   dispatchReply = () => ({ status: 200, body: { handled: false, outcome: 'unknown', replies: [] } })
 })
 
@@ -104,6 +112,7 @@ function runHook(prompt: string, apiBase = base, agent = 'marveen', args: string
         MARVEEN_API_BASE: apiBase,
         TELEGRAM_API_BASE: base,
         LEDGER_DB_PATH: ledgerDb,
+        MARVEEN_CMD_SEND_RETRY_SECONDS: '0.01',
       },
     })
     let stdout = ''
@@ -475,6 +484,27 @@ describe('marveen-commands.py reply logging (for the command harness)', () => {
     await runHook(channel('/status'))
     const log = readFileSync(join(stateDir, 'progress', 'commands-hook.log'), 'utf-8').trim().split('\n').pop()
     expect(log).toMatch(/\/status answered \(ran\).* reply="sor1\\nsor2"$/)
+  })
+})
+
+describe('marveen-commands.py send retry', () => {
+  it('a transient Bot API failure is retried; the reply still goes out once', async () => {
+    failSends = 2
+    dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['ok'] } })
+    const r = await runHook(channel('/runs'))
+    expect(r.code).toBe(2)
+    // two 502s, then the one that went out: the same message, three calls
+    expect(sends()).toEqual([1, 2, 3].map(() => ({ chat_id: '42', text: 'ok' })))
+    expect(readFileSync(join(stateDir, 'progress', 'commands-hook.log'), 'utf-8')).toMatch(/attempt 2\/3\)[^\n]*\n[^\n]*\/runs answered/)
+  })
+
+  it('three failures: gives up, logged, turn still blocked', async () => {
+    failSends = 3
+    dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['ok'] } })
+    const r = await runHook(channel('/runs'))
+    expect(r.code).toBe(2)
+    expect(calls.filter(c => c.path === '/botbot-tok/sendMessage')).toHaveLength(3)
+    expect(readFileSync(join(stateDir, 'progress', 'commands-hook.log'), 'utf-8')).toMatch(/sendMessage failed \(attempt 3\/3\)/)
   })
 })
 

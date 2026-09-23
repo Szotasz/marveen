@@ -74,6 +74,8 @@ REPO_ROOT = os.environ.get("MARVEEN_INSTALL_DIR") or os.path.dirname(
 USAGE_SCRIPT = os.path.join(REPO_ROOT, "scripts", "usage-collect.py")
 TELEGRAM_API_BASE = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org")
 TELEGRAM_MAX_TEXT = 4096
+SEND_ATTEMPTS = 3
+SEND_RETRY_SECONDS = float(os.environ.get("MARVEEN_CMD_SEND_RETRY_SECONDS", "1.5"))
 
 CHANNEL_RX = re.compile(r'<channel\s+([^>]*)>(.*?)</channel>', re.DOTALL)
 COMMAND_RX = re.compile(r'^/([A-Za-z][A-Za-z0-9_]{0,31})(?:@[A-Za-z0-9_]+)?(?:\s|$)')
@@ -181,11 +183,17 @@ def send(sd, tok, chat_id, text):
     should still pick it up)."""
     sent_any = False
     for part in chunks(text):
-        try:
-            tg(tok, "sendMessage", {"chat_id": chat_id, "text": part})
-            sent_any = True
-        except Exception as e:
-            log(sd, f"sendMessage failed: {type(e).__name__}")
+        # Measured on the test bot (2026-09-23 15:00): one connect ETIMEDOUT to
+        # api.telegram.org lost a whole answer. Two more tries, then give up.
+        for attempt in range(1, SEND_ATTEMPTS + 1):
+            try:
+                tg(tok, "sendMessage", {"chat_id": chat_id, "text": part})
+                sent_any = True
+                break
+            except Exception as e:
+                log(sd, f"sendMessage failed (attempt {attempt}/{SEND_ATTEMPTS}): {type(e).__name__}")
+                if attempt < SEND_ATTEMPTS:
+                    time.sleep(SEND_RETRY_SECONDS * attempt)
     return sent_any
 
 

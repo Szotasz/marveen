@@ -86,6 +86,7 @@ describe('midTurnTick', () => {
       dispatch: vi.fn(async (text: string) => { dispatched.push(text); return dispatchImpl(text) }) as unknown as MidTurnDeps['dispatch'],
       send: async (chatId, text) => { sent.push({ chatId, text }) },
       now: () => 1,
+      sleep: async () => {},
     }
   })
 
@@ -177,5 +178,26 @@ describe('midTurnTick', () => {
   it('no transcript directory: nothing happens, no throw', async () => {
     deps.transcriptDir = () => join(dir, 'nincs')
     await expect(midTurnTick(state, deps, true)).resolves.toBe(0)
+  })
+
+  it('a transient send failure is retried; the reply still goes out', async () => {
+    let fails = 1
+    deps.send = async (chatId, text) => {
+      if (fails-- > 0) throw new Error('connect ETIMEDOUT')
+      sent.push({ chatId, text })
+    }
+    await midTurnTick(state, deps, true)
+    appendFileSync(file, queuedLine(channelPrompt('/runs')) + '\n')
+    expect(await midTurnTick(state, deps)).toBe(1)
+    expect(sent).toEqual([{ chatId: OWNER, text: 'válasz: /runs' }])
+  })
+
+  it('gives up after SEND_ATTEMPTS, logged, no throw', async () => {
+    let tries = 0
+    deps.send = async () => { tries++; throw new Error('down') }
+    await midTurnTick(state, deps, true)
+    appendFileSync(file, queuedLine(channelPrompt('/runs')) + '\n')
+    await expect(midTurnTick(state, deps)).resolves.toBe(0)
+    expect(tries).toBe(3)
   })
 })

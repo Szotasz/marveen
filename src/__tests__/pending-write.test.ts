@@ -14,6 +14,7 @@ import {
   PENDING_WRITE_TTL_MS,
   type PendingDeps,
 } from '../web/pending-write.js'
+import { withRetry } from '../web/main-model.js'
 
 const T0 = Date.parse('2026-09-22T20:00:00Z')
 let dir: string
@@ -100,3 +101,26 @@ describe('pending write', () => {
     expect(await runPendingWrite(T0, deps())).toBe('none')
   })
 })
+
+// Measured on the test bot (2026-09-23): "/model low 5m" was queued as busy,
+// then "/model default" ran -- and the queued one stayed, to fire minutes
+// later against the owner's latest word.
+describe('withRetry: the latest write wins', () => {
+  const ctx = { ownerId: 1, now: T0 }
+  it('a busy refusal queues; a later write that RAN drops it and says so', () => {
+    expect(withRetry('/model low 5m', { ok: false, busy: true, text: 'foglalt.' }, ctx, file)).toMatch(/A kör végén megpróbálom/)
+    expect(readPendingWrite(file)?.text).toBe('/model low 5m')
+    const out = withRetry('/model default', { ok: true, text: 'Visszaváltva.' }, ctx, file)
+    expect(out).toBe('Visszaváltva.\n(A sorban várakozó „/model low 5m” törölve: ez a parancs felülírta.)')
+    expect(readPendingWrite(file)).toBeNull()
+  })
+
+  it('a plain failure (not busy) leaves the queue alone; no queue, no note', () => {
+    withRetry('/model low 5m', { ok: false, busy: true, text: 'foglalt.' }, ctx, file)
+    expect(withRetry('/model x', { ok: false, text: 'Nem értem.' }, ctx, file)).toBe('Nem értem.')
+    expect(readPendingWrite(file)?.text).toBe('/model low 5m')
+    clearPendingWrite(file)
+    expect(withRetry('/model opus', { ok: true, text: 'Átváltva.' }, ctx, file)).toBe('Átváltva.')
+  })
+})
+

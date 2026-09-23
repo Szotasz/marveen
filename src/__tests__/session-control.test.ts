@@ -115,6 +115,25 @@ describe('/context clear (CMD920 test 10)', () => {
     } finally { rmSync(cfgDir, { recursive: true, force: true }) }
   })
 
+  it('readLastTurnActivityMs skips our own /model lines (local command, no model turn; measured 2026-09-23)', () => {
+    const cfgDir = mkdtempSync(join(tmpdir(), 'turn-'))
+    try {
+      const dir = projectsDirFor('/opt/marveen', cfgDir)
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 's.jsonl'), [
+        JSON.stringify({ type: 'assistant', timestamp: '2026-09-23T13:01:00.000Z', message: { model: 'claude-sonnet-5' } }),
+        JSON.stringify({ type: 'system', subtype: 'local_command', timestamp: '2026-09-23T13:07:00.300Z', content: '<command-name>/model</command-name>' }),
+        JSON.stringify({ type: 'user', timestamp: '2026-09-23T13:07:00.310Z', message: { role: 'user', content: '<command-name>/model</command-name>\n<command-message>model</command-message>' } }),
+        JSON.stringify({ type: 'user', timestamp: '2026-09-23T13:07:00.317Z', message: { role: 'user', content: '<local-command-stdout>Set model to \u001b[1mclaude-sonnet-5\u001b[22m</local-command-stdout>' } }),
+        '',
+      ].join('\n'))
+      expect(readLastTurnActivityMs('/opt/marveen', cfgDir)).toBe(Date.parse('2026-09-23T13:01:00.000Z'))
+      // a real owner prompt after it counts again
+      writeFileSync(join(dir, 's.jsonl'), JSON.stringify({ type: 'user', timestamp: '2026-09-23T13:08:00.000Z', message: { role: 'user', content: 'szia' } }) + '\n', { flag: 'a' })
+      expect(readLastTurnActivityMs('/opt/marveen', cfgDir)).toBe(Date.parse('2026-09-23T13:08:00.000Z'))
+    } finally { rmSync(cfgDir, { recursive: true, force: true }) }
+  })
+
   it('a real turn line still blocks; the switch window is 20 s, /context clear keeps the gate 2 min', () => {
     const cfg = { ...DEFAULT_GATE_CONFIG }
     expect(switchVerdict(inputs({ msSinceTurnActivity: 10_000 }), cfg)).toEqual({ quiet: false, reason: 'turn-active (10s ago, need 20s)' })

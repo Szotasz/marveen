@@ -15,6 +15,7 @@ import {
   windowWarning,
   _resetMainModelForTest,
   countModelAcks,
+  lastRejectionMessage,
   readLastSent,
   onMainTurnEnded,
   effortSentFileFor,
@@ -32,13 +33,14 @@ const T0 = Date.parse('2026-09-22T08:00:00Z')
 
 let dir: string
 
-function deps(over: Partial<ModelDeps> = {}, opts: { noAck?: boolean } = {}) {
+function deps(over: Partial<ModelDeps> = {}, opts: { noAck?: boolean; reject?: string } = {}) {
   const sent: string[] = []
   const notes: string[] = []
   const env: Array<Record<string, string>> = []
   const expiries: Array<number | null> = []
   let now = T0
   let acks = 3 // older "Set model to" lines already on the pane
+  let pane = 'API error: 529 {"type":"error","error":{"message":"old, overloaded"}}\n'
   const d: ModelDeps & { sent: string[]; notes: string[]; env: typeof env; expiries: typeof expiries; setNow(n: number): void } = {
     sent, notes, env, expiries,
     setNow(n: number) { now = n },
@@ -50,7 +52,13 @@ function deps(over: Partial<ModelDeps> = {}, opts: { noAck?: boolean } = {}) {
     measured: () => BASE,
     quiet: () => ({ quiet: true }),
     // The fake CLI prints its "Set model to" line for every /model it gets.
-    send: async (c) => { sent.push(c); if (c.startsWith('/model') && !opts.noAck) acks++ },
+    send: async (c) => {
+      sent.push(c)
+      if (!c.startsWith('/model')) return
+      if (opts.reject) pane += `❯ ${c}\n  ⎿  API error: 400\n     {"type":"error","error":{"type":"invalid_request_error","message":"${opts.reject}"}}\n`
+      else if (!opts.noAck) acks++
+    },
+    pane: () => pane,
     writeEnv: (u) => { env.push(u) },
     notify: async (t) => { notes.push(t); return true },
     autoCompactWindow: () => null,
@@ -503,3 +511,41 @@ describe('/model back and /model effort', () => {
     expect(effortLine(null, null)).toMatch(/nincs beállítva \(a CLI alapértéke\)/)
   })
 })
+
+// Measured on the test bot (2026-09-23): "/model fable 10m" on Claude Code
+// 2.1.110 -> "API error: 400 ... does not support this model", while the reply
+// said "elküldve ... Ideiglenes: 10 perc" and a hold was written.
+describe('a model the CLI refuses', () => {
+  it('setModel: "Nem váltottam" with the CLI message; no hold, no effort sent', async () => {
+    writeChoices()
+    const d = deps({}, { reject: 'Claude Code 2.1.110 does not support this model; version 2.1.251 or newer is required' })
+    const r = await setModel(['opus', 'high', '10m'], d)
+    expect(r.ok).toBe(false)
+    expect(r.text).toBe('Nem váltottam: a Claude Code elutasította a(z) claude-opus-5[1m] modellt (Claude Code 2.1.110 does not support this model; version 2.1.251 or newer is required).')
+    expect(existsSync(d.holdFile)).toBe(false)
+    expect(d.sent).toEqual(['/model claude-opus-5[1m]'])
+  })
+
+  it('an OLDER API error already on the pane is not a refusal of this send', async () => {
+    writeChoices()
+    const d = deps()
+    const r = await setModel(['haiku', '5m'], d)
+    expect(r.ok).toBe(true)
+    expect(r.text).toMatch(/^Átváltva: haiku/)
+  })
+
+  it('lastRejectionMessage reads a message wrapped across pane lines', () => {
+    const pane = '  ⎿  API error: 400\n     {"type":"error","error":{"type":"invalid_request_error","message":"Claude\n     Code 2.1.110 does not support this model"}}'
+    expect(lastRejectionMessage(pane)).toBe('Claude Code 2.1.110 does not support this model')
+  })
+})
+
+describe('"/model effort high" (the plan\'s form) = "/model high"', () => {
+  it('parses the literal "effort" away', () => {
+    writeChoices()
+    const list = readModelChoices(join(dir, 'model-choices.json'), BASE)
+    expect(parseModelArgs(['effort', 'high'], list)).toEqual({ choice: null, effort: 'high', hold: undefined })
+    expect(parseModelArgs(['effort', 'turbo'], list)).toMatch(/Nem értem: „turbo”/)
+  })
+})
+

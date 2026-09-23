@@ -36,7 +36,7 @@ import { capturePane } from './agent-process.js'
 import { switchVerdict, SWITCH_TURN_QUIET_MS, type QuietVerdict } from './session-control.js'
 import { notifyChannel } from '../notify.js'
 import { registerCommand } from './commands.js'
-import { queuePendingWrite, readPendingWrite, runPendingWrite, PENDING_WRITE_TTL_MS } from './pending-write.js'
+import { queuePendingWrite, readPendingWrite, runPendingWrite, clearPendingWrite, PENDING_WRITE_FILE, PENDING_WRITE_TTL_MS } from './pending-write.js'
 import { formatDayClock, formatSpan, modelsDiffer, formatTokens } from './system-status.js'
 
 export const DEFAULT_HOLD_MINUTES = 120
@@ -78,6 +78,22 @@ function writeLastSent(file: string, model: string, at: number, acked: boolean):
 // "elküldve" -- never a false "átváltva".
 export function countModelAcks(pane: string | null): number | null {
   return pane === null ? null : (pane.match(/Set model to\b/g) ?? []).length
+}
+
+// The CLI refuses a model it does not support with an API error in the pane,
+// e.g. "API error: 400 {...Claude Code 2.1.110 does not support this model;
+// version 2.1.251 or newer is required...}" (measured on the test bot,
+// 2026-09-23, /model fable). Counted like the acks: a rise after our send is
+// a refusal; its message, when readable, goes into the reply.
+export function countModelRejections(pane: string | null): number | null {
+  return pane === null ? null : (pane.match(/API error: \d{3}/g) ?? []).length
+}
+
+export function lastRejectionMessage(pane: string | null): string | null {
+  if (!pane) return null
+  const flat = pane.replace(/\s*\n\s*/g, ' ')
+  const all = [...flat.matchAll(/"message":"((?:[^"\\]|\\.)*)"/g)]
+  return all.length ? all[all.length - 1][1] : null
 }
 
 export interface ModelChoice {
@@ -133,6 +149,8 @@ export function parseModelArgs(args: string[], list: ChoiceList): ModelArgs | st
   const out: ModelArgs = { choice: null, effort: null, hold: undefined }
   for (const raw of a) {
     const t = raw.trim().toLowerCase()
+    // "/model effort high" (the plan's form) = "/model high"
+    if (t === 'effort') continue
     if ((EFFORT_LEVELS as readonly string[]).includes(t)) {
       if (out.effort) return `Kétszer adtál meg effortot: „${raw}”.`
       out.effort = t
@@ -264,6 +282,8 @@ export interface ModelDeps {
   configuredEffort: () => string | null
   /** Count of "Set model to" lines in the visible pane; null = not capturable. */
   ackCount: () => number | null
+  /** The visible pane, for the CLI's refusal of a model (API error). */
+  pane: () => string | null
   /** Pause between two ack reads (the ack wait is bounded, see sendModel). */
   sleep: (ms: number) => Promise<void>
   /** Arm (untilMs) or disarm (null) the one-shot hold-expiry timer. */
@@ -319,26 +339,44 @@ export const liveModelDeps: ModelDeps = {
   lastSentFile: MODEL_LAST_SENT_FILE,
   configuredEffort: () => readConfiguredEffort()?.value ?? null,
   ackCount: () => countModelAcks(capturePane(mainSessionName())),
+  pane: () => capturePane(mainSessionName()),
   sleep: (ms) => new Promise(r => setTimeout(r, ms)),
   scheduleExpiry: (untilMs) => scheduleHoldExpiry(untilMs),
 }
 
 // Send a /model and wait (bounded) for the CLI's acknowledgement. Records the
 // send so a status can say "switched since the last measured turn".
-async function sendModel(modelId: string, deps: ModelDeps): Promise<boolean> {
+export interface SendOutcome {
+  acked: boolean
+  /** The CLI refused the model (API error in the pane): the message, or '' if unreadable. */
+  rejected: string | null
+}
+
+async function sendModel(modelId: string, deps: ModelDeps): Promise<SendOutcome> {
   const before = deps.ackCount()
+  const rejBefore = countModelRejections(deps.pane())
   await deps.send(`/model ${modelId}`)
   const sentAt = deps.now()
   let acked = false
+  let rejected: string | null = null
   if (before !== null) {
-    for (let waited = 0; waited < ACK_WAIT_MS && !acked; waited += ACK_STEP_MS) {
+    for (let waited = 0; waited < ACK_WAIT_MS && !acked && rejected === null; waited += ACK_STEP_MS) {
       await deps.sleep(ACK_STEP_MS)
       const after = deps.ackCount()
       acked = after !== null && after > before
+      if (!acked && rejBefore !== null) {
+        const pane = deps.pane()
+        const rej = countModelRejections(pane)
+        if (rej !== null && rej > rejBefore) rejected = lastRejectionMessage(pane) ?? ''
+      }
     }
   }
   writeLastSent(deps.lastSentFile, modelId, sentAt, acked)
-  return acked
+  return { acked, rejected }
+}
+
+function rejectedText(modelId: string, why: string): string {
+  return `Nem váltottam: a Claude Code elutasította a(z) ${modelId} modellt${why ? ` (${why})` : ''}.`
 }
 
 // A hold that expired while the session was busy: the Stop hook reports the
@@ -396,7 +434,9 @@ export async function setModel(args: string[], deps: ModelDeps = liveModelDeps):
   const lines: string[] = []
   let acked = false
   if (choice) {
-    acked = await sendModel(choice.id, deps)
+    const out = await sendModel(choice.id, deps)
+    if (out.rejected !== null) return fail(rejectedText(choice.id, out.rejected))
+    acked = out.acked
     lines.push(acked
       ? `Átváltva: ${choice.name} = ${choice.id} (a Claude Code visszaigazolta)`
       : `/model ${choice.id} elküldve (a Claude Code visszaigazolását nem láttam)`)
@@ -454,7 +494,9 @@ export async function modelBack(deps: ModelDeps = liveModelDeps): Promise<StepRe
   const lines: string[] = []
   // An effort-only hold has no model to put back.
   if (!state || state.model !== null) {
-    const acked = await sendModel(base, deps)
+    const out = await sendModel(base, deps)
+    if (out.rejected !== null) return fail(rejectedText(base, out.rejected))
+    const acked = out.acked
     lines.push(`${acked ? `Visszaváltva: ${base} (a Claude Code visszaigazolta)` : `/model ${base} elküldve (vissza az alapmodellre; a visszaigazolást nem láttam)`}${state ? ', a tartás törölve' : ''}.`)
   }
   // /model default puts the effort back too, when there is a base to put back.
@@ -589,7 +631,7 @@ export async function sweepModelHold(nowMs: number, deps: ModelDeps = liveModelD
   }
   const parts: string[] = []
   if (s.model && s.revert_to) {
-    const acked = await sendModel(s.revert_to, deps)
+    const acked = (await sendModel(s.revert_to, deps)).acked
     parts.push(acked
       ? `visszaváltva ${s.model} -> ${s.revert_to} (a Claude Code visszaigazolta)`
       : `/model ${s.revert_to} elküldve (${s.model} helyett); a visszaigazolást nem láttam, a következő kör mérése mutatja`)
@@ -618,9 +660,22 @@ export function _resetMainModelForTest(): void {
 // A write refused only because the session was busy is queued, and run at the
 // end of the turn (pending-write.ts). The owner asked for exactly this after
 // a `/model sonnet keep` was lost to a pane-busy refusal.
-export function withRetry(text: string, r: StepResult, ctx: { ownerId: number; now: number }): string {
-  if (r.ok || !r.busy) return r.text
-  queuePendingWrite(text, ctx.ownerId, ctx.now)
+export function withRetry(text: string, r: StepResult, ctx: { ownerId: number; now: number }, file: string = PENDING_WRITE_FILE): string {
+  // The owner's latest word wins: a write that went through drops an older
+  // one still queued for the turn end (measured on the test bot: a queued
+  // "/model low 5m" outlived the "/model default" typed after it, and would
+  // have fired minutes later).
+  if (r.ok) {
+    const stale = readPendingWrite(file)
+    if (stale) {
+      clearPendingWrite(file)
+      logger.info({ dropped: stale.text, by: text }, 'pending-write: dropped, a later write ran')
+      return `${r.text}\n(A sorban várakozó „${stale.text}” törölve: ez a parancs felülírta.)`
+    }
+    return r.text
+  }
+  if (!r.busy) return r.text
+  queuePendingWrite(text, ctx.ownerId, ctx.now, file)
   return `${r.text} A kör végén megpróbálom, és szólok az eredményről (legfeljebb ${Math.round(PENDING_WRITE_TTL_MS / 60_000)} percig).`
 }
 

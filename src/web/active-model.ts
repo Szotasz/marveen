@@ -115,6 +115,17 @@ const TURN_TAIL_BYTES = 512 * 1024
 // (ELSOKOR922 Phase 7 A-smoke: /model refused "transcript-active (0s)").
 // A running turn writes user (tool_result) and assistant lines, so the gap
 // between two tool calls -- what the quiet window guards -- still counts.
+// A local slash command (/model, /effort, /clear sent into the pane) writes
+// `user` lines -- "<command-name>/model</command-name>..." and
+// "<local-command-stdout>Set model to ...</local-command-stdout>" -- but no model
+// turn runs. Counted as activity they made every write within 20 s of our own
+// previous /model read "turn-active" (measured on the test bot, 2026-09-23).
+function isLocalCommandLine(e: { type?: unknown; message?: { content?: unknown } }): boolean {
+  if (e.type !== 'user') return false
+  const c = e.message?.content
+  return typeof c === 'string' && /^\s*<(local-command-(stdout|stderr|caveat)|command-name)>/.test(c)
+}
+
 export function readLastTurnActivityMs(workingDir: string, configDir?: string): number | null {
   try {
     const dir = projectsDirFor(workingDir, configDir)
@@ -139,6 +150,7 @@ export function readLastTurnActivityMs(workingDir: string, configDir?: string): 
       try {
         const e = JSON.parse(line)
         if (e?.type !== 'user' && e?.type !== 'assistant') continue
+        if (isLocalCommandLine(e)) continue
         const at = typeof e.timestamp === 'string' ? new Date(e.timestamp).getTime() : NaN
         if (Number.isFinite(at)) return at
       } catch { /* a line cut by the tail window, or malformed */ }

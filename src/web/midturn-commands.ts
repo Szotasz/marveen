@@ -129,6 +129,27 @@ export interface MidTurnDeps {
   dispatch: typeof dispatchForChat
   send: (chatId: string, text: string) => Promise<void>
   now: () => number
+  sleep?: (ms: number) => Promise<void>
+}
+
+export const SEND_ATTEMPTS = 3
+const SEND_RETRY_MS = 1500
+
+// Measured on the test bot (2026-09-23 15:00): one `connect ETIMEDOUT` to
+// api.telegram.org and the /runs answer was gone, silently. A reply the
+// command already produced is worth two more tries.
+async function sendWithRetry(deps: MidTurnDeps, chatId: string, text: string): Promise<void> {
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)))
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await deps.send(chatId, text)
+      return
+    } catch (err) {
+      if (attempt >= SEND_ATTEMPTS) throw err
+      logger.warn({ err, attempt }, 'midturn-commands: reply send failed, retrying')
+      await sleep(SEND_RETRY_MS * attempt)
+    }
+  }
 }
 
 // One tick: read the new transcript lines, dispatch every mid-turn command
@@ -156,7 +177,7 @@ export async function midTurnTick(state: TailState, deps: MidTurnDeps, firstRun 
         logger.info({ text: cmd.text, outcome: result.outcome }, 'midturn-commands: not ours, left to the model')
         continue
       }
-      for (const r of result.replies) if (r) await deps.send(cmd.chatId, r)
+      for (const r of result.replies) if (r) await sendWithRetry(deps, cmd.chatId, r)
       handled++
       logger.info(
         { text: cmd.text, outcome: result.outcome, messageId: cmd.messageId, reply: result.replies.join('\n---\n').slice(0, 2000) },
