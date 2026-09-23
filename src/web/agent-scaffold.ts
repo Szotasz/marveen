@@ -618,6 +618,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   }
   if (agentGetsTelegramCopyGate(name)) injectTelegramCopyGate(existing)
   injectEgressGate(existing)
+  if (agentGetsBashEgressParser(name)) injectBashEgressParser(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 
@@ -786,12 +787,16 @@ const SELF_PACE_TOOL_DENY = ['ScheduleWakeup', 'CronCreate', 'CronDelete', 'Cron
 //     `allow`, so "any http:// host except localhost" is NOT expressible: a
 //     `*http://*` rule would also match the dashboard's own
 //     `http://localhost:<WEB_PORT>/` calls and mute the entire fleet (memory,
-//     kanban, message queue, approvals all ride that URL). The residual gap is
-//     stated out loud rather than papered over:
-//     plain-http external fetches, an interpreter one-liner (python3 -c,
-//     node -e), and a URL hidden in a shell variable all still pass. Closing
-//     those needs a Bash PreToolUse hook that parses the command, which is a
-//     separate and larger decision.
+//     kanban, message queue, approvals all ride that URL). This list alone
+//     lets through plain-http external fetches, an interpreter one-liner
+//     (python3 -c, node -e), and a URL hidden in a shell variable. On
+//     SUB-AGENTS those three shapes are now closed by the Bash PreToolUse hook
+//     scripts/hooks/bash-egress-parser.mjs (EGRESSPARSER923), which parses the
+//     command and always lets localhost through. It is a longer named list,
+//     not a complete one: a script file, a heredoc-fed interpreter, a URL built
+//     from pieces, and every other network-capable binary still pass, and the
+//     main agent is not covered by the hook. Closing those needs an allowlist
+//     or network-level gate, which is a separate owner decision.
 export const BASH_EGRESS_DENY = [
   // curl: the https:// form only -- see the localhost note above.
   'Bash(curl *https://*)',
@@ -993,6 +998,41 @@ export function injectEgressGate(existing: Record<string, unknown>): void {
   ]
 }
 
+// Which agents get the Bash egress parser (EGRESSPARSER923): every sub-agent,
+// NOT the main agent -- the same population the BASH_EGRESS_DENY list binds on
+// every install. The main agent's Bash deny lands only in its OWN config dir
+// (bashEgressDenyTargetPath), because the shared ~/.claude is also the owner's
+// interactive shell; a hook in the repo-shipped project settings would bind the
+// owner's sessions in this project the same way. Widening it to the main agent
+// is a separate owner decision, not a side effect of this gate.
+export function agentGetsBashEgressParser(name: string): boolean {
+  return name !== MAIN_AGENT_ID
+}
+
+// Idempotently wire the bash-egress-parser PreToolUse hook. It closes the three
+// shapes BASH_EGRESS_DENY names as open (plain-http curl, an interpreter
+// one-liner with a network primitive, a URL hidden in a variable) by PARSING the
+// command, with localhost always allowed. See the script header for what stays
+// open. The dedupe key is the script basename, which deliberately does NOT
+// contain 'egress-gate.mjs' -- injectEgressGate's filter would drop it.
+export function injectBashEgressParser(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'bash-egress-parser.mjs'))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('bash-egress-parser.mjs')),
+    entry,
+  ]
+}
+
 // Which Telegram tools carry copyable text out of the install. `reply` is the
 // send route; `edit_message` rewrites a message already on the phone and can
 // just as easily replace a working code block with a broken one.
@@ -1100,6 +1140,34 @@ export function ensureEgressGate(name: string): boolean {
   if (isUnsafeHookCommand(command)) return false
   injectEgressGate(settings)
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
+// Idempotent migration for the EXISTING fleet: the scaffold only rewrites a
+// sub-agent's settings on spawn, so without this the parser would reach the
+// running agents no sooner than their next respawn. Returns true if written.
+// A settings file that is not there is not created: a sub-agent without one
+// has never been spawned, and its first spawn writes the hook.
+export function ensureBashEgressParser(name: string): boolean {
+  if (!agentGetsBashEgressParser(name)) return false
+  const settingsPath = agentSettingsPath(name)
+  if (!existsSync(settingsPath)) return false
+  let settings: Record<string, unknown> = {}
+  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'bash-egress-parser.mjs'))
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  // Wired only when the entry carries the CURRENT command under the Bash
+  // matcher: a stale node path or a different matcher is silently
+  // non-enforcing, so both fall through to an in-place replace.
+  const wired = ptu.some((e) => (e as { matcher?: unknown })?.matcher === 'Bash'
+    && hookCommandWired(JSON.stringify(e), command))
+  if (wired) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectBashEgressParser(settings)
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
 }
