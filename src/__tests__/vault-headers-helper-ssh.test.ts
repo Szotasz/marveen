@@ -36,6 +36,11 @@ describe('vault-headers-helper: an SSH private key is never sent as a header', (
     expect(r.stderr).toContain('refused, SSH private keys are not sent as headers')
     expect(r.stdout + r.stderr).not.toContain(VALUE)
   })
+  it('ORDER control: a refused ssh-key header does not take the headers AFTER it down (continue, not break)', async () => {
+    const r = await run(['Authorization=Bearer:::ssh-key-abc123', 'X-Api-Key=KNOWN'])
+    expect(JSON.parse(r.stdout)).toEqual({ 'X-Api-Key': VALUE })
+    expect(r.stderr).toContain('refused, SSH private keys are not sent as headers')
+  })
   it('control: an ordinary secret still becomes the header', async () => {
     const r = await run(['Authorization=Bearer:::KNOWN'])
     expect(JSON.parse(r.stdout)).toEqual({ Authorization: `Bearer ${VALUE}` })
