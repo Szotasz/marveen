@@ -30,6 +30,14 @@ import { initDatabase } from '../db.js'
 // ---- CMD920 test 11: one throwing collector, the rest still render ----------
 
 describe('/status collectors', () => {
+  // Owner-measured on the test bot: the getMe cache stores "@name", and the
+  // row prefixed another @ -> "@@marveenkitttestbot".
+  it('the pairing row never doubles the @ of the bot name', () => {
+    const at = (u: string) => `@${u.replace(/^@+/, '')}`
+    expect(at('@marveenkitttestbot')).toBe('@marveenkitttestbot')
+    expect(at('marveenkitttestbot')).toBe('@marveenkitttestbot')
+  })
+
   it('a throwing collector gets an error, every other row still appears', async () => {
     const s = await runCollectors([
       { title: 'A', rows: [

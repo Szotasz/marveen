@@ -410,7 +410,8 @@ export function liveBlockSpecs(now = Date.now()): BlockSpec[] {
             const cfg = readMarveenTelegramConfig()
             if (!cfg.hasTelegram) return notMeasurable('nincs bot-token a csatorna .env-jében')
             const chat = resolveOwnerChatId()
-            const bot = cfg.botUsername ? `@${cfg.botUsername}` : notMeasurable('a bot neve még nincs lekérdezve')
+            // The cache may or may not carry the leading @ -- normalise, never double it.
+            const bot = cfg.botUsername ? `@${cfg.botUsername.replace(/^@+/, '')}` : notMeasurable('a bot neve még nincs lekérdezve')
             return `${bot} · tulajdonos chat: ${chat ?? notMeasurable('nincs ALLOWED_CHAT_ID')}`
           },
         },
