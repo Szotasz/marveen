@@ -76,11 +76,12 @@ const CHANNEL_SECRET_FILES = ['.env', 'access.json', 'invites.json'] as const
 const CHANNEL_SECRET_DIRS = ['approved'] as const
 
 // agent-config.json keys that are machine-specific and must NOT survive a move
-// to another host: a remote agent's ssh host/workdir and a per-agent
-// CLAUDE_CONFIG_DIR point at paths/credentials that only exist on the source
-// machine. Stripped on import so an imported agent starts as a clean local
-// agent the operator can re-point if needed.
-const MACHINE_SPECIFIC_CONFIG_KEYS = ['remoteHost', 'remoteWorkdir', 'claudeConfigDir'] as const
+// to another host: a remote agent's ssh host/workdir, a per-agent
+// CLAUDE_CONFIG_DIR and a per-agent setup-token file (oauthTokenFile, 2fb86ef2)
+// point at paths/credentials that only exist on the source machine. Stripped on
+// import so an imported agent starts as a clean local agent the operator can
+// re-point if needed.
+const MACHINE_SPECIFIC_CONFIG_KEYS = ['remoteHost', 'remoteWorkdir', 'claudeConfigDir', 'oauthTokenFile'] as const
 
 function makeTempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix))

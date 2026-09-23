@@ -153,6 +153,7 @@ describe('agent bundle export/import', () => {
       remoteHost: 'devbox',
       remoteWorkdir: '/home/user/proj',
       claudeConfigDir: '/home/user/.claude-alt',
+      oauthTokenFile: '/home/user/.config/marveen/tokens/agent.token',
       displayName: 'Keep me',
     }))
     sanitizeImportedConfig(stagedAgent)
@@ -160,6 +161,8 @@ describe('agent bundle export/import', () => {
     expect(cfg.remoteHost).toBeUndefined()
     expect(cfg.remoteWorkdir).toBeUndefined()
     expect(cfg.claudeConfigDir).toBeUndefined()
+    // 2fb86ef2: a per-agent setup-token file points at a path on the source machine.
+    expect(cfg.oauthTokenFile).toBeUndefined()
     expect(cfg.model).toBe('claude-sonnet-5')
     expect(cfg.displayName).toBe('Keep me')
   })
