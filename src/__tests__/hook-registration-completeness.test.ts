@@ -57,6 +57,8 @@ const REGISTRATION_SURFACES = [...SEEDING_SURFACES, ...CHECKOUT_SURFACES]
 const EXEMPT: Record<string, string> = {
   'ledger_lib.py':
     'shared library imported by the ledger hooks; not itself a hook',
+  'command_prompt.py':
+    'shared library: the one "is this prompt an owner slash command" check, imported by marveen-commands.py, inbox-drain.py and channel-inbox-drain.py; not itself a hook',
   'clearstate_lib.py':
     'shared library imported by clear-capture.py / clear-replay.py; not itself a hook',
   'email_extract.py':

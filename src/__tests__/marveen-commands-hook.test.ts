@@ -551,3 +551,15 @@ describe('marveen-commands.py deferred write, slow dashboard', () => {
   })
 })
 
+describe('marveen-commands.py pass-through logging', () => {
+  it('a slash word the registry does not know goes to the model AND leaves a log line', async () => {
+    dispatchReply = () => ({ status: 200, body: { handled: false, outcome: 'unknown', replies: [] } })
+    const r = await runHook(channel('/xyzproba'))
+    expect(r.code).toBe(0)
+    expect(r.stdout).toBe('')
+    expect(sends()).toEqual([])
+    const last = readFileSync(join(stateDir, 'progress', 'commands-hook.log'), 'utf-8').trim().split('\n').pop()
+    expect(last).toMatch(/\/xyzproba: not a registry command \(unknown\), passed to the model chat=42/)
+  })
+})
+

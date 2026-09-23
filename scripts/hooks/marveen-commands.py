@@ -77,9 +77,7 @@ TELEGRAM_MAX_TEXT = 4096
 SEND_ATTEMPTS = 3
 SEND_RETRY_SECONDS = float(os.environ.get("MARVEEN_CMD_SEND_RETRY_SECONDS", "1.5"))
 
-CHANNEL_RX = re.compile(r'<channel\s+([^>]*)>(.*?)</channel>', re.DOTALL)
-COMMAND_RX = re.compile(r'^/([A-Za-z][A-Za-z0-9_]{0,31})(?:@[A-Za-z0-9_]+)?(?:\s|$)')
-TELEGRAM_SOURCE_RX = re.compile(r'\bsource="[^"]*telegram[^"]*"', re.IGNORECASE)
+from command_prompt import COMMAND_RX, command_block  # noqa: E402
 
 # The builtin registry names (src/web/builtin-commands.ts + the A2 writes).
 # Only consulted when the dashboard is DOWN, to decide "ours, answer with an
@@ -557,18 +555,12 @@ def main():
     prompt = payload.get("prompt") or ""
     sid = payload.get("session_id") or "unknown"
 
-    matches = list(CHANNEL_RX.finditer(prompt))
-    if len(matches) != 1:
+    found = command_block(prompt)
+    if found is None:
         sys.exit(0)
-    attrs, body = matches[0].group(1), matches[0].group(2).strip()
+    attrs, body = found
     cm = COMMAND_RX.match(body)
-    if not cm or "\n" in body:
-        sys.exit(0)
-    if not TELEGRAM_SOURCE_RX.search(attrs):
-        sys.exit(0)
     chat_id = attr(attrs, "chat_id")
-    if not chat_id:
-        sys.exit(0)
     owner = owner_chat_id()
     if owner is not None and chat_id != owner:
         sys.exit(0)
@@ -605,6 +597,8 @@ def main():
         sys.exit(2)
 
     if not result.get("handled"):
+        # visible in the log: "passed to the model" is a decision, not silence
+        log(sd, f"/{name}: not a registry command ({result.get('outcome')}), passed to the model chat={chat_id} sid={sid}")
         sys.exit(0)
 
     replies = [r for r in (result.get("replies") or []) if isinstance(r, str) and r]
