@@ -120,7 +120,7 @@ describe('the writers are gated too (POST/PUT model)', () => {
 })
 
 describe('the served client', () => {
-  it('both selects offer Opus 5.5 and Opus 5.5[1m], and both carry a CLI hint element', () => {
+  it('both selects offer Opus 5.5[1m] only (no plain claude-opus-5-5), and both carry a CLI hint element', () => {
     expect(indexHtml.split('<option value="claude-opus-5-5[1m]"').length - 1).toBe(2)
     // the plain claude-opus-5-5 option is NOT offered in either select (owner decision 2026-09-23)
     expect(indexHtml.split('<option value="claude-opus-5-5"').length - 1).toBe(0)
