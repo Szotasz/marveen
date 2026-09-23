@@ -213,10 +213,16 @@ describe('POST /api/vault/bindings: an SSH private key cannot be bound', () => {
     return { handled, res }
   }
   it('a header binding to an ssh-key id is refused with the SSH reason, before target discovery', async () => {
+    logSpy.warn.mockClear()
     const { handled, res } = await post({ vaultSecretId: SSH_KEY_ID, headerName: 'Authorization', headerScheme: 'Bearer' })
     expect(handled).toBe(true)
     expect(res.statusCode).toBe(400)
     expect(JSON.parse(res.body).error).toBe('SSH private keys cannot be bound to an env var or a header')
+    // the refusal leaves a server-side trace, with who tried and how, and no value
+    const rows = logSpy.warn.mock.calls.filter(c => c[0]?.event === 'vault-binding-refused')
+    expect(rows).toHaveLength(1)
+    expect(rows[0][0]).toMatchObject({ vaultSecretId: SSH_KEY_ID, kind: 'token', principal: 'token', via: 'header' })
+    expect(allLogPayloads()).not.toContain(SSH_PRIVATE)
   })
   it('an env binding to an ssh-key id is refused the same way', async () => {
     const { res } = await post({ vaultSecretId: SSH_KEY_ID, envVar: 'DEPLOY_KEY' })

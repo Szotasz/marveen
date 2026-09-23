@@ -16,7 +16,7 @@ import { readBody, json } from '../http-helpers.js'
 import { shellEscape } from '../sanitize.js'
 import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars } from '../dashboard-settings.js'
 import { listSecrets, setSecret, getSecret, deleteSecret } from '../vault.js'
-import { logVaultRead, isSshPrivateKeyId } from '../vault-acl.js'
+import { logVaultRead, isSshPrivateKeyId, principalOf } from '../vault-acl.js'
 import {
   getBindings, addBinding, removeBinding, removeBindingsForSecret,
   syncSecret, syncAllBindings, scanMcpConfigs, unsyncBinding,
@@ -806,6 +806,11 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     // binding would put it into a child process. Refused before any write or sync runs.
     // Measured 2026-09-23: the live store/vault-bindings.json has 1 binding, 0 on an ssh-key.
     if (isSshPrivateKeyId(data.vaultSecretId)) {
+      // The refusal leaves a server-side trace (Marveen 29017): a binding attempt that only
+      // gets a 400 back would be visible to the caller and to no one else. No value is read.
+      const { kind, principal } = principalOf(ctx.auth)
+      logger.warn({ event: 'vault-binding-refused', vaultSecretId: data.vaultSecretId, kind, principal,
+        via: data.headerName?.trim() ? 'header' : 'env' }, 'vault: SSH private key binding refused')
       json(res, { error: 'SSH private keys cannot be bound to an env var or a header' }, 400)
       return true
     }
