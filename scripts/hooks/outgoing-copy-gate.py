@@ -1012,19 +1012,27 @@ def http_channel_gate(cmd: str) -> None:
     sys.exit(0)
 
 
-def collect_telegram_body(tool_input: dict) -> str:
+def collect_channel_body(tool_input: dict, unescape_mdv2: bool) -> str:
+    """Text of a channel reply. GATEDISCORD905: both the Telegram and the
+    Discord reply tool put the prose in `text` (schema-checked, not guessed);
+    `caption`/`message` stay in the list because they cost nothing and a
+    missed field here is a SILENT ZERO -- empty text exits 0, i.e. fail-open.
+    Only Telegram's MarkdownV2 escapes get undone: on Discord a backslash is
+    a literal the author wrote, not gate noise."""
     fields = ("text", "caption", "message")
     got = [str(tool_input[f]) for f in fields if tool_input.get(f)]
-    return MDV2_ESCAPE.sub(r"\1", "\n".join(got))
+    joined = "\n".join(got)
+    return MDV2_ESCAPE.sub(r"\1", joined) if unescape_mdv2 else joined
 
 
-def telegram_gate(tool_input: dict) -> None:
-    """Audit a Telegram reply. FAIL-OPEN on any internal error (exit 0 + loud
-    log): email is deferrable, but Telegram is the owner's ONLY supervision
-    channel -- a gate crash that silences it costs more than a slipped accent.
-    A FOUND problem still blocks (exit 2): that is the gate's whole point."""
+def channel_gate(tool_input: dict, label: str, unescape_mdv2: bool) -> None:
+    """Audit a channel reply (Telegram or Discord). FAIL-OPEN on any internal
+    error (exit 0 + loud log): email is deferrable, but these are the owner's
+    ONLY supervision channels -- a gate crash that silences one costs more
+    than a slipped accent. A FOUND problem still blocks (exit 2): that is the
+    gate's whole point."""
     try:
-        text = collect_telegram_body(tool_input)
+        text = collect_channel_body(tool_input, unescape_mdv2)
         if not text.strip():
             sys.exit(0)  # files-only reply or empty text: nothing to audit
         # GATECOPY827: a masolhato kodblokk CSAK markdownv2 modban lesz
@@ -1039,7 +1047,16 @@ def telegram_gate(tool_input: dict) -> None:
         # MDV2_ESCAPE feloldas nem erinti.
         raw = "\n".join(str(tool_input[f]) for f in ("text", "caption", "message")
                         if tool_input.get(f))
-        if "```" in raw and str(tool_input.get("format", "")).lower() != "markdownv2":
+        # This rule is TELEGRAM-SPECIFIC: the copy button depends on MarkdownV2
+        # parsing. Discord renders a triple-backtick block natively in a plain
+        # message and its reply tool has no markdownv2 format value at all, so on
+        # that branch the rule would block a problem that does not exist -- and,
+        # before the label existed, would have named the wrong channel while doing
+        # it. The condition therefore filters on the label explicitly, not on
+        # unescape_mdv2: those two only happen to coincide today, and the intent
+        # here is the channel.
+        if (label == "Telegram" and "```" in raw
+                and str(tool_input.get("format", "")).lower() != "markdownv2"):
             sys.stderr.write(
                 "KIMENO-SZOVEG KAPU (Telegram): TILTVA, a kodblokk nem lenne masolhato.\n\n"
                 "  - A szoveg harom backtickes kodblokkot tartalmaz, de a hivasban\n"
@@ -1054,19 +1071,19 @@ def telegram_gate(tool_input: dict) -> None:
     except SystemExit:
         raise
     except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-open path
-        warn = f"outgoing-copy-gate: TELEGRAM-ag belso hiba, FAIL-OPEN atengedes: {exc!r}"
+        warn = f"outgoing-copy-gate: {label.upper()}-ag belso hiba, FAIL-OPEN atengedes: {exc!r}"
         sys.stderr.write(warn + "\n")
         _gate_log(warn)
         sys.exit(0)
     if problems:
         sys.stderr.write(
-            "KIMENO-SZOVEG KAPU (Telegram): TILTVA, az uzenet nem mehet ki igy.\n\n"
+            f"KIMENO-SZOVEG KAPU ({label}): TILTVA, az uzenet nem mehet ki igy.\n\n"
             + "\n".join(f"  - {p}" for p in problems)
             + "\n\nJavitsd a szoveget es kuldd ujra (a MarkdownV2 escape-eket a kapu "
               "az ellenorzes elott feloldja, azok nem szamitanak hibanak).\n"
         )
         sys.exit(2)
-    # GATEPERSIST816(2): a hianyzo nev-szabaly a telegram-agon fail-open marad,
+    # GATEPERSIST816(2): a hianyzo nev-szabaly a csatorna-agon fail-open marad,
     # de a figyelmeztetes ODA megy, ahol a session tenyleg latja -- a hook
     # stdout systemMessage mezoje a futo sessionben jelenik meg, nem egy
     # logfajlban, amit senki nem olvas.
@@ -1390,7 +1407,12 @@ def main():
     # one). The dispatch must recognise BOTH, or the edit half of the matcher
     # invokes a hook that exits 0 without auditing anything.
     if re.search(r"telegram.*__(reply|edit_message)$", tool, re.I):
-        telegram_gate(tool_input)  # exits; never falls through
+        channel_gate(tool_input, "Telegram", unescape_mdv2=True)  # exits; never falls through
+    if re.search(r"discord.*__(reply|edit_message)$", tool, re.I):
+        # GATEDISCORD905: an install whose owner DM and every working thread run
+        # on Discord had no gate on that path at all -- same audit, no MarkdownV2
+        # unescaping (on Discord a backslash is a literal the author typed).
+        channel_gate(tool_input, "Discord", unescape_mdv2=False)  # exits; never falls through
     # COPYGATEMATCHER904: the hook is REGISTERED for manage_email, create_draft,
     # update_draft and the Gmail connector's reply/send_message/forward tools,
     # but this dispatch only ever recognised a tool NAME containing
@@ -1494,8 +1516,8 @@ if __name__ == "__main__":
         # An unhandled crash exits 1, and PreToolUse treats 1 as NON-blocking,
         # so the send would run UNCHECKED -- the exact opposite of the email
         # path's fail-closed contract (e.g. a non-dict tool_input used to
-        # AttributeError inside collect_mcp_body). The telegram path never
-        # reaches here: telegram_gate() catches its own errors and exits 0
+        # AttributeError inside collect_mcp_body). The channel paths never
+        # reach here: channel_gate() catches its own errors and exits 0
         # (fail-open by design), so this net only ever catches the email/Bash
         # send paths, where blocking is the safe failure mode.
         sys.stderr.write(

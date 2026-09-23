@@ -241,6 +241,43 @@ def main():
         code, out, err = run_hook(edit_ok, rules_file=active)
         check("edit_message clean passes (exit 0)", code, 0)
 
+        # --- GATEDISCORD905: the Discord reply path is audited too ----------
+        # Same audit as Telegram, with two deliberate differences: no MarkdownV2
+        # unescaping (a backslash on Discord is a literal the author typed), and
+        # the Telegram-only code-block rule must NOT fire there.
+        discord_bad = {"tool_name": "mcp__plugin_discord_discord__reply",
+                       "tool_input": {"text": CLEAN_HU_OK + " — mégis."}}
+        code, out, err = run_hook(discord_bad, rules_file=active)
+        check("discord reply with em dash blocks (exit 2)", code, 2)
+        check_true("discord block names the DISCORD channel, not Telegram",
+                   "(Discord)" in err and "(Telegram)" not in err, err)
+
+        discord_ok = {"tool_name": "mcp__plugin_discord_discord__reply",
+                      "tool_input": {"text": CLEAN_HU_OK}}
+        code, out, err = run_hook(discord_ok, rules_file=active)
+        check("discord reply clean passes (exit 0)", code, 0)
+
+        discord_edit = {"tool_name": "mcp__plugin_discord_discord__edit_message",
+                        "tool_input": {"message_id": "1", "text": CLEAN_HU_OK + " — mégis."}}
+        code, out, err = run_hook(discord_edit, rules_file=active)
+        check("discord edit_message with em dash blocks (exit 2)", code, 2)
+
+        # The code-block rule is Telegram-only. Discord renders a fenced block
+        # natively and its reply tool has no markdownv2 format value, so firing
+        # here would block a problem that does not exist. Paired with the
+        # telegram case above, which must stay red for the same input.
+        discord_fence = {"tool_name": "mcp__plugin_discord_discord__reply",
+                         "tool_input": {"text": fenced}}
+        code, out, err = run_hook(discord_fence, rules_file=active)
+        check("discord codeblock without markdownv2 passes (exit 0)", code, 0)
+
+        # A name hit still blocks on Discord: the channel branch is a new door,
+        # not a bypass.
+        discord_name = {"tool_name": "mcp__plugin_discord_discord__reply",
+                        "tool_input": {"text": CLEAN_HU_OK + " Üdvözlettel, Teszt Elek"}}
+        code, out, err = run_hook(discord_name, rules_file=active)
+        check("discord reply with a bad name blocks (exit 2)", code, 2)
+
         # --- COPYGATEENT914: HTML-ENTITAS NEM KERULHETI MEG A GONDOLATJEL-TILTAST ---
         # Marveen merese 2026-09-14, egy VALODI vevo-levelen: a hook a TAGEKET
         # szedte ki, de az entitast sehol nem dekodolta, igy a `&mdash;` atment
