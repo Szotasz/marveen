@@ -109,7 +109,7 @@ describe('copy gate reads a curl @file payload (GATEBINVAK916)', () => {
 
   it('a shell-expanded @path is unreadable (fail-closed), like the < branch', () => {
     const [, reason] = extract(resend('--data-binary @$HOME/$LETTER.json'))
-    expect(reason).toMatch(/fel nem oldhato @utvonal/)
+    expect(reason).toMatch(/fel nem oldhato utvonal.*@\$HOME/)
   })
 
   it('@- without a heredoc is unreadable; @- WITH a heredoc reads the heredoc', () => {
@@ -127,6 +127,55 @@ describe('copy gate reads a curl @file payload (GATEBINVAK916)', () => {
   it('a non-JSON @file is the text itself', () => {
     const p = file('letter.txt', CLEAN)
     expect(extract(resend(`--data-binary @${p}`))).toEqual([CLEAN, null])
+  })
+
+  // Marveen's #1507 review: five more shapes send a FILE as the body. Before
+  // this they fell to the generic "no inspectable text" -- the very message
+  // this change retires -- and `--data-urlencode name@file` LOOKED handled.
+  const FIVE = (p: string): Array<[string, string]> => [
+    ['--data-urlencode name@', resend(`--data-urlencode text@${p}`)],
+    ['-F name=@', resend(`-F "text=@${p};type=text/plain"`)],
+    ['-F name=<', resend(`-F "text=<${p}"`)],
+    ['wget --post-file', `wget --post-file=${p} https://api.resend.com/emails`],
+    ['wget --body-file', `wget --method=POST --body-file ${p} https://api.resend.com/emails`],
+    ['curl -T', resend(`-T ${p}`)],
+    ['curl --upload-file', resend(`--upload-file ${p}`)],
+  ]
+
+  it('the five further file-body shapes are READ: clean passes, homoglyph blocks for its content', () => {
+    const clean = file('five-clean.txt', CLEAN)
+    const homo = file('five-homo.txt', HOMO)
+    for (const [label, cmd] of FIVE(clean)) {
+      expect(extract(cmd), label).toEqual([CLEAN, null])
+      expect(gate(cmd).code, label).toBe(0)
+    }
+    for (const [label, cmd] of FIVE(homo)) {
+      const r = gate(cmd)
+      expect(r.code, label).toBe(2)
+      expect(r.err, label).toContain('homoglifa')
+    }
+  })
+
+  it('an unreadable file in any of them gets a NAMED reason, never the generic one', () => {
+    const missing = join(dir, 'five-missing.txt')
+    for (const [label, cmd] of FIVE(missing)) {
+      const [text, reason] = extract(cmd)
+      expect(text, label).toBe('')
+      expect(reason, label).toMatch(/nem olvashato/)
+      const r = gate(cmd)
+      expect(r.code, label).toBe(2)
+      expect(r.err, label).not.toContain('nem talalt vizsgalhato szoveget')
+    }
+  })
+
+  it('an UNQUOTED -F name=<file (a shell redirect too) is read once, not twice', () => {
+    const p = file('once.txt', CLEAN)
+    expect(extract(resend(`-F text=<${p}`))).toEqual([CLEAN, null])
+  })
+
+  it('--form-string stays a literal (no file is read)', () => {
+    const p = file('fs.txt', CLEAN)
+    expect(extract(resend(`--form-string "text=@${p}"`))).toEqual(['', null])
   })
 
   it('inter-agent messages stay out of the email gate (scope unchanged by this branch)', () => {

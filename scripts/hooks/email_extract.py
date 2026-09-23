@@ -47,7 +47,10 @@ def collect_bash_body(cmd: str):
     # A single `<` only. Without the lookarounds a heredoc (`<<'EOF'`) matches
     # here and the quoted delimiter is taken for a filename -- caught by the
     # first live probe of this gate, which blocked with "'EOF': No such file".
-    redirect = re.search(r"(?<!<)<(?!<)\s*([^\s|;&<>]+)", cmd)
+    # `(?<![<=])`: a `=<` is curl's `-F "name=<file"` (read by the file-body
+    # forms below), not a shell redirect; the quoted form would otherwise be
+    # taken as a redirect to a path ending in the closing quote.
+    redirect = re.search(r"(?<![<=])<(?!<)\s*([^\s|;&<>]+)", cmd)
     if redirect:
         raw = redirect.group(1)
         path = os.path.expandvars(os.path.expanduser(raw))
@@ -64,37 +67,66 @@ def collect_bash_body(cmd: str):
     # too -- fail closed with the generic "no inspectable text" reason, and the
     # real content was never audited. --data-raw is deliberately NOT here: it
     # sends a literal "@path", it reads no file.
-    for m in _CURL_AT_FILE.finditer(cmd):
-        raw = m.group(2)
-        if raw == "-":
-            # stdin: a heredoc is already in `parts`; a pipe is not readable.
-            if not parts:
-                return ("", "a torzs stdin-rol jon (@-), heredoc nelkul -- a hook nem latja")
-            continue
-        path = os.path.expandvars(os.path.expanduser(raw))
-        if "$" in path:
-            return ("\n".join(parts), f"a torzs egy fel nem oldhato @utvonalrol jon (@{raw})")
-        try:
-            with open(path, encoding="utf-8", errors="replace") as fh:
-                data = fh.read()
-        except OSError as exc:
-            return ("\n".join(parts), f"a torzs-fajl (@{raw}) nem olvashato ({path}: {exc})")
-        text, reason = _payload_text(data, raw)
-        if reason:
-            return ("\n".join(parts), reason)
-        parts.append(text)
+    # Every curl/wget shape that sends a FILE as the body, each with its own
+    # label: an unreadable one then says WHICH shape failed, instead of the
+    # generic "no inspectable text" that this change exists to retire
+    # (Marveen's #1507 review: `--data-urlencode name@file` LOOKED handled --
+    # the flag was in the @ regex -- but the name@ form never matched).
+    for label, rx in _FILE_BODY_FORMS:
+        for m in rx.finditer(cmd):
+            ref = m.group(1)
+            if ref in ("-", "."):
+                # stdin: a heredoc is already in `parts`; a pipe is not readable.
+                if not parts:
+                    return ("", f"a torzs stdin-rol jon ({label} {ref}), heredoc nelkul -- a hook nem latja")
+                continue
+            text, reason = _read_body_file(ref, label)
+            if reason:
+                return ("\n".join(parts), reason)
+            parts.append(text)
     if not parts and re.search(r"\|\s*(python3?|node|tsx)?[^|]*send", cmd):
         return ("", "a torzs egy pipe-bol jon, a hook nem latja")
     return ("\n".join(parts), None)
 
 
-# GATEBINVAK916: `-d @f`, `-d@f`, `--data-binary=@f`, optionally quoted. The
-# flag must stand alone (leading space or start), so an address like
-# x@y.hu or an @ inside a quoted payload is never taken for a file.
-_CURL_AT_FILE = re.compile(
-    r"(?:^|\s)(-d|--data|--data-binary|--data-ascii|--json|--data-urlencode)"
-    r"(?:=|\s+|(?<=-d))['\"]?@([^\s'\"|;&<>]+)"
+# GATEBINVAK916: the file-body shapes. Each flag must stand alone (leading
+# space or start), so an address like x@y.hu or an @ inside a quoted payload is
+# never taken for a file. Measured list (Marveen's #1507 review, against the
+# gate's own _CURL_BODY_OPTS): the six @-flags, plus the five shapes that also
+# send a FILE but were not read: --data-urlencode name@file, -F/--form
+# name=@file or name=<file, wget --post-file / --body-file, curl -T.
+# NOT here, deliberately: --data-raw (sends a literal "@path", reads nothing)
+# and --form-string (literal). The inline literal flags (-d '...',
+# --post-data '...') stay outside this branch as before.
+_REF = r"['\"]?([^\s'\"|;&<>]+)"
+_FILE_BODY_FORMS = (
+    ("@", re.compile(
+        r"(?:^|\s)(?:-d|--data|--data-binary|--data-ascii|--json|--data-urlencode)"
+        r"(?:=|\s+|(?<=-d))['\"]?@([^\s'\"|;&<>]+)")),
+    ("--data-urlencode name@", re.compile(
+        r"(?:^|\s)--data-urlencode(?:=|\s+)['\"]?[A-Za-z0-9_.-]+@([^\s'\"|;&<>]+)")),
+    ("-F/--form name=@|<", re.compile(
+        r"(?:^|\s)(?:-F|--form)(?:=|\s+)['\"]?[^\s'\"=]+=[@<]([^\s'\";|&<>]+)")),
+    ("wget --post-file/--body-file", re.compile(
+        r"(?:^|\s)--(?:post|body)-file(?:=|\s+)" + _REF)),
+    ("curl -T/--upload-file", re.compile(
+        r"(?:^|\s)(?:-T|--upload-file)(?:=|\s+)" + _REF)),
 )
+
+
+def _read_body_file(ref: str, label: str):
+    """(text, unreadable_reason) for a file named as a request body."""
+    shown = f"@{ref}" if label == "@" else f"{label} {ref}"  # as the user typed it
+    path = os.path.expandvars(os.path.expanduser(ref))
+    if "$" in path:
+        return ("", f"a torzs egy fel nem oldhato utvonalrol jon ({shown})")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            data = fh.read()
+    except OSError as exc:
+        return ("", f"a torzs-fajl ({shown}) nem olvashato ({path}: {exc})")
+    return _payload_text(data, ref)
+
 
 # The prose fields of a JSON payload. A JSON body is audited through these,
 # DECODED: the raw file would show "\u00e1" for "a" with an accent, and the
