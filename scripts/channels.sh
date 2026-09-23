@@ -529,7 +529,7 @@ export DISABLE_AUTOUPDATER=1
 export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false
 # Effort level for THIS shell (the main channels claude inherits it). See the
 # set-environment -g block below for why this is an env var and not settings.json.
-export CLAUDE_CODE_EFFORT_LEVEL=max
+export CLAUDE_CODE_EFFORT_LEVEL=high
 
 # Same class, second source: the optional session-feedback survey ("How is Claude
 # doing this session?  1: Bad  2: Fine  3: Good  0: Dismiss") blocks on a keypress,
@@ -925,7 +925,7 @@ $TMUX set-environment -g DISABLE_AUTOUPDATER 1 2>/dev/null || true
 # "max") and outranks every other source. Keep in sync with FLEET_EFFORT_LEVEL
 # in src/model-id.ts -- that constant governs the TS launch paths, this line the
 # tmux-inherited ones.
-$TMUX set-environment -g CLAUDE_CODE_EFFORT_LEVEL max 2>/dev/null || true
+$TMUX set-environment -g CLAUDE_CODE_EFFORT_LEVEL high 2>/dev/null || true
 
 # Hybrid channel-coordinator model: the native plugin stays the PRIMARY inbound
 # path (it always polls getUpdates here -- never outbound-only). The standalone

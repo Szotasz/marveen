@@ -46,12 +46,15 @@ export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 export type EffortLevel = (typeof EFFORT_LEVELS)[number]
 
 /**
- * The effort level every Claude agent in the fleet launches with (Balázs, 2026-08-06: "mindenkinél
- * max"). Set as an env var at the launch sites, never in settings.json -- see {@link EFFORT_LEVELS}
+ * The effort level every Claude agent in the fleet launches with. It is DELIBERATELY the level
+ * the fleet runs at today -- templates/settings.json.template says "high" -- because this change
+ * is about WHERE the level is set, not about raising it: an install that sets nothing must not
+ * change behaviour just because the lever moved. Raising it is a separate, deliberate decision.
+ * Set as an env var at the launch sites, never in settings.json -- see {@link EFFORT_LEVELS}
  * for why the file is the wrong lever. A model without the `max_effort` capability downgrades itself
  * to high, so this is safe for every Claude model.
  */
-export const FLEET_EFFORT_LEVEL: EffortLevel = 'max'
+export const FLEET_EFFORT_LEVEL: EffortLevel = 'high'
 
 /** Thrown when a caller tries to persist a malformed id. Routes map it to 400. */
 export class InvalidModelIdError extends Error {
