@@ -27,6 +27,8 @@ import {
 import { configDirFor } from './main-transcript-root.js'
 import { readConfiguredMainModel } from './channel-monitor.js'
 import { readModelFallbackConfig } from './model-fallback-store.js'
+import { readMarveenTelegramConfig } from './telegram.js'
+import { resolveOwnerChatId } from '../owner-chat.js'
 import { readGateConfig } from './context-restart-gate-store.js'
 import { readQuotaSnapshot, DEFAULT_MAX_AGE_SEC, type QuotaSnapshot, type QuotaWindow } from './quota.js'
 import { getAgentRunningSince } from './agent-process.js'
@@ -399,6 +401,19 @@ export function liveBlockSpecs(now = Date.now()): BlockSpec[] {
     {
       title: 'CSATORNA',
       rows: [
+        {
+          // The plugin's own /status used to answer "Paired as ..."; the D-4
+          // patch takes that handler out, so the pairing has to be measured
+          // here or it disappears from the chat entirely (owner, 2026-09-23).
+          label: 'Párosítás', source: 'channels/telegram/.env + getMe cache',
+          collect: () => {
+            const cfg = readMarveenTelegramConfig()
+            if (!cfg.hasTelegram) return notMeasurable('nincs bot-token a csatorna .env-jében')
+            const chat = resolveOwnerChatId()
+            const bot = cfg.botUsername ? `@${cfg.botUsername}` : notMeasurable('a bot neve még nincs lekérdezve')
+            return `${bot} · tulajdonos chat: ${chat ?? notMeasurable('nincs ALLOWED_CHAT_ID')}`
+          },
+        },
         {
           label: 'Forgalom', source: 'conversation_log',
           collect: () => {
