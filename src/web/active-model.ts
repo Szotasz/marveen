@@ -155,6 +155,13 @@ export function readLastTurnActivityMs(workingDir: string, configDir?: string): 
         if (Number.isFinite(at)) return at
       } catch { /* a line cut by the tail window, or malformed */ }
     }
+    // The WHOLE file was read and holds no turn: a fresh session (after a
+    // deploy or /clear) that has only bookkeeping lines. That is "never had a
+    // turn" -- quiet -- not "unknown". Returning null here made the caller
+    // fall back to the file's mtime, which every hook-blocked command bumps,
+    // so commands typed in a row kept each other "turn-active" (measured on
+    // the test bot, 2026-09-23). A file larger than the window stays null.
+    if (newest.size <= TURN_TAIL_BYTES) return 0
   } catch { /* fall through */ }
   return null
 }

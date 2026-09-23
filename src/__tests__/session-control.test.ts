@@ -115,6 +115,24 @@ describe('/context clear (CMD920 test 10)', () => {
     } finally { rmSync(cfgDir, { recursive: true, force: true }) }
   })
 
+  it('a fresh session with only bookkeeping lines reads as "never had a turn" (0); an oversized file stays unknown (null)', () => {
+    const cfgDir = mkdtempSync(join(tmpdir(), 'turn-'))
+    try {
+      const dir = projectsDirFor('/opt/marveen', cfgDir)
+      mkdirSync(dir, { recursive: true })
+      const book = [
+        JSON.stringify({ type: 'system', subtype: 'local_command', timestamp: '2026-09-23T13:19:39.000Z', content: '<command-name>/rename</command-name>' }),
+        JSON.stringify({ type: 'queue-operation', operation: 'enqueue', timestamp: '2026-09-23T13:19:44.000Z', content: '<channel>/model</channel>' }),
+        JSON.stringify({ type: 'system', subtype: 'informational', timestamp: '2026-09-23T13:19:44.500Z', content: 'UserPromptSubmit operation blocked by hook' }),
+      ]
+      writeFileSync(join(dir, 's.jsonl'), book.join('\n') + '\n')
+      expect(readLastTurnActivityMs('/opt/marveen', cfgDir)).toBe(0)
+      const filler = JSON.stringify({ type: 'system', subtype: 'informational', content: 'x'.repeat(1000) })
+      writeFileSync(join(dir, 's.jsonl'), Array.from({ length: 600 }, () => filler).join('\n') + '\n')
+      expect(readLastTurnActivityMs('/opt/marveen', cfgDir)).toBeNull()
+    } finally { rmSync(cfgDir, { recursive: true, force: true }) }
+  })
+
   it('readLastTurnActivityMs skips our own /model lines (local command, no model turn; measured 2026-09-23)', () => {
     const cfgDir = mkdtempSync(join(tmpdir(), 'turn-'))
     try {

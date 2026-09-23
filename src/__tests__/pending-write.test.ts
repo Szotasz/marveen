@@ -122,5 +122,11 @@ describe('withRetry: the latest write wins', () => {
     clearPendingWrite(file)
     expect(withRetry('/model opus', { ok: true, text: 'Átváltva.' }, ctx, file)).toBe('Átváltva.')
   })
+
+  it('an unrelated write does not drop the queued one', () => {
+    withRetry('/model fable 10m', { ok: false, busy: true, text: 'foglalt.' }, ctx, file)
+    expect(withRetry('/heartbeat', { ok: true, text: 'elindult.' }, ctx, file)).toBe('elindult.')
+    expect(readPendingWrite(file)?.text).toBe('/model fable 10m')
+  })
 })
 

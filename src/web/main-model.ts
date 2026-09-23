@@ -660,6 +660,10 @@ export function _resetMainModelForTest(): void {
 // A write refused only because the session was busy is queued, and run at the
 // end of the turn (pending-write.ts). The owner asked for exactly this after
 // a `/model sonnet keep` was lost to a pane-busy refusal.
+function commandName(text: string): string {
+  return (text.trim().split(/\s+/)[0] ?? '').toLowerCase()
+}
+
 export function withRetry(text: string, r: StepResult, ctx: { ownerId: number; now: number }, file: string = PENDING_WRITE_FILE): string {
   // The owner's latest word wins: a write that went through drops an older
   // one still queued for the turn end (measured on the test bot: a queued
@@ -667,7 +671,9 @@ export function withRetry(text: string, r: StepResult, ctx: { ownerId: number; n
   // have fired minutes later).
   if (r.ok) {
     const stale = readPendingWrite(file)
-    if (stale) {
+    // Only the same command: an unrelated write (/heartbeat) must not drop a
+    // queued /model (measured: it did, in the first version of this rule).
+    if (stale && commandName(stale.text) === commandName(text)) {
       clearPendingWrite(file)
       logger.info({ dropped: stale.text, by: text }, 'pending-write: dropped, a later write ran')
       return `${r.text}\n(A sorban várakozó „${stale.text}” törölve: ez a parancs felülírta.)`
