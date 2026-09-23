@@ -241,6 +241,10 @@ export async function runActions(steps: ActionStep[], nowMs: number, deps: RunDe
       return { text: lines.join('\n'), busy: r.busy === true }
     }
   }
+  // A command made only of messages is a canned reply: send just its text,
+  // not the step report (measured on the test bot: /dashboard answered
+  // "1. message X: kész — X / Mind a 1 lépés kész.").
+  if (steps.every(st => st.action === 'message')) return { text: steps.map(st => st.value ?? '').join('\n'), busy: false }
   lines.push(`Mind a ${steps.length} lépés kész.`)
   return { text: lines.join('\n'), busy: false }
 }

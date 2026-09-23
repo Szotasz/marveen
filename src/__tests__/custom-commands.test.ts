@@ -212,7 +212,7 @@ describe('load-time validation (CMD920 test 24)', () => {
     loadCustomCommands(runDeps())
     const c = ctx()
     expect(await dispatchCommand('/jo', c)).toBe('ran')
-    expect(c.out[0]).toMatch(/1\. message szia: kész — szia/)
+    expect(c.out[0]).toBe('szia')
   })
 
   it('a disabled command is not registered', () => {
@@ -348,6 +348,15 @@ describe('interrupt action', () => {
     const blind = await interruptStep(null, send)
     expect(blind.ok).toBe(false)
     expect(sent).toBe(1)
+  })
+})
+
+describe('message-only commands', () => {
+  it('reply with just the text; a mixed command keeps the step report', async () => {
+    const d = runDeps()
+    expect((await runActions([{ action: 'message', value: 'Dashboard: http://x' }], T0, d)).text).toBe('Dashboard: http://x')
+    expect((await runActions([{ action: 'message', value: 'a' }, { action: 'message', value: 'b' }], T0, d)).text).toBe('a\nb')
+    expect((await runActions([{ action: 'message', value: 'a' }, { action: 'context clear' }], T0, d)).text).toMatch(/Mind a 2 lépés kész/)
   })
 })
 
