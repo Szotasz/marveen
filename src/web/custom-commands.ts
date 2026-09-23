@@ -45,7 +45,7 @@ import {
   type CommandContext,
   type InvalidCustomCommand,
 } from './commands.js'
-import { setModel, setEffort, EFFORT_LEVELS, type StepResult } from './main-model.js'
+import { setModel, setEffort, withRetry, EFFORT_LEVELS, type StepResult } from './main-model.js'
 import { contextClear } from './session-control.js'
 import { formatDayClock } from './system-status.js'
 
@@ -183,16 +183,28 @@ export const liveRunDeps: RunDeps = {
   effort: (level) => setEffort(level),
   clear: async (nowMs) => {
     const r = await contextClear(nowMs)
-    return { ok: r.cleared, text: r.text }
+    return { ok: r.cleared, text: r.text, busy: r.busy }
   },
   sendPrompt: (content) => createAgentMessage(COORDINATOR_AGENT_ID, MAIN_AGENT_ID, content, 'owner custom command').id,
   getRow: getCustomCommand,
   markRun: markCustomCommandRun,
 }
 
+/**
+ * The text to reply plus `busy` = a step was refused only because the session
+ * was busy. Without this the whole custom command reported plain "HIBA" and was
+ * lost, while the same write typed as `/model ...` was queued for the end of the
+ * turn (measured on the test bot: `/gyors` ran from the queue twice and switched
+ * nothing, ELSOKOR922 Phase 7).
+ */
+export interface ActionsResult {
+  text: string
+  busy: boolean
+}
+
 // Actions run in order; the first failing step stops the rest, and the reply
 // says how far it got.
-export async function runActions(steps: ActionStep[], nowMs: number, deps: RunDeps): Promise<string> {
+export async function runActions(steps: ActionStep[], nowMs: number, deps: RunDeps): Promise<ActionsResult> {
   const lines: string[] = []
   for (const [i, st] of steps.entries()) {
     let r: StepResult
@@ -209,11 +221,11 @@ export async function runActions(steps: ActionStep[], nowMs: number, deps: RunDe
     lines.push(`${i + 1}. ${st.action}${st.value ? ` ${st.value}` : ''}: ${r.ok ? 'kész' : 'HIBA'} — ${r.text}`)
     if (!r.ok) {
       lines.push(`Megállt a ${i + 1}. lépésnél (${i}/${steps.length} kész).`)
-      return lines.join('\n')
+      return { text: lines.join('\n'), busy: r.busy === true }
     }
   }
   lines.push(`Mind a ${steps.length} lépés kész.`)
-  return lines.join('\n')
+  return { text: lines.join('\n'), busy: false }
 }
 
 // name -> { definitionAt, expiresAt }: the one-time "changed, send anyway?" ask.
@@ -280,7 +292,13 @@ export function loadCustomCommands(deps: RunDeps = liveRunDeps, rows: CustomComm
       usage,
       description: `${def.description || '(nincs leírás)'} [${def.kind}]`,
       run: async (ctx, args) => {
-        if (def.kind === 'actions') await ctx.reply(await runActions(def.body as ActionStep[], ctx.now, deps))
+        if (def.kind === 'actions') {
+          const r = await runActions(def.body as ActionStep[], ctx.now, deps)
+          // A busy step queues the WHOLE command for the end of the turn, the
+          // same way a typed `/model ...` is queued -- rerunning it from the
+          // start is right here: the steps are the owner's own definition.
+          await ctx.reply(withRetry(usage, { ok: !r.busy, text: r.text, busy: r.busy }, ctx))
+        }
         else await ctx.reply(await runPrompt(def.name, args, ctx, deps))
       },
     })

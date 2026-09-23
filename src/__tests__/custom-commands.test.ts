@@ -73,7 +73,7 @@ beforeEach(() => {
 describe('actions (CMD920 test 22)', () => {
   it('a valid definition runs step by step with measured feedback', async () => {
     const d = runDeps()
-    const out = await runActions([{ action: 'model', value: 'opus', hold: '4h' }, { action: 'effort', value: 'high' }, { action: 'message', value: 'kész a mód' }], T0, d)
+    const out = (await runActions([{ action: 'model', value: 'opus', hold: '4h' }, { action: 'effort', value: 'high' }, { action: 'message', value: 'kész a mód' }], T0, d)).text
     expect(d.calls).toEqual(['model opus 4h', 'effort high'])
     expect(out).toMatch(/1\. model opus: kész — \/model opus elküldve\n2\. effort high: kész.*\n3\. message kész a mód: kész — kész a mód\nMind a 3 lépés kész\./)
   })
@@ -89,14 +89,29 @@ describe('actions (CMD920 test 22)', () => {
 
   it('a failing second step stops the rest and says how far it got', async () => {
     const d = runDeps({ effort: async () => ({ ok: false, text: 'Nem állítottam: a session foglalt (pane-busy).' }) })
-    const out = await runActions([{ action: 'model', value: 'opus' }, { action: 'effort', value: 'high' }, { action: 'context clear' }], T0, d)
+    const out = (await runActions([{ action: 'model', value: 'opus' }, { action: 'effort', value: 'high' }, { action: 'context clear' }], T0, d)).text
     expect(d.calls).toEqual(['model opus'])
     expect(out).toMatch(/2\. effort high: HIBA — Nem állítottam/)
     expect(out).toMatch(/Megállt a 2\. lépésnél \(1\/3 kész\)\./)
   })
 
+  // ELSOKOR922 Phase 7 A-smoke: a step refused for a busy session must surface
+  // as `busy`, so the caller queues the whole command for the end of the turn
+  // (the live `/gyors` reported plain HIBA and was lost).
+  it('a step refused for a busy session reports busy', async () => {
+    const d = runDeps({ model: async () => ({ ok: false, text: 'Nem váltottam: a session foglalt (pane-busy).', busy: true }) })
+    const r = await runActions([{ action: 'model', value: 'sonnet' }], T0, d)
+    expect(r.busy).toBe(true)
+    expect(r.text).toMatch(/HIBA — Nem váltottam/)
+  })
+
+  it('a non-busy failure is not queued', async () => {
+    const d = runDeps({ effort: async () => ({ ok: false, text: 'Nem értem' }) })
+    expect((await runActions([{ action: 'effort', value: 'high' }], T0, d)).busy).toBe(false)
+  })
+
   it('a throwing step is a failure, not a crash', async () => {
-    const out = await runActions([{ action: 'context clear' }], T0, runDeps({ clear: async () => { throw new Error('tmux gone') } }))
+    const out = (await runActions([{ action: 'context clear' }], T0, runDeps({ clear: async () => { throw new Error('tmux gone') } }))).text
     expect(out).toMatch(/HIBA — tmux gone\nMegállt az? 1\. lépésnél|HIBA — tmux gone\nMegállt a 1\. lépésnél/)
   })
 })
