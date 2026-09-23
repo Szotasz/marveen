@@ -4690,6 +4690,53 @@ export function resolveApproval(id: string, status: 'approved' | 'rejected' | 't
   `).run(status, now, resolvedBy, telegramMessageId ?? null, id).changes > 0
 }
 
+// MEMAPPROVALVEGTELEN923: an `approved` row used to be a permanent licence.
+// `consumed_at` and `content_hash` were only ever written by the email gate
+// (scripts/hooks/email-approval-gate.py), so on every other category -- for
+// example memory_maintenance -- a yes given days ago still looked exactly like
+// a yes given a minute ago, and nothing tied it to the items it was given for.
+// Measured 2026-09-23: approval 954b7685 (36 hot memories to cold, resolved
+// 09-20 13:38) was still `approved` + `consumed_at IS NULL` three days later.
+// This is the same one-shot the email gate performs, lifted to a reusable
+// helper so every category can consume its own approval:
+//   - only an `approved`, not-yet-consumed row inside the freshness window counts,
+//   - a row that CARRIES a content_hash only counts for that exact anchor,
+//   - the flip NULL -> now is the atomic winner, so two racing executions cannot
+//     both act on one yes.
+// `bound` is reported back because an unbound row (no content_hash) can be
+// consumed but NOT verified against the items at hand -- the caller has to read
+// the description itself, and should know that it must.
+export type ApprovalConsumeVerdict =
+  | 'allowed' | 'not_found' | 'pending' | 'rejected' | 'timeout'
+  | 'consumed' | 'expired' | 'hash_mismatch' | 'race'
+
+export function consumeApproval(id: string, opts: {
+  contentHash?: string | null
+  windowSeconds: number
+  nowS?: number
+}): { verdict: ApprovalConsumeVerdict; approval?: Approval; bound: boolean } {
+  const now = opts.nowS ?? Math.floor(Date.now() / 1000)
+  const row = getApproval(id)
+  if (!row) return { verdict: 'not_found', bound: false }
+  const bound = row.content_hash != null
+  if (row.status !== 'approved') return { verdict: row.status, approval: row, bound }
+  if (row.consumed_at != null) return { verdict: 'consumed', approval: row, bound }
+  if (row.resolved_at == null || row.resolved_at < now - opts.windowSeconds) {
+    return { verdict: 'expired', approval: row, bound }
+  }
+  // A bound row demands the anchor. A caller that sends nothing gets a
+  // mismatch, not a pass: fail closed, exactly like the email gate.
+  if (bound && opts.contentHash !== row.content_hash) {
+    return { verdict: 'hash_mismatch', approval: row, bound }
+  }
+  const changed = db.prepare(`
+    UPDATE approvals SET consumed_at = ?
+    WHERE id = ? AND status = 'approved' AND consumed_at IS NULL
+  `).run(now, id).changes
+  if (changed === 0) return { verdict: 'race', approval: getApproval(id), bound }
+  return { verdict: 'allowed', approval: getApproval(id), bound }
+}
+
 // The CREATE path stamps the owner-notification message id onto the row
 // (APPROVALVAK821): until this existed, telegram_message_id was only writable
 // through resolveApproval, so a pending request could never carry it.
