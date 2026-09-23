@@ -56,6 +56,9 @@ import {
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
+import { decideContinueFlag, verifyContinueLaunch } from './channel-continue-policy.js'
+import { measureClaudeCliVersion } from './claude-cli-version.js'
+import { getClaudePidForSession, probeChannelPluginLiveness } from '../channel-coordinator/liveness.js'
 import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBOX_TEE } from '../config.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { readEnvFile } from '../env.js'
@@ -2019,14 +2022,28 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // omit --continue so the heavy accumulated context is dropped. Without it
     // we resume the prior session (the 'continue' mode / normal restart).
     //
-    // CC 2.1.193 REGRESSION: a `--continue` resume does NOT re-initialise the
-    // `--channels` plugin MCP server -- the agent comes up with the plugin
-    // absent from /mcp, no bun poller, no bot.pid -> permanently deaf on its
-    // channel. A FRESH launch loads the plugin correctly. So channel-having
-    // agents are ALWAYS launched fresh: the lost conversation context is the
-    // price of a reachable bot (file/db memory persists either way). Channel-
-    // less agents keep --continue to preserve their accumulated context.
-    const continueFlag = (hasPriorSession && !opts.fresh && !hasChannel) ? '--continue ' : ''
+    // CC 2.1.193 REGRESSION: a `--continue` resume did NOT re-initialise the
+    // `--channels` plugin MCP server -- the agent came up deaf on its channel.
+    // So channel-having agents were ALWAYS launched fresh. MEASURED ABSENT on
+    // Claude Code 2.1.280 (CONTRESUME922, 2026-09-23: real Telegram message
+    // from a resumed session, context kept). The narrowing lives in
+    // channel-continue-policy.ts and is CONDITIONAL: telegram provider, the
+    // fleet-token auth path, no ephemeral launch-secret in the launch (a
+    // resume of such a command starts without its key), measured CLI >= the
+    // floor; and after a resumed launch the plugin is VERIFIED (bun poller +
+    // bot.pid) with a fresh fallback, see below. Channel-less agents keep
+    // --continue as before.
+    const usesLaunchSecret = providerEnv !== '' || apiKeyEnv !== ''
+    const installedCli = hasChannel ? (await measureClaudeCliVersion()).version : null
+    const continueDecision = decideContinueFlag({
+      hasPriorSession, fresh: !!opts.fresh, hasChannel, isMainAgent: name === MAIN_AGENT_ID,
+      provider: agentProvider, usesLaunchSecret, fleetTokenLaunch: oauthTokenEnv !== '',
+      useMcpJsonForChannel, installedCli,
+    })
+    if (hasChannel && hasPriorSession && !opts.fresh) {
+      logger.info({ name, useContinue: continueDecision.useContinue, reason: continueDecision.reason, installedCli }, 'channel agent resume decision')
+    }
+    const continueFlag = continueDecision.useContinue ? '--continue ' : ''
     const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : agentProvider === 'googlechat' ? 'GOOGLECHAT_STATE_DIR' : agentProvider === 'teams' ? 'TEAMS_STATE_DIR' : 'TELEGRAM_STATE_DIR'
     const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN'
     // Slack plugin is third-party; its "not on approved allowlist" check is
@@ -2110,6 +2127,34 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     runTmux(startTarget, ['new-session', '-d', '-s', session, buildLaunchCmd(dir)], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir, runAsUser: startTarget.runAsUser ?? null }, 'Agent tmux session started')
+
+    // Condition 3 of the resume narrowing: a resumed channel agent must bring
+    // its plugin up (bun poller under the claude pid + bot.pid) within the
+    // window, or it is relaunched FRESH. Measured: the plugin appears within
+    // seconds on a healthy resume; a deaf resume never shows it. Async so the
+    // start call returns as before; the fallback goes through the normal
+    // start path (kill + reap + fresh), which never uses --continue.
+    if (continueFlag && hasChannel && name !== MAIN_AGENT_ID) {
+      void verifyContinueLaunch({
+        probe: () => {
+          const pid = getClaudePidForSession(session)
+          return pid ? probeChannelPluginLiveness(pid, agentProvider, name) : 'unknown'
+        },
+      }).then(async (v) => {
+        if (v.outcome === 'alive') {
+          logger.info({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin alive, context kept')
+          return
+        }
+        logger.warn({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin NOT alive within the window; relaunching FRESH')
+        try { runTmux(agentTmuxTarget(name), ['kill-session', '-t', session], { timeout: 5000 }) } catch { /* already gone */ }
+        try {
+          const r = await startAgentProcess(name, { fresh: true })
+          logger.info({ name, ok: r.ok, error: r.error ?? null }, 'resumed channel agent: fresh fallback launched')
+        } catch (err) {
+          logger.error({ err, name }, 'resumed channel agent: fresh fallback failed')
+        }
+      }).catch((err) => logger.error({ err, name }, 'resume verification crashed'))
+    }
 
     // EPERM /tmp-fallback (2026-06-30, mirrors scripts/channels.sh:233+): on
     // Claude Code 2.1.183+ launching `--channels` in a TRUSTED project directory
