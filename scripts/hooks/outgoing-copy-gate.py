@@ -664,6 +664,33 @@ def _hit_context(prose: str, pos: int, length: int) -> str:
 # szet, amit a szotar hibanak lat -- pedig ott toldalek, nem szo. A javitas nem a szotarbol
 # vesz ki (az elrontana a valodi talalatokat is), hanem a technikai regiokat
 # vagja ki a vizsgalt szovegbol. A gondolatjel- es nev-ellenorzes NEM ezen fut.
+# NEVKAPULINK923. A nev-szabaly hatokore: a TECHNICAL minta fole nem lehet raulni,
+# mert az szandekosan TUL SOKAT vag ki. A magyar-toldalek heurisztikak (szam+toldalek,
+# Tulajdonnev-toldalek, kotojeles kisbetus azonosito) az EKEZET-ellenorzes hamis
+# talalatait szuntetik meg, es ha a nev-ellenorzes is azokon futna, egy kotojeles
+# kisbetus nev-minta (`teszt-elek`) csendben ATMENNE prozaban is -- vagyis a javitas
+# egy valodi talalatot vinne el.
+#
+# Ez a minta ezert csak azt vagja ki, ami FELREERTHETETLENUL azonosito, nem proza:
+# URL, email, kod-span, utvonal, fajlnev/domain. Egy ezekben veletlenul benne allo
+# nev-minta nem prozahiba (egy sajat GitHub-link nem elirt cegnev), egy mondatban
+# allo viszont az marad.
+NAME_TECHNICAL = re.compile(
+    r"""https?://\S+                # URL
+      | [\w.+-]+@[\w-]+\.[\w.]+     # email
+      | `[^`]*`                     # kod-span
+      | \b[\w-]*/[\w/-]+            # utvonal / slug
+      | \b\w+\.[A-Za-z]{2,10}(?:-[a-záéíóöőúüű]{1,4})?\b   # fajlnev / domain
+    """,
+    re.X,
+)
+
+
+def strip_name_technical(text: str) -> str:
+    """Cut only the unambiguously technical regions (see NAME_TECHNICAL)."""
+    return NAME_TECHNICAL.sub(" ", text)
+
+
 TECHNICAL = re.compile(
     r"""https?://\S+                # URL
       | [\w.+-]+@[\w-]+\.[\w.]+     # email
@@ -827,7 +854,11 @@ def audit(text: str):
         problems.append(
             f"GONDOLATJEL (em dash, U+2014) {plain.count(EM_DASH)} helyen -- allo szabaly, soha nem mehet ki."
         )
-    bad = BAD_NAME.search(plain) if BAD_NAME else None
+    # NEVKAPULINK923: a nev-szabaly a technikai regiok NELKULI szovegen fut.
+    # Elotte a NYERS `plain`-en futott, tehat egy URL-ben/azonositoban veletlenul
+    # benne allo minta az EGESZ uzenetet megallitotta -- egy sajat GitHub-link
+    # akadt el igy. A hatokor szandekosan szukebb, mint a TECHNICAL: lasd ott.
+    bad = BAD_NAME.search(strip_name_technical(plain)) if BAD_NAME else None
     if bad:
         problems.append(
             f"HELYTELEN NEV: {bad.group(0)!r} -- a lokal nev-szabaly (store/outgoing-copy-gate-rules.json) szerint helytelen alak; a helyes irast a szabaly-fajl correction mezoje adja." + _name_correction()

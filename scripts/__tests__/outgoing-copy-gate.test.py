@@ -166,6 +166,44 @@ def main():
         code, out, err = run_hook(telegram_payload(bad_body), rules_file=active)
         check("active rule, bad name present: telegram blocks (exit 2)", code, 2)
 
+        # --- 4b. NEVKAPULINK923: the name rule runs on prose, not on links --
+        # Reported upstream by another install: a GitHub URL of their own
+        # contained the forbidden pattern and the gate stopped the whole
+        # message. A pattern inside a link/path/code-span is not a prose typo.
+        # Both directions, because a one-directional fix here is indistinguishable
+        # from switching the rule off.
+        link_body = CLEAN_HU_OK + " A hivatkozás: https://github.com/Teszt-Elek/repo/issues/3"
+        code, out, err = run_hook(email_payload(link_body), rules_file=active)
+        check("name pattern inside a URL: passes (exit 0)", code, 0)
+
+        path_body = CLEAN_HU_OK + " Az útvonal: /var/log/Teszt-Elek/audit.log"
+        code, out, err = run_hook(email_payload(path_body), rules_file=active)
+        check("name pattern inside a path: passes (exit 0)", code, 0)
+
+        span_body = CLEAN_HU_OK + " A parancs: `grep Teszt Elek /tmp/x`"
+        code, out, err = run_hook(email_payload(span_body), rules_file=active)
+        check("name pattern inside a code span: passes (exit 0)", code, 0)
+
+        # ...and the other direction: prose still blocks (this is the check that
+        # would go silently green if the scope were widened to TECHNICAL).
+        code, out, err = run_hook(email_payload(CLEAN_HU_OK + " Üdvözlettel, Teszt Elek"), rules_file=active)
+        check("name pattern in prose: still blocks (exit 2)", code, 2)
+        check_true("name pattern in prose: and for the NAME reason", "HELYTELEN NEV" in err, err)
+
+        # A hyphenated all-lowercase pattern is exactly what TECHNICAL's
+        # identifier branch would have eaten. It must still be caught in prose.
+        hyphen = rules_path(tmp, "hyphen.json")
+        write_rules(hyphen, {
+            "bad_name_patterns": [r"\bteszt-elek\b"],
+            "correction": "a helyes alak: Teszt Elemer",
+        })
+        code, out, err = run_hook(email_payload(CLEAN_HU_OK + " Aláírás: teszt-elek"), rules_file=hyphen)
+        check("hyphenated lowercase pattern in prose: still blocks (exit 2)", code, 2)
+        code, out, err = run_hook(
+            email_payload(CLEAN_HU_OK + " A tároló: https://github.com/teszt-elek/x"), rules_file=hyphen,
+        )
+        check("hyphenated lowercase pattern inside a URL: passes (exit 0)", code, 0)
+
         # --- 5. Regression: checks this task must not touch -----------------
         # 5a. em dash
         code, out, err = run_hook(email_payload(CLEAN_HU_OK + " — mégis."), rules_file=active)
