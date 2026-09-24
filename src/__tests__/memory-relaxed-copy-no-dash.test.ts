@@ -18,7 +18,7 @@ beforeAll(async () => {
 })
 
 const KEYS = ['memories.relaxed.title', 'memories.relaxed.body']
-const DASH = /\s--\s|—|–/
+const DASH = /\s--\s|\u2014|\u2013/
 
 describe('memory search relaxed-result copy carries no dash (UIDASH924)', () => {
   for (const key of KEYS) {
