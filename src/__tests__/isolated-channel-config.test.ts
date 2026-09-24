@@ -241,7 +241,7 @@ describe('isolated-config launcher wiring', () => {
     expect(SRC).toMatch(/hasFleetOauthToken\(\) && needsFleetOauth/)
   })
 
-  it('channel-isolation token export is wrapped in if(needsFleetOauth) — BYO channel agents keep CLAUDE_CONFIG_DIR but no OAuth token', () => {
+  it('channel-isolation token export is wrapped in if(needsFleetOauth): BYO channel agents keep CLAUDE_CONFIG_DIR but no OAuth token', () => {
     // The oauthTokenEnv assignment inside the channel-isolation block must be
     // wrapped in an if(needsFleetOauth) guard so BYO channel agents (hasChannel=true
     // but isClaude=false) get the isolated CLAUDE_CONFIG_DIR for plugin-slot
@@ -252,7 +252,7 @@ describe('isolated-config launcher wiring', () => {
   // Regression guard for the inherited-token layer of the BYO 401 bug (2026-08-05).
   // The tmux server carries CLAUDE_CODE_OAUTH_TOKEN in its own env;
   // every new agent pane inherits it regardless of whether the launch command exports
-  // it.  Not exporting is not enough — the token must be actively unset at launch for
+  // it.  Not exporting is not enough: the token must be actively unset at launch for
   // BYO/custom-endpoint agents so the CLI forwards ANTHROPIC_API_KEY to the provider
   // instead.
 
