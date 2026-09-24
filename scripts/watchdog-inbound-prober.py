@@ -37,6 +37,9 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 
+sys.path.insert(0, str(SCRIPT_DIR / "lib"))
+import owner_chat  # noqa: E402
+
 SESSION_FILE = PROJECT_ROOT / "store" / ".watchdog-userbot.session"
 CREDS_FILE = PROJECT_ROOT / "store" / ".watchdog-userbot.json"
 ENV_FILE = PROJECT_ROOT / ".env"
@@ -107,17 +110,22 @@ async def main() -> None:
 
     # --- .env config ---
     env = read_env(ENV_FILE)
-    allowed_chat_id_raw = env.get("ALLOWED_CHAT_ID", "").strip()
-    if not allowed_chat_id_raw:
+    # CHATID0: resolve_owner_chat_id refuses the "0" placeholder and falls
+    # back to the paired channel (access.json) -- a plain ALLOWED_CHAT_ID
+    # read used to feed "0" straight into int() and ping the installer
+    # placeholder chat every tick. None here means the same as the old
+    # "absent" case: no owner chat, safe no-op.
+    resolved_chat_id = owner_chat.resolve_owner_chat_id(str(ENV_FILE))
+    if resolved_chat_id is None:
         print(
             "inbound-prober: ALLOWED_CHAT_ID absent in .env -- exiting as safe no-op",
             file=sys.stderr,
         )
         sys.exit(0)
     try:
-        allowed_chat_id = int(allowed_chat_id_raw)
+        allowed_chat_id = int(resolved_chat_id)
     except ValueError:
-        print(f"inbound-prober: ALLOWED_CHAT_ID is not an integer: {allowed_chat_id_raw!r}", file=sys.stderr)
+        print(f"inbound-prober: resolved owner chat is not an integer: {resolved_chat_id!r}", file=sys.stderr)
         sys.exit(0)
 
     probe_interval_ms = 180_000

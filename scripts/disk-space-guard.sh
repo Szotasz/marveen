@@ -62,6 +62,8 @@ fi
 TG_ENV="$TG_CHAN_DIR/.env"
 LOG_TAG="disk-space-guard"
 
+. "$(cd "$(dirname "$0")" && pwd)/lib/owner-chat.sh"
+
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*" || true; }
 
 # Current usage% of DISK_PATH (0-100), or the test override.
@@ -127,14 +129,14 @@ alert_owner() {
   if [ "${DISK_GUARD_ALERT_DRYRUN:-}" = "1" ]; then
     echo "ALERT_DRYRUN: $msg"; return 0
   fi
-  # Token + owner chat id both come from config, never hardcoded: token from the
-  # channels env, chat id from .env ALLOWED_CHAT_ID (or TELEGRAM_CHAT_ID in the
-  # channels env). If either is missing, skip the alert silently.
+  # Token from the channels env, never hardcoded. Owner chat id via
+  # resolve_owner_chat_id (CHATID0): the old direct ALLOWED_CHAT_ID/
+  # TELEGRAM_CHAT_ID reads let the installer's "0" placeholder through
+  # unnoticed, and skipped the access.json fallback entirely.
   # `tr -d '\r '` strips a trailing CR (CRLF-edited .env) / stray spaces so the
-  # value doesn't corrupt the URL or the comparison.
+  # token doesn't corrupt the URL.
   token="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$TG_ENV" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r ')"
-  chat="$(grep -E '^ALLOWED_CHAT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r ')"
-  [ -z "$chat" ] && chat="$(grep -E '^TELEGRAM_CHAT_ID=' "$TG_ENV" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r ')"
+  chat="$(resolve_owner_chat_id "$INSTALL_DIR/.env" 2>/dev/null)"
   if [ -z "$token" ] || [ -z "$chat" ]; then
     log "ALERT (no bot token or owner chat id configured, could not Telegram): $msg"; return 1
   fi

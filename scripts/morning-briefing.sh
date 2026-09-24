@@ -26,7 +26,6 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   export $(grep -v '^#' "$INSTALL_DIR/.env" | xargs)
 fi
 
-CHAT_ID="${ALLOWED_CHAT_ID:-0}"
 CALENDAR_ID="${HEARTBEAT_CALENDAR_ID:-primary}"
 
 # Same-day dedup guard: the briefing must go out at most once per calendar
@@ -43,6 +42,18 @@ fi
 echo "=== Reggeli napindító $(date) ===" >> "$LOG"
 
 cd "$INSTALL_DIR"
+
+# CHATID0: the ALLOWED_CHAT_ID:-0 default used to hand the installer
+# placeholder straight to the prompt as a real chat id. resolve_owner_chat_id
+# refuses "0"/empty and falls back to the paired channel (access.json) --
+# with neither, the run must not start at all: no owner chat, nothing to
+# deliver, no point spending the model call, and NO stamp (so the guard
+# retries next trigger instead of silently marking the day done).
+. "$INSTALL_DIR/scripts/lib/owner-chat.sh"
+if ! CHAT_ID="$(resolve_owner_chat_id "$INSTALL_DIR/.env" 2>>"$LOG")"; then
+  echo "=== Reggeli napindító kihagyva: nincs tulajdonos-chat (guard nem pecsételve) ===" >> "$LOG"
+  exit 0
+fi
 
 # Delivery-proof sentinel. The dedup stamp must record "the briefing REACHED
 # the owner", not "the process exited 0" -- those diverged on 2026-09-13: the

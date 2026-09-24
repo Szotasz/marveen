@@ -25,6 +25,9 @@ new_case() {
   # is not a smaller install -- it is a BROKEN one, and the difference would
   # only show up as a silently missing send. Copy what a real install has.
   mkdir -p "$c/scripts/lib"; cp "$INSTALL_DIR/scripts/lib/send-telegram.sh" "$c/scripts/lib/"
+  # CHATID0: the owner-chat resolver, same reason -- its absence is a silently
+  # broken install, not a smaller one.
+  cp "$INSTALL_DIR/scripts/lib/owner-chat.sh" "$c/scripts/lib/"
   # MIOHEREDOC902: the measured quota path now lives in its own file.
   cp "$INSTALL_DIR/scripts/lib/quota-check.py" "$c/scripts/lib/"
   printf 'MAIN_AGENT_ID=probe\nALLOWED_CHAT_ID=1\n' > "$c/.env"
@@ -334,6 +337,42 @@ if grep -q "quota file stale" "$C/store/limit-monitor.log" 2>/dev/null; then
   pass "and it is the value actually in force (the day-old reading is stale)"
 else
   fail "an in-range value was accepted but not applied"
+fi
+
+echo "(f) CHATID0: ALLOWED_CHAT_ID=0 resolves via the owner-chat helper"
+# Real signal, real token, but ALLOWED_CHAT_ID=0 (the installer placeholder)
+# with a paired access.json in the channel state dir -- must still send, to
+# the REAL resolved id, never to "0".
+C="$(deliver_case chatid0_paired ok)"
+sed -i 's/ALLOWED_CHAT_ID=1/ALLOWED_CHAT_ID=0/' "$C/.env"
+printf '{"allowFrom":["9999999"]}\n' > "$C/fakehome/.claude/channels/telegram/access.json"
+: > "$C/fakebin/curl.log"
+cat > "$C/fakebin/curl" <<'STUB'
+#!/bin/bash
+for a in "$@"; do
+  case "$a" in
+    chat_id=*) echo "SEEN_CHAT_ID:${a#chat_id=}" >> "$(dirname "$0")/curl.log" ;;
+  esac
+done
+printf '%s' '{"ok":true,"result":{}}'
+STUB
+chmod +x "$C/fakebin/curl"
+printf '%s\n' "You've reached your weekly limit for Opus." > "$C/store/channels.log"
+run_case "$C"
+if grep -q "SEEN_CHAT_ID:9999999" "$C/fakebin/curl.log" 2>/dev/null; then
+  pass "ALLOWED_CHAT_ID=0 + paired access.json -> alerts the real resolved id"
+else
+  fail "ALLOWED_CHAT_ID=0 + paired access.json -> expected chat_id=9999999, log: $(cat "$C/fakebin/curl.log" 2>/dev/null)"
+fi
+
+# No access.json at all -> the monitor must stay silent, not send to "0".
+C="$(new_case chatid0_no_access)"
+sed -i 's/ALLOWED_CHAT_ID=1/ALLOWED_CHAT_ID=0/' "$C/.env"
+run_case "$C"
+if grep -q "no ALLOWED_CHAT_ID in .env" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "ALLOWED_CHAT_ID=0, no access.json -> exits quietly (no owner chat)"
+else
+  fail "ALLOWED_CHAT_ID=0, no access.json -> expected the no-owner-chat log line: $(cat "$C/store/limit-monitor.log" 2>/dev/null)"
 fi
 
 echo ""

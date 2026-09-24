@@ -26,6 +26,7 @@ function stageTree(scriptNames: string[]): { bin: string } {
   mkdirSync(join(stage, 'store'), { recursive: true })
   for (const s of scriptNames) cpSync(join(ROOT, 'scripts', s), join(scripts, s))
   cpSync(join(ROOT, 'scripts', 'lib', 'send-telegram.sh'), join(scripts, 'lib', 'send-telegram.sh'))
+  cpSync(join(ROOT, 'scripts', 'lib', 'owner-chat.sh'), join(scripts, 'lib', 'owner-chat.sh'))
   const bin = join(stage, 'bin')
   mkdirSync(bin, { recursive: true })
   writeFileSync(join(bin, 'curl'),

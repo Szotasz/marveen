@@ -51,7 +51,11 @@ if [ -z "${GH_TOKEN:-}" ] && [ -f store/.github-fleet-token ]; then
 fi
 [ -n "${GH_TOKEN:-}" ] && export GH_TOKEN || echo "WARN: no GH_TOKEN (vault+file both empty), gh calls may fail" >&2
 BOT_TOKEN="$(grep -E '^TELEGRAM_BOT_TOKEN=' .env | cut -d= -f2- | tr -d '"'"'"' ')"
-CHAT_ID="$(grep -E '^ALLOWED_CHAT_ID=' .env | cut -d= -f2- | tr -d '"'"'"' ')"
+# CHATID0: resolve_owner_chat_id, not a raw ALLOWED_CHAT_ID read -- the old
+# read let the installer's "0" placeholder through unnoticed, and never
+# fell back to a paired channel's access.json.
+. "$(cd "$(dirname "$0")" && pwd)/lib/owner-chat.sh"
+CHAT_ID="$(resolve_owner_chat_id "$INSTALL_DIR/.env" 2>/dev/null || true)"
 
 send_telegram() {
   local text="$1"
