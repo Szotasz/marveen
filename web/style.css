@@ -6412,6 +6412,41 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   cursor: pointer;
 }
 .claude-plans-checkbox-row input { width: auto; }
+.claude-plans-form-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+}
+.claude-plans-add-form .input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.claude-plans-form-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+.claude-plans-form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.claude-plan-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.claude-plan-edit {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+}
+.claude-plan-edit:hover { color: var(--text); }
 
 /* === connectors.hu cross-promo banner === */
 .cxhu-banner {

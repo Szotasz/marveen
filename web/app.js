@@ -14403,20 +14403,24 @@ async function renderClaudePlansPanel(body) {
     <p style="color:var(--text-muted);font-size:13px;margin:0 0 16px">${t('settings.claude_plans.intro')}</p>
     <div id="claudePlansList"></div>
     <div class="claude-plans-add-form">
+      <div class="claude-plans-form-title" id="cpFormTitle">${t('settings.claude_plans.form.title_add')}</div>
       <div class="form-row">
         <div class="form-group" style="flex:1">
           <label>${t('settings.claude_plans.form.id')}</label>
-          <input class="input" id="cpFormId" placeholder="personal-2">
+          <input class="input" id="cpFormId" placeholder="personal-2" autocomplete="off">
         </div>
         <div class="form-group" style="flex:1">
           <label>${t('settings.claude_plans.form.label')}</label>
-          <input class="input" id="cpFormLabel" placeholder="Second Pro">
+          <input class="input" id="cpFormLabel" placeholder="Second Pro" autocomplete="off">
         </div>
       </div>
       <div class="form-row">
-        <div class="form-group" style="flex:2">
-          <label>${t('settings.claude_plans.form.config_dir')}</label>
-          <input class="input" id="cpFormConfigDir" placeholder="~/.claude-second">
+        <div class="form-group" style="flex:1">
+          <label>${t('settings.claude_plans.form.mode')}</label>
+          <select class="input" id="cpFormMode">
+            <option value="token">${t('settings.claude_plans.form.mode_token')}</option>
+            <option value="configDir">${t('settings.claude_plans.form.mode_config_dir')}</option>
+          </select>
         </div>
         <div class="form-group" style="flex:1">
           <label>${t('settings.claude_plans.form.type')}</label>
@@ -14426,55 +14430,181 @@ async function renderClaudePlansPanel(body) {
           </select>
         </div>
       </div>
+      <div class="form-group" id="cpFormTokenGroup">
+        <label for="cpFormToken">${t('settings.claude_plans.form.token')}</label>
+        <input class="input" id="cpFormToken" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-oat01-…">
+        <div class="claude-plans-form-hint" id="cpFormTokenHint">${t('settings.claude_plans.form.token_hint')}</div>
+      </div>
+      <div class="form-group" id="cpFormConfigDirGroup" hidden>
+        <label for="cpFormConfigDir">${t('settings.claude_plans.form.config_dir')}</label>
+        <input class="input" id="cpFormConfigDir" placeholder="~/.claude-second" autocomplete="off">
+      </div>
       <label class="claude-plans-checkbox-row">
         <input type="checkbox" id="cpFormChannelsAllowed" checked>
         <span>${t('settings.claude_plans.form.channels_allowed')}</span>
       </label>
       <div id="cpFormError" class="settings-row-error" hidden></div>
-      <button class="btn-secondary btn-compact" id="cpFormAddBtn" style="margin-top:12px">${t('settings.claude_plans.form.add_btn')}</button>
+      <div class="claude-plans-form-actions">
+        <button class="btn-secondary btn-compact" id="cpFormAddBtn">${t('settings.claude_plans.form.add_btn')}</button>
+        <button class="btn-secondary btn-compact" id="cpFormCancelBtn" hidden>${t('common.btn.cancel')}</button>
+      </div>
     </div>
   `
 
-  document.getElementById('cpFormAddBtn').addEventListener('click', () => addClaudePlan())
-  for (const id of ['cpFormId', 'cpFormLabel', 'cpFormConfigDir']) {
-    document.getElementById(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') addClaudePlan() })
+  document.getElementById('cpFormMode').addEventListener('change', () => syncClaudePlanFormMode())
+  document.getElementById('cpFormAddBtn').addEventListener('click', () => saveClaudePlan())
+  document.getElementById('cpFormCancelBtn').addEventListener('click', () => resetClaudePlanForm())
+  for (const id of ['cpFormId', 'cpFormLabel', 'cpFormConfigDir', 'cpFormToken']) {
+    document.getElementById(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') saveClaudePlan() })
   }
+  claudePlanFormEditing = null
+  syncClaudePlanFormMode()
 
   await loadClaudePlansList()
 }
 
-async function addClaudePlan() {
+// The plan being edited in the form (the GET /api/claude-plans object), or
+// null while the form is in "add" mode. Only the plan's public shape is kept
+// here -- the raw token is never returned by the API and never pre-filled.
+let claudePlanFormEditing = null
+
+// Pure: form fields (+ the plan being edited, if any) -> the POST/PUT body,
+// or an i18n error key. Contract of src/web/routes/claude-plans.ts:
+//   - config-dir mode sends `configDir`;
+//   - token mode sends the raw `token` (moved into the vault server-side as
+//     claude-plan-token-<id>, never written to disk or echoed back);
+//   - token mode on EDIT with the token field left empty keeps the stored
+//     token by sending the plan's own `tokenSecretId` instead (the PUT
+//     replaces the whole plan, and a body with neither configDir nor
+//     token/tokenSecretId is rejected);
+//   - never both `token` and `configDir` (the route 400s that as ambiguous).
+function buildClaudePlanRequestBody(fields, editing) {
+  const id = editing ? editing.id : String(fields.id || '').trim()
+  const label = String(fields.label || '').trim()
+  const body = { id, label, planType: fields.planType, channelsAllowed: !!fields.channelsAllowed }
+  if (!id || !label) return { error: 'settings.claude_plans.form.error_required' }
+  if (fields.mode === 'token') {
+    const token = String(fields.token || '').trim()
+    if (token) {
+      body.token = token
+    } else if (editing && editing.tokenSecretId) {
+      body.tokenSecretId = editing.tokenSecretId
+    } else {
+      return { error: 'settings.claude_plans.form.error_token_required' }
+    }
+  } else {
+    const configDir = String(fields.configDir || '').trim()
+    if (!configDir) return { error: 'settings.claude_plans.form.error_config_dir_required' }
+    body.configDir = configDir
+  }
+  return { body, sendsNewToken: typeof body.token === 'string' }
+}
+
+function syncClaudePlanFormMode() {
+  const mode = document.getElementById('cpFormMode')?.value
+  const tokenGroup = document.getElementById('cpFormTokenGroup')
+  const dirGroup = document.getElementById('cpFormConfigDirGroup')
+  if (!tokenGroup || !dirGroup) return
+  tokenGroup.hidden = mode !== 'token'
+  dirGroup.hidden = mode === 'token'
+  const hasStoredToken = !!claudePlanFormEditing?.tokenSecretId
+  const hint = document.getElementById('cpFormTokenHint')
+  if (hint) {
+    hint.textContent = t(hasStoredToken
+      ? 'settings.claude_plans.form.token_keep_hint'
+      : 'settings.claude_plans.form.token_hint')
+  }
+  // A stored token reads as masked dots, not as an example value to type.
+  const tokenEl = document.getElementById('cpFormToken')
+  if (tokenEl) tokenEl.placeholder = hasStoredToken ? '••••••••••••' : 'sk-ant-oat01-…'
+}
+
+function resetClaudePlanForm() {
+  claudePlanFormEditing = null
+  const idEl = document.getElementById('cpFormId')
+  if (!idEl) return
+  idEl.value = ''
+  idEl.disabled = false
+  document.getElementById('cpFormLabel').value = ''
+  document.getElementById('cpFormConfigDir').value = ''
+  document.getElementById('cpFormToken').value = ''
+  document.getElementById('cpFormMode').value = 'token'
+  document.getElementById('cpFormType').value = 'personal'
+  document.getElementById('cpFormChannelsAllowed').checked = true
+  document.getElementById('cpFormTitle').textContent = t('settings.claude_plans.form.title_add')
+  document.getElementById('cpFormAddBtn').textContent = t('settings.claude_plans.form.add_btn')
+  document.getElementById('cpFormCancelBtn').hidden = true
+  document.getElementById('cpFormError').hidden = true
+  syncClaudePlanFormMode()
+}
+
+function editClaudePlan(plan) {
+  claudePlanFormEditing = plan
+  const idEl = document.getElementById('cpFormId')
+  if (!idEl) return
+  idEl.value = plan.id
+  idEl.disabled = true
+  document.getElementById('cpFormLabel').value = plan.label
+  document.getElementById('cpFormMode').value = plan.tokenSecretId ? 'token' : 'configDir'
+  document.getElementById('cpFormConfigDir').value = plan.configDir || ''
+  // Never pre-filled: the API does not return the token, and an empty field
+  // on save means "keep the stored one" (buildClaudePlanRequestBody).
+  document.getElementById('cpFormToken').value = ''
+  document.getElementById('cpFormType').value = plan.planType === 'team' ? 'team' : 'personal'
+  document.getElementById('cpFormChannelsAllowed').checked = !!plan.channelsAllowed
+  document.getElementById('cpFormTitle').textContent = t('settings.claude_plans.form.title_edit', { id: plan.id })
+  document.getElementById('cpFormAddBtn').textContent = t('common.btn.save')
+  document.getElementById('cpFormCancelBtn').hidden = false
+  document.getElementById('cpFormError').hidden = true
+  syncClaudePlanFormMode()
+  document.getElementById('cpFormLabel').focus()
+  document.querySelector('.claude-plans-add-form')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+}
+
+async function saveClaudePlan() {
   const errEl = document.getElementById('cpFormError')
   errEl.hidden = true
-  const id = document.getElementById('cpFormId').value.trim()
-  const label = document.getElementById('cpFormLabel').value.trim()
-  const configDir = document.getElementById('cpFormConfigDir').value.trim()
-  const planType = document.getElementById('cpFormType').value
-  const channelsAllowed = document.getElementById('cpFormChannelsAllowed').checked
-
-  if (!id || !label || !configDir) {
-    errEl.textContent = t('settings.claude_plans.form.error_required')
+  const editing = claudePlanFormEditing
+  const built = buildClaudePlanRequestBody({
+    id: document.getElementById('cpFormId').value,
+    label: document.getElementById('cpFormLabel').value,
+    mode: document.getElementById('cpFormMode').value,
+    configDir: document.getElementById('cpFormConfigDir').value,
+    token: document.getElementById('cpFormToken').value,
+    planType: document.getElementById('cpFormType').value,
+    channelsAllowed: document.getElementById('cpFormChannelsAllowed').checked,
+  }, editing)
+  if (built.error) {
+    errEl.textContent = t(built.error)
     errEl.hidden = false
     return
   }
 
+  const url = editing ? `/api/claude-plans/${encodeURIComponent(editing.id)}` : '/api/claude-plans'
   try {
-    const res = await fetch('/api/claude-plans', {
-      method: 'POST',
+    const res = await fetch(url, {
+      method: editing ? 'PUT' : 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, label, configDir, planType, channelsAllowed }),
+      body: JSON.stringify(built.body),
     })
-    const data = await res.json()
+    let data = null
+    try { data = await res.json() } catch { /* non-JSON error body */ }
     if (!res.ok) {
-      errEl.textContent = data.error || t('settings.claude_plans.form.error_generic')
+      errEl.textContent = (data && data.error) || t('settings.claude_plans.form.error_generic')
       errEl.hidden = false
       return
     }
-    document.getElementById('cpFormId').value = ''
-    document.getElementById('cpFormLabel').value = ''
-    document.getElementById('cpFormConfigDir').value = ''
-    document.getElementById('cpFormChannelsAllowed').checked = true
+    // The raw token leaves the DOM as soon as the server has it.
+    document.getElementById('cpFormToken').value = ''
+    const savedId = (data && data.id) || built.body.id
+    resetClaudePlanForm()
     await loadClaudePlansList()
+    // A freshly pasted token: measure it right away, so the row shows its
+    // real 5h/7d usage (or "token rejected") instead of "not checked yet".
+    if (built.sendsNewToken && data && data.tokenSecretId) {
+      const btn = document.querySelector(`.claude-plan-row[data-plan-id="${CSS.escape(savedId)}"] .claude-plan-check-btn`)
+      if (btn) await probeClaudePlan(savedId, btn)
+    }
   } catch {
     errEl.textContent = t('settings.claude_plans.form.error_generic')
     errEl.hidden = false
@@ -14484,6 +14614,7 @@ async function addClaudePlan() {
 async function deleteClaudePlan(id) {
   if (!confirm(t('settings.claude_plans.confirm_delete', { id }))) return
   await fetch(`/api/claude-plans/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  if (claudePlanFormEditing?.id === id) resetClaudePlanForm()
   await loadClaudePlansList()
 }
 
@@ -14529,7 +14660,7 @@ function renderClaudePlanUsage(plan, observed) {
     if (expired) {
       tail = ' · ' + t('overview.quota.expired')
     } else if (typeof w.resetsAt === 'number') {
-      const at = new Date(w.resetsAt * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+      const at = new Date(w.resetsAt * 1000).toLocaleString(_lang === 'en' ? 'en-US' : 'hu-HU', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
       tail = ' · ' + t('settings.claude_plans.resets', { d: formatDurationShort(w.resetsAt - nowSec), at })
     }
     const row = document.createElement('div')
@@ -14562,7 +14693,7 @@ function renderClaudePlanUsage(plan, observed) {
   foot.appendChild(info)
 
   const btn = document.createElement('button')
-  btn.className = 'btn-secondary btn-compact'
+  btn.className = 'btn-secondary btn-compact claude-plan-check-btn'
   btn.textContent = t('settings.claude_plans.check_now')
   if (!plan.tokenSecretId) {
     btn.disabled = true
@@ -14621,6 +14752,7 @@ async function loadClaudePlansList() {
 
       const row = document.createElement('div')
       row.className = 'claude-plan-row'
+      row.dataset.planId = plan.id
 
       const main = document.createElement('div')
       main.style.flex = '1'
@@ -14644,12 +14776,23 @@ async function loadClaudePlansList() {
 
       row.appendChild(main)
 
+      const actions = document.createElement('div')
+      actions.className = 'claude-plan-actions'
+      const editBtn = document.createElement('button')
+      editBtn.className = 'claude-plan-edit'
+      editBtn.title = t('common.btn.edit')
+      editBtn.setAttribute('aria-label', t('common.btn.edit'))
+      editBtn.textContent = '✎'
+      editBtn.addEventListener('click', () => editClaudePlan(plan))
+      actions.appendChild(editBtn)
+
       const delBtn = document.createElement('button')
       delBtn.className = 'claude-plan-delete'
       delBtn.title = t('common.btn.delete')
       delBtn.textContent = '×'
       delBtn.addEventListener('click', () => deleteClaudePlan(plan.id))
-      row.appendChild(delBtn)
+      actions.appendChild(delBtn)
+      row.appendChild(actions)
 
       list.appendChild(row)
     }
