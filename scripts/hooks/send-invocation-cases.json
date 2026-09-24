@@ -560,6 +560,21 @@
       "name": "SENDWRAP924: an UNKNOWN long flag that takes a value (a future sudo flag): the second reading finds the send",
       "cmd": "sudo --future-flag val sendmail a@b.hu",
       "expected": true
+    },
+    {
+      "name": "SENDWRAP924: setsid (the one open wrapper fleet traffic uses)",
+      "cmd": "setsid sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: setsid -f",
+      "cmd": "setsid -f sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: reverse -- setsid runs a non-sender",
+      "cmd": "setsid echo sendmail",
+      "expected": false
     }
   ]
 }

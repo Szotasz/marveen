@@ -294,6 +294,9 @@ _WRAPPERS = {
     "xargs": ("ILnPsdEa", ("arg-file", "delimiter", "eof", "replace", "max-lines", "max-args",
                            "max-procs", "max-chars", "process-slot-var"), 0),
     "timeout": ("sk", ("signal", "kill-after"), 1),
+    # setsid: the one wrapper outside the first table that fleet traffic uses
+    # (Marveen, tool_call_log 24 h: 5 uses; stdbuf/flock/caffeinate/... 0).
+    "setsid": ("", (), 0),
 }
 _HEAD_DEPTH = 8
 

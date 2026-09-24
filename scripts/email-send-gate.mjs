@@ -176,6 +176,7 @@ const WRAPPERS = new Map([
   ['xargs', ['ILnPsdEa', ['arg-file', 'delimiter', 'eof', 'replace', 'max-lines', 'max-args',
     'max-procs', 'max-chars', 'process-slot-var'], 0]],
   ['timeout', ['sk', ['signal', 'kill-after'], 1]],
+  ['setsid', ['', [], 0]],
 ])
 const HEAD_DEPTH = 8
 
