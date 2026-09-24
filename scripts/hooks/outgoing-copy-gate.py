@@ -73,6 +73,18 @@ import sys
 # eldobasa a heredoc-taplalt VALODI kuldot vesztette volna el (FN).
 _HEREDOC = re.compile(r"(<<-?\s*'?(\w+)'?[^\n]*)\n.*?\n\2(?=\s|$)", re.S)
 _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*=")
+# KWSPLIT924: shell reserved words that put the NEXT word in command position.
+# The segmenter splits on operators only, so `if true; then sendmail x; fi`
+# gave the segment [then, sendmail, x] whose "program" was `then`: the send was
+# not recognised and the copy audit was silently skipped (same for do / else /
+# elif / { / !, and the condition after if / while / until). They are stripped
+# ONLY at the head of a segment, i.e. in command position, never as separators:
+# `echo then sendmail x` stays a single echo. `in` is deliberately NOT here: the
+# words after it are data, and `for m in sendmail msmtp; do which $m; done` must
+# stay false. `for` / `case` are not here either: the word after them is a name
+# or a subject, not a command. Mirrored in email-send-gate.mjs (CMD_POSITION_KEYWORDS);
+# the shared send-invocation-cases.json binds the two.
+_CMD_POSITION_KEYWORDS = frozenset(("if", "then", "else", "elif", "do", "while", "until", "{", "!"))
 _SENDER_PROG = re.compile(r"^(sendmail|msmtp|swaks)$", re.I)
 _SENDPY = re.compile(r"^send\.py$", re.I)
 _PYTHON = re.compile(r"^python3?$", re.I)
@@ -257,7 +269,7 @@ def _segments_tokens(cmd: str):
 
 
 def _segment_is_send(toks, depth: int) -> bool:
-    while toks and _ENV_ASSIGN.match(toks[0]):
+    while toks and (_ENV_ASSIGN.match(toks[0]) or toks[0] in _CMD_POSITION_KEYWORDS):
         toks = toks[1:]
     if not toks:
         return False

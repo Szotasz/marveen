@@ -280,6 +280,111 @@
       "name": "SEGSPLIT923: control -- a non-send after $(...); stays false",
       "cmd": "X=$(date); echo sendmail is mentioned here",
       "expected": false
+    },
+    {
+      "name": "KWSPLIT924: send inside if/then",
+      "cmd": "if true; then sendmail a@b.hu; fi",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: send inside while/do",
+      "cmd": "while true; do sendmail a@b.hu; done",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: send inside for/do",
+      "cmd": "for x in 1; do sendmail a@b.hu; done",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: send in the else branch",
+      "cmd": "if false; then true; else sendmail a@b.hu; fi",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: send inside a { } group",
+      "cmd": "{ sendmail a@b.hu; }",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: send.py inside if/then",
+      "cmd": "if true; then python3 scripts/support-mail/send.py --to a@b.hu --body x; fi",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: send inside until/do",
+      "cmd": "until false; do sendmail a@b.hu; done",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: send as the if condition",
+      "cmd": "if sendmail a@b.hu; then true; fi",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: send in an elif branch",
+      "cmd": "if false; then true; elif true; then sendmail a@b.hu; fi",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: send after !",
+      "cmd": "! sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: { } group nested in then",
+      "cmd": "if true; then { sendmail a@b.hu; }; fi",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: control -- the same send after ;",
+      "cmd": "true; sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: control -- the same send after &&",
+      "cmd": "true && sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: reverse -- keyword inside a double-quoted argument",
+      "cmd": "echo \"then sendmail a@b.hu\"",
+      "expected": false
+    },
+    {
+      "name": "KWSPLIT924: reverse -- a whole if/then in single quotes",
+      "cmd": "echo 'if true; then sendmail a@b.hu; fi'",
+      "expected": false
+    },
+    {
+      "name": "KWSPLIT924: reverse -- unquoted keyword as an argument",
+      "cmd": "echo then sendmail a@b.hu",
+      "expected": false
+    },
+    {
+      "name": "KWSPLIT924: reverse -- do as an argument",
+      "cmd": "echo do sendmail",
+      "expected": false
+    },
+    {
+      "name": "KWSPLIT924: reverse -- the words after `in` are data, not commands",
+      "cmd": "for m in sendmail msmtp; do which $m; done",
+      "expected": false
+    },
+    {
+      "name": "KWSPLIT924: reverse -- keyword inside a grep pattern",
+      "cmd": "grep -n \"else sendmail\" notes.md",
+      "expected": false
+    },
+    {
+      "name": "KWSPLIT924: reverse -- a case pattern is not a command",
+      "cmd": "case \"$x\" in sendmail) echo hit;; esac",
+      "expected": false
+    },
+    {
+      "name": "KWSPLIT924: reverse -- `in` on its own line heads a segment, and its words are still data",
+      "cmd": "for m\nin sendmail msmtp\ndo which $m\ndone",
+      "expected": false
     }
   ]
 }

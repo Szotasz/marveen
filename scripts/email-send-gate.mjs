@@ -84,6 +84,11 @@ const SEND_PATTERNS = [
 // would have lost a heredoc-fed real sender (FN).
 const HEREDOC_RE = /(<<-?\s*'?(\w+)'?[^\n]*)\n[\s\S]*?\n\2(?=\s|$)/g
 const ENV_ASSIGN = /^[A-Za-z_][A-Za-z_0-9]*=/
+// KWSPLIT924: shell reserved words that put the NEXT word in command position.
+// Stripped only at the head of a segment, never used as separators -- see the
+// full rationale at _CMD_POSITION_KEYWORDS in outgoing-copy-gate.py (the python
+// twin); the shared send-invocation-cases.json binds the two copies.
+const CMD_POSITION_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '{', '!'])
 const SENDER_PROG = /^(sendmail|msmtp|swaks)$/i
 const SENDPY = /^send\.py$/i
 const PYTHON = /^python3?$/i
@@ -157,7 +162,7 @@ const basename = (t) => t.split('/').pop()
 
 function segmentIsSend(toksIn, depth) {
   let toks = toksIn
-  while (toks.length && ENV_ASSIGN.test(toks[0])) toks = toks.slice(1)
+  while (toks.length && (ENV_ASSIGN.test(toks[0]) || CMD_POSITION_KEYWORDS.has(toks[0]))) toks = toks.slice(1)
   if (!toks.length) return false
   const prog = basename(toks[0])
   const rest = toks.slice(1)
