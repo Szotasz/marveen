@@ -575,6 +575,21 @@
       "name": "SENDWRAP924: reverse -- setsid runs a non-sender",
       "cmd": "setsid echo sendmail",
       "expected": false
+    },
+    {
+      "name": "SENDWRAP924: nine nested wrappers: the depth bound errs toward auditing (Samu, #1521 review)",
+      "cmd": "nohup nohup nohup nohup nohup nohup nohup nohup nohup sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: eight nested wrappers + sendmail, inside the bound",
+      "cmd": "nohup nohup nohup nohup nohup nohup nohup nohup sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: reverse -- eight nested wrappers + a non-sender, inside the bound",
+      "cmd": "nohup nohup nohup nohup nohup nohup nohup nohup echo sendmail",
+      "expected": false
     }
   ]
 }
