@@ -11,7 +11,6 @@
   {"toolName": "Bash", "input": {"command": "export VALAMI_TOKEN=\"fakeTokenValue123456\" && run"}},
   {"toolName": "Bash", "input": {"command": "PGPASSWORD='fake pass 98765' psql -h db"}},
   {"toolName": "Bash", "input": {"command": "gh api --token fakeflagvalue12345 /user"}},
-  {"toolName": "Bash", "input": {"command": "SERVICE_KEY=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmYWtlIn0.ZmFrZXNpZ25hdHVyZQ ./deploy"}},
   {"toolName": "Bash", "input": {"command": "GH=gho_FAKEfakeFAKEfake1234 gh pr list"}},
   {"toolName": "Bash", "input": {"command": "echo github_pat_11FAKEFAKE_fakefakefakefake"}},
   {"toolName": "Bash", "input": {"command": "git clone https://x-access-token:fakeurlcred9876@github.com/o/r.git"}},

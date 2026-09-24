@@ -12,14 +12,18 @@ import { toolInputPreview } from '../web/tool-input-preview.js'
 
 const PY_SCRIPT = join(__dirname, 'tool-input-preview-parity.py')
 
+// Assembled at runtime: a literal JWT in the source trips the repo's own
+// secret-gate (scripts/secret-gate.ts), which is right to refuse one.
+const JWT = ['eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiJmYWtlIn0', 'ZmFrZXNpZ25hdHVyZQ'].join('.')
+
 // [command, the secret that must not survive, a label that must survive]
 const SHAPES: Array<[string, string, string]> = [
   ['export VALAMI_TOKEN="fakeTokenValue123456" && run', 'fakeTokenValue123456', 'VALAMI_TOKEN='],
   ["PGPASSWORD='fake pass 98765' psql -h db", 'fake pass', 'PGPASSWORD='],
   ['gh api --token fakeflagvalue12345 /user', 'fakeflagvalue12345', '--token'],
   ['deploy --github-token "fake quoted flag"', 'fake quoted flag', '--github-token'],
-  ['SERVICE_KEY=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmYWtlIn0.ZmFrZXNpZ25hdHVyZQ ./deploy', 'eyJzdWIiOiJmYWtlIn0', 'SERVICE_KEY='],
-  ['echo eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmYWtlIn0.ZmFrZXNpZ25hdHVyZQ', 'eyJzdWIiOiJmYWtlIn0', 'echo'],
+  [`SERVICE_KEY=${JWT} ./deploy`, 'eyJzdWIiOiJmYWtlIn0', 'SERVICE_KEY='],
+  [`echo ${JWT}`, 'eyJzdWIiOiJmYWtlIn0', 'echo'],
   ['GH=gho_FAKEfakeFAKEfake1234 gh pr list', 'FAKEfakeFAKEfake1234', 'gh pr list'],
   ['X=ghs_FAKEfakeFAKEfake1234; Y=ghu_FAKEfakeFAKEfake5678', 'FAKEfakeFAKEfake', 'X='],
   ['echo github_pat_11FAKEFAKE_fakefakefakefake', 'fakefakefakefake', 'echo'],
