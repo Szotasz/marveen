@@ -115,7 +115,7 @@ describe('/help generated from the registry (CMD920 test 3)', () => {
       expect(m.description.length).toBeLessThanOrEqual(256)
     }
     // the menu shows the read description of /model, not a planned write's
-    expect(menu.find(m => m.command === 'model')?.description).toMatch(/futó és beállított/)
+    expect(menu.find(m => m.command === 'model')?.description).toMatch(/mi fut most/)
   })
 
   it('A2: the /model and /context writes are real (not planned); the nonce writes stay planned', () => {

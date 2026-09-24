@@ -718,7 +718,7 @@ export function registerModelWriteCommands(): void {
   registerCommand({
     name: 'model', kind: 'write', usage: `/model [<választás>] [<${EFFORT_LEVELS.join('|')}>] [<idő>|keep]`,
     description: 'modell és/vagy effort; alapból 2 óra, majd vissza; keep = tartós (.env)',
-    matches: args => args.length > 0 && !['back', 'default'].includes(args[0].toLowerCase()),
+    matches: args => args.length > 0 && !['back', 'default', 'details'].includes(args[0].toLowerCase()),
     touches: ['model'],
     run: async (ctx, args) => ctx.reply(withRetry(`/model ${args.join(' ')}`, await setModel(args), ctx)),
   })

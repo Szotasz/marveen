@@ -26,7 +26,8 @@ import {
   type ModelDeps,
   type HoldState,
 } from '../web/main-model.js'
-import { measuredModelLines, effortLine } from '../web/builtin-commands.js'
+import { measuredModelLines, effortLine, modelSummary, modelStateLine, registerBuiltinCommands, type ModelSummaryInput } from '../web/builtin-commands.js'
+import { resolveCommand, clearCommandsForTest } from '../web/commands.js'
 import { logger } from '../logger.js'
 
 const BASE = 'claude-sonnet-5'
@@ -589,6 +590,64 @@ describe('/model default with a hold while the session is busy', () => {
     expect(r).toEqual({ ok: true, text: 'A session foglalt (pane-busy); a tartás lejártra állítva, a sweep visszavált, amint csendes.' })
     expect(readHold(d.holdFile).state?.until).toBe(T0)
     expect(d.sent).toEqual([])
+  })
+})
+
+// The owner's /model view (owner feedback 2026-09-24, mocks approved): what
+// runs, until when, what to type -- no config keys, no "nem mérhető (...)".
+describe('/model owner view (modelSummary)', () => {
+  const choices = [
+    { name: 'opus', id: 'claude-opus-5[1m]', purpose: 'nehéz munka, tervezés' },
+    { name: 'sonnet', id: 'claude-sonnet-5', purpose: 'napi munka' },
+    { name: 'haiku', id: 'claude-haiku-4-5-20251001', purpose: 'gépies, olcsó körök (200K ablak)' },
+  ]
+  const base = (o: Partial<ModelSummaryInput> = {}): ModelSummaryInput => ({
+    measured: { model: 'claude-sonnet-5', atMs: T0 - 60_000 }, lastSent: null, hold: null,
+    configured: 'claude-sonnet-5', effortConfigured: null, effortSent: null, choices, now: T0, ...o,
+  })
+
+  it('base state: short names, no technical keys', () => {
+    expect(modelSummary(base())).toBe([
+      'Modell: sonnet (alap)',
+      'Tartás: nincs',
+      '',
+      'Választható: opus (nehéz munka, tervezés) · sonnet (napi munka) · haiku (gépies, olcsó körök)',
+      'Váltás: /model opus 30m · vissza: /model default · részletek: /model details',
+    ].join('\n'))
+    expect(modelSummary(base())).not.toMatch(/\.env|MAIN_AGENT_MODEL|visszamérni|assistant-sor/)
+  })
+
+  it('a hold: until when, how long left, what comes back; effort marked temporary', () => {
+    const hold = { model: 'claude-opus-5[1m]', name: 'opus', revert_to: 'claude-sonnet-5', effort: 'high', revert_effort: null,
+      until: T0 + 25 * 60_000, set_at: T0 - 60_000, verify_pending: false, blocked_since: null, block_alert_at: null }
+    const out = modelSummary(base({ hold, measured: { model: 'claude-opus-5', atMs: T0 - 1000 } }))
+    expect(out).toMatch(/^Modell: opus, ideiglenes, \d\d:\d\d-ig \(még 25 perc\)\nUtána vissza: sonnet\nEffort: high, ideiglenes\n/)
+    expect(out).not.toMatch(/Tartás: nincs/)
+    expect(out).toMatch(/Váltás: \/model sonnet 30m · vissza most: \/model default/)
+  })
+
+  it('after a restart, no turn yet: says it will measure from the next turn', () => {
+    expect(modelStateLine(base({ measured: null })).line).toBe('sonnet (alap), a következő körtől mérem')
+  })
+
+  it('a different model running than the one expected: a plain-language warning', () => {
+    const r = modelStateLine(base({ measured: { model: 'claude-haiku-4-5-20251001', atMs: T0 - 1000 } }))
+    expect(r.warn).toMatch(/^⚠️ Most haiku fut, pedig a beállítás sonnet\./)
+  })
+
+  it('effort only when there is one; a configured effort is "alap"', () => {
+    expect(modelSummary(base())).not.toMatch(/Effort/)
+    expect(modelSummary(base({ effortConfigured: 'medium' }))).toMatch(/Effort: medium \(alap\)/)
+    expect(modelSummary(base({ effortSent: 'low' }))).toMatch(/Effort: low\n/)
+  })
+
+  it('/model details resolves to the READ entry, not a model switch', () => {
+    clearCommandsForTest()
+    registerBuiltinCommands()
+    expect(resolveCommand('model', ['details'])?.kind).toBe('read')
+    expect(resolveCommand('model', ['details'])?.usage).toBe('/model details')
+    expect(resolveCommand('model', ['opus'])?.kind).toBe('write')
+    expect(resolveCommand('model', [])?.kind).toBe('read')
   })
 })
 

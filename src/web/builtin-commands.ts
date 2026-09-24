@@ -47,7 +47,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { listScheduledTasks, type ScheduledTask } from './scheduled-tasks-io.js'
 import { computeNextRun } from './cron.js'
 import { getTokenSummary, getModelDistribution } from './token-usage.js'
-import { registerModelWriteCommands, readModelChoices as readChoiceList, readHold, readLastSent, readEffortSent, readConfiguredEffort, withRetry, MODEL_CHOICES_FILE, MODEL_HOLD_FILE, MODEL_LAST_SENT_FILE, EFFORT_SENT_FILE, EFFORT_LEVELS, type LastSent } from './main-model.js'
+import { registerModelWriteCommands, readModelChoices as readChoiceList, readHold, readLastSent, readEffortSent, readConfiguredEffort, withRetry, MODEL_CHOICES_FILE, MODEL_HOLD_FILE, MODEL_LAST_SENT_FILE, EFFORT_SENT_FILE, EFFORT_LEVELS, type LastSent, type HoldState } from './main-model.js'
 import { contextClear } from './session-control.js'
 
 function clip(s: string, n: number): string {
@@ -70,7 +70,17 @@ async function statusText(): Promise<string> {
       ? notMeasurable('a status.claude.com nem válaszolt')
       : anthropic.overall,
   }
-  return formatSystemStatus(system, { RENDSZER: [row] })
+  // The owner-facing Modell row (same wording as /model); the /api/status JSON
+  // keeps its technical value.
+  const ms = modelStateLine(modelSummaryInput())
+  const owner = {
+    ...system,
+    blocks: system.blocks.map(b => ({
+      ...b,
+      rows: b.rows.map(r => r.label === 'Modell' ? { ...r, value: ms.line + (ms.warn ? ' · ⚠️ eltér, l. /model' : '') } : r),
+    })),
+  }
+  return formatSystemStatus(owner, { RENDSZER: [row] })
 }
 
 // ---- /model (status) --------------------------------------------------------
@@ -116,6 +126,106 @@ export function measuredModelLines(
     ? `⚠️ A futó modell eltér a ${holdModel ? 'tartásétól' : 'beállítottól'}.`
     : null
   return { head, warn }
+}
+
+// ---- /model: the owner's view (owner feedback 2026-09-24) -------------------
+//
+// The detailed view (model ids, config sources, measurement times) read like a
+// debug dump on Telegram: "Most fut: nem mérhető (nincs assistant-sor ...)",
+// "(.env MAIN_AGENT_MODEL)", "visszamérni nem tudjuk". This view says what
+// runs, for how long, and what to type; the old text is /model details.
+
+export interface ModelSummaryInput {
+  measured: { model: string; atMs: number } | null
+  lastSent: LastSent | null
+  hold: HoldState | null
+  configured: string
+  effortConfigured: string | null
+  effortSent: string | null
+  choices: Array<{ name: string; id: string; purpose?: string }> | null
+  now: number
+}
+
+// A choice's short name for a model id (opus, sonnet, ...), else the id itself.
+export function shortModelName(id: string | null, choices: ModelSummaryInput['choices']): string {
+  if (!id) return '?'
+  const c = (choices ?? []).find(x => !modelsDiffer(x.id, id))
+  return c ? c.name : id
+}
+
+// "16:20" when it is today, "09. 25. 16:20" otherwise.
+function clockShort(ms: number, now: number): string {
+  const a = formatDayClock(ms), b = formatDayClock(now)
+  return a.slice(0, -5) === b.slice(0, -5) ? a.slice(-5) : a
+}
+
+function purposeShort(p?: string): string {
+  return (p ?? '').replace(/\s*\([^)]*\)\s*$/, '').trim()
+}
+
+// The one-line model state, shared by /model and the /status "Modell" row.
+export function modelStateLine(i: ModelSummaryInput): { line: string; warn: string | null } {
+  const short = (id: string | null) => shortModelName(id, i.choices)
+  const pending = i.lastSent !== null && (i.measured === null || i.lastSent.at > i.measured.atMs)
+  const expected = i.hold?.model ?? i.configured
+  let line: string
+  if (i.hold?.model) {
+    line = `${short(i.hold.model)}, ideiglenes, ${clockShort(i.hold.until, i.now)}-ig (még ${formatSpan(Math.round((i.hold.until - i.now) / 1000))})`
+  } else {
+    line = `${short(i.configured)} (alap)`
+  }
+  if (pending && i.lastSent && !i.lastSent.acked) line += ', a váltást a Claude Code még nem igazolta vissza'
+  else if (i.measured === null && !pending) line += ', a következő körtől mérem'
+  const warn = i.measured && !pending && modelsDiffer(expected, i.measured.model)
+    ? `⚠️ Most ${short(i.measured.model)} fut, pedig a ${i.hold?.model ? 'tartás' : 'beállítás'} ${short(expected)}. Lehetséges ok: kvóta miatti tartalék-modell vagy egy kézi váltás. A következő körtől újramérem.`
+    : null
+  return { line, warn }
+}
+
+export function modelSummary(i: ModelSummaryInput): string {
+  const short = (id: string | null) => shortModelName(id, i.choices)
+  const { line, warn } = modelStateLine(i)
+  const out: string[] = [`Modell: ${line}`]
+  if (warn) out.push(warn)
+  if (i.hold?.model && i.hold.revert_to) out.push(`Utána vissza: ${short(i.hold.revert_to)}`)
+  const effort = i.hold?.effort ?? i.effortSent ?? i.effortConfigured
+  if (effort) {
+    const tag = i.hold?.effort ? ', ideiglenes' : i.effortSent ? '' : ' (alap)'
+    out.push(`Effort: ${effort}${tag}`)
+  }
+  if (!i.hold) out.push('Tartás: nincs')
+  out.push('')
+  if (i.choices === null) out.push('Választható: csak a beállított modell')
+  else out.push(`Választható: ${i.choices.map(c => purposeShort(c.purpose) ? `${c.name} (${purposeShort(c.purpose)})` : c.name).join(' · ')}`)
+  const current = short(i.hold?.model ?? i.configured)
+  const example = (i.choices ?? []).find(c => c.name !== current)?.name
+  out.push([
+    example ? `Váltás: /model ${example} 30m` : null,
+    i.hold ? 'vissza most: /model default' : 'vissza: /model default',
+    'részletek: /model details',
+  ].filter(Boolean).join(' · '))
+  return out.join('\n')
+}
+
+export function modelSummaryInput(now = Date.now()): ModelSummaryInput {
+  const conf = configuredModelWithSource()
+  const h = readHold(MODEL_HOLD_FILE)
+  const since = getAgentRunningSince(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION)
+  let choices: ModelSummaryInput['choices'] = null
+  try {
+    const c = readChoiceList(MODEL_CHOICES_FILE, conf.model)
+    if (c.fromFile) choices = c.choices
+  } catch { /* the details view names the error */ }
+  return {
+    measured: readLastAssistantModel(PROJECT_ROOT, configDirFor(MAIN_AGENT_ID)),
+    lastSent: readLastSent(MODEL_LAST_SENT_FILE),
+    hold: h.state ?? null,
+    configured: conf.model,
+    effortConfigured: readConfiguredEffort()?.value ?? null,
+    effortSent: readEffortSent(EFFORT_SENT_FILE, since === null ? null : since * 1000)?.level ?? null,
+    choices,
+    now,
+  }
 }
 
 export function modelStatusText(): string {
@@ -436,7 +546,12 @@ export function registerBuiltinCommands(): void {
       return reply(ctx, n === null ? 'Használat: /approvals vagy /approvals <n>' : approvalDetailText(n, ctx.now))
     },
   })
-  registerCommand({ name: 'model', kind: 'read', description: 'futó és beállított modell, effort, választék', run: ctx => reply(ctx, modelStatusText()) })
+  registerCommand({ name: 'model', kind: 'read', description: 'mi fut most, meddig, és mire válthatsz', run: ctx => reply(ctx, modelSummary(modelSummaryInput(ctx.now))) })
+  registerCommand({
+    name: 'model', kind: 'read', usage: '/model details', description: 'a modell-állapot technikai részletei (azonosítók, források, mérés)',
+    matches: args => args[0]?.toLowerCase() === 'details',
+    run: ctx => reply(ctx, modelStatusText()),
+  })
   registerCommand({ name: 'context', kind: 'read', description: 'kontextus mérete, küszöb, session kora', run: ctx => reply(ctx, contextStatusText(ctx.now)) })
   registerCommand({
     name: 'usage', kind: 'read', usage: '/usage [<nap>]', description: 'token-fogyasztás, ma és 7 nap, modell szerint; <nap>: egy nap bontása',
