@@ -123,37 +123,92 @@ describe('cc4d0ddd channels.sh pass 1: real processes', () => {
   })
 })
 
-// Card 217d8669 (found in the cc4d0ddd review): two protections of the
-// shell path had no test, and their mutants stayed green:
-//   (2) the argv[0]==tmux rule. When `tmux list-panes` fails there is no pane
-//       leader and no pane parent in the never-signal set, so this rule is the
-//       real server's only protection on the shell path;
+// Card 217d8669 (found in the cc4d0ddd review): protections of the shell
+// path that had no test, and whose mutants stayed green:
+//   (2) the argv[0]==tmux rule. `tmux list-panes -a` lists the default socket only,
+//       so a server on another socket is no pane parent there; this rule spares it;
 //   (3) the masking and the 240-character bound of the logged command line.
-// argv[0] is set with bash `exec -a` (bash does not care about its own name).
-describe('217d8669 channels.sh pass 1: argv[0]==tmux rule and log masking (real processes)', () => {
+// And decision B (card 217d8669) for a failing `tmux list-panes`:
+//   B1 a tmux process still runs -> the server exists but is unreachable: signal nothing;
+//   B2 no tmux process at all    -> no server, the pollers are orphans: clean up;
+//   B3 the process table is unreadable -> no answer: signal nothing, even when
+//      list-panes itself succeeded (the pane parents cannot be resolved either).
+// The tmux census reads CHANNEL_REAP_PS (a fake ps here), so the cases do not depend
+// on whether this host runs a real tmux. argv[0] is set with bash `exec -a`.
+describe('217d8669 channels.sh pass 1: argv[0]==tmux rule, decision B, log masking (real processes)', () => {
   const fakeTmuxDown = join(tmp, 'fake-tmux-down')
+  const fakePs = join(tmp, 'fake-ps')
   const argsOf = (pid: number) => execFileSync('/bin/ps', ['-o', 'args=', '-p', String(pid)], { encoding: 'utf-8' }).trim()
+  const psTable = (rows: string[]) => { writeFileSync(fakePs, `#!/bin/sh\ncat <<'EOF'\n${rows.join('\n')}\nEOF\n`); chmodSync(fakePs, 0o755) }
+  const psBroken = () => { writeFileSync(fakePs, '#!/bin/sh\necho "ps: cannot read the process table" >&2\nexit 1\n'); chmodSync(fakePs, 0o755) }
+  function reap(log: string, tmuxBin: string, pids: number[], env: Record<string, string> = {}): string {
+    execFileSync('bash', ['-c', `. "${LIB}"; channel_reap_kill "$@"`, 'x', log, 'pass1', tmuxBin, ...pids.map(String)],
+      { env: { ...process.env, ...env } })
+    return readFileSync(log, 'utf-8')
+  }
+  const both = () => ({ TELEGRAM_STATE_DIR: chanDir, CLAUDE_PLUGIN_ROOT: pluginRoot })
+  writeFileSync(fakeTmuxDown, '#!/bin/sh\necho "error connecting to /tmp/tmux-test/default (No such file or directory)" >&2\nexit 1\n')
+  chmodSync(fakeTmuxDown, 0o755)
 
-  it('with a failing `tmux list-panes`, a process whose argv[0] is tmux is spared; a poller in the same call dies', async () => {
-    writeFileSync(fakeTmuxDown, '#!/bin/sh\necho "no server running on /tmp/tmux-test/default" >&2\nexit 1\n')
-    chmodSync(fakeTmuxDown, 0o755)
-    const log = join(tmp, 'reap-217-tmux.log')
-    const tmuxLike = spawnEnv('/bin/bash', ['-c', 'exec -a tmux /bin/bash -c "sleep 302; :"'],
-      { TELEGRAM_STATE_DIR: chanDir, CLAUDE_PLUGIN_ROOT: pluginRoot })
-    const poller = spawnEnv('/bin/sleep', ['304'], { TELEGRAM_STATE_DIR: chanDir, CLAUDE_PLUGIN_ROOT: pluginRoot })
+  it('(2) with a working list-panes, a process whose argv[0] is tmux is spared; a poller in the same call dies', async () => {
+    writeFileSync(fakeTmux, '#!/bin/sh\necho 4242\n'); chmodSync(fakeTmux, 0o755)
+    const tmuxLike = spawnEnv('/bin/bash', ['-c', 'exec -a tmux /bin/bash -c "sleep 302; :"'], both())
+    const poller = spawnEnv('/bin/sleep', ['304'], both())
     await sleep(200)
-    // preconditions: the fake tmux fails, and argv[0] really is "tmux"
-    expect(() => execFileSync(fakeTmuxDown, ['list-panes', '-a'], { stdio: 'ignore' })).toThrow()
-    expect(argsOf(tmuxLike)).toMatch(/^tmux /)
-    execFileSync('bash', ['-c', `. "${LIB}"; channel_reap_kill "$1" pass1 "$2" "$3" "$4"`,
-      'x', log, fakeTmuxDown, String(tmuxLike), String(poller)])
+    expect(argsOf(tmuxLike)).toMatch(/^tmux /) // precondition
+    const text = reap(join(tmp, 'reap-217-argv0.log'), fakeTmux, [tmuxLike, poller])
     await sleep(500)
     expect(alive(tmuxLike)).toBe(true)
     expect(alive(poller)).toBe(false)
-    const text = readFileSync(log, 'utf-8')
     expect(text).toContain(`kill pid=${poller} cmd=/bin/sleep 304`)
     expect(text).toMatch(new RegExp(`spared \\(tmux server or live pane\\):.*\\b${tmuxLike}\\b`))
     expect(text).not.toContain(`kill pid=${tmuxLike}`)
+  })
+
+  it('B1: list-panes fails while a tmux process runs -> nothing is signalled, not even the poller', async () => {
+    const poller = spawnEnv('/bin/sleep', ['306'], both())
+    await sleep(200)
+    expect(() => execFileSync(fakeTmuxDown, ['list-panes', '-a'], { stdio: 'ignore' })).toThrow() // precondition
+    psTable(['  1 /sbin/init', ' 777 /usr/bin/tmux new-session -d -s other', ` ${poller} /bin/sleep 306`])
+    const text = reap(join(tmp, 'reap-217-b1.log'), fakeTmuxDown, [poller], { CHANNEL_REAP_PS: fakePs })
+    await sleep(500)
+    expect(alive(poller)).toBe(true)
+    expect(text).toMatch(new RegExp(`fail-safe, tmux list-panes failed while 1 tmux process\\(es\\) run; signalled nothing: ${poller}`))
+    expect(text).not.toContain('kill pid=')
+  })
+
+  it('B2: list-panes fails and no tmux process runs -> no server: the orphan poller is cleaned up', async () => {
+    const poller = spawnEnv('/bin/sleep', ['307'], both())
+    await sleep(200)
+    psTable(['  1 /sbin/init', ` ${poller} /bin/sleep 307`])
+    const text = reap(join(tmp, 'reap-217-b2.log'), fakeTmuxDown, [poller], { CHANNEL_REAP_PS: fakePs })
+    await sleep(500)
+    expect(alive(poller)).toBe(false)
+    expect(text).toContain('tmux list-panes failed and no tmux process runs (no server); orphan cleanup proceeds')
+    expect(text).toContain(`kill pid=${poller} cmd=/bin/sleep 307`)
+  })
+
+  it('B3: an unreadable process table -> nothing is signalled, whether list-panes failed or not', async () => {
+    psBroken()
+    const p1 = spawnEnv('/bin/sleep', ['308'], both())
+    const p2 = spawnEnv('/bin/sleep', ['309'], both())
+    await sleep(200)
+    const down = reap(join(tmp, 'reap-217-b3a.log'), fakeTmuxDown, [p1], { CHANNEL_REAP_PS: fakePs })
+    writeFileSync(fakeTmux, '#!/bin/sh\necho 4242\n'); chmodSync(fakeTmux, 0o755)
+    const up = reap(join(tmp, 'reap-217-b3b.log'), fakeTmux, [p2], { CHANNEL_REAP_PS: fakePs })
+    await sleep(500)
+    expect(alive(p1)).toBe(true)
+    expect(alive(p2)).toBe(true)
+    expect(down).toContain(`fail-safe, the process table is unreadable; signalled nothing: ${p1}`)
+    expect(up).toContain(`fail-safe, the process table is unreadable; signalled nothing: ${p2}`)
+    // an EMPTY table with exit 0 is no answer either (a real host always lists at least init)
+    writeFileSync(fakePs, '#!/bin/sh\nexit 0\n'); chmodSync(fakePs, 0o755)
+    const p3 = spawnEnv('/bin/sleep', ['310'], both())
+    await sleep(200)
+    const empty = reap(join(tmp, 'reap-217-b3c.log'), fakeTmuxDown, [p3], { CHANNEL_REAP_PS: fakePs })
+    await sleep(500)
+    expect(alive(p3)).toBe(true)
+    expect(empty).toContain(`fail-safe, the process table is unreadable; signalled nothing: ${p3}`)
   })
 
   it('masks secret-looking values in the logged command line and keeps it within 240 characters', async () => {
