@@ -11,6 +11,7 @@ import {
   oauthTokenFileConflict,
   checkOauthTokenFile,
   ownOauthTokenExport,
+  ownOauthExportMissing,
   decideOwnOauthToken,
   SETUP_TOKEN_PREFIX,
 } from '../web/agent-oauth-token-file.js'
@@ -200,6 +201,24 @@ describe('ownOauthTokenExport: the fleet shape, only the file differs', () => {
   })
 })
 
+describe('ownOauthExportMissing: an ok decision must reach the launch env', () => {
+  const p = '/home/u/.config/marveen/tokens/a.token'
+  const ok = { kind: 'ok' as const, path: p, fingerprint: 'abcd1234' }
+  const fleetEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${fleet}')" && `
+  it('ok + its own export -> not missing', () => {
+    expect(ownOauthExportMissing(ok, ownOauthTokenExport(p))).toBe(false)
+  })
+  it('ok + the fleet export, an empty env or another file -> missing', () => {
+    expect(ownOauthExportMissing(ok, fleetEnv)).toBe(true)
+    expect(ownOauthExportMissing(ok, '')).toBe(true)
+    expect(ownOauthExportMissing(ok, ownOauthTokenExport('/other/b.token'))).toBe(true)
+  })
+  it('unset and refused never mismatch (they carry no own export)', () => {
+    expect(ownOauthExportMissing({ kind: 'unset' }, fleetEnv)).toBe(false)
+    expect(ownOauthExportMissing({ kind: 'refused', path: p, reason: 'missing', detail: '' }, '')).toBe(false)
+  })
+})
+
 // Source-level contract for the launcher wiring (startAgentProcess), in the
 // style of isolated-channel-config.test.ts: the order of the steps is what
 // makes the field fail-closed, and a refactor that reorders them would not
@@ -247,6 +266,23 @@ describe('launcher wiring (agent-process.ts)', () => {
   it('logs the path and the fingerprint only; the launcher never reads the token file itself', () => {
     expect(FN).toMatch(/\{ name, path: ownOauth\.path, fingerprint: ownOauth\.fingerprint \}/)
     expect(FN).not.toMatch(/readFileSync\(\s*own(TokenFile|Oauth)/)
+  })
+
+  // PR #1511 review mutant: `const ownTokenFile = ... ? ownOauth.path : null` -> `null`
+  // left all tests green while the agent ran on the fleet token and the log still
+  // claimed the own token. Pin the hand-off, and pin that the claim is derived
+  // from oauthTokenEnv (with a refusal before it), not from the decision alone.
+  it('an ok decision reaches the export: ownTokenFile carries the ok path, and the log is gated on oauthTokenEnv', () => {
+    expect(FN).toContain("const ownTokenFile = ownOauth.kind === 'ok' ? ownOauth.path : null")
+    const guardAt = FN.indexOf('if (ownOauthExportMissing(ownOauth, oauthTokenEnv)) {')
+    expect(guardAt).toBeGreaterThan(FN.lastIndexOf('oauthTokenEnv = '))
+    expect(FN.slice(guardAt, guardAt + 500)).toMatch(/return \{ ok: false, error: 'oauthTokenFile: own token did not reach the launch env' \}/)
+    const logAt = FN.indexOf("'oauthTokenFile: own setup-token exported instead of the fleet token'")
+    expect(logAt).toBeGreaterThan(guardAt)
+    const logGate = FN.lastIndexOf('if (', logAt)
+    expect(FN.slice(logGate, logAt)).toContain("if (ownOauth.kind === 'ok' && oauthTokenEnv === ownOauthTokenExport(ownOauth.path)) {")
+    // The guard sits before the launch command is built and sent.
+    expect(guardAt).toBeLessThan(FN.indexOf('const buildLaunchCmd'))
   })
 
   it('the API cannot write the field (write path: manual agent-config edit only)', () => {

@@ -172,3 +172,13 @@ export function decideOwnOauthToken(input: {
   if (!check.ok) return { kind: 'refused', path: check.path, reason: check.reason, detail: check.detail }
   return { kind: 'ok', path: check.path, fingerprint: check.fingerprint }
 }
+
+// Pure: does the launch env actually carry the decided own token? The launcher
+// derives its "own token exported" log line from THIS, not from the decision,
+// and refuses the start when an 'ok' decision did not reach the export -- so a
+// wiring slip can neither run the agent on the fleet token nor log that it did
+// not. 'unset' and 'refused' never carry an own export, so they never mismatch.
+export function ownOauthExportMissing(decision: OwnOauthTokenDecision, oauthTokenEnv: string): boolean {
+  if (decision.kind !== 'ok') return false
+  return oauthTokenEnv !== ownOauthTokenExport(decision.path)
+}
