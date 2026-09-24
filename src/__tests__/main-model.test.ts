@@ -17,6 +17,7 @@ import {
   countModelAcks,
   lastRejectionMessage,
   lastModelAck,
+  modelSupportsEffort,
   readLastSent,
   onMainTurnEnded,
   effortSentFileFor,
@@ -663,6 +664,38 @@ describe('/model owner view (modelSummary)', () => {
     expect(resolveCommand('model', ['details'])?.usage).toBe('/model details')
     expect(resolveCommand('model', ['opus'])?.kind).toBe('write')
     expect(resolveCommand('model', [])?.kind).toBe('read')
+  })
+})
+
+// Owner question 2026-09-24: "haiku has no effort level, does it?" -- Claude
+// Code 2.1.110 (binary): every haiku id -> supportsEffort false.
+describe('haiku has no effort', () => {
+  it('/model haiku high 5m: switches, does NOT send the effort, and says so; no effort held', async () => {
+    writeChoices()
+    const d = deps()
+    const r = await setModel(['haiku', 'high', '5m'], d)
+    expect(r.ok).toBe(true)
+    expect(d.sent).toEqual(['/model claude-haiku-4-5-20251001'])
+    expect(r.text).toMatch(/^Átváltva: haiku\.\nA haiku nem támogat effortot, a\(z\) high szintet nem küldtem el\.\n/)
+    expect(r.text).not.toMatch(/Effort: high/)
+    expect(readHold(d.holdFile).state).toMatchObject({ effort: null, revert_effort: null })
+  })
+
+  it('an effort alone while haiku runs (a hold on haiku) is refused, nothing sent', async () => {
+    writeChoices()
+    const d = deps()
+    await setModel(['haiku', '5m'], d)
+    d.sent.length = 0
+    const r = await setModel(['high', '5m'], d)
+    expect(r).toEqual({ ok: false, text: 'Nem állítottam: a most futó haiku nem támogat effortot.' })
+    expect(d.sent).toEqual([])
+    expect((await setEffort('high', d)).text).toBe('Nem állítottam: a most futó haiku nem támogat effortot.')
+  })
+
+  it('opus and sonnet keep their effort', () => {
+    expect(modelSupportsEffort('claude-opus-5[1m]')).toBe(true)
+    expect(modelSupportsEffort('claude-sonnet-5')).toBe(true)
+    expect(modelSupportsEffort('claude-haiku-4-5-20251001')).toBe(false)
   })
 })
 

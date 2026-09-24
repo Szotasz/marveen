@@ -143,6 +143,7 @@ describe('/board (read only)', () => {
     createKanbanCard({ id: 'd0000003', title: 'Archivált Z', status: 'planned' })
     archiveKanbanCard('d0000003')
     expect(boardText(listKanbanCards(), 'András')).toMatch(/\+3 további, mindet: \/board all/)
+    expect(boardText(listKanbanCards(), 'András')).toMatch(/Részletek: \/board <id> \(8 jegyű id vagy #szám\) · minden nyitott kártya: \/board all$/)
     const all = boardAllText(listKanbanCards())
     expect(all).toMatch(/^Minden nyitott kártya: 34\n/)
     expect(all).toMatch(/\nplanned \(1\):\n- #\d+ d0000001 · samu · Tervezett X/)

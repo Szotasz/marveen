@@ -44,6 +44,14 @@ export const BLOCK_ALERT_MS = 30 * 60_000
 // What Claude Code 2.1.110 accepts (`/effort [low|medium|high|max|auto]`,
 // measured in the binary): `xhigh` is not there and would fail silently.
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'max'] as const
+// Claude Code decides effort support per model (2.1.110, measured in the
+// binary: a capability table first, then every `haiku` id -> no effort). A
+// `/effort` sent while haiku runs is stored and ignored, so the reply must not
+// claim it (owner feedback 2026-09-24: "Effort: high" after /model haiku high).
+export function modelSupportsEffort(id: string): boolean {
+  return !/haiku/i.test(id)
+}
+
 // The CLI's own default: what an effort hold goes back to when no effort is configured.
 export const EFFORT_AUTO = 'auto'
 
@@ -461,8 +469,18 @@ export async function setModel(args: string[], deps: ModelDeps = liveModelDeps):
   }
   const parsed = parseModelArgs(args, list)
   if (typeof parsed === 'string') return fail(parsed)
-  const { choice, effort, hold } = parsed
+  const { choice, hold } = parsed
+  let effort = parsed.effort
   if (choice && !isValidModelId(choice.id)) return fail(`Nem váltottam: érvénytelen modell-azonosító: ${choice.id}`)
+  let effortDropped: string | null = null
+  if (effort) {
+    const target = choice?.id ?? readHold(deps.holdFile).state?.model ?? configured
+    if (!modelSupportsEffort(target)) {
+      if (!choice) return fail(`Nem állítottam: a most futó ${shortName(target, deps)} nem támogat effortot.`)
+      effortDropped = effort
+      effort = null
+    }
+  }
   const now = deps.now()
   const verdict = deps.quiet(now)
   if (!verdict.quiet) return failBusy(`Nem váltottam: a session ${humanBusy(verdict.reason)}.`)
@@ -474,6 +492,7 @@ export async function setModel(args: string[], deps: ModelDeps = liveModelDeps):
     if (out.rejected !== null) return fail(rejectedText(choice.id, out.rejected))
     acked = out.acked
     lines.push(acked ? `Átváltva: ${choice.name}.` : `Elküldve: ${choice.name} (a Claude Code még nem igazolta vissza).`)
+    if (effortDropped) lines.push(`A ${choice.name} nem támogat effortot, a(z) ${effortDropped} szintet nem küldtem el.`)
   }
   if (effort) {
     await deps.send(`/effort ${effort}`)
@@ -554,6 +573,8 @@ export async function modelBack(deps: ModelDeps = liveModelDeps): Promise<StepRe
 export async function setEffort(level: string | undefined, deps: ModelDeps = liveModelDeps): Promise<StepResult> {
   const l = (level ?? '').toLowerCase()
   if (!(EFFORT_LEVELS as readonly string[]).includes(l)) return fail(`Használat: /model effort <${EFFORT_LEVELS.join('|')}>`)
+  const running = readHold(deps.holdFile).state?.model ?? deps.configured()
+  if (!modelSupportsEffort(running)) return fail(`Nem állítottam: a most futó ${shortName(running, deps)} nem támogat effortot.`)
   const verdict = deps.quiet(deps.now())
   if (!verdict.quiet) return failBusy(`Nem állítottam: a session ${humanBusy(verdict.reason)}.`)
   await deps.send(`/effort ${l}`)

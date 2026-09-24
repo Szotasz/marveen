@@ -461,7 +461,7 @@ export function boardText(cards: KanbanCard[], owner: string = OWNER_NAME): stri
     lines.push(`- #${c.seq ?? '?'} ${c.id.slice(0, 8)} · ${c.status} · ${c.assignee ?? '-'} · ${clip(c.title, 60)}`)
   }
   if (mine.length > 30) lines.push(`+${mine.length - 30} további, mindet: /board all`)
-  lines.push('', 'Részletek: /board <id> (8 jegyű id vagy #szám)')
+  lines.push('', 'Részletek: /board <id> (8 jegyű id vagy #szám) · minden nyitott kártya: /board all')
   return lines.join('\n')
 }
 
