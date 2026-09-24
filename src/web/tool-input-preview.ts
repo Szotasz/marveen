@@ -12,13 +12,25 @@
 // runs in sequence over the progressively-redacted text).
 // Each entry: the pattern, and whether it has a leading label capture group
 // to preserve (group 1) -- mirrors Python's `pat.groups` check.
+const KEY_WORDS = String.raw`(?:token|secret|passw(?:or)?d|api[_\-]?key|apikey|key|auth|credential)`
 const SECRET_PATTERNS: Array<{ re: RegExp; hasGroup: boolean }> = [
-  // Bearer / Authorization headers
+  // Bearer / Authorization: Basic headers
   { re: /(bearer\s+)[A-Za-z0-9+/=_\-.]{8,}/gi, hasGroup: true },
-  // Generic key=value / key: value pairs
-  { re: /((?:token|secret|password|api[_-]?key|apikey|auth|credential)\s*[=:]\s*)[^\s,'";&|]{6,}/gi, hasGroup: true },
-  // GitHub/Anthropic/OpenAI style tokens
-  { re: /\b(ghp_|sk-|sk-ant-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}/g, hasGroup: true },
+  { re: /(authorization\s*:\s*basic\s+)[A-Za-z0-9+/=]{8,}/gi, hasGroup: true },
+  // Credentials embedded in a URL: scheme://user:pass@host
+  { re: /(\b[A-Za-z][A-Za-z0-9+.\-]*:\/\/)[^\s/@]+(?=@)/g, hasGroup: true },
+  // JWT (header.payload.signature), wherever it stands -- no capture group
+  { re: /\beyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*/g, hasGroup: false },
+  // Quoted key=value / key: value pairs (the whole quoted value goes)
+  { re: new RegExp(`(${KEY_WORDS}["']?\\s*[=:]\\s*)(?:"[^"]+"|'[^']+')`, 'gi'), hasGroup: true },
+  // Generic unquoted key=value / key: value pairs (not one already redacted)
+  { re: new RegExp(`(${KEY_WORDS}["']?\\s*[=:]\\s*)(?!\\[REDACTED\\])[^\\s,'";&|]{6,}`, 'gi'), hasGroup: true },
+  // Space-separated secret flags: --token X, --api-key "X", --github-token X
+  { re: /(--[A-Za-z0-9\-]*(?:token|secret|passw(?:or)?d|api-?key|key)\s+)(?:"[^"]+"|'[^']+'|[^\s'";&|]+)/gi, hasGroup: true },
+  // -p <password> only for the clients where -p IS the password (not mkdir -p)
+  { re: /(\b(?:mysql|mysqldump|mysqladmin|mariadb|sshpass)\b[^\n|;&]*?\s-p\s*)(?:"[^"]+"|'[^']+'|[^\s'";&|]+)/g, hasGroup: true },
+  // GitHub/Anthropic/OpenAI/Slack/Supabase style tokens
+  { re: /\b(ghp_|gho_|ghs_|ghu_|ghr_|github_pat_|sk-|sk-ant-|xoxb-|xoxp-|sbp_)[A-Za-z0-9_-]{10,}/g, hasGroup: true },
   // Raw hex blobs >= 32 chars (likely hashed secrets) -- no capture group, full match replaced
   { re: /\b[0-9a-fA-F]{32,}\b/g, hasGroup: false },
 ]

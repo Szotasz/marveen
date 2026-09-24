@@ -79,14 +79,29 @@ def _dashboard_token() -> str:
         return ''
 
 
-# Patterns that could reveal secrets if stored verbatim.
+# Patterns that could reveal secrets if stored verbatim. Order matters: each
+# pattern runs over the text the previous ones already redacted. The TS port
+# (src/web/tool-input-preview.ts) mirrors this list; tool-input-preview-parity
+# pins the two together.
+_KEY_WORDS = r'(?:token|secret|passw(?:or)?d|api[_\-]?key|apikey|key|auth|credential)'
 _SECRET_PATTERNS = [
-    # Bearer / Authorization headers
+    # Bearer / Authorization: Basic headers
     re.compile(r'(?i)(bearer\s+)[A-Za-z0-9+/=_\-\.]{8,}'),
-    # Generic key=value / key: value pairs
-    re.compile(r'(?i)((?:token|secret|password|api[_\-]?key|apikey|auth|credential)\s*[=:]\s*)[^\s,\'";&|]{6,}'),
-    # GitHub/Anthropic/OpenAI style tokens
-    re.compile(r'\b(ghp_|sk-|sk-ant-|xoxb-|xoxp-)[A-Za-z0-9_\-]{10,}'),
+    re.compile(r'(?i)(authorization\s*:\s*basic\s+)[A-Za-z0-9+/=]{8,}'),
+    # Credentials embedded in a URL: scheme://user:pass@host
+    re.compile(r'(\b[A-Za-z][A-Za-z0-9+.\-]*://)[^\s/@]+(?=@)'),
+    # JWT (header.payload.signature), wherever it stands
+    re.compile(r'\beyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*'),
+    # Quoted key=value / key: value pairs (the whole quoted value goes)
+    re.compile(r'(?i)(' + _KEY_WORDS + r'["\']?\s*[=:]\s*)(?:"[^"]+"|\'[^\']+\')'),
+    # Generic unquoted key=value / key: value pairs (not one already redacted)
+    re.compile(r'(?i)(' + _KEY_WORDS + r'["\']?\s*[=:]\s*)(?!\[REDACTED\])[^\s,\'";&|]{6,}'),
+    # Space-separated secret flags: --token X, --api-key "X", --github-token X
+    re.compile(r'(?i)(--[A-Za-z0-9\-]*(?:token|secret|passw(?:or)?d|api-?key|key)\s+)(?:"[^"]+"|\'[^\']+\'|[^\s\'";&|]+)'),
+    # -p <password> only for the clients where -p IS the password (not mkdir -p)
+    re.compile(r'(\b(?:mysql|mysqldump|mysqladmin|mariadb|sshpass)\b[^\n|;&]*?\s-p\s*)(?:"[^"]+"|\'[^\']+\'|[^\s\'";&|]+)'),
+    # GitHub/Anthropic/OpenAI/Slack/Supabase style tokens
+    re.compile(r'\b(ghp_|gho_|ghs_|ghu_|ghr_|github_pat_|sk-|sk-ant-|xoxb-|xoxp-|sbp_)[A-Za-z0-9_\-]{10,}'),
     # Raw hex blobs ≥ 32 chars (likely hashed secrets) -- no capture group, full match replaced
     re.compile(r'\b[0-9a-fA-F]{32,}\b'),
 ]
