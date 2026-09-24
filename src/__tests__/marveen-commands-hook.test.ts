@@ -563,3 +563,12 @@ describe('marveen-commands.py pass-through logging', () => {
   })
 })
 
+describe('marveen-commands.py and "?"', () => {
+  it('/usage ? gets the help only, no quota line in front', async () => {
+    dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['/usage\n/usage [<nap>] - token'] } })
+    const r = await runHook(channel('/usage ?'))
+    expect(r.code).toBe(2)
+    expect(sends()).toEqual([{ chat_id: '42', text: '/usage\n/usage [<nap>] - token' }])
+  })
+})
+
