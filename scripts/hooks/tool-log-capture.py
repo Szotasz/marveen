@@ -80,14 +80,35 @@ def _dashboard_token() -> str:
 
 
 # Patterns that could reveal secrets if stored verbatim.
+#
+# TOOLLOGREDACT924: the first version let 4 measured shapes through (Boni, #1533
+# review, on formatted fabricated secrets): a QUOTED value (`KEY="sbp_..."`, the
+# PATSZIVARGAS912 shape), a SPACE-separated flag (`--token sbp_...`), a JWT after
+# a `*_KEY=` name the generic key list did not know, and `Authorization: Basic`.
+# Same review, same pattern set asked of the TS twin (#1533, tool-input-preview):
+# quoted values, spaced flags, any `*KEY` / `*TOKEN` / `*SECRET` / `*PASSWORD`
+# name, a bare JWT, the sbp_ / gho_ / ghs_ / ghu_ / ghr_ / github_pat_ prefixes,
+# Basic auth, and credentials embedded in a URL. A value that is a shell
+# variable (`$X`, `${X}`, `$(...)`) is a reference, not a secret, and is kept so
+# the log stays readable. `-p X` is deliberately NOT a flag here: `mkdir -p`,
+# `ssh -p 22`, `psql -p 5432` would all be redacted for nothing.
+# Group 1, when present, is kept (the label); the rest of the match is replaced.
 _SECRET_PATTERNS = [
-    # Bearer / Authorization headers
-    re.compile(r'(?i)(bearer\s+)[A-Za-z0-9+/=_\-\.]{8,}'),
-    # Generic key=value / key: value pairs
-    re.compile(r'(?i)((?:token|secret|password|api[_\-]?key|apikey|auth|credential)\s*[=:]\s*)[^\s,\'";&|]{6,}'),
-    # GitHub/Anthropic/OpenAI style tokens
-    re.compile(r'\b(ghp_|sk-|sk-ant-|xoxb-|xoxp-)[A-Za-z0-9_\-]{10,}'),
-    # Raw hex blobs ≥ 32 chars (likely hashed secrets) -- no capture group, full match replaced
+    # Bearer / Basic authorization values
+    re.compile(r'(?i)(\b(?:bearer|basic)\s+)[A-Za-z0-9+/=_\-\.]{8,}'),
+    # Credentials embedded in a URL: https://user:pass@host and https://token@host
+    re.compile(r'(?i)(\bhttps?://)(?!\$)[^/\s:@]+:[^/\s@]+(?=@)'),
+    re.compile(r'(?i)(\bhttps?://)[A-Za-z0-9_\-]{20,}(?=@)'),
+    # Spaced or = flags: --token X, --password 'X', --api-key=X ...
+    re.compile(r'(?i)(--(?:token|password|passwd|api-key|apikey|access-token|auth-token|secret)(?:\s+|=)[\'"]?)(?!\$)[^\s\'"]{6,}'),
+    # key=value / key: value, the value quoted or not, the key any name ending in
+    # a secret word (SERVICE_ROLE_KEY=, GITHUB_TOKEN=, "password": ...)
+    re.compile(r'(?i)(\b\w*(?:token|secret|passw(?:or)?d|api[_\-]?key|apikey|auth|credential|_key)[\'"]?\s*[=:]\s*[\'"]?)(?!\$)[^\s,\'";&|]{6,}'),
+    # Known token prefixes (the prefix is kept as the label)
+    re.compile(r'\b(ghp_|gho_|ghs_|ghu_|ghr_|github_pat_|sbp_|sk-ant-|sk-|xoxb-|xoxp-|xapp-)[A-Za-z0-9_\-]{10,}'),
+    # A JWT anywhere (header.payload.signature)
+    re.compile(r'\beyJ[\w\-]{8,}\.eyJ[\w\-]{8,}\.[\w\-]{8,}'),
+    # Raw hex blobs >= 32 chars (likely hashed secrets) -- no capture group, full match replaced
     re.compile(r'\b[0-9a-fA-F]{32,}\b'),
 ]
 
