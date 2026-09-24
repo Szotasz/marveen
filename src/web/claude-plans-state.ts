@@ -27,6 +27,21 @@ export interface ObservedPlanWindow {
   usedPercent: number
   /** Unix epoch seconds. */
   resetsAt: number
+  /** Per-window status as reported by a live probe (e.g. "allowed",
+   *  "rejected"). Absent on heartbeat (usage-collect) observations. */
+  status?: string
+}
+
+/** Outcome of the most recent live probe (src/claude-plan-usage-probe.ts) of
+ *  a plan. Kept separately from `observedAt`/`windows` so a FAILED probe
+ *  (e.g. a revoked token) is visible without discarding the last good numbers. */
+export interface PlanProbeOutcome {
+  /** Unix epoch ms. */
+  at: number
+  ok: boolean
+  /** ProbeErrorKind when !ok. */
+  error?: string
+  httpStatus?: number
 }
 
 export interface ObservedPlanState {
@@ -34,6 +49,9 @@ export interface ObservedPlanState {
   observedAt: number
   source: string
   windows: Record<string, ObservedPlanWindow>
+  /** anthropic-ratelimit-unified-status from a live probe, when known. */
+  overallStatus?: string
+  lastProbe?: PlanProbeOutcome
 }
 
 export interface ClaudePlansState {
@@ -87,10 +105,20 @@ export function recordObservation(
   planId: string,
   observed: ObservedPlanState,
 ): ClaudePlansState {
-  return {
-    activePlanByAgent: { ...state.activePlanByAgent, [agentId]: planId },
-    plans: { ...state.plans, [planId]: observed },
-  }
+  const next = recordPlanObservation(state, planId, observed)
+  return { ...next, activePlanByAgent: { ...state.activePlanByAgent, [agentId]: planId } }
+}
+
+// Pure state transition: record an observation for `planId` WITHOUT touching
+// which plan any agent is on. This is the live-probe path (a plan's usage is
+// read directly with its own token while it is idle); recordObservation above
+// would wrongly mark the probed plan as an agent's active one.
+export function recordPlanObservation(
+  state: ClaudePlansState,
+  planId: string,
+  observed: ObservedPlanState,
+): ClaudePlansState {
+  return { activePlanByAgent: state.activePlanByAgent, plans: { ...state.plans, [planId]: observed } }
 }
 
 // Pure state transition: point `agentId` at `targetPlanId`. Used both by an

@@ -39,7 +39,9 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { decideAndRecord } from '../src/claude-plan-rotate-heartbeat.js'
 import { readClaudePlans } from '../src/web/claude-plans.js'
-import { readClaudePlansState, writeClaudePlansState } from '../src/web/claude-plans-state.js'
+import { readClaudePlansState, writeClaudePlansState, recordPlanObservation } from '../src/web/claude-plans-state.js'
+import { probePlanUsage, observationFromProbe, selectPlansToProbe } from '../src/claude-plan-usage-probe.js'
+import { getSecret } from '../src/web/vault.js'
 import { getEffectiveSettingValue } from '../src/settings-store.js'
 import { MAIN_AGENT_ID } from '../src/config.js'
 
@@ -50,7 +52,46 @@ function settingIsOn(key: string): boolean {
   try { return String(getEffectiveSettingValue(key)) === '1' } catch { return false }
 }
 
-function main(): void {
+// Background refresh of IDLE plans' usage (live probe, see
+// src/claude-plan-usage-probe.ts). The heartbeat below only ever observes the
+// plan the main agent is on, so without this an idle plan's "last known %"
+// (and estimateWindowFree's input for it) is frozen at whenever it was last
+// active. selectPlansToProbe() decides who is due: 2+ plans only (single-plan
+// installs: zero new calls), token-mode only, never the main agent's active
+// plan, at most once per 30 min per plan. Runs BEFORE the rotation decision so
+// that decision sees the fresh numbers. Prints nothing on stdout -- stdout is
+// the ROTATE/NO_ALTERNATIVE channel the scheduled task's prompt parses.
+async function refreshIdlePlans(): Promise<void> {
+  const due = selectPlansToProbe({
+    plans: readClaudePlans(),
+    state: readClaudePlansState(),
+    activeAgentId: MAIN_AGENT_ID,
+    nowMs: Date.now(),
+  })
+  for (const plan of due) {
+    let token: string | null = null
+    try { token = plan.tokenSecretId ? getSecret(plan.tokenSecretId) : null } catch { token = null }
+    if (!token) {
+      console.error(`claude-plan-rotate-check: probe skipped for plan=${plan.id}: token missing from vault`)
+      continue
+    }
+    const result = await probePlanUsage(token)
+    token = null
+    const nowMs = Date.now()
+    const state = readClaudePlansState()
+    writeClaudePlansState(recordPlanObservation(state, plan.id, observationFromProbe(result, state.plans[plan.id], nowMs)))
+    if (!result.ok) console.error(`claude-plan-rotate-check: probe plan=${plan.id} error=${result.error} status=${result.httpStatus ?? '-'}`)
+  }
+}
+
+async function main(): Promise<void> {
+  try {
+    await refreshIdlePlans()
+  } catch (err) {
+    // Never let the probe pass take the rotation heartbeat down with it.
+    console.error('claude-plan-rotate-check: idle-plan probe pass failed:', err instanceof Error ? err.name : 'error')
+  }
+
   let raw: unknown
   try {
     const out = execFileSync('python3', [join(PROJECT_ROOT, 'scripts', 'usage-collect.py'), '--json'], {
@@ -81,4 +122,4 @@ function main(): void {
   if (result.printLine) console.log(result.printLine)
 }
 
-main()
+await main()
