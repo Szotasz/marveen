@@ -194,7 +194,8 @@ export function renderHelp(): string {
   const confirm = builtin.filter(e => e.kind === 'write' && e.confirm)
   // Owner feedback (ELSOKOR922 Phase 7 A-smoke): the read list needs no header
   // of its own, and "MODOSÍT" says more than "ÍR" about what a write does.
-  const out: string[] = []
+  // First line (owner feedback 2026-09-24): the "?" is the way into every command.
+  const out: string[] = ['Minden parancs után ?: részletes súgó példákkal, pl. /board ?', '']
   for (const e of read) out.push(helpLine(e))
   out.push('')
   out.push('MODOSÍT, megerősítés nélkül')
@@ -208,7 +209,6 @@ export function renderHelp(): string {
   out.push('SAJÁT')
   if (custom.length === 0) out.push('nincs')
   for (const e of custom) out.push(helpLine(e))
-  out.push('', 'Bármelyik parancs után ?: részletes súgó példákkal, pl. /board ?')
   return out.join('\n')
 }
 

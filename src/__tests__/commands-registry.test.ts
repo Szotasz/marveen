@@ -185,7 +185,7 @@ describe('chunkText', () => {
     await dispatchCommand('/sajat ?', k)
     expect(k.out[0]).toMatch(/^\/sajat\n\/sajat - a saját \[actions\]\n\nSaját parancs/)
     expect(commandHelpText('nincsilyen')).toBeNull()
-    expect(renderHelp()).toMatch(/Bármelyik parancs után \?: részletes súgó példákkal, pl\. \/board \?$/)
+    expect(renderHelp()).toMatch(/^Minden parancs után \?: részletes súgó példákkal, pl\. \/board \?\n\n/)
   })
 })
 

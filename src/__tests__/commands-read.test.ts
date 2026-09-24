@@ -390,5 +390,18 @@ describe('/board filters', () => {
     expect(nalNel('Samu')).toBe('Samunál')
     expect(nalNel('Edith')).toBe('Edithnél')
   })
+
+  it('parameterised views carry no usage hints (owner feedback 2026-09-24); the main /board does', () => {
+    createKanbanCard({ id: 'h0000001', title: 'Egy', status: 'waiting' })
+    const cards = listKanbanCards()
+    expect(boardText(cards, 'András')).toMatch(/Szűrők és példák: \/board \?$/)
+    for (const t of [
+      boardAllText(cards, 'András'),
+      boardFilterText(cards, { status: 'waiting', who: null }, 'András', aliases, 'marveen'),
+      boardFilterText(cards, { status: null, who: { kind: 'none' } }, 'András', aliases, 'marveen'),
+    ]) {
+      expect(t).not.toMatch(/\/board \?|Egy kártya:|Szűrők/)
+    }
+  })
 })
 

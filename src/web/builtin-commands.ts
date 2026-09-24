@@ -288,12 +288,8 @@ export function modelStatusText(): string {
     choices = notMeasurable(`a model-choices.json olvashatatlan: ${err instanceof Error ? err.message : String(err)}`)
   }
   lines.push(`Választható: ${choices}`)
-  lines.push('')
-  // ELSOKOR922 Phase 7 A-smoke, tulajdonosi visszajelzés (2026-09-22): a
-  // sima /model státusz nem mondta meg, HOGYAN kell váltani -- a szintaxis
-  // csak a /help-ben (a registry `usage` mezőjében) volt látható, itt nem.
-  lines.push(`Váltás: /model [<választás>] [<${EFFORT_LEVELS.join('|')}>] [<idő>|keep] · pl. /model opus 30m, /model opus low 4m, /model low 5m, /model opus keep`)
-  lines.push('Vissza az alapra: /model default')
+  // A parameterised view carries no usage hints (owner feedback 2026-09-24):
+  // how to switch is the main /model's footer and /model ?.
   return lines.join('\n')
 }
 
@@ -557,7 +553,6 @@ export function boardAllText(cards: KanbanCard[], owner: string = OWNER_NAME): s
     }
     for (const c of col) walk(c, 0, null)
   }
-  lines.push('', `Egy kártya: /board <szám> · ${boardHints()}`)
   return lines.join('\n')
 }
 
@@ -687,7 +682,6 @@ export function boardFilterText(cards: KanbanCard[], f: BoardFilter, owner: stri
     }
     for (const c of col) walk(c, 0, null)
   }
-  lines.push('', boardHints())
   return lines.join('\n')
 }
 
