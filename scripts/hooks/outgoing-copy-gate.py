@@ -397,6 +397,18 @@ def _head_is_send(toks, depth: int) -> bool:
     return False
 
 
+def wrapper_depth_hit(cmd: str) -> bool:
+    """True when some segment is still a wrapper at the depth bound, so it was
+    counted as a send without the real command being seen (HEADDEPTH924). The
+    gate uses it to say WHY it blocks: "I could not audit the letter" is the
+    wrong reason for `nohup x9 git status` (Marveen, #1522 review)."""
+    try:
+        segments = _segments_tokens(cmd)
+    except ValueError:
+        return False
+    return any(h is None for toks in segments for h in _command_heads(toks))
+
+
 def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
     try:
         segments = _segments_tokens(cmd)
@@ -1267,6 +1279,17 @@ def main():
         sys.exit(0)
 
     if unreadable or not text.strip():
+        if tool == "Bash" and wrapper_depth_hit(cmd):
+            sys.stderr.write(
+                "KIMENO-SZOVEG KAPU: TILTVA, mert a parancs valodi fejet nem latom.\n"
+                f"Ok: a parancs a burkolo-korlatnal ({_HEAD_DEPTH} egymasba agyazott burkolo: sudo, "
+                "time, env, nohup, nice, timeout...) is meg burkolo, tehat nem tudom eldonteni, "
+                "hogy levelkuldes-e. Ez szandekosan fail-closed.\n\n"
+                f"Ha ez NEM levelkuldes: csokkentsd a burkolok szamat {_HEAD_DEPTH} vagy kevesebb ala.\n"
+                "Ha levelkuldes: tedd vizsgalhatova -- ABSZOLUT utvonalu stdin-atiranyitas "
+                "(< /teljes/ut/body.txt), vagy --body-ban atadott szoveg.\n"
+            )
+            sys.exit(2)
         reason = unreadable or "a hook nem talalt vizsgalhato szoveget a hivasban"
         sys.stderr.write(
             "KIMENO-SZOVEG KAPU: TILTVA, mert a levelet nem tudtam megvizsgalni.\n"

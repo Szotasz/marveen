@@ -246,6 +246,28 @@ function headIsSend(toks, depth) {
   return false
 }
 
+// True when some segment is still a wrapper at the depth bound (HEADDEPTH924),
+// so the deny says WHY -- see wrapper_depth_hit in outgoing-copy-gate.py.
+export function wrapperDepthHit(cmd) {
+  let segments
+  try {
+    segments = segmentsTokens(cmd)
+  } catch {
+    return false
+  }
+  return segments.some((toks) => commandHeads(toks).some((h) => h === null))
+}
+
+export function buildWrapperDepthMsg() {
+  return (
+    'TILTVA (governance hard-gate): a parancs valodi fejet nem latom. ' +
+    `A parancs a burkolo-korlatnal (${HEAD_DEPTH} egymasba agyazott burkolo: sudo, time, env, nohup, nice, timeout...) ` +
+    'is meg burkolo, tehat nem tudom eldonteni, hogy levelkuldes-e, es a kapu ilyenkor fail-closed. ' +
+    `Ha ez NEM levelkuldes: csokkentsd a burkolok szamat ${HEAD_DEPTH} vagy kevesebb ala. ` +
+    'Ha levelkuldes: sub-agentkent Bash-bol amugy sem kuldhetsz, a kimeno emailt a fo-agens kuldi.'
+  )
+}
+
 export function isSendInvocation(cmd, depth = 0) {
   let segments
   try {
@@ -368,7 +390,7 @@ export function gateDecision(toolName, toolInput, isVerified = null) {
   }
   if (name === 'Bash') {
     const cmd = String(toolInput?.command ?? '')
-    if (isSendInvocation(cmd)) return { deny: true }
+    if (isSendInvocation(cmd)) return wrapperDepthHit(cmd) ? { deny: true, kind: 'wrapper-depth' } : { deny: true }
   }
   return { deny: false }
 }
@@ -622,6 +644,7 @@ if (isInvokedDirectly()) {
     // vouch for an unsourced recipient.
     if (kind === 'unverified-recipient') deny(buildUnverifiedRecipientMsg(addresses ?? []))
     if (kind === 'draft-required') deny(buildDraftOnlyMsg(ownerName))
+    if (kind === 'wrapper-depth') deny(buildWrapperDepthMsg())
     // Thread-scoped narrowing: only when the scaffold wired this agent's hook
     // command with the flag (capability-driven, regenerated on every spawn),
     // and only for the direct send_email tool. Bash send routes and
