@@ -8,29 +8,32 @@
 // by tool-input-preview-parity.test.ts running python3 on the SAME fixture.
 
 // Patterns that could reveal secrets if stored verbatim. Mirrors
-// tool-log-capture.py's _SECRET_PATTERNS exactly (order matters: each pattern
-// runs in sequence over the progressively-redacted text).
+// tool-log-capture.py's _SECRET_PATTERNS exactly (TOOLLOGREDACT924, #1536 --
+// the Python stays the norm; order matters: each pattern runs in sequence over
+// the progressively-redacted text). See the Python for the why of each one.
 // Each entry: the pattern, and whether it has a leading label capture group
 // to preserve (group 1) -- mirrors Python's `pat.groups` check.
-const KEY_WORDS = String.raw`(?:token|secret|passw(?:or)?d|api[_\-]?key|apikey|key|auth|credential)`
 const SECRET_PATTERNS: Array<{ re: RegExp; hasGroup: boolean }> = [
-  // Bearer / Authorization: Basic headers
-  { re: /(bearer\s+)[A-Za-z0-9+/=_\-.]{8,}/gi, hasGroup: true },
-  { re: /(authorization\s*:\s*basic\s+)[A-Za-z0-9+/=]{8,}/gi, hasGroup: true },
-  // Credentials embedded in a URL: scheme://user:pass@host
-  { re: /(\b[A-Za-z][A-Za-z0-9+.\-]*:\/\/)[^\s/@]+(?=@)/g, hasGroup: true },
-  // JWT (header.payload.signature), wherever it stands -- no capture group
-  { re: /\beyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*/g, hasGroup: false },
-  // Quoted key=value / key: value pairs (the whole quoted value goes)
-  { re: new RegExp(`(${KEY_WORDS}["']?\\s*[=:]\\s*)(?:"[^"]+"|'[^']+')`, 'gi'), hasGroup: true },
-  // Generic unquoted key=value / key: value pairs (not one already redacted)
-  { re: new RegExp(`(${KEY_WORDS}["']?\\s*[=:]\\s*)(?!\\[REDACTED\\])[^\\s,'";&|]{6,}`, 'gi'), hasGroup: true },
-  // Space-separated secret flags: --token X, --api-key "X", --github-token X
-  { re: /(--[A-Za-z0-9\-]*(?:token|secret|passw(?:or)?d|api-?key|key)\s+)(?:"[^"]+"|'[^']+'|[^\s'";&|]+)/gi, hasGroup: true },
-  // -p <password> only for the clients where -p IS the password (not mkdir -p)
-  { re: /(\b(?:mysql|mysqldump|mysqladmin|mariadb|sshpass)\b[^\n|;&]*?\s-p\s*)(?:"[^"]+"|'[^']+'|[^\s'";&|]+)/g, hasGroup: true },
-  // GitHub/Anthropic/OpenAI/Slack/Supabase style tokens
-  { re: /\b(ghp_|gho_|ghs_|ghu_|ghr_|github_pat_|sk-|sk-ant-|xoxb-|xoxp-|sbp_)[A-Za-z0-9_-]{10,}/g, hasGroup: true },
+  // Bearer / Basic authorization values
+  { re: /(\b(?:bearer|basic)\s+)[A-Za-z0-9+/=_\-.]{8,}/gi, hasGroup: true },
+  // Credentials embedded in a URL: https://user:pass@host and https://token@host
+  { re: /(\bhttps?:\/\/)(?!\$)[^/\s:@]+:[^/\s@]+(?=@)/gi, hasGroup: true },
+  { re: /(\bhttps?:\/\/)[A-Za-z0-9_\-]{20,}(?=@)/gi, hasGroup: true },
+  // Spaced or = flags: --token X, --password 'X', --api-key=X ...
+  { re: /(--(?:token|password|passwd|api-key|apikey|access-token|auth-token|secret)(?:\s+|=)['"]?)(?!\$)[^\s'"]{6,}/gi, hasGroup: true },
+  // key=value / key: value, the value quoted or not, the key any name ending in a secret word
+  { re: /(\b\w*(?:token|secret|passw(?:or)?d|api[_\-]?key|apikey|auth|credential|_key)['"]?\s*[=:]\s*['"]?)(?!\$)[^\s,'";&|]{6,}/gi, hasGroup: true },
+  // Known token prefixes (the prefix is kept as the label)
+  { re: /\b(ghp_|gho_|ghs_|ghu_|ghr_|github_pat_|sbp_|sk-ant-|sk-|xoxb-|xoxp-|xapp-|sk_live_|sk_test_|rk_live_|rk_test_|whsec_)[A-Za-z0-9_\-]{10,}/g, hasGroup: true },
+  // Telegram bot token (<bot id>:<secret>), bare or inside an api.telegram.org URL
+  { re: /(\b(?:bot)?\d{6,12}:)[A-Za-z0-9_\-]{30,}/g, hasGroup: true },
+  // AWS access key id
+  { re: /\b(AKIA|ASIA)[A-Z0-9]{16}\b/g, hasGroup: true },
+  // A password given inline to a tool that takes it as -p (sshpass -p X, mysql -pX)
+  { re: /(\bsshpass\s+-p\s*)(?:'[^']*'|"(?!\$)[^"]*"|(?!\$)[^\s'"]+)/g, hasGroup: true },
+  { re: /(\b(?:mysql|mysqldump|mariadb)\b[^|;&\n]*?\s-p['"]?)(?!\$)[^\s'"]{4,}/g, hasGroup: true },
+  // A JWT anywhere (header.payload.signature) -- no capture group
+  { re: /\beyJ[\w\-]{8,}\.eyJ[\w\-]{8,}\.[\w\-]{8,}/g, hasGroup: false },
   // Raw hex blobs >= 32 chars (likely hashed secrets) -- no capture group, full match replaced
   { re: /\b[0-9a-fA-F]{32,}\b/g, hasGroup: false },
 ]

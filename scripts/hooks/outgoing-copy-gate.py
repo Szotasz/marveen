@@ -893,6 +893,125 @@ except Exception as _extract_exc:  # noqa: BLE001 -- deliberate fail-closed stub
 MDV2_ESCAPE = re.compile(r"\\([^\w\s])")
 
 
+# --- Human-facing HTTP channels via curl (GATEHTTP924) ------------------------
+# The Bash arm recognised exactly one kind of send: email. Every other outbound
+# path that a human reads, and that an agent can reach with a plain curl, left
+# the machine with no audit at all. Measured 2026-09-24 with a synthetic em-dash
+# payload: a comment to the community API, a post to Discord's REST API and a
+# Telegram Bot API sendMessage all passed exit 0, while the SAME text through
+# the Telegram reply tool was blocked. The gate was not failing on these paths,
+# it simply had no door there.
+#
+# Covered here, each only when the method is a SEND (POST/PUT/PATCH or an
+# implicit POST from a data flag; GET/HEAD reads pass untouched):
+#   - the community agent API (api.marveen.io): feed posts, comments, mention
+#     replies. Written from a vault-held base URL in practice ($B/feed/...), so
+#     the path shape counts even when the host is an unresolved variable;
+#   - Discord REST: .../channels/<id>/messages[/<id>];
+#   - Telegram Bot API: .../bot<token>/send*|edit*.
+# NOT covered, deliberately: /api/messages (inter-agent and federation). That
+# channel is agent-to-agent, its traffic is written without accents, and it
+# already has its own homoglyph-only gate (INTERAGENTHOMOGLIF923) above.
+#
+# Failure direction follows the email branch, not the Telegram one: a body the
+# hook cannot read BLOCKS. These are deferrable writes (a community post is
+# even queued for owner approval), and a public text that skipped the audit
+# costs more than a retry with a readable body. An INTERNAL error still passes
+# loudly, like every channel arm.
+_HTTP_CHANNEL_TARGETS = (
+    ("marveen.io", re.compile(
+        r"^((https?://)?([^/\s]*\.)?api\.marveen\.io|\$\{?\w+\}?)(/[^\s]*)?"
+        r"/(feed/posts(/[^/\s]+/comments)?|mentions/[^/\s]+/reply)/?(\?\S*)?$", re.I)),
+    ("Discord API", re.compile(
+        r"^(https?://)?([^/\s]*\.)?discord(app)?\.com/api(/v\d+)?/channels/[^/\s]+/messages(/[^/\s]+)?/?(\?\S*)?$",
+        re.I)),
+    ("Telegram API", re.compile(
+        r"^(https?://)?api\.telegram\.org/bot[^/\s]+/(send|edit)\w*/?(\?\S*)?$", re.I)),
+)
+# Only the prose a human reads. ids, chat ids, parse modes and urls stay out:
+# auditing them would block on tokens nobody reads as text.
+_HTTP_TEXT_FIELDS = ("title", "content", "text", "caption", "message")
+
+
+def _http_channel_segment(cmd: str):
+    """(label, tokens) of the first curl segment that SENDS to a covered
+    human-facing HTTP channel, or (None, None)."""
+    try:
+        segments = _segments_tokens(cmd)
+    except ValueError:
+        return None, None
+    for toks in segments:
+        while toks and _ENV_ASSIGN.match(toks[0]):
+            toks = toks[1:]
+        if not toks or not _CURLISH.match(_basename(toks[0])):
+            continue
+        rest = toks[1:]
+        for label, target in _HTTP_CHANNEL_TARGETS:
+            if any(target.match(t) for t in rest):
+                if _curl_resend_verdict(rest) == "read":
+                    return None, None  # a GET of the feed: nothing is sent
+                return label, toks
+    return None, None
+
+
+def _http_channel_text(raw: str) -> str:
+    """The human-read prose of a channel body: JSON object fields, or the same
+    fields form-encoded (Telegram accepts both). Unknown shape: the raw body."""
+    try:
+        obj = json.loads(raw)
+    except ValueError:
+        obj = None
+    if isinstance(obj, dict):
+        return "\n".join(str(obj[f]) for f in _HTTP_TEXT_FIELDS
+                         if isinstance(obj.get(f), str) and obj.get(f))
+    if obj is None:
+        from urllib.parse import parse_qs
+        form = parse_qs(raw, keep_blank_values=False)
+        got = [v for f in _HTTP_TEXT_FIELDS for v in form.get(f, [])]
+        if got:
+            return "\n".join(got)
+    return raw
+
+
+def http_channel_gate(cmd: str) -> None:
+    """Exit 2 on a copy problem or an unreadable body, exit 0 when clean.
+    RETURNS (does not exit) when the command is not a covered HTTP send, so
+    the caller's other arms still run."""
+    label, toks = _http_channel_segment(cmd)
+    if label is None:
+        return
+    try:
+        raw, unreadable = _curl_payload_raw(cmd, toks, all_flags=True)
+        if unreadable:
+            sys.stderr.write(
+                f"KIMENO-SZOVEG KAPU ({label}): TILTVA, mert a kimeno szoveget nem tudtam "
+                f"megvizsgalni.\nOk: {unreadable}.\n\n"
+                "Ez szandekosan fail-closed: egy vizsgalhatatlan kuldes pont a kaput utne ki.\n"
+                "Vizsgalhato alak: idezett heredoc (--data-binary @- <<'JSON'), "
+                "@/abszolut/ut.json, vagy inline -d '...' behelyettesites nelkul.\n")
+            sys.exit(2)
+        if raw is None:
+            sys.exit(0)  # a bare POST: nothing of ours is being sent
+        text = _http_channel_text(raw)
+        if not text.strip():
+            sys.exit(0)
+        problems = audit(text)
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-open-loud
+        warn = f"outgoing-copy-gate: HTTP-csatorna-ag ({label}) belso hiba, FAIL-OPEN atengedes: {exc!r}"
+        sys.stderr.write(warn + "\n")
+        _gate_log(warn)
+        sys.exit(0)
+    if problems:
+        sys.stderr.write(
+            f"KIMENO-SZOVEG KAPU ({label}): TILTVA, az uzenet nem mehet ki igy.\n\n"
+            + "\n".join(f"  - {p}" for p in problems)
+            + "\n\nJavitsd a szoveget es kuldd ujra.\n")
+        sys.exit(2)
+    sys.exit(0)
+
+
 def collect_telegram_body(tool_input: dict) -> str:
     fields = ("text", "caption", "message")
     got = [str(tool_input[f]) for f in fields if tool_input.get(f)]
@@ -1126,9 +1245,16 @@ def _ia_resolve_local_vars(cmd: str, ref: str) -> str:
     return re.sub(r"\$\{(\w+)\}|\$(\w+)", sub, ref)
 
 
-def _ia_payload(cmd: str, toks):
-    """(text, unreadable_reason) of the message body, from the three shapes."""
+def _curl_payload_raw(cmd: str, toks, all_flags: bool = False):
+    """(raw_body, unreadable_reason) of a curl data flag, from the three shapes
+    (inline -d, @file, quoted heredoc via @-). raw_body is None when the call
+    carries no data flag at all. Shared by the inter-agent homoglyph gate and
+    the HTTP channel gate (GATEHTTP924), so both read the SAME body the same way.
+    all_flags: curl joins repeated -d values with '&' (a form body such as
+    `-d chat_id=1 -d text=...`); the HTTP gate needs every part, or the text
+    field hides behind the first flag. The inter-agent gate keeps first-only."""
     raw = None
+    parts = []
     for i, t in enumerate(toks):
         val = None
         for f in _IA_DATA_FLAGS:
@@ -1165,7 +1291,19 @@ def _ia_payload(cmd: str, toks):
             if _IA_SUBST.search(val):
                 return None, "az inline torzs shell-behelyettesitest tartalmaz, futasidoben dol el"
             raw = val
-        break
+        if not all_flags:
+            break
+        parts.append(raw)
+    if all_flags and parts:
+        return "&".join(parts), None
+    return raw, None
+
+
+def _ia_payload(cmd: str, toks):
+    """(text, unreadable_reason) of the message body, from the three shapes."""
+    raw, unreadable = _curl_payload_raw(cmd, toks)
+    if unreadable:
+        return None, unreadable
     if raw is None:
         # No data flag at all: a GET of the queue (the most frequent call on this
         # path) or a bare POST. Nothing is being SENT, so nothing to scan and
@@ -1278,6 +1416,7 @@ def main():
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
         if not is_send_invocation(cmd):
+            http_channel_gate(cmd)  # exits if it is a human-facing HTTP send; else returns
             inter_agent_homoglyph_gate(cmd)  # exits; a no-op pass for anything else
         text, unreadable = collect_bash_body(cmd)
     else:

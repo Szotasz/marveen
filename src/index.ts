@@ -21,6 +21,7 @@ import { initHeartbeat, stopHeartbeat, ensureHeartbeatWorkerHidden } from './hea
 import { ensureHeartbeatAgent, shouldBootHeartbeatAgent, HEARTBEAT_AGENT_NAME } from './web/heartbeat-agent-scaffold.js'
 import { startAgentProcess } from './web/agent-process.js'
 import { runLogRotationSweep, LOG_ROTATION_SWEEP_MS } from './web/log-rotation.js'
+import { sweepScheduledRunSnapshots } from './web/scheduled-run-snapshot.js'
 import { renameSharedCredentialsIfSafe, fleetTokenBootPass } from './web/claude-credentials-guard.js'
 import { startWebServer } from './web.js'
 import { logger } from './logger.js'
@@ -402,6 +403,7 @@ let decayInterval: NodeJS.Timeout | null = null
 let digestTimer: NodeJS.Timeout | null = null
 let digestInterval: NodeJS.Timeout | null = null
 let logRotationInterval: NodeJS.Timeout | null = null
+let scheduledRunSnapshotSweepInterval: NodeJS.Timeout | null = null
 let heartbeatStarted = false
 let webServer: HttpServer | null = null
 let shuttingDown = false
@@ -422,6 +424,7 @@ const shutdown = (): void => {
     if (digestTimer) clearTimeout(digestTimer)
     if (digestInterval) clearInterval(digestInterval)
     if (logRotationInterval) clearInterval(logRotationInterval)
+    if (scheduledRunSnapshotSweepInterval) clearInterval(scheduledRunSnapshotSweepInterval)
 
     const hardKill = setTimeout(() => {
       logger.warn({ timeoutMs: SHUTDOWN_HARD_KILL_MS }, 'Graceful shutdown timeout, hard exit')
@@ -491,6 +494,12 @@ async function main(): Promise<void> {
   // platform gets it without launchd/systemd/cron wiring.
   runLogRotationSweep()
   logRotationInterval = setInterval(runLogRotationSweep, LOG_ROTATION_SWEEP_MS)
+
+  // Scheduled-task run snapshot retention (SCHEDPROMPTREF917): same hourly
+  // cadence as log rotation, 7-day age cutoff with a per-task floor of the
+  // most recent 20 (see scheduled-run-snapshot.ts).
+  sweepScheduledRunSnapshots()
+  scheduledRunSnapshotSweepInterval = setInterval(() => sweepScheduledRunSnapshots(), LOG_ROTATION_SWEEP_MS)
 
   // Daily digest at 23:00. Timer handles kept so shutdown can drop them.
   function scheduleDailyDigest() {

@@ -67,7 +67,7 @@ describe('token-usage preview wiring goes through the redact', () => {
     expect(row.tool_name).toBe('Bash')
     // the preview is there (the wiring did not drop it) ...
     expect(row.content_preview).toContain('./run.sh')
-    expect(row.content_preview).toContain('VALAMI_TOKEN=[REDACTED]')
+    expect(row.content_preview).toContain('VALAMI_TOKEN="[REDACTED]')
     // ... and the secret is not
     expect(row.content_preview).not.toContain(SECRET)
   })

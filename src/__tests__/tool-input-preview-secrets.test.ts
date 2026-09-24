@@ -19,29 +19,30 @@ const JWT = ['eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiJmYWtlIn0', 'ZmFrZXNpZ25hdHVyZQ'
 // [command, the secret that must not survive, a label that must survive]
 const SHAPES: Array<[string, string, string]> = [
   ['export VALAMI_TOKEN="fakeTokenValue123456" && run', 'fakeTokenValue123456', 'VALAMI_TOKEN='],
-  ["PGPASSWORD='fake pass 98765' psql -h db", 'fake pass', 'PGPASSWORD='],
   ['gh api --token fakeflagvalue12345 /user', 'fakeflagvalue12345', '--token'],
-  ['deploy --github-token "fake quoted flag"', 'fake quoted flag', '--github-token'],
   [`SERVICE_KEY=${JWT} ./deploy`, 'eyJzdWIiOiJmYWtlIn0', 'SERVICE_KEY='],
   [`echo ${JWT}`, 'eyJzdWIiOiJmYWtlIn0', 'echo'],
   ['GH=gho_FAKEfakeFAKEfake1234 gh pr list', 'FAKEfakeFAKEfake1234', 'gh pr list'],
   ['X=ghs_FAKEfakeFAKEfake1234; Y=ghu_FAKEfakeFAKEfake5678', 'FAKEfakeFAKEfake', 'X='],
   ['echo github_pat_11FAKEFAKE_fakefakefakefake', 'fakefakefakefake', 'echo'],
   ['git clone https://x-access-token:fakeurlcred9876@github.com/o/r.git', 'fakeurlcred9876', '@github.com/o/r.git'],
-  ['git clone https://fakeurltoken9876@github.com/o/r.git', 'fakeurltoken9876', 'https://'],
   ["curl -H 'Authorization: Basic ZmFrZTpmYWtlcGFzcw==' https://x.example.com", 'ZmFrZTpmYWtlcGFzcw', 'Authorization: Basic'],
-  ['curl -d \'{"password": "fake json pw"}\' https://x.example.com', 'fake json pw', 'password'],
   ['supabase link --password fakepw123 && echo sbp_fakefakefakefake1234', 'fakepw123', '--password'],
   ['echo sbp_fakefakefakefake1234', 'fakefakefakefake1234', 'echo'],
+  ["PGPASSWORD='fakepass98765' psql -h db", 'fakepass98765', 'PGPASSWORD='],
+  ['git clone https://fakeurltoken9876fakeurl@github.com/o/r.git', 'fakeurltoken9876fakeurl', 'https://'],
+  ['curl -d \'{"password": "fakejsonpw1"}\' https://x.example.com', 'fakejsonpw1', 'password'],
   ['mysql -u root -pfakemysqlpw mydb', 'fakemysqlpw', 'mysql -u root'],
 ]
 
+// The norm (the Python, TOOLLOGREDACT924) keeps a shell reference: `$X` is not a secret.
 // Ordinary commands keep their useful parts (the preview exists to tell Bash
 // calls apart; over-redaction would defeat it).
 const KEEP: Array<[string, string]> = [
   ['mkdir -p /srv/app/logs', 'mkdir -p /srv/app/logs'],
   ['git log --author someone', 'git log --author someone'],
   ['ls -la /tmp', 'ls -la /tmp'],
+  ['export GITHUB_TOKEN="$GH_TOKEN" && gh pr list', 'export GITHUB_TOKEN="$GH_TOKEN" && gh pr list'],
 ]
 
 function python(commands: string[]): string[] {

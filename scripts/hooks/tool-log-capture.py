@@ -79,30 +79,47 @@ def _dashboard_token() -> str:
         return ''
 
 
-# Patterns that could reveal secrets if stored verbatim. Order matters: each
-# pattern runs over the text the previous ones already redacted. The TS port
-# (src/web/tool-input-preview.ts) mirrors this list; tool-input-preview-parity
-# pins the two together.
-_KEY_WORDS = r'(?:token|secret|passw(?:or)?d|api[_\-]?key|apikey|key|auth|credential)'
+# Patterns that could reveal secrets if stored verbatim.
+#
+# TOOLLOGREDACT924: the first version let 4 measured shapes through (Boni, #1533
+# review, on formatted fabricated secrets): a QUOTED value (`KEY="sbp_..."`, the
+# PATSZIVARGAS912 shape), a SPACE-separated flag (`--token sbp_...`), a JWT after
+# a `*_KEY=` name the generic key list did not know, and `Authorization: Basic`.
+# Same review, same pattern set asked of the TS twin (#1533, tool-input-preview):
+# quoted values, spaced flags, any `*KEY` / `*TOKEN` / `*SECRET` / `*PASSWORD`
+# name, a bare JWT, the sbp_ / gho_ / ghs_ / ghu_ / ghr_ / github_pat_ prefixes,
+# Basic auth, and credentials embedded in a URL. A value that is a shell
+# variable (`$X`, `${X}`, `$(...)`) is a reference, not a secret, and is kept so
+# the log stays readable. `-p X` is deliberately NOT a flag here: `mkdir -p`,
+# `ssh -p 22`, `psql -p 5432` would all be redacted for nothing.
+# Group 1, when present, is kept (the label); the rest of the match is replaced.
 _SECRET_PATTERNS = [
-    # Bearer / Authorization: Basic headers
-    re.compile(r'(?i)(bearer\s+)[A-Za-z0-9+/=_\-\.]{8,}'),
-    re.compile(r'(?i)(authorization\s*:\s*basic\s+)[A-Za-z0-9+/=]{8,}'),
-    # Credentials embedded in a URL: scheme://user:pass@host
-    re.compile(r'(\b[A-Za-z][A-Za-z0-9+.\-]*://)[^\s/@]+(?=@)'),
-    # JWT (header.payload.signature), wherever it stands
-    re.compile(r'\beyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*'),
-    # Quoted key=value / key: value pairs (the whole quoted value goes)
-    re.compile(r'(?i)(' + _KEY_WORDS + r'["\']?\s*[=:]\s*)(?:"[^"]+"|\'[^\']+\')'),
-    # Generic unquoted key=value / key: value pairs (not one already redacted)
-    re.compile(r'(?i)(' + _KEY_WORDS + r'["\']?\s*[=:]\s*)(?!\[REDACTED\])[^\s,\'";&|]{6,}'),
-    # Space-separated secret flags: --token X, --api-key "X", --github-token X
-    re.compile(r'(?i)(--[A-Za-z0-9\-]*(?:token|secret|passw(?:or)?d|api-?key|key)\s+)(?:"[^"]+"|\'[^\']+\'|[^\s\'";&|]+)'),
-    # -p <password> only for the clients where -p IS the password (not mkdir -p)
-    re.compile(r'(\b(?:mysql|mysqldump|mysqladmin|mariadb|sshpass)\b[^\n|;&]*?\s-p\s*)(?:"[^"]+"|\'[^\']+\'|[^\s\'";&|]+)'),
-    # GitHub/Anthropic/OpenAI/Slack/Supabase style tokens
-    re.compile(r'\b(ghp_|gho_|ghs_|ghu_|ghr_|github_pat_|sk-|sk-ant-|xoxb-|xoxp-|sbp_)[A-Za-z0-9_\-]{10,}'),
-    # Raw hex blobs ≥ 32 chars (likely hashed secrets) -- no capture group, full match replaced
+    # Bearer / Basic authorization values
+    re.compile(r'(?i)(\b(?:bearer|basic)\s+)[A-Za-z0-9+/=_\-\.]{8,}'),
+    # Credentials embedded in a URL: https://user:pass@host and https://token@host
+    re.compile(r'(?i)(\bhttps?://)(?!\$)[^/\s:@]+:[^/\s@]+(?=@)'),
+    re.compile(r'(?i)(\bhttps?://)[A-Za-z0-9_\-]{20,}(?=@)'),
+    # Spaced or = flags: --token X, --password 'X', --api-key=X ...
+    re.compile(r'(?i)(--(?:token|password|passwd|api-key|apikey|access-token|auth-token|secret)(?:\s+|=)[\'"]?)(?!\$)[^\s\'"]{6,}'),
+    # key=value / key: value, the value quoted or not, the key any name ending in
+    # a secret word (SERVICE_ROLE_KEY=, GITHUB_TOKEN=, "password": ...)
+    re.compile(r'(?i)(\b\w*(?:token|secret|passw(?:or)?d|api[_\-]?key|apikey|auth|credential|_key)[\'"]?\s*[=:]\s*[\'"]?)(?!\$)[^\s,\'";&|]{6,}'),
+    # Known token prefixes (the prefix is kept as the label). Stripe keys are
+    # underscore-separated (sk_live_ / rk_live_ / whsec_), unlike the sk- family.
+    re.compile(r'\b(ghp_|gho_|ghs_|ghu_|ghr_|github_pat_|sbp_|sk-ant-|sk-|xoxb-|xoxp-|xapp-|sk_live_|sk_test_|rk_live_|rk_test_|whsec_)[A-Za-z0-9_\-]{10,}'),
+    # Telegram bot token (<bot id>:<secret>), bare or inside an api.telegram.org URL
+    re.compile(r'(\b(?:bot)?\d{6,12}:)[A-Za-z0-9_\-]{30,}'),
+    # AWS access key id
+    re.compile(r'\b(AKIA|ASIA)[A-Z0-9]{16}\b'),
+    # A password given inline to a tool that takes it as -p: sshpass -p X,
+    # mysql/mysqldump/mariadb -pX. A bare `mysql -p` (prompt) has no value to hide.
+    # sshpass: a quoted password may contain spaces, so a quoted value is
+    # taken WHOLE; a double-quoted or bare $ reference stays (Samu, #1536).
+    re.compile(r'(\bsshpass\s+-p\s*)(?:\'[^\']*\'|"(?!\$)[^"]*"|(?!\$)[^\s\'"]+)'),
+    re.compile(r'(\b(?:mysql|mysqldump|mariadb)\b[^|;&\n]*?\s-p[\'"]?)(?!\$)[^\s\'"]{4,}'),
+    # A JWT anywhere (header.payload.signature)
+    re.compile(r'\beyJ[\w\-]{8,}\.eyJ[\w\-]{8,}\.[\w\-]{8,}'),
+    # Raw hex blobs >= 32 chars (likely hashed secrets) -- no capture group, full match replaced
     re.compile(r'\b[0-9a-fA-F]{32,}\b'),
 ]
 
