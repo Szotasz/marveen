@@ -23,6 +23,8 @@ import {
   parseBoardFilter,
   botAliases,
   botHandle,
+  boardHelpText,
+  nalNel,
   findCard,
   cardDetailText,
   nextRunText,
@@ -141,7 +143,7 @@ describe('/board (read only)', () => {
     expect(text).not.toContain('Archivált várakozó')
     expect(text).not.toContain('Tervezett, nem az enyém')
     expect(text).not.toMatch(/#\d|c000000/) // no hashtag links, no hex ids in the list
-    expect(text).toContain(`Egy kártya: /board ${seq('c0000002')}\nOszlop: /board w · p · i · t · d · all\nKié: /board me · /board `)
+    expect(text).toMatch(new RegExp(`Egy kártya: /board ${seq('c0000002')} · Szűrők és példák: /board \\?$`))
   })
 
   // Owner case 2026-09-24: three children were archived as standalone tasks.
@@ -376,10 +378,17 @@ describe('/board filters', () => {
     expect(d).toMatch(/^DONE \(1\)\n\(csak a még nem archivált kész kártyák\)\n/)
   })
 
-  it('the hints name the resolved bot handle, never "<név>"', () => {
-    const t = boardFilterText([], { status: 'waiting', who: null }, 'András', aliases, 'marveen')
-    expect(t).toContain('Kié: /board me · /board marveen · /board -')
-    expect(t).not.toContain('<név>')
+  it('/board ? explains the options with examples, in the resolved bot name; never "<név>"', () => {
+    const h = boardHelpText('marveen')
+    expect(h).toMatch(/^\/board – a kanban tábla\n/)
+    expect(h).toContain('  w várakozik · p tervezett · i folyamatban')
+    expect(h).toContain('  marveen  Marveen kártyái')
+    expect(h).toContain('  /board w marveen  ami Marveennél várakozik')
+    expect(h).not.toContain('<név>')
+    expect(boardHelpText('bot')).toContain('  bot      a boté')
+    expect(nalNel('Marveen')).toBe('Marveennél')
+    expect(nalNel('Samu')).toBe('Samunál')
+    expect(nalNel('Edith')).toBe('Edithnél')
   })
 })
 

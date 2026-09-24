@@ -53,6 +53,12 @@ describe('dispatchForChat', () => {
     expect(runs).toBe(0)
     expect((await dispatchForChat('/kanban', '42', '42', Date.now(), true, false, true)).handled).toBe(false)
   })
+  it('a write command\'s ? is answered as a read: no deferral, even for a sub-agent', async () => {
+    registerCommand({ name: 'irasos', kind: 'write', description: 'ír', help: () => 'SÚGÓ', run: async () => { runs++ } })
+    const r = await dispatchForChat('/irasos ?', '42', '42', Date.now(), false, true)
+    expect(r).toEqual({ handled: true, outcome: 'ran', replies: ['SÚGÓ'] })
+    expect(runs).toBe(0)
+  })
   it('plain text is not handled', async () => {
     expect((await dispatchForChat('szia, mi a helyzet?', '42', '42')).handled).toBe(false)
   })

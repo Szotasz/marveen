@@ -22,7 +22,7 @@
 
 import type http from 'node:http'
 import { json, readBody } from '../http-helpers.js'
-import { parseCommand, resolveCommand, dispatchCommand, botCommandList, type DispatchOutcome } from '../commands.js'
+import { parseCommand, resolveCommand, dispatchCommand, botCommandList, isHelpRequest, hasCommand, type DispatchOutcome } from '../commands.js'
 import { resolveOwnerChatId } from '../../owner-chat.js'
 import { onMainTurnEnded } from '../main-model.js'
 import { logger } from '../../logger.js'
@@ -90,7 +90,10 @@ export const FORWARDED_REPLY = (name: string) => `Továbbított üzenetből nem 
 
 export async function dispatchForChat(text: string, chatId: string, ownerChatId: string | null, now = Date.now(), mainSession = true, deferWrites = false, forwarded = false): Promise<DispatchResult> {
   const parsed = parseCommand(text)
-  const spec = parsed ? resolveCommand(parsed.name, parsed.args) : null
+  // `/<name> ?` is a read for every command, a write's included: no defer, no
+  // sub-agent refusal -- it only explains.
+  const helpAsk = parsed !== null && isHelpRequest(parsed.args) && hasCommand(parsed.name)
+  const spec = parsed ? resolveCommand(parsed.name, helpAsk ? [] : parsed.args) : null
   if (!parsed || !spec) {
     return { handled: false, outcome: parsed ? 'unknown' : 'not-command', replies: [] }
   }
@@ -99,6 +102,11 @@ export async function dispatchForChat(text: string, chatId: string, ownerChatId:
   }
   if (forwarded) {
     return { handled: true, outcome: 'forwarded-refused', replies: [FORWARDED_REPLY(spec.name)] }
+  }
+  if (helpAsk) {
+    const replies: string[] = []
+    await dispatchCommand(text, { reply: async (t: string) => { replies.push(t) }, ownerId: Number(ownerChatId), now })
+    return { handled: true, outcome: 'ran', replies }
   }
   if (spec.kind === 'write' && !mainSession) {
     return {

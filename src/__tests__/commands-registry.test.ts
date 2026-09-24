@@ -6,6 +6,7 @@ import {
   parseCommand,
   resolveCommand,
   dispatchCommand,
+  commandHelpText,
   renderHelp,
   botCommandList,
   chunkText,
@@ -165,4 +166,26 @@ describe('chunkText', () => {
     const parts = chunkText('x'.repeat(2500), 1000)
     expect(parts.map(p => p.length)).toEqual([1000, 1000, 500])
   })
+
+  // Owner request 2026-09-24: every command answers `?`.
+  it('/<name> ? : own help when the command has one, the registry lines otherwise; unknown names are left alone', async () => {
+    clearCommandsForTest()
+    registerBuiltinCommands()
+    registerCommand({ name: 'sajat', kind: 'write', source: 'custom', description: 'a saját [actions]', run: async () => {} })
+    const c = ctx()
+    expect(await dispatchCommand('/board ?', c)).toBe('ran')
+    expect(c.out[0]).toMatch(/^\/board – a kanban tábla/)
+    const u = ctx()
+    await dispatchCommand('/usage ?', u)
+    expect(u.out[0]).toMatch(/^\/usage\n\/usage \[<nap>\] - /)
+    const m = ctx()
+    await dispatchCommand('/model ?', m)
+    expect(m.out[0]).toMatch(/^\/model – melyik modell fut/) // not a model switch to "?"
+    const k = ctx()
+    await dispatchCommand('/sajat ?', k)
+    expect(k.out[0]).toMatch(/^\/sajat\n\/sajat - a saját \[actions\]\n\nSaját parancs/)
+    expect(commandHelpText('nincsilyen')).toBeNull()
+    expect(renderHelp()).toMatch(/Bármelyik parancs után \?: részletes súgó példákkal, pl\. \/board \?$/)
+  })
 })
+

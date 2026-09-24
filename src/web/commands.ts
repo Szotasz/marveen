@@ -39,6 +39,8 @@ export interface CommandSpec {
   confirm?: boolean
   /** `custom` = owner-defined command (listed under SAJÁT). */
   source?: 'builtin' | 'custom'
+  /** Detailed help with examples, shown for `/<name> ?`; without it the registry lines are shown. */
+  help?: () => string
   /** What a write changes. A write that runs drops a queued write touching the same thing. */
   touches?: Array<'model' | 'context'>
   /** Claims specific argument shapes; an entry without it is the fallback. */
@@ -130,11 +132,36 @@ export function resolveCommand(name: string, args: string[]): CommandSpec | null
   return forName.find(e => !e.matches) ?? null
 }
 
+// `/<name> ?` (owner request 2026-09-24): every command explains itself. A
+// command with its own help() shows that (options, examples); any other one
+// its registry lines -- so a new command never lacks a `?` answer.
+export function isHelpRequest(args: string[]): boolean {
+  return args.length === 1 && args[0] === '?'
+}
+
+export function commandHelpText(name: string): string | null {
+  const forName = entries.filter(e => e.name === name)
+  if (forName.length === 0) return null
+  const own = forName.find(e => e.help)
+  if (own?.help) return own.help()
+  const out = [`/${name}`]
+  for (const e of forName) out.push(helpLine(e))
+  if (forName[0].source === 'custom') out.push('', 'Saját parancs; a definíciója a dashboardon szerkeszthető.')
+  return out.join('\n')
+}
+
 export type DispatchOutcome = 'ran' | 'planned' | 'unknown' | 'not-command' | 'error'
 
 export async function dispatchCommand(text: string, ctx: CommandContext): Promise<DispatchOutcome> {
   const parsed = parseCommand(text)
   if (!parsed) return 'not-command'
+  if (isHelpRequest(parsed.args)) {
+    const h = commandHelpText(parsed.name)
+    if (h !== null) {
+      await ctx.reply(h)
+      return 'ran'
+    }
+  }
   const spec = resolveCommand(parsed.name, parsed.args)
   if (!spec) {
     await ctx.reply(`Ismeretlen parancs: /${parsed.name}. Nem futtattam semmit. Lásd /help.`)
@@ -181,6 +208,7 @@ export function renderHelp(): string {
   out.push('SAJÁT')
   if (custom.length === 0) out.push('nincs')
   for (const e of custom) out.push(helpLine(e))
+  out.push('', 'Bármelyik parancs után ?: részletes súgó példákkal, pl. /board ?')
   return out.join('\n')
 }
 

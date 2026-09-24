@@ -628,7 +628,7 @@ describe('/model owner view (modelSummary)', () => {
       'Tartás: nincs',
       '',
       'Választható: opus (nehéz munka, tervezés) · sonnet (napi munka) · haiku (gépies, olcsó körök)',
-      'Váltás: /model opus 30m · vissza: /model default · részletek: /model details',
+      'Váltás: /model opus 30m · súgó: /model ?',
     ].join('\n'))
     expect(modelSummary(base())).not.toMatch(/\.env|MAIN_AGENT_MODEL|visszamérni|assistant-sor/)
   })
@@ -639,7 +639,7 @@ describe('/model owner view (modelSummary)', () => {
     const out = modelSummary(base({ hold, measured: { model: 'claude-opus-5', atMs: T0 - 1000 } }))
     expect(out).toMatch(/^Modell: opus, ideiglenes, \d\d:\d\d-ig \(még 25 perc\)\nUtána vissza: sonnet\nEffort: high, ideiglenes\n/)
     expect(out).not.toMatch(/Tartás: nincs/)
-    expect(out).toMatch(/Váltás: \/model sonnet 30m · vissza most: \/model default/)
+    expect(out).toMatch(/Váltás: \/model sonnet 30m · vissza most: \/model default · súgó: \/model \?/)
   })
 
   it('after a restart, no turn yet: says it will measure from the next turn', () => {

@@ -47,7 +47,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { listScheduledTasks, type ScheduledTask } from './scheduled-tasks-io.js'
 import { computeNextRun } from './cron.js'
 import { getTokenSummary, getModelDistribution } from './token-usage.js'
-import { registerModelWriteCommands, readModelChoices as readChoiceList, readHold, readLastSent, readEffortSent, readConfiguredEffort, withRetry, MODEL_CHOICES_FILE, MODEL_HOLD_FILE, MODEL_LAST_SENT_FILE, EFFORT_SENT_FILE, EFFORT_LEVELS, type LastSent, type HoldState } from './main-model.js'
+import { registerModelWriteCommands, readModelChoices as readChoiceList, readHold, readLastSent, readEffortSent, readConfiguredEffort, withRetry, MODEL_CHOICES_FILE, MODEL_HOLD_FILE, MODEL_LAST_SENT_FILE, EFFORT_SENT_FILE, EFFORT_LEVELS, type LastSent, type HoldState, modelSupportsEffort } from './main-model.js'
 import { contextClear } from './session-control.js'
 
 function clip(s: string, n: number): string {
@@ -201,10 +201,35 @@ export function modelSummary(i: ModelSummaryInput): string {
   const example = (i.choices ?? []).find(c => c.name !== current)?.name
   out.push([
     example ? `Váltás: /model ${example} 30m` : null,
-    i.hold ? 'vissza most: /model default' : 'vissza: /model default',
-    'részletek: /model details',
+    i.hold ? 'vissza most: /model default' : null,
+    'súgó: /model ?',
   ].filter(Boolean).join(' · '))
   return out.join('\n')
+}
+
+export function modelHelpText(i: ModelSummaryInput = modelSummaryInput()): string {
+  const names = (i.choices ?? []).map(c => c.name)
+  const withEffort = (i.choices ?? []).filter(c => modelSupportsEffort(c.id)).map(c => c.name)
+  const a = names[0] ?? 'opus'
+  const e = withEffort[0] ?? a
+  return [
+    '/model – melyik modell fut, és váltás',
+    '',
+    '/model            mi fut most, meddig',
+    '/model details    technikai részletek',
+    '/model default    vissza az alapra, most',
+    '',
+    'Váltás: /model <modell> [<effort>] [<idő>|keep]',
+    `  modell: ${names.length ? names.join(' · ') : 'csak a beállított'}`,
+    `  effort: ${EFFORT_LEVELS.join(' · ')}${names.some(n => !withEffort.includes(n)) ? ` (nincs: ${names.filter(n => !withEffort.includes(n)).join(', ')})` : ''}`,
+    '  idő: 30m, 2h (alap: 2 óra) · keep = tartósan',
+    '',
+    'Példák:',
+    `  /model ${a} 30m`.padEnd(24) + 'fél órára, utána vissza',
+    `  /model ${e} high 2h`.padEnd(24) + 'magas efforttal, 2 órára',
+    '  /model high 1h'.padEnd(24) + 'csak az effort, 1 órára',
+    `  /model ${a} keep`.padEnd(24) + 'tartósan, újraindulás után is',
+  ].join('\n')
 }
 
 export function modelSummaryInput(now = Date.now()): ModelSummaryInput {
@@ -507,7 +532,7 @@ export function boardText(cards: KanbanCard[], owner: string = OWNER_NAME): stri
   if (shown === 0) lines.push('', 'Nincs rád váró vagy hozzád rendelt nyitott kártya.')
   const total = waiting.length + assigned.length
   if (total > shown) lines.push(`+${total - shown} további: /board all`)
-  lines.push('', `Egy kártya: /board ${first ? seqOf(first) : '<szám>'}`, boardHints())
+  lines.push('', `Egy kártya: /board ${first ? seqOf(first) : '<szám>'} · ${boardHints()}`)
   return lines.join('\n')
 }
 
@@ -532,7 +557,7 @@ export function boardAllText(cards: KanbanCard[], owner: string = OWNER_NAME): s
     }
     for (const c of col) walk(c, 0, null)
   }
-  lines.push('', 'Egy kártya: /board <szám>', boardHints())
+  lines.push('', `Egy kártya: /board <szám> · ${boardHints()}`)
   return lines.join('\n')
 }
 
@@ -594,8 +619,45 @@ function whoLabel(who: BoardWho, owner: string, handle: string): string {
   return who.name
 }
 
-export function boardHints(handle: string = botHandle()): string {
-  return `Oszlop: /board w · p · i · t · d · all\nKié: /board me · /board ${handle} · /board -  (kombinálható: /board w me)`
+// The compact footer; the full explanation is /board ? (owner feedback: the
+// switch list at the bottom was dense and hard to read).
+export function boardHints(): string {
+  return 'Szűrők és példák: /board ?'
+}
+
+// "Marveennél", "Edithnél", "Samunál": -nál/-nél by the last vowel (the name
+// comes from BOT_NAME, so it cannot be spelled out once).
+export function nalNel(name: string): string {
+  const v = name.toLocaleLowerCase('hu').match(/[aáeéiíoóöőuúüű]/g)
+  const last = v ? v[v.length - 1] : 'e'
+  return `${name}${'aáoóuú'.includes(last) ? 'nál' : 'nél'}`
+}
+
+export function boardHelpText(handle: string = botHandle()): string {
+  const Name = `${handle[0].toUpperCase()}${handle.slice(1)}`
+  return [
+    '/board – a kanban tábla',
+    '',
+    '/board          ami rád vár (várakozik + hozzád rendelt)',
+    '/board 41       egy kártya, alfeladataival',
+    '/board all      minden nyitott kártya, fában',
+    '',
+    'Egy oszlop:',
+    '  w várakozik · p tervezett · i folyamatban',
+    '  t tesztelés · d kész (még nem archivált)',
+    '',
+    'Kié:',
+    '  me       a tiéd',
+    `  ${handle.padEnd(8)} ${handle === 'bot' ? 'a boté' : `${Name} kártyái`}`,
+    '  -        senkié',
+    '  samu     bárki más, név szerint',
+    '',
+    'Példák:',
+    '  /board w          mi várakozik',
+    '  /board p me       a tervezett feladataid',
+    `  /board ${handle.padEnd(10)} ${Name} minden nyitott kártyája`,
+    `  /board w ${handle.padEnd(8)} ami ${nalNel(Name)} várakozik`,
+  ].join('\n')
 }
 
 // A filtered view: matching cards by column; a matching child sits under its
@@ -625,7 +687,7 @@ export function boardFilterText(cards: KanbanCard[], f: BoardFilter, owner: stri
     }
     for (const c of col) walk(c, 0, null)
   }
-  lines.push('', boardHints(handle))
+  lines.push('', boardHints())
   return lines.join('\n')
 }
 
@@ -717,7 +779,7 @@ export function registerBuiltinCommands(): void {
       return reply(ctx, n === null ? 'Használat: /approvals vagy /approvals <n>' : approvalDetailText(n, ctx.now))
     },
   })
-  registerCommand({ name: 'model', kind: 'read', description: 'mi fut most, meddig, és mire válthatsz', run: ctx => reply(ctx, modelSummary(modelSummaryInput(ctx.now))) })
+  registerCommand({ name: 'model', kind: 'read', description: 'mi fut most, meddig, és mire válthatsz', help: () => modelHelpText(), run: ctx => reply(ctx, modelSummary(modelSummaryInput(ctx.now))) })
   registerCommand({
     name: 'model', kind: 'read', usage: '/model details', description: 'a modell-állapot technikai részletei (azonosítók, források, mérés)',
     matches: args => args[0]?.toLowerCase() === 'details',
@@ -731,6 +793,7 @@ export function registerBuiltinCommands(): void {
   registerCommand({
     name: 'board', kind: 'read', usage: `/board [<szám>|w|p|i|t|d|all] [me|${botHandle()}|-]`,
     description: `kanban: ami rád vár; <szám>: egy kártya; w/p/i/t/d: egy oszlop; me, ${botHandle()}, -: kié; all: minden, fában`,
+    help: () => boardHelpText(),
     run: (ctx, args) => {
       if (args.length === 0) return reply(ctx, boardText(listKanbanCards()))
       if (args.length === 1 && ['all', 'a'].includes(args[0].toLowerCase())) return reply(ctx, boardAllText(listKanbanCards()))
@@ -738,9 +801,9 @@ export function registerBuiltinCommands(): void {
         const card = findCard(args[0])
         return reply(ctx, card ? cardDetailText(card) : `Nincs ilyen nyitott kártya: ${args[0]}. Minden nyitott kártya: /board all`)
       }
-      if (args.length > 2) return reply(ctx, `A /board csak olvas; kártyát írni innen nem lehet. Legfeljebb egy oszlopot és egy felelőst kap.\n${boardHints()}`)
+      if (args.length > 2) return reply(ctx, `A /board csak olvas; kártyát írni innen nem lehet. Legfeljebb egy oszlopot és egy felelőst kap. ${boardHints()}`)
       const f = parseBoardFilter(args)
-      if (typeof f === 'string') return reply(ctx, `${f}\n${boardHints()}`)
+      if (typeof f === 'string') return reply(ctx, `${f} ${boardHints()}`)
       // exactly an 8-char hex id still opens the card (a short name like
       // "ada" must not prefix-match an id)
       if (args.length === 1 && /^[0-9a-f]{8}$/i.test(args[0].trim())) {
