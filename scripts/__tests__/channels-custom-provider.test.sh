@@ -36,11 +36,21 @@ REAL_HELPER="$INSTALL_DIR/scripts/main-agent-custom-provider.mjs"
 
 # A silent exit 0 here used to read as a pass in CI without a single case
 # actually running -- an unbuilt tree made this suite report green while
-# testing nothing. Fail loudly instead: a missing dist/ is a setup error,
-# not a reason to report success.
+# testing nothing, and CI (the `test` workflow) never runs `npm run build`
+# before `npm test`, so a hard "FAIL: dist/ not built" turned every CI run
+# red instead. Build it ourselves on demand, and fail only if THAT fails --
+# a setup error still cannot report success, but a plain unbuilt tree (the
+# normal CI/fresh-checkout state) no longer needs a human to build first.
 if [ ! -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
-  echo "FAIL: dist/ not built -- run 'npm run build' first" >&2
-  exit 1
+  echo "dist/ not built -- building now (npm run build)..." >&2
+  if ! ( cd "$INSTALL_DIR" && npm run build ) >&2; then
+    echo "FAIL: npm run build failed" >&2
+    exit 1
+  fi
+  if [ ! -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
+    echo "FAIL: dist/web/agent-process.js still missing after npm run build" >&2
+    exit 1
+  fi
 fi
 
 # The isolated root lives INSIDE the project tree so node.js walks up to find
