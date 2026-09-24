@@ -364,6 +364,29 @@ check("munkaagra push atengedve", _hook_cwd_exit(GPUSH + " origin munkaag", ROOT
 check("main-re push blokkolva", _hook_cwd_exit(GPUSH + " origin main", ROOT) == 2)
 
 
+# --- 8. SHELL-KULCSSZO a parancsnev elott (2026-09-24-i res) ----------------
+# MERVE az akkori kapun: "rm -f /tmp/x" -> exit 2, de
+# "if rm -f /tmp/x; then echo ok; fi" -> exit 0. A szegmens elso tokenje az `if`,
+# az nem tiltott parancsnev, es a mogotte allo rm-et a kapu meg sem nezte. A hazi
+# stilus epp ezt az alakot irja elo, tehat a leggyakoribb alak volt a vak folt.
+print()
+print("Shell-kulcsszo a parancsnev elott (nem rejtheti el a tiltott parancsot):")
+check("if + rm blokkolva", blocks("if " + RM + " -f /etc/passwd; then echo ok; fi"))
+check("while + rm blokkolva", blocks("while " + RM + " -rf /etc/x; do :; done"))
+check("! + rm blokkolva", blocks("! " + RM + " -rf /etc/x"))
+check("csoportositas + rm blokkolva", blocks("{ " + RM + " -rf /etc/x; }"))
+check("then-agban allo rm blokkolva", blocks("then " + RM + " -rf " + HOME + "/.ssh"))
+check("if + eros push blokkolva", blocks("if " + GPUSH + " --force origin main; then echo ok; fi"))
+check("if + rm a gyoker alol atengedve",
+      not blocks_cwd("if " + RM + " -rf build; then echo ok; fi", ROOT))
+check("if + munkaagra push atengedve",
+      not blocks_cwd("if " + GPUSH + " origin munkaag; then echo ok; fi", ROOT))
+check("artalmatlan if-feltetel valtozatlanul atmegy",
+      not blocks("if systemctl --user is-active foo; then echo A; else echo B; fi"))
+check("teszt-feltetel atmegy", not blocks("if [ -f /tmp/x ]; then echo van; fi"))
+check("az 'rm' szo mint grep-minta nem parancs", not blocks("if grep -q rm file.txt; then echo t; fi"))
+
+
 print()
 if failed:
     print("%d FAILED: %s" % (len(failed), failed), file=sys.stderr)

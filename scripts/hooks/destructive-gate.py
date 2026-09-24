@@ -341,6 +341,17 @@ def _tokens(seg):
 # (egyuttmukodo agensek kormanyzasa), de ne higgye senki teljesnek.
 # Tovabbra sem zarul: "ssh gep <tiltott>" -- az tavoli gepen fut, arra kulon szabaly
 # kellene, nem burkolo-felismeres.
+# SHELL-KULCSSZAVAK a parancsnev ELOTT. A `if rm -f /x; then ...` szegmens elso
+# tokenje az `if`, ami nem tiltott parancsnev -- a kapu ezert a mogotte allo `rm`-et
+# SOHA NEM NEZTE MEG. 2026-09-24-en merve az ELES kapun: `rm -f /tmp/x` -> exit 2,
+# `if rm -f /tmp/x; then echo ok; fi` -> exit 0. A res azert sulyos, mert a hazi
+# stilus (CLAUDE.md: "Minden ellenorzes if ... then ... else ... fi formaban") EPP
+# ezt az alakot irja elo, tehat a leggyakoribb alak volt a vak folt.
+# Az `if`/`while`/`!`/`{` elotag, a `fi`/`done`/`}` lezaro -- mindegyiket atlepjuk:
+# a lezarok utan vagy nincs semmi, vagy a kovetkezo parancs all, es azt nezni kell.
+_KEYWORDS = ('if', 'then', 'elif', 'else', 'fi', 'while', 'until', 'do', 'done',
+             'case', 'esac', 'in', 'select', 'function', 'coproc',
+             '!', '{', '}', '(', ')', '[[', ']]')
 _TRANSPARENT = ('exec', 'command', 'time', 'nohup', 'env')
 _PREFIX_WRAPPERS = ('xargs', 'timeout', 'nice', 'ionice', 'stdbuf', 'watch', 'parallel',
                     'flock', 'chroot', 'setsid', 'unbuffer')
@@ -389,6 +400,9 @@ def command_index(toks):
         if i >= len(toks):
             return None
         base = os.path.basename(toks[i][0])
+        if toks[i][0] in _KEYWORDS and not toks[i][1]:
+            i += 1
+            continue
         if base in _TRANSPARENT:
             i += 1
             continue
