@@ -22,7 +22,17 @@ hook adds NO new state model -- it reuses ledger_lib.open_question_with_age):
   - If this same message_id has already been blocked MAX_BLOCKS times -> allow;
     a hard backstop so a wedged model can never be trapped in an infinite loop.
   - Otherwise -> BLOCK with a directive telling the model to send the reply via
-    mcp__plugin_telegram_telegram__reply(chat_id=...) before stopping.
+    the reply tool OF THE CHANNEL THE MESSAGE CAME FROM, with chat_id=...
+
+PROVIDER-AWARENESS (PROVIDERVAK908): this hook used to name
+mcp__plugin_telegram_telegram__reply unconditionally, because the ledger recorded
+WHAT arrived but not WHERE FROM. Measured 2026-09-07 it demanded a TELEGRAM reply
+for an inbound that came from the owner's DISCORD DM.
+The block itself was right -- an unanswered inbound IS owed a reply -- but the
+directive named a tool that cannot deliver it. The ledger now stores the envelope
+source, and the directive is derived from it. Rows written before that column
+existed have source NULL, so the fallback is PROVIDER-AGNOSTIC wording, never a
+guess: naming the wrong tool is exactly the failure being fixed.
 
 Safety: any error -> allow the stop (exit 0). A guard hook must never wedge the
 session. agent_id is derived from the session cwd, so it is generic across all
@@ -69,6 +79,25 @@ def _is_ack(text):
     if not tokens:
         return True  # emoji-only acknowledgement
     return all(tok in _ACK_WORDS for tok in tokens)
+
+
+_SOURCE_RX = re.compile(r"^plugin:([A-Za-z0-9_]+):([A-Za-z0-9_]+)$")
+
+
+def _reply_target(source):
+    """(channel_label, reply_tool_name) for an envelope source, or (None, None).
+
+    Only a source whose segments are plain [A-Za-z0-9_] yields a tool name: the
+    MCP tool id is mcp__plugin_<provider>_<server>__reply, and a segment with a
+    dot or a dash does not map to it character-for-character. In that case the
+    caller falls back to provider-agnostic wording -- an invented tool name is
+    worse than no tool name, because the model would call it and fail.
+    """
+    m = _SOURCE_RX.match(source or "")
+    if not m:
+        return (None, None)
+    provider, server = m.group(1), m.group(2)
+    return (provider, "mcp__plugin_{}_{}__reply".format(provider, server))
 
 
 def _statefile(agent_id):
@@ -138,12 +167,26 @@ def main():
     if len(snippet) > 160:
         snippet = snippet[:157] + "..."
 
+    try:
+        source = ledger_lib.source_for(agent_id, chat_id)
+    except Exception:
+        source = None  # unknown provider -> agnostic wording, never a guess
+    label, tool = _reply_target(source)
+
+    if tool:
+        channel = f"{label.upper()}-ÜZENET"
+        how = f"a {tool} toolon keresztül (chat_id={chat_id})"
+        sees = f"ő csak a(z) {label} csatornát látja"
+    else:
+        channel = "CSATORNA-ÜZENET"
+        how = f"ANNAK a csatornának a reply tooljával, ahonnan jött (chat_id={chat_id})"
+        sees = "ő csak a csatornát látja, a transzkriptet nem"
+
     reason = (
-        f"⚠️ VÁLASZOLATLAN TELEGRAM-ÜZENET (chat_id={chat_id}): \"{snippet}\"\n"
-        f"A fordulót NEM zárhatod le, amíg NEM küldtél Telegram-választ a "
-        f"mcp__plugin_telegram_telegram__reply toolon keresztül (chat_id={chat_id}). "
+        f"⚠️ VÁLASZOLATLAN {channel} (chat_id={chat_id}): \"{snippet}\"\n"
+        f"A fordulót NEM zárhatod le, amíg NEM küldtél választ {how}. "
         f"A sima szöveges (assistant text) kimenet NEM jut el a felhasználóhoz -- "
-        f"ő csak a Telegramot látja. Küldd el a választ a reply toollal MOST, "
+        f"{sees}. Küldd el a választ a reply toollal MOST, "
         f"utána zárhatod a fordulót."
     )
     print(json.dumps({"decision": "block", "reason": reason}))

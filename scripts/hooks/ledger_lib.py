@@ -43,6 +43,13 @@ _MIGRATION_COLUMNS = (
     ("attachment_kind", "TEXT"),
     ("attachment_file_id", "TEXT"),
     ("reply_to_message_id", "TEXT"),
+    # PROVIDERVAK908: the ledger used to record WHAT arrived but not WHERE FROM.
+    # The reply guard therefore named the Telegram reply tool for a Discord
+    # inbound (measured 2026-09-07, the owner's Discord
+    # DM). Stores the full envelope source, e.g. "plugin:discord:discord", so the
+    # reply tool name is derivable without a per-provider table. NULL for every
+    # row written before this column existed -- consumers must fall back.
+    ("source", "TEXT"),
 )
 
 RECENT_LIMIT = 20
@@ -248,7 +255,7 @@ def connect():
 
 def log_inbound(agent_id, chat_id, message_id, text, ts,
                 attachment_kind=None, attachment_file_id=None,
-                reply_to_message_id=None):
+                reply_to_message_id=None, source=None):
     """Record an inbound user message. Idempotent on (agent_id, chat_id, in, message_id).
 
     attachment_kind/file_id: set for voice / video_note messages that arrived
@@ -259,16 +266,20 @@ def log_inbound(agent_id, chat_id, message_id, text, ts,
     ctx.message.reply_to_message), when the sender replied to a specific
     earlier message instead of writing standalone. Only the id is kept, not an
     excerpt -- the quoted text is a copy of that other row's own `text` and is
-    already recoverable via a lookup on message_id (df3b48a7)."""
+    already recoverable via a lookup on message_id (df3b48a7).
+
+    source: the channel envelope's source attribute ("plugin:<provider>:<server>"),
+    or None when the caller does not know it. Used to name the RIGHT reply tool
+    in the reply guard's directive (PROVIDERVAK908)."""
     con = connect()
     try:
         con.execute(
             "INSERT OR IGNORE INTO conversation_log"
             " (agent_id, chat_id, direction, message_id, text, ts, created_at,"
-            "  attachment_kind, attachment_file_id, reply_to_message_id)"
-            " VALUES (?, ?, 'in', ?, ?, ?, ?, ?, ?, ?)",
+            "  attachment_kind, attachment_file_id, reply_to_message_id, source)"
+            " VALUES (?, ?, 'in', ?, ?, ?, ?, ?, ?, ?, ?)",
             (str(agent_id), str(chat_id), str(message_id), text, ts, int(time.time()),
-             attachment_kind, attachment_file_id, reply_to_message_id),
+             attachment_kind, attachment_file_id, reply_to_message_id, source),
         )
         con.commit()
     finally:
@@ -315,6 +326,30 @@ def recent(agent_id, limit=RECENT_LIMIT):
             (str(agent_id), int(limit)),
         ).fetchall()
         return list(reversed(rows))
+    finally:
+        con.close()
+
+
+def source_for(agent_id, chat_id):
+    """The channel envelope source ("plugin:<provider>:<server>") most recently
+    recorded for this agent+chat, or None if unknown (PROVIDERVAK908).
+
+    Deliberately a SEPARATE lookup rather than a widened open_question_with_age()
+    tuple: every consumer of that tuple prefix-slices it (HOOKARITAS821), and a
+    new trailing element is exactly the kind of change that keeps working in the
+    tests while silently shifting a field for a caller that unpacks positionally.
+    A miss returns None, and every caller must degrade to provider-agnostic
+    wording -- rows written before the column existed have source NULL.
+    """
+    con = connect()
+    try:
+        row = con.execute(
+            "SELECT source FROM conversation_log"
+            " WHERE agent_id=? AND chat_id=? AND source IS NOT NULL"
+            " ORDER BY created_at DESC, id DESC LIMIT 1",
+            (str(agent_id), str(chat_id)),
+        ).fetchone()
+        return row[0] if row else None
     finally:
         con.close()
 
