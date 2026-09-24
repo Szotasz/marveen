@@ -123,6 +123,63 @@ describe('cc4d0ddd channels.sh pass 1: real processes', () => {
   })
 })
 
+// Card 217d8669 (found in the cc4d0ddd review): two protections of the
+// shell path had no test, and their mutants stayed green:
+//   (2) the argv[0]==tmux rule. When `tmux list-panes` fails there is no pane
+//       leader and no pane parent in the never-signal set, so this rule is the
+//       real server's only protection on the shell path;
+//   (3) the masking and the 240-character bound of the logged command line.
+// argv[0] is set with bash `exec -a` (bash does not care about its own name).
+describe('217d8669 channels.sh pass 1: argv[0]==tmux rule and log masking (real processes)', () => {
+  const fakeTmuxDown = join(tmp, 'fake-tmux-down')
+  const argsOf = (pid: number) => execFileSync('/bin/ps', ['-o', 'args=', '-p', String(pid)], { encoding: 'utf-8' }).trim()
+
+  it('with a failing `tmux list-panes`, a process whose argv[0] is tmux is spared; a poller in the same call dies', async () => {
+    writeFileSync(fakeTmuxDown, '#!/bin/sh\necho "no server running on /tmp/tmux-test/default" >&2\nexit 1\n')
+    chmodSync(fakeTmuxDown, 0o755)
+    const log = join(tmp, 'reap-217-tmux.log')
+    const tmuxLike = spawnEnv('/bin/bash', ['-c', 'exec -a tmux /bin/bash -c "sleep 302; :"'],
+      { TELEGRAM_STATE_DIR: chanDir, CLAUDE_PLUGIN_ROOT: pluginRoot })
+    const poller = spawnEnv('/bin/sleep', ['304'], { TELEGRAM_STATE_DIR: chanDir, CLAUDE_PLUGIN_ROOT: pluginRoot })
+    await sleep(200)
+    // preconditions: the fake tmux fails, and argv[0] really is "tmux"
+    expect(() => execFileSync(fakeTmuxDown, ['list-panes', '-a'], { stdio: 'ignore' })).toThrow()
+    expect(argsOf(tmuxLike)).toMatch(/^tmux /)
+    execFileSync('bash', ['-c', `. "${LIB}"; channel_reap_kill "$1" pass1 "$2" "$3" "$4"`,
+      'x', log, fakeTmuxDown, String(tmuxLike), String(poller)])
+    await sleep(500)
+    expect(alive(tmuxLike)).toBe(true)
+    expect(alive(poller)).toBe(false)
+    const text = readFileSync(log, 'utf-8')
+    expect(text).toContain(`kill pid=${poller} cmd=/bin/sleep 304`)
+    expect(text).toMatch(new RegExp(`spared \\(tmux server or live pane\\):.*\\b${tmuxLike}\\b`))
+    expect(text).not.toContain(`kill pid=${tmuxLike}`)
+  })
+
+  it('masks secret-looking values in the logged command line and keeps it within 240 characters', async () => {
+    writeFileSync(fakeTmux, '#!/bin/sh\necho 4242\n'); chmodSync(fakeTmux, 0o755)
+    const log = join(tmp, 'reap-217-mask.log')
+    const secretish = spawnEnv('/bin/sh', ['-c', 'sleep 303; :', 'x',
+      'API_KEY=supersecret123', 'MY_TOKEN_X=tok-abc', 'Authorization:', 'Bearer', 'bearer-xyz789'], {})
+    const long = spawnEnv('/bin/sh', ['-c', 'sleep 305; :', 'x', 'L'.repeat(400)], {})
+    await sleep(200)
+    execFileSync('bash', ['-c', `. "${LIB}"; channel_reap_kill "$1" pass1 "$2" "$3" "$4"`,
+      'x', log, fakeTmux, String(secretish), String(long)])
+    await sleep(500)
+    const lines = readFileSync(log, 'utf-8').split('\n')
+    const s = lines.find((l) => l.includes(`kill pid=${secretish} cmd=`))
+    expect(s).toBeDefined() // positive control: the kill was logged
+    expect(s).toContain('API_KEY=<redacted>')
+    expect(s).toContain('MY_TOKEN_X=<redacted>')
+    expect(s).toContain('Bearer <redacted>')
+    expect(s).not.toMatch(/supersecret123|tok-abc|bearer-xyz789/)
+    const l = lines.find((x) => x.includes(`kill pid=${long} cmd=`))
+    expect(l).toBeDefined()
+    expect(l!.split(' cmd=')[1]!.length).toBeLessThanOrEqual(240)
+    expect(l).toContain('LLLL')
+  })
+})
+
 describe('cc4d0ddd channels.sh pass 1: wiring', () => {
   it('sources the helpers and uses them for pass 1', () => {
     expect(channelsSh).toContain('. "$INSTALL_DIR/scripts/lib/channel-reap.sh"')
