@@ -84,6 +84,12 @@ CASES = [
      "curl -s https://api.telegram.org/botXYZ/sendMessage -d chat_id=1 -d text='Rendes mondat.'", 0),
     ("Telegram getUpdates READ passes",
      "curl -s https://api.telegram.org/botXYZ/getUpdates", 0),
+    # pinned after review (#1527): each of these stayed green with its guard removed
+    ("community feed search READ with an em dash in the query passes (the read exemption)",
+     f"curl -s -G '{MIO}/feed/posts' -d 'q={BAD}'", 0),
+    ("Telegram form body: em dash in parse_mode passes (only prose fields are audited)",
+     "curl -s https://api.telegram.org/botXYZ/sendMessage -d chat_id=1 "
+     "-d text='Rendes mondat.' -d 'parse_mode=\u2014'", 0),
     # scope boundary
     ("inter-agent /api/messages stays OUT of the full audit (homoglyph-only gate)",
      "curl -s -X POST http://localhost:3420/api/messages "
