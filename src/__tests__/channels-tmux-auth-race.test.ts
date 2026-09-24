@@ -3,6 +3,9 @@
 // container restart, 2026-09-23, tmux 3.3a). Replayed here with a REAL tmux on
 // an isolated socket, running the auth block cut verbatim out of
 // scripts/channels.sh -- the race itself, not a model of it.
+// The pane writes its answer to a temp file and renames it: a shell creates
+// the `>` target before writing, and a faster machine (CI, #1534) read the
+// empty file.
 import { describe, it, expect, afterEach } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs'
@@ -45,15 +48,18 @@ describe.skipIf(!HAS_TMUX)('channels.sh tmux auth (real tmux, isolated socket)',
     dir = mkdtempSync(join(tmpdir(), 'tmuxrace-'))
     sock = join(dir, 's')
     const out = join(dir, 'pane-env')
-    bash(`
+    const log = bash(`
       TMUX="tmux -S ${sock}"
       ${authBlock()}
+      echo "tmux=$(tmux -V) flags=\${#TMUX_AUTH_ENV[@]}"
       # the dashboard worker creates the server first, WITHOUT the token
       env -u CLAUDE_CODE_OAUTH_TOKEN tmux -S ${sock} new-session -d -s worker "sleep 30"
-      $TMUX new-session -d -s channels \${TMUX_AUTH_ENV[@]+"\${TMUX_AUTH_ENV[@]}"} "printenv CLAUDE_CODE_OAUTH_TOKEN > ${out}; sleep 30"
+      $TMUX new-session -d -s channels \${TMUX_AUTH_ENV[@]+"\${TMUX_AUTH_ENV[@]}"} "printenv CLAUDE_CODE_OAUTH_TOKEN > ${out}.tmp; mv ${out}.tmp ${out}; sleep 30"
       _tmux_set_auth_globals
     `, { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-test' })
-    for (let i = 0; i < 50 && !existsSync(out); i++) execFileSync('sleep', ['0.1'])
+    // "-e NAME=value" twice would be 4; one token var = 2 array items
+    expect(log).toMatch(/flags=2$/m)
+    for (let i = 0; i < 100 && !existsSync(out); i++) execFileSync('sleep', ['0.1'])
     expect(readFileSync(out, 'utf-8').trim()).toBe('sk-ant-oat01-test')
     const globalEnv = execFileSync('tmux', ['-S', sock, 'show-environment', '-g', 'CLAUDE_CODE_OAUTH_TOKEN'], { encoding: 'utf-8' })
     expect(globalEnv.trim()).toBe('CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-test')
@@ -67,9 +73,9 @@ describe.skipIf(!HAS_TMUX)('channels.sh tmux auth (real tmux, isolated socket)',
       tmux -S ${sock} start-server
       tmux -S ${sock} set-environment -g CLAUDE_CODE_OAUTH_TOKEN "$CLAUDE_CODE_OAUTH_TOKEN" 2>/dev/null
       env -u CLAUDE_CODE_OAUTH_TOKEN tmux -S ${sock} new-session -d -s worker "sleep 30"
-      tmux -S ${sock} new-session -d -s channels "printenv CLAUDE_CODE_OAUTH_TOKEN > ${out}; echo rc=\\$? >> ${out}; sleep 30"
+      tmux -S ${sock} new-session -d -s channels "printenv CLAUDE_CODE_OAUTH_TOKEN > ${out}.tmp; echo rc=\\$? >> ${out}.tmp; mv ${out}.tmp ${out}; sleep 30"
     `, { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-test' })
-    for (let i = 0; i < 50 && !existsSync(out); i++) execFileSync('sleep', ['0.1'])
+    for (let i = 0; i < 100 && !existsSync(out); i++) execFileSync('sleep', ['0.1'])
     expect(readFileSync(out, 'utf-8')).not.toContain('sk-ant-oat01-test')
   })
 
