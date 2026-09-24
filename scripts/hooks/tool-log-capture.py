@@ -96,9 +96,16 @@ def _dashboard_token() -> str:
 _SECRET_PATTERNS = [
     # Bearer / Basic authorization values
     re.compile(r'(?i)(\b(?:bearer|basic)\s+)[A-Za-z0-9+/=_\-\.]{8,}'),
-    # Credentials embedded in a URL: https://user:pass@host and https://token@host
-    re.compile(r'(?i)(\bhttps?://)(?!\$)[^/\s:@]+:[^/\s@]+(?=@)'),
-    re.compile(r'(?i)(\bhttps?://)[A-Za-z0-9_\-]{20,}(?=@)'),
+    # Credentials embedded in a URL: scheme://user:pass@host and scheme://token@host.
+    # TOOLLOGURLSCHEME924 (Boni, #1533 review): the scheme used to be https? only,
+    # so postgres(ql)://, redis://, amqp://, mongodb(+srv):// passwords went through
+    # on both sides. Any RFC 3986 scheme now. Two more shapes measured leaking in
+    # the same round: an EMPTY user (redis://:pass@host, the usual redis form), and
+    # an unencoded @ inside the password -- the password runs to the LAST @ before
+    # the host, not the first. A $ reference in either the user or the password
+    # position is kept (a reference, not a secret).
+    re.compile(r'(?i)(\b[a-z][a-z0-9+.\-]*://)(?!\$)[^/\s:@]*:(?!\$)[^/\s]+(?=@[^/\s@]*(?:[/\s?#]|$))'),
+    re.compile(r'(?i)(\b[a-z][a-z0-9+.\-]*://)[A-Za-z0-9_\-]{20,}(?=@)'),
     # Spaced or = flags: --token X, --password 'X', --api-key=X ...
     re.compile(r'(?i)(--(?:token|password|passwd|api-key|apikey|access-token|auth-token|secret)(?:\s+|=)[\'"]?)(?!\$)[^\s\'"]{6,}'),
     # key=value / key: value, the value quoted or not, the key any name ending in

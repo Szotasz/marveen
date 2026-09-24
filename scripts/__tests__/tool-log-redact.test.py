@@ -84,6 +84,16 @@ LEAK = [
     ("mysql -p\"X\" (double-quoted, attached)", f'mysql -u root -p"{OPAQUE}" db', OPAQUE),
     ("mysqldump -uroot -p'X'", f"mysqldump -uroot -p'{OPAQUE}' db > d.sql", OPAQUE),
     ("sshpass -p 'two words' (quoted, with a space)", "sshpass -p 'Secret " + "Pass" + "99' ssh u@h", "Pass" + "99"),
+    # TOOLLOGURLSCHEME924 (Boni, #1533 review): URL credentials under a non-http scheme
+    ("postgresql:// user:pass", f"psql postgresql://app:{OPAQUE}@db.example.org:5432/app", OPAQUE),
+    ("DATABASE_URL=postgres://", f"DATABASE_URL=postgres://app:{OPAQUE}@db.example.org/app npm run migrate", OPAQUE),
+    ("redis:// user:pass", f"redis-cli -u redis://default:{OPAQUE}@cache.example.org:6379", OPAQUE),
+    ("redis:// EMPTY user (the usual redis form)", f"redis-cli -u redis://:{OPAQUE}@cache.example.org:6379", OPAQUE),
+    ("amqp:// user:pass", f"AMQP_URL=amqp://guest:{OPAQUE}@mq.example.org:5672/", OPAQUE),
+    ("mongodb+srv:// user:pass", f"mongosh mongodb+srv://u:{OPAQUE}@c0.example.net/db", OPAQUE),
+    ("unencoded @ inside the password: the tail after the first @",
+     f"psql postgres://app:fake@{OPAQUE}@db.example.org/app", OPAQUE),
+    ("token-only credential under a non-http scheme", f"redis-cli -u rediss://{OPAQUE}@cache.example.org", OPAQUE),
 ]
 
 KEEP = [
@@ -98,6 +108,11 @@ KEEP = [
     ("sshpass -p with a variable", 'sshpass -p "$SSHPASS_VALUE" ssh u@h', 'sshpass -p "$SSHPASS_VALUE" ssh u@h'),
     ("a timestamp-like number with a colon is not a bot token", "sleep 3600; echo 1727180000:done", "sleep 3600; echo 1727180000:done"),
     ("plain URL", "git clone https://github.com/o/r.git", "git clone https://github.com/o/r.git"),
+    ("redis URL with a $ password reference", "redis-cli -u redis://:$REDIS_PASS@cache.example.org",
+     "redis-cli -u redis://:$REDIS_PASS@cache.example.org"),
+    ("ssh:// with a user and no password", "git clone ssh://git@github.com/o/r.git", "git clone ssh://git@github.com/o/r.git"),
+    ("a colon and an @ in the path, not in the authority", "curl https://example.org/a:b/c@d",
+     "curl https://example.org/a:b/c@d"),
     ("an author field is not auth", 'git log --author="someone@example.org"', 'git log --author="someone@example.org"'),
 ]
 

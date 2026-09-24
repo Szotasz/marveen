@@ -18,5 +18,8 @@
   {"toolName": "Bash", "input": {"command": "curl -d '{\"password\": \"fake json pw\"}' https://x.example.com"}},
   {"toolName": "Bash", "input": {"command": "supabase link --password fakepw123 && echo sbp_fakefakefakefake1234"}},
   {"toolName": "Bash", "input": {"command": "mysql -u root -pfakemysqlpw mydb"}},
-  {"toolName": "Bash", "input": {"command": "mkdir -p /srv/app/logs && git log --author someone"}}
+  {"toolName": "Bash", "input": {"command": "mkdir -p /srv/app/logs && git log --author someone"}},
+  {"toolName": "Bash", "input": {"command": "DATABASE_URL=postgres://app:fakepgpw1111@db.example.org/app npm run migrate"}},
+  {"toolName": "Bash", "input": {"command": "redis-cli -u redis://:fakeredispw2222@cache.example.org:6379"}},
+  {"toolName": "Bash", "input": {"command": "psql postgres://app:fake@tailpw3333@db.example.org/app"}}
 ]

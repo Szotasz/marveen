@@ -16,9 +16,10 @@
 const SECRET_PATTERNS: Array<{ re: RegExp; hasGroup: boolean }> = [
   // Bearer / Basic authorization values
   { re: /(\b(?:bearer|basic)\s+)[A-Za-z0-9+/=_\-.]{8,}/gi, hasGroup: true },
-  // Credentials embedded in a URL: https://user:pass@host and https://token@host
-  { re: /(\bhttps?:\/\/)(?!\$)[^/\s:@]+:[^/\s@]+(?=@)/gi, hasGroup: true },
-  { re: /(\bhttps?:\/\/)[A-Za-z0-9_\-]{20,}(?=@)/gi, hasGroup: true },
+  // Credentials embedded in a URL: scheme://user:pass@host and scheme://token@host,
+  // any scheme, empty user allowed, password up to the LAST @ (TOOLLOGURLSCHEME924)
+  { re: /(\b[a-z][a-z0-9+.\-]*:\/\/)(?!\$)[^/\s:@]*:(?!\$)[^/\s]+(?=@[^/\s@]*(?:[/\s?#]|$))/gi, hasGroup: true },
+  { re: /(\b[a-z][a-z0-9+.\-]*:\/\/)[A-Za-z0-9_\-]{20,}(?=@)/gi, hasGroup: true },
   // Spaced or = flags: --token X, --password 'X', --api-key=X ...
   { re: /(--(?:token|password|passwd|api-key|apikey|access-token|auth-token|secret)(?:\s+|=)['"]?)(?!\$)[^\s'"]{6,}/gi, hasGroup: true },
   // key=value / key: value, the value quoted or not, the key any name ending in a secret word

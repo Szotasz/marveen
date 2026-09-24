@@ -33,6 +33,14 @@ const SHAPES: Array<[string, string, string]> = [
   ['git clone https://fakeurltoken9876fakeurl@github.com/o/r.git', 'fakeurltoken9876fakeurl', 'https://'],
   ['curl -d \'{"password": "fakejsonpw1"}\' https://x.example.com', 'fakejsonpw1', 'password'],
   ['mysql -u root -pfakemysqlpw mydb', 'fakemysqlpw', 'mysql -u root'],
+  // TOOLLOGURLSCHEME924: any URL scheme, an empty user, an unencoded @ in the password
+  ['psql postgresql://app:fakepgpw4321@db.example.org:5432/app', 'fakepgpw4321', 'postgresql://'],
+  ['DATABASE_URL=postgres://app:fakepgpw5432@db.example.org/app npm run migrate', 'fakepgpw5432', 'DATABASE_URL=postgres://'],
+  ['redis-cli -u redis://:fakeredispw6543@cache.example.org:6379', 'fakeredispw6543', '@cache.example.org:6379'],
+  ['AMQP_URL=amqp://guest:fakeamqppw7654@mq.example.org:5672/', 'fakeamqppw7654', 'amqp://'],
+  ['mongosh mongodb+srv://u:fakemongopw8765@c0.example.net/db', 'fakemongopw8765', 'mongodb+srv://'],
+  ['psql postgres://app:fake@tailpw9876@db.example.org/app', 'tailpw9876', '@db.example.org/app'],
+  ['redis-cli -u rediss://fakeredistoken0987fake@cache.example.org', 'fakeredistoken0987fake', 'rediss://'],
 ]
 
 // The norm (the Python, TOOLLOGREDACT924) keeps a shell reference: `$X` is not a secret.
@@ -43,6 +51,8 @@ const KEEP: Array<[string, string]> = [
   ['git log --author someone', 'git log --author someone'],
   ['ls -la /tmp', 'ls -la /tmp'],
   ['export GITHUB_TOKEN="$GH_TOKEN" && gh pr list', 'export GITHUB_TOKEN="$GH_TOKEN" && gh pr list'],
+  ['redis-cli -u redis://:$REDIS_PASS@cache.example.org', 'redis-cli -u redis://:$REDIS_PASS@cache.example.org'],
+  ['git clone ssh://git@github.com/o/r.git', 'git clone ssh://git@github.com/o/r.git'],
 ]
 
 function python(commands: string[]): string[] {
