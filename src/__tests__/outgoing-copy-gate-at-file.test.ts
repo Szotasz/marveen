@@ -14,8 +14,9 @@ import { tmpdir } from 'node:os'
 //     acceptance criterion "a clean payload goes through" failed.
 //   - inter-agent `curl .../api/messages` -> NOT a send invocation at all,
 //     heredoc AND @file alike (pinned expected:false in
-//     send-invocation-cases.json). The @ branch does not change that; whether
-//     inter-agent traffic gets a homoglyph check is a separate scope decision.
+//     send-invocation-cases.json). The @ branch does not change that: the
+//     EMAIL copy rules never run on inter-agent traffic. (Its homoglyph-only
+//     check is INTERAGENTHOMOGLIF923's, pinned in its own test file.)
 //
 // Card acceptance: (a) homoglyph in an @file JSON payload BLOCKS, for its
 // content; (b) a clean one PASSES; (c) an unreadable @path gives a "cannot
@@ -40,13 +41,13 @@ function file(name: string, content: string): string {
   return p
 }
 
-function gate(cmd: string): { code: number | null; err: string } {
+function gate(cmd: string, rules = join(dir, 'rules.json')): { code: number | null; err: string } {
   const r = spawnSync('python3', [GATE], {
     input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: cmd }, hook_event_name: 'PreToolUse' }),
     encoding: 'utf-8',
     // Rules path (and so the gate's log) inside the test dir: hermetic, and
     // never a write into the checkout's store/.
-    env: { ...process.env, CLAUDE_PROJECT_DIR: ROOT, OUTGOING_COPY_GATE_RULES: join(dir, 'rules.json') },
+    env: { ...process.env, CLAUDE_PROJECT_DIR: ROOT, OUTGOING_COPY_GATE_RULES: rules },
   })
   return { code: r.status, err: r.stderr }
 }
@@ -178,22 +179,27 @@ describe('copy gate reads a curl @file payload (GATEBINVAK916)', () => {
     expect(extract(resend(`--form-string "text=@${p}"`))).toEqual(['', null])
   })
 
-  // Inter-agent messages stay out of the EMAIL gate. Since INTERAGENTHOMOGLIF923
-  // (#1509) they get their own homoglyph-only check, so a lookalike in an @file
-  // message now blocks -- but on the inter-agent branch, not on the email rules,
-  // and accentless text (which the email accent rule would stop) still passes.
-  // Before #1509 this case pinned "passes"; merged together the two went red.
-  it('inter-agent messages stay out of the email gate: only the homoglyph check runs', () => {
+  // The claim this case exists for, true before and after INTERAGENTHOMOGLIF923:
+  // the EMAIL copy rules do not run on the inter-agent path. The body carries
+  // exactly what they would stop -- accentless Hungarian (accent rule), " -- "
+  // (dash rule) and an owner name-rule hit (rules file below) -- and must pass.
+  // Each control sends ONE of those traits as a Resend letter and must block,
+  // so every trait is load-bearing and the pass is scope, not a toothless gate.
+  it('inter-agent messages stay out of the email gate (the email copy rules do not run there)', () => {
+    const rules = file('rules-name.json', JSON.stringify({ bad_name_patterns: ['Rosszvezeteknev'] }))
+    const accentless = 'Szia, kuldom a szamlat, nezd meg.'
+    const dashed = 'Szia, küldöm a számlát -- nézd meg, köszönöm.'
+    const named = 'Szia, küldöm a számlát Rosszvezeteknev részére, köszönöm.'
     const post = (p: string) =>
       `curl -s -X POST http://localhost:3420/api/messages -H "Content-Type: application/json" --data-binary @${p}`
-    const homo = gate(post(file('msg.json', JSON.stringify({ from: 'samu', to: 'marveen', content: HOMO }))))
-    expect(homo.code).toBe(2)
-    expect(homo.err).toMatch(/\(inter-agent\)/)
-    const accentless = gate(post(file('msg2.json', JSON.stringify({ from: 'samu', to: 'marveen', content: 'Szia, kuldom a szamlat, nezd meg.' }))))
-    expect(accentless.code).toBe(0)
-    // Control: the SAME accentless text as an email letter is stopped by the
-    // email rules, so the pass above is the scope, not a toothless gate.
-    const asMail = gate(resend(`--data-binary @${file('mail2.json', JSON.stringify({ to: 'c@d.hu', subject: 'Szamla', text: 'Szia, kuldom a szamlat, nezd meg.' }))}`))
-    expect(asMail.code).toBe(2)
+    const body = `${accentless} ${dashed} ${named}`
+    expect(gate(post(file('msg.json', JSON.stringify({ from: 'samu', to: 'marveen', content: body }))), rules).code).toBe(0)
+    const controls: [string, RegExp][] = [[accentless, /HIANYZO EKEZETEK/], [dashed, /DUPLA KOTOJEL/], [named, /HELYTELEN NEV/]]
+    for (const [i, [text, reason]] of controls.entries()) {
+      const letter = file(`ctl${i}.json`, JSON.stringify({ to: 'c@d.hu', subject: 'Számla', text }))
+      const r = gate(resend(`--data-binary @${letter}`), rules)
+      expect(r.code, `control ${i}`).toBe(2)
+      expect(r.err, `control ${i}`).toMatch(reason)
+    }
   })
 })
