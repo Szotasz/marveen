@@ -744,7 +744,8 @@ const reply = (ctx: CommandContext, text: string) => ctx.reply(text)
 
 export function registerBuiltinCommands(): void {
   // OLVAS
-  registerCommand({ name: 'help', kind: 'read', description: 'ez a parancslista', run: ctx => reply(ctx, renderHelp()) })
+  // "/help ?" is the help itself (owner, 2026-09-24).
+  registerCommand({ name: 'help', kind: 'read', description: 'ez a parancslista', help: () => renderHelp(), run: ctx => reply(ctx, renderHelp()) })
   registerCommand({ name: 'status', kind: 'read', description: 'rendszer-állapot', run: async ctx => reply(ctx, await statusText()) })
   registerCommand({ name: 'queue', kind: 'read', description: 'mi vár rád, mi indul magától', run: ctx => reply(ctx, formatBlocks(collectQueue(ctx.now))) })
   registerCommand({

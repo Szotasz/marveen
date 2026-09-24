@@ -185,6 +185,15 @@ describe('chunkText', () => {
     await dispatchCommand('/sajat ?', k)
     expect(k.out[0]).toMatch(/^\/sajat\n\/sajat - a saját \[actions\]\n\nSaját parancs/)
     expect(commandHelpText('nincsilyen')).toBeNull()
+    const h = ctx()
+    await dispatchCommand('/help ?', h)
+    expect(h.out[0]).toBe(renderHelp()) // the help of /help is /help
+    const f = ctx()
+    await dispatchCommand('/board w ?', f)
+    expect(f.out[0]).toMatch(/^\/board – a kanban tábla/) // not a filter for an assignee "?"
+    const mo = ctx()
+    await dispatchCommand('/model opus ?', mo)
+    expect(mo.out[0]).toMatch(/^\/model – melyik modell fut/)
     expect(renderHelp()).toMatch(/^Minden parancs után \?: részletes súgó példákkal, pl\. \/board \?\n\n/)
   })
 })

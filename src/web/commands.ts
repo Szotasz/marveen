@@ -135,8 +135,10 @@ export function resolveCommand(name: string, args: string[]): CommandSpec | null
 // `/<name> ?` (owner request 2026-09-24): every command explains itself. A
 // command with its own help() shows that (options, examples); any other one
 // its registry lines -- so a new command never lacks a `?` answer.
+// A "?" anywhere asks for the help: "/board w ?" must not filter for an
+// assignee called "?", nor "/model opus ?" switch to a model called "?".
 export function isHelpRequest(args: string[]): boolean {
-  return args.length === 1 && args[0] === '?'
+  return args.includes('?')
 }
 
 export function commandHelpText(name: string): string | null {

@@ -603,7 +603,7 @@ def main():
 
     replies = [r for r in (result.get("replies") or []) if isinstance(r, str) and r]
     # "/usage ?" is the help: no quota line in front of it
-    if name == "usage" and body.split()[1:] != ["?"]:
+    if name == "usage" and "?" not in body.split()[1:]:
         replies = [quota_text(sd) + ("\n\n" + replies[0] if replies else "")] + replies[1:]
     sent_any = False
     for r in replies:
