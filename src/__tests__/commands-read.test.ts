@@ -122,47 +122,75 @@ describe('/usage speaks tokens, never dollars (CMD920 test 20)', () => {
 })
 
 describe('/board (read only)', () => {
-  it('column counts, waiting + owner cards listed, archived left out', () => {
-    createKanbanCard({ id: 'c0000001', title: 'Tervezett', status: 'planned' })
+  it('short list: two groups, "41) title", assignee only when not the owner, zero columns left out, archived left out', () => {
+    createKanbanCard({ id: 'c0000001', title: 'Tervezett, nem az enyém', status: 'planned', assignee: 'samu' })
     createKanbanCard({ id: 'c0000002', title: 'Rám vár', status: 'waiting', assignee: 'Marveen' })
     createKanbanCard({ id: 'c0000003', title: 'Nekem szól', status: 'in_progress', assignee: 'andrás' })
     createKanbanCard({ id: 'c0000004', title: 'Archivált várakozó', status: 'waiting' })
     archiveKanbanCard('c0000004')
-    const text = boardText(listKanbanCards(), 'András')
-    expect(text).toMatch(/planned 1 · in_progress 1 · testing 0 · waiting 1 · done 0/)
-    expect(text).toContain('Rám vár')
-    expect(text).toContain('Nekem szól')
+    const cards = listKanbanCards()
+    const seq = (id: string) => cards.find(c => c.id === id)!.seq
+    const text = boardText(cards, 'András')
+    expect(text).toMatch(/^Oszlopok: planned 1 · in_progress 1 · waiting 1\n/)
+    expect(text).toContain(`\nVÁRAKOZIK (1)\n${seq('c0000002')}) Rám vár · Marveen\n`)
+    expect(text).toContain(`\nHOZZÁD RENDELVE (1)\n${seq('c0000003')}) Nekem szól\n`)
     expect(text).not.toContain('Archivált várakozó')
-    expect(text).not.toMatch(/- .*Tervezett/)
+    expect(text).not.toContain('Tervezett, nem az enyém')
+    expect(text).not.toMatch(/#\d|c000000/) // no hashtag links, no hex ids in the list
+    expect(text).toMatch(new RegExp(`Egy kártya: /board ${seq('c0000002')} · minden: /board all$`))
   })
 
-  it('/board cuts at 30 and points to /board all; /board all lists every open card by column, uncut', () => {
+  // Owner case 2026-09-24: three children were archived as standalone tasks.
+  it('a parent says how many open children it has; a child says whose it is (↑); titles are cut to 40', () => {
+    createKanbanCard({ id: 'p0000001', title: 'Emanuel Swedenborg munkái', status: 'waiting', assignee: 'Marveen' })
+    createKanbanCard({ id: 'k0000001', title: 'Könyvtárstruktúra és YAML front matter konvenció LLM-feldolgozáshoz', status: 'planned', assignee: 'András', parent_id: 'p0000001' })
+    createKanbanCard({ id: 'k0000002', title: 'Licenc', status: 'planned', assignee: 'samu', parent_id: 'p0000001' })
+    createKanbanCard({ id: 'k0000003', title: 'Kész gyerek', status: 'done', parent_id: 'p0000001' })
+    const cards = listKanbanCards()
+    const seq = (id: string) => cards.find(c => c.id === id)!.seq
+    const text = boardText(cards, 'András')
+    expect(text).toContain(`${seq('p0000001')}) Emanuel Swedenborg munkái · Marveen\n    └ 2 alfeladat`)
+    expect(text).toContain(`${seq('k0000001')}) Könyvtárstruktúra és YAML front matter k… ↑${seq('p0000001')}`)
+  })
+
+  it('/board all: by column, children nested under the parent with their own status when it differs; uncut', () => {
+    createKanbanCard({ id: 'p0000001', title: 'Szülő', status: 'planned', assignee: 'Marveen' })
+    createKanbanCard({ id: 'k0000001', title: 'Gyerek egy', status: 'planned', parent_id: 'p0000001' })
+    createKanbanCard({ id: 'k0000002', title: 'Gyerek kettő', status: 'waiting', parent_id: 'p0000001' })
+    createKanbanCard({ id: 'u0000001', title: 'Unoka', status: 'planned', parent_id: 'k0000001' })
     for (let i = 0; i < 33; i++) createKanbanCard({ id: `b${String(i).padStart(7, '0')}`, title: `Várakozó ${i}`, status: 'waiting' })
-    createKanbanCard({ id: 'd0000001', title: 'Tervezett X', status: 'planned', assignee: 'samu' })
     createKanbanCard({ id: 'd0000002', title: 'Kész Y', status: 'done' })
-    createKanbanCard({ id: 'd0000003', title: 'Archivált Z', status: 'planned' })
-    archiveKanbanCard('d0000003')
-    expect(boardText(listKanbanCards(), 'András')).toMatch(/\+3 további, mindet: \/board all/)
-    expect(boardText(listKanbanCards(), 'András')).toMatch(/Részletek: \/board <id> \(8 jegyű id vagy #szám\) · minden nyitott kártya: \/board all$/)
-    const all = boardAllText(listKanbanCards())
-    expect(all).toMatch(/^Minden nyitott kártya: 34\n/)
-    expect(all).toMatch(/\nplanned \(1\):\n- #\d+ d0000001 · samu · Tervezett X/)
-    expect(all).toMatch(/\nwaiting \(33\):/)
+    const cards = listKanbanCards()
+    const seq = (id: string) => cards.find(c => c.id === id)!.seq
+    expect(boardText(cards, 'András')).toMatch(/\+\d+ további: \/board all/)
+    const all = boardAllText(cards, 'András')
+    expect(all).toMatch(/^Minden nyitott kártya: 37\n/)
+    // siblings follow the board's own sort_order; the nesting is what matters
+    expect(all).toContain(`PLANNED (1)\n${seq('p0000001')}) Szülő · Marveen\n    └ `)
+    expect(all).toContain(`    └ ${seq('k0000001')}) Gyerek egy\n        └ ${seq('u0000001')}) Unoka`)
+    expect(all).toContain(`    └ ${seq('k0000002')}) Gyerek kettő (waiting)`)
+    expect(all).toMatch(/\nWAITING \(33\)\n/) // the child is under its parent, not counted again
     expect(all.match(/Várakozó \d+/g)).toHaveLength(33)
     expect(all).not.toContain('Kész Y')
-    expect(all).not.toContain('Archivált Z')
-    expect(all).not.toMatch(/in_progress|testing/)
   })
 
-  it('/board <id> by #seq or id prefix, with comments', () => {
-    createKanbanCard({ id: 'c0ffee01', title: 'Kártya', status: 'testing' })
+  it('/board <szám>: children listed on a parent, the parent named on a child; lookup by number or id', () => {
+    createKanbanCard({ id: 'p0ffee01', title: 'Szülő kártya', status: 'waiting', assignee: 'Marveen' })
+    createKanbanCard({ id: 'c0ffee01', title: 'Kártya', status: 'testing', parent_id: 'p0ffee01' })
+    createKanbanCard({ id: 'c0ffee02', title: 'Kész testvér', status: 'done', parent_id: 'p0ffee01' })
     addKanbanComment('c0ffee01', 'marveen', 'első komment')
-    const bySeq = findCard(`#${listKanbanCards()[0].seq}`)
-    expect(bySeq?.id).toBe('c0ffee01')
-    expect(findCard('c0ffee')?.id).toBe('c0ffee01')
-    const text = cardDetailText(findCard('c0ffee01')!)
-    expect(text).toContain('státusz: testing')
-    expect(text).toContain('marveen: első komment')
+    const cards = listKanbanCards()
+    const seq = (id: string) => cards.find(c => c.id === id)!.seq!
+    expect(findCard(`${seq('c0ffee01')}`)?.id).toBe('c0ffee01')
+    expect(findCard(`#${seq('c0ffee01')}`)?.id).toBe('c0ffee01')
+    expect(findCard('c0ffee01')?.id).toBe('c0ffee01')
+    const child = cardDetailText(findCard('c0ffee01')!, cards, 'András')
+    expect(child).toMatch(new RegExp(`^${seq('c0ffee01')}\\) Kártya\\ntesting · nincs felelős · normal\\n`))
+    expect(child).toContain(`↑ Szülő: ${seq('p0ffee01')}) Szülő kártya`)
+    expect(child).toContain('marveen: első komment')
+    expect(child).toMatch(/azonosító: c0ffee01$/)
+    const parent = cardDetailText(findCard('p0ffee01')!, cards, 'András')
+    expect(parent).toContain(`Alfeladatok (1 nyitott, 1 kész):\n${seq('c0ffee01')}) Kártya · testing`)
     expect(findCard('nincsilyen')).toBeUndefined()
   })
 })

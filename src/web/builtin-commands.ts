@@ -450,34 +450,89 @@ export function usageDayText(arg: string, now = Date.now(), tz: string = APP_TZ)
 
 const STATUSES: KanbanCard['status'][] = ['planned', 'in_progress', 'testing', 'waiting', 'done']
 
+// Telegram lines are narrow (owner screenshot 2026-09-24: every /board line
+// wrapped in two; "#36" became a hashtag link). A line is "41) title", the
+// status sits in the group header, the assignee only when it is not the owner,
+// and a child says whose it is (↑64) -- the owner archived three children as
+// if they were standalone tasks, because the flat list never showed a parent.
+const TITLE_MAX = 40
+
+function openCards(cards: KanbanCard[]): KanbanCard[] {
+  return cards.filter(c => c.archived_at === null && c.status !== 'done')
+}
+
+function seqOf(c: KanbanCard): string {
+  return String(c.seq ?? '?')
+}
+
+function isOwner(assignee: string | null, owner: string): boolean {
+  return (assignee ?? '').toLocaleLowerCase('hu') === owner.toLocaleLowerCase('hu')
+}
+
+function cardLine(c: KanbanCard, owner: string, byId: Map<string, KanbanCard>, opts: { parentMark: boolean } = { parentMark: true }): string {
+  const who = c.assignee && !isOwner(c.assignee, owner) ? ` · ${c.assignee}` : ''
+  const parent = c.parent_id ? byId.get(c.parent_id) : undefined
+  const up = opts.parentMark && parent ? ` ↑${seqOf(parent)}` : ''
+  return `${seqOf(c)}) ${clip(c.title, TITLE_MAX)}${who}${up}`
+}
+
+function openChildren(parent: KanbanCard, open: KanbanCard[]): KanbanCard[] {
+  return open.filter(c => c.parent_id === parent.id)
+}
+
 export function boardText(cards: KanbanCard[], owner: string = OWNER_NAME): string {
   const live = cards.filter(c => c.archived_at === null)
-  const counts = STATUSES.map(s => `${s} ${live.filter(c => c.status === s).length}`).join(' · ')
-  const ownerKey = owner.toLocaleLowerCase('hu')
-  const mine = live.filter(c => c.status !== 'done' && (c.status === 'waiting' || (c.assignee ?? '').toLocaleLowerCase('hu') === ownerKey))
-  const lines = [`Oszlopok: ${counts}`, '', 'Ami rád vár (waiting, vagy hozzád rendelve):']
-  if (mine.length === 0) lines.push('nincs')
-  for (const c of mine.slice(0, 30)) {
-    lines.push(`- #${c.seq ?? '?'} ${c.id.slice(0, 8)} · ${c.status} · ${c.assignee ?? '-'} · ${clip(c.title, 60)}`)
+  const open = openCards(cards)
+  const byId = new Map(cards.map(c => [c.id, c]))
+  const counts = STATUSES.map(st => [st, live.filter(c => c.status === st).length] as const)
+    .filter(([, n]) => n > 0).map(([st, n]) => `${st} ${n}`).join(' · ')
+  const waiting = open.filter(c => c.status === 'waiting')
+  const assigned = open.filter(c => c.status !== 'waiting' && isOwner(c.assignee, owner))
+  const lines = [`Oszlopok: ${counts || 'üres'}`]
+  const LIMIT = 30
+  let shown = 0
+  let first: KanbanCard | undefined
+  for (const [title, group] of [['VÁRAKOZIK', waiting], ['HOZZÁD RENDELVE', assigned]] as const) {
+    if (group.length === 0) continue
+    lines.push('', `${title} (${group.length})`)
+    for (const c of group) {
+      if (shown >= LIMIT) break
+      lines.push(cardLine(c, owner, byId))
+      const kids = openChildren(c, open).length
+      if (kids > 0) lines.push(`    └ ${kids} alfeladat`)
+      first ??= c
+      shown++
+    }
   }
-  if (mine.length > 30) lines.push(`+${mine.length - 30} további, mindet: /board all`)
-  lines.push('', 'Részletek: /board <id> (8 jegyű id vagy #szám) · minden nyitott kártya: /board all')
+  if (shown === 0) lines.push('', 'Nincs rád váró vagy hozzád rendelt nyitott kártya.')
+  const total = waiting.length + assigned.length
+  if (total > shown) lines.push(`+${total - shown} további: /board all`)
+  lines.push('', `Egy kártya: /board ${first ? seqOf(first) : '<szám>'} · minden: /board all`)
   return lines.join('\n')
 }
 
-// /board all: every live card that is not done, by column, uncut (owner
-// request 2026-09-24: /board cut the list at 30 and said "+3 további" with no
-// way to see them). Long replies are split into Telegram-sized messages.
-export function boardAllText(cards: KanbanCard[]): string {
-  const live = cards.filter(c => c.archived_at === null && c.status !== 'done')
-  const lines = [`Minden nyitott kártya: ${live.length}`]
+// /board all: every open card by column, uncut; children nested under their
+// parent (in the parent's column), with their own status when it differs.
+export function boardAllText(cards: KanbanCard[], owner: string = OWNER_NAME): string {
+  const open = openCards(cards)
+  const byId = new Map(cards.map(c => [c.id, c]))
+  const openIds = new Set(open.map(c => c.id))
+  // A child whose parent is closed/archived stands on its own (with its ↑mark).
+  const roots = open.filter(c => !c.parent_id || !openIds.has(c.parent_id))
+  const lines = [`Minden nyitott kártya: ${open.length}`]
   for (const st of STATUSES.filter(x => x !== 'done')) {
-    const col = live.filter(c => c.status === st)
+    const col = roots.filter(c => c.status === st)
     if (col.length === 0) continue
-    lines.push('', `${st} (${col.length}):`)
-    for (const c of col) lines.push(`- #${c.seq ?? '?'} ${c.id.slice(0, 8)} · ${c.assignee ?? '-'} · ${clip(c.title, 60)}`)
+    lines.push('', `${st.toUpperCase()} (${col.length})`)
+    const walk = (c: KanbanCard, depth: number, parentStatus: string | null) => {
+      const status = parentStatus !== null && c.status !== parentStatus ? ` (${c.status})` : ''
+      const line = cardLine(c, owner, byId, { parentMark: depth === 0 })
+      lines.push(depth === 0 ? line : `${'    '.repeat(depth)}└ ${line}${status}`)
+      for (const k of openChildren(c, open)) walk(k, depth + 1, c.status)
+    }
+    for (const c of col) walk(c, 0, null)
   }
-  lines.push('', 'Részletek: /board <id> (8 jegyű id vagy #szám)')
+  lines.push('', 'Egy kártya: /board <szám>')
   return lines.join('\n')
 }
 
@@ -490,20 +545,27 @@ export function findCard(ref: string, cards: () => KanbanCard[] = listKanbanCard
   return getKanbanCard(r) ?? cards().find(c => c.id.startsWith(r.toLowerCase()))
 }
 
-export function cardDetailText(card: KanbanCard): string {
+export function cardDetailText(card: KanbanCard, cards: KanbanCard[] = listKanbanCards(), owner: string = OWNER_NAME): string {
   const comments = getKanbanComments(card.id)
+  const byId = new Map(cards.map(c => [c.id, c]))
+  const parent = card.parent_id ? byId.get(card.parent_id) : undefined
+  const kids = cards.filter(c => c.parent_id === card.id && c.archived_at === null)
+  const openKids = kids.filter(c => c.status !== 'done')
   const lines = [
-    `#${card.seq ?? '?'} ${card.id} · ${card.title}`,
-    `státusz: ${card.status} · felelős: ${card.assignee ?? '-'} · prioritás: ${card.priority}${card.archived_at ? ' · ARCHIVÁLT' : ''}`,
+    `${seqOf(card)}) ${card.title}`,
+    `${card.status} · ${card.assignee ?? 'nincs felelős'} · ${card.priority}${card.archived_at ? ' · ARCHIVÁLT' : ''}`,
     `létrehozva ${formatDayClock(card.created_at * 1000)} · frissítve ${formatDayClock(card.updated_at * 1000)}`,
-    '',
-    clip(card.description ?? '(nincs leírás)', 800),
-    '',
-    `Kommentek (${comments.length}):`,
   ]
+  if (parent) lines.push(`↑ Szülő: ${seqOf(parent)}) ${clip(parent.title, TITLE_MAX)}`)
+  if (kids.length > 0) {
+    lines.push('', `Alfeladatok (${openKids.length} nyitott${kids.length > openKids.length ? `, ${kids.length - openKids.length} kész` : ''}):`)
+    for (const k of openKids) lines.push(`${cardLine(k, owner, byId, { parentMark: false })} · ${k.status}`)
+  }
+  lines.push('', clip(card.description ?? '(nincs leírás)', 800), '', `Kommentek (${comments.length}):`)
   if (comments.length === 0) lines.push('nincs')
   for (const c of comments.slice(-10)) lines.push(`- ${formatDayClock(c.created_at * 1000)} ${c.author}: ${clip(c.content, 300)}`)
   if (comments.length > 10) lines.push(`(csak az utolsó 10; összesen ${comments.length})`)
+  lines.push('', `azonosító: ${card.id}`)
   return lines.join('\n')
 }
 
@@ -574,13 +636,13 @@ export function registerBuiltinCommands(): void {
     run: (ctx, args) => reply(ctx, args.length === 0 ? usageText(ctx.now) : usageDayText(args[0], ctx.now)),
   })
   registerCommand({
-    name: 'board', kind: 'read', usage: '/board [<id>|all]', description: 'kanban: oszlopok és ami rád vár; <id>: egy kártya kommentekkel; all: minden nyitott kártya',
+    name: 'board', kind: 'read', usage: '/board [<szám>|all]', description: 'kanban: ami rád vár; <szám>: egy kártya, alfeladatokkal; all: minden nyitott kártya, fában',
     run: (ctx, args) => {
       if (args.length === 0) return reply(ctx, boardText(listKanbanCards()))
       if (args.length === 1 && args[0].toLowerCase() === 'all') return reply(ctx, boardAllText(listKanbanCards()))
-      if (args.length > 1) return reply(ctx, 'A /board csak olvas; kártyát írni innen nem lehet. Részletek: /board <id>')
+      if (args.length > 1) return reply(ctx, 'A /board csak olvas; kártyát írni innen nem lehet. Egy kártya: /board <szám>')
       const card = findCard(args[0])
-      return reply(ctx, card ? cardDetailText(card) : `Nincs ilyen kártya: ${args[0]}`)
+      return reply(ctx, card ? cardDetailText(card) : `Nincs ilyen nyitott kártya: ${args[0]}. Minden nyitott kártya: /board all`)
     },
   })
   registerCommand({ name: 'commands', kind: 'read', description: 'a saját parancsaid, az érvénytelenek külön', run: ctx => reply(ctx, customCommandsText()) })
