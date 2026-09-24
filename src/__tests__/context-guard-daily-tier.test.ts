@@ -173,6 +173,7 @@ describe('decideGuard -- the daily tier mid-sequence (failure branches)', () => 
     deadlineMs: NOW + 60_000,
     cooldownUntilMs: 0,
     saturatedStreak: 0,
+    staleRefreshCount: 0,
     handoffStaleMinutes: null,
   }
 

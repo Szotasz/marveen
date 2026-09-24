@@ -95,6 +95,18 @@
         ]
       }
     ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/tool-log-capture.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/tool-log-capture.py; exit 0'",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "hooks": [
@@ -117,8 +129,13 @@
             "type": "command",
             "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/voice-reply-directive.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/voice-reply-directive.py; exit 0'",
             "timeout": 60
-          }
-          ,{
+          },
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram-reply-directive.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/telegram-reply-directive.py; exit 0'",
+            "timeout": 10
+          },
+          {
             "type": "command",
             "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/claude-usage.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/claude-usage.py; exit 0'",
             "timeout": 45
@@ -139,6 +156,16 @@
             "type": "command",
             "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/channel-image-resize.sh ] && exec bash {{PROJECT_ROOT}}/scripts/hooks/channel-image-resize.sh; exit 0'",
             "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-gate.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-gate.py; exit 0'",
+            "timeout": 10
           }
         ]
       }

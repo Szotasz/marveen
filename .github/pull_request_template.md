@@ -35,3 +35,21 @@ preview and can be skipped with `--no-verify`, so it is not sufficient on its ow
 
 - [ ] Nincs a valtoztatasban bizonyitek-/artefaktum-mappa, titok-alaku string vagy idezett csatorna-uzenet.
       / No evidence or artifact directory, secret-shaped string, or quoted channel message in this change.
+
+## Review-nyom / Review trace
+
+Kulso szerzo PR-jet a szokasos modon hagyjuk jova (zold "Approved"). A flotta SAJAT PR-jen ez az
+allapot technikai okbol nem elerheto -- minden agens ugyanazzal a GitHub-fiokkal ir --, ezert ott a
+verdikt egy `COMMENTED` review-komment, aminek az elso sora a harom allapot egyike:
+`FLEET REVIEW -- GO`, `FLEET REVIEW -- FIX-THEN-GO` vagy `FLEET REVIEW -- NO-GO`.
+A `FIX-THEN-GO` azt jelenti, hogy erdemben nincs blokkolo: a kommentben MEGNEVEZETT javitasoknak be
+kell menniuk, a szerzo pedig a PR-en olvassa vissza oket -- uj review-kor nem kell, de a merge megvarja
+azt a visszaolvasast.
+Reszletek: [CONTRIBUTING.md](https://github.com/Szotasz/marveen/blob/develop/CONTRIBUTING.md).
+
+An outside contributor's PR is approved the normal way (green "Approved"). A PR written by the fleet
+cannot carry that state, because every agent writes through the same GitHub account, so the verdict
+there is a `COMMENTED` review whose first line is one of three states: `FLEET REVIEW -- GO`,
+`FLEET REVIEW -- FIX-THEN-GO` or `FLEET REVIEW -- NO-GO`. `FIX-THEN-GO` means nothing is blocking on
+the substance: the fixes NAMED in the comment must land and the author reads them back on the PR. No
+second review round, but the merge waits for that readback.

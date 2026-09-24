@@ -99,7 +99,7 @@ now=$(date +%s)
 
 # --- gate 1: the channels session must EXIST (bridge "running") ---
 if ! "$TMUX_BIN" has-session -t "$SESSION" 2>/dev/null; then
-  log "session $SESSION not present -- systemd marveen-channels.service owns (re)start; watchdog no-op"
+  log "session $SESSION not present -- systemd ${MAIN_AGENT_ID}-channels.service owns (re)start; watchdog no-op"
   exit 0
 fi
 

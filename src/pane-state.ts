@@ -1693,6 +1693,56 @@ export function parkedInputRowCount(pane: string): number {
     .filter((row) => row.length > 0).length
 }
 
+// The visible TAIL of an input box taller than the pane, whitespace-collapsed,
+// or null when the box is not overfull.
+//
+// A prompt with more wrapped rows than the pane has lines pushes the box's TOP
+// separator -- and usually the ❯ glyph -- off the capture. What remains is
+// prose, the bottom separator and the idle footer. liveInputBox() needs both
+// separators, so it returns null; detectPaneState() then falls through to
+// 'idle', and every parked-input probe built on either (shouldRetrySubmit,
+// isScheduledPromptStuck, parkedInputText) reads "nothing parked".
+//
+// SCHEDLOST915, reproduced 2026-09-15 on Claude Code 2.1.110 in the tmux-default
+// 80x24 pane the main channels session runs in: a 6735-char scheduled prompt
+// typed as 80-char chunks and submitted with an immediate Enter parked in 3 of
+// 6 rounds, each capture exactly this shape, and all five probes above said
+// idle / not stuck. On the live host the watchdog then declared the round lost
+// and the redelivery was typed on top of the parked copy.
+//
+// Deliberately NOT folded into detectPaneState: reclassifying this shape as
+// 'typing' globally would pin the main session not-ready with no recovery that
+// can see the box. Callers pair it with proof the text is theirs (see
+// isOwnPromptParkedOverfull in schedule-runner.ts). Pure.
+export function overfullParkedInputTail(pane: string): string | null {
+  if (!pane || !pane.trim()) return null
+  const lines = pane.split('\n')
+  const busyRegion = liveTailRegion(lines, BUSY_LIVE_REGION_LINES)
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(busyRegion)) return null
+  }
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(liveTailRegion(lines, LIVE_FOOTER_REGION_LINES))) return null
+  const footerIdx = lines.findIndex(l => IDLE_FOOTER_RX.test(l))
+  if (footerIdx < 0) return null
+  let bottomSep = -1
+  for (let i = footerIdx - 1; i >= 0; i--) {
+    if (BOX_SEP_RX.test(lines[i])) { bottomSep = i; break }
+  }
+  if (bottomSep <= 0) return null
+  // A second separator above means the box fits: that is liveInputBox's case.
+  for (let i = bottomSep - 1; i >= 0; i--) {
+    if (BOX_SEP_RX.test(lines[i])) return null
+  }
+  // If the ❯ row is still on screen, the box starts there; rows above it are
+  // scrollback, not input.
+  let start = 0
+  for (let i = bottomSep - 1; i >= 0; i--) {
+    if (/^\s*❯/.test(lines[i])) { start = i; break }
+  }
+  const tail = lines.slice(start, bottomSep).join('\n').replace(/^\s*❯/, '').replace(/\s+/g, ' ').trim()
+  return tail.length > 0 ? tail : null
+}
+
 // Post-submit verification: did the parked input actually leave the box?
 //
 // `prevSig` is stuckInputSignature(pane) captured BEFORE the submit attempt
@@ -2262,11 +2312,53 @@ export function decideStuckToolCallRecovery(
 // turn a warning into a restart trigger; matching only the last two percent
 // keeps this a saturation predicate.
 const CTX_SAT_FOOTER_REGION_LINES = 8
-const CTX_SAT_RX = /100% context used|context (?:is |limit reached|window )?full\b|context limit|auto-?compact required|context low \([0-2]% remaining\)/i
+
+// TWO shapes of banner land here, and only ONE of them can be wrong about the
+// pane. Callers that hold an independent measurement need to tell them apart.
+//
+// PERCENTAGE CLAIMS -- "100% context used", "Context low (N% remaining)" -- are
+// computed by the CLI from ITS OWN denominator: the status line is sized from
+// the model id the CLI was launched with. A model whose real window is 1M but
+// whose id reaches the CLI without the [1m] marker gets a status line sized to
+// 200k, so the CLI prints "100% context used" at ~179k while the session keeps
+// working -- 998 856 tokens observed in one session (isapp06, 2026-09-15).
+// Their truth depends on that denominator, so a measurement CAN disprove them.
+//
+// HARD-ERROR banners -- "Context limit reached", "context ... full",
+// "auto-compact required" -- are painted only after a turn has ACTUALLY failed
+// against the real limit. Verified in the shipped CLI 2.1.205: the string
+// "Context limit reached" is rendered with color:"error", driven by the API's
+// own "input length and max_tokens exceed context limit: N + M > LIMIT". The
+// CLI's status-line denominator plays no part, so NO measurement may overrule
+// one of these -- doing so would stand the saturation net down on a genuinely
+// wedged pane while the dispatch gate keeps prompting it.
+//
+// paneShowsContextSaturation() matches BOTH and is unchanged: any of them means
+// the pane cannot do useful work. paneShowsContextSaturationHardError() exposes
+// the second class alone. Both regexes are built from the same two sources, so
+// the union can never drift away from its parts.
+const CTX_SAT_PCT_CLAIM_SOURCE = '100% context used|context low \\([0-2]% remaining\\)'
+const CTX_SAT_HARD_ERROR_SOURCE =
+  'context (?:is |limit reached|window )?full\\b|context limit|auto-?compact required'
+const CTX_SAT_RX = new RegExp(`${CTX_SAT_PCT_CLAIM_SOURCE}|${CTX_SAT_HARD_ERROR_SOURCE}`, 'i')
+const CTX_SAT_HARD_ERROR_RX = new RegExp(CTX_SAT_HARD_ERROR_SOURCE, 'i')
+
+function ctxSatFooterRegion(capture: string): string | null {
+  if (!capture || !capture.trim()) return null
+  const lines = capture.split('\n')
+  return lines.slice(-CTX_SAT_FOOTER_REGION_LINES).join('\n')
+}
 
 export function paneShowsContextSaturation(capture: string): boolean {
-  if (!capture || !capture.trim()) return false
-  const lines = capture.split('\n')
-  const footerRegion = lines.slice(-CTX_SAT_FOOTER_REGION_LINES).join('\n')
-  return CTX_SAT_RX.test(footerRegion)
+  const footerRegion = ctxSatFooterRegion(capture)
+  return footerRegion !== null && CTX_SAT_RX.test(footerRegion)
+}
+
+/** The saturation banners whose truth does NOT come from the CLI's status-line
+ *  denominator: the CLI paints these only after a turn actually failed at the
+ *  real limit. A caller reconciling the banner against its own measurement must
+ *  treat these as final -- see the note above. */
+export function paneShowsContextSaturationHardError(capture: string): boolean {
+  const footerRegion = ctxSatFooterRegion(capture)
+  return footerRegion !== null && CTX_SAT_HARD_ERROR_RX.test(footerRegion)
 }

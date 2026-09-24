@@ -349,6 +349,31 @@ with tempfile.TemporaryDirectory() as td:
     check("control: manage_email operation=send passes at level 3", code == 0,
           f"exit={code}")
 
+    # --- GMAILCONNECTOR914: the claude.ai Gmail connector -------------------
+    # No send_email, no manage_email in the name: the gate exited 0 on every
+    # connector send, so an unapproved send_message was never denied.
+    def connector(tool, **ti):
+        return {"tool_name": f"mcp__claude_ai_Gmail__{tool}", "tool_input": ti}
+    store_l1 = make_store(os.path.join(td, "sconn1"), level=1)  # store1 was raised to level 3 above
+    code, _, err = run_gate(store_l1, connector("send_message", to=["a@b.hu"], subject="T", body="x"))
+    check("connector send_message is DENIED at level 1", code == 2 and "szint 1" in err, f"exit={code}")
+    code, _, _ = run_gate(store_l1, connector("search_threads", q="x"))
+    check("connector search_threads is a read: passes at level 1", code == 0, f"exit={code}")
+    code, _, _ = run_gate(store_l1, connector("create_draft", to=["a@b.hu"], body="x"))
+    check("connector create_draft is not a send: passes at level 1", code == 0, f"exit={code}")
+    store_c = make_store(os.path.join(td, "sconn"), level=2)
+    payload = connector("reply", messageId="msg-42", body="Kedves Ügyfelünk! Válasz.")
+    code, _, err = run_gate(store_c, payload)
+    anchor = anchor_from_stderr(err)
+    check("connector reply at level 2 without approval: DENIED, anchored on messageId (no `to` field)",
+          code == 2 and anchor is not None and "messageId:msg-42" in err, f"exit={code} err={err[:200]!r}")
+    approve(store_c, anchor)
+    code, out, _ = run_gate(store_c, payload)
+    check("connector reply with a matching approval: ALLOWED", code == 0 and "felhasznalva" in out,
+          f"exit={code} out={out[:120]!r}")
+    code, _, err = run_gate(store_c, connector("reply", messageId="msg-43", body="Kedves Ügyfelünk! Válasz."))
+    check("the same approval does not cover a reply to ANOTHER message", code == 2, f"exit={code}")
+
     # SQLite-version portability, kept as a STATIC check on purpose. The
     # behavioural cases above only catch the bad call on a host whose sqlite is
     # older than 3.38 -- on CI (newer) they stay green while the live install

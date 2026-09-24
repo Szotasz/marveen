@@ -13,6 +13,8 @@ import type { AgentStatusSignals, AgentStatusRow } from '../agent-status.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
+import { measureClaudeCliVersion } from '../claude-cli-version.js'
+import { claudeSupportForCli, isModelUnsupportedByCli, CLAUDE_MODEL_MIN_CLI } from '../../claude-cli-support.js'
 import { CHANNEL_PLUGIN_IDS } from '../plugin-ids.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
 import { loadOpenRouterCatalog, fetchAllOpenRouterModels, loadCuratedManual, addCuratedManual, removeCuratedManual } from '../openrouter-models.js'
@@ -147,6 +149,12 @@ import {
 } from '../agent-bundle.js'
 import type { RouteContext } from './types.js'
 import { suggestForAgent, type AgentSignals } from '../model-suggest.js'
+import {
+  contextAvgPerCallMap,
+  kanbanLoadMap,
+  KANBAN_LOAD_SQL,
+  type KanbanLoadRow,
+} from '../model-suggest-signals.js'
 import { getTokenSummary } from '../token-usage.js'
 import { listScheduledTasks } from '../scheduled-tasks-io.js'
 
@@ -624,6 +632,25 @@ function paneActivityLabel(running: boolean, pane: string | null): string {
   return s // 'unknown' | 'error'
 }
 
+/**
+ * PICKERCLIKAPU923: refuse a Claude model the INSTALLED CLI is measured not to
+ * launch. Returns the 422 body, or null when the write may proceed. Fail-OPEN:
+ * an unmeasured version refuses nothing. The probe is fresh (cache bypassed)
+ * so an operator who just upgraded the CLI is not blocked by a stale reading.
+ */
+export async function refuseIfCliCannotLaunch(model: string): Promise<Record<string, unknown> | null> {
+  const cli = await measureClaudeCliVersion({ fresh: true })
+  if (!isModelUnsupportedByCli(model, cli.version)) return null
+  const req = CLAUDE_MODEL_MIN_CLI[model.replace(/\[[^\]]*\]$/, '')]
+  return {
+    error: 'model not launchable by the installed Claude Code CLI',
+    model,
+    installedCli: cli.version,
+    minCli: req?.minCli ?? null,
+    message: `A telepített Claude Code ${cli.version} nem futtatja a(z) ${model} modellt (legalább ${req?.minCli ?? '?'} kell; mérve: ${req?.measured ?? 'n/a'}). Frissítsd a CLI-t, vagy válassz olyan modellt, amit ez a verzió ismer.`,
+  }
+}
+
 export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -647,9 +674,21 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // options without the key would let the operator pick a model that 401s.
     const hasOpenRouter = getSecret('openrouter-fleet-key') !== null
     const orCatalog = loadOpenRouterCatalog()
+    // PICKERCLIKAPU923: the INSTALLED CLI decides which Claude ids are
+    // launchable (2.1.110, the customer pin, answers 400 unrecognized_model on
+    // claude-fable-5-1 and claude-opus-5-5). Fail-OPEN when unmeasured: the
+    // client keeps every option and shows an "unmeasured" label instead.
+    const cli = await measureClaudeCliVersion()
+    const claudeSupport = claudeSupportForCli(cli.version)
     json(res, {
+      cli: { version: cli.version, measuredAt: cli.measuredAt, error: cli.error, source: cli.source },
+      claudeSupport,
       claude: [
-        { id: 'claude-opus-5', label: 'Opus 5 (legújabb Opus)' },
+        { id: 'claude-fable-5-1', label: 'Fable 5.1 (legújabb Fable)', minCli: CLAUDE_MODEL_MIN_CLI['claude-fable-5-1'].minCli },
+        // Opus 5.5: ONLY the 1M variant (owner decision 2026-09-23). The gate table is keyed on the
+        // base id, so the [1m] variant inherits the 2.1.280 minimum -- pinned in picker-cli-gate.test.ts.
+        { id: 'claude-opus-5-5[1m]', label: 'Opus 5.5 (1M kontextus, legújabb Opus)', minCli: CLAUDE_MODEL_MIN_CLI['claude-opus-5-5'].minCli },
+        { id: 'claude-opus-5', label: 'Opus 5' },
         { id: 'claude-sonnet-5', label: 'Sonnet 5' },
         { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
         { id: 'claude-fable-5', label: 'Fable 5' },
@@ -867,30 +906,40 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // Collect runtime signals once, then classify per agent.
     // I/O is centralised here; the classifier (model-suggest.ts) stays pure.
 
-    // Token usage: per-agent average input tokens/call over the last 30 days
+    // Token usage: per-agent average CONTEXT carried per call over the last 30
+    // days -- input + cache-read + cache-creation, not totalInput alone.
+    //
+    // totalInput is SUM(input_tokens): the uncached remainder only. On a
+    // long-lived session nearly the whole context arrives as cache reads, so
+    // that remainder is a rounding error, and the classifier read it as a tiny
+    // context. MEASURED 2026-09-17 on the live install: 2.9 tokens/call over 30
+    // days (17,325 calls) against a true 354,271 -- and the main agent was
+    // therefore advised to DOWNGRADE to Sonnet, the opposite of what its own
+    // threshold means. Same defect family as the transcript-root blind spots
+    // (SCHEDLOST914, TOKENVAK915, GATEVAK917): a measurement that reads a real
+    // number from the wrong place and so never looks broken.
+    //
+    // getTokenSummary().totalInput itself stays as it is: the token-usage
+    // dashboard shows the four columns separately and wants the raw one.
     const thirtyDaysAgo = Math.floor(Date.now() / 1000) - 30 * 24 * 3600
     const tokenSummaries = getTokenSummary(thirtyDaysAgo)
-    const tokenMap = new Map(
-      tokenSummaries.map(s => [s.agent, s.totalCalls > 0 ? s.totalInput / s.totalCalls : 0])
-    )
+    const tokenMap = contextAvgPerCallMap(tokenSummaries)
 
-    // Kanban: open and urgent/high card counts per assignee
+    // Kanban: OPEN and urgent/high card counts per assignee.
+    //
+    // status <> 'done' is the point: archived_at IS NULL alone counts finished
+    // cards as open, because a done card is only archived by the 7-day sweep
+    // (and a level-1 autonomy setting can stop even that). MEASURED 2026-09-17
+    // on the live install: the main agent showed "14 aktív kártya, ebből 6
+    // sürgős/magas" while it actually had 8 open and 2 urgent/high -- 6 of the
+    // 14 were done, and 4 of the 6 urgent ones were done. kanbanUrgentCount >= 2
+    // is an Opus signal, so the inflated count feeds the suggestion directly;
+    // that day it happened not to flip the verdict, which is luck, not
+    // correctness. Same family as the token signal fixed in the same commit
+    // range: a real number measured over the wrong set.
     const db = getDb()
-    type KanbanRow = { assignee: string | null; priority: string; cnt: number }
-    const kanbanRows = db.prepare(
-      `SELECT assignee, priority, COUNT(*) as cnt
-       FROM kanban_cards
-       WHERE archived_at IS NULL AND assignee IS NOT NULL
-       GROUP BY assignee, priority`
-    ).all() as KanbanRow[]
-    const kanbanMap = new Map<string, { open: number; urgent: number }>()
-    for (const row of kanbanRows) {
-      if (!row.assignee) continue
-      const cur = kanbanMap.get(row.assignee) ?? { open: 0, urgent: 0 }
-      cur.open += row.cnt
-      if (row.priority === 'urgent' || row.priority === 'high') cur.urgent += row.cnt
-      kanbanMap.set(row.assignee, cur)
-    }
+    const kanbanRows = db.prepare(KANBAN_LOAD_SQL).all() as KanbanLoadRow[]
+    const kanbanMap = kanbanLoadMap(kanbanRows)
 
     // Scheduled-task frequency: total estimated runs/day per agent (cron-derived)
     function cronFreqPerDay(cron: string): number {
@@ -947,7 +996,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
       const kanban = kanbanMap.get(name)
       const signals: AgentSignals = {
-        tokenAvgInputPerCall: tokenMap.has(name) ? tokenMap.get(name) : undefined,
+        contextAvgPerCall: tokenMap.has(name) ? tokenMap.get(name) : undefined,
         kanbanOpenCount: kanban?.open,
         kanbanUrgentCount: kanban?.urgent,
         scheduledFreqPerDay: schedFreqMap.has(name) ? schedFreqMap.get(name) : undefined,
@@ -970,6 +1019,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const profileId = (rawProfile || 'default').trim() || 'default'
 
     if (!name) { json(res, { error: 'Name is required' }, 400); return true }
+    // PICKERCLIKAPU923: the API is a writer too, not only the picker. A fresh
+    // probe, so a CLI upgraded a minute ago is not refused on a stale cache.
+    const cliGate = await refuseIfCliCannotLaunch(model)
+    if (cliGate) { json(res, cliGate, 422); return true }
     if (!description) { json(res, { error: 'Description is required' }, 400); return true }
     if (existsSync(agentDir(name))) { json(res, { error: 'Agent already exists' }, 409); return true }
 
@@ -2257,7 +2310,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
     if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
-    if (data.model !== undefined) writeAgentModel(name, data.model)
+    if (data.model !== undefined) {
+      // PICKERCLIKAPU923: same gate as the picker and the POST, fresh probe.
+      const cliGate = await refuseIfCliCannotLaunch(String(data.model))
+      if (cliGate) { json(res, cliGate, 422); return true }
+      writeAgentModel(name, data.model)
+    }
     // Card c755f4b2 Block B: optional generic capability tier. An unknown id
     // is a 400, never a persisted value -- storing one would leave the UI
     // showing a profile while resolution silently fell back to the install

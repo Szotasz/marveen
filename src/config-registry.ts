@@ -323,6 +323,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'MEMORY_IMPORT_CATEGORIZE_MODEL',
+    type: 'string',
+    default: '',
+    description: 'Memória-importkor ezzel az Ollama modellel sorolja be az emlékeket (hot/warm/cold/shared), pl. gemma3:4b. FELÜLBÍRÁLÁS: ha be van állítva, pontosan ez a modell fut, helyettesítés nincs. Üres = a telepített gemma4 felismerése; ha nincs gemma4 és nincs beállítás, minden emlék warm, modellhívás nélkül. 4 GB VRAM-on a gemma3:4b bevált; gondolkodó modell (pl. qwen3) nagyon lassú.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     key: 'TELEGRAM_PROGRESS_MODE',
     type: 'string',
     default: 'indicator',
@@ -499,6 +508,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     valueSet: ['Europe/London', 'Europe/Budapest', 'UTC', 'Europe/Dublin', 'Europe/Berlin', 'Europe/Bucharest', 'America/New_York'],
   },
   {
+    key: 'AGENT_INHERITED_MCP_SERVERS',
+    type: 'string',
+    default: '',
+    description: 'Vesszővel elválasztott MCP-szerver-nevek, amelyeket egy ÚJ ügynök örökölhet (pl. aiam-blog). Minden más kimarad, amíg valaki név szerint oda nem adja. Üresen hagyva az új ügynök semmilyen connectort nem örököl (szűk alapértelmezés). Két helyről örököl: a projekt-gyökér .mcp.json-jából és a közös ~/.claude.json-ból, és a lista mindkettőre vonatkozik. A meglévő ügynöktől semmit nem vesz el. A fő ügynökre nem vonatkozik.',
+    module: 'agents',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
     key: 'DEFAULT_AGENT_MODEL',
     type: 'string',
     default: DISTRIBUTION_DEFAULT_AGENT_MODEL,
@@ -507,10 +525,13 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: true,
     valueSet: [
+      // Opus 5.5: ONLY the 1M variant is offered (owner decision 2026-09-23, Marveen 28541).
+      'claude-opus-5-5[1m]',
       'claude-opus-5',
       'claude-opus-5[1m]',
       'claude-sonnet-5',
       'claude-fable-5',
+      'claude-fable-5-1',
       'claude-opus-4-8[1m]',
       'claude-haiku-4-5-20251001',
     ],

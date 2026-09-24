@@ -65,9 +65,17 @@ function walk(dir: string): string[] {
   return out
 }
 
+// Text only. readFileSync(..., 'utf-8') does NOT throw on a binary file: it
+// returns replacement-character mojibake, and those bytes can spell out any of
+// the patterns below -- a compiled .pyc decoded this way matched HOME_PATH_RX
+// and failed the scan with a phantom violation. A binary cannot carry readable
+// identity anyway, so a NUL byte (which no text file in these trees has) is the
+// signal to skip.
 function readText(file: string): string | null {
   try {
-    return readFileSync(file, 'utf-8')
+    const buf = readFileSync(file)
+    if (buf.includes(0)) return null
+    return buf.toString('utf-8')
   } catch {
     return null
   }

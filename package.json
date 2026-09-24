@@ -1,10 +1,10 @@
 {
   "name": "marveen",
-  "version": "1.38.0",
+  "version": "1.39.0",
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/write-built-commit.cjs",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "setup": "tsx scripts/setup.ts",

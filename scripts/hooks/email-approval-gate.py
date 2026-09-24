@@ -54,7 +54,10 @@ WINDOW_S = int(os.environ.get("EMAIL_APPROVAL_WINDOW_S", "1800"))
 sys.path.insert(0, _HERE)
 from email_extract import collect_email_envelope  # noqa: E402
 
-_SEND_TOOL = re.compile(r"send_email|manage_email", re.I)
+# GMAILCONNECTOR914: the claude.ai Gmail connector's send-shaped tools carry
+# neither word (mcp__claude_ai_Gmail__send_message / reply / forward), so the
+# gate exited 0 on them and an unapproved connector send was never denied.
+_SEND_TOOL = re.compile(r"send_email|manage_email|gmail__(reply|reply_all|send_message|forward)$", re.I)
 
 # manage_email is a MULTIPLEXER, not a send tool: the same MCP tool searches the
 # mailbox, reads a thread, writes a draft AND sends. Scoping this gate on the

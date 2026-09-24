@@ -72,3 +72,4 @@ jobs:
       - run: bash scripts/__tests__/morning-stamp-gate.test.sh
       - run: bash scripts/__tests__/morning-timer-park.test.sh
       - run: bash scripts/__tests__/userbot-arming-gate.test.sh
+      - run: bash scripts/__tests__/supabase-q-token-hiding.test.sh

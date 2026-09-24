@@ -172,10 +172,24 @@ describe('the runner wires the policy in', () => {
   })
 
   it('reports both halves of the gap in one line', () => {
-    expect(SRC).toMatch(/sendCatchUpSummary\(caughtUpThisTick, staleThisTick/)
+    expect(SRC).toMatch(/sendCatchUpSummary\(caughtUpReportable, staleReportable/)
   })
 
   it('stays silent on a tick that caught nothing up', () => {
-    expect(SRC).toMatch(/if \(caughtUpThisTick\.length \|\| staleThisTick\.length\) \{/)
+    expect(SRC).toMatch(/if \(caughtUpReportable\.length \|\| staleReportable\.length\) \{/)
+  })
+
+  // A heartbeat is self-healing -- the next occurrence is minutes away -- so a
+  // missed one is not operator-actionable. Reporting it turned a routine
+  // 15-minute heartbeat into ~25 Telegram alerts a day. The miss must still be
+  // recorded (WARN log + task_runs); only the push notification is dropped.
+  it('never reports a missed heartbeat, only real tasks', () => {
+    expect(SRC).toMatch(/caughtUpThisTick\.filter\(e => e\.type !== 'heartbeat'\)/)
+    expect(SRC).toMatch(/staleThisTick\.filter\(e => e\.type !== 'heartbeat'\)/)
+    // The entries must carry the type, or the filter above silently keeps everything.
+    expect(SRC).toMatch(/caughtUpThisTick\.push\(\{ task: task\.name, ageMs, type: task\.type \}\)/)
+    expect(SRC).toMatch(/staleThisTick\.push\(\{ task: task\.name, ageMs, type: task\.type \}\)/)
+    // The miss itself is still recorded -- the fix mutes the alert, not the bookkeeping.
+    expect(SRC).toMatch(/appendTaskRun\(task\.name, agentName, 'missed'\)/)
   })
 })

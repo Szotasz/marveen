@@ -1,3 +1,4 @@
+import { tmuxStderr } from './tmux-stderr.js'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -12,6 +13,10 @@ import { detectPaneState } from '../pane-state.js'
 import { detectsUsageLimit } from '../model-fallback.js'
 import { readContextTokensFromProjectDir, projectsDirFor } from './active-model.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
+// One copy, in a module neither runner owns (the gate imports the guard, so the
+// guard cannot import the gate back). Re-exported below because #1382's test
+// -- and any future reader -- looks for these names here.
+import { configDirFor, newestMainConfigRoot } from './main-transcript-root.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { getHardGuardPhase } from './context-guard-runner.js'
 import { readGateConfig, readGateRunState, writeGateRunState } from './context-restart-gate-store.js'
@@ -163,23 +168,7 @@ function workingDirFor(name: string): string {
   return join(PROJECT_ROOT, 'agents', name)
 }
 
-/**
- * Claude Code config root for an agent, or undefined for the host default.
- *
- * Transcripts live under <config-root>/projects/<encoded-working-dir>/, and an
- * agent launched with CLAUDE_CONFIG_DIR keeps them somewhere other than
- * ~/.claude. Reading without this looks in the default root, finds nothing, and
- * the gate's contextTokens comes back null -- which is a fail-closed BLOCK, so
- * the symptom is a gate that never opens and never says why.
- */
-function configDirFor(name: string): string | undefined {
-  // resolveAgentConfigDirForRead, not readAgentClaudeConfigDir: the launcher
-  // auto-provisions agents/<name>/.claude-config when no field is set, and
-  // reading the host default returns a stale transcript instead of nothing --
-  // which is worse than the null this comment warns about, because the gate
-  // then believes it can see.
-  return name === MAIN_AGENT_ID ? undefined : (resolveAgentConfigDirForRead(name) ?? undefined)
-}
+export { configDirFor, newestMainConfigRoot }
 
 function agentIdForLedger(name: string): string {
   // The main agent's ledger key is the MAIN_AGENT_ID (e.g. "bigme"), same as
@@ -219,13 +208,21 @@ function capturePaneOrNull(session: string): string | null {
 //
 // On ps failure for any PID: fail-closed (return null → decideGate blocks).
 
+// TMUXWINDOWATTR920: stderr is PIPED, not inherited. Without a stdio option
+// execFileSync copies the child's stderr onto the parent's stderr as well, so
+// tmux's "can't find window/session: ..." landed in dashboard.error.log
+// undated and unattributed (133 + ~3000 such lines measured 2026-09-20). The
+// message now goes through the logger with the call site and the session.
 function getPanePid(session: string): number | null {
   try {
     const raw = execFileSync(tmuxBin(), ['list-panes', '-t', session, '-F', '#{pane_pid}'],
-      { timeout: 3000, encoding: 'utf-8' })
+      { timeout: 3000, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
     const pid = parseInt(raw.split('\n')[0]?.trim() ?? '', 10)
     return Number.isFinite(pid) && pid > 0 ? pid : null
-  } catch { return null }
+  } catch (err) {
+    logger.warn({ site: 'context-restart-gate-runner.getPanePid', session, tmux: tmuxStderr(err) }, 'tmux list-panes failed')
+    return null
+  }
 }
 
 // PORTABILITY: `ps --ppid` is GNU/procps-only. BSD ps (macOS) rejects it with
@@ -492,9 +489,13 @@ function hasLiveChildProcesses(session: string, mcpPatterns: string[]): boolean 
  * snapshot only shows whatever the terminal painted last. Between two tool
  * calls the pane reads idle; the transcript does not.
  */
-function msSinceTranscriptWrite(workingDir: string, nowMs: number): number | null {
+function msSinceTranscriptWrite(workingDir: string, nowMs: number, configDir?: string): number | null {
   try {
-    const dir = projectsDirFor(workingDir)
+    // configDir matters MORE here than for the token read: a missing root makes
+    // this return a huge age, which reads as "quiet" and lets the gate clear a
+    // session that is in fact mid-turn. Fail-open, so it must use the same root
+    // the context read uses.
+    const dir = projectsDirFor(workingDir, configDir)
     if (!existsSync(dir)) return null
     let newest = 0
     for (const f of readdirSync(dir)) {
@@ -672,7 +673,7 @@ export function gatherGateInputs(name: string, nowMs: number): GateSnapshot {
     pendingOutboundCount:   dispatchedStats === null ? 1 : dispatchedStats.count,
     hasStaleOutbound:       dispatchedStats?.hasStale ?? false,
     hasChildProcesses:      childProcesses,
-    msSinceTranscriptWrite: msSinceTranscriptWrite(workingDir, nowMs),
+    msSinceTranscriptWrite: msSinceTranscriptWrite(workingDir, nowMs, configDirFor(name)),
     hasOpenQuestion:        openQuestion,
     hasLiveTaskState:       liveTaskState,
   }

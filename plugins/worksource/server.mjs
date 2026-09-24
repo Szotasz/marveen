@@ -94,6 +94,34 @@ function hasRouterProvenance(meta) {
   return meta.message_id != null && typeof meta.from === 'string' && meta.from.trim().length > 0
 }
 
+/**
+ * Coerce a meta bag to the `Record<string, string>` the client validates.
+ *
+ * MEASURED (2026-09-21, client debug log), and the failure is far worse than a
+ * dropped field: the client parses `params.meta` with a zod record of STRINGS,
+ * and a violation throws INSIDE its notification handler, where the error is
+ * uncaught. It does not fail this one delivery, it tears down the whole STDIO
+ * connection:
+ *
+ *   ... Channel notifications registered
+ *   ... STDIO connection dropped after 120s uptime
+ *   ... Connection error: Uncaught error in notification handler: $ZodError
+ *
+ * Our own router stamps `message_id` as a NUMBER and `parent_span_id` as null,
+ * so every routed item hit this. Nothing on our side logged a failure: the item
+ * is moved to active/ BEFORE the notification, and the send itself resolves --
+ * the write to the pipe succeeded, the parse on the far side did not.
+ */
+function stringMeta(bag) {
+  const out = {}
+  for (const [k, v] of Object.entries(bag)) {
+    // Dropped, not stringified: "null" as a meta value reads like a real one.
+    if (v == null) continue
+    out[k] = typeof v === 'string' ? v : typeof v === 'object' ? JSON.stringify(v) : String(v)
+  }
+  return out
+}
+
 /** Frame a provenance-less item so the agent sees what it is BEFORE the text. */
 function frameUnverified(content) {
   const scrubbed = String(content ?? '').replace(SECURITY_TAG_RX, STRIPPED_SENTINEL)
@@ -215,7 +243,7 @@ function deliverOne() {
         // Routed items are already framed upstream by the router; framing them
         // again would nest a wrap inside a wrap. Only the unframed ones get one.
         content: routed ? String(item.content ?? '') : frameUnverified(item.content),
-        meta: {
+        meta: stringMeta({
           ts: new Date().toISOString(),
           ...(item.meta && typeof item.meta === 'object' ? item.meta : {}),
           // Stamped AFTER the caller's meta, never before: these three are OURS.
@@ -225,7 +253,7 @@ function deliverOne() {
           work_id: id,
           agent: AGENT,
           provenance: routed ? 'router' : 'unverified',
-        },
+        }),
       },
     })
     .then(() => log(`delivered ${id}`))

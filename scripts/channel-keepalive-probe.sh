@@ -62,7 +62,7 @@ fi
 
 # --- gate 1: the channels session must exist ---
 if ! "$TMUX_BIN" has-session -t "$SESSION" 2>/dev/null; then
-  log "session $SESSION absent -- marveen-channels.service owns start; no touch"
+  log "session $SESSION absent -- ${MAIN_AGENT_ID}-channels.service owns start; no touch"
   exit 0
 fi
 

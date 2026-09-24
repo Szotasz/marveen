@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, readFileSync, writeFileSync, statSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -151,5 +151,106 @@ describe('updateEnrolledServicePorts (fs, temp dir)', () => {
     expect(miss.found).toBe(false)
     expect(readFileSync(join(dir, 'authorized_keys'), 'utf8')).toBe(`${FOREIGN_LINE}\n`)
     rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// HTTP layer: "not paired" must mean NOT PAIRED (ENROLL813).
+//
+// readCurrentPorts() used to wrap its whole body in `catch { /* missing file =
+// not enrolled */ }`. That was fine while the only thing that could throw was a
+// missing file -- but resolveSshDir() can now REFUSE, and a swallowed refusal
+// came out of this route as 404 "No enrollment found for this install id": the
+// system asserting the device is unpaired when it never managed to look. The
+// owner would go and re-pair a device that was already paired, and the actual
+// fault would leave no trace a user could see. Same silent-failure class the
+// rest of this change exists to remove, one layer up.
+import { Readable } from 'node:stream'
+import type http from 'node:http'
+import { initDatabase } from '../db.js'
+import { WEB_PORT } from '../config.js'
+import { tryHandleBridgeServicePorts } from '../web/routes/bridge-service-ports.js'
+import type { RouteContext } from '../web/routes/types.js'
+
+function mkRes() {
+  return {
+    statusCode: 0,
+    headers: {} as Record<string, unknown>,
+    body: '',
+    writeHead(status: number, headers?: Record<string, unknown>) {
+      this.statusCode = status
+      if (headers) Object.assign(this.headers, headers)
+      return this
+    },
+    setHeader(k: string, v: string) { this.headers[k] = v },
+    end(data?: string) { if (data !== undefined) this.body += data },
+  }
+}
+
+async function getPorts(installId: string): Promise<{ statusCode: number; json: () => Record<string, unknown> }> {
+  const req = Readable.from([]) as unknown as http.IncomingMessage & Record<string, unknown>
+  req.headers = {}
+  const res = mkRes()
+  const path = '/api/bridge/service-ports'
+  await tryHandleBridgeServicePorts({
+    req: req as http.IncomingMessage,
+    res: res as unknown as http.ServerResponse,
+    path,
+    method: 'GET',
+    url: new URL(`http://127.0.0.1:3420${path}?install_id=${installId}`),
+    // Token principal: owner tooling naming the install explicitly. This is the
+    // shortest route into readCurrentPorts -- no device-key row required.
+    auth: { kind: 'token' } as RouteContext['auth'],
+  } as RouteContext)
+  return { statusCode: res.statusCode, json: () => JSON.parse(res.body || '{}') }
+}
+
+describe('GET /api/bridge/service-ports (HTTP) -- a fault is never dressed up as "not paired"', () => {
+  const SUITE_DEFAULT_SSH_DIR = process.env.MARVEEN_SSH_DIR
+  let routeDir: string
+
+  beforeAll(() => {
+    process.env.NODE_ENV = 'test'
+    initDatabase(':memory:')
+  })
+
+  beforeEach(() => {
+    routeDir = mkdtempSync(join(tmpdir(), 'bridge-ports-route-'))
+    process.env.MARVEEN_SSH_DIR = routeDir
+  })
+
+  afterEach(() => {
+    rmSync(routeDir, { recursive: true, force: true })
+    // Restore the suite-wide seam rather than deleting it: a bare delete would
+    // leave every later test in this worker resolving the real ~/.ssh again.
+    if (SUITE_DEFAULT_SSH_DIR === undefined) delete process.env.MARVEEN_SSH_DIR
+    else process.env.MARVEEN_SSH_DIR = SUITE_DEFAULT_SSH_DIR
+  })
+
+  it('no authorized_keys at all is still a plain 404 -- the ENOENT path is unchanged', async () => {
+    const r = await getPorts(ID)
+    expect(r.statusCode).toBe(404)
+    expect(String(r.json().error ?? '')).toMatch(/No enrollment found/)
+  })
+
+  it('an enrolled line is found and its service ports returned', async () => {
+    writeFileSync(
+      join(routeDir, 'authorized_keys'),
+      `${restrictOptionsWithServices(WEB_PORT, [4007])} ssh-ed25519 ${B64} marveen-remote:${ID}\n`,
+    )
+    const r = await getPorts(ID)
+    expect(r.statusCode).toBe(200)
+    expect(r.json().ports).toEqual([4007])
+  })
+
+  it('a guard refusal surfaces as 500 + enroll813, NOT as the 404 that would send the owner off to re-pair', async () => {
+    // Unsetting the seam under a test runner is exactly the condition
+    // resolveSshDir() refuses. Before the fix this produced the 404 above.
+    delete process.env.MARVEEN_SSH_DIR
+    const r = await getPorts(ID)
+    expect(r.statusCode).toBe(500)
+    // Lowercase on the wire, like every other code this server emits.
+    expect(r.json().code).toBe('enroll813')
+    expect(String(r.json().error ?? '')).not.toMatch(/No enrollment found/)
   })
 })

@@ -643,6 +643,7 @@
 
       <!-- Memory list (for hot/warm/cold/shared) -->
       <div class="mem-tier-view" id="memTierView">
+        <div class="mem-search-label" id="memSearchLabel" hidden></div>
         <div class="mem-list" id="memList"></div>
         <div class="mem-empty" id="memEmpty" hidden>
           <p data-i18n="memories.empty">Nincs emlék ebben a kategóriában</p>
@@ -1908,6 +1909,9 @@
 
       <div id="updatesDiagnose" class="updates-diagnose" hidden></div>
 
+      <!-- Claude Code CLI update offer (CLIFRISSAJANLAS923): an offer, never automatic -->
+      <div id="updatesCli" class="updates-diagnose" hidden></div>
+
       <div class="updates-commits">
         <h3 data-i18n="tokenUsage.changes_title">Változások</h3>
         <div id="updatesCommitList" class="updates-commit-list"></div>
@@ -2256,8 +2260,10 @@
             <select id="agentModel">
               <option value="inherit" data-i18n="agents.model.inherit">Öröklött (alapértelmezett)</option>
               <optgroup label="☁️ Claude (felhő)">
-                <option value="claude-fable-5" data-i18n="agents.model.fable5">Fable 5 (legújabb)</option>
-                <option value="claude-opus-5" data-i18n="agents.model.opus5">Opus 5 (legújabb Opus)</option>
+                <option value="claude-fable-5-1" data-i18n="agents.model.fable51">Fable 5.1 (legújabb Fable)</option>
+                <option value="claude-fable-5" data-i18n="agents.model.fable5">Fable 5</option>
+                <option value="claude-opus-5-5[1m]" data-i18n="agents.model.opus55_1m">Opus 5.5 (1M kontextus, legújabb Opus)</option>
+                <option value="claude-opus-5" data-i18n="agents.model.opus5">Opus 5</option>
                 <option value="claude-opus-4-8[1m]" data-i18n="agents.model.opus48">Opus 4.8 (1M kontextus, alapértelmezett)</option>
                 <option value="claude-sonnet-5" data-i18n="agents.model.sonnet5">Sonnet 5 (legújabb Sonnet, Opus-közeli)</option>
                 <option value="claude-sonnet-4-6" data-i18n="agents.model.sonnet46">Sonnet 4.6 (gyors és okos)</option>
@@ -2274,6 +2280,7 @@
               <optgroup label="🏠 Ollama (lokális)" id="agentModelOllamaGroup" style="display:none">
               </optgroup>
             </select>
+            <p class="model-cli-hint" id="agentModelCliHint" style="display:none;font-size:12px;color:var(--muted,#888);margin:4px 0 0"></p>
           </div>
           <div class="form-group">
             <label for="agentProfile" data-i18n="agents.wizard.profile_label">Biztonsági profil</label>
@@ -2429,8 +2436,10 @@
             <label for="editAgentModel" data-i18n="agents.detail.model_label">Modell</label>
             <select id="editAgentModel">
               <optgroup label="☁️ Claude (felhő)">
-                <option value="claude-fable-5" data-i18n="agents.model.fable5">Fable 5 (legújabb)</option>
-                <option value="claude-opus-5" data-i18n="agents.model.opus5">Opus 5 (legújabb Opus)</option>
+                <option value="claude-fable-5-1" data-i18n="agents.model.fable51">Fable 5.1 (legújabb Fable)</option>
+                <option value="claude-fable-5" data-i18n="agents.model.fable5">Fable 5</option>
+                <option value="claude-opus-5-5[1m]" data-i18n="agents.model.opus55_1m">Opus 5.5 (1M kontextus, legújabb Opus)</option>
+                <option value="claude-opus-5" data-i18n="agents.model.opus5">Opus 5</option>
                 <option value="claude-opus-4-8[1m]" data-i18n="agents.model.opus48">Opus 4.8 (1M kontextus, alapértelmezett)</option>
                 <option value="claude-sonnet-5" data-i18n="agents.model.sonnet5">Sonnet 5 (legújabb Sonnet, Opus-közeli)</option>
                 <option value="claude-sonnet-4-6" data-i18n="agents.model.sonnet46">Sonnet 4.6 (gyors és okos)</option>
@@ -2447,6 +2456,7 @@
               <optgroup label="🏠 Ollama (lokális)" id="ollamaModelGroup">
               </optgroup>
             </select>
+            <p class="model-cli-hint" id="editAgentModelCliHint" style="display:none;font-size:12px;color:var(--muted,#888);margin:4px 0 0"></p>
             <button class="btn-secondary btn-compact agent-save-section" id="saveModelBtn" data-i18n="common.btn.save">Mentés</button>
             <button class="btn-secondary btn-compact" id="modelSuggestBtn" style="margin-left:6px" data-i18n="agents.settings.model_suggest_btn">Javaslat</button>
             <button class="btn-secondary btn-compact" id="openrouterBrowseBtn" style="margin-left:6px;display:none" title="Kézi OpenRouter modellek listájának szerkesztése (pipával)">🔀 OpenRouter kézi lista</button>

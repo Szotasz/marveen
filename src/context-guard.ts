@@ -282,6 +282,11 @@ export interface GuardState {
   cooldownUntilMs: number
   /** Consecutive idle-phase sweeps that saw a saturated pane (debounce). */
   saturatedStreak: number
+  /** Stale-handoff refreshes already requested in THIS await-handoff sequence.
+   *  Bounded by MAX_STALE_REFRESHES: without a bound the refresh loop cannot
+   *  converge for an agent whose own scheduled task fires more often than the
+   *  staleness slack, and it runs to the handoff timeout every time. */
+  staleRefreshCount: number
   /** Set at restart time when HANDOFF.md predates the agent's last transcript
    *  activity by more than the slack: ~minutes of work the handoff does NOT
    *  cover. Carried into await-ready so the resume prompt can say so -- a
@@ -297,6 +302,7 @@ export const INITIAL_GUARD_STATE: GuardState = {
   deadlineMs: 0,
   cooldownUntilMs: 0,
   saturatedStreak: 0,
+  staleRefreshCount: 0,
   handoffStaleMinutes: null,
 }
 
@@ -306,6 +312,72 @@ export const INITIAL_GUARD_STATE: GuardState = {
  *  a scrollback quote scrolling through the footer region, a mid-render
  *  frame -- clears by the next sweep. */
 export const SATURATION_CONFIRM_SWEEPS = 2
+
+/**
+ * Below this MEASURED context fraction a PERCENTAGE-shaped saturation banner is
+ * not believable.
+ *
+ * The banner is a CLAIM the CLI computes with its OWN denominator; pct is a
+ * MEASUREMENT from the transcript over contextLimitForModel's denominator (the
+ * 1M families plus the runner's persisted high-water mark). When a model id
+ * reaches the CLI WITHOUT the [1m] marker the CLI sizes its status line to 200k
+ * and prints "100% context used" at ~179k, while the session keeps working --
+ * 998 856 tokens observed in one session on this host. Believing the claim
+ * there executes a WORKING agent mid-turn: 318 numeric "pane saturated" hard
+ * restarts over nine days across four agents, measured context min 18 / median
+ * 19 / max 43 percent, not one above 90.
+ *
+ * 0.5 sits in the EMPTY BAND between the measured false positives (max 0.43)
+ * and any believable genuine saturation: per the CALIBRATION_OVERSHOOT_TOLERANCE
+ * note, 11 sessions that the CLI itself flagged "100% context used" measured
+ * 0.89-1.07. The margin is deliberately asymmetric towards safety (16% of
+ * headroom towards the false readings, 78% towards the genuine ones): when in
+ * doubt we believe the banner. A standalone constant, NOT derived from
+ * cfg.actPct -- lowering actPct must never widen the band in which the net
+ * stands down.
+ */
+export const SATURATION_CREDIBLE_MIN_PCT = 0.5
+
+/**
+ * Does the measurement support the pane's saturation banner?
+ *
+ * `bannerIsHardError` is what keeps this safe, and it is why the parameter is
+ * required rather than defaulted. Only the PERCENTAGE-shaped banners ("100%
+ * context used", "Context low (N% remaining)") take their truth from the CLI's
+ * status-line denominator and can therefore be wrong. The error-shaped ones
+ * ("Context limit reached", "context ... full", "auto-compact required") are
+ * painted only after a turn ACTUALLY failed at the real limit -- in CLI 2.1.205
+ * "Context limit reached" renders in color:"error" off the API's own "input
+ * length and max_tokens exceed context limit" -- so no denominator is involved
+ * and nothing measured here may overrule them. Overruling one would stand the
+ * net down on a genuinely wedged pane AND open the dispatch gate to it, turning
+ * a ~10 minute rescue into silent message loss. See
+ * paneShowsContextSaturationHardError in pane-state.ts.
+ *
+ * `pct === null` (unreadable transcript) => TRUE: there is no evidence against
+ * the banner, and that is the case the net was originally built for (samu,
+ * 2026-07-18). Only a real measurement may overrule a real banner.
+ *
+ * There is deliberately NO time-based valve for the mirror-image failure (a
+ * denominator wrong UPWARDS, e.g. [1m] pinned on a genuinely 200k model),
+ * because that case self-corrects through bannerIsHardError: the gate is open
+ * for such a session, so the next dispatched prompt starts a turn, the turn
+ * fails at the real limit, the CLI paints "Context limit reached", and the
+ * following sweep restarts it. An idle-time valve was written and then removed:
+ * idleMs cannot tell a wedged session from a merely quiet one, so it would hard
+ * restart every healthy personal assistant that goes silent overnight -- which
+ * is the exact failure this function exists to remove.
+ */
+export function saturationBannerCredible(
+  paneSaturated: boolean,
+  bannerIsHardError: boolean,
+  pct: number | null,
+): boolean {
+  if (!paneSaturated) return false
+  if (bannerIsHardError) return true
+  if (pct === null) return true
+  return pct >= SATURATION_CREDIBLE_MIN_PCT
+}
 
 export interface GuardInputs {
   nowMs: number
@@ -412,6 +484,36 @@ export function dailyHandoffDue(
  *  a zero-slack comparison would flag every handoff as stale. */
 export const STALE_HANDOFF_SLACK_MS = 3 * 60_000
 
+/**
+ * How many stale-handoff refreshes one await-handoff sequence may ask for.
+ *
+ * Why a bound exists at all (measured 2026-09-20, cortex-ugypasztor): staleness
+ * is `last pane activity - handoff mtime`, so it measures WHEN the last activity
+ * was, not WHAT it was. An agent whose own scheduled task fires every 5 minutes
+ * is woken between every pair of guard sweeps, which puts fresh activity ~4
+ * minutes after each handoff write -- above the 3-minute slack, every single
+ * time. The refresh condition is then structurally always true and the loop
+ * cannot converge: the agent answered all four requests, and each answer was
+ * invalidated by its own next poll before the guard looked again. It ran to the
+ * 20-minute timeout and force-restarted at 94% (from 90%).
+ *
+ * Raising or lowering handoffTimeoutMinutes does not fix that -- it only moves
+ * the ceiling on a loop that never terminates on its own. Control group from the
+ * same night: two agents whose fastest task fires every 10 and ~14 minutes entered
+ * same phase and left it in 10 minutes with ONE refresh each.
+ *
+ * One refresh still covers the case the refresh was built for (2026-08-17: a
+ * merge-gate verdict landed in the 20 minutes after a handoff write). After
+ * that we ship the handoff we have -- never silently: restartDecision carries
+ * handoffStaleMinutes into await-ready, and the resume prompt spells out how
+ * many minutes the handoff does not cover.
+ *
+ * Deliberately a constant, not a config key. The measured failure is structural,
+ * not a tuning mistake, and a new knob would invite exactly the tuning that does
+ * not help.
+ */
+export const MAX_STALE_REFRESHES = 1
+
 /** Freshness verdict for HANDOFF.md at decision time: minutes of uncovered
  *  work, 'unknown', or null (= fresh enough / no artifact to judge). */
 export type HandoffStaleness = number | 'unknown' | null
@@ -464,6 +566,7 @@ function cooldown(nowMs: number, cfg: ContextGuardConfig, reason: string): Guard
       deadlineMs: 0,
       cooldownUntilMs: nowMs + cfg.cooldownMinutes * 60_000,
       saturatedStreak: 0,
+      staleRefreshCount: 0,
       handoffStaleMinutes: null,
     },
   }
@@ -481,6 +584,7 @@ function restartDecision(nowMs: number, reason: string, staleMinutes: HandoffSta
       deadlineMs: nowMs + READY_TIMEOUT_MS,
       cooldownUntilMs: 0,
       saturatedStreak: 0,
+      staleRefreshCount: 0,
       handoffStaleMinutes: staleMinutes,
     },
   }
@@ -589,7 +693,13 @@ export function decideGuard(
         // idle pane (2026-08-17: 20 minutes of work, including a merge-gate
         // verdict, happened after the write). Existence is not freshness.
         const staleMin = handoffStaleMinutes(inputs)
-        if (typeof staleMin === 'number' && nowMs < state.deadlineMs && !(inputs.pct !== null && inputs.pct >= cfg.hardPct)) {
+        const refreshBudgetLeft = state.staleRefreshCount < MAX_STALE_REFRESHES
+        if (
+          typeof staleMin === 'number' &&
+          refreshBudgetLeft &&
+          nowMs < state.deadlineMs &&
+          !(inputs.pct !== null && inputs.pct >= cfg.hardPct)
+        ) {
           // There is still budget before the deadline and the context is not
           // yet at the hard threshold: ask for a refresh instead of shipping
           // a handoff that misses the last N minutes. Advancing the recorded
@@ -599,12 +709,23 @@ export function decideGuard(
           return {
             action: 'request-handoff',
             reason: `${STALE_REFRESH_REASON_PREFIX}: handoff written but ~${staleMin}m of work happened after it -- requesting refresh`,
-            nextState: { ...state, handoffMtimeAtRequest: inputs.handoffMtime },
+            nextState: {
+              ...state,
+              handoffMtimeAtRequest: inputs.handoffMtime,
+              staleRefreshCount: state.staleRefreshCount + 1,
+            },
           }
         }
+        // Refresh budget spent (or never applicable): ship what we have. Saying
+        // the budget is spent out loud matters -- the previous behaviour looked
+        // identical in the log to "the agent never answered", which is the
+        // opposite diagnosis.
         return restartDecision(
           nowMs,
-          typeof staleMin === 'number' ? `handoff written but STALE (~${staleMin}m of work after it)` : 'handoff written',
+          typeof staleMin === 'number'
+            ? `handoff written but STALE (~${staleMin}m of work after it)` +
+              (refreshBudgetLeft ? '' : ` -- ${state.staleRefreshCount} refresh(es) already requested, accepting as-is`)
+            : 'handoff written',
           staleMin,
         )
       }
@@ -639,6 +760,7 @@ export function decideGuard(
             deadlineMs: 0,
             cooldownUntilMs: nowMs + cfg.cooldownMinutes * 60_000,
             saturatedStreak: 0,
+            staleRefreshCount: 0,
             handoffStaleMinutes: null,
           },
         }
@@ -763,6 +885,8 @@ function handoffRequest(
       deadlineMs: nowMs + cfg.handoffTimeoutMinutes * 60_000,
       cooldownUntilMs: 0,
       saturatedStreak: 0,
+      // A NEW sequence starts with a fresh refresh budget.
+      staleRefreshCount: 0,
       handoffStaleMinutes: null,
     },
   }

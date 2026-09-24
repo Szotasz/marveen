@@ -10,7 +10,7 @@ import {
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
   addCardBlocker, removeCardBlocker, getBlockersForCard, getBlockedByCard,
-  getBlockersForAllCards, blockerWouldCycle,
+  getBlockersForAllCards, blockerWouldCycle, parentWouldCycle,
   listArchivedKanbanCards,
   revertIdeaFromKanban,
   getHeartbeatKanbanSummary,
@@ -18,6 +18,7 @@ import {
   countPlannedKanbanCards,
   getDbFileSizeMb,
   getTokenPruneLag,
+  getStuckKanbanCards,
   type TokenPruneLag,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
@@ -27,7 +28,7 @@ import { isAgentRunning } from '../agent-process.js'
 import { resolveKanbanDispatch } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
-import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
+import { readBody, json, jsonMaybeGzip, methodNotAllowed } from '../http-helpers.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import type { RouteContext } from './types.js'
 
@@ -93,12 +94,20 @@ export function kanbanMoveInstructions(id: string, target: string): string {
   // reader would have no status and no idea why, and the likeliest reaction to a
   // broken pre-flight check is to skip it. Echoing the server's own error keeps it
   // actionable.
+  //
+  // description is pulled alongside status, not left for a second look-up: a
+  // program-specific closing-status override (see the ranking sentence below)
+  // lives in the card's description, and a probe that prints only the status
+  // gives the reader no reason to ever read it. Two agent incidents on one card
+  // (2026-09-15, 7ed56208) confirmed the failure mode -- the reader ran exactly
+  // this probe, saw a status, and never saw the override sitting one field over.
   const statusProbe =
-    `  curl -s ${auth} ${base}/api/kanban | python3 -c "import sys,json;d=json.load(sys.stdin);print(next((c['status'] for c in d if c.get('id')=='${id}'),'nincs ilyen kartya') if isinstance(d,list) else 'ismeretlen -- a szerver nem kartya-listat adott: '+str(d)[:120])"`
+    `  curl -s ${auth} ${base}/api/kanban | python3 -c "import sys,json;d=json.load(sys.stdin);c=(next((x for x in d if x.get('id')=='${id}'),None) if isinstance(d,list) else None);print(('status: '+str(c.get('status'))+chr(10)+'description: '+((c.get('description') or '').strip() or '(nincs)')) if c else ('nincs ilyen kartya' if isinstance(d,list) else 'ismeretlen -- a szerver nem kartya-listat adott: '+str(d)[:120]))"`
   return [
-    'MIELŐTT NEKIKEZDESZ: nézd meg a kártya AKTUÁLIS státuszát. Ez az üzenet egy foglalt session sorában KÉSHET, és közben a munka elkészülhetett:',
+    'MIELŐTT NEKIKEZDESZ: nézd meg a kártya AKTUÁLIS státuszát ÉS leírását. Ez az üzenet egy foglalt session sorában KÉSHET, és közben a munka elkészülhetett -- a leírás pedig a kártya saját, ennél a sablonnál erősebb szabályait hordozhatja (lásd lent):',
     statusProbe,
-    'Ha a válasz már "testing" vagy "done", NE kezdj bele -- az üzenet későn ért ide, a munka már áll. Egy második nekifutás párhuzamos, két helyen karbantartott munkát szül (például egy MÁSODIK teszt-fájlt ugyanarra a vezérlőre). Ilyenkor jelezd a delegálódnak, és ne írj kódot.',
+    'Ha a "status:" sor már "testing" vagy "done", NE kezdj bele -- az üzenet későn ért ide, a munka már áll. Egy második nekifutás párhuzamos, két helyen karbantartott munkát szül (például egy MÁSODIK teszt-fájlt ugyanarra a vezérlőre). Ilyenkor jelezd a delegálódnak, és ne írj kódot.',
+    'A "description:" sort is OLVASD EL, ne csak a státuszt: ha benne kártya-specifikus kikötés áll (pl. más záró-státusz, "nincs éles restart"), az felülírja ennek a sablonnak az alapértelmezését, lásd a 2) lépésnél.',
     '',
     'A kártyát in_progress-re húzták. Amikor VÉGEZTÉL, két lépés (mindkettő a kártyára kerül, a web UI-ban látszik):',
     '',
@@ -288,8 +297,13 @@ export function buildHeartbeatSummaryResponse(
   }
 }
 
+// The methods the single-card path actually serves. One source, so the Allow
+// header can never drift from the branches above it -- advertising a method
+// that is not routed would send the caller one step further into the same fog.
+const KANBAN_CARD_METHODS = ['PUT', 'DELETE'] as const
+
 export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
-  const { req, res, path, method } = ctx
+  const { req, res, path, method, url } = ctx
 
   if (path === '/api/kanban' && method === 'GET') {
     // Embed each card's labels in one extra JOIN query (getLabelsForAllCards)
@@ -328,6 +342,32 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   // naming items; the numbers ONLY ever come from counts.
   if (path === '/api/kanban/heartbeat-summary' && method === 'GET') {
     json(res, buildHeartbeatSummaryResponse(getHeartbeatKanbanSummary(), countNewHotMemories(MAIN_AGENT_ID), countPlannedKanbanCards(), getDbFileSizeMb(), getTokenPruneLag()))
+    return true
+  }
+
+  // KANBANSTUCKURES916: replaces the kanban-audit skill's inline "status ==
+  // in_progress" detector (structurally near-always empty on this board) with
+  // a real "started, then went idle" measurement across all non-done statuses.
+  // See getStuckKanbanCards in db.ts for the "started"/"last_activity"
+  // definitions. `examined: 0` gets its own `empty_reason` -- the skill's
+  // job is to report "could not measure" instead of a reassuring false zero.
+  if (path === '/api/kanban/stuck' && method === 'GET') {
+    const plannedDaysRaw = url.searchParams.get('planned_days') ?? '7'
+    const activeDaysRaw = url.searchParams.get('active_days') ?? '3'
+    const plannedDays = Number(plannedDaysRaw)
+    const activeDays = Number(activeDaysRaw)
+    if (!Number.isFinite(plannedDays) || plannedDays <= 0 || !Number.isFinite(activeDays) || activeDays <= 0) {
+      json(res, { error: 'invalid planned_days/active_days: must be positive numbers' }, 400)
+      return true
+    }
+    // 600s: the measured creator-comment window (D001, ELSOKOR922 Phase 0) --
+    // an immediate comment on a fresh card is a description, not a work-trace.
+    const result = getStuckKanbanCards({ plannedDays, activeDays, creatorCommentWindowSec: 600 })
+    if (result.examined === 0) {
+      json(res, { ...result, empty_reason: 'nincs megkezdett kártya' })
+    } else {
+      json(res, result)
+    }
     return true
   }
 
@@ -517,6 +557,25 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       }, 400)
       return true
     }
+    // A re-parent is refused rather than stored if it would close a loop, same reasoning as
+    // the blocker check above: a parent chain that loops back on itself is not a hierarchy,
+    // and touchAncestorChain (db.ts) only detects one after it already exists -- it cannot
+    // prevent the write that creates it. Clearing the parent (null/omitted) needs no check:
+    // there is nothing to walk.
+    if (typeof data.parent_id === 'string' && data.parent_id) {
+      if (!getKanbanCard(data.parent_id)) {
+        json(res, { error: 'A szülő kártya nem található' }, 404)
+        return true
+      }
+      if (parentWouldCycle(id, data.parent_id)) {
+        json(res, {
+          error: data.parent_id === id
+            ? 'Egy kártya nem lehet a saját szülője'
+            : 'Ez a szülő-kapcsolat kört zárna be',
+        }, 409)
+        return true
+      }
+    }
     if (updateKanbanCard(id, data, actor)) { json(res, { ok: true }); return true }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
@@ -610,13 +669,17 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const body = await readBody(req)
-    const { author, content } = JSON.parse(body.toString())
+    const { author, content, automated } = JSON.parse(body.toString())
     if (!author || !content) { json(res, { error: 'Szerző és tartalom kötelező' }, 400); return true }
     // Code-side kanban-ref enforcement: rewrite `#<hex8>` references that map
     // to a real card into the human-facing `#<seq>` form before persistence
     // (#75 Cuzcoo dispatch). Random hex / non-matching tokens pass through.
     const normalizedContent = normalizeKanbanRefs(content, getKanbanSeqByIdPrefix)
-    json(res, addKanbanComment(cardId, author, normalizedContent))
+    // `automated: true`: a bulk/machine writer marks its own comment, so the
+    // stuck detector never reads it as a work-trace (KANBANSTUCKURES916).
+    json(res, automated === true
+      ? addKanbanComment(cardId, author, normalizedContent, { automated: true })
+      : addKanbanComment(cardId, author, normalizedContent))
     return true
   }
 
@@ -684,6 +747,20 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (childrenMatch && method === 'GET') {
     const parentId = decodeURIComponent(childrenMatch[1])
     json(res, getChildCards(parentId))
+    return true
+  }
+
+  // Last, deliberately: every other single-card matcher above has had its turn,
+  // including the fixed paths that also happen to be one segment long
+  // (/api/kanban/archived among them). Placing this earlier would answer 405
+  // for those before their own handler ran.
+  //
+  // Reached only when the path IS a single-card path and the method is not one
+  // this route serves. Without it the request falls through to the server's
+  // catch-all 404, whose body cannot be told apart from "no such card" -- an
+  // ambiguity that has twice pointed a caller at the wrong bug.
+  if (path.match(/^\/api\/kanban\/([^/]+)$/)) {
+    methodNotAllowed(res, method, KANBAN_CARD_METHODS)
     return true
   }
 

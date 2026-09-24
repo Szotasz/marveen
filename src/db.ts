@@ -426,6 +426,19 @@ export function initDatabase(dbPathOverride?: string): void {
   // NULL-at-a-fresh-updated_at reads as "unattributed write", never as a
   // false attribution. (Known edge, conservative direction: the same author
   // rewriting within the same second gets updated_by cleared.)
+  // PORTABILITY (2026-09-21): the body used `unixepoch()`, which is SQLite 3.38+.
+  // Ubuntu 22.04 LTS ships libsqlite3 3.37.2 and its repositories offer nothing
+  // newer, so the system `python3` (and the `sqlite3` CLI) are on 3.37.2 while
+  // Node's better-sqlite3 bundles 3.53. The trigger therefore fired only on the
+  // Node side: every Python-side `UPDATE memories ...` died with
+  // `no such function: unixepoch`, which silently took the scripted maintenance
+  // path (tier-downs, dream-engine hygiene) out of service on those hosts while
+  // the dashboard kept working. `strftime('%s','now')` returns TEXT and has been
+  // present forever; the CAST keeps the column INTEGER, so the stored value is
+  // identical to what unixepoch() wrote.
+  // DROP before CREATE: `CREATE TRIGGER IF NOT EXISTS` is a no-op against the
+  // already-installed old body, so an upgrade would keep the broken trigger.
+  db.exec('DROP TRIGGER IF EXISTS memories_touch')
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS memories_touch AFTER UPDATE ON memories
     WHEN (new.content IS NOT old.content
@@ -435,7 +448,7 @@ export function initDatabase(dbPathOverride?: string): void {
      AND new.updated_at IS old.updated_at
     BEGIN
       UPDATE memories SET
-        updated_at = unixepoch(),
+        updated_at = CAST(strftime('%s','now') AS INTEGER),
         updated_by = CASE WHEN new.updated_by IS old.updated_by THEN NULL ELSE new.updated_by END
       WHERE id = new.id;
     END
@@ -497,6 +510,15 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_comments_card ON kanban_comments(card_id)`)
+  // KANBANSTUCKURES916 (#1531 review): bulk and machine writers (migrations,
+  // sweeps, audits) mark their own comments, so the stuck detector can tell a
+  // work-trace from a sweep's footprint. Default 0: every existing writer keeps
+  // working unchanged, and an unmarked comment is still judged by its author.
+  try {
+    db.exec('ALTER TABLE kanban_comments ADD COLUMN automated INTEGER NOT NULL DEFAULT 0')
+  } catch {
+    // column already exists
+  }
 
   // Homoglyph journal (GATEHOMOGLIFSWEEP816): agents write kanban via sqlite3
   // directly, so an API-level check never sees those writes. These triggers
@@ -513,20 +535,22 @@ export function initDatabase(dbPathOverride?: string): void {
       resolved_at INTEGER
     )
   `)
+  db.exec('DROP TRIGGER IF EXISTS homoglyph_kanban_comments_ai')
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS homoglyph_kanban_comments_ai AFTER INSERT ON kanban_comments
     WHEN ${triggerLikeClause('NEW.content')}
     BEGIN
       INSERT INTO homoglyph_findings (src_table, src_id, sample, found_at)
-      VALUES ('kanban_comments', NEW.id, substr(NEW.content, 1, 120), unixepoch());
+      VALUES ('kanban_comments', NEW.id, substr(NEW.content, 1, 120), CAST(strftime('%s','now') AS INTEGER));
     END
   `)
+  db.exec('DROP TRIGGER IF EXISTS homoglyph_kanban_cards_ai')
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS homoglyph_kanban_cards_ai AFTER INSERT ON kanban_cards
     WHEN ${triggerLikeClause('NEW.title')}
     BEGIN
       INSERT INTO homoglyph_findings (src_table, src_id, sample, found_at)
-      VALUES ('kanban_cards', NEW.id, substr(NEW.title, 1, 120), unixepoch());
+      VALUES ('kanban_cards', NEW.id, substr(NEW.title, 1, 120), CAST(strftime('%s','now') AS INTEGER));
     END
   `)
 
@@ -935,6 +959,18 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec(`ALTER TABLE task_runs ADD COLUMN completed_at INTEGER`) } catch { /* already present */ }
   try { db.exec(`ALTER TABLE task_runs ADD COLUMN outcome TEXT`) } catch { /* already present */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_task_runs_open ON task_runs(completed_at, ts)`)
+  // Migration: delivery integrity (PROMPTCSONK923). What the session's own
+  // transcript shows actually ARRIVED, compared with what was typed: 'intact',
+  // or how it broke ('head-lost', 'split', ...). NULL = not verified (remote
+  // agent, command task, transcript not readable, or a row from before this
+  // column). Separate from `status`, which says how the DISPATCH went and is
+  // stamped before anything has arrived.
+  try { db.exec(`ALTER TABLE task_runs ADD COLUMN delivery TEXT`) } catch { /* already present */ }
+  // Backfill for SCHEDLOST915: terminal marker rows (lost, skipped, ...) were
+  // inserted with completed_at NULL and so looked open for ever. A marker ends
+  // when it is written. Idempotent: matches nothing once applied.
+  db.exec(`UPDATE task_runs SET completed_at = ts
+           WHERE completed_at IS NULL AND status NOT IN ('fired', 'fired_late', 'fired_busy')`)
 
   // --- Pending Scheduled Task Retries ---
   // Busy-skipped scheduled tasks used to live in an in-memory Map. On a
@@ -1267,7 +1303,7 @@ export function initDatabase(dbPathOverride?: string): void {
         CHECK(status IN ('pending','approved','rejected','timeout')),
       timeout_at INTEGER,
       telegram_message_id INTEGER,
-      requested_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      requested_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
       resolved_at INTEGER,
       resolved_by TEXT
     )
@@ -1568,11 +1604,38 @@ export function buildFtsMatchExpression(query: string, join: 'AND' | 'OR' = 'AND
  *
  * A single-token query has nothing to relax, so it runs once.
  */
-function ftsWithOrFallback<T>(query: string, run: (terms: string) => T[]): { rows: T[]; relaxed: boolean } {
+/**
+ * Strict AND first, then -- only when the caller allows it -- an OR pass.
+ *
+ * The OR pass is genuinely useful and genuinely dangerous, and which one it is
+ * depends entirely on whether the caller is told it happened. Measured: a query
+ * whose every real term matched nothing still returned a row, because dropping
+ * the terms left two ordinary filler words that occur in unrelated memories.
+ * A caller reading that answer sees a recall; there was none.
+ *
+ * So the relaxation STAYS ON by default, and the strictness is what a caller
+ * opts into. That order matters and was measured the hard way: the relaxation
+ * exists because a naturally phrased question ("meddig tart a felmondasi ido")
+ * found nothing while the memory sat there, and turning it off by default
+ * would bring that back -- a false negative on real knowledge, which is worse
+ * than a generous answer that says it was generous.
+ *
+ * What was missing is not strictness, it is the LABEL: whether a relaxation
+ * happened has to reach the caller, so "we have no memory of this" can be
+ * distinguished from "the search worked hard to find something". Callers that
+ * need the hard answer pass allowRelaxed=false and get silence when there is
+ * no strict match.
+ */
+function ftsWithOrFallback<T>(
+  query: string,
+  run: (terms: string) => T[],
+  allowRelaxed = true,
+): { rows: T[]; relaxed: boolean } {
   const strict = buildFtsMatchExpression(query)
   if (!strict) return { rows: [], relaxed: false }
   const rows = run(strict)
   if (rows.length > 0) return { rows, relaxed: false }
+  if (!allowRelaxed) return { rows, relaxed: false }
   const relaxedTerms = buildFtsMatchExpression(query, 'OR')
   if (relaxedTerms === strict) return { rows, relaxed: false }
   return { rows: run(relaxedTerms), relaxed: true }
@@ -1631,19 +1694,25 @@ function withoutRank<T extends { rank: number }>(rows: T[]): Omit<T, 'rank'>[] {
   return rows.map(({ rank: _rank, ...rest }) => rest)
 }
 
-export function searchMemories(query: string, chatId: string, limit = 3): Memory[] {
+export function searchMemories(query: string, chatId: string, limit = 3, allowRelaxed = true, category?: string): Memory[] {
   try {
     const { rows } = ftsWithOrFallback(query, (terms) =>
-      db
-        .prepare(
-          `SELECT m.*, f.rank AS rank FROM memories m
-           JOIN memories_fts f ON m.id = f.rowid
-           WHERE f.content MATCH ? AND m.chat_id = ?
-           ORDER BY rank
-           LIMIT ?`
-        )
-        .all(terms, chatId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
-    )
+      (category
+        ? db.prepare(
+            `SELECT m.*, f.rank AS rank FROM memories m
+             JOIN memories_fts f ON m.id = f.rowid
+             WHERE f.content MATCH ? AND m.chat_id = ? AND m.category = ?
+             ORDER BY rank
+             LIMIT ?`
+          ).all(terms, chatId, category, limit * RECENCY_OVERSAMPLE)
+        : db.prepare(
+            `SELECT m.*, f.rank AS rank FROM memories m
+             JOIN memories_fts f ON m.id = f.rowid
+             WHERE f.content MATCH ? AND m.chat_id = ?
+             ORDER BY rank
+             LIMIT ?`
+          ).all(terms, chatId, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
+      , allowRelaxed)
     return withoutRank(reRankByRecency(rows, limit)) as Memory[]
   } catch {
     return []
@@ -1797,22 +1866,50 @@ export function getAgentMemories(agentId: string, limit: number = 20, category?:
   return result
 }
 
-export function searchAgentMemories(agentId: string, query: string, limit: number = 10, trace?: { relaxed: boolean }): Memory[] {
+// MEMKERESVAK917: `category` is a filter on the QUERY, not on the answer.
+// It used to be applied by the route AFTER this function had already cut the
+// result to `limit`, so a filtered search silently truncated: measured on the
+// owner store, q=billingo&category=warm returned 9 rows at limit=50 and 39 at
+// limit=200, while 38 warm rows contain the word. The caller was told
+// `relaxed=false` -- "matched as asked" -- on an answer missing three quarters
+// of its matches. Pushing it down makes the limit mean rows the caller asked
+// for, and it is also less work: the oversample now fills with candidates that
+// can survive the filter instead of being thrown away after ranking.
+export function searchAgentMemories(
+  agentId: string,
+  query: string,
+  limit: number = 10,
+  trace?: { relaxed: boolean },
+  allowRelaxed = true,
+  category?: string,
+): Memory[] {
   try {
     const { rows, relaxed } = ftsWithOrFallback(query, (terms) =>
-      db.prepare(
-        `SELECT m.*, f.rank AS rank FROM memories m
-         JOIN memories_fts f ON m.id = f.rowid
-         WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')
-         ORDER BY rank LIMIT ?`
-      ).all(terms, agentId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
-    )
+      (category
+        ? db.prepare(
+            `SELECT m.*, f.rank AS rank FROM memories m
+             JOIN memories_fts f ON m.id = f.rowid
+             WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')
+               AND m.category = ?
+             ORDER BY rank LIMIT ?`
+          ).all(terms, agentId, category, limit * RECENCY_OVERSAMPLE)
+        : db.prepare(
+            `SELECT m.*, f.rank AS rank FROM memories m
+             JOIN memories_fts f ON m.id = f.rowid
+             WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')
+             ORDER BY rank LIMIT ?`
+          ).all(terms, agentId, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
+    , allowRelaxed)
     if (trace) trace.relaxed = relaxed
     return withoutRank(reRankByRecency(rows, limit)) as Memory[]
   } catch {
-    return db.prepare(
-      "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?"
-    ).all(agentId, `%${query}%`, `%${query}%`, limit) as Memory[]
+    return (category
+      ? db.prepare(
+          "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?"
+        ).all(agentId, category, `%${query}%`, `%${query}%`, limit)
+      : db.prepare(
+          "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?"
+        ).all(agentId, `%${query}%`, `%${query}%`, limit)) as Memory[]
   }
 }
 
@@ -1890,8 +1987,12 @@ export function updateMemory(id: number, content: string, category?: string, age
   // Read the row's CURRENT owner and category before writing. The agentId
   // parameter is optional and means "reassign to this agent", so it is absent
   // on the ordinary edit -- it cannot be used to decide whose cache went
-  // stale. Only the row itself knows that. getMemoryById also gives us the
-  // full pre-image content the version snapshot needs (card 27ab6a18).
+  // stale. Only the row itself knows that. content/keywords come along for the
+  // staleness check below, for the same reason: the parameters alone cannot say
+  // whether the embedded text changed. getMemoryById returns exactly those four
+  // fields PLUS the id, which is what the version snapshot needs (card 27ab6a18)
+  // -- a strict superset of the inline SELECT develop used here, so one read
+  // serves both.
   const before = getMemoryById(id)
   // MEMIRASNYOM915: attributed write-trace. updated_at is set explicitly here
   // (which keeps the memories_touch trigger from firing); updated_by is the
@@ -1899,6 +2000,26 @@ export function updateMemory(id: number, content: string, category?: string, age
   // author left in place.
   const sets: string[] = ['content = ?', 'accessed_at = ?', 'updated_at = ?', 'updated_by = ?']
   const params: unknown[] = [content, now, now, updatedBy ?? null]
+  // The stored embedding was generated from the OLD text, so an edit silently
+  // leaves the vector describing text that is no longer there. Nothing in the
+  // schema records that mismatch (there is no embedding_generated_at column),
+  // and neither search path errors: FTS and the LIKE fallback read `content`
+  // live and stay correct, while hybridSearch keeps fusing the stale vector's
+  // ranking in. Dropping it to NULL hands the row back to backfillEmbeddings,
+  // which processes exactly `WHERE embedding IS NULL` and is therefore
+  // idempotent and resumable. Deliberately NOT regenerating here: that would
+  // put a synchronous Ollama call in the path of a DB write.
+  //
+  // The trigger is the embedded TEXT changing, which is content AND keywords:
+  // both saveAgentMemory and backfillEmbeddings embed `content + ' ' + keywords`,
+  // so a keywords-only edit leaves exactly the same stale vector.
+  //
+  // Compare against the stored values rather than testing for the parameter's
+  // presence -- `content` is required and every caller passes it (the PUT route
+  // resends the unchanged body on a category-only edit), so presence alone says
+  // nothing about a change.
+  const keywordsChanged = keywords !== undefined && (before?.keywords ?? null) !== keywords
+  if (before && (before.content !== content || keywordsChanged)) sets.push('embedding = NULL')
   if (category) { sets.push('category = ?'); params.push(category) }
   if (agentId) { sets.push('agent_id = ?'); params.push(agentId) }
   if (keywords !== undefined) { sets.push('keywords = ?'); params.push(keywords) }
@@ -2211,6 +2332,8 @@ export interface KanbanComment {
   author: string
   content: string
   created_at: number
+  // 1 = written by a bulk/machine tool; never a work-trace (KANBANSTUCKURES916)
+  automated?: number
 }
 
 export function listKanbanCards(): KanbanCard[] {
@@ -2269,12 +2392,13 @@ const ANCESTOR_DEPTH_LIMIT = 16
 
 // Stamps `now` on every ancestor starting at `parentId`, walking upward.
 //
-// NOT a `while (parent)` loop, and the reason is a second, still-missing check: nothing guards
-// kanban_cards.parent_id against a cycle -- updateKanbanCard() writes whatever it is handed, so
-// A -> B -> A is constructible through the public API. A plain walk would spin forever inside a
-// write path. The visited set makes the cycle terminate and the depth cap catches a chain that
-// grew past anything we would call a hierarchy. Both are loud, because either one means the
-// parent_id data is broken and something else needs fixing.
+// NOT a `while (parent)` loop: the visited set and depth cap below are defense-in-depth for
+// any path that writes parent_id directly (a script, a migration, a hand-edited database),
+// bypassing parentWouldCycle (below) the way addCardBlocker's callers cannot bypass
+// blockerWouldCycle. Through the public API (PUT /api/kanban/:id) a cycle is refused before
+// the write happens; this loop only has to survive one that got in some other way, not
+// silently accept it -- both branches below are loud, because either one means the parent_id
+// data is broken and something else needs fixing.
 function touchAncestorChain(parentId: string | null | undefined, now: number, startedAt: string): void {
   if (!parentId) return // root card: the common case, and it costs nothing
   const readParent = db.prepare('SELECT parent_id FROM kanban_cards WHERE id = ?')
@@ -2295,6 +2419,34 @@ function touchAncestorChain(parentId: string | null | undefined, now: number, st
     stamp.run(now, current)
     current = (readParent.get(current) as { parent_id: string | null } | undefined)?.parent_id ?? null
   }
+}
+
+// Mirrors blockerWouldCycle (above) for kanban_cards.parent_id, and closes the gap its own
+// comment used to describe: touchAncestorChain defends a write path that a cycle has ALREADY
+// entered, but nothing refused the write that created it -- A -> B -> A was constructible
+// through PUT /api/kanban/:id with no error, silently reproducing the touchAncestorChain
+// warning on every subsequent write to either card instead of being rejected once, at the
+// moment the re-parent was proposed.
+//
+// Walks upward from the PROPOSED parent using the existing (pre-write) chain, the same
+// direction touchAncestorChain walks: if cardId is reachable that way, cardId is already an
+// ancestor of parentId, so pointing cardId at parentId would close the loop. The seen-set and
+// depth cap mirror touchAncestorChain's, for the same reason -- a pre-existing cycle in the
+// data (from some other write path) must not hang this walk either; encountering one refuses
+// the new write rather than extending a chain that is already broken.
+export function parentWouldCycle(cardId: string, parentId: string): boolean {
+  if (cardId === parentId) return true
+  const readParent = db.prepare('SELECT parent_id FROM kanban_cards WHERE id = ?')
+  const seen = new Set<string>()
+  let current: string | null = parentId
+  let depth = 0
+  while (current) {
+    if (current === cardId) return true
+    if (seen.has(current) || ++depth > ANCESTOR_DEPTH_LIMIT) return true
+    seen.add(current)
+    current = (readParent.get(current) as { parent_id: string | null } | undefined)?.parent_id ?? null
+  }
+  return false
 }
 
 export function createKanbanCard(card: {
@@ -2572,16 +2724,17 @@ export function markScheduledTaskKanbanWaiting(taskName: string): string | null 
   return card.id
 }
 
-export function addKanbanComment(cardId: string, author: string, content: string): KanbanComment {
+export function addKanbanComment(cardId: string, author: string, content: string, opts: { automated?: boolean } = {}): KanbanComment {
   const now = Math.floor(Date.now() / 1000)
+  const automated = opts.automated ? 1 : 0
   const info = db.prepare(
-    'INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, ?)'
-  ).run(cardId, author, content, now)
+    'INSERT INTO kanban_comments (card_id, author, content, created_at, automated) VALUES (?, ?, ?, ?, ?)'
+  ).run(cardId, author, content, now, automated)
   db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(now, cardId)
   const parentId = (db.prepare('SELECT parent_id FROM kanban_cards WHERE id = ?').get(cardId) as
     { parent_id: string | null } | undefined)?.parent_id
   touchAncestorChain(parentId, now, cardId)
-  return { id: Number(info.lastInsertRowid), card_id: cardId, author, content, created_at: now }
+  return { id: Number(info.lastInsertRowid), card_id: cardId, author, content, created_at: now, automated }
 }
 
 // --- Kanban labels (tags) ---
@@ -2838,6 +2991,154 @@ export function countNewHotMemories(agentId: string): number {
   return row?.n ?? 0
 }
 
+// KANBANSTUCKURES916: the kanban-audit's stuck-card detector used to filter on
+// status='in_progress' alone, which on this board is structurally almost always
+// empty (started work sits on `planned`, not `in_progress`) -- so the detector
+// reported "0 stuck" every round while never actually measuring anything. A
+// backlog `planned` card with no activity is the EXPECTED steady state, not a
+// stall, so the fix cannot just widen the status filter; it needs a real
+// "started" signal, independent of status.
+//
+// A comment is a WORK-TRACE only if its author is the card's assignee (case-
+// insensitive: the board stores "Marveen", the agent writes "marveen") and it
+// is not marked `automated`. Measured on a maintainer board (#1531 review): of
+// 590 "stuck" cards, all 590 were "started" by a comment alone, and 151 of them
+// only by a migration or sweep comment that was also their last activity.
+//
+// A card counts as STARTED if any of: it was ever dispatched to an agent, it
+// once left `planned` (kanban_card_events), it has a work-trace comment that is
+// not the assignee's immediate note (within `creatorCommentWindowSec` of
+// creation it is a description -- measured window: D001, 600s), or its current
+// status is in_progress/testing.
+//
+// `last_activity` is the max of: creation, dispatch, the latest work-trace
+// comment, the latest status event, and the card's updated_at -- UNLESS that
+// updated_at is the second a non-work comment was written (addKanbanComment
+// bumps updated_at on every comment, so a sweep's comment would otherwise count
+// as activity through the back door).
+//
+// `waiting` is NOT idle-measured: a waiting card waits on something external by
+// definition. It gets its own group, judged against its own deadline
+// (`due_date`): overdue ones are listed, the rest are only counted.
+export interface StuckKanbanCard {
+  id: string
+  seq?: number
+  title: string
+  status: KanbanCard['status']
+  assignee: string | null
+  last_activity: number
+  idle_days: number
+}
+
+export interface OverdueWaitingCard {
+  id: string
+  seq?: number
+  title: string
+  assignee: string | null
+  due_date: number
+  overdue_days: number
+}
+
+export interface StuckKanbanCardsResult {
+  examined: number
+  stuck: StuckKanbanCard[]
+  by_status: Record<string, { examined: number; stuck: number }>
+  waiting: { examined: number; overdue: OverdueWaitingCard[]; without_deadline: number }
+}
+
+// A comment row `m` of card `c` that is a work-trace (see above).
+const WORK_COMMENT_SQL = `m.card_id = c.id AND m.automated = 0 AND c.assignee IS NOT NULL
+                  AND lower(trim(m.author)) = lower(trim(c.assignee))`
+
+export function getStuckKanbanCards(opts: {
+  plannedDays: number
+  activeDays: number
+  creatorCommentWindowSec: number
+}): StuckKanbanCardsResult {
+  const { plannedDays, activeDays, creatorCommentWindowSec } = opts
+  const nowSec = Math.floor(Date.now() / 1000)
+  const rows = db
+    .prepare(
+      `SELECT c.rowid AS seq, c.id, c.title, c.status, c.assignee, c.created_at, c.dispatched_at, c.due_date,
+              MAX(
+                c.created_at,
+                COALESCE(c.dispatched_at, 0),
+                CASE WHEN EXISTS(SELECT 1 FROM kanban_comments m
+                                  WHERE m.card_id = c.id AND m.created_at = c.updated_at
+                                    AND NOT (${WORK_COMMENT_SQL}))
+                     THEN 0 ELSE c.updated_at END,
+                COALESCE((SELECT MAX(m.created_at) FROM kanban_comments m WHERE ${WORK_COMMENT_SQL}), 0),
+                COALESCE((SELECT MAX(created_at) FROM kanban_card_events e WHERE e.card_id = c.id), 0)
+              ) AS last_activity,
+              (
+                c.dispatched_at IS NOT NULL
+                OR EXISTS(SELECT 1 FROM kanban_card_events e WHERE e.card_id = c.id AND e.to_status != 'planned')
+                OR EXISTS(SELECT 1 FROM kanban_comments m WHERE ${WORK_COMMENT_SQL} AND m.created_at > c.created_at + ?)
+                OR c.status IN ('in_progress', 'testing')
+              ) AS started
+       FROM kanban_cards c
+       WHERE c.archived_at IS NULL AND c.status != 'done'`
+    )
+    .all(creatorCommentWindowSec) as Array<{
+    seq: number
+    id: string
+    title: string
+    status: KanbanCard['status']
+    assignee: string | null
+    created_at: number
+    dispatched_at: number | null
+    due_date: number | null
+    last_activity: number
+    started: 0 | 1
+  }>
+
+  const byStatus: Record<string, { examined: number; stuck: number }> = {}
+  const stuck: StuckKanbanCard[] = []
+  const waiting: StuckKanbanCardsResult['waiting'] = { examined: 0, overdue: [], without_deadline: 0 }
+  let examined = 0
+
+  for (const r of rows) {
+    if (r.status === 'waiting') {
+      waiting.examined++
+      if (r.due_date == null) {
+        waiting.without_deadline++
+      } else if (r.due_date < nowSec) {
+        waiting.overdue.push({
+          id: r.id,
+          seq: r.seq,
+          title: r.title,
+          assignee: r.assignee,
+          due_date: r.due_date,
+          overdue_days: Math.floor((nowSec - r.due_date) / 86400),
+        })
+      }
+      continue
+    }
+    if (!r.started) continue
+    examined++
+    const bucket = byStatus[r.status] ?? { examined: 0, stuck: 0 }
+    bucket.examined++
+    const thresholdDays = r.status === 'in_progress' || r.status === 'testing' ? activeDays : plannedDays
+    const idleSec = nowSec - r.last_activity
+    const idleDays = idleSec / 86400
+    if (idleDays >= thresholdDays) {
+      bucket.stuck++
+      stuck.push({
+        id: r.id,
+        seq: r.seq,
+        title: r.title,
+        status: r.status,
+        assignee: r.assignee,
+        last_activity: r.last_activity,
+        idle_days: Math.floor(idleDays),
+      })
+    }
+    byStatus[r.status] = bucket
+  }
+
+  return { examined, stuck, by_status: byStatus, waiting }
+}
+
 /**
  * HBDBMERET822: the heartbeat's "DB size" number is computed HERE, server-side,
  * and served over /api/kanban/heartbeat-summary -- same closure as the kanban
@@ -2908,6 +3209,19 @@ export function createAgentMessage(
   }
 }
 
+// The router's pre-delivery re-read: the CURRENT status of one row, or null if
+// the row is gone.
+//
+// Deliberately not getAgentMessage(): that is a SELECT * on a table whose
+// `content` column routinely holds thousands of characters, and the delivery
+// loop needs exactly one short string. This keeps the check to an indexed
+// primary-key lookup of a single column, so it can sit on the hot path without
+// being felt.
+export function getMessageStatus(id: number): string | null {
+  const row = db.prepare('SELECT status FROM agent_messages WHERE id = ?').get(id) as { status: string } | undefined
+  return row ? row.status : null
+}
+
 export function getPendingMessages(toAgent?: string): AgentMessage[] {
   if (toAgent) {
     return db.prepare("SELECT * FROM agent_messages WHERE status = 'pending' AND to_agent = ? ORDER BY created_at ASC")
@@ -2951,6 +3265,54 @@ export function countNewerMessagesFromSameSender(fromAgent: string, toAgent: str
     "SELECT COUNT(*) AS n FROM agent_messages WHERE from_agent = ? AND to_agent = ? AND id > ? AND status != 'failed'"
   ).get(fromAgent, toAgent, msgId) as { n: number }
   return row.n
+}
+
+// Batch form of the above for a LIST of rows: the JSON mailbox endpoints
+// annotate every row they return, up to a full page of them.
+//
+// Not a loop over countNewerMessagesFromSameSender: that function is a
+// per-partition scan (see the note above it), so calling it per row turns one
+// list read into N scans of the same few partitions -- the classic N+1, and on
+// the exact endpoint the dashboard polls. Instead we read each distinct
+// (from_agent, to_agent) partition ONCE, from the oldest id we care about
+// upward, and count in memory. Same answer, same 'failed'-excluded rule.
+export function countNewerMessagesForRows(
+  rows: { id: number; from_agent: string; to_agent: string }[],
+): Map<number, number> {
+  const out = new Map<number, number>()
+  if (!rows.length) return out
+
+  const partitions = new Map<string, { from: string; to: string; ids: number[] }>()
+  for (const r of rows) {
+    // \u0000 as the separator: an agent id cannot contain a NUL, so two
+    // different (from, to) pairs can never collide into one key.
+    const key = `${r.from_agent}\u0000${r.to_agent}`
+    const p = partitions.get(key)
+    if (p) p.ids.push(r.id)
+    else partitions.set(key, { from: r.from_agent, to: r.to_agent, ids: [r.id] })
+  }
+
+  const stmt = db.prepare(
+    "SELECT id FROM agent_messages WHERE from_agent = ? AND to_agent = ? AND id > ? AND status != 'failed' ORDER BY id"
+  )
+  for (const p of partitions.values()) {
+    const oldest = Math.min(...p.ids)
+    // Ascending ids of everything strictly newer than the oldest row of interest.
+    const newerIds = (stmt.all(p.from, p.to, oldest) as { id: number }[]).map((r) => r.id)
+    for (const id of p.ids) {
+      // How many of those are strictly newer than THIS row: binary search for
+      // the first index past `id`, the rest of the array is the answer.
+      let lo = 0
+      let hi = newerIds.length
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1
+        if (newerIds[mid] <= id) lo = mid + 1
+        else hi = mid
+      }
+      out.set(id, newerIds.length - lo)
+    }
+  }
+  return out
 }
 
 // Per-agent backlog: how many messages are waiting, and how old the oldest one
@@ -3276,10 +3638,23 @@ export interface TaskRunHistoryEntry {
   // claims and conflating them is how a finished task kept looking stuck.
   completed_at: number | null
   outcome: string | null
+  // Delivery integrity (PROMPTCSONK923): what the transcript shows arrived.
+  // null = not verified -- NOT 'intact'.
+  delivery: string | null
   duration_ms: number | null
 }
 
 const TASK_RUN_TTL_MS = 30 * 24 * 60 * 60 * 1000
+
+// Dispatch statuses that open a run (closed later by markTaskRunCompleted or
+// reconcileOpenTaskRuns). Must match reconcileOpenTaskRuns' own filter.
+// 'fired_busy' (AUDITBORITEKVESZ918) belongs here with the other two: it is a
+// DELIVERED run whose prompt went into a busy pane, so it is open until the
+// watchdog sweep closes it. Left out, appendTaskRun would stamp completed_at at
+// injection time and a run that has not even started would read as finished --
+// and the authentication path that proves a wrapper-less prompt really came from
+// the scheduler (see docs + the boritek-nelkuli skill) looks for an OPEN run.
+export const OPEN_TASK_RUN_STATUSES: ReadonlySet<string> = new Set(['fired', 'fired_late', 'fired_busy'])
 
 /**
  * Record that a run was dispatched. Returns the row id so the caller can close
@@ -3288,7 +3663,13 @@ const TASK_RUN_TTL_MS = 30 * 24 * 60 * 60 * 1000
  */
 export function appendTaskRun(name: string, agent: string, status = 'fired'): number {
   const now = Date.now()
-  const info = db.prepare('INSERT INTO task_runs (name, agent, ts, status) VALUES (?, ?, ?, ?)').run(name, agent, now, status)
+  // Only a dispatch opens a run the watchdog will later close. Every other
+  // status (lost, lost-giveup, skipped, missed, error, ...) is a terminal marker
+  // with nothing to wait for, so it is closed at insert. Left NULL, each of them
+  // read as "still running" to any open-run query, for ever: 1127 'lost' rows on
+  // the reference install, the oldest 13 days, none ever closed (SCHEDLOST915).
+  const completedAt = OPEN_TASK_RUN_STATUSES.has(status) ? null : now
+  const info = db.prepare('INSERT INTO task_runs (name, agent, ts, status, completed_at) VALUES (?, ?, ?, ?, ?)').run(name, agent, now, status, completedAt)
   // Opportunistic TTL prune: cheap indexed DELETE, keeps the table bounded.
   db.prepare('DELETE FROM task_runs WHERE ts < ?').run(now - TASK_RUN_TTL_MS)
   return Number(info.lastInsertRowid)
@@ -3302,6 +3683,18 @@ export type TaskRunOutcome = 'done' | 'abandoned' | 'lost' | 'interrupted'
  * already-closed row, so a duplicate sweep (or a reconcile racing a live sweep)
  * cannot turn a 'done' into an 'abandoned'. First writer wins.
  */
+/**
+ * Record the delivery-integrity verdict of a run (PROMPTCSONK923). Written
+ * once: a later sweep cannot overwrite the first observation. Returns true
+ * when the row was updated.
+ */
+export function setTaskRunDelivery(runId: number, verdict: string): boolean {
+  const info = db.prepare(
+    'UPDATE task_runs SET delivery = ? WHERE id = ? AND delivery IS NULL'
+  ).run(verdict, runId)
+  return info.changes > 0
+}
+
 export function markTaskRunCompleted(runId: number, outcome: TaskRunOutcome, completedAt = Date.now()): boolean {
   const info = db.prepare(
     'UPDATE task_runs SET completed_at = ?, outcome = ? WHERE id = ? AND completed_at IS NULL'
@@ -3310,21 +3703,31 @@ export function markTaskRunCompleted(runId: number, outcome: TaskRunOutcome, com
 }
 
 /**
- * Close runs that a restart orphaned.
+ * Close EVERY run that a restart orphaned (SCHEDSORZAR923).
  *
  * The watchdog's in-flight map lives in memory, so a dashboard restart loses
- * every open run it was tracking and those rows would stay open for ever --
- * re-introducing the exact "cannot tell running from finished" problem this
- * change removes, just in a smaller window. Rows older than maxAgeMs with no
- * completed_at are closed as 'interrupted': we genuinely do not know whether
- * they finished, and saying so is more useful than either optimistic 'done'
- * or alarming 'abandoned'.
+ * every open run it was tracking. Nothing else can ever close those rows: the
+ * sweep that closes rows only walks the map. Until 2026-09-23 this reconcile
+ * closed only rows OLDER than the tracking ceiling (6 h), so a run that was
+ * minutes old at the restart stayed open for ever and fed the stuck-run alert
+ * for hours (measured: hermes-soak-orszem 08:34:48, 8 minutes old at the
+ * 08:43:12 restart, still open 4 hours later). Age is not a criterion: the map
+ * is gone for ALL of them.
+ *
+ * The close stamp is completed_at = ts, a zero duration, on purpose. A "now"
+ * stamp LOOKS like a measurement and lies: the 2026-09-10 sweep produced
+ * 14-16 day "durations" that way and a threshold was later derived from them.
+ * A zero duration is obviously not a measurement, and outcome 'interrupted'
+ * says why: we genuinely do not know whether the run finished. Duration
+ * statistics filter on outcome = 'done' and never see these rows.
  */
-export function reconcileOpenTaskRuns(maxAgeMs: number, now = Date.now()): number {
+export function reconcileOpenTaskRuns(now = Date.now()): number {
   const info = db.prepare(
-    `UPDATE task_runs SET completed_at = ?, outcome = 'interrupted'
-     WHERE completed_at IS NULL AND ts < ? AND status IN ('fired', 'fired_late')`
-  ).run(now, now - maxAgeMs)
+    // 'fired_busy' (AUDITBORITEKVESZ918) is an open dispatch status like the
+    // other two, so the reconcile must be able to close it.
+    `UPDATE task_runs SET completed_at = ts, outcome = 'interrupted'
+     WHERE completed_at IS NULL AND ts <= ? AND status IN ('fired', 'fired_late', 'fired_busy')`
+  ).run(now)
   return info.changes
 }
 
@@ -3336,6 +3739,12 @@ export function reconcileOpenTaskRuns(maxAgeMs: number, now = Date.now()): numbe
  * judgement the operator can make: "running 5 min, typically finishes in 40 s"
  * says something; "running 5 min" alone does not.
  */
+/** The dispatch status of one task_runs row ('fired' | 'fired_late' | 'fired_busy' | ...), or null. */
+export function getTaskRunStatus(runId: number): string | null {
+  const row = db.prepare('SELECT status FROM task_runs WHERE id = ?').get(runId) as { status: string } | undefined
+  return row?.status ?? null
+}
+
 export function getTaskRunMedianDurationMs(name: string, minSamples = 5, limit = 50): number | null {
   const rows = db.prepare(
     `SELECT (completed_at - ts) AS d FROM task_runs
@@ -3350,8 +3759,8 @@ export function getTaskRunMedianDurationMs(name: string, minSamples = 5, limit =
 
 export function listTaskRunHistory(name: string, limit: number): TaskRunHistoryEntry[] {
   const rows = db.prepare(
-    'SELECT ts, status, agent, completed_at, outcome FROM task_runs WHERE name = ? ORDER BY ts DESC LIMIT ?'
-  ).all(name, limit) as { ts: number; status: string; agent: string; completed_at: number | null; outcome: string | null }[]
+    'SELECT ts, status, agent, completed_at, outcome, delivery FROM task_runs WHERE name = ? ORDER BY ts DESC LIMIT ?'
+  ).all(name, limit) as { ts: number; status: string; agent: string; completed_at: number | null; outcome: string | null; delivery: string | null }[]
 
   // token_usage.timestamp is in seconds; task_runs.ts is in ms -- divide by 1000
   const tokenStmt = db.prepare(
@@ -3372,6 +3781,7 @@ export function listTaskRunHistory(name: string, limit: number): TaskRunHistoryE
       tokens_est: tokenRow.total > 0 ? tokenRow.total : null,
       completed_at: completedAt,
       outcome: row.outcome ?? null,
+      delivery: row.delivery ?? null,
       duration_ms: completedAt != null ? completedAt - row.ts : null,
     }
   })
@@ -3556,10 +3966,16 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB))
 }
 
-function vectorSearch(agentId: string, queryEmbedding: number[], limit: number = 10): Memory[] {
-  const rows = db.prepare(
-    "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared')"
-  ).all(agentId) as Memory[]
+function vectorSearch(agentId: string, queryEmbedding: number[], limit: number = 10, category?: string): Memory[] {
+  // Same push-down as searchAgentMemories: this branch scores EVERY embedded
+  // row in JS, so filtering in SQL is both correct and strictly less work.
+  const rows = (category
+    ? db.prepare(
+        "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared') AND category = ?"
+      ).all(agentId, category)
+    : db.prepare(
+        "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared')"
+      ).all(agentId)) as Memory[]
 
   // A vector written by a DIFFERENT model has a different length, and the
   // cosine loop walks the QUERY's length: the missing entries read as undefined
@@ -3602,16 +4018,20 @@ export async function hybridSearch(
   query: string,
   limit: number = 10,
   trace?: HybridSearchTrace,
+  category?: string,
 ): Promise<Memory[]> {
   const k = 60 // RRF constant
 
   // FTS5 results
   const ftsTrace = { relaxed: false }
-  const ftsResults = searchAgentMemories(agentId, query, limit * 2, ftsTrace)
+  // Relaxed on purpose, and unchanged by the strict default introduced for the
+  // endpoint: the hybrid answer fuses two rankings and already reports which
+  // branch produced it, so a loose lexical hit here is labelled, not silent.
+  const ftsResults = searchAgentMemories(agentId, query, limit * 2, ftsTrace, true, category)
 
   // Vector results
   const queryEmbedding = await generateEmbedding(query)
-  const vecResults = queryEmbedding ? vectorSearch(agentId, queryEmbedding, limit * 2) : []
+  const vecResults = queryEmbedding ? vectorSearch(agentId, queryEmbedding, limit * 2, category) : []
 
   if (trace) {
     trace.ftsHits = ftsResults.length

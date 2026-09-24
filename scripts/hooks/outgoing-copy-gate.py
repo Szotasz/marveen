@@ -73,6 +73,18 @@ import sys
 # eldobasa a heredoc-taplalt VALODI kuldot vesztette volna el (FN).
 _HEREDOC = re.compile(r"(<<-?\s*'?(\w+)'?[^\n]*)\n.*?\n\2(?=\s|$)", re.S)
 _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*=")
+# KWSPLIT924: shell reserved words that put the NEXT word in command position.
+# The segmenter splits on operators only, so `if true; then sendmail x; fi`
+# gave the segment [then, sendmail, x] whose "program" was `then`: the send was
+# not recognised and the copy audit was silently skipped (same for do / else /
+# elif / { / !, and the condition after if / while / until). They are stripped
+# ONLY at the head of a segment, i.e. in command position, never as separators:
+# `echo then sendmail x` stays a single echo. `in` is deliberately NOT here: the
+# words after it are data, and `for m in sendmail msmtp; do which $m; done` must
+# stay false. `for` / `case` are not here either: the word after them is a name
+# or a subject, not a command. Mirrored in email-send-gate.mjs (CMD_POSITION_KEYWORDS);
+# the shared send-invocation-cases.json binds the two.
+_CMD_POSITION_KEYWORDS = frozenset(("if", "then", "else", "elif", "do", "while", "until", "{", "!"))
 _SENDER_PROG = re.compile(r"^(sendmail|msmtp|swaks)$", re.I)
 _SENDPY = re.compile(r"^send\.py$", re.I)
 _PYTHON = re.compile(r"^python3?$", re.I)
@@ -237,7 +249,15 @@ def _segments_tokens(cmd: str):
     lex.whitespace_split = True
     segments, cur = [], []
     for tok in lex:
-        if tok in ("|", "||", "&", "&&", ";", "(", ")", ";;", "|&"):
+        # SEGSPLIT923: shlex(punctuation_chars) returns a RUN of operator
+        # characters as ONE token, so `$(date); sendmail ...` (after the
+        # subshell mask: `;date); sendmail`) yielded the token ");" -- not in
+        # the list, so it did not split, `sendmail` landed mid-segment, and the
+        # send was NOT recognised: the copy audit was silently skipped. The JS
+        # twin (email-send-gate.mjs) said true on the same input; nothing in
+        # the conformance list covered it. A token made ONLY of operator
+        # characters is always an operator sequence, so it separates.
+        if tok in ("|", "||", "&", "&&", ";", "(", ")", ";;", "|&") or (tok and set(tok) <= set("();|&")):
             if cur:
                 segments.append(cur)
             cur = []
@@ -248,9 +268,97 @@ def _segments_tokens(cmd: str):
     return segments
 
 
-def _segment_is_send(toks, depth: int) -> bool:
-    while toks and _ENV_ASSIGN.match(toks[0]):
+# SENDWRAP924: a wrapper in front of the sender -- `sudo sendmail x`,
+# `time -p sendmail x`, `env -i sendmail x`, `timeout 10 sendmail x` -- made
+# the wrapper the "program", so the send was not recognised and the copy audit
+# was silently skipped (13 measured shapes, both copies). A wrapper is stepped
+# over WITH its own flags: a flag that takes a value consumes it, so in
+# `sudo -u sendmail true` the program is `true`, not `sendmail`.
+# name -> (short flags taking a value, long flags taking a value, positional
+# arguments before the command). An UNKNOWN long flag without `=` may or may
+# not take a value, so both readings are tried and either one being a send
+# counts: an unknown flag errs toward auditing, never toward skipping.
+# `command -v/-V` looks a name up and runs nothing. `function NAME` and
+# `coproc [NAME]` put their body in command position. Mirrored in
+# email-send-gate.mjs (WRAPPERS / commandHeads); send-invocation-cases.json
+# binds the two.
+_WRAPPERS = {
+    "time": ("fo", ("format", "output"), 0),
+    "sudo": ("ughpCUrtDRT", ("user", "group", "host", "prompt", "close-from", "other-user",
+                             "role", "type", "chdir", "chroot", "command-timeout"), 0),
+    "env": ("uCS", ("unset", "chdir", "split-string"), 0),
+    "nohup": ("", (), 0),
+    "nice": ("n", ("adjustment",), 0),
+    "exec": ("a", (), 0),
+    "command": ("", (), 0),
+    "xargs": ("ILnPsdEa", ("arg-file", "delimiter", "eof", "replace", "max-lines", "max-args",
+                           "max-procs", "max-chars", "process-slot-var"), 0),
+    "timeout": ("sk", ("signal", "kill-after"), 1),
+    # setsid: for future use and symmetry. NOT measured local traffic: the hits the
+    # first count found all sat inside quoted remote (ssh) command strings or heredoc
+    # bodies, and that pattern was not quote-aware (Marveen's correction, 2026-09-24).
+    "setsid": ("", (), 0),
+}
+_HEAD_DEPTH = 8
+
+
+def _command_heads(toks, _d: int = 0):
+    """Every token list that can be the real command of this segment, after the
+    leading assignments, command-position keywords and wrappers are stepped over."""
+    while toks and (_ENV_ASSIGN.match(toks[0]) or toks[0] in _CMD_POSITION_KEYWORDS):
         toks = toks[1:]
+    if not toks:
+        return [toks]
+    w = _basename(toks[0])
+    if _d >= _HEAD_DEPTH:
+        # Still a wrapper at the depth bound: the real command is out of sight,
+        # so it counts as a send (None) -- the bound errs toward auditing, like
+        # an unknown flag does. It used to return the wrapper itself, and nine
+        # nested wrappers + sendmail was silently skipped (Samu, #1521 review).
+        return [None] if (w in _WRAPPERS or w in ("function", "coproc")) else [toks]
+    if w == "function":
+        return _command_heads(toks[2:], _d + 1)
+    if w == "coproc":
+        return _command_heads(toks[1:], _d + 1) + _command_heads(toks[2:], _d + 1)
+    spec = _WRAPPERS.get(w)
+    if spec is None:
+        return [toks]
+    short_val, long_val, positionals = spec
+    i, starts = 1, []
+    while i < len(toks):
+        t = toks[i]
+        if t == "--":
+            i += 1
+            break
+        if t.startswith("--"):
+            if "=" not in t and t[2:] in long_val:
+                i += 2
+                continue
+            if "=" not in t:
+                starts.append(i + 2)
+            i += 1
+            continue
+        if t.startswith("-") and len(t) > 1:
+            if w == "command" and ("v" in t or "V" in t):
+                return []
+            k = next((j for j, ch in enumerate(t[1:], 1) if ch in short_val), -1)
+            i += 2 if k == len(t) - 1 else 1
+            continue
+        break
+    starts.insert(0, i)
+    heads = []
+    for s in starts:
+        heads += _command_heads(toks[s + positionals:], _d + 1)
+    return heads
+
+
+def _segment_is_send(toks, depth: int) -> bool:
+    return any(_head_is_send(h, depth) for h in _command_heads(toks))
+
+
+def _head_is_send(toks, depth: int) -> bool:
+    if toks is None:  # the depth bound was hit on a wrapper: audit it
+        return True
     if not toks:
         return False
     prog = _basename(toks[0])
@@ -287,6 +395,23 @@ def _segment_is_send(toks, depth: int) -> bool:
     if _CURLISH.match(prog) and any(_RESEND_TARGET.match(t) for t in rest):
         return _curl_resend_verdict(rest) != "read"
     return False
+
+
+def wrapper_depth_hit(cmd: str) -> bool:
+    """True when some segment is still a wrapper at the depth bound, so it was
+    counted as a send without the real command being seen (HEADDEPTH924). The
+    gate uses it to say WHY it blocks: "I could not audit the letter" is the
+    wrong reason for `nohup x9 git status` (Marveen, #1522 review)."""
+    # Only when the depth bound is the WHOLE reason: if a visible segment is a
+    # send on its own (`sendmail x; sudo x9 true`), that send is the reason,
+    # and the ordinary wording must stay (Samu, #1523 review).
+    try:
+        segments = _segments_tokens(cmd)
+    except ValueError:
+        return False
+    heads = [h for toks in segments for h in _command_heads(toks)]
+    return any(h is None for h in heads) and not any(
+        h is not None and _head_is_send(h, 0) for h in heads)
 
 
 def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
@@ -402,9 +527,27 @@ ACCENTLESS = {
 # regex latin-only, egy homoglifas szot darabokra vagna.
 UWORD = re.compile(r"[^\W\d_]+", re.UNICODE)
 
+# HOMOGLYPHMICRO924: az "irasrendszer" itt a Unicode-nev ELSO SZAVA, es ez nehany
+# jelnel nem irasrendszer, hanem a jel neve. Merve 2026-09-24: a "40 us" (MICRO
+# SIGN), a "100 m2" es "5 cm3" (SUPERSCRIPT TWO/THREE) es a "H2O" (SUBSCRIPT TWO)
+# VEGYES SZOKENT blokkolt, mert a felso/also indexes szamjegy nem \d, tehat az
+# UWORD a szoba veszi. Ezek mertekegyseg- es kepletjelolesek, egyik sem alcaz
+# latin betut (a MICRO SIGN egyetlen confusable-je a gorog mu). A lista SZANDEKOSAN
+# explicit: a "minden nem-betu semleges" szabaly tul tag volna, mert a ROMAN
+# NUMERAL ONE (U+2160) is nem-betu, es latin I-nek latszik; a KELVIN SIGN (U+212A)
+# es az ANGSTROM SIGN (U+212B) betu, es latin K/A-nak latszik -- ezek maradnak
+# fogva.
+SCRIPT_NEUTRAL = frozenset(
+    ["\u00b5", "\u00b2", "\u00b3", "\u00b9", "\u2070"]
+    + [chr(cp) for cp in range(0x2074, 0x207A)]  # felso index 4..9
+    + [chr(cp) for cp in range(0x2080, 0x208A)]  # also index 0..9
+)
+
 
 def _char_script(ch: str) -> str:
     import unicodedata
+    if ch in SCRIPT_NEUTRAL:
+        return "NEUTRAL"
     try:
         return unicodedata.name(ch).split(" ")[0]
     except ValueError:
@@ -417,9 +560,9 @@ def mixed_script_words(text: str):
     import unicodedata
     out = []
     for word in UWORD.findall(text):
-        scripts = {_char_script(ch) for ch in word}
+        scripts = {_char_script(ch) for ch in word} - {"NEUTRAL"}
         if "LATIN" in scripts and len(scripts) > 1:
-            bad = next(ch for ch in word if _char_script(ch) != "LATIN")
+            bad = next(ch for ch in word if _char_script(ch) not in ("LATIN", "NEUTRAL"))
             try:
                 bad_name = unicodedata.name(bad)
             except ValueError:
@@ -663,25 +806,52 @@ def _hit_context(prose: str, pos: int, length: int) -> str:
 # ("8:09-es", "2-es", "17:06-kor") a szobontonal puszta "es"/"kor" tokenne esik
 # szet, amit a szotar hibanak lat -- pedig ott toldalek, nem szo. A javitas nem a szotarbol
 # vesz ki (az elrontana a valodi talalatokat is), hanem a technikai regiokat
-# vagja ki a vizsgalt szovegbol. A gondolatjel- es nev-ellenorzes NEM ezen fut.
-TECHNICAL = re.compile(
-    r"""https?://\S+                # URL
+# vagja ki a vizsgalt szovegbol. A gondolatjel-ellenorzes NEM ezen fut (az a nyers
+# szovegen mer), a nev-ellenorzes pedig a SAJAT, szukebb maszkjan -- lasd NAME_MASK.
+#
+# GATENEVSTRIP921 (kulso bejelentes 2026-09-21, sajat visszameres 2026-09-22):
+# KET SZABALY, AMI UGYANARRA A SZOVEGRE NEZ, NEM UGYANAZT A MASZKOT AKARJA.
+# A bejelentes az volt, hogy a nev-szabaly a NYERS szovegen fut, ezert URL-ben,
+# kod-spanban vagy utvonalban allo nevalak is megallitja a teljes uzenetet
+# (harom ilyen hamis pozitiv reprodukalva). A kezenfekvo javitas -- a nev-szabaly
+# athelyezese a strip_technical UTANRA -- viszont LYUKAT NYIT, mert az alabbi ket
+# alternativa a NEVET magat vagja ki a szovegbol a toldalekaval egyutt:
+#   "Nev-val" / "Nev-nak" / "Nev-fele"  ->  a tulajdonnev+toldalek ag eszi meg
+# Merve a sajat mintankon (kartya-komment 17237): harom prozai alakbol harom tunt
+# el a strip utan, vagyis csendben ATMENTEK volna. Ezert a nev-szabaly a kozos,
+# egyertelmuen technikai regiokat kapja meg maszknak (_TECH_COMMON), a toldalek-
+# es azonosito-agakat NEM. Ezek az agak a token- es ekezet-vizsgalatnak kellenek,
+# ahol epp az a dolguk, hogy a toldalek-toredeket ne nezzek onallo szonak.
+#
+# A KET MASZK EGY FORRASBOL EPUL, hogy ne drifteljenek szet: ha valaki uj
+# technikai regiot vesz fel, a _TECH_COMMON-ba irva MINDKET ellenorzes latja.
+_TECH_COMMON = r"""
+        https?://\S+                # URL
       | [\w.+-]+@[\w-]+\.[\w.]+     # email
       | `[^`]*`                     # kod-span
       | \b\w+(?:_\w+)+\b            # snake_case azonosito
-      | \b\w+\.[A-Za-z]{2,10}\b     # fajlnev / domain (video.mp4, marveen.io)
+      | \b\w+\.[A-Za-z]{2,10}(?:-[a-záéíóöőúüű]{1,4})?\b   # fajlnev / domain, magyar toldalekkal (video.mp4, marveen.io, Mail.app-ot)
       | \b[\w-]*/[\w/-]+            # utvonal / slug
-      | \d+(?:[.:,]\d+)*-[^\W\d_]+   # szam + magyar toldalek (8:09-es, 2-es, 17:06-kor)
+"""
+# CSAK a token-/ekezet-vizsgalat vaghatja ki ezeket: mindharom ag kepes egy
+# tulajdonnevet a toldalekaval egyutt elnyelni, ezert a nev-szabaly nem kapja meg.
+_TECH_SUFFIXED = r"""
+        \d+(?:[.:,]\d+)*-[^\W\d_]+   # szam + magyar toldalek (8:09-es, 2-es, 17:06-kor)
       | \b[A-ZÁÉÍÓÖŐÚÜŰ][^\W\d_]*-[a-záéíóöőúüű]{1,4}\b   # tulajdonnev + toldalek (Chrome-ot, Drive-ra)
       | \blevel\s+\d+\b            # angol "level 1" (autonomia-szint, log-szint)
       | \b[a-z]+(?:-[a-z]+){1,4}\b    # kotojeles kisbetus azonosito (feladat- es skill-nevek)
-    """,
-    re.X,
-)
+"""
+TECHNICAL = re.compile(_TECH_COMMON + "|" + _TECH_SUFFIXED, re.X)
+NAME_MASK = re.compile(_TECH_COMMON, re.X)
 
 
 def strip_technical(text: str) -> str:
     return TECHNICAL.sub(" ", text)
+
+
+def strip_for_name(text: str) -> str:
+    """A nev-ellenorzes maszkja: csak az egyertelmuen technikai regiok esnek ki."""
+    return NAME_MASK.sub(" ", text)
 
 
 def is_hungarian(text: str) -> bool:
@@ -741,19 +911,146 @@ except Exception as _extract_exc:  # noqa: BLE001 -- deliberate fail-closed stub
 MDV2_ESCAPE = re.compile(r"\\([^\w\s])")
 
 
-def collect_telegram_body(tool_input: dict) -> str:
+# --- Human-facing HTTP channels via curl (GATEHTTP924) ------------------------
+# The Bash arm recognised exactly one kind of send: email. Every other outbound
+# path that a human reads, and that an agent can reach with a plain curl, left
+# the machine with no audit at all. Measured 2026-09-24 with a synthetic em-dash
+# payload: a comment to the community API, a post to Discord's REST API and a
+# Telegram Bot API sendMessage all passed exit 0, while the SAME text through
+# the Telegram reply tool was blocked. The gate was not failing on these paths,
+# it simply had no door there.
+#
+# Covered here, each only when the method is a SEND (POST/PUT/PATCH or an
+# implicit POST from a data flag; GET/HEAD reads pass untouched):
+#   - the community agent API (api.marveen.io): feed posts, comments, mention
+#     replies. Written from a vault-held base URL in practice ($B/feed/...), so
+#     the path shape counts even when the host is an unresolved variable;
+#   - Discord REST: .../channels/<id>/messages[/<id>];
+#   - Telegram Bot API: .../bot<token>/send*|edit*.
+# NOT covered, deliberately: /api/messages (inter-agent and federation). That
+# channel is agent-to-agent, its traffic is written without accents, and it
+# already has its own homoglyph-only gate (INTERAGENTHOMOGLIF923) above.
+#
+# Failure direction follows the email branch, not the Telegram one: a body the
+# hook cannot read BLOCKS. These are deferrable writes (a community post is
+# even queued for owner approval), and a public text that skipped the audit
+# costs more than a retry with a readable body. An INTERNAL error still passes
+# loudly, like every channel arm.
+_HTTP_CHANNEL_TARGETS = (
+    ("marveen.io", re.compile(
+        r"^((https?://)?([^/\s]*\.)?api\.marveen\.io|\$\{?\w+\}?)(/[^\s]*)?"
+        r"/(feed/posts(/[^/\s]+/comments)?|mentions/[^/\s]+/reply)/?(\?\S*)?$", re.I)),
+    ("Discord API", re.compile(
+        r"^(https?://)?([^/\s]*\.)?discord(app)?\.com/api(/v\d+)?/channels/[^/\s]+/messages(/[^/\s]+)?/?(\?\S*)?$",
+        re.I)),
+    ("Telegram API", re.compile(
+        r"^(https?://)?api\.telegram\.org/bot[^/\s]+/(send|edit)\w*/?(\?\S*)?$", re.I)),
+)
+# Only the prose a human reads. ids, chat ids, parse modes and urls stay out:
+# auditing them would block on tokens nobody reads as text.
+_HTTP_TEXT_FIELDS = ("title", "content", "text", "caption", "message")
+
+
+def _http_channel_segment(cmd: str):
+    """(label, tokens) of the first curl segment that SENDS to a covered
+    human-facing HTTP channel, or (None, None)."""
+    try:
+        segments = _segments_tokens(cmd)
+    except ValueError:
+        return None, None
+    for toks in segments:
+        while toks and _ENV_ASSIGN.match(toks[0]):
+            toks = toks[1:]
+        if not toks or not _CURLISH.match(_basename(toks[0])):
+            continue
+        rest = toks[1:]
+        for label, target in _HTTP_CHANNEL_TARGETS:
+            if any(target.match(t) for t in rest):
+                if _curl_resend_verdict(rest) == "read":
+                    return None, None  # a GET of the feed: nothing is sent
+                return label, toks
+    return None, None
+
+
+def _http_channel_text(raw: str) -> str:
+    """The human-read prose of a channel body: JSON object fields, or the same
+    fields form-encoded (Telegram accepts both). Unknown shape: the raw body."""
+    try:
+        obj = json.loads(raw)
+    except ValueError:
+        obj = None
+    if isinstance(obj, dict):
+        return "\n".join(str(obj[f]) for f in _HTTP_TEXT_FIELDS
+                         if isinstance(obj.get(f), str) and obj.get(f))
+    if obj is None:
+        from urllib.parse import parse_qs
+        form = parse_qs(raw, keep_blank_values=False)
+        got = [v for f in _HTTP_TEXT_FIELDS for v in form.get(f, [])]
+        if got:
+            return "\n".join(got)
+    return raw
+
+
+def http_channel_gate(cmd: str) -> None:
+    """Exit 2 on a copy problem or an unreadable body, exit 0 when clean.
+    RETURNS (does not exit) when the command is not a covered HTTP send, so
+    the caller's other arms still run."""
+    label, toks = _http_channel_segment(cmd)
+    if label is None:
+        return
+    try:
+        raw, unreadable = _curl_payload_raw(cmd, toks, all_flags=True)
+        if unreadable:
+            sys.stderr.write(
+                f"KIMENO-SZOVEG KAPU ({label}): TILTVA, mert a kimeno szoveget nem tudtam "
+                f"megvizsgalni.\nOk: {unreadable}.\n\n"
+                "Ez szandekosan fail-closed: egy vizsgalhatatlan kuldes pont a kaput utne ki.\n"
+                "Vizsgalhato alak: idezett heredoc (--data-binary @- <<'JSON'), "
+                "@/abszolut/ut.json, vagy inline -d '...' behelyettesites nelkul.\n")
+            sys.exit(2)
+        if raw is None:
+            sys.exit(0)  # a bare POST: nothing of ours is being sent
+        text = _http_channel_text(raw)
+        if not text.strip():
+            sys.exit(0)
+        problems = audit(text)
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-open-loud
+        warn = f"outgoing-copy-gate: HTTP-csatorna-ag ({label}) belso hiba, FAIL-OPEN atengedes: {exc!r}"
+        sys.stderr.write(warn + "\n")
+        _gate_log(warn)
+        sys.exit(0)
+    if problems:
+        sys.stderr.write(
+            f"KIMENO-SZOVEG KAPU ({label}): TILTVA, az uzenet nem mehet ki igy.\n\n"
+            + "\n".join(f"  - {p}" for p in problems)
+            + "\n\nJavitsd a szoveget es kuldd ujra.\n")
+        sys.exit(2)
+    sys.exit(0)
+
+
+def collect_channel_body(tool_input: dict, unescape_mdv2: bool) -> str:
+    """Text of a channel reply. GATEDISCORD905: both the Telegram and the
+    Discord reply tool put the prose in `text` (schema-checked, not guessed);
+    `caption`/`message` stay in the list because they cost nothing and a
+    missed field here is a SILENT ZERO -- empty text exits 0, i.e. fail-open.
+    Only Telegram's MarkdownV2 escapes get undone: on Discord a backslash is
+    a literal the author wrote, not gate noise."""
     fields = ("text", "caption", "message")
     got = [str(tool_input[f]) for f in fields if tool_input.get(f)]
-    return MDV2_ESCAPE.sub(r"\1", "\n".join(got))
+    joined = "\n".join(got)
+    return MDV2_ESCAPE.sub(r"\1", joined) if unescape_mdv2 else joined
 
 
-def telegram_gate(tool_input: dict) -> None:
-    """Audit a Telegram reply. FAIL-OPEN on any internal error (exit 0 + loud
-    log): email is deferrable, but Telegram is the owner's ONLY supervision
-    channel -- a gate crash that silences it costs more than a slipped accent.
-    A FOUND problem still blocks (exit 2): that is the gate's whole point."""
+def channel_gate(tool_input: dict, label: str, unescape_mdv2: bool) -> None:
+    """Audit a channel reply (Telegram or Discord). FAIL-OPEN on any internal
+    error (exit 0 + loud log): email is deferrable, but these are the owner's
+    ONLY supervision channels -- a gate crash that silences one costs more
+    than a slipped accent. A FOUND problem still blocks (exit 2): that is the
+    gate's whole point."""
     try:
-        text = collect_telegram_body(tool_input)
+        text = collect_channel_body(tool_input, unescape_mdv2)
         if not text.strip():
             sys.exit(0)  # files-only reply or empty text: nothing to audit
         # GATECOPY827: a masolhato kodblokk CSAK markdownv2 modban lesz
@@ -768,7 +1065,16 @@ def telegram_gate(tool_input: dict) -> None:
         # MDV2_ESCAPE feloldas nem erinti.
         raw = "\n".join(str(tool_input[f]) for f in ("text", "caption", "message")
                         if tool_input.get(f))
-        if "```" in raw and str(tool_input.get("format", "")).lower() != "markdownv2":
+        # This rule is TELEGRAM-SPECIFIC: the copy button depends on MarkdownV2
+        # parsing. Discord renders a triple-backtick block natively in a plain
+        # message and its reply tool has no markdownv2 format value at all, so on
+        # that branch the rule would block a problem that does not exist -- and,
+        # before the label existed, would have named the wrong channel while doing
+        # it. The condition therefore filters on the label explicitly, not on
+        # unescape_mdv2: those two only happen to coincide today, and the intent
+        # here is the channel.
+        if (label == "Telegram" and "```" in raw
+                and str(tool_input.get("format", "")).lower() != "markdownv2"):
             sys.stderr.write(
                 "KIMENO-SZOVEG KAPU (Telegram): TILTVA, a kodblokk nem lenne masolhato.\n\n"
                 "  - A szoveg harom backtickes kodblokkot tartalmaz, de a hivasban\n"
@@ -783,19 +1089,19 @@ def telegram_gate(tool_input: dict) -> None:
     except SystemExit:
         raise
     except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-open path
-        warn = f"outgoing-copy-gate: TELEGRAM-ag belso hiba, FAIL-OPEN atengedes: {exc!r}"
+        warn = f"outgoing-copy-gate: {label.upper()}-ag belso hiba, FAIL-OPEN atengedes: {exc!r}"
         sys.stderr.write(warn + "\n")
         _gate_log(warn)
         sys.exit(0)
     if problems:
         sys.stderr.write(
-            "KIMENO-SZOVEG KAPU (Telegram): TILTVA, az uzenet nem mehet ki igy.\n\n"
+            f"KIMENO-SZOVEG KAPU ({label}): TILTVA, az uzenet nem mehet ki igy.\n\n"
             + "\n".join(f"  - {p}" for p in problems)
             + "\n\nJavitsd a szoveget es kuldd ujra (a MarkdownV2 escape-eket a kapu "
               "az ellenorzes elott feloldja, azok nem szamitanak hibanak).\n"
         )
         sys.exit(2)
-    # GATEPERSIST816(2): a hianyzo nev-szabaly a telegram-agon fail-open marad,
+    # GATEPERSIST816(2): a hianyzo nev-szabaly a csatorna-agon fail-open marad,
     # de a figyelmeztetes ODA megy, ahol a session tenyleg latja -- a hook
     # stdout systemMessage mezoje a futo sessionben jelenik meg, nem egy
     # logfajlban, amit senki nem olvas.
@@ -827,7 +1133,11 @@ def audit(text: str):
         problems.append(
             f"GONDOLATJEL (em dash, U+2014) {plain.count(EM_DASH)} helyen -- allo szabaly, soha nem mehet ki."
         )
-    bad = BAD_NAME.search(plain) if BAD_NAME else None
+    # GATENEVSTRIP921: a nev-szabaly a SAJAT maszkjan fut (NAME_MASK), nem a
+    # nyers szovegen es nem a strip_technical kimeneten -- lasd a NAME_MASK
+    # feletti indoklast. Igy a kod-spanban/URL-ben allo nevalak atmegy, a
+    # toldalekos prozai alak ("Nev-val") viszont tovabbra is bukik.
+    bad = BAD_NAME.search(strip_for_name(plain)) if BAD_NAME else None
     if bad:
         problems.append(
             f"HELYTELEN NEV: {bad.group(0)!r} -- a lokal nev-szabaly (store/outgoing-copy-gate-rules.json) szerint helytelen alak; a helyes irast a szabaly-fajl correction mezoje adja." + _name_correction()
@@ -897,11 +1207,181 @@ MANAGE_EMAIL_OUTBOUND_OPS = {"send", "reply", "replyall", "forward"}
 # Dedicated (non-multiplexed) outbound tools: the draft tools and the Gmail
 # connector's three separate send-shaped tools. Kept in step with the matcher
 # this hook is registered under in settings.json.
+# GMAILCONNECTOR914: the server segment is NOT always exactly "gmail" -- the
+# claude.ai connector is mcp__claude_ai_Gmail__send_message, one underscore
+# before Gmail, and `(^|__)gmail__` never matched it, so its sends fell through
+# to sys.exit(0) with no audit (measured 2026-08-30, 2026-09-08). Anything
+# ending in "gmail__<send-shaped tool>" is a send now, whatever the prefix.
 EMAIL_TOOL_RE = re.compile(
     r"(send_email|create_draft|draft_email|update_draft"
-    r"|(^|__)gmail__(reply|reply_all|send_message|forward)$)",
+    r"|gmail__(reply|reply_all|send_message|forward)$)",
     re.I,
 )
+
+
+# --- Inter-agent messages: HOMOGLYPH-ONLY (INTERAGENTHOMOGLIF923) -----------
+# `curl .../api/messages` is NOT an email send (send-invocation-cases.json pins
+# it expected:false, and that stays), so none of the copy rules below ever ran
+# on it: no accent audit, no name rule, no em dash -- correctly, because the
+# fleet's internal traffic is written WITHOUT accents and the full audit would
+# block most of it. One dimension is added here and nothing else: a MIXED-SCRIPT
+# word (homoglyph). The fleet coordinates by card ids, agent names and file
+# paths passed in messages; a Cyrillic 'a' in one of those does not look wrong,
+# it silently points at something that does not exist. Measured 2026-09-16:
+# four such characters in the lead agent's own messages, caught only by a
+# manual scan.
+#
+# FAILURE DIRECTION IS THE OPPOSITE OF THE EMAIL BRANCH (Marveen, msg 28870):
+#   - homoglyph FOUND           -> BLOCK (exit 2), naming the word and the char;
+#   - body NOT INTERPRETABLE     -> PASS, with a loud named systemMessage and a
+#     (unreadable path, $-path,     gate-log line. On this channel a false block
+#     run-time substitution,        mutes an agent (the fleet's coordination
+#     non-object JSON, unknown      backbone); the threat is our own agent
+#     shape)                        emitting a lookalike by accident, not an
+#                                   attacker, so fail-open-loud is the right side.
+# All three shapes are covered, or the concept is not closed: quoted heredoc
+# (`--data-binary @- <<'JSON'`), `@file`, and inline `-d '...'`.
+_IA_TARGET = re.compile(r"^(https?://)?[^/\s]*/api/messages/?(\?\S*)?$", re.I)
+_IA_DATA_FLAGS = ("-d", "--data", "--data-binary", "--data-raw", "--data-ascii", "--json")
+_IA_SUBST = re.compile(r"\$\(|`|\$\{?\w")
+
+
+def _ia_segment(cmd: str):
+    """Tokens of the curl segment that POSTs to /api/messages, or None."""
+    try:
+        segments = _segments_tokens(cmd)
+    except ValueError:
+        return None
+    for toks in segments:
+        while toks and _ENV_ASSIGN.match(toks[0]):
+            toks = toks[1:]
+        if toks and _CURLISH.match(_basename(toks[0])) and any(_IA_TARGET.match(t) for t in toks[1:]):
+            return toks
+    return None
+
+
+# The fleet's everyday form is `S=/abs/scratch; ... --data-binary @$S/m.json`:
+# the variable is assigned a LITERAL earlier in the SAME command string. That
+# is deterministic, so it is resolved here instead of warned about. Measured
+# 2026-09-23 over 1153 real inter-agent POSTs: without this, most of the
+# warnings were exactly this shape, and a warning that fires on half the
+# traffic is noise. Only a plain literal value counts (no quotes-with-$,
+# no substitution); anything else stays unresolved and is warned about.
+_IA_ASSIGN = re.compile(r"""(?:^|[;&|\n(]\s*|\s)(?:export\s+)?([A-Za-z_]\w*)=(?:"([^"$`]*)"|'([^']*)'|([^\s;&|$`'"()]+))""")
+
+
+def _ia_resolve_local_vars(cmd: str, ref: str) -> str:
+    local = {}
+    for m in _IA_ASSIGN.finditer(cmd):
+        local[m.group(1)] = next(g for g in m.groups()[1:] if g is not None)
+    def sub(m):
+        name = m.group(1) or m.group(2)
+        return local.get(name, m.group(0))
+    return re.sub(r"\$\{(\w+)\}|\$(\w+)", sub, ref)
+
+
+def _curl_payload_raw(cmd: str, toks, all_flags: bool = False):
+    """(raw_body, unreadable_reason) of a curl data flag, from the three shapes
+    (inline -d, @file, quoted heredoc via @-). raw_body is None when the call
+    carries no data flag at all. Shared by the inter-agent homoglyph gate and
+    the HTTP channel gate (GATEHTTP924), so both read the SAME body the same way.
+    all_flags: curl joins repeated -d values with '&' (a form body such as
+    `-d chat_id=1 -d text=...`); the HTTP gate needs every part, or the text
+    field hides behind the first flag. The inter-agent gate keeps first-only."""
+    raw = None
+    parts = []
+    for i, t in enumerate(toks):
+        val = None
+        for f in _IA_DATA_FLAGS:
+            if t == f and i + 1 < len(toks):
+                val = toks[i + 1]
+            elif t.startswith(f + "="):
+                val = t[len(f) + 1:]
+            elif f == "-d" and t.startswith("-d") and len(t) > 2 and not t.startswith("--"):
+                val = t[2:]
+            if val is not None:
+                is_raw_flag = f == "--data-raw"
+                break
+        if val is None:
+            continue
+        if val.startswith("@") and not is_raw_flag:
+            ref = val[1:]
+            if ref == "-":
+                m = re.search(r"<<-?\s*'?(\w+)'?[^\n]*\n(.*?)\n\1(?=\s|$)", cmd, re.S)
+                if not m:
+                    return None, "a torzs stdin-rol jon (@-), heredoc nelkul"
+                if not re.search(r"<<-?\s*'", cmd) and _IA_SUBST.search(m.group(2)):
+                    return None, "a heredoc NEM idezett, es shell-behelyettesitest tartalmaz"
+                raw = m.group(2)
+            else:
+                path = os.path.expandvars(os.path.expanduser(_ia_resolve_local_vars(cmd, ref)))
+                if "$" in path:
+                    return None, f"a torzs fel nem oldhato @utvonalrol jon (@{ref})"
+                try:
+                    with open(path, encoding="utf-8", errors="replace") as fh:
+                        raw = fh.read()
+                except OSError as exc:
+                    return None, f"a torzs-fajl (@{ref}) nem olvashato ({exc.strerror or exc})"
+        else:
+            if _IA_SUBST.search(val):
+                return None, "az inline torzs shell-behelyettesitest tartalmaz, futasidoben dol el"
+            raw = val
+        if not all_flags:
+            break
+        parts.append(raw)
+    if all_flags and parts:
+        return "&".join(parts), None
+    return raw, None
+
+
+def _ia_payload(cmd: str, toks):
+    """(text, unreadable_reason) of the message body, from the three shapes."""
+    raw, unreadable = _curl_payload_raw(cmd, toks)
+    if unreadable:
+        return None, unreadable
+    if raw is None:
+        # No data flag at all: a GET of the queue (the most frequent call on this
+        # path) or a bare POST. Nothing is being SENT, so nothing to scan and
+        # nothing to warn about -- a warning here would fire on every queue read.
+        return "", None
+    try:
+        obj = json.loads(raw)
+    except ValueError:
+        return None, "a torzs nem ervenyes JSON"
+    if not isinstance(obj, dict):
+        return None, "a torzs JSON, de nem objektum"
+    # EVERY string field: a lookalike in `to` misroutes as silently as one in
+    # `content` misleads.
+    strings = [str(v) for v in obj.values() if isinstance(v, str)]
+    return "\n".join(strings), None
+
+
+def inter_agent_homoglyph_gate(cmd: str) -> None:
+    """Exit 2 on a homoglyph, exit 0 otherwise (loudly when unreadable).
+    Only called for a command that is NOT an email send."""
+    toks = _ia_segment(cmd)
+    if toks is None:
+        sys.exit(0)
+    text, unreadable = _ia_payload(cmd, toks)
+    if unreadable:
+        msg = ("outgoing-copy-gate (inter-agent, homoglifa): a torzs NEM vizsgalhato -- "
+               f"{unreadable}. Az uzenet ATMENT, homoglifa-ellenorzes NELKUL. "
+               "Vizsgalhato alak: idezett heredoc (--data-binary @- <<'JSON') vagy @/abszolut/ut.json.")
+        _gate_log(msg)
+        print(json.dumps({"systemMessage": msg}))
+        sys.exit(0)
+    mixed = mixed_script_words(text)
+    if mixed:
+        shown = "; ".join(f"{w!r} -- benne {name}" for w, _c, name in mixed[:5])
+        more = f" (+{len(mixed) - 5} tovabbi)" if len(mixed) > 5 else ""
+        sys.stderr.write(
+            "KIMENO-SZOVEG KAPU (inter-agent): TILTVA -- VEGYES IRASRENDSZERU SZO (homoglifa), "
+            f"{len(mixed)} db: {shown}{more}.\n"
+            "Egy kartya-azonositoban, agens-nevben vagy utvonalban ez neman felreiranyit. "
+            "Javitsd a szoveget es kuldd ujra. (Itt CSAK a homoglifa fut, ekezet- es copy-szabaly nem.)\n"
+        )
+        sys.exit(2)
+    sys.exit(0)
 
 
 def main():
@@ -945,7 +1425,12 @@ def main():
     # one). The dispatch must recognise BOTH, or the edit half of the matcher
     # invokes a hook that exits 0 without auditing anything.
     if re.search(r"telegram.*__(reply|edit_message)$", tool, re.I):
-        telegram_gate(tool_input)  # exits; never falls through
+        channel_gate(tool_input, "Telegram", unescape_mdv2=True)  # exits; never falls through
+    if re.search(r"discord.*__(reply|edit_message)$", tool, re.I):
+        # GATEDISCORD905: an install whose owner DM and every working thread run
+        # on Discord had no gate on that path at all -- same audit, no MarkdownV2
+        # unescaping (on Discord a backslash is a literal the author typed).
+        channel_gate(tool_input, "Discord", unescape_mdv2=False)  # exits; never falls through
     # COPYGATEMATCHER904: the hook is REGISTERED for manage_email, create_draft,
     # update_draft and the Gmail connector's reply/send_message/forward tools,
     # but this dispatch only ever recognised a tool NAME containing
@@ -971,12 +1456,24 @@ def main():
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
         if not is_send_invocation(cmd):
-            sys.exit(0)
+            http_channel_gate(cmd)  # exits if it is a human-facing HTTP send; else returns
+            inter_agent_homoglyph_gate(cmd)  # exits; a no-op pass for anything else
         text, unreadable = collect_bash_body(cmd)
     else:
         sys.exit(0)
 
     if unreadable or not text.strip():
+        if tool == "Bash" and wrapper_depth_hit(cmd):
+            sys.stderr.write(
+                "KIMENO-SZOVEG KAPU: TILTVA, mert a parancs valodi fejet nem latom.\n"
+                f"Ok: a parancs a burkolo-korlatnal ({_HEAD_DEPTH} egymasba agyazott burkolo: sudo, "
+                "time, env, nohup, nice, timeout...) is meg burkolo, tehat nem tudom eldonteni, "
+                "hogy levelkuldes-e. Ez szandekosan fail-closed.\n\n"
+                f"Ha ez NEM levelkuldes: csokkentsd a burkolok szamat {_HEAD_DEPTH} vagy kevesebb ala.\n"
+                "Ha levelkuldes: tedd vizsgalhatova -- ABSZOLUT utvonalu stdin-atiranyitas "
+                "(< /teljes/ut/body.txt), vagy --body-ban atadott szoveg.\n"
+            )
+            sys.exit(2)
         reason = unreadable or "a hook nem talalt vizsgalhato szoveget a hivasban"
         sys.stderr.write(
             "KIMENO-SZOVEG KAPU: TILTVA, mert a levelet nem tudtam megvizsgalni.\n"
@@ -1037,8 +1534,8 @@ if __name__ == "__main__":
         # An unhandled crash exits 1, and PreToolUse treats 1 as NON-blocking,
         # so the send would run UNCHECKED -- the exact opposite of the email
         # path's fail-closed contract (e.g. a non-dict tool_input used to
-        # AttributeError inside collect_mcp_body). The telegram path never
-        # reaches here: telegram_gate() catches its own errors and exits 0
+        # AttributeError inside collect_mcp_body). The channel paths never
+        # reach here: channel_gate() catches its own errors and exits 0
         # (fail-open by design), so this net only ever catches the email/Bash
         # send paths, where blocking is the safe failure mode.
         sys.stderr.write(
