@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Stop hook — two jobs, mirroring telegram_progress_clear.py:
+Stop hook - two jobs, mirroring telegram_progress_clear.py:
 
   1) CLEAR: remove the "✍️ Dolgozom rajta…" placeholder(s) that
      slack_progress.py posted for this session. Under normal operation the
@@ -46,7 +46,7 @@ TEXTS = {
     "hu": {"instruction": (
         "KÖTELEZŐ: erre a Slack-üzenetre még NEM küldtél választ a Slack "
         "`reply` tool-lal (chat_id=%s). A CLI/transzkript szöveget a felhasználó a "
-        "Slacken NEM látja — onnan nézve csak befagytál. Küldd el a válaszodat "
+        "Slacken NEM látja - onnan nézve csak befagytál. Küldd el a válaszodat "
         "MOST a `reply` tool-lal a megfelelő chat_id-vel (és thread_ts-szel, ha "
         "volt). Ha tényleg nincs érdemi válasz, akkor is küldj egy rövid "
         "visszaigazolást."
@@ -54,7 +54,7 @@ TEXTS = {
     "en": {"instruction": (
         "MANDATORY: you have NOT yet answered this Slack message with the Slack "
         "`reply` tool (chat_id=%s). The user does NOT see CLI/transcript text on "
-        "Slack — from their side you simply froze. Send your answer NOW with the "
+        "Slack - from their side you simply froze. Send your answer NOW with the "
         "`reply` tool using the right chat_id (and thread_ts, if there was one). "
         "If there is genuinely nothing substantive to say, still send a short "
         "acknowledgement."

@@ -8,7 +8,7 @@ the Slack channel plugin** and survives plugin updates.
 
 ## Why
 
-Slack's modern Web API (`chat.postMessage`) has no bot "typing…" bubble —
+Slack's modern Web API (`chat.postMessage`) has no bot "typing…" bubble -
 that only ever existed on the legacy RTM API (a `type: typing` websocket
 frame), which new Slack apps have not been allowed to use for years. So the
 official Slack channel plugin cannot show one either. The fix is the exact
@@ -30,7 +30,7 @@ place) or `chat.delete` + a fresh `chat.postMessage`. This deliberately uses
 **delete + repost for the real answer**, not edit-in-place:
 
 - A `chat.update` edit does **not** push a notification in Slack (silent,
-  no highlight/badge) — using it for the final answer would mean the user's
+  no highlight/badge) - using it for the final answer would mean the user's
   answer arrives invisibly, same failure mode the Telegram doc rejected the
   "typing…" action for (looks fine in the log, useless in practice).
 - `chat.postMessage` for the real answer always lands as a normal, notifying
@@ -55,11 +55,11 @@ So each piece stays correct per-agent.
 | `slack_progress_clear.py` | `Stop` hook | Delete any placeholder still recorded at turn end, **and enforce delivery** (same one-nudge-then-fallback contract as the Telegram Stop hook). `replied` entries are outside the enforcement; their delete is only retried. |
 | `slack_progress_watchdog.py` | launchd / systemd, ~60s | Scan every agent's per-agent state dir; for an orphan (agent down + placeholder old, OR a hung reply-tool call, OR a generic wedged backstop) either deliver the recovered answer for real, or rewrite the placeholder into the error text via `chat.update`. For a `replied` entry: retry the delete on every tick, deliver nothing. |
 
-### Why the thread is part of the key — and why loosely
+### Why the thread is part of the key - and why loosely
 
 Telegram's `chat_id` already identifies a single DM or group, so matching on
 it alone is precise. A Slack **channel** can have several concurrent threads
-in flight, each with its own placeholder — matching on `chat_id` alone in the
+in flight, each with its own placeholder - matching on `chat_id` alone in the
 reply-clear hook could delete the wrong thread's placeholder. So the thread
 takes part in the key.
 
@@ -76,12 +76,12 @@ incident).
 The hook therefore filters by `chat_id` first, then narrows by thread in
 three tiers, taking the first non-empty one:
 
-1. **exact** — same thread, or threaded under the inbound message
+1. **exact** - same thread, or threaded under the inbound message
    (`thread_ts` equals the entry's `src_ts`, now recorded by
    `slack_progress.py`);
-2. **loose** — either side is top-level (`""` and missing both normalise to
+2. **loose** - either side is top-level (`""` and missing both normalise to
    `None`);
-3. **fallback** — nothing matched but this chat has pending placeholders; a
+3. **fallback** - nothing matched but this chat has pending placeholders; a
    reply to the chat is still the answer to that turn.
 
 The asymmetry is deliberate. Clearing one placeholder too eagerly removes a
@@ -154,7 +154,7 @@ answer is delivered as a guaranteed fallback via `chat.postMessage`.
   that posted the placeholder (anchored on the timestamped user prompt at the
   marker's mtime), never from a later internal turn's text.
 - **Already delivered**: if that round's own `reply` call did return a result,
-  the marker is leftover bookkeeping — the placeholder is cleared silently,
+  the marker is leftover bookkeeping - the placeholder is cleared silently,
   nothing is resent.
 
 ### Delivery failures (Slack-specific, not shared with Telegram)
@@ -212,14 +212,14 @@ It:
 
 0. **Provider gate.** Reads `CHANNEL_PROVIDER` from the install `.env`
    (resolved like `src/channel-provider.ts`: exact known value, anything
-   else — empty, `none`, a typo — means `telegram`). If it is not `slack`,
+   else - empty, `none`, a typo - means `telegram`). If it is not `slack`,
    the installer retires any leftover Slack plumbing and exits with that
    retire's status (0 unless it failed) without touching anything else. The
    Telegram installer has the mirror gate.
    This is what makes the pair order-independent under `sync-hooks.sh`,
    which runs *every* installer on *every* update, Slack first and Telegram
    last: without the gate a Slack install ended each update with both hook
-   sets wired and both watchdog timers enabled — the Telegram installer
+   sets wired and both watchdog timers enabled - the Telegram installer
    re-wired its hooks right after the Slack one had retired them (its own
    retire of Slack being refused by the active-provider guard).
 1. Retires the Telegram progress plumbing (`scripts/retire-progress-watchdog.sh telegram`)
@@ -230,7 +230,7 @@ It:
    never silent* below.
 2. Installs the watchdog as a **launchd** agent (macOS) or **systemd** user
    service+timer (Linux), running every ~60s **straight from the repo
-   checkout** — no `~/.claude/hooks` copy, so the daemon can never drift from
+   checkout** - no `~/.claude/hooks` copy, so the daemon can never drift from
    the repo. The unit also pins `MARVEEN_ROOT` to the install root: launchd
    and systemd pass no shell environment to a job, and the watchdog's own
    self-location (two directories up from
@@ -306,11 +306,11 @@ Both carry the same three: `UserPromptSubmit -> slack_progress.py`,
 `Stop -> slack_progress_clear.py`. The Telegram set sits next to them
 unconditionally; that costs nothing, because each hook is provider-scoped
 internally and no-ops on the other provider's turns. Only the **watchdog
-daemon** — which polls on a timer whether or not a turn is in flight — has to
+daemon** - which polls on a timer whether or not a turn is in flight - has to
 be gated to the active provider.
 
 `MARVEEN_ENV_FILE=<path>` makes the installers (and the retire script) read
-that file instead of `<install>/.env` — a test hook only, so the contract
+that file instead of `<install>/.env` - a test hook only, so the contract
 tests never depend on the checkout's own `.env`.
 
 ### The PostToolUse matcher
@@ -320,7 +320,7 @@ surfaces above: it matches the real reply tool name
 `mcp__plugin_slack-channel_slack__reply` regardless of the exact plugin id,
 mirroring the Telegram matcher `telegram.*reply`. An install that needs a
 stricter or different matcher edits `.claude/settings.json` (and the template
-for seeded agents) — there is no installer flag any more, because the
+for seeded agents) - there is no installer flag any more, because the
 installer no longer writes any settings file. The pre-#1305
 `SLACK_REPLY_TOOL_MATCHER` environment override is gone.
 
@@ -395,7 +395,7 @@ bash scripts/retire-progress-watchdog.sh slack --force
 
 This stops + removes the watchdog daemon (launchd agent on macOS, systemd user
 timer on Linux) and unwires any `slack_progress*` entry from the **user-global**
-`~/.claude/settings.json` — a pre-#1305 leftover, since nothing writes there any
+`~/.claude/settings.json` - a pre-#1305 leftover, since nothing writes there any
 more. It never touches the repo-shipped `.claude/settings.json`: those hooks are
 tracked files, removed by editing the repo, not by a script. The hook files
 under `~/.claude/hooks/` (also pre-#1305 leftovers) are left in place; they are
@@ -405,5 +405,5 @@ inert once unwired. If the script cannot do its job (e.g. a user-global
 Note that while `CHANNEL_PROVIDER=slack`, the next update's `sync-hooks.sh`
 re-installs the indicator (the installer is meant to keep the active
 provider's plumbing live). A removal that should survive updates means
-switching `CHANNEL_PROVIDER` — the provider gate then retires the Slack
+switching `CHANNEL_PROVIDER` - the provider gate then retires the Slack
 plumbing on the next update by itself.

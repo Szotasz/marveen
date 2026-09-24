@@ -2,12 +2,12 @@
 # Install the Slack progress-indicator WATCHDOG (sentry) daemon. Mirrors
 # install-telegram-progress-hook.sh, using the Slack Web API
 # (chat.postMessage / chat.delete / chat.update) instead of the Bot API.
-# Plugin-independent — needs no changes to the Slack channel plugin, so it
+# Plugin-independent - needs no changes to the Slack channel plugin, so it
 # survives plugin updates.
 #
 # Why not Slack's "typing…" indicator: the classic RTM `type: typing` frame
 # is not available to modern (Web API / Socket Mode) Slack apps, so there is
-# no bot-side typing bubble to use — same situation as Telegram, same fix.
+# no bot-side typing bubble to use - same situation as Telegram, same fix.
 #
 # What you get:
 #   - inbound Slack message    -> a "✍️ Dolgozom rajta…" placeholder appears
@@ -234,7 +234,7 @@ TIMEREOF
     systemctl --user enable --now "$SVC.timer" 2>/dev/null || true
     echo "✓ Watchdog installed (systemd timer: $SVC.timer, every 60s, running $WATCHDOG)"
   else
-    echo "⚠ systemd --user not available — units written to $UNIT_DIR"
+    echo "⚠ systemd --user not available - units written to $UNIT_DIR"
     echo "  Enable later: systemctl --user enable --now $SVC.timer"
   fi
 fi

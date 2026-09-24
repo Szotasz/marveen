@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-UserPromptSubmit hook — Slack "processing" indicator.
+UserPromptSubmit hook - Slack "processing" indicator.
 
-Slack's modern Web API (chat.postMessage) has no bot "typing…" bubble — that
+Slack's modern Web API (chat.postMessage) has no bot "typing…" bubble - that
 only ever existed on the legacy RTM API (a `type: typing` websocket frame),
 which new Slack apps have not been allowed to use for years. So the only
 honest option is the same pattern already used for Telegram
@@ -15,7 +15,7 @@ When an inbound Slack channel message is delivered to the agent, this posts a
 the inbound message, if any) and records its `ts` so the PostToolUse/Stop
 hooks can clear it when the turn ends.
 
-MUST stay silent on stdout — stdout from UserPromptSubmit is injected into the
+MUST stay silent on stdout - stdout from UserPromptSubmit is injected into the
 model prompt. All diagnostics go to a debug log file under the state dir.
 
 Token/state dir resolution mirrors the Slack plugin: honor SLACK_STATE_DIR
@@ -136,7 +136,7 @@ def main():
     # loose "slack" match also covers a coordinator-style source="slack".
     blocks = re.findall(r'<channel\b[^>]*\bsource="[^"]*slack[^"]*"[^>]*>', prompt)
     if not blocks:
-        return  # not a Slack turn — stay silent
+        return  # not a Slack turn - stay silent
     log(sd, f"[submit] sid={sid} blocks={len(blocks)} state_dir={sd}")
 
     tok = token(sd)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PostToolUse hook — clears the "✍️ Dolgozom rajta…" Slack placeholder as soon
+PostToolUse hook - clears the "✍️ Dolgozom rajta…" Slack placeholder as soon
 as the agent actually SENDS a reply, instead of waiting for the turn to end
 (Stop). Mirrors telegram_progress_reply_clear.py exactly, adapted to the
 Slack API (chat.delete keyed on channel+ts instead of chat_id+message_id).
@@ -11,7 +11,7 @@ lingers for the whole (possibly very long) turn even though the user already
 got an answer. Clearing on the reply tool makes the placeholder disappear
 exactly when the answer appears.
 
-Matching is keyed on chat_id first, then narrowed by thread — a Slack channel
+Matching is keyed on chat_id first, then narrowed by thread - a Slack channel
 can have several concurrent threads, each with its own placeholder, so chat_id
 alone is not a precise enough key (unlike Telegram, where chat_id already
 identifies a single DM or group). Thread narrowing is deliberately TOLERANT,
@@ -21,10 +21,10 @@ not byte-equal to the inbound block's:
   tier 1 (exact)    same thread, or threaded under the inbound message itself
                     (reply thread_ts == the entry's src_ts);
   tier 2 (loose)    either side is top-level ("" and missing both normalise to
-                    None) — an install's outbound rules may tell the agent to
+                    None) - an install's outbound rules may tell the agent to
                     answer a threaded inbound WITHOUT thread_ts, and the
                     optional param is sometimes passed as an empty string;
-  tier 3 (fallback) nothing matched but this chat has pending placeholders — a
+  tier 3 (fallback) nothing matched but this chat has pending placeholders - a
                     reply to the chat is still the answer to that turn.
 
 A miss here is not cosmetic: the placeholder stays pending, the Stop hook
