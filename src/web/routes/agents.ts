@@ -670,6 +670,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const hasDeepseek = getSecret('DEEPSEEK_API_KEY') !== null
     // Direct MiniMax API (bypasses the OpenRouter markup) -- same gating pattern.
     const hasMinimax = getSecret('MINIMAX_API_KEY') !== null
+    // Z.ai GLM Coding Plan -- same vault gating as DeepSeek/MiniMax.
+    const hasZai = getSecret('ZAI_API_KEY') !== null
     // OpenRouter is gated behind the vault key, same as DeepSeek: surfacing the
     // options without the key would let the operator pick a model that 401s.
     const hasOpenRouter = getSecret('openrouter-fleet-key') !== null
@@ -707,6 +709,18 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // see agent-provider-env.test.ts + the marveen kanban card 964a9567.
       minimax: hasMinimax ? [{ id: 'minimax-m3', label: 'MiniMax M3 (közvetlen API)' }] : [],
       minimaxConfigured: hasMinimax,
+      // Z.ai GLM Coding Plan -- native Anthropic-compatible endpoint (no
+      // OpenRouter markup). Model ids per docs.z.ai/devpack/latest-model;
+      // the [1m] suffix enables the 1M context window (needs a recent CLI).
+      zai: hasZai
+        ? [
+            { id: 'glm-5.3', label: 'GLM-5.3 (legújabb, erősebb)' },
+            { id: 'glm-5.3[1m]', label: 'GLM-5.3 (1M kontextus)' },
+            { id: 'glm-5.3-flash', label: 'GLM-5.3-Flash (multimodális, gyorsabb)' },
+            { id: 'glm-5.3-flash[1m]', label: 'GLM-5.3-Flash (1M kontextus)' },
+          ]
+        : [],
+      zaiConfigured: hasZai,
       // OpenRouter tiers for the model picker. `auto` per tier feeds the "Auto"
       // mode (stored as `openrouter-auto:<tierKey>`, resolved weekly-fresh at
       // launch); `manual` (2 ids) feeds the "Manual" mode.
