@@ -47,6 +47,9 @@ PASS = "fakePassw0rd" + "_9x8y"
 # An opaque value with no known prefix, not hex, not a JWT: only the NAME or
 # the FLAG around it can identify it, so each pattern below is pinned alone.
 OPAQUE = "q9W8e7R6t5Y4u3I2" + "o1P0aSdFgH"
+STRIPE = "sk" + "_live_" + "51Hx" + "Ab9Cd8Ef7Gh6Ij5Kl4"
+TGTOK = "7" + "123456789" + ":" + "AAF" + "k9Lm8Nb7Vc6Xz5Aq4Sw3De2Fr1Gt0Hy"
+AWSID = "AK" + "IA" + "Q7W6E5R4T3Y2U1I0"
 
 LEAK = [
     # the four shapes Boni measured leaking on develop
@@ -70,6 +73,12 @@ LEAK = [
     ("standalone JWT", f"echo {JWT} | cut -d. -f2", JWT),
     ("token-only credential in a URL", f"git clone https://{OPAQUE}@example.org/r.git", OPAQUE),
     ("raw 40-char hex blob", "sha=" + "ab12cd34" * 5 + " verify", "ab12cd34" * 5),
+    # Samu's #1536 review: five real fleet shapes that still passed
+    ("bare Stripe sk_live_ key (curl -u)", f"curl https://api.stripe.com/v1/charges -u {STRIPE}:", STRIPE),
+    ("Telegram bot token in the API URL", f"curl https://api.telegram.org/bot{TGTOK}/getMe", TGTOK.split(":")[1]),
+    ("AWS access key id", f"aws configure set aws_access_key_id {AWSID}", AWSID),
+    ("sshpass -p literal", f"sshpass -p {OPAQUE} ssh u@h", OPAQUE),
+    ("mysql -p<literal> (attached)", f"mysql -u root -p{OPAQUE} db", OPAQUE),
 ]
 
 KEEP = [
@@ -78,6 +87,10 @@ KEEP = [
     ("shell variables as URL credentials", "git clone https://$GH_USER:$GH_TOKEN@github.com/o/r.git", "git clone https://$GH_USER:$GH_TOKEN@github.com/o/r.git"),
     ("mkdir -p is not a password flag", "mkdir -p /tmp/some/dir", "mkdir -p /tmp/some/dir"),
     ("ssh -p port", "ssh -p 2222 host", "ssh -p 2222 host"),
+    ("mysql -p with no value (password prompt)", "mysql -u root -p db", "mysql -u root -p db"),
+    ("mysql -p with a variable", "mysql -u root -p$MYSQL_PWD db", "mysql -u root -p$MYSQL_PWD db"),
+    ("sshpass -p with a variable", 'sshpass -p "$SSHPASS_VALUE" ssh u@h', 'sshpass -p "$SSHPASS_VALUE" ssh u@h'),
+    ("a timestamp-like number with a colon is not a bot token", "sleep 3600; echo 1727180000:done", "sleep 3600; echo 1727180000:done"),
     ("plain URL", "git clone https://github.com/o/r.git", "git clone https://github.com/o/r.git"),
     ("an author field is not auth", 'git log --author="someone@example.org"', 'git log --author="someone@example.org"'),
 ]

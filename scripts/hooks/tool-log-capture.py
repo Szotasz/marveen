@@ -104,8 +104,17 @@ _SECRET_PATTERNS = [
     # key=value / key: value, the value quoted or not, the key any name ending in
     # a secret word (SERVICE_ROLE_KEY=, GITHUB_TOKEN=, "password": ...)
     re.compile(r'(?i)(\b\w*(?:token|secret|passw(?:or)?d|api[_\-]?key|apikey|auth|credential|_key)[\'"]?\s*[=:]\s*[\'"]?)(?!\$)[^\s,\'";&|]{6,}'),
-    # Known token prefixes (the prefix is kept as the label)
-    re.compile(r'\b(ghp_|gho_|ghs_|ghu_|ghr_|github_pat_|sbp_|sk-ant-|sk-|xoxb-|xoxp-|xapp-)[A-Za-z0-9_\-]{10,}'),
+    # Known token prefixes (the prefix is kept as the label). Stripe keys are
+    # underscore-separated (sk_live_ / rk_live_ / whsec_), unlike the sk- family.
+    re.compile(r'\b(ghp_|gho_|ghs_|ghu_|ghr_|github_pat_|sbp_|sk-ant-|sk-|xoxb-|xoxp-|xapp-|sk_live_|sk_test_|rk_live_|rk_test_|whsec_)[A-Za-z0-9_\-]{10,}'),
+    # Telegram bot token (<bot id>:<secret>), bare or inside an api.telegram.org URL
+    re.compile(r'(\b(?:bot)?\d{6,12}:)[A-Za-z0-9_\-]{30,}'),
+    # AWS access key id
+    re.compile(r'\b(AKIA|ASIA)[A-Z0-9]{16}\b'),
+    # A password given inline to a tool that takes it as -p: sshpass -p X,
+    # mysql/mysqldump/mariadb -pX. A bare `mysql -p` (prompt) has no value to hide.
+    re.compile(r'(\bsshpass\s+-p\s*[\'"]?)(?!\$)[^\s\'"]+'),
+    re.compile(r'(\b(?:mysql|mysqldump|mariadb)\b[^|;&\n]*?\s-p)(?!\$)[^\s\'"]{4,}'),
     # A JWT anywhere (header.payload.signature)
     re.compile(r'\beyJ[\w\-]{8,}\.eyJ[\w\-]{8,}\.[\w\-]{8,}'),
     # Raw hex blobs >= 32 chars (likely hashed secrets) -- no capture group, full match replaced
