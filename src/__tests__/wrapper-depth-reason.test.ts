@@ -41,11 +41,25 @@ describe('copy gate: the depth-bound block names its own reason', () => {
     expect(r.err).not.toContain('a levelet nem tudtam megvizsgalni')
   })
 
-  it('a VISIBLE send next to a deep wrapper keeps the ordinary reason (Samu, #1523 review)', () => {
-    const r = copyGate(`sendmail a@b.hu; ${wrap(9, 'true')}`)
-    expect(r.code).toBe(2)
-    expect(r.err).toContain('a levelet nem tudtam megvizsgalni')
-    expect(r.err).not.toContain('valodi fejet')
+  // Both reasons could be named here (a visible send AND a segment past the
+  // bound): the VISIBLE send wins, in either order, so a refactor cannot flip
+  // the precedence silently. And the mirror: a mixed command whose visible
+  // segment is NOT a send keeps the depth reason (Marveen, #1523 review).
+  it('both reasons present: the VISIBLE send wins, in either segment order (Samu, #1523 review)', () => {
+    for (const cmd of [`sendmail a@b.hu; ${wrap(9, 'true')}`, `${wrap(9, 'true')}; sendmail a@b.hu`]) {
+      const r = copyGate(cmd)
+      expect({ cmd, code: r.code }).toEqual({ cmd, code: 2 })
+      expect(r.err).toContain('a levelet nem tudtam megvizsgalni')
+      expect(r.err).not.toContain('valodi fejet')
+    }
+  })
+
+  it('only the bound present: a visible NON-send beside it keeps the depth reason', () => {
+    for (const cmd of [`git status; ${wrap(9, 'true')}`, `${wrap(9, 'true')}; git status`]) {
+      const r = copyGate(cmd)
+      expect({ cmd, code: r.code }).toEqual({ cmd, code: 2 })
+      expect(r.err).toContain('a parancs valodi fejet nem latom')
+    }
   })
 
   it('inside the bound the same command is not a send and passes', () => {
@@ -78,9 +92,14 @@ describe('hard gate (sub-agents): the depth-bound deny has its own kind and mess
     expect(wrapperDepthHit('sendmail a@b.hu')).toBe(false)
   })
 
-  it('a visible send next to a deep wrapper is the reason, not the bound', () => {
-    expect(wrapperDepthHit(`sendmail a@b.hu < body.txt; ${wrap(9, 'true')}`)).toBe(false)
-    expect(gateDecision('Bash', { command: `sendmail a@b.hu < body.txt; ${wrap(9, 'true')}` })).toEqual({ deny: true })
+  it('both reasons present: the visible send wins, in either order; only the bound: the depth kind', () => {
+    for (const cmd of [`sendmail a@b.hu < body.txt; ${wrap(9, 'true')}`, `${wrap(9, 'true')}; sendmail a@b.hu < body.txt`]) {
+      expect({ cmd, hit: wrapperDepthHit(cmd) }).toEqual({ cmd, hit: false })
+      expect({ cmd, d: gateDecision('Bash', { command: cmd }) }).toEqual({ cmd, d: { deny: true } })
+    }
+    for (const cmd of [`git status; ${wrap(9, 'true')}`, `${wrap(9, 'true')}; git status`]) {
+      expect({ cmd, d: gateDecision('Bash', { command: cmd }) }).toEqual({ cmd, d: { deny: true, kind: 'wrapper-depth' } })
+    }
   })
 
   it('gives kind wrapper-depth past the bound, the ordinary deny otherwise', () => {
