@@ -113,8 +113,10 @@ _SECRET_PATTERNS = [
     re.compile(r'\b(AKIA|ASIA)[A-Z0-9]{16}\b'),
     # A password given inline to a tool that takes it as -p: sshpass -p X,
     # mysql/mysqldump/mariadb -pX. A bare `mysql -p` (prompt) has no value to hide.
-    re.compile(r'(\bsshpass\s+-p\s*[\'"]?)(?!\$)[^\s\'"]+'),
-    re.compile(r'(\b(?:mysql|mysqldump|mariadb)\b[^|;&\n]*?\s-p)(?!\$)[^\s\'"]{4,}'),
+    # sshpass: a quoted password may contain spaces, so a quoted value is
+    # taken WHOLE; a double-quoted or bare $ reference stays (Samu, #1536).
+    re.compile(r'(\bsshpass\s+-p\s*)(?:\'[^\']*\'|"(?!\$)[^"]*"|(?!\$)[^\s\'"]+)'),
+    re.compile(r'(\b(?:mysql|mysqldump|mariadb)\b[^|;&\n]*?\s-p[\'"]?)(?!\$)[^\s\'"]{4,}'),
     # A JWT anywhere (header.payload.signature)
     re.compile(r'\beyJ[\w\-]{8,}\.eyJ[\w\-]{8,}\.[\w\-]{8,}'),
     # Raw hex blobs >= 32 chars (likely hashed secrets) -- no capture group, full match replaced

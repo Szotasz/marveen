@@ -79,6 +79,11 @@ LEAK = [
     ("AWS access key id", f"aws configure set aws_access_key_id {AWSID}", AWSID),
     ("sshpass -p literal", f"sshpass -p {OPAQUE} ssh u@h", OPAQUE),
     ("mysql -p<literal> (attached)", f"mysql -u root -p{OPAQUE} db", OPAQUE),
+    # Samu's #1536 delta review: quoted forms of the two -p tools
+    ("mysql -p'X' (quoted, attached)", f"mysql -u root -p'{OPAQUE}' db", OPAQUE),
+    ("mysql -p\"X\" (double-quoted, attached)", f'mysql -u root -p"{OPAQUE}" db', OPAQUE),
+    ("mysqldump -uroot -p'X'", f"mysqldump -uroot -p'{OPAQUE}' db > d.sql", OPAQUE),
+    ("sshpass -p 'two words' (quoted, with a space)", "sshpass -p 'Secret " + "Pass" + "99' ssh u@h", "Pass" + "99"),
 ]
 
 KEEP = [
@@ -89,6 +94,7 @@ KEEP = [
     ("ssh -p port", "ssh -p 2222 host", "ssh -p 2222 host"),
     ("mysql -p with no value (password prompt)", "mysql -u root -p db", "mysql -u root -p db"),
     ("mysql -p with a variable", "mysql -u root -p$MYSQL_PWD db", "mysql -u root -p$MYSQL_PWD db"),
+    ("mysql -p with a double-quoted variable", 'mysql -u root -p"$MYSQL_PWD" db', 'mysql -u root -p"$MYSQL_PWD" db'),
     ("sshpass -p with a variable", 'sshpass -p "$SSHPASS_VALUE" ssh u@h', 'sshpass -p "$SSHPASS_VALUE" ssh u@h'),
     ("a timestamp-like number with a colon is not a bot token", "sleep 3600; echo 1727180000:done", "sleep 3600; echo 1727180000:done"),
     ("plain URL", "git clone https://github.com/o/r.git", "git clone https://github.com/o/r.git"),
