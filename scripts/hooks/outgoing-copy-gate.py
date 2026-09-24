@@ -294,8 +294,9 @@ _WRAPPERS = {
     "xargs": ("ILnPsdEa", ("arg-file", "delimiter", "eof", "replace", "max-lines", "max-args",
                            "max-procs", "max-chars", "process-slot-var"), 0),
     "timeout": ("sk", ("signal", "kill-after"), 1),
-    # setsid: the one wrapper outside the first table that fleet traffic uses
-    # (Marveen, tool_call_log 24 h: 5 uses; stdbuf/flock/caffeinate/... 0).
+    # setsid: for future use and symmetry. NOT measured local traffic: the hits the
+    # first count found all sat inside quoted remote (ssh) command strings or heredoc
+    # bodies, and that pattern was not quote-aware (Marveen's correction, 2026-09-24).
     "setsid": ("", (), 0),
 }
 _HEAD_DEPTH = 8
