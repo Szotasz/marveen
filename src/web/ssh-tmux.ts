@@ -1,4 +1,5 @@
 import { mkdirSync } from 'node:fs'
+import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join } from 'node:path'
 import { userInfo } from 'node:os'
 import { execFileSync } from 'node:child_process'
@@ -173,7 +174,7 @@ export function buildRemoteLaunchCommand(opts: {
  * exists, silently dropping --continue on every remote launch.)
  */
 export function buildContinueProbeCommand(absWorkdir: string): string {
-  const encoded = absWorkdir.replace(/\//g, '-')
+  const encoded = encodeClaudeProjectDir(absWorkdir)
   return 'test -d "$HOME/.claude/projects/"' + shQuote(encoded)
 }
 

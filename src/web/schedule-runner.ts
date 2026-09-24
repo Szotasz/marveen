@@ -17,6 +17,8 @@ import { resolveOwnerChatId, configuredOwnerChatFor } from '../owner-chat.js'
 import {
   appendTaskRun,
   markTaskRunCompleted,
+  setTaskRunDelivery,
+  getTaskRunStatus,
   reconcileOpenTaskRuns,
   getTaskRunMedianDurationMs,
   listPendingTaskRetries,
@@ -48,7 +50,9 @@ import {
 } from './scheduled-tasks-io.js'
 import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
-import { readTranscriptMtimeAcrossConfigDirs } from './active-model.js'
+import { readTranscriptMtimeAcrossConfigDirs, projectsDirFor } from './active-model.js'
+import { classifyDelivery, readUserPromptsSince, type DeliveryVerdict } from './delivery-integrity.js'
+import { paneOneLine } from './pane-text.js'
 import { mainConfigRoots } from './inbound-probe.js'
 import { channelStateDir, getProvider, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import {
@@ -180,6 +184,15 @@ export interface TaskInflightEntry {
   // in an overfull input box, so a second 'lost' verdict on this entry takes the
   // ordinary lost path instead of Enter-looping.
   parkedEnterSent?: boolean
+  // PROMPTCSONK923 delivery-integrity check. `sentText` is the exact one-line
+  // byte stream sendPromptToSession typed, `typedAt` the moment typing began:
+  // every prompt the session recorded from then on is compared with it (see
+  // delivery-integrity.ts). Absent for a remote agent (its transcript is not
+  // on this host). `deliveryVerdict` is set once a verdict is persisted, so
+  // the transcript is not re-read on every sweep after that.
+  sentText?: string
+  typedAt?: number
+  deliveryVerdict?: DeliveryVerdict
 }
 
 // How long a fired task may stay busy before the watchdog calls it stuck.
@@ -308,6 +321,43 @@ export type TaskTimeoutDecision = 'done' | 'abandoned' | 'alert' | 'escalate' | 
 // evicted ('clear') before escalate is ever reached. Accepted -- a task
 // legitimately configured to run for hours AND stuck long enough to hit
 // that ceiling is an extreme edge case outside this change's scope.
+// PROMPTCSONK923: the delivery-integrity verdict to persist for an in-flight
+// entry right now, or null (nothing to record yet). Reads every prompt the
+// target session's transcripts recorded since typing began and compares it
+// with what was typed (delivery-integrity.ts).
+//
+// 'tail-lost' is only returned when `final` (the entry is closing): the head
+// of a split prompt is recorded BEFORE its tail, so a sweep that lands between
+// the two would otherwise persist 'tail-lost' for what is really a 'split'.
+// Every other verdict is final on first sight.
+//
+// The CLOSING look never leaves the question open (Marveen's #1506 review): in
+// flight, "nothing of ours arrived" means "not yet"; at the close there is no
+// "yet". It becomes 'not-arrived' when a transcript directory was readable,
+// and 'unverifiable' when none was -- so a wholly lost prompt no longer sits
+// as NULL next to a remote agent's never-checked row.
+//
+// `read` and `dirExists` are injectable so the decision is unit-tested
+// without disk.
+export function checkTaskDeliveryIntegrity(
+  entry: Pick<TaskInflightEntry, 'sentText' | 'typedAt' | 'deliveryVerdict' | 'workingDir' | 'configDirs'>,
+  final: boolean,
+  read: (dirs: readonly string[], sinceMs: number) => string[] = readUserPromptsSince,
+  dirExists: (dir: string) => boolean = existsSync,
+): DeliveryVerdict | null {
+  if (entry.sentText == null || entry.typedAt == null || entry.deliveryVerdict != null) return null
+  const dirs = [...new Set(entry.configDirs.map((c) => projectsDirFor(entry.workingDir, c)))]
+  let verdict: DeliveryVerdict | null
+  try {
+    verdict = classifyDelivery(entry.sentText, read(dirs, entry.typedAt))
+  } catch {
+    return final ? 'unverifiable' : null
+  }
+  if (verdict === 'tail-lost' && !final) return null
+  if (verdict == null && final) return dirs.some((d) => dirExists(d)) ? 'not-arrived' : 'unverifiable'
+  return verdict
+}
+
 export function decideTaskTimeout(
   entry: Pick<TaskInflightEntry, 'injectedAt' | 'alerted' | 'ownerAlerted' | 'sawTurn'> & { deliveryPending?: boolean },
   paneState: PaneState | null,
@@ -1180,13 +1230,37 @@ async function attemptFireTask(
       SCHEDULED_TASK_PREAMBLE + '\n' +
       prefix.trimEnd() + '\n\n' +
       scheduledTaskBlock
+    let typedAt = Date.now() // replaced by onEmitStart; see the note after the call
     // forceSend skips the busy-state check above; it must also skip the
     // pre-flight wait-until-idle gate inside sendPromptToSession, otherwise a
     // task aimed at a long-busy session would block on the 12s idle wait every
     // tick -- defeating the very purpose of forceSend (inject regardless, let
     // Claude Code queue it). All non-forceSend tasks keep the gate ON.
-    await sendPromptToSession(session, fullPrompt, host, { waitForIdle: !task.forceSend })
+    // AUDITBORITEKVESZ918: onBusySend fires when the idle gate timed out and the
+    // prompt went into a BUSY pane best-effort -- the delivery mode that produced
+    // the 2026-09-18 16:00 spliced kanban-audit prompt (envelope gone, head cut
+    // off) while task_runs still recorded a plain 'fired'. The flag only changes
+    // the recorded status below; delivery is untouched.
+    let busySend = false
+    await sendPromptToSession(session, fullPrompt, host, {
+      onEmitStart: () => {
+        typedAt = Date.now()
+      },
+      waitForIdle: !task.forceSend,
+      onBusySend: () => {
+        busySend = true
+      },
+    })
     const submittedAt = Date.now()
+    // typedAt (PROMPTCSONK923) is the moment the FIRST KEYSTROKE of this prompt
+    // was emitted (onEmitStart fires inside the pane's send lock), not when the
+    // call above began: before emission sendPromptToSession runs the modal
+    // dismissals and up to 12 s of idle wait, and a prompt submitted in that
+    // window is not ours. The initial Date.now() is only a fallback for a send
+    // that threw before emitting -- the catch below then records 'error' and
+    // registers no entry. Residual, stated: a PREVIOUS copy of the same task
+    // still queued in a busy pane and dequeued after this instant would carry
+    // the same tail; the lock cannot exclude that, it is a TUI queue.
     scheduleLastRun.set(task.name, now)
     persistScheduleLastRun()
     // A lateCatchUpMs value means this tick only matched because of the
@@ -1205,6 +1279,21 @@ async function attemptFireTask(
       logger.warn(
         { task: task.name, agent: agentName, session, lateCatchUpMinutes: Math.round(lateCatchUpMs / 60000) },
         'Scheduled task fired via restart catch-up window -- missed its normal tick',
+      )
+    } else if (busySend) {
+      // 'fired_busy', not 'fired': the pane was still busy when the prompt was
+      // typed. CORRECTED 2026-09-23 (PROMPTCSONK923): that alone is not damage.
+      // The 09-18 16:00 kanban-audit run cited above arrived INTACT (its
+      // transcript holds the full prompt); a busy-pane send queued whole in a
+      // live repro. What actually arrived is judged from the transcript by the
+      // sweep (checkTaskDeliveryIntegrity -> task_runs.delivery); this status
+      // only keeps the send condition. A distinct
+      // status is the whole point -- it makes the corrupted-delivery class
+      // visible in the run history instead of hiding behind a clean 'fired'.
+      firedRunId = appendTaskRun(task.name, agentName, 'fired_busy')
+      logger.warn(
+        { task: task.name, agent: agentName, session },
+        'Scheduled task typed into a BUSY pane after the idle budget -- recorded as fired_busy; the delivery verdict comes from the transcript',
       )
     } else {
       firedRunId = appendTaskRun(task.name, agentName, 'fired')
@@ -1276,6 +1365,8 @@ async function attemptFireTask(
       timeoutMs: resolveStuckTimeoutMs(task),
       runId: firedRunId,
       taskType: task.type,
+      // Local agents only: a remote agent's transcript is on its own host.
+      ...(host == null ? { sentText: paneOneLine(fullPrompt), typedAt } : {}),
       deliveryPending: true,
     }
     taskInflightMap.set(`${task.name}@${agentName}`, inflightEntry)
@@ -1679,6 +1770,31 @@ function sendLostRedeliveryGiveUpNotice(entry: TaskInflightEntry, attempts: numb
 // stage-2 escalation -- the board should reflect a stuck task as soon as the
 // main agent is told, independent of whether it later escalates to the
 // operator.
+// SCHEDSORZAR923 (2): the alert says WHAT it measures. The watchdog knows one
+// thing -- the pane has been busy since the injection -- and nothing about the
+// task's own work: an agent that finished the task and went on to other work
+// keeps the pane busy, and a background-polling round leaves it idle. Measured
+// 2026-09-23: a 3.4-minute finding alerted at 25.5 minutes because the pane
+// stayed busy afterwards; a threshold was raised on such numbers. So the line
+// names the instrument, not "runs for N minutes -- possible hang", and it
+// carries the task_runs row (id + dispatch status) so the reader can look it
+// up instead of guessing. Pure, exported for the text pins.
+export function describeInflightPaneAge(
+  entry: Pick<TaskInflightEntry, 'taskName' | 'agentName' | 'runId'>,
+  elapsedMs: number,
+  runStatus: string | null,
+): string {
+  const ageMinutes = Math.floor(elapsedMs / 60000)
+  const row = entry.runId != null ? `task_runs #${entry.runId}${runStatus ? ` (${runStatus})` : ''}` : 'task_runs sor nélkül'
+  return `A(z) "${entry.taskName}" (${entry.agentName}) ütemezett feladat injektálása óta a pane ${ageMinutes} perce foglalt` +
+    ` -- ez a pane elfoglaltsága, NEM a feladat munkaideje: a feladat közben be is fejeződhetett, ha az ágens mással dolgozik tovább; ${row}.`
+}
+
+function runStatusOf(entry: Pick<TaskInflightEntry, 'runId'>): string | null {
+  if (entry.runId == null) return null
+  try { return getTaskRunStatus(entry.runId) } catch { return null }
+}
+
 function sendTaskInflightMainAgentNotice(entry: TaskInflightEntry, elapsedMs: number): void {
   const ageMinutes = Math.floor(elapsedMs / 60000)
 
@@ -1689,8 +1805,8 @@ function sendTaskInflightMainAgentNotice(entry: TaskInflightEntry, elapsedMs: nu
 
   const thresholdMinutes = Math.round(entry.timeoutMs / 60000)
   const text = [
-    `[scheduler] A(z) "${entry.taskName}" (${entry.agentName}) ütemezett feladat ${ageMinutes} perce fut -- lehetséges beakadás (küszöb: ${thresholdMinutes} perc).`,
-    'Ha jogosan fut ennél tovább, allitsd a task-config.json "stuckAfterMinutes" mezojet.',
+    `[scheduler] ${describeInflightPaneAge(entry, elapsedMs, runStatusOf(entry))} Küszöb: ${thresholdMinutes} perc pane-foglaltság.`,
+    'Ha a pane jogosan foglalt ennél tovább (hosszú feladat, vagy az ágens mással dolgozik), allitsd a task-config.json "stuckAfterMinutes" mezojet.',
     'Ellenőrizd az ágenst; ha nem oldódik meg, az uzemeltető direkt ertesitest kap ha ez tovabb tart.',
   ].join('\n')
   try {
@@ -1755,8 +1871,8 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
       ? `${Math.round(medianMs / 1000)} másodperc`
       : `${Math.round(medianMs / 60_000)} perc`
   const text = [
-    `[${BOT_NAME} scheduler] A(z) "${entry.taskName}" (${entry.agentName}) ütemezett feladat ${ageMinutes} perce fut -- lehetséges beakadás. A(z) fő-agent mar ertesitve volt errol, de nem oldodott meg.`,
-    ...(typical ? [`Ez a feladat általában ${typical} alatt lefut (a korábbi befejezett futások mediánja).`] : []),
+    `[${BOT_NAME} scheduler] ${describeInflightPaneAge(entry, elapsedMs, runStatusOf(entry))} A(z) fő-agent mar ertesitve volt errol, de a pane azota is foglalt.`,
+    ...(typical ? [`Ez a feladat általában ${typical} alatt lefut (a korábbi befejezett futások mediánja; ez is PANE-IDŐ: az injektálástól a pane első tétlen állapotáig, nem munkaidő).`] : []),
     `A riasztási küszöb ennél a feladatnál ${thresholdMinutes} perc; ha ez a feladat jogosan fut ennél tovább, allitsd a task-config.json "stuckAfterMinutes" mezojet.`,
     'Az ágensben megtekintheted; a dashboard /Ütemezések oldalán visszavonható ha kell.',
   ].join('\n')
@@ -1776,14 +1892,15 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
 export const SCHEDULE_TICK_MS = 15_000
 
 export function startScheduleRunner(): NodeJS.Timeout {
-  // Close runs that the previous process was still watching when it stopped.
-  // taskInflightMap is in memory, so a restart loses every open entry and those
-  // rows would stay open for ever -- the same "cannot tell running from
-  // finished" hole this bookkeeping exists to close, just in a smaller window.
-  // They are recorded as 'interrupted', not 'done': we do not know whether they
-  // finished, and saying so beats guessing either way.
+  // Close EVERY run that the previous process was still watching when it
+  // stopped. taskInflightMap is in memory, so a restart loses every open entry
+  // and nothing else can ever close those rows (SCHEDSORZAR923: an age window
+  // here left a minutes-old run open for hours). They are recorded as
+  // 'interrupted' with a zero duration (completed_at = ts), not 'done' and not
+  // "now": we do not know whether they finished, and a "now" stamp would look
+  // like a measured duration.
   try {
-    const closed = reconcileOpenTaskRuns(TASK_FIRE_MAX_TRACK_MS)
+    const closed = reconcileOpenTaskRuns()
     if (closed > 0) logger.info({ closed }, 'Closed task runs orphaned by a restart (outcome=interrupted)')
   } catch (err) {
     logger.warn({ err }, 'task-run restart reconcile failed (non-fatal)')
@@ -1900,6 +2017,29 @@ export function startScheduleRunner(): NodeJS.Timeout {
         maxTrackMs: TASK_FIRE_MAX_TRACK_MS,
         ownerExtraMs: OWNER_ESCALATION_EXTRA_MS,
       })
+      // PROMPTCSONK923: record what actually ARRIVED, from the transcript. On
+      // a closing decision this is the last look, so a head-only arrival is
+      // recorded as 'tail-lost' instead of waiting for a tail that is not
+      // coming. Bookkeeping only: never alters the decision below, never
+      // throws into the sweep.
+      const closing = decision === 'done' || decision === 'abandoned' || decision === 'lost'
+      const verdict = checkTaskDeliveryIntegrity(entry, closing)
+      if (verdict != null) {
+        entry.deliveryVerdict = verdict
+        if (entry.runId != null) {
+          try {
+            setTaskRunDelivery(entry.runId, verdict)
+          } catch (err) {
+            logger.warn({ err, task: entry.taskName, runId: entry.runId }, 'Failed to record task-run delivery verdict')
+          }
+        }
+        if (verdict !== 'intact') {
+          logger.warn(
+            { task: entry.taskName, agent: entry.agentName, session: entry.session, runId: entry.runId, delivery: verdict },
+            'Scheduled prompt did NOT arrive as typed -- the session transcript shows a damaged delivery',
+          )
+        }
+      }
       if (decision === 'done' || decision === 'abandoned') {
         // 'done' is genuine success (sawTurn was true) -- this occurrence's
         // lost-redelivery count, if any, no longer applies to a FUTURE

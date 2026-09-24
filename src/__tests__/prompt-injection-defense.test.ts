@@ -8,6 +8,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
+import { importsValueBinding } from './setup/source-imports.js'
 import { fileURLToPath } from 'node:url'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { isEgressBlocked, loadRuntimeAllowlist } from '../../scripts/hooks/egress-gate.mjs'
@@ -337,11 +338,22 @@ describe('ensureEgressGate', () => {
 // ---------------------------------------------------------------------------
 // 3. from-authentication: messages.ts source check
 // ---------------------------------------------------------------------------
+
 describe('/api/messages from-authentication', () => {
   const src = readFileSync(join(REPO_ROOT, 'src', 'web', 'routes', 'messages.ts'), 'utf8')
 
-  it('imports isKnownAgent from agent-config', () => {
-    expect(src).toContain("import { isKnownAgent } from '../agent-config.js'")
+  it('imports isKnownAgent from agent-config, co-imports and all', () => {
+    // IMPORTKAPULAZ921: this used to assert the import line VERBATIM, so it fired
+    // on #1448 -- where the author added a SECOND symbol to the same line and the
+    // defence was untouched. That shape misfires on every future co-import, and
+    // asking an outside contributor to bend correct code around a brittle string
+    // of ours is the wrong direction.
+    //
+    // The relaxation must stay a GATE, not a formality: it still reads the value
+    // binding out of the import statement, so removing the import turns it red.
+    // A type-only import does NOT count -- it disappears at runtime, which is
+    // exactly the guard being gone.
+    expect(importsValueBinding(src, 'isKnownAgent', '../agent-config.js')).toBe(true)
   })
 
   it('calls isKnownAgent with the sanitized from field', () => {

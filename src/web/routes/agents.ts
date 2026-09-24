@@ -13,6 +13,8 @@ import type { AgentStatusSignals, AgentStatusRow } from '../agent-status.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
+import { measureClaudeCliVersion } from '../claude-cli-version.js'
+import { claudeSupportForCli, isModelUnsupportedByCli, CLAUDE_MODEL_MIN_CLI } from '../../claude-cli-support.js'
 import { CHANNEL_PLUGIN_IDS } from '../plugin-ids.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
 import { loadOpenRouterCatalog, fetchAllOpenRouterModels, loadCuratedManual, addCuratedManual, removeCuratedManual } from '../openrouter-models.js'
@@ -630,6 +632,25 @@ function paneActivityLabel(running: boolean, pane: string | null): string {
   return s // 'unknown' | 'error'
 }
 
+/**
+ * PICKERCLIKAPU923: refuse a Claude model the INSTALLED CLI is measured not to
+ * launch. Returns the 422 body, or null when the write may proceed. Fail-OPEN:
+ * an unmeasured version refuses nothing. The probe is fresh (cache bypassed)
+ * so an operator who just upgraded the CLI is not blocked by a stale reading.
+ */
+export async function refuseIfCliCannotLaunch(model: string): Promise<Record<string, unknown> | null> {
+  const cli = await measureClaudeCliVersion({ fresh: true })
+  if (!isModelUnsupportedByCli(model, cli.version)) return null
+  const req = CLAUDE_MODEL_MIN_CLI[model.replace(/\[[^\]]*\]$/, '')]
+  return {
+    error: 'model not launchable by the installed Claude Code CLI',
+    model,
+    installedCli: cli.version,
+    minCli: req?.minCli ?? null,
+    message: `A telepített Claude Code ${cli.version} nem futtatja a(z) ${model} modellt (legalább ${req?.minCli ?? '?'} kell; mérve: ${req?.measured ?? 'n/a'}). Frissítsd a CLI-t, vagy válassz olyan modellt, amit ez a verzió ismer.`,
+  }
+}
+
 export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -653,9 +674,21 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // options without the key would let the operator pick a model that 401s.
     const hasOpenRouter = getSecret('openrouter-fleet-key') !== null
     const orCatalog = loadOpenRouterCatalog()
+    // PICKERCLIKAPU923: the INSTALLED CLI decides which Claude ids are
+    // launchable (2.1.110, the customer pin, answers 400 unrecognized_model on
+    // claude-fable-5-1 and claude-opus-5-5). Fail-OPEN when unmeasured: the
+    // client keeps every option and shows an "unmeasured" label instead.
+    const cli = await measureClaudeCliVersion()
+    const claudeSupport = claudeSupportForCli(cli.version)
     json(res, {
+      cli: { version: cli.version, measuredAt: cli.measuredAt, error: cli.error, source: cli.source },
+      claudeSupport,
       claude: [
-        { id: 'claude-opus-5', label: 'Opus 5 (legújabb Opus)' },
+        { id: 'claude-fable-5-1', label: 'Fable 5.1 (legújabb Fable)', minCli: CLAUDE_MODEL_MIN_CLI['claude-fable-5-1'].minCli },
+        // Opus 5.5: ONLY the 1M variant (owner decision 2026-09-23). The gate table is keyed on the
+        // base id, so the [1m] variant inherits the 2.1.280 minimum -- pinned in picker-cli-gate.test.ts.
+        { id: 'claude-opus-5-5[1m]', label: 'Opus 5.5 (1M kontextus, legújabb Opus)', minCli: CLAUDE_MODEL_MIN_CLI['claude-opus-5-5'].minCli },
+        { id: 'claude-opus-5', label: 'Opus 5' },
         { id: 'claude-sonnet-5', label: 'Sonnet 5' },
         { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
         { id: 'claude-fable-5', label: 'Fable 5' },
@@ -986,6 +1019,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const profileId = (rawProfile || 'default').trim() || 'default'
 
     if (!name) { json(res, { error: 'Name is required' }, 400); return true }
+    // PICKERCLIKAPU923: the API is a writer too, not only the picker. A fresh
+    // probe, so a CLI upgraded a minute ago is not refused on a stale cache.
+    const cliGate = await refuseIfCliCannotLaunch(model)
+    if (cliGate) { json(res, cliGate, 422); return true }
     if (!description) { json(res, { error: 'Description is required' }, 400); return true }
     if (existsSync(agentDir(name))) { json(res, { error: 'Agent already exists' }, 409); return true }
 
@@ -2273,7 +2310,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
     if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
-    if (data.model !== undefined) writeAgentModel(name, data.model)
+    if (data.model !== undefined) {
+      // PICKERCLIKAPU923: same gate as the picker and the POST, fresh probe.
+      const cliGate = await refuseIfCliCannotLaunch(String(data.model))
+      if (cliGate) { json(res, cliGate, 422); return true }
+      writeAgentModel(name, data.model)
+    }
     // Card c755f4b2 Block B: optional generic capability tier. An unknown id
     // is a 400, never a persisted value -- storing one would leave the UI
     // showing a profile while resolution silently fell back to the install

@@ -3809,6 +3809,11 @@ async function openAgentDetail(agentName) {
       sel.appendChild(opt)
     }
     sel.value = mv
+    // PICKERCLIKAPU923: re-apply the CLI gate AFTER the value is set, so the
+    // agent's current model is never the disabled option regardless of which
+    // of the two async loads finished first (measured in Chromium: a value set
+    // onto a disabled option still reads back, but the order must not matter).
+    if (lastAvailableModelsData) applyClaudeCliGate(lastAvailableModelsData)
   })
   populateProfileSelect(
     document.getElementById('editAgentProfile'),
@@ -4297,11 +4302,60 @@ async function loadOllamaModels() {
 // panel. Backend gates the list behind a vault entry, so an empty array
 // here means the operator has not configured an API key yet -- in that
 // case we hide the optgroup and surface a hint pointing to the Vault page.
+// PICKERCLIKAPU923: the INSTALLED Claude Code CLI decides which Claude ids
+// are launchable (a customer install pins 2.1.110, where claude-fable-5-1 and
+// claude-opus-5-5 answer 400 on the first prompt and the agent goes silently
+// deaf). Two branches, both deliberate:
+//   measured   -> unsupported options are disabled and labelled; the option
+//                 that is an agent's CURRENT model is never disabled, so the
+//                 edit panel keeps showing the real value and a save does not
+//                 silently rewrite it (#751 lesson).
+//   unmeasured -> nothing is filtered (a customer who can pick no model is
+//                 worse off than today) and a visible hint says so.
+let lastAvailableModelsData = null
+function applyClaudeCliGate(data) {
+  if (data) lastAvailableModelsData = data
+  const support = data && data.claudeSupport ? data.claudeSupport : null
+  const cli = data && data.cli ? data.cli : null
+  const selects = [document.getElementById('agentModel'), document.getElementById('editAgentModel')]
+  const hints = [document.getElementById('agentModelCliHint'), document.getElementById('editAgentModelCliHint')]
+  const base = (id) => String(id || '').replace(/\[[^\]]*\]$/, '')
+  const unsupported = new Map()
+  if (support && support.measured && Array.isArray(support.unsupported)) {
+    for (const u of support.unsupported) unsupported.set(u.id, u.minCli)
+  }
+  selects.forEach((sel, i) => {
+    if (!sel) return
+    const hint = hints[i]
+    if (!support || !support.measured) {
+      // Unmeasured: restore any earlier gating, show the hint, filter nothing.
+      Array.from(sel.options).forEach((opt) => {
+        if (opt.dataset.cliGated === '1') { opt.disabled = false; opt.textContent = opt.dataset.cliLabel || opt.textContent; delete opt.dataset.cliGated }
+      })
+      if (hint) { hint.textContent = t('agents.model.cliUnmeasured').replace('{err}', (cli && cli.error) || '?'); hint.style.display = '' }
+      return
+    }
+    if (hint) hint.style.display = 'none'
+    const current = sel.value
+    Array.from(sel.options).forEach((opt) => {
+      if (!String(opt.value).startsWith('claude-')) return
+      const minCli = unsupported.get(base(opt.value))
+      if (opt.dataset.cliGated === '1') { opt.disabled = false; opt.textContent = opt.dataset.cliLabel || opt.textContent; delete opt.dataset.cliGated }
+      if (!minCli) return
+      if (!opt.dataset.cliLabel) opt.dataset.cliLabel = opt.textContent
+      opt.dataset.cliGated = '1'
+      opt.textContent = opt.dataset.cliLabel + ' (' + t('agents.model.cliUnsupported').replace('{v}', support.installedVersion).replace('{min}', minCli) + ')'
+      opt.disabled = opt.value !== current
+    })
+  })
+}
+
 async function loadAvailableModels() {
   try {
     const res = await fetch('/api/models/available')
     if (!res.ok) return
     const data = await res.json()
+    applyClaudeCliGate(data)
     const deepseekModels = Array.isArray(data.deepseek) ? data.deepseek : []
     const editGroup = document.getElementById('deepseekModelGroup')
     const wizardGroup = document.getElementById('agentModelDeepseekGroup')
@@ -12382,6 +12436,76 @@ async function loadUpdates() {
     applyBtn.hidden = true
   }
   renderDiagnoseOffer()
+  renderCliUpdateOffer()
+}
+
+// Claude Code CLI update OFFER (CLIFRISSAJANLAS923). Reads /api/updates/cli:
+// installed vs offered target (latest, or the AVX-safe pin on an AVX-less
+// host), a button that only POSTs the exact offered target, and the note that
+// running sessions keep the old binary until their next start.
+let _cliUpdatePoll = null
+async function renderCliUpdateOffer(fresh) {
+  const box = document.getElementById('updatesCli')
+  if (!box) return
+  let d
+  try { d = await (await fetch('/api/updates/cli' + (fresh ? '?fresh=1' : ''))).json() } catch { box.hidden = true; return }
+  const esc = escapeHtmlUpdates
+  const lines = []
+  lines.push(`<strong>${esc(t('updates.cli.title'))}</strong>`)
+  lines.push(`<p>${esc(t('updates.cli.installed', { v: d.installed || t('updates.cli.unmeasured') }))}`
+    + (d.avxLess
+      ? ` · ${esc(t('updates.cli.avx_target', { v: d.avxSafePin || '—' }))}`
+      : ` · ${esc(t('updates.cli.latest', { v: d.latest || (d.latestError ? t('updates.cli.unknown') : '…') }))}`)
+    + `</p>`)
+  if (d.avxLess) lines.push(`<p class="muted">${esc(t('updates.cli.avx_note'))}</p>`)
+  const job = d.job || {}
+  if (job.running) {
+    lines.push(`<p><span class="spinner"></span> ${esc(t('updates.cli.running', { v: (job.result && job.result.target) || d.target || '' }))}</p>`)
+  } else if (job.result && job.result.status === 'done' && job.result.installedAfter === d.installed) {
+    lines.push(`<p class="updates-cli-done">${esc(t('updates.cli.done', { v: job.result.installedAfter || '' }))}</p>`)
+    lines.push(`<p class="muted">${esc(t('updates.cli.sessions_note'))}</p>`)
+  } else if (job.result && job.result.status === 'failed' && !d.offer) {
+    lines.push(`<p class="updates-cli-failed">${esc(t('updates.cli.failed', { msg: job.result.message || '' }))}</p>`)
+  }
+  if (d.offer && !job.running) {
+    lines.push(`<p>${esc(t('updates.cli.offer', { v: d.target }))}</p>`)
+    lines.push(`<p class="muted">${esc(t('updates.cli.sessions_note'))}</p>`)
+    lines.push(`<button class="btn-secondary btn-compact" id="updatesCliBtn">${esc(t('updates.cli.btn', { v: d.target }))}</button>`)
+    if (d.manualCommand) lines.push(`<p class="muted">${esc(t('updates.cli.manual'))} <code>${esc(d.manualCommand)}</code></p>`)
+  } else if (!d.offer && !job.running && d.installed && (d.avxLess ? d.avxSafePin : d.latest)) {
+    if (!(job.result && job.result.status === 'done' && job.result.installedAfter === d.installed)) lines.push(`<p class="muted">${esc(t('updates.cli.up_to_date'))}</p>`)
+  }
+  box.hidden = false
+  box.className = 'updates-diagnose updates-cli'
+  box.innerHTML = lines.join('')
+  const btn = document.getElementById('updatesCliBtn')
+  if (btn) btn.addEventListener('click', () => applyCliUpdate(d.target))
+  if (job.running) {
+    if (!_cliUpdatePoll) _cliUpdatePoll = setTimeout(() => { _cliUpdatePoll = null; renderCliUpdateOffer(true) }, 5000)
+  }
+}
+
+async function applyCliUpdate(target) {
+  if (!target) return
+  if (!confirm(t('updates.cli.confirm', { v: target }))) return
+  const btn = document.getElementById('updatesCliBtn')
+  if (btn) btn.disabled = true
+  try {
+    const res = await fetch('/api/updates/cli/apply', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      if (btn) btn.disabled = false
+      showToast(t('updates.cli.failed', { msg: data.error || ('HTTP ' + res.status) }))
+      return
+    }
+    showToast(t('updates.cli.started', { v: target }))
+    renderCliUpdateOffer(true)
+  } catch (err) {
+    if (btn) btn.disabled = false
+    showToast(t('updates.cli.failed', { msg: err.message || err }))
+  }
 }
 
 // Post-rollback diagnosis offer (PR-D). Reads /api/updates/status: if the last

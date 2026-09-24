@@ -13,7 +13,7 @@ import { isBlockedCrossOriginWrite, originMatchesServedHost } from './web/csrf-o
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureGovernanceGateCommands, ensureTelegramCopyGate, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureBashEgressParser, ensureGovernanceGateCommands, ensureTelegramCopyGate, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { mainAgentConfigDirIfSeparate } from './web/agent-process.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
@@ -565,6 +565,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       const egressPatched: string[] = []
       const bashEgressPatched: string[] = []
       const bashEgressUncovered: string[] = []
+      const bashParserPatched: string[] = []
       const govPatched: string[] = []
       const copyGatePatched: string[] = []
       const pruned: string[] = []
@@ -595,6 +596,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
         const bashDenyDir = agentName === MAIN_AGENT_ID ? mainAgentConfigDirIfSeparate() : null
         if (agentName === MAIN_AGENT_ID && !bashDenyDir) bashEgressUncovered.push(agentName)
         else if (ensureBashEgressDeny(agentName, bashDenyDir)) bashEgressPatched.push(agentName)
+        if (ensureBashEgressParser(agentName)) bashParserPatched.push(agentName)
         if (ensureGovernanceGateCommands(agentName)) govPatched.push(agentName)
         if (ensureTelegramCopyGate(agentName)) copyGatePatched.push(agentName)
         ensureQuarantineReader(agentName)
@@ -616,6 +618,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       if (bashEgressPatched.length) logger.info({ patched: bashEgressPatched }, 'Bash egress deny rules backfilled into agent settings.json (permissions.deny)')
       if (bashEgressUncovered.length) logger.warn({ agents: bashEgressUncovered },
         'Bash egress deny NOT applied to the main agent: it runs on the shared user config root, which is also the operator\'s own shell. Give it a config dir of its own (MAIN_AGENT_ISOLATED_CONFIG / MAIN_AGENT_CONFIG_DIR) to cover it without covering the operator.')
+      if (bashParserPatched.length) logger.info({ patched: bashParserPatched }, 'bash-egress-parser Bash hook backfilled into agent settings.json (EGRESSPARSER923)')
       if (govPatched.length) logger.info({ patched: govPatched }, 'governance gate hook commands upgraded to absolute node path in agent settings.json')
       if (copyGatePatched.length) logger.info({ patched: copyGatePatched }, 'outgoing-copy-gate wired onto the Telegram send tools in agent settings.json (GATECOPY828)')
     } catch (err) {

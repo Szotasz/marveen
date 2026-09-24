@@ -1,6 +1,7 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync } from 'node:fs'
+import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { AGENT_LOCAL_BASE_URL } from '../config.js'
 import { makeLazyBinResolver } from '../platform.js'
@@ -55,8 +56,12 @@ import {
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
+import { decideContinueFlag, verifyContinueLaunch } from './channel-continue-policy.js'
+import { measureClaudeCliVersion } from './claude-cli-version.js'
+import { getClaudePidForSession, probeChannelPluginLiveness } from '../channel-coordinator/liveness.js'
 import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBOX_TEE } from '../config.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
+import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
 import { readEnvFile } from '../env.js'
 import { loadProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
@@ -151,6 +156,98 @@ export function buildTelegramMcpServerConfig(bunBin: string, pluginDir: string, 
 // CLAUDE_CODE_OAUTH_TOKEN env var -- NOT via a copied/symlinked .credentials.json.
 // See ensureIsolatedChannelConfigDir for why.
 export const FLEET_OAUTH_TOKEN_PATH = join(STORE_DIR, '.claude-oauth-token')
+
+/** Where a launch-time secret is parked so the launch COMMAND never carries its value. */
+export const LAUNCH_SECRETS_DIR = join(STORE_DIR, '.launch-secrets')
+
+/**
+ * A konyvtar es a fajl modja EGY helyen all, mert a kettonek egyutt kell mozognia.
+ *
+ * ES A `chmodSync` NEM OVATOSSAG: a `mkdirSync` a modot CSAK LETREHOZASKOR allitja be, egy MAR
+ * LETEZO konyvtaron nem valtoztat. Ezt a sajat mutansom mutatta meg: a mod 0700 -> 0755 rontasa
+ * ZOLD maradt, mert a konyvtar a korabbi futasokbol mar letezett 0700-on. Vagyis egy lazabb modon
+ * alljo konyvtar (regebbi verzio, mas umask, kezi beavatkozas) eszrevetlenul tullelne a javitast.
+ */
+export const LAUNCH_SECRETS_DIR_MODE = 0o700
+export const LAUNCH_SECRET_FILE_MODE = 0o600
+
+/**
+ * hu: A titkot FAJLBA teszi, es a shell-kifejezest adja vissza, amit a launch-parancsba irunk.
+ * Igy a parancs sztringben a HIVAS all, nem az ertek -- a helyettesites az INDITOTT shellben
+ * tortenik, tehat a titok nem kerul a `ps`/argv sorba.
+ * <br />
+ * en: Parks the secret in a file and returns the shell expression to interpolate into the launch
+ * command, so the command string carries the CALL and not the value.
+ *
+ * MIERT: az agens-inditas egy shell-sztring, amit a tmux `new-session -d -s <s> <cmd>` argumentumkent
+ * kap. Ami abban a sztringben all, az a folyamatlistaban olvashato, amig a pane wrapper-shellje el.
+ * A `$(cat '...')` alakot NEM ez a javitas talalta ki: a flotta OAuth-tokenje mar igy megy
+ * (`agent-process.ts` oauthTokenEnv, `agent-worker.ts:510`, es `scripts/channels.sh` -- ott a komment
+ * ki is mondja: "evaluated in the launched shell so the secret never lands in the argv/`ps` command
+ * string"). A szolgaltatoi kulcsok (BYO, deepseek, minimax, openrouter) voltak az egyetlen kivetelek.
+ *
+ * A fajl 0600, a konyvtar 0700, es az iras atomi (a tmp-fajl sem all soha 0644-en).
+ *
+ * AMI EBBOL NEM KOVETKEZIK, ES EZT KI KELL MONDANI: a kitettseg NEM SZUNT MEG, hanem ATKOLTOZOTT.
+ * Eddig a folyamatlistaban allt, amit a gep BARMELYIK usere olvashatott; mostantol egy 0600-as
+ * fajlban all, tartosan. Ez szigorubb, de nem semmi: PER-AGENS OS-USER NALUNK MEG NINCS, tehat
+ * barmelyik flotta-agens, aki shellt tud futtatni, el tudja olvasni egy MASIK agens launch-titkat.
+ * Ugyanaz az osztaly, mint a flotta OAuth-token fajlja (`store/.claude-oauth-token`), es ugyanaz
+ * zarja: az OS-user izolacio, nem egy ujabb export-alak. Aki ezt a fuggvenyt olvassa, ne vegye
+ * megoldottnak azt, ami csak SZIGORUBB lett.
+ *
+ * ES EGY UJ FUGGOSEG, amit a javitas HOZOTT LETRE (Boni lelete a review-ban): ez a kod mostantol
+ * TITKOT IR a repo alatti `store/` konyvtarba. Azt ma a `.gitignore` 17. sora zarja ki (pozitiv
+ * kontroll: ugyanazon a soron akad fenn a `store/.dashboard-token` is). Ha az a sor egyszer
+ * eltunne, a kovetkezo commit vinne a kulcsot.
+ */
+/**
+ * hu: Egy agens launch-titkait torli a lemezrol (leallitaskor).
+ * <br />
+ * en: Removes an agent's launch secrets from disk (on stop).
+ *
+ * MIERT DONTES, ES NEM MULASZTAS (Marveen kikotese a #1478 review-jan): a takaritas hianya azt
+ * jelentette volna, hogy egy vaultban ROTALT kulcs REGI erteke a lemezen marad a kovetkezo
+ * inditasig, egy leallitott agens titka pedig hataridotlenul. Egy rotacio utan tovabb elo regi
+ * kulcs pont az a nyom, amit egy incidensnel keresni fogunk.
+ *
+ * KET NEVSEMAT KELL TOROLNIE, mert ket hivasi hely van: a provider-kulcs `<agens>.<SECRET_ID>`,
+ * a BYO-kulcs `agent-<agens>-api-key`. Egy takaritas, ami csak az egyik elotagra illeszt, a
+ * masikat nemán ott hagyja.
+ *
+ * AMI EZUTAN IS IGAZ: egy OSSZEOMLAS vagy kulso `kill` nem fut ezen az uton, tehat ott a fajl
+ * ott marad a kovetkezo inditasig (amikor felulirodik). Rotacio utan a HELYES LEPES az erintett
+ * agens UJRAINDITASA: az irja felul a fajlt a friss ertekkel. A torolt agens maradek fajlja
+ * kulon kartyan all (LAUNCHSECRETTAKARIT922).
+ */
+export function clearLaunchSecrets(agentName: string): number {
+  if (!existsSync(LAUNCH_SECRETS_DIR)) return 0
+  const provider = `${agentName}.`
+  const byo = `agent-${agentName}-api-key`
+  let torolve = 0
+  for (const f of readdirSync(LAUNCH_SECRETS_DIR)) {
+    if (f !== byo && !f.startsWith(provider)) continue
+    try {
+      unlinkSync(join(LAUNCH_SECRETS_DIR, f))
+      torolve += 1
+    } catch (err) {
+      logger.warn({ err, file: f }, 'launch-secret cleanup failed')
+    }
+  }
+  return torolve
+}
+
+export function launchSecretRef(secretName: string, value: string): string {
+  // A `/` nem eli tul a szurest, tehat utvonal-bejaras nincs. A csupa-pont nev VISZONT elne
+  // (`..` -> a szulo konyvtar), ezert azt kulon zarjuk: ez a sajat tesztem lelete volt.
+  const szurt = secretName.replace(/[^A-Za-z0-9._-]/g, '_')
+  const biztonsagosNev = /^\.+$/.test(szurt) || !szurt ? 'nevtelen' : szurt
+  mkdirSync(LAUNCH_SECRETS_DIR, { recursive: true, mode: LAUNCH_SECRETS_DIR_MODE })
+  chmodSync(LAUNCH_SECRETS_DIR, LAUNCH_SECRETS_DIR_MODE)
+  const utvonal = join(LAUNCH_SECRETS_DIR, biztonsagosNev)
+  atomicWriteFileSync(utvonal, value, { mode: LAUNCH_SECRET_FILE_MODE })
+  return `"$(cat ${shSingleQuote(utvonal)})"`
+}
 
 // True when the fleet OAuth token file exists and is non-empty. Provisioning an
 // isolated config dir WITHOUT auth would launch the sub-agent logged-out, so
@@ -632,14 +729,28 @@ function reconcileMcpServers(
   }
   const own = isPlainObject(cur.mcpServers) ? cur.mcpServers : {}
   const projectScoped = projectScopedServerNames(cwd)
+  // MCPOROKLES923: a sub-agent gap-fills ONLY servers on the inheritable list
+  // (mcp-inheritance.ts). Additive as before: nothing the agent already has is
+  // removed. The main agent is exempt -- its config mirrors the operator's own.
+  const allowed = name === MAIN_AGENT_ID ? null : readInheritableMcpServerNames()
   const added: string[] = []
   const shadowed: string[] = []
+  const notInherited: string[] = []
   for (const [key, def] of Object.entries(shared.mcpServers)) {
     if (key in own) continue
-    if (projectScoped.has(key)) { shadowed.push(key); continue }
+    // Both reasons are judged independently and BOTH are logged: an unlisted
+    // server the agent also owns at project scope is a list refusal AND a
+    // collision. Recording only the first reason hid the collision trace the
+    // 2026-09-05 rule exists to leave.
+    const unlisted = allowed !== null && !allowed.has(key)
+    const collides = projectScoped.has(key)
+    if (unlisted) notInherited.push(key)
+    if (collides) shadowed.push(key)
+    if (unlisted || collides) continue
     own[key] = def
     added.push(key)
   }
+  logNotInherited(name, 'gap-fill', notInherited)
   // Log the skips even when nothing was added: a silent skip is how this class
   // of bug stays invisible, and the name alone tells the next reader where the
   // agent's real definition lives.
@@ -660,10 +771,18 @@ function reconcileMcpServers(
 // shared config is copied: without this the very first launch of a new agent
 // starts out shadowed, which is the same outage as the gap-fill one, just
 // earlier. Mutates `cfg` in place.
-function stripProjectScopedCollisions(cfg: Record<string, unknown>, cwd: string, name: string): void {
+// `alreadyRemoved` are names an earlier filter (the inheritable list) took out of
+// `cfg` first; any of them the agent owns at project scope is still a collision
+// and is logged as one, so the trace does not depend on which rule ran first.
+function stripProjectScopedCollisions(
+  cfg: Record<string, unknown>,
+  cwd: string,
+  name: string,
+  alreadyRemoved: readonly string[] = [],
+): void {
   const projectScoped = projectScopedServerNames(cwd)
   if (projectScoped.size === 0) return
-  const dropped: string[] = []
+  const dropped: string[] = alreadyRemoved.filter((key) => projectScoped.has(key))
   if (isPlainObject(cfg.mcpServers)) {
     for (const key of Object.keys(cfg.mcpServers)) {
       if (projectScoped.has(key)) { delete (cfg.mcpServers as Record<string, unknown>)[key]; dropped.push(key) }
@@ -891,15 +1010,26 @@ function provisionIsolatedConfigDir(
       const sharedDot = join(homedir(), '.claude.json')
       if (!existsSync(dotClaude)) {
         let seed: Record<string, unknown> = { hasCompletedOnboarding: true }
+        let notInheritedOnSeed: string[] = []
         if (existsSync(sharedDot)) {
           try { seed = JSON.parse(readFileSync(sharedDot, 'utf-8')) as Record<string, unknown> } catch { /* keep minimal */ }
         }
         seed.hasCompletedOnboarding = true
+        // MCPOROKLES923: the seed copies the shared config for its consent flags,
+        // NOT for its connectors: a sub-agent's seed keeps only the servers on the
+        // inheritable list. The main agent is exempt (its config mirrors the
+        // operator's own ~/.claude.json).
+        if (name !== MAIN_AGENT_ID && isPlainObject(seed.mcpServers)) {
+          const { kept, dropped } = filterInheritableMcpServers(seed.mcpServers, readInheritableMcpServerNames())
+          seed.mcpServers = kept
+          notInheritedOnSeed = dropped
+          logNotInherited(name, 'seed', dropped)
+        }
         // The seed is a FULL copy of the shared config, so it carries the same
         // scope-collision risk as the gap-fill below: a shared entry whose name
         // the agent owns in its own .mcp.json would arrive at local scope and
         // shadow it, credentials included. Strip those before writing.
-        stripProjectScopedCollisions(seed, cwd, name)
+        stripProjectScopedCollisions(seed, cwd, name, notInheritedOnSeed)
         writeJsonAtomic(dotClaude, seed, { groupShared: perUser })
       } else {
         try {
@@ -1112,18 +1242,29 @@ export function shSingleQuote(value: string): string {
 /**
  * hu: A modell-azonosító alapján eldönti, melyik providerhez tartozik, és felépíti a shell
  * export-láncot, ami a Claude Code CLI-t az adott provider Anthropic-kompatibilis végpontjára
- * téríti. Tiszta függvény (nincs I/O) -- a titkot a hívó adja át `secretLookup`-on keresztül,
- * hogy vault nélkül tesztelhető legyen.
+ * téríti. Tiszta függvény (nincs I/O).
  * <br />
  * en: Resolves which provider a model id belongs to and builds the shell export chain that
- * redirects the Claude Code CLI to that provider's Anthropic-compatible endpoint. Pure function
- * (no I/O) -- the caller supplies secrets via `secretLookup` so this is testable without a vault.
+ * redirects the Claude Code CLI to that provider's Anthropic-compatible endpoint. Pure function.
+ *
+ * A HIVO NEM A TITKOT ADJA AT, HANEM EGY SHELL-HIVATKOZAST RA (LATENSKULCSARGV920).
+ *
+ * Korabban a parameter a kulcs ERTEKET adta vissza, es az ide interpolalodott: `export
+ * ANTHROPIC_AUTH_TOKEN="<ertek>"`. Ez a sztring a tmux `new-session` argumentuma, tehat a kulcs a
+ * folyamatlistaban olvashato volt, amig a pane wrapper-shellje elt. A flotta OAuth-tokenje mar
+ * korabban is `$(cat fajl)` alakban ment; a szolgaltatoi kulcsok voltak az egyetlen kivetelek.
+ *
+ * A JAVITAS SZERKEZETI, NEM CSAK SZOVEGES: ez a fuggveny MEG SEM KAPJA a titkot, tehat nem is tudja
+ * kiszivarogtatni. Ami itt athalad, az egy mar shell-be irhato hivatkozas (`"$(cat '/ut/...')"`),
+ * amit a hivo a `launchSecretRef`-fel allit elo. Egy jovobeli ag, ami megint az erteket akarna
+ * beirni, eloszor a PARAMETER TIPUSAT kellene visszaallitsa -- az pedig latszik a review-ban.
  */
 export type ProviderKind = 'claude' | 'deepseek' | 'minimax' | 'openrouter' | 'ollama'
 
 export function resolveProviderEnv(
   model: string,
-  secretLookup: (id: string) => string | null,
+  /** A titok SHELL-HIVATKOZASA (pl. `"$(cat '/ut')"`), NEM az erteke. Lasd `launchSecretRef`. */
+  secretShellRef: (id: string) => string | null,
 ): { provider: ProviderKind; exportsStr: string } {
   const isClaude = model.startsWith('claude-')
   const isDeepseek = model.startsWith('deepseek-')
@@ -1134,14 +1275,14 @@ export function resolveProviderEnv(
   const isOllama = !isClaude && !isDeepseek && !isMinimax && !isOpenRouter
 
   if (isDeepseek) {
-    const key = secretLookup('DEEPSEEK_API_KEY') ?? ''
+    const keyRef = secretShellRef('DEEPSEEK_API_KEY') ?? '""'
     return {
       provider: 'deepseek',
-      exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=${keyRef} && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
     }
   }
   if (isMinimax) {
-    const key = secretLookup('MINIMAX_API_KEY') ?? ''
+    const keyRef = secretShellRef('MINIMAX_API_KEY') ?? '""'
     // MiniMax's own /anthropic compat layer misreports a 200K context window in
     // its model metadata instead of M3's real 1M (MiniMax-AI/MiniMax-M2.7#46,
     // confirmed live 2026-08-19: two independently running fleet agents on
@@ -1151,15 +1292,15 @@ export function resolveProviderEnv(
     // of the compat layer's wrong one.
     return {
       provider: 'minimax',
-      exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && export CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 && `,
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=${keyRef} && export ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && export CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 && `,
     }
   }
   if (isOpenRouter) {
     // Anthropic-compatible endpoint at https://openrouter.ai/api (the SDK appends /v1/messages).
-    const key = secretLookup('openrouter-fleet-key') ?? ''
+    const keyRef = secretShellRef('openrouter-fleet-key') ?? '""'
     return {
       provider: 'openrouter',
-      exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=${keyRef} && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
     }
   }
   if (isOllama) {
@@ -1558,7 +1699,11 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // the agents run the TUI.) Single-quoted so a `:` in the tag is shell-safe.
     // Provider discriminator + env-export chain live in resolveProviderEnv (pure,
     // unit-tested in agent-provider-env.test.ts) so a new provider is one branch there.
-    const { exportsStr: providerEnv } = resolveProviderEnv(model, getSecret)
+    // A titok FAJLBA megy, es a launch-parancsba csak a HIVATKOZAS kerul (LATENSKULCSARGV920).
+    const { exportsStr: providerEnv } = resolveProviderEnv(model, (id) => {
+      const ertek = (getSecret(id) ?? '').trim()
+      return ertek ? launchSecretRef(`${name}.${id}`, ertek) : null
+    })
     // When authMode is 'api', the agent uses its own ANTHROPIC_API_KEY from
     // the vault instead of the host's OAuth. The vault entry ID follows the
     // convention `agent-{name}-api-key`. We inject it as an env var so Claude
@@ -1567,7 +1712,9 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     if (isClaude && authMode === 'api') {
       const agentApiKey = getSecret(`agent-${name}-api-key`) ?? ''
       if (agentApiKey) {
-        apiKeyEnv = `export ANTHROPIC_API_KEY="${agentApiKey}" && `
+        // Ugyanaz a szabaly, mint a provider-againal: a kulcs FAJLBOL olvasva kerul be, hogy a
+        // launch-parancs (es vele a `ps` sora) ne hordozza az erteket (LATENSKULCSARGV920).
+        apiKeyEnv = `export ANTHROPIC_API_KEY=${launchSecretRef(`agent-${name}-api-key`, agentApiKey)} && `
       }
     }
     // Apply security profile: write allow/deny list into settings.json, and
@@ -1703,7 +1850,18 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
         // with `option '--dangerously-load-development-channels <servers...>'
         // argument missing`, i.e. a worksourceChannel agent could not start AT ALL
         // -- not "the plugin is skipped", the process died. (2026-09-03, PR #1099.)
-        worksourceFlags = ' --channels server:worksource --dangerously-load-development-channels server:worksource'
+        //
+        // AND IT MUST BE THE ONLY FLAG NAMING worksource: passing `--channels
+        // server:worksource` ALONGSIDE it silently un-does it. The CLI appends
+        // the dev list to the plain list and then resolves the entry with a
+        // `find`, so the FIRST match wins -- the plain entry, which carries no
+        // dev mark -- and a manually configured (non-plugin) server without that
+        // mark is refused by the allowlist gate. Measured on a live agent
+        // 2026-09-21 (cli 2.1.110), printed on its own startup screen:
+        //   server:worksource · server: entries need --dangerously-load-development-channels
+        // The channel was never registered, every delivery was dropped by the
+        // client, and the server still logged `delivered` for each one.
+        worksourceFlags = ' --dangerously-load-development-channels server:worksource'
         logger.info({ name, serverPath }, 'worksource channel wired for agent')
       } catch (err) {
         // Fail OPEN, on purpose: a worksource agent that comes up without its
@@ -1712,6 +1870,23 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
         // Refusing to launch would trade a delayed message for a dead agent.
         logger.warn({ err, name }, 'Could not wire worksource channel; agent starts without it')
       }
+    } else if (name !== MAIN_AGENT_ID) {
+      // Opting OUT has to un-write what opting in wrote. .mcp.json is loaded by
+      // the CLI on its own, with no flag involved, so an entry left behind keeps
+      // spawning a worksource server on every launch -- one with no channel
+      // registered and nothing feeding its queue. Harmless to the agent, but it
+      // is a process that looks like a working wire, and during the 2026-09-21
+      // debugging it cost time twice: a dangling server was mistaken for the one
+      // under test. Half-states should not survive a toggle.
+      const mcpJsonPath = join(agentDir(name), '.mcp.json')
+      try {
+        const existing = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as { mcpServers?: Record<string, unknown> }
+        if (existing?.mcpServers?.worksource) {
+          delete existing.mcpServers.worksource
+          writeFileSync(mcpJsonPath, JSON.stringify(existing, null, 2))
+          logger.info({ name }, 'worksource channel unwired for agent (opted out)')
+        }
+      } catch { /* absent or unreadable -> nothing to unwire */ }
     }
 
     if (name !== MAIN_AGENT_ID) {
@@ -1866,25 +2041,43 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // Claude Code projects directory does not yet exist and `claude` exits
     // immediately with an obscure "No deferred tool marker found" error
     // that is silent inside tmux. Detect first launch by probing for the
-    // encoded project dir and skip `--continue` only then. The encoding
-    // mirrors Claude Code's own scheme: replace every `/` with `-`.
+    // encoded project dir and skip `--continue` only then. The encoding is
+    // Claude Code's own, measured (src/claude-project-dir.ts): every character
+    // outside [a-zA-Z0-9-] becomes '-', not just '/'. A slash-only copy here
+    // named a directory that never exists on a path with an underscore or a
+    // space, so every launch on such an install looked like a first launch
+    // and never continued its session.
     const projectsRoot = claudeConfigDir
       ? join(claudeConfigDir, 'projects')
       : join(homedir(), '.claude', 'projects')
-    const encodedProject = dir.replace(/\//g, '-')
+    const encodedProject = encodeClaudeProjectDir(dir)
     const hasPriorSession = existsSync(join(projectsRoot, encodedProject))
     // opts.fresh forces a brand-new conversation (auto-restart 'fresh' mode):
     // omit --continue so the heavy accumulated context is dropped. Without it
     // we resume the prior session (the 'continue' mode / normal restart).
     //
-    // CC 2.1.193 REGRESSION: a `--continue` resume does NOT re-initialise the
-    // `--channels` plugin MCP server -- the agent comes up with the plugin
-    // absent from /mcp, no bun poller, no bot.pid -> permanently deaf on its
-    // channel. A FRESH launch loads the plugin correctly. So channel-having
-    // agents are ALWAYS launched fresh: the lost conversation context is the
-    // price of a reachable bot (file/db memory persists either way). Channel-
-    // less agents keep --continue to preserve their accumulated context.
-    const continueFlag = (hasPriorSession && !opts.fresh && !hasChannel) ? '--continue ' : ''
+    // CC 2.1.193 REGRESSION: a `--continue` resume did NOT re-initialise the
+    // `--channels` plugin MCP server -- the agent came up deaf on its channel.
+    // So channel-having agents were ALWAYS launched fresh. MEASURED ABSENT on
+    // Claude Code 2.1.280 (CONTRESUME922, 2026-09-23: real Telegram message
+    // from a resumed session, context kept). The narrowing lives in
+    // channel-continue-policy.ts and is CONDITIONAL: telegram provider, the
+    // fleet-token auth path, no ephemeral launch-secret in the launch (a
+    // resume of such a command starts without its key), measured CLI >= the
+    // floor; and after a resumed launch the plugin is VERIFIED (bun poller +
+    // bot.pid) with a fresh fallback, see below. Channel-less agents keep
+    // --continue as before.
+    const usesLaunchSecret = providerEnv !== '' || apiKeyEnv !== ''
+    const installedCli = hasChannel ? (await measureClaudeCliVersion()).version : null
+    const continueDecision = decideContinueFlag({
+      hasPriorSession, fresh: !!opts.fresh, hasChannel, isMainAgent: name === MAIN_AGENT_ID,
+      provider: agentProvider, usesLaunchSecret, fleetTokenLaunch: oauthTokenEnv !== '',
+      useMcpJsonForChannel, installedCli,
+    })
+    if (hasChannel && hasPriorSession && !opts.fresh) {
+      logger.info({ name, useContinue: continueDecision.useContinue, reason: continueDecision.reason, installedCli }, 'channel agent resume decision')
+    }
+    const continueFlag = continueDecision.useContinue ? '--continue ' : ''
     const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : agentProvider === 'googlechat' ? 'GOOGLECHAT_STATE_DIR' : agentProvider === 'teams' ? 'TEAMS_STATE_DIR' : 'TELEGRAM_STATE_DIR'
     const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN'
     // Slack plugin is third-party; its "not on approved allowlist" check is
@@ -1955,16 +2148,107 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // exactly how korall lost its `hasCompletedOnboarding` flag on every restart
     // and parked on the login picker with a perfectly good token in its env.
     const umaskPrefix = agentTmuxTarget(name).runAsUser ? 'umask 002 && ' : ''
-    const cmd = `${umaskPrefix}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
+    // buildLaunchCmd(launchCwd): only the launch CWD varies between the normal start and the
+    // EPERM /tmp fallback below; every env export is an absolute path and stays pointed at the
+    // real agent dir.
+    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start
     // reported ok, no session existed under the agent's user, and the first
     // capture-pane failed against the router's empty tmux server.
     const startTarget = agentTmuxTarget(name)
-    runTmux(startTarget, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
+    runTmux(startTarget, ['new-session', '-d', '-s', session, buildLaunchCmd(dir)], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir, runAsUser: startTarget.runAsUser ?? null }, 'Agent tmux session started')
+
+    // Condition 3 of the resume narrowing: a resumed channel agent must bring
+    // its plugin up (bun poller under the claude pid + bot.pid) within the
+    // window, or it is relaunched FRESH. Measured: the plugin appears within
+    // seconds on a healthy resume; a deaf resume never shows it. Async so the
+    // start call returns as before; the fallback goes through the normal
+    // start path (kill + reap + fresh), which never uses --continue.
+    if (continueFlag && hasChannel && name !== MAIN_AGENT_ID) {
+      void verifyContinueLaunch({
+        probe: () => {
+          const pid = getClaudePidForSession(session)
+          return pid ? probeChannelPluginLiveness(pid, agentProvider, name) : 'unknown'
+        },
+      }).then(async (v) => {
+        if (v.outcome === 'alive') {
+          logger.info({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin alive, context kept')
+          return
+        }
+        logger.warn({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin NOT alive within the window; relaunching FRESH')
+        try { runTmux(agentTmuxTarget(name), ['kill-session', '-t', session], { timeout: 5000 }) } catch { /* already gone */ }
+        try {
+          const r = await startAgentProcess(name, { fresh: true })
+          logger.info({ name, ok: r.ok, error: r.error ?? null }, 'resumed channel agent: fresh fallback launched')
+        } catch (err) {
+          logger.error({ err, name }, 'resumed channel agent: fresh fallback failed')
+        }
+      }).catch((err) => logger.error({ err, name }, 'resume verification crashed'))
+    }
+
+    // EPERM /tmp-fallback (2026-06-30, mirrors scripts/channels.sh:233+): on
+    // Claude Code 2.1.183+ launching `--channels` in a TRUSTED project directory
+    // throws EPERM before any dialog -- the plugin never loads, no bun poller,
+    // the sub-bot is deaf. The MAIN channels session has this fallback in
+    // channels.sh; sub-agents did NOT, so after a reboot/restart hephaestus and
+    // hermes came up with their telegram plugin silently absent. Watch the pane and, on EPERM,
+    // relaunch ONCE from a /tmp dir (untrusted -> a trust dialog fires instead of
+    // EPERM) with the agent CLAUDE.md symlinked so personality survives; the
+    // channel state dir + CLAUDE_CONFIG_DIR are absolute so the bot still
+    // attaches. Non-blocking setTimeout poller (the dashboard is single-threaded
+    // -- a synchronous sleep loop would freeze the whole event loop). Only for
+    // channel-having sub-agents; MAIN comes up via channels.sh, not this path.
+    if (hasChannel && name !== MAIN_AGENT_ID) {
+      const epermDeadline = Date.now() + 14_000
+      let epermRestarted = false
+      const checkEperm = () => {
+        if (Date.now() > epermDeadline) return
+        let pane = ''
+        try { pane = capturePane(session) ?? '' } catch { /* transient capture miss */ }
+        if (!epermRestarted && /EPERM|[Oo]peration not permitted/.test(pane)) {
+          epermRestarted = true
+          try { runTmux(null, ['kill-session', '-t', session], { timeout: 5000 }) } catch { /* already gone */ }
+          try {
+            const fallbackCwd = mkdtempSync(join(tmpdir(), `marveen-agent-${name}-`))
+            const agentClaudeMd = join(dir, 'CLAUDE.md')
+            if (existsSync(agentClaudeMd)) {
+              try { symlinkSync(agentClaudeMd, join(fallbackCwd, 'CLAUDE.md')) } catch { /* degrade to context-less */ }
+            }
+            runTmux(null, ['new-session', '-d', '-s', session, buildLaunchCmd(fallbackCwd)], { timeout: 10000 })
+            logger.warn({ name, session, fallbackCwd }, 'Agent --channels EPERM in trusted dir; relaunched from /tmp fallback')
+          } catch (err) {
+            logger.error({ err, name, session }, 'EPERM /tmp fallback relaunch failed')
+          }
+          setTimeout(checkEperm, 1000)
+          return
+        }
+        // Dialogs ONLY on the fresh /tmp path we ourselves just created (untrusted,
+        // first-run) -- mirror channels.sh. The `epermRestarted` guard is the whole
+        // point: without it this block runs on EVERY tick of EVERY channel-having
+        // sub-agent start, not just the fallback, and one of these branches answers
+        // the Bypass Permissions prompt with a keystroke. Auto-accepting that on a
+        // directory we just minted for a relaunch is a startup detail; auto-accepting
+        // it on every normal start is a security setting, and not one this function
+        // gets to make. Reported upstream on #1460 by reading the control flow: the
+        // EPERM branch returns early, so the non-EPERM path fell through to here.
+        if (epermRestarted) {
+          if (/Do you trust the files in this folder\?/.test(pane)) {
+            try { runTmux(null, ['send-keys', '-t', session, '1', 'Enter'], { timeout: 4000 }) } catch { /* ignore */ }
+          } else if (/Bypass Permissions mode/.test(pane) && /Yes, I accept/.test(pane)) {
+            try { runTmux(null, ['send-keys', '-t', session, '2', 'Enter'], { timeout: 4000 }) } catch { /* ignore */ }
+          } else if (/Welcome to Claude Code/.test(pane)) {
+            try { runTmux(null, ['send-keys', '-t', session, 'Enter'], { timeout: 4000 }) } catch { /* ignore */ }
+          }
+        }
+        if (/Listening for channel messages/.test(pane)) return
+        setTimeout(checkEperm, 1000)
+      }
+      setTimeout(checkEperm, 1500)
+    }
 
     // After a restart with --continue, a session that's been idle for >24h
     // shows the "Resume from summary" modal before the prompt input is ready
@@ -2025,6 +2309,9 @@ export async function stopAgentProcess(name: string): Promise<{ ok: boolean; err
 
   try {
     runTmux(target, ['kill-session', '-t', session], { timeout: 5000 })
+    // A LAUNCH-TITKOK NEM ELIK TUL A LEALLITAST. Enelkul egy rotalt kulcs REGI erteke a lemezen
+    // maradna a kovetkezo inditasig, egy leallitott agense pedig hataridotlenul.
+    clearLaunchSecrets(name)
     await delay(2000)
     // Reap any orphaned plugin grandchild that tmux did not tear down. This is
     // a LOCAL pkill against this host's process table, so it only makes sense
@@ -2612,7 +2899,7 @@ export async function sendPromptToSession(
   session: string,
   text: string,
   host: string | null = null,
-  opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number; lockMode?: SendLockMode } = {},
+  opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number; lockMode?: SendLockMode; onBusySend?: () => void; onEmitStart?: () => void } = {},
 ): Promise<'sent' | 'aborted-busy' | 'skipped-locked'> {
   const lockMode: SendLockMode = opts.lockMode ?? 'deliver'
   // PANEWRITERS805: the three modal dismissals are probe+act keystroke writers
@@ -2677,6 +2964,30 @@ export async function sendPromptToSession(
       return 'aborted-busy'
     }
     logger.warn({ session }, 'sendPromptToSession: pane still busy after wait-until-idle budget; sending best-effort')
+    // AUDITBORITEKVESZ918: a best-effort send into a BUSY pane is the one
+    // delivery mode that can arrive spliced. Measured 2026-09-18 16:00 on the
+    // main session: three tasks fired inside 18s (drain :08, memoria :13,
+    // kanban-audit :26), the third one's idle wait timed out after the 12s
+    // budget, and the prompt reached the agent with its HEAD CUT OFF -- no
+    // <scheduled-task> envelope, body starting mid-line. task_runs still said
+    // 'fired', so a corrupted delivery was indistinguishable from a clean run.
+    // This callback lets the caller record THAT instead of a false green. It
+    // does not change delivery: the send still proceeds (a session that never
+    // idles must still get its prompt), only the bookkeeping learns the
+    // difference. Never throws into the send path.
+    try {
+      opts.onBusySend?.()
+    } catch (err) {
+      logger.warn({ err, session }, 'sendPromptToSession: onBusySend callback threw; ignored (delivery continues)')
+    }
+    // CORRECTED 2026-09-23 (PROMPTCSONK923): the 09-18 incident above was NOT
+    // a truncation -- that session's transcript holds the full 44448-char
+    // kanban-audit prompt, envelope and all; "head cut off" was read off the
+    // pane, where an input box taller than the pane shows only its tail. A
+    // busy-pane send queued whole in a live repro. Real damage comes from a
+    // foreign keystroke mid-stream, busy or not; the scheduler judges each
+    // delivery from the transcript (delivery-integrity.ts). onBusySend records
+    // a send condition, not an integrity verdict.
   }
 
   // DELIVLOCK805: everything from here to `return 'sent'` EMITS keystrokes into
@@ -2686,6 +2997,14 @@ export async function sendPromptToSession(
   // (session-send-lock): normal delivery is fail-open (a stuck holder must not
   // silence the fleet); a `recover` caller skips instead of racing a live send.
   const emitToPane = async (): Promise<'sent'> => {
+  // PROMPTCSONK923: tell the caller the moment the first keystroke of THIS
+  // prompt is about to be emitted (we hold the lane from here). The scheduler
+  // judges delivery from transcript prompts recorded after this instant.
+  try {
+    opts.onEmitStart?.()
+  } catch (err) {
+    logger.warn({ err, session }, 'sendPromptToSession: onEmitStart callback threw; ignored (delivery continues)')
+  }
   // Pre-flight buffer-clear when a stale preamble is detected. Reading
   // the pane is best-effort: a capture failure here means we cannot
   // prove the buffer is clean, but proceeding without the clear is no
