@@ -1241,7 +1241,7 @@ export function buildCustomProviderLaunchEnv(agentName: string): CustomProviderL
     }
   }
 
-  const envPrefix = `export ANTHROPIC_BASE_URL="${customProviderDef.baseUrl}" && ${headerExport}export ANTHROPIC_MODEL='${model}' && `
+  const envPrefix = `export ANTHROPIC_BASE_URL="${customProviderDef.baseUrl}" && ${headerExport}export ANTHROPIC_MODEL=${shSingleQuote(model)} && `
   return { envPrefix, customApiKeyForApproval, model }
 }
 
