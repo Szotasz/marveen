@@ -34,9 +34,13 @@ fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1 -- expected: $2, got: $3"; }
 INSTALL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 REAL_HELPER="$INSTALL_DIR/scripts/main-agent-custom-provider.mjs"
 
+# A silent exit 0 here used to read as a pass in CI without a single case
+# actually running -- an unbuilt tree made this suite report green while
+# testing nothing. Fail loudly instead: a missing dist/ is a setup error,
+# not a reason to report success.
 if [ ! -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
-  echo "SKIP: dist/ not built (run 'npm run build' first)"
-  exit 0
+  echo "FAIL: dist/ not built -- run 'npm run build' first" >&2
+  exit 1
 fi
 
 # The isolated root lives INSIDE the project tree so node.js walks up to find
