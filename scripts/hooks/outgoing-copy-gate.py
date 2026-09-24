@@ -306,9 +306,15 @@ def _command_heads(toks, _d: int = 0):
     leading assignments, command-position keywords and wrappers are stepped over."""
     while toks and (_ENV_ASSIGN.match(toks[0]) or toks[0] in _CMD_POSITION_KEYWORDS):
         toks = toks[1:]
-    if not toks or _d >= _HEAD_DEPTH:
+    if not toks:
         return [toks]
     w = _basename(toks[0])
+    if _d >= _HEAD_DEPTH:
+        # Still a wrapper at the depth bound: the real command is out of sight,
+        # so it counts as a send (None) -- the bound errs toward auditing, like
+        # an unknown flag does. It used to return the wrapper itself, and nine
+        # nested wrappers + sendmail was silently skipped (Samu, #1521 review).
+        return [None] if (w in _WRAPPERS or w in ("function", "coproc")) else [toks]
     if w == "function":
         return _command_heads(toks[2:], _d + 1)
     if w == "coproc":
@@ -350,6 +356,8 @@ def _segment_is_send(toks, depth: int) -> bool:
 
 
 def _head_is_send(toks, depth: int) -> bool:
+    if toks is None:  # the depth bound was hit on a wrapper: audit it
+        return True
     if not toks:
         return False
     prog = _basename(toks[0])

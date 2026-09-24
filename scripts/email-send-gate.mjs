@@ -183,8 +183,10 @@ const HEAD_DEPTH = 8
 function commandHeads(toksIn, d = 0) {
   let toks = toksIn
   while (toks.length && (ENV_ASSIGN.test(toks[0]) || CMD_POSITION_KEYWORDS.has(toks[0]))) toks = toks.slice(1)
-  if (!toks.length || d >= HEAD_DEPTH) return [toks]
+  if (!toks.length) return [toks]
   const w = basename(toks[0])
+  // Still a wrapper at the depth bound: counts as a send (null), see the python twin.
+  if (d >= HEAD_DEPTH) return (WRAPPERS.has(w) || w === 'function' || w === 'coproc') ? [null] : [toks]
   if (w === 'function') return commandHeads(toks.slice(2), d + 1)
   if (w === 'coproc') return [...commandHeads(toks.slice(1), d + 1), ...commandHeads(toks.slice(2), d + 1)]
   const spec = WRAPPERS.get(w)
@@ -219,6 +221,7 @@ function segmentIsSend(toksIn, depth) {
 }
 
 function headIsSend(toks, depth) {
+  if (toks === null) return true // the depth bound was hit on a wrapper: audit it
   if (!toks.length) return false
   const prog = basename(toks[0])
   const rest = toks.slice(1)
