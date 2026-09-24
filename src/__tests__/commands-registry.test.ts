@@ -119,15 +119,15 @@ describe('/help generated from the registry (CMD920 test 3)', () => {
   })
 
   it('A2: the /model and /context writes are real (not planned); the nonce writes stay planned', () => {
-    for (const usage of ['/model [<választás>] [<low|medium|high|xhigh|max>] [<idő>|keep]', '/model default', '/context clear']) {
+    for (const usage of ['/model [<választás>] [<low|medium|high|max>] [<idő>|keep]', '/model default', '/context clear']) {
       const e = listCommands().find(x => x.usage === usage)
       expect(e?.planned).toBeFalsy()
       expect(typeof e?.run).toBe('function')
     }
-    expect(resolveCommand('model', ['opus', '30m'])?.usage).toBe('/model [<választás>] [<low|medium|high|xhigh|max>] [<idő>|keep]')
+    expect(resolveCommand('model', ['opus', '30m'])?.usage).toBe('/model [<választás>] [<low|medium|high|max>] [<idő>|keep]')
     // one line, order-free: model and/or effort and/or time (ELSOKOR922 Phase 7)
-    expect(resolveCommand('model', ['opus', 'low', '4m'])?.usage).toBe('/model [<választás>] [<low|medium|high|xhigh|max>] [<idő>|keep]')
-    expect(resolveCommand('model', ['low', '5m'])?.usage).toBe('/model [<választás>] [<low|medium|high|xhigh|max>] [<idő>|keep]')
+    expect(resolveCommand('model', ['opus', 'low', '4m'])?.usage).toBe('/model [<választás>] [<low|medium|high|max>] [<idő>|keep]')
+    expect(resolveCommand('model', ['low', '5m'])?.usage).toBe('/model [<választás>] [<low|medium|high|max>] [<idő>|keep]')
     expect(resolveCommand('model', ['default'])?.usage).toBe('/model default')
     expect(resolveCommand('model', ['back'])?.usage).toBe('/model default')
     expect(resolveCommand('model', [])?.kind).toBe('read')

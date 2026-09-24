@@ -46,6 +46,21 @@ export const SWITCH_TURN_QUIET_MS = 20_000
 // A model switch only needs the pane quiet (idle pane, quiet turn, no live
 // child process, no hard-guard phase): unlike /clear it throws nothing
 // away, so pending outbound work or an open question do not block it.
+// The gate's reasons are for logs ("turn-active (15s ago, need 20s)"); the
+// owner reads Telegram (owner feedback 2026-09-24: technical text carries no
+// information there).
+export function humanBusy(reason: string | undefined): string {
+  const r = reason ?? ''
+  if (r.startsWith('pane-busy') || r.startsWith('pane-')) return 'épp dolgozik'
+  if (r.startsWith('turn-active')) return 'épp most fejezett be egy kört'
+  if (r.startsWith('transcript-active')) return 'nemrég dolgozott, a törléshez 2 perc csend kell'
+  if (r.startsWith('open-question')) return 'egy megválaszolatlan kérdésed vár'
+  if (r.includes('child-process')) return 'fut egy háttérfolyamata'
+  if (r.startsWith('hard-guard')) return 'a kontextus-őr épp újraindítást készít elő'
+  if (r.includes('usage-limited')) return 'elérte a használati keretet'
+  return r || 'foglalt'
+}
+
 export function switchVerdict(inputs: GateInputs, _cfg: GateConfig): QuietVerdict {
   if (inputs.hardGuardPhase === 'await-handoff' || inputs.hardGuardPhase === 'await-ready') {
     return { quiet: false, reason: `hard-guard-armed (phase: ${inputs.hardGuardPhase})` }
@@ -90,7 +105,7 @@ export async function contextClear(nowMs: number, deps: SessionControlDeps = liv
     return {
       cleared: false,
       busy: true,
-      text: `Nem töröltem: a session foglalt (${verdict.reason}).`,
+      text: `Nem töröltem: a session ${humanBusy(verdict.reason)}.`,
     }
   }
   await deps.softClear(MAIN_AGENT_ID, deps.session(), nowMs, before)

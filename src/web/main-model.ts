@@ -33,7 +33,7 @@ import { configDirFor } from './main-transcript-root.js'
 import { readConfiguredMainModel } from './channel-monitor.js'
 import { gatherGateInputs, sendSlashCommand, mainSessionName } from './context-restart-gate-runner.js'
 import { capturePane } from './agent-process.js'
-import { switchVerdict, SWITCH_TURN_QUIET_MS, type QuietVerdict } from './session-control.js'
+import { switchVerdict, humanBusy, SWITCH_TURN_QUIET_MS, type QuietVerdict } from './session-control.js'
 import { notifyChannel } from '../notify.js'
 import { registerCommand, parseCommand, resolveCommand } from './commands.js'
 import { queuePendingWrite, readPendingWrite, runPendingWrite, clearPendingWrite, PENDING_WRITE_FILE, PENDING_WRITE_TTL_MS } from './pending-write.js'
@@ -41,7 +41,11 @@ import { formatDayClock, formatSpan, modelsDiffer, formatTokens } from './system
 
 export const DEFAULT_HOLD_MINUTES = 120
 export const BLOCK_ALERT_MS = 30 * 60_000
-export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+// What Claude Code 2.1.110 accepts (`/effort [low|medium|high|max|auto]`,
+// measured in the binary): `xhigh` is not there and would fail silently.
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'max'] as const
+// The CLI's own default: what an effort hold goes back to when no effort is configured.
+export const EFFORT_AUTO = 'auto'
 
 export const MODEL_CHOICES_FILE = join(STORE_DIR, 'model-choices.json')
 export const MODEL_HOLD_FILE = join(STORE_DIR, 'main-model-hold.json')
@@ -269,7 +273,7 @@ export function windowWarning(modelId: string, autoCompactWindow: number | null)
   if (autoCompactWindow === null) return null
   const limit = contextLimitForModel(modelId)
   return limit < autoCompactWindow
-    ? `FIGYELEM: a(z) ${modelId} ablaka (${formatTokens(limit)}) kisebb a beállított autoCompactWindow-nál (${formatTokens(autoCompactWindow)}); a CLI némán levágja.`
+    ? `Figyelem: a(z) ${modelId} kontextus-ablaka (${formatTokens(limit)}) kisebb, mint a beállított tömörítési határ (${formatTokens(autoCompactWindow)}); a Claude Code ilyenkor szó nélkül levágja a kontextust.`
     : null
 }
 
@@ -388,6 +392,19 @@ async function sendModel(modelId: string, deps: ModelDeps): Promise<SendOutcome>
   return { acked, rejected }
 }
 
+// Short name for an id (opus, sonnet) from the choice list; the id when unknown.
+function shortName(id: string | null, deps: ModelDeps): string {
+  if (!id) return '?'
+  try {
+    const c = readModelChoices(deps.choicesFile, deps.configured()).choices.find(x => !modelsDiffer(x.id, id))
+    return c ? c.name : id
+  } catch { return id }
+}
+
+function effortName(level: string): string {
+  return level === EFFORT_AUTO ? 'alap (auto)' : level
+}
+
 function rejectedText(modelId: string, why: string): string {
   return `Nem váltottam: a Claude Code elutasította a(z) ${modelId} modellt${why ? ` (${why})` : ''}.`
 }
@@ -442,7 +459,7 @@ export async function setModel(args: string[], deps: ModelDeps = liveModelDeps):
   if (choice && !isValidModelId(choice.id)) return fail(`Nem váltottam: érvénytelen modell-azonosító: ${choice.id}`)
   const now = deps.now()
   const verdict = deps.quiet(now)
-  if (!verdict.quiet) return failBusy(`Nem váltottam: a session foglalt (${verdict.reason}).`)
+  if (!verdict.quiet) return failBusy(`Nem váltottam: a session ${humanBusy(verdict.reason)}.`)
 
   const lines: string[] = []
   let acked = false
@@ -450,14 +467,12 @@ export async function setModel(args: string[], deps: ModelDeps = liveModelDeps):
     const out = await sendModel(choice.id, deps)
     if (out.rejected !== null) return fail(rejectedText(choice.id, out.rejected))
     acked = out.acked
-    lines.push(acked
-      ? `Átváltva: ${choice.name} = ${choice.id} (a Claude Code visszaigazolta)`
-      : `/model ${choice.id} elküldve (a Claude Code visszaigazolását nem láttam)`)
+    lines.push(acked ? `Átváltva: ${choice.name}.` : `Elküldve: ${choice.name} (a Claude Code még nem igazolta vissza).`)
   }
   if (effort) {
     await deps.send(`/effort ${effort}`)
     writeEffortSent(effortSentFileFor(deps.lastSentFile), effort, now)
-    lines.push(`Effort: ${effort} elküldve (visszamérni nem tudjuk).`)
+    lines.push(`Effort: ${effort}.`)
   }
 
   const baseEffort = deps.configuredEffort()
@@ -466,22 +481,22 @@ export async function setModel(args: string[], deps: ModelDeps = liveModelDeps):
     clearHold(deps.holdFile)
     deps.scheduleExpiry(null)
     lines.push(choice
-      ? 'TARTÓS: az app .env MAIN_AGENT_MODEL sora frissítve (respawn után is ez indul).'
-      : 'A „keep” csak a modellre vonatkozik; az effortot a CLI újraindításkor elfelejti.')
+      ? `Tartós: újraindulás után is ${choice.name} indul.`
+      : 'A „keep” csak a modellre vonatkozik; az effort a session következő újraindulásáig marad.')
   } else {
     const minutes = hold ?? choice?.defaultHoldMinutes ?? DEFAULT_HOLD_MINUTES
     const until = now + minutes * 60_000
     writeHold(deps.holdFile, {
       model: choice?.id ?? null, name: choice?.name ?? (effort as string), revert_to: choice ? configured : null,
-      effort: effort ?? null, revert_effort: effort ? baseEffort : null,
+      effort: effort ?? null, revert_effort: effort ? (baseEffort ?? EFFORT_AUTO) : null,
       until, set_at: now, verify_pending: choice !== null, blocked_since: null, block_alert_at: null,
     })
     deps.scheduleExpiry(until)
-    const back = [choice ? `modell: ${configured}` : null, effort ? (baseEffort ? `effort: ${baseEffort}` : 'effort: nincs beállított alapérték, kézzel állítsd vissza') : null]
-      .filter(Boolean).join(' · ')
-    lines.push(`Ideiglenes: ${formatSpan(minutes * 60)} (${formatDayClock(until)}-ig), utána vissza -- ${back}. A .env nem változott.`)
+    const back = [choice ? shortName(configured, deps) : null, effort ? `effort ${effortName(baseEffort ?? EFFORT_AUTO)}` : null]
+      .filter(Boolean).join(', ')
+    lines.push(`Ideiglenes: ${formatDayClock(until)}-ig (${formatSpan(minutes * 60)}), utána vissza: ${back}.`)
   }
-  if (choice) lines.push('A következő kör modelljét is visszamérem; ha eltér, szólok.')
+  if (choice) lines.push('Ha a következő kör mást mér, szólok.')
   const warn = choice ? windowWarning(choice.id, deps.autoCompactWindow()) : null
   if (warn) lines.push(warn)
   return ok(lines.join('\n'))
@@ -495,7 +510,7 @@ export async function modelBack(deps: ModelDeps = liveModelDeps): Promise<StepRe
   if (error) return fail(`Nem váltottam: a main-model-hold.json olvashatatlan (${error}).`)
   const base = state?.revert_to ?? deps.configured()
   const measured = deps.measured()
-  if (!state && measured && !modelsDiffer(base, measured)) return ok(`Már az alapmodell fut: ${measured}.`)
+  if (!state && measured && !modelsDiffer(base, measured)) return ok(`Már az alapmodell fut: ${shortName(measured, deps)}.`)
   const verdict = deps.quiet(now)
   if (!verdict.quiet) {
     if (state) {
@@ -503,9 +518,9 @@ export async function modelBack(deps: ModelDeps = liveModelDeps): Promise<StepRe
       // ok, not fail: the owner's "default" took effect (the revert is armed),
       // so a queued model write must be dropped by withRetry -- measured on the
       // test bot: a queued /gyors survived this reply and would have switched.
-      return ok(`A session foglalt (${verdict.reason}); a tartás lejártra állítva, a sweep visszavált, amint csendes.`)
+      return ok(`A session ${humanBusy(verdict.reason)}; a visszaváltás megtörténik, amint szabad.`)
     }
-    return failBusy(`Nem váltottam: a session foglalt (${verdict.reason}).`)
+    return failBusy(`Nem váltottam: a session ${humanBusy(verdict.reason)}.`)
   }
   const lines: string[] = []
   // An effort-only hold has no model to put back.
@@ -513,17 +528,15 @@ export async function modelBack(deps: ModelDeps = liveModelDeps): Promise<StepRe
     const out = await sendModel(base, deps)
     if (out.rejected !== null) return fail(rejectedText(base, out.rejected))
     const acked = out.acked
-    lines.push(`${acked ? `Visszaváltva: ${base} (a Claude Code visszaigazolta)` : `/model ${base} elküldve (vissza az alapmodellre; a visszaigazolást nem láttam)`}${state ? ', a tartás törölve' : ''}.`)
+    lines.push(`${acked ? `Visszaváltva: ${shortName(base, deps)}` : `Elküldve: vissza ${shortName(base, deps)}-ra (a Claude Code még nem igazolta vissza)`}${state ? ', a tartás törölve' : ''}.`)
   }
   // /model default puts the effort back too, when there is a base to put back.
   if (state?.effort) {
-    if (state.revert_effort) {
-      await deps.send(`/effort ${state.revert_effort}`)
-      writeEffortSent(effortSentFileFor(deps.lastSentFile), state.revert_effort, deps.now())
-      lines.push(`Effort vissza: ${state.revert_effort} elküldve.`)
-    } else {
-      lines.push(`Az effort (${state.effort}) marad: nincs beállított alapérték, amire visszaállíthatnék.`)
-    }
+    // A hold written before the auto fallback has no revert_effort: auto too.
+    const back = state.revert_effort ?? EFFORT_AUTO
+    await deps.send(`/effort ${back}`)
+    recordEffortReset(deps, back)
+    lines.push(`Effort vissza: ${effortName(back)}.`)
   }
   clearHold(deps.holdFile)
   deps.scheduleExpiry(null)
@@ -536,10 +549,10 @@ export async function setEffort(level: string | undefined, deps: ModelDeps = liv
   const l = (level ?? '').toLowerCase()
   if (!(EFFORT_LEVELS as readonly string[]).includes(l)) return fail(`Használat: /model effort <${EFFORT_LEVELS.join('|')}>`)
   const verdict = deps.quiet(deps.now())
-  if (!verdict.quiet) return failBusy(`Nem állítottam: a session foglalt (${verdict.reason}).`)
+  if (!verdict.quiet) return failBusy(`Nem állítottam: a session ${humanBusy(verdict.reason)}.`)
   await deps.send(`/effort ${l}`)
   writeEffortSent(effortSentFileFor(deps.lastSentFile), l, deps.now())
-  return ok(`/effort ${l} elküldve. Az effortot visszamérni nem tudjuk (a transzkript nem hordozza).`)
+  return ok(`Effort: ${l}.`)
 }
 
 // The last /effort sent, for the /model status: the CLI's effort is not in the
@@ -570,6 +583,16 @@ export function readEffortSent(file: string, sessionStartMs: number | null): { l
     if (sessionStartMs !== null && p.at < sessionStartMs) return null
     return { level: p.level, at: p.at }
   } catch { return null }
+}
+
+// Back to the CLI default: forget the marker, so /model no longer names an effort.
+function recordEffortReset(deps: ModelDeps, level: string): void {
+  const file = effortSentFileFor(deps.lastSentFile)
+  if (level === EFFORT_AUTO) {
+    try { unlinkSync(file) } catch { /* nothing recorded */ }
+  } else {
+    writeEffortSent(file, level, deps.now())
+  }
 }
 
 function writeEffortSent(file: string, level: string, at: number): void {
@@ -610,7 +633,7 @@ export async function sweepModelHold(nowMs: number, deps: ModelDeps = liveModelD
       s = { ...s, verify_pending: false }
       writeHold(deps.holdFile, s)
       if (modelsDiffer(s.model as string, measured)) {
-        await deps.notify(`FIGYELEM: /model ${s.model} után a mért modell ${measured}. A tartás marad, lejáratkor visszaváltok: ${s.revert_to}.`)
+        await deps.notify(`Figyelem: a váltás után ${shortName(measured, deps)} fut, nem ${shortName(s.model, deps)}. A tartás marad, lejáratkor visszaváltok: ${shortName(s.revert_to, deps)}.`)
         outcome = 'mismatch'
       } else {
         // The switch reply already carried the CLI's own acknowledgement; a
@@ -640,7 +663,7 @@ export async function sweepModelHold(nowMs: number, deps: ModelDeps = liveModelD
     const alertDue = nowMs - since >= BLOCK_ALERT_MS && s.block_alert_at === null
     writeHold(deps.holdFile, { ...s, blocked_since: since, block_alert_at: alertDue ? nowMs : s.block_alert_at })
     if (alertDue) {
-      await deps.notify(`A modell-tartás ${formatDayClock(s.until)}-kor lejárt, de a session ${Math.round((nowMs - since) / 60_000)} perce foglalt (${verdict.reason}); a visszaváltás (${s.revert_to}) vár. Mi fut: /runs`)
+      await deps.notify(`A modell-tartás ${formatDayClock(s.until)}-kor lejárt, de a session ${Math.round((nowMs - since) / 60_000)} perce foglalt (${humanBusy(verdict.reason)}); a visszaváltás (${shortName(s.revert_to, deps)}) vár. Mi fut: /runs`)
       return 'block-alerted'
     }
     return 'blocked'
@@ -649,17 +672,14 @@ export async function sweepModelHold(nowMs: number, deps: ModelDeps = liveModelD
   if (s.model && s.revert_to) {
     const acked = (await sendModel(s.revert_to, deps)).acked
     parts.push(acked
-      ? `visszaváltva ${s.model} -> ${s.revert_to} (a Claude Code visszaigazolta)`
-      : `/model ${s.revert_to} elküldve (${s.model} helyett); a visszaigazolást nem láttam, a következő kör mérése mutatja`)
+      ? `visszaváltva ${shortName(s.model, deps)} -> ${shortName(s.revert_to, deps)}`
+      : `vissza ${shortName(s.revert_to, deps)}-ra elküldve (a Claude Code még nem igazolta vissza)`)
   }
   if (s.effort) {
-    if (s.revert_effort) {
-      await deps.send(`/effort ${s.revert_effort}`)
-      writeEffortSent(effortSentFileFor(deps.lastSentFile), s.revert_effort, deps.now())
-      parts.push(`effort vissza: ${s.revert_effort}`)
-    } else {
-      parts.push(`az effort (${s.effort}) marad: nincs beállított alapérték, kézzel állítsd vissza`)
-    }
+    const back = s.revert_effort ?? EFFORT_AUTO
+    await deps.send(`/effort ${back}`)
+    recordEffortReset(deps, back)
+    parts.push(`effort vissza: ${effortName(back)}`)
   }
   clearHold(deps.holdFile)
   deps.scheduleExpiry(null)

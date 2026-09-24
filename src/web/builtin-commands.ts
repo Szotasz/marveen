@@ -460,7 +460,23 @@ export function boardText(cards: KanbanCard[], owner: string = OWNER_NAME): stri
   for (const c of mine.slice(0, 30)) {
     lines.push(`- #${c.seq ?? '?'} ${c.id.slice(0, 8)} · ${c.status} · ${c.assignee ?? '-'} · ${clip(c.title, 60)}`)
   }
-  if (mine.length > 30) lines.push(`+${mine.length - 30} további`)
+  if (mine.length > 30) lines.push(`+${mine.length - 30} további, mindet: /board all`)
+  lines.push('', 'Részletek: /board <id> (8 jegyű id vagy #szám)')
+  return lines.join('\n')
+}
+
+// /board all: every live card that is not done, by column, uncut (owner
+// request 2026-09-24: /board cut the list at 30 and said "+3 további" with no
+// way to see them). Long replies are split into Telegram-sized messages.
+export function boardAllText(cards: KanbanCard[]): string {
+  const live = cards.filter(c => c.archived_at === null && c.status !== 'done')
+  const lines = [`Minden nyitott kártya: ${live.length}`]
+  for (const st of STATUSES.filter(x => x !== 'done')) {
+    const col = live.filter(c => c.status === st)
+    if (col.length === 0) continue
+    lines.push('', `${st} (${col.length}):`)
+    for (const c of col) lines.push(`- #${c.seq ?? '?'} ${c.id.slice(0, 8)} · ${c.assignee ?? '-'} · ${clip(c.title, 60)}`)
+  }
   lines.push('', 'Részletek: /board <id> (8 jegyű id vagy #szám)')
   return lines.join('\n')
 }
@@ -558,9 +574,10 @@ export function registerBuiltinCommands(): void {
     run: (ctx, args) => reply(ctx, args.length === 0 ? usageText(ctx.now) : usageDayText(args[0], ctx.now)),
   })
   registerCommand({
-    name: 'board', kind: 'read', usage: '/board [<id>]', description: 'kanban: oszlopok és ami rád vár; <id>: egy kártya kommentekkel',
+    name: 'board', kind: 'read', usage: '/board [<id>|all]', description: 'kanban: oszlopok és ami rád vár; <id>: egy kártya kommentekkel; all: minden nyitott kártya',
     run: (ctx, args) => {
       if (args.length === 0) return reply(ctx, boardText(listKanbanCards()))
+      if (args.length === 1 && args[0].toLowerCase() === 'all') return reply(ctx, boardAllText(listKanbanCards()))
       if (args.length > 1) return reply(ctx, 'A /board csak olvas; kártyát írni innen nem lehet. Részletek: /board <id>')
       const card = findCard(args[0])
       return reply(ctx, card ? cardDetailText(card) : `Nincs ilyen kártya: ${args[0]}`)

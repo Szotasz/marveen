@@ -18,6 +18,7 @@ import {
   usageDayText,
   dayStartMs,
   boardText,
+  boardAllText,
   findCard,
   cardDetailText,
   nextRunText,
@@ -133,6 +134,23 @@ describe('/board (read only)', () => {
     expect(text).toContain('Nekem szól')
     expect(text).not.toContain('Archivált várakozó')
     expect(text).not.toMatch(/- .*Tervezett/)
+  })
+
+  it('/board cuts at 30 and points to /board all; /board all lists every open card by column, uncut', () => {
+    for (let i = 0; i < 33; i++) createKanbanCard({ id: `b${String(i).padStart(7, '0')}`, title: `Várakozó ${i}`, status: 'waiting' })
+    createKanbanCard({ id: 'd0000001', title: 'Tervezett X', status: 'planned', assignee: 'samu' })
+    createKanbanCard({ id: 'd0000002', title: 'Kész Y', status: 'done' })
+    createKanbanCard({ id: 'd0000003', title: 'Archivált Z', status: 'planned' })
+    archiveKanbanCard('d0000003')
+    expect(boardText(listKanbanCards(), 'András')).toMatch(/\+3 további, mindet: \/board all/)
+    const all = boardAllText(listKanbanCards())
+    expect(all).toMatch(/^Minden nyitott kártya: 34\n/)
+    expect(all).toMatch(/\nplanned \(1\):\n- #\d+ d0000001 · samu · Tervezett X/)
+    expect(all).toMatch(/\nwaiting \(33\):/)
+    expect(all.match(/Várakozó \d+/g)).toHaveLength(33)
+    expect(all).not.toContain('Kész Y')
+    expect(all).not.toContain('Archivált Z')
+    expect(all).not.toMatch(/in_progress|testing/)
   })
 
   it('/board <id> by #seq or id prefix, with comments', () => {

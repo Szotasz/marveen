@@ -118,7 +118,7 @@ describe('/model set (CMD920 tests 5, 6)', () => {
     expect(d.env).toEqual([])
     const h = readHold(d.holdFile).state!
     expect(h).toMatchObject({ model: 'claude-opus-5[1m]', revert_to: BASE, until: T0 + 120 * 60_000, verify_pending: true })
-    expect(r.text).toMatch(/Ideiglenes: 2 óra .*utána vissza -- modell: claude-sonnet-5/)
+    expect(r.text).toMatch(/Ideiglenes: .*-ig \(2 óra\), utána vissza: claude-sonnet-5\./)
   })
 
   it('custom hold: 30m and 4h; "set" is optional', async () => {
@@ -168,7 +168,7 @@ describe('/model set (CMD920 tests 5, 6)', () => {
     const d = deps({ quiet: () => ({ quiet: false, reason: 'pane-busy' }) })
     const r = await setModel(['opus'], d)
     expect(r.ok).toBe(false)
-    expect(r.text).toMatch(/foglalt \(pane-busy\)/)
+    expect(r.text).toBe('Nem váltottam: a session épp dolgozik.')
     expect(r.busy).toBe(true)   // the caller queues it for the end of the turn
     expect(d.sent).toEqual([])
     expect(existsSync(d.holdFile)).toBe(false)
@@ -209,8 +209,8 @@ describe('/model: one line, model and/or effort and/or time', () => {
     const r = await setModel(['opus', 'low', '4m'], d)
     expect(r.ok).toBe(true)
     expect(d.sent).toEqual(['/model claude-opus-5[1m]', '/effort low'])
-    expect(r.text).toMatch(/Effort: low elküldve/)
-    expect(r.text).toMatch(/utána vissza -- modell: claude-sonnet-5 · effort: medium/)
+    expect(r.text).toMatch(/\nEffort: low\.\n/)
+    expect(r.text).toMatch(/utána vissza: claude-sonnet-5, effort medium\./)
     expect(readHold(d.holdFile).state).toMatchObject({ model: 'claude-opus-5[1m]', effort: 'low', revert_effort: 'medium', until: T0 + 4 * 60_000 })
     expect(await sweepModelHold(T0 + 5 * 60_000, d)).toBe('reverted')
     expect(d.sent).toEqual(['/model claude-opus-5[1m]', '/effort low', `/model ${BASE}`, '/effort medium'])
@@ -227,14 +227,28 @@ describe('/model: one line, model and/or effort and/or time', () => {
     expect(d.sent).toEqual(['/effort low', '/effort medium'])
   })
 
-  it('no configured effort: the hold says the revert is manual, and never guesses a level', async () => {
+  // Owner feedback 2026-09-24: "the effort stays high after /model default".
+  // Claude Code 2.1.110 has `/effort auto` (its own default, measured in the
+  // binary), so a hold with no configured effort now goes back to auto.
+  it('no configured effort: the hold goes back to the CLI default (auto)', async () => {
     writeChoices()
     const d = deps() // configuredEffort: () => null
     const r = await setModel(['low', '5m'], d)
-    expect(r.text).toMatch(/effort: nincs beállított alapérték, kézzel állítsd vissza/)
+    expect(r.text).toMatch(/utána vissza: effort alap \(auto\)/)
+    expect(readHold(d.holdFile).state?.revert_effort).toBe('auto')
     expect(await sweepModelHold(T0 + 6 * 60_000, d)).toBe('reverted')
-    expect(d.sent).toEqual(['/effort low'])
-    expect(d.notes[0]).toMatch(/az effort \(low\) marad: nincs beállított alapérték/)
+    expect(d.sent).toEqual(['/effort low', '/effort auto'])
+    expect(d.notes[0]).toMatch(/effort vissza: alap \(auto\)/)
+  })
+
+  it('a hold written before the auto fallback (revert_effort null) also goes back to auto', async () => {
+    writeChoices()
+    const d = deps()
+    writeHold(d.holdFile, { model: null, name: 'high', revert_to: null, effort: 'high', revert_effort: null,
+      until: T0 - 1, set_at: T0 - 60_000, verify_pending: false, blocked_since: null, block_alert_at: null })
+    const r = await modelBack(d)
+    expect(d.sent).toEqual(['/effort auto'])
+    expect(r.text).toBe('Effort vissza: alap (auto).')
   })
 
   it('/model default puts back the model and the held effort', async () => {
@@ -250,12 +264,12 @@ describe('/model: one line, model and/or effort and/or time', () => {
 
 describe('/model window warning (CMD920 test 9)', () => {
   it('a smaller window than autoCompactWindow warns; a 1M model does not', async () => {
-    expect(windowWarning('claude-haiku-4-5-20251001', 300_000)).toMatch(/FIGYELEM.*200k.*300k/)
+    expect(windowWarning('claude-haiku-4-5-20251001', 300_000)).toMatch(/Figyelem.*200k.*300k/)
     expect(windowWarning('claude-opus-5[1m]', 300_000)).toBeNull()
     expect(windowWarning('claude-haiku-4-5-20251001', null)).toBeNull()
     writeChoices()
     const r = await setModel(['haiku'], deps({ autoCompactWindow: () => 300_000 }))
-    expect(r.text).toMatch(/FIGYELEM: a\(z\) claude-haiku-4-5-20251001 ablaka/)
+    expect(r.text).toMatch(/Figyelem: a\(z\) claude-haiku-4-5-20251001 kontextus-ablaka/)
   })
 })
 
@@ -288,7 +302,7 @@ describe('hold sweep (CMD920 tests 7, 8)', () => {
     expect(readHold(d.holdFile).state!.blocked_since).toBe(T0 + 61_000)
     expect(await sweepModelHold(T0 + 61_000 + BLOCK_ALERT_MS, d)).toBe('block-alerted')
     expect(d.notes).toHaveLength(1)
-    expect(d.notes[0]).toMatch(/perce foglalt \(pane-busy\)/)
+    expect(d.notes[0]).toMatch(/perce foglalt \(épp dolgozik\)/)
     expect(await sweepModelHold(T0 + 61_000 + 2 * BLOCK_ALERT_MS, d)).toBe('blocked')
     expect(d.notes).toHaveLength(1)
     expect(d.sent).toEqual([])
@@ -345,7 +359,7 @@ describe('hold sweep (CMD920 tests 7, 8)', () => {
     const bad = deps({ measured: () => 'claude-sonnet-4-6' })
     writeHold(bad.holdFile, hold({ verify_pending: true }))
     expect(await sweepModelHold(T0 + 1000, bad)).toBe('mismatch')
-    expect(bad.notes[0]).toMatch(/FIGYELEM.*mért modell claude-sonnet-4-6/)
+    expect(bad.notes[0]).toMatch(/Figyelem: a váltás után claude-sonnet-4-6 fut/)
   })
 
   it('no transcript line after the switch yet: verification stays pending', async () => {
@@ -363,16 +377,16 @@ describe('/model acknowledgement, exact expiry, stale measurement', () => {
   it("the CLI's own 'Set model to' line turns the reply into 'Átváltva'", async () => {
     writeChoices()
     const r = await setModel(['opus', '3m'], deps())
-    expect(r.text).toMatch(/^Átváltva: opus = claude-opus-5\[1m\] \(a Claude Code visszaigazolta\)\nIdeiglenes: 3 perc/)
+    expect(r.text).toMatch(/^Átváltva: opus\.\nIdeiglenes: .*-ig \(3 perc\)/)
   })
 
   it('no acknowledgement seen: the reply stays the cautious "elküldve", never "Átváltva"', async () => {
     writeChoices()
     const r = await setModel(['opus', '3m'], deps({}, { noAck: true }))
-    expect(r.text).toMatch(/^\/model claude-opus-5\[1m\] elküldve \(a Claude Code visszaigazolását nem láttam\)/)
+    expect(r.text).toMatch(/^Elküldve: opus \(a Claude Code még nem igazolta vissza\)/)
     expect(r.text).not.toMatch(/Átváltva/)
     const blind = await setModel(['opus', '3m'], deps({ ackCount: () => null }))
-    expect(blind.text).toMatch(/elküldve/)
+    expect(blind.text).toMatch(/^Elküldve: opus/)
   })
 
   it('a hold arms the one-shot expiry timer at `until`; keep and back disarm it', async () => {
@@ -396,10 +410,11 @@ describe('/model acknowledgement, exact expiry, stale measurement', () => {
   })
 
   it('the expiry revert reports the acknowledgement too', async () => {
+    writeChoices()
     const d = deps({ measured: () => 'claude-opus-5' })
     writeHold(d.holdFile, { model: 'claude-opus-5[1m]', name: 'opus', revert_to: BASE, until: T0 + 60_000, set_at: T0, effort: null, revert_effort: null, verify_pending: false, blocked_since: null, block_alert_at: null })
     expect(await sweepModelHold(T0 + 61_000, d)).toBe('reverted')
-    expect(d.notes[0]).toMatch(/visszaváltva .* \(a Claude Code visszaigazolta\)/)
+    expect(d.notes[0]).toMatch(/^A tartás lejárt: visszaváltva opus -> claude-sonnet-5\.$/)
     expect(d.expiries).toEqual([null])
   })
 
@@ -495,7 +510,7 @@ describe('/model back and /model effort', () => {
     expect(d.sent).toEqual(['/effort high'])
     const bad = await setEffort('turbo', d)
     expect(bad.ok).toBe(false)
-    expect(bad.text).toMatch(/low\|medium\|high\|xhigh\|max/)
+    expect(bad.text).toMatch(/low\|medium\|high\|max/)
     expect(d.sent).toHaveLength(1)
   })
 
@@ -569,7 +584,7 @@ describe('ack when an older ack scrolled off', () => {
     const pane = '  ⎿  Set model to claude-opus-5[1m]\n'
     const d = deps({ ackCount: () => 1, pane: () => pane, send: async () => {} })
     const r = await setModel(['haiku', '5m'], d)
-    expect(r.text).toMatch(/elküldve \(a Claude Code visszaigazolását nem láttam\)/)
+    expect(r.text).toMatch(/Elküldve: haiku \(a Claude Code még nem igazolta vissza\)/)
   })
 
   it('lastModelAck folds whitespace and takes the last line', () => {
@@ -587,7 +602,7 @@ describe('/model default with a hold while the session is busy', () => {
       until: T0 + 3_600_000, set_at: T0, verify_pending: false, blocked_since: null, block_alert_at: null,
     })
     const r = await modelBack(d)
-    expect(r).toEqual({ ok: true, text: 'A session foglalt (pane-busy); a tartás lejártra állítva, a sweep visszavált, amint csendes.' })
+    expect(r).toEqual({ ok: true, text: 'A session épp dolgozik; a visszaváltás megtörténik, amint szabad.' })
     expect(readHold(d.holdFile).state?.until).toBe(T0)
     expect(d.sent).toEqual([])
   })

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { contextClear, clearVerdict, switchVerdict, type SessionControlDeps } from '../web/session-control.js'
+import { contextClear, clearVerdict, switchVerdict, humanBusy, type SessionControlDeps } from '../web/session-control.js'
 import { DEFAULT_GATE_CONFIG, type GateInputs } from '../context-restart-gate.js'
 import { readLastTurnActivityMs, projectsDirFor } from '../web/active-model.js'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
@@ -36,12 +36,23 @@ function deps(i: GateInputs, after: number | null = 12_000) {
   return { d, softClear }
 }
 
+describe('humanBusy (owner-facing busy reasons)', () => {
+  it('turns the gate reasons into plain Hungarian; an unknown one passes through', () => {
+    expect(humanBusy('pane-busy')).toBe('épp dolgozik')
+    expect(humanBusy('turn-active (10s ago, need 20s)')).toBe('épp most fejezett be egy kört')
+    expect(humanBusy('transcript-active (13s since last write, need 120s)')).toMatch(/2 perc csend/)
+    expect(humanBusy('open-question-in-ledger (unanswered inbound)')).toMatch(/kérdésed vár/)
+    expect(humanBusy('live-child-processes')).toMatch(/háttérfolyamat/)
+    expect(humanBusy('valami-uj')).toBe('valami-uj')
+  })
+})
+
 describe('/context clear (CMD920 test 10)', () => {
   it('busy session: no /clear, the reply points to /runs', async () => {
     const { d, softClear } = deps(inputs({ paneState: 'busy' }))
     const r = await contextClear(NOW, d)
     expect(r.cleared).toBe(false)
-    expect(r.text).toMatch(/Nem töröltem: a session foglalt \(pane-busy/)
+    expect(r.text).toBe('Nem töröltem: a session épp dolgozik.')
     expect(r.busy).toBe(true)   // queued for the end of the turn
     expect(softClear).not.toHaveBeenCalled()
   })
