@@ -547,7 +547,7 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
   // APRO920 (c)(2): same rationale as startAgentProcess's model-resolved log --
   // which config-chain element supplied the --model value.
   logger.info(
-    { session: ctx.session, model: WORKER_MODEL, source: workerModelSource() },
+    { session: ctx.session, model: workerModel, source: workerModelSource() },
     'agent-worker: launch model resolved',
   )
   logWorkerClaudeVersion(ctx)
