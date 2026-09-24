@@ -101,6 +101,41 @@ describe('inter-agent message: clean traffic PASSES, and only the homoglyph rule
   })
 })
 
+// HOMOGLYPHMICRO924: the "script" is the first word of the Unicode name, and for a
+// few signs that word is the sign's own name. Measured 2026-09-24: "40 us" (MICRO
+// SIGN), "m2" / "cm3" (SUPERSCRIPT TWO/THREE) and "H2O" (SUBSCRIPT TWO) all blocked.
+const MICRO = String.fromCodePoint(0xb5)
+const SUP2 = String.fromCodePoint(0xb2)
+const SUP3 = String.fromCodePoint(0xb3)
+const SUB2 = String.fromCodePoint(0x2082)
+const KELVIN = String.fromCodePoint(0x212a)
+const ROMAN_ONE = String.fromCodePoint(0x2160)
+
+describe('inter-agent message: unit and formula notation is not a homoglyph (HOMOGLYPHMICRO924)', () => {
+  it('micro sign, superscript and subscript digits pass silently', () => {
+    const r = gate(heredoc(msg(`a p95 kesleltetes 40 ${MICRO}s, a haz 100 m${SUP2}, 5 cm${SUP3}, H${SUB2}O`)))
+    expect(r.code).toBe(0)
+    expect(r.out).toBe('')
+  })
+  it('the exemption is a closed list: lookalike signs outside it still block', () => {
+    // KELVIN SIGN is a letter that reads as Latin K; ROMAN NUMERAL ONE is not a
+    // letter at all and reads as Latin I. A "skip every non-script name" fix would
+    // have let both through.
+    const k = gate(heredoc(msg(`a ${KELVIN}ARTYA kesz`)))
+    expect(k.code).toBe(2)
+    expect(k.err).toContain('KELVIN SIGN')
+    const i = gate(heredoc(msg(`${ROMAN_ONE}NVOICE kesz`)))
+    expect(i.code).toBe(2)
+    expect(i.err).toContain('ROMAN NUMERAL ONE')
+  })
+  it('a neutral sign does not shield a real lookalike in the same word', () => {
+    const r = gate(heredoc(msg(`40 ${MICRO}s${CYR_A} kesz`)))
+    expect(r.code).toBe(2)
+    expect(r.err).toContain('CYRILLIC SMALL LETTER A')
+    expect(r.err).not.toContain('MICRO SIGN')
+  })
+})
+
 describe('inter-agent message: an UNINTERPRETABLE body PASSES, loudly (fail-open-loud)', () => {
   const cases: Array<[string, string, RegExp]> = [
     ['missing @file', `${POST} --data-binary @/nincs/ilyen/fajl.json`, /nem olvashato/],

@@ -193,6 +193,12 @@ def main():
         check("mixed-script homoglyph still blocks (exit 2)", code, 2)
         check_true("homoglyph: stderr names it", "VEGYES IRASRENDSZERU" in err, err)
 
+        # 5d2. HOMOGLYPHMICRO924: unit and formula notation is not a mixed-script
+        # word (MICRO SIGN, superscript and subscript digits disguise no Latin letter).
+        units = " A mért késés 40 \u00b5s, a ház 100 m\u00b2, a doboz 5 cm\u00b3, a víz H\u2082O."
+        code, out, err = run_hook(email_payload(CLEAN_HU_OK + units), rules_file=active)
+        check("unit notation (micro sign, super/subscript digits) passes (exit 0)", code, 0)
+
         # 5e. clean, correctly-accented text with an active (matching-nothing)
         # rule and no em dash/double-hyphen/homoglyph -> passes clean.
         code, out, err = run_hook(email_payload(CLEAN_HU_OK), rules_file=active)

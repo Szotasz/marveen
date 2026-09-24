@@ -264,12 +264,17 @@ PRIORITASOK = ('low','normal','high','urgent')
 KULDOK = FLEET | {COORDINATOR}
 API = os.environ.get('KARTYA_API', 'http://localhost:3420/api/messages')
 HU = set('áéíóöőúüűÁÉÍÓÖŐÚÜŰ')
+# HOMOGLYPHMICRO924: a MICRO SIGN (U+00B5) betu-kategoriaju, de mertekegyseg-elotag
+# ("40 us"), latin betut nem alcaz -- a kimeno-szoveg kapu SCRIPT_NEUTRAL-janak parja.
+# A felso/also indexes szamjegyek itt nem kellenek: nem betuk, ez a kapu at sem nezi oket.
+SEMLEGES = {'\u00b5'}
 
 def gyanus(t):
     """Nem-magyar, nem-ASCII BETUK egy egyebkent ASCII szoban (HOMOGLIFKAPU905 D-szabalya)."""
     out = []
     for w in t.split():
-        if any(ord(c) > 127 and c not in HU and unicodedata.category(c).startswith('L') for c in w) \
+        if any(ord(c) > 127 and c not in HU and c not in SEMLEGES
+               and unicodedata.category(c).startswith('L') for c in w) \
            and any('a' <= c.lower() <= 'z' for c in w):
             out.append(' '.join(f'U+{ord(c):04X}' if ord(c) > 127 else c for c in w))
     return out
