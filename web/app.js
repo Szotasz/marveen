@@ -14487,6 +14487,115 @@ async function deleteClaudePlan(id) {
   await loadClaudePlansList()
 }
 
+// Live usage per plan (piece 1 of multi-key rotation): the 5h / 7d windows
+// last recorded for this plan -- by the rotation heartbeat while the plan is
+// active, or by a live probe (POST /api/claude-plans/:id/probe, "Check now")
+// while it is idle. A window whose reset has already passed is shown muted
+// with "window already reset", same rule as the overview quota strip: an old
+// number must not look like a current one.
+function claudePlanWindowLevel(w, nowSec) {
+  if (!w || typeof w.usedPercent !== 'number') return null
+  if (typeof w.resetsAt === 'number' && w.resetsAt <= nowSec) return 'ok'
+  if (w.usedPercent >= 100 || w.status === 'rejected') return 'exhausted'
+  if (w.usedPercent >= 80) return 'warn'
+  return 'ok'
+}
+
+function claudePlanUsageLevel(observed) {
+  const windows = observed?.windows || {}
+  const nowSec = Math.floor(Date.now() / 1000)
+  const levels = [windows.five_hour, windows.seven_day].map((w) => claudePlanWindowLevel(w, nowSec)).filter(Boolean)
+  if (!levels.length) return null
+  if (levels.includes('exhausted')) return 'exhausted'
+  if (levels.includes('warn')) return 'warn'
+  return 'ok'
+}
+
+function renderClaudePlanUsage(plan, observed) {
+  const wrap = document.createElement('div')
+  wrap.className = 'claude-plan-usage'
+  const nowSec = Math.floor(Date.now() / 1000)
+  const windows = observed?.windows || {}
+
+  const bars = document.createElement('div')
+  bars.className = 'quota-bars'
+  for (const [labelKey, w] of [['overview.quota.five_hour', windows.five_hour], ['overview.quota.seven_day', windows.seven_day]]) {
+    if (!w || typeof w.usedPercent !== 'number') continue
+    const pct = Math.max(0, Math.min(100, Math.round(w.usedPercent)))
+    const expired = typeof w.resetsAt === 'number' && w.resetsAt <= nowSec
+    const lvl = claudePlanWindowLevel(w, nowSec)
+    const fillClass = expired ? '' : (lvl === 'exhausted' ? 'danger' : lvl === 'warn' ? 'warn' : '')
+    let tail = ''
+    if (expired) {
+      tail = ' · ' + t('overview.quota.expired')
+    } else if (typeof w.resetsAt === 'number') {
+      const at = new Date(w.resetsAt * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+      tail = ' · ' + t('settings.claude_plans.resets', { d: formatDurationShort(w.resetsAt - nowSec), at })
+    }
+    const row = document.createElement('div')
+    row.className = 'quota-bar' + (expired ? ' muted' : '')
+    row.innerHTML = `
+      <div class="quota-bar-label">${escapeHtml(t(labelKey))}</div>
+      <div class="quota-bar-track"><div class="quota-bar-fill ${fillClass}" style="width:${pct}%"></div></div>
+      <div class="quota-bar-value">${pct}%<span class="quota-bar-reset">${escapeHtml(tail)}</span></div>
+    `
+    bars.appendChild(row)
+  }
+  if (bars.children.length) wrap.appendChild(bars)
+
+  const foot = document.createElement('div')
+  foot.className = 'claude-plan-usage-foot'
+  const info = document.createElement('span')
+  const checkedAt = Math.max(observed?.observedAt || 0, observed?.lastProbe?.at || 0)
+  const parts = []
+  if (checkedAt > 0) {
+    parts.push(t('settings.claude_plans.checked', { age: formatPendingAge(Date.now() - checkedAt) }))
+  } else {
+    parts.push(t('settings.claude_plans.never_checked'))
+  }
+  const lp = observed?.lastProbe
+  if (lp && !lp.ok && lp.error !== 'rate_limited') {
+    parts.push(t('settings.claude_plans.probe_error.' + (lp.error || 'http_error'), { status: lp.httpStatus ?? '' }))
+    info.className = 'claude-plan-usage-error'
+  }
+  info.textContent = parts.join(' · ')
+  foot.appendChild(info)
+
+  const btn = document.createElement('button')
+  btn.className = 'btn-secondary btn-compact'
+  btn.textContent = t('settings.claude_plans.check_now')
+  if (!plan.tokenSecretId) {
+    btn.disabled = true
+    btn.title = t('settings.claude_plans.check_needs_token')
+  } else {
+    btn.addEventListener('click', () => probeClaudePlan(plan.id, btn))
+  }
+  foot.appendChild(btn)
+  wrap.appendChild(foot)
+  return wrap
+}
+
+async function probeClaudePlan(id, btn) {
+  const original = btn.textContent
+  btn.disabled = true
+  btn.textContent = t('settings.claude_plans.checking')
+  try {
+    const res = await fetch(`/api/claude-plans/${encodeURIComponent(id)}/probe`, { method: 'POST' })
+    if (!res.ok) {
+      let data = null
+      try { data = await res.json() } catch { /* non-JSON error body */ }
+      // A 502 is an upstream verdict (e.g. token rejected) already recorded in
+      // the state side-car; the reloaded row shows it. Anything else (404/409/
+      // 422) is not recorded, so surface it here.
+      if (res.status !== 502) showToast((data && data.error) || t('settings.claude_plans.probe_failed'))
+    }
+  } catch {
+    showToast(t('settings.claude_plans.probe_failed'))
+  }
+  btn.textContent = original
+  await loadClaudePlansList()
+}
+
 async function loadClaudePlansList() {
   const list = document.getElementById('claudePlansList')
   if (!list) return
@@ -14507,7 +14616,7 @@ async function loadClaudePlansList() {
     list.innerHTML = ''
     for (const plan of plans) {
       const observed = state.plans?.[plan.id]
-      const fiveHour = observed?.windows?.five_hour
+      const level = claudePlanUsageLevel(observed)
       const isActive = state.activePlanByAgent?.[mainAgentId()] === plan.id
 
       const row = document.createElement('div')
@@ -14522,14 +14631,16 @@ async function loadClaudePlansList() {
         <strong>${escapeHtml(plan.label)}</strong>
         <span class="claude-plan-badge">${plan.planType === 'team' ? t('settings.claude_plans.form.type_team') : t('settings.claude_plans.form.type_personal')}</span>
         ${!plan.channelsAllowed ? `<span class="claude-plan-badge claude-plan-badge-muted">${t('settings.claude_plans.no_channels')}</span>` : ''}
-        ${fiveHour ? `<span class="claude-plan-badge">${t('settings.claude_plans.last_known', { pct: Math.round(fiveHour.usedPercent) })}</span>` : ''}
+        ${level ? `<span class="claude-plan-badge claude-plan-status-${level}">${t('settings.claude_plans.status.' + level)}</span>` : ''}
       `
       main.appendChild(mainLine)
 
       const meta = document.createElement('div')
       meta.className = 'claude-plan-row-meta'
-      meta.textContent = `${plan.id} · ${plan.configDir}`
+      meta.textContent = `${plan.id} · ${plan.tokenSecretId ? t('settings.claude_plans.token_mode') : plan.configDir}`
       main.appendChild(meta)
+
+      main.appendChild(renderClaudePlanUsage(plan, observed))
 
       row.appendChild(main)
 

@@ -6382,6 +6382,22 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   flex-shrink: 0;
 }
 .claude-plan-delete:hover { opacity: 0.7; }
+.claude-plan-usage { margin-top: 10px; }
+.claude-plan-usage .quota-bar { grid-template-columns: 56px minmax(60px, 1fr) auto; }
+.claude-plan-usage-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.claude-plan-usage-error { color: var(--danger); }
+.claude-plan-status-ok { color: var(--success); border-color: var(--success); }
+.claude-plan-status-warn { color: var(--accent); border-color: var(--accent); }
+.claude-plan-status-exhausted { color: var(--danger); border-color: var(--danger); }
 .claude-plans-add-form {
   margin-top: 16px;
   padding-top: 16px;
