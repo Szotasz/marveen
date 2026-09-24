@@ -118,7 +118,7 @@ describe('/model set (CMD920 tests 5, 6)', () => {
     expect(d.env).toEqual([])
     const h = readHold(d.holdFile).state!
     expect(h).toMatchObject({ model: 'claude-opus-5[1m]', revert_to: BASE, until: T0 + 120 * 60_000, verify_pending: true })
-    expect(r.text).toMatch(/Ideiglenes: .*-ig \(2 óra\), utána vissza: claude-sonnet-5\./)
+    expect(r.text).toMatch(/Ideiglenes: \d\d:\d\d-ig \(2 óra\), utána vissza: claude-sonnet-5\./)
   })
 
   it('custom hold: 30m and 4h; "set" is optional', async () => {

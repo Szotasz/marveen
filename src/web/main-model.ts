@@ -401,6 +401,12 @@ function shortName(id: string | null, deps: ModelDeps): string {
   } catch { return id }
 }
 
+// "16:20" when it is today, "09. 25. 16:20" otherwise (same as the /model view).
+function clockShort(ms: number, now: number): string {
+  const a = formatDayClock(ms), b = formatDayClock(now)
+  return a.slice(0, -5) === b.slice(0, -5) ? a.slice(-5) : a
+}
+
 function effortName(level: string): string {
   return level === EFFORT_AUTO ? 'alap (auto)' : level
 }
@@ -494,7 +500,7 @@ export async function setModel(args: string[], deps: ModelDeps = liveModelDeps):
     deps.scheduleExpiry(until)
     const back = [choice ? shortName(configured, deps) : null, effort ? `effort ${effortName(baseEffort ?? EFFORT_AUTO)}` : null]
       .filter(Boolean).join(', ')
-    lines.push(`Ideiglenes: ${formatDayClock(until)}-ig (${formatSpan(minutes * 60)}), utána vissza: ${back}.`)
+    lines.push(`Ideiglenes: ${clockShort(until, now)}-ig (${formatSpan(minutes * 60)}), utána vissza: ${back}.`)
   }
   if (choice) lines.push('Ha a következő kör mást mér, szólok.')
   const warn = choice ? windowWarning(choice.id, deps.autoCompactWindow()) : null
