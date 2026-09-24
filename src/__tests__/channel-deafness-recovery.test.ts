@@ -19,7 +19,21 @@ import { mainConfigDecisionForTest } from '../web/main-config-decision.js'
 // it the respawned bun telegram bridge can't be located and the session comes
 // up channel-less. Lock it so a future refactor can't silently drop it.
 describe('buildMainSessionRespawnCmd', () => {
-  const base = { claudePath: '/usr/local/bin/claude', pluginId: 'telegram@claude-plugins-official', model: "claude-opus-4-8[1m]", config: mainConfigDecisionForTest() }
+  const base = { claudePath: '/usr/local/bin/claude', pluginId: 'telegram@claude-plugins-official', model: "claude-opus-4-8[1m]", config: mainConfigDecisionForTest(), channelStateEnv: { name: 'TELEGRAM_STATE_DIR', dir: '/opt/marveen/.claude/channels/telegram' } }
+
+  // #915 regression: without the *_STATE_DIR export the plugin falls back to
+  // ~/.claude/channels/<provider>/, finds no .env and exits -- the respawned
+  // session comes up channel-deaf (2026-09-24, twice in one evening).
+  it('exports the channel state dir before launching claude', () => {
+    const cmd = buildMainSessionRespawnCmd({ ...base, continueSession: false })
+    expect(cmd).toContain("export TELEGRAM_STATE_DIR='/opt/marveen/.claude/channels/telegram'")
+    expect(cmd.indexOf('TELEGRAM_STATE_DIR')).toBeLessThan(cmd.indexOf(base.claudePath))
+  })
+
+  it('single-quote-escapes the state dir so a path cannot break out of the export', () => {
+    const cmd = buildMainSessionRespawnCmd({ ...base, continueSession: false, channelStateEnv: { name: 'TELEGRAM_STATE_DIR', dir: "/x'; touch PWNED #" } })
+    expect(cmd).not.toContain("'/x'; touch")
+  })
 
   it('always exports a PATH that includes $HOME/.bun/bin', () => {
     const cmd = buildMainSessionRespawnCmd({ ...base, continueSession: false })
