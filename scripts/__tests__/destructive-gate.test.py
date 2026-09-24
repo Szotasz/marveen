@@ -91,7 +91,10 @@ def _hook_exit(stdin_text):
 def _injected_fault_exit():
     """Szandekos hiba a check_bash-ben: a main()-nek 2-vel kell kilepnie, nem 0-val."""
     src = open(GATE, encoding="utf-8").read()
-    fault = ("\n\ndef check_bash(cmd, _depth=0):\n"
+    # A csonk szignaturaja kovesse a valodit (cwd-vel egyutt): kulonben nem a
+    # BEINJEKTALT hibat mernenk, hanem egy TypeError-t -- ami szinten 2-vel
+    # lepne ki, tehat a teszt zold maradna, mikozben mar mast merne.
+    fault = ("\n\ndef check_bash(cmd, _depth=0, cwd=None):\n"
              "    raise ValueError('szandekosan injektalt hiba')\n\n")
     # A foltnak a main() HIVASA ELE kell kerulnie, kulonben a modul mar lefutott.
     marker = "if __name__ =="
@@ -334,6 +337,31 @@ check("fork-URL-re, tokennel", not blocks(
       GPUSH + " https://user:x@github.com/valaki/repo.git munkaag:munkaag"))
 check("cimke", not blocks(GPUSH + " origin v1.2.3"))
 check("mas git alparancs valtozatlan", not blocks("git commit -m 'fix'"))
+
+
+# --- 7. A cwd BEKOTESE a hook teljes utjan --------------------------------
+# A 6. szakasz esetei kozvetlenul a check_bash()-t hivjak, megadott cwd-vel. A main()
+# viszont az ESEMENYBOL veszi a cwd-t, es azt az ag egyetlen fenti eset sem erinti:
+# ha a mezo neve elirodna, minden modul-szintu teszt zold maradna, es a kapu elesben
+# minden relativ torlest blokkolna (vagy rosszabb: rossz konyvtarhoz merne).
+def _hook_cwd_exit(cmd, cwd):
+    ev = {"tool_name": "Bash", "tool_input": {"command": cmd}}
+    if cwd is not None:
+        ev["cwd"] = cwd
+    return _hook_exit(json.dumps(ev))
+
+
+print()
+print("A cwd bekotese a hook teljes utjan (main -> check_bash):")
+check("relativ torles a gyoker alol: atengedve", _hook_cwd_exit(RM + " -rf build", ROOT) == 0)
+check("ugyanaz a parancs mashonnan: blokkolva",
+      _hook_cwd_exit(RM + " -rf build", "/etc") == 2)
+check("cwd nelkul a relativ ut nem eldontheto",
+      _hook_cwd_exit(RM + " -rf build", None) == 2)
+check("abszolut ut a gyoker alatt cwd nelkul is atmegy",
+      _hook_cwd_exit(RM + " -rf " + ROOT + "/build", None) == 0)
+check("munkaagra push atengedve", _hook_cwd_exit(GPUSH + " origin munkaag", ROOT) == 0)
+check("main-re push blokkolva", _hook_cwd_exit(GPUSH + " origin main", ROOT) == 2)
 
 
 print()
