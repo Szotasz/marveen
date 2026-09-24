@@ -178,8 +178,22 @@ describe('copy gate reads a curl @file payload (GATEBINVAK916)', () => {
     expect(extract(resend(`--form-string "text=@${p}"`))).toEqual(['', null])
   })
 
-  it('inter-agent messages stay out of the email gate (scope unchanged by this branch)', () => {
-    const p = file('msg.json', JSON.stringify({ from: 'samu', to: 'marveen', content: HOMO }))
-    expect(gate(`curl -s -X POST http://localhost:3420/api/messages -H "Content-Type: application/json" --data-binary @${p}`).code).toBe(0)
+  // Inter-agent messages stay out of the EMAIL gate. Since INTERAGENTHOMOGLIF923
+  // (#1509) they get their own homoglyph-only check, so a lookalike in an @file
+  // message now blocks -- but on the inter-agent branch, not on the email rules,
+  // and accentless text (which the email accent rule would stop) still passes.
+  // Before #1509 this case pinned "passes"; merged together the two went red.
+  it('inter-agent messages stay out of the email gate: only the homoglyph check runs', () => {
+    const post = (p: string) =>
+      `curl -s -X POST http://localhost:3420/api/messages -H "Content-Type: application/json" --data-binary @${p}`
+    const homo = gate(post(file('msg.json', JSON.stringify({ from: 'samu', to: 'marveen', content: HOMO }))))
+    expect(homo.code).toBe(2)
+    expect(homo.err).toMatch(/\(inter-agent\)/)
+    const accentless = gate(post(file('msg2.json', JSON.stringify({ from: 'samu', to: 'marveen', content: 'Szia, kuldom a szamlat, nezd meg.' }))))
+    expect(accentless.code).toBe(0)
+    // Control: the SAME accentless text as an email letter is stopped by the
+    // email rules, so the pass above is the scope, not a toothless gate.
+    const asMail = gate(resend(`--data-binary @${file('mail2.json', JSON.stringify({ to: 'c@d.hu', subject: 'Szamla', text: 'Szia, kuldom a szamlat, nezd meg.' }))}`))
+    expect(asMail.code).toBe(2)
   })
 })
