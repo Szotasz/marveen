@@ -255,7 +255,9 @@ export function wrapperDepthHit(cmd) {
   } catch {
     return false
   }
-  return segments.some((toks) => commandHeads(toks).some((h) => h === null))
+  // Only when the bound is the WHOLE reason: a visible send in another segment wins.
+  const heads = segments.flatMap((toks) => commandHeads(toks))
+  return heads.some((h) => h === null) && !heads.some((h) => h !== null && headIsSend(h, 0))
 }
 
 export function buildWrapperDepthMsg() {

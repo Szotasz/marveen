@@ -402,11 +402,16 @@ def wrapper_depth_hit(cmd: str) -> bool:
     counted as a send without the real command being seen (HEADDEPTH924). The
     gate uses it to say WHY it blocks: "I could not audit the letter" is the
     wrong reason for `nohup x9 git status` (Marveen, #1522 review)."""
+    # Only when the depth bound is the WHOLE reason: if a visible segment is a
+    # send on its own (`sendmail x; sudo x9 true`), that send is the reason,
+    # and the ordinary wording must stay (Samu, #1523 review).
     try:
         segments = _segments_tokens(cmd)
     except ValueError:
         return False
-    return any(h is None for toks in segments for h in _command_heads(toks))
+    heads = [h for toks in segments for h in _command_heads(toks)]
+    return any(h is None for h in heads) and not any(
+        h is not None and _head_is_send(h, 0) for h in heads)
 
 
 def is_send_invocation(cmd: str, _depth: int = 0) -> bool:

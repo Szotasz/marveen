@@ -41,6 +41,13 @@ describe('copy gate: the depth-bound block names its own reason', () => {
     expect(r.err).not.toContain('a levelet nem tudtam megvizsgalni')
   })
 
+  it('a VISIBLE send next to a deep wrapper keeps the ordinary reason (Samu, #1523 review)', () => {
+    const r = copyGate(`sendmail a@b.hu; ${wrap(9, 'true')}`)
+    expect(r.code).toBe(2)
+    expect(r.err).toContain('a levelet nem tudtam megvizsgalni')
+    expect(r.err).not.toContain('valodi fejet')
+  })
+
   it('inside the bound the same command is not a send and passes', () => {
     expect(copyGate(wrap(8, 'git status')).code).toBe(0)
   })
@@ -69,6 +76,11 @@ describe('hard gate (sub-agents): the depth-bound deny has its own kind and mess
     expect(wrapperDepthHit(wrap(9, 'git status'))).toBe(true)
     expect(wrapperDepthHit(wrap(8, 'git status'))).toBe(false)
     expect(wrapperDepthHit('sendmail a@b.hu')).toBe(false)
+  })
+
+  it('a visible send next to a deep wrapper is the reason, not the bound', () => {
+    expect(wrapperDepthHit(`sendmail a@b.hu < body.txt; ${wrap(9, 'true')}`)).toBe(false)
+    expect(gateDecision('Bash', { command: `sendmail a@b.hu < body.txt; ${wrap(9, 'true')}` })).toEqual({ deny: true })
   })
 
   it('gives kind wrapper-depth past the bound, the ordinary deny otherwise', () => {
