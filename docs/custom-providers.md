@@ -79,6 +79,8 @@ Minden végpont Bearer tokenes hitelesítést igényel (`store/.dashboard-token`
 - A vault kulcsok értéke sosem kerül a provider-konfigba -- csak a kulcs neve tárolódik.
 - Ha egy ágenshez beállított provider-id nem található a `store/custom-providers.json`-ban, az ágens indítása hibával leáll (csendes Ollama-fallback helyett).
 - Modell azonosítóban csak `a-zA-Z0-9._/:+-` karakterek engedélyeztek, hogy megakadályozzuk a shell-injekciót az egyéni provider ágakban.
+- Megosztott config-gyökér esetén (nincs izolált `CLAUDE_CONFIG_DIR` az ágenshez) az `x-api-key` jóváhagyási stamp az operátor saját `~/.claude.json` fájljába kerül, nem egy ágens-specifikus fájlba.
+- Az `ollama` ág a telepítés-szintű `AGENT_LOCAL_BASE_URL` környezeti változót olvassa a base URL-hez, az egyéni provider ág viszont a `store/custom-providers.json`-ban tárolt, per-provider `baseUrl` bejegyzést -- a kettő egymástól függetlenül, egyszerre él.
 
 ---
 
