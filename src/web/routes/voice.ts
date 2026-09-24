@@ -30,6 +30,26 @@ const VOICE_DIR = join(homedir(), '.local', 'share', 'marveen-voice')
 const VTOOLS_PY = join(VOICE_DIR, '_vtools.py')
 const VENV_PY = join(VOICE_DIR, 'venv', 'bin', 'python')
 
+// STT wall-clock budget. Measured 2026-09-18 on an 8-core CPU box with the
+// STOCK _vtools.py settings (faster-whisper "small"/int8, beam_size=5): a 2:26
+// voice note took 110.1 s. The previous 60 s budget therefore silently killed
+// every voice message longer than about two minutes -- the route returned
+// transcript=null and nothing said why, so the owner's message simply vanished.
+// At that measured rate 160 s covers roughly 3.5 minutes of audio.
+// The figure is deliberately quoted for stock settings: an earlier revision of
+// this change also lowered beam_size, which would have made the same budget
+// stretch further, but that tuning lives in the INSTALLED copy of _vtools.py
+// and a merge cannot deliver it -- so the budget must hold without it.
+//
+// THE THREE BOUNDS MUST BE STRICTLY INCREASING, innermost first:
+//   this STT budget 160 s  <  voice-reply-directive.py urlopen 170 s
+//                          <  hook `timeout` in settings.json 180 s
+// The shortest wins, so if an outer bound is the smallest it fires first and
+// the caller sees a bare socket/hook timeout instead of the server's own
+// transcript=null -- the same "vanished with no reason" failure this change
+// exists to remove, just later. Raising one of the three alone changes nothing.
+const STT_TIMEOUT_MS = 160_000
+
 // Telegram file_ids are base64url + some punctuation; reject anything else.
 const SAFE_FILE_ID_RE = /^[A-Za-z0-9_\-]{10,200}$/
 
@@ -98,13 +118,14 @@ let _installInProgress = false
 // coupled message delivery to the HTTP server and, under sustained voice
 // traffic, threw the event loop (progressive /api/agents latency 73ms -> 12s ->
 // timeout). Returns the transcript, or null on any failure (toolkit missing,
-// invalid input, whisper non-zero). The whisper subprocess keeps its own 60s
-// timeout inside runProc, so a slow transcription can never hang the caller.
+// invalid input, whisper non-zero). The whisper subprocess keeps its own
+// STT_TIMEOUT_MS budget inside runProc, so a slow transcription can never hang
+// the caller.
 export async function transcribeVoiceFile(fileId: string, stateDir: string): Promise<string | null> {
   if (!isVoiceInstalled()) return null
   if (!SAFE_FILE_ID_RE.test(fileId)) return null
   if (!isSafeStateDir(stateDir)) return null
-  const result = await runProc(VENV_PY, [VTOOLS_PY, 'transcribe', fileId, stateDir], { timeoutMs: 60_000 })
+  const result = await runProc(VENV_PY, [VTOOLS_PY, 'transcribe', fileId, stateDir], { timeoutMs: STT_TIMEOUT_MS })
   if (result.code !== 0) {
     logger.warn({ fileId, stderr: result.stderr.slice(0, 200) }, 'transcribeVoiceFile: whisper failed')
     return null
@@ -160,7 +181,7 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
 
     let transcript: string | null = null
     if (inboundWasAudio && isVoiceInstalled()) {
-      const sttResult = await runProc(VENV_PY, [VTOOLS_PY, 'transcribe', fileParam, stateDir], { timeoutMs: 60_000 })
+      const sttResult = await runProc(VENV_PY, [VTOOLS_PY, 'transcribe', fileParam, stateDir], { timeoutMs: STT_TIMEOUT_MS })
       if (sttResult.code === 0) {
         transcript = sttResult.stdout.trim() || null
       } else {

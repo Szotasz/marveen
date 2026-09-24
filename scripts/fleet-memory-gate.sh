@@ -95,6 +95,21 @@ try:
   print(v[0] if v else "")
 except Exception: print("")' "$ACCESS_JSON" 2>/dev/null)"
 fi
+# NULLAORFLEET921: the "0" installer placeholder is not a chat (install-linux.sh:812).
+# The two notifiers got this guard in #1450 and this file did not, so the three
+# surfaces diverged. MEASURED before adding it, and the honest state is worth
+# writing down: today NO path puts a "0" here. Nothing in the repo sets
+# MARVEEN_ALERT_CHAT_ID (no unit, no plist, no installer line), the placeholder
+# lands in ALLOWED_CHAT_ID which this script never reads, and no shipped installer
+# version ever seeded access.json's allowFrom from CHAT_ID (107 historical versions
+# checked, 0 hits, positive control passed). This line is therefore defence in
+# depth, not a live bug fix: it matters the moment someone populates the alert
+# chat id from the install config -- which is exactly what the external ticket
+# suggests doing for the notifiers.
+# Without it the value is NOT silent but noisy-useless: measured, "0" takes the
+# same path as a real id, so the send is attempted, fails, and is retried every
+# run because a failed send deliberately never stamps the cooldown.
+[ "$CHAT_ID" = "0" ] && CHAT_ID=""
 ALERT_COOLDOWN=600   # seconds; do not repeat the same band's alert within this
 
 log() { echo "[fleet-memory-gate] $*" >&2; }

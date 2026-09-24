@@ -20,13 +20,28 @@ Segít megérteni:
 
 ### Adatgyűjtés (`src/web/token-usage.ts`)
 
-1. **Agent discovery**: A `~/.claude/projects/` könyvtárból azonosítja az ágenseket a könyvtárnevek alapján (`-agents-NAME` minta a sub-ágensekhez, `-MAIN_AGENT_ID` a fő ágenshez).
+1. **Agent discovery**: Három forrásból gyűjti össze az ügynökök átirat-könyvtárait.
+   - A megosztott `~/.claude/projects/` alól a könyvtárnevek alapján (`-agents-NAME` minta a
+     sub-ügynökökhöz, a projekt kódolt elérési útja a fő ügynökhöz).
+   - Minden sub-ügynök **izolált** config-könyvtárából (`agents/<név>/.claude-config/projects/`),
+     ha az ügynök saját OS-felhasználó alatt fut. Enélkül a migrációtól kezdve némán elfogynak a sorai.
+   - A **fő ügynök** izolált config-gyökeréből is, amit a `mainConfigRoots()` ad meg
+     (`src/web/inbound-probe.ts`): jellemzően `<PROJECT_ROOT>/.channels-config/projects/`, illetve
+     a `MAIN_AGENT_CONFIG_DIR` beállítás, ha van. A csatorna-munkamenet saját `CLAUDE_CONFIG_DIR`
+     mellett fut, tehát az átirata NEM a megosztott gyökérbe kerül.
+
+   Mindkét gyökér megmarad, nem csere: a migráció előtti előzmény csak a megosztottban él. A jelölteket
+   realpath szerint dedupálja, tehát egy csak symlinkelt izolált könyvtár nem számolódik kétszer.
+
+   > Mérve 2026-09-15: amíg a fő ügynököt csak a megosztott gyökérben kereste, a token-sorai 30 órán át
+   > némán elmaradtak. A régi könyvtár létezett és parsolható maradt, ezért a dashboardon szám állt,
+   > nem hiányjelzés. (TOKENVAK915)
 
 2. **JSONL parsing**: Rekurzívan bejárja a projekt könyvtárakat (beleértve a `subagents/` almappákat), és feldolgozza a `.jsonl` fájlokat. Csak az `assistant` típusú üzeneteket veszi figyelembe, amelyeknek van `usage` mezőjük.
 
 3. **Cursor tracking**: Fájlonként eltárolja az utolsó feldolgozott sort és fájlméretet (`token_usage_cursors` tábla). Változatlan fájlokat kihagyja, módosultakat az utolsó pozíciótól folytatja.
 
-4. **Deduplication**: `UNIQUE INDEX` az `(agent, session_id, timestamp, input_tokens, output_tokens)` kombináción + `INSERT OR IGNORE`. Ugyanaz a rekord kétszer nem kerül be.
+4. **Deduplication**: `UNIQUE INDEX` az `(agent, session_id, timestamp, input_tokens, output_tokens)` kombináción + `ON CONFLICT ... DO UPDATE` upsert. Ugyanaz a rekord kétszer nem kerül be; ütközéskor a tárolt sor marad, és csak a `model` (ha NULL) és a `thinking_tokens` (ha NULL vagy nulla) töltődik utólag. Nem `INSERT OR IGNORE`: az upsert kiegészíteni tud egy hiányos sort, felülírni nem.
 
 ### API végpontok (`src/web/routes/token-usage.ts`)
 

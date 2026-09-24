@@ -918,11 +918,18 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec(`ALTER TABLE task_runs ADD COLUMN completed_at INTEGER`) } catch { /* already present */ }
   try { db.exec(`ALTER TABLE task_runs ADD COLUMN outcome TEXT`) } catch { /* already present */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_task_runs_open ON task_runs(completed_at, ts)`)
+  // Migration: delivery integrity (PROMPTCSONK923). What the session's own
+  // transcript shows actually ARRIVED, compared with what was typed: 'intact',
+  // or how it broke ('head-lost', 'split', ...). NULL = not verified (remote
+  // agent, command task, transcript not readable, or a row from before this
+  // column). Separate from `status`, which says how the DISPATCH went and is
+  // stamped before anything has arrived.
+  try { db.exec(`ALTER TABLE task_runs ADD COLUMN delivery TEXT`) } catch { /* already present */ }
   // Backfill for SCHEDLOST915: terminal marker rows (lost, skipped, ...) were
   // inserted with completed_at NULL and so looked open for ever. A marker ends
   // when it is written. Idempotent: matches nothing once applied.
   db.exec(`UPDATE task_runs SET completed_at = ts
-           WHERE completed_at IS NULL AND status NOT IN ('fired', 'fired_late')`)
+           WHERE completed_at IS NULL AND status NOT IN ('fired', 'fired_late', 'fired_busy')`)
 
   // --- Pending Scheduled Task Retries ---
   // Busy-skipped scheduled tasks used to live in an in-memory Map. On a
@@ -2277,12 +2284,13 @@ const ANCESTOR_DEPTH_LIMIT = 16
 
 // Stamps `now` on every ancestor starting at `parentId`, walking upward.
 //
-// NOT a `while (parent)` loop, and the reason is a second, still-missing check: nothing guards
-// kanban_cards.parent_id against a cycle -- updateKanbanCard() writes whatever it is handed, so
-// A -> B -> A is constructible through the public API. A plain walk would spin forever inside a
-// write path. The visited set makes the cycle terminate and the depth cap catches a chain that
-// grew past anything we would call a hierarchy. Both are loud, because either one means the
-// parent_id data is broken and something else needs fixing.
+// NOT a `while (parent)` loop: the visited set and depth cap below are defense-in-depth for
+// any path that writes parent_id directly (a script, a migration, a hand-edited database),
+// bypassing parentWouldCycle (below) the way addCardBlocker's callers cannot bypass
+// blockerWouldCycle. Through the public API (PUT /api/kanban/:id) a cycle is refused before
+// the write happens; this loop only has to survive one that got in some other way, not
+// silently accept it -- both branches below are loud, because either one means the parent_id
+// data is broken and something else needs fixing.
 function touchAncestorChain(parentId: string | null | undefined, now: number, startedAt: string): void {
   if (!parentId) return // root card: the common case, and it costs nothing
   const readParent = db.prepare('SELECT parent_id FROM kanban_cards WHERE id = ?')
@@ -2303,6 +2311,34 @@ function touchAncestorChain(parentId: string | null | undefined, now: number, st
     stamp.run(now, current)
     current = (readParent.get(current) as { parent_id: string | null } | undefined)?.parent_id ?? null
   }
+}
+
+// Mirrors blockerWouldCycle (above) for kanban_cards.parent_id, and closes the gap its own
+// comment used to describe: touchAncestorChain defends a write path that a cycle has ALREADY
+// entered, but nothing refused the write that created it -- A -> B -> A was constructible
+// through PUT /api/kanban/:id with no error, silently reproducing the touchAncestorChain
+// warning on every subsequent write to either card instead of being rejected once, at the
+// moment the re-parent was proposed.
+//
+// Walks upward from the PROPOSED parent using the existing (pre-write) chain, the same
+// direction touchAncestorChain walks: if cardId is reachable that way, cardId is already an
+// ancestor of parentId, so pointing cardId at parentId would close the loop. The seen-set and
+// depth cap mirror touchAncestorChain's, for the same reason -- a pre-existing cycle in the
+// data (from some other write path) must not hang this walk either; encountering one refuses
+// the new write rather than extending a chain that is already broken.
+export function parentWouldCycle(cardId: string, parentId: string): boolean {
+  if (cardId === parentId) return true
+  const readParent = db.prepare('SELECT parent_id FROM kanban_cards WHERE id = ?')
+  const seen = new Set<string>()
+  let current: string | null = parentId
+  let depth = 0
+  while (current) {
+    if (current === cardId) return true
+    if (seen.has(current) || ++depth > ANCESTOR_DEPTH_LIMIT) return true
+    seen.add(current)
+    current = (readParent.get(current) as { parent_id: string | null } | undefined)?.parent_id ?? null
+  }
+  return false
 }
 
 export function createKanbanCard(card: {
@@ -3345,6 +3381,9 @@ export interface TaskRunHistoryEntry {
   // claims and conflating them is how a finished task kept looking stuck.
   completed_at: number | null
   outcome: string | null
+  // Delivery integrity (PROMPTCSONK923): what the transcript shows arrived.
+  // null = not verified -- NOT 'intact'.
+  delivery: string | null
   duration_ms: number | null
 }
 
@@ -3352,7 +3391,13 @@ const TASK_RUN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
 // Dispatch statuses that open a run (closed later by markTaskRunCompleted or
 // reconcileOpenTaskRuns). Must match reconcileOpenTaskRuns' own filter.
-export const OPEN_TASK_RUN_STATUSES: ReadonlySet<string> = new Set(['fired', 'fired_late'])
+// 'fired_busy' (AUDITBORITEKVESZ918) belongs here with the other two: it is a
+// DELIVERED run whose prompt went into a busy pane, so it is open until the
+// watchdog sweep closes it. Left out, appendTaskRun would stamp completed_at at
+// injection time and a run that has not even started would read as finished --
+// and the authentication path that proves a wrapper-less prompt really came from
+// the scheduler (see docs + the boritek-nelkuli skill) looks for an OPEN run.
+export const OPEN_TASK_RUN_STATUSES: ReadonlySet<string> = new Set(['fired', 'fired_late', 'fired_busy'])
 
 /**
  * Record that a run was dispatched. Returns the row id so the caller can close
@@ -3381,6 +3426,18 @@ export type TaskRunOutcome = 'done' | 'abandoned' | 'lost' | 'interrupted'
  * already-closed row, so a duplicate sweep (or a reconcile racing a live sweep)
  * cannot turn a 'done' into an 'abandoned'. First writer wins.
  */
+/**
+ * Record the delivery-integrity verdict of a run (PROMPTCSONK923). Written
+ * once: a later sweep cannot overwrite the first observation. Returns true
+ * when the row was updated.
+ */
+export function setTaskRunDelivery(runId: number, verdict: string): boolean {
+  const info = db.prepare(
+    'UPDATE task_runs SET delivery = ? WHERE id = ? AND delivery IS NULL'
+  ).run(verdict, runId)
+  return info.changes > 0
+}
+
 export function markTaskRunCompleted(runId: number, outcome: TaskRunOutcome, completedAt = Date.now()): boolean {
   const info = db.prepare(
     'UPDATE task_runs SET completed_at = ?, outcome = ? WHERE id = ? AND completed_at IS NULL'
@@ -3389,21 +3446,31 @@ export function markTaskRunCompleted(runId: number, outcome: TaskRunOutcome, com
 }
 
 /**
- * Close runs that a restart orphaned.
+ * Close EVERY run that a restart orphaned (SCHEDSORZAR923).
  *
  * The watchdog's in-flight map lives in memory, so a dashboard restart loses
- * every open run it was tracking and those rows would stay open for ever --
- * re-introducing the exact "cannot tell running from finished" problem this
- * change removes, just in a smaller window. Rows older than maxAgeMs with no
- * completed_at are closed as 'interrupted': we genuinely do not know whether
- * they finished, and saying so is more useful than either optimistic 'done'
- * or alarming 'abandoned'.
+ * every open run it was tracking. Nothing else can ever close those rows: the
+ * sweep that closes rows only walks the map. Until 2026-09-23 this reconcile
+ * closed only rows OLDER than the tracking ceiling (6 h), so a run that was
+ * minutes old at the restart stayed open for ever and fed the stuck-run alert
+ * for hours (measured: hermes-soak-orszem 08:34:48, 8 minutes old at the
+ * 08:43:12 restart, still open 4 hours later). Age is not a criterion: the map
+ * is gone for ALL of them.
+ *
+ * The close stamp is completed_at = ts, a zero duration, on purpose. A "now"
+ * stamp LOOKS like a measurement and lies: the 2026-09-10 sweep produced
+ * 14-16 day "durations" that way and a threshold was later derived from them.
+ * A zero duration is obviously not a measurement, and outcome 'interrupted'
+ * says why: we genuinely do not know whether the run finished. Duration
+ * statistics filter on outcome = 'done' and never see these rows.
  */
-export function reconcileOpenTaskRuns(maxAgeMs: number, now = Date.now()): number {
+export function reconcileOpenTaskRuns(now = Date.now()): number {
   const info = db.prepare(
-    `UPDATE task_runs SET completed_at = ?, outcome = 'interrupted'
-     WHERE completed_at IS NULL AND ts < ? AND status IN ('fired', 'fired_late')`
-  ).run(now, now - maxAgeMs)
+    // 'fired_busy' (AUDITBORITEKVESZ918) is an open dispatch status like the
+    // other two, so the reconcile must be able to close it.
+    `UPDATE task_runs SET completed_at = ts, outcome = 'interrupted'
+     WHERE completed_at IS NULL AND ts <= ? AND status IN ('fired', 'fired_late', 'fired_busy')`
+  ).run(now)
   return info.changes
 }
 
@@ -3415,6 +3482,12 @@ export function reconcileOpenTaskRuns(maxAgeMs: number, now = Date.now()): numbe
  * judgement the operator can make: "running 5 min, typically finishes in 40 s"
  * says something; "running 5 min" alone does not.
  */
+/** The dispatch status of one task_runs row ('fired' | 'fired_late' | 'fired_busy' | ...), or null. */
+export function getTaskRunStatus(runId: number): string | null {
+  const row = db.prepare('SELECT status FROM task_runs WHERE id = ?').get(runId) as { status: string } | undefined
+  return row?.status ?? null
+}
+
 export function getTaskRunMedianDurationMs(name: string, minSamples = 5, limit = 50): number | null {
   const rows = db.prepare(
     `SELECT (completed_at - ts) AS d FROM task_runs
@@ -3429,8 +3502,8 @@ export function getTaskRunMedianDurationMs(name: string, minSamples = 5, limit =
 
 export function listTaskRunHistory(name: string, limit: number): TaskRunHistoryEntry[] {
   const rows = db.prepare(
-    'SELECT ts, status, agent, completed_at, outcome FROM task_runs WHERE name = ? ORDER BY ts DESC LIMIT ?'
-  ).all(name, limit) as { ts: number; status: string; agent: string; completed_at: number | null; outcome: string | null }[]
+    'SELECT ts, status, agent, completed_at, outcome, delivery FROM task_runs WHERE name = ? ORDER BY ts DESC LIMIT ?'
+  ).all(name, limit) as { ts: number; status: string; agent: string; completed_at: number | null; outcome: string | null; delivery: string | null }[]
 
   // token_usage.timestamp is in seconds; task_runs.ts is in ms -- divide by 1000
   const tokenStmt = db.prepare(
@@ -3451,6 +3524,7 @@ export function listTaskRunHistory(name: string, limit: number): TaskRunHistoryE
       tokens_est: tokenRow.total > 0 ? tokenRow.total : null,
       completed_at: completedAt,
       outcome: row.outcome ?? null,
+      delivery: row.delivery ?? null,
       duration_ms: completedAt != null ? completedAt - row.ts : null,
     }
   })

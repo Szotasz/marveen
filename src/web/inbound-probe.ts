@@ -38,10 +38,11 @@ const VENV_PYTHON = join(PROJECT_ROOT, '.watchdog-venv', 'bin', 'python3')
 const PROBER_SCRIPT = join(PROJECT_ROOT, 'scripts', 'watchdog-inbound-prober.py')
 
 // Transcript directory for the main channels session JSONL files. Claude Code
-// encodes a project dir by replacing every character that is not alphanumeric
-// (not just '/') with '-' -- see projectsDirFor in active-model.ts, the
-// canonical encoder already relied on by schedule-runner and the
-// context-guard/restart-gate watchdogs. A hand-rolled slash-only encoder here
+// encodes a project dir by replacing every character outside [a-zA-Z0-9-]
+// with '-' (measured, src/claude-project-dir.ts) --
+// see projectsDirFor in active-model.ts, the canonical encoder already relied
+// on by schedule-runner and the context-guard/restart-gate watchdogs. A
+// hand-rolled slash-only encoder here
 // used to disagree with it on any PROJECT_ROOT containing another separator
 // Claude Code also encodes (e.g. a dot in the username), which made this
 // constant point at a directory Claude Code never creates -- see the
@@ -98,9 +99,9 @@ export function mainConfigRoots(): string[] {
 
 // POSTMORTEM (866da985, 2026-09-20): this used to encode PROJECT_ROOT with a
 // local `PROJECT_ROOT.replace(/\//g, '-')` that only strips slashes, while
-// Claude Code itself replaces EVERY non-alphanumeric character (dots
-// included). On this host PROJECT_ROOT is /Users/a.kobza/marveen -- the dot
-// in the username meant the computed directory
+// Claude Code itself also replaces dots with '-' (the character class is
+// `[/.]`, not `/` alone). On this host PROJECT_ROOT is
+// /Users/a.kobza/marveen -- the dot in the username meant the computed directory
 // (.../-Users-a.kobza-marveen) never existed on disk (the real one is
 // .../-Users-a-kobza-marveen), so readLastIngestionTimestampAcross() always
 // returned null. shouldRefreshKeepaliveFromInbound() is `lastInboundTs !=

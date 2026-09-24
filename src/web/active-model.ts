@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 
 // Claude Code writes one .jsonl session log per session under
 // ~/.claude/projects/<encoded-working-dir>/. Every assistant turn carries the
@@ -24,7 +25,8 @@ const TTL_MS = 3000
 // so we read the right project dir for agents on a non-default config.
 export function projectsDirFor(workingDir: string, configDir?: string, homeDirOverride?: string): string {
   const base = configDir ?? join(homeDirOverride ?? homedir(), '.claude')
-  const encoded = workingDir.replace(/[/.]/g, '-')
+  // The encoding is Claude Code's, measured -- see src/claude-project-dir.ts.
+  const encoded = encodeClaudeProjectDir(workingDir)
   return join(base, 'projects', encoded)
 }
 

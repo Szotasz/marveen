@@ -8,6 +8,7 @@ import { runAgent } from '../agent.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
+import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
 import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities, readAgentToolDeny } from './agent-config.js'
 import { resolveProfilePlaceholders, type ProfileTemplate } from './profiles.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
@@ -618,6 +619,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   }
   if (agentGetsTelegramCopyGate(name)) injectTelegramCopyGate(existing)
   injectEgressGate(existing)
+  if (agentGetsBashEgressParser(name)) injectBashEgressParser(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 
@@ -786,12 +788,16 @@ const SELF_PACE_TOOL_DENY = ['ScheduleWakeup', 'CronCreate', 'CronDelete', 'Cron
 //     `allow`, so "any http:// host except localhost" is NOT expressible: a
 //     `*http://*` rule would also match the dashboard's own
 //     `http://localhost:<WEB_PORT>/` calls and mute the entire fleet (memory,
-//     kanban, message queue, approvals all ride that URL). The residual gap is
-//     stated out loud rather than papered over:
-//     plain-http external fetches, an interpreter one-liner (python3 -c,
-//     node -e), and a URL hidden in a shell variable all still pass. Closing
-//     those needs a Bash PreToolUse hook that parses the command, which is a
-//     separate and larger decision.
+//     kanban, message queue, approvals all ride that URL). This list alone
+//     lets through plain-http external fetches, an interpreter one-liner
+//     (python3 -c, node -e), and a URL hidden in a shell variable. On
+//     SUB-AGENTS those three shapes are now closed by the Bash PreToolUse hook
+//     scripts/hooks/bash-egress-parser.mjs (EGRESSPARSER923), which parses the
+//     command and always lets localhost through. It is a longer named list,
+//     not a complete one: a script file, a heredoc-fed interpreter, a URL built
+//     from pieces, and every other network-capable binary still pass, and the
+//     main agent is not covered by the hook. Closing those needs an allowlist
+//     or network-level gate, which is a separate owner decision.
 export const BASH_EGRESS_DENY = [
   // curl: the https:// form only -- see the localhost note above.
   'Bash(curl *https://*)',
@@ -993,6 +999,41 @@ export function injectEgressGate(existing: Record<string, unknown>): void {
   ]
 }
 
+// Which agents get the Bash egress parser (EGRESSPARSER923): every sub-agent,
+// NOT the main agent -- the same population the BASH_EGRESS_DENY list binds on
+// every install. The main agent's Bash deny lands only in its OWN config dir
+// (bashEgressDenyTargetPath), because the shared ~/.claude is also the owner's
+// interactive shell; a hook in the repo-shipped project settings would bind the
+// owner's sessions in this project the same way. Widening it to the main agent
+// is a separate owner decision, not a side effect of this gate.
+export function agentGetsBashEgressParser(name: string): boolean {
+  return name !== MAIN_AGENT_ID
+}
+
+// Idempotently wire the bash-egress-parser PreToolUse hook. It closes the three
+// shapes BASH_EGRESS_DENY names as open (plain-http curl, an interpreter
+// one-liner with a network primitive, a URL hidden in a variable) by PARSING the
+// command, with localhost always allowed. See the script header for what stays
+// open. The dedupe key is the script basename, which deliberately does NOT
+// contain 'egress-gate.mjs' -- injectEgressGate's filter would drop it.
+export function injectBashEgressParser(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'bash-egress-parser.mjs'))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('bash-egress-parser.mjs')),
+    entry,
+  ]
+}
+
 // Which Telegram tools carry copyable text out of the install. `reply` is the
 // send route; `edit_message` rewrites a message already on the phone and can
 // just as easily replace a working code block with a broken one.
@@ -1100,6 +1141,34 @@ export function ensureEgressGate(name: string): boolean {
   if (isUnsafeHookCommand(command)) return false
   injectEgressGate(settings)
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
+// Idempotent migration for the EXISTING fleet: the scaffold only rewrites a
+// sub-agent's settings on spawn, so without this the parser would reach the
+// running agents no sooner than their next respawn. Returns true if written.
+// A settings file that is not there is not created: a sub-agent without one
+// has never been spawned, and its first spawn writes the hook.
+export function ensureBashEgressParser(name: string): boolean {
+  if (!agentGetsBashEgressParser(name)) return false
+  const settingsPath = agentSettingsPath(name)
+  if (!existsSync(settingsPath)) return false
+  let settings: Record<string, unknown> = {}
+  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'bash-egress-parser.mjs'))
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  // Wired only when the entry carries the CURRENT command under the Bash
+  // matcher: a stale node path or a different matcher is silently
+  // non-enforcing, so both fall through to an in-place replace.
+  const wired = ptu.some((e) => (e as { matcher?: unknown })?.matcher === 'Bash'
+    && hookCommandWired(JSON.stringify(e), command))
+  if (wired) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectBashEgressParser(settings)
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
 }
@@ -1568,14 +1637,28 @@ export function scaffoldAgentDir(name: string) {
   if (!existsSync(memoryMd)) writeFileSync(memoryMd, '')
   const mcpJson = join(dir, '.mcp.json')
   if (!existsSync(mcpJson)) {
-    // Copy shared MCP config so agents get access to common tools (e.g. aiam-blog)
+    // MCPOROKLES923: a new agent inherits from the project-root .mcp.json ONLY the
+    // servers on AGENT_INHERITED_MCP_SERVERS (mcp-inheritance.ts). This used to be a
+    // plain copy, so whatever the operator put into the root -- a mail connector is a
+    // natural thing to put there -- reached every new agent unasked.
     const sharedMcp = join(PROJECT_ROOT, '.mcp.json')
+    let inherited: Record<string, unknown> = { mcpServers: {} }
     if (existsSync(sharedMcp)) {
-      copyFileSync(sharedMcp, mcpJson)
-    } else {
-      // Valid empty shape -- `claude /doctor` rejects plain "{}"
-      atomicWriteFileSync(mcpJson, JSON.stringify({ mcpServers: {} }, null, 2))
+      try {
+        const parsed = JSON.parse(readFileSync(sharedMcp, 'utf-8')) as Record<string, unknown>
+        const servers = parsed && typeof parsed.mcpServers === 'object' && parsed.mcpServers !== null && !Array.isArray(parsed.mcpServers)
+          ? parsed.mcpServers as Record<string, unknown>
+          : {}
+        const { kept, dropped } = filterInheritableMcpServers(servers, readInheritableMcpServerNames())
+        logNotInherited(name, 'scaffold', dropped)
+        inherited = { ...parsed, mcpServers: kept }
+      } catch (err) {
+        // Unparseable root config: inherit nothing rather than copy what we cannot filter.
+        logger.warn({ err, name }, 'MCP inheritance: project .mcp.json unreadable, new agent inherits no servers')
+      }
     }
+    // Valid empty shape when nothing is inherited -- `claude /doctor` rejects plain "{}"
+    atomicWriteFileSync(mcpJson, JSON.stringify(inherited, null, 2))
   }
   // Seed settings.json from template so the agent gets the PreCompact
   // hook (memory save + skill reflection) out of the box. Only if the
@@ -1781,7 +1864,32 @@ function buildAutonomyBody(name: string): string {
 // "ezzel napok telnek el, hogyha hulyesegeket mondanak nekem, es en meg
 // elhiszem". This block is fleet-wide, not agent-specific: a guess dressed as
 // a fact costs the same wherever it comes from.
-function buildEvidenceBody(): string {
+// `isMainAgent`: the recipient-ledger hook (scripts/email-send-gate.mjs) is
+// wired ONLY into sub-agent settings (writeAgentSettingsFromProfile, guarded by
+// `name !== MAIN_AGENT_ID`); the main agent's own sends go through the
+// approval gate (envelope-hash approval) and the Hungarian copy gate under
+// scripts/hooks/, neither of which reads the ledger. The hook FILE NAMES are
+// deliberately not written into the generated text: the seeding-surface scan in
+// hook-registration-completeness.test.ts reads this file as a corpus and would
+// take a name mention for a registration.
+// Measured 2026-09-22 (LEDGERFOAGENS922): the main agent's settings carry no
+// email-send-gate entry and its two email hooks contain zero ledger references.
+// The same paragraph cannot be true for both audiences: for a sub-agent the
+// ledger IS a machine gate, for the main agent it is NOT. Wiring the ledger for
+// the main agent is a separate owner decision; this text only stops promising a
+// protection that is not there.
+export function buildEvidenceBody(isMainAgent = false): string {
+  const gateParagraphs: string[] = isMainAgent
+    ? [
+        'Kimenő levélnél a címzett-ledger (`store/verified-recipients.json`) **nálad NEM gépi kapu**: az `email-send-gate.mjs` hook csak a sub-ügynökök settingsébe van bekötve, a tiédbe nem (mérve 2026-09-22). Ami nálad fut, az a jóváhagyás-kapu (a küldés csak a boríték -- címzett, cc, bcc, tárgy, törzs -- hash-ére adott, el nem használt jóváhagyás mellett megy át) és a magyar copy-kapu (ékezet és szöveg-QA a küldés előtt), mindkettő a `scripts/hooks/` alatt. Ezek a KÜLDÉST szigorúan kapuzzák, de a **címet nem mérik a ledgerhez**: egy rossz cím pontosan úgy megy be a jóváhagyásba, ahogy te írtad. A címforrás-szabály nálad tehát szabály, nem gép -- ne olvasd védelemnek ott, ahol nincs.',
+        '',
+        'A ledger ettől még a flottáé: a sub-ügynökök küldését méri, és ha nekik kell egy cím, forrással veszed fel. A ledger bekötése a fő ügynökre külön, gazda-döntés: magadtól ne kösd be, és ne is számolj vele, amíg nincs bekötve.',
+      ]
+    : [
+        'Kimenő levélnél van gépi kapu is, de **szűkebb, mint a szabály** -- és a különbség csendes, ezért tudni kell róla. Amit a PreToolUse hook lát: a `to`/`cc`/`bcc` mezőt **hordozó** tool-hívást (küldés, piszkozat). Azt a `store/verified-recipients.json` ledgerhez méri, és ismeretlen címre nem engedi át. **Amit NEM lát: a szkriptbe zárt címet.** Ha a levelet egy futtatott szkript állítja össze (`python3 kuldes.py`), a címzett a hook elől rejtve marad; ezt a kapu forrása maga mondja ki, mert tetszőleges értelmezőkód statikus elemzése eldönthetetlen. A gépi kapu tehát a szabály EGY részét fedi le, a maradékot a szabály tartja -- **ne olvasd védelemnek ott, ahol nincs.**',
+        '',
+        'És egy következmény, ami a hiányzó ledgerből jön: amíg a `verified-recipients.json` nem létezik, a kapu fail-closed, tehát MINDEN címet hordozó küldés tiltott. Ez helyes irány, de ha egy jóváhagyott, ismétlődő feladat emiatt akad el, a helyes lépés a **cím felvétele forrással** -- nem a kapu megkerülése egy szkripttel. Ha megkerülnéd, állj meg és jelezd.',
+      ]
   return [
     '## Tények és találgatás',
     '',
@@ -1816,7 +1924,7 @@ function buildEvidenceBody(): string {
     '',
     'Ha nem találsz forrást, ez a válasz: "ezt a címet/számot nem találom sehol". Ez teljes értékű, és sokkal olcsóbb, mint egy jó levél, ami senkihez nem ér el.',
     '',
-    'Kimenő levélnél ez gépi kapu is, nem csak szabály: a `to`/`cc`/`bcc` minden címét a `store/verified-recipients.json` ledgerhez méri a PreToolUse hook, és ismeretlen címre még piszkozatot sem enged. Új cím felvétele forrás megnevezésével:',
+    ...gateParagraphs,
     '',
     '```bash',
     `node ${join(PROJECT_ROOT, 'scripts', 'recipient-ledger.mjs')} add <cim> --source mail:<messageId>|site:<url>|owner|crm:<ref>|order:<id>|doc:<ref> --note "<honnan>"`,
@@ -1836,7 +1944,7 @@ export function ensureEvidenceSection(name: string): void {
     : join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const block = `${EVIDENCE_BEGIN}\n${buildEvidenceBody()}\n${EVIDENCE_END}`
+  const block = `${EVIDENCE_BEGIN}\n${buildEvidenceBody(name === MAIN_AGENT_ID)}\n${EVIDENCE_END}`
 
   let existing: string
   try {

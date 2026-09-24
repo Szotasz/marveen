@@ -1,4 +1,5 @@
 import { statSync, readdirSync, existsSync, realpathSync } from 'node:fs'
+import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join, basename } from 'node:path'
 import { homedir } from 'node:os'
 import { createReadStream } from 'node:fs'
@@ -8,17 +9,15 @@ import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { listAgentNames } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
+import { mainConfigRoots } from './inbound-probe.js'
 import { toolInputPreview } from './tool-input-preview.js'
 
 const PROJECTS_DIR = join(homedir(), '.claude', 'projects')
 
-// Claude Code encodes a project's absolute path into a directory name by
-// replacing every non-alphanumeric/non-dash character with `-`. The main
-// agent's transcripts live under that exact directory, regardless of what
-// the agent calls itself.
-function encodeProjectPath(p: string): string {
-  return p.replace(/[^a-zA-Z0-9-]/g, '-')
-}
+// The main agent's transcripts live under the directory Claude Code derives
+// from PROJECT_ROOT, regardless of what the agent calls itself. The encoder is
+// the tree-wide one (src/claude-project-dir.ts); the local copy that used to
+// live here was the only correct rule in the tree, and it is now the shared one.
 
 // True when `dir` is the shared ~/.claude/projects wearing another name,
 // reached through a symlink. Compared by realpath, so a symlinked parent
@@ -44,7 +43,7 @@ interface AgentTranscriptSource {
 export function discoverAgentSources(projectRootOverride?: string): AgentTranscriptSource[] {
   const sources: AgentTranscriptSource[] = []
   if (!existsSync(PROJECTS_DIR)) return sources
-  const mainDirName = encodeProjectPath(PROJECT_ROOT)
+  const mainDirName = encodeClaudeProjectDir(PROJECT_ROOT)
   for (const entry of readdirSync(PROJECTS_DIR)) {
     const full = join(PROJECTS_DIR, entry)
     let stat
@@ -83,7 +82,11 @@ export function discoverAgentSources(projectRootOverride?: string): AgentTranscr
   // Both roots are kept for a migrated agent, not swapped: the pre-migration
   // history is real and lives only in the shared root. Duplicate rows are
   // impossible anyway -- the UNIQUE INDEX on (agent, session_id, timestamp,
-  // input, output) plus INSERT OR IGNORE absorbs any overlap.
+  // input, output) plus the ON CONFLICT ... DO UPDATE upsert at the insert site
+  // absorbs any overlap. The upsert is not a plain INSERT OR IGNORE: on a
+  // conflict it keeps the stored row and only backfills `model` where it is NULL
+  // and `thinking_tokens` where it is NULL or zero, so a re-read can complete a
+  // partial row but never rewrite one.
   for (const name of listAgentNames()) {
     let configDir: string | null = null
     try { configDir = resolveAgentConfigDirForRead(name, projectRootOverride) } catch { continue }
@@ -118,6 +121,47 @@ export function discoverAgentSources(projectRootOverride?: string): AgentTranscr
       if (sources.some((s) => s.agent === name && s.projectDir === full)) continue
       sources.push({ agent: name, projectDir: full })
     }
+  }
+
+  // The MAIN agent has the same isolated-config problem the sub-agent loop above
+  // was written for, and it was left out of that fix: the loop over PROJECTS_DIR
+  // only ever finds ~/.claude/projects/<encoded>, while a channels session that
+  // runs with its own CLAUDE_CONFIG_DIR writes into <PROJECT_ROOT>/.channels-config/
+  // projects/<encoded>. From the moment the main session moved there its rows
+  // stop, and they stop SILENTLY -- the old directory still exists and still
+  // parses, so the dashboard keeps showing a number instead of a gap.
+  //
+  // MEASURED 2026-09-15 08:5x on this install: the newest transcript under
+  // ~/.claude/projects/-home-bobeklajos-marveen/ was frozen at 2026-09-13 07:27
+  // (288 KB), while the live file under .channels-config/projects/<same name>
+  // was 5.0 MB and minutes old. token_usage's last row carried exactly that
+  // 07:27 timestamp: 30 hours of the main agent's consumption missing from the
+  // monitor, with no error anywhere.
+  //
+  // mainConfigRoots() is reused deliberately rather than re-deriving the roots:
+  // the scheduler's sawTurn probe (SCHEDLOST914) and the channel watchdogs were
+  // fixed the same way, and a second copy of the root list is exactly how they
+  // drifted apart in the first place.
+  //
+  // Both roots are kept, not swapped -- the pre-migration history is real and
+  // lives only in the shared root. Duplicates cannot arise: dirs are deduped by
+  // realpath here (a .channels-config/projects that is merely a SYMLINK back to
+  // the shared root resolves to the same path and is skipped), and the UNIQUE
+  // INDEX plus the ON CONFLICT ... DO UPDATE upsert at the insert site absorbs
+  // any overlap the cursor table misses (backfill-only, see the note above).
+  const seenMainDirs = new Set<string>()
+  for (const s of sources) {
+    if (s.agent !== MAIN_AGENT_ID) continue
+    try { seenMainDirs.add(realpathSync(s.projectDir)) } catch { seenMainDirs.add(s.projectDir) }
+  }
+  for (const root of mainConfigRoots()) {
+    const candidate = join(root, 'projects', mainDirName)
+    if (!existsSync(candidate)) continue
+    let real: string
+    try { real = realpathSync(candidate) } catch { real = candidate }
+    if (seenMainDirs.has(real)) continue
+    seenMainDirs.add(real)
+    sources.push({ agent: MAIN_AGENT_ID, projectDir: candidate })
   }
 
   return sources
