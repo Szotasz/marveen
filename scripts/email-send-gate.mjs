@@ -160,9 +160,64 @@ export function segmentsTokens(cmd) {
 
 const basename = (t) => t.split('/').pop()
 
-function segmentIsSend(toksIn, depth) {
+// SENDWRAP924: a wrapper in front of the sender is stepped over WITH its own
+// flags -- see the full rationale at _WRAPPERS in outgoing-copy-gate.py (the
+// python twin). An unknown long flag without `=` is read both ways, so it errs
+// toward auditing. send-invocation-cases.json binds the two copies.
+const WRAPPERS = new Map([
+  ['time', ['fo', ['format', 'output'], 0]],
+  ['sudo', ['ughpCUrtDRT', ['user', 'group', 'host', 'prompt', 'close-from', 'other-user',
+    'role', 'type', 'chdir', 'chroot', 'command-timeout'], 0]],
+  ['env', ['uCS', ['unset', 'chdir', 'split-string'], 0]],
+  ['nohup', ['', [], 0]],
+  ['nice', ['n', ['adjustment'], 0]],
+  ['exec', ['a', [], 0]],
+  ['command', ['', [], 0]],
+  ['xargs', ['ILnPsdEa', ['arg-file', 'delimiter', 'eof', 'replace', 'max-lines', 'max-args',
+    'max-procs', 'max-chars', 'process-slot-var'], 0]],
+  ['timeout', ['sk', ['signal', 'kill-after'], 1]],
+])
+const HEAD_DEPTH = 8
+
+function commandHeads(toksIn, d = 0) {
   let toks = toksIn
   while (toks.length && (ENV_ASSIGN.test(toks[0]) || CMD_POSITION_KEYWORDS.has(toks[0]))) toks = toks.slice(1)
+  if (!toks.length || d >= HEAD_DEPTH) return [toks]
+  const w = basename(toks[0])
+  if (w === 'function') return commandHeads(toks.slice(2), d + 1)
+  if (w === 'coproc') return [...commandHeads(toks.slice(1), d + 1), ...commandHeads(toks.slice(2), d + 1)]
+  const spec = WRAPPERS.get(w)
+  if (!spec) return [toks]
+  const [shortVal, longVal, positionals] = spec
+  let i = 1
+  const starts = []
+  while (i < toks.length) {
+    const t = toks[i]
+    if (t === '--') { i++; break }
+    if (t.startsWith('--')) {
+      if (!t.includes('=') && longVal.includes(t.slice(2))) { i += 2; continue }
+      if (!t.includes('=')) starts.push(i + 2)
+      i++
+      continue
+    }
+    if (t.startsWith('-') && t.length > 1) {
+      if (w === 'command' && (t.includes('v') || t.includes('V'))) return []
+      let k = -1
+      for (let j = 1; j < t.length; j++) if (shortVal.includes(t[j])) { k = j; break }
+      i += k === t.length - 1 ? 2 : 1
+      continue
+    }
+    break
+  }
+  starts.unshift(i)
+  return starts.flatMap((s) => commandHeads(toks.slice(s + positionals), d + 1))
+}
+
+function segmentIsSend(toksIn, depth) {
+  return commandHeads(toksIn).some((h) => headIsSend(h, depth))
+}
+
+function headIsSend(toks, depth) {
   if (!toks.length) return false
   const prog = basename(toks[0])
   const rest = toks.slice(1)

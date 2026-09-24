@@ -268,9 +268,85 @@ def _segments_tokens(cmd: str):
     return segments
 
 
-def _segment_is_send(toks, depth: int) -> bool:
+# SENDWRAP924: a wrapper in front of the sender -- `sudo sendmail x`,
+# `time -p sendmail x`, `env -i sendmail x`, `timeout 10 sendmail x` -- made
+# the wrapper the "program", so the send was not recognised and the copy audit
+# was silently skipped (13 measured shapes, both copies). A wrapper is stepped
+# over WITH its own flags: a flag that takes a value consumes it, so in
+# `sudo -u sendmail true` the program is `true`, not `sendmail`.
+# name -> (short flags taking a value, long flags taking a value, positional
+# arguments before the command). An UNKNOWN long flag without `=` may or may
+# not take a value, so both readings are tried and either one being a send
+# counts: an unknown flag errs toward auditing, never toward skipping.
+# `command -v/-V` looks a name up and runs nothing. `function NAME` and
+# `coproc [NAME]` put their body in command position. Mirrored in
+# email-send-gate.mjs (WRAPPERS / commandHeads); send-invocation-cases.json
+# binds the two.
+_WRAPPERS = {
+    "time": ("fo", ("format", "output"), 0),
+    "sudo": ("ughpCUrtDRT", ("user", "group", "host", "prompt", "close-from", "other-user",
+                             "role", "type", "chdir", "chroot", "command-timeout"), 0),
+    "env": ("uCS", ("unset", "chdir", "split-string"), 0),
+    "nohup": ("", (), 0),
+    "nice": ("n", ("adjustment",), 0),
+    "exec": ("a", (), 0),
+    "command": ("", (), 0),
+    "xargs": ("ILnPsdEa", ("arg-file", "delimiter", "eof", "replace", "max-lines", "max-args",
+                           "max-procs", "max-chars", "process-slot-var"), 0),
+    "timeout": ("sk", ("signal", "kill-after"), 1),
+}
+_HEAD_DEPTH = 8
+
+
+def _command_heads(toks, _d: int = 0):
+    """Every token list that can be the real command of this segment, after the
+    leading assignments, command-position keywords and wrappers are stepped over."""
     while toks and (_ENV_ASSIGN.match(toks[0]) or toks[0] in _CMD_POSITION_KEYWORDS):
         toks = toks[1:]
+    if not toks or _d >= _HEAD_DEPTH:
+        return [toks]
+    w = _basename(toks[0])
+    if w == "function":
+        return _command_heads(toks[2:], _d + 1)
+    if w == "coproc":
+        return _command_heads(toks[1:], _d + 1) + _command_heads(toks[2:], _d + 1)
+    spec = _WRAPPERS.get(w)
+    if spec is None:
+        return [toks]
+    short_val, long_val, positionals = spec
+    i, starts = 1, []
+    while i < len(toks):
+        t = toks[i]
+        if t == "--":
+            i += 1
+            break
+        if t.startswith("--"):
+            if "=" not in t and t[2:] in long_val:
+                i += 2
+                continue
+            if "=" not in t:
+                starts.append(i + 2)
+            i += 1
+            continue
+        if t.startswith("-") and len(t) > 1:
+            if w == "command" and ("v" in t or "V" in t):
+                return []
+            k = next((j for j, ch in enumerate(t[1:], 1) if ch in short_val), -1)
+            i += 2 if k == len(t) - 1 else 1
+            continue
+        break
+    starts.insert(0, i)
+    heads = []
+    for s in starts:
+        heads += _command_heads(toks[s + positionals:], _d + 1)
+    return heads
+
+
+def _segment_is_send(toks, depth: int) -> bool:
+    return any(_head_is_send(h, depth) for h in _command_heads(toks))
+
+
+def _head_is_send(toks, depth: int) -> bool:
     if not toks:
         return False
     prog = _basename(toks[0])
