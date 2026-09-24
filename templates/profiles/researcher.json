@@ -9,8 +9,8 @@
       "Write(${AGENT_DIR}/**)",
       "Edit(${AGENT_DIR}/**)",
       "Read(${AGENT_DIR}/.claude-config/**)",
-      "Read(${HOME}/marveen/research-inbox/**)",
-      "Read(${HOME}/marveen/agents/*/research/**)",
+      "Read(${PROJECT_ROOT}/research-inbox/**)",
+      "Read(${PROJECT_ROOT}/agents/*/research/**)",
       "Read(${HOME}/Downloads/**)",
       "Read(/mnt/c/Users/*/Downloads/**)",
       "Read(${HOME}/.claude/skills/**)",
@@ -28,23 +28,23 @@
       "Bash(pdf2txt.py:*)",
       "Bash(${HOME}/.local/bin/pdf2txt.py:*)",
       "Bash(${HOME}/.local/bin/dumppdf.py:*)",
-      "Bash(bash ${HOME}/marveen/scripts/agent-msg.sh:*)",
-      "Bash(bash ${HOME}/marveen/scripts/agent-mem.sh:*)",
-      "Bash(cd ${HOME}/marveen && bash scripts/agent-mem.sh:*)",
+      "Bash(bash ${PROJECT_ROOT}/scripts/agent-msg.sh:*)",
+      "Bash(bash ${PROJECT_ROOT}/scripts/agent-mem.sh:*)",
+      "Bash(cd ${PROJECT_ROOT} && bash scripts/agent-mem.sh:*)",
       "Bash(bash scripts/agent-mem.sh:*)",
-      "Bash(cd ${HOME}/marveen && bash scripts/agent-msg.sh:*)",
+      "Bash(cd ${PROJECT_ROOT} && bash scripts/agent-msg.sh:*)",
       "Bash(curl -s -X POST http://localhost:3420/api/*)",
-      "Bash(curl -s -H \"Authorization: Bearer $(cat ${HOME}/marveen/store/.dashboard-token)\" \"http://localhost:3420/api/*)",
+      "Bash(curl -s -H \"Authorization: Bearer $(cat ${PROJECT_ROOT}/store/.dashboard-token)\" \"http://localhost:3420/api/*)",
       "Bash(${PROJECT_ROOT}/scripts/notify.sh:*)",
       "WebFetch(*)",
       "WebSearch(*)",
-      "Write(${HOME}/marveen/research-inbox/**)",
-      "Edit(${HOME}/marveen/research-inbox/**)",
+      "Write(${PROJECT_ROOT}/research-inbox/**)",
+      "Edit(${PROJECT_ROOT}/research-inbox/**)",
       "Bash(mkdir:*)",
       "Write(${AGENT_DIR}/.claude/skills/**)",
       "Edit(${AGENT_DIR}/.claude/skills/**)",
       "/mnt/e/03_LEAN Library/**",
-      "${HOME}/marveen/store/egress-allowlist.json"
+      "${PROJECT_ROOT}/store/egress-allowlist.json"
     ],
     "deny": [
       "Read(${HOME}/.ssh/**)",
@@ -59,9 +59,9 @@
     ]
   },
   "additionalDirectories": [
-    "${HOME}/marveen/research-inbox",
-    "${HOME}/marveen/scripts",
-    "${HOME}/marveen/store",
+    "${PROJECT_ROOT}/research-inbox",
+    "${PROJECT_ROOT}/scripts",
+    "${PROJECT_ROOT}/store",
     "/mnt/e/03_LEAN Library"
   ]
 }

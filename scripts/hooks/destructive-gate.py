@@ -15,6 +15,24 @@ TUDATOS dontesek voltak, nem veletlenek:
   - Hitelesito adatok olvasasanak tiltasa.
   - A kozos repoba valo push: kifele mutato, visszafordithatatlan.
 
+KET SZABALY AZOTA SZUKULT (PR #1357 review, Szabolcs; Istvan mind az ot pontot
+jovahagyta). Nem enyhites, hanem a hatar athelyezese oda, ahol a kockazat tenylegesen
+van -- ugyanaz az indok, ami 2026-09-14-en a szovegkornyezet-erzekenyseget kikenyszeritette:
+
+  - TORLES: a munkakonyvtar (PROJECT_ROOT) ALATT engedett. Kivul, valamint a .git es a
+    store/ alatt tovabbra sem. Az agens a sajat munkaterulete szemetet takaritja; a
+    verziotortenetet es az eles allapotot nem. Ami nem eldontheto (behelyettesites,
+    csovezetekbol jovo lista, cwd nelkuli relativ ut), az tovabbra is BLOKK.
+  - PUSH: a sajat munkaagra valo push engedett. Tiltott marad az eroltetett push
+    (--force es tarsai, '+' refspec), a tavoli ag torlese, a --all, es a vedett agakra
+    (main/master) iranyulo push. Cel-ag nelkuli `git push` szinten blokk: az upstream
+    nem latszik a parancsbol, tehat nem eldontheto, hova menne.
+
+  Miert nem maradt a szigorubb alak: egy tiltas, amit a mindennapi munka naponta
+  beleutkozik, nem kockazatot csokkent, hanem megkerulest tanit -- ezt a kapu sajat
+  merese mar egyszer kimutatta (lasd lentebb). A dontes az operatore: a kapu egeszet
+  a biztonsagi profil kapcsolja be (`destructiveGate`), es alapbol KI van kapcsolva.
+
 A HOOK a permission-modtol FUGGETLENUL fut. Ezert ami tenyleg tilos, az ide kerul, nem a
 deny listara. A deny lista permissive modban disz; a hook nem az.
 
@@ -59,6 +77,29 @@ import json, os, re, sys
 # Parancsok, amelyeket nem az agens dont el. Nem stilus-kerdes: mindegyik adatot vagy
 # allapotot semmisit meg visszafordithatatlanul.
 BANNED_CMDS = {'rm', 'mv', 'shred', 'sudo', 'mkfs', 'dd'}
+# 'rm' a listan marad, de NEM feltetel nelkul: sajat, szukebb szabalya van lentebb
+# (_rm_allowed). A halmazban azert all, hogy egy jovobeli szerkesztes ne felejtse el:
+# ez tovabbra is destruktiv parancs, csak nem mindig tiltott.
+
+# A telepites gyokere. A sajat helyzetebol szarmazik -- <ROOT>/scripts/hooks/ezafajl --,
+# nem konfigbol: egy kapunak nem lehet olyan bemenete, amit a vizsgalt fel is at tud irni.
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# A munkakonyvtar alatt is vedett alkonyvtarak. A 'rm' engedelye a MUNKARA szol, nem a
+# verziotortenetre es nem a futo allapotra: a .git ujrairhatatlan, a store/ pedig az
+# eles adatbazist, a tokent es a vault-ot tartalmazza -- pont az, aminek az elvesztese
+# 2026-09-07-en a tiltast egyaltalan indokolta.
+RM_PROTECTED = ('.git', 'store')
+# Feloldhatatlan alakok egy torlendo utvonalban. A '*' es a '?' NEM szerepel: a shell
+# glob nem lep at '/'-en, tehat egy munkakonyvtar alatti minta a munkakonyvtar alatt
+# marad. A behelyettesites viszont barmive kiertekelodhet, azt nem latjuk elore.
+RM_UNRESOLVABLE = ('$', '`', '{', '}')
+# Push-kapcsolok, amelyek a tavoli tortenetet irjak ujra vagy toroltetnek refet.
+PUSH_FORCE_FLAGS = {'-f', '--force', '--force-with-lease', '--force-if-includes', '--mirror'}
+PUSH_DELETE_FLAGS = {'-d', '--delete'}
+# Ertekuket KULON szoban hozo push-kapcsolok (kulonben a szomszedjuk refspecnek latszik).
+PUSH_VALUE_FLAGS = {'-o', '--push-option', '--receive-pack', '--exec', '--repo'}
+# A vedett agak: ide kezzel, review-val megy valami, nem egy agens push-abol.
+PROTECTED_BRANCHES = {'main', 'master'}
 # Ut-elotagok, amelyek hitelesito adatot tartalmaznak.
 PROTECTED_READ = ('.ssh', '.aws', '.gnupg', '.gmail-mcp')
 # A hataroloval egyutt illesztunk: a puszta minta ELENGEDTE a zaro perjel nelkuli alakot,
@@ -371,31 +412,195 @@ def _sub_scripts(toks, idx):
     return []
 
 
-def check_bash(cmd, _depth=0):
+def _under(path, root):
+    """True, ha a (mar abszolut) path a root ALATT van. A root maga NEM szamit bele."""
+    root = os.path.normpath(root)
+    path = os.path.normpath(path)
+    return path.startswith(root + os.sep)
+
+
+def _resolve(arg, cwd):
+    """A torlendo argumentum abszolut alakja, vagy None ha nem eldontheto.
+
+    Symlinkre SZANDEKOSAN nem oldunk fel: az `rm link` magat a linket torli, tehat a
+    cel helye nem szamit. A szulokonyvtar viszont szamit, ezert azt feloldjuk -- egy
+    munkakonyvtarba mutato symlink-konyvtaron keresztul kulonben kifele lehetne torolni.
+    """
+    if not arg or any(c in arg for c in RM_UNRESOLVABLE):
+        return None
+    arg = os.path.expanduser(arg)
+    if not os.path.isabs(arg):
+        if cwd is None:
+            return None
+        arg = os.path.join(cwd, arg)
+    arg = os.path.normpath(arg)
+    parent, base = os.path.split(arg)
+    try:
+        parent = os.path.realpath(parent)
+    except OSError:
+        return None
+    return os.path.normpath(os.path.join(parent, base))
+
+
+def _rm_allowed(toks, argstart, cwd):
+    """(engedett?, indoklas) -- a torles minden celpontja a munkakonyvtar alatt van-e.
+
+    Alapertelmezesben ENGEDETT a PROJECT_ROOT alatti torles (PR #1357). A korabbi,
+    feltetel nelkuli tiltas nem kockazatot csokkentett, hanem atfogalmazast tanitott:
+    a sajat munkajat takarito agens megkerulesi alakokat keresett. Amit a kapu tovabbra
+    sem enged at, az a ROOT-on KIVULRE mutato torles es minden alak, amirol nem tudja
+    eldonteni, hova mutat -- ez utobbi nem szigor, hanem a kapu egyetlen tisztesseges
+    valasza arra, amit nem lat at.
+    """
+    paths, skip = [], 0
+    for tok, quoted_space in toks[argstart:]:
+        if skip:
+            skip -= 1
+            continue
+        if quoted_space:              # szokozos idezett szoveg: nem utvonal (lasd ba856d56)
+            return False, 'idezett, szokozt tartalmazo argumentum'
+        if tok == '--':
+            continue
+        if tok.startswith('-') and tok != '-':
+            continue
+        paths.append(tok)
+    if not paths:
+        return False, 'nem latszik, MIT torolne (pl. csovezetekbol vagy -exec {}-bol jon a lista)'
+    for raw in paths:
+        abspath = _resolve(raw, cwd)
+        if abspath is None:
+            return False, 'nem eldontheto utvonal: %s' % raw[:60]
+        if not _under(abspath, PROJECT_ROOT):
+            return False, 'a munkakonyvtaron KIVULRE mutat: %s' % abspath
+        rel = os.path.relpath(abspath, PROJECT_ROOT).split(os.sep)
+        if rel and rel[0] in RM_PROTECTED:
+            return False, 'vedett alkonyvtar a munkakonyvtaron belul: %s' % rel[0]
+    return True, ''
+
+
+def _cd_target(toks, argstart, cwd):
+    """A `cd` uj munkakonyvtara, vagy None ha nem kovetheto.
+
+    Miert kell: a szegmensekre bontas utan a `cd /etc && rm foo` masodik fele ugy nezne
+    ki, mintha az agens sajat konyvtaraban torolne. Ez nem elmeleti -- ez AZ eset,
+    amiert a munkakonyvtar-alapu engedely kulonben egy sorban megkerulheto lenne.
+    """
+    args = [t for t, _sp in toks[argstart:] if not t.startswith('-')]
+    if not args:
+        return HOME                  # a puszta `cd` a HOME-ba visz
+    tgt = _resolve(args[0], cwd)
+    return tgt
+
+
+def _git_push_index(toks, argstart):
+    """A 'push' alparancs indexe, a git sajat kapcsoloin (-C ut, -c kulcs=ertek) atlepve."""
+    i = argstart
+    while i < len(toks):
+        t = toks[i][0]
+        if t in ('-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path'):
+            i += 2
+            continue
+        if t.startswith('-'):
+            i += 1
+            continue
+        return i if t == 'push' else None
+    return None
+
+
+def _check_git(toks, argstart):
+    """git push: nem tiltott onmagaban (PR #1357), de harom alakja igen.
+
+    Amit a kapu MEGTART: a tortenet ujrairasat (--force es tarsai, '+' refspec), a
+    tavoli ref torleset, es a vedett agakra (main/master) iranyulo push-t. Ezek
+    kifele mutatnak es mas munkajat is elvihetik -- ezt nem egy agens donti el.
+    Amit ELENGED: a sajat munkaag push-a, ami eddig is a munka resze volt, csak
+    jovahagyason keresztul.
+    """
+    pi = _git_push_index(toks, argstart)
+    if pi is None:
+        return
+    args, skip = [], 0
+    for tok, _sp in toks[pi + 1:]:
+        if skip:
+            skip -= 1
+            continue
+        if tok in PUSH_VALUE_FLAGS:
+            skip = 1
+            continue
+        args.append(tok)
+    flags = [a for a in args if a.startswith('-')]
+    positional = [a for a in args if not a.startswith('-')]
+
+    for f in flags:
+        base = f.split('=', 1)[0]
+        if base in PUSH_FORCE_FLAGS:
+            block('git push %s: a tavoli tortenet ujrairasa mas munkajat is elviheti. '
+                  'Sima push szabad, eroltetett nem.' % base)
+        if base in PUSH_DELETE_FLAGS:
+            block('git push %s: tavoli ag torlese. A torles nem az agens dontese.' % base)
+        if base == '--all':
+            block('git push --all: minden agat kitolja, a vedetteket is. '
+                  'Nevezd meg, melyik agra pusholsz.')
+
+    refspecs = positional[1:]          # az elso pozicionalis a remote (vagy URL)
+    if not refspecs:
+        block('git push cel-ag nelkul: a kapu nem tudja eldonteni, melyik agra menne '
+              '(az upstream nem latszik a parancsbol). Nevezd meg: '
+              'git push <remote> HEAD:<ag>.')
+    for spec in refspecs:
+        if spec.startswith('+'):
+            block('git push +%s: a "+" eloterjesztes eroltetett push. '
+                  'Eroltetett push nem az agens dontese.' % spec[1:][:40])
+        dest = spec.split(':', 1)[1] if ':' in spec else spec
+        if dest.rsplit('/', 1)[-1] in PROTECTED_BRANCHES and not dest.startswith('refs/tags/'):
+            block('git push a(z) "%s" agra: vedett ag, ide review-n keresztul megy '
+                  'valami. Pusholj sajat munkaagra.' % dest)
+
+
+def check_bash(cmd, _depth=0, cwd=None):
     text = scannable(cmd)
+    # A munkakonyvtar szegmensrol szegmensre valtozhat (`cd X && rm y`), ezert
+    # vegigvisszuk. Ismeretlen (None) cwd eseten a relativ utak nem eldonthetok, es a
+    # nem eldonthetot a kapu nem engedi at.
+    if cwd is not None:
+        cwd = os.path.normpath(os.path.expanduser(cwd))
     for seg in segments(text):
         toks = _bare_tokens(seg)
         idx = command_index(toks)
 
         # A vizsgalando parancsnevek: a szegmens sajat parancsa, plusz a find -exec
-        # utan allo parancs (az nem a szegmens elejen all, ezert kulon).
+        # utan allo parancs (az nem a szegmens elejen all, ezert kulon). Az argumentumok
+        # kezdoindexe is kell, mert a feltetelesen engedett parancsok (rm, git) esetén
+        # nem a nev, hanem az ARGUMENTUMOK dontik el a verdiktet.
         names = []
         # Az idezojelen belul SZOKOZT tartalmazo szo nem parancsnev, hanem karakterlanc
         # (teszteset-lista, uzenet-szoveg, regex-minta) -- lasd ba856d56.
         if idx is not None and not toks[idx][1]:
-            nxt = toks[idx + 1][0] if idx + 1 < len(toks) and not toks[idx + 1][1] else None
-            names.append((toks[idx][0], nxt))
+            names.append((toks[idx][0], idx + 1))
         for j, (t, _sp) in enumerate(toks):
             if t in _FIND_EXEC and j + 1 < len(toks) and not toks[j + 1][1]:
-                names.append((toks[j + 1][0], None))
+                names.append((toks[j + 1][0], j + 2))
 
-        for name, second in names:
+        for name, argstart in names:
             base = os.path.basename(name)
+            if base == 'git':
+                _check_git(toks, argstart)
+                continue
+            if base == 'rm':
+                ok, why = _rm_allowed(toks, argstart, cwd)
+                if not ok:
+                    block('Torles, amit a kapu nem engedhet at: %s.\n'
+                          'A munkakonyvtar (%s) ALATTI torles alapbol szabad; ezen kivul, '
+                          'illetve a .git es a store/ alatt nem.\n'
+                          '(a teljes szegmens: %s)' % (why, PROJECT_ROOT, seg[:160]))
+                continue
             if base in BANNED_CMDS:
                 block('A tiltott parancs: "%s" (a teljes szegmens: %s)' % (base, seg[:160]))
-            if base == 'git' and second == 'push':
-                block('git push: a kozos repoba valo iras kifele mutato, visszafordithatatlan '
-                      'muvelet. Commitolni szabad, pusholni nem.')
+
+        # A `cd` a KOVETKEZO szegmensek munkakonyvtarat allitja. Nem eldontheto cel
+        # eseten a cwd ismeretlenne valik, ami a kesobbi relativ torleseket blokkolja.
+        if idx is not None and not toks[idx][1] and os.path.basename(toks[idx][0]) == 'cd':
+            cwd = _cd_target(toks, idx + 1, cwd)
 
         for sub in _sub_scripts(toks, idx):
             if not sub or sub == cmd:
@@ -403,7 +608,7 @@ def check_bash(cmd, _depth=0):
             if _depth >= _MAX_NEST:
                 block('Tul melyen agyazott parancs (%d szint): a kapu nem tudja '
                       'vegigkovetni, ezert nem engedi at.' % _depth)
-            check_bash(sub, _depth + 1)
+            check_bash(sub, _depth + 1, cwd)
 
     # Hitelesito fajlok kiolvasasa barmilyen parancson keresztul.
     m = PROTECTED_RE.search(text)
@@ -440,7 +645,13 @@ def main():
     # kapunal nem szabad megengedni.
     try:
         if tool == 'Bash':
-            check_bash(str(inp.get('command') or ''))
+            # A PreToolUse esemeny cwd-je a relativ utak feloldasahoz kell. Ha
+            # hianyzik vagy nem a telepites alatt van, NEM helyettesitjuk a gyokerrel:
+            # akkor a relativ torlesek egyszeruen nem eldonthetok, es blokkolodnak.
+            ev_cwd = ev.get('cwd')
+            if not (isinstance(ev_cwd, str) and ev_cwd.strip()):
+                ev_cwd = None
+            check_bash(str(inp.get('command') or ''), cwd=ev_cwd)
         elif tool in ('Read', 'Edit', 'Write', 'NotebookEdit'):
             check_read(str(inp.get('file_path') or ''))
     except Exception as exc:

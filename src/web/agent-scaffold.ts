@@ -9,7 +9,9 @@ import { atomicWriteFileSync } from './atomic-write.js'
 import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
 import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities, readAgentToolDeny } from './agent-config.js'
-import { resolveProfilePlaceholders, type ProfileTemplate } from './profiles.js'
+import { loadProfileTemplate, profileWantsDestructiveGate, resolveProfilePlaceholders,
+  type ProfileTemplate } from './profiles.js'
+import { resolveAgentSecurityProfile } from './agent-team.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
 import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
 
@@ -656,7 +658,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     injectDigestProvenanceGate(existing)
   }
   if (agentGetsTelegramCopyGate(name)) injectTelegramCopyGate(existing)
-  if (agentGetsDestructiveGate(name)) injectDestructiveGate(existing)
+  if (agentGetsDestructiveGate(name, profile)) injectDestructiveGate(existing)
   injectEgressGate(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
@@ -1072,11 +1074,30 @@ export function injectTelegramCopyGate(existing: Record<string, unknown>): void 
 // migration below is a normalization, not a behaviour change.
 export const DESTRUCTIVE_GATE_MATCHER = 'Bash|Read|Edit|Write|NotebookEdit'
 
-// Which agents get the destructive-gate: every sub-agent, NOT the main agent --
-// the same split the email and self-pace gates use. The operator authorizes the
-// main agent's destructive work directly; a sub-agent's does not pass a human.
-export function agentGetsDestructiveGate(name: string): boolean {
-  return name !== MAIN_AGENT_ID
+// Which agents get the destructive-gate. TWO conditions, both required:
+//
+//   (a) not the main agent -- the same split the email and self-pace gates use.
+//       The operator authorizes the main agent's destructive work directly; a
+//       sub-agent's does not pass a human.
+//   (b) the agent's security profile opts in (`"destructiveGate": true`).
+//
+// (b) is new and DEFAULT OFF (PR #1357 review). What an agent may delete is a
+// property of the operator's process, not of this software, and no shipped
+// template sets the flag -- so a fresh install gates nothing until someone
+// decides it should. The fleet that wrote this code keeps the gate by setting
+// the flag on its own profiles.
+//
+// Off does NOT unwire an agent that already has the hook: writeAgentSettingsFromProfile
+// merges into the settings.json on disk, so an existing entry survives. The
+// flag decides what gets APPLIED, never what gets torn down -- disarming a live
+// agent has to be someone's explicit act, not a default flipping under it.
+//
+// `profile` is optional so the startup migration (which has no profile in hand)
+// can call it; omitted, the agent's own profile is resolved from its config.
+export function agentGetsDestructiveGate(name: string, profile?: ProfileTemplate): boolean {
+  if (name === MAIN_AGENT_ID) return false
+  const p = profile ?? loadProfileTemplate(resolveAgentSecurityProfile(name))
+  return profileWantsDestructiveGate(p)
 }
 
 // Idempotently wire the destructive-gate PreToolUse hook.
@@ -1422,7 +1443,11 @@ export function renderQuarantineReader(template: string, domains: string[]): str
 // command takes effect at that agent's next (re)spawn; this call only makes
 // the migration zero-touch, not instantaneous.
 // Returns true if the file was updated, false if already correct.
-export function ensureGovernanceGateCommands(name: string): boolean {
+// `profile` is an optional override for the agent's resolved security profile;
+// production passes nothing (the profile is read from the agent's config) and
+// only tests supply one, so the opt-in gate can be exercised without writing a
+// fixture into templates/profiles/ where every other suite would see it.
+export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemplate): boolean {
   if (name === MAIN_AGENT_ID) return false
   const settingsPath = agentSettingsPath(name)
   if (!existsSync(settingsPath)) return false
@@ -1456,7 +1481,7 @@ export function ensureGovernanceGateCommands(name: string): boolean {
     return j.includes('destructive-gate.py')
       && (e as { matcher?: unknown })?.matcher !== DESTRUCTIVE_GATE_MATCHER
   })
-  const needDestructive = agentGetsDestructiveGate(name)
+  const needDestructive = agentGetsDestructiveGate(name, profile)
     && (!hookCommandWired(ptuJson, destructiveCmd) || destructiveStale)
   if (!needEmail && !needPace && !needDestructive) return false
   // The injectors dedupe by script basename, so a stale bare-`node` entry is

@@ -24,6 +24,35 @@ export interface ProfileTemplate {
   // allow/deny lists. Optional -- a profile that stays inside its own dir
   // needs none.
   additionalDirectories?: string[]
+
+  // ---- Opt-in house rules (default OFF) --------------------------------
+  // Two things the fleet that built this repo runs on, which are OUR process
+  // and not part of the product: the destructive-command PreToolUse gate and
+  // the THIN CHIEF handoff section injected into an agent's CLAUDE.md. A
+  // downstream install has its own review culture and its own idea of what an
+  // agent may delete, so shipping either one switched on would be imposing a
+  // process, not providing a capability.
+  //
+  // Absent == false on purpose: an install that never heard of these gets
+  // neither, and no template edit is needed to stay that way. Turning one on
+  // is a deliberate, per-profile decision. (PR #1357 review, Szabolcs.)
+  //
+  // Switching either OFF does not strip it from an agent that already has it:
+  // writeAgentSettingsFromProfile merges into the existing settings.json and
+  // ensureThinChiefHandoffSection only ever appends, so the flags govern what
+  // is APPLIED from here on, not a retroactive teardown. Removing a gate from
+  // a live agent stays a deliberate, separate act.
+  destructiveGate?: boolean
+  thinChiefHandoff?: boolean
+}
+
+/** Absent or non-true == off. Keeps the default in ONE place. */
+export function profileWantsDestructiveGate(p: ProfileTemplate | null | undefined): boolean {
+  return p?.destructiveGate === true
+}
+
+export function profileWantsThinChiefHandoff(p: ProfileTemplate | null | undefined): boolean {
+  return p?.thinChiefHandoff === true
 }
 
 export const PROFILES_DIR = join(PROJECT_ROOT, 'templates', 'profiles')

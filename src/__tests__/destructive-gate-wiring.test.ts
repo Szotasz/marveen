@@ -19,7 +19,7 @@ import {
   agentSettingsPath,
   DESTRUCTIVE_GATE_MATCHER,
 } from '../web/agent-scaffold.js'
-import { loadProfileTemplate } from '../web/profiles.js'
+import { listProfileTemplates, loadProfileTemplate, type ProfileTemplate } from '../web/profiles.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { AGENTS_BASE_DIR } from '../web/agent-config.js'
 
@@ -58,26 +58,66 @@ function cleanup(): void {
 beforeEach(cleanup)
 afterEach(cleanup)
 
-function render(name: string): string {
+// Opt-in profile. Built in memory, NOT written to templates/profiles/: a
+// fixture file there would show up in listProfileTemplates() and leak into
+// other suites running in the same worker.
+const GATED: ProfileTemplate = { ...loadProfileTemplate('default'), destructiveGate: true }
+const UNGATED: ProfileTemplate = loadProfileTemplate('default')
+
+function render(name: string, profile: ProfileTemplate = GATED): string {
   mkdirSync(join(agentRoot(name), '.claude'), { recursive: true })
-  writeAgentSettingsFromProfile(name, loadProfileTemplate('default'))
+  writeAgentSettingsFromProfile(name, profile)
   return readFileSync(settingsFor(name), 'utf-8')
 }
 
 describe('scope: who gets the destructive gate', () => {
-  it('every sub-agent does', () => {
+  it('a sub-agent whose profile opts in does', () => {
     for (const n of ['leanscout', 'leanwriter', 'gembaecho', TEST_AGENT]) {
-      expect(agentGetsDestructiveGate(n)).toBe(true)
+      expect(agentGetsDestructiveGate(n, GATED)).toBe(true)
     }
   })
+
+  // PR #1357: the gate became opt-in. What an agent may delete is the
+  // operator's call, so the shipped posture is OFF and staying off needs no
+  // edit. These two cases are the default; if either goes green-by-accident,
+  // a downstream install is being handed our process.
+  it('a sub-agent on a profile that does NOT opt in does not', () => {
+    expect(agentGetsDestructiveGate(TEST_AGENT, UNGATED)).toBe(false)
+  })
+
+  it('no shipped template opts in', () => {
+    for (const p of listProfileTemplates()) expect(p.destructiveGate).not.toBe(true)
+  })
+
   it('the main agent does NOT -- the card is explicit, do not break it', () => {
     expect(agentGetsDestructiveGate(MAIN_AGENT_ID)).toBe(false)
+    // Not even an opted-in profile may elevate the main agent.
+    expect(agentGetsDestructiveGate(MAIN_AGENT_ID, GATED)).toBe(false)
   })
 })
 
 describe('the FINAL settings file after a re-render', () => {
-  it('a fresh render wires the gate', () => {
+  it('a fresh render wires the gate when the profile opts in', () => {
     expect(render(TEST_AGENT)).toContain('destructive-gate.py')
+  })
+
+  it('a fresh render on a NON-opted-in profile wires nothing', () => {
+    expect(render(TEST_AGENT, UNGATED)).not.toContain('destructive-gate.py')
+  })
+
+  // The claim the opt-in rests on, measured rather than asserted in a comment:
+  // turning the flag off is not a teardown. writeAgentSettingsFromProfile
+  // merges into the settings.json on disk, so an agent that already carries the
+  // gate keeps it even when re-rendered from a profile that does not ask for
+  // it. If this ever goes red, flipping a default would silently disarm a live
+  // agent -- which is exactly what must never follow from a shipped default.
+  it('re-rendering an ALREADY-gated agent from an ungated profile keeps the gate', () => {
+    expect(render(TEST_AGENT, GATED)).toContain('destructive-gate.py')
+    const after = render(TEST_AGENT, UNGATED)
+    expect(after).toContain('destructive-gate.py')
+    const entries = (JSON.parse(after) as { hooks: { PreToolUse: unknown[] } })
+      .hooks.PreToolUse.filter((e) => JSON.stringify(e).includes('destructive-gate.py'))
+    expect(entries).toHaveLength(1)
   })
 
   it('(b) a SECOND render keeps it -- exactly once, no accumulation', () => {
@@ -89,8 +129,12 @@ describe('the FINAL settings file after a re-render', () => {
   })
 
   it('(c) the four pre-existing gates are still wired, unchanged', () => {
-    const final = render(TEST_AGENT)
-    for (const gate of EXISTING_GATES) expect(final).toContain(gate)
+    // On BOTH sides of the new switch: the opt-in must not become a way to
+    // drop the gates that were never optional.
+    for (const profile of [GATED, UNGATED]) {
+      const final = render(TEST_AGENT, profile)
+      for (const gate of EXISTING_GATES) expect(final).toContain(gate)
+    }
   })
 
   it('(d) the main agent is not rendered here -- the exemption is pinned in source', () => {
@@ -100,7 +144,7 @@ describe('the FINAL settings file after a re-render', () => {
     // its predicate, and the egress gate deliberately does NOT (every agent can
     // be hijacked through an injected WebFetch, the main one included).
     const src = readFileSync(join(PROJECT_ROOT, 'src', 'web', 'agent-scaffold.ts'), 'utf-8')
-    expect(src).toContain('if (agentGetsDestructiveGate(name)) injectDestructiveGate(existing)')
+    expect(src).toContain('if (agentGetsDestructiveGate(name, profile)) injectDestructiveGate(existing)')
     expect(src).toMatch(/^ {2}injectEgressGate\(existing\)$/m)
   })
 
@@ -113,6 +157,25 @@ describe('the FINAL settings file after a re-render', () => {
 })
 
 describe('the startup migration for the EXISTING fleet', () => {
+  // PR #1357 changed what this migration is FOR. It no longer spreads the gate
+  // to the fleet by default; it repairs an agent whose profile asks for the
+  // gate. On a non-opted-in agent it must do nothing at all -- a migration that
+  // re-adds a gate the operator turned off is not a migration, it is a revert.
+  it('does NOT add the gate to an agent whose profile does not opt in', () => {
+    render(TEST_AGENT, UNGATED)
+    const path = settingsFor(TEST_AGENT)
+    expect(readFileSync(path, 'utf-8')).not.toContain('destructive-gate.py')
+    ensureGovernanceGateCommands(TEST_AGENT)
+    expect(readFileSync(path, 'utf-8')).not.toContain('destructive-gate.py')
+  })
+
+  it('leaves an already-gated agent alone (no churn, no teardown)', () => {
+    render(TEST_AGENT, GATED)
+    const path = settingsFor(TEST_AGENT)
+    expect(ensureGovernanceGateCommands(TEST_AGENT)).toBe(false)
+    expect(readFileSync(path, 'utf-8')).toContain('destructive-gate.py')
+  })
+
   it('adds the gate to an agent scaffolded before this change', () => {
     render(TEST_AGENT)
     // Simulate the pre-card state: strip the gate back out of the file.
@@ -122,14 +185,14 @@ describe('the startup migration for the EXISTING fleet', () => {
     writeFileSync(path, JSON.stringify(s, null, 2))
     expect(readFileSync(path, 'utf-8')).not.toContain('destructive-gate.py')
 
-    expect(ensureGovernanceGateCommands(TEST_AGENT)).toBe(true)
+    expect(ensureGovernanceGateCommands(TEST_AGENT, GATED)).toBe(true)
     expect(readFileSync(path, 'utf-8')).toContain('destructive-gate.py')
   })
 
   it('is a no-op on a second pass (no rewrite churn at every boot)', () => {
     render(TEST_AGENT)
-    ensureGovernanceGateCommands(TEST_AGENT)
-    expect(ensureGovernanceGateCommands(TEST_AGENT)).toBe(false)
+    ensureGovernanceGateCommands(TEST_AGENT, GATED)
+    expect(ensureGovernanceGateCommands(TEST_AGENT, GATED)).toBe(false)
   })
 
   it('replaces a STALE matcher instead of leaving a gate that never fires', () => {
@@ -141,7 +204,7 @@ describe('the startup migration for the EXISTING fleet', () => {
     }
     writeFileSync(path, JSON.stringify(s, null, 2))
 
-    expect(ensureGovernanceGateCommands(TEST_AGENT)).toBe(true)
+    expect(ensureGovernanceGateCommands(TEST_AGENT, GATED)).toBe(true)
     const after = JSON.parse(readFileSync(path, 'utf-8')) as { hooks: { PreToolUse: Array<{ matcher: string }> } }
     const entries = after.hooks.PreToolUse.filter((e) => JSON.stringify(e).includes('destructive-gate.py'))
     expect(entries).toHaveLength(1)

@@ -53,6 +53,17 @@ def check(name, ok):
         failed.append(name)
 
 
+def blocks_cwd(cmd, cwd):
+    """Ugyanaz, mint blocks(), de megadott munkakonyvtarral: a rm-engedely
+    (PR #1357) relativ utaknal ettol fugg, es cwd nelkul minden relativ ut
+    egyszeruen nem eldontheto -- az sosem mutatna meg a kulonbseget."""
+    try:
+        gate.check_bash(cmd, cwd=cwd)
+        return False
+    except Blocked:
+        return True
+
+
 def blocks(cmd):
     try:
         gate.check_bash(cmd)
@@ -257,6 +268,72 @@ check("tiltott parancsra exit 2",
 # lep ki, azt az "except Exception" nem fogja meg -- tehat a valodi blokkolas atmegy, es
 # csak a VARATLAN kivetel valt ki fail-closed viselkedest.
 check("a kapu sajat hibaja is exit 2 (fail-closed)", _injected_fault_exit() == 2)
+
+
+# --- 6. rm a munkakonyvtar alatt + git push (PR #1357) ----------------------
+# A kapu ket szabalya SZUKULT, Szabolcs review-ja nyoman: a torles a munkakonyvtar
+# alatt es a sajat munkaagra valo push a MUNKA resze, nem dontes. Amit a
+# feltetel nelkuli tiltas termelt, az nem biztonsag volt, hanem atfogalmazas.
+#
+# A ket irany itt kulon all, es a NEGATIV oldal az uj: egy szabaly, ami csak
+# blokkolni tud, ugyanannyit er, mint ami csak atengedni.
+GROOT = gate.PROJECT_ROOT
+OUTSIDE = os.path.dirname(GROOT)
+
+print()
+print("POZITIV kontroll -- torles, amit tovabbra sem enged at:")
+check("munkakonyvtaron kivul, abszolut", blocks_cwd(RM + " /tmp/x", GROOT))
+check("munkakonyvtaron kivul, relativ kilepessel",
+      blocks_cwd(RM + " ../../valami", os.path.join(GROOT, "agents")))
+check("a verziotortenet", blocks_cwd(RM + " -rf " + GROOT + "/.git", GROOT))
+check("az eles allapot (store/)", blocks_cwd(RM + " " + GROOT + "/store/adat.db", GROOT))
+check("maga a munkakonyvtar gyokere", blocks_cwd(RM + " -rf " + GROOT, GROOT))
+check("cd utan mar mashol torol",
+      blocks_cwd("cd " + OUTSIDE + " && " + RM + " -rf x", GROOT))
+check("behelyettesites: nem eldontheto, hova mutat",
+      blocks_cwd(RM + ' -rf "$TARGET/build"', GROOT))
+check("cwd nelkul a relativ ut nem eldontheto", blocks(RM + " -rf build"))
+check("nem latszik, mit torolne (csovezetekbol)", blocks_cwd("ls | xargs " + RM, GROOT))
+check("find -exec helyettesito jellel", blocks_cwd(
+      "find . -name '*.tmp' -exec " + RM + " {} ;", GROOT))
+
+print()
+print("NEGATIV kontroll -- torles a munkakonyvtar alatt, ez a MUNKA resze:")
+check("abszolut ut a gyoker alatt",
+      not blocks_cwd(RM + " " + GROOT + "/build/out.js", GROOT))
+check("relativ ut a cwd alatt", not blocks_cwd(RM + " -rf build", GROOT))
+check("relativ ut melyebb cwd-bol",
+      not blocks_cwd(RM + " -f jegyzet.txt", os.path.join(GROOT, "agents", "valaki")))
+check("glob nem lep at konyvtarhataron",
+      not blocks_cwd(RM + " -f " + GROOT + "/tmp/*.log", GROOT))
+check("cd a gyoker ALA, utana torles",
+      not blocks_cwd("cd " + GROOT + "/agents && " + RM + " -rf scratch", GROOT))
+check("'..' a gyokeren BELUL marad",
+      not blocks_cwd(RM + " -rf ../build", os.path.join(GROOT, "agents")))
+
+print()
+print("POZITIV kontroll -- push, ami tovabbra is tiltott:")
+check("eroltetett push", blocks(GPUSH + " --force origin munkaag"))
+check("eroltetett push rovid alakkal", blocks(GPUSH + " -f origin munkaag"))
+check("lease-elt eroltetes", blocks(GPUSH + " --force-with-lease origin munkaag"))
+check("'+' refspec is eroltetes", blocks(GPUSH + " origin +munkaag"))
+check("tavoli ag torlese", blocks(GPUSH + " origin --delete munkaag"))
+check("vedett ag: main", blocks(GPUSH + " origin main"))
+check("vedett ag: master ketoldalu refspecben", blocks(GPUSH + " origin HEAD:master"))
+check("vedett ag teljes ref-uttal", blocks(GPUSH + " origin munkaag:refs/heads/main"))
+check("mindent kitol", blocks(GPUSH + " --all origin"))
+check("cel-ag nelkul nem eldontheto", blocks(GPUSH))
+check("csak remote, refspec nelkul", blocks(GPUSH + " origin"))
+check("a git sajat -C kapcsolojan is atlat", blocks("git -C /tmp push origin main"))
+
+print()
+print("NEGATIV kontroll -- sajat munkaagra valo push, ez a MUNKA resze:")
+check("egyszeru munkaag", not blocks(GPUSH + " origin munkaag"))
+check("upstream beallitasa", not blocks(GPUSH + " -u origin HEAD:munkaag"))
+check("fork-URL-re, tokennel", not blocks(
+      GPUSH + " https://user:x@github.com/valaki/repo.git munkaag:munkaag"))
+check("cimke", not blocks(GPUSH + " origin v1.2.3"))
+check("mas git alparancs valtozatlan", not blocks("git commit -m 'fix'"))
 
 
 print()

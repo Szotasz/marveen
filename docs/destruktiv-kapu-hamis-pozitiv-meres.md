@@ -402,3 +402,25 @@ adatot lásson arról, meddig hat a védelem:
   nem az elszánt megkerülés ellen. Kódkommentben is ott áll.
 - **`ssh gép <tiltott>`:** távoli gépen futó parancs, a lean-chief ebben a körben nem kérte.
 - A 16. pont heredoc-pontatlansága: nem kérte, 0 jelenlegi hatás.
+
+---
+
+## Utóirat, 2026-09-24 -- a kapu azóta változott (PR #1357)
+
+Ez a dokumentum **mérés**, nem szabályzat, és a fenti számok a 2026-09-14-i kapura
+vonatkoznak. Azóta Szabolcs PR #1357-es review-ja nyomán (István mind az öt pontot
+jóváhagyta) két szabály szűkült, és maga a kapu opt-in lett:
+
+- a **törlés** a munkakönyvtár (`PROJECT_ROOT`) alatt engedett; kívül, valamint a
+  `.git` és a `store/` alatt nem, és ami nem eldönthető, az továbbra is blokk;
+- a **push** a saját munkaágra engedett; tiltott marad az erőltetett push
+  (`--force` és társai, `+` refspec), a távoli ág törlése, a `--all`, a védett ágak
+  (main/master), és a cél-ág nélküli `git push`;
+- a kapu egészét a biztonsági profil `destructiveGate` kapcsolója kapcsolja be, és
+  **alapból ki van kapcsolva**: hogy egy ágens mit törölhet, az az üzemeltető
+  folyamatának kérdése, nem a szoftveré.
+
+Amit a fenti mérésből **nem** szabad kiolvasni: hogy az új számok ugyanezek lennének.
+A `banned-cmd:rm` és a `git push` sor mögötti esetek egy részét az új szabály már át
+is engedi, tehát a hamis pozitív ráta a mérés megismétlése nélkül nem tudható. Ez nem
+becslés, hanem hiány: **a mérést nem futtattam újra az új kapun.**
