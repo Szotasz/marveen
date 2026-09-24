@@ -30,6 +30,9 @@ import {
 import { measuredModelLines, effortLine, modelSummary, modelStateLine, registerBuiltinCommands, type ModelSummaryInput } from '../web/builtin-commands.js'
 import { resolveCommand, clearCommandsForTest } from '../web/commands.js'
 import { logger } from '../logger.js'
+// Expected clock strings are built with the app's own formatter: CI runs in
+// UTC, a hard-coded "14:52" only held in Budapest time.
+import { formatDayClock } from '../web/system-status.js'
 
 const BASE = 'claude-sonnet-5'
 const T0 = Date.parse('2026-09-22T08:00:00Z')
@@ -456,20 +459,20 @@ describe('/model status: the measurement is shown with its age', () => {
   it('a CLI-confirmed switch after the last turn: "Most fut" names the new model, no "Azóta" line', () => {
     const r = measuredModelLines({ model: 'claude-sonnet-5', atMs: at1447 }, { model: 'claude-opus-5[1m]', at: at1452, acked: true }, 'claude-opus-5[1m]', BASE)
     expect(r.head).toHaveLength(1)
-    expect(r.head[0]).toMatch(/^Most fut: claude-opus-5\[1m\] \(váltva .*14:52, a Claude Code visszaigazolta; rajta még nem futott kör\)$/)
+    expect(r.head[0]).toBe(`Most fut: claude-opus-5[1m] (váltva ${formatDayClock(at1452)}, a Claude Code visszaigazolta; rajta még nem futott kör)`)
     expect(r.warn).toBeNull()
   })
 
   it('an unconfirmed send after the last turn: the old reading stays, the send is named, no false "eltér"', () => {
     const r = measuredModelLines({ model: 'claude-opus-5', atMs: at1447 }, { model: BASE, at: at1452, acked: false }, null, BASE)
-    expect(r.head[0]).toMatch(/^Most fut: claude-opus-5 \(utolsó kör .*14:47\)$/)
-    expect(r.head[1]).toMatch(/^Azóta: \/model claude-sonnet-5 elküldve .*14:52, visszaigazolás nélkül; a következő kör méri$/)
+    expect(r.head[0]).toBe(`Most fut: claude-opus-5 (utolsó kör ${formatDayClock(at1447)})`)
+    expect(r.head[1]).toBe(`Azóta: /model claude-sonnet-5 elküldve ${formatDayClock(at1452)}, visszaigazolás nélkül; a következő kör méri`)
     expect(r.warn).toBeNull()
   })
 
   it('a turn after the switch: the measurement wins again', () => {
     const r = measuredModelLines({ model: 'claude-opus-5', atMs: at1452 }, { model: 'claude-opus-5[1m]', at: at1447, acked: true }, 'claude-opus-5[1m]', BASE)
-    expect(r.head[0]).toMatch(/^Most fut: claude-opus-5 \(utolsó kör .*14:52\)$/)
+    expect(r.head[0]).toBe(`Most fut: claude-opus-5 (utolsó kör ${formatDayClock(at1452)})`)
   })
 
   it('during a hold the expected model is the hold model, not the configured one', () => {
