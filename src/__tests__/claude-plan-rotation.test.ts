@@ -4,6 +4,7 @@ import {
   pickRotationTarget,
   decideRotationAction,
   isQuotaExceededError,
+  candidateFromObservation,
   ROTATION_GATE,
   type ObservedWindow,
   type RotationCandidate,
@@ -158,5 +159,139 @@ describe('isQuotaExceededError', () => {
     'a random 4295 in some unrelated log line',
   ])('does not match unrelated text: %s', (text) => {
     expect(isQuotaExceededError(text)).toBe(false)
+  })
+})
+
+// Weekly (7d) window: every real outage on the fleet was the weekly limit,
+// so the decision has to see it on both sides -- the active plan's pressure
+// and the candidates' headroom.
+describe('decideRotationAction: 7-day window', () => {
+  const candidates: RotationCandidate[] = [{ planId: 'other', freeFivePct: 100, freeSevenDayPct: 100 }]
+  const calm5h = { usedPercent: 10, resetsAt: NOW_S + 3600 }
+
+  it('rotates on 7d pressure even when the 5h window is calm', () => {
+    const result = decideRotationAction({
+      activePlanId: 'active',
+      activeFiveHour: calm5h,
+      activeSevenDay: { usedPercent: 93, resetsAt: NOW_S + 3 * 24 * 3600 },
+      candidates,
+      nowMs: NOW,
+    })
+    expect(result).toEqual(expect.objectContaining({ action: 'rotate', targetPlanId: 'other', trigger: '7d' }))
+    expect(result.reason).toContain('7d=93%')
+  })
+
+  it('treats a 7d status "rejected" as 100% used, whatever the percentage', () => {
+    const result = decideRotationAction({
+      activePlanId: 'active',
+      activeFiveHour: calm5h,
+      activeSevenDay: { usedPercent: 40, resetsAt: NOW_S + 24 * 3600, status: 'rejected' },
+      candidates,
+      nowMs: NOW,
+    })
+    expect(result).toEqual(expect.objectContaining({ action: 'rotate', trigger: '7d' }))
+    expect(result.reason).toContain('7d=100%')
+  })
+
+  it('stays put just under the 7d threshold', () => {
+    const result = decideRotationAction({
+      activePlanId: 'active',
+      activeFiveHour: calm5h,
+      activeSevenDay: { usedPercent: 89.9, resetsAt: NOW_S + 3 * 24 * 3600 },
+      candidates,
+      nowMs: NOW,
+    })
+    expect(result.action).toBe('no-pressure')
+  })
+
+  it('a 7d reset days away is not "near": 5h near-reset does not suppress a 7d rotation', () => {
+    const result = decideRotationAction({
+      activePlanId: 'active',
+      activeFiveHour: { usedPercent: 95, resetsAt: NOW_S + 10 * 60 },
+      activeSevenDay: { usedPercent: 95, resetsAt: NOW_S + 3 * 24 * 3600 },
+      candidates,
+      nowMs: NOW,
+    })
+    expect(result).toEqual(expect.objectContaining({ action: 'rotate', trigger: '7d' }))
+  })
+
+  it('a 7d window resetting within 30 min is near-reset, same rule as 5h', () => {
+    const result = decideRotationAction({
+      activePlanId: 'active',
+      activeFiveHour: calm5h,
+      activeSevenDay: { usedPercent: 99, resetsAt: NOW_S + 20 * 60 },
+      candidates,
+      nowMs: NOW,
+    })
+    expect(result.action).toBe('near-reset')
+  })
+
+  it('reports no-alternative with the 7d trigger when nothing is left', () => {
+    const result = decideRotationAction({
+      activePlanId: 'active',
+      activeFiveHour: calm5h,
+      activeSevenDay: { usedPercent: 100, resetsAt: NOW_S + 24 * 3600 },
+      candidates: [],
+      nowMs: NOW,
+    })
+    expect(result).toEqual(expect.objectContaining({ action: 'no-alternative', trigger: '7d' }))
+  })
+
+  it('an absent 7d window is never pressure (fail open)', () => {
+    const result = decideRotationAction({ activePlanId: 'active', activeFiveHour: calm5h, candidates, nowMs: NOW })
+    expect(result.action).toBe('no-pressure')
+  })
+})
+
+describe('candidateFromObservation', () => {
+  it('no observation -> full-headroom candidate (fail open)', () => {
+    expect(candidateFromObservation('p', undefined, NOW)).toEqual({ planId: 'p', freeFivePct: 100, freeSevenDayPct: 100 })
+  })
+
+  it('excludes a plan whose 7d is over threshold and not yet reset', () => {
+    const obs = { observedAt: NOW - 1000, windows: { seven_day: { usedPercent: 92, resetsAt: NOW_S + 2 * 24 * 3600 } } }
+    expect(candidateFromObservation('p', obs, NOW)).toBeNull()
+  })
+
+  it('excludes a plan whose 7d status is rejected even at a low percentage', () => {
+    const obs = { observedAt: NOW - 1000, windows: { seven_day: { usedPercent: 12, resetsAt: NOW_S + 3600, status: 'rejected' } } }
+    expect(candidateFromObservation('p', obs, NOW)).toBeNull()
+  })
+
+  it('re-includes a 7d-exhausted plan once its reset has passed', () => {
+    const obs = { observedAt: NOW - 8 * 24 * 3600_000, windows: { seven_day: { usedPercent: 100, resetsAt: NOW_S - 60, status: 'rejected' } } }
+    expect(candidateFromObservation('p', obs, NOW)).toEqual({ planId: 'p', freeFivePct: 100, freeSevenDayPct: 100 })
+  })
+
+  it('excludes a plan whose last probe failed with invalid_token', () => {
+    const obs = { observedAt: NOW - 3600_000, windows: {}, lastProbe: { at: NOW - 1000, ok: false, error: 'invalid_token' } }
+    expect(candidateFromObservation('p', obs, NOW)).toBeNull()
+  })
+
+  it('keeps a plan whose failed probe was a network error, not a bad token', () => {
+    const obs = { observedAt: NOW - 3600_000, windows: {}, lastProbe: { at: NOW - 1000, ok: false, error: 'network' } }
+    expect(candidateFromObservation('p', obs, NOW)).not.toBeNull()
+  })
+
+  it('an invalid_token probe older than a later good observation no longer excludes', () => {
+    const obs = { observedAt: NOW - 1000, windows: {}, lastProbe: { at: NOW - 3600_000, ok: false, error: 'invalid_token' } }
+    expect(candidateFromObservation('p', obs, NOW)).not.toBeNull()
+  })
+
+  it('excludes a 5h-exhausted plan, but keeps a merely busy one (92%)', () => {
+    const spent = { observedAt: NOW, windows: { five_hour: { usedPercent: 100, resetsAt: NOW_S + 3600 } } }
+    const busy = { observedAt: NOW, windows: { five_hour: { usedPercent: 92, resetsAt: NOW_S + 3600 } } }
+    expect(candidateFromObservation('p', spent, NOW)).toBeNull()
+    expect(candidateFromObservation('p', busy, NOW)).toEqual({ planId: 'p', freeFivePct: 8, freeSevenDayPct: 100 })
+  })
+})
+
+describe('pickRotationTarget: ranks by the tighter of the two windows', () => {
+  it('prefers moderate-both over fresh-5h-but-nearly-spent-week', () => {
+    const candidates: RotationCandidate[] = [
+      { planId: 'a', freeFivePct: 100, freeSevenDayPct: 20 },
+      { planId: 'b', freeFivePct: 50, freeSevenDayPct: 95 },
+    ]
+    expect(pickRotationTarget(candidates, 'active')).toBe('b')
   })
 })

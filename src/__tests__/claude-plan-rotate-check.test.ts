@@ -138,7 +138,7 @@ describe('decideAndRecord: rotate and no-alternative print exactly one structure
       nowMs: NOW,
     })
     expect(result.printLine).toBe(
-      'ROTATE agent=marveen target=team targetLabel=Team Seat currentLabel=Personal PRO currentPct=95 resetsInMin=60',
+      'ROTATE agent=marveen target=team targetLabel=Team Seat currentLabel=Personal PRO currentPct=95 resetsInMin=60 trigger=5h sevenDayPct=20 sevenDayResetsInMin=8700',
     )
     expect(result.nextState?.activePlanByAgent.marveen).toBe('pro') // rotation itself is applied by the caller, not here
   })
@@ -165,7 +165,7 @@ describe('decideAndRecord: rotate and no-alternative print exactly one structure
       usageCollectRaw: usageCollect({ usedPercent: 95, resetsAt: NOW_S + 3600 }),
       nowMs: NOW,
     })
-    expect(result.printLine).toBe('NO_ALTERNATIVE agent=marveen currentLabel=Personal PRO currentPct=95 resetsInMin=60')
+    expect(result.printLine).toBe('NO_ALTERNATIVE agent=marveen currentLabel=Personal PRO currentPct=95 resetsInMin=60 trigger=5h sevenDayPct=20 sevenDayResetsInMin=8700')
   })
 
   it('picks the plan with the most estimated free headroom among several candidates', () => {
@@ -183,5 +183,57 @@ describe('decideAndRecord: rotate and no-alternative print exactly one structure
       nowMs: NOW,
     })
     expect(result.printLine).toContain('target=third')
+  })
+})
+
+describe('decideAndRecord: weekly (7d) window', () => {
+  function usage7d(sevenUsed: number, sevenResetsAt = NOW_S + 3 * 24 * 3600) {
+    const u = usageCollect({ usedPercent: 10, resetsAt: NOW_S + 3600 })
+    u.claude.windows.seven_day = { used_percent: sevenUsed, resets_at: sevenResetsAt }
+    return u
+  }
+
+  it('rotates when the ACTIVE plan is 7d-exhausted though its 5h is calm, and says 7d triggered', () => {
+    const state: ClaudePlansState = { activePlanByAgent: { marveen: 'pro' }, plans: {} }
+    const plans = [plan({ id: 'pro' }), plan({ id: 'team', label: 'Team' })]
+    const result = decideAndRecord({ agentId: 'marveen', plans, state, usageCollectRaw: usage7d(100), nowMs: NOW })
+    expect(result.printLine).toMatch(/^ROTATE agent=marveen target=team .* trigger=7d sevenDayPct=100 /)
+  })
+
+  it('never rotates onto a candidate whose own week is spent (not yet reset)', () => {
+    const state: ClaudePlansState = {
+      activePlanByAgent: { marveen: 'pro' },
+      plans: {
+        team: { observedAt: NOW - 1000, source: 'probe', windows: { seven_day: { usedPercent: 100, resetsAt: NOW_S + 24 * 3600, status: 'rejected' } } },
+      },
+    }
+    const plans = [plan({ id: 'pro' }), plan({ id: 'team', label: 'Team' })]
+    const result = decideAndRecord({ agentId: 'marveen', plans, state, usageCollectRaw: usage7d(95), nowMs: NOW })
+    expect(result.printLine).toMatch(/^NO_ALTERNATIVE .* trigger=7d/)
+  })
+
+  it('re-includes that candidate once its weekly reset has passed', () => {
+    const state: ClaudePlansState = {
+      activePlanByAgent: { marveen: 'pro' },
+      plans: {
+        team: { observedAt: NOW - 8 * 24 * 3600_000, source: 'probe', windows: { seven_day: { usedPercent: 100, resetsAt: NOW_S - 60, status: 'rejected' } } },
+      },
+    }
+    const plans = [plan({ id: 'pro' }), plan({ id: 'team', label: 'Team' })]
+    const result = decideAndRecord({ agentId: 'marveen', plans, state, usageCollectRaw: usage7d(95), nowMs: NOW })
+    expect(result.printLine).toContain('target=team')
+  })
+
+  it('skips a candidate whose last probe said invalid_token, picks the next one', () => {
+    const state: ClaudePlansState = {
+      activePlanByAgent: { marveen: 'pro' },
+      plans: {
+        aaa: { observedAt: 0, source: 'probe', windows: {}, lastProbe: { at: NOW - 1000, ok: false, error: 'invalid_token', httpStatus: 401 } },
+        zzz: { observedAt: NOW - 1000, source: 'probe', windows: { five_hour: { usedPercent: 50, resetsAt: NOW_S + 3600 } } },
+      },
+    }
+    const plans = [plan({ id: 'pro' }), plan({ id: 'aaa', label: 'A' }), plan({ id: 'zzz', label: 'Z' })]
+    const result = decideAndRecord({ agentId: 'marveen', plans, state, usageCollectRaw: usage7d(95), nowMs: NOW })
+    expect(result.printLine).toContain('target=zzz')
   })
 })
