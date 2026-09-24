@@ -121,6 +121,26 @@ r = run(p, ['--automated', '--title', 'uj cim'], comment=False)
 check('--automated --comment-file nelkul: MEGTAGADVA',
       r.returncode != 0 and 'csak komment-modban' in (r.stderr + r.stdout), r.stderr + r.stdout)
 
+# 7. FORRAS-PIN a nyom-sorokra, amiket a fenti futasok nem ernek el (az ertesito agak tokent es elo
+# /api/messages-t kernek). Minden kanban_comments-INSERT az _komment_insert-en megy at, es minden
+# 'kartya-es-ertesites' szerzoju hivas automated=True-t ad. Egy uj, kozvetlen INSERT vagy egy
+# kifelejtett jel itt bukik, nem az eles tablan.
+import re
+src = open(SCRIPT, encoding='utf-8').read()
+kozvetlen = [m.start() for m in re.finditer(r'INSERT INTO kanban_comments', src)]
+helper = src.find('def _komment_insert')
+helper_vege = src.find('\ndef ', helper + 1)
+check('minden kanban_comments-INSERT az _komment_insert-ben all',
+      kozvetlen and all(helper < i < helper_vege for i in kozvetlen),
+      f'{len(kozvetlen)} INSERT, ebbol a helperen kivul: '
+      f'{sum(1 for i in kozvetlen if not helper < i < helper_vege)}')
+hivas = src.count("_komment_insert(db, a.id, 'kartya-es-ertesites',")
+jelolt = src.count(', now, automated=True)')
+check('minden kartya-es-ertesites nyom-sor automated=True-val irodik ('
+      + str(hivas) + ' hely, ' + str(jelolt) + ' jelolt)',
+      hivas >= 4 and jelolt == hivas and 'automated=False' not in src,
+      f'hivas={hivas} jelolt={jelolt}')
+
 print()
 if FAILS:
     print(f'kartya-automated-jel: {len(FAILS)} bukas')
