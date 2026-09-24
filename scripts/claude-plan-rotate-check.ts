@@ -22,7 +22,11 @@
 //      POST /api/claude-plans/rotate with { targetPlanId };
 //   3. if it printed a NO_ALTERNATIVE line: send the Telegram signal (design
 //      6.4/2) and do nothing else;
-//   4. if it printed nothing: stay silent.
+//   4. if it printed a FLEET_ROTATE / FLEET_SKIPPED / FLEET_FAILED line
+//      (opt-in CLAUDE_ROTATION_FLEET; the fleet leg of the previous
+//      rotation, printed once): relay it via `reply` -- restarted= / failed=
+//      name the sub-agents, and a non-empty failed= needs the operator;
+//   5. if it printed nothing: stay silent.
 // This mirrors the fleet's existing OPEN_QUESTION heartbeat pattern
 // (scripts/hooks/ledger-live-drain.py) rather than inventing a new one.
 //
@@ -37,7 +41,7 @@
 import { execFileSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { decideAndRecord } from '../src/claude-plan-rotate-heartbeat.js'
+import { decideAndRecord, pendingFleetReport } from '../src/claude-plan-rotate-heartbeat.js'
 import { readClaudePlans } from '../src/web/claude-plans.js'
 import { readClaudePlansState, writeClaudePlansState, recordPlanObservation } from '../src/web/claude-plans-state.js'
 import { probePlanUsage, observationFromProbe, selectPlansToProbe } from '../src/claude-plan-usage-probe.js'
@@ -90,6 +94,18 @@ async function main(): Promise<void> {
   } catch (err) {
     // Never let the probe pass take the rotation heartbeat down with it.
     console.error('claude-plan-rotate-check: idle-plan probe pass failed:', err instanceof Error ? err.name : 'error')
+  }
+
+  // Report a finished fleet leg once (see pendingFleetReport). Independent of
+  // usage-collect below, so a failing collector never swallows the report.
+  try {
+    const report = pendingFleetReport(readClaudePlansState(), Date.now())
+    if (report) {
+      writeClaudePlansState(report.nextState)
+      console.log(report.printLine)
+    }
+  } catch (err) {
+    console.error('claude-plan-rotate-check: fleet report failed:', err instanceof Error ? err.name : 'error')
   }
 
   let raw: unknown

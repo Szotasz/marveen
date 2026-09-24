@@ -32,6 +32,10 @@ function isRotationEnabled(): boolean {
   try { return String(getEffectiveSettingValue('CLAUDE_ROTATION_ENABLED')) === '1' } catch { return false }
 }
 
+function isFleetRotationEnabled(): boolean {
+  try { return String(getEffectiveSettingValue('CLAUDE_ROTATION_FLEET')) === '1' } catch { return false }
+}
+
 function isMainAgentIsolated(): boolean {
   try { return String(getEffectiveSettingValue('MAIN_AGENT_ISOLATED_CONFIG')) === '1' } catch { return false }
 }
@@ -235,7 +239,23 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
         return true
       }
       logger.info({ agentId, targetPlanId }, 'Claude plan rotation: main agent restarted')
-      json(res, { ok: true, agentId, activePlanId: targetPlanId })
+
+      // Fleet leg (opt-in, CLAUDE_ROTATION_FLEET): the shared fleet token and
+      // the sub-agents on it follow the main agent. Deliberately NOT awaited:
+      // the restarts are sequential with a gap (a minute or more on a big
+      // fleet), and the usual caller -- the main agent's own heartbeat turn --
+      // is being restarted by this very request. runFleetLeg never throws; it
+      // records its outcome in the state side-car (fleet), and the next
+      // heartbeat tick prints that once for the Telegram report.
+      // Imported lazily: the wiring pulls in the agent registry/launcher
+      // helpers, which installs with the opt-in off never need to load here.
+      const fleetOn = isFleetRotationEnabled()
+      if (fleetOn) {
+        void import('../claude-plan-fleet-wiring.js')
+          .then(({ runFleetLeg }) => runFleetLeg(target))
+          .catch((err) => logger.error({ err: err instanceof Error ? err.name : 'error' }, 'Claude plan rotation: fleet leg failed to load'))
+      }
+      json(res, { ok: true, agentId, activePlanId: targetPlanId, fleet: fleetOn ? 'started' : 'off' })
       return true
     }
 

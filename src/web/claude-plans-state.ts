@@ -54,12 +54,39 @@ export interface ObservedPlanState {
   lastProbe?: PlanProbeOutcome
 }
 
+/** Outcome of the most recent fleet leg of a rotation (CLAUDE_ROTATION_FLEET,
+ *  src/claude-plan-fleet-rotation.ts): which plan's token the shared fleet
+ *  token file was switched to, and which sub-agents were restarted. */
+export interface FleetRotationRecord {
+  /** Plan the fleet was pointed at (or would have been, when skipped). */
+  fleetPlanId: string
+  /** Unix epoch ms. */
+  rotatedAt: number
+  /** 'rotated': file written (or already held that token) and restarts ran.
+   *  'skipped': nothing touched, see `reason`. 'failed': the file write
+   *  itself failed, nothing restarted. */
+  outcome: 'rotated' | 'skipped' | 'failed'
+  reason?: string
+  restarted: string[]
+  failed: Array<{ agent: string; error: string }>
+  /** Shared-token agents that were not running: they pick the new token up
+   *  on their next start, nothing to restart. */
+  notRunning: string[]
+  /** The structured line (FLEET_ROTATE / FLEET_SKIPPED ...) describing it. */
+  line: string
+  /** Unix epoch ms at which the heartbeat printed `line`; absent = not yet
+   *  reported (scripts/claude-plan-rotate-check.ts prints it once). */
+  reportedAt?: number
+}
+
 export interface ClaudePlansState {
   /** Which plan id each agent is currently on. A missing key means that agent
    *  has never been rotated (not on the isolated-config path yet, or
    *  rotation has not run for it). */
   activePlanByAgent: Record<string, string>
   plans: Record<string, ObservedPlanState>
+  /** Last fleet leg (opt-in). Absent on installs that never ran one. */
+  fleet?: FleetRotationRecord
 }
 
 const EMPTY_STATE: ClaudePlansState = { activePlanByAgent: {}, plans: {} }
@@ -80,7 +107,10 @@ export function readClaudePlansState(): ClaudePlansState {
     if (!isPlainObject(raw)) return EMPTY_STATE
     const activePlanByAgent = isStringRecord(raw.activePlanByAgent) ? raw.activePlanByAgent : {}
     const plans = isPlainObject(raw.plans) ? (raw.plans as unknown as ClaudePlansState['plans']) : {}
-    return { activePlanByAgent, plans }
+    const fleet = isPlainObject(raw.fleet) && typeof raw.fleet.fleetPlanId === 'string'
+      ? (raw.fleet as unknown as FleetRotationRecord)
+      : undefined
+    return fleet ? { activePlanByAgent, plans, fleet } : { activePlanByAgent, plans }
   } catch {
     return EMPTY_STATE
   }
@@ -118,7 +148,7 @@ export function recordPlanObservation(
   planId: string,
   observed: ObservedPlanState,
 ): ClaudePlansState {
-  return { activePlanByAgent: state.activePlanByAgent, plans: { ...state.plans, [planId]: observed } }
+  return { ...state, plans: { ...state.plans, [planId]: observed } }
 }
 
 // Pure state transition: point `agentId` at `targetPlanId`. Used both by an
@@ -132,4 +162,17 @@ export function applyRotation(
   targetPlanId: string,
 ): ClaudePlansState {
   return { ...state, activePlanByAgent: { ...state.activePlanByAgent, [agentId]: targetPlanId } }
+}
+
+// Pure state transition: record the outcome of a fleet leg. Replaces any
+// previous record (only the latest one is interesting, and a fresh record
+// has no reportedAt, so the heartbeat reports it once).
+export function recordFleetRotation(state: ClaudePlansState, record: FleetRotationRecord): ClaudePlansState {
+  return { ...state, fleet: record }
+}
+
+// Pure state transition: mark the current fleet record as reported.
+export function markFleetReported(state: ClaudePlansState, nowMs: number): ClaudePlansState {
+  if (!state.fleet) return state
+  return { ...state, fleet: { ...state.fleet, reportedAt: nowMs } }
 }

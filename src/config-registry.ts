@@ -552,6 +552,19 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  // Opt-in: the shared fleet token (store/.claude-oauth-token) follows the
+  // main agent's rotation. Default OFF -- with it off, a rotation touches the
+  // main agent only, exactly as before. Read at rotation time by
+  // POST /api/claude-plans/rotate (src/web/claude-plan-fleet-wiring.ts).
+  {
+    key: 'CLAUDE_ROTATION_FLEET',
+    type: 'boolean',
+    default: '0',
+    description: 'A flotta is kövesse a rotációt: amikor a fő agent egy token-módú planre vált, a közös flotta-token (store/.claude-oauth-token) is erre a plan tokenjére cserélődik (mentéssel), és minden olyan sub-agent újraindul, amely ezt a közös tokent használja. Saját tokenes / saját configDir-os agenteket nem érint. configDir-módú célplannél a flotta-lépés kimarad. Előfeltétel: CLAUDE_ROTATION_ENABLED=1.',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: false,
+  },
 ]
 
 export function getSettingDefinition(key: string): SettingDefinition | undefined {

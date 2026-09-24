@@ -525,3 +525,28 @@ NEM nyitottuk újra -- ezek azok alkalmazását pontosítják):
    `claude` process outputjából) NINCS bekötve -- ez élő, futó session
    kimenetének feldolgozását jelentené, nagyobb és kockázatosabb darab, külön
    follow-up-nak jelölve.
+
+## 12. Heti ablak + a flotta követi a rotációt (2026-09-24)
+
+Ok: egy másik telepítésen MINDEN kiesés a heti (7d) limit volt, és a teljes
+flotta (fő agent + a közös flotta-tokenen futó sub-agentek) egyszerre állt le.
+
+1. **7d a döntésben** (`claude-plan-rotation.ts`): az aktív plan akkor is
+   vált, ha a 7d >= 90% (`switchAtSevenDayPercent`) vagy a státusz
+   `rejected` (= 100%). A near-reset (30 perc) ablakonként számít, egy 3 nap
+   múlva resetelő 7d sosem "közeli". Jelölt kiesik (`candidateFromObservation`),
+   ha a 7d-je küszöb felett van és még nem resetelt (reset után újra jelölt),
+   ha az 5h-ja kimerült, vagy ha a legfrissebb probe `invalid_token` volt.
+   Rangsor: min(5h szabad, 7d szabad). A ROTATE/NO_ALTERNATIVE sor végére
+   `trigger=5h|7d` és a 7d számok kerülnek (a régi mezők változatlanok).
+2. **Flotta-láb, opt-in `CLAUDE_ROTATION_FLEET` (alapból KI)**: ha a fő agent
+   token-módú planre rotál, a plan tokenje (vaultból, processzen belül) a
+   `store/.claude-oauth-token`-be kerül (`.bak.rotation.<UTC>` mentés, atomikus
+   írás, 0600), majd minden FUTÓ, közös flotta-tokent használó sub-agent
+   sorban, szünettel újraindul (`restartAgentProcess`, nem fresh; a csatornás
+   agenteket a launcher a CC 2.1.193 regresszió miatt amúgy is frissen
+   indítja). Saját configDir/plan, `api`, `own_team`, távoli és nem-Claude
+   agent érintetlen. configDir-módú célplannél a láb kimarad
+   (`FLEET_SKIPPED ... reason=config-dir-plan-fleet-needs-token`). Az
+   eredmény a state side-car `fleet` mezőjébe kerül, és a következő heartbeat
+   egyszer kiírja (`FLEET_ROTATE` / `FLEET_SKIPPED` / `FLEET_FAILED`).

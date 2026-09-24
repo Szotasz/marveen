@@ -14,11 +14,13 @@ const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-claude-plans-routes-test-'))
 vi.mock('../config.js', () => ({ PROJECT_ROOT: tmpRoot, MAIN_AGENT_ID: 'agent-a', DEFAULT_AGENT_MODEL: 'claude-opus-5' }))
 
 let rotationEnabled = '0'
+let fleetEnabled = false
 let mainIsolated = '0'
 vi.mock('../settings-store.js', () => ({
   getEffectiveSettingValue: (key: string) => {
     if (key === 'CLAUDE_ROTATION_ENABLED') return rotationEnabled
     if (key === 'MAIN_AGENT_ISOLATED_CONFIG') return mainIsolated
+    if (key === 'CLAUDE_ROTATION_FLEET') return fleetEnabled ? '1' : '0'
     return ''
   },
 }))
@@ -40,6 +42,14 @@ const vaultSecrets = new Map<string, string>()
 const setSecret = vi.fn((id: string, _label: string, value: string) => { vaultSecrets.set(id, value) })
 const deleteSecret = vi.fn((id: string) => vaultSecrets.delete(id))
 vi.mock('../web/vault.js', () => ({ setSecret, deleteSecret }))
+
+// Fleet leg (CLAUDE_ROTATION_FLEET): its logic is tested in
+// claude-plan-fleet-rotation.test.ts; here only "does the route start it, and
+// only when the opt-in is on".
+const runFleetLeg = vi.fn(async (_plan: { id: string }) => null)
+vi.mock('../web/claude-plan-fleet-wiring.js', () => ({
+  runFleetLeg: (p: { id: string }) => runFleetLeg(p),
+}))
 
 const { tryHandleClaudePlans } = await import('../web/routes/claude-plans.js')
 const { CLAUDE_PLANS_PATH } = await import('../web/claude-plans.js')
@@ -341,6 +351,8 @@ describe('POST /api/claude-plans/rotate (PR2c)', () => {
     mainIsolated = '1'
     hardRestartMarveenChannels.mockClear().mockReturnValue({ ok: true })
     restartAgentProcess.mockClear().mockResolvedValue({ ok: true, pid: 123 })
+    fleetEnabled = false
+    runFleetLeg.mockClear()
   })
 
   async function seedTwoPlans() {
@@ -402,12 +414,36 @@ describe('POST /api/claude-plans/rotate (PR2c)', () => {
     const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'team' })
     await tryHandleClaudePlans(ctx)
     expect(out.status).toBe(200)
-    expect(out.body).toEqual({ ok: true, agentId: 'agent-a', activePlanId: 'team' })
+    expect(out.body).toEqual({ ok: true, agentId: 'agent-a', activePlanId: 'team', fleet: 'off' })
     expect(hardRestartMarveenChannels).toHaveBeenCalledTimes(1)
+    // CLAUDE_ROTATION_FLEET off (default): the fleet is not touched at all.
+    expect(runFleetLeg).not.toHaveBeenCalled()
 
     const state = fakeCtx('GET', '/api/claude-plans/state')
     await tryHandleClaudePlans(state.ctx)
     expect(state.out.body.activePlanByAgent).toEqual({ 'agent-a': 'team' })
+  })
+
+  it('CLAUDE_ROTATION_FLEET on: a main-agent rotation starts the fleet leg for the target plan', async () => {
+    await seedTwoPlans()
+    fleetEnabled = true
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'team' })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body.fleet).toBe('started')
+    await vi.waitFor(() => expect(runFleetLeg).toHaveBeenCalledTimes(1))
+    expect(runFleetLeg.mock.calls[0][0].id).toBe('team')
+  })
+
+  it('CLAUDE_ROTATION_FLEET on: no fleet leg when the main restart itself failed', async () => {
+    await seedTwoPlans()
+    fleetEnabled = true
+    hardRestartMarveenChannels.mockReturnValue({ ok: false, error: 'boom' })
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'team' })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(500)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(runFleetLeg).not.toHaveBeenCalled()
   })
 
   it('this is also how a first-ever assignment happens -- no separate bootstrap path', async () => {

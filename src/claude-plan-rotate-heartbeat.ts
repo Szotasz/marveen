@@ -9,6 +9,7 @@ import { decideRotationAction, candidateFromObservation, type RotationCandidate 
 import type { ClaudePlan } from './web/claude-plans.js'
 import {
   recordObservation,
+  markFleetReported,
   type ClaudePlansState,
   type ObservedPlanState,
 } from './web/claude-plans-state.js'
@@ -128,4 +129,19 @@ export function decideAndRecord(input: {
   // no-pressure / near-reset: quiet tick, but the observation is still worth
   // keeping so the dashboard badge does not go stale.
   return { printLine: null, nextState: stateWithObservation }
+}
+
+/**
+ * The fleet leg of a rotation (CLAUDE_ROTATION_FLEET) runs inside the
+ * dashboard after POST /api/claude-plans/rotate has already answered -- and
+ * after the main agent that would report it has been restarted. It records
+ * its structured line in the state side-car instead; the next heartbeat tick
+ * prints it exactly once (this) so the scheduled task can relay it.
+ */
+export function pendingFleetReport(
+  state: ClaudePlansState,
+  nowMs: number,
+): { printLine: string; nextState: ClaudePlansState } | null {
+  if (!state.fleet || state.fleet.reportedAt !== undefined || !state.fleet.line) return null
+  return { printLine: state.fleet.line, nextState: markFleetReported(state, nowMs) }
 }

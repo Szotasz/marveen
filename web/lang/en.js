@@ -804,6 +804,7 @@ window._i18n.en = {
   'settings.claude_plans.form.token_keep_hint': 'Token is set. Leave empty to keep it; pasting a new token replaces it.',
   'settings.claude_plans.form.error_generic':  'Could not save the plan.',
   'settings.desc.CLAUDE_ROTATION_ENABLED': 'Automatic Claude key rotation: if the main agent\'s active subscription runs out, automatically switch to another registered plan. Requires MAIN_AGENT_ISOLATED_CONFIG=1 and at least 2 registered plans. Switching restarts the main agent\'s session.',
+  'settings.desc.CLAUDE_ROTATION_FLEET': 'Fleet follows the rotation: when the main agent switches to a token-mode plan, the shared fleet token is replaced with that plan\'s token too (with a backup), and every sub-agent using the shared token is restarted. Agents with their own token or config dir are untouched; a config-dir target plan skips this step. Requires automatic rotation to be on.',
   'settings.col.key':            'Key',
   'settings.col.value':          'Value',
   'settings.col.description':    'Description',

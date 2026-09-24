@@ -1123,6 +1123,7 @@ window._i18n.hu = {
   'settings.claude_plans.form.token_keep_hint': 'Token beállítva. Hagyd üresen, ha a meglévőt megtartod; új token beillesztése lecseréli.',
   'settings.claude_plans.form.error_generic':  'Nem sikerült menteni a plant.',
   'settings.desc.CLAUDE_ROTATION_ENABLED': 'Automata Claude-kulcs rotáció: ha a fő agent aktív előfizetése kifogy, automatikusan váltson egy másik regisztrált planre. Előfeltétel: MAIN_AGENT_ISOLATED_CONFIG=1 és legalább 2 regisztrált plan. A váltás a fő agent session-jének újraindításával jár.',
+  'settings.desc.CLAUDE_ROTATION_FLEET': 'A flotta is kövesse a rotációt: amikor a fő agent egy token-módú planre vált, a közös flotta-token is erre cserélődik (mentéssel), és újraindul minden sub-agent, amely a közös tokent használja. Saját tokenes vagy saját configDir-os agenteket nem érint; configDir-módú célplannél ez a lépés kimarad. Előfeltétel: automata rotáció bekapcsolva.',
   'settings.col.key':            'Kulcs',
   'settings.col.value':          'Érték',
   'settings.col.description':    'Leírás',
