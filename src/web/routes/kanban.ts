@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import {
-  listKanbanCards, createKanbanCard, updateKanbanCard, KANBAN_WRITABLE_FIELDS,
+  listKanbanCards, kanbanAssigneeExists, createKanbanCard, updateKanbanCard, KANBAN_WRITABLE_FIELDS,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
   getKanbanComments, addKanbanComment, getKanbanCardEvents, listKanbanProjects,
   getKanbanCard, getChildCards, getDb,
@@ -367,15 +367,21 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // An unrecognised agent name 400s naming the accepted set, rather than silently
     // matching everything (`assignee = ?` against a name nothing has would just return
     // an empty list with 200) -- the same silence-teaches-guessing argument as the
-    // KNOWN_PARAMS check above, applied to the value instead of the key. Accepted set
-    // matches /api/kanban/assignees exactly, so a caller can discover it the same way.
+    // KNOWN_PARAMS check above, applied to the value instead of the key. Accepted: a
+    // configured name (OWNER_NAME, BOT_NAME, fleet agents -- what /api/kanban/assignees
+    // advertises) OR any assignee that already exists on the board (external contributors
+    // get cards too). Both sides compare case-insensitively: configured names are
+    // capitalised (BOT_NAME=Marveen) while stored assignees are usually lowercase
+    // (`marveen`), and an exact compare rejected the bot's and owner's own names.
     if (agent !== undefined) {
-      const knownAgents = new Set([OWNER_NAME, BOT_NAME, ...listAgentNames()])
-      if (!knownAgents.has(agent)) {
+      const wanted = agent.toLowerCase()
+      const isConfigured = [OWNER_NAME, BOT_NAME, ...listAgentNames()]
+        .some((n) => n.toLowerCase() === wanted)
+      if (!isConfigured && !kanbanAssigneeExists(agent)) {
         json(res, {
           error: 'unknown agent',
           agent,
-          hint: 'lásd GET /api/kanban/assignees az elfogadott nevekért',
+          hint: 'lásd GET /api/kanban/assignees az elfogadott nevekért, vagy egy a táblán már szereplő assignee (kis/nagybetű mindegy)',
         }, 400)
         return true
       }

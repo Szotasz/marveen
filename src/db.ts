@@ -2248,7 +2248,9 @@ export function listKanbanCards(
   const feltetelek: string[] = []
   const ertekek: unknown[] = []
   if (!opts.includeArchived) feltetelek.push('c.archived_at IS NULL')
-  if (opts.agent) { feltetelek.push('c.assignee = ?'); ertekek.push(opts.agent) }
+  // COLLATE NOCASE: configured names are capitalised (BOT_NAME=Marveen) while stored
+  // assignees are typically lowercase (`marveen`); an exact match found neither spelling.
+  if (opts.agent) { feltetelek.push('c.assignee = ? COLLATE NOCASE'); ertekek.push(opts.agent) }
   const where = feltetelek.length ? `WHERE ${feltetelek.join(' AND ')} ` : ''
   return db
     .prepare(`SELECT c.rowid AS seq, c.*,
@@ -2256,6 +2258,13 @@ export function listKanbanCards(
                                WHERE e.card_id = c.id), c.created_at) AS last_status_at
               FROM kanban_cards c ${where}ORDER BY c.sort_order ASC`)
     .all(...ertekek) as KanbanCard[]
+}
+
+// Whether any card -- archived included -- is assigned to `name`, case-insensitively.
+// The kanban `agent=` filter accepts such a name even when it is not a configured agent:
+// external contributors get cards too, and they must be filterable.
+export function kanbanAssigneeExists(name: string): boolean {
+  return db.prepare('SELECT 1 FROM kanban_cards WHERE assignee = ? COLLATE NOCASE LIMIT 1').get(name) !== undefined
 }
 
 export function getKanbanCard(id: string): KanbanCard | undefined {
