@@ -19,6 +19,10 @@ import {
   dayStartMs,
   boardText,
   boardAllText,
+  boardFilterText,
+  parseBoardFilter,
+  botAliases,
+  botHandle,
   findCard,
   cardDetailText,
   nextRunText,
@@ -137,7 +141,7 @@ describe('/board (read only)', () => {
     expect(text).not.toContain('Archivált várakozó')
     expect(text).not.toContain('Tervezett, nem az enyém')
     expect(text).not.toMatch(/#\d|c000000/) // no hashtag links, no hex ids in the list
-    expect(text).toMatch(new RegExp(`Egy kártya: /board ${seq('c0000002')} · minden: /board all$`))
+    expect(text).toContain(`Egy kártya: /board ${seq('c0000002')}\nOszlop: /board w · p · i · t · d · all\nKié: /board me · /board `)
   })
 
   // Owner case 2026-09-24: three children were archived as standalone tasks.
@@ -328,6 +332,54 @@ describe('/queue: the open question is not the command being answered', () => {
     expect(openQuestionIgnoringCommands(MAIN_AGENT_ID)).toBeNull()
     logIn('701', 'és a számla?')
     expect(openQuestionIgnoringCommands(MAIN_AGENT_ID)).toBe('701')
+  })
+})
+
+// /board filters (owner request 2026-09-24): a status letter and/or whose.
+describe('/board filters', () => {
+  const aliases = botAliases('Marveen TEST', 'marveen-test')
+  it('the bot name is not hard-coded: aliases and the help handle come from BOT_NAME / MAIN_AGENT_ID', () => {
+    expect([...aliases].sort()).toEqual(['bot', 'marveen', 'marveen test', 'marveen-test'])
+    expect(botHandle('Marveen TEST')).toBe('marveen')
+    expect(botHandle('Edith')).toBe('edith')
+  })
+
+  it('parses status letters and whose, in any order, case-insensitive', () => {
+    expect(parseBoardFilter(['w'], aliases)).toEqual({ status: 'waiting', who: null })
+    expect(parseBoardFilter(['ME', 'p'], aliases)).toEqual({ status: 'planned', who: { kind: 'me' } })
+    expect(parseBoardFilter(['Marveen'], aliases)).toEqual({ status: null, who: { kind: 'bot' } })
+    expect(parseBoardFilter(['-', 'i'], aliases)).toEqual({ status: 'in_progress', who: { kind: 'none' } })
+    expect(parseBoardFilter(['samu'], aliases)).toEqual({ status: null, who: { kind: 'name', name: 'samu' } })
+    expect(parseBoardFilter(['w', 'p'], aliases)).toMatch(/Kétszer adtál meg oszlopot/)
+  })
+
+  it('filters by column and by whose; the bot matches every spelling; a matching child nests under a matching parent', () => {
+    createKanbanCard({ id: 'p0000001', title: 'Szülő', status: 'waiting', assignee: 'Marveen' })
+    createKanbanCard({ id: 'k0000001', title: 'Gyerek várakozik', status: 'waiting', assignee: 'marveen', parent_id: 'p0000001' })
+    createKanbanCard({ id: 'k0000002', title: 'Gyerek tervezett', status: 'planned', assignee: 'András', parent_id: 'p0000001' })
+    createKanbanCard({ id: 'x0000001', title: 'Senkié', status: 'planned' })
+    createKanbanCard({ id: 'x0000002', title: 'Samué', status: 'waiting', assignee: 'SAMU' })
+    createKanbanCard({ id: 'x0000003', title: 'Kész', status: 'done', assignee: 'Marveen' })
+    const cards = listKanbanCards()
+    const seq = (id: string) => cards.find(c => c.id === id)!.seq
+    const w = boardFilterText(cards, { status: 'waiting', who: null }, 'András', aliases, 'marveen')
+    expect(w).toMatch(/^WAITING \(3\)\n/)
+    expect(w).toContain(`${seq('p0000001')}) Szülő · Marveen\n    └ ${seq('k0000001')}) Gyerek várakozik · marveen`)
+    expect(w).not.toContain('Gyerek tervezett')
+    const bot = boardFilterText(cards, { status: null, who: { kind: 'bot' } }, 'András', aliases, 'marveen')
+    expect(bot).toMatch(/^NYITOTT · marveen \(2\)\n/) // Marveen + marveen, done left out
+    const meP = boardFilterText(cards, { status: 'planned', who: { kind: 'me' } }, 'András', aliases, 'marveen')
+    expect(meP).toContain(`PLANNED · András (1)\n${seq('k0000002')}) Gyerek tervezett ↑${seq('p0000001')}`) // parent not in the view: ↑mark
+    expect(boardFilterText(cards, { status: null, who: { kind: 'none' } }, 'András', aliases, 'marveen')).toContain('Senkié')
+    expect(boardFilterText(cards, { status: null, who: { kind: 'name', name: 'samu' } }, 'András', aliases, 'marveen')).toContain('Samué')
+    const d = boardFilterText(cards, { status: 'done', who: null }, 'András', aliases, 'marveen')
+    expect(d).toMatch(/^DONE \(1\)\n\(csak a még nem archivált kész kártyák\)\n/)
+  })
+
+  it('the hints name the resolved bot handle, never "<név>"', () => {
+    const t = boardFilterText([], { status: 'waiting', who: null }, 'András', aliases, 'marveen')
+    expect(t).toContain('Kié: /board me · /board marveen · /board -')
+    expect(t).not.toContain('<név>')
   })
 })
 

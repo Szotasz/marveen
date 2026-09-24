@@ -8,7 +8,7 @@
 
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { PROJECT_ROOT, MAIN_AGENT_ID, OWNER_NAME, APP_TZ } from '../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, OWNER_NAME, APP_TZ, BOT_NAME } from '../config.js'
 import {
   listApprovals,
   listKanbanCards,
@@ -507,7 +507,7 @@ export function boardText(cards: KanbanCard[], owner: string = OWNER_NAME): stri
   if (shown === 0) lines.push('', 'Nincs rád váró vagy hozzád rendelt nyitott kártya.')
   const total = waiting.length + assigned.length
   if (total > shown) lines.push(`+${total - shown} további: /board all`)
-  lines.push('', `Egy kártya: /board ${first ? seqOf(first) : '<szám>'} · minden: /board all`)
+  lines.push('', `Egy kártya: /board ${first ? seqOf(first) : '<szám>'}`, boardHints())
   return lines.join('\n')
 }
 
@@ -532,7 +532,100 @@ export function boardAllText(cards: KanbanCard[], owner: string = OWNER_NAME): s
     }
     for (const c of col) walk(c, 0, null)
   }
-  lines.push('', 'Egy kártya: /board <szám>')
+  lines.push('', 'Egy kártya: /board <szám>', boardHints())
+  return lines.join('\n')
+}
+
+// ---- /board filters: status letter and/or whose (owner request 2026-09-24) ----
+//
+// "/board w", "/board p me", "/board marveen": short enough to type on a phone.
+// The main agent's name is NOT hard-coded: its aliases come from BOT_NAME and
+// MAIN_AGENT_ID ("Marveen TEST" / "marveen-test" on the test instance), and the
+// assignee field is free text ("Marveen" and "marveen" on the same live board),
+// so every name match is case-insensitive.
+
+const STATUS_ALIASES: Record<string, KanbanCard['status']> = {
+  w: 'waiting', waiting: 'waiting', p: 'planned', planned: 'planned',
+  i: 'in_progress', in_progress: 'in_progress', t: 'testing', testing: 'testing',
+  d: 'done', done: 'done',
+}
+
+export function botAliases(botName: string = BOT_NAME, agentId: string = MAIN_AGENT_ID): Set<string> {
+  const n = botName.trim().toLocaleLowerCase('hu')
+  return new Set([n, n.split(/\s+/)[0], agentId.toLocaleLowerCase('hu'), 'bot'].filter(Boolean))
+}
+
+// The bot's name as the owner types it: the first word of BOT_NAME, lowercase.
+export function botHandle(botName: string = BOT_NAME): string {
+  return botName.trim().split(/\s+/)[0].toLocaleLowerCase('hu') || 'bot'
+}
+
+export type BoardWho = { kind: 'me' } | { kind: 'bot' } | { kind: 'none' } | { kind: 'name'; name: string }
+export interface BoardFilter { status: KanbanCard['status'] | null; who: BoardWho | null }
+
+export function parseBoardFilter(args: string[], aliases: Set<string> = botAliases()): BoardFilter | string {
+  const f: BoardFilter = { status: null, who: null }
+  for (const raw of args) {
+    const a = raw.trim().toLocaleLowerCase('hu')
+    const st = STATUS_ALIASES[a]
+    if (st) {
+      if (f.status) return `Kétszer adtál meg oszlopot: „${raw}”.`
+      f.status = st
+      continue
+    }
+    if (f.who) return `Kétszer adtál meg felelőst: „${raw}”.`
+    f.who = a === 'me' ? { kind: 'me' } : a === '-' ? { kind: 'none' } : aliases.has(a) ? { kind: 'bot' } : { kind: 'name', name: a }
+  }
+  return f
+}
+
+function whoMatches(c: KanbanCard, who: BoardWho, owner: string, aliases: Set<string>): boolean {
+  const a = (c.assignee ?? '').trim().toLocaleLowerCase('hu')
+  if (who.kind === 'none') return a === ''
+  if (who.kind === 'me') return isOwner(c.assignee, owner)
+  if (who.kind === 'bot') return a !== '' && (aliases.has(a) || aliases.has(a.split(/\s+/)[0]))
+  return a === who.name
+}
+
+function whoLabel(who: BoardWho, owner: string, handle: string): string {
+  if (who.kind === 'me') return owner
+  if (who.kind === 'bot') return handle
+  if (who.kind === 'none') return 'felelős nélkül'
+  return who.name
+}
+
+export function boardHints(handle: string = botHandle()): string {
+  return `Oszlop: /board w · p · i · t · d · all\nKié: /board me · /board ${handle} · /board -  (kombinálható: /board w me)`
+}
+
+// A filtered view: matching cards by column; a matching child sits under its
+// matching parent, else stands alone with its ↑mark.
+export function boardFilterText(cards: KanbanCard[], f: BoardFilter, owner: string = OWNER_NAME, aliases: Set<string> = botAliases(), handle: string = botHandle()): string {
+  const live = cards.filter(c => c.archived_at === null)
+  const byId = new Map(cards.map(c => [c.id, c]))
+  const match = live.filter(c =>
+    (f.status ? c.status === f.status : c.status !== 'done')
+    && (f.who ? whoMatches(c, f.who, owner, aliases) : true))
+  const ids = new Set(match.map(c => c.id))
+  const roots = match.filter(c => !c.parent_id || !ids.has(c.parent_id))
+  const title = [f.status ? f.status.toUpperCase() : 'NYITOTT', f.who ? whoLabel(f.who, owner, handle) : null].filter(Boolean).join(' · ')
+  const lines = [`${title} (${match.length})`]
+  if (f.status === 'done') lines.push('(csak a még nem archivált kész kártyák)')
+  if (match.length === 0) lines.push('nincs')
+  const statuses = f.status ? [f.status] : STATUSES.filter(x => x !== 'done')
+  for (const st of statuses) {
+    const col = roots.filter(c => c.status === st)
+    if (col.length === 0) continue
+    if (!f.status) lines.push('', `${st.toUpperCase()} (${col.length})`)
+    const walk = (c: KanbanCard, depth: number, parentStatus: string | null) => {
+      const status = parentStatus !== null && c.status !== parentStatus ? ` (${c.status})` : ''
+      const line = cardLine(c, owner, byId, { parentMark: depth === 0 })
+      lines.push(depth === 0 ? line : `${'    '.repeat(depth)}└ ${line}${status}`)
+      for (const k of match.filter(x => x.parent_id === c.id)) walk(k, depth + 1, c.status)
+    }
+    for (const c of col) walk(c, 0, null)
+  }
+  lines.push('', boardHints(handle))
   return lines.join('\n')
 }
 
@@ -636,13 +729,25 @@ export function registerBuiltinCommands(): void {
     run: (ctx, args) => reply(ctx, args.length === 0 ? usageText(ctx.now) : usageDayText(args[0], ctx.now)),
   })
   registerCommand({
-    name: 'board', kind: 'read', usage: '/board [<szám>|all]', description: 'kanban: ami rád vár; <szám>: egy kártya, alfeladatokkal; all: minden nyitott kártya, fában',
+    name: 'board', kind: 'read', usage: `/board [<szám>|w|p|i|t|d|all] [me|${botHandle()}|-]`,
+    description: `kanban: ami rád vár; <szám>: egy kártya; w/p/i/t/d: egy oszlop; me, ${botHandle()}, -: kié; all: minden, fában`,
     run: (ctx, args) => {
       if (args.length === 0) return reply(ctx, boardText(listKanbanCards()))
-      if (args.length === 1 && args[0].toLowerCase() === 'all') return reply(ctx, boardAllText(listKanbanCards()))
-      if (args.length > 1) return reply(ctx, 'A /board csak olvas; kártyát írni innen nem lehet. Egy kártya: /board <szám>')
-      const card = findCard(args[0])
-      return reply(ctx, card ? cardDetailText(card) : `Nincs ilyen nyitott kártya: ${args[0]}. Minden nyitott kártya: /board all`)
+      if (args.length === 1 && ['all', 'a'].includes(args[0].toLowerCase())) return reply(ctx, boardAllText(listKanbanCards()))
+      if (args.length === 1 && /^#?\d+$/.test(args[0].trim())) {
+        const card = findCard(args[0])
+        return reply(ctx, card ? cardDetailText(card) : `Nincs ilyen nyitott kártya: ${args[0]}. Minden nyitott kártya: /board all`)
+      }
+      if (args.length > 2) return reply(ctx, `A /board csak olvas; kártyát írni innen nem lehet. Legfeljebb egy oszlopot és egy felelőst kap.\n${boardHints()}`)
+      const f = parseBoardFilter(args)
+      if (typeof f === 'string') return reply(ctx, `${f}\n${boardHints()}`)
+      // exactly an 8-char hex id still opens the card (a short name like
+      // "ada" must not prefix-match an id)
+      if (args.length === 1 && /^[0-9a-f]{8}$/i.test(args[0].trim())) {
+        const card = findCard(args[0])
+        if (card) return reply(ctx, cardDetailText(card))
+      }
+      return reply(ctx, boardFilterText(listKanbanCards(), f))
     },
   })
   registerCommand({ name: 'commands', kind: 'read', description: 'a saját parancsaid, az érvénytelenek külön', run: ctx => reply(ctx, customCommandsText()) })
