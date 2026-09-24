@@ -37,24 +37,29 @@ function insertCard(db: ReturnType<typeof getDb>, opts: {
   dispatchedAt?: number | null
   archivedAt?: number | null
   assignee?: string | null
+  dueDate?: number | null
 }) {
   db.prepare(
-    `INSERT INTO kanban_cards (id, title, status, priority, assignee, created_at, updated_at, dispatched_at, archived_at)
-     VALUES (?, ?, ?, 'normal', ?, ?, ?, ?, ?)`
+    `INSERT INTO kanban_cards (id, title, status, priority, assignee, created_at, updated_at, dispatched_at, archived_at, due_date)
+     VALUES (?, ?, ?, 'normal', ?, ?, ?, ?, ?, ?)`
   ).run(
     opts.id,
     `card ${opts.id}`,
     opts.status ?? 'planned',
-    opts.assignee ?? null,
+    opts.assignee === undefined ? 'Dev' : opts.assignee,
     opts.createdAt,
     opts.updatedAt,
     opts.dispatchedAt ?? null,
     opts.archivedAt ?? null,
+    opts.dueDate ?? null,
   )
 }
 
-function insertComment(db: ReturnType<typeof getDb>, cardId: string, createdAt: number) {
-  db.prepare(`INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, 'someone', 'note', ?)`).run(cardId, createdAt)
+// Default author 'dev' = the default assignee 'Dev' (case differs on purpose:
+// the board stores "Marveen", the agent writes "marveen").
+function insertComment(db: ReturnType<typeof getDb>, cardId: string, createdAt: number, opts: { author?: string; automated?: boolean } = {}) {
+  db.prepare(`INSERT INTO kanban_comments (card_id, author, content, created_at, automated) VALUES (?, ?, 'note', ?, ?)`)
+    .run(cardId, opts.author ?? 'dev', createdAt, opts.automated ? 1 : 0)
 }
 
 function insertEvent(db: ReturnType<typeof getDb>, cardId: string, toStatus: string, createdAt: number) {
@@ -147,6 +152,66 @@ describe('getStuckKanbanCards (KANBANSTUCKURES916 forrás-spec 5. fejezet)', () 
     expect(r.stuck.map((c) => c.id)).toEqual(['c9'])
   })
 
+  it('a comment by someone other than the assignee is no work-trace: the card is not started', () => {
+    const db = getDb()
+    const created = now() - 10 * DAY
+    insertCard(db, { id: 'n1', createdAt: created, updatedAt: created })
+    insertComment(db, 'n1', created + 2 * DAY, { author: 'migration-bot' })
+    insertCard(db, { id: 'n2', createdAt: created, updatedAt: created, assignee: null })
+    insertComment(db, 'n2', created + 2 * DAY)
+    const r = getStuckKanbanCards(OPTS)
+    expect(r.examined).toBe(0)
+  })
+
+  it('an automated comment is no work-trace even from the assignee', () => {
+    const db = getDb()
+    const created = now() - 10 * DAY
+    insertCard(db, { id: 'a1', createdAt: created, updatedAt: created })
+    insertComment(db, 'a1', created + 2 * DAY, { automated: true })
+    const r = getStuckKanbanCards(OPTS)
+    expect(r.examined).toBe(0)
+  })
+
+  it('a sweep comment that bumped updated_at is not activity: the started card stays stuck', () => {
+    const db = getDb()
+    const created = now() - 20 * DAY
+    const sweep = now() - 1 * DAY
+    // addKanbanComment bumps updated_at to the comment's second
+    insertCard(db, { id: 's1', createdAt: created, updatedAt: sweep, dispatchedAt: created })
+    insertComment(db, 's1', sweep, { author: 'sweep', automated: true })
+    const r = getStuckKanbanCards(OPTS)
+    expect(r.stuck.map((c) => c.id)).toEqual(['s1'])
+    expect(r.stuck[0].idle_days).toBe(20)
+  })
+
+  it('an updated_at from a real edit (no comment at that second) still counts as activity', () => {
+    const db = getDb()
+    const created = now() - 20 * DAY
+    insertCard(db, { id: 'e1', createdAt: created, updatedAt: now() - 1 * DAY, dispatchedAt: created })
+    insertComment(db, 'e1', now() - 2 * DAY, { author: 'sweep', automated: true })
+    const r = getStuckKanbanCards(OPTS)
+    expect(r.examined).toBe(1)
+    expect(r.stuck).toHaveLength(0)
+  })
+
+  it('waiting is not idle-measured: own group, judged by due_date', () => {
+    const db = getDb()
+    const old = now() - 30 * DAY
+    // 30 days idle, started, no deadline: counted, never stuck
+    insertCard(db, { id: 'w1', status: 'waiting', createdAt: old, updatedAt: old, dispatchedAt: old })
+    // deadline passed 2 days ago: overdue
+    insertCard(db, { id: 'w2', status: 'waiting', createdAt: old, updatedAt: old, dueDate: now() - 2 * DAY - 60 })
+    // deadline in the future: fine
+    insertCard(db, { id: 'w3', status: 'waiting', createdAt: old, updatedAt: old, dueDate: now() + DAY })
+    const r = getStuckKanbanCards(OPTS)
+    expect(r.examined).toBe(0)
+    expect(r.stuck).toHaveLength(0)
+    expect(r.by_status.waiting).toBeUndefined()
+    expect(r.waiting.examined).toBe(3)
+    expect(r.waiting.without_deadline).toBe(1)
+    expect(r.waiting.overdue.map((c) => [c.id, c.overdue_days])).toEqual([['w2', 2]])
+  })
+
   it('by_status carries per-status examined/stuck breakdown', () => {
     const db = getDb()
     insertCard(db, { id: 'p1', createdAt: now() - 10 * DAY, updatedAt: now() - 8 * DAY, dispatchedAt: now() - 8 * DAY })
@@ -178,6 +243,25 @@ describe('GET /api/kanban/stuck', () => {
     expect(out.status).toBe(200)
     expect(out.body.examined).toBe(0)
     expect(out.body.empty_reason).toBeTruthy()
+  })
+
+  it('POST comments with automated: true stores the marker (and a plain POST does not)', async () => {
+    const db = getDb()
+    insertCard(db, { id: 'p9', createdAt: now() - DAY, updatedAt: now() - DAY })
+    for (const [automated, want] of [[true, 1], [undefined, 0]] as const) {
+      const out: { status: number; body: any } = { status: 0, body: null }
+      const res: any = {
+        writeHead(status: number) { out.status = status; return res },
+        end(chunk?: string) { if (chunk) out.body = JSON.parse(chunk) },
+      }
+      const req: any = Readable.from([Buffer.from(JSON.stringify({ author: 'sweep', content: 'x', automated }))])
+      req.headers = {}
+      const url = new URL('http://localhost:3420/api/kanban/p9/comments')
+      await tryHandleKanban({ req, res, path: url.pathname, method: 'POST', url } as RouteContext)
+      expect(out.body.automated).toBe(want)
+      const row = db.prepare('SELECT automated FROM kanban_comments WHERE id = ?').get(out.body.id) as { automated: number }
+      expect(row.automated).toBe(want)
+    }
   })
 
   it('defaults to planned_days=7, active_days=3 when no query params are given', async () => {

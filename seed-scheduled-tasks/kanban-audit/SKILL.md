@@ -61,8 +61,13 @@ print(f\"Beakadás: vizsgált={d['examined']}, találat={len(d['stuck'])}\" + ('
 now=int(time.time())
 for c in sorted(d['stuck'], key=lambda c: -c['last_activity']):
     print(' ', c['id'], '|', (c.get('assignee') or '-'), '|', round((now-c['last_activity'])/3600.0,1), 'h |', c['title'])
+w=d['waiting']
+print(f\"Várakozó: {w['examined']}, határidőn túl: {len(w['overdue'])}, határidő nélkül: {w['without_deadline']}\")
+for c in w['overdue']:
+    print(' ', c['id'], '|', (c.get('assignee') or '-'), '|', c['overdue_days'], 'nap késés |', c['title'])
 "
    ```
+   Munka-nyom csak a felelős saját, nem gépi kommentje. Tömeges vagy gépi kommentet `"automated": true`-val írj (POST `/api/kanban/<id>/comments`). A `waiting` nem tétlenség: a határidőn túliakat a tulajdonosnak jelezd, ne pingeld.
 
 4. **Beakadt task -> ping**: minden beakadt kártyához küldj inter-agent message-t az assignee-nek (kivéve {{MAIN_AGENT_ID}}-nek és üres assignee-nek):
    ```
@@ -385,15 +390,7 @@ for c in json.load(sys.stdin):
   **ELJÁRÁS: mielőtt bizonyítékot írsz egy régi kártyára, nézd meg a MAI kommentjeit** (`SELECT date(created_at,'unixepoch','localtime'), substr(content,1,120) FROM kanban_comments WHERE card_id='<id>' ORDER BY created_at DESC LIMIT 3`). Ha ma már szerepel ugyanaz a mérés, a helyes lépés a hallgatás. Új komment csak akkor, ha a mérés EREDMÉNYE változott (a tünet eltűnt, súlyosbodott, vagy más okra vezethető vissza), nem akkor, ha csak megint lefuttattad.
 - Ne re-pingelj 4 órán belül ugyanazt: a state-fájlban tárolt `last_audit_at` automatikusan kezeli ezt (l. 1. lépés az első futásra is).
 - A státuszváltozás (in_progress -> done) is updated_at frissítést jelent, így a következő audit nem fogja megfogni a most-még-aktív taskokat.
-- **KOMMENT HOZZÁADÁS NEM frissíti az updated_at-ot** (2026-05-23 incident): a `kanban_comments` insert csak a comment-row `created_at`-ját állítja, NEM a kanban_cards.updated_at-ot. Ezért ha egy task aktívan kommentes (pl. Samu/Boni delegálási láncolat), DE státusz nem mozdul, akkor false-positive stuck-listára kerül. **Megoldás-pattern a query-ben**: a stuck-detekciónál vedd az `MAX(c.created_at)` és `cards.updated_at` MAXIMUMÁT mint effective_last_activity, és AHHOZ hasonlítsd a `last_audit_at`-ot:
-```sql
-SELECT k.id, k.title, k.assignee,
-  ROUND((strftime('%s','now') - MAX(k.updated_at, COALESCE((SELECT MAX(created_at) FROM kanban_comments WHERE card_id=k.id), 0))) / 3600.0, 1) AS hrs
-FROM kanban_cards k
-WHERE k.status='in_progress' AND k.archived_at IS NULL
-  AND MAX(k.updated_at, COALESCE((SELECT MAX(created_at) FROM kanban_comments WHERE card_id=k.id), 0)) < <LAST>
-```
-Vagy alternatíva (gyorsabb): minden ping előtt query-old a komment-count-ot az utolsó audit óta -- ha van, skip a ping-et és manuálisan bump-old a cards.updated_at-ot. Még jobb: a kanban_comments insert ELŐTT/UTÁN trigger-rel auto-bump-old a parent cards.updated_at-ját (storage-szintű megoldás, de schema-change kell).
+- **A beakadás-mérést NE írd újra saját SQL-lel** (a régi, csak `in_progress`-es lekérdezés strukturálisan üres volt): az aktivitás (felelős kommentje, esemény, szerkesztés) a `/api/kanban/stuck`-ban él, a 3. lépés azt hívja.
 
 - **`changes()` KÜLÖN sqlite3-hívásban MINDIG 0 (2026-06-15)**: ha az UPDATE után `sqlite3 ... "SELECT changes()"` külön invokációban fut, az egy ÚJ kapcsolat -> 0-t ad akkor is ha az UPDATE sikeres volt (false-negative, "0 sor módosult" látszat). NE erre alapozz. Verifikáld a hatást előtte/utána count-tal (pl. unassigned darabszám 11->5), vagy tedd a `SELECT changes();`-t UGYANABBA a sqlite3 hívásba az UPDATE után (`sqlite3 db "UPDATE ...; SELECT changes();"`).
 - **Batch-UPDATE `{ ... } | sqlite3` szubshell-pipe + loop-épített `$SQL` string CSENDBEN visszagördülhet (2026-07-20)**: sok kártya egyszerre zárásakor a `for id in ...; do SQL="$SQL UPDATE...;INSERT..."; done; sqlite3 db "$SQL ..."` minta némán 0 sort módosított (a záró SELECT lefutott és normál számot adott, de SEMMI nem íródott -- valószínű egy statement a loop-épített stringben elrontotta a parse-t, hibaüzenet nélkül a capture-ben). MEGBÍZHATÓ MINTA: (1) NE `{ } | sqlite3` szubshell-pipe; (2) az összes statement EGYETLEN `sqlite3 db "..."` argumentumban, explicit egymás után (ne shell-loopból konkatenálva), pontosvesszővel; (3) UTÁNA verifikáld a hatást count-tal (waiting-darabszám előtte/utána), ne a 0-exitre hagyatkozz. Kis (2-3 statementes) hívások megbízhatóan mennek; a nagy loop-string a rizikós.

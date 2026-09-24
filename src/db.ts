@@ -478,6 +478,15 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_comments_card ON kanban_comments(card_id)`)
+  // KANBANSTUCKURES916 (#1531 review): bulk and machine writers (migrations,
+  // sweeps, audits) mark their own comments, so the stuck detector can tell a
+  // work-trace from a sweep's footprint. Default 0: every existing writer keeps
+  // working unchanged, and an unmarked comment is still judged by its author.
+  try {
+    db.exec('ALTER TABLE kanban_comments ADD COLUMN automated INTEGER NOT NULL DEFAULT 0')
+  } catch {
+    // column already exists
+  }
 
   // Homoglyph journal (GATEHOMOGLIFSWEEP816): agents write kanban via sqlite3
   // directly, so an API-level check never sees those writes. These triggers
@@ -2219,6 +2228,8 @@ export interface KanbanComment {
   author: string
   content: string
   created_at: number
+  // 1 = written by a bulk/machine tool; never a work-trace (KANBANSTUCKURES916)
+  automated?: number
 }
 
 export function listKanbanCards(): KanbanCard[] {
@@ -2580,16 +2591,17 @@ export function markScheduledTaskKanbanWaiting(taskName: string): string | null 
   return card.id
 }
 
-export function addKanbanComment(cardId: string, author: string, content: string): KanbanComment {
+export function addKanbanComment(cardId: string, author: string, content: string, opts: { automated?: boolean } = {}): KanbanComment {
   const now = Math.floor(Date.now() / 1000)
+  const automated = opts.automated ? 1 : 0
   const info = db.prepare(
-    'INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, ?)'
-  ).run(cardId, author, content, now)
+    'INSERT INTO kanban_comments (card_id, author, content, created_at, automated) VALUES (?, ?, ?, ?, ?)'
+  ).run(cardId, author, content, now, automated)
   db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(now, cardId)
   const parentId = (db.prepare('SELECT parent_id FROM kanban_cards WHERE id = ?').get(cardId) as
     { parent_id: string | null } | undefined)?.parent_id
   touchAncestorChain(parentId, now, cardId)
-  return { id: Number(info.lastInsertRowid), card_id: cardId, author, content, created_at: now }
+  return { id: Number(info.lastInsertRowid), card_id: cardId, author, content, created_at: now, automated }
 }
 
 // --- Kanban labels (tags) ---
@@ -2854,13 +2866,27 @@ export function countNewHotMemories(agentId: string): number {
 // stall, so the fix cannot just widen the status filter; it needs a real
 // "started" signal, independent of status.
 //
+// A comment is a WORK-TRACE only if its author is the card's assignee (case-
+// insensitive: the board stores "Marveen", the agent writes "marveen") and it
+// is not marked `automated`. Measured on a maintainer board (#1531 review): of
+// 590 "stuck" cards, all 590 were "started" by a comment alone, and 151 of them
+// only by a migration or sweep comment that was also their last activity.
+//
 // A card counts as STARTED if any of: it was ever dispatched to an agent, it
-// once left `planned` (kanban_card_events), it has a comment that is not the
-// creator's immediate note (an initial comment within `creatorCommentWindowSec`
-// of creation is a description, not a work-trace -- measured window: D001,
-// 600s), or its current status is in_progress/testing. `last_activity` is the
-// max of the card's own updated_at, its latest comment, and its latest event --
-// so a fresh comment on an old card counts as activity, not a stall.
+// once left `planned` (kanban_card_events), it has a work-trace comment that is
+// not the assignee's immediate note (within `creatorCommentWindowSec` of
+// creation it is a description -- measured window: D001, 600s), or its current
+// status is in_progress/testing.
+//
+// `last_activity` is the max of: creation, dispatch, the latest work-trace
+// comment, the latest status event, and the card's updated_at -- UNLESS that
+// updated_at is the second a non-work comment was written (addKanbanComment
+// bumps updated_at on every comment, so a sweep's comment would otherwise count
+// as activity through the back door).
+//
+// `waiting` is NOT idle-measured: a waiting card waits on something external by
+// definition. It gets its own group, judged against its own deadline
+// (`due_date`): overdue ones are listed, the rest are only counted.
 export interface StuckKanbanCard {
   id: string
   seq?: number
@@ -2871,11 +2897,25 @@ export interface StuckKanbanCard {
   idle_days: number
 }
 
+export interface OverdueWaitingCard {
+  id: string
+  seq?: number
+  title: string
+  assignee: string | null
+  due_date: number
+  overdue_days: number
+}
+
 export interface StuckKanbanCardsResult {
   examined: number
   stuck: StuckKanbanCard[]
   by_status: Record<string, { examined: number; stuck: number }>
+  waiting: { examined: number; overdue: OverdueWaitingCard[]; without_deadline: number }
 }
+
+// A comment row `m` of card `c` that is a work-trace (see above).
+const WORK_COMMENT_SQL = `m.card_id = c.id AND m.automated = 0 AND c.assignee IS NOT NULL
+                  AND lower(trim(m.author)) = lower(trim(c.assignee))`
 
 export function getStuckKanbanCards(opts: {
   plannedDays: number
@@ -2886,16 +2926,21 @@ export function getStuckKanbanCards(opts: {
   const nowSec = Math.floor(Date.now() / 1000)
   const rows = db
     .prepare(
-      `SELECT c.rowid AS seq, c.id, c.title, c.status, c.assignee, c.created_at, c.dispatched_at,
+      `SELECT c.rowid AS seq, c.id, c.title, c.status, c.assignee, c.created_at, c.dispatched_at, c.due_date,
               MAX(
-                c.updated_at,
-                COALESCE((SELECT MAX(created_at) FROM kanban_comments m WHERE m.card_id = c.id), 0),
+                c.created_at,
+                COALESCE(c.dispatched_at, 0),
+                CASE WHEN EXISTS(SELECT 1 FROM kanban_comments m
+                                  WHERE m.card_id = c.id AND m.created_at = c.updated_at
+                                    AND NOT (${WORK_COMMENT_SQL}))
+                     THEN 0 ELSE c.updated_at END,
+                COALESCE((SELECT MAX(m.created_at) FROM kanban_comments m WHERE ${WORK_COMMENT_SQL}), 0),
                 COALESCE((SELECT MAX(created_at) FROM kanban_card_events e WHERE e.card_id = c.id), 0)
               ) AS last_activity,
               (
                 c.dispatched_at IS NOT NULL
                 OR EXISTS(SELECT 1 FROM kanban_card_events e WHERE e.card_id = c.id AND e.to_status != 'planned')
-                OR EXISTS(SELECT 1 FROM kanban_comments m WHERE m.card_id = c.id AND m.created_at > c.created_at + ?)
+                OR EXISTS(SELECT 1 FROM kanban_comments m WHERE ${WORK_COMMENT_SQL} AND m.created_at > c.created_at + ?)
                 OR c.status IN ('in_progress', 'testing')
               ) AS started
        FROM kanban_cards c
@@ -2909,15 +2954,33 @@ export function getStuckKanbanCards(opts: {
     assignee: string | null
     created_at: number
     dispatched_at: number | null
+    due_date: number | null
     last_activity: number
     started: 0 | 1
   }>
 
   const byStatus: Record<string, { examined: number; stuck: number }> = {}
   const stuck: StuckKanbanCard[] = []
+  const waiting: StuckKanbanCardsResult['waiting'] = { examined: 0, overdue: [], without_deadline: 0 }
   let examined = 0
 
   for (const r of rows) {
+    if (r.status === 'waiting') {
+      waiting.examined++
+      if (r.due_date == null) {
+        waiting.without_deadline++
+      } else if (r.due_date < nowSec) {
+        waiting.overdue.push({
+          id: r.id,
+          seq: r.seq,
+          title: r.title,
+          assignee: r.assignee,
+          due_date: r.due_date,
+          overdue_days: Math.floor((nowSec - r.due_date) / 86400),
+        })
+      }
+      continue
+    }
     if (!r.started) continue
     examined++
     const bucket = byStatus[r.status] ?? { examined: 0, stuck: 0 }
@@ -2940,7 +3003,7 @@ export function getStuckKanbanCards(opts: {
     byStatus[r.status] = bucket
   }
 
-  return { examined, stuck, by_status: byStatus }
+  return { examined, stuck, by_status: byStatus, waiting }
 }
 
 /**
