@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { resolveProviderEnv } from '../web/agent-process.js'
+import type { CustomProviderDef } from '../web/custom-providers.js'
 
 describe('resolveProviderEnv', () => {
   it('returns no export chain for a claude- model (uses host OAuth/API key elsewhere)', () => {
@@ -90,5 +91,40 @@ describe('resolveProviderEnv', () => {
       return 'unused'
     })
     expect(called).toBe(false)
+  })
+
+  // REGRESSZIOS ORZO: a custom-provider vault-kulcs hianya megallitja az inditast,
+  // nem esik vissza csendben a rossz backendre. Ez a check kivehetetlen anelkul,
+  // hogy ez a teszt piros ne legyen -- korabban semmilyen teszt nem pinnelte le
+  // (Szotasz FIX-THEN-GO merese: a check kivetele mellett is 6537/6537 zold volt).
+  for (const authHeader of ['x-api-key', 'Bearer'] as const) {
+    it(`throws when a custom provider's vault key (authHeader=${authHeader}) has no secret, instead of launching without one`, () => {
+      const def: CustomProviderDef = {
+        id: 'my-provider',
+        label: 'My Provider',
+        baseUrl: 'https://api.example.com',
+        authHeader,
+        vaultKey: 'missing-vault-key',
+      }
+      const seen: string[] = []
+      expect(() => resolveProviderEnv('some-model', (id) => {
+        seen.push(id)
+        return null // a hivo pontosan ezt adja vissza, ha a vault-kulcshoz nincs titok
+      }, def)).toThrow(/missing-vault-key/)
+      expect(seen).toEqual(['missing-vault-key'])
+    })
+  }
+
+  it("does NOT throw for authHeader='none' even when the vault key lookup would fail -- no key is needed on that path", () => {
+    const def: CustomProviderDef = {
+      id: 'ollama-like',
+      label: 'No-auth provider',
+      baseUrl: 'http://localhost:11434',
+      authHeader: 'none',
+      vaultKey: null,
+    }
+    const r = resolveProviderEnv('some-model', () => null, def)
+    expect(r.provider).toBe('custom')
+    expect(r.exportsStr).toContain('ANTHROPIC_AUTH_TOKEN=ollama')
   })
 })
