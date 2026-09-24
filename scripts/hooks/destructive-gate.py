@@ -111,7 +111,11 @@ ENV_RE = re.compile(r'(?:^|[\s=:])(?:[^\s"\']*/)?\.env(?=$|[\s"\'`,;)\]}])')
 # Amelyik parancs a heredoc-torzset VEGREHAJTJA, nem fajlba irja. Csak ezeknel marad
 # bent a torzs a vizsgalt szovegben.
 INTERPRETERS = {'python', 'python3', 'bash', 'sh', 'zsh', 'node', 'perl', 'ruby', 'php'}
-SCRIPT_FLAGS = {'-c', '-e', '--command', '--eval'}
+SCRIPT_FLAGS = {'-c', '-e', '-E', '-p', '--command', '--eval'}
+# -p is node's print-eval and -E is perl's feature-enabled -e. They are in the
+# set only so the argument after them counts as CODE rather than prose. A flag
+# that does not actually take a script (perl -pe, bash -p) is harmless here:
+# _script_arg_ranges only records a range when a QUOTE follows the flag.
 
 HOME = os.path.expanduser('~')
 
@@ -562,6 +566,12 @@ def _check_git(toks, argstart):
               '(az upstream nem latszik a parancsbol). Nevezd meg: '
               'git push <remote> HEAD:<ag>.')
     for spec in refspecs:
+        # Az ures forras-refspec (`:ag`) ugyanaz a muvelet, mint a --delete: torli a
+        # tavoli agat. 2026-09-24-en merve, a szabaly atvitelekor: a kapcsolos alakot
+        # tiltotta, a ketpontosat atengedte. Ugyanaz a dontes, ugyanaz a verdikt.
+        if spec.startswith(':') or spec.startswith('+:'):
+            block('git push %s: ures forras-refspec, azaz tavoli ag torlese. '
+                  'A torles nem az agens dontese.' % spec[:40])
         if spec.startswith('+'):
             block('git push +%s: a "+" eloterjesztes eroltetett push. '
                   'Eroltetett push nem az agens dontese.' % spec[1:][:40])
@@ -571,6 +581,175 @@ def _check_git(toks, argstart):
                   'valami. Pusholj sajat munkaagra.' % dest)
 
 
+# --- Az ERTELMEZO-PAYLOAD belseje (efccadab) ---------------------------------
+# Istvan jovahagyta 2026-09-21 04:01, a lean-chief eloterjesztesere. A kapu eddig a
+# PARANCSNEVET es az UTVONAL-MINTAT nezte; ha ugyanaz a torles egy `python3 -c`
+# egysoron vagy egy `python3 - <<PY` torzsben allt, a kapu nem latott bele. A modul
+# fejlece ezt 2026-09-20 ota ISMERT es NYITOTT resként nevezi meg -- ez a szakasz
+# zarja be.
+#
+# A SCOPE-OT A LEAN CHIEF SZABTA MEG, es szandekosan szuk: "ne vezess be uj
+# tiltasokat azon tul, amit a kapu ma is tilt. A cel ugyanaz a szabalykeszlet, csak
+# az interpreter-burok mogott is." Ezert a tabla minden sora egy MA IS TILTOTT
+# parancs megfeleloje, es a sor ki is mondja, MELYIKE:
+#     os.remove / shutil.rmtree / fs.unlinkSync / File.delete ...  ->  rm
+#     os.rename / shutil.move  / fs.renameSync  / FileUtils.mv ...  ->  mv
+# Ami ma NEM tiltott, az itt sem lesz az. Kifejezetten KIMARAD, noha a 2026-09-20-as
+# probaban atment es kezenfekvo volna felvenni:
+#     open(f,'w')      csonkitas -- a `: > fajl` alak ma is atmegy, tehat nem szabaly
+#     sqlite3 DELETE   DB-tartalom -- a kapu sosem nezett SQL-t
+#     urllib POST      kifele iranyulo forgalom -- az az egress-deny dolga, mas kapu
+#     .ssh ut darabolt osszefuzessel -- obfuszkacio, kulon dontes kell hozza
+# Ez nem feledekenyseg: mindegyik UJ tiltas volna, es a kartya kifejezetten tiltja.
+#
+# A shell-kihivast (os.system, subprocess, child_process, Ruby backtick...) NEM kulon
+# szabalylistaval kezeljuk, hanem VISSZAVEZETJUK a check_bash-re. Igy a burkon beluli
+# parancsra pontosan ugyanaz a szabalykeszlet all, es nem keletkezik egy masodik,
+# lassan elkulonbozo lista. Ez a kartya kovetelmenyenek szo szerinti alakja.
+_PAYLOAD_RULES = (
+    # (minta, a ma is tiltott parancs, amelynek ez a megfeleloje)
+    (r'\bos\.(remove|unlink|rmdir|removedirs)\s*\(',            'rm'),
+    (r'\bshutil\.rmtree\s*\(',                                  'rm'),
+    (r'\bos\.(rename|renames|replace)\s*\(',                    'mv'),
+    (r'\bshutil\.(move|copyfile)\s*\(',                         'mv'),
+    (r'\.unlink\s*\(',                                          'rm'),   # pathlib.Path
+    (r'\bPath\([^)]*\)\.(rmdir|rename|replace)\s*\(',           'mv'),
+    # Node. A `Sync` vegu nevek maguktol is egyertelmuek, ezert NEM kerul ele
+    # pont-tilto elonezet: a leggyakoribb alak `require('fs').rmSync(...)`, ahol a
+    # nevet epp egy pont elozi meg. Merve: pont-tiltassal mind a harom node-alak
+    # atment a kapun. A pont NELKULI nevek (`rm`, `unlink`, `rename`) tul altalanosak,
+    # azok tovabbra is megnevezett fs-objektumot vagy require-t kernek.
+    (r'(?<![\w$])(?:rmSync|unlinkSync|rmdirSync)\s*\(',          'rm'),
+    (r'(?<![\w$])renameSync\s*\(',                               'mv'),
+    (r'\b(?:fs|fsp|fsPromises)\.(?:promises\.)?(?:rm|unlink|rmdir)\s*\(', 'rm'),
+    (r'\b(?:fs|fsp|fsPromises)\.(?:promises\.)?rename\s*\(',    'mv'),
+    (r'require\(\s*[\'"]fs(?:/promises)?[\'"]\s*\)\s*\.\s*(?:rm|unlink|rmdir)\s*\(', 'rm'),
+    (r'require\(\s*[\'"]fs(?:/promises)?[\'"]\s*\)\s*\.\s*rename\s*\(', 'mv'),
+    (r'\bFile(?:Utils)?\.(delete|unlink|rm|rm_r|rm_rf|remove_entry|remove_entry_secure)\b', 'rm'),
+    (r'\bDir\.(delete|rmdir|unlink)\b',                         'rm'),
+    (r'\bFile(?:Utils)?\.(rename|mv|move)\b',                   'mv'),
+    (r'\b(rmtree|remove_tree)\s*\(',                            'rm'),   # Perl File::Path
+    (r'(?<![\w.])unlink\s*\(',                                  'rm'),   # Perl builtin
+    (r'(?<![\w.])rename\s*\(',                                  'mv'),   # Perl builtin
+)
+_PAYLOAD_RE = tuple((re.compile(p), c) for p, c in _PAYLOAD_RULES)
+
+# Ahonnan a payload SHELLT hiv. A zarojeles argumentumbol kiszedjuk a
+# karakterlanc-literalokat, szokozzel osszefuzzuk, es visszaadjuk a check_bash-nek.
+# A lista-alak (`subprocess.run(['rm','-rf',p])`) igy "rm -rf" lesz -- a parancsnev
+# az ELSO szo marad, tehat a meglevo felismeres valtozatlanul all ra.
+_SHELLOUT_RE = re.compile(
+    # Ket elonezet-osztaly, szandekosan kulon. A megkulonboztetheto nevek (`execSync`,
+    # `spawnSync`, `execFileSync`) elott allhat pont -- `require('child_process').execSync`
+    # a leggyakoribb node-alak, es a pont-tilto elonezet EPP ezt engedte at (merve).
+    # A puszta `system`, `exec`, `qx` viszont tul altalanos: azok elott a pont-tiltas marad,
+    # kulonben minden `foo.exec(` talalat lenne.
+    r'(?:(?<![\w$])(?:execSync|spawnSync|execFileSync)|'
+    r'require\(\s*[\'"]child_process[\'"]\s*\)\s*\.\s*'
+    r'(?:exec|execFile|spawn|execSync|execFileSync|spawnSync)|'
+    r'(?<![\w.])(?:os\.system|os\.popen|os\.exec[lv]?[pe]*|subprocess\.(?:run|call|'
+    r'check_call|check_output|Popen|getoutput)|child_process\.(?:exec|execSync|'
+    r'execFile|execFileSync|spawn|spawnSync)|IO\.popen|'
+    r'Open3\.(?:capture2|capture3|popen3)|system|exec|qx))\s*\(')
+_STR_LIT_RE = re.compile(r"(['\"])((?:\\.|(?!\1).)*)\1")
+
+
+def _balanced_arg(text, open_idx):
+    """A nyito zarojeltol a hozza tartozo zarojelig terjedo szoveg. Ha nincs parja
+    (csonka payload), a szoveg vegeig -- egy le nem zart hivast nem engedunk at
+    csak azert, mert elgepeltek."""
+    depth, i = 0, open_idx
+    while i < len(text):
+        if text[i] == '(':
+            depth += 1
+        elif text[i] == ')':
+            depth -= 1
+            if depth == 0:
+                return text[open_idx + 1:i]
+        i += 1
+    return text[open_idx + 1:]
+
+
+def interpreter_payloads(cmd):
+    """Minden szovegdarab, amit egy ERTELMEZO fog vegrehajtani.
+
+    Harom forras, mind a harom a kartyan nevesitve:
+      1. `-c` / `-e` / `-E` / `-p` utani idezett szkript,
+      2. az ertelmezonek adott heredoc TORZSE (`python3 - <<PY`), amit a
+         _heredoc_body_ranges mar ma is megkulonboztet az adat-heredoctol,
+      3. a `-` STDIN-alak csovon at (`echo "..." | python3 -`): ilyenkor az ELOZO
+         csoszakasz idezett szovegei a kod. A prozaszures kulonben pont ezeket
+         mosna ki, mert szokozt tartalmaznak.
+    A kommentsorok es az ADAT-heredocok itt is ki vannak fehérítve, mielott
+    barmit kinyernenk: egy kikommentezett sor a payloadon belul sem fut le.
+    """
+    data, code = _heredoc_body_ranges(cmd)
+    text = _blank_ranges(cmd, data)
+    text = _blank_ranges(text, _comment_ranges(text))
+    out = [text[a:b] for a, b in code]
+    out += [text[a:b] for a, b in _script_arg_ranges(text)]
+    out += [text[a:b] for a, b in _stdin_pipe_ranges(text)]
+    return [p for p in out if p.strip()]
+
+
+def _stdin_pipe_ranges(text):
+    """`echo "<kod>" | python3 -` -- az ertelmezo a STDIN-rol olvas.
+
+    Csak akkor ad vissza tartomanyt, ha a cso EGYIK szakaszanak parancsa ertelmezo
+    ES a szakaszban ott all a puszta `-`. Enelkul minden idezett szoveget kodnak
+    kellene tekinteni, ami a prozaszures ellentetje volna.
+    """
+    state = _quote_map(text)
+    bars = [i for i in range(len(text)) if not state[i] and text[i] == '|'
+            and not text.startswith('||', i) and not (i and text[i - 1] == '|')]
+    if not bars:
+        return []
+    bounds = [0] + [b + 1 for b in bars] + [len(text)]
+    parts = [(bounds[k], bounds[k + 1] - (1 if k + 1 <= len(bars) else 0))
+             for k in range(len(bounds) - 1)]
+    out = []
+    for k, (a, b) in enumerate(parts):
+        toks = [t for t, _sp in _tokens(text[a:b])]
+        if not toks or k == 0:
+            continue
+        if os.path.basename(toks[0]) in INTERPRETERS and '-' in toks[1:]:
+            pa, pb = parts[k - 1]
+            prev_state = _quote_map(text[pa:pb])
+            i = 0
+            while i < pb - pa:
+                if prev_state[i]:
+                    j = i
+                    while j < pb - pa and prev_state[j] == prev_state[i]:
+                        j += 1
+                    out.append((pa + i, pa + j))
+                    i = j
+                else:
+                    i += 1
+    return out
+
+
+def check_payload(payload, _depth=0, cwd=None):
+    """A ma is tiltott muveletek az ertelmezo-burkon BELUL."""
+    for rx, equivalent in _PAYLOAD_RE:
+        m = rx.search(payload)
+        if m:
+            block('Ertelmezo-payloadban allo, visszafordithatatlan muvelet: "%s" -- ez a '
+                  '"%s" megfeleloje, amit a kapu a shellben is tilt. A burok nem valtoztat '
+                  'a dontesen.\n(a payload reszlete: %s)'
+                  % (m.group(0).strip(), equivalent, payload[:160]))
+    for m in _SHELLOUT_RE.finditer(payload):
+        arg = _balanced_arg(payload, payload.index('(', m.end() - 1))
+        words = [g2 for _g1, g2 in _STR_LIT_RE.findall(arg)]
+        if not words:
+            continue
+        inner = ' '.join(words).strip()
+        if not inner or _depth >= _MAX_NEST:
+            continue
+        # Ugyanaz a szabalykeszlet, nem egy masodik lista: a kihivott parancs
+        # visszamegy a check_bash-be.
+        check_bash(inner, _depth + 1, cwd)
+
+
 def check_bash(cmd, _depth=0, cwd=None):
     text = scannable(cmd)
     # A munkakonyvtar szegmensrol szegmensre valtozhat (`cd X && rm y`), ezert
@@ -578,6 +757,7 @@ def check_bash(cmd, _depth=0, cwd=None):
     # nem eldonthetot a kapu nem engedi at.
     if cwd is not None:
         cwd = os.path.normpath(os.path.expanduser(cwd))
+    entry_cwd, saw_cd = cwd, False
     for seg in segments(text):
         toks = _bare_tokens(seg)
         idx = command_index(toks)
@@ -615,6 +795,7 @@ def check_bash(cmd, _depth=0, cwd=None):
         # eseten a cwd ismeretlenne valik, ami a kesobbi relativ torleseket blokkolja.
         if idx is not None and not toks[idx][1] and os.path.basename(toks[idx][0]) == 'cd':
             cwd = _cd_target(toks, idx + 1, cwd)
+            saw_cd = True
 
         for sub in _sub_scripts(toks, idx):
             if not sub or sub == cmd:
@@ -623,6 +804,13 @@ def check_bash(cmd, _depth=0, cwd=None):
                 block('Tul melyen agyazott parancs (%d szint): a kapu nem tudja '
                       'vegigkovetni, ezert nem engedi at.' % _depth)
             check_bash(sub, _depth + 1, cwd)
+
+    # Az ertelmezo-burkon beluli payload (efccadab). A szegmens-ciklus UTAN fut,
+    # mert nem a parancsnevrol szol: a burok parancsneve legitim (python3), a
+    # payload tartalma nem. A payload a TELJES parancsbol jon, nem egy szegmensbol,
+    # ezert ha barhol allt benne `cd`, a munkakonyvtar nem eldontheto -- None.
+    for payload in interpreter_payloads(cmd):
+        check_payload(payload, _depth, None if saw_cd else entry_cwd)
 
     # Hitelesito fajlok kiolvasasa barmilyen parancson keresztul.
     m = PROTECTED_RE.search(text)

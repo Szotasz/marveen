@@ -387,6 +387,96 @@ check("teszt-feltetel atmegy", not blocks("if [ -f /tmp/x ]; then echo van; fi")
 check("az 'rm' szo mint grep-minta nem parancs", not blocks("if grep -q rm file.txt; then echo t; fi"))
 
 
+# --- 9. AZ ERTELMEZO-PAYLOAD BELSEJE (efccadab) ----------------------------
+# Ez a vedelem 2026-09-21-ig CSAK az eles, untracked kapuban letezett, a PR-agon
+# nem. A 281b06df kartya azert nyilt, mert ha valaki az eles kaput a repobol
+# "szinkronizalja", a vedelem NYOM NELKUL eltunik -- es semmi nem szol. Az alabbi
+# kontrollok ezt teszik zajossa: a vedelem eltavolitasa mostantol piros tesztet ad.
+# MERVE 2026-09-24-en, a PR-agi kapun a szakasz atvitele ELOTT: mind az ot pozitiv
+# eset ATMENT (exit 0). Nem elmeleti res volt.
+OSREM = "os." + "remove"
+RMTREE = "shutil." + "rmtree"
+UNLINKS = "unlink" + "Sync"
+
+print()
+print("POZITIV kontroll -- ertelmezo-payloadban allo, ma is tiltott muvelet:")
+check("python -c: fajltorles",
+      blocks('python3 -c "import os; ' + OSREM + "('/etc/x')\""))
+check("python heredoc: konyvtartorles",
+      blocks("python3 - <<PY\nimport shutil\n" + RMTREE + '("/etc/x")\nPY'))
+check("stdin-cso: echo ... | python3 -",
+      blocks('echo "import os; ' + OSREM + "('/etc/x')\" | python3 -"))
+check("node -e: fajltorles",
+      blocks('node -e "require(\'fs\').' + UNLINKS + "('/etc/x')\""))
+check("perl -e: beepitett unlink",
+      blocks('perl -e "unlink(\'/etc/x\')"'))
+
+# A shell-kihivas NEM kulon szabalylista: visszamegy a check_bash-be, tehat a
+# burkon beluli parancsra pontosan ugyanaz a szabalykeszlet all. Ez a ket eset azt
+# pineli, hogy a visszavezetes tenylegesen megtortenik -- mind a torlesre, mind a
+# push-szabalyra, amit ez a kartya vitt at ide.
+print()
+print("POZITIV kontroll -- a payloadbol kihivott SHELL ugyanazt a szabalyt kapja:")
+check("payload -> shell: munkakonyvtaron kivuli torles",
+      blocks('python3 -c "import subprocess; subprocess.run([\'' + RM +
+             "','-rf','/etc/x'])\""))
+check("payload -> shell: eroltetett push",
+      blocks('python3 -c "import os; os.system(\'' + GPUSH + " --force origin main')\""))
+
+# A masik irany. Egy szabaly, ami csak blokkolni tud, ugyanannyit er, mint ami csak
+# atengedni -- es a payload-szures a legkonnyebben elszabadulo fajta, mert minden
+# beagyazott kodot gyanusnak lat.
+print()
+print("NEGATIV kontroll -- artalmatlan payload, nem blokkolhat:")
+check("artalmatlan python egysoros", not blocks('python3 -c "print(\'hello world\')"'))
+check("ADAT-heredoc csak EMLITI a muveletet",
+      not blocks("cat > /tmp/jegyzet.txt <<EOF\n" + OSREM + " egy python hivas\nEOF"))
+check("payload -> shell: artalmatlan parancs",
+      not blocks('python3 -c "import subprocess; subprocess.run([\'ls\',\'-la\'])"'))
+check("a muvelet neve a payloadban KIKOMMENTEZVE",
+      not blocks('python3 -c "\n# ' + OSREM + "('/etc/x')\nprint(1)\""))
+
+# A payload a TELJES parancsbol jon, nem egy szegmensbol, ezert ha barhol allt benne
+# `cd`, a payload munkakonyvtara nem eldontheto -- es a nem eldonthetot a kapu nem
+# engedi at. Enelkul a `cd <kifele> && python3 -c "...('build')"` alak ugy nezne ki,
+# mintha a sajat munkakonyvtaraban torolne.
+print()
+print("POZITIV/NEGATIV kontroll -- a payload munkakonyvtara:")
+check("payload -> shell: relativ torles a gyoker alol atengedve",
+      not blocks_cwd('python3 -c "import os; os.system(\'' + RM + " -rf build')\"", GROOT))
+check("cd utan a payload munkakonyvtara mar nem eldontheto",
+      blocks_cwd("cd " + OUTSIDE + ' && python3 -c "import os; os.system(\'' + RM +
+                 " -rf build')\"", GROOT))
+
+print()
+print("KIMONDOTT KORLAT -- a payload-szures szandekosan ennyit lat:")
+check("csonkitas (open 'w') NEM tiltott: a `: > fajl` alak sem az",
+      not blocks('python3 -c "open(\'/etc/x\',\'w\').close()"'))
+check("SQL-torlest a kapu sosem nezett", not blocks(
+    'python3 -c "import sqlite3; sqlite3.connect(\'a.db\').execute(\'DELETE FROM t\')"'))
+
+
+# --- 10. URES FORRAS-REFSPEC = TAVOLI AG TORLESE ---------------------------
+# 2026-09-24-en merve, a push-szabaly atvitelekor: a `--delete` kapcsolos alakot a
+# szabaly tiltotta, a ketpontos alak (`:ag`) ATMENT, pedig ugyanaz a muvelet. Az
+# eles kapu akkor meg minden push-t tiltott, tehat a szabaly valtoztatas nelkuli
+# atvitele egy esetet BLOKK-bol ATMEGY-be mozgatott volna.
+print()
+print("POZITIV kontroll -- ures forras-refspec (tavoli ag torlese):")
+check("git push origin :ag", blocks(GPUSH + " origin :munkaag"))
+check("git push origin +:ag", blocks(GPUSH + " origin +:munkaag"))
+
+# A git sajat kapcsoloi a 'push' ELOTT allnak. A regi, feltetel nelkuli eles tiltas
+# a parancsnev UTANI szot nezte, ezert a `git -C <ut> push` alakot eszre sem vette
+# (merve: atment). Az uj szabaly a kapcsolokon atlepve keresi az alparancsot.
+print()
+print("A 'git -C <ut> push' alak is push:")
+check("git -C: eroltetett push blokkolva",
+      blocks("git -C " + GROOT + " push --force origin main"))
+check("git -C: munkaagra push atengedve",
+      not blocks("git -C " + GROOT + " push origin munkaag"))
+
+
 print()
 if failed:
     print("%d FAILED: %s" % (len(failed), failed), file=sys.stderr)
