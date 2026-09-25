@@ -30,7 +30,7 @@ const hooks: Hooks = settings.hooks ?? {}
 const EXPECTED: Record<string, string[]> = {
   UserPromptSubmit: [
     'ledger-capture.py', 'inbox-drain.py', 'telegram-reply-directive.py',
-    'provenance-gate.py', 'staleness-guard.py', 'channel-inbox-drain.py',
+    'provenance-gate.py', 'staleness-guard.py', 'memory-lookup-nudge.py', 'channel-inbox-drain.py',
     'voice-reply-directive.py', 'telegram_progress.py', 'claude-usage.py',
   ],
   PostToolUse: [
