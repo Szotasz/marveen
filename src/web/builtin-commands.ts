@@ -725,10 +725,10 @@ export function customCommandsText(): string {
   const invalid = listInvalidCustomCommands()
   const lines = ['Saját parancsok:']
   if (custom.length === 0) lines.push('nincs')
-  for (const e of custom) lines.push(`${e.usage ?? `/${e.name}`} — ${e.description}`)
+  for (const e of custom) lines.push(`${e.usage ?? `/${e.name}`}: ${e.description}`)
   lines.push('', 'Érvénytelen definíciók:')
   if (invalid.length === 0) lines.push('nincs')
-  for (const i of invalid) lines.push(`/${i.name} — ${i.reason}`)
+  for (const i of invalid) lines.push(`/${i.name}: ${i.reason}`)
   return lines.join('\n')
 }
 

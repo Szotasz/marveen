@@ -46,6 +46,17 @@ error reply and the turn is still blocked: the model cannot run it either,
 and a command must not silently turn into a paid turn. An unknown slash word
 (possibly an owner custom command the dashboard would know) passes through.
 
+One overall deadline (DEADLINE_SEC, 40 s) caps the whole run, safely under
+the 45 s registration timeout. The network steps run one after another
+(dispatch, usage-collect.py, sendMessage, placeholder delete), and their own
+limits used to add up to more than 45 s: with the dashboard, the Bot API and
+the usage collector all hung, /usage measured 55.1 s (maintainer review on
+#1529), Claude Code killed the hook, the kill does not block, and the command
+became a paid model turn. Now every step gets at most what is left
+(dispatch and usage-collect.py at most half of it, so a reply still fits),
+a step with no time left is skipped and logged, and the turn is blocked
+either way.
+
 Never interpolate a raw exception into a log line or a reply: a urllib error
 string can carry the request URL, and the Bot API URL contains the bot token.
 Exception TYPE only.
@@ -79,6 +90,33 @@ SEND_RETRY_SECONDS = float(os.environ.get("MARVEEN_CMD_SEND_RETRY_SECONDS", "1.5
 
 from command_prompt import COMMAND_RX, command_block  # noqa: E402
 
+# Overall deadline, see the docstring. MARVEEN_HOOK_DEADLINE_SEC is the test
+# override (the real value stays 40).
+START = time.monotonic()
+try:
+    DEADLINE_SEC = float(os.environ.get("MARVEEN_HOOK_DEADLINE_SEC") or 40)
+except ValueError:
+    DEADLINE_SEC = 40.0
+MIN_STEP_SEC = 0.2
+
+
+class DeadlineExceeded(Exception):
+    pass
+
+
+def budget(cap, share=1.0):
+    """Timeout for the next step: its own cap, at most `share` of what is left
+    of the overall deadline. Raises DeadlineExceeded when nothing is left."""
+    t = min(cap, remaining() * share)
+    if t < MIN_STEP_SEC:
+        raise DeadlineExceeded()
+    return t
+
+
+def remaining():
+    return DEADLINE_SEC - (time.monotonic() - START)
+
+
 # The builtin registry names (src/web/builtin-commands.ts + the A2 writes).
 # Only consulted when the dashboard is DOWN, to decide "ours, answer with an
 # error" vs "not ours, let the model have it". Pinned against the registry by
@@ -89,15 +127,15 @@ BUILTIN_NAMES = frozenset({
 })
 
 WINDOW_LABELS = [
-    ("five_hour", "5 orás"),
+    ("five_hour", "5 órás"),
     ("seven_day", "heti"),
     ("seven_day_opus", "Fable/Opus heti"),
     ("seven_day_sonnet", "Sonnet heti"),
 ]
 
-DASHBOARD_DOWN_REPLY = "Nem futott: /{name} -- a dashboard nem érhető el ({why}). A parancs nem ment tovább a modellhez. Napló: progress/commands-hook.log"
-USAGE_ERROR_REPLY = "Nem sikerult lekerdezni a keret-allapotot (a lekerdezo script hibara futott). Nezd meg a naplot: progress/commands-hook.log"
-USAGE_MISSING_REPLY = "Nem sikerult lekerdezni a keret-allapotot: a lekerdezo script nincs meg ezen a telepitesen (scripts/usage-collect.py)."
+DASHBOARD_DOWN_REPLY = "Nem futott: /{name}, mert a dashboard nem érhető el ({why}). A parancs nem ment tovább a modellhez. Napló: progress/commands-hook.log"
+USAGE_ERROR_REPLY = "Nem sikerült lekérdezni a keret-állapotot (a lekérdező script hibára futott). Nézd meg a naplót: progress/commands-hook.log"
+USAGE_MISSING_REPLY = "Nem sikerült lekérdezni a keret-állapotot: a lekérdező script nincs meg ezen a telepítésen (scripts/usage-collect.py)."
 
 
 def state_dir():
@@ -154,7 +192,7 @@ def api_base():
 def tg(tok, method, payload):
     url = f"{TELEGRAM_API_BASE}/bot{tok}/{method}"
     req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=15) as r:
+    with urllib.request.urlopen(req, timeout=budget(15)) as r:
         return json.loads(r.read().decode())
 
 
@@ -188,10 +226,13 @@ def send(sd, tok, chat_id, text):
                 tg(tok, "sendMessage", {"chat_id": chat_id, "text": part})
                 sent_any = True
                 break
+            except DeadlineExceeded:
+                log(sd, "sendMessage skipped: the hook deadline is reached")
+                return sent_any
             except Exception as e:
                 log(sd, f"sendMessage failed (attempt {attempt}/{SEND_ATTEMPTS}): {type(e).__name__}")
                 if attempt < SEND_ATTEMPTS:
-                    time.sleep(SEND_RETRY_SECONDS * attempt)
+                    time.sleep(max(0.0, min(SEND_RETRY_SECONDS * attempt, remaining() - MIN_STEP_SEC)))
     return sent_any
 
 
@@ -215,7 +256,7 @@ def mark_answered(sd, payload, chat_id, text):
         log(sd, f"ledger log_outbound failed: {type(e).__name__}")
 
 
-def dispatch(text, chat_id, main_session, defer_writes=False, forwarded=False, timeout=20):
+def dispatch(text, chat_id, main_session, defer_writes=False, forwarded=False, timeout=None):
     """POST the command to the dashboard. Returns (result dict, None) or (None, why).
 
     `main_session` rides along so the server can refuse a WRITE resolved for
@@ -240,7 +281,7 @@ def dispatch(text, chat_id, main_session, defer_writes=False, forwarded=False, t
         headers={"Authorization": "Bearer " + dtok, "Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with urllib.request.urlopen(req, timeout=timeout or budget(20, 0.5)) as r:
             return json.loads(r.read().decode()), None
     except urllib.error.HTTPError as e:
         return None, f"HTTP {e.code}"
@@ -269,15 +310,15 @@ def format_usage(snapshot):
         reason = c.get("error") or c.get("auth_error") or c.get("source") or "ismeretlen hiba"
         return f"Kvóta: nem mérhető ({reason})."
     w = c.get("windows") or {}
-    lines = ["Claude keret-allapot:"]
+    lines = ["Claude keret-állapot:"]
     for key, label in WINDOW_LABELS:
         win = w.get(key)
         if not win or win.get("used_percent") is None:
             continue
         used = win["used_percent"]
         lines.append(
-            f"- {label}: {100 - used:.0f}% van hatra ({used:.0f}% elhasznalva), "
-            f"megujul: {fmt_reset(win.get('resets_at'))}"
+            f"- {label}: {100 - used:.0f}% van hátra ({used:.0f}% elhasználva), "
+            f"megújul: {fmt_reset(win.get('resets_at'))}"
         )
     if len(lines) == 1:
         reason = c.get("auth_error") or "nincs autoritatív adat, csak becslés lenne, de az sem elérhető"
@@ -290,7 +331,7 @@ def quota_text(sd):
         log(sd, f"usage-collect.py not found at {USAGE_SCRIPT}")
         return USAGE_MISSING_REPLY
     try:
-        out = subprocess.run(["python3", USAGE_SCRIPT, "--json"], capture_output=True, text=True, timeout=20).stdout
+        out = subprocess.run(["python3", USAGE_SCRIPT, "--json"], capture_output=True, text=True, timeout=budget(20, 0.5)).stdout
         return format_usage(json.loads(out))
     except Exception as e:
         log(sd, f"usage-collect failed: {type(e).__name__}")
@@ -427,6 +468,9 @@ def spawn_deferred(sd, payload, body, chat_id, main_session):
 
 
 def run_deferred():
+    # Detached from Claude Code (no 45 s kill), so the hook deadline is off.
+    global DEADLINE_SEC
+    DEADLINE_SEC = float("inf")
     try:
         job = json.loads(os.environ.get(DEFERRED_ENV) or "")
     except Exception:

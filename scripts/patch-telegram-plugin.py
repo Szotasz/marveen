@@ -13,18 +13,26 @@ Without the handlers the two words arrive as ordinary text messages, exactly
 like /usage does today, and the hook takes them.
 
 Runs at every channel start (scripts/channels.sh), before the plugin is
-spawned, over every cached plugin version:
+spawned, over every cached plugin version in ONE cache: the one this install
+launches from ($CLAUDE_CONFIG_DIR/plugins/cache, or ~/.claude/plugins/cache
+when the variable is unset). Never both: an install with its own config dir
+must not rewrite the user-level cache other Claude Code sessions load
+(maintainer review on #1529, 2026-09-25).
 
 - idempotent: a file carrying the marker is left alone;
 - all-or-nothing per patch: if ANY anchor of a patch is missing (a plugin
   update changed the code), that patch is left out and one loud line says so
   -- /status and /help then fall back to the plugin's own answers, or a
   forwarded command is not refused; the channel itself is not touched;
-- always exits 0: a failed patch must never stop the channel from starting.
+- always exits 0: a failed patch must never stop the channel from starting;
+- with --state FILE, the outcome per file (and per patch) is written there as
+  JSON, so /status can say in one line when a patch is missing
+  (src/web/system-status.ts) instead of the command silently falling back.
 
-Usage: patch-telegram-plugin.py [<plugins cache root> ...]
-(default: $CLAUDE_CONFIG_DIR/plugins/cache and ~/.claude/plugins/cache)
+Usage: patch-telegram-plugin.py [--state FILE] [<plugins cache root>]
+(default root: $CLAUDE_CONFIG_DIR/plugins/cache, else ~/.claude/plugins/cache)
 """
+import json
 import os
 import re
 import sys
@@ -88,21 +96,34 @@ def patch_text(text):
     return text, results
 
 
+def file_status(results):
+    """One word for the file: 'already' when every patch was there,
+    'patched' when this run wrote one, else the first anchor-missing."""
+    statuses = [st for _, st in results]
+    if "patched" in statuses:
+        return "patched"
+    if all(st == "already" for st in statuses):
+        return "already"
+    return next(st for st in statuses if st.startswith("anchor-missing"))
+
+
 def patch_file(path):
+    """Returns (file status, {patch name: status})."""
     try:
         with open(path, encoding="utf-8") as f:
             text = f.read()
     except Exception as e:
         log(f"cannot read {path}: {type(e).__name__}")
-        return "unreadable"
+        return "unreadable", {}
     new, results = patch_text(text)
+    per_patch = {p["name"]: st for p, st in results}
     for patch, status in results:
         if status.startswith("anchor-missing"):
             log(f"LOUD: {status.split(':', 1)[1]} not found exactly once in {path} (plugin changed?) -- "
                 f"the {patch['name']} patch left out, {patch['fallback']}")
     patched = [p["name"] for p, st in results if st == "patched"]
     if not patched:
-        return "unchanged"
+        return file_status(results), per_patch
     tmp = path + ".marveen-tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
@@ -114,33 +135,44 @@ def patch_file(path):
             os.remove(tmp)
         except Exception:
             pass
-        return "unwritable"
+        return "unwritable", {n: ("unwritable" if st == "patched" else st) for n, st in per_patch.items()}
     log(f"patched {path} ({', '.join(patched)})")
-    return "patched"
+    return file_status(results), per_patch
 
 
-def default_roots():
-    roots = []
+def default_root():
     cfg = os.environ.get("CLAUDE_CONFIG_DIR")
     if cfg:
-        roots.append(os.path.join(cfg, "plugins", "cache"))
-    roots.append(os.path.expanduser("~/.claude/plugins/cache"))
-    return roots
+        return os.path.join(cfg, "plugins", "cache")
+    return os.path.expanduser("~/.claude/plugins/cache")
+
+
+def write_state(state_path, state):
+    tmp = state_path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=1)
+        os.replace(tmp, state_path)
+    except Exception as e:
+        log(f"cannot write state {state_path}: {type(e).__name__}")
 
 
 def main(argv):
-    roots = argv[1:] or default_roots()
-    seen = set()
-    for root in roots:
-        base = os.path.join(root, "claude-plugins-official", "telegram")
-        if not os.path.isdir(base):
-            continue
+    args = argv[1:]
+    state_path = None
+    if len(args) >= 2 and args[0] == "--state":
+        state_path, args = args[1], args[2:]
+    root = args[0] if args else default_root()
+    files = []
+    base = os.path.join(root, "claude-plugins-official", "telegram")
+    if os.path.isdir(base):
         for ver in sorted(os.listdir(base)):
-            path = os.path.realpath(os.path.join(base, ver, "server.ts"))
-            if path in seen or not os.path.isfile(path):
-                continue
-            seen.add(path)
-            patch_file(path)
+            path = os.path.join(base, ver, "server.ts")
+            if os.path.isfile(path):
+                status, patches = patch_file(path)
+                files.append({"version": ver, "path": path, "status": status, "patches": patches})
+    if state_path:
+        write_state(state_path, {"at": int(time.time()), "root": root, "files": files})
     return 0
 
 

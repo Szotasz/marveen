@@ -236,6 +236,48 @@ export function formatQuota(q: QuotaSnapshot): { fiveHour: string; sevenDay: str
 
 // ---- the live collectors ----------------------------------------------------
 
+// Telegram plugin patch (scripts/patch-telegram-plugin.py, review on #1529):
+// when it is missing, the plugin answers /status and /help itself, and that
+// fallback must not be silent. Measured now, not only at channel start: the
+// state file names the cache the last start patched and why a file failed;
+// each cached version's server.ts is re-read for the marker, so a plugin
+// version that arrived after the start shows up too.
+export const PLUGIN_PATCH_MARKER = 'MARVEEN-PATCH(elsokor922-d4)'
+// The two independent patches, each with what the owner loses without it.
+const PLUGIN_PATCHES = [
+  { name: 'd4', marker: PLUGIN_PATCH_MARKER, label: '', fallback: 'a /status és a /help a plugin saját válasza' },
+  { name: 'fwd', marker: 'MARVEEN-PATCH(elsokor922-fwd)', label: ' (továbbítás-jelölő)', fallback: 'egy továbbított parancs úgy fut, mint a begépelt' },
+]
+
+export function telegramPluginPatchStatus(stateFile = join(STORE_DIR, 'telegram-plugin-patch.json')): string {
+  if (!existsSync(stateFile)) return 'nincs adat (a csatorna-indítás még nem futtatta a patchert; nem Telegram csatorna?)'
+  const state = JSON.parse(readFileSync(stateFile, 'utf-8')) as {
+    root?: string
+    files?: Array<{ version: string; status: string; patches?: Record<string, string> }>
+  }
+  if (!state.root) return notMeasurable('az állapotfájlban nincs cache-útvonal')
+  const base = join(state.root, 'claude-plugins-official', 'telegram')
+  const versions = existsSync(base) ? readdirSync(base).filter(v => existsSync(join(base, v, 'server.ts'))).sort() : []
+  if (versions.length === 0) return `nincs Telegram plugin a cache-ben (${state.root})`
+  const texts = new Map(versions.map(v => [v, readFileSync(join(base, v, 'server.ts'), 'utf-8')]))
+  const lines: string[] = []
+  for (const p of PLUGIN_PATCHES) {
+    const missing: string[] = []
+    for (const v of versions) {
+      if (texts.get(v)!.includes(p.marker)) continue
+      const file = state.files?.find(f => f.version === v)
+      const recorded = file ? (file.patches?.[p.name] ?? file.status) : undefined
+      const why = !recorded ? 'új verzió, a következő csatorna-indításkor kerül rá'
+        : recorded === 'patched' || recorded === 'already' ? 'a fájl az indítás óta cserélődött'
+        : recorded
+      missing.push(`${v} (${why})`)
+    }
+    if (missing.length) lines.push(`HIÁNYZIK${p.label}: ${missing.join(', ')} · ${p.fallback}`)
+  }
+  if (lines.length === 0) return `rendben (${versions.join(', ')})`
+  return lines.join('; ')
+}
+
 function newestTranscript(): string | null {
   const dir = projectsDirFor(PROJECT_ROOT, configDirFor(MAIN_AGENT_ID))
   if (!existsSync(dir)) return null
@@ -425,6 +467,10 @@ export function liveBlockSpecs(now = Date.now()): BlockSpec[] {
             const fmt = (v: number | null) => v === null ? 'nincs' : formatDayClock(msOf(v))
             return `bejövő ${fmt(get('in'))} · kimenő ${fmt(get('out'))}`
           },
+        },
+        {
+          label: 'Telegram plugin-patch', source: 'store/telegram-plugin-patch.json, server.ts jelölő',
+          collect: () => telegramPluginPatchStatus(),
         },
         {
           label: 'Hiba-napló (24 óra)', source: 'store/channels.error.log mtime',

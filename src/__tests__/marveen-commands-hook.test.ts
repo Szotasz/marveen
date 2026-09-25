@@ -24,6 +24,8 @@ const HOOK = join(ROOT, 'scripts', 'hooks', 'marveen-commands.py')
 interface Call { path: string; body: any }
 let calls: Call[] = []
 let dispatchReply: (body: any) => { status: number; body: unknown; delayMs?: number } = () => ({ status: 200, body: { handled: false } })
+// true = the stub never answers /api/commands/dispatch (a hung dashboard)
+let dispatchHangs = false
 let server: http.Server
 let menuStatus = 200
 let failSends = 0
@@ -46,6 +48,7 @@ beforeAll(async () => {
       }
       if (req.url === '/api/commands/dispatch') {
         expect(req.headers.authorization).toBe('Bearer dash-token')
+        if (dispatchHangs) return
         const r = dispatchReply(body)
         setTimeout(() => {
           res.writeHead(r.status, { 'Content-Type': 'application/json' })
@@ -85,6 +88,7 @@ beforeAll(async () => {
 })
 
 afterAll(() => {
+  server.closeAllConnections()
   server.close()
   rmSync(install, { recursive: true, force: true })
   rmSync(stateDir, { recursive: true, force: true })
@@ -95,6 +99,7 @@ beforeEach(() => {
   calls = []
   menuStatus = 200
   failSends = 0
+  dispatchHangs = false
   dispatchReply = () => ({ status: 200, body: { handled: false, outcome: 'unknown', replies: [] } })
 })
 
@@ -155,7 +160,7 @@ describe('marveen-commands.py', () => {
     expect(r.code).toBe(2)
     const s = sends()
     expect(s).toHaveLength(1)
-    expect(s[0].text).toMatch(/^Claude keret-allapot:\n- 5 orás: 70% van hatra/)
+    expect(s[0].text).toMatch(/^Claude keret-állapot:\n- 5 órás: 70% van hátra/)
     expect(s[0].text).toMatch(/Token-könyvelés: 123$/)
   })
 
@@ -227,7 +232,7 @@ describe('marveen-commands.py', () => {
     expect(r.stdout).toBe('')
     const s = sends()
     expect(s).toHaveLength(1)
-    expect(s[0].text).toMatch(/^Nem futott: \/status -- a dashboard nem érhető el/)
+    expect(s[0].text).toMatch(/^Nem futott: \/status, mert a dashboard nem érhető el/)
     expect(s[0].text).not.toContain('bot-tok')
   })
 
@@ -345,6 +350,43 @@ describe('marveen-commands.py', () => {
     const all = new Set(builtin.map(e => e.name))
     for (const n of runnable) expect(names.has(n), `/${n} missing from BUILTIN_NAMES`).toBe(true)
     for (const n of names) expect(all.has(n), `/${n} is not a registry builtin`).toBe(true)
+  })
+
+  it('one overall deadline: a hung dashboard AND a hung usage collector still end in a sent reply and a blocked turn, in time', async () => {
+    // Review #1529 point 3: the steps' own limits (20 + 20 + 15 + 15 s) used to
+    // add up past the 45 s registration timeout (/usage measured 55.1 s), and
+    // a killed hook does not block, so /usage became a paid model turn. Scaled
+    // down here: a 4 s deadline must hold with both steps hanging for good.
+    dispatchHangs = true
+    const usage = join(install, 'scripts', 'usage-collect.py')
+    const saved = readFileSync(usage, 'utf-8')
+    writeFileSync(usage, 'import time\ntime.sleep(60)\n')
+    try {
+      const t0 = Date.now()
+      const r = await runHook(channel('/usage'), base, 'marveen', [], { MARVEEN_HOOK_DEADLINE_SEC: '4' })
+      const took = Date.now() - t0
+      expect(r.code).toBe(2)
+      expect(took).toBeLessThan(5_500)
+      const s = sends()
+      expect(s).toHaveLength(1)
+      expect(s[0].text).toMatch(/Nem sikerült lekérdezni a keret-állapotot/)
+      expect(s[0].text).toMatch(/Nem futott: \/usage, mert a dashboard nem érhető el/)
+    } finally {
+      writeFileSync(usage, saved)
+    }
+  }, 30_000)
+
+  it('the real deadline stays under the 45 s registration timeout, in both registrations', () => {
+    const hook = readFileSync(HOOK, 'utf-8')
+    const m = hook.match(/os\.environ\.get\("MARVEEN_HOOK_DEADLINE_SEC"\) or (\d+)\)/)
+    expect(m).not.toBeNull()
+    const deadline = Number(m![1])
+    for (const f of [join(ROOT, '.claude', 'settings.json'), join(ROOT, 'templates', 'settings.json.template')]) {
+      const line = readFileSync(f, 'utf-8').split('\n').findIndex(l => l.includes('marveen-commands.py'))
+      const near = readFileSync(f, 'utf-8').split('\n').slice(line, line + 2).join('\n')
+      const reg = Number(near.match(/"timeout": (\d+)/)![1])
+      expect(deadline).toBeLessThanOrEqual(reg - 5)
+    }
   })
 })
 
@@ -549,6 +591,16 @@ describe('marveen-commands.py deferred write, slow dashboard', () => {
     expect(sends()).toEqual([{ chat_id: '42', text: 'kész' }])
     expect(readFileSync(HOOK, 'utf-8')).toMatch(/MARVEEN_CMD_DEFERRED_TIMEOUT", "90"/)
   })
+
+  it('the detached re-send is not held to the hook deadline (Claude Code no longer waits on it)', async () => {
+    dispatchReply = (b) => b.deferWrites
+      ? { status: 200, body: { handled: true, outcome: 'deferred', replies: [] } }
+      : { status: 200, body: { handled: true, outcome: 'ran', replies: ['kész'] }, delayMs: 1500 }
+    await runHook(channel('/new'), base, 'marveen', [], { MARVEEN_HOOK_DEADLINE_SEC: '1' })
+    const deadline = Date.now() + 8000
+    while (sends().length === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 50))
+    expect(sends()).toEqual([{ chat_id: '42', text: 'kész' }])
+  })
 })
 
 describe('marveen-commands.py pass-through logging', () => {
@@ -565,10 +617,10 @@ describe('marveen-commands.py pass-through logging', () => {
 
 describe('marveen-commands.py and "?"', () => {
   it('/usage ? gets the help only, no quota line in front', async () => {
-    dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['/usage\n/usage [<nap>] - token'] } })
+    dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['/usage\n/usage [<nap>]: token'] } })
     const r = await runHook(channel('/usage ?'))
     expect(r.code).toBe(2)
-    expect(sends()).toEqual([{ chat_id: '42', text: '/usage\n/usage [<nap>] - token' }])
+    expect(sends()).toEqual([{ chat_id: '42', text: '/usage\n/usage [<nap>]: token' }])
   })
 })
 
