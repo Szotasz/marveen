@@ -132,7 +132,10 @@ def main():
     # A group message the agent was not addressed in owes no reply, so there is
     # nothing to drain: surfacing it would ask for the group post the standing
     # rule forbids. Same test as the Stop guard and the prompt directive.
-    if not channel_scope.reply_owed(chat_id, text, agent_id):
+    if not channel_scope.reply_owed(
+            chat_id, text, agent_id,
+            replies_to_agent=lambda: ledger_lib.inbound_replies_to_own(
+                agent_id, chat_id, message_id)):
         sys.exit(0)
 
     # GRACE: skip a fresh inbound the agent may be answering right now.

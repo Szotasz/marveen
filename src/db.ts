@@ -6,7 +6,7 @@ import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { triggerLikeClause } from './homoglyph.js'
-import { replyOwed } from './reply-owed.js'
+import { replyOwed, mentionNames } from './reply-owed.js'
 
 let db: Database.Database
 // The path the CURRENT handle was opened on (null for ':memory:'). Kept so
@@ -3474,11 +3474,26 @@ export function getDispatchedPendingStats(
 const OPEN_QUESTION_SCAN = 50
 function latestOwedInbound(agentId: string): { id: number; created_at: number; message_id: string | null } | undefined {
   const rows = db.prepare(
-    `SELECT id, created_at, message_id, chat_id, text FROM conversation_log
+    `SELECT id, created_at, message_id, chat_id, text, reply_to_message_id FROM conversation_log
        WHERE agent_id = ? AND direction = 'in'
        ORDER BY created_at DESC, id DESC LIMIT ?`,
-  ).all(agentId, OPEN_QUESTION_SCAN) as { id: number; created_at: number; message_id: string | null; chat_id: string | null; text: string | null }[]
-  return rows.find((r) => replyOwed(r.chat_id, r.text, agentId))
+  ).all(agentId, OPEN_QUESTION_SCAN) as {
+    id: number; created_at: number; message_id: string | null; chat_id: string | null
+    text: string | null; reply_to_message_id: string | null
+  }[]
+  const names = mentionNames(agentId)
+  // A quote-reply to one of the agent's own ledgered messages addresses it,
+  // same as ledger_lib.replies_to_own on the Python side.
+  const ownOut = db.prepare(
+    `SELECT 1 FROM conversation_log
+       WHERE agent_id = ? AND chat_id = ? AND direction = 'out' AND message_id = ?
+       LIMIT 1`,
+  )
+  return rows.find((r) => replyOwed(r.chat_id, r.text, agentId, {
+    names,
+    repliesToAgent: () => r.reply_to_message_id != null && r.reply_to_message_id !== '' &&
+      ownOut.get(agentId, String(r.chat_id ?? ''), String(r.reply_to_message_id)) !== undefined,
+  }))
 }
 
 export function openInboundQuestionMessageId(agentId: string): string | null {

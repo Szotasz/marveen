@@ -38,6 +38,10 @@ import channel_scope  # noqa: E402
 # LEDGER_CONTEXT_CHAR_BUDGET.
 DEFAULT_CHAR_BUDGET = 16000
 
+# Label for an inbound GROUP row: the ledger keeps no sender id, so the sender
+# is unknown and must not be shown as the owner.
+GROUP_SENDER_LABEL = "Csoport (nem azonositott kuldo)"
+
 # Hard BYTE budget on the FINAL hook payload (the whole json.dumps(...) blob,
 # UTF-8 encoded: frame + directive + open-question + transcript). This is the
 # real guard. WHY bytes, not chars: the Claude Code harness caps a hook's
@@ -148,8 +152,11 @@ def _build_output(transcript, open_q, owner):
         # fail-open, the silence looks like a calm start.
         chat_id, message_id, text, ts, att_kind, att_file_id = open_q[:6]
         snippet = _snippet(text, _max_snippet())
+        # Same attribution rule as the transcript lines below: a group sender
+        # is unknown, so the owner's name must not be put on it.
+        who = GROUP_SENDER_LABEL if channel_scope.is_group_chat(chat_id) else owner
         parts.append(
-            f'NYITOTT KÉRDÉS (még NEM válaszoltad meg): {owner} utolsó üzenete '
+            f'NYITOTT KÉRDÉS (még NEM válaszoltad meg): {who} utolsó üzenete '
             f'(chat {chat_id}, message_id {message_id}): "{snippet}". Válaszolj rá '
             f'MOST a telegram reply tool (mcp__plugin_telegram_telegram__reply) '
             f'meghívásával a megfelelő chat_id-re, a lenti kontextusból folytatva.'
@@ -219,7 +226,10 @@ def main():
     # question: silent reading is the correct outcome there, so it must not be
     # replayed as "answer this NOW". It still reaches the fresh session as part
     # of the transcript below, which is where it belongs.
-    if open_q and not channel_scope.reply_owed(open_q[0], open_q[2], agent_id):
+    if open_q and not channel_scope.reply_owed(
+            open_q[0], open_q[2], agent_id,
+            replies_to_agent=lambda: ledger_lib.inbound_replies_to_own(
+                agent_id, open_q[0], open_q[1])):
         open_q = None
     if not rows and not open_q:
         sys.exit(0)  # nothing to replay
@@ -239,7 +249,7 @@ def main():
         if direction != "in":
             who = "Te"
         elif channel_scope.is_group_chat(chat_id):
-            who = "Csoport (nem azonositott kuldo)"
+            who = GROUP_SENDER_LABEL
         else:
             who = owner
         snippet = _snippet(text, max_snippet)

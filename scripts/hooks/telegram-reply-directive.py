@@ -53,11 +53,18 @@ def main():
         m = OPEN_TAG_RX.search(prompt)
     if not m:
         sys.exit(0)  # not a Telegram message -> stay silent
-    chat_id = _attr(m.group(1), "chat_id") or "<a bejövő chat_id>"
+    attrs = m.group(1)
+    chat_id = _attr(attrs, "chat_id") or "<a bejövő chat_id>"
+    agent_id = ledger_lib.agent_id_from_payload(payload)
+    # A Telegram quote-reply carries reply_to_message_id; a reply to one of the
+    # agent's own (ledgered) messages addresses it even without a name.
+    reply_to = _attr(attrs, "reply_to_message_id")
 
     # Group message that does not address this agent -> the correct behaviour is
     # silent reading, so the directive must NOT push a reply into the group.
-    if not channel_scope.reply_owed(chat_id, text, ledger_lib.agent_id_from_payload(payload)):
+    if not channel_scope.reply_owed(
+            chat_id, text, agent_id,
+            replies_to_agent=lambda: ledger_lib.replies_to_own(agent_id, chat_id, reply_to)):
         sys.stdout.write(
             f"[TELEGRAM-CSOPORT] Ez az üzenet egy Telegram CSOPORTBÓL érkezett "
             f"(chat_id={chat_id}), és NEM szólít meg névvel. A helyes viselkedés a "

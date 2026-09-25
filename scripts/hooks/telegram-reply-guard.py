@@ -118,11 +118,15 @@ def main():
     # would read the empty stdout as "allow" -- the guard would never block).
     chat_id, message_id, text, ts, created_at = oq[:5]
 
-    # Group message with no mention -> no reply owed (channel_scope.reply_owed).
-    # In the company group the agents read silently and only speak when addressed;
-    # blocking the turn here would demand exactly the post the standing rule
-    # forbids.
-    if not channel_scope.reply_owed(chat_id, text, agent_id):
+    # Group message that does not address the agent (no name form, not a reply
+    # to one of its own messages) -> no reply owed (channel_scope.reply_owed).
+    # In the company group the agents read silently and only speak when
+    # addressed; blocking the turn here would demand exactly the post the
+    # standing rule forbids.
+    if not channel_scope.reply_owed(
+            chat_id, text, agent_id,
+            replies_to_agent=lambda: ledger_lib.inbound_replies_to_own(
+                agent_id, chat_id, message_id)):
         sys.exit(0)
 
     # Pure acknowledgement -> no reply owed.
