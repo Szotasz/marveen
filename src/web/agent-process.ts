@@ -138,6 +138,28 @@ export function ownChannelProviderForScope(
   return hasOwnToken && resolvedProvider ? resolvedProvider : null
 }
 
+/**
+ * Teams name-sync write: set TEAMS_BOT_DISPLAY_NAME in the agent's teams .env
+ * to `displayName`, only on drift. Returns whether it wrote.
+ *
+ * ENVTMPMODE925: the teams .env holds the bot's app secret, so a file this call
+ * CREATES is 0600. writeFileSync's `mode` applies only on creation, so an
+ * existing .env keeps whatever mode the operator gave it (the write is in
+ * place, no rename). Without it a missing .env came up at the umask default.
+ */
+export function syncTeamsDisplayName(envPath: string, displayName: string | null | undefined): boolean {
+  if (!displayName) return false
+  const raw = existsSync(envPath) ? readFileSync(envPath, 'utf-8') : ''
+  const current = raw.match(/^TEAMS_BOT_DISPLAY_NAME=(.*)$/m)?.[1]?.trim()
+  if (current === displayName) return false
+  const line = `TEAMS_BOT_DISPLAY_NAME=${displayName}`
+  const next = current !== undefined
+    ? raw.replace(/^TEAMS_BOT_DISPLAY_NAME=.*$/m, line)
+    : (raw === '' || raw.endsWith('\n') ? raw + line + '\n' : raw + '\n' + line + '\n')
+  writeFileSync(envPath, next, { mode: 0o600 })
+  return true
+}
+
 // Wrap the telegram plugin's bun stdio server in a tee that persists each
 // inbound channel notification to <stateDir>/inbox-pending.jsonl, which the
 // channel-inbox-drain UserPromptSubmit hook then pulls into the next turn.
@@ -1834,17 +1856,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
   // (not the generic fallback). Idempotent; writes only on drift, non-fatal.
   if (agentProvider === 'teams' && hasChannel) {
     try {
-      const envPath = join(agentChannelDir, '.env')
-      const displayName = readAgentDisplayName(name)
-      const raw = existsSync(envPath) ? readFileSync(envPath, 'utf-8') : ''
-      const current = raw.match(/^TEAMS_BOT_DISPLAY_NAME=(.*)$/m)?.[1]?.trim()
-      if (displayName && current !== displayName) {
-        const line = `TEAMS_BOT_DISPLAY_NAME=${displayName}`
-        const next = current !== undefined
-          ? raw.replace(/^TEAMS_BOT_DISPLAY_NAME=.*$/m, line)
-          : (raw === '' || raw.endsWith('\n') ? raw + line + '\n' : raw + '\n' + line + '\n')
-        writeFileSync(envPath, next)
-      }
+      syncTeamsDisplayName(join(agentChannelDir, '.env'), readAgentDisplayName(name))
     } catch { /* best-effort name-sync; never block launch */ }
   }
 

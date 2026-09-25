@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { writeFileSync, unlinkSync, mkdtempSync, rmSync, chmodSync, statSync } from 'node:fs'
+import { writeFileSync, unlinkSync, mkdtempSync, rmSync, chmodSync, statSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -65,23 +65,35 @@ describe('readEnvFile', () => {
   })
 })
 
-// #1530 review, point 5: `/model ... keep` writes the .env through
-// updateEnvFile, whose mode-less atomic write turned a 0600 file into 0644.
-describe('updateEnvFile keeps the file mode', () => {
-  it('a 0600 .env stays 0600 (and a 0640 one 0640) after a write', async () => {
-    const { updateEnvFile, readEnvFile } = await import('../env.js')
-    for (const mode of [0o600, 0o640]) {
-      writeFileSync(testEnvPath, 'FOO=bar\n')
-      chmodSync(testEnvPath, mode)
-      updateEnvFile({ FOO: 'baz', NEW_KEY: '1' })
-      expect(statSync(testEnvPath).mode & 0o777).toBe(mode)
-      expect(readEnvFile()['FOO']).toBe('baz')
-    }
-  })
-  it('a missing .env is created 0600', async () => {
+// ENVPERM925: .env holds the bot token and API keys. updateEnvFile writes a new
+// file and renames it over .env, so the mode has to be carried over on purpose;
+// before this fix a 0600 .env came back 0644 (measured with this function).
+describe('updateEnvFile keeps the .env mode', () => {
+  const modeOf = (p: string) => statSync(p).mode & 0o777
+
+  it('a 0600 .env stays 0600, and the value is written', async () => {
+    writeFileSync(testEnvPath, 'SECRET=abc\nMAIN_AGENT_MODEL=claude-opus-5\n')
+    chmodSync(testEnvPath, 0o600)
     const { updateEnvFile } = await import('../env.js')
+    updateEnvFile({ MAIN_AGENT_MODEL: 'claude-sonnet-5' })
+    expect(modeOf(testEnvPath)).toBe(0o600)
+    expect(readFileSync(testEnvPath, 'utf-8')).toContain('MAIN_AGENT_MODEL=claude-sonnet-5')
+    expect(readFileSync(testEnvPath, 'utf-8')).toContain('SECRET=abc')
+  })
+
+  it('an operator-chosen mode (0640) is kept, not reset to a default', async () => {
+    writeFileSync(testEnvPath, 'A=1\n')
+    chmodSync(testEnvPath, 0o640)
+    const { updateEnvFile } = await import('../env.js')
+    updateEnvFile({ B: '2' })
+    expect(modeOf(testEnvPath)).toBe(0o640)
+  })
+
+  it('a .env that did not exist is created 0600', async () => {
     try { unlinkSync(testEnvPath) } catch { /* absent */ }
-    updateEnvFile({ FOO: 'x' })
-    expect(statSync(testEnvPath).mode & 0o777).toBe(0o600)
+    const { updateEnvFile, ENV_FILE_MODE } = await import('../env.js')
+    updateEnvFile({ MAIN_AGENT_ID: 'bot' })
+    expect(ENV_FILE_MODE).toBe(0o600)
+    expect(modeOf(testEnvPath)).toBe(0o600)
   })
 })

@@ -1071,7 +1071,12 @@ echo -e "${BOLD}  Konfiguracio letrehozasa...${NC}"
 env_merge_key() {
   # env_merge_key KEY VALUE -- drop any existing KEY= line, append KEY=VALUE.
   _emk_tmp="$INSTALL_DIR/.env.tmp.$$"
-  grep -v "^$1=" "$INSTALL_DIR/.env" > "$_emk_tmp" 2>/dev/null || true
+  # ENVTMPMODE925: the tmp holds the WHOLE .env (bot token, API keys) until the
+  # mv below, so it is created 0600 from its first byte -- at the umask default
+  # it was world-readable for that window (the VAULTMODE818 pattern). The rm
+  # matters too: a leftover tmp of the same name would keep its old mode.
+  rm -f "$_emk_tmp"
+  (umask 077; grep -v "^$1=" "$INSTALL_DIR/.env" > "$_emk_tmp" 2>/dev/null) || true
   printf '%s=%s\n' "$1" "$2" >> "$_emk_tmp"
   mv "$_emk_tmp" "$INSTALL_DIR/.env"
   chmod 600 "$INSTALL_DIR/.env"
