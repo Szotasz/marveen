@@ -89,6 +89,14 @@ describe('POST /api/messages sender guards (runtime)', () => {
     expect(r.json.from_agent).toBe(MAIN_AGENT_ID)
   })
 
+  // UNKNOWNTO924: a placeholder recipient used to get 200 and
+  // only fail an hour later.
+  it('rejects an unregistered local recipient with 400 at once', async () => {
+    const r = await post({ from: MAIN_AGENT_ID, to: 'PLACEHOLDER', content: 'placeholder' })
+    expect(r.statusCode).toBe(400)
+    expect(String(r.json.error)).toContain('unknown recipient')
+  })
+
   it('rejects an empty from/to/content with 400, before any guard', async () => {
     const r = await post({ from: '', to: MAIN_AGENT_ID, content: 'x' })
     expect(r.statusCode).toBe(400)
