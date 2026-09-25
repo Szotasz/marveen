@@ -277,29 +277,39 @@ describe('Telegram plugin-patch row', () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
   it('patched: "rendben" with the version', () => {
-    server('0.0.7', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y')
+    server('0.0.7', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z')
     writeState([{ version: '0.0.7', status: 'patched' }])
     expect(telegramPluginPatchStatus(state)).toBe('rendben (0.0.7)')
   })
 
   it('the forward patch is measured on its own: d4 in place, fwd missing says what that costs', () => {
-    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x')
+    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(cmd920-evid): z')
     writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), files: [
-      { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'anchor-missing:inbound meta user_id' } },
+      { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'anchor-missing:inbound meta user_id', evid: 'patched' } },
     ] }))
     expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (továbbítás-jelölő): 0.0.8 (anchor-missing:inbound meta user_id) · egy továbbított parancs úgy fut, mint a begépelt')
   })
 
   it('anchor-missing / unwritable at start: one line naming the version, the reason and the fallback', () => {
-    server('0.0.8', 'plugin code\n// MARVEEN-PATCH(elsokor922-fwd): y')
+    server('0.0.8', 'plugin code\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z')
     writeState([{ version: '0.0.8', status: 'anchor-missing:status handler' }])
     expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK: 0.0.8 (anchor-missing:status handler) · a /status és a /help a plugin saját válasza')
     writeState([{ version: '0.0.8', status: 'unwritable' }])
     expect(telegramPluginPatchStatus(state)).toMatch(/^HIÁNYZIK: 0\.0\.8 \(unwritable\)/)
   })
 
+  // #1530 review: without the inbound log no owner write command can run, so
+  // a missing `evid` patch must say exactly that.
+  it('the evidence patch is measured on its own: missing says the write commands will not run', () => {
+    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y')
+    writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), files: [
+      { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'anchor-missing:channel notification' } },
+    ] }))
+    expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (bejövő-napló): 0.0.8 (anchor-missing:channel notification) · az író parancsok (/model, /context clear, saját parancsok) nem futnak, nincs mihez ellenőrizni őket')
+  })
+
   it('a plugin version that arrived after the start is measured now, not taken from the state file', () => {
-    server('0.0.7', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y')
+    server('0.0.7', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z')
     server('0.0.9', 'fresh plugin code')
     writeState([{ version: '0.0.7', status: 'already' }])
     expect(telegramPluginPatchStatus(state)).toMatch(/^HIÁNYZIK: 0\.0\.9 \(új verzió/)

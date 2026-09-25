@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Take /status and /help away from the Telegram channel plugin (ELSOKOR922 D-4),
-and mark forwarded messages in the inbound meta (forwarded="1").
+mark forwarded messages in the inbound meta (forwarded="1"), and record every
+inbound message the bot receives (the evidence owner WRITE commands need).
 
 The official plugin (claude-plugins-official/telegram/<ver>/server.ts) answers
 /status ("Paired as ...") and /help itself, inside its bot poller -- those
@@ -40,6 +41,7 @@ import time
 
 MARKER = "// MARVEEN-PATCH(elsokor922-d4): /status and /help belong to the command hook"
 FWD_MARKER = "// MARVEEN-PATCH(elsokor922-fwd): forwarded flag for the command hook"
+EVID_MARKER = "// MARVEEN-PATCH(cmd920-evid): inbound evidence for owner write commands"
 
 # Each anchor is the handler's full block, up to its closing `})` at column 0.
 ANCHORS = [
@@ -54,6 +56,25 @@ ANCHORS = [
 # after user_id, and the hook refuses to run a forwarded command.
 FWD_ANCHOR = ("inbound meta user_id", re.compile(r"^( *)user_id: String\(from\.id\),\n", re.MULTILINE))
 
+# Owner WRITE commands (/model, /context clear, ...) run only when the message
+# they came in is on record HERE, in the plugin process, the one place that
+# only a real Telegram update reaches (#1530 review: the dashboard token is
+# shared by every fleet agent, and the prompt text is not evidence -- anything
+# typed into the session pane can carry a <channel> block). One JSON line per
+# inbound message into <STATE_DIR>/inbound-evidence.jsonl, written just before
+# the message is handed to Claude Code; the dashboard reads it
+# (src/web/write-evidence.ts). Bounded: past 256 KiB the file becomes .1.
+# Uses only names server.ts already imports (writeFileSync, statSync,
+# renameSync, join) and the handler's own chat_id / msgId / text.
+EVID_ANCHOR = ("channel notification", re.compile(
+    r"^( *)mcp\.notification\(\{\n *method: 'notifications/claude/channel',\n", re.MULTILINE))
+EVID_INSERT = (
+    "{indent}try {{ const evidFile = join(STATE_DIR, 'inbound-evidence.jsonl'); "
+    "try {{ if (statSync(evidFile).size > 262144) renameSync(evidFile, evidFile + '.1') }} catch {{}}; "
+    "writeFileSync(evidFile, JSON.stringify({{ chat_id, message_id: msgId != null ? String(msgId) : null, "
+    "text, at: Date.now() }}) + '\\n', {{ flag: 'a', mode: 0o600 }}) }} catch {{}} " + EVID_MARKER + "\n"
+)
+
 # Independent patches: each has its own marker and is all-or-nothing on its
 # own, so a plugin update that moves one anchor does not undo the other.
 PATCHES = [
@@ -62,6 +83,9 @@ PATCHES = [
     {"name": "fwd", "marker": FWD_MARKER, "anchors": [FWD_ANCHOR], "mode": "insert-after",
      "insert": "{indent}...(ctx.message?.forward_origin ? {{ forwarded: '1' }} : {{}}), " + FWD_MARKER + "\n",
      "fallback": "forwarded messages are not marked, a forwarded command runs like a typed one"},
+    {"name": "evid", "marker": EVID_MARKER, "anchors": [EVID_ANCHOR], "mode": "insert-before",
+     "insert": EVID_INSERT,
+     "fallback": "no inbound evidence is recorded, owner write commands are refused"},
 ]
 
 
@@ -82,6 +106,8 @@ def apply_patch(text, patch):
         indent = m.group(1) if rx.groups else ""
         if patch["mode"] == "remove":
             out = out[:m.start()] + f"{indent}{patch['marker']} ({name} removed)\n" + out[m.end():]
+        elif patch["mode"] == "insert-before":
+            out = out[:m.start()] + patch["insert"].format(indent=indent) + out[m.start():]
         else:
             out = out[:m.end()] + patch["insert"].format(indent=indent) + out[m.end():]
     return out, "patched"

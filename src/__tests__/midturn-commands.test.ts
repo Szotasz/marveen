@@ -107,7 +107,7 @@ describe('midTurnTick', () => {
     await midTurnTick(state, deps, true)
     appendFileSync(file, queuedLine(channelPrompt('/gyors')) + '\n')
     await midTurnTick(state, deps)
-    expect(deps.dispatch).toHaveBeenCalledWith('/gyors', OWNER, OWNER, 1, true, false, false)
+    expect(deps.dispatch).toHaveBeenCalledWith('/gyors', OWNER, OWNER, 1, true, false, false, '373') // the message id rides along: the write's evidence (#1530 review)
   })
 
   it('the same message_id twice (a re-written line) runs once', async () => {

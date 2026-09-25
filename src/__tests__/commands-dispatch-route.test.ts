@@ -2,14 +2,30 @@
 // session's command hook calls. A registry command from the owner chat runs
 // and its reply comes back; anything else is `handled:false` with nothing run
 // and nothing replied, so the hook lets the prompt through to the model.
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { Readable } from 'node:stream'
 import { readFileSync } from 'node:fs'
+import { initDatabase } from '../db.js'
 import { join } from 'node:path'
 import { registerCommand, clearCommandsForTest } from '../web/commands.js'
 import { dispatchForChat, tryHandleCommands, mainSessionFromBody } from '../web/routes/commands.js'
 import { requiresAuth, resolveAuth } from '../web/auth-gate.js'
 import type { RouteContext } from '../web/routes/types.js'
+
+// The owner chat the route resolves, and the channel state dir the evidence
+// is read from: both pinned, so the HTTP cases below never see a live install.
+vi.mock('../owner-chat.js', async (orig) => ({ ...(await orig<typeof import('../owner-chat.js')>()), resolveOwnerChatId: () => '42' }))
+const STATE = mkdtempSync(join(tmpdir(), 'cmd-evidence-'))
+const prevStateDir = process.env.TELEGRAM_STATE_DIR
+beforeAll(() => { initDatabase(':memory:'); process.env.TELEGRAM_STATE_DIR = STATE })
+afterAll(() => {
+  if (prevStateDir === undefined) delete process.env.TELEGRAM_STATE_DIR
+  else process.env.TELEGRAM_STATE_DIR = prevStateDir
+  rmSync(STATE, { recursive: true, force: true })
+})
+const EVIDENCE_OK = () => ({ ok: true as const })
 
 let runs = 0
 
@@ -105,9 +121,35 @@ describe('dispatchForChat', () => {
   it('the main session runs the same WRITE normally', async () => {
     let ran = 0
     registerCommand({ name: 'model', kind: 'write', description: 'valt', run: async () => { ran++ } })
-    const r = await dispatchForChat('/model opus', '42', '42', Date.now(), true)
+    const r = await dispatchForChat('/model opus', '42', '42', Date.now(), true, false, false, '777', EVIDENCE_OK)
     expect(r.outcome).not.toBe('sub-agent-write-refused')
     expect(ran).toBe(1)
+  })
+  // #1530 review: a write needs evidence that the owner's chat sent it, not
+  // just the absence of an agent identity.
+  it('a WRITE without inbound evidence is refused with the reason, and never runs', async () => {
+    let ran = 0
+    registerCommand({ name: 'model', kind: 'write', description: 'valt', run: async () => { ran++ } })
+    const r = await dispatchForChat('/model opus', '42', '42', Date.now(), true, false, false, '777',
+      () => ({ ok: false, reason: 'not-found' }))
+    expect(r.outcome).toBe('write-evidence-refused')
+    expect(r.replies[0]).toContain('not-found')
+    expect(ran).toBe(0)
+  })
+  it('the evidence is checked with the chat, message id and text of THIS dispatch', async () => {
+    registerCommand({ name: 'model', kind: 'write', description: 'valt', run: async () => {} })
+    const seen: unknown[] = []
+    await dispatchForChat('/model opus', '42', '42', 1234, true, false, false, '777', (r) => { seen.push(r); return { ok: true } })
+    expect(seen).toEqual([{ chatId: '42', messageId: '777', text: '/model opus', now: 1234 }])
+  })
+  it('the deferred first call does not consult (or use up) the evidence; reads and planned writes never need it', async () => {
+    registerCommand({ name: 'model', kind: 'write', description: 'valt', run: async () => {} })
+    let asked = 0
+    const ev = () => { asked++; return { ok: false as const, reason: 'not-found' as const } }
+    expect((await dispatchForChat('/model opus', '42', '42', Date.now(), true, true, false, '777', ev)).outcome).toBe('deferred')
+    expect((await dispatchForChat('/status', '42', '42', Date.now(), true, false, false, null, ev)).outcome).toBe('ran')
+    expect((await dispatchForChat('/runs stop abc', '42', '42', Date.now(), true, false, false, null, ev)).handled).toBe(true)
+    expect(asked).toBe(0)
   })
 })
 
@@ -146,6 +188,33 @@ describe('POST /api/commands/dispatch', () => {
     c = fakeCtx({}, {}, 'GET')
     await tryHandleCommands(c.ctx)
     expect(c.out.status).toBe(405)
+  })
+  // The reviewer's case, over HTTP: the shared token, no identity header, no
+  // mainSession field -- and no message the plugin recorded. Refused.
+  it('a WRITE posted without mainSession and without recorded evidence is refused, nothing runs', async () => {
+    let ran = 0
+    registerCommand({ name: 'model', kind: 'write', description: 'valt', run: async () => { ran++ } })
+    for (const body of [{ text: '/model opus', chatId: '42' }, { text: '/model opus', chatId: '42', messageId: '31337' }]) {
+      const { ctx, out } = fakeCtx(body)
+      await tryHandleCommands(ctx)
+      expect(out.body.outcome).toBe('write-evidence-refused')
+    }
+    expect(ran).toBe(0)
+  })
+  it('a WRITE whose message the plugin recorded runs once; the same message id a second time is refused', async () => {
+    let ran = 0
+    registerCommand({ name: 'model', kind: 'write', description: 'valt', run: async () => { ran++ } })
+    writeFileSync(join(STATE, 'inbound-evidence.jsonl'),
+      JSON.stringify({ chat_id: '42', message_id: '901', text: '/model opus', at: Date.now() }) + '\n')
+    const first = fakeCtx({ text: '/model opus', chatId: '42', messageId: '901' })
+    await tryHandleCommands(first.ctx)
+    expect(first.out.body.outcome).not.toBe('write-evidence-refused')
+    expect(ran).toBe(1)
+    const again = fakeCtx({ text: '/model opus', chatId: '42', messageId: '901' })
+    await tryHandleCommands(again.ctx)
+    expect(again.out.body.outcome).toBe('write-evidence-refused')
+    expect(again.out.body.replies[0]).toContain('already-used')
+    expect(ran).toBe(1)
   })
   it('GET /api/commands/menu lists the runnable names, planned-only left out', async () => {
     const { ctx, out } = fakeCtx({}, {}, 'GET', '/api/commands/menu')

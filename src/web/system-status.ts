@@ -243,10 +243,11 @@ export function formatQuota(q: QuotaSnapshot): { fiveHour: string; sevenDay: str
 // each cached version's server.ts is re-read for the marker, so a plugin
 // version that arrived after the start shows up too.
 export const PLUGIN_PATCH_MARKER = 'MARVEEN-PATCH(elsokor922-d4)'
-// The two independent patches, each with what the owner loses without it.
+// The independent patches, each with what the owner loses without it.
 const PLUGIN_PATCHES = [
   { name: 'd4', marker: PLUGIN_PATCH_MARKER, label: '', fallback: 'a /status és a /help a plugin saját válasza' },
   { name: 'fwd', marker: 'MARVEEN-PATCH(elsokor922-fwd)', label: ' (továbbítás-jelölő)', fallback: 'egy továbbított parancs úgy fut, mint a begépelt' },
+  { name: 'evid', marker: 'MARVEEN-PATCH(cmd920-evid)', label: ' (bejövő-napló)', fallback: 'az író parancsok (/model, /context clear, saját parancsok) nem futnak, nincs mihez ellenőrizni őket' },
 ]
 
 export function telegramPluginPatchStatus(stateFile = join(STORE_DIR, 'telegram-plugin-patch.json')): string {

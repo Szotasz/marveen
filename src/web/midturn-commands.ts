@@ -173,7 +173,7 @@ export async function midTurnTick(state: TailState, deps: MidTurnDeps, firstRun 
     state.seen.push(key)
     if (state.seen.length > SEEN_MAX) state.seen.splice(0, state.seen.length - SEEN_MAX)
     try {
-      const result = await deps.dispatch(cmd.text, cmd.chatId, deps.ownerChatId(), deps.now(), true, false, cmd.forwarded)
+      const result = await deps.dispatch(cmd.text, cmd.chatId, deps.ownerChatId(), deps.now(), true, false, cmd.forwarded, cmd.messageId)
       if (!result.handled) {
         logger.info({ text: cmd.text, outcome: result.outcome }, 'midturn-commands: not ours, left to the model')
         continue

@@ -256,7 +256,7 @@ def mark_answered(sd, payload, chat_id, text):
         log(sd, f"ledger log_outbound failed: {type(e).__name__}")
 
 
-def dispatch(text, chat_id, main_session, defer_writes=False, forwarded=False, timeout=None):
+def dispatch(text, chat_id, main_session, defer_writes=False, forwarded=False, timeout=None, message_id=None):
     """POST the command to the dashboard. Returns (result dict, None) or (None, why).
 
     `main_session` rides along so the server can refuse a WRITE resolved for
@@ -265,7 +265,12 @@ def dispatch(text, chat_id, main_session, defer_writes=False, forwarded=False, t
     sub-agent's /status went to the model at full token cost instead of the
     free hook round trip. Reads are safe to dispatch from anywhere; only
     writes need the session check, and the server is the one place that
-    actually knows each command's kind."""
+    actually knows each command's kind.
+
+    `message_id` is the Telegram message this command came in: the server
+    runs a WRITE only when the Telegram plugin itself recorded that message
+    (src/web/write-evidence.ts), so an HTTP caller holding the dashboard
+    token cannot run one by leaving the identity fields out (#1530 review)."""
     try:
         with open(os.path.join(REPO_ROOT, "store", ".dashboard-token"), encoding="utf-8") as f:
             dtok = f.read().strip()
@@ -276,7 +281,8 @@ def dispatch(text, chat_id, main_session, defer_writes=False, forwarded=False, t
     req = urllib.request.Request(
         api_base() + "/api/commands/dispatch",
         data=json.dumps({"text": text, "chatId": chat_id, "mainSession": main_session,
-                         "deferWrites": defer_writes, "forwarded": forwarded}).encode(),
+                         "deferWrites": defer_writes, "forwarded": forwarded,
+                         "messageId": message_id}).encode(),
         method="POST",
         headers={"Authorization": "Bearer " + dtok, "Content-Type": "application/json"},
     )
@@ -442,12 +448,13 @@ def wait_for_exit(pid, timeout):
     return False
 
 
-def spawn_deferred(sd, payload, body, chat_id, main_session):
+def spawn_deferred(sd, payload, body, chat_id, main_session, message_id=None):
     job = {
         "pid": os.getpid(),
         "text": body,
         "chat_id": chat_id,
         "main_session": main_session,
+        "message_id": message_id,
         "payload": {k: payload.get(k) for k in ("transcript_path", "cwd", "session_id")},
     }
     env = dict(os.environ)
@@ -489,7 +496,8 @@ def run_deferred():
     # waits for the session to restart and be woken -- 26 s measured on the
     # test bot (2026-09-23), past the old 20 s, and a clear that WORKED was
     # reported as "a dashboard nem érhető el".
-    result, why = dispatch(text, chat_id, bool(job.get("main_session")), timeout=DEFERRED_DISPATCH_TIMEOUT)
+    result, why = dispatch(text, chat_id, bool(job.get("main_session")), timeout=DEFERRED_DISPATCH_TIMEOUT,
+                           message_id=job.get("message_id"))
     if result is None:
         if why == "TimeoutError":
             reply = DEFERRED_TIMEOUT_REPLY.format(name=name, secs=int(DEFERRED_DISPATCH_TIMEOUT))
@@ -618,9 +626,11 @@ def main():
         sys.exit(0)
 
     forwarded = attr(attrs, "forwarded") == "1"
-    result, why = dispatch(body, chat_id, main_session, defer_writes=True, forwarded=forwarded)
+    message_id = attr(attrs, "message_id")
+    result, why = dispatch(body, chat_id, main_session, defer_writes=True, forwarded=forwarded,
+                           message_id=message_id)
     if result is not None and result.get("outcome") == "deferred":
-        if not spawn_deferred(sd, payload, body, chat_id, main_session):
+        if not spawn_deferred(sd, payload, body, chat_id, main_session, message_id):
             reply = DEFERRED_SPAWN_FAILED_REPLY.format(name=name)
             if send(sd, tok, chat_id, reply):
                 mark_answered(sd, payload, chat_id, reply)

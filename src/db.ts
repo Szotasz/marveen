@@ -1310,6 +1310,19 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
 
+  // --- Owner write-command evidence, single use (#1530 review) ---
+  // One row per Telegram message that has already authorised an owner WRITE
+  // command (web/write-evidence.ts). The PRIMARY KEY is the single-use rule:
+  // a second dispatch naming the same message is refused, across restarts.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS command_write_evidence (
+      chat_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      used_at INTEGER NOT NULL,
+      PRIMARY KEY (chat_id, message_id)
+    )
+  `)
+
   // --- Dashboard browser login (OPTIONAL; the bearer token stays primary) ---
   // Zero rows here = exactly the token-only behavior. A row is created only when
   // the operator opts in (Settings card or the dashboard-user CLI). No seeded
@@ -5287,4 +5300,18 @@ export function deleteCustomCommand(name: string): boolean {
 
 export function markCustomCommandRun(name: string, runAt: number, definitionAt: number): void {
   db.prepare('UPDATE custom_commands SET last_run_at = ?, last_run_definition_at = ? WHERE name = ?').run(runAt, definitionAt, name)
+}
+
+/**
+ * Claim one Telegram message as the evidence of an owner WRITE command. True
+ * only for the first claim of that (chat, message); every later one is false
+ * (web/write-evidence.ts, single use). Rows older than a day are pruned on
+ * the way: the evidence window is minutes, so an older row cannot matter.
+ */
+export function claimCommandWriteEvidence(chatId: string, messageId: string, nowMs: number): boolean {
+  db.prepare('DELETE FROM command_write_evidence WHERE used_at < ?').run(nowMs - 24 * 60 * 60 * 1000)
+  const r = db.prepare(
+    'INSERT OR IGNORE INTO command_write_evidence (chat_id, message_id, used_at) VALUES (?, ?, ?)',
+  ).run(chatId, messageId, nowMs)
+  return r.changes === 1
 }

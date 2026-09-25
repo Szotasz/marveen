@@ -139,7 +139,7 @@ describe('marveen-commands.py', () => {
     const r = await runHook(channel('/status'))
     expect(r.code).toBe(2)
     expect(r.stdout).toBe('')
-    expect(dispatches()[0].body).toEqual({ text: '/status', chatId: '42', mainSession: true, deferWrites: true, forwarded: false })
+    expect(dispatches()[0].body).toEqual({ text: '/status', chatId: '42', mainSession: true, deferWrites: true, forwarded: false, messageId: '7' })
     expect(sends()).toEqual([{ chat_id: '42', text: 'minden rendben' }])
   })
 
@@ -259,11 +259,11 @@ describe('marveen-commands.py', () => {
     dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['ok'] } })
     let r = await runHook(channel('/status'), base, 'nova')
     expect(r.code).toBe(2)
-    expect(dispatches()[0].body).toEqual({ text: '/status', chatId: '42', mainSession: false, deferWrites: true, forwarded: false })
+    expect(dispatches()[0].body).toEqual({ text: '/status', chatId: '42', mainSession: false, deferWrites: true, forwarded: false, messageId: '7' })
     expect(sends()).toHaveLength(1)
     r = await runHook(channel('/usage'), base, 'nova')
     expect(r.code).toBe(2)
-    expect(dispatches()[1].body).toEqual({ text: '/usage', chatId: '42', mainSession: false, deferWrites: true, forwarded: false })
+    expect(dispatches()[1].body).toEqual({ text: '/usage', chatId: '42', mainSession: false, deferWrites: true, forwarded: false, messageId: '7' })
     expect(sends()).toHaveLength(2)
   })
   // ELSOKOR922 Phase 7 A-smoke: a write checked from inside the hook always
@@ -282,7 +282,7 @@ describe('marveen-commands.py', () => {
     const d = dispatches()
     expect(d).toHaveLength(2)
     expect(d[0].body.deferWrites).toBe(true)
-    expect(d[1].body).toEqual({ text: '/model opus 5m', chatId: '42', mainSession: true, deferWrites: false, forwarded: false })
+    expect(d[1].body).toEqual({ text: '/model opus 5m', chatId: '42', mainSession: true, deferWrites: false, forwarded: false, messageId: '7' })
     expect(Date.now() - exitedAt).toBeGreaterThanOrEqual(400) // the settle wait ran after the exit
   })
 
@@ -290,7 +290,7 @@ describe('marveen-commands.py', () => {
     dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['ok'] } })
     const r = await runHook(channel('/status'), base, 'marveen')
     expect(r.code).toBe(2)
-    expect(dispatches()[0].body).toEqual({ text: '/status', chatId: '42', mainSession: true, deferWrites: true, forwarded: false })
+    expect(dispatches()[0].body).toEqual({ text: '/status', chatId: '42', mainSession: true, deferWrites: true, forwarded: false, messageId: '7' })
   })
 
   it('clears a telegram_progress placeholder posted for the blocked turn', async () => {
@@ -562,7 +562,7 @@ describe('marveen-commands.py forwarded messages', () => {
       : { handled: true, outcome: 'ran', replies: ['x'] } })
     const r = await runHook(channel('/model opus keep', 'source="plugin:telegram:telegram" chat_id="42" message_id="9" user="owner" forwarded="1"'))
     expect(r.code).toBe(2)
-    expect(dispatches()[0].body).toEqual({ text: '/model opus keep', chatId: '42', mainSession: true, deferWrites: true, forwarded: true })
+    expect(dispatches()[0].body).toEqual({ text: '/model opus keep', chatId: '42', mainSession: true, deferWrites: true, forwarded: true, messageId: '9' })
     expect(sends()).toEqual([{ chat_id: '42', text: 'Továbbított üzenetből nem futtatok parancsot: /model.' }])
   })
 })
