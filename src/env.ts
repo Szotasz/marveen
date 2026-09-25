@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { atomicWriteFileSync } from './web/atomic-write.js'
@@ -38,6 +38,10 @@ export function readEnvFile(keys?: string[]): Record<string, string> {
   }
   return result
 }
+
+// The mode a newly created .env gets: it holds secrets, and install-macos.sh /
+// install-linux.sh chmod it to 600.
+export const ENV_FILE_MODE = 0o600
 
 // Update (or append) the given keys in .env, preserving every other line,
 // comment, and the original ordering. Used by fleet import to mirror the
@@ -84,5 +88,12 @@ export function updateEnvFile(updates: Record<string, string>): void {
     out.push(`${key}=${val}`)
   }
 
-  atomicWriteFileSync(envPath, out.join('\n'))
+  // ENVPERM925: keep the file's own mode. atomicWriteFileSync writes a NEW file
+  // and renames it over .env, so without an explicit mode the result took the
+  // umask default: a 0600 .env holding the bot token and API keys came back
+  // 0644, readable by every local user (measured 2026-09-25 with this function).
+  // A new file is created ENV_FILE_MODE.
+  let mode = ENV_FILE_MODE
+  try { mode = statSync(envPath).mode & 0o777 } catch { /* no .env yet */ }
+  atomicWriteFileSync(envPath, out.join('\n'), { mode })
 }
