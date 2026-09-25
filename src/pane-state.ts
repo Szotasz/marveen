@@ -1693,6 +1693,56 @@ export function parkedInputRowCount(pane: string): number {
     .filter((row) => row.length > 0).length
 }
 
+// The visible TAIL of an input box taller than the pane, whitespace-collapsed,
+// or null when the box is not overfull.
+//
+// A prompt with more wrapped rows than the pane has lines pushes the box's TOP
+// separator -- and usually the ❯ glyph -- off the capture. What remains is
+// prose, the bottom separator and the idle footer. liveInputBox() needs both
+// separators, so it returns null; detectPaneState() then falls through to
+// 'idle', and every parked-input probe built on either (shouldRetrySubmit,
+// isScheduledPromptStuck, parkedInputText) reads "nothing parked".
+//
+// SCHEDLOST915, reproduced 2026-09-15 on Claude Code 2.1.110 in the tmux-default
+// 80x24 pane the main channels session runs in: a 6735-char scheduled prompt
+// typed as 80-char chunks and submitted with an immediate Enter parked in 3 of
+// 6 rounds, each capture exactly this shape, and all five probes above said
+// idle / not stuck. On the live host the watchdog then declared the round lost
+// and the redelivery was typed on top of the parked copy.
+//
+// Deliberately NOT folded into detectPaneState: reclassifying this shape as
+// 'typing' globally would pin the main session not-ready with no recovery that
+// can see the box. Callers pair it with proof the text is theirs (see
+// isOwnPromptParkedOverfull in schedule-runner.ts). Pure.
+export function overfullParkedInputTail(pane: string): string | null {
+  if (!pane || !pane.trim()) return null
+  const lines = pane.split('\n')
+  const busyRegion = liveTailRegion(lines, BUSY_LIVE_REGION_LINES)
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(busyRegion)) return null
+  }
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(liveTailRegion(lines, LIVE_FOOTER_REGION_LINES))) return null
+  const footerIdx = lines.findIndex(l => IDLE_FOOTER_RX.test(l))
+  if (footerIdx < 0) return null
+  let bottomSep = -1
+  for (let i = footerIdx - 1; i >= 0; i--) {
+    if (BOX_SEP_RX.test(lines[i])) { bottomSep = i; break }
+  }
+  if (bottomSep <= 0) return null
+  // A second separator above means the box fits: that is liveInputBox's case.
+  for (let i = bottomSep - 1; i >= 0; i--) {
+    if (BOX_SEP_RX.test(lines[i])) return null
+  }
+  // If the ❯ row is still on screen, the box starts there; rows above it are
+  // scrollback, not input.
+  let start = 0
+  for (let i = bottomSep - 1; i >= 0; i--) {
+    if (/^\s*❯/.test(lines[i])) { start = i; break }
+  }
+  const tail = lines.slice(start, bottomSep).join('\n').replace(/^\s*❯/, '').replace(/\s+/g, ' ').trim()
+  return tail.length > 0 ? tail : null
+}
+
 // Post-submit verification: did the parked input actually leave the box?
 //
 // `prevSig` is stuckInputSignature(pane) captured BEFORE the submit attempt

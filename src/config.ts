@@ -339,6 +339,9 @@ export const AGENT_API_ORIGIN = cfg('AGENT_API_ORIGIN') ?? ''
 // key, so it stays a plain env read (not routed through the override layer).
 export const DASHBOARD_ALLOWED_ORIGINS = env['DASHBOARD_ALLOWED_ORIGINS'] ?? ''
 export const OLLAMA_URL = cfg('OLLAMA_URL') ?? 'http://localhost:11434'
+// Ollama model that tiers memories during /api/memories/import. Empty = off:
+// every chunk goes to warm with no model call, instead of guessing a model.
+export const MEMORY_IMPORT_CATEGORIZE_MODEL = (cfg('MEMORY_IMPORT_CATEGORIZE_MODEL') ?? '').trim()
 
 // Kanban swimlanes: which field the board groups by on first load. Invalid
 // values silently fall back to 'none' (flat board) rather than breaking the

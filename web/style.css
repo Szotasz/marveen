@@ -7690,3 +7690,19 @@ body {
   background: color-mix(in srgb, #f59e0b 18%, transparent);
   border: 1px solid color-mix(in srgb, #f59e0b 45%, transparent);
 }
+
+/* MEMKERESVAK917: the memory search is forgiving -- when nothing matches the
+   query as asked it answers with the rescued near-misses, and in the LIST those
+   are indistinguishable from real hits. The endpoint says which it was in the
+   X-Memory-Search header; this is where the viewer gets told. */
+.mem-search-label {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--text, inherit);
+}
+.mem-search-label code { font-size: 11px; opacity: .85; }

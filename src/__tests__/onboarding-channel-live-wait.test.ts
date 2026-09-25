@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { importsValueBinding } from './setup/source-imports.js'
 
 // WIZFLOW809. After saving the bot token the wizard used to advance on a fixed
 // setTimeout (4s), while the restart response is only a dispatch receipt and
@@ -111,7 +112,12 @@ describe('structural pins -- the fixed-wait shape must not return', () => {
 
   it('the backend status route computes channelLive from the shared liveness probe', () => {
     const route = readFileSync(join(__dirname, '..', 'web', 'routes', 'onboarding.ts'), 'utf-8')
-    expect(route).toContain("import { getClaudePidForSession, hasChannelPluginAlive } from '../../channel-coordinator/liveness.js'")
+    // TESZTIMPORTUTIL922: this compared the import line VERBATIM, so it would
+    // fire on the first co-import even with both probes still wired up. Both
+    // bindings are asserted SEPARATELY -- dropping either one must stay red.
+    const LIVENESS = '../../channel-coordinator/liveness.js'
+    expect(importsValueBinding(route, 'getClaudePidForSession', LIVENESS)).toBe(true)
+    expect(importsValueBinding(route, 'hasChannelPluginAlive', LIVENESS)).toBe(true)
     expect(route).toMatch(/channelLive = claudePid != null && hasChannelPluginAlive\(claudePid, CHANNEL_PROVIDER\)/)
     expect(route).toMatch(/^\s*channelLive,$/m) // and it is actually in the response
   })

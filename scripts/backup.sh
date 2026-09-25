@@ -90,9 +90,12 @@ add_if() {
 #   backups                   -- store/backups holds OTHER machines' tarballs (two 2026-07-13
 #     hermes dumps, 701 MB): a backup inside the backup, and not this host's state
 #   darwin-relay              -- relay.log (87 MB): a log, not state; nothing restores from it
+#   scheduled-runs            -- SCHEDPROMPTREF917 fire-time snapshots, ~100 files/day,
+#     7-day retention on disk already (scheduled-run-snapshot.ts); regenerated on every
+#     large-task fire, so a restore losing yesterday's costs nothing
 #   (measured 2026-09-16: these two were 788 MB of a 948 MB archive; excluding them
 #    leaves ~150 MB. STORE_SKIP does not delete anything -- the files stay on disk.)
-STORE_SKIP=" whisper health cowork venv-garmin venv-pdf dhl-chrome-profile fedex-labels fedex-vam archery-basis backups darwin-relay "
+STORE_SKIP=" whisper health cowork venv-garmin venv-pdf dhl-chrome-profile fedex-labels fedex-vam archery-basis backups darwin-relay scheduled-runs "
 if [[ -d store ]]; then
   while IFS= read -r _entry; do
     _name="$(basename "${_entry}")"

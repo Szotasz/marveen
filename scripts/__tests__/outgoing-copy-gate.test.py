@@ -193,6 +193,12 @@ def main():
         check("mixed-script homoglyph still blocks (exit 2)", code, 2)
         check_true("homoglyph: stderr names it", "VEGYES IRASRENDSZERU" in err, err)
 
+        # 5d2. HOMOGLYPHMICRO924: unit and formula notation is not a mixed-script
+        # word (MICRO SIGN, superscript and subscript digits disguise no Latin letter).
+        units = " A mért késés 40 \u00b5s, a ház 100 m\u00b2, a doboz 5 cm\u00b3, a víz H\u2082O."
+        code, out, err = run_hook(email_payload(CLEAN_HU_OK + units), rules_file=active)
+        check("unit notation (micro sign, super/subscript digits) passes (exit 0)", code, 0)
+
         # 5e. clean, correctly-accented text with an active (matching-nothing)
         # rule and no em dash/double-hyphen/homoglyph -> passes clean.
         code, out, err = run_hook(email_payload(CLEAN_HU_OK), rules_file=active)
@@ -240,6 +246,43 @@ def main():
                    "tool_input": {"message_id": "1", "text": CLEAN_HU_OK}}
         code, out, err = run_hook(edit_ok, rules_file=active)
         check("edit_message clean passes (exit 0)", code, 0)
+
+        # --- GATEDISCORD905: the Discord reply path is audited too ----------
+        # Same audit as Telegram, with two deliberate differences: no MarkdownV2
+        # unescaping (a backslash on Discord is a literal the author typed), and
+        # the Telegram-only code-block rule must NOT fire there.
+        discord_bad = {"tool_name": "mcp__plugin_discord_discord__reply",
+                       "tool_input": {"text": CLEAN_HU_OK + " — mégis."}}
+        code, out, err = run_hook(discord_bad, rules_file=active)
+        check("discord reply with em dash blocks (exit 2)", code, 2)
+        check_true("discord block names the DISCORD channel, not Telegram",
+                   "(Discord)" in err and "(Telegram)" not in err, err)
+
+        discord_ok = {"tool_name": "mcp__plugin_discord_discord__reply",
+                      "tool_input": {"text": CLEAN_HU_OK}}
+        code, out, err = run_hook(discord_ok, rules_file=active)
+        check("discord reply clean passes (exit 0)", code, 0)
+
+        discord_edit = {"tool_name": "mcp__plugin_discord_discord__edit_message",
+                        "tool_input": {"message_id": "1", "text": CLEAN_HU_OK + " — mégis."}}
+        code, out, err = run_hook(discord_edit, rules_file=active)
+        check("discord edit_message with em dash blocks (exit 2)", code, 2)
+
+        # The code-block rule is Telegram-only. Discord renders a fenced block
+        # natively and its reply tool has no markdownv2 format value, so firing
+        # here would block a problem that does not exist. Paired with the
+        # telegram case above, which must stay red for the same input.
+        discord_fence = {"tool_name": "mcp__plugin_discord_discord__reply",
+                         "tool_input": {"text": fenced}}
+        code, out, err = run_hook(discord_fence, rules_file=active)
+        check("discord codeblock without markdownv2 passes (exit 0)", code, 0)
+
+        # A name hit still blocks on Discord: the channel branch is a new door,
+        # not a bypass.
+        discord_name = {"tool_name": "mcp__plugin_discord_discord__reply",
+                        "tool_input": {"text": CLEAN_HU_OK + " Üdvözlettel, Teszt Elek"}}
+        code, out, err = run_hook(discord_name, rules_file=active)
+        check("discord reply with a bad name blocks (exit 2)", code, 2)
 
         # --- COPYGATEENT914: HTML-ENTITAS NEM KERULHETI MEG A GONDOLATJEL-TILTAST ---
         # Marveen merese 2026-09-14, egy VALODI vevo-levelen: a hook a TAGEKET
@@ -290,6 +333,32 @@ def main():
         code, out, err = run_hook(span, rules_file=active)
         check("escape-elt SPAN-ben rejtett gondolatjel blokkol (sorrend-fog)", code, 2)
         check("...es a GONDOLATJEL indokkal", "GONDOLATJEL" in (err or ""), True)
+
+        # --- GMAILCONNECTOR914: the claude.ai Gmail connector ----------------
+        # mcp__claude_ai_Gmail__send_message carries ONE underscore before Gmail,
+        # so the old (^|__)gmail__ alternative never matched and the send fell
+        # through to exit 0 with no audit (measured 2026-08-30, 2026-09-08).
+        for tool in ("send_message", "reply", "forward"):
+            bad = {"tool_name": f"mcp__claude_ai_Gmail__{tool}",
+                   "tool_input": {"to": ["a@b.hu"], "messageId": "m1", "subject": "Teszt",
+                                  "body": CLEAN_HU_OK + " — mégis."}}
+            code, out, err = run_hook(bad, rules_file=active)
+            check(f"connector {tool} with em dash blocks (exit 2)", code, 2)
+            ok = {"tool_name": f"mcp__claude_ai_Gmail__{tool}",
+                  "tool_input": {"to": ["a@b.hu"], "messageId": "m1", "subject": "Teszt", "body": CLEAN_HU_OK}}
+            code, out, err = run_hook(ok, rules_file=active)
+            check(f"connector {tool} clean passes (exit 0)", code, 0)
+        fwd = {"tool_name": "mcp__claude_ai_Gmail__forward",
+               "tool_input": {"to": ["a@b.hu"], "messageId": "m1", "forwardText": "Nézd meg — fontos."}}
+        code, out, err = run_hook(fwd, rules_file=active)
+        check("connector forward: forwardText is audited too (exit 2)", code, 2)
+        draft_only = {"tool_name": "mcp__claude_ai_Gmail__send_message", "tool_input": {"draftId": "d1"}}
+        code, out, err = run_hook(draft_only, rules_file=active)
+        check("connector send of a draftId: body unreadable, fail-closed (exit 2)", code, 2)
+        for tool in ("search_threads", "get_thread", "label_message"):
+            code, out, err = run_hook({"tool_name": f"mcp__claude_ai_Gmail__{tool}", "tool_input": {"q": "x — y"}},
+                                      rules_file=active)
+            check(f"connector {tool} is a read: passes untouched (exit 0)", code, 0)
 
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)
