@@ -80,7 +80,7 @@ describe('actions (CMD920 test 22)', () => {
     const d = runDeps()
     const out = (await runActions([{ action: 'model', value: 'opus', hold: '4h' }, { action: 'effort', value: 'high' }, { action: 'message', value: 'kész a mód' }], T0, d)).text
     expect(d.calls).toEqual(['model opus 4h', 'effort high'])
-    expect(out).toMatch(/1\. model opus: kész — \/model opus elküldve\n2\. effort high: kész.*\n3\. message kész a mód: kész — kész a mód\nMind a 3 lépés kész\./)
+    expect(out).toMatch(/1\. model opus: kész, \/model opus elküldve\n2\. effort high: kész.*\n3\. message kész a mód: kész, kész a mód\nMind a 3 lépés kész\./)
   })
 
   // ELSOKOR922 Phase 7 A-smoke: with /model taking one order-free line, the
@@ -96,7 +96,7 @@ describe('actions (CMD920 test 22)', () => {
     const d = runDeps({ effort: async () => ({ ok: false, text: 'Nem állítottam: a session foglalt (pane-busy).' }) })
     const out = (await runActions([{ action: 'model', value: 'opus' }, { action: 'effort', value: 'high' }, { action: 'context clear' }], T0, d)).text
     expect(d.calls).toEqual(['model opus'])
-    expect(out).toMatch(/2\. effort high: HIBA — Nem állítottam/)
+    expect(out).toMatch(/2\. effort high: HIBA, Nem állítottam/)
     expect(out).toMatch(/Megállt a 2\. lépésnél \(1\/3 kész\)\./)
   })
 
@@ -107,7 +107,7 @@ describe('actions (CMD920 test 22)', () => {
     const d = runDeps({ model: async () => ({ ok: false, text: 'Nem váltottam: a session foglalt (pane-busy).', busy: true }) })
     const r = await runActions([{ action: 'model', value: 'sonnet' }], T0, d)
     expect(r.busy).toBe(true)
-    expect(r.text).toMatch(/HIBA — Nem váltottam/)
+    expect(r.text).toMatch(/HIBA, Nem váltottam/)
   })
 
   it('a non-busy failure is not queued', async () => {
@@ -117,7 +117,7 @@ describe('actions (CMD920 test 22)', () => {
 
   it('a throwing step is a failure, not a crash', async () => {
     const out = (await runActions([{ action: 'context clear' }], T0, runDeps({ clear: async () => { throw new Error('tmux gone') } }))).text
-    expect(out).toMatch(/HIBA — tmux gone\nMegállt az? 1\. lépésnél|HIBA — tmux gone\nMegállt a 1\. lépésnél/)
+    expect(out).toMatch(/HIBA, tmux gone\nMegállt az? 1\. lépésnél|HIBA, tmux gone\nMegállt a 1\. lépésnél/)
   })
 })
 
@@ -192,8 +192,8 @@ describe('load-time validation (CMD920 test 24)', () => {
       { name: 'status', reason: 'beépített parancs neve; a beépített nyer' },
     ])
     const text = customCommandsText()
-    expect(text).toContain('/jo — jó parancs [actions]')
-    expect(text).toContain('/rossz — 1. lépés: ismeretlen akció: rm -rf')
+    expect(text).toContain('/jo: jó parancs [actions]')
+    expect(text).toContain('/rossz: 1. lépés: ismeretlen akció: rm -rf')
     // the builtin /status still wins
     expect(listCommands().filter(e => e.name === 'status').every(e => e.source !== 'custom')).toBe(true)
     // and /help lists the valid custom command under SAJÁT

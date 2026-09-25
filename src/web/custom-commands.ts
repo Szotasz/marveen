@@ -258,7 +258,7 @@ export async function runActions(steps: ActionStep[], nowMs: number, deps: RunDe
     } catch (err) {
       r = { ok: false, text: err instanceof Error ? err.message : String(err) }
     }
-    lines.push(`${i + 1}. ${st.action}${st.value ? ` ${st.value}` : ''}: ${r.ok ? 'kész' : 'HIBA'} — ${r.text}`)
+    lines.push(`${i + 1}. ${st.action}${st.value ? ` ${st.value}` : ''}: ${r.ok ? 'kész' : 'HIBA'}, ${r.text}`)
     if (!r.ok) {
       lines.push(`Megállt a ${i + 1}. lépésnél (${i}/${steps.length} kész).`)
       return { text: lines.join('\n'), busy: r.busy === true }
@@ -266,7 +266,7 @@ export async function runActions(steps: ActionStep[], nowMs: number, deps: RunDe
   }
   // A command made only of messages is a canned reply: send just its text,
   // not the step report (measured on the test bot: /dashboard answered
-  // "1. message X: kész — X / Mind a 1 lépés kész.").
+  // "1. message X: kész, X / Mind a 1 lépés kész.").
   if (steps.every(st => st.action === 'message')) return { text: steps.map(st => st.value ?? '').join('\n'), busy: false }
   lines.push(`Mind a ${steps.length} lépés kész.`)
   return { text: lines.join('\n'), busy: false }
