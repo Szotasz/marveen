@@ -1518,7 +1518,7 @@ while $TMUX has-session -t "$SESSION" 2>/dev/null; do
 
   NOW=$(date +%s)
   # CHANSPARE925 review: channel-watchdog.sh and stuck-modal-guard.sh use
-  # `respawn-pane -k`, which gives the pane a NEW pid while this session and loop
+  # a pane respawn (-k), which gives the pane a NEW pid while this session and loop
   # live on. Re-read it every tick, or our own fresh plugin reads as foreign.
   _pane_pid_now="$($TMUX list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)"
   [ -n "$_pane_pid_now" ] && _watchdog_claude_pid="$_pane_pid_now"
