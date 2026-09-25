@@ -1,5 +1,5 @@
 #!/bin/bash
-# owner-chat.sh -- shell port of src/owner-chat.ts resolveOwnerChatId (CHATID0).
+# owner-chat.sh -- shell port of src/owner-chat.ts resolveAlertOwnerChat (CHATID0).
 #
 # The installer default ALLOWED_CHAT_ID=0 is not empty and not falsy, so every
 # shell consumer that tested for emptiness sent straight to chat 0 and earned
@@ -10,9 +10,13 @@
 #
 #   stdout: the chat id, or nothing when this install has no owner chat.
 #   stderr: one reason line when stdout is empty.
-#   Order (mirrors resolveOwnerChatId): the provider's configured .env key
-#   first, then <state dir>/access.json (allowFrom -> groups -> channels,
-#   first normalized non-placeholder entry).
+#   Order (mirrors resolveAlertOwnerChat): the provider's configured .env key
+#   first, then the MAIN install's <state dir>/access.json -- and only when its
+#   DM allowlist (allowFrom) holds exactly one usable entry. More than one
+#   entry would be a guess (on a multi-person fleet, a stranger's chat), and a
+#   group/channel is never the owner: groups/channels keys and "-"-prefixed
+#   ids are not used. Every sender of this lib is an alert, so the digest's
+#   looser first-entry rule (resolveOwnerChatId) deliberately does not apply.
 #
 # Bash 3.2 compatible (macOS system bash). JSON is read with `node -e`
 # (spec "Nem spec-eredetű" 1.) -- no jq dependency assumed.
@@ -46,12 +50,19 @@ _owner_chat_env_key() {
   esac
 }
 
-# _owner_chat_state_dir ENV_FILE PROVIDER -- channelStateDir(provider), shell
-# side: <PROVIDER>_STATE_DIR env override, else install-scoped
-# <install>/.claude/channels/<provider>, else legacy ~/.claude/channels/<provider>
-# while the install-scoped one has no .env yet (channel-provider.ts #915).
+# _owner_chat_state_dir ENV_FILE PROVIDER -- the MAIN install's channel state
+# dir: install-scoped <install>/.claude/channels/<provider>, else legacy
+# ~/.claude/channels/<provider> while the install-scoped one has no .env yet
+# (channel-provider.ts #915).
+#
+# The inherited <PROVIDER>_STATE_DIR is deliberately NOT honoured, unlike
+# channelStateDir on the TS side. A sub-agent with its own channel carries ITS
+# state dir in that variable, and notify.sh is the progress-report path agents
+# are told to use: honouring it sent the main bot's message to the sub-agent's
+# paired person. The dashboard never has the variable, so the TS side is
+# unaffected; here the caller's environment is not the main install's.
 _owner_chat_state_dir() {
-  local env_file="$1" provider="$2" install_dir subdir override_var override
+  local env_file="$1" provider="$2" install_dir subdir
   install_dir="$(cd "$(dirname "$env_file")" && pwd)"
   case "$provider" in
     slack) subdir="slack" ;;
@@ -60,12 +71,6 @@ _owner_chat_state_dir() {
     teams) subdir="teams" ;;
     *) subdir="telegram" ;;
   esac
-  override_var="$(printf '%s' "$provider" | tr '[:lower:]' '[:upper:]')_STATE_DIR"
-  eval "override=\"\${$override_var:-}\""
-  if [ -n "$override" ]; then
-    printf '%s' "$override"
-    return 0
-  fi
   local installed="$install_dir/.claude/channels/$subdir"
   if [ -f "$installed/.env" ]; then
     printf '%s' "$installed"
@@ -79,38 +84,43 @@ _owner_chat_state_dir() {
   printf '%s' "$installed"
 }
 
-# _owner_chat_from_access ACCESS_JSON_PATH -- first normalized, non-placeholder
-# id from allowFrom, then groups, then channels (owner-chat.ts order). Empty
-# stdout (no output at all) when the file is missing/unreadable/malformed or
-# nothing usable is found.
+# _owner_chat_from_access ACCESS_JSON_PATH -- the single usable DM entry of
+# allowFrom (soleDmOwner in owner-chat.ts). stdout: the id; exit 1 with a
+# reason on stderr when the file is missing/unreadable/malformed, has no DM
+# entry, or has more than one.
 _owner_chat_from_access() {
   local path="$1"
-  [ -f "$path" ] || return 1
+  if [ ! -f "$path" ]; then
+    echo "no owner chat: .env placeholder/empty and no readable access.json" >&2
+    return 1
+  fi
   node -e '
     const fs = require("fs")
     let raw
-    try { raw = JSON.parse(fs.readFileSync(process.argv[1], "utf-8")) } catch { process.exit(1) }
+    try { raw = JSON.parse(fs.readFileSync(process.argv[1], "utf-8")) } catch {
+      process.stderr.write("no owner chat: .env placeholder/empty and no readable access.json\n"); process.exit(1)
+    }
     function norm(v) {
       const s = String(v).trim().replace(/^["\x27]|["\x27]$/g, "")
       if (!s || s === "0") return null
       return s
     }
-    if (Array.isArray(raw.allowFrom)) {
+    const ids = new Set()
+    if (raw && Array.isArray(raw.allowFrom)) {
       for (const entry of raw.allowFrom) {
+        if (typeof entry !== "string" && typeof entry !== "number") continue
         const id = norm(entry)
-        if (id) { process.stdout.write(id); process.exit(0) }
+        if (id && !id.startsWith("-")) ids.add(id)
       }
     }
-    for (const key of ["groups", "channels"]) {
-      const map = raw[key]
-      if (!map || typeof map !== "object") continue
-      for (const k of Object.keys(map)) {
-        const id = norm(k)
-        if (id) { process.stdout.write(id); process.exit(0) }
-      }
+    if (ids.size === 1) { process.stdout.write([...ids][0]); process.exit(0) }
+    if (ids.size === 0) {
+      process.stderr.write("no owner chat: .env placeholder/empty and access.json has no DM entry (groups/channels are never used)\n")
+    } else {
+      process.stderr.write("no owner chat: .env placeholder/empty and access.json has " + ids.size + " DM entries, refusing to guess\n")
     }
     process.exit(1)
-  ' "$path" 2>/dev/null
+  ' "$path"
 }
 
 # resolve_owner_chat_id ENV_FILE [PROVIDER] -- see file header.
@@ -131,6 +141,5 @@ resolve_owner_chat_id() {
     printf '%s\n' "$access_id"
     return 0
   fi
-  echo "no owner chat: .env placeholder/empty and no access.json owner" >&2
   return 1
 }

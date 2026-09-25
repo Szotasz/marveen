@@ -157,6 +157,17 @@ describe('github-pr-monitor.sh: failed alert keeps the snapshot for retry', () =
     expect(r2.stdout).toContain('change detected, alerted')
     expect(readFileSync(state, 'utf-8')).toContain('OPEN|none|0|1|') // fresh snapshot persisted
   })
+  // #1555 review round 1: with no owner chat (the "0" placeholder and nothing
+  // to fall back to) nothing is sent, so the change must NOT be marked as
+  // reported -- a success return here used to drop the alert for good.
+  linuxOnly('keeps the old snapshot when there is no owner chat to send to', () => {
+    const { bin, state, envBase } = setup()
+    writeFileSync(join(stage, '.env'), `TELEGRAM_BOT_TOKEN=${FAKE_TOKEN}\nALLOWED_CHAT_ID=0\n`)
+    const r = run('github-pr-monitor.sh', envBase, bin)
+    expect(r.stderr + r.stdout).toContain('did NOT deliver')
+    expect(existsSync(join(stage, 'curl-argv.log'))).toBe(false) // nothing went out
+    expect(readFileSync(state, 'utf-8')).toContain('OPEN|none|0|0|') // old snapshot kept
+  })
 })
 
 describe('watchdog-replay.py: the injection path now leaves a record (MSGSZIVARGAS826)', () => {

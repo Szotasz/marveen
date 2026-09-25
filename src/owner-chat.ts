@@ -121,3 +121,57 @@ export function resolveOwnerChatId(
   }
   return null
 }
+
+export type AlertOwnerChat = { chatId: string; reason?: undefined } | { chatId: null; reason: string }
+
+/**
+ * The owner chat for an ALERT (quota, security, disk, stuck session, the
+ * shell/Python senders) -- stricter than resolveOwnerChatId, which stays the
+ * rule for the daily digest and the other callers that already accepted its
+ * first-entry heuristic.
+ *
+ * The configured .env value still wins. The access.json fallback applies only
+ * when the DM allowlist (`allowFrom`) holds EXACTLY ONE usable entry: then the
+ * install has one paired person, and that person is the owner. With more than
+ * one entry the first is a guess, and on a fleet that serves several people a
+ * guessed quota or security alert lands in a stranger's chat -- so it is not
+ * sent. `groups` / `channels` keys are never used, and neither is an allowFrom
+ * entry that starts with "-" (a Telegram group or channel id, not a person).
+ *
+ * `reason` is set whenever chatId is null, so the caller can log WHY the alert
+ * was not sent instead of dropping it quietly. scripts/lib/owner-chat.sh and
+ * scripts/lib/owner_chat.py are ports of this function, not of
+ * resolveOwnerChatId (src/__tests__/owner-chat-parity.test.ts).
+ */
+export function resolveAlertOwnerChat(
+  readAccessFile: (path: string) => string = (p) => readFileSync(p, 'utf-8'),
+  configured: string | null = ALLOWED_CHAT_ID,
+  provider: ChannelProviderType = 'telegram',
+): AlertOwnerChat {
+  const fromEnv = normalizeChatId(configured)
+  if (fromEnv) return { chatId: fromEnv }
+  let raw: Record<string, unknown>
+  try {
+    raw = JSON.parse(readAccessFile(join(channelStateDir(provider), 'access.json'))) as Record<string, unknown>
+  } catch {
+    return { chatId: null, reason: 'no owner chat: .env placeholder/empty and no readable access.json' }
+  }
+  return soleDmOwner(raw)
+}
+
+/** The exactly-one-DM-entry rule on a parsed access.json, shared by the
+ *  resolver above and its tests. */
+export function soleDmOwner(raw: Record<string, unknown> | null): AlertOwnerChat {
+  const entries = new Set<string>()
+  if (raw && Array.isArray(raw.allowFrom)) {
+    for (const entry of raw.allowFrom) {
+      const id = normalizeChatId(typeof entry === 'number' ? String(entry) : typeof entry === 'string' ? entry : '')
+      if (id && !id.startsWith('-')) entries.add(id)
+    }
+  }
+  if (entries.size === 1) return { chatId: [...entries][0] }
+  if (entries.size === 0) {
+    return { chatId: null, reason: 'no owner chat: .env placeholder/empty and access.json has no DM entry (groups/channels are never used)' }
+  }
+  return { chatId: null, reason: `no owner chat: .env placeholder/empty and access.json has ${entries.size} DM entries, refusing to guess` }
+}

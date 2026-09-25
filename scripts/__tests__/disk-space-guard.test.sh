@@ -8,6 +8,10 @@
 
 set -u
 
+# Hermetic (#1555 review round 1): inside an agent session the inherited
+# channel state dir points at a live access.json / bot token.
+unset TELEGRAM_STATE_DIR SLACK_STATE_DIR DISCORD_STATE_DIR GOOGLECHAT_STATE_DIR TEAMS_STATE_DIR
+
 PASS=0; FAIL=0
 TMPDIR_BASE="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_BASE"' EXIT
@@ -185,7 +189,7 @@ if printf '%s' "$OUTJ2" | grep -q "ALERT_DRYRUN"; then fail "B: re-alerted withi
 echo ""
 echo "(k) CHATID0 owner-chat resolution"
 KBASE="$TMPDIR_BASE/k"
-mkdir -p "$KBASE/bin"
+mkdir -p "$KBASE/bin" "$KBASE/home"
 cat > "$KBASE/bin/curl" <<'STUB'
 #!/bin/bash
 for a in "$@"; do
@@ -208,7 +212,7 @@ printf '{"allowFrom":["7777777"]}\n' > "$K1/.claude/channels/telegram/access.jso
 CURL_LOG="$K1/curl.log"; : > "$CURL_LOG"
 # The guard's own INSTALL_DIR is scripts/.. -- run it FROM K1 so $0's dirname resolves there.
 CURL_LOG="$CURL_LOG" DISK_GUARD_USAGE_OVERRIDE=96 DISK_GUARD_STATE_DIR="$K1/store" \
-  bash -c 'cd "$1" && PATH="'"$KBASE"'/bin:$PATH" bash scripts/disk-space-guard.sh' _ "$K1" >/dev/null 2>&1
+  HOME="$KBASE/home" bash -c 'cd "$1" && PATH="'"$KBASE"'/bin:$PATH" bash scripts/disk-space-guard.sh' _ "$K1" >/dev/null 2>&1
 if grep -q "SEEN_CHAT_ID:7777777" "$CURL_LOG" 2>/dev/null; then
   pass "CHATID0: ALLOWED_CHAT_ID=0 + paired access.json -> alerts the real resolved id"
 else
@@ -223,7 +227,7 @@ cp "$INSTALL_DIR/scripts/lib/send-telegram.sh" "$K2/scripts/lib/"
 printf 'ALLOWED_CHAT_ID=0\n' > "$K2/.env"
 CURL_LOG2="$K2/curl.log"; : > "$CURL_LOG2"
 CURL_LOG="$CURL_LOG2" DISK_GUARD_USAGE_OVERRIDE=96 DISK_GUARD_STATE_DIR="$K2/store" \
-  bash -c 'cd "$1" && PATH="'"$KBASE"'/bin:$PATH" bash scripts/disk-space-guard.sh' _ "$K2" >/dev/null 2>&1
+  HOME="$KBASE/home" bash -c 'cd "$1" && PATH="'"$KBASE"'/bin:$PATH" bash scripts/disk-space-guard.sh' _ "$K2" >/dev/null 2>&1
 if [ ! -s "$CURL_LOG2" ]; then
   pass "CHATID0: ALLOWED_CHAT_ID=0, no access.json -> no send attempted"
 else

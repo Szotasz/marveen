@@ -22,6 +22,10 @@
 
 set -u
 
+# Hermetic (#1555 review round 1): inside an agent session the inherited
+# channel state dir points at a live access.json / bot token.
+unset TELEGRAM_STATE_DIR SLACK_STATE_DIR DISCORD_STATE_DIR GOOGLECHAT_STATE_DIR TEAMS_STATE_DIR
+
 PASS=0; FAIL=0
 pass() { PASS=$((PASS + 1)); echo "  PASS: $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1"; }
@@ -71,7 +75,7 @@ STUB
   chmod +x "$dir/bin/claude"
   # CLAUDE_BIN, not PATH: the script exports its own minimal PATH, so a
   # prepended stub dir is discarded and the real binary would run instead.
-  CLAUDE_BIN="$dir/bin/claude" bash "$dir/scripts/morning-briefing.sh" >/dev/null 2>&1
+  HOME="$dir" CLAUDE_BIN="$dir/bin/claude" bash "$dir/scripts/morning-briefing.sh" >/dev/null 2>&1
   cat "$dir/store/.morning-last-sent" 2>/dev/null || echo "<none>"
 }
 
@@ -118,7 +122,7 @@ echo "Elkuldve."
 echo "$S"
 STUB
   chmod +x "$dir/bin/claude"
-  CLAUDE_BIN="$dir/bin/claude" bash "$dir/scripts/morning-briefing.sh" >/dev/null 2>&1
+  HOME="$dir" CLAUDE_BIN="$dir/bin/claude" bash "$dir/scripts/morning-briefing.sh" >/dev/null 2>&1
   cat "$dir/store/.claude-argv" 2>/dev/null || echo "<no-run>"
 }
 

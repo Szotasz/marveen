@@ -38,7 +38,7 @@ vi.mock('../logger.js', () => ({
 
 vi.mock('../test-run-marker.js', () => ({ markIfTestRun: (t: string) => t }))
 
-// owner-chat.ts's resolveOwnerChatId takes a reader function as its first
+// owner-chat.ts's resolveAlertOwnerChat takes a reader function as its first
 // (optional) arg, defaulting to node:fs readFileSync -- notify.ts calls it
 // with `undefined`, so we intercept the real fs read instead of re-mocking
 // owner-chat.ts itself (keeping the real resolution logic under test).
@@ -81,6 +81,32 @@ describe('notifyChannel: owner-chat fallback (NOTIFYOWNERFALLBACK924)', () => {
     cfg.accessBody = { allowFrom: ['0'] }
     await notifyChannel('alert')
     expect(mockSend).not.toHaveBeenCalled()
+  })
+
+  // Review round 1, item 3: an alert falls back only to a SINGLE paired DM
+  // entry. Several entries make the first one a guess (on a multi-person fleet
+  // a stranger's chat), and a group/channel is never the owner.
+  it('does not send when access.json has more than one DM entry, and logs why', async () => {
+    cfg.chatId = '0'
+    cfg.accessBody = { allowFrom: [REAL, '2233445566'] }
+    await notifyChannel('alert')
+    expect(mockSend).not.toHaveBeenCalled()
+    expect(mockWarn).toHaveBeenCalledWith(expect.stringContaining('2 DM entries'))
+  })
+
+  it('never falls back to a group or channel key', async () => {
+    cfg.chatId = '0'
+    cfg.accessBody = { allowFrom: [], groups: { '-100999': {} }, channels: { C0000000001: {} } }
+    await notifyChannel('alert')
+    expect(mockSend).not.toHaveBeenCalled()
+    expect(mockWarn).toHaveBeenCalledWith(expect.stringContaining('no DM entry'))
+  })
+
+  it('a negative (group/channel) id inside allowFrom is not a DM entry', async () => {
+    cfg.chatId = '0'
+    cfg.accessBody = { allowFrom: ['-100999', REAL] }
+    await notifyChannel('alert')
+    expect(mockSend).toHaveBeenCalledWith('bot-token', REAL, 'alert', 'HTML')
   })
 
   it('an explicit configured chat id still wins over access.json (unchanged behaviour)', async () => {

@@ -8,6 +8,10 @@
 
 set -u
 
+# Hermetic (#1555 review round 1): inside an agent session the inherited
+# channel state dir points at a live access.json / bot token.
+unset TELEGRAM_STATE_DIR SLACK_STATE_DIR DISCORD_STATE_DIR GOOGLECHAT_STATE_DIR TEAMS_STATE_DIR
+
 PASS=0; FAIL=0
 pass() { PASS=$((PASS + 1)); echo "  PASS: $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1"; }
@@ -135,7 +139,7 @@ rm -rf "$TMP_F1"
 echo ""
 echo "(g) CHATID0 owner-chat resolution"
 GBASE="$(mktemp -d)"
-mkdir -p "$GBASE/bin"
+mkdir -p "$GBASE/bin" "$GBASE/home"
 cat > "$GBASE/bin/curl" <<'STUB'
 #!/bin/bash
 for a in "$@"; do
@@ -155,7 +159,7 @@ printf 'ALLOWED_CHAT_ID=0\n' > "$G1/.env"
 printf 'TELEGRAM_BOT_TOKEN=faketoken\n' > "$G1/.claude/channels/telegram/.env"
 printf '{"allowFrom":["8888888"]}\n' > "$G1/.claude/channels/telegram/access.json"
 CURL_LOG="$G1/curl.log"; : > "$CURL_LOG"
-(cd "$G1" && PATH="$GBASE/bin:$PATH" CURL_LOG="$CURL_LOG" bash scripts/stuck-modal-guard.sh alert-owner-test "probe" >/dev/null 2>&1)
+(cd "$G1" && HOME="$GBASE/home" PATH="$GBASE/bin:$PATH" CURL_LOG="$CURL_LOG" bash scripts/stuck-modal-guard.sh alert-owner-test "probe" >/dev/null 2>&1)
 if grep -q "SEEN_CHAT_ID:8888888" "$CURL_LOG" 2>/dev/null; then
   pass "CHATID0: ALLOWED_CHAT_ID=0 + paired access.json -> alerts the real resolved id"
 else
@@ -168,7 +172,7 @@ cp "$INSTALL_DIR/scripts/lib/owner-chat.sh" "$G2/scripts/lib/"
 cp "$INSTALL_DIR/scripts/lib/send-telegram.sh" "$G2/scripts/lib/"
 printf 'ALLOWED_CHAT_ID=0\n' > "$G2/.env"
 CURL_LOG2="$G2/curl.log"; : > "$CURL_LOG2"
-(cd "$G2" && PATH="$GBASE/bin:$PATH" CURL_LOG="$CURL_LOG2" bash scripts/stuck-modal-guard.sh alert-owner-test "probe" >/dev/null 2>&1)
+(cd "$G2" && HOME="$GBASE/home" PATH="$GBASE/bin:$PATH" CURL_LOG="$CURL_LOG2" bash scripts/stuck-modal-guard.sh alert-owner-test "probe" >/dev/null 2>&1)
 if [ ! -s "$CURL_LOG2" ]; then
   pass "CHATID0: ALLOWED_CHAT_ID=0, no access.json -> no send attempted"
 else

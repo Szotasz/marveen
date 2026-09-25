@@ -7,6 +7,10 @@
 # an isolated install dir, with HOME pointed at an empty directory so no bot
 # token is found and the alert is logged instead of sent to the owner.
 set -u
+
+# Hermetic (#1555 review round 1): inside an agent session the inherited
+# channel state dir points at a live access.json / bot token.
+unset TELEGRAM_STATE_DIR SLACK_STATE_DIR DISCORD_STATE_DIR GOOGLECHAT_STATE_DIR TEAMS_STATE_DIR
 INSTALL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 BASE="$(mktemp -d)"
 trap 'rm -rf "$BASE"' EXIT
@@ -340,11 +344,16 @@ else
 fi
 
 echo "(f) CHATID0: ALLOWED_CHAT_ID=0 resolves via the owner-chat helper"
+# Portable in-place edit: BSD sed reads `-i 's/..'` as a backup suffix and
+# leaves the file unchanged (#1555 review round 1), so rewrite through a temp.
+set_placeholder_chat() {
+  sed 's/^ALLOWED_CHAT_ID=1$/ALLOWED_CHAT_ID=0/' "$1/.env" > "$1/.env.tmp" && mv "$1/.env.tmp" "$1/.env"
+}
 # Real signal, real token, but ALLOWED_CHAT_ID=0 (the installer placeholder)
 # with a paired access.json in the channel state dir -- must still send, to
 # the REAL resolved id, never to "0".
 C="$(deliver_case chatid0_paired ok)"
-sed -i 's/ALLOWED_CHAT_ID=1/ALLOWED_CHAT_ID=0/' "$C/.env"
+set_placeholder_chat "$C"
 printf '{"allowFrom":["9999999"]}\n' > "$C/fakehome/.claude/channels/telegram/access.json"
 : > "$C/fakebin/curl.log"
 cat > "$C/fakebin/curl" <<'STUB'
@@ -367,12 +376,28 @@ fi
 
 # No access.json at all -> the monitor must stay silent, not send to "0".
 C="$(new_case chatid0_no_access)"
-sed -i 's/ALLOWED_CHAT_ID=1/ALLOWED_CHAT_ID=0/' "$C/.env"
+set_placeholder_chat "$C"
 run_case "$C"
 if grep -q "no ALLOWED_CHAT_ID in .env" "$C/store/limit-monitor.log" 2>/dev/null; then
   pass "ALLOWED_CHAT_ID=0, no access.json -> exits quietly (no owner chat)"
 else
   fail "ALLOWED_CHAT_ID=0, no access.json -> expected the no-owner-chat log line: $(cat "$C/store/limit-monitor.log" 2>/dev/null)"
+fi
+
+# Two paired DM entries -> the first one would be a guess, and a quota warning
+# must not reach a stranger: no send, and the log says why (review round 1).
+C="$(deliver_case chatid0_two_dm ok)"
+set_placeholder_chat "$C"
+printf '{"allowFrom":["9999999","8888888"]}\n' > "$C/fakehome/.claude/channels/telegram/access.json"
+: > "$C/fakebin/curl.log"
+printf '#!/bin/sh\necho sent >> "$(dirname "$0")/curl.log"\nprintf %%s "{\\"ok\\":true,\\"result\\":{}}"\n' > "$C/fakebin/curl"
+chmod +x "$C/fakebin/curl"
+printf '%s\n' "You've reached your weekly limit for Opus." > "$C/store/channels.log"
+run_case "$C"
+if [ ! -s "$C/fakebin/curl.log" ] && grep -q "2 DM entries" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "ALLOWED_CHAT_ID=0 + two DM entries -> no send, reason logged"
+else
+  fail "ALLOWED_CHAT_ID=0 + two DM entries -> expected no send + reason: curl=$(cat "$C/fakebin/curl.log" 2>/dev/null) log=$(cat "$C/store/limit-monitor.log" 2>/dev/null)"
 fi
 
 echo ""

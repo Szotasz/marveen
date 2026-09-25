@@ -26,10 +26,12 @@ fi
 # the plugin is down, and on a placeholder install it would post to chat_id=0.
 # The access.json fallback still applies here: a paired channel survives even
 # while the plugin process itself is down, because it reads the same file the
-# plugin wrote, not the plugin's live state.
+# plugin wrote, not the plugin's live state. It is the MAIN install's file
+# even when a sub-agent runs this script with its own TELEGRAM_STATE_DIR
+# (the lib ignores that variable), and only a single paired DM entry counts.
 . "$SCRIPT_DIR/lib/owner-chat.sh"
-if ! CHAT_ID="$(resolve_owner_chat_id "$ENV_FILE" 2>/dev/null)"; then
-  echo "Hiba: ALLOWED_CHAT_ID nincs beallitva"
+if ! CHAT_ID="$(resolve_owner_chat_id "$ENV_FILE" 2>&1)"; then
+  echo "Hiba: ALLOWED_CHAT_ID nincs beallitva ($CHAT_ID)"
   exit 1
 fi
 

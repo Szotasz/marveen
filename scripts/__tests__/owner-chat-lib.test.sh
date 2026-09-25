@@ -20,6 +20,12 @@ REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# Hermetic: run inside an agent session, the inherited channel state dir and
+# HOME (legacy ~/.claude/channels) would point at the live access.json.
+unset TELEGRAM_STATE_DIR SLACK_STATE_DIR DISCORD_STATE_DIR GOOGLECHAT_STATE_DIR TEAMS_STATE_DIR
+export HOME="$TMP/home"
+mkdir -p "$HOME"
+
 echo "owner-chat.sh"
 
 # --- .env value normalization -------------------------------------------
@@ -82,8 +88,54 @@ mkdir -p "$dir/.claude/channels/telegram"
 printf 'ALLOWED_CHAT_ID=0\n' > "$dir/.env"
 printf 'TELEGRAM_BOT_TOKEN=x\n' > "$dir/.claude/channels/telegram/.env"
 printf '{"allowFrom":[],"groups":{"-100999":{}}}\n' > "$dir/.claude/channels/telegram/access.json"
-assert_eq "falls back to a group entry when allowFrom is empty" \
-  "-100999" "$(resolve_owner_chat_id "$dir/.env" 2>/dev/null)"
+out="$(resolve_owner_chat_id "$dir/.env" 2>"$TMP/err")"; rc=$?
+assert_eq "never falls back to a group entry (alerts: DM only)" "" "$out"
+[ "$rc" -ne 0 ] && pass "group-only access.json -> failure exit" || fail "group-only access.json -> failure exit"
+grep -q "no DM entry" "$TMP/err" && pass "group-only: the reason names the missing DM entry" || fail "group-only: reason line missing ($(cat "$TMP/err"))"
+
+# --- exactly one DM entry (review round 1, item 3) ----------------------
+dir="$TMP/access-two-dm"
+mkdir -p "$dir/.claude/channels/telegram"
+printf 'ALLOWED_CHAT_ID=0\n' > "$dir/.env"
+printf 'TELEGRAM_BOT_TOKEN=x\n' > "$dir/.claude/channels/telegram/.env"
+printf '{"allowFrom":["1268077055","2233445566"]}\n' > "$dir/.claude/channels/telegram/access.json"
+out="$(resolve_owner_chat_id "$dir/.env" 2>"$TMP/err")"; rc=$?
+assert_eq "two DM entries -> nothing (the first would be a guess)" "" "$out"
+[ "$rc" -ne 0 ] && pass "two DM entries -> failure exit" || fail "two DM entries -> failure exit"
+grep -q "2 DM entries" "$TMP/err" && pass "two DM entries: the reason says so" || fail "two DM entries: reason line missing ($(cat "$TMP/err"))"
+
+dir="$TMP/access-dup-dm"
+mkdir -p "$dir/.claude/channels/telegram"
+printf 'ALLOWED_CHAT_ID=0\n' > "$dir/.env"
+printf 'TELEGRAM_BOT_TOKEN=x\n' > "$dir/.claude/channels/telegram/.env"
+printf '{"allowFrom":["1268077055",1268077055,"0"]}\n' > "$dir/.claude/channels/telegram/access.json"
+assert_eq "the same person listed twice (string + number) is still one entry" \
+  "1268077055" "$(resolve_owner_chat_id "$dir/.env" 2>/dev/null)"
+
+dir="$TMP/access-negative-dm"
+mkdir -p "$dir/.claude/channels/telegram"
+printf 'ALLOWED_CHAT_ID=0\n' > "$dir/.env"
+printf 'TELEGRAM_BOT_TOKEN=x\n' > "$dir/.claude/channels/telegram/.env"
+printf '{"allowFrom":["-100999","1268077055"]}\n' > "$dir/.claude/channels/telegram/access.json"
+assert_eq "a negative (group/channel) id in allowFrom is not a DM entry" \
+  "1268077055" "$(resolve_owner_chat_id "$dir/.env" 2>/dev/null)"
+
+# --- a sub-agent's TELEGRAM_STATE_DIR (review round 1, item 1) -----------
+# notify.sh runs in agents' environments. A sub-agent with its own channel
+# carries its own state dir in TELEGRAM_STATE_DIR; the resolver must still read
+# the MAIN install's access.json, never the sub-agent's paired person.
+dir="$TMP/subagent"
+mkdir -p "$dir/.claude/channels/telegram" "$dir/agents/helper/.claude/channels/telegram"
+printf 'ALLOWED_CHAT_ID=0\n' > "$dir/.env"
+printf 'TELEGRAM_BOT_TOKEN=x\n' > "$dir/.claude/channels/telegram/.env"
+printf '{"allowFrom":["1268077055"]}\n' > "$dir/.claude/channels/telegram/access.json"
+printf 'TELEGRAM_BOT_TOKEN=y\n' > "$dir/agents/helper/.claude/channels/telegram/.env"
+printf '{"allowFrom":["9988776655"]}\n' > "$dir/agents/helper/.claude/channels/telegram/access.json"
+assert_eq "a sub-agent TELEGRAM_STATE_DIR does not redirect to the sub-agent's person" \
+  "1268077055" "$(TELEGRAM_STATE_DIR="$dir/agents/helper/.claude/channels/telegram" resolve_owner_chat_id "$dir/.env" 2>/dev/null)"
+rm "$dir/.claude/channels/telegram/access.json"
+assert_eq "...and with no main access.json it sends nowhere, not to the sub-agent" \
+  "" "$(TELEGRAM_STATE_DIR="$dir/agents/helper/.claude/channels/telegram" resolve_owner_chat_id "$dir/.env" 2>/dev/null)"
 
 dir="$TMP/no-owner-chat"
 mkdir -p "$dir"

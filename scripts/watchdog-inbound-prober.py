@@ -115,10 +115,10 @@ async def main() -> None:
     # read used to feed "0" straight into int() and ping the installer
     # placeholder chat every tick. None here means the same as the old
     # "absent" case: no owner chat, safe no-op.
-    resolved_chat_id = owner_chat.resolve_owner_chat_id(str(ENV_FILE))
+    resolved_chat_id, reason = owner_chat.resolve_owner_chat(str(ENV_FILE))
     if resolved_chat_id is None:
         print(
-            "inbound-prober: ALLOWED_CHAT_ID absent in .env -- exiting as safe no-op",
+            f"inbound-prober: {reason} -- exiting as safe no-op",
             file=sys.stderr,
         )
         sys.exit(0)

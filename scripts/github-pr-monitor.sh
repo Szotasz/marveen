@@ -55,13 +55,16 @@ BOT_TOKEN="$(grep -E '^TELEGRAM_BOT_TOKEN=' .env | cut -d= -f2- | tr -d '"'"'"' 
 # read let the installer's "0" placeholder through unnoticed, and never
 # fell back to a paired channel's access.json.
 . "$(cd "$(dirname "$0")" && pwd)/lib/owner-chat.sh"
-CHAT_ID="$(resolve_owner_chat_id "$INSTALL_DIR/.env" 2>/dev/null || true)"
+CHAT_ID="$(resolve_owner_chat_id "$INSTALL_DIR/.env" || true)"
 
 send_telegram() {
   local text="$1"
+  # Nothing sent is a failure, not a success: the callers only stamp/snapshot
+  # an item as reported when this returns 0, so returning 0 here would drop
+  # the alert for good (review round 1). Failing keeps it for the next tick.
   if [ -z "${BOT_TOKEN:-}" ] || [ -z "${CHAT_ID:-}" ]; then
-    echo "send_telegram: no BOT_TOKEN/CHAT_ID configured, alert skipped" >&2
-    return 0
+    echo "send_telegram: no BOT_TOKEN/CHAT_ID configured, alert not sent" >&2
+    return 1
   fi
   # Honest send (NOTIFYVAKSWEEP826): the old fire-and-forget curl let a failed
   # alert vanish while the state snapshot below marked the change as reported.
