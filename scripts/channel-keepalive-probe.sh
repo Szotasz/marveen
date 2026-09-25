@@ -63,7 +63,12 @@ channel_watchdog_installed() {
   if [ "$(uname -s)" = "Darwin" ]; then
     launchctl list 2>/dev/null | grep -q 'com\.marveen\.channel-watchdog'
   else
-    systemctl --user is-enabled channel-watchdog.timer >/dev/null 2>&1
+    # The systemd units on a renamed install are agent-prefixed
+    # (<agent>-channel-watchdog.timer, the way <agent>-channels.service is);
+    # only a stock install has the bare name. Checking the bare name alone
+    # reported "no recovery unit installed" on every renamed host that HAD one.
+    systemctl --user is-enabled "${MAIN_AGENT_ID}-channel-watchdog.timer" >/dev/null 2>&1 ||
+      systemctl --user is-enabled channel-watchdog.timer >/dev/null 2>&1
   fi
 }
 
@@ -72,6 +77,21 @@ MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | hea
 MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 MAIN_AGENT_ID="${MAIN_AGENT_ID//[^a-zA-Z0-9_-]/}"
 SESSION="${MAIN_AGENT_ID}-channels"
+
+# --- resolve the channel provider (this probe is NOT telegram-only) ---
+# The poller match below greps the plugin dir out of the process argv, and that
+# dir is named after the PROVIDER. Hardcoding /telegram/ made the probe a
+# permanent no-op on every non-telegram install: it never found a poller, so it
+# never advanced store/.channel-keepalive, so the only producer left was organic
+# inbound. Measured on this discord install 2026-09-25 -- every probe tick since
+# the channel was set up logged "no live telegram poller", and the keepalive was
+# as stale as the last message the owner happened to send. That is also why the
+# channel-watchdog timer must NOT be installed before this is fixed: its STALE
+# arm would read a quiet-but-healthy session as dead and respawn it every 15
+# minutes. Derived exactly as scripts/channel-watchdog.sh derives it.
+CHANNEL_PROVIDER="$(grep -E '^CHANNEL_PROVIDER=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
+CHANNEL_PROVIDER="${CHANNEL_PROVIDER//[^a-zA-Z0-9_-]/}"
 
 TMUX_BIN="$(command -v tmux)"
 if [ -z "$TMUX_BIN" ]; then
@@ -109,8 +129,8 @@ descends_from_pane() {
 }
 
 alive=0
-# Candidate pollers: bun/node processes whose argv references a /telegram/
-# plugin dir.
+# Candidate pollers: bun/node processes whose argv references the provider's
+# plugin dir (/discord/, /telegram/, ...).
 #
 # RUNTIME_TOKEN_RX below is the portable ERE spelling of the TS side's
 # /\b(bun|node)\b/ (src/channel-coordinator/provider-poller-match.ts). It must
@@ -119,7 +139,7 @@ alive=0
 # '(^| )(bun|node)( |$|.*/)', which required a SPACE or line start before the
 # runtime token, so a poller launched from a full path -- the shape the official
 # bun installer produces, /home/USER/.bun/bin/bun -- never matched, the probe
-# reported "no live telegram poller", and the keepalive was never advanced. With
+# reported "no live <provider> poller", and the keepalive was never advanced. With
 # the 45 minute liveness ceiling that turns a quiet-but-healthy session into a
 # fresh respawn every 15 minutes: the reporter measured 41 of them in one night,
 # each losing the main agent's conversation.
@@ -134,15 +154,15 @@ while read -r cand; do
     alive=1
     break
   fi
-done < <(ps -axo pid,command 2>/dev/null | grep -E "$RUNTIME_TOKEN_RX" | grep -E '/telegram/' | grep -v grep | awk '{print $1}')
+done < <(ps -axo pid,command 2>/dev/null | grep -E "$RUNTIME_TOKEN_RX" | grep -F "/${CHANNEL_PROVIDER}/" | grep -v grep | awk '{print $1}')
 
 if [ "$alive" -ne 1 ]; then
   # Do NOT advance the keepalive: a dead pipe must stay visibly stale so a real
   # recovery owner can act. But only claim an owner that actually exists here.
   if channel_watchdog_installed; then
-    log "no live telegram poller under $SESSION (pane $pane_pid) -- pipe may be down; not touching (channel-watchdog owns recovery)"
+    log "no live $CHANNEL_PROVIDER poller under $SESSION (pane $pane_pid) -- pipe may be down; not touching (channel-watchdog owns recovery)"
   else
-    log "WARN no live telegram poller under $SESSION (pane $pane_pid) -- pipe may be down AND no channel-watchdog recovery unit is installed on this host (CHANWDOG818); automatic recovery relies only on process-death KeepAlive + the dashboard channel-monitor, so a FROZEN session while the dashboard is also down is NOT auto-recovered"
+    log "WARN no live $CHANNEL_PROVIDER poller under $SESSION (pane $pane_pid) -- pipe may be down AND no channel-watchdog recovery unit is installed on this host (CHANWDOG818); automatic recovery relies only on process-death KeepAlive + the dashboard channel-monitor, so a FROZEN session while the dashboard is also down is NOT auto-recovered"
   fi
   exit 0
 fi
