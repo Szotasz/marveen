@@ -47,6 +47,7 @@ const SEEDING_SURFACES = [
   'templates/settings.json.template',
   'src/web/agent-scaffold.ts',
   'scripts/install-telegram-progress-hook.sh',
+  'scripts/install-slack-progress-hook.sh',
   'scripts/install-channel-image-hook.sh',
 ]
 const CHECKOUT_SURFACES = ['.claude/settings.json']

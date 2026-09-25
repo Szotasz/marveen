@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import {
-  listKanbanCards, createKanbanCard, updateKanbanCard, KANBAN_WRITABLE_FIELDS,
+  listKanbanCards, kanbanAssigneeExists, createKanbanCard, updateKanbanCard, KANBAN_WRITABLE_FIELDS,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
   getKanbanComments, addKanbanComment, getKanbanCardEvents, listKanbanProjects,
   getKanbanCard, getChildCards, getDb,
@@ -302,19 +302,97 @@ export function buildHeartbeatSummaryResponse(
 // that is not routed would send the caller one step further into the same fog.
 const KANBAN_CARD_METHODS = ['PUT', 'DELETE'] as const
 
+/**
+ * Parse the `includeArchived` query parameter.
+ *
+ * Three-valued on purpose: true / false / null-meaning-REJECT. The bug this replaces was
+ * a two-valued read where every unrecognised input collapsed into "false" -- which is how
+ * `?includeArchived=1` came back with the archived cards missing and no complaint.
+ *
+ * Bare presence (`?includeArchived` or `=`) reads as TRUE: that is the common URL idiom,
+ * and it errs toward returning MORE rows, which is the safe direction here -- the failure
+ * we are fixing was rows going missing.
+ */
+export function parseIncludeArchived(raw: string | null): boolean | null {
+  if (raw === null) return false
+  const v = raw.trim().toLowerCase()
+  if (v === '' || v === '1' || v === 'true' || v === 'yes' || v === 'on') return true
+  if (v === '0' || v === 'false' || v === 'no' || v === 'off') return false
+  return null
+}
+
 export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
   if (path === '/api/kanban' && method === 'GET') {
+    // includeArchived is honoured or REFUSED -- never silently dropped. Ignoring it was
+    // the actual defect: a caller had evidence it asked for archived cards, the response
+    // had evidence it did not, and nothing reconciled the two.
+    // ⛔ ISMERETLEN PARAM -> HANGOS 400, a /api/messages mintajara (sajat telepitesunkon mert
+    // korabbi eset). Harom vegpont adott harom kulonbozo valaszt ugyanarra a hibara: az egyik
+    // hangosan elutasitott, a masik ketto neman eldobta. A nema elfogadas TANITJA a
+    // talalgatast -- merve: hat agens HAROM kulonbozo neven probalta ugyanazt (includeArchived
+    // 16x, archived 6x, include_archived 6x), plusz ?id= 4x es ?limit= 1x. Egyik sem kapott
+    // visszajelzest, ezert probaltak tovabb.
+    // ⛔ SZIGORU halmaz, ALIAS NELKUL (sajat telepitesunkon hozott ugyvezetoi dontes): egy
+    // alias eletben tartana a talalgatast; a hibauzenetbol viszont megtanulhato a helyes nev.
+    const KNOWN_PARAMS = new Set(['agent', 'assignee', 'includeArchived'])
+    const unknown = [...ctx.url.searchParams.keys()].filter((k) => !KNOWN_PARAMS.has(k))
+    if (unknown.length) {
+      json(res, {
+        error: 'unknown query parameter',
+        unknown,
+        known: [...KNOWN_PARAMS],
+        hint: 'a lapok szurese "agent" (vagy "assignee"); EGY lapot a /api/kanban/<id> utvonal ad, '
+            + 'nem a ?id= parameter',
+      }, 400)
+      return true
+    }
+    const includeArchived = parseIncludeArchived(ctx.url.searchParams.get('includeArchived'))
+    if (includeArchived === null) {
+      json(res, {
+        error: 'Az includeArchived értéke érvénytelen. Elfogadott: 1, true, yes, on, ' +
+               '0, false, no, off (vagy érték nélkül = igaz).',
+      }, 400)
+      return true
+    }
     // Embed each card's labels in one extra JOIN query (getLabelsForAllCards)
     // instead of an N+1 per-card lookup, so the footer-pill UI gets
     // everything it needs in a single round trip.
+    // Az `assignee=` ugyanazt jelenti, mint az `agent=`: a dashboard es az agens-CLAUDE.md
+    // kulonbozo nevet tanit ugyanarra, es a KETTO kozul egyik sem volt hibas -- csak nem
+    // mukodott egyik sem.
+    const agent = ctx.url.searchParams.get('agent')
+      ?? ctx.url.searchParams.get('assignee')
+      ?? undefined
+    // An unrecognised agent name 400s naming the accepted set, rather than silently
+    // matching everything (`assignee = ?` against a name nothing has would just return
+    // an empty list with 200) -- the same silence-teaches-guessing argument as the
+    // KNOWN_PARAMS check above, applied to the value instead of the key. Accepted: a
+    // configured name (OWNER_NAME, BOT_NAME, fleet agents -- what /api/kanban/assignees
+    // advertises) OR any assignee that already exists on the board (external contributors
+    // get cards too). Both sides compare case-insensitively: configured names are
+    // capitalised (BOT_NAME=Marveen) while stored assignees are usually lowercase
+    // (`marveen`), and an exact compare rejected the bot's and owner's own names.
+    if (agent !== undefined) {
+      const wanted = agent.toLowerCase()
+      const isConfigured = [OWNER_NAME, BOT_NAME, ...listAgentNames()]
+        .some((n) => n.toLowerCase() === wanted)
+      if (!isConfigured && !kanbanAssigneeExists(agent)) {
+        json(res, {
+          error: 'unknown agent',
+          agent,
+          hint: 'lásd GET /api/kanban/assignees az elfogadott nevekért, vagy egy a táblán már szereplő assignee (kis/nagybetű mindegy)',
+        }, 400)
+        return true
+      }
+    }
     const labelsByCard = getLabelsForAllCards()
     // Blockers ride along in the same round trip as labels: the board needs
     // them to mark a blocked card, and a per-card fetch would be an N+1 on
     // every poll.
     const blockersByCard = getBlockersForAllCards()
-    const cards = listKanbanCards().map((card) => ({
+    const cards = listKanbanCards({ includeArchived, agent }).map((card) => ({
       ...card,
       labels: labelsByCard.get(card.id) ?? [],
       blockers: blockersByCard.get(card.id) ?? [],
