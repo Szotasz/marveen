@@ -28,6 +28,7 @@ import json
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
+import channel_scope  # noqa: E402
 
 # How many chars of transcript context to inject (~4 chars/token, so 16000 chars
 # ~= 4000 tokens). This is a CHEAP coarse pre-trim only; the authoritative guard
@@ -214,6 +215,12 @@ def main():
         open_q = ledger_lib.open_question(agent_id)
     except Exception:
         sys.exit(0)  # ledger unavailable -> no-op
+    # An unanswered GROUP message the agent was not addressed in is not an open
+    # question: silent reading is the correct outcome there, so it must not be
+    # replayed as "answer this NOW". It still reaches the fresh session as part
+    # of the transcript below, which is where it belongs.
+    if open_q and not channel_scope.reply_owed(open_q[0], open_q[2], agent_id):
+        open_q = None
     if not rows and not open_q:
         sys.exit(0)  # nothing to replay
 
@@ -222,7 +229,19 @@ def main():
     max_snippet = _max_snippet()
     transcript = []
     for direction, chat_id, text, ts, att_kind, att_file_id in rows:
-        who = owner if direction == "in" else "Te"
+        # Inbound rows are labelled with the OWNER's name, which is right for a
+        # DM and wrong for a group: anyone in the company group can write, and
+        # the ledger stores no sender id (only chat_id), so the replayed line
+        # would put the owner's name on a colleague's message. Measured
+        # 2026-09-12: a group "Fyi: kolcsonkertem a platost" came back attributed
+        # to the owner in a fresh session. Unknown beats wrong -- a name the
+        # session cannot verify is a fact it should not invent.
+        if direction != "in":
+            who = "Te"
+        elif channel_scope.is_group_chat(chat_id):
+            who = "Csoport (nem azonositott kuldo)"
+        else:
+            who = owner
         snippet = _snippet(text, max_snippet)
         # A transcript-less voice turn carries its file_id so the fresh session
         # can still fetch the audio content instead of seeing an opaque

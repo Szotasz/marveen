@@ -8,6 +8,11 @@ voice-reply-directive.py -- voice messages already got a hook-injected directive
 plain text messages did not. Injecting the reminder at the TOP of the turn means
 the model rarely reaches the Stop-hook block at all.
 
+A GROUP message that does not address the agent by name gets the OPPOSITE
+directive: there the standing rule is silent reading, so pushing a reply would
+demand exactly the post that rule forbids. The group/mention test is shared with
+the Stop guard (channel_scope.reply_owed) so the two can never disagree.
+
 Claude Code injects a UserPromptSubmit hook's stdout directly into the model
 prompt (plain text, no JSON wrapper). This hook is silent for any prompt that
 does not carry a Telegram channel tag, so it never disturbs non-channel turns
@@ -18,10 +23,15 @@ import os
 import json
 import re
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ledger_lib  # noqa: E402
+import channel_scope  # noqa: E402
+
 CHANNEL_RX = re.compile(
-    r'<channel\s+source="plugin:telegram:telegram"([^>]*)>',
+    r'<channel\s+source="plugin:telegram:telegram"([^>]*)>(.*?)</channel>',
     re.DOTALL,
 )
+OPEN_TAG_RX = re.compile(r'<channel\s+source="plugin:telegram:telegram"([^>]*)>')
 
 
 def _attr(attrs, name):
@@ -36,9 +46,26 @@ def main():
         sys.exit(0)
     prompt = payload.get("prompt") or ""
     m = CHANNEL_RX.search(prompt)
+    text = m.group(2) if m else ""
+    if not m:
+        # Fall back to the attrs-only form: a wrapper without its closing tag is
+        # still a Telegram message and still owes the DM directive.
+        m = OPEN_TAG_RX.search(prompt)
     if not m:
         sys.exit(0)  # not a Telegram message -> stay silent
     chat_id = _attr(m.group(1), "chat_id") or "<a bejövő chat_id>"
+
+    # Group message that does not address this agent -> the correct behaviour is
+    # silent reading, so the directive must NOT push a reply into the group.
+    if not channel_scope.reply_owed(chat_id, text, ledger_lib.agent_id_from_payload(payload)):
+        sys.stdout.write(
+            f"[TELEGRAM-CSOPORT] Ez az üzenet egy Telegram CSOPORTBÓL érkezett "
+            f"(chat_id={chat_id}), és NEM szólít meg névvel. A helyes viselkedés a "
+            f"csendes olvasás: NE posztolj a csoportba. Ha az üzenet nyomán teendő "
+            f"van, azt a gazda DM-jében intézd, vagy jegyezd fel.\n"
+        )
+        sys.exit(0)
+
     sys.stdout.write(
         f"[TELEGRAM-DIREKTÍVA] Ez az üzenet a Telegram csatornáról érkezett "
         f"(chat_id={chat_id}). A válaszod KÖTELEZŐEN a "

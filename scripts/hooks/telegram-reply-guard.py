@@ -15,6 +15,8 @@ hook adds NO new state model -- it reuses ledger_lib.open_question_with_age):
     later outbound (i.e. an unanswered message). ledger-outbound.py logs an
     'out' row on every reply-tool call, so a reply flips this to None.
   - If there is no open question -> allow the stop (exit 0, silent).
+  - If the open inbound came from a GROUP and does not address this agent by name
+    -> allow; the standing rule is silent reading there (see channel_scope).
   - If the open inbound is a pure acknowledgement ("ok", "köszi", 👍, ...) -> allow;
     per the standing rule a bare ack needs no reply.
   - If the open inbound is older than STALE_SECONDS -> allow; never nag forever on
@@ -36,6 +38,7 @@ import re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
+import channel_scope  # noqa: E402
 
 # Tunables (overridable via env for tests / ops).
 STALE_SECONDS = int(os.environ.get("TG_GUARD_STALE_SECONDS", "1800"))  # 30 min
@@ -114,6 +117,13 @@ def main():
     # outside the try above, so a mismatch would kill the hook and the harness
     # would read the empty stdout as "allow" -- the guard would never block).
     chat_id, message_id, text, ts, created_at = oq[:5]
+
+    # Group message with no mention -> no reply owed (channel_scope.reply_owed).
+    # In the company group the agents read silently and only speak when addressed;
+    # blocking the turn here would demand exactly the post the standing rule
+    # forbids.
+    if not channel_scope.reply_owed(chat_id, text, agent_id):
+        sys.exit(0)
 
     # Pure acknowledgement -> no reply owed.
     if _is_ack(text):

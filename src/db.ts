@@ -6,6 +6,7 @@ import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { triggerLikeClause } from './homoglyph.js'
+import { replyOwed } from './reply-owed.js'
 
 let db: Database.Database
 // The path the CURRENT handle was opened on (null for ':memory:'). Kept so
@@ -3467,12 +3468,21 @@ export function getDispatchedPendingStats(
  * cannot match that against a marker, and the safe reading of "unknown" is
  * that the agent has not seen it.
  */
-export function openInboundQuestionMessageId(agentId: string): string | null {
-  const row = db.prepare(
-    `SELECT id, created_at, message_id FROM conversation_log
+// Latest inbound that OWES a reply (REPLYOWED924): an unaddressed group
+// message never does, so it must not pin an "open question" forever. Scans a
+// bounded window; an owed inbound older than that is treated as none.
+const OPEN_QUESTION_SCAN = 50
+function latestOwedInbound(agentId: string): { id: number; created_at: number; message_id: string | null } | undefined {
+  const rows = db.prepare(
+    `SELECT id, created_at, message_id, chat_id, text FROM conversation_log
        WHERE agent_id = ? AND direction = 'in'
-       ORDER BY created_at DESC, id DESC LIMIT 1`,
-  ).get(agentId) as { id: number; created_at: number; message_id: string | null } | undefined
+       ORDER BY created_at DESC, id DESC LIMIT ?`,
+  ).all(agentId, OPEN_QUESTION_SCAN) as { id: number; created_at: number; message_id: string | null; chat_id: string | null; text: string | null }[]
+  return rows.find((r) => replyOwed(r.chat_id, r.text, agentId))
+}
+
+export function openInboundQuestionMessageId(agentId: string): string | null {
+  const row = latestOwedInbound(agentId)
   if (!row) return null
   const laterOut = db.prepare(
     `SELECT 1 FROM conversation_log
@@ -3485,11 +3495,7 @@ export function openInboundQuestionMessageId(agentId: string): string | null {
 }
 
 export function hasOpenInboundQuestion(agentId: string): boolean {
-  const row = db.prepare(
-    `SELECT id, created_at FROM conversation_log
-       WHERE agent_id = ? AND direction = 'in'
-       ORDER BY created_at DESC, id DESC LIMIT 1`,
-  ).get(agentId) as { id: number; created_at: number } | undefined
+  const row = latestOwedInbound(agentId)
   if (!row) return false
   const laterOut = db.prepare(
     `SELECT 1 FROM conversation_log

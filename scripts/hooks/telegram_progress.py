@@ -64,6 +64,38 @@ def api(tok, method, payload):
         return json.loads(r.read().decode())
 
 
+def _access(sd):
+    try:
+        with open(os.path.join(sd, "access.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def passive_group_no_mention(sd, chat_id, prompt):
+    """True if chat_id is a configured passive-read GROUP and the inbound does NOT
+    @mention the bot. Owner policy (2026-07-30): the fleet READS such a group but
+    only replies when @mentioned -> we must NOT post a 'Dolgozom rajta…' placeholder
+    there. A placeholder is itself an unsolicited group post, and it arms the Stop
+    enforce/fallback path to dump the agent's transcript into the group. DMs and
+    non-configured chats are unaffected (return False)."""
+    acc = _access(sd)
+    groups = acc.get("groups") or {}
+    if str(chat_id) not in groups:
+        return False
+    # No configured mentionPatterns -> no mention can be recognised here, so a
+    # configured passive group never gets a placeholder (the placeholder is
+    # cosmetic; a wrong one is an unsolicited group post).
+    patterns = acc.get("mentionPatterns") or []
+    for p in patterns:
+        try:
+            if re.search(p, prompt, re.IGNORECASE):
+                return False  # @mentioned -> normal placeholder + reply flow
+        except re.error:
+            continue
+    return True
+
+
 def claim(progress_dir, sid, src_mid):
     """Atomic per-inbound-message guard. Returns True if THIS invocation claimed
     the message (proceed), False if another already did (skip). Prevents double
@@ -116,6 +148,12 @@ def main():
             continue
         chat_id = cid.group(1)
         src_mid = mid.group(1) if mid else None
+        # Passive-read group without @mention -> no placeholder (owner policy):
+        # never post to the team group unsolicited, and never arm the fallback
+        # to dump the transcript there.
+        if passive_group_no_mention(sd, chat_id, prompt):
+            log(sd, f"[submit] passive-group no-mention, skip placeholder chat={chat_id}")
+            continue
         # Dedup: skip if a sibling invocation already handled this inbound msg.
         if not claim(os.path.join(sd, "progress"), sid, src_mid):
             log(sd, f"[submit] dedup skip src={src_mid}")
