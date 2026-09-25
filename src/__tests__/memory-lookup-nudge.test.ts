@@ -14,6 +14,10 @@ import { join } from 'node:path'
 
 const ROOT = join(__dirname, '..', '..')
 const HOOK = join(ROOT, 'scripts', 'hooks', 'memory-lookup-nudge.py')
+// Any way to reach the network, a DB, a subprocess or dynamic code, on ANY line, in
+// any import shape (#1559 review: `import json, urllib.request` and `os.system(...)`
+// both passed an import-line-only blacklist).
+const NO_IO = /\b(?:urlopen|urllib|http\.client|httplib|socket|sqlite3|subprocess|requests|os\.system|os\.popen|os\.exec\w*|os\.spawn\w*|popen|__import__|importlib|exec|eval|compile)\b/
 
 function run(stdin: string, env: Record<string, string> = {}) {
   const r = spawnSync('python3', [HOOK], { input: stdin, encoding: 'utf-8', env: { ...process.env, ...env }, timeout: 10_000 })
@@ -39,6 +43,19 @@ describe('memory-lookup-nudge: speaks on a human message', () => {
 
   it('a bare terminal prompt (the owner at the dashboard) gets it too', () => {
     expect(hook('Nézd meg, mit írtunk Ádámnak a warm memóriáról').out).toContain('[memoria-szetnezes]')
+  })
+
+  it('prints EXACTLY the fixed three-line nudge and nothing else (no memory content can ride along)', () => {
+    const { out } = hook(channel(), join(ROOT, 'agents', 'samu'), { WEB_PORT: '4999' })
+    const token = join(ROOT, 'store', '.dashboard-token')
+    expect(out).toBe(
+      '[memoria-szetnezes] Emberi uzenet: mielott valaszolsz, nezd meg, van-e rola emleked. ' +
+        'A kulcsszot te valaszd (nev, tema), ne a mondat toltelekszavait.\n' +
+        `curl -s -G -D /tmp/mem-fejlec-samu.txt -H "Authorization: Bearer $(cat ${token})" ` +
+        '--data-urlencode "agent=samu" --data-urlencode "q=KULCSSZO" "http://localhost:4999/api/memories"\n' +
+        "grep -i '^x-memory-search' /tmp/mem-fejlec-samu.txt  " +
+        '(relaxed=true = kozelites, nem bizonyitek; hiany-allitashoz: --data-urlencode "strict=1")\n',
+    )
   })
 
   it('stays short: one fixed block, well under the token ceiling', () => {
@@ -68,6 +85,8 @@ describe('memory-lookup-nudge: silent on everything that is not a human', () => 
     ['slash command', '/rename Geri'],
     ['local command echo', '<command-name>/rename</command-name>'],
     ['empty', '   '],
+    ['system reminder line', '<system-reminder>\nThe user named this session "Geri".\n</system-reminder>'],
+    ['skill load text', 'Base directory for this skill: /x/skills/y\n\n## Page contract'],
   ]
   it.each(silent)('%s', (_label, prompt) => {
     const { out, code } = hook(prompt)
@@ -91,7 +110,7 @@ describe('memory-lookup-nudge: fail-open', () => {
 
   it('does no network, DB or subprocess work, so the 3 s timeout is never the bound', () => {
     const src = readFileSync(HOOK, 'utf-8')
-    expect(src).not.toMatch(/^\s*(?:import|from)\s+(?:urllib|http|socket|sqlite3|subprocess|requests)\b/m)
+    expect(src).not.toMatch(NO_IO)
     const t0 = Date.now()
     hook(channel())
     expect(Date.now() - t0).toBeLessThan(2_000)

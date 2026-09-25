@@ -123,10 +123,10 @@ describe('...and that stays true (update the scaffold sentence if one of these f
 
   // An exemption must not become the loophole: an exempt hook may PRINT the
   // endpoint (a recipe the agent runs itself), but it may not reach it.
-  it.each(Object.keys(RECIPE_PRINTERS))('exempt %s only prints: no network, DB or subprocess import', (rel) => {
+  it.each(Object.keys(RECIPE_PRINTERS))('exempt %s only prints: no network, DB, subprocess or dynamic code on any line', (rel) => {
     const src = readFileSync(join(ROOT, rel), 'utf-8')
     expect(src).toMatch(/api\/memories/) // stale-exemption guard: drop the entry when this stops holding
-    expect(src).not.toMatch(/^\s*(?:import|from)\s+(?:urllib|http|socket|sqlite3|subprocess|requests)\b/m)
+    expect(src).not.toMatch(/\b(?:urlopen|urllib|http\.client|httplib|socket|sqlite3|subprocess|requests|os\.system|os\.popen|os\.exec\w*|os\.spawn\w*|popen|__import__|importlib|exec|eval|compile)\b/)
   })
 })
 

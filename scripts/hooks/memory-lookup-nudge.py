@@ -33,6 +33,8 @@ MACHINE_MARKERS = (
     "[Üzenet @",
     "<command-name>",
     "<local-command-",
+    "<system-reminder>",
+    "Base directory for this skill:",
 )
 
 
