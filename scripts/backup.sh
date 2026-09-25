@@ -221,7 +221,13 @@ stage_group() {  # stage_group <listfile> <base> <group>
     [[ -z "${rel}" ]] && continue
     parent="$(dirname "${rel}")"
     mkdir -p "${STAGE}/${group}/${parent}"
-    cp -pR "${base}/${rel}" "${STAGE}/${group}/${parent}/"
+    # BACKUPALERT925: one unreadable file (e.g. a root-owned 0600 leftover) used
+    # to abort the whole run under `set -e`, so no archive was written at all.
+    # Skip it loudly instead; the manifest still names it, so the verification
+    # below reports it as MISSING and the run fails with exit 6 and an alert.
+    if ! cp -pR "${base}/${rel}" "${STAGE}/${group}/${parent}/"; then
+      echo "backup: WARN could not stage ${group}/${rel} -- skipped, verification will flag it" >&2
+    fi
   done < "${list}"
 }
 
@@ -300,9 +306,12 @@ if [[ "${missing}" -gt 0 ]]; then
   # the next turn. Best-effort: a messaging problem must not change the exit
   # code or mask the real failure.
   if [[ -x "${REPO_ROOT}/scripts/agent-msg.sh" ]]; then
-    bash "${REPO_ROOT}/scripts/agent-msg.sh" halpali halpali \
+    # BACKUPALERT925: the recipient used to be a literal agent name from the
+    # author's machine, so on any other fleet the alert went nowhere and the
+    # swallowed error hid that too. Address this install's main agent.
+    bash "${REPO_ROOT}/scripts/agent-msg.sh" "${MAIN_AGENT_ID}" "${MAIN_AGENT_ID}" \
       "[MENTES] A napi mentes ellenorzese ELBUKOTT ${STAMP}-kor: ${missing} tetel hianyzik az archivumbol (reszletek: logs/backup.log). Az archivum NEM tekintheto jo masolatnak." \
-      >/dev/null 2>&1 || true
+      >/dev/null 2>&1 || echo "backup: WARN could not queue the failure alert for ${MAIN_AGENT_ID}" >&2
   fi
   exit 6
 fi
