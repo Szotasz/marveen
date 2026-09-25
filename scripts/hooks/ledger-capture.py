@@ -87,9 +87,6 @@ def main():
     prompt = payload.get("prompt") or ""
     matched = stored = skipped = failed = 0
     for m in CHANNEL_RX.finditer(prompt):
-        # MERGE 2026-09-14: az upstream matched-szamlaloja KELL, de a ketto-elemu
-        # kicsomagolasa NEM: a CHANNEL_RX-nek HAROM csoportja van (source, attrs,
-        # text), es a source-t a log_inbound lejjebb hasznalja.
         matched += 1
         source, attrs, text = m.group(1), m.group(2), m.group(3)
         chat_id = _attr(attrs, "chat_id")
