@@ -96,6 +96,12 @@ describe('/context clear (CMD920 test 10)', () => {
     expect(switchVerdict(inputs({ pendingOutboundCount: 3, hasOpenQuestion: true }), cfg)).toEqual({ quiet: true })
     expect(switchVerdict(inputs({ paneState: 'busy' }), cfg).quiet).toBe(false)
     expect(switchVerdict(inputs({ msSinceTranscriptWrite: 500 }), cfg).quiet).toBe(false)
+    // #1530 review: this branch had no test (removing it kept the suite green).
+    // While the hard guard hands the session over, a /model would land mid-handoff.
+    for (const phase of ['await-handoff', 'await-ready']) {
+      expect(switchVerdict(inputs({ hardGuardPhase: phase }), cfg)).toEqual({ quiet: false, reason: `hard-guard-armed (phase: ${phase})` })
+    }
+    expect(switchVerdict(inputs({ hardGuardPhase: 'cooldown' }), cfg).quiet).toBe(true)
     expect(switchVerdict(inputs({ hasChildProcesses: null }), cfg).quiet).toBe(false)
   })
 

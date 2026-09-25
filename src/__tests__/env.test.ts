@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { writeFileSync, unlinkSync, mkdtempSync, rmSync } from 'node:fs'
+import { writeFileSync, unlinkSync, mkdtempSync, rmSync, chmodSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -62,5 +62,26 @@ describe('readEnvFile', () => {
     expect(result['A']).toBe('1')
     expect(result['C']).toBe('3')
     expect(result['B']).toBeUndefined()
+  })
+})
+
+// #1530 review, point 5: `/model ... keep` writes the .env through
+// updateEnvFile, whose mode-less atomic write turned a 0600 file into 0644.
+describe('updateEnvFile keeps the file mode', () => {
+  it('a 0600 .env stays 0600 (and a 0640 one 0640) after a write', async () => {
+    const { updateEnvFile, readEnvFile } = await import('../env.js')
+    for (const mode of [0o600, 0o640]) {
+      writeFileSync(testEnvPath, 'FOO=bar\n')
+      chmodSync(testEnvPath, mode)
+      updateEnvFile({ FOO: 'baz', NEW_KEY: '1' })
+      expect(statSync(testEnvPath).mode & 0o777).toBe(mode)
+      expect(readEnvFile()['FOO']).toBe('baz')
+    }
+  })
+  it('a missing .env is created 0600', async () => {
+    const { updateEnvFile } = await import('../env.js')
+    try { unlinkSync(testEnvPath) } catch { /* absent */ }
+    updateEnvFile({ FOO: 'x' })
+    expect(statSync(testEnvPath).mode & 0o777).toBe(0o600)
   })
 })

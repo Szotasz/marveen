@@ -119,10 +119,18 @@ A tulajdonos slash-parancsaira (`/status`, `/queue`, `/runs`, `/model`, `/usage`
 - `/model default` (a `/model back` ugyanez): azonnal vissza az alapmodellre, és a tartásban lévő effort is vissza az alapra.
 - `/context clear` (és a szállított `/new`, `/clear` saját parancs): a context-restart gate soft-restartjának kódútja (ugyanazok a csendesség-feltételek, csak a méret-küszöb nélkül), `/clear` a küldési sávon, a replay-hookok viszik tovább a szálat. Foglalt sessionnél nem töröl, a `/runs`-ra mutat.
 
+**Maradék kockázat: a bizonyíték küszöb, nem határ.** Ahol a flotta ágensei ugyanazzal az OS-felhasználóval futnak, mint a plugin és a dashboard, ott az író út három fájlban bízik meg, és mindhármat bármelyik ágens írhatja:
+
+- `<csatorna-state>/inbound-evidence.jsonl`: egy Bash-képes ágens hozzáfűzhet egy sort egy kitalált (chat, `message_id`, szöveg) hármassal, és azzal átmegy az ellenőrzésen;
+- `store/main-command-pending.json`: a kör végén futó, sorba állított író parancs (`runPendingWrite`) innen fut, bizonyíték-ellenőrzés nélkül;
+- `store/main-model-hold.json`: a tartás lejáratakor és a `/model default`-nál innen jön a visszaállítandó modell (olvasáskor modell-azonosítóként ellenőrizve, de a tartalmát bárki átírhatja).
+
+A jogosultsági szabályok ezt nem zárják le: egy Bash-tiltás a fájlnévre nem látja a `>>` átirányítás célját, és a Write/Edit-tiltás nem köt az ágens projekt-könyvtárán kívüli útvonalra. A valódi határ az OS-felhasználók szétválasztása. A bizonyíték annyit ad, hogy a fejléc elhagyása már nem elég, a fájlok írása viszont igen.
+
 **Saját parancsok** (`custom_commands` tábla, `GET/POST /api/custom-commands`, `PUT/DELETE /api/custom-commands/<név>`, `GET …/export`, `POST …/import` csak üres táblába; induláskor üres táblába a `store/commands.json` töltődik, hiányában a `/new` és `/clear` alapértelmezés; minta: `config-examples/commands.example.json`):
 
-- `actions`: lépések a zárt készletből (`model`, `effort`, `context clear`, `message`); lépésenként mért visszajelzés, az első hiba megállítja a sort.
-- `prompt`: szöveg-sablon (`$ARGUMENTS`), a meglévő csatorna-bejövő borítékkal megy a fő ágenshez (ugyanaz a jogosultság, mintha a tulajdonos a csatornán írta volna), a wrapper-jelölések kiszűrve, hosszkorláttal. A válasz kiírja, ki és mikor módosította, és a szöveg elejét; ha a definíció az utolsó futtatásod óta változott (vagy még nem futtattad), **nem küldi be**, hanem egyszer visszakérdez (2 percen belüli ismétlés küldi).
+- `actions`: lépések a zárt készletből (`model`, `effort`, `context clear`, `interrupt`, `task`, `message`); a `task` bármelyik ütemezett feladatot név szerint most elindítja, az `interrupt` megszakítja a futó kört. Lépésenként mért visszajelzés, az első hiba megállítja a sort. A változott (vagy még sosem futtatott) definíciót ugyanúgy nem futtatja, mint a `prompt`-ot: egyszer visszakérdez, és kiírja az összes lépést. Kivétel a kód által szállított, azóta nem módosított alapértelmezés (`/new`, `/clear`).
+- `prompt`: szöveg-sablon (`$ARGUMENTS`), a meglévő csatorna-bejövő borítékkal megy a fő ágenshez (ugyanaz a jogosultság, mintha a tulajdonos a csatornán írta volna), a wrapper-jelölések kiszűrve, hosszkorláttal. A válasz kiírja, ki és mikor módosította, és a szöveg elejét; ha a definíció az utolsó futtatásod óta változott (vagy még nem futtattad), **nem küldi be**, hanem egyszer visszakérdez a teljes szöveggel és a hosszával (2 percen belüli ismétlés küldi). A wrapper-szűrés előtt a szöveg normalizálva van (zero-width karakterek ki, NFKC, HTML-entitások feloldva), így a rejtett változatok sem jutnak át.
 - Az ágens-azonosítóval érkező írást (`agent_id`, `updated_by` a törzsben, `X-Agent-Id` fejléc, federációs hívó) a végpont elutasítja; az `updated_by`-t a szerver állítja. Kemény garancia a konténeren belül nincs (az ágens olvassa a dashboard-tokent); a védelem a fenti láthatóság és a visszakérdezés.
 - Érvénytelen definíció (ismeretlen akció, rossz paraméter, beépített név) betöltéskor kiesik, a `/commands` az okkal listázza.
 

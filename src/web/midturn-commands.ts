@@ -16,7 +16,7 @@
 // message; the hook's SessionStart branch tells it these are answered here.
 
 import { closeSync, openSync, readSync, readdirSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { CHANNEL_PROVIDER, CHANNEL_TOKEN, MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { getProvider } from '../channel-provider.js'
 import { resolveOwnerChatId } from '../owner-chat.js'
@@ -39,6 +39,8 @@ export interface MidTurnCommand {
   messageId: string | null
   text: string
   forwarded: boolean
+  /** The transcript line's own timestamp: the dedup key when there is no message id. */
+  ts: string | null
 }
 
 function attr(attrs: string, name: string): string | null {
@@ -65,7 +67,8 @@ export function parseQueuedChannelCommand(line: string): MidTurnCommand | null {
   if (!TELEGRAM_SOURCE_RX.test(attrs)) return null
   const chatId = attr(attrs, 'chat_id')
   if (!chatId) return null
-  return { chatId, messageId: attr(attrs, 'message_id'), text: body, forwarded: attr(attrs, 'forwarded') === '1' }
+  const ts = (entry as { timestamp?: unknown }).timestamp
+  return { chatId, messageId: attr(attrs, 'message_id'), text: body, forwarded: attr(attrs, 'forwarded') === '1', ts: typeof ts === 'string' ? ts : null }
 }
 
 export interface TailState {
@@ -73,10 +76,13 @@ export interface TailState {
   offset: number
   partial: string
   seen: string[]
+  /** Where every other transcript of the directory was left: switching back to
+   *  one resumes there instead of re-reading it from the start. */
+  known: Record<string, { offset: number; partial: string }>
 }
 
 export function newTailState(): TailState {
-  return { file: null, offset: 0, partial: '', seen: [] }
+  return { file: null, offset: 0, partial: '', seen: [], known: {} }
 }
 
 export function newestJsonl(dir: string): string | null {
@@ -93,18 +99,32 @@ export function newestJsonl(dir: string): string | null {
   return best
 }
 
-// Advance the tail over `file` and return the new complete lines. The first
-// file seen after boot starts at its END (no replay of history the model has
-// long answered); a file that appears later is a new session and is read from
-// the start. A shrunk file (rewritten) restarts at its end.
+// Advance the tail over `file` and return the new complete lines. Every
+// transcript that exists at boot starts at its END (no replay of history the
+// model has long answered); a file that appears later is a new session and is
+// read from the start. The offset is kept PER FILE: two transcripts of the
+// main session can be written in turn, and switching back to the older one
+// used to reset it to 0 and dispatch its commands again (#1530 review, point
+// 6). A shrunk file (rewritten) restarts at its end.
 export function readNewLines(state: TailState, file: string | null, firstRun: boolean): string[] {
   if (!file) return []
   let size: number
   try { size = statSync(file).size } catch { return [] }
+  if (firstRun) {
+    try {
+      for (const f of readdirSync(dirname(file))) {
+        if (!f.endsWith('.jsonl')) continue
+        const p = join(dirname(file), f)
+        try { state.known[p] ??= { offset: statSync(p).size, partial: '' } } catch { /* vanished */ }
+      }
+    } catch { /* unreadable dir: only `file` below */ }
+  }
   if (file !== state.file) {
+    if (state.file) state.known[state.file] = { offset: state.offset, partial: state.partial }
+    const k = state.known[file]
     state.file = file
-    state.partial = ''
-    state.offset = firstRun ? size : 0
+    state.partial = k?.partial ?? ''
+    state.offset = k ? k.offset : (firstRun ? size : 0)
   }
   if (size < state.offset || size - state.offset > MAX_READ_BYTES) {
     if (size < state.offset) logger.warn({ file }, 'midturn-commands: transcript shrank, tail restarted at its end')
@@ -168,8 +188,10 @@ export async function midTurnTick(state: TailState, deps: MidTurnDeps, firstRun 
   for (const line of lines) {
     const cmd = parseQueuedChannelCommand(line)
     if (!cmd) continue
-    const key = `${cmd.chatId}:${cmd.messageId ?? cmd.text}`
-    if (cmd.messageId && state.seen.includes(key)) continue
+    // No message id: the line's own timestamp makes the key, so a line read
+    // twice is still one command (the same text sent again is a new line).
+    const key = `${cmd.chatId}:${cmd.messageId ?? `${cmd.text}@${cmd.ts ?? ''}`}`
+    if (state.seen.includes(key)) continue
     state.seen.push(key)
     if (state.seen.length > SEEN_MAX) state.seen.splice(0, state.seen.length - SEEN_MAX)
     try {

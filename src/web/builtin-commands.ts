@@ -213,7 +213,7 @@ export function modelHelpText(i: ModelSummaryInput = modelSummaryInput()): strin
   const a = names[0] ?? 'opus'
   const e = withEffort[0] ?? a
   return [
-    '/model – melyik modell fut, és váltás',
+    '/model: melyik modell fut, és váltás',
     '',
     '/model            mi fut most, meddig',
     '/model details    technikai részletek',
@@ -631,7 +631,7 @@ export function nalNel(name: string): string {
 export function boardHelpText(handle: string = botHandle()): string {
   const Name = `${handle[0].toUpperCase()}${handle.slice(1)}`
   return [
-    '/board – a kanban tábla',
+    '/board: a kanban tábla',
     '',
     '/board          ami rád vár (várakozik + hozzád rendelt)',
     '/board 41       egy kártya, alfeladataival',
@@ -817,7 +817,7 @@ export function registerBuiltinCommands(): void {
     name: 'context', kind: 'write', usage: '/context clear', description: 'azonnali /clear (foglalt sessionnél nem)',
     matches: args => args[0]?.toLowerCase() === 'clear',
     touches: ['context'],
-    run: async ctx => { const r = await contextClear(ctx.now); ctx.reply(withRetry('/context clear', { ok: r.cleared, text: r.text, busy: r.busy }, ctx)) },
+    run: async ctx => { const r = await contextClear(ctx.now); await ctx.reply(withRetry('/context clear', { ok: r.cleared, text: r.text, busy: r.busy }, ctx)) },
   })
 
   // ÍR, megerősítéssel: planned until after the stabilization (CMD920 2.).

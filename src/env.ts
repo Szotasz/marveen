@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { atomicWriteFileSync } from './web/atomic-write.js'
@@ -84,5 +84,11 @@ export function updateEnvFile(updates: Record<string, string>): void {
     out.push(`${key}=${val}`)
   }
 
-  atomicWriteFileSync(envPath, out.join('\n'))
+  // Keep the file's own mode: .env holds credentials, and a mode-less atomic
+  // write replaced a 0600 file with a fresh 0644 one (#1530 review, point 5:
+  // `/model ... keep` writes here on the owner's command). A missing file is
+  // created 0600.
+  let mode = 0o600
+  try { mode = statSync(envPath).mode & 0o777 } catch { /* new file */ }
+  atomicWriteFileSync(envPath, out.join('\n'), { mode })
 }

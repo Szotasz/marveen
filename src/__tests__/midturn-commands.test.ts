@@ -35,7 +35,7 @@ function enqueueLine(prompt: string): string {
 
 describe('parseQueuedChannelCommand', () => {
   it('the measured queued_command line -> the command', () => {
-    expect(parseQueuedChannelCommand(queuedLine(channelPrompt('/board')))).toEqual({ chatId: OWNER, messageId: '373', text: '/board', forwarded: false })
+    expect(parseQueuedChannelCommand(queuedLine(channelPrompt('/board')))).toEqual({ chatId: OWNER, messageId: '373', text: '/board', forwarded: false, ts: '2026-09-23T07:20:29.310Z' })
     expect(parseQueuedChannelCommand(queuedLine(channelPrompt('/board', `source="plugin:telegram:telegram" chat_id="${OWNER}" message_id="5" forwarded="1"`)))?.forwarded).toBe(true)
   })
 
@@ -101,6 +101,35 @@ describe('midTurnTick', () => {
     expect(dispatched).toEqual(['/board'])
     expect(sent).toEqual([{ chatId: OWNER, text: 'válasz: /board' }])
     expect(await midTurnTick(state, deps)).toBe(0)
+  })
+
+  // #1530 review, point 6: two transcripts of the main session written in
+  // turn. Switching back to the older one used to reset its offset to 0 and
+  // dispatch its pre-boot commands again.
+  it('two transcripts written in turn: neither is re-read from the start, pre-boot lines never run', async () => {
+    const older = join(dir, 'sess-0.jsonl')
+    writeFileSync(older, queuedLine(channelPrompt('/model haiku', `source="plugin:telegram:telegram" chat_id="${OWNER}" message_id="100"`)) + '\n')
+    utimesSync(older, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000))
+    await midTurnTick(state, deps, true)                       // boot: sess-a newest
+    appendFileSync(older, queuedLine(channelPrompt('/board', `source="plugin:telegram:telegram" chat_id="${OWNER}" message_id="101"`)) + '\n')
+    const future = new Date(Date.now() + 60_000)
+    utimesSync(older, future, future)                          // the older file is now the newest
+    await midTurnTick(state, deps)
+    expect(dispatched).toEqual(['/board'])                     // only the new line, not /model haiku
+    appendFileSync(file, queuedLine(channelPrompt('/runs', `source="plugin:telegram:telegram" chat_id="${OWNER}" message_id="102"`)) + '\n')
+    const later = new Date(Date.now() + 120_000)
+    utimesSync(file, later, later)                             // back to sess-a
+    await midTurnTick(state, deps)
+    expect(dispatched).toEqual(['/board', '/runs'])            // sess-a's pre-boot /status stays unread
+  })
+
+  it('a line without a message id is still dispatched once, keyed on its own timestamp', async () => {
+    await midTurnTick(state, deps, true)
+    const noId = `source="plugin:telegram:telegram" chat_id="${OWNER}"`
+    const line = queuedLine(channelPrompt('/status', noId))
+    appendFileSync(file, line + '\n' + line + '\n')              // the same line seen twice
+    await midTurnTick(state, deps)
+    expect(dispatched).toEqual(['/status'])
   })
 
   it('dispatches as the MAIN session and without deferWrites (a busy write goes to the pending queue)', async () => {

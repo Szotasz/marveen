@@ -234,6 +234,18 @@ export function readHold(file: string): HoldRead {
   try {
     const p = JSON.parse(readFileSync(file, 'utf-8')) as Partial<HoldState>
     const hasModel = typeof p.model === 'string' && typeof p.revert_to === 'string'
+    // Validated on read, like the choice path (#1530 review, point 4): the
+    // file is not the owner's words, and `revert_to` ends up typed into the
+    // session pane (`send-keys -l`, newlines included) on expiry and on
+    // /model back.
+    if (hasModel && (!isValidModelId(p.model) || !isValidModelId(p.revert_to))) {
+      return { state: null, error: 'érvénytelen modell-azonosító a tartás-fájlban (model vagy revert_to)' }
+    }
+    // The effort values are typed into the pane the same way (`/effort <v>`).
+    const effortOk = (v: unknown) => v === undefined || v === null || v === EFFORT_AUTO || (EFFORT_LEVELS as readonly string[]).includes(v as string)
+    if (!effortOk(p.effort) || !effortOk(p.revert_effort)) {
+      return { state: null, error: 'érvénytelen effort-érték a tartás-fájlban (effort vagy revert_effort)' }
+    }
     const hasEffort = typeof p.effort === 'string'
     if ((!hasModel && !hasEffort) || typeof p.until !== 'number' || !Number.isFinite(p.until)) {
       return { state: null, error: 'hiányzó vagy hibás mező (model+revert_to vagy effort, és until)' }

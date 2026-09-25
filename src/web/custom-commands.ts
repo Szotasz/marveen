@@ -151,10 +151,31 @@ export function definitionBody(def: CommandDefinition): string {
 // Wrapper markers a prompt must not carry: a forged <scheduled-task> or
 // system-reminder would claim a provenance the owner's text does not have.
 const WRAPPER_TAG_RX = /<\s*\/?\s*(channel|scheduled-task|trusted-peer|untrusted|system-reminder|task-notification|command-name|local-command-stdout)\b[^>]*>/gi
-const WRAPPER_PREFIX_RX = /^\s*\[(Uzenet @|Uzenet a tavoli @|Üzenet @|SYSTEM-DIREKTIVA)/gim
+// Anywhere in a line, not only at its start: a mid-line `[SYSTEM-DIREKTIVA
+// msg_id:5]` reads just as authoritative (#1530 review, point 3).
+const WRAPPER_PREFIX_RX = /\[\s*(Uzenet @|Uzenet a tavoli @|Üzenet @|SYSTEM-DIREKTIVA|SYSTEM\s*:|CONTEXT-GUARD)/gi
+const ZERO_WIDTH_RX = /[\u00AD\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g
+
+// What the model will effectively read, so the deny-list below matches it:
+// zero-width and bidi characters removed, NFKC-folded (a fullwidth ＜ is <),
+// and HTML entities decoded until nothing changes (&amp;lt; is <).
+export function normalizePromptText(text: string): string {
+  let out = text.replace(ZERO_WIDTH_RX, '').normalize('NFKC')
+  for (let i = 0; i < 5; i++) {
+    const next = out
+      .replace(/&#x([0-9a-f]+);?/gi, (_, h: string) => String.fromCodePoint(parseInt(h, 16)))
+      .replace(/&#(\d+);?/g, (_, d: string) => String.fromCodePoint(Number(d)))
+      .replace(/&lt;?/gi, '<').replace(/&gt;?/gi, '>').replace(/&quot;?/gi, '"').replace(/&apos;?/gi, "'").replace(/&amp;?/gi, '&')
+      .replace(ZERO_WIDTH_RX, '')
+      .normalize('NFKC')
+    if (next === out) break
+    out = next
+  }
+  return out
+}
 
 export function sanitizePromptText(text: string): string {
-  return text.replace(WRAPPER_TAG_RX, '[stripped-tag]').replace(WRAPPER_PREFIX_RX, '(stripped-prefix: ')
+  return normalizePromptText(text).replace(WRAPPER_TAG_RX, '[stripped-tag]').replace(WRAPPER_PREFIX_RX, '(stripped-prefix: ')
 }
 
 export function renderPrompt(template: string, args: string[]): string {
@@ -260,7 +281,7 @@ export async function runActions(steps: ActionStep[], nowMs: number, deps: RunDe
     }
     lines.push(`${i + 1}. ${st.action}${st.value ? ` ${st.value}` : ''}: ${r.ok ? 'kész' : 'HIBA'}, ${r.text}`)
     if (!r.ok) {
-      lines.push(`Megállt a ${i + 1}. lépésnél (${i}/${steps.length} kész).`)
+      lines.push(`Megállt ${i + 1 === 1 || i + 1 === 5 ? 'az' : 'a'} ${i + 1}. lépésnél (${i}/${steps.length} kész).`)
       return { text: lines.join('\n'), busy: r.busy === true }
     }
   }
@@ -275,6 +296,56 @@ export async function runActions(steps: ActionStep[], nowMs: number, deps: RunDe
 // name -> { definitionAt, expiresAt }: the one-time "changed, send anyway?" ask.
 const pendingConfirm = new Map<string, { definitionAt: number; expiresAt: number }>()
 
+// Rows the code itself inserted (importIfEmpty's shipped defaults): no route
+// can write this principal (routes/custom-commands.ts updatedByOf), and the
+// first edit replaces it, so an untouched default needs no confirmation.
+export const SHIPPED_DEFAULT_BY = 'shipped-default'
+
+/**
+ * The "definition changed since your last run" gate, for BOTH kinds (#1530
+ * review, point 1: it used to exist only for prompts, so a token-only PUT
+ * could redefine /clear and the owner's next /clear ran the new steps
+ * unasked). The write evidence proves the owner SENT the command; this proves
+ * the owner has SEEN what it now does. Returns the ask to reply with, or null
+ * when the command may run (a confirmation within the window is consumed).
+ */
+export function confirmGate(name: string, row: CustomCommandRow, now: number, verb: string, shown: string): string | null {
+  if (row.updated_by === SHIPPED_DEFAULT_BY) return null
+  const changed = row.last_run_definition_at === null || row.updated_at > row.last_run_definition_at
+  if (!changed) return null
+  const p = pendingConfirm.get(name)
+  if (p && p.definitionAt === row.updated_at && p.expiresAt >= now) {
+    pendingConfirm.delete(name)
+    return null
+  }
+  pendingConfirm.set(name, { definitionAt: row.updated_at, expiresAt: now + CONFIRM_WINDOW_MS })
+  const why = row.last_run_definition_at === null ? 'még nem futtattad' : `a legutóbbi futtatásod óta változott (${formatDayClock(row.updated_at)})`
+  const head = `/${name} · módosította: ${row.updated_by} · ${formatDayClock(row.updated_at)}`
+  return `NEM ${verb}: a /${name} definíciója ${why}.\n${head}\n${shown}\nHa így ${verb === 'küldtem be' ? 'küldjem' : 'futtassam'}, add ki újra ${CONFIRM_WINDOW_MS / 1000} másodpercen belül.`
+}
+
+/** Every step, in full: what the owner confirms is what runs. */
+export function stepsText(steps: ActionStep[]): string {
+  return `Lépések (${steps.length}):\n` + steps.map((st, i) => `${i + 1}. ${st.action}${st.value ? ` ${st.value}` : ''}${st.hold ? ` ${st.hold}` : ''}`).join('\n')
+}
+
+/**
+ * An `actions` command, behind the same confirmation as a prompt. The steps
+ * that run are the ones on the row the gate just showed.
+ */
+export async function runActionsCommand(name: string, ctx: CommandContext, deps: RunDeps): Promise<ActionsResult> {
+  const row = deps.getRow(name)
+  if (!row) return { text: `A /${name} közben törlődött.`, busy: false }
+  let steps: ActionStep[]
+  try { steps = JSON.parse(row.body) as ActionStep[] } catch { return { text: `A /${name} definíciója olvashatatlan.`, busy: false } }
+  const ask = confirmGate(name, row, ctx.now, 'futtattam', stepsText(steps))
+  if (ask) return { text: ask, busy: false }
+  // Marked before the steps: a busy step queues the command for the turn end,
+  // and that re-run must not ask again for what the owner just confirmed.
+  deps.markRun(name, ctx.now, row.updated_at)
+  return runActions(steps, ctx.now, deps)
+}
+
 export function _resetCustomCommandsForTest(): void {
   pendingConfirm.clear()
 }
@@ -285,23 +356,16 @@ export async function runPrompt(
   const row = deps.getRow(name)
   if (!row) return `A /${name} közben törlődött.`
   const now = ctx.now
-  const changed = row.last_run_definition_at === null || row.updated_at > row.last_run_definition_at
   const head = `/${name} · módosította: ${row.updated_by} · ${formatDayClock(row.updated_at)}`
-  const preview = row.body.replace(/\s+/g, ' ').trim().slice(0, 160)
-  if (changed) {
-    const p = pendingConfirm.get(name)
-    if (!p || p.definitionAt !== row.updated_at || p.expiresAt < now) {
-      pendingConfirm.set(name, { definitionAt: row.updated_at, expiresAt: now + CONFIRM_WINDOW_MS })
-      const why = row.last_run_definition_at === null ? 'még nem futtattad' : `a legutóbbi futtatásod óta változott (${formatDayClock(row.updated_at)})`
-      return `NEM küldtem be: a /${name} definíciója ${why}.\n${head}\nSzöveg eleje: „${preview}”\nHa így küldjem, add ki újra ${CONFIRM_WINDOW_MS / 1000} másodpercen belül.`
-    }
-    pendingConfirm.delete(name)
-  }
+  // The whole text and its length: a preview cut at 160 characters let the
+  // rest of a 2000-character body be confirmed unseen (#1530 review, point 2).
+  const ask = confirmGate(name, row, now, 'küldtem be', `Szöveg (${row.body.length} karakter, teljes):\n„${row.body}”`)
+  if (ask) return ask
   const text = sanitizePromptText(renderPrompt(row.body, args))
   if (text.length > PROMPT_MAX_CHARS * 2) return `NEM küldtem be: a kész szöveg ${text.length} karakter, a korlát ${PROMPT_MAX_CHARS * 2}.`
   const msgId = deps.sendPrompt(buildOwnerCommandInbound(text, ctx.ownerId, name, now))
   deps.markRun(name, now, row.updated_at)
-  return `Beküldve a fő ágensnek (üzenet #${msgId}, csatorna-bejövő borítékkal; a fő csatornán válaszol).\n${head}\nSzöveg eleje: „${text.replace(/\s+/g, ' ').trim().slice(0, 160)}”`
+  return `Beküldve a fő ágensnek (üzenet #${msgId}, csatorna-bejövő borítékkal; a fő csatornán válaszol).\n${head}\nSzöveg eleje (${text.length} karakter): „${text.replace(/\s+/g, ' ').trim().slice(0, 160)}”`
 }
 
 // ---- load / import / export -----------------------------------------------------
@@ -348,7 +412,7 @@ export function loadCustomCommands(deps: RunDeps = liveRunDeps, rows: CustomComm
       description: `${def.description || '(nincs leírás)'} [${def.kind}]`,
       run: async (ctx, args) => {
         if (def.kind === 'actions') {
-          const r = await runActions(def.body as ActionStep[], ctx.now, deps)
+          const r = await runActionsCommand(def.name, ctx, deps)
           // A busy step queues the WHOLE command for the end of the turn, the
           // same way a typed `/model ...` is queued -- rerunning it from the
           // start is right here: the steps are the owner's own definition.
@@ -386,7 +450,7 @@ export function importIfEmpty(file: string = COMMANDS_JSON): ImportResult {
     defs = DEFAULT_COMMANDS
     source = 'defaults'
   }
-  return { ...importDefinitions(defs, source === 'commands.json' ? 'import:commands.json' : 'shipped-default'), source }
+  return { ...importDefinitions(defs, source === 'commands.json' ? 'import:commands.json' : SHIPPED_DEFAULT_BY), source }
 }
 
 export function importDefinitions(defs: unknown[], updatedBy: string): { imported: number; skipped: InvalidCustomCommand[] } {
