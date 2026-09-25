@@ -319,9 +319,11 @@ export function confirmGate(name: string, row: CustomCommandRow, now: number, ve
     return null
   }
   pendingConfirm.set(name, { definitionAt: row.updated_at, expiresAt: now + CONFIRM_WINDOW_MS })
-  const why = row.last_run_definition_at === null ? 'még nem futtattad' : `a legutóbbi futtatásod óta változott (${formatDayClock(row.updated_at)})`
+  const why = row.last_run_definition_at === null
+    ? `a /${name} mostani definícióját még nem futtattad`
+    : `a /${name} definíciója a legutóbbi futtatásod óta változott (${formatDayClock(row.updated_at)})`
   const head = `/${name} · módosította: ${row.updated_by} · ${formatDayClock(row.updated_at)}`
-  return `NEM ${verb}: a /${name} definíciója ${why}.\n${head}\n${shown}\nHa így ${verb === 'küldtem be' ? 'küldjem' : 'futtassam'}, add ki újra ${CONFIRM_WINDOW_MS / 1000} másodpercen belül.`
+  return `NEM ${verb}: ${why}.\n${head}\n${shown}\nHa így ${verb === 'küldtem be' ? 'küldjem' : 'futtassam'}, add ki újra ${CONFIRM_WINDOW_MS / 1000} másodpercen belül.`
 }
 
 /** Every step, in full: what the owner confirms is what runs. */

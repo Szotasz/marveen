@@ -132,7 +132,7 @@ describe('prompt (CMD920 test 23 + the changed-definition ask)', () => {
     addPrompt('Foglald össze a napot. Fókusz: $ARGUMENTS', 'dashboard-token')
     const d = runDeps()
     const first = await runPrompt('napzaro', ['ügyfelek'], ctx(T0), d)
-    expect(first).toMatch(/^NEM küldtem be: a \/napzaro definíciója még nem futtattad/)
+    expect(first).toMatch(/^NEM küldtem be: a \/napzaro mostani definícióját még nem futtattad/)
     expect(first).toMatch(/módosította: dashboard-token/)
     expect(first).toMatch(/Szöveg \(41 karakter, teljes\):\n„Foglald össze a napot\. Fókusz: \$ARGUMENTS”/)
     expect(d.prompts).toEqual([])
@@ -252,7 +252,7 @@ describe('load-time validation (CMD920 test 24)', () => {
     loadCustomCommands(runDeps())
     const c = ctx()
     expect(await dispatchCommand('/jo', c)).toBe('ran')
-    expect(c.out[0]).toMatch(/^NEM futtattam: a \/jo definíciója még nem futtattad/)   // first run: asked
+    expect(c.out[0]).toMatch(/^NEM futtattam: a \/jo mostani definícióját még nem futtattad/)   // first run: asked
     const again = ctx(T0 + 10_000)
     expect(await dispatchCommand('/jo', again)).toBe('ran')
     expect(again.out[0]).toBe('szia')
@@ -278,7 +278,7 @@ describe('actions: the changed-definition confirmation (#1530 review)', () => {
     loadCustomCommands(d)
     const c = ctx(T0)
     await dispatchCommand('/torol', c)
-    expect(c.out[0]).toMatch(/^NEM futtattam: a \/torol definíciója még nem futtattad/)
+    expect(c.out[0]).toMatch(/^NEM futtattam: a \/torol mostani definícióját még nem futtattad/)
     expect(c.out[0]).toMatch(/módosította: dashboard-token/)
     expect(c.out[0]).toMatch(/Lépések \(1\):\n1\. message Kontextus törölve\./)
     expect(c.out[0]).not.toBe('Kontextus törölve.')
