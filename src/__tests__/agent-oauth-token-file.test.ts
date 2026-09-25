@@ -12,6 +12,7 @@ import {
   checkOauthTokenFile,
   ownOauthTokenExport,
   ownOauthExportMissing,
+  ownOauthLaunchVerdict,
   decideOwnOauthToken,
   SETUP_TOKEN_PREFIX,
 } from '../web/agent-oauth-token-file.js'
@@ -219,6 +220,53 @@ describe('ownOauthExportMissing: an ok decision must reach the launch env', () =
   })
 })
 
+// PR #1511 review: the link between the fail-closed decision and the export.
+// The launcher acts on ownOauthLaunchVerdict(decision, oauthTokenEnv) for BOTH
+// the refusal and the "own setup-token exported" log, so these cases are the
+// launcher's behaviour for every decision/env pair it can end up with.
+describe('ownOauthLaunchVerdict: the decision and the actual export cannot diverge', () => {
+  const p = '/home/u/.config/marveen/tokens/a.token'
+  const ok = { kind: 'ok' as const, path: p, fingerprint: 'abcd1234' }
+  const fleetEnv = () => `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${fleet}')" && `
+  const envs = () => ({
+    own: ownOauthTokenExport(p),
+    fleet: fleetEnv(),
+    empty: '',
+    other: ownOauthTokenExport('/other/b.token'),
+  })
+
+  it('ok + the own export in the env -> own, carrying the path and fingerprint for the log', () => {
+    expect(ownOauthLaunchVerdict(ok, ownOauthTokenExport(p))).toEqual({ kind: 'own', path: p, fingerprint: 'abcd1234' })
+  })
+
+  it('ok + the FLEET export (the review mutant), an empty env or another file -> refuse, never own', () => {
+    for (const env of [envs().fleet, envs().empty, envs().other]) {
+      expect(ownOauthLaunchVerdict(ok, env)).toEqual({ kind: 'refuse', path: p })
+    }
+  })
+
+  it('unset and refused decisions never claim the own token, whatever the env', () => {
+    for (const env of Object.values(envs())) {
+      expect(ownOauthLaunchVerdict({ kind: 'unset' }, env)).toEqual({ kind: 'not-own' })
+      expect(ownOauthLaunchVerdict({ kind: 'refused', path: p, reason: 'missing', detail: '' }, env)).toEqual({ kind: 'not-own' })
+    }
+  })
+
+  it('invariant over every pair: "own" only when the env is exactly the own export, and an ok decision never ends in "not-own"', () => {
+    const decisions = [ok, { kind: 'unset' as const }, { kind: 'refused' as const, path: p, reason: 'missing', detail: '' }]
+    for (const d of decisions) {
+      for (const env of Object.values(envs())) {
+        const v = ownOauthLaunchVerdict(d, env)
+        if (v.kind === 'own') {
+          expect(env).toBe(ownOauthTokenExport(v.path))
+          expect(env).not.toContain(fleet)
+        }
+        if (d.kind === 'ok') expect(v.kind).not.toBe('not-own')
+      }
+    }
+  })
+})
+
 // Source-level contract for the launcher wiring (startAgentProcess), in the
 // style of isolated-channel-config.test.ts: the order of the steps is what
 // makes the field fail-closed, and a refactor that reorders them would not
@@ -264,25 +312,36 @@ describe('launcher wiring (agent-process.ts)', () => {
   })
 
   it('logs the path and the fingerprint only; the launcher never reads the token file itself', () => {
-    expect(FN).toMatch(/\{ name, path: ownOauth\.path, fingerprint: ownOauth\.fingerprint \}/)
+    expect(FN).toMatch(/\{ name, path: ownLaunch\.path, fingerprint: ownLaunch\.fingerprint \}/)
     expect(FN).not.toMatch(/readFileSync\(\s*own(TokenFile|Oauth)/)
   })
 
   // PR #1511 review mutant: `const ownTokenFile = ... ? ownOauth.path : null` -> `null`
   // left all tests green while the agent ran on the fleet token and the log still
-  // claimed the own token. Pin the hand-off, and pin that the claim is derived
-  // from oauthTokenEnv (with a refusal before it), not from the decision alone.
-  it('an ok decision reaches the export: ownTokenFile carries the ok path, and the log is gated on oauthTokenEnv', () => {
+  // claimed the own token. The link is pinned end to end: the ok path is handed to
+  // the export sites, ONE verdict computed from the real oauthTokenEnv (after its
+  // last write, before the launch command) drives the refusal and the log, and
+  // nothing else in the launcher can emit the claim.
+  it('decision -> export -> verdict -> log is one chain: an ok decision that misses the env refuses, and only the env can make the claim', () => {
     expect(FN).toContain("const ownTokenFile = ownOauth.kind === 'ok' ? ownOauth.path : null")
-    const guardAt = FN.indexOf('if (ownOauthExportMissing(ownOauth, oauthTokenEnv)) {')
-    expect(guardAt).toBeGreaterThan(FN.lastIndexOf('oauthTokenEnv = '))
-    expect(FN.slice(guardAt, guardAt + 500)).toMatch(/return \{ ok: false, error: 'oauthTokenFile: own token did not reach the launch env' \}/)
-    const logAt = FN.indexOf("'oauthTokenFile: own setup-token exported instead of the fleet token'")
-    expect(logAt).toBeGreaterThan(guardAt)
+    const verdictAt = FN.indexOf('const ownLaunch = ownOauthLaunchVerdict(ownOauth, oauthTokenEnv)')
+    expect(verdictAt).toBeGreaterThan(0)
+    expect(FN.split('ownOauthLaunchVerdict(').length - 1).toBe(1)
+    expect(verdictAt).toBeGreaterThan(FN.lastIndexOf('oauthTokenEnv = '))
+    expect(verdictAt).toBeLessThan(FN.indexOf('const buildLaunchCmd'))
+    const refuseAt = FN.indexOf("if (ownLaunch.kind === 'refuse') {", verdictAt)
+    expect(refuseAt).toBeGreaterThan(verdictAt)
+    expect(FN.slice(refuseAt, refuseAt + 500)).toMatch(/return \{ ok: false, error: 'oauthTokenFile: own token did not reach the launch env' \}/)
+    const CLAIM = "'oauthTokenFile: own setup-token exported instead of the fleet token'"
+    expect(FN.split(CLAIM).length - 1).toBe(1)
+    const logAt = FN.indexOf(CLAIM)
+    expect(logAt).toBeGreaterThan(refuseAt)
     const logGate = FN.lastIndexOf('if (', logAt)
-    expect(FN.slice(logGate, logAt)).toContain("if (ownOauth.kind === 'ok' && oauthTokenEnv === ownOauthTokenExport(ownOauth.path)) {")
-    // The guard sits before the launch command is built and sent.
-    expect(guardAt).toBeLessThan(FN.indexOf('const buildLaunchCmd'))
+    expect(FN.slice(logGate, logAt)).toMatch(/^if \(ownLaunch\.kind === 'own'\) \{\s+logger\.info\(\s+\{ name, path: ownLaunch\.path, fingerprint: ownLaunch\.fingerprint \},\s+$/)
+    // The decision itself is read in exactly one place after the refusal return:
+    // the ownTokenFile hand-off. A second `ownOauth.kind === 'ok'` would be a
+    // claim or an export gated on the decision instead of the env.
+    expect(FN.split("ownOauth.kind === 'ok'").length - 1).toBe(1)
   })
 
   it('the API cannot write the field (write path: manual agent-config edit only)', () => {

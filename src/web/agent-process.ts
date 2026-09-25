@@ -34,7 +34,7 @@ import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel, readAgentCustomProvider, readFileOr } from './agent-config.js'
 import { loadCustomProvider, type CustomProviderDef } from './custom-providers.js'
-import { decideOwnOauthToken, ownOauthTokenExport, ownOauthExportMissing } from './agent-oauth-token-file.js'
+import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict } from './agent-oauth-token-file.js'
 import { worksourceRootFor } from './worksource-queue.js'
 import { resolveAgentConfigDir, readClaudePlans, getClaudePlan } from './claude-plans.js'
 import { readClaudePlansState } from './claude-plans-state.js'
@@ -2289,18 +2289,20 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
       return { ok: false, error: 'oauthTokenFile: isolated config dir could not be provisioned' }
     }
     // 2fb86ef2: the claim is derived from the launch env itself, not from the
-    // decision. An 'ok' decision that did not reach oauthTokenEnv would run the
-    // agent on the fleet token (or none) while the log said otherwise: refuse.
-    if (ownOauthExportMissing(ownOauth, oauthTokenEnv)) {
+    // decision. One verdict drives both the refusal and the log: an 'ok'
+    // decision that did not reach oauthTokenEnv would run the agent on the
+    // fleet token (or none) while the log said otherwise, so it refuses.
+    const ownLaunch = ownOauthLaunchVerdict(ownOauth, oauthTokenEnv)
+    if (ownLaunch.kind === 'refuse') {
       logger.error(
-        { name, path: ownOauth.kind === 'ok' ? ownOauth.path : null },
+        { name, path: ownLaunch.path },
         'oauthTokenFile: own token decided but NOT in the launch env -- agent NOT started (no fallback to the fleet token)',
       )
       return { ok: false, error: 'oauthTokenFile: own token did not reach the launch env' }
     }
-    if (ownOauth.kind === 'ok' && oauthTokenEnv === ownOauthTokenExport(ownOauth.path)) {
+    if (ownLaunch.kind === 'own') {
       logger.info(
-        { name, path: ownOauth.path, fingerprint: ownOauth.fingerprint },
+        { name, path: ownLaunch.path, fingerprint: ownLaunch.fingerprint },
         'oauthTokenFile: own setup-token exported instead of the fleet token',
       )
     }

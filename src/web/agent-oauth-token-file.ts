@@ -182,3 +182,20 @@ export function ownOauthExportMissing(decision: OwnOauthTokenDecision, oauthToke
   if (decision.kind !== 'ok') return false
   return oauthTokenEnv !== ownOauthTokenExport(decision.path)
 }
+
+// Pure: the ONE verdict the launcher acts on after the last write to
+// oauthTokenEnv, for both the refusal and the "own token" log line. Its only
+// inputs are the decision and the actual launch env, so the log cannot claim
+// the own token unless the env carries exactly the own export, and an 'ok'
+// decision that did not reach the env can only end in a refusal (#1511 review:
+// never "runs on the fleet token while the log says its own").
+export type OwnOauthLaunchVerdict =
+  | { kind: 'not-own' }
+  | { kind: 'refuse'; path: string }
+  | { kind: 'own'; path: string; fingerprint: string }
+
+export function ownOauthLaunchVerdict(decision: OwnOauthTokenDecision, oauthTokenEnv: string): OwnOauthLaunchVerdict {
+  if (decision.kind !== 'ok') return { kind: 'not-own' }
+  if (ownOauthExportMissing(decision, oauthTokenEnv)) return { kind: 'refuse', path: decision.path }
+  return { kind: 'own', path: decision.path, fingerprint: decision.fingerprint }
+}
