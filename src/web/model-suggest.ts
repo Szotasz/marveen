@@ -36,6 +36,7 @@ export type ModelId =
   | 'claude-opus-5[1m]'
   | 'claude-opus-5'
   | 'claude-fable-5'
+  | 'claude-fable-5-1'
   | string
 
 export interface ModelSuggestion {
@@ -124,7 +125,12 @@ const HAIKU_KEYWORDS = [
 // Approximate input-token cost in USD per 1M tokens (mid-2026 pricing).
 const MODEL_COST_PER_M: Record<string, number> = {
   'claude-opus-4-8': 15,
+  // Opus 5.5: 4 USD / 1M input, Zara olvasta a RENDERELT hivatalos oldalrol (2026-09-22, OPUS55SELECTOR922).
+  'claude-opus-5-5': 4,
   'claude-opus-5': 15,
+  // Fable 5.1: a Fable 5 arat vettem at, mert a 5.1-re NINCS mert listaarunk.
+  // FELTETELEZES, nem meres -- ha valaki merte, irja felul es vegye ki ezt a sort.
+  'claude-fable-5-1': 15,
   'claude-fable-5': 15,
   'claude-sonnet-5': 3,
   'claude-sonnet-4-6': 3,

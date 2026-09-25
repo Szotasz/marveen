@@ -14,6 +14,7 @@ import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { importsValueBinding } from './setup/source-imports.js'
 import { tmpdir } from 'node:os'
 import { paneOneLine } from '../web/pane-text.js'
 
@@ -616,7 +617,10 @@ describe('provenance-gate: system directive row verification (CTXBORITEK919)', (
 
     it('STATIC: the send site uses the shared mapping and no other newline->space site remains', () => {
       const src = readFileSync(join(ROOT, 'src', 'web', 'agent-process.ts'), 'utf-8')
-      expect(src).toContain("import { paneOneLine } from './pane-text.js'")
+      // TESZTIMPORTUTIL922: verbatim line comparison replaced -- agent-process.ts
+      // imports plenty from its own directory, and a co-import there is not a
+      // regression of the shared mapping this suite guards.
+      expect(importsValueBinding(src, 'paneOneLine', './pane-text.js')).toBe(true)
       expect(src).toContain('const oneLine = paneOneLine(text)')
       expect(src).not.toMatch(/replace\(\/\\r\?\\n\/g, ' '\)/)
     })

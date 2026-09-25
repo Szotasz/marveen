@@ -6,21 +6,26 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type http from 'node:http'
+import { Readable } from 'node:stream'
 import type { RouteContext } from '../web/routes/types.js'
 
 const logSpy = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
 vi.mock('../logger.js', () => ({ logger: logSpy, PRETTY_OPTIONS: {} }))
 
 const SECRET_VALUE = 'SECRET-VALUE-do-not-log-8f3a'
+const SSH_KEY_ID = 'ssh-key-abc123'
+// A marker, not a key-shaped string: the repo's secret-gate rightly refuses anything that looks like a real private key.
+const SSH_PRIVATE = 'SSH-PRIVATE-MARKER-do-not-serve-7c1e'
+const getSecretSpy = vi.fn((id: string) => (id === 'EXISTS' ? SECRET_VALUE : id === SSH_KEY_ID ? SSH_PRIVATE : null))
 vi.mock('../web/vault.js', () => ({
-  listSecrets: () => [],
+  listSecrets: () => [{ id: SSH_KEY_ID, label: 'test key', createdAt: '', updatedAt: '' }],
   setSecret: () => undefined,
   deleteSecret: () => false,
-  getSecret: (id: string) => (id === 'EXISTS' ? SECRET_VALUE : null),
+  getSecret: (id: string) => getSecretSpy(id),
   getSecretsForEnv: () => ({}),
 }))
 
-const { readVaultAcl, principalOf, evaluateVaultRead, logVaultRead } = await import('../web/vault-acl.js')
+const { readVaultAcl, principalOf, evaluateVaultRead, logVaultRead, isSshPrivateKeyId } = await import('../web/vault-acl.js')
 const { tryHandleConnectors } = await import('../web/routes/connectors.js')
 
 const tmp = mkdtempSync(join(tmpdir(), 'vault-acl-test-'))
@@ -150,5 +155,82 @@ describe('GET /api/vault/:id audit row', () => {
     logSpy.info.mockImplementation(() => undefined)
     expect(orderRowIndex).toBeGreaterThanOrEqual(0)
     expect(orderEndIndex).toBeGreaterThan(orderRowIndex)
+  })
+})
+
+describe('GET /api/vault/ssh-key-<id>: SSH private keys are never served by the generic value route', () => {
+  it('refuses with 403, returns no value, keeps the audit row, and never decrypts the key', async () => {
+    getSecretSpy.mockClear()
+    logSpy.info.mockClear()
+    const { handled, res } = await get(`/api/vault/${SSH_KEY_ID}`, { kind: 'token' })
+    expect(handled).toBe(true)
+    expect(res.statusCode).toBe(403)
+    expect(JSON.parse(res.body)).not.toHaveProperty('value')
+    expect(res.body).not.toContain(SSH_PRIVATE)
+    expect(getSecretSpy).not.toHaveBeenCalledWith(SSH_KEY_ID)
+    const rows = logSpy.info.mock.calls.filter(c => c[0]?.event === 'vault-read')
+    expect(rows).toHaveLength(1)
+    expect(rows[0][0]).toMatchObject({ id: SSH_KEY_ID, kind: 'token', found: true })
+  })
+  it('a missing ssh-key id is refused the same way (found:false), not answered by the generic 404', async () => {
+    logSpy.info.mockClear()
+    const { res } = await get('/api/vault/ssh-key-nope', { kind: 'token' })
+    expect(res.statusCode).toBe(403)
+    const rows = logSpy.info.mock.calls.filter(c => c[0]?.event === 'vault-read')
+    expect(rows[0][0]).toMatchObject({ id: 'ssh-key-nope', found: false })
+  })
+  it('positive control: an ordinary secret is still served', async () => {
+    const { res } = await get('/api/vault/EXISTS', { kind: 'token' })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ id: 'EXISTS', value: SECRET_VALUE })
+  })
+})
+
+describe('isSshPrivateKeyId: one predicate for every writer', () => {
+  it('matches the ssh-key- id prefix (trimmed), and nothing else', () => {
+    expect(isSshPrivateKeyId('ssh-key-abc123')).toBe(true)
+    expect(isSshPrivateKeyId('  ssh-key-abc123 ')).toBe(true)
+    expect(isSshPrivateKeyId('ssh-keys')).toBe(false)
+    expect(isSshPrivateKeyId('EXISTS')).toBe(false)
+    expect(isSshPrivateKeyId('MARVEEN-CONNECTORS-PAT')).toBe(false)
+  })
+})
+
+describe('POST /api/vault/bindings: an SSH private key cannot be bound', () => {
+  // No serverName and no targets on purpose: without the guard the handler answers
+  // 'No targets found' BEFORE any write, so even a mutant run touches no file.
+  async function post(body: unknown) {
+    const res = mkRes()
+    const req = Readable.from([Buffer.from(JSON.stringify(body))]) as unknown as http.IncomingMessage
+    ;(req as unknown as { headers: object; method: string }).headers = {}
+    ;(req as unknown as { method: string }).method = 'POST'
+    const ctx: RouteContext = {
+      req, res: res as unknown as http.ServerResponse,
+      path: '/api/vault/bindings', method: 'POST',
+      url: new URL('http://127.0.0.1:3420/api/vault/bindings'), auth: { kind: 'token' },
+    }
+    const handled = await tryHandleConnectors(ctx)
+    return { handled, res }
+  }
+  it('a header binding to an ssh-key id is refused with the SSH reason, before target discovery', async () => {
+    logSpy.warn.mockClear()
+    const { handled, res } = await post({ vaultSecretId: SSH_KEY_ID, headerName: 'Authorization', headerScheme: 'Bearer' })
+    expect(handled).toBe(true)
+    expect(res.statusCode).toBe(400)
+    expect(JSON.parse(res.body).error).toBe('SSH private keys cannot be bound to an env var or a header')
+    // the refusal leaves a server-side trace, with who tried and how, and no value
+    const rows = logSpy.warn.mock.calls.filter(c => c[0]?.event === 'vault-binding-refused')
+    expect(rows).toHaveLength(1)
+    expect(rows[0][0]).toMatchObject({ vaultSecretId: SSH_KEY_ID, kind: 'token', principal: 'token', via: 'header' })
+    expect(allLogPayloads()).not.toContain(SSH_PRIVATE)
+  })
+  it('an env binding to an ssh-key id is refused the same way', async () => {
+    const { res } = await post({ vaultSecretId: SSH_KEY_ID, envVar: 'DEPLOY_KEY' })
+    expect(JSON.parse(res.body).error).toBe('SSH private keys cannot be bound to an env var or a header')
+  })
+  it('control: an ordinary id passes the guard and reaches the next check (no targets), not the SSH refusal', async () => {
+    const { res } = await post({ vaultSecretId: 'EXISTS', headerName: 'Authorization' })
+    expect(res.statusCode).toBe(400)
+    expect(JSON.parse(res.body).error).toBe('No targets found for this server')
   })
 })

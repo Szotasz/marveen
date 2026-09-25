@@ -3790,25 +3790,47 @@ async function openAgentDetail(agentName) {
   const chConnected = agentIsConnected(currentAgent)
   document.getElementById('agentDetailChStatus').innerHTML = `<span class="tg-status"><span class="tg-dot ${chConnected ? 'connected' : 'disconnected'}"></span>${chConnected ? t('agents.channel.connected') : t('agents.channel.disconnected')}</span>`
 
-  // Settings tab - load Ollama + DeepSeek models then set value
+  // Settings tab - load Ollama + DeepSeek + custom-provider models then set value
   loadAvailableModels()
   loadOllamaModels().then(() => {
     const sel = document.getElementById('editAgentModel')
     const mv = currentAgent.activeModel || currentAgent.model || 'claude-opus-4-8[1m]'
+    const customProviderId = currentAgent.customProvider || null
     // The model <select> is one shared element reused per agent. A manual
-    // OpenRouter id (or openrouter-auto:tier) may not be among the static/auto
-    // options, so setting .value would silently show nothing. Inject THIS
-    // agent's model as a selectable option (cleaning any stale injected ones
-    // first) so every agent always displays its own model, per-agent.
+    // OpenRouter id (or openrouter-auto:tier, or custom model) may not be
+    // among the static/auto options, so setting .value would silently show
+    // nothing. Inject THIS agent's model as a selectable option (cleaning any
+    // stale injected ones first) so every agent always displays its own model.
     Array.from(sel.querySelectorAll('option.dynamic-model-opt')).forEach(o => o.remove())
-    if (!Array.from(sel.options).some(o => o.value === mv)) {
-      const opt = document.createElement('option')
-      opt.value = mv
-      opt.className = 'dynamic-model-opt'
-      opt.textContent = mv.startsWith('openrouter-auto:') ? `🔀 ${mv}` : `🔀 ${mv}`
-      sel.appendChild(opt)
+    if (customProviderId) {
+      // Custom provider: select value is "custom:<providerId>"; model-id in the text input.
+      const cpVal = `custom:${customProviderId}`
+      if (!Array.from(sel.options).some(o => o.value === cpVal)) {
+        const opt = document.createElement('option')
+        opt.value = cpVal
+        opt.className = 'dynamic-model-opt'
+        opt.textContent = `🔧 ${customProviderId}`
+        sel.appendChild(opt)
+      }
+      sel.value = cpVal
+      const modelInput = document.getElementById('editAgentModelCustomModelId')
+      if (modelInput) modelInput.value = mv
+    } else {
+      if (!Array.from(sel.options).some(o => o.value === mv)) {
+        const opt = document.createElement('option')
+        opt.value = mv
+        opt.className = 'dynamic-model-opt'
+        opt.textContent = mv.startsWith('openrouter-auto:') ? `🔀 ${mv}` : `🔀 ${mv}`
+        sel.appendChild(opt)
+      }
+      sel.value = mv
     }
-    sel.value = mv
+    // PICKERCLIKAPU923: re-apply the CLI gate AFTER the value is set, so the
+    // agent's current model is never the disabled option regardless of which
+    // of the two async loads finished first (measured in Chromium: a value set
+    // onto a disabled option still reads back, but the order must not matter).
+    if (lastAvailableModelsData) applyClaudeCliGate(lastAvailableModelsData)
+    updateCustomModelIdRow(sel)
   })
   populateProfileSelect(
     document.getElementById('editAgentProfile'),
@@ -4297,11 +4319,60 @@ async function loadOllamaModels() {
 // panel. Backend gates the list behind a vault entry, so an empty array
 // here means the operator has not configured an API key yet -- in that
 // case we hide the optgroup and surface a hint pointing to the Vault page.
+// PICKERCLIKAPU923: the INSTALLED Claude Code CLI decides which Claude ids
+// are launchable (a customer install pins 2.1.110, where claude-fable-5-1 and
+// claude-opus-5-5 answer 400 on the first prompt and the agent goes silently
+// deaf). Two branches, both deliberate:
+//   measured   -> unsupported options are disabled and labelled; the option
+//                 that is an agent's CURRENT model is never disabled, so the
+//                 edit panel keeps showing the real value and a save does not
+//                 silently rewrite it (#751 lesson).
+//   unmeasured -> nothing is filtered (a customer who can pick no model is
+//                 worse off than today) and a visible hint says so.
+let lastAvailableModelsData = null
+function applyClaudeCliGate(data) {
+  if (data) lastAvailableModelsData = data
+  const support = data && data.claudeSupport ? data.claudeSupport : null
+  const cli = data && data.cli ? data.cli : null
+  const selects = [document.getElementById('agentModel'), document.getElementById('editAgentModel')]
+  const hints = [document.getElementById('agentModelCliHint'), document.getElementById('editAgentModelCliHint')]
+  const base = (id) => String(id || '').replace(/\[[^\]]*\]$/, '')
+  const unsupported = new Map()
+  if (support && support.measured && Array.isArray(support.unsupported)) {
+    for (const u of support.unsupported) unsupported.set(u.id, u.minCli)
+  }
+  selects.forEach((sel, i) => {
+    if (!sel) return
+    const hint = hints[i]
+    if (!support || !support.measured) {
+      // Unmeasured: restore any earlier gating, show the hint, filter nothing.
+      Array.from(sel.options).forEach((opt) => {
+        if (opt.dataset.cliGated === '1') { opt.disabled = false; opt.textContent = opt.dataset.cliLabel || opt.textContent; delete opt.dataset.cliGated }
+      })
+      if (hint) { hint.textContent = t('agents.model.cliUnmeasured').replace('{err}', (cli && cli.error) || '?'); hint.style.display = '' }
+      return
+    }
+    if (hint) hint.style.display = 'none'
+    const current = sel.value
+    Array.from(sel.options).forEach((opt) => {
+      if (!String(opt.value).startsWith('claude-')) return
+      const minCli = unsupported.get(base(opt.value))
+      if (opt.dataset.cliGated === '1') { opt.disabled = false; opt.textContent = opt.dataset.cliLabel || opt.textContent; delete opt.dataset.cliGated }
+      if (!minCli) return
+      if (!opt.dataset.cliLabel) opt.dataset.cliLabel = opt.textContent
+      opt.dataset.cliGated = '1'
+      opt.textContent = opt.dataset.cliLabel + ' (' + t('agents.model.cliUnsupported').replace('{v}', support.installedVersion).replace('{min}', minCli) + ')'
+      opt.disabled = opt.value !== current
+    })
+  })
+}
+
 async function loadAvailableModels() {
   try {
     const res = await fetch('/api/models/available')
     if (!res.ok) return
     const data = await res.json()
+    applyClaudeCliGate(data)
     const deepseekModels = Array.isArray(data.deepseek) ? data.deepseek : []
     const editGroup = document.getElementById('deepseekModelGroup')
     const wizardGroup = document.getElementById('agentModelDeepseekGroup')
@@ -4394,7 +4465,35 @@ async function loadAvailableModels() {
     )
     const orBtn = document.getElementById('openrouterBrowseBtn')
     if (orBtn) orBtn.style.display = (data.openrouterConfigured && isMainAgent) ? '' : 'none'
+
+    // Custom providers: one <option value="custom:<id>"> per defined provider.
+    const customProviders = Array.isArray(data.customProviders) ? data.customProviders : []
+    const cpGroupIds = ['editAgentModelCustomProviderGroup', 'agentModelCustomProviderGroup']
+    for (const gid of cpGroupIds) {
+      const g = document.getElementById(gid)
+      if (!g) continue
+      g.innerHTML = ''
+      if (customProviders.length === 0) { g.style.display = 'none'; continue }
+      g.style.display = ''
+      for (const p of customProviders) {
+        const opt = document.createElement('option')
+        opt.value = `custom:${p.id}`
+        opt.textContent = `🔧 ${p.label}`
+        g.appendChild(opt)
+      }
+    }
+    updateCustomModelIdRow(document.getElementById('editAgentModel'))
+    updateCustomModelIdRow(document.getElementById('agentModel'))
   } catch { /* dashboard not available */ }
+}
+
+function updateCustomModelIdRow(selectEl) {
+  if (!selectEl) return
+  const isEdit = selectEl.id === 'editAgentModel'
+  const rowId = isEdit ? 'editAgentModelCustomModelRow' : 'agentModelCustomModelRow'
+  const row = document.getElementById(rowId)
+  if (!row) return
+  row.style.display = (selectEl.value || '').startsWith('custom:') ? '' : 'none'
 }
 
 // --- OpenRouter manual-list curation (tick models into the shared dropdown) ---
@@ -4587,15 +4686,24 @@ function startModelRestartPolling(name, expectedModel, triggeredAt) {
   }, 2000)
 }
 
+document.getElementById('editAgentModel').addEventListener('change', () => {
+  updateCustomModelIdRow(document.getElementById('editAgentModel'))
+})
+
 document.getElementById('saveModelBtn').addEventListener('click', async () => {
   if (!currentAgent || currentAgent.role === 'main') return
-  const newModel = document.getElementById('editAgentModel').value
+  const selectVal = document.getElementById('editAgentModel').value
+  const isCustom = selectVal.startsWith('custom:')
+  const customProviderId = isCustom ? selectVal.slice('custom:'.length) : null
+  const newModel = isCustom
+    ? (document.getElementById('editAgentModelCustomModelId').value.trim() || selectVal)
+    : selectVal
   const name = currentAgent.name
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(name)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: newModel }),
+      body: JSON.stringify({ model: newModel, customProvider: customProviderId }),
     })
     if (!res.ok) throw new Error()
     currentAgent.model = newModel
@@ -12027,7 +12135,7 @@ function quotaLevelClass(pct) {
 // data -- and a stale or already-reset reading keeps its numbers but drops the
 // colour, because a green bar from six hours ago reassures exactly as much as
 // a green bar from six seconds ago.
-function renderQuotaStrip(q) {
+function renderQuotaStrip(q, fable) {
   const strip = document.getElementById('quotaStrip')
   const bars = document.getElementById('quotaBars')
   const note = document.getElementById('quotaStripNote')
@@ -12049,13 +12157,20 @@ function renderQuotaStrip(q) {
   const stale = q.status === 'stale'
   const nowSec = Math.floor(Date.now() / 1000)
   const windows = [
-    ['overview.quota.five_hour', q.fiveHour],
-    ['overview.quota.seven_day', q.sevenDay],
+    ['overview.quota.five_hour', q.fiveHour, stale, null],
+    ['overview.quota.seven_day', q.sevenDay, stale, null],
   ]
-  for (const [labelKey, w] of windows) {
+  // Fable/Opus comes from a different collector with its own freshness --
+  // muted independently of the statusLine-sourced `stale` above. Silently
+  // omitted (like any other null window here) when there's simply no
+  // reading yet -- non-tiered accounts never get one.
+  if (fable && fable.window) {
+    windows.push(['overview.quota.fable', fable.window, fable.status !== 'ok', fable.ageSec])
+  }
+  for (const [labelKey, w, muted0, ageSecForRow] of windows) {
     if (!w) continue
     const pct = Math.max(0, Math.min(100, Math.round(w.usedPercentage)))
-    const muted = stale || w.expired
+    const muted = muted0 || w.expired
     const row = document.createElement('div')
     row.className = 'quota-bar' + (muted ? ' muted' : '')
     let tail = ''
@@ -12063,6 +12178,13 @@ function renderQuotaStrip(q) {
       tail = ' · ' + t('overview.quota.expired')
     } else if (typeof w.resetsAt === 'number' && w.resetsAt > nowSec) {
       tail = ' · ' + t('overview.quota.resets_in', { d: formatDurationShort(w.resetsAt - nowSec) })
+    }
+    // This row's own collector age travels with it: the shared age line
+    // below (q.ageSec) only covers the statusLine source, so it says nothing
+    // about a row fed by a different collector -- without this a muted row
+    // reads as "might be old" with no way to tell minutes from days.
+    if (typeof ageSecForRow === 'number') {
+      tail += ' · ' + t('overview.quota.measured', { age: formatRelative(Date.now() - ageSecForRow * 1000) })
     }
     row.innerHTML = `
       <div class="quota-bar-label">${escapeHtml(t(labelKey))}</div>
@@ -12097,7 +12219,7 @@ async function loadOverview() {
     document.getElementById('statMemoriesSub').textContent = `${t('overview.stat.sub.memories')} · ${d.memories.categories} category`
     document.getElementById('statSkills').textContent = d.skills.count
     document.getElementById('statSkillsSub').textContent = d.skills.today > 0 ? t('overview.stat.skills_today', { n: d.skills.today }) : ''
-    renderQuotaStrip(d.quota)
+    renderQuotaStrip(d.quota, d.quotaFable)
     // Team: reuse the hierarchy graph renderer so the overview card shows
     // exactly what the Csapat page does (avatars + reports-to tree).
     try {
@@ -12382,6 +12504,76 @@ async function loadUpdates() {
     applyBtn.hidden = true
   }
   renderDiagnoseOffer()
+  renderCliUpdateOffer()
+}
+
+// Claude Code CLI update OFFER (CLIFRISSAJANLAS923). Reads /api/updates/cli:
+// installed vs offered target (latest, or the AVX-safe pin on an AVX-less
+// host), a button that only POSTs the exact offered target, and the note that
+// running sessions keep the old binary until their next start.
+let _cliUpdatePoll = null
+async function renderCliUpdateOffer(fresh) {
+  const box = document.getElementById('updatesCli')
+  if (!box) return
+  let d
+  try { d = await (await fetch('/api/updates/cli' + (fresh ? '?fresh=1' : ''))).json() } catch { box.hidden = true; return }
+  const esc = escapeHtmlUpdates
+  const lines = []
+  lines.push(`<strong>${esc(t('updates.cli.title'))}</strong>`)
+  lines.push(`<p>${esc(t('updates.cli.installed', { v: d.installed || t('updates.cli.unmeasured') }))}`
+    + (d.avxLess
+      ? ` · ${esc(t('updates.cli.avx_target', { v: d.avxSafePin || '—' }))}`
+      : ` · ${esc(t('updates.cli.latest', { v: d.latest || (d.latestError ? t('updates.cli.unknown') : '…') }))}`)
+    + `</p>`)
+  if (d.avxLess) lines.push(`<p class="muted">${esc(t('updates.cli.avx_note'))}</p>`)
+  const job = d.job || {}
+  if (job.running) {
+    lines.push(`<p><span class="spinner"></span> ${esc(t('updates.cli.running', { v: (job.result && job.result.target) || d.target || '' }))}</p>`)
+  } else if (job.result && job.result.status === 'done' && job.result.installedAfter === d.installed) {
+    lines.push(`<p class="updates-cli-done">${esc(t('updates.cli.done', { v: job.result.installedAfter || '' }))}</p>`)
+    lines.push(`<p class="muted">${esc(t('updates.cli.sessions_note'))}</p>`)
+  } else if (job.result && job.result.status === 'failed' && !d.offer) {
+    lines.push(`<p class="updates-cli-failed">${esc(t('updates.cli.failed', { msg: job.result.message || '' }))}</p>`)
+  }
+  if (d.offer && !job.running) {
+    lines.push(`<p>${esc(t('updates.cli.offer', { v: d.target }))}</p>`)
+    lines.push(`<p class="muted">${esc(t('updates.cli.sessions_note'))}</p>`)
+    lines.push(`<button class="btn-secondary btn-compact" id="updatesCliBtn">${esc(t('updates.cli.btn', { v: d.target }))}</button>`)
+    if (d.manualCommand) lines.push(`<p class="muted">${esc(t('updates.cli.manual'))} <code>${esc(d.manualCommand)}</code></p>`)
+  } else if (!d.offer && !job.running && d.installed && (d.avxLess ? d.avxSafePin : d.latest)) {
+    if (!(job.result && job.result.status === 'done' && job.result.installedAfter === d.installed)) lines.push(`<p class="muted">${esc(t('updates.cli.up_to_date'))}</p>`)
+  }
+  box.hidden = false
+  box.className = 'updates-diagnose updates-cli'
+  box.innerHTML = lines.join('')
+  const btn = document.getElementById('updatesCliBtn')
+  if (btn) btn.addEventListener('click', () => applyCliUpdate(d.target))
+  if (job.running) {
+    if (!_cliUpdatePoll) _cliUpdatePoll = setTimeout(() => { _cliUpdatePoll = null; renderCliUpdateOffer(true) }, 5000)
+  }
+}
+
+async function applyCliUpdate(target) {
+  if (!target) return
+  if (!confirm(t('updates.cli.confirm', { v: target }))) return
+  const btn = document.getElementById('updatesCliBtn')
+  if (btn) btn.disabled = true
+  try {
+    const res = await fetch('/api/updates/cli/apply', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      if (btn) btn.disabled = false
+      showToast(t('updates.cli.failed', { msg: data.error || ('HTTP ' + res.status) }))
+      return
+    }
+    showToast(t('updates.cli.started', { v: target }))
+    renderCliUpdateOffer(true)
+  } catch (err) {
+    if (btn) btn.disabled = false
+    showToast(t('updates.cli.failed', { msg: err.message || err }))
+  }
 }
 
 // Post-rollback diagnosis offer (PR-D). Reads /api/updates/status: if the last
@@ -14239,6 +14431,32 @@ async function loadSettings() {
         renderClaudePlansPanel(body)
       }
     }
+
+    // Providers tab (synthetic, owner-only feature for custom Anthropic-compatible endpoints)
+    {
+      const mod = 'providers'
+      const btn = document.createElement('button')
+      btn.className = 'tab-btn' + (mod === activeTab ? ' active' : '')
+      btn.dataset.tab = mod
+      btn.textContent = 'Provider-ok'
+      btn.addEventListener('click', () => activateSettingsTab(mod))
+      tabNav.appendChild(btn)
+
+      const panel = document.createElement('div')
+      panel.className = 'tab-panel'
+      panel.id = `settings-panel-${mod}`
+      panel.hidden = mod !== activeTab
+
+      const container = document.createElement('div')
+      container.id = 'settingsProvidersContainer'
+      panel.appendChild(container)
+
+      tabPanels.appendChild(panel)
+
+      if (mod === activeTab) {
+        renderProvidersContent(container)
+      }
+    }
   } catch (err) {
     tabPanels.innerHTML = `<p style="padding:24px;color:var(--danger)">${t('settings.error')}</p>`
   }
@@ -14258,10 +14476,13 @@ function activateSettingsTab(mod) {
     const footer = document.getElementById('settingsAutonomyUpdatedAt')
     if (grid && !grid.innerHTML.trim()) renderAutonomyContent(grid, footer)
   }
-
   if (mod === 'claude-plans') {
     const body = document.getElementById('claudePlansBody')
     if (body && !body.innerHTML.trim()) renderClaudePlansPanel(body)
+  }
+  if (mod === 'providers') {
+    const container = document.getElementById('settingsProvidersContainer')
+    if (container && !container.innerHTML.trim()) renderProvidersContent(container)
   }
 }
 
@@ -14421,6 +14642,180 @@ async function loadClaudePlansList() {
   } catch {
     list.innerHTML = `<p style="color:var(--danger);font-size:13px">${t('settings.error')}</p>`
   }
+}
+
+
+async function renderProvidersContent(container) {
+  container.innerHTML = '<p style="padding:16px;color:var(--text-muted);font-size:13px">Betöltés...</p>'
+  try {
+    const res = await fetch('/api/custom-providers')
+    if (!res.ok) throw new Error('fetch failed')
+    const { providers } = await res.json()
+    buildProvidersUI(container, providers)
+  } catch {
+    container.innerHTML = '<p style="padding:16px;color:var(--danger);font-size:13px">Hiba a provider lista betöltésekor.</p>'
+  }
+}
+
+function buildProvidersUI(container, providers) {
+  container.innerHTML = ''
+
+  const notice = document.createElement('p')
+  notice.style.cssText = 'font-size:12.5px;color:var(--text-muted);padding:12px 0 8px;line-height:1.5'
+  notice.textContent = 'Egyéni Anthropic Messages API (/v1/messages) kompatibilis végpontok. Tiszta OpenAI végponthoz proxy szükséges.'
+  container.appendChild(notice)
+
+  if (providers.length > 0) {
+    const tableWrap = document.createElement('div')
+    tableWrap.style.cssText = 'overflow-x:auto;margin-bottom:16px'
+    const table = document.createElement('table')
+    table.style.cssText = 'width:100%;min-width:520px;border-collapse:collapse;font-size:13px'
+    table.innerHTML = `<thead><tr style="border-bottom:1px solid var(--border)">
+      <th style="text-align:left;padding:6px 8px">Név</th>
+      <th style="text-align:left;padding:6px 8px">Base URL</th>
+      <th style="text-align:left;padding:6px 8px">Auth</th>
+      <th style="text-align:left;padding:6px 8px">Vault kulcs</th>
+      <th style="padding:6px 8px"></th>
+    </tr></thead><tbody id="customProvidersTableBody"></tbody>`
+    tableWrap.appendChild(table)
+    container.appendChild(tableWrap)
+    const tbody = table.querySelector('#customProvidersTableBody')
+    for (const p of providers) {
+      const tr = document.createElement('tr')
+      tr.style.borderBottom = '1px solid var(--border)'
+      tr.innerHTML = `
+        <td style="padding:6px 8px;font-weight:500">${escapeHtml(p.label)}</td>
+        <td style="padding:6px 8px;font-family:monospace;font-size:12px;word-break:break-all">${escapeHtml(p.baseUrl)}</td>
+        <td style="padding:6px 8px">${escapeHtml(p.authHeader)}</td>
+        <td style="padding:6px 8px;font-family:monospace;font-size:12px">${p.vaultKey ? escapeHtml(p.vaultKey) : '<em style="color:var(--text-muted)">nincs</em>'}</td>
+        <td style="padding:6px 8px;text-align:right;white-space:nowrap">
+          <button class="btn-secondary btn-compact" data-provider-edit="${escapeHtml(p.id)}" style="margin-right:4px">Szerkesztés</button>
+          <button class="btn-secondary btn-compact" style="color:var(--danger)" data-provider-delete="${escapeHtml(p.id)}">Törlés</button>
+        </td>`
+      tbody.appendChild(tr)
+    }
+    tbody.querySelectorAll('[data-provider-edit]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.providerEdit
+        const p = providers.find(x => x.id === id)
+        if (p) openAddProviderModal(container, p)
+      })
+    })
+    tbody.querySelectorAll('[data-provider-delete]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.providerDelete
+        if (!confirm(`Biztosan törlöd a(z) "${id}" providert?`)) return
+        try {
+          const r = await fetch(`/api/custom-providers/${encodeURIComponent(id)}`, { method: 'DELETE' })
+          if (!r.ok) throw new Error()
+          renderProvidersContent(container)
+          loadAvailableModels()
+        } catch { alert('Hiba a törléskor.') }
+      })
+    })
+  } else {
+    const empty = document.createElement('p')
+    empty.style.cssText = 'color:var(--text-muted);font-size:13px;padding:8px 0 16px'
+    empty.textContent = 'Nincs egyéni provider konfigurálva.'
+    container.appendChild(empty)
+  }
+
+  const addBtn = document.createElement('button')
+  addBtn.className = 'btn-primary btn-compact'
+  addBtn.textContent = '+ Új provider'
+  addBtn.addEventListener('click', () => openAddProviderModal(container))
+  container.appendChild(addBtn)
+}
+
+function openAddProviderModal(container, editProvider = null) {
+  const existing = document.getElementById('addProviderModal')
+  if (existing) existing.remove()
+
+  const isEdit = editProvider !== null
+  const v = (field) => isEdit ? escapeHtml(editProvider[field] || '') : ''
+
+  const overlay = document.createElement('div')
+  overlay.id = 'addProviderModal'
+  overlay.className = 'modal-overlay active'
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:480px">
+      <div class="modal-header">
+        <h2>${isEdit ? 'Provider szerkesztése' : 'Új egyéni provider'}</h2>
+        <button class="modal-close" id="addProviderModalClose">&times;</button>
+      </div>
+      <div class="modal-body" style="display:flex;flex-direction:column;gap:12px">
+        <div class="form-group">
+          <label class="form-label">Megjelenő név *</label>
+          <input type="text" id="cpLabel" class="input" placeholder="pl. DeepSeek (saját kulcs)" value="${v('label')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Provider azonosító (belső név) * <small style="color:var(--text-muted)">(csak a-z 0-9 _ -)</small></label>
+          <input type="text" id="cpId" class="input" placeholder="pl. my-deepseek" value="${v('id')}"${isEdit ? ' readonly style="opacity:0.6;cursor:not-allowed"' : ''}>
+          <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">Ez a provider belső neve, nem a modellazonosító. A modellt az ágens szerkesztőjében adod meg.</small>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Base URL * <small style="color:var(--text-muted)">(https:// vagy http://localhost)</small></label>
+          <input type="text" id="cpBaseUrl" class="input" placeholder="https://api.deepseek.com/anthropic" value="${v('baseUrl')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Auth header *</label>
+          <select id="cpAuthHeader" class="input">
+            <option value="x-api-key"${isEdit && editProvider.authHeader === 'x-api-key' ? ' selected' : ''}>x-api-key (ANTHROPIC_API_KEY)</option>
+            <option value="Bearer"${isEdit && editProvider.authHeader === 'Bearer' ? ' selected' : ''}>Bearer (ANTHROPIC_AUTH_TOKEN)</option>
+            <option value="none"${isEdit && editProvider.authHeader === 'none' ? ' selected' : ''}>none (Ollama-szerű, token nélkül)</option>
+          </select>
+        </div>
+        <div class="form-group" id="cpVaultKeyGroup"${isEdit && editProvider.authHeader === 'none' ? ' style="display:none"' : ''}>
+          <label class="form-label">Vault kulcs neve *</label>
+          <input type="text" id="cpVaultKey" class="input" placeholder="pl. my-deepseek-api-key" value="${v('vaultKey')}">
+          <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">A kulcs értékét a Vault tabon veheted fel.</small>
+        </div>
+        <p style="font-size:12px;color:var(--text-muted);background:var(--surface-hover);padding:10px;border-radius:6px;line-height:1.5">
+          Csak Anthropic Messages API (/v1/messages) kompatibilis végpont működik. Tiszta OpenAI végponthoz (pl. /v1/chat/completions) fordítóproxy szükséges, az most nem támogatott.
+        </p>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn-secondary" id="addProviderCancelBtn">Mégsem</button>
+          <button class="btn-primary" id="addProviderSaveBtn">Mentés</button>
+        </div>
+      </div>
+    </div>`
+  document.body.appendChild(overlay)
+
+  const closeModal = () => overlay.remove()
+  overlay.querySelector('#addProviderModalClose').addEventListener('click', closeModal)
+  overlay.querySelector('#addProviderCancelBtn').addEventListener('click', closeModal)
+
+  overlay.querySelector('#cpAuthHeader').addEventListener('change', (e) => {
+    const vkGroup = overlay.querySelector('#cpVaultKeyGroup')
+    vkGroup.style.display = e.target.value === 'none' ? 'none' : ''
+  })
+
+  overlay.querySelector('#addProviderSaveBtn').addEventListener('click', async () => {
+    const id = overlay.querySelector('#cpId').value.trim()
+    const label = overlay.querySelector('#cpLabel').value.trim()
+    const baseUrl = overlay.querySelector('#cpBaseUrl').value.trim()
+    const authHeader = overlay.querySelector('#cpAuthHeader').value
+    const vaultKey = authHeader !== 'none' ? overlay.querySelector('#cpVaultKey').value.trim() : null
+    if (!id || !label || !baseUrl || (authHeader !== 'none' && !vaultKey)) {
+      alert('Töltsd ki az összes kötelező mezőt.')
+      return
+    }
+    try {
+      const r = await fetch('/api/custom-providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, label, baseUrl, authHeader, vaultKey }),
+      })
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}))
+        alert(err.error || 'Hiba a mentéskor.')
+        return
+      }
+      overlay.remove()
+      renderProvidersContent(container)
+      loadAvailableModels()
+    } catch { alert('Hiba a mentéskor.') }
+  })
 }
 
 function buildSettingRow(def) {
