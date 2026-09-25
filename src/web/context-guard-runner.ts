@@ -1,3 +1,4 @@
+import { SYSTEM_DIRECTIVE_SENDER } from './system-directive.js'
 import { statSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
@@ -621,7 +622,11 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
                 )
               } else {
               const msg = createAgentMessage(
-                name,
+                // CGFROM924: the notice is written BY the guard, not by
+                // the agent being restarted -- attributing it to the agent polluted its own
+                // 'what did I send' ledger (P1 probe, 75 rows). 'system' + the router's
+                // msg_id keeps it verifiable (GET /api/messages/<id> -> from_agent=system).
+                SYSTEM_DIRECTIVE_SENDER,
                 MAIN_AGENT_ID,
                 `[CONTEXT-GUARD] ${count}. EGYMAST KOVETO bukott mentes a(z) "${name}" agensnel. ` +
                 `Ok: ${decision.reason}` + (pctRound !== null ? ` (kontextus ~${pctRound}%)` : '') +
@@ -645,7 +650,11 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         }
         try {
           createAgentMessage(
-            name,
+            // CGFROM924: the notice is written BY the guard, not by
+            // the agent being restarted -- attributing it to the agent polluted its own
+            // 'what did I send' ledger (P1 probe, 75 rows). 'system' + the router's
+            // msg_id keeps it verifiable (GET /api/messages/<id> -> from_agent=system).
+            SYSTEM_DIRECTIVE_SENDER,
             MAIN_AGENT_ID,
             `[CONTEXT-GUARD] Ujrainditottam a(z) "${name}" agentet -- ok: ${decision.reason}` +
             (pctRound !== null ? ` (kontextus ~${pctRound}%)` : '') +
