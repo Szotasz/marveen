@@ -226,26 +226,33 @@ fi
 # with no transcript. The watchdog below only asked `kill -0 bot.pid`, and the
 # thief's pid was alive -- so the plugin read as healthy the whole time, and the
 # 180s dead-grace only started once the thief was killed by hand.
-# Walks the parent chain of $1 (at most 12 hops) and returns 0 when it reaches
-# $2 (this session's pane pid). Anything else -- a foreign tree, init, a pid
-# that vanished mid-walk -- returns 1.
+# Walks the parent chain of $1 (at most 12 hops) with ps (CHANNELS_PS_BIN for
+# tests). Returns 0 when the chain reaches $2 (this session's pane pid) = OURS;
+# 1 when it ends in a foreign tree (init, or out of hops) = hijacked; 2 when it
+# cannot be measured (bad input, ps failed or printed no/non-numeric ppid, a pid
+# vanished mid-walk). The caller keeps the old liveness verdict on 2: a broken
+# instrument must never turn into an endless restart loop.
 bot_pid_descends_from() {
-  _bd_pid="$1"; _bd_root="$2"; _bd_hops=0
-  case "$_bd_pid$_bd_root" in (*[!0-9]*|'') unset _bd_pid _bd_root _bd_hops; return 1;; esac
-  while [ "$_bd_hops" -lt 12 ] && [ -n "$_bd_pid" ] && [ "$_bd_pid" -gt 1 ] 2>/dev/null; do
-    if [ "$_bd_pid" = "$_bd_root" ]; then unset _bd_pid _bd_root _bd_hops; return 0; fi
-    _bd_pid="$(/bin/ps -o ppid= -p "$_bd_pid" 2>/dev/null | tr -d '[:space:]')"
+  _bd_pid="$1"; _bd_root="$2"; _bd_hops=0; _bd_rc=2
+  case "$_bd_pid" in (*[!0-9]*|'') unset _bd_pid _bd_root _bd_hops _bd_rc; return 2;; esac
+  case "$_bd_root" in (*[!0-9]*|'') unset _bd_pid _bd_root _bd_hops _bd_rc; return 2;; esac
+  while :; do
+    if [ "$_bd_pid" = "$_bd_root" ]; then _bd_rc=0; break; fi
+    if [ "$_bd_pid" -le 1 ] || [ "$_bd_hops" -ge 12 ]; then _bd_rc=1; break; fi
+    _bd_pid="$("${CHANNELS_PS_BIN:-/bin/ps}" -o ppid= -p "$_bd_pid" 2>/dev/null | tr -d '[:space:]')"
+    case "$_bd_pid" in (*[!0-9]*|'') _bd_rc=2; break;; esac
     _bd_hops=$((_bd_hops + 1))
   done
   unset _bd_pid _bd_root _bd_hops
-  return 1
+  return "$_bd_rc"
 }
 
-# Test seam: `channels.sh --bot-owner-check <bot_pid> <pane_pid>` prints own|foreign
+# Test seam: `channels.sh --bot-owner-check <bot_pid> <pane_pid>` prints own|foreign|unknown
 # and exits before touching .env, the store or a session
 # (src/__tests__/channels-poller-hijack.test.ts).
 if [ "${1:-}" = "--bot-owner-check" ]; then
-  if bot_pid_descends_from "${2:-}" "${3:-}"; then echo own; else echo foreign; fi
+  bot_pid_descends_from "${2:-}" "${3:-}"
+  case $? in (0) echo own;; (1) echo foreign;; (*) echo unknown;; esac
   exit 0
 fi
 
@@ -1510,6 +1517,12 @@ while $TMUX has-session -t "$SESSION" 2>/dev/null; do
   fi
 
   NOW=$(date +%s)
+  # CHANSPARE925 review: channel-watchdog.sh and stuck-modal-guard.sh use
+  # `respawn-pane -k`, which gives the pane a NEW pid while this session and loop
+  # live on. Re-read it every tick, or our own fresh plugin reads as foreign.
+  _pane_pid_now="$($TMUX list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)"
+  [ -n "$_pane_pid_now" ] && _watchdog_claude_pid="$_pane_pid_now"
+  unset _pane_pid_now
   _plugin_alive=false
   _bot_hijacked=false
   if [ -f "$MAIN_BOT_PID_FILE" ]; then
@@ -1518,8 +1531,13 @@ while $TMUX has-session -t "$SESSION" 2>/dev/null; do
       # CHANSPARE925: a live bot.pid is only OUR plugin when it hangs under this
       # session's pane. A live foreign owner is a hijacked poller: alarm once per
       # pid, and count the plugin as NOT alive, so the dead-grace below restarts
-      # the session and its fresh plugin takes the poller back.
-      if [ -n "$_watchdog_claude_pid" ] && ! bot_pid_descends_from "$_bot_pid" "$_watchdog_claude_pid"; then
+      # the session and its fresh plugin takes the poller back. Unmeasurable
+      # (ps failed) keeps the old verdict -- alive -- and says so once.
+      _bd_verdict=0
+      if [ -n "$_watchdog_claude_pid" ]; then
+        bot_pid_descends_from "$_bot_pid" "$_watchdog_claude_pid"; _bd_verdict=$?
+      fi
+      if [ "$_bd_verdict" = "1" ]; then
         _bot_hijacked=true
         if [ "${_bot_hijack_seen:-}" != "$_bot_pid" ]; then
           _bot_hijack_seen="$_bot_pid"
@@ -1528,7 +1546,13 @@ while $TMUX has-session -t "$SESSION" 2>/dev/null; do
         fi
       else
         _plugin_alive=true
+        if [ "$_bd_verdict" = "2" ] && [ "${_bot_owner_unknown_logged:-}" != "$_bot_pid" ]; then
+          _bot_owner_unknown_logged="$_bot_pid"
+          echo "WARN: $CHANNEL_PROVIDER bot.pid owner check could not measure pid $_bot_pid -- keeping the liveness-only verdict" >&2
+          respawn_log "poller-owner-unmeasurable: bot.pid=$_bot_pid pane pid=${_watchdog_claude_pid:-?} -- liveness-only verdict kept"
+        fi
       fi
+      unset _bd_verdict
     fi
   fi
   unset _bot_pid
