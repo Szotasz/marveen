@@ -576,6 +576,27 @@ check("melyebb, nem vedett ut szabad", not blocks_cwd(
       RM + " -rf " + GROOT + "/agents/valaki/scratch", GROOT))
 
 print()
+print("ONVEDELEM -- a GLOB nem kerulheti meg a vedett listat (9e34a3b7):")
+# MERVE 2026-09-25, a javitas elott, szintetikus gyokeren: `rm -rf *` a gyoker
+# alatt ATMENT, es vele a store/, a .git es maga a kapu. A kod indoklasa
+# ("a shell glob nem lep at '/'-en, tehat a minta a munkakonyvtar alatt marad")
+# IGAZ allitas volt, csak nem arrol, amit a vedett lista vedene: az egy
+# MUNKAKONYVTARON BELULI lista, es a shell a globot a kapu VERDIKTJE UTAN
+# terjeszti ki. Ezert az illesztes fnmatch-csel megy: a minta-szegmens ugy
+# szamit, mintha a vedett nevre illene.
+for _g in ("*", "./*", "*/*", "s*", ".g*", "[a-z]*", "scripts/*"):
+    check("glob nem kerulheti meg a vedett listat: " + _g,
+          blocks_cwd(RM + " -rf " + _g, GROOT))
+# A masik irany, kulon, mert ha ez is blokkolna, a javitas csendben
+# visszaallitana a feltetel nelkuli tiltast:
+check("'?' NEM lyuk: egy karakter egyik vedett nevre sem illik",
+      not blocks_cwd(RM + " -rf ?", GROOT))
+check("nem vedett konyvtar globja tovabbra is szabad",
+      not blocks_cwd(RM + " -rf agents/*", GROOT))
+check("nem vedett melyebb glob tovabbra is szabad",
+      not blocks_cwd(RM + " -rf src/web/*.js", GROOT))
+
+print()
 print("ELES TELEPITES felismerese -- a jelolo a store/ telepiteskor keletkezo fajlja:")
 with tempfile.TemporaryDirectory() as td:
     check("jelolo nelkul: eldobhato masolat", not gate._live_install(td))

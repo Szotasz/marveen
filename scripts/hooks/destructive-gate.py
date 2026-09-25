@@ -74,7 +74,7 @@ Regresszios teszt: scripts/__tests__/destructive-gate.test.py
 
 Blokkolas: exit 2 + indoklas a stderr-re (a Claude Code ezt visszaadja az agensnek).
 """
-import json, os, re, sys
+import fnmatch, json, os, re, sys
 
 # Parancsok, amelyeket nem az agens dont el. Nem stilus-kerdes: mindegyik adatot vagy
 # allapotot semmisit meg visszafordithatatlanul.
@@ -131,6 +131,14 @@ def _live_install(root):
 # Feloldhatatlan alakok egy torlendo utvonalban. A '*' es a '?' NEM szerepel: a shell
 # glob nem lep at '/'-en, tehat egy munkakonyvtar alatti minta a munkakonyvtar alatt
 # marad. A behelyettesites viszont barmive kiertekelodhet, azt nem latjuk elore.
+#
+# FIGYELEM, es ezt 2026-09-25-ig rosszul olvastuk (9e34a3b7): a fenti mondat a
+# GYOKERBOL VALO KILEPESRE igaz, es CSAK arra. A vedett lista (RM_PROTECTED)
+# viszont nem a gyokerbol kilepest tiltja, hanem a gyokeron BELULI neveket vedi --
+# es oda a '*' nagyon is elerhet, mert a shell a kapu verdiktje UTAN terjeszti ki.
+# Ezert a vedett-lista illesztese fnmatch-csel megy (_rm_allowed), nem '=='-vel.
+# Ha valaki ujra azt merlegeli, hogy a '*' bekeruljon-e ebbe a listaba: az ITT
+# helyes indoklas a kilepes, a vedett nevekre mar van valasz.
 RM_UNRESOLVABLE = ('$', '`', '{', '}')
 # Push-kapcsolok, amelyek a tavoli tortenetet irjak ujra vagy toroltetnek refet.
 PUSH_FORCE_FLAGS = {'-f', '--force', '--force-with-lease', '--force-if-includes', '--mirror'}
@@ -578,7 +586,13 @@ def _rm_allowed(toks, argstart, cwd):
         rel = tuple(os.path.relpath(abspath, PROJECT_ROOT).split(os.sep))
         for prot in RM_PROTECTED:
             n = min(len(rel), len(prot))
-            if rel[:n] == prot[:n]:
+            # fnmatch es nem ==: a shell a globot a kapu VERDIKTJE UTAN terjeszti ki,
+            # tehat egy `rm -rf *` a vedett nevekre IS kiterjed. A '*' szegmens ezert
+            # ugy szamit, mintha a vedett nevre illene -- kulonben a vedett lista egy
+            # csillaggal megkerulheto. (Merve 2026-09-25, 9e34a3b7: a javitas elott
+            # `rm -rf *` a gyoker alatt ATMENT, es vele a store/, a .git es maga a kapu.)
+            if all(fnmatch.fnmatch(prot_seg, rel_seg)
+                   for rel_seg, prot_seg in zip(rel[:n], prot[:n])):
                 return False, 'vedett utvonal a munkakonyvtaron belul: %s' % '/'.join(prot)
     return True, ''
 
