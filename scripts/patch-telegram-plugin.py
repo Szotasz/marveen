@@ -12,18 +12,26 @@ Without the handlers the two words arrive as ordinary text messages, exactly
 like /usage does today, and the hook takes them.
 
 Runs at every channel start (scripts/channels.sh), before the plugin is
-spawned, over every cached plugin version:
+spawned, over every cached plugin version in ONE cache: the one this install
+launches from ($CLAUDE_CONFIG_DIR/plugins/cache, or ~/.claude/plugins/cache
+when the variable is unset). Never both: an install with its own config dir
+must not rewrite the user-level cache other Claude Code sessions load
+(maintainer review on #1529, 2026-09-25).
 
 - idempotent: a file carrying the marker is left alone;
 - all-or-nothing per file: if ANY anchor is missing (a plugin update changed
   the code), the file is left byte-identical and one loud line says so --
   /status and /help then fall back to the plugin's own answers, the channel
   itself is not touched;
-- always exits 0: a failed patch must never stop the channel from starting.
+- always exits 0: a failed patch must never stop the channel from starting;
+- with --state FILE, the outcome per file is written there as JSON, so /status
+  can say in one line when the patch is missing (src/web/system-status.ts)
+  instead of the command silently falling back to the plugin's own answer.
 
-Usage: patch-telegram-plugin.py [<plugins cache root> ...]
-(default: $CLAUDE_CONFIG_DIR/plugins/cache and ~/.claude/plugins/cache)
+Usage: patch-telegram-plugin.py [--state FILE] [<plugins cache root>]
+(default root: $CLAUDE_CONFIG_DIR/plugins/cache, else ~/.claude/plugins/cache)
 """
+import json
 import os
 import re
 import sys
@@ -86,28 +94,38 @@ def patch_file(path):
     return status
 
 
-def default_roots():
-    roots = []
+def default_root():
     cfg = os.environ.get("CLAUDE_CONFIG_DIR")
     if cfg:
-        roots.append(os.path.join(cfg, "plugins", "cache"))
-    roots.append(os.path.expanduser("~/.claude/plugins/cache"))
-    return roots
+        return os.path.join(cfg, "plugins", "cache")
+    return os.path.expanduser("~/.claude/plugins/cache")
+
+
+def write_state(state_path, state):
+    tmp = state_path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=1)
+        os.replace(tmp, state_path)
+    except Exception as e:
+        log(f"cannot write state {state_path}: {type(e).__name__}")
 
 
 def main(argv):
-    roots = argv[1:] or default_roots()
-    seen = set()
-    for root in roots:
-        base = os.path.join(root, "claude-plugins-official", "telegram")
-        if not os.path.isdir(base):
-            continue
+    args = argv[1:]
+    state_path = None
+    if len(args) >= 2 and args[0] == "--state":
+        state_path, args = args[1], args[2:]
+    root = args[0] if args else default_root()
+    files = []
+    base = os.path.join(root, "claude-plugins-official", "telegram")
+    if os.path.isdir(base):
         for ver in sorted(os.listdir(base)):
-            path = os.path.realpath(os.path.join(base, ver, "server.ts"))
-            if path in seen or not os.path.isfile(path):
-                continue
-            seen.add(path)
-            patch_file(path)
+            path = os.path.join(base, ver, "server.ts")
+            if os.path.isfile(path):
+                files.append({"version": ver, "path": path, "status": patch_file(path)})
+    if state_path:
+        write_state(state_path, {"at": int(time.time()), "root": root, "files": files})
     return 0
 
 

@@ -919,9 +919,16 @@ $TMUX set-environment -g DISABLE_AUTOUPDATER 1 2>/dev/null || true
 # them out of every cached plugin version BEFORE the plugin is spawned.
 # Idempotent; a missing anchor (plugin update) leaves the file unchanged and
 # logs one loud line; never fails the start. A plugin version downloaded
-# during this start is patched at the next one.
+# during this start is patched at the next one. Only the cache THIS session
+# launches from is written (its own CLAUDE_CONFIG_DIR when CFG_ENV set one
+# above, else the inherited one / ~/.claude), never the user-level cache on
+# top. The outcome lands in store/telegram-plugin-patch.json for /status.
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
-  python3 "$INSTALL_DIR/scripts/patch-telegram-plugin.py" 2>> "$INSTALL_DIR/store/channels-failures.log" || true
+  if [ -n "$CFG_ENV" ]; then
+    CLAUDE_CONFIG_DIR="$_cfg_dir" python3 "$INSTALL_DIR/scripts/patch-telegram-plugin.py" --state "$INSTALL_DIR/store/telegram-plugin-patch.json" 2>> "$INSTALL_DIR/store/channels-failures.log" || true
+  else
+    python3 "$INSTALL_DIR/scripts/patch-telegram-plugin.py" --state "$INSTALL_DIR/store/telegram-plugin-patch.json" 2>> "$INSTALL_DIR/store/channels-failures.log" || true
+  fi
 fi
 
 # Hybrid channel-coordinator model: the native plugin stays the PRIMARY inbound

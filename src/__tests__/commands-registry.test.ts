@@ -84,7 +84,7 @@ describe('/help generated from the registry (CMD920 test 3)', () => {
       expect(help).toContain(e.usage ?? `/${e.name}`)
     }
     for (const e of listCommands().filter(x => x.planned)) {
-      expect(help).toContain(`${e.usage ?? `/${e.name}`} — ${e.description} (tervezett)`)
+      expect(help).toContain(`${e.usage ?? `/${e.name}`}: ${e.description} (tervezett)`)
     }
     // every CMD920 3.2 read command is there
     for (const name of ['help', 'status', 'queue', 'runs', 'jobs', 'approvals', 'model', 'context', 'usage', 'board', 'commands']) {
@@ -97,9 +97,16 @@ describe('/help generated from the registry (CMD920 test 3)', () => {
     expect(confirmSection).toContain('/approvals <n> approve|reject|renew <nonce>')
   })
 
+  it('owner-facing text carries no dash: /help and /commands lines are "name: description" (review #1529, point 4)', () => {
+    registerCommand({ name: 'reggel', kind: 'write', source: 'custom', description: 'reggeli összefoglaló', run: () => {} })
+    for (const text of [renderHelp(), customCommandsText()]) {
+      expect(text).not.toMatch(/—| -- /)
+    }
+  })
+
   it('a custom command registered later shows up under SAJÁT', () => {
     registerCommand({ name: 'reggel', kind: 'write', source: 'custom', description: 'reggeli összefoglaló', run: () => {} })
-    expect(renderHelp().split('SAJÁT')[1]).toContain('/reggel — reggeli összefoglaló')
+    expect(renderHelp().split('SAJÁT')[1]).toContain('/reggel: reggeli összefoglaló')
   })
 
   it('the bot menu lists runnable names once, planned-only names left out', () => {
@@ -143,7 +150,7 @@ describe('/help generated from the registry (CMD920 test 3)', () => {
   it('/commands lists custom commands and the invalid ones with their reason', () => {
     expect(customCommandsText()).toMatch(/Saját parancsok:\nnincs/)
     setInvalidCustomCommands([{ name: 'rossz', reason: 'ismeretlen akció: foo' }])
-    expect(customCommandsText()).toContain('/rossz — ismeretlen akció: foo')
+    expect(customCommandsText()).toContain('/rossz: ismeretlen akció: foo')
   })
 })
 

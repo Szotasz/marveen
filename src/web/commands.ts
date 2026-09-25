@@ -153,7 +153,7 @@ export async function dispatchCommand(text: string, ctx: CommandContext): Promis
 }
 
 function helpLine(e: CommandSpec): string {
-  return `${usageOf(e)} — ${e.description}${e.planned ? ' (tervezett)' : ''}`
+  return `${usageOf(e)}: ${e.description}${e.planned ? ' (tervezett)' : ''}`
 }
 
 // /help text, generated from the registry. Sections follow CMD920 3.2.

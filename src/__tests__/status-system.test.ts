@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type http from 'node:http'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 
 // The route tests pin the local part so they measure the ROUTE contract; the
 // pure helpers below use the real module.
@@ -22,6 +25,7 @@ import {
   cacheHitRatio,
   getSystemStatus,
   liveBlockSpecs,
+  telegramPluginPatchStatus,
   type SystemStatus,
 } from '../web/system-status.js'
 import { tryHandleStatus } from '../web/routes/status.js'
@@ -215,5 +219,51 @@ describe('/api/status', () => {
     const { res, ctx } = fakeReqRes('?only=system')
     await tryHandleStatus(ctx as never)
     expect(JSON.parse(res.body).system).toEqual(SYSTEM)
+  })
+})
+
+// ---- review #1529 point 4c: the Telegram plugin patch is visible ------------
+
+describe('Telegram plugin-patch row', () => {
+  let dir = ''
+  let state = ''
+  const server = (v: string, text: string) => {
+    const d = join(dir, 'cache', 'claude-plugins-official', 'telegram', v)
+    mkdirSync(d, { recursive: true })
+    writeFileSync(join(d, 'server.ts'), text)
+  }
+  const writeState = (files: Array<{ version: string; status: string }>) =>
+    writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), files }))
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plugin-patch-row-')); state = join(dir, 'state.json') })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('patched: "rendben" with the version', () => {
+    server('0.0.7', '// MARVEEN-PATCH(elsokor922-d4): x')
+    writeState([{ version: '0.0.7', status: 'patched' }])
+    expect(telegramPluginPatchStatus(state)).toBe('rendben (0.0.7)')
+  })
+
+  it('anchor-missing / unwritable at start: one line naming the version, the reason and the fallback', () => {
+    server('0.0.8', 'plugin code')
+    writeState([{ version: '0.0.8', status: 'anchor-missing:status handler' }])
+    expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK: 0.0.8 (anchor-missing:status handler) · a /status és a /help a plugin saját válasza')
+    writeState([{ version: '0.0.8', status: 'unwritable' }])
+    expect(telegramPluginPatchStatus(state)).toMatch(/^HIÁNYZIK: 0\.0\.8 \(unwritable\)/)
+  })
+
+  it('a plugin version that arrived after the start is measured now, not taken from the state file', () => {
+    server('0.0.7', '// MARVEEN-PATCH(elsokor922-d4): x')
+    server('0.0.9', 'fresh plugin code')
+    writeState([{ version: '0.0.7', status: 'already' }])
+    expect(telegramPluginPatchStatus(state)).toMatch(/^HIÁNYZIK: 0\.0\.9 \(új verzió/)
+  })
+
+  it('no state file: says so instead of vanishing', () => {
+    expect(telegramPluginPatchStatus(state)).toMatch(/^nincs adat/)
+  })
+
+  it('is a CSATORNA row of the live /status', () => {
+    const csatorna = liveBlockSpecs().find(b => b.title === 'CSATORNA')!
+    expect(csatorna.rows.map(r => r.label)).toContain('Telegram plugin-patch')
   })
 })

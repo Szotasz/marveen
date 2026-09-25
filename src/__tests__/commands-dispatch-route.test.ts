@@ -4,6 +4,8 @@
 // and nothing replied, so the hook lets the prompt through to the model.
 import { describe, it, expect, beforeEach } from 'vitest'
 import { Readable } from 'node:stream'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { registerCommand, clearCommandsForTest } from '../web/commands.js'
 import { dispatchForChat, tryHandleCommands, mainSessionFromBody } from '../web/routes/commands.js'
 import { requiresAuth, resolveAuth } from '../web/auth-gate.js'
@@ -18,7 +20,7 @@ beforeEach(() => {
   registerCommand({ name: 'runs', kind: 'write', description: 'leállítás', usage: '/runs stop <nonce>', planned: true, matches: a => a[0] === 'stop' })
 })
 
-function fakeCtx(body: unknown, headers: Record<string, string> = {}, method = 'POST', path = '/api/commands/dispatch') {
+function fakeCtx(body: unknown, headers: Record<string, string> = {}, method = 'POST', path = '/api/commands/dispatch', auth: RouteContext['auth'] = { kind: 'token' } as RouteContext['auth']) {
   const out: { status: number; body: any } = { status: 0, body: null }
   const res: any = {
     setHeader() { return res },
@@ -28,7 +30,7 @@ function fakeCtx(body: unknown, headers: Record<string, string> = {}, method = '
   const req: any = Readable.from([Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))])
   req.headers = headers
   const url = new URL(`http://localhost:3420${path}`)
-  const ctx = { req, res, path, method, url, auth: { kind: 'token' } } as RouteContext
+  const ctx = { req, res, path, method, url, auth } as RouteContext
   return { ctx, out }
 }
 
@@ -125,5 +127,28 @@ describe('POST /api/commands/dispatch', () => {
   it('other paths are not ours', async () => {
     const { ctx } = fakeCtx({}, {}, 'GET', '/api/status')
     expect(await tryHandleCommands(ctx)).toBe(false)
+  })
+})
+
+describe('wiring (review #1529, point 1)', () => {
+  it('a federation peer is refused (403) even with a clean body and no agent headers, runs nothing', async () => {
+    const auth = { kind: 'federation', peer: 'peer-a' } as RouteContext['auth']
+    const { ctx, out } = fakeCtx({ text: '/status', chatId: '42' }, {}, 'POST', '/api/commands/dispatch', auth)
+    expect(await tryHandleCommands(ctx)).toBe(true)
+    expect(out.status).toBe(403)
+    expect(out.body.error).toMatch(/federation peer peer-a/)
+    expect(runs).toBe(0)
+  })
+
+  it('web.ts registers the builtins and routes /api/commands/* through tryHandleCommands', () => {
+    // Source pin: the dispatcher lives inside startWebServer, which a unit test
+    // cannot drive. Without these two lines every test above stays green while
+    // the hook gets a dashboard error on every command.
+    const web = readFileSync(join(__dirname, '..', 'web.ts'), 'utf-8')
+    const code = web.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+    expect(code).toMatch(/^\s*if \(await tryHandleCommands\(routeCtx\)\) return$/m)
+    expect(code).toMatch(/^\s*registerBuiltinCommands\(\)$/m)
+    // inside the authenticated route chain, i.e. after the auth gate resolved routeCtx
+    expect(code.indexOf('if (await tryHandleCommands(routeCtx)) return')).toBeGreaterThan(code.indexOf('if (await tryHandleStatus(routeCtx)) return'))
   })
 })
