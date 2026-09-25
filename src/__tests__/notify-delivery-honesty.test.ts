@@ -24,8 +24,10 @@ function stageScript(chatId = '42'): { scriptCopy: string } {
   mkdirSync(join(scriptsDir, 'lib'), { recursive: true })
   const scriptCopy = join(scriptsDir, 'notify.sh')
   execFileSync('/bin/cp', [SCRIPT, scriptCopy])
-  // notify.sh sources the shared send contract from its own lib/ sibling.
+  // notify.sh sources the shared send contract AND the owner-chat resolver
+  // (CHATID0) from its own lib/ sibling.
   execFileSync('/bin/cp', [join(ROOT, 'scripts', 'lib', 'send-telegram.sh'), join(scriptsDir, 'lib', 'send-telegram.sh')])
+  execFileSync('/bin/cp', [join(ROOT, 'scripts', 'lib', 'owner-chat.sh'), join(scriptsDir, 'lib', 'owner-chat.sh')])
   writeFileSync(join(stage, '.env'), `TELEGRAM_BOT_TOKEN=${FAKE_TOKEN}\nALLOWED_CHAT_ID=${chatId}\nMAIN_AGENT_ID=mainbot\n`)
   return { scriptCopy }
 }

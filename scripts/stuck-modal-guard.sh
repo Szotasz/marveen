@@ -53,6 +53,8 @@ fi
 TG_ENV="$TG_CHAN_DIR/.env"
 LOG_TAG="stuck-modal-guard"
 
+. "$(cd "$(dirname "$0")" && pwd)/lib/owner-chat.sh"
+
 STUCK_SECONDS="${STUCK_MODAL_SECONDS:-120}"   # must stay stuck this long before acting
 # Validate: a non-integer override would make the `-ge` comparison error and
 # short-circuit recovery. Fall back to the default.
@@ -127,11 +129,17 @@ sanitize_model() {
 # --- direct Bot API alert (mirrors channel-watchdog.sh alert_owner) -------------
 alert_owner() {
   local msg="$1" token chat
-  # Token + owner chat id both from config, never hardcoded.
+  # Token from config, never hardcoded. Owner chat id via resolve_owner_chat_id
+  # (CHATID0): the old direct ALLOWED_CHAT_ID/TELEGRAM_CHAT_ID reads let the
+  # installer's "0" placeholder through unnoticed, and skipped the
+  # access.json fallback entirely.
   # `tr -d '\r '` strips a trailing CR (CRLF-edited .env) / stray spaces.
   token="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$TG_ENV" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r ')"
-  chat="$(grep -E '^ALLOWED_CHAT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r ')"
-  [ -z "$chat" ] && chat="$(grep -E '^TELEGRAM_CHAT_ID=' "$TG_ENV" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r ')"
+  # The resolver's reason line stays on stderr (the guard's log), not
+  # /dev/null: a skipped alert must say why (no DM entry, several DM entries,
+  # no access.json). Not captured with 2>&1 -- any stderr noise on the success
+  # path would then become part of the chat id.
+  chat="$(resolve_owner_chat_id "$INSTALL_DIR/.env")" || chat=""
   if [ -z "$token" ] || [ -z "$chat" ]; then
     log "ALERT (no bot token or owner chat id configured): $msg"; return 1
   fi
@@ -323,7 +331,7 @@ run_guard() {
     fi
   fi
 
-  local RESPAWN_CMD="export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && ${CFG_ENV}$CLAUDE_Q --dangerously-skip-permissions ${MODEL_FLAG}--channels $PLUGIN_Q"
+  local RESPAWN_CMD="export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && ${CFG_ENV}$CLAUDE_Q --dangerously-skip-permissions ${MODEL_FLAG}--channels $PLUGIN_Q"
 
   log "stuck modal not cleared by Escape -- respawn-pane $SESSION (respawn #$((count+1)))"
   # G: alert ONLY after the respawn-pane actually succeeds, so a failed respawn
@@ -344,6 +352,9 @@ case "${1:-}" in
   classify)       classify_pane ;;
   decide)         decide_action "${2:-}" "${3:-0}" "${4:-0}" ;;
   sanitize-model) sanitize_model "${2:-}" ;;
+  # Test-only seam (scripts/__tests__/stuck-modal-guard.test.sh, CHATID0): exercise
+  # alert_owner's real owner-chat resolution without driving the full pane flow.
+  alert-owner-test) alert_owner "${2:-probe}" ;;
   *)              run_guard ;;
 esac
 exit 0

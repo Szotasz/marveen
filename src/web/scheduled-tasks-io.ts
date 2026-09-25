@@ -138,6 +138,17 @@ export interface ScheduledTask {
   // instructing the round to run it was measured failing 4 separate times
   // (fabricated numbers with the instruction standing).
   injectMetrics?: boolean
+  // Explicit Telegram delivery target for this task's result (WRONGRECIP819).
+  // Unset means "resolve it automatically" -- safe only when the agent's own
+  // channel access.json has exactly one DM contact; with 2+ contacts the
+  // runner will no longer guess (see resolveTaskChannelTarget in
+  // schedule-runner.ts; the name lost its Telegram-only spelling when Slack
+  // was added). A real chat_id string pins the exact recipient,
+  // overriding any allowlist-order heuristic. The literal string "none" means
+  // this task has NO direct Telegram recipient at all (e.g. its result goes
+  // out as an inter-agent message, or it is a self-only reminder) -- the
+  // runner omits the Telegram delivery instruction entirely, no warning.
+  telegramChatId?: string
 }
 
 function readFileOr(path: string, fallback: string): string {
@@ -170,7 +181,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = hasSkill ? readFileOr(skillPath, '') : ''
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; requiresDesktop?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; injectMetrics?: unknown } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; requiresDesktop?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; injectMetrics?: unknown; telegramChatId?: string } = {}
   try {
     config = JSON.parse(readFileOr(configPath, '{}'))
   } catch { /* use defaults */ }
@@ -196,6 +207,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     stuckAfterMinutes: parseFiniteMinutes(config.stuckAfterMinutes),
     requires: parseRequires(config.requires),
     injectMetrics: config.injectMetrics === true,
+    telegramChatId: typeof config.telegramChatId === 'string' && config.telegramChatId.trim() ? config.telegramChatId.trim() : undefined,
   }
 }
 
@@ -236,7 +248,7 @@ export function listScheduledTasks(): ScheduledTask[] {
 
 export function writeScheduledTask(
   taskName: string,
-  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number; injectMetrics?: boolean },
+  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number; injectMetrics?: boolean; telegramChatId?: string },
 ): void {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   mkdirSync(dir, { recursive: true })
@@ -273,6 +285,7 @@ export function writeScheduledTask(
   if (data.catchUpMaxAgeMinutes !== undefined) config.catchUpMaxAgeMinutes = data.catchUpMaxAgeMinutes
   if (data.stuckAfterMinutes !== undefined) config.stuckAfterMinutes = data.stuckAfterMinutes
   if (data.injectMetrics !== undefined) config.injectMetrics = data.injectMetrics
+  if (data.telegramChatId !== undefined) config.telegramChatId = data.telegramChatId
   if (data.description !== undefined) config.description = data.description
   if (!config.createdAt) config.createdAt = Math.floor(Date.now() / 1000)
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))

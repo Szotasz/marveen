@@ -689,10 +689,84 @@ park_morning_timer() {
   return 0
 }
 
+# Main-agent inbox observer, for hosts that already exist. The installers wire
+# it on a fresh install; without this, every machine installed before it stays
+# exactly as it was -- the script present, nothing running it -- which is the
+# defect the observer itself is about, one level up.
+#
+# Two platforms, two mechanisms, and BOTH are needed here: on Linux the unit
+# pair below, on macOS the launchd installer (which refuses to run anywhere
+# else). Idempotent on both: the Linux half writes nothing once the timer unit
+# exists, the launchd half rewrites the same plist byte for byte.
+install_main_inbox_observer_unit() {
+  [ -x "$INSTALL_DIR/scripts/main-inbox-observer.sh" ] || return 0
+  if [ "$(uname -s)" = "Darwin" ]; then
+    [ -x "$INSTALL_DIR/scripts/install-main-inbox-observer.sh" ] || return 0
+    if "$INSTALL_DIR/scripts/install-main-inbox-observer.sh" --load >/dev/null 2>&1; then
+      echo -e "  Fo-agens inbox-figyelo telepitve (5 percenkent, launchd)"
+    else
+      echo -e "  FIGYELEM: az inbox-figyelo telepitese nem sikerult -- kezzel: scripts/install-main-inbox-observer.sh --load"
+    fi
+    return 0
+  fi
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  [ -d "$units_dir" ] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  # Same service-id derivation as the keepalive timer above, and for the same
+  # reason: extend the units that actually exist on this host.
+  for chan_unit in "$units_dir/"*-channels.service; do
+    [ -f "$chan_unit" ] || continue
+    _svc_id="$(basename "$chan_unit" -channels.service)"
+    _io_unit="${_svc_id}-main-inbox-observer"
+    [ -f "$units_dir/${_io_unit}.timer" ] && continue
+    _bot_name="$(sed -n 's/^BOT_NAME=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | tr -d '"')"
+    [ -n "$_bot_name" ] || _bot_name="Marveen"
+    _tz_line="# no explicit TZ detected; inheriting host default"
+    _tz="$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || true)"
+    [ -n "$_tz" ] && [ "$_tz" != "UTC" ] && _tz_line="Environment=TZ=$_tz"
+    cat >"$units_dir/${_io_unit}.service" <<EOF
+[Unit]
+Description=${_bot_name} out-of-process observer of the main agent's inbox queue
+
+[Service]
+Type=oneshot
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/scripts/main-inbox-observer.sh
+Environment=PATH=$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=$HOME
+${_tz_line}
+StandardOutput=append:$INSTALL_DIR/store/main-inbox-observer.log
+StandardError=append:$INSTALL_DIR/store/main-inbox-observer.log
+EOF
+    # Not bound to the dashboard unit on purpose: "the dashboard is down" is one
+    # of the states being observed, so the timer must outlive it.
+    cat >"$units_dir/${_io_unit}.timer" <<EOF
+[Unit]
+Description=${_bot_name} main-agent inbox observer every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl --user daemon-reload 2>/dev/null || true
+    if systemctl --user enable --now "${_io_unit}.timer" >/dev/null 2>&1; then
+      echo -e "  Fo-agens inbox-figyelo telepitve (5 percenkent, a dashboard folyamaton kivul): ${_io_unit}.timer"
+    else
+      echo -e "  FIGYELEM: ${_io_unit}.timer unit megirva, de az engedelyezese nem sikerult -- inditsd kezzel: systemctl --user enable --now ${_io_unit}.timer"
+    fi
+  done
+  return 0
+}
+
 run_unit_maintenance() {
   repair_morning_timer "$@"
   migrate_channels_restart "$@"
   install_keepalive_probe_timer "$@"
+  install_main_inbox_observer_unit "$@"
   park_morning_timer "$@"
   return 0
 }

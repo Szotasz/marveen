@@ -77,3 +77,20 @@ describe('GET /api/kanban?agent= -- case-insensitive, and any assignee on the bo
     expect(out.body.error).toBe('unknown agent')
   })
 })
+
+// Follow-up review on PR #1408: every test above has a card on the board for each configured
+// name, so kanbanAssigneeExists() also accepts it and masks the configured-name comparison. A
+// mutant that makes that comparison case-sensitive again (`n === agent`) passed the whole
+// suite. On an empty board (a fresh install, or a new agent that has no card yet) only the
+// configured-name check can accept the name, so this is where the case-insensitivity shows.
+describe('GET /api/kanban?agent= -- configured name, different case, empty board', () => {
+  beforeEach(() => {
+    initDatabase(':memory:')
+  })
+
+  it.each(['marveen', 'MARVEEN', 'szabolcs', 'SZABOLCS'])('?agent=%s with zero cards -> 200 and []', async (name) => {
+    const out = await get(`?agent=${name}`)
+    expect(out.status).toBe(200)
+    expect(out.body).toEqual([])
+  })
+})

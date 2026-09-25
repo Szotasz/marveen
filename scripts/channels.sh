@@ -219,6 +219,43 @@ if [ "${1:-}" = "--pane-dead-check" ]; then
   exit 0
 fi
 
+# CHANSPARE925: is the process that owns bot.pid OURS? Measured 2026-09-25: a
+# Claude Code daemon background session, started from the same config dir with
+# --channels, loaded the plugin, wrote ITS bun pid into bot.pid and took the
+# poller ("replacing stale poller"). The owner's messages then went to a session
+# with no transcript. The watchdog below only asked `kill -0 bot.pid`, and the
+# thief's pid was alive -- so the plugin read as healthy the whole time, and the
+# 180s dead-grace only started once the thief was killed by hand.
+# Walks the parent chain of $1 (at most 12 hops) with ps (CHANNELS_PS_BIN for
+# tests). Returns 0 when the chain reaches $2 (this session's pane pid) = OURS;
+# 1 when it ends in a foreign tree (init, or out of hops) = hijacked; 2 when it
+# cannot be measured (bad input, ps failed or printed no/non-numeric ppid, a pid
+# vanished mid-walk). The caller keeps the old liveness verdict on 2: a broken
+# instrument must never turn into an endless restart loop.
+bot_pid_descends_from() {
+  _bd_pid="$1"; _bd_root="$2"; _bd_hops=0; _bd_rc=2
+  case "$_bd_pid" in (*[!0-9]*|'') unset _bd_pid _bd_root _bd_hops _bd_rc; return 2;; esac
+  case "$_bd_root" in (*[!0-9]*|'') unset _bd_pid _bd_root _bd_hops _bd_rc; return 2;; esac
+  while :; do
+    if [ "$_bd_pid" = "$_bd_root" ]; then _bd_rc=0; break; fi
+    if [ "$_bd_pid" -le 1 ] || [ "$_bd_hops" -ge 12 ]; then _bd_rc=1; break; fi
+    _bd_pid="$("${CHANNELS_PS_BIN:-/bin/ps}" -o ppid= -p "$_bd_pid" 2>/dev/null | tr -d '[:space:]')"
+    case "$_bd_pid" in (*[!0-9]*|'') _bd_rc=2; break;; esac
+    _bd_hops=$((_bd_hops + 1))
+  done
+  unset _bd_pid _bd_root _bd_hops
+  return "$_bd_rc"
+}
+
+# Test seam: `channels.sh --bot-owner-check <bot_pid> <pane_pid>` prints own|foreign|unknown
+# and exits before touching .env, the store or a session
+# (src/__tests__/channels-poller-hijack.test.ts).
+if [ "${1:-}" = "--bot-owner-check" ]; then
+  bot_pid_descends_from "${2:-}" "${3:-}"
+  case $? in (0) echo own;; (1) echo foreign;; (*) echo unknown;; esac
+  exit 0
+fi
+
 if [ "${1:-}" = "--classify-mcp-pane" ]; then
   resolve_plugin_ids "${2:-$CHANNEL_PROVIDER}"
   classify_mcp_plugin_row "$(cat)"
@@ -538,6 +575,15 @@ export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false
 # Verified present in the shipped binary's CLAUDE_CODE_DISABLE_* table (2.1.205).
 export CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1
 
+# CHANSPARE925: no Agent view in fleet sessions. Its "← for agents" key moves the
+# running session into the Claude Code daemon as a background worker, and the daemon
+# then keeps it (and a prewarmed spare) alive with the same --channels flag -- a
+# second copy of the channel plugin that takes the bot poller from the pane.
+# Measured 2026-09-25: one Left keypress into the main pane did exactly that; with
+# this variable the key does nothing and no daemon starts, while run_in_background,
+# Monitor and the Agent tool (foreground and background subagents) keep working.
+export CLAUDE_CODE_DISABLE_AGENT_VIEW=1
+
 # The single, serialized Claude Code install/update point (see the
 # DISABLE_AUTOUPDATER block above).
 #
@@ -602,7 +648,7 @@ TMUX="$(command -v tmux)"
 # the one place the pane-scrape recovery could still misread it (the v1.15.0
 # dim-strip catches it on the recovery side, but killing it at the SOURCE on MAIN
 # too closes the gap end-to-end). Parity with the sub-agent launch.
-MCP_BATCH_ENV="export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000 && "
+MCP_BATCH_ENV="export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000 && "
 
 # Resolve the main agent's model so we can pass --model explicitly. Without
 # --model claude-code falls back to its built-in default, which can drift
@@ -977,6 +1023,8 @@ _tmux_set_auth_globals() {
   fi
   # Propagate the prompt-suggestion disable to every sub-agent tmux session.
   $TMUX set-environment -g CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION false 2>/dev/null || true
+  # CHANSPARE925: and the Agent-view kill switch (see the export above).
+  $TMUX set-environment -g CLAUDE_CODE_DISABLE_AGENT_VIEW 1 2>/dev/null || true
   # Same for the auto-updater kill switch. A plain `export` above only reaches
   # sessions that inherit THIS shell, i.e. only when channels.sh happened to
   # create the tmux server first; the dashboard's worker sessions often win that
@@ -1497,11 +1545,42 @@ while $TMUX has-session -t "$SESSION" 2>/dev/null; do
   fi
 
   NOW=$(date +%s)
+  # CHANSPARE925 review: channel-watchdog.sh and stuck-modal-guard.sh use
+  # a pane respawn (-k), which gives the pane a NEW pid while this session and loop
+  # live on. Re-read it every tick, or our own fresh plugin reads as foreign.
+  _pane_pid_now="$($TMUX list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)"
+  [ -n "$_pane_pid_now" ] && _watchdog_claude_pid="$_pane_pid_now"
+  unset _pane_pid_now
   _plugin_alive=false
+  _bot_hijacked=false
   if [ -f "$MAIN_BOT_PID_FILE" ]; then
     _bot_pid=$(cat "$MAIN_BOT_PID_FILE" 2>/dev/null | tr -d '[:space:]')
     if [ -n "$_bot_pid" ] && [ "$_bot_pid" -gt 1 ] 2>/dev/null && kill -0 "$_bot_pid" 2>/dev/null; then
-      _plugin_alive=true
+      # CHANSPARE925: a live bot.pid is only OUR plugin when it hangs under this
+      # session's pane. A live foreign owner is a hijacked poller: alarm once per
+      # pid, and count the plugin as NOT alive, so the dead-grace below restarts
+      # the session and its fresh plugin takes the poller back. Unmeasurable
+      # (ps failed) keeps the old verdict -- alive -- and says so once.
+      _bd_verdict=0
+      if [ -n "$_watchdog_claude_pid" ]; then
+        bot_pid_descends_from "$_bot_pid" "$_watchdog_claude_pid"; _bd_verdict=$?
+      fi
+      if [ "$_bd_verdict" = "1" ]; then
+        _bot_hijacked=true
+        if [ "${_bot_hijack_seen:-}" != "$_bot_pid" ]; then
+          _bot_hijack_seen="$_bot_pid"
+          echo "WARN: $CHANNEL_PROVIDER poller hijacked -- bot.pid $_bot_pid is not under this session's pane ($_watchdog_claude_pid)" >&2
+          respawn_log "poller-hijack: bot.pid=$_bot_pid is not under $SESSION pane pid $_watchdog_claude_pid -- owner chain: $(/bin/ps -o pid=,ppid=,command= -p "$_bot_pid" 2>/dev/null | cut -c1-160)"
+        fi
+      else
+        _plugin_alive=true
+        if [ "$_bd_verdict" = "2" ] && [ "${_bot_owner_unknown_logged:-}" != "$_bot_pid" ]; then
+          _bot_owner_unknown_logged="$_bot_pid"
+          echo "WARN: $CHANNEL_PROVIDER bot.pid owner check could not measure pid $_bot_pid -- keeping the liveness-only verdict" >&2
+          respawn_log "poller-owner-unmeasurable: bot.pid=$_bot_pid pane pid=${_watchdog_claude_pid:-?} -- liveness-only verdict kept"
+        fi
+      fi
+      unset _bd_verdict
     fi
   fi
   unset _bot_pid
@@ -1521,7 +1600,7 @@ while $TMUX has-session -t "$SESSION" 2>/dev/null; do
   # failure the watchdog exists to catch, silently defeated. Single-agent
   # installs never saw this because there was only ever one plugin process to
   # find, and it happened to be the right one.
-  if [ "$_plugin_alive" != "true" ]; then
+  if [ "$_plugin_alive" != "true" ] && [ "$_bot_hijacked" != "true" ]; then
     if [ -n "$_watchdog_claude_pid" ] && /usr/bin/pgrep -P "$_watchdog_claude_pid" bun >/dev/null 2>&1; then
       _plugin_alive=true
     fi

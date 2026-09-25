@@ -51,13 +51,20 @@ if [ -z "${GH_TOKEN:-}" ] && [ -f store/.github-fleet-token ]; then
 fi
 [ -n "${GH_TOKEN:-}" ] && export GH_TOKEN || echo "WARN: no GH_TOKEN (vault+file both empty), gh calls may fail" >&2
 BOT_TOKEN="$(grep -E '^TELEGRAM_BOT_TOKEN=' .env | cut -d= -f2- | tr -d '"'"'"' ')"
-CHAT_ID="$(grep -E '^ALLOWED_CHAT_ID=' .env | cut -d= -f2- | tr -d '"'"'"' ')"
+# CHATID0: resolve_owner_chat_id, not a raw ALLOWED_CHAT_ID read -- the old
+# read let the installer's "0" placeholder through unnoticed, and never
+# fell back to a paired channel's access.json.
+. "$(cd "$(dirname "$0")" && pwd)/lib/owner-chat.sh"
+CHAT_ID="$(resolve_owner_chat_id "$INSTALL_DIR/.env" || true)"
 
 send_telegram() {
   local text="$1"
+  # Nothing sent is a failure, not a success: the callers only stamp/snapshot
+  # an item as reported when this returns 0, so returning 0 here would drop
+  # the alert for good (review round 1). Failing keeps it for the next tick.
   if [ -z "${BOT_TOKEN:-}" ] || [ -z "${CHAT_ID:-}" ]; then
-    echo "send_telegram: no BOT_TOKEN/CHAT_ID configured, alert skipped" >&2
-    return 0
+    echo "send_telegram: no BOT_TOKEN/CHAT_ID configured, alert not sent" >&2
+    return 1
   fi
   # Honest send (NOTIFYVAKSWEEP826): the old fire-and-forget curl let a failed
   # alert vanish while the state snapshot below marked the change as reported.

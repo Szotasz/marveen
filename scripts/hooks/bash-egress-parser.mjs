@@ -37,6 +37,23 @@ import { maskInertLiterals } from '../self-pace-gate.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 export const BLOCK_LOG = process.env.BASH_EGRESS_BLOCK_LOG || join(ROOT, 'store', 'bash-egress-blocks.jsonl')
+// EGRESSVENDOR925: vendor-API hosts a Bash call may reach (owner decision, per install).
+// store/egress-vendor-hosts.json = { "hosts": ["api.elevenlabs.io"] }. EXACT host match only:
+// no wildcard, no suffix match, no subdomain inheritance -- `elevenlabs.io.evil.com` and
+// `x.api.elevenlabs.io` are other hosts. A missing or unreadable file, or an entry that is not
+// a plain DNS name, means no exception: today's behaviour (deny). This is NOT
+// store/egress-allowlist.json -- that one is the WebFetch / quarantine-reader list.
+export const VENDOR_HOSTS_PATH = process.env.BASH_EGRESS_VENDOR_HOSTS || join(ROOT, 'store', 'egress-vendor-hosts.json')
+// A plain DNS name: labels of [a-z0-9-], no leading/trailing hyphen, at least one dot, a letter TLD.
+// Not an IP, not localhost, no `*`, no leading dot, no port, no userinfo.
+const VENDOR_HOST = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/
+export function parseVendorHosts(raw) {
+  const list = raw && typeof raw === 'object' && Array.isArray(raw.hosts) ? raw.hosts : []
+  return new Set(list.filter((h) => typeof h === 'string' && VENDOR_HOST.test(h)))
+}
+export function loadVendorHosts(path = VENDOR_HOSTS_PATH) {
+  try { return parseVendorHosts(JSON.parse(readFileSync(path, 'utf-8'))) } catch { return new Set() }
+}
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
 const URL_RE = /\b(?:https?|ftp):\/\/[^\s'"`<>\\)]+/gi
 const INTERPRETER = /^(?:python(?:\d+(?:\.\d+)?)?|node(?:js)?|perl|ruby|php|deno|bun)$/
@@ -284,11 +301,11 @@ export function curlDestinations(args) {
   }
   return dests.filter((h) => !LOCAL_HOSTS.has(h))
 }
-export function classify(command, depth = 0) {
+export function classify(command, depth = 0, vendorHosts = new Set()) {
   const norm = String(command ?? '').replace(/\\\r?\n/g, ' ')
   const { stripped: orig, inners } = liftSubstitutions(norm)
   if (depth < 4) {
-    for (const inner of inners) { const r = classify(inner, depth + 1); if (r.deny) return r }
+    for (const inner of inners) { const r = classify(inner, depth + 1, vendorHosts); if (r.deny) return r }
   }
   const masked = maskInertLiterals(orig)
   if (masked === null || masked.length !== orig.length) return { deny: false, reason: 'unparseable', hosts: [] }
@@ -314,7 +331,8 @@ export function classify(command, depth = 0) {
     const at = argv ? argv.findIndex((w) => w.split('/').pop() === 'curl') : -1
     if (at !== -1) found = curlDestinations(argv.slice(at + 1))
     else found = [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
-    const hosts = [...new Set(found)]
+    // A listed vendor host passes only by itself: any other destination in the same call still denies.
+    const hosts = [...new Set(found)].filter((h) => !vendorHosts.has(h))
     if (hosts.length) return { deny: true, reason: `${target}-external`, hosts }
   }
   return { deny: false, reason: null, hosts: [] }
@@ -332,7 +350,7 @@ if (isInvokedDirectly()) {
   try { payload = JSON.parse(readFileSync(0, 'utf-8')) } catch { process.exit(0) }
   if (payload?.tool_name !== 'Bash') process.exit(0)
   let r
-  try { r = classify(payload?.tool_input?.command) } catch (e) { process.stderr.write(`bash-egress-parser: internal error, allowing: ${e?.message}\n`); process.exit(0) }
+  try { r = classify(payload?.tool_input?.command, 0, loadVendorHosts()) } catch (e) { process.stderr.write(`bash-egress-parser: internal error, allowing: ${e?.message}\n`); process.exit(0) }
   if (r.deny) {
     try {
       mkdirSync(dirname(BLOCK_LOG), { recursive: true })

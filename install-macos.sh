@@ -1538,6 +1538,23 @@ if [ -x "$INSTALL_DIR/scripts/install-channel-keepalive-probe.sh" ]; then
   fi
 fi
 
+# Main-agent inbox observer, installed the same way and for the same reason: a
+# probe nobody schedules is not a probe. Every delivery path except the main
+# agent's queue is watched by something, and the one in-process reader of that
+# queue lives inside the dashboard -- so when the dashboard is down or wedged,
+# the watcher is down with it and mail to the main agent sits pending unseen.
+# The observer runs from launchd instead, on its own 5-minute schedule, and
+# alerts over the direct Bot API rather than /api/*, which dies with the same
+# process. Idempotent, --load starts it at once, and non-fatal: a failed
+# observer install must not fail the whole installation.
+if [ -x "$INSTALL_DIR/scripts/install-main-inbox-observer.sh" ]; then
+  if "$INSTALL_DIR/scripts/install-main-inbox-observer.sh" --load >/dev/null 2>&1; then
+    ok "Fo-agens inbox-figyelo telepitve (5 percenkent, a dashboard folyamaton KIVUL)"
+  else
+    warn "Az inbox-figyelo telepitese nem sikerult -- inditsd kezzel: scripts/install-main-inbox-observer.sh --load"
+  fi
+fi
+
 # Verify channel plugin is working
 sleep 3
 echo ""

@@ -346,6 +346,90 @@ export function hookScriptAlreadyEffectiveInOtherScope(
   } catch { return false }
 }
 
+// HOSTMOVE923: install-anchored absolute paths survive a host move.
+//
+// The scaffold bakes PROJECT_ROOT into two places as an ABSOLUTE path: the
+// curl recipes in every agent's CLAUDE.md (deliberately absolute -- a relative
+// `store/.dashboard-token` 401s from agents/<name>/, measured 2026-07-25, see
+// `tokenPath` above) and the PreCompact agent-hook prompt in settings.json.
+// Both are written once and never re-derived, so after the store/ and agents/
+// trees are copied to a machine with a different home or install dir the
+// recipes keep naming the OLD root. `cat` of a missing token file yields an
+// empty Bearer, every call 401s, and nothing alerts. Measured 2026-09-23 on
+// the book -> mini move: all four sub-agents' CLAUDE.md (5 lines each) and
+// PreCompact prompts (5 occurrences each) still named /Users/<old-user>/...
+// for a full day while the hook backfill logged "backfilled" -- it only ADDS
+// missing entries, it never re-reads an existing prompt.
+//
+// The fix stays with absolute paths (the relative form is the measured 401)
+// and instead re-anchors them on every boot: any absolute path that ends in
+// one of the install-anchored suffixes below but starts with a root other
+// than the CURRENT PROJECT_ROOT is rewritten to the current root. Suffixes,
+// not a remembered old root, are the detector, so it needs no migration
+// record and is idempotent: a second run finds nothing foreign.
+const INSTALL_ANCHORED_SUFFIXES = ['/store/.dashboard-token', '/scripts/hooks/', '/scripts/skill-index.sh'] as const
+// An absolute path prefix: starts with a `/` that is not the tail of something
+// else (`~/x`, `{{X}}/x`, `a/x` are not absolute roots -- the lookbehind keeps
+// them out), runs until the suffix, and never crosses whitespace, quotes,
+// backticks or brackets -- so `$(cat /a/b/store/…)` captures `/a/b`, not
+// `$(cat`. Lazy, so the prefix is the shortest root that makes the suffix
+// follow.
+const FOREIGN_ROOT_RE = new RegExp(
+  `(?<![\\w~}.\\-/])(/[^\\s"'\`()<>\\[\\]]*?)(${INSTALL_ANCHORED_SUFFIXES.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`,
+  'g',
+)
+
+export interface ForeignRootRewrite {
+  text: string
+  /** Number of path occurrences re-anchored. 0 means `text` is unchanged. */
+  replaced: number
+  /** Distinct foreign roots that were replaced, for the log line. */
+  foreignRoots: string[]
+}
+
+/**
+ * Re-anchor install-anchored absolute paths onto `currentRoot`. Pure; exported
+ * for unit tests. A path already under `currentRoot` is left byte-identical,
+ * and text with no such path comes back with replaced=0.
+ */
+export function rewriteForeignProjectRoot(text: string, currentRoot: string): ForeignRootRewrite {
+  const root = currentRoot.replace(/\/+$/, '')
+  const foreign = new Set<string>()
+  let replaced = 0
+  const out = text.replace(FOREIGN_ROOT_RE, (whole, prefix: string, suffix: string) => {
+    if (prefix === root) return whole
+    foreign.add(prefix)
+    replaced++
+    return root + suffix
+  })
+  return { text: out, replaced, foreignRoots: [...foreign] }
+}
+
+/**
+ * In-place pass over an agent's hooks block: every `prompt` string (the
+ * `type: "agent"` hooks -- PreCompact today) gets its install-anchored paths
+ * re-anchored on `currentRoot`. Commands are NOT touched here: they are
+ * owned by upgradeLegacyHookCommands (basename-matched to the template).
+ * Exported for unit tests.
+ */
+export function upgradeForeignRootInHookPrompts(existingHooks: Record<string, unknown>, currentRoot: string): boolean {
+  let changed = false
+  for (const entries of Object.values(existingHooks)) {
+    if (!Array.isArray(entries)) continue
+    for (const entry of entries as HookEntry[]) {
+      for (const hook of entry.hooks ?? []) {
+        if (typeof hook.prompt !== 'string') continue
+        const r = rewriteForeignProjectRoot(hook.prompt, currentRoot)
+        if (r.replaced > 0) {
+          hook.prompt = r.text
+          changed = true
+        }
+      }
+    }
+  }
+  return changed
+}
+
 // Idempotent migration: every agent's settings.json should carry the
 // PreCompact hook (memory save + skill reflection). Pre-refactor agents
 // were scaffolded before scaffoldAgentDir seeded the template, so their
@@ -404,6 +488,9 @@ export function ensureAgentHooks(
     //   3. Sync the timeout of any command hook whose command matches but timeout differs.
     const existingHooks = existing.hooks as Record<string, unknown>
     let changed = upgradeLegacyHookCommands(existingHooks, tplHooks)
+    // HOSTMOVE923: an existing PreCompact prompt inherited from another
+    // install/host names a dead root; the add pass below would never see it.
+    if (upgradeForeignRootInHookPrompts(existingHooks, PROJECT_ROOT)) changed = true
     // Matcher pass: a widened template matcher (e.g. SessionStart gaining
     // `clear`) must reach agents whose command string is unchanged.
     if (syncHookMatchers(existingHooks, tplHooks)) changed = true
@@ -1824,7 +1911,8 @@ function buildAutonomyBody(name: string): string {
     `{"from":"${name}","to":"${MAIN_AGENT_ID}","content":"[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek."}`,
     'JSON',
     '```',
-    'FIGYELEM, a `-d "{...}"` DUPLA idézőjeles alak TILOS inter-agent üzenetnél: a shell a backtickot',
+    'FIGYELEM, a `-d "{...}"` DUPLA idézőjeles alak TILOS **MINDEN API-payloadnál** -- inter-agent',
+    'üzenet, memória-mentés és -PATCH, napi napló, eset-jegyzet, kanban egyaránt: a shell a backtickot',
     'és a `$(...)`-t végrehajtja a payloadon belül, a szöveg helyére a parancs KIMENETE kerül, és a',
     'küldés HTTP 200-at ad -- semmi nem jelzi. Idézett heredoc (fent) vagy `--data-binary @fájl`.',
     'A header `$(cat ...)`-ja szándékosan interpolál, az maradhat.',
@@ -1832,6 +1920,10 @@ function buildAutonomyBody(name: string): string {
     "mint a dupla idézőjel, csak a `<<'JSON'` nem. És mivel az idézettben semmit nem lehet",
     'behelyettesíteni, ha a payloadba EGY változó is kell, ne a shell állítsa össze: `python3` +',
     '`json.dumps` (vagy `jq`) írja fájlba, és `curl --data-binary @fájl` küldje.',
+    'Nem az üzenet-típus számít, hanem hogy a szöveg BACKTICKET vagy `$(...)`-t tartalmaz-e: egy',
+    '`python3 -c "..."` dupla idézőjeles parancsban a backtickkel körbevett mezőnevek parancsként futnak le',
+    '("command not found"), és némán kiesnek a mentett szövegből, miközben a mentés HTTP 200-at ad.',
+    'Ezért csak az ÍRÁS UTÁNI VISSZAOLVASÁS fogja meg.',
     '',
     '**Level 2 (jóváhagyás szükséges)**: kérj jóváhagyást az API-n MIELŐTT cselekszel.',
     '',
@@ -2068,6 +2160,30 @@ export function ensureFleetRosterSection(name: string): void {
 
   if (updated === existing) return
   atomicWriteFileSync(claudeMdPath, updated)
+}
+
+// HOSTMOVE923: the CLAUDE.md side of the same re-anchoring (see
+// rewriteForeignProjectRoot above). The generated curl recipes are absolute on
+// purpose; this makes them follow the install when the tree is copied to a
+// different home or directory. Runs on every boot and respawn like the other
+// ensure*Section passes; a file already on the current root is not rewritten.
+// Returns true when the file changed, so the caller can log which agents were
+// re-anchored and from which foreign roots.
+export function ensureProjectRootInClaudeMd(name: string): boolean {
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return false
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return false
+  }
+  const r = rewriteForeignProjectRoot(existing, PROJECT_ROOT)
+  if (r.replaced === 0) return false
+  atomicWriteFileSync(claudeMdPath, r.text)
+  logger.info({ agent: name, replaced: r.replaced, foreignRoots: r.foreignRoots, projectRoot: PROJECT_ROOT },
+    'ensureProjectRootInClaudeMd: install-anchored paths re-anchored on the current PROJECT_ROOT')
+  return true
 }
 
 // SKILLUTCSAPDA822: the near-identical `.claude-config/skills` path IS the

@@ -5,10 +5,11 @@
 // entry point) so it unit-tests under tsc's rootDir=src, the same reason
 // quota-gate.ts's decision logic lives under src/ instead of inside a script.
 import { parseQuotaSnapshot } from './quota-snapshot.js'
-import { decideRotationAction, estimateWindowFree, type RotationCandidate } from './claude-plan-rotation.js'
+import { decideRotationAction, candidateFromObservation, type RotationCandidate } from './claude-plan-rotation.js'
 import type { ClaudePlan } from './web/claude-plans.js'
 import {
   recordObservation,
+  markFleetReported,
   type ClaudePlansState,
   type ObservedPlanState,
 } from './web/claude-plans-state.js'
@@ -86,37 +87,61 @@ export function decideAndRecord(input: {
   // stay current even on a quiet cycle.
   const stateWithObservation = recordObservation(state, agentId, activePlanId, observed)
 
+  // Candidacy looks at BOTH windows (candidateFromObservation): a plan whose
+  // week is spent, or whose token was last rejected as invalid, is not a
+  // landing spot however fresh its 5h window looks.
   const candidates: RotationCandidate[] = plans
     .filter((p) => p.id !== activePlanId && p.channelsAllowed)
-    .map((p) => {
-      const lastObserved = stateWithObservation.plans[p.id]?.windows?.five_hour
-      return { planId: p.id, freeFivePct: estimateWindowFree(lastObserved, nowMs) }
-    })
+    .map((p) => candidateFromObservation(p.id, stateWithObservation.plans[p.id], nowMs))
+    .filter((c): c is RotationCandidate => c !== null)
 
+  const activeSevenDay = observed.windows.seven_day
   const decision = decideRotationAction({
     activePlanId,
     activeFiveHour: { usedPercent: fiveHour.used_percent, resetsAt: fiveHour.resets_at },
+    ...(activeSevenDay ? { activeSevenDay } : {}),
     candidates,
     nowMs,
   })
 
   const resetsInMin = roundMin(fiveHour.resets_at * 1000 - nowMs)
   const pct = Math.round(fiveHour.used_percent)
+  // Appended AFTER the historical fields so a prompt that parses the old
+  // ROTATE/NO_ALTERNATIVE shape keeps working; `trigger` names the window
+  // that demanded the switch (5h or 7d).
+  const weekly = activeSevenDay
+    ? ` sevenDayPct=${Math.round(activeSevenDay.usedPercent)} sevenDayResetsInMin=${roundMin(activeSevenDay.resetsAt * 1000 - nowMs)}`
+    : ''
 
   if (decision.action === 'rotate') {
     const target = plans.find((p) => p.id === decision.targetPlanId)
     return {
-      printLine: `ROTATE agent=${agentId} target=${decision.targetPlanId} targetLabel=${target?.label ?? decision.targetPlanId} currentLabel=${activePlan.label} currentPct=${pct} resetsInMin=${resetsInMin}`,
+      printLine: `ROTATE agent=${agentId} target=${decision.targetPlanId} targetLabel=${target?.label ?? decision.targetPlanId} currentLabel=${activePlan.label} currentPct=${pct} resetsInMin=${resetsInMin} trigger=${decision.trigger}${weekly}`,
       nextState: stateWithObservation,
     }
   }
   if (decision.action === 'no-alternative') {
     return {
-      printLine: `NO_ALTERNATIVE agent=${agentId} currentLabel=${activePlan.label} currentPct=${pct} resetsInMin=${resetsInMin}`,
+      printLine: `NO_ALTERNATIVE agent=${agentId} currentLabel=${activePlan.label} currentPct=${pct} resetsInMin=${resetsInMin} trigger=${decision.trigger}${weekly}`,
       nextState: stateWithObservation,
     }
   }
   // no-pressure / near-reset: quiet tick, but the observation is still worth
   // keeping so the dashboard badge does not go stale.
   return { printLine: null, nextState: stateWithObservation }
+}
+
+/**
+ * The fleet leg of a rotation (CLAUDE_ROTATION_FLEET) runs inside the
+ * dashboard after POST /api/claude-plans/rotate has already answered -- and
+ * after the main agent that would report it has been restarted. It records
+ * its structured line in the state side-car instead; the next heartbeat tick
+ * prints it exactly once (this) so the scheduled task can relay it.
+ */
+export function pendingFleetReport(
+  state: ClaudePlansState,
+  nowMs: number,
+): { printLine: string; nextState: ClaudePlansState } | null {
+  if (!state.fleet || state.fleet.reportedAt !== undefined || !state.fleet.line) return null
+  return { printLine: state.fleet.line, nextState: markFleetReported(state, nowMs) }
 }

@@ -54,7 +54,7 @@ import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST } from './main-agent.js'
 import { recordChannelEvent } from './channel-event-log.js'
 import { notifyChannel } from '../notify.js'
 import { sendRoutineAlert } from './routine-alert.js'
-import { getProvider, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
+import { getProvider, channelStateDir, channelStateDirEnvVar, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { attemptChannelMcpReconnect } from './channel-mcp-reconnect.js'
 import { readLastIngestionTimestampAcross, mainTranscriptDirs } from './inbound-probe.js'
 import {
@@ -455,6 +455,32 @@ export async function recoverStuckInputForSession(
 // that did NOT clear the parked text is logged and the next tick escalates
 // within the attempts budget (decideStuckInputRecovery caps it). 'hold' and
 // 'clear-preamble' submit nothing, so there is nothing to verify there.
+// CLEARLANE925. The two clear-only recovery actions (clear-preamble,
+// clear-scheduled) used to call clearInputBuffer() OUTSIDE the per-pane send
+// lane, while every clear+re-inject path above takes it in 'recover' mode. The
+// gap is not theoretical. Measured 2026-09-25 on the main pane, five times in
+// five hours: a scheduled prompt is still being typed into the box (the
+// sendPromptToSession emit span holds the lane), the 15s watcher samples the
+// half-typed text, reads it as a parked scheduled tick, and clears it. The
+// clear removes the head, the emit keeps typing, and the TAIL is submitted as
+// a headless prompt 2-4s later -- the "Scheduled task fired" line lands AFTER
+// the "could not be emptied" line every time. Taking the lane here makes the
+// clear fail-closed against a live delivery, exactly like the re-inject paths:
+// a genuinely parked box is still there on the next tick.
+export type ParkedClearResult = 'skipped-locked' | 'cleared' | 'left-fragment'
+
+export async function clearParkedInputUnderLane(
+  session: string,
+  clear: (session: string) => Promise<boolean> = s => clearInputBuffer(s),
+): Promise<ParkedClearResult> {
+  let cleared = false
+  const res = await withSessionSendLock(session, null, 'recover', async () => {
+    cleared = await clear(session)
+  })
+  if (!res.ran) return 'skipped-locked'
+  return cleared ? 'cleared' : 'left-fragment'
+}
+
 async function performStuckInputAction(
   session: string,
   action: StuckInputAction,
@@ -537,18 +563,26 @@ async function performStuckInputAction(
       }
       case 'clear-preamble': {
         logger.warn({ session, attempt }, 'Stuck input -- truncated safety preamble, clearing buffer (no re-inject)')
-        const cleared = await clearInputBuffer(session)
-        if (!cleared) logger.warn({ session, attempt }, 'Stuck input -- clear-preamble left text in the box; the leftover stays parked')
+        const result = await clearParkedInputUnderLane(session)
+        if (result === 'skipped-locked') {
+          logger.info({ session, attempt }, 'Stuck-input recovery (clear-preamble) skipped: a delivery is in flight into this pane (fail-closed)')
+          break
+        }
+        if (result === 'left-fragment') logger.warn({ session, attempt }, 'Stuck input -- clear-preamble left text in the box; the leftover stays parked')
         break
       }
       case 'clear-scheduled': {
         logger.warn({ session, attempt }, 'Stuck input -- parked scheduled-task tick, clearing buffer (no re-inject; next schedule fire re-delivers)')
-        const cleared = await clearInputBuffer(session)
+        const result = await clearParkedInputUnderLane(session)
+        if (result === 'skipped-locked') {
+          logger.info({ session, attempt }, 'Stuck-input recovery (clear-scheduled) skipped: a delivery is in flight into this pane (fail-closed)')
+          break
+        }
         // A half-cleared tick is the 2026-09-03 wedge: the fragment left behind
         // stops matching a delivery wrapper, so every later restart decision
         // reads it as a human draft. Say so in the log rather than reporting a
         // clean clear that did not happen.
-        if (!cleared) logger.warn({ session, attempt }, 'Stuck input -- clear-scheduled left a fragment in the box; expect machineOrigin=false on the next tick')
+        if (result === 'left-fragment') logger.warn({ session, attempt }, 'Stuck input -- clear-scheduled left a fragment in the box; expect machineOrigin=false on the next tick')
         break
       }
       case 'enter':
@@ -795,9 +829,20 @@ export function buildMainSessionRespawnCmd(opts: {
    * non-primary channel after a recovery respawn -- see that helper's comment.
    */
   extraPluginIds?: string[]
+  /**
+   * The channel plugin's state-dir env var and value, from
+   * mainChannelStateEnv(). REQUIRED: since #915 the main agent's bot token
+   * lives in the install-scoped dir, and a plugin launched without
+   * *_STATE_DIR falls back to ~/.claude/channels/<provider>/, finds no .env
+   * and exits ("TELEGRAM_BOT_TOKEN required") -- every in-process respawn came
+   * up channel-deaf (measured 2026-09-24, 21:04 and 22:03 CEST). channels.sh
+   * and channel-watchdog.sh already export it; this is the third launcher.
+   */
+  channelStateEnv: { name: string; dir: string }
 }): string {
   return [
     'export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"',
+    `&& export ${opts.channelStateEnv.name}=${shSingleQuote(opts.channelStateEnv.dir)}`,
     // MCP startup-batch tuning (parity with channels.sh + startAgentProcess):
     // the --channels plugin is a stdio MCP server; the main session runs the
     // most MCP servers (filesystem/playwright/chrome + claude.ai connectors +
@@ -807,6 +852,9 @@ export function buildMainSessionRespawnCmd(opts: {
     // env as the channels.sh boot path, else a recovery respawn comes up
     // un-tuned and can re-starve under load.
     '&& export MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000',
+    // CHANSPARE925: no Agent view -- parity with channels.sh (Left backgrounds the
+    // session into the daemon, whose --channels copy takes the bot poller).
+    '&& export CLAUDE_CODE_DISABLE_AGENT_VIEW=1',
     // macOS main-agent config isolation -- parity with channels.sh CFG_ENV. The
     // token is read at launch via $(cat) so the secret never lands in argv/`ps`.
     // An own-credential dir (explicit or a rotated claude-plans entry) gets NO
@@ -846,6 +894,13 @@ export function buildMainSessionRespawnCmd(opts: {
   ].join(' ')
 }
 
+// The *_STATE_DIR export every main-session respawn must carry -- the same
+// directory channels.sh resolves at boot (install-scoped, or the legacy shared
+// dir on a not-yet-migrated install).
+export function mainChannelStateEnv(provider: ChannelProviderType): { name: string; dir: string } {
+  return { name: channelStateDirEnvVar(provider), dir: channelStateDir(provider) }
+}
+
 // FRESH respawn of the main channels session, for hosts with no launchd.
 //
 // Exported for the scheduled auto-restart (auto-restart-runner.ts), whose macOS
@@ -879,6 +934,7 @@ export function respawnMainSessionFresh(): void {
     claudePath: claudeBin(),
     pluginId: provider.pluginId,
     extraPluginIds: readExtraChannelPluginIds(),
+    channelStateEnv: mainChannelStateEnv(provider.type),
     model: readConfiguredMainModel(),
     // The main session always starts a new conversation -- this is the whole
     // point of the nightly restart (drop the accumulated context).
@@ -972,6 +1028,7 @@ export async function resumeMarveenSession(): Promise<boolean> {
       claudePath: claudeBin(),
       pluginId: provider.pluginId,
       extraPluginIds: readExtraChannelPluginIds(),
+      channelStateEnv: mainChannelStateEnv(provider.type),
       model: readConfiguredMainModel(),
       continueSession: true,
       // Parity with channels.sh: a recovery respawn must also land on the
@@ -1230,6 +1287,7 @@ function respawnMarveenSessionFresh(): boolean {
       claudePath: claudeBin(),
       pluginId: provider.pluginId,
       extraPluginIds: readExtraChannelPluginIds(),
+      channelStateEnv: mainChannelStateEnv(provider.type),
       model: readConfiguredMainModel(),
       continueSession: false,
       // Same channels.sh-bypass concern as resumeMarveenSession: this fresh
@@ -1569,6 +1627,38 @@ const KEEPALIVE_RESPAWN_GRACE_MS = 15 * 60 * 1000 // let a respawned session re-
 const KEEPALIVE_LIVENESS_TRUST_CEILING_MS = 45 * 60 * 1000
 let marveenLastKeepaliveRespawn = 0
 
+// LOOP BREAKER (KEEPALIVELOOP923). Measured 2026-09-23: the keepalive producer
+// (launchd probe) hung, the file stayed stale from ~01:34 with a LIVE poller,
+// and this path respawned a healthy main session 28 times (02:19-13:32), each
+// time losing the conversation and alerting the owner. A respawn cannot fix a
+// dead PRODUCER. So: when the poller is alive and the file has NOT advanced
+// since our previous keepalive respawn, count it as a useless respawn; after
+// KEEPALIVE_USELESS_RESPAWN_LIMIT of them stop respawning, alert ONCE, and
+// resume normal behaviour as soon as the file moves again. A dead poller is
+// real deafness and is never held back by this breaker.
+export const KEEPALIVE_USELESS_RESPAWN_LIMIT = 2
+let keepaliveUselessRespawns = 0
+let keepaliveMtimeAtLastRespawn: number | null = null
+let keepaliveLoopAlerted = false
+
+export type KeepaliveLoopDecision = 'respawn' | 'hold' | 'hold-and-alert'
+
+export function decideKeepaliveLoop(opts: {
+  pollerAlive: boolean
+  keepaliveMtimeMs: number | null
+  mtimeAtLastRespawn: number | null
+  uselessRespawns: number
+  alreadyAlerted: boolean
+  limit: number
+}): { decision: KeepaliveLoopDecision; uselessRespawns: number } {
+  if (!opts.pollerAlive) return { decision: 'respawn', uselessRespawns: 0 }
+  const advanced = opts.mtimeAtLastRespawn == null || opts.keepaliveMtimeMs == null
+    || opts.keepaliveMtimeMs > opts.mtimeAtLastRespawn
+  const useless = advanced ? 0 : opts.uselessRespawns + (opts.mtimeAtLastRespawn == null ? 0 : 1)
+  if (useless < opts.limit) return { decision: 'respawn', uselessRespawns: useless }
+  return { decision: opts.alreadyAlerted ? 'hold' : 'hold-and-alert', uselessRespawns: useless }
+}
+
 /**
  * Pure decision: should the keepalive respawn be deferred because the
  * main session pane is actively busy?
@@ -1677,11 +1767,13 @@ function checkMainKeepaliveStaleness(): void {
   // during idle periods, each one losing the running --continue context).
   // The bun-child check is the same liveness signal channel-plugin-unlock
   // already uses; reuse it here so the two paths agree on "alive".
+  let pollerAlive = false
   try {
     const claudePid = getClaudePidForSession(MAIN_CHANNELS_SESSION)
     if (claudePid != null) {
       const provider = getProvider(getMainAgentProvider())
       if (hasChannelPluginAlive(claudePid, provider.type)) {
+        pollerAlive = true
         // A live poller is trusted only while the keepalive is freshly stale.
         // Past KEEPALIVE_LIVENESS_TRUST_CEILING_MS a live-but-non-delivering
         // poller reads as deafness, so we do NOT skip -- we fall through to the
@@ -1708,6 +1800,14 @@ function checkMainKeepaliveStaleness(): void {
     ageMs = null // file missing -> keep-alive not yet established
   }
   const now = Date.now()
+  const keepaliveMtimeMs = ageMs == null ? null : now - ageMs
+  if (keepaliveLoopAlerted && keepaliveMtimeAtLastRespawn != null && keepaliveMtimeMs != null
+      && keepaliveMtimeMs > keepaliveMtimeAtLastRespawn) {
+    logger.info('Keepalive advanced again -- loop breaker released')
+    keepaliveLoopAlerted = false
+    keepaliveUselessRespawns = 0
+    keepaliveMtimeAtLastRespawn = null
+  }
   // B2 fix: cross-path grace — use the later of the two respawn timestamps so
   // an inbound-probe respawn also suppresses the keepalive path for the grace window.
   const msSinceLastRespawn = lastMainRespawnAt() ? now - lastMainRespawnAt() : null
@@ -1729,8 +1829,26 @@ function checkMainKeepaliveStaleness(): void {
     return
   }
   const ageMin = Math.round((ageMs ?? 0) / 60000)
+  const loop = decideKeepaliveLoop({
+    pollerAlive,
+    keepaliveMtimeMs,
+    mtimeAtLastRespawn: keepaliveMtimeAtLastRespawn,
+    uselessRespawns: keepaliveUselessRespawns,
+    alreadyAlerted: keepaliveLoopAlerted,
+    limit: KEEPALIVE_USELESS_RESPAWN_LIMIT,
+  })
+  keepaliveUselessRespawns = loop.uselessRespawns
+  if (loop.decision !== 'respawn') {
+    if (loop.decision === 'hold-and-alert') {
+      keepaliveLoopAlerted = true
+      logger.warn({ ageMs, uselessRespawns: loop.uselessRespawns }, 'Keepalive loop breaker: respawns did not advance the keepalive while the poller is alive -- holding further respawns (KEEPALIVELOOP923)')
+      sendAlert(`⚠️ A fő channel keep-alive ${ageMin} perce nem frissül, de a Telegram-poller él, és ${loop.uselessRespawns} újraindítás sem segített. További újraindítást NEM csinálok (csak a beszélgetést vinné el). Valószínűleg a jelző-forrás akadt el: nézd meg a com.marveen.channel-keepalive-probe launchd jobot és a store/channel-keepalive-probe.log-ot. Ha a jelző újra frissül, a figyelő magától visszaáll.`)
+    }
+    return
+  }
   logger.warn({ ageMs, paneState }, 'Channel keep-alive stale -- main session likely wedged/deaf, respawning via respawn-pane')
   sendRoutineAlert('keepalive-respawn', `⚠️ A fő channel keep-alive ${ageMin} perce nem frissült -- respawn-pane a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik, memoria marad).`)
+  keepaliveMtimeAtLastRespawn = keepaliveMtimeMs
   if (respawnMarveenSessionFresh()) {
     marveenLastKeepaliveRespawn = now
     // Suppress the process-down handler during the respawn window (reuses the

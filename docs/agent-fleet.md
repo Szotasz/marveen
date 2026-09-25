@@ -47,6 +47,40 @@ Az indítás kezeli a Claude Code "resume summary" modal automatikus elutasítá
 
 A teljes életciklus (start/stop/status/lista) és az inter-agent üzenetküldés **távoli ügynöknél is működik**, ssh-n keresztül (lásd lentebb) -- a helyi ügynökök viselkedése változatlan.
 
+### Saját setup-token fájl (`oauthTokenFile`)
+
+Alapból minden helyi al-ügynök a flotta setup-tokenjével indul (`store/.claude-oauth-token`).
+Ha egy ügynöknek SAJÁT tokennel kell futnia (például hogy ne a flotta kvótáját terhelje), az
+`agents/<név>/agent-config.json`-ba kerül egy abszolút út:
+
+```json
+{ "oauthTokenFile": "/home/<user>/.config/marveen/tokens/<név>.token" }
+```
+
+Az indító a flotta-fájl HELYETT ezt exportálja, ugyanabban az alakban
+(`export CLAUDE_CODE_OAUTH_TOKEN="$(cat '<fájl>')"`), tehát a token értéke nem kerül a
+launch-parancsba és a `ps`-be. Az ügynök ugyanúgy izolált `CLAUDE_CONFIG_DIR`-t kap, mint
+flotta-tokennel; csak a token forrása más.
+
+**Fail-closed:** ha a mező jelen van, de nem használható, az ügynök NEM indul (hangos
+naplóbejegyzés, a start-hívás hibát ad), és a flotta-tokenre SOHA nem esik vissza. Nem
+használható a mező, ha:
+- az út nem abszolút, vagy nem csak betűt, számot és `_ . / -` jelet tartalmaz, vagy van benne `..`;
+- a fájl hiányzik, nem sima fájl (például symlink), nem a futtató felhasználóé, vagy a módja
+  bővebb, mint `0600`;
+- a tartalom üres, nem `sk-ant-oat` kezdetű, szóközt vagy vezérlőkaraktert tartalmaz, vagy
+  maga a flotta-fájl, illetve annak másolata;
+- az ügynök beállítása mellett nem tudna hatni: fő ügynök, távoli ügynök, `authMode`
+  `own_team` vagy `api`, kifejezett `claudeConfigDir` vagy `claudePlan`;
+- Claude-modellnél az izolált config-könyvtár nem hozható létre (a közös `~/.claude`
+  forgó gazda-hitelesítője felülírná az env-tokent).
+
+A naplóba és az API-ra csak a fájl útja és a lenyomat (a token sha256-jának első 8 karaktere)
+kerülhet; a token értéke soha. A mező csak kézzel írható az `agent-config.json`-ba (a
+`PUT /api/agents/<név>` nem írja): a dashboard-token az egész flottánál ott van, egy API-írási
+út bármelyik ügynöknek megengedné, hogy egy másik ügynök hitelesítő-forrását átállítsa.
+A mező gép-specifikus: bundle-importkor eltávolításra kerül (lásd lent).
+
 ---
 
 ## 🌐 Távoli (remote) ügynökök
@@ -199,7 +233,7 @@ hordozható részhalmaza: identitás + viselkedés, opcionálisan a csatorna-tit
 | `.claude/channels/*/.env` (channel bot token) | | ✅ |
 | `.claude/channels/*/access.json`, `invites.json`, `approved/` (párosítás) | | ✅ |
 
-A gép-specifikus mezők (`remoteHost`, `remoteWorkdir`, `claudeConfigDir`) importkor
+A gép-specifikus mezők (`remoteHost`, `remoteWorkdir`, `claudeConfigDir`, `oauthTokenFile`) importkor
 **eltávolításra kerülnek**, így az importált ügynök tiszta, helyi ügynökként indul.
 
 ### Dashboard
