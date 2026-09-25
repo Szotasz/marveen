@@ -1,6 +1,6 @@
 ---
 name: kanban-audit
-description: 4 óránkénti kanban-tábla audit. Tisztítás (7+ napos done archiválás) + beakadt task-ok számon kérése (előző audit óta nem mozdult in_progress -> ping az assignee-nek).
+description: 4 óránkénti kanban-tábla audit. Tisztítás (7+ napos done archiválás) + beakadt task-ok számon kérése (megkezdett, azóta nem mozdult -> ping az assignee-nek).
 ---
 
 # Kanban 4 órás audit
@@ -43,31 +43,31 @@ Ha a config hiányzik vagy a kulcs nincs benne → default level 3 (régi viselk
    curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:$PORT/api/kanban" | python3 -c "
 import json,sys,time
 cut=int(time.time())-7*86400
-for c in json.load(sys.stdin):
-    if c.get('status')=='done' and not c.get('archived_at') and (c.get('updated_at') or 0) < cut:
-        print(c['id'])
-" | while read -r id; do
+d=[c for c in json.load(sys.stdin) if c.get('status')=='done' and not c.get('archived_at')]
+o=[c for c in d if (c.get('updated_at') or 0) < cut]
+print(f'Tisztítás: vizsgált={len(d)}, találat={len(o)}' + ('' if d else ' (nem tudott mérni)'))
+for c in o: print(c['id'])
+" | tail -n +2 | while read -r id; do
      curl -s -X POST -H "Authorization: Bearer $TOKEN" "http://localhost:$PORT/api/kanban/$id/archive" >/dev/null
    done
    ```
 
-3. **Beakadt task detection** (előző audit óta nem mozdult): in_progress kártyák amik `updated_at < last_audit_at`:
+3. **Beakadt task detection** (megkezdett, nem mozdult -- nem csak `in_progress`; a logika a `/api/kanban/stuck`-ban él):
    ```bash
-   LAST="$(python3 -c "
-import json
-try: print(json.load(open('{{INSTALL_DIR}}/store/kanban-audit-state.json')).get('last_audit_at') or 0)
-except Exception: print(0)
-")"
-   curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:$PORT/api/kanban" | python3 -c "
+   curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:$PORT/api/kanban/stuck?planned_days=7&active_days=3" | python3 -c "
 import json,sys,time
-last=int('''$LAST''' or 0); now=int(time.time())
-rows=[c for c in json.load(sys.stdin)
-      if c.get('status')=='in_progress' and not c.get('archived_at') and (c.get('updated_at') or 0) < last]
-rows.sort(key=lambda c: c.get('updated_at') or 0)
-for c in rows:
-    print(c['id'], '|', (c.get('assignee') or '-'), '|', round((now-(c.get('updated_at') or now))/3600.0,1), 'h |', c.get('title'))
+d=json.load(sys.stdin)
+print(f\"Beakadás: vizsgált={d['examined']}, találat={len(d['stuck'])}\" + ('' if d['examined'] else ' (nem tudott mérni)'))
+now=int(time.time())
+for c in sorted(d['stuck'], key=lambda c: -c['last_activity']):
+    print(' ', c['id'], '|', (c.get('assignee') or '-'), '|', round((now-c['last_activity'])/3600.0,1), 'h |', c['title'])
+w=d['waiting']
+print(f\"Várakozó: {w['examined']}, határidőn túl: {len(w['overdue'])}, határidő nélkül: {w['without_deadline']}\")
+for c in w['overdue']:
+    print(' ', c['id'], '|', (c.get('assignee') or '-'), '|', c['overdue_days'], 'nap késés |', c['title'])
 "
    ```
+   Munka-nyom csak a felelős saját, nem gépi kommentje. Tömeges vagy gépi kommentet `"automated": true`-val írj (POST `/api/kanban/<id>/comments`). A `waiting` nem tétlenség: a határidőn túliakat a tulajdonosnak jelezd, ne pingeld.
 
 4. **Beakadt task -> ping**: minden beakadt kártyához küldj inter-agent message-t az assignee-nek (kivéve {{MAIN_AGENT_ID}}-nek és üres assignee-nek):
    ```
@@ -135,7 +135,7 @@ for r in sqlite3.connect('{{INSTALL_DIR}}/store/claudeclaw.db').execute('''<IDE 
      az `updated_at`-ot. Nalunk frissiti. Ezert az (a)-t ne detektorral keresd, hanem a statusz-valtas
      pillanataban -- a jelentes valodi targya az ATLEPO-lista es a kulso-ember/biztonsagi kiemeles.
    - A backlog-metszes GAZDA-DONTES, ne csinald magadtol (lasd a deep-clean buktatot).
-     A te dolgod a lista eloallitasa + a ket kiemelt kategoria megjelolese.
+     A te dolgod a lista eloallitasa. Jelentsd: vizsgált=N,találat=K,0→nemmért.
 
 4c. **KIKULDES-DETEKTOR A FRISS KARTYAKRA (2026-08-24-tol, AUDITKIKULD823 -- ez eddig HIANYZOTT,
    es egy ugyfel-bejelentes 4,5 orat ult miatta).** A fenti harom halo (done-archivalas, beakadt
@@ -170,6 +170,7 @@ except Exception: print(0)
    KOVETTE (2026-08-26 08:00, merve).** A lenti bekezdes 2026-08-10 ota irja, hogy KULSO szerzonel a nulla
    inter-agent uzenet a VART allapot (nekik PR-komment vagy email megy). A lekerdezesben viszont
    `NOT IN ('', '<fo-agens>', '<tulajdonos>')` alaku kizaro lista allt, vagyis minden kulso nev ATCSUSZOTT rajta. A 08:00-s teljes-halmazos
+   Jelentsd: vizsgált=N,találat=K,0→nemmért.
    futas OT `waiting` tetelt jelentett kikuldetlennek, es MIND AZ OT kulso emberhez tartozott
    (zollak, stivi1g-gif, tekt, szuszupaks, zsuzsa). Nulla valodi lelet, ot sor zaj -- pont az a fajta,
    ami mellett a valodi lelet elveszne.
@@ -238,7 +239,29 @@ except Exception: print(0)
 
 5. **State-fájl frissítés** (a futás VÉGÉN): `store/kanban-audit-state.json` -> `{"last_audit_at": <current Unix timestamp>}`.
 
-6. **Delegálatlan kártyák**: in_progress/waiting/planned amiknek assignee NULL/üres -> log + Telegram csak akkor ha 3+ ilyen van.
+6. **Delegálatlan kártyák**: minden nem archivált, NEM `done` kártya (kizárással szűrj, ne a státuszok felsorolásával), aminek assignee NULL/üres -> log + Telegram csak akkor ha 3+ ilyen van.
+   Jelentsd: vizsgált=N,találat=K,0→nemmért.
+
+6a. **Detektorral nem fedett státuszú kártyák** (KANBANSTATUSZVAK916, KÖTELEZŐ minden körben): a többi
+   detektor a `planned`, `in_progress`, `waiting`, `done` négyesre szűr, a tábla viszont ennél többet enged
+   (a `kanban_cards` séma CHECK-je szerint a `testing` is érvényes). Az ilyen kártya SEMELYIK detektorban
+   nem jelenik meg (mért eset 2026-09-16: `17d07456`, `testing`, 2026-09-05 óta), az audit számára nem létezik.
+   ```bash
+   curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:$PORT/api/kanban" | python3 -c "
+import json,sys,time
+COVERED={'planned','in_progress','waiting','done'}
+for c in json.load(sys.stdin):
+    if c.get('archived_at') or c.get('status') in COVERED: continue
+    age=(time.time()-(c.get('updated_at') or 0))/86400
+    print(c['id'][:8],'|',c.get('status'),'|',round(age,1),'napja nem mozdult |',(c.get('title') or '')[:50])
+"
+   ```
+   **Ha van találat:** a kör jelentésébe ID-vel, státusszal és korral kerüljön bele, és Telegramon is
+   menjen ki (7. pont), mert ezekre a kártyákra a stuck- és a
+   delegálatlan-mérés nem érvényes. **Ha 0:** a jelentésben is 0-ként szerepeljen, ne maradjon ki,
+   különben nem látszik, hogy a lépés lefutott. A `COVERED` halmazt csak akkor bővítsd, ha
+   az új státuszt egy detektor ténylegesen méri, különben a bővítés újra elrejti a kártyát.
+   Jelentsd: vizsgált=N,találat=K,0→nemmért.
 
 6b. **ELŐRE-DATÁLT CÍM-BÉLYEG detektor** (2026-08-25-én vezetve be, mert a hiba negyedszer fordult elő):
    a kártyacímbe írt óra BECSÜLT lehet, és hosszú munkamenetben MONOTON NÖVEKVŐ eltérést halmoz
@@ -267,9 +290,49 @@ for c in json.load(sys.stdin):
 7. **Telegram csak akkor írj ha**:
    - 3+ beakadt task van (kritikus)
    - Új blokker (waiting > 48h)
+   - Detektorral nem fedett státuszú kártya (6a): ugyanarról a kártyáról naponta legfeljebb egyszer, a többi körben csak a jelentésben
+   - **TULAJDONOSRA VÁRÓ KEMÉNY BLOKKOLÓ, státusztól és kortól függetlenül.**
+     A fenti két küszöb szűk, mert mindkettő ÁLLAPOTOT vagy KORT néz, a
+     blokkoló viszont lehet friss és lehet `planned` is. 2026-08-11: egy
+     kártya arról, hogy elfogyott egy szolgáltató előrefizetett kerete és
+     minden hívás 429-cel tér vissza, `planned` státuszban, 100 perce
+     létezett, tehát SEM a "3+ beakadt", SEM a "waiting > 48h" nem fogta meg.
+     Közben négy szálat állított meg, és csak a tulajdonos tudta feloldani,
+     mert számlázás.
+     A szabály: ha egy kártya (a) kemény megállást ír le, (b) az assignee-je a
+     tulajdonos, vagy a leírása szerint csak ő tudja elvégezni, és (c) nem
+     látszik, hogy szólt volna neki bárki, akkor kimegy Telegramon.
+     A (c) ellenőrzése: nézd meg, kérte-e valaki inter-agent üzenetben a
+     továbbítást, és fusd át a saját kimenő üzeneteidet. Ha kétséges, inkább
+     szólj: a kétszer elmondott blokkoló olcsóbb, mint a négy órát álló flotta.
    - Egyébként csendben (heartbeat-stílus)
 
 ## Buktatók
+- **A saját kommentelésed elrejti a kártyát a kor-alapú metrikák elől.** Egy
+  komment (és minden kártya-írás) frissíti az `updated_at`-et, tehát a
+  `waiting > 48h` lista ÜRESRE válthat attól, hogy az előző körben te magad
+  írtál a kártyára. 2026-08-11, saját mérés: egy kártya 307 órája várt, 12:00-kor
+  kommenteltem rá, és a 16:00-s auditon már 0 volt a `waiting > 48h` -- nem
+  azért, mert megoldódott, hanem mert én nyúltam hozzá. A hiba iránya
+  megnyugtató, és ettől veszélyes: néma nulla, ami sikernek látszik.
+  Ha "0 blokkolót" mérsz, nézd meg, mozgott-e a kártya az előző audit óta ÉS ki
+  mozgatta:
+  ```bash
+  python3 -c "
+  import sqlite3
+  c=sqlite3.connect('store/claudeclaw.db')
+  r=c.execute(\"select author from kanban_comments where card_id=? order by created_at desc limit 1\", ('<id>',)).fetchone()
+  print(r[0] if r else '(nincs komment)')"
+  ```
+  Az `updated_at` az utolsó ÍRÁS ideje, nem a munka utolsó valódi mozgásáé.
+  **A VALÓS kort a `created_at`-tel vesd össze, ha az `updated_at` a te írásod.**
+  2026-08-25: egy kártya 162,5 órásnak mérődött, de az `updated_at` egy héttel
+  korábbi saját kommentem volt; a kártya 14 napja készült. A kétszeres eltérés
+  eldönti, halasztható-e még egy napot, ezért a jelentésben a valós kort mondd,
+  a mérttel együtt.
+  Ebből következik egy tartózkodás is: **ne kommentelj a kártyára pusztán azért,
+  hogy rögzítsd, hogy megnézted.** Ha csak ellenőriztél, a csatornán jelezd, ne a
+  táblán. Kommentet akkor írj, ha MÉRTÉL valamit, ami a kártyán maradandó.
 - **NE `sqlite3` CLI-t és NE `jq`-t használj.** Egyik sincs telepítve egy átlagos Linux
   gépen (a telepítő függőségei: ffmpeg, git, tmux, lsof, curl, python3, pipx, unzip), és a
   hívás ott `exit 127`-tel elhal -- ez a lépés némán kimarad, miközben az audit sikeresnek
@@ -325,18 +388,9 @@ for c in json.load(sys.stdin):
 - **EGY RÉGI KOCKÁZAT-KÁRTYÁT MEG LEHET ERŐSÍTENI ANÉLKÜL, HOGY ESZKALÁLNÁD (2026-07-29)**: a `56dd56bf` (fleet-wide Supabase prod-write zárás) 36 napja waiting, és tegnap már helyesen NEM eszkaláltam, mert az élő állapot szerint a technikai zár kész, csak a vault-PAT áthelyezése maradt. A csábítás ilyenkor az, hogy a következő auditban ugyanazt írod le újra ("változatlan"), és a kártya lassan háttérzajjá válik. **Amit helyette csinálj: keresd meg, hogy AZNAP történt-e olyan, ami a kártya kockázatát KONKRÉTABBÁ teszi.** Aznap három külön feladatban használtam ugyanazt a megosztott `MARVEEN-CONNECTORS-PAT`-ot, két olyan Supabase-projekten is, aminek semmi köze a napi munkához -- vagyis a "megosztott helyen ül egy teljes DDL/DML jogú Management API kulcs" nem elméleti, hanem NAPI HASZNÁLATÚ kitettség. Ez nem sürgősség-emelés és nem eszkaláció: egy komment, ami a következő prioritás-mérlegelésnél tény lesz, nem érzés. **Elv: a `waiting` státusz megtartása mellett a BIZONYÍTÉK erősödhet -- és épp ez különbözteti meg az élő kockázat-nyilvántartást a temetőtől.**
   **DE A BIZONYÍTÉK-ERŐSÍTÉSNEK IS VAN TELÍTÉSI PONTJA (2026-08-04, 5E0A32B0, a 20:00-s audit)**: a fenti szabály arra bátorít, hogy mérj és kommentelj a régi kártyán. Aznap ezt a 63 napos naptár-auth kártyát a 08:00-s, a 12:00-s ÉS a 16:00-s audit is átmérte, mindhárom kommentelt is rá, és a 20:00-s körben ott volt a késztetés a negyedikre -- ugyanazzal a tartalommal ("a heartbeat naptár-szekciója ma is hibás"). Az ilyen negyedik komment már nem erősíti a bizonyítékot, csak hosszabbá teszi a kártyát, és pont azt a hatást éri el, ami ellen a szabály született: a kártya háttérzajjá válik, csak most a saját kommentjeimtől.
   **ELJÁRÁS: mielőtt bizonyítékot írsz egy régi kártyára, nézd meg a MAI kommentjeit** (`SELECT date(created_at,'unixepoch','localtime'), substr(content,1,120) FROM kanban_comments WHERE card_id='<id>' ORDER BY created_at DESC LIMIT 3`). Ha ma már szerepel ugyanaz a mérés, a helyes lépés a hallgatás. Új komment csak akkor, ha a mérés EREDMÉNYE változott (a tünet eltűnt, súlyosbodott, vagy más okra vezethető vissza), nem akkor, ha csak megint lefuttattad.
-- Ne re-pingelj 4 órán belül ugyanazt: a state-fájlban tárolt `last_audit_at` automatikusan kezeli ezt (a 16:00-os audit nem fogja újra pingelni a 12:00-os állapotút mert az updated_at>=12:00).
-- Első futáskor (state-fájl üres) → ne pingelj, csak inicializáld a state-et.
+- Ne re-pingelj 4 órán belül ugyanazt: a state-fájlban tárolt `last_audit_at` automatikusan kezeli ezt (l. 1. lépés az első futásra is).
 - A státuszváltozás (in_progress -> done) is updated_at frissítést jelent, így a következő audit nem fogja megfogni a most-még-aktív taskokat.
-- **KOMMENT HOZZÁADÁS NEM frissíti az updated_at-ot** (2026-05-23 incident): a `kanban_comments` insert csak a comment-row `created_at`-ját állítja, NEM a kanban_cards.updated_at-ot. Ezért ha egy task aktívan kommentes (pl. Samu/Boni delegálási láncolat), DE státusz nem mozdul, akkor false-positive stuck-listára kerül. **Megoldás-pattern a query-ben**: a stuck-detekciónál vedd az `MAX(c.created_at)` és `cards.updated_at` MAXIMUMÁT mint effective_last_activity, és AHHOZ hasonlítsd a `last_audit_at`-ot:
-```sql
-SELECT k.id, k.title, k.assignee,
-  ROUND((strftime('%s','now') - MAX(k.updated_at, COALESCE((SELECT MAX(created_at) FROM kanban_comments WHERE card_id=k.id), 0))) / 3600.0, 1) AS hrs
-FROM kanban_cards k
-WHERE k.status='in_progress' AND k.archived_at IS NULL
-  AND MAX(k.updated_at, COALESCE((SELECT MAX(created_at) FROM kanban_comments WHERE card_id=k.id), 0)) < <LAST>
-```
-Vagy alternatíva (gyorsabb): minden ping előtt query-old a komment-count-ot az utolsó audit óta -- ha van, skip a ping-et és manuálisan bump-old a cards.updated_at-ot. Még jobb: a kanban_comments insert ELŐTT/UTÁN trigger-rel auto-bump-old a parent cards.updated_at-ját (storage-szintű megoldás, de schema-change kell).
+- **A beakadás-mérést NE írd újra saját SQL-lel** (a régi, csak `in_progress`-es lekérdezés strukturálisan üres volt): az aktivitás (felelős kommentje, esemény, szerkesztés) a `/api/kanban/stuck`-ban él, a 3. lépés azt hívja.
 
 - **`changes()` KÜLÖN sqlite3-hívásban MINDIG 0 (2026-06-15)**: ha az UPDATE után `sqlite3 ... "SELECT changes()"` külön invokációban fut, az egy ÚJ kapcsolat -> 0-t ad akkor is ha az UPDATE sikeres volt (false-negative, "0 sor módosult" látszat). NE erre alapozz. Verifikáld a hatást előtte/utána count-tal (pl. unassigned darabszám 11->5), vagy tedd a `SELECT changes();`-t UGYANABBA a sqlite3 hívásba az UPDATE után (`sqlite3 db "UPDATE ...; SELECT changes();"`).
 - **Batch-UPDATE `{ ... } | sqlite3` szubshell-pipe + loop-épített `$SQL` string CSENDBEN visszagördülhet (2026-07-20)**: sok kártya egyszerre zárásakor a `for id in ...; do SQL="$SQL UPDATE...;INSERT..."; done; sqlite3 db "$SQL ..."` minta némán 0 sort módosított (a záró SELECT lefutott és normál számot adott, de SEMMI nem íródott -- valószínű egy statement a loop-épített stringben elrontotta a parse-t, hibaüzenet nélkül a capture-ben). MEGBÍZHATÓ MINTA: (1) NE `{ } | sqlite3` szubshell-pipe; (2) az összes statement EGYETLEN `sqlite3 db "..."` argumentumban, explicit egymás után (ne shell-loopból konkatenálva), pontosvesszővel; (3) UTÁNA verifikáld a hatást count-tal (waiting-darabszám előtte/utána), ne a 0-exitre hagyatkozz. Kis (2-3 statementes) hívások megbízhatóan mennek; a nagy loop-string a rizikós.

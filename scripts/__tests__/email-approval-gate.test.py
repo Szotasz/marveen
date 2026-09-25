@@ -281,6 +281,99 @@ with tempfile.TemporaryDirectory() as td:
           bccless_anchor == "de87bdb699dcab419b68811bb57b6fab44b34e2fe16bff11cf90b2a5848f82ec",
           f"got {bccless_anchor}")
 
+    # MANAGEOP904: manage_email is a MULTIPLEXER, not a send tool. Scoping the
+    # gate on the tool NAME alone denied `operation=search` and
+    # `operation=draft` at level 1 -- measured on a live install 2026-09-04,
+    # where the draft-only workflow needs exactly those two. The level exists to
+    # stop the SEND, so reading and drafting must pass and sending must not.
+    store1 = make_store(td, level=1)
+
+    def manage(op=None, **extra):
+        ti = {"to": ["a@b.hu"], "subject": "T", "body": "Torzs."}
+        if op is not None:
+            ti["operation"] = op
+        ti.update(extra)
+        return {"tool_name": "mcp__google-workspace__manage_email", "tool_input": ti}
+
+    for op in ("search", "read", "draft", "label", "list", "archive"):
+        code, _, _ = run_gate(store1, manage(op))
+        check(f"manage_email operation={op} passes at level 1 (not a send)", code == 0,
+              f"exit={code}")
+    for op in ("send", "reply", "reply_all", "replyAll", "forward", "SEND"):
+        code, _, _ = run_gate(store1, manage(op))
+        check(f"manage_email operation={op} is DENIED at level 1 (it is a send)",
+              code == 2, f"exit={code}")
+    # Fail-closed on doubt: no operation, or one we cannot read, counts as send.
+    code, _, _ = run_gate(store1, manage(None))
+    check("manage_email without an operation is DENIED (fail-closed)", code == 2,
+          f"exit={code}")
+    code, _, _ = run_gate(store1, {"tool_name": "mcp__google-workspace__manage_email",
+                                   "tool_input": {"operation": 42}})
+    check("manage_email with a non-string operation is DENIED (fail-closed)", code == 2,
+          f"exit={code}")
+    # MANAGEDRAFT905: a send OPERATION carrying an explicit draft:true is a
+    # DRAFT, not a send -- `{"operation":"reply","draft":true}` is the only way
+    # to write a threaded draft with this tool, and the sibling gate
+    # (email-send-gate.mjs) lets exactly that shape through. Without this the
+    # draft-only workflow was blocked at level 1 by its own guard.
+    for op in ("send", "reply", "reply_all", "replyAll", "forward"):
+        for flag in (True, "true"):
+            code, _, _ = run_gate(store1, manage(op, draft=flag))
+            check(f"manage_email operation={op} draft={flag!r} passes at level 1 (a draft is not a send)",
+                  code == 0, f"exit={code}")
+    # Fail-closed stays: anything but an explicit true is still a send.
+    for flag in (False, "false", "yes", 1, None, "", "True "):
+        code, _, _ = run_gate(store1, manage("reply", draft=flag))
+        check(f"manage_email operation=reply draft={flag!r} is DENIED (not an explicit draft)",
+              code == 2, f"exit={code}")
+    # Control: the draft exemption is scoped to the multiplexer, not to the
+    # dedicated send tool -- a draft flag must not buy send_email a pass.
+    code, _, _ = run_gate(store1, {"tool_name": "mcp__x__send_email",
+                                   "tool_input": {"to": ["a@b.hu"], "subject": "T",
+                                                  "body": "Torzs.", "draft": True}})
+    check("control: send_email with draft:true is still DENIED at level 1", code == 2,
+          f"exit={code}")
+
+    # Control: send_email has no operations and must stay gated unconditionally,
+    # otherwise the scoping above could quietly exempt the real send tool too.
+    code, _, _ = run_gate(store1, mcp_send())
+    check("control: send_email is still DENIED at level 1", code == 2, f"exit={code}")
+    # Control: the scoping is about the OPERATION, not about level 1 letting
+    # things through -- at level 3 the same send passes, which proves the deny
+    # above came from the level and not from a broken payload.
+    cfg1 = os.path.join(store1, "autonomy-config.json")
+    with open(cfg1, "w", encoding="utf-8") as fh:
+        json.dump({"version": 1, "categories": [
+            {"key": "email_send", "label": "Email", "level": 3, "locked": False}]}, fh)
+    code, _, _ = run_gate(store1, manage("send"))
+    check("control: manage_email operation=send passes at level 3", code == 0,
+          f"exit={code}")
+
+    # --- GMAILCONNECTOR914: the claude.ai Gmail connector -------------------
+    # No send_email, no manage_email in the name: the gate exited 0 on every
+    # connector send, so an unapproved send_message was never denied.
+    def connector(tool, **ti):
+        return {"tool_name": f"mcp__claude_ai_Gmail__{tool}", "tool_input": ti}
+    store_l1 = make_store(os.path.join(td, "sconn1"), level=1)  # store1 was raised to level 3 above
+    code, _, err = run_gate(store_l1, connector("send_message", to=["a@b.hu"], subject="T", body="x"))
+    check("connector send_message is DENIED at level 1", code == 2 and "szint 1" in err, f"exit={code}")
+    code, _, _ = run_gate(store_l1, connector("search_threads", q="x"))
+    check("connector search_threads is a read: passes at level 1", code == 0, f"exit={code}")
+    code, _, _ = run_gate(store_l1, connector("create_draft", to=["a@b.hu"], body="x"))
+    check("connector create_draft is not a send: passes at level 1", code == 0, f"exit={code}")
+    store_c = make_store(os.path.join(td, "sconn"), level=2)
+    payload = connector("reply", messageId="msg-42", body="Kedves Ügyfelünk! Válasz.")
+    code, _, err = run_gate(store_c, payload)
+    anchor = anchor_from_stderr(err)
+    check("connector reply at level 2 without approval: DENIED, anchored on messageId (no `to` field)",
+          code == 2 and anchor is not None and "messageId:msg-42" in err, f"exit={code} err={err[:200]!r}")
+    approve(store_c, anchor)
+    code, out, _ = run_gate(store_c, payload)
+    check("connector reply with a matching approval: ALLOWED", code == 0 and "felhasznalva" in out,
+          f"exit={code} out={out[:120]!r}")
+    code, _, err = run_gate(store_c, connector("reply", messageId="msg-43", body="Kedves Ügyfelünk! Válasz."))
+    check("the same approval does not cover a reply to ANOTHER message", code == 2, f"exit={code}")
+
     # SQLite-version portability, kept as a STATIC check on purpose. The
     # behavioural cases above only catch the bad call on a host whose sqlite is
     # older than 3.38 -- on CI (newer) they stay green while the live install

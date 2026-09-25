@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+"""Dry-run / live parity for scripts/kartya-es-ertesites.py (KARTYADRYRUN907).
+
+Mira's finding (2026-09-07): `--dry-run` returned OK for a card id that ALREADY
+EXISTED, while the same command without `--dry-run` was refused. The exact use the
+flag exists for -- "would this go through?" -- was the one that broke. A dry-run
+that is MORE PERMISSIVE than the live path is worse than none: it returns green for
+what the system rejects.
+
+The assertion here is PARITY, not "dry-run refuses": both directions must agree, so
+a future divergence on either side goes red.
+
+Drives the script as a subprocess against an isolated DB (KARTYA_DB). Run:
+    python3 scripts/__tests__/kartya-dryrun-paritas.test.py
+Exit 0 = all pass; non-zero = a failure.
+"""
+import os, sqlite3, subprocess, sys, tempfile, time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+SCRIPT = os.path.join(ROOT, 'scripts', 'kartya-es-ertesites.py')
+FAILS = []
+
+# KET SANDBOX-GYOKER, mert az egyik or eppen a token HIANYAT meri:
+#   TOKEN_ROOT  -- van store/.dashboard-token
+#   NOTOKEN_ROOT -- nincs
+TOKEN_ROOT = tempfile.mkdtemp(prefix='kartya-dry-tok-')
+NOTOKEN_ROOT = tempfile.mkdtemp(prefix='kartya-dry-notok-')
+os.makedirs(os.path.join(TOKEN_ROOT, 'store'))
+os.makedirs(os.path.join(NOTOKEN_ROOT, 'store'))
+with open(os.path.join(TOKEN_ROOT, 'store', '.dashboard-token'), 'w') as f:
+    f.write('teszt-token')
+DB_PATH = os.path.join(TOKEN_ROOT, 'store', 'claudeclaw.db')
+
+
+def check(name, cond, detail=''):
+    print(('PASS  ' if cond else 'FAIL  ') + name + (('  -- ' + detail) if detail and not cond else ''))
+    if not cond:
+        FAILS.append(name)
+
+
+def fresh_db():
+    db = sqlite3.connect(DB_PATH)
+    db.executescript('''
+      CREATE TABLE kanban_cards (id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT,
+        status TEXT NOT NULL DEFAULT 'planned'
+          CHECK(status IN ('planned','in_progress','testing','waiting','done')),
+        assignee TEXT,
+        priority TEXT NOT NULL DEFAULT 'normal'
+          CHECK(priority IN ('low','normal','high','urgent')),
+        project TEXT, due_date INTEGER, sort_order REAL NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, archived_at INTEGER,
+        parent_id TEXT, dispatched_at INTEGER);
+      CREATE TABLE kanban_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, card_id TEXT NOT NULL,
+        author TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL);
+      CREATE TABLE agent_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, from_agent TEXT NOT NULL,
+        to_agent TEXT NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+        result TEXT, created_at INTEGER NOT NULL, delivered_at INTEGER, completed_at INTEGER);
+    ''')
+    db.commit(); db.close()
+
+
+def seed(card_id):
+    db = sqlite3.connect(DB_PATH)
+    now = int(time.time())
+    db.execute('INSERT INTO kanban_cards (id,title,status,assignee,priority,created_at,updated_at)'
+               ' VALUES (?,?,?,?,?,?,?)', (card_id, f'teszt {card_id}', 'planned', 'boni', 'normal', now, now))
+    db.commit(); db.close()
+
+
+def exists(card_id):
+    db = sqlite3.connect(DB_PATH)
+    r = db.execute('SELECT 1 FROM kanban_cards WHERE id=?', (card_id,)).fetchone()
+    db.close()
+    return r is not None
+
+
+def run(card_id, extra=(), root=TOKEN_ROOT):
+    env = dict(os.environ)
+    env['KARTYA_DB'] = DB_PATH
+    env['CLAUDECLAW_ROOT'] = root
+    return subprocess.run(
+        # A --author KIMONDVA megy, holott a LETREHOZO agon nem kotelezo: enelkul a felado
+        # csendben 'marveen' lenne, es a teszt sorai MAS agens neveben mennenek ki. (A teszt
+        # egy korabbi valtozata azt allitotta, hogy az --author a letrehozo agon KOTELEZO --
+        # 2026-09-08-an visszamerve ez NEM igaz: a kotelezoseg CSAK a komment-modra all, es a
+        # letrehozo ag alapertelmezeset a kartya-ertesites-felado teszt 3. ellenorzese
+        # regresszio-kontrollkent rogziti.)
+        # A CIM HORGONYA (KARTYAHORGONY906): a cimnek tartalmaznia kell a kartya sajat ID-jet,
+        # kulonben a futas MAR A HORGONY-KAPUN elhal, es a teszt a ROSSZ OKBOL lenne piros.
+        # Ez a kapu UJABB, mint a teszt elso valtozata -- merve 2026-09-08-an: mind az ot
+        # "paritas" ellenorzes ezen bukott, nem a merni kivant viselkedesen.
+        # KOMMENTERTESITES922: ez a suite a DRY-RUN PARITAST meri, nem az ertesitest. A
+        # komment-modu hivasai atadjak a kartyat mas flotta-agensnek, amit az uj
+        # ertesites-kapu megtagad -- a kapcsolo KIMONDJA, hogy itt ez szandekos.
+        [sys.executable, SCRIPT, '--id', card_id, '--assignee', 'boni',
+         '--title', f'{card_id} paritas teszt',
+         '--author', 'Boni', '--nincs-ertesites-szandekos', *extra],
+        capture_output=True, text=True, env=env, timeout=30)
+
+
+def msgfile(card_id):
+    d = tempfile.mkdtemp(prefix='kartya-dry-msg-')
+    p = os.path.join(d, 'm.txt')
+    with open(p, 'w', encoding='utf-8') as f:
+        f.write(f'Kartya: {card_id} -- teszt uzenet.\n')
+    return p
+
+
+fresh_db()
+
+# --- 1. A LELET MAGA: letezo ID-n a ket ag EGYETERT (mindketto megtagad) ---
+seed('LETEZO1')
+dry = run('LETEZO1', ('--no-msg', '--dry-run'))
+live = run('LETEZO1', ('--no-msg',))
+check('1 dry-run megtagadja a letezo ID-t', dry.returncode != 0, f'exit={dry.returncode} out={dry.stdout!r}')
+check('2 az eles ag is megtagadja', live.returncode != 0, f'exit={live.returncode}')
+check('3 PARITAS: a ket ag ugyanazt az okot mondja',
+      'MAR LETEZIK' in (dry.stdout + dry.stderr) and 'MAR LETEZIK' in (live.stdout + live.stderr),
+      f'dry={dry.stdout + dry.stderr!r}')
+
+# --- 2. A JO UT NEM TORT EL: uj ID-n a dry-run zold, ES nem ir semmit ---
+dry_uj = run('UJKARTYA1', ('--no-msg', '--dry-run'))
+check('4 uj ID-n a dry-run tovabbra is zold', dry_uj.returncode == 0, f'exit={dry_uj.returncode} err={dry_uj.stderr!r}')
+check('5 a dry-run NEM hozta letre a kartyat', not exists('UJKARTYA1'))
+
+# --- 3. TOKEN-OR: uzenettel, token nelkul az eles ag RESZLEGESEN irna (kartya igen, uzenet nem) ---
+mf = msgfile('TOKENUJ1')
+dry_notok = run('TOKENUJ1', ('--msg-file', mf, '--dry-run'), root=NOTOKEN_ROOT)
+check('6 token nelkul + uzenettel a dry-run megtagad', dry_notok.returncode != 0, f'exit={dry_notok.returncode}')
+check('7 es kimondja, hogy a kartya eles futasban MAR LETREJONNE',
+      'LETREJONNE' in (dry_notok.stdout + dry_notok.stderr), f'{dry_notok.stdout + dry_notok.stderr!r}')
+check('8 a megtagadott dry-run semmit nem irt', not exists('TOKENUJ1'))
+
+# --- 4. NEGATIV KONTROLL: az or NEM tulzottan szeles ---
+dry_tok = run('TOKENUJ2', ('--msg-file', msgfile('TOKENUJ2'), '--dry-run'), root=TOKEN_ROOT)
+check('9 letezo tokennel ugyanaz a futas zold', dry_tok.returncode == 0, f'exit={dry_tok.returncode} err={dry_tok.stderr!r}')
+dry_nomsg = run('TOKENUJ3', ('--no-msg', '--dry-run'), root=NOTOKEN_ROOT)
+check('10 token nelkul, de --no-msg mellett zold (az or az UZENET-utra szol)',
+      dry_nomsg.returncode == 0, f'exit={dry_nomsg.returncode} err={dry_nomsg.stderr!r}')
+
+# --- 5. ELOZMENY-FIGYELMEZTETES: A DRY-RUN AG NEM LEHET VAKABB AZ ELESNEL ---
+# Mira lelete, 2026-09-11: a figyelmeztetes eloszor CSAK az eles agon futott, mert a
+# komment-mod dry-run `return`-je elotte allt. Ezzel EPP a gondos hasznalot buntette --
+# aki elovigyazatossagbol dry-runol egy mezomozgatas elott, kevesebbet latott, mint aki
+# gondolkodas nelkul nekifutott. A paritas itt nem elmeleti: a negyedik utkozest pont az
+# elozetes ellenorzes elozne meg.
+seed('ELOZM1')
+# elso mozgatas MARVEEN neveben (eles), hogy legyen elozmeny-nyom
+run('ELOZM1', ('--comment-file', msgfile('ELOZM1'), '--author', 'Marveen', '--status', 'in_progress'))
+# majd MIRA neveben dry-run: MAS szerzo, 30 percen belul -> HANGOS figyelmeztetes kell
+d = run('ELOZM1', ('--comment-file', msgfile('ELOZM1'), '--author', 'Mira', '--status', 'planned', '--dry-run'))
+out_d = d.stdout + d.stderr
+check('11 a dry-run ag is kiirja az elozmeny-figyelmeztetest',
+      'AZ ELOZO MEZOMOZGATAS' in out_d, f'{out_d!r}')
+check('12 es a dry-run NEM allitja, hogy vegrehajtja',
+      'most semmi nem irodik' in out_d and 'A mozgatast VEGREHAJTOM' not in out_d, f'{out_d!r}')
+# NEGATIV KONTROLL: ugyanaz a szerzo -> csak a halk sor, hangos NEM
+d2 = run('ELOZM1', ('--comment-file', msgfile('ELOZM1'), '--author', 'Marveen', '--status', 'planned', '--dry-run'))
+out_d2 = d2.stdout + d2.stderr
+check('13 NEGATIV KONTROLL: sajat elozmenynel nincs hangos figyelmeztetes',
+      'AZ ELOZO MEZOMOZGATAS' not in out_d2 and 'elozo mezomozgatas:' in out_d2, f'{out_d2!r}')
+
+# --- 6. A TAROLT NYOM A TELJES REGI ERTEKET ORZI ---
+# A valtoztatas LENYEGE: a kartya-mezo egyerteku, aki utoljara ir, felulir. A rovidített
+# (60 karakteres) nyomból egy felulirt hosszu cimet nem lehetett visszaallitani -- pont
+# akkor nem, amikor kellett volna. A konzol marad rovid, a TAROLT nyom teljes.
+# A CIM HORGONYA (KARTYAHORGONY906) a kartya ID-jet koveteli -- enelkul a futas MAR A
+# HORGONY-KAPUN elhalna, es ez a ket ellenorzes a ROSSZ OKBOL lenne piros.
+HOSSZU = ('TELJES1 EREDETI HOSSZU CIM, amit vissza kell tudni allitani: '
+          + 'x' * 120 + ' -- a vege is szamit')
+seed('TELJES1')
+_db = sqlite3.connect(DB_PATH)
+_db.execute('UPDATE kanban_cards SET title=?, assignee=NULL WHERE id=?', (HOSSZU, 'TELJES1'))
+_db.commit(); _db.close()
+run('TELJES1', ('--comment-file', msgfile('TELJES1'), '--author', 'Marveen',
+                '--title', 'TELJES1 uj rovid cim', '--assignee', 'samu'))
+_db = sqlite3.connect(DB_PATH)
+_nyom = _db.execute("SELECT content FROM kanban_comments WHERE card_id='TELJES1' AND "
+                    "content LIKE '[kartya-es-ertesites.py] Mezomozgatas%' "
+                    "ORDER BY created_at DESC LIMIT 1").fetchone()
+_db.close()
+_nyom = _nyom[0] if _nyom else ''
+check('14 a tarolt nyom a TELJES regi cimet orzi (nem a 60 karakteres rovidítest)',
+      HOSSZU in _nyom, f'{_nyom!r}')
+check('15 a NULL regi ertek megkulonboztetheto az ures szotol',
+      '(ures -- NULL volt)' in _nyom, f'{_nyom!r}')
+
+# --- 7. A MOZGATO NEVE GEPI ZAROSORBOL JON, NEM A SZABAD SZOVEGBOL ---
+# Samu fuggetlen verify-lelete a #1296-on (2026-09-12): a szabad szoveges
+# `kerte: ([^.]+)\.` parse HAROM alakban bukott. A harmadik a veszelyes: ha a
+# beagyazott nev EGYBEESIK a kovetkezo mozgatoeval, az intes teljesen ELNEMUL --
+# pont az utkozes-alaku adaton, amiert letezik.
+
+# c1: pontot tartalmazo szerzo-nev nem vagodik le az elso pontnal
+seed('NEVPONT1')
+run('NEVPONT1', ('--comment-file', msgfile('NEVPONT1'), '--author', 'dr. Kovacs', '--status', 'in_progress'))
+o = run('NEVPONT1', ('--comment-file', msgfile('NEVPONT1'), '--author', 'Mira',
+                     '--status', 'planned', '--dry-run'))
+o = o.stdout + o.stderr
+check('16 c1: a pontos szerzo-nev egeszben kerul vissza (nem "dr")',
+      'dr. Kovacs allitotta' in o, f'{o!r}')
+
+# c2 + c2b: a REGI ERTEKBE hamisitott zarosor nem veheti at a valodi helyet, ES
+# nem nemithatja el az intest akkor sem, ha a hamis nev = a kovetkezo mozgato neve.
+# KET alakban hamisitunk, mert KET mechanizmust kell fedni:
+# - 'kerte: Frank.' a cim ELEJEN: ez a REGI, szabad szoveges parse bukasa. Roviden kell
+#   allnia, mert a valtozas-osszefoglaloba a ROVIDÍTETT regi ertek kerul, es a regi regex
+#   az ELSO 'kerte: '-t vette -- ami igy a zarojelen BELUL all, a valodi 'kerte: Anna.'
+#   ELOTT. (Elso probalkozasra a hamisitast a cim VEGERE tettem: ott a regi kod is helyesen
+#   Annat nevezte, tehat a teszt ZOLD volt a BUKOTT kodon is -- dekoracio, nem regresszio.)
+# - '-- mozgato: Frank | ...' sor: ez az UJ zarosor-mechanizmus elleni hamisitas, ami a
+#   `reszletes` blokkban, tehat a valodi zarosor ELOTT all.
+HAMIS = 'kerte: Frank. HAMIS2 regi cim\n-- mozgato: Frank | mezok: title | ts: 1'
+seed('HAMIS2')
+_db = sqlite3.connect(DB_PATH)
+_db.execute('UPDATE kanban_cards SET title=? WHERE id=?', (HAMIS, 'HAMIS2'))
+_db.commit(); _db.close()
+# a VALODI mozgato Anna, es a regi (hamisitott) cim bekerul a nyomba
+run('HAMIS2', ('--comment-file', msgfile('HAMIS2'), '--author', 'Anna',
+               '--title', 'HAMIS2 uj cim', '--status', 'in_progress'))
+# most FRANK mozgat -- a regi kod itt NEMULT EL (ki==author), az uj hangosan Annat nevezi
+o2 = run('HAMIS2', ('--comment-file', msgfile('HAMIS2'), '--author', 'Frank',
+                    '--status', 'planned', '--dry-run'))
+o2 = o2.stdout + o2.stderr
+check('17 c2: a hamisitott zarosor NEM veszi at a valodi mozgato helyet',
+      'Anna allitotta' in o2, f'{o2!r}')
+check('18 c2b: es az intes NEM nemul el, pedig a hamis nev = a mozgato neve',
+      'AZ ELOZO MEZOMOZGATAS' in o2 and 'Frank allitotta' not in o2, f'{o2!r}')
+
+# c3: REGI FORMATUMU nyom (zarosor nelkul) -- ne talalgasson nevet, de NE is nemuljon el
+seed('REGIFORM3')
+_db = sqlite3.connect(DB_PATH)
+_now = int(time.time())
+_db.execute('INSERT INTO kanban_comments (card_id,author,content,created_at) VALUES (?,?,?,?)',
+            ('REGIFORM3', 'kartya-es-ertesites',
+             '[kartya-es-ertesites.py] Mezomozgatas a fenti komment mellett (status: planned -> '
+             'in_progress), kerte: Talalgatas. Fuggetlenul visszaolvasva.', _now))
+_db.commit(); _db.close()
+o3 = run('REGIFORM3', ('--comment-file', msgfile('REGIFORM3'), '--author', 'Mira',
+                       '--status', 'planned', '--dry-run'))
+o3 = o3.stdout + o3.stderr
+check('19 c3: regi formatumu nyomnal hangosan jelzi, hogy a mozgato nem allapithato meg',
+      'NEM ALLAPITHATO MEG' in o3, f'{o3!r}')
+check('20 c3: es NEM talalgat nevet a szabad szovegbol',
+      'Talalgatas' not in o3, f'{o3!r}')
+
+# --- 8. A NEV NEM ALLITHATJA ELO A SAJAT CSENDJET (Samu 2. verify-kore, B2-alak) ---
+# A sortores-ejtes keves volt: egy mezoelvalasztot tartalmazo nev elcsusztatja a zarosor
+# mezok-mezojet, es ha utana egy olyan szerzo mozgat, akinek a neve a csuszas utan egybeesik
+# a felismert nevvel, a FIGYELMEZTETES ELNEMUL. Vagyis a nev maga allitja elo pontosan azt a
+# csendet, amiert a mechanizmus letezik. Az organikus eset ('Anna | Bob') Samunal PASS volt --
+# a konstrualt ('Silent | mezok: z') nem.
+seed('PIPE1')
+run('PIPE1', ('--comment-file', msgfile('PIPE1'), '--author', 'Silent | mezok: z',
+              '--status', 'in_progress'))
+o = run('PIPE1', ('--comment-file', msgfile('PIPE1'), '--author', 'Silent',
+                  '--status', 'planned', '--dry-run'))
+o = o.stdout + o.stderr
+check('21 B2: a mezoelvalasztos nev NEM nemitja el a figyelmeztetest',
+      'AZ ELOZO MEZOMOZGATAS' in o, f'{o!r}')
+check('22 B2: es a nev egeszben jon vissza, a szerkezet serulese nelkul',
+      'Silent / mezok: z' in o, f'{o!r}')
+
+# --- 9. KOMMENT-MOD + --msg-file: A TOKEN-KAPU A DRY-RUN AGON IS ALL (KOMMENTMSGFILE922) ---
+# Samu lelete (28122): a komment-agi dry-run token NELKUL is ZOLDET mondott, az eles futas pedig
+# FELBE irt volna (komment igen, uzenet nem). Ez ugyanaz a hazugsag, amit a letrehozo ag mar
+# megtanult -- a paritas ezert ide tartozik, nem csak az uj suite-ba.
+# A javitas utan a token-kapu az IRAS ELOTT all, tehat a dry-run mondata is mas: nem "a komment mar
+# beirodott", hanem hogy be SEM irodna.
+def run_kapcsolo_nelkul(card_id, extra, root):
+    # A kozos run() a --nincs-ertesites-szandekos-t is beteszi, ami a --msg-file-lal ELLENTMOND:
+    # azzal ez a ket eset a KONTRADIKCIO-kapun akadna fenn, es a 23. allitas ROSSZ OKBOL lenne zold.
+    # (Merve: pontosan ez tortent az elso valtozatnal.)
+    env = dict(os.environ)
+    env['KARTYA_DB'] = DB_PATH
+    env['CLAUDECLAW_ROOT'] = root
+    return subprocess.run([sys.executable, SCRIPT, '--id', card_id, *extra],
+                          capture_output=True, text=True, env=env, timeout=30)
+
+
+seed('KTOK1')
+d = run_kapcsolo_nelkul('KTOK1', ('--comment-file', msgfile('KTOK1'), '--author', 'Boni',
+                                  '--msg-file', msgfile('KTOK1'), '--assignee', 'samu', '--dry-run'),
+                        NOTOKEN_ROOT)
+o = d.stdout + d.stderr
+check('23 komment-mod + --msg-file: a dry-run token NELKUL PIROS (nem zold)', d.returncode != 0, f'{o!r}')
+check('24 es kimondja, hogy a komment SEM irodna be', 'komment SEM irodna be' in o, f'{o!r}')
+# POZITIV KONTROLL ugyanazon a muszeren: tokennel ugyanez a futas ATMEGY. Enelkul a 23. allitas
+# akkor is zold lenne, ha a dry-run barmilyen okbol mindig pirosat adna.
+seed('KTOK2')
+d2 = run_kapcsolo_nelkul('KTOK2', ('--comment-file', msgfile('KTOK2'), '--author', 'Boni',
+                                   '--msg-file', msgfile('KTOK2'), '--assignee', 'samu', '--dry-run'),
+                         TOKEN_ROOT)
+o2 = d2.stdout + d2.stderr
+check('25 pozitiv kontroll: tokennel ugyanez a dry-run ATMEGY', d2.returncode == 0 and 'DRY-RUN OK' in o2, f'{o2!r}')
+
+print()
+if FAILS:
+    print(f'BUKOTT: {len(FAILS)} -- {", ".join(FAILS)}', file=sys.stderr)
+    sys.exit(1)
+print('minden teszt atment')

@@ -25,6 +25,11 @@ writes exactly this block to stdout:
 
     OPEN_QUESTION chat_id=<id> message_id=<id>
     <text>
+
+With --precheck (the task's scheduler preCheck, via ledger-live-drain-precheck.sh)
+it prints "SKIP" when the drain would surface nothing and nothing at all when it
+would, and never writes the statefile. An idle install then spends no model turn
+on the ~720 empty ticks a day.
 """
 import sys
 import os
@@ -60,14 +65,26 @@ def _record_surfaced(path, message_id):
 
 
 def main():
+    # --precheck: the scheduler asks "is there anything to surface?" BEFORE it
+    # spends a model turn (runPreCheck contract: "SKIP" = no turn). It answers
+    # with exactly the same rules as a real drain but never records anything,
+    # because the scheduler's busy gate runs after it and may still drop the
+    # tick; a question marked surfaced here would then be deduplicated away.
+    precheck = "--precheck" in sys.argv[1:]
+
+    def nothing():
+        if precheck:
+            sys.stdout.write("SKIP\n")
+        sys.exit(0)
+
     agent_id = ledger_lib.agent_id_from_cwd(os.getcwd())
 
     try:
         oq = ledger_lib.open_question_with_age(agent_id)
     except Exception:
-        sys.exit(0)  # ledger unavailable -> silent no-op
+        nothing()  # ledger unavailable -> silent no-op
     if not oq:
-        sys.exit(0)  # nothing open (none, or already answered)
+        nothing()  # nothing open (none, or already answered)
     # Prefix-slice on purpose (HOOKARITAS821): this unpack sits outside the
     # try above, so a widened open_question_with_age() tuple would kill the
     # hook with a ValueError -- and a dead drain hook fails OPEN: the unanswered
@@ -78,14 +95,16 @@ def main():
     # GRACE: skip a fresh inbound the agent may be answering right now.
     try:
         if created_at is None or (int(time.time()) - int(created_at)) < GRACE_SECONDS:
-            sys.exit(0)
+            nothing()
     except Exception:
-        sys.exit(0)
+        nothing()
 
     # DEDUP: surface a given message_id at most once.
     path = _statefile(agent_id)
     if _last_surfaced(path) == str(message_id):
-        sys.exit(0)
+        nothing()
+    if precheck:
+        sys.exit(0)  # something to surface: empty stdout lets the turn run
 
     snippet = (text or "").strip()
     if att_file_id:

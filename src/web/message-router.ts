@@ -4,6 +4,7 @@ import { MAIN_AGENT_ID } from '../config.js'
 import { resolveAgentChannelStateDir } from './voice-directive.js'
 import {
   getPendingMessages,
+  getMessageStatus,
   markMessageDelivered,
   markMessageDone,
   markMessageFailed,
@@ -18,7 +19,8 @@ import {
 import { isQualifiedId } from './federation/address.js'
 import { sendFederatedMessage } from './federation/bridge.js'
 import { getFederationConfig, abandonWindowMsForPeer } from './federation/config.js'
-import { readAgentRemoteHost, readAgentVoiceConfig } from './agent-config.js'
+import { readAgentRemoteHost, readAgentVoiceConfig, readAgentWorksourceChannel } from './agent-config.js'
+import { enqueueWorksourceItem, worksourceItemId } from './worksource-queue.js'
 import {
   agentSessionName,
   isSessionReadyForPrompt,
@@ -28,10 +30,12 @@ import {
   capturePane,
   clearFeedbackModalAndRecheck,
 } from './agent-process.js'
-import { detectPaneState, detectsPermissionDialog, permissionPromptSummary, type PaneState, type PermissionPromptSummary } from '../pane-state.js'
+import { detectPaneState, detectsFirstRunGate, detectsPermissionDialog, permissionPromptSummary, type PaneState, type PermissionPromptSummary } from '../pane-state.js'
 import { setLastInboundModality } from './voice-modality.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
+import { composeBatchInjection, batchInjectCapFor } from './batch-inject.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
+import { selectTickWindow } from './message-router-window.js'
 
 // A message that cannot be delivered within this window (target session never
 // exists / stays busy) is marked failed so it stops clogging the pending
@@ -440,7 +444,10 @@ export async function runMessageRouterTick(): Promise<void> {
     // rest roll to the next 5s tick. Bounds a single tick's wall-time so a
     // backlog (e.g. after a delivery stall) can never make one tick run long
     // and starve the event loop -- the slow-tick half of the progressive-hang
-    // pattern. Ordering is preserved (oldest first) so nothing is starved.
+    // pattern. The window is chosen FAIRLY across recipients (selectTickWindow,
+    // card fc5748f5): the globally oldest rows of busy recipients used to fill it
+    // and starve every other recipient, idle ones included. Each recipient's own
+    // rows stay oldest first.
     //
     // Federated (slash-qualified) recipients are split out FIRST: they must
     // never reach the local path (agentSessionName / readAgentRemoteHost would
@@ -450,7 +457,7 @@ export async function runMessageRouterTick(): Promise<void> {
     const localPending: AgentMessage[] = []
     const federatedPending: AgentMessage[] = []
     for (const m of allPending) (isQualifiedId(m.to_agent) ? federatedPending : localPending).push(m)
-    const pending = localPending.slice(0, MAX_MESSAGES_PER_TICK)
+    const pending = selectTickWindow(localPending, MAX_MESSAGES_PER_TICK, MAIN_AGENT_ID)
     const now = Date.now()
     // ---- update absent/present tracking for all receivers in this tick ----
     // Rebuild the stuck-detector's view of which agents are absent RIGHT NOW.
@@ -464,12 +471,15 @@ export async function runMessageRouterTick(): Promise<void> {
     const absentNow = new Set<string>()
     const presentNow = new Set<string>()
     // agent -> {exists: bool, host, session} cached lookup for the main loop.
-    const agentSessionCache = new Map<string, {host: string | null, session: string, exists: boolean}>()
+    const agentSessionCache = new Map<string, {host: string | null, session: string, exists: boolean, worksource: boolean}>()
     for (const agent of receiversInTick) {
       const host = readAgentRemoteHost(agent)
       const session = agentSessionName(agent)
       const exists = sessionExistsOnHost(host, session)
-      agentSessionCache.set(agent, { host, session, exists })
+      // Read once per receiver per tick, not once per message: the flag decides
+      // the whole delivery path below and a per-message read would re-open the
+      // same config file for every queued item.
+      agentSessionCache.set(agent, { host, session, exists, worksource: readAgentWorksourceChannel(agent) })
       if (exists) {
         presentNow.add(agent)
       } else {
@@ -478,6 +488,12 @@ export async function runMessageRouterTick(): Promise<void> {
     }
     // Reconnect detection: agent was absent on the last tick, now present.
     for (const agent of presentNow) {
+      // Worksource agents are exempt: backlog batching exists because a tmux
+      // pane that was gone missed everything and typing 40 messages in a row
+      // would wedge it. A queue directory misses nothing -- the items are still
+      // in pending/ and get handed over one at a time, acknowledged one at a
+      // time. Summarising them away would DISCARD work that was never lost.
+      if (agentSessionCache.get(agent)?.worksource) continue
       if (agentWasAbsent.has(agent) && !agentBatchedThisReconnect.has(agent)) {
         // Check if this agent qualifies for backlog batching.
         const agentPending = getPendingMessages(agent)
@@ -549,8 +565,40 @@ export async function runMessageRouterTick(): Promise<void> {
       const session = cached?.session ?? agentSessionName(msg.to_agent)
       const host = isMainAgent ? null : cached?.host ?? readAgentRemoteHost(msg.to_agent)
       const sessionExists = cached?.exists ?? sessionExistsOnHost(host, session)
+      // Opt-in queue delivery. EVERY tmux-shaped gate below is skipped for these
+      // agents, and that is the point rather than a shortcut: "session absent",
+      // "session busy" and "session stuck" are all statements about a KEYBOARD.
+      // An item written into the queue directory waits there for an agent that
+      // is busy, and is still there for an agent that has not started yet -- so
+      // abandoning it, or counting the wait as a stall, would invent a failure
+      // the queue does not have. The stuck escalation is the sharpest case: it
+      // tells the operator to consider a restart, and firing it at a merely busy
+      // worksource agent would be a false alarm with a destructive suggestion.
+      const usesWorksource = cached?.worksource ?? readAgentWorksourceChannel(msg.to_agent)
 
-      if (shouldAbandon(sessionExists, ageMs, MESSAGE_ABANDON_WINDOW_MS)) {
+      // ...BUT the carve-out needs POSITIVE EVIDENCE that the queue is actually
+      // being served, not just that the agent opted in (2026-09-03, PR #1099
+      // review). The reviewer measured the hole: a worksource agent parks on
+      // the MCP server-approval dialog at startup, the router keeps writing to
+      // pending/, and every stall gate is already switched off underneath it --
+      // so from the outside the item looks delivered and nobody is working on
+      // it. That is the exact failure this PR set out to remove.
+      //
+      // Evidence, in the weakest form that still closes the hole: the session
+      // must EXIST and must not be parked on a first-run/approval dialog. A
+      // parked pane means the channel is not up, so the tmux-shaped gates
+      // (abandon / not-running / not-ready) must apply again -- they are the
+      // only thing that will report it.
+      const parkedGate = usesWorksource && sessionExists
+        ? detectsFirstRunGate(capturePane(session, host) ?? '')
+        : null
+      const worksourceServing = usesWorksource && sessionExists && parkedGate == null
+      if (usesWorksource && !worksourceServing) {
+        logger.warn({ id: msg.id, to: msg.to_agent, session, sessionExists, parkedGate },
+          'worksource agent is not serving its queue (session absent or parked on a startup dialog) -- keeping the tmux stall gates armed')
+      }
+
+      if (!worksourceServing && shouldAbandon(sessionExists, ageMs, MESSAGE_ABANDON_WINDOW_MS)) {
         logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent, ageMs }, 'Agent message abandoned: target session absent for full retry window')
         if (!markMessageFailed(msg.id, 'Abandoned: target session absent for full retry window')) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
@@ -561,7 +609,7 @@ export async function runMessageRouterTick(): Promise<void> {
         continue
       }
 
-      if (!sessionExists) {
+      if (!worksourceServing && !sessionExists) {
         if (!routerLoggedMisses.has(msg.id)) {
           logger.warn({ id: msg.id, to: msg.to_agent, session }, 'Agent message target session not running, will retry')
           routerLoggedMisses.add(msg.id)
@@ -569,7 +617,7 @@ export async function runMessageRouterTick(): Promise<void> {
         continue
       }
 
-      if (!(await isSessionReadyForPrompt(session, host))) {
+      if (!worksourceServing && !(await isSessionReadyForPrompt(session, host))) {
         // A self-drafted feedback modal ("Bug report drafted ... 0 to dismiss")
         // holds the pane in a not-ready state, and the pre-flight dismissal in
         // sendPromptToSession never runs because this gate short-circuits
@@ -713,6 +761,34 @@ export async function runMessageRouterTick(): Promise<void> {
       }
 
       try {
+        // RE-READ before sending. The work set of this tick is a SNAPSHOT taken
+        // at the top (getPendingMessages into an array), and everything below
+        // has been working from that copy: session lookups, the readiness gate,
+        // voice STT -- which the re-entrancy guard notes can hold a tick for up
+        // to 65 seconds on its own. With up to MAX_MESSAGES_PER_TICK rows sent
+        // serially, the gap between reading a row and sending it is the length
+        // of the tick, not an instant.
+        //
+        // Anything that closed the row in that gap is invisible to the snapshot:
+        // a sender withdrawing its own queued message, an operator fixing a row,
+        // a concurrent path closing it. The message goes out regardless, which
+        // is the one outcome nobody asked for -- the row already says it should
+        // not be delivered.
+        //
+        // One indexed lookup of one column, placed as late as possible (after
+        // STT, immediately before the send) so the blind window it leaves is as
+        // small as the code allows. A row that is no longer 'pending' -- or no
+        // longer there at all -- is skipped and NOT re-closed: it already has a
+        // terminal state and, usually, a reason; overwriting that would erase
+        // who closed it and why.
+        const liveStatus = getMessageStatus(msg.id)
+        if (liveStatus !== 'pending') {
+          logger.info(
+            { id: msg.id, from: msg.from_agent, to: msg.to_agent, liveStatus },
+            'message-router: row is no longer pending at send time, skipping delivery',
+          )
+          continue
+        }
         // channel-inbound carries the STT-applied deliveryContent; the agent
         // wrap (trusted/untrusted) carries the raw content. Single-source frame.
         // msgId passed so receiving agents can write back via PUT /api/messages/:id.
@@ -724,16 +800,78 @@ export async function runMessageRouterTick(): Promise<void> {
           ? undefined
           : { ageMs, newerFromSameSender: countNewerMessagesFromSameSender(msg.from_agent, msg.to_agent, msg.id) }
         const { prefix, wrapped } = wrapAgentMessageForDelivery(category, safeFromAgent, msg.from_agent, content, msg.id, msg.origin_note, freshness)
+        // What the recipient inherits as trace context after this delivery:
+        // the head's, unless a multi-envelope batch below ends on a later row.
+        let traceCtxToRecord: { trace_id: string; span_id: string } | null = traceCtx
         // Inline preamble so a fresh session (post hard-restart) doesn't miss
         // the context that explains the tag semantics.
-        await sendPromptToSession(session, prefix + wrapped, host)
+        if (usesWorksource) {
+          // Hand it to the queue instead of the keyboard. The reader turns the
+          // file into a real turn and takes an acknowledgment back.
+          //
+          // WHAT 'delivered' MEANS HERE, stated plainly because it is weaker
+          // than it sounds and stronger than what it replaces: it means the item
+          // is durably queued, NOT that the agent has processed it. That is a
+          // strict improvement on the tmux path, where 'delivered' has always
+          // meant "we pressed some keys at a pane" -- which is exactly the claim
+          // that turned out to be false on the two cortex-router wedges. An item
+          // the agent never acknowledges is re-offered by the reader after its
+          // ack timeout, so a lost hand-off self-heals; the DB row does not have
+          // to model that.
+          //
+          // enqueue returns false when the id is already in pending/active/done.
+          // That is not an error: a tick that could not confirm its own write
+          // retries, and re-queueing would hand the agent the same work twice.
+          const itemId = worksourceItemId(msg.id)
+          const queued = enqueueWorksourceItem(msg.to_agent, itemId, prefix + wrapped, {
+            from: safeFromAgent,
+            category,
+            message_id: msg.id,
+            ...(traceCtx ?? {}),
+          })
+          logger.info({ id: msg.id, to: msg.to_agent, itemId, queued }, queued
+            ? 'message-router: queued to worksource'
+            : 'message-router: worksource item already present, not re-queued')
+        } else {
+          // MULTI-ENVELOPE INJECTION (B1F38C8C): while the pane is free, take the
+          // OTHER pending inter-agent rows for this same recipient from the
+          // tick's snapshot and send them in this one injection, each with its
+          // own envelope. Opt-in per recipient (ROUTER_BATCH_INJECT_AGENTS), so
+          // it is measured on one agent before it is widened. Channel-inbound
+          // rows (user messages, possibly voice/STT) stay on the serial path.
+          const mates = collectBatchMates(pending, msg, now, agentSessionCache)
+          if (mates.items.length > 0) {
+            const text = composeBatchInjection([{ prefix, wrapped }, ...mates.items], mates.remaining)
+            await sendPromptToSession(session, text, host)
+            // The head row is marked delivered by the shared code below; the
+            // mates are marked here and skipped by the loop via
+            // batchedMsgIdsThisTick, exactly like the reconnect batch.
+            for (const mate of mates.rows) {
+              if (!markMessageDelivered(mate.id)) {
+                logger.warn({ id: mate.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
+              }
+              batchedMsgIdsThisTick.add(mate.id)
+              routerInjectFailures.delete(mate.id)
+              routerLoggedMisses.delete(mate.id)
+              logger.info({ id: mate.id, from: mate.from_agent, to: mate.to_agent, batchHead: msg.id }, 'Agent message delivered (multi-envelope batch)')
+            }
+            // The recipient inherits the LAST message's trace, as it would after
+            // a serial delivery of the same rows (each of which overwrote the
+            // previous). Recorded via traceCtxToRecord so the shared line below
+            // does not put the head's context back on top of it.
+            if (mates.lastTraceCtx) traceCtxToRecord = mates.lastTraceCtx
+            logger.info({ head: msg.id, to: msg.to_agent, batchSize: mates.items.length + 1, remaining: mates.remaining }, 'message-router: multi-envelope injection')
+          } else {
+            await sendPromptToSession(session, prefix + wrapped, host)
+          }
+        }
         if (!markMessageDelivered(msg.id)) {
           logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
         }
         // Propagate trace context: the receiving agent inherits this trace_id
         // and span_id so its next outbound message continues the same chain.
-        if (traceCtx) {
-          deliveredTraceCtx.set(msg.to_agent, traceCtx)
+        if (traceCtxToRecord) {
+          deliveredTraceCtx.set(msg.to_agent, traceCtxToRecord)
         }
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
@@ -772,6 +910,66 @@ export async function runMessageRouterTick(): Promise<void> {
     // (default off); when enabled it is cheap statSync-gated so an empty fleet
     // costs one stat per agent and no tmux I/O.
     void maybeWakeSubAgentsForTelegram(now)
+}
+
+// ---- multi-envelope batch mates (B1F38C8C) ---------------------------------
+// From the tick's snapshot, the OTHER pending inter-agent rows addressed to
+// the head row's recipient, in ascending id, up to the recipient's cap. Each
+// mate is re-read for liveness (same rule as the head: a row that is no longer
+// pending at send time is not sent), classified and wrapped with its own
+// envelope, trace-stamped, and given its OWN freshness suffix computed now --
+// so an older row whose newer sibling rides in the same batch is annotated.
+// `remaining` is the recipient's REAL pending count beyond this batch, read
+// from the DB at compose time -- NOT the snapshot's leftover. The snapshot is
+// the tick window (selectTickWindow), capped at MAX_MESSAGES_PER_TICK rows across
+// every recipient, so a recipient whose rows fit the batch cap inside the
+// snapshot can still have more rows beyond it; a snapshot-local count
+// would then say "nothing else waits" from a truncated view. Measured by the
+// reviewer (#1415): the pending set exceeded 25 in 38 separate episodes over
+// 30 days, peak 43, i.e. exactly in the congested moments this feature is
+// for. The DB count includes every still-pending row for the recipient
+// (channel-inbound ones too: they wait in the same queue and arrive serially),
+// and excludes rows that are no longer pending, so a mate skipped by the
+// liveness check below is not counted as waiting either.
+function collectBatchMates(
+  pending: AgentMessage[],
+  head: AgentMessage,
+  now: number,
+  agentSessionCache: Map<string, {host: string | null, session: string, exists: boolean, worksource: boolean}>,
+): { items: { prefix: string; wrapped: string }[]; rows: AgentMessage[]; remaining: number; lastTraceCtx: { trace_id: string; span_id: string } | null } {
+  const empty = { items: [], rows: [], remaining: 0, lastTraceCtx: null }
+  const cap = batchInjectCapFor(head.to_agent)
+  if (cap < 2) return empty
+  if (agentSessionCache.get(head.to_agent)?.worksource) return empty
+  const items: { prefix: string; wrapped: string }[] = []
+  const rows: AgentMessage[] = []
+  let lastTraceCtx: { trace_id: string; span_id: string } | null = null
+  const start = pending.indexOf(head) + 1
+  for (let i = start; i < pending.length; i++) {
+    const m = pending[i]
+    if (m.to_agent !== head.to_agent) continue
+    if (m.id <= head.id) continue                 // ascending only
+    if (batchedMsgIdsThisTick.has(m.id)) continue
+    const cls = classifyAgentMessage(m.from_agent, m.to_agent)
+    if (!cls || cls.category === 'channel-inbound' || cls.category === 'federated') continue
+    if (items.length >= cap - 1) break
+    if (getMessageStatus(m.id) !== 'pending') continue
+    const effective = m.trace_id && m.span_id
+      ? { trace_id: m.trace_id, span_id: m.span_id }
+      : stampTraceOnMessage(m, now)
+    const freshness = { ageMs: now - m.created_at * 1000, newerFromSameSender: countNewerMessagesFromSameSender(m.from_agent, m.to_agent, m.id) }
+    const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, m.from_agent, m.content, m.id, m.origin_note, freshness)
+    items.push({ prefix, wrapped })
+    rows.push(m)
+    if (effective) lastTraceCtx = effective
+  }
+  if (items.length === 0) return empty
+  // Real count, at compose time: everything still pending for this recipient
+  // that is not in this injection. The head and the mates are still 'pending'
+  // in the DB here (they are marked delivered only after the send succeeds).
+  const inBatch = new Set<number>([head.id, ...rows.map((r) => r.id)])
+  const remaining = getPendingMessages(head.to_agent).filter((r) => !inBatch.has(r.id)).length
+  return { items, rows, remaining, lastTraceCtx }
 }
 
 // ---- voice helpers (message-router level) ----------------------------------

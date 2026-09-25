@@ -1,3 +1,4 @@
+import { tmuxStderr } from './tmux-stderr.js'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync, readdirSync, lstatSync, symlinkSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
@@ -13,6 +14,8 @@ import {
   sessionExistsOnHost,
   hasFleetOauthToken,
   FLEET_OAUTH_TOKEN_PATH,
+  buildCustomProviderLaunchEnv,
+  stampCustomApiKeyApproval,
 } from './agent-process.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { readClaudeCodeOauthJson } from './claude-credentials.js'
@@ -43,11 +46,19 @@ import { notifyChannel } from '../notify.js'
 
 const TMUX = resolveFromPath('tmux')
 
-// MARVEEN_WORKER_MODEL stays a process-level escape hatch (systemd
-// `Environment=`), but the .env-backed DEFAULT_AGENT_MODEL is what an operator
-// can actually set: readEnvFile() returns a plain object and never populates
-// process.env, so a MARVEEN_WORKER_MODEL line in .env was silently ignored.
-const WORKER_MODEL = process.env.MARVEEN_WORKER_MODEL || DEFAULT_AGENT_MODEL
+// MARVEEN_WORKER_MODEL is an escape hatch (systemd `Environment=`); when set it
+// wins over everything else. Without it the worker inherits the main agent's
+// custom provider (model + endpoint env) if one is configured, so a
+// Claude-subscription-less fleet (e.g. custom LiteLLM endpoint) gets working
+// background workers without any extra config. Falls back to DEFAULT_AGENT_MODEL
+// when neither override nor custom provider is in play.
+const WORKER_MODEL_OVERRIDE = process.env.MARVEEN_WORKER_MODEL ?? null
+
+// APRO920 (c)(2): pure so the launch-model log line's source label is unit
+// testable without spinning up a real tmux session.
+export function workerModelSource(env: NodeJS.ProcessEnv = process.env): string {
+  return env.MARVEEN_WORKER_MODEL ? 'env:MARVEEN_WORKER_MODEL' : 'default'
+}
 
 // How long to wait for a freshly launched worker to reach an idle prompt.
 const WORKER_BOOT_TIMEOUT_MS = 90_000
@@ -495,14 +506,52 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
   // measured on vps47 during the WORKERHOME1 cold-start probe: session created,
   // gone before the first 5s poll). tryResolveFromPath probes the known install
   // dirs; fall back to the bare name so an exotic layout keeps the old behavior.
+  //
+  // CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false (2026-06-29): without it the
+  // worker's empty input box shows a DIM history-based ghost suggestion (e.g.
+  // `❯ Try "refactor channel-monitor.ts"`). isSessionReadyForPrompt scrapes the
+  // pane colourless via capture-pane, so PARKED_INPUT_RX matches the ghost and
+  // detectPaneState returns 'typing' -- the worker reads "not ready" FOREVER and
+  // every agent-create fails with "worker session not ready" (observed: agent-create
+  // failed 4x after a cold start). Mirror the agent-process.ts launcher,
+  // which already disables the suggestion for the same scrape-misread reason.
+  // Resolve model and optional custom-provider env prefix.
+  // Priority: MARVEEN_WORKER_MODEL override > main-agent custom provider > default.
+  let workerModel = WORKER_MODEL_OVERRIDE ?? DEFAULT_AGENT_MODEL
+  let customEnvPrefix = ''
+  if (!WORKER_MODEL_OVERRIDE) {
+    try {
+      const cpEnv = buildCustomProviderLaunchEnv(MAIN_AGENT_ID)
+      if (cpEnv) {
+        workerModel = cpEnv.model
+        customEnvPrefix = cpEnv.envPrefix
+        if (cpEnv.customApiKeyForApproval) {
+          stampCustomApiKeyApproval(join(ctx.configDir, '.claude.json'), cpEnv.customApiKeyForApproval)
+        }
+      }
+    } catch (err) {
+      logger.warn({ err }, 'agent-worker: could not resolve main-agent custom provider; falling back to default model')
+    }
+  }
+
   const claudeLaunchBin = tryResolveFromPath('claude') ?? 'claude'
   const launch =
     (hasFleetOauthToken() ? `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shArg(FLEET_OAUTH_TOKEN_PATH)})"; ` : '') +
     `export CLAUDE_CONFIG_DIR=${shArg(ctx.configDir)}; ` +
+    `export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false; ` +
+    // CHANSPARE925: no Agent view (Left would background the worker into the daemon).
+    `export CLAUDE_CODE_DISABLE_AGENT_VIEW=1; ` +
+    customEnvPrefix +
     `cd ${shArg(ctx.home)} && ` +
-    `${shArg(claudeLaunchBin)} --dangerously-skip-permissions --model ${shArg(WORKER_MODEL)}`
+    `${shArg(claudeLaunchBin)} --dangerously-skip-permissions --model ${shArg(workerModel)}`
   execFileSync(TMUX, ['new-session', '-d', '-s', ctx.session, '-c', ctx.home, 'bash', '-lc', launch], { timeout: 8000 })
   logger.info({ session: ctx.session, cwd: ctx.home }, 'agent-worker: launched interactive worker session')
+  // APRO920 (c)(2): same rationale as startAgentProcess's model-resolved log --
+  // which config-chain element supplied the --model value.
+  logger.info(
+    { session: ctx.session, model: workerModel, source: workerModelSource() },
+    'agent-worker: launch model resolved',
+  )
   logWorkerClaudeVersion(ctx)
 }
 
@@ -634,7 +683,9 @@ function restartWorkerSession(ctx: WorkerCtx): void {
     logger.warn({ session: ctx.session }, 'agent-worker: WEB_ONLY mode -- refusing to restart (kill) a worker session')
     return
   }
-  try { execFileSync(TMUX, ['kill-session', '-t', ctx.session], { timeout: 5000 }) } catch { /* not running */ }
+  // TMUXWINDOWATTR920: stderr piped; "not running" is the expected case here,
+  // so it is logged at debug with the site instead of copied onto stderr.
+  try { execFileSync(TMUX, ['kill-session', '-t', ctx.session], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] }) } catch (err) { logger.debug({ site: 'agent-worker.restart', session: ctx.session, tmux: tmuxStderr(err) }, 'tmux kill-session: not running') }
   try { startWorkerSessionFor(ctx) } catch (err) { logger.warn({ err, session: ctx.session }, 'agent-worker: restart failed') }
 }
 

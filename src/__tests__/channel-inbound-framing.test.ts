@@ -127,7 +127,12 @@ describe('/api/messages 403 guard (forged coordinator id)', () => {
   })
 
   it('the guarded id is the same constant the router trusts (one source of truth)', () => {
-    expect(MESSAGES_ROUTE_SRC).toMatch(/import \{ COORDINATOR_AGENT_ID \} from '\.\.\/\.\.\/channel-coordinator\/ingest\.js'/)
+    // Relaxed 2026-09-18 (HANGCSATORNA918): the route now also imports
+    // VOICE_CHANNEL_AGENT_ID from the same module, so an exact-arity regex
+    // broke on a change that does not touch this test's INTENT -- that the
+    // guarded id comes from the shared constant and not a literal. Assert the
+    // intent: the name is imported from that module, whatever else rides along.
+    expect(MESSAGES_ROUTE_SRC).toMatch(/import \{[^}]*\bCOORDINATOR_AGENT_ID\b[^}]*\} from '\.\.\/\.\.\/channel-coordinator\/ingest\.js'/)
     expect(COORDINATOR_AGENT_ID).toBe('telegram-coordinator')
   })
 })

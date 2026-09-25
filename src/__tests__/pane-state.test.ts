@@ -19,6 +19,9 @@ import {
   parkedInputRowCount,
   submitLanded,
   paneShowsContextSaturation,
+  paneShowsContextSaturationHardError,
+  mcpTrustAcceptKeys,
+  detectsFirstRunGate,
 } from '../pane-state.js'
 
 // Realistic pane fixtures modelled on actual `tmux capture-pane -p`
@@ -612,6 +615,14 @@ describe('detectPaneState', () => {
     // "Accomplishing… (Ns · ↓ N tokens)" frame lingered well above the idle
     // input box. The token-counter scan is region-scoped, so a counter that
     // has scrolled out of the live bottom region must not pin the pane busy.
+    //
+    // NOTE (2026-09-06): this fixture's counter is MINUTE-shaped ("3m 8s"), a
+    // shape the counter regex could not match until the TURN_ELAPSED fix. Until
+    // then the test passed for the wrong reason -- no region scoping required,
+    // because nothing matched anywhere -- which is why a mutation that widened
+    // the busy scan to the whole pane left the whole suite green. It is a real
+    // scope test only from this commit on; the sibling test below pins the
+    // other side of the same boundary.
     const staleCounter = [
       '✶ Accomplishing… (3m 8s · ↓ 9.3k tokens)',
       '⏺ Done: rebuilt and restarted the dashboard.',
@@ -2231,6 +2242,127 @@ describe('paneShowsContextSaturation', () => {
     expect(paneShowsContextSaturation('')).toBe(false)
     expect(paneShowsContextSaturation('   \n  ')).toBe(false)
   })
+
+  // The OTHER phrasing. Claude Code prints "N% context used" only while
+  // auto-compact is ENABLED; with it off the same footer slot renders
+  // `Context low (N% remaining)` in red and the "used" wording never appears
+  // (read out of the shipped CLI 2.1.247: the two strings are the two arms of
+  // one ternary). A pane sitting there is just as unreachable, so the net has
+  // to know the second wording too.
+  const lowFooter = (banner: string) => [
+    '  some prior assistant output',
+    '',
+    '✻ Cooked for 3m 7s',
+    `                                                              ${banner}`,
+    SEP,
+    '❯ ',
+    SEP,
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+  ].join('\n')
+
+  it('detects the auto-compact-off wording at exhaustion', () => {
+    expect(paneShowsContextSaturation(lowFooter('Context low (0% remaining) · Run /compact to compact & continue'))).toBe(true)
+    expect(paneShowsContextSaturation(lowFooter('Context low (1% remaining)'))).toBe(true)
+    expect(paneShowsContextSaturation(lowFooter('Context low (2% remaining)'))).toBe(true)
+  })
+
+  it('does NOT treat a merely-low context as saturation', () => {
+    // The banner starts well above the danger zone and the net's response is a
+    // FRESH RESTART. Matching the whole low band would restart working agents.
+    for (const pct of [3, 5, 9, 12, 30]) {
+      expect(paneShowsContextSaturation(lowFooter(`Context low (${pct}% remaining)`))).toBe(false)
+    }
+  })
+
+  it('the low-context wording is still tail-scoped like the rest', () => {
+    const quoted = [
+      '  Note: the guard should also match "Context low (0% remaining)".',
+      ...Array.from({ length: 10 }, () => '  more scrollback padding'),
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(paneShowsContextSaturation(quoted)).toBe(false)
+  })
+})
+
+// Two shapes of banner reach the predicate, and only one of them can be WRONG.
+//
+// A percentage claim ("100% context used", "Context low (N% remaining)") is
+// computed by the CLI from its own denominator, which is sized from the model
+// id it was launched with -- a 1M model whose id arrives without the [1m]
+// marker gets a 200k status line and prints the banner at ~179k while the
+// session keeps working. A caller holding an independent measurement can, and
+// on 2026-09-15 had to, disprove that.
+//
+// An error-shaped banner cannot be disproved by anything: the CLI paints it
+// only after a turn ACTUALLY failed at the real limit (CLI 2.1.205 renders
+// "Context limit reached" with color:"error", driven by the API's own "input
+// length and max_tokens exceed context limit"). Splitting them here is what
+// lets the context-guard overrule the first without ever touching the second.
+describe('paneShowsContextSaturationHardError', () => {
+  const footer = (banner: string) => [
+    '  some prior assistant output',
+    '',
+    banner,
+    SEP,
+    '❯ ',
+    SEP,
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+  ].join('\n')
+
+  const HARD_ERRORS = [
+    'Context limit reached · use /compact or /clear to continue',
+    'Context window full',
+    'context is full',
+    'Auto-compact required',
+    'autocompact required',
+  ]
+  const PCT_CLAIMS = [
+    '                                                              100% context used',
+    'Context low (0% remaining) · Run /compact to compact & continue',
+    'Context low (2% remaining)',
+  ]
+
+  it('is true for every error-shaped banner', () => {
+    for (const b of HARD_ERRORS) {
+      expect(paneShowsContextSaturationHardError(footer(b))).toBe(true)
+    }
+  })
+
+  it('is FALSE for the percentage-shaped banners -- the ones a measurement may overrule', () => {
+    for (const b of PCT_CLAIMS) {
+      expect(paneShowsContextSaturationHardError(footer(b))).toBe(false)
+    }
+  })
+
+  it('the union predicate still matches BOTH classes (the split did not narrow it)', () => {
+    // paneShowsContextSaturation's own behaviour must be byte-identical after
+    // the regex was rebuilt from two sources: every alternative still fires.
+    for (const b of HARD_ERRORS.concat(PCT_CLAIMS)) {
+      expect(paneShowsContextSaturation(footer(b))).toBe(true)
+    }
+  })
+
+  it('is tail-scoped and empty-safe like the union predicate', () => {
+    const quoted = [
+      '  Postmortem: the pane said "Context limit reached" at 09:14.',
+      ...Array.from({ length: 10 }, () => '  more scrollback padding'),
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(paneShowsContextSaturationHardError(quoted)).toBe(false)
+    expect(paneShowsContextSaturationHardError('')).toBe(false)
+    expect(paneShowsContextSaturationHardError('   \n  ')).toBe(false)
+  })
+
+  it('is false on ordinary panes', () => {
+    expect(paneShowsContextSaturationHardError(IDLE_BYPASS)).toBe(false)
+    expect(paneShowsContextSaturationHardError(BUSY_FULL_FOOTER)).toBe(false)
+  })
 })
 
 describe('parkedPasteSignature (stuck [Pasted text #N] recovery)', () => {
@@ -2303,5 +2435,137 @@ describe('parkedPasteSignature (stuck [Pasted text #N] recovery)', () => {
     ].join('\n')
     expect(stuckInputSignature(auraShape)).toBeNull()
     expect(parkedPasteSignature(auraShape)).not.toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// PANESPINPERC906 -- a turn longer than a minute must still read as busy.
+//
+// Claude Code stops rendering a flat second count at 60s and switches to
+// "1m 16s". Both busy regexes required `\d+s` directly after the paren, so
+// from the 60th second of every turn the spinner/token-counter signal went
+// silent and only the footer's `esc to interrupt` was left. That footer is
+// exactly the signal these patterns exist to backstop: between a submit and
+// the next spinner frame it is briefly absent, and a scheduler tick landing
+// in that window reads 'idle' and injects a prompt into a working pane.
+//
+// The minute-form fixture below is a verbatim capture from a live fleet pane
+// (marveen-channels, 2026-09-06 17:31), not a retyped lookalike.
+// ---------------------------------------------------------------------------
+describe('detectPaneState: minute- and hour-shaped turn durations', () => {
+  const liveTurn = (statusLine: string) =>
+    [
+      '⏺ Reading the router source to find the delivery loop.',
+      '',
+      statusLine,
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+
+  it('reads a minute-shaped token counter as busy (verbatim live capture)', () => {
+    expect(detectPaneState(liveTurn('✻ (1m 16s · ↓ 4.0k tokens)'))).toBe('busy')
+  })
+
+  it('reads a minute-shaped labelled spinner frame as busy', () => {
+    expect(detectPaneState(liveTurn('✢ Combobulating… (2m 0s · ↓ 9.3k tokens)'))).toBe('busy')
+  })
+
+  it('reads an hour-shaped counter as busy', () => {
+    // Defensive, not measured: no fleet turn ran an hour. Pinned so the shape
+    // is a decision in the code rather than an accident of the regex.
+    expect(detectPaneState(liveTurn('✻ (1h 4m 2s · ↓ 210k tokens)'))).toBe('busy')
+  })
+
+  it('still reads the seconds-only shape as busy', () => {
+    // The widened pattern must not lose the shape it already covered.
+    expect(detectPaneState(liveTurn('✻ (52s · ↓ 2.6k tokens)'))).toBe('busy')
+  })
+
+  it('does NOT read a minute-shaped duration without the ↓-tokens tail as busy', () => {
+    // Prose control. "Thinking… (2m 3s)" can appear in reply text; the `· ↓N`
+    // chrome tail is what separates a rendered spinner from quoted prose, and
+    // widening the duration must not weaken that.
+    expect(detectPaneState(liveTurn('  Thinking… (2m 3s) about the schema'))).toBe('idle')
+  })
+
+  it('does NOT read a minute-shaped counter above the live region as busy', () => {
+    // The other side of the boundary pinned by the 2026-06-30 stale-counter
+    // test: same minute shape, but scrolled out of BUSY_LIVE_REGION_LINES.
+    // Together the two tests make the busy-scan SCOPE measurable -- widening
+    // the scan to the whole pane now turns this red instead of staying green.
+    const stale = [
+      '✻ Accomplishing… (1m 16s · ↓ 4.0k tokens)',
+      '⏺ Done: restarted the dashboard.',
+      '⏺ Verified the endpoints.',
+      '⏺ Trailing scrollback line one.',
+      '⏺ Trailing scrollback line two.',
+      '⏺ Trailing scrollback line three.',
+      '⏺ Trailing scrollback line four.',
+      '⏺ Trailing scrollback line five.',
+      '',
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(detectPaneState(stale)).toBe('idle')
+  })
+
+  it('blocks a prompt to a pane in a minute-long turn', () => {
+    // The verdict is what the scheduler acts on: isReadyForPrompt is the call
+    // site that decides whether a prompt gets injected.
+    expect(isReadyForPrompt(liveTurn('✻ (1m 16s · ↓ 4.0k tokens)'))).toBe(false)
+  })
+})
+
+// MCP server-approval dialog (2026-09-03, PR #1099 review). The reviewer
+// measured this pane in a real tmux session: detectPaneState read 'unknown',
+// detectsFirstRunGate returned null, detectsBlockingMenu was false -- nothing
+// answered it and nothing alerted, while the router kept queueing work.
+describe('detectsFirstRunGate / mcpTrustAcceptKeys: the MCP approval dialog', () => {
+  const MCP_PANE = [
+    '',
+    'New MCP server found in this project: worksource',
+    'MCP servers may execute code or access system resources. All tool calls require approval.',
+    '',
+    '❯ 1. Use this MCP server',
+    '  2. Use this and all future MCP servers in this project',
+    '  3. Continue without using this MCP server',
+    '',
+    'Enter to confirm · Esc to cancel',
+  ].join('\n')
+
+  it('classifies it as a first-run gate instead of returning null', () => {
+    expect(detectsFirstRunGate(MCP_PANE)).toBe('mcp-trust')
+  })
+
+  it('selects THIS server with cursor-relative keys, never by number', () => {
+    // Cursor already on option 1 -> confirm without moving.
+    expect(mcpTrustAcceptKeys(MCP_PANE)).toEqual(['Enter'])
+  })
+
+  it('walks UP to option 1 when the cursor starts on the refusal', () => {
+    const onRefusal = MCP_PANE
+      .replace('❯ 1. Use this MCP server', '  1. Use this MCP server')
+      .replace('  3. Continue without', '❯ 3. Continue without')
+    expect(mcpTrustAcceptKeys(onRefusal)).toEqual(['Up', 'Up', 'Enter'])
+  })
+
+  it('never targets "all future MCP servers" -- that pre-approves unseen servers', () => {
+    const keys = mcpTrustAcceptKeys(MCP_PANE)
+    // From option 1, a single Down would land on the "all future" row.
+    expect(keys).not.toContain('Down')
+  })
+
+  it('parks (null) when no unambiguous "use this server" row exists', () => {
+    const reworded = MCP_PANE.replace('❯ 1. Use this MCP server', '❯ 1. Approve the server')
+    expect(mcpTrustAcceptKeys(reworded)).toBeNull()
+  })
+
+  it('a busy pane quoting the dialog is never the dialog', () => {
+    const quoted = `New MCP server found in this project: worksource\n  1. Use this MCP server\n\n✻ Thinking… (esc to interrupt)`
+    expect(detectsFirstRunGate(quoted)).toBeNull()
   })
 })

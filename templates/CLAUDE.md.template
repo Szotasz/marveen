@@ -118,9 +118,24 @@ curl -s -X POST http://localhost:{{WEB_PORT}}/api/daily-log \
 
 Keresés (mielőtt válaszolsz, nézd meg van-e releváns emlék):
 ```bash
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+curl -s -D /tmp/mem-fejlec.txt -H "Authorization: Bearer $(cat store/.dashboard-token)" \
   "http://localhost:{{WEB_PORT}}/api/memories?agent={{MAIN_AGENT_ID}}&q=KULCSSZÓ&category=warm"
+grep -i '^x-memory-search' /tmp/mem-fejlec.txt   # EZT IS OLVASD EL, nem opcionális
 ```
+
+A `-D` NEM dísz. A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja
+őket, és a maradék töltelékszavakra hozott sorokat adja vissza. A body ilyenkor UGYANÚGY néz
+ki, mint egy valódi találat -- a különbség KIZÁRÓLAG az `X-Memory-Search` fejlécben utazik.
+
+- `relaxed=true` -- semmi nem illeszkedett ÚGY, AHOGY KÉRTED; amit látsz, az mentett
+  közelítés, NEM bizonyíték.
+- `relaxed=false` -- a kérdés úgy illeszkedett, ahogy kérted. NEM jelenti azt, hogy ez MINDEN,
+  és azt sem, hogy van találat: `relaxed=false; hits=0` létező válasz.
+
+Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a
+`&strict=1`-et: ott az üres válasz pontosan azt jelenti, aminek látszik. Az engedékeny
+alapértelmezés SZÁNDÉKOS -- a természetesen megfogalmazott kérdés attól találja meg a meglévő
+emléket. Amivel a végpont tartozik, az a CÍMKE, nem a szigor.
 
 ## Kanban tábla
 

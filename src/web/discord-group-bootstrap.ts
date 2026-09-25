@@ -24,6 +24,7 @@ import { CHANNEL_PROVIDER, CHANNEL_CHAT_ID } from '../config.js'
 import { channelStateDir } from '../channel-provider.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { logger } from '../logger.js'
+import { normalizeChatId } from '../owner-chat.js'
 
 interface AccessFile {
   dmPolicy?: 'pairing' | 'allowlist' | 'disabled'
@@ -35,7 +36,8 @@ interface AccessFile {
 
 export function ensureDiscordChannelGroup(): void {
   if (CHANNEL_PROVIDER !== 'discord') return
-  if (!CHANNEL_CHAT_ID) return
+  // CHATID0: same placeholder rule as notify.ts -- "0" is not a channel.
+  if (!normalizeChatId(CHANNEL_CHAT_ID)) return
   const dir = channelStateDir('discord')
   const path = join(dir, 'access.json')
 

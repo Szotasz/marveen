@@ -144,7 +144,12 @@ elif [ "$OS" = "Linux" ]; then
     if _service_live "$INSTALL_DIR/store/dashboard.pid" "dist/index.js"; then
       echo "Dashboard mar fut, ujrainditas kihagyva."
     else
-      nohup "$NODE_BIN" "$INSTALL_DIR/dist/index.js" > "$INSTALL_DIR/store/dashboard.log" 2>&1 9>&- &
+      # >> (append), deliberately: the in-app log rotation (LOGROTATE910) is
+      # copy-then-truncate, which is only safe for O_APPEND writers -- a plain
+      # > redirect keeps its offset after the truncate and turns the log into
+      # a sparse file. launchd StandardOutPath and systemd append: already
+      # open in append mode; this redirect must match them.
+      nohup "$NODE_BIN" "$INSTALL_DIR/dist/index.js" >> "$INSTALL_DIR/store/dashboard.log" 2>&1 9>&- &
       echo $! > "$INSTALL_DIR/store/dashboard.pid"
     fi
     if _service_live "$INSTALL_DIR/store/channels.pid" "channels.sh"; then

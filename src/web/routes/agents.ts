@@ -3,15 +3,23 @@ import { join, extname, dirname } from 'node:path'
 import { homedir, platform, tmpdir } from 'node:os'
 import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
+import { beginRestart, endRestart } from '../restart-lock.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
-import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, countNewerMessagesFromSameSender } from '../../db.js'
+import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, countNewerMessagesFromSameSender,
+  getAgentToolActivity, getAgentMessageActivity, getAgentCurrentCards } from '../../db.js'
+import { deriveAgentStatus, AGENT_STATUS_THRESHOLDS } from '../agent-status.js'
+import type { AgentStatusSignals, AgentStatusRow } from '../agent-status.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
+import { snapshotPersonaFile, writePersonaFileIfUnchanged } from '../persona-write-guard.js'
+import { measureClaudeCliVersion } from '../claude-cli-version.js'
+import { claudeSupportForCli, isModelUnsupportedByCli, CLAUDE_MODEL_MIN_CLI } from '../../claude-cli-support.js'
 import { CHANNEL_PLUGIN_IDS } from '../plugin-ids.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
 import { loadOpenRouterCatalog, fetchAllOpenRouterModels, loadCuratedManual, addCuratedManual, removeCuratedManual } from '../openrouter-models.js'
+import { listCustomProviders } from '../custom-providers.js'
 import {
   agentDir,
   agentConfigRoot,
@@ -46,6 +54,8 @@ import {
   readAgentVoiceConfig,
   writeAgentVoiceConfig,
   KNOWN_VOICE_MODELS,
+  readAgentCustomProvider,
+  writeAgentCustomProvider,
   type AuthMode,
 } from '../agent-config.js'
 import { readClaudePlans, resolveAgentConfigDir } from '../claude-plans.js'
@@ -113,14 +123,14 @@ import { detectPaneState, detectPermissionMode } from '../../pane-state.js'
 import { checkAgentPutFields, checkConfigPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../agent-put-fields.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
-import { readContextGuardConfig, writeContextGuardConfig } from '../context-guard-store.js'
+import { readContextGuardConfig, writeContextGuardConfig, seedContextGuardForNewAgent } from '../context-guard-store.js'
 import { getContextGuardStatus } from '../context-guard-runner.js'
 import type { AutoRestartConfig } from '../../auto-restart.js'
 import type { ContextGuardConfig } from '../../context-guard.js'
 // Derived from the DEFAULT config objects, not hand-listed: a field added to
 // the interface is added to its default too, so the accepted-key set cannot
 // drift away from what normalize*Config() actually reads.
-import { DEFAULT_AUTO_RESTART } from '../../auto-restart.js'
+import { DEFAULT_AUTO_RESTART, LEGACY_AUTO_RESTART_FIELDS } from '../../auto-restart.js'
 import { DEFAULT_CONTEXT_GUARD } from '../../context-guard.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
 import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
@@ -143,6 +153,12 @@ import {
 } from '../agent-bundle.js'
 import type { RouteContext } from './types.js'
 import { suggestForAgent, type AgentSignals } from '../model-suggest.js'
+import {
+  contextAvgPerCallMap,
+  kanbanLoadMap,
+  KANBAN_LOAD_SQL,
+  type KanbanLoadRow,
+} from '../model-suggest-signals.js'
 import { getTokenSummary } from '../token-usage.js'
 import { listScheduledTasks } from '../scheduled-tasks-io.js'
 
@@ -435,12 +451,50 @@ interface AgentSummary {
 
 interface AgentDetail extends AgentSummary {
   memoryIsolation: boolean
+  customProvider: string | null
   claudeMd: string
   soulMd: string
   mcpJson: string
   skills: { name: string; hasSkillMd: boolean }[]
   hasAvatar: boolean
   hasApiKey: boolean
+}
+
+// Where a READER finds the transcript of a given agent.
+//
+// GH #816: the main agent's row resolved this the same way as a sub-agent's,
+// through agentDir(name) -> <root>/agents/<main>. The main agent does not run
+// there; it runs in PROJECT_ROOT, under the channels session, so the reader was
+// pointed at a different working directory than the one being written.
+//
+// Measured on the live install, 2026-09-09, same moment, same process:
+//   agents/<main>  -> projects/-Users-marvin-ClaudeClaw-agents-marveen  (exists) -> null
+//   PROJECT_ROOT   -> projects/-Users-marvin-ClaudeClaw                 (exists) -> claude-opus-5
+// The old directory is not missing, which is why this never surfaced as an
+// error: it is a real directory holding another session's history, and it
+// simply has no current model to report.
+//
+// The consequence is the trust problem in the report: activeModel stayed null,
+// the row fell back to the configured value with modelSource "default", and a
+// fallback shown as a plain value reads as a statement. The reporter's owner
+// took it for a silent downgrade of their assistant.
+//
+// The config root matters too. With main-agent isolation the session writes
+// under <root>/.channels-config; on this install that path is a symlink to
+// ~/.claude/projects, but an install without the symlink would read an empty
+// shared root and go back to reporting null. Probing for the directory (rather
+// than re-deriving the launcher's isolation decision) is the same approach
+// resolveAgentConfigDirForRead uses, and for the same reason: duplicating the
+// launcher's logic is how the two paths drift.
+export function resolveTranscriptLocation(name: string): { workingDir: string; configDir: string | undefined } {
+  if (!isMainChannelsAgent(name)) {
+    return { workingDir: agentDir(name), configDir: resolveAgentConfigDir(name).configDir ?? undefined }
+  }
+  const isolated = join(PROJECT_ROOT, '.channels-config')
+  return {
+    workingDir: PROJECT_ROOT,
+    configDir: existsSync(join(isolated, 'projects')) ? isolated : undefined,
+  }
 }
 
 function getAgentSummary(name: string): AgentSummary {
@@ -465,15 +519,30 @@ function getAgentSummary(name: string): AgentSummary {
   // never blocks on a sleeping laptop's ssh timeout. `running` is derived from
   // it; `unreachable` reads as not-running but is surfaced distinctly so the UI
   // does not show a still-alive remote agent as "stopped".
+  //
+  // MSGWARN908: the MAIN agent lives in `${MAIN_AGENT_ID}-channels` (launchd /
+  // channels.sh), not `agent-<name>` -- agentRunState() on its id always said
+  // 'stopped', so this roster reported a running Marveen as down, and on
+  // 2026-09-08 that false state was relayed to the owner as a system-down
+  // report. Probe the channels session instead (same source the activity
+  // endpoint already uses).
+  const isMain = isMainChannelsAgent(name)
   const remote = readAgentRemoteConfig(name)
-  const runState = agentRunStateCached(name, remote.host != null)
+  const mainSessionName = isMain ? MAIN_CHANNELS_SESSION : agentSessionName(name)
+  const runState: AgentRunState = isMain
+    ? (capturePane(MAIN_CHANNELS_SESSION) !== null ? 'running' : 'stopped')
+    : agentRunStateCached(name, remote.host != null)
   const running = runState === 'running'
-  const session = running ? agentSessionName(name) : undefined
-  const runningSince = running ? getAgentRunningSince(name) : null
+  const session = running ? mainSessionName : undefined
+  const runningSince = running ? getAgentRunningSince(name, mainSessionName) : null
 
   // Reauth badge: only meaningful for a running session (a stopped agent has
   // no pane to inspect). One capture-pane per running agent on the list poll.
-  const reauth = running ? detectReauthNeeded(capturePane(agentSessionName(name))) : { needsReauth: false }
+  const reauth = running ? detectReauthNeeded(capturePane(mainSessionName)) : { needsReauth: false }
+
+  // The main agent runs in PROJECT_ROOT, not in agents/<name>; see
+  // resolveTranscriptLocation.
+  const transcript = resolveTranscriptLocation(name)
 
   return {
     name,
@@ -483,7 +552,7 @@ function getAgentSummary(name: string): AgentSummary {
     modelProfile: typeof agentModelConfig.modelProfile === 'string' ? agentModelConfig.modelProfile : null,
     modelSource: modelResolution.source,
     modelProfileError: modelResolution.error ?? null,
-    activeModel: running ? readActiveModelFromProjectDir(dir, runningSince ?? undefined, resolveAgentConfigDir(name).configDir ?? undefined) : null,
+    activeModel: running ? readActiveModelFromProjectDir(transcript.workingDir, runningSince ?? undefined, transcript.configDir) : null,
     runningSince,
     authMode: readAgentAuthMode(name),
     securityProfile: readAgentSecurityProfile(name),
@@ -504,7 +573,11 @@ function getAgentSummary(name: string): AgentSummary {
     hasAvatar: findAvatarForAgent(name) !== null,
     autoRestart: readAutoRestartConfig(name),
     contextGuard: readContextGuardConfig(name),
-    contextTokens: running ? readContextTokensFromProjectDir(dir, resolveAgentConfigDir(name).configDir ?? undefined) : null,
+    // GATECTX910: same location the activeModel read above uses. The previous
+    // `dir` + configured-config-dir pair was blind to the MAIN agent (which
+    // runs in PROJECT_ROOT with the .channels-config probe): its listing row
+    // showed contextTokens null while a live transcript sat right there.
+    contextTokens: running ? readContextTokensFromProjectDir(transcript.workingDir, transcript.configDir) : null,
     needsReauth: reauth.needsReauth,
     reauthReason: reauth.reason,
   }
@@ -534,6 +607,7 @@ function getAgentDetail(name: string): AgentDetail {
   return {
     ...summary,
     memoryIsolation: readAgentMemoryIsolation(name),
+    customProvider: readAgentCustomProvider(name),
     claudeMd,
     soulMd,
     mcpJson,
@@ -551,6 +625,37 @@ function listAgentSummaries(): AgentSummary[] {
 // stay pending (FIFO) for the next turn's drain -- bounds the context a single
 // turn absorbs, mirroring the router's MAX_MESSAGES_PER_TICK.
 const INBOX_DRAIN_CAP = 10
+
+// Pane -> coarse activity label. Shared by /api/agents/activity and
+// /api/agents/status so the two surfaces can never drift into disagreeing
+// about whether the same agent is working.
+function paneActivityLabel(running: boolean, pane: string | null): string {
+  if (!running) return 'stopped'
+  if (pane === null) return 'unknown'
+  const s = detectPaneState(pane)
+  if (s === 'busy' || s === 'typing') return 'working'
+  if (s === 'idle') return 'idle'
+  return s // 'unknown' | 'error'
+}
+
+/**
+ * PICKERCLIKAPU923: refuse a Claude model the INSTALLED CLI is measured not to
+ * launch. Returns the 422 body, or null when the write may proceed. Fail-OPEN:
+ * an unmeasured version refuses nothing. The probe is fresh (cache bypassed)
+ * so an operator who just upgraded the CLI is not blocked by a stale reading.
+ */
+export async function refuseIfCliCannotLaunch(model: string): Promise<Record<string, unknown> | null> {
+  const cli = await measureClaudeCliVersion({ fresh: true })
+  if (!isModelUnsupportedByCli(model, cli.version)) return null
+  const req = CLAUDE_MODEL_MIN_CLI[model.replace(/\[[^\]]*\]$/, '')]
+  return {
+    error: 'model not launchable by the installed Claude Code CLI',
+    model,
+    installedCli: cli.version,
+    minCli: req?.minCli ?? null,
+    message: `A telepített Claude Code ${cli.version} nem futtatja a(z) ${model} modellt (legalább ${req?.minCli ?? '?'} kell; mérve: ${req?.measured ?? 'n/a'}). Frissítsd a CLI-t, vagy válassz olyan modellt, amit ez a verzió ismer.`,
+  }
+}
 
 export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method } = ctx
@@ -575,9 +680,21 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // options without the key would let the operator pick a model that 401s.
     const hasOpenRouter = getSecret('openrouter-fleet-key') !== null
     const orCatalog = loadOpenRouterCatalog()
+    // PICKERCLIKAPU923: the INSTALLED CLI decides which Claude ids are
+    // launchable (2.1.110, the customer pin, answers 400 unrecognized_model on
+    // claude-fable-5-1 and claude-opus-5-5). Fail-OPEN when unmeasured: the
+    // client keeps every option and shows an "unmeasured" label instead.
+    const cli = await measureClaudeCliVersion()
+    const claudeSupport = claudeSupportForCli(cli.version)
     json(res, {
+      cli: { version: cli.version, measuredAt: cli.measuredAt, error: cli.error, source: cli.source },
+      claudeSupport,
       claude: [
-        { id: 'claude-opus-5', label: 'Opus 5 (legújabb Opus)' },
+        { id: 'claude-fable-5-1', label: 'Fable 5.1 (legújabb Fable)', minCli: CLAUDE_MODEL_MIN_CLI['claude-fable-5-1'].minCli },
+        // Opus 5.5: ONLY the 1M variant (owner decision 2026-09-23). The gate table is keyed on the
+        // base id, so the [1m] variant inherits the 2.1.280 minimum -- pinned in picker-cli-gate.test.ts.
+        { id: 'claude-opus-5-5[1m]', label: 'Opus 5.5 (1M kontextus, legújabb Opus)', minCli: CLAUDE_MODEL_MIN_CLI['claude-opus-5-5'].minCli },
+        { id: 'claude-opus-5', label: 'Opus 5' },
         { id: 'claude-sonnet-5', label: 'Sonnet 5' },
         { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
         { id: 'claude-fable-5', label: 'Fable 5' },
@@ -615,6 +732,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // Feeds the "OpenRouter - kézi" optgroup in every agent's model dropdown.
       openrouterManual: hasOpenRouter ? loadCuratedManual() : [],
       openrouterConfigured: hasOpenRouter,
+      // Custom Anthropic-compatible providers defined in store/custom-providers.json.
+      customProviders: listCustomProviders(),
     })
     return true
   }
@@ -666,15 +785,6 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     return true
   }
 
-  // Named Claude subscription registry (store/claude-plans.json), resolved +
-  // validated. Feeds the per-agent plan dropdown; empty array when no registry
-  // file exists (opt-in feature). Read-only in PR1 -- editing the registry is a
-  // separate surface.
-  if (path === '/api/claude-plans' && method === 'GET') {
-    json(res, readClaudePlans())
-    return true
-  }
-
   // Live activity panel: per-agent "what is it doing right now". Read-only,
   // polled by the dashboard every 3s; uses the same pane-state detector as the
   // scheduler (detectPaneState) and returns the last few output lines as a tail.
@@ -682,14 +792,6 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   // fleet, not just sub-agents. Restored after #226 dropped this route while the
   // frontend kept calling /api/agents/activity (which then 404'd the panel).
   if (path === '/api/agents/activity' && method === 'GET') {
-    const label = (running: boolean, pane: string | null): string => {
-      if (!running) return 'stopped'
-      if (pane === null) return 'unknown'
-      const s = detectPaneState(pane)
-      if (s === 'busy' || s === 'typing') return 'working'
-      if (s === 'idle') return 'idle'
-      return s // 'unknown' | 'error'
-    }
     const tailOf = (pane: string | null): string[] =>
       pane === null
         ? []
@@ -717,7 +819,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         name: MAIN_AGENT_ID,
         isMain: true,
         running,
-        state: label(running, mainPane),
+        state: paneActivityLabel(running, mainPane),
         mode: modeOf(running, mainPane),
         tail: tailOf(mainPane),
       })
@@ -735,7 +837,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
           ? remotePaneCache.getOrRefresh(name, Date.now(), () => capturePane(agentSessionName(name), host), null)
           : capturePane(agentSessionName(name))
       }
-      const state = runState === 'unreachable' ? 'unreachable' : label(running, pane)
+      const state = runState === 'unreachable' ? 'unreachable' : paneActivityLabel(running, pane)
       entries.push({ name, isMain: false, running, state, mode: modeOf(running, pane), tail: tailOf(pane) })
     }
 
@@ -743,34 +845,109 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     return true
   }
 
+  // Per-agent status: what each agent is on, since when, and how long since it
+  // last did anything. Sits BESIDE /api/agents/activity (which stays unchanged);
+  // that one answers "is it working", this one answers "on what, and since when".
+  //
+  // All I/O is here; the derivation is the pure deriveAgentStatus so the rules
+  // stay unit-testable. Deliberately no completion percentage -- see agent-status.ts.
+  if (path === '/api/agents/status' && method === 'GET') {
+    const nowSec = Math.floor(Date.now() / 1000)
+    const cards = getAgentCurrentCards()
+    const messages = getAgentMessageActivity()
+    // Count tool calls from the moment the current work started, so the number
+    // answers "how much has it done on THIS", not "how busy was it today".
+    const workStart: Record<string, number | null> = {}
+    for (const [agent, card] of Object.entries(cards)) workStart[agent] = card.enteredStatusAt
+    for (const [agent, m] of Object.entries(messages)) {
+      if (workStart[agent] == null) workStart[agent] = m.lastInboundAt
+    }
+    const tools = getAgentToolActivity(AGENT_STATUS_THRESHOLDS.TOOL_DATA_WINDOW_SEC, workStart)
+
+    const signalsFor = (name: string, isMain: boolean, running: boolean, pane: string | null, runState: string): AgentStatusSignals => {
+      const paneLabel = runState === 'unreachable' ? 'unreachable' : paneActivityLabel(running, pane)
+      const tool = tools[name]
+      const msg = messages[name]
+      return {
+        agent: name,
+        isMain,
+        running,
+        paneState: paneLabel as AgentStatusSignals['paneState'],
+        // Passed through uninterpreted -- no state is derived from it. See the
+        // permissionMode note in agent-status.ts for why.
+        permissionMode: running && pane !== null ? detectPermissionMode(pane) : null,
+        toolDataAvailable: tool !== undefined,
+        toolCallsSinceStart: tool?.sinceWork ?? 0,
+        lastToolCallAt: tool?.lastAt ?? null,
+        lastInboundAt: msg?.lastInboundAt ?? null,
+        lastOutboundAt: msg?.lastOutboundAt ?? null,
+        lastInboundSubject: msg?.lastInboundSubject ?? null,
+        currentCard: cards[name] ?? null,
+        nowSec,
+      }
+    }
+
+    const rows: AgentStatusRow[] = []
+    {
+      const mainPane = capturePane(MAIN_CHANNELS_SESSION)
+      const running = mainPane !== null
+      rows.push(deriveAgentStatus(signalsFor(MAIN_AGENT_ID, true, running, mainPane, running ? 'running' : 'stopped')))
+    }
+    for (const name of withoutMainAgent(listAgentNames())) {
+      const host = readAgentRemoteHost(name)
+      const runState = agentRunStateCached(name, host != null)
+      const running = runState === 'running'
+      let pane: string | null = null
+      if (running) {
+        pane = host
+          ? remotePaneCache.getOrRefresh(name, Date.now(), () => capturePane(agentSessionName(name), host), null)
+          : capturePane(agentSessionName(name))
+      }
+      rows.push(deriveAgentStatus(signalsFor(name, false, running, pane, runState)))
+    }
+
+    jsonMaybeGzip(req, res, rows)
+    return true
+  }
+
   if (path === '/api/agents/model-suggest' && method === 'POST') {
     // Collect runtime signals once, then classify per agent.
     // I/O is centralised here; the classifier (model-suggest.ts) stays pure.
 
-    // Token usage: per-agent average input tokens/call over the last 30 days
+    // Token usage: per-agent average CONTEXT carried per call over the last 30
+    // days -- input + cache-read + cache-creation, not totalInput alone.
+    //
+    // totalInput is SUM(input_tokens): the uncached remainder only. On a
+    // long-lived session nearly the whole context arrives as cache reads, so
+    // that remainder is a rounding error, and the classifier read it as a tiny
+    // context. MEASURED 2026-09-17 on the live install: 2.9 tokens/call over 30
+    // days (17,325 calls) against a true 354,271 -- and the main agent was
+    // therefore advised to DOWNGRADE to Sonnet, the opposite of what its own
+    // threshold means. Same defect family as the transcript-root blind spots
+    // (SCHEDLOST914, TOKENVAK915, GATEVAK917): a measurement that reads a real
+    // number from the wrong place and so never looks broken.
+    //
+    // getTokenSummary().totalInput itself stays as it is: the token-usage
+    // dashboard shows the four columns separately and wants the raw one.
     const thirtyDaysAgo = Math.floor(Date.now() / 1000) - 30 * 24 * 3600
     const tokenSummaries = getTokenSummary(thirtyDaysAgo)
-    const tokenMap = new Map(
-      tokenSummaries.map(s => [s.agent, s.totalCalls > 0 ? s.totalInput / s.totalCalls : 0])
-    )
+    const tokenMap = contextAvgPerCallMap(tokenSummaries)
 
-    // Kanban: open and urgent/high card counts per assignee
+    // Kanban: OPEN and urgent/high card counts per assignee.
+    //
+    // status <> 'done' is the point: archived_at IS NULL alone counts finished
+    // cards as open, because a done card is only archived by the 7-day sweep
+    // (and a level-1 autonomy setting can stop even that). MEASURED 2026-09-17
+    // on the live install: the main agent showed "14 aktív kártya, ebből 6
+    // sürgős/magas" while it actually had 8 open and 2 urgent/high -- 6 of the
+    // 14 were done, and 4 of the 6 urgent ones were done. kanbanUrgentCount >= 2
+    // is an Opus signal, so the inflated count feeds the suggestion directly;
+    // that day it happened not to flip the verdict, which is luck, not
+    // correctness. Same family as the token signal fixed in the same commit
+    // range: a real number measured over the wrong set.
     const db = getDb()
-    type KanbanRow = { assignee: string | null; priority: string; cnt: number }
-    const kanbanRows = db.prepare(
-      `SELECT assignee, priority, COUNT(*) as cnt
-       FROM kanban_cards
-       WHERE archived_at IS NULL AND assignee IS NOT NULL
-       GROUP BY assignee, priority`
-    ).all() as KanbanRow[]
-    const kanbanMap = new Map<string, { open: number; urgent: number }>()
-    for (const row of kanbanRows) {
-      if (!row.assignee) continue
-      const cur = kanbanMap.get(row.assignee) ?? { open: 0, urgent: 0 }
-      cur.open += row.cnt
-      if (row.priority === 'urgent' || row.priority === 'high') cur.urgent += row.cnt
-      kanbanMap.set(row.assignee, cur)
-    }
+    const kanbanRows = db.prepare(KANBAN_LOAD_SQL).all() as KanbanLoadRow[]
+    const kanbanMap = kanbanLoadMap(kanbanRows)
 
     // Scheduled-task frequency: total estimated runs/day per agent (cron-derived)
     function cronFreqPerDay(cron: string): number {
@@ -815,11 +992,19 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       const personaMd = existsSync(personaPath) ? readFileSync(personaPath, 'utf-8') : ''
       const personaText = [claudeMd, personaMd].filter(Boolean).join('\n')
       const currentModel = readAgentModel(name)
-      const contextTokens = readContextTokensFromProjectDir(dir) ?? 0
+      // GATECTX910: read the transcript where the session actually writes it.
+      // The bare `dir` read had two blind spots: an agent with an isolated
+      // config root (CLAUDE_CONFIG_DIR) read as a false 0, and the MAIN agent
+      // -- which runs in PROJECT_ROOT, not agents/<name> -- always read as 0
+      // (measured live 2026-09-10: contextTokens null on the listing's own
+      // main row for the same reason). resolveTranscriptLocation answers both,
+      // and is what the activeModel read above already uses.
+      const transcript = resolveTranscriptLocation(name)
+      const contextTokens = readContextTokensFromProjectDir(transcript.workingDir, transcript.configDir) ?? 0
 
       const kanban = kanbanMap.get(name)
       const signals: AgentSignals = {
-        tokenAvgInputPerCall: tokenMap.has(name) ? tokenMap.get(name) : undefined,
+        contextAvgPerCall: tokenMap.has(name) ? tokenMap.get(name) : undefined,
         kanbanOpenCount: kanban?.open,
         kanbanUrgentCount: kanban?.urgent,
         scheduledFreqPerDay: schedFreqMap.has(name) ? schedFreqMap.get(name) : undefined,
@@ -842,6 +1027,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const profileId = (rawProfile || 'default').trim() || 'default'
 
     if (!name) { json(res, { error: 'Name is required' }, 400); return true }
+    // PICKERCLIKAPU923: the API is a writer too, not only the picker. A fresh
+    // probe, so a CLI upgraded a minute ago is not refused on a stale cache.
+    const cliGate = await refuseIfCliCannotLaunch(model)
+    if (cliGate) { json(res, cliGate, 422); return true }
     if (!description) { json(res, { error: 'Description is required' }, 400); return true }
     if (existsSync(agentDir(name))) { json(res, { error: 'Agent already exists' }, 409); return true }
 
@@ -849,6 +1038,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     writeAgentModel(name, model)
     writeAgentSecurityProfile(name, profileId)
     writeAgentSettingsFromProfile(name, loadProfileTemplate(profileId))
+    // A new agent comes up with the context guard ARMED (fleet policy, 2026-09-08).
+    // Written as an explicit store row rather than by moving
+    // DEFAULT_CONTEXT_GUARD: the default is also what hidden technical workers
+    // and never-configured existing agents fall back to, and both are
+    // deliberately proactive-tier-off. Placed here, before personality
+    // generation, so the LLM step -- the one that can fail and fall back to a
+    // template -- cannot leave an agent unguarded.
+    seedContextGuardForNewAgent(name)
     if (rawName && rawName !== name) writeAgentDisplayName(name, rawName)
 
     logger.info({ name, description }, 'Generating agent CLAUDE.md and SOUL.md...')
@@ -857,14 +1054,36 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // a template-personality agent exists and is usable, so the fleet has to hear
     // about it for the same reason a fully generated one does.
     let personalityPendingDetail: string | null = null
+    // PERSONANOCLOBBER923: the agent dir is visible from scaffoldAgentDir() on,
+    // and generation below can take many minutes. Snapshot the personality files
+    // NOW, and let both completion paths write only while each file is still
+    // exactly this -- an operator who wrote it in the meantime wins. See
+    // persona-write-guard.ts for the measured incident.
+    const personaFiles = (['CLAUDE.md', 'SOUL.md'] as const).map(file => {
+      const path = join(agentDir(name), file)
+      return { file, path, baseline: snapshotPersonaFile(path) }
+    })
+    const [claudeMdFile, soulMdFile] = personaFiles
+    // Files a completion path left alone because they changed under it.
+    const personaSkipped: Array<{ file: string; sidecarPath: string | null }> = []
+    // Files the success path already wrote, so a throw after the first write
+    // does not have the fallback report our own generated file as "changed".
+    const personaWrittenByUs = new Set<string>()
     try {
       const [claudeMd, soulMd] = await Promise.all([
         generateClaudeMd(name, description, model),
         generateSoulMd(name, description),
       ])
-      atomicWriteFileSync(join(agentDir(name), 'CLAUDE.md'), claudeMd)
-      atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), soulMd)
-      logger.info({ name }, 'Agent created successfully')
+      for (const [f, content] of [[claudeMdFile, claudeMd], [soulMdFile, soulMd]] as const) {
+        const r = writePersonaFileIfUnchanged(f.path, f.baseline, content, { saveSidecarOnSkip: true })
+        if (r.written) personaWrittenByUs.add(f.file)
+        else personaSkipped.push({ file: f.file, sidecarPath: r.sidecarPath })
+      }
+      if (personaSkipped.length > 0) {
+        logger.warn({ name, skipped: personaSkipped }, 'Agent created; generated personality NOT written over files changed during generation (saved as *.generated.md)')
+      } else {
+        logger.info({ name }, 'Agent created successfully')
+      }
     } catch (err) {
       // NO DESTRUCTIVE ROLLBACK. This used to be
       //   rmSync(agentDir(name), { recursive: true, force: true })
@@ -890,17 +1109,50 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // exist.
       const detail = err instanceof Error ? err.message : 'Unknown error'
       logger.error({ err, name }, 'Agent personality generation failed -- falling back to template, agent kept')
+      // PERSONANOCLOBBER923: the template goes only where the file is still
+      // untouched. A failed generation must NEVER replace content somebody
+      // wrote while it ran -- that is exactly the measured incident. No sidecar
+      // here: a placeholder has nothing worth keeping.
+      let templateWritten = false
       try {
-        atomicWriteFileSync(join(agentDir(name), 'CLAUDE.md'), fallbackClaudeMd(name, description, model))
-        atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), fallbackSoulMd(name, description))
-        atomicWriteFileSync(join(agentDir(name), PERSONALITY_PENDING_SENTINEL), `${new Date().toISOString()}\n${detail}\n`)
+        for (const [f, content] of [
+          [claudeMdFile, fallbackClaudeMd(name, description, model)],
+          [soulMdFile, fallbackSoulMd(name, description)],
+        ] as const) {
+          if (personaWrittenByUs.has(f.file)) continue
+          const r = writePersonaFileIfUnchanged(f.path, f.baseline, content, { saveSidecarOnSkip: false })
+          if (r.written) templateWritten = true
+          else personaSkipped.push({ file: f.file, sidecarPath: null })
+        }
+        // The sentinel says "this agent's personality is a placeholder", so it
+        // is written only when a placeholder actually landed.
+        if (templateWritten) {
+          atomicWriteFileSync(join(agentDir(name), PERSONALITY_PENDING_SENTINEL), `${new Date().toISOString()}\n${detail}\n`)
+        }
       } catch (fallbackErr) {
         // Even the template write failed (disk full, permissions). Still do NOT
         // delete: a half-built agent an operator can inspect beats a vanished
         // one they cannot.
         logger.error({ err: fallbackErr, name }, 'Fallback template write failed; agent left in place for inspection')
       }
-      personalityPendingDetail = detail
+      if (personaSkipped.length > 0) {
+        logger.warn({ name, skipped: personaSkipped }, 'Personality generation failed; fallback template NOT written over files changed during generation')
+      }
+      if (templateWritten) personalityPendingDetail = detail
+    }
+
+    // A skip is never silent: besides the log line, the main agent hears which
+    // files were left alone, because the HTTP caller may be long gone by the
+    // time a slow generation finishes.
+    if (personaSkipped.length > 0) {
+      try {
+        const list = personaSkipped
+          .map(s => s.sidecarPath ? `${s.file} (a generált változat: ${s.sidecarPath})` : s.file)
+          .join(', ')
+        createAgentMessage('system', MAIN_AGENT_ID, `Az új ügynök (${name}) személyiség-generálása NEM írta felül ezeket a fájlokat, mert a generálás közben valaki módosította őket: ${list}. A kézi tartalom maradt érvényben.`)
+      } catch (err) {
+        logger.warn({ err, name }, 'Personality write skipped, and the main-agent notice about it failed')
+      }
     }
 
     // Notifications are deliberately OUTSIDE the try above. They used to sit
@@ -922,6 +1174,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       logger.warn({ err, name }, 'Agent created, but the team notification failed')
     }
 
+    const skippedField = personaSkipped.length > 0
+      ? { personalitySkipped: personaSkipped.map(s => ({ file: s.file, generatedPath: s.sidecarPath })) }
+      : {}
+
     if (personalityPendingDetail !== null) {
       // The warning says what actually happens next. An earlier wording promised
       // "It is queued for regeneration", and there is no queue: the sentinel is
@@ -929,7 +1185,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // What DOES exist is PUT /api/agents/:name with claudeMd/soulMd, so that is
       // what the message points at. The sentinel stays as a marker for whenever a
       // regeneration path gets built; it just must not be described as one today.
-      json(res, { ok: true, name, personalityPending: true, warning: 'Agent created with a template personality because generation failed. Edit CLAUDE.md and SOUL.md to replace it.', detail: personalityPendingDetail }, 200)
+      json(res, { ok: true, name, personalityPending: true, warning: 'Agent created with a template personality because generation failed. Edit CLAUDE.md and SOUL.md to replace it.', detail: personalityPendingDetail, ...skippedField }, 200)
+      return true
+    }
+
+    if (personaSkipped.length > 0) {
+      json(res, { ok: true, name, ...skippedField })
       return true
     }
 
@@ -1116,17 +1377,29 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         writeAgentChannelProvider(name, provider)
         setAgentEnabledPlugins(name, provider)
         gcWasRunning = isAgentRunning(name)
-        if (gcWasRunning) {
-          const stopRes = await stopAgentProcess(name)
-          if (stopRes.ok) {
-            await delay(2000)
-            // 'Agent is already running' here means the 60s reconcile sweep
-            // raced us in the stop..start gap and started the agent with the
-            // NEW config (written above, before the stop) -- the end state is
-            // exactly what a restart promises, only the starter differs
-            // (PR1014KONFIG821).
-            const gcStartRes = await startAgentProcess(name)
-            gcRestarted = gcStartRes.ok || gcStartRes.error === 'Agent is already running'
+        // This is a stop -> (2s) -> start unit, so it holds the shared restart
+        // slot like every other one: a context-guard rescue landing in the 2s
+        // gap would start with ITS options (fresh:true) while this path
+        // reported restarted:true. When a managed restart is already in
+        // flight, skip loudly -- the config was written BEFORE the stop, so
+        // the in-flight restart's own start picks it up (PR1014KONFIG821).
+        if (gcWasRunning && !beginRestart(name)) {
+          logger.info({ name }, 'Channel-config restart skipped -- a managed restart is already in flight; it will start with the new config')
+        } else if (gcWasRunning) {
+          try {
+            const stopRes = await stopAgentProcess(name)
+            if (stopRes.ok) {
+              await delay(2000)
+              // 'Agent is already running' here means the 60s reconcile sweep
+              // raced us in the stop..start gap and started the agent with the
+              // NEW config (written above, before the stop) -- the end state is
+              // exactly what a restart promises, only the starter differs
+              // (PR1014KONFIG821).
+              const gcStartRes = await startAgentProcess(name)
+              gcRestarted = gcStartRes.ok || gcStartRes.error === 'Agent is already running'
+            }
+          } finally {
+            endRestart(name)
           }
         }
       }
@@ -1219,15 +1492,25 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       setAgentEnabledPlugins(name, provider)
       if (provider === 'telegram') sendWelcomeMessage(name, botToken.trim()).catch(() => {})
       wasRunning = isAgentRunning(name)
-      if (wasRunning) {
-        const stopRes = await stopAgentProcess(name)
-        if (stopRes.ok) {
-          await delay(2000)
-          const startRes = await startAgentProcess(name)
-          // Same reconcile-race as the GC branch above: an 'already running'
-          // start after our own stop means the agent IS up with the new
-          // provider config (PR1014KONFIG821).
-          restarted = startRes.ok || startRes.error === 'Agent is already running'
+      // Same restart-slot discipline as the GC branch above: this too is a
+      // stop -> (2s) -> start unit; skip loudly when a managed restart is in
+      // flight (the pre-stop config write means that restart's start already
+      // yields the new provider config).
+      if (wasRunning && !beginRestart(name)) {
+        logger.info({ name }, 'Channel-config restart skipped -- a managed restart is already in flight; it will start with the new config')
+      } else if (wasRunning) {
+        try {
+          const stopRes = await stopAgentProcess(name)
+          if (stopRes.ok) {
+            await delay(2000)
+            const startRes = await startAgentProcess(name)
+            // Same reconcile-race as the GC branch above: an 'already running'
+            // start after our own stop means the agent IS up with the new
+            // provider config (PR1014KONFIG821).
+            restarted = startRes.ok || startRes.error === 'Agent is already running'
+          }
+        } finally {
+          endRestart(name)
         }
       }
     }
@@ -1297,7 +1580,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const body = await readBody(req)
     let data: unknown
     try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'invalid JSON' }, 400); return true }
-    const arFields = checkConfigPutFields(data, Object.keys(DEFAULT_AUTO_RESTART))
+    // Legacy keys are accepted (and dropped by normalization), never stored --
+    // see LEGACY_AUTO_RESTART_FIELDS for why rejecting them would break a save
+    // from a dashboard page that is already open.
+    const arFields = checkConfigPutFields(data, [...Object.keys(DEFAULT_AUTO_RESTART), ...LEGACY_AUTO_RESTART_FIELDS])
     if (!arFields.ok) {
       json(res, { error: arFields.message, rejected: arFields.rejected, known: Object.keys(DEFAULT_AUTO_RESTART) }, 400)
       return true
@@ -2002,6 +2288,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // the single-agent or whole-fleet importer.
       if (peekBundleKind(bundle) === 'fleet') {
         const result = importAllAgentsBundle(bundle, { overwrite })
+        // An imported agent is a NEW agent on this machine: the bundle carries
+        // the agent directory, never store/context-guard.json. Same rule as
+        // creation (fleet policy, 2026-09-08) and idempotent, so re-importing over an
+        // agent an operator has already configured leaves that row alone.
+        for (const a of result.imported) seedContextGuardForNewAgent(a.name)
         logger.info(
           { imported: result.imported.map((a) => a.name), skipped: result.skipped, secrets: result.includesSecrets },
           'Fleet imported from bundle',
@@ -2021,6 +2312,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       }
 
       const result = importAgentBundle(bundle, { overrideName: overrideName || undefined, overwrite })
+      seedContextGuardForNewAgent(result.name)
       logger.info({ name: result.name, overwritten: result.overwritten, secrets: result.manifest.includesSecrets }, 'Agent imported from bundle')
       json(res, {
         ok: true,
@@ -2060,6 +2352,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
       authMode?: AuthMode; apiKey?: string; claudePlan?: string; memoryIsolation?: boolean
       modelProfile?: string | null
+      customProvider?: string | null
     }
 
     // Unknown fields are rejected rather than silently dropped -- see
@@ -2090,7 +2383,23 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
     if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
-    if (data.model !== undefined) writeAgentModel(name, data.model)
+    if (data.model !== undefined) {
+      // PICKERCLIKAPU923: same gate as the picker and the POST, fresh probe.
+      const cliGate = await refuseIfCliCannotLaunch(String(data.model))
+      if (cliGate) { json(res, cliGate, 422); return true }
+      // When a custom provider is being set (either in this same request or
+      // already persisted), validate the model id to prevent apostrophe/shell
+      // metacharacter breakout from the single-quoted `'${model}'` in the
+      // agent launch command. Allow: alphanumeric, dot, underscore, dash, colon, slash.
+      const incomingProvider = data.customProvider !== undefined ? (data.customProvider || null) : readAgentCustomProvider(name)
+      if (incomingProvider) {
+        if (!/^[a-zA-Z0-9._/:+-]+$/.test(data.model)) {
+          json(res, { error: 'Custom provider model id contains disallowed characters (allowed: a-z A-Z 0-9 . _ / : + -)' }, 400)
+          return true
+        }
+      }
+      writeAgentModel(name, data.model)
+    }
     // Card c755f4b2 Block B: optional generic capability tier. An unknown id
     // is a 400, never a persisted value -- storing one would leave the UI
     // showing a profile while resolution silently fell back to the install
@@ -2113,6 +2422,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         json(res, { error: `modelProfile must be one of ${MODEL_PROFILE_IDS.join('|')}` }, 400)
         return true
       }
+    }
+    if (data.customProvider !== undefined) {
+      writeAgentCustomProvider(name, data.customProvider || null)
     }
     if (data.authMode !== undefined) {
       writeAgentAuthMode(name, data.authMode)

@@ -100,6 +100,54 @@ else
   fail "no snapshot in this checkout's store/backups"
 fi
 
+# ---------------------------------------------------------------------------
+# (e) No GNU-only command INVOKED in an ops script -- these run on macOS too
+# ---------------------------------------------------------------------------
+# This repo has learned the lesson twice in comments and still shipped a third
+# instance: limit-monitor.sh records that a bare `md5sum` returned an EMPTY hash
+# on macOS, github-pr-monitor.sh records that BSD grep has no -P and exited 2
+# with empty output -- and pre-modify-backup.sh then wrote every manifest line
+# with an empty checksum there, while reporting success. The shape is always the
+# same: the GNU tool is absent, the substitution yields EMPTY, and empty passes
+# for an answer. So the rule gets a gate instead of a third comment.
+#
+# What is flagged is an INVOCATION, matched at a command position (line start,
+# or after a pipe, `;`, `&&`, `||`, or `$(`). Naming the tool is not the defect:
+# a comment that warns about it and a `SHA=$(command -v sha256sum || ...)` probe
+# that resolves it are both the RIGHT shape, and a gate that could not tell them
+# from a call would have to be deleted the first time someone did this properly.
+echo ""
+echo "(e) No GNU-only command invoked (macOS has none of these)"
+GNU_INVOKED='(^|[|;&]|\$\()[[:space:]]*(sha256sum|md5sum|tac)\b|[[:space:]](readlink[[:space:]]+-f|stat[[:space:]]+-c|date[[:space:]]+-d|grep[[:space:]]+-P)[[:space:]]'
+for rel in $SCRIPTS; do
+  f="$INSTALL_DIR/$rel"
+  [ -f "$f" ] || { fail "$rel exists"; continue; }
+  hits="$(grep -nE "$GNU_INVOKED" "$f" | grep -vE '^[0-9]+:[[:space:]]*#' || true)"
+  if [ -n "$hits" ]; then
+    fail "$rel: GNU-only command invoked -- $(printf '%s' "$hits" | head -1)"
+  else
+    pass "$rel: no GNU-only command invoked"
+  fi
+done
+
+# POSITIVE CONTROL on the gate itself, both directions. A pattern that matched
+# nothing would print the same all-green block as a clean tree; a pattern that
+# matched everything would make the sanctioned probe unwritable.
+PROBE_BAD="$TMPDIR_BASE/gnu-bad.sh"
+printf '#!/bin/bash\nsum=$(sha256sum "$1" | cut -d" " -f1)\n' > "$PROBE_BAD"
+if grep -nE "$GNU_INVOKED" "$PROBE_BAD" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -q .; then
+  pass "the gate catches a real GNU-only call (positive control)"
+else
+  fail "the gate catches a real GNU-only call" "matched nothing in a file that calls sha256sum"
+fi
+PROBE_OK="$TMPDIR_BASE/gnu-ok.sh"
+printf '#!/bin/bash\n# sha256sum is GNU-only\nif command -v sha256sum >/dev/null; then SHA_CMD="sha256sum"; else SHA_CMD="shasum -a 256"; fi\n' > "$PROBE_OK"
+if grep -nE "$GNU_INVOKED" "$PROBE_OK" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -q .; then
+  fail "the gate leaves the sanctioned probe alone" "a command -v probe and its assignment were flagged"
+else
+  pass "the gate leaves the sanctioned probe alone (negative control)"
+fi
+
 echo ""
 echo "======================="
 echo "PASS: $PASS  FAIL: $FAIL"

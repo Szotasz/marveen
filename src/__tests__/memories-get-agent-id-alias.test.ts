@@ -33,6 +33,10 @@ function makeCtx(path: string, searchParams: Record<string, string> = {}): { ctx
   let responseBody = ''
   const res = {
     writeHead: vi.fn(),
+    // A real ServerResponse has this; the stub did not, so a route that starts
+    // setting a header fails here for a reason that has nothing to do with the
+    // behaviour under test.
+    setHeader: vi.fn(),
     end: (body?: string) => { responseBody = body || '' },
   }
 

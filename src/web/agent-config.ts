@@ -29,6 +29,9 @@ export const MODEL_ALIASES: Record<string, string> = {
   'opus-5': 'claude-opus-5',
   'opus5': 'claude-opus-5',
   'haiku': 'claude-haiku-4-5-20251001',
+  'fable': 'claude-fable-5',
+  'fable-5': 'claude-fable-5',
+  'fable5': 'claude-fable-5',
   'inherit': DEFAULT_MODEL,
 }
 
@@ -456,6 +459,39 @@ export function writeAgentMemoryIsolation(name: string, enabled: boolean): void 
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
+// Opt-in per-agent worksource channel (default OFF). When true the router hands
+// inter-agent messages to this agent by writing a file into its worksource
+// queue instead of typing them into its tmux pane, and the launcher loads the
+// worksource channel plugin for it.
+//
+// DELIBERATELY ITS OWN FLAG, not folded into `channelProvider` or `hasChannel`.
+// `hasChannel` is derived from the presence of a chat-provider TOKEN FILE
+// (agent-process.ts), and it gates the plugin watchdog, the /mcp unlock driver
+// and `--continue` suppression. An agent whose only channel is worksource has
+// no bot poller for the watchdog to find, so reusing `hasChannel` would make it
+// read "plugin down" forever and enter its restart ladder -- a restart loop
+// caused purely by wiring. Keeping this orthogonal is what lets a worksource
+// agent stay invisible to every chat-channel monitor.
+export function readAgentWorksourceChannel(name: string): boolean {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    return config.worksourceChannel === true
+  } catch { /* fall through */ }
+  return false
+}
+
+// Persist the opt-in worksourceChannel flag. `false` removes the key so the
+// config file stays minimal and the default-OFF semantics remain explicit.
+export function writeAgentWorksourceChannel(name: string, enabled: boolean): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  if (enabled) config.worksourceChannel = true
+  else delete config.worksourceChannel
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
 export function writeAgentAuthMode(name: string, mode: AuthMode): void {
   if (!VALID_AUTH_MODES.has(mode)) return
   const configPath = join(agentDir(name), 'agent-config.json')
@@ -655,10 +691,78 @@ export function readAgentCapabilities(name: string): string[] {
   return parsePersonaCapabilities(name)
 }
 
+// ---- per-agent tool-name deny --------------------------------------------
+//
+// ORSIKTXRATA914 / 2026-09-14 (Iris measured, Dani confirmed): a whole-tool-name
+// deny in the agent's .claude/settings.json (e.g. "Artifact") does not only
+// block the tool, it REMOVES the tool schema from the prompt -- on Orsi that
+// was 56% of a 64.7k-token base load. But writeAgentSettingsFromProfile()
+// replaces permissions.deny WHOLESALE from the security profile on every
+// spawn, so a hand-edited deny silently reverts at the next respawn (Orsi
+// respawns 2-3x a day). Same class as PROFILREGRESS908: settings.json is a
+// DERIVED file here, not a durable one.
+//
+// The durable per-agent home is agent-config.json "toolDeny" -- the same
+// place "capabilities" lives -- which the scaffold merges into the deny list
+// on every spawn. Putting the names into the shared profile template instead
+// would hit every agent on that profile (and every customer install): a
+// per-agent experiment belongs in per-agent config.
+//
+// Only bare tool names are accepted (Claude Code rule shape "ToolName" or
+// "mcp__server__tool"), never a "Tool(pattern)" rule: this field can only
+// ever WIDEN the deny list, and a name-shaped whitelist keeps a mistyped or
+// injected value from becoming a pattern rule with surprising reach.
+const TOOL_DENY_NAME_RE = /^[A-Za-z][A-Za-z0-9_]{0,127}$/
+export const TOOL_DENY_MAX_PER_AGENT = 64
+
+export function sanitizeToolDenyList(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return []
+  const out: string[] = []
+  for (const v of raw) {
+    if (typeof v !== 'string') continue
+    const t = v.trim()
+    if (!TOOL_DENY_NAME_RE.test(t) || out.includes(t)) continue
+    out.push(t)
+    if (out.length >= TOOL_DENY_MAX_PER_AGENT) break
+  }
+  return out
+}
+
+export function readAgentToolDeny(name: string): string[] {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    return sanitizeToolDenyList(config.toolDeny)
+  } catch {
+    return []
+  }
+}
+
 export function writeAgentCapabilities(name: string, capabilities: string[]): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
   try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
   config.capabilities = capabilities
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
+// ---- per-agent custom provider ---------------------------------------------
+
+export function readAgentCustomProvider(name: string): string | null {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    const value = config.customProvider
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  } catch { /* fall through */ }
+  return null
+}
+
+export function writeAgentCustomProvider(name: string, id: string | null): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  if (id && id.trim()) config.customProvider = id.trim()
+  else delete config.customProvider
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }

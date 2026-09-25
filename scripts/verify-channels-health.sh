@@ -15,7 +15,14 @@ MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 # N2: sanitize — strip any character that is not alphanumeric, underscore, or hyphen.
 MAIN_AGENT_ID="${MAIN_AGENT_ID//[^a-zA-Z0-9_-]/}"
 SESSION="${MAIN_AGENT_ID}-channels"
-BOT_PID_FILE="$HOME/.claude/channels/telegram/bot.pid"
+# #915: main channel state is install-scoped once migrated; the legacy shared
+# path only serves unmigrated installs.
+TG_CHAN_DIR="${TELEGRAM_STATE_DIR:-}"
+if [ -z "$TG_CHAN_DIR" ]; then
+  TG_CHAN_DIR="$INSTALL_DIR/.claude/channels/telegram"
+  [ -f "$TG_CHAN_DIR/.env" ] || TG_CHAN_DIR="$HOME/.claude/channels/telegram"
+fi
+BOT_PID_FILE="$TG_CHAN_DIR/bot.pid"
 
 fail=0
 note() { echo "  $1"; }

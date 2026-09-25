@@ -15,6 +15,7 @@ import {
 import { json, readBody } from '../http-helpers.js'
 import { claudeAgentRunnable } from '../../update-agent-capability.js'
 import { runScheduledTaskNow } from '../schedule-runner.js'
+import { buildCliUpdateStatus, cliUpdateDepsForRoute, startCliUpdate, VERSION_RE } from '../cli-update.js'
 import type { RouteContext } from './types.js'
 
 // Pidfile path owned by update.sh for the lifetime of an update run.
@@ -40,7 +41,7 @@ function isDiagnosable(r: LastResult | null): boolean {
 }
 
 export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
-  const { res, path, method } = ctx
+  const { res, req, path, method } = ctx
 
   if (path === '/api/updates' && method === 'GET') {
     json(res, getUpdateStatus())
@@ -107,6 +108,34 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
     try { writeFileSync(DIAGNOSE_MARKER, key, { mode: 0o600 }) } catch { /* best-effort */ }
     logger.info({ result: fired.result }, 'post-rollback diagnosis fired')
     json(res, { ok: true, result: fired.result })
+    return true
+  }
+
+  // Claude Code CLI update OFFER (CLIFRISSAJANLAS923). GET measures; nothing
+  // is installed until the operator POSTs the exact target the GET offered.
+  if (path === '/api/updates/cli' && method === 'GET') {
+    json(res, await buildCliUpdateStatus(cliUpdateDepsForRoute({ fresh: ctx.url.searchParams.get('fresh') === '1' })))
+    return true
+  }
+  if (path === '/api/updates/cli/apply' && method === 'POST') {
+    const body = String(await readBody(req).catch(() => '') ?? '')
+    let requested = ''
+    try { requested = String((JSON.parse(body || '{}') as { target?: unknown }).target ?? '') } catch { requested = '' }
+    if (!VERSION_RE.test(requested)) { json(res, { error: 'target must be a dotted version', reason: 'bad-target' }, 400); return true }
+    // Re-decide fresh: the only installable version is the one the offer
+    // computes NOW (an AVX-less host can never be handed "latest" this way).
+    const status = await buildCliUpdateStatus(cliUpdateDepsForRoute({ fresh: true }))
+    if (!status.offer || status.target !== requested) {
+      json(res, { error: `not offered: ${status.reason}`, reason: 'not-offered', target: status.target, offer: status.offer }, 409)
+      return true
+    }
+    if (status.installMethod === 'unknown') {
+      json(res, { error: 'the installed claude was not installed by npm or the official installer; run the manual command instead', reason: 'unknown-method', manualCommand: status.manualCommand }, 400)
+      return true
+    }
+    const started = startCliUpdate(status.target, status.installMethod)
+    if (!started.ok) { json(res, { error: started.error, reason: 'not-started' }, 409); return true }
+    json(res, { ok: true, started: true, target: status.target, method: status.installMethod })
     return true
   }
 
@@ -199,6 +228,17 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
       try { unlinkSync(UPDATE_PIDFILE) } catch { /* already gone */ }
       lockHeld = false
     }
+    const countRevs = (range: string): number => {
+      try {
+        const out = execFileSync(
+          '/usr/bin/git',
+          ['rev-list', '--count', range],
+          { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' },
+        ).trim()
+        const n = parseInt(out, 10)
+        return Number.isFinite(n) ? n : 0
+      } catch { return 0 }
+    }
     const git: GitRunner = {
       currentBranch: () => execFileSync(
         '/usr/bin/git',
@@ -210,16 +250,25 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
         ['status', '--porcelain', '--untracked-files=no'],
         { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' },
       ),
-      aheadCount: () => {
+      aheadCount: () => countRevs('@{u}..HEAD'),
+      behindCount: () => countRevs('HEAD..@{u}'),
+      // Mirrors update.sh guard 2. `git ls-remote --exit-code --heads` exits
+      // 2 for "no such branch" and 128 for a transport/auth failure -- the
+      // difference matters: only 2 is evidence, 128 is an unknown we must not
+      // block on. status is undefined when the spawn itself failed (timeout,
+      // git missing), which is likewise unknown.
+      originHasBranch: (branch: string) => {
         try {
-          const out = execFileSync(
+          execFileSync(
             '/usr/bin/git',
-            ['rev-list', '--count', '@{u}..HEAD'],
-            { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' },
-          ).trim()
-          const n = parseInt(out, 10)
-          return Number.isFinite(n) ? n : 0
-        } catch { return 0 }
+            ['ls-remote', '--exit-code', '--heads', 'origin', branch],
+            { cwd: PROJECT_ROOT, timeout: 15000, stdio: 'ignore' },
+          )
+          return 'yes' as const
+        } catch (err) {
+          const status = (err as { status?: number }).status
+          return status === 2 ? ('no' as const) : ('unknown' as const)
+        }
       },
     }
     let preflight
@@ -264,11 +313,19 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
         json(res, { error: 'store/ is not writable; cannot run the updater safely.', reason: 'store-unwritable' }, 500)
         return true
       }
+      // NODE_ENV must not reach update.sh: with NODE_ENV=production npm defaults
+      // to omit=dev, the pruned tree loses tsc, and every update build fails and
+      // rolls back forever (AUTOUPDNODEENV905). Deleting it here shields the
+      // OLD update.sh copies already deployed at customers, which lack the
+      // script-side --include=dev fix and can only receive it through a run
+      // this spawn starts.
+      const updateEnv: NodeJS.ProcessEnv = { ...process.env, AUTO_STASH: autoStash ? '1' : '0' }
+      delete updateEnv['NODE_ENV']
       const child = spawn('/bin/bash', [join(PROJECT_ROOT, 'update.sh')], {
         cwd: PROJECT_ROOT,
         detached: true,
         stdio: ['ignore', outFd, outFd],
-        env: { ...process.env, AUTO_STASH: autoStash ? '1' : '0' },
+        env: updateEnv,
       })
       child.on('error', (err) => {
         logger.error({ err }, 'update.sh spawn reported an async error')

@@ -103,6 +103,33 @@ const IDLE_FOOTER_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\)| �
 // prevent prose-quoting false positives. A future Claude Code release
 // that renames the spinner labels will miss the label regex but still
 // be caught by the tokens pattern.
+
+// Elapsed-time shape inside the turn marker. Claude Code does NOT render a
+// flat second count once a turn passes a minute: it switches to `1m 16s`, and
+// the seconds-only pattern that used to sit in both regexes below simply
+// stopped matching there. Measured on a live fleet pane 2026-09-06:
+//
+//   seconds form   "(52s · ↓ 2.6k tokens)"     -> matched before and still does
+//   minute form    "(1m 16s · ↓ 4.0k tokens)"  -> did NOT match before this fix
+//
+// The minute form above is the verbatim capture from a busy fleet pane, not a
+// retyped lookalike.
+//
+// The gap was not cosmetic. These patterns exist to cover the frame-level
+// window where the footer has not yet re-rendered `· esc to interrupt`, so
+// for the whole of a turn longer than 60 seconds the pane had ONE busy signal
+// instead of two -- and a long turn is exactly when a mis-detected 'idle'
+// costs the most (a prompt injected into a working pane).
+//
+// The hour segment is defensive, not measured: no live pane in the fleet ran
+// long enough to render one. It widens nothing dangerous, because every use
+// still requires the `· ↓N` chrome tail that prose cannot produce.
+//
+// One fragment, one definition: both patterns below and all eight busy-scan
+// call sites read the same shape, so the next rendering change is a one-line
+// edit rather than a hunt for copies.
+const TURN_ELAPSED = String.raw`(?:\d+h\s*)?(?:\d+m\s*)?\d+s`
+
 const BUSY_INDICATORS: RegExp[] = [
   // NOTE: /\besc to interrupt\b/ is NOT in this list.
   // It is checked separately via BUSY_ESC_TO_INTERRUPT_RX scoped to the
@@ -120,13 +147,15 @@ const BUSY_INDICATORS: RegExp[] = [
   // 2026-06-30). The live spinner/token line renders just above the input
   // box during a real turn, so the bottom-region scope still catches it.
   //
-  // Tokens-down-arrow counter: "(52s · ↓ 2.6k tokens ..."
-  /\(\s*\d+s\s*·\s*↓\s*\d/,
+  // Tokens-down-arrow counter: "(52s · ↓ 2.6k tokens ...", "(1m 16s · ↓ 4.0k tokens)"
+  new RegExp(String.raw`\(\s*${TURN_ELAPSED}\s*·\s*↓\s*\d`),
   // Known spinner labels paired with the turn-scoped `(Ns · ↓` tail on
   // the same line. The tail requirement kills the "Thinking…" prose
   // false positive. Non-exhaustive by design; the bare tokens pattern
   // above is the authoritative fallback.
-  /\b(?:Combobulating|Beaming|Thinking|Pondering|Reticulating|Configuring|Noodling|Ruminating|Percolating|Cogitating|Deliberating|Contemplating|Musing|Brewing|Synthesizing|Distilling|Refining|Simmering|Crafting|Formulating|Consulting|Unfurling|Unspooling|Unraveling)…\s*\(\s*\d+s\s*·\s*↓/,
+  new RegExp(
+    String.raw`\b(?:Combobulating|Beaming|Thinking|Pondering|Reticulating|Configuring|Noodling|Ruminating|Percolating|Cogitating|Deliberating|Contemplating|Musing|Brewing|Synthesizing|Distilling|Refining|Simmering|Crafting|Formulating|Consulting|Unfurling|Unspooling|Unraveling)…\s*\(\s*${TURN_ELAPSED}\s*·\s*↓`,
+  ),
 ]
 
 // `esc to interrupt` is a footer-region-only busy signal: Claude Code
@@ -138,6 +167,30 @@ const BUSY_INDICATORS: RegExp[] = [
 // contained the phrase in its body).
 const BUSY_ESC_TO_INTERRUPT_RX = /\besc to interrupt\b/
 const LIVE_FOOTER_REGION_LINES = 5
+
+/**
+ * The last `count` lines that still have content, ignoring a blank tail.
+ *
+ * Every footer probe in this file used to count back from the last LINE of
+ * the capture. A pane whose prompt sits high on the screen with empty rows
+ * below it -- what a fresh session shows when its FIRST tool call needs
+ * consent -- then had its footer fall outside the window, and the probe
+ * reported nothing at all: no menu, no permission prompt, and a pane state of
+ * `unknown`. Measured 2026-09-06 on the shipped code: a live consent prompt
+ * with an 18-line blank tail read `detectsBlockingMenu=false` AND
+ * `detectsPermissionDialog=false`, so the monitor neither alerted nor
+ * recovered. It just sat there.
+ *
+ * Counting from the last line with content keeps the window size honest (the
+ * footer really is within a few lines of the last thing drawn) while making
+ * the prompt's POSITION on screen stop mattering.
+ */
+function liveTailRegion(lines: string[], count: number): string {
+  let end = lines.length
+  while (end > 0 && lines[end - 1].trim() === '') end--
+  if (end === 0) return ''
+  return lines.slice(Math.max(0, end - count), end).join('\n')
+}
 
 // How many trailing lines the BUSY_INDICATORS (spinner / token-counter)
 // scan inspects. During a live turn the status line renders just above the
@@ -503,7 +556,7 @@ export function detectsBlockingMenu(pane: string): boolean {
     if (rx.test(pane)) return false
   }
   const lines = pane.split('\n')
-  const footerRegion = lines.slice(-MENU_FOOTER_REGION_LINES).join('\n')
+  const footerRegion = liveTailRegion(lines, MENU_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
   if (IDLE_FOOTER_RX.test(pane)) return false
   return MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)
@@ -622,12 +675,29 @@ export function permissionPromptSummary(pane: string): PermissionPromptSummary |
 // The tmux-visible selection marker Claude Code draws on the active option.
 const CURSOR_GLYPH = '\u276f'
 
-export type FirstRunGateKind = 'trust' | 'bypass-permissions' | 'login' | 'theme' | 'welcome'
+export type FirstRunGateKind = 'trust' | 'bypass-permissions' | 'login' | 'theme' | 'welcome' | 'mcp-trust'
 
 // Ordered: the login picker and theme screen render UNDER the "Welcome to
 // Claude Code" banner, so the more specific matches must win before the
 // generic welcome fallback.
 const FIRST_RUN_GATES: Array<{ kind: FirstRunGateKind; rx: RegExp }> = [
+  // MCP server-approval dialog (2026-09-03, PR #1099 review). A worksource
+  // agent gets its queue as a project-scope MCP server, and on the first start
+  // after that server appears Claude Code parks the TUI on:
+  //   New MCP server found in this project: worksource
+  //   ❯ 1. Use this MCP server
+  //     2. Use this and all future MCP servers in this project
+  //     3. Continue without using this MCP server
+  // Measured by the reviewer in a real tmux pane: detectPaneState read
+  // 'unknown', detectsFirstRunGate returned null and detectsBlockingMenu was
+  // false -- so nothing answered it and nothing alerted, while the router kept
+  // writing items into pending/. That is the exact failure the worksource PR
+  // exists to remove, reintroduced by its own launch path.
+  //
+  // Anchored on the OPTION TEXT for the same reason as the trust gate: the
+  // heading is vendor copy (it just changed once for trust), the option is the
+  // functional element the dialog cannot drop.
+  { kind: 'mcp-trust', rx: /Use this MCP server/i },
   // TRUSTGATE901 (2026-09-01): ALTERNATION, not a replacement. Claude Code
   // 2.1.246 rewrote this dialog -- the old question is GONE and the panel now
   // opens with a marketing line ("Quick safety check: Is this a project you
@@ -682,6 +752,42 @@ const FIRST_RUN_GATES: Array<{ kind: FirstRunGateKind; rx: RegExp }> = [
  * "No, exit" by the dialog's own footer, and Enter confirms whatever happens
  * to be highlighted. On an unrecognised shape, not acting is the correct move.
  */
+// Cursor-relative keys that select "Use this MCP server" on the MCP
+// server-approval dialog. Same discipline as firstRunAcceptKeys and for the
+// same reason: never by number. The dialog's option prefixes are vendor copy,
+// and a dropped "1." would make a blind `1` type nothing and then let Enter
+// confirm whatever happens to be highlighted.
+//
+// Deliberately targets option 1 (THIS server) and never option 2 ("all future
+// MCP servers in this project"). Option 2 would stop the dialog returning, but
+// it pre-approves servers nobody has seen yet; a new server appearing IS a
+// decision, and this code may not make it. Option 3 ("Continue without") is
+// excluded explicitly so a reworded layout cannot land on the refusal.
+export function mcpTrustAcceptKeys(pane: string): string[] | null {
+  if (!pane || !pane.trim()) return null
+  const lines = pane.split('\n')
+  const cursorIdx = lines.findIndex(l => l.includes(CURSOR_GLYPH))
+  if (cursorIdx < 0) return null
+  let first = cursorIdx
+  while (first > 0 && lines[first - 1].trim() !== '') first--
+  let last = cursorIdx
+  while (last < lines.length - 1 && lines[last + 1].trim() !== '') last++
+  const block = lines.slice(first, last + 1)
+
+  const isTarget = (l: string) =>
+    /use this MCP server/i.test(l) && !/all future/i.test(l) && !/continue without/i.test(l)
+  const idx = block.findIndex(isTarget)
+  if (idx < 0) return null
+  // Ambiguity is a reason to stop, not to guess.
+  if (block.filter(isTarget).length !== 1) return null
+
+  const delta = idx - (cursorIdx - first)
+  const keys: string[] = []
+  for (let i = 0; i < Math.abs(delta); i++) keys.push(delta > 0 ? 'Down' : 'Up')
+  keys.push('Enter')
+  return keys
+}
+
 export function firstRunAcceptKeys(pane: string): string[] | null {
   if (!pane || !pane.trim()) return null
   const lines = pane.split('\n')
@@ -722,7 +828,7 @@ export function detectsFirstRunGate(pane: string): FirstRunGateKind | null {
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(busyRegion)) return null
   }
-  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return null
   if (IDLE_FOOTER_RX.test(pane)) return null
   for (const g of FIRST_RUN_GATES) {
@@ -797,7 +903,7 @@ export function detectsPermissionDialog(pane: string): boolean {
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(busyRegion)) return false
   }
-  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
   if (IDLE_FOOTER_RX.test(pane)) return false
   return PERMISSION_AMEND_RX.test(footerRegion)
@@ -811,7 +917,7 @@ export function detectsModelConsentDialog(pane: string): boolean {
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(busyRegion)) return false
   }
-  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
   if (IDLE_FOOTER_RX.test(pane)) return false
   return MODEL_CONSENT_TITLE_RX.test(pane)
@@ -866,7 +972,7 @@ export function detectsFeedbackDraftModal(pane: string): boolean {
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(busyRegion)) return false
   }
-  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
 
   const liveFrom = Math.max(0, lines.length - BUSY_LIVE_REGION_LINES)
@@ -957,7 +1063,14 @@ export function detectPaneState(
   // Spinner / token-counter busy signals, scoped to the live bottom region.
   // Whole-pane scanning let a completed turn's stale token-counter line pin
   // an idle session busy (see BUSY_LIVE_REGION_LINES).
-  const busyRegion = paneLines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  // liveTailRegion, not slice(-N): a pane drawn high with empty rows below it --
+  // what tmux capture-pane returns whenever the content is shorter than the pane --
+  // pushed BOTH live windows off the footer, and this function then read a running
+  // turn as idle. Measured 2026-09-06 on a real capture of a busy fleet agent: with
+  // an 18-line blank tail appended, detectPaneState went busy -> idle, and the router
+  // would have delivered into a live turn. #1205 fixed this shape for the prompt
+  // probes; these two windows are the same shape in the function that routes.
+  const busyRegion = liveTailRegion(paneLines, BUSY_LIVE_REGION_LINES)
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(busyRegion)) return 'busy'
   }
@@ -966,7 +1079,7 @@ export function detectPaneState(
   // Checking the whole pane would let a scrollback quote of the phrase
   // (e.g. in a watchdog report or a log analysis) permanently classify
   // an idle session as busy.
-  const footerRegion = paneLines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  const footerRegion = liveTailRegion(paneLines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return 'busy'
 
   // Pending-paste placeholder check runs BEFORE the idle-footer gate. The
@@ -1194,12 +1307,12 @@ export function shouldRetrySubmit(
   // Busy pane: the turn is mid-flight, no retry needed. Region-scoped (same
   // as detectPaneState) so a stale token-counter line does not suppress a
   // legitimate retry on an idle pane.
-  const retryBusyRegion = retryPaneLines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  const retryBusyRegion = liveTailRegion(retryPaneLines, BUSY_LIVE_REGION_LINES)
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(retryBusyRegion)) return false
   }
   // Footer-region `esc to interrupt` check (same scoping as detectPaneState).
-  const retryFooterRegion = retryPaneLines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  const retryFooterRegion = liveTailRegion(retryPaneLines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(retryFooterRegion)) return false
 
   // Path 1: placeholder is unambiguous, retry regardless of hint -- and it is
@@ -1477,7 +1590,7 @@ export function parkedPasteSignature(pane: string): string | null {
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(busyRegion)) return null
   }
-  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return null
   if (!detectsPastePlaceholder(pane)) return null
   const sig = pastePlaceholderRegion(pane).replace(/\s+/g, ' ').trim()
@@ -1665,6 +1778,56 @@ export function parkedInputRowCount(pane: string): number {
     .split('\n')
     .map((row) => row.replace(/^\s*❯/, '').trim())
     .filter((row) => row.length > 0).length
+}
+
+// The visible TAIL of an input box taller than the pane, whitespace-collapsed,
+// or null when the box is not overfull.
+//
+// A prompt with more wrapped rows than the pane has lines pushes the box's TOP
+// separator -- and usually the ❯ glyph -- off the capture. What remains is
+// prose, the bottom separator and the idle footer. liveInputBox() needs both
+// separators, so it returns null; detectPaneState() then falls through to
+// 'idle', and every parked-input probe built on either (shouldRetrySubmit,
+// isScheduledPromptStuck, parkedInputText) reads "nothing parked".
+//
+// SCHEDLOST915, reproduced 2026-09-15 on Claude Code 2.1.110 in the tmux-default
+// 80x24 pane the main channels session runs in: a 6735-char scheduled prompt
+// typed as 80-char chunks and submitted with an immediate Enter parked in 3 of
+// 6 rounds, each capture exactly this shape, and all five probes above said
+// idle / not stuck. On the live host the watchdog then declared the round lost
+// and the redelivery was typed on top of the parked copy.
+//
+// Deliberately NOT folded into detectPaneState: reclassifying this shape as
+// 'typing' globally would pin the main session not-ready with no recovery that
+// can see the box. Callers pair it with proof the text is theirs (see
+// isOwnPromptParkedOverfull in schedule-runner.ts). Pure.
+export function overfullParkedInputTail(pane: string): string | null {
+  if (!pane || !pane.trim()) return null
+  const lines = pane.split('\n')
+  const busyRegion = liveTailRegion(lines, BUSY_LIVE_REGION_LINES)
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(busyRegion)) return null
+  }
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(liveTailRegion(lines, LIVE_FOOTER_REGION_LINES))) return null
+  const footerIdx = lines.findIndex(l => IDLE_FOOTER_RX.test(l))
+  if (footerIdx < 0) return null
+  let bottomSep = -1
+  for (let i = footerIdx - 1; i >= 0; i--) {
+    if (BOX_SEP_RX.test(lines[i])) { bottomSep = i; break }
+  }
+  if (bottomSep <= 0) return null
+  // A second separator above means the box fits: that is liveInputBox's case.
+  for (let i = bottomSep - 1; i >= 0; i--) {
+    if (BOX_SEP_RX.test(lines[i])) return null
+  }
+  // If the ❯ row is still on screen, the box starts there; rows above it are
+  // scrollback, not input.
+  let start = 0
+  for (let i = bottomSep - 1; i >= 0; i--) {
+    if (/^\s*❯/.test(lines[i])) { start = i; break }
+  }
+  const tail = lines.slice(start, bottomSep).join('\n').replace(/^\s*❯/, '').replace(/\s+/g, ' ').trim()
+  return tail.length > 0 ? tail : null
 }
 
 // Post-submit verification: did the parked input actually leave the box?
@@ -1858,7 +2021,9 @@ export interface StuckInputActionFacts {
  *   - A TRUNCATED <channel> block (chat_id unrecoverable) must not be
  *     re-injected; multi-row truncated holds (awaiting the keystroke fix),
  *     single-row keeps the harmless legacy Enter.
- *   - Otherwise a bare Enter is the swallowed-Enter remedy, but only single-row.
+ *   - A bare Enter is the swallowed-Enter remedy, but only single-row AND only
+ *     with positive machine origin: an unidentified park may be the operator's
+ *     own draft, and Enter would submit it half-typed (GH #717).
  */
 export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputAction {
   const multiRow = f.rowCount > 1
@@ -1906,10 +2071,36 @@ export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputActi
   // Truncated safety preamble: clear only (never re-inject a stale preamble).
   if (f.truncatedPreamble && f.escalate) return 'clear-preamble'
   // Truncated <channel> block: hold a multi-row (Enter would corrupt; re-inject
-  // would answer the wrong chat_id), keep the harmless legacy Enter single-row.
+  // would answer the wrong chat_id), keep the Enter single-row. The Enter is
+  // safe here for the same reason the branches above are: a <channel> block,
+  // even a truncated one, IS positive evidence that we put the text there.
   if (f.blockTruncated) return multiRow ? 'hold' : 'enter'
-  // Default swallowed-Enter remedy -- never on multi-row.
-  return multiRow ? 'hold' : 'enter'
+  // Nothing above identified the park. GH #717: this default used to bare-Enter
+  // any single-row box, which submits an operator's half-typed draft the moment
+  // they pause past the confirm window. The reporter measured it repeatedly from
+  // a `tmux attach` on the main session; the remaining text is lost from the
+  // prompt and the agent answers a fragment.
+  //
+  // Every branch above establishes origin before it acts -- a channel block, a
+  // scheduled-task tick, a registry match, or an explicit machine-origin marker
+  // -- and the plain re-inject path already refuses to touch an uncertain park
+  // for exactly this reason ("a human's text has no re-delivery"). That rule was
+  // applied to the branches that clear or re-type and not to the one that
+  // presses Enter, even though submitting a half-typed draft destroys the same
+  // work. This closes that gap: no positive origin, no keystroke.
+  //
+  // What this costs, stated plainly: a genuine swallowed-Enter delivery whose
+  // parked text carries no recognisable marker is no longer rescued by the
+  // watcher. That failure is a DELAY and it has a safety net -- the ledger
+  // live-drain returns unanswered inbound to the running session on its own
+  // cycle. Submitting an operator's unfinished sentence is irreversible and
+  // goes out under the owner's name. The two are not the same weight.
+  //
+  // The hard-restart busy-guard is unaffected: applyStuckRestartBusyGuard only
+  // allows a restart on a 'typing' pane when machineOrigin is true, so an
+  // unidentified park (a suspected human draft) still yields 'skip' there --
+  // the same signal now gates both paths, which is the point.
+  return !multiRow && f.machineOrigin ? 'enter' : 'hold'
 }
 
 // Would the soft stuck-input recovery have ANY submitting/clearing move for
@@ -2193,12 +2384,68 @@ export function decideStuckToolCallRecovery(
 // little wider than LIVE_FOOTER_REGION_LINES (which anchors on the footer line
 // itself); still tail-scoped, so a scrollback quote of the same phrase does
 // not trip it.
+// "100% context used" is the phrasing Claude Code uses while AUTO-COMPACT IS
+// ENABLED. With auto-compact off it renders a different string entirely --
+// `Context low (N% remaining)` in red -- and never reaches the "used" wording
+// at all (verified against the shipped CLI 2.1.247: one branch prints
+// `${100-pct}% context used`, the other `Context low (${pctLeft}% remaining)`,
+// and only the first was matched here). A pane in that state is just as
+// unreachable, so the net has to recognise it too.
+//
+// Deliberately capped at 0-2% REMAINING, not at any "context low". The banner
+// appears from well above the danger zone (a session at 30% remaining is
+// working fine), and the net's action is a FRESH RESTART -- the most expensive
+// thing the guard can do to a live agent. Matching the whole low band would
+// turn a warning into a restart trigger; matching only the last two percent
+// keeps this a saturation predicate.
 const CTX_SAT_FOOTER_REGION_LINES = 8
-const CTX_SAT_RX = /100% context used|context (?:is |limit reached|window )?full\b|context limit|auto-?compact required/i
+
+// TWO shapes of banner land here, and only ONE of them can be wrong about the
+// pane. Callers that hold an independent measurement need to tell them apart.
+//
+// PERCENTAGE CLAIMS -- "100% context used", "Context low (N% remaining)" -- are
+// computed by the CLI from ITS OWN denominator: the status line is sized from
+// the model id the CLI was launched with. A model whose real window is 1M but
+// whose id reaches the CLI without the [1m] marker gets a status line sized to
+// 200k, so the CLI prints "100% context used" at ~179k while the session keeps
+// working -- 998 856 tokens observed in one session (isapp06, 2026-09-15).
+// Their truth depends on that denominator, so a measurement CAN disprove them.
+//
+// HARD-ERROR banners -- "Context limit reached", "context ... full",
+// "auto-compact required" -- are painted only after a turn has ACTUALLY failed
+// against the real limit. Verified in the shipped CLI 2.1.205: the string
+// "Context limit reached" is rendered with color:"error", driven by the API's
+// own "input length and max_tokens exceed context limit: N + M > LIMIT". The
+// CLI's status-line denominator plays no part, so NO measurement may overrule
+// one of these -- doing so would stand the saturation net down on a genuinely
+// wedged pane while the dispatch gate keeps prompting it.
+//
+// paneShowsContextSaturation() matches BOTH and is unchanged: any of them means
+// the pane cannot do useful work. paneShowsContextSaturationHardError() exposes
+// the second class alone. Both regexes are built from the same two sources, so
+// the union can never drift away from its parts.
+const CTX_SAT_PCT_CLAIM_SOURCE = '100% context used|context low \\([0-2]% remaining\\)'
+const CTX_SAT_HARD_ERROR_SOURCE =
+  'context (?:is |limit reached|window )?full\\b|context limit|auto-?compact required'
+const CTX_SAT_RX = new RegExp(`${CTX_SAT_PCT_CLAIM_SOURCE}|${CTX_SAT_HARD_ERROR_SOURCE}`, 'i')
+const CTX_SAT_HARD_ERROR_RX = new RegExp(CTX_SAT_HARD_ERROR_SOURCE, 'i')
+
+function ctxSatFooterRegion(capture: string): string | null {
+  if (!capture || !capture.trim()) return null
+  const lines = capture.split('\n')
+  return lines.slice(-CTX_SAT_FOOTER_REGION_LINES).join('\n')
+}
 
 export function paneShowsContextSaturation(capture: string): boolean {
-  if (!capture || !capture.trim()) return false
-  const lines = capture.split('\n')
-  const footerRegion = lines.slice(-CTX_SAT_FOOTER_REGION_LINES).join('\n')
-  return CTX_SAT_RX.test(footerRegion)
+  const footerRegion = ctxSatFooterRegion(capture)
+  return footerRegion !== null && CTX_SAT_RX.test(footerRegion)
+}
+
+/** The saturation banners whose truth does NOT come from the CLI's status-line
+ *  denominator: the CLI paints these only after a turn actually failed at the
+ *  real limit. A caller reconciling the banner against its own measurement must
+ *  treat these as final -- see the note above. */
+export function paneShowsContextSaturationHardError(capture: string): boolean {
+  const footerRegion = ctxSatFooterRegion(capture)
+  return footerRegion !== null && CTX_SAT_HARD_ERROR_RX.test(footerRegion)
 }

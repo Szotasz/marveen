@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { applyStuckRestartBusyGuard } from '../web/channel-monitor.js'
 import {
   decideStuckInputAction,
   submitLanded,
@@ -108,16 +109,20 @@ describe('decideStuckInputAction (recovery-decision unit)', () => {
     expect(a).toBe('hold')
   })
 
-  it('STUCKINPUT805: box so short even the tail marker is cut -> no machine evidence -> default path', () => {
-    // scheduledTaskBlock and machineOrigin both read false when every marker
-    // is outside the visible box. Multi-row holds; single-row keeps the
-    // harmless legacy Enter. Neither destroys anything.
+  it('STUCKINPUT805: box so short even the tail marker is cut -> no machine evidence -> hold', () => {
+    // scheduledTaskBlock and machineOrigin both read false when every marker is
+    // outside the visible box.
+    //
+    // CONTRACT CHANGED (GH #717): the single-row case asserted 'enter' here and
+    // called it "the harmless legacy Enter". It is not harmless. With no machine
+    // evidence the park may be an operator's own draft, and Enter submits it
+    // half-typed. Both row counts now hold.
     expect(decideStuckInputAction(facts({
       rowCount: 3, allowPlainReinject: true, hasPlainText: true, escalate: true,
     }))).toBe('hold')
     expect(decideStuckInputAction(facts({
       rowCount: 1, allowPlainReinject: true, hasPlainText: true, escalate: true,
-    }))).toBe('enter')
+    }))).toBe('hold')
   })
 
   it('multi-row with nothing safely re-injectable -> hold (never corrupt via Enter)', () => {
@@ -141,8 +146,29 @@ describe('decideStuckInputAction (recovery-decision unit)', () => {
     expect(decideStuckInputAction(facts({ rowCount: 1, blockTruncated: true, escalate: true }))).toBe('enter')
   })
 
-  it('single-row default (swallowed Enter) -> bare Enter', () => {
-    expect(decideStuckInputAction(facts({ rowCount: 1, escalate: true }))).toBe('enter')
+  // CONTRACT CHANGED (GH #717). The default used to bare-Enter any single-row
+  // box on the theory that it was a swallowed Enter. The reporter measured what
+  // else it hits: attach to the main session, type a line, pause past the
+  // confirm window, and the unfinished sentence submits itself.
+  it('single-row default with NO machine origin -> hold, never submit an unidentified park', () => {
+    expect(decideStuckInputAction(facts({ rowCount: 1, escalate: true }))).toBe('hold')
+  })
+
+  it('single-row default WITH machine origin -> bare Enter, the swallowed-Enter remedy survives', () => {
+    expect(decideStuckInputAction(facts({ rowCount: 1, escalate: true, machineOrigin: true }))).toBe('enter')
+    expect(decideStuckInputAction(facts({ rowCount: 1, escalate: false, machineOrigin: true }))).toBe('enter')
+  })
+
+  it('machine origin does not license an Enter on a multi-row box', () => {
+    // The older invariant still holds: a bare Enter in a multi-row box inserts a
+    // newline and corrupts the message, whoever put the text there.
+    expect(decideStuckInputAction(facts({ rowCount: 2, escalate: true, machineOrigin: true }))).toBe('hold')
+  })
+
+  it('a truncated <channel> block still Enters single-row: the block itself is the evidence', () => {
+    // Distinct from the default path: parkedChannelInput found OUR block, so the
+    // origin question is already answered even though the capture is incomplete.
+    expect(decideStuckInputAction(facts({ rowCount: 1, blockTruncated: true, machineOrigin: false }))).toBe('enter')
   })
 
   // 2026-07-25 hermes incident: a multi-row scheduled-task tick parked on the
@@ -208,5 +234,26 @@ describe('parkedInputRowCount', () => {
 
   it('idle / empty box -> 0', () => {
     expect(parkedInputRowCount(IDLE)).toBe(0)
+  })
+})
+
+// GH #717 end to end: the same machineOrigin signal must gate BOTH the watcher's
+// keystroke and the hard-restart busy-guard, or the fix on one path becomes a
+// new destructive path on the other. These pin that they agree.
+describe('GH #717: an unidentified park is neither submitted nor restarted away', () => {
+  it('the watcher holds on a suspected human draft', () => {
+    expect(decideStuckInputAction(facts({ rowCount: 1, escalate: true, machineOrigin: false }))).toBe('hold')
+  })
+
+  it('and the busy-guard skips the hard restart for the same pane', () => {
+    // applyStuckRestartBusyGuard only lets a restart through on a 'typing' pane
+    // when machineOrigin is true. So the pane the watcher now refuses to Enter
+    // is also the pane the restart path refuses to act on: holding does not
+    // hand the draft to a restart instead.
+    expect(applyStuckRestartBusyGuard('typing', 'restart', { machineOrigin: false, softRemedy: false })).toBe('skip')
+  })
+
+  it('a machine-origin park with no soft remedy is still restartable, so a real wedge is not immortal', () => {
+    expect(applyStuckRestartBusyGuard('typing', 'restart', { machineOrigin: true, softRemedy: false })).toBe('restart')
   })
 })

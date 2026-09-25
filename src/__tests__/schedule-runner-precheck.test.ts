@@ -127,11 +127,14 @@ describe('schedule-runner pre-check integration (source-level)', () => {
     const skipBlock = afterCronPc.slice(afterCronPc.indexOf('if (cronPc.skip)'), afterCronPc.indexOf('for (const agentName of targetAgents) {'))
     expect(skipBlock).toMatch(/cronPc\.skip/)
     expect(skipBlock).toMatch(/scheduleLastRun\.set/)
-    // appendTaskRun is inside the targetAgents loop within the skip block
+    // appendTaskRun is inside the targetAgents loop within the skip block,
+    // and it must record the REASON-tagged status: a stall detector has to
+    // tell a healthy precheck-quiet round (state file legitimately stale)
+    // from a busy/quota skip that can mask a stuck agent.
     expect(afterCronPc.slice(
       afterCronPc.indexOf('if (cronPc.skip)'),
       afterCronPc.indexOf('if (pendingKeys.has(key))'),
-    )).toMatch(/appendTaskRun/)
+    )).toMatch(/appendTaskRun\(task\.name, agentName, 'skipped-precheck'\)/)
   })
 
   it('uses fail-open semantics (no SKIP on non-zero exit, no throw on missing file)', () => {

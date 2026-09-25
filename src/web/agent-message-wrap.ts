@@ -18,15 +18,36 @@ import { isTrustedPeer } from '../team-trust.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { isKnownAgent } from './agent-config.js'
 import { readAgentTeam } from './agent-team.js'
-import { COORDINATOR_AGENT_ID } from '../channel-coordinator/ingest.js'
+import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../channel-coordinator/ingest.js'
 import { parseQualifiedId, formatQualifiedId, federationSource } from './federation/address.js'
 
 // Channel-coordinator sources whose messages are real inbound user messages
 // (relayed during a native-channel disconnect), matched on a CODE CONSTANT --
 // never the attacker-influenceable from_agent string.
-const CHANNEL_COORDINATOR_AGENTS = new Set<string>([COORDINATOR_AGENT_ID])
+const CHANNEL_COORDINATOR_AGENTS = new Set<string>([COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID])
 
 export type AgentMessageCategory = 'channel-inbound' | 'trusted-peer' | 'untrusted' | 'federated'
+
+// True when this sender id earns the channel-inbound envelope -- "the owner is
+// speaking here, a reply is expected". Exported because /api/messages is NOT
+// the only way a row lands in agent_messages: any OTHER write path must be
+// able to refuse to MINT one of these ids, or the envelope's guarantee is only
+// as strong as the weakest door into the table.
+//
+// DESKTOPLOCKFROM918 (measured 2026-09-18): POST /api/desktop-lock took the
+// body's `owner` verbatim as from_agent and broadcast it to the whole fleet,
+// with the caller's free-text `note` inside the content. With the shared
+// dashboard token -- which every sub-agent can read -- that minted an
+// owner-framed message carrying attacker-chosen text, straight past the
+// device-key gate that /api/messages requires for the same id.
+//
+// Matched on the SANITIZED id, the same way classifyAgentMessage matches it:
+// a guard that reads the raw string lets through exactly the spellings the
+// classifier still resolves to the privileged id.
+export function isChannelInboundSender(fromAgent: string): boolean {
+  return CHANNEL_COORDINATOR_AGENTS.has(sanitizeAgentIdent(fromAgent))
+}
+
 
 // Freshness annotation (SB hardening 2026-08-22). A message that waited in the
 // queue while its target was busy/absent can be delivered LONG after it was
@@ -70,6 +91,35 @@ export function formatFreshnessSuffix(ageMs?: number, newerFromSameSender?: numb
     return ` [frissesseg: ez az uzenet ${formatAge(ageMs)} regi volt a kezbesiteskor]`
   }
   return ''
+}
+
+// The same signal, shaped for a JSON reader instead of an injected prefix.
+// The freshness annotation belongs to the message CONTENT, not to one delivery
+// path: a recipient that reads its own still-pending mailbox over
+// `GET /api/messages` receives the row well before the router injects it, and
+// used to receive it stripped of exactly the warning the router would have
+// attached. That gap is long enough for a sender to send a correction, or to
+// revoke the instruction outright, between the read and the delivery -- and the
+// early reader had no way to see that it had happened.
+//
+// `note` is the ROUTER's own string, trimmed -- deliberately not a second
+// wording. If the delivered text and the API text ever disagree about what is
+// stale, the one that is wrong is whichever drifted, so there is only one.
+// The raw numbers travel alongside it because a machine consumer should not
+// have to parse Hungarian prose to learn that two newer messages exist.
+export type MessageFreshness = {
+  ageMinutes: number
+  newerFromSameSender: number
+  note: string
+}
+
+export function buildFreshnessInfo(ageMs: number, newerFromSameSender: number): MessageFreshness {
+  const safeAge = Math.max(0, ageMs)
+  return {
+    ageMinutes: Math.floor(safeAge / 60000),
+    newerFromSameSender,
+    note: formatFreshnessSuffix(safeAge, newerFromSameSender).trim(),
+  }
 }
 
 // Classify an inter-agent message's delivery category, in priority order on the

@@ -1,4 +1,5 @@
 import { mkdirSync } from 'node:fs'
+import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join } from 'node:path'
 import { userInfo } from 'node:os'
 import { execFileSync } from 'node:child_process'
@@ -159,7 +160,8 @@ export function buildRemoteLaunchCommand(opts: {
 }): string {
   const path = 'export PATH="$HOME/.bun/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"'
   const cont = opts.continue ? '--continue ' : ''
-  return `${path} && cd ${shQuote(opts.workdir)} && claude ${cont}--dangerously-skip-permissions --model ${shQuote(opts.model)}`
+  // CHANSPARE925: no Agent view on remote agents either (parity with every local launch).
+  return `${path} && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && cd ${shQuote(opts.workdir)} && claude ${cont}--dangerously-skip-permissions --model ${shQuote(opts.model)}`
 }
 
 /**
@@ -173,7 +175,7 @@ export function buildRemoteLaunchCommand(opts: {
  * exists, silently dropping --continue on every remote launch.)
  */
 export function buildContinueProbeCommand(absWorkdir: string): string {
-  const encoded = absWorkdir.replace(/\//g, '-')
+  const encoded = encodeClaudeProjectDir(absWorkdir)
   return 'test -d "$HOME/.claude/projects/"' + shQuote(encoded)
 }
 

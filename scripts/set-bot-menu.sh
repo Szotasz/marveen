@@ -19,8 +19,15 @@ if [ "$CHANNEL_PROVIDER" != "telegram" ]; then
 fi
 
 # Load bot token
-if [ -f "$HOME/.claude/channels/telegram/.env" ]; then
-  BOT_TOKEN=$(grep TELEGRAM_BOT_TOKEN "$HOME/.claude/channels/telegram/.env" | cut -d= -f2)
+# #915: main channel state is install-scoped once migrated; the legacy shared
+# path only serves unmigrated installs.
+TG_CHAN_DIR="${TELEGRAM_STATE_DIR:-}"
+if [ -z "$TG_CHAN_DIR" ]; then
+  TG_CHAN_DIR="$INSTALL_DIR/.claude/channels/telegram"
+  [ -f "$TG_CHAN_DIR/.env" ] || TG_CHAN_DIR="$HOME/.claude/channels/telegram"
+fi
+if [ -f "$TG_CHAN_DIR/.env" ]; then
+  BOT_TOKEN=$(grep TELEGRAM_BOT_TOKEN "$TG_CHAN_DIR/.env" | cut -d= -f2)
 elif [ -f "$INSTALL_DIR/.env" ]; then
   BOT_TOKEN=$(grep TELEGRAM_BOT_TOKEN "$INSTALL_DIR/.env" | cut -d= -f2)
 fi

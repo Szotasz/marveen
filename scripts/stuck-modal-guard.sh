@@ -43,8 +43,17 @@ FIRSTSEEN_STAMP="$STORE/.stuck-modal-firstseen"
 RESPAWN_STAMP="$STORE/.channel-last-respawn"           # SHARED with channel-watchdog.sh
 RESPAWN_COUNT_FILE="$STORE/.stuck-modal-respawns"
 BACKOFF_STAMP="$STORE/.stuck-modal-backoff-alerted"
-TG_ENV="$HOME/.claude/channels/telegram/.env"
+# #915: main channel state is install-scoped once migrated; the legacy shared
+# path only serves unmigrated installs.
+TG_CHAN_DIR="${TELEGRAM_STATE_DIR:-}"
+if [ -z "$TG_CHAN_DIR" ]; then
+  TG_CHAN_DIR="$INSTALL_DIR/.claude/channels/telegram"
+  [ -f "$TG_CHAN_DIR/.env" ] || TG_CHAN_DIR="$HOME/.claude/channels/telegram"
+fi
+TG_ENV="$TG_CHAN_DIR/.env"
 LOG_TAG="stuck-modal-guard"
+
+. "$(cd "$(dirname "$0")" && pwd)/lib/owner-chat.sh"
 
 STUCK_SECONDS="${STUCK_MODAL_SECONDS:-120}"   # must stay stuck this long before acting
 # Validate: a non-integer override would make the `-ge` comparison error and
@@ -120,11 +129,17 @@ sanitize_model() {
 # --- direct Bot API alert (mirrors channel-watchdog.sh alert_owner) -------------
 alert_owner() {
   local msg="$1" token chat
-  # Token + owner chat id both from config, never hardcoded.
+  # Token from config, never hardcoded. Owner chat id via resolve_owner_chat_id
+  # (CHATID0): the old direct ALLOWED_CHAT_ID/TELEGRAM_CHAT_ID reads let the
+  # installer's "0" placeholder through unnoticed, and skipped the
+  # access.json fallback entirely.
   # `tr -d '\r '` strips a trailing CR (CRLF-edited .env) / stray spaces.
   token="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$TG_ENV" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r ')"
-  chat="$(grep -E '^ALLOWED_CHAT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r ')"
-  [ -z "$chat" ] && chat="$(grep -E '^TELEGRAM_CHAT_ID=' "$TG_ENV" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r ')"
+  # The resolver's reason line stays on stderr (the guard's log), not
+  # /dev/null: a skipped alert must say why (no DM entry, several DM entries,
+  # no access.json). Not captured with 2>&1 -- any stderr noise on the success
+  # path would then become part of the chat id.
+  chat="$(resolve_owner_chat_id "$INSTALL_DIR/.env")" || chat=""
   if [ -z "$token" ] || [ -z "$chat" ]; then
     log "ALERT (no bot token or owner chat id configured): $msg"; return 1
   fi
@@ -270,7 +285,53 @@ run_guard() {
   CLAUDE_Q="$(printf '%q' "$CLAUDE")"
   # W2: %q-quote the (config-overridable) plugin id, same treatment as the model.
   local PLUGIN_Q; PLUGIN_Q="$(printf '%q' "$RESPAWN_PLUGIN")"
-  local RESPAWN_CMD="export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && $CLAUDE_Q --dangerously-skip-permissions ${MODEL_FLAG}--channels $PLUGIN_Q"
+
+  # CFGDIR686: the main-agent isolated-config decision belongs on EVERY respawn
+  # path, not just the watchdog's. PR #686 fixed the 401 outage by giving
+  # channel-watchdog.sh a CFG_ENV -- this script was the other respawner and was
+  # missed, so a respawn from here silently dropped the main agent back onto the
+  # shared ~/.claude. That is the very outage shape the channels.sh guard exists
+  # to shout about, and it would fire at the worst moment: the session is
+  # already stuck, and the operator simply stops getting answers.
+  # Mirrors channel-watchdog.sh:186-201 exactly, including reading the fleet
+  # token via $(cat ...) at spawn time so the secret never lands in the
+  # RESPAWN_CMD string handed to tmux (visible via ps/pane history otherwise).
+  local CFG_ENV=""
+  local NODE_BIN; NODE_BIN="$(command -v node || true)"
+  if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
+    # The helper keys the isolated dir by PROVIDER; here the configured value is
+    # a full plugin id (plugin:<provider>@<owner>), so take the provider out of it
+    # rather than hard-coding 'telegram' -- a renamed install would otherwise get
+    # a config dir that belongs to a different channel.
+    local _prov="${RESPAWN_PLUGIN#plugin:}"; _prov="${_prov%%@*}"
+    local _cfg_line _cfg_mode _cfg_rest _cfg_dir _cfg_token_secret
+    _cfg_line="$("$NODE_BIN" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$_prov" 2>>"$STORE/channels-failures.log" || true)"
+    _cfg_mode="${_cfg_line%%	*}"
+    _cfg_rest="${_cfg_line#*	}"
+    if [ "$_cfg_mode" = "token" ]; then
+      _cfg_dir="${_cfg_rest%%	*}"
+      _cfg_token_secret="${_cfg_rest#*	}"
+    else
+      _cfg_dir="$_cfg_rest"
+      _cfg_token_secret=""
+    fi
+    if [ -n "$_cfg_line" ] && [ -d "$_cfg_dir" ]; then
+      if [ "$_cfg_mode" = "explicit" ] || [ "$_cfg_mode" = "rotated" ]; then
+        CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && "
+      elif [ "$_cfg_mode" = "token" ]; then
+        # Token-mode rotated plan -- same credential-less dir as `isolated`, but
+        # export THAT plan's vault-stored token. See channels.sh's identical
+        # branch, including the fleet-token fallback and the loud-failure gate
+        # (PR #1304 review (c)) via the bare `_plan_token=$(...)` assignment.
+        CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && _plan_token=\"\$(\"$NODE_BIN\" '$INSTALL_DIR/scripts/resolve-plan-token-env.mjs' '$_cfg_token_secret' '$INSTALL_DIR/store/.claude-oauth-token' '$INSTALL_DIR/store/channels-failures.log')\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$_plan_token\" && "
+      else
+        CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "
+      fi
+      log "main-agent $_cfg_mode CLAUDE_CONFIG_DIR=$_cfg_dir"
+    fi
+  fi
+
+  local RESPAWN_CMD="export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && ${CFG_ENV}$CLAUDE_Q --dangerously-skip-permissions ${MODEL_FLAG}--channels $PLUGIN_Q"
 
   log "stuck modal not cleared by Escape -- respawn-pane $SESSION (respawn #$((count+1)))"
   # G: alert ONLY after the respawn-pane actually succeeds, so a failed respawn
@@ -291,6 +352,9 @@ case "${1:-}" in
   classify)       classify_pane ;;
   decide)         decide_action "${2:-}" "${3:-0}" "${4:-0}" ;;
   sanitize-model) sanitize_model "${2:-}" ;;
+  # Test-only seam (scripts/__tests__/stuck-modal-guard.test.sh, CHATID0): exercise
+  # alert_owner's real owner-chat resolution without driving the full pane flow.
+  alert-owner-test) alert_owner "${2:-probe}" ;;
   *)              run_guard ;;
 esac
 exit 0

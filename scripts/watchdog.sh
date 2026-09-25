@@ -116,9 +116,24 @@ replay_unfinished_messages() {
   NOW=$(date +%s)
   CUTOFF=$(( NOW - 7200 ))
 
+  # ⛔ `agent`, nem `to`: a `to` SOSEM volt ismert parameter ezen a vegponton (KNOWN_PARAMS:
+  # agent, status, limit, before), es 2026-08-18 ota HANGOS 400-at kap.
+  # ⛔ A hiba NEM a `|| return` agan bukott ki: a curl `-f` nelkul 400-nal is 0-val ter vissza, es
+  # a hiba-JSON se nem ures, se nem "[]" -- tehat ADATKENT ment tovabb a replay-nek, ahol a
+  # json.load egy dict-et ad es a "for m in msgs" a KULCSOKON iteral. Ezert kell a HTTP-kod is.
+  # ⛔ A kommentek SZANDEKOSAN a parancs ELOTT allnak: egy `\`-folytatasorok koze tett komment
+  # elnyeli a sor hatralevo reszet (merve: az URL is a kommentbe kerult, a `bash -n` megis zold
+  # maradt -- a szintaxis-ellenorzes a JELENTEST nem meri).
   RESPONSE=$(curl -s -m 5 \
     -H "Authorization: Bearer $TOKEN" \
-    "http://localhost:${WEB_PORT}/api/messages?to=${AGENT_ID}&limit=200" 2>/dev/null) || return
+    -w '\n%{http_code}' \
+    "http://localhost:${WEB_PORT}/api/messages?agent=${AGENT_ID}&limit=200" 2>/dev/null) || return
+  HTTP_CODE=$(printf '%s' "$RESPONSE" | tail -n1)
+  RESPONSE=$(printf '%s' "$RESPONSE" | sed '$d')
+  if [ "$HTTP_CODE" != "200" ]; then
+    echo "$(timestamp) [watchdog] $AGENT_ID: /api/messages HTTP $HTTP_CODE, replay kihagyva" >> "$LOG"
+    return
+  fi
 
   [ -z "$RESPONSE" ] || [ "$RESPONSE" = "[]" ] && return
 
@@ -218,7 +233,7 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
 
   ISO_ENV="$(agent_launch_env "$AGENT_DIR")"
 
-  CMD="${ISO_ENV}export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official"
+  CMD="${ISO_ENV}export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official"
 
   tmux new-session -d -s "$SESSION_NAME" "$CMD" 2>/dev/null
   sleep 2

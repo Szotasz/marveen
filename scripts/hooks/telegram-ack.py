@@ -27,7 +27,16 @@ CHANNEL_RX = re.compile(r'<channel\s+([^>]*)>', re.DOTALL)
 ATTR_RX = re.compile(r'(\w+)="([^"]*)"')
 STATE_FILE = os.path.expanduser("~/.claude/.telegram-ack-state")
 MAX_STATE = 500  # keep the last N acked keys, bounded
-TOKEN_ENV = os.path.expanduser("~/.claude/channels/telegram/.env")
+def _token_env_path():
+    # #915: env override, then install-scoped once migrated, then legacy shared.
+    d = os.environ.get("TELEGRAM_STATE_DIR")
+    if not d:
+        _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        _inst = os.path.join(_root, ".claude", "channels", "telegram")
+        d = _inst if os.path.isfile(os.path.join(_inst, ".env")) else os.path.expanduser("~/.claude/channels/telegram")
+    return os.path.join(d, ".env")
+
+TOKEN_ENV = _token_env_path()
 TOKEN_RX = re.compile(r'[0-9]+:[A-Za-z0-9_-]+')
 
 

@@ -132,4 +132,42 @@ describe('sendPromptToSession delivery-lock wiring', () => {
     expect(CHANNEL_MONITOR).toMatch(/withSessionSendLock\(session, null, 'recover'/)
     expect(CHANNEL_MONITOR).toMatch(/lockMode: 'held'/)
   })
+
+  // IDENTLANE910. scheduleIdentitySetup was the writer #885 and #895 both
+  // missed: it typed `/rename <name>` with a bare send-keys on a
+  // fire-and-forget timer. Measured 2026-09-10 09:40:01 -- a restart fired it
+  // while the scheduler was chunk-pasting a task prompt into the same pane, and
+  // `/rename Marveen_is` landed in the MIDDLE of that prompt, between two words
+  // of a python expression. The reading agent saw an unprovenanced self-rename
+  // command inside its own instructions.
+  //
+  // This test is a source contract for the same reason the two above are: the
+  // race needs a restart and a concurrent delivery to collide within the same
+  // second, so it is not reproducible on demand in CI. What IS checkable is
+  // that the send site sits inside a lane acquisition.
+  it('the identity /rename send is inside a send-lane acquisition, not a bare send-keys', () => {
+    const fn = AGENT_PROCESS.slice(AGENT_PROCESS.indexOf('export async function scheduleIdentitySetup'))
+    const body = fn.slice(0, fn.indexOf('\n}\n') + 3)
+    expect(body).toMatch(/tryAcquireSessionSendLane\(session, host\)/)
+    // The send-keys that types the slash command must be guarded: the acquire
+    // has to appear BEFORE it in the function body.
+    const acquireAt = body.indexOf('releaseIdentityLane = tryAcquireSessionSendLane')
+    const sendAt = body.indexOf("runTmux(host, ['send-keys', '-t', session, cmd, 'Enter']")
+    expect(acquireAt).toBeGreaterThanOrEqual(0)
+    expect(sendAt).toBeGreaterThan(acquireAt)
+    // And it must be released, or the pane's lane wedges for every later writer.
+    expect(body).toMatch(/releaseIdentityLane\(\)/)
+  })
+
+  it('a busy lane defers the identity /rename instead of dropping it silently', () => {
+    const fn = AGENT_PROCESS.slice(AGENT_PROCESS.indexOf('export async function scheduleIdentitySetup'))
+    const body = fn.slice(0, fn.indexOf('\n}\n') + 3)
+    // Retry loop, not a one-shot skip: a skipped /rename would leave the
+    // session unnamed for its whole life.
+    expect(body).toMatch(/IDENTITY_LANE_MAX_ATTEMPTS/)
+    // Both the deferral and the give-up are logged -- a skip nobody logs is
+    // not a skip.
+    expect(body).toMatch(/Identity \/rename deferred/)
+    expect(body).toMatch(/Identity \/rename abandoned/)
+  })
 })

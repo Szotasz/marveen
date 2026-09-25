@@ -7,6 +7,10 @@
 # an isolated install dir, with HOME pointed at an empty directory so no bot
 # token is found and the alert is logged instead of sent to the owner.
 set -u
+
+# Hermetic (#1555 review round 1): inside an agent session the inherited
+# channel state dir points at a live access.json / bot token.
+unset TELEGRAM_STATE_DIR SLACK_STATE_DIR DISCORD_STATE_DIR GOOGLECHAT_STATE_DIR TEAMS_STATE_DIR
 INSTALL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 BASE="$(mktemp -d)"
 trap 'rm -rf "$BASE"' EXIT
@@ -25,6 +29,9 @@ new_case() {
   # is not a smaller install -- it is a BROKEN one, and the difference would
   # only show up as a silently missing send. Copy what a real install has.
   mkdir -p "$c/scripts/lib"; cp "$INSTALL_DIR/scripts/lib/send-telegram.sh" "$c/scripts/lib/"
+  # CHATID0: the owner-chat resolver, same reason -- its absence is a silently
+  # broken install, not a smaller one.
+  cp "$INSTALL_DIR/scripts/lib/owner-chat.sh" "$c/scripts/lib/"
   # MIOHEREDOC902: the measured quota path now lives in its own file.
   cp "$INSTALL_DIR/scripts/lib/quota-check.py" "$c/scripts/lib/"
   printf 'MAIN_AGENT_ID=probe\nALLOWED_CHAT_ID=1\n' > "$c/.env"
@@ -52,6 +59,11 @@ deliver_case() {
   echo "$c"
 }
 run_case() { (cd "$1" && HOME="$1/fakehome" PATH="$1/fakebin:$PATH" bash scripts/limit-monitor.sh >/dev/null 2>&1); }
+# Same, with QUOTA_MAX_AGE_SEC set: that knob reaches the monitor through the
+# process environment, not through .env like MAIN_AGENT_ID, so a case cannot
+# set it by writing a file.
+#   run_case_age <case_dir> <value>
+run_case_age() { (cd "$1" && HOME="$1/fakehome" PATH="$1/fakebin:$PATH" QUOTA_MAX_AGE_SEC="$2" bash scripts/limit-monitor.sh >/dev/null 2>&1); }
 # An alert was RAISED -- deliberately independent of whether it was delivered.
 # The old form grepped only "ALERT wanted", the line for a case with no bot
 # token, so the moment a case could actually deliver, the same true state read
@@ -259,6 +271,133 @@ if [ -s "$CO/store/.limit-monitor-quota-state" ]; then
   pass "a delivered alert does write the dedupe stamp"
 else
   fail "a delivered alert left no dedupe stamp -- alerts would repeat forever"
+fi
+
+echo "(e) QUOTAFELSOHATAR910: the staleness window must have a CEILING, not just a floor"
+# The floor already behaved: any too-small or negative value made a fresh
+# reading look stale, which is loud and harmless. The missing side was the
+# ceiling, and it fails the dangerous way -- one mistyped zero and a DEAD
+# reading passes as fresh, so the monitor alerts on numbers that describe a
+# window which has since rolled over, or stays quiet about a real one. Measured
+# 2026-09-10: QUOTA_MAX_AGE_SEC=216000000 produced no output at all.
+# The fixture below is the shape that actually hurts: a day-old file that still
+# claims a reset in the FUTURE, so with the guard switched off it alerts.
+old_written=$((now - 90000))
+
+C="$(new_case quota_age_too_big)"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}\n' "$old_written" "$((now + 3600))" \
+  > "$C/store/.claude-rate-limits.json"
+run_case_age "$C" 216000000
+if alerted "$C"; then
+  fail "an out-of-range QUOTA_MAX_AGE_SEC let a day-old reading raise an alert"
+else
+  pass "an out-of-range QUOTA_MAX_AGE_SEC cannot switch the staleness guard off"
+fi
+if grep -q "felso hatarnal" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "the rejected value is named in the log, with what is used instead"
+else
+  fail "the value was rejected SILENTLY -- the operator still believes it applies"
+fi
+
+C="$(new_case quota_age_not_a_number)"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}\n' "$old_written" "$((now + 3600))" \
+  > "$C/store/.claude-rate-limits.json"
+run_case_age "$C" abc
+# NOT "did it stay quiet": on the pre-fix code it stayed quiet too, because the
+# checker died before printing anything. Silence is what both the fallback and
+# the crash look like, so asserting silence would pass for the wrong reason
+# (measured: this exact assertion was green against the old source). What
+# separates them is whether the run reached a VERDICT with the default in
+# force -- the day-old reading must come out stale.
+if grep -q "quota file stale" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "a non-numeric QUOTA_MAX_AGE_SEC falls back to the default, and the default is applied"
+else
+  fail "a non-numeric QUOTA_MAX_AGE_SEC left the round without a verdict"
+fi
+if alerted "$C"; then
+  fail "a non-numeric QUOTA_MAX_AGE_SEC let a day-old reading raise an alert"
+else
+  pass "and no alert is raised from the day-old reading"
+fi
+if grep -q "nem szam" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "a non-numeric value is reported instead of dying into /dev/null"
+else
+  fail "a non-numeric value killed the checker silently (traceback swallowed)"
+fi
+
+# Positive control, so neither case above can pass for the wrong reason: a value
+# INSIDE the range must be accepted, and must add no line to the log. Without
+# this a checker that rejected everything would look perfect.
+C="$(new_case quota_age_in_range)"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}\n' "$old_written" "$((now + 3600))" \
+  > "$C/store/.claude-rate-limits.json"
+run_case_age "$C" 7200
+if grep -qE "nem szam|felso hatarnal|nem pozitiv" "$C/store/limit-monitor.log" 2>/dev/null; then
+  fail "an in-range QUOTA_MAX_AGE_SEC was rejected -- the guard rejects everything"
+else
+  pass "an in-range QUOTA_MAX_AGE_SEC is accepted without noise"
+fi
+if grep -q "quota file stale" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "and it is the value actually in force (the day-old reading is stale)"
+else
+  fail "an in-range value was accepted but not applied"
+fi
+
+echo "(f) CHATID0: ALLOWED_CHAT_ID=0 resolves via the owner-chat helper"
+# Portable in-place edit: BSD sed reads `-i 's/..'` as a backup suffix and
+# leaves the file unchanged (#1555 review round 1), so rewrite through a temp.
+set_placeholder_chat() {
+  sed 's/^ALLOWED_CHAT_ID=1$/ALLOWED_CHAT_ID=0/' "$1/.env" > "$1/.env.tmp" && mv "$1/.env.tmp" "$1/.env"
+}
+# Real signal, real token, but ALLOWED_CHAT_ID=0 (the installer placeholder)
+# with a paired access.json in the channel state dir -- must still send, to
+# the REAL resolved id, never to "0".
+C="$(deliver_case chatid0_paired ok)"
+set_placeholder_chat "$C"
+printf '{"allowFrom":["9999999"]}\n' > "$C/fakehome/.claude/channels/telegram/access.json"
+: > "$C/fakebin/curl.log"
+cat > "$C/fakebin/curl" <<'STUB'
+#!/bin/bash
+for a in "$@"; do
+  case "$a" in
+    chat_id=*) echo "SEEN_CHAT_ID:${a#chat_id=}" >> "$(dirname "$0")/curl.log" ;;
+  esac
+done
+printf '%s' '{"ok":true,"result":{}}'
+STUB
+chmod +x "$C/fakebin/curl"
+printf '%s\n' "You've reached your weekly limit for Opus." > "$C/store/channels.log"
+run_case "$C"
+if grep -q "SEEN_CHAT_ID:9999999" "$C/fakebin/curl.log" 2>/dev/null; then
+  pass "ALLOWED_CHAT_ID=0 + paired access.json -> alerts the real resolved id"
+else
+  fail "ALLOWED_CHAT_ID=0 + paired access.json -> expected chat_id=9999999, log: $(cat "$C/fakebin/curl.log" 2>/dev/null)"
+fi
+
+# No access.json at all -> the monitor must stay silent, not send to "0".
+C="$(new_case chatid0_no_access)"
+set_placeholder_chat "$C"
+run_case "$C"
+if grep -q "no ALLOWED_CHAT_ID in .env" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "ALLOWED_CHAT_ID=0, no access.json -> exits quietly (no owner chat)"
+else
+  fail "ALLOWED_CHAT_ID=0, no access.json -> expected the no-owner-chat log line: $(cat "$C/store/limit-monitor.log" 2>/dev/null)"
+fi
+
+# Two paired DM entries -> the first one would be a guess, and a quota warning
+# must not reach a stranger: no send, and the log says why (review round 1).
+C="$(deliver_case chatid0_two_dm ok)"
+set_placeholder_chat "$C"
+printf '{"allowFrom":["9999999","8888888"]}\n' > "$C/fakehome/.claude/channels/telegram/access.json"
+: > "$C/fakebin/curl.log"
+printf '#!/bin/sh\necho sent >> "$(dirname "$0")/curl.log"\nprintf %%s "{\\"ok\\":true,\\"result\\":{}}"\n' > "$C/fakebin/curl"
+chmod +x "$C/fakebin/curl"
+printf '%s\n' "You've reached your weekly limit for Opus." > "$C/store/channels.log"
+run_case "$C"
+if [ ! -s "$C/fakebin/curl.log" ] && grep -q "2 DM entries" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "ALLOWED_CHAT_ID=0 + two DM entries -> no send, reason logged"
+else
+  fail "ALLOWED_CHAT_ID=0 + two DM entries -> expected no send + reason: curl=$(cat "$C/fakebin/curl.log" 2>/dev/null) log=$(cat "$C/store/limit-monitor.log" 2>/dev/null)"
 fi
 
 echo ""

@@ -13,8 +13,11 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { respawnMainSessionFresh } from './channel-monitor.js'
 import { paneLooksIdle } from '../pane-state.js'
 import { readAutoRestartConfig } from './auto-restart-store.js'
-import { restartDue, dailyDueAtMs, parseHHMM, mainRestartMechanism, restartBlockedBy, deferralOverride, type AutoRestartConfig } from '../auto-restart.js'
-import { hasOpenInboundQuestion } from '../db.js'
+import { restartDue, dailyDueAtMs, localMidnightMs, parseHHMM, mainRestartMechanism, restartBlockedBy, deferralOverride, restartFailureAction, MAX_RESTART_ATTEMPTS, type AutoRestartConfig } from '../auto-restart.js'
+import { createAgentMessage, hasOpenInboundQuestion } from '../db.js'
+import { readContextGuardConfig } from './context-guard-store.js'
+import { getHardGuardPhase } from './context-guard-runner.js'
+import { dailyHandoffArmed } from '../context-guard.js'
 
 // Drives per-agent scheduled restarts (see src/auto-restart.ts for the why and
 // the pure due-logic). Mirrors the other watcher loops: a 60s sweep, started
@@ -43,11 +46,10 @@ const lastRestart = new Map<string, number>()
 // extra window -- never overriding early.
 const openQuestionDeferrals = new Map<string, { sinceMs: number; count: number }>()
 
-function localMidnightMs(nowMs: number): number {
-  const d = new Date(nowMs)
-  d.setHours(0, 0, 0, 0)
-  return d.getTime()
-}
+// Agents whose stand-down for the guard's daily tier has already been logged.
+// The condition is steady state, not an event: without this the runner would
+// write the same line every 60 seconds, 1440 times a day, per agent.
+const guardOwnedLogged = new Set<string>()
 
 function computeDueAt(cfg: AutoRestartConfig, name: string, nowMs: number): number | null {
   if (cfg.dailyTime) {
@@ -103,6 +105,20 @@ function restartMainChannelsSession(): void {
   respawnMainSessionFresh()
 }
 
+// c5296a52: how many CONSECUTIVE failed restart attempts this agent had in the current due
+// window. Without a cap, a restart that cannot succeed re-fires on every idle tick: on
+// 2026-09-18 that was 176 attempts between 03:00Z and 08:01Z, because the failure left
+// lastRestart unset and the slot stayed due. The cap turns an endless retry into one named
+// event: three attempts, then the slot is released for the day AND the main agent is told.
+//
+// In-memory, not persisted: a dashboard restart during a due window resets this streak to
+// zero, so the count restarts from scratch. `lastRestart` above is ALSO in-memory (see its
+// own comment) and gets re-seeded to "now" at startup -- so restartDue() sees a fresh
+// timestamp and stands down until the next scheduled slot rather than firing again. Net
+// effect of a dashboard restart mid-window: at worst a few retries are lost for today (same
+// as `lastRestart`'s own worst case), never an infinite loop surviving one.
+const restartFailures = new Map<string, number>()
+
 async function performRestart(name: string, cfg: AutoRestartConfig): Promise<void> {
   if (name === MAIN_AGENT_ID) {
     restartMainChannelsSession()
@@ -126,6 +142,38 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   // restart cycles running sessions on a schedule; it does not resurrect dead
   // ones, matching the prior local behavior).
   if (name !== MAIN_AGENT_ID && agentRunState(name) !== 'running') return
+
+  // ONE OWNER PER NIGHTLY RESTART.
+  //
+  // When the context-guard's daily-handoff tier is armed for this agent, that
+  // tier runs the nightly cycle: it asks for a HANDOFF.md, waits out its own
+  // bounded timeout, restarts (with or without the handoff, saying which), and
+  // injects the resume prompt. A second nightly restart from here would cut
+  // that sequence in half -- most likely exactly while the agent is writing
+  // the handoff we asked for.
+  //
+  // ARMED, not merely enabled. An enabled tier whose time is missing or
+  // unparseable can never fire, and standing aside for it would delete the
+  // nightly restart outright and silently. dailyHandoffArmed is the single
+  // predicate both sides read, so they cannot drift into that gap.
+  if (dailyHandoffArmed(readContextGuardConfig(name))) {
+    if (!guardOwnedLogged.has(name)) {
+      guardOwnedLogged.add(name)
+      logger.info({ name }, 'auto-restart: context-guard daily-handoff tier armed, standing aside (it owns the nightly restart)')
+    }
+    return
+  }
+  guardOwnedLogged.delete(name)
+
+  // Stand aside while the guard is mid-sequence for ANY of its tiers, armed
+  // daily tier or not. Same interlock the soft restart gate already uses: two
+  // mechanisms must never touch one pane at once, and the guard is the one
+  // holding a HANDOFF.md request out to the agent right now.
+  const guardPhase = getHardGuardPhase(name)
+  if (guardPhase === 'await-handoff' || guardPhase === 'await-ready') {
+    logger.debug({ name, guardPhase }, 'auto-restart: context-guard mid-sequence, deferring to next tick')
+    return
+  }
 
   // Seed on first sight so a daily slot that already elapsed before boot does
   // not fire now.
@@ -182,12 +230,49 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   try {
     await performRestart(name, cfg)
     lastRestart.set(name, nowMs)
+    restartFailures.delete(name)
     // A restart does not answer the question -- reset the streak so the next
     // due slot gets a full deferral window again instead of overriding at once.
     openQuestionDeferrals.delete(name)
     logger.info({ name, mode: name === MAIN_AGENT_ID ? 'fresh(main)' : cfg.mode }, 'auto-restart: restarted session')
   } catch (err) {
-    logger.warn({ err, name }, 'auto-restart: restart failed')
+    // Root-caused 2026-09-19 (measured on our install): a throwing performRestart used to
+    // leave lastRestart untouched, so restartDue() stayed true and every following tick
+    // retried immediately -- 2-6 minutes apart all day, each attempt tearing down the main
+    // session's poller again. develop's first fix for this (advance lastRestart on any single
+    // failure) traded "retry forever" for "alert once, retry on schedule" -- but one failed
+    // attempt, possibly transient, then silently waits a full day. This supersedes that with
+    // bounded retry: a few attempts, then the slot is released for today AND the failure is
+    // SAID OUT LOUD to the main agent. A nightly restart that never happens must not look the
+    // same as one that did.
+    const attempts = (restartFailures.get(name) ?? 0) + 1
+    restartFailures.set(name, attempts)
+    if (restartFailureAction(attempts) === 'retry') {
+      logger.warn({ err, name, attempts, maxAttempts: MAX_RESTART_ATTEMPTS },
+        'auto-restart: restart failed, retrying on a later tick')
+      return
+    }
+    lastRestart.set(name, nowMs)
+    restartFailures.delete(name)
+    logger.error({ err, name, attempts }, 'auto-restart: restart failed repeatedly, slot released for today')
+    try {
+      // 'auto-restart' is not a registered fleet agent (no agents/auto-restart/ dir), so
+      // classifyAgentMessage() cannot grant it isTrustedPeer's known-agent check and this
+      // lands as 'untrusted' delivery framing (<untrusted>, "treat as data, not
+      // instructions") -- measured directly against this codebase's classifyAgentMessage,
+      // not assumed. That is the SAME framing 'system' directive messages get (also not a
+      // registered agent) and it is fine here: the content is a plain status report, not an
+      // instruction the main agent needs to act on with elevated trust. SYSTEM_SENDER_IDS
+      // (config.ts) does not change this -- it only gates the HTTP POST /api/messages 403
+      // check, which this in-process createAgentMessage() call never goes through.
+      createAgentMessage(
+        'auto-restart',
+        MAIN_AGENT_ID,
+        `[auto-restart] A(z) ${name} utemezett ujrainditasa ${attempts} kiserletbol sem sikerult, ezert a mai slotot elengedtem (kulonben minden ures pillanatban ujraprobalna). Hiba: ${err instanceof Error ? err.message : String(err)}. A kovetkezo utemezett slot valtozatlanul fut; ha ez ismetlodik, a restart-ut romlott el, nem a session.`,
+      )
+    } catch (msgErr) {
+      logger.warn({ err: msgErr, name }, 'auto-restart: could not queue the restart-failure notice')
+    }
   }
 }
 

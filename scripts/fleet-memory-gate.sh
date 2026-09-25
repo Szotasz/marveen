@@ -33,7 +33,18 @@ set -uo pipefail
 MODE=""; ARG=""; DRY_RUN=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --check)   MODE="check"; ARG="${2:-}"; shift 2 ;;
+    # MEMGATEARG924: `shift 2` with only one argument left is a bash ERROR that
+    # shifts NOTHING, so `$#` never reaches 0 and this while-loop spins forever
+    # (measured: `--check` as the last argument = infinite loop). The same line
+    # also swallowed the NEXT switch: `--check --dry-run` bound ARG="--dry-run"
+    # and left DRY_RUN=0, so a run meant to be side-effect free wrote the
+    # safe-mode flag and attempted a Telegram alert. Take an agent name only if
+    # it is really there and is not itself a switch; the empty-agent case is
+    # already handled fail-open below ("--check needs an agent name").
+    --check)
+      MODE="check"
+      if [[ $# -ge 2 && "$2" != --* ]]; then ARG="$2"; shift 2; else shift; fi
+      ;;
     --verdict) MODE="verdict"; shift ;;
     --status)  MODE="status"; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
@@ -74,12 +85,19 @@ OBSERVE_FLAG="$STATE_DIR/.fleet-memgate-observe"  # if present -> observe-only
 # file flag (touch/rm store/.fleet-memgate-observe) or MARVEEN_MEM_GATE_OBSERVE=1.
 OBSERVE=0
 if [[ "${MARVEEN_MEM_GATE_OBSERVE:-0}" == "1" || -f "$OBSERVE_FLAG" ]]; then OBSERVE=1; fi
-ENV_FILE="${TELEGRAM_ENV:-$HOME/.claude/channels/telegram/.env}"
+# #915: main channel state is install-scoped once migrated; the legacy shared
+# path only serves unmigrated installs.
+TG_CHAN_DIR="${TELEGRAM_STATE_DIR:-}"
+if [ -z "$TG_CHAN_DIR" ]; then
+  TG_CHAN_DIR="$INSTALL_DIR/.claude/channels/telegram"
+  [ -f "$TG_CHAN_DIR/.env" ] || TG_CHAN_DIR="$HOME/.claude/channels/telegram"
+fi
+ENV_FILE="${TELEGRAM_ENV:-$TG_CHAN_DIR/.env}"
 # Alert target: the owner's chat id. Resolve from the channel access.json (the
 # first allow-listed sender) so no chat-id is ever hardcoded; override with
 # MARVEEN_ALERT_CHAT_ID. Empty -> the Telegram alert is skipped (log only), never
 # sent to a stranger.
-ACCESS_JSON="${TELEGRAM_ACCESS:-$HOME/.claude/channels/telegram/access.json}"
+ACCESS_JSON="${TELEGRAM_ACCESS:-$TG_CHAN_DIR/access.json}"
 CHAT_ID="${MARVEEN_ALERT_CHAT_ID:-}"
 if [[ -z "$CHAT_ID" && -f "$ACCESS_JSON" ]] && command -v python3 >/dev/null 2>&1; then
   CHAT_ID="$(python3 -c 'import json,sys
@@ -88,6 +106,21 @@ try:
   print(v[0] if v else "")
 except Exception: print("")' "$ACCESS_JSON" 2>/dev/null)"
 fi
+# NULLAORFLEET921: the "0" installer placeholder is not a chat (install-linux.sh:812).
+# The two notifiers got this guard in #1450 and this file did not, so the three
+# surfaces diverged. MEASURED before adding it, and the honest state is worth
+# writing down: today NO path puts a "0" here. Nothing in the repo sets
+# MARVEEN_ALERT_CHAT_ID (no unit, no plist, no installer line), the placeholder
+# lands in ALLOWED_CHAT_ID which this script never reads, and no shipped installer
+# version ever seeded access.json's allowFrom from CHAT_ID (107 historical versions
+# checked, 0 hits, positive control passed). This line is therefore defence in
+# depth, not a live bug fix: it matters the moment someone populates the alert
+# chat id from the install config -- which is exactly what the external ticket
+# suggests doing for the notifiers.
+# Without it the value is NOT silent but noisy-useless: measured, "0" takes the
+# same path as a real id, so the send is attempted, fails, and is retried every
+# run because a failed send deliberately never stamps the cooldown.
+[ "$CHAT_ID" = "0" ] && CHAT_ID=""
 ALERT_COOLDOWN=600   # seconds; do not repeat the same band's alert within this
 
 log() { echo "[fleet-memory-gate] $*" >&2; }

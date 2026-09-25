@@ -1,6 +1,7 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 
 // Claude Code writes one .jsonl session log per session under
 // ~/.claude/projects/<encoded-working-dir>/. Every assistant turn carries the
@@ -24,7 +25,8 @@ const TTL_MS = 3000
 // so we read the right project dir for agents on a non-default config.
 export function projectsDirFor(workingDir: string, configDir?: string, homeDirOverride?: string): string {
   const base = configDir ?? join(homeDirOverride ?? homedir(), '.claude')
-  const encoded = workingDir.replace(/[/.]/g, '-')
+  // The encoding is Claude Code's, measured -- see src/claude-project-dir.ts.
+  const encoded = encodeClaudeProjectDir(workingDir)
   return join(base, 'projects', encoded)
 }
 
@@ -152,5 +154,112 @@ export function readTranscriptMtimeFromProjectDir(workingDir: string, configDir?
       if (newest === null || m > newest) newest = m
     }
     return newest
+  } catch { return null }
+}
+
+/**
+ * Newest transcript mtime for `workingDir` across SEVERAL candidate config
+ * roots, or null when no candidate has one.
+ *
+ * Same "probe every root, newest wins" rule the inbound probe uses, and for the
+ * same reason: whether a session writes under the shared ~/.claude or under an
+ * isolated CLAUDE_CONFIG_DIR is decided by gates (settings, fleet token, dir
+ * existence) that a watchdog must not try to re-derive. A root that is not in
+ * use simply yields an older timestamp or none.
+ *
+ * An `undefined` entry means the shared ~/.claude default, so a caller that
+ * already has a single known root can pass `[root]` and get the old behaviour.
+ */
+export function readTranscriptMtimeAcrossConfigDirs(
+  workingDir: string,
+  configDirs: ReadonlyArray<string | undefined>,
+): number | null {
+  let newest: number | null = null
+  for (const configDir of configDirs) {
+    const m = readTranscriptMtimeFromProjectDir(workingDir, configDir)
+    if (m != null && (newest === null || m > newest)) newest = m
+  }
+  return newest
+}
+
+/**
+ * Epoch ms of the newest REAL conversation event in `workingDir`'s transcript,
+ * or null when no timestamped line can be found.
+ *
+ * WHY THIS EXISTS AND WHY mtime IS NOT IT (GATEMTIME922, measured 2026-09-22):
+ * Claude Code appends more than conversation to the .jsonl. Bookkeeping records
+ * (atis-latch, mode, last-prompt, custom-title, agent-name,
+ * file-history-snapshot, artifact-autoreact-ledger) are written while a session
+ * sits completely idle, and they carry NO `timestamp` field. The file therefore
+ * keeps growing when nobody is working: measured on Willy's transcript, the
+ * last real turn was 11:35:56 while mtime read 12:24:19 and was still climbing
+ * (10404001 -> 10404348 bytes under observation).
+ *
+ * The consequence is not "the gate waits a bit longer". The restart gate blocks
+ * while msSinceTranscriptWrite < transcriptQuietMs, so a signal that never goes
+ * quiet is a gate that NEVER opens: Willy's was blocked 240 minutes with no
+ * stuck work at all. The mtime measurement was never wrong about the FILE; it
+ * answered a different question than the one the gate asks.
+ *
+ * Reads a bounded tail rather than the whole file: transcripts here run to tens
+ * of megabytes and this is called on every gate tick. The first (likely
+ * partial) line of the tail is dropped. Lines are JSON-parsed and only a
+ * TOP-LEVEL `timestamp` counts, so an ISO date quoted inside message text
+ * cannot masquerade as activity.
+ */
+/** Above this a transcript is read by tail only; see the widening passes below. */
+const MAX_FULL_READ_BYTES = 64 * 1024 * 1024
+
+export function readLastConversationTsFromProjectDir(
+  workingDir: string,
+  configDir?: string,
+  tailBytes = 512 * 1024,
+): number | null {
+  try {
+    const dir = projectsDirFor(workingDir, configDir)
+    if (!existsSync(dir)) return null
+    let newestFile: string | null = null
+    let newestMtime = -1
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith('.jsonl')) continue
+      const m = statSync(join(dir, f)).mtimeMs
+      if (m > newestMtime) { newestMtime = m; newestFile = join(dir, f) }
+    }
+    if (newestFile === null) return null
+
+    const size = statSync(newestFile).size
+    // Widening passes: a long tool-result burst can push every timestamped line
+    // out of a small tail, and a tail that happens to contain no turn is NOT
+    // evidence that the session has none. The last pass reads the whole file,
+    // but only below MAX_FULL_READ_BYTES -- past that the caller's logged mtime
+    // fallback is cheaper than stalling a watchdog tick on a huge read.
+    const passes = [tailBytes, tailBytes * 8, tailBytes * 64]
+    if (size <= MAX_FULL_READ_BYTES) passes.push(size)
+    for (const want of passes) {
+      const start = Math.max(0, size - want)
+      const fd = openSync(newestFile, 'r')
+      let buf: Buffer
+      try {
+        const len = size - start
+        buf = Buffer.alloc(len)
+        readSync(fd, buf, 0, len, start)
+      } finally { closeSync(fd) }
+
+      const lines = buf.toString('utf-8').split('\n')
+      if (start > 0) lines.shift()   // partial first line
+      let newest: number | null = null
+      for (const line of lines) {
+        if (!line.startsWith('{')) continue
+        let o: Record<string, unknown>
+        try { o = JSON.parse(line) as Record<string, unknown> } catch { continue }
+        const ts = o.timestamp
+        if (typeof ts !== 'string') continue
+        const ms = Date.parse(ts)
+        if (Number.isFinite(ms) && (newest === null || ms > newest)) newest = ms
+      }
+      if (newest !== null) return newest
+      if (start === 0) break   // already read the whole file
+    }
+    return null
   } catch { return null }
 }

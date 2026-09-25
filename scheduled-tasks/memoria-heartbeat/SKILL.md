@@ -88,7 +88,13 @@ Lépések:
    bash {{INSTALL_DIR}}/scripts/skill-index.sh "$(pwd)" # ágensspecifikus merged index frissítése
    ```
 
-**Ha kihagytad a skill akciót, pedig A/B/C valamelyike IGEN volt:** kötelezően írj `hot` tier memóriát "skip-skill: <konkrét ok>" tartalommal, hogy később lássuk miért. Ne csendben hagyd ki.
+**Ha kihagytad a skill akciót, pedig A/B/C valamelyike IGEN volt:** kötelezően hagyj nyomot `hot` tier memóriában, hogy később lássuk miért. Ne csendben hagyd ki.
+
+**A bejegyzés kulcsa a LELET, nem a kör.** Előbb keress meglévő `skip-skill:` sort UGYANARRA a leletre:
+- ha van: azt **frissítsd** (számláló + utolsó dátum), NE írj újat;
+- csak akkor írj új sort, ha ez a lelet még egyáltalán nem szerepel.
+
+Egy nyitott lelet egy sor marad, akárhány kör látja. (Mérve 2026-09-13: a kulcs a kör volt, nem a lelet, így minden kör újra beírta ugyanazt -- 35 skip-skill sor, a hot memória 64%-a, egyetlen zárt csatornára.)
 
 ## 3. Csendben maradás
 

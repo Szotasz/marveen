@@ -10,8 +10,61 @@ export const SCHEDULED_TASKS_DIR = join(homedir(), '.claude', 'scheduled-tasks')
 // or accidentally-huge POST body from exhausting the target agent's
 // token budget (and wedging the tmux send-keys paste detector). 50,000
 // characters is ~12k tokens of English, which is already far beyond any
-// legitimate schedule prompt -- real ones are usually <1k chars.
+// legitimate schedule prompt -- real ones are usually <1k chars. Doubles
+// (SCHEDPROMPTREF917) as the scheduled-task size-guard ALERT threshold: past
+// this point delivery is fine (reference-based, see below), but the task
+// itself is large enough to warrant a direct owner notice.
 export const MAX_SCHEDULED_TASK_PROMPT_LEN = 50_000
+
+// SCHEDPROMPTREF917: above this length the runner snapshots the full task
+// body to disk (scheduled-run-snapshot.ts) and sends only a short reference
+// through tmux, instead of pasting the whole body via send-keys -- the path
+// that corrupted large scheduled-task fires (spec 1.1, 1.3). Below it, the
+// existing inline path is unchanged. 1,500 chars keeps every measured task
+// under this size inline (the smallest three, spec 3.3) while the previously
+// corrupted ones (kanban-audit at ~49k) all cross it by a wide margin.
+export const SCHEDULED_TASK_INLINE_MAX_CHARS = 1_500
+
+// Below this, no size-guard notice. At/above it: a one-per-task-per-day
+// logger.warn + inter-agent notice to the main agent (spec 3.5). Chosen well
+// under MAX_SCHEDULED_TASK_PROMPT_LEN so the operator sees the growth trend
+// (SKILL.md "Buktatók" accretion, spec 1.2) before it reaches the alert tier.
+export const SCHEDULED_TASK_BODY_WARN_CHARS = 20_000
+
+// #796: a deleted DEFAULT scheduled task must stay deleted. Seeding is
+// skip-if-missing at three points -- ensureDefaultScheduledTasks() on every
+// dashboard start, and the install/update shell seed loops -- so without a
+// record of the deletion, a shipped task the operator removed reappears on the
+// next restart or update. This tombstone is a newline-separated list of task
+// names that all three seed points consult; the DELETE route appends to it and
+// (re)creating a task clears its entry. Kept as a plain dotfile in the tasks
+// dir (not a subdirectory) so listScheduledTasks -- which filters to dirs --
+// never treats it as a task, and the shell seeders can read it with grep.
+export const REMOVED_DEFAULTS_FILE = join(SCHEDULED_TASKS_DIR, '.removed-defaults')
+
+export function readRemovedDefaultTasks(): Set<string> {
+  try {
+    return new Set(
+      readFileSync(REMOVED_DEFAULTS_FILE, 'utf-8')
+        .split('\n').map(l => l.trim()).filter(l => l.length > 0),
+    )
+  } catch { return new Set<string>() }
+}
+
+export function markDefaultTaskRemoved(taskName: string): void {
+  const names = readRemovedDefaultTasks()
+  if (names.has(taskName)) return
+  names.add(taskName)
+  mkdirSync(SCHEDULED_TASKS_DIR, { recursive: true })
+  atomicWriteFileSync(REMOVED_DEFAULTS_FILE, [...names].sort().join('\n') + '\n')
+}
+
+export function clearDefaultTaskRemoved(taskName: string): void {
+  const names = readRemovedDefaultTasks()
+  if (!names.delete(taskName)) return
+  const body = [...names].sort().join('\n')
+  atomicWriteFileSync(REMOVED_DEFAULTS_FILE, body.length > 0 ? body + '\n' : '')
+}
 
 export interface ScheduledTask {
   name: string
@@ -78,6 +131,24 @@ export interface ScheduledTask {
   // target session before injecting the prompt; a dead server defers the task
   // with a reasoned alert instead of a silent runtime failure.
   requires?: { mcp_servers?: string[] }
+  // type='heartbeat' only (HBMETRICSWIRE910): the runner executes
+  // scripts/heartbeat-metrics.sh at prompt-build time and appends its output
+  // PRE-RENDERED in final report form to the prompt. The receiving round
+  // copies the block verbatim instead of running the instrument itself --
+  // instructing the round to run it was measured failing 4 separate times
+  // (fabricated numbers with the instruction standing).
+  injectMetrics?: boolean
+  // Explicit Telegram delivery target for this task's result (WRONGRECIP819).
+  // Unset means "resolve it automatically" -- safe only when the agent's own
+  // channel access.json has exactly one DM contact; with 2+ contacts the
+  // runner will no longer guess (see resolveTaskChannelTarget in
+  // schedule-runner.ts; the name lost its Telegram-only spelling when Slack
+  // was added). A real chat_id string pins the exact recipient,
+  // overriding any allowlist-order heuristic. The literal string "none" means
+  // this task has NO direct Telegram recipient at all (e.g. its result goes
+  // out as an inter-agent message, or it is a self-only reminder) -- the
+  // runner omits the Telegram delivery instruction entirely, no warning.
+  telegramChatId?: string
 }
 
 function readFileOr(path: string, fallback: string): string {
@@ -110,7 +181,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = hasSkill ? readFileOr(skillPath, '') : ''
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; requiresDesktop?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown } } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; requiresDesktop?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; injectMetrics?: unknown; telegramChatId?: string } = {}
   try {
     config = JSON.parse(readFileOr(configPath, '{}'))
   } catch { /* use defaults */ }
@@ -135,6 +206,8 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     catchUpMaxAgeMinutes: parseCatchUpMaxAge(config.catchUpMaxAgeMinutes),
     stuckAfterMinutes: parseFiniteMinutes(config.stuckAfterMinutes),
     requires: parseRequires(config.requires),
+    injectMetrics: config.injectMetrics === true,
+    telegramChatId: typeof config.telegramChatId === 'string' && config.telegramChatId.trim() ? config.telegramChatId.trim() : undefined,
   }
 }
 
@@ -175,10 +248,13 @@ export function listScheduledTasks(): ScheduledTask[] {
 
 export function writeScheduledTask(
   taskName: string,
-  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number },
+  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number; injectMetrics?: boolean; telegramChatId?: string },
 ): void {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   mkdirSync(dir, { recursive: true })
+  // (Re)creating a task with this name is a deliberate act -- lift any tombstone
+  // so a later restart's seeding treats it as present, not as removed (#796).
+  clearDefaultTaskRemoved(taskName)
 
   const skillPath = join(dir, 'SKILL.md')
   const configPath = join(dir, 'task-config.json')
@@ -208,6 +284,8 @@ export function writeScheduledTask(
   if (data.preCheck !== undefined) config.preCheck = data.preCheck
   if (data.catchUpMaxAgeMinutes !== undefined) config.catchUpMaxAgeMinutes = data.catchUpMaxAgeMinutes
   if (data.stuckAfterMinutes !== undefined) config.stuckAfterMinutes = data.stuckAfterMinutes
+  if (data.injectMetrics !== undefined) config.injectMetrics = data.injectMetrics
+  if (data.telegramChatId !== undefined) config.telegramChatId = data.telegramChatId
   if (data.description !== undefined) config.description = data.description
   if (!config.createdAt) config.createdAt = Math.floor(Date.now() / 1000)
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))

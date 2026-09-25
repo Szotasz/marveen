@@ -29,6 +29,15 @@
 // sendPromptToSession, so no in-process lock can reach it (a cross-process file
 // lock would be a separate change). A reader must not assume the pane is fully
 // serialized: it is serialized for the two acquirers above, no more.
+//
+// Since then, brought under the lane one by one (each with a fail-closed
+// acquire -- see pane-writers-under-send-lock.test.ts for the per-writer
+// contract): channel-mcp-reconnect, channel-plugin-unlock, reauth-healer,
+// agent-worker's /clear, the pre-emit modal dismissals (#895), the identity
+// /rename (IDENTLANE910, #1272), and the two not-ready-path janitors --
+// clearStaleParkedInput and clearFeedbackModalAndRecheck (PANEWRITERS910).
+// Still uncovered: routes/agent-terminal.ts (operator-driven keystrokes) and
+// the cross-process channel-plugin delivery above.
 
 const delay = (ms: number): Promise<void> => new Promise(res => setTimeout(res, ms))
 

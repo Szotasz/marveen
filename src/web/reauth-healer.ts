@@ -5,6 +5,7 @@ import { MAIN_AGENT_ID, PROJECT_ROOT, RESPAWN_ENABLED, APP_TZ } from '../config.
 import { resolveFromPath } from '../platform.js'
 import { listAgentNames } from './agent-config.js'
 import { isAgentRunning, capturePane, startAgentProcess } from './agent-process.js'
+import { isRestartInFlight } from './restart-lock.js'
 import { quarantineFleetTokenIfDead } from './claude-credentials-guard.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
@@ -352,6 +353,12 @@ function checkSession(label: string, session: string, isMain: boolean, quiet: bo
 // startAgentProcess runs ensureSharedClaudeOnboarded before the fresh claude
 // starts, so the relaunch comes up past the gate.
 async function restartFirstRunGatedAgent(name: string, session: string): Promise<void> {
+  // A managed restart already owns this agent; killing its session from here
+  // would tear down the replacement mid-boot (see restart-lock.ts).
+  if (isRestartInFlight(name)) {
+    logger.info({ name }, 'reauth-healer: managed restart in flight -- skipping first-run-gate relaunch')
+    return
+  }
   await new Promise<void>((resolve) => {
     execFile(TMUX, ['kill-session', '-t', session], { timeout: 5000 }, () => resolve())
   })

@@ -1,5 +1,5 @@
 {
-  "_comment": "Shared recognition contract of the two mail gates (scripts/hooks/outgoing-copy-gate.py :: is_send_invocation and scripts/email-send-gate.mjs :: isSendInvocation). The conformance test (send-invocation-conformance.test.ts) runs EVERY case through BOTH implementations and asserts both equal `expected` -- divergence between the two copies surfaces as a test failure, not an incident (SUBGATEPOZ822, msg 14289). Unparseable-input fallbacks are deliberately NOT here: the two gates fall back differently by design (copy-gate: strong literals; hard-gate: full legacy patterns) and each pins its own in its scope test. A [marveen:...] prefixu esetek Marveen fuggetlen review-probai (store/marveen-send-gate-cases.json, msg 14302) -- a 'hatar' jeloles tortenete: az ot naiv exec-alak 2026-08-22 delutan LEZARULT (expected true), a megmaradt dokumentalt korlat az elfedett/futasidoben osszerakott kod; egy kesobbi valtozasnak itt teszt-hibakent kell jelentkeznie MINDKET iranyban, a nema atbillenes a tiltott allapot.",
+  "_comment": "Shared recognition contract of the two mail gates (scripts/hooks/outgoing-copy-gate.py :: is_send_invocation and scripts/email-send-gate.mjs :: isSendInvocation). The conformance test (send-invocation-conformance.test.ts) runs EVERY case through BOTH implementations and asserts both equal `expected` -- divergence between the two copies surfaces as a test failure, not an incident (SUBGATEPOZ822, msg 14289). Unparseable-input fallbacks are deliberately NOT here: the two gates fall back differently by design (copy-gate: strong literals; hard-gate: full legacy patterns) and each pins its own in its scope test. A [marveen:...] prefixu esetek Marveen fuggetlen review-probai (store/marveen-send-gate-cases.json, msg 14302) -- a 'hatar' jeloles tortenete: az ot naiv exec-alak 2026-08-22 delutan LEZARULT (expected true), a megmaradt dokumentalt korlat az elfedett/futasidoben osszerakott kod; egy kesobbi valtozasnak itt teszt-hibakent kell jelentkeznie MINDKET iranyban, a nema atbillenes a tiltott allapot. INTERAGENTHOMOGLIF923 (2026-09-23): the inter-agent `curl .../api/messages` cases STAY expected:false here -- they are NOT email sends, and NONE of the email copy rules (accents, name rule, em dash) run on them. What changed is OUTSIDE this contract: the copy gate runs a SEPARATE, homoglyph-only check on that path (outgoing-copy-gate.py :: inter_agent_homoglyph_gate), blocking on a mixed-script word and passing an uninterpretable body with a loud warning. A reader must not take the expected:false rows as 'the path is unguarded', nor that change as 'the full copy gate now runs there'.",
   "cases": [
     {
       "name": "inter-agent curl, content mentions the mail script",
@@ -255,6 +255,341 @@
       "name": "[marveen:hatar-node-execfile-list] interpreter-kodbol inditott kuldo, node execFileSync listaval",
       "cmd": "node -e \"require('child_process').execFileSync('sendmail',['-t','a@b.hu'])\"",
       "expected": true
+    },
+    {
+      "name": "SEGSPLIT923: send after a $(...) assignment and ';' (the ');' operator run)",
+      "cmd": "X=$(date); sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SEGSPLIT923: send after $(...) on the next line",
+      "cmd": "X=$(date)\nsendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SEGSPLIT923: send.py after echo $(...);",
+      "cmd": "echo $(date); python3 scripts/support-mail/send.py --to a@b.hu --body x",
+      "expected": true
+    },
+    {
+      "name": "SEGSPLIT923: send after $(...) and '&&'",
+      "cmd": "S=$(mktemp -d)&& sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SEGSPLIT923: control -- a non-send after $(...); stays false",
+      "cmd": "X=$(date); echo sendmail is mentioned here",
+      "expected": false
+    },
+    {
+      "name": "KWSPLIT924: send inside if/then",
+      "cmd": "if true; then sendmail a@b.hu; fi",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: send inside while/do",
+      "cmd": "while true; do sendmail a@b.hu; done",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: send inside for/do",
+      "cmd": "for x in 1; do sendmail a@b.hu; done",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: send in the else branch",
+      "cmd": "if false; then true; else sendmail a@b.hu; fi",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: send inside a { } group",
+      "cmd": "{ sendmail a@b.hu; }",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: send.py inside if/then",
+      "cmd": "if true; then python3 scripts/support-mail/send.py --to a@b.hu --body x; fi",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: send inside until/do",
+      "cmd": "until false; do sendmail a@b.hu; done",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: send as the if condition",
+      "cmd": "if sendmail a@b.hu; then true; fi",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: send in an elif branch",
+      "cmd": "if false; then true; elif true; then sendmail a@b.hu; fi",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: send after !",
+      "cmd": "! sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: { } group nested in then",
+      "cmd": "if true; then { sendmail a@b.hu; }; fi",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: control -- the same send after ;",
+      "cmd": "true; sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: control -- the same send after &&",
+      "cmd": "true && sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "KWSPLIT924: reverse -- keyword inside a double-quoted argument",
+      "cmd": "echo \"then sendmail a@b.hu\"",
+      "expected": false
+    },
+    {
+      "name": "KWSPLIT924: reverse -- a whole if/then in single quotes",
+      "cmd": "echo 'if true; then sendmail a@b.hu; fi'",
+      "expected": false
+    },
+    {
+      "name": "KWSPLIT924: reverse -- unquoted keyword as an argument",
+      "cmd": "echo then sendmail a@b.hu",
+      "expected": false
+    },
+    {
+      "name": "KWSPLIT924: reverse -- do as an argument",
+      "cmd": "echo do sendmail",
+      "expected": false
+    },
+    {
+      "name": "KWSPLIT924: reverse -- the words after `in` are data, not commands",
+      "cmd": "for m in sendmail msmtp; do which $m; done",
+      "expected": false
+    },
+    {
+      "name": "KWSPLIT924: reverse -- keyword inside a grep pattern",
+      "cmd": "grep -n \"else sendmail\" notes.md",
+      "expected": false
+    },
+    {
+      "name": "KWSPLIT924: reverse -- a case pattern is not a command",
+      "cmd": "case \"$x\" in sendmail) echo hit;; esac",
+      "expected": false
+    },
+    {
+      "name": "KWSPLIT924: reverse -- `in` on its own line heads a segment, and its words are still data",
+      "cmd": "for m\nin sendmail msmtp\ndo which $m\ndone",
+      "expected": false
+    },
+    {
+      "name": "SENDWRAP924: time (a reserved word) before the sender",
+      "cmd": "time sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: time -p",
+      "cmd": "time -p sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: sudo",
+      "cmd": "sudo sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: sudo -u consumes its value",
+      "cmd": "sudo -u x sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: env with an assignment",
+      "cmd": "env FOO=1 sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: env -i",
+      "cmd": "env -i sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: nohup",
+      "cmd": "nohup sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: nice -n consumes its value",
+      "cmd": "nice -n 5 sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: exec",
+      "cmd": "exec sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: command (without -v)",
+      "cmd": "command sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: xargs",
+      "cmd": "xargs sendmail < list",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: a function body",
+      "cmd": "function f { sendmail a@b.hu; }",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: coproc",
+      "cmd": "coproc sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: nested wrappers",
+      "cmd": "sudo env FOO=1 nohup sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: an unknown long flag is read both ways (errs toward auditing)",
+      "cmd": "sudo --login sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: a known long flag consumes its value",
+      "cmd": "sudo --user x sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: timeout: flags, then one duration, then the command",
+      "cmd": "timeout -s KILL 10 sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: the -- end of options",
+      "cmd": "sudo -- sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: xargs -I with an inline value",
+      "cmd": "xargs -I{} sendmail {} < list",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: send.py behind sudo",
+      "cmd": "sudo python3 scripts/support-mail/send.py --to a@b.hu --body x",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: a named coproc body",
+      "cmd": "coproc M { sendmail a@b.hu; }",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: a wrapper inside if/then",
+      "cmd": "if true; then sudo -u x sendmail a@b.hu; fi",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: reverse -- sendmail is the VALUE of sudo -u",
+      "cmd": "sudo -u sendmail true",
+      "expected": false
+    },
+    {
+      "name": "SENDWRAP924: reverse -- sendmail is the VALUE of sudo -g",
+      "cmd": "sudo -g sendmail id",
+      "expected": false
+    },
+    {
+      "name": "SENDWRAP924: reverse -- wrapper words as echo arguments",
+      "cmd": "echo sudo sendmail a@b.hu",
+      "expected": false
+    },
+    {
+      "name": "SENDWRAP924: reverse -- command -v only looks the name up",
+      "cmd": "command -v sendmail",
+      "expected": false
+    },
+    {
+      "name": "SENDWRAP924: reverse -- command -V only looks the name up",
+      "cmd": "command -V sendmail",
+      "expected": false
+    },
+    {
+      "name": "SENDWRAP924: reverse -- time runs a non-sender",
+      "cmd": "time echo sendmail",
+      "expected": false
+    },
+    {
+      "name": "SENDWRAP924: reverse -- timeout runs a non-sender",
+      "cmd": "timeout 5 echo sendmail",
+      "expected": false
+    },
+    {
+      "name": "SENDWRAP924: reverse -- xargs -a consumes the file name",
+      "cmd": "xargs -a sendmail.txt echo",
+      "expected": false
+    },
+    {
+      "name": "SENDWRAP924: reverse -- defining a function NAMED sendmail",
+      "cmd": "function sendmail { true; }",
+      "expected": false
+    },
+    {
+      "name": "SENDWRAP924: reverse -- a named coproc with a non-send body",
+      "cmd": "coproc M { true; }",
+      "expected": false
+    },
+    {
+      "name": "SENDWRAP924: reverse -- nice runs grep",
+      "cmd": "nice -n 5 grep sendmail log",
+      "expected": false
+    },
+    {
+      "name": "SENDWRAP924: reverse -- a bare wrapper",
+      "cmd": "sudo",
+      "expected": false
+    },
+    {
+      "name": "SENDWRAP924: an UNKNOWN long flag that takes a value (a future sudo flag): the second reading finds the send",
+      "cmd": "sudo --future-flag val sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: setsid (the one open wrapper fleet traffic uses)",
+      "cmd": "setsid sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: setsid -f",
+      "cmd": "setsid -f sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: reverse -- setsid runs a non-sender",
+      "cmd": "setsid echo sendmail",
+      "expected": false
+    },
+    {
+      "name": "SENDWRAP924: nine nested wrappers: the depth bound errs toward auditing (Samu, #1521 review)",
+      "cmd": "nohup nohup nohup nohup nohup nohup nohup nohup nohup sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: eight nested wrappers + sendmail, inside the bound",
+      "cmd": "nohup nohup nohup nohup nohup nohup nohup nohup sendmail a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "SENDWRAP924: reverse -- eight nested wrappers + a non-sender, inside the bound",
+      "cmd": "nohup nohup nohup nohup nohup nohup nohup nohup echo sendmail",
+      "expected": false
     }
   ]
 }

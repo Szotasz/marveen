@@ -3,7 +3,10 @@ import { describe, it, expect } from 'vitest'
 import { gateDecision as selfPaceDecision, stripDataPayloads, stripGitCommitMessages } from '../../scripts/self-pace-gate.mjs'
 import {
   agentGetsGovernanceGates,
+  agentGetsTelegramCopyGate,
   injectSelfPaceGate,
+  injectTelegramCopyGate,
+  TELEGRAM_COPY_GATE_MATCHER,
 } from '../web/agent-scaffold.js'
 import { MAIN_AGENT_ID } from '../config.js'
 
@@ -426,5 +429,70 @@ describe('self-pace-gate: quoted prose cannot fake a command position', () => {
   it('fails CLOSED on an UNQUOTED heredoc tag whose body substitutes', () => {
     // <<PY (no quotes) expands the body, so its contents are not inert.
     expect(selfPaceDecision('Bash', { command: 'cat <<PY\n$(crontab -r)\nPY' }).deny).toBe(true)
+  })
+})
+
+// --- telegram copy gate: the outgoing-copy-gate must actually be WIRED ---
+//
+// GATECOPY828. The check itself lived in outgoing-copy-gate.py since 2026-08-27
+// and passed its own unit tests, but no sub-agent's settings.json bound a
+// Telegram tool to that script, so it never ran for them and an unusable code
+// block went out again. These tests assert the WIRING, which is the half that
+// was missing: a gate's script passing is not evidence that the gate runs.
+describe('telegram copy gate wiring', () => {
+  const copyEntries = (s: Record<string, unknown>) => {
+    const hooks = s.hooks as Record<string, unknown>
+    const ptu = hooks.PreToolUse as Array<Record<string, unknown>>
+    return ptu.filter((e) => JSON.stringify(e).includes('outgoing-copy-gate.py'))
+  }
+
+  it('exempts the main agent (it carries the hook in its own project settings)', () => {
+    expect(agentGetsTelegramCopyGate(MAIN_AGENT_ID)).toBe(false)
+  })
+  it('covers every sub-agent', () => {
+    for (const n of ['social', 'emma', 'chris', 'heartbeat-worker']) {
+      expect(agentGetsTelegramCopyGate(n)).toBe(true)
+    }
+  })
+  it('wires the gate onto the Telegram send AND edit tools', () => {
+    const settings: Record<string, unknown> = {}
+    injectTelegramCopyGate(settings)
+    const [entry] = copyEntries(settings)
+    expect(entry.matcher).toBe(TELEGRAM_COPY_GATE_MATCHER)
+    expect(String(entry.matcher)).toContain('mcp__plugin_telegram_telegram__reply')
+    expect(String(entry.matcher)).toContain('mcp__plugin_telegram_telegram__edit_message')
+  })
+  it('is idempotent: a second pass does not accumulate a duplicate', () => {
+    const settings: Record<string, unknown> = {}
+    injectTelegramCopyGate(settings)
+    injectTelegramCopyGate(settings)
+    expect(copyEntries(settings)).toHaveLength(1)
+  })
+  it('keeps the SAME script wired under a different matcher', () => {
+    // The main agent legitimately runs this script on Bash and on the email
+    // tools too. A dedupe filter keyed on the script basename alone would have
+    // deleted those entries on every pass -- closing one hole by opening two.
+    const settings: Record<string, unknown> = {
+      hooks: {
+        PreToolUse: [
+          { matcher: 'Bash', hooks: [{ type: 'command', command: 'python3 "/x/scripts/hooks/outgoing-copy-gate.py"' }] },
+          { matcher: '.*send_email.*', hooks: [{ type: 'command', command: 'python3 "/x/scripts/hooks/outgoing-copy-gate.py"' }] },
+        ],
+      },
+    }
+    injectTelegramCopyGate(settings)
+    const matchers = copyEntries(settings).map((e) => e.matcher)
+    expect(matchers).toContain('Bash')
+    expect(matchers).toContain('.*send_email.*')
+    expect(matchers).toContain(TELEGRAM_COPY_GATE_MATCHER)
+  })
+  it('leaves unrelated PreToolUse entries alone', () => {
+    const settings: Record<string, unknown> = {
+      hooks: { PreToolUse: [{ matcher: 'WebFetch', hooks: [{ type: 'command', command: 'node "/x/egress-gate.mjs"' }] }] },
+    }
+    injectTelegramCopyGate(settings)
+    const ptu = (settings.hooks as Record<string, unknown>).PreToolUse as unknown[]
+    expect(JSON.stringify(ptu)).toContain('egress-gate.mjs')
+    expect(ptu).toHaveLength(2)
   })
 })

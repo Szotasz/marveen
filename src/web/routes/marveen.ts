@@ -14,10 +14,16 @@ import { readBody, json, serveFile } from '../http-helpers.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
 import { readAutoRestartConfig } from '../auto-restart-store.js'
+import { configDirFor } from '../main-transcript-root.js'
 import type { RouteContext } from './types.js'
 
 function getActiveMarveenModel(): string {
-  return readActiveModelFromProjectDir(PROJECT_ROOT) ?? 'unknown'
+  // configDirFor, not the host default: when the channels session runs on its
+  // own CLAUDE_CONFIG_DIR, the default root holds a pre-migration transcript
+  // that still parses, so the card would show a model the session stopped
+  // using. Display, not a decision -- but a wrong number here is what makes
+  // someone trust the wrong root elsewhere.
+  return readActiveModelFromProjectDir(PROJECT_ROOT, undefined, configDirFor(MAIN_AGENT_ID)) ?? 'unknown'
 }
 
 // Pure identity-core of the /api/marveen payload: the brand-relevant fields the
@@ -83,7 +89,7 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
       // orchestrator id (autoRestartId, part of idCore) so the UI PUTs to the
       // right store entry.
       autoRestart: readAutoRestartConfig(MAIN_AGENT_ID),
-      contextTokens: readContextTokensFromProjectDir(PROJECT_ROOT),
+      contextTokens: readContextTokensFromProjectDir(PROJECT_ROOT, configDirFor(MAIN_AGENT_ID)),
       hasTelegram: tg.hasTelegram,
       hasDiscord: dc.hasDiscord,
       hasSlack: sl.hasSlack,
