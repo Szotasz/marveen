@@ -181,13 +181,13 @@ describe('chunkText', () => {
     registerCommand({ name: 'sajat', kind: 'write', source: 'custom', description: 'a saját [actions]', run: async () => {} })
     const c = ctx()
     expect(await dispatchCommand('/board ?', c)).toBe('ran')
-    expect(c.out[0]).toMatch(/^\/board – a kanban tábla/)
+    expect(c.out[0]).toMatch(/^\/board: a kanban tábla/)
     const u = ctx()
     await dispatchCommand('/usage ?', u)
     expect(u.out[0]).toMatch(/^\/usage\n\/usage \[<nap>\]: /)
     const m = ctx()
     await dispatchCommand('/model ?', m)
-    expect(m.out[0]).toMatch(/^\/model – melyik modell fut/) // not a model switch to "?"
+    expect(m.out[0]).toMatch(/^\/model: melyik modell fut/) // not a model switch to "?"
     const k = ctx()
     await dispatchCommand('/sajat ?', k)
     expect(k.out[0]).toMatch(/^\/sajat\n\/sajat: a saját \[actions\]\n\nSaját parancs/)
@@ -197,10 +197,10 @@ describe('chunkText', () => {
     expect(h.out[0]).toBe(renderHelp()) // the help of /help is /help
     const f = ctx()
     await dispatchCommand('/board w ?', f)
-    expect(f.out[0]).toMatch(/^\/board – a kanban tábla/) // not a filter for an assignee "?"
+    expect(f.out[0]).toMatch(/^\/board: a kanban tábla/) // not a filter for an assignee "?"
     const mo = ctx()
     await dispatchCommand('/model opus ?', mo)
-    expect(mo.out[0]).toMatch(/^\/model – melyik modell fut/)
+    expect(mo.out[0]).toMatch(/^\/model: melyik modell fut/)
     expect(renderHelp()).toMatch(/^Minden parancs után \?: részletes súgó példákkal, pl\. \/board \?\n\n/)
   })
 })

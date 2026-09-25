@@ -380,7 +380,7 @@ describe('/board filters', () => {
 
   it('/board ? explains the options with examples, in the resolved bot name; never "<név>"', () => {
     const h = boardHelpText('marveen')
-    expect(h).toMatch(/^\/board – a kanban tábla\n/)
+    expect(h).toMatch(/^\/board: a kanban tábla\n/)
     expect(h).toContain('  w várakozik · p tervezett · i folyamatban')
     expect(h).toContain('  marveen  Marveen kártyái')
     expect(h).toContain('  /board w marveen  ami Marveennél várakozik')
