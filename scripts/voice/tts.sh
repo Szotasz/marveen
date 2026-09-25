@@ -4,11 +4,15 @@
 # Usage: tts.sh <voice> <chat_id> <text...>   (voice: imre|anna|<path-to-onnx>)
 # Optional env: VOICE_STATE_DIR (defaults to global telegram channel dir).
 set -euo pipefail
+# Prefer a toolkit dir that has BOTH _vtools.py AND a usable venv. The source
+# tree (scripts/voice) has _vtools.py but no venv -> fall back to the installed
+# toolkit at ~/.local/share/marveen-voice which carries the venv.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-if [[ -f "$SCRIPT_DIR/_vtools.py" ]]; then
+INSTALL_DIR="${MARVEEN_VOICE_DIR:-$HOME/.local/share/marveen-voice}"
+if [[ -f "$SCRIPT_DIR/_vtools.py" && -x "$SCRIPT_DIR/venv/bin/python" ]]; then
   DEST="$SCRIPT_DIR"
 else
-  DEST="$HOME/.local/share/marveen-voice"
+  DEST="$INSTALL_DIR"
 fi
 VOICE_ARG="${1:?usage: tts.sh <voice> <chat_id> <text...>}"; shift
 CHAT_ID="${1:?missing chat_id}"; shift

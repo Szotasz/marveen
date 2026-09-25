@@ -50,6 +50,11 @@ import urllib.error
 _orig_getaddrinfo = socket.getaddrinfo
 
 
+
+def _whisper_model_name():
+    """faster-whisper model size (MARVEEN_WHISPER_MODEL, default 'small')."""
+    return (os.environ.get("MARVEEN_WHISPER_MODEL") or "small").strip()
+
 def _getaddrinfo_ipv4_first(host, port, family=0, *args, **kwargs):
     results = _orig_getaddrinfo(host, port, family, *args, **kwargs)
     # Stable sort: AF_INET entries move to the front, every other family keeps the
@@ -62,8 +67,23 @@ socket.getaddrinfo = _getaddrinfo_ipv4_first
 # hang unbounded again.
 socket.setdefaulttimeout(60)
 
-# Resolved relative to this file so PREFIX-based installs work correctly.
-VENV_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", "bin", "python")
+
+# Piper runs from the marveen-voice venv. Resolve robustly across install layouts:
+# 1) explicit override env, 2) the real user-data venv (actual install location),
+# 3) legacy path relative to this file (PREFIX-style). First existing wins.
+def _resolve_venv_py():
+    candidates = [
+        os.environ.get("MARVEEN_VOICE_VENV_PY"),
+        os.path.join(os.path.expanduser("~/.local/share/marveen-voice/venv"), "bin", "python"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", "bin", "python"),
+    ]
+    for c in candidates:
+        if c and os.path.exists(c):
+            return c
+    # fall back to the user-data path even if missing, so the error message points at the real location
+    return candidates[1]
+
+VENV_PY = _resolve_venv_py()
 
 
 def _token(state_dir):
@@ -79,7 +99,10 @@ def _whisper(path, words=False):
     # repetition-teszt a stdoutjat kapja el. A words=True ag KULON kimenet (JSON), uj hivoknak:
     # a vagas-hatar ellenorzeshez SZO-SZINTU `end` ido kell, amit a szoveges alak nem hordoz.
     from faster_whisper import WhisperModel
-    m = WhisperModel("small", device="cpu", compute_type="int8")
+    # Model size is configurable: 'medium' is noticeably better than 'small' on
+    # Hungarian accents/diacritics, at a cost in latency and memory. Default
+    # stays 'small'; set MARVEEN_WHISPER_MODEL=medium to trade speed for accuracy.
+    m = WhisperModel(_whisper_model_name(), device="cpu", compute_type="int8")
     segs, _ = m.transcribe(path, language="hu", beam_size=5, condition_on_previous_text=False,
                            word_timestamps=words)
     segs = list(segs)
@@ -191,6 +214,52 @@ def _post_voice(token, chat_id, ogg):
         print("sendVoice failed: HTTP %s -- %s" % (e.code, detail), file=sys.stderr)
         raise VoiceSendError("sendVoice failed: HTTP %s -- %s" % (e.code, detail)) from e
 
+
+def _install_dir():
+    """A marveen install gyokere (ez a fajl: <install>/scripts/voice/_vtools.py)."""
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _agent_from_state_dir(state_dir):
+    """A state_dir alakja <...>/agents/<bot>/.claude/channels/telegram, a fo-agensnel
+    <install>/.claude/channels/telegram. Az agents/<bot> szegmensbol olvassuk ki a
+    bot nevet; ha nincs ilyen szegmens, a fo-agens MAIN_AGENT_ID-ja a helyes valasz."""
+    parts = os.path.abspath(state_dir).split(os.sep)
+    if "agents" in parts:
+        i = parts.index("agents")
+        if i + 1 < len(parts):
+            return parts[i + 1]
+    try:
+        with open(os.path.join(_install_dir(), ".env")) as f:
+            for line in f:
+                if line.startswith("MAIN_AGENT_ID="):
+                    return line.split("=", 1)[1].strip().strip('"') or "marveen"
+    except OSError:
+        pass
+    return "marveen"
+
+
+_PRON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pronunciation-hu.json")
+
+
+def apply_pronunciation(text, path=_PRON_PATH):
+    """TTSANGOL924: rewrite known English words into Hungarian phonetic spelling
+    before Piper reads them (the hu voice reads 'Monday' letter by letter the
+    Hungarian way). Match is case-insensitive at a word START and keeps the
+    Hungarian suffix ('Mondayben' -> 'mandejben'). Longest keys first, so a
+    two-word key (e.g. 'Google Drive') wins over a one-word one. Never raises: a missing
+    or broken lexicon leaves the text untouched."""
+    try:
+        with open(path) as f:
+            words = json.load(f).get("words", {})
+    except Exception:
+        return text
+    for key in sorted(words, key=len, reverse=True):
+        rx = re.compile(r"(?<![\w-])" + re.escape(key) + r"(?=[\w-]*)", re.IGNORECASE)
+        text = rx.sub(words[key], text)
+    return text
+
+
 def speak(voice_onnx, state_dir, chat_id, text):
     token = _token(state_dir)
     fd_wav, wav = tempfile.mkstemp(suffix=".wav")
@@ -199,20 +268,48 @@ def speak(voice_onnx, state_dir, chat_id, text):
     os.close(fd_ogg)
     try:
         subprocess.run([VENV_PY, "-m", "piper", "-m", voice_onnx, "-f", wav],
-                       input=text.encode(), check=True)
+                       input=apply_pronunciation(text).encode(), check=True)
         # Optional voice style: deeper + slower (e.g. a melancholic android tone).
         # asetrate lowers pitch AND slows playback; aresample restores the container
         # rate (so the lower pitch sticks). Distribution-safe default = 1.0 (off,
         # natural Piper voice); set VOICE_PITCH in the host env (e.g. dashboard
         # plist) to style a specific deployment. TODO: per-agent voice-style config.
         pitch = os.environ.get("VOICE_PITCH", "1.0")
-        af = []
+        filters = []
         if pitch and pitch != "1.0":
-            af = ["-af", "asetrate=22050*%s,aresample=22050" % pitch]
+            filters.append("asetrate=22050*%s,aresample=22050" % pitch)
+        # TAIL PAD (TTSVEG924): the last word or two of voice replies was
+        # regularly reported cut off. Measured 2026-09-24: the
+        # opus encode keeps the full length (3.664s vs 3.657s WAV), but Piper
+        # leaves only ~86ms of silence after the last phoneme, and the Telegram
+        # player drops the tail of a clip. Half a second of padded silence moves
+        # that loss into silence.
+        filters.append("apad=pad_dur=%s" % os.environ.get("VOICE_TAIL_PAD_S", "0.5"))
+        af = ["-af", ",".join(filters)]
         subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
                         "-i", wav, *af, "-c:a", "libopus", "-b:a", "32k", ogg], check=True)
         r = _post_voice(token, chat_id, ogg)
-        print("ok=%s id=%s" % (r.get("ok"), (r.get("result") or {}).get("message_id")))
+        mid = (r.get("result") or {}).get("message_id")
+        print("ok=%s id=%s" % (r.get("ok"), mid))
+        # A hangvalasz IS valasz -- rogzitsd a beszelgetes-naploba.
+        #
+        # A spoken reply used to leave no trace anywhere: the Stop hook decides
+        # whether a reply went out from whether the `reply` tool was used, but a
+        # voice reply goes out through this endpoint, so after every voice note
+        # it falsely reported "no reply" and pushed the bot into a redundant text
+        # duplicate. The root cause: the absence of a NARROWER signal (a specific
+        # tool call) was read as the absence of the FACT (a message was sent).
+        # This row records the fact in the conversation ledger.
+        if r.get("ok") and mid:
+            try:
+                sys.path.insert(0, os.path.join(_install_dir(), "scripts", "hooks"))
+                import ledger_lib
+                ledger_lib.log_outbound(
+                    _agent_from_state_dir(state_dir), str(chat_id),
+                    "[hang] " + (text[:400] if text else ""), mid,
+                )
+            except Exception:
+                pass  # a naplozas SOHA ne bukjon el egy mar elkuldott hangon
     finally:
         for p in (wav, ogg):
             try:
@@ -236,7 +333,7 @@ def canary(voice_onnx, expected_text):
                        input=expected_text.encode(), check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         from faster_whisper import WhisperModel
-        m = WhisperModel("small", device="cpu", compute_type="int8")
+        m = WhisperModel(_whisper_model_name(), device="cpu", compute_type="int8")
         segs, _ = m.transcribe(wav, language="hu", beam_size=5, condition_on_previous_text=False)
         transcript = " ".join(s.text.strip() for s in segs).strip()
         exp_words = _normalize(expected_text).split()

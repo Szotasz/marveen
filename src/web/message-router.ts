@@ -19,7 +19,7 @@ import {
 import { isQualifiedId } from './federation/address.js'
 import { sendFederatedMessage } from './federation/bridge.js'
 import { getFederationConfig, abandonWindowMsForPeer } from './federation/config.js'
-import { readAgentRemoteHost, readAgentVoiceConfig, readAgentWorksourceChannel } from './agent-config.js'
+import { readAgentRemoteHost, readAgentWorksourceChannel } from './agent-config.js'
 import { enqueueWorksourceItem, worksourceItemId } from './worksource-queue.js'
 import {
   agentSessionName,
@@ -717,21 +717,20 @@ export async function runMessageRouterTick(): Promise<void> {
       if (isChannelInbound) {
         const voiceFileId = extractVoiceFileId(msg.content)
         const chatId = extractChatId(msg.content)
-        const voiceCfg = readAgentVoiceConfig(msg.to_agent)
         if (voiceFileId && chatId) {
           // Always record modality so auto-mode TTS can fire on reply.
           setLastInboundModality(msg.to_agent, chatId, 'voice')
-          if (voiceCfg.responseMode !== 'text') {
-            // Attempt STT; on failure fall through to raw voice block.
-            const transcript = await callVoiceSTT(voiceFileId, msg.to_agent)
-            if (transcript) {
-              deliveryContent = injectTranscript(msg.content, transcript)
-              logger.info({ id: msg.id, agent: msg.to_agent }, 'message-router: voice STT applied')
-              // TTS directive is injected by the UserPromptSubmit hook (voice-reply-directive.py)
-              // which fires on every delivery path, not just coordinator-relay.
-            } else {
-              logger.warn({ id: msg.id, agent: msg.to_agent }, 'message-router: STT failed, delivering raw voice block')
-            }
+          // Inbound STT is ALWAYS applied, fleet-wide: every assistant must
+          // understand incoming voice notes ([Hang átirat]: prefix) regardless
+          // of the outbound responseMode. Voice REPLIES (TTS) stay gated by
+          // responseMode via the voice-reply-directive.py hook -- inbound
+          // transcription is decoupled from outbound speech.
+          const transcript = await callVoiceSTT(voiceFileId, msg.to_agent)
+          if (transcript) {
+            deliveryContent = injectTranscript(msg.content, transcript)
+            logger.info({ id: msg.id, agent: msg.to_agent }, 'message-router: voice STT applied')
+          } else {
+            logger.warn({ id: msg.id, agent: msg.to_agent }, 'message-router: STT failed, delivering raw voice block')
           }
         } else if (chatId) {
           // Text message: record modality so a previous voice flag is cleared.
