@@ -345,6 +345,25 @@ Respond ONLY with JSON, nothing else:
   }
 
   const memUpdateMatch = path.match(/^\/api\/memories\/(\d+)$/)
+  // GET /api/memories/:id -- read ONE memory back by id.
+  //
+  // Added 2026-09-14. Until then the id-addressed routes were PUT/PATCH/DELETE
+  // only: a memory could be referenced by id, edited by id and deleted by id,
+  // but never READ by id. The shared tier is full of such pointers ("see shared
+  // 5131"), and the only way to follow one was keyword search -- which silently
+  // fails when the keywords do not match. A sub-agent hit exactly that: the
+  // 404 from this path read as "the record does not exist", when what did not
+  // exist was the route. An absent route and an absent row must not look alike.
+  if (memUpdateMatch && method === 'GET') {
+    const id = parseInt(memUpdateMatch[1], 10)
+    const row = getDb()
+      .prepare('SELECT id, agent_id, category, content, keywords, created_at, accessed_at FROM memories WHERE id = ?')
+      .get(id) as Record<string, unknown> | undefined
+    if (!row) { json(res, { error: 'Memory not found' }, 404); return true }
+    json(res, row)
+    return true
+  }
+
   if (memUpdateMatch && (method === 'PUT' || method === 'PATCH')) {
     const id = parseInt(memUpdateMatch[1], 10)
     const body = await readBody(req)
