@@ -1,5 +1,5 @@
 {
-  "_doc": "The Piper Hungarian voices pronounce English words with Hungarian phonetics. speak() rewrites these words into a Hungarian phonetic spelling BEFORE synthesis, keeping the Hungarian suffix (Mondayben -> mandéjben). Key: the word (case-insensitive, word-initial match); value: how the Hungarian voice should say it. Add a word with one line; install-specific words can be added locally.",
+  "_doc": "The Piper Hungarian voices pronounce English words with Hungarian phonetics. speak() rewrites these words into a Hungarian phonetic spelling BEFORE synthesis. Key: the word (case-insensitive, whole-word match); value: how the Hungarian voice should say it. A Hungarian suffix is kept when it is hyphenated (GitHub-on -> githab-on) or is a known ending glued on (Mondayben -> mandéjben); a longer word that merely starts with a key is left alone, and so is a word inside a domain, path or e-mail address. Add a word with one line; install-specific words can be added locally.",
   "words": {
     "Monday": "mandéj",
     "Framer": "fréjmer",

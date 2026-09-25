@@ -424,6 +424,15 @@ export const SUBAGENT_INBOX_TEE =
 export const SUBAGENT_TELEGRAM_WAKE_ENABLED =
   ['1', 'true', 'yes', 'on'].includes((cfg('SUBAGENT_TELEGRAM_WAKE_ENABLED') ?? '').trim().toLowerCase())
 
+// Install-wide default for router-side speech-to-text on inbound voice notes
+// (opt-in, DEFAULT OFF). Agents in responseMode 'voice'/'auto' are always
+// transcribed; this only decides what happens for text-mode agents that do not
+// set voice.transcribeInbound in their agent-config.json. Enable with
+// VOICE_TRANSCRIBE_INBOUND=1 to run faster-whisper on every inbound voice note
+// for every such agent. Read at boot: takes effect after a dashboard restart.
+export const VOICE_TRANSCRIBE_INBOUND =
+  ['1', 'true', 'yes', 'on'].includes((cfg('VOICE_TRANSCRIBE_INBOUND') ?? '').trim().toLowerCase())
+
 // Google Calendar account the heartbeat summarises (next 2h). Empty (the
 // default) means the agent uses whatever calendar its MCP server is
 // authenticated as, so no personal address is baked into the shipped
