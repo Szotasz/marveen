@@ -50,8 +50,35 @@ if [ -z "${GH_TOKEN:-}" ] && [ -f store/.github-fleet-token ]; then
   GH_TOKEN="$(cat store/.github-fleet-token)"
 fi
 [ -n "${GH_TOKEN:-}" ] && export GH_TOKEN || echo "WARN: no GH_TOKEN (vault+file both empty), gh calls may fail" >&2
-BOT_TOKEN="$(grep -E '^TELEGRAM_BOT_TOKEN=' .env | cut -d= -f2- | tr -d '"'"'"' ')"
-CHAT_ID="$(grep -E '^ALLOWED_CHAT_ID=' .env | cut -d= -f2- | tr -d '"'"'"' ')"
+# The bot token comes from the CHANNEL's own .env, which is what the running
+# bridge actually authenticates with; the project .env carries an EMPTY
+# TELEGRAM_BOT_TOKEN= line (measured 2026-09-22), so reading only that one meant
+# every alert was refused before it reached the Bot API. Channel first, project
+# .env as fallback, so a fleet without the channel plugin still works.
+BOT_TOKEN="$(grep -hE '^TELEGRAM_BOT_TOKEN=' "$HOME/.claude/channels/telegram/.env" 2>/dev/null \
+  | cut -d= -f2- | tr -d '"'"'"' ')"
+if [ -z "${BOT_TOKEN:-}" ]; then
+  BOT_TOKEN="$(grep -E '^TELEGRAM_BOT_TOKEN=' .env | cut -d= -f2- | tr -d '"'"'"' ')"
+fi
+# The recipient is the PAIRED sender from the channel's own allowlist, not a
+# constant in .env. Measured 2026-09-22: .env carried ALLOWED_CHAT_ID=0, and the
+# bridge rejects chat 0 with "chat 0 is not allowlisted" -- so every alert this
+# monitor ever sent would have been dropped, silently, on top of the missing gh
+# and missing timer. allowFrom is what the owner actually paired, so it follows a
+# re-pairing instead of going stale. The .env value stays as a fallback only, and
+# an explicit 0 is treated as unset because it is never a real chat.
+CHAT_ID="$(python3 -c "
+import json, sys
+try:
+    allow = json.load(open('$HOME/.claude/channels/telegram/access.json')).get('allowFrom') or []
+except Exception:
+    allow = []
+print(allow[0] if allow else '')
+" 2>/dev/null || true)"
+if [ -z "${CHAT_ID:-}" ]; then
+  CHAT_ID="$(grep -E '^ALLOWED_CHAT_ID=' .env | cut -d= -f2- | tr -d '"'"'"' ')"
+fi
+[ "${CHAT_ID:-}" = "0" ] && CHAT_ID=""
 
 send_telegram() {
   local text="$1"
