@@ -81,12 +81,6 @@ import { getInjectedPrompt, matchesInjectedPrompt, type InjectedPromptRecord } f
 import { withSessionSendLock } from './session-send-lock.js'
 
 
-// How long a scheduled task may keep deferring before it stops being polite.
-// Twenty minutes: long enough that a normal multi-minute turn is never cut
-// into, short enough that an hour-long block like the one that produced this
-// rule cannot happen again.
-const DEFAULT_ESCALATE_AFTER_MS = 20 * 60_000
-
 // How many bare-Enter attempts the post-send resubmit tries before escalating
 // to a clear + re-inject, and the hard cap after which it gives up.
 const RESUBMIT_BARE_ENTER_ATTEMPTS = 2
@@ -1074,6 +1068,22 @@ export function consumeOneShot(task: Pick<ScheduledTask, 'name' | 'oneShot'>, no
   }
 }
 
+// Escalation types into a busy pane with waitForIdle=false, which can park a
+// line; on the main channels session a parked line has no automatic recovery.
+// So it is opt-in: only a task that sets escalateAfterMinutes escalates, never
+// one aimed at the main channels session, and forceSend tasks already bypass.
+export function shouldEscalateDeferral(
+  task: Pick<ScheduledTask, 'forceSend' | 'escalateAfterMinutes'>,
+  session: string,
+  stuckMs: number,
+): boolean {
+  if (task.forceSend) return false
+  if (session === MAIN_CHANNELS_SESSION) return false
+  const minutes = task.escalateAfterMinutes
+  if (typeof minutes !== 'number' || !(minutes > 0)) return false
+  return stuckMs >= minutes * 60_000
+}
+
 async function attemptFireTask(
   task: ScheduledTask,
   agentName: string,
@@ -1103,18 +1113,14 @@ async function attemptFireTask(
   // closed topic kept the session busy. The owner's mail simply was not triaged
   // in that window, and nothing anywhere said so.
   //
-  // So politeness is now bounded. After ESCALATE_AFTER_MS of continuous
+  // So politeness can be bounded. After escalateAfterMinutes of continuous
   // deferral this behaves as forceSend for the attempt: Claude Code queues the
   // prompt internally and runs it at the next idle slot. The saturation guard
   // inside the forceSend path still applies -- injecting into a wedged session
   // really is a silent drop, and that one case must keep deferring.
   const retryRow = getPendingTaskRetry(task.name, agentName)
   const stuckMs = retryRow ? now - retryRow.first_attempt * 1000 : 0
-  const escalateAfterMs =
-    typeof task.escalateAfterMinutes === 'number' && task.escalateAfterMinutes > 0
-      ? task.escalateAfterMinutes * 60_000
-      : DEFAULT_ESCALATE_AFTER_MS
-  const escalated = !task.forceSend && stuckMs >= escalateAfterMs
+  const escalated = shouldEscalateDeferral(task, session, stuckMs)
   const forceSend = task.forceSend || escalated
   if (escalated) {
     logger.warn(
