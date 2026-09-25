@@ -174,6 +174,50 @@ def _blank_ranges(text, ranges):
     return ''.join(out)
 
 
+def _heredoc_opener_runs_body(head):
+    """A `<<` ELOTTI resz alapjan: a torzs PROGRAM lesz, vagy egy program BEMENETE?
+
+    A kulonbseg nem az, hogy szerepel-e ertelmezo-nev a soron, hanem az, hogy az
+    ertelmezo HONNAN veszi a programjat (79d8b59c):
+      bash <<SH            -> nincs megnevezve program, marad a stdin  -> PROGRAM
+      bash -s <<SH         -> a -s kifejezetten stdin                  -> PROGRAM
+      python3 - <<PY       -> a '-' kifejezetten stdin                 -> PROGRAM
+      bash szkript.sh <<EOF-> a program a FAJL, a torzs annak bemenete -> ADAT
+      python3 -c "..." <<PY-> a program a -c utani szoveg              -> ADAT
+      cat > fajl <<EOF     -> nem is ertelmezo                         -> ADAT
+
+    A regi valtozat azt kerdezte, hogy a soron BARHOL all-e ertelmezo-nev. Ez minden
+    `bash <valami>.sh <<EOF` alakra igaz, ezert egy tiltott parancs MEGEMLITESE egy
+    uzenet-torzsben ugyanugy blokkolodott, mint a vegrehajtasa. 2026-09-24-en harom
+    eles esetben akasztotta meg a csapat sajat dokumentaciojat, egyszer epp ennek a
+    hibanak a jelenteset.
+    """
+    seg = re.split(r'\|\||&&|[;|&]', head)[-1]
+    toks = [t for t in re.split(r'\s+', seg.strip()) if t]
+    k = 0
+    while k < len(toks) and (re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', toks[k])
+                             or os.path.basename(toks[k].strip('"\'')) in _TRANSPARENT):
+        k += 1
+    if k >= len(toks):
+        return False
+    base = os.path.basename(toks[k].strip('"\''))
+    if base not in INTERPRETERS:
+        # Ismeretlen burkolo mogott allo ertelmezo (timeout, strace, ...) ugyanugy
+        # lefuttatja a torzset. A burkolo argumentum-alakjat nem talalgatjuk: marad
+        # a regi, szelesebb olvasat. Igy ez a javitas SZIGORUAN szukebb valtozas --
+        # csak a fenti, egyertelmu eset fordul at.
+        return any(os.path.basename(t.strip('"\'')) in INTERPRETERS for t in toks[k:])
+    for t in toks[k + 1:]:
+        if t in ('-', '-s'):
+            return True
+        if t in SCRIPT_FLAGS:
+            return False
+        if t.startswith('-'):
+            continue
+        return False               # egy program-FAJL: a torzs annak a bemenete
+    return True
+
+
 def _heredoc_body_ranges(cmd):
     """(adat-torzsek, ertelmezo-torzsek) karaktertartomanyai.
 
@@ -192,8 +236,7 @@ def _heredoc_body_ranges(cmd):
         m = re.search(r'<<-?\s*([\'"]?)([A-Za-z_][A-Za-z0-9_]*)\1', lines[i])
         if m:
             delim = m.group(2)
-            words = [w for w in re.split(r'[\s|;&]+', lines[i]) if w]
-            is_code = any(os.path.basename(w.strip('"\'')) in INTERPRETERS for w in words)
+            is_code = _heredoc_opener_runs_body(lines[i][:m.start()])
             j = i + 1
             while j < len(lines) and lines[j].strip() != delim:
                 j += 1

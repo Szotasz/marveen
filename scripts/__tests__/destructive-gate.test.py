@@ -477,6 +477,75 @@ check("git -C: munkaagra push atengedve",
       not blocks("git -C " + GROOT + " push origin munkaag"))
 
 
+# --- 11. A HEREDOC-TORZS: PROGRAM VAGY EGY PROGRAM BEMENETE? (79d8b59c) -----
+# A kapu a `<<` nyito soran azt kerdezte, hogy szerepel-e BARHOL ertelmezo-nev.
+# Ez minden `bash <valami>.sh <<EOF` alakra igaz, tehat egy tiltott parancs
+# MEGEMLITESE egy uzenet-torzsben ugyanugy blokkolodott, mint a vegrehajtasa.
+# MERVE 2026-09-25-en, a javitas ELOTT: 11 ilyen adat-eset blokkolt (mind a ket
+# kapu-peldanyon azonosan). A helyes kerdes nem az, hogy hol all ertelmezo-nev,
+# hanem az, hogy az ertelmezo HONNAN veszi a programjat.
+#
+# FIGYELEM, ez a szakasz ket iranyban pinel. A pozitiv kontrollok (a torzs MAGA a
+# program) azert vannak itt, mert egy kovetkezo "meg kevesebb hamis pozitiv"
+# finomitas ezeken bukjon el, ne eles hasznalatban.
+print()
+print("NEGATIV kontroll -- a torzs egy MEGNEVEZETT program bemenete, tehat ADAT:")
+check("bash szkript.sh <<EOF",
+      not blocks("bash kuldo.sh a b - <<EOF\n%s -rf /tmp/x\nEOF" % RM))
+check("sh helper.sh <<TXT",
+      not blocks("sh helper.sh <<TXT\n%s -rf /tmp/x\nTXT" % RM))
+check("python3 riport.py <<DATA",
+      not blocks("python3 riport.py <<DATA\n%s -rf /tmp/x\nDATA" % RM))
+check("node app.js <<DATA",
+      not blocks("node app.js <<DATA\n%s -rf /tmp/x\nDATA" % RM))
+check("bash -x szkript.sh <<EOF (kapcsolo, majd fajl)",
+      not blocks("bash -x szkript.sh <<EOF\n%s -rf /tmp/x\nEOF" % RM))
+check("/usr/bin/bash szkript.sh <<EOF (teljes ut)",
+      not blocks("/usr/bin/bash szkript.sh <<EOF\n%s -rf /tmp/x\nEOF" % RM))
+check("python3 -c ... <<PY (a program a -c utan van, a torzs a stdin)",
+      not blocks('python3 -c "print(1)" <<PY\n%s -rf /tmp/x\nPY' % RM))
+check("cat a.txt | python3 proc.py <<DATA",
+      not blocks("cat a.txt | python3 proc.py <<DATA\n%s -rf /tmp/x\nDATA" % RM))
+check("bash szkript.sh <<EOF, a torzsben sudo",
+      not blocks("bash szkript.sh <<EOF\nsudo systemctl restart foo\nEOF"))
+
+print()
+print("POZITIV kontroll -- a torzs MAGA a program, tehat vizsgalni kell:")
+check("bash <<SH", blocks("bash <<SH\n%s -rf /tmp/x\nSH" % RM))
+check("sh <<SH", blocks("sh <<SH\n%s -rf /tmp/x\nSH" % RM))
+check("bash -s <<SH (a -s kifejezetten stdin)",
+      blocks("bash -s <<SH\n%s -rf /tmp/x\nSH" % RM))
+check("bash -x <<SH (csak kapcsolo, program nincs megnevezve)",
+      blocks("bash -x <<SH\n%s -rf /tmp/x\nSH" % RM))
+check("python3 - <<PY", blocks("python3 - <<PY\nimport shutil\n%s('/tmp/x')\nPY" % RMTREE))
+check("python3 <<PY", blocks("python3 <<PY\nimport shutil\n%s('/tmp/x')\nPY" % RMTREE))
+check("echo x | bash <<SH", blocks("echo x | bash <<SH\n%s -rf /tmp/x\nSH" % RM))
+check("exec bash <<SH (atlatszo burkolo)",
+      blocks("exec bash <<SH\n%s -rf /tmp/x\nSH" % RM))
+check("FOO=1 bash <<SH (kornyezeti ertekadas)",
+      blocks("FOO=1 bash <<SH\n%s -rf /tmp/x\nSH" % RM))
+check("env FOO=1 bash <<SH",
+      blocks("env FOO=1 bash <<SH\n%s -rf /tmp/x\nSH" % RM))
+check("bash <<SH, a torzsben sudo",
+      blocks("bash <<SH\nsudo systemctl restart foo\nSH"))
+
+print()
+print("POZITIV kontroll -- a heredoc-on KIVULI parancsot a javitas nem takarhatja el:")
+check("bash sc.sh <<EOF ... EOF majd torles",
+      blocks("bash sc.sh <<EOF\nadat\nEOF\n%s -rf /tmp/x" % RM))
+
+print()
+print("KIMONDOTT KORLAT -- ismeretlen burkolo mogotti ertelmezo:")
+# A `timeout 5 bash sc.sh <<EOF` alak TOVABBRA IS hamis pozitiv. Tudatos dontes:
+# a burkolok argumentum-alakja (a timeout elso argumentuma idotartam, a strace-e
+# nem) esetenkent mas, es a talalgatas ugyanaz a hibaosztaly volna, ami ezt a
+# kartyat megnyitotta. Amig a burkolo nem ismert, marad a szelesebb olvasat.
+check("timeout 5 bash <<SH (helyesen blokkol)",
+      blocks("timeout 5 bash <<SH\n%s -rf /tmp/x\nSH" % RM))
+check("timeout 5 bash sc.sh <<EOF -- TUDATOSAN blokkol, nem allitjuk helyesnek",
+      blocks("timeout 5 bash sc.sh <<EOF\n%s -rf /tmp/x\nEOF" % RM))
+
+
 print()
 if failed:
     print("%d FAILED: %s" % (len(failed), failed), file=sys.stderr)
