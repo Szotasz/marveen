@@ -30,8 +30,10 @@ fi
 # even when a sub-agent runs this script with its own TELEGRAM_STATE_DIR
 # (the lib ignores that variable), and only a single paired DM entry counts.
 . "$SCRIPT_DIR/lib/owner-chat.sh"
-if ! CHAT_ID="$(resolve_owner_chat_id "$ENV_FILE" 2>&1)"; then
-  echo "Hiba: ALLOWED_CHAT_ID nincs beallitva ($CHAT_ID)"
+# The resolver's reason line goes to stderr as is (not captured: any stderr
+# noise on the success path would otherwise become part of the chat id).
+if ! CHAT_ID="$(resolve_owner_chat_id "$ENV_FILE")"; then
+  echo "Hiba: ALLOWED_CHAT_ID nincs beallitva (az ok a fenti sorban)"
   exit 1
 fi
 

@@ -136,11 +136,11 @@ alert_owner() {
   # `tr -d '\r '` strips a trailing CR (CRLF-edited .env) / stray spaces so the
   # token doesn't corrupt the URL.
   token="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$TG_ENV" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r ')"
-  # The resolver's reason line goes into the log, not /dev/null: a skipped
-  # alert must say why (no DM entry, several DM entries, no access.json).
-  if ! chat="$(resolve_owner_chat_id "$INSTALL_DIR/.env" 2>&1)"; then
-    log "owner chat: $chat"; chat=""
-  fi
+  # The resolver's reason line stays on stderr (the guard's log), not
+  # /dev/null: a skipped alert must say why (no DM entry, several DM entries,
+  # no access.json). Not captured with 2>&1 -- any stderr noise on the success
+  # path would then become part of the chat id.
+  chat="$(resolve_owner_chat_id "$INSTALL_DIR/.env")" || chat=""
   if [ -z "$token" ] || [ -z "$chat" ]; then
     log "ALERT (no bot token or owner chat id configured, could not Telegram): $msg"; return 1
   fi
