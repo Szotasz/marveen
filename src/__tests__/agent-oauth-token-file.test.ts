@@ -74,7 +74,7 @@ describe('resolveOauthTokenFileSetting: only an ABSENT key is "unset"', () => {
 })
 
 describe('oauthTokenFileConflict: a setting the field cannot take effect under refuses', () => {
-  const base = { isMainAgent: false, isRemote: false, authMode: 'shared' as const, hasExplicitConfigDir: false, hasClaudePlan: false }
+  const base = { isMainAgent: false, isRemote: false, isCustomProvider: false, isClaudeModel: true, authMode: 'shared' as const, hasExplicitConfigDir: false, hasClaudePlan: false }
   it('a plain shared-mode local sub-agent has no conflict', () => {
     expect(oauthTokenFileConflict(base)).toBeNull()
   })
@@ -83,6 +83,10 @@ describe('oauthTokenFileConflict: a setting the field cannot take effect under r
     expect(oauthTokenFileConflict({ ...base, isRemote: true })).toBe('remote-agent')
     expect(oauthTokenFileConflict({ ...base, authMode: 'own_team' })).toBe('auth-mode-own_team')
     expect(oauthTokenFileConflict({ ...base, authMode: 'api' })).toBe('auth-mode-api')
+    expect(oauthTokenFileConflict({ ...base, isCustomProvider: true })).toBe('custom-provider')
+    expect(oauthTokenFileConflict({ ...base, isClaudeModel: false })).toBe('non-claude-model')
+    // A custom provider refuses even with a claude- model id: customProvider wins over the pattern.
+    expect(oauthTokenFileConflict({ ...base, isCustomProvider: true, isClaudeModel: true })).toBe('custom-provider')
     expect(oauthTokenFileConflict({ ...base, hasExplicitConfigDir: true })).toBe('explicit-config-dir')
     expect(oauthTokenFileConflict({ ...base, hasClaudePlan: true })).toBe('explicit-config-dir')
   })
@@ -172,7 +176,7 @@ describe('checkOauthTokenFile: the file itself', () => {
 
 describe('decideOwnOauthToken: the whole decision', () => {
   const ctx = (raw: string, over: Partial<Parameters<typeof decideOwnOauthToken>[0]> = {}) => decideOwnOauthToken({
-    rawConfigJson: raw, isMainAgent: false, isRemote: false, authMode: 'shared',
+    rawConfigJson: raw, isMainAgent: false, isRemote: false, isCustomProvider: false, isClaudeModel: true, authMode: 'shared',
     hasExplicitConfigDir: false, hasClaudePlan: false, fleetTokenPath: fleet, uid: UID, ...over,
   })
 
@@ -190,6 +194,17 @@ describe('decideOwnOauthToken: the whole decision', () => {
     const p = tokenFile('ok2.token', FAKE_TOKEN)
     expect(ctx(JSON.stringify({ oauthTokenFile: p }), { authMode: 'own_team' })).toMatchObject({ kind: 'refused', reason: 'auth-mode-own_team' })
     expect(ctx(JSON.stringify({ oauthTokenFile: join(tmp, 'missing.token') }))).toMatchObject({ kind: 'refused', reason: 'missing' })
+  })
+
+  // #1511 review (custom-provider path on develop): a valid own token on an agent
+  // that is not a Claude OAuth agent refuses, and the refusal names why.
+  it('a valid file on a custom-provider, non-Claude or api agent -> refused, never ok', () => {
+    const p = tokenFile('ok3.token', FAKE_TOKEN)
+    const raw = JSON.stringify({ oauthTokenFile: p })
+    expect(ctx(raw)).toMatchObject({ kind: 'ok' })
+    expect(ctx(raw, { isCustomProvider: true })).toMatchObject({ kind: 'refused', path: p, reason: 'custom-provider' })
+    expect(ctx(raw, { isClaudeModel: false })).toMatchObject({ kind: 'refused', path: p, reason: 'non-claude-model' })
+    expect(ctx(raw, { authMode: 'api' })).toMatchObject({ kind: 'refused', path: p, reason: 'auth-mode-api' })
   })
 })
 
@@ -289,7 +304,7 @@ describe('launcher wiring (agent-process.ts)', () => {
   })
 
   it('both export sites put the own file FIRST, and the fleet export only in the else-branch', () => {
-    expect(FN).toMatch(/if \(ownTokenFile\) \{\n\s+\/\/ 2fb86ef2[^\n]*\n\s+oauthTokenEnv = ownOauthTokenExport\(ownTokenFile\)\n\s+\} else if \(!claudeConfigDir && hasFleetOauthToken\(\) && !isOwnTeam\) \{/)
+    expect(FN).toMatch(/if \(ownTokenFile\) \{\n\s+\/\/ 2fb86ef2[^\n]*\n\s+oauthTokenEnv = ownOauthTokenExport\(ownTokenFile\)\n\s+\} else if \(!claudeConfigDir && hasFleetOauthToken\(\) && needsFleetOauth\) \{/)
     const ownBranch = FN.match(/\} else if \(ownTokenFile\) \{[\s\S]*?\n {6}\} else if \(hasFleetOauthToken\(\)\) \{/)?.[0] ?? ''
     expect(ownBranch).not.toBe('')
     expect(ownBranch).toContain('oauthTokenEnv = ownOauthTokenExport(ownTokenFile)')
@@ -303,6 +318,24 @@ describe('launcher wiring (agent-process.ts)', () => {
 
   it('NO FIELD -> unchanged: the two fleet export statements are still there, byte for byte', () => {
     expect(FN.split(FLEET_EXPORT).length - 1).toBe(2)
+  })
+
+  it('the decision gets the launcher\'s own custom-provider and isClaude discriminators', () => {
+    const call = FN.slice(FN.indexOf('decideOwnOauthToken({'), FN.indexOf('if (ownOauth.kind === \'refused\') {'))
+    expect(call).toContain('isCustomProvider: readAgentCustomProvider(name) !== null,')
+    expect(call).toContain("isClaudeModel: resolveOpenRouterModel(readAgentModel(name)).startsWith('claude-'),")
+    // Same predicates the launcher uses further down.
+    expect(FN).toContain('const isCustom = customProviderId !== null')
+    expect(FN).toContain("const isClaude = !isCustom && model.startsWith('claude-')")
+    expect(FN).toContain('const model = isCustom ? rawModel : resolveOpenRouterModel(rawModel)')
+  })
+
+  it('backstop: an own token on an agent the launcher sees as non-Claude refuses before any export', () => {
+    const isClaudeAt = FN.indexOf("const isClaude = !isCustom && model.startsWith('claude-')")
+    const guardAt = FN.indexOf('if (ownTokenFile && !isClaude) {')
+    expect(guardAt).toBeGreaterThan(isClaudeAt)
+    expect(guardAt).toBeLessThan(FN.indexOf('oauthTokenEnv = '))
+    expect(FN.slice(guardAt, guardAt + 500)).toMatch(/return \{ ok: false, error: 'oauthTokenFile: not a Claude OAuth agent' \}/)
   })
 
   it('a Claude agent with its own token that could not be isolated refuses (shared root = host credential)', () => {

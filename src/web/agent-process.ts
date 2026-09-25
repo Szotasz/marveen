@@ -1772,6 +1772,11 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     rawConfigJson: readFileOr(join(dir, 'agent-config.json'), '{}'),
     isMainAgent: name === MAIN_AGENT_ID,
     isRemote: !!(remote.host && remote.workdir),
+    // The launcher's own discriminators (see isCustom / isClaude below): a set
+    // customProvider wins over every model pattern, and for the rest the
+    // resolved model must start with claude-.
+    isCustomProvider: readAgentCustomProvider(name) !== null,
+    isClaudeModel: resolveOpenRouterModel(readAgentModel(name)).startsWith('claude-'),
     authMode: readAgentAuthMode(name),
     hasExplicitConfigDir: readAgentClaudeConfigDir(name) !== null,
     hasClaudePlan: !!readAgentClaudePlan(name),
@@ -1906,6 +1911,17 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     const model = isCustom ? rawModel : resolveOpenRouterModel(rawModel)
     const authMode = readAgentAuthMode(name)
     const isClaude = !isCustom && model.startsWith('claude-')
+    // 2fb86ef2 backstop: the decision above already refused a custom-provider or
+    // non-Claude agent with its own token. Re-checked on the launcher's own
+    // isClaude, so a drift between the two predicates refuses instead of
+    // launching with a setup-token that no export site will use.
+    if (ownTokenFile && !isClaude) {
+      logger.error(
+        { name, path: ownTokenFile, customProviderId, model },
+        'oauthTokenFile: agent is not a Claude OAuth agent -- NOT started (a setup-token cannot take effect here)',
+      )
+      return { ok: false, error: 'oauthTokenFile: not a Claude OAuth agent' }
+    }
     // When authHeader=x-api-key, the CLI's ANTHROPIC_API_KEY approval prompt
     // cannot be answered in --channels mode. Pre-seed the approval into
     // .claude.json (see stampCustomApiKeyApproval) after claudeConfigDir is

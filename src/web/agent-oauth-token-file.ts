@@ -68,6 +68,8 @@ export function resolveOauthTokenFileSetting(rawConfigJson: string): OauthTokenF
 export function oauthTokenFileConflict(input: {
   isMainAgent: boolean
   isRemote: boolean
+  isCustomProvider: boolean
+  isClaudeModel: boolean
   authMode: AuthMode
   hasExplicitConfigDir: boolean
   hasClaudePlan: boolean
@@ -76,6 +78,15 @@ export function oauthTokenFileConflict(input: {
   if (input.isMainAgent) return 'main-agent'
   // A remote agent's session runs on another host; a local path means nothing there.
   if (input.isRemote) return 'remote-agent'
+  // A setup-token is a Claude OAuth credential. A custom-provider or a non-Claude
+  // (Ollama, DeepSeek, OpenRouter, ...) agent authenticates with the provider's
+  // own key, and the launcher never exports an OAuth token for it: exported
+  // anyway, the CLI would send it to the third-party endpoint instead of the
+  // provider credential (the 2026-08-05 custom-provider 401). So the field
+  // cannot take effect there, and ignoring it would leave the operator believing
+  // the agent runs on its own token.
+  if (input.isCustomProvider) return 'custom-provider'
+  if (!input.isClaudeModel) return 'non-claude-model'
   // own_team authenticates from its own /login; api from its own API key.
   if (input.authMode === 'own_team') return 'auth-mode-own_team'
   if (input.authMode === 'api') return 'auth-mode-api'
@@ -157,6 +168,8 @@ export function decideOwnOauthToken(input: {
   rawConfigJson: string
   isMainAgent: boolean
   isRemote: boolean
+  isCustomProvider: boolean
+  isClaudeModel: boolean
   authMode: AuthMode
   hasExplicitConfigDir: boolean
   hasClaudePlan: boolean
