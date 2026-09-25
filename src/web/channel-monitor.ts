@@ -455,6 +455,32 @@ export async function recoverStuckInputForSession(
 // that did NOT clear the parked text is logged and the next tick escalates
 // within the attempts budget (decideStuckInputRecovery caps it). 'hold' and
 // 'clear-preamble' submit nothing, so there is nothing to verify there.
+// CLEARLANE925. The two clear-only recovery actions (clear-preamble,
+// clear-scheduled) used to call clearInputBuffer() OUTSIDE the per-pane send
+// lane, while every clear+re-inject path above takes it in 'recover' mode. The
+// gap is not theoretical. Measured 2026-09-25 on the main pane, five times in
+// five hours: a scheduled prompt is still being typed into the box (the
+// sendPromptToSession emit span holds the lane), the 15s watcher samples the
+// half-typed text, reads it as a parked scheduled tick, and clears it. The
+// clear removes the head, the emit keeps typing, and the TAIL is submitted as
+// a headless prompt 2-4s later -- the "Scheduled task fired" line lands AFTER
+// the "could not be emptied" line every time. Taking the lane here makes the
+// clear fail-closed against a live delivery, exactly like the re-inject paths:
+// a genuinely parked box is still there on the next tick.
+export type ParkedClearResult = 'skipped-locked' | 'cleared' | 'left-fragment'
+
+export async function clearParkedInputUnderLane(
+  session: string,
+  clear: (session: string) => Promise<boolean> = s => clearInputBuffer(s),
+): Promise<ParkedClearResult> {
+  let cleared = false
+  const res = await withSessionSendLock(session, null, 'recover', async () => {
+    cleared = await clear(session)
+  })
+  if (!res.ran) return 'skipped-locked'
+  return cleared ? 'cleared' : 'left-fragment'
+}
+
 async function performStuckInputAction(
   session: string,
   action: StuckInputAction,
@@ -537,18 +563,26 @@ async function performStuckInputAction(
       }
       case 'clear-preamble': {
         logger.warn({ session, attempt }, 'Stuck input -- truncated safety preamble, clearing buffer (no re-inject)')
-        const cleared = await clearInputBuffer(session)
-        if (!cleared) logger.warn({ session, attempt }, 'Stuck input -- clear-preamble left text in the box; the leftover stays parked')
+        const result = await clearParkedInputUnderLane(session)
+        if (result === 'skipped-locked') {
+          logger.info({ session, attempt }, 'Stuck-input recovery (clear-preamble) skipped: a delivery is in flight into this pane (fail-closed)')
+          break
+        }
+        if (result === 'left-fragment') logger.warn({ session, attempt }, 'Stuck input -- clear-preamble left text in the box; the leftover stays parked')
         break
       }
       case 'clear-scheduled': {
         logger.warn({ session, attempt }, 'Stuck input -- parked scheduled-task tick, clearing buffer (no re-inject; next schedule fire re-delivers)')
-        const cleared = await clearInputBuffer(session)
+        const result = await clearParkedInputUnderLane(session)
+        if (result === 'skipped-locked') {
+          logger.info({ session, attempt }, 'Stuck-input recovery (clear-scheduled) skipped: a delivery is in flight into this pane (fail-closed)')
+          break
+        }
         // A half-cleared tick is the 2026-09-03 wedge: the fragment left behind
         // stops matching a delivery wrapper, so every later restart decision
         // reads it as a human draft. Say so in the log rather than reporting a
         // clean clear that did not happen.
-        if (!cleared) logger.warn({ session, attempt }, 'Stuck input -- clear-scheduled left a fragment in the box; expect machineOrigin=false on the next tick')
+        if (result === 'left-fragment') logger.warn({ session, attempt }, 'Stuck input -- clear-scheduled left a fragment in the box; expect machineOrigin=false on the next tick')
         break
       }
       case 'enter':
