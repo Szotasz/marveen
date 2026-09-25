@@ -44,8 +44,57 @@ const INTERVAL_MS = 60_000
 const downgradedAt = new Map<string, number>()
 
 const MAIN_SETTINGS_PATH = join(PROJECT_ROOT, '.claude', 'settings.json')
+const MAIN_ENV_PATH = join(PROJECT_ROOT, '.env')
+
+// The main agent's model does NOT live in one place, and writing the wrong one
+// is silent. scripts/channels.sh resolves it as: MAIN_AGENT_MODEL from .env
+// (per-install, gitignored) WINS over .claude/settings.json (tracked). That
+// precedence exists on purpose -- editing the tracked file dirties the tree,
+// blocks the update preflight's clean-tree check, and gets reverted by the next
+// update.
+//
+// This runner used to write settings.json unconditionally. Measured 2026-09-11
+// 13:17: it logged a downgrade of the main agent, wrote "model":"claude-sonnet-5"
+// into the tracked settings.json, restarted -- and the process came back on
+// claude-opus-5[1m], because .env won. So the main agent was NOT protected at
+// all (a real limit would have left it deaf rather than downgraded), the tracked
+// file was left dirty, and every status surface still named the old model.
+//
+// Both accessors below now follow the launch path's precedence, so what we read
+// and write is what the next launch will actually use.
+function mainEnvModel(): string | null {
+  try {
+    const line = readFileSync(MAIN_ENV_PATH, 'utf-8')
+      .split('\n')
+      .reverse()
+      .find((l) => /^\s*MAIN_AGENT_MODEL\s*=/.test(l))
+    if (!line) return null
+    const v = line.slice(line.indexOf('=') + 1).trim().replace(/^["']|["']$/g, '')
+    // An EMPTY MAIN_AGENT_MODEL deliberately does not shadow settings.json --
+    // channels.sh has the same rule (scripts/__tests__/channels-main-model.test.sh).
+    return v.length > 0 ? v : null
+  } catch {
+    return null
+  }
+}
+
+function writeMainEnvModel(model: string): boolean {
+  let raw: string
+  try { raw = readFileSync(MAIN_ENV_PATH, 'utf-8') } catch { return false }
+  const lines = raw.split('\n')
+  let idx = -1
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (/^\s*MAIN_AGENT_MODEL\s*=/.test(lines[i] as string)) { idx = i; break }
+  }
+  if (idx < 0) return false
+  lines[idx] = `MAIN_AGENT_MODEL=${model}`
+  atomicWriteFileSync(MAIN_ENV_PATH, lines.join('\n'))
+  return true
+}
 
 function readMainModel(): string {
+  const fromEnv = mainEnvModel()
+  if (fromEnv) return resolveModelId(fromEnv)
   try {
     const cfg = JSON.parse(readFileSync(MAIN_SETTINGS_PATH, 'utf-8'))
     return resolveModelId((cfg && typeof cfg.model === 'string' && cfg.model) || DEFAULT_MODEL)
@@ -56,6 +105,10 @@ function readMainModel(): string {
 
 function writeMainModel(model: string): void {
   if (!isValidModelId(model)) throw new InvalidModelIdError(model)
+  // Write where the launch will read. Only fall through to the tracked
+  // settings.json when .env has no MAIN_AGENT_MODEL to honour -- otherwise the
+  // write is a no-op the next launch ignores.
+  if (mainEnvModel() && writeMainEnvModel(model)) return
   let cfg: Record<string, unknown> = {}
   try { cfg = JSON.parse(readFileSync(MAIN_SETTINGS_PATH, 'utf-8')) } catch {}
   cfg.model = model
