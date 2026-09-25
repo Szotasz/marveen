@@ -457,7 +457,7 @@ export function startWebServer(port = 3420): http.Server {
   const modelVersionGuardInterval = webOnly ? undefined : startModelVersionGuard()
   const bootAutostartTimer = webOnly || !RESPAWN_ENABLED ? undefined : startBootAutostart()
   if (bootAutostartTimer) logger.info('Boot autostart scheduled (store/boot-autostart.json, 45s delay)')
-  if (!webOnly) logger.info('Model-version guard started (120s poll, 65s offset)')
+  if (modelVersionGuardInterval) logger.info('Model-version guard started (120s poll, 65s offset)')
   if (!webOnly) logger.info('Inbox nudge watcher started (20s poll, 55s offset)')
 
   const reauthHealerInterval = webOnly ? undefined : startReauthHealer()
@@ -675,7 +675,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     if (channelIntakeInterval) clearInterval(channelIntakeInterval)
     if (costsSyncInterval) clearInterval(costsSyncInterval)
     clearInterval(stuckInputInterval)
-    clearInterval(modelVersionGuardInterval)
+    if (modelVersionGuardInterval) clearInterval(modelVersionGuardInterval)
     clearTimeout(bootAutostartTimer)
     clearInterval(stuckToolCallInterval)
     if (inboxNudgeInterval) clearInterval(inboxNudgeInterval)

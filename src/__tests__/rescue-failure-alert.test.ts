@@ -98,7 +98,7 @@ describe('the guard raises the alert (pinned at the source)', () => {
     expect(region).toMatch(/if \(shouldAlert\)/)
     // The message must not be sent unconditionally: that is the noise path.
     expect(region.indexOf('recordRescueFailure(name, nowMs)'))
-      .toBeLessThan(region.indexOf('createAgentMessage('))
+      .toBeLessThan(region.indexOf('postGuardNotice('))
   })
 
   it('sends to the main agent, and says the agent is unreachable meanwhile', () => {
@@ -137,7 +137,7 @@ import { join as joinRunnerPath } from 'node:path'
 describe('main-agent rescue alert goes to the operator, not its own queue', () => {
   const src = readRunnerSrc(joinRunnerPath(__dirname, '../web/context-guard-runner.ts'), 'utf-8')
   const lines = src.split('\n')
-  const sendIdx = lines.findIndex(l => l.includes('const msg = createAgentMessage('))
+  const sendIdx = lines.findIndex(l => l.includes('const msg = postGuardNotice('))
 
   it('branches MAIN_AGENT_ID to notifyChannel before the queue send', () => {
     expect(sendIdx, 'the queue send for sub-agent alerts disappeared').toBeGreaterThan(0)
