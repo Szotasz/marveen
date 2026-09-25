@@ -9,13 +9,22 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const h = vi.hoisted(() => ({ calls: [] as unknown[][] }))
 
-vi.mock('node:child_process', async (orig) => ({
-  ...(await orig() as object),
-  spawnSync: vi.fn((...args: unknown[]) => {
-    h.calls.push(args)
-    return { status: 0, stdout: '', stderr: '', error: undefined }
-  }),
-}))
+vi.mock('node:child_process', async (orig) => {
+  const { EventEmitter } = await import('node:events')
+  return {
+    ...(await orig() as object),
+    // runCommand is async (spawn, not spawnSync): the executor records the
+    // argv synchronously and hands back a child that exits 0 on the next tick.
+    spawn: vi.fn((...args: unknown[]) => {
+      h.calls.push(args)
+      const child = new EventEmitter() as EventEmitter & { stderr: EventEmitter; kill: () => void }
+      child.stderr = new EventEmitter()
+      child.kill = () => {}
+      setImmediate(() => child.emit('close', 0))
+      return child
+    }),
+  }
+})
 vi.mock('../config.js', async (orig) => ({
   ...(await orig() as object),
   PROJECT_ROOT: '/opt/marveen root',
