@@ -17,6 +17,8 @@ import { resolveOwnerChatId, configuredOwnerChatFor } from '../owner-chat.js'
 import {
   appendTaskRun,
   markTaskRunCompleted,
+  setTaskRunDelivery,
+  getTaskRunStatus,
   reconcileOpenTaskRuns,
   getTaskRunMedianDurationMs,
   listPendingTaskRetries,
@@ -34,16 +36,23 @@ import { toPendingRetryView, classifySendError, OWNER_ESCALATION_EXTRA_MS, type 
 import {
   SCHEDULED_TASK_PREAMBLE,
   wrapScheduledTask,
+  wrapScheduledTaskByReference,
 } from '../prompt-safety.js'
+import { writeScheduledRunSnapshot, isScheduledRunReference } from './scheduled-run-snapshot.js'
 import { cronPrevOccurrence, effectiveCronTz } from './cron.js'
 import {
   listScheduledTasks,
   SCHEDULED_TASKS_DIR,
+  SCHEDULED_TASK_INLINE_MAX_CHARS,
+  SCHEDULED_TASK_BODY_WARN_CHARS,
+  MAX_SCHEDULED_TASK_PROMPT_LEN,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
 import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
-import { readTranscriptMtimeAcrossConfigDirs } from './active-model.js'
+import { readTranscriptMtimeAcrossConfigDirs, projectsDirFor } from './active-model.js'
+import { classifyDelivery, readUserPromptsSince, type DeliveryVerdict } from './delivery-integrity.js'
+import { paneOneLine } from './pane-text.js'
 import { mainConfigRoots } from './inbound-probe.js'
 import { channelStateDir, getProvider, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import {
@@ -175,6 +184,15 @@ export interface TaskInflightEntry {
   // in an overfull input box, so a second 'lost' verdict on this entry takes the
   // ordinary lost path instead of Enter-looping.
   parkedEnterSent?: boolean
+  // PROMPTCSONK923 delivery-integrity check. `sentText` is the exact one-line
+  // byte stream sendPromptToSession typed, `typedAt` the moment typing began:
+  // every prompt the session recorded from then on is compared with it (see
+  // delivery-integrity.ts). Absent for a remote agent (its transcript is not
+  // on this host). `deliveryVerdict` is set once a verdict is persisted, so
+  // the transcript is not re-read on every sweep after that.
+  sentText?: string
+  typedAt?: number
+  deliveryVerdict?: DeliveryVerdict
 }
 
 // How long a fired task may stay busy before the watchdog calls it stuck.
@@ -303,6 +321,43 @@ export type TaskTimeoutDecision = 'done' | 'abandoned' | 'alert' | 'escalate' | 
 // evicted ('clear') before escalate is ever reached. Accepted -- a task
 // legitimately configured to run for hours AND stuck long enough to hit
 // that ceiling is an extreme edge case outside this change's scope.
+// PROMPTCSONK923: the delivery-integrity verdict to persist for an in-flight
+// entry right now, or null (nothing to record yet). Reads every prompt the
+// target session's transcripts recorded since typing began and compares it
+// with what was typed (delivery-integrity.ts).
+//
+// 'tail-lost' is only returned when `final` (the entry is closing): the head
+// of a split prompt is recorded BEFORE its tail, so a sweep that lands between
+// the two would otherwise persist 'tail-lost' for what is really a 'split'.
+// Every other verdict is final on first sight.
+//
+// The CLOSING look never leaves the question open (Marveen's #1506 review): in
+// flight, "nothing of ours arrived" means "not yet"; at the close there is no
+// "yet". It becomes 'not-arrived' when a transcript directory was readable,
+// and 'unverifiable' when none was -- so a wholly lost prompt no longer sits
+// as NULL next to a remote agent's never-checked row.
+//
+// `read` and `dirExists` are injectable so the decision is unit-tested
+// without disk.
+export function checkTaskDeliveryIntegrity(
+  entry: Pick<TaskInflightEntry, 'sentText' | 'typedAt' | 'deliveryVerdict' | 'workingDir' | 'configDirs'>,
+  final: boolean,
+  read: (dirs: readonly string[], sinceMs: number) => string[] = readUserPromptsSince,
+  dirExists: (dir: string) => boolean = existsSync,
+): DeliveryVerdict | null {
+  if (entry.sentText == null || entry.typedAt == null || entry.deliveryVerdict != null) return null
+  const dirs = [...new Set(entry.configDirs.map((c) => projectsDirFor(entry.workingDir, c)))]
+  let verdict: DeliveryVerdict | null
+  try {
+    verdict = classifyDelivery(entry.sentText, read(dirs, entry.typedAt))
+  } catch {
+    return final ? 'unverifiable' : null
+  }
+  if (verdict === 'tail-lost' && !final) return null
+  if (verdict == null && final) return dirs.some((d) => dirExists(d)) ? 'not-arrived' : 'unverifiable'
+  return verdict
+}
+
 export function decideTaskTimeout(
   entry: Pick<TaskInflightEntry, 'injectedAt' | 'alerted' | 'ownerAlerted' | 'sawTurn'> & { deliveryPending?: boolean },
   paneState: PaneState | null,
@@ -463,6 +518,174 @@ function persistScheduleLastRun(): void {
     atomicWriteFileSync(SCHEDULE_LAST_RUN_PATH, JSON.stringify(Object.fromEntries(scheduleLastRun), null, 2))
   } catch (err) {
     logger.warn({ err }, 'schedule-runner: failed to persist last-run map')
+  }
+}
+
+// --- SCHEDPROMPTREF917: size-guard ---
+//
+// A scheduled task's SKILL.md body grows unboundedly over time (every
+// lesson learned lands in its "Buktatók" section, spec 1.2) -- the
+// reference-based delivery below closes the CORRUPTION risk that growth used
+// to carry, but the growth itself is still worth surfacing: a bigger body
+// costs more tokens per fire and is a proxy for "this task's SKILL.md wants
+// splitting". Two tiers, both same-day-deduped per task (spec 3.5):
+//   WARN  (SCHEDULED_TASK_BODY_WARN_CHARS)  -> logger.warn + inter-agent notice
+//   ALERT (MAX_SCHEDULED_TASK_PROMPT_LEN)   -> logger.warn + a second, louder
+//                                              inter-agent notice
+// Both go to the main agent only. The size of a SKILL.md is internal
+// housekeeping; the owner channel is reserved for customer- or
+// money-impacting alerts, so the size guard never sends there.
+// Delivery itself is UNAFFECTED by either tier -- the task still fires.
+export type SizeGuardLevel = 'none' | 'warn' | 'alert'
+
+export function sizeGuardLevel(
+  bodyChars: number,
+  warnChars: number = SCHEDULED_TASK_BODY_WARN_CHARS,
+  alertChars: number = MAX_SCHEDULED_TASK_PROMPT_LEN,
+): SizeGuardLevel {
+  if (bodyChars >= alertChars) return 'alert'
+  if (bodyChars >= warnChars) return 'warn'
+  return 'none'
+}
+
+// Whether the task body is large enough that tmux delivery must go through
+// the fire-time snapshot + reference path instead of inline (spec 3.3).
+export function shouldSnapshotTaskBody(
+  bodyChars: number,
+  inlineMaxChars: number = SCHEDULED_TASK_INLINE_MAX_CHARS,
+): boolean {
+  return bodyChars > inlineMaxChars
+}
+
+export interface ScheduledTaskBlockDeps {
+  writeSnapshot: typeof writeScheduledRunSnapshot
+  isValidReference: (filePath: string) => boolean
+}
+
+const DEFAULT_TASK_BLOCK_DEPS: ScheduledTaskBlockDeps = {
+  writeSnapshot: writeScheduledRunSnapshot,
+  isValidReference: (filePath) => isScheduledRunReference(filePath),
+}
+
+// Build the <scheduled-task> block for one fire: inline, or a reference to a
+// fire-time snapshot (spec 3.3). The reference path is taken only when all
+// three hold, otherwise the body goes inline and the task is never dropped:
+//   - the body crosses SCHEDULED_TASK_INLINE_MAX_CHARS;
+//   - the target session is LOCAL (host === null). The snapshot lives on the
+//     dashboard host, so a remote agent could not Read it and the task would
+//     be silently undelivered;
+//   - the snapshot was written (write failure = spec test 11) and its path
+//     passes isScheduledRunReference (a rejected path is logged there).
+export function buildScheduledTaskBlock(
+  taskName: string,
+  taskBody: string,
+  host: string | null,
+  nowMs: number,
+  deps: ScheduledTaskBlockDeps = DEFAULT_TASK_BLOCK_DEPS,
+): { block: string; delivery: 'inline' | 'reference' } {
+  const source = `scheduled-task:${taskName}`
+  const inline = { block: wrapScheduledTask(source, taskBody), delivery: 'inline' as const }
+  if (!shouldSnapshotTaskBody(taskBody.length)) return inline
+  if (host !== null) return inline
+  const skillPath = join(SCHEDULED_TASKS_DIR, taskName, 'SKILL.md')
+  const snapshot = deps.writeSnapshot(taskName, taskBody, { firedAt: new Date(nowMs), skillPath })
+  if (!snapshot) return inline
+  if (!deps.isValidReference(snapshot.filePath)) return inline
+  return {
+    block: wrapScheduledTaskByReference(source, snapshot.filePath, snapshot.sha256, snapshot.chars),
+    delivery: 'reference',
+  }
+}
+
+const SIZE_GUARD_STATE_PATH = join(PROJECT_ROOT, 'store', 'scheduled-task-size-guard.json')
+// task name -> 'YYYY-MM-DD' of the last day a WARN/ALERT notice fired for it.
+const sizeGuardWarnSentDate: Map<string, string> = new Map()
+const sizeGuardAlertSentDate: Map<string, string> = new Map()
+
+function todayStamp(nowMs: number): string {
+  return new Date(nowMs).toISOString().slice(0, 10)
+}
+
+function loadSizeGuardState(): void {
+  try {
+    const raw = JSON.parse(readFileSync(SIZE_GUARD_STATE_PATH, 'utf-8'))
+    if (raw && typeof raw === 'object') {
+      const warn = (raw as Record<string, unknown>).warn
+      const alert = (raw as Record<string, unknown>).alert
+      if (warn && typeof warn === 'object') {
+        for (const [name, d] of Object.entries(warn)) if (typeof d === 'string') sizeGuardWarnSentDate.set(name, d)
+      }
+      if (alert && typeof alert === 'object') {
+        for (const [name, d] of Object.entries(alert)) if (typeof d === 'string') sizeGuardAlertSentDate.set(name, d)
+      }
+    }
+  } catch { /* no file yet / unreadable -- start empty */ }
+}
+
+function persistSizeGuardState(): void {
+  try {
+    atomicWriteFileSync(SIZE_GUARD_STATE_PATH, JSON.stringify({
+      warn: Object.fromEntries(sizeGuardWarnSentDate),
+      alert: Object.fromEntries(sizeGuardAlertSentDate),
+    }, null, 2))
+  } catch (err) {
+    logger.warn({ err }, 'schedule-runner: failed to persist size-guard state')
+  }
+}
+
+// Pure claim-and-set over an injected map: true exactly once per (task, day).
+// Split out from claimSizeGuardNotice so the same-day dedupe (test 10) is
+// directly unit-testable without touching the module's real state or disk --
+// a fresh Map plays the role of a same-day restart's reloaded stamps, an
+// empty one the role of a new day.
+export function shouldSendSizeGuardNotice(stamps: Map<string, string>, taskName: string, today: string): boolean {
+  if (stamps.get(taskName) === today) return false
+  stamps.set(taskName, today)
+  return true
+}
+
+// True exactly once per (task, level, day) -- claims the stamp as a side
+// effect so the caller only sends when this returns true (test 10: a second
+// same-day fire, or a same-day restart, must not repeat the notice).
+function claimSizeGuardNotice(taskName: string, level: 'warn' | 'alert', nowMs: number): boolean {
+  const stamps = level === 'warn' ? sizeGuardWarnSentDate : sizeGuardAlertSentDate
+  const today = todayStamp(nowMs)
+  if (!shouldSendSizeGuardNotice(stamps, taskName, today)) return false
+  persistSizeGuardState()
+  return true
+}
+
+// Never lets a size-guard notice delay or fail the task fire it is reporting
+// on: both tiers are a synchronous inter-agent row to the main agent, each
+// wrapped in its own try/catch.
+function maybeSendSizeGuardNotice(taskName: string, bodyChars: number, nowMs: number): void {
+  const level = sizeGuardLevel(bodyChars)
+  if (level === 'none') return
+  if (!claimSizeGuardNotice(taskName, 'warn', nowMs)) {
+    // Already warned today. An 'alert'-level body still needs its own,
+    // separately-stamped ALERT tier below, so only bail here for 'warn'.
+    if (level === 'warn') return
+  } else {
+    logger.warn({ task: taskName, bodyChars, warnChars: SCHEDULED_TASK_BODY_WARN_CHARS }, 'scheduled task body has grown past the size-guard warn threshold')
+    try {
+      createAgentMessage('system', MAIN_AGENT_ID, [
+        `[scheduler] A(z) "${taskName}" ütemezett feladat SKILL.md törzse ${bodyChars} karakter (figyelmeztetési küszöb: ${SCHEDULED_TASK_BODY_WARN_CHARS}).`,
+        'A kézbesítés emiatt nem sérülékeny (hivatkozásos küldés), de a méret növekszik. A buktatók references/ alá mozgatása csökkentené.',
+      ].join('\n'))
+    } catch (err) {
+      logger.warn({ err, task: taskName }, 'size-guard warn: inter-agent notice failed')
+    }
+  }
+  if (level !== 'alert') return
+  if (!claimSizeGuardNotice(taskName, 'alert', nowMs)) return
+  logger.warn({ task: taskName, bodyChars, alertChars: MAX_SCHEDULED_TASK_PROMPT_LEN }, 'scheduled task body has grown past the size-guard alert threshold')
+  try {
+    createAgentMessage('system', MAIN_AGENT_ID, [
+      `[scheduler] RIASZTÁS: a(z) "${taskName}" ütemezett feladat SKILL.md törzse ${bodyChars} karakter (riasztási küszöb: ${MAX_SCHEDULED_TASK_PROMPT_LEN}).`,
+      'A kézbesítés emiatt nem sérülékeny (hivatkozásos küldés), de a méret növekszik. A buktatók references/ alá mozgatása csökkentené.',
+    ].join('\n'))
+  } catch (err) {
+    logger.warn({ err, task: taskName }, 'size-guard alert: inter-agent notice failed')
   }
 }
 
@@ -996,17 +1219,48 @@ async function attemptFireTask(
     const taskBody = preCheckPrefix
       ? `[Pre-check eredmeny]\n${preCheckPrefix}\n\n[Feladat]\n${promptWithMetrics}`
       : promptWithMetrics
+    // SCHEDPROMPTREF917: the size-guard measures the SKILL.md body alone
+    // (task.prompt, before pre-check/metrics are spliced in) -- those two are
+    // runner-generated per fire and the task author has no control over
+    // their length, so folding them in would make the guard fire on
+    // something the operator cannot fix from the SKILL.md.
+    maybeSendSizeGuardNotice(task.name, task.prompt.length, now)
+    const { block: scheduledTaskBlock } = buildScheduledTaskBlock(task.name, taskBody, host, now)
     const fullPrompt =
       SCHEDULED_TASK_PREAMBLE + '\n' +
       prefix.trimEnd() + '\n\n' +
-      wrapScheduledTask(`scheduled-task:${task.name}`, taskBody)
+      scheduledTaskBlock
+    let typedAt = Date.now() // replaced by onEmitStart; see the note after the call
     // forceSend skips the busy-state check above; it must also skip the
     // pre-flight wait-until-idle gate inside sendPromptToSession, otherwise a
     // task aimed at a long-busy session would block on the 12s idle wait every
     // tick -- defeating the very purpose of forceSend (inject regardless, let
     // Claude Code queue it). All non-forceSend tasks keep the gate ON.
-    await sendPromptToSession(session, fullPrompt, host, { waitForIdle: !task.forceSend })
+    // AUDITBORITEKVESZ918: onBusySend fires when the idle gate timed out and the
+    // prompt went into a BUSY pane best-effort -- the delivery mode that produced
+    // the 2026-09-18 16:00 spliced kanban-audit prompt (envelope gone, head cut
+    // off) while task_runs still recorded a plain 'fired'. The flag only changes
+    // the recorded status below; delivery is untouched.
+    let busySend = false
+    await sendPromptToSession(session, fullPrompt, host, {
+      onEmitStart: () => {
+        typedAt = Date.now()
+      },
+      waitForIdle: !task.forceSend,
+      onBusySend: () => {
+        busySend = true
+      },
+    })
     const submittedAt = Date.now()
+    // typedAt (PROMPTCSONK923) is the moment the FIRST KEYSTROKE of this prompt
+    // was emitted (onEmitStart fires inside the pane's send lock), not when the
+    // call above began: before emission sendPromptToSession runs the modal
+    // dismissals and up to 12 s of idle wait, and a prompt submitted in that
+    // window is not ours. The initial Date.now() is only a fallback for a send
+    // that threw before emitting -- the catch below then records 'error' and
+    // registers no entry. Residual, stated: a PREVIOUS copy of the same task
+    // still queued in a busy pane and dequeued after this instant would carry
+    // the same tail; the lock cannot exclude that, it is a TUI queue.
     scheduleLastRun.set(task.name, now)
     persistScheduleLastRun()
     // A lateCatchUpMs value means this tick only matched because of the
@@ -1025,6 +1279,21 @@ async function attemptFireTask(
       logger.warn(
         { task: task.name, agent: agentName, session, lateCatchUpMinutes: Math.round(lateCatchUpMs / 60000) },
         'Scheduled task fired via restart catch-up window -- missed its normal tick',
+      )
+    } else if (busySend) {
+      // 'fired_busy', not 'fired': the pane was still busy when the prompt was
+      // typed. CORRECTED 2026-09-23 (PROMPTCSONK923): that alone is not damage.
+      // The 09-18 16:00 kanban-audit run cited above arrived INTACT (its
+      // transcript holds the full prompt); a busy-pane send queued whole in a
+      // live repro. What actually arrived is judged from the transcript by the
+      // sweep (checkTaskDeliveryIntegrity -> task_runs.delivery); this status
+      // only keeps the send condition. A distinct
+      // status is the whole point -- it makes the corrupted-delivery class
+      // visible in the run history instead of hiding behind a clean 'fired'.
+      firedRunId = appendTaskRun(task.name, agentName, 'fired_busy')
+      logger.warn(
+        { task: task.name, agent: agentName, session },
+        'Scheduled task typed into a BUSY pane after the idle budget -- recorded as fired_busy; the delivery verdict comes from the transcript',
       )
     } else {
       firedRunId = appendTaskRun(task.name, agentName, 'fired')
@@ -1096,6 +1365,8 @@ async function attemptFireTask(
       timeoutMs: resolveStuckTimeoutMs(task),
       runId: firedRunId,
       taskType: task.type,
+      // Local agents only: a remote agent's transcript is on its own host.
+      ...(host == null ? { sentText: paneOneLine(fullPrompt), typedAt } : {}),
       deliveryPending: true,
     }
     taskInflightMap.set(`${task.name}@${agentName}`, inflightEntry)
@@ -1499,6 +1770,31 @@ function sendLostRedeliveryGiveUpNotice(entry: TaskInflightEntry, attempts: numb
 // stage-2 escalation -- the board should reflect a stuck task as soon as the
 // main agent is told, independent of whether it later escalates to the
 // operator.
+// SCHEDSORZAR923 (2): the alert says WHAT it measures. The watchdog knows one
+// thing -- the pane has been busy since the injection -- and nothing about the
+// task's own work: an agent that finished the task and went on to other work
+// keeps the pane busy, and a background-polling round leaves it idle. Measured
+// 2026-09-23: a 3.4-minute finding alerted at 25.5 minutes because the pane
+// stayed busy afterwards; a threshold was raised on such numbers. So the line
+// names the instrument, not "runs for N minutes -- possible hang", and it
+// carries the task_runs row (id + dispatch status) so the reader can look it
+// up instead of guessing. Pure, exported for the text pins.
+export function describeInflightPaneAge(
+  entry: Pick<TaskInflightEntry, 'taskName' | 'agentName' | 'runId'>,
+  elapsedMs: number,
+  runStatus: string | null,
+): string {
+  const ageMinutes = Math.floor(elapsedMs / 60000)
+  const row = entry.runId != null ? `task_runs #${entry.runId}${runStatus ? ` (${runStatus})` : ''}` : 'task_runs sor nélkül'
+  return `A(z) "${entry.taskName}" (${entry.agentName}) ütemezett feladat injektálása óta a pane ${ageMinutes} perce foglalt` +
+    ` -- ez a pane elfoglaltsága, NEM a feladat munkaideje: a feladat közben be is fejeződhetett, ha az ágens mással dolgozik tovább; ${row}.`
+}
+
+function runStatusOf(entry: Pick<TaskInflightEntry, 'runId'>): string | null {
+  if (entry.runId == null) return null
+  try { return getTaskRunStatus(entry.runId) } catch { return null }
+}
+
 function sendTaskInflightMainAgentNotice(entry: TaskInflightEntry, elapsedMs: number): void {
   const ageMinutes = Math.floor(elapsedMs / 60000)
 
@@ -1509,8 +1805,8 @@ function sendTaskInflightMainAgentNotice(entry: TaskInflightEntry, elapsedMs: nu
 
   const thresholdMinutes = Math.round(entry.timeoutMs / 60000)
   const text = [
-    `[scheduler] A(z) "${entry.taskName}" (${entry.agentName}) ütemezett feladat ${ageMinutes} perce fut -- lehetséges beakadás (küszöb: ${thresholdMinutes} perc).`,
-    'Ha jogosan fut ennél tovább, allitsd a task-config.json "stuckAfterMinutes" mezojet.',
+    `[scheduler] ${describeInflightPaneAge(entry, elapsedMs, runStatusOf(entry))} Küszöb: ${thresholdMinutes} perc pane-foglaltság.`,
+    'Ha a pane jogosan foglalt ennél tovább (hosszú feladat, vagy az ágens mással dolgozik), allitsd a task-config.json "stuckAfterMinutes" mezojet.',
     'Ellenőrizd az ágenst; ha nem oldódik meg, az uzemeltető direkt ertesitest kap ha ez tovabb tart.',
   ].join('\n')
   try {
@@ -1575,8 +1871,8 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
       ? `${Math.round(medianMs / 1000)} másodperc`
       : `${Math.round(medianMs / 60_000)} perc`
   const text = [
-    `[${BOT_NAME} scheduler] A(z) "${entry.taskName}" (${entry.agentName}) ütemezett feladat ${ageMinutes} perce fut -- lehetséges beakadás. A(z) fő-agent mar ertesitve volt errol, de nem oldodott meg.`,
-    ...(typical ? [`Ez a feladat általában ${typical} alatt lefut (a korábbi befejezett futások mediánja).`] : []),
+    `[${BOT_NAME} scheduler] ${describeInflightPaneAge(entry, elapsedMs, runStatusOf(entry))} A(z) fő-agent mar ertesitve volt errol, de a pane azota is foglalt.`,
+    ...(typical ? [`Ez a feladat általában ${typical} alatt lefut (a korábbi befejezett futások mediánja; ez is PANE-IDŐ: az injektálástól a pane első tétlen állapotáig, nem munkaidő).`] : []),
     `A riasztási küszöb ennél a feladatnál ${thresholdMinutes} perc; ha ez a feladat jogosan fut ennél tovább, allitsd a task-config.json "stuckAfterMinutes" mezojet.`,
     'Az ágensben megtekintheted; a dashboard /Ütemezések oldalán visszavonható ha kell.',
   ].join('\n')
@@ -1596,14 +1892,15 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
 export const SCHEDULE_TICK_MS = 15_000
 
 export function startScheduleRunner(): NodeJS.Timeout {
-  // Close runs that the previous process was still watching when it stopped.
-  // taskInflightMap is in memory, so a restart loses every open entry and those
-  // rows would stay open for ever -- the same "cannot tell running from
-  // finished" hole this bookkeeping exists to close, just in a smaller window.
-  // They are recorded as 'interrupted', not 'done': we do not know whether they
-  // finished, and saying so beats guessing either way.
+  // Close EVERY run that the previous process was still watching when it
+  // stopped. taskInflightMap is in memory, so a restart loses every open entry
+  // and nothing else can ever close those rows (SCHEDSORZAR923: an age window
+  // here left a minutes-old run open for hours). They are recorded as
+  // 'interrupted' with a zero duration (completed_at = ts), not 'done' and not
+  // "now": we do not know whether they finished, and a "now" stamp would look
+  // like a measured duration.
   try {
-    const closed = reconcileOpenTaskRuns(TASK_FIRE_MAX_TRACK_MS)
+    const closed = reconcileOpenTaskRuns()
     if (closed > 0) logger.info({ closed }, 'Closed task runs orphaned by a restart (outcome=interrupted)')
   } catch (err) {
     logger.warn({ err }, 'task-run restart reconcile failed (non-fatal)')
@@ -1612,6 +1909,9 @@ export function startScheduleRunner(): NodeJS.Timeout {
   // Reload the persisted last-run times so a restart inside a task's catch-up
   // window does not re-fire an already-run task.
   loadScheduleLastRun()
+  // Reload the size-guard's per-task-per-day notice stamps (SCHEDPROMPTREF917)
+  // so a same-day restart does not repeat a WARN/ALERT already sent (test 10).
+  loadSizeGuardState()
 
   // Surface the effective cron timezone at startup. A silent UTC fallback (no
   // SCHEDULER_TZ/TZ in the env) shifts every fixed-time cron off its intended
@@ -1717,6 +2017,29 @@ export function startScheduleRunner(): NodeJS.Timeout {
         maxTrackMs: TASK_FIRE_MAX_TRACK_MS,
         ownerExtraMs: OWNER_ESCALATION_EXTRA_MS,
       })
+      // PROMPTCSONK923: record what actually ARRIVED, from the transcript. On
+      // a closing decision this is the last look, so a head-only arrival is
+      // recorded as 'tail-lost' instead of waiting for a tail that is not
+      // coming. Bookkeeping only: never alters the decision below, never
+      // throws into the sweep.
+      const closing = decision === 'done' || decision === 'abandoned' || decision === 'lost'
+      const verdict = checkTaskDeliveryIntegrity(entry, closing)
+      if (verdict != null) {
+        entry.deliveryVerdict = verdict
+        if (entry.runId != null) {
+          try {
+            setTaskRunDelivery(entry.runId, verdict)
+          } catch (err) {
+            logger.warn({ err, task: entry.taskName, runId: entry.runId }, 'Failed to record task-run delivery verdict')
+          }
+        }
+        if (verdict !== 'intact') {
+          logger.warn(
+            { task: entry.taskName, agent: entry.agentName, session: entry.session, runId: entry.runId, delivery: verdict },
+            'Scheduled prompt did NOT arrive as typed -- the session transcript shows a damaged delivery',
+          )
+        }
+      }
       if (decision === 'done' || decision === 'abandoned') {
         // 'done' is genuine success (sawTurn was true) -- this occurrence's
         // lost-redelivery count, if any, no longer applies to a FUTURE

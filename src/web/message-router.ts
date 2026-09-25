@@ -35,6 +35,7 @@ import { setLastInboundModality } from './voice-modality.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
 import { composeBatchInjection, batchInjectCapFor } from './batch-inject.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
+import { selectTickWindow } from './message-router-window.js'
 
 // A message that cannot be delivered within this window (target session never
 // exists / stays busy) is marked failed so it stops clogging the pending
@@ -428,7 +429,10 @@ export async function runMessageRouterTick(): Promise<void> {
     // rest roll to the next 5s tick. Bounds a single tick's wall-time so a
     // backlog (e.g. after a delivery stall) can never make one tick run long
     // and starve the event loop -- the slow-tick half of the progressive-hang
-    // pattern. Ordering is preserved (oldest first) so nothing is starved.
+    // pattern. The window is chosen FAIRLY across recipients (selectTickWindow,
+    // card fc5748f5): the globally oldest rows of busy recipients used to fill it
+    // and starve every other recipient, idle ones included. Each recipient's own
+    // rows stay oldest first.
     //
     // Federated (slash-qualified) recipients are split out FIRST: they must
     // never reach the local path (agentSessionName / readAgentRemoteHost would
@@ -438,7 +442,7 @@ export async function runMessageRouterTick(): Promise<void> {
     const localPending: AgentMessage[] = []
     const federatedPending: AgentMessage[] = []
     for (const m of allPending) (isQualifiedId(m.to_agent) ? federatedPending : localPending).push(m)
-    const pending = localPending.slice(0, MAX_MESSAGES_PER_TICK)
+    const pending = selectTickWindow(localPending, MAX_MESSAGES_PER_TICK, MAIN_AGENT_ID)
     const now = Date.now()
     // ---- update absent/present tracking for all receivers in this tick ----
     // Rebuild the stuck-detector's view of which agents are absent RIGHT NOW.
@@ -896,9 +900,9 @@ export async function runMessageRouterTick(): Promise<void> {
 // so an older row whose newer sibling rides in the same batch is annotated.
 // `remaining` is the recipient's REAL pending count beyond this batch, read
 // from the DB at compose time -- NOT the snapshot's leftover. The snapshot is
-// `localPending.slice(0, MAX_MESSAGES_PER_TICK)`, a GLOBAL 25-row cap across
+// the tick window (selectTickWindow), capped at MAX_MESSAGES_PER_TICK rows across
 // every recipient, so a recipient whose rows fit the batch cap inside the
-// snapshot can still have more rows past position 25; a snapshot-local count
+// snapshot can still have more rows beyond it; a snapshot-local count
 // would then say "nothing else waits" from a truncated view. Measured by the
 // reviewer (#1415): the pending set exceeded 25 in 38 separate episodes over
 // 30 days, peak 43, i.e. exactly in the congested moments this feature is

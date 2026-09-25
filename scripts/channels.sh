@@ -651,6 +651,7 @@ MODEL_FLAG=""
 # prints nothing, CFG_ENV stays EMPTY and the agent keeps the shared ~/.claude --
 # strict no-op for existing installs (no setting, no fleet token, no dist build).
 CFG_ENV=""
+CUSTOM_PROVIDER_ENV=""
 mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
 _node_bin="$(command -v node || true)"
 if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
@@ -667,18 +668,39 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   # and a non-empty output with no contract line in it is reported LOUDLY, because
   # that is the shape that silently disables isolation.
   _cfg_raw="$("$_node_bin" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$CHANNEL_PROVIDER" 3>&1 2>>"$INSTALL_DIR/store/channels-failures.log" 1>&2 || true)"
-  _cfg_line="$(printf '%s\n' "$_cfg_raw" | grep -m1 -E '^(explicit|rotated|isolated)	/' || true)"
+  _cfg_line="$(printf '%s\n' "$_cfg_raw" | grep -m1 -E '^(explicit|rotated|isolated|token)	/' || true)"
   if [ -n "$_cfg_raw" ] && [ -z "$_cfg_line" ]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN main-agent-isolated-config.mjs printed output with NO contract line -- isolation skipped. Raw first line: $(printf '%s\n' "$_cfg_raw" | head -1)" >> "$INSTALL_DIR/store/channels-failures.log"
   fi
   _cfg_mode="${_cfg_line%%	*}"
-  _cfg_dir="${_cfg_line#*	}"
+  _cfg_rest="${_cfg_line#*	}"
+  # `token` mode carries a THIRD field (the vault secret id) after the dir;
+  # every other mode's rest IS the dir.
+  if [ "$_cfg_mode" = "token" ]; then
+    _cfg_dir="${_cfg_rest%%	*}"
+    _cfg_token_secret="${_cfg_rest#*	}"
+  else
+    _cfg_dir="$_cfg_rest"
+    _cfg_token_secret=""
+  fi
   if [ -n "$_cfg_line" ] && [ -d "$_cfg_dir" ]; then
     if [ "$_cfg_mode" = "explicit" ] || [ "$_cfg_mode" = "rotated" ]; then
       # Both carry their OWN .credentials.json (an operator-logged-in dir for
       # `explicit`, a registered plan's dir for `rotated` -- design 6.5/4) --
       # neither wants the fleet token injected below.
       CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && "
+    elif [ "$_cfg_mode" = "token" ]; then
+      # Token-mode rotated plan: same credential-less dir as `isolated`, but
+      # export THAT plan's vault-stored token instead of the flotta's.
+      # resolve-plan-token-env.mjs is evaluated in the launched shell (same
+      # "never lands in argv/ps" property as the $(cat) below); the secret id
+      # itself is not secret, only its resolved value is. It falls back to
+      # the fleet token when the plan's own secret is missing, and exits
+      # nonzero (nothing on stdout) when NEITHER is available -- the bare
+      # `_plan_token=$(...)` assignment propagates that exit status, so the
+      # `&&` chain stops here rather than launching unauthenticated (PR #1304
+      # review (c)).
+      CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && _plan_token=\"\$(\"$_node_bin\" '$INSTALL_DIR/scripts/resolve-plan-token-env.mjs' '$_cfg_token_secret' '$INSTALL_DIR/store/.claude-oauth-token' '$INSTALL_DIR/store/channels-failures.log')\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$_plan_token\" && "
     else
       # Seed the token from the SAME 0600 file the isolated dir is gated on, so
       # the config dir and the active token always match (the isolated dir carries
@@ -751,6 +773,42 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
       unset _guard_port _guard_http
     fi
   fi
+  # Custom provider env for the main agent (e.g. LiteLLM/OpenCode endpoint).
+  # The helper reads the main agent's customProvider from agent-config.json,
+  # resolves the vault key, pre-stamps the x-api-key approval into .claude.json
+  # so the TUI gate never fires, then prints the shell export prefix to inject
+  # into the tmux launch command.
+  #
+  # Gate on dist/web/custom-providers.js (the key file the helper imports), NOT
+  # on dist/web/agent-process.js (the outer gate covers the CFG_ENV block above).
+  # If only agent-process.js is present but custom-providers.js is missing (e.g.
+  # a stale dist from a partially-applied update), the helper would hit a
+  # top-level import error and exit 1, causing an unconditional channel abort even
+  # when no customProvider is configured. Inner gate prevents that.
+  #
+  # Exit-code contract: exit 0 + empty = no customProvider (legitimate, carry on).
+  # exit 0 + non-empty = provider resolved, inject. exit 1 = customProvider IS
+  # configured but cannot be used (missing def/key/baseUrl). On exit 1 we ABORT
+  # rather than silently launching on the wrong (standard Claude/OAuth) backend.
+  if [ -f "$INSTALL_DIR/dist/web/custom-providers.js" ]; then
+    # Pass the isolated config dir only when it actually exists on disk, so the
+    # helper can stamp x-api-key approval into the right .claude.json. An empty
+    # arg makes it fall back to ~/.claude.json (the standard path).
+    _cp_cfg_dir=""
+    [ -d "${_cfg_dir:-}" ] && _cp_cfg_dir="${_cfg_dir:-}"
+    _cp_env="$("$_node_bin" "$INSTALL_DIR/scripts/main-agent-custom-provider.mjs" "$_cp_cfg_dir" 2>>"$INSTALL_DIR/store/channels-failures.log")"
+    _cp_rc=$?
+    if [ "$_cp_rc" -ne 0 ]; then
+      echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent-custom-provider exited $_cp_rc -- customProvider configured but broken; aborting to avoid silent wrong-backend launch (see channels-failures.log)" >> "$INSTALL_DIR/store/channels-failures.log"
+      exit "$_cp_rc"
+    fi
+    if [ -n "$_cp_env" ]; then
+      CUSTOM_PROVIDER_ENV="$_cp_env"
+      echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent custom-provider env injected" >> "$INSTALL_DIR/store/channels-failures.log"
+    fi
+    unset _cp_env _cp_rc _cp_cfg_dir
+  fi
+
   unset _cfg_raw _cfg_line _cfg_mode _cfg_dir
 fi
 unset _node_bin
@@ -898,21 +956,45 @@ STATE_DIR_ENV="export ${STATE_ENV_VAR}='${MAIN_CHAN_DIR}' && "
 # plugin dies in a restart loop, on a headless box where /login is impossible.
 # Creating the server ourselves makes set-environment -g always land, which is
 # what the fix intended. start-server is idempotent and cheap.
+#
+# CHANNELSAUTHRACE923 (measured 2026-09-23, tmux 3.3a): `start-server` does
+# NOT keep a server alive -- with no session it exits at once (exit-empty),
+# so the set-environment -g calls below answered "no server running" and were
+# lost. When the dashboard's worker session then created the server, our
+# new-session inherited its token-less global env: the channels claude came up
+# "Not logged in", --channels ignored, Telegram dead, silently. Two layers now:
+#   1. the token rides on OUR new-session itself (`-e`, tmux >= 3.2), so this
+#      session has it whoever created the server;
+#   2. the globals are set again right AFTER new-session, when a server
+#      certainly exists, so a later pane relaunch (auto-restart runner) and
+#      every sub-agent session inherit them too.
+_tmux_set_auth_globals() {
+  if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    $TMUX set-environment -g CLAUDE_CODE_OAUTH_TOKEN "$CLAUDE_CODE_OAUTH_TOKEN" 2>/dev/null || true
+  fi
+  if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    $TMUX set-environment -g ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY" 2>/dev/null || true
+  fi
+  # Propagate the prompt-suggestion disable to every sub-agent tmux session.
+  $TMUX set-environment -g CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION false 2>/dev/null || true
+  # Same for the auto-updater kill switch. A plain `export` above only reaches
+  # sessions that inherit THIS shell, i.e. only when channels.sh happened to
+  # create the tmux server first; the dashboard's worker sessions often win that
+  # race. -g makes launch order irrelevant, which matters here because it takes
+  # exactly two self-updating sessions to wipe the shared global install.
+  $TMUX set-environment -g DISABLE_AUTOUPDATER 1 2>/dev/null || true
+}
 $TMUX start-server 2>/dev/null || true
-if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-  $TMUX set-environment -g CLAUDE_CODE_OAUTH_TOKEN "$CLAUDE_CODE_OAUTH_TOKEN" 2>/dev/null || true
+_tmux_set_auth_globals
+
+# new-session -e needs tmux >= 3.2; older tmux keeps the global-env path only.
+TMUX_AUTH_ENV=()
+_tmux_ver="$($TMUX -V 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)"
+if [ -n "$_tmux_ver" ] && awk -v v="$_tmux_ver" 'BEGIN { split(v, p, "."); exit !((p[1] > 3) || (p[1] == 3 && p[2] >= 2)) }'; then
+  [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && TMUX_AUTH_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN")
+  [ -n "${ANTHROPIC_API_KEY:-}" ] && TMUX_AUTH_ENV+=(-e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY")
 fi
-if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-  $TMUX set-environment -g ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY" 2>/dev/null || true
-fi
-# Propagate the prompt-suggestion disable to every sub-agent tmux session.
-$TMUX set-environment -g CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION false 2>/dev/null || true
-# Same for the auto-updater kill switch. A plain `export` above only reaches
-# sessions that inherit THIS shell, i.e. only when channels.sh happened to
-# create the tmux server first; the dashboard's worker sessions often win that
-# race. -g makes launch order irrelevant, which matters here because it takes
-# exactly two self-updating sessions to wipe the shared global install.
-$TMUX set-environment -g DISABLE_AUTOUPDATER 1 2>/dev/null || true
+unset _tmux_ver
 
 # Owner commands (ELSOKOR922 spec D-4): the Telegram plugin answers /status
 # and /help itself, so those two never reach the session's command hook. Take
@@ -951,8 +1033,10 @@ fi
 # just THIS session first -- never the server, never another agent's session --
 # otherwise new-session below fails with "duplicate session".
 $TMUX kill-session -t "$SESSION" 2>/dev/null || true
-$TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
-  "${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+$TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" ${TMUX_AUTH_ENV[@]+"${TMUX_AUTH_ENV[@]}"} \
+  "${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${CUSTOM_PROVIDER_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+# The server certainly exists now: see CHANNELSAUTHRACE923 above.
+_tmux_set_auth_globals
 # remain-on-exit: without this, if the pane's claude process dies for ANY
 # reason (crashed plugin, OOM, a reap step killing its poller out from under
 # it) while it is the session's only window, tmux auto-closes the pane AND
@@ -1040,8 +1124,8 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
         # invasive change (a stable fallback dir + a seeded ~/.claude.json project
         # entry); see the PR description / card 7EB18437.
         [ -e "$INSTALL_DIR/CLAUDE.md" ] && ln -sf "$INSTALL_DIR/CLAUDE.md" "$_CHANNELS_STARTDIR/CLAUDE.md" 2>/dev/null || true
-        $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" \
-          "${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+        $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" ${TMUX_AUTH_ENV[@]+"${TMUX_AUTH_ENV[@]}"} \
+          "${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${CUSTOM_PROVIDER_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
         # See the primary new-session above: remain-on-exit keeps the pane
         # (and session) alive if claude dies early, so the scheduled relaunch
         # can always find it. This is the /tmp-fallback launch path, same fix.
@@ -1486,7 +1570,12 @@ ELAPSED=$(( $(date +%s) - START_TS ))
 if [ "$ELAPSED" -lt 30 ]; then
   echo "WARN: channels session exited after ${ELAPSED}s (likely config error). Check logs." >&2
   echo "$(date '+%Y-%m-%d %H:%M:%S') rapid-exit after ${ELAPSED}s" >> "$INSTALL_DIR/store/channels-failures.log"
-  FAIL_COUNT=$(wc -l < "$INSTALL_DIR/store/channels-failures.log" 2>/dev/null || echo 0)
+  # c5296a52: count the RAPID-EXIT lines, not every line in the file. The same log carries
+  # WARN lines from a normal startup (isolated-config notes, failed guard POSTs): on
+  # 2026-09-18 the file held 2 lines, BOTH warnings and zero rapid-exits, so the first real
+  # rapid-exit would already have counted as 3 (60s backoff) and two more warnings as 5
+  # (300s). A backoff that grows from warnings punishes a healthy start.
+  FAIL_COUNT=$(grep -c "rapid-exit after" "$INSTALL_DIR/store/channels-failures.log" 2>/dev/null || echo 0)
   FAIL_COUNT=$((FAIL_COUNT))
   if [ "$FAIL_COUNT" -ge 5 ]; then
     echo "ERROR: ${FAIL_COUNT} rapid failures detected. Waiting 300s before next attempt." >&2

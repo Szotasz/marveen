@@ -19,6 +19,10 @@ MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' .env 2>/dev/null | head -1 | cut -d= 
 WEB_PORT="${WEB_PORT:-$(grep -E '^WEB_PORT=' "$(dirname "$0")/../.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')}"
 WEB_PORT="${WEB_PORT:-3420}"
 MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
+# Active channel provider (telegram default) -- the progress-watchdog section
+# below compares the live hook/timer plumbing against it.
+CHANNEL_PROVIDER="$(grep -E '^CHANNEL_PROVIDER=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')"
+CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
 
 echo -e "\n${BOLD}Marveen Doctor${RESET}: $(date '+%Y-%m-%d %H:%M:%S')\n"
 
@@ -106,6 +110,48 @@ elif [ -f "$MANAGED_FILE" ] && python3 -c "import json,sys; sys.exit(0 if json.l
 else
   warn "channelsEnabled: HIANYZIK -- team/enterprise orgnal a bejovo channel-uzenetek eldobodhatnak. Fix: bash scripts/ensure-managed-channels-enabled.sh"
 fi
+
+# --- Progress-watchdog drift ---
+# Only the ACTIVE provider's progress plumbing should be live. A migration
+# (telegram -> slack) leaves the old provider's watchdog timer enabled, which
+# then runs forever against state dirs that no longer exist -- silent waste
+# that nothing else reports.
+#
+# Since #1305 the settings hooks are repo-shipped (project scope), so a
+# ${prov}_progress entry in the USER-GLOBAL ~/.claude/settings.json is always a
+# leftover from a pre-#1305 install, for the active provider too: it makes the
+# fleet hooks fire in the owner's own, unrelated Claude Code sessions.
+# Diagnostic only (warn, not fail): the fix is a separate, explicit command.
+echo -e "\n${BOLD}Progress watchdog${RESET}"
+SERVICE_ID_DOC="$(grep -E '^SERVICE_ID=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')"
+SERVICE_ID_DOC="${SERVICE_ID_DOC:-$MAIN_AGENT_ID}"
+for prov in telegram slack; do
+  stale=""
+  daemon_present=""
+  if [ "$(uname -s)" = "Darwin" ]; then
+    [ -f "$HOME/Library/LaunchAgents/com.${SERVICE_ID_DOC}.${prov}-progress-watchdog.plist" ] && daemon_present="yes"
+  else
+    [ -f "$HOME/.config/systemd/user/${SERVICE_ID_DOC}-${prov}-progress-watchdog.timer" ] && daemon_present="yes"
+  fi
+  [ -n "$daemon_present" ] && stale="daemon"
+  legacy_hooks=""
+  if [ -f "$HOME/.claude/settings.json" ] && grep -q "${prov}_progress" "$HOME/.claude/settings.json" 2>/dev/null; then
+    legacy_hooks="yes"
+    stale="${stale:+$stale + }user-global hooks"
+  fi
+  if [ "$prov" = "$CHANNEL_PROVIDER" ]; then
+    if [ -n "$daemon_present" ]; then
+      ok "$prov (aktiv): progress watchdog telepitve"
+    else
+      warn "$prov (aktiv): NINCS progress watchdog -- a beragadt korokrol nem szol semmi. Fix: bash scripts/install-${prov}-progress-hook.sh"
+    fi
+    if [ -n "$legacy_hooks" ]; then
+      warn "$prov (aktiv): #1305 elotti hookok meg a user-global ~/.claude/settings.json-ben -- a tulajdonos sajat sessionjeiben is elsulnek. Fix: bash scripts/retire-progress-watchdog.sh $prov --force, majd bash scripts/install-${prov}-progress-hook.sh"
+    fi
+  elif [ -n "$stale" ]; then
+    warn "$prov (NEM aktiv): elavult progress plumbing meg el ($stale) -- feleslegesen fut. Fix: bash scripts/retire-progress-watchdog.sh $prov"
+  fi
+done
 
 # --- Channel keepalive ---
 echo -e "\n${BOLD}Keepalive${RESET}"

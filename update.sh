@@ -413,15 +413,50 @@ OLD_VERSION_FULL=$(git rev-parse HEAD 2>/dev/null || echo "")
 # checkout sat 53 commits ahead / 0 behind on 2026-08-30, having just merged
 # upstream, and the updater still would not run -- no build, no migration, no
 # restart, on a tree that was in fact current. Only ahead AND behind together
-# mean the histories have parted and a human has to reconcile them.
+# mean the histories have parted, and reconciling them is a human's call by
+# DEFAULT -- see the UPDATE_AUTO_REBASE block below, which is off unless the
+# operator of this install turns it on.
 RESULT_PHASE="pull"
 AHEAD=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
 BEHIND=$(git rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
 if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
-  RESULT_MSG="A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van az upstreamhez kepest (szetvalt elozmeny); a fast-forward frissites nem lehetseges. Nezd meg: git log @{u}..HEAD"
-  echo -e "${RED}HIBA:${NC} a helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van (szetvalt elozmeny); fast-forward nem lehetseges. Nezd: git log @{u}..HEAD"
-  restore_stash_before_exit
-  exit 5
+  # Diverged history: ahead AND behind. #1112 made this refuse ON PURPOSE -- a
+  # human has to reconcile it -- and that stays the DEFAULT here. What this adds
+  # is an explicit opt-in for installs whose operator has already decided that
+  # replaying local commits is the right call for their box (fleet operators who
+  # commit fixes locally and rarely push hit this on every update; "the Update
+  # button does nothing" is the dominant report). Rewriting someone else's
+  # history without their say-so is not a default we are willing to ship, so the
+  # switch is off unless UPDATE_AUTO_REBASE=1 is set.
+  if [ "${UPDATE_AUTO_REBASE:-0}" = "1" ]; then
+    echo -e "  ${ORANGE}↻${NC} A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van; UPDATE_AUTO_REBASE=1, auto-rebase origin/${CURRENT_BRANCH}-re..."
+    # A FAILED fetch must NOT fall through to the rebase: rebasing onto a stale
+    # origin ref does not error, it just quietly does something other than what
+    # the operator asked for. Bail out to the same loud refusal as a conflict.
+    if ! git fetch origin "$CURRENT_BRANCH" --quiet 2>>"$INSTALL_DIR/store/update.log"; then
+      RESULT_MSG="Auto-rebase megszakitva: a 'git fetch origin ${CURRENT_BRANCH}' elbukott, igy csak egy ELAVULT origin-refre lehetne rebase-elni. Nezd: store/update.log"
+      echo -e "${RED}HIBA:${NC} a fetch elbukott, az auto-rebase kimarad (elavult origin-refre nem rebase-elunk)."
+      bash "$INSTALL_DIR/scripts/notify.sh" "🔴 Dashboard update: a fetch elbukott, az auto-rebase kimaradt. Reszletek: store/update.log" >/dev/null 2>&1 || true
+      restore_stash_before_exit
+      exit 5
+    fi
+    if git -c core.editor=true rebase "origin/${CURRENT_BRANCH}" >>"$INSTALL_DIR/store/update.log" 2>&1; then
+      echo -e "  ${GREEN}✓${NC} Auto-rebase sikeres (${AHEAD} helyi commit ujrajatszva a friss upstreamre)."
+      RESULT_MSG="Auto-rebase: ${AHEAD} helyi commit ujrajatszva origin/${CURRENT_BRANCH}-re."
+    else
+      git rebase --abort 2>/dev/null || true
+      RESULT_MSG="A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van, es az auto-rebase KONFLIKTUSBA utkozott -- kezi (szemantikus) rebase kell. Nezd: git log @{u}..HEAD"
+      echo -e "${RED}HIBA:${NC} auto-rebase konfliktus, kezi feloldas kell (git log @{u}..HEAD)."
+      bash "$INSTALL_DIR/scripts/notify.sh" "🔴 Dashboard update: ${AHEAD} helyi commit utkozik az upstreammel, az auto-rebase konfliktusba futott. Kezi szemantikus rebase kell. Reszletek: store/update.log" >/dev/null 2>&1 || true
+      restore_stash_before_exit
+      exit 5
+    fi
+  else
+    RESULT_MSG="A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van az upstreamhez kepest (szetvalt elozmeny); a fast-forward frissites nem lehetseges. Nezd meg: git log @{u}..HEAD (vagy UPDATE_AUTO_REBASE=1 az automatikus ujrajatszashoz)"
+    echo -e "${RED}HIBA:${NC} a helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van (szetvalt elozmeny); fast-forward nem lehetseges. Nezd: git log @{u}..HEAD"
+    restore_stash_before_exit
+    exit 5
+  fi
 fi
 if [ "${AHEAD:-0}" -gt 0 ]; then
   echo -e "  ${ORANGE}Megjegyzes:${NC} a helyi checkout ${AHEAD} committal elore van, lemaradas nincs -- a letoltes nem hoz ujat, a frissites folytatodik."
@@ -1345,8 +1380,46 @@ _health() { local i=0; while [ "$i" -lt 20 ]; do
   sleep 1; i=$(( i + 1 )); done; return 1; }
 _restart() { "$INSTALL_DIR/scripts/stop.sh"; "$INSTALL_DIR/scripts/start.sh"; }
 
+# ZAKARFELUGY921: THE PORT ANSWERING IS NOT PROOF THAT THE SERVICES ARE UNDER
+# THEIR UNITS. That is exactly how the reported install looked for two days: the
+# dashboard answered, the channel answered, and both units were `inactive`, so
+# Restart= and OnFailure= no longer applied to anything. _health cannot see this
+# -- it only asks the port. This check asks systemd instead, and it reports
+# rather than fails: a unit drift is not fixed by a rollback, so turning it into
+# a failed update would swap a silent problem for a destructive one.
+# The SLUG is derived the same way start.sh/stop.sh derive it.
+_unit_drift() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  pidof systemd >/dev/null 2>&1 || return 0
+  local slug drift="" u scope=""
+  slug="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  slug="${slug:-marveen}"
+  if systemctl cat "${slug}-dashboard.service" >/dev/null 2>&1; then scope=""
+  elif systemctl --user cat "${slug}-dashboard.service" >/dev/null 2>&1; then scope="--user"
+  else return 0
+  fi
+  for u in "${slug}-dashboard" "${slug}-channels"; do
+    # Only enabled units are a promise; a deliberately disabled one is not drift.
+    systemctl $scope is-enabled --quiet "$u" 2>/dev/null || continue
+    systemctl $scope is-active --quiet "$u" 2>/dev/null || drift="${drift} ${u}"
+  done
+  [ -n "$drift" ] && printf '%s' "${drift# }"
+  return 0
+}
+
 _restart
-if _health; then _finish success restart 0 ""; fi
+UNIT_DRIFT="$(_unit_drift)"
+if [ -n "$UNIT_DRIFT" ]; then
+  echo "FIGYELEM: enabled, de NEM active unit(ok) a restart utan: ${UNIT_DRIFT}" >&2
+  echo "          A szolgaltatas valaszolhat a portjan, de a unitjan KIVUL fut:" >&2
+  echo "          a Restart= es az OnFailure= ilyenkor NEM vonatkozik ra." >&2
+fi
+if _health; then
+  if [ -n "$UNIT_DRIFT" ]; then
+    _finish success restart 0 "A frissites lement es a dashboard valaszol, DE enabled unit(ok) nem active: ${UNIT_DRIFT}. A szolgaltatas a unitjan kivul fut, tehat a Restart=/OnFailure= felugyelet nem ervenyes ra."
+  fi
+  _finish success restart 0 ""
+fi
 
 # Restart did not bring the dashboard back -> auto-rollback to the pre-update
 # commit (safe: ff-only ancestor, no force-push, no local-change discard) and
@@ -1379,22 +1452,43 @@ FINALIZE_LAUNCHED=1
 # dashboard-triggered run leaves it unset -> silent (the UI polls the status).
 FINALIZE_ARGS=("$INSTALL_DIR" "$OLD_VERSION_FULL" "$OLD_VERSION" "${WEB_PORT:-3420}" "$RESULT_FILE" "$BUILT_COMMIT_FILE" "$NEW_VERSION" "${NODE_PIN_DIR:-}" "${MARVEEN_UPDATE_NOTIFY:-0}")
 XDG_RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u 2>/dev/null)}"
+# ZAKARFELUGY921 (external report, 2026-09-21): the finalizer used to leave no
+# trace at all, so a run that died mid-restart looked identical to one that
+# never started. Every branch below writes here now.
+FINALIZE_LOG="$INSTALL_DIR/store/update-finalize.log"
 if command -v systemd-run >/dev/null 2>&1 && [ -d "$XDG_RUN" ]; then
   # Linux/systemd: the finalizer runs inside a transient scope whose OWN cgroup
   # is separate from the dashboard cgroup, so it survives stop.sh tearing that
-  # cgroup down (which reaps update.sh). Cgroup separation -- not foreground/bg
-  # -- is what guarantees survival, so we background it and return promptly; if
-  # scope creation fails, fall back to a plain detached setsid run.
-  XDG_RUNTIME_DIR="$XDG_RUN" systemd-run --user --scope --collect --quiet \
+  # cgroup down (which reaps update.sh).
+  #
+  # THE CGROUP IS NECESSARY BUT NOT SUFFICIENT, and this comment used to claim
+  # otherwise (ZAKARFELUGY921). `--scope` does NOT detach the controlling
+  # terminal: the finalizer inherited the calling tmux pane's pty, and stop.sh
+  # ends with `tmux kill-session`, which destroys that very pty. The hangup then
+  # killed the finalizer AFTER stop.sh returned and BEFORE start.sh ran, so the
+  # services came back outside their units -- Restart= and OnFailure= silently
+  # stopped applying.
+  #
+  # MEASURED on Ubuntu 24.04 / systemd 255, A/B in one pty session, with a
+  # no-systemd-run child as the positive control: after the hangup the plain
+  # child and the bare `systemd-run --scope` child were both gone (heartbeat
+  # frozen), while the `setsid systemd-run --scope` child kept running. The
+  # setsid child still sits in its own transient scope cgroup, so detaching the
+  # terminal costs nothing that the cgroup gave us.
+  #
+  # setsid is NOT hoisted out of this branch on purpose: macOS has no setsid at
+  # all (measured), and this branch only runs where systemd-run exists.
+  XDG_RUNTIME_DIR="$XDG_RUN" setsid systemd-run --user --scope --collect --quiet \
     bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" \
-    || setsid bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null > /dev/null 2>&1 &
+    < /dev/null >> "$FINALIZE_LOG" 2>&1 \
+    || setsid bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1 &
 elif command -v setsid >/dev/null 2>&1; then
   # macOS/launchd or no user-systemd: no cgroup self-kill. Detach in the
   # background so a parent signal during restart cannot abort the health/
   # rollback sequence and update.sh returns promptly.
-  setsid bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null > /dev/null 2>&1 &
+  setsid bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1 &
 else
-  bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null > /dev/null 2>&1 &
+  bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1 &
 fi
 
 echo ""

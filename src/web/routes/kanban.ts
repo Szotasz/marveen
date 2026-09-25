@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import {
-  listKanbanCards, createKanbanCard, updateKanbanCard, KANBAN_WRITABLE_FIELDS,
+  listKanbanCards, kanbanAssigneeExists, createKanbanCard, updateKanbanCard, KANBAN_WRITABLE_FIELDS,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
   getKanbanComments, addKanbanComment, getKanbanCardEvents, listKanbanProjects,
   getKanbanCard, getChildCards, getDb,
@@ -10,7 +10,7 @@ import {
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
   addCardBlocker, removeCardBlocker, getBlockersForCard, getBlockedByCard,
-  getBlockersForAllCards, blockerWouldCycle,
+  getBlockersForAllCards, blockerWouldCycle, parentWouldCycle,
   listArchivedKanbanCards,
   revertIdeaFromKanban,
   getHeartbeatKanbanSummary,
@@ -18,6 +18,7 @@ import {
   countPlannedKanbanCards,
   getDbFileSizeMb,
   getTokenPruneLag,
+  getStuckKanbanCards,
   type TokenPruneLag,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
@@ -301,19 +302,97 @@ export function buildHeartbeatSummaryResponse(
 // that is not routed would send the caller one step further into the same fog.
 const KANBAN_CARD_METHODS = ['PUT', 'DELETE'] as const
 
+/**
+ * Parse the `includeArchived` query parameter.
+ *
+ * Three-valued on purpose: true / false / null-meaning-REJECT. The bug this replaces was
+ * a two-valued read where every unrecognised input collapsed into "false" -- which is how
+ * `?includeArchived=1` came back with the archived cards missing and no complaint.
+ *
+ * Bare presence (`?includeArchived` or `=`) reads as TRUE: that is the common URL idiom,
+ * and it errs toward returning MORE rows, which is the safe direction here -- the failure
+ * we are fixing was rows going missing.
+ */
+export function parseIncludeArchived(raw: string | null): boolean | null {
+  if (raw === null) return false
+  const v = raw.trim().toLowerCase()
+  if (v === '' || v === '1' || v === 'true' || v === 'yes' || v === 'on') return true
+  if (v === '0' || v === 'false' || v === 'no' || v === 'off') return false
+  return null
+}
+
 export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
-  const { req, res, path, method } = ctx
+  const { req, res, path, method, url } = ctx
 
   if (path === '/api/kanban' && method === 'GET') {
+    // includeArchived is honoured or REFUSED -- never silently dropped. Ignoring it was
+    // the actual defect: a caller had evidence it asked for archived cards, the response
+    // had evidence it did not, and nothing reconciled the two.
+    // ⛔ ISMERETLEN PARAM -> HANGOS 400, a /api/messages mintajara (sajat telepitesunkon mert
+    // korabbi eset). Harom vegpont adott harom kulonbozo valaszt ugyanarra a hibara: az egyik
+    // hangosan elutasitott, a masik ketto neman eldobta. A nema elfogadas TANITJA a
+    // talalgatast -- merve: hat agens HAROM kulonbozo neven probalta ugyanazt (includeArchived
+    // 16x, archived 6x, include_archived 6x), plusz ?id= 4x es ?limit= 1x. Egyik sem kapott
+    // visszajelzest, ezert probaltak tovabb.
+    // ⛔ SZIGORU halmaz, ALIAS NELKUL (sajat telepitesunkon hozott ugyvezetoi dontes): egy
+    // alias eletben tartana a talalgatast; a hibauzenetbol viszont megtanulhato a helyes nev.
+    const KNOWN_PARAMS = new Set(['agent', 'assignee', 'includeArchived'])
+    const unknown = [...ctx.url.searchParams.keys()].filter((k) => !KNOWN_PARAMS.has(k))
+    if (unknown.length) {
+      json(res, {
+        error: 'unknown query parameter',
+        unknown,
+        known: [...KNOWN_PARAMS],
+        hint: 'a lapok szurese "agent" (vagy "assignee"); EGY lapot a /api/kanban/<id> utvonal ad, '
+            + 'nem a ?id= parameter',
+      }, 400)
+      return true
+    }
+    const includeArchived = parseIncludeArchived(ctx.url.searchParams.get('includeArchived'))
+    if (includeArchived === null) {
+      json(res, {
+        error: 'Az includeArchived értéke érvénytelen. Elfogadott: 1, true, yes, on, ' +
+               '0, false, no, off (vagy érték nélkül = igaz).',
+      }, 400)
+      return true
+    }
     // Embed each card's labels in one extra JOIN query (getLabelsForAllCards)
     // instead of an N+1 per-card lookup, so the footer-pill UI gets
     // everything it needs in a single round trip.
+    // Az `assignee=` ugyanazt jelenti, mint az `agent=`: a dashboard es az agens-CLAUDE.md
+    // kulonbozo nevet tanit ugyanarra, es a KETTO kozul egyik sem volt hibas -- csak nem
+    // mukodott egyik sem.
+    const agent = ctx.url.searchParams.get('agent')
+      ?? ctx.url.searchParams.get('assignee')
+      ?? undefined
+    // An unrecognised agent name 400s naming the accepted set, rather than silently
+    // matching everything (`assignee = ?` against a name nothing has would just return
+    // an empty list with 200) -- the same silence-teaches-guessing argument as the
+    // KNOWN_PARAMS check above, applied to the value instead of the key. Accepted: a
+    // configured name (OWNER_NAME, BOT_NAME, fleet agents -- what /api/kanban/assignees
+    // advertises) OR any assignee that already exists on the board (external contributors
+    // get cards too). Both sides compare case-insensitively: configured names are
+    // capitalised (BOT_NAME=Marveen) while stored assignees are usually lowercase
+    // (`marveen`), and an exact compare rejected the bot's and owner's own names.
+    if (agent !== undefined) {
+      const wanted = agent.toLowerCase()
+      const isConfigured = [OWNER_NAME, BOT_NAME, ...listAgentNames()]
+        .some((n) => n.toLowerCase() === wanted)
+      if (!isConfigured && !kanbanAssigneeExists(agent)) {
+        json(res, {
+          error: 'unknown agent',
+          agent,
+          hint: 'lásd GET /api/kanban/assignees az elfogadott nevekért, vagy egy a táblán már szereplő assignee (kis/nagybetű mindegy)',
+        }, 400)
+        return true
+      }
+    }
     const labelsByCard = getLabelsForAllCards()
     // Blockers ride along in the same round trip as labels: the board needs
     // them to mark a blocked card, and a per-card fetch would be an N+1 on
     // every poll.
     const blockersByCard = getBlockersForAllCards()
-    const cards = listKanbanCards().map((card) => ({
+    const cards = listKanbanCards({ includeArchived, agent }).map((card) => ({
       ...card,
       labels: labelsByCard.get(card.id) ?? [],
       blockers: blockersByCard.get(card.id) ?? [],
@@ -341,6 +420,32 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   // naming items; the numbers ONLY ever come from counts.
   if (path === '/api/kanban/heartbeat-summary' && method === 'GET') {
     json(res, buildHeartbeatSummaryResponse(getHeartbeatKanbanSummary(), countNewHotMemories(MAIN_AGENT_ID), countPlannedKanbanCards(), getDbFileSizeMb(), getTokenPruneLag()))
+    return true
+  }
+
+  // KANBANSTUCKURES916: replaces the kanban-audit skill's inline "status ==
+  // in_progress" detector (structurally near-always empty on this board) with
+  // a real "started, then went idle" measurement across all non-done statuses.
+  // See getStuckKanbanCards in db.ts for the "started"/"last_activity"
+  // definitions. `examined: 0` gets its own `empty_reason` -- the skill's
+  // job is to report "could not measure" instead of a reassuring false zero.
+  if (path === '/api/kanban/stuck' && method === 'GET') {
+    const plannedDaysRaw = url.searchParams.get('planned_days') ?? '7'
+    const activeDaysRaw = url.searchParams.get('active_days') ?? '3'
+    const plannedDays = Number(plannedDaysRaw)
+    const activeDays = Number(activeDaysRaw)
+    if (!Number.isFinite(plannedDays) || plannedDays <= 0 || !Number.isFinite(activeDays) || activeDays <= 0) {
+      json(res, { error: 'invalid planned_days/active_days: must be positive numbers' }, 400)
+      return true
+    }
+    // 600s: the measured creator-comment window (D001, ELSOKOR922 Phase 0) --
+    // an immediate comment on a fresh card is a description, not a work-trace.
+    const result = getStuckKanbanCards({ plannedDays, activeDays, creatorCommentWindowSec: 600 })
+    if (result.examined === 0) {
+      json(res, { ...result, empty_reason: 'nincs megkezdett kártya' })
+    } else {
+      json(res, result)
+    }
     return true
   }
 
@@ -530,6 +635,25 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       }, 400)
       return true
     }
+    // A re-parent is refused rather than stored if it would close a loop, same reasoning as
+    // the blocker check above: a parent chain that loops back on itself is not a hierarchy,
+    // and touchAncestorChain (db.ts) only detects one after it already exists -- it cannot
+    // prevent the write that creates it. Clearing the parent (null/omitted) needs no check:
+    // there is nothing to walk.
+    if (typeof data.parent_id === 'string' && data.parent_id) {
+      if (!getKanbanCard(data.parent_id)) {
+        json(res, { error: 'A szülő kártya nem található' }, 404)
+        return true
+      }
+      if (parentWouldCycle(id, data.parent_id)) {
+        json(res, {
+          error: data.parent_id === id
+            ? 'Egy kártya nem lehet a saját szülője'
+            : 'Ez a szülő-kapcsolat kört zárna be',
+        }, 409)
+        return true
+      }
+    }
     if (updateKanbanCard(id, data, actor)) { json(res, { ok: true }); return true }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
@@ -623,13 +747,17 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const body = await readBody(req)
-    const { author, content } = JSON.parse(body.toString())
+    const { author, content, automated } = JSON.parse(body.toString())
     if (!author || !content) { json(res, { error: 'Szerző és tartalom kötelező' }, 400); return true }
     // Code-side kanban-ref enforcement: rewrite `#<hex8>` references that map
     // to a real card into the human-facing `#<seq>` form before persistence
     // (#75 Cuzcoo dispatch). Random hex / non-matching tokens pass through.
     const normalizedContent = normalizeKanbanRefs(content, getKanbanSeqByIdPrefix)
-    json(res, addKanbanComment(cardId, author, normalizedContent))
+    // `automated: true`: a bulk/machine writer marks its own comment, so the
+    // stuck detector never reads it as a work-trace (KANBANSTUCKURES916).
+    json(res, automated === true
+      ? addKanbanComment(cardId, author, normalizedContent, { automated: true })
+      : addKanbanComment(cardId, author, normalizedContent))
     return true
   }
 

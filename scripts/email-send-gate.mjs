@@ -84,6 +84,11 @@ const SEND_PATTERNS = [
 // would have lost a heredoc-fed real sender (FN).
 const HEREDOC_RE = /(<<-?\s*'?(\w+)'?[^\n]*)\n[\s\S]*?\n\2(?=\s|$)/g
 const ENV_ASSIGN = /^[A-Za-z_][A-Za-z_0-9]*=/
+// KWSPLIT924: shell reserved words that put the NEXT word in command position.
+// Stripped only at the head of a segment, never used as separators -- see the
+// full rationale at _CMD_POSITION_KEYWORDS in outgoing-copy-gate.py (the python
+// twin); the shared send-invocation-cases.json binds the two copies.
+const CMD_POSITION_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '{', '!'])
 const SENDER_PROG = /^(sendmail|msmtp|swaks)$/i
 const SENDPY = /^send\.py$/i
 const PYTHON = /^python3?$/i
@@ -155,9 +160,68 @@ export function segmentsTokens(cmd) {
 
 const basename = (t) => t.split('/').pop()
 
-function segmentIsSend(toksIn, depth) {
+// SENDWRAP924: a wrapper in front of the sender is stepped over WITH its own
+// flags -- see the full rationale at _WRAPPERS in outgoing-copy-gate.py (the
+// python twin). An unknown long flag without `=` is read both ways, so it errs
+// toward auditing. send-invocation-cases.json binds the two copies.
+const WRAPPERS = new Map([
+  ['time', ['fo', ['format', 'output'], 0]],
+  ['sudo', ['ughpCUrtDRT', ['user', 'group', 'host', 'prompt', 'close-from', 'other-user',
+    'role', 'type', 'chdir', 'chroot', 'command-timeout'], 0]],
+  ['env', ['uCS', ['unset', 'chdir', 'split-string'], 0]],
+  ['nohup', ['', [], 0]],
+  ['nice', ['n', ['adjustment'], 0]],
+  ['exec', ['a', [], 0]],
+  ['command', ['', [], 0]],
+  ['xargs', ['ILnPsdEa', ['arg-file', 'delimiter', 'eof', 'replace', 'max-lines', 'max-args',
+    'max-procs', 'max-chars', 'process-slot-var'], 0]],
+  ['timeout', ['sk', ['signal', 'kill-after'], 1]],
+  ['setsid', ['', [], 0]],
+])
+const HEAD_DEPTH = 8
+
+function commandHeads(toksIn, d = 0) {
   let toks = toksIn
-  while (toks.length && ENV_ASSIGN.test(toks[0])) toks = toks.slice(1)
+  while (toks.length && (ENV_ASSIGN.test(toks[0]) || CMD_POSITION_KEYWORDS.has(toks[0]))) toks = toks.slice(1)
+  if (!toks.length) return [toks]
+  const w = basename(toks[0])
+  // Still a wrapper at the depth bound: counts as a send (null), see the python twin.
+  if (d >= HEAD_DEPTH) return (WRAPPERS.has(w) || w === 'function' || w === 'coproc') ? [null] : [toks]
+  if (w === 'function') return commandHeads(toks.slice(2), d + 1)
+  if (w === 'coproc') return [...commandHeads(toks.slice(1), d + 1), ...commandHeads(toks.slice(2), d + 1)]
+  const spec = WRAPPERS.get(w)
+  if (!spec) return [toks]
+  const [shortVal, longVal, positionals] = spec
+  let i = 1
+  const starts = []
+  while (i < toks.length) {
+    const t = toks[i]
+    if (t === '--') { i++; break }
+    if (t.startsWith('--')) {
+      if (!t.includes('=') && longVal.includes(t.slice(2))) { i += 2; continue }
+      if (!t.includes('=')) starts.push(i + 2)
+      i++
+      continue
+    }
+    if (t.startsWith('-') && t.length > 1) {
+      if (w === 'command' && (t.includes('v') || t.includes('V'))) return []
+      let k = -1
+      for (let j = 1; j < t.length; j++) if (shortVal.includes(t[j])) { k = j; break }
+      i += k === t.length - 1 ? 2 : 1
+      continue
+    }
+    break
+  }
+  starts.unshift(i)
+  return starts.flatMap((s) => commandHeads(toks.slice(s + positionals), d + 1))
+}
+
+function segmentIsSend(toksIn, depth) {
+  return commandHeads(toksIn).some((h) => headIsSend(h, depth))
+}
+
+function headIsSend(toks, depth) {
+  if (toks === null) return true // the depth bound was hit on a wrapper: audit it
   if (!toks.length) return false
   const prog = basename(toks[0])
   const rest = toks.slice(1)
@@ -180,6 +244,30 @@ function segmentIsSend(toksIn, depth) {
   if (toks.some((t) => GRAPHMAIL.test(basename(t))) && rest.includes('send')) return true
   if (CURLISH.test(prog) && rest.some((t) => RESEND_TARGET.test(t))) return true
   return false
+}
+
+// True when some segment is still a wrapper at the depth bound (HEADDEPTH924),
+// so the deny says WHY -- see wrapper_depth_hit in outgoing-copy-gate.py.
+export function wrapperDepthHit(cmd) {
+  let segments
+  try {
+    segments = segmentsTokens(cmd)
+  } catch {
+    return false
+  }
+  // Only when the bound is the WHOLE reason: a visible send in another segment wins.
+  const heads = segments.flatMap((toks) => commandHeads(toks))
+  return heads.some((h) => h === null) && !heads.some((h) => h !== null && headIsSend(h, 0))
+}
+
+export function buildWrapperDepthMsg() {
+  return (
+    'TILTVA (governance hard-gate): a parancs valodi fejet nem latom. ' +
+    `A parancs a burkolo-korlatnal (${HEAD_DEPTH} egymasba agyazott burkolo: sudo, time, env, nohup, nice, timeout...) ` +
+    'is meg burkolo, tehat nem tudom eldonteni, hogy levelkuldes-e, es a kapu ilyenkor fail-closed. ' +
+    `Ha ez NEM levelkuldes: csokkentsd a burkolok szamat ${HEAD_DEPTH} vagy kevesebb ala. ` +
+    'Ha levelkuldes: sub-agentkent Bash-bol amugy sem kuldhetsz, a kimeno emailt a fo-agens kuldi.'
+  )
 }
 
 export function isSendInvocation(cmd, depth = 0) {
@@ -304,7 +392,7 @@ export function gateDecision(toolName, toolInput, isVerified = null) {
   }
   if (name === 'Bash') {
     const cmd = String(toolInput?.command ?? '')
-    if (isSendInvocation(cmd)) return { deny: true }
+    if (isSendInvocation(cmd)) return wrapperDepthHit(cmd) ? { deny: true, kind: 'wrapper-depth' } : { deny: true }
   }
   return { deny: false }
 }
@@ -558,6 +646,7 @@ if (isInvokedDirectly()) {
     // vouch for an unsourced recipient.
     if (kind === 'unverified-recipient') deny(buildUnverifiedRecipientMsg(addresses ?? []))
     if (kind === 'draft-required') deny(buildDraftOnlyMsg(ownerName))
+    if (kind === 'wrapper-depth') deny(buildWrapperDepthMsg())
     // Thread-scoped narrowing: only when the scaffold wired this agent's hook
     // command with the flag (capability-driven, regenerated on every spawn),
     // and only for the direct send_email tool. Bash send routes and
