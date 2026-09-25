@@ -219,6 +219,36 @@ if [ "${1:-}" = "--pane-dead-check" ]; then
   exit 0
 fi
 
+# CHANSPARE925: is the process that owns bot.pid OURS? Measured 2026-09-25: a
+# Claude Code daemon background session, started from the same config dir with
+# --channels, loaded the plugin, wrote ITS bun pid into bot.pid and took the
+# poller ("replacing stale poller"). The owner's messages then went to a session
+# with no transcript. The watchdog below only asked `kill -0 bot.pid`, and the
+# thief's pid was alive -- so the plugin read as healthy the whole time, and the
+# 180s dead-grace only started once the thief was killed by hand.
+# Walks the parent chain of $1 (at most 12 hops) and returns 0 when it reaches
+# $2 (this session's pane pid). Anything else -- a foreign tree, init, a pid
+# that vanished mid-walk -- returns 1.
+bot_pid_descends_from() {
+  _bd_pid="$1"; _bd_root="$2"; _bd_hops=0
+  case "$_bd_pid$_bd_root" in (*[!0-9]*|'') unset _bd_pid _bd_root _bd_hops; return 1;; esac
+  while [ "$_bd_hops" -lt 12 ] && [ -n "$_bd_pid" ] && [ "$_bd_pid" -gt 1 ] 2>/dev/null; do
+    if [ "$_bd_pid" = "$_bd_root" ]; then unset _bd_pid _bd_root _bd_hops; return 0; fi
+    _bd_pid="$(/bin/ps -o ppid= -p "$_bd_pid" 2>/dev/null | tr -d '[:space:]')"
+    _bd_hops=$((_bd_hops + 1))
+  done
+  unset _bd_pid _bd_root _bd_hops
+  return 1
+}
+
+# Test seam: `channels.sh --bot-owner-check <bot_pid> <pane_pid>` prints own|foreign
+# and exits before touching .env, the store or a session
+# (src/__tests__/channels-poller-hijack.test.ts).
+if [ "${1:-}" = "--bot-owner-check" ]; then
+  if bot_pid_descends_from "${2:-}" "${3:-}"; then echo own; else echo foreign; fi
+  exit 0
+fi
+
 if [ "${1:-}" = "--classify-mcp-pane" ]; then
   resolve_plugin_ids "${2:-$CHANNEL_PROVIDER}"
   classify_mcp_plugin_row "$(cat)"
@@ -1481,10 +1511,24 @@ while $TMUX has-session -t "$SESSION" 2>/dev/null; do
 
   NOW=$(date +%s)
   _plugin_alive=false
+  _bot_hijacked=false
   if [ -f "$MAIN_BOT_PID_FILE" ]; then
     _bot_pid=$(cat "$MAIN_BOT_PID_FILE" 2>/dev/null | tr -d '[:space:]')
     if [ -n "$_bot_pid" ] && [ "$_bot_pid" -gt 1 ] 2>/dev/null && kill -0 "$_bot_pid" 2>/dev/null; then
-      _plugin_alive=true
+      # CHANSPARE925: a live bot.pid is only OUR plugin when it hangs under this
+      # session's pane. A live foreign owner is a hijacked poller: alarm once per
+      # pid, and count the plugin as NOT alive, so the dead-grace below restarts
+      # the session and its fresh plugin takes the poller back.
+      if [ -n "$_watchdog_claude_pid" ] && ! bot_pid_descends_from "$_bot_pid" "$_watchdog_claude_pid"; then
+        _bot_hijacked=true
+        if [ "${_bot_hijack_seen:-}" != "$_bot_pid" ]; then
+          _bot_hijack_seen="$_bot_pid"
+          echo "WARN: $CHANNEL_PROVIDER poller hijacked -- bot.pid $_bot_pid is not under this session's pane ($_watchdog_claude_pid)" >&2
+          respawn_log "poller-hijack: bot.pid=$_bot_pid is not under $SESSION pane pid $_watchdog_claude_pid -- owner chain: $(/bin/ps -o pid=,ppid=,command= -p "$_bot_pid" 2>/dev/null | cut -c1-160)"
+        fi
+      else
+        _plugin_alive=true
+      fi
     fi
   fi
   unset _bot_pid
@@ -1504,7 +1548,7 @@ while $TMUX has-session -t "$SESSION" 2>/dev/null; do
   # failure the watchdog exists to catch, silently defeated. Single-agent
   # installs never saw this because there was only ever one plugin process to
   # find, and it happened to be the right one.
-  if [ "$_plugin_alive" != "true" ]; then
+  if [ "$_plugin_alive" != "true" ] && [ "$_bot_hijacked" != "true" ]; then
     if [ -n "$_watchdog_claude_pid" ] && /usr/bin/pgrep -P "$_watchdog_claude_pid" bun >/dev/null 2>&1; then
       _plugin_alive=true
     fi
