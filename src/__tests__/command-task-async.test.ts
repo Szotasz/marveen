@@ -52,4 +52,66 @@ describe('command task execution', () => {
     )
     await new Promise((r) => setTimeout(r, 700))
   })
+
+  it('a command with large stdout finishes instead of blocking on the pipe', async () => {
+    const { logger } = await import('../logger.js')
+    const started = Date.now()
+    mod.runCommandTask(
+      { name: 'bigout-probe', type: 'command', command: "head -c 300000 /dev/zero | tr '\\0' x", agent: 'system', timeoutMs: 5000 } as never,
+      Math.floor(Date.now() / 1000),
+    )
+    await vi.waitFor(() => {
+      expect(logger.info).toHaveBeenCalledWith(expect.objectContaining({ task: 'bigout-probe', ok: true }), 'command task ran')
+    }, { timeout: 4000 })
+    expect(Date.now() - started).toBeLessThan(4000)
+  })
+
+  it('the in-flight guard is released after the run, so the task can run again', async () => {
+    const { logger } = await import('../logger.js')
+    const task = { name: 'rerun-probe', type: 'command', command: 'true', agent: 'system', timeoutMs: 5000 } as never
+    mod.runCommandTask(task, Math.floor(Date.now() / 1000))
+    await vi.waitFor(() => {
+      expect(logger.info).toHaveBeenCalledWith(expect.objectContaining({ task: 'rerun-probe' }), 'command task ran')
+    }, { timeout: 3000 })
+    vi.mocked(logger.info).mockClear()
+    mod.runCommandTask(task, Math.floor(Date.now() / 1000))
+    await vi.waitFor(() => {
+      expect(logger.info).toHaveBeenCalledWith(expect.objectContaining({ task: 'rerun-probe' }), 'command task ran')
+    }, { timeout: 3000 })
+  })
+
+  it('the timeout kills the command and records a failure', async () => {
+    const { logger } = await import('../logger.js')
+    const started = Date.now()
+    mod.runCommandTask(
+      { name: 'timeout-probe', type: 'command', command: 'sleep 5', agent: 'system', timeoutMs: 300 } as never,
+      Math.floor(Date.now() / 1000),
+    )
+    await vi.waitFor(() => {
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ task: 'timeout-probe', ok: false, detail: 'timeout 300ms' }),
+        'command task ran',
+      )
+    }, { timeout: 3000 })
+    expect(Date.now() - started).toBeLessThan(3000)
+  })
+
+  it('the timeout kills the command, it does not keep running in the background', async () => {
+    const { logger } = await import('../logger.js')
+    const { mkdtempSync, existsSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const { tmpdir } = await import('node:os')
+    const marker = join(mkdtempSync(join(tmpdir(), 'cmdtask-kill-')), 'still-alive')
+    mod.runCommandTask(
+      { name: 'kill-probe', type: 'command', command: `sleep 0.8; touch '${marker}'`, agent: 'system', timeoutMs: 200 } as never,
+      Math.floor(Date.now() / 1000),
+    )
+    await vi.waitFor(() => {
+      expect(logger.info).toHaveBeenCalledWith(expect.objectContaining({ task: 'kill-probe', ok: false }), 'command task ran')
+    }, { timeout: 3000 })
+    // Without the kill the shell outlives the timeout and reaches the touch.
+    await new Promise((r) => setTimeout(r, 1200))
+    expect(existsSync(marker)).toBe(false)
+  })
+
 })

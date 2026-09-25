@@ -109,6 +109,10 @@ function runCommand(cmd: string, timeoutMs: number): Promise<{ ok: boolean; deta
       try { child.kill("SIGKILL") } catch { /* already gone */ }
       done({ ok: false, detail: `timeout ${timeoutMs}ms` })
     }, timeoutMs)
+    // Drain stdout: nothing else reads it, and an undrained pipe blocks a
+    // command that prints more than the pipe buffer until our timeout kills it
+    // (spawnSync used to buffer it for us).
+    child.stdout?.resume()
     child.stderr?.on("data", (d: Buffer) => {
       if (stderr.length < 4000) stderr += d.toString()
     })

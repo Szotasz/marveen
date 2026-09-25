@@ -17,7 +17,9 @@ vi.mock('node:child_process', async (orig) => {
     // argv synchronously and hands back a child that exits 0 on the next tick.
     spawn: vi.fn((...args: unknown[]) => {
       h.calls.push(args)
-      const child = new EventEmitter() as EventEmitter & { stderr: EventEmitter; kill: () => void }
+      type Emitter = InstanceType<typeof EventEmitter>
+      const child = new EventEmitter() as Emitter & { stdout: Emitter & { resume: () => void }; stderr: Emitter; kill: () => void }
+      child.stdout = Object.assign(new EventEmitter(), { resume: () => {} })
       child.stderr = new EventEmitter()
       child.kill = () => {}
       setImmediate(() => child.emit('close', 0))
