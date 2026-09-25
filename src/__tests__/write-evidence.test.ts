@@ -6,7 +6,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { checkWriteEvidence, findEvidence, readEvidenceLines, EVIDENCE_FILE, EVIDENCE_WINDOW_MS } from '../web/write-evidence.js'
+import { checkWriteEvidence, findEvidence, readEvidenceLines, EVIDENCE_FILE, EVIDENCE_WINDOW_MS, WRITE_EVIDENCE_REPLY } from '../web/write-evidence.js'
 
 const NOW = 1_780_000_000_000
 const line = (o: Record<string, unknown>) => JSON.stringify({ chat_id: '42', message_id: '901', text: '/model opus', at: NOW - 5_000, ...o })
@@ -73,5 +73,13 @@ describe('findEvidence / readEvidenceLines', () => {
   it('no log at all (the plugin patch is missing): nothing found, so no write runs', () => {
     const dir = mkdtempSync(join(tmpdir(), 'write-evidence-')); dirs.push(dir)
     expect(readEvidenceLines(dir)).toEqual([])
+  })
+})
+
+describe('WRITE_EVIDENCE_REPLY', () => {
+  it('says what happened: a used message is not "not found", an old one is not either', () => {
+    expect(WRITE_EVIDENCE_REPLY('model', 'already-used')).toMatch(/egyszer már lefutott/)
+    expect(WRITE_EVIDENCE_REPLY('model', 'too-old')).toMatch(/túl régi/)
+    expect(WRITE_EVIDENCE_REPLY('model', 'not-found')).toMatch(/nem találom a Telegram-üzenetet.*not-found/)
   })
 })

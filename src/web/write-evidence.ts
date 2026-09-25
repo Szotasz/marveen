@@ -100,4 +100,6 @@ export type WriteEvidenceCheck = (req: EvidenceRequest) => EvidenceVerdict
 export const WRITE_EVIDENCE_REPLY = (name: string, reason: EvidenceRefusal): string =>
   reason === 'too-old'
     ? `/${name}: ez az üzenet már túl régi ahhoz, hogy most lefusson. Ha még kell, küldd el újra.`
-    : `/${name}: nem futtatom, mert nem találom a Telegram-üzenetet, amiből jött (${reason}). Ha te küldted, küldd el újra.`
+    : reason === 'already-used'
+      ? `/${name}: ez az üzenet egyszer már lefutott, másodszor nem futtatom (already-used). Ha még kell, küldd el újra.`
+      : `/${name}: nem futtatom, mert nem találom a Telegram-üzenetet, amiből jött (${reason}). Ha te küldted, küldd el újra.`
