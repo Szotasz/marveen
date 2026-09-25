@@ -214,6 +214,7 @@ fi
 # `cp -pR` preserves modes so the 0600 token files stay private.
 cp "${MANIFEST}" "${STAGE}/MANIFEST.txt"
 
+STAGE_FAILS=0
 stage_group() {  # stage_group <listfile> <base> <group>
   local list="$1" base="$2" group="$3" rel parent
   [[ -s "${list}" ]] || return 0
@@ -226,7 +227,11 @@ stage_group() {  # stage_group <listfile> <base> <group>
     # Skip it loudly instead; the manifest still names it, so the verification
     # below reports it as MISSING and the run fails with exit 6 and an alert.
     if ! cp -pR "${base}/${rel}" "${STAGE}/${group}/${parent}/"; then
-      echo "backup: WARN could not stage ${group}/${rel} -- skipped, verification will flag it" >&2
+      # A directory entry can be PARTIALLY copied (one unreadable file inside):
+      # the manifest names the directory, which did get in, so verification
+      # alone would pass. Count every staging failure and fail the run on it.
+      STAGE_FAILS=$((STAGE_FAILS + 1))
+      echo "backup: WARN could not fully stage ${group}/${rel} -- the run will fail (exit 6)" >&2
     fi
   done < "${list}"
 }
@@ -294,6 +299,11 @@ if ( cd "${HOME}" && find .claude/projects -maxdepth 2 -type d -name memory -pri
     echo "backup: MISSING load-bearing item: the file-based memory directories" >&2
     missing=$((missing + 1))
   }
+fi
+
+if [[ "${STAGE_FAILS}" -gt 0 ]]; then
+  echo "backup: FAILED staging -- ${STAGE_FAILS} entr(y/ies) could not be copied completely (see WARN lines above)." >&2
+  missing=$((missing + STAGE_FAILS))
 fi
 
 if [[ "${missing}" -gt 0 ]]; then
