@@ -4,8 +4,9 @@
 // Card b5344b62: createKanbanCard reads named fields off the body, so a key it does not
 // recognise (like a caller sending `agent` instead of `assignee`) is silently absent from
 // the stored row -- the response is still {ok:true,id}, and the card ends up gazdatlan
-// (ownerless). Measured against the whole table at the time: zero cards ever carried a
-// literal `agent` column value, i.e. every such caller lost its assignment silently.
+// (ownerless). Observed on this install, 2026-09-22: this happened five separate times
+// before anyone noticed (c99f3c05, 3f17b3f4, 7abb8d8f, 85eb1c90, b75f9946) -- every such
+// caller lost its assignment silently.
 //
 // Same postCtx shape as kanban-create-id-echo.test.ts.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
@@ -47,6 +48,17 @@ describe('POST /api/kanban -- agent -> assignee alias', () => {
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(getKanbanCard(out.body.id)?.assignee).toBeNull()
   })
+
+  // Szotasz's review on #1501, point 4: pin the explicit `assignee: null` case. Today
+  // `data.assignee === undefined` correctly leaves an explicit null alone; replacing that
+  // with a falsy check (`!data.assignee`) would treat null the same as undefined and apply
+  // the alias anyway, silently overriding a caller's deliberate "no owner" -- this test goes
+  // red on that specific regression, not just on the alias disappearing entirely.
+  it('an explicit `assignee: null` is left alone -- `agent` does not override a deliberate null', async () => {
+    const { ctx, out } = postCtx({ title: 'Deliberately unowned', agent: 'newton', assignee: null })
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(getKanbanCard(out.body.id)?.assignee).toBeNull()
+  })
 })
 
 describe('POST /api/kanban -- unknown fields are warned, not rejected', () => {
@@ -63,7 +75,7 @@ describe('POST /api/kanban -- unknown fields are warned, not rejected', () => {
     expect(out.status).toBe(200)
     expect(getKanbanCard(out.body.id)?.title).toBe('Typo field')
     expect(warn).toHaveBeenCalledWith(
-      expect.objectContaining({ key: 'descrpition' }),
+      expect.objectContaining({ keys: ['descrpition'] }),
       expect.any(String),
     )
   })
@@ -78,5 +90,46 @@ describe('POST /api/kanban -- unknown fields are warned, not rejected', () => {
     const { ctx } = postCtx({ id: 'k1', title: 'Clean card', status: 'planned', assignee: 'newton' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(warn).not.toHaveBeenCalled()
+  })
+
+  // Szotasz's review on #1501, point 2: `sort_order` and `archived_at` are in
+  // KANBAN_WRITABLE_FIELDS (the PUT/update set) but createKanbanCard does not accept
+  // either -- it computes its own sort_order and a new card is never pre-archived. Before
+  // this fix the known-field set borrowed KANBAN_WRITABLE_FIELDS wholesale, so these two
+  // were treated as "known" and silently dropped with no warning.
+  it('sort_order and archived_at are warned and dropped, not silently accepted', async () => {
+    const { ctx, out } = postCtx({ title: 'Sneaky fields', sort_order: 99, archived_at: 12345 })
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    const card = getKanbanCard(out.body.id)
+    expect(card?.archived_at).toBeNull()
+    expect(card?.sort_order).toBe(0)
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ keys: expect.arrayContaining(['sort_order', 'archived_at']) }),
+      expect.any(String),
+    )
+  })
+
+  // Szotasz's review on #1501, point 3: a non-string `agent` (e.g. an array) fails the
+  // `typeof === 'string'` check, so the alias never applies -- but the old code deleted
+  // `agent` unconditionally right after, before the unknown-key loop ran, so the bad value
+  // vanished with no alias AND no warning. It must now fall through and be warned.
+  it('a non-string `agent` is warned as unknown, not silently dropped', async () => {
+    const { ctx, out } = postCtx({ title: 'Bad agent type', agent: ['newton'] })
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(getKanbanCard(out.body.id)?.assignee).toBeNull()
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ keys: expect.arrayContaining(['agent']) }),
+      expect.any(String),
+    )
+  })
+
+  it('one warn call lists every unknown key, not one call per key', async () => {
+    const { ctx } = postCtx({ title: 'Two typos', descrpition: 'oops', statuss: 'planned' })
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ keys: expect.arrayContaining(['descrpition', 'statuss']) }),
+      expect.any(String),
+    )
   })
 })
