@@ -565,6 +565,20 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  // Opt-in background refresh of IDLE plans' 5h/7d usage by the rotation
+  // heartbeat (scripts/claude-plan-rotate-check.ts -> refreshIdlePlans). Each
+  // probe is a real Messages API call that spends the probed plan's own quota,
+  // so it is off by default and independent of CLAUDE_ROTATION_ENABLED: an
+  // operator can keep the Settings bars fresh without automatic rotation.
+  {
+    key: 'CLAUDE_PLAN_USAGE_REFRESH',
+    type: 'boolean',
+    default: '0',
+    description: 'A tétlen (épp nem használt) token-módú planek 5 órás és heti keretét a rotációs heartbeat a háttérben is lekérdezi, planenként legfeljebb 30 percenként. Minden lekérdezés egy valódi, minimális API-hívás, ami az adott plan saját keretéből fogy, ezért alapból KI. A rotációtól (CLAUDE_ROTATION_ENABLED) függetlenül bekapcsolható, ha csak a Beállítások sávjait akarod frissen tartani.',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: false,
+  },
 ]
 
 export function getSettingDefinition(key: string): SettingDefinition | undefined {

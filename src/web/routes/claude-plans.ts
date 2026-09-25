@@ -28,6 +28,9 @@ import { restartAgentProcess } from '../agent-process.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
 import type { RouteContext } from './types.js'
 
+/** Minimum gap between two manual probes of the same plan (POST .../probe). */
+export const MANUAL_PROBE_MIN_INTERVAL_MS = 60_000
+
 function isRotationEnabled(): boolean {
   try { return String(getEffectiveSettingValue('CLAUDE_ROTATION_ENABLED')) === '1' } catch { return false }
 }
@@ -302,6 +305,25 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
     if (!target.tokenSecretId) {
       json(res, { error: 'probe needs a token-mode plan' }, 422)
       return true
+    }
+    // Every probe is a real Messages API call on this plan's own subscription,
+    // so it spends that quota. A stuck client loop or a double click must not
+    // burn it: at most one probe per plan per MANUAL_PROBE_MIN_INTERVAL_MS, measured
+    // from the last recorded probe (ok or not). Inside the window: 429 with
+    // the observation we already have, and no network call.
+    const priorObserved = readClaudePlansState().plans[planId]
+    const lastProbeAt = priorObserved?.lastProbe?.at
+    if (typeof lastProbeAt === 'number') {
+      const waitMs = lastProbeAt + MANUAL_PROBE_MIN_INTERVAL_MS - Date.now()
+      if (waitMs > 0) {
+        json(res, {
+          planId,
+          error: 'probe_throttled',
+          retryAfterSec: Math.ceil(waitMs / 1000),
+          observed: priorObserved,
+        }, 429)
+        return true
+      }
     }
     let token: string | null = null
     try { token = getSecret(target.tokenSecretId) } catch { token = null }

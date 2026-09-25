@@ -778,6 +778,7 @@ window._i18n.en = {
   'settings.claude_plans.checking': 'Checking…',
   'settings.claude_plans.check_needs_token': "Live check needs a token-mode plan (a CLAUDE_CONFIG_DIR plan's credential is not read by the dashboard).",
   'settings.claude_plans.probe_failed': 'Could not check the plan.',
+  'settings.claude_plans.probe_throttled': 'This plan was just checked. You can check it again in a minute.',
   'settings.claude_plans.probe_error.invalid_token': 'last check: token rejected (401)',
   'settings.claude_plans.probe_error.network': 'last check: network error',
   'settings.claude_plans.probe_error.http_error': 'last check: unexpected HTTP {status}',

@@ -1097,6 +1097,7 @@ window._i18n.hu = {
   'settings.claude_plans.checking': 'Ellenőrzés…',
   'settings.claude_plans.check_needs_token': 'Az élő ellenőrzéshez token-módú plan kell (a CLAUDE_CONFIG_DIR-es plan hitelesítőjét a dashboard nem olvassa).',
   'settings.claude_plans.probe_failed': 'Nem sikerült ellenőrizni a plant.',
+  'settings.claude_plans.probe_throttled': 'Ezt a plant az imént ellenőriztük. Egy perc múlva újra lehet.',
   'settings.claude_plans.probe_error.invalid_token': 'utolsó ellenőrzés: a token érvénytelen (401)',
   'settings.claude_plans.probe_error.network': 'utolsó ellenőrzés: hálózati hiba',
   'settings.claude_plans.probe_error.http_error': 'utolsó ellenőrzés: váratlan HTTP {status}',

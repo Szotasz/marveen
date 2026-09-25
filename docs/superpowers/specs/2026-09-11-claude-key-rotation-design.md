@@ -550,3 +550,10 @@ flotta (fő agent + a közös flotta-tokenen futó sub-agentek) egyszerre állt 
    (`FLEET_SKIPPED ... reason=config-dir-plan-fleet-needs-token`). Az
    eredmény a state side-car `fleet` mezőjébe kerül, és a következő heartbeat
    egyszer kiírja (`FLEET_ROTATE` / `FLEET_SKIPPED` / `FLEET_FAILED`).
+3. **Tétlen planek háttér-mérése, opt-in `CLAUDE_PLAN_USAGE_REFRESH` (alapból KI)**:
+   bekapcsolva a rotációs heartbeat (`refreshIdlePlans`) a nem aktív, token-módú
+   planek 5h/7d keretét is lekérdezi (2+ plan, planenként max. 30 percenként);
+   mivel minden mérés a plan saját keretéből fogy, kikapcsolva egyetlen hálózati
+   hívás sincs, és a `CLAUDE_ROTATION_ENABLED`-től független. A kézi
+   "Ellenőrzés most" (`POST /api/claude-plans/:id/probe`) planenként legfeljebb
+   percenként egyszer mér, azon belül 429 a meglévő megfigyeléssel.

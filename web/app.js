@@ -14718,7 +14718,10 @@ async function probeClaudePlan(id, btn) {
       // A 502 is an upstream verdict (e.g. token rejected) already recorded in
       // the state side-car; the reloaded row shows it. Anything else (404/409/
       // 422) is not recorded, so surface it here.
-      if (res.status !== 502) showToast((data && data.error) || t('settings.claude_plans.probe_failed'))
+      // A 429 is the per-plan probe throttle: the reloaded row already shows
+      // the last measurement, so just say why nothing new happened.
+      if (res.status === 429) showToast(t('settings.claude_plans.probe_throttled'))
+      else if (res.status !== 502) showToast((data && data.error) || t('settings.claude_plans.probe_failed'))
     }
   } catch {
     showToast(t('settings.claude_plans.probe_failed'))

@@ -13,6 +13,16 @@ vi.mock('../settings-store.js', () => ({ getEffectiveSettingValue: () => '' }))
 vi.mock('../web/channel-monitor.js', () => ({ hardRestartMarveenChannels: () => ({ ok: true }) }))
 vi.mock('../web/agent-process.js', () => ({ restartAgentProcess: async () => ({ ok: true }) }))
 
+// Captures every logger call, so a test can assert the plan token never lands
+// in a log line (today the probe route logs only id/ok/error/httpStatus).
+const logCalls: unknown[][] = []
+vi.mock('../logger.js', () => {
+  const rec = (...args: unknown[]) => { logCalls.push(args) }
+  const l: any = { info: rec, warn: rec, error: rec, debug: rec, trace: rec, fatal: rec }
+  l.child = () => l
+  return { logger: l }
+})
+
 const vaultSecrets = new Map<string, string>()
 vi.mock('../web/vault.js', () => ({
   setSecret: (id: string, _label: string, value: string) => { vaultSecrets.set(id, value) },
@@ -20,7 +30,7 @@ vi.mock('../web/vault.js', () => ({
   getSecret: (id: string) => vaultSecrets.get(id) ?? null,
 }))
 
-const { tryHandleClaudePlans } = await import('../web/routes/claude-plans.js')
+const { tryHandleClaudePlans, MANUAL_PROBE_MIN_INTERVAL_MS } = await import('../web/routes/claude-plans.js')
 const { CLAUDE_PLANS_PATH, writeClaudePlans } = await import('../web/claude-plans.js')
 const { CLAUDE_PLANS_STATE_PATH, readClaudePlansState, writeClaudePlansState } = await import('../web/claude-plans-state.js')
 
@@ -55,6 +65,7 @@ describe('POST /api/claude-plans/:id/probe', () => {
     if (existsSync(CLAUDE_PLANS_PATH)) rmSync(CLAUDE_PLANS_PATH)
     if (existsSync(CLAUDE_PLANS_STATE_PATH)) rmSync(CLAUDE_PLANS_STATE_PATH)
     vaultSecrets.clear()
+    logCalls.length = 0
     fetchMock.mockClear()
     vi.stubGlobal('fetch', fetchMock)
     writeClaudePlans([
@@ -133,5 +144,68 @@ describe('POST /api/claude-plans/:id/probe', () => {
     expect(out.body).toMatchObject({ ok: false, error: 'rate_limited', httpStatus: 429 })
     expect(out.body.usage.sevenDay.usedPercent).toBe(100)
     expect(readClaudePlansState().plans.tok.overallStatus).toBe('rejected')
+  })
+
+  it('never writes the token into a log line (ok and error paths)', async () => {
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans/tok/probe').ctx)
+    writeClaudePlansState({ activePlanByAgent: {}, plans: {} }) // clear the throttle
+    fetchMock.mockImplementationOnce(async () => new Response('{}', { status: 401 }))
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans/tok/probe').ctx)
+    expect(logCalls.length).toBeGreaterThan(0)
+    const logged = JSON.stringify(logCalls)
+    expect(logged).not.toContain(FAKE_TOKEN)
+    expect(logged).not.toContain('FAKEROUTETOKEN')
+  })
+
+  it('throttles a second probe of the same plan inside the window: 429, no network call', async () => {
+    const first = fakeCtx('POST', '/api/claude-plans/tok/probe')
+    await tryHandleClaudePlans(first.ctx)
+    expect(first.out.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    const second = fakeCtx('POST', '/api/claude-plans/tok/probe')
+    await tryHandleClaudePlans(second.ctx)
+    expect(second.out.status).toBe(429)
+    expect(second.out.body.error).toBe('probe_throttled')
+    expect(second.out.body.retryAfterSec).toBeGreaterThan(0)
+    expect(second.out.body.retryAfterSec).toBeLessThanOrEqual(MANUAL_PROBE_MIN_INTERVAL_MS / 1000)
+    // The answer carries the data we already have...
+    expect(second.out.body.observed.windows.five_hour.usedPercent).toBe(42)
+    // ...and spent nothing: still exactly one upstream call.
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(second.out.raw).not.toContain('FAKEROUTETOKEN')
+  })
+
+  it('a failed probe also starts the window (a retry loop on a bad token is throttled too)', async () => {
+    fetchMock.mockImplementationOnce(async () => new Response('{}', { status: 401 }))
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans/tok/probe').ctx)
+    const again = fakeCtx('POST', '/api/claude-plans/tok/probe')
+    await tryHandleClaudePlans(again.ctx)
+    expect(again.out.status).toBe(429)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('probes again once the window has passed', async () => {
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans/tok/probe').ctx)
+    const state = readClaudePlansState()
+    state.plans.tok.lastProbe!.at = Date.now() - MANUAL_PROBE_MIN_INTERVAL_MS - 1
+    writeClaudePlansState(state)
+    const again = fakeCtx('POST', '/api/claude-plans/tok/probe')
+    await tryHandleClaudePlans(again.ctx)
+    expect(again.out.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('the window is per plan: probing one plan does not throttle another', async () => {
+    writeClaudePlans([
+      { id: 'tok', label: 'Token plan', tokenSecretId: 'claude-plan-token-tok', planType: 'personal', channelsAllowed: true },
+      { id: 'tok2', label: 'Token plan 2', tokenSecretId: 'claude-plan-token-tok2', planType: 'personal', channelsAllowed: true },
+    ])
+    vaultSecrets.set('claude-plan-token-tok2', FAKE_TOKEN + 'X')
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans/tok/probe').ctx)
+    const other = fakeCtx('POST', '/api/claude-plans/tok2/probe')
+    await tryHandleClaudePlans(other.ctx)
+    expect(other.out.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 })
