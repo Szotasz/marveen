@@ -44,8 +44,9 @@ if [ -n "$REFS" ]; then
     echo "vault-env-wrapper: vault-resolve exit $RC -- not every vault: reference resolved; starting anyway with the resolved subset" >&2
   fi
   # Split each line on the FIRST '=' only, preserving '=' inside/at-end of the
-  # value (e.g. base64 keys with '=' padding). IFS='=' read strips a trailing
-  # '=' and mangles values containing '=', so use parameter expansion instead.
+  # value (e.g. base64 keys with '=' padding). `IFS='=' read -r key value`
+  # drops a single trailing '=' (PAD1=abc= became abc), so use parameter
+  # expansion instead.
   while IFS= read -r line; do
     [ -z "$line" ] && continue
     key="${line%%=*}"
