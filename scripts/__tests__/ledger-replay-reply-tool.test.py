@@ -55,6 +55,50 @@ check("an unknown source says: the channel it came from", "ahonnan jött" in d)
 sig = replay._fit_output.__code__.co_varnames[:replay._fit_output.__code__.co_argcount]
 check("_fit_output threads reply_tool through to _build_output", "reply_tool" in sig)
 
+
+# End-to-end through main(): the helper checks above pass reply_tool by hand, so
+# on their own they stay green even if main() never derives it. Write real
+# ledger rows (a sourced inbound, no outbound after it = an open question), run
+# the hook as the harness does, and read the tool name off its real output.
+import subprocess
+import tempfile
+
+REPLAY = os.path.join(HOOKS, "ledger-replay.py")
+
+
+def replay_output(source):
+    with tempfile.TemporaryDirectory() as tmp:
+        env = dict(os.environ, LEDGER_DB_PATH=os.path.join(tmp, "ledger.db"),
+                   MARVEEN_AGENT_ID="replay-e2e", MAIN_AGENT_ID="replay-e2e")
+        seed = (
+            "import sys; sys.path.insert(0, sys.argv[1]); import ledger_lib;"
+            "src = sys.argv[2] or None;"
+            "ledger_lib.log_inbound('replay-e2e', '4242', '1', 'nyitott kerdes',"
+            " '2026-09-25T10:00:00Z', source=src)"
+        )
+        subprocess.run([sys.executable, "-c", seed, HOOKS, source or ""],
+                       env=env, check=True, cwd=tmp)
+        res = subprocess.run([sys.executable, REPLAY], input=json.dumps({"cwd": tmp}),
+                             env=env, cwd=tmp, capture_output=True, text=True, timeout=60)
+        return res.returncode, res.stdout
+
+
+rc, out = replay_output("plugin:discord:discord")
+check("main(): the hook exits 0 on a sourced open question", rc == 0)
+check("main(): a Discord-sourced open question names the Discord reply tool",
+      "mcp__plugin_discord_discord__reply" in out)
+check("main(): a Discord-sourced open question does NOT name the Telegram tool",
+      "mcp__plugin_telegram_telegram__reply" not in out)
+
+rc, out = replay_output("plugin:telegram:telegram")
+check("main(): a Telegram-sourced open question names the Telegram reply tool",
+      "mcp__plugin_telegram_telegram__reply" in out)
+
+rc, out = replay_output(None)
+check("main(): the open question is replayed at all (control for the checks above)",
+      "nyitott kerdes" in out)
+check("main(): an unsourced open question names NO tool", "mcp__plugin_" not in out)
+
 print()
 if failed:
     print(f"{len(failed)} FAILED: {failed}", file=sys.stderr)
