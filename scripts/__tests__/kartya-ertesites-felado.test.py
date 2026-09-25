@@ -117,11 +117,39 @@ def main():
     check('2 felado az --author-bol == boni', POSTED and POSTED[0]['from'] == 'boni',
           f'kapott: {POSTED[0]["from"] if POSTED else "semmi"}')
 
+    # 3. A CSENDES 'marveen' ALAPERTELMEZES SZANDEKOSAN MEGSZUNT (KARTYAKULDO908, 2026-09-08).
+    #    EZ AZ ELLENORZES KORABBAN AZ ELLENKEZOJET ALLITOTTA, es a megfordulasa DONTES, nem elirás:
+    #    2026-09-07-ig a --author es --from nelkuli futas felado nelkul is kikuldte az ertesitest,
+    #    a koordinator (marveen) neveben. Mira merte (21680), mi ennek az ara: Tomi olyan
+    #    feladat-kiosztast kapott, ami ugy nezett ki, mintha a FO-AGENS adta volna, holott a
+    #    kartya Mirae volt -- es visszakerdezni is a koordinatornak kerdezett volna vissza.
+    #    A hiba iranya a rossz: FELFELE attribual, tehat SULYT ad egy kerésnek, amit nem az
+    #    kuldott, akinek latszik.
+    #    A KOMMENT-AGON ezt a #1237 mar lezarta; ez a sor a LETREHOZO ag ugyanezen kapuja.
+    #    A ket agat szandekosan ket PR zarta: a regi viselkedest EZ a sor rogzitette
+    #    regresszio-kontrollkent, es egy ilyen szerzodest nem irunk at egy masik javitas
+    #    mellekhatasakent. Ha valaki a jovoben visszaallitana az alapertelmezest, ELOSZOR
+    #    ezt a kommentet olvassa el: a csend nem kenyelem, hanem rossz nevre kuldott uzenet.
     POSTED.clear()
-    p = run('KULDOC906', 'samu', 'Kartya: KULDOC906 -- alapertelmezes valtozatlan.', port)
-    check('3 lefutott', p.returncode == 0, p.stdout + p.stderr)
-    check('3 alapertelmezett felado marveen (regresszio-kontroll)',
-          POSTED and POSTED[0]['from'] == 'marveen')
+    p = run('KULDOC906', 'samu', 'Kartya: KULDOC906 -- kimondott felado nelkul.', port)
+    check('3 MEGTAGADVA kimondott felado nelkul (2026-09-08 ota)', p.returncode != 0,
+          f'exit={p.returncode} out={p.stdout + p.stderr!r}')
+    check('3 a megtagadas megnevezi a ket kapcsolot',
+          '--author' in (p.stdout + p.stderr) and '--from' in (p.stdout + p.stderr),
+          p.stdout + p.stderr)
+    check('3 semmit nem kuldott ki', not POSTED)
+    db = sqlite3.connect(DB_PATH)
+    n3 = db.execute('SELECT count(*) FROM kanban_cards WHERE id=?', ('KULDOC906',)).fetchone()[0]
+    db.close()
+    check('3 a kartya sem jott letre', n3 == 0)
+    # NEGATIV KONTROLL a megfordult ellenorzes melle: enelkul a 3. attol is zold lenne, ha a kapu
+    # MINDEN letrehozo futast megtagadna. Ugyanaz a hivas, csak kimondott szerzovel -> zold.
+    POSTED.clear()
+    p = run('KULDOC2906', 'samu', 'Kartya: KULDOC2906 -- kimondott szerzovel.', port,
+            extra=('--author', 'Boni'))
+    check('3 kimondott szerzovel ugyanaz a futas zold', p.returncode == 0, p.stdout + p.stderr)
+    check('3 es a felado boni, nem marveen', POSTED and POSTED[0]['from'] == 'boni',
+          f'kapott: {POSTED[0]["from"] if POSTED else "semmi"}')
 
     # 4. ONHUROK: felado == felelos -> a koordinatorhoz megy, es ki is mondja.
     POSTED.clear()
@@ -152,6 +180,50 @@ def main():
     db.close()
     check('6 a nyom-komment a feladot nevezi', nyom and 'boni -> samu' in nyom[0],
           nyom[0] if nyom else 'nincs komment')
+
+    # 7. CIM-HOSSZ KAPU A LETREHOZO AGON (KAPUMUTANS919, 2026-09-19). A mozgato ag 300-as
+    #    kapujat a mezomozgatas-teszt 10. esete meri; a LETREHOZO agon ugyanaz a kapu (a
+    #    trigger kommentbe vagna a cimet) EDDIG FEDETLEN volt: a fajl-mutans, ami csak ezt
+    #    az agat kapcsolta ki, mind az ot kartya-suite-ot zolden hagyta. Ez a kapu ma este
+    #    elesben szolt (LIFETIMEOLVASOK919 letrehozasakor). A cim HORDOZZA a kartya ID-jet,
+    #    hogy a horgony-kapu ne fogja meg elobb: itt a 300-as kapu a merendo, nem egy masik.
+    POSTED.clear()
+    hosszu_cim = f'Kartya CIMHOSSZ919: ' + ('x' * 300)
+    p = run('CIMHOSSZ919', 'samu', 'Kartya: CIMHOSSZ919 -- hosszu cim.', port,
+            extra=('--from', 'boni', '--title', hosszu_cim))
+    check('7 megtagadva a 300 feletti cim a letrehozo agon',
+          p.returncode != 0 and 'KIMONDOTT a felado' not in (p.stdout + p.stderr), p.stdout + p.stderr)
+    check('7 a megtagadas a 300-as hatart nevezi meg (nem a horgonyt)',
+          '300' in (p.stdout + p.stderr) and 'nem tartalmazza a kartya sajat ID-jet' not in (p.stdout + p.stderr),
+          p.stdout + p.stderr)
+    check('7 semmit nem kuldott ki', not POSTED)
+    db = sqlite3.connect(DB_PATH)
+    n7 = db.execute('SELECT count(*) FROM kanban_cards WHERE id=?', ('CIMHOSSZ919',)).fetchone()[0]
+    db.close()
+    check('7 a kartya sem jott letre', n7 == 0)
+
+    # 8. AZ ERTESITES NEVEZZE MEG A KARTYAT (KAPUMUTANS919). A kapu 2026-09-05 ota all
+    #    (az eszkoz elso eles hasznalata bukott el rajta), de EDDIG EGYETLEN TESZT SEM MERTE:
+    #    a feltetelet False-ra allito fajl-mutans mind az ot suite-ot zolden hagyta. Ma este
+    #    elesben szolt (LIFETIMEOLVASOK919 ertesitesenel). Elo-ellenorzes: sem uzenet, sem kartya.
+    POSTED.clear()
+    p = run('NEVNELKUL919', 'samu', 'Ertesites a feladatrol, a kartya azonositoja nelkul.', port,
+            extra=('--from', 'boni'))
+    check('8 megtagadva a kartyat nem nevezo ertesites',
+          p.returncode != 0 and 'KIMONDOTT a felado' not in (p.stdout + p.stderr), p.stdout + p.stderr)
+    check('8 a megtagadas kimondja, hogy az uzenet nem nevezi meg a kartyat',
+          'nevezi meg a kartyat' in (p.stdout + p.stderr), p.stdout + p.stderr)
+    check('8 semmit nem kuldott ki', not POSTED)
+    db = sqlite3.connect(DB_PATH)
+    n8 = db.execute('SELECT count(*) FROM kanban_cards WHERE id=?', ('NEVNELKUL919',)).fetchone()[0]
+    db.close()
+    check('8 a kartya sem jott letre', n8 == 0)
+    #    Pozitiv kontroll ugyanazon a muszeren: ugyanaz a futas az ID-vel a szovegben ZOLD.
+    POSTED.clear()
+    p = run('NEVVEL919', 'samu', 'Kartya: NEVVEL919 -- az ertesites nevezi a kartyat.', port,
+            extra=('--from', 'boni'))
+    check('8 pozitiv kontroll: ID-vel a szovegben lefut', p.returncode == 0, p.stdout + p.stderr)
+    check('8 pozitiv kontroll: az uzenet kiment', bool(POSTED))
 
     srv.shutdown()
     os.remove(DB_PATH)

@@ -501,9 +501,45 @@ export PATH="$HOME/.local/bin:$PATH"
 
 # Does an installed claude actually LAUNCH? On an AVX-less x86 host the official
 # installer's Bun standalone binary SIGILLs / hangs on start, so `command -v`
-# alone is not enough -- we verify it runs (with a timeout so a hanging Bun
-# binary cannot wedge the installer).
-_claude_runs() { command -v claude >/dev/null 2>&1 && timeout 25 claude --version </dev/null >/dev/null 2>&1; }
+# alone is not enough -- we verify it runs. `--version` is NOT that probe:
+# measured 2026-09-23 on the AVX-less pilot VPS (CLIRUNSVERZIO923), the
+# 2.1.200+ Bun ELF answers `--version` with exit 0 and then spins silently on a
+# real prompt, so a host that already carries a latest claude would pass the
+# gate and get an install on which no agent prompt ever runs. The probe is a
+# real `-p` prompt, made auth-free on purpose: an isolated EMPTY config dir and
+# the auth env unset make a healthy CLI exit 1 within ~2 s ("Not logged in",
+# JSON on stdout, no API call, nothing written to the real config), while a Bun
+# binary without AVX either SIGILLs (exit 132) or hangs until `timeout` (124).
+# "Runs" therefore means: exited on its own with a code below 124.
+_claude_runs() {
+  command -v claude >/dev/null 2>&1 || return 1
+  local probe_cfg rc
+  probe_cfg="$(mktemp -d 2>/dev/null || echo "/tmp/claude-probe-$$")"
+  mkdir -p "$probe_cfg"
+  env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \
+    CLAUDE_CONFIG_DIR="$probe_cfg" DISABLE_AUTOUPDATER=1 \
+    timeout "${CLAUDE_PROBE_TIMEOUT:-25}" claude -p 'ping' --max-turns 1 --output-format json \
+    </dev/null >/dev/null 2>&1
+  rc=$?
+  rm -rf "$probe_cfg"
+  # 124 = hung until timeout, 125-127 = could not even exec, 128+ = killed by a signal (SIGILL/SIGSEGV)
+  [ "$rc" -lt 124 ]
+}
+# A claude that is on PATH but does not launch (typically the official
+# installer's Bun ELF at ~/.local/bin/claude) would keep SHADOWING the pinned
+# Node build: ~/.local/bin is first on PATH and `npm -g` lands in /usr/bin or
+# ~/.npm-global. Move it aside (reversible: <path>.avx-broken) so the pin wins.
+_shelve_broken_claude() {
+  local p
+  p="$(command -v claude 2>/dev/null || true)"
+  [ -n "$p" ] || return 0
+  if mv "$p" "${p}.avx-broken" 2>/dev/null; then
+    warn "A mar telepitett claude ($p) AVX nelkul nem indul; felretettem: ${p}.avx-broken"
+  else
+    warn "A mar telepitett claude ($p) AVX nelkul nem indul, es nem tudtam felretenni -- a pinnelt verziot arnyekolhatja."
+  fi
+  hash -r
+}
 
 # Pinned Node-based fallback for AVX-less hosts. @2.1.110 is the LAST version
 # that ships bin=cli.js (a `#!/usr/bin/env node` entrypoint) running without
@@ -515,6 +551,9 @@ CLAUDE_PIN="2.1.110"
 if _claude_runs; then
   ok "claude mar telepitve es fut: $(claude --version 2>/dev/null || echo 'ok')"
 else
+  # Present on PATH but did not launch (the probe above failed while the
+  # binary exists): remembered here so the AVX-less branch can shelve it.
+  CLAUDE_PREEXISTING_BROKEN="$(command -v claude 2>/dev/null || true)"
   # AVX pre-flight: the official installer's Bun binary needs AVX. Only x86
   # (has a `flags :` line in /proc/cpuinfo) can lack it; ARM (`Features :`, no
   # `avx`) runs the arm64 Bun binary fine, so it takes the official path.
@@ -526,6 +565,7 @@ else
     # interactive shells; channels.sh exports it for the agent sessions).
     ensure_in_rc 'DISABLE_AUTOUPDATER' 'export DISABLE_AUTOUPDATER=1'
     export DISABLE_AUTOUPDATER=1
+    [ -n "${CLAUDE_PREEXISTING_BROKEN:-}" ] && _shelve_broken_claude
     if command -v npm >/dev/null 2>&1; then
       # NPMPERM1: nodesource-os gepen a globalis node_modules root-tulajdonu
       # lehet. Auto-mod: nem kerdez, sudo-ra valt lathato megjegyzessel.
@@ -1259,11 +1299,18 @@ if [ -d "$SEED_SCHED_DIR" ]; then
   mkdir -p "$SCHED_TARGET_DIR"
   SCHED_NEW=0
   SCHED_SKIP=0
+  SCHED_TOMBSTONE="$SCHED_TARGET_DIR/.removed-defaults"
   for tpl in "$SEED_SCHED_DIR"/*/; do
     [ -d "$tpl" ] || continue
     task_name=$(basename "$tpl")
     [[ "$task_name" == "bumblebee-hygiene-scan" ]] && continue
     target="$SCHED_TARGET_DIR/$task_name"
+    # #796: a reinstall over an existing box must honor the dashboard's record
+    # of a deleted default (.removed-defaults); a UI re-create clears it.
+    if [ -f "$SCHED_TOMBSTONE" ] && grep -qxF "$task_name" "$SCHED_TOMBSTONE" 2>/dev/null; then
+      SCHED_SKIP=$((SCHED_SKIP + 1))
+      continue
+    fi
     if [ -d "$target" ]; then
       SCHED_SKIP=$((SCHED_SKIP + 1))
       continue
@@ -1677,6 +1724,7 @@ NODE_PATH="$(which node)"
 DASH_UNIT="${SERVICE_ID}-dashboard"
 CHAN_UNIT="${SERVICE_ID}-channels"
 MORN_UNIT="${SERVICE_ID}-morning"
+KEEPALIVE_UNIT="${SERVICE_ID}-channel-keepalive-probe"
 
 # Detect the host timezone so the scheduled-task runner (which reads
 # cron expressions in Node's local TZ) fires at the operator's wall
@@ -1794,6 +1842,17 @@ ${TZ_LINE}
 EOF
 
 # ${MORN_UNIT}.timer
+# WRITTEN BUT NOT ENABLED (see the enable list further down). The morning
+# briefing ships TWICE: as this 07:27 timer and as the seeded
+# scheduled-tasks/reggeli-napindito task at 07:30. Two runs of the same work
+# three minutes apart is one too many, and the timer is the weaker of the two:
+# it launches a headless `claude -p` whose config dir carries no channel
+# allowlist, so its reply tool rejects the owner's chat_id and the run refuses
+# itself as a prompt injection (observed 2026-09-13, and it stamped the day as
+# delivered on the way out). The scheduled task runs inside the live channel
+# session, which has the allowlist. The unit files stay on disk so an operator
+# who wants the timer path can `systemctl --user enable --now <id>-morning.timer`.
+#
 # NO Requires=/Wants= on the service here: a [Unit] dependency on the
 # triggered service makes EVERY activation of the timer unit (each systemd
 # user-manager start, not just the 07:27 elapse) queue an immediate start of
@@ -1813,6 +1872,59 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
+# ${KEEPALIVE_UNIT}.service/.timer -- token-free IDLE-path keepalive producer.
+#
+# WHY THIS MUST BE INSTALLED (measured on a live install, night of 2026-09-12/13:
+# 13 service restarts, one every ~50 minutes, all night). store/.channel-keepalive
+# has two intended producers: organic inbound (channel-monitor advances the mtime
+# on every ingested message -- covers BUSY periods) and this probe (covers QUIET
+# periods). The repo shipped scripts/channel-keepalive-probe.sh plus placeholder
+# units under scripts/systemd/, but nothing installed them, so on a real host the
+# ONLY producer was inbound traffic. Every night, as soon as the owner stopped
+# writing, the file aged past the dashboard's 45-minute liveness ceiling and
+# channel-monitor "recovered" a perfectly healthy session: respawn-pane (the main
+# agent's conversation gone, restarted fresh with no --continue), which killed the
+# telegram plugin with it, which tripped channels.sh's own dead-plugin watchdog
+# 181s later, which exited 1 for a second, whole-unit restart. A silent channel is
+# normal at 3am; the watchdog read it as a wedge because nothing was left to prove
+# otherwise.
+#
+# The probe does NOT fake liveness: it touches the keepalive only after proving
+# from the process tree that the channels tmux session, its claude pid, and a
+# telegram poller descending from that pid are all alive. A genuinely dead pipe
+# still ages out and still gets recovered.
+cat >"$SYSTEMD_DIR/${KEEPALIVE_UNIT}.service" <<EOF
+[Unit]
+Description=${BOT_NAME} token-free idle-path channel keepalive probe
+
+[Service]
+Type=oneshot
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/scripts/channel-keepalive-probe.sh
+Environment=PATH=$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=$HOME
+${TZ_LINE}
+StandardOutput=append:$INSTALL_DIR/store/channel-keepalive-probe.log
+StandardError=append:$INSTALL_DIR/store/channel-keepalive-probe.log
+EOF
+
+# Same "no Requires=/Wants= on the triggered service" rule as the morning timer
+# above: the [Timer] section already binds to ${KEEPALIVE_UNIT}.service by name.
+# 3 minutes is far inside every consumer's staleness threshold (the dashboard's
+# 45-minute ceiling, channel-watchdog's 15).
+cat >"$SYSTEMD_DIR/${KEEPALIVE_UNIT}.timer" <<EOF
+[Unit]
+Description=${BOT_NAME} channel keepalive probe every 3 minutes
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=3min
+AccuracySec=20s
+
+[Install]
+WantedBy=timers.target
+EOF
+
 # marveen-host-watchdog.service -- host/WSL-VM restart detector (btime-based).
 # Distinguishes a whole-VM restart (all units down at once, NOT an app crash)
 # from a service crash, and Telegrams it. See scripts/host-restart-watchdog.sh.
@@ -1826,7 +1938,6 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=$INSTALL_DIR/scripts/host-restart-watchdog.sh
 Environment=MARVEEN_STORE=$INSTALL_DIR/store
-Environment=TELEGRAM_ENV=$HOME/.claude/channels/telegram/.env
 Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=$HOME
 ${TZ_LINE}
@@ -1847,7 +1958,6 @@ Description=${BOT_NAME} app-crash notifier for %i
 [Service]
 Type=oneshot
 ExecStart=$INSTALL_DIR/scripts/unit-fail-notify.sh %i
-Environment=TELEGRAM_ENV=$HOME/.claude/channels/telegram/.env
 Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=$HOME
 ${TZ_LINE}
@@ -1897,14 +2007,17 @@ if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; the
   # macOS branch had. `if` rather than `&&`: a failing enable inside an if
   # CONDITION is exempt from errexit and from the ERR trap, so the installer
   # reports it instead of dying on it.
-  if systemctl --user enable "${DASH_UNIT}" "${CHAN_UNIT}" "${MORN_UNIT}.timer" "${SERVICE_ID}-host-watchdog.service" 2>/dev/null; then
+  # ${MORN_UNIT}.timer is deliberately NOT in this list -- the seeded
+  # reggeli-napindito scheduled task already delivers the morning briefing at
+  # 07:30 from inside the live channel session. See the timer's comment above.
+  if systemctl --user enable "${DASH_UNIT}" "${CHAN_UNIT}" "${KEEPALIVE_UNIT}.timer" "${SERVICE_ID}-host-watchdog.service" 2>/dev/null; then
     ok "systemd unitok generalva es engedelyezve"
   else
     warn "A unit-fajlok elkeszultek, de az engedelyezesuk nem sikerult -- ujrainditas utan a szolgaltatasok nem indulnak el maguktol."
     # ALL FOUR units the enable above covers, not just the two services. A
-    # command that silently drops the timer and the watchdog would leave them
-    # disabled while the operator sees no error and believes the fix worked --
-    # an incomplete instruction ends the same way as a false claim.
+    # command that silently drops the keepalive probe or the watchdog would leave
+    # them disabled while the operator sees no error and believes the fix worked
+    # -- an incomplete instruction ends the same way as a false claim.
     # The label gets its own line. With "Javitas most:" in front of the command,
     # the backslashes join all three printed lines into ONE command whose first
     # token is `Javitas`, so a pasted block fails with "Javitas: command not
@@ -1915,7 +2028,7 @@ if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; the
     echo -e "  ${DIM}Javitas most:${NC}"
     echo -e "  ${DIM}systemctl --user enable \\${NC}"
     echo -e "  ${DIM}    ${DASH_UNIT} ${CHAN_UNIT} \\${NC}"
-    echo -e "  ${DIM}    ${MORN_UNIT}.timer ${SERVICE_ID}-host-watchdog.service${NC}"
+    echo -e "  ${DIM}    ${KEEPALIVE_UNIT}.timer ${SERVICE_ID}-host-watchdog.service${NC}"
   fi
   systemctl --user start "${DASH_UNIT}" "${CHAN_UNIT}" 2>/dev/null || true
   sleep 2

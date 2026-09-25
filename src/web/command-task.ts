@@ -1,12 +1,13 @@
 import { spawnSync } from "node:child_process"
 import { join } from "node:path"
 import { readFileSync } from "node:fs"
-import { STORE_DIR, TELEGRAM_BOT_TOKEN } from "../config.js"
+import { PROJECT_ROOT, STORE_DIR, TELEGRAM_BOT_TOKEN } from "../config.js"
+import { shQuote } from "./ssh-tmux.js"
 import { resolveOwnerChatId } from "../owner-chat.js"
 import { atomicWriteFileSync } from "./atomic-write.js"
 import { logger } from "../logger.js"
 import { sendTelegramMessage } from "./telegram.js"
-import { appendTaskRun } from "../db.js"
+import { appendTaskRun, markTaskRunCompleted } from "../db.js"
 import type { ScheduledTask } from "./scheduled-tasks-io.js"
 
 // command-type scheduled tasks run a raw shell command directly (no LLM
@@ -79,6 +80,16 @@ function runCommand(cmd: string, timeoutMs: number): { ok: boolean; detail: stri
   }
 }
 
+// A shipped command task cannot hard-code the install path, and the node
+// seeder copies task-config.json without template rendering. So the command
+// may name the install root as {{PROJECT_ROOT}} / {{INSTALL_DIR}} (the same
+// placeholders preCheck accepts), resolved here at run time. The root is
+// inserted shell-quoted, so a template writes it bare:
+//   python3 {{PROJECT_ROOT}}/scripts/x.py  ->  python3 '/path/to/root'/scripts/x.py
+export function resolveCommandPlaceholders(cmd: string, root: string = PROJECT_ROOT): string {
+  return cmd.replace(/\{\{(PROJECT_ROOT|INSTALL_DIR)\}\}/g, () => shQuote(root))
+}
+
 export function runCommandTask(task: ScheduledTask, now: number): void {
   if (!task.command) {
     logger.warn({ task: task.name }, "command task has no command, skipping")
@@ -87,11 +98,18 @@ export function runCommandTask(task: ScheduledTask, now: number): void {
   const timeoutMs = task.timeoutMs && task.timeoutMs > 0 ? task.timeoutMs : 10_000
   const failThreshold = task.failThreshold && task.failThreshold > 0 ? task.failThreshold : 2
   const map = load()
-  const { ok, detail } = runCommand(task.command, timeoutMs)
+  const { ok, detail } = runCommand(resolveCommandPlaceholders(task.command), timeoutMs)
   const { next, action } = evaluateCommandResult(map[task.name], ok, failThreshold, now)
   map[task.name] = next
   persist()
-  try { appendTaskRun(task.name, task.agent || "system") } catch { /* non-fatal */ }
+  // A command task is synchronous: by the time runCommand returns, the run IS
+  // over. Close it here rather than leaving it to the pane watchdog, which
+  // never sees these -- they are not injected into a session at all, so without
+  // this they would be the one class of run that stays open for ever.
+  try {
+    const runId = appendTaskRun(task.name, task.agent || "system")
+    markTaskRunCompleted(runId, "done")
+  } catch { /* non-fatal */ }
   logger.info({ task: task.name, ok, detail, fails: next.fails, action }, "command task ran")
 
   if (action === "none") return

@@ -13,14 +13,31 @@
 #   large / multi-line content may come from STDIN when the 3rd arg is "-":
 #     echo "<long text>" | bash scripts/agent-msg.sh <from> <to> -
 # Output: success -> "OK id=<n>"; failure -> "FAIL <reason>" + a line in store/agent-msg-failures.log, exit 1.
-# Env: MARVEEN_WEB_PORT (default 3420).
+#
+# LOG FORMAT, store/agent-msg-failures.log (tab-separated, one line per failure):
+#   <YYYY-MM-DD HH:MM:SS>  FAIL  from=<a>  to=<b>  url=<endpoint>  http=<code>  resp=<first 200 bytes>
+# CHANGED 2026-09: the `url=` field is NEW. It was added together with the
+# env-overridable base URL, because from that point a failure can mean "posted to
+# the wrong address" and the old line could not distinguish that from a dead
+# server. A parser written against the pre-2026-09 format sees one extra field;
+# parse by the `key=` names, not by position.
+# Env:
+#   MARVEEN_API_BASE   full base URL, e.g. https://marveen.example.com (overrides host+port)
+#   MARVEEN_WEB_PORT   port for the default localhost base (default 3420)
+#   MARVEEN_TOKEN_FILE bearer token file (default <repo>/store/.dashboard-token)
+# MEASURED 2026-09-13: a remote agent runs this helper OUTSIDE this repo, where localhost:3420
+# does not exist -- it had to fall back to raw curl, i.e. exactly the unchecked pattern this file was
+# written to eliminate. A hardcoded base URL silently un-installs the helper for everyone not on this
+# VM, so the base is env-overridable and the two endpoints stay ONE script.
 set -uo pipefail
 
 # base dir = the parent of this script's dir (scripts/..), so it works from any CWD / any install
 BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${MARVEEN_WEB_PORT:-3420}"
-TOKEN_FILE="$BASE/store/.dashboard-token"
-URL="http://localhost:${PORT}/api/messages"
+API_BASE="${MARVEEN_API_BASE:-http://localhost:${PORT}}"
+API_BASE="${API_BASE%/}"
+TOKEN_FILE="${MARVEEN_TOKEN_FILE:-$BASE/store/.dashboard-token}"
+URL="${API_BASE}/api/messages"
 LOG="$BASE/store/agent-msg-failures.log"
 
 FROM="${1:?from required}"; TO="${2:?to required}"; C="${3:?content required (or - for STDIN)}"
@@ -36,16 +53,36 @@ while [ "$attempt" -lt "$max" ]; do
   RESP="$(curl -s -X POST "$URL" -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d "$BODY" -w $'\n%{http_code}' 2>/dev/null || true)"
   CODE="$(printf '%s' "$RESP" | tail -n1)"
   JSON="$(printf '%s' "$RESP" | sed '$d')"
-  ID="$(printf '%s' "$JSON" | python3 -c 'import sys,json
+  # An id ALONE is not delivery. The router answers 200 WITH an id even when the
+  # recipient is not running, and says so in a separate `warning` field
+  # (src/web/routes/messages.ts) whose text spells out that such a message is
+  # LOST rather than queued. This helper read only the id, so it printed
+  # "OK id=..." for a message that never arrived -- the exact failure the header
+  # above says it exists to prevent, one field further in. The exit code stays 0
+  # on purpose: the row really was accepted, so this is not a send failure. It
+  # just must not be silent.
+  read -r ID WARN <<EOF
+$(printf '%s' "$JSON" | python3 -c 'import sys,json
 try:
-  d=json.load(sys.stdin); print(d.get("id","") if isinstance(d,dict) else "")
+  d=json.load(sys.stdin)
+  if not isinstance(d,dict): d={}
 except Exception:
-  print("")' 2>/dev/null)"
+  d={}
+w=" ".join(str(d.get("warning","")).split())
+print((d.get("id","") or "-"), w)' 2>/dev/null)
+EOF
+  [ "$ID" = "-" ] && ID=""
   if { [ "$CODE" = "200" ] || [ "$CODE" = "201" ]; } && [ -n "$ID" ]; then
-    echo "OK id=$ID"; exit 0
+    if [ -n "${WARN:-}" ]; then
+      echo "OK id=$ID  WARNING: $WARN" >&2
+      echo "OK id=$ID (warning)"
+    else
+      echo "OK id=$ID"
+    fi
+    exit 0
   fi
   sleep 1
 done
-echo "FAIL from=$FROM to=$TO http=${CODE:-?} id='$ID' (after $max tries)"
-printf '%s\tFAIL\tfrom=%s\tto=%s\thttp=%s\tresp=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$FROM" "$TO" "${CODE:-?}" "$(printf '%s' "${JSON:-}" | head -c 200)" >> "$LOG" 2>/dev/null || true
+echo "FAIL from=$FROM to=$TO url=$URL http=${CODE:-?} id='$ID' (after $max tries)"
+printf '%s\tFAIL\tfrom=%s\tto=%s\turl=%s\thttp=%s\tresp=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$FROM" "$TO" "$URL" "${CODE:-?}" "$(printf '%s' "${JSON:-}" | head -c 200)" >> "$LOG" 2>/dev/null || true
 exit 1

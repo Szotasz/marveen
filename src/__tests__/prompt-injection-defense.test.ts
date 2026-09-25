@@ -8,6 +8,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
+import { importsValueBinding } from './setup/source-imports.js'
 import { fileURLToPath } from 'node:url'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { isEgressBlocked, loadRuntimeAllowlist } from '../../scripts/hooks/egress-gate.mjs'
@@ -63,6 +64,35 @@ describe('quarantine-reader sub-agent definition', () => {
     // Regression guard: the scaffold must deploy the quarantine-reader template.
     const src = readFileSync(join(REPO_ROOT, 'src', 'web', 'agent-scaffold.ts'), 'utf8')
     expect(src).toContain('quarantine-reader.md')
+  })
+
+  // WEBFETCHFAB819 (2026-08-19, Sam/Pedro): measured live -- asked to check a
+  // pdb.hu product page for strong/ul/li usage, this sub-agent confidently
+  // reported 3 ul blocks with ~15 li elements AND quoted a specific
+  // <h3>...</h3><ul><li>...</li> snippet. A direct curl of the same page
+  // showed zero ul/li/h3, only 32 plain <p> tags -- neither the count nor the
+  // quote existed. WebFetch reconstructs a description, not a byte copy, so
+  // structural/verbatim claims from it must never be presented as measured.
+  it('warns callers in its own description that structural claims are unverified', () => {
+    const content = readFileSync(tplPath, 'utf8')
+    const frontmatter = content.slice(0, content.indexOf('---', 4))
+    expect(frontmatter).toMatch(/model-reconstructed|not a byte-exact copy/i)
+  })
+
+  it('forbids presenting a fabricated verbatim quote as a real excerpt', () => {
+    const content = readFileSync(tplPath, 'utf8')
+    expect(content).toMatch(/never produce a quoted, verbatim-looking excerpt/i)
+    expect(content).toMatch(/unless every character of\s+it appears in webfetch/i)
+  })
+
+  it('forbids stating tag-level/structural facts as measured', () => {
+    const content = readFileSync(tplPath, 'utf8')
+    expect(content).toMatch(/must not state a structural fact/i)
+  })
+
+  it('tells the agent to say "cannot verify" instead of guessing a precise-sounding answer', () => {
+    const content = readFileSync(tplPath, 'utf8')
+    expect(content).toMatch(/say\s+so\s+explicitly in your response instead of answering with a specific-sounding/i)
   })
 })
 
@@ -308,11 +338,22 @@ describe('ensureEgressGate', () => {
 // ---------------------------------------------------------------------------
 // 3. from-authentication: messages.ts source check
 // ---------------------------------------------------------------------------
+
 describe('/api/messages from-authentication', () => {
   const src = readFileSync(join(REPO_ROOT, 'src', 'web', 'routes', 'messages.ts'), 'utf8')
 
-  it('imports isKnownAgent from agent-config', () => {
-    expect(src).toContain("import { isKnownAgent } from '../agent-config.js'")
+  it('imports isKnownAgent from agent-config, co-imports and all', () => {
+    // IMPORTKAPULAZ921: this used to assert the import line VERBATIM, so it fired
+    // on #1448 -- where the author added a SECOND symbol to the same line and the
+    // defence was untouched. That shape misfires on every future co-import, and
+    // asking an outside contributor to bend correct code around a brittle string
+    // of ours is the wrong direction.
+    //
+    // The relaxation must stay a GATE, not a formality: it still reads the value
+    // binding out of the import statement, so removing the import turns it red.
+    // A type-only import does NOT count -- it disappears at runtime, which is
+    // exactly the guard being gone.
+    expect(importsValueBinding(src, 'isKnownAgent', '../agent-config.js')).toBe(true)
   })
 
   it('calls isKnownAgent with the sanitized from field', () => {

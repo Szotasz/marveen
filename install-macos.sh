@@ -412,11 +412,14 @@ echo -e "${BOLD}$(_t section_4_macos)${NC}"
 echo -e "${DIM}$(_t macos.channel_select_hint)${NC}"
 echo -e "  ${BOLD}1.${NC} $(_t macos.channel_option_1)"
 echo -e "  ${BOLD}2.${NC} Slack"
+echo -e "  ${BOLD}3.${NC} Discord"
 echo ""
 read -rp "$(_t prompt_channel_select_macos)" PROVIDER_CHOICE
 PROVIDER_CHOICE=${PROVIDER_CHOICE:-1}
 if [ "$PROVIDER_CHOICE" = "2" ]; then
   CHANNEL_PROVIDER="slack"
+elif [ "$PROVIDER_CHOICE" = "3" ]; then
+  CHANNEL_PROVIDER="discord"
 else
   CHANNEL_PROVIDER="telegram"
 fi
@@ -462,6 +465,9 @@ probe_telegram_token() {
 BOT_TOKEN=""
 SLACK_BOT_TOKEN=""
 SLACK_APP_TOKEN=""
+DISCORD_BOT_TOKEN=""
+DISCORD_CHANNEL_ID=""
+OPERATOR_DISCORD_USER_ID=""
 
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   echo ""
@@ -473,6 +479,79 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   echo ""
   read -rp "$(_t prompt_telegram_token)" BOT_TOKEN
   probe_telegram_token "$BOT_TOKEN"
+elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
+  echo ""
+  echo -e "${DIM}  Az AI asszisztensed Discordon kommunikal veled.${NC}"
+  echo -e "${DIM}  1. Hozz letre egy alkalmazast: discord.com/developers/applications${NC}"
+  echo -e "${DIM}  2. Bot fulon: Add Bot, majd masold ki a Tokent${NC}"
+  echo -e "${DIM}  3. Privileged Gateway Intents: kapcsold be a MESSAGE CONTENT INTENT-et${NC}"
+  echo -e "${DIM}  4. OAuth2 > URL Generator: bot scope, majd hivd meg a szerveredre${NC}"
+  echo -e "${DIM}  5. Masold ki a csatorna ID-jet (Developer Mode > jobb klikk > Copy Channel ID)${NC}"
+  echo -e "${DIM}  6. Sajat (operator) user ID: jobb klikk a nevedre > Copy User ID${NC}"
+  echo ""
+  read -rp "$(_t prompt_discord_bot_token)" DISCORD_BOT_TOKEN
+  read -rp "$(_t prompt_discord_channel_id)" DISCORD_CHANNEL_ID
+  echo ""
+  echo -e "${DIM}  Az operator user ID-re a parositashoz kell: amikor egy uj felhasznalo${NC}"
+  echo -e "${DIM}  DM-et ir a botnak, a bot ezen az ID-n ertesit teged jovahagyasert.${NC}"
+  read -rp "$(_t prompt_discord_user_id)" OPERATOR_DISCORD_USER_ID
+
+  # A previously written managed allowlist (a slack/teams install writes one)
+  # BLOCKS every channel plugin missing from it -- measured on the fleet host:
+  # /Library/Application Support/ClaudeCode/managed-settings.json lists
+  # slack-channel + telegram + teams, no discord, so a discord plugin on such a
+  # machine goes silently mute. A fresh telegram-only install never creates the
+  # file and the official-marketplace plugin runs fine without it, so we only
+  # MERGE when the file already exists -- never create it here.
+  MANAGED_FILE="/Library/Application Support/ClaudeCode/managed-settings.json"
+  if [ -f "$MANAGED_FILE" ]; then
+    HAS_DISCORD=$(sudo python3 -c "
+import json, sys
+try:
+  d = json.load(open('$MANAGED_FILE'))
+  have = {(p.get('plugin'),p.get('marketplace')) for p in d.get('allowedChannelPlugins', [])}
+  sys.exit(0 if ('discord','claude-plugins-official') in have else 1)
+except: sys.exit(1)
+" 2>/dev/null && echo "yes" || echo "no")
+    if [ "$HAS_DISCORD" = "no" ]; then
+      echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_update)"
+      # Safe JSON merge (same shape as ensure-managed-channels-enabled.sh):
+      # tmp file + copymode + os.replace, so no interruption can leave a
+      # truncated managed-settings behind. And an org-policy file is NEVER
+      # rebuilt from scratch: on a parse failure we say so and leave it
+      # untouched -- a {} fallback would silently drop the OTHER channels'
+      # allowlist entries, muting them host-wide.
+      if sudo python3 - "$MANAGED_FILE" <<'DISCORDMERGEPY'
+import json, os, shutil, sys
+p = sys.argv[1]
+try:
+    d = json.load(open(p))
+except Exception as e:
+    print(f"managed-settings parse failed, NOT writing: {e}", file=sys.stderr)
+    sys.exit(1)
+if not isinstance(d, dict):
+    print("managed-settings root is not an object, NOT writing", file=sys.stderr)
+    sys.exit(1)
+plugins = d.get('allowedChannelPlugins', [])
+entry = {'plugin': 'discord', 'marketplace': 'claude-plugins-official'}
+if entry not in plugins:
+    plugins.append(entry)
+d['allowedChannelPlugins'] = plugins
+tmp = p + '.tmp'
+with open(tmp, 'w') as f:
+    f.write(json.dumps(d, indent=2) + "\n")
+shutil.copymode(p, tmp)
+os.replace(tmp, p)
+DISCORDMERGEPY
+      then
+        echo -e "  ${GREEN}✓${NC} Discord engedelyezve a managed-settings allowlistben"
+      else
+        echo -e "  ${RED}✗${NC} A managed-settings.json nem volt biztonsagosan frissitheto -- a fajl ERINTETLEN maradt."
+        echo -e "  ${DIM}Kezi potlas (root): add az allowedChannelPlugins tombhoz:${NC}"
+        echo -e "  ${DIM}  {\"plugin\":\"discord\",\"marketplace\":\"claude-plugins-official\"}${NC}"
+      fi
+    fi
+  fi
 else
   echo ""
   echo -e "${DIM}  Az AI asszisztensed Slack-en kommunikal veled.${NC}"
@@ -495,7 +574,8 @@ else
   SLACK_ENTRY='{"plugin":"slack-channel","marketplace":"marveen-marketplace"}'
   TELEGRAM_ENTRY='{"plugin":"telegram","marketplace":"claude-plugins-official"}'
   TEAMS_ENTRY='{"plugin":"teams","marketplace":"marveen-marketplace"}'
-  REQUIRED_JSON="{\"allowedChannelPlugins\":[$SLACK_ENTRY,$TELEGRAM_ENTRY,$TEAMS_ENTRY]}"
+  DISCORD_ENTRY='{"plugin":"discord","marketplace":"claude-plugins-official"}'
+  REQUIRED_JSON="{\"allowedChannelPlugins\":[$SLACK_ENTRY,$TELEGRAM_ENTRY,$TEAMS_ENTRY,$DISCORD_ENTRY]}"
 
   if [ -f "$MANAGED_FILE" ]; then
     # Gate on ALL required plugins being present (not just slack) -- otherwise an
@@ -505,7 +585,7 @@ else
     # at install time, so no manual managed-settings edit is needed later.
     HAS_ALL=$(sudo python3 -c "
 import json, sys
-required = [('slack-channel','marveen-marketplace'),('telegram','claude-plugins-official'),('teams','marveen-marketplace')]
+required = [('slack-channel','marveen-marketplace'),('telegram','claude-plugins-official'),('teams','marveen-marketplace'),('discord','claude-plugins-official')]
 try:
   d = json.load(open('$MANAGED_FILE'))
   plugins = d.get('allowedChannelPlugins', [])
@@ -515,28 +595,83 @@ except: sys.exit(1)
 " 2>/dev/null && echo "yes" || echo "no")
     if [ "$HAS_ALL" = "no" ]; then
       echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_update)"
-      echo "$REQUIRED_JSON" | sudo python3 -c "
-import json, sys
-new = json.loads(sys.stdin.read())
+      # Safe JSON merge (same shape as the Discord branch / #1306): tmp file +
+      # copymode + os.replace, so no interruption can leave a truncated
+      # managed-settings behind. And an org-policy file is NEVER rebuilt from
+      # scratch: on a parse failure we say so and leave it untouched -- the old
+      # empty-object fallback silently dropped every OTHER managed key
+      # (channelsEnabled, other allowlists) host-wide. The old shape also
+      # piped through `sudo tee`, which TRUNCATES the file even when the merge
+      # process fails -- a failed merge left an EMPTY org-policy file behind.
+      if sudo python3 - "$MANAGED_FILE" <<'SLACKMERGEPY'
+import json, os, shutil, sys
+p = sys.argv[1]
+required = [
+    {'plugin': 'slack-channel', 'marketplace': 'marveen-marketplace'},
+    {'plugin': 'telegram', 'marketplace': 'claude-plugins-official'},
+    {'plugin': 'teams', 'marketplace': 'marveen-marketplace'},
+    {'plugin': 'discord', 'marketplace': 'claude-plugins-official'},
+]
 try:
-  with open('$MANAGED_FILE') as f: existing = json.load(f)
-except: existing = {}
-plugins = existing.get('allowedChannelPlugins', [])
-for entry in new['allowedChannelPlugins']:
-  if not any(p.get('plugin')==entry['plugin'] and p.get('marketplace')==entry['marketplace'] for p in plugins):
-    plugins.append(entry)
-existing['allowedChannelPlugins'] = plugins
-print(json.dumps(existing, indent=2))
-" | sudo tee "$MANAGED_FILE" > /dev/null
-      echo -e "  ${GREEN}✓${NC} $(_t macos.managed_updated)"
+    d = json.load(open(p))
+except Exception as e:
+    print(f"managed-settings parse failed, NOT writing: {e}", file=sys.stderr)
+    sys.exit(1)
+if not isinstance(d, dict):
+    print("managed-settings root is not an object, NOT writing", file=sys.stderr)
+    sys.exit(1)
+plugins = d.get('allowedChannelPlugins', [])
+for entry in required:
+    if not any(p2.get('plugin') == entry['plugin'] and p2.get('marketplace') == entry['marketplace'] for p2 in plugins):
+        plugins.append(entry)
+d['allowedChannelPlugins'] = plugins
+tmp = p + '.tmp'
+with open(tmp, 'w') as f:
+    f.write(json.dumps(d, indent=2) + "\n")
+shutil.copymode(p, tmp)
+os.replace(tmp, p)
+SLACKMERGEPY
+      then
+        echo -e "  ${GREEN}✓${NC} $(_t macos.managed_updated)"
+      else
+        echo -e "  ${RED}✗${NC} A managed-settings.json nem volt biztonsagosan frissitheto -- a fajl ERINTETLEN maradt."
+        echo -e "  ${DIM}Kezi potlas (root): add az allowedChannelPlugins tombhoz a hianyzo bejegyzeseket:${NC}"
+        echo -e "  ${DIM}  $REQUIRED_JSON${NC}"
+      fi
     else
       echo -e "  ${GREEN}✓${NC} $(_t macos.managed_has_slack)"
     fi
   else
     echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_create)"
     sudo mkdir -p "$MANAGED_DIR"
-    echo "$REQUIRED_JSON" | python3 -c "import json,sys; print(json.dumps(json.loads(sys.stdin.read()),indent=2))" | sudo tee "$MANAGED_FILE" > /dev/null
-    echo -e "  ${GREEN}✓${NC} $(_t macos.managed_created)"
+    # Fresh file: still tmp + os.replace, so an interrupted install can never
+    # leave a truncated/empty org-policy file that a later run would then
+    # refuse to touch (the merge above declines unparseable files by design).
+    if sudo python3 - "$MANAGED_FILE" <<'SLACKCREATEPY'
+import json, os, sys
+p = sys.argv[1]
+required = [
+    {'plugin': 'slack-channel', 'marketplace': 'marveen-marketplace'},
+    {'plugin': 'telegram', 'marketplace': 'claude-plugins-official'},
+    {'plugin': 'teams', 'marketplace': 'marveen-marketplace'},
+    {'plugin': 'discord', 'marketplace': 'claude-plugins-official'},
+]
+tmp = p + '.tmp'
+with open(tmp, 'w') as f:
+    f.write(json.dumps({'allowedChannelPlugins': required}, indent=2) + "\n")
+# A fresh tmp inherits the caller's umask; under `umask 077` that leaves a
+# root-owned 0600 policy the unprivileged session cannot read, so the channel
+# policy silently never takes effect (the exact trap documented in
+# scripts/ensure-managed-channels-enabled.sh) -- pin the world-readable mode.
+os.chmod(tmp, 0o644)
+os.replace(tmp, p)
+SLACKCREATEPY
+    then
+      echo -e "  ${GREEN}✓${NC} $(_t macos.managed_created)"
+    else
+      echo -e "  ${RED}✗${NC} A managed-settings.json letrehozasa nem sikerult -- kezi potlas (root):"
+      echo -e "  ${DIM}  echo '$REQUIRED_JSON' > \"$MANAGED_FILE\"${NC}"
+    fi
   fi
 fi
 
@@ -723,6 +858,10 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   if [ "${CHAT_ID}" != "0" ] || [ -z "$_existing_chat" ]; then
     env_merge_key ALLOWED_CHAT_ID "${CHAT_ID}"
   fi
+elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
+  env_keep_or_set DISCORD_BOT_TOKEN "${DISCORD_BOT_TOKEN}"
+  env_keep_or_set DISCORD_CHANNEL_ID "${DISCORD_CHANNEL_ID}"
+  env_keep_or_set OPERATOR_DISCORD_USER_ID "${OPERATOR_DISCORD_USER_ID}"
 else
   env_keep_or_set SLACK_BOT_TOKEN "${SLACK_BOT_TOKEN}"
   env_keep_or_set SLACK_APP_TOKEN "${SLACK_APP_TOKEN}"
@@ -911,6 +1050,22 @@ SLACKENVEOF
 }
 ACCESSEOF
   echo -e "  ${GREEN}✓${NC} $(_t macos.slack_channel_configured)"
+elif [ "$CHANNEL_PROVIDER" = "discord" ] && [ -n "$DISCORD_BOT_TOKEN" ]; then
+  (umask 077 && cat > "$CHANNEL_DIR/.env" << DISCORDENVEOF
+DISCORD_BOT_TOKEN=$DISCORD_BOT_TOKEN
+DISCORD_CHANNEL_ID=$DISCORD_CHANNEL_ID
+DISCORDENVEOF
+  )
+  chmod 600 "$CHANNEL_DIR/.env"
+  cat > "$CHANNEL_DIR/access.json" << ACCESSEOF
+{
+  "dmPolicy": "pairing",
+  "allowFrom": [],
+  "channels": {},
+  "pending": {}
+}
+ACCESSEOF
+  echo -e "  ${GREEN}✓${NC} $(_t macos.discord_channel_configured)"
 fi
 
 # Install channel plugin
@@ -918,6 +1073,10 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   PLUGIN_MARKETPLACE="anthropics/claude-plugins-official"
   PLUGIN_ID="telegram@claude-plugins-official"
   PLUGIN_SHORT="telegram"
+elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
+  PLUGIN_MARKETPLACE="anthropics/claude-plugins-official"
+  PLUGIN_ID="discord@claude-plugins-official"
+  PLUGIN_SHORT="discord"
 else
   PLUGIN_MARKETPLACE="Szotasz/marveen-marketplace"
   PLUGIN_ID="slack-channel@marveen-marketplace"
@@ -1358,12 +1517,33 @@ else
   echo -e "    ${DIM}Ellenorzes: launchctl print gui/$(id -u)/${CHANNELS_PLIST} | grep -E 'state|pid'${NC}"
 fi
 
+# Idle-path keepalive probe (launchd twin of the Linux systemd timer). Without
+# it the ONLY producer of store/.channel-keepalive freshness is organic inbound
+# traffic, so a quiet night looks exactly like a wedged session: the file ages
+# past the dashboard's 45-minute liveness ceiling and channel-monitor respawns a
+# healthy main agent (its conversation lost), which kills the channel plugin,
+# which trips the channels watchdog into a second restart. Measured on a live
+# Linux install the night of 2026-09-12/13: 13 restarts, one every ~50 minutes.
+# The probe never fakes liveness -- it proves the session, its claude pid and a
+# descending poller are alive before touching the file -- so a genuinely dead
+# channel still ages out and still gets recovered.
+#
+# The dedicated installer script already exists and is idempotent; --load starts
+# it immediately. Non-fatal: a failed keepalive probe must not fail the install.
+if [ -x "$INSTALL_DIR/scripts/install-channel-keepalive-probe.sh" ]; then
+  if "$INSTALL_DIR/scripts/install-channel-keepalive-probe.sh" --load >/dev/null 2>&1; then
+    ok "Keepalive-szonda telepitve (3 percenkent, hamis respawn ellen)"
+  else
+    warn "A keepalive-szonda telepitese nem sikerult -- inditsd kezzel: scripts/install-channel-keepalive-probe.sh --load"
+  fi
+fi
+
 # Verify channel plugin is working
 sleep 3
 echo ""
 echo -e "${BOLD}$(_t section_checks)${NC}"
-if [ "$CHANNEL_PROVIDER" = "telegram" ] && ! command -v bun &>/dev/null; then
-  echo -e "  ${RED}✗${NC} Bun nem talalhato. A Telegram plugin nem fog mukodni."
+if { [ "$CHANNEL_PROVIDER" = "telegram" ] || [ "$CHANNEL_PROVIDER" = "discord" ]; } && ! command -v bun &>/dev/null; then
+  echo -e "  ${RED}✗${NC} Bun nem talalhato. A ${CHANNEL_PROVIDER} plugin nem fog mukodni."
   echo -e "  ${BOLD}Javitas:${NC} curl -fsSL https://bun.sh/install | bash"
   echo -e "  ${DIM}Utana: source ~/.zshrc && ./scripts/start.sh${NC}"
 fi

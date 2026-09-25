@@ -27,7 +27,15 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HOOK_DIR="$(cd "$(git -C "$ROOT" rev-parse --git-common-dir)" && pwd)/hooks"
+# `rev-parse --git-common-dir` answers RELATIVE TO THE REPO (".git"), so the
+# `git -C "$ROOT"` above only looks safe: resolving that answer with a bare `cd`
+# resolves it against the CALLER's cwd. Measured: started from another checkout
+# this installer wrote the guard into THAT repository and printed its success
+# line, leaving the tree it was meant to protect unguarded -- the silent
+# non-enforcement this hook exists to prevent.
+GIT_COMMON_DIR="$(git -C "$ROOT" rev-parse --git-common-dir)"
+case "$GIT_COMMON_DIR" in /*) ;; *) GIT_COMMON_DIR="$ROOT/$GIT_COMMON_DIR" ;; esac
+HOOK_DIR="$(cd "$GIT_COMMON_DIR" && pwd)/hooks"
 DISPATCH="$HOOK_DIR/pre-commit"
 GUARD="$HOOK_DIR/pre-commit.d/05-prod-tree-guard"
 DISPATCH_MARK="marveen-pre-commit-dispatcher"
@@ -131,6 +139,28 @@ TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || echo)"
 BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo ismeretlen)"
 case "$BRANCH" in develop|main|master) exit 0 ;; esac
 [ "${MARVEEN_PROD_CHECKOUT_OK:-0}" = "1" ] && exit 0
+# A rebase's (merge/cherry-pick/bisect's) FIRST step is a checkout to detached
+# HEAD -- abbrev-ref reports the literal string "HEAD", which matches nothing
+# in the case above, so an in-progress operation hit this guard mid-flight and
+# got auto-reverted to the home branch, pulling the tree out from under the
+# very operation that just checked it out (msg 3042-3045: four rebase attempts,
+# always "index contains uncommitted changes" from a provably clean index --
+# the index was fine, the tree under it had just been yanked back to main).
+# The guard's job is to catch an UNNOTICED switch, not to interrupt a running
+# multi-step git operation -- detect one and skip the revert, but still alert.
+GIT_DIR_CUR="$(git rev-parse --git-dir 2>/dev/null || echo)"
+OP=""
+if [ -n "$GIT_DIR_CUR" ]; then
+  if [ -d "$GIT_DIR_CUR/rebase-merge" ] || [ -d "$GIT_DIR_CUR/rebase-apply" ]; then
+    OP="rebase"
+  elif [ -f "$GIT_DIR_CUR/CHERRY_PICK_HEAD" ]; then
+    OP="cherry-pick"
+  elif [ -f "$GIT_DIR_CUR/MERGE_HEAD" ]; then
+    OP="merge"
+  elif [ -f "$GIT_DIR_CUR/BISECT_LOG" ]; then
+    OP="bisect"
+  fi
+fi
 # Revert target: the deployment's default branch, derived, not assumed.
 HOME_BRANCH=""
 for b in develop main master; do
@@ -143,7 +173,9 @@ done
 # fire (measured 2026-08-22). Recursion is self-limiting: the revert lands on
 # the home branch, where this hook exits at the case-guard above.
 REVERTED="nem"
-if [ -z "$HOME_BRANCH" ]; then
+if [ -n "$OP" ]; then
+  REVERTED="nem (folyamatban levo git-muvelet: $OP -- a guard nem szakitja meg)"
+elif [ -z "$HOME_BRANCH" ]; then
   REVERTED="nem (nincs develop/main/master ag)"
 elif [ -z "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
   if git checkout "$HOME_BRANCH" -q 2>/dev/null; then
@@ -167,11 +199,35 @@ ALERT_TO="${MARVEEN_GUARD_ALERT_TO:-marveen}"
 # forget -- a failed send left the branch-switch alert lost with no trace.
 # The hook stays exit-0 (a guard must not break git), but a delivery failure
 # is now loud on the git command's own output.
-GUARD_HTTP="$(curl -s -m 5 -X POST "$ORIGIN/api/messages" \
+#
+# The body is JSON-ENCODED, never assembled by the shell: BOTH values it
+# reports can carry JSON metacharacters. git check-ref-format accepts a double
+# quote in a branch name (it rejects space, colon, backslash and '[', but not
+# '"'), and a directory name has none of those restrictions, so the repository
+# path can hold a quote AND a colon. Measured on the hand-built payload: a
+# quoted branch name produced a body that no longer parses, so the switch went
+# unreported -- the silent non-enforcement this guard exists to prevent -- and
+# a quote plus a colon in the path closed "content" and opened a SECOND "to"
+# key, which a parser takes over the first, delivering attacker-written text
+# to an attacker-named agent. Same rule as scripts/agent-msg.sh: the values
+# travel in the ENVIRONMENT and json.dumps does the quoting.
+ALERT_TEXT="[PROD-FA ORSEG, post-checkout hook] Fa: $TOPLEVEL -- agat valtott a(z) $BRANCH agra. (Ha ez az utvonal nem a telepites fo faja, ez PROBA, nem eles riasztas.) AUTO-VISSZAALLITAS: $REVERTED. Commitot a pre-commit hook blokkol; szandekos valtashoz MARVEEN_PROD_CHECKOUT_OK=1."
+GUARD_BODY=""
+if command -v python3 >/dev/null 2>&1; then
+  GUARD_BODY="$(GUARD_TO="$ALERT_TO" GUARD_TEXT="$ALERT_TEXT" python3 -c 'import json,os,sys
+sys.stdout.write(json.dumps({"from":"marveen","to":os.environ["GUARD_TO"],"content":os.environ["GUARD_TEXT"]}))' 2>/dev/null)" || GUARD_BODY=""
+fi
+if [ -z "$GUARD_BODY" ]; then
+  # No encoder, no send: a body the shell glued together is exactly what this
+  # change removes, so there is no fallback to it. Loud, like a failed POST.
+  echo "[prod-tree-guard] FIGYELEM: a branch-valtas riasztas NEM ert celba (a JSON payload nem allt elo -- python3 hianyzik?) -- a koordinator nem tud a valtasrol" >&2
+  exit 0
+fi
+GUARD_HTTP="$(printf '%s' "$GUARD_BODY" | curl -s -m 5 -X POST "$ORIGIN/api/messages" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $(cat "$TOKEN_FILE")" \
   -o /dev/null -w '%{http_code}' \
-  -d "{\"from\":\"marveen\",\"to\":\"$ALERT_TO\",\"content\":\"[PROD-FA ORSEG, post-checkout hook] Fa: $TOPLEVEL -- agat valtott a(z) $BRANCH agra. (Ha ez az utvonal nem a telepites fo faja, ez PROBA, nem eles riasztas.) AUTO-VISSZAALLITAS: $REVERTED. Commitot a pre-commit hook blokkol; szandekos valtashoz MARVEEN_PROD_CHECKOUT_OK=1.\"}" 2>/dev/null)" || GUARD_HTTP="000"
+  --data-binary @- 2>/dev/null)" || GUARD_HTTP="000"
 case "$GUARD_HTTP" in
   2*) : ;;
   *) echo "[prod-tree-guard] FIGYELEM: a branch-valtas riasztas NEM ert celba (HTTP ${GUARD_HTTP:-000}) -- a koordinator nem tud a valtasrol" >&2 ;;

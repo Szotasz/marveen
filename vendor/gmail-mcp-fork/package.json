@@ -1,0 +1,76 @@
+{
+  "name": "@artymclabin/gmail-mcp",
+  "version": "1.2.3",
+  "mcpName": "io.github.ArtyMcLabin/Gmail-MCP-Server",
+  "description": "Lean Gmail MCP server with auto authentication support (maintained fork of GongRzhe/Gmail-MCP-Server)",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "gmail-mcp": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/index.js",
+    "auth": "node dist/index.js auth",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lockfile:lint": "lockfile-lint --path package-lock.json --type npm --validate-https --allowed-hosts npm",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run build"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "keywords": [
+    "gmail",
+    "mcp",
+    "cursor",
+    "ai",
+    "oauth",
+    "model-context-protocol",
+    "google-gmail",
+    "claude",
+    "auto-auth"
+  ],
+  "author": "Arty McLabin",
+  "contributors": [
+    "gongrzhe (original upstream author)"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ArtyMcLabin/Gmail-MCP-Server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ArtyMcLabin/Gmail-MCP-Server/issues"
+  },
+  "homepage": "https://github.com/ArtyMcLabin/Gmail-MCP-Server#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "email-addresses": "^5.0.0",
+    "google-auth-library": "^9.4.1",
+    "googleapis": "^129.0.0",
+    "mime-types": "^3.0.1",
+    "nodemailer": "^7.0.11",
+    "open": "^10.0.0",
+    "zod": "^3.22.4",
+    "zod-to-json-schema": "^3.22.1"
+  },
+  "devDependencies": {
+    "@types/mime-types": "^2.1.4",
+    "@types/node": "^20.10.5",
+    "@types/nodemailer": "^6.4.17",
+    "lockfile-lint": "^5.0.0",
+    "mcp-evals": "^1.0.18",
+    "typescript": "^5.3.3",
+    "vitest": "^4.0.18"
+  }
+}

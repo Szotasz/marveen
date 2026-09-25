@@ -165,14 +165,23 @@ describe('branchOnRemote does not trust a branch the remote has never seen', () 
   })
 
   it('falls back to the default branch when the remote has no such branch', async () => {
+    // CIDEVPIROS907: the control must not be tied to the LIVE checkout. The
+    // old assertion compared against trackedBranch(), which on CI runs ON
+    // develop -- the very value the stub returned -- so the inequality
+    // structurally could never pass there (20/20 red develop runs). A
+    // synthetic fixture name proves the value came from the remote-default
+    // probe BY CONSTRUCTION: no real checkout can be named this, so the
+    // came-from-the-fallback property no longer depends on where the suite
+    // happens to run.
+    const FIXTURE_DEFAULT = 'fixture-default-branch-cidev907'
     const branch = await branchOnRemote(
       OURS, PROJECT_ROOT,
-      async () => 'develop',
+      async () => FIXTURE_DEFAULT,
       () => false,
       ownOrigin,
       () => true,
     )
-    expect(branch).toBe('develop')
+    expect(branch).toBe(FIXTURE_DEFAULT)
     expect(branch).not.toBe(trackedBranch())
   })
 

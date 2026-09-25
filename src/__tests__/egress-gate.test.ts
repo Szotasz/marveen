@@ -18,6 +18,10 @@ import { isEgressBlocked, egressDecision, payloadKeySignature } from '../../scri
 
 const QUARANTINE = 'quarantine-reader'
 const EMPTY = { domains: [], prefixes: [], quarantineDomains: [] }
+// The operator flipped the reader-posture switch. Identical to EMPTY in every
+// other respect, so any behaviour difference between the two objects IS the
+// switch and nothing else.
+const OPEN = { ...EMPTY, quarantinePosture: 'denylist' }
 
 describe('what the gate lets through', () => {
   it('passes a built-in allowed prefix', () => {
@@ -74,7 +78,11 @@ describe('the quarantine tier', () => {
     expect(isEgressBlocked('WebFetch', feed, EMPTY, undefined)).toBe(true)
   })
 
-  it('blocks a domain the quarantine-reader was never given', () => {
+  it('blocks a domain the quarantine-reader was never given -- in the DEFAULT posture', () => {
+    // This assertion is the owner's requirement made executable: an install
+    // that never touched quarantine_reader_posture behaves exactly as before
+    // the switch existed. The open behaviour lives in its own describe below
+    // and is reachable only through the explicit config value.
     expect(isEgressBlocked('WebFetch', { url: 'https://evil.example/feed' }, EMPTY, QUARANTINE)).toBe(true)
   })
 
@@ -111,6 +119,99 @@ describe('the quarantine tier', () => {
     expect(egressDecision('WebFetch', { url: 'https://api.github.com/x' }, EMPTY, QUARANTINE).tier).toBe('builtin')
     expect(egressDecision('WebFetch', feed, EMPTY, QUARANTINE).tier).toBe('quarantine')
     expect(egressDecision('WebFetch', feed, EMPTY, '').tier).toBe('none')
+  })
+})
+
+// The reader-posture switch (quarantine_reader_posture: "denylist"). The
+// owner's terms, verbatim in code: both behaviours exist, one setting chooses,
+// the allowlist stays the default because its failure direction is the one a
+// human hears about. Everything in this block requires the explicit config
+// value; everything above ran on EMPTY and proved the default unchanged.
+describe('the open reader posture (operator opt-in)', () => {
+  it('lets the reader fetch a public domain it was never given', () => {
+    // The reader has `tools: WebFetch` and nothing else -- no shell, no
+    // filesystem, no store -- so it holds no secret to leak, and what it
+    // returns is data the caller must wrap. That is why open reading is
+    // defensible for this tier and no other.
+    expect(isEgressBlocked('WebFetch', { url: 'https://evil.example/feed' }, OPEN, QUARANTINE)).toBe(false)
+    expect(egressDecision('WebFetch', { url: 'https://evil.example/feed' }, OPEN, QUARANTINE).tier).toBe('quarantine-open')
+  })
+
+  it('opens NOTHING for the main agent, whatever the posture says', () => {
+    // The switch narrows or widens the reader only. A main agent fetching a
+    // news page puts unwrapped, untrusted text straight into its own context,
+    // and no config value may change that.
+    expect(isEgressBlocked('WebFetch', { url: 'https://evil.example/feed' }, OPEN, '')).toBe(true)
+    expect(isEgressBlocked('WebFetch', { url: 'https://evil.example/feed' }, OPEN, undefined)).toBe(true)
+  })
+
+  it('takes only the literal value "denylist" -- anything else is the default', () => {
+    // A typo or a wrong type must fall back to the stricter posture, not the
+    // laxer one: the misconfiguration should be heard (a refused read), not
+    // silently widen the gate.
+    for (const bad of ['Denylist', 'open', 'DENYLIST', true, 1, {}, null]) {
+      expect(isEgressBlocked('WebFetch', { url: 'https://evil.example/feed' },
+        { ...EMPTY, quarantinePosture: bad as never }, QUARANTINE)).toBe(true)
+    }
+  })
+
+  it('refuses our own network even for the open reader, and does it BEFORE any allow path', () => {
+    // Order is the substance here. The built-in prefixes include this
+    // install's own dashboard, so deny rules consulted only at the quarantine
+    // step would have let the open reader reach localhost through the
+    // built-in tier -- the one address the deny rules exist to refuse. Found
+    // by a test, not by reading.
+    const internal = [
+      'http://localhost:3420/api/memories',
+      'http://127.0.0.1:8080/',
+      'http://169.254.169.254/latest/meta-data/',
+      'http://10.0.85.98:9000/',
+      'http://192.168.1.1/',
+      'http://172.20.0.5/',
+      'http://100.100.0.1/',
+      'http://[::1]/',
+      'http://[fd00::1]/',
+      'http://[fe80::1]/',
+      'http://printer.local/',
+      'http://box.internal/',
+      'http://metadata.google.internal/',
+      'file:///etc/passwd',
+    ]
+    for (const url of internal) {
+      expect(egressDecision('WebFetch', { url }, OPEN, QUARANTINE).tier).toBe('quarantine-denied')
+    }
+    // ...and the neighbours of those ranges stay reachable, so the rule is a
+    // rule and not a superstition about numbers that look private.
+    for (const url of ['http://172.15.0.5/', 'http://172.32.0.5/', 'http://11.0.0.1/', 'http://100.63.0.1/']) {
+      expect(isEgressBlocked('WebFetch', { url }, OPEN, QUARANTINE)).toBe(false)
+    }
+  })
+
+  it('keeps the deny rules away from the main agent and from the default posture', () => {
+    // The main agent may still reach its own dashboard through the built-in
+    // prefixes, and so may the DEFAULT-posture reader (its prompt never asks
+    // for internal addresses, and the owner's rule is that the default
+    // changes for no one).
+    expect(isEgressBlocked('WebFetch', { url: 'http://localhost:3420/api/memories' }, OPEN, '')).toBe(false)
+    expect(isEgressBlocked('WebFetch', { url: 'http://localhost:3420/api/memories' }, EMPTY, QUARANTINE)).toBe(false)
+  })
+
+  it('reddit: the RSS path still matches by name, and the rest opens like any public site', () => {
+    // The path rule predates the switch, when hostname-only matching would
+    // have handed over the whole site while the definition promised feeds. It
+    // is kept because the shipped sources must not depend on the posture --
+    // but in the open posture it no longer decides anything: a non-RSS reddit
+    // URL is reachable for the same reason any other public URL is. Stated
+    // rather than left as a surprise for whoever next reads the path callback
+    // and assumes it blocks.
+    expect(egressDecision('WebFetch', { url: 'https://www.reddit.com/r/devops/new.rss' }, OPEN, QUARANTINE).tier).toBe('quarantine')
+    expect(egressDecision('WebFetch', { url: 'https://www.reddit.com/r/devops/about/rules.json' }, OPEN, QUARANTINE).tier).toBe('quarantine-open')
+  })
+
+  it('fails closed on anything that is not an exact agent_type match, posture notwithstanding', () => {
+    for (const bad of ['quarantine_reader', 'Quarantine-Reader', 'quarantine-reader ', 'general-purpose', null, 42]) {
+      expect(isEgressBlocked('WebFetch', { url: 'https://evil.example/feed' }, OPEN, bad as never)).toBe(true)
+    }
   })
 })
 

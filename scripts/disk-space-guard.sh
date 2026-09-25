@@ -52,7 +52,14 @@ INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SCRATCH_DIR="${DISK_GUARD_SCRATCH_DIR:-/tmp}"
 STATE_DIR="${DISK_GUARD_STATE_DIR:-$INSTALL_DIR/store}"
 ALERT_STAMP="$STATE_DIR/.disk-guard-alerted"
-TG_ENV="$HOME/.claude/channels/telegram/.env"
+# #915: main channel state is install-scoped once migrated; the legacy shared
+# path only serves unmigrated installs.
+TG_CHAN_DIR="${TELEGRAM_STATE_DIR:-}"
+if [ -z "$TG_CHAN_DIR" ]; then
+  TG_CHAN_DIR="$INSTALL_DIR/.claude/channels/telegram"
+  [ -f "$TG_CHAN_DIR/.env" ] || TG_CHAN_DIR="$HOME/.claude/channels/telegram"
+fi
+TG_ENV="$TG_CHAN_DIR/.env"
 LOG_TAG="disk-space-guard"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*" || true; }

@@ -32,6 +32,7 @@
 // session cannot accept other input, but the helper runs in a setTimeout off
 // the recovery thread and only fires once per respawn, so the cost is bounded.
 
+import { tmuxStderr } from './tmux-stderr.js'
 import { execFileSync } from 'node:child_process'
 import { resolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
@@ -105,11 +106,14 @@ function getSessionClaudePid(session: string): number | null {
     const raw = execFileSync(TMUX, ['list-panes', '-t', session, '-F', '#{pane_pid}'], {
       timeout: 3000,
       encoding: 'utf-8',
+      // TMUXWINDOWATTR920: piped, so tmux's one-line error is logged below with
+      // the site instead of being copied undated onto dashboard.error.log.
+      stdio: ['ignore', 'pipe', 'pipe'],
     }).trim().split('\n')[0]
     const pid = parseInt(raw ?? '', 10)
     return Number.isFinite(pid) && pid > 1 ? pid : null
   } catch (err) {
-    logger.warn({ err, session }, 'channel-plugin-unlock: failed to read session claude pid')
+    logger.warn({ site: 'channel-plugin-unlock.getSessionClaudePid', session, tmux: tmuxStderr(err) }, 'channel-plugin-unlock: failed to read session claude pid')
     return null
   }
 }

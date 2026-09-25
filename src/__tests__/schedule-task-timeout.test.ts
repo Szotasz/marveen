@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { decideTaskTimeout, resolveStuckTimeoutMs, TASK_FIRE_GRACE_MS, TASK_FIRE_TIMEOUT_MS } from '../web/schedule-runner.js'
+import {
+  decideTaskTimeout,
+  decideLostRedeliveryAction,
+  MAX_LOST_REDELIVERIES,
+  resolveStuckTimeoutMs,
+  TASK_FIRE_GRACE_MS,
+  TASK_FIRE_TIMEOUT_MS,
+} from '../web/schedule-runner.js'
 import type { TaskInflightEntry } from '../web/schedule-runner.js'
 import { OWNER_ESCALATION_EXTRA_MS } from '../pending-retries.js'
 
@@ -55,19 +62,19 @@ describe('decideTaskTimeout: idle clear', () => {
   it('clears immediately when the pane is idle (task completed before timeout)', () => {
     const entry = makeEntry({ injectedAt: 0 })
     const now = GRACE + 1000
-    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('clear')
+    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('done')
   })
 
   it('clears even before the grace period if somehow idle', () => {
     const entry = makeEntry({ injectedAt: 0 })
     const now = GRACE - 5000
-    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('clear')
+    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('done')
   })
 
   it('clears when idle even after the timeout has elapsed', () => {
     const entry = makeEntry({ injectedAt: 0 })
     const now = TIMEOUT + 1000
-    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('clear')
+    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('done')
   })
 })
 
@@ -105,7 +112,7 @@ describe('decideTaskTimeout: one-shot alert flag', () => {
   it('still clears when idle even after alerted', () => {
     const entry = makeEntry({ injectedAt: 0, alerted: true })
     const now = TIMEOUT + 60_000
-    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('clear')
+    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('done')
   })
 })
 
@@ -129,22 +136,39 @@ describe('decideTaskTimeout: injection that never started a turn', () => {
     expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('hold')
   })
 
-  it('clears instead of losing once a turn has been observed', () => {
+  it('reports done instead of lost once a turn has been observed', () => {
     const entry = makeEntry({ injectedAt: 0, sawTurn: true })
     const now = GRACE + 1
-    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('clear')
+    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('done')
   })
 
   it('still evicts at max tracking age rather than reporting lost', () => {
     const entry = makeEntry({ injectedAt: 0, sawTurn: false })
     const now = MAX_TRACK + 1
-    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('clear')
+    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('abandoned')
   })
 
   it('does not report lost while the pane is busy -- that is the alert path', () => {
     const entry = makeEntry({ injectedAt: 0, sawTurn: false })
     const now = TIMEOUT + 1
     expect(decideTaskTimeout(entry, 'busy', now, BASE_OPTS)).toBe('alert')
+  })
+
+  // SCHEDLOST915: the resubmit chain was still clearing a paste placeholder
+  // when the sweep called 'lost' and queued a second copy on top of it.
+  it('holds past grace while the post-send resubmit chain still owns the delivery', () => {
+    const entry = { ...makeEntry({ injectedAt: 0, sawTurn: false }), deliveryPending: true }
+    expect(decideTaskTimeout(entry, 'idle', GRACE + 15_000, BASE_OPTS)).toBe('hold')
+  })
+
+  it('reports lost again once the resubmit chain has ended', () => {
+    const entry = { ...makeEntry({ injectedAt: 0, sawTurn: false }), deliveryPending: false }
+    expect(decideTaskTimeout(entry, 'idle', GRACE + 15_000, BASE_OPTS)).toBe('lost')
+  })
+
+  it('a pending delivery does not outlive max tracking age', () => {
+    const entry = { ...makeEntry({ injectedAt: 0, sawTurn: false }), deliveryPending: true }
+    expect(decideTaskTimeout(entry, 'idle', MAX_TRACK + 1, BASE_OPTS)).toBe('abandoned')
   })
 })
 
@@ -182,20 +206,26 @@ describe('decideTaskTimeout: stage-2 owner escalation', () => {
     expect(decideTaskTimeout(entry, 'busy', now, BASE_OPTS)).toBe('hold')
   })
 
-  it('still clears when idle even after escalation', () => {
+  it('still ends when idle even after escalation, and it ends as done', () => {
+    // Upstream wrote this as 'clear'. Since the done/abandoned split that value
+    // no longer exists: an idle pane with a turn seen is a FINISHED run, so the
+    // honest assertion is 'done'. Changing it is the point of the split, not a
+    // concession to it.
     const entry = makeEntry({ injectedAt: 0, alerted: true, ownerAlerted: true })
     const now = TIMEOUT + OWNER_EXTRA + 60_000
-    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('clear')
+    expect(decideTaskTimeout(entry, 'idle', now, BASE_OPTS)).toBe('done')
   })
 
   it('maxTrackMs eviction still wins over escalate for a task configured near the ceiling', () => {
     // Known, accepted limitation (see decideTaskTimeout's doc comment):
-    // clear (maxTrackMs) is checked before alert/escalate, so a task whose
+    // abandoned (maxTrackMs) is checked before alert/escalate, so a task whose
     // timeoutMs + ownerExtraMs together exceed maxTrackMs never escalates.
+    // Upstream called this 'clear'; after the split, giving up on a still-busy
+    // task is 'abandoned' -- explicitly NOT 'done', because we never saw it end.
     const entry = makeEntry({ injectedAt: 0, alerted: true })
     const nearCeilingOpts = { graceMs: GRACE, timeoutMs: MAX_TRACK - 1000, maxTrackMs: MAX_TRACK, ownerExtraMs: OWNER_EXTRA }
     const now = MAX_TRACK + 1
-    expect(decideTaskTimeout(entry, 'busy', now, nearCeilingOpts)).toBe('clear')
+    expect(decideTaskTimeout(entry, 'busy', now, nearCeilingOpts)).toBe('abandoned')
   })
 })
 
@@ -227,13 +257,30 @@ describe('decideTaskTimeout: max tracking age', () => {
   it('evicts the entry regardless of pane state after maxTrackMs', () => {
     const entry = makeEntry({ injectedAt: 0, alerted: true })
     const now = MAX_TRACK + 1
-    expect(decideTaskTimeout(entry, 'busy', now, BASE_OPTS)).toBe('clear')
+    expect(decideTaskTimeout(entry, 'busy', now, BASE_OPTS)).toBe('abandoned')
   })
 
   it('evicts even if the pane is unknown at max age', () => {
     const entry = makeEntry({ injectedAt: 0 })
     const now = MAX_TRACK + 1
-    expect(decideTaskTimeout(entry, 'unknown', now, BASE_OPTS)).toBe('clear')
+    expect(decideTaskTimeout(entry, 'unknown', now, BASE_OPTS)).toBe('abandoned')
+  })
+
+  // The load-bearing half of the 2026-08-26 split. Ageing out is NOT success:
+  // the session was still busy when we stopped watching. If both cases kept
+  // returning one value, recording completions would silently stamp 'done' on
+  // every task that ran past six hours -- worse than recording nothing, because
+  // it would look like evidence.
+  it('a busy session at max age is abandoned, NOT done', () => {
+    const entry = makeEntry({ injectedAt: 0, alerted: true })
+    const decision = decideTaskTimeout(entry, 'busy', MAX_TRACK + 1, BASE_OPTS)
+    expect(decision).toBe('abandoned')
+    expect(decision).not.toBe('done')
+  })
+
+  it('an idle session that saw a turn is done, and max age cannot mask it as such', () => {
+    const finished = makeEntry({ injectedAt: 0, sawTurn: true })
+    expect(decideTaskTimeout(finished, 'idle', GRACE + 1000, BASE_OPTS)).toBe('done')
   })
 })
 
@@ -314,5 +361,143 @@ describe('resolveStuckTimeoutMs: the threshold is per task', () => {
     const src = readFileSync(join(__dirname, '../web/schedule-runner.ts'), 'utf-8')
     expect(src).toMatch(/timeoutMs: entry\.timeoutMs,/)
     expect(src).toMatch(/timeoutMs: resolveStuckTimeoutMs\(task\),/)
+  })
+
+  // Heartbeats must never reach the owner's Telegram from THIS alert path.
+  // Measured 2026-09-01: 40 timeout alerts landed on the owner's phone, 18 of
+  // them from `memoria-heartbeat` -- a task that is both `type: heartbeat` and
+  // `skipIfBusy: true`. This is the second time heartbeat noise had to be
+  // filtered out (2026-08-24 was the catch-up summary), hence a guard.
+  it('sendTaskTimeoutAlert bails out for heartbeat tasks (fix-revert guard)', () => {
+    const src = readFileSync(join(__dirname, '../web/schedule-runner.ts'), 'utf-8')
+    // The type must be captured on the entry at injection time...
+    expect(src).toMatch(/taskType: task\.type,/)
+    expect(src).toMatch(/taskType: string \| undefined/)
+    // ...and the alert must return before any network call when it is a heartbeat.
+    const fn = src.slice(src.indexOf('function sendTaskTimeoutAlert'))
+    const guardAt = fn.indexOf("entry.taskType === 'heartbeat'")
+    // Upstream made the alert channel-agnostic (sendTelegramMessage ->
+    // sendSchedulerAlertMessage); accept either so the guard outlives a rename.
+    const sendAt = Math.max(fn.indexOf('sendSchedulerAlertMessage'), fn.indexOf('sendTelegramMessage'))
+    expect(guardAt).toBeGreaterThan(-1)
+    expect(sendAt).toBeGreaterThan(-1)
+    expect(guardAt).toBeLessThan(sendAt)
+  })
+})
+
+// --- Bounded 'lost' redelivery ---
+//
+// Regression guard for an unbounded self-refire loop, measured live
+// 2026-09-12 on the main channels agent: 'lost' used to always drop the
+// scheduleLastRun stamp and enqueue a fresh retry with no memory of how many
+// times this exact occurrence had already been declared lost. The main
+// agent's transcript-mtime evidence was blind (see the configDir fix in
+// schedule-runner.ts, which reuses agent-process.ts's
+// mainAgentConfigDirIfSeparate), so sawTurn depended entirely on catching the
+// pane 'busy' in a snapshot -- any sweep that missed a fast heartbeat's busy
+// window declared it 'lost' and re-delivered, every ~30s (TASK_FIRE_GRACE_MS),
+// indefinitely. Even with correct evidence a single retry is worth keeping (a
+// sweep can still land inside the grace window by bad luck), but past
+// MAX_LOST_REDELIVERIES the sweep must give up instead of looping forever.
+describe('decideLostRedeliveryAction: bounded lost-injection redelivery', () => {
+  it('retries on the first lost verdict (zero prior attempts)', () => {
+    expect(decideLostRedeliveryAction(0)).toBe('retry')
+  })
+
+  it('gives up once prior attempts reach the cap', () => {
+    expect(decideLostRedeliveryAction(MAX_LOST_REDELIVERIES)).toBe('giveup')
+  })
+
+  it('never returns "retry" past the cap, however high prior attempts climb', () => {
+    expect(decideLostRedeliveryAction(MAX_LOST_REDELIVERIES + 5)).toBe('giveup')
+  })
+
+  it('honours an explicit cap override rather than the module default', () => {
+    expect(decideLostRedeliveryAction(0, 3)).toBe('retry')
+    expect(decideLostRedeliveryAction(2, 3)).toBe('retry')
+    expect(decideLostRedeliveryAction(3, 3)).toBe('giveup')
+  })
+
+  it('the default cap is a small positive number, not accidentally 0 or unbounded', () => {
+    // A cap of 0 would give up on the very first 'lost' verdict (no retry ever
+    // survives a single blind sweep); this constant is a deliberate policy
+    // choice, not a stray default, so pin it against silent drift in either
+    // direction.
+    expect(MAX_LOST_REDELIVERIES).toBeGreaterThan(0)
+    expect(MAX_LOST_REDELIVERIES).toBeLessThanOrEqual(3)
+  })
+})
+
+// --- Wiring: the sweep's 'lost' branch actually consults the cap ---
+//
+// decideLostRedeliveryAction is pure and covered above; these guard that the
+// imperative sweep (which owns the in-memory attempt counter and cannot be
+// unit-tested without a full tmux/DB harness) is actually wired to it, the
+// same source-text-guard style already used for the per-task-threshold fix
+// above and for the main-agent-missing branch in
+// schedule-runner-main-agent-missing.test.ts.
+describe('lost-redelivery wiring in the watchdog sweep', () => {
+  const SRC = readFileSync(join(__dirname, '../web/schedule-runner.ts'), 'utf-8')
+  const lostBranchIdx = SRC.indexOf("} else if (decision === 'lost') {")
+  const doneBranchIdx = SRC.indexOf("if (decision === 'done' || decision === 'abandoned') {")
+
+  it('the lost branch consults decideLostRedeliveryAction before re-queueing', () => {
+    expect(lostBranchIdx).toBeGreaterThan(0)
+    const lostBranch = SRC.slice(lostBranchIdx, lostBranchIdx + 3600)
+    expect(lostBranch).toMatch(/decideLostRedeliveryAction\(priorAttempts\)/)
+  })
+
+  it("give-up records 'lost-giveup' and does NOT enqueue another pending retry", () => {
+    const lostBranch = SRC.slice(lostBranchIdx, lostBranchIdx + 3600)
+    const giveupIdx = lostBranch.indexOf("=== 'giveup'")
+    expect(giveupIdx).toBeGreaterThan(0)
+    const giveupBlock = lostBranch.slice(giveupIdx, lostBranch.indexOf('} else {', giveupIdx))
+    expect(giveupBlock).toMatch(/'lost-giveup'/)
+    expect(giveupBlock).toMatch(/sendLostRedeliveryGiveUpNotice/)
+    expect(giveupBlock).not.toMatch(/insertPendingTaskRetryIfNew/)
+  })
+
+  it('a plain retry (not yet at the cap) still enqueues the pending retry, unchanged from before', () => {
+    const lostBranch = SRC.slice(lostBranchIdx, lostBranchIdx + 3600)
+    const elseIdx = lostBranch.indexOf('} else {')
+    const retryBlock = lostBranch.slice(elseIdx, lostBranch.indexOf('}', elseIdx + 8))
+    expect(retryBlock).toMatch(/insertPendingTaskRetryIfNew\(entry\.taskName, entry\.agentName, now, 'lost-injection'\)/)
+  })
+
+  it('done only forgets the attempt count on genuine success, not on max-track abandonment', () => {
+    expect(doneBranchIdx).toBeGreaterThan(0)
+    expect(doneBranchIdx).toBeLessThan(lostBranchIdx)
+    const doneBlock = SRC.slice(doneBranchIdx, SRC.indexOf("} else if (decision === 'alert')", doneBranchIdx))
+    // The delete must be conditioned on decision === 'done' specifically -- an
+    // 'abandoned' entry never proved a turn happened, so the next occurrence of
+    // the same task@agent must not start over with a fresh budget on a session
+    // that may still be silently swallowing prompts.
+    expect(doneBlock).toMatch(/if \(decision === 'done'\) \{\s*\n\s*lostRedeliveryCounts\.delete/)
+  })
+})
+
+// SCHEDLOST915 wiring: the grace window starts at submit, and every exit of the
+// resubmit chain ends the delivery phase (otherwise a pending flag stuck at
+// true would turn every real loss into a silent hold until max-track age).
+describe('in-flight registration wiring', () => {
+  const SRC = readFileSync(join(__dirname, '../web/schedule-runner.ts'), 'utf-8')
+
+  it('injectedAt is the submit time, not the tick start', () => {
+    // AUDITBORITEKVESZ918 turned the opts bag multi-line (onBusySend), so the
+    // anchor is the call itself: this test is about the ORDER of the submit
+    // stamp, not about how the argument list is formatted.
+    const sendIdx = SRC.indexOf('await sendPromptToSession(session, fullPrompt, host, {')
+    const stampIdx = SRC.indexOf('const submittedAt = Date.now()')
+    expect(sendIdx).toBeGreaterThan(0)
+    expect(stampIdx).toBeGreaterThan(sendIdx)
+    expect(SRC).toMatch(/injectedAt: submittedAt,/)
+    expect(SRC).not.toMatch(/injectedAt: now,/)
+  })
+
+  it('registers the entry with deliveryPending and clears it on every resubmit exit', () => {
+    expect(SRC).toMatch(/deliveryPending: true,\s*\n\s*\}\s*\n\s*taskInflightMap\.set/)
+    expect(SRC).toMatch(/if \(res\.value === 'done'\) \{ endDelivery\(\); return \}/)
+    expect(SRC).toMatch(/'lane-busy'\)\s*\n\s*endDelivery\(\)\s*\n\s*return/)
+    expect(SRC).toMatch(/'Post-send resubmit failed'\)\s*\n\s*endDelivery\(\)/)
   })
 })

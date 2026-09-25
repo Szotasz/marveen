@@ -22,7 +22,9 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { logger } from '../logger.js'
 import { PROJECT_ROOT } from '../config.js'
 import { readEnvFile } from '../env.js'
+import { getEffectiveSettingValue } from '../settings-store.js'
 import { resolveOwnerChatId } from '../owner-chat.js'
+import { projectsDirFor } from './active-model.js'
 
 // Mirrors KEEPALIVE_RESPAWN_GRACE_MS from channel-monitor.ts (15 min).
 // Not imported directly to avoid a circular module dependency: channel-monitor.ts
@@ -36,16 +38,100 @@ const VENV_PYTHON = join(PROJECT_ROOT, '.watchdog-venv', 'bin', 'python3')
 const PROBER_SCRIPT = join(PROJECT_ROOT, 'scripts', 'watchdog-inbound-prober.py')
 
 // Transcript directory for the main channels session JSONL files. Claude Code
-// encodes a project dir by replacing every '/' in the cwd with '-', so we
-// derive it from PROJECT_ROOT rather than hardcoding a host-specific path.
-// Sub-agents live in separate project dirs (one per agent cwd), so picking the
-// newest file in the main dir is reliable.
-export const TRANSCRIPT_DIR = join(
-  process.env.HOME ?? homedir(),
-  '.claude',
-  'projects',
-  PROJECT_ROOT.replace(/\//g, '-'),
-)
+// encodes a project dir by replacing every character outside [a-zA-Z0-9-]
+// with '-' (measured, src/claude-project-dir.ts) --
+// see projectsDirFor in active-model.ts, the canonical encoder already relied
+// on by schedule-runner and the context-guard/restart-gate watchdogs. A
+// hand-rolled slash-only encoder here
+// used to disagree with it on any PROJECT_ROOT containing another separator
+// Claude Code also encodes (e.g. a dot in the username), which made this
+// constant point at a directory Claude Code never creates -- see the
+// 866da985 postmortem below mainTranscriptDirs().
+//
+// Kept as the SHARED-ROOT candidate only; every caller must go through
+// mainTranscriptDirs() instead -- see the comment there.
+export const TRANSCRIPT_DIR = projectsDirFor(PROJECT_ROOT, join(process.env.HOME ?? homedir(), '.claude'))
+
+// CONFIG-DIR BLIND SPOT (2026-09-11, ~2h of false keepalive respawns): the
+// constant above assumes the main channels agent writes its transcript under the
+// SHARED ~/.claude. That stopped being true the moment main-agent config
+// isolation shipped -- with MAIN_AGENT_ISOLATED_CONFIG=1 the session runs with
+// CLAUDE_CONFIG_DIR=<PROJECT_ROOT>/.channels-config, so its JSONL lands in
+// <PROJECT_ROOT>/.channels-config/projects/<encoded-cwd>/ and the watchdogs read
+// an empty (or frozen) directory forever. Two things break at once:
+//   - refreshKeepaliveFromInbound() never sees live traffic, so a BUSY
+//     conversation ages the keepalive file out (the scheduled edit_message
+//     keep-alive is busy-skipped exactly then) and the staleness watchdog
+//     respawn-panes the running conversation away;
+//   - the inbound probe reads lastIngestionTs as null/stale and can declare
+//     deafness on a perfectly healthy channel.
+// Rather than re-deriving the isolation gates here (settings + fleet token +
+// dir existence -- three places to drift out of sync, and an import cycle into
+// agent-process.ts), we probe EVERY candidate root and take the newest
+// ingestion across them. A root that is not in use simply yields an older
+// timestamp or none, and "newest wins" is exactly the question being asked.
+// The CONFIG ROOTS (not the projects/ subdirs) the main agent may be writing
+// its transcript under. Exported separately from mainTranscriptDirs() because
+// not every caller wants the main agent's own cwd: the schedule runner asks the
+// same question about a task it injected, and needs the roots so it can join
+// them with ITS working dir. Keeping the isolation knowledge in one function is
+// the whole point -- a second copy is what produced the schedule-runner blind
+// spot this list was already supposed to prevent (2026-09-14).
+export function mainConfigRoots(): string[] {
+  const roots = [
+    join(process.env.HOME ?? homedir(), '.claude'),
+    join(PROJECT_ROOT, '.channels-config'),
+  ]
+  // An operator-set MAIN_AGENT_CONFIG_DIR (a separate Claude login for the bot)
+  // wins over both defaults, so it must be a candidate too. Read defensively:
+  // the settings store must never be able to break a watchdog tick.
+  try {
+    let raw = String(getEffectiveSettingValue('MAIN_AGENT_CONFIG_DIR') ?? '').trim()
+    if (raw) {
+      if (raw.startsWith('~')) raw = join(homedir(), raw.slice(1))
+      roots.push(raw)
+    }
+  } catch {
+    // keep the defaults
+  }
+  return [...new Set(roots)]
+}
+
+// POSTMORTEM (866da985, 2026-09-20): this used to encode PROJECT_ROOT with a
+// local `PROJECT_ROOT.replace(/\//g, '-')` that only strips slashes, while
+// Claude Code itself also replaces dots with '-' (the character class is
+// `[/.]`, not `/` alone). On this host PROJECT_ROOT is
+// /Users/a.kobza/marveen -- the dot in the username meant the computed directory
+// (.../-Users-a.kobza-marveen) never existed on disk (the real one is
+// .../-Users-a-kobza-marveen), so readLastIngestionTimestampAcross() always
+// returned null. shouldRefreshKeepaliveFromInbound() is `lastInboundTs !=
+// null && ...`, so it was permanently false: refreshKeepaliveFromInbound()
+// never advanced store/.channel-keepalive's mtime, no matter how much real
+// Telegram traffic or inter-agent processing occurred. The file aged out
+// past KEEPALIVE_STALE_MS forever, and once past KEEPALIVE_RESPAWN_GRACE_MS
+// (15 min) the very next non-busy poll tick force-respawned the session --
+// measured live at 63 respawns in one day, each one wiping the running
+// conversation (memory/kanban survive; the live turn does not). Fixed by
+// reusing projectsDirFor(), the same encoder schedule-runner and the
+// context-guard/restart-gate watchdogs already trust for this exact
+// question -- see the 09-11 CONFIG-DIR BLIND SPOT comment above for why a
+// second hand-rolled copy of this logic is exactly how this kind of bug
+// hides for months on hosts whose username has no dot in it.
+export function mainTranscriptDirs(): string[] {
+  const dirs = mainConfigRoots().map(root => projectsDirFor(PROJECT_ROOT, root))
+  return [...new Set(dirs)]
+}
+
+// Newest inbound-channel ingestion across every candidate transcript root.
+// Returns null only when NO candidate has one.
+export function readLastIngestionTimestampAcross(dirs: string[]): number | null {
+  let newest: number | null = null
+  for (const dir of dirs) {
+    const ts = readLastIngestionTimestamp(dir)
+    if (ts != null && (newest == null || ts > newest)) newest = ts
+  }
+  return newest
+}
 
 // N3: named constant for the probe timeout multiplier.
 // probeTimeoutMs = probeIntervalMs * PROBE_TIMEOUT_MULTIPLIER (allow 2x interval before declaring deaf).
@@ -304,7 +390,7 @@ function checkInboundProbeDeafness(probeTimeoutMs: number): void {
   }
 
   const nowMs = Date.now()
-  const lastIngestionTs = readLastIngestionTimestamp(TRANSCRIPT_DIR)
+  const lastIngestionTs = readLastIngestionTimestampAcross(mainTranscriptDirs())
 
   const needsRespawn = shouldTriggerDeafnessRespawn({
     markerTs,

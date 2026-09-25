@@ -1,5 +1,6 @@
 import { join, isAbsolute } from 'node:path'
 import { checkTaskMcpRequirements } from './schedule-mcp-precheck.js'
+import { collectHeartbeatMetricsBlock } from './heartbeat-metrics-inject.js'
 import { existsSync, readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -15,6 +16,11 @@ import {
 import { resolveOwnerChatId, configuredOwnerChatFor } from '../owner-chat.js'
 import {
   appendTaskRun,
+  markTaskRunCompleted,
+  setTaskRunDelivery,
+  getTaskRunStatus,
+  reconcileOpenTaskRuns,
+  getTaskRunMedianDurationMs,
   listPendingTaskRetries,
   deletePendingTaskRetry,
   updatePendingTaskRetry,
@@ -30,16 +36,24 @@ import { toPendingRetryView, classifySendError, OWNER_ESCALATION_EXTRA_MS, type 
 import {
   SCHEDULED_TASK_PREAMBLE,
   wrapScheduledTask,
+  wrapScheduledTaskByReference,
 } from '../prompt-safety.js'
+import { writeScheduledRunSnapshot, isScheduledRunReference } from './scheduled-run-snapshot.js'
 import { cronPrevOccurrence, effectiveCronTz } from './cron.js'
 import {
   listScheduledTasks,
   SCHEDULED_TASKS_DIR,
+  SCHEDULED_TASK_INLINE_MAX_CHARS,
+  SCHEDULED_TASK_BODY_WARN_CHARS,
+  MAX_SCHEDULED_TASK_PROMPT_LEN,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
 import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
-import { readTranscriptMtimeFromProjectDir } from './active-model.js'
+import { readTranscriptMtimeAcrossConfigDirs, projectsDirFor } from './active-model.js'
+import { classifyDelivery, readUserPromptsSince, type DeliveryVerdict } from './delivery-integrity.js'
+import { paneOneLine } from './pane-text.js'
+import { mainConfigRoots } from './inbound-probe.js'
 import { channelStateDir, getProvider, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import {
   agentSessionName,
@@ -53,12 +67,15 @@ import {
   clearStaleParkedInput,
   resolveAgentProvider,
   clearFeedbackModalAndRecheck,
+  saturationRefusesDispatch,
 } from './agent-process.js'
+import { isRestartInFlight } from './restart-lock.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { runCommandTask } from './command-task.js'
 import { decideQuotaAction, type QuotaWorkClass } from '../quota-gate.js'
 import { readQuotaSnapshot } from '../quota-snapshot.js'
-import { paneShowsContextSaturation, detectsFirstRunGate, detectPaneState, type PaneState } from '../pane-state.js'
+import { detectsFirstRunGate, detectPaneState, overfullParkedInputTail, type PaneState } from '../pane-state.js'
+import { getInjectedPrompt, matchesInjectedPrompt, type InjectedPromptRecord } from './injected-prompt-registry.js'
 import { withSessionSendLock } from './session-send-lock.js'
 
 // How many bare-Enter attempts the post-send resubmit tries before escalating
@@ -134,14 +151,48 @@ export interface TaskInflightEntry {
   sawTurn: boolean
   // Where the target agent's transcripts live, captured at injection time so a
   // config edit mid-flight cannot move the evidence. Reused as the arguments to
-  // readTranscriptMtimeFromProjectDir on every sweep.
+  // readTranscriptMtimeAcrossConfigDirs on every sweep.
+  //
+  // A LIST, not a single root (2026-09-14): the main agent may run under the
+  // shared ~/.claude or under an isolated CLAUDE_CONFIG_DIR, and guessing wrong
+  // blinds the sawTurn probe completely. See the comment at the assignment.
+  // `undefined` inside the list means the shared ~/.claude default.
   workingDir: string
-  configDir: string | undefined
+  configDirs: ReadonlyArray<string | undefined>
   // Per-task stuck threshold, resolved at injection time from the task config
   // (see resolveStuckTimeoutMs). Captured on the entry rather than looked up
   // during the sweep so an edit to the schedule mid-run cannot move the
   // goalposts under an already-running injection.
   timeoutMs: number
+  // task_runs row id of the dispatch that opened this entry, so the sweep can
+  // close the SAME row it started. null only if the insert failed (non-fatal by
+  // design -- bookkeeping must never block a task from running).
+  runId: number | null
+  // Task type, captured at injection time for the same reason as timeoutMs.
+  // Read by sendTaskTimeoutAlert to keep self-healing heartbeats out of the
+  // operator's Telegram (see the guard there).
+  taskType: string | undefined
+  // True while attemptFireTask's detached post-send resubmit chain is still
+  // working on this injection (probing for a parked prompt, re-pressing Enter,
+  // clearing a [Pasted text] placeholder and re-typing). While it runs, an idle
+  // pane with no turn yet is that chain's business, not a loss: calling 'lost'
+  // here re-queued a second copy that was typed on top of the first one's
+  // re-send (SCHEDLOST915: kanban-audit 2026-09-15, delivered twice, the second
+  // copy with spliced sentences).
+  deliveryPending: boolean
+  // Set once the sweep has pressed its single recovery Enter for a prompt parked
+  // in an overfull input box, so a second 'lost' verdict on this entry takes the
+  // ordinary lost path instead of Enter-looping.
+  parkedEnterSent?: boolean
+  // PROMPTCSONK923 delivery-integrity check. `sentText` is the exact one-line
+  // byte stream sendPromptToSession typed, `typedAt` the moment typing began:
+  // every prompt the session recorded from then on is compared with it (see
+  // delivery-integrity.ts). Absent for a remote agent (its transcript is not
+  // on this host). `deliveryVerdict` is set once a verdict is persisted, so
+  // the transcript is not re-read on every sweep after that.
+  sentText?: string
+  typedAt?: number
+  deliveryVerdict?: DeliveryVerdict
 }
 
 // How long a fired task may stay busy before the watchdog calls it stuck.
@@ -173,7 +224,53 @@ export function resolveStuckTimeoutMs(
 // Active task/heartbeat injections keyed by `${taskName}@${agentName}`.
 const taskInflightMap = new Map<string, TaskInflightEntry>()
 
-export type TaskTimeoutDecision = 'clear' | 'alert' | 'escalate' | 'hold' | 'lost'
+// How many times a single occurrence may be re-queued after a 'lost' verdict.
+// Before this cap the loop was unbounded: 'lost' drops the scheduleLastRun
+// stamp and enqueues a retry; the retry fires, attemptFireTask registers a
+// FRESH in-flight entry with sawTurn:false, and a second blind sweep can call
+// 'lost' on that one too, with nothing counting how many times this has
+// already happened. Confirmed live 2026-09-12 on the main channels agent
+// (main-agent sawTurn probe blind, see #1329): a heartbeat that genuinely finished between
+// two sweeps re-delivered itself indefinitely, every ~30s. One retry is kept
+// (a single sweep can still land inside the grace window by bad luck even
+// with correct evidence); a second 'lost' on the SAME occurrence means either
+// the evidence is still bad or the session is genuinely swallowing the
+// prompt, and either way a third injection only compounds the damage
+// (duplicate memory writes, duplicate skill patches -- see
+// scheduled-tasks/memoria-heartbeat/SKILL.md's own warning about this). In-
+// memory only, same lifetime as taskInflightMap: a fired occurrence deletes
+// its retry row, so there is no DB column this could live on instead.
+export const MAX_LOST_REDELIVERIES = 1
+const lostRedeliveryCounts = new Map<string, number>()
+
+export type LostRedeliveryAction = 'retry' | 'giveup'
+
+// Pure: given how many times this occurrence has already been declared
+// 'lost' (BEFORE this one), decide whether the sweep may queue another retry
+// or must give up instead. Exported so the cap is unit-tested without
+// tmux/DB mocks, the same way decideTaskTimeout and decideCatchUp are.
+export function decideLostRedeliveryAction(
+  priorAttempts: number,
+  max: number = MAX_LOST_REDELIVERIES,
+): LostRedeliveryAction {
+  return priorAttempts >= max ? 'giveup' : 'retry'
+}
+
+// 'done'      -- the pane went idle after a turn was seen: the run FINISHED.
+// 'abandoned' -- max tracking age reached; we stop watching without knowing.
+// 'alert'     -- still busy past the threshold; one-shot operator alert.
+// 'hold'      -- no conclusion this tick.
+// 'lost'      -- the session took the keystrokes but never started a turn.
+//
+// 'done' and 'abandoned' were one value ('clear') until 2026-08-26. They are
+// opposites -- one is success, the other is giving up -- and merging them meant
+// the only moment the system KNEW a task had finished was spent deleting a map
+// entry. Splitting them is what makes a completion recordable at all.
+// 'escalate' -- stage 2: the main agent was already told and the session is
+//                STILL busy after the extra owner window; alert the owner
+//                directly. Added upstream after this branch forked, so the
+//                rebase has to keep it alongside the done/abandoned split.
+export type TaskTimeoutDecision = 'done' | 'abandoned' | 'alert' | 'escalate' | 'hold' | 'lost'
 
 // Pure: decide what the watchdog should do for a single in-flight entry this
 // tick. Exported so it can be unit-tested without tmux I/O.
@@ -224,20 +321,61 @@ export type TaskTimeoutDecision = 'clear' | 'alert' | 'escalate' | 'hold' | 'los
 // evicted ('clear') before escalate is ever reached. Accepted -- a task
 // legitimately configured to run for hours AND stuck long enough to hit
 // that ceiling is an extreme edge case outside this change's scope.
+// PROMPTCSONK923: the delivery-integrity verdict to persist for an in-flight
+// entry right now, or null (nothing to record yet). Reads every prompt the
+// target session's transcripts recorded since typing began and compares it
+// with what was typed (delivery-integrity.ts).
+//
+// 'tail-lost' is only returned when `final` (the entry is closing): the head
+// of a split prompt is recorded BEFORE its tail, so a sweep that lands between
+// the two would otherwise persist 'tail-lost' for what is really a 'split'.
+// Every other verdict is final on first sight.
+//
+// The CLOSING look never leaves the question open (Marveen's #1506 review): in
+// flight, "nothing of ours arrived" means "not yet"; at the close there is no
+// "yet". It becomes 'not-arrived' when a transcript directory was readable,
+// and 'unverifiable' when none was -- so a wholly lost prompt no longer sits
+// as NULL next to a remote agent's never-checked row.
+//
+// `read` and `dirExists` are injectable so the decision is unit-tested
+// without disk.
+export function checkTaskDeliveryIntegrity(
+  entry: Pick<TaskInflightEntry, 'sentText' | 'typedAt' | 'deliveryVerdict' | 'workingDir' | 'configDirs'>,
+  final: boolean,
+  read: (dirs: readonly string[], sinceMs: number) => string[] = readUserPromptsSince,
+  dirExists: (dir: string) => boolean = existsSync,
+): DeliveryVerdict | null {
+  if (entry.sentText == null || entry.typedAt == null || entry.deliveryVerdict != null) return null
+  const dirs = [...new Set(entry.configDirs.map((c) => projectsDirFor(entry.workingDir, c)))]
+  let verdict: DeliveryVerdict | null
+  try {
+    verdict = classifyDelivery(entry.sentText, read(dirs, entry.typedAt))
+  } catch {
+    return final ? 'unverifiable' : null
+  }
+  if (verdict === 'tail-lost' && !final) return null
+  if (verdict == null && final) return dirs.some((d) => dirExists(d)) ? 'not-arrived' : 'unverifiable'
+  return verdict
+}
+
 export function decideTaskTimeout(
-  entry: Pick<TaskInflightEntry, 'injectedAt' | 'alerted' | 'ownerAlerted' | 'sawTurn'>,
+  entry: Pick<TaskInflightEntry, 'injectedAt' | 'alerted' | 'ownerAlerted' | 'sawTurn'> & { deliveryPending?: boolean },
   paneState: PaneState | null,
   now: number,
   opts: { graceMs: number; timeoutMs: number; maxTrackMs: number; ownerExtraMs: number },
 ): TaskTimeoutDecision {
   const elapsed = now - entry.injectedAt
-  if (elapsed >= opts.maxTrackMs) return 'clear'
+  if (elapsed >= opts.maxTrackMs) return 'abandoned'
   if (paneState === 'idle') {
-    if (entry.sawTurn) return 'clear'
+    if (entry.sawTurn) return 'done'
     // Idle, and nothing ever showed the prompt being picked up. Inside the
     // grace window that is just the normal pre-turn lag, so hold; past it the
     // delivery is gone.
     if (elapsed < opts.graceMs) return 'hold'
+    // The post-send resubmit chain still owns this delivery (a parked prompt
+    // or paste placeholder it is about to re-submit). Its own give-up path
+    // queues the pending retry, so holding here cannot lose the task.
+    if (entry.deliveryPending) return 'hold'
     return 'lost'
   }
   // NOTE: no early `if (entry.alerted) return 'hold'` here -- that was
@@ -329,6 +467,18 @@ export function isScheduledPromptStuck(pane: string | null, marker: string): boo
   return /❯\s+\S/.test(inputRegion) && inputRegion.includes(marker)
 }
 
+// isScheduledPromptStuck's blind spot: a prompt taller than the pane. The ❯
+// glyph and the marker scroll off the capture with the box's top, so the
+// check above reads "not parked" while our prompt sits unsent (SCHEDLOST915,
+// see overfullParkedInputTail). The visible tail must match what this process
+// typed into the pane (injected-prompt registry) -- that match, not the shape,
+// is what makes a recovery Enter safe: it can only submit our own text, never
+// a human draft or someone else's message.
+export function isOwnPromptParkedOverfull(pane: string | null, record: InjectedPromptRecord | null): boolean {
+  if (!pane) return false
+  return matchesInjectedPrompt(overfullParkedInputTail(pane), record)
+}
+
 // --- Schedule Runner ---
 // Checks every minute if any scheduled task is due and injects the prompt
 // into the agent's tmux session.
@@ -368,6 +518,174 @@ function persistScheduleLastRun(): void {
     atomicWriteFileSync(SCHEDULE_LAST_RUN_PATH, JSON.stringify(Object.fromEntries(scheduleLastRun), null, 2))
   } catch (err) {
     logger.warn({ err }, 'schedule-runner: failed to persist last-run map')
+  }
+}
+
+// --- SCHEDPROMPTREF917: size-guard ---
+//
+// A scheduled task's SKILL.md body grows unboundedly over time (every
+// lesson learned lands in its "Buktatók" section, spec 1.2) -- the
+// reference-based delivery below closes the CORRUPTION risk that growth used
+// to carry, but the growth itself is still worth surfacing: a bigger body
+// costs more tokens per fire and is a proxy for "this task's SKILL.md wants
+// splitting". Two tiers, both same-day-deduped per task (spec 3.5):
+//   WARN  (SCHEDULED_TASK_BODY_WARN_CHARS)  -> logger.warn + inter-agent notice
+//   ALERT (MAX_SCHEDULED_TASK_PROMPT_LEN)   -> logger.warn + a second, louder
+//                                              inter-agent notice
+// Both go to the main agent only. The size of a SKILL.md is internal
+// housekeeping; the owner channel is reserved for customer- or
+// money-impacting alerts, so the size guard never sends there.
+// Delivery itself is UNAFFECTED by either tier -- the task still fires.
+export type SizeGuardLevel = 'none' | 'warn' | 'alert'
+
+export function sizeGuardLevel(
+  bodyChars: number,
+  warnChars: number = SCHEDULED_TASK_BODY_WARN_CHARS,
+  alertChars: number = MAX_SCHEDULED_TASK_PROMPT_LEN,
+): SizeGuardLevel {
+  if (bodyChars >= alertChars) return 'alert'
+  if (bodyChars >= warnChars) return 'warn'
+  return 'none'
+}
+
+// Whether the task body is large enough that tmux delivery must go through
+// the fire-time snapshot + reference path instead of inline (spec 3.3).
+export function shouldSnapshotTaskBody(
+  bodyChars: number,
+  inlineMaxChars: number = SCHEDULED_TASK_INLINE_MAX_CHARS,
+): boolean {
+  return bodyChars > inlineMaxChars
+}
+
+export interface ScheduledTaskBlockDeps {
+  writeSnapshot: typeof writeScheduledRunSnapshot
+  isValidReference: (filePath: string) => boolean
+}
+
+const DEFAULT_TASK_BLOCK_DEPS: ScheduledTaskBlockDeps = {
+  writeSnapshot: writeScheduledRunSnapshot,
+  isValidReference: (filePath) => isScheduledRunReference(filePath),
+}
+
+// Build the <scheduled-task> block for one fire: inline, or a reference to a
+// fire-time snapshot (spec 3.3). The reference path is taken only when all
+// three hold, otherwise the body goes inline and the task is never dropped:
+//   - the body crosses SCHEDULED_TASK_INLINE_MAX_CHARS;
+//   - the target session is LOCAL (host === null). The snapshot lives on the
+//     dashboard host, so a remote agent could not Read it and the task would
+//     be silently undelivered;
+//   - the snapshot was written (write failure = spec test 11) and its path
+//     passes isScheduledRunReference (a rejected path is logged there).
+export function buildScheduledTaskBlock(
+  taskName: string,
+  taskBody: string,
+  host: string | null,
+  nowMs: number,
+  deps: ScheduledTaskBlockDeps = DEFAULT_TASK_BLOCK_DEPS,
+): { block: string; delivery: 'inline' | 'reference' } {
+  const source = `scheduled-task:${taskName}`
+  const inline = { block: wrapScheduledTask(source, taskBody), delivery: 'inline' as const }
+  if (!shouldSnapshotTaskBody(taskBody.length)) return inline
+  if (host !== null) return inline
+  const skillPath = join(SCHEDULED_TASKS_DIR, taskName, 'SKILL.md')
+  const snapshot = deps.writeSnapshot(taskName, taskBody, { firedAt: new Date(nowMs), skillPath })
+  if (!snapshot) return inline
+  if (!deps.isValidReference(snapshot.filePath)) return inline
+  return {
+    block: wrapScheduledTaskByReference(source, snapshot.filePath, snapshot.sha256, snapshot.chars),
+    delivery: 'reference',
+  }
+}
+
+const SIZE_GUARD_STATE_PATH = join(PROJECT_ROOT, 'store', 'scheduled-task-size-guard.json')
+// task name -> 'YYYY-MM-DD' of the last day a WARN/ALERT notice fired for it.
+const sizeGuardWarnSentDate: Map<string, string> = new Map()
+const sizeGuardAlertSentDate: Map<string, string> = new Map()
+
+function todayStamp(nowMs: number): string {
+  return new Date(nowMs).toISOString().slice(0, 10)
+}
+
+function loadSizeGuardState(): void {
+  try {
+    const raw = JSON.parse(readFileSync(SIZE_GUARD_STATE_PATH, 'utf-8'))
+    if (raw && typeof raw === 'object') {
+      const warn = (raw as Record<string, unknown>).warn
+      const alert = (raw as Record<string, unknown>).alert
+      if (warn && typeof warn === 'object') {
+        for (const [name, d] of Object.entries(warn)) if (typeof d === 'string') sizeGuardWarnSentDate.set(name, d)
+      }
+      if (alert && typeof alert === 'object') {
+        for (const [name, d] of Object.entries(alert)) if (typeof d === 'string') sizeGuardAlertSentDate.set(name, d)
+      }
+    }
+  } catch { /* no file yet / unreadable -- start empty */ }
+}
+
+function persistSizeGuardState(): void {
+  try {
+    atomicWriteFileSync(SIZE_GUARD_STATE_PATH, JSON.stringify({
+      warn: Object.fromEntries(sizeGuardWarnSentDate),
+      alert: Object.fromEntries(sizeGuardAlertSentDate),
+    }, null, 2))
+  } catch (err) {
+    logger.warn({ err }, 'schedule-runner: failed to persist size-guard state')
+  }
+}
+
+// Pure claim-and-set over an injected map: true exactly once per (task, day).
+// Split out from claimSizeGuardNotice so the same-day dedupe (test 10) is
+// directly unit-testable without touching the module's real state or disk --
+// a fresh Map plays the role of a same-day restart's reloaded stamps, an
+// empty one the role of a new day.
+export function shouldSendSizeGuardNotice(stamps: Map<string, string>, taskName: string, today: string): boolean {
+  if (stamps.get(taskName) === today) return false
+  stamps.set(taskName, today)
+  return true
+}
+
+// True exactly once per (task, level, day) -- claims the stamp as a side
+// effect so the caller only sends when this returns true (test 10: a second
+// same-day fire, or a same-day restart, must not repeat the notice).
+function claimSizeGuardNotice(taskName: string, level: 'warn' | 'alert', nowMs: number): boolean {
+  const stamps = level === 'warn' ? sizeGuardWarnSentDate : sizeGuardAlertSentDate
+  const today = todayStamp(nowMs)
+  if (!shouldSendSizeGuardNotice(stamps, taskName, today)) return false
+  persistSizeGuardState()
+  return true
+}
+
+// Never lets a size-guard notice delay or fail the task fire it is reporting
+// on: both tiers are a synchronous inter-agent row to the main agent, each
+// wrapped in its own try/catch.
+function maybeSendSizeGuardNotice(taskName: string, bodyChars: number, nowMs: number): void {
+  const level = sizeGuardLevel(bodyChars)
+  if (level === 'none') return
+  if (!claimSizeGuardNotice(taskName, 'warn', nowMs)) {
+    // Already warned today. An 'alert'-level body still needs its own,
+    // separately-stamped ALERT tier below, so only bail here for 'warn'.
+    if (level === 'warn') return
+  } else {
+    logger.warn({ task: taskName, bodyChars, warnChars: SCHEDULED_TASK_BODY_WARN_CHARS }, 'scheduled task body has grown past the size-guard warn threshold')
+    try {
+      createAgentMessage('system', MAIN_AGENT_ID, [
+        `[scheduler] A(z) "${taskName}" ütemezett feladat SKILL.md törzse ${bodyChars} karakter (figyelmeztetési küszöb: ${SCHEDULED_TASK_BODY_WARN_CHARS}).`,
+        'A kézbesítés emiatt nem sérülékeny (hivatkozásos küldés), de a méret növekszik. A buktatók references/ alá mozgatása csökkentené.',
+      ].join('\n'))
+    } catch (err) {
+      logger.warn({ err, task: taskName }, 'size-guard warn: inter-agent notice failed')
+    }
+  }
+  if (level !== 'alert') return
+  if (!claimSizeGuardNotice(taskName, 'alert', nowMs)) return
+  logger.warn({ task: taskName, bodyChars, alertChars: MAX_SCHEDULED_TASK_PROMPT_LEN }, 'scheduled task body has grown past the size-guard alert threshold')
+  try {
+    createAgentMessage('system', MAIN_AGENT_ID, [
+      `[scheduler] RIASZTÁS: a(z) "${taskName}" ütemezett feladat SKILL.md törzse ${bodyChars} karakter (riasztási küszöb: ${MAX_SCHEDULED_TASK_PROMPT_LEN}).`,
+      'A kézbesítés emiatt nem sérülékeny (hivatkozásos küldés), de a méret növekszik. A buktatók references/ alá mozgatása csökkentené.',
+    ].join('\n'))
+  } catch (err) {
+    logger.warn({ err, task: taskName }, 'size-guard alert: inter-agent notice failed')
   }
 }
 
@@ -595,11 +913,21 @@ export function quotaWorkClass(task: Pick<ScheduledTask, 'type'>): QuotaWorkClas
   return 'owner-facing'
 }
 
+// Where a task's preCheck script lives. Relative -> beside the task's SKILL.md;
+// absolute -> as given; a leading {{PROJECT_ROOT}} / {{INSTALL_DIR}} -> the
+// install root. The placeholder form exists for SHIPPED tasks that gate on a
+// repo script: the node seeder copies task-config.json without template
+// rendering, and update.sh's seed refresh never adds a new file to an existing
+// task dir, so neither a hard-coded path nor a script beside the SKILL.md would
+// reach every install.
+export function resolvePreCheckPath(taskName: string, preCheck: string): string {
+  const rooted = preCheck.replace(/^\{\{(PROJECT_ROOT|INSTALL_DIR)\}\}(?=\/)/, PROJECT_ROOT)
+  return isAbsolute(rooted) ? rooted : join(SCHEDULED_TASKS_DIR, taskName, rooted)
+}
+
 export function runPreCheck(task: ScheduledTask): { skip: boolean; prefix?: string } {
   if (!task.preCheck) return { skip: false }
-  const scriptPath = isAbsolute(task.preCheck)
-    ? task.preCheck
-    : join(SCHEDULED_TASKS_DIR, task.name, task.preCheck)
+  const scriptPath = resolvePreCheckPath(task.name, task.preCheck)
   if (!existsSync(scriptPath)) {
     logger.warn({ task: task.name, scriptPath }, 'pre-check script not found, running LLM anyway')
     return { skip: false }
@@ -690,6 +1018,15 @@ async function attemptFireTask(
   // rather than widening that function's return type for this one caller.
   const isMainAgent = agentName === MAIN_AGENT_ID
 
+  // A managed restart (context-guard rescue, auto-restart, model fallback) owns
+  // this agent for the length of its stop+start. Delivering into a session that
+  // is about to be killed loses the prompt, and the missing-session branch below
+  // would go further and START the agent with OUR default options -- overtaking
+  // the restarter, because stopAgentProcess's ~2s tmux wait makes isAgentRunning
+  // report false while the restart is only half done (see restart-lock.ts).
+  // 'busy' is the honest answer: the normal retry path delivers once it is over.
+  if (isRestartInFlight(agentName)) return 'busy'
+
   if (!sessionExistsOnHost(host, session)) {
     // The main channels session is service-managed (systemd/launchd via
     // channels.sh), not a directory under AGENTS_BASE_DIR -- startAgentProcess
@@ -772,7 +1109,7 @@ async function attemptFireTask(
     // retry lands on the first tick after the session has been rescued. All
     // other busy states keep the bypass.
     const pane = capturePane(session, host)
-    if (pane != null && paneShowsContextSaturation(pane)) {
+    if (pane != null && saturationRefusesDispatch(pane, session)) {
       logger.warn({ task: task.name, agent: agentName, session }, 'forceSend target session is context-saturated (100%) -- deferring to retry queue instead of injecting into a wedged session')
       return 'busy'
     }
@@ -864,19 +1201,66 @@ async function attemptFireTask(
     // Use the scheduled-task framing instead: tags are still scrubbed (so a
     // poisoned body cannot smuggle a fake security tag) but the preamble marks
     // it as a task-to-execute with the standard escalate-if-dangerous guard.
-    const taskBody = preCheckPrefix
-      ? `[Pre-check eredmeny]\n${preCheckPrefix}\n\n[Feladat]\n${task.prompt}`
+    //
+    // HBMETRICSWIRE910: for a heartbeat task flagged injectMetrics, the
+    // runner executes the on-disk instrument NOW and appends its output in
+    // final report form. Inside the scrubbed body on purpose: the block
+    // carries kanban titles (operator-adjacent but free text), so it gets the
+    // same tag-scrub as the rest of the task body. collectHeartbeatMetricsBlock
+    // never throws and never returns empty -- an instrument failure arrives as
+    // a muszer-hiba block, which is a result to deliver, not a reason to skip.
+    let metricsBlock: string | null = null
+    if (task.type === 'heartbeat' && task.injectMetrics) {
+      metricsBlock = await collectHeartbeatMetricsBlock()
+    }
+    const promptWithMetrics = metricsBlock
+      ? `${task.prompt}\n\n${metricsBlock}`
       : task.prompt
+    const taskBody = preCheckPrefix
+      ? `[Pre-check eredmeny]\n${preCheckPrefix}\n\n[Feladat]\n${promptWithMetrics}`
+      : promptWithMetrics
+    // SCHEDPROMPTREF917: the size-guard measures the SKILL.md body alone
+    // (task.prompt, before pre-check/metrics are spliced in) -- those two are
+    // runner-generated per fire and the task author has no control over
+    // their length, so folding them in would make the guard fire on
+    // something the operator cannot fix from the SKILL.md.
+    maybeSendSizeGuardNotice(task.name, task.prompt.length, now)
+    const { block: scheduledTaskBlock } = buildScheduledTaskBlock(task.name, taskBody, host, now)
     const fullPrompt =
       SCHEDULED_TASK_PREAMBLE + '\n' +
       prefix.trimEnd() + '\n\n' +
-      wrapScheduledTask(`scheduled-task:${task.name}`, taskBody)
+      scheduledTaskBlock
+    let typedAt = Date.now() // replaced by onEmitStart; see the note after the call
     // forceSend skips the busy-state check above; it must also skip the
     // pre-flight wait-until-idle gate inside sendPromptToSession, otherwise a
     // task aimed at a long-busy session would block on the 12s idle wait every
     // tick -- defeating the very purpose of forceSend (inject regardless, let
     // Claude Code queue it). All non-forceSend tasks keep the gate ON.
-    await sendPromptToSession(session, fullPrompt, host, { waitForIdle: !task.forceSend })
+    // AUDITBORITEKVESZ918: onBusySend fires when the idle gate timed out and the
+    // prompt went into a BUSY pane best-effort -- the delivery mode that produced
+    // the 2026-09-18 16:00 spliced kanban-audit prompt (envelope gone, head cut
+    // off) while task_runs still recorded a plain 'fired'. The flag only changes
+    // the recorded status below; delivery is untouched.
+    let busySend = false
+    await sendPromptToSession(session, fullPrompt, host, {
+      onEmitStart: () => {
+        typedAt = Date.now()
+      },
+      waitForIdle: !task.forceSend,
+      onBusySend: () => {
+        busySend = true
+      },
+    })
+    const submittedAt = Date.now()
+    // typedAt (PROMPTCSONK923) is the moment the FIRST KEYSTROKE of this prompt
+    // was emitted (onEmitStart fires inside the pane's send lock), not when the
+    // call above began: before emission sendPromptToSession runs the modal
+    // dismissals and up to 12 s of idle wait, and a prompt submitted in that
+    // window is not ours. The initial Date.now() is only a fallback for a send
+    // that threw before emitting -- the catch below then records 'error' and
+    // registers no entry. Residual, stated: a PREVIOUS copy of the same task
+    // still queued in a busy pane and dequeued after this instant would carry
+    // the same tail; the lock cannot exclude that, it is a TUI queue.
     scheduleLastRun.set(task.name, now)
     persistScheduleLastRun()
     // A lateCatchUpMs value means this tick only matched because of the
@@ -888,14 +1272,31 @@ async function attemptFireTask(
     // history) surfaces exactly which tasks were missed and had to be
     // caught up, without any new alert/polling path that could race other
     // running tasks. Read-only w.r.t. everything else in this function.
+    // Bookkeeping id for the run we are about to open; the watchdog closes it.
+    let firedRunId: number | null = null
     if (lateCatchUpMs != null) {
-      appendTaskRun(task.name, agentName, 'fired_late')
+      firedRunId = appendTaskRun(task.name, agentName, 'fired_late')
       logger.warn(
         { task: task.name, agent: agentName, session, lateCatchUpMinutes: Math.round(lateCatchUpMs / 60000) },
         'Scheduled task fired via restart catch-up window -- missed its normal tick',
       )
+    } else if (busySend) {
+      // 'fired_busy', not 'fired': the pane was still busy when the prompt was
+      // typed. CORRECTED 2026-09-23 (PROMPTCSONK923): that alone is not damage.
+      // The 09-18 16:00 kanban-audit run cited above arrived INTACT (its
+      // transcript holds the full prompt); a busy-pane send queued whole in a
+      // live repro. What actually arrived is judged from the transcript by the
+      // sweep (checkTaskDeliveryIntegrity -> task_runs.delivery); this status
+      // only keeps the send condition. A distinct
+      // status is the whole point -- it makes the corrupted-delivery class
+      // visible in the run history instead of hiding behind a clean 'fired'.
+      firedRunId = appendTaskRun(task.name, agentName, 'fired_busy')
+      logger.warn(
+        { task: task.name, agent: agentName, session },
+        'Scheduled task typed into a BUSY pane after the idle budget -- recorded as fired_busy; the delivery verdict comes from the transcript',
+      )
     } else {
-      appendTaskRun(task.name, agentName, 'fired')
+      firedRunId = appendTaskRun(task.name, agentName, 'fired')
     }
     logger.info({ task: task.name, agent: agentName, session }, 'Scheduled task fired')
 
@@ -905,16 +1306,47 @@ async function attemptFireTask(
     // previous entry (task re-fired before the prior one completed -- e.g. a
     // manual "run now" overlapping a cron tick; track the latest injection
     // because the agent is processing that one).
-    taskInflightMap.set(`${task.name}@${agentName}`, {
+    const inflightEntry: TaskInflightEntry = {
       taskName: task.name,
       agentName,
       session,
       host,
-      injectedAt: now,
+      // The moment the prompt was SUBMITTED, not `now` (the tick start). The
+      // sweep's grace window is "time the session gets to start a turn", but
+      // everything above -- the metrics instrument, the 12s wait-until-idle
+      // gate, ~500 chunked send-keys for a 40 KB prompt -- ran before the Enter
+      // and used to be charged against that window. Measured 2026-09-15 on the
+      // main channels agent (SCHEDLOST915): kanban-audit logged 'Scheduled task
+      // fired' 18s after its tick and was declared lost 12s later;
+      // memoria-heartbeat went lost at elapsedMs 30001 in every other round,
+      // each time while the round was actually running, and each false verdict
+      // re-injected the whole prompt.
+      injectedAt: submittedAt,
       alerted: false,
       ownerAlerted: false,
       sawTurn: false,
       workingDir: agentName === MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(agentName),
+      // THE MAIN AGENT'S OWN BLIND SPOT (2026-09-14, measured on a live host).
+      // This used to hardcode `undefined` for the main agent, i.e. "the main
+      // session always writes under the shared ~/.claude". That stopped being
+      // true with main-agent config isolation: the session runs with
+      // CLAUDE_CONFIG_DIR=<PROJECT_ROOT>/.channels-config and its JSONL lands
+      // there, so the sawTurn probe read a directory frozen days earlier and
+      // returned null on every sweep. sawTurn could then only be set by a pane
+      // sample that happened to catch 'busy' -- which a task finishing between
+      // two sweeps never is. Every fast task was therefore declared 'lost' and
+      // re-injected. Measured over 24h on that host: ledger-live-drain 2509
+      // fires against 720 scheduled (*/2), memoria-heartbeat 259 against ~48, a
+      // 3.5x-5.4x amplification that had been running unnoticed since
+      // 2026-09-11 with a success record on every round.
+      //
+      // Exactly the failure the comment below describes for sub-agents, on the
+      // other side of the same ternary. PR #1312 fixed this family for the
+      // channel watchdogs but did not touch this file; its own notes flagged
+      // the main-agent half as latent because on that host
+      // .channels-config/projects happens to be a symlink to the shared root.
+      // Where it is a real directory the gap is live.
+      //
       // resolveAgentConfigDirForRead, not readAgentClaudeConfigDir -- same
       // reason the context-guard and restart-gate runners use it. Since the
       // fleet auth rule (2026-07-01) an agent's config dir is AUTO-PROVISIONED
@@ -927,9 +1359,20 @@ async function attemptFireTask(
       // re-fired. Measured 2026-09-04 on cortex-voip-insight: 2069 false-lost
       // re-injections in 24h from a */5 task (288 expected), a 7.5x
       // amplification running unnoticed since 2026-08-27.
-      configDir: agentName === MAIN_AGENT_ID ? undefined : (resolveAgentConfigDirForRead(agentName) ?? undefined),
+      configDirs: agentName === MAIN_AGENT_ID
+        ? mainConfigRoots()
+        : [resolveAgentConfigDirForRead(agentName) ?? undefined],
       timeoutMs: resolveStuckTimeoutMs(task),
-    })
+      runId: firedRunId,
+      taskType: task.type,
+      // Local agents only: a remote agent's transcript is on its own host.
+      ...(host == null ? { sentText: paneOneLine(fullPrompt), typedAt } : {}),
+      deliveryPending: true,
+    }
+    taskInflightMap.set(`${task.name}@${agentName}`, inflightEntry)
+    // Every exit of the resubmit chain below ends the delivery phase, after
+    // which an idle pane without a turn is judged by the sweep again.
+    const endDelivery = (): void => { inflightEntry.deliveryPending = false }
 
     // Post-send verify: if the agent started a new turn during our chunk
     // stream, the Enter from sendPromptToSession might have landed while
@@ -957,6 +1400,7 @@ async function attemptFireTask(
           // Enter hit the laptop session, not a (nonexistent) local one.
           const pane = capturePane(session, host)
           const stuck = isScheduledPromptStuck(pane, marker)
+            || isOwnPromptParkedOverfull(pane, getInjectedPrompt(session))
           const action = decideScheduledResubmitAction(attempt, stuck)
           if (action === 'none') return 'done'
           if (action === 'giveup') {
@@ -982,8 +1426,10 @@ async function attemptFireTask(
             // is off because the box is 'typing', not idle -- the pre-flight gate
             // would otherwise burn its whole budget and time out every attempt.
             // lockMode 'held': we are already inside this pane's lane; taking
-            // the lock again would deadlock the promise-chain mutex.
-            if (await clearStaleParkedInput(session, host)) {
+            // the lock again would deadlock the promise-chain mutex. That goes
+            // for the clear too (PANEWRITERS910): its own acquire would see
+            // OUR lane busy and skip, so this call site must say it holds it.
+            if (await clearStaleParkedInput(session, host, { lockMode: 'held' })) {
               await sendPromptToSession(session, fullPrompt, host, { waitForIdle: false, lockMode: 'held' })
               logger.info({ task: task.name, session, attempt }, 'Scheduled prompt re-injected after swallowed Enter')
             } else {
@@ -1006,16 +1452,18 @@ async function attemptFireTask(
             // the 'giveup' action above, so it gets the same compensation --
             // otherwise the skip budget is a second silent-lost-task exit.
             insertPendingTaskRetryIfNew(task.name, agentName, now, 'lane-busy')
+            endDelivery()
             return
           }
           logger.info({ task: task.name, session, attempt, laneBusySkips }, 'Post-send resubmit skipped: a delivery is in flight into this pane (fail-closed)')
           setTimeout(() => { void resubmit(attempt, laneBusySkips + 1) }, 3000)
           return
         }
-        if (res.value === 'done') return
+        if (res.value === 'done') { endDelivery(); return }
         setTimeout(() => { void resubmit(attempt + 1, 0) }, 3000)
       } catch (err) {
         logger.warn({ err, task: task.name }, 'Post-send resubmit failed')
+        endDelivery()
       }
     }
     setTimeout(() => { void resubmit(0) }, 2000)
@@ -1292,6 +1740,26 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
   })()
 }
 
+// One-shot inter-agent notice when a 'lost' occurrence has hit
+// MAX_LOST_REDELIVERIES and the sweep is giving up instead of queueing
+// another retry. Deliberately NOT sendTaskInflightMainAgentNotice: that one
+// moves the matching kanban card to 'waiting' and its copy says "N perce fut"
+// (a still-running task) -- this is the opposite situation, a task that never
+// started and will not be retried again automatically. Same
+// createAgentMessage + try/catch shape as its neighbours in this file.
+function sendLostRedeliveryGiveUpNotice(entry: TaskInflightEntry, attempts: number): void {
+  const text = [
+    `[scheduler] A(z) "${entry.taskName}" (${entry.agentName}) ütemezett feladat ${attempts} próbálkozás után sem indult el (a session befogadta a promptot, de sosem kezdett kört).`,
+    'A rendszer NEM küldi újra automatikusan -- ismétlődő újraküldés duplikált memória-írást / skill-patchet okozhat. Ellenőrizd a session állapotát; a dashboard /Ütemezések oldaláról kézzel indítható.',
+  ].join('\n')
+  try {
+    createAgentMessage('system', MAIN_AGENT_ID, text)
+    logger.info({ task: entry.taskName, agent: entry.agentName, attempts }, 'lost-redelivery give-up notice sent')
+  } catch (err) {
+    logger.warn({ err, task: entry.taskName, agent: entry.agentName }, 'lost-redelivery give-up notice failed')
+  }
+}
+
 // Stage 1: one-shot inter-agent notice to the main agent when a fired
 // task/heartbeat has been continuously busy past TASK_FIRE_TIMEOUT_MS. This
 // used to go straight to the operator's channel (see sendTaskTimeoutAlert
@@ -1302,6 +1770,31 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
 // stage-2 escalation -- the board should reflect a stuck task as soon as the
 // main agent is told, independent of whether it later escalates to the
 // operator.
+// SCHEDSORZAR923 (2): the alert says WHAT it measures. The watchdog knows one
+// thing -- the pane has been busy since the injection -- and nothing about the
+// task's own work: an agent that finished the task and went on to other work
+// keeps the pane busy, and a background-polling round leaves it idle. Measured
+// 2026-09-23: a 3.4-minute finding alerted at 25.5 minutes because the pane
+// stayed busy afterwards; a threshold was raised on such numbers. So the line
+// names the instrument, not "runs for N minutes -- possible hang", and it
+// carries the task_runs row (id + dispatch status) so the reader can look it
+// up instead of guessing. Pure, exported for the text pins.
+export function describeInflightPaneAge(
+  entry: Pick<TaskInflightEntry, 'taskName' | 'agentName' | 'runId'>,
+  elapsedMs: number,
+  runStatus: string | null,
+): string {
+  const ageMinutes = Math.floor(elapsedMs / 60000)
+  const row = entry.runId != null ? `task_runs #${entry.runId}${runStatus ? ` (${runStatus})` : ''}` : 'task_runs sor nélkül'
+  return `A(z) "${entry.taskName}" (${entry.agentName}) ütemezett feladat injektálása óta a pane ${ageMinutes} perce foglalt` +
+    ` -- ez a pane elfoglaltsága, NEM a feladat munkaideje: a feladat közben be is fejeződhetett, ha az ágens mással dolgozik tovább; ${row}.`
+}
+
+function runStatusOf(entry: Pick<TaskInflightEntry, 'runId'>): string | null {
+  if (entry.runId == null) return null
+  try { return getTaskRunStatus(entry.runId) } catch { return null }
+}
+
 function sendTaskInflightMainAgentNotice(entry: TaskInflightEntry, elapsedMs: number): void {
   const ageMinutes = Math.floor(elapsedMs / 60000)
 
@@ -1312,8 +1805,8 @@ function sendTaskInflightMainAgentNotice(entry: TaskInflightEntry, elapsedMs: nu
 
   const thresholdMinutes = Math.round(entry.timeoutMs / 60000)
   const text = [
-    `[scheduler] A(z) "${entry.taskName}" (${entry.agentName}) ütemezett feladat ${ageMinutes} perce fut -- lehetséges beakadás (küszöb: ${thresholdMinutes} perc).`,
-    'Ha jogosan fut ennél tovább, allitsd a task-config.json "stuckAfterMinutes" mezojet.',
+    `[scheduler] ${describeInflightPaneAge(entry, elapsedMs, runStatusOf(entry))} Küszöb: ${thresholdMinutes} perc pane-foglaltság.`,
+    'Ha a pane jogosan foglalt ennél tovább (hosszú feladat, vagy az ágens mással dolgozik), allitsd a task-config.json "stuckAfterMinutes" mezojet.',
     'Ellenőrizd az ágenst; ha nem oldódik meg, az uzemeltető direkt ertesitest kap ha ez tovabb tart.',
   ].join('\n')
   try {
@@ -1336,6 +1829,21 @@ function sendTaskInflightMainAgentNotice(entry: TaskInflightEntry, elapsedMs: nu
 // alert, not a per-agent channel notification.
 function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void {
   const ageMinutes = Math.floor(elapsedMs / 60000)
+  // Heartbeats are excluded from this alert on purpose -- the same reasoning as
+  // the catch-up summary filter below. A heartbeat is self-healing: the next
+  // occurrence is minutes away, so "this one is running long" is not
+  // operator-actionable, it is just noise. Measured 2026-09-01: 40 timeout
+  // alerts reached the owner's phone, 18 of them from `memoria-heartbeat`
+  // alone -- a task that is `type: heartbeat` AND `skipIfBusy: true`, i.e.
+  // explicitly designed to drop its own tick when the session is busy.
+  // The WARN below keeps the signal in the log, so nothing is silently lost.
+  if (entry.taskType === 'heartbeat') {
+    logger.warn(
+      { task: entry.taskName, agent: entry.agentName, ageMinutes },
+      'task-timeout alert suppressed: heartbeat task (self-healing, next occurrence is minutes away)',
+    )
+    return
+  }
   const token = resolveSchedulerAlertToken()
   if (!token) {
     logger.warn({ task: entry.taskName, agent: entry.agentName, provider: CHANNEL_PROVIDER }, 'task-timeout alert suppressed: no channel bot token (config error)')
@@ -1351,8 +1859,20 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
   // judge: a long-running analysis task that legitimately needs more time is
   // then one config line away, instead of a recurring 3am mystery.
   const thresholdMinutes = Math.round(entry.timeoutMs / 60000)
+  // "Running 5 minutes" is not actionable on its own; "running 5 minutes, normally
+  // finishes in 40 s" is. The median comes from this task's own completed runs,
+  // which only exist because completions are now recorded.
+  const medianMs = (() => {
+    try { return getTaskRunMedianDurationMs(entry.taskName) } catch { return null }
+  })()
+  const typical = medianMs == null
+    ? null
+    : medianMs < 60_000
+      ? `${Math.round(medianMs / 1000)} másodperc`
+      : `${Math.round(medianMs / 60_000)} perc`
   const text = [
-    `[${BOT_NAME} scheduler] A(z) "${entry.taskName}" (${entry.agentName}) ütemezett feladat ${ageMinutes} perce fut -- lehetséges beakadás. A(z) fő-agent mar ertesitve volt errol, de nem oldodott meg.`,
+    `[${BOT_NAME} scheduler] ${describeInflightPaneAge(entry, elapsedMs, runStatusOf(entry))} A(z) fő-agent mar ertesitve volt errol, de a pane azota is foglalt.`,
+    ...(typical ? [`Ez a feladat általában ${typical} alatt lefut (a korábbi befejezett futások mediánja; ez is PANE-IDŐ: az injektálástól a pane első tétlen állapotáig, nem munkaidő).`] : []),
     `A riasztási küszöb ennél a feladatnál ${thresholdMinutes} perc; ha ez a feladat jogosan fut ennél tovább, allitsd a task-config.json "stuckAfterMinutes" mezojet.`,
     'Az ágensben megtekintheted; a dashboard /Ütemezések oldalán visszavonható ha kell.',
   ].join('\n')
@@ -1372,9 +1892,26 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
 export const SCHEDULE_TICK_MS = 15_000
 
 export function startScheduleRunner(): NodeJS.Timeout {
+  // Close EVERY run that the previous process was still watching when it
+  // stopped. taskInflightMap is in memory, so a restart loses every open entry
+  // and nothing else can ever close those rows (SCHEDSORZAR923: an age window
+  // here left a minutes-old run open for hours). They are recorded as
+  // 'interrupted' with a zero duration (completed_at = ts), not 'done' and not
+  // "now": we do not know whether they finished, and a "now" stamp would look
+  // like a measured duration.
+  try {
+    const closed = reconcileOpenTaskRuns()
+    if (closed > 0) logger.info({ closed }, 'Closed task runs orphaned by a restart (outcome=interrupted)')
+  } catch (err) {
+    logger.warn({ err }, 'task-run restart reconcile failed (non-fatal)')
+  }
+
   // Reload the persisted last-run times so a restart inside a task's catch-up
   // window does not re-fire an already-run task.
   loadScheduleLastRun()
+  // Reload the size-guard's per-task-per-day notice stamps (SCHEDPROMPTREF917)
+  // so a same-day restart does not repeat a WARN/ALERT already sent (test 10).
+  loadSizeGuardState()
 
   // Surface the effective cron timezone at startup. A silent UTC fallback (no
   // SCHEDULER_TZ/TZ in the env) shifts every fixed-time cron off its intended
@@ -1448,8 +1985,8 @@ export function startScheduleRunner(): NodeJS.Timeout {
     const fromMs = lastCheckMs
     // Catch-up bookkeeping for this tick's one-line report (see below). Empty
     // on every normal tick, so the operator only ever hears about real gaps.
-    const caughtUpThisTick: Array<{ task: string; ageMs: number }> = []
-    const staleThisTick: Array<{ task: string; ageMs: number }> = []
+    const caughtUpThisTick: Array<{ task: string; ageMs: number; type?: string }> = []
+    const staleThisTick: Array<{ task: string; ageMs: number; type?: string }> = []
 
     // Post-fire timeout watchdog sweep: check every tracked in-flight injection
     // to see if the target session is still busy. If so past TASK_FIRE_TIMEOUT_MS,
@@ -1465,12 +2002,13 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // prompt is parked UNSENT in the input box, which the resubmit loop owns
       // -- counting it as a turn would re-open the silent-loss hole from the
       // other side.
+      let lastMtimeSeen: number | null = null
       if (!entry.sawTurn) {
         if (state === 'busy') {
           entry.sawTurn = true
         } else {
-          const mtime = readTranscriptMtimeFromProjectDir(entry.workingDir, entry.configDir)
-          if (mtime != null && mtime > entry.injectedAt) entry.sawTurn = true
+          lastMtimeSeen = readTranscriptMtimeAcrossConfigDirs(entry.workingDir, entry.configDirs)
+          if (lastMtimeSeen != null && lastMtimeSeen > entry.injectedAt) entry.sawTurn = true
         }
       }
       const decision = decideTaskTimeout(entry, state, now, {
@@ -1479,7 +2017,58 @@ export function startScheduleRunner(): NodeJS.Timeout {
         maxTrackMs: TASK_FIRE_MAX_TRACK_MS,
         ownerExtraMs: OWNER_ESCALATION_EXTRA_MS,
       })
-      if (decision === 'clear') {
+      // PROMPTCSONK923: record what actually ARRIVED, from the transcript. On
+      // a closing decision this is the last look, so a head-only arrival is
+      // recorded as 'tail-lost' instead of waiting for a tail that is not
+      // coming. Bookkeeping only: never alters the decision below, never
+      // throws into the sweep.
+      const closing = decision === 'done' || decision === 'abandoned' || decision === 'lost'
+      const verdict = checkTaskDeliveryIntegrity(entry, closing)
+      if (verdict != null) {
+        entry.deliveryVerdict = verdict
+        if (entry.runId != null) {
+          try {
+            setTaskRunDelivery(entry.runId, verdict)
+          } catch (err) {
+            logger.warn({ err, task: entry.taskName, runId: entry.runId }, 'Failed to record task-run delivery verdict')
+          }
+        }
+        if (verdict !== 'intact') {
+          logger.warn(
+            { task: entry.taskName, agent: entry.agentName, session: entry.session, runId: entry.runId, delivery: verdict },
+            'Scheduled prompt did NOT arrive as typed -- the session transcript shows a damaged delivery',
+          )
+        }
+      }
+      if (decision === 'done' || decision === 'abandoned') {
+        // 'done' is genuine success (sawTurn was true) -- this occurrence's
+        // lost-redelivery count, if any, no longer applies to a FUTURE
+        // occurrence of the same task@agent key. 'abandoned' means max-track
+        // age was reached WITHOUT ever seeing a turn, so the count is left in
+        // place: this entry never proved anything, and the next occurrence
+        // should not get a fresh full retry budget on a session that may
+        // still be silently swallowing prompts.
+        if (decision === 'done') {
+          lostRedeliveryCounts.delete(`${entry.taskName}@${entry.agentName}`)
+        }
+        // The one moment the system knows how the run ended. Before 2026-08-26
+        // this branch only deleted the map entry, so the knowledge died here and
+        // task_runs kept every row open for ever.
+        if (entry.runId != null) {
+          try {
+            markTaskRunCompleted(entry.runId, decision, now)
+          } catch (err) {
+            // Bookkeeping must never take down the sweep: the next tick still
+            // needs to watch the remaining entries.
+            logger.warn({ err, task: entry.taskName, runId: entry.runId }, 'Failed to record task-run completion')
+          }
+        }
+        if (decision === 'abandoned') {
+          logger.info(
+            { task: entry.taskName, agent: entry.agentName, elapsedMs: now - entry.injectedAt },
+            'Task-run tracking aged out before the session went idle -- recorded as abandoned, NOT as completed',
+          )
+        }
         taskInflightMap.delete(key)
       } else if (decision === 'alert') {
         sendTaskInflightMainAgentNotice(entry, now - entry.injectedAt)
@@ -1487,6 +2076,23 @@ export function startScheduleRunner(): NodeJS.Timeout {
       } else if (decision === 'escalate') {
         sendTaskTimeoutAlert(entry, now - entry.injectedAt)
         entry.ownerAlerted = true
+      } else if (decision === 'lost' && !entry.parkedEnterSent && isOwnPromptParkedOverfull(pane, getInjectedPrompt(entry.session))) {
+        // Not lost: our prompt is parked in a box taller than the pane, where
+        // every idle probe is blind (SCHEDLOST915). Re-queueing here typed the
+        // redelivery ON TOP of the parked copy and the round later ran with the
+        // prompt twice. One Enter submits it (settled bare Enter recovered 3/3
+        // parked rounds in the reproduction). Once per entry: if it still has
+        // not started a turn by the next sweep, the ordinary lost path runs.
+        entry.parkedEnterSent = true
+        const res = await withSessionSendLock(entry.session, entry.host, 'recover', async (): Promise<boolean> => {
+          const fresh = capturePane(entry.session, entry.host)
+          if (!isOwnPromptParkedOverfull(fresh, getInjectedPrompt(entry.session))) return false
+          return sendEnterToSession(entry.session, entry.host)
+        })
+        logger.warn(
+          { task: entry.taskName, agent: entry.agentName, session: entry.session, elapsedMs: now - entry.injectedAt, entered: res.ran ? res.value : false },
+          'Scheduled prompt parked in an overfull input box -- pressed Enter instead of recording lost',
+        )
       } else if (decision === 'lost') {
         // The prompt was typed into a session that never acted on it. Undo the
         // success bookkeeping: overwrite the run record and drop the lastRun
@@ -1494,16 +2100,56 @@ export function startScheduleRunner(): NodeJS.Timeout {
         // the redelivery. The retry queue is the right owner from here -- it
         // already refuses to inject into a session that is not ready and keeps
         // the row (with its aged-retry alert) until the session is rescued.
+        //
+        // Bounded by MAX_LOST_REDELIVERIES: past the cap this stops re-queueing
+        // and notifies instead of retrying forever (see the constant's comment
+        // for the incident this closes).
+        const lostKey = `${entry.taskName}@${entry.agentName}`
+        const priorAttempts = lostRedeliveryCounts.get(lostKey) ?? 0
+        const attempts = priorAttempts + 1
+        lostRedeliveryCounts.set(lostKey, attempts)
+        // Diagnostic fields (SCHEDLOST914): the 2026-09-13 memoria-heartbeat
+        // false-lost incident could not be root-caused after the fact --
+        // the transcript proved the turn ran and finished well inside the
+        // grace window, yet this branch still fired. Without knowing what
+        // readTranscriptMtimeFromProjectDir actually saw at decision time
+        // (null? stale? resolved to the wrong dir?) that contradiction is
+        // unfalsifiable from logs alone. These fields make the next
+        // occurrence self-diagnosing instead of requiring this same
+        // after-the-fact transcript archaeology.
         logger.warn(
-          { task: entry.taskName, agent: entry.agentName, session: entry.session, elapsedMs: now - entry.injectedAt },
-          'Scheduled injection never started a turn (session accepted the keystrokes but stayed idle) -- recording as lost and re-queueing',
+          {
+            task: entry.taskName,
+            agent: entry.agentName,
+            session: entry.session,
+            elapsedMs: now - entry.injectedAt,
+            attempts,
+            injectedAt: entry.injectedAt,
+            workingDir: entry.workingDir,
+            configDirs: entry.configDirs,
+            paneState: state,
+            mtimeSeen: lastMtimeSeen,
+            mtimeAheadOfInjectMs: lastMtimeSeen != null ? lastMtimeSeen - entry.injectedAt : null,
+          },
+          'Scheduled injection never started a turn (session accepted the keystrokes but stayed idle) -- recording as lost',
         )
+        // Close the run this injection opened before recording the loss, so the
+        // original row does not stay open for ever alongside its own 'lost' row.
+        if (entry.runId != null) {
+          try { markTaskRunCompleted(entry.runId, 'lost', now) } catch { /* non-fatal */ }
+        }
         appendTaskRun(entry.taskName, entry.agentName, 'lost')
         if (scheduleLastRun.get(entry.taskName) === entry.injectedAt) {
           scheduleLastRun.delete(entry.taskName)
           persistScheduleLastRun()
         }
-        insertPendingTaskRetryIfNew(entry.taskName, entry.agentName, now, 'lost-injection')
+        if (decideLostRedeliveryAction(priorAttempts) === 'giveup') {
+          appendTaskRun(entry.taskName, entry.agentName, 'lost-giveup')
+          sendLostRedeliveryGiveUpNotice(entry, attempts)
+          lostRedeliveryCounts.delete(lostKey)
+        } else {
+          insertPendingTaskRetryIfNew(entry.taskName, entry.agentName, now, 'lost-injection')
+        }
         taskInflightMap.delete(key)
       }
     }
@@ -1632,7 +2278,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
           { task: task.name, ageMinutes: Math.round(ageMs / 60000), maxAgeMinutes: catchUpMaxAgeMs(task) / 60000 },
           'Scheduled occurrence missed while the scheduler was down and is too stale to catch up -- recording as missed',
         )
-        staleThisTick.push({ task: task.name, ageMs })
+        staleThisTick.push({ task: task.name, ageMs, type: task.type })
         const missedTargets = task.agent === 'all'
           ? [MAIN_AGENT_ID, ...listAgentNames().filter(a => isAgentRunning(a))]
           : [task.agent || MAIN_AGENT_ID]
@@ -1640,7 +2286,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         continue
       }
       const lateCatchUpMs = decision === 'catch-up' ? ageMs : undefined
-      if (lateCatchUpMs != null) caughtUpThisTick.push({ task: task.name, ageMs })
+      if (lateCatchUpMs != null) caughtUpThisTick.push({ task: task.name, ageMs, type: task.type })
 
       // type='command' tasks run a raw shell command directly -- no LLM, no
       // tmux, no target agent. They self-manage failure streaks + Telegram
@@ -1694,7 +2340,13 @@ export function startScheduleRunner(): NodeJS.Timeout {
         scheduleLastRun.set(task.name, now)
         persistScheduleLastRun()
         for (const agentName of targetAgents) {
-          appendTaskRun(task.name, agentName, 'skipped')
+          // 'skipped-precheck', not plain 'skipped': a stall detector reading
+          // task_runs must be able to tell "the preCheck measured nothing to
+          // do" (a healthy quiet round -- the state file legitimately stays
+          // stale) from a busy/quota skip, which can just as well be masking
+          // a stuck agent. Same reason 'skipped-desktop-lock' is its own
+          // status; the run-history UI falls back to the raw string.
+          appendTaskRun(task.name, agentName, 'skipped-precheck')
         }
         continue
       }
@@ -1795,8 +2447,16 @@ export function startScheduleRunner(): NodeJS.Timeout {
     // Tell the operator, in one line, what the gap cost. Only fires when this
     // tick actually caught something up or declared something too stale, which
     // in steady state is never.
-    if (caughtUpThisTick.length || staleThisTick.length) {
-      sendCatchUpSummary(caughtUpThisTick, staleThisTick, pendingStartupGapMs || (now - fromMs))
+    // Heartbeats are excluded from the report on purpose. A heartbeat is
+    // self-healing -- the next occurrence is minutes away -- so a missed one
+    // is not operator-actionable, and reporting it turned a routine 15-minute
+    // heartbeat into ~25 Telegram alerts a day (2026-08-24, owner asked twice
+    // for it to stop). The miss is still WARN-logged and recorded in
+    // task_runs, so nothing is silently lost; it just isn't pushed at a human.
+    const caughtUpReportable = caughtUpThisTick.filter(e => e.type !== 'heartbeat')
+    const staleReportable = staleThisTick.filter(e => e.type !== 'heartbeat')
+    if (caughtUpReportable.length || staleReportable.length) {
+      sendCatchUpSummary(caughtUpReportable, staleReportable, pendingStartupGapMs || (now - fromMs))
     }
     pendingStartupGapMs = 0
 

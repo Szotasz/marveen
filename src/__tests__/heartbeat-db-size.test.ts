@@ -41,12 +41,12 @@ describe('the endpoint serves the number under counts.* (truncation-safe surface
   const empty = { urgent: [], in_progress: [], waiting: [] }
 
   it('db_size_mb rides in counts, inside the first 200 bytes', () => {
-    const json = JSON.stringify(buildHeartbeatSummaryResponse(empty, 0, 0, 159.7))
+    const json = JSON.stringify(buildHeartbeatSummaryResponse(empty, 0, 0, 159.7, { state: 'ok', retention_days: 90, tolerance_hours: 48, lag_hours: 0.27, oldest_age_days: 90.01 }))
     expect(json.slice(0, 200)).toContain('"db_size_mb":159.7')
   })
 
   it('null passes through as null -- the builder must not coerce "unknown" into a calm-looking 0', () => {
-    const r = buildHeartbeatSummaryResponse(empty, 0, 0, null)
+    const r = buildHeartbeatSummaryResponse(empty, 0, 0, null, { state: 'ok', retention_days: 90, tolerance_hours: 48, lag_hours: 0.27, oldest_age_days: 90.01 })
     expect(r.counts.db_size_mb).toBeNull()
     expect(JSON.stringify(r)).toContain('"db_size_mb":null')
   })
@@ -66,19 +66,20 @@ describe('wiring contract: endpoint -> agent, never agent -> du/stat', () => {
     expect(KANBAN.slice(start, end)).toMatch(/buildHeartbeatSummaryResponse\([\s\S]*getDbFileSizeMb\(\)/)
   })
 
-  it('the scaffold names counts.db_size_mb as the ONLY source and forbids self-measurement', () => {
-    expect(SCAFFOLD).toMatch(/counts\.db_size_mb/)
-    // The extractor moved from the prose into scripts/heartbeat-metrics.sh
-    // (HBMEMBLIND819 third contract): the measured-output surface and the
-    // missing-field handling are asserted on the SCRIPT now. Older-build
-    // tolerance flipped on purpose: a missing field is an ERROR line + a
-    // non-zero exit, never a silently absent (or zeroed) value.
+  it('db_size flows script -> worker renderer; the scaffold only bans self-measurement', () => {
+    // HBMETRICSWIRE910: the field name left the prose (the agent never sees
+    // COUNTS anymore); the consuming surface is the worker-side renderer.
     const METRICS = readFileSync(join(ROOT, 'scripts', 'heartbeat-metrics.sh'), 'utf-8')
     expect(METRICS).toMatch(/db_size_mb=%s/)
     expect(METRICS).toMatch(/required = \[[^\]]*'db_size_mb'/)
-    // The drifted surface itself: the template placeholder with no source.
+    const INJECT = readFileSync(join(ROOT, 'src', 'web', 'heartbeat-metrics-inject.ts'), 'utf-8')
+    expect(INJECT).toMatch(/db_size_mb/)
+    // The drifted surface itself: a template placeholder with no source.
     expect(SCAFFOLD).not.toMatch(/DB size: <X> MB/)
-    // Missing/null degrades to "no data", never to a self-run measurement.
-    expect(SCAFFOLD).toMatch(/nincs adat \(muszer-hiba\)/)
+    expect(SCAFFOLD).not.toMatch(/counts\.db_size_mb/)
+    // The prose's remaining duty: the class-wide self-measurement ban, du
+    // and stat named (the 2026-09-10/11 fingerprint was a du-shaped size).
+    expect(SCAFFOLD).toMatch(/du \/ ls \/ stat/)
+    expect(SCAFFOLD).toMatch(/du-shaped DB\s+size 488/)
   })
 })

@@ -8,9 +8,14 @@
 // agents can share one login and the operator can re-point an agent from the
 // dashboard with a single field.
 //
-// This module is the READ + VALIDATE half (PR1). It does NOT wire the main
-// agent (channels.sh) or do drift detection -- those are separate, gated
-// follow-ups. The launch integration for regular agents lives in
+// This module was the READ + VALIDATE half in PR1. PR2b (see
+// docs/superpowers/specs/2026-09-11-claude-key-rotation-design.md section 7)
+// adds the WRITE half: writeClaudePlans() + the exported validatePlan(), used
+// by the dashboard CRUD route so a malformed entry can never reach disk
+// through a different gate than the one resolveClaudePlans() reads back
+// through. It still does NOT wire the main agent (channels.sh), do drift
+// detection, or perform any rotation -- those stay separate, gated follow-ups
+// (PR2c / PR3). The launch integration for regular agents lives in
 // agent-process.ts and is strictly additive: no plan set => existing
 // behaviour.
 //
@@ -19,10 +24,11 @@
 // kept pure (raw JSON string + homeDir in, validated array out) so it unit-
 // tests without the fs, mirroring resolveClaudeConfigDir in agent-config.ts.
 
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { PROJECT_ROOT } from '../config.js'
+import { atomicWriteFileSync } from './atomic-write.js'
 import {
   expandAndValidateConfigDir,
   readAgentClaudeConfigDir,
@@ -38,8 +44,30 @@ export interface ClaudePlan {
   id: string
   /** Human label shown in the dashboard dropdown. */
   label: string
-  /** Absolute, launcher-validated CLAUDE_CONFIG_DIR for this login. */
-  configDir: string
+  /** Absolute, launcher-validated CLAUDE_CONFIG_DIR for this login. Mutually
+   *  exclusive with tokenSecretId -- see validatePlan(). */
+  configDir?: string
+  /** Vault secret id (src/web/vault.ts) holding a raw, portable long-lived
+   *  token (`claude setup-token`'s printed output, `sk-ant-oat01-...`), as an
+   *  alternative to configDir. Mutually exclusive with configDir.
+   *
+   *  Why: a configDir-mode plan needs an INTERACTIVE `claude setup-token` run
+   *  ON the machine that will use it -- fine for a plan registered where it
+   *  runs, painful for a remote/headless install (2026-09-12 incident: two
+   *  plans got registered on a remote host with no credentials ever placed in
+   *  their configDir, because the setup-token step was never run there, and
+   *  the dashboard registration alone gave no signal that anything was
+   *  missing). A token-mode plan needs no per-host step at all: the operator
+   *  can run `claude setup-token` ANYWHERE with a browser and paste the
+   *  resulting string into the plan.
+   *
+   *  Every token-mode plan shares the SAME generic isolated CLAUDE_CONFIG_DIR
+   *  (ensureMainAgentIsolatedConfigDir, credential-less) -- rotation only
+   *  changes which token is exported as CLAUDE_CODE_OAUTH_TOKEN at launch,
+   *  exactly like the flotta's own token already works. See
+   *  resolveMainAgentRotatedTokenSecretId() and
+   *  buildMainSessionRespawnCmd()'s ownCredentials/tokenSecretId handling. */
+  tokenSecretId?: string
   /** Personal subscription vs. company/team seat. */
   planType: ClaudePlanType
   /** Whether external Channels (Telegram etc.) may run on this plan. Team
@@ -51,9 +79,19 @@ export interface ClaudePlan {
   expectedEmail?: string
 }
 
-// Plan ids are used as HTML option values and looked up by string equality;
-// keep them to a boring, injection-proof charset.
-const PLAN_ID_ALLOWED = /^[A-Za-z0-9_.-]+$/
+// Plan ids (and token-mode's tokenSecretId, which doubles as a vault secret
+// id) are used as HTML option values / shell-interpolated / looked up by
+// string equality; keep them to a boring, injection-proof charset.
+export const PLAN_ID_ALLOWED = /^[A-Za-z0-9_.-]+$/
+
+// Stable vault secret id for a plan's token-mode credential, derived from the
+// plan id (not random) so re-promoting a token for the same plan overwrites
+// the same vault entry instead of orphaning the old one. This is the ONLY
+// form validatePlan accepts for tokenSecretId (see below) -- PR #1304 review
+// (b): letting a plan name ANY vault entry made deleteSecret (on plan
+// delete/switch) a destructive primitive reachable by a typo, capable of
+// wiping an unrelated credential (on one install, a live-prod-DB secret).
+export const tokenSecretIdFor = (planId: string) => `claude-plan-token-${planId}`
 
 const VALID_PLAN_TYPES = new Set<ClaudePlanType>(['personal', 'team'])
 
@@ -64,7 +102,12 @@ function isNonEmptyString(v: unknown): v is string {
 // Validate a single raw entry into a ClaudePlan, or null if malformed. A bad
 // entry is dropped rather than throwing so one typo in the registry cannot
 // take down plan resolution for every other agent.
-function validatePlan(raw: unknown, homeDir: string): ClaudePlan | null {
+//
+// Exported for the write API (PR2b, src/web/routes/claude-plans.ts): the
+// route layer runs every create/update body through this exact function
+// before it ever reaches writeClaudePlans(), so the write side accepts
+// nothing that resolveClaudePlans() would then drop reading it back.
+export function validatePlan(raw: unknown, homeDir: string): ClaudePlan | null {
   if (!raw || typeof raw !== 'object') return null
   const o = raw as Record<string, unknown>
 
@@ -72,11 +115,30 @@ function validatePlan(raw: unknown, homeDir: string): ClaudePlan | null {
   if (!id || !PLAN_ID_ALLOWED.test(id)) return null
 
   if (!isNonEmptyString(o.label)) return null
-  if (!isNonEmptyString(o.configDir)) return null
-  // Same shell-safety gauntlet as the raw per-agent claudeConfigDir: the path
-  // is inlined into the tmux launch command.
-  const configDir = expandAndValidateConfigDir(o.configDir, homeDir)
-  if (!configDir) return null
+
+  // Exactly one of configDir / tokenSecretId -- never both, never neither.
+  // Both-set is rejected rather than silently preferring one: a caller that
+  // sent both almost certainly has a bug, and guessing hides it.
+  const hasConfigDir = isNonEmptyString(o.configDir)
+  const hasTokenSecretId = isNonEmptyString(o.tokenSecretId)
+  if (hasConfigDir === hasTokenSecretId) return null
+
+  let configDir: string | undefined
+  let tokenSecretId: string | undefined
+  if (hasConfigDir) {
+    // Same shell-safety gauntlet as the raw per-agent claudeConfigDir: the
+    // path is inlined into the tmux launch command.
+    const expanded = expandAndValidateConfigDir(o.configDir as string, homeDir)
+    if (!expanded) return null
+    configDir = expanded
+  } else {
+    // Not just charset-valid -- must be exactly THIS plan's own derived id.
+    // A well-formed but foreign id (e.g. another secret's vault label) is
+    // rejected here rather than accepted and later deleted by mistake.
+    const tid = (o.tokenSecretId as string).trim()
+    if (tid !== tokenSecretIdFor(id)) return null
+    tokenSecretId = tid
+  }
 
   const planType = o.planType
   if (typeof planType !== 'string' || !VALID_PLAN_TYPES.has(planType as ClaudePlanType)) {
@@ -87,10 +149,11 @@ function validatePlan(raw: unknown, homeDir: string): ClaudePlan | null {
   const plan: ClaudePlan = {
     id,
     label: o.label.trim(),
-    configDir,
     planType: planType as ClaudePlanType,
     channelsAllowed: o.channelsAllowed,
   }
+  if (configDir) plan.configDir = configDir
+  if (tokenSecretId) plan.tokenSecretId = tokenSecretId
   if (isNonEmptyString(o.expectedOrgType)) plan.expectedOrgType = o.expectedOrgType.trim()
   if (isNonEmptyString(o.expectedEmail)) plan.expectedEmail = o.expectedEmail.trim()
   return plan
@@ -142,6 +205,19 @@ export function readClaudePlans(): ClaudePlan[] {
   return plans
 }
 
+// Atomic overwrite of the whole registry (PR2b write API: create/update/
+// delete all read-modify-write the full array and call this once). The mtime
+// cache is reset immediately rather than left to the next statSync() to
+// notice a bumped mtime -- two calls within the same filesystem timestamp
+// resolution window would otherwise serve the pre-write cache straight back
+// to a caller that just wrote fresh data (e.g. the route's own response, or a
+// second write racing right behind it).
+export function writeClaudePlans(plans: ClaudePlan[]): void {
+  mkdirSync(dirname(CLAUDE_PLANS_PATH), { recursive: true })
+  atomicWriteFileSync(CLAUDE_PLANS_PATH, JSON.stringify(plans, null, 2) + '\n')
+  plansCache = null
+}
+
 // Resolve a single plan id to its plan, or null when the id is blank/unknown.
 export function getClaudePlan(id: string | null | undefined): ClaudePlan | null {
   if (!id) return null
@@ -162,7 +238,11 @@ export function resolveAgentConfigDir(
   const planId = readAgentClaudePlan(name)
   if (planId) {
     const plan = getClaudePlan(planId)
-    if (plan) return { configDir: plan.configDir, planUnresolved: false }
+    if (plan?.configDir) return { configDir: plan.configDir, planUnresolved: false }
+    // Token-mode plans (ClaudePlan.tokenSecretId) are main-agent-only for now
+    // -- there is no per-agent configDir to hand back for one, same shape as a
+    // removed/renamed plan, so this reads as unresolved rather than silently
+    // returning an undefined dir.
     return { configDir: readAgentClaudeConfigDir(name), planUnresolved: true }
   }
   return { configDir: readAgentClaudeConfigDir(name), planUnresolved: false }

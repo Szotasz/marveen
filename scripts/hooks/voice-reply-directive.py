@@ -121,7 +121,16 @@ def main():
     try:
         req = urllib.request.Request(url)
         req.add_header("Authorization", "Bearer " + token)
-        with urllib.request.urlopen(req, timeout=55) as r:
+        # 170 s sits in the middle of a strictly increasing chain, innermost first:
+        #   voice.ts STT_TIMEOUT_MS 160 s  <  this urlopen 170 s
+        #                                  <  hook `timeout` in settings.json 180 s
+        # The shortest wins. If this one were the smallest, the socket would give
+        # up before the server's own budget and the caller would see a bare
+        # connection error instead of the server's transcript=null -- the same
+        # "vanished with no reason" failure this change exists to remove.
+        # At the previous 55 s every voice note over ~2 min was dropped with no
+        # error anywhere (measured 2026-09-18).
+        with urllib.request.urlopen(req, timeout=170) as r:
             data = json.load(r)
     except Exception:
         sys.exit(0)  # dashboard unavailable -- fail-safe, no injection

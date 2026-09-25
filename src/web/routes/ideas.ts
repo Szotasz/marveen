@@ -1,19 +1,122 @@
 import { randomUUID } from 'node:crypto'
-import { MAIN_AGENT_ID, BOT_NAME } from '../../config.js'
-import { listIdeas, createIdea, updateIdea, deleteIdea, listIdeaCategories, createKanbanCard, getDb, getIdeaComments, addIdeaComment, logIdeaStatusChange, getIdeaStatusLog } from '../../db.js'
+import { createReadStream, existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { execFile } from 'node:child_process'
+import { extname, relative, resolve, sep } from 'node:path'
+import { promisify } from 'node:util'
+import { MAIN_AGENT_ID, BOT_NAME, PROJECT_ROOT } from '../../config.js'
+import { listIdeas, createIdea, updateIdea, deleteIdea, listIdeaCategories, createKanbanCard, getDb, getIdeaComments, addIdeaComment, logIdeaStatusChange, getIdeaStatusLog, listIdeaAttachments, getIdeaAttachment, addIdeaAttachment, deleteIdeaAttachment } from '../../db.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
+import { parseMultipart } from '../multipart.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import type { RouteContext } from './types.js'
 
 type IdeaRow = import('../../db.js').IdeaBoxRow
+type IdeaScope = IdeaRow['scope']
 
 function getIdea(id: string): IdeaRow | undefined {
   return getDb().prepare('SELECT * FROM idea_box WHERE id = ?').get(id) as IdeaRow | undefined
 }
 
 const VALID_PRIORITIES = new Set(['low', 'normal', 'high', 'urgent'])
+const VALID_SCOPES = new Set<IdeaScope>(['munka', 'szemelyes'])
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+const ATTACHMENTS_ROOT = resolve(PROJECT_ROOT, 'store', 'idea-attachments')
+const execFileAsync = promisify(execFile)
+const ALLOWED_ATTACHMENT_TYPES: Record<string, Set<string>> = {
+  '.pdf': new Set(['application/pdf']),
+  '.png': new Set(['image/png']),
+  '.jpg': new Set(['image/jpeg']),
+  '.jpeg': new Set(['image/jpeg']),
+  '.gif': new Set(['image/gif']),
+  '.webp': new Set(['image/webp']),
+  '.txt': new Set(['text/plain']),
+  '.md': new Set(['text/markdown', 'text/plain', 'application/octet-stream']),
+  '.csv': new Set(['text/csv', 'application/csv', 'text/plain', 'application/vnd.ms-excel']),
+  '.docx': new Set(['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/octet-stream']),
+  '.xlsx': new Set(['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/octet-stream']),
+}
+
+function safeAttachmentFilename(name: string): string {
+  const leaf = name.replace(/^.*[\\/]/, '')
+  return (leaf.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/_+/g, '_').replace(/^\.+/, '').slice(0, 100) || 'attachment')
+}
+
+function attachmentAbsolutePath(storedPath: string): string | null {
+  const fullPath = resolve(PROJECT_ROOT, storedPath)
+  const rel = relative(ATTACHMENTS_ROOT, fullPath)
+  return rel && !rel.startsWith(`..${sep}`) && rel !== '..' ? fullPath : null
+}
+
+// `stored_path` is a server filesystem path and `extracted_text` can be large:
+// neither belongs in a client response. The client addresses an attachment by id
+// through the download route, so it never needs the path.
+function publicAttachment(row: import('../../db.js').IdeaAttachmentRow) {
+  const { extracted_text: extractedText, stored_path: _storedPath, ...rest } = row
+  return { ...rest, has_text: Boolean(extractedText?.trim()) }
+}
+
+async function readAttachmentUpload(req: RouteContext['req'], res: RouteContext['res']) {
+  const declaredLength = Number(req.headers['content-length'] || 0)
+  if (declaredLength > MAX_ATTACHMENT_BYTES + 1024 * 1024) {
+    json(res, { error: 'A fájl legfeljebb 20 MB lehet' }, 413); return null
+  }
+  let body: Buffer
+  try {
+    body = await readBody(req, { maxBytes: MAX_ATTACHMENT_BYTES + 1024 * 1024 })
+  } catch {
+    json(res, { error: 'A fájl legfeljebb 20 MB lehet' }, 413); return null
+  }
+  const { file, fields } = parseMultipart(body, req.headers['content-type'] || '')
+  if (!file) { json(res, { error: 'Nincs feltöltött fájl' }, 400); return null }
+  if (file.data.length > MAX_ATTACHMENT_BYTES) { json(res, { error: 'A fájl legfeljebb 20 MB lehet' }, 413); return null }
+  const extension = extname(file.name).toLowerCase()
+  const allowedMimes = ALLOWED_ATTACHMENT_TYPES[extension]
+  const mime = file.mime.toLowerCase().split(';', 1)[0].trim()
+  if (!allowedMimes?.has(mime)) { json(res, { error: 'Ez a fájltípus nem tölthető fel' }, 415); return null }
+  return { file, fields, extension, mime }
+}
+
+async function storeIdeaAttachment(ideaId: string, scope: IdeaScope, upload: NonNullable<Awaited<ReturnType<typeof readAttachmentUpload>>>) {
+  const { file, extension, mime } = upload
+  const id = randomUUID().slice(0, 8)
+  const filename = file.name.replace(/^.*[\\/]/, '').slice(0, 255) || 'attachment'
+  const scopeDir = scope === 'szemelyes' ? 'szemelyes' : 'munka'
+  const ideaDir = resolve(ATTACHMENTS_ROOT, scopeDir, ideaId)
+  const ideaRel = relative(ATTACHMENTS_ROOT, ideaDir)
+  if (!ideaRel || ideaRel.startsWith(`..${sep}`) || ideaRel === '..') throw new Error('Invalid idea attachment directory')
+  mkdirSync(ideaDir, { recursive: true })
+  const filePath = resolve(ideaDir, `${id}-${safeAttachmentFilename(filename)}`)
+  const storedPath = relative(PROJECT_ROOT, filePath)
+  try {
+    writeFileSync(filePath, file.data)
+    let extractedText: string | null = null
+    if (extension === '.pdf') {
+      try { extractedText = await extractPdfText(filePath) }
+      catch (err) { logger.warn({ err, ideaId, attachmentId: id }, 'PDF text extraction failed') }
+    }
+    const row: import('../../db.js').IdeaAttachmentRow = {
+      id, idea_id: ideaId, filename, stored_path: storedPath, mime, size: file.data.length,
+      extracted_text: extractedText, created_at: Math.floor(Date.now() / 1000),
+    }
+    addIdeaAttachment(row)
+    return row
+  } catch (err) {
+    try { unlinkSync(filePath) } catch { /* best effort */ }
+    throw err
+  }
+}
+
+async function extractPdfText(filePath: string): Promise<string | null> {
+  const script = resolve(PROJECT_ROOT, 'scripts', 'muhely', 'pdftext.py')
+  const { stdout } = await execFileAsync('python3', [script, filePath], {
+    timeout: 10_000,
+    maxBuffer: 10 * 1024 * 1024,
+    encoding: 'utf8',
+  })
+  return stdout.trim() || null
+}
 
 export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
@@ -27,7 +130,10 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/ideas' && method === 'GET') {
     const status = url.searchParams.get('status') || undefined
     const category = url.searchParams.get('category') || undefined
-    const ideas = listIdeas({ status, category })
+    const scopeParam = url.searchParams.get('scope')
+    if (scopeParam !== null && !VALID_SCOPES.has(scopeParam as IdeaScope)) { json(res, { error: 'scope must be munka or szemelyes' }, 400); return true }
+    const scope = scopeParam as IdeaScope | null
+    const ideas = listIdeas({ status, category, scope: scope ?? undefined })
     const staleCutoff = Math.floor(Date.now() / 1000) - IDEA_STALE_DAYS * 86400
     json(res, ideas.map(i => ({ ...i, stale: i.status === 'new' && i.updated_at < staleCutoff })))
     return true
@@ -35,6 +141,101 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/ideas/categories' && method === 'GET') {
     json(res, listIdeaCategories())
+    return true
+  }
+
+  const attachmentDownloadMatch = path.match(/^\/api\/ideas\/attachments\/([^/]+)\/download$/)
+  if (attachmentDownloadMatch && method === 'GET') {
+    const attachment = getIdeaAttachment(decodeURIComponent(attachmentDownloadMatch[1]))
+    if (!attachment) { json(res, { error: 'Csatolmány nem található' }, 404); return true }
+    const filePath = attachmentAbsolutePath(attachment.stored_path)
+    if (!filePath) { json(res, { error: 'Érvénytelen csatolmány útvonal' }, 400); return true }
+    if (!existsSync(filePath)) { json(res, { error: 'A csatolmány fájlja nem található' }, 404); return true }
+    const downloadName = safeAttachmentFilename(attachment.filename).replace(/"/g, '_')
+    res.writeHead(200, {
+      'Content-Type': attachment.mime,
+      'Content-Disposition': `attachment; filename="${downloadName}"; filename*=UTF-8''${encodeURIComponent(attachment.filename)}`,
+      'Cache-Control': 'private, no-store',
+    })
+    createReadStream(filePath).pipe(res)
+    return true
+  }
+
+  const attachmentActionMatch = path.match(/^\/api\/ideas\/attachments\/([^/]+)$/)
+  if (attachmentActionMatch && method === 'DELETE') {
+    const id = decodeURIComponent(attachmentActionMatch[1])
+    const attachment = getIdeaAttachment(id)
+    if (!attachment) { json(res, { error: 'Csatolmány nem található' }, 404); return true }
+    const filePath = attachmentAbsolutePath(attachment.stored_path)
+    if (filePath) {
+      try { unlinkSync(filePath) } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') logger.warn({ err, attachmentId: id }, 'Failed to delete idea attachment file')
+        else logger.info({ attachmentId: id }, 'Idea attachment file already missing')
+      }
+    } else {
+      logger.warn({ attachmentId: id, storedPath: attachment.stored_path }, 'Refusing to delete attachment outside storage root')
+    }
+    deleteIdeaAttachment(id)
+    json(res, { ok: true })
+    return true
+  }
+
+  const attachmentsMatch = path.match(/^\/api\/ideas\/([^/]+)\/attachments$/)
+  if (attachmentsMatch && method === 'GET') {
+    const ideaId = decodeURIComponent(attachmentsMatch[1])
+    if (!getIdea(ideaId)) { json(res, { error: 'Ötlet nem található' }, 404); return true }
+    json(res, { attachments: listIdeaAttachments(ideaId).map(publicAttachment) })
+    return true
+  }
+
+  if (attachmentsMatch && method === 'POST') {
+    const ideaId = decodeURIComponent(attachmentsMatch[1])
+    const idea = getIdea(ideaId)
+    if (!idea) { json(res, { error: 'Ötlet nem található' }, 404); return true }
+    const upload = await readAttachmentUpload(req, res)
+    if (!upload) return true
+    const row = await storeIdeaAttachment(ideaId, idea.scope, upload)
+    json(res, publicAttachment(row))
+    return true
+  }
+
+  if (path === '/api/ideas/upload' && method === 'POST') {
+    const upload = await readAttachmentUpload(req, res)
+    if (!upload) return true
+    const scopeParam = upload.fields.scope || 'munka'
+    if (!VALID_SCOPES.has(scopeParam as IdeaScope)) { json(res, { error: 'scope must be munka or szemelyes' }, 400); return true }
+    const scope = scopeParam as IdeaScope
+    const id = randomUUID().slice(0, 8)
+    const filename = upload.file.name.replace(/^.*[\\/]/, '').slice(0, 255) || 'attachment'
+    const titleWithoutExtension = upload.extension ? filename.slice(0, -upload.extension.length).trim() : filename.trim()
+    const title = (titleWithoutExtension || filename.trim() || filename).slice(0, 120)
+    createIdea({
+      id,
+      title,
+      description: null,
+      category: 'Egyéb',
+      scope,
+      status: 'new',
+      source: 'upload',
+      kanban_id: null,
+      impact: null,
+      effort: null,
+    })
+    let attachment: import('../../db.js').IdeaAttachmentRow | undefined
+    try {
+      attachment = await storeIdeaAttachment(id, scope, upload)
+      if (attachment.extracted_text && !updateIdea(id, { description: attachment.extracted_text.slice(0, 2000) })) {
+        throw new Error('Failed to update uploaded idea description')
+      }
+    } catch (err) {
+      if (attachment) {
+        const filePath = attachmentAbsolutePath(attachment.stored_path)
+        if (filePath) try { unlinkSync(filePath) } catch { /* best effort */ }
+      }
+      try { deleteIdea(id) } catch (cleanupErr) { logger.error({ err: cleanupErr, ideaId: id }, 'Failed to clean up idea after upload failure') }
+      throw err
+    }
+    json(res, { idea: getIdea(id), attachment: publicAttachment(attachment) })
     return true
   }
 
@@ -47,8 +248,11 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       source?: string
       impact?: number | null
       effort?: number | null
+      scope?: IdeaScope
     }
     if (!data.title) { json(res, { error: 'title required' }, 400); return true }
+    const scope = data.scope ?? 'munka'
+    if (!VALID_SCOPES.has(scope)) { json(res, { error: 'scope must be munka or szemelyes' }, 400); return true }
     // Same 1-5 validation as PUT -- previously POST silently dropped these fields
     let impact: number | null = null
     if (data.impact !== undefined && data.impact !== null) {
@@ -68,6 +272,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       title: data.title,
       description: data.description ?? null,
       category: data.category ?? 'Egyéb',
+      scope,
       status: 'new',
       source: data.source ?? 'manual',
       kanban_id: null,
@@ -91,7 +296,9 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       kanban_id?: string
       impact?: number | null
       effort?: number | null
+      scope?: IdeaScope
     }
+    if (data.scope !== undefined && !VALID_SCOPES.has(data.scope)) { json(res, { error: 'scope must be munka or szemelyes' }, 400); return true }
     // Coerce impact/effort to int or null -- reject values outside 1-5
     if (data.impact !== undefined && data.impact !== null) {
       const v = Math.round(Number(data.impact))
@@ -105,6 +312,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
     }
     const current = getIdea(id)
     if (!current) { json(res, { error: 'Ötlet nem található' }, 404); return true }
+    // Scope changes deliberately do not move attachments: stored_path remains authoritative.
     if (updateIdea(id, data)) {
       if (data.status && data.status !== current.status) {
         logIdeaStatusChange(id, current.status, data.status, MAIN_AGENT_ID)
@@ -118,7 +326,18 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
 
   if (ideaMatch && method === 'DELETE') {
     const id = decodeURIComponent(ideaMatch[1])
-    if (deleteIdea(id)) { json(res, { ok: true }); return true }
+    const attachments = listIdeaAttachments(id)
+    if (deleteIdea(id)) {
+      for (const attachment of attachments) {
+        const filePath = attachmentAbsolutePath(attachment.stored_path)
+        if (!filePath) { logger.warn({ attachmentId: attachment.id }, 'Refusing to delete attachment outside storage root'); continue }
+        try { unlinkSync(filePath) } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') logger.warn({ err, attachmentId: attachment.id }, 'Failed to delete idea attachment file')
+          else logger.info({ attachmentId: attachment.id }, 'Idea attachment file already missing')
+        }
+      }
+      json(res, { ok: true }); return true
+    }
     json(res, { error: 'Ötlet nem található' }, 404)
     return true
   }

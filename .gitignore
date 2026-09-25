@@ -129,3 +129,29 @@ transcripts/
 # el). A .example vaz viszont kimegy: abbol kap a vevo sajat kontextus-sablont.
 .agents/*
 !.agents/product-marketing.md.example
+
+# Upload staging area written into the install directory: per-install state,
+# not source. (The UI language marker .lang this commit also added has since
+# landed on develop; kept there, not duplicated here.)
+.uploads/
+
+# Scratch HOME for test runs. The suite is run as `HOME=<scratch> npx vitest`
+# because #1348 -- before it, the full suite wrote into the owner's real
+# ~/.ssh/authorized_keys. The tool leaves droppings in that HOME (npm's
+# update-notifier stamp, a 648 KB lbdb vector extension), and three PRs in the
+# MEMKERESVAK917 series would have carried the first of them into the repo.
+# No trailing slash on purpose: a trailing slash does not match a symlink, so
+# `.fakehome/` would stop ignoring it the day the scratch HOME is created as one.
+.fakehome
+
+# Supabase CLI scratch state (cli-latest, linked-project.json). Written on every
+# CLI run, never source. Two of these rode into #1324 and would have been the
+# first ones in the repo -- after that they regenerate silently on every run.
+#
+# NO TRAILING SLASH, same rule and same reason as `.fakehome` above, measured
+# again for this path on 2026-09-17 in a throwaway repo, with an empty-.gitignore
+# negative control confirming the file is visible when unignored:
+#   supabase/.temp   -> ignores a real directory AND a symlink
+#   supabase/.temp/  -> ignores a real directory, MISSES the symlink (it shows in
+#                       `git status`, so the next CLI run commits it again)
+supabase/.temp

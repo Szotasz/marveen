@@ -43,6 +43,10 @@ vi.mock('../db.js', () => ({
     if (toAgent) return []
     return mockGetPendingMessages()
   },
+  // The router re-reads the row's status immediately before sending (the tick
+  // works from a snapshot taken at its start). Pending here keeps these
+  // fixtures on the delivery path they were written to measure.
+  getMessageStatus: (..._a: unknown[]) => 'pending',
   markMessageDelivered: (...a: unknown[]) => mockMarkDelivered(...a),
   markMessageFailed: (...a: unknown[]) => mockMarkFailed(...a),
   markMessageDone: (..._a: unknown[]) => true,
@@ -69,6 +73,11 @@ vi.mock('../web/agent-config.js', () => ({
   readAgentVoiceConfig: () => ({ responseMode: 'text' }),
   isKnownAgent: () => true,
   agentDir: () => '/tmp/none-agentdir',
+  // These cases are about the KEYBOARD path (modal cleared -> prompt delivered),
+  // so the agent under test is deliberately NOT a worksource agent: a queue
+  // agent skips the readiness gate entirely, which would stop this file from
+  // measuring the refusal branch it exists to pin.
+  readAgentWorksourceChannel: () => false,
 }))
 
 vi.mock('../web/agent-process.js', () => ({

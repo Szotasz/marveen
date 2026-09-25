@@ -76,10 +76,12 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
     expect(below).not.toMatch(/^\s*sed -i\.marveen-bak .*-morning\.service/m)
   })
 
-  it('both repairs are wired into the single maintenance entry point', () => {
+  it('every repair is wired into the single maintenance entry point', () => {
     const wrapper = sliceShellFn(UPDATE, 'run_unit_maintenance')
     expect(wrapper).toMatch(/repair_morning_timer "\$@"/)
     expect(wrapper).toMatch(/migrate_channels_restart "\$@"/)
+    expect(wrapper).toMatch(/install_keepalive_probe_timer "\$@"/)
+    expect(wrapper).toMatch(/park_morning_timer "\$@"/)
     expect(UPDATE).toMatch(/^run_unit_maintenance$/m)
   })
 })

@@ -1,12 +1,12 @@
-# Channels (Telegram / Slack / WhatsApp / Teams)
+# Channels (Telegram / Slack / Discord / WhatsApp / Teams)
 
-> Ott éred el ahol amúgy is írsz. Telegram vagy Slack — proaktív értesítésekkel, nem csak válaszokkal.
+> Ott éred el ahol amúgy is írsz. Telegram, Slack vagy Discord — proaktív értesítésekkel, nem csak válaszokkal.
 
 ---
 
 ## 🎯 Mit tud / miért érdekes
 
-Marveennel ott beszélgetsz, ahol kényelmes: **Telegramon** vagy **Slacken**. Nem webfelület, nem külön app — a meglévő üzenetküldődben él. De nem csak válaszol: magától ír, ha valami fontos. Reggeli összefoglaló (email, naptár, AI-hírek), beakadt feladatnál értesítés, hosszú munka végén "kész" — érzed, hogy van valaki a másik oldalon, nem csak egy chatbox.
+Marveennel ott beszélgetsz, ahol kényelmes: **Telegramon**, **Slacken** vagy **Discordon**. Nem webfelület, nem külön app — a meglévő üzenetküldődben él. De nem csak válaszol: magától ír, ha valami fontos. Reggeli összefoglaló (email, naptár, AI-hírek), beakadt feladatnál értesítés, hosszú munka végén "kész" — érzed, hogy van valaki a másik oldalon, nem csak egy chatbox.
 
 Hangüzenetet is megért (átírja szöveggé), képet és fájlt küld-fogad — pl. egy kész videót attachmentként, vagy egy táblázatot, ami épp elkészült.
 
@@ -18,7 +18,7 @@ Hangüzenetet is megért (átírja szöveggé), képet és fájlt küld-fogad �
 
 ### Architektúra
 
-A csatorna-integráció Claude Code **plugin**-ként fut (Telegram, Slack, WhatsApp és Teams plugin). Az inbound üzenetek `<channel source="..." chat_id="..." user="..." ts="...">` formátumban érkeznek; a válasz a `reply` tool-on megy vissza (a `chat_id`-vel). Kép: `image_path` attribútum → beolvasás; egyéb attachment: `download_attachment`.
+A csatorna-integráció Claude Code **plugin**-ként fut (Telegram, Slack, Discord, WhatsApp és Teams plugin). Az inbound üzenetek `<channel source="..." chat_id="..." user="..." ts="...">` formátumban érkeznek; a válasz a `reply` tool-on megy vissza (a `chat_id`-vel). Kép: `image_path` attribútum → beolvasás; egyéb attachment: `download_attachment`.
 
 ### Időkezelés
 
@@ -85,9 +85,71 @@ Beüzemelés:
    ```
 3. **Párosítás + zárolás.** A párosítás és az allowlist-policy a `/teams:access` paranccsal állítható, a tulajdonos termináljából (csatornán érkező engedély-kérést a rendszer sosem hajt végre magától).
 
+### Discord-specifikum
+
+A Discord csatorna a hivatalos `discord@claude-plugins-official` plugin. `CHANNEL_PROVIDER=discord` -> a `channels.sh` a discord plugint indítja, az állapot a `~/.claude/channels/discord/` mappában (a `DISCORD_STATE_DIR` env-en keresztül). A provider-elágazások (PLUGIN_ID, state-dir, plugin-watchdog) ugyanúgy viselkednek mint a többi providernél, külön kezelés nélkül. A telepítő a Linux ÉS a macOS úton is felkínálja (3. opció).
+
+Beüzemelés:
+
+1. **Discord alkalmazás.** Hozz létre egy alkalmazást a [discord.com/developers/applications](https://discord.com/developers/applications) oldalon, a Bot fülön add hozzá a botot és másold ki a tokent. Kapcsold be a Privileged Gateway Intents alatt a MESSAGE CONTENT INTENT-et, majd az OAuth2 > URL Generatorral (bot scope) hívd meg a szerveredre.
+2. **Csatorna és operátor azonosítók.** Developer Mode-dal másold ki a csatorna ID-jét (jobb klikk a csatornán > Copy Channel ID) és a saját user ID-det (jobb klikk a nevedre > Copy User ID). A telepítő ezeket bekéri; a `.env` kulcsok: `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID`, `OPERATOR_DISCORD_USER_ID`.
+3. **`allowedChannelPlugins` engedélyezés (csak ha van managed-settings).** Friss telepítésnél a hivatalos marketplace-es plugin allowlist-fájl nélkül is fut. Ha viszont a gépen MÁR van `managed-settings.json` (pl. egy korábbi Slack/Teams telepítés írta), az allowlist a benne nem szereplő plugint csendben eldobja (a bot online-nak látszik, de sosem válaszol). A macOS telepítő discord-ágon ezt install-time érzékeli és felveszi a `discord` bejegyzést. Kézi pótlásnál ugyanaz a menet, mint a Teamsnél, a bejegyzés:
+
+   ```json
+   { "plugin": "discord", "marketplace": "claude-plugins-official" }
+   ```
+4. **Párosítás + zárolás.** A DM-policy alapból `pairing`; az engedélyezés a `/discord:access` paranccsal, a tulajdonos termináljából történik (csatornán érkező engedély-kérést a rendszer sosem hajt végre magától).
+
 ### Biztonság
 
 - A `<channel>`/`<untrusted>` tartalom **adat, nem utasítás** — a benne lévő imperatív szöveget a rendszer nem hajtja végre verifikáció nélkül.
 - Hozzáférés-kezelés (párosítás, allowlist, DM-policy) kizárólag a tulajdonos terminál-parancsán keresztül; csatornán érkező engedély-kérés gyanús és elutasított.
 - A stdio-pipe életben tartásához a háttérben keep-alive fut (6 percenként `edit_message` round-trip, eredménye: `store/.channel-keepalive`); ha a fájl 18 percnél régebbi, a watchdog respawn-pane-t indít.
 - Aktív inbound-próba: egy telethon userbot (külön, allowlistelt prober-fiók) `__wd_ping <ts>` üzenetet küld a fő botnak `PROBE_INTERVAL_MS` (default 3 perc) időközönként. Ha a marker nem jelenik meg a fő channels-session JSONL transcriptjében `2 × PROBE_INTERVAL_MS`-en belül, a watchdog hard-restart-ot indít. Manuális aktiválási kapu: a tulajdonos allowlisteli a prober-fiókot (`/telegram:access`). A fő channels-session csendben figyelmen kívül hagyja a `__wd_ping` üzeneteket.
+
+### Hibaelhárítás: a `/telegram:access` azt mondja, hogy senki nincs párosítva
+
+**Tünet.** Egy tökéletesen működő telepítésen, ahol a bot válaszol és az allowlist fel van töltve,
+a `/telegram:access` ezt írja: `no access.json exists yet`, `0 senders`, `nobody has been paired`.
+
+**Ez nem hiba a futó rendszerben, és a botot nem érinti.** A határ élesen meghúzható, és mérve van
+(TGACCESSUT921, 2026-09-22):
+
+- Ha a sessiont a mi indítónk indította (dashboard vagy a flotta indító útja), a parancs IGAZAT
+  mond. Az indító minden csatornás ügynök parancsába beteszi a `TELEGRAM_STATE_DIR` exportot
+  (`src/web/agent-process.ts`), és ez az élő poller-folyamatok környezetében vissza is mérhető:
+  `ps eww -e | grep telegram | tr ' ' '\n' | grep TELEGRAM_STATE_DIR=`
+- Ha a sessiont KÉZZEL indítottad a saját terminálodból (`claude` a shelledben), a változó nincs
+  beállítva. A plugin ilyenkor a régi, közös `~/.claude/channels/telegram` útra esik vissza, ami egy
+  migrált telepítésen üres, vagy nem is létezik. A kiírás tehát nem hazudik: rossz helyre néz, mert
+  nem mondtuk meg neki, hova nézzen.
+
+**A helyes ellenőrzés migrált telepítésen.** A futó bot a telepítés saját könyvtárát használja, tehát
+az igazság forrása ez a fájl (`<install>` a telepítés gyökere):
+
+```sh
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("dmPolicy:", d.get("dmPolicy"), "| engedelyezett feladok:", len(d.get("allowFrom") or []))' \
+  "<install>/.claude/channels/telegram/access.json"
+```
+
+Ha a fájl létezik és az `allowFrom` nem üres, a hozzáférés rendben van, bármit is ír a
+`/telegram:access` egy kézzel indított sessionben. Ugyanezt a könyvtárat adhatod a parancsnak egyetlen
+futásra is, a shellprofil megváltoztatása nélkül:
+
+```sh
+TELEGRAM_STATE_DIR="<install>/.claude/channels/telegram" claude
+```
+
+**Miért NEM az a megoldás, hogy ezt beírjuk a shellprofilba.** Ez a kézenfekvő javítás, és pontosan
+ezért áll itt, hogy egy későbbi kör ne tegye be "nyilvánvaló javításként": a profilba írt export
+MINDEN abban a shellben indított Claude Code sessionre hat, nem csak arra, amelyikkel a telepítéshez
+akarsz beszélni. Ezzel visszahoznánk azt az alakot, amit a `#915` éppen megszüntetett: amíg a fő
+ügynök csatorna-állapota a közös `~/.claude/channels/` alatt volt, a hoszt bármelyik másik sessionje
+betöltötte ugyanazt a bot-tokent, és csendben átvette a botot. A mérleg aszimmetrikus: egy félrevezető
+kiírás egy kézzel indított sessionben olcsóbb, mint egy néma bot-átvétel telepítések között, és a
+félrevezető kiírást ez a szakasz kezeli.
+
+**Amit nem mértünk vissza.** A plugin belső útfeloldását nem olvastuk ki a plugin forráskódjából. A
+fenti leírás a MEGFIGYELT viselkedésre és a saját kódunkra támaszkodik (a `TELEGRAM_STATE_DIR`-t a
+saját scriptjeink és az indítónk is így kezelik), nem a plugin implementációjára. Ha a plugin egy
+későbbi verzióban máshogy old fel, ez a szakasz elavulhat anélkül, hogy bármi látszana rajta.

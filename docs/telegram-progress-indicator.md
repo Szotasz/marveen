@@ -81,12 +81,15 @@ Loop-safe: a per-session `enforce-<sid>.marker` guarantees at most one block, an
 bash ~/ClaudeClaw/scripts/install-telegram-progress-hook.sh
 ```
 
-It is idempotent and is auto-run by `scripts/sync-hooks.sh` on every update. It:
+It is idempotent and is auto-run by `scripts/sync-hooks.sh` on every update.
 
-1. Copies the four hook scripts to `~/.claude/hooks/`.
-2. Patches `~/.claude/settings.json` (UserPromptSubmit / PostToolUse / Stop).
-3. Installs the watchdog as a **launchd** agent (macOS) or **systemd** user
-   service+timer (Linux), running every ~60s.
+Since #1305 the three settings hooks (UserPromptSubmit / PostToolUse / Stop)
+are **repo-shipped** in the tracked `.claude/settings.json` (project scope,
+`$CLAUDE_PROJECT_DIR` form) -- the installer never touches
+`~/.claude/settings.json` and copies nothing into `~/.claude/hooks/`. The only
+thing it installs is the watchdog, as a **launchd** agent (macOS) or
+**systemd** user service+timer (Linux), running every ~60s straight from the
+repo checkout.
 
 ## Tuning
 
@@ -97,8 +100,8 @@ It is idempotent and is auto-run by `scripts/sync-hooks.sh` on every update. It:
 
 ## Remove
 
-Delete the four `~/.claude/hooks/telegram_progress*.py` files and their entries
-in `~/.claude/settings.json`, then unload the watchdog
+Remove the three `telegram_progress*` entries from the tracked
+`.claude/settings.json`, then unload the watchdog
 (`launchctl unload ~/Library/LaunchAgents/com.marveen.telegram-progress-watchdog.plist`
 on macOS, or `systemctl --user disable --now marveen-telegram-progress-watchdog.timer`
 on Linux).

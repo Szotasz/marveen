@@ -61,6 +61,35 @@ describe('resumePrompt carries the prod-tree constraint on every variant', () =>
   })
 })
 
+// ORSICTX912 (2026-09-12): msg 23670 was delivered seven seconds after the
+// guard kill started, into the dying session. The queue said delivered, the
+// fresh session never looked back, and completed_at is unused (0/37 measured)
+// so the loss was invisible. The resume prompt is the fresh session's ONLY
+// context, so the re-read instruction must be present on EVERY variant, and
+// it must demand an OBSERVABLE trace (ack to the sender) -- an instruction
+// whose success cannot be observed would run into the same blindness.
+describe('resumePrompt carries the restart-window re-read on every variant', () => {
+  const variants = [
+    ['without a handoff', () => resumePrompt('samu', '/x/HANDOFF.md', false)],
+    ['with a fresh handoff', () => resumePrompt('samu', '/x/HANDOFF.md', true)],
+    ['with a stale handoff', () => resumePrompt('samu', '/x/HANDOFF.md', true, 42)],
+    ['with unmeasurable freshness', () => resumePrompt('samu', '/x/HANDOFF.md', true, 'unknown')],
+    ['main agent', () => resumePrompt('marveen', '/x/HANDOFF.md', true)],
+  ] as const
+  for (const [label, make] of variants) {
+    it(label, () => {
+      const p = make()
+      expect(p).toContain('RESTART-ABLAK')
+      // The queue re-read names the concrete endpoint, not a vague "check".
+      expect(p).toContain('api/messages?agent=')
+      // The observable trace: an ack to the SENDER, required even when the
+      // item needs no work -- this is what makes the v1 measurable at all.
+      expect(p).toContain('nyugtát a feladónak')
+      expect(p).toContain('akkor is, ha nincs belőle teendő')
+    })
+  }
+})
+
 // Review msg 14197: the main agent's channel is the OWNER's Telegram, and
 // session meta must never go there (standing owner preference; a 3am status
 // notice went out exactly this way on 2026-08-05). The closing line is

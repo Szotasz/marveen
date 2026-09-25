@@ -50,7 +50,21 @@ export interface SendMailOptions {
   contentType?: 'Text' | 'HTML'
   /** Persist the sent message to the mailbox Sent Items. Default true. */
   saveToSentItems?: boolean
+  /**
+   * File attachments. `contentBytes` is base64, as Graph expects it.
+   * The combined base64 size is capped at MAX_TOTAL_ATTACHMENT_BASE64_BYTES
+   * and rejected here, before the request is built -- Graph's own limit on a
+   * simple /sendMail would otherwise surface as an opaque request failure.
+   */
+  attachments?: { name: string; contentBytes: string; contentType?: string }[]
 }
+
+/**
+ * Ceiling for the combined base64 payload of all attachments on one message.
+ * Graph caps a simple /sendMail request at a few MB total; this sits under it
+ * so the failure is ours, named and local, rather than a Graph-side reject.
+ */
+export const MAX_TOTAL_ATTACHMENT_BASE64_BYTES = 3 * 1024 * 1024
 
 export interface ListMessagesOptions {
   /** How many messages to return (Graph $top). Default 10, capped at 50. */
@@ -227,6 +241,22 @@ export async function sendMail(options: SendMailOptions): Promise<void> {
     toRecipients: toRecipientList(options.to),
   }
   if (options.cc) message.ccRecipients = toRecipientList(options.cc)
+  if (options.attachments?.length) {
+    const total = options.attachments.reduce((n, a) => n + a.contentBytes.length, 0)
+    if (total > MAX_TOTAL_ATTACHMENT_BASE64_BYTES) {
+      throw new Error(
+        `graph-mail: attachments too large (${total} base64 bytes across ` +
+          `${options.attachments.length} file(s); limit ${MAX_TOTAL_ATTACHMENT_BASE64_BYTES}). ` +
+          'Send fewer or smaller files, or share a link instead.',
+      )
+    }
+    message.attachments = options.attachments.map((a) => ({
+      '@odata.type': '#microsoft.graph.fileAttachment',
+      name: a.name,
+      contentType: a.contentType ?? 'application/octet-stream',
+      contentBytes: a.contentBytes,
+    }))
+  }
   const res = await graphFetch(`${mailboxPath()}/sendMail`, {
     method: 'POST',
     body: JSON.stringify({ message, saveToSentItems: options.saveToSentItems ?? true }),

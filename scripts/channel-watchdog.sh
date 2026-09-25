@@ -99,7 +99,7 @@ now=$(date +%s)
 
 # --- gate 1: the channels session must EXIST (bridge "running") ---
 if ! "$TMUX_BIN" has-session -t "$SESSION" 2>/dev/null; then
-  log "session $SESSION not present -- systemd marveen-channels.service owns (re)start; watchdog no-op"
+  log "session $SESSION not present -- systemd ${MAIN_AGENT_ID}-channels.service owns (re)start; watchdog no-op"
   exit 0
 fi
 
@@ -186,23 +186,60 @@ MODEL_FLAG=""
 # via ps/pane history otherwise).
 CFG_ENV=""
 if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
-  _cfg_line="$("$NODE_BIN" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$CHANNEL_PROVIDER" 2>>"$STORE/channels-failures.log" || true)"
+  # Contract on fd 3, never stdout -- see scripts/main-agent-isolated-config.mjs
+  # and channels.sh: the helper imports a pino-logging module that writes to fd 1
+  # from a worker thread, and one such line silently dropped the main agent back
+  # onto the shared ~/.claude on 2026-09-12. This caller must stay in step with
+  # channels.sh, or a watchdog respawn reintroduces exactly that outage.
+  _cfg_raw="$("$NODE_BIN" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$CHANNEL_PROVIDER" 3>&1 2>>"$STORE/channels-failures.log" 1>&2 || true)"
+  _cfg_line="$(printf '%s\n' "$_cfg_raw" | grep -m1 -E '^(explicit|rotated|isolated|token)	/' || true)"
+  if [ -n "$_cfg_raw" ] && [ -z "$_cfg_line" ]; then
+    log "WARN main-agent-isolated-config.mjs printed output with NO contract line -- respawn without isolation"
+  fi
   _cfg_mode="${_cfg_line%%	*}"
-  _cfg_dir="${_cfg_line#*	}"
+  _cfg_rest="${_cfg_line#*	}"
+  if [ "$_cfg_mode" = "token" ]; then
+    _cfg_dir="${_cfg_rest%%	*}"
+    _cfg_token_secret="${_cfg_rest#*	}"
+  else
+    _cfg_dir="$_cfg_rest"
+    _cfg_token_secret=""
+  fi
   if [ -n "$_cfg_line" ] && [ -d "$_cfg_dir" ]; then
-    if [ "$_cfg_mode" = "explicit" ]; then
+    if [ "$_cfg_mode" = "explicit" ] || [ "$_cfg_mode" = "rotated" ]; then
       CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && "
+    elif [ "$_cfg_mode" = "token" ]; then
+      # Token-mode rotated plan -- same credential-less dir as `isolated`, but
+      # export THAT plan's vault-stored token. See channels.sh's identical
+      # branch, including the fleet-token fallback and the loud-failure gate
+      # (PR #1304 review (c)) via the bare `_plan_token=$(...)` assignment.
+      CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && _plan_token=\"\$(\"$NODE_BIN\" '$INSTALL_DIR/scripts/resolve-plan-token-env.mjs' '$_cfg_token_secret' '$INSTALL_DIR/store/.claude-oauth-token' '$INSTALL_DIR/store/channels-failures.log')\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$_plan_token\" && "
     else
       CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "
     fi
     log "main-agent $_cfg_mode CLAUDE_CONFIG_DIR=$_cfg_dir"
   fi
-  unset _cfg_line _cfg_mode _cfg_dir
+  unset _cfg_raw _cfg_line _cfg_mode _cfg_rest _cfg_dir _cfg_token_secret
 fi
 
 # Full PATH with .bun/bin -- without it the respawned bun telegram bridge does
 # not come up and the session is channel-less.
-RESPAWN_CMD="export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && ${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${CHANNEL_PROVIDER}@claude-plugins-official${EXTRA_CHANNELS}"
+#
+# #915: the respawned session must carry the same install-scoped *_STATE_DIR
+# channels.sh exports at spawn, or the plugin falls back to the shared
+# ~/.claude/channels/<provider>/ and the hijack window reopens on the first
+# watchdog respawn. Mirror channels.sh's STATE_ENV_VAR mapping.
+case "$CHANNEL_PROVIDER" in
+  slack)    STATE_ENV_VAR="SLACK_STATE_DIR" ;;
+  whatsapp) STATE_ENV_VAR="WHATSAPP_STATE_DIR" ;;
+  teams)    STATE_ENV_VAR="TEAMS_STATE_DIR" ;;
+  discord)  STATE_ENV_VAR="DISCORD_STATE_DIR" ;;
+  *)        STATE_ENV_VAR="TELEGRAM_STATE_DIR" ;;
+esac
+MAIN_CHAN_DIR="$INSTALL_DIR/.claude/channels/$CHANNEL_PROVIDER"
+STATE_DIR_ENV=""
+[ -f "$MAIN_CHAN_DIR/.env" ] && STATE_DIR_ENV="export ${STATE_ENV_VAR}='${MAIN_CHAN_DIR}' && "
+RESPAWN_CMD="export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 && ${STATE_DIR_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${CHANNEL_PROVIDER}@claude-plugins-official${EXTRA_CHANNELS}"
 
 reason="keepalive stale ${age}s"
 [ "$STALE" != true ] && reason=""

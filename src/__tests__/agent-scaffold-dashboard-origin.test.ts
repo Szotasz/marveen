@@ -134,6 +134,26 @@ describe('generateClaudeMd prompt: no hardcoded localhost:3420', () => {
     expect(fnBody).toContain('${dashboardOrigin}/api/daily-log')
   })
 
+  // GH #944: the curl examples always used the absolute ${tokenPath}, but the
+  // prose line above them named the token by its project-relative path. Agents
+  // copy prose as readily as code, and a sub-agent's working directory is
+  // agents/<name>/, where store/.dashboard-token does not exist. `cat` on a
+  // missing file yields an empty string, so curl sends "Authorization: Bearer "
+  // and the call 401s with nothing logged on the agent side. Two agents hit it
+  // independently on 2026-08-09.
+  it('never names the token by a project-relative path in the prompt body', () => {
+    expect(fnBody).not.toContain('store/.dashboard-token')
+  })
+
+  it('names the token by the absolute tokenPath in the prose, not only in the curl examples', () => {
+    expect(fnBody).toContain('a token a ${tokenPath} fájlban')
+  })
+
+  it('states the working-directory rule that makes the absolute path necessary', () => {
+    expect(fnBody).toContain('A munkakönyvtárad NEM a projekt gyökere')
+    expect(fnBody).toContain('MINDIG abszolút úttal hivatkozz')
+  })
+
   it('references dashboardOrigin in the schedules API curl example', () => {
     expect(fnBody).toContain('${dashboardOrigin}/api/schedules')
   })

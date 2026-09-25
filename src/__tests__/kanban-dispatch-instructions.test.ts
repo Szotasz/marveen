@@ -59,24 +59,31 @@ describe('kanbanMoveInstructions', () => {
 
   // Text assertions cannot tell a working command from a plausible-looking one,
   // and this line's whole value is that the reader can paste it. So run the
-  // program it emits: once against a board (the answer must be THIS card's status,
-  // not a neighbour's) and once against the error object the endpoint returns when
-  // the token cannot be read -- the shape that made the first draft die on a
-  // Python TypeError, which is the one answer a pre-flight check must never give.
+  // program it emits: once against a board (the answer must be THIS card's status
+  // AND description, not a neighbour's) and once against the error object the
+  // endpoint returns when the token cannot be read -- the shape that made the
+  // first draft die on a Python TypeError, which is the one answer a pre-flight
+  // check must never give.
   const runProbeProgram = (out: string, stdin: string): string => {
     const probe = probeLine(out)!
     const program = probe.slice(probe.indexOf('python3 -c "') + 'python3 -c "'.length).replace(/"\s*$/, '')
     return execFileSync('python3', ['-c', program], { input: stdin, encoding: 'utf-8' }).trim()
   }
 
-  it('the emitted program reports THIS card status and survives an error response', () => {
+  // 2026-09-15, 7ed56208: an agent that ran exactly this probe never saw a
+  // card-specific closing-status override, because the probe printed only the
+  // status field -- the override lived one field over, in description, which
+  // the probe never fetched. The probe now prints both.
+  it('the emitted program reports THIS card status and description, and survives an error response', () => {
     const out = kanbanMoveInstructions('abc123', 'cody')
     const board = JSON.stringify([
-      { id: 'zzz999', status: 'in_progress' },
-      { id: 'abc123', status: 'testing' },
+      { id: 'zzz999', status: 'in_progress', description: 'neighbour, must not leak' },
+      { id: 'abc123', status: 'testing', description: 'zaro-statusz: review, nem done' },
     ])
-    expect(runProbeProgram(out, board)).toBe('testing')
+    expect(runProbeProgram(out, board)).toBe('status: testing\ndescription: zaro-statusz: review, nem done')
     expect(runProbeProgram(out, JSON.stringify([{ id: 'zzz999', status: 'done' }]))).toBe('nincs ilyen kartya')
+    const noDesc = runProbeProgram(out, JSON.stringify([{ id: 'abc123', status: 'planned', description: null }]))
+    expect(noDesc).toBe('status: planned\ndescription: (nincs)')
     const err = runProbeProgram(out, JSON.stringify({ error: 'Unauthorized' }))
     expect(err).toContain('Unauthorized')
     expect(err).not.toContain('Traceback')
@@ -93,5 +100,39 @@ describe('kanbanMoveInstructions', () => {
     const out = kanbanMoveInstructions('abc123', 'cody')
     expect(out).toContain('$(cat ')
     expect(out).toContain('.dashboard-token')
+  })
+
+  // The template closes every card with `done`, but a board program can give a
+  // card its OWN closing status -- for example a review status, so the delegator
+  // checks the work before the card closes. Without a stated ranking the two
+  // rules collide on every such card: the agent either burns a round deciding
+  // which to follow, or silently follows the template and the work closes
+  // unreviewed. The fix is one sentence, not a global swap: for every other
+  // program `done` IS the right close, so the template keeps it as the default
+  // and only names the card as the stronger rule when the card says otherwise.
+  it('says the card own closing status outranks the template default', () => {
+    const out = kanbanMoveInstructions('abc123', 'cody')
+    expect(out).toContain('a kártya program-specifikus szabálya erősebb')
+    expect(out).toContain('záró-státuszt ír elő')
+    // `testing` is named as the concrete case, so the reader does not have to
+    // recognise the abstraction in the middle of a task.
+    expect(out).toContain('testing')
+    // ...and `done` stays the default: the sentence is an exception, not a swap.
+    expect(out).toContain('"status":"done","actor":"cody"')
+    expect(out).toContain('a "done" az alapértelmezés')
+  })
+
+  // Placement is part of the fix: the ranking has to be read WITH step 2 (the
+  // done curl it modifies), not after the escalation block where a reader who
+  // already ran the curl would meet it too late.
+  it('puts the ranking sentence with step 2, before the escalation block', () => {
+    const out = kanbanMoveInstructions('abc123', 'cody')
+    const step2 = out.indexOf('2) Állítsd a kártyát done-ra')
+    const ranking = out.indexOf('a kártya program-specifikus szabálya erősebb')
+    const escalation = out.indexOf('Ha elakadtál')
+    expect(step2).toBeGreaterThan(-1)
+    expect(escalation).toBeGreaterThan(-1)
+    expect(ranking).toBeGreaterThan(step2)
+    expect(ranking).toBeLessThan(escalation)
   })
 })

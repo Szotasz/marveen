@@ -33,21 +33,33 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const REAL = '1268077055'
 
 let home: string
+let stateDir: string
 let sent: Array<{ url: string; chatId: unknown }>
 let originalHome: string | undefined
 let originalChat: string | undefined
+let originalStateDir: string | undefined
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'freshinstall-'))
-  mkdirSync(join(home, '.claude', 'channels', 'telegram'), { recursive: true })
+  stateDir = join(home, '.claude', 'channels', 'telegram')
+  mkdirSync(stateDir, { recursive: true })
   // The wizard DID pair successfully: this is the file the plugin enforces.
   writeFileSync(
-    join(home, '.claude', 'channels', 'telegram', 'access.json'),
+    join(stateDir, 'access.json'),
     JSON.stringify({ dmPolicy: 'allowlist', allowFrom: [REAL], groups: {}, pending: {} }),
   )
   originalHome = process.env['HOME']
   originalChat = process.env['ALLOWED_CHAT_ID']
+  originalStateDir = process.env['TELEGRAM_STATE_DIR']
   process.env['HOME'] = home
+  // #915: the main agent's channel state dir is resolved by channelStateDir,
+  // which honours TELEGRAM_STATE_DIR (the value channels.sh exports at spawn)
+  // and otherwise prefers the install-scoped dir over the legacy ~/.claude one.
+  // Point it at this fixture explicitly so the test measures its OWN access.json
+  // deterministically -- rather than depending on the resolver's HOME fallback
+  // (which no longer wins unconditionally) or on an ambient TELEGRAM_STATE_DIR
+  // leaking in from the process that runs the suite.
+  process.env['TELEGRAM_STATE_DIR'] = stateDir
 
   sent = []
   vi.stubGlobal('fetch', async (url: string, init?: { body?: string }) => {
@@ -68,6 +80,8 @@ afterEach(() => {
   else process.env['HOME'] = originalHome
   if (originalChat === undefined) delete process.env['ALLOWED_CHAT_ID']
   else process.env['ALLOWED_CHAT_ID'] = originalChat
+  if (originalStateDir === undefined) delete process.env['TELEGRAM_STATE_DIR']
+  else process.env['TELEGRAM_STATE_DIR'] = originalStateDir
   rmSync(home, { recursive: true, force: true })
 })
 
@@ -95,7 +109,7 @@ describe('fresh wizard install (no usable ALLOWED_CHAT_ID, channel paired)', () 
     // still called the API with "0" and collected a 400 nobody read. The fix
     // has to be silence, not a different bad request.
     writeFileSync(
-      join(home, '.claude', 'channels', 'telegram', 'access.json'),
+      join(stateDir, 'access.json'),
       JSON.stringify({ dmPolicy: 'allowlist', allowFrom: [], groups: {}, pending: {} }),
     )
     vi.resetModules()

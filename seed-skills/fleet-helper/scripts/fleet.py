@@ -51,7 +51,7 @@ def db_path():
     return os.path.join(project_dir(), "store", "claudeclaw.db")
 
 
-def api(method, path, payload=None, timeout=20):
+def api(method, path, payload=None, timeout=20, want_headers=False):
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(base_url() + path, data=data, method=method)
     req.add_header("Authorization", "Bearer " + token())
@@ -60,12 +60,14 @@ def api(method, path, payload=None, timeout=20):
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             body = r.read().decode()
+            headers = dict(r.headers.items())
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"API {method} {path} -> {e.code}: {e.read().decode()[:200]}")
     try:
-        return json.loads(body)
+        parsed = json.loads(body)
     except ValueError:
-        return body
+        parsed = body
+    return (parsed, headers) if want_headers else parsed
 
 
 def save_memory(agent, content, category="warm", keywords=""):
@@ -73,12 +75,47 @@ def save_memory(agent, content, category="warm", keywords=""):
                                          "category": category, "keywords": keywords})
 
 
-def search_memory(agent, q, category=None):
+# MEMKERESVAK917: this used to return the body and drop r.headers on the floor.
+# The memory search is deliberately forgiving -- when nothing matches the query
+# as asked, it answers with whatever the leftover filler words pulled in, and
+# that answer is byte-identical to a real hit in the BODY. The only thing that
+# tells them apart is the X-Memory-Search response header. An agent calling this
+# helper could not opt in: there is no `-D` to add to a Python function.
+#
+# So the label comes back WITH the rows, and `relaxed` gets its own warning
+# string, because the whole failure mode is a caller who skims the rows.
+def search_memory(agent, q, category=None, strict=False):
     from urllib.parse import quote
     path = f"/api/memories?agent={quote(agent)}&q={quote(q)}"
     if category:
+        # No limit widening here on purpose. Until #1384 the tier filter ran
+        # AFTER the limit, so a category search truncated in silence and this
+        # asked for limit=200 to work around it. #1384 pushed the filter into
+        # the search SQL, so the default window now holds rows the caller
+        # actually asked for, and a hardcoded 200 would just be a bigger page
+        # than every other call site uses.
         path += f"&category={quote(category)}"
-    return api("GET", path)
+    if strict:
+        path += "&strict=1"
+    rows, headers = api("GET", path, want_headers=True)
+    label = ""
+    for k, v in headers.items():
+        if k.lower() == "x-memory-search":
+            label = v
+            break
+    relaxed = "relaxed=true" in label
+    out = {
+        "label": label,
+        "relaxed": relaxed,
+        "strict": strict,
+        "hits": len(rows) if isinstance(rows, list) else None,
+        "rows": rows,
+    }
+    if relaxed:
+        out["warning"] = ("relaxed=true -- semmi nem illeszkedett UGY, AHOGY KERTED. "
+                          "Ezek mentett kozelitesek, NEM bizonyitek. Hiany-allitashoz "
+                          "futtasd ujra strict=1-gyel.")
+    return out
 
 
 def daily_log(agent, content):
@@ -179,7 +216,13 @@ def main(argv):
         _out(save_memory(rest[0], rest[1], rest[2] if len(rest) > 2 else "warm",
                          rest[3] if len(rest) > 3 else ""))
     elif cmd == "mem-search":
-        _out(search_memory(rest[0], rest[1], rest[2] if len(rest) > 2 else None))
+        res = search_memory(rest[0], rest[1], rest[2] if len(rest) > 2 else None,
+                            strict=(len(rest) > 3 and rest[3] in ("strict", "1", "true")))
+        # stderr as well as the JSON field: the rows are what a reader's eye
+        # goes to, and a rescued near-miss looks exactly like a real hit there.
+        if res.get("warning"):
+            sys.stderr.write("FIGYELEM: " + res["warning"] + "\n")
+        _out(res)
     elif cmd == "daily-log":
         _out(daily_log(rest[0], rest[1]))
     elif cmd == "msg":

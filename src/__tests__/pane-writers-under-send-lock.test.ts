@@ -116,4 +116,27 @@ describe('every unguarded pane writer routes through the send lane', () => {
     const heldIdx = src.indexOf("if (lockMode === 'held') {\n    await dismissSurveyModalIfPresent")
     expect(heldIdx).toBeGreaterThan(-1)
   })
+
+  // PANEWRITERS910: the two not-ready-path janitors. Their behaviour under a
+  // held lane is pinned in janitor-under-send-lane.test.ts; these pin the
+  // source shape so a refactor cannot silently drop the acquire.
+  it('clearStaleParkedInput acquires fail-closed, releases in finally, and honours lockMode held', () => {
+    const src = read('../web/agent-process.ts')
+    expect(src).toMatch(/stale-parked-input janitor skipped/)
+    // The held branch delegates WITHOUT acquiring; the acquire branch wraps the
+    // same lane-holding tail in try/finally.
+    expect(src).toMatch(/return clearStaleParkedInputInLane\(session, host, a, parked, key, nowMs, prev\)/)
+    expect(src).toMatch(/return await clearStaleParkedInputInLane\(session, host, a, parked, key, nowMs, prev\)\s*\} finally \{\s*releaseLane\(\)/)
+  })
+
+  it('clearFeedbackModalAndRecheck acquires fail-closed around the dismissal keystrokes', () => {
+    const src = read('../web/agent-process.ts')
+    expect(src).toMatch(/feedback-draft modal dismissal skipped/)
+    expect(src).toMatch(/await dismissFeedbackDraftModalIfPresent\(session, host\)\s*\} finally \{\s*releaseLane\(\)/)
+  })
+
+  it("schedule-runner's reinject site declares the lane it already holds", () => {
+    const src = read('../web/schedule-runner.ts')
+    expect(src).toMatch(/clearStaleParkedInput\(session, host, \{ lockMode: 'held' \}\)/)
+  })
 })

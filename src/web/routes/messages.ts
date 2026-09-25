@@ -5,16 +5,21 @@ import {
   markMessageDone, markMessageFailed, getAgentMessage,
   closeOtelSpan,
   getPendingBacklogByAgent,
+  countNewerMessagesForRows,
   COMPLETION_REPORT_PREFIX,
   type AgentMessage,
 } from '../../db.js'
 import { logger } from '../../logger.js'
-import { COORDINATOR_AGENT_ID } from '../../channel-coordinator/ingest.js'
+import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coordinator/ingest.js'
+import { SYSTEM_DIRECTIVE_SENDER } from '../system-directive.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
-import { OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
+import { MAIN_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
+import { isAgentRunning } from '../agent-process.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
+import { stampHeartbeatHeader } from '../heartbeat-header-stamp.js'
+import { buildFreshnessInfo, type MessageFreshness } from '../agent-message-wrap.js'
 import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
 import type { RouteContext } from './types.js'
@@ -83,6 +88,34 @@ export function resultSummary(id: number, result: string | undefined | null): st
   )
 }
 
+// Every JSON read of a message body carries the same freshness / supersession
+// state the router stamps on the delivered text.
+//
+// WHY THE READ PATH NEEDS IT AT ALL. Reading the pending mailbox is a SUPPORTED
+// move, not a workaround: the pull drain-inbox path exists precisely because it
+// hands the main agent its messages in seconds where the router's push can take
+// many minutes. So the answer to an early read acting on stale orders is
+// emphatically NOT to forbid the read -- that would break a working mechanism
+// over a missing annotation. It is to make the two paths say the same thing.
+// Until now they did not: a row read from this endpoint arrived bare, and if its
+// sender corrected or revoked it in the interval before delivery, the reader had
+// nothing to go on. The annotation sat on the path the early read bypasses.
+//
+// Added as a SEPARATE `freshness` object rather than folded into `content`: the
+// row is evidence (the system-directive rule compares `content` byte for byte
+// against the quoted directive), so the body must stay untouched.
+export type AgentMessageWithFreshness = AgentMessage & { freshness: MessageFreshness }
+
+export function attachFreshness(messages: AgentMessage[]): AgentMessageWithFreshness[] {
+  const nowMs = Date.now()
+  // One query per distinct (from, to) partition, not one per row.
+  const newer = countNewerMessagesForRows(messages)
+  return messages.map((m) => ({
+    ...m,
+    freshness: buildFreshnessInfo(nowMs - m.created_at * 1000, newer.get(m.id) ?? 0),
+  }))
+}
+
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -112,6 +145,53 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (sanitizeAgentIdent(from) === COORDINATOR_AGENT_ID) {
       logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST forging channel-coordinator id')
       json(res, { error: 'from is reserved for the in-process channel coordinator' }, 403)
+      return true
+    }
+    // System directives (SYSRESERVED918): the same shape, one level up. Every
+    // fleet agent authenticates an operational directive
+    // ([SYSTEM-DIREKTIVA msg_id:<N>]: stop, prepare to restart, drop work) by
+    // reading the referenced row back and requiring from_agent === 'system' --
+    // the header text alone is what a prompt injection would also write. That
+    // recipe is only sound while 'system' cannot be POSTed here.
+    //
+    // Before this guard it could not be -- but only by ACCIDENT: 'system' has
+    // no agents/<id>/ directory, so the known-agent check below rejected it.
+    // Two ordinary, reversible acts would have removed that: adding 'system' to
+    // SYSTEM_SENDER_IDS (an .env line whose entire PURPOSE is to exempt ids
+    // from that check), or `mkdir agents/system/`. Either one hands the shared
+    // dashboard token -- which every sub-agent reads -- the power to forge a
+    // stop order, and nothing would have announced it.
+    //
+    // So the id is RESERVED, ahead of both the SYSTEM_SENDERS exemption and the
+    // known-agent check, and on every auth lane including an enrolled device
+    // key. No legitimate path is lost: every 'system' message is written
+    // in-process via createAgentMessage (system-directive, message-router,
+    // schedule-runner, context-guard-runner, agents), never over HTTP.
+    // The other SYSTEM_SENDER_IDS entries are untouched -- they name external
+    // notifiers, and none of them is the fleet's authentication base.
+    if (sanitizeAgentIdent(from) === SYSTEM_DIRECTIVE_SENDER) {
+      logger.warn({ from: from.trim(), to: to.trim(), authKind: ctx.auth?.kind ?? 'none' }, 'Rejected /api/messages POST forging the system directive sender')
+      json(res, { error: `from '${SYSTEM_DIRECTIVE_SENDER}' is reserved for in-process system directives and can never be POSTed` }, 403)
+      return true
+    }
+    // Voice channel (HANGCSATORNA918): the VOICE_CHANNEL_AGENT_ID also earns
+    // channel-inbound
+    // framing, but unlike the coordinator it is a legitimate POST writer -- the
+    // relay runs out-of-process. So the guard is the AUTH LANE, not a blanket
+    // 403: accept it only from an enrolled DEVICE KEY.
+    //
+    // WHY THE LANE AND NOT THE NAME: channel-inbound tells the receiving agent
+    // "this is the owner, a reply is expected". The dashboard token is readable
+    // by every sub-agent, so a name-only rule would let any of them forge an
+    // owner message. A device key is a per-device secret the sub-agents do not
+    // have, so requiring it is what makes the id trustworthy at DELIVERY time,
+    // where the auth context is long gone and only from_agent survives.
+    if (sanitizeAgentIdent(from) === VOICE_CHANNEL_AGENT_ID && ctx.auth?.kind !== 'device') {
+      logger.warn(
+        { from: from.trim(), to: to.trim(), authKind: ctx.auth?.kind ?? 'none' },
+        'Rejected /api/messages POST as voice channel without a device key',
+      )
+      json(res, { error: `from '${VOICE_CHANNEL_AGENT_ID}' requires an enrolled device key, not the shared dashboard token` }, 403)
       return true
     }
     // Federation spoof guard: a slash-qualified from ("teodor/teodor") is the
@@ -148,8 +228,12 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // manager pushed 4182 messages, then every call 403'd for nine days while
     // its fail-soft caller logged nothing.
     const isOwnerSender = sanitizeAgentIdent(from) === sanitizeAgentIdent(OWNER_NAME)
+    // The voice channel is the OWNER speaking, not a fleet agent: it has no
+    // agents/<id>/ directory, so isKnownAgent alone would 403 it. It is already
+    // device-key gated above, which is a STRONGER check than this one.
+    const isVoiceChannelSender = sanitizeAgentIdent(from) === VOICE_CHANNEL_AGENT_ID
     const isSystemSender = SYSTEM_SENDERS.has(sanitizeAgentIdent(from))
-    if (!isOwnerSender && !isSystemSender && !isKnownAgent(sanitizeAgentIdent(from))) {
+    if (!isOwnerSender && !isSystemSender && !isVoiceChannelSender && !isKnownAgent(sanitizeAgentIdent(from))) {
       logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST from unregistered agent')
       json(res, { error: `unknown agent '${from.trim()}' -- from must be a registered fleet agent id` }, 403)
       return true
@@ -200,12 +284,43 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // human-facing `#<seq>` form before persistence, so the dashboard and
     // every downstream consumer sees the canonical reference even when a
     // sub-agent forgets the CLAUDE.md rule (#75 Cuzcoo dispatch).
-    const normalizedContent = normalizeKanbanRefs(content.trim(), getKanbanSeqByIdPrefix)
+    // HBORACSUSZAS908: the digest header clock is machine-stamped at
+    // persistence -- an agent-typed hour drifts forward as its session fills
+    // (measured 0,0,0,0,0,+1h,+3h on 2026-09-08) and the digest is the surface
+    // the whole fleet reads time from. Same code-side-enforcement pattern as
+    // normalizeKanbanRefs below.
+    const normalizedContent = normalizeKanbanRefs(stampHeartbeatHeader(content.trim()), getKanbanSeqByIdPrefix)
     // Card 06f062e4: optional attributability tag, self-declared like `from`
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
     const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote)
     logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note }, 'Agent message created')
+    // A LOCAL recipient that is not running never receives this: the router
+    // retries for a while and then abandons it, and the failure notice goes to
+    // the MAIN agent, not to the sender. The caller therefore sees a plain 200
+    // and believes it delegated. Federated addresses already get an actionable
+    // error at creation time (see above) -- give the local path the same
+    // courtesy, as a non-breaking warning field rather than a status change, so
+    // existing callers keep working.
+    // The MAIN agent is exempt (MSGWARN908): its session is
+    // `${MAIN_AGENT_ID}-channels`, so isAgentRunning() -- which probes
+    // `agent-<name>` -- always says stopped, and the router never abandons a
+    // main-agent message anyway (pull model: the main agent drains its own
+    // inbox each turn). The warning below was therefore always false for it,
+    // and on 2026-09-08 the false "not running" state reached the owner as a
+    // system-down report. The worst reaction it invites -- starting a second
+    // main instance -- is exactly what the pull model must never see.
+    if (!storedTo.includes('/')
+        && sanitizeAgentIdent(storedTo) !== sanitizeAgentIdent(MAIN_AGENT_ID)
+        && !isAgentRunning(sanitizeAgentIdent(storedTo))) {
+      logger.warn({ id: msg.id, to: msg.to_agent }, 'Agent message queued for a STOPPED agent -- likely to be abandoned')
+      json(res, {
+        ...msg,
+        targetRunning: false,
+        warning: `'${msg.to_agent}' nem fut -- indítsd el (POST /api/agents/${msg.to_agent}/start), várd meg amíg feláll, és küldd újra. Egy leállított ügynöknek küldött üzenet nem várakozik, hanem elveszik.`,
+      })
+      return true
+    }
     json(res, msg)
     return true
   }
@@ -262,7 +377,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       messages = listAgentMessages(limit)
     }
 
-    jsonMaybeGzip(req, res, messages)
+    jsonMaybeGzip(req, res, attachFreshness(messages))
     return true
   }
 
@@ -273,7 +388,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   if (msgUpdateMatch && method === 'GET') {
     const one = getAgentMessage(parseInt(msgUpdateMatch[1], 10))
     if (!one) { json(res, { error: 'Message not found' }, 404); return true }
-    json(res, one)
+    json(res, attachFreshness([one])[0])
     return true
   }
   if (msgUpdateMatch && method === 'PUT') {

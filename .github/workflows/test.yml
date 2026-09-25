@@ -47,3 +47,29 @@ jobs:
       # regression guard that only runs manually rots exactly like a one-shot
       # seed. Runs natively here (ubuntu = the Linux branch it asserts).
       - run: bash scripts/__tests__/stop-start-system-unit.test.sh
+      # TASKEGRESSDRIFT913: the egress-drift scan is a gate instrument; a guard that
+      # only runs by hand rots (the #1316 class), so its tests run here too.
+      - run: python3 scripts/__tests__/egress-drift-scan.test.py
+      # DASHAUDITZAJ915: the dash audit's classifier is a gate instrument too --
+      # same rot argument as the line above.
+      - run: python3 scripts/__tests__/dash-audit-scan.test.py
+      # ORSICTX912: the sentinel preCheck's SKIP is "no model turn" -- an
+      # error path that said SKIP would silence the community sentinel for
+      # good, so its fail-direction cases are gate instruments (hermetic:
+      # stubbed vault/supabase, throwaway dirs).
+      - run: python3 scripts/__tests__/mio-orszem-precheck.test.py
+      # MEMLINKAUDIT915: the audit's own footer calls UNRESOLVED the repair
+      # queue, so an over-report sends someone to rewrite working links. The
+      # over-report GROWS with every consolidation round, which is why this
+      # runs here and not by hand. Hermetic: throwaway fixture dir.
+      - run: python3 scripts/__tests__/memory-link-audit.test.py
+      # MORNTIMERPARK914: the #1313 contract tests shipped without CI wiring,
+      # so "CI green" said nothing about them -- the exact rot the comment
+      # above warns about. All three are hermetic (stubs on PATH / CLAUDE_BIN,
+      # throwaway dirs); the stamp-gate test never reaches the claude stub
+      # above because the briefing script takes its binary from CLAUDE_BIN.
+      - run: bash scripts/__tests__/keepalive-probe-install.test.sh
+      - run: bash scripts/__tests__/morning-stamp-gate.test.sh
+      - run: bash scripts/__tests__/morning-timer-park.test.sh
+      - run: bash scripts/__tests__/userbot-arming-gate.test.sh
+      - run: bash scripts/__tests__/supabase-q-token-hiding.test.sh

@@ -29,10 +29,19 @@ if [[ "$CODE" != "200" ]]; then
   exit 4
 fi
 
+# The freshness/supersession note is printed BEFORE the content, not after.
+# This script is one of the ways an agent gets a message body into its hands --
+# the same state the router stamps on a delivered message has to travel with it
+# here too, or the fix stops at the API boundary and the reader is back to
+# acting on a possibly-revoked instruction. Above the content, because a warning
+# under a long body is a warning nobody reads.
 python3 - "$OUT" <<'PY'
 import json, sys
 m = json.load(open(sys.argv[1], encoding='utf-8'))
 print(f"# msg {m.get('id')}  {m.get('from_agent')} -> {m.get('to_agent')}  status={m.get('status')}")
+fresh = m.get('freshness') or {}
+if fresh.get('note'):
+    print(f"\n!! {fresh['note']}")
 print("\n--- CONTENT ---")
 print(m.get('content') or '(nincs)')
 print("\n--- RESULT ---")

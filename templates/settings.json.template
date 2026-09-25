@@ -3,6 +3,20 @@
     "telegram@claude-plugins-official": true
   },
   "effortLevel": "high",
+  "permissions": {
+    "deny": [
+      "Bash(curl *https://*)",
+      "Bash(*/curl *https://*)",
+      "Bash(wget *)",
+      "Bash(*/wget *)",
+      "Bash(nc *)",
+      "Bash(*/nc *)",
+      "Bash(ncat *)",
+      "Bash(*/ncat *)",
+      "Bash(telnet *)",
+      "Bash(*/telnet *)"
+    ]
+  },
   "hooks": {
     "PreCompact": [
       {
@@ -59,6 +73,38 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/tool-log-capture.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/tool-log-capture.py; exit 0'",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "telegram.*reply",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram_progress_reply_clear.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/telegram_progress_reply_clear.py; exit 0'",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/tool-log-capture.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/tool-log-capture.py; exit 0'",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -83,6 +129,54 @@
             "type": "command",
             "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/voice-reply-directive.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/voice-reply-directive.py; exit 0'",
             "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram-reply-directive.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/telegram-reply-directive.py; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/claude-usage.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/claude-usage.py; exit 0'",
+            "timeout": 45
+          }
+          ,{
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram_progress.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/telegram_progress.py; exit 0'",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/channel-image-resize.sh ] && exec bash {{PROJECT_ROOT}}/scripts/hooks/channel-image-resize.sh; exit 0'",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-gate.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-gate.py; exit 0'",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram_progress_clear.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/telegram_progress_clear.py; exit 0'",
+            "timeout": 15
           }
         ]
       }

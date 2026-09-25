@@ -13,7 +13,12 @@ fi
 VOICE_ARG="${1:?usage: tts.sh <voice> <chat_id> <text...>}"; shift
 CHAT_ID="${1:?missing chat_id}"; shift
 TEXT="$*"
-STATE_DIR="${VOICE_STATE_DIR:-$HOME/.claude/channels/telegram}"
+# #915: env overrides, then install-scoped once migrated, then legacy shared.
+STATE_DIR="${VOICE_STATE_DIR:-${TELEGRAM_STATE_DIR:-}}"
+if [ -z "$STATE_DIR" ]; then
+  STATE_DIR="$(cd "$(dirname "$0")/../.." && pwd)/.claude/channels/telegram"
+  [ -f "$STATE_DIR/.env" ] || STATE_DIR="$HOME/.claude/channels/telegram"
+fi
 case "$VOICE_ARG" in
   imre)  ONNX="$DEST/voices/hu_HU-imre-medium.onnx" ;;
   anna)  ONNX="$DEST/voices/hu_HU-anna-medium.onnx" ;;

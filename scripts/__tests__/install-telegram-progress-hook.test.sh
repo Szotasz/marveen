@@ -155,57 +155,59 @@ assert_eq   "MAIN_AGENT_ID fallback: SERVICE_ID resolves to myagent" \
             "SERVICE_ID=myagent" "$(echo "$OUT" | grep '^SERVICE_ID=')"
 
 # ---------------------------------------------------------------------------
-# (g) Hook files are copied when the full script runs (behaviour preserved)
-# We drive the full script with a fake INSTALL_DIR + HOME + stub hook sources.
-# Daemon install is left to run; on macOS launchctl is a no-op here, on Linux
-# systemd --user is unavailable so it prints a warning and exits 0.
+# (g) Full script (#1305 contract): NO ~/.claude write, watchdog from the repo
+# The installer must not copy anything into ~/.claude/hooks and must not touch
+# ~/.claude/settings.json -- the settings hooks are repo-shipped in the tracked
+# project .claude/settings.json. The only thing it installs is the watchdog
+# daemon, whose unit must run the REPO copy of telegram_progress_watchdog.py.
+# launchctl/systemctl/pidof are stubbed via PATH so no real daemon is (un)loaded.
 # ---------------------------------------------------------------------------
 echo ""
-echo "(g) Full script: hook files are copied to DEST_DIR"
+echo "(g) Full script: no ~/.claude write, watchdog unit targets the repo"
 CASE="$TMP/case-g"
-INSTALL_G="$CASE/marveen"
 HOME_G="$CASE/home"
-HOOKS_SRC_G="$INSTALL_G/scripts/hooks"
-mkdir -p "$HOOKS_SRC_G" "$HOME_G/.claude/hooks"
-for f in telegram_progress.py telegram_progress_clear.py \
-          telegram_progress_reply_clear.py telegram_progress_watchdog.py \
-          telegram_fallback_send.py; do
-  printf '#!/usr/bin/env python3\n# stub\n' > "$HOOKS_SRC_G/$f"
+BIN_G="$CASE/bin"
+mkdir -p "$HOME_G/.claude/hooks" "$BIN_G"
+for stub in launchctl systemctl pidof; do
+  printf '#!/bin/bash\nexit 1\n' > "$BIN_G/$stub"
+  chmod +x "$BIN_G/$stub"
 done
-echo '{"hooks":{}}' > "$HOME_G/.claude/settings.json"
-cat > "$INSTALL_G/.env" <<'EOF'
-SERVICE_ID=testbot
-OWNER_NAME=Foo Bar
-BOT_NAME=TestBot
-EOF
+SETTINGS_BEFORE='{"hooks":{"marker":"untouched"}}'
+printf '%s' "$SETTINGS_BEFORE" > "$HOME_G/.claude/settings.json"
 
-# Run the real script with overridden HOME and a symlinked scripts/hooks.
-REAL_HOOKS="$REPO_ROOT/scripts/hooks"
-rm -rf "$INSTALL_G/scripts/hooks"
-mkdir -p "$INSTALL_G/scripts"
-# Use the stub hooks we created (not real ones), already in $HOOKS_SRC_G.
-OUT="$(HOME="$HOME_G" bash "$SCRIPT" 2>&1)" || true
-# The script resolves INSTALL_DIR from its own __dirname. We can't override that
-# via env, so we inject a .env next to the script's actual install dir for this
-# specific case we test via the run_env_parse helper above -- the full-run (g)
-# test focuses only on whether the copy + settings patch succeeds when a
-# spaced OWNER_NAME is present. Since the script resolves its own install dir,
-# we verify via run_env_parse that SERVICE_ID is read correctly (covered by b/f).
-# Here we just confirm the real script exits 0 with a clean .env (no spaces).
-cat > "/tmp/marveen-hook-fix/.env" <<'EOF'
-SERVICE_ID=testbot
-BOT_NAME=TestBot
-EOF
-OUT2="$(HOME="$HOME_G" bash "$SCRIPT" 2>&1)"
+OUT="$(HOME="$HOME_G" PATH="$BIN_G:$PATH" bash "$SCRIPT" 2>&1)"
 EXIT=$?
-assert_zero "full script: exits 0 with clean .env" $EXIT
+assert_zero "full script: exits 0" $EXIT
+
 for f in telegram_progress.py telegram_progress_clear.py \
           telegram_progress_reply_clear.py telegram_progress_watchdog.py \
           telegram_fallback_send.py; do
-  if [ -f "$HOME_G/.claude/hooks/$f" ]; then pass "full script: $f copied"
-  else fail "full script: $f NOT copied"; fi
+  assert_absent "$HOME_G/.claude/hooks/$f" "full script: $f NOT copied to ~/.claude/hooks"
 done
-rm -f "/tmp/marveen-hook-fix/.env"
+
+SETTINGS_AFTER="$(cat "$HOME_G/.claude/settings.json")"
+assert_eq "full script: user-global settings.json untouched" \
+          "$SETTINGS_BEFORE" "$SETTINGS_AFTER"
+
+# The daemon unit (plist on Darwin, systemd service on Linux) must reference
+# the repo watchdog, never a ~/.claude/hooks copy.
+UNIT_FILE="$(find "$HOME_G/Library/LaunchAgents" "$HOME_G/.config/systemd/user" \
+             -type f \( -name '*.plist' -o -name '*.service' \) 2>/dev/null | head -1)"
+if [ -n "$UNIT_FILE" ]; then
+  pass "full script: daemon unit written ($(basename "$UNIT_FILE"))"
+  if grep -q "$REPO_ROOT/scripts/hooks/telegram_progress_watchdog.py" "$UNIT_FILE"; then
+    pass "full script: unit runs the REPO watchdog"
+  else
+    fail "full script: unit does not reference the repo watchdog path"
+  fi
+  if grep -q "$HOME_G/.claude/hooks" "$UNIT_FILE"; then
+    fail "full script: unit still references a ~/.claude/hooks copy"
+  else
+    pass "full script: unit has no ~/.claude/hooks reference"
+  fi
+else
+  fail "full script: no daemon unit file written"
+fi
 
 # ---------------------------------------------------------------------------
 echo ""

@@ -147,6 +147,7 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 |-------|-------|-----------|--------|-------------|
 | `DASHBOARD_PUBLIC_URL` | string | (üres) | A dashboard nyilvánosan elérhető URL-je | igen |
 | `OLLAMA_URL` | string | `http://localhost:11434` | Ollama API alap-URL | igen |
+| `MEMORY_IMPORT_CATEGORIZE_MODEL` | string | (üres) | Memória-import besoroló Ollama modellje (felülbírálás); üres = telepített `gemma4` felismerése, olyan híján minden warm | igen |
 
 **Registry -- Heartbeat modul:**
 
@@ -337,6 +338,27 @@ Ezek a sablonok az ágens scaffold során töltődnek ki és kerülnek az `agent
 | `researcher.json` | strict | Kutató profil, korlátozott írás |
 
 A profil beállítása az ágens `agent-config.json` `profileId` mezőjével történik, és a dashboard "Ágensek" felületén módosítható.
+
+### toolDeny -- ágensenkénti eszköz-tiltás (kontextus-fogantyú)
+
+Az `agent-config.json` opcionális `toolDeny` mezője csupasz Claude Code eszköznevek listája
+(pl. `"Artifact"`, `"Workflow"`, `"mcp__szerver__eszkoz"`), amit a scaffold MINDEN spawnkor
+hozzáfűz a `.claude/settings.json` `permissions.deny` listájához. Egy egész eszköznévre szóló
+deny nem csak tilt: a Claude Code az eszköz sémáját ki is hagyja a promptból, tehát ez a
+per-ágens kontextus-terhelés egyik fogantyúja (egy kutató ágensnél a 7 soha nem használt eszköz
+levétele -25% alapterhelést mért).
+
+Fontos: a `.claude/settings.json` deny-listája a profilból SZÁRMAZTATOTT, a scaffold spawnkor
+egészben újraírja. Egy kézzel oda írt eszköznév a következő újraindításkor nyomtalanul eltűnik;
+a tartós hely a `toolDeny` mező. Minta-alakú szabály (`Bash(...)`, `Read(...)`) itt nem fogadható
+el, csak eszköznév; a mező csak BŐVÍTENI tudja a tiltást, szűkíteni nem.
+
+```json
+{
+  "securityProfile": "researcher",
+  "toolDeny": ["Artifact", "Workflow", "AskUserQuestion", "ReportFindings", "SendFeedback", "ListAgents", "Skill"]
+}
+```
 
 ---
 

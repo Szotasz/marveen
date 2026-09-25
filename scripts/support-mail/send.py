@@ -12,13 +12,32 @@ from email.message import EmailMessage
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lib
 
+# A gazda masolati cime: a kimeno support-levelek alapertelmezett CC-je.
+# CONFIG-VEZERELT, URES ALAPERTELMEZESSEL -- a Marveen termekkent szallitodik, tehat
+# a repoban NEM allhat egyetlen telepites gazdajanak a cime sem. Aki nem allitja be,
+# annal a viselkedes bajt-azonos a korabbival (nincs CC). A mi telepitesunkon a
+# SUPPORT_OWNER_CC a .env-ben all, ami nem verziokovetett.
+# (A template-identity-hygiene teszt fogta meg az elso, hardcode-olt valtozatot --
+#  jogosan: az minden vevo telepitesen a mi cimunkre CC-zett volna.)
+OWNER_CC = lib._env("SUPPORT_OWNER_CC")
+
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--to", required=True)
     ap.add_argument("--subject", required=True)
     ap.add_argument("--body", default=None)
-    ap.add_argument("--cc", default=None)
+    # A GAZDA-CC MOSTANTOL ALAPERTELMEZES, NEM EMLEKEZET (Marveen, mert eset 2026-09-14).
+    # A CLAUDE.md kimondja, hogy MINDEN kimeno levelnek CC-znie kell a gazdat, kivetel nelkul.
+    # Ez a szabaly eddig CSAK PROZABAN letezett: a `--cc` opcionalis volt, default None.
+    # Merve: a mai negy Comline-levelbol HAROM CC nelkul ment ki (INBOX.Sent fejlecek), ezert a
+    # gazda a sajat postalada-jaban nem latta a megoldast, es ugy jelezte vissza, mintha az ugy
+    # meg allna. Nem a szabaly volt rossz, hanem az, hogy nem volt KODUTBA kotve.
+    ap.add_argument("--cc", default=OWNER_CC or None,
+                    help="CC-cim (alapertelmezes: a SUPPORT_OWNER_CC config-ertek, ha be van "
+                         "allitva); kikapcsolas: --no-owner-cc")
+    ap.add_argument("--no-owner-cc", action="store_true",
+                    help="KIMONDOTT lemondas a gazda-CC-rol -- csak akkor, ha a cimzettnek nem szabad latnia")
     ap.add_argument("--html", action="store_true")
     # --html-wrap takes PLAIN text and builds the light HTML itself, keeping the
     # original text as the text/plain alternative. Prefer it over --html: --html
@@ -26,6 +45,10 @@ def main():
     # stub, which is what plain-text readers and previews then show.
     ap.add_argument("--html-wrap", action="store_true")
     a = ap.parse_args()
+    # A lemondas CSAK az alapertelmezett (config-bol jott) erteket ejti ki: egy
+    # kimondott --cc-t nem dob el. Ha nincs beallitva OWNER_CC, nincs mit ejteni.
+    if a.no_owner_cc and OWNER_CC and a.cc == OWNER_CC:
+        a.cc = None
     body = a.body if a.body is not None else sys.stdin.read()
 
     msg = EmailMessage()
@@ -55,7 +78,7 @@ def main():
                           context=ssl.create_default_context(), timeout=45) as s:
         s.login(lib.EMAIL, pw)
         s.send_message(msg, to_addrs=rcpts)
-    print(f"SENT from {lib.FROM_ADDRESS} to {a.to}" + (f" cc {a.cc}" if a.cc else ""))
+    print(f"SENT from {lib.FROM_ADDRESS} to {a.to}" + (f" cc {a.cc}" if a.cc else " CC NELKUL (--no-owner-cc)"))
 
     # AUDIT TRAIL (SUPPJOGVAK901): SMTP send alone does NOT populate the mailbox
     # Sent folder, so an outgoing auto-reply used to leave no readable record --

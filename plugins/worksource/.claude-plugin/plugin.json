@@ -1,0 +1,6 @@
+{
+  "name": "worksource",
+  "description": "Queue channel for machine work. Hands queued items to the agent as real turns instead of typing them into its terminal, and takes an explicit acknowledgment back.",
+  "version": "0.1.0",
+  "keywords": ["channel", "queue", "mcp", "marveen"]
+}
