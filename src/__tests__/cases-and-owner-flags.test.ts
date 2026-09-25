@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest'
-import { initDatabase, openCase, getCase, listCases, appendCaseNote, closeCase, claimOwnerFlag, listOwnerFlagClaims, releaseOwnerFlag } from '../db.js'
+import { initDatabase, openCase, getCase, listCases, appendCaseNote, closeCase, claimOwnerFlag, listOwnerFlagClaims, releaseOwnerFlag, listOwnerFlagReleases } from '../db.js'
 
 // Case files (one place per multi-agent finding) and the send-once ledger for
 // owner-facing flags. In-memory DB, no network.
@@ -24,11 +24,20 @@ describe('cases', () => {
   })
 
   it('closing records who and moves it out of the open list', () => {
-    const closed = closeCase('case-x', 'agent-b')
-    expect(closed?.status).toBe('closed')
-    expect(closed?.closed_by).toBe('agent-b')
+    const r = closeCase('case-x', 'agent-b')
+    expect(r.closed).toBe(true)
+    expect(r.case?.status).toBe('closed')
+    expect(r.case?.closed_by).toBe('agent-b')
     expect(listCases('open').some((c) => c.id === 'case-x')).toBe(false)
     expect(listCases('closed').some((c) => c.id === 'case-x')).toBe(true)
+  })
+
+  it('a second close keeps the original closer and time', () => {
+    const before = getCase('case-x')!.case
+    const r = closeCase('case-x', 'agent-c')
+    expect(r.closed).toBe(false)
+    expect(r.case?.closed_by).toBe(before.closed_by)
+    expect(r.case?.closed_at).toBe(before.closed_at)
   })
 
   it('an unknown case is null', () => {
@@ -54,5 +63,14 @@ describe('owner-flag send-once ledger', () => {
     expect(releaseOwnerFlag('agent-a', 'mail:1')).toBe(true)
     expect(claimOwnerFlag('agent-a', 'mail:1').claimed).toBe(true)
     expect(listOwnerFlagClaims('agent-a').length).toBe(1)
+  })
+
+  it('a release leaves a trail of who released it and when', () => {
+    expect(releaseOwnerFlag('agent-a', 'mail:1', 'agent-z')).toBe(true)
+    const trail = listOwnerFlagReleases('agent-a', 'mail:1')
+    expect(trail.at(-1)?.released_by).toBe('agent-z')
+    expect(trail.at(-1)?.released_at).toBeGreaterThan(0)
+    expect(releaseOwnerFlag('agent-a', 'mail:1', 'agent-z')).toBe(false)
+    expect(listOwnerFlagReleases('agent-a', 'mail:1').length).toBe(trail.length)
   })
 })

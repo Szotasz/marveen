@@ -549,6 +549,19 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_owner_flag_claims_agent ON owner_flag_claims(agent, created_at)`)
+  // A release deletes the claim, so without a trail nobody could tell later
+  // who re-opened a flag or when. The Bearer is shared, so released_by is the
+  // caller's self-declared id -- a record, not an authorisation.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS owner_flag_releases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent TEXT NOT NULL,
+      source_ref TEXT NOT NULL,
+      claimed_at INTEGER NOT NULL,
+      released_by TEXT NOT NULL,
+      released_at INTEGER NOT NULL
+    )
+  `)
 
   // Homoglyph journal (GATEHOMOGLIFSWEEP816): agents write kanban via sqlite3
   // directly, so an API-level check never sees those writes. These triggers
@@ -2057,10 +2070,33 @@ export function listOwnerFlagClaims(agent: string, limit = 50): OwnerFlagClaimRo
  * then failed, so nothing actually reached the owner. Without this the mail
  * would be silently marked as told -- the expensive direction of the error.
  */
-export function releaseOwnerFlag(agent: string, sourceRef: string): boolean {
+export function releaseOwnerFlag(agent: string, sourceRef: string, releasedBy: string = agent): boolean {
+  return db.transaction(() => {
+    const row = db
+      .prepare('SELECT created_at FROM owner_flag_claims WHERE agent = ? AND source_ref = ?')
+      .get(agent, sourceRef) as { created_at: number } | undefined
+    if (!row) return false
+    db.prepare('DELETE FROM owner_flag_claims WHERE agent = ? AND source_ref = ?').run(agent, sourceRef)
+    db.prepare(
+      'INSERT INTO owner_flag_releases (agent, source_ref, claimed_at, released_by, released_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(agent, sourceRef, row.created_at, releasedBy, Math.floor(Date.now() / 1000))
+    return true
+  })()
+}
+
+export interface OwnerFlagReleaseRow {
+  id: number
+  agent: string
+  source_ref: string
+  claimed_at: number
+  released_by: string
+  released_at: number
+}
+
+export function listOwnerFlagReleases(agent: string, sourceRef: string): OwnerFlagReleaseRow[] {
   return db
-    .prepare('DELETE FROM owner_flag_claims WHERE agent = ? AND source_ref = ?')
-    .run(agent, sourceRef).changes > 0
+    .prepare('SELECT * FROM owner_flag_releases WHERE agent = ? AND source_ref = ? ORDER BY id ASC')
+    .all(agent, sourceRef) as OwnerFlagReleaseRow[]
 }
 
 export interface CaseRow {
@@ -2118,10 +2154,15 @@ export function appendCaseNote(caseId: string, agent: string, kind: string, cont
   return db.prepare('SELECT * FROM case_notes WHERE id = ?').get(info.lastInsertRowid) as CaseNoteRow
 }
 
-export function closeCase(id: string, closedBy: string): CaseRow | null {
+/** Closes an open case once. A second close leaves closed_by / closed_at as
+ *  they were (closed=false), so the record of who decided stays intact. */
+export function closeCase(id: string, closedBy: string): { closed: boolean; case: CaseRow | null } {
   const now = Math.floor(Date.now() / 1000)
-  db.prepare('UPDATE cases SET status = ?, closed_at = ?, closed_by = ? WHERE id = ?').run('closed', now, closedBy, id)
-  return (db.prepare('SELECT * FROM cases WHERE id = ?').get(id) as CaseRow) ?? null
+  const info = db
+    .prepare("UPDATE cases SET status = 'closed', closed_at = ?, closed_by = ? WHERE id = ? AND status = 'open'")
+    .run(now, closedBy, id)
+  const row = (db.prepare('SELECT * FROM cases WHERE id = ?').get(id) as CaseRow | undefined) ?? null
+  return { closed: info.changes > 0, case: row }
 }
 
 export function appendDailyLog(agentId: string, content: string): void {

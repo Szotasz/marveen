@@ -28,7 +28,7 @@ const SUSPICIOUS_PATTERNS = [
   /\brm\s+-rf\b/i,
 ]
 
-function containsSuspiciousContent(content: string): boolean {
+export function containsSuspiciousContent(content: string): boolean {
   return SUSPICIOUS_PATTERNS.some((pattern) => pattern.test(content))
 }
 

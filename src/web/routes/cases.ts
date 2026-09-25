@@ -1,9 +1,21 @@
-import { openCase, listCases, getCase, appendCaseNote, closeCase, claimOwnerFlag, listOwnerFlagClaims, releaseOwnerFlag } from '../../db.js'
+import { openCase, listCases, getCase, appendCaseNote, closeCase, claimOwnerFlag, listOwnerFlagClaims, releaseOwnerFlag, listOwnerFlagReleases } from '../../db.js'
 import { MAIN_AGENT_ID } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import type { RouteContext } from './types.js'
+import { containsSuspiciousContent } from './memories.js'
+
+// Reserved author ids (review follow-up): agents read case notes as trusted
+// context, and supervisor directives are authenticated by from='system', which
+// /api/messages refuses with 403. The same id must not be writable here.
+const RESERVED_AUTHORS = new Set(['system'])
+function reservedAuthor(a: string | undefined): boolean {
+  return RESERVED_AUTHORS.has(String(a ?? '').trim().toLowerCase())
+}
+function safeDecode(s: string): string | null {
+  try { return decodeURIComponent(s) } catch { return null }
+}
 
 // Case files: one place per multi-agent finding, instead of N-to-N messaging.
 // See the schema comment in db.ts for the measurement that motivated it.
@@ -28,6 +40,8 @@ export async function tryHandleCases(ctx: RouteContext): Promise<boolean> {
       return true
     }
     if (!data.title?.trim()) { json(res, { error: 'title required' }, 400); return true }
+    if (reservedAuthor(data.agent)) { json(res, { error: 'reserved agent id' }, 403); return true }
+    if (containsSuspiciousContent(data.title)) { json(res, { error: 'Content rejected by security filter' }, 400); return true }
     const row = openCase(id, data.title.trim(), data.agent || MAIN_AGENT_ID)
     json(res, { ok: true, case: row })
     return true
@@ -41,13 +55,18 @@ export async function tryHandleCases(ctx: RouteContext): Promise<boolean> {
 
   const noteMatch = /^\/api\/cases\/([^/]+)\/notes$/.exec(path)
   if (noteMatch && method === 'POST') {
-    const caseId = decodeURIComponent(noteMatch[1] as string)
+    const caseId = safeDecode(noteMatch[1] as string)
+    if (caseId === null) { json(res, { error: 'malformed case id' }, 400); return true }
     const existing = getCase(caseId)
     if (!existing) { json(res, { error: 'no such case' }, 404); return true }
+    // A closed case is a settled record; a later finding opens a new case.
+    if (existing.case.status !== 'open') { json(res, { error: 'case is closed', case: existing.case }, 409); return true }
     const data = JSON.parse((await readBody(req)).toString()) as {
       agent?: string; kind?: string; content?: string
     }
     if (!data.content?.trim()) { json(res, { error: 'content required' }, 400); return true }
+    if (reservedAuthor(data.agent)) { json(res, { error: 'reserved agent id' }, 403); return true }
+    if (containsSuspiciousContent(data.content)) { json(res, { error: 'Content rejected by security filter' }, 400); return true }
     const kind = (data.kind || 'note').trim()
     if (!KINDS.has(kind)) {
       json(res, { error: `kind must be one of: ${[...KINDS].join(', ')}` }, 400)
@@ -70,16 +89,22 @@ export async function tryHandleCases(ctx: RouteContext): Promise<boolean> {
 
   const closeMatch = /^\/api\/cases\/([^/]+)\/close$/.exec(path)
   if (closeMatch && method === 'POST') {
-    const caseId = decodeURIComponent(closeMatch[1] as string)
+    const caseId = safeDecode(closeMatch[1] as string)
+    if (caseId === null) { json(res, { error: 'malformed case id' }, 400); return true }
     if (!getCase(caseId)) { json(res, { error: 'no such case' }, 404); return true }
     const data = JSON.parse((await readBody(req)).toString()) as { agent?: string }
-    json(res, { ok: true, case: closeCase(caseId, data.agent || MAIN_AGENT_ID) })
+    if (reservedAuthor(data.agent)) { json(res, { error: 'reserved agent id' }, 403); return true }
+    const r = closeCase(caseId, data.agent || MAIN_AGENT_ID)
+    if (!r.closed) { json(res, { error: 'case already closed', case: r.case }, 409); return true }
+    json(res, { ok: true, case: r.case })
     return true
   }
 
   const getMatch = /^\/api\/cases\/([^/]+)$/.exec(path)
   if (getMatch && method === 'GET') {
-    const found = getCase(decodeURIComponent(getMatch[1] as string))
+    const gid = safeDecode(getMatch[1] as string)
+    if (gid === null) { json(res, { error: 'malformed case id' }, 400); return true }
+    const found = getCase(gid)
     if (!found) { json(res, { error: 'no such case' }, 404); return true }
     json(res, found)
     return true
@@ -103,11 +128,23 @@ export async function tryHandleCases(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/owner-flags/release' && method === 'POST') {
-    const data = JSON.parse((await readBody(req)).toString()) as { agent?: string; source_ref?: string }
+    const data = JSON.parse((await readBody(req)).toString()) as { agent?: string; source_ref?: string; released_by?: string }
     const agent = (data.agent || MAIN_AGENT_ID).trim()
     const ref = (data.source_ref || '').trim()
     if (!ref) { json(res, { error: 'source_ref required' }, 400); return true }
-    json(res, { ok: true, released: releaseOwnerFlag(agent, ref) })
+    const by = (data.released_by || agent).trim()
+    if (reservedAuthor(by)) { json(res, { error: 'reserved agent id' }, 403); return true }
+    const released = releaseOwnerFlag(agent, ref, by)
+    if (released) logger.info({ agent, source_ref: ref, released_by: by }, 'owner flag claim released')
+    json(res, { ok: true, released })
+    return true
+  }
+
+  if (path === '/api/owner-flags/releases' && method === 'GET') {
+    const agent = url.searchParams.get('agent') || MAIN_AGENT_ID
+    const ref = (url.searchParams.get('source_ref') || '').trim()
+    if (!ref) { json(res, { error: 'source_ref required' }, 400); return true }
+    json(res, listOwnerFlagReleases(agent, ref))
     return true
   }
 
