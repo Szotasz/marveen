@@ -1538,6 +1538,23 @@ if [ -x "$INSTALL_DIR/scripts/install-channel-keepalive-probe.sh" ]; then
   fi
 fi
 
+# Channel process gate (CHANPROCGATE923). The gate itself shipped on 2026-09-20
+# with tests and its own notify path, and NOTHING ran it: measured 2026-09-23, a
+# caller grep over the tree found none outside its own test suite. It is the only
+# probe that catches "the session still declares the channel plugin, but the
+# plugin's worker is gone" -- the state in which every inbound message is dropped
+# and no reply can be sent, so the channel cannot report it either. The alarm
+# rides scripts/notify.sh (bot token from .env), not the dead plugin. Fires on
+# transition only, so a healthy host stays silent. Non-fatal, same as above: a
+# monitor that fails to install must not fail the install.
+if [ -x "$INSTALL_DIR/scripts/install-channel-process-gate.sh" ]; then
+  if "$INSTALL_DIR/scripts/install-channel-process-gate.sh" --load >/dev/null 2>&1; then
+    ok "Csatorna-folyamat figyelo telepitve (5 percenkent, nema csatorna ellen)"
+  else
+    warn "A csatorna-folyamat figyelo telepitese nem sikerult -- inditsd kezzel: scripts/install-channel-process-gate.sh --load"
+  fi
+fi
+
 # Verify channel plugin is working
 sleep 3
 echo ""

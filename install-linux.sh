@@ -1725,6 +1725,7 @@ DASH_UNIT="${SERVICE_ID}-dashboard"
 CHAN_UNIT="${SERVICE_ID}-channels"
 MORN_UNIT="${SERVICE_ID}-morning"
 KEEPALIVE_UNIT="${SERVICE_ID}-channel-keepalive-probe"
+GATE_UNIT="${SERVICE_ID}-channel-process-gate"
 
 # Detect the host timezone so the scheduled-task runner (which reads
 # cron expressions in Node's local TZ) fires at the operator's wall
@@ -1925,6 +1926,45 @@ AccuracySec=20s
 WantedBy=timers.target
 EOF
 
+# ${GATE_UNIT}.service/.timer -- channel process gate (CHANPROCGATE923).
+#
+# WHY: scripts/hooks/channel-process-gate.py shipped on 2026-09-20 with 16 tests
+# and its own notify path, and nothing ever ran it (measured 2026-09-23: no
+# caller anywhere outside its own suite). It detects the one failure the channel
+# cannot report on itself -- a session that still DECLARES a channel plugin while
+# the plugin's worker process is gone, so inbound is dropped and no reply can go
+# out. The alarm travels on scripts/notify.sh (bot token from .env), not through
+# the dead plugin, and only on TRANSITION, so a healthy host stays quiet.
+cat >"$SYSTEMD_DIR/${GATE_UNIT}.service" <<EOF
+[Unit]
+Description=${BOT_NAME} channel process gate (declared plugin with no live worker)
+
+[Service]
+Type=oneshot
+WorkingDirectory=$INSTALL_DIR
+ExecStart=/usr/bin/env python3 $INSTALL_DIR/scripts/hooks/channel-process-gate.py --notify
+Environment=PATH=$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=$HOME
+Environment=CLAUDE_PROJECT_DIR=$INSTALL_DIR
+${TZ_LINE}
+StandardOutput=append:$INSTALL_DIR/store/channel-process-gate.log
+StandardError=append:$INSTALL_DIR/store/channel-process-gate.log
+EOF
+
+# Same "no Requires=/Wants= on the triggered service" rule as the timers above.
+cat >"$SYSTEMD_DIR/${GATE_UNIT}.timer" <<EOF
+[Unit]
+Description=${BOT_NAME} channel process gate every 5 minutes
+
+[Timer]
+OnBootSec=120s
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
+EOF
+
 # marveen-host-watchdog.service -- host/WSL-VM restart detector (btime-based).
 # Distinguishes a whole-VM restart (all units down at once, NOT an app crash)
 # from a service crash, and Telegrams it. See scripts/host-restart-watchdog.sh.
@@ -2010,7 +2050,7 @@ if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; the
   # ${MORN_UNIT}.timer is deliberately NOT in this list -- the seeded
   # reggeli-napindito scheduled task already delivers the morning briefing at
   # 07:30 from inside the live channel session. See the timer's comment above.
-  if systemctl --user enable "${DASH_UNIT}" "${CHAN_UNIT}" "${KEEPALIVE_UNIT}.timer" "${SERVICE_ID}-host-watchdog.service" 2>/dev/null; then
+  if systemctl --user enable "${DASH_UNIT}" "${CHAN_UNIT}" "${KEEPALIVE_UNIT}.timer" "${GATE_UNIT}.timer" "${SERVICE_ID}-host-watchdog.service" 2>/dev/null; then
     ok "systemd unitok generalva es engedelyezve"
   else
     warn "A unit-fajlok elkeszultek, de az engedelyezesuk nem sikerult -- ujrainditas utan a szolgaltatasok nem indulnak el maguktol."
