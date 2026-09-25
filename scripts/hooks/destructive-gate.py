@@ -19,10 +19,12 @@ KET SZABALY AZOTA SZUKULT (PR #1357 review, Szabolcs; Istvan mind az ot pontot
 jovahagyta). Nem enyhites, hanem a hatar athelyezese oda, ahol a kockazat tenylegesen
 van -- ugyanaz az indok, ami 2026-09-14-en a szovegkornyezet-erzekenyseget kikenyszeritette:
 
-  - TORLES: a munkakonyvtar (PROJECT_ROOT) ALATT engedett. Kivul, valamint a .git es a
-    store/ alatt tovabbra sem. Az agens a sajat munkaterulete szemetet takaritja; a
-    verziotortenetet es az eles allapotot nem. Ami nem eldontheto (behelyettesites,
-    csovezetekbol jovo lista, cwd nelkuli relativ ut), az tovabbra is BLOKK.
+  - TORLES: a munkakonyvtar (PROJECT_ROOT) ALATT engedett. Kivul, valamint a vedett
+    utvonalakon (.git, store/, scripts/hooks/, backups/) tovabbra sem. Az agens a sajat
+    munkaterulete szemetet takaritja; a verziotortenetet es az eles allapotot nem. Ami
+    nem eldontheto (behelyettesites, csovezetekbol jovo lista, cwd nelkuli relativ ut),
+    az tovabbra is BLOKK. ES: ez az egesz engedely csak ELDOBHATO masolatban (worktree,
+    CI-klon) all -- ELES telepites gyokeren nem, lasd _live_install() (be8ef9f1).
   - PUSH: a sajat munkaagra valo push engedett. Tiltott marad az eroltetett push
     (--force es tarsai, '+' refspec), a tavoli ag torlese, a --all, es a vedett agakra
     (main/master) iranyulo push. Cel-ag nelkuli `git push` szinten blokk: az upstream
@@ -88,7 +90,44 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 # verziotortenetre es nem a futo allapotra: a .git ujrairhatatlan, a store/ pedig az
 # eles adatbazist, a tokent es a vault-ot tartalmazza -- pont az, aminek az elvesztese
 # 2026-09-07-en a tiltast egyaltalan indokolta.
-RM_PROTECTED = ('.git', 'store')
+# Utvonal-ELOTAGOK, komponensekre bontva. Az illeszkedes MINDKET iranyban szamit:
+# a 'scripts' torlese ugyanugy megoli a kaput, mint a 'scripts/hooks'-e, ezert ha a
+# torlendo ut egy vedett elotag OSE, az is blokk. (Merve 2026-09-25, be8ef9f1: elotte
+# az `rm -rf <root>/scripts/hooks` -- maga a kapu -- ATMENT.)
+RM_PROTECTED = (
+    ('.git',),                # ujrairhatatlan verziotortenet
+    ('store',),               # eles DB, token, vault
+    ('scripts', 'hooks'),     # MAGA EZ A KAPU. Enelkul a kapu megkerulese egy rm.
+    ('backups',),             # a mentesek; a torlesuk pont akkor derul ki, amikor mar kellenenek
+)
+
+
+def _live_install(root):
+    """Eles telepites-e ez a gyoker, vagy eldobhato masolat (worktree, CI-klon)?
+
+    Miert kell (be8ef9f1): a PROJECT_ROOT a FAJL helyebol szarmazik, tehat ugyanez a
+    szabaly mast jelent minden peldanyban. Amig a fajl egy worktree-ben ul, a
+    munkakonyvtar alatti torles egy eldobhato masolatot erint. Amint a PR beolvad es a
+    fajl az ELES gyokerbe kerul, PONTOSAN UGYANAZ a szabaly az eles telepitesre
+    vonatkozik -- ez nem uj kockazat bevezetese, hanem egy meglevo szabaly athelyezese
+    oda, ahova nem szantak.
+
+    A jelolo a store/ ket, TELEPITESKOR keletkezo allomanya. A store/ gitignore-olt
+    (.gitignore:17), tehat sem CI-klonban, sem worktree-ben nincs meg -- merve
+    2026-09-25-en mindharom helyen. Ezert a PR sajat tesztjei (amelyek a munkakonyvtar
+    alatti torlest ENGEDETTNEK varjak) valtozatlanul zoldek maradnak, mikozben az eles
+    gyokeren a szabaly nem alkalmazhato.
+
+    A nem-eldontheto eset itt a SZIGORU fele esik: ha a jelolot nem tudjuk megnezni
+    (jogosultsag, I/O), eles telepitesnek vesszuk.
+    """
+    for marker in ('claudeclaw.db', '.dashboard-token'):
+        try:
+            if os.path.exists(os.path.join(root, 'store', marker)):
+                return True
+        except OSError:
+            return True
+    return False
 # Feloldhatatlan alakok egy torlendo utvonalban. A '*' es a '?' NEM szerepel: a shell
 # glob nem lep at '/'-en, tehat egy munkakonyvtar alatti minta a munkakonyvtar alatt
 # marad. A behelyettesites viszont barmive kiertekelodhet, azt nem latjuk elore.
@@ -513,6 +552,9 @@ def _rm_allowed(toks, argstart, cwd):
     eldonteni, hova mutat -- ez utobbi nem szigor, hanem a kapu egyetlen tisztesseges
     valasza arra, amit nem lat at.
     """
+    if _live_install(PROJECT_ROOT):
+        return False, ('ez ELES telepites gyokere (%s), itt a munkakonyvtar alatti '
+                       'torles nem szabad -- lasd _live_install()' % PROJECT_ROOT)
     paths, skip = [], 0
     for tok, quoted_space in toks[argstart:]:
         if skip:
@@ -533,9 +575,11 @@ def _rm_allowed(toks, argstart, cwd):
             return False, 'nem eldontheto utvonal: %s' % raw[:60]
         if not _under(abspath, PROJECT_ROOT):
             return False, 'a munkakonyvtaron KIVULRE mutat: %s' % abspath
-        rel = os.path.relpath(abspath, PROJECT_ROOT).split(os.sep)
-        if rel and rel[0] in RM_PROTECTED:
-            return False, 'vedett alkonyvtar a munkakonyvtaron belul: %s' % rel[0]
+        rel = tuple(os.path.relpath(abspath, PROJECT_ROOT).split(os.sep))
+        for prot in RM_PROTECTED:
+            n = min(len(rel), len(prot))
+            if rel[:n] == prot[:n]:
+                return False, 'vedett utvonal a munkakonyvtaron belul: %s' % '/'.join(prot)
     return True, ''
 
 
@@ -826,10 +870,16 @@ def check_bash(cmd, _depth=0, cwd=None):
             if base == 'rm':
                 ok, why = _rm_allowed(toks, argstart, cwd)
                 if not ok:
-                    block('Torles, amit a kapu nem engedhet at: %s.\n'
-                          'A munkakonyvtar (%s) ALATTI torles alapbol szabad; ezen kivul, '
-                          'illetve a .git es a store/ alatt nem.\n'
-                          '(a teljes szegmens: %s)' % (why, PROJECT_ROOT, seg[:160]))
+                    if _live_install(PROJECT_ROOT):
+                        extra = ('Ez ELES telepites gyokere (%s): itt a torles nem a '
+                                 'munkakonyvtar-szabaly ala esik.' % PROJECT_ROOT)
+                    else:
+                        extra = ('A munkakonyvtar (%s) ALATTI torles alapbol szabad; ezen '
+                                 'kivul, illetve a vedett utvonalakon (%s) nem.'
+                                 % (PROJECT_ROOT,
+                                    ', '.join('/'.join(p) for p in RM_PROTECTED)))
+                    block('Torles, amit a kapu nem engedhet at: %s.\n%s\n'
+                          '(a teljes szegmens: %s)' % (why, extra, seg[:160]))
                 continue
             if base in BANNED_CMDS:
                 block('A tiltott parancs: "%s" (a teljes szegmens: %s)' % (base, seg[:160]))

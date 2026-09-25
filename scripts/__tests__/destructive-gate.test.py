@@ -546,6 +546,88 @@ check("timeout 5 bash sc.sh <<EOF -- TUDATOSAN blokkol, nem allitjuk helyesnek",
       blocks("timeout 5 bash sc.sh <<EOF\n%s -rf /tmp/x\nEOF" % RM))
 
 
+# --- 12. Onvedelem: a rm-engedely nem erhet el az ELES gyokerig (be8ef9f1) ---
+# A PROJECT_ROOT a FAJL helyebol szarmazik, ezert ugyanez a szabaly mast jelent
+# minden peldanyban. Amig a fajl worktree-ben ul, a "munkakonyvtar alatt szabad"
+# egy eldobhato masolatra vonatkozik. A #1357 beolvadasa utan PONTOSAN UGYANAZ a
+# szabaly az ELES telepitesre vonatkozna. MERVE 2026-09-25, a javitas elott,
+# szintetikus gyokeren: `rm -rf <root>/scripts/hooks` -- MAGA A KAPU -- ATMENT.
+# Ket fuggetlen retege van a javitasnak, es mindketto kulon bukhat, ezert kulon all.
+
+print()
+print("ONVEDELEM -- vedett utvonalak, eldobhato masolatban is:")
+check("maga a kapu konyvtara", blocks_cwd(RM + " -rf " + GROOT + "/scripts/hooks", GROOT))
+check("a kapu OSE is (rm -rf scripts)", blocks_cwd(RM + " -rf " + GROOT + "/scripts", GROOT))
+check("egyetlen hook-fajl is", blocks_cwd(
+      RM + " -f " + GROOT + "/scripts/hooks/destructive-gate.py", GROOT))
+check("a mentesek konyvtara", blocks_cwd(RM + " -rf " + GROOT + "/backups", GROOT))
+check("mentes-fajl a konyvtaron belul", blocks_cwd(
+      RM + " -f " + GROOT + "/backups/claudeclaw-x.tar.gz", GROOT))
+
+print()
+print("ONVEDELEM -- a mellettuk allo utak NEM lettek vedettek (a masik irany):")
+# Ha ezek is blokkolnanak, az elotag-illesztes tul szelesre sikerult volna, es a
+# javitas csendben visszaallitana a feltetel nelkuli tiltast.
+check("scripts-hez HASONLO nevu ut szabad", not blocks_cwd(
+      RM + " -rf " + GROOT + "/scriptsegyeb", GROOT))
+check("backups-hoz HASONLO nevu ut szabad", not blocks_cwd(
+      RM + " -rf " + GROOT + "/backups-regi", GROOT))
+check("melyebb, nem vedett ut szabad", not blocks_cwd(
+      RM + " -rf " + GROOT + "/agents/valaki/scratch", GROOT))
+
+print()
+print("ELES TELEPITES felismerese -- a jelolo a store/ telepiteskor keletkezo fajlja:")
+with tempfile.TemporaryDirectory() as td:
+    check("jelolo nelkul: eldobhato masolat", not gate._live_install(td))
+    os.makedirs(os.path.join(td, "store"))
+    check("ures store/ meg nem eles", not gate._live_install(td))
+    open(os.path.join(td, "store", "claudeclaw.db"), "w").close()
+    check("claudeclaw.db -> ELES", gate._live_install(td))
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "store"))
+    open(os.path.join(td, "store", ".dashboard-token"), "w").close()
+    check("dashboard-token -> ELES", gate._live_install(td))
+# Az itt futo peldany maga NEM lehet eles: kulonben a fenti 6. szakasz negativ
+# kontrolljai (a munkakonyvtar alatti torles) mast mernenek, mint amit allitanak.
+check("a teszt sajat gyokere nem eles telepites", not gate._live_install(GROOT))
+
+print()
+print("ELES TELEPITESEN a munkakonyvtar-szabaly NEM all:")
+_orig_live = gate._live_install
+try:
+    gate._live_install = lambda root: True
+    check("build/ torlese eles gyokeren BLOKK", blocks_cwd(RM + " -rf " + GROOT + "/build", GROOT))
+    check("relativ ut eles gyokeren BLOKK", blocks_cwd(RM + " -rf build", GROOT))
+    check("melyebb cwd-bol is BLOKK", blocks_cwd(
+          RM + " -f jegyzet.txt", os.path.join(GROOT, "agents", "valaki")))
+finally:
+    gate._live_install = _orig_live
+# A visszaallitas utan ugyanaz a parancs ismet atmegy -- ez bizonyitja, hogy a
+# fenti harom blokkot a kapcsolo okozta, nem valami mas.
+check("a kapcsolo visszaallitasa utan ismet atmegy",
+      not blocks_cwd(RM + " -rf " + GROOT + "/build", GROOT))
+
+# A fenti harom eset a PREDIKATUMOT csereli ki, ezert egy elromlott _live_install()-t
+# nem venne eszre -- MERVE 2026-09-25: az "_live_install mindig False" mutacio csak a
+# ket egyseg-ellenorzest olte meg, ezt a harmat nem. Ez az eset ezert VALODI jelolot
+# tesz ki egy szintetikus gyokerre, es csak a PROJECT_ROOT-ot iranyitja oda: igy a
+# ket resz OSSZEKAPCSOLASA is meg van merve, nem csak kulon-kulon.
+_orig_root = gate.PROJECT_ROOT
+with tempfile.TemporaryDirectory() as td:
+    td = os.path.realpath(td)
+    os.makedirs(os.path.join(td, "store"))
+    os.makedirs(os.path.join(td, "build"))
+    try:
+        gate.PROJECT_ROOT = td
+        check("valodi jelolo nelkul a szintetikus gyokeren atmegy",
+              not blocks_cwd(RM + " -rf " + td + "/build", td))
+        open(os.path.join(td, "store", "claudeclaw.db"), "w").close()
+        check("VALODI claudeclaw.db kiteve -> ugyanaz a parancs BLOKK",
+              blocks_cwd(RM + " -rf " + td + "/build", td))
+    finally:
+        gate.PROJECT_ROOT = _orig_root
+
+
 print()
 if failed:
     print("%d FAILED: %s" % (len(failed), failed), file=sys.stderr)
