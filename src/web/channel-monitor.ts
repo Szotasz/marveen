@@ -1624,6 +1624,38 @@ const KEEPALIVE_RESPAWN_GRACE_MS = 15 * 60 * 1000 // let a respawned session re-
 const KEEPALIVE_LIVENESS_TRUST_CEILING_MS = 45 * 60 * 1000
 let marveenLastKeepaliveRespawn = 0
 
+// LOOP BREAKER (KEEPALIVELOOP923). Measured 2026-09-23: the keepalive producer
+// (launchd probe) hung, the file stayed stale from ~01:34 with a LIVE poller,
+// and this path respawned a healthy main session 28 times (02:19-13:32), each
+// time losing the conversation and alerting the owner. A respawn cannot fix a
+// dead PRODUCER. So: when the poller is alive and the file has NOT advanced
+// since our previous keepalive respawn, count it as a useless respawn; after
+// KEEPALIVE_USELESS_RESPAWN_LIMIT of them stop respawning, alert ONCE, and
+// resume normal behaviour as soon as the file moves again. A dead poller is
+// real deafness and is never held back by this breaker.
+export const KEEPALIVE_USELESS_RESPAWN_LIMIT = 2
+let keepaliveUselessRespawns = 0
+let keepaliveMtimeAtLastRespawn: number | null = null
+let keepaliveLoopAlerted = false
+
+export type KeepaliveLoopDecision = 'respawn' | 'hold' | 'hold-and-alert'
+
+export function decideKeepaliveLoop(opts: {
+  pollerAlive: boolean
+  keepaliveMtimeMs: number | null
+  mtimeAtLastRespawn: number | null
+  uselessRespawns: number
+  alreadyAlerted: boolean
+  limit: number
+}): { decision: KeepaliveLoopDecision; uselessRespawns: number } {
+  if (!opts.pollerAlive) return { decision: 'respawn', uselessRespawns: 0 }
+  const advanced = opts.mtimeAtLastRespawn == null || opts.keepaliveMtimeMs == null
+    || opts.keepaliveMtimeMs > opts.mtimeAtLastRespawn
+  const useless = advanced ? 0 : opts.uselessRespawns + (opts.mtimeAtLastRespawn == null ? 0 : 1)
+  if (useless < opts.limit) return { decision: 'respawn', uselessRespawns: useless }
+  return { decision: opts.alreadyAlerted ? 'hold' : 'hold-and-alert', uselessRespawns: useless }
+}
+
 /**
  * Pure decision: should the keepalive respawn be deferred because the
  * main session pane is actively busy?
@@ -1732,11 +1764,13 @@ function checkMainKeepaliveStaleness(): void {
   // during idle periods, each one losing the running --continue context).
   // The bun-child check is the same liveness signal channel-plugin-unlock
   // already uses; reuse it here so the two paths agree on "alive".
+  let pollerAlive = false
   try {
     const claudePid = getClaudePidForSession(MAIN_CHANNELS_SESSION)
     if (claudePid != null) {
       const provider = getProvider(getMainAgentProvider())
       if (hasChannelPluginAlive(claudePid, provider.type)) {
+        pollerAlive = true
         // A live poller is trusted only while the keepalive is freshly stale.
         // Past KEEPALIVE_LIVENESS_TRUST_CEILING_MS a live-but-non-delivering
         // poller reads as deafness, so we do NOT skip -- we fall through to the
@@ -1763,6 +1797,14 @@ function checkMainKeepaliveStaleness(): void {
     ageMs = null // file missing -> keep-alive not yet established
   }
   const now = Date.now()
+  const keepaliveMtimeMs = ageMs == null ? null : now - ageMs
+  if (keepaliveLoopAlerted && keepaliveMtimeAtLastRespawn != null && keepaliveMtimeMs != null
+      && keepaliveMtimeMs > keepaliveMtimeAtLastRespawn) {
+    logger.info('Keepalive advanced again -- loop breaker released')
+    keepaliveLoopAlerted = false
+    keepaliveUselessRespawns = 0
+    keepaliveMtimeAtLastRespawn = null
+  }
   // B2 fix: cross-path grace — use the later of the two respawn timestamps so
   // an inbound-probe respawn also suppresses the keepalive path for the grace window.
   const msSinceLastRespawn = lastMainRespawnAt() ? now - lastMainRespawnAt() : null
@@ -1784,8 +1826,26 @@ function checkMainKeepaliveStaleness(): void {
     return
   }
   const ageMin = Math.round((ageMs ?? 0) / 60000)
+  const loop = decideKeepaliveLoop({
+    pollerAlive,
+    keepaliveMtimeMs,
+    mtimeAtLastRespawn: keepaliveMtimeAtLastRespawn,
+    uselessRespawns: keepaliveUselessRespawns,
+    alreadyAlerted: keepaliveLoopAlerted,
+    limit: KEEPALIVE_USELESS_RESPAWN_LIMIT,
+  })
+  keepaliveUselessRespawns = loop.uselessRespawns
+  if (loop.decision !== 'respawn') {
+    if (loop.decision === 'hold-and-alert') {
+      keepaliveLoopAlerted = true
+      logger.warn({ ageMs, uselessRespawns: loop.uselessRespawns }, 'Keepalive loop breaker: respawns did not advance the keepalive while the poller is alive -- holding further respawns (KEEPALIVELOOP923)')
+      sendAlert(`⚠️ A fő channel keep-alive ${ageMin} perce nem frissül, de a Telegram-poller él, és ${loop.uselessRespawns} újraindítás sem segített. További újraindítást NEM csinálok (csak a beszélgetést vinné el). Valószínűleg a jelző-forrás akadt el: nézd meg a com.marveen.channel-keepalive-probe launchd jobot és a store/channel-keepalive-probe.log-ot. Ha a jelző újra frissül, a figyelő magától visszaáll.`)
+    }
+    return
+  }
   logger.warn({ ageMs, paneState }, 'Channel keep-alive stale -- main session likely wedged/deaf, respawning via respawn-pane')
   sendRoutineAlert('keepalive-respawn', `⚠️ A fő channel keep-alive ${ageMin} perce nem frissült -- respawn-pane a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik, memoria marad).`)
+  keepaliveMtimeAtLastRespawn = keepaliveMtimeMs
   if (respawnMarveenSessionFresh()) {
     marveenLastKeepaliveRespawn = now
     // Suppress the process-down handler during the respawn window (reuses the

@@ -34,6 +34,25 @@ LOG_TAG="channel-keepalive-probe"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*"; }
 
+# SELF-TIMEOUT (KEEPALIVEHANG923). launchd never starts a second instance of
+# a StartInterval job while one is still running, so ONE hung run (a blocked
+# tmux/ps call) silently stops every later run. Measured 2026-09-23: launchd's
+# run counter was ~240 runs (~12 h) short of the 180 s cadence since the plist
+# was loaded, the keepalive went stale from ~01:34 with a LIVE poller and no
+# probe log line, and the dashboard respawned a healthy main session 28 times
+# (02:19-13:32). A run takes well under a second; kill it long before the next
+# interval so a hang costs one tick, not a night.
+PROBE_TIMEOUT_S="${PROBE_TIMEOUT_S:-60}"
+( sleep "$PROBE_TIMEOUT_S"
+  log "WARN probe run exceeded ${PROBE_TIMEOUT_S}s -- killing it so launchd can start the next one (KEEPALIVEHANG923)"
+  kill -TERM $$ 2>/dev/null ) 2>/dev/null &
+PROBE_WATCHDOG_PID=$!
+# disown + the subshell stderr redirect: no "Terminated: 15" job notice in the
+# log on every normal run (the WARN above goes to stdout, so it still lands).
+disown "$PROBE_WATCHDOG_PID" 2>/dev/null
+# On a normal exit, stop the watchdog AND its sleep child.
+trap 'pkill -P "$PROBE_WATCHDOG_PID" 2>/dev/null; kill "$PROBE_WATCHDOG_PID" 2>/dev/null' EXIT
+
 # Whether a dedicated channel-watchdog recovery owner is actually installed on
 # THIS host. The probe declines to recover a dead pipe on purpose -- but only a
 # real, installed watchdog legitimately "owns recovery". The systemd
