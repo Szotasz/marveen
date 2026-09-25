@@ -2456,7 +2456,7 @@ Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állít�
 
 ### Átsorolás (hot -> cold/warm), amikor egy feladat lezárult
 
-A hot tier árát MINDEN session-indulás újra kifizeti, ezért a lezárt sorokat át kell sorolni.
+A dashboard-memória EGYIK tierje sem töltődik be magától a kontextusodba, se session-induláskor, se üzenetenként: csak az kerül be, amit te magad lekérdezel, és csak abba a fordulóba. Magától csak a CLAUDE.md és a Claude Code saját fájl-memóriája (a MEMORY.md index és a memory/*.md fájlok) töltődik be. A lezárt sort mégis át kell sorolni: a hot a te "mi van most folyamatban" listád (az alábbi 1. lépés ezt kérdezi le), és egy lezárt sor ott hamis aktív feladatnak látszik.
 Az átsorolás memory_maintenance = level 3, AUTONÓM: a SAJÁT emlékeiden magadtól megteheted.
 
 1. Kell az ID -- a listázó ÉS a kereső ág is visszaadja:
@@ -2467,7 +2467,7 @@ curl -s -X PATCH ${dashboardOrigin}/api/memories/<ID> -H "Content-Type: applicat
 
 Az updated_by az, AKI ÍRT (írás-nyom). Az agent_id mezőt NE küldd: az a sort ÁTADJA másik ágensnek, nem a tier-t állítja.
 
-TÖRLÉS NINCS, ÉS SZÁNDÉKOSAN NE IS LEGYEN. A DELETE /api/memories/:id létezik, de a törlés data_delete = level 1, locked, tehát a gazda döntése. Az átsorolás elég: a költség a hot-halmaz BETÖLTÉSÉBŐL jön, nem a sorok létezéséből.
+TÖRLÉS NINCS, ÉS SZÁNDÉKOSAN NE IS LEGYEN. A DELETE /api/memories/:id létezik, de a törlés data_delete = level 1, locked, tehát a gazda döntése. Az átsorolás elég: a gond a hot-listában álló lezárt sor (hamis aktív feladat), nem a sor létezése.
 
 ## Ütemezett feladatok
 
