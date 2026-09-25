@@ -36,6 +36,12 @@ const EXPECTED: Record<string, string[]> = {
   PostToolUse: [
     'ledger-outbound.py', 'tool-log-capture.py',
     'telegram_progress_reply_clear.py', 'skill-usage-capture.py',
+    // The persona guard watches the main agent's own CLAUDE.md/SOUL.md and
+    // every agents/*/ pair, and it must fire on EVERY tool call: the first
+    // version filtered on the Write/Edit file_path and a python3 heredoc
+    // walked straight past it. PostToolUse is the event that cannot be
+    // dodged by choosing a different tool.
+    'persona-change-notify.py',
   ],
   // A failed tool call fires PostToolUseFailure, never PostToolUse
   // (TOOLLOGVAKSIKER921): without this entry tool_call_log cannot hold a 0.

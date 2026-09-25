@@ -125,6 +125,8 @@ const CHECKOUT_ONLY: Record<string, string> = {
     'conversation-continuity ledger: same design as ledger-capture.py (docs/conversation-continuity.md, project settings only)',
   'ledger-replay.py':
     'conversation-continuity ledger: same design as ledger-capture.py; the docs state it is "wired in the repo\'s project settings only (the main agent)"',
+  'persona-change-notify.py':
+    'fleet-wide BY CONSTRUCTION, so one wiring already covers every agent: it resolves the repo root from its own file location, and watched() enumerates agents/*/CLAUDE.md and SOUL.md alongside the main pair. Seeding it per-agent would point every seeded session at the SAME store/.persona-hashes.json, and because the hook stamps the new digest BEFORE it sends, whichever session reaches it first silences the others -- the race can only LOSE an alert, so seeding would weaken the guard rather than extend it',
   'telegram-reply-guard.py':
     'the Stop-hook half of the Telegram reply enforcement (#856) decides from ledger_lib.open_question_with_age, i.e. the conversation_log the main-only ledger trio writes; seeded alone it would read an empty ledger and allow every stop, a silent no-op -- seeding it means seeding the ledger trio with it, a separate design decision',
 }

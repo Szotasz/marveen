@@ -18,6 +18,7 @@
     "PostToolUse": [
       { "matcher": "mcp__plugin_telegram_telegram__reply", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/ledger-outbound.py\"", "timeout": 15 } ] },
       { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/tool-log-capture.py\"", "timeout": 5 } ] },
+      { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/persona-change-notify.py\"", "timeout": 15 } ] },
       { "matcher": "telegram.*reply", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram_progress_reply_clear.py\"", "timeout": 15 } ] },
       { "matcher": "Skill|Read", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/skill-usage-capture.py\"", "timeout": 10 } ] }
     ],
