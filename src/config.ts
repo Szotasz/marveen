@@ -366,6 +366,11 @@ export const KANBAN_LABEL_COLORS = rawKanbanLabelColors.length > 0 ? rawKanbanLa
 export const CHANNEL_PROVIDER: ChannelProviderType = getProviderType(env['CHANNEL_PROVIDER'])
 export const CHANNEL_TOKEN = getChannelToken(CHANNEL_PROVIDER, env)
 export const CHANNEL_CHAT_ID = getChannelChatId(CHANNEL_PROVIDER, env)
+// Where OPERATIONAL alerts go (watchdog respawns, stuck sessions, restart
+// notices). Empty = the owner chat; set it when the person who runs the
+// system is not the owner, so the owner is not flooded with plumbing noise.
+// Owner-facing content (heartbeat digest, security events) ignores it.
+export const ALERT_CHAT_ID = (env['MARVEEN_ALERT_CHAT_ID'] ?? env['ALERT_CHAT_ID'] ?? '').trim()
 
 // Respawn / keep-alive gate.
 // The in-process channel-plugin monitor (main-agent respawn + sub-agent
