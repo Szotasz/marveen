@@ -94,6 +94,12 @@ export interface ScheduledTask {
   // deferred to a retry queue (e.g. daily briefings, heartbeats during
   // active conversations).
   forceSend?: boolean
+  // Bound on how long this task may keep deferring against a busy session
+  // before it is delivered anyway (minutes). Omit for the fleet default.
+  // The busy check is politeness towards a turn in progress; past this window
+  // it stops being politeness -- see the escalation comment in
+  // schedule-runner.ts for the hour-long block that produced it.
+  escalateAfterMinutes?: number
   // Override the default tmux session name derived from the agent. When
   // set, the scheduler targets this exact tmux session instead of
   // `agent-<name>` or MAIN_CHANNELS_SESSION. Enables dedicated
@@ -149,6 +155,14 @@ export interface ScheduledTask {
   // out as an inter-agent message, or it is a self-only reminder) -- the
   // runner omits the Telegram delivery instruction entirely, no warning.
   telegramChatId?: string
+  // ONESHOT925: the task runs ONCE. Cron has no "once": `0 10 28 9 *` fires
+  // every 28 September, so one-off reminders were disabled by hand after
+  // their run, tracked in hot memory (two such entries in one week, 2026-09).
+  // One missed hand-off and the owner gets a reminder about a long-closed
+  // matter a year later. With oneShot the runner itself sets enabled=false
+  // right after the first scheduled fire (cron tick or its queued retry).
+  // A manual run-now does NOT consume it -- that is a test, not the run.
+  oneShot?: boolean
 }
 
 function readFileOr(path: string, fallback: string): string {
@@ -181,7 +195,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = hasSkill ? readFileOr(skillPath, '') : ''
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; requiresDesktop?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; injectMetrics?: unknown; telegramChatId?: string } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; requiresDesktop?: boolean; forceSend?: boolean; escalateAfterMinutes?: number; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; injectMetrics?: unknown; telegramChatId?: string; oneShot?: unknown } = {}
   try {
     config = JSON.parse(readFileOr(configPath, '{}'))
   } catch { /* use defaults */ }
@@ -198,6 +212,9 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     skipIfBusy: config.skipIfBusy === true,
     requiresDesktop: config.requiresDesktop === true,
     forceSend: config.forceSend === true,
+    ...(typeof config.escalateAfterMinutes === 'number' && config.escalateAfterMinutes > 0
+      ? { escalateAfterMinutes: config.escalateAfterMinutes }
+      : {}),
     targetSession: config.targetSession || undefined,
     command: config.command,
     timeoutMs: config.timeoutMs,
@@ -208,6 +225,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     requires: parseRequires(config.requires),
     injectMetrics: config.injectMetrics === true,
     telegramChatId: typeof config.telegramChatId === 'string' && config.telegramChatId.trim() ? config.telegramChatId.trim() : undefined,
+    oneShot: config.oneShot === true,
   }
 }
 
@@ -249,6 +267,7 @@ export function listScheduledTasks(): ScheduledTask[] {
 export function writeScheduledTask(
   taskName: string,
   data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number; injectMetrics?: boolean; telegramChatId?: string },
+  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; escalateAfterMinutes?: number; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number; injectMetrics?: boolean; oneShot?: boolean },
 ): void {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   mkdirSync(dir, { recursive: true })
@@ -286,7 +305,24 @@ export function writeScheduledTask(
   if (data.stuckAfterMinutes !== undefined) config.stuckAfterMinutes = data.stuckAfterMinutes
   if (data.injectMetrics !== undefined) config.injectMetrics = data.injectMetrics
   if (data.telegramChatId !== undefined) config.telegramChatId = data.telegramChatId
+  if (data.oneShot !== undefined) config.oneShot = data.oneShot
   if (data.description !== undefined) config.description = data.description
   if (!config.createdAt) config.createdAt = Math.floor(Date.now() / 1000)
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
+// ONESHOT925: called by the runner right after a oneShot task's scheduled fire.
+// Writes enabled=false plus a dated note into task-config.json, so whoever
+// opens the file later sees WHY it is off and when it ran. Idempotent: a task
+// already disabled is left untouched. Returns true when it disabled the task.
+export function disableOneShotTask(taskName: string, firedAtMs: number = Date.now()): boolean {
+  const configPath = join(SCHEDULED_TASKS_DIR, taskName, 'task-config.json')
+  if (!existsSync(configPath)) return false
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch { return false }
+  if (config.enabled === false) return false
+  config.enabled = false
+  config.oneShotDisabledAt = new Date(firedAtMs).toISOString()
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+  return true
 }

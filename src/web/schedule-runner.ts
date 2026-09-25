@@ -25,6 +25,7 @@ import {
   deletePendingTaskRetry,
   updatePendingTaskRetry,
   insertPendingTaskRetryIfNew,
+  getPendingTaskRetry,
   markPendingTaskRetryAlert,
   clearPendingTaskRetryAlert,
   markPendingTaskRetryOwnerAlert,
@@ -41,6 +42,7 @@ import {
 import { writeScheduledRunSnapshot, isScheduledRunReference } from './scheduled-run-snapshot.js'
 import { cronPrevOccurrence, effectiveCronTz } from './cron.js'
 import {
+  disableOneShotTask,
   listScheduledTasks,
   SCHEDULED_TASKS_DIR,
   SCHEDULED_TASK_INLINE_MAX_CHARS,
@@ -77,6 +79,13 @@ import { readQuotaSnapshot } from '../quota-snapshot.js'
 import { detectsFirstRunGate, detectPaneState, overfullParkedInputTail, type PaneState } from '../pane-state.js'
 import { getInjectedPrompt, matchesInjectedPrompt, type InjectedPromptRecord } from './injected-prompt-registry.js'
 import { withSessionSendLock } from './session-send-lock.js'
+
+
+// How long a scheduled task may keep deferring before it stops being polite.
+// Twenty minutes: long enough that a normal multi-minute turn is never cut
+// into, short enough that an hour-long block like the one that produced this
+// rule cannot happen again.
+const DEFAULT_ESCALATE_AFTER_MS = 20 * 60_000
 
 // How many bare-Enter attempts the post-send resubmit tries before escalating
 // to a clear + re-inject, and the hard cap after which it gives up.
@@ -1055,6 +1064,16 @@ export function resolveTaskTarget(
   return { session, host }
 }
 
+// ONESHOT925: a oneShot task is disabled right after its first scheduled
+// fire. Only the cron and retry paths call this -- runScheduledTaskNow does
+// not, so a manual test run leaves the real run armed.
+export function consumeOneShot(task: Pick<ScheduledTask, 'name' | 'oneShot'>, now: number): void {
+  if (!task.oneShot) return
+  if (disableOneShotTask(task.name, now)) {
+    logger.info({ task: task.name }, 'oneShot task fired once -- disabled')
+  }
+}
+
 async function attemptFireTask(
   task: ScheduledTask,
   agentName: string,
@@ -1076,6 +1095,33 @@ async function attemptFireTask(
   // report false while the restart is only half done (see restart-lock.ts).
   // 'busy' is the honest answer: the normal retry path delivers once it is over.
   if (isRestartInFlight(agentName)) return 'busy'
+
+  // TIME-BOUND ESCALATION. The busy check exists so a scheduled prompt does not
+  // interrupt a turn in progress -- good politeness for a minute or two. Past a
+  // point it becomes the bug: measured 2026-09-11, an email-processing task
+  // deferred for SIXTY MINUTES while ten inter-agent messages on one already
+  // closed topic kept the session busy. The owner's mail simply was not triaged
+  // in that window, and nothing anywhere said so.
+  //
+  // So politeness is now bounded. After ESCALATE_AFTER_MS of continuous
+  // deferral this behaves as forceSend for the attempt: Claude Code queues the
+  // prompt internally and runs it at the next idle slot. The saturation guard
+  // inside the forceSend path still applies -- injecting into a wedged session
+  // really is a silent drop, and that one case must keep deferring.
+  const retryRow = getPendingTaskRetry(task.name, agentName)
+  const stuckMs = retryRow ? now - retryRow.first_attempt * 1000 : 0
+  const escalateAfterMs =
+    typeof task.escalateAfterMinutes === 'number' && task.escalateAfterMinutes > 0
+      ? task.escalateAfterMinutes * 60_000
+      : DEFAULT_ESCALATE_AFTER_MS
+  const escalated = !task.forceSend && stuckMs >= escalateAfterMs
+  const forceSend = task.forceSend || escalated
+  if (escalated) {
+    logger.warn(
+      { task: task.name, agent: agentName, stuckMinutes: Math.round(stuckMs / 60_000) },
+      'Scheduled task deferred past its escalation window, delivering despite busy session',
+    )
+  }
 
   if (!sessionExistsOnHost(host, session)) {
     // The main channels session is service-managed (systemd/launchd via
@@ -1118,7 +1164,7 @@ async function attemptFireTask(
   // will process it at the next idle slot. This prevents the infinite
   // retry loop observed when the target session stays busy for hours
   // (275 retries overnight in production).
-  if (!task.forceSend && !(await isSessionReadyForPrompt(session, host))) {
+  if (!forceSend && !(await isSessionReadyForPrompt(session, host))) {
     // Distinguish a first-run gate (fresh-install folder-trust / login picker
     // parked forever) from an ordinary busy turn: the retry row's reason then
     // drives a first-run-specific operator alert instead of a generic
@@ -1146,7 +1192,7 @@ async function attemptFireTask(
     }
   }
 
-  if (task.forceSend) {
+  if (forceSend) {
     // forceSend's contract is "always eventually land, never silently drop" --
     // but injecting into a 100%-context session IS a silent drop with extra
     // steps: the pane accepts the keystrokes and the wedged session never acts
@@ -1315,7 +1361,7 @@ async function attemptFireTask(
       onEmitStart: () => {
         typedAt = Date.now()
       },
-      waitForIdle: !task.forceSend,
+      waitForIdle: !forceSend,
       onBusySend: () => {
         busySend = true
       },
@@ -2265,6 +2311,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       const result = await attemptFireTask(taskDef, row.agent_name, now, retryPc.prefix)
       if (result === 'fired') {
         deletePendingTaskRetry(row.task_name, row.agent_name)
+        consumeOneShot(taskDef, now)
         continue
       }
       // 'missing' used to DELETE the retry row here -- a silent abandonment
@@ -2365,6 +2412,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         runCommandTask(task, now)
         scheduleLastRun.set(task.name, now)
         persistScheduleLastRun()
+        consumeOneShot(task, now)
         continue
       }
 
@@ -2467,6 +2515,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         // the retry handler -- don't re-queue or double-fire.
         if (pendingKeys.has(key)) continue
         const result = await attemptFireTask(task, agentName, now, cronPc.prefix, lateCatchUpMs)
+        if (result === 'fired') consumeOneShot(task, now)
         if (result === 'starting') {
           // Agent was auto-started this tick. ALWAYS enqueue the retry that
           // delivers the prompt once the session is ready -- skipIfBusy must
