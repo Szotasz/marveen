@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { hardRestartMarveenChannels } from './channel-monitor.js'
@@ -88,7 +88,11 @@ function writeMainEnvModel(model: string): boolean {
   }
   if (idx < 0) return false
   lines[idx] = `MAIN_AGENT_MODEL=${model}`
-  atomicWriteFileSync(MAIN_ENV_PATH, lines.join('\n'))
+  // .env holds secrets: keep its current mode. The atomic write creates a new
+  // file, which would otherwise come out at the umask default (0644).
+  let mode = 0o600
+  try { mode = statSync(MAIN_ENV_PATH).mode & 0o777 } catch { /* keep 0600 */ }
+  atomicWriteFileSync(MAIN_ENV_PATH, lines.join('\n'), { mode })
   return true
 }
 
@@ -118,6 +122,9 @@ function writeMainModel(model: string): void {
 function readModelFor(name: string): string {
   return name === MAIN_AGENT_ID ? readMainModel() : readAgentModel(name)
 }
+
+// Test seam (review follow-up): the .env precedence must be measurable.
+export const _mainModelIoForTest = { readMainModel, writeMainModel }
 
 function writeModelFor(name: string, model: string): void {
   if (name === MAIN_AGENT_ID) writeMainModel(model)
