@@ -74,7 +74,7 @@ SENTINEL="MORNING_SENT_OK_$(date +%s)_$$"
 RUN_OUT="$(mktemp)"
 trap 'rm -f "$RUN_OUT"' EXIT
 
-$CLAUDE --dangerously-skip-permissions \
+CLAUDE_CODE_DISABLE_AGENT_VIEW=1 $CLAUDE --dangerously-skip-permissions \
   --channels plugin:telegram@claude-plugins-official \
   -p "Reggeli napindító - készítsd el és küld el Telegramra (chat_id: $CHAT_ID).
 

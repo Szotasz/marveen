@@ -539,6 +539,8 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
     (hasFleetOauthToken() ? `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shArg(FLEET_OAUTH_TOKEN_PATH)})"; ` : '') +
     `export CLAUDE_CONFIG_DIR=${shArg(ctx.configDir)}; ` +
     `export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false; ` +
+    // CHANSPARE925: no Agent view (Left would background the worker into the daemon).
+    `export CLAUDE_CODE_DISABLE_AGENT_VIEW=1; ` +
     customEnvPrefix +
     `cd ${shArg(ctx.home)} && ` +
     `${shArg(claudeLaunchBin)} --dangerously-skip-permissions --model ${shArg(workerModel)}`

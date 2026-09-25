@@ -575,6 +575,15 @@ export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false
 # Verified present in the shipped binary's CLAUDE_CODE_DISABLE_* table (2.1.205).
 export CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1
 
+# CHANSPARE925: no Agent view in fleet sessions. Its "← for agents" key moves the
+# running session into the Claude Code daemon as a background worker, and the daemon
+# then keeps it (and a prewarmed spare) alive with the same --channels flag -- a
+# second copy of the channel plugin that takes the bot poller from the pane.
+# Measured 2026-09-25: one Left keypress into the main pane did exactly that; with
+# this variable the key does nothing and no daemon starts, while run_in_background,
+# Monitor and the Agent tool (foreground and background subagents) keep working.
+export CLAUDE_CODE_DISABLE_AGENT_VIEW=1
+
 # The single, serialized Claude Code install/update point (see the
 # DISABLE_AUTOUPDATER block above).
 #
@@ -639,7 +648,7 @@ TMUX="$(command -v tmux)"
 # the one place the pane-scrape recovery could still misread it (the v1.15.0
 # dim-strip catches it on the recovery side, but killing it at the SOURCE on MAIN
 # too closes the gap end-to-end). Parity with the sub-agent launch.
-MCP_BATCH_ENV="export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000 && "
+MCP_BATCH_ENV="export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000 && "
 
 # Resolve the main agent's model so we can pass --model explicitly. Without
 # --model claude-code falls back to its built-in default, which can drift
@@ -1014,6 +1023,8 @@ _tmux_set_auth_globals() {
   fi
   # Propagate the prompt-suggestion disable to every sub-agent tmux session.
   $TMUX set-environment -g CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION false 2>/dev/null || true
+  # CHANSPARE925: and the Agent-view kill switch (see the export above).
+  $TMUX set-environment -g CLAUDE_CODE_DISABLE_AGENT_VIEW 1 2>/dev/null || true
   # Same for the auto-updater kill switch. A plain `export` above only reaches
   # sessions that inherit THIS shell, i.e. only when channels.sh happened to
   # create the tmux server first; the dashboard's worker sessions often win that

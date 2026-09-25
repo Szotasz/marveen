@@ -2366,7 +2366,9 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // restarts did not clear it; one keypress did. Env var verified present in the
     // shipped binary's CLAUDE_CODE_DISABLE_* table (2.1.205).
     const promptSuggestionEnv =
-      'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 && '
+      // CHANSPARE925: no Agent view -- its Left key backgrounds the session into the
+      // Claude Code daemon, which keeps a second --channels copy alive (bot poller hijack).
+      'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && '
     // Disable Claude Code's in-place auto-updater for every spawned agent. A
     // running agent whose updater fires does an in-place global reinstall into the
     // shared package prefix; a half-completed update can leave a broken stub and
