@@ -10,6 +10,7 @@
       { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram-reply-directive.py\"", "timeout": 10 } ] },
       { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/provenance-gate.py\"", "timeout": 10 } ] },
       { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/staleness-guard.py\"", "timeout": 10 } ] },
+      { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/memory-lookup-nudge.py\"", "timeout": 3 } ] },
       { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/channel-inbox-drain.py\"", "timeout": 5 } ] },
       { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/voice-reply-directive.py\"", "timeout": 180 } ] },
       { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram_progress.py\"", "timeout": 15 } ] },
