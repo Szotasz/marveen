@@ -34,7 +34,9 @@ vi.mock('../logger.js', () => ({
 
 vi.mock('../test-run-marker.js', () => ({ markIfTestRun: (t: string) => t }))
 
-import { notifyChannel, notifyOwner, notifySecurityEvent } from '../notify.js'
+import { notifyChannel, notifyOwner, notifySecurityEvent, alertIsRedirected } from '../notify.js'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 const sentTo = () => (mockSend.mock.calls as unknown as unknown[][]).map((c) => c[1])
 
@@ -63,3 +65,32 @@ describe('ALERT_CHAT_ID routing', () => {
     expect(sentTo()).toEqual(['111', '111'])
   })
 })
+
+describe('ALERT_CHAT_ID edge cases (review follow-up)', () => {
+  it('the "0" placeholder is treated as unset: the alert goes to the owner, never to chat 0', async () => {
+    cfg.alertChatId = '0'
+    await notifyChannel('alert')
+    expect(sentTo()).toEqual(['111'])
+    expect(alertIsRedirected()).toBe(false)
+  })
+
+  it('alertIsRedirected is true only for a real alert chat', () => {
+    cfg.alertChatId = ''
+    expect(alertIsRedirected()).toBe(false)
+    cfg.alertChatId = '222'
+    expect(alertIsRedirected()).toBe(true)
+  })
+
+  it('the heartbeat summary is owner content: it is sent with notifyOwner, not notifyChannel', () => {
+    const src = readFileSync(join(__dirname, '..', 'heartbeat.ts'), 'utf-8')
+    expect(src).toMatch(/await notifyOwner\(text\)/)
+    expect(src).not.toMatch(/notifyChannel\(/)
+  })
+
+  it('parked-line alerts drop the conversation preview when the alert is redirected', () => {
+    const src = readFileSync(join(__dirname, '..', 'web', 'agent-process.ts'), 'utf-8')
+    const uses = src.match(/alertIsRedirected\(\) \? '' :/g) || []
+    expect(uses.length).toBe(2)
+  })
+})
+

@@ -370,7 +370,10 @@ export const CHANNEL_CHAT_ID = getChannelChatId(CHANNEL_PROVIDER, env)
 // notices). Empty = the owner chat; set it when the person who runs the
 // system is not the owner, so the owner is not flooded with plumbing noise.
 // Owner-facing content (heartbeat digest, security events) ignores it.
-export const ALERT_CHAT_ID = (env['MARVEEN_ALERT_CHAT_ID'] ?? env['ALERT_CHAT_ID'] ?? '').trim()
+export function resolveAlertChatIdSetting(e: Record<string, string | undefined>): string {
+  return (e['MARVEEN_ALERT_CHAT_ID'] || e['ALERT_CHAT_ID'] || '').trim()
+}
+export const ALERT_CHAT_ID = resolveAlertChatIdSetting(env)
 
 // Respawn / keep-alive gate.
 // The in-process channel-plugin monitor (main-agent respawn + sub-agent

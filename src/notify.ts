@@ -4,6 +4,13 @@ import { getProvider } from './channel-provider.js'
 import { logger } from './logger.js'
 import { markIfTestRun } from './test-run-marker.js'
 
+// True when operational alerts go to a chat other than the owner's. Callers
+// must then leave owner/partner conversation content (e.g. a preview of a
+// parked input line) out of the alert text.
+export function alertIsRedirected(): boolean {
+  return normalizeChatId(ALERT_CHAT_ID) !== null
+}
+
 // Operational alert (watchdogs, restarts, stuck sessions). Goes to
 // ALERT_CHAT_ID when it is set, otherwise to the owner chat.
 export async function notifyChannel(text: string): Promise<void> {
