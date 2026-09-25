@@ -286,17 +286,28 @@ if [ "$CURRENT_BRANCH" = "HEAD" ] || [ -z "$CURRENT_BRANCH" ]; then
   # LECSERELI a fetch-refspecet, nem HOZZAFUZ -- a klon eredeti
   # `+refs/tags/<tag>:refs/tags/<tag>` sora kiesik. Az update-utra artalmatlan
   # (az ag-refbol dolgozik), de ez a parancs maradando config-valtozas.
+  #
+  # BRANCHHEAL925 (2026-09-25, #1566): the advice below is no longer the bare
+  # `git checkout main`. On an install with two remotes that both carry main
+  # (origin plus a fork) that form exits 128 -- git cannot infer which to
+  # follow -- and `checkout -b main --track origin/main` works exactly ONCE,
+  # failing on every install that has healed before. `git switch main ||
+  # git switch -c main --track origin/main` covers both states, and it is the
+  # same command the dashboard hands the user (web/app.js BRANCH_HEAL_COMMAND).
+  # The SHALLOW limitation above is unchanged by that: with no branch refs
+  # there is nothing for either form to switch TO, which is why the fetch
+  # steps still come first here.
   if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ] || [ -f .git/shallow ]; then
     if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
-      echo "       This is a SHALLOW clone with no branch refs, so 'git checkout main' cannot work here."
+      echo "       This is a SHALLOW clone with no branch refs, so no switch to main can work here yet."
       echo "       Fetch the release branch first, then switch to it:"
     else
-      echo "       Ez egy SHALLOW klon, ag-ref nelkul, tehat a 'git checkout main' itt nem tud mukodni."
+      echo "       Ez egy SHALLOW klon, ag-ref nelkul, tehat main-re valtani itt meg semmivel nem lehet."
       echo "       Eloszor hozd le a release branchet, es csak utana valts ra:"
     fi
     echo "         git remote set-branches origin main"
     echo "         git fetch --unshallow origin"
-    echo "         git checkout main"
+    echo "         git switch main || git switch -c main --track origin/main"
   else
     # NYELV-AG (UPDATEENHU921, 2026-09-21). Korabban ez a ket sor EN nyelven is
     # MAGYARUL ment, mikozben a folotte allo HIBA/ERROR fejlec helyesen valtott.
@@ -307,7 +318,7 @@ if [ "$CURRENT_BRANCH" = "HEAD" ] || [ -z "$CURRENT_BRANCH" ]; then
     else
       echo "       Allj at egy release branchre, majd indithatod ujra a frissitest, pl.:"
     fi
-    echo "         git checkout main"
+    echo "         git switch main || git switch -c main --track origin/main"
   fi
   exit 2
 fi
@@ -331,7 +342,7 @@ if ! git ls-remote --exit-code --heads origin "$CURRENT_BRANCH" >/dev/null 2>&1;
     echo "       Csak az origin-on is meglevo (kovetett) branchrol lehet frissiteni."
     echo "       Allj at egy release branchre, pl.:"
   fi
-  echo "         git checkout main"
+  echo "         git switch main || git switch -c main --track origin/main"
   exit 2
 fi
 
