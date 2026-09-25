@@ -1,20 +1,50 @@
 {
   "id": "researcher",
   "label": "Kutató",
-  "description": "Piackutatas, versenytars-elemzes, webes forrasok olvasasa. Prompt injection szempontbol kiemelt felulet, ezert a deny-lista (SSH/AWS/.env, sudo, rm, curl -X POST, git push) VALTOZATLANUL all. A permissionMode viszont permissive a gazda 2026-09-07-i dontese szerint (TG 14764): strict alatt az agens minden tool-hivasnal engedelykero parbeszedre allt meg, amire nem-interaktiv agensben senki nem valaszol, tehat egyaltalan nem tudott dolgozni. Draft-only marad: riportot ir a sajat mappajaba, nem kuld magatol kifele.",
+  "description": "Kutatas, forrasfeltaras, webes es tudomanyos forrasok olvasasa. Prompt injection szempontbol kiemelt: kulso tartalom CSAK a quarantine-reader sub-agensen at johet, adatkent. Draft-only: riportot ir a mappajaba, nem kuld magatol kifele. A curl -X POST tiltas MEGMARAD (kifele nem POST-olhat); a helyi dashboard API es az agent-msg.sh helper kulon engedelyt kapott, mert enelkul a memoria-mentes es a fonoknek valo valaszadas mind blokkol. A permissionMode permissive a gazda 2026-09-07-i dontese szerint (TG 14764): strict alatt az agens minden tool-hivasnal engedelykero parbeszedre allt meg, amire nem-interaktiv agensben senki nem valaszol.",
   "permissionMode": "permissive",
   "filesystem": {
     "allow": [
       "Read(${AGENT_DIR}/**)",
+      "Write(${AGENT_DIR}/**)",
       "Edit(${AGENT_DIR}/**)",
+      "Read(${AGENT_DIR}/.claude-config/**)",
+      "Read(${PROJECT_ROOT}/research-inbox/**)",
+      "Read(${PROJECT_ROOT}/agents/*/research/**)",
       "Read(${HOME}/Downloads/**)",
+      "Read(/mnt/c/Users/*/Downloads/**)",
+      "Read(${HOME}/.claude/skills/**)",
       "Bash(ls:*)",
       "Bash(cat:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(sort:*)",
+      "Bash(date:*)",
+      "Bash(python3:*)",
+      "Bash(dumppdf.py:*)",
+      "Bash(pdf2txt.py:*)",
+      "Bash(${HOME}/.local/bin/pdf2txt.py:*)",
+      "Bash(${HOME}/.local/bin/dumppdf.py:*)",
+      "Bash(bash ${PROJECT_ROOT}/scripts/agent-msg.sh:*)",
+      "Bash(bash ${PROJECT_ROOT}/scripts/agent-mem.sh:*)",
+      "Bash(cd ${PROJECT_ROOT} && bash scripts/agent-mem.sh:*)",
+      "Bash(bash scripts/agent-mem.sh:*)",
+      "Bash(cd ${PROJECT_ROOT} && bash scripts/agent-msg.sh:*)",
+      "Bash(curl -s -X POST http://localhost:3420/api/*)",
+      "Bash(curl -s -H \"Authorization: Bearer $(cat ${PROJECT_ROOT}/store/.dashboard-token)\" \"http://localhost:3420/api/*)",
+      "Bash(${PROJECT_ROOT}/scripts/notify.sh:*)",
       "WebFetch(*)",
       "WebSearch(*)",
-      "Read(${HOME}/.claude/skills/**)",
-      "Bash(${PROJECT_ROOT}/scripts/agent-post.sh:*)",
-      "Bash(${PROJECT_ROOT}/scripts/notify.sh:*)"
+      "Write(${PROJECT_ROOT}/research-inbox/**)",
+      "Edit(${PROJECT_ROOT}/research-inbox/**)",
+      "Bash(mkdir:*)",
+      "Write(${AGENT_DIR}/.claude/skills/**)",
+      "Edit(${AGENT_DIR}/.claude/skills/**)",
+      "/mnt/e/03_LEAN Library/**",
+      "${PROJECT_ROOT}/store/egress-allowlist.json"
     ],
     "deny": [
       "Read(${HOME}/.ssh/**)",
@@ -27,5 +57,11 @@
       "Bash(curl -X POST:*)",
       "Bash(git push:*)"
     ]
-  }
+  },
+  "additionalDirectories": [
+    "${PROJECT_ROOT}/research-inbox",
+    "${PROJECT_ROOT}/scripts",
+    "${PROJECT_ROOT}/store",
+    "/mnt/e/03_LEAN Library"
+  ]
 }
