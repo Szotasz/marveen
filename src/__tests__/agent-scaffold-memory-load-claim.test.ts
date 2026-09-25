@@ -126,7 +126,7 @@ describe('...and that stays true (update the scaffold sentence if one of these f
   it.each(Object.keys(RECIPE_PRINTERS))('exempt %s only prints: no network, DB, subprocess or dynamic code on any line', (rel) => {
     const src = readFileSync(join(ROOT, rel), 'utf-8')
     expect(src).toMatch(/api\/memories/) // stale-exemption guard: drop the entry when this stops holding
-    expect(src).not.toMatch(/\b(?:urlopen|urllib|http\.client|httplib|socket|sqlite3|subprocess|requests|os\.system|os\.popen|os\.exec\w*|os\.spawn\w*|popen|__import__|importlib|exec|eval|compile)\b/)
+    expect(src).not.toMatch(/urlopen|urllib|http\.client|HTTPConnection|(?:from|import)\s+http\b|httplib|socket|sqlite3|subprocess|\brequests\b|os\.system|os\.popen|os\.exec|os\.spawn|popen|__import__|importlib|asyncio|open_connection|\b(?:exec|eval|compile)\s*\(/)
   })
 })
 
