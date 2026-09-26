@@ -7,6 +7,7 @@ import {
 } from '../../db.js'
 import { resolveFromPath } from '../../platform.js'
 import { APP_TZ } from '../../config.js'
+import { fleetVenvPathPrefix } from '../agent-process.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
@@ -55,7 +56,8 @@ export function spawnBackgroundTask(agentId: string, prompt: string): Background
   }
 
   const shellCmd = [
-    `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH"`,
+    // FLEETVENV923: same opt-in python shim first as every other launcher.
+    `export PATH="${fleetVenvPathPrefix()}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH"`,
     `${CLAUDE} -p "$BG_PROMPT" --output-format text 2>&1`,
   ].join(' && ')
 

@@ -1,5 +1,5 @@
 import { CronExpressionParser } from 'cron-parser'
-import { hostname } from 'node:os'
+import { hostname, homedir } from 'node:os'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -332,6 +332,19 @@ export const DASHBOARD_PUBLIC_URL = cfg('DASHBOARD_PUBLIC_URL') ?? ''
 // the other cannot be correct for both deployment shapes, so it is its own key.
 // Empty preserves the previous behaviour exactly (public URL, else localhost).
 export const AGENT_API_ORIGIN = cfg('AGENT_API_ORIGIN') ?? ''
+
+// FLEETVENV923: the fleet's shared Python virtualenv. When `<dir>/bin` exists it
+// is prepended to every agent launch PATH (sub-agents via startAgentProcess,
+// the main session via channels.sh and the recovery relaunch in
+// channel-monitor.ts), so a skill's plain `python3` and the venv's own CLIs
+// (markitdown, ...) resolve to the venv without per-skill interpreter paths.
+// Measured 2026-09-23 on the Mac mini: the Homebrew python3 carried zero
+// packages, so every skill `python3` call import-failed while a venv with the
+// packages sat next to it. A `~` prefix means the home directory; a
+// nonexistent directory (or an empty string) disables the prefix.
+// FLEETVENV923: opt-in; empty (the default) = off. Quotes are already stripped by cfg()/readEnvFile.
+const _fleetVenvRaw = (cfg('FLEET_PYTHON_VENV') ?? '').trim()
+export const FLEET_PYTHON_VENV = _fleetVenvRaw.startsWith('~') ? join(homedir(), _fleetVenvRaw.slice(1)) : _fleetVenvRaw
 // Extra browser origins allowed to make state-changing dashboard requests
 // (CORS + CSRF allowlist), comma-separated, e.g. for VPN/LAN addresses that
 // aren't covered by WEB_HOST or DASHBOARD_PUBLIC_URL. Empty by default so

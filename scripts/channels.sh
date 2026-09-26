@@ -513,6 +513,16 @@ unset TMUX
 
 export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
+# FLEETVENV923: opt-in fleet Python venv (FLEET_PYTHON_VENV in .env): a shim
+# with only python3/pip goes FIRST, so the main session's `python3` comes from
+# the venv while system tools keep winning -- parity with startAgentProcess,
+# the channel-monitor relaunch, background claude -p and watchdog.sh. The
+# script reads .env itself (one key, no `set -a`) and prints nothing when off.
+PYTHON_SHIM_PREFIX="$(bash "$INSTALL_DIR/scripts/python-shim-prefix.sh" "$INSTALL_DIR" 2>/dev/null || true)"
+if [ -n "$PYTHON_SHIM_PREFIX" ]; then
+  export PATH="${PYTHON_SHIM_PREFIX}$PATH"
+fi
+
 # Root VPS / container: Claude Code refuses --dangerously-skip-permissions when
 # running as uid 0 ("cannot be used with root/sudo privileges"), so the tmux
 # claude session below dies instantly and the bot never comes online. On a

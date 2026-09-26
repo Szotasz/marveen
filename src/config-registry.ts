@@ -276,6 +276,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'FLEET_PYTHON_VENV',
+    type: 'string',
+    default: '',
+    description: 'Opcionális közös Python venv a flottának. Ha meg van adva és a <mappa>/bin/python3 létezik, egy csak python3/pip-et tartalmazó shim mappa (store/python-shim) kerül minden ügynök indítási PATH-jának elejére, így a skillek sima python3 hívása a venv-ből jön, a rendszer-eszközöket (git, gh, node) viszont nem árnyékolja. Üres = kikapcsolva. Kezdő ~ = home.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     key: 'OLLAMA_URL',
     type: 'string',
     default: 'http://localhost:11434',
