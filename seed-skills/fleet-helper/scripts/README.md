@@ -26,8 +26,26 @@ MarkdownV2: `escape_mdv2()` escapes literal text. Escape the dynamic text first,
 then add your own `*...*` bold markers around the escaped pieces.
 
 ## mail_triage.py - rule-based unread-mail filter (macOS Mail.app)
-Auth-free (osascript), returns JSON, never sends and never marks read. Buckets:
+Auth-free, returns JSON, never sends and never marks read. Buckets:
 `important` / `review` / `dropped`. Real senders/keywords go in `mail_rules.json`.
+
+**Read `zero_means` before the buckets.** An empty result has two very different
+causes, and reporting the wrong one is how fourteen consecutive morning briefings
+came to say "no mail" from an index that could not be read (MAILINDEXFAGYOTT914):
+
+- `zero_means: "no-unread"` -- the index is trustworthy, the mailbox really is quiet.
+- `zero_means: "cannot-tell"` -- say so out loud. `warning` carries the sentence,
+  and `source` the measurement: `index_latest`, `index_age_min`, `wal_age_min`
+  (when the index itself was last written), `mail_running`, `read_mode`.
+
+Two independent signals decide it, because neither alone separates a frozen index
+from a quiet mailbox: the age of the newest indexed message, and the WAL mtime.
+
+`read_mode` names how the index was opened: `ro` (WAL-aware, the normal path),
+`copy` (db + -wal copied out when SQLite refuses a read-only WAL open), or
+`immutable` (last resort -- it cannot see the WAL, so it can under-report).
+Measured 2026-09-23: `immutable=1` saw the newest message at 22:15 and 40485 rows
+while a WAL-aware read of the same file in the same second saw 02:02 and 40487.
 
 ## The heartbeat gate pattern (the interesting part)
 
