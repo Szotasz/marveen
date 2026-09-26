@@ -27,6 +27,7 @@ import {
   detectsFeedbackOptOutPrompt,
   firstRunAcceptKeys,
   stuckInputSignature,
+  scheduledTaskParkedText,
   mcpTrustAcceptKeys,
   type FirstRunGateKind,
 } from '../pane-state.js'
@@ -3819,6 +3820,37 @@ export function rescueParkedInput(
   }
 }
 
+// MAINBOXPARK926 (2026-09-26): NARROW clear-only exception for the main box,
+// upstream of the whole escalation ladder.
+//
+// The absolute rule stays absolute: a HUMAN's parked draft is never touched, and
+// GH #890's rescue-then-clear stays the answer for it. What this exception covers
+// is the one parked text that provably cannot be a draft AND provably costs
+// nothing to drop: a SCHEDULED-TASK tick. Scheduled tasks recur, so the next fire
+// re-delivers the identical instruction -- which is exactly why the sub-agent path
+// has always been clear-only for them (see scheduledTaskParkedText). Without this
+// branch a parked tick walks the full ladder: it pings the operator at ~6 min with
+// a manual fix for a line nobody typed, and at ~12 min it is rescued to a 0600
+// file in store/parked-input/ that nobody will ever read, because the scheduler
+// re-sent the same text minutes earlier.
+//
+// Measured on one install (2026-09-26): 23 parked episodes in the router log, 2 of
+// them reached the owner's phone, and in BOTH the parked text was a scheduled
+// heartbeat prompt. Both operator pings to date were for this case.
+//
+// Deliberately NOT widened to parkedMachineOriginInput: that also matches
+// `[Uzenet @...]` (an inter-agent message) and `<channel source="plugin:...>` (an
+// INBOUND USER MESSAGE). Those do not recur, so clearing one would destroy it --
+// recurrence is the entire warrant here, so the predicate must stay the
+// scheduled-task one.
+//
+// Capped at the first ladder threshold: if the clear keeps failing, stop trying
+// and hand the episode back to the ladder, so the worst case stays exactly
+// today's behaviour (heartbeat surface, owner notify, then rescue-and-clear).
+export function decideMainParkedClear(scheduledTick: boolean, fails: number): boolean {
+  return scheduledTick && fails < MAIN_PARKED_HEARTBEAT_AFTER
+}
+
 // Pure decision, exported for tests: which escalation stage applies. 'owner'
 // fires once per episode (ownerNotified latches via the record's escalated
 // flag); afterwards the state stays 'heartbeat'-visible until the box clears.
@@ -3969,8 +4001,19 @@ async function clearStaleParkedInputInLane(
   //     notifyChannel direct to the owner (pure HTTP, does not touch the box)
   //     with the CONCRETE manual fix -- a message actionable in seconds, not
   //     "something is wrong".
-  if (session === MAIN_CHANNELS_SESSION) {
-    const fails = (prev && prev.sig === parked ? prev.fails : 0) + 1
+  // MAINBOXPARK926: classify the ALREADY-extracted, stability-confirmed text --
+  // never a fresh capture, which could race the box (see scheduledTaskParkedText).
+  const mainBox = session === MAIN_CHANNELS_SESSION
+  const failsSoFar = (prev && prev.sig === parked ? prev.fails : 0) + 1
+  const mainClearableTick = mainBox && decideMainParkedClear(scheduledTaskParkedText(parked), failsSoFar)
+  if (mainClearableTick) {
+    logger.warn(
+      { session, parked: parked.slice(0, 60), fails: failsSoFar },
+      'message-router: main-agent parked SCHEDULED-TASK tick -- clear-only (no re-inject, no rescue file; the next schedule fire re-delivers it)',
+    )
+  }
+  if (mainBox && !mainClearableTick) {
+    const fails = failsSoFar
     let escalated = !!(prev && prev.sig === parked && prev.escalated)
     const stage = decideMainParkedEscalation(fails, escalated)
     if (stage === 'owner') {
@@ -4048,7 +4091,7 @@ async function clearStaleParkedInputInLane(
     // wedged (not the usual junk heartbeat line the auto-clear handles) -- surface
     // it to the operator ONCE so it cannot stall silently like the 1h main-agent
     // incident did behind a lone WARN.
-    if (!escalated && fails >= SUBAGENT_PARKED_ESCALATE_AFTER) {
+    if (!mainBox && !escalated && fails >= SUBAGENT_PARKED_ESCALATE_AFTER) {
       const preview = parked.slice(0, 80).replace(/[<>&]/g, ' ')
       notifyChannel(
         `⚠️ Egy sub-agent (${session}) input-mezojebe beragadt egy parkolt sor, ` +
