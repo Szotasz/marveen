@@ -910,6 +910,33 @@ export function detectsPermissionDialog(pane: string): boolean {
     || (PERMISSION_QUESTION_RX.test(pane) && PERMISSION_YES_RX.test(pane))
 }
 
+// PEERHOLD925 (card c3f8f062): a cross-session (peer) message that the
+// receiving session holds for its user's approval renders its OWN dialog, not
+// the tool-permission card: no "Do you want to proceed?", no "Tab to amend".
+// Measured on 2026-09-23 on this install: kigyo's session sat on one for hours
+// with no alert -- detectsPermissionDialog does not match it, and the router's
+// session-stuck path only fires when inter-agent messages are QUEUED for the
+// session, which a cross-session send never is. The phrases below are the
+// dialog's own strings, taken from the installed Claude Code binary (2.1.x):
+// "A message from another session needs your approval", "Another Claude
+// session sent a message", "Held message from another session". Same guards
+// as detectsPermissionDialog: a busy pane is never a dialog, and a visible
+// idle footer means the prompt is live and the phrase is merely quoted.
+const HELD_PEER_MESSAGE_RX = /A message from another session needs your approval|Another Claude session sent a message|Held message from another session|approve message from another session/i
+
+export function detectsHeldPeerMessage(pane: string): boolean {
+  if (!pane || !pane.trim()) return false
+  const lines = pane.split('\n')
+  const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(busyRegion)) return false
+  }
+  const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
+  if (IDLE_FOOTER_RX.test(pane)) return false
+  return HELD_PEER_MESSAGE_RX.test(pane)
+}
+
 export function detectsModelConsentDialog(pane: string): boolean {
   if (!pane || !pane.trim()) return false
   const lines = pane.split('\n')
