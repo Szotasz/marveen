@@ -12,6 +12,23 @@ FAILED=0
 pass(){ echo "  PASS  $*"; }
 fail(){ echo "  FAIL  $*"; FAILED=1; }
 
+# HERMETIKUS FIXTURE-OK -- kartya `fda30df6`-hoz hasonlo osztaly, itt meg
+# eles kiadas elott elkapva: a `store/` gitignore-olt, tehat egy FRIS
+# checkout (CI, uj worktree) SOSEM latja az EN sajat, nem-committolt
+# store/seeme-internal-numbers.json-omat vagy a store/.dashboard-token-emet.
+# A +36305552860 teszt-szam ezert csak NALAM klasszifikalodott BELSo-kent --
+# CI-n a szkript minden cimzettet KULSonek latott ("a fajl NEM LETEZIK"),
+# es a script-tests-runner.test.ts PIROSAT adott. A ket fixture SAJAT,
+# eldobhato temp konyvtarban el, es a szkript env-valtozon at latja oket
+# (seeme-send.py: SEEME_INTERNAL_FILE / SEEME_DASH_TOKEN_FILE) -- a valodi
+# store/ tartalmat egyaltalan nem erinti a teszt.
+FIXTURE_DIR="$(mktemp -d /tmp/seeme-send-fixtures-XXXX)"
+export SEEME_INTERNAL_FILE="$FIXTURE_DIR/seeme-internal-numbers.json"
+export SEEME_DASH_TOKEN_FILE="$FIXTURE_DIR/.dashboard-token"
+printf '{"internal": ["36305552860"]}' > "$SEEME_INTERNAL_FILE"
+printf 'teszt-fixture-token-nem-valodi' > "$SEEME_DASH_TOKEN_FILE"
+trap 'rm -rf "$FIXTURE_DIR"' EXIT
+
 run() {
   # run <to> <approval-or-empty> <stdin-text>
   local to="$1" approval="$2" text="$3"
@@ -67,7 +84,7 @@ out="$(printf '%s' "teszt" | python3 "$SCRIPT" --to +36301234567 --approval "nem
 
 echo "--- mutacios kontroll (4. kikotes: a kontroll TUDJON bukni) ---"
 MUT="$(mktemp /tmp/seeme-send-mutated-XXXX.py)"
-trap 'rm -f "$MUT"' EXIT
+trap 'rm -f "$MUT"; rm -rf "$FIXTURE_DIR"' EXIT
 # A TELJES kulso-agat kivesszuk: az `if not is_internal:` felteteltdet mindig-
 # hamisra cachereljuk, tehat egy KULSO szam is BELSOKENT viselkedik -- approval
 # nelkul is atmegy.

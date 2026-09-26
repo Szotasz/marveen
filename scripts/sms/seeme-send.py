@@ -79,9 +79,17 @@ import argparse, json, os, re, sys, time, urllib.error, urllib.parse, urllib.req
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ENV_FILE = os.path.join(ROOT, "store", "seeme-gateway.env")
-INTERNAL_FILE = os.path.join(ROOT, "store", "seeme-internal-numbers.json")
+# INTERNAL_FILE es DASH_TOKEN_FILE felulirhato env-valtozoval -- KIZAROLAG a
+# hermetikus teszt (seeme-send.test.sh) miatt, ami egy fris checkoutban (CI,
+# uj worktree) SOSEM latja a valodi store/ tartalmat (gitignore-olt). Alapertelmezett
+# viselkedes valtozatlan: eles hasznalatnal egyik env-valtozo sincs beallitva, tehat
+# a ROOT-hoz kepesti utvonal marad ervenyben. Mert eset: script-tests-runner.test.ts
+# a CI-n PIROSAT adott (`osztalyozas` mindig KULSO -- "a fajl NEM LETEZIK"), mert a
+# +36305552860 teszt-szam csak az EN sajat, nem-committolt store/seeme-internal-
+# numbers.json-omban szerepelt -- egy fris checkout ezt sosem latja.
+INTERNAL_FILE = os.environ.get("SEEME_INTERNAL_FILE") or os.path.join(ROOT, "store", "seeme-internal-numbers.json")
 LOG_FILE = os.path.join(ROOT, "store", "seeme-send.log")
-DASH_TOKEN_FILE = os.path.join(ROOT, "store", ".dashboard-token")
+DASH_TOKEN_FILE = os.environ.get("SEEME_DASH_TOKEN_FILE") or os.path.join(ROOT, "store", ".dashboard-token")
 DASH_BASE = "http://localhost:3420"
 DEFAULT_BASE = "https://seeme.hu/gateway"
 # Elovigyazatossagbol, NEM mert protekcio -- lasd a fejlecet.
