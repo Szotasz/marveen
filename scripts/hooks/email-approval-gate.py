@@ -33,6 +33,15 @@ did, and since the agent can write store/ itself, the gate's own refusal was
 the manual for getting around it. The right to send still comes from the
 owner; the route to it is no longer handed out by the thing doing the
 refusing.
+The list alone no longer grants anything (the review's third ask): an entry makes
+an address a CANDIDATE, and a one-time, owner-resolved approval
+(category email_standing_recipient, content_hash = sha256 of the normalised
+address) makes it live. That approval is neither consumed nor time-windowed --
+a standing right that expires or dies on first use is just a per-letter approval
+under another name -- and the owner's LAST resolved decision wins, so a later
+rejection revokes the right without anyone editing the file. Whoever can write
+the list still cannot grant themselves the right; that separation is the whole
+point, and it only holds where the approvals path is out of the agent's reach.
 
 Anchor semantics (Marveen msg 17900, 5+1 conditions):
   1. the hash is computed from the SAME extraction the copy gate audits
@@ -321,6 +330,63 @@ def standing_trace(addr: str, env: dict):
         + ("ok" if ok else f"NEM MENT KI ({detail})"))
     return None if ok else detail
 
+# --- BIRALOI KERES 3: a lista felvetel, nem elesites -----------------------
+# The review's strongest ask: an address must not become live merely by being
+# written into the list file. The list says WHICH addresses are candidates; a
+# one-time, owner-resolved approval says which of them may actually be written
+# to without a per-letter decision. Two separate acts, on purpose -- whoever can
+# edit the file still cannot grant themselves the right.
+#
+# This approval is deliberately UNLIKE the per-letter one, and both differences
+# are load-bearing:
+#   - it is NOT consumed. A standing right that dies on first use is just a
+#     per-letter approval wearing a different name.
+#   - it is NOT time-windowed. The 30-minute window exists so an approved letter
+#     cannot be re-sent days later; a standing recipient is a standing decision,
+#     and an expiring one would silently turn every notification into a deny.
+# What it IS: the owner's LAST resolved decision about this address. A later
+# `rejected` row therefore revokes the right without anyone touching the file,
+# which is the only revocation path that works when the file is not writable by
+# the person who wants the right gone.
+STANDING_CATEGORY = "email_standing_recipient"
+
+
+def standing_anchor(addr: str) -> str:
+    """sha256 over the NORMALISED address, matching read_standing's
+    normalisation (parseaddr + lowercase), so the owner's approval and the
+    list entry can never disagree about what was approved."""
+    return hashlib.sha256(addr.strip().lower().encode("utf-8")).hexdigest()
+
+
+def standing_authorized(addr: str):
+    """Return (ok, detail) for THIS address. Raises on any DB problem -- the
+    caller turns that into a fail-closed deny, exactly as the per-letter path
+    does: "cannot decide" never means "allowed"."""
+    if not os.path.exists(DB_PATH):
+        raise OSError(f"approvals DB hianyzik ({DB_PATH})")
+    anchor = standing_anchor(addr)
+    con = sqlite3.connect(DB_PATH, timeout=5)
+    try:
+        con.execute("PRAGMA busy_timeout=5000")
+        # The LAST resolved decision wins, so a later rejection revokes an
+        # earlier approval. rowid breaks same-second ties deterministically.
+        row = con.execute(
+            f"SELECT id, status FROM approvals WHERE category='{STANDING_CATEGORY}'"
+            " AND content_hash=? AND resolved_at IS NOT NULL"
+            " ORDER BY resolved_at DESC, rowid DESC LIMIT 1", (anchor,)).fetchone()
+        if row and row[1] == "approved":
+            return True, row[0]
+        if row:
+            return False, f"a gazda utolso dontese erre a cimre: {row[1]} ({row[0]})"
+        pending = con.execute(
+            f"SELECT id FROM approvals WHERE category='{STANDING_CATEGORY}'"
+            " AND content_hash=? AND status='pending' LIMIT 1", (anchor,)).fetchone()
+        if pending:
+            return False, f"a cim elesitese FUGGOBEN van a gazdanal ({pending[0]})"
+        return False, "ehhez a cimhez nincs gazdai elesites"
+    finally:
+        con.close()
+
 def content_anchor(env: dict) -> str:
     """sha256 over the envelope: to + cc + bcc + text (subject+body exactly as
     the copy gate audits it, from the shared extractor). Canonical JSON so the
@@ -469,6 +535,28 @@ def main():
         prefix = prefix + f"({standing_note})\n"
     hit = standing_match(env, standing)
     if hit:
+        # The list makes the address a CANDIDATE; only the owner's one-time
+        # approval makes it live. Checked before the trace, because an address
+        # that is not live has no approval-free send to record.
+        try:
+            live, live_detail = standing_authorized(hit)
+        except Exception as exc:  # noqa: BLE001 -- unreachable DB is fail-closed
+            deny(prefix +
+                 f"email_send level 2: {hit} rajta van az allando cimzett-listan, de az "
+                 f"elesitese nem ellenorizheto ({exc!r}) -- nem-eldontheto, ezert "
+                 "fail-closed TILTVA. Ha a dashboard/DB helyreallt, kuldd ujra.")
+        if not live:
+            deny(prefix +
+                 f"email_send level 2: {hit} szerepel az allando cimzett-listan, DE NINCS "
+                 f"ELESITVE -- {live_detail}.\n"
+                 "Egy cim attol valik elese, hogy a gazda EGYSZER jovahagyta, NEM attol, "
+                 "hogy felkerult a listara. A felvetel javaslat, az elesites dontes.\n"
+                 f"Cim-horgony (sha256): {standing_anchor(hit)}\n"
+                 "Elesites KERESE: POST /api/approvals a sajat agent_id-ddal, "
+                 f'category="{STANDING_CATEGORY}", content_hash=a fenti cim-horgony, '
+                 "action_description=melyik cimet es miert. A dontes a gazdae: a sajat "
+                 "keresedet NE hagyd jova.\n"
+                 "Addig ez a level a szokasos, level-enkenti jovahagyasi uton mehet.")
         # The trace is part of the AUTHORISATION here, not a side effect of it:
         # this is the one allow-path with no human deciding on THIS letter, so a
         # send that cannot be recorded does not go out at all.
