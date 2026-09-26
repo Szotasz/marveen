@@ -109,7 +109,7 @@ def _format_entry(entry):
         content = ""
     body = str(content).replace("</channel>", "")
 
-    attrs = [('source', 'telegram')]
+    attrs = [('source', 'plugin:telegram:telegram')]
     for key in ("chat_id", "message_id", "user", "ts", "image_path"):
         if key in meta and meta.get(key) is not None:
             attrs.append((key, meta.get(key)))
