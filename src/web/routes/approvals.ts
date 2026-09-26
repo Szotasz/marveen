@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN } from '../../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, CHANNEL_TOKEN, CHANNEL_CHAT_ID } from '../../config.js'
 import {
   consumeApproval,
   createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals,
@@ -10,7 +10,8 @@ import {
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
-import { resolveOwnerChatId } from '../../owner-chat.js'
+import { resolveOwnerChatId, resolveAlertOwnerChat } from '../../owner-chat.js'
+import { notifyChannel } from '../../notify.js'
 import { sendTelegramMessage } from '../telegram.js'
 import type { RouteContext } from './types.js'
 
@@ -130,21 +131,62 @@ function fallbackInBand(approval: Approval, reason: string): void {
 // undelivered approval is exactly the closed loop this fixes.
 function notifyOwner(approval: Approval): void {
   void (async () => {
-    if (!TELEGRAM_BOT_TOKEN) {
-      logger.warn({ approvalId: approval.id }, 'approval owner notification suppressed: no TELEGRAM_BOT_TOKEN')
+    // APPROVALVAK821 fixed this path so the request reaches the OWNER and not
+    // only the main agent's queue -- but the fix went out Telegram-only, so on
+    // any install that speaks another provider the old silence came straight
+    // back. Measured on a Discord install 2026-09-26: every approval request
+    // logged `owner notification suppressed: no TELEGRAM_BOT_TOKEN`, the owner
+    // was told nothing, and the only notification went to the main agent, i.e.
+    // to the very agent whose request it was. An approval gate whose owner
+    // never hears about it is not a gate.
+    //
+    // The Telegram branch is kept for Telegram installs ONLY because it also
+    // records the message id (setApprovalTelegramMessageId); every other
+    // provider goes through notifyChannel, which resolves provider, token and
+    // owner chat the same way every other alert in the fleet does.
+    if (CHANNEL_PROVIDER === 'telegram' && TELEGRAM_BOT_TOKEN) {
+      const ownerChat = resolveOwnerChatId()
+      if (!ownerChat) {
+        logger.warn({ approvalId: approval.id }, 'approval owner notification suppressed: no owner chat')
+        fallbackInBand(approval, 'no-owner-chat')
+        return
+      }
+      try {
+        const messageId = await sendTelegramMessage(TELEGRAM_BOT_TOKEN, ownerChat, buildOwnerApprovalText(approval))
+        if (messageId != null) setApprovalTelegramMessageId(approval.id, messageId)
+        logger.info({ approvalId: approval.id, messageId }, 'approval owner notification sent')
+      } catch (err) {
+        logger.warn({ err, approvalId: approval.id }, 'approval owner notification FAILED -- the request is only visible on the dashboard')
+        fallbackInBand(approval, 'send-failed')
+      }
+      return
+    }
+
+    // notifyChannel never throws and never reports whether it sent, so the two
+    // conditions it checks are checked HERE too -- otherwise a missing token or
+    // owner chat would look like a delivered notification and the in-band
+    // fallback would never fire.
+    // The two literals below are deliberate, not a computed reason string: the
+    // delivery contract test (approvals-delivery.test.ts) reads this function's
+    // SOURCE and requires every failure path to name its fallback explicitly.
+    // That test exists so a refactor cannot quietly drop a fallback -- and it
+    // caught exactly that when this branch first used a template string.
+    if (!CHANNEL_TOKEN) {
+      logger.warn({ approvalId: approval.id, provider: CHANNEL_PROVIDER },
+        'approval owner notification suppressed: no channel token')
       fallbackInBand(approval, 'no-token')
       return
     }
-    const ownerChat = resolveOwnerChatId()
-    if (!ownerChat) {
-      logger.warn({ approvalId: approval.id }, 'approval owner notification suppressed: no owner chat')
+    const owner = resolveAlertOwnerChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER)
+    if (!owner.chatId) {
+      logger.warn({ approvalId: approval.id, provider: CHANNEL_PROVIDER, reason: owner.reason },
+        'approval owner notification suppressed: no owner chat')
       fallbackInBand(approval, 'no-owner-chat')
       return
     }
     try {
-      const messageId = await sendTelegramMessage(TELEGRAM_BOT_TOKEN, ownerChat, buildOwnerApprovalText(approval))
-      if (messageId != null) setApprovalTelegramMessageId(approval.id, messageId)
-      logger.info({ approvalId: approval.id, messageId }, 'approval owner notification sent')
+      await notifyChannel(buildOwnerApprovalText(approval))
+      logger.info({ approvalId: approval.id, provider: CHANNEL_PROVIDER }, 'approval owner notification sent')
     } catch (err) {
       logger.warn({ err, approvalId: approval.id }, 'approval owner notification FAILED -- the request is only visible on the dashboard')
       fallbackInBand(approval, 'send-failed')
