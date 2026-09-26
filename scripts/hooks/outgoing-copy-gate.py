@@ -747,6 +747,13 @@ def _at_sentence_start(text: str, idx: int) -> bool:
     return False
 
 
+# A closing quote or bracket ends a span the writer did not mean as prose; a
+# hyphenated Hungarian suffix that follows belongs to THAT span, not to the
+# sentence. Straight and typographic quotes both, because the owner's own
+# messages carry both, plus the closing brackets for the same reason.
+CLOSERS = '"\'”“„’‘»«)]}'
+
+
 def accent_check_tokens(prose: str):
     """(lowercase alak, kezdo-pozicio) parok az ekezet-vizsgalathoz."""
     out = []
@@ -759,6 +766,23 @@ def accent_check_tokens(prose: str):
         # (2026-08-21: the gate blocked a correct message reading "429-es vagy
         # 403-as". GATEKOTOJEL817 covered letter-hyphen-letter forms, not this one.)
         if m.start() >= 2 and prose[m.start() - 1] == "-" and prose[m.start() - 2].isdigit():
+            continue
+        # QUOTE/BRACKET-HYPHEN SUFFIX (COPYGATETOLDALEK920). Same shape one class
+        # over: HYPHEN_WORD admits only LETTERS around the hyphen, so a suffix
+        # hanging off a CLOSING QUOTE is orphaned into a standalone word --
+        # 'a "git pull develop"-ot mondja' leaves a bare "ot", which the
+        # dictionary reads as the accent-stripped "öt" and the gate blocks the
+        # whole message. Measured 2026-09-20 on a live morning briefing, and
+        # again on develop 2026-09-23 (exit 2, `ot -> öt`). The masks above
+        # cannot reach it: the quoted span is not a technical region, so nothing
+        # swallows the suffix with it.
+        #
+        # Length cap (4) is the same boundary the proper-noun and filename
+        # branches use: a Hungarian suffix is short, while the second half of a
+        # real compound ("Telegram-hidam") is longer and still gets checked.
+        if (m.start() >= 2 and prose[m.start() - 1] == "-"
+                and prose[m.start() - 2] in CLOSERS
+                and len(tok) <= 4 and tok.islower()):
             continue
         if "-" not in tok and tok[0].isupper() and not _at_sentence_start(prose, m.start()):
             continue
