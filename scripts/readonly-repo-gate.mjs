@@ -46,16 +46,26 @@ function isArtifactPath(p) {
   return String(p || '').split('/').some(seg => ARTIFACT_SEGMENTS.has(seg))
 }
 
-// Package managers only ever write artifacts (node_modules, lockfile refresh),
-// so they are allowed wholesale rather than path-checked.
-// Every branch REQUIRES its subcommand. The yarn branch used to read
-// `yarn\s+(install)?\b`, and the optional group made the pattern match bare
-// `yarn ` + anything -- `yarn add`, `yarn exec`, `yarn dlx` all skipped the
-// gate's inspection, which is the opposite of what an install-only exemption
-// is for. (Found in review on #770, 2026-09-03.) Bare `yarn` (Yarn 1's
-// implicit install) is no longer exempted either: it carries no redirect and
-// no mutating verb, so it passes on its own merits rather than by blanket skip.
-const INSTALL_RX = /\b(npm\s+(ci|install|i)\b|pnpm\s+(install|i)\b|yarn\s+install\b|pip\s+install\b|poetry\s+install\b|bundle\s+install\b)/
+// Package-manager installs are allowed, but ONLY the exact install command
+// with nothing appended (maintainer decision on #770, 2026-09-25):
+//
+//   npm install | npm ci | yarn install | yarn | pnpm install
+//
+// The match is anchored to the WHOLE segment. An earlier form was a substring
+// test, and its yarn branch read `yarn\s+(install)?\b`: the optional group
+// plus the word boundary matched `yarn ` + anything, so `yarn add left-pad`
+// and `yarn exec rm -rf src` skipped the gate's inspection entirely (found in
+// review on #770). Anchoring closes the same hole for every manager at once:
+// `npm install evil-pkg`, `npm ci > src/x` and `pnpm install && ...` tail are
+// no longer "the install", they are judged like any other segment -- and
+// PM_MUTATING_RX below refuses them inside a protected root.
+// Short aliases (`npm i`), flags, env prefixes and other ecosystems (pip,
+// poetry, bundle) are deliberately NOT exempt: the decision lists these five.
+const INSTALL_RX = /^(npm\s+(install|ci)|yarn(\s+install)?|pnpm\s+install)$/
+
+function isExactInstall(seg) {
+  return INSTALL_RX.test(String(seg || '').trim())
+}
 
 // Branch movement is not a source edit -- a QA worker needs it for baseline
 // comparison. `git checkout -- <path>` / `git restore <path>` IS a working-tree
@@ -76,6 +86,8 @@ function splitSegments(cmd) {
   return String(cmd || '').split(/&&|\|\||;|\n|\|/).map(s => s.trim()).filter(Boolean)
 }
 
+const PM_MUTATING_RX = /\b(npm|pnpm|yarn)\s+(install|i|ci|add|remove|rm|uninstall|un|update|up|upgrade|link|unlink|patch|exec|dlx)\b/
+
 const MUTATING_RX = [
   /\bsed\s+[^|]*-i\b/,                       // in-place edit
   /\b(rm|mv|cp|install|truncate|chmod|chown)\b/,
@@ -84,6 +96,10 @@ const MUTATING_RX = [
   /\bgit\s+checkout\s+.*--\s/,
   /\bnpm\s+publish\b/,
   /\b(pnpm|yarn)\s+(add|remove)\b/,
+  // Anything but the exact install (which never reaches this list): a package
+  // added, removed or upgraded, an install with arguments, or an arbitrary
+  // binary run through the manager (`yarn exec`, `yarn dlx`, `pnpm dlx`).
+  PM_MUTATING_RX,
   /\bmkdir\b/,
   /\btouch\b/,
 ]
@@ -92,18 +108,20 @@ const MUTATING_RX = [
 // a protected root. `2>/dev/null` and friends are not file writes we care about.
 const REDIRECT_RX = /(?<!\d)>>?\s*("[^"]+"|'[^']+'|[^\s;|&]+)/g
 
-function bashViolation(cmd) {
+function bashViolation(cmd, sessionCwd = null) {
   // The cwd carries ACROSS segments: `cd /repo && echo x > src/a.ts` puts the
   // redirect in a later segment than the cd, so judging segments in isolation
-  // would wave it through. Track it.
-  let cwd = null
+  // would wave it through. Track it. It also carries across CALLS: the Bash
+  // tool's shell keeps its cwd, so `cd /repo` in one call and `yarn add x` in
+  // the next must be judged from /repo. The hook payload's `cwd` seeds it.
+  let cwd = sessionCwd || null
   for (const seg of splitSegments(cmd)) {
     const cd = seg.match(/\bcd\s+("[^"]+"|'[^']+'|[^\s;|&]+)/)
     if (cd) cwd = cd[1].replace(/^["']|["']$/g, '')
 
     const inRoot = (p) => underRoot(p) || (cwd && !String(p).startsWith('/') && underRoot(cwd))
 
-    if (INSTALL_RX.test(seg) || GIT_SAFE_RX.test(seg)) continue
+    if (isExactInstall(seg) || GIT_SAFE_RX.test(seg)) continue
 
     for (const m of seg.matchAll(REDIRECT_RX)) {
       const target = m[1].replace(/^["']|["']$/g, '')
@@ -166,11 +184,11 @@ if (isInvokedDirectly()) {
   }
 
   if (tool === 'Bash') {
-    const v = bashViolation(input.command)
+    const v = bashViolation(input.command, payload?.cwd)
     if (v) deny(GATE_MSG(v))
   }
 
   allow()
 }
 
-export { bashViolation, underRoot, isArtifactPath }
+export { bashViolation, underRoot, isArtifactPath, isExactInstall }
