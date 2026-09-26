@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { gateDecision as selfPaceDecision, stripDataPayloads, stripGitCommitMessages, stripHeredocBodies, stripProseArguments } from '../../scripts/self-pace-gate.mjs'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { bashViolation } from '../../scripts/readonly-repo-gate.mjs'
+import { bashViolation, isExactInstall } from '../../scripts/readonly-repo-gate.mjs'
 import {
   agentGetsGovernanceGates,
   agentGetsReadonlyRepoGate,
@@ -595,46 +595,89 @@ describe('telegram copy gate wiring', () => {
   })
 })
 
-// --- readonly-repo-gate: the install exemption must exempt installs ONLY ---
+// --- readonly-repo-gate: only the EXACT install command is exempt ---
 //
-// INSTALL_RX marks a segment as "this is a dependency install, do not inspect
-// it" -- package managers only ever write artifacts. The yarn branch used to
-// read `yarn\s+(install)?\b`: the optional group plus the word boundary made
-// it match `yarn ` + anything, so `yarn add`, `yarn exec` and `yarn dlx`
-// inherited a blanket skip that was never meant for them. Found in review on
-// #770 (2026-09-03). The other five branches all require their subcommand,
-// which is why only yarn slipped.
-describe('readonly-repo-gate: INSTALL_RX exempts installs, not every yarn call', () => {
+// Maintainer decision on #770 (2026-09-25): package installs are allowed, but
+// only the exact install command with nothing appended -- `npm install`,
+// `npm ci`, `yarn install`, bare `yarn`, `pnpm install`. The yarn branch used
+// to read `yarn\s+(install)?\b`, which matched `yarn ` + anything, so
+// `yarn add left-pad` and `yarn exec rm -rf src` skipped the gate. INSTALL_RX
+// is now anchored to the whole segment, and an appended form is judged (and,
+// inside a protected root, refused) like any other package-manager call.
+describe('readonly-repo-gate: only the exact install command is exempt', () => {
   // ROOTS defaults to <home>/projects, resolved when the module loads.
-  const repoFile = join(homedir(), 'projects', 'app', 'install.log')
+  const repo = join(homedir(), 'projects', 'app')
+  const outside = join(homedir(), 'agents', 'qa-worker')
 
-  it('still exempts the real installs, per package manager', () => {
+  const EXACT = ['npm install', 'npm ci', 'yarn install', 'yarn', 'pnpm install']
+
+  it('recognises exactly the five decided install commands', () => {
+    for (const cmd of EXACT) expect(isExactInstall(cmd), cmd).toBe(true)
     for (const cmd of [
-      `npm ci > ${repoFile}`,
-      `npm install > ${repoFile}`,
-      `pnpm install > ${repoFile}`,
-      `yarn install > ${repoFile}`,
-      `pip install -r requirements.txt > ${repoFile}`,
-      `poetry install > ${repoFile}`,
-      `bundle install > ${repoFile}`,
+      'yarn add left-pad',
+      'yarn exec rm -rf src',
+      'yarn dlx some-codemod',
+      'npm install evil-pkg',
+      'npm ci --ignore-scripts',
+      'npm i',
+      'pnpm install left-pad',
+      'pnpm add left-pad',
+      'yarn install --frozen-lockfile',
+      'CI=1 npm ci',
+      'pip install -r requirements.txt',
     ]) {
-      expect(bashViolation(cmd), cmd).toBeNull()
+      expect(isExactInstall(cmd), cmd).toBe(false)
     }
   })
 
-  it('no longer waves through a non-install yarn subcommand (the regression)', () => {
-    for (const cmd of [
-      `yarn add left-pad > ${repoFile}`,
-      `yarn exec tsx build.ts > ${repoFile}`,
-      `yarn dlx some-codemod > ${repoFile}`,
-      `yarn run build > ${repoFile}`,
-    ]) {
-      expect(bashViolation(cmd), cmd).not.toBeNull()
+  it('allows the exact installs inside a protected repo', () => {
+    for (const cmd of EXACT) {
+      expect(bashViolation(`cd ${repo} && ${cmd}`), cmd).toBeNull()
+      expect(bashViolation(cmd, repo), `${cmd} (session cwd)`).toBeNull()
     }
+  })
+
+  it('refuses yarn add and yarn exec inside a protected repo', () => {
+    for (const cmd of ['yarn add left-pad', 'yarn exec rm -rf src', 'yarn exec tsx build.ts', 'yarn dlx some-codemod']) {
+      expect(bashViolation(`cd ${repo} && ${cmd}`), cmd).not.toBeNull()
+      expect(bashViolation(cmd, repo), `${cmd} (session cwd)`).not.toBeNull()
+    }
+  })
+
+  it('refuses an install with anything appended', () => {
+    for (const cmd of [
+      'npm install evil-pkg',
+      'npm install --save left-pad',
+      'npm ci --foreground-scripts',
+      'pnpm install left-pad',
+      'yarn install --modules-folder src',
+      'npm i left-pad',
+    ]) {
+      expect(bashViolation(`cd ${repo} && ${cmd}`), cmd).not.toBeNull()
+    }
+  })
+
+  it('an appended redirect is no longer hidden behind the install', () => {
+    expect(bashViolation(`npm ci > ${repo}/src/index.ts`)).not.toBeNull()
+    expect(bashViolation(`yarn install > ${repo}/src/index.ts`)).not.toBeNull()
   })
 
   it('the exemption is per-segment, so a chained non-install is still judged', () => {
-    expect(bashViolation(`yarn install && yarn add left-pad > ${repoFile}`)).not.toBeNull()
+    expect(bashViolation(`cd ${repo} && yarn install && yarn add left-pad`)).not.toBeNull()
+    expect(bashViolation(`cd ${repo} && npm ci && yarn exec rm -rf src`)).not.toBeNull()
+  })
+
+  it('judges from the session cwd the hook payload carries', () => {
+    // `cd <repo>` in one Bash call, `yarn add x` in the next: the shell kept
+    // the cwd, so the second call must be judged from the repo.
+    expect(bashViolation('yarn add left-pad', repo)).not.toBeNull()
+    expect(bashViolation('yarn add left-pad', outside)).toBeNull()
+  })
+
+  it('leaves read-only package-manager use alone', () => {
+    for (const cmd of ['npm test', 'npm run build', 'yarn test', 'pnpm run lint']) {
+      expect(bashViolation(`cd ${repo} && ${cmd}`), cmd).toBeNull()
+    }
   })
 })
 
