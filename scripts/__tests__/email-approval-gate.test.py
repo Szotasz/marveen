@@ -23,7 +23,9 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import tokenize
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOKS = os.path.join(os.path.dirname(HERE), "hooks")
@@ -84,11 +86,36 @@ def write_standing(store, value):
     return path
 
 
-def run_gate(store, payload):
+def make_daily_log_stub(received):
+    """A minimal /api/daily-log endpoint. Records (parsed body, Authorization)
+    so the test can assert WHAT reached the owner's log, not merely that
+    something did."""
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 -- BaseHTTPRequestHandler's contract
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(n).decode("utf-8")
+            try:
+                body = json.loads(raw)
+            except Exception:
+                body = {"_unparseable": raw}
+            received.append((body, self.headers.get("Authorization")))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
+
+        def log_message(self, *a):  # keep the test output clean
+            pass
+    return Handler
+
+
+def run_gate(store, payload, extra_env=None):
     env = dict(os.environ,
                EMAIL_APPROVAL_GATE_STORE=store,
                EMAIL_APPROVAL_WINDOW_S=str(WINDOW),
                OUTGOING_COPY_GATE_RULES=os.path.join(store, "no-rules.json"))
+    if extra_env:
+        env.update(extra_env)
     proc = subprocess.run([sys.executable, GATE], input=json.dumps(payload).encode(),
                           capture_output=True, env=env)
     return proc.returncode, proc.stdout.decode(), proc.stderr.decode()
@@ -437,12 +464,94 @@ with tempfile.TemporaryDirectory() as td:
     check("standing: rossz alaku lista (string lista helyett) -> nincs jog, es lathato",
           code == 2 and "alakja nem lista" in err, f"exit={code}")
 
-    # hianyzo fajl = a normal allapot, nem hiba: csendben a regi ut
+    # hianyzo fajl = a normal allapot, nem hiba: csendben a regi ut. "Extra zaj"
+    # = a lista HIBA-jegyzete (romlott/rossz alaku); annak nincs mit jeleznie,
+    # ha a fajl egyszeruen nincs.
     store3 = make_store(os.path.join(td, "sl4"), level=2)
     code, _, err = run_gate(store3, mcp_send(to="dani@pelda.hu"))
     check("standing: lista-fajl nelkul minden marad a regiben, extra zaj nelkul",
-          code == 2 and "NINCS jovahagyas" in err and "allando" not in err.split("Visszatero")[0],
+          code == 2 and "NINCS jovahagyas" in err
+          and "nem olvashato" not in err and "alakja nem lista" not in err,
           f"exit={code}")
+
+    # --- BIRALOI KERES 1: a deny NE tanitsa meg a kiskaput -------------------
+    # A tiltas korabban SZO SZERINT leirta, hogy a cim felvehetó a
+    # email-standing-recipients.json fajlba, es onnantol jovahagyas nelkul mehet
+    # ra level. Csakhogy azt a fajlt AZ AGENS IS irja: a store/ ala ir nap mint
+    # nap. Vagyis a kapu sajat tiltasa volt a megkerules hasznalati utmutatoja.
+    # A jogot tovabbra is a gazda adja, de az UTAT a tiltas nem mondja meg.
+    code, _, err = run_gate(store3, mcp_send(to="dani@pelda.hu"))
+    check("keres1: a deny NEM nevezi meg a lista-fajlt",
+          "email-standing-recipients" not in err and ".json" not in err,
+          f"err={err[-400:]!r}")
+    check("keres1: a deny a GAZDAHOZ kuldi az agenst, nem a fajlhoz",
+          "KERD TOLE" in err and "MAGAD NE vegezd el" in err,
+          f"err={err[-400:]!r}")
+    # Kontroll: a regi, tanito mondat tenylegesen eltunt -- kulonben a ket
+    # fenti allitas akkor is zold lenne, ha csak a fajlnevet vettem volna ki.
+    check("keres1 kontroll: a 'felveheti a cimet ... fajlba' mondat nincs tobbe",
+          "felveheti a cimet" not in err, f"err={err[-400:]!r}")
+
+    # --- BIRALOI KERES 2: a jovahagyas nelkuli kuldes hagyjon nyomot ---------
+    # Ez az EGYETLEN ut, amin emberi dontes nelkul megy ki level, ezert a nyom
+    # nem mellektermek, hanem a jog feltetele.
+    store4 = make_store(os.path.join(td, "sl5"), level=2)
+    write_standing(store4, {"recipients": ["dani@pelda.hu"]})
+    log_path = os.path.join(store4, "email-standing-sends.log")
+    code, out, _ = run_gate(store4, mcp_send(to="dani@pelda.hu", subject="Napi jelentes"))
+    log_text = open(log_path, encoding="utf-8").read() if os.path.exists(log_path) else ""
+    check("keres2: a listas kuldes sort ir a helyi naploba",
+          code == 0 and "dani@pelda.hu" in log_text, f"exit={code} log={log_text!r}")
+    check("keres2: a naplosor idobelyeges (offsettel, nem UTC)",
+          re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{4} ", log_text or "x") is not None,
+          f"log={log_text[:80]!r}")
+    check("keres2: a naplosor megmondja, hogy a gazdat NEM sikerult ertesiteni",
+          "NEM MENT KI" in log_text, f"log={log_text!r}")
+    check("keres2: a systemMessage sem allitja, hogy a gazda latta",
+          "NEM sikerult ertesiteni" in out, f"out={out[:300]!r}")
+
+    # A ket kuldes ket sor: a naplo append-only, nem felulir.
+    run_gate(store4, mcp_send(to="dani@pelda.hu", subject="Masodik"))
+    after = open(log_path, encoding="utf-8").read() if os.path.exists(log_path) else ""
+    check("keres2: a naplo append-only (ket kuldes = ket sor)",
+          len([l for l in after.splitlines() if l.strip()]) == 2, f"log={after!r}")
+
+    # Es a kritikus el: ha a nyom NEM irhato, a jog sem all.
+    store5 = make_store(os.path.join(td, "sl6"), level=2)
+    write_standing(store5, {"recipients": ["dani@pelda.hu"]})
+    blocked_log = os.path.join(store5, "email-standing-sends.log")
+    os.mkdir(blocked_log)  # egy KONYVTAR ugyanazon a neven -> az append OSError
+    code, _, err = run_gate(store5, mcp_send(to="dani@pelda.hu"))
+    check("keres2: rogzithetetlen kuldes -> fail-closed TILTVA, nem csendes atengedes",
+          code == 2 and "nem rogzitheto" in err, f"exit={code} err={err[:300]!r}")
+
+    # A gazda-ertesites ELMEGY, ha a dashboard el: stub szerver a napi naplora.
+    store6 = make_store(os.path.join(td, "sl7"), level=2)
+    write_standing(store6, {"recipients": ["dani@pelda.hu"]})
+    with open(os.path.join(store6, ".dashboard-token"), "w", encoding="utf-8") as fh:
+        fh.write("teszt-token")
+    received = []
+    srv = HTTPServer(("127.0.0.1", 0), make_daily_log_stub(received))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        code, out, _ = run_gate(store6, mcp_send(to="dani@pelda.hu", subject="Elo dashboard"),
+                                extra_env={"WEB_PORT": str(srv.server_port),
+                                           "MAIN_AGENT_ID": "teszt-agens"})
+    finally:
+        srv.shutdown()
+    check("keres2: elo dashboardnal a kuldes a GAZDA napi naplojaba kerul",
+          code == 0 and len(received) == 1, f"exit={code} received={len(received)}")
+    if received:
+        body, auth = received[0]
+        check("keres2: a napi naplo bejegyzes a fo agens neveben, Bearer tokennel megy",
+              body.get("agent_id") == "teszt-agens" and auth == "Bearer teszt-token",
+              f"body={body!r} auth={auth!r}")
+        check("keres2: a bejegyzes megnevezi a cimzettet es hogy jovahagyas NELKUL ment",
+              "dani@pelda.hu" in body.get("content", "")
+              and "JOVAHAGYAS NELKUL" in body.get("content", ""),
+              f"content={body.get('content')!r}")
+    check("keres2: es ilyenkor a systemMessage sem beszel elmaradt ertesitesrol",
+          "NEM sikerult" not in out, f"out={out[:300]!r}")
 
     # kontroll: a matcher tud is talalni -- kulonben a fenti tiltasok
     # akkor is atmennenek, ha a funkcio egyaltalan nem letezne

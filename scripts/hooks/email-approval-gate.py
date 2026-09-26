@@ -24,6 +24,15 @@ without clicking, and the alternative he was about to reach for -- raising the
 level to 3 -- is far wider: the level knows nothing about WHO the letter goes
 to, so it would also release every supplier letter. The list is checked only at
 level 2; level 1 stays a hard deny, so "signal only" keeps meaning that.
+Because that path authorises with no human deciding on THAT letter, it carries
+two obligations the rest of the gate does not (review of #1608): it LEAVES A
+TRACE the owner can read -- an append-only local log plus an entry in the
+dashboard's daily log, and an unrecordable send is denied -- and the level-2
+DENY MESSAGE does not name the list file or the way onto it. The old wording
+did, and since the agent can write store/ itself, the gate's own refusal was
+the manual for getting around it. The right to send still comes from the
+owner; the route to it is no longer handed out by the thing doing the
+refusing.
 
 Anchor semantics (Marveen msg 17900, 5+1 conditions):
   1. the hash is computed from the SAME extraction the copy gate audits
@@ -216,6 +225,102 @@ def standing_match(env: dict, standing):
     return addrs[0] if addrs[0] in standing else None
 
 
+# --- EMAILALLANDOCIMZETT926 / SZAMONKERHETOSEG ----------------------------
+# The standing list is the ONLY path on this gate that puts a letter on the
+# wire without a human deciding on THAT letter. Its entire accountability is
+# therefore the trace it leaves, and the trace has to reach the OWNER -- a
+# systemMessage is read by the very process this gate exists to constrain, so
+# on its own it is not a record, it is a receipt handed to the sender.
+# Every approval-free send is recorded twice:
+#   - locally, in an append-only log next to the list (last-resort record);
+#   - in the dashboard's daily log, which is where the owner actually reads.
+# The two failure modes are handled DIFFERENTLY, on purpose:
+#   - a failed LOCAL append DENIES the send. It is a file append into the same
+#     directory the gate just read the list from; if that cannot be done, the
+#     send cannot be recorded at all, and an unrecordable approval-free send is
+#     precisely the invisible hole this list would otherwise open.
+#   - a failed DASHBOARD post does NOT deny. The owner's own notifications must
+#     not hinge on the dashboard being up. Instead the local line says in words
+#     that the owner was not reached, and so does the systemMessage, so the gap
+#     is itself on the record rather than being the absence of one.
+STANDING_LOG = os.path.join(STORE_DIR, "email-standing-sends.log")
+
+
+def _install_setting(key: str, default: str) -> str:
+    """Env first, then the install .env, then the default. Never an
+    install-specific hardcode (distribution rule)."""
+    v = os.environ.get(key)
+    if v and v.strip():
+        return v.strip()
+    try:
+        with open(os.path.join(_ROOT, ".env"), encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith(key + "="):
+                    val = line.split("=", 1)[1].strip()
+                    if val:
+                        return val
+    except Exception:  # noqa: BLE001 -- a missing .env just means the default
+        pass
+    return default
+
+
+def _standing_log_append(line: str) -> None:
+    """Append ONE timestamped line. Deliberately lets OSError out: the caller
+    turns it into a deny. Local time with offset, never UTC -- same reason as
+    the copy gate's log (an entry that cannot be placed in time checks
+    nothing)."""
+    from datetime import datetime
+    stamp = datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
+    with open(STANDING_LOG, "a", encoding="utf-8") as fh:
+        fh.write(f"{stamp} {line}\n")
+
+
+def _post_daily_log(text: str):
+    """Best-effort daily-log entry on the dashboard. Returns (ok, detail).
+    Never raises: its failure is data for the local log, not an exception."""
+    import urllib.request
+    try:
+        with open(os.path.join(STORE_DIR, ".dashboard-token"), encoding="utf-8") as fh:
+            token = fh.read().strip()
+        if not token:
+            return False, "ures dashboard-token"
+        url = "http://127.0.0.1:%s/api/daily-log" % _install_setting("WEB_PORT", "3420")
+        body = json.dumps({"agent_id": _install_setting("MAIN_AGENT_ID", "marveen"),
+                           "content": text}, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(url, data=body, method="POST", headers={
+            "Authorization": "Bearer " + token,
+            "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            code = getattr(resp, "status", None) or resp.getcode()
+            if 200 <= int(code) < 300:
+                return True, "ok"
+            return False, f"HTTP {code}"
+    except Exception as exc:  # noqa: BLE001 -- the local log carries the failure
+        return False, repr(exc)
+
+
+def standing_trace(addr: str, env: dict):
+    """Record an approval-free send. Returns None when the owner was reached,
+    otherwise the reason he was not -- which the caller puts into the
+    systemMessage, so the sending agent cannot believe the owner saw it.
+
+    Raises OSError when the LOCAL append fails; the caller denies on that."""
+    from datetime import datetime
+    head = env.get("text", "").replace("\n", " ").strip()[:120] or "(nincs szoveg)"
+    owner_entry = (
+        f"## {datetime.now().astimezone().strftime('%H:%M')} -- Level ment ki "
+        "JOVAHAGYAS NELKUL (allando cimzett)\n"
+        f"Cimzett: {addr}\n"
+        f"Level eleje: {head}\n"
+        "Ez a level az allando cimzett-lista alapjan ment ki, per-level jovahagyas "
+        "nelkul. Ha erre a cimre nem akarod ezt, vedd ki a cimet a listabol.")
+    ok, detail = _post_daily_log(owner_entry)
+    _standing_log_append(
+        f"allando cimzett, jovahagyas nelkuli kuldes | cimzett={addr} | "
+        f"level-eleje={head!r} | gazda-ertesites="
+        + ("ok" if ok else f"NEM MENT KI ({detail})"))
+    return None if ok else detail
+
 def content_anchor(env: dict) -> str:
     """sha256 over the envelope: to + cc + bcc + text (subject+body exactly as
     the copy gate audits it, from the shared extractor). Canonical JSON so the
@@ -364,10 +469,27 @@ def main():
         prefix = prefix + f"({standing_note})\n"
     hit = standing_match(env, standing)
     if hit:
+        # The trace is part of the AUTHORISATION here, not a side effect of it:
+        # this is the one allow-path with no human deciding on THIS letter, so a
+        # send that cannot be recorded does not go out at all.
+        try:
+            owner_gap = standing_trace(hit, env)
+        except OSError as exc:
+            deny(prefix +
+                 f"email_send level 2: {hit} rajta van az allando cimzett-listan, DE a "
+                 f"kuldes nem rogzitheto ({exc!r}) -- fail-closed TILTVA.\n"
+                 "A lista az egyetlen ut, amin emberi dontes nelkul megy ki level, ezert "
+                 f"a NYOMA a feltetele: ha a {os.path.basename(STANDING_LOG)} nem irhato, "
+                 "a jog sem all. Tedd irhatova, aztan kuldd ujra.")
+        note = ("A kuldes a gazda napi naplojaba is bekerult."
+                if owner_gap is None else
+                f"FIGYELEM: a gazdat NEM sikerult ertesiteni ({owner_gap}). A helyi "
+                f"{os.path.basename(STANDING_LOG)} rogzitette a kuldest ES az ertesites "
+                "hianyat is, de a gazda ettol meg nem tud rola -- ha a level fontos, "
+                "szolj neki a csatornan.")
         print(json.dumps({"systemMessage":
-            f"email-approval-gate: {hit} allando cimzett (email-standing-recipients.json), "
-            "a kuldes jovahagyas nelkul mehet. Minden mas cimzett tovabbra is "
-            "jovahagyas-koteles."}))
+            f"email-approval-gate: {hit} allando cimzett, a kuldes jovahagyas nelkul "
+            f"mehet. Minden mas cimzett tovabbra is jovahagyas-koteles. {note}"}))
         sys.exit(0)
 
     anchor = content_anchor(env)
@@ -400,9 +522,10 @@ def main():
          "Jovahagyas UTAN PONTOSAN ugyanezt a hivast kuldd ujra -- a horgony csak "
          "byte-azonos levelre egyezik, es a jovahagyas egyszer hasznalhato, "
          f"{WINDOW_S // 60} percig ervenyes.\n"
-         "Visszatero, egy cimzettnek szolo levelnel (pl. sajat ertesites) a gazda "
-         f"felveheti a cimet a {os.path.basename(STANDING_PATH)} fajlba; onnantol az "
-         "a cim jovahagyas nelkul mehet, cc es bcc nelkul.")
+         "Ha ez visszatero, EGY cimzettnek szolo level (tipikusan a gazda sajat "
+         "ertesitese), a gazda beallithatja a cimet allando cimzettnek. KERD TOLE "
+         "a csatornan es vard meg a valaszat. A beallitast MAGAD NE vegezd el: ez "
+         "a kapu sajat korlatja, es egy korlatot nem a korlatozott old fel.")
 
 
 if __name__ == "__main__":
