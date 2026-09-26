@@ -56,9 +56,11 @@ describe('sendPromptToSession waitForIdle gate', () => {
     const call = SCHEDULE_RUNNER.slice(callIdx, callIdx + 300)
     // waitForIdle is the negation of forceSend: ON for normal tasks, OFF for
     // forceSend so a long-busy session is not blocked on the 12s gate.
-    // The opts object is multi-line since AUDITBORITEKVESZ918 added onBusySend,
-    // so this pins the member itself, not the whole literal.
-    expect(call).toMatch(/waitForIdle:\s*!task\.forceSend/)
+    // ESCALATEAFTER921: reads the local `forceSend` (task.forceSend ||
+    // escalated), not `task.forceSend` alone -- a task escalated past its
+    // busy-deferral window must also skip the idle gate. The opts object is
+    // multi-line (onBusySend), so this pins the member itself.
+    expect(call).toMatch(/waitForIdle:\s*!forceSend\b/)
   })
 
   it('documents WHY forceSend skips the gate', () => {

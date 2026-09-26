@@ -59,7 +59,14 @@ describe('taskInjectionRank: forceSend outranks tasks outranks heartbeats', () =
 
 describe('forceSend defers on context saturation instead of injecting', () => {
   it('asks saturationRefusesDispatch inside the forceSend branch and returns busy', () => {
-    const idx = SRC.indexOf('if (task.forceSend) {')
+    // ESCALATEAFTER921: the saturation-deferral check now reads the local
+    // `forceSend` (task.forceSend || escalated), not `task.forceSend` alone --
+    // a task escalated past its busy-deferral window must go through the SAME
+    // saturation guard as a statically forceSend=true task (see the escalation
+    // comment in schedule-runner.ts). `task.forceSend` alone still gates a
+    // DIFFERENT branch (the MCP pre-check), so anchoring on that literal here
+    // would silently match the wrong branch instead of failing loudly.
+    const idx = SRC.indexOf('if (forceSend) {')
     expect(idx).toBeGreaterThan(0)
     const branch = SRC.slice(idx, idx + 1800)
     // The deferral must read the SAME verdict the context-guard net and the

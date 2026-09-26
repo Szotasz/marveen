@@ -45,6 +45,13 @@ vi.mock('../web/atomic-write.js', () => ({
 vi.mock('../db.js', () => ({
   appendTaskRun: (...a: unknown[]) => mockAppendTaskRun(...a),
   listPendingTaskRetries: () => mockListPendingRetries(),
+  // ESCALATEAFTER921: attemptFireTask now looks up the single retry row for
+  // (taskName, agentName) before the busy check, mirroring the real
+  // getPendingTaskRetry(taskName, agentName) query over the same table
+  // listPendingTaskRetries() reads (see db.ts). Missing from this mock, a
+  // rebase-merge gap surfaced by the suite, not by the rebase itself.
+  getPendingTaskRetry: (taskName: unknown, agentName: unknown) =>
+    pendingRetries.find((r) => r.task_name === taskName && r.agent_name === agentName),
   deletePendingTaskRetry: (...a: unknown[]) => mockDeletePendingRetry(a[0], a[1]),
   updatePendingTaskRetry: mockUpdatePendingRetry,
   insertPendingTaskRetryIfNew: vi.fn(),
