@@ -10,6 +10,7 @@
 // Precedence (first match wins):
 //   1. Authorization: Bearer <dashboard token>   -> { kind: 'token' }
 //   2. Authorization: Bearer <device key>        -> { kind: 'device', device, deviceId }
+//   2b. Authorization: Bearer <agent token>      -> { kind: 'agent', agent, scope }
 //   3. SSE pane-stream ?token=<dashboard token>   -> { kind: 'token' }  (path-scoped)
 //   4. SSE pane-stream ?token=<device key>        -> { kind: 'device' } (path-scoped)
 //   5. Federation inbound token, endpoint-scoped  -> { kind: 'federation', peer }
@@ -25,10 +26,13 @@ import { checkBearerToken } from './dashboard-auth.js'
 import { identifyFederationCaller } from './federation/config.js'
 import { resolveSession } from './auth-sessions.js'
 import { resolveDeviceKey } from './auth-device-keys.js'
+import { resolveAgentToken } from './auth-agent-tokens.js'
+import type { AgentTokenScope } from './agent-token-scope.js'
 
 export type AuthResult =
   | { kind: 'token' }
   | { kind: 'device'; device: string; deviceId: number }
+  | { kind: 'agent'; agent: string; tokenId: number; scope: AgentTokenScope }
   | { kind: 'federation'; peer: string }
   | { kind: 'session'; user: string }
   | { kind: 'none' }
@@ -89,8 +93,16 @@ export function resolveAuth(
   //    rows the whole step never resolves -- fresh installs unaffected).
   const bearerMatch = /^Bearer\s+(.+)$/.exec(req.headers.authorization ?? '')
   if (bearerMatch) {
-    const dk = resolveDeviceKey(bearerMatch[1]!.trim())
+    const presented = bearerMatch[1]!.trim()
+    const dk = resolveDeviceKey(presented)
     if (dk) return { kind: 'device', device: dk.name, deviceId: dk.id }
+    // 2b. Per-agent scoped token (mvat_ prefix). Like the device lane this runs
+    //     only after the dashboard token missed, so the token lane stays
+    //     byte-identical. WHICH endpoints this principal may reach is decided
+    //     centrally by agentTokenAllows() in the web.ts gate -- default-deny --
+    //     not by the routes, so a new route is out of scope until listed.
+    const at = resolveAgentToken(presented)
+    if (at) return { kind: 'agent', agent: at.agent, tokenId: at.id, scope: at.scope }
   }
 
   // 3. SSE pane stream ?token= (EventSource cannot set an Authorization header):

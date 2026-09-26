@@ -11,6 +11,11 @@ import {
   _clearDeviceKeyCacheForTest,
 } from '../web/auth-device-keys.js'
 import {
+  createAgentToken,
+  resolveAgentToken,
+  _clearAgentTokenCacheForTest,
+} from '../web/auth-agent-tokens.js'
+import {
   createSession,
   resolveSession,
   _clearSessionCacheForTest,
@@ -80,25 +85,32 @@ beforeAll(() => {
 
 beforeEach(() => {
   _clearDeviceKeyCacheForTest()
+  _clearAgentTokenCacheForTest()
   _clearSessionCacheForTest()
   const db = getDb()
   db.prepare('DELETE FROM device_keys').run()
+  db.prepare('DELETE FROM agent_tokens').run()
   db.prepare('DELETE FROM auth_sessions').run()
   db.prepare('DELETE FROM dashboard_users').run()
   db.prepare('DELETE FROM config_change_log').run()
 })
 
 describe('securityReset', () => {
-  it('revokes all device keys and sessions, keeps users, audits the counts', async () => {
+  it('revokes all device keys, agent tokens and sessions, keeps users, audits the counts', async () => {
     const u = createDashboardUser('op', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
     const key = createDeviceKey('phone')
+    // A scoped agent token is a credential living on ANOTHER machine -- exactly
+    // what a break-glass reset exists to cut, so it goes with the rest.
+    const agentToken = createAgentToken('sam', 'sam outstation', 'remote-agent')
     const cookie = createSession({ userId: u.id, username: u.username })
     expect(resolveDeviceKey(key.key)).not.toBeNull()
+    expect(resolveAgentToken(agentToken.token)).not.toBeNull()
     expect(resolveSession(cookie)).not.toBeNull()
 
     const r = securityReset('test')
-    expect(r).toEqual({ deviceKeysRevoked: 1, sessionsCleared: 1 })
+    expect(r).toEqual({ deviceKeysRevoked: 1, agentTokensRevoked: 1, sessionsCleared: 1 })
     expect(resolveDeviceKey(key.key)).toBeNull()
+    expect(resolveAgentToken(agentToken.token)).toBeNull()
     expect(resolveSession(cookie)).toBeNull()
     expect(listDeviceKeys()).toHaveLength(0)
     // The user (and their password hash) survive: this is not a factory reset.
@@ -107,11 +119,11 @@ describe('securityReset', () => {
     const rows = auditRows('security.reset')
     expect(rows).toHaveLength(1)
     expect(rows[0]!.actor).toBe('test')
-    expect(rows[0]!.new_value).toBe('device_keys=1 sessions=1')
+    expect(rows[0]!.new_value).toBe('device_keys=1 agent_tokens=1 sessions=1')
   })
 
   it('is a safe no-op on an empty install', () => {
-    expect(securityReset('test')).toEqual({ deviceKeysRevoked: 0, sessionsCleared: 0 })
+    expect(securityReset('test')).toEqual({ deviceKeysRevoked: 0, agentTokensRevoked: 0, sessionsCleared: 0 })
   })
 })
 

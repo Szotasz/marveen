@@ -1342,6 +1342,34 @@ export function initDatabase(dbPathOverride?: string): void {
   // line in the same step. Null for keys minted outside the pairing flow.
   try { db.exec(`ALTER TABLE device_keys ADD COLUMN install_id TEXT`) } catch { /* column already exists */ }
 
+  // Per-agent scoped tokens (TOKENSZUKITES909). A credential bound to ONE
+  // agent id and ONE named endpoint scope, so a remote agent on someone else's
+  // network can reach the queue and the board without holding the all-powerful
+  // dashboard token. Only sha256(token) is stored; see web/auth-agent-tokens.ts.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_tokens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      token_hash TEXT NOT NULL UNIQUE,
+      agent_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      last_used_at INTEGER,
+      expires_at INTEGER,
+      revoked_at INTEGER
+    )
+  `)
+  // Soft revoke (review request on PR #1449): revoking used to DELETE the row,
+  // so an audit record naming a revoked token pointed at nothing. The row now
+  // stays and carries the moment it stopped being valid; resolveAgentToken()
+  // fails closed on it. Existing installs get the column here.
+  try {
+    db.exec('ALTER TABLE agent_tokens ADD COLUMN revoked_at INTEGER')
+  } catch {
+    // already there
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_agent_tokens_agent ON agent_tokens(agent_id)')
+
   // --- OTel Distributed Tracing (card def5a189) ---
   // SQLite-native span store. No external OTel SDK: spans are written via
   // /api/spans and the message-router middleware injects trace context into
