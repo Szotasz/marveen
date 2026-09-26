@@ -85,6 +85,10 @@ function makeRepo(dirName: string): string {
   execFileSync('git', ['-C', repo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'])
   cpSync(join(ROOT, 'scripts', SCRIPT), join(repo, 'scripts', SCRIPT))
   writeFileSync(join(repo, 'store', '.dashboard-token'), 'probe-token\n')
+  // The SENDER now comes from the install's .env and from nowhere else, so a
+  // fixture that expects a POST has to have an install identity. Without it
+  // the hook refuses before curl, and every case here would measure silence.
+  writeFileSync(join(repo, '.env'), 'MAIN_AGENT_ID=payload-proba\n')
   const r = spawnSync('/bin/bash', [join(repo, 'scripts', SCRIPT)], { cwd: repo, encoding: 'utf-8', timeout: 20000 })
   expect(r.status).toBe(0)
   return repo

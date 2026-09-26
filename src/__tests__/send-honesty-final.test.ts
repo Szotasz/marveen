@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { spawnSync, execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync, existsSync, readFileSync, cpSync, realpathSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -81,6 +81,15 @@ describe('generated prod-tree post-checkout hook: honest alert delivery', () => 
     execFileSync('git', ['-C', repo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'])
     cpSync(join(ROOT, 'scripts', 'install-prod-tree-guard-hook.sh'), join(repo, 'scripts', 'install-prod-tree-guard-hook.sh'))
     writeFileSync(join(repo, 'store', '.dashboard-token'), 'test-token\n')
+    // A RECIPIENT IS NOW REQUIRED FOR THE SEND PATH TO RUN AT ALL. Without this
+    // .env the hook resolves no recipient, refuses to send, and returns before
+    // curl is ever invoked -- at which point this test still PASSES while
+    // measuring nothing: two of its three assertions are not.toContain, and
+    // those go vacuously true against stderr that never mentions delivery.
+    // Measured 2026-09-25 (Sam): exactly that happened, and only the third
+    // assertion failed, which is the one that said so out loud. The early-exit
+    // path has its own case below; this one is about delivery honesty.
+    writeFileSync(join(repo, '.env'), 'MAIN_AGENT_ID=probanev\n')
     // The repo root as cwd is the production shape (update.sh cd-s there), kept
     // here deliberately. The installer no longer DEPENDS on it -- it resolves
     // git-common-dir against its own root -- and that independence is pinned
@@ -126,6 +135,25 @@ describe('generated prod-tree post-checkout hook: honest alert delivery', () => 
     const dead = runHook(hook, repo, { CURL_STUB_EXIT: '6' })
     expect(dead.status).toBe(0)
     expect(dead.stderr).toContain('NEM ert celba')
+  })
+
+  it('with NO recipient resolvable, nothing is sent and the refusal is loud (the switch still reaches a human)', () => {
+    // The other case pins what happens when delivery FAILS. This one pins the
+    // step before it: when there is no id to deliver to, the hook must not
+    // invent one. Separate case on purpose -- folding it into the delivery
+    // test is what made that test measure nothing when the early exit appeared.
+    const { hook, repo } = setupRepoWithHook()
+    rmSync(join(repo, '.env'), { force: true })
+    const r = runHook(hook, repo, { CURL_STUB_HTTP: '200' })
+    expect(r.status).toBe(0)                       // a guard must not break git
+    expect(r.stderr).toContain('[prod-tree-guard]')
+    expect(r.stderr).toContain('MAIN_AGENT_ID')
+    // and the alert text itself still reaches the person at the terminal
+    expect(r.stderr).toContain('feature-probe')
+    // POSITIVE CONTROL for the claim "nothing is sent": the stub curl records
+    // every invocation, so an empty log is evidence rather than an assumption.
+    const log = join(stage, 'curl.log')
+    expect(existsSync(log) ? readFileSync(log, 'utf-8') : '').toBe('')
   })
 })
 
