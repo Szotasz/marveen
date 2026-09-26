@@ -1,3 +1,4 @@
+import { SYSTEM_DIRECTIVE_SENDER } from './system-directive.js'
 import { statSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
@@ -133,6 +134,16 @@ function handoffPathFor(name: string): string {
 
 function handoffMtime(name: string): number | null {
   try { return statSync(handoffPathFor(name)).mtimeMs } catch { return null }
+}
+
+// CGFROM924: every guard notice to the main agent goes out as 'system'. The
+// notice is written BY the guard, not by the agent being restarted --
+// attributing it to that agent polluted the agent's own "what did I send"
+// ledger, and 'system' plus the router's msg_id keeps it verifiable
+// (GET /api/messages/<id> -> from_agent=system). The one call site for
+// createAgentMessage in this file; a test pins both.
+export function postGuardNotice(content: string, originNote: string): ReturnType<typeof createAgentMessage> {
+  return createAgentMessage(SYSTEM_DIRECTIVE_SENDER, MAIN_AGENT_ID, content, originNote)
 }
 
 export function handoffPrompt(pctRound: number, handoffPath: string): string {
@@ -620,9 +631,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
                   'A guard kb. 10 percenkent ujraprobalja; ez a riasztas orankent ismetlodik, amig tart.',
                 )
               } else {
-              const msg = createAgentMessage(
-                name,
-                MAIN_AGENT_ID,
+              const msg = postGuardNotice(
                 `[CONTEXT-GUARD] ${count}. EGYMAST KOVETO bukott mentes a(z) "${name}" agensnel. ` +
                 `Ok: ${decision.reason}` + (pctRound !== null ? ` (kontextus ~${pctRound}%)` : '') +
                 `. Utolso hiba: ${err instanceof Error ? err.message : String(err)}. ` +
@@ -644,9 +653,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           break
         }
         try {
-          createAgentMessage(
-            name,
-            MAIN_AGENT_ID,
+          postGuardNotice(
             `[CONTEXT-GUARD] Ujrainditottam a(z) "${name}" agentet -- ok: ${decision.reason}` +
             (pctRound !== null ? ` (kontextus ~${pctRound}%)` : '') +
             `. A regi sessionbe az utolso percekben kuldott uzenetek/utasitasok ELVESZHETTEK -- ellenorizd es kuldd ujra oket.` +

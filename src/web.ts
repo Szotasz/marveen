@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
-import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID } from './config.js'
+import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, RESPAWN_ENABLED } from './config.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
@@ -26,6 +26,8 @@ import { startChannelHealthMonitor } from './web/channel-health-monitor.js'
 import { startChannelIntakeMonitor } from './web/channel-intake-monitor.js'
 import { startStuckInputWatcher } from './web/stuck-input-watcher.js'
 import { startInboxNudgeWatcher } from './web/inbox-nudge-watcher.js'
+import { startModelVersionGuard } from './web/model-version-guard.js'
+import { startBootAutostart } from './web/boot-autostart.js'
 import { startStuckToolCallWatcher } from './web/stuck-tool-call-watcher.js'
 import { startReauthHealer } from './web/reauth-healer.js'
 import { startAutoRestartRunner } from './web/auto-restart-runner.js'
@@ -455,6 +457,10 @@ export function startWebServer(port = 3420): http.Server {
   if (!webOnly) logger.info('Stuck-tool-call watcher started (30s poll, 35s offset)')
 
   const inboxNudgeInterval = webOnly ? undefined : startInboxNudgeWatcher()
+  const modelVersionGuardInterval = webOnly ? undefined : startModelVersionGuard()
+  const bootAutostartTimer = webOnly || !RESPAWN_ENABLED ? undefined : startBootAutostart()
+  if (bootAutostartTimer) logger.info('Boot autostart scheduled (store/boot-autostart.json, 45s delay)')
+  if (modelVersionGuardInterval) logger.info('Model-version guard started (120s poll, 65s offset)')
   if (!webOnly) logger.info('Inbox nudge watcher started (20s poll, 55s offset)')
 
   const reauthHealerInterval = webOnly ? undefined : startReauthHealer()
@@ -682,6 +688,8 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     if (channelIntakeInterval) clearInterval(channelIntakeInterval)
     if (costsSyncInterval) clearInterval(costsSyncInterval)
     clearInterval(stuckInputInterval)
+    if (modelVersionGuardInterval) clearInterval(modelVersionGuardInterval)
+    clearTimeout(bootAutostartTimer)
     clearInterval(stuckToolCallInterval)
     if (inboxNudgeInterval) clearInterval(inboxNudgeInterval)
     if (reauthHealerInterval) clearInterval(reauthHealerInterval)
