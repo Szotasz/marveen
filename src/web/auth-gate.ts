@@ -25,6 +25,7 @@ import { checkBearerToken } from './dashboard-auth.js'
 import { identifyFederationCaller } from './federation/config.js'
 import { resolveSession } from './auth-sessions.js'
 import { resolveDeviceKey } from './auth-device-keys.js'
+import { isKnownAgent } from './agent-config.js'
 
 export type AuthResult =
   | { kind: 'token' }
@@ -118,4 +119,43 @@ export function resolveAuth(
   }
 
   return { kind: 'none' }
+}
+
+// DEVICEIDENTITY829: shared bearer token is still the only credential every
+// fleet agent has, so a body-declared identity field (from/agent_id/author/
+// resolved_by) can always be forged by any holder -- the isKnownAgent guards
+// in each route only reject an UNKNOWN name, not a stolen KNOWN one. A device
+// key closes that: it is a hashed, per-caller credential (auth-device-keys.ts),
+// so when a request authenticates as one, the caller cannot legitimately claim
+// any identity but its own. Once every fleet agent holds a device key, this
+// makes body-declared identity redundant for those callers; while migration is
+// in progress (some callers still on the shared token), this only tightens the
+// device-authenticated ones and leaves 'token' callers exactly as before.
+//
+// Route usage: call BEFORE the existing isKnownAgent-family guard, with the
+// identity value the route is about to persist. Returns an error string to
+// send as 403, or null to fall through to the existing guard unchanged.
+// Takes the flattened `RouteContext['auth']` shape (not `AuthResult` directly)
+// since that is what every route handler actually holds.
+// Sentinel Bon + Logra Bon, device-key migration plan, 2026-08-29.
+export function deviceIdentityMismatch(
+  auth: { kind: string; device?: string } | undefined,
+  claimed: string,
+): string | null {
+  if (!auth || auth.kind !== 'device') return null
+  if (auth.device === claimed) return null
+  // FIXPOINT2 (maintainer review, PR #1230): this only constrains identity
+  // when the device ITSELF is a registered fleet agent -- the state the
+  // migration-plan comment above describes, once every fleet agent carries
+  // its own key. Today every device key belongs to the OWNER's own hardware
+  // (a phone, a Bridge install; see auth-device-keys.ts -- "the principal is
+  // the device itself ... not a user"), never to a fleet agent, so its name
+  // is never a fleet agent id. Firing here regardless of that gave the owner's
+  // own phone/Bridge session a blanket 403 on every kanban comment, message,
+  // and memory write it posted under the owner's name -- the device-check ran
+  // before the route's owner/system exception ever got a turn. Falling
+  // through instead (returning null) hands the request to that existing
+  // guard unchanged, which already knows how to allow the owner.
+  if (!auth.device || !isKnownAgent(auth.device)) return null
+  return `device key '${auth.device}' may not act as '${claimed}'`
 }

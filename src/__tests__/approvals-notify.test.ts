@@ -8,6 +8,16 @@ vi.mock('../config.js', async (importOriginal) => {
   return { ...real, MAIN_AGENT_ID: 'agent-a' }
 })
 
+// REQUESTORGUARD829: approval creation now rejects any agent_id that is not a
+// known fleet agent (see approvals.ts). These fixtures use synthetic ids
+// ('agent-a', 'agent-b') with no real `agents/<id>/` directory on disk, so
+// isKnownAgent is mocked to recognize exactly the two ids this suite exercises
+// -- same shape as the MAIN_AGENT_ID mock above, kept minimal on purpose.
+vi.mock('../web/agent-config.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../web/agent-config.js')>()
+  return { ...real, isKnownAgent: (name: string) => name === 'agent-a' || name === 'agent-b' }
+})
+
 import { tryHandleApprovals } from '../web/routes/approvals.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -91,7 +101,12 @@ describe('approvals self-approval guard', () => {
     expect(postOut.status).toBe(201)
     const id = postOut.body.id
 
-    // agent-b attempts to approve its own request
+    // agent-b attempts to approve its own request. REQUESTORGUARD829 means
+    // agent_id at creation must now be a known fleet agent, so resolved_by
+    // being that SAME name is also always a known agent -- AGENTRESOLVE826
+    // ("no fleet agent may resolve any approval") fires before the older,
+    // more specific self-approval guard ever gets a turn. The outcome (403,
+    // blocked) is unchanged; only the wording is now AGENTRESOLVE826's.
     const { ctx: patchCtx, out: patchOut } = fakePatch(id, {
       status: 'approved',
       resolved_by: 'agent-b',
@@ -99,7 +114,7 @@ describe('approvals self-approval guard', () => {
     const handled = await tryHandleApprovals(patchCtx)
     expect(handled).toBe(true)
     expect(patchOut.status).toBe(403)
-    expect(patchOut.body.error).toMatch(/cannot approve its own request/)
+    expect(patchOut.body.error).toMatch(/not a fleet agent/)
   })
 
   it('allows approval when resolved_by differs from the requesting agent_id', async () => {
