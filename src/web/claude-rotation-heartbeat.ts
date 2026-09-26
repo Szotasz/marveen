@@ -16,6 +16,7 @@ import { join } from 'node:path'
 import { CHANNEL_CHAT_ID, MAIN_AGENT_ID, PROJECT_ROOT, WEB_PORT } from '../config.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { readClaudePlans } from './claude-plans.js'
+import { readClaudePlansState } from './claude-plans-state.js'
 import {
   SCHEDULED_TASKS_DIR, readScheduledTask, readRemovedDefaultTasks, writeScheduledTask,
 } from './scheduled-tasks-io.js'
@@ -162,6 +163,19 @@ export function rotationReadiness(): RotationReadiness {
     blockers.push({
       code: 'too_few_channel_plans',
       message: `Legalább 2 olyan plan kell, amelyen a csatorna futhat (channelsAllowed), most ${allowed} van.`,
+    })
+  }
+
+  // Bootstrap gap: decideAndRecord stays silent while the main agent has no
+  // recorded active plan (or one that is no longer registered) -- it cannot
+  // guess which login the running session is on. The first assignment is one
+  // manual switch; it restarts the main agent, so it is never done here.
+  let activeId: string | undefined
+  try { activeId = readClaudePlansState().activePlanByAgent[MAIN_AGENT_ID] } catch { activeId = undefined }
+  if (!activeId || !plans.some((p) => p.id === activeId)) {
+    blockers.push({
+      code: 'no_active_plan',
+      message: 'A rotációnak nincs rögzített aktív planje a fő agentre, ezért a heartbeat nem tudja, melyik keretet figyelje. Javítás: a Claude plans fülön egyszer kézzel válts arra a planre, amelyiken a fő agent most fut ("Váltás erre a planre"). Ez a fő agent újraindításával jár.',
     })
   }
 
