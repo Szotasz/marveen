@@ -488,6 +488,81 @@ export function initDatabase(dbPathOverride?: string): void {
     // column already exists
   }
 
+  // Case files (2026-09-11). A finding that concerns more than one agent had no
+  // place to live, so every new detail became another round of N-to-N messages:
+  // measured that day, 442 inter-agent messages, most of them the same answer
+  // sent several ways and replies to states that had already been corrected.
+  // One of them filled an agent's queue for an hour and blocked its scheduled
+  // email run.
+  //
+  // Notes are APPEND-ONLY on purpose. The obvious alternative -- one growing
+  // document that each agent rewrites -- loses a note whenever two agents
+  // append at once, and concurrent work by several agents is exactly the
+  // situation this exists for.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS cases (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      opened_by TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      closed_at INTEGER,
+      closed_by TEXT
+    )
+  `)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS case_notes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      case_id TEXT NOT NULL,
+      agent TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_case_notes_case ON case_notes(case_id, id)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_cases_status ON cases(status, created_at)`)
+
+  // Send-once ledger for owner-facing flags (2026-09-11).
+  //
+  // The whole seen-id apparatus in the email processors exists for ONE reason:
+  // the triage branch is not idempotent, so a mail processed twice means the
+  // owner is told twice. Every layer built that day -- id dedup, the window
+  // formula, the three probes, per-mail persistence -- is scaffolding around
+  // that single missing property. And it still failed: one assistant flagged the
+  // same mail to its owner twice, ninety minutes apart, because two of the probes
+  // came back falsely negative.
+  //
+  // This makes the property explicit instead. A claim is atomic through the
+  // UNIQUE index: the first caller for a (agent, source_ref) pair wins and
+  // sends, every later caller is told it was already sent and stays quiet --
+  // no matter what any cursor, window or probe believes.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS owner_flag_claims (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent TEXT NOT NULL,
+      source_ref TEXT NOT NULL,
+      chat_id TEXT,
+      note TEXT,
+      created_at INTEGER NOT NULL,
+      UNIQUE (agent, source_ref)
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_owner_flag_claims_agent ON owner_flag_claims(agent, created_at)`)
+  // A release deletes the claim, so without a trail nobody could tell later
+  // who re-opened a flag or when. The Bearer is shared, so released_by is the
+  // caller's self-declared id -- a record, not an authorisation.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS owner_flag_releases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent TEXT NOT NULL,
+      source_ref TEXT NOT NULL,
+      claimed_at INTEGER NOT NULL,
+      released_by TEXT NOT NULL,
+      released_at INTEGER NOT NULL
+    )
+  `)
+
   // Homoglyph journal (GATEHOMOGLIFSWEEP816): agents write kanban via sqlite3
   // directly, so an API-level check never sees those writes. These triggers
   // journal (never block, never modify) inserts whose text carries a measured
@@ -1948,6 +2023,147 @@ export function updateMemory(id: number, content: string, category?: string, age
 }
 
 // --- Daily logs ---
+
+export interface OwnerFlagClaimRow {
+  id: number
+  agent: string
+  source_ref: string
+  chat_id: string | null
+  note: string | null
+  created_at: number
+}
+
+/**
+ * Claim the right to flag `sourceRef` to this agent's owner, exactly once.
+ *
+ * Atomic through the UNIQUE(agent, source_ref) index, so two turns racing on
+ * the same mail cannot both win. Returns claimed=false plus the original claim
+ * when someone already sent it -- which is the caller's signal to stay quiet,
+ * regardless of what its cursor or seen-list happens to think.
+ */
+export function claimOwnerFlag(
+  agent: string,
+  sourceRef: string,
+  chatId?: string,
+  note?: string,
+): { claimed: boolean; existing: OwnerFlagClaimRow } {
+  const now = Math.floor(Date.now() / 1000)
+  const info = db
+    .prepare(
+      'INSERT INTO owner_flag_claims (agent, source_ref, chat_id, note, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(agent, source_ref) DO NOTHING',
+    )
+    .run(agent, sourceRef, chatId ?? null, note ?? null, now)
+  const existing = db
+    .prepare('SELECT * FROM owner_flag_claims WHERE agent = ? AND source_ref = ?')
+    .get(agent, sourceRef) as OwnerFlagClaimRow
+  return { claimed: info.changes > 0, existing }
+}
+
+export function listOwnerFlagClaims(agent: string, limit = 50): OwnerFlagClaimRow[] {
+  return db
+    .prepare('SELECT * FROM owner_flag_claims WHERE agent = ? ORDER BY id DESC LIMIT ?')
+    .all(agent, limit) as OwnerFlagClaimRow[]
+}
+
+/**
+ * Release a claim. For the one honest case: the claim succeeded but the send
+ * then failed, so nothing actually reached the owner. Without this the mail
+ * would be silently marked as told -- the expensive direction of the error.
+ */
+export function releaseOwnerFlag(agent: string, sourceRef: string, releasedBy: string = agent): boolean {
+  return db.transaction(() => {
+    const row = db
+      .prepare('SELECT created_at FROM owner_flag_claims WHERE agent = ? AND source_ref = ?')
+      .get(agent, sourceRef) as { created_at: number } | undefined
+    if (!row) return false
+    db.prepare('DELETE FROM owner_flag_claims WHERE agent = ? AND source_ref = ?').run(agent, sourceRef)
+    db.prepare(
+      'INSERT INTO owner_flag_releases (agent, source_ref, claimed_at, released_by, released_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(agent, sourceRef, row.created_at, releasedBy, Math.floor(Date.now() / 1000))
+    return true
+  })()
+}
+
+export interface OwnerFlagReleaseRow {
+  id: number
+  agent: string
+  source_ref: string
+  claimed_at: number
+  released_by: string
+  released_at: number
+}
+
+export function listOwnerFlagReleases(agent: string, sourceRef: string): OwnerFlagReleaseRow[] {
+  return db
+    .prepare('SELECT * FROM owner_flag_releases WHERE agent = ? AND source_ref = ? ORDER BY id ASC')
+    .all(agent, sourceRef) as OwnerFlagReleaseRow[]
+}
+
+export interface CaseRow {
+  id: string
+  title: string
+  status: string
+  opened_by: string
+  created_at: number
+  closed_at: number | null
+  closed_by: string | null
+}
+export interface CaseNoteRow {
+  id: number
+  case_id: string
+  agent: string
+  kind: string
+  content: string
+  created_at: number
+}
+
+/** Open a case, or return the existing one. Idempotent on the slug so two
+ *  agents racing to open the same case cannot create two of them. */
+export function openCase(id: string, title: string, openedBy: string): CaseRow {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(
+    'INSERT INTO cases (id, title, status, opened_by, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING',
+  ).run(id, title, 'open', openedBy, now)
+  return db.prepare('SELECT * FROM cases WHERE id = ?').get(id) as CaseRow
+}
+
+export function listCases(status?: string): CaseRow[] {
+  if (status) {
+    return db.prepare('SELECT * FROM cases WHERE status = ? ORDER BY created_at DESC').all(status) as CaseRow[]
+  }
+  return db.prepare('SELECT * FROM cases ORDER BY created_at DESC').all() as CaseRow[]
+}
+
+export function getCase(id: string): { case: CaseRow; notes: CaseNoteRow[] } | null {
+  const row = db.prepare('SELECT * FROM cases WHERE id = ?').get(id) as CaseRow | undefined
+  if (!row) return null
+  const notes = db
+    .prepare('SELECT * FROM case_notes WHERE case_id = ? ORDER BY id ASC')
+    .all(id) as CaseNoteRow[]
+  return { case: row, notes }
+}
+
+/** Append-only: never updates an existing note, so concurrent writers cannot
+ *  overwrite each other. A correction is a new note, which also keeps the
+ *  history of what was believed and when. */
+export function appendCaseNote(caseId: string, agent: string, kind: string, content: string): CaseNoteRow {
+  const now = Math.floor(Date.now() / 1000)
+  const info = db
+    .prepare('INSERT INTO case_notes (case_id, agent, kind, content, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run(caseId, agent, kind, content, now)
+  return db.prepare('SELECT * FROM case_notes WHERE id = ?').get(info.lastInsertRowid) as CaseNoteRow
+}
+
+/** Closes an open case once. A second close leaves closed_by / closed_at as
+ *  they were (closed=false), so the record of who decided stays intact. */
+export function closeCase(id: string, closedBy: string): { closed: boolean; case: CaseRow | null } {
+  const now = Math.floor(Date.now() / 1000)
+  const info = db
+    .prepare("UPDATE cases SET status = 'closed', closed_at = ?, closed_by = ? WHERE id = ? AND status = 'open'")
+    .run(now, closedBy, id)
+  const row = (db.prepare('SELECT * FROM cases WHERE id = ?').get(id) as CaseRow | undefined) ?? null
+  return { closed: info.changes > 0, case: row }
+}
 
 export function appendDailyLog(agentId: string, content: string): void {
   const now = Math.floor(Date.now() / 1000)
