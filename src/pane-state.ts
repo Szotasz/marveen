@@ -1711,14 +1711,24 @@ export function parkedMachineOriginInput(pane: string): boolean {
 // NOT safe (the TUI truncates long box content mid-text, so the visible
 // capture may be missing lines even when the closing tag is visible).
 // The safe recovery for a parked tick is therefore clear-only.
-export function parkedScheduledTaskInput(pane: string): boolean {
-  const flat = parkedInputText(pane)
-  if (flat == null) return false
+//
+// Split into a STRING-level predicate (scheduledTaskParkedText) plus the pane
+// wrapper: a caller that has ALREADY extracted and stability-confirmed the
+// parked text must classify THAT exact string, never re-capture the pane -- a
+// second capture can race the box and answer about different content than the
+// one the decision is being made for.
+export function scheduledTaskParkedText(flat: string): boolean {
   if (/^SCHEDULED TASK NOTICE/.test(flat) || /^<scheduled-task[\s>]/.test(flat)) return true
   // Head dropped by the TUI -- see MACHINE_ORIGIN_TRUNCATED_MARKERS. Clear-only
   // is exactly as safe here as for an intact tick: the instruction is already
   // corrupted by the truncation, and the next schedule fire re-delivers it.
   return MACHINE_ORIGIN_TRUNCATED_MARKERS.some((rx) => rx.test(flat))
+}
+
+export function parkedScheduledTaskInput(pane: string): boolean {
+  const flat = parkedInputText(pane)
+  if (flat == null) return false
+  return scheduledTaskParkedText(flat)
 }
 
 // Keystrokes that actually EMPTY a parked input box.
