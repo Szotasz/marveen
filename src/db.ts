@@ -3981,6 +3981,28 @@ export function clearPendingTaskRetryOwnerAlert(taskName: string, agentName: str
 // EMBED_DIMS) instead of a hardcoded literal; see the rationale block in
 // config.ts. Defaults reproduce the previous behaviour exactly.
 
+// SILENTOLLAMA926 (card 035e46d0): on 2026-09-24/25 Ollama was not installed at
+// all on this host, every embedding call failed, and the ONLY trace was a
+// debug-level line nobody reads by default: backfillEmbeddings() returned 0
+// two nights running and the memory search silently degraded to FTS-only.
+// The first failure of an outage is now a WARN (naming the URL and model, so
+// the operator can tell "not installed" from "wrong model"); repeats within
+// the same outage stay at debug so a machine without Ollama does not fill
+// the log; a success re-arms the warning for the next outage.
+let embeddingBackendWarned = false
+
+// Pure: which level the next embedding failure is logged at.
+export function decideEmbeddingFailureLevel(alreadyWarned: boolean): 'warn' | 'debug' {
+  return alreadyWarned ? 'debug' : 'warn'
+}
+
+// Pure: a backfill that had work and embedded NONE of it is the outage
+// signature (every call failed), worth one WARN per run. Zero pending is the
+// normal quiet case; a partial result means the backend answered.
+export function backfillNeedsWarning(pending: number, embedded: number): boolean {
+  return pending > 0 && embedded === 0
+}
+
 export async function generateEmbedding(text: string): Promise<number[] | null> {
   try {
     const resp = await fetch(`${EMBED_URL}/api/embeddings`, {
@@ -3991,6 +4013,7 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
     })
     const data = await resp.json() as { embedding?: number[] }
     if (!data.embedding || data.embedding.length === 0) return null
+    embeddingBackendWarned = false
     // Matryoshka truncation. Only ever CUT, never pad: slicing a vector that is
     // already shorter than EMBED_DIMS would silently store a dimension that
     // does not match what the model produces.
@@ -3998,10 +4021,18 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
       ? data.embedding.slice(0, EMBED_DIMS)
       : data.embedding
   } catch (err) {
-    // Debug-level so it doesn't spam default INFO logs when Ollama isn't
-    // running (the common case on most user machines). Enables "why does
-    // hybrid search only return FTS results?" diagnostics without noise.
-    logger.debug({ err, embedUrl: EMBED_URL, embedModel: EMBED_MODEL }, 'Embedding generation failed (Ollama not running?)')
+    // First failure of an outage: WARN once (see SILENTOLLAMA926 above). Later
+    // failures: debug, so a host without Ollama does not spam default INFO
+    // logs while "why does hybrid search only return FTS results?" stays
+    // diagnosable.
+    const level = decideEmbeddingFailureLevel(embeddingBackendWarned)
+    embeddingBackendWarned = true
+    logger[level](
+      { err: (err as Error)?.message ?? String(err), embedUrl: EMBED_URL, embedModel: EMBED_MODEL },
+      level === 'warn'
+        ? 'Embedding generation failed -- embedding backend unreachable or model missing (Ollama not installed/running at EMBED_URL?). Memory search runs FTS-only until it recovers; further failures are logged at debug.'
+        : 'Embedding generation failed (backend still unavailable)',
+    )
     return null
   }
 }
@@ -4126,6 +4157,14 @@ export async function backfillEmbeddings(): Promise<number> {
     }
     // Small delay to not overwhelm Ollama
     await new Promise(r => setTimeout(r, 100))
+  }
+  if (backfillNeedsWarning(rows.length, count)) {
+    // The 2026-09-24/25 signature: work pending, nothing embedded, no error
+    // surfaced. One WARN per run names it.
+    logger.warn(
+      { pending: rows.length, embedUrl: EMBED_URL, embedModel: EMBED_MODEL },
+      'Embedding backfill embedded 0 of the pending memories -- the embedding backend answered none of them (Ollama not installed/running, or EMBED_MODEL missing); the backlog stays until it does',
+    )
   }
   return count
 }

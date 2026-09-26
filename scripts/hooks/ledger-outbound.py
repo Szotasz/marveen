@@ -145,8 +145,14 @@ def main():
     if chat_id and text is not None:
         try:
             ledger_lib.log_outbound(agent_id, chat_id, str(text), message_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            # SILENTOLLAMA926: a reply that never reaches the conversation
+            # ledger breaks the reply-guard's picture of the thread; say so.
+            try:
+                import hook_errlog  # noqa: E402
+                hook_errlog.report("ledger-outbound", "log_outbound failed, reply not recorded in the conversation ledger", exc)
+            except Exception:
+                pass
     sys.exit(0)
 
 

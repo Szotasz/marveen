@@ -226,8 +226,16 @@ def main():
         sys.exit(0)
     try:
         drain(payload)
-    except Exception:
-        pass
+    except Exception as exc:
+        # SILENTOLLAMA926: the tool call must not break, but the failure must
+        # not vanish either. The claimed inbox file stays in place and is picked
+        # up by the next run (see _claim_one), so nothing is lost; the line says
+        # why this run delivered nothing.
+        try:
+            import hook_errlog  # noqa: E402
+            hook_errlog.report("channel-inbox-drain", "drain failed, inbox left claimed for the next run", exc)
+        except Exception:
+            pass
     sys.exit(0)
 
 

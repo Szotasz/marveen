@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { MAIN_AGENT_ID } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { readJsonObjectForWrite } from './agent-config.js'
 
 export const SCHEDULED_TASKS_DIR = join(homedir(), '.claude', 'scheduled-tasks')
 
@@ -270,7 +271,7 @@ export function writeScheduledTask(
 
   // Write/update config
   let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch { /* use empty */ }
+  config = readJsonObjectForWrite(configPath)
   if (data.schedule !== undefined) config.schedule = data.schedule
   if (data.agent !== undefined) config.agent = data.agent
   if (data.enabled !== undefined) config.enabled = data.enabled

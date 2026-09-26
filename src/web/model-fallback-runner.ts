@@ -12,6 +12,7 @@ import {
   writeAgentModel,
   resolveModelId,
   DEFAULT_MODEL,
+  readJsonObjectForWrite,
 } from './agent-config.js'
 import {
   agentRunState,
@@ -56,8 +57,11 @@ function readMainModel(): string {
 
 function writeMainModel(model: string): void {
   if (!isValidModelId(model)) throw new InvalidModelIdError(model)
-  let cfg: Record<string, unknown> = {}
-  try { cfg = JSON.parse(readFileSync(MAIN_SETTINGS_PATH, 'utf-8')) } catch {}
+  // JSONCLOBBER926: the main agent's settings.json is the most valuable file
+  // in the install; an existing but corrupt copy is refused, not reset to
+  // {model}. The refusal lands in the runner's catch as a warn and the
+  // switch is skipped, which is the right outcome.
+  const cfg: Record<string, unknown> = readJsonObjectForWrite(MAIN_SETTINGS_PATH)
   cfg.model = model
   atomicWriteFileSync(MAIN_SETTINGS_PATH, JSON.stringify(cfg, null, 2))
 }
