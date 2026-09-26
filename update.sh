@@ -393,11 +393,32 @@ fi
 # local files with no restore. Incident (2026-07-12): the AHEAD-check exit
 # left scripts/imap-business-mail/*.py, billingo-report, crm-report etc.
 # stashed for hours until manually recovered via `git stash apply`.
+#
+# Optional first argument "rebuild" (UPDATEBUILDSTASH912, 2026-09-13): the
+# build-failure rollback caller has ALREADY compiled a tree -- the rollback
+# rebuild of OLD_VERSION -- and it compiled it WITHOUT the operator's stashed
+# files, because the pop only happens here, after it. Left alone, the box ends
+# with dist/ missing the local patch and no one to rebuild it: the next restart
+# (watchdog, nightly timer, manual start.sh) runs that patch-less dist. So that
+# one caller asks for a rebuild after a successful pop. The other callers
+# (AHEAD-check, pull-failure, nothing-to-pull) never built, so they must NOT
+# trigger a build here -- it would compile a tree the run never intended to.
 restore_stash_before_exit() {
   if [ "$STASHED_AUTO" = "1" ]; then
     echo -e "  Auto-stash visszaallitasa (korai kilepes elott)..."
     if git stash pop; then
       STASHED_AUTO=0
+      if [ "${1:-}" = "rebuild" ]; then
+        echo -e "  Ujraforditas a visszaallitott helyi valtozasokkal..."
+        if ! retry 2 3 npm run build --silent; then
+          if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+            echo -e "${RED}WARNING:${NC} Rebuild after stash-restore failed; dist/ may not reflect local changes."
+          else
+            echo -e "${RED}FIGYELEM:${NC} Az ujraforditas a stash-visszaallitas utan sikertelen; a dist/ lehet hogy nem tartalmazza a helyi valtozasokat."
+          fi
+          echo -e "          Futtasd kezzel: npm run build"
+        fi
+      fi
     else
       if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
         echo -e "${RED}WARNING:${NC} Auto-stash pop had conflicts; the stash remains in 'git stash list'."
@@ -1058,7 +1079,10 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
     fi
     RESULT_STATUS="rolled-back"
     RESULT_MSG="A build elbukott; a rendszer visszaallt a korabbi mukodo verziora (${OLD_VERSION}). A frissites nem ment ki."
-    restore_stash_before_exit
+    # "rebuild": the rollback build above compiled OLD_VERSION without the
+    # stashed local files; rebuild once they are back on disk, otherwise the
+    # next restart runs a dist/ that silently lacks them (UPDATEBUILDSTASH912).
+    restore_stash_before_exit rebuild
     exit 6
   fi
 
