@@ -99,21 +99,29 @@ describe('readJsonObjectForWrite never clobbers an existing config', () => {
   })
 
   it('every config read-modify-write site in the covered files goes through it (no silent parse-then-write left)', () => {
-    // The sweep covers every file with a config read-modify-write that this
-    // change routed through the helper. Known same-shape sites deliberately
-    // left for a follow-up: agent-process.ts (.claude.json approval stamp,
-    // .mcp.json at launch) and fleet-transfer.ts (config-overrides.json).
+    // The sweep covers every file with a config read-modify-write that goes
+    // through the helper. The three sites #1600 deferred (agent-process.ts:
+    // .claude.json approval stamp and .mcp.json at launch; fleet-transfer.ts:
+    // config-overrides.json) are in since JSONCLOBBER926B.
     const files = [
       'src/web/agent-config.ts', 'src/web/agent-team.ts', 'src/web/scheduled-tasks-io.ts',
       'src/web/routes/connectors.ts', 'src/web/routes/agents.ts', 'src/web/routes/schedules.ts',
-      'src/web/model-fallback-runner.ts',
+      'src/web/model-fallback-runner.ts', 'src/web/agent-process.ts', 'src/web/fleet-transfer.ts',
     ]
     for (const f of files) {
       const src = read(f)
       expect(src, f).not.toMatch(/try \{ \w+ = JSON\.parse\(readFileOr\([^)]*\)\) \} catch \{/)
       expect(src, f).not.toMatch(/catch \{ \/\* overwrite \*\/ \}/)
       expect(src, f).not.toMatch(/try \{ cfg = JSON\.parse\(readFileSync\([^)]*\)\) \} catch \{\}/)
+      // The three multi-line shapes JSONCLOBBER926B removed, by their catch comments.
+      expect(src, f).not.toMatch(/catch \{ \/\* unreadable \/ empty -- start fresh \*\/ \}/)
+      expect(src, f).not.toMatch(/catch \{ \/\* absent or unreadable -> start from empty/)
+      expect(src, f).not.toMatch(/catch \{ \/\* start fresh if file is corrupt \*\/ \}/)
     }
+    const proc = read('src/web/agent-process.ts')
+    expect(proc).toContain('const data = readJsonObjectForWrite(dotClaudePath)')
+    expect(proc).toContain('const existing = readJsonObjectForWrite(mcpJsonPath)')
+    expect(read('src/web/fleet-transfer.ts')).toContain('const overrides = readJsonObjectForWrite(overridesPath)')
     expect(read('src/web/routes/schedules.ts')).toContain('config = readJsonObjectForWrite(configPath)')
     expect(read('src/web/model-fallback-runner.ts')).toContain('readJsonObjectForWrite(MAIN_SETTINGS_PATH)')
     // Thirteen writers in agent-config.ts, one each in the other four.

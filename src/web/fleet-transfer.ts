@@ -19,7 +19,7 @@ import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, BOT_NAME, BRAND_NAME, OWNER_NAM
 import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { updateEnvFile } from '../env.js'
-import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
+import { AGENTS_BASE_DIR, listAgentNames, readJsonObjectForWrite } from './agent-config.js'
 import { safeJoin } from './sanitize.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
@@ -1242,12 +1242,11 @@ export function importFleet(
     const sourceAgentId = sourceIdentity?.MAIN_AGENT_ID ?? fleet.mainAgent?.agentId
     if (sourceAgentId && typeof sourceAgentId === 'string') {
       const overridesPath = join(STORE_DIR, 'config-overrides.json')
-      let overrides: Record<string, unknown> = {}
-      try {
-        if (existsSync(overridesPath)) {
-          overrides = JSON.parse(readFileSync(overridesPath, 'utf-8')) as Record<string, unknown>
-        }
-      } catch { /* start fresh if file is corrupt */ }
+      // JSONCLOBBER926B: a corrupt config-overrides.json is refused, not
+      // replaced by the identity keys alone (it holds every dashboard setting).
+      // The throw takes the import's own failure path below: tracked writes are
+      // cleaned up and the error names the file.
+      const overrides = readJsonObjectForWrite(overridesPath)
       if (sourceIdentity && typeof sourceIdentity === 'object') {
         // Full identity takeover: iterate all keys generically (no hardcoded names)
         for (const [key, val] of Object.entries(sourceIdentity)) {

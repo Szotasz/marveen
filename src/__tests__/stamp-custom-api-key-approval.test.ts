@@ -80,12 +80,17 @@ describe('stampCustomApiKeyApproval', () => {
     expect(existsSync(dotClaude)).toBe(false)
   })
 
-  it('handles corrupted JSON gracefully -- resets file rather than crashing', () => {
-    writeFileSync(dotClaude, '{ not valid json')
-    expect(() => stampCustomApiKeyApproval(dotClaude, KEY_XAPI)).not.toThrow()
-    // After recovery the entry should be stamped
-    const data = JSON.parse(readFileSync(dotClaude, 'utf-8'))
-    expect(data.customApiKeyResponses.approved).toContain(suffix(KEY_XAPI))
+  // JSONCLOBBER926B: this used to pin the opposite ("resets file rather than
+  // crashing"). A corrupt .claude.json still must not crash the launch, but it
+  // is no longer replaced: it carries onboarding/trust flags and local-scope MCP
+  // servers, and the reset destroyed them silently. No stamp, file untouched.
+  it('handles corrupted JSON without crashing and WITHOUT overwriting the file', () => {
+    const corrupt = '{ "hasCompletedOnboarding": true, "mcpServers": { not valid json'
+    writeFileSync(dotClaude, corrupt)
+    let result: boolean | undefined
+    expect(() => { result = stampCustomApiKeyApproval(dotClaude, KEY_XAPI) }).not.toThrow()
+    expect(result).toBe(false)
+    expect(readFileSync(dotClaude, 'utf-8')).toBe(corrupt)
   })
 
   // Regression: Bearer/authorization providers must NOT trigger a stamp
