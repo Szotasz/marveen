@@ -14,8 +14,10 @@
 // single structured line for (4) instead of doing it itself, for the same
 // reason design 6.4 requires: the Telegram signal MUST go through the c3po
 // `reply` tool, which only an agent turn has access to -- a plain node
-// script cannot call it. So the scheduled task's prompt (authored by the
-// operator, same as every other heartbeat in this fleet) is expected to:
+// script cannot call it. So the scheduled task's prompt is expected to (the
+// task itself, `claude-plan-rotate-check`, is seeded automatically while
+// CLAUDE_ROTATION_ENABLED=1 -- see src/web/claude-rotation-heartbeat.ts, whose
+// buildRotationHeartbeatPrompt implements exactly this list):
 //   1. run this script;
 //   2. if it printed a ROTATE line: send the Telegram signal via `reply`
 //      FIRST (design 6.4/1's ordering requirement), THEN

@@ -5,7 +5,7 @@
 // itself only calls it, and a top-level `await main()` cannot be imported.
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
-import { decideAndRecord, pendingFleetReport } from './claude-plan-rotate-heartbeat.js'
+import { decideAndRecord, pendingFleetReport, activePlanNearLimit } from './claude-plan-rotate-heartbeat.js'
 import { readClaudePlans } from './web/claude-plans.js'
 import { readClaudePlansState, writeClaudePlansState, recordPlanObservation } from './web/claude-plans-state.js'
 import { probePlanUsage, observationFromProbe, selectPlansToProbe } from './claude-plan-usage-probe.js'
@@ -17,7 +17,7 @@ function settingIsOn(key: string): boolean {
   try { return String(getEffectiveSettingValue(key)) === '1' } catch { return false }
 }
 
-// Background refresh of IDLE plans' usage (live probe, see
+// On-demand refresh of IDLE plans' usage (live probe, see
 // src/claude-plan-usage-probe.ts). The heartbeat below only ever observes the
 // plan the main agent is on, so without this an idle plan's "last known %"
 // (and estimateWindowFree's input for it) is frozen at whenever it was last
@@ -26,7 +26,8 @@ function settingIsOn(key: string): boolean {
 // plan, at most once per 30 min per plan. Runs BEFORE the rotation decision so
 // that decision sees the fresh numbers. Prints nothing on stdout -- stdout is
 // the ROTATE/NO_ALTERNATIVE channel the scheduled task's prompt parses.
-// Only runs when CLAUDE_PLAN_USAGE_REFRESH=1 (see runRotateCheck).
+// Only runs when CLAUDE_PLAN_USAGE_REFRESH=1 AND the active plan is near a
+// limit (activePlanNearLimit, see runRotateCheck).
 export async function refreshIdlePlans(): Promise<void> {
   const due = selectPlansToProbe({
     plans: readClaudePlans(),
@@ -51,17 +52,6 @@ export async function refreshIdlePlans(): Promise<void> {
 }
 
 export async function runRotateCheck(): Promise<void> {
-  // Opt-in (CLAUDE_PLAN_USAGE_REFRESH, default off): every probe spends the
-  // probed plan's own subscription quota, so nothing here calls the network
-  // unless an operator turned it on. Independent of CLAUDE_ROTATION_ENABLED,
-  // so the Settings usage bars can stay fresh without automatic rotation.
-  try {
-    if (settingIsOn('CLAUDE_PLAN_USAGE_REFRESH')) await refreshIdlePlans()
-  } catch (err) {
-    // Never let the probe pass take the rotation heartbeat down with it.
-    console.error('claude-plan-rotate-check: idle-plan probe pass failed:', err instanceof Error ? err.name : 'error')
-  }
-
   // Report a finished fleet leg once (see pendingFleetReport). Independent of
   // usage-collect below, so a failing collector never swallows the report.
   try {
@@ -90,11 +80,28 @@ export async function runRotateCheck(): Promise<void> {
     return
   }
 
+  // Idle-plan probes happen on demand only: when the active plan is near a
+  // limit (IDLE_PROBE_GATE, a little below the rotation thresholds), so the
+  // decision below -- in this same tick -- ranks the candidates on fresh
+  // numbers. With a healthy active plan nothing is probed: every probe spends
+  // the probed plan's own quota for a decision nobody is about to make.
+  // CLAUDE_PLAN_USAGE_REFRESH (default on) is the operator's off switch.
+  // Independent of CLAUDE_ROTATION_ENABLED, so the Settings usage bars still
+  // refresh near a limit without automatic rotation.
+  try {
+    if (settingIsOn('CLAUDE_PLAN_USAGE_REFRESH') && activePlanNearLimit(raw, Date.now())) await refreshIdlePlans()
+  } catch (err) {
+    // Never let the probe pass take the rotation heartbeat down with it.
+    console.error('claude-plan-rotate-check: idle-plan probe pass failed:', err instanceof Error ? err.name : 'error')
+  }
+
   if (!settingIsOn('CLAUDE_ROTATION_ENABLED') || !settingIsOn('MAIN_AGENT_ISOLATED_CONFIG')) return
 
   const result = decideAndRecord({
     agentId: MAIN_AGENT_ID,
     plans: readClaudePlans(),
+    // Read AFTER the probe pass, so its fresh observations are what the
+    // candidates are ranked on.
     state: readClaudePlansState(),
     usageCollectRaw: raw,
     nowMs: Date.now(),

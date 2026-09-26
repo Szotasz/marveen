@@ -5,7 +5,7 @@
 // entry point) so it unit-tests under tsc's rootDir=src, the same reason
 // quota-gate.ts's decision logic lives under src/ instead of inside a script.
 import { parseQuotaSnapshot } from './quota-snapshot.js'
-import { decideRotationAction, candidateFromObservation, type RotationCandidate } from './claude-plan-rotation.js'
+import { decideRotationAction, candidateFromObservation, effectiveUsedPct, IDLE_PROBE_GATE, type RotationCandidate } from './claude-plan-rotation.js'
 import type { ClaudePlan } from './web/claude-plans.js'
 import {
   recordObservation,
@@ -24,6 +24,52 @@ export interface RotateCheckResult {
 }
 
 const roundMin = (ms: number) => Math.round(ms / 60_000)
+
+interface ActiveWindows {
+  source: string
+  fiveHour: { used_percent: number; resets_at: number }
+  sevenDay?: { used_percent: number; resets_at: number }
+}
+
+/**
+ * The active plan's windows from the raw usage-collect.py --json output, or
+ * null when the snapshot is not trustworthy enough to act on. Same fail-open
+ * rule as quota-gate.ts: an untrusted/missing/incomplete snapshot is not
+ * evidence of pressure. Shared by decideAndRecord and activePlanNearLimit so
+ * the probe gate and the rotation decision can never read the snapshot
+ * differently.
+ */
+function trustedActiveWindows(usageCollectRaw: unknown): ActiveWindows | null {
+  const snapshot = parseQuotaSnapshot(usageCollectRaw)
+  const trustedSources = ['authoritative', 'authoritative_cached']
+  if (!snapshot || !trustedSources.includes((snapshot.source ?? '').toLowerCase())) return null
+  const fiveHour = snapshot.windows?.five_hour
+  if (!fiveHour || typeof fiveHour.used_percent !== 'number' || typeof fiveHour.resets_at !== 'number') return null
+  const sevenDay = snapshot.windows?.seven_day
+  return {
+    source: snapshot.source ?? 'unknown',
+    fiveHour: { used_percent: fiveHour.used_percent, resets_at: fiveHour.resets_at },
+    ...(sevenDay && typeof sevenDay.used_percent === 'number' && typeof sevenDay.resets_at === 'number'
+      ? { sevenDay: { used_percent: sevenDay.used_percent, resets_at: sevenDay.resets_at } }
+      : {}),
+  }
+}
+
+/**
+ * Is the active plan close enough to a limit that the idle plans are worth a
+ * live probe this tick (IDLE_PROBE_GATE, a little below ROTATION_GATE)? False
+ * on an untrusted snapshot: not knowing is never a reason to spend another
+ * plan's quota.
+ */
+export function activePlanNearLimit(usageCollectRaw: unknown, nowMs: number): boolean {
+  const w = trustedActiveWindows(usageCollectRaw)
+  if (!w) return false
+  const five = effectiveUsedPct({ usedPercent: w.fiveHour.used_percent, resetsAt: w.fiveHour.resets_at }, nowMs)
+  if (five >= IDLE_PROBE_GATE.fiveHourPercent) return true
+  if (!w.sevenDay) return false
+  const seven = effectiveUsedPct({ usedPercent: w.sevenDay.used_percent, resetsAt: w.sevenDay.resets_at }, nowMs)
+  return seven >= IDLE_PROBE_GATE.sevenDayPercent
+}
 
 /**
  * Everything design 6.3/6.6 decides, given the already-collected inputs:
@@ -59,27 +105,18 @@ export function decideAndRecord(input: {
   const activePlan = plans.find((p) => p.id === activePlanId)
   if (!activePlan) return { printLine: null, nextState: null }
 
-  const snapshot = parseQuotaSnapshot(usageCollectRaw)
   // Same fail-open rule as quota-gate.ts: an untrusted/missing/incomplete
   // snapshot is not evidence of pressure, so never act on it.
-  const trustedSources = ['authoritative', 'authoritative_cached']
-  if (!snapshot || !trustedSources.includes((snapshot.source ?? '').toLowerCase())) {
-    return { printLine: null, nextState: null }
-  }
-  const fiveHour = snapshot.windows?.five_hour
-  if (!fiveHour || typeof fiveHour.used_percent !== 'number' || typeof fiveHour.resets_at !== 'number') {
-    return { printLine: null, nextState: null }
-  }
-  const sevenDay = snapshot.windows?.seven_day
+  const active = trustedActiveWindows(usageCollectRaw)
+  if (!active) return { printLine: null, nextState: null }
+  const { fiveHour, sevenDay } = active
 
   const observed: ObservedPlanState = {
     observedAt: nowMs,
-    source: snapshot.source ?? 'unknown',
+    source: active.source,
     windows: {
       five_hour: { usedPercent: fiveHour.used_percent, resetsAt: fiveHour.resets_at },
-      ...(sevenDay && typeof sevenDay.used_percent === 'number' && typeof sevenDay.resets_at === 'number'
-        ? { seven_day: { usedPercent: sevenDay.used_percent, resetsAt: sevenDay.resets_at } }
-        : {}),
+      ...(sevenDay ? { seven_day: { usedPercent: sevenDay.used_percent, resetsAt: sevenDay.resets_at } } : {}),
     },
   }
   // Telemetry is recorded on every trustworthy tick, independent of whether a
