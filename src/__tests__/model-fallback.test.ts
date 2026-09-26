@@ -76,9 +76,19 @@ describe('decideModelAction', () => {
       .toEqual({ kind: 'downgrade', model: HAIKU })
   })
 
-  it('does nothing when limited at the bottom of the chain', () => {
-    expect(decideModelAction({ ...base, limitDetected: true, currentModel: HAIKU, downgradedAt: 500_000 }))
+  it('does nothing when limited at the bottom of the chain inside the revert window', () => {
+    expect(decideModelAction({ ...base, limitDetected: true, currentModel: HAIKU, downgradedAt: 1_000_000 - 59_999 }))
       .toEqual({ kind: 'none' })
+    // never downgraded by us (an agent whose intended model is the bottom one)
+    expect(decideModelAction({ ...base, limitDetected: true, currentModel: HAIKU, downgradedAt: null }))
+      .toEqual({ kind: 'none' })
+  })
+
+  // FALLBACKSTUCK924: a stale limit banner re-rendered by --continue kept a
+  // downgraded agent pinned at the bottom forever.
+  it('reverts past the window even if a (possibly stale) banner is still on screen at the bottom', () => {
+    expect(decideModelAction({ ...base, limitDetected: true, currentModel: HAIKU, downgradedAt: 500_000 }))
+      .toEqual({ kind: 'revert', model: PRIMARY })
   })
 
   it('reverts to the primary after the window once limit-free', () => {
