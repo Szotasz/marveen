@@ -330,8 +330,11 @@ Respond ONLY with JSON, nothing else:
 
   if (path === '/api/memories/backfill' && method === 'POST') {
     try {
-      const count = await backfillEmbeddings()
-      json(res, { ok: true, count })
+      const r = await backfillEmbeddings()
+      // `count` stays for older clients, but it no longer travels alone: a
+      // caller can now tell an empty backlog from an unreachable embedder
+      // (BACKFILLHAMISNULLA921).
+      json(res, { ok: true, count: r.embedded, pending: r.pending, failed: r.failed, embedderDown: r.embedderDown })
     } catch (err) {
       logger.error({ err }, 'Backfill failed')
       json(res, { error: 'Backfill failed' }, 500)

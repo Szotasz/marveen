@@ -1231,7 +1231,11 @@ export function importFleet(
     }
 
     // M3: fire-and-forget re-embed imported memories (embedding was stripped at export)
-    backfillEmbeddings().catch(err => logger.warn({ err: err?.message }, 'Fleet import: embedding backfill failed'))
+    backfillEmbeddings()
+      .then(r => {
+        if (r.embedderDown) logger.warn({ pending: r.pending, failed: r.failed }, 'Fleet import: embedding backfill skipped, the embedder did not answer')
+      })
+      .catch(err => logger.warn({ err: err?.message }, 'Fleet import: embedding backfill failed'))
 
     // Identity takeover: write the source identity set into config-overrides.json so the
     // target install adopts the source persona (name, brand, owner) on next restart.

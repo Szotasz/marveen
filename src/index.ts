@@ -480,8 +480,11 @@ async function main(): Promise<void> {
 
   // Backfill embeddings for memories saved before Ollama was available.
   // Fire-and-forget: a missing or slow Ollama instance must not block startup.
-  backfillEmbeddings().then(count => {
-    if (count > 0) logger.info({ count }, 'Embedding backfill befejezve')
+  backfillEmbeddings().then(res => {
+    if (res.embedded > 0) logger.info({ count: res.embedded, pending: res.pending }, 'Embedding backfill befejezve')
+    // A silent skip is what made this invisible: the backlog stayed untouched
+    // and the log said nothing, because nothing had "succeeded" to report.
+    else if (res.embedderDown) logger.warn({ pending: res.pending, failed: res.failed }, 'Embedding backfill kihagyva: az embedder nem valaszol, a hatralek erintetlen')
   }).catch(err => logger.warn({ err }, 'Embedding backfill hiba (Ollama nem elerheto)'))
 
   // Memory decay (24h cycle)

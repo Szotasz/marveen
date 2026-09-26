@@ -651,6 +651,7 @@ window._i18n.hu = {
   'memories.toast.save_error':   'Hiba a mentés során',
   'memories.toast.delete_error': 'Hiba a törlés során',
   'memories.toast.vector_error': 'Hiba a vektor generálás során',
+  'memories.toast.vector_embedder_down': 'Az embedder nem válaszolt, {pending} emlék maradt vektor nélkül',
 
   // --- Recall / Napló ---
   'recall.page_title':           'Napló',
