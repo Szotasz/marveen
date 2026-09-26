@@ -16,6 +16,15 @@ The `email_send.level` in store/autonomy-config.json becomes a real switch:
               re-sent to a different recipient -- hence every recipient field, bcc included (msg 17936, EMAILBCCHORGONY903).
   level 3  -> allow (autonomous; the outgoing-copy-gate still audits copy).
 
+At level 2 there is ONE narrow bypass, the standing recipient list
+(store/email-standing-recipients.json, EMAILALLANDOCIMZETT926): a letter whose
+sole recipient is on that list, with no cc and no bcc, is allowed without an
+approval. It exists because the owner wants notifications to his own address
+without clicking, and the alternative he was about to reach for -- raising the
+level to 3 -- is far wider: the level knows nothing about WHO the letter goes
+to, so it would also release every supplier letter. The list is checked only at
+level 2; level 1 stays a hard deny, so "signal only" keeps meaning that.
+
 Anchor semantics (Marveen msg 17900, 5+1 conditions):
   1. the hash is computed from the SAME extraction the copy gate audits
      (email_extract.collect_email_envelope -- single implementation);
@@ -34,6 +43,7 @@ EVERY malformed input (unparseable stdin included) blocks: unlike the copy
 gate, which audits and stays alive on harness faults, this gate authorizes,
 so "cannot decide" is always a deny.
 """
+import email.utils
 import hashlib
 import importlib.util
 import json
@@ -48,6 +58,12 @@ STORE_DIR = os.environ.get("EMAIL_APPROVAL_GATE_STORE",
                            os.path.join(_ROOT, "store"))
 DB_PATH = os.path.join(STORE_DIR, "claudeclaw.db")
 CONFIG_PATH = os.path.join(STORE_DIR, "autonomy-config.json")
+# EMAILALLANDOCIMZETT926: a standing recipient list, consulted at level 2 ONLY.
+# The owner asked for one address (his own) to receive notifications without a
+# per-letter approval, WITHOUT widening the gate to every recipient -- which is
+# what raising the level to 3 would do, because the level knows nothing about
+# who the letter goes to.
+STANDING_PATH = os.path.join(STORE_DIR, "email-standing-recipients.json")
 # ~30 minutes from approval (resolved_at) to send; env override is for tests.
 WINDOW_S = int(os.environ.get("EMAIL_APPROVAL_WINDOW_S", "1800"))
 
@@ -139,6 +155,65 @@ def read_email_level():
         return 2, "az email_send kategoria hianyzik az autonomy-configbol -> level 2 (fail-closed)"
     except Exception as exc:  # noqa: BLE001 -- unreadable config is a fail-closed input
         return 2, f"az autonomy-config nem olvashato ({exc!r}) -> level 2 (fail-closed)"
+
+
+def read_standing():
+    """Return (addresses, note). A MISSING file means no standing rights, which
+    is the normal state and not a fault. A CORRUPT or wrongly shaped file also
+    yields no rights -- fail-closed -- but returns a note, because an empty set
+    from a broken file looks exactly like an empty set from no file, and that is
+    the silent failure this gate cannot afford.
+
+    Accepted shapes: {"recipients": [...]} or a bare list. Each entry is either
+    an address string or {"address": ..., "note": ...}; the note is for the
+    human reading the file, the gate ignores it."""
+    if not os.path.exists(STANDING_PATH):
+        return set(), None
+    try:
+        with open(STANDING_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception as exc:  # noqa: BLE001 -- unreadable list grants nothing
+        return set(), (f"az allando cimzett-lista nem olvashato ({exc!r}) -> "
+                       "nincs allando jog (fail-closed)")
+    raw = data.get("recipients") if isinstance(data, dict) else data
+    if not isinstance(raw, list):
+        return set(), ("az allando cimzett-lista alakja nem lista -> nincs "
+                       "allando jog (fail-closed)")
+    out = set()
+    for item in raw:
+        addr = item.get("address") if isinstance(item, dict) else item
+        if not isinstance(addr, str):
+            continue
+        _, parsed = email.utils.parseaddr(addr.strip())
+        parsed = parsed.strip().lower()
+        if "@" in parsed:
+            out.add(parsed)
+    return out, None
+
+
+def standing_match(env: dict, standing):
+    """The address this letter may be sent to WITHOUT an approval, or None.
+
+    Deliberately narrow, because this is the one path that authorises without a
+    human in the loop for THIS letter:
+      - exactly ONE recipient resolves out of `to`, and it is on the list;
+      - cc and bcc are empty.
+    The extractor keeps recipients RAW and does NOT split them, so a single
+    `to` entry can carry several comma-joined addresses; getaddresses expands
+    that, and the count is taken AFTER expansion. Anything that does not parse
+    to exactly one known address falls through to the approval path -- never to
+    an allow."""
+    if not standing:
+        return None
+    for field in ("cc", "bcc"):
+        if any(str(v).strip() for v in (env.get(field) or [])):
+            return None
+    addrs = [a.strip().lower()
+             for _, a in email.utils.getaddresses([str(v) for v in (env.get("to") or [])])
+             if a and a.strip()]
+    if len(addrs) != 1:
+        return None
+    return addrs[0] if addrs[0] in standing else None
 
 
 def content_anchor(env: dict) -> str:
@@ -280,6 +355,21 @@ def main():
              "A hivasbol nem nyerheto ki cimzett (a horgony a cimzettet is fedi).\n"
              "Hasznalj explicit --to flaget vagy MCP to-mezot, aztan kuldd ujra.")
 
+    # The standing list is checked BEFORE the anchor, and only here -- i.e.
+    # only at level 2. Level 1 stays a hard deny: "signal only" must not have a
+    # back door, and the owner's plan is to sit at 2. Level 3 never reaches
+    # this point at all.
+    standing, standing_note = read_standing()
+    if standing_note:
+        prefix = prefix + f"({standing_note})\n"
+    hit = standing_match(env, standing)
+    if hit:
+        print(json.dumps({"systemMessage":
+            f"email-approval-gate: {hit} allando cimzett (email-standing-recipients.json), "
+            "a kuldes jovahagyas nelkul mehet. Minden mas cimzett tovabbra is "
+            "jovahagyas-koteles."}))
+        sys.exit(0)
+
     anchor = content_anchor(env)
     try:
         verdict, detail = find_and_consume(anchor)
@@ -309,7 +399,10 @@ def main():
          "az olvashato osszefoglalo (cimzett + targy + torzs eleje).\n"
          "Jovahagyas UTAN PONTOSAN ugyanezt a hivast kuldd ujra -- a horgony csak "
          "byte-azonos levelre egyezik, es a jovahagyas egyszer hasznalhato, "
-         f"{WINDOW_S // 60} percig ervenyes.")
+         f"{WINDOW_S // 60} percig ervenyes.\n"
+         "Visszatero, egy cimzettnek szolo levelnel (pl. sajat ertesites) a gazda "
+         f"felveheti a cimet a {os.path.basename(STANDING_PATH)} fajlba; onnantol az "
+         "a cim jovahagyas nelkul mehet, cc es bcc nelkul.")
 
 
 if __name__ == "__main__":

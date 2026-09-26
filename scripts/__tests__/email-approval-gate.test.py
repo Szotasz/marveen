@@ -72,6 +72,18 @@ def make_store(td, level=2, max_level=None, config="ok"):
     return store
 
 
+def write_standing(store, value):
+    """value: a Python object dumped as JSON, or a raw string written verbatim
+    (for the corrupt-file case)."""
+    path = os.path.join(store, "email-standing-recipients.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        if isinstance(value, str):
+            fh.write(value)
+        else:
+            json.dump(value, fh)
+    return path
+
+
 def run_gate(store, payload):
     env = dict(os.environ,
                EMAIL_APPROVAL_GATE_STORE=store,
@@ -373,6 +385,70 @@ with tempfile.TemporaryDirectory() as td:
           f"exit={code} out={out[:120]!r}")
     code, _, err = run_gate(store_c, connector("reply", messageId="msg-43", body="Kedves Ügyfelünk! Válasz."))
     check("the same approval does not cover a reply to ANOTHER message", code == 2, f"exit={code}")
+
+    # --- EMAILALLANDOCIMZETT926: allando cimzett-lista, CSAK level 2-n --------
+    # A funkcio egyetlen dolga, hogy EGY cimre jovahagyas nelkul lehessen kuldeni,
+    # ugy, hogy minden mas cimzett a regi uton maradjon. Ezert minden teszt parban
+    # all: ami atmegy a listas cimre, annak TILOS lennie egy masikra.
+    store = make_store(os.path.join(td, "sl1"), level=2)
+    write_standing(store, {"recipients": ["dani@pelda.hu"]})
+    code, out, err = run_gate(store, mcp_send(to="dani@pelda.hu"))
+    check("standing: a listan levo cimre level 2-n jovahagyas NELKUL mehet",
+          code == 0 and "allando cimzett" in out, f"exit={code} out={out[:120]!r}")
+    code, _, err = run_gate(store, mcp_send(to="idegen@pelda.hu"))
+    check("standing: a listan NEM szereplo cimre tovabbra is jovahagyas kell",
+          code == 2 and "NINCS jovahagyas" in err, f"exit={code}")
+
+    # A ketto egyutt a lenyeg: a lista NEM a level helyettesitoje.
+    store1 = make_store(os.path.join(td, "sl2"), level=1)
+    write_standing(store1, {"recipients": ["dani@pelda.hu"]})
+    code, _, err = run_gate(store1, mcp_send(to="dani@pelda.hu"))
+    check("standing: level 1 HARD DENY marad, a lista nem nyit hatso ajtot",
+          code == 2 and "szint 1" in err, f"exit={code} err={err[:120]!r}")
+
+    # cc/bcc: a lista egy cimzettre szol, nem egy levelre
+    code, _, err = run_gate(store, mcp_send(to="dani@pelda.hu", cc="idegen@pelda.hu"))
+    check("standing: cc-vel NEM mehet at (a lista egy cimzettre szol)",
+          code == 2, f"exit={code}")
+    payload = mcp_send(to="dani@pelda.hu")
+    payload["tool_input"]["bcc"] = ["idegen@pelda.hu"]
+    code, _, err = run_gate(store, payload)
+    check("standing: bcc-vel sem mehet at", code == 2, f"exit={code}")
+
+    # A kritikus el: az extractor NEM bontja a cimzettet, egy string tobb cimet vihet.
+    code, _, err = run_gate(store, mcp_send(to="dani@pelda.hu, idegen@pelda.hu"))
+    check("standing: vesszovel osszefuzott ket cim EGY to-mezoben sem megy at",
+          code == 2, f"exit={code}")
+    code, out, _ = run_gate(store, mcp_send(to="Nemeth Daniel <dani@pelda.hu>"))
+    check("standing: a 'Nev <cim>' alak felismerese (ugyanaz a cim)",
+          code == 0 and "allando cimzett" in out, f"exit={code}")
+    code, out, _ = run_gate(store, mcp_send(to="DANI@Pelda.HU"))
+    check("standing: a cim-egyezes kis-nagybetu fuggetlen",
+          code == 0, f"exit={code}")
+
+    # fail-closed: romlott lista nem ad jogot, DE lathatova teszi magat
+    store2 = make_store(os.path.join(td, "sl3"), level=2)
+    write_standing(store2, "{not json")
+    code, _, err = run_gate(store2, mcp_send(to="dani@pelda.hu"))
+    check("standing: romlott lista -> nincs jog (fail-closed), es a deny MEGMONDJA",
+          code == 2 and "nem olvashato" in err, f"exit={code} err={err[:160]!r}")
+    write_standing(store2, {"recipients": "dani@pelda.hu"})
+    code, _, err = run_gate(store2, mcp_send(to="dani@pelda.hu"))
+    check("standing: rossz alaku lista (string lista helyett) -> nincs jog, es lathato",
+          code == 2 and "alakja nem lista" in err, f"exit={code}")
+
+    # hianyzo fajl = a normal allapot, nem hiba: csendben a regi ut
+    store3 = make_store(os.path.join(td, "sl4"), level=2)
+    code, _, err = run_gate(store3, mcp_send(to="dani@pelda.hu"))
+    check("standing: lista-fajl nelkul minden marad a regiben, extra zaj nelkul",
+          code == 2 and "NINCS jovahagyas" in err and "allando" not in err.split("Visszatero")[0],
+          f"exit={code}")
+
+    # kontroll: a matcher tud is talalni -- kulonben a fenti tiltasok
+    # akkor is atmennenek, ha a funkcio egyaltalan nem letezne
+    code, out, _ = run_gate(store, mcp_send(to="dani@pelda.hu"))
+    check("kontroll: a pozitiv ag ugyanabban a store-ban tovabbra is atmegy",
+          code == 0, f"exit={code}")
 
     # SQLite-version portability, kept as a STATIC check on purpose. The
     # behavioural cases above only catch the bad call on a host whose sqlite is
