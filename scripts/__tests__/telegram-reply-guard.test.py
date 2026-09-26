@@ -18,6 +18,43 @@ HOOK = os.path.join(HOOKS, "telegram-reply-guard.py")
 sys.path.insert(0, HOOKS)
 
 
+import contextlib
+import importlib.util
+
+
+def load_guard():
+    """Import the hook as a module, so its helpers can be called directly."""
+    spec = importlib.util.spec_from_file_location("guard_mod", HOOK)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@contextlib.contextmanager
+def env_patch(vars, install_dir=None):
+    """Set/clear env vars (and optionally the install dir) for one block."""
+    import ledger_lib
+    regi = {k: os.environ.get(k) for k in vars}
+    regi_dir = getattr(ledger_lib, "_install_dir", None)
+    for k, v in vars.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+    if install_dir is not None:
+        ledger_lib._install_dir = lambda *_a, **_k: install_dir
+    try:
+        yield
+    finally:
+        for k, v in regi.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        if install_dir is not None and regi_dir is not None:
+            ledger_lib._install_dir = regi_dir
+
+
 def run_hook(db_path, cwd="/Users/edgar/marveen", extra_env=None):
     env = dict(os.environ)
     env["LEDGER_DB_PATH"] = db_path
@@ -118,6 +155,64 @@ def main():
     load_lib(db)
     d, _ = run_hook(db)
     check("no inbound allows", d, None)
+
+    # 7. Provider resolution and the reply-tool name it produces.
+    #    A table test, because the two halves of the tool name differ per
+    #    provider: mcp__plugin_<plugin directory>_<MCP server>__reply. Slack is
+    #    the case that motivated it -- the plugin directory is `slack-channel`
+    #    while the MCP server is `slack`, so deriving the name from the provider
+    #    alone produced a tool that does not exist in any session.
+    guard = load_guard()
+
+    # 7a. CHANNEL_PROVIDER in the environment wins over everything.
+    for provider, vart_tool in [
+        ("telegram", "mcp__plugin_telegram_telegram__reply"),
+        ("discord", "mcp__plugin_discord_discord__reply"),
+        ("slack", "mcp__plugin_slack-channel_slack__reply"),
+        ("SLACK", "mcp__plugin_slack-channel_slack__reply"),  # case-folded
+    ]:
+        with env_patch({"CHANNEL_PROVIDER": provider}):
+            tool, nev = guard._reply_tool_name()
+        check(f"env {provider} -> tool", tool, vart_tool)
+        check(f"env {provider} -> name", nev, provider.lower())
+
+    # 7b. A provider we know of but whose real tool name is unverified must NOT
+    #     get an invented name. A wrong name is worse than none: the model cannot
+    #     comply with a directive naming a tool absent from its session, which is
+    #     the exact failure this guard exists to remove.
+    #     (An EMPTY CHANNEL_PROVIDER is not this case: it is falsy, so resolution
+    #     correctly falls through to .env and the project settings. 7d covers it.)
+    for provider in ("teams", "googlechat", "whatsapp"):
+        with env_patch({"CHANNEL_PROVIDER": provider}):
+            tool, _ = guard._reply_tool_name()
+        check(f"unverified {provider} -> generic wording",
+              tool, "a csatorna reply tool")
+
+    # 7c. With no environment value, the install .env is consulted, then the
+    #     project settings. Both are exercised through a temporary install dir.
+    with tempfile.TemporaryDirectory() as d:
+        with open(os.path.join(d, ".env"), "w") as f:
+            f.write("CHANNEL_PROVIDER=discord\n")
+        with env_patch({"CHANNEL_PROVIDER": None}, install_dir=d):
+            tool, _ = guard._reply_tool_name()
+        check(".env discord -> tool", tool, "mcp__plugin_discord_discord__reply")
+
+    with tempfile.TemporaryDirectory() as d:
+        os.makedirs(os.path.join(d, ".claude"))
+        with open(os.path.join(d, ".claude", "settings.json"), "w") as f:
+            json.dump({"enabledPlugins": {"slack-channel@marveen-marketplace": True}}, f)
+        with env_patch({"CHANNEL_PROVIDER": None, "CLAUDE_PROJECT_DIR": d}, install_dir=d):
+            tool, _ = guard._reply_tool_name()
+        check("settings slack-channel -> slack tool", tool,
+              "mcp__plugin_slack-channel_slack__reply")
+
+    # 7d. Nothing configured anywhere: no tool is named, and the guard still
+    #     fires. The PR text once claimed telegram was the fallback; it is not.
+    with tempfile.TemporaryDirectory() as d:
+        with env_patch({"CHANNEL_PROVIDER": None, "CLAUDE_PROJECT_DIR": d}, install_dir=d):
+            tool, nev = guard._reply_tool_name()
+        check("nothing configured -> generic wording", tool, "a csatorna reply tool")
+        check("nothing configured -> generic name", nev, "csatorna")
 
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)

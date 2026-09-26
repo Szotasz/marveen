@@ -75,9 +75,25 @@ def _is_ack(text):
 _CHANNEL_PROVIDERS = ("telegram", "discord", "slack", "googlechat", "teams")
 
 # A plugin key can be named for the provider without matching the MCP tool
-# prefix (slack-channel@... serves mcp__plugin_slack_channel_...), so the
-# provider name is what CHANNEL_PROVIDER states, not what a key happens to spell.
+# prefix, so the provider name is what CHANNEL_PROVIDER states, not what a key
+# happens to spell.
 _PROVIDER_ALIASES = {"slack-channel": "slack"}
+
+# The reply tool's name is NOT f"mcp__plugin_{provider}_{provider}__reply": it is
+# mcp__plugin_<plugin directory>_<MCP server>__reply, and the two halves differ
+# per provider. Slack is the case that proves it -- the plugin checks in under
+# `slack-channel` while its MCP server is `slack`, so the tool is
+# mcp__plugin_slack-channel_slack__reply, the spelling the rest of the repo uses.
+# Only names verified against a source are listed here: telegram and discord from
+# their installed plugins' .mcp.json, slack from this repo's own usages. A
+# provider missing from the table falls through to the generic wording below
+# rather than to an invented name -- the same principle this guard already
+# applies to an unknown provider, and the reason it exists at all.
+_REPLY_TOOLS = {
+    "telegram": "mcp__plugin_telegram_telegram__reply",
+    "discord": "mcp__plugin_discord_discord__reply",
+    "slack": "mcp__plugin_slack-channel_slack__reply",
+}
 
 
 def _channel_provider():
@@ -131,10 +147,14 @@ def _reply_tool_name():
     could not comply and the guard blocked on a message it had in fact answered.
     """
     provider = _channel_provider()
-    if provider in _CHANNEL_PROVIDERS:
-        return f"mcp__plugin_{provider}_{provider}__reply", provider
-    # Unknown/absent provider: name no specific tool rather than a wrong one.
-    return "a csatorna reply tool", "csatorna"
+    tool = _REPLY_TOOLS.get(provider)
+    if tool:
+        return tool, provider
+    # Unknown provider, or one whose real tool name we cannot verify: name no
+    # specific tool rather than a wrong one. A wrong name is worse than none,
+    # because the model cannot comply with a directive naming a tool that is not
+    # in its session -- which is the bug this guard was written to remove.
+    return "a csatorna reply tool", provider or "csatorna"
 
 
 def _statefile(agent_id):
