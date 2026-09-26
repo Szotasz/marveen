@@ -37,8 +37,45 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
+import channel_scope  # noqa: E402
 
 GRACE_SECONDS = 60
+
+# BUSY GATE (INBOXBUSY924). Measured 2026-09-23..24 on the main agent: all 9
+# "[Inbox] ... valasz nelkul maradt" wake-ups fired 1-2 min after the inbound,
+# while the session was still MID-TURN on that very message, and the reply went
+# out 1-10 min later (e.g. in 3108 12:34:29, nudge 12:36:03, reply 12:45:04).
+# The question was never lost: the capture hook only logs what the session
+# already received. An open question during a running turn is simply being
+# worked on. So: skip while the agent's pane shows a live turn, and let a later
+# idle tick surface it if the turn really ended without a reply. Fail OPEN: if
+# the pane cannot be read, behave as before (a missed wake-up costs more than a
+# spurious one).
+BUSY_FOOTER_LINES = 8
+
+
+def _pane_text(agent_id):
+    override = os.environ.get("LEDGER_DRAIN_PANE_FILE")
+    if override:
+        try:
+            with open(override) as f:
+                return f.read()
+        except Exception:
+            return ""
+    main = ledger_lib.main_agent_id()
+    session = f"{main}-channels" if agent_id == main else f"agent-{agent_id}"
+    try:
+        import subprocess
+        out = subprocess.run(["tmux", "capture-pane", "-p", "-t", session],
+                             capture_output=True, text=True, timeout=5)
+        return out.stdout if out.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _session_busy(agent_id):
+    lines = [l for l in _pane_text(agent_id).splitlines() if l.strip()]
+    return any("esc to interrupt" in l for l in lines[-BUSY_FOOTER_LINES:])
 
 
 def _statefile(agent_id):
@@ -92,11 +129,24 @@ def main():
     # for ten days (#1028).
     chat_id, message_id, text, ts, created_at, att_kind, att_file_id = oq[:7]
 
+    # A group message the agent was not addressed in owes no reply, so there is
+    # nothing to drain: surfacing it would ask for the group post the standing
+    # rule forbids. Same test as the Stop guard and the prompt directive.
+    if not channel_scope.reply_owed(
+            chat_id, text, agent_id,
+            replies_to_agent=lambda: ledger_lib.inbound_replies_to_own(
+                agent_id, chat_id, message_id)):
+        sys.exit(0)
+
     # GRACE: skip a fresh inbound the agent may be answering right now.
     try:
         if created_at is None or (int(time.time()) - int(created_at)) < GRACE_SECONDS:
             nothing()
     except Exception:
+        nothing()
+
+    # BUSY: the agent is mid-turn, most likely on this very message.
+    if _session_busy(agent_id):
         nothing()
 
     # DEDUP: surface a given message_id at most once.

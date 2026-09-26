@@ -60,6 +60,8 @@ const EXEMPT: Record<string, string> = {
     'shared library imported by the ledger hooks; not itself a hook',
   'clearstate_lib.py':
     'shared library imported by clear-capture.py / clear-replay.py; not itself a hook',
+  'channel_scope.py':
+    'shared library (does an inbound owe a reply?) imported by telegram-reply-guard.py, telegram-reply-directive.py, ledger-live-drain.py and ledger-replay.py; not itself a hook',
   'email_extract.py':
     'shared library imported by outgoing-copy-gate.py (and the level-2 email approval gate, EMAILKAPU901 PR2); not itself a hook',
   'memory-save.sh':
