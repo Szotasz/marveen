@@ -61,7 +61,16 @@ fi
 REPOLIST="$(mktemp -t claudeclaw-repo.XXXXXX)"
 HOMELIST="$(mktemp -t claudeclaw-home.XXXXXX)"
 MANIFEST="$(mktemp -t claudeclaw-manifest.XXXXXX)"
-STAGE="$(mktemp -d -t claudeclaw-stage.XXXXXX)"
+# The staging tree lives next to the archives, NOT in $TMPDIR. macOS runs
+# com.apple.bsd.dirhelper daily at 03:35 (StartCalendarInterval) with
+# CLEAN_FILES_OLDER_THAN_DAYS=3: it deletes $TMPDIR files whose atime is older
+# than three days. `cp -p` below preserves the SOURCE atime, so every file that
+# is rarely read (an agent's CLAUDE.md, a channel .env, the dashboard token, a
+# small side database) arrives in the stage already "three days old" and can be
+# swept between the copy and the tar. The archive is still written, the
+# verification below then reports the holes, and the nightly job fails.
+# BACKUP_DIR is not a sweep target, and the EXIT trap still removes the stage.
+STAGE="$(mktemp -d "${BACKUP_DIR}/.stage.XXXXXX")"
 BUNDLE=""
 trap 'rm -f "${REPOLIST}" "${HOMELIST}" "${MANIFEST}"; [[ -n "${BUNDLE}" ]] && rm -f "${BUNDLE}"; rm -rf "${STAGE}"' EXIT
 
