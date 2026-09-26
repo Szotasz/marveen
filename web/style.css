@@ -2947,6 +2947,21 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 .approvals-pending-banner[hidden] { display: none; }
 
+/* Settings -> Claude plans: rotation is on but something keeps it inert.
+   Same warning token set as .approvals-pending-banner. */
+.claude-plans-readiness-banner {
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--warning, #d4a52c) 12%, transparent);
+  border: 1px solid var(--warning, #d4a52c);
+  font-size: 13px;
+  color: var(--text);
+}
+.claude-plans-readiness-banner[hidden] { display: none; }
+.claude-plans-readiness-banner ul { margin: 6px 0 0; padding-left: 18px; }
+.claude-plans-readiness-title { font-weight: 600; }
+
 /* Wizard step 3: the agent was created but its personality is a placeholder.
    Warning tone, not danger: nothing failed for the operator to undo, the agent
    works. Same token set as .approvals-pending-banner so the two read as one

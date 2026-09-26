@@ -26,6 +26,7 @@ import { probePlanUsage, observationFromProbe, usageFromProbe } from '../../clau
 import { agentDir, writeAgentClaudePlan } from '../agent-config.js'
 import { restartAgentProcess } from '../agent-process.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
+import { rotationReadiness } from '../claude-rotation-heartbeat.js'
 import type { RouteContext } from './types.js'
 
 /** Minimum gap between two manual probes of the same plan (POST .../probe). */
@@ -93,6 +94,31 @@ function prepareTokenCandidate(
   }
 }
 
+// The same setup-token registered under two plan ids makes rotation between
+// them a no-op that still restarts the main agent, and the two plans'
+// "remaining quota" bars are really one subscription counted twice (measured
+// 2026-09-26: two of six plans on a real install carried the identical
+// token, and nothing flagged it). Returns the OTHER plan's id, never the
+// token. A vault read failure for one plan is treated as "no match" for that
+// plan: this is a mistake guard, not an authorization gate, and it must not
+// turn an unreadable neighbour into a failed create.
+export function findPlanWithSameToken(
+  plans: ReadonlyArray<{ id: string; tokenSecretId?: string }>,
+  planId: string,
+  token: string,
+): string | null {
+  for (const p of plans) {
+    if (p.id === planId || !p.tokenSecretId) continue
+    let stored: string | null = null
+    try { stored = getSecret(p.tokenSecretId) } catch { stored = null }
+    if (stored !== null && stored.trim() === token) return p.id
+  }
+  return null
+}
+
+const DUPLICATE_TOKEN_ERROR = (otherId: string) =>
+  `This token is already stored for another plan (${otherId}). Each plan needs its own subscription token.`
+
 // Defense in depth beyond validatePlan's own derived-form check (PR #1304
 // review (b)): deleteSecret must never fire on anything but the plan's OWN
 // tokenSecretId, even if a caller somehow got a different id attached to it
@@ -150,6 +176,13 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
       json(res, { error: `Plan id already exists: ${plan.id}` }, 409)
       return true
     }
+    if (pendingToken) {
+      const otherId = findPlanWithSameToken(current, plan.id, pendingToken.value)
+      if (otherId) {
+        json(res, { error: DUPLICATE_TOKEN_ERROR(otherId) }, 409)
+        return true
+      }
+    }
 
     // Vault write happens only now, after every rejection check has already
     // passed -- see prepareTokenCandidate's header.
@@ -168,6 +201,15 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
   // shadow this route.
   if (path === '/api/claude-plans/state' && method === 'GET') {
     json(res, readClaudePlansState())
+    return true
+  }
+
+  // Why rotation would stay inert right now (rotation off, main agent not
+  // isolated, too few channels plans, heartbeat task missing/disabled). Read
+  // by the Settings "Claude plans" warning banner. Before the :id matcher for
+  // the same reason as .../state above.
+  if (path === '/api/claude-plans/readiness' && method === 'GET') {
+    json(res, rotationReadiness())
     return true
   }
 
@@ -401,6 +443,16 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
         error: 'Invalid plan: label, exactly one of configDir (safe absolute or ~-prefixed path, no traversal/spaces) or token (raw claude setup-token output), planType (personal|team) and channelsAllowed (boolean) are all required',
       }, 400)
       return true
+    }
+
+    // Last rejection check, still before any vault write (see
+    // prepareTokenCandidate's header): the same token under a different plan.
+    if (pendingToken) {
+      const otherId = findPlanWithSameToken(current, idMatch[1], pendingToken.value)
+      if (otherId) {
+        json(res, { error: DUPLICATE_TOKEN_ERROR(otherId) }, 409)
+        return true
+      }
     }
 
     // Vault write happens only now, after validation succeeded. For an

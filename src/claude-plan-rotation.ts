@@ -133,6 +133,19 @@ export const ROTATION_GATE = {
   nearResetMs: 30 * 60_000,
 } as const
 
+/**
+ * When the heartbeat probes IDLE plans live (claude-plan-rotate-check-run.ts
+ * -> refreshIdlePlans). Derived from ROTATION_GATE, a little below it, so the
+ * idle plans' numbers are refreshed in the ticks BEFORE the switch decision
+ * rather than only at the moment of it. Below both thresholds nothing is
+ * probed at all: every probe spends the probed plan's own quota, and with a
+ * healthy active plan there is no decision the fresh numbers would feed.
+ */
+export const IDLE_PROBE_GATE = {
+  fiveHourPercent: ROTATION_GATE.switchAtPercent - 10,
+  sevenDayPercent: ROTATION_GATE.switchAtSevenDayPercent - 5,
+} as const
+
 /** Last-known state of a would-be rotation target, as far as candidacy is
  *  concerned. Structurally a subset of ObservedPlanState
  *  (web/claude-plans-state.ts) -- kept local so this module stays pure and

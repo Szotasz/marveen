@@ -14507,6 +14507,7 @@ function activateSettingsTab(mod) {
 async function renderClaudePlansPanel(body) {
   body.innerHTML = `
     <p style="color:var(--text-muted);font-size:13px;margin:0 0 16px">${t('settings.claude_plans.intro')}</p>
+    <div id="claudePlansReadiness" class="claude-plans-readiness-banner" role="alert" hidden></div>
     <div id="claudePlansList"></div>
     <div class="claude-plans-add-form">
       <div class="claude-plans-form-title" id="cpFormTitle">${t('settings.claude_plans.form.title_add')}</div>
@@ -14836,9 +14837,49 @@ async function probeClaudePlan(id, btn) {
   await loadClaudePlansList()
 }
 
+// Pure: GET /api/claude-plans/readiness -> the banner's lines, or null when
+// no banner belongs on screen. Shown only while rotation is ON but something
+// keeps it inert (with rotation off there is nothing to warn about: the
+// toggle itself says so). Known codes get the localized text; an unknown one
+// falls back to the server's own Hungarian message rather than vanishing.
+function claudePlansReadinessLines(readiness) {
+  if (!readiness || readiness.ready) return null
+  const codes = Array.isArray(readiness.blockers) ? readiness.blockers : []
+  if (!codes.length || codes.includes('rotation_disabled')) return null
+  const details = Array.isArray(readiness.details) ? readiness.details : []
+  return codes.map((code) => {
+    const key = 'settings.claude_plans.readiness.' + code
+    const text = t(key)
+    if (text !== key) return text
+    const d = details.find((x) => x && x.code === code)
+    return (d && d.message) || code
+  })
+}
+
+async function loadClaudePlansReadiness() {
+  const el = document.getElementById('claudePlansReadiness')
+  if (!el) return
+  let lines = null
+  try {
+    const res = await fetch('/api/claude-plans/readiness')
+    if (res.ok) lines = claudePlansReadinessLines(await res.json())
+  } catch { /* banner is advisory: no answer, no banner */ }
+  if (!lines) {
+    el.hidden = true
+    el.innerHTML = ''
+    return
+  }
+  el.innerHTML = `<div class="claude-plans-readiness-title">${escapeHtml(t('settings.claude_plans.readiness.title'))}</div>`
+    + `<ul>${lines.map((l) => `<li>${escapeHtml(l)}</li>`).join('')}</ul>`
+  el.hidden = false
+}
+
 async function loadClaudePlansList() {
   const list = document.getElementById('claudePlansList')
   if (!list) return
+  // Plan count and channelsAllowed feed the readiness report, so it is
+  // refreshed together with the list (add/edit/delete all end up here).
+  loadClaudePlansReadiness()
   list.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${t('common.loading')}</p>`
   try {
     const [plansRes, stateRes] = await Promise.all([
@@ -15213,6 +15254,9 @@ async function saveAllSettings() {
   updateSettingsSaveBar()
 
   if (btn) { btn.disabled = false; btn.textContent = t('settings.btn.save') }
+  // The rotation toggle lives on the Claude plans tab and changes its
+  // readiness banner (and turning it on seeds the heartbeat task server-side).
+  loadClaudePlansReadiness()
   if (errors.length) {
     showToast(t('settings.toast.partial_error'), 'error')
   } else {
