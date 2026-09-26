@@ -27,8 +27,11 @@ import ledger_lib  # noqa: E402
 # The source is `plugin:<provider>:<server>` for every channel plugin
 # (telegram, discord, slack, ...). Matching the shape instead of one literal
 # keeps a new provider working without a code change.
+# Group 1 is the FULL source ("plugin:discord:discord"); it is recorded with the
+# row so the reply guard can name the right provider's reply tool
+# (PROVIDERVAK908). Group 2 is the remaining attributes, group 3 the body.
 CHANNEL_RX = re.compile(
-    r'<channel\s+source="plugin:[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+"([^>]*)>(.*?)</channel>',
+    r'<channel\s+source="(plugin:[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+)"([^>]*)>(.*?)</channel>',
     re.DOTALL,
 )
 
@@ -85,7 +88,7 @@ def main():
     matched = stored = skipped = failed = 0
     for m in CHANNEL_RX.finditer(prompt):
         matched += 1
-        attrs, text = m.group(1), m.group(2)
+        source, attrs, text = m.group(1), m.group(2), m.group(3)
         chat_id = _attr(attrs, "chat_id")
         message_id = _attr(attrs, "message_id")
         ts = _attr(attrs, "ts")
@@ -106,6 +109,7 @@ def main():
                     agent_id, chat_id, message_id, text.strip(), ts,
                     attachment_kind=att_kind, attachment_file_id=att_file_id,
                     reply_to_message_id=reply_to_message_id,
+                    source=source,
                 )
                 stored += 1
             except Exception as exc:

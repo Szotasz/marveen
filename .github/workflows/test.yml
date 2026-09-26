@@ -73,3 +73,9 @@ jobs:
       - run: bash scripts/__tests__/morning-timer-park.test.sh
       - run: bash scripts/__tests__/userbot-arming-gate.test.sh
       - run: bash scripts/__tests__/supabase-q-token-hiding.test.sh
+      # REPLAYTOOL924: the reply-tool naming in the ledger hooks had tests that
+      # only ran by hand, so a green PR said nothing about them. All three are
+      # hermetic (LEDGER_DB_PATH on a throwaway DB, temp dirs).
+      - run: python3 scripts/__tests__/telegram-reply-guard.test.py
+      - run: python3 scripts/__tests__/ledger-replay-reply-tool.test.py
+      - run: bash scripts/__tests__/conversation-ledger.test.sh
