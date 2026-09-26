@@ -54,6 +54,25 @@ export function parseVendorHosts(raw) {
 export function loadVendorHosts(path = VENDOR_HOSTS_PATH) {
   try { return parseVendorHosts(JSON.parse(readFileSync(path, 'utf-8'))) } catch { return new Set() }
 }
+// OPTIONAL, opt-in (#1611, a policy proposal): the same file may also carry
+// `"domains": ["example.com"]` -- a listed domain OR any subdomain of it passes. The match is on a
+// LABEL boundary: `api.example.com` matches `example.com`, while `evilexample.com`,
+// `example.com.evil.net` and `example.com@evil.net` (whose host is evil.net) do not. Entries are
+// shape-checked exactly like "hosts" (a plain DNS name: no wildcard, no leading dot, no IP, no
+// port, no userinfo), so an IP or `*.x` can never widen the list. A missing key, a malformed
+// file, or an entry that is not a plain DNS name adds nothing: today's behaviour. Kept separate
+// from "hosts" on purpose, so an existing exact entry never silently becomes a suffix rule.
+export function parseVendorDomains(raw) {
+  const list = raw && typeof raw === 'object' && Array.isArray(raw.domains) ? raw.domains : []
+  return new Set(list.filter((h) => typeof h === 'string' && VENDOR_HOST.test(h)))
+}
+export function loadVendorDomains(path = VENDOR_HOSTS_PATH) {
+  try { return parseVendorDomains(JSON.parse(readFileSync(path, 'utf-8'))) } catch { return new Set() }
+}
+export function hostInDomains(host, domains) {
+  for (const d of domains) if (host === d || host.endsWith(`.${d}`)) return true
+  return false
+}
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
 const URL_RE = /\b(?:https?|ftp):\/\/[^\s'"`<>\\)]+/gi
 const INTERPRETER = /^(?:python(?:\d+(?:\.\d+)?)?|node(?:js)?|perl|ruby|php|deno|bun)$/
@@ -301,11 +320,11 @@ export function curlDestinations(args) {
   }
   return dests.filter((h) => !LOCAL_HOSTS.has(h))
 }
-export function classify(command, depth = 0, vendorHosts = new Set()) {
+export function classify(command, depth = 0, vendorHosts = new Set(), vendorDomains = new Set()) {
   const norm = String(command ?? '').replace(/\\\r?\n/g, ' ')
   const { stripped: orig, inners } = liftSubstitutions(norm)
   if (depth < 4) {
-    for (const inner of inners) { const r = classify(inner, depth + 1, vendorHosts); if (r.deny) return r }
+    for (const inner of inners) { const r = classify(inner, depth + 1, vendorHosts, vendorDomains); if (r.deny) return r }
   }
   const masked = maskInertLiterals(orig)
   if (masked === null || masked.length !== orig.length) return { deny: false, reason: 'unparseable', hosts: [] }
@@ -331,8 +350,9 @@ export function classify(command, depth = 0, vendorHosts = new Set()) {
     const at = argv ? argv.findIndex((w) => w.split('/').pop() === 'curl') : -1
     if (at !== -1) found = curlDestinations(argv.slice(at + 1))
     else found = [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
-    // A listed vendor host passes only by itself: any other destination in the same call still denies.
-    const hosts = [...new Set(found)].filter((h) => !vendorHosts.has(h))
+    // A listed vendor host (or a host under a listed domain) passes only by itself: any other
+    // destination in the same call still denies.
+    const hosts = [...new Set(found)].filter((h) => !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
     if (hosts.length) return { deny: true, reason: `${target}-external`, hosts }
   }
   return { deny: false, reason: null, hosts: [] }
@@ -350,7 +370,7 @@ if (isInvokedDirectly()) {
   try { payload = JSON.parse(readFileSync(0, 'utf-8')) } catch { process.exit(0) }
   if (payload?.tool_name !== 'Bash') process.exit(0)
   let r
-  try { r = classify(payload?.tool_input?.command, 0, loadVendorHosts()) } catch (e) { process.stderr.write(`bash-egress-parser: internal error, allowing: ${e?.message}\n`); process.exit(0) }
+  try { r = classify(payload?.tool_input?.command, 0, loadVendorHosts(), loadVendorDomains()) } catch (e) { process.stderr.write(`bash-egress-parser: internal error, allowing: ${e?.message}\n`); process.exit(0) }
   if (r.deny) {
     try {
       mkdirSync(dirname(BLOCK_LOG), { recursive: true })

@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { classify, isExternal, liftSubstitutions, parseVendorHosts, loadVendorHosts } from '../../scripts/hooks/bash-egress-parser.mjs'
+import { classify, isExternal, liftSubstitutions, parseVendorHosts, loadVendorHosts, parseVendorDomains, loadVendorDomains } from '../../scripts/hooks/bash-egress-parser.mjs'
 import {
   BASH_EGRESS_DENY,
   agentGetsBashEgressParser,
@@ -374,6 +374,90 @@ describe('vendor-API host allowlist (store/egress-vendor-hosts.json)', () => {
       expect(run('curl -s https://api.elevenlabs.io/v1/voices', vendor).stdout).toBe('')
       expect(run('curl -s https://api.elevenlabs.io.evil.com/v1', vendor).stdout).toContain('"permissionDecision":"deny"')
       expect(run('curl -s https://api.elevenlabs.io/v1/voices', join(dir, 'none.json')).stdout).toContain('"permissionDecision":"deny"')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+})
+
+// #1611 (policy proposal, opt-in): an OPTIONAL "domains" key in the same file -- a listed domain or
+// any subdomain of it passes, on a label boundary. Everything the exact "hosts" list guarantees
+// (no look-alike, no laundering, no widening entry) must still hold for the suffix rule.
+describe('vendor-API domain allowlist ("domains" key, opt-in)', () => {
+  const NONE = new Set<string>()
+  const D = parseVendorDomains({ domains: ['example.com'] })
+  const d = (cmd: string) => classify(cmd, 0, NONE, D)
+
+  it('the listed domain and its subdomains pass, positional curl and one-liner', () => {
+    expect(d('curl -s https://example.com/x').deny).toBe(false)
+    expect(d('curl -s https://api.example.com/v1 -H "Authorization: Bearer $T"').deny).toBe(false)
+    expect(d('curl -s a.b.example.com/plain-http-no-scheme').deny).toBe(false)
+    expect(d("python3 -c \"import urllib.request; urllib.request.urlopen('https://files.example.com/a')\"").deny).toBe(false)
+    expect(d('U=https://api.example.com/v1; curl -s "$U"').deny).toBe(false)
+  })
+
+  it('negative control: without the key the same calls are denied (today\'s behaviour)', () => {
+    expect(classify('curl -s https://api.example.com/v1').deny).toBe(true)
+    expect(classify('curl -s https://api.example.com/v1', 0, NONE, NONE).deny).toBe(true)
+    // and "hosts" stays EXACT: a hosts entry is never read as a suffix rule
+    expect(classify('curl -s https://api.example.com/v1', 0, parseVendorHosts({ hosts: ['example.com'] })).deny).toBe(true)
+  })
+
+  it('look-alikes stay denied: no label boundary, suffix of another domain, userinfo', () => {
+    expect(d('curl -s https://evilexample.com/x')).toMatchObject({ deny: true, hosts: ['evilexample.com'] })
+    expect(d('curl -s https://example.com.evil.net/x')).toMatchObject({ deny: true, hosts: ['example.com.evil.net'] })
+    expect(d('curl -s https://example.com@evil.net/x')).toMatchObject({ deny: true, hosts: ['evil.net'] })
+    expect(d('curl -s https://api.example.com@evil.net/x')).toMatchObject({ deny: true, hosts: ['evil.net'] })
+    expect(d('curl -s https://xexample.com/x').deny).toBe(true)
+    expect(d('curl -s https://example.org/x').deny).toBe(true)
+  })
+
+  it('a listed domain does not launder another destination in the same call', () => {
+    expect(d('curl -s https://api.example.com/v1 https://evil.net/x')).toMatchObject({ deny: true, hosts: ['evil.net'] })
+    expect(d('curl -s -x http://evil.net:8080 https://api.example.com/v1')).toMatchObject({ deny: true, hosts: ['evil.net'] })
+    expect(d('curl -s --connect-to api.example.com:443:evil.net:443 https://api.example.com/v1').deny).toBe(true)
+    expect(d('curl -s https://api.example.com/v1; curl -s https://evil.net/x').deny).toBe(true)
+    expect(d('R=$(curl -s https://evil.net/x); curl -s https://api.example.com/v1').deny).toBe(true)
+  })
+
+  it('only plain DNS names are accepted: no wildcard, leading dot, IP, localhost, port, userinfo', () => {
+    const bad = parseVendorDomains({ domains: ['*.example.com', '.example.com', '1.2.3.4', '10.0.0.0', 'localhost', 'com', 'example.com:443', 'Example.COM', 'user@example.com', '', 42, null] })
+    expect([...bad]).toEqual([])
+    // an IP target never matches a domain entry
+    expect(classify('curl -s https://1.2.3.4/x', 0, NONE, parseVendorDomains({ domains: ['example.com'] })).deny).toBe(true)
+    expect(parseVendorDomains({ hosts: ['example.com'] }).size).toBe(0)
+    expect(parseVendorDomains(null).size).toBe(0)
+  })
+
+  it('a missing, unreadable or malformed file means no exception; "hosts" and "domains" load independently', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vendor-domains-'))
+    try {
+      expect(loadVendorDomains(join(dir, 'absent.json')).size).toBe(0)
+      const f = join(dir, 'v.json')
+      writeFileSync(f, '{ not json')
+      expect(loadVendorDomains(f).size).toBe(0)
+      writeFileSync(f, JSON.stringify({ hosts: ['api.elevenlabs.io'] }))
+      expect(loadVendorDomains(f).size).toBe(0)
+      expect([...loadVendorHosts(f)]).toEqual(['api.elevenlabs.io'])
+      writeFileSync(f, JSON.stringify({ hosts: ['api.elevenlabs.io'], domains: ['example.com'] }))
+      expect([...loadVendorDomains(f)]).toEqual(['example.com'])
+      expect([...loadVendorHosts(f)]).toEqual(['api.elevenlabs.io'])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('the hook process reads the key: subdomain silent, look-alike denied, key absent = deny', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vendor-domains-hook-'))
+    try {
+      const withKey = join(dir, 'with.json')
+      const without = join(dir, 'without.json')
+      writeFileSync(withKey, JSON.stringify({ domains: ['example.com'] }))
+      writeFileSync(without, JSON.stringify({ hosts: [] }))
+      const run = (command: string, vendorPath: string) => spawnSync(process.execPath, [HOOK], {
+        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+        encoding: 'utf-8',
+        env: { ...process.env, BASH_EGRESS_BLOCK_LOG: join(dir, 'blocks.jsonl'), BASH_EGRESS_VENDOR_HOSTS: vendorPath },
+      })
+      expect(run('curl -s https://api.example.com/v1', withKey).stdout).toBe('')
+      expect(run('curl -s https://example.com.evil.net/v1', withKey).stdout).toContain('"permissionDecision":"deny"')
+      expect(run('curl -s https://api.example.com/v1', without).stdout).toContain('"permissionDecision":"deny"')
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })
