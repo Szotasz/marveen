@@ -42,10 +42,13 @@ write_result() {
 
 retry() {
   local tries="$1" pause="$2"; shift 2
-  local i=1
+  local i=1 rc=0
   while true; do
-    if "$@"; then return 0; fi
-    if [ "$i" -ge "$tries" ]; then return 1; fi
+    rc=0; "$@" || rc=$?
+    if [ "$rc" -eq 0 ]; then return 0; fi
+    # UPDOOMNPMCI926: return the LAST attempt's exit code, not a flat 1 -- a
+    # caller that must tell an OOM kill (137) from a lockfile error needs it.
+    if [ "$i" -ge "$tries" ]; then return "$rc"; fi
     echo -e "  ${DIM}retry $i/$tries...${NC}"; sleep "$pause"; pause=$(( pause * 2 )); i=$(( i + 1 ))
   done
 }
@@ -407,6 +410,57 @@ restore_stash_before_exit() {
       echo "          Manualisan kezeld: git stash list / git stash apply / git stash drop"
     fi
   fi
+}
+
+# UPDOOMNPMCI926: `npm ci` failed after the pull. npm ci deletes node_modules
+# before installing, so the tree is on the NEW commit with a half-installed
+# dependency set; the running dashboard still has the old code in memory, but
+# its next start (or any fresh node process) would load from the broken tree.
+# The old path only printed a fixed "package-lock.json out of sync" line and
+# exited 1 with no rollback, so the report said "failed" while the tree sat on
+# the new commit. Measured on a 3.8 GB, swapless host: the OOM killer ended
+# npm ci three times in 33 s (exit 137), and the message blamed the lockfile.
+# Now: name the cause from the exit code, roll back exactly like the build
+# failure below (old commit, its dependencies, its build), and report what
+# actually happened -- including a rollback whose own npm ci failed too.
+npm_ci_failed() {
+  local rc="$1"
+  if [ "$rc" -eq 137 ]; then
+    if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+      echo -e "${RED}ERROR:${NC} npm ci was killed (exit 137, SIGKILL) -- most likely the machine ran out of memory."
+      echo -e "  Check with: dmesg | grep -i 'killed process'  (the lockfile is not the cause)"
+    else
+      echo -e "${RED}HIBA:${NC} az npm ci-t a rendszer leállította (137-es kilépési kód, SIGKILL), valószínűleg elfogyott a memória."
+      echo -e "  Ellenőrzés: dmesg | grep -i 'killed process'  (nem a package-lock.json a hiba)"
+    fi
+  else
+    if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+      echo -e "${RED}ERROR:${NC} npm ci failed (exit code ${rc}). Details: npm ci"
+    else
+      echo -e "${RED}HIBA:${NC} az npm ci sikertelen (kilépési kód: ${rc}). Részletek: npm ci"
+    fi
+  fi
+  echo -e "  Visszaallitas a korabbi verziora (${OLD_VERSION})..."
+  local deps_ok=0
+  if [ -n "$OLD_VERSION_FULL" ]; then
+    git reset --hard "$OLD_VERSION_FULL" >/dev/null 2>&1 || true
+    if npm ci --silent --include=dev 2>/dev/null; then deps_ok=1; fi
+    npm rebuild better-sqlite3 --silent 2>/dev/null || true
+    npm run build --silent 2>/dev/null || true
+    [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
+  fi
+  local cause="a függőségek telepítése elbukott (kilépési kód: ${rc})"
+  [ "$rc" -eq 137 ] && cause="a függőségek telepítését a rendszer leállította (137, valószínűleg memóriahiány)"
+  if [ "$deps_ok" = "1" ]; then
+    RESULT_STATUS="rolled-back"
+    RESULT_MSG="A frissítés közben ${cause}; a rendszer visszaállt a korábbi működő verzióra (${OLD_VERSION}). A frissítés nem ment ki."
+  else
+    RESULT_STATUS="failed"
+    RESULT_MSG="A frissítés közben ${cause}, és a visszaállítás függőség-telepítése sem sikerült: a kód a korábbi verzión (${OLD_VERSION}) áll, de a node_modules hiányos lehet. Kézi beavatkozás kell: npm ci --include=dev, majd npm run build."
+    echo -e "${RED}HIBA:${NC} a visszaallitas npm ci-je is elbukott; a node_modules hianyos lehet. Kezi beavatkozas kell: npm ci --include=dev && npm run build"
+  fi
+  restore_stash_before_exit
+  exit 6
 }
 
 # Save current version
@@ -1035,10 +1089,10 @@ if git diff "$OLD_VERSION" "$NEW_VERSION" --name-only | grep -qE "^package(-lock
   # TypeScript compiler and makes the build below fail -> rollback -> the same
   # failure next run, forever (the rollback also reverts the freshly pulled
   # update.sh, so a fix can never arrive through this path on its own).
-  if ! retry 3 3 npm ci --silent --include=dev; then
-    echo -e "  HIBA: npm ci sikertelen. Valoszinuleg a package-lock.json nincs szinkronban."
-    echo -e "  Reszletekert futtasd: npm ci"
-    exit 1
+  NPM_CI_RC=0
+  retry 3 3 npm ci --silent --include=dev || NPM_CI_RC=$?
+  if [ "$NPM_CI_RC" -ne 0 ]; then
+    npm_ci_failed "$NPM_CI_RC"
   fi
   # Security posture check, NOT a hard gate. npm audit queries the
   # registry and can fail for reasons entirely outside the operator's
