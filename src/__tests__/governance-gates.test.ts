@@ -1,14 +1,20 @@
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision as selfPaceDecision, stripDataPayloads, stripGitCommitMessages } from '../../scripts/self-pace-gate.mjs'
+import { gateDecision as selfPaceDecision, stripDataPayloads, stripGitCommitMessages, stripHeredocBodies, stripProseArguments } from '../../scripts/self-pace-gate.mjs'
+// @ts-expect-error -- plain .mjs hook script, no types
+import { bashViolation, isExactInstall } from '../../scripts/readonly-repo-gate.mjs'
 import {
   agentGetsGovernanceGates,
+  agentGetsReadonlyRepoGate,
+  injectReadonlyRepoGate,
   agentGetsTelegramCopyGate,
   injectSelfPaceGate,
   injectTelegramCopyGate,
   TELEGRAM_COPY_GATE_MATCHER,
 } from '../web/agent-scaffold.js'
 import { MAIN_AGENT_ID } from '../config.js'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
 // --- self-pace-gate: blocks the agent from scheduling its own future turns ---
 describe('self-pace-gate gateDecision', () => {
@@ -131,6 +137,98 @@ describe('self-pace-gate gateDecision', () => {
 // a shell invocation, so a trigger token INSIDE the payload must not false-deny a
 // legit dispatch. Only provably-literal payloads are blanked; a payload that can
 // command-substitute ($(...)/backtick) is kept so a real substitution still trips. ---
+describe('self-pace-gate stripHeredocBodies (quoted vs unquoted marker)', () => {
+  // A heredoc body is data -- unless the shell will expand it. A quoted marker
+  // is literal, an unquoted one is not, and blanking an unquoted body would
+  // hide a live command substitution from the scheduler patterns. Reported on
+  // PR #770; the gate-level assertion for the same hole lives above.
+  const PROSE = 'at the same time we fixed the parser'
+
+  it('blanks a QUOTED heredoc body (the false positive this strip exists for)', () => {
+    const cmd = `git commit -F - <<'EOF'\n${PROSE}\nEOF`
+    expect(stripHeredocBodies(cmd)).not.toContain(PROSE)
+  })
+
+  it('blanks a double-quoted marker too', () => {
+    const cmd = `git commit -F - <<"EOF"\n${PROSE}\nEOF`
+    expect(stripHeredocBodies(cmd)).not.toContain(PROSE)
+  })
+
+  it('blanks an UNQUOTED body that has nothing to expand', () => {
+    const cmd = `git commit -F - <<EOF\n${PROSE}\nEOF`
+    expect(stripHeredocBodies(cmd)).not.toContain(PROSE)
+  })
+
+  it('KEEPS an unquoted body containing $( ) -- the shell would run it', () => {
+    const cmd = 'git commit -m "$(cat <<EOF\nfix\n$(at now)\nEOF\n)"'
+    expect(stripHeredocBodies(cmd)).toContain('$(at now)')
+  })
+
+  it('KEEPS an unquoted body containing a backtick', () => {
+    const cmd = 'git commit -F - <<EOF\nfix `at now`\nEOF'
+    expect(stripHeredocBodies(cmd)).toContain('`at now`')
+  })
+
+  it('still blanks a QUOTED body that merely mentions $( ) as text', () => {
+    // Quoted marker: the shell does not expand, so the text is data even when
+    // it looks like a substitution.
+    const cmd = "git commit -F - <<'EOF'\nwe replaced $(at now) with cron\nEOF"
+    expect(stripHeredocBodies(cmd)).not.toContain('$(at now)')
+  })
+
+  it('the <<- variant follows the same rule', () => {
+    expect(stripHeredocBodies(`git commit -F - <<-'EOF'\n\t${PROSE}\n\tEOF`)).not.toContain(PROSE)
+    expect(stripHeredocBodies('git commit -F - <<-EOF\n\t$(at now)\n\tEOF')).toContain('$(at now)')
+  })
+
+  // PR #770 review (Szotasz): a QUOTED body is literal to the SHELL, but an
+  // interpreter/remote-executor that OWNS the redirect runs it -- blanking would
+  // hide a live scheduler command. Keep the body visible for those owners.
+  const RUNS = 'crontab -r; at now'
+
+  it('KEEPS a quoted heredoc body owned by bash (it executes the body)', () => {
+    expect(stripHeredocBodies(`bash <<'EOF'\n${RUNS}\nEOF`)).toContain(RUNS)
+  })
+
+  it('KEEPS a quoted heredoc body owned by sh / bash -s', () => {
+    expect(stripHeredocBodies(`sh <<"EOF"\n${RUNS}\nEOF`)).toContain(RUNS)
+    expect(stripHeredocBodies(`bash -s <<'EOF'\n${RUNS}\nEOF`)).toContain(RUNS)
+  })
+
+  it('KEEPS a quoted heredoc body owned by ssh / python / docker exec', () => {
+    expect(stripHeredocBodies(`ssh box <<'EOF'\n${RUNS}\nEOF`)).toContain(RUNS)
+    expect(stripHeredocBodies(`python3 - <<'EOF'\n${RUNS}\nEOF`)).toContain(RUNS)
+    expect(stripHeredocBodies(`docker exec c bash <<'EOF'\n${RUNS}\nEOF`)).toContain(RUNS)
+  })
+
+  it('sees through a sudo/env prefix to the interpreter owner', () => {
+    expect(stripHeredocBodies(`sudo bash <<'EOF'\n${RUNS}\nEOF`)).toContain(RUNS)
+  })
+
+  it('still blanks when a non-interpreter (git/tee) owns the redirect', () => {
+    expect(stripHeredocBodies(`git commit -F - <<'EOF'\n${RUNS}\nEOF`)).not.toContain(RUNS)
+    expect(stripHeredocBodies(`tee f <<'EOF'\n${RUNS}\nEOF`)).not.toContain(RUNS)
+  })
+})
+
+describe('self-pace-gate stripProseArguments (scoped to gh/git/glab)', () => {
+  // PR #770 review (Szotasz): the prose-flag blanking is for a PR/issue body or
+  // release note, so it must be scoped to gh/git/glab. A short flag means
+  // something else to other tools, and blanking it there hides real data.
+  it('blanks a prose flag on gh', () => {
+    expect(stripProseArguments("gh pr create --body 'runs at midnight, cron style'"))
+      .not.toContain('midnight')
+  })
+
+  it('leaves a same-named flag on an unrelated tool alone', () => {
+    // tar -t is "list", cut -b is "bytes" -- not prose, must not be blanked.
+    const tar = "tar -t 'archive at now.tar'"
+    expect(stripProseArguments(tar)).toBe(tar)
+    const cut = "cut -b '1-3 at now'"
+    expect(stripProseArguments(cut)).toBe(cut)
+  })
+})
+
 describe('self-pace-gate stripDataPayloads (data-payload false-positive guard)', () => {
   it('blanks a single-quoted -d payload but keeps the flag', () => {
     expect(stripDataPayloads(`curl -d '{"x":"/api/schedules"}' u`)).toBe(`curl -d '' u`)
@@ -494,5 +592,120 @@ describe('telegram copy gate wiring', () => {
     const ptu = (settings.hooks as Record<string, unknown>).PreToolUse as unknown[]
     expect(JSON.stringify(ptu)).toContain('egress-gate.mjs')
     expect(ptu).toHaveLength(2)
+  })
+})
+
+// --- readonly-repo-gate: only the EXACT install command is exempt ---
+//
+// Maintainer decision on #770 (2026-09-25): package installs are allowed, but
+// only the exact install command with nothing appended -- `npm install`,
+// `npm ci`, `yarn install`, bare `yarn`, `pnpm install`. The yarn branch used
+// to read `yarn\s+(install)?\b`, which matched `yarn ` + anything, so
+// `yarn add left-pad` and `yarn exec rm -rf src` skipped the gate. INSTALL_RX
+// is now anchored to the whole segment, and an appended form is judged (and,
+// inside a protected root, refused) like any other package-manager call.
+describe('readonly-repo-gate: only the exact install command is exempt', () => {
+  // ROOTS defaults to <home>/projects, resolved when the module loads.
+  const repo = join(homedir(), 'projects', 'app')
+  const outside = join(homedir(), 'agents', 'qa-worker')
+
+  const EXACT = ['npm install', 'npm ci', 'yarn install', 'yarn', 'pnpm install']
+
+  it('recognises exactly the five decided install commands', () => {
+    for (const cmd of EXACT) expect(isExactInstall(cmd), cmd).toBe(true)
+    for (const cmd of [
+      'yarn add left-pad',
+      'yarn exec rm -rf src',
+      'yarn dlx some-codemod',
+      'npm install evil-pkg',
+      'npm ci --ignore-scripts',
+      'npm i',
+      'pnpm install left-pad',
+      'pnpm add left-pad',
+      'yarn install --frozen-lockfile',
+      'CI=1 npm ci',
+      'pip install -r requirements.txt',
+    ]) {
+      expect(isExactInstall(cmd), cmd).toBe(false)
+    }
+  })
+
+  it('allows the exact installs inside a protected repo', () => {
+    for (const cmd of EXACT) {
+      expect(bashViolation(`cd ${repo} && ${cmd}`), cmd).toBeNull()
+      expect(bashViolation(cmd, repo), `${cmd} (session cwd)`).toBeNull()
+    }
+  })
+
+  it('refuses yarn add and yarn exec inside a protected repo', () => {
+    for (const cmd of ['yarn add left-pad', 'yarn exec rm -rf src', 'yarn exec tsx build.ts', 'yarn dlx some-codemod']) {
+      expect(bashViolation(`cd ${repo} && ${cmd}`), cmd).not.toBeNull()
+      expect(bashViolation(cmd, repo), `${cmd} (session cwd)`).not.toBeNull()
+    }
+  })
+
+  it('refuses an install with anything appended', () => {
+    for (const cmd of [
+      'npm install evil-pkg',
+      'npm install --save left-pad',
+      'npm ci --foreground-scripts',
+      'pnpm install left-pad',
+      'yarn install --modules-folder src',
+      'npm i left-pad',
+    ]) {
+      expect(bashViolation(`cd ${repo} && ${cmd}`), cmd).not.toBeNull()
+    }
+  })
+
+  it('an appended redirect is no longer hidden behind the install', () => {
+    expect(bashViolation(`npm ci > ${repo}/src/index.ts`)).not.toBeNull()
+    expect(bashViolation(`yarn install > ${repo}/src/index.ts`)).not.toBeNull()
+  })
+
+  it('the exemption is per-segment, so a chained non-install is still judged', () => {
+    expect(bashViolation(`cd ${repo} && yarn install && yarn add left-pad`)).not.toBeNull()
+    expect(bashViolation(`cd ${repo} && npm ci && yarn exec rm -rf src`)).not.toBeNull()
+  })
+
+  it('judges from the session cwd the hook payload carries', () => {
+    // `cd <repo>` in one Bash call, `yarn add x` in the next: the shell kept
+    // the cwd, so the second call must be judged from the repo.
+    expect(bashViolation('yarn add left-pad', repo)).not.toBeNull()
+    expect(bashViolation('yarn add left-pad', outside)).toBeNull()
+  })
+
+  it('leaves read-only package-manager use alone', () => {
+    for (const cmd of ['npm test', 'npm run build', 'yarn test', 'pnpm run lint']) {
+      expect(bashViolation(`cd ${repo} && ${cmd}`), cmd).toBeNull()
+    }
+  })
+})
+
+// --- readonly-repo-gate wiring: opt-in by profile FLAG, not by profile name ---
+describe('agentGetsReadonlyRepoGate', () => {
+  it('wires only for a profile that opts in', () => {
+    expect(agentGetsReadonlyRepoGate({ readonlyRepo: true })).toBe(true)
+    expect(agentGetsReadonlyRepoGate({ readonlyRepo: false })).toBe(false)
+    expect(agentGetsReadonlyRepoGate({})).toBe(false)
+  })
+
+  it('injects one PreToolUse entry and stays idempotent', () => {
+    const settings: Record<string, unknown> = {}
+    injectReadonlyRepoGate(settings)
+    injectReadonlyRepoGate(settings)
+    const pre = (settings.hooks as Record<string, unknown>).PreToolUse as unknown[]
+    const mine = pre.filter((e) => JSON.stringify(e).includes('readonly-repo-gate.mjs'))
+    expect(mine).toHaveLength(1)
+    expect(JSON.stringify(mine[0])).toContain('Bash|Write|Edit|NotebookEdit')
+  })
+
+  it('preserves unrelated PreToolUse entries', () => {
+    const settings: Record<string, unknown> = {
+      hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'node other.mjs' }] }] },
+    }
+    injectReadonlyRepoGate(settings)
+    const pre = (settings.hooks as Record<string, unknown>).PreToolUse as unknown[]
+    expect(pre).toHaveLength(2)
+    expect(JSON.stringify(pre[0])).toContain('other.mjs')
   })
 })

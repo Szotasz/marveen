@@ -291,6 +291,33 @@ export function maskInertLiterals(command) {
 // blank the out-of-band `; crontab -r` and let a real self-pace command slip.
 // ANSI-C $'...' DOES process \', so that branch keeps the \\. escape form; "..."
 // keeps it too (backslash is special inside bash double quotes).
+// Human prose in a command-argument position is DATA, not commands. The heredoc
+// fix closed one wrapper; this closes the rest of the family: a PR body, a PR
+// comment, a release note. The failure mode is identical -- a sentence like
+// "runs at the same time" reads as the `at` scheduler at a segment start, and
+// the better the prose, the likelier it contains words like at / cron /
+// schedule. Same literal-only rule as the other strippers: a double-quoted
+// value with $( or ` may substitute, so it is left alone.
+const PROSE_FLAGS = String.raw`--body|--message|--notes|--title|--subject|-b|-m|-t`
+
+export function stripProseArguments(seg) {
+  const s = String(seg ?? '')
+  // Scoped to the tools these prose flags were written for: gh, git, glab (a PR
+  // body, a PR comment, a release note). A short flag means different things to
+  // different binaries (`tar -t`, `cut -b`, `sort -t`), so blanking it on an
+  // unrelated tool would hide real data from the gate (PR #770 review, Szotasz).
+  // Same coarse command-word guard as stripGitCommitMessages just below.
+  if (!/\b(?:gh|git|glab)\b/i.test(s)) return s
+  return s.replace(
+    new RegExp(String.raw`((?:^|\s)(?:${PROSE_FLAGS})(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")`, 'gi'),
+    (full, flag, arg) => {
+      const dq = arg.startsWith('"')
+      if (dq && (arg.includes('$(') || arg.includes('`'))) return full
+      return flag + (dq ? '""' : "''")
+    },
+  )
+}
+
 export function stripDataPayloads(seg) {
   return String(seg ?? '').replace(
     /((?:^|\s)(?:-d|--data(?:-(?:raw|binary|ascii|urlencode))?)(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/gi,
@@ -312,6 +339,73 @@ export function stripDataPayloads(seg) {
 // double-quoted message that CAN command-substitute (`git commit -m "$(crontab
 // -r)"`) is left intact so SCHEDULER_RX still catches the real substitution.
 // Scoped to git commit/tag/stash so a `-m` on an unrelated binary is untouched.
+// Heredoc bodies are DATA, not commands. A worker writing a real commit message
+// through `git commit -F - <<EOF … EOF` had the turn denied because one prose
+// line happened to start with "at " -- which SCHEDULER_RX reads as the `at`
+// scheduler at a segment start. A heredoc body is data, so blank it before any
+// pattern runs. Handles <<- for tab-indented bodies.
+//
+// EXCEPT when the body can still run something. A QUOTED marker (<<'EOF' or
+// <<"EOF") is literal: the shell performs no expansion inside it, so blanking is
+// safe. An UNQUOTED marker (<<EOF) is not -- the shell expands $(...) and
+// backticks in that body at exec time, so blanking one would hide a live
+// command substitution from SCHEDULER_RX and the gate would stop seeing
+// something that really runs:
+//
+//     git commit -m "$(cat <<EOF
+//     fix
+//     $(at now)
+//     EOF
+//     )"
+//
+// This is the same rule the other strippers already apply: stripDataPayloads,
+// stripGitCommitMessages and stripProseArguments all leave a double-quoted
+// value alone when it contains `$(` or a backtick. An unquoted heredoc is the
+// same category; it was simply missing the guard. Reported on PR #770.
+// Whether the command word owning a heredoc redirect EXECUTES the body. The
+// shell-literal guard above is not enough: a quoted marker (<<'EOF') is literal
+// to the SHELL, so blanking looks safe, but `bash <<'EOF'`, `sh`, `ssh box`,
+// `python - <<'EOF'` feed the body to an interpreter that runs it -- blanking
+// would hide a live scheduler command from the gate (PR #770 review, Szotasz).
+// `git commit -F - <<'EOF'` feeds the body to git as DATA, so that stays safe to
+// blank. So: keep the body visible when its redirect owner is an interpreter or
+// remote/container executor.
+const HEREDOC_INTERPRETER_RX = /^(?:bash|sh|zsh|dash|ksh|ash|python[0-9.]*|node|nodejs|ruby|perl|php|ssh)$/
+
+function heredocOwnerRunsBody(before) {
+  // `before` is the command text up to the << redirect; the owner is the first
+  // word of the last command segment.
+  const seg = before.split(/\n|;|\|\|?|&&?|\(|\{/).pop() ?? ''
+  const tokens = seg.trim().split(/\s+/).filter(Boolean)
+  // Pass-through prefixes that do not change what runs the body.
+  while (tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0]) ||
+    ['sudo', 'env', 'nice', 'time', 'exec', 'command', 'nohup', 'stdbuf'].includes(tokens[0]))) {
+    tokens.shift()
+  }
+  if (!tokens.length) return false
+  const word = tokens[0].split('/').pop()
+  if (HEREDOC_INTERPRETER_RX.test(word)) return true
+  // docker/podman/kubectl exec run the body through a shell in the target.
+  if (['docker', 'podman', 'kubectl'].includes(word) && tokens.slice(1).includes('exec')) return true
+  return false
+}
+
+export function stripHeredocBodies(command) {
+  const cmd = String(command ?? '')
+  if (!/<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*/.test(cmd)) return cmd
+  return cmd.replace(
+    /(<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2)([\s\S]*?)(^\s*\3\s*$)/gm,
+    (full, open, quote, _marker, body, close, offset, string) => {
+      const literal = quote === "'" || quote === '"'
+      if (!literal && (body.includes('$(') || body.includes('`'))) return full
+      // A quoted body the shell will not expand is still executed when an
+      // interpreter/remote-executor owns the redirect -- keep it visible then.
+      if (heredocOwnerRunsBody(string.slice(0, offset))) return full
+      return `${open}\n${close}`
+    },
+  )
+}
+
 export function stripGitCommitMessages(command) {
   const cmd = String(command ?? '')
   if (!/\bgit\b[\s\S]*\b(commit|tag|stash)\b/i.test(cmd)) return cmd
@@ -363,7 +457,7 @@ export function gateDecision(toolName, toolInput) {
     // it), so the URL/method args still match but the body text never does. A
     // separator OUTSIDE the payload still splits, so `curl -d '' x ; crontab -r`
     // is still caught.
-    const safeCommand = stripDataPayloads(stripGitCommitMessages(String(toolInput?.command ?? '')))
+    const safeCommand = stripProseArguments(stripDataPayloads(stripGitCommitMessages(stripHeredocBodies(String(toolInput?.command ?? '')))))
     // Per-segment so an unrelated token elsewhere in a compound command cannot
     // turn a legit read (store inspection, schedule-API GET) into a false deny.
     const naiveSegs = splitSegments(safeCommand)
