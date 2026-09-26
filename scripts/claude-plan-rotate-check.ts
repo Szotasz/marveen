@@ -6,6 +6,13 @@
 //
 //   npx tsx scripts/claude-plan-rotate-check.ts
 //
+// Usage source (2026-09-26 fix): when the main agent's active plan is a
+// token-mode plan in effect, its usage comes from a live probe with THAT
+// plan's token on every tick (one minimal API call on the active plan);
+// usage-collect.py reads the host login, a different account, and is only
+// used for a configDir-mode or unassigned active plan. The two are never
+// mixed (src/claude-plan-rotate-check-run.ts).
+//
 // Design 6.6 lists four heartbeat steps: (1) run usage-collect.py --json,
 // (2) feed it to the decision logic, (3) update the state side-car, (4) if
 // the decision is "rotate", call POST /api/claude-plans/rotate AND send the
@@ -14,8 +21,10 @@
 // single structured line for (4) instead of doing it itself, for the same
 // reason design 6.4 requires: the Telegram signal MUST go through the c3po
 // `reply` tool, which only an agent turn has access to -- a plain node
-// script cannot call it. So the scheduled task's prompt (authored by the
-// operator, same as every other heartbeat in this fleet) is expected to:
+// script cannot call it. So the scheduled task's prompt is expected to (the
+// task itself, `claude-plan-rotate-check`, is seeded automatically while
+// CLAUDE_ROTATION_ENABLED=1 -- see src/web/claude-rotation-heartbeat.ts, whose
+// buildRotationHeartbeatPrompt implements exactly this list):
 //   1. run this script;
 //   2. if it printed a ROTATE line: send the Telegram signal via `reply`
 //      FIRST (design 6.4/1's ordering requirement), THEN

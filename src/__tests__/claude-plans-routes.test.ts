@@ -41,7 +41,8 @@ vi.mock('../web/agent-process.js', () => ({ restartAgentProcess: (name: string) 
 const vaultSecrets = new Map<string, string>()
 const setSecret = vi.fn((id: string, _label: string, value: string) => { vaultSecrets.set(id, value) })
 const deleteSecret = vi.fn((id: string) => vaultSecrets.delete(id))
-vi.mock('../web/vault.js', () => ({ setSecret, deleteSecret }))
+const getSecret = vi.fn((id: string) => vaultSecrets.get(id) ?? null)
+vi.mock('../web/vault.js', () => ({ setSecret, deleteSecret, getSecret }))
 
 // Fleet leg (CLAUDE_ROTATION_FLEET): its logic is tested in
 // claude-plan-fleet-rotation.test.ts; here only "does the route start it, and
@@ -177,6 +178,16 @@ describe('tryHandleClaudePlans', () => {
     expect(out.body).toEqual({ activePlanByAgent: {}, plans: {} })
   })
 
+  it('GET .../readiness answers { ready, blockers[], details[] } (not shadowed by the :id matcher)', async () => {
+    const { ctx, out } = fakeCtx('GET', '/api/claude-plans/readiness')
+    expect(await tryHandleClaudePlans(ctx)).toBe(true)
+    expect(typeof out.body.ready).toBe('boolean')
+    expect(Array.isArray(out.body.blockers)).toBe(true)
+    // rotationEnabled defaults to '0' in this file.
+    expect(out.body.blockers).toContain('rotation_disabled')
+    expect(out.body.details.find((d: any) => d.code === 'rotation_disabled').message).toMatch(/CLAUDE_ROTATION_ENABLED/)
+  })
+
   it('a plan literally named "state" cannot shadow the state route', async () => {
     await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'state' })).ctx)
     const { ctx, out } = fakeCtx('GET', '/api/claude-plans/state')
@@ -283,6 +294,47 @@ describe('tryHandleClaudePlans', () => {
       await tryHandleClaudePlans(ctx)
       expect(out.status).toBe(200)
       expect(vaultSecrets.get('claude-plan-token-marketing')).toBe('rotated-token-value')
+    })
+
+    // Duplicate-token guard (2026-09-26: two of six plans on a real install
+    // carried the identical setup-token). Discriminating input: the SAME raw
+    // token under a DIFFERENT plan id.
+    it('POST rejects a token already stored for a different plan (409), writing nothing and never echoing the token', async () => {
+      await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', tokenPlan()).ctx)
+      setSecret.mockClear()
+      const before = readFileSync(CLAUDE_PLANS_PATH, 'utf8')
+
+      const { ctx, out } = fakeCtx('POST', '/api/claude-plans', tokenPlan({
+        id: 'claude7', label: 'Claude 7', token: '  test-fixture-not-a-real-token-marketing  ',
+      }))
+      await tryHandleClaudePlans(ctx)
+      expect(out.status).toBe(409)
+      expect(out.body.error).toContain('marketing')
+      expect(JSON.stringify(out.body)).not.toContain('test-fixture-not-a-real-token')
+      expect(setSecret).not.toHaveBeenCalled()
+      expect(vaultSecrets.has('claude-plan-token-claude7')).toBe(false)
+      expect(readFileSync(CLAUDE_PLANS_PATH, 'utf8')).toBe(before)
+    })
+
+    it('PUT rejects switching a plan to a token another plan already holds (409), existing secret untouched', async () => {
+      await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', tokenPlan()).ctx)
+      await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', tokenPlan({ id: 'claude7', label: 'Claude 7', token: 'other-fixture-token' })).ctx)
+      setSecret.mockClear()
+      deleteSecret.mockClear()
+
+      const { ctx, out } = fakeCtx('PUT', '/api/claude-plans/claude7', tokenPlan({ label: 'Claude 7' }))
+      await tryHandleClaudePlans(ctx)
+      expect(out.status).toBe(409)
+      expect(vaultSecrets.get('claude-plan-token-claude7')).toBe('other-fixture-token')
+      expect(setSecret).not.toHaveBeenCalled()
+      expect(deleteSecret).not.toHaveBeenCalled()
+    })
+
+    it('PUT re-sending a plan\'s OWN token is not a duplicate (200)', async () => {
+      await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', tokenPlan()).ctx)
+      const { ctx, out } = fakeCtx('PUT', '/api/claude-plans/marketing', tokenPlan({ label: 'Renamed' }))
+      await tryHandleClaudePlans(ctx)
+      expect(out.status).toBe(200)
     })
 
     // PR #1304 review (b): tokenSecretId must be exactly this plan's own

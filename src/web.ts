@@ -13,6 +13,7 @@ import { isBlockedCrossOriginWrite, originMatchesServedHost } from './web/csrf-o
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
+import { ensureRotationHeartbeatTask } from './web/claude-rotation-heartbeat.js'
 import { ensureAgentHooks, ensureProjectRootInClaudeMd, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureBashEgressParser, ensureGovernanceGateCommands, ensureTelegramCopyGate, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { mainAgentConfigDirIfSeparate } from './web/agent-process.js'
@@ -656,6 +657,16 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     logger.info('Default scheduled tasks seeded')
   } catch (err) {
     logger.warn({ err }, 'Scheduled tasks seed skipped')
+  }
+
+  // Claude plan rotation needs its heartbeat task; installs that turned
+  // rotation on before this was automatic (or updated into it) get it here.
+  // Never overwrites an existing task, and honors an operator's deletion.
+  try {
+    const seeded = ensureRotationHeartbeatTask({ respectRemoval: true })
+    if (seeded === 'created') logger.info('Claude rotation heartbeat task created')
+  } catch (err) {
+    logger.warn({ err }, 'Claude rotation heartbeat seed skipped')
   }
 
   try {
