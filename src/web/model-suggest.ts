@@ -33,6 +33,7 @@ const TOP_TIER_LABEL = humanModelLabel(TOP_TIER_MODEL)
 export type ModelId =
   | 'claude-haiku-4-5-20251001'
   | 'claude-sonnet-5'
+  | 'claude-opus-5-5[1m]'
   | 'claude-opus-5[1m]'
   | 'claude-opus-5'
   | 'claude-fable-5'

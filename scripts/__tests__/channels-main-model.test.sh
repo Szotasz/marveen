@@ -175,12 +175,19 @@ else
   fail "resolver over the REAL shipped settings falls through to the distribution default" "SENTINEL-FROM-REGISTRY" "$real_settings_model"
 fi
 
-# (3) The real shipped constant (the single source of truth) is Opus 5 (1M).
+# (3) The real shipped constant (the single source of truth) is Opus 5.5 (1M).
+# MODELSUGGEST923 (2026-09-26): bumped from claude-opus-5[1m] -- OPUS55SELECTOR922
+# (#1492) added claude-opus-5-5[1m] to the picker but never bumped this
+# constant, so model-suggest.ts (which reuses it as its top-tier ceiling) kept
+# recommending the older, pricier claude-opus-5[1m] ($15/M) as an "upgrade"
+# over agents already correctly running claude-opus-5-5[1m] ($4/M). This pin
+# is deliberately literal, same as before: it must go red on the NEXT tier
+# bump too, not silently track whatever the constant says.
 registry_default="$(grep -oE "DISTRIBUTION_DEFAULT_AGENT_MODEL = '[^']+'" "$INSTALL_DIR/src/config-registry.ts" | head -1 | sed "s/.*'\(.*\)'/\1/")"
-if [ "$registry_default" = "claude-opus-5[1m]" ]; then
-  pass "DISTRIBUTION_DEFAULT_AGENT_MODEL is claude-opus-5[1m] (real src constant)"
+if [ "$registry_default" = "claude-opus-5-5[1m]" ]; then
+  pass "DISTRIBUTION_DEFAULT_AGENT_MODEL is claude-opus-5-5[1m] (real src constant)"
 else
-  fail "DISTRIBUTION_DEFAULT_AGENT_MODEL is claude-opus-5[1m]" "claude-opus-5[1m]" "$registry_default"
+  fail "DISTRIBUTION_DEFAULT_AGENT_MODEL is claude-opus-5-5[1m]" "claude-opus-5-5[1m]" "$registry_default"
 fi
 
 # (4) The template must not resurrect a second model source: no installer ships

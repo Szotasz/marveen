@@ -62,9 +62,9 @@ describe('suggestForAgent -- base (no signals)', () => {
 
   it('normalises [1m] suffix for comparison', () => {
     const text = 'IT architekt. Komplex elosztott rendszerterv, mikroszolgáltatás, stratégiai döntések.'
-    // Plain opus-5 vs the suggested opus-5[1m]: same family after normalize(),
+    // Plain opus-5-5 vs the suggested opus-5-5[1m]: same family after normalize(),
     // so no change is advised -- the suffix alone must not trigger churn.
-    const result = suggestForAgent('rick', 'claude-opus-5', text)
+    const result = suggestForAgent('rick', 'claude-opus-5-5', text)
     expect(result.changeAdvised).toBe(false)
   })
 
@@ -217,9 +217,19 @@ describe('suggestForAgent -- reason structure (6 sections)', () => {
 // suggester kept recommending claude-opus-4-8[1m] (measured on the live
 // endpoint before the fix: 8 of 10 agents were suggested 4.8, 7 of them with
 // changeAdvised, 5 of those running Opus 5; after: 0 of 10).
+// MODELSUGGEST923 (measured 2026-09-26): the same drift recurred one tier up.
+// OPUS55SELECTOR922 (#1492, 2026-09-23) added claude-opus-5-5[1m] to the
+// picker's valueSet but never bumped DISTRIBUTION_DEFAULT_AGENT_MODEL, so
+// this suite's own "locks to" pin below was still asserting the OLD ceiling
+// (claude-opus-5[1m], $15/M) while the picker already offered a
+// strictly-better, cheaper one (claude-opus-5-5[1m], $4/M) -- live effect:
+// the advisor told 5 of 5 fleet agents to move to the pricier, older tier,
+// including two agents already correctly running 5.5. Bumped the constant in
+// config-registry.ts; this pin now locks to the new value so the NEXT tier
+// bump fails here too, on purpose, instead of shipping silently.
 describe('MODELSUGGEST807 -- top tier is the shipped distribution default', () => {
-  it('the constant this suite locks to is Opus 5 (1M) today', () => {
-    expect(DISTRIBUTION_DEFAULT_AGENT_MODEL).toBe('claude-opus-5[1m]')
+  it('the constant this suite locks to is Opus 5.5 (1M) today', () => {
+    expect(DISTRIBUTION_DEFAULT_AGENT_MODEL).toBe('claude-opus-5-5[1m]')
   })
 
   it('an agent already ON the distribution default is never advised to change tier upward', () => {
