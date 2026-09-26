@@ -637,6 +637,39 @@ EOF
   return 0
 }
 
+# macOS twin of install_keepalive_probe_timer (KEEPALIVEMAC926). The Linux half
+# landed with #1313 and install-macos.sh got the launchd unit the same day, but
+# the template only reaches NEW installs -- and update.sh, the one thing that
+# runs weekly on the machines that already have the bug, had no Darwin branch at
+# all, so every Mac installed before 2026-09-14 still has no probe.
+# Measured on this install 2026-09-26 05:07: launchctl had no
+# com.marveen.channel-keepalive-probe, and store/channels-failures.log shows
+# main-agent respawns ONLY between 22:00 and 07:00 (19 that night, one every
+# ~15 minutes, zero between 07:00 and 22:00) -- the same quiet-night-reads-as-a-
+# wedge loop the Linux comment above describes. The respawn never clears the
+# condition that triggers it (nothing refreshes the file afterwards either), so
+# it repeats until the owner's first morning message warms the file.
+# Idempotent: once the plist exists this writes nothing and prints nothing. The
+# label is read from the installer so a rename there cannot silently turn this
+# into a weekly reload.
+install_keepalive_probe_launchd() {
+  [ "$(uname -s 2>/dev/null)" = "Darwin" ] || return 0
+  _ka_installer="$INSTALL_DIR/scripts/install-channel-keepalive-probe.sh"
+  [ -x "$_ka_installer" ] || return 0
+  command -v launchctl >/dev/null 2>&1 || return 0
+  _ka_label="$(sed -n 's/^LABEL="\(.*\)"$/\1/p' "$_ka_installer" | head -1)"
+  [ -n "$_ka_label" ] || _ka_label="com.marveen.channel-keepalive-probe"
+  if [ -f "$HOME/Library/LaunchAgents/${_ka_label}.plist" ]; then
+    return 0
+  fi
+  if "$_ka_installer" --load >/dev/null 2>&1; then
+    echo -e "  Keepalive-szonda telepitve (3 percenkent, hamis respawn ellen): ${_ka_label}"
+  else
+    echo -e "  FIGYELEM: a keepalive-szonda telepitese nem sikerult -- inditsd kezzel: scripts/install-channel-keepalive-probe.sh --load"
+  fi
+  return 0
+}
+
 # Morning-timer parking (MORNTIMERPARK914 -- the missing half of the locked
 # MORNCONS1 decision, 2026-07-27). The #1313 installer change stops ENABLING
 # the 07:27 morning timer on NEW installs, but every already-installed Linux
@@ -777,6 +810,7 @@ run_unit_maintenance() {
   repair_morning_timer "$@"
   migrate_channels_restart "$@"
   install_keepalive_probe_timer "$@"
+  install_keepalive_probe_launchd "$@"
   install_main_inbox_observer_unit "$@"
   park_morning_timer "$@"
   return 0
