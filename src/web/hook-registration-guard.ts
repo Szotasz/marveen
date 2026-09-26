@@ -46,6 +46,12 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'inbox-drain.py',
   'channel-inbox-drain.py',
   'ledger-capture.py',
+  // The Telegram sub-agent reply fix trio (telegram-subagent-reply-fix.py):
+  // without these here a stale entry survives every boot while its
+  // ledger-capture sibling is pruned (KNOWNTRIO924, review 2026-09-24).
+  'ledger-outbound.py',
+  'telegram-reply-guard.py',
+  'telegram-reply-directive.py',
   'skill-usage-capture.py',
   'tool-log-capture.py',
   'memory-frontmatter-gate.py',
