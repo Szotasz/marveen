@@ -57,6 +57,7 @@ import {
   readAgentCustomProvider,
   writeAgentCustomProvider,
   type AuthMode,
+  readJsonObjectForWrite,
 } from '../agent-config.js'
 import { readClaudePlans, resolveAgentConfigDir } from '../claude-plans.js'
 import {
@@ -332,10 +333,9 @@ export function setAgentEnabledPlugins(name: string, provider: ChannelProviderTy
   const settingsDir = join(agentDir(name), '.claude')
   const settingsPath = join(settingsDir, 'settings.json')
   mkdirSync(settingsDir, { recursive: true })
-  let existing: Record<string, unknown> = {}
-  if (existsSync(settingsPath)) {
-    try { existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { /* overwrite */ }
-  }
+  // JSONCLOBBER926: an existing but unreadable settings.json is refused, not
+  // overwritten -- see readJsonObjectForWrite.
+  const existing: Record<string, unknown> = readJsonObjectForWrite(settingsPath)
   const plugins = (existing.enabledPlugins ?? {}) as Record<string, boolean>
   for (const [p, pluginKey] of Object.entries(CHANNEL_PLUGIN_IDS)) {
     plugins[pluginKey] = p === provider

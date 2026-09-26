@@ -58,6 +58,8 @@ const REGISTRATION_SURFACES = [...SEEDING_SURFACES, ...CHECKOUT_SURFACES]
 const EXEMPT: Record<string, string> = {
   'ledger_lib.py':
     'shared library imported by the ledger hooks; not itself a hook',
+  'hook_errlog.py':
+    'shared library imported by hooks to record a swallowed failure in store/hook-errors.log (SILENTOLLAMA926); not itself a hook',
   'clearstate_lib.py':
     'shared library imported by clear-capture.py / clear-replay.py; not itself a hook',
   'email_extract.py':

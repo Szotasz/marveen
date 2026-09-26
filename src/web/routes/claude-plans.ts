@@ -269,8 +269,10 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
       json(res, { error: `Agent not found: ${agentId}` }, 404)
       return true
     }
-    writeClaudePlansState(applyRotation(readClaudePlansState(), agentId, targetPlanId))
+    // Agent config first: if it refuses (corrupt file, JSONCLOBBER926) the
+    // rotation side-car must not already claim the switch happened.
     writeAgentClaudePlan(agentId, targetPlanId)
+    writeClaudePlansState(applyRotation(readClaudePlansState(), agentId, targetPlanId))
     const result = await restartAgentProcess(agentId)
     if (!result.ok) {
       json(res, { error: result.error || `Restart failed for agent ${agentId}` }, 500)
