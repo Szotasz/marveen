@@ -1,4 +1,22 @@
 {
+  "permissions": {
+    "deny": [
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.gnupg/**)",
+      "Read(~/.env)",
+      "Read(**/.env)",
+      "Bash(sudo:*)",
+      "Bash(*/sudo *)",
+      "Bash(rm:*)",
+      "Bash(*/rm *)",
+      "Bash(curl -X POST:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(*/git *)",
+      "mcp__playwright__browser_run_code_unsafe"
+    ]
+  },
   "enabledPlugins": {
     "slack-channel@marveen-marketplace": false,
     "telegram@claude-plugins-official": true

@@ -671,6 +671,14 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // function replaces permissions wholesale on each spawn, so without it a
   // respawn would silently drop what ensureBashEgressDeny() merged in.
   denyList.push(...BASH_EGRESS_DENY)
+  // Fleet baseline: the deny FLOOR every agent gets regardless of profile.
+  // Pushed here rather than copied into each templates/profiles/*.json so a
+  // profile added tomorrow cannot silently ship without it. Deduped against what
+  // the profile already declared (developer-senior and marketer both carry some
+  // of these), so the written file stays readable.
+  for (const rule of FLEET_BASELINE_DENY.map(r => resolveProfilePlaceholders(r, ctx))) {
+    if (!denyList.includes(rule)) denyList.push(rule)
+  }
   // Per-agent tool-name deny (agent-config.json "toolDeny"): merged LAST and
   // on EVERY spawn, because this function replaces the deny list wholesale --
   // a name written straight into settings.json disappears at the next respawn
@@ -899,6 +907,76 @@ export const BASH_EGRESS_DENY = [
   'Bash(*/ncat *)',
   'Bash(telnet *)',
   'Bash(*/telnet *)',
+]
+
+// The fleet-wide deny FLOOR: applied to EVERY profile, exactly like
+// BASH_EGRESS_DENY above and for the same reason. permissions.deny is rebuilt
+// WHOLESALE from the security profile on every spawn, so a rule that lives only
+// in one profile -- or worse, hand-written into a settings.json -- is not a
+// floor at all: it is whatever the agent's profile happens to carry, and it
+// disappears at the next respawn.
+//
+// Measured 2026-09-25 (DENYARGS925). The hand-edited lists would have dropped 5
+// rules on one agent and 9 on another at their next restart, and a
+// default-profile agent never had them at all: default.json carries ONE rule, so
+// it sat at 16 while a developer-senior agent sat at 24. Raising default.json
+// alone does not fix that -- profiles are independent, so a marketer or
+// developer-senior agent would still miss whatever was added there, and every
+// future profile is a new hole. One list, applied to all.
+//
+// Two rules in here are deliberately weaker than they look, and are kept for the
+// owner's stated posture rather than as protection:
+//   Bash(curl -X POST:*) is DECORATION. An argument-bearing rule matches the
+//     command's leading words exactly, so `curl -s -X POST` -- the form every
+//     example in our own docs uses -- walks past it (measured twice).
+//     Do not read it as coverage.
+//   Bash(sudo:*) and Bash(rm:*) hold against an inserted prefix word, but NOT
+//     against an absolute path: `/usr/bin/sudo -n true` ran on a list carrying
+//     only Bash(sudo:*) (measured 2026-09-25, reproduced independently). That is
+//     why the `*/` partners below are here: the network rules above have always
+//     had them, sudo and rm did not. NOTE the shape's cost, which the network
+//     rules already carry: `*/rm *` matches the whole command text, so a command
+//     that merely NAMES a path ending in `/rm` is denied too. That is the safe
+//     direction, but it is an over-match, not a precise rule.
+//   Bash(git push --force:*) and Bash(git push -f:*) are NARROWED by the
+//     Bash(*/git *) partner, but NOT closed. Measured 2026-09-25 by HEX in his
+//     own session, with a control in BOTH directions -- the rule added
+//     temporarily, measured, removed, and the removal measured too:
+//       with the pair:    /usr/bin/git push --force <remote>   -> DENIED
+//       with the pair:    git -C <path> push --force <remote>  -> RAN
+//       after removal:    /usr/bin/git push --force <remote>   -> RAN again
+//     The third line is what makes the first one evidence: the denial came from
+//     the added rule, not from something else. So the REARRANGED form gets
+//     through, because `git -C <path> push` puts the subcommand where no
+//     leading-word rule looks. This is NOT fixable by a better pattern: the only
+//     pattern that would catch both denies the whole `git` command, which would
+//     stop development itself. Force-push here is NARROWABLE, not closeable --
+//     read these three lines as friction against a slip, never as a guarantee.
+//
+// Cover for the token files that actually hold the secrets on an install
+// (store/.dashboard-token and friends) is deliberately NOT here. Every agent
+// reads those with `cat` every round, so whether a Read() rule reaches a Bash
+// read decides between "partial cover" and "the fleet stops". That measurement
+// is open; the rule waits for it.
+//
+// The HOME placeholder is resolved through resolveProfilePlaceholders like any
+// profile rule, which also rewrites a single leading '/' to '//': a single-slash
+// absolute Read rule is PROJECT-RELATIVE and silently never matches (TMPLPERM908).
+export const FLEET_BASELINE_DENY = [
+  'Read(${HOME}/.ssh/**)',
+  'Read(${HOME}/.aws/**)',
+  'Read(${HOME}/.gnupg/**)',
+  'Read(${HOME}/.env)',
+  'Read(**/.env)',
+  'Bash(sudo:*)',
+  'Bash(*/sudo *)',
+  'Bash(rm:*)',
+  'Bash(*/rm *)',
+  'Bash(curl -X POST:*)',
+  'Bash(git push --force:*)',
+  'Bash(git push -f:*)',
+  'Bash(*/git *)',
+  'mcp__playwright__browser_run_code_unsafe',
 ]
 
 // Idempotently merge the egress deny rules into a settings object's
@@ -1750,6 +1828,20 @@ export function scaffoldAgentDir(name: string) {
   // Seed settings.json from template so the agent gets the PreCompact
   // hook (memory save + skill reflection) out of the box. Only if the
   // file doesn't exist yet -- user edits and later profile writes stay.
+  //
+  // The template carries BASH_EGRESS_DENY but deliberately NOT
+  // FLEET_BASELINE_DENY, and the asymmetry is measured, not an oversight
+  // (DENYARGS925, 2026-09-25): the file written here holds 10 deny rules and
+  // zero of the floor's 14, but no session ever reads it in that state. On the
+  // create path (routes/agents.ts) this call and writeAgentSettingsFromProfile()
+  // are separated by two synchronous writes -- no await, no process launch --
+  // and on the spawn path the profile write runs before Claude Code starts.
+  // loadProfileTemplate() cannot fail its way past that either: it falls back to
+  // `default` and finally to HARDCODED_DEFAULT_PROFILE rather than throwing.
+  // The floor's single route is therefore the profile write, and the parity test
+  // in fleet-baseline-deny.test.ts pins that choice WITH its condition: add a
+  // route that scaffolds without writing the profile right after, and the floor
+  // belongs in this template too.
   const settingsJson = join(dir, '.claude', 'settings.json')
   if (!existsSync(settingsJson)) {
     const tplPath = join(PROJECT_ROOT, 'templates', 'settings.json.template')
