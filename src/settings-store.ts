@@ -57,18 +57,28 @@ function coerce(def: SettingDefinition, raw: string | number): string | number {
   return String(raw)
 }
 
-// Resolves the effective value for a registered key: override > .env >
-// registry default. Reads .env fresh (cheap, scoped to one key) rather than
-// relying on the boot-time config.ts constants, so this resolution stays
-// correct independent of when the process last restarted.
-export function getEffectiveSettingValue(key: string): string | number {
+export type SettingSource = 'override' | 'env' | 'default'
+
+// Resolves the effective value for a registered key AND says which layer
+// answered: override > .env > registry default. Reads .env fresh (cheap,
+// scoped to one key) rather than relying on the boot-time config.ts
+// constants, so this resolution stays correct independent of when the
+// process last restarted. The source is for messages that have to NAME the
+// reason for a value instead of guessing it (card 8a4056ad: a guard said
+// "config-overrides.json was deleted and there is no .env key" about an
+// explicit 0 in .env).
+export function getEffectiveSettingSource(key: string): { value: string | number; source: SettingSource } {
   ensureWatching()
   const def = getSettingDefinition(key)
   if (!def) throw new Error(`Unknown setting key: ${key}`)
-  if (key in cache) return coerce(def, cache[key])
+  if (key in cache) return { value: coerce(def, cache[key]), source: 'override' }
   const envValue = readEnvFile([key])[key]
-  if (envValue !== undefined) return coerce(def, envValue)
-  return def.default
+  if (envValue !== undefined) return { value: coerce(def, envValue), source: 'env' }
+  return { value: def.default, source: 'default' }
+}
+
+export function getEffectiveSettingValue(key: string): string | number {
+  return getEffectiveSettingSource(key).value
 }
 
 export interface SetOverrideResult {
