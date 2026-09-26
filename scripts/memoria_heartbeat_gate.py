@@ -144,7 +144,52 @@ TOKEN_FILE = MARVEEN_DIR / "store" / ".dashboard-token"
 MARKER_FILE = MARVEEN_DIR / "store" / "memoria-heartbeat-gate-last.txt"
 MESSAGES_URL = "http://localhost:3420/api/messages"
 
-AGENT = "picard"
+def main_agent_id() -> str:
+    """The installation's own main-agent id, resolved THE WAY THE PRODUCT DOES.
+
+    BEEGETETT913: this used to be a hardcoded agent name from a different
+    install ("picard", "seven"). A name that does not exist here is not a loud
+    failure -- the dashboard rejects the POST with 403 and the gate's alert is
+    lost, or worse, it is accepted into a mailbox nobody reads.
+
+    The fallback is "marveen" ON PURPOSE, and it is not the old defect coming
+    back: src/config.ts resolves MAIN_AGENT_ID exactly this way
+    (`env['MAIN_AGENT_ID'] ?? 'marveen'`) so that an older install upgrading in
+    place keeps working. On such an install "marveen" IS the registered main
+    agent, so the POST is accepted. The defect was never "there is a default" --
+    it was a name written into this script that had nothing to do with the
+    install it runs on. Resolving it the same way the product does is the fix.
+
+    Accepts the shapes a hand-edited .env actually contains: a leading
+    `export `, surrounding quotes, and a trailing ` # comment`.
+    """
+    env = MARVEEN_DIR / ".env"
+    try:
+        for line in env.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("export "):
+                line = line[len("export "):].lstrip()
+            if not line.startswith("MAIN_AGENT_ID="):
+                continue
+            value = line.split("=", 1)[1].strip()
+            if value[:1] in ("'", '"'):
+                # quoted: the value ends at the closing quote, so a '#' inside stays
+                zaro = value.find(value[0], 1)
+                if zaro > 0:
+                    return value[1:zaro]
+            value = value.split("#", 1)[0].strip().strip("\"'")
+            if value:
+                return value
+    except OSError:
+        pass
+    return "marveen"
+
+
+# Resolved once at import: AGENT is not only the message recipient, it is
+# also the SQL filter in the activity queries below. A None here does not
+# fail -- it silently matches no rows, so the gate would report "no
+# activity" forever. Caught by scripts/test_memoria_heartbeat_gate.py.
+AGENT = main_agent_id()
 
 # The agent's own `--mark-seen` call is logged by the PostToolUse hook AFTER
 # this script has read the maximum, so the marker can never cover it and the
@@ -271,7 +316,11 @@ def wake_agent(seen: dict[str, int], maxima: dict[str, int]) -> None:
         tool_max=maxima["tool_call_log"],
         tool_new=count_new(seen["tool_call_log"], "tool_call_log"),
     )
-    payload = json.dumps({"from": "geordi", "to": AGENT, "content": content}).encode()
+    # The sender is the agent id, not a descriptive label: the API accepts only
+    # a registered fleet agent id and answers 403 to anything else (measured
+    # 2026-09-25 against the live dashboard). What the message IS says so in its
+    # own text, not in the envelope.
+    payload = json.dumps({"from": AGENT, "to": AGENT, "content": content}).encode()
     req = urllib.request.Request(
         MESSAGES_URL,
         data=payload,
@@ -374,6 +423,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.conv_upto is not None and not args.mark_seen:
         parser.error("--conv-upto only means anything together with --mark-seen")
+
 
     return mark_seen(args.conv_upto) if args.mark_seen else check()
 

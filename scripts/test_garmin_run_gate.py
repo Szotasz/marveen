@@ -26,6 +26,8 @@ SPEC = importlib.util.spec_from_file_location(
 gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
 
+VALODI_NOTIFY = gate.notify_seven  # captured before any scenario rebinds it
+
 FAILURES: list[str] = []
 
 
@@ -146,6 +148,49 @@ def scenario_no_state_file() -> None:
         check("state file gone again", gate.STATE_FILE.exists(), False)
 
 
+def scenario_sender_is_the_agent_id() -> None:
+    """The SENDER is the agent id, and the fallback is the PRODUCT's.
+
+    Two things nothing pinned before, and both lost the message in their own
+    way. Measured on the live dashboard 2026-09-25:
+      from=garmin-gate -> HTTP 403,  from=<the install's main agent> -> 200
+    A readable label reads well and is rejected. And the fallback has to be
+    "marveen", because src/config.ts resolves MAIN_AGENT_ID as
+    `env['MAIN_AGENT_ID'] ?? 'marveen'`: on an install without the key that IS
+    the registered agent, so anything else we invented would be a 403 too.
+
+    Every other scenario replaces notify_seven outright, so this is the only
+    one that runs the real function -- which is exactly why the sender went
+    unmeasured until review.
+    """
+    print("the notification is sent AS the agent, with the product's fallback")
+    kuldott = {}
+
+    class Valasz:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def hamis(req, timeout=None):
+        kuldott.update(json.loads(req.data.decode()))
+        return Valasz()
+
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        wire(tmp, fake_analysis_script(tmp, 0, None))
+        gate.notify_seven = VALODI_NOTIFY
+        eredeti_env, eredeti_urlopen = gate.MARVEEN_DIR, gate.urllib.request.urlopen
+        gate.MARVEEN_DIR = tmp                      # nincs .env -> a termek alapertelmezese
+        gate.urllib.request.urlopen = hamis
+        try:
+            gate.notify_seven("333")
+        finally:
+            gate.MARVEEN_DIR, gate.urllib.request.urlopen = eredeti_env, eredeti_urlopen
+    check("from is the agent id", kuldott.get("from"), "marveen")
+    check("to is the agent id", kuldott.get("to"), "marveen")
+    check("not a descriptive label", kuldott.get("from") in {"garmin-gate", "geordi"}, False)
+
+
 if __name__ == "__main__":
     for scenario in (
         scenario_nothing_new,
@@ -153,6 +198,7 @@ if __name__ == "__main__":
         scenario_notify_fails,
         scenario_crash,
         scenario_no_state_file,
+        scenario_sender_is_the_agent_id,
     ):
         scenario()
         print()
