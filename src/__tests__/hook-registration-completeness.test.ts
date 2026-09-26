@@ -74,6 +74,8 @@ const EXEMPT: Record<string, string> = {
     'OPT-IN by construction (BROWSERNOTICE920): it envelopes browser-MCP / WebSearch payloads as untrusted content, and an install without a browser MCP server gains nothing from it. Wiring it here would fire it on every fleet member, most of which have no browser. Operators add it to their own PostToolUse hooks -- the procedure is in docs/security-hardening.md.',
   'mio-orszem-precheck.sh':
     'scheduler preCheck for the HOST-LOCAL marveen-io-kozosseg-orszem task (ORSICTX912): the mio community sentinel is this install\'s own and deliberately NOT seeded (a repo seed would ship it to every customer install), so its registration lives in the host ~/.claude/scheduled-tasks task-config -- outside this corpus by design. Wiring is gated on the ORSICTX912 activation order (host restart -> verify -> merge -> build+restart); the hermetic fail-direction tests are scripts/__tests__/mio-orszem-precheck.test.py.',
+  'memoria-heartbeat-precheck.py':
+    'scheduler preCheck for the memoria-heartbeat round (TOKENEGES917), not a settings hook: the schedule runner invokes it from the HOST\'s ~/.claude/scheduled-tasks/memoria-heartbeat/precheck.sh, outside this corpus by design -- the same shape as mio-orszem-precheck.sh above. It answers one question before the model starts (did anything happen since the round last ran), fails open on any error, and is read-only on the state file the round itself owns.',
 }
 
 function readSurfaces(rels: readonly string[]): string {
