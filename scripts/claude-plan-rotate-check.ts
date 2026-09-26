@@ -6,6 +6,13 @@
 //
 //   npx tsx scripts/claude-plan-rotate-check.ts
 //
+// Usage source (2026-09-26 fix): when the main agent's active plan is a
+// token-mode plan in effect, its usage comes from a live probe with THAT
+// plan's token on every tick (one minimal API call on the active plan);
+// usage-collect.py reads the host login, a different account, and is only
+// used for a configDir-mode or unassigned active plan. The two are never
+// mixed (src/claude-plan-rotate-check-run.ts).
+//
 // Design 6.6 lists four heartbeat steps: (1) run usage-collect.py --json,
 // (2) feed it to the decision logic, (3) update the state side-car, (4) if
 // the decision is "rotate", call POST /api/claude-plans/rotate AND send the

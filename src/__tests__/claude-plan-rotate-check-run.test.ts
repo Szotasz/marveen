@@ -17,7 +17,11 @@ vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
   MAIN_AGENT_ID: 'marveen',
 }))
-vi.mock('../settings-store.js', () => ({ getEffectiveSettingValue: (k: string) => settings.get(k) ?? '0' }))
+vi.mock('../settings-store.js', () => ({
+  // MAIN_AGENT_CONFIG_DIR is a string setting whose real default is ''; every
+  // other key here is a boolean defaulting to '0'.
+  getEffectiveSettingValue: (k: string) => settings.get(k) ?? (k === 'MAIN_AGENT_CONFIG_DIR' ? '' : '0'),
+}))
 vi.mock('../web/vault.js', () => ({ getSecret: (id: string) => `token-for-${id}` }))
 vi.mock('../web/claude-plans.js', () => ({ readClaudePlans: () => plans }))
 vi.mock('../web/claude-plans-state.js', async (importOriginal) => {
@@ -38,8 +42,10 @@ vi.mock('../claude-plan-usage-probe.js', async (importOriginal) => {
 // usage-collect.py: returns `usageJson` (the active plan's windows) or throws
 // when it is null.
 let usageJson: string | null = null
+let usageCollectCalls = 0
 vi.mock('node:child_process', () => ({
   execFileSync: () => {
+    usageCollectCalls++
     if (usageJson === null) throw new Error('usage-collect mocked out')
     return usageJson
   },
@@ -66,17 +72,19 @@ function tokenPlan(id: string): ClaudePlan {
   return { id, label: id, tokenSecretId: `claude-plan-token-${id}`, planType: 'personal', channelsAllowed: true }
 }
 
-describe('runRotateCheck -> idle-plan probe wiring', () => {
-  beforeEach(() => {
-    probeMock.mockClear()
-    settings.clear()
-    state = { activePlanByAgent: { marveen: 'a' }, plans: {} }
-    // Near a limit by default, so the gating tests below isolate their own rule.
-    usageJson = activeUsage(IDLE_PROBE_GATE.fiveHourPercent)
-    vi.spyOn(console, 'error').mockImplementation(() => {})
-    vi.spyOn(console, 'log').mockImplementation(() => {})
-  })
+beforeEach(() => {
+  probeMock.mockReset()
+  probeMock.mockImplementation(async () => ({ ok: false as const, error: 'network' as const, message: 'mocked' }))
+  usageCollectCalls = 0
+  settings.clear()
+  state = { activePlanByAgent: { marveen: 'a' }, plans: {} }
+  // Near a limit by default, so the gating tests below isolate their own rule.
+  usageJson = activeUsage(IDLE_PROBE_GATE.fiveHourPercent)
+  vi.spyOn(console, 'error').mockImplementation(() => {})
+  vi.spyOn(console, 'log').mockImplementation(() => {})
+})
 
+describe('runRotateCheck -> idle-plan probe wiring', () => {
   it('opted in, 2+ plans: probes the idle token plan (never the active one)', async () => {
     settings.set('CLAUDE_PLAN_USAGE_REFRESH', '1')
     plans = [tokenPlan('a'), tokenPlan('b')]
@@ -95,12 +103,15 @@ describe('runRotateCheck -> idle-plan probe wiring', () => {
     expect(probeMock).not.toHaveBeenCalled()
   })
 
-  it('default (flag unset): no probe, even with 2+ plans and rotation on', async () => {
+  it('flag off: no idle probe, even with 2+ plans, rotation on and the active plan near its limit', async () => {
+    settings.set('CLAUDE_PLAN_USAGE_REFRESH', '0')
     settings.set('CLAUDE_ROTATION_ENABLED', '1')
     settings.set('MAIN_AGENT_ISOLATED_CONFIG', '1')
     plans = [tokenPlan('a'), tokenPlan('b')]
+    probeReturns({ a: ROTATION_GATE.switchAtPercent })
     await runRotateCheck()
-    expect(probeMock).not.toHaveBeenCalled()
+    // The active plan's own reading is not an idle probe; b must stay untouched.
+    expect(probeMock).not.toHaveBeenCalledWith('token-for-claude-plan-token-b')
   })
 
   it('opted in without rotation: probes anyway (the Settings bars use case)', async () => {
@@ -136,45 +147,22 @@ describe('runRotateCheck -> idle-plan probe wiring', () => {
   })
 
   it('active plan near the limit: idle plans probed BEFORE the decision, which ranks on the fresh numbers', async () => {
-    settings.set('CLAUDE_PLAN_USAGE_REFRESH', '1')
-    settings.set('CLAUDE_ROTATION_ENABLED', '1')
-    settings.set('MAIN_AGENT_ISOLATED_CONFIG', '1')
+    rotationOn()
     plans = [tokenPlan('a'), tokenPlan('b'), tokenPlan('c')]
     // Stale knowledge says b is the emptier plan; the live probe says b is
     // exhausted and c is nearly empty. Only a probe that ran BEFORE the
     // decision can make it pick c.
-    const nowS = Math.floor(Date.now() / 1000)
     state = {
       activePlanByAgent: { marveen: 'a' },
-      plans: {
-        b: { observedAt: 0, source: 'probe', windows: { five_hour: { usedPercent: 5, resetsAt: nowS + 3600 } } },
-        c: { observedAt: 0, source: 'probe', windows: { five_hour: { usedPercent: 60, resetsAt: nowS + 3600 } } },
-      },
+      plans: { b: fiveHourObs(5), c: fiveHourObs(60) },
     } as ClaudePlansState
     const order: string[] = []
-    probeMock.mockImplementation(async (token: string) => {
-      order.push(`probe:${token}`)
-      const pct = token.endsWith('-b') ? 100 : 3
-      return {
-        ok: true,
-        httpStatus: 200,
-        usage: {
-          fiveHour: { usedPercent: pct, resetsAt: nowS + 3600, status: pct >= 100 ? 'rejected' : 'allowed' },
-          sevenDay: null,
-          overallStatus: null,
-          representativeClaim: null,
-        },
-      } as never
-    })
-    const logs: string[] = []
-    vi.spyOn(console, 'log').mockImplementation((line: string) => { logs.push(line); order.push('decision') })
-    usageJson = activeUsage(ROTATION_GATE.switchAtPercent + 5)
+    probeReturns({ a: ROTATION_GATE.switchAtPercent + 5, b: 100, c: 3 }, order)
+    const logs = captureLogs(order)
     await runRotateCheck()
-    expect(probeMock).toHaveBeenCalledTimes(2)
-    expect(order.slice(0, 2).every((o) => o.startsWith('probe:'))).toBe(true)
+    expect(probeMock).toHaveBeenCalledTimes(3)
+    expect(order.slice(0, 3).every((o) => o.startsWith('probe:'))).toBe(true)
     expect(logs.some((l) => l.startsWith('ROTATE ') && l.includes('target=c '))).toBe(true)
-    probeMock.mockReset()
-    probeMock.mockImplementation(async () => ({ ok: false as const, error: 'network' as const, message: 'mocked' }))
   })
 
   it('the Settings description names the thresholds IDLE_PROBE_GATE actually uses, and defaults on', () => {
@@ -182,5 +170,114 @@ describe('runRotateCheck -> idle-plan probe wiring', () => {
     expect(def.default).toBe('1')
     expect(def.description).toContain(`${IDLE_PROBE_GATE.fiveHourPercent}%`)
     expect(def.description).toContain(`${IDLE_PROBE_GATE.sevenDayPercent}%`)
+  })
+})
+
+const nowS = () => Math.floor(Date.now() / 1000)
+function fiveHourObs(pct: number) {
+  return { observedAt: 0, source: 'probe', windows: { five_hour: { usedPercent: pct, resetsAt: nowS() + 3600 } } }
+}
+function configDirPlan(id: string): ClaudePlan {
+  return { id, label: id, configDir: `/opt/claude-${id}`, planType: 'personal', channelsAllowed: true }
+}
+function rotationOn(): void {
+  settings.set('CLAUDE_PLAN_USAGE_REFRESH', '1')
+  settings.set('CLAUDE_ROTATION_ENABLED', '1')
+  settings.set('MAIN_AGENT_ISOLATED_CONFIG', '1')
+}
+/** Probe answers per plan id (5h used %, 100 = rejected). */
+function probeReturns(pctByPlan: Record<string, number>, order?: string[]): void {
+  probeMock.mockImplementation(async (token: string) => {
+    order?.push(`probe:${token}`)
+    const id = token.replace('token-for-claude-plan-token-', '')
+    const pct = pctByPlan[id] ?? 0
+    return {
+      ok: true,
+      httpStatus: 200,
+      usage: {
+        fiveHour: { usedPercent: pct, resetsAt: nowS() + 3 * 3600, status: pct >= 100 ? 'rejected' : 'allowed' },
+        sevenDay: null,
+        overallStatus: null,
+        representativeClaim: null,
+      },
+    } as never
+  })
+}
+function captureLogs(order?: string[]): string[] {
+  const logs: string[] = []
+  vi.spyOn(console, 'log').mockImplementation((line: string) => { logs.push(line); order?.push('decision') })
+  return logs
+}
+
+// Measured live 2026-09-26: usage-collect.py reads the HOST login, not the
+// active token plan's account, and the heartbeat decided on the wrong numbers.
+describe('runRotateCheck -> the active plan is read from the right account', () => {
+  it('active token plan: its own probe says 5h exhausted, usage-collect says 0% -> ROTATE', async () => {
+    rotationOn()
+    plans = [tokenPlan('a'), tokenPlan('b')]
+    probeReturns({ a: 100, b: 0 })
+    usageJson = activeUsage(0, 0)
+    const logs = captureLogs()
+    await runRotateCheck()
+    expect(logs.some((l) => l.startsWith('ROTATE ') && l.includes('target=b '))).toBe(true)
+    expect(usageCollectCalls).toBe(0)
+    expect(probeMock).toHaveBeenCalledWith('token-for-claude-plan-token-a')
+  })
+
+  it('mirror: probe says 0%, usage-collect says 100% -> quiet', async () => {
+    rotationOn()
+    plans = [tokenPlan('a'), tokenPlan('b')]
+    probeReturns({ a: 0, b: 0 })
+    usageJson = activeUsage(100, 100)
+    const logs = captureLogs()
+    await runRotateCheck()
+    expect(logs).toEqual([])
+    expect(usageCollectCalls).toBe(0)
+    // Recorded as the active plan's observation.
+    expect(state.plans.a?.windows.five_hour?.usedPercent).toBe(0)
+  })
+
+  it('a failed active probe stays silent; it never falls back to usage-collect', async () => {
+    rotationOn()
+    plans = [tokenPlan('a'), tokenPlan('b')]
+    usageJson = activeUsage(100, 100)
+    const logs = captureLogs()
+    await runRotateCheck()
+    expect(logs).toEqual([])
+    expect(usageCollectCalls).toBe(0)
+    expect(state.plans.a?.lastProbe).toMatchObject({ ok: false, error: 'network' })
+  })
+
+  it('the active plan is probed every tick, even right after a probe (idle throttles do not apply)', async () => {
+    rotationOn()
+    plans = [tokenPlan('a'), tokenPlan('b')]
+    state = {
+      activePlanByAgent: { marveen: 'a' },
+      plans: { a: { ...fiveHourObs(10), lastProbe: { at: Date.now(), ok: true } } },
+    } as ClaudePlansState
+    probeReturns({ a: 10 })
+    await runRotateCheck()
+    expect(probeMock).toHaveBeenCalledWith('token-for-claude-plan-token-a')
+  })
+
+  it('configDir-mode active plan: usage-collect is the input, the active plan is not probed', async () => {
+    rotationOn()
+    plans = [configDirPlan('a'), tokenPlan('b')]
+    probeReturns({ b: 0 })
+    usageJson = activeUsage(100)
+    const logs = captureLogs()
+    await runRotateCheck()
+    expect(usageCollectCalls).toBe(1)
+    expect(logs.some((l) => l.startsWith('ROTATE ') && l.includes('target=b '))).toBe(true)
+    expect(probeMock).not.toHaveBeenCalledWith('token-for-claude-plan-token-a')
+  })
+
+  it('main agent not isolated: the recorded token plan is not in effect, usage-collect is read', async () => {
+    settings.set('CLAUDE_PLAN_USAGE_REFRESH', '1')
+    plans = [tokenPlan('a'), tokenPlan('b')]
+    usageJson = activeUsage(10)
+    await runRotateCheck()
+    expect(usageCollectCalls).toBe(1)
+    expect(probeMock).not.toHaveBeenCalled()
   })
 })
