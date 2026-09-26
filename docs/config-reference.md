@@ -425,6 +425,7 @@ A főbb konfigurációs változók a launchd plist-ben (`~/Library/LaunchAgents/
 | `ANTHROPIC_API_KEY` | Claude API kulcs |
 | `OWNER_NAME` | A tulajdonos neve (pl. "Jónás Gergő") |
 | `BOT_NAME` | A főágens neve (pl. "Jarvis") |
+| `VOICE_TRANSCRIBE_INBOUND` | `1` = a text módú ügynököknél is átirat készül a bejövő hangüzenetről (alapból ki; az ügynökönkénti `voice.transcribeInbound` felülírja). Lásd `voice.md` |
 
 ---
 

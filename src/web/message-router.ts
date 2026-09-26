@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID } from '../config.js'
+import { MAIN_AGENT_ID, VOICE_TRANSCRIBE_INBOUND } from '../config.js'
 import { resolveAgentChannelStateDir } from './voice-directive.js'
 import {
   getPendingMessages,
@@ -19,7 +19,7 @@ import {
 import { isQualifiedId } from './federation/address.js'
 import { sendFederatedMessage } from './federation/bridge.js'
 import { getFederationConfig, abandonWindowMsForPeer } from './federation/config.js'
-import { readAgentRemoteHost, readAgentVoiceConfig, readAgentWorksourceChannel } from './agent-config.js'
+import { readAgentRemoteHost, readAgentVoiceConfig, readAgentWorksourceChannel, type AgentVoiceConfig } from './agent-config.js'
 import { enqueueWorksourceItem, worksourceItemId } from './worksource-queue.js'
 import {
   agentSessionName,
@@ -738,11 +738,16 @@ export async function runMessageRouterTick(): Promise<void> {
       if (isChannelInbound) {
         const voiceFileId = extractVoiceFileId(msg.content)
         const chatId = extractChatId(msg.content)
-        const voiceCfg = readAgentVoiceConfig(msg.to_agent)
         if (voiceFileId && chatId) {
           // Always record modality so auto-mode TTS can fire on reply.
           setLastInboundModality(msg.to_agent, chatId, 'voice')
-          if (voiceCfg.responseMode !== 'text') {
+          // Inbound STT runs when the agent speaks back (responseMode voice/auto,
+          // the historical path) or when transcription was switched on
+          // explicitly (per-agent voice.transcribeInbound, or the install-wide
+          // VOICE_TRANSCRIBE_INBOUND default). Off by default for text-mode
+          // agents, so an existing install does not start running
+          // faster-whisper on every inbound voice note after an update.
+          if (shouldTranscribeInboundVoice(readAgentVoiceConfig(msg.to_agent), VOICE_TRANSCRIBE_INBOUND)) {
             // Attempt STT; on failure fall through to raw voice block.
             const transcript = await callVoiceSTT(voiceFileId, msg.to_agent)
             if (transcript) {
@@ -973,6 +978,20 @@ function collectBatchMates(
 }
 
 // ---- voice helpers (message-router level) ----------------------------------
+
+// Should the router transcribe an inbound voice note for this agent?
+// - responseMode 'voice' / 'auto': always (unchanged historical behaviour --
+//   an agent that answers with speech has to understand speech).
+// - responseMode 'text': only when opted in. The per-agent
+//   voice.transcribeInbound wins when set (true or false); otherwise the
+//   install-wide default (VOICE_TRANSCRIBE_INBOUND, off unless configured).
+export function shouldTranscribeInboundVoice(
+  voiceCfg: Pick<AgentVoiceConfig, 'responseMode' | 'transcribeInbound'>,
+  installDefault: boolean,
+): boolean {
+  if (voiceCfg.responseMode !== 'text') return true
+  return voiceCfg.transcribeInbound ?? installDefault
+}
 
 // Extract attachment_file_id from a <channel ... attachment_kind="voice" attachment_file_id="..."> block.
 function extractVoiceFileId(content: string): string | null {

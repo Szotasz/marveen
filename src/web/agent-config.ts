@@ -589,6 +589,10 @@ export type VoiceResponseMode = 'text' | 'voice' | 'auto'
 export interface AgentVoiceConfig {
   responseMode: VoiceResponseMode
   voiceModel: string
+  // Router-side STT for inbound voice notes when responseMode is 'text'.
+  // Undefined = follow the install-wide VOICE_TRANSCRIBE_INBOUND default (off
+  // unless configured). Irrelevant for 'voice'/'auto', which always transcribe.
+  transcribeInbound?: boolean
 }
 
 // Canonical set of bundled voice model identifiers (basename without .onnx).
@@ -617,6 +621,9 @@ export function readAgentVoiceConfig(name: string): AgentVoiceConfig {
       voiceModel: KNOWN_VOICE_MODELS.has(vc.voiceModel ?? '')
         ? (vc.voiceModel as string)
         : DEFAULT_VOICE_CONFIG.voiceModel,
+      // Only a real boolean counts; anything else (a string "true", a number)
+      // is treated as unset rather than guessed at.
+      ...(typeof vc.transcribeInbound === 'boolean' ? { transcribeInbound: vc.transcribeInbound } : {}),
     }
   } catch {
     return { ...DEFAULT_VOICE_CONFIG }
@@ -630,13 +637,18 @@ export function writeAgentVoiceConfig(name: string, patch: Partial<AgentVoiceCon
   if (patch.voiceModel !== undefined && !KNOWN_VOICE_MODELS.has(patch.voiceModel)) {
     throw new Error(`Unknown voiceModel: ${patch.voiceModel}`)
   }
+  if (patch.transcribeInbound !== undefined && typeof patch.transcribeInbound !== 'boolean') {
+    throw new Error(`Invalid transcribeInbound: ${String(patch.transcribeInbound)}`)
+  }
   const configPath = join(agentConfigRoot(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
   try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
   const current = readAgentVoiceConfig(name)
+  const transcribeInbound = patch.transcribeInbound ?? current.transcribeInbound
   config.voice = {
     responseMode: patch.responseMode ?? current.responseMode,
     voiceModel: patch.voiceModel ?? current.voiceModel,
+    ...(transcribeInbound !== undefined ? { transcribeInbound } : {}),
   }
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }

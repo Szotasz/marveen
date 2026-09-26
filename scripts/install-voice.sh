@@ -150,8 +150,10 @@ cp "$VOICE_SRC/_vtools.py" "$DEST/_vtools.py"
 cp "$VOICE_SRC/stt.sh"     "$DEST/stt.sh"
 cp "$VOICE_SRC/tts.sh"     "$DEST/tts.sh"
 cp "$VOICE_SRC/canary.sh"  "$DEST/canary.sh"
+# The pronunciation lexicon is read next to _vtools.py (the installed copy).
+cp "$VOICE_SRC/pronunciation-hu.json" "$DEST/pronunciation-hu.json"
 chmod +x "$DEST/stt.sh" "$DEST/tts.sh" "$DEST/_vtools.py"
-_pass "stt.sh, tts.sh, _vtools.py deployed"
+_pass "stt.sh, tts.sh, _vtools.py, pronunciation-hu.json deployed"
 
 # --- Done ---
 echo ""
