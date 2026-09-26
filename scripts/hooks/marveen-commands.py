@@ -65,6 +65,7 @@ import sys
 import os
 import re
 import json
+import select
 import subprocess
 import time
 import urllib.error
@@ -84,6 +85,10 @@ REPO_ROOT = os.environ.get("MARVEEN_INSTALL_DIR") or os.path.dirname(
 USAGE_SCRIPT = os.path.join(REPO_ROOT, "scripts", "usage-collect.py")
 TELEGRAM_API_BASE = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org")
 TELEGRAM_MAX_TEXT = 4096
+SEND_ATTEMPTS = 3
+SEND_RETRY_SECONDS = float(os.environ.get("MARVEEN_CMD_SEND_RETRY_SECONDS", "1.5"))
+
+from command_prompt import COMMAND_RX, command_block  # noqa: E402
 
 # Overall deadline, see the docstring. MARVEEN_HOOK_DEADLINE_SEC is the test
 # override (the real value stays 40).
@@ -102,15 +107,15 @@ class DeadlineExceeded(Exception):
 def budget(cap, share=1.0):
     """Timeout for the next step: its own cap, at most `share` of what is left
     of the overall deadline. Raises DeadlineExceeded when nothing is left."""
-    left = DEADLINE_SEC - (time.monotonic() - START)
-    t = min(cap, left * share)
+    t = min(cap, remaining() * share)
     if t < MIN_STEP_SEC:
         raise DeadlineExceeded()
     return t
 
-CHANNEL_RX = re.compile(r'<channel\s+([^>]*)>(.*?)</channel>', re.DOTALL)
-COMMAND_RX = re.compile(r'^/([A-Za-z][A-Za-z0-9_]{0,31})(?:@[A-Za-z0-9_]+)?(?:\s|$)')
-TELEGRAM_SOURCE_RX = re.compile(r'\bsource="[^"]*telegram[^"]*"', re.IGNORECASE)
+
+def remaining():
+    return DEADLINE_SEC - (time.monotonic() - START)
+
 
 # The builtin registry names (src/web/builtin-commands.ts + the A2 writes).
 # Only consulted when the dashboard is DOWN, to decide "ours, answer with an
@@ -208,14 +213,50 @@ def chunks(text, limit=TELEGRAM_MAX_TEXT):
 
 
 def send(sd, tok, chat_id, text):
+    """Returns True iff at least one chunk actually went out -- the caller
+    uses this to decide whether to close the ledger's open question (a
+    send that fully failed must NOT be marked answered; the live-drain
+    should still pick it up)."""
+    sent_any = False
     for part in chunks(text):
-        try:
-            tg(tok, "sendMessage", {"chat_id": chat_id, "text": part})
-        except Exception as e:
-            log(sd, f"sendMessage failed: {type(e).__name__}")
+        # Measured on the test bot (2026-09-23 15:00): one connect ETIMEDOUT to
+        # api.telegram.org lost a whole answer. Two more tries, then give up.
+        for attempt in range(1, SEND_ATTEMPTS + 1):
+            try:
+                tg(tok, "sendMessage", {"chat_id": chat_id, "text": part})
+                sent_any = True
+                break
+            except DeadlineExceeded:
+                log(sd, "sendMessage skipped: the hook deadline is reached")
+                return sent_any
+            except Exception as e:
+                log(sd, f"sendMessage failed (attempt {attempt}/{SEND_ATTEMPTS}): {type(e).__name__}")
+                if attempt < SEND_ATTEMPTS:
+                    time.sleep(max(0.0, min(SEND_RETRY_SECONDS * attempt, remaining() - MIN_STEP_SEC)))
+    return sent_any
 
 
-def dispatch(text, chat_id, main_session):
+def mark_answered(sd, payload, chat_id, text):
+    """Close the conversation-continuity ledger's open question for this
+    reply (fix-forward, ELSOKOR922 Phase 7 A-smoke, live-measured 2026-09-22):
+    this hook answers over the raw Bot API, never through the
+    mcp__plugin_telegram_telegram__reply tool -- so ledger-outbound.py (the
+    PostToolUse hook that closes the open question on a REAL reply-tool call)
+    never sees it. Without this, EVERY hook-answered command stays "open" in
+    conversation_log forever, and ledger-live-drain.py (every ~2 min) surfaces
+    it as lost and pays for a full model turn to answer it AGAIN -- measured
+    live: /board and /context both re-answered by the main session, 3-20
+    minutes later, doubling every reply and defeating the entire point of the
+    hook (0 model tokens). Never raises: a ledger-write failure must not
+    affect the reply that already went out."""
+    try:
+        agent_id = ledger_lib.agent_id_from_payload(payload)
+        ledger_lib.log_outbound(agent_id, chat_id, text)
+    except Exception as e:
+        log(sd, f"ledger log_outbound failed: {type(e).__name__}")
+
+
+def dispatch(text, chat_id, main_session, defer_writes=False, forwarded=False, timeout=None, message_id=None):
     """POST the command to the dashboard. Returns (result dict, None) or (None, why).
 
     `main_session` rides along so the server can refuse a WRITE resolved for
@@ -224,7 +265,12 @@ def dispatch(text, chat_id, main_session):
     sub-agent's /status went to the model at full token cost instead of the
     free hook round trip. Reads are safe to dispatch from anywhere; only
     writes need the session check, and the server is the one place that
-    actually knows each command's kind."""
+    actually knows each command's kind.
+
+    `message_id` is the Telegram message this command came in: the server
+    runs a WRITE only when the Telegram plugin itself recorded that message
+    (src/web/write-evidence.ts), so an HTTP caller holding the dashboard
+    token cannot run one by leaving the identity fields out (#1530 review)."""
     try:
         with open(os.path.join(REPO_ROOT, "store", ".dashboard-token"), encoding="utf-8") as f:
             dtok = f.read().strip()
@@ -234,12 +280,14 @@ def dispatch(text, chat_id, main_session):
         return None, "nincs dashboard-token"
     req = urllib.request.Request(
         api_base() + "/api/commands/dispatch",
-        data=json.dumps({"text": text, "chatId": chat_id, "mainSession": main_session}).encode(),
+        data=json.dumps({"text": text, "chatId": chat_id, "mainSession": main_session,
+                         "deferWrites": defer_writes, "forwarded": forwarded,
+                         "messageId": message_id}).encode(),
         method="POST",
         headers={"Authorization": "Bearer " + dtok, "Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=budget(20, 0.5)) as r:
+        with urllib.request.urlopen(req, timeout=timeout or budget(20, 0.5)) as r:
             return json.loads(r.read().decode()), None
     except urllib.error.HTTPError as e:
         return None, f"HTTP {e.code}"
@@ -296,10 +344,35 @@ def quota_text(sd):
         return USAGE_ERROR_REPLY
 
 
-def clear_stray_placeholder(sd, tok, sid):
+HANDLED_MARKER_MAX_AGE = 600
+
+
+def mark_handled(sd, sid, src_mid):
+    """Handshake with telegram_progress.py (a parallel UserPromptSubmit hook):
+    it posts the placeholder, stores it, and only THEN looks for this marker.
+    Written before the clear below, so either the clear finds its stored entry
+    or it finds this marker -- no order of the two hooks leaves the placeholder
+    behind (ELSOKOR922 Phase 7 A-smoke: "Dolgozom rajta..." hung after /model)."""
+    pdir = os.path.join(sd, "progress")
+    try:
+        os.makedirs(pdir, exist_ok=True)
+        now = time.time()
+        for name in os.listdir(pdir):
+            if name.startswith("cmd-") and name.endswith(".handled"):
+                p = os.path.join(pdir, name)
+                if now - os.path.getmtime(p) > HANDLED_MARKER_MAX_AGE:
+                    os.remove(p)
+        if src_mid:
+            open(os.path.join(pdir, f"cmd-{sid}-{src_mid}.handled"), "w").close()
+    except Exception as e:
+        log(sd, f"handled marker failed: {type(e).__name__}")
+
+
+def clear_stray_placeholder(sd, tok, sid, src_mid=None):
     """telegram_progress.py may have posted a "Dolgozom rajta..." placeholder
     for this same event; its Stop-hook cleanup never fires on a blocked turn,
     so clear it here (same logic as telegram_progress_clear.py)."""
+    mark_handled(sd, sid, src_mid)
     path = os.path.join(sd, "progress", f"{sid}.json")
     try:
         pending = json.load(open(path, encoding="utf-8"))
@@ -326,9 +399,204 @@ def is_main_session(payload):
         return False  # unknown identity: treated as non-main, so writes get refused
 
 
+# ---- deferred writes ----------------------------------------------------------
+#
+# While this hook runs, Claude Code already shows the owner's own (about to be
+# blocked) turn as live -- spinner + `esc to interrupt` -- so a write's quiet
+# gate, checked from inside the hook, always read its OWN turn as "pane-busy"
+# (measured on the test bot, ELSOKOR922 Phase 7: every /model refused, while a
+# direct API call with no hook running went through). The server therefore
+# answers a write on the hook's first call `deferred`, and the hook hands the
+# command to a detached watcher that wakes exactly once, when THIS process
+# exits (pidfd on Linux, kqueue on macOS -- an event, not a poll), waits
+# SETTLE_SECONDS for the pane to redraw idle, and re-sends it. The gate then
+# runs once; a genuinely busy session still gets its one-line refusal.
+
+DEFERRED_ENV = "MARVEEN_CMD_DEFERRED"
+DEFERRED_WAIT_SECONDS = 30
+SETTLE_SECONDS = 0.5
+DEFERRED_DISPATCH_TIMEOUT = float(os.environ.get("MARVEEN_CMD_DEFERRED_TIMEOUT", "90"))
+DEFERRED_TIMEOUT_REPLY = "/{name}: elküldtem, de a dashboard {secs} mp alatt sem válaszolt, lehet, hogy lefutott. Nézd meg /status-szal, mielőtt újra kiadod."
+DEFERRED_SPAWN_FAILED_REPLY = "Nem futott: /{name} -- a késleltetett végrehajtás nem indult el. Napló: progress/commands-hook.log"
+
+
+def wait_for_exit(pid, timeout):
+    """Block until `pid` exits, or `timeout` passes. True iff it exited."""
+    try:
+        fd = os.pidfd_open(pid)
+    except ProcessLookupError:
+        return True
+    except (AttributeError, OSError):
+        fd = None
+    if fd is not None:
+        try:
+            ready, _, _ = select.select([fd], [], [], timeout)
+            return bool(ready)
+        finally:
+            os.close(fd)
+    if hasattr(select, "kqueue"):
+        kq = select.kqueue()
+        try:
+            ev = select.kevent(pid, filter=select.KQ_FILTER_PROC,
+                               flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                               fflags=select.KQ_NOTE_EXIT)
+            return bool(kq.control([ev], 1, timeout))
+        except ProcessLookupError:
+            return True
+        finally:
+            kq.close()
+    return False
+
+
+def spawn_deferred(sd, payload, body, chat_id, main_session, message_id=None):
+    job = {
+        "pid": os.getpid(),
+        "text": body,
+        "chat_id": chat_id,
+        "main_session": main_session,
+        "message_id": message_id,
+        "payload": {k: payload.get(k) for k in ("transcript_path", "cwd", "session_id")},
+    }
+    env = dict(os.environ)
+    env[DEFERRED_ENV] = json.dumps(job)
+    try:
+        # stdio MUST NOT be inherited: Claude Code waits for the hook's pipes
+        # to close, so an inherited stdout would hold the turn open for the
+        # watcher's whole life -- the very busy state this is waiting out.
+        subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), "--deferred"],
+            env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
+        )
+        return True
+    except Exception as e:
+        log(sd, f"deferred spawn failed: {type(e).__name__}")
+        return False
+
+
+def run_deferred():
+    # Detached from Claude Code (no 45 s kill), so the hook deadline is off.
+    global DEADLINE_SEC
+    DEADLINE_SEC = float("inf")
+    try:
+        job = json.loads(os.environ.get(DEFERRED_ENV) or "")
+    except Exception:
+        sys.exit(0)
+    sd = state_dir()
+    tok = env_value(os.path.join(sd, ".env"), "TELEGRAM_BOT_TOKEN")
+    if not tok:
+        sys.exit(0)
+    text, chat_id = job.get("text") or "", job.get("chat_id") or ""
+    name = (COMMAND_RX.match(text).group(1).lower() if COMMAND_RX.match(text) else "?")
+    exited = wait_for_exit(int(job.get("pid") or 0), DEFERRED_WAIT_SECONDS)
+    if not exited:
+        log(sd, f"/{name} deferred: hook did not exit within {DEFERRED_WAIT_SECONDS}s, running anyway")
+    time.sleep(SETTLE_SECONDS)
+    # Detached from Claude Code, so it can wait: /new runs a soft clear that
+    # waits for the session to restart and be woken -- 26 s measured on the
+    # test bot (2026-09-23), past the old 20 s, and a clear that WORKED was
+    # reported as "a dashboard nem érhető el".
+    result, why = dispatch(text, chat_id, bool(job.get("main_session")), timeout=DEFERRED_DISPATCH_TIMEOUT,
+                           message_id=job.get("message_id"))
+    if result is None:
+        if why == "TimeoutError":
+            reply = DEFERRED_TIMEOUT_REPLY.format(name=name, secs=int(DEFERRED_DISPATCH_TIMEOUT))
+        else:
+            reply = DASHBOARD_DOWN_REPLY.format(name=name, why=why)
+        replies = [reply]
+    else:
+        replies = [r for r in (result.get("replies") or []) if isinstance(r, str) and r]
+    sent_any = False
+    for r in replies:
+        if send(sd, tok, chat_id, r):
+            sent_any = True
+    if sent_any:
+        mark_answered(sd, job.get("payload") or {}, chat_id, replies[-1])
+    log(sd, f"/{name} deferred write answered ({(result or {}).get('outcome', why)}) chat={chat_id} reply={json.dumps(chr(10).join(replies)[:2000], ensure_ascii=False)}")
+    sys.exit(0)
+
+
 def attr(attrs, name):
     m = re.search(name + r'="([^"]*)"', attrs)
     return m.group(1) if m else None
+
+
+MIDTURN_CONTEXT = (
+    "Tulajdonosi parancsok kör közben: ha egy futó kör közben <channel> üzenet érkezik a "
+    "tulajdonostól, ami egyetlen /szó parancs a lenti listából, arra NE válaszolj, és ne "
+    "hajtsd végre: a dashboard külön, a Bot API-n válaszol rá (a kör közben érkező üzenetet a "
+    "UserPromptSubmit hook nem látja, ezért a dashboard a transzkriptből olvassa ki). "
+    "Folytasd a saját munkádat. A lista: {names}. A listán kívüli /szó a tiéd, a szokott módon."
+)
+
+
+def command_names():
+    """The registry's command names from the dashboard menu, the builtin set
+    when the dashboard is down (custom commands then missing -- stated)."""
+    try:
+        with open(os.path.join(REPO_ROOT, "store", ".dashboard-token"), encoding="utf-8") as f:
+            dtok = f.read().strip()
+        req = urllib.request.Request(api_base() + "/api/commands/menu",
+                                     headers={"Authorization": "Bearer " + dtok})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            cmds = json.loads(r.read().decode()).get("commands") or []
+        names = sorted({str(c.get("command")).lstrip("/") for c in cmds if isinstance(c, dict) and c.get("command")})
+        if names:
+            return names, None
+    except Exception as e:
+        return sorted(BUILTIN_NAMES), type(e).__name__
+    return sorted(BUILTIN_NAMES), "ures menu"
+
+
+def run_session_start():
+    """SessionStart hook (startup/resume/clear/compact): tell the MAIN session
+    which owner commands the dashboard answers when they arrive mid-turn
+    (src/web/midturn-commands.ts), so the model does not answer them a second
+    time in a paid turn. Never blocks: exit 0 on every path."""
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        payload = {}
+    if not is_main_session(payload):
+        sys.exit(0)
+    names, why = command_names()
+    text = MIDTURN_CONTEXT.format(names=", ".join("/" + n for n in names))
+    if why:
+        log(state_dir(), f"session-start: command menu unavailable ({why}), builtin names used")
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}, ensure_ascii=False))
+    sys.exit(0)
+
+
+def run_stop():
+    """Stop hook: the main session finished a turn. If a /model hold expired
+    while the session was busy (the one-shot expiry timer found it busy), tell
+    the dashboard, which arms ONE revert retry after the switch quiet window.
+    The expiry is checked from the hold file first, so an ordinary turn end
+    costs no HTTP call. Silent, never blocks (exit 0, empty stdout)."""
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        payload = {}
+    if not is_main_session(payload):
+        sys.exit(0)
+    try:
+        with open(os.path.join(REPO_ROOT, "store", "main-model-hold.json"), encoding="utf-8") as f:
+            until = json.load(f).get("until")
+        if not isinstance(until, (int, float)) or time.time() * 1000 < until:
+            sys.exit(0)
+    except Exception:
+        sys.exit(0)
+    try:
+        with open(os.path.join(REPO_ROOT, "store", ".dashboard-token"), encoding="utf-8") as f:
+            dtok = f.read().strip()
+        req = urllib.request.Request(
+            api_base() + "/api/commands/turn-ended", data=b"{}", method="POST",
+            headers={"Authorization": "Bearer " + dtok, "Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=5).read()
+    except Exception as e:
+        log(state_dir(), f"turn-ended notify failed: {type(e).__name__}")
+    sys.exit(0)
 
 
 def main():
@@ -339,18 +607,12 @@ def main():
     prompt = payload.get("prompt") or ""
     sid = payload.get("session_id") or "unknown"
 
-    matches = list(CHANNEL_RX.finditer(prompt))
-    if len(matches) != 1:
+    found = command_block(prompt)
+    if found is None:
         sys.exit(0)
-    attrs, body = matches[0].group(1), matches[0].group(2).strip()
+    attrs, body = found
     cm = COMMAND_RX.match(body)
-    if not cm or "\n" in body:
-        sys.exit(0)
-    if not TELEGRAM_SOURCE_RX.search(attrs):
-        sys.exit(0)
     chat_id = attr(attrs, "chat_id")
-    if not chat_id:
-        sys.exit(0)
     owner = owner_chat_id()
     if owner is not None and chat_id != owner:
         sys.exit(0)
@@ -363,7 +625,18 @@ def main():
         log(sd, "no bot token found, letting the prompt through")
         sys.exit(0)
 
-    result, why = dispatch(body, chat_id, main_session)
+    forwarded = attr(attrs, "forwarded") == "1"
+    message_id = attr(attrs, "message_id")
+    result, why = dispatch(body, chat_id, main_session, defer_writes=True, forwarded=forwarded,
+                           message_id=message_id)
+    if result is not None and result.get("outcome") == "deferred":
+        if not spawn_deferred(sd, payload, body, chat_id, main_session, message_id):
+            reply = DEFERRED_SPAWN_FAILED_REPLY.format(name=name)
+            if send(sd, tok, chat_id, reply):
+                mark_answered(sd, payload, chat_id, reply)
+        clear_stray_placeholder(sd, tok, sid, attr(attrs, "message_id"))
+        log(sd, f"/{name} deferred until the hook exits chat={chat_id} sid={sid}")
+        sys.exit(2)
     if result is None:
         if name not in BUILTIN_NAMES:
             log(sd, f"/{name}: dashboard unreachable ({why}), not a builtin, passed to the model")
@@ -371,23 +644,37 @@ def main():
         reply = DASHBOARD_DOWN_REPLY.format(name=name, why=why)
         if name == "usage":
             reply = quota_text(sd) + "\n\n" + reply
-        send(sd, tok, chat_id, reply)
-        clear_stray_placeholder(sd, tok, sid)
+        if send(sd, tok, chat_id, reply):
+            mark_answered(sd, payload, chat_id, reply)
+        clear_stray_placeholder(sd, tok, sid, attr(attrs, "message_id"))
         log(sd, f"/{name}: dashboard unreachable ({why}), error reply sent, turn blocked")
         sys.exit(2)
 
     if not result.get("handled"):
+        # visible in the log: "passed to the model" is a decision, not silence
+        log(sd, f"/{name}: not a registry command ({result.get('outcome')}), passed to the model chat={chat_id} sid={sid}")
         sys.exit(0)
 
     replies = [r for r in (result.get("replies") or []) if isinstance(r, str) and r]
-    if name == "usage":
+    # "/usage ?" is the help: no quota line in front of it
+    if name == "usage" and "?" not in body.split()[1:]:
         replies = [quota_text(sd) + ("\n\n" + replies[0] if replies else "")] + replies[1:]
+    sent_any = False
     for r in replies:
-        send(sd, tok, chat_id, r)
-    clear_stray_placeholder(sd, tok, sid)
-    log(sd, f"/{name} answered ({result.get('outcome')}) chat={chat_id} sid={sid}")
+        if send(sd, tok, chat_id, r):
+            sent_any = True
+    if sent_any:
+        mark_answered(sd, payload, chat_id, replies[-1])
+    clear_stray_placeholder(sd, tok, sid, attr(attrs, "message_id"))
+    log(sd, f"/{name} answered ({result.get('outcome')}) chat={chat_id} sid={sid} reply={json.dumps(chr(10).join(replies)[:2000], ensure_ascii=False)}")
     sys.exit(2)  # block: the model never sees this turn
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--deferred"]:
+        run_deferred()
+    if sys.argv[1:2] == ["--stop"]:
+        run_stop()
+    if sys.argv[1:2] == ["--session-start"]:
+        run_session_start()
     main()

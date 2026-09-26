@@ -21,6 +21,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import command_prompt  # noqa: E402
 try:
     import ledger_lib  # noqa: E402
     _HAS_LEDGER = True
@@ -219,6 +220,9 @@ def main():
         sys.exit(0)
     # Sub-agents only: the main agent receives Telegram via --channels directly.
     if _is_main_session(payload):
+        sys.exit(0)
+    # the command hook may block this prompt: do not drain into it
+    if command_prompt.command_block(payload.get("prompt") or "") is not None:
         sys.exit(0)
     try:
         drain(payload)

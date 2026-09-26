@@ -27,6 +27,8 @@ import {
 import { configDirFor } from './main-transcript-root.js'
 import { readConfiguredMainModel } from './channel-monitor.js'
 import { readModelFallbackConfig } from './model-fallback-store.js'
+import { readMarveenTelegramConfig } from './telegram.js'
+import { resolveOwnerChatId } from '../owner-chat.js'
 import { readGateConfig } from './context-restart-gate-store.js'
 import { readQuotaSnapshot, DEFAULT_MAX_AGE_SEC, type QuotaSnapshot, type QuotaWindow } from './quota.js'
 import { getAgentRunningSince } from './agent-process.js'
@@ -47,6 +49,8 @@ export interface StatusRow {
 export interface StatusBlock {
   title: string
   rows: StatusRow[]
+  /** See `formatSystemStatus`: the block is dropped, not just its rows blanked. */
+  hideIfAllUnmeasurable?: boolean
 }
 
 export interface SystemStatus {
@@ -63,6 +67,8 @@ export interface RowCollector {
 export interface BlockSpec {
   title: string
   rows: RowCollector[]
+  /** See `formatSystemStatus`. */
+  hideIfAllUnmeasurable?: boolean
 }
 
 export function notMeasurable(reason: string): string {
@@ -73,6 +79,7 @@ export function notMeasurable(reason: string): string {
 export async function runCollectors(specs: BlockSpec[], now = Date.now()): Promise<SystemStatus> {
   const blocks = await Promise.all(specs.map(async (b) => ({
     title: b.title,
+    hideIfAllUnmeasurable: b.hideIfAllUnmeasurable,
     rows: await Promise.all(b.rows.map(async (r): Promise<StatusRow> => {
       try {
         return { label: r.label, value: await r.collect(), source: r.source }
@@ -84,12 +91,22 @@ export async function runCollectors(specs: BlockSpec[], now = Date.now()): Promi
   return { generatedAt: now, blocks }
 }
 
+// ELSOKOR922 Phase 7 A-smoke, tulajdonosi visszajelzés (2026-09-22): a
+// fejléc-elv szerint alapból egy nem mérhető SOR a helyén marad ("egy eltűnt
+// sor úgy nézne ki, mintha nincs mit jelenteni"), de a KERET blokk a
+// legtöbb (headless szerver-) telepítésen MINDHÁROM sorára ugyanazt a
+// "nem mérhető"-t adja, állandóan -- itt a három ismételt sor maga a zaj,
+// nem egy eltűnő jel. `hideIfAllUnmeasurable` ezért a BLOKKOT dobja, nem a
+// sort: csak akkor, ha MINDEN sora "nem mérhető (" (egy valódi hiba -- null
+// value -- NEM számít annak, az marad, mert az tényleg jel).
 export function formatSystemStatus(status: SystemStatus, extraRows: Record<string, StatusRow[]> = {}): string {
   const out: string[] = []
   for (const b of status.blocks) {
+    const rows = [...b.rows, ...(extraRows[b.title] ?? [])]
+    if (b.hideIfAllUnmeasurable && rows.every(r => r.value?.startsWith('nem mérhető ('))) continue
     if (out.length) out.push('')
     out.push(b.title)
-    for (const r of [...b.rows, ...(extraRows[b.title] ?? [])]) {
+    for (const r of rows) {
       out.push(`${r.label}: ${r.value ?? `hiba (${r.error ?? 'ismeretlen'})`}`)
     }
   }
@@ -226,25 +243,40 @@ export function formatQuota(q: QuotaSnapshot): { fiveHour: string; sevenDay: str
 // each cached version's server.ts is re-read for the marker, so a plugin
 // version that arrived after the start shows up too.
 export const PLUGIN_PATCH_MARKER = 'MARVEEN-PATCH(elsokor922-d4)'
+// The independent patches, each with what the owner loses without it.
+const PLUGIN_PATCHES = [
+  { name: 'd4', marker: PLUGIN_PATCH_MARKER, label: '', fallback: 'a /status és a /help a plugin saját válasza' },
+  { name: 'fwd', marker: 'MARVEEN-PATCH(elsokor922-fwd)', label: ' (továbbítás-jelölő)', fallback: 'egy továbbított parancs úgy fut, mint a begépelt' },
+  { name: 'evid', marker: 'MARVEEN-PATCH(cmd920-evid)', label: ' (bejövő-napló)', fallback: 'az író parancsok (/model, /context clear, saját parancsok) nem futnak, nincs mihez ellenőrizni őket' },
+]
 
 export function telegramPluginPatchStatus(stateFile = join(STORE_DIR, 'telegram-plugin-patch.json')): string {
   if (!existsSync(stateFile)) return 'nincs adat (a csatorna-indítás még nem futtatta a patchert; nem Telegram csatorna?)'
-  const state = JSON.parse(readFileSync(stateFile, 'utf-8')) as { root?: string; files?: Array<{ version: string; status: string }> }
+  const state = JSON.parse(readFileSync(stateFile, 'utf-8')) as {
+    root?: string
+    files?: Array<{ version: string; status: string; patches?: Record<string, string> }>
+  }
   if (!state.root) return notMeasurable('az állapotfájlban nincs cache-útvonal')
   const base = join(state.root, 'claude-plugins-official', 'telegram')
   const versions = existsSync(base) ? readdirSync(base).filter(v => existsSync(join(base, v, 'server.ts'))).sort() : []
   if (versions.length === 0) return `nincs Telegram plugin a cache-ben (${state.root})`
-  const missing: string[] = []
-  for (const v of versions) {
-    if (readFileSync(join(base, v, 'server.ts'), 'utf-8').includes(PLUGIN_PATCH_MARKER)) continue
-    const recorded = state.files?.find(f => f.version === v)?.status
-    const why = !recorded ? 'új verzió, a következő csatorna-indításkor kerül rá'
-      : recorded === 'patched' || recorded === 'already' ? 'a fájl az indítás óta cserélődött'
-      : recorded
-    missing.push(`${v} (${why})`)
+  const texts = new Map(versions.map(v => [v, readFileSync(join(base, v, 'server.ts'), 'utf-8')]))
+  const lines: string[] = []
+  for (const p of PLUGIN_PATCHES) {
+    const missing: string[] = []
+    for (const v of versions) {
+      if (texts.get(v)!.includes(p.marker)) continue
+      const file = state.files?.find(f => f.version === v)
+      const recorded = file ? (file.patches?.[p.name] ?? file.status) : undefined
+      const why = !recorded ? 'új verzió, a következő csatorna-indításkor kerül rá'
+        : recorded === 'patched' || recorded === 'already' ? 'a fájl az indítás óta cserélődött'
+        : recorded
+      missing.push(`${v} (${why})`)
+    }
+    if (missing.length) lines.push(`HIÁNYZIK${p.label}: ${missing.join(', ')} · ${p.fallback}`)
   }
-  if (missing.length === 0) return `rendben (${versions.join(', ')})`
-  return `HIÁNYZIK: ${missing.join(', ')} · a /status és a /help a plugin saját válasza`
+  if (lines.length === 0) return `rendben (${versions.join(', ')})`
+  return lines.join('; ')
 }
 
 function newestTranscript(): string | null {
@@ -367,6 +399,7 @@ export function liveBlockSpecs(now = Date.now()): BlockSpec[] {
     },
     {
       title: 'KERET',
+      hideIfAllUnmeasurable: true,
       rows: (() => {
         const read = () => readQuotaSnapshot(
           join(STORE_DIR, '.claude-rate-limits.json'),
@@ -411,6 +444,20 @@ export function liveBlockSpecs(now = Date.now()): BlockSpec[] {
     {
       title: 'CSATORNA',
       rows: [
+        {
+          // The plugin's own /status used to answer "Paired as ..."; the D-4
+          // patch takes that handler out, so the pairing has to be measured
+          // here or it disappears from the chat entirely (owner, 2026-09-23).
+          label: 'Párosítás', source: 'channels/telegram/.env + getMe cache',
+          collect: () => {
+            const cfg = readMarveenTelegramConfig()
+            if (!cfg.hasTelegram) return notMeasurable('nincs bot-token a csatorna .env-jében')
+            const chat = resolveOwnerChatId()
+            // The cache may or may not carry the leading @ -- normalise, never double it.
+            const bot = cfg.botUsername ? `@${cfg.botUsername.replace(/^@+/, '')}` : notMeasurable('a bot neve még nincs lekérdezve')
+            return `${bot} · tulajdonos chat: ${chat ?? notMeasurable('nincs ALLOWED_CHAT_ID')}`
+          },
+        },
         {
           label: 'Forgalom', source: 'conversation_log',
           collect: () => {

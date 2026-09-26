@@ -6,6 +6,7 @@ import {
   parseCommand,
   resolveCommand,
   dispatchCommand,
+  commandHelpText,
   renderHelp,
   botCommandList,
   chunkText,
@@ -91,7 +92,7 @@ describe('/help generated from the registry (CMD920 test 3)', () => {
       expect(listCommands().some(e => e.name === name && e.kind === 'read' && !e.planned)).toBe(true)
     }
     // the nonce writes are planned, in the "megerősítéssel" section
-    const confirmSection = help.split('ÍR, megerősítéssel')[1].split('SAJÁT')[0]
+    const confirmSection = help.split('MODOSÍT, megerősítéssel')[1].split('SAJÁT')[0]
     expect(confirmSection).toContain('/runs stop <nonce>')
     expect(confirmSection).toContain('/jobs <név> on|off|run|skip <nonce>')
     expect(confirmSection).toContain('/approvals <n> approve|reject|renew <nonce>')
@@ -122,22 +123,28 @@ describe('/help generated from the registry (CMD920 test 3)', () => {
       expect(m.description.length).toBeLessThanOrEqual(256)
     }
     // the menu shows the read description of /model, not a planned write's
-    expect(menu.find(m => m.command === 'model')?.description).toMatch(/futó és beállított/)
+    expect(menu.find(m => m.command === 'model')?.description).toMatch(/mi fut most/)
   })
 
-  it('A2 writes are planned in A1: /model opus, /model back, /context clear, /new do nothing', async () => {
-    for (const text of ['/model opus', '/model set opus 30m', '/model back', '/model effort high', '/context clear', '/new', '/clear']) {
-      const c = ctx()
-      expect(await dispatchCommand(text, c)).toBe('planned')
+  it('A2: the /model and /context writes are real (not planned); the nonce writes stay planned', () => {
+    for (const usage of ['/model [<választás>] [<low|medium|high|max>] [<idő>|keep]', '/model default', '/context clear']) {
+      const e = listCommands().find(x => x.usage === usage)
+      expect(e?.planned).toBeFalsy()
+      expect(typeof e?.run).toBe('function')
     }
-  })
-
-  it('CMD920 test 5 in A1: an off-list or injection-shaped model id reaches no writer at all', async () => {
-    for (const text of ["/model nincs-ilyen-modell", "/model opus'; rm -rf / #", '/model set claude-x;id keep']) {
-      const c = ctx()
-      expect(await dispatchCommand(text, c)).toBe('planned')
-      expect(c.out[0]).toMatch(/^Tervezett, még nem elérhető/)
+    expect(resolveCommand('model', ['opus', '30m'])?.usage).toBe('/model [<választás>] [<low|medium|high|max>] [<idő>|keep]')
+    // one line, order-free: model and/or effort and/or time (ELSOKOR922 Phase 7)
+    expect(resolveCommand('model', ['opus', 'low', '4m'])?.usage).toBe('/model [<választás>] [<low|medium|high|max>] [<idő>|keep]')
+    expect(resolveCommand('model', ['low', '5m'])?.usage).toBe('/model [<választás>] [<low|medium|high|max>] [<idő>|keep]')
+    expect(resolveCommand('model', ['default'])?.usage).toBe('/model default')
+    expect(resolveCommand('model', ['back'])?.usage).toBe('/model default')
+    expect(resolveCommand('model', [])?.kind).toBe('read')
+    expect(resolveCommand('context', ['clear'])?.usage).toBe('/context clear')
+    for (const usage of ['/runs stop <nonce>', '/jobs <név> on|off|run|skip <nonce>', '/approvals <n> approve|reject|renew <nonce>']) {
+      expect(listCommands().find(x => x.usage === usage)?.planned).toBe(true)
     }
+    // /new and /clear are shipped as default CUSTOM commands, not builtins
+    expect(listCommands().some(e => e.name === 'new' || e.name === 'clear')).toBe(false)
   })
 
   it('/board is read-only: no write entry is registered for it (CMD920 test 21)', async () => {
@@ -166,4 +173,35 @@ describe('chunkText', () => {
     const parts = chunkText('x'.repeat(2500), 1000)
     expect(parts.map(p => p.length)).toEqual([1000, 1000, 500])
   })
+
+  // Owner request 2026-09-24: every command answers `?`.
+  it('/<name> ? : own help when the command has one, the registry lines otherwise; unknown names are left alone', async () => {
+    clearCommandsForTest()
+    registerBuiltinCommands()
+    registerCommand({ name: 'sajat', kind: 'write', source: 'custom', description: 'a saját [actions]', run: async () => {} })
+    const c = ctx()
+    expect(await dispatchCommand('/board ?', c)).toBe('ran')
+    expect(c.out[0]).toMatch(/^\/board: a kanban tábla/)
+    const u = ctx()
+    await dispatchCommand('/usage ?', u)
+    expect(u.out[0]).toMatch(/^\/usage\n\/usage \[<nap>\]: /)
+    const m = ctx()
+    await dispatchCommand('/model ?', m)
+    expect(m.out[0]).toMatch(/^\/model: melyik modell fut/) // not a model switch to "?"
+    const k = ctx()
+    await dispatchCommand('/sajat ?', k)
+    expect(k.out[0]).toMatch(/^\/sajat\n\/sajat: a saját \[actions\]\n\nSaját parancs/)
+    expect(commandHelpText('nincsilyen')).toBeNull()
+    const h = ctx()
+    await dispatchCommand('/help ?', h)
+    expect(h.out[0]).toBe(renderHelp()) // the help of /help is /help
+    const f = ctx()
+    await dispatchCommand('/board w ?', f)
+    expect(f.out[0]).toMatch(/^\/board: a kanban tábla/) // not a filter for an assignee "?"
+    const mo = ctx()
+    await dispatchCommand('/model opus ?', mo)
+    expect(mo.out[0]).toMatch(/^\/model: melyik modell fut/)
+    expect(renderHelp()).toMatch(/^Minden parancs után \?: részletes súgó példákkal, pl\. \/board \?\n\n/)
+  })
 })
+

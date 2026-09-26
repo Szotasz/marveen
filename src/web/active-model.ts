@@ -75,6 +75,99 @@ export function readActiveModelFromProjectDir(workingDir: string, sinceUnixSec?:
   return value
 }
 
+// Like readActiveModelFromProjectDir, but also says WHEN that assistant line
+// was written. The model a status shows is only as fresh as the last turn: a
+// /model sent after it has not been measured yet (ELSOKOR922 Phase 7 A-smoke:
+// the hold reverted to sonnet at 14:52, /model at 14:53 still read "opus" from
+// the 14:47 turn, with nothing saying the reading was stale).
+export function readLastAssistantModel(workingDir: string, configDir?: string): { model: string; atMs: number } | null {
+  try {
+    const dir = projectsDirFor(workingDir, configDir)
+    if (!existsSync(dir)) return null
+    const newest = readdirSync(dir)
+      .filter(f => f.endsWith('.jsonl'))
+      .map(f => ({ f, mtime: statSync(join(dir, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime)[0]
+    if (!newest) return null
+    const lines = readFileSync(join(dir, newest.f), 'utf-8').split('\n')
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim()
+      if (!line) continue
+      try {
+        const entry = JSON.parse(line)
+        const model = entry?.message?.model
+        if (typeof model !== 'string' || model.startsWith('<')) continue
+        const atMs = typeof entry?.timestamp === 'string' ? new Date(entry.timestamp).getTime() : NaN
+        if (!Number.isFinite(atMs)) continue
+        return { model, atMs }
+      } catch { /* skip malformed JSON line */ }
+    }
+  } catch { /* fall through */ }
+  return null
+}
+
+const TURN_TAIL_BYTES = 512 * 1024
+
+// Epoch ms of the last TURN line (type user / assistant) in the newest
+// transcript; null = no transcript or no such line in the tail. Unlike the
+// file mtime, bookkeeping lines do not count: Claude Code writes a
+// queue-operation, a "UserPromptSubmit operation blocked by hook" system line
+// and last-prompt / title metadata for every prompt a hook blocks, so an owner
+// command made the transcript look "active" by its own blocked prompt
+// (ELSOKOR922 Phase 7 A-smoke: /model refused "transcript-active (0s)").
+// A running turn writes user (tool_result) and assistant lines, so the gap
+// between two tool calls -- what the quiet window guards -- still counts.
+// A local slash command (/model, /effort, /clear sent into the pane) writes
+// `user` lines -- "<command-name>/model</command-name>..." and
+// "<local-command-stdout>Set model to ...</local-command-stdout>" -- but no model
+// turn runs. Counted as activity they made every write within 20 s of our own
+// previous /model read "turn-active" (measured on the test bot, 2026-09-23).
+function isLocalCommandLine(e: { type?: unknown; message?: { content?: unknown } }): boolean {
+  if (e.type !== 'user') return false
+  const c = e.message?.content
+  return typeof c === 'string' && /^\s*<(local-command-(stdout|stderr|caveat)|command-name)>/.test(c)
+}
+
+export function readLastTurnActivityMs(workingDir: string, configDir?: string): number | null {
+  try {
+    const dir = projectsDirFor(workingDir, configDir)
+    if (!existsSync(dir)) return null
+    const newest = readdirSync(dir)
+      .filter(f => f.endsWith('.jsonl'))
+      .map(f => ({ f, mtime: statSync(join(dir, f)).mtimeMs, size: statSync(join(dir, f)).size }))
+      .sort((a, b) => b.mtime - a.mtime)[0]
+    if (!newest) return null
+    const fd = openSync(join(dir, newest.f), 'r')
+    let text: string
+    try {
+      const len = Math.min(newest.size, TURN_TAIL_BYTES)
+      const buf = Buffer.alloc(len)
+      readSync(fd, buf, 0, len, newest.size - len)
+      text = buf.toString('utf-8')
+    } finally { closeSync(fd) }
+    const lines = text.split('\n')
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim()
+      if (!line.startsWith('{')) continue
+      try {
+        const e = JSON.parse(line)
+        if (e?.type !== 'user' && e?.type !== 'assistant') continue
+        if (isLocalCommandLine(e)) continue
+        const at = typeof e.timestamp === 'string' ? new Date(e.timestamp).getTime() : NaN
+        if (Number.isFinite(at)) return at
+      } catch { /* a line cut by the tail window, or malformed */ }
+    }
+    // The WHOLE file was read and holds no turn: a fresh session (after a
+    // deploy or /clear) that has only bookkeeping lines. That is "never had a
+    // turn" -- quiet -- not "unknown". Returning null here made the caller
+    // fall back to the file's mtime, which every hook-blocked command bumps,
+    // so commands typed in a row kept each other "turn-active" (measured on
+    // the test bot, 2026-09-23). A file larger than the window stays null.
+    if (newest.size <= TURN_TAIL_BYTES) return 0
+  } catch { /* fall through */ }
+  return null
+}
+
 const ctxCache = new Map<string, { value: number | null; expiresAt: number }>()
 
 // Current context size of the live session, in tokens. Claude Code records a

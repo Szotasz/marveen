@@ -1,6 +1,6 @@
 // Owner slash commands over HTTP (CMD920, ELSOKOR922 spec D-4).
 //
-//   POST /api/commands/dispatch   {text, chatId} -> {handled, outcome, replies}
+//   POST /api/commands/dispatch   {text, chatId, messageId?} -> {handled, outcome, replies}
 //   GET  /api/commands/menu       the Telegram command menu from the registry
 //
 // The caller is the main session's UserPromptSubmit hook
@@ -15,15 +15,18 @@
 // the prompt through unchanged.
 //
 // The dashboard token is the credential (the gate in web.ts answers 401
-// without it). A call carrying an agent identity is refused: every fleet
-// agent shares that token, so this is the only server-side line between
-// "the owner typed it" and "an agent asked for it" (the same check as the
-// custom-commands CRUD).
+// without it). A call carrying an agent identity is refused (the same check
+// as the custom-commands CRUD). That alone rests on the ABSENCE of a header,
+// and every fleet agent shares the token, so a WRITE also needs positive
+// evidence: `messageId`, the Telegram message it came in, must be on record in
+// the channel plugin's own inbound log (write-evidence.ts; #1530 review).
 
 import type http from 'node:http'
 import { json, readBody } from '../http-helpers.js'
-import { parseCommand, resolveCommand, dispatchCommand, botCommandList, type DispatchOutcome } from '../commands.js'
+import { parseCommand, resolveCommand, dispatchCommand, botCommandList, isHelpRequest, hasCommand, type DispatchOutcome } from '../commands.js'
 import { resolveOwnerChatId } from '../../owner-chat.js'
+import { checkWriteEvidence, WRITE_EVIDENCE_REPLY, type WriteEvidenceCheck } from '../write-evidence.js'
+import { onMainTurnEnded } from '../main-model.js'
 import { logger } from '../../logger.js'
 import type { RouteContext } from './types.js'
 
@@ -60,7 +63,7 @@ export function mainSessionFromBody(b: Record<string, unknown>): boolean {
 
 export interface DispatchResult {
   handled: boolean
-  outcome: DispatchOutcome | 'not-owner' | 'sub-agent-write-refused'
+  outcome: DispatchOutcome | 'not-owner' | 'sub-agent-write-refused' | 'deferred' | 'forwarded-refused' | 'write-evidence-refused'
   replies: string[]
 }
 
@@ -73,20 +76,63 @@ export interface DispatchResult {
 // (3): the old gate lived in the Python hook and blocked every non-/usage
 // command for a sub-agent, reads included, sending them to the model at
 // full token cost instead of the free hook round trip).
-export async function dispatchForChat(text: string, chatId: string, ownerChatId: string | null, now = Date.now(), mainSession = true): Promise<DispatchResult> {
+//
+// `deferWrites`: the hook's first call. A runnable WRITE is not run now but
+// answered `deferred` -- while the UserPromptSubmit hook is still running,
+// Claude Code already shows the owner's own (about to be blocked) turn as
+// live (spinner + `esc to interrupt`), so every write's quiet gate read its
+// OWN turn as "pane-busy" and refused, every time (measured on the test bot,
+// ELSOKOR922 Phase 7). The hook then re-sends the command once, from a
+// detached watcher that wakes on the hook process's exit.
+// `forwarded`: the Telegram message was forwarded (the plugin patch marks it,
+// scripts/patch-telegram-plugin.py). The owner forwarding someone else's
+// "/model opus keep" must not run it (ELSOKOR922 spec 5.; measured on the
+// test bot before the patch: a forwarded /status ran).
+export const FORWARDED_REPLY = (name: string) => `Továbbított üzenetből nem futtatok parancsot: /${name}. Ha kell, írd be magad.`
+
+// `messageId` / `evidence`: a WRITE runs only with evidence that the owner's
+// chat really sent this message (write-evidence.ts). Checked where the write
+// would run -- after the sub-agent refusal and the deferral, so the hook's
+// first (deferred) call does not use the message up.
+export async function dispatchForChat(
+  text: string, chatId: string, ownerChatId: string | null, now = Date.now(), mainSession = true,
+  deferWrites = false, forwarded = false, messageId: string | null = null,
+  evidence: WriteEvidenceCheck = (r) => checkWriteEvidence(r),
+): Promise<DispatchResult> {
   const parsed = parseCommand(text)
-  const spec = parsed ? resolveCommand(parsed.name, parsed.args) : null
+  // `/<name> ?` is a read for every command, a write's included: no defer, no
+  // sub-agent refusal -- it only explains.
+  const helpAsk = parsed !== null && isHelpRequest(parsed.args) && hasCommand(parsed.name)
+  const spec = parsed ? resolveCommand(parsed.name, helpAsk ? [] : parsed.args) : null
   if (!parsed || !spec) {
     return { handled: false, outcome: parsed ? 'unknown' : 'not-command', replies: [] }
   }
   if (!ownerChatId || chatId !== ownerChatId) {
     return { handled: false, outcome: 'not-owner', replies: [] }
   }
+  if (forwarded) {
+    return { handled: true, outcome: 'forwarded-refused', replies: [FORWARDED_REPLY(spec.name)] }
+  }
+  if (helpAsk) {
+    const replies: string[] = []
+    await dispatchCommand(text, { reply: async (t: string) => { replies.push(t) }, ownerId: Number(ownerChatId), now })
+    return { handled: true, outcome: 'ran', replies }
+  }
   if (spec.kind === 'write' && !mainSession) {
     return {
       handled: true,
       outcome: 'sub-agent-write-refused',
       replies: [`/${spec.name} csak a fő chatből írható; ez a parancs mást állítana, és ez a session nem a fő session.`],
+    }
+  }
+  if (spec.kind === 'write' && !spec.planned && deferWrites) {
+    return { handled: true, outcome: 'deferred', replies: [] }
+  }
+  if (spec.kind === 'write' && !spec.planned) {
+    const v = evidence({ chatId, messageId, text, now })
+    if (!v.ok) {
+      logger.warn({ command: spec.name, messageId, reason: v.reason }, 'commands: write refused, no inbound evidence for the message')
+      return { handled: true, outcome: 'write-evidence-refused', replies: [WRITE_EVIDENCE_REPLY(spec.name, v.reason)] }
     }
   }
   const replies: string[] = []
@@ -102,6 +148,13 @@ export async function tryHandleCommands(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, auth } = ctx
   if (path === '/api/commands/menu' && method === 'GET') {
     json(res, { commands: botCommandList() })
+    return true
+  }
+  // The main session's Stop hook (marveen-commands.py --stop): a turn ended.
+  // Only acts when a model hold is past its expiry (the session was busy
+  // then); it arms one revert retry -- nothing else reads this.
+  if (path === '/api/commands/turn-ended' && method === 'POST') {
+    json(res, { armed: onMainTurnEnded(Date.now()) })
     return true
   }
   if (path !== '/api/commands/dispatch') return false
@@ -130,7 +183,9 @@ export async function tryHandleCommands(ctx: RouteContext): Promise<boolean> {
     json(res, { error: 'text and chatId are required' }, 400)
     return true
   }
-  const result = await dispatchForChat(text, chatId, resolveOwnerChatId(), Date.now(), mainSession)
+  const deferWrites = b.deferWrites === true
+  const messageId = typeof b.messageId === 'string' || typeof b.messageId === 'number' ? String(b.messageId) : null
+  const result = await dispatchForChat(text, chatId, resolveOwnerChatId(), Date.now(), mainSession, deferWrites, b.forwarded === true, messageId)
   if (result.handled) logger.info({ command: parseCommand(text)?.name, outcome: result.outcome }, 'commands: dispatched')
   else if (result.outcome === 'not-owner') logger.warn({ chatId }, 'commands: registry command from a non-owner chat, passed to the model')
   json(res, result)

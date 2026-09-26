@@ -34,6 +34,14 @@ import { initDatabase } from '../db.js'
 // ---- CMD920 test 11: one throwing collector, the rest still render ----------
 
 describe('/status collectors', () => {
+  // Owner-measured on the test bot: the getMe cache stores "@name", and the
+  // row prefixed another @ -> "@@marveenkitttestbot".
+  it('the pairing row never doubles the @ of the bot name', () => {
+    const at = (u: string) => `@${u.replace(/^@+/, '')}`
+    expect(at('@marveenkitttestbot')).toBe('@marveenkitttestbot')
+    expect(at('marveenkitttestbot')).toBe('@marveenkitttestbot')
+  })
+
   it('a throwing collector gets an error, every other row still appears', async () => {
     const s = await runCollectors([
       { title: 'A', rows: [
@@ -50,6 +58,37 @@ describe('/status collectors', () => {
     ])
     const text = formatSystemStatus(s)
     expect(text).toBe('A\njó: érték\nrossz: hiba (elszállt)\nasync: később\n\nB\nrossz async: hiba (timeout)')
+  })
+
+  // ELSOKOR922 Phase 7 A-smoke, tulajdonosi visszajelzés: a KERET blokk egy
+  // headless (env_file token) telepítésen mindhárom sorára "nem mérhető"-t
+  // ad, mindig -- itt ez zaj, nem jel, ezért a blokk `hideIfAllUnmeasurable`
+  // esetén EGÉSZBEN kimarad. Egy VALÓDI hiba (null value) viszont nem
+  // "nem mérhető" -- az a rendes elv szerint marad, mert az tényleg jel.
+  it('hideIfAllUnmeasurable: a block where every row is "nem mérhető(" is dropped entirely', async () => {
+    const s = await runCollectors([
+      { title: 'A', rows: [{ label: 'x', source: 's', collect: () => 'érték' }] },
+      { title: 'KERET', hideIfAllUnmeasurable: true, rows: [
+        { label: '5 órás', source: 's', collect: () => 'nem mérhető (nincs adat)' },
+        { label: 'Heti', source: 's', collect: () => 'nem mérhető (nincs adat)' },
+      ] },
+    ])
+    expect(formatSystemStatus(s)).toBe('A\nx: érték')
+  })
+  it('hideIfAllUnmeasurable: stays if even one row has real data or a thrown error', async () => {
+    const withData = await runCollectors([
+      { title: 'KERET', hideIfAllUnmeasurable: true, rows: [
+        { label: '5 órás', source: 's', collect: () => '70% van hátra' },
+        { label: 'Heti', source: 's', collect: () => 'nem mérhető (nincs adat)' },
+      ] },
+    ])
+    expect(formatSystemStatus(withData)).toContain('KERET')
+    const withError = await runCollectors([
+      { title: 'KERET', hideIfAllUnmeasurable: true, rows: [
+        { label: '5 órás', source: 's', collect: () => { throw new Error('boom') } },
+      ] },
+    ])
+    expect(formatSystemStatus(withError)).toContain('KERET')
   })
 
   it('the live collectors never throw as a whole; every row has a value or an error', async () => {
@@ -238,21 +277,39 @@ describe('Telegram plugin-patch row', () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
   it('patched: "rendben" with the version', () => {
-    server('0.0.7', '// MARVEEN-PATCH(elsokor922-d4): x')
+    server('0.0.7', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z')
     writeState([{ version: '0.0.7', status: 'patched' }])
     expect(telegramPluginPatchStatus(state)).toBe('rendben (0.0.7)')
   })
 
+  it('the forward patch is measured on its own: d4 in place, fwd missing says what that costs', () => {
+    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(cmd920-evid): z')
+    writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), files: [
+      { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'anchor-missing:inbound meta user_id', evid: 'patched' } },
+    ] }))
+    expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (továbbítás-jelölő): 0.0.8 (anchor-missing:inbound meta user_id) · egy továbbított parancs úgy fut, mint a begépelt')
+  })
+
   it('anchor-missing / unwritable at start: one line naming the version, the reason and the fallback', () => {
-    server('0.0.8', 'plugin code')
+    server('0.0.8', 'plugin code\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z')
     writeState([{ version: '0.0.8', status: 'anchor-missing:status handler' }])
     expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK: 0.0.8 (anchor-missing:status handler) · a /status és a /help a plugin saját válasza')
     writeState([{ version: '0.0.8', status: 'unwritable' }])
     expect(telegramPluginPatchStatus(state)).toMatch(/^HIÁNYZIK: 0\.0\.8 \(unwritable\)/)
   })
 
+  // #1530 review: without the inbound log no owner write command can run, so
+  // a missing `evid` patch must say exactly that.
+  it('the evidence patch is measured on its own: missing says the write commands will not run', () => {
+    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y')
+    writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), files: [
+      { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'anchor-missing:channel notification' } },
+    ] }))
+    expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (bejövő-napló): 0.0.8 (anchor-missing:channel notification) · az író parancsok (/model, /context clear, saját parancsok) nem futnak, nincs mihez ellenőrizni őket')
+  })
+
   it('a plugin version that arrived after the start is measured now, not taken from the state file', () => {
-    server('0.0.7', '// MARVEEN-PATCH(elsokor922-d4): x')
+    server('0.0.7', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z')
     server('0.0.9', 'fresh plugin code')
     writeState([{ version: '0.0.7', status: 'already' }])
     expect(telegramPluginPatchStatus(state)).toMatch(/^HIÁNYZIK: 0\.0\.9 \(új verzió/)

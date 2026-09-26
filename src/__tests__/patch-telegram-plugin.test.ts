@@ -30,7 +30,7 @@ function run(extra: string[] = []): { status: number | null; stderr: string } {
   return { status: r.status, stderr: r.stderr }
 }
 
-function readState(file: string): { root: string; files: Array<{ version: string; path: string; status: string }> } {
+function readState(file: string): { root: string; files: Array<{ version: string; path: string; status: string; patches: Record<string, string> }> } {
   return JSON.parse(readFileSync(file, 'utf-8'))
 }
 
@@ -51,30 +51,80 @@ describe('patch-telegram-plugin.py', () => {
     expect(text).not.toContain('Paired as')
     expect(text).toContain("bot.command('start'")
     expect(text.match(/MARVEEN-PATCH\(elsokor922-d4\)/g)).toHaveLength(3)
+    expect(text).toMatch(/ +user_id: String\(from\.id\),\n +\.\.\.\(ctx\.message\?\.forward_origin \? \{ forwarded: '1' \} : \{\}\), \/\/ MARVEEN-PATCH\(elsokor922-fwd\)/)
     expect(syntaxErrors(text)).toEqual([])
   })
 
   it('2nd run is a no-op: returns `already`, byte-identical, silent', () => {
     const state = join(cache, 'state.json')
     run(['--state', state])
-    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'patched' }])
+    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched' } }])
     const once = readFileSync(server, 'utf-8')
     const r = run(['--state', state])
     expect(r.status).toBe(0)
     expect(r.stderr).toBe('')
     expect(readFileSync(server, 'utf-8')).toBe(once)
-    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'already' }])
+    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'already', patches: { d4: 'already', fwd: 'already', evid: 'already' } }])
   })
 
-  it('a changed anchor (plugin update): loud line, file left byte-identical, exit 0', () => {
+  it('a changed anchor (plugin update): loud line, THAT patch left out, the other still applied, exit 0', () => {
     const changed = readFileSync(FIXTURE, 'utf-8').replace("bot.command('status', async ctx => {", "bot.command('status', async (ctx) => {")
     writeFileSync(server, changed)
     const state = join(cache, 'state.json')
     const r = run(['--state', state])
     expect(r.status).toBe(0)
-    expect(r.stderr).toMatch(/LOUD: status handler not found exactly once/)
-    expect(readFileSync(server, 'utf-8')).toBe(changed)
-    expect(readState(state).files[0].status).toBe('anchor-missing:status handler')
+    expect(r.stderr).toMatch(/LOUD: status handler not found exactly once.*the d4 patch left out/)
+    const text = readFileSync(server, 'utf-8')
+    expect(text).not.toContain('elsokor922-d4')
+    expect(text).toContain("bot.command('help', async ctx => {")
+    expect(text).toContain('elsokor922-fwd')
+    expect(syntaxErrors(text)).toEqual([])
+    expect(readState(state).files[0].patches).toEqual({ d4: 'anchor-missing:status handler', fwd: 'patched', evid: 'patched' })
+  })
+
+  // #1530 review: owner write commands need evidence the owner's chat sent
+  // them. The plugin records every inbound message just before handing it to
+  // Claude Code -- the one place only a real Telegram update reaches.
+  it('evid: one inbound-log line right before the channel notification, and it really writes the record', () => {
+    run()
+    const text = readFileSync(server, 'utf-8')
+    expect(text.match(/MARVEEN-PATCH\(cmd920-evid\)/g)).toHaveLength(1)
+    const lines = text.split('\n')
+    const i = lines.findIndex(l => l.includes('MARVEEN-PATCH(cmd920-evid)'))
+    expect(lines[i + 1]).toMatch(/^ *mcp\.notification\(\{$/)
+    expect(lines[i + 2]).toMatch(/method: 'notifications\/claude\/channel',$/)
+    expect(syntaxErrors(text)).toEqual([])
+    // Run the inserted line with the handler's own names in scope.
+    const stateDir = mkdtempSync(join(tmpdir(), 'tg-evid-'))
+    try {
+      const fs = require('node:fs')
+      const fn = new Function('writeFileSync', 'statSync', 'renameSync', 'join', 'STATE_DIR', 'chat_id', 'msgId', 'text', lines[i])
+      fn(fs.writeFileSync, fs.statSync, fs.renameSync, join, stateDir, '42', 901, '/model opus')
+      fn(fs.writeFileSync, fs.statSync, fs.renameSync, join, stateDir, '42', undefined, 'szia')
+      const recs = readFileSync(join(stateDir, 'inbound-evidence.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l))
+      expect(recs.map(r => [r.chat_id, r.message_id, r.text])).toEqual([['42', '901', '/model opus'], ['42', null, 'szia']])
+      expect(typeof recs[0].at).toBe('number')
+    } finally { rmSync(stateDir, { recursive: true, force: true }) }
+  })
+
+  it('evid: the permission notification (a different method) is not an anchor; a moved anchor leaves evid out loudly', () => {
+    const changed = readFileSync(FIXTURE, 'utf-8').replace("method: 'notifications/claude/channel',", "method: 'notifications/claude/channel/v2',")
+    writeFileSync(server, changed)
+    const state = join(cache, 'state.json')
+    const r = run(['--state', state])
+    expect(r.stderr).toMatch(/LOUD: channel notification not found exactly once.*the evid patch left out, no inbound evidence is recorded/)
+    expect(readState(state).files[0].patches.evid).toBe('anchor-missing:channel notification')
+    expect(readFileSync(server, 'utf-8')).not.toContain('cmd920-evid')
+  })
+
+  it('a file patched by the d4-only version gets the forward patch on the next run', () => {
+    run()
+    const d4only = readFileSync(server, 'utf-8').replace(/\n +\.\.\.\(ctx\.message\?\.forward_origin[^\n]*/, '')
+    writeFileSync(server, d4only)
+    expect(d4only).not.toContain('elsokor922-fwd')
+    const r = run()
+    expect(r.stderr).toMatch(/patched .*\(fwd\)/)
+    expect(readFileSync(server, 'utf-8').match(/elsokor922-fwd/g)).toHaveLength(1)
   })
 
   it('writes exactly one cache: $CLAUDE_CONFIG_DIR when set, the user-level ~/.claude never on top', () => {
