@@ -23,6 +23,7 @@ import { AGENTS_BASE_DIR, listAgentNames, readJsonObjectForWrite } from './agent
 import { safeJoin } from './sanitize.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
+import { resolveMasterKeyForExport } from './vault.js'
 import { getDb, backfillEmbeddings } from '../db.js'
 import { logger } from '../logger.js'
 
@@ -629,24 +630,19 @@ function exportDashboardSettings(): DashboardSettingsExport {
 }
 
 function exportVault(): VaultExport | null {
-  const vaultKeyPath = join(STORE_DIR, '.vault-key')
-  const vaultKeyMigratedPath = join(STORE_DIR, '.vault-key.migrated')
   const vaultPath = join(STORE_DIR, 'vault.json')
   const bindingsPath = join(STORE_DIR, 'vault-bindings.json')
 
-  if (!existsSync(vaultKeyPath)) {
-    // macOS Keychain migration -- vault-key.migrated means key is in Keychain
-    if (existsSync(vaultKeyMigratedPath)) {
-      throw new Error(
-        'A vault kulcs macOS Keychain-be lett migrálva (.vault-key.migrated megtalálható). ' +
-        'A vault szekció exportja ebben a konfigurációban nem támogatott -- adj meg vault jelszót.'
-      )
-    }
-    return null
-  }
+  // The master key is resolved by CONTENT from whichever source holds it
+  // (.vault-key, .vault-key.migrated, Keychain), each verified against
+  // vault.json -- not inferred from which filename happens to exist. A kept
+  // .vault-key.migrated is a valid copy of the live key after a Keychain
+  // migration, so its presence must not refuse the export. Null = no key and
+  // no secret; a vault with secrets and no opening key throws VaultKeyError.
+  const vaultKey = resolveMasterKeyForExport()
+  if (!vaultKey) return null
 
   // Raw export: the entire FleetJson will be encrypted, so vault data is safe as plaintext here.
-  const vaultKey = readFileSync(vaultKeyPath, 'utf-8').trim()
   const vaultStore = safeReadJson(vaultPath)
   const entries = (vaultStore.entries as Record<string, unknown>[]) ?? []
   const bindingsStore = safeReadJson(bindingsPath)
@@ -655,6 +651,9 @@ function exportVault(): VaultExport | null {
   // Channel .env (bot tokens) are intentionally NOT exported -- see re-pair model comment in VaultExport.
   return { vaultKey, entries, bindings }
 }
+
+// Exposed for unit tests -- exercises the master-key source resolution above.
+export const _exportVaultForTest = exportVault
 
 // Encrypted export wrapper: {"enc":1,"blob":"<base64-of-encrypted-fleet-json>"}
 // The enc field signals the import side to decrypt before parsing.
