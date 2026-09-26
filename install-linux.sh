@@ -541,12 +541,18 @@ _shelve_broken_claude() {
   hash -r
 }
 
-# Pinned Node-based fallback for AVX-less hosts. @2.1.110 is the LAST version
+# Pinned Node-based fallback for AVX-less hosts. @2.1.112 is the LAST version
 # that ships bin=cli.js (a `#!/usr/bin/env node` entrypoint) running without
-# AVX -- 2.1.120+ bundles only the Bun ELF binary, so DO NOT use latest here.
-# Unlike the old 2.0.76 pin, 2.1.110 also understands `--channels`, which
-# channels.sh requires to boot the bot. Verified on the AVX-less pilot VPS.
-CLAUDE_PIN="2.1.110"
+# AVX -- from 2.1.113 on every published version ships bin=bin/claude.exe with
+# a postinstall that downloads the Bun ELF binary, so DO NOT use latest here.
+# Measured 2026-09-23 on the AVX-less pilot VPS (QEMU Virtual CPU 2.5+, 0 avx
+# flags) with a REAL `claude -p ... --output-format json` probe, not
+# `--version` (which still exits 0 on some Bun builds there): 2.1.110/111/112
+# answer, 2.1.113/150/170 SIGILL ("CPU lacks AVX support"), 2.1.200/240/260/280
+# spin silently for 120 s. 2.1.112 understands `--channels` (same parser
+# as 2.1.110), which channels.sh requires to boot the bot. Keep in sync with
+# scripts/channels.sh and scripts/fix-avx.sh (a test pins the three together).
+CLAUDE_PIN="2.1.112"
 
 if _claude_runs; then
   ok "claude mar telepitve es fut: $(claude --version 2>/dev/null || echo 'ok')"
