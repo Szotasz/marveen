@@ -39,7 +39,7 @@ vi.mock('node:child_process', async (orig) => ({
     return ''
   }),
 }))
-vi.mock('../notify.js', () => ({ notifyChannel: vi.fn(async () => {}), notifyTelegram: vi.fn(async () => {}) }))
+vi.mock('../notify.js', () => ({ alertIsRedirected: () => false, notifyChannel: vi.fn(async () => {}), notifyTelegram: vi.fn(async () => {}) }))
 
 import { clearStaleParkedInput } from '../web/agent-process.js'
 import { notifyChannel } from '../notify.js'

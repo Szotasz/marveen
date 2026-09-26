@@ -74,7 +74,7 @@ import { getSecret } from './vault.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-import { notifyChannel } from '../notify.js'
+import { notifyChannel, alertIsRedirected } from '../notify.js'
 
 // Lazy so a transient PATH gap at import time (e.g. the 04:00 auto-update
 // restart, where the finalizer omits the bin dir from PATH) cannot hard-crash
@@ -3978,8 +3978,9 @@ async function clearStaleParkedInputInLane(
       notifyChannel(
         `🚨 A fo agens (${session}) input-mezojeben ~${Math.round((fails * UNWEDGE_COOLDOWN_MS) / 60000)} perce all egy parkolt sor, ` +
         `es emiatt a csatorna nem dolgoz fel bejovo uzenetet. KEZI FELOLDAS (par masodperc): ` +
-        `tmux attach -t ${session}, majd Ctrl-C es utana Ctrl-U (a sor torlese), vegul kilepes: Ctrl-B d. ` +
-        `A parkolt sor eleje: "${preview}"`,
+        `tmux attach -t ${session}, majd Ctrl-C es utana Ctrl-U (a sor torlese), vegul kilepes: Ctrl-B d.` +
+        // No conversation content in an alert that goes to a non-owner chat.
+        (alertIsRedirected() ? '' : ` A parkolt sor eleje: "${preview}"`),
       ).catch(() => { /* notify is best-effort */ })
       escalated = true
       logger.warn({ session, parked: parked.slice(0, 60), fails }, 'message-router: main-agent parked input -- owner notified with manual fix (box untouched)')
@@ -4052,7 +4053,8 @@ async function clearStaleParkedInputInLane(
       const preview = parked.slice(0, 80).replace(/[<>&]/g, ' ')
       notifyChannel(
         `⚠️ Egy sub-agent (${session}) input-mezojebe beragadt egy parkolt sor, ` +
-        `az auto-tisztitas ${fails}x sikertelen -- lehet kezi beavatkozas kell. Reszlet: "${preview}"`,
+        `az auto-tisztitas ${fails}x sikertelen -- lehet kezi beavatkozas kell.` +
+        (alertIsRedirected() ? '' : ` Reszlet: "${preview}"`),
       ).catch(() => { /* notify is best-effort */ })
       escalated = true
       logger.warn({ session, parked: parked.slice(0, 60), fails }, 'message-router: sub-agent parked input resisted clearing -- escalated to operator')

@@ -1,10 +1,27 @@
-import { CHANNEL_PROVIDER, CHANNEL_TOKEN, CHANNEL_CHAT_ID } from './config.js'
-import { resolveAlertOwnerChat } from './owner-chat.js'
+import { CHANNEL_PROVIDER, CHANNEL_TOKEN, CHANNEL_CHAT_ID, ALERT_CHAT_ID } from './config.js'
+import { normalizeChatId, resolveAlertOwnerChat } from './owner-chat.js'
 import { getProvider } from './channel-provider.js'
 import { logger } from './logger.js'
 import { markIfTestRun } from './test-run-marker.js'
 
+// True when operational alerts go to a chat other than the owner's. Callers
+// must then leave owner/partner conversation content (e.g. a preview of a
+// parked input line) out of the alert text.
+export function alertIsRedirected(): boolean {
+  return normalizeChatId(ALERT_CHAT_ID) !== null
+}
+
+// Operational alert (watchdogs, restarts, stuck sessions). Goes to
+// ALERT_CHAT_ID when it is set, otherwise to the owner chat.
 export async function notifyChannel(text: string): Promise<void> {
+  const alertChat = normalizeChatId(ALERT_CHAT_ID)
+  if (alertChat) return sendToChat(alertChat, text)
+  return notifyOwner(text)
+}
+
+// Owner-facing content (heartbeat digest, security events): always the owner
+// chat, never rerouted by ALERT_CHAT_ID.
+export async function notifyOwner(text: string): Promise<void> {
   // CHATID0 -- resolveAlertOwnerChat, not a truthiness test on the raw .env
   // value. The installer writes ALLOWED_CHAT_ID=0 as its placeholder, and "0"
   // is neither empty nor falsy, so a plain truthiness/normalizeChatId-only
@@ -19,10 +36,17 @@ export async function notifyChannel(text: string): Promise<void> {
   // and with several entries the alert is not sent (a guess would reach a
   // stranger). The reason is logged, so a skipped alert is visible.
   const owner = resolveAlertOwnerChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER)
-  const chatId = owner.chatId
-  if (!CHANNEL_TOKEN || !chatId) {
+  if (!CHANNEL_TOKEN || !owner.chatId) {
     const reason = !CHANNEL_TOKEN ? 'nincs token' : `nincs tulajdonos-chat (${owner.reason})`
     logger.warn(`Channel ertesites kihagyva: ${reason}`)
+    return
+  }
+  return sendToChat(owner.chatId, text)
+}
+
+async function sendToChat(chatId: string, text: string): Promise<void> {
+  if (!CHANNEL_TOKEN) {
+    logger.warn('Channel ertesites kihagyva: nincs token')
     return
   }
 
@@ -55,7 +79,7 @@ export const notifyTelegram = notifyChannel
 export async function notifySecurityEvent(text: string): Promise<void> {
   if (!CHANNEL_TOKEN || !resolveAlertOwnerChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER).chatId) return
   try {
-    await notifyChannel(text)
+    await notifyOwner(text)
   } catch {
     /* never let a notification failure break the recovery action itself */
   }

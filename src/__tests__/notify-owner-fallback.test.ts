@@ -18,6 +18,7 @@ vi.mock('../config.js', () => ({
   get CHANNEL_TOKEN() { return cfg.token },
   get CHANNEL_CHAT_ID() { return cfg.chatId },
   get ALLOWED_CHAT_ID() { return cfg.chatId },
+  ALERT_CHAT_ID: '',
   MAIN_AGENT_ID: 'marveen',
   PROJECT_ROOT: '/tmp/notify-owner-fallback-test',
 }))
