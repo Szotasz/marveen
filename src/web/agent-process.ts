@@ -32,7 +32,7 @@ import {
 } from '../pane-state.js'
 import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
 import { beginRestart, endRestart } from './restart-lock.js'
-import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel, readAgentCustomProvider, readFileOr } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel, readAgentCustomProvider, readFileOr, readJsonObjectForWrite } from './agent-config.js'
 import { loadCustomProvider, type CustomProviderDef } from './custom-providers.js'
 import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict } from './agent-oauth-token-file.js'
 import { worksourceRootFor } from './worksource-queue.js'
@@ -1233,11 +1233,12 @@ export function stampCustomApiKeyApproval(dotClaudePath: string, apiKey: string)
   const suffix = apiKey.trim().slice(-20)
   if (!suffix) return false
   try {
-    let data: Record<string, unknown> = {}
-    if (existsSync(dotClaudePath)) {
-      try { data = JSON.parse(readFileSync(dotClaudePath, 'utf-8')) as Record<string, unknown> }
-      catch { /* unreadable / empty -- start fresh */ }
-    }
+    // JSONCLOBBER926B: a corrupt .claude.json is refused, not reset to a
+    // one-key object. It carries the agent's onboarding and project-trust
+    // flags and its local-scope MCP servers (credentials included), and the
+    // old "start fresh" silently destroyed all of them. The refusal lands in
+    // the catch below: no stamp, a warn naming the file, and the file intact.
+    const data = readJsonObjectForWrite(dotClaudePath)
     const existing = (data.customApiKeyResponses && typeof data.customApiKeyResponses === 'object' && !Array.isArray(data.customApiKeyResponses))
       ? data.customApiKeyResponses as Record<string, unknown>
       : {}
@@ -2096,10 +2097,12 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
         if (!existsSync(serverPath)) throw new Error(`worksource server not found at ${serverPath}`)
         const mcpJsonPath = join(agentDir(name), '.mcp.json')
         let mcpConfig: { mcpServers: Record<string, unknown> } = { mcpServers: {} }
-        try {
-          const existing = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as { mcpServers?: Record<string, unknown> }
-          if (existing && typeof existing === 'object' && existing.mcpServers) mcpConfig = { mcpServers: existing.mcpServers }
-        } catch { /* absent or unreadable -> start from empty, do not fail the launch */ }
+        // JSONCLOBBER926B: absent -> start from empty; an existing but corrupt
+        // .mcp.json is refused (it may hold the agent's other MCP servers), and
+        // the refusal lands in this block's catch: the agent starts without the
+        // worksource channel, as for any other wiring failure, and the file stays.
+        const existing = readJsonObjectForWrite(mcpJsonPath)
+        if (isPlainObject(existing.mcpServers)) mcpConfig = { mcpServers: existing.mcpServers }
         mcpConfig.mcpServers.worksource = {
           command: process.execPath,
           args: [serverPath],
