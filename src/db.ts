@@ -2391,6 +2391,20 @@ export function parentWouldCycle(cardId: string, parentId: string): boolean {
   return false
 }
 
+// The fields createKanbanCard actually reads off its argument. Deliberately a
+// SUBSET of KANBAN_WRITABLE_FIELDS (the PUT/update set), not the same list:
+// creation computes its own `sort_order` (see below) and never accepts
+// `archived_at` (a new card is never pre-archived), so a caller that POSTs
+// either is silently ignored no matter what the row ends up looking like.
+// Exported so the HTTP boundary (POST /api/kanban) can build its "known
+// field" warn-set from what this function actually writes instead of
+// borrowing PUT's set and silently under-warning on these two (Szotasz's
+// review on #1501: `POST {title, archived_at: 12345, sort_order: 99}`
+// returned 200, stored `archived_at=null` and `sort_order=0`, logged nothing).
+export const KANBAN_CREATE_FIELDS = [
+  'title', 'description', 'status', 'assignee', 'priority', 'project', 'parent_id', 'due_date',
+] as const
+
 export function createKanbanCard(card: {
   id: string
   title: string
