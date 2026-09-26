@@ -55,7 +55,11 @@ export function loadVendorHosts(path = VENDOR_HOSTS_PATH) {
   try { return parseVendorHosts(JSON.parse(readFileSync(path, 'utf-8'))) } catch { return new Set() }
 }
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
-const URL_RE = /\b(?:https?|ftp):\/\/[^\s'"`<>\\)]+/gi
+// One-liner URL schemes: every network scheme libcurl speaks (minus file:, and ipfs:/ipns:, which
+// resolve through a gateway, not the literal host). A one-liner reaches all of them through a curl
+// binding (PHP curl_exec, pycurl) or a stream wrapper (PHP ftps://, Perl LWP gopher://), so an
+// http/ftp-only list let `php -r '...curl_init("sftp://host/")...curl_exec(...)'` out untouched.
+const URL_RE = /\b(?:https?|ftps?|sftp|scp|tftp|smbs?|dict|gophers?|imaps?|pop3s?|smtps?|ldaps?|telnet|mqtt|rtsp):\/\/[^\s'"`<>\\)]+/gi
 const INTERPRETER = /^(?:python(?:\d+(?:\.\d+)?)?|node(?:js)?|perl|ruby|php|deno|bun)$/
 const CODE_FLAG = new Set(['-c', '-e', '-E', '-r', '--eval', '-p', '--print', 'eval'])
 // Words that can stand before the real command word of a sub-command. The shell keywords are here

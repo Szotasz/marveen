@@ -122,6 +122,40 @@ describe('(a) the named shapes', () => {
   })
 })
 
+// A one-liner's URL is found by scheme (URL_RE), so the scheme list decides what a network
+// primitive can reach unseen. It used to be http/https/ftp only; every other libcurl scheme
+// passed, e.g. PHP curl_exec to sftp:// or smtp://, or a PHP ftps:// stream (Refs #1611).
+describe('one-liner URLs in every libcurl network scheme', () => {
+  const SCHEMES = ['ftps', 'sftp', 'scp', 'tftp', 'smb', 'smbs', 'dict', 'gopher', 'gophers',
+    'imap', 'imaps', 'pop3', 'pop3s', 'smtp', 'smtps', 'ldap', 'ldaps', 'telnet', 'mqtt', 'rtsp']
+  const curlExec = (url: string) => `php -r '$c=curl_init("${url}"); curl_exec($c);'`
+  it('denies an external host in each scheme when a network primitive is used', () => {
+    for (const s of SCHEMES) {
+      const cmd = curlExec(`${s}://example.org/x`)
+      expect({ cmd, r: classify(cmd) }).toEqual({ cmd, r: { deny: true, reason: 'one-liner-external', hosts: ['example.org'] } })
+    }
+  })
+  it('denies the stream-wrapper and LWP shapes and the variable-assigned URL', () => {
+    for (const cmd of [
+      `php -r 'file_get_contents("ftps://example.org/x");'`,
+      `perl -MLWP::Simple -e 'get("gopher://example.org/x")'`,
+      `U=sftp://example.org/x; php -r "\\$c=curl_init('$U'); curl_exec(\\$c);"`,
+    ]) expect({ cmd, deny: deny(cmd) }).toEqual({ cmd, deny: true })
+  })
+  it('still lets the same schemes reach loopback', () => {
+    for (const s of SCHEMES) {
+      const cmd = curlExec(`${s}://localhost/x`)
+      expect({ cmd, deny: deny(cmd) }).toEqual({ cmd, deny: false })
+    }
+  })
+  it('does not deny a one-liner that only carries such a URL as data', () => {
+    for (const cmd of [
+      `python3 -c 'print("sftp://example.org/x")'`,
+      `node -e 'console.log("smtp://example.org")'`,
+    ]) expect({ cmd, deny: deny(cmd) }).toEqual({ cmd, deny: false })
+  })
+})
+
 // curl's destination is its argv, not only a scheme-bearing URL (#1514 review,
 // finding A). A positional argument is always a URL to curl; flag VALUES are not.
 describe('curl destinations read from the argv', () => {
