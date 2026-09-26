@@ -449,8 +449,8 @@ npm_ci_failed() {
     npm run build --silent 2>/dev/null || true
     [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
   fi
-  local cause="az npm ci elbukott (kilépési kód: ${rc})"
-  [ "$rc" -eq 137 ] && cause="az npm ci-t a rendszer leállította (137, valószínűleg memóriahiány)"
+  local cause="a függőségek telepítése elbukott (kilépési kód: ${rc})"
+  [ "$rc" -eq 137 ] && cause="a függőségek telepítését a rendszer leállította (137, valószínűleg memóriahiány)"
   if [ "$deps_ok" = "1" ]; then
     RESULT_STATUS="rolled-back"
     RESULT_MSG="A frissítés közben ${cause}; a rendszer visszaállt a korábbi működő verzióra (${OLD_VERSION}). A frissítés nem ment ki."
