@@ -41,9 +41,12 @@ import { execFileSync } from 'node:child_process'
 import { logger } from '../logger.js'
 import { tmuxStderr } from './tmux-stderr.js'
 import { resolveFromPath } from '../platform.js'
-import { PROJECT_ROOT } from '../config.js'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { PROJECT_ROOT, STORE_DIR } from '../config.js'
 import { capturePane } from './agent-process.js'
-import { readTranscriptMtimeFromProjectDir } from './active-model.js'
+import { readTranscriptMtimeAcrossConfigDirs } from './active-model.js'
+import { mainConfigRoots } from './inbound-probe.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { resumeMarveenSession, sendAlert, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS } from './channel-monitor.js'
 import { sendRoutineAlert } from './routine-alert.js'
@@ -100,6 +103,73 @@ export function confirmsWedgeProfile(cpuPercent: number | null, maxCpuPercent: n
 // time, because an abort keeps the spell and the next poll re-fires the
 // verdict once the masking writer pauses.
 export const STALE_VERDICT_FRESH_MS = 30_000
+
+// STUCKALLCLEAR923 (owner request, 2026-09-23). The failed-recovery branch
+// below sends "kezi beavatkozas kellhet" and then NOTHING, ever -- there is no
+// path in this file, or any other, that tells the owner the session came back.
+// Measured that day: the alert went out at 17:28:07, the session was usable
+// again at 17:28:23 (the service manager relaunched channels.sh, 16 seconds
+// later), and no message ever said so. The owner's answer was to stop reading
+// the alerts, which is the correct response to an alert that never resolves
+// and exactly what CLAUDE.md's message rules warn about: an unclosed warning
+// is not information, it is background noise that teaches the reader to skip
+// the next one. So the alert now gets a closing line.
+//
+// Two sweeps, not one: the pane can read 'idle' in the gap between a failed
+// respawn and the relaunch, and a single sample there would announce a
+// recovery that did not happen yet. Two consecutive sweeps mean the session
+// held for a full INTERVAL_MS.
+export const ALL_CLEAR_HEALTHY_SWEEPS = 2
+
+// Pure: is the session usable again, in the sense the failure alert used
+// ("tmux attach ... kezi beavatkozas")? A live idle prompt is exactly that.
+// NOTE the deliberate asymmetry: everywhere else in this file a null pane
+// fails OPEN (a capture failure must not block a recovery). Here it must fail
+// CLOSED -- capture-pane returns null when the session does not exist, and
+// claiming an all-clear off a missing session would be the one lie this whole
+// change exists to prevent.
+export function paneLooksRecovered(pane: string | null): boolean {
+  return pane != null && detectPaneState(pane) === 'idle'
+}
+
+// Pure: close out the pending alert?
+export function shouldSendAllClear(
+  pendingSince: number | null,
+  healthyStreak: number,
+  needed = ALL_CLEAR_HEALTHY_SWEEPS,
+): boolean {
+  return pendingSince !== null && healthyStreak >= needed
+}
+
+// The pending-alert stamp is PERSISTED, not just held in memory, and that is
+// the point rather than an optimisation: the alert is sent by the dashboard
+// process, and if that process restarts between the alert and the recovery
+// (auto-update, crash, manual restart) an in-memory flag would drop the
+// follow-up silently -- the same hole one level up.
+const ALERT_STATE_PATH = join(STORE_DIR, 'stuck-alert-state.json')
+
+export function readPendingFailureAlert(): number | null {
+  try {
+    const raw = JSON.parse(readFileSync(ALERT_STATE_PATH, 'utf-8')) as { pendingSince?: unknown }
+    const v = raw?.pendingSince
+    return typeof v === 'number' && Number.isFinite(v) ? v : null
+  } catch {
+    return null
+  }
+}
+
+function writePendingFailureAlert(pendingSince: number | null): void {
+  try {
+    writeFileSync(ALERT_STATE_PATH, JSON.stringify({ pendingSince }), 'utf-8')
+  } catch (err) {
+    logger.warn({ err }, 'stuck-tool-call-watcher: could not persist the pending-alert stamp')
+  }
+}
+
+// Consecutive healthy sweeps seen while an alert is outstanding. In memory on
+// purpose: losing it on a dashboard restart only delays the all-clear by one
+// sweep, while losing the PERSISTED stamp above would lose it entirely.
+let healthyStreak = 0
 
 // Pure: is the recovery verdict stale because the session's transcript shows
 // recent activity? null mtime (dir unreadable) -> false: fail-open, the
@@ -190,6 +260,27 @@ export function shouldDeferForRecentRespawn(
 async function checkSession(label: string, session: string): Promise<void> {
   const pane = capturePane(session)
   const sig = pane == null ? null : stuckToolCallSignature(pane)
+
+  // STUCKALLCLEAR923: close out a failed-recovery alert once the session is
+  // provably usable again. This runs BEFORE the wedge logic and independently
+  // of it, because the recovery that saves us is usually NOT this watcher's:
+  // on 2026-09-23 our respawn-pane failed outright ("can't find pane") and the
+  // service manager brought the session back 16 seconds later. An all-clear
+  // keyed to our OWN success would never have fired in the one case it was
+  // asked for.
+  const pendingAlert = readPendingFailureAlert()
+  if (pendingAlert !== null) {
+    healthyStreak = paneLooksRecovered(pane) ? healthyStreak + 1 : 0
+    if (shouldSendAllClear(pendingAlert, healthyStreak)) {
+      const downMin = Math.max(1, Math.round((Date.now() - pendingAlert) / 60000))
+      writePendingFailureAlert(null)
+      healthyStreak = 0
+      logger.info({ label, session, downMin }, 'stuck-tool-call-watcher: failed-recovery alert closed out -- session healthy again')
+      sendAlert(`✅ A fő session magától helyreállt, nincs teendőd. A ${downMin} perce küldött "kézi beavatkozás kellhet" riasztás ezzel le van zárva.`)
+    }
+  } else if (healthyStreak !== 0) {
+    healthyStreak = 0
+  }
 
   const prev = watchState.get(session) ?? NO_STATE
   const { recover, next } = decideStuckToolCallRecovery(sig, prev, Date.now(), THRESHOLDS)
@@ -297,7 +388,18 @@ async function checkSession(label: string, session: string): Promise<void> {
     // false kills happened exactly in that gap (the session woke up between
     // verdict and kill). Abort keeps the spell: a real wedge re-fires on the
     // next poll, so this gate can only delay a true recovery by one sweep.
-    const transcriptMtime = readTranscriptMtimeFromProjectDir(PROJECT_ROOT)
+    // STUCKROOT923 (measured 2026-09-23, this guard's FOURTH sibling after
+    // SCHEDLOST914 / TOKENVAK915 / GATEVAK917): reading ONE config root made
+    // this gate dead code on an isolated install. The main session runs under
+    // CLAUDE_CONFIG_DIR=<PROJECT_ROOT>/.channels-config, so its transcript is
+    // NOT under ~/.claude -- but the old directory still exists and still
+    // parses, so the bad read returned a STALE NUMBER (newest jsonl frozen at
+    // 2026-09-13 07:27), never a null. A stale number never looks fresh, so
+    // verdictStaleByTranscript could not fire even once in ten days, and on
+    // 2026-09-23 17:28 this watcher killed a session whose transcript was being
+    // written in that same second. Take the candidate list from the shared
+    // mainConfigRoots() and let newest-wins decide; never write a second list.
+    const transcriptMtime = readTranscriptMtimeAcrossConfigDirs(PROJECT_ROOT, mainConfigRoots())
     if (verdictStaleByTranscript(transcriptMtime, Date.now())) {
       logger.warn(
         { label, session, transcriptAgeMs: transcriptMtime ? Date.now() - transcriptMtime : null, freshMs: STALE_VERDICT_FRESH_MS, seconds: next.lastSeconds },
@@ -351,6 +453,11 @@ async function checkSession(label: string, session: string): Promise<void> {
         `🔧 A fő session beragadt: a kijelző számlálója ${Math.round(next.lastSeconds ?? 0)}s-nál megállt, és több mint ${THRESHOLDS.freezeSeconds}s-ig nem mozdult. Automatikusan újraindítottam a beszélgetés megtartásával. Ha volt megválaszolatlan üzeneted, mindjárt válaszolok rá.`,
       )
     } else {
+      // STUCKALLCLEAR923: remember the unresolved alert so the sweep above can
+      // close it out. Only the FIRST failure in an outage is stamped: a second
+      // one must not push the timestamp forward, or the all-clear would report
+      // a shorter outage than the owner actually lived through.
+      if (readPendingFailureAlert() === null) writePendingFailureAlert(Date.now())
       sendAlert(`🚨 A fő session beragadt, és az automatikus újraindítás NEM sikerült. Kézi beavatkozás kellhet: tmux attach -t ${session}, vagy scripts/stop.sh && scripts/start.sh a marveen mappából.`)
     }
   }

@@ -577,3 +577,112 @@ describe('wiring: the stale-verdict gate sits at the KILL boundary, not in verdi
     expect(SRC).toContain('ABORTING recovery (STUCKFREEZE819)')
   })
 })
+
+import {
+  paneLooksRecovered,
+  shouldSendAllClear,
+  ALL_CLEAR_HEALTHY_SWEEPS,
+} from '../web/stuck-tool-call-watcher.js'
+
+// STUCKALLCLEAR923. The failed-recovery alert ("kezi beavatkozas kellhet") had
+// no closing message: it went out and nothing ever said the session came back.
+// Measured 2026-09-23: alert 17:28:07, session usable again 17:28:23, silence
+// afterwards. The owner's response was to stop reading the alerts, which is
+// the correct response to a warning that never resolves.
+describe('all-clear after a failed-recovery alert (STUCKALLCLEAR923)', () => {
+  const SEP = '─'.repeat(80)
+
+  // Shaped on a real capture-pane of a live fleet agent, 2026-09-23 17:58.
+  const idlePane = [
+    '',
+    `${SEP.slice(0, 73)} Igor ${SEP.slice(0, 1)}`,
+    '❯ ',
+    SEP,
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+  ].join('\n')
+
+  const busyPane = [
+    '',
+    '✻ Worked for 31s',
+    '',
+    SEP,
+    '  ⏵⏵ bypass permissions on · esc to interrupt',
+  ].join('\n')
+
+  it('a live idle prompt counts as recovered -- that is exactly what the alert asked the owner to check', () => {
+    expect(detectPaneState(idlePane), 'fixture must read idle or the test proves nothing').toBe('idle')
+    expect(paneLooksRecovered(idlePane)).toBe(true)
+  })
+
+  it('FAILS CLOSED on a null pane, against the fail-open rule used everywhere else in this file', () => {
+    // capturePane returns null when the session does not exist. Every other
+    // guard here fails OPEN so a capture failure cannot block a recovery.
+    // This one must invert: announcing "helyreallt" off a MISSING session is
+    // the single lie this change exists to prevent.
+    expect(paneLooksRecovered(null)).toBe(false)
+  })
+
+  it('a busy pane is not a recovery', () => {
+    expect(paneLooksRecovered(busyPane)).toBe(false)
+  })
+
+  it('needs two consecutive healthy sweeps, so the gap between a failed respawn and the relaunch cannot fake one', () => {
+    expect(ALL_CLEAR_HEALTHY_SWEEPS).toBeGreaterThanOrEqual(2)
+    expect(shouldSendAllClear(1_000, 1)).toBe(false)
+    expect(shouldSendAllClear(1_000, ALL_CLEAR_HEALTHY_SWEEPS)).toBe(true)
+  })
+
+  it('sends nothing when no alert is outstanding, however healthy the session looks', () => {
+    // The noisy failure mode in the other direction: an all-clear for an alert
+    // that was never sent is a message the owner cannot place.
+    expect(shouldSendAllClear(null, 99)).toBe(false)
+  })
+})
+
+describe('wiring: the all-clear is stamped at the failure and cleared at the recovery (STUCKALLCLEAR923)', () => {
+  const SRC = rfs(pjoin(__dirname, '..', 'web', 'stuck-tool-call-watcher.ts'), 'utf-8')
+  const start = SRC.indexOf('async function checkSession')
+  const body = SRC.slice(start, SRC.indexOf('\n}', start))
+  const code = body.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+
+  it('the failed-recovery branch stamps the pending alert, right where the 🚨 goes out', () => {
+    const stampIdx = code.indexOf('writePendingFailureAlert(Date.now())')
+    const alertIdx = code.indexOf('A fő session beragadt, és az automatikus újraindítás NEM sikerült')
+    expect(stampIdx, 'no stamp at the failure branch: the all-clear could never fire').toBeGreaterThanOrEqual(0)
+    expect(alertIdx).toBeGreaterThan(stampIdx)
+  })
+
+  it('a second failure in the same outage must not push the stamp forward', () => {
+    // Otherwise the all-clear reports a shorter outage than the owner lived
+    // through, which is worse than no number at all.
+    expect(code).toContain('if (readPendingFailureAlert() === null) writePendingFailureAlert(Date.now())')
+  })
+
+  it('the recovery sweep runs BEFORE the wedge decision, not inside it', () => {
+    // The recovery that saves us is usually not this watcher's own: on
+    // 2026-09-23 respawn-pane failed outright and the service manager brought
+    // the session back 16 seconds later. An all-clear keyed to our own success
+    // would never have fired in the one case it was asked for.
+    const sweepIdx = code.indexOf('readPendingFailureAlert()')
+    const decideIdx = code.indexOf('decideStuckToolCallRecovery(')
+    expect(sweepIdx).toBeGreaterThanOrEqual(0)
+    expect(decideIdx).toBeGreaterThan(sweepIdx)
+  })
+
+  it('clears the stamp before sending, so a repeat all-clear cannot loop every sweep', () => {
+    const clearIdx = code.indexOf('writePendingFailureAlert(null)')
+    const sendIdx = code.indexOf('A fő session magától helyreállt')
+    expect(clearIdx).toBeGreaterThanOrEqual(0)
+    expect(sendIdx).toBeGreaterThan(clearIdx)
+  })
+
+  it('the all-clear says there is nothing to do, and names the alert it closes', () => {
+    expect(SRC).toContain('nincs teendőd')
+    expect(SRC).toMatch(/kézi beavatkozás kellhet.*riasztás ezzel le van zárva/)
+  })
+
+  it('the pending stamp is persisted, not in-memory: a dashboard restart must not swallow the follow-up', () => {
+    expect(SRC).toMatch(/stuck-alert-state\.json/)
+    expect(SRC).toMatch(/writeFileSync\(ALERT_STATE_PATH/)
+  })
+})
