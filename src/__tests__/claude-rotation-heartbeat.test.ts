@@ -33,6 +33,8 @@ vi.mock('../settings-store.js', () => ({
 
 let plans: ClaudePlan[] = []
 vi.mock('../web/claude-plans.js', () => ({ readClaudePlans: () => plans }))
+let activePlanByAgent: Record<string, string> = {}
+vi.mock('../web/claude-plans-state.js', () => ({ readClaudePlansState: () => ({ activePlanByAgent, plans: {} }) }))
 vi.mock('../db.js', () => ({ logConfigChange: () => {} }))
 vi.mock('../store-watcher.js', () => ({ setStoreWriteActor: () => {} }))
 
@@ -69,6 +71,7 @@ beforeEach(() => {
   rmSync(io.SCHEDULED_TASKS_DIR, { recursive: true, force: true })
   settings.clear()
   plans = []
+  activePlanByAgent = {}
 })
 
 afterAll(() => {
@@ -166,6 +169,7 @@ describe('rotationReadiness', () => {
     settings.set('CLAUDE_ROTATION_ENABLED', '1')
     settings.set('MAIN_AGENT_ISOLATED_CONFIG', '1')
     plans = [plan('a'), plan('b')]
+    activePlanByAgent = { 'host-main': 'a' }
     ensureRotationHeartbeatTask()
   }
 
@@ -200,6 +204,20 @@ describe('rotationReadiness', () => {
     readyBaseline()
     plans = [plan('a'), plan('b', false), plan('c', false)]
     expect(rotationReadiness().blockers).toEqual(['too_few_channel_plans'])
+  })
+
+  it('no recorded active plan for the main agent (the first-assignment gap)', () => {
+    readyBaseline()
+    activePlanByAgent = { 'some-sub-agent': 'a' }
+    const r = rotationReadiness()
+    expect(r.blockers).toEqual(['no_active_plan'])
+    expect(r.details[0].message).toContain('Váltás erre a planre')
+  })
+
+  it('an active plan id that is no longer registered counts as none', () => {
+    readyBaseline()
+    activePlanByAgent = { 'host-main': 'deleted-plan' }
+    expect(rotationReadiness().blockers).toEqual(['no_active_plan'])
   })
 
   it('heartbeat task missing', () => {

@@ -63,3 +63,47 @@ describe('readiness i18n coverage', () => {
     expect(src).toContain(`'settings.claude_plans.readiness.title':`)
   })
 })
+
+describe('switchToClaudePlan (manual switch / first assignment)', () => {
+  function load(confirmAnswer: boolean) {
+    const calls: Array<{ url: string; init: any }> = []
+    const toasts: string[] = []
+    let reloaded = 0
+    const fetchStub = async (url: string, init: any) => {
+      calls.push({ url, init })
+      return { ok: true, json: async () => ({ ok: true }) }
+    }
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const fn = new Function(
+      't', 'confirm', 'fetch', 'showToast', 'loadClaudePlansList',
+      `${extractFn('switchToClaudePlan')}; return switchToClaudePlan`,
+    )(
+      (k: string) => k,
+      () => confirmAnswer,
+      fetchStub,
+      (m: string) => { toasts.push(m) },
+      async () => { reloaded++ },
+    ) as (plan: { id: string; label: string }) => Promise<void>
+    return { fn, calls, toasts, reloaded: () => reloaded }
+  }
+
+  it('confirmed: POSTs the plan id as targetPlanId to the rotate route', async () => {
+    const h = load(true)
+    await h.fn({ id: 'claude7', label: 'Claude 7' })
+    expect(h.calls).toHaveLength(1)
+    expect(h.calls[0].url).toBe('/api/claude-plans/rotate')
+    expect(h.calls[0].init.method).toBe('POST')
+    expect(JSON.parse(h.calls[0].init.body)).toEqual({ targetPlanId: 'claude7' })
+    expect(h.reloaded()).toBe(1)
+  })
+
+  it('declined confirm: no request at all (it restarts the main agent)', async () => {
+    const h = load(false)
+    await h.fn({ id: 'claude7', label: 'Claude 7' })
+    expect(h.calls).toHaveLength(0)
+  })
+
+  it('the row renders the button only for a non-active, channels-allowed plan', () => {
+    expect(APP).toMatch(/if \(plan\.channelsAllowed && !isActive\) \{[\s\S]{0,400}switchToClaudePlan\(plan\)/)
+  })
+})

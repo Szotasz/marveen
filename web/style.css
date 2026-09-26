@@ -6462,6 +6462,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   padding: 2px 6px;
 }
 .claude-plan-edit:hover { color: var(--text); }
+.claude-plan-switch-btn { margin-right: 4px; white-space: nowrap; }
 
 /* === connectors.hu cross-promo banner === */
 .cxhu-banner {

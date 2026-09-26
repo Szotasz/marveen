@@ -14500,10 +14500,10 @@ function activateSettingsTab(mod) {
 // active-plan / last-known-usage badges. The "active" dot reflects the MAIN
 // agent's entry in activePlanByAgent (PR2c, design decision #1: the state is
 // per-agent, but this tab only shows the one that also drives the dashboard
-// header). There is still no manual rotate button here: this tab lets the
-// operator view and hand-edit the registry, the same way it already lets
-// them for store/claude-plans.json by hand; actual rotation is triggered by
-// the heartbeat script or POST /api/claude-plans/rotate directly.
+// header). Each non-active, channels-allowed plan has a "switch to this
+// plan" button (switchToClaudePlan -> POST /api/claude-plans/rotate): the
+// manual path, and the first assignment the rotation heartbeat needs before
+// it can decide anything. Automatic rotation is the heartbeat's job.
 async function renderClaudePlansPanel(body) {
   body.innerHTML = `
     <p style="color:var(--text-muted);font-size:13px;margin:0 0 16px">${t('settings.claude_plans.intro')}</p>
@@ -14716,6 +14716,29 @@ async function saveClaudePlan() {
     errEl.textContent = t('settings.claude_plans.form.error_generic')
     errEl.hidden = false
   }
+}
+
+// POST /api/claude-plans/rotate for the main agent (agentId defaults to it
+// server-side). Restarts the main agent's session, hence the confirm.
+async function switchToClaudePlan(plan) {
+  if (!confirm(t('settings.claude_plans.confirm_switch', { label: plan.label }))) return
+  try {
+    const res = await fetch('/api/claude-plans/rotate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetPlanId: plan.id }),
+    })
+    let data = null
+    try { data = await res.json() } catch { /* non-JSON error body */ }
+    if (!res.ok) {
+      showToast((data && data.error) || t('settings.claude_plans.switch_error'), 'error')
+    } else {
+      showToast(t('settings.claude_plans.switch_done', { label: plan.label }))
+    }
+  } catch {
+    showToast(t('settings.claude_plans.switch_error'), 'error')
+  }
+  await loadClaudePlansList()
 }
 
 async function deleteClaudePlan(id) {
@@ -14935,6 +14958,18 @@ async function loadClaudePlansList() {
       editBtn.textContent = '✎'
       editBtn.addEventListener('click', () => editClaudePlan(plan))
       actions.appendChild(editBtn)
+
+      // Manual switch (also the first assignment the rotation heartbeat
+      // needs before it can decide anything, see readiness no_active_plan).
+      // Only for a plan that may run the channel and is not already active.
+      if (plan.channelsAllowed && !isActive) {
+        const switchBtn = document.createElement('button')
+        switchBtn.className = 'btn-secondary btn-compact claude-plan-switch-btn'
+        switchBtn.textContent = t('settings.claude_plans.switch_btn')
+        switchBtn.title = t('settings.claude_plans.switch_btn')
+        switchBtn.addEventListener('click', () => switchToClaudePlan(plan))
+        actions.appendChild(switchBtn)
+      }
 
       const delBtn = document.createElement('button')
       delBtn.className = 'claude-plan-delete'
