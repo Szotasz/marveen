@@ -19,6 +19,45 @@
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
+# WHO THE GUARD ALERTS IN THIS SCRIPT ARE SENT AS.
+#
+# The two alerts below report that the main agent came up on the SHARED
+# ~/.claude, which can 401 into a silent channel -- so an alert that cannot be
+# delivered defeats its own purpose. Measured 2026-09-26 against the live
+# dashboard: `from=channels-sh-guard` is answered HTTP 403 "unknown agent",
+# while the install's MAIN_AGENT_ID is accepted. The sender check
+# (src/web/routes/messages.ts) takes the owner, an id listed in
+# SYSTEM_SENDER_IDS, the voice channel, or a directory under agents/ --
+# SYSTEM_SENDER_IDS is EMPTY by default (src/config.ts) and no
+# agents/channels-sh-guard/ directory exists. Same defect and same fix as the
+# prod-tree-guard hook (card ecb62920 closed the identical shape for
+# `from=marveen`).
+#
+# SCOPE, SAID OUT LOUD: no alert has been lost to this on this install.
+# store/channels-failures.log has zero "starting on SHARED" lines, so the
+# trigger has never fired here. This is prevention, not a post-mortem.
+_guard_sender() {
+  # The SAME normalisation the server applies, so this can never pick a
+  # spelling the API then refuses: parseSystemSenderIds (src/config.ts) splits
+  # on commas and trims, sanitizeAgentIdent (src/prompt-safety.ts) drops every
+  # character outside [A-Za-z0-9_-]. Case is significant there, so it is here.
+  local want="channels-sh-guard" entry saved_ifs
+  saved_ifs="$IFS"
+  IFS=','
+  for entry in ${SYSTEM_SENDER_IDS:-}; do
+    entry="$(printf '%s' "$entry" | tr -dc 'A-Za-z0-9_-')"
+    if [ "$entry" = "$want" ]; then
+      IFS="$saved_ifs"
+      printf '%s' "$want"
+      return 0
+    fi
+  done
+  IFS="$saved_ifs"
+  # Not registered here: the id the API does accept. This mirrors the recipient
+  # on the same two calls, which already resolves this way.
+  printf '%s' "${MAIN_AGENT_ID:-marveen}"
+}
+
 # Read MAIN_AGENT_ID and CHANNEL_PROVIDER from .env WITHOUT exporting
 # every variable into the shell environment. `set -a && source .env`
 # would also export TELEGRAM_BOT_TOKEN, which then leaks into the tmux
@@ -27,6 +66,11 @@ INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # token and fight over the same getUpdates slot, 409 Conflict in a loop.
 if [ -f "$INSTALL_DIR/.env" ]; then
   MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
+  # Read for _guard_sender() below: it decides whether this script's guard
+  # alerts may be sent under the guard's own name or must use the main agent's
+  # id. Same read shape as the keys around it, and NOT exported, for the reason
+  # the comment above gives.
+  SYSTEM_SENDER_IDS="$(grep -E '^SYSTEM_SENDER_IDS=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
   CHANNEL_PROVIDER="$(grep -E '^CHANNEL_PROVIDER=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
   BOT_NAME="$(grep -E '^BOT_NAME=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
   # Optional extra channel plugins to co-listen alongside the PRIMARY provider
@@ -779,7 +823,7 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
       curl -s --max-time 5 -X POST "http://localhost:${_guard_port:-3420}/api/messages" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $(cat "$INSTALL_DIR/store/.dashboard-token")" \
-        -d "{\"from\":\"channels-sh-guard\",\"to\":\"${MAIN_AGENT_ID:-marveen}\",\"content\":\"[GUARD] A fo agens a KOZOS ~/.claude alol indult, pedig van flotta setup-token (store/.claude-oauth-token). A MAIN_AGENT_ISOLATED_CONFIG nincs beallitva, ezert az auth a rotalodo megosztott credentialbol megy: ez lejarhat, 401-be all a TUI, es a csatorna NEMAN elerhetetlen lesz. Teendo: MAIN_AGENT_ISOLATED_CONFIG=1 beallitasa, majd channels session restart.\"}" \
+        -d "{\"from\":\"$(_guard_sender)\",\"to\":\"${MAIN_AGENT_ID:-marveen}\",\"content\":\"[GUARD] A fo agens a KOZOS ~/.claude alol indult, pedig van flotta setup-token (store/.claude-oauth-token). A MAIN_AGENT_ISOLATED_CONFIG nincs beallitva, ezert az auth a rotalodo megosztott credentialbol megy: ez lejarhat, 401-be all a TUI, es a csatorna NEMAN elerhetetlen lesz. Teendo: MAIN_AGENT_ISOLATED_CONFIG=1 beallitasa, majd channels session restart.\"}" \
         -o /dev/null -w '%{http_code}' 2>>"$INSTALL_DIR/store/channels-failures.log" > "$INSTALL_DIR/store/.channels-guard-http.$$" || true
       # Honest delivery (NOTIFYVAKSWEEP826 zaro kor): a fenti WARN csak a helyi
       # logban el -- ha a koordinatornak szolo POST elbukik, az is a logba
@@ -805,7 +849,7 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
       curl -s --max-time 5 -X POST "http://localhost:${_guard_port:-3420}/api/messages" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $(cat "$INSTALL_DIR/store/.dashboard-token")" \
-        -d "{\"from\":\"channels-sh-guard\",\"to\":\"${MAIN_AGENT_ID:-marveen}\",\"content\":\"[GUARD] A channels session most a KOZOS ~/.claude alol indult, pedig letezik izolalt config dir (.channels-config). A MAIN_AGENT_ISOLATED_CONFIG beallitas valoszinuleg elveszett (store/config-overrides.json torlodott es nincs .env kulcs). Az auth a rotalodo shared sessionbol megy, 401-veszely. Teendo: MAIN_AGENT_ISOLATED_CONFIG=1 visszaallitasa, majd channels session restart.\"}" \
+        -d "{\"from\":\"$(_guard_sender)\",\"to\":\"${MAIN_AGENT_ID:-marveen}\",\"content\":\"[GUARD] A channels session most a KOZOS ~/.claude alol indult, pedig letezik izolalt config dir (.channels-config). A MAIN_AGENT_ISOLATED_CONFIG beallitas valoszinuleg elveszett (store/config-overrides.json torlodott es nincs .env kulcs). Az auth a rotalodo shared sessionbol megy, 401-veszely. Teendo: MAIN_AGENT_ISOLATED_CONFIG=1 visszaallitasa, majd channels session restart.\"}" \
         -o /dev/null -w '%{http_code}' 2>>"$INSTALL_DIR/store/channels-failures.log" > "$INSTALL_DIR/store/.channels-guard-http.$$" || true
       # Honest delivery (NOTIFYVAKSWEEP826 zaro kor): a fenti WARN csak a helyi
       # logban el -- ha a koordinatornak szolo POST elbukik, az is a logba
