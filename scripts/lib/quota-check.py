@@ -75,7 +75,37 @@ try:
 except Exception:
     raise SystemExit(0)
 
-age = int(time.time()) - int(d.get("written_at") or 0)
+
+
+def reading_age(d, now):
+    """Return (age_seconds, None), or (None, reason) when there is no usable stamp.
+
+    This used to be `now - int(d.get("written_at") or 0)`, so a missing, null or
+    zero stamp became an age counted from 1970 -- "STALE 1790511588", about 56
+    years, printed exactly like a genuinely old reading. The log could not tell
+    "the writer never stamped this file" from "this file is very old", and those
+    have different fixes. A non-numeric stamp or a non-object file raised a
+    traceback instead. All of them are now one distinct, named outcome.
+    """
+    if not isinstance(d, dict):
+        return None, "a fajl nem JSON objektum (%s)" % type(d).__name__
+    if "written_at" not in d or d["written_at"] is None:
+        return None, "nincs written_at"
+    ts = d["written_at"]
+    # bool is an int subclass: True would pass as the stamp 1.
+    if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+        return None, "written_at nem szam: %r" % (ts,)
+    if ts <= 0:
+        return None, "written_at nem pozitiv: %r" % (ts,)
+    return int(now) - int(ts), None
+
+
+age, no_stamp = reading_age(d, time.time())
+if no_stamp:
+    # Still a STALE line, so the measured path is skipped exactly as before, but
+    # the second field is a word, never a number: it cannot be read as an age.
+    print("STALE\tnostamp\t%s" % no_stamp)
+    raise SystemExit(0)
 if age > max_age:
     print("STALE\t%d" % age)
     raise SystemExit(0)

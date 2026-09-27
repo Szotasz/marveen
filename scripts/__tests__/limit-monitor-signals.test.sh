@@ -256,6 +256,36 @@ elif grep -q "quota file stale" "$C/store/limit-monitor.log" 2>/dev/null; then
 else
   fail "a stale reading was skipped without a trace"
 fi
+if grep -q "no usable written_at" "$C/store/limit-monitor.log" 2>/dev/null; then
+  fail "a genuinely old stamp was reported as unstamped"
+else
+  pass "a genuinely old stamp is still reported as an age"
+fi
+
+# A missing / null / zero / non-numeric stamp, or a file that is not an object,
+# used to become an age counted from 1970 ("stale (1790511588s)") or a
+# traceback -- indistinguishable in the log from a truly old reading, or silent
+# on stdout. Each must skip the measured path AND name the missing stamp.
+for nostamp in 'missing|{"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}' \
+               'null|{"written_at":null,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}' \
+               'zero|{"written_at":0,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}' \
+               'string|{"written_at":"abc","rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}' \
+               'bool|{"written_at":true,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}' \
+               'array|[%d]'; do
+  name="${nostamp%%|*}"; fmt="${nostamp#*|}"
+  C="$(new_case "quota_nostamp_$name")"
+  # shellcheck disable=SC2059
+  printf "$fmt\n" "$((now + 3600))" > "$C/store/.claude-rate-limits.json"
+  run_case "$C"
+  if alerted "$C"; then
+    fail "nostamp/$name: alerted on a reading with no usable written_at"
+  elif grep -q "quota file has no usable written_at" "$C/store/limit-monitor.log" 2>/dev/null \
+       && ! grep -q "quota file stale" "$C/store/limit-monitor.log" 2>/dev/null; then
+    pass "nostamp/$name: skipped, and logged as unstamped, not as an age"
+  else
+    fail "nostamp/$name: not logged as unstamped: $(grep -i quota "$C/store/limit-monitor.log" 2>/dev/null | tr '\n' ' ')"
+  fi
+done
 
 echo "(d) a FAILED delivery must not suppress the retry"
 # This is the case the whole honest-send contract exists for. The Bot API can
