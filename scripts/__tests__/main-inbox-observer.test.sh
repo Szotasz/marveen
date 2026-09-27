@@ -31,6 +31,11 @@ OBSERVER="${OBSERVER_BIN:-$INSTALL_DIR/scripts/main-inbox-observer.sh}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# Fixtures are seeded and inspected through python3's sqlite3 module, not the
+# sqlite3 CLI -- that binary is not an install dependency, and without it this
+# suite used to go red for a packaging decision (see lib/sqlite-oracle.sh).
+. "$INSTALL_DIR/scripts/__tests__/lib/sqlite-oracle.sh"
+
 if [ ! -f "$OBSERVER" ]; then
   echo "FAIL: observer not found at $OBSERVER"
   exit 1
@@ -52,13 +57,13 @@ SCHEMA="CREATE TABLE agent_messages (
 make_db() {
   local db="$TMP/$1.db"
   rm -f "$db"
-  sqlite3 "$db" "$SCHEMA"
+  oracle_exec "$db" "$SCHEMA"
   echo "$db"
 }
 
 # $1 = db, $2 = to_agent, $3 = status, $4 = age in seconds
 add_msg() {
-  sqlite3 "$1" "INSERT INTO agent_messages (from_agent,to_agent,content,status,created_at)
+  oracle_exec "$1" "INSERT INTO agent_messages (from_agent,to_agent,content,status,created_at)
                 VALUES ('sender-a','$2','proba','$3', CAST(strftime('%s','now') AS INTEGER) - $4);"
 }
 
@@ -179,7 +184,7 @@ echo "(e) Unreadable queue is unknown, not ok"
 expect_verdict "a missing database file is unknown" "$TMP/nincs-ilyen.db" unknown 2
 
 DB_NOTABLE="$TMP/notable.db"
-sqlite3 "$DB_NOTABLE" "CREATE TABLE valami (x INTEGER);"
+oracle_exec "$DB_NOTABLE" "CREATE TABLE valami (x INTEGER);"
 expect_verdict "a database without agent_messages is unknown" "$DB_NOTABLE" unknown 2
 
 DB_JUNK="$TMP/junk.db"
@@ -198,7 +203,7 @@ cp "$OBSERVER" "$FIX/scripts/main-inbox-observer.sh"
 printf 'MAIN_AGENT_ID=marveen\n' > "$FIX/.env"
 OBS="$FIX/scripts/main-inbox-observer.sh"
 FIXDB="$FIX/store/claudeclaw.db"
-sqlite3 "$FIXDB" "$SCHEMA"
+oracle_exec "$FIXDB" "$SCHEMA"
 
 MAIN_INBOX_OBSERVER_ALERT_DRYRUN=1 bash "$OBS" >"$TMP/run1.out" 2>&1
 if [ -f "$FIX/store/.main-inbox-observer" ]; then
@@ -213,7 +218,7 @@ else
 fi
 
 rm -f "$FIX/store/.main-inbox-observer"
-sqlite3 "$FIXDB" "INSERT INTO agent_messages (from_agent,to_agent,content,status,created_at)
+oracle_exec "$FIXDB" "INSERT INTO agent_messages (from_agent,to_agent,content,status,created_at)
   VALUES ('sender-a','marveen','proba','pending', CAST(strftime('%s','now') AS INTEGER) - 3600);"
 MAIN_INBOX_OBSERVER_ALERT_DRYRUN=1 bash "$OBS" >"$TMP/run2.out" 2>&1
 if grep -q 'ALERT_DRYRUN' "$TMP/run2.out"; then
@@ -236,9 +241,9 @@ fi
 
 # A drained queue clears the spell, so the NEXT stall alerts again instead of
 # sitting out the rest of the cooldown hour.
-sqlite3 "$FIXDB" "UPDATE agent_messages SET status='done';"
+oracle_exec "$FIXDB" "UPDATE agent_messages SET status='done';"
 MAIN_INBOX_OBSERVER_ALERT_DRYRUN=1 bash "$OBS" >/dev/null 2>&1
-sqlite3 "$FIXDB" "INSERT INTO agent_messages (from_agent,to_agent,content,status,created_at)
+oracle_exec "$FIXDB" "INSERT INTO agent_messages (from_agent,to_agent,content,status,created_at)
   VALUES ('sender-a','marveen','masodik','pending', CAST(strftime('%s','now') AS INTEGER) - 3600);"
 MAIN_INBOX_OBSERVER_ALERT_DRYRUN=1 bash "$OBS" >"$TMP/run4.out" 2>&1
 if grep -q 'ALERT_DRYRUN' "$TMP/run4.out"; then
@@ -349,13 +354,13 @@ echo "(h) A WAL database with no -shm (the stopped-dashboard shape)"
 
 WALDB="$TMP/wal.db"
 rm -f "$WALDB" "$WALDB-wal" "$WALDB-shm"
-sqlite3 "$WALDB" "PRAGMA journal_mode=wal;" >/dev/null
-sqlite3 "$WALDB" "$SCHEMA"
-sqlite3 "$WALDB" "INSERT INTO agent_messages (from_agent,to_agent,content,status,created_at)
+oracle_query "$WALDB" "PRAGMA journal_mode=wal;" >/dev/null
+oracle_exec "$WALDB" "$SCHEMA"
+oracle_exec "$WALDB" "INSERT INTO agent_messages (from_agent,to_agent,content,status,created_at)
   VALUES ('sender-a','marveen','proba','pending', CAST(strftime('%s','now') AS INTEGER) - 3600);"
 # The shape under test: journal_mode is wal, and neither side file is present.
 rm -f "$WALDB-wal" "$WALDB-shm"
-MODE="$(sqlite3 "$WALDB" 'PRAGMA journal_mode;' 2>/dev/null)"
+MODE="$(oracle_query "$WALDB" 'PRAGMA journal_mode;' 2>/dev/null)"
 rm -f "$WALDB-wal" "$WALDB-shm"
 if [ "$MODE" = "wal" ]; then
   pass "the fixture really is a WAL database (otherwise this section proves nothing)"
@@ -378,15 +383,18 @@ esac
 # skipped WITH ITS REASON PRINTED -- a silent skip would be the measure quietly
 # switching itself off, which is the failure this whole section is about.
 rm -f "$WALDB-wal" "$WALDB-shm"
-sqlite3 -readonly "$WALDB" "SELECT 1;" >/dev/null 2>&1
+# The same read-only open the observer tries first (mode=ro), asked directly.
+python3 -c 'import sqlite3,sys,urllib.parse
+c=sqlite3.connect("file:"+urllib.parse.quote(sys.argv[1])+"?mode=ro",uri=True)
+c.execute("SELECT 1").fetchall()' "$WALDB" >/dev/null 2>&1
 READONLY_RC=$?
 rm -f "$WALDB-wal" "$WALDB-shm"
 if [ "$READONLY_RC" = 0 ]; then
-  pass "skipped: '-readonly' opens this fixture on this host (sqlite3 $(sqlite3 --version | awk '{print $1}')), so there is nothing to control against -- the defect is environment-dependent"
+  pass "skipped: a read-only open (mode=ro) opens this fixture on this host (SQLite $(python3 -c 'import sqlite3;print(sqlite3.sqlite_version)')), so there is nothing to control against -- the defect is environment-dependent"
 else
   PREFIX_OBS="$TMP/observer-without-fallback.sh"
-  grep -v 'PRAGMA query_only=ON; \$sql' "$OBSERVER" > "$PREFIX_OBS"
-  if [ "$(grep -c 'query_only=ON; \$sql' "$PREFIX_OBS")" = 0 ] && [ -s "$PREFIX_OBS" ]; then
+  grep -v '_READ_QUEUE_PY" query_only ' "$OBSERVER" > "$PREFIX_OBS"
+  if [ "$(grep -c '_READ_QUEUE_PY" query_only ' "$PREFIX_OBS")" = 0 ] && [ -s "$PREFIX_OBS" ]; then
     OUT="$(MAIN_AGENT_ID=marveen bash "$PREFIX_OBS" --check "$WALDB" 2>&1)"; RC=$?
     case "$OUT" in
       *"verdict=unknown"*) [ "$RC" = 2 ] && pass "NEGATIVE CONTROL: without the fallback the same file reads as unknown (rc=2)" \
@@ -402,11 +410,11 @@ fi
 # promise needs measuring too: reading must not change the file or the rows.
 rm -f "$WALDB-wal" "$WALDB-shm"
 SUM_BEFORE="$(shasum -a 256 "$WALDB" | awk '{print $1}')"
-ROWS_BEFORE="$(sqlite3 "$WALDB" 'SELECT COUNT(*) FROM agent_messages;')"
+ROWS_BEFORE="$(oracle_query "$WALDB" 'SELECT COUNT(*) FROM agent_messages;')"
 rm -f "$WALDB-wal" "$WALDB-shm"
 MAIN_AGENT_ID=marveen bash "$OBSERVER" --check "$WALDB" >/dev/null 2>&1
 SUM_AFTER="$(shasum -a 256 "$WALDB" | awk '{print $1}')"
-ROWS_AFTER="$(sqlite3 "$WALDB" 'SELECT COUNT(*) FROM agent_messages;')"
+ROWS_AFTER="$(oracle_query "$WALDB" 'SELECT COUNT(*) FROM agent_messages;')"
 if [ "$SUM_BEFORE" = "$SUM_AFTER" ] && [ "$ROWS_BEFORE" = "$ROWS_AFTER" ]; then
   pass "the read leaves the database byte-identical (the fallback still does not write)"
 else

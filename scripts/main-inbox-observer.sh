@@ -78,7 +78,7 @@ log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*" || true; }
 
 # The agent id lands inside a SQL string, so it is validated rather than
 # escaped: an id is a tmux session name and a directory name in this fleet, so
-# anything outside [A-Za-z0-9._-] is not a real id and must not reach sqlite3.
+# anything outside [A-Za-z0-9._-] is not a real id and must not reach SQLite.
 resolve_main_agent_id() {
   local id="${MAIN_AGENT_ID:-}"
   if [ -z "$id" ] && [ -f "$INSTALL_DIR/.env" ]; then
@@ -91,32 +91,60 @@ resolve_main_agent_id() {
   esac
 }
 
-# Read one row without writing to the queue. Two opens, in this order, because
-# -readonly ALONE CANNOT READ THIS DATABASE IN THE ONE CASE THAT MATTERS: the
-# queue is in WAL mode, and SQLite deletes the -wal/-shm pair when the last
-# connection closes. A stopped dashboard therefore leaves a WAL-mode file with
-# no -shm, and a -readonly open cannot create one -- measured 3/3 as
-# "unable to open database file (14)", i.e. verdict=unknown exactly when the
-# dashboard is down, which is the situation this observer exists for. Loud, but
-# false. Positive control on the same file: the same query WITHOUT -readonly
-# answers correctly, and with the -shm present -readonly answers correctly too,
-# so the flag is the cause, not the file.
+# Read one row without writing to the queue, through python3's stdlib sqlite3
+# module. Not the `sqlite3` command-line tool: that binary is not an install
+# dependency (install-linux.sh asks for ffmpeg, git, tmux, lsof, curl, python3,
+# pipx and unzip), and on a host without it every tick read as verdict=unknown
+# -- an observer that cannot observe. python3 is a dependency, and the fleet's
+# own code (intel_db.py, ledger_lib.py, memoria_heartbeat_gate.py) already
+# opens this database that way. Output keeps the CLI's list shape
+# ("count|oldest"), so evaluate_queue below is unchanged.
 #
-# So: try the strictly read-only open first (it is right whenever it works and
-# cannot touch anything), and fall back to a normal open with query_only=ON.
-# Measured on that fallback: content and mtime unchanged by the SELECT, and a
-# DELETE through the same connection is refused with "attempt to write a
-# readonly database (8)". It does create the -wal/-shm pair next to the file,
-# which the next dashboard start uses as its own. If even the fallback fails
-# (an unwritable directory, say), the caller keeps verdict=unknown -- honest,
-# because at that point the queue really cannot be read.
+# Two opens, in this order, because a READ-ONLY OPEN ALONE CANNOT READ THIS
+# DATABASE IN THE ONE CASE THAT MATTERS: the queue is in WAL mode, and SQLite
+# deletes the -wal/-shm pair when the last connection closes. A stopped
+# dashboard therefore leaves a WAL-mode file with no -shm, and a read-only open
+# cannot create one -- measured 3/3 (sqlite3 CLI -readonly, macOS) as "unable
+# to open database file (14)", i.e. verdict=unknown exactly when the dashboard
+# is down, which is the situation this observer exists for. Whether it fails is
+# environment-dependent (the Linux CI runner opened the same fixture fine); the
+# order below is right either way.
+#
+# So: try the strictly read-only open first (mode=ro -- it is right whenever it
+# works and cannot touch anything, and it never creates a missing file), and
+# fall back to a normal open with query_only=ON. Measured on that fallback:
+# content and mtime unchanged by the SELECT, and a DELETE through the same
+# connection is refused with "attempt to write a readonly database". It does
+# create the -wal/-shm pair next to the file, which the next dashboard start
+# uses as its own. If even the fallback fails (an unwritable directory, say),
+# the caller keeps verdict=unknown -- honest, because at that point the queue
+# really cannot be read. The caller checks that the file exists first, so the
+# normal open never creates an empty database either.
+_READ_QUEUE_PY='
+import sqlite3, sys, urllib.parse
+mode, path, sql = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    if mode == "ro":
+        con = sqlite3.connect("file:" + urllib.parse.quote(path) + "?mode=ro", uri=True, timeout=3)
+    else:
+        con = sqlite3.connect(path, timeout=3)
+        con.execute("PRAGMA query_only=ON")
+    try:
+        rows = con.execute(sql).fetchall()
+    finally:
+        con.close()
+except Exception:
+    sys.exit(1)
+for r in rows:
+    print("|".join("" if v is None else str(v) for v in r))
+'
 read_queue_row() {
   local db="$1" sql="$2" out
-  if out="$(sqlite3 -readonly -cmd '.timeout 3000' "$db" "$sql" 2>/dev/null)"; then
+  if out="$(python3 -c "$_READ_QUEUE_PY" ro "$db" "$sql" 2>/dev/null)"; then
     printf '%s' "$out"
     return 0
   fi
-  out="$(sqlite3 -cmd '.timeout 3000' "$db" "PRAGMA query_only=ON; $sql" 2>/dev/null)" || return 1
+  out="$(python3 -c "$_READ_QUEUE_PY" query_only "$db" "$sql" 2>/dev/null)" || return 1
   printf '%s' "$out"
   return 0
 }

@@ -97,7 +97,7 @@ echo "Wrote launchd unit: $PLIST"
 if [ "$LOAD" = "1" ]; then
   launchctl unload "$PLIST" 2>/dev/null || true
   launchctl load "$PLIST"
-  echo "Loaded $LABEL (every 300s + at load). It reads the queue with sqlite3 -readonly and alerts over the direct Bot API, so it keeps working while the dashboard process is down."
+  echo "Loaded $LABEL (every 300s + at load). It reads the queue read-only (python3 sqlite3) and alerts over the direct Bot API, so it keeps working while the dashboard process is down."
   echo "Liveness is measurable from outside: store/.main-inbox-observer is rewritten on every tick."
 else
   echo "Installed but NOT loaded. To start: launchctl load $PLIST"
