@@ -29,9 +29,28 @@ const KNOWN_PLACEHOLDERS = ['PROJECT_ROOT', 'INSTALL_DIR', 'MAIN_AGENT_ID', 'BOT
 // An absolute macOS/Linux home path embeds a real username. The trailing
 // slash is optional so a bare literal like "/Users/bob" at end of value is
 // still caught. A `<...>` segment (e.g. /Users/<user>/marveen) is a doc
-// placeholder, not a real path, so it is allowed. URL lines are skipped by the
-// caller so a link like https://host/home/x is not mistaken for a home path.
+// placeholder, not a real path, so it is allowed. Callers run the line through
+// stripUrls() first, so a link like https://host/home/x is not mistaken for a
+// home path.
 const HOME_PATH_RX = /\/(Users|home)\/(?!<)[A-Za-z0-9._-]+/
+
+// Why the home-path check strips URLs instead of skipping the line (measured
+// 2026-09-20, HYGIENEURL920). The predicate used to be
+// `!line.includes('://') && HOME_PATH_RX.test(line)`, which does not exclude a
+// URL -- it switches the whole LINE off as soon as any `://` appears anywhere
+// on it. Both halves of a line like
+//     "Bash(curl -H \"Bearer $(cat /home/<user>/x/store/.token)\" \"http://localhost:3420/api/*)"
+// are then unchecked, and the hardcoded home path rides through on the back of
+// the localhost URL. That is not a narrow gap: it is an off switch anyone can
+// hit by accident. Measured on this install the same day: of 17 hardcoded
+// lines in the shipped profiles the old predicate reported 12, because 5 of
+// them also carried a `://`.
+// Stripping keeps the original intent (a home-looking path INSIDE a URL is
+// still not a violation) while checking the rest of the line.
+// `file:`/`FILE:` is deliberately NOT stripped: a `file:///home/bob/x` is an
+// absolute local path wearing a scheme, which is exactly what must be caught.
+const URL_RX = /\b(?!file:)[a-z][a-z0-9+.-]*:\/\/\S*/gi
+const stripUrls = (line: string): string => line.replace(URL_RX, '')
 // A personal mailbox baked into a shipped file would leak / break on every
 // other install. example.com and the noreply providers are not listed.
 const PERSONAL_EMAIL_RX = /[A-Za-z0-9._%+-]+@(gmail|outlook|icloud|yahoo|hotmail)\.[A-Za-z]+/i
@@ -90,7 +109,7 @@ describe('shipped templates carry no hardcoded identity', () => {
         if (text === null) continue
         const rel = file.slice(REPO_ROOT.length + 1)
         text.split('\n').forEach((line, i) => {
-          if (!line.includes('://') && HOME_PATH_RX.test(line)) {
+          if (HOME_PATH_RX.test(stripUrls(line))) {
             violations.push(`${rel}:${i + 1} absolute home path (use {{INSTALL_DIR}}): ${line.trim().slice(0, 100)}`)
           }
           if (PERSONAL_EMAIL_RX.test(line)) {
@@ -122,7 +141,7 @@ describe('shipped templates carry no hardcoded identity', () => {
     const text = readText(file)
     if (text !== null) {
       text.split('\n').forEach((line, i) => {
-        if (!line.includes('://') && HOME_PATH_RX.test(line)) {
+        if (HOME_PATH_RX.test(stripUrls(line))) {
           violations.push(`web/app.js:${i + 1} absolute home path: ${line.trim().slice(0, 100)}`)
         }
         if (PERSONAL_EMAIL_RX.test(line)) {
@@ -148,7 +167,7 @@ describe('shipped templates carry no hardcoded identity', () => {
       if (text === null) continue
       const rel = file.slice(REPO_ROOT.length + 1)
       text.split('\n').forEach((line, i) => {
-        if (!line.includes('://') && HOME_PATH_RX.test(line)) {
+        if (HOME_PATH_RX.test(stripUrls(line))) {
           violations.push(`${rel}:${i + 1} absolute home path (derive from __file__): ${line.trim().slice(0, 100)}`)
         }
         if (PERSONAL_EMAIL_RX.test(line)) {
@@ -160,6 +179,60 @@ describe('shipped templates carry no hardcoded identity', () => {
       })
     }
     expect(violations, `Hardcoded identity found in scripts/support-mail:\n${violations.join('\n')}`).toEqual([])
+  })
+})
+
+// The home-path predicate itself, pinned. The scans above can only go green
+// two ways -- the tree is clean, or the predicate did not look -- and until
+// 2026-09-20 it was silently the second for any line carrying a `://`. These
+// cases fix which of the two a green run means. BYPASS_CORPUS holds lines that
+// the previous predicate waved through; if someone reintroduces a line-skip,
+// the last case here goes red on its own.
+describe('the home-path predicate looks at the whole line, not just URL-free lines', () => {
+  const flags = (line: string) => HOME_PATH_RX.test(stripUrls(line))
+
+  // The pre-2026-09-20 predicate, kept only as the control in the last case.
+  const oldPredicate = (line: string) => !line.includes('://') && HOME_PATH_RX.test(line)
+
+  // Lines with a hardcoded home path AND a `://` somewhere. Every one of these
+  // is a real violation; every one of these used to pass.
+  const BYPASS_CORPUS = [
+    // the exact shape that hid 5 of 17 findings in the shipped profiles
+    '"Bash(curl -H \\"Bearer $(cat /home/bob/app/store/.dashboard-token)\\" \\"http://localhost:3420/api/*)"',
+    '# see foo:// for the format, path is /home/bob/app',
+    'docs at https://example.com/guide and the tree at /home/bob/app',
+    'file:///home/bob/app/notes.md',
+  ]
+
+  it('flags a bare absolute home path', () => {
+    expect(flags('/home/bob/app/store')).toBe(true)
+    expect(flags('INSTALL=/Users/bob')).toBe(true)
+  })
+
+  it('does not flag a documentation placeholder', () => {
+    expect(flags('/Users/<user>/marveen')).toBe(false)
+  })
+
+  it('does not flag a home-looking path that is inside a URL', () => {
+    expect(flags('see https://docs.example.com/home/bob for details')).toBe(false)
+    expect(flags('curl "http://localhost:3420/api/agents"')).toBe(false)
+  })
+
+  it('flags every line in the bypass corpus', () => {
+    const missed = BYPASS_CORPUS.filter(line => !flags(line))
+    expect(missed, `lines a :// still hides:\n${missed.join('\n')}`).toEqual([])
+  })
+
+  // The regression this file exists to prevent. If the predicate ever goes back
+  // to skipping whole lines, `flags` starts agreeing with `oldPredicate` here
+  // and this goes red. Asserting the DISAGREEMENT (not just the new result)
+  // means the case cannot pass vacuously.
+  it('disagrees with the old line-skip predicate on exactly those lines', () => {
+    const stillWaved = BYPASS_CORPUS.filter(line => oldPredicate(line) === flags(line))
+    expect(
+      stillWaved,
+      `the predicate no longer improves on the old line-skip for:\n${stillWaved.join('\n')}`,
+    ).toEqual([])
   })
 })
 
