@@ -79,6 +79,7 @@ vi.mock('../db.js', () => ({
     if (tag === 'context-guard restart notice') h.messages.push(content)
     return { id: 1 }
   },
+  countRestartQueueState: () => ({ pending: 0, failed: 0 }),
 }))
 
 type Runner = typeof import('../web/context-guard-runner.js')
@@ -132,13 +133,13 @@ describe('idle-flush restart notice, through the real runner', () => {
     expect(h.messages[0]).not.toContain('ELVESZHETTEK')
   })
 
-  it('an agent NOT on worksource keeps the generic line', async () => {
+  it('an agent NOT on worksource gets the queue counts', async () => {
     h.worksource = false
     const runner = await boot()
     await idleFlushToRestart(runner)
 
     expect(h.messages).toHaveLength(1)
-    expect(h.messages[0]).toContain('ELVESZHETTEK')
+    expect(h.messages[0]).toContain('0 pending, 0 failed')
     expect(h.messages[0]).not.toContain('NE kuldj ujra')
   })
 })

@@ -33,7 +33,7 @@ import {
 import { localMidnightMs } from '../auto-restart.js'
 import { ownerQuestionHolds } from './open-question.js'
 import { recordRescueFailure, clearRescueFailures } from './rescue-failure-tracker.js'
-import { createAgentMessage } from '../db.js'
+import { createAgentMessage, countRestartQueueState } from '../db.js'
 import {
   decideGuard,
   contextLimitForModel,
@@ -307,6 +307,42 @@ export function staleRefreshHandoffPrompt(staleMinutes: number, handoffPath: str
   )
 }
 
+/**
+ * The queue sentence of the restart notice. The notice used to tell the main
+ * agent that messages sent to the old session "may have been lost -- check and
+ * resend them", without measuring anything. Resending is usually wrong: pending
+ * rows are delivered into the fresh session once it is ready, and the resume
+ * prompt tells the fresh session to re-read the restart window itself, so a
+ * resend lands as a duplicate in the very session that was just restarted to
+ * get its context down. The sentence now carries the counts instead; the rows
+ * the router will not retry are the failed ones. Exported so a test pins it.
+ */
+export function restartNoticeQueueText(queue: { pending: number; failed: number } | null): string {
+  if (queue === null) {
+    return ' A sor allapotat NEM tudtam megmerni -- ellenorizd kezzel, mielott barmit ujrakuldenel.'
+  }
+  return ` A sor a restart pillanataban: ${queue.pending} pending, ${queue.failed} failed (utolso ora).` +
+    (queue.failed > 0
+      ? ` A ${queue.failed} failed sort a router mar NEM probalja ujra -- ezeket nezd meg (a 'result' mezo mondja meg, miert buktak).`
+      : '') +
+    (queue.pending > 0
+      ? ` A ${queue.pending} pending sort a router a friss sessionbe kezbesiti, amint az kesz -- NE kuldd ujra, mert duplikalodik.`
+      : '') +
+    ' A regi sessionbe az utolso percekben kezbesitett uzeneteket a resume prompt alapjan a friss session maga olvassa vissza -- ezeket se kuldd ujra.' +
+    // Both promises need the resume to happen; a ready-timeout gives it up, and then nothing re-reads.
+    ' Mindez akkor all, ha a friss session elindul es megkapja a resume promptot; ha nem, a sort es ezeket az uzeneteket kezzel nezd meg.'
+}
+
+/** Counts the queue for the restart notice; a failed count yields null, not a guess. */
+export function restartQueueAtRestart(name: string): { pending: number; failed: number } | null {
+  try {
+    return countRestartQueueState(name, Math.floor(Date.now() / 1000) - 3600)
+  } catch (err) {
+    logger.warn({ err, name }, 'context-guard: queue count for the restart notice failed')
+    return null
+  }
+}
+
 export function resumePrompt(
   name: string,
   handoffPath: string,
@@ -573,16 +609,23 @@ function onWorksource(name: string): boolean {
  * flight, and the queue redelivers whatever it had not acknowledged. The
  * supervisor following the generic line sent three needless status messages
  * (~3.1M input tokens, measured 2026-09-29), so that case gets its own text.
- * Every other case, and any agent NOT on worksource, keeps the generic line.
+ * Every other case, and any agent NOT on worksource, gets the queue at restart
+ * time instead (restartNoticeQueueText): a resend advice would duplicate rows
+ * the router still delivers.
  */
-export function restartLossLine(idleFlush: boolean, worksource: boolean, idleMinutes: number): string {
+export function restartLossLine(
+  idleFlush: boolean,
+  worksource: boolean,
+  idleMinutes: number,
+  queue: { pending: number; failed: number } | null,
+): string {
   if (worksource && idleFlush) {
     return (
       `. Tetlen volt (>= ${idleMinutes} perc), folyamatban levo munka nem volt; a nyugtazatlan tetelek a sorbol ujrakezbesulnek; ` +
       'a resume magatol megy -- NE kuldj allapot-uzenetet es NE kuldj ujra semmit.'
     )
   }
-  return `. A regi sessionbe az utolso percekben kuldott uzenetek/utasitasok ELVESZHETTEK -- ellenorizd es kuldd ujra oket.`
+  return '.' + restartNoticeQueueText(queue)
 }
 
 async function checkAgent(name: string, nowMs: number): Promise<void> {
@@ -981,10 +1024,10 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
             (pctRound !== null ? ` (kontextus ~${pctRound}%)` : '') +
             // The idle-flush origin comes from the SEQUENCE state: decision.reason
             // here is the restart's own ("handoff written"), never idle-flush.
-            restartLossLine(state.idleFlushSequence === true, onWorksource(name), cfg.idleMinutes) +
+            restartLossLine(state.idleFlushSequence === true, onWorksource(name), cfg.idleMinutes, restartQueueAtRestart(name)) +
             (typeof decision.nextState.handoffStaleMinutes === 'number'
-              // The generic "messages may be lost" line invites the wrong
-              // conclusion when the real gap is the ARTIFACT: say explicitly
+              // The queue line alone invites the wrong conclusion when the
+              // real gap is the ARTIFACT: say explicitly
               // that the handoff does not cover the tail of the session.
               ? ` FIGYELEM: a HANDOFF.md ELAVULT -- az utolso ~${decision.nextState.handoffStaleMinutes} perc munkaja nincs benne, a friss session ezt a szakaszt az elo forrasokbol kapja meg.`
               : decision.nextState.handoffStaleMinutes === 'unknown'

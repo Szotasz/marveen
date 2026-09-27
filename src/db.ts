@@ -4566,6 +4566,19 @@ export function getRecipientQueueState(toAgent: string): RecipientQueueState {
   }
 }
 
+// The queue state the context guard's restart notice reports for one agent:
+// rows still pending (the router delivers them into the fresh session) and rows
+// that failed since `failedSinceEpoch` (the router does not retry those).
+export function countRestartQueueState(agent: string, failedSinceEpoch: number): { pending: number; failed: number } {
+  const pending = db.prepare(
+    "SELECT COUNT(*) AS c FROM agent_messages WHERE status = 'pending' AND to_agent = ?",
+  ).get(agent) as { c: number }
+  const failed = db.prepare(
+    "SELECT COUNT(*) AS c FROM agent_messages WHERE status = 'failed' AND to_agent = ? AND completed_at > ?",
+  ).get(agent, failedSinceEpoch) as { c: number }
+  return { pending: pending.c, failed: failed.c }
+}
+
 // Close a pending backlog that is NOT going to be delivered -- stale rows an
 // operator does not want the router to replay (an old thank-you note, a legal
 // warning whose content has since changed). Separate from markMessageDelivered
