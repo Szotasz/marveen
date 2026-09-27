@@ -649,6 +649,28 @@ export function ensureAgentProvenanceHook(name: string): boolean {
   return true
 }
 
+// A file-tool permission rule whose path starts with a SINGLE slash is read as
+// relative to the project root, not as an absolute filesystem path -- so
+// `Edit(/home/.../agents/x/**)` silently matched nothing and EVERY file write
+// asked for approval, even inside the agent's own directory. The absolute form
+// needs a leading `//`. MEASURED 2026-09-06 (gembaecho): with the profile
+// unchanged except for adding the `//` variants, all four probes (new file and
+// edit, own dir and /mnt/e) went through with zero prompts; before it, all four
+// asked. Only Read/Write/Edit carry paths -- Bash(...) rules are commands and
+// must NOT be touched.
+const FILE_PATH_TOOLS = ['Read', 'Write', 'Edit'] as const
+
+export function absolutizeFileRule(rule: string): string {
+  for (const tool of FILE_PATH_TOOLS) {
+    const prefix = `${tool}(`
+    if (!rule.startsWith(prefix) || !rule.endsWith(')')) continue
+    const inner = rule.slice(prefix.length, -1)
+    if (!inner.startsWith('/') || inner.startsWith('//')) return rule
+    return `${prefix}/${inner})`
+  }
+  return rule
+}
+
 export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemplate): void {
   const agentRoot = agentDir(name)
   const settingsDir = join(agentRoot, '.claude')
@@ -659,7 +681,13 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     try { existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { /* overwrite */ }
   }
   const ctx = { HOME: homedir(), AGENT_DIR: agentRoot }
-  const denyList = profile.filesystem.deny.map(p => resolveProfilePlaceholders(p, ctx))
+  // Deny rules carry paths too, and the SAME leading-`//` rule applies to them: a
+  // `Write(/mnt/e/...)` deny written with one slash resolves against the project root and
+  // therefore never matches, which silently downgrades a fail-closed deny into a mere
+  // "ask". Found 2026-09-06 on the leanwriter profile: allow was absolutized, deny was not.
+  // absolutizeFileRule only touches Read/Write/Edit, so Bash(...)/WebFetch/tool-name denies
+  // pass through untouched.
+  const denyList = profile.filesystem.deny.map(p => absolutizeFileRule(resolveProfilePlaceholders(p, ctx)))
   // Self-pace tool-name deny: every sub-agent (NOT the main agent) is denied the
   // Claude Code runtime self-scheduling tools. A whole-tool-name deny IS enforced
   // even under --dangerously-skip-permissions (deny is checked BEFORE the bypass
@@ -681,7 +709,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     if (!denyList.includes(tool)) denyList.push(tool)
   }
   existing.permissions = {
-    allow: profile.filesystem.allow.map(p => resolveProfilePlaceholders(p, ctx)),
+    allow: profile.filesystem.allow.map(p => absolutizeFileRule(resolveProfilePlaceholders(p, ctx))),
     deny: denyList,
   }
   // Governance hard-gates: every sub-agent (NOT the main agent) gets PreToolUse
