@@ -10,7 +10,14 @@
 #
 # The script branches on `uname -s`, so a PATH shim fakes uname=Linux (plus
 # systemctl/tmux recorders); the test therefore runs on any host, macOS
-# included. sqlite3 and python3 are the real binaries.
+# included. python3 is the real binary.
+#
+# The DB fixture and the DB check go through lib/sqlite-oracle.sh (python3
+# stdlib), not the sqlite3 CLI, which install-linux.sh does not install
+# (7ac77433). The script itself rewrites the rows with python3's sqlite3 module
+# too (67c8f449): it used to call the CLI, died with 127 after the services were
+# stopped and disabled, and left the bot down. A trapping sqlite3 shim on PATH
+# proves it no longer calls the CLI, even on a host that has one.
 
 set -u
 
@@ -21,6 +28,7 @@ pass() { PASS=$((PASS + 1)); echo "  PASS: $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1"; }
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
+. "$REPO/scripts/__tests__/lib/sqlite-oracle.sh"
 
 # --- throwaway install tree ---------------------------------------------------
 INSTALL="$TMP/install"
@@ -28,7 +36,7 @@ mkdir -p "$INSTALL/scripts" "$INSTALL/store"
 cp "$REPO/scripts/migrate-main-agent-id.sh" "$INSTALL/scripts/"
 echo 'BOT_NAME="Test Bot"' > "$INSTALL/.env"
 
-sqlite3 "$INSTALL/store/claudeclaw.db" <<'SQL'
+oracle_exec "$INSTALL/store/claudeclaw.db" - <<'SQL'
 CREATE TABLE memories (agent_id TEXT);
 CREATE TABLE daily_logs (agent_id TEXT);
 CREATE TABLE agent_messages (from_agent TEXT, to_agent TEXT);
@@ -70,11 +78,30 @@ cat > "$BIN/tmux" <<'EOF'
 #!/bin/bash
 exit 0
 EOF
-chmod +x "$BIN/uname" "$BIN/systemctl" "$BIN/tmux"
+cat > "$BIN/sqlite3" <<EOF
+#!/bin/bash
+echo "SQLITE3-CLI-CALLED \$*" >> "$LOG"
+exit 127
+EOF
+chmod +x "$BIN/uname" "$BIN/systemctl" "$BIN/tmux" "$BIN/sqlite3"
 
 run_migrate() {
   HOME="$FAKE_HOME" PATH="$BIN:$PATH" SYSTEMCTL_FAIL_ON="${1:-}" \
     bash "$INSTALL/scripts/migrate-main-agent-id.sh" <<< "y" > "$TMP/out.log" 2> "$TMP/err.log"
+}
+
+# Pre-migration state again: marveen-* units, marveen rows, no MAIN_AGENT_ID.
+reset_state() {
+  rm -rf "$UNITS"
+  mkdir -p "$UNITS/marveen-dashboard.service.d" "$UNITS/marveen-channels.service.d"
+  for unit in dashboard.service channels.service morning.service morning.timer host-watchdog.service 'notify@.service'; do
+    printf '[Unit]\nDescription=Marveen %s\n' "$unit" > "$UNITS/marveen-${unit}"
+  done
+  printf '[Unit]\nOnFailure=marveen-notify@%%n.service\n' > "$UNITS/marveen-dashboard.service.d/onfailure.conf"
+  printf '[Unit]\nOnFailure=marveen-notify@%%n.service\n' > "$UNITS/marveen-channels.service.d/onfailure.conf"
+  oracle_exec "$INSTALL/store/claudeclaw.db" "UPDATE kanban_cards SET assignee='marveen'"
+  sed -i.bak '/^MAIN_AGENT_ID=/d' "$INSTALL/.env"
+  : > "$LOG"
 }
 
 # ==============================================================================
@@ -88,8 +115,21 @@ RC=$?
 grep -q '^MAIN_AGENT_ID=test-bot$' "$INSTALL/.env" \
   && pass ".env got MAIN_AGENT_ID=test-bot" || fail ".env got MAIN_AGENT_ID=test-bot"
 
-DB_SLUG=$(sqlite3 "$INSTALL/store/claudeclaw.db" "SELECT assignee FROM kanban_cards")
+DB_SLUG=$(oracle_query "$INSTALL/store/claudeclaw.db" "SELECT assignee FROM kanban_cards")
 [ "$DB_SLUG" = "test-bot" ] && pass "DB rows rewritten to the new slug" || fail "DB rows rewritten (got '$DB_SLUG')"
+
+MSG=$(oracle_query "$INSTALL/store/claudeclaw.db" "SELECT from_agent || '>' || to_agent FROM agent_messages")
+[ "$MSG" = "test-bot>samu" ] && pass "only 'marveen' values are rewritten" || fail "only 'marveen' rewritten (got '$MSG')"
+
+grep -q 'SQLITE3-CLI-CALLED' "$LOG" \
+  && fail "the sqlite3 CLI is not called (not an install dependency)" \
+  || pass "the sqlite3 CLI is not called (not an install dependency)"
+
+# memories 1 + agent_messages.from_agent 1 + kanban_cards 1; the success line
+# carries the count, printed only after the commit.
+grep -q '^✓ DB rows rewritten: 3$' "$TMP/out.log" \
+  && pass "the success line reports the rewritten row count" \
+  || fail "success line with the count (out: $(grep 'DB rows' "$TMP/out.log"))"
 
 OLD_LEFT=$(find "$UNITS" -maxdepth 1 -name 'marveen-*' | wc -l | tr -d ' ')
 [ "$OLD_LEFT" = "0" ] && pass "no marveen-* unit files left behind" || fail "no marveen-* left behind ($OLD_LEFT remain)"
@@ -135,7 +175,7 @@ for unit in dashboard.service channels.service morning.service morning.timer hos
 done
 printf '[Unit]\nOnFailure=marveen-notify@%%n.service\n' > "$UNITS/marveen-dashboard.service.d/onfailure.conf"
 printf '[Unit]\nOnFailure=marveen-notify@%%n.service\n' > "$UNITS/marveen-channels.service.d/onfailure.conf"
-sqlite3 "$INSTALL/store/claudeclaw.db" "UPDATE kanban_cards SET assignee='marveen'"
+oracle_exec "$INSTALL/store/claudeclaw.db" "UPDATE kanban_cards SET assignee='marveen'"
 sed -i.bak '/^MAIN_AGENT_ID=/d' "$INSTALL/.env"
 : > "$LOG"
 
@@ -150,6 +190,39 @@ grep -q '^Done\.' "$TMP/out.log" \
 
 grep -q 'FAILED to start' "$TMP/err.log" \
   && pass "the failure is named on stderr" || fail "the failure is named on stderr"
+
+# --- preflight: no sqlite3 module -> nothing is stopped ------------------------
+# The DB rewrite runs after the services are stopped and disabled; a host that
+# cannot do it must be refused before that, not half-way.
+reset_state
+NOSQL="$TMP/nosqlite"
+mkdir -p "$NOSQL"
+echo 'raise ImportError("no sqlite3 in this python (test)")' > "$NOSQL/sqlite3.py"
+PYTHONPATH="$NOSQL" run_migrate ""
+RC=$?
+[ "$RC" -eq 1 ] && pass "no sqlite3 module: exit 1" || fail "no sqlite3 module: exit 1 (got $RC)"
+grep -q 'stop' "$LOG" \
+  && fail "no sqlite3 module: no service was stopped" \
+  || pass "no sqlite3 module: no service was stopped"
+[ -f "$UNITS/marveen-dashboard.service" ] && ! grep -q '^MAIN_AGENT_ID=' "$INSTALL/.env" \
+  && pass "no sqlite3 module: units and .env untouched" || fail "no sqlite3 module: units and .env untouched"
+grep -q 'Nothing was changed' "$TMP/err.log" \
+  && pass "no sqlite3 module: stderr says nothing changed" || fail "no sqlite3 module: stderr says nothing changed"
+
+# --- a failing rewrite stops before the rename, and says the services are down -
+reset_state
+cp "$INSTALL/store/claudeclaw.db" "$TMP/good.db"
+echo "this is not a database" > "$INSTALL/store/claudeclaw.db"
+run_migrate ""
+RC=$?
+[ "$RC" -eq 1 ] && pass "broken DB: exit 1" || fail "broken DB: exit 1 (got $RC)"
+grep -q '✓ DB rows rewritten' "$TMP/out.log" \
+  && fail "broken DB: no 'rows rewritten' claim" || pass "broken DB: no 'rows rewritten' claim"
+[ -f "$UNITS/marveen-dashboard.service" ] && ! grep -q '^MAIN_AGENT_ID=' "$INSTALL/.env" \
+  && pass "broken DB: nothing renamed, .env untouched" || fail "broken DB: nothing renamed, .env untouched"
+grep -q 'services are STOPPED' "$TMP/err.log" \
+  && pass "broken DB: stderr says the services are stopped" || fail "broken DB: stderr says the services are stopped"
+cp "$TMP/good.db" "$INSTALL/store/claudeclaw.db"
 
 # ==============================================================================
 echo ""

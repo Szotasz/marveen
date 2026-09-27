@@ -52,6 +52,19 @@ if [ "$NEW_SLUG" = "marveen" ]; then
   exit 0
 fi
 
+DB="$INSTALL_DIR/store/claudeclaw.db"
+
+# Preflight, BEFORE anything is stopped: the DB rewrite below is the first step
+# that can fail on a stock host, and it runs after the services are stopped and
+# disabled. It used to call the sqlite3 CLI, which install-linux.sh does not
+# install, so the script died with 127 there and left the bot down, nothing
+# renamed. python3 is already required above; check its sqlite3 module too.
+if [ -f "$DB" ] && ! python3 -c 'import sqlite3' 2>/dev/null; then
+  echo "ERROR: python3 has no sqlite3 module; the DB rows cannot be rewritten." >&2
+  echo "Nothing was changed. Install a python3 with sqlite3 support and rerun." >&2
+  exit 1
+fi
+
 echo "Migrating main agent id: marveen → $NEW_SLUG (BOT_NAME=\"$BOT_NAME\")"
 read -r -p "This will restart the launchd services and update the DB. Continue? (y/N) " ans
 case "$ans" in
@@ -75,17 +88,38 @@ elif [ "$OS" = "Linux" ]; then
 fi
 tmux kill-session -t marveen-channels 2>/dev/null || true
 
-# DB rewrite. Use the SQLite CLI that ships with the project.
-DB="$INSTALL_DIR/store/claudeclaw.db"
+# DB rewrite, through python3's stdlib sqlite3 (see the preflight above), in one
+# transaction: either every table is rewritten or none is. The success line is
+# printed only after the commit, with the counts.
 if [ -f "$DB" ]; then
-  sqlite3 "$DB" <<SQL
-UPDATE memories        SET agent_id   = '$NEW_SLUG' WHERE agent_id   = 'marveen';
-UPDATE daily_logs      SET agent_id   = '$NEW_SLUG' WHERE agent_id   = 'marveen';
-UPDATE agent_messages  SET from_agent = '$NEW_SLUG' WHERE from_agent = 'marveen';
-UPDATE agent_messages  SET to_agent   = '$NEW_SLUG' WHERE to_agent   = 'marveen';
-UPDATE kanban_cards    SET assignee   = '$NEW_SLUG' WHERE assignee   = 'marveen';
-SQL
-  echo "✓ DB rows rewritten"
+  if ! python3 - "$DB" "$NEW_SLUG" <<'PYEOF'
+import sqlite3, sys
+db, slug = sys.argv[1], sys.argv[2]
+cols = [('memories', 'agent_id'), ('daily_logs', 'agent_id'),
+        ('agent_messages', 'from_agent'), ('agent_messages', 'to_agent'),
+        ('kanban_cards', 'assignee')]
+con = sqlite3.connect(db, timeout=30)
+try:
+    have = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    total, missing = 0, []
+    with con:
+        for table, col in cols:
+            if table not in have:
+                missing.append(table)
+                continue
+            total += con.execute(f'UPDATE {table} SET {col} = ? WHERE {col} = ?',
+                                 (slug, 'marveen')).rowcount
+finally:
+    con.close()
+note = f" (no table: {', '.join(sorted(set(missing)))})" if missing else ''
+print(f'✓ DB rows rewritten: {total}{note}')
+PYEOF
+  then
+    echo "ERROR: DB rewrite failed; no row was changed (single transaction)." >&2
+    echo "The old services are STOPPED and nothing has been renamed yet." >&2
+    echo "Fix the error above and rerun this script." >&2
+    exit 1
+  fi
 fi
 
 # Rename plists + patch Label.

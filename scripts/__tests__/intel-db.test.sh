@@ -28,27 +28,13 @@ export INTEL_DB="$TMPDIR_BASE/intel.db"
 # own code (intel_db.py, ledger_lib.py, memoria_heartbeat_gate.py) already uses
 # it. This is an ORACLE swap: not one assertion below changed.
 #
-# db_query prints one line per row with columns joined by '|', which is the
-# sqlite3 CLI's default list format -- that is what keeps the assertions
-# byte-identical. NULL prints as the empty string, again like the CLI.
-DB_ORACLE='
-import sqlite3, sys
-con = sqlite3.connect(sys.argv[1])
-try:
-    rows = con.execute(sys.argv[2]).fetchall()
-    con.commit()
-finally:
-    con.close()
-for r in rows:
-    print("|".join("" if v is None else str(v) for v in r))
-'
-db_query() { python3 -c "$DB_ORACLE" "$INTEL_DB" "$1"; }
-# The CLI dot-command `.tables` has no SQL equivalent, so this is the one place
-# the oracle is not a literal translation: it lists the same names from
-# sqlite_master, one per line instead of in columns. The case greps the output
-# for each name, so the shape change cannot alter the verdict.
-db_tables() { db_query "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"; }
-db_exec() { db_query "$1" > /dev/null; }
+# The oracle itself lives in lib/sqlite-oracle.sh (7ac77433), shared with the
+# other suites that had the same missing-binary failure. These three names stay
+# so the cases below read exactly as they did.
+. "$INSTALL_DIR/scripts/__tests__/lib/sqlite-oracle.sh"
+db_query() { oracle_query "$INTEL_DB" "$1"; }
+db_tables() { oracle_tables "$INTEL_DB"; }
+db_exec() { oracle_exec "$INTEL_DB" "$1"; }
 
 echo "intel_db tests"
 echo "=============="
