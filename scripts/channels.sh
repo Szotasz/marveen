@@ -663,9 +663,19 @@ claude_is_native() {
 #   - there is no launcher, AND no npm global package for
 #     @anthropic-ai/claude-code either, so npm is not the install this host was
 #     running. (The package NAME, not $CLAUDE_PKG: that may carry an @<pin>.)
+#     EXCEPT when the npm update stamp is newer than the newest native build:
+#     claude_install writes $CLAUDE_UPDATE_STAMP only after a successful
+#     `npm install -g`, so a newer stamp proves npm was the live install after
+#     that build. That is the documented npm race aftermath ("no package dir AND
+#     no claude binary"), where a missing package is evidence of the crash, not
+#     of a native host (review #1613, round 2).
+#     Trade-off: a native host whose stamp was refreshed by the pre-fix daily
+#     check AND whose launcher is gone entirely (not dangling) falls through to
+#     npm. A dangling launcher still wins, and after this change a native host
+#     no longer refreshes the stamp, so the window only covers hosts hit before.
 # Anything else falls through to the npm self-heal, exactly as before.
 claude_host_is_native_now() {
-  local launcher="$HOME/.local/bin/claude" target root npm_root
+  local launcher="$HOME/.local/bin/claude" target root npm_root newest
   if [ -L "$launcher" ]; then
     target="$(readlink "$launcher" 2>/dev/null)"
     # The target may be written with the resolved HOME (/private/var/...) or
@@ -675,6 +685,13 @@ claude_host_is_native_now() {
       "$CLAUDE_NATIVE_ROOT"/*) return 0 ;;
     esac
     [ -n "$root" ] && case "$target" in "$root"/*) return 0 ;; esac
+    return 1
+  fi
+  # `-nt` compares whole seconds on macOS bash 3.2; a stamp and a build written
+  # in the same second count as "not newer", which keeps the native reading.
+  newest="$(ls -1 "$CLAUDE_NATIVE_ROOT" 2>/dev/null | sort -V | tail -1)"
+  if [ -e "$CLAUDE_UPDATE_STAMP" ] && [ -n "$newest" ] \
+     && [ "$CLAUDE_UPDATE_STAMP" -nt "$CLAUDE_NATIVE_ROOT/$newest" ]; then
     return 1
   fi
   if command -v npm >/dev/null 2>&1; then

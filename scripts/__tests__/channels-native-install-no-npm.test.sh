@@ -22,7 +22,17 @@
 #   6. launcher symlink left DANGLING into the versions dir (its version was
 #      removed)                            -> relinked to the newest, npm NOT called,
 #      even with an npm package present (the launcher is the stronger evidence)
-# 3, 4 and 5 are the positive controls: the guard must not switch the npm path
+#   7. npm race AFTERMATH: stale versions/<old>, no launcher, no npm package dir,
+#      but an npm update stamp NEWER than the newest native build
+#                                          -> npm self-heal IS called, NO relink
+#      (review #1613 round 2: the missing package is the crash, not a native host)
+#   8. same shape, but the stamp is OLDER than the newest native build
+#                                          -> relinked, npm NOT called
+#      (the stamp check must not switch the native self-heal off)
+#   The version dirs of 7 and the stamp of 8 are backdated with `touch -t`:
+#   `-nt` compares whole seconds on macOS bash 3.2, so files written in the
+#   same second would make case 7 silently relink.
+# 3, 4, 5 and 7 are the positive controls: the guard must not switch the npm path
 # off for hosts that really are npm installs.
 #
 # Version fixtures include 2.1.9, 2.1.30 and 2.1.265 so that a lexical sort, or
@@ -106,6 +116,18 @@ setup_dangling_launcher() {
   mkdir -p "$1/home/.local/bin" "$1/npmroot/@anthropic-ai/claude-code"
   ln -s "$1/home/.local/share/claude/versions/2.1.200" "$1/home/.local/bin/claude"
 }
+setup_race_aftermath() {
+  make_version "$1" 2.1.169
+  touch -t 202606090110 "$1/home/.local/share/claude/versions/2.1.169"
+  mkdir -p "$1/npmroot/@anthropic-ai"
+  : > "$1/install/store/.claude-update-stamp"
+}
+setup_old_stamp_native() {
+  make_version "$1" 2.1.9
+  make_version "$1" 2.1.265
+  : > "$1/install/store/.claude-update-stamp"
+  touch -t 202606090110 "$1/install/store/.claude-update-stamp"
+}
 setup_npm_host() {
   printf '#!/bin/sh\necho 2.1.265\n' > "$1/stub/claude"
   chmod +x "$1/stub/claude"
@@ -149,6 +171,22 @@ if [ "$LINK_TARGET" = ".local/share/claude/versions/2.1.265" ]; then
   pass "dangling native launcher: relinked to the NEWEST version"
 else
   fail "dangling native launcher: relinked to the NEWEST version" \
+    ".local/share/claude/versions/2.1.265" "${LINK_TARGET:-<no link>}"
+fi
+
+run_case setup_race_aftermath
+if [ "$NPM_CALLS" = "1" ]; then pass "npm race aftermath (stamp newer than native): npm self-heal runs"
+else fail "npm race aftermath (stamp newer than native): npm self-heal runs" "1 npm call" "$NPM_CALLS"; fi
+if [ -z "$LINK_TARGET" ]; then pass "npm race aftermath (stamp newer than native): NOT relinked"
+else fail "npm race aftermath (stamp newer than native): NOT relinked" "<no link>" "$LINK_TARGET"; fi
+
+run_case setup_old_stamp_native
+if [ "$NPM_CALLS" = "0" ]; then pass "stamp older than the newest native build: no npm self-heal"
+else fail "stamp older than the newest native build: no npm self-heal" "0 npm calls" "$NPM_CALLS"; fi
+if [ "$LINK_TARGET" = ".local/share/claude/versions/2.1.265" ]; then
+  pass "stamp older than the newest native build: relinked to the NEWEST version"
+else
+  fail "stamp older than the newest native build: relinked to the NEWEST version" \
     ".local/share/claude/versions/2.1.265" "${LINK_TARGET:-<no link>}"
 fi
 
