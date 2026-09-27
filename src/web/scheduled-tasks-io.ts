@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { MAIN_AGENT_ID } from '../config.js'
 import type { ChannelProviderType } from '../channel-provider.js'
+import { logger } from '../logger.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { readJsonObjectForWrite } from './agent-config.js'
 
@@ -201,6 +202,27 @@ export function parseSkillMdFrontmatter(content: string): { name?: string; descr
   }
 }
 
+// A hand-written "once": "true" is NOT once (card 7d2b49b4, a review finding): only the JSON true counts, the
+// same rule the API enforces with a 400. Ignoring it silently would let a task meant to run once fire again
+// every year, so the read says so, naming the task -- once per task and value per process, because the
+// runner reads every task every minute.
+const announcedNonBooleanOnce = new Set<string>()
+
+function readOnceFlag(taskName: string, raw: unknown): boolean {
+  if (raw === undefined || typeof raw === 'boolean') return raw === true
+  const key = JSON.stringify([taskName, raw])
+  if (!announcedNonBooleanOnce.has(key)) {
+    announcedNonBooleanOnce.add(key)
+    logger.warn({ task: taskName, once: raw }, 'task-config.json "once" is not true or false -- the task is NOT treated as once')
+  }
+  return false
+}
+
+/** Test seam: the announce-once memory is process-wide by design. */
+export function resetOnceValueAnnouncements(): void {
+  announcedNonBooleanOnce.clear()
+}
+
 export function readScheduledTask(taskName: string): ScheduledTask | null {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   const skillPath = join(dir, 'SKILL.md')
@@ -242,7 +264,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     sendDigestDirect: config.sendDigestDirect === true,
     telegramChatId: typeof config.telegramChatId === 'string' && config.telegramChatId.trim() ? config.telegramChatId.trim() : undefined,
     channelProvider: parseChannelProvider(config.channelProvider),
-    once: config.once === true,
+    once: readOnceFlag(taskName, config.once),
     onceDisabledAt: typeof config.onceDisabledAt === 'string' ? config.onceDisabledAt : undefined,
   }
 }

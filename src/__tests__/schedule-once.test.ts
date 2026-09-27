@@ -10,10 +10,13 @@
 // it and went idle) AND the transcript shows the prompt arrived intact; a command task counts on exit 0. A
 // damaged, unverifiable, abandoned or lost run leaves the task enabled, so it stays visible.
 //
+// Only the JSON true is once. A hand-written "once": "true" is not, and the read says so with a WARN that names
+// the task (a review finding: silently ignored, such a task would fire again every year).
+//
 // SANDBOX: os.homedir() reads $HOME and SCHEDULED_TASKS_DIR is fixed at import, so HOME points at a throwaway
 // directory BEFORE any module that reaches scheduled-tasks-io is imported.
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -25,10 +28,12 @@ process.env.HOME = tmpHome
 
 let io: typeof import('../web/scheduled-tasks-io.js')
 let route: typeof import('../web/routes/schedules.js')
+let logger: typeof import('../logger.js')['logger']
 
 beforeAll(async () => {
   io = await import('../web/scheduled-tasks-io.js')
   route = await import('../web/routes/schedules.js')
+  logger = (await import('../logger.js')).logger
 })
 afterAll(() => {
   process.env.HOME = realHome
@@ -120,6 +125,50 @@ describe('disableOnceTask: only task-config.json, only a once task that is still
     const other = rawOf('masik', 'task-config.json')
     io.disableOnceTask('egyik', Date.now())
     expect(rawOf('masik', 'task-config.json')).toBe(other)
+  })
+})
+
+describe('a "once" that is not true or false: NOT once, and the read says so, naming the task', () => {
+  let warn: ReturnType<typeof vi.spyOn>
+  beforeEach(() => {
+    io.resetOnceValueAnnouncements()
+    warn = vi.spyOn(logger, 'warn').mockImplementation(() => logger)
+  })
+  afterEach(() => { warn.mockRestore() })
+
+  it('a hand-written "once": "true" is not once, and one WARN names the task and the value', () => {
+    fixture('szoveges', { schedule: '0 5 22 9 *', enabled: true, once: 'true' })
+    expect(io.readScheduledTask('szoveges')!.once).toBe(false)
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0][0]).toMatchObject({ task: 'szoveges', once: 'true' })
+    expect(String(warn.mock.calls[0][1])).toMatch(/NOT treated as once/)
+  })
+  it('every other non-boolean shape is not once either, and each is warned', () => {
+    const shapes: unknown[] = [1, 'yes', null, { on: true }, [true]]
+    shapes.forEach((v, i) => fixture(`alak-${i}`, { schedule: '0 5 22 9 *', enabled: true, once: v }))
+    shapes.forEach((_v, i) => expect(io.readScheduledTask(`alak-${i}`)!.once).toBe(false))
+    expect(warn).toHaveBeenCalledTimes(shapes.length)
+  })
+  it('read again, as the runner does every minute: no second WARN for the same task and value', () => {
+    fixture('ismetelt', { schedule: '0 5 22 9 *', enabled: true, once: 'true' })
+    io.readScheduledTask('ismetelt')
+    io.readScheduledTask('ismetelt')
+    expect(warn).toHaveBeenCalledTimes(1)
+  })
+  it('true, false and an absent once: no WARN', () => {
+    fixture('igaz', { schedule: '0 5 22 9 *', enabled: true, once: true })
+    fixture('hamis', { schedule: '0 5 22 9 *', enabled: true, once: false })
+    fixture('nincs', { schedule: '0 5 22 9 *', enabled: true })
+    expect(io.readScheduledTask('igaz')!.once).toBe(true)
+    expect(io.readScheduledTask('hamis')!.once).toBe(false)
+    expect(io.readScheduledTask('nincs')!.once).toBe(false)
+    expect(warn).not.toHaveBeenCalled()
+  })
+  it('disableOnceTask leaves a string "true" task on, the file byte-identical', () => {
+    fixture('szoveges-ki', { schedule: '0 5 22 9 *', enabled: true, once: 'true' })
+    const before = rawOf('szoveges-ki', 'task-config.json')
+    expect(io.disableOnceTask('szoveges-ki', Date.now())).toBe(false)
+    expect(rawOf('szoveges-ki', 'task-config.json')).toBe(before)
   })
 })
 
