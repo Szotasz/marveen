@@ -56,6 +56,17 @@ fi
 # telepito placeholder-e, nem chat (install-linux.sh:812). Ott ez a sor nincs meg;
 # ha a gyakorlatban kell neki is, kulon korben megy at, nem mellekhatasként.
 [ "$CHAT_ID" = "0" ] && CHAT_ID=""
+# b2e9c0c1: the value may be a COMMA-SEPARATED LIST, with the unit-fail-notify.sh rules (615002e1): spaces and a
+# trailing comma are not an error, an empty element and the "0" installer placeholder are dropped, and a single id
+# is a list of one. The runtime fallback above only fills an EMPTY variable, so a set list always wins over it.
+CHAT_IDS=()
+if [[ -n "$CHAT_ID" ]]; then
+  IFS=',' read -r -a _ids_split <<< "$CHAT_ID"
+  for _id in "${_ids_split[@]+"${_ids_split[@]}"}"; do
+    _id="${_id//[[:space:]]/}"
+    [[ -n "$_id" && "$_id" != "0" ]] && CHAT_IDS+=("$_id")
+  done
+fi
 
 log() { echo "[host-restart-watchdog] $*"; }
 
@@ -129,20 +140,49 @@ token=""
 if [[ -f "$ENV_FILE" ]]; then
   token="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"' \r\n')"
 fi
-if [[ -n "$token" && -n "$CHAT_ID" ]]; then
+if [[ -n "$token" && ${#CHAT_IDS[@]} -gt 0 ]]; then
   # Honest send (curl exit 0 AND "ok":true -- an HTTP 200 with ok:false was
   # invisible here before). Baseline stamped ONLY on confirmed delivery: this
   # one-shot notice must survive a transient send failure by retrying on the
   # next run, not by being marked done.
+  # b2e9c0c1: with a list, delivery is recorded PER RECIPIENT for this btime (DELIVERED_FILE, "<btime> <chat id>"
+  # lines): a recipient already served is not sent again, a failed one retries on the next run, and the baseline is
+  # stamped once every recipient has it. One failing recipient neither silences the others nor makes them get it twice.
   . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/send-telegram.sh"
-  if send_err="$(send_telegram_message "$token" "$CHAT_ID" "$msg" 2>&1)"; then
+  DELIVERED_FILE="$STATE_FILE.delivered"
+  if [[ -f "$DELIVERED_FILE" ]]; then
+    # a record of an earlier boot is stale: keep only this btime's lines
+    grep -E "^${btime} " "$DELIVERED_FILE" >"$DELIVERED_FILE.tmp" 2>/dev/null || true
+    mv -f "$DELIVERED_FILE.tmp" "$DELIVERED_FILE" 2>/dev/null || true
+  fi
+  _total=${#CHAT_IDS[@]}; _ok=0; _bad=0; _i=0
+  for _cid in "${CHAT_IDS[@]}"; do
+    _i=$((_i + 1))
+    _tag="recipient ${_i}/${_total} (...${_cid: -4})"   # the id is logged MASKED, as in unit-fail-notify.sh
+    if [[ -f "$DELIVERED_FILE" ]] && grep -qxF -- "${btime} ${_cid}" "$DELIVERED_FILE"; then
+      _ok=$((_ok + 1))
+      log "already delivered for this boot -- ${_tag}"
+      continue
+    fi
+    # NOTE: no break/exit on a failure: a failing recipient must not decide for the others.
+    if send_err="$(send_telegram_message "$token" "$_cid" "$msg" 2>&1)"; then
+      _ok=$((_ok + 1))
+      echo "${btime} ${_cid}" >>"$DELIVERED_FILE" 2>/dev/null || true
+      log "Telegram sent -- ${_tag}"
+    else
+      _bad=$((_bad + 1))
+      log "Telegram send FAILED -- ${_tag}, will retry next run: ${send_err}"
+    fi
+  done
+  if (( _bad == 0 )); then
     echo "$btime" >"$STATE_FILE" 2>/dev/null || true
-    log "Telegram sent (btime baseline stamped)"
+    rm -f "$DELIVERED_FILE" 2>/dev/null || true
+    log "Telegram sent to all ${_total} recipient(s) (btime baseline stamped)"
   else
-    log "Telegram send FAILED -- baseline NOT stamped, will retry next run: ${send_err}"
+    log "Telegram: ${_ok}/${_total} recipient(s) delivered, ${_bad} failed -- baseline NOT stamped, the failed one(s) retry next run"
   fi
 else
-  log "skipping Telegram (${HOST_KIND} restart still logged): missing${token:+}$( [[ -z "$token" ]] && echo ' TELEGRAM_BOT_TOKEN(via TELEGRAM_ENV)')$( [[ -z "$CHAT_ID" ]] && echo ' MARVEEN_ALERT_CHAT_ID')"
+  log "skipping Telegram (${HOST_KIND} restart still logged): missing${token:+}$( [[ -z "$token" ]] && echo ' TELEGRAM_BOT_TOKEN(via TELEGRAM_ENV)')$( [[ ${#CHAT_IDS[@]} -eq 0 ]] && echo ' MARVEEN_ALERT_CHAT_ID')"
 fi
 
 exit 0

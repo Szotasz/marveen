@@ -121,6 +121,17 @@ fi
 # same path as a real id, so the send is attempted, fails, and is retried every
 # run because a failed send deliberately never stamps the cooldown.
 [ "$CHAT_ID" = "0" ] && CHAT_ID=""
+# b2e9c0c1: the value may be a COMMA-SEPARATED LIST, with the unit-fail-notify.sh rules (615002e1): spaces and a
+# trailing comma are not an error, an empty element and the "0" installer placeholder are dropped, and a single id
+# is a list of one. The access.json fallback above only fills an EMPTY variable, so a set list always wins over it.
+CHAT_IDS=()
+if [[ -n "$CHAT_ID" ]]; then
+  IFS=',' read -r -a _ids_split <<< "$CHAT_ID"
+  for _id in "${_ids_split[@]+"${_ids_split[@]}"}"; do
+    _id="${_id//[[:space:]]/}"
+    [[ -n "$_id" && "$_id" != "0" ]] && CHAT_IDS+=("$_id")
+  done
+fi
 ALERT_COOLDOWN=600   # seconds; do not repeat the same band's alert within this
 
 log() { echo "[fleet-memory-gate] $*" >&2; }
@@ -157,7 +168,7 @@ send_alert() {
   (( DRY_RUN )) && { log "DRY-RUN alert [$band]: $msg"; return 0; }
   # No resolvable owner chat id -> never send (would otherwise go nowhere or, with
   # a hardcoded default, to a stranger). Log and move on.
-  [[ -z "$CHAT_ID" ]] && { log "no owner chat id resolved; skipping Telegram alert [$band]"; return 0; }
+  [[ ${#CHAT_IDS[@]} -eq 0 ]] && { log "no owner chat id resolved; skipping Telegram alert [$band]"; return 0; }
   local now prev_band prev_ep
   now="$(date +%s)"
   if [[ -f "$ALERT_STAMP" ]]; then
@@ -173,13 +184,36 @@ send_alert() {
     # Honest send + cooldown stamp ONLY on confirmed delivery
     # (NOTIFYVAKSWEEP826): stamping a failed send suppressed the retry for
     # ALERT_COOLDOWN while the fleet was heading into OOM.
+    # b2e9c0c1: with a list, delivery is recorded PER RECIPIENT for this band ("<band> <chat id>" lines): a recipient
+    # already served is not sent again, a failed one retries on the next run, and the cooldown stamp is written once
+    # every recipient has it. One failing recipient neither silences the others nor floods them with repeats.
     . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/send-telegram.sh"
-    local send_err
-    if send_err="$(send_telegram_message "$token" "$CHAT_ID" "$msg" 2>&1)"; then
-      log "Telegram sent [$band]"
+    local send_err delivered="$ALERT_STAMP.delivered" total=${#CHAT_IDS[@]} ok=0 bad=0 i=0 cid tag
+    if [[ -f "$delivered" ]]; then
+      # a record of another band belongs to an earlier episode: keep only this band's lines
+      grep -E "^${band} " "$delivered" >"$delivered.tmp" 2>/dev/null || true
+      mv -f "$delivered.tmp" "$delivered" 2>/dev/null || true
+    fi
+    for cid in "${CHAT_IDS[@]}"; do
+      i=$((i + 1))
+      tag="recipient ${i}/${total} (...${cid: -4})"   # the id is logged MASKED, as in unit-fail-notify.sh
+      if [[ -f "$delivered" ]] && grep -qxF -- "${band} ${cid}" "$delivered"; then
+        ok=$((ok + 1)); log "alert [$band] already delivered in this episode -- ${tag}"; continue
+      fi
+      # NOTE: no break/return on a failure: a failing recipient must not decide for the others.
+      if send_err="$(send_telegram_message "$token" "$cid" "$msg" 2>&1)"; then
+        ok=$((ok + 1)); echo "${band} ${cid}" >>"$delivered" 2>/dev/null || true
+        log "Telegram sent [$band] -- ${tag}"
+      else
+        bad=$((bad + 1)); log "Telegram send FAILED [$band] -- ${tag}: ${send_err}"
+      fi
+    done
+    if (( bad == 0 )); then
       echo "${band}:${now}" >"$ALERT_STAMP" 2>/dev/null || true
+      rm -f "$delivered" 2>/dev/null || true
+      log "Telegram sent [$band] to all ${total} recipient(s)"
     else
-      log "Telegram send FAILED -- cooldown stamp NOT written, will retry next run: ${send_err}"
+      log "Telegram [$band]: ${ok}/${total} delivered, ${bad} failed -- cooldown stamp NOT written, the failed one(s) retry next run"
     fi
   else
     log "no TELEGRAM_BOT_TOKEN; alert only logged"
