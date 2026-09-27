@@ -55,14 +55,27 @@ def env_patch(vars, install_dir=None):
             ledger_lib._install_dir = regi_dir
 
 
-def run_hook(db_path, cwd="/Users/edgar/marveen", extra_env=None):
+# The identity the rows are ledgered under AND the identity the hook resolves.
+# They used to be two different things: the rows said "marveen", while the hook
+# took its id from the install -- MAIN_AGENT_ID in <install>/.env, "marveen" only
+# as the fallback. On any install whose main agent has another name the hook
+# looked under that name, found no open question, and every case returned
+# got=None: the allow cases went green for the wrong reason and the suite could
+# not tell a working guard from a dead one. MARVEEN_AGENT_ID is the explicit
+# override agent_id_from_payload honours before the cwd, so pinning it here
+# makes the result independent of the host.
+AGENT = "tgguard-test"
+
+
+def run_hook(db_path, cwd=None, extra_env=None):
     env = dict(os.environ)
     env["LEDGER_DB_PATH"] = db_path
+    env["MARVEEN_AGENT_ID"] = AGENT
     if extra_env:
         env.update(extra_env)
     p = subprocess.run(
         [sys.executable, HOOK],
-        input=json.dumps({"cwd": cwd, "stop_hook_active": False}),
+        input=json.dumps({"cwd": cwd or os.path.dirname(db_path), "stop_hook_active": False}),
         capture_output=True, text=True, env=env, timeout=20,
     )
     out = p.stdout.strip()
@@ -72,6 +85,10 @@ def run_hook(db_path, cwd="/Users/edgar/marveen", extra_env=None):
             decision = json.loads(out).get("decision")
         except Exception:
             decision = "PARSE_ERROR:" + out
+    # An allow is "exit 0, no output". A hook that crashes before deciding
+    # looks the same on stdout, so the run must also be clean.
+    if p.returncode != 0 or p.stderr.strip():
+        decision = f"UNCLEAN(rc={p.returncode}):{p.stderr.strip()[-200:]}"
     return decision, p.returncode
 
 
@@ -110,26 +127,32 @@ def main():
     # 1. Unanswered real question -> BLOCK
     db = fresh_db()
     lib = load_lib(db)
-    lib.log_inbound("marveen", "8695313113", "1001", "mennyi 2+2?", "2026-08-02T22:00:00.000Z")
+    lib.log_inbound(AGENT, "8695313113", "1001", "mennyi 2+2?", "2026-08-02T22:00:00.000Z")
     d, _ = run_hook(db)
     check("unanswered question blocks", d, "block")
 
     # 2. Same question, but answered via reply-tool (outbound logged) -> ALLOW
-    lib.log_outbound("marveen", "8695313113", "4")
+    lib.log_outbound(AGENT, "8695313113", "4")
     d, _ = run_hook(db)
     check("answered question allows", d, None)
 
     # 3. Pure acknowledgement -> ALLOW (no reply owed)
     db = fresh_db()
     lib = load_lib(db)
-    lib.log_inbound("marveen", "8695313113", "1002", "köszi 👍", "2026-08-02T22:05:00.000Z")
+    lib.log_inbound(AGENT, "8695313113", "1002", "köszi 👍", "2026-08-02T22:05:00.000Z")
     d, _ = run_hook(db)
     check("ack allows", d, None)
+    # Liveness control: the same DB with a real question after the ack must
+    # block. Without it "ack allows" is also what a hook that never finds
+    # anything would return.
+    lib.log_inbound(AGENT, "8695313113", "1012", "és mikor?", "2026-08-02T22:06:00.000Z")
+    d, _ = run_hook(db)
+    check("ack control: a later question on the same DB blocks", d, "block")
 
     # 4. Stale (older than STALE_SECONDS) unanswered question -> ALLOW
     db = fresh_db()
     lib = load_lib(db)
-    lib.log_inbound("marveen", "8695313113", "1003", "regi kerdes", "2026-08-01T00:00:00.000Z")
+    lib.log_inbound(AGENT, "8695313113", "1003", "regi kerdes", "2026-08-01T00:00:00.000Z")
     # backdate created_at directly
     con = lib.connect()
     con.execute("UPDATE conversation_log SET created_at=? WHERE message_id='1003'",
@@ -137,11 +160,15 @@ def main():
     con.commit(); con.close()
     d, _ = run_hook(db)
     check("stale question allows", d, None)
+    # Control: the same row with a staleness window wider than its age must
+    # block, so it is the age that allowed it, not a hook that saw nothing.
+    d, _ = run_hook(db, extra_env={"TG_GUARD_STALE_SECONDS": "86400"})
+    check("stale control: same row inside the window blocks", d, "block")
 
     # 5. Max-block backstop: after MAX_BLOCKS blocks on the same id -> ALLOW
     db = fresh_db()
     lib = load_lib(db)
-    lib.log_inbound("marveen", "8695313113", "1004", "makacs kerdes", "2026-08-02T22:10:00.000Z")
+    lib.log_inbound(AGENT, "8695313113", "1004", "makacs kerdes", "2026-08-02T22:10:00.000Z")
     env = {"TG_GUARD_MAX_BLOCKS": "2"}
     d1, _ = run_hook(db, extra_env=env)   # block 1
     d2, _ = run_hook(db, extra_env=env)   # block 2
@@ -152,9 +179,22 @@ def main():
 
     # 6. No inbound at all (e.g. a heartbeat-only turn) -> ALLOW
     db = fresh_db()
-    load_lib(db)
+    lib = load_lib(db)
     d, _ = run_hook(db)
     check("no inbound allows", d, None)
+    lib.log_inbound(AGENT, "8695313113", "1006", "most mar van kerdes?", "2026-08-02T22:20:00.000Z")
+    d, _ = run_hook(db)
+    check("no-inbound control: once a question arrives it blocks", d, "block")
+
+    # 6b. Rows ledgered under ANOTHER agent must not make this one block. This
+    #     is the other half of the identity pin: the hook reads its own rows.
+    db = fresh_db()
+    lib = load_lib(db)
+    lib.log_inbound("some-other-agent", "8695313113", "1007", "kinek szol ez?", "2026-08-02T22:25:00.000Z")
+    d, _ = run_hook(db)
+    check("another agent's open question does not block this one", d, None)
+    d, _ = run_hook(db, extra_env={"MARVEEN_AGENT_ID": "some-other-agent"})
+    check("... but blocks the agent it belongs to", d, "block")
 
     # 7. Provider resolution and the reply-tool name it produces.
     #    A table test, because the two halves of the tool name differ per
