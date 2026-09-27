@@ -92,17 +92,23 @@ def run_hook(db_path, cwd=None, extra_env=None):
     return decision, p.returncode
 
 
+# Kept alive for the whole run; TemporaryDirectory removes each one when the
+# interpreter finalises it.
+_TMPDIRS = []
+
+
 def fresh_db():
-    fd, path = tempfile.mkstemp(suffix=".db", prefix="tgguard-")
-    os.close(fd)
-    # remove any stale statefile from a previous run in the same tmpdir
-    for f in os.listdir(os.path.dirname(path)):
-        if f.startswith(".tg-reply-guard-"):
-            try:
-                os.remove(os.path.join(os.path.dirname(path), f))
-            except Exception:
-                pass
-    return path
+    # Each DB gets its own directory. The hook keeps its per-agent statefile
+    # NEXT TO the DB (_statefile: dirname(db_path())/.tg-reply-guard-<agent>),
+    # and AGENT is a constant, so a DB made straight in the shared tmpdir put
+    # every concurrent run of this suite on the same statefile -- and the old
+    # "clear stale statefiles" sweep here deleted the other runs' state
+    # mid-case. A private directory makes the statefile private too, starts
+    # every case clean without touching anyone else's files, and needs no
+    # sweep at all.
+    d = tempfile.TemporaryDirectory(prefix="tgguard-")
+    _TMPDIRS.append(d)
+    return os.path.join(d.name, "ledger.db")
 
 
 def load_lib(db_path):
@@ -253,6 +259,20 @@ def main():
             tool, nev = guard._reply_tool_name()
         check("nothing configured -> generic wording", tool, "a csatorna reply tool")
         check("nothing configured -> generic name", nev, "csatorna")
+
+    # 8. Fixture isolation: the hook's statefile sits beside the DB, so every
+    #    DB must live in a directory of its own, and making a new one must not
+    #    touch the statefile of another DB (a concurrent run of this suite).
+    a, b = fresh_db(), fresh_db()
+    check("fresh_db: private dir, not the shared tmpdir",
+          os.path.dirname(a) != tempfile.gettempdir(), True)
+    check("fresh_db: each DB its own dir",
+          os.path.dirname(a) != os.path.dirname(b), True)
+    other = os.path.join(os.path.dirname(a), f".tg-reply-guard-{AGENT}")
+    with open(other, "w") as f:
+        f.write("{}")
+    fresh_db()
+    check("fresh_db: leaves another DB's statefile alone", os.path.exists(other), True)
 
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)
