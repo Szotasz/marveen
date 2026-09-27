@@ -361,8 +361,10 @@ export function writeScheduledTask(
 /**
  * Whether a prompt task's run counts as the "first successful run" of a once task (card 7d2b49b4): the
  * run closed 'done' -- the session worked on it and went idle -- AND the transcript shows the prompt arrived
- * intact. Every other ending ('abandoned', 'lost') and every other delivery verdict (damaged, not arrived,
- * unverifiable, never checked) is not a success: the task stays on and visible rather than silently gone.
+ * intact, as a turn of its own ('intact') or queued into a running turn ('intact-queued', card c8a6c2cc:
+ * whole, just handed over while the agent was busy). Every other ending ('abandoned', 'lost') and every
+ * other delivery verdict (damaged, not arrived, unverifiable, never checked) is not a success: the task
+ * stays on and visible rather than silently gone.
  *
  * A REMOTE agent is the one exception (review on #1806): its transcript lives on its own host, so the
  * runner never records sentText/typedAt for it and no delivery verdict can exist. For such a run a closed
@@ -377,7 +379,7 @@ export function isOnceRunSuccess(
 ): boolean {
   if (decision !== 'done') return false
   if (delivery.remote === true) return true
-  return deliveryVerdict === 'intact'
+  return deliveryVerdict === 'intact' || deliveryVerdict === 'intact-queued'
 }
 
 /**
