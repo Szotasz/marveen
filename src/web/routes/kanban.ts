@@ -613,7 +613,13 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // `actor` is metadata for the audit event, not a card column -- keep it out
     // of the field set so it can never be mistaken for one. Same name the /move
     // route already accepts, so callers do not have to learn a second spelling.
-    const { actor, ...data } = JSON.parse(body.toString()) as Record<string, unknown> & { actor?: string }
+    const { actor, ...data } = JSON.parse(body.toString()) as Record<string, unknown> & { actor?: unknown }
+    // The actor is bound into the event rows, which only take a string or NULL. Anything else is refused BEFORE
+    // any write (card f6fba9ec, found in review: `actor: true` changed the card, then the row insert threw, 500).
+    if (actor !== undefined && actor !== null && typeof actor !== 'string') {
+      json(res, { error: 'actor must be a string or null' }, 400)
+      return true
+    }
     // #1023: reject unknown fields loudly instead of dropping them silently.
     // updateKanbanCard writes only KANBAN_WRITABLE_FIELDS, so anything outside
     // the accepted set below was silently discarded while the write still
@@ -654,7 +660,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
-    if (updateKanbanCard(id, data, actor)) { json(res, { ok: true }); return true }
+    // No actor in the request: a browser session's user made the change (the dashboard's own edits send none), so
+    // the rows name them; a token caller without one stays anonymous (NULL), as before (card f6fba9ec).
+    const effectiveActor = typeof actor === 'string' ? actor
+      : ctx.auth?.kind === 'session' && ctx.auth.user ? ctx.auth.user
+      : undefined
+    if (updateKanbanCard(id, data, effectiveActor)) { json(res, { ok: true }); return true }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
   }

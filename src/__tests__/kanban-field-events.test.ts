@@ -148,6 +148,41 @@ describe('updateKanbanCard: one kanban_card_field_events row per REAL change of 
     expect(statusEventRows()).toBe(0)
   })
 
+  it('ONE TRANSACTION: a field-row insert that fails rolls the card write back too (forced with a trigger)', () => {
+    createKanbanCard({ id: 'tx', title: 'Rolled back', due_date: DUE })
+    getDb().prepare('UPDATE kanban_cards SET updated_at = 1 WHERE id = ?').run('tx')
+    getDb().exec(`CREATE TRIGGER fail_field BEFORE INSERT ON kanban_card_field_events BEGIN SELECT RAISE(ABORT, 'forced field-row failure'); END`)
+
+    expect(() => updateKanbanCard('tx', { due_date: LATER }, 'x')).toThrow(/forced field-row failure/)
+
+    expect(getKanbanCard('tx')!.due_date).toBe(DUE)
+    expect(getKanbanCard('tx')!.updated_at).toBe(1)
+    expect(getKanbanCardFieldEvents('tx')).toHaveLength(0)
+  })
+
+  it('ONE TRANSACTION: a status-event insert that fails rolls the status change and its field rows back', () => {
+    createKanbanCard({ id: 'txs', title: 'Status rolled back', priority: 'normal' })
+    getDb().exec(`CREATE TRIGGER fail_status BEFORE INSERT ON kanban_card_events BEGIN SELECT RAISE(ABORT, 'forced status-row failure'); END`)
+
+    expect(() => updateKanbanCard('txs', { status: 'in_progress', priority: 'high' }, 'x')).toThrow(/forced status-row failure/)
+
+    expect(getKanbanCard('txs')!.status).toBe('planned')
+    expect(getKanbanCard('txs')!.priority).toBe('normal')
+    expect(getKanbanCardEvents('txs')).toHaveLength(0)
+    expect(getKanbanCardFieldEvents('txs')).toHaveLength(0)
+  })
+
+  it('ONE TRANSACTION: the ancestor stamp is rolled back with it', () => {
+    createKanbanCard({ id: 'parent', title: 'Thread' })
+    createKanbanCard({ id: 'child', title: 'Subcard', parent_id: 'parent', due_date: DUE })
+    getDb().prepare('UPDATE kanban_cards SET updated_at = 1 WHERE id = ?').run('parent')
+    getDb().exec(`CREATE TRIGGER fail_field2 BEFORE INSERT ON kanban_card_field_events BEGIN SELECT RAISE(ABORT, 'forced'); END`)
+
+    expect(() => updateKanbanCard('child', { due_date: LATER }, 'x')).toThrow()
+
+    expect(getKanbanCard('parent')!.updated_at).toBe(1)
+  })
+
   it('kanban_card_events keeps its columns: the status table was not extended', () => {
     const cols = (getDb().prepare('PRAGMA table_info(kanban_card_events)').all() as Array<{ name: string }>).map((c) => c.name)
     expect(cols).toEqual(['id', 'card_id', 'from_status', 'to_status', 'actor', 'created_at'])
@@ -155,7 +190,7 @@ describe('updateKanbanCard: one kanban_card_field_events row per REAL change of 
 })
 
 describe('the routes: PUT writes the row, GET /field-events reads it, GET /events keeps its shape', () => {
-  function ctx(method: string, path: string, body?: unknown) {
+  function ctx(method: string, path: string, body?: unknown, auth?: RouteContext['auth']) {
     const out: { status: number; body: any } = { status: 200, body: null }
     const res: any = {
       writeHead(status: number) { out.status = status; return res },
@@ -164,10 +199,10 @@ describe('the routes: PUT writes the row, GET /field-events reads it, GET /event
     }
     const req: any = Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))])
     const url = new URL(`http://localhost:3420${path}`)
-    return { c: { req, res, path: url.pathname, method, url } as RouteContext, out }
+    return { c: { req, res, path: url.pathname, method, url, auth } as RouteContext, out }
   }
-  async function call(method: string, path: string, body?: unknown) {
-    const { c, out } = ctx(method, path, body)
+  async function call(method: string, path: string, body?: unknown, auth?: RouteContext['auth']) {
+    const { c, out } = ctx(method, path, body, auth)
     expect(await tryHandleKanban(c)).toBe(true)
     return out
   }
@@ -183,6 +218,51 @@ describe('the routes: PUT writes the row, GET /field-events reads it, GET /event
     expect(fields.body[0]).toMatchObject({ card_id: 'rt', field: 'due_date', old_value: String(DUE), new_value: String(LATER), actor: 'dev-a' })
     const events = await call('GET', '/api/kanban/rt/events')
     expect(events.body).toEqual([])
+  })
+
+  it('X7: an actor that is not a string or null is refused BEFORE the write -- 400, card unchanged, no rows', async () => {
+    createKanbanCard({ id: 'x7', title: 'Bad actor', due_date: DUE })
+    for (const bad of [true, { name: 'x' }, 42, ['a']]) {
+      const out = await call('PUT', '/api/kanban/x7', { due_date: LATER, status: 'in_progress', actor: bad })
+      expect(out.status, JSON.stringify(bad)).toBe(400)
+      expect(out.body.error).toMatch(/actor must be a string or null/)
+    }
+    expect(getKanbanCard('x7')!.due_date).toBe(DUE)
+    expect(getKanbanCard('x7')!.status).toBe('planned')
+    expect(getKanbanCardFieldEvents('x7')).toHaveLength(0)
+    expect(getKanbanCardEvents('x7')).toHaveLength(0)
+  })
+
+  it('X7 INVARIANT (taken over from the review): an unbindable actor never leaves an audited field changed without its row', async () => {
+    // Mechanism-free on purpose: whether the route refuses (400) or the write rolls back (500), a changed field
+    // without its row is the one outcome that must not happen.
+    createKanbanCard({ id: 'x7i', title: 'x7', due_date: DUE })
+    try { await call('PUT', '/api/kanban/x7i', { due_date: LATER, actor: true }) } catch { /* a throw is allowed, a half write is not */ }
+    const changed = getKanbanCard('x7i')!.due_date !== DUE
+    expect(changed ? getKanbanCardFieldEvents('x7i').length : 1).toBe(1)
+  })
+
+  it('no actor in the request: a browser session names its user, on the field row and the status event', async () => {
+    createKanbanCard({ id: 'ses', title: 'Edited in the dashboard', due_date: DUE })
+
+    expect((await call('PUT', '/api/kanban/ses', { due_date: LATER, status: 'in_progress' }, { kind: 'session', user: 'admin' })).status).toBe(200)
+
+    expect(fieldRows('ses')).toEqual([{ field: 'due_date', old_value: String(DUE), new_value: String(LATER), actor: 'admin' }])
+    expect(getKanbanCardEvents('ses')[0].actor).toBe('admin')
+  })
+
+  it('actor: null in a session is also "no actor"; an explicit actor string wins over the session', async () => {
+    createKanbanCard({ id: 'nul2', title: 'Null actor', priority: 'normal' })
+    await call('PUT', '/api/kanban/nul2', { priority: 'high', actor: null }, { kind: 'session', user: 'admin' })
+    await call('PUT', '/api/kanban/nul2', { priority: 'low', actor: 'dev-a' }, { kind: 'session', user: 'admin' })
+    expect(fieldRows('nul2').map((r) => r.actor)).toEqual(['admin', 'dev-a'])
+  })
+
+  it('no actor and no session (a token caller, or no principal): the row stays anonymous, as before', async () => {
+    createKanbanCard({ id: 'tok', title: 'Token caller', priority: 'normal' })
+    await call('PUT', '/api/kanban/tok', { priority: 'high' }, { kind: 'token' })
+    await call('PUT', '/api/kanban/tok', { priority: 'low' })
+    expect(fieldRows('tok').map((r) => r.actor)).toEqual([null, null])
   })
 
   it('a card without changes: /field-events is an empty array', async () => {
