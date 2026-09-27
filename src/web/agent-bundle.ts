@@ -13,6 +13,7 @@ import { join, basename } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { agentDir } from './agent-config.js'
+import { MAIN_AGENT_ID } from '../config.js'
 import { sanitizeAgentName } from './sanitize.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 
@@ -271,6 +272,8 @@ export function importAgentBundle(
     const rawName = (opts.overrideName ?? manifest.agentName).trim()
     const name = sanitizeAgentName(rawName)
     if (!name) throw new Error('Invalid agent name (empty after sanitization)')
+    // Same reservation as POST /api/agents: the main agent is not under agents/.
+    if (name === MAIN_AGENT_ID) throw new Error(`Agent name "${name}" is reserved for the main agent`)
 
     sanitizeImportedConfig(stagedAgentDir)
 
@@ -462,6 +465,7 @@ export function importAllAgentsBundle(
       try { if (!statSync(stagedAgentDir).isDirectory()) continue } catch { continue }
       const name = sanitizeAgentName(entry)
       if (!name) { skipped.push({ name: entry, reason: 'invalid name' }); continue }
+      if (name === MAIN_AGENT_ID) { skipped.push({ name, reason: 'reserved for the main agent' }); continue }
 
       sanitizeImportedConfig(stagedAgentDir)
       const dest = resolveDest(name) // agentDir: safeJoin rejects traversal

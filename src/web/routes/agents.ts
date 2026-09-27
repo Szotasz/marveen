@@ -1032,6 +1032,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const cliGate = await refuseIfCliCannotLaunch(model)
     if (cliGate) { json(res, cliGate, 422); return true }
     if (!description) { json(res, { error: 'Description is required' }, 400); return true }
+    // The main agent lives in PROJECT_ROOT, not under agents/, so the existsSync
+    // below never sees it: without this, a sub-agent named like the main one
+    // is created and shares its id in messages, kanban and memories.
+    if (name === MAIN_AGENT_ID) { json(res, { error: 'Name is reserved for the main agent' }, 409); return true }
     if (existsSync(agentDir(name))) { json(res, { error: 'Agent already exists' }, 409); return true }
 
     scaffoldAgentDir(name)
