@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import {
   listKanbanCards, kanbanAssigneeExists, createKanbanCard, updateKanbanCard, KANBAN_WRITABLE_FIELDS,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
-  getKanbanComments, addKanbanComment, getKanbanCardEvents, listKanbanProjects,
+  getKanbanComments, addKanbanComment, getKanbanCardEvents, getKanbanCardFieldEvents, listKanbanProjects,
   getKanbanCard, getChildCards, getDb,
   createAgentMessage, markKanbanCardDispatched,
   getKanbanSeqByIdPrefix,
@@ -765,6 +765,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanEventsMatch && method === 'GET') {
     const cardId = decodeURIComponent(kanbanEventsMatch[1])
     json(res, getKanbanCardEvents(cardId))
+    return true
+  }
+
+  // The due_date / assignee / priority changes (card f6fba9ec). A route of its
+  // own, so the /events array above keeps its shape for every existing reader.
+  const kanbanFieldEventsMatch = path.match(/^\/api\/kanban\/([^/]+)\/field-events$/)
+  if (kanbanFieldEventsMatch && method === 'GET') {
+    const cardId = decodeURIComponent(kanbanFieldEventsMatch[1])
+    json(res, getKanbanCardFieldEvents(cardId))
     return true
   }
 
