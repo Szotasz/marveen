@@ -17,32 +17,46 @@ export const OVERRIDES_PATH = join(STORE_DIR, 'config-overrides.json')
 let cache: Record<string, string | number> = {}
 let watcher: FSWatcher | undefined
 
-// 'unreadable' = the file is on disk but does not parse as a JSON object (or
-// cannot be read at all). Every getter then treats it as empty, so a key
-// written in it does not take effect -- which a message must not report as
-// "the file does not contain the key" (card 8a4056ad, a review finding).
+// 'unreadable' = the file is on disk but cannot be read, does not parse as JSON,
+// or parses to something that is not an object. Every getter then treats it
+// as empty, so a key written in it does not take effect -- which a message must
+// not report as "the file does not contain the key" (card 8a4056ad, a review
+// finding). The cause is kept apart, because it is measured, not guessed: the
+// fs error code of the read (EACCES, EISDIR, ...), 'invalid-json' or
+// 'not-an-object' (found in review: a chmod 000 file was reported as bad JSON).
 export type OverridesFileState = 'missing' | 'readable' | 'unreadable'
+export type OverridesFileCheck = { state: OverridesFileState; cause?: string }
 
-function readOverridesFile(): { state: OverridesFileState; values: Record<string, string | number> } {
+function readOverridesFile(): OverridesFileCheck & { values: Record<string, string | number> } {
+  if (!existsSync(OVERRIDES_PATH)) return { state: 'missing', values: {} }
+  let raw: string
   try {
-    if (!existsSync(OVERRIDES_PATH)) return { state: 'missing', values: {} }
-    const raw = readFileSync(OVERRIDES_PATH, 'utf-8')
-    const parsed = JSON.parse(raw)
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return { state: 'readable', values: parsed }
-    return { state: 'unreadable', values: {} }
-  } catch {
-    return { state: 'unreadable', values: {} }
+    raw = readFileSync(OVERRIDES_PATH, 'utf-8')
+  } catch (err) {
+    return { state: 'unreadable', cause: (err as NodeJS.ErrnoException)?.code ?? 'read-error', values: {} }
   }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return { state: 'unreadable', cause: 'invalid-json', values: {} }
+  }
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    return { state: 'readable', values: parsed as Record<string, string | number> }
+  }
+  return { state: 'unreadable', cause: 'not-an-object', values: {} }
 }
 
 function loadFromDisk(): Record<string, string | number> {
   return readOverridesFile().values
 }
 
-// The state of config-overrides.json on disk right now, by the same test the
-// cache is loaded with, so "unreadable" here means exactly "read as empty".
-export function getOverridesFileState(): OverridesFileState {
-  return readOverridesFile().state
+// The state of config-overrides.json on disk right now (and, when unreadable,
+// the measured cause), by the same read the cache is loaded with, so
+// "unreadable" here means exactly "read as empty".
+export function getOverridesFileState(): OverridesFileCheck {
+  const { state, cause } = readOverridesFile()
+  return cause === undefined ? { state } : { state, cause }
 }
 
 cache = loadFromDisk()

@@ -12,14 +12,15 @@
 //
 // A config-overrides.json that is on disk but does not parse is read as EMPTY by every getter, so the key in it
 // does not take effect; the notice says "exists but unreadable" there, never "exists without this key", and gives
-// no "=1" advice while the file's content is unknown (a review finding).
+// no "=1" advice while the file's content is unknown (a review finding). The cause it names is the measured one: a read
+// error by its fs code (EACCES, EISDIR), bad JSON only for bad JSON (a second review finding).
 //
 // SANDBOX, ENFORCED (the settings-store suite's rule): config-overrides.json lives under STORE_DIR, which is
 // baked into OVERRIDES_PATH at import, so both are mocked before the modules load; .env is a fake map. Nothing
 // here can reach a real store/ or .env.
 
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, chmodSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -62,18 +63,32 @@ const KEY = 'MAIN_AGENT_ISOLATED_CONFIG'
 const ADVICE = 'MAIN_AGENT_ISOLATED_CONFIG=1'
 
 function overrides(o: Record<string, string> | null): void {
-  if (existsSync(OVERRIDES_PATH)) rmSync(OVERRIDES_PATH)
+  if (existsSync(OVERRIDES_PATH)) rmSync(OVERRIDES_PATH, { recursive: true, force: true })
   if (o) writeFileSync(OVERRIDES_PATH, JSON.stringify(o))
   reloadOverridesForTest()
 }
 /** The file as bytes, for the states JSON.stringify cannot produce (the review's case: the key is IN the text,
  *  the file does not parse). */
 function overridesRaw(text: string): void {
-  if (existsSync(OVERRIDES_PATH)) rmSync(OVERRIDES_PATH)
+  if (existsSync(OVERRIDES_PATH)) rmSync(OVERRIDES_PATH, { recursive: true, force: true })
   writeFileSync(OVERRIDES_PATH, text)
   reloadOverridesForTest()
 }
 const BROKEN = `{ "${KEY}": "1", }`
+/** A readable-looking file the process cannot open: valid JSON holding the key, mode 000 (the review's F5 state).
+ *  root reads through mode 000, so the cases that need it are skipped there. */
+function overridesLocked(o: Record<string, string>): void {
+  overrides(o)
+  chmodSync(OVERRIDES_PATH, 0o000)
+  reloadOverridesForTest()
+}
+/** A directory where the file should be: the read fails with EISDIR for every user, root included. */
+function overridesDirectory(): void {
+  if (existsSync(OVERRIDES_PATH)) rmSync(OVERRIDES_PATH, { recursive: true, force: true })
+  mkdirSync(OVERRIDES_PATH)
+  reloadOverridesForTest()
+}
+const AS_ROOT = typeof process.getuid === 'function' && process.getuid() === 0
 function log(): string {
   const p = join(STORE, 'channels-failures.log')
   return existsSync(p) ? readFileSync(p, 'utf-8') : ''
@@ -116,17 +131,29 @@ describe('getEffectiveSettingSource: the same order as getEffectiveSettingValue,
   })
 })
 
-describe('getOverridesFileState: the same test the cache is loaded with, so "unreadable" means "read as empty"', () => {
-  it('missing, readable (even an empty object), unreadable (does not parse, or parses to a non-object)', () => {
-    expect(getOverridesFileState()).toBe('missing')
+describe('getOverridesFileState: the same read the cache is loaded with, so "unreadable" means "read as empty"', () => {
+  it('missing, readable (even an empty object), unreadable with the measured cause (bad JSON, or not an object)', () => {
+    expect(getOverridesFileState()).toEqual({ state: 'missing' })
     overrides({})
-    expect(getOverridesFileState()).toBe('readable')
+    expect(getOverridesFileState()).toEqual({ state: 'readable' })
     overrides({ CLAUDE_ROTATION_ENABLED: '1' })
-    expect(getOverridesFileState()).toBe('readable')
-    for (const text of [BROKEN, '', '[]', '5', 'null', '"x"']) {
+    expect(getOverridesFileState()).toEqual({ state: 'readable' })
+    for (const text of [BROKEN, '']) {
       overridesRaw(text)
-      expect(getOverridesFileState(), text).toBe('unreadable')
+      expect(getOverridesFileState(), text).toEqual({ state: 'unreadable', cause: 'invalid-json' })
     }
+    for (const text of ['[]', '5', 'null', '"x"']) {
+      overridesRaw(text)
+      expect(getOverridesFileState(), text).toEqual({ state: 'unreadable', cause: 'not-an-object' })
+    }
+  })
+  it('a read error is its own cause, named by the fs code, not bad JSON: a directory in place of the file (EISDIR)', () => {
+    overridesDirectory()
+    expect(getOverridesFileState()).toEqual({ state: 'unreadable', cause: 'EISDIR' })
+  })
+  it.skipIf(AS_ROOT)('a file the process may not open (mode 000) is EACCES, although its content is valid JSON', () => {
+    overridesLocked({ [KEY]: '1' })
+    expect(getOverridesFileState()).toEqual({ state: 'unreadable', cause: 'EACCES' })
   })
   it('a key written in an unreadable file does not take effect: the next layer answers', () => {
     ENV = { [KEY]: '0' }
@@ -176,7 +203,7 @@ describe('isolationLostAdvice: each branch says only what it measured', () => {
     expect(t).not.toContain(ADVICE)
   })
   it('file unreadable, key missing from .env: no "set nowhere", no =1 advice, the file is named as unreadable', () => {
-    const t = isolationLostAdvice({ value: '0', source: 'default', overridesFile: 'unreadable' })
+    const t = isolationLostAdvice({ value: '0', source: 'default', overridesFile: 'unreadable', overridesFileCause: 'invalid-json' })
     expect(t).toContain('letezik, de nem olvashato')
     expect(t).toContain('nem merheto')
     expect(t).toContain('a fajl javitasa')
@@ -185,11 +212,20 @@ describe('isolationLostAdvice: each branch says only what it measured', () => {
     expect(t).not.toContain(ADVICE)
   })
   it('file unreadable, explicit 0 in .env: the deliberate 0 stands, and the file is not said to lack the key', () => {
-    const t = isolationLostAdvice({ value: '0', source: 'env', overridesFile: 'unreadable' })
+    const t = isolationLostAdvice({ value: '0', source: 'env', overridesFile: 'unreadable', overridesFileCause: 'invalid-json' })
     expect(t).toContain('szandekos beallitas (=0)')
     expect(t).toContain('a .env-ben (a store/config-overrides.json letezik, de nem olvashato')
     expect(t).not.toContain('nem tartalmazza')
     expect(t).not.toContain(ADVICE)
+  })
+  it('the cause is the measured one: a read error by its code and never JSON; JSON only for JSON', () => {
+    const read = isolationLostAdvice({ value: '0', source: 'env', overridesFile: 'unreadable', overridesFileCause: 'EACCES' })
+    expect(read).toContain('letezik, de nem olvashato: a beolvasasa EACCES hibat adott')
+    expect(read).not.toMatch(/JSON/)
+    expect(isolationLostAdvice({ value: '0', source: 'env', overridesFile: 'unreadable', overridesFileCause: 'invalid-json' }))
+      .toContain('letezik, de nem olvashato: nem ervenyes JSON;')
+    expect(isolationLostAdvice({ value: '0', source: 'env', overridesFile: 'unreadable', overridesFileCause: 'not-an-object' }))
+      .toContain('letezik, de nem olvashato: a tartalma nem JSON-objektum;')
   })
   it('an unreadable source: said so, no advice', () => {
     const t = isolationLostAdvice(null)
@@ -204,8 +240,8 @@ describe('isolationLostAdvice: each branch says only what it measured', () => {
       isolationLostAdvice({ value: '0', source: 'override', overridesFile: 'readable' }),
       isolationLostAdvice({ value: '1', source: 'override', overridesFile: 'readable' }),
       isolationLostAdvice({ value: 'yes', source: 'env', overridesFile: 'missing' }),
-      isolationLostAdvice({ value: '0', source: 'default', overridesFile: 'unreadable' }),
-      isolationLostAdvice({ value: '0', source: 'env', overridesFile: 'unreadable' }),
+      isolationLostAdvice({ value: '0', source: 'default', overridesFile: 'unreadable', overridesFileCause: 'invalid-json' }),
+      isolationLostAdvice({ value: '0', source: 'env', overridesFile: 'unreadable', overridesFileCause: 'EACCES' }),
       isolationLostAdvice(null),
     ]
     for (const t of all) {
@@ -246,14 +282,31 @@ describe('end to end through resolveMainConfigDecision, the real settings-store 
     expect(sent[0][2]).toContain('letezik, de nem olvashato')
     expect(sent[0][2]).not.toContain('nem tartalmazza')
     expect(sent[0][2]).not.toContain(ADVICE)
-    expect(log()).toContain(`${KEY}=0 from .env; store/config-overrides.json unreadable, read as empty`)
+    expect(sent[0][2]).toContain('nem ervenyes JSON')
+    expect(log()).toContain(`${KEY}=0 from .env; store/config-overrides.json unreadable (invalid JSON), read as empty`)
   })
   it('the key in a file that does not parse, nothing in .env: the default is named, no =1 advice', () => {
     overridesRaw(BROKEN)
     resolveMainConfigDecision()
     expect(sent[0][2]).toContain('nem merheto')
     expect(sent[0][2]).not.toContain(ADVICE)
-    expect(log()).toContain(`${KEY}=0 from registry default; store/config-overrides.json unreadable, read as empty`)
+    expect(log()).toContain(`${KEY}=0 from registry default; store/config-overrides.json unreadable (invalid JSON), read as empty`)
+  })
+  it.skipIf(AS_ROOT)('THE MODE-000 STATE: valid JSON with the key, mode 000, .env=0 -> the read error by its code, no JSON', () => {
+    overridesLocked({ [KEY]: '1' })
+    ENV = { [KEY]: '0' }
+    resolveMainConfigDecision()
+    expect(sent[0][2]).toContain('a beolvasasa EACCES hibat adott')
+    expect(sent[0][2]).not.toMatch(/JSON/)
+    expect(log()).toContain(`${KEY}=0 from .env; store/config-overrides.json unreadable (EACCES), read as empty`)
+  })
+  it('a directory in place of the file, .env=0: EISDIR named, no JSON (runs as root too)', () => {
+    overridesDirectory()
+    ENV = { [KEY]: '0' }
+    resolveMainConfigDecision()
+    expect(sent[0][2]).toContain('a beolvasasa EISDIR hibat adott')
+    expect(sent[0][2]).not.toMatch(/JSON/)
+    expect(log()).toContain(`${KEY}=0 from .env; store/config-overrides.json unreadable (EISDIR), read as empty`)
   })
   it('an override of 0 over a .env of 1 is reported as the override (the precedence, measured through the store)', () => {
     overrides({ [KEY]: '0' })

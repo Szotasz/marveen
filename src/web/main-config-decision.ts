@@ -89,16 +89,32 @@ const FLEET_TOKEN_UNUSED_ADVICE =
 
 /** What the guard can MEASURE about MAIN_AGENT_ISOLATED_CONFIG when a launch that has run isolated before
  *  comes up on the shared root: the effective value, the layer it came from, and the state of the overrides
- *  file (missing; readable, so it may simply lack this key; or unreadable, so whatever it holds is ignored). */
-export type IsolationSettingFacts = { value: string; source: SettingSource; overridesFile: OverridesFileState }
+ *  file (missing; readable, so it may simply lack this key; or unreadable, so whatever it holds is ignored) with
+ *  the measured cause of an unreadable one (an fs error code, 'invalid-json' or 'not-an-object'). */
+export type IsolationSettingFacts = { value: string; source: SettingSource; overridesFile: OverridesFileState; overridesFileCause?: string }
 
 function readIsolationSettingFacts(): IsolationSettingFacts | null {
   try {
     const { value, source } = getEffectiveSettingSource('MAIN_AGENT_ISOLATED_CONFIG')
-    return { value: String(value).trim(), source, overridesFile: getOverridesFileState() }
+    const file = getOverridesFileState()
+    return { value: String(value).trim(), source, overridesFile: file.state, ...(file.cause === undefined ? {} : { overridesFileCause: file.cause }) }
   } catch {
     return null
   }
+}
+
+// Why an existing overrides file was read as empty, in the notice's words: only what was measured, so a read
+// error is named by its code and never called bad JSON (a review finding).
+function unreadableCause(cause: string | undefined): string {
+  if (cause === 'invalid-json') return 'nem ervenyes JSON'
+  if (cause === 'not-an-object') return 'a tartalma nem JSON-objektum'
+  return cause ? `a beolvasasa ${cause} hibat adott` : 'a beolvasasa hibat adott'
+}
+
+function unreadableCauseForLog(cause: string | undefined): string {
+  if (cause === 'invalid-json') return 'invalid JSON'
+  if (cause === 'not-an-object') return 'not a JSON object'
+  return cause ?? 'read error'
 }
 
 const SOURCE_LABEL: Record<SettingSource, string> = {
@@ -119,7 +135,7 @@ export function isolationLostAdvice(f: IsolationSettingFacts | null): string {
   const head = '[GUARD] A fo agens most a KOZOS ~/.claude alol indult ujra, pedig letezik izolalt config dir (.channels-config).'
   if (!f) return `${head} A MAIN_AGENT_ISOLATED_CONFIG forrasa nem olvashato, ezert a guard nem allit okot es nem javasol teendot.`
   const file = f.overridesFile === 'readable' ? 'letezik, de ezt a kulcsot nem tartalmazza'
-    : f.overridesFile === 'unreadable' ? 'letezik, de nem olvashato: nem ervenyes JSON-objektum, a futo kod uresnek veszi, igy a benne allo ertek nem hat'
+    : f.overridesFile === 'unreadable' ? `letezik, de nem olvashato: ${unreadableCause(f.overridesFileCause)}; a futo kod uresnek veszi, igy a benne allo ertek nem hat`
     : 'nem letezik'
   if (f.source === 'default' && f.overridesFile === 'unreadable') {
     // The key may well be in the file that cannot be read: "set nowhere" and the "=1" advice would both be guesses.
@@ -174,7 +190,7 @@ function noteState(d: Omit<MainConfigDecision, typeof MAIN_CONFIG_DECISION>): vo
     }
     const facts = d.trigger === 'isolation-lost' ? readIsolationSettingFacts() : null
     const setting = d.trigger !== 'isolation-lost' ? ''
-      : facts ? ` (MAIN_AGENT_ISOLATED_CONFIG=${facts.value} from ${SOURCE_LABEL[facts.source]}${facts.overridesFile === 'unreadable' ? '; store/config-overrides.json unreadable, read as empty' : ''})`
+      : facts ? ` (MAIN_AGENT_ISOLATED_CONFIG=${facts.value} from ${SOURCE_LABEL[facts.source]}${facts.overridesFile === 'unreadable' ? `; store/config-overrides.json unreadable (${unreadableCauseForLog(facts.overridesFileCause)}), read as empty` : ''})`
       : ' (MAIN_AGENT_ISOLATED_CONFIG: source unreadable)'
     line(`main-agent respawn: WARN ${d.trigger} -- starting on SHARED ~/.claude${setting}`)
     if (!warnDueNow()) {
