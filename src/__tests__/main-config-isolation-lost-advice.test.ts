@@ -10,6 +10,10 @@
 // order (config-overrides.json > .env > registry default), and only a MISSING setting draws the "=1 and
 // restart" advice.
 //
+// A config-overrides.json that is on disk but does not parse is read as EMPTY by every getter, so the key in it
+// does not take effect; the notice says "exists but unreadable" there, never "exists without this key", and gives
+// no "=1" advice while the file's content is unknown (a review finding).
+//
 // SANDBOX, ENFORCED (the settings-store suite's rule): config-overrides.json lives under STORE_DIR, which is
 // baked into OVERRIDES_PATH at import, so both are mocked before the modules load; .env is a fake map. Nothing
 // here can reach a real store/ or .env.
@@ -50,7 +54,7 @@ vi.mock('../web/agent-process.js', async (orig) => ({
   readMainSharedConfigState: (dir: string | null) => ({ isolatedConfigDir: dir, fleetToken: true, isolatedDirExists: true }),
 }))
 
-const { OVERRIDES_PATH, getEffectiveSettingSource, getEffectiveSettingValue, reloadOverridesForTest } =
+const { OVERRIDES_PATH, getEffectiveSettingSource, getEffectiveSettingValue, getOverridesFileState, reloadOverridesForTest } =
   await import('../settings-store.js')
 const { isolationLostAdvice, resolveMainConfigDecision } = await import('../web/main-config-decision.js')
 
@@ -62,6 +66,14 @@ function overrides(o: Record<string, string> | null): void {
   if (o) writeFileSync(OVERRIDES_PATH, JSON.stringify(o))
   reloadOverridesForTest()
 }
+/** The file as bytes, for the states JSON.stringify cannot produce (the review's case: the key is IN the text,
+ *  the file does not parse). */
+function overridesRaw(text: string): void {
+  if (existsSync(OVERRIDES_PATH)) rmSync(OVERRIDES_PATH)
+  writeFileSync(OVERRIDES_PATH, text)
+  reloadOverridesForTest()
+}
+const BROKEN = `{ "${KEY}": "1", }`
 function log(): string {
   const p = join(STORE, 'channels-failures.log')
   return existsSync(p) ? readFileSync(p, 'utf-8') : ''
@@ -104,42 +116,79 @@ describe('getEffectiveSettingSource: the same order as getEffectiveSettingValue,
   })
 })
 
+describe('getOverridesFileState: the same test the cache is loaded with, so "unreadable" means "read as empty"', () => {
+  it('missing, readable (even an empty object), unreadable (does not parse, or parses to a non-object)', () => {
+    expect(getOverridesFileState()).toBe('missing')
+    overrides({})
+    expect(getOverridesFileState()).toBe('readable')
+    overrides({ CLAUDE_ROTATION_ENABLED: '1' })
+    expect(getOverridesFileState()).toBe('readable')
+    for (const text of [BROKEN, '', '[]', '5', 'null', '"x"']) {
+      overridesRaw(text)
+      expect(getOverridesFileState(), text).toBe('unreadable')
+    }
+  })
+  it('a key written in an unreadable file does not take effect: the next layer answers', () => {
+    ENV = { [KEY]: '0' }
+    overridesRaw(BROKEN)
+    expect(getEffectiveSettingSource(KEY)).toEqual({ value: '0', source: 'env' })
+    ENV = {}
+    expect(getEffectiveSettingSource(KEY)).toEqual({ value: '0', source: 'default' })
+  })
+})
+
 describe('isolationLostAdvice: each branch says only what it measured', () => {
   it('file missing, key missing: the absence is stated, and only here comes the =1 advice', () => {
-    const t = isolationLostAdvice({ value: '0', source: 'default', overridesFileExists: false })
+    const t = isolationLostAdvice({ value: '0', source: 'default', overridesFile: 'missing' })
     expect(t).toContain('sehol nincs beallitva')
     expect(t).toContain('store/config-overrides.json nem letezik')
     expect(t).toContain(ADVICE)
     expect(t).toContain('ujrainditasa')
   })
   it('file present without the key, key missing from .env: the absence is stated with the file that exists', () => {
-    const t = isolationLostAdvice({ value: '0', source: 'default', overridesFileExists: true })
+    const t = isolationLostAdvice({ value: '0', source: 'default', overridesFile: 'readable' })
     expect(t).toContain('letezik, de ezt a kulcsot nem tartalmazza')
     expect(t).toContain(ADVICE)
   })
   it('explicit 0 in .env: a deliberate setting, no advice to write 1, no restart', () => {
-    const t = isolationLostAdvice({ value: '0', source: 'env', overridesFileExists: true })
+    const t = isolationLostAdvice({ value: '0', source: 'env', overridesFile: 'readable' })
     expect(t).toContain('szandekos beallitas (=0)')
     expect(t).toContain('a .env-ben')
     expect(t).not.toContain(ADVICE)
     expect(t).not.toMatch(/ujraindit/i)
   })
   it('explicit 0 in config-overrides.json: named as that file', () => {
-    const t = isolationLostAdvice({ value: '0', source: 'override', overridesFileExists: true })
+    const t = isolationLostAdvice({ value: '0', source: 'override', overridesFile: 'readable' })
     expect(t).toContain('szandekos beallitas (=0)')
     expect(t).toContain('a store/config-overrides.json-ban')
     expect(t).not.toContain(ADVICE)
   })
   it('1 and still the shared root: the cause is unknown, and no restart is advised', () => {
-    const t = isolationLostAdvice({ value: '1', source: 'env', overridesFileExists: false })
+    const t = isolationLostAdvice({ value: '1', source: 'env', overridesFile: 'missing' })
     expect(t).toContain('az oka ismeretlen')
     expect(t).not.toContain(ADVICE)
     expect(t).not.toMatch(/ujraindit/i)
   })
   it('a value that is neither 0 nor 1 is quoted, not interpreted', () => {
-    const t = isolationLostAdvice({ value: 'yes', source: 'env', overridesFileExists: false })
+    const t = isolationLostAdvice({ value: 'yes', source: 'env', overridesFile: 'missing' })
     expect(t).toContain('"yes"')
     expect(t).toContain('csak az 1 kapcsolja be')
+    expect(t).not.toContain(ADVICE)
+  })
+  it('file unreadable, key missing from .env: no "set nowhere", no =1 advice, the file is named as unreadable', () => {
+    const t = isolationLostAdvice({ value: '0', source: 'default', overridesFile: 'unreadable' })
+    expect(t).toContain('letezik, de nem olvashato')
+    expect(t).toContain('nem merheto')
+    expect(t).toContain('a fajl javitasa')
+    expect(t).not.toContain('sehol nincs beallitva')
+    expect(t).not.toContain('nem tartalmazza')
+    expect(t).not.toContain(ADVICE)
+  })
+  it('file unreadable, explicit 0 in .env: the deliberate 0 stands, and the file is not said to lack the key', () => {
+    const t = isolationLostAdvice({ value: '0', source: 'env', overridesFile: 'unreadable' })
+    expect(t).toContain('szandekos beallitas (=0)')
+    expect(t).toContain('a .env-ben (a store/config-overrides.json letezik, de nem olvashato')
+    expect(t).not.toContain('nem tartalmazza')
     expect(t).not.toContain(ADVICE)
   })
   it('an unreadable source: said so, no advice', () => {
@@ -149,12 +198,14 @@ describe('isolationLostAdvice: each branch says only what it measured', () => {
   })
   it('no branch repeats the unmeasured claims of the old text', () => {
     const all = [
-      isolationLostAdvice({ value: '0', source: 'default', overridesFileExists: false }),
-      isolationLostAdvice({ value: '0', source: 'default', overridesFileExists: true }),
-      isolationLostAdvice({ value: '0', source: 'env', overridesFileExists: true }),
-      isolationLostAdvice({ value: '0', source: 'override', overridesFileExists: true }),
-      isolationLostAdvice({ value: '1', source: 'override', overridesFileExists: true }),
-      isolationLostAdvice({ value: 'yes', source: 'env', overridesFileExists: false }),
+      isolationLostAdvice({ value: '0', source: 'default', overridesFile: 'missing' }),
+      isolationLostAdvice({ value: '0', source: 'default', overridesFile: 'readable' }),
+      isolationLostAdvice({ value: '0', source: 'env', overridesFile: 'readable' }),
+      isolationLostAdvice({ value: '0', source: 'override', overridesFile: 'readable' }),
+      isolationLostAdvice({ value: '1', source: 'override', overridesFile: 'readable' }),
+      isolationLostAdvice({ value: 'yes', source: 'env', overridesFile: 'missing' }),
+      isolationLostAdvice({ value: '0', source: 'default', overridesFile: 'unreadable' }),
+      isolationLostAdvice({ value: '0', source: 'env', overridesFile: 'unreadable' }),
       isolationLostAdvice(null),
     ]
     for (const t of all) {
@@ -184,6 +235,25 @@ describe('end to end through resolveMainConfigDecision, the real settings-store 
     expect(sent[0][2]).toContain('store/config-overrides.json nem letezik')
     expect(sent[0][2]).toContain(ADVICE)
     expect(log()).toContain(`${KEY}=0 from registry default`)
+  })
+  it('THE UNPARSABLE-FILE STATE: the key in a file that does not parse, .env=0 -> "nem olvashato", not "nem tartalmazza"', () => {
+    overridesRaw(BROKEN)
+    ENV = { [KEY]: '0' }
+    const d = resolveMainConfigDecision()
+    expect(d.trigger).toBe('isolation-lost')
+    expect(sent).toHaveLength(1)
+    expect(sent[0][2]).toContain('szandekos beallitas (=0)')
+    expect(sent[0][2]).toContain('letezik, de nem olvashato')
+    expect(sent[0][2]).not.toContain('nem tartalmazza')
+    expect(sent[0][2]).not.toContain(ADVICE)
+    expect(log()).toContain(`${KEY}=0 from .env; store/config-overrides.json unreadable, read as empty`)
+  })
+  it('the key in a file that does not parse, nothing in .env: the default is named, no =1 advice', () => {
+    overridesRaw(BROKEN)
+    resolveMainConfigDecision()
+    expect(sent[0][2]).toContain('nem merheto')
+    expect(sent[0][2]).not.toContain(ADVICE)
+    expect(log()).toContain(`${KEY}=0 from registry default; store/config-overrides.json unreadable, read as empty`)
   })
   it('an override of 0 over a .env of 1 is reported as the override (the precedence, measured through the store)', () => {
     overrides({ [KEY]: '0' })

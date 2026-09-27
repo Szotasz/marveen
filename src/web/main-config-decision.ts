@@ -26,12 +26,12 @@
 // THE RESIDUAL GAP, STATED RATHER THAN PAPERED OVER: one resolve could in
 // principle be reused across several respawns, which would emit one trace for
 // many launches. Nothing does that today; every call site resolves inline.
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { logger } from '../logger.js'
 import { createAgentMessage } from '../db.js'
-import { OVERRIDES_PATH, getEffectiveSettingSource, type SettingSource } from '../settings-store.js'
+import { getEffectiveSettingSource, getOverridesFileState, type OverridesFileState, type SettingSource } from '../settings-store.js'
 import {
   ensureMainAgentIsolatedConfigDir,
   ensureMainAgentIsolatedConfigDirForRotatedToken,
@@ -88,14 +88,14 @@ const FLEET_TOKEN_UNUSED_ADVICE =
   '[GUARD] A fo agens most a KOZOS ~/.claude alol indult ujra, pedig van flotta setup-token (store/.claude-oauth-token). A MAIN_AGENT_ISOLATED_CONFIG nincs beallitva, ezert az auth a rotalodo megosztott credentialbol megy: ez lejarhat, 401-be all a TUI, es a csatorna NEMAN elerhetetlen lesz. Teendo: MAIN_AGENT_ISOLATED_CONFIG=1 beallitasa, majd a fo session ujrainditasa.'
 
 /** What the guard can MEASURE about MAIN_AGENT_ISOLATED_CONFIG when a launch that has run isolated before
- *  comes up on the shared root: the effective value, the layer it came from, and whether the overrides file
- *  exists at all (it may exist without this key). */
-export type IsolationSettingFacts = { value: string; source: SettingSource; overridesFileExists: boolean }
+ *  comes up on the shared root: the effective value, the layer it came from, and the state of the overrides
+ *  file (missing; readable, so it may simply lack this key; or unreadable, so whatever it holds is ignored). */
+export type IsolationSettingFacts = { value: string; source: SettingSource; overridesFile: OverridesFileState }
 
 function readIsolationSettingFacts(): IsolationSettingFacts | null {
   try {
     const { value, source } = getEffectiveSettingSource('MAIN_AGENT_ISOLATED_CONFIG')
-    return { value: String(value).trim(), source, overridesFileExists: existsSync(OVERRIDES_PATH) }
+    return { value: String(value).trim(), source, overridesFile: getOverridesFileState() }
   } catch {
     return null
   }
@@ -118,7 +118,13 @@ const SOURCE_LABEL: Record<SettingSource, string> = {
 export function isolationLostAdvice(f: IsolationSettingFacts | null): string {
   const head = '[GUARD] A fo agens most a KOZOS ~/.claude alol indult ujra, pedig letezik izolalt config dir (.channels-config).'
   if (!f) return `${head} A MAIN_AGENT_ISOLATED_CONFIG forrasa nem olvashato, ezert a guard nem allit okot es nem javasol teendot.`
-  const file = f.overridesFileExists ? 'letezik, de ezt a kulcsot nem tartalmazza' : 'nem letezik'
+  const file = f.overridesFile === 'readable' ? 'letezik, de ezt a kulcsot nem tartalmazza'
+    : f.overridesFile === 'unreadable' ? 'letezik, de nem olvashato: nem ervenyes JSON-objektum, a futo kod uresnek veszi, igy a benne allo ertek nem hat'
+    : 'nem letezik'
+  if (f.source === 'default' && f.overridesFile === 'unreadable') {
+    // The key may well be in the file that cannot be read: "set nowhere" and the "=1" advice would both be guesses.
+    return `${head} A MAIN_AGENT_ISOLATED_CONFIG a .env-ben nincs, a store/config-overrides.json pedig ${file}. Hogy a kulcs benne all-e, nem merheto; a registry alaperteke (${f.value}) el. Teendo: a fajl javitasa. A guard addig nem javasol erteket.`
+  }
   if (f.source === 'default') {
     return `${head} A MAIN_AGENT_ISOLATED_CONFIG sehol nincs beallitva: a store/config-overrides.json ${file}, es a .env-ben sincs ilyen kulcs, igy a registry alaperteke (${f.value}) el. Ha az izolalt futas a cel: MAIN_AGENT_ISOLATED_CONFIG=1, majd a fo session ujrainditasa.`
   }
@@ -168,7 +174,7 @@ function noteState(d: Omit<MainConfigDecision, typeof MAIN_CONFIG_DECISION>): vo
     }
     const facts = d.trigger === 'isolation-lost' ? readIsolationSettingFacts() : null
     const setting = d.trigger !== 'isolation-lost' ? ''
-      : facts ? ` (MAIN_AGENT_ISOLATED_CONFIG=${facts.value} from ${SOURCE_LABEL[facts.source]})`
+      : facts ? ` (MAIN_AGENT_ISOLATED_CONFIG=${facts.value} from ${SOURCE_LABEL[facts.source]}${facts.overridesFile === 'unreadable' ? '; store/config-overrides.json unreadable, read as empty' : ''})`
       : ' (MAIN_AGENT_ISOLATED_CONFIG: source unreadable)'
     line(`main-agent respawn: WARN ${d.trigger} -- starting on SHARED ~/.claude${setting}`)
     if (!warnDueNow()) {

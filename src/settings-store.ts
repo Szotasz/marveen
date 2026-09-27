@@ -17,16 +17,32 @@ export const OVERRIDES_PATH = join(STORE_DIR, 'config-overrides.json')
 let cache: Record<string, string | number> = {}
 let watcher: FSWatcher | undefined
 
-function loadFromDisk(): Record<string, string | number> {
+// 'unreadable' = the file is on disk but does not parse as a JSON object (or
+// cannot be read at all). Every getter then treats it as empty, so a key
+// written in it does not take effect -- which a message must not report as
+// "the file does not contain the key" (card 8a4056ad, a review finding).
+export type OverridesFileState = 'missing' | 'readable' | 'unreadable'
+
+function readOverridesFile(): { state: OverridesFileState; values: Record<string, string | number> } {
   try {
-    if (!existsSync(OVERRIDES_PATH)) return {}
+    if (!existsSync(OVERRIDES_PATH)) return { state: 'missing', values: {} }
     const raw = readFileSync(OVERRIDES_PATH, 'utf-8')
     const parsed = JSON.parse(raw)
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed
-    return {}
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return { state: 'readable', values: parsed }
+    return { state: 'unreadable', values: {} }
   } catch {
-    return {}
+    return { state: 'unreadable', values: {} }
   }
+}
+
+function loadFromDisk(): Record<string, string | number> {
+  return readOverridesFile().values
+}
+
+// The state of config-overrides.json on disk right now, by the same test the
+// cache is loaded with, so "unreadable" here means exactly "read as empty".
+export function getOverridesFileState(): OverridesFileState {
+  return readOverridesFile().state
 }
 
 cache = loadFromDisk()
