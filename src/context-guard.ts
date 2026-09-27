@@ -132,13 +132,23 @@ export const DEFAULT_CONTEXT_GUARD: ContextGuardConfig = {
   dailyHandoffTime: null,
 }
 
+/**
+ * Upper bound for every minutes field. Each one is turned into a millisecond
+ * deadline (nowMs + minutes * 60_000), and Number.isFinite(1e308) is true while
+ * 1e308 * 60_000 is Infinity: an infinite deadline is never reached, so the
+ * phase would never time out. This is a conversion limit, not a business one
+ * (about 5800 years): it keeps the latest possible Date plus two such durations
+ * a safe integer.
+ */
+export const MAX_GUARD_MINUTES = Math.floor((Number.MAX_SAFE_INTEGER - 8.64e15) / (2 * 60_000))
+
 /** Coerce arbitrary parsed JSON into a safe, fully-populated config. */
 export function normalizeContextGuardConfig(raw: unknown): ContextGuardConfig {
   const o = (raw && typeof raw === 'object') ? raw as Record<string, unknown> : {}
   const pct = (v: unknown, dflt: number): number =>
     (typeof v === 'number' && Number.isFinite(v) && v > 0 && v < 1) ? v : dflt
   const mins = (v: unknown, dflt: number): number =>
-    (typeof v === 'number' && Number.isFinite(v) && v > 0) ? v : dflt
+    (typeof v === 'number' && Number.isFinite(v) && v > 0) ? Math.min(v, MAX_GUARD_MINUTES) : dflt
   let actPct = pct(o.actPct, DEFAULT_CONTEXT_GUARD.actPct)
   let hardPct = pct(o.hardPct, DEFAULT_CONTEXT_GUARD.hardPct)
   if (hardPct < actPct) hardPct = actPct // hard tier can never sit below act
