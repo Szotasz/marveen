@@ -24,6 +24,7 @@ trap 'rm -rf "$BASE"' EXIT
 mkdir -p "$BASE/scripts/lib" "$BASE/env" "$BASE/store"
 cp "$INSTALL_DIR/scripts/host-restart-watchdog.sh" "$BASE/scripts/host-restart-watchdog.sh"
 cp "$INSTALL_DIR/scripts/fleet-memory-gate.sh" "$BASE/scripts/fleet-memory-gate.sh"
+cp "$INSTALL_DIR/scripts/lib/alert-recipients.sh" "$BASE/scripts/lib/alert-recipients.sh"   # the REAL resolver
 printf 'TELEGRAM_BOT_TOKEN="teszt-token"\n' > "$BASE/env/.env"
 cat > "$BASE/scripts/lib/send-telegram.sh" <<'STUB'
 # STUB sender. Records every call, and fails for the ids listed in STUB_FAIL_IDS.

@@ -93,45 +93,13 @@ if [ -z "$TG_CHAN_DIR" ]; then
   [ -f "$TG_CHAN_DIR/.env" ] || TG_CHAN_DIR="$HOME/.claude/channels/telegram"
 fi
 ENV_FILE="${TELEGRAM_ENV:-$TG_CHAN_DIR/.env}"
-# Alert target: the owner's chat id. Resolve from the channel access.json (the
-# first allow-listed sender) so no chat-id is ever hardcoded; override with
-# MARVEEN_ALERT_CHAT_ID. Empty -> the Telegram alert is skipped (log only), never
-# sent to a stranger.
 ACCESS_JSON="${TELEGRAM_ACCESS:-$TG_CHAN_DIR/access.json}"
-CHAT_ID="${MARVEEN_ALERT_CHAT_ID:-}"
-if [[ -z "$CHAT_ID" && -f "$ACCESS_JSON" ]] && command -v python3 >/dev/null 2>&1; then
-  CHAT_ID="$(python3 -c 'import json,sys
-try:
-  a=json.load(open(sys.argv[1]));v=a.get("allowFrom") or []
-  print(v[0] if v else "")
-except Exception: print("")' "$ACCESS_JSON" 2>/dev/null)"
-fi
-# NULLAORFLEET921: the "0" installer placeholder is not a chat (install-linux.sh:812).
-# The two notifiers got this guard in #1450 and this file did not, so the three
-# surfaces diverged. MEASURED before adding it, and the honest state is worth
-# writing down: today NO path puts a "0" here. Nothing in the repo sets
-# MARVEEN_ALERT_CHAT_ID (no unit, no plist, no installer line), the placeholder
-# lands in ALLOWED_CHAT_ID which this script never reads, and no shipped installer
-# version ever seeded access.json's allowFrom from CHAT_ID (107 historical versions
-# checked, 0 hits, positive control passed). This line is therefore defence in
-# depth, not a live bug fix: it matters the moment someone populates the alert
-# chat id from the install config -- which is exactly what the external ticket
-# suggests doing for the notifiers.
-# Without it the value is NOT silent but noisy-useless: measured, "0" takes the
-# same path as a real id, so the send is attempted, fails, and is retried every
-# run because a failed send deliberately never stamps the cooldown.
-[ "$CHAT_ID" = "0" ] && CHAT_ID=""
-# b2e9c0c1: the value may be a COMMA-SEPARATED LIST, with the unit-fail-notify.sh rules (615002e1): spaces and a
-# trailing comma are not an error, an empty element and the "0" installer placeholder are dropped, and a single id
-# is a list of one. The access.json fallback above only fills an EMPTY variable, so a set list always wins over it.
-CHAT_IDS=()
-if [[ -n "$CHAT_ID" ]]; then
-  IFS=',' read -r -a _ids_split <<< "$CHAT_ID"
-  for _id in "${_ids_split[@]+"${_ids_split[@]}"}"; do
-    _id="${_id//[[:space:]]/}"
-    [[ -n "$_id" && "$_id" != "0" ]] && CHAT_IDS+=("$_id")
-  done
-fi
+# Alert recipients: MARVEEN_ALERT_CHAT_ID (a comma-separated list, 615002e1), or -- only when it is empty -- the
+# first allowFrom entry of access.json. Resolved, logged and recorded by lib/alert-recipients.sh, the one copy for
+# the three alert scripts (b2e9c0c1). There is deliberately NO hardcoded id: a hardcoded id would make every
+# downstream install send its alerts to that one private chat via its own bot token.
+# NULLAORFLEET921: the "0" installer-placeholder guard lives in that one copy too, so the three surfaces cannot
+# diverge on it again.
 ALERT_COOLDOWN=600   # seconds; do not repeat the same band's alert within this
 
 log() { echo "[fleet-memory-gate] $*" >&2; }
@@ -166,9 +134,6 @@ is_core() {
 send_alert() {
   local band="$1" msg="$2"
   (( DRY_RUN )) && { log "DRY-RUN alert [$band]: $msg"; return 0; }
-  # No resolvable owner chat id -> never send (would otherwise go nowhere or, with
-  # a hardcoded default, to a stranger). Log and move on.
-  [[ ${#CHAT_IDS[@]} -eq 0 ]] && { log "no owner chat id resolved; skipping Telegram alert [$band]"; return 0; }
   local now prev_band prev_ep
   now="$(date +%s)"
   if [[ -f "$ALERT_STAMP" ]]; then
@@ -177,6 +142,16 @@ send_alert() {
     if [[ "$prev_band" == "$band" && -n "${prev_ep:-}" ]] && (( now - prev_ep < ALERT_COOLDOWN )); then
       log "alert [$band] within cooldown; skipping"; return 0
     fi
+  fi
+  # Recipients AFTER the cooldown check, so the fallback / no-recipient events (lib/alert-recipients.sh: logged and
+  # appended to $STATE_DIR/alert-recipients.log) are written only when an alert is actually due. No resolvable
+  # recipient -> never send (no invented or hardcoded id); the gate's exit code stays its allow/block decision.
+  . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/alert-recipients.sh"
+  local CHAT_IDS=()
+  if alert_resolve_recipients "$ACCESS_JSON" log "$STATE_DIR"; then
+    CHAT_IDS=("${ALERT_CHAT_IDS[@]}")
+  else
+    log "no owner chat id resolved; skipping Telegram alert [$band]"; return 0
   fi
   local token=""
   [[ -f "$ENV_FILE" ]] && token="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"' \r\n')"
@@ -196,7 +171,7 @@ send_alert() {
     fi
     for cid in "${CHAT_IDS[@]}"; do
       i=$((i + 1))
-      tag="recipient ${i}/${total} (...${cid: -4})"   # the id is logged MASKED, as in unit-fail-notify.sh
+      tag="$(alert_recipient_tag "$i" "$total" "$cid")"   # masked, FALLBACK-tagged (lib/alert-recipients.sh)
       if [[ -f "$delivered" ]] && grep -qxF -- "${band} ${cid}" "$delivered"; then
         ok=$((ok + 1)); log "alert [$band] already delivered in this episode -- ${tag}"; continue
       fi

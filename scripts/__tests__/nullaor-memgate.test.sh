@@ -90,12 +90,16 @@ check "5 valodi access.json-beli id tovabbra is MEGY" \
   "$(grep -q 'chat_id=555444333' "$SANDBOX/args.txt" && echo 0 || echo 1)" \
   "kuldott chat-id-k: $(sent_chat_ids) | log: $out"
 
-# 6. the three surfaces carry the SAME guard line -- this is what diverged
+# 6. the three surfaces cannot diverge on the guard again: since b2e9c0c1 none of them carries a copy of its own,
+#    all three resolve through lib/alert-recipients.sh, and that one copy drops the "0" (1-5 above measure it).
 mismatch=0
 for f in scripts/fleet-memory-gate.sh scripts/host-restart-watchdog.sh scripts/unit-fail-notify.sh; do
-  grep -qF '[ "$CHAT_ID" = "0" ] && CHAT_ID=""' "$ROOT/$f" || { mismatch=1; echo "    hianyzik: $f"; }
+  { grep -qF 'lib/alert-recipients.sh' "$ROOT/$f" && grep -qF 'alert_resolve_recipients ' "$ROOT/$f"; } \
+    || { mismatch=1; echo "    nem a kozos feloldot hivja: $f"; }
+  if grep -qF 'MARVEEN_ALERT_CHAT_ID:-' "$ROOT/$f"; then mismatch=1; echo "    sajat MARVEEN_ALERT_CHAT_ID-olvasas maradt: $f"; fi
 done
-check "6 mindharom felulet ugyanazt a '0'-ort viszi" "$mismatch"
+grep -qF '"$id" != "0"' "$ROOT/scripts/lib/alert-recipients.sh" || { mismatch=1; echo "    a kozos feloldobol hianyzik a \"0\"-or"; }
+check "6 mindharom felulet a kozos feloldot hivja, es abban all a '0'-or" "$mismatch"
 
 echo ""
 echo "nullaor-memgate: $((DB-FAILS))/$DB"

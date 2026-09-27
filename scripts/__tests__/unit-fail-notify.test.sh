@@ -34,6 +34,7 @@ trap 'rm -rf "$BASE"' EXIT
 # A sandbox tree: the real script + a stub sender + a fake telegram .env.
 mkdir -p "$BASE/scripts/lib" "$BASE/env"
 cp "$SRC" "$BASE/scripts/unit-fail-notify.sh"
+cp "$INSTALL_DIR/scripts/lib/alert-recipients.sh" "$BASE/scripts/lib/alert-recipients.sh"   # the REAL resolver (b2e9c0c1)
 printf 'TELEGRAM_BOT_TOKEN="teszt-token"\n' > "$BASE/env/.env"
 cat > "$BASE/scripts/lib/send-telegram.sh" <<'STUB'
 # STUB sender. Records every call, and fails for the ids listed in STUB_FAIL_IDS.

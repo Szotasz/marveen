@@ -31,42 +31,11 @@ if [ -z "$TG_CHAN_DIR" ]; then
   [ -f "$TG_CHAN_DIR/.env" ] || TG_CHAN_DIR="$HOME/.claude/channels/telegram"
 fi
 ENV_FILE="${TELEGRAM_ENV:-$TG_CHAN_DIR/.env}"
-# Alert target chat-id -- MUST come from the install's own config; there is
-# deliberately NO hardcoded fallback (a hardcoded id would make every downstream
-# install send its host-stability alerts to that one private chat).
-CHAT_ID="${MARVEEN_ALERT_CHAT_ID:-}"
-# ZAKARFELUGY921 (kulso bejelentes, 2026-09-21): a MARVEEN_ALERT_CHAT_ID-t SEMMI
-# nem allitotta be -- se unit-sablon, se az install-linux.sh (merve: 0 elofordulas
-# mindkettoben) --, tehat ervenyes tokennel SEM ment ki semmi. Beegetni tilos, es a
-# unitba irni sem lehet: a telepito a unitokat a PAROSITAS ELOTT irja ki, amikor a
-# CHAT_ID meg a "0" placeholder (install-linux.sh:812, es a docs/channels.md ki is
-# mondja ezt a sorrend-fuggest). Ezert FUTASIDOBEN oldjuk fel, ugyanazzal az alakkal,
-# amit a scripts/fleet-memory-gate.sh mar hasznal: az access.json elso engedelyezett
-# kuldoje -- ugyanaz a lista, amit a plugin befele is betartat, tehat a feloldott id
-# kezbesitheto. Ures marad -> a kuldes kimarad es a hiany NEVESITVE naplozodik.
 ACCESS_JSON="${TELEGRAM_ACCESS:-$TG_CHAN_DIR/access.json}"
-if [[ -z "$CHAT_ID" && -f "$ACCESS_JSON" ]] && command -v python3 >/dev/null 2>&1; then
-  CHAT_ID="$(python3 -c 'import json,sys
-try:
-  a=json.load(open(sys.argv[1]));v=a.get("allowFrom") or []
-  print(v[0] if v else "")
-except Exception: print("")' "$ACCESS_JSON" 2>/dev/null)"
-fi
-# EGYETLEN ELTERES a fleet-memory-gate meglevo alakjatol, es szandekos: a "0" a
-# telepito placeholder-e, nem chat (install-linux.sh:812). Ott ez a sor nincs meg;
-# ha a gyakorlatban kell neki is, kulon korben megy at, nem mellekhatasként.
-[ "$CHAT_ID" = "0" ] && CHAT_ID=""
-# b2e9c0c1: the value may be a COMMA-SEPARATED LIST, with the unit-fail-notify.sh rules (615002e1): spaces and a
-# trailing comma are not an error, an empty element and the "0" installer placeholder are dropped, and a single id
-# is a list of one. The runtime fallback above only fills an EMPTY variable, so a set list always wins over it.
-CHAT_IDS=()
-if [[ -n "$CHAT_ID" ]]; then
-  IFS=',' read -r -a _ids_split <<< "$CHAT_ID"
-  for _id in "${_ids_split[@]+"${_ids_split[@]}"}"; do
-    _id="${_id//[[:space:]]/}"
-    [[ -n "$_id" && "$_id" != "0" ]] && CHAT_IDS+=("$_id")
-  done
-fi
+# Alert recipients: MARVEEN_ALERT_CHAT_ID (a comma-separated list, 615002e1), or -- only when it is empty -- the
+# first allowFrom entry of access.json. Resolved, logged and recorded by lib/alert-recipients.sh, the one copy for
+# the three alert scripts (b2e9c0c1). There is deliberately NO hardcoded id: a hardcoded id would make every
+# downstream install send its alerts to that one private chat via its own bot token.
 
 log() { echo "[host-restart-watchdog] $*"; }
 
@@ -140,6 +109,12 @@ token=""
 if [[ -f "$ENV_FILE" ]]; then
   token="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"' \r\n')"
 fi
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/alert-recipients.sh"
+# No recipient: the resolver logs it, records it and returns non-zero; the watchdog still exits 0.
+CHAT_IDS=()
+if alert_resolve_recipients "$ACCESS_JSON" log "$STATE_DIR"; then
+  CHAT_IDS=("${ALERT_CHAT_IDS[@]}")
+fi
 if [[ -n "$token" && ${#CHAT_IDS[@]} -gt 0 ]]; then
   # Honest send (curl exit 0 AND "ok":true -- an HTTP 200 with ok:false was
   # invisible here before). Baseline stamped ONLY on confirmed delivery: this
@@ -158,7 +133,7 @@ if [[ -n "$token" && ${#CHAT_IDS[@]} -gt 0 ]]; then
   _total=${#CHAT_IDS[@]}; _ok=0; _bad=0; _i=0
   for _cid in "${CHAT_IDS[@]}"; do
     _i=$((_i + 1))
-    _tag="recipient ${_i}/${_total} (...${_cid: -4})"   # the id is logged MASKED, as in unit-fail-notify.sh
+    _tag="$(alert_recipient_tag "$_i" "$_total" "$_cid")"   # masked, FALLBACK-tagged (lib/alert-recipients.sh)
     if [[ -f "$DELIVERED_FILE" ]] && grep -qxF -- "${btime} ${_cid}" "$DELIVERED_FILE"; then
       _ok=$((_ok + 1))
       log "already delivered for this boot -- ${_tag}"
@@ -182,7 +157,7 @@ if [[ -n "$token" && ${#CHAT_IDS[@]} -gt 0 ]]; then
     log "Telegram: ${_ok}/${_total} recipient(s) delivered, ${_bad} failed -- baseline NOT stamped, the failed one(s) retry next run"
   fi
 else
-  log "skipping Telegram (${HOST_KIND} restart still logged): missing${token:+}$( [[ -z "$token" ]] && echo ' TELEGRAM_BOT_TOKEN(via TELEGRAM_ENV)')$( [[ ${#CHAT_IDS[@]} -eq 0 ]] && echo ' MARVEEN_ALERT_CHAT_ID')"
+  log "skipping Telegram (${HOST_KIND} restart still logged): missing${token:+}$( [[ -z "$token" ]] && echo ' TELEGRAM_BOT_TOKEN(via TELEGRAM_ENV)')$( [[ ${#CHAT_IDS[@]} -eq 0 ]] && echo ' MARVEEN_ALERT_CHAT_ID(and no access.json fallback, see above)')"
 fi
 
 exit 0

@@ -46,6 +46,7 @@ mk_install() {  # mk_install <access.json tartalom>
   mkdir -p "$d/scripts/lib" "$d/.claude/channels/telegram" "$d/home/.claude/channels/telegram"
   cp "$ROOT/scripts/unit-fail-notify.sh" "$d/scripts/"
   cp "$ROOT/scripts/lib/send-telegram.sh" "$d/scripts/lib/"
+  cp "$ROOT/scripts/lib/alert-recipients.sh" "$d/scripts/lib/"
   printf 'TELEGRAM_BOT_TOKEN=123456:TESZT-TOKEN\n' > "$d/.claude/channels/telegram/.env"
   printf '%s' "$acc" > "$d/.claude/channels/telegram/access.json"
 }
