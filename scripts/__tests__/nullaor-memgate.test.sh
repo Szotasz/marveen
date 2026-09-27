@@ -25,10 +25,17 @@ check() { DB=$((DB+1)); if [ "$2" = "0" ]; then echo "PASS  $1"; else echo "FAIL
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/nullaor.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
 
-mkdir -p "$SANDBOX/store" "$SANDBOX/chan" "$SANDBOX/bin"
+mkdir -p "$SANDBOX/store" "$SANDBOX/bin" "$SANDBOX/home"
+# The gate runs from a COPIED install (b2e9c0c1): since its fallback is lib/owner-chat.sh, which reads the install
+# .env and the MAIN install's channel dir by design, a run from $ROOT would read whatever install the checkout is.
+INST="$SANDBOX/inst"
+mkdir -p "$INST/scripts/lib" "$INST/.claude/channels/telegram"
+cp "$ROOT/scripts/fleet-memory-gate.sh" "$INST/scripts/"
+cp "$ROOT/scripts/lib/alert-recipients.sh" "$ROOT/scripts/lib/owner-chat.sh" "$ROOT/scripts/lib/send-telegram.sh" "$INST/scripts/lib/"
+printf 'ALLOWED_CHAT_ID=0\n' > "$INST/.env"   # the installer's placeholder: the fallback then reads access.json
 # A token must be present, otherwise the run stops before the send for an unrelated
 # reason and every case would look the same.
-printf 'TELEGRAM_BOT_TOKEN=123456:TESZT-TOKEN\n' > "$SANDBOX/chan/.env"
+printf 'TELEGRAM_BOT_TOKEN=123456:TESZT-TOKEN\n' > "$INST/.claude/channels/telegram/.env"
 # Memory well past the hard band, so an alert is always attempted.
 printf 'MemTotal:       16000000 kB\nMemAvailable:     400000 kB\n' > "$SANDBOX/meminfo"
 
@@ -45,17 +52,17 @@ run_gate() {
   local chat="$1" access="${2:-}"
   : > "$SANDBOX/args.txt"
   rm -f "$SANDBOX/store/.fleet-memgate-alert"
-  if [ -n "$access" ]; then printf '%s' "$access" > "$SANDBOX/chan/access.json"
-  else rm -f "$SANDBOX/chan/access.json"; fi
-  env PATH="$SANDBOX/bin:$PATH" \
+  if [ -n "$access" ]; then printf '%s' "$access" > "$INST/.claude/channels/telegram/access.json"
+  else rm -f "$INST/.claude/channels/telegram/access.json"; fi
+  env -u TELEGRAM_STATE_DIR -u TELEGRAM_ENV -u TELEGRAM_ACCESS \
+      PATH="$SANDBOX/bin:$PATH" \
+      HOME="$SANDBOX/home" \
       STUB_ARGS_FILE="$SANDBOX/args.txt" \
       MEMGATE_PROC_MEMINFO="$SANDBOX/meminfo" \
       MARVEEN_STORE="$SANDBOX/store" \
-      TELEGRAM_ENV="$SANDBOX/chan/.env" \
-      TELEGRAM_ACCESS="$SANDBOX/chan/access.json" \
       MARVEEN_ALERT_CHAT_ID="$chat" \
       MARVEEN_MEM_GATE_OBSERVE=1 \
-      bash "$ROOT/scripts/fleet-memory-gate.sh" check >/dev/null 2>"$SANDBOX/log.txt"
+      bash "$INST/scripts/fleet-memory-gate.sh" check >/dev/null 2>"$SANDBOX/log.txt"
   cat "$SANDBOX/log.txt"
 }
 

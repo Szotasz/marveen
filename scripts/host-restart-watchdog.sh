@@ -31,11 +31,11 @@ if [ -z "$TG_CHAN_DIR" ]; then
   [ -f "$TG_CHAN_DIR/.env" ] || TG_CHAN_DIR="$HOME/.claude/channels/telegram"
 fi
 ENV_FILE="${TELEGRAM_ENV:-$TG_CHAN_DIR/.env}"
-ACCESS_JSON="${TELEGRAM_ACCESS:-$TG_CHAN_DIR/access.json}"
 # Alert recipients: MARVEEN_ALERT_CHAT_ID (a comma-separated list, 615002e1), or -- only when it is empty -- the
-# first allowFrom entry of access.json. Resolved, logged and recorded by lib/alert-recipients.sh, the one copy for
-# the three alert scripts (b2e9c0c1). There is deliberately NO hardcoded id: a hardcoded id would make every
-# downstream install send its alerts to that one private chat via its own bot token.
+# owner chat of lib/owner-chat.sh (the install .env's ALLOWED_CHAT_ID, else a single-entry access.json allowFrom).
+# Resolved, logged and recorded by lib/alert-recipients.sh, the one copy for the three alert scripts (b2e9c0c1).
+# There is deliberately NO hardcoded id: a hardcoded id would make every downstream install send its alerts to
+# that one private chat via its own bot token.
 
 log() { echo "[host-restart-watchdog] $*"; }
 
@@ -112,7 +112,7 @@ fi
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/alert-recipients.sh"
 # No recipient: the resolver logs it, records it and returns non-zero; the watchdog still exits 0.
 CHAT_IDS=()
-if alert_resolve_recipients "$ACCESS_JSON" log "$STATE_DIR"; then
+if alert_resolve_recipients "$INSTALL_DIR/.env" log "$STATE_DIR"; then
   CHAT_IDS=("${ALERT_CHAT_IDS[@]}")
 fi
 if [[ -n "$token" && ${#CHAT_IDS[@]} -gt 0 ]]; then
@@ -157,7 +157,7 @@ if [[ -n "$token" && ${#CHAT_IDS[@]} -gt 0 ]]; then
     log "Telegram: ${_ok}/${_total} recipient(s) delivered, ${_bad} failed -- baseline NOT stamped, the failed one(s) retry next run"
   fi
 else
-  log "skipping Telegram (${HOST_KIND} restart still logged): missing${token:+}$( [[ -z "$token" ]] && echo ' TELEGRAM_BOT_TOKEN(via TELEGRAM_ENV)')$( [[ ${#CHAT_IDS[@]} -eq 0 ]] && echo ' MARVEEN_ALERT_CHAT_ID(and no access.json fallback, see above)')"
+  log "skipping Telegram (${HOST_KIND} restart still logged): missing${token:+}$( [[ -z "$token" ]] && echo ' TELEGRAM_BOT_TOKEN(via TELEGRAM_ENV)')$( [[ ${#CHAT_IDS[@]} -eq 0 ]] && echo ' MARVEEN_ALERT_CHAT_ID(and no owner-chat fallback, see above)')"
 fi
 
 exit 0

@@ -21,11 +21,11 @@ if [ -z "$TG_CHAN_DIR" ]; then
   [ -f "$TG_CHAN_DIR/.env" ] || TG_CHAN_DIR="$HOME/.claude/channels/telegram"
 fi
 ENV_FILE="${TELEGRAM_ENV:-$TG_CHAN_DIR/.env}"
-ACCESS_JSON="${TELEGRAM_ACCESS:-$TG_CHAN_DIR/access.json}"
 # Alert recipients: MARVEEN_ALERT_CHAT_ID (a comma-separated list, 615002e1), or -- only when it is empty -- the
-# first allowFrom entry of access.json. Resolved, logged and recorded by lib/alert-recipients.sh, the one copy for
-# the three alert scripts (b2e9c0c1). There is deliberately NO hardcoded id: a hardcoded id would make every
-# downstream install send its alerts to that one private chat via its own bot token.
+# owner chat of lib/owner-chat.sh (the install .env's ALLOWED_CHAT_ID, else a single-entry access.json allowFrom).
+# Resolved, logged and recorded by lib/alert-recipients.sh, the one copy for the three alert scripts (b2e9c0c1).
+# There is deliberately NO hardcoded id: a hardcoded id would make every downstream install send its alerts to
+# that one private chat via its own bot token.
 
 now_local="$(date '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || echo now)"
 msg="Marveen app-crash: a(z) ${UNIT} unit FAILED állapotba került (${now_local}).
@@ -39,7 +39,7 @@ fi
 _ufn_log() { echo "[unit-fail-notify] $*" >&2; }
 # No recipient: the resolver logs it, records it and returns non-zero; this OnFailure handler still exits 0.
 CHAT_IDS=()
-if alert_resolve_recipients "$ACCESS_JSON" _ufn_log "${MARVEEN_STORE:-$INSTALL_DIR/store}"; then
+if alert_resolve_recipients "$INSTALL_DIR/.env" _ufn_log "${MARVEEN_STORE:-$INSTALL_DIR/store}"; then
   CHAT_IDS=("${ALERT_CHAT_IDS[@]}")
 fi
 if [[ -n "$token" && ${#CHAT_IDS[@]} -gt 0 ]]; then
@@ -51,7 +51,7 @@ if [[ -n "$token" && ${#CHAT_IDS[@]} -gt 0 ]]; then
   _total=${#CHAT_IDS[@]}; _ok=0; _bad=0; _i=0
   for _cid in "${CHAT_IDS[@]}"; do
     _i=$((_i + 1))
-    # Masked (last 4) + position, and FALLBACK when the id came from access.json (lib/alert-recipients.sh).
+    # Masked (last 4) + position, and FALLBACK when the id came from the owner-chat rule (lib/alert-recipients.sh).
     _tag="$(alert_recipient_tag "$_i" "$_total" "$_cid")"
     # NOTE: no `break`/`exit` in this loop on purpose -- a failing recipient must
     # not decide for the others. That is the whole point of the change.
@@ -66,7 +66,7 @@ if [[ -n "$token" && ${#CHAT_IDS[@]} -gt 0 ]]; then
   echo "[unit-fail-notify] ${UNIT}: ${_ok}/${_total} recipient(s) delivered, ${_bad} failed" >&2
 else
   # Not silent: name the missing piece so a misconfigured install is diagnosable.
-  miss=""; [[ -z "$token" ]] && miss+=" TELEGRAM_BOT_TOKEN(via TELEGRAM_ENV=$ENV_FILE)"; [[ ${#CHAT_IDS[@]} -eq 0 ]] && miss+=" MARVEEN_ALERT_CHAT_ID(and no access.json fallback, see above)"
+  miss=""; [[ -z "$token" ]] && miss+=" TELEGRAM_BOT_TOKEN(via TELEGRAM_ENV=$ENV_FILE)"; [[ ${#CHAT_IDS[@]} -eq 0 ]] && miss+=" MARVEEN_ALERT_CHAT_ID(and no owner-chat fallback, see above)"
   echo "[unit-fail-notify] ${UNIT} FAILED but no Telegram sent -- missing:${miss}" >&2
 fi
 exit 0

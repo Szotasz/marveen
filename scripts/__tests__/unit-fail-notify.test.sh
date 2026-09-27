@@ -7,9 +7,9 @@
 # exercises the shipped text without a test hook in production code, and WITHOUT
 # sending a single real Telegram message.
 #
-# The chat ids are made up (never a real account's id in a test fixture). The sandbox also pins
-# TELEGRAM_STATE_DIR and TELEGRAM_ACCESS, so the runtime fallback (ZAKARFELUGY921: the first
-# allowFrom of access.json) can only ever read the test's own file, never the real channel config.
+# The chat ids are made up (never a real account's id in a test fixture). The sandbox is its own install -- its
+# .env, its install-scoped channel dir and an empty HOME -- so the runtime fallback (lib/owner-chat.sh through
+# lib/alert-recipients.sh, b2e9c0c1) can only ever read the test's own files, never the real channel config.
 #
 # The case that matters most is the NEGATIVE CONTROL: with a bad recipient first,
 # the second recipient must STILL be delivered. Without it a green run would only
@@ -35,6 +35,9 @@ trap 'rm -rf "$BASE"' EXIT
 mkdir -p "$BASE/scripts/lib" "$BASE/env"
 cp "$SRC" "$BASE/scripts/unit-fail-notify.sh"
 cp "$INSTALL_DIR/scripts/lib/alert-recipients.sh" "$BASE/scripts/lib/alert-recipients.sh"   # the REAL resolver (b2e9c0c1)
+cp "$INSTALL_DIR/scripts/lib/owner-chat.sh" "$BASE/scripts/lib/owner-chat.sh"               # and its owner-chat rule
+mkdir -p "$BASE/.claude/channels/telegram" "$BASE/home"
+printf 'TELEGRAM_BOT_TOKEN="teszt-token"\n' > "$BASE/.claude/channels/telegram/.env"   # the install-scoped state dir
 printf 'TELEGRAM_BOT_TOKEN="teszt-token"\n' > "$BASE/env/.env"
 cat > "$BASE/scripts/lib/send-telegram.sh" <<'STUB'
 # STUB sender. Records every call, and fails for the ids listed in STUB_FAIL_IDS.
@@ -52,7 +55,7 @@ STUB
 run_notify() {
   STUB_CALLS="$BASE/calls.txt"; : > "$STUB_CALLS"
   MARVEEN_ALERT_CHAT_ID="$1" STUB_FAIL_IDS="${2:-}" STUB_CALLS="$STUB_CALLS" \
-    TELEGRAM_ENV="$BASE/env/.env" TELEGRAM_STATE_DIR="$BASE/env" TELEGRAM_ACCESS="$BASE/env/access.json" \
+    TELEGRAM_ENV="$BASE/env/.env" TELEGRAM_STATE_DIR="$BASE/env" TELEGRAM_ACCESS="$BASE/env/access.json" HOME="$BASE/home" \
     bash "$BASE/scripts/unit-fail-notify.sh" teszt.service 2>&1
 }
 calls() { cat "$BASE/calls.txt" 2>/dev/null | tr '\n' ' '; }
@@ -95,12 +98,22 @@ MARVEEN_ALERT_CHAT_ID="1000000001" STUB_FAIL_IDS="1000000001" STUB_CALLS="$BASE/
   bash "$BASE/scripts/unit-fail-notify.sh" teszt.service >/dev/null 2>&1
 assert_eq "6a. exit 0 meg teljes bukasnal is" "0" "$?"
 
-# 7-10) A LISTA ES A FUTASIDEJU FELOLDAS (ZAKARFELUGY921) EGYUTT: a beallitott lista nyer, ures valtozonal
-# az access.json elso engedelyezett kuldoje megy, a "0" a telepito helyorzoje (egyedul es listaban is).
-printf '{"allowFrom": ["1000000003", "1000000009"]}\n' > "$BASE/env/access.json"
+# 7-10) A LISTA ES A FUTASIDEJU FELOLDAS EGYUTT (b2e9c0c1: a tartalek a lib/owner-chat.sh szabalya): a
+# beallitott lista nyer; ures valtozonal a telepites .env ALLOWED_CHAT_ID-je, kulonben az access.json EGYETLEN
+# DM-bejegyzese, tobb bejegyzesnel nincs talalgatas; a "0" a telepito helyorzoje (egyedul es listaban is).
+ACC="$BASE/.claude/channels/telegram/access.json"
+printf 'ALLOWED_CHAT_ID=0\n' > "$BASE/.env"
+printf '{"allowFrom": ["1000000003"]}\n' > "$ACC"
 out="$(run_notify "")"
-assert_eq       "7a. ures valtozo: a feloldott egy id kap (a develop viselkedese)" "1000000003 " "$(calls)"
+assert_eq       "7a. ures valtozo, helyorzos .env, egyetlen DM-bejegyzes: az kap" "1000000003 " "$(calls)"
 assert_contains "7b. osszegzo egy cimzettre" "1/1 recipient(s) delivered, 0 failed" "$out"
+printf '{"allowFrom": ["1000000003", "1000000009"]}\n' > "$ACC"
+out="$(run_notify "")"
+assert_eq       "7c. ket DM-bejegyzes: nincs talalgatas, nincs kuldes (az elso-elem szabaly LEVALT)" "" "$(calls)"
+assert_contains "7d. a konyvtar sajat oka a naploban" "refusing to guess" "$out"
+printf 'ALLOWED_CHAT_ID=1000000005\n' > "$BASE/.env"
+out="$(run_notify "")"
+assert_eq       "7e. a telepites .env ALLOWED_CHAT_ID-je all elobb" "1000000005 " "$(calls)"
 out="$(run_notify "1000000001,1000000002")"
 assert_eq       "8a. beallitott lista: a lista nyer, a feloldas nem fut" "1000000001 1000000002 " "$(calls)"
 out="$(run_notify "0")"
@@ -108,7 +121,7 @@ assert_eq       "9a. a \"0\" helyorzo: nincs kuldes (a develop szabalya: a felol
 assert_contains "9b. a hiany megnevezve" "missing: MARVEEN_ALERT_CHAT_ID" "$out"
 out="$(run_notify "0,1000000004")"
 assert_eq       "10a. listaban a \"0\" elem kimarad, a tobbi kap" "1000000004 " "$(calls)"
-rm -f "$BASE/env/access.json"
+rm -f "$ACC" "$BASE/.env"
 
 echo
 echo "PASS: $PASS  FAIL: $FAIL"
