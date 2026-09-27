@@ -482,8 +482,25 @@ OLD_VERSION_FULL=$(git rev-parse HEAD 2>/dev/null || echo "")
 # DEFAULT -- see the UPDATE_AUTO_REBASE block below, which is off unless the
 # operator of this install turns it on.
 RESULT_PHASE="pull"
-AHEAD=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
-BEHIND=$(git rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
+# DIVERGENCE-REF (UPSTREAMSRC927): measure the ref the pull below will merge,
+# fetched NOW -- not `@{u}`. Two ways `@{u}` answered a different question:
+#   - it is only as fresh as the last fetch, and nothing in the product fetches
+#     on a schedule. With local commits and new upstream commits, the stale ref
+#     said "ahead 1, behind 0", this guard let it through, and `pull --ff-only`
+#     then died with a generic message; the UPDATE_AUTO_REBASE=1 path below,
+#     built for exactly that case, never started (measured on a throwaway repo).
+#   - it is whatever the branch tracks, while the pull names origin/<branch>.
+# `git fetch origin <branch>` is the first half of that pull, and FETCH_HEAD is
+# precisely what its merge would take. A failed fetch is said out loud and the
+# guard falls back to the last known origin ref; the pull then reports the
+# network failure itself.
+DIVERGENCE_REF="FETCH_HEAD"
+if ! git fetch --quiet origin "$CURRENT_BRANCH" 2>>"$INSTALL_DIR/store/update.log"; then
+  DIVERGENCE_REF="origin/${CURRENT_BRANCH}"
+  echo -e "  ${ORANGE}Figyelem:${NC} a 'git fetch origin ${CURRENT_BRANCH}' elbukott; az elteres-ellenorzes az utolso ismert ${DIVERGENCE_REF} refet meri, ami elavult lehet."
+fi
+AHEAD=$(git rev-list --count "${DIVERGENCE_REF}..HEAD" 2>/dev/null || echo 0)
+BEHIND=$(git rev-list --count "HEAD..${DIVERGENCE_REF}" 2>/dev/null || echo 0)
 if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
   # Diverged history: ahead AND behind. #1112 made this refuse ON PURPOSE -- a
   # human has to reconcile it -- and that stays the DEFAULT here. What this adds
