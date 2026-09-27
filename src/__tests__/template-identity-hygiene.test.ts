@@ -49,8 +49,23 @@ const HOME_PATH_RX = /\/(Users|home)\/(?!<)[A-Za-z0-9._-]+/
 // still not a violation) while checking the rest of the line.
 // `file:`/`FILE:` is deliberately NOT stripped: a `file:///home/bob/x` is an
 // absolute local path wearing a scheme, which is exactly what must be caught.
+// Known blind spot, left open on purpose: `\S*` runs to the next whitespace,
+// so a path GLUED to a URL with no space in between is stripped along with it
+// -- minified JSON like `"url":"http://x","dir":"/Users/bob"` passes. Nothing
+// in the scanned trees has that shape today (the templates are pretty-printed).
+// If one ever appears, end the URL at a quote as well as at whitespace.
 const URL_RX = /\b(?!file:)[a-z][a-z0-9+.-]*:\/\/\S*/gi
 const stripUrls = (line: string): string => line.replace(URL_RX, '')
+
+// THE one home-path predicate. Every scan below calls this, and so do the
+// predicate tests at the bottom of the file, so what those tests pin is the
+// code that actually scans -- not a copy of it. A second, inline
+// `HOME_PATH_RX.test(...)` at a scan site would escape the predicate tests
+// again; the "single predicate" case below counts the call sites for that
+// reason.
+function isHomePathViolation(line: string): boolean {
+  return HOME_PATH_RX.test(stripUrls(line))
+}
 // A personal mailbox baked into a shipped file would leak / break on every
 // other install. example.com and the noreply providers are not listed.
 const PERSONAL_EMAIL_RX = /[A-Za-z0-9._%+-]+@(gmail|outlook|icloud|yahoo|hotmail)\.[A-Za-z]+/i
@@ -109,7 +124,7 @@ describe('shipped templates carry no hardcoded identity', () => {
         if (text === null) continue
         const rel = file.slice(REPO_ROOT.length + 1)
         text.split('\n').forEach((line, i) => {
-          if (HOME_PATH_RX.test(stripUrls(line))) {
+          if (isHomePathViolation(line)) {
             violations.push(`${rel}:${i + 1} absolute home path (use {{INSTALL_DIR}}): ${line.trim().slice(0, 100)}`)
           }
           if (PERSONAL_EMAIL_RX.test(line)) {
@@ -141,7 +156,7 @@ describe('shipped templates carry no hardcoded identity', () => {
     const text = readText(file)
     if (text !== null) {
       text.split('\n').forEach((line, i) => {
-        if (HOME_PATH_RX.test(stripUrls(line))) {
+        if (isHomePathViolation(line)) {
           violations.push(`web/app.js:${i + 1} absolute home path: ${line.trim().slice(0, 100)}`)
         }
         if (PERSONAL_EMAIL_RX.test(line)) {
@@ -167,7 +182,7 @@ describe('shipped templates carry no hardcoded identity', () => {
       if (text === null) continue
       const rel = file.slice(REPO_ROOT.length + 1)
       text.split('\n').forEach((line, i) => {
-        if (HOME_PATH_RX.test(stripUrls(line))) {
+        if (isHomePathViolation(line)) {
           violations.push(`${rel}:${i + 1} absolute home path (derive from __file__): ${line.trim().slice(0, 100)}`)
         }
         if (PERSONAL_EMAIL_RX.test(line)) {
@@ -186,10 +201,11 @@ describe('shipped templates carry no hardcoded identity', () => {
 // two ways -- the tree is clean, or the predicate did not look -- and until
 // 2026-09-20 it was silently the second for any line carrying a `://`. These
 // cases fix which of the two a green run means. BYPASS_CORPUS holds lines that
-// the previous predicate waved through; if someone reintroduces a line-skip,
-// the last case here goes red on its own.
+// the previous predicate waved through. `flags` IS the scans' predicate
+// (isHomePathViolation), so a line-skip reintroduced in it turns these red; a
+// line-skip reintroduced inline at a scan site is caught by the call-site count.
 describe('the home-path predicate looks at the whole line, not just URL-free lines', () => {
-  const flags = (line: string) => HOME_PATH_RX.test(stripUrls(line))
+  const flags = isHomePathViolation
 
   // The pre-2026-09-20 predicate, kept only as the control in the last case.
   const oldPredicate = (line: string) => !line.includes('://') && HOME_PATH_RX.test(line)
@@ -233,6 +249,28 @@ describe('the home-path predicate looks at the whole line, not just URL-free lin
       stillWaved,
       `the predicate no longer improves on the old line-skip for:\n${stillWaved.join('\n')}`,
     ).toEqual([])
+  })
+
+  // Measured in review of #1620: with the predicate tests exercising a local
+  // copy, reverting all three scan sites to the old line-skip kept this whole
+  // file green. The helper closes that for the helper; this closes it for the
+  // sites. It reads this file's own source: HOME_PATH_RX may be applied in
+  // exactly one place -- inside isHomePathViolation -- and every line-based
+  // home-path scan goes through the helper.
+  it('is the single predicate: no scan site tests HOME_PATH_RX on its own', () => {
+    const src = readFileSync(join(REPO_ROOT, 'src', '__tests__', 'template-identity-hygiene.test.ts'), 'utf-8')
+    // Split so this line does not count itself.
+    const needle = 'HOME_PATH_RX' + '.test('
+    const direct = src.split('\n').filter(l =>
+      l.includes(needle) &&
+      !/^\s*\/\//.test(l) && // comments
+      !/^\s*return HOME_PATH_RX\b/.test(l) && // the helper itself
+      !/^\s*const oldPredicate = /.test(l), // the control, never used to scan
+    )
+    expect(direct, `HOME_PATH_RX applied outside isHomePathViolation:\n${direct.join('\n')}`).toEqual([])
+    const calls = (src.match(/isHomePathViolation\(line\)/g) ?? []).length
+    // 3 template/app.js/support-mail scans + the update.sh scan
+    expect(calls).toBe(4)
   })
 })
 
@@ -330,8 +368,10 @@ describe('runtime-seeded placeholders are all substituted', () => {
       ).toBe(false)
     }
     for (const line of updateSh.split('\n')) {
+      // Same predicate as the template scans: a URL on the line no longer
+      // switches the home-path check off for the whole line.
+      expect(isHomePathViolation(line), `update.sh embeds an absolute home path: ${line.trim()}`).toBe(false)
       if (/https?:\/\//.test(line)) continue
-      expect(HOME_PATH_RX.test(line), `update.sh embeds an absolute home path: ${line.trim()}`).toBe(false)
       expect(PERSONAL_EMAIL_RX.test(line), `update.sh embeds a personal email: ${line.trim()}`).toBe(false)
     }
   })
