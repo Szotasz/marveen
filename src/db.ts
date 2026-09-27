@@ -469,8 +469,14 @@ export function initDatabase(dbPathOverride?: string): void {
   // API can stay frictionless for the common case -- the repair loop, which is
   // measurably the normal use of this endpoint (7 of 8 logged calls).
   //
-  // Append-only by construction: nothing in the app updates or deletes a row
-  // here. The pre-image keeps the row's OWN agent_id/category, not the caller's,
+  // Nothing in the app UPDATES a row here, and exactly one path deletes: a
+  // plain DELETE of the memory purges that memory's versions with it (PR #1357
+  // fleet review, 2026-09-25). A secret saved by mistake and still readable
+  // through /versions after the delete would be a security issue, not a
+  // product choice. An overwrite (PUT/PATCH) keeps its pre-image as before.
+  // The 'delete' operation value stays legal in the CHECK only so rows written
+  // before the purge existed still satisfy it; new code never writes it.
+  // The pre-image keeps the row's OWN agent_id/category, not the caller's,
   // because that is what a restore has to put back.
   db.exec(`
     CREATE TABLE IF NOT EXISTS memory_versions (
@@ -1950,7 +1956,7 @@ export function getMemoryById(id: number): MemoryRow | undefined {
  * outside the transaction can survive a write that then fails, and a restore
  * would put back something that was never superseded.
  */
-function snapshotMemoryVersion(row: MemoryRow, operation: 'update' | 'delete', now: number): void {
+function snapshotMemoryVersion(row: MemoryRow, operation: 'update', now: number): void {
   db.prepare(
     'INSERT INTO memory_versions (memory_id, content, agent_id, category, keywords, operation, superseded_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
   ).run(row.id, row.content, row.agent_id, row.category, row.keywords, operation, now)
@@ -1964,16 +1970,24 @@ export function getMemoryVersions(memoryId: number, limit: number = 20): Array<M
 }
 
 /**
- * Delete a memory, keeping its pre-image. Replaces the route's raw
- * `DELETE FROM memories` (card 27ab6a18): id=159 was deleted on 2026-09-14 and
- * its content exists nowhere -- that is the failure this closes.
+ * Delete a memory AND every version of it, in one transaction.
+ *
+ * A delete must not leave the content readable (PR #1357 fleet review,
+ * 2026-09-25): a memory deleted because it held something it should not -- a
+ * pasted secret -- would otherwise stay readable through
+ * GET /api/memories/<id>/versions and in every backup taken after. So a plain
+ * delete is final, and it takes the update pre-images with it too, not only
+ * the row: an earlier overwrite's pre-image can hold the very same secret.
+ *
+ * What protects against the ACCIDENTAL delete (the id=159 case, 2026-09-14) is
+ * no longer the version table but the route's guard: a large shared/warm row
+ * is refused with 409 unless the caller confirms with ?confirm_overwrite=1.
  */
 export function deleteMemoryById(id: number): boolean {
-  const now = Math.floor(Date.now() / 1000)
   const before = getMemoryById(id)
   if (!before) return false
   db.transaction(() => {
-    snapshotMemoryVersion(before, 'delete', now)
+    db.prepare('DELETE FROM memory_versions WHERE memory_id = ?').run(id)
     db.prepare('DELETE FROM memories WHERE id = ?').run(id)
   })()
   // A shared row is listed for every agent, so evicting one owner is not enough.

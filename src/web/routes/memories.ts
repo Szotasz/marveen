@@ -633,7 +633,7 @@ Respond ONLY with JSON, nothing else:
         owner: before.agent_id,
         category: before.category,
         signals: ['torles-guarded-tier'],
-        how_to_proceed: 'Ha szandekos: ugyanez a keres ?confirm_overwrite=1-gyel. A tartalmat a torles utan is megtalalod: GET /api/memories/' + id + '/versions.',
+        how_to_proceed: 'Ha szandekos: ugyanez a keres ?confirm_overwrite=1-gyel. FIGYELEM: a torles VEGLEGES, a verziokat is torli (GET /api/memories/' + id + '/versions utana ures). Ha a tartalomra meg szukseg lehet, eloszor olvasd ki: GET /api/memories/' + id + '.',
       }, 409)
       return true
     }
@@ -643,9 +643,10 @@ Respond ONLY with JSON, nothing else:
       logger.warn({ memoryId: id, caller: delMismatch.caller, owner: delMismatch.owner, op: 'delete' }, 'Memory deleted by a non-owner (self-asserted caller id)')
     }
 
-    // deleteMemoryById keeps the pre-image and invalidates the TTL cache, so a
-    // deleted memory neither resurfaces in the agent-filtered list nor becomes
-    // unrecoverable -- that second half is what id=159 lacked on 2026-09-14.
+    // deleteMemoryById purges the row's versions with it and invalidates the
+    // TTL cache: a deleted memory neither resurfaces in the agent-filtered list
+    // nor stays readable through /versions (PR #1357 fleet review). The guard
+    // above is what stands between an accidental delete and that finality.
     if (deleteMemoryById(id)) {
       json(res, delMismatch ? { ok: true, owner_mismatch: ownerMismatchPayload(id, delMismatch) } : { ok: true })
       return true

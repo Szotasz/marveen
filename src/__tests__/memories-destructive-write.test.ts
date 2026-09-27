@@ -144,14 +144,46 @@ describe('versioning -- the primary fix, independent of the guard', () => {
     }
   })
 
-  it('DELETE keeps the content recoverable -- the id=159 case', async () => {
-    const { id } = saveAgentMemory('leanscout', LONG, 'cold')
+  // PR #1357 fleet review (2026-09-25), request 2: a delete must not leave the
+  // content readable. The row is first OVERWRITTEN, so it has an update
+  // pre-image too -- that pre-image can hold the same secret, and it has to go
+  // with the delete, not only the row itself.
+  it('DELETE purges the row AND every version of it -- nothing readable remains', async () => {
+    const SECRET = 'sk-live-' + 'Z'.repeat(40)
+    const { id } = saveAgentMemory('leanscout', SECRET, 'cold')
+    await call(`/api/memories/${id}`, 'PUT', { content: LONG_EDITED })
+    expect(getMemoryVersions(id)).toHaveLength(1) // the pre-image exists before the delete
+
     const r = await call(`/api/memories/${id}`, 'DELETE')
     expect(r.status).toBe(200)
     expect(getMemoryById(id)).toBeUndefined()
-    const versions = getMemoryVersions(id)
-    expect(versions[0].content).toBe(LONG)
-    expect(versions[0].operation).toBe('delete')
+
+    const v = await call(`/api/memories/${id}/versions`, 'GET')
+    expect(v.status).toBe(200)
+    expect(v.body).toEqual([])
+    // Asked of the table directly, not only through the route's LIMIT-ed read.
+    const db = getDb()
+    expect((db.prepare('SELECT COUNT(*) AS n FROM memory_versions WHERE memory_id = ?').get(id) as { n: number }).n).toBe(0)
+    for (const text of [SECRET, LONG_EDITED]) {
+      expect((db.prepare('SELECT COUNT(*) AS n FROM memory_versions WHERE content = ?').get(text) as { n: number }).n).toBe(0)
+    }
+  })
+
+  it('the purge is scoped to the deleted row: another memory keeps its versions', async () => {
+    const a = saveAgentMemory('leanscout', LONG, 'cold')
+    const b = saveAgentMemory('leanscout', SHORT, 'cold')
+    await call(`/api/memories/${a.id}`, 'PUT', { content: LONG_EDITED })
+    await call(`/api/memories/${b.id}`, 'PUT', { content: 'k'.repeat(50) })
+    await call(`/api/memories/${a.id}`, 'DELETE')
+    expect(getMemoryVersions(a.id)).toEqual([])
+    expect(getMemoryVersions(b.id).map(v => v.content)).toEqual([SHORT])
+  })
+
+  it('a confirmed delete of a guarded row purges too -- confirm does not mean "keep a copy"', async () => {
+    const { id } = saveAgentMemory('leanscout', HUGE, 'shared')
+    const r = await call(`/api/memories/${id}`, 'DELETE', undefined, { confirm_overwrite: '1' })
+    expect(r.status).toBe(200)
+    expect(getMemoryVersions(id)).toEqual([])
   })
 
   it('?confirm_overwrite=1 lets a deliberate destruction through, still versioned', async () => {
@@ -268,8 +300,10 @@ describe('non-owner write warning (card 29c8cf33, option A) -- warns, never bloc
     expect(r.body.ok).toBe(true)
     expect(r.body.owner_mismatch.caller).toBe('leandev')
     expect(getMemoryById(id)).toBeUndefined()
-    // ...and the pre-image is still there, which is the protection that DOES bite.
-    expect(getMemoryVersions(id)[0].content).toBe(SHORT)
+    // ...and the delete is final for a foreign caller too: the purge does not
+    // depend on who asked (PR #1357 fleet review). The only thing that bites a
+    // foreign delete is the size/tier guard, pinned by case 5 and case 6.
+    expect(getMemoryVersions(id)).toEqual([])
   })
 
   it('the guard still wins over the warning: a destructive foreign edit is refused, not warned', async () => {
