@@ -16,6 +16,17 @@
 // Hosts are cut with a regex, not URL(), so http://localhost:$PORT stays local, while
 // localhost.evil.com and localhost@evil.com are external.
 //
+// PRIVATE NETWORK (maintainer decision on #1611, 2026-09-27): agents may reach private network
+// targets from the shell. Local, besides the loopback names above, is decided by the LITERAL host
+// string only, never by DNS: a canonical dotted-quad IPv4 in 10/8, 172.16/12, 192.168/16 or 127/8, a
+// bracketed IPv6 in fc00::/7 (ULA) or fe80::/10 (link-local), or a name whose LAST label is `local`
+// (mDNS, e.g. nas.local). A public name that happens to resolve to a private address stays external
+// (nas.example.com), and so does every IPv4 spelling a resolver reads differently from how it looks
+// (0x0a.0.0.1, 012.0.0.1, 167772161, 10.1) -- fail closed. 169.254/16 is deliberately NOT local:
+// it carries the cloud instance-metadata endpoint. 100.64/10 (CGNAT) is not RFC 1918 and stays
+// external. A single-label name (nas, xlocal) is external too: the resolver may complete it through
+// a search domain to anywhere.
+//
 // HOW IT READS THE COMMAND: structure from the MASKED text (maskInertLiterals blanks quoted strings
 // and heredoc bodies, length-preserving), so a `curl` or `;` inside a quoted argument or a heredoc
 // is not a command; the URL from the ORIGINAL text of the same span.
@@ -75,10 +86,26 @@ export function hostOf(url) {
   const m = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/?#]*@)?(\[[^\]]*\]|[^/:?#]*)/i.exec(url)
   return m ? m[1].toLowerCase() : null
 }
+// Canonical dotted-quad only: no leading zero, no hex/octal/decimal/short forms.
+const OCTET = '(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)'
+const CANON_IPV4 = new RegExp(`^${OCTET}(?:\\.${OCTET}){3}$`)
+const MDNS_NAME = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+local$/
+// A private-network target by its literal spelling (see the PRIVATE NETWORK note in the header).
+export function isPrivateTarget(host) {
+  const h = String(host ?? '').toLowerCase()
+  if (CANON_IPV4.test(h)) {
+    const [a, b] = h.split('.').map(Number)
+    return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
+  }
+  const v6 = /^\[([0-9a-f:.]+)\]$/.exec(h)
+  if (v6) return /^f[cd][0-9a-f]{0,2}:/.test(v6[1]) || /^fe[89ab][0-9a-f]?:/.test(v6[1])
+  return MDNS_NAME.test(h)
+}
+export function isLocalHost(host) { return LOCAL_HOSTS.has(host) || isPrivateTarget(host) }
 export function isExternal(url) {
   const h = hostOf(url)
   if (h === null || h === '') return false
-  return !LOCAL_HOSTS.has(h)
+  return !isLocalHost(h)
 }
 function spans(masked) {
   const out = []; let start = 0
@@ -269,7 +296,11 @@ export function destHost(value) {
   const noScheme = value.replace(/^[^/?#\s]*:\/\//, '')
   const m = /^(?:[^@/?#]*@)?(\[[^\]]*\]|[^/:?#]*)/.exec(noScheme)
   const h = m ? m[1].toLowerCase() : ''
-  return HOSTNAME.test(h) ? h : null
+  if (HOSTNAME.test(h)) return h
+  // A literal host that is not a regular hostname (single label, 0x0a.0.0.1, 167772161, 10.1) is
+  // still a destination curl will resolve; returning null here let it pass unchecked. Fail closed.
+  // Only plain literal tokens qualify, so a $VAR, a glob or a relative path still yields null.
+  return /^(?=[^.]*[a-z0-9])[a-z0-9][a-z0-9._-]*$/.test(h) ? h : null
 }
 // Every external destination host in a curl argv (the words AFTER `curl`).
 export function curlDestinations(args) {
@@ -299,7 +330,7 @@ export function curlDestinations(args) {
     }
     addUrl(w) // positional: always a URL to curl
   }
-  return dests.filter((h) => !LOCAL_HOSTS.has(h))
+  return dests.filter((h) => !isLocalHost(h))
 }
 export function classify(command, depth = 0, vendorHosts = new Set()) {
   const norm = String(command ?? '').replace(/\\\r?\n/g, ' ')
@@ -340,7 +371,8 @@ export function classify(command, depth = 0, vendorHosts = new Set()) {
 
 const GATE_MSG =
   'Kulso halozati hivas Bash-bol TILTVA (egress hard-gate): curl vagy interpreter-egysoros kulso URL-re, ' +
-  'akkor is, ha az URL valtozoban van. A localhost/127.0.0.1 hivasok (dashboard) szabadok. Kulso tartalmat ' +
+  'akkor is, ha az URL valtozoban van. A localhost/127.0.0.1 hivasok (dashboard) es a helyi halozat ' +
+  '(10/8, 172.16/12, 192.168/16, *.local) szabadok. Kulso tartalmat ' +
   'a quarantine-reader sub-ugynokon at kerj le; ha ez egy vendor-API hivas, kerd a fo-agenst.'
 function isInvokedDirectly() {
   try { return realpathSync(fileURLToPath(import.meta.url)) === (process.argv[1] ? realpathSync(process.argv[1]) : '') } catch { return false }

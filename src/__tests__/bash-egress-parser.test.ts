@@ -30,6 +30,9 @@ import {
 } from '../web/agent-scaffold.js'
 import { MAIN_AGENT_ID } from '../config.js'
 
+// @ts-expect-error -- plain .mjs hook script, no types
+import { isPrivateTarget } from '../../scripts/hooks/bash-egress-parser.mjs'
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const HOOK = join(ROOT, 'scripts', 'hooks', 'bash-egress-parser.mjs')
 
@@ -136,7 +139,8 @@ describe('curl destinations read from the argv', () => {
     'curl --url=example.org/x',
     'curl -x example.org:8080 http://localhost:3420/',
     'curl --connect-to localhost:80:example.org:80 http://localhost/',
-    'curl -s -w "%{http_code}" -o /dev/null 10.0.0.5:8080/',
+    // a public address; a private one (10.0.0.5) is local since #1611, see the private-network block
+    'curl -s -w "%{http_code}" -o /dev/null 203.0.113.5:8080/',
   ]
   const PASS = [
     'curl -H "Host: example.org" http://localhost:3420/x',
@@ -157,7 +161,7 @@ describe('curl destinations read from the argv', () => {
 })
 
 describe('what counts as local', () => {
-  it('treats only loopback names as local', () => {
+  it('treats the loopback names as local', () => {
     expect(isExternal('http://localhost:3420/api')).toBe(false)
     expect(isExternal('http://127.0.0.1/')).toBe(false)
     expect(isExternal('http://[::1]:3420/')).toBe(false)
@@ -171,6 +175,78 @@ describe('what counts as local', () => {
   })
   it('denies a curl that mixes a local and an external URL', () => {
     expect(deny('curl -s http://localhost:3420/api/health http://example.org/x')).toBe(true)
+  })
+})
+
+// Private network (maintainer decision on #1611, 2026-09-27): agents may reach RFC 1918 and .local
+// targets from the shell. Decided by the LITERAL host string, never by DNS.
+describe('private network targets', () => {
+  const py = (u: string) => `python3 -c "import urllib.request; urllib.request.urlopen('${u}')"`
+  const ALLOW = [
+    'curl -s http://192.168.31.100:8096/',
+    'curl -s 10.0.0.5:8080/',
+    'curl -s http://172.16.0.1/',
+    'curl -s http://172.31.255.254/',
+    'curl -s http://127.0.0.2/',
+    'curl -s http://nas.local:5000/',
+    'curl -s http://[fd00::1]:80/',
+    'curl -s http://[fe80::1]/',
+    py('http://192.168.1.5/x'),
+    'U=http://nas.local/x; curl -s "$U"',
+    'curl --url http://10.1.2.3/',
+    'curl -x http://192.168.1.2:3128 http://localhost:3420/',
+  ]
+  const DENY: Array<[string, string[]]> = [
+    // look-alikes: the private string is not the host
+    ['curl -s http://192.168.1.1.evil.com/', ['192.168.1.1.evil.com']],
+    ['curl -s http://evil.com.local.attacker.net/', ['evil.com.local.attacker.net']],
+    ['curl -s http://10.0.0.1@evil.com/', ['evil.com']],
+    // no dot boundary / single label: the resolver may complete it through a search domain
+    ['curl -s http://xlocal/', ['xlocal']],
+    ['curl -s http://local/', ['local']],
+    // a public NAME that may resolve to a private address is not waved through by name alone
+    ['curl -s http://nas.example.com/', ['nas.example.com']],
+    // IPv4 spellings a resolver reads differently from how they look: fail closed
+    ['curl -s http://0x0a.0.0.1/', ['0x0a.0.0.1']],
+    ['curl -s http://012.0.0.1/', ['012.0.0.1']],
+    ['curl -s http://167772161/', ['167772161']],
+    ['curl -s http://10.1/', ['10.1']],
+    // just outside the ranges
+    ['curl -s http://172.15.0.1/', ['172.15.0.1']],
+    ['curl -s http://172.32.0.1/', ['172.32.0.1']],
+    ['curl -s http://100.64.0.1/', ['100.64.0.1']], // CGNAT, not RFC 1918
+    ['curl -s http://169.254.169.254/latest/meta-data/', ['169.254.169.254']], // cloud metadata
+    [py('http://0x0a.0.0.1/x'), ['0x0a.0.0.1']],
+    // a private target does not launder another destination in the same call
+    ['curl -s http://192.168.1.5/ http://example.org/', ['example.org']],
+    ['curl -s --resolve nas.local:80:203.0.113.9 http://nas.local/', ['203.0.113.9']],
+    ['curl -s http://192.168.1.5/; curl -s http://example.org/', ['example.org']],
+  ]
+  it('lets private-network targets through, on every path the parser reads', () => {
+    for (const cmd of ALLOW) expect({ cmd, deny: deny(cmd) }).toEqual({ cmd, deny: false })
+  })
+  it('denies look-alikes, non-canonical IPv4, out-of-range and mixed calls, naming the host', () => {
+    for (const [cmd, hosts] of DENY) expect({ cmd, r: classify(cmd) }).toMatchObject({ cmd, r: { deny: true, hosts } })
+  })
+  it('isPrivateTarget decides by the literal string', () => {
+    for (const h of ['10.0.0.1', '172.16.0.1', '172.31.0.1', '192.168.0.1', '127.0.0.5', 'nas.local', 'a.b.local', '[fd12::1]', '[fe80::1]'])
+      expect({ h, p: isPrivateTarget(h) }).toEqual({ h, p: true })
+    for (const h of ['8.8.8.8', '172.15.0.1', '172.32.0.1', '192.169.0.1', '169.254.1.1', '100.64.0.1', '010.0.0.1', '10.0.0', '10.0.0.256',
+      'local', 'xlocal', '.local', 'nas.local.evil.com', 'nas.example.com', '[2001:db8::1]', '[::ffff:192.168.1.1]', ''])
+      expect({ h, p: isPrivateTarget(h) }).toEqual({ h, p: false })
+  })
+  it('the hook process stays silent on a LAN call and denies a look-alike', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bash-egress-lan-'))
+    try {
+      const run = (command: string) => spawnSync(process.execPath, [HOOK], {
+        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+        encoding: 'utf-8',
+        env: { ...process.env, BASH_EGRESS_BLOCK_LOG: join(dir, 'blocks.jsonl'), BASH_EGRESS_VENDOR_HOSTS: join(dir, 'none.json') },
+      })
+      expect(run('curl -s http://192.168.31.100:8096/').stdout).toBe('')
+      expect(run('curl -s http://nas.local:5000/').stdout).toBe('')
+      expect(run('curl -s http://192.168.1.1.evil.com/').stdout).toContain('"permissionDecision":"deny"')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })
 
