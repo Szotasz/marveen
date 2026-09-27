@@ -1,0 +1,14 @@
+[Unit]
+Description=Marveen Memory Pressure Monitor Timer
+Documentation=https://github.com/istvan/marveen
+
+[Timer]
+# Every 20 seconds — the default sample interval from DEFAULT_CONFIG.monitor.sampleIntervalSeconds.
+# Must match that value; if you change the config, update this timer too.
+OnUnitActiveSec=20s
+OnBootSec=30s
+AccuracySec=2s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
