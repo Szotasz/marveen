@@ -63,6 +63,8 @@ import {
   SCHEDULED_TASK_INLINE_MAX_CHARS,
   SCHEDULED_TASK_BODY_WARN_CHARS,
   MAX_SCHEDULED_TASK_PROMPT_LEN,
+  isOnceRunSuccess,
+  disableOnceTask,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
 import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir } from './agent-config.js'
@@ -387,6 +389,26 @@ export function checkTaskDeliveryIntegrity(
   if (verdict === 'tail-lost' && !final) return null
   if (verdict == null && final) return dirs.some((d) => dirExists(d)) ? 'not-arrived' : 'unverifiable'
   return verdict
+}
+
+// Card 7d2b49b4: a once task is switched off after its first SUCCESSFUL run (isOnceRunSuccess: the run
+// closed 'done' and the transcript shows the prompt intact). The config is read fresh here, at the end of
+// the run, so a once flag removed in the meantime is respected. Bookkeeping only, like the delivery verdict
+// above it: never alters the sweep's decision, never throws into the sweep.
+function settleOnceAfterRun(taskName: string, decision: string, deliveryVerdict: DeliveryVerdict | undefined, now: number): void {
+  try {
+    if (!readScheduledTask(taskName)?.once) return
+    if (!isOnceRunSuccess(decision, deliveryVerdict)) {
+      logger.warn(
+        { task: taskName, decision, delivery: deliveryVerdict ?? 'unchecked' },
+        'Once-task ran but its delivery was not verified intact -- left enabled, so it stays visible',
+      )
+      return
+    }
+    if (disableOnceTask(taskName, now)) logger.info({ task: taskName }, 'Once-task switched off after its first successful run')
+  } catch (err) {
+    logger.warn({ err, task: taskName }, 'Once-task could not be switched off -- left enabled')
+  }
 }
 
 export function decideTaskTimeout(
@@ -2577,6 +2599,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         // still be silently swallowing prompts.
         if (decision === 'done') {
           lostRedeliveryCounts.delete(`${entry.taskName}@${entry.agentName}`)
+          settleOnceAfterRun(entry.taskName, decision, entry.deliveryVerdict, now)
         }
         // The one moment the system knows how the run ended. Before 2026-08-26
         // this branch only deleted the map entry, so the knowledge died here and

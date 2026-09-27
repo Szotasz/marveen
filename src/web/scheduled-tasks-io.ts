@@ -165,6 +165,13 @@ export interface ScheduledTask {
   // historical name); without one, the agent's binding for THIS provider is
   // resolved. An unknown value is ignored, as if unset.
   channelProvider?: ChannelProviderType
+  // Run once (card 7d2b49b4): after the first SUCCESSFUL run the runner switches the task off itself
+  // (enabled:false + onceDisabledAt). The fleet wrote one-offs as a dated cron ("0 5 22 9 *"), which fires
+  // again every year and had to be switched off by hand. "Successful" is isOnceRunSuccess for a prompt task
+  // and exit 0 for a command task: a damaged or lost run leaves the task on, so it stays visible.
+  once?: boolean
+  // When the runner switched a once task off (ISO time); absent until then.
+  onceDisabledAt?: string
 }
 
 const CHANNEL_PROVIDER_VALUES: readonly ChannelProviderType[] = ['telegram', 'slack', 'discord', 'googlechat', 'teams']
@@ -206,7 +213,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = hasSkill ? readFileOr(skillPath, '') : ''
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; requiresDesktop?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; injectMetrics?: unknown; sendDigestDirect?: unknown; telegramChatId?: string; channelProvider?: unknown } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; requiresDesktop?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; injectMetrics?: unknown; sendDigestDirect?: unknown; telegramChatId?: string; channelProvider?: unknown; once?: unknown; onceDisabledAt?: unknown } = {}
   try {
     config = JSON.parse(readFileOr(configPath, '{}'))
   } catch { /* use defaults */ }
@@ -235,6 +242,8 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     sendDigestDirect: config.sendDigestDirect === true,
     telegramChatId: typeof config.telegramChatId === 'string' && config.telegramChatId.trim() ? config.telegramChatId.trim() : undefined,
     channelProvider: parseChannelProvider(config.channelProvider),
+    once: config.once === true,
+    onceDisabledAt: typeof config.onceDisabledAt === 'string' ? config.onceDisabledAt : undefined,
   }
 }
 
@@ -275,7 +284,7 @@ export function listScheduledTasks(): ScheduledTask[] {
 
 export function writeScheduledTask(
   taskName: string,
-  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number; injectMetrics?: boolean; sendDigestDirect?: boolean; telegramChatId?: string; channelProvider?: ChannelProviderType | null },
+  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number; injectMetrics?: boolean; sendDigestDirect?: boolean; telegramChatId?: string; channelProvider?: ChannelProviderType | null; once?: boolean },
 ): void {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   mkdirSync(dir, { recursive: true })
@@ -321,7 +330,36 @@ export function writeScheduledTask(
     const cp = parseChannelProvider(data.channelProvider)
     if (cp) config.channelProvider = cp
   }
+  if (data.once !== undefined) config.once = data.once
   if (data.description !== undefined) config.description = data.description
   if (!config.createdAt) config.createdAt = Math.floor(Date.now() / 1000)
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
+/**
+ * Whether a prompt task's run counts as the "first successful run" of a once task (card 7d2b49b4): the
+ * run closed 'done' -- the session worked on it and went idle -- AND the transcript shows the prompt arrived
+ * intact. Every other ending ('abandoned', 'lost') and every other delivery verdict (damaged, not arrived,
+ * unverifiable, never checked) is not a success: the task stays on and visible rather than silently gone.
+ */
+export function isOnceRunSuccess(decision: string, deliveryVerdict: string | null | undefined): boolean {
+  return decision === 'done' && deliveryVerdict === 'intact'
+}
+
+/**
+ * Switch a once task off after its first successful run (card 7d2b49b4): enabled:false and onceDisabledAt,
+ * nothing else. Only task-config.json is written -- writeScheduledTask would also rewrite SKILL.md, and would
+ * create one for a command task that has none. Returns true only when it switched something off: a task
+ * without once, an already disabled one, or a missing one is left exactly as it is. A corrupt
+ * task-config.json is refused (readJsonObjectForWrite throws), never reset.
+ */
+export function disableOnceTask(taskName: string, nowMs: number): boolean {
+  const configPath = join(SCHEDULED_TASKS_DIR, taskName, 'task-config.json')
+  if (!existsSync(configPath)) return false
+  const config = readJsonObjectForWrite(configPath)
+  if (config.once !== true || config.enabled === false) return false
+  config.enabled = false
+  config.onceDisabledAt = new Date(nowMs).toISOString()
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+  return true
 }
