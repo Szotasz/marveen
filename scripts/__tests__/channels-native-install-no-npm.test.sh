@@ -15,8 +15,18 @@
 #   2. native host, launcher missing       -> relinked to the newest version, npm NOT called
 #   3. non-native claude, stale stamp      -> npm IS called (daily check unchanged)
 #   4. no claude and no native versions    -> npm IS called (self-heal unchanged)
-# 3 and 4 are the positive controls: the guard must not switch the npm path off
-# for hosts that really are npm installs.
+#   5. STALE native leftover (versions/<old> only, no launcher) on a host whose
+#      npm package is installed            -> npm self-heal IS called, NO relink
+#      (review #1613: a leftover must not pin the host to an old CLI and switch
+#      its updates off for good)
+#   6. launcher symlink left DANGLING into the versions dir (its version was
+#      removed)                            -> relinked to the newest, npm NOT called,
+#      even with an npm package present (the launcher is the stronger evidence)
+# 3, 4 and 5 are the positive controls: the guard must not switch the npm path
+# off for hosts that really are npm installs.
+#
+# Version fixtures include 2.1.9, 2.1.30 and 2.1.265 so that a lexical sort, or
+# picking the first instead of the last, selects a wrong version (sort -V pin).
 #
 # The block is extracted from channels.sh (from `CLAUDE_UPDATE_STAMP=` up to the
 # `CLAUDE="$(command -v claude)"` line) and run against a throwaway HOME, with
@@ -44,9 +54,12 @@ run_case() {
   local setup="$1" root
   root="$(mktemp -d)"
   mkdir -p "$root/home" "$root/stub" "$root/install/store"
-  # npm stub: records the call, installs nothing
+  mkdir -p "$root/npmroot"
+  # npm stub: answers `npm root -g` (not counted), records every other call,
+  # installs nothing. NPM_CALLS therefore counts install/update calls only.
   cat > "$root/stub/npm" <<EOF
 #!/bin/sh
+if [ "\$1" = "root" ]; then echo "$root/npmroot"; exit 0; fi
 echo "npm \$*" >> "$root/npm.log"
 exit 0
 EOF
@@ -79,7 +92,19 @@ setup_native_present() {
 }
 setup_native_launcher_missing() {
   make_version "$1" 2.1.9
+  make_version "$1" 2.1.30
   make_version "$1" 2.1.265
+}
+setup_stale_leftover_npm_host() {
+  make_version "$1" 2.1.169
+  mkdir -p "$1/npmroot/@anthropic-ai/claude-code"
+}
+setup_dangling_launcher() {
+  make_version "$1" 2.1.9
+  make_version "$1" 2.1.30
+  make_version "$1" 2.1.265
+  mkdir -p "$1/home/.local/bin" "$1/npmroot/@anthropic-ai/claude-code"
+  ln -s "$1/home/.local/share/claude/versions/2.1.200" "$1/home/.local/bin/claude"
 }
 setup_npm_host() {
   printf '#!/bin/sh\necho 2.1.265\n' > "$1/stub/claude"
@@ -110,6 +135,22 @@ else fail "npm host: daily check still calls npm (positive control)" "1 npm call
 run_case setup_nothing
 if [ "$NPM_CALLS" = "1" ]; then pass "no claude, no native versions: npm self-heal still runs (positive control)"
 else fail "no claude, no native versions: npm self-heal still runs (positive control)" "1 npm call" "$NPM_CALLS"; fi
+
+run_case setup_stale_leftover_npm_host
+if [ "$NPM_CALLS" = "1" ]; then pass "stale native leftover on an npm host: npm self-heal runs"
+else fail "stale native leftover on an npm host: npm self-heal runs" "1 npm call" "$NPM_CALLS"; fi
+if [ -z "$LINK_TARGET" ]; then pass "stale native leftover on an npm host: NOT relinked"
+else fail "stale native leftover on an npm host: NOT relinked" "<no link>" "$LINK_TARGET"; fi
+
+run_case setup_dangling_launcher
+if [ "$NPM_CALLS" = "0" ]; then pass "dangling native launcher: no npm self-heal"
+else fail "dangling native launcher: no npm self-heal" "0 npm calls" "$NPM_CALLS"; fi
+if [ "$LINK_TARGET" = ".local/share/claude/versions/2.1.265" ]; then
+  pass "dangling native launcher: relinked to the NEWEST version"
+else
+  fail "dangling native launcher: relinked to the NEWEST version" \
+    ".local/share/claude/versions/2.1.265" "${LINK_TARGET:-<no link>}"
+fi
 
 echo "channels.sh native-install guard: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

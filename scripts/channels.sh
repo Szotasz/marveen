@@ -649,11 +649,43 @@ claude_is_native() {
   esac
 }
 
-# Self-heal for a native host whose LAUNCHER vanished while the versioned
+# Self-heal for a native host whose LAUNCHER broke while the versioned
 # binaries are still on disk: re-link to the newest one instead of falling
 # back to npm, which would reintroduce the second install.
+#
+# A versions dir alone is NOT proof that the host is native today: a host that
+# tried the native installer once and went back to npm keeps a stale
+# versions/<old> behind. Relinking that would pin the host to an old CLI and,
+# because claude_is_native is then true, skip every later update. So relink
+# only on evidence that the host is native NOW:
+#   - the launcher is still there as a symlink into the versions dir, and only
+#     its target is gone (dangling), or
+#   - there is no launcher, AND no npm global package for
+#     @anthropic-ai/claude-code either, so npm is not the install this host was
+#     running. (The package NAME, not $CLAUDE_PKG: that may carry an @<pin>.)
+# Anything else falls through to the npm self-heal, exactly as before.
+claude_host_is_native_now() {
+  local launcher="$HOME/.local/bin/claude" target root npm_root
+  if [ -L "$launcher" ]; then
+    target="$(readlink "$launcher" 2>/dev/null)"
+    # The target may be written with the resolved HOME (/private/var/...) or
+    # the literal one; accept either spelling of the versions root.
+    root="$(claude_realpath "$CLAUDE_NATIVE_ROOT")"
+    case "$target" in
+      "$CLAUDE_NATIVE_ROOT"/*) return 0 ;;
+    esac
+    [ -n "$root" ] && case "$target" in "$root"/*) return 0 ;; esac
+    return 1
+  fi
+  if command -v npm >/dev/null 2>&1; then
+    npm_root="$(npm root -g 2>/dev/null)"
+    [ -n "$npm_root" ] && [ -d "$npm_root/@anthropic-ai/claude-code" ] && return 1
+  fi
+  return 0
+}
 claude_relink_native() {
   local newest
+  claude_host_is_native_now || return 1
   newest="$(ls -1 "$CLAUDE_NATIVE_ROOT" 2>/dev/null | sort -V | tail -1)"
   [ -n "$newest" ] || return 1
   [ -x "$CLAUDE_NATIVE_ROOT/$newest" ] || return 1
