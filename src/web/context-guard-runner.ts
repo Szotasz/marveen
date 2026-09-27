@@ -45,6 +45,7 @@ import {
   IDLE_FLUSH_REASON_PREFIX,
   INITIAL_GUARD_STATE,
   READY_TIMEOUT_MS,
+  RESUME_GIVE_UP_REASON,
   STALE_REFRESH_REASON_PREFIX,
   SATURATION_CREDIBLE_MIN_PCT,
   saturationBannerCredible,
@@ -364,6 +365,31 @@ export function resumePrompt(
       ? `Zárásul egyetlen transzkript-sorban rögzítsd, hogy friss kontextussal folytatod -- a csatornádra (a gazda Telegramjára) session-meta NEM mehet ki.`
       : `Röviden jelezz a csatornádon, hogy friss kontextussal folytatod.`)
   )
+}
+
+/** Operator notice for a resume give-up. Exported so the wording is pinned by a test. */
+export function resumeGiveUpNotice(name: string, handoffPath: string): string {
+  return `[CONTEXT-GUARD] A(z) "${name}" agent restartja utan a session ${READY_TIMEOUT_MS / 60_000} percen belul nem lett kesz, ` +
+    'ezert a folytatasi (resume) prompt NEM ment ki. Az agent vagy nem fut, vagy nem fogad promptot, vagy a handoff nelkul indult el. ' +
+    `Nezd meg a pane-t; ha all, add be neki kezzel a handoffot: ${handoffPath}`
+}
+
+/**
+ * The resume give-up is decided as action 'none', and the none-branch logs
+ * nothing, so the restarted agent could sit without its handoff pointer while
+ * nobody knew the resume path had failed. Warn, and tell a human through the
+ * same sinks as the rescue-failure alert: the main agent's own inbox is not a
+ * sink for an alert about the main agent.
+ */
+export async function reportResumeGiveUp(name: string): Promise<void> {
+  logger.warn({ name }, 'context-guard: resume give-up -- the restarted session never became ready, resume prompt not sent')
+  const text = resumeGiveUpNotice(name, handoffPathFor(name))
+  try {
+    if (name === MAIN_AGENT_ID) await notifyChannel(text)
+    else createAgentMessage(name, MAIN_AGENT_ID, text, 'context-guard resume give-up notice')
+  } catch (err) {
+    logger.error({ err, name }, 'context-guard: FAILED TO RAISE the resume give-up notice')
+  }
 }
 
 /** Raw observed context size (tokens) for the idle-flush tier's absolute threshold. */
@@ -830,6 +856,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     dropPendingResume(name, decision.reason)
   }
   if (decision.action === 'none') {
+    if (decision.reason === RESUME_GIVE_UP_REASON) await reportResumeGiveUp(name)
     // Idle-flush non-decisions carry the measurement that blocked them
     // ("quiet for only 4m of 20m"), which is the only way to see the tier
     // failing to reach its threshold. It matters because the idle clock is the

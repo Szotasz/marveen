@@ -686,6 +686,13 @@ export const STALE_REFRESH_REASON_PREFIX = 'stale-handoff-refresh'
 export const DAILY_HANDOFF_REASON_PREFIX = 'daily-handoff'
 
 /**
+ * Reason for giving up on the resume injection: the restarted session did not
+ * become ready within READY_TIMEOUT_MS. The decision is action 'none', so the
+ * runner matches this constant to raise an alert instead of staying silent.
+ */
+export const RESUME_GIVE_UP_REASON = 'ready timeout -- giving up on resume injection'
+
+/**
  * Whether the daily tier can actually fire for this config.
  *
  * ONE predicate, two readers: the tier itself, and the auto-restart runner
@@ -1222,7 +1229,7 @@ export function decideGuard(
         }
       }
       if (nowMs >= state.deadlineMs) {
-        return cooldown(nowMs, cfg, 'ready timeout -- giving up on resume injection')
+        return cooldown(nowMs, cfg, RESUME_GIVE_UP_REASON)
       }
       return none('waiting for restarted session')
     }
