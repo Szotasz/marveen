@@ -30,6 +30,11 @@ REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 SCRIPT="$REPO/scripts/pre-modify-backup.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# The fixture DB is seeded through python3 stdlib, not the sqlite3 CLI, which
+# install-linux.sh does not install (7ac77433). What the SCRIPT under test does
+# with or without sqlite3 is what the cases below measure; the seeding must not
+# depend on it.
+. "$REPO/scripts/__tests__/lib/sqlite-oracle.sh"
 
 echo "pre-modify-backup: portable checksum and honest exit"
 echo "===================================================="
@@ -39,10 +44,7 @@ echo "===================================================="
 FAKE="$TMP/repo"
 mkdir -p "$FAKE/scripts" "$FAKE/store"
 cp "$SCRIPT" "$FAKE/scripts/"
-# The fixture is written with python3's stdlib sqlite3, not the sqlite3 CLI: the
-# CLI is not an installer dependency (#1565 item 7), and a suite that dies with
-# 127 before its first case says nothing about the script under test.
-python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("CREATE TABLE t(a)"); c.execute("INSERT INTO t VALUES (1)"); c.commit()' "$FAKE/store/claudeclaw.db"
+oracle_exec "$FAKE/store/claudeclaw.db" "CREATE TABLE t(a); INSERT INTO t VALUES (1);"
 printf '#!/bin/bash\necho proba\n' > "$FAKE/scripts/sajat.sh"
 chmod +x "$FAKE/scripts/sajat.sh"
 printf 'scripts/sajat.sh\n' > "$FAKE/store/personal-scripts.txt"
@@ -129,7 +131,7 @@ rm -rf "$FAKE/store/backups"
 OUT="$(PATH="$SHIM:$PATH" bash "$FAKE/scripts/pre-modify-backup.sh" nosqlite 2>&1)"; RC=$?
 SNAP="$(ls -1dt "$FAKE/store/backups"/*/ 2>/dev/null | head -1)"
 assert_eq "exit 0: a raw copy IS a recoverable snapshot" "0" "$RC"
-ROWS="$(python3 -c 'import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute("SELECT count(*) FROM t").fetchone()[0])' "${SNAP}claudeclaw.db" 2>/dev/null)"
+ROWS="$(oracle_query "${SNAP}claudeclaw.db" "SELECT count(*) FROM t" 2>/dev/null)"
 assert_eq "the snapshot holds a readable copy of the db (row count)" "1" "$ROWS"
 assert_contains "the run says it is NOT a consistent snapshot" "$OUT" "no sqlite3 snapshot"
 assert_contains "and the closing line names the db mode" "$OUT" "db: raw db+wal+shm copy"
