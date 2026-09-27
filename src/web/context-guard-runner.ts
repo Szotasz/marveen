@@ -212,11 +212,13 @@ function readHighwater(): HighwaterMap {
 
 let highwater: HighwaterMap | null = null
 
-function observedHighwater(name: string, model: string, observedNow: number): number {
+// `learn` false reads the stored mark without raising it: a status read must
+// not change the thing it reports on, so only the guard's sweep writes.
+function observedHighwater(name: string, model: string, observedNow: number, learn: boolean): number {
   if (highwater === null) highwater = readHighwater()
   const entry = highwater[name]
   const prior = entry && entry.model === model ? entry.tokens : 0
-  if (observedNow > prior) {
+  if (learn && observedNow > prior) {
     highwater[name] = { model, tokens: observedNow }
     try { writeFileSync(HIGHWATER_PATH, JSON.stringify(highwater, null, 2)) }
     catch (err) { logger.warn({ err }, 'context-guard: highwater persist failed') }
@@ -384,7 +386,7 @@ export function measureIdleMs(name: string, nowMs: number): number | null {
   return Math.max(0, nowMs - mtime)
 }
 
-export function measurePct(name: string, cfgLimit: number | null): number | null {
+export function measurePct(name: string, cfgLimit: number | null, opts: { learn?: boolean } = {}): number | null {
   const workingDir = workingDirFor(name)
   const configDir = configDirFor(name)
   const tokens = readContextTokensFromProjectDir(workingDir, configDir)
@@ -402,7 +404,7 @@ export function measurePct(name: string, cfgLimit: number | null): number | null
     // Calibrate against the persisted per-(agent, model) maximum, not just
     // the live reading: a fresh post-restart session must not un-learn a
     // window the previous session already proved (see HighwaterMap above).
-    limit = calibrateLimit(observedHighwater(name, model, tokens), contextLimitForModel(model))
+    limit = calibrateLimit(observedHighwater(name, model, tokens, opts.learn !== false), contextLimitForModel(model))
   }
   return tokens / limit
 }
@@ -1064,7 +1066,7 @@ export function getContextGuardStatus(): Array<{
     return {
       agent: name,
       phase: state?.phase ?? 'idle',
-      pct: cfg.enabled && !remote ? measurePct(name, cfg.limitTokens) : null,
+      pct: cfg.enabled && !remote ? measurePct(name, cfg.limitTokens, { learn: false }) : null,
       enabled: cfg.enabled,
       saturationRestart: cfg.saturationRestart,
       ...cooldownStatusExtra(state),
