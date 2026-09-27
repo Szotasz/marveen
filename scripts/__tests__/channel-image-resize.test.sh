@@ -92,12 +92,19 @@ MUTANT="$BASE/mutant.sh"
   echo '[ "$TOOL_NAME" = "Read" ] || exit 0'
   echo 'echo "reached the work"'
 } > "$MUTANT"
+# The mutant runs on a curated PATH with no jq on it, so the control reproduces
+# the bug's own precondition instead of borrowing it from the host. A GitHub
+# runner ships jq; relying on its absence made this case fail there (#1621 CI).
+BIN0="$BASE/bin-nojq"; mkdir -p "$BIN0"
+p="$(command -v cat)" && ln -sf "$p" "$BIN0/cat"
 IMG="$(fresh_image a.jpg)"
-M_OUT="$(payload Read "$IMG" | bash "$MUTANT" 2>"$BASE/merr")"; M_RC=$?
-if [ "$M_RC" -eq 0 ] && [ -z "$M_OUT" ] && [ -z "$(cat "$BASE/merr")" ]; then
+M_OUT="$(payload Read "$IMG" | PATH="$BIN0" "$BASH_BIN" "$MUTANT" 2>"$BASE/merr")"; M_RC=$?
+if [ -e "$BIN0/jq" ]; then
+  fail "the curated PATH for the control carries jq -- the control measures nothing"
+elif [ "$M_RC" -eq 0 ] && [ -z "$M_OUT" ] && [ -z "$(cat "$BASE/merr")" ]; then
   pass "the old shape exits 0, says nothing, does nothing -- the test can see the bug"
 else
-  fail "the control did NOT reproduce the silent no-op (rc=$M_RC out='$M_OUT'); jq may be installed now, which changes what this suite proves"
+  fail "the control did NOT reproduce the silent no-op (rc=$M_RC out='$M_OUT' err='$(cat "$BASE/merr")')"
 fi
 
 # --- (1) the happy path, measured on the file, not on the hook's word -------
