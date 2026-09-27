@@ -111,6 +111,40 @@ describe('web-reading profile posture (TMPLPERM908)', () => {
     }
   })
 
+  // Every entry in a permission list must be a rule, not a path. A bare path
+  // ("/mnt/e/Library/**") is not a rule, Claude Code does not match it against
+  // anything, so it silently grants nothing while reading like a grant.
+  // (PR #1357 fleet review, 2026-09-25, item 1e.)
+  it('every allow/deny entry carries a tool prefix', () => {
+    for (const id of PROFILE_IDS) {
+      const p = loadProfileTemplate(id)
+      for (const rule of [...p.filesystem.allow, ...p.filesystem.deny]) {
+        // Tool(...), a bare tool name (WebSearch), or an MCP tool (mcp__srv__tool)
+        expect(rule, `${id}: ${rule}`).toMatch(/^(mcp__\w|[A-Z][A-Za-z]*(\(|$))/)
+      }
+    }
+  })
+
+  // researcher is the most prompt-injection-exposed profile (external content,
+  // draft-only), and it ships to every install. It gets only what the product
+  // needs. Each assertion pins one item of the PR #1357 fleet review
+  // (2026-09-25): a general interpreter sidesteps the whole deny list; store/
+  // holds the dashboard and fleet tokens; a raw dashboard POST is any write,
+  // not only memory and messaging (the agent-msg.sh / agent-mem.sh helpers
+  // cover those); /mnt/... paths are one machine's layout, not the product's.
+  it('researcher ships without the injection-exposed grants', () => {
+    const p = loadProfileTemplate('researcher')
+    const rules = [...p.filesystem.allow, ...(p.additionalDirectories ?? [])]
+    expect(p.filesystem.allow.filter(r => /^Bash\((python3?|node|perl|ruby|bash -c|sh -c)\b/.test(r))).toEqual([])
+    expect((p.additionalDirectories ?? []).filter(d => /\/store(\/|$)/.test(d))).toEqual([])
+    expect(p.filesystem.allow.filter(r => /^Bash\(curl\b.*-X\s*POST/i.test(r))).toEqual([])
+    expect(rules.filter(r => r.includes('/mnt/'))).toEqual([])
+    // the product-needed grants stay
+    expect(p.filesystem.allow).toContain('Bash(bash ${PROJECT_ROOT}/scripts/agent-mem.sh:*)')
+    expect(p.filesystem.allow).toContain('Bash(pdf2txt.py:*)')
+    expect(p.filesystem.allow).toContain('Write(${PROJECT_ROOT}/research-inbox/**)')
+  })
+
   it('no template carries a Bash rule with a ** glob (prefix matching cannot glob)', () => {
     for (const id of PROFILE_IDS) {
       const p = loadProfileTemplate(id)
