@@ -13,7 +13,7 @@ import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coordinator/ingest.js'
 import { SYSTEM_DIRECTIVE_SENDER } from '../system-directive.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
-import { isKnownAgent } from '../agent-config.js'
+import { isKnownAgent, readAgentPullDelivery } from '../agent-config.js'
 import { MAIN_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
@@ -310,8 +310,14 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // and on 2026-09-08 the false "not running" state reached the owner as a
     // system-down report. The worst reaction it invites -- starting a second
     // main instance -- is exactly what the pull model must never see.
+    // A PULL-delivery agent is exempt for the same reason: it runs on its own
+    // machine and claims its rows over the API, so isAgentRunning() (a local
+    // `agent-<name>` tmux probe) says stopped forever, and the router never
+    // abandons its messages. Telling the sender the row "elveszik" would be
+    // false, and the suggested fix (start the agent here) is not even possible.
     if (!storedTo.includes('/')
         && sanitizeAgentIdent(storedTo) !== sanitizeAgentIdent(MAIN_AGENT_ID)
+        && !readAgentPullDelivery(sanitizeAgentIdent(storedTo))
         && !isAgentRunning(sanitizeAgentIdent(storedTo))) {
       logger.warn({ id: msg.id, to: msg.to_agent }, 'Agent message queued for a STOPPED agent -- likely to be abandoned')
       json(res, {

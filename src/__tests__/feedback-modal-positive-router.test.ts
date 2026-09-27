@@ -78,6 +78,7 @@ vi.mock('../web/agent-config.js', () => ({
   // agent skips the readiness gate entirely, which would stop this file from
   // measuring the refusal branch it exists to pin.
   readAgentWorksourceChannel: () => false,
+  readAgentPullDelivery: () => false,
 }))
 
 vi.mock('../web/agent-process.js', () => ({

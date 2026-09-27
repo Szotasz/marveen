@@ -61,6 +61,7 @@ vi.mock('../web/agent-config.js', () => ({
   // Default-OFF, matching the real reader: the agents in this test take the
   // tmux path, so the cap being measured is the cap on the unchanged route.
   readAgentWorksourceChannel: () => false,
+  readAgentPullDelivery: () => false,
 }))
 
 vi.mock('../web/agent-process.js', () => ({

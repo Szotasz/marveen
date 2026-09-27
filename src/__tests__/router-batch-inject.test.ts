@@ -49,6 +49,7 @@ vi.mock('../web/agent-config.js', () => ({
   readAgentRemoteHost: () => null,
   readAgentVoiceConfig: () => ({ responseMode: 'text' }),
   readAgentWorksourceChannel: () => false,
+  readAgentPullDelivery: () => false,
 }))
 vi.mock('../web/agent-process.js', () => ({
   clearFeedbackModalAndRecheck: () => false,
