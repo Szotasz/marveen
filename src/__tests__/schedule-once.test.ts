@@ -155,6 +155,16 @@ describe('a "once" that is not true or false: NOT once, and the read says so, na
     io.readScheduledTask('ismetelt')
     expect(warn).toHaveBeenCalledTimes(1)
   })
+  it('the memory is per task AND value: "true" -> "yes" -> "true" warns twice, not once and not three times (review X1)', () => {
+    fixture('valtozo', { schedule: '0 5 22 9 *', enabled: true, once: 'true' })
+    io.readScheduledTask('valtozo')
+    fixture('valtozo', { schedule: '0 5 22 9 *', enabled: true, once: 'yes' })
+    io.readScheduledTask('valtozo')
+    fixture('valtozo', { schedule: '0 5 22 9 *', enabled: true, once: 'true' })
+    io.readScheduledTask('valtozo')
+    expect(warn).toHaveBeenCalledTimes(2)
+    expect(warn.mock.calls.map((c: unknown[]) => (c[0] as { once: unknown }).once)).toEqual(['true', 'yes'])
+  })
   it('true, false and an absent once: no WARN', () => {
     fixture('igaz', { schedule: '0 5 22 9 *', enabled: true, once: true })
     fixture('hamis', { schedule: '0 5 22 9 *', enabled: true, once: false })
