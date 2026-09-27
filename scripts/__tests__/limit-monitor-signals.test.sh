@@ -20,7 +20,28 @@ fail(){ echo "  FAIL  $*"; FAILED=1; }
 
 # Own tmux server (empty): otherwise the case would capture the real fleet's
 # panes and every result would depend on what happens to be on screen.
+#
+# #1565 item 5: TMUX_TMPDIR ALONE DOES NOT ISOLATE. While $TMUX is set --
+# and it always is, because the suite runs inside an agent's pane -- tmux takes
+# the socket from $TMUX and ignores TMUX_TMPDIR entirely. Measured 2026-09-21:
+# with TMUX_TMPDIR pointed at an empty directory, `tmux list-sessions` still
+# returned all six live fleet sessions. So every case was reading the fleet's
+# screens, and the verdict depended on what happened to be printed there at
+# that second: a pane showing "Claude usage limit reached" turns every quiet
+# case into a false alarm (measured on a separate server with planted text),
+# and can also make a positive case pass for the wrong reason. That is the
+# whole of the "red in the harness, green on its own" flake -- not the harness.
+unset TMUX TMUX_PANE
 export TMUX_TMPDIR="$BASE/tmux"; mkdir -p "$TMUX_TMPDIR"
+# And prove the isolation instead of trusting it: this comment claimed it for
+# months while it was false. An error here is FINE (no server = no panes); what
+# must never happen is tmux answering with a session name.
+if tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -q .; then
+  echo "  FAIL  tmux isolation BROKEN: the cases can see live sessions:"
+  tmux list-sessions -F '#{session_name}' 2>/dev/null | sed 's/^/          /'
+  echo "        Every result below would depend on what is on those screens."
+  exit 1
+fi
 
 new_case() {
   local c="$BASE/$1"; mkdir -p "$c/scripts" "$c/store" "$c/fakehome"
@@ -34,6 +55,12 @@ new_case() {
   cp "$INSTALL_DIR/scripts/lib/owner-chat.sh" "$c/scripts/lib/"
   # MIOHEREDOC902: the measured quota path now lives in its own file.
   cp "$INSTALL_DIR/scripts/lib/quota-check.py" "$c/scripts/lib/"
+  # Same reason as send-telegram.sh above, found 2026-09-21: the monitor sources
+  # scripts/lib/content-hash.sh for the dedupe hash, and without it every tick
+  # logged "content_hash UNAVAILABLE -- dedupe disabled ... (fail-open)". The
+  # cases still passed, so the gap was invisible -- but the text-path dedupe was
+  # never actually exercised: it was switched off in every single case.
+  cp "$INSTALL_DIR/scripts/lib/content-hash.sh" "$c/scripts/lib/"
   printf 'MAIN_AGENT_ID=probe\nALLOWED_CHAT_ID=1\n' > "$c/.env"
   echo "$c"
 }
