@@ -1170,12 +1170,18 @@ export function decideGuard(
       // stays in the past while we defer, so the restart fires on the first
       // sweep that finds the pane no longer busy; a turn that saturates
       // mid-flight is caught by the paneSaturated branch above.
+      // The deferral is bounded: past the deadline a busy pane gets one more
+      // handoffTimeoutMinutes, then the restart fires anyway. Without the bound
+      // an agent that never goes idle (back-to-back turns, a long tool loop)
+      // postpones its own restart for as long as it keeps working, while its
+      // context keeps growing past the threshold that started the handoff.
+      const deferBusy = inputs.paneBusy && nowMs < state.deadlineMs + cfg.handoffTimeoutMinutes * 60_000
       if (inputs.pct !== null && inputs.pct >= cfg.hardPct) {
-        if (inputs.paneBusy) return none('hard threshold during await-handoff but agent mid-turn -- deferring restart')
+        if (deferBusy) return none('hard threshold during await-handoff but agent mid-turn -- deferring restart')
         return restartDecision(nowMs, 'hard threshold during await-handoff', handoffStaleMinutes(inputs))
       }
       if (nowMs >= state.deadlineMs) {
-        if (inputs.paneBusy) return none('handoff timeout but agent mid-turn -- deferring restart')
+        if (deferBusy) return none('handoff timeout but agent mid-turn -- deferring restart')
         // No handoff in time (agent wedged or ignored the prompt). Restart
         // anyway: taskstate + kanban + hot memories are the fallback context.
         // An OLD HANDOFF.md may still exist; measure how far behind it is so
