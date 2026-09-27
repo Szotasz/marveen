@@ -126,6 +126,50 @@ def send_message(from_agent, to_agent, content):
     return api("POST", "/api/messages", {"from": from_agent, "to": to_agent, "content": content})
 
 
+def kanban_comment(card_id, author, content):
+    """POST a comment. Hand-rolling this as `python3 -c json.dumps | curl --data-binary`
+    was written out by hand three times on 2026-09-19 alone; the payload carries
+    newlines and non-ASCII text, so a `-d "{...}"` shell string is both fragile and
+    (with backticks or $()) unsafe. Returns the API body -- an `id` means it landed.
+
+    scripts/kartya-es-ertesites.py is the more gated path for the same write (accent
+    gate, owner notification, the automated marker) AND IT IS THE RIGHT ONE WHERE IT
+    RUNS -- but its roster is a literal (`FLEET`/`GAZDA`, src line ~172), so on an
+    install whose agents are not in that set it refuses every --author (measured
+    2026-09-27). These wrappers carry no roster: they take whatever the dashboard
+    accepts. Prefer the gated tool when your agent is in its FLEET; use these when it
+    is not, and remember what they do not check.
+    """
+    return api("POST", f"/api/kanban/{card_id}/comments",
+               {"author": author, "content": content})
+
+
+def kanban_move(card_id, status, actor):
+    """POST a status move. `actor` is REQUIRED and is not decoration: the move route
+    passes it to fireKanbanDispatch, and resolveKanbanDispatch suppresses the echo only
+    when the mover IS the assignee. Omit it and a move of YOUR OWN card to in_progress
+    queues a full task-assignment message back at you -- measured 2026-09-27, twice
+    (messages 21 and 22), from two throwaway selftest cards. Nothing fails: the move
+    answers {"ok":true} and the echo arrives later, costing an agent round.
+
+    See kanban_comment on which path to prefer, and note that a move made here leaves
+    NO comment, while the gated tool ties every move to one."""
+    return api("POST", f"/api/kanban/{card_id}/move", {"status": status, "actor": actor})
+
+
+def kanban_set(card_id, fields):
+    """PUT a PARTIAL field set. Safe on this endpoint (unlike /api/memories/<id>):
+    updateKanbanCard merges `{...card, ...fields}`, so omitted columns keep their
+    value -- measured in src/db.ts. Writable: title, description, status, assignee,
+    priority, project, parent_id, due_date, sort_order, archived_at. Anything else
+    is rejected with a 400 and the card is not touched (#1257).
+
+    This is the only path to the columns kartya-es-ertesites.py does not expose at
+    all -- due_date, project, parent_id, sort_order -- which the audit scripts read.
+    """
+    return api("PUT", f"/api/kanban/{card_id}", fields)
+
+
 def list_agents():
     return api("GET", "/api/agents")
 
@@ -236,6 +280,15 @@ def main(argv):
         _out(kanban_stuck(int(rest[0]) if rest else 14400))
     elif cmd == "kanban-status":
         _out(kanban_by_status(rest[0]))
+    elif cmd == "kanban-comment":
+        body = sys.stdin.read() if rest[2] == "-" else rest[2]
+        _out(kanban_comment(rest[0], rest[1], body))
+    elif cmd == "kanban-move":
+        # kanban-move <id> <status> <actor>   (actor is required -- see kanban_move)
+        _out(kanban_move(rest[0], rest[1], rest[2]))
+    elif cmd == "kanban-set":
+        # kanban-set <id> <field> <value>   (value "null" clears the column)
+        _out(kanban_set(rest[0], {rest[1]: None if rest[2] == "null" else rest[2]}))
     else:
         sys.stderr.write(f"unknown command: {cmd}\n")
         return 2
