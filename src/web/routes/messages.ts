@@ -354,9 +354,18 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // a near-miss (the voice id plus a stray character, sanitised back to the voice id) would be stored under a
     // name the relay never reads, and lost without a sound. It gets the 400.
     const isVoiceMailbox = storedTo === VOICE_CHANNEL_AGENT_ID
-    if (!storedTo.includes('/') && !isVoiceMailbox && !isKnownAgent(sanitizeAgentIdent(storedTo))) {
+    //
+    // A SYSTEM_SENDER_IDS entry is not unknown either (card 9fc6dc3e): those
+    // ids name the neighbouring systems that talk to the fleet over this API,
+    // and the fleet answers them over the same POST (to=<system id>). Without
+    // this, every reply to such a system would get a 400 since this gate
+    // shipped. Only an id that is neither a registered agent nor a listed
+    // system is rejected; the match uses the same normalization as the sender
+    // check.
+    const toIdent = sanitizeAgentIdent(storedTo)
+    if (!storedTo.includes('/') && !isVoiceMailbox && !SYSTEM_SENDERS.has(toIdent) && !isKnownAgent(toIdent)) {
       logger.warn({ from: from.trim(), to: storedTo }, 'Rejected /api/messages POST to an unregistered recipient')
-      json(res, { error: `unknown recipient '${storedTo}' -- to must be a registered fleet agent id (or "<system>/<agent>" for federation)` }, 400)
+      json(res, { error: `unknown recipient '${storedTo}' -- to must be a registered fleet agent id, a SYSTEM_SENDER_IDS system id, or "<system>/<agent>" for federation` }, 400)
       return true
     }
     // Code-side enforcement of the kanban-ref convention: rewrite any
