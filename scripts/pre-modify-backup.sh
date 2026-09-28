@@ -54,9 +54,24 @@ if [ -f "$STORE/claudeclaw.db" ]; then
      && [ -s "$DEST/claudeclaw.db" ]; then
     DB_MODE="sqlite3 .backup"
     echo "  db: consistent snapshot ok"
+  elif rm -f "$DEST/claudeclaw.db" 2>/dev/null; command -v python3 >/dev/null 2>&1 \
+     && python3 - "$STORE/claudeclaw.db" "$DEST/claudeclaw.db" 2>/dev/null <<'PYSNAP' \
+     && [ -s "$DEST/claudeclaw.db" ]; then
+import sqlite3, sys
+# The same online backup the CLI's .backup runs, through python3's stdlib: python3
+# IS an install dependency, the sqlite3 CLI is not (card 252ab361, item (a)).
+src = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True, timeout=30)
+dst = sqlite3.connect(sys.argv[2])
+with dst:
+    src.backup(dst)
+dst.close()
+src.close()
+PYSNAP
+    DB_MODE="python3 sqlite3 backup"
+    echo "  db: consistent snapshot ok (python3 sqlite3 backup, no sqlite3 CLI)"
   else
-    # Degraded fallback, the same one scripts/backup.sh uses without sqlite3:
-    # copy the file trio as-is. A raw copy CAN be torn mid-write, so this is a
+    # Degraded fallback, the same one scripts/backup.sh uses without sqlite3, and
+    # now only when python3's backup could not run either: copy the file trio as-is. A raw copy CAN be torn mid-write, so this is a
     # RECOVERABLE snapshot, not a consistent one -- the -wal carries the recent
     # writes and SQLite replays it on open; the -shm is only an index and is
     # rebuilt. Copying the db without its -wal would silently lose everything
