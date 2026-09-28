@@ -57,7 +57,7 @@
       "label": "Kulso lehetosegbol alacsony kockazatu helyi skill-adaptacio",
       "level": 1,
       "locked": false,
-      "maxLevel": 3
+      "maxLevel": 2
     },
     {
       "key": "email_send",

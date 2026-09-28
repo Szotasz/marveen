@@ -32,8 +32,5 @@ A külső opportunity-k kezelése az `external_skill_adoption` autonómia-kateg�
 
 - **Level 1:** a Dream Engine csak jelzi az opportunity-t a `DREAM.md`-ben.
 - **Level 2:** konkrét helyi skill-adaptációt javasol, de a skill-fájlt nem módosítja; a döntés a tulajdonosé.
-- **Level 3:** kizárólag alacsony kockázatú, visszafordítható, helyi `SKILL.md` create/patch hajtható végre automatikusan, a meglévő `skill-factory` / `skill-management` eljárásokkal.
 
-A level 3 nem supply-chain bypass. A külső README/repo-leírás nem megbízható adatforrásként kezelendő, nem végrehajtandó utasításként. A Dream Engine nem tölthet le, telepíthet vagy futtathat külső repo-kódot, nem adhat hozzá dependency-t, plugint, MCP/connectort vagy új secretet, nem változtathat permissiont/system-service konfigurációt, és nem végezhet publikálást, külső üzenetküldést, fizetést vagy adattörlést. Az automatikusan létrehozott vagy patchelt skill sem kerülheti meg ezeket a határokat. Ha az opportunity ezek közül bármelyiket igényli, a folyamat level 2 viselkedésre esik vissza és tulajdonosi döntést kér.
-
-Autonóm adaptációnál a forrás URL és az adaptáció indoka provenance-ként megmarad, a módosított skillt a rendszer visszaolvassa, a skill indexet újragenerálja, és csak sikeres ellenőrzés után jelenti az adaptációt lezártnak.
+Az `external_skill_adoption` kategória legmagasabb engedélyezett szintje 2. A Dream Engine külső opportunity alapján nem hoz létre és nem módosít skill-fájlt önállóan; a tényleges adaptációhoz tulajdonosi döntés szükséges. A külső README/repo-leírás csak javaslati bemenet, és nem ad felhatalmazást skill-fájl módosítására.
