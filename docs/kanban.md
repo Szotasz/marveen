@@ -52,6 +52,8 @@ Két, csak hozzáírt tábla rögzíti, mi változott egy kártyán, és ki vál
 - `kanban_card_events`: valódi státusz-átmenetenként egy sor (`from_status`, `to_status`); a `/move` útvonal és a `PUT /api/kanban/:id` is írja. Olvasása: `GET /api/kanban/:id/events`.
 - `kanban_card_field_events`: a `due_date`, az `assignee` vagy a `priority` valódi változásánként egy sor a `PUT /api/kanban/:id` útján (`field`, `old_value`, `new_value`, szövegként; `null`, ha a mező üres volt vagy üres lett). A változatlanul visszaküldött érték nem ír sort. Olvasása: `GET /api/kanban/:id/field-events`.
 
+Mindkét írás (`PUT /api/kanban/:id` és `POST /api/kanban/:id/move`) `actor`-a szöveg vagy `null`; más típust 400-zal utasít el, mielőtt bármit írna, és az írás a soraival egy tranzakció. Az üres vagy csak szóközből álló actor hiányzónak számít: ilyenkor a dashboard-munkamenet felhasználója kerül a sorba, a tokenes hívóé névtelen (`null`) marad.
+
 A kettő szándékosan külön tábla: a `kanban_card_events` minden olvasója (köztük a beakadt kártyák jelzése és a státusz-kor lekérdezései) az ottani sort státusz-átmenetnek veszi. A flotta-átvitel a `kanban_card_events`-et átviszi, a `kanban_card_field_events`-et nem.
 
 ### WIP-limit (folyamatban lévő kártyák korlátja) -- technikai részletek

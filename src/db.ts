@@ -2551,18 +2551,23 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   // every move that does not land in in_progress re-arms the next activation --
   // and heals a row already stuck this way, since the clear does not depend on
   // the previous status.
-  const changed = db.prepare(
-    status === 'in_progress'
-      ? 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
-      : 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL WHERE id=?'
-  ).run(status, sortOrder, now, id).changes > 0
-  if (changed) touchAncestorChain(row?.parent_id, now, id)
-  if (changed && prev !== undefined && prev !== status) {
-    db.prepare(
-      'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
-    ).run(id, prev, status, actor ?? null, now)
-  }
-  return changed
+  // ONE TRANSACTION for the move and the row it owes, as in updateKanbanCard (card f6fba9ec, X16): the UPDATE, the
+  // ancestor stamps and the status event either all happen or none does, so a row insert that throws cannot leave a
+  // card moved with no row saying who moved it.
+  return db.transaction((): boolean => {
+    const changed = db.prepare(
+      status === 'in_progress'
+        ? 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
+        : 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL WHERE id=?'
+    ).run(status, sortOrder, now, id).changes > 0
+    if (changed) touchAncestorChain(row?.parent_id, now, id)
+    if (changed && prev !== undefined && prev !== status) {
+      db.prepare(
+        'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
+      ).run(id, prev, status, actor ?? null, now)
+    }
+    return changed
+  })()
 }
 
 // Stamp the once-only kanban -> agent dispatch guard. Returns false if the

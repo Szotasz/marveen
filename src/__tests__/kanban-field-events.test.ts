@@ -21,6 +21,7 @@ import {
   getDb,
   createKanbanCard,
   updateKanbanCard,
+  moveKanbanCard,
   getKanbanCard,
   getKanbanCardEvents,
   getKanbanCardFieldEvents,
@@ -183,6 +184,36 @@ describe('updateKanbanCard: one kanban_card_field_events row per REAL change of 
     expect(getKanbanCard('parent')!.updated_at).toBe(1)
   })
 
+  it('X16 ONE TRANSACTION: a move whose status-event insert fails is rolled back, the card stays where it was', () => {
+    createKanbanCard({ id: 'mtx', title: 'Move rolled back' })
+    getDb().prepare('UPDATE kanban_cards SET updated_at = 1 WHERE id = ?').run('mtx')
+    getDb().exec(`CREATE TRIGGER fail_move BEFORE INSERT ON kanban_card_events BEGIN SELECT RAISE(ABORT, 'forced move-row failure'); END`)
+
+    expect(() => moveKanbanCard('mtx', 'waiting', 0, 'x')).toThrow(/forced move-row failure/)
+
+    expect(getKanbanCard('mtx')!.status).toBe('planned')
+    expect(getKanbanCard('mtx')!.updated_at).toBe(1)
+    expect(getKanbanCardEvents('mtx')).toHaveLength(0)
+  })
+
+  it('X16 ONE TRANSACTION: the ancestor stamp of a move is rolled back with it; without the trigger the same move writes its row', () => {
+    createKanbanCard({ id: 'mpar', title: 'Thread' })
+    createKanbanCard({ id: 'mchild', title: 'Subcard', parent_id: 'mpar' })
+    getDb().prepare('UPDATE kanban_cards SET updated_at = 1 WHERE id = ?').run('mpar')
+    getDb().exec(`CREATE TRIGGER fail_move2 BEFORE INSERT ON kanban_card_events BEGIN SELECT RAISE(ABORT, 'forced'); END`)
+
+    expect(() => moveKanbanCard('mchild', 'done', 0, 'x')).toThrow()
+    expect(getKanbanCard('mpar')!.updated_at).toBe(1)
+    expect(getKanbanCard('mchild')!.status).toBe('planned')
+
+    // CONTROL: the same move without the forced failure goes through, stamps the thread and writes one row.
+    getDb().exec('DROP TRIGGER fail_move2')
+    expect(moveKanbanCard('mchild', 'done', 0, 'x')).toBe(true)
+    expect(getKanbanCard('mchild')!.status).toBe('done')
+    expect(getKanbanCard('mpar')!.updated_at).toBeGreaterThan(1)
+    expect(getKanbanCardEvents('mchild').map((e) => [e.from_status, e.to_status, e.actor])).toEqual([['planned', 'done', 'x']])
+  })
+
   it('kanban_card_events keeps its columns: the status table was not extended', () => {
     const cols = (getDb().prepare('PRAGMA table_info(kanban_card_events)').all() as Array<{ name: string }>).map((c) => c.name)
     expect(cols).toEqual(['id', 'card_id', 'from_status', 'to_status', 'actor', 'created_at'])
@@ -263,6 +294,48 @@ describe('the routes: PUT writes the row, GET /field-events reads it, GET /event
     await call('PUT', '/api/kanban/tok', { priority: 'high' }, { kind: 'token' })
     await call('PUT', '/api/kanban/tok', { priority: 'low' })
     expect(fieldRows('tok').map((r) => r.actor)).toEqual([null, null])
+  })
+
+  it('X16: POST /move refuses a non-string actor BEFORE the write -- 400, status unchanged, no row', async () => {
+    createKanbanCard({ id: 'mv16', title: 'Bad mover' })
+    for (const bad of [true, { name: 'x' }, 42, ['a']]) {
+      const out = await call('POST', '/api/kanban/mv16/move', { status: 'waiting', sort_order: 0, actor: bad })
+      expect(out.status, JSON.stringify(bad)).toBe(400)
+      expect(out.body.error).toMatch(/actor must be a string or null/)
+    }
+    expect(getKanbanCard('mv16')!.status).toBe('planned')
+    expect(getKanbanCardEvents('mv16')).toHaveLength(0)
+  })
+
+  it('X16 INVARIANT: an unbindable actor never leaves a card moved without its row', async () => {
+    // Mechanism-free, like the PUT's X7 invariant: a refusal or a rollback is fine, a half move is not.
+    createKanbanCard({ id: 'mv16i', title: 'x16' })
+    try { await call('POST', '/api/kanban/mv16i/move', { status: 'waiting', actor: true }) } catch { /* a throw is allowed, a half move is not */ }
+    const moved = getKanbanCard('mv16i')!.status !== 'planned'
+    expect(moved ? getKanbanCardEvents('mv16i').length : 1).toBe(1)
+  })
+
+  it('POST /move follows the PUT: an actor string names the row; with no actor a session names its user, a token caller stays anonymous', async () => {
+    createKanbanCard({ id: 'mv1', title: 'Moved' })
+    await call('POST', '/api/kanban/mv1/move', { status: 'waiting', sort_order: 0, actor: 'dev-a' }, { kind: 'session', user: 'admin' })
+    await call('POST', '/api/kanban/mv1/move', { status: 'planned', sort_order: 0 }, { kind: 'session', user: 'admin' })
+    await call('POST', '/api/kanban/mv1/move', { status: 'waiting', sort_order: 0, actor: null }, { kind: 'token' })
+    await call('POST', '/api/kanban/mv1/move', { status: 'planned', sort_order: 0 })
+    expect(getKanbanCardEvents('mv1').map((e) => e.actor)).toEqual(['dev-a', 'admin', null, null])
+  })
+
+  it('X15: an empty or blank actor counts as no actor, on the PUT and on /move', async () => {
+    createKanbanCard({ id: 'x15', title: 'Empty actor', priority: 'normal' })
+    for (const empty of ['', '   ']) {
+      // In a session the session's user is named, as with no actor at all ...
+      await call('PUT', '/api/kanban/x15', { priority: empty === '' ? 'high' : 'low', actor: empty }, { kind: 'session', user: 'admin' })
+      await call('POST', '/api/kanban/x15/move', { status: empty === '' ? 'waiting' : 'planned', sort_order: 0, actor: empty }, { kind: 'session', user: 'admin' })
+    }
+    // ... and a token caller stays anonymous: never an empty-string actor in a row.
+    await call('PUT', '/api/kanban/x15', { priority: 'high', actor: '' }, { kind: 'token' })
+    await call('POST', '/api/kanban/x15/move', { status: 'waiting', sort_order: 0, actor: '' }, { kind: 'token' })
+    expect(fieldRows('x15').map((r) => r.actor)).toEqual(['admin', 'admin', null])
+    expect(getKanbanCardEvents('x15').map((e) => e.actor)).toEqual(['admin', 'admin', null])
   })
 
   it('a card without changes: /field-events is an empty array', async () => {
