@@ -38,6 +38,10 @@ export const CLAUDE_MODEL_MIN_CLI: Readonly<Record<string, ClaudeModelCliRequire
     minCli: '2.1.278',
     measured: '2.1.110 -> 400 unrecognized_model (hermes, 2026-09-23); 2.1.278 and 2.1.280 -> OK (owner Mac, 2026-09-22)',
   },
+  'claude-sonnet-5-5': {
+    minCli: '2.1.283',
+    measured: '2.1.283 -> OK (claude -p, plugin-free config, main host, 2026-09-28 21:4x); lower versions NOT measured, so they count as unsupported',
+  },
   'claude-opus-5-5': {
     minCli: '2.1.280',
     measured: '2.1.110 and 2.1.278 -> 400 unrecognized_model; 2.1.280 -> OK for both claude-opus-5-5 and claude-opus-5-5[1m] (owner Mac, 2026-09-22)',

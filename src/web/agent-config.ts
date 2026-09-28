@@ -25,6 +25,8 @@ export const DEFAULT_MODEL = DEFAULT_AGENT_MODEL
 export const MODEL_ALIASES: Record<string, string> = {
   'opus': 'claude-opus-5[1m]',
   'sonnet': 'claude-sonnet-5',
+  'sonnet-5-5': 'claude-sonnet-5-5',
+  'sonnet55': 'claude-sonnet-5-5',
   'sonnet-5': 'claude-sonnet-5',
   'sonnet5': 'claude-sonnet-5',
   'opus-5': 'claude-opus-5',
