@@ -11,7 +11,7 @@
 // dropping the wiring (not just the helper) turns the suite red (#1534 review).
 import { describe, it, expect, afterEach } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync, writeFileSync, chmodSync, statSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync, writeFileSync, chmodSync, statSync, lstatSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -107,6 +107,36 @@ describe.skipIf(!HAS_TMUX)('channels.sh tmux auth (real tmux, isolated socket)',
     const n = bash(`TMUX="tmux -S ${sock}"; INSTALL_DIR=${dir}; ${authBlock()}; echo "[\${AUTH_PANE_ENV}]"`)
     expect(n.trim().split('\n').pop()).toBe('[]')
     expect(existsSync(join(dir, 'store', '.channels-pane-auth'))).toBe(false)
+  })
+
+  // #1647 review (Geri): the auth file is written to a NEW 0600 file and renamed
+  // over the name, so a pre-existing wider-mode file or a planted symlink never
+  // receives the value.
+  it('a pre-existing 0644 auth file: replaced by a 0600 file, never written in place', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tmuxauthfile-'))
+    mkdirSync(join(dir, 'store'))
+    const f = join(dir, 'store', '.channels-pane-auth')
+    writeFileSync(f, 'old\n')
+    chmodSync(f, 0o644)
+    const ino = statSync(f).ino
+    bash(`TMUX="tmux -S ${join(dir, 's')}"; INSTALL_DIR=${dir}; ${authBlock()}`, { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-filemode' })
+    expect(statSync(f).mode & 0o777).toBe(0o600)
+    expect(statSync(f).ino).not.toBe(ino) // a new file, not the old one truncated
+    expect(readFileSync(f, 'utf-8')).toContain('sk-ant-oat01-filemode')
+  })
+
+  it('a symlink planted at the auth path: its target is never written, the link itself is replaced', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tmuxauthfile-'))
+    mkdirSync(join(dir, 'store'))
+    const target = join(dir, 'elsewhere')
+    writeFileSync(target, 'untouched\n')
+    chmodSync(target, 0o644)
+    const f = join(dir, 'store', '.channels-pane-auth')
+    symlinkSync(target, f)
+    bash(`TMUX="tmux -S ${join(dir, 's')}"; INSTALL_DIR=${dir}; ${authBlock()}`, { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-symlink' })
+    expect(readFileSync(target, 'utf-8')).toBe('untouched\n')
+    expect(lstatSync(f).isSymbolicLink()).toBe(false)
+    expect(statSync(f).mode & 0o777).toBe(0o600)
   })
 
   // TOKENARGV929: when OUR new-session creates the tmux server, the server

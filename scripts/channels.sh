@@ -1200,15 +1200,26 @@ AUTH_PANE_ENV=""
 _auth_file="$INSTALL_DIR/store/.channels-pane-auth"
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   _q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
-  (
-    umask 077
-    : > "$_auth_file"
-    [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && printf 'export CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$(_q "$CLAUDE_CODE_OAUTH_TOKEN")" >> "$_auth_file"
-    [ -n "${ANTHROPIC_API_KEY:-}" ] && printf 'export ANTHROPIC_API_KEY=%s\n' "$(_q "$ANTHROPIC_API_KEY")" >> "$_auth_file"
-  )
-  chmod 600 "$_auth_file" 2>/dev/null || true
-  AUTH_PANE_ENV=". '$_auth_file' && "
+  # Written to a NEW file (mktemp: 0600, O_EXCL, never follows a symlink) and
+  # renamed over the final name, so the value never lands in a pre-existing
+  # wider-mode file or through a symlink planted at that path (Geri, #1647
+  # review: `umask 077; : >` only applies to a file it CREATES, and `>` follows
+  # a symlink). mv replaces the name itself, not a symlink's target.
+  _auth_tmp="$(mktemp "$_auth_file.XXXXXX")" || _auth_tmp=""
+  if [ -n "$_auth_tmp" ]; then
+    {
+      [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && printf 'export CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$(_q "$CLAUDE_CODE_OAUTH_TOKEN")"
+      [ -n "${ANTHROPIC_API_KEY:-}" ] && printf 'export ANTHROPIC_API_KEY=%s\n' "$(_q "$ANTHROPIC_API_KEY")"
+      true
+    } > "$_auth_tmp"
+    if mv -f "$_auth_tmp" "$_auth_file"; then
+      AUTH_PANE_ENV=". '$_auth_file' && "
+    else
+      rm -f "$_auth_tmp" 2>/dev/null || true
+    fi
+  fi
   unset -f _q
+  unset _auth_tmp
 else
   rm -f "$_auth_file" 2>/dev/null || true
 fi
