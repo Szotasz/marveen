@@ -323,6 +323,17 @@ describe('runner wiring', () => {
     expect(code).toContain('else lastDailyHandoff.set(name, step.record)')
   })
 
+  it('a disarmed tier is forgotten on EVERY sweep, before the idle gate (didi, 987baf44)', () => {
+    const code = src('src/web/context-guard-runner.ts')
+    // An agent that is never idle while the tier is off must still lose its
+    // old ARMED record; otherwise re-arming after the slot fires at once.
+    const forget = code.indexOf('if (!dailyHandoffArmed(cfg)) {\n        lastDailyHandoff.delete(name)')
+    const idleGate = code.indexOf("if (!running || state.phase !== 'idle') return false\n      const step = dailyHandoffStep(")
+    expect(forget).toBeGreaterThan(-1)
+    expect(idleGate).toBeGreaterThan(-1)
+    expect(forget).toBeLessThan(idleGate)
+  })
+
   it('the daily reason selects the scheduled wording, not the act tier percentage prompt', () => {
     const code = src('src/web/context-guard-runner.ts')
     expect(code).toContain('dailyHandoffPrompt(cfg.dailyHandoffTime')

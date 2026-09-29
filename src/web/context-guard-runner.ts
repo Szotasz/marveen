@@ -29,6 +29,7 @@ import {
   contextLimitForModel,
   calibrateLimit,
   handoffStaleMinutes,
+  dailyHandoffArmed,
   dailyHandoffStep,
   DAILY_HANDOFF_REASON_PREFIX,
   IDLE_FLUSH_REASON_PREFIX,
@@ -467,6 +468,14 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     // a disarmed tier forgets the record, so arming it later in the day does
     // not find a stale seed from before the slot and fire at once.
     dailyHandoffDue: (() => {
+      // Forgetting does NOT wait for an idle sweep: an agent that was never idle
+      // while the tier was off would otherwise keep its old armed record, and
+      // re-arming after the slot would fire at once (didi, 987baf44). Seeding
+      // and firing stay behind the idle gate, as before.
+      if (!dailyHandoffArmed(cfg)) {
+        lastDailyHandoff.delete(name)
+        return false
+      }
       if (!running || state.phase !== 'idle') return false
       const step = dailyHandoffStep(cfg, lastDailyHandoff.get(name), localMidnightMs(nowMs), nowMs)
       if (step.record === undefined) lastDailyHandoff.delete(name)
