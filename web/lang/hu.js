@@ -1457,6 +1457,8 @@ window._i18n.hu = {
   'agents.channel.connected':    'Csatlakozva',
   'agents.channel.disconnected': 'Nincs bekötve',
   'agents.strict_mode':          ' (szigorú)',
+  'agents.profile_missing_option': 'nem létezik',
+  'agents.profile_missing_desc':   'A kért profil ({id}) nem található vagy olvashatatlan, ezért az ágens az Alapértelmezett profillal fut, ami kevesebbet tilt. Válassz egy létező profilt, és mentsd.',
   'agents.marveen_boss':         '{bot} Főnök',
   'agents.btn.login':            'Bejelentkezés',
 

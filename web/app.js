@@ -2713,7 +2713,23 @@ function populateProfileSelect(selectEl, descEl, selected) {
       if (p.id === selected) opt.selected = true
       selectEl.appendChild(opt)
     }
+    // A REQUESTED PROFILE THAT DOES NOT EXIST. No option
+    // matched, so the select used to show the FIRST profile, and the agent in
+    // fact ran under `default` (the server's silent fallback). The requested
+    // name is shown as it is, marked, with the consequence in the description.
+    const missing = selected && !profiles.some(p => p.id === selected) ? selected : null
+    if (missing) {
+      const opt = document.createElement('option')
+      opt.value = missing
+      opt.textContent = `⚠ ${missing} (${t('agents.profile_missing_option')})`
+      opt.selected = true
+      selectEl.prepend(opt)
+    }
     const updateDesc = () => {
+      if (missing && selectEl.value === missing) {
+        descEl.textContent = t('agents.profile_missing_desc', { id: missing })
+        return
+      }
       const p = profiles.find(x => x.id === selectEl.value)
       descEl.textContent = p ? p.description : ''
     }

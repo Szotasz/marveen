@@ -1454,6 +1454,8 @@ window._i18n.en = {
   'agents.channel.connected':    'Connected',
   'agents.channel.disconnected': 'Not connected',
   'agents.strict_mode':          ' (strict)',
+  'agents.profile_missing_option': 'does not exist',
+  'agents.profile_missing_desc':   'The requested profile ({id}) is missing or unreadable, so the agent runs under the Default profile, which denies less. Pick an existing profile and save.',
   'agents.marveen_boss':         '{bot} Boss',
   'agents.btn.login':            'Login',
 

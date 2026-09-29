@@ -138,6 +138,7 @@ import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
 import { getChannelHealth } from '../channel-health-monitor.js'
 import {
   loadProfileTemplate,
+  resolveProfileTemplate,
   resolveProfilePlaceholders,
 } from '../profiles.js'
 import { sanitizeAgentName, safeJoin } from '../sanitize.js'
@@ -1544,10 +1545,16 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const name = decodeURIComponent(secGetMatch[1])
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
     const profileId = readAgentSecurityProfile(name)
-    const profile = loadProfileTemplate(profileId)
+    // Resolved, not loaded: this is read on every dashboard view, and the WARN
+    // belongs to the spawn that applies the profile, not to a page load.
+    const resolution = resolveProfileTemplate(profileId)
+    const profile = resolution.profile
     const placeholders = { HOME: homedir(), AGENT_DIR: agentDir(name) }
     json(res, {
       profile: profileId,
+      // What the agent actually runs under, and why it differs.
+      effectiveProfile: resolution.effective,
+      fallbackReason: resolution.fallbackReason,
       label: profile.label,
       description: profile.description,
       permissionMode: profile.permissionMode,

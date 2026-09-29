@@ -79,7 +79,10 @@ const CHANNEL_PLUGIN_DISABLES = Object.fromEntries(
 const HEARTBEAT_AGENT_CONFIG = {
   model: 'claude-haiku-4-5',
   authMode: 'oauth' as const,
-  securityProfile: 'standard',
+  // Was 'standard', a profile that has never existed under templates/profiles/:
+  // every heartbeat agent silently resolved to 'default'. Named
+  // for what it already got, so the dashboard does not flag a missing profile.
+  securityProfile: 'default',
 }
 
 // Per-deployment identity threaded into the rendered CLAUDE.md. Pulled
