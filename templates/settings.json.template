@@ -103,6 +103,16 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py; exit 0'",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [
@@ -112,6 +122,16 @@
           {
             "type": "command",
             "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/tool-log-capture.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/tool-log-capture.py; exit 0'",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py; exit 0'",
             "timeout": 10
           }
         ]
@@ -185,6 +205,16 @@
           {
             "type": "command",
             "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-gate.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-gate.py; exit 0'",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py; exit 0'",
             "timeout": 10
           }
         ]

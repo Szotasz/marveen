@@ -64,6 +64,8 @@ const EXEMPT: Record<string, string> = {
     'shared library imported by hooks to record a swallowed failure in store/hook-errors.log (SILENTOLLAMA926); not itself a hook',
   'clearstate_lib.py':
     'shared library imported by clear-capture.py / clear-replay.py; not itself a hook',
+  'memory_frontmatter_lib.py':
+    'shared library: the one memory-frontmatter check, imported by memory-frontmatter-gate.py (Write/Edit) and memory-frontmatter-bash-gate.py (Bash, KAPUEGYUT918); not itself a hook',
   'email_extract.py':
     'shared library imported by outgoing-copy-gate.py (and the level-2 email approval gate, EMAILKAPU901 PR2); not itself a hook',
   'memory-save.sh':
