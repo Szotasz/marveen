@@ -29,7 +29,7 @@ import {
   contextLimitForModel,
   calibrateLimit,
   handoffStaleMinutes,
-  dailyHandoffDue,
+  dailyHandoffStep,
   DAILY_HANDOFF_REASON_PREFIX,
   IDLE_FLUSH_REASON_PREFIX,
   INITIAL_GUARD_STATE,
@@ -462,17 +462,16 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     // (handoffStaleMinutes) needs the transcript mtime on every decision path
     // that can restart, and the probe is a single stat().
     idleMs: running && needPct ? measureIdleMs(name, nowMs) : null,
-    // Seed-on-first-sight: an agent we have not seen this process is recorded
-    // as served NOW and is never due on the same sweep. dailyHandoffDue is
-    // therefore false on the first tick by construction, not by luck.
+    // Seed-on-first-ARMED-sight (dailyHandoffStep): an agent first seen with
+    // the tier armed is recorded as served NOW and is never due on that sweep;
+    // a disarmed tier forgets the record, so arming it later in the day does
+    // not find a stale seed from before the slot and fire at once.
     dailyHandoffDue: (() => {
       if (!running || state.phase !== 'idle') return false
-      const last = lastDailyHandoff.get(name)
-      if (last === undefined) {
-        lastDailyHandoff.set(name, nowMs)
-        return false
-      }
-      return dailyHandoffDue(cfg, localMidnightMs(nowMs), last, nowMs)
+      const step = dailyHandoffStep(cfg, lastDailyHandoff.get(name), localMidnightMs(nowMs), nowMs)
+      if (step.record === undefined) lastDailyHandoff.delete(name)
+      else lastDailyHandoff.set(name, step.record)
+      return step.due
     })(),
   }
 
