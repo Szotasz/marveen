@@ -361,6 +361,17 @@ el, csak eszköznév; a mező csak BŐVÍTENI tudja a tiltást, szűkíteni nem.
 }
 ```
 
+### mentionNames -- milyen néven szólítják az ágenst egy Telegram-csoportban
+
+Csoportüzenetre az ágens csak akkor tartozik válasszal, ha megszólítják (`scripts/hooks/channel_scope.py`, TS-ikre: `src/reply-owed.ts`). Megszólításnak számít a Telegram-válasz az ágens saját üzenetére, és ha a szövegben szerepel az ágens valamelyik névalakja. Az illesztés ékezet- és kisbetű-független, és a név után legfeljebb 5 betű ragot enged (`zara` -> "Zárát", `iris` -> "Írisz", "Írisszel"); `@`-címke után bármi jöhet ("@iris_helper_bot"). A névalakok: az ágens azonosítója, a `displayName`, az opcionális `mentionNames` lista, és a `TG_MENTION_NAMES` környezeti változó (vesszővel elválasztva). Olyan becenevet, ami nem az azonosítóval kezdődik, a `mentionNames`-be kell felvenni:
+
+```json
+{
+  "displayName": "Front Desk",
+  "mentionNames": ["Kristóf"]
+}
+```
+
 ---
 
 ## ~/.claude/scheduled-tasks/ -- ütemezett feladatok

@@ -521,6 +521,25 @@ emit_inbound 10000000001 1131 "Epp most erkezett" | run_hook ledger-capture.py "
 OUT_G4="$(run_drain "$DB_LD4")"
 assert_eq "live drain: in-flight question (within grace) is not surfaced" "" "$OUT_G4"
 
+# (g4b) INBOXBUSY924: aged + unanswered, but the agent's pane shows a live turn
+#       ('esc to interrupt' in the footer) -> not surfaced, no statefile write;
+#       the same question surfaces once the pane is idle.
+mkdir -p "$TMPDIR_BASE/ld4b"; DB_LD4B="$TMPDIR_BASE/ld4b/x.db"
+emit_inbound 10000000001 1133 "Dolgozik rajta" | run_hook ledger-capture.py "$DB_LD4B"
+age_rows "$DB_LD4B" 120
+printf 'some output\n\u2733 Baking... (12s \u00b7 esc to interrupt)\n\n> \n' > "$TMPDIR_BASE/ld4b/pane-busy.txt"
+printf 'done\n> \n  bypass permissions on (shift+tab to cycle)\n' > "$TMPDIR_BASE/ld4b/pane-idle.txt"
+OUT_G4B="$(LEDGER_DRAIN_PANE_FILE="$TMPDIR_BASE/ld4b/pane-busy.txt" run_drain "$DB_LD4B")"
+assert_eq "live drain: busy session (mid-turn) is not nudged" "" "$OUT_G4B"
+assert_eq "live drain: busy skip does not mark the question surfaced" "" \
+    "$(cat "$TMPDIR_BASE/ld4b/.ledger-drain-marveen" 2>/dev/null)"
+OUT_G4C="$(LEDGER_DRAIN_PANE_FILE="$TMPDIR_BASE/ld4b/pane-idle.txt" run_drain "$DB_LD4B")"
+if printf '%s' "$OUT_G4C" | grep -q "message_id=1133"; then
+    pass "live drain: surfaces the same question once the session is idle"
+else
+    fail "live drain: idle session did not surface the question (got: $OUT_G4C)"
+fi
+
 # (g5) preCheck: nothing to surface -> SKIP (no model turn); covers the
 #      answered, in-flight and already-surfaced cases with the drain's own rules
 assert_eq "drain precheck: answered question -> SKIP" "SKIP" "$(run_drain_precheck "$DB_LD3")"

@@ -28,6 +28,7 @@ import json
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
+import channel_scope  # noqa: E402
 
 # How many chars of transcript context to inject (~4 chars/token, so 16000 chars
 # ~= 4000 tokens). This is a CHEAP coarse pre-trim only; the authoritative guard
@@ -36,6 +37,10 @@ import ledger_lib  # noqa: E402
 # of how chatty the recent conversation was. Env override:
 # LEDGER_CONTEXT_CHAR_BUDGET.
 DEFAULT_CHAR_BUDGET = 16000
+
+# Label for an inbound GROUP row: the ledger keeps no sender id, so the sender
+# is unknown and must not be shown as the owner.
+GROUP_SENDER_LABEL = "Csoport (nem azonositott kuldo)"
 
 # Hard BYTE budget on the FINAL hook payload (the whole json.dumps(...) blob,
 # UTF-8 encoded: frame + directive + open-question + transcript). This is the
@@ -147,8 +152,11 @@ def _build_output(transcript, open_q, owner):
         # fail-open, the silence looks like a calm start.
         chat_id, message_id, text, ts, att_kind, att_file_id = open_q[:6]
         snippet = _snippet(text, _max_snippet())
+        # Same attribution rule as the transcript lines below: a group sender
+        # is unknown, so the owner's name must not be put on it.
+        who = GROUP_SENDER_LABEL if channel_scope.is_group_chat(chat_id) else owner
         parts.append(
-            f'NYITOTT KÉRDÉS (még NEM válaszoltad meg): {owner} utolsó üzenete '
+            f'NYITOTT KÉRDÉS (még NEM válaszoltad meg): {who} utolsó üzenete '
             f'(chat {chat_id}, message_id {message_id}): "{snippet}". Válaszolj rá '
             f'MOST a telegram reply tool (mcp__plugin_telegram_telegram__reply) '
             f'meghívásával a megfelelő chat_id-re, a lenti kontextusból folytatva.'
@@ -214,6 +222,15 @@ def main():
         open_q = ledger_lib.open_question(agent_id)
     except Exception:
         sys.exit(0)  # ledger unavailable -> no-op
+    # An unanswered GROUP message the agent was not addressed in is not an open
+    # question: silent reading is the correct outcome there, so it must not be
+    # replayed as "answer this NOW". It still reaches the fresh session as part
+    # of the transcript below, which is where it belongs.
+    if open_q and not channel_scope.reply_owed(
+            open_q[0], open_q[2], agent_id,
+            replies_to_agent=lambda: ledger_lib.inbound_replies_to_own(
+                agent_id, open_q[0], open_q[1])):
+        open_q = None
     if not rows and not open_q:
         sys.exit(0)  # nothing to replay
 
@@ -222,7 +239,19 @@ def main():
     max_snippet = _max_snippet()
     transcript = []
     for direction, chat_id, text, ts, att_kind, att_file_id in rows:
-        who = owner if direction == "in" else "Te"
+        # Inbound rows are labelled with the OWNER's name, which is right for a
+        # DM and wrong for a group: anyone in the company group can write, and
+        # the ledger stores no sender id (only chat_id), so the replayed line
+        # would put the owner's name on a colleague's message. Measured
+        # 2026-09-12: a group "Fyi: kolcsonkertem a platost" came back attributed
+        # to the owner in a fresh session. Unknown beats wrong -- a name the
+        # session cannot verify is a fact it should not invent.
+        if direction != "in":
+            who = "Te"
+        elif channel_scope.is_group_chat(chat_id):
+            who = GROUP_SENDER_LABEL
+        else:
+            who = owner
         snippet = _snippet(text, max_snippet)
         # A transcript-less voice turn carries its file_id so the fresh session
         # can still fetch the audio content instead of seeing an opaque

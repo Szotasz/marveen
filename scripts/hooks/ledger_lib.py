@@ -349,6 +349,43 @@ def open_question_with_age(agent_id):
         con.close()
 
 
+def replies_to_own(agent_id, chat_id, reply_to_message_id):
+    """True if `reply_to_message_id` is one of this agent's own outbound
+    messages in `chat_id`, i.e. the inbound was a Telegram reply to the agent.
+
+    Only messages sent through the reply tool are known (ledger-outbound.py
+    records their message_id); a reply to anything else, or no reply at all,
+    is False. Lookup errors propagate so the caller can fail toward a reply."""
+    if not reply_to_message_id:
+        return False
+    con = connect()
+    try:
+        row = con.execute(
+            "SELECT 1 FROM conversation_log"
+            " WHERE agent_id=? AND chat_id=? AND direction='out' AND message_id=?"
+            " LIMIT 1",
+            (str(agent_id), str(chat_id), str(reply_to_message_id)),
+        ).fetchone()
+        return row is not None
+    finally:
+        con.close()
+
+
+def inbound_replies_to_own(agent_id, chat_id, message_id):
+    """replies_to_own() for an inbound already in the ledger, by its own id."""
+    con = connect()
+    try:
+        row = con.execute(
+            "SELECT reply_to_message_id FROM conversation_log"
+            " WHERE agent_id=? AND chat_id=? AND direction='in' AND message_id=?"
+            " ORDER BY id DESC LIMIT 1",
+            (str(agent_id), str(chat_id), str(message_id)),
+        ).fetchone()
+    finally:
+        con.close()
+    return replies_to_own(agent_id, chat_id, row[0] if row else None)
+
+
 def open_question(agent_id):
     """The most recent inbound with NO later outbound (the unanswered question),
     or None. Returns (chat_id, message_id, text, ts, attachment_kind,
