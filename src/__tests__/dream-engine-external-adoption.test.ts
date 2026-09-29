@@ -31,7 +31,7 @@ describe('Dream Engine external skill adoption autonomy contract', () => {
   })
 
   it('makes the Dream Engine read the dedicated category and fail closed when it is absent', () => {
-    expect(DREAM).toContain('external_skill_adoption')
+    expect(DREAM).toContain('OLVASD KI az\n`external_skill_adoption` kategóriát')
     expect(DREAM).toContain('Ha a config vagy a kategória hiányzik, kezeld `level 1`-ként (fail closed).')
   })
 
@@ -39,11 +39,13 @@ describe('Dream Engine external skill adoption autonomy contract', () => {
     expect(DREAM).toContain('Level 1: csak jelez')
     expect(DREAM).toContain('NE módosíts skillt')
     expect(DREAM).toContain('Level 2: javasol + jóváhagyás')
+    expect(DREAM).toContain('de NE írj skill-fájlt')
     expect(DREAM).toContain('csak későbbi tulajdonosi döntés után hajtható végre')
     expect(DREAM).toContain('mode=report|propose')
   })
 
   it('never autonomously mutates a global skill from an external opportunity', () => {
+    expect(DREAM).toContain('nem hoz létre és nem módosít skill-fájlt önállóan')
     expect(DREAM).not.toContain('Level 3')
     expect(DREAM).not.toContain('mode=adopted')
     expect(DREAM).not.toContain('scripts/skill-index.sh')
