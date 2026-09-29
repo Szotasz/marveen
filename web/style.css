@@ -631,18 +631,34 @@ main {
   background: var(--text);
   pointer-events: none;
 }
+/* Day names switch by the width of the label row itself (container query),
+   not by an ellipsis: full names need ~58 px per day (longest: "Wednesday",
+   measured at 10 px in DejaVu Sans, wider than the system UI fonts), so
+   below 7 x ~62 px = 440 px the short forms (H K Sze Cs P Szo V /
+   Mon..Sun, <= 22 px) take over, and below 180 px English drops to
+   M T W T F S S. */
 .quota-bar-days {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   margin-top: 3px;
   font-size: 10px;
   color: var(--text-muted);
+  container-type: inline-size;
+  container-name: quota-days;
 }
-.quota-bar-days span {
+.quota-bar-days > span {
   text-align: center;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
+}
+.quota-bar-days .day-short,
+.quota-bar-days .day-narrow { display: none; }
+@container quota-days (max-width: 440px) {
+  .quota-bar-days .day-full { display: none; }
+  .quota-bar-days .day-short { display: inline; }
+}
+@container quota-days (max-width: 180px) {
+  .quota-bar-days .day-short { display: none; }
+  .quota-bar-days .day-narrow { display: inline; }
 }
 .quota-bar-fill {
   height: 100%;

@@ -12159,11 +12159,23 @@ function weekSegments(resetsAt, nowSec, lang, timeZone) {
   if (resetsAt <= nowSec || nowSec < start) return null
   const locale = lang === 'en' ? 'en-US' : 'hu-HU'
   const starts = Array.from({ length: 7 }, (_, i) => start + i * 86400)
-  const labels = starts.map((sec) => {
-    const s = new Date(sec * 1000).toLocaleDateString(locale, { weekday: 'long', timeZone })
+  const name = (weekday) => starts.map((sec) => {
+    const s = new Date(sec * 1000).toLocaleDateString(locale, { weekday, timeZone })
     return s.charAt(0).toUpperCase() + s.slice(1)
   })
-  return { starts, labels, nowPct: ((nowSec - start) / WEEK) * 100 }
+  // Three widths, chosen by the CSS container query on .quota-bar-days, never
+  // by an ellipsis (a portrait phone showed "Hé… Ke… Sz… … Sz…": two
+  // indistinguishable "Sz…"). hu short = H K Sze Cs P Szo V. hu has no safe
+  // one-letter form (Szerda/Szombat both "Sz"), so hu narrow stays short;
+  // en narrow = M T W T F S S.
+  const short = name('short')
+  return {
+    starts,
+    labels: name('long'),
+    shortLabels: short,
+    narrowLabels: lang === 'en' ? name('narrow') : short,
+    nowPct: ((nowSec - start) / WEEK) * 100,
+  }
 }
 
 // Render the subscription quota strip from /api/overview's `quota` block.
@@ -12246,7 +12258,7 @@ function renderQuotaStrip(q, fable) {
       ${week ? `<div class="quota-bar-col">
         ${track}
         <div class="quota-bar-now" style="left:${week.nowPct.toFixed(2)}%"></div>
-        <div class="quota-bar-days">${week.labels.map((d) => `<span>${escapeHtml(d)}</span>`).join('')}</div>
+        <div class="quota-bar-days">${week.labels.map((d, i) => `<span><span class="day-full">${escapeHtml(d)}</span><span class="day-short">${escapeHtml(week.shortLabels[i])}</span><span class="day-narrow">${escapeHtml(week.narrowLabels[i])}</span></span>`).join('')}</div>
       </div>` : track}
       <div class="quota-bar-value">${pct}%<span class="quota-bar-reset">${escapeHtml(tail)}</span></div>
     `
