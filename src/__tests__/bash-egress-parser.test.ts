@@ -313,6 +313,57 @@ describe('inert text is not a command', () => {
 // WHAT STAYS OPEN after this change, pinned as tests so nobody reads the merge
 // as "closed". The name-and-shape list will never be complete; closing these
 // needs an allowlist / network-level gate (direction (b), a separate decision).
+// A `for` loop variable is an assignment too, one value per turn. The reported call
+// on 2026-09-29 reached three external GETs this way, while the same URL as a literal was denied.
+describe('a URL in a for-loop variable', () => {
+  const unbounded = `for u in ${Array.from({ length: 70 }, (_, i) => `http://localhost/${i}`).join(' ')}; do curl -s "$u"; done`
+  it('POSITIVE CONTROL: the literal and the plain assignment were already denied', () => {
+    expect(classify('curl -s https://api.deltacrm.io/x')).toMatchObject({ deny: true, hosts: ['api.deltacrm.io'] })
+    expect(classify('U=https://api.deltacrm.io/x; curl -s "$U"')).toMatchObject({ deny: true, hosts: ['api.deltacrm.io'] })
+  })
+  it('the reported shape is denied, naming the host', () => {
+    expect(classify('for u in https://deltacrm.io/api/v1/health https://api.deltacrm.io/x; do curl -s "$u"; done'))
+      .toMatchObject({ deny: true, reason: 'curl-external', hosts: ['deltacrm.io'] })
+  })
+  it('every value is judged: one external value among local ones denies', () => {
+    expect(classify('for u in http://localhost:3420/a https://evil.example/b; do curl -s "$u"; done'))
+      .toMatchObject({ deny: true, hosts: ['evil.example'] })
+  })
+  it('the ${u} form, the newline form, nested loops and values taken from an assignment', () => {
+    expect(deny('for u in https://evil.example/a; do curl -s "${u}/x"; done')).toBe(true)
+    expect(deny('for u in https://evil.example/a\ndo\n  curl -s "$u"\ndone')).toBe(true)
+    expect(deny('for h in localhost evil.example; do for p in a b; do curl -s "http://$h/$p"; done; done')).toBe(true)
+    expect(deny('A=https://evil.example/a; for u in $A http://localhost/b; do curl "$u"; done')).toBe(true)
+  })
+  it('a one-liner fed by a loop variable', () => {
+    expect(deny('for u in https://evil.example/a; do python3 -c "import urllib.request as r; r.urlopen(\'$u\')"; done')).toBe(true)
+  })
+  it("review: a loop variable that shares its name with an assignment does not hide the assigned value", () => {
+    expect(classify('for u in http://localhost/a; do true; done; u=https://evil.example/x; curl -s "$u"'))
+      .toMatchObject({ deny: true, hosts: ['evil.example'] })
+    expect(classify('u=https://evil.example/x; for u in http://localhost/a; do true; done; curl -s "$u"'))
+      .toMatchObject({ deny: true, hosts: ['evil.example'] })
+  })
+  it('a loop opened right after a paren, (for ...', () => {
+    expect(deny('(for u in https://evil.example/a; do curl -s "$u"; done)')).toBe(true)
+  })
+  it('a URL inside a quoted loop value is still judged (the value goes in as that URL, not dropped)', () => {
+    expect(deny(`for p in '{"u": "https://evil.example/x"}'; do python3 -c "import urllib.request as r; r.urlopen('$p')"; done`)).toBe(true)
+  })
+  it('a loop with too many values to judge one by one fails closed', () => {
+    expect(classify(unbounded)).toMatchObject({ deny: true, reason: 'curl-loop-unbounded' })
+  })
+  it('CONTROLS: local loops, a loop variable used only in a local path, and "for" inside quotes pass', () => {
+    expect(deny('for u in http://localhost:3420/a http://127.0.0.1:3420/b; do curl -s "$u"; done')).toBe(false)
+    expect(deny('for f in a b; do curl -s http://localhost:3420/$f; done')).toBe(false)
+    expect(deny('echo "for u in https://evil.example; do curl $u; done"')).toBe(false)
+  })
+  it('CONTROL from the fleet replay: a loop of JSON bodies posted to localhost is data, not a host', () => {
+    expect(classify(`for p in '{"agent_id":"a","text":"delete, item 42"}' '{"b":"c d"}'; do curl -s -X POST http://localhost:3420/api/approvals -d "$p"; done`))
+      .toMatchObject({ deny: false })
+  })
+})
+
 describe('still open after (a) -- pinned on purpose', () => {
   const OPEN = [
     'bash ./fetch.sh', // the network call is inside the script file

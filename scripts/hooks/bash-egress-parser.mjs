@@ -148,6 +148,44 @@ function collectAssignments(orig, masked) {
   }
   return env
 }
+// `for NAME in w1 w2 ...`: the loop variable takes EACH value in turn.
+// NAME=value alone never saw it, so `for u in https://x ...; do curl "$u"; done` reached curl with an
+// unread destination and passed, while the same URL as a literal or a plain assignment was denied.
+// The keyword is found in the MASKED text (a quoted "for u in" is not a loop), the values are read
+// from the ORIGINAL text, unquoted, with this command's assignments expanded in them.
+function collectLoops(orig, masked, env) {
+  const loops = {}
+  for (const [a, b] of spans(masked)) {
+    const m = /(?:^|[\s(!{])for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in(?=\s|$)/.exec(masked.slice(a, b))
+    if (!m) continue
+    const vals = shellWords(expand(orig.slice(a + m.index + m[0].length, b), env))
+    loops[m[1]] = [...(loops[m[1]] ?? []), ...vals]
+  }
+  return loops
+}
+// Every reading of a span a loop can produce: one text per loop value (per combination, for nested
+// loops). Past MAX_LOOP_VARIANTS the span is not judged value by value: null, and the caller fails
+// closed -- a hand-written URL loop is a few values, never hundreds.
+const MAX_LOOP_VARIANTS = 64
+// A value goes into the text as ONE word: pasting `'{"a":"b c"}'` raw broke the command's own
+// quoting, and its fragments were read as hosts (measured on the fleet's week of commands: a loop
+// of JSON bodies posted to localhost with -d "$p" was denied). A URL never holds whitespace or a
+// quote, so such a value is replaced by the first URL inside it, or by a neutral word.
+function asWord(value) {
+  if (/^[^\s'"`\\]+$/.test(value)) return value
+  return (String(value).match(URL_RE) ?? [])[0] ?? 'x'
+}
+function loopVariants(text, env, loops) {
+  let out = [text]
+  for (const [v, vals] of Object.entries(loops)) {
+    const re = new RegExp(`\\$\\{${v}\\}|\\$${v}(?![A-Za-z0-9_])`, 'g')
+    if (!re.test(text)) continue
+    re.lastIndex = 0
+    out = out.flatMap((t) => vals.map((x) => t.replace(re, () => asWord(x))))
+    if (out.length > MAX_LOOP_VARIANTS) return null
+  }
+  return out.map((t) => expand(t, env))
+}
 function expand(text, env) {
   return text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (all, a, b) => (env[a ?? b] ?? all))
 }
@@ -364,31 +402,39 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
   const masked = maskInertLiterals(orig)
   if (masked === null || masked.length !== orig.length) return { deny: false, reason: 'unparseable', hosts: [] }
   const env = collectAssignments(orig, masked)
+  const loops = collectLoops(orig, masked, env)
   for (const [a, b] of spans(masked)) {
     const mw = words(masked.slice(a, b))
     let i = 0
     while (i < mw.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(mw[i]) || PREFIX_WORDS.has(mw[i]))) i++
     if (i >= mw.length) continue
-    const cmd = mw[i].split('/').pop()
-    const text = expand(orig.slice(a, b), env)
-    let target = null
-    if (cmd === 'curl') target = 'curl'
-    else if (INTERPRETER.test(cmd) && mw.slice(i + 1).some((w) => CODE_FLAG.has(w)) && NET_PRIMITIVE.test(text)) target = 'one-liner'
-    if (!target) continue
-    // curl: the destination is read from the ARGV only. A URL inside a flag VALUE (-d, -e, -H, a
-    // JSON payload) is data sent to wherever curl connects, not a destination. The fleet reports PR
-    // links with a localhost curl whose -d JSON carries a github.com URL, and scanning the whole text
-    // with URL_RE denied exactly that (#1514 re-review, measured on the merged head). An interpreter
-    // one-liner has no argv to read, so its code is still scanned with URL_RE.
-    let found
-    const argv = target === 'curl' ? shellWords(text) : null
-    const at = argv ? argv.findIndex((w) => w.split('/').pop() === 'curl') : -1
-    if (at !== -1) found = curlDestinations(argv.slice(at + 1))
-    else found = [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
-    // A listed vendor host (or a host under a listed domain) passes only by itself: any other
-    // destination in the same call still denies.
-    const hosts = [...new Set(found)].filter((h) => !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
-    if (hosts.length) return { deny: true, reason: `${target}-external`, hosts }
+    // Every loop reading AND the plain one: a loop variable can share its name with an assignment
+    // elsewhere in the command (`for u in <local>; do ...; done; u=<external>; curl "$u"`), and a
+    // loop-only reading would let the assigned value go unjudged.
+    const plain = expand(orig.slice(a, b), env)
+    const variants = loopVariants(orig.slice(a, b), env, loops)
+    for (const text of [plain, ...(variants ?? [])]) {
+      const cmd = mw[i].split('/').pop()
+      let target = null
+      if (cmd === 'curl') target = 'curl'
+      else if (INTERPRETER.test(cmd) && mw.slice(i + 1).some((w) => CODE_FLAG.has(w)) && NET_PRIMITIVE.test(text)) target = 'one-liner'
+      if (!target) continue
+      // curl: the destination is read from the ARGV only. A URL inside a flag VALUE (-d, -e, -H, a
+      // JSON payload) is data sent to wherever curl connects, not a destination. The fleet reports PR
+      // links with a localhost curl whose -d JSON carries a github.com URL, and scanning the whole text
+      // with URL_RE denied exactly that (#1514 re-review, measured on the merged head). An interpreter
+      // one-liner has no argv to read, so its code is still scanned with URL_RE.
+      let found
+      const argv = target === 'curl' ? shellWords(text) : null
+      const at = argv ? argv.findIndex((w) => w.split('/').pop() === 'curl') : -1
+      if (at !== -1) found = curlDestinations(argv.slice(at + 1))
+      else found = [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
+      // A listed vendor host (or a host under a listed domain) passes only by itself: any other
+      // destination in the same call still denies.
+      const hosts = [...new Set(found)].filter((h) => !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
+      if (hosts.length) return { deny: true, reason: `${target}-external`, hosts }
+      if (variants === null) return { deny: true, reason: `${target}-loop-unbounded`, hosts: [] }
+    }
   }
   return { deny: false, reason: null, hosts: [] }
 }
