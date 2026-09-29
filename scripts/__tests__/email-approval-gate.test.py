@@ -399,6 +399,51 @@ with tempfile.TemporaryDirectory() as td:
         code, _, err = bash(bad)
         check(f"html/Bash fail-closed: {label} -> DENIED, not anchored",
               code == 2 and "nem horgonyozhato" in err and why in err, f"exit={code} err={err[:160]!r}")
+    # A tester's finding: the repo's only --html is a SWITCH (scripts/support-mail/send.py, store_true). Read as
+    # argparse reads it, "--html --cc x" has no file after --html: the gate must pass that letter exactly as
+    # before (the regression: exit 2 "a --html fajl nem olvashato (--cc ...)" and no approval could cover it).
+    sm_cmd = ('python3 scripts/support-mail/send.py --to "a@b.hu" --subject "Teszt tárgy" '
+              '--body "Kedves Ügyfelünk! Törzs."')
+    _, _, err = bash(sm_cmd)
+    sm_plain_anchor = anchor_from_stderr(err)
+    for form, label in ((sm_cmd + ' --html --cc "c@d.hu"', "--html then --cc"),
+                        (sm_cmd + ' --cc "c@d.hu" --html', "--html as the last token"),
+                        (sm_cmd + ' --cc "c@d.hu" --html-wrap', "--html-wrap")):
+        _, _, err = bash(form)
+        got = anchor_from_stderr(err)
+        check(f"support-mail switch ({label}): anchored like the letter without --html, no unreadable deny",
+              got is not None and "nem horgonyozhato" not in err, f"anchor={got} err={err[:160]!r}")
+        approve(store, got)
+        code, _, err = bash(form)
+        check(f"support-mail switch ({label}): the approved letter sends", code == 0, f"exit={code} err={err[:160]!r}")
+    _, _, err = bash(sm_cmd + ' --cc "c@d.hu"')
+    check("support-mail switch: the --html switch does not change the anchor",
+          anchor_from_stderr(err) is not None and anchor_from_stderr(err) == anchor_from_stderr(bash(sm_cmd + ' --html --cc "c@d.hu"')[2]))
+    check("support-mail switch: control, a plain support-mail letter is anchored at all", bool(sm_plain_anchor))
+    # A switch before a file flag must not hide it: the attachment after a --html switch is still anchored.
+    _, _, err_1 = bash(plain_cmd + f' --html --attach "{att_path}"')
+    put(att_path, b"%PDF-1.4 csere")
+    _, _, err_2 = bash(plain_cmd + f' --html --attach "{att_path}"')
+    put(att_path, b"%PDF-1.4 elso")
+    check("switch then --attach: the attachment is still in the anchor (a changed file changes it)",
+          anchor_from_stderr(err_1) is not None and anchor_from_stderr(err_2) is not None
+          and anchor_from_stderr(err_1) != anchor_from_stderr(err_2))
+    # The low finding: a quoted flag and an argparse prefix are the same flag.
+    for form, label in ((plain_cmd + f' "--attach" "{att_path}"', "quoted --attach"),
+                        (plain_cmd + f' --att "{att_path}"', "abbreviated --att"),
+                        (plain_cmd + f' --htm "{html_path}"', "abbreviated --htm")):
+        _, _, err_a = bash(form)
+        target = html_path if "--htm" in form else att_path
+        put(target, b"csere")
+        _, _, err_b = bash(form)
+        put(html_path, "<p>Kedves Ügyfelünk!</p>\n".encode("utf-8"))
+        put(att_path, b"%PDF-1.4 elso")
+        check(f"{label}: the file is in the anchor", anchor_from_stderr(err_a) is not None
+              and anchor_from_stderr(err_a) != anchor_from_stderr(err_b) and anchor_from_stderr(err_a) != plain_anchor,
+              f"a={anchor_from_stderr(err_a)} b={anchor_from_stderr(err_b)}")
+    # With "=" the value is literal, even when it starts with "-": a file named "--cc" is unreadable -> denied.
+    code, _, err = bash(plain_cmd + ' --html=--cc')
+    check("--html=--cc: a literal value, unreadable -> DENIED", code == 2 and "nem olvashato" in err, f"exit={code} err={err[:160]!r}")
     # Backward-compat golden: a command WITHOUT --html/--attach hashes to the
     # old to/cc/text canon, so every open approval stays valid.
     old_canon = json.dumps({"to": ["a@b.hu"], "cc": [], "text": "Teszt tárgy\nKedves Ügyfelünk! Törzs."},

@@ -203,7 +203,19 @@ def collect_mcp_recipients(tool_input: dict):
 # only when present, so every existing anchor stays byte-identical. Same
 # unreadable boundary as the body and the recipients: a shell-expanded, empty
 # or unreadable path is not approximated -- the caller denies.
-_FILE_FLAG_RE = re.compile(r"(?:^|\s)--(html|attach)(?:=|\s+)(\"([^\"]*)\"|'([^']*)'|([^\s|;&<>]+))")
+#
+# The flag is read the way argparse reads it (a tester's finding): it may be quoted
+# ("--attach") or an unambiguous prefix (--att, --ht); after "=" the value is
+# literal; after whitespace the next token is the value ONLY if it does not start
+# with "-", because argparse takes such a token as the next option. So a
+# store_true switch of the same name is not a file flag: scripts/support-mail/
+# send.py's --html ("... --html --cc x") stays a switch, and the anchor of that
+# letter is unchanged. The value is captured in a lookahead, so a token after a
+# switch (another --attach) is still seen by the next match. --html-wrap is not
+# --html (the flag must end in "=" or whitespace).
+_FILE_FLAG_RE = re.compile(
+    r"(?:^|\s)([\"']?)--(html|htm|ht|attach|attac|atta|att)\1"
+    r"(?=(=|\s+)(?:\"([^\"]*)\"|'([^']*)'|([^\s|;&<>]+)))")
 
 
 def collect_bash_attachments(cmd: str):
@@ -212,8 +224,10 @@ def collect_bash_attachments(cmd: str):
     order of the flags on the command line does not change the anchor."""
     html, atts = None, []
     for m in _FILE_FLAG_RE.finditer(cmd):
-        flag = m.group(1)
-        ref = m.group(3) if m.group(3) is not None else (m.group(4) if m.group(4) is not None else m.group(5))
+        flag = "html" if m.group(2).startswith("ht") else "attach"
+        ref = next(g for g in (m.group(4), m.group(5), m.group(6)) if g is not None)
+        if m.group(3) != "=" and ref.startswith("-"):
+            continue  # the next token is an option: a switch of this name, not a file
         if not ref or _SHELL_SUBST.search(ref):
             return (None, [], f"a --{flag} ures vagy shell-behelyettesitest tartalmaz ({ref[:60]}) "
                               "-- a fajl futasidoben dol el")
