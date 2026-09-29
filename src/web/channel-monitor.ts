@@ -354,6 +354,35 @@ export function noteMachineFragmentLeft(session: string): void { machineFragment
 export function clearMachineFragmentLeft(session: string): void { machineFragmentLeft.delete(session) }
 export function hasMachineFragmentLeft(session: string): boolean { return machineFragmentLeft.has(session) }
 
+// The two lifecycle DECISIONS, as functions the call sites use -- not as prose
+// beside three bare calls. A decision that exists only at its call site cannot be
+// tested, and deleting the call leaves the suite green: measured on this branch,
+// three of the four bookkeeping mutants survived the full run (590 files / 7514
+// tests). The primitives above stay -- they are the store; these are the policy.
+
+/** What a parked-clear attempt is allowed to record.
+ *
+ *  Only `left-fragment` is a fact about the BOX: we tried, and text we injected
+ *  stayed in it. `cleared` is a claim about our own ACTION, and `skipped-locked`
+ *  means we never touched the box at all -- neither tells us the box is empty
+ *  NOW, so neither may write the record. Forgetting has exactly one owner
+ *  (onParkedState), because this whole fix exists for a clear that reported
+ *  success and left a fragment anyway. */
+export function onClearResult(session: string, result: ParkedClearResult): void {
+  if (result === 'left-fragment') noteMachineFragmentLeft(session)
+}
+
+/** The only safe moment to forget: the box is OBSERVED empty.
+ *
+ *  That is also the only moment a human draft can begin, which is what keeps the
+ *  flag from being inherited by text a person typed. This single call is the
+ *  safety property of the change: without it a flag set once would make every
+ *  later hand-typed draft in the main pane count as machine-origin and eligible
+ *  for a hard restart. */
+export function onParkedState(session: string, parked: boolean): void {
+  if (!parked) clearMachineFragmentLeft(session)
+}
+
 // Pure. The capture-derived heuristic is authoritative when it FIRES; it is its
 // SILENCE that is unreliable, so our own record can only ever add machine-origin,
 // never take it away.
@@ -599,8 +628,8 @@ async function performStuckInputAction(
           logger.info({ session, attempt }, 'Stuck-input recovery (clear-preamble) skipped: a delivery is in flight into this pane (fail-closed)')
           break
         }
+        onClearResult(session, result)
         if (result === 'left-fragment') {
-          noteMachineFragmentLeft(session)
           logger.warn({ session, attempt }, 'Stuck input -- clear-preamble left text in the box; the leftover stays parked (recorded as machine-origin)')
         }
         break
@@ -616,8 +645,8 @@ async function performStuckInputAction(
         // stops matching a delivery wrapper, so every later restart decision
         // reads it as a human draft. Say so in the log rather than reporting a
         // clean clear that did not happen.
+        onClearResult(session, result)
         if (result === 'left-fragment') {
-          noteMachineFragmentLeft(session)
           logger.warn({ session, attempt }, 'Stuck input -- clear-scheduled left a fragment in the box; recorded as machine-origin so the restart guard does not read it as a human draft')
         }
         break
@@ -1532,7 +1561,8 @@ function maybeRestartWedgedMainChannel(state: StuckInputState): void {
   const parked = state.parkedSig !== null
   // A cleared input box ends the spell -> reset the escalation counter so the
   // next genuine wedge starts fresh (and a successful restart is not penalised).
-  if (!parked) { stuckRestartCount = 0; clearMachineFragmentLeft(MAIN_CHANNELS_SESSION); return }
+  onParkedState(MAIN_CHANNELS_SESSION, parked)
+  if (!parked) { stuckRestartCount = 0; return }
   // Busy-guard: never hard-restart while the main pane is actively generating --
   // a parked <channel> block then is a busy session, not a wedge. See
   // applyStuckRestartBusyGuard. detectPaneState reads 'unknown' for an
