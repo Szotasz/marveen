@@ -21,8 +21,10 @@ a daily repeat of the same news (a repeated alarm is read past).
 EXIT CODES (the scheduler's command task maps 0/1 to 0; only 2+ is an alert):
   0  nothing broken
   1  broken files exist (the verdict; the message carries it)
-  2  the instrument failed: no memory file found at all, or a directory unreadable.
-     A sweep that sees nothing must not look like a clean fleet.
+  2  the instrument failed. Counted PER SOURCE, because a glob skips an unreadable
+     or missing directory silently: the home projects tree yields no memory file,
+     or agent config dirs exist but none of them yields one. A sweep that sees
+     nothing (or only half) must not look like a clean fleet.
   3  the message to Marveen could not be delivered
 """
 import argparse
@@ -39,17 +41,19 @@ from memory_frontmatter_lib import tartalom_hiba  # noqa: E402
 
 
 def memory_files(home, repo):
-    patterns = [
-        os.path.join(home, '.claude', 'projects', '*', 'memory', '*.md'),
-        os.path.join(repo, 'agents', '*', '.claude-config', 'projects', '*', 'memory', '*.md'),
-    ]
-    seen = {}
-    for pat in patterns:
-        for p in glob.glob(pat):
-            if os.path.basename(p) == 'MEMORY.md':
-                continue
+    """(sorted realpaths, per-source hit counts, whether agent config dirs exist)."""
+    sources = {
+        'home': os.path.join(home, '.claude', 'projects', '*', 'memory', '*.md'),
+        'agents': os.path.join(repo, 'agents', '*', '.claude-config', 'projects', '*', 'memory', '*.md'),
+    }
+    seen, counts = {}, {}
+    for name, pat in sources.items():
+        hits = [p for p in glob.glob(pat) if os.path.basename(p) != 'MEMORY.md']
+        counts[name] = len(hits)
+        for p in hits:
             seen.setdefault(os.path.realpath(p), p)
-    return sorted(seen)
+    agent_configs = bool(glob.glob(os.path.join(repo, 'agents', '*', '.claude-config', 'projects')))
+    return sorted(seen), counts, agent_configs
 
 
 def sweep(files):
@@ -72,9 +76,12 @@ def main():
     a = ap.parse_args()
 
     try:
-        files = memory_files(a.home, a.repo)
-        if not files:
-            print('MUSZER-HIBA: egyetlen memoriafajlt sem talaltam, ez nem tiszta flotta, hanem vak meres')
+        files, counts, agent_configs = memory_files(a.home, a.repo)
+        if counts['home'] == 0:
+            print(f'MUSZER-HIBA: a home projects-fajabol egyetlen memoriafajl sem jott ({counts}), ez vak meres, nem tiszta flotta')
+            return 2
+        if agent_configs and counts['agents'] == 0:
+            print(f'MUSZER-HIBA: vannak agens config-konyvtarak, de egyikbol sem jott memoriafajl ({counts}), a meres felig vak')
             return 2
         broken = sweep(files)
     except Exception as ex:
