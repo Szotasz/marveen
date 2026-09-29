@@ -15424,29 +15424,55 @@ function tuGetModelColor(idx) { return TU_MODEL_COLORS[idx % TU_MODEL_COLORS.len
 // Agents missing from TU_COLORS used to share the '#64748b' fallback, so on a
 // fleet whose agent names are not in the map every agent except the main one
 // rendered in the same grey and the stacked timeline could not show who used
-// what. Unlisted agents now get a distinct colour from this palette. Cyan and
-// light violet are left out: the 5h and weekly window lines use them.
+// what. Unlisted agents now get a distinct colour from this palette.
+//
+// The palette is disjoint from EVERY TU_COLORS value and from the chart's own
+// line colours, not only from the listed agents present in the current load:
+// the summary depends on the selected period, so a listed agent can appear
+// after a period switch, and a palette colour it shares would then belong to
+// two agents at once (review on #1646: 'geri' got #f59e0b on 1h, 'codi' showed
+// up with the same colour on 7d).
+const TU_RESERVED_COLORS = [
+  '#06b6d4', // 5h window line
+  '#8b5cf6', // weekly window line
+  '#3b82f6', // 5h reset marker
+  '#f59e0b', // day marker
+  '#ef4444', // week marker
+  '#64748b', // legacy grey fallback
+]
 const TU_EXTRA_PALETTE = [
-  '#f59e0b', '#10b981', '#ec4899', '#ef4444', '#f97316', '#84cc16',
-  '#0ea5e9', '#d946ef', '#14b8a6', '#eab308', '#78716c', '#be123c',
+  '#f97316', '#84cc16', '#0ea5e9', '#d946ef', '#14b8a6', '#eab308',
+  '#78716c', '#be123c', '#a16207', '#15803d', '#1d4ed8', '#c2410c',
+  '#4d7c0f', '#7f1d1d', '#fb7185', '#92400e',
 ]
 const tuAssignedColors = {}
+let tuGeneratedCount = 0
+
+// Past the palette, a generated hue instead of the grey: golden-angle steps
+// keep consecutive agents far apart on the wheel. Returned as an hsl() string,
+// which canvas and CSS both accept and which never equals a hex palette entry.
+function tuGeneratedColor(n) {
+  return `hsl(${Math.round((n * 137.508 + 20) % 360)}, 62%, 46%)`
+}
 
 // Called with the agent list of each summary load. Assignment is alphabetical
 // over the agents not yet coloured, so the same fleet gets the same colours on
 // every page load, and an agent keeps its colour for the life of the page even
 // if a later filter hides the others.
 function tuAssignColors(agents) {
-  const used = new Set(Object.values(tuAssignedColors))
-  for (const a of agents) if (TU_COLORS[a]) used.add(TU_COLORS[a])
+  const used = new Set([
+    ...Object.values(TU_COLORS),
+    ...TU_RESERVED_COLORS,
+    ...Object.values(tuAssignedColors),
+  ])
   const pending = [...new Set(agents)]
     .filter((a) => !TU_COLORS[a] && !tuAssignedColors[a])
     .sort()
   for (const a of pending) {
     const free = TU_EXTRA_PALETTE.find((c) => !used.has(c))
-    if (!free) break
-    tuAssignedColors[a] = free
-    used.add(free)
+    const colour = free || tuGeneratedColor(tuGeneratedCount++)
+    tuAssignedColors[a] = colour
+    used.add(colour)
   }
 }
 
