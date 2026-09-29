@@ -338,6 +338,74 @@ with tempfile.TemporaryDirectory() as td:
           bccless_anchor == "de87bdb699dcab419b68811bb57b6fab44b34e2fe16bff11cf90b2a5848f82ec",
           f"got {bccless_anchor}")
 
+    # --- EMAILHTMLHORGONY929: the HTML body and the attachments are in the anchor -
+    # The gap this pins closed: the anchor covered to/cc/bcc/text only, so an
+    # approved send.py letter could go out with a DIFFERENT --html file or with
+    # an added or changed --attach: the recipient got something nobody approved.
+    store = make_store(os.path.join(td, "html-bash"))
+    hdir = os.path.join(td, "html-files")
+    os.makedirs(hdir, exist_ok=True)
+    html_path = os.path.join(hdir, "level.html")
+    att_path = os.path.join(hdir, "melleklet.pdf")
+    extra_att = os.path.join(hdir, "masik.pdf")
+
+    def put(path, data):
+        with open(path, "wb") as fh:
+            fh.write(data)
+
+    def bash(command):
+        return run_gate(store, {"tool_name": "Bash", "tool_input": {"command": command}})
+
+    put(html_path, "<p>Kedves Ügyfelünk!</p>\n".encode("utf-8"))
+    put(att_path, b"%PDF-1.4 elso")
+    put(extra_att, b"%PDF-1.4 masik")
+    plain_cmd = ('python3 scripts/send.py --to "a@b.hu" --subject "Teszt tárgy" '
+                 '--body "Kedves Ügyfelünk! Törzs."')
+    html_cmd = plain_cmd + f' --html "{html_path}" --attach "{att_path}"'
+    _, _, err = bash(plain_cmd)
+    plain_anchor = anchor_from_stderr(err)
+    _, _, err = bash(html_cmd)
+    html_anchor = anchor_from_stderr(err)
+    check("html/Bash: --html and --attach change the anchor",
+          bool(plain_anchor) and bool(html_anchor) and plain_anchor != html_anchor,
+          f"plain={plain_anchor} html={html_anchor}")
+    approve(store, html_anchor)
+    put(html_path, "<p>MAS szoveg</p>\n".encode("utf-8"))
+    code, _, _ = bash(html_cmd)
+    check("html/Bash: HTML changed after the approval -> DENIED", code == 2, f"exit={code}")
+    put(html_path, "<p>Kedves Ügyfelünk!</p>\n".encode("utf-8"))
+    put(att_path, b"%PDF-1.4 masodik")
+    code, _, _ = bash(html_cmd)
+    check("html/Bash: attachment changed after the approval -> DENIED", code == 2, f"exit={code}")
+    put(att_path, b"%PDF-1.4 elso")
+    code, _, _ = bash(html_cmd + f' --attach "{extra_att}"')
+    check("html/Bash: an ADDED attachment -> DENIED", code == 2, f"exit={code}")
+    code, _, _ = bash(plain_cmd)
+    check("html/Bash: the same letter WITHOUT its HTML and attachment -> DENIED", code == 2, f"exit={code}")
+    code, _, _ = bash(html_cmd)
+    check("html/Bash: the approved letter (files as approved) sends", code == 0, f"exit={code}")
+    code, _, _ = bash(html_cmd)
+    check("html/Bash: ... and only once (one-shot)", code == 2, f"exit={code}")
+    _, _, err_a = bash(plain_cmd + f' --attach "{att_path}" --attach "{extra_att}"')
+    _, _, err_b = bash(plain_cmd + f' --attach "{extra_att}" --attach "{att_path}"')
+    check("html/Bash: the order of the --attach flags does not change the anchor",
+          anchor_from_stderr(err_a) is not None and anchor_from_stderr(err_a) == anchor_from_stderr(err_b))
+    # Each branch by its OWN reason: a shell-expanded path must be refused as
+    # such, not merely because no file carries the literal name "$LEVEL_HTML".
+    for bad, label, why in ((plain_cmd + ' --html "$LEVEL_HTML"', "shell variable", "shell-behelyettesitest"),
+                            (plain_cmd + ' --attach "$(ls *.pdf)"', "command substitution", "shell-behelyettesitest"),
+                            (plain_cmd + f' --html "{os.path.join(hdir, "nincs.html")}"', "missing file", "nem olvashato"),
+                            (plain_cmd + f' --html "{html_path}" --html "{html_path}"', "two --html", "tobb --html")):
+        code, _, err = bash(bad)
+        check(f"html/Bash fail-closed: {label} -> DENIED, not anchored",
+              code == 2 and "nem horgonyozhato" in err and why in err, f"exit={code} err={err[:160]!r}")
+    # Backward-compat golden: a command WITHOUT --html/--attach hashes to the
+    # old to/cc/text canon, so every open approval stays valid.
+    old_canon = json.dumps({"to": ["a@b.hu"], "cc": [], "text": "Teszt tárgy\nKedves Ügyfelünk! Törzs."},
+                           ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    check("html/golden: a plain command's anchor is the pre-change to/cc/text canon",
+          plain_anchor == hashlib.sha256(old_canon.encode("utf-8")).hexdigest(), f"got {plain_anchor}")
+
     # MANAGEOP904: manage_email is a MULTIPLEXER, not a send tool. Scoping the
     # gate on the tool NAME alone denied `operation=search` and
     # `operation=draft` at level 1 -- measured on a live install 2026-09-04,

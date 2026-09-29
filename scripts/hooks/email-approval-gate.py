@@ -402,10 +402,19 @@ def content_anchor(env: dict) -> str:
         stay valid for the letters they approved. There is no ambiguity to
         exploit: the extractor decides bcc deterministically, and any
         non-empty bcc changes the hash -- fail-closed in the only direction
-        that matters."""
+        that matters.
+
+    EMAILHTMLHORGONY929: the HTML body's and the attachments' sha256 join the
+    canon the same way, ONLY when present: an approved letter re-sent with a
+    different HTML or an added/changed attachment has another anchor, and a
+    plain letter's anchor is unchanged."""
     fields = {"to": env["to"], "cc": env["cc"], "text": env["text"]}
     if env.get("bcc"):
         fields["bcc"] = env["bcc"]
+    if env.get("html_sha256"):
+        fields["html_sha256"] = env["html_sha256"]
+    if env.get("attachments"):
+        fields["attachments"] = env["attachments"]
     canon = json.dumps(fields, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
@@ -469,7 +478,12 @@ def summarize(env: dict) -> str:
     to = ", ".join(env["to"]) or "(nincs)"
     cc = ", ".join(env["cc"]) or "-"
     head = env["text"].replace("\n", " ")[:120]
-    return f"Cimzett: {to} | CC: {cc} | Szoveg eleje: {head}"
+    extra = ""
+    if env.get("html_sha256"):
+        extra += f" | HTML sha256: {env['html_sha256'][:16]}"
+    if env.get("attachments"):
+        extra += " | Csatolmany: " + ", ".join(f"{a['name']} ({a['sha256'][:16]})" for a in env["attachments"])
+    return f"Cimzett: {to} | CC: {cc} | Szoveg eleje: {head}{extra}"
 
 
 def main():
