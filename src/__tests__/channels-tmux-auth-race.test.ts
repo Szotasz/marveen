@@ -107,11 +107,21 @@ describe.skipIf(!HAS_TMUX)('channels.sh tmux auth (real tmux, isolated socket)',
 })
 
 describe('channels.sh tmux auth wiring (source pin)', () => {
-  const launches = SH.split('\n').filter(l => /^\s*\$TMUX new-session -d -s "\$SESSION"/.test(l))
+  const launches = SH.split('\n').filter(l => /^\s*(env -u "\$STATE_ENV_VAR" )?\$TMUX new-session -d -s "\$SESSION"/.test(l))
 
   it('both channels new-session call sites carry the TMUX_AUTH_ENV expansion', () => {
     expect(launches).toHaveLength(2)
     for (const l of launches) expect(l).toContain('${TMUX_AUTH_ENV[@]+"${TMUX_AUTH_ENV[@]}"}')
+  })
+
+  // TMUXSERVERREAP929: whichever launch creates the shared tmux server must not
+  // hand it the main session's state-dir var -- the pre-respawn poller reap
+  // matches that var in /proc environ and would kill the server (every agent
+  // session with it). The pane still gets the var from the command's own export.
+  it('both channels new-session call sites strip the state-dir var from the tmux client env', () => {
+    expect(launches).toHaveLength(2)
+    for (const l of launches) expect(l.trim().startsWith('env -u "$STATE_ENV_VAR" $TMUX new-session')).toBe(true)
+    expect(SH).toContain('$TMUX set-environment -g -u "$STATE_ENV_VAR"')
   })
 
   it('the auth globals are set again right after the primary new-session', () => {
