@@ -28,8 +28,52 @@ ENV_FILE="${TELEGRAM_ENV:-$TG_CHAN_DIR/.env}"
 # that one private chat via its own bot token.
 
 now_local="$(date '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || echo now)"
-msg="Marveen app-crash: a(z) ${UNIT} unit FAILED állapotba került (${now_local}).
+
+# Per-unit label and reason (9318442d): the OnFailure path stays, and the notice
+# says WHAT failed and WHY, read from the FAILED RUN itself:
+#  - a guard whose alert IS its OnFailure prints a marker line and then exits non-zero on purpose. The markers in use
+#    (measured on the guards of one install, 2026-09-29): "PROBLEMA:" (e.g. "<guard>: ⛔ PROBLEMA:<what>"), and
+#    "RIASZTAS" / "RIASZTÁS". Such a run (Result exit-code, a marker line in its own output) is an "őr-jelzés" (a guard's
+#    signal), not an app crash, and the last marker line is the reason;
+#  - any other failure keeps the "app-crash" label, with systemd's own reason: a guard's OWN error (no marker line in
+#    that run), and every signal, timeout or oom-kill, whatever the run printed before it.
+# The marker is read from the failed run's own output only (its InvocationID), so a line of an earlier run can never
+# label a later failure. Every step is best-effort: without systemctl or journalctl, or when they say nothing, the
+# notice is today's text.
+UNIT_SCOPE=""
+for _scope in --user --system; do
+  if [ "$(systemctl "$_scope" show -p LoadState --value "$UNIT" 2>/dev/null)" = "loaded" ]; then UNIT_SCOPE="$_scope"; break; fi
+done
+unit_prop() { [ -n "$UNIT_SCOPE" ] && systemctl "$UNIT_SCOPE" show -p "$1" --value "$UNIT" 2>/dev/null; }
+# Control characters out (the line is someone's output), and a bound on the length: this is a Telegram notice.
+_clean() { tr -d '\000-\010\013-\037\177' | tr '\n\t' '  ' | cut -c1-300 | sed 's/[[:space:]]*$//'; }
+guard_line=""; why=""; label_desc=""
+if [ -n "$UNIT_SCOPE" ]; then
+  _inv="$(unit_prop InvocationID)"
+  _result="$(unit_prop Result)"; _status="$(unit_prop ExecMainStatus)"
+  if [ -n "$_inv" ] && [ "$_result" = "exit-code" ]; then
+    guard_line="$(journalctl "$UNIT_SCOPE" "_SYSTEMD_INVOCATION_ID=$_inv" -o cat --no-pager 2>/dev/null | grep -E 'PROBLEMA:|RIASZTAS|RIASZTÁS' | tail -n 1 | _clean)"
+  fi
+  case "$_result" in
+    exit-code) why="kilépési kód ${_status:-?}" ;;
+    signal|core-dump) why="jelzés ${_status:-?} (${_result})" ;;
+    timeout) why="időtúllépés" ;;
+    oom-kill) why="elfogyott a memória (oom-kill)" ;;
+    ""|success) why="" ;;
+    *) why="$(printf '%s' "$_result" | _clean)" ;;
+  esac
+  label_desc="$(unit_prop Description | _clean)"
+fi
+unit_label="${UNIT}${label_desc:+ (${label_desc})}"
+if [ -n "$guard_line" ]; then
+  msg="Marveen őr-jelzés: a(z) ${unit_label} problémát jelez (${now_local}).
+Ok: ${guard_line}
+(Ez NEM összeomlás: az őr a futása végén jelez, a riasztás útja a unit OnFailure-je.)"
+else
+  msg="Marveen app-crash: a(z) ${unit_label} unit FAILED állapotba került (${now_local}).${why:+
+Ok (systemd): ${why}}
 (Ez alkalmazás/service szintű hiba, NEM host/VM restart. A host-restartot a host-restart-watchdog jelzi külön.)"
+fi
 
 token=""
 if [[ -f "$ENV_FILE" ]]; then
