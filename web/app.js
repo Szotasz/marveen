@@ -15421,8 +15421,37 @@ const TU_MODEL_COLORS = ['#6366f1','#06b6d4','#f59e0b','#22c55e','#ef4444','#8b5
 
 function tuGetModelColor(idx) { return TU_MODEL_COLORS[idx % TU_MODEL_COLORS.length] }
 
+// Agents missing from TU_COLORS used to share the '#64748b' fallback, so on a
+// fleet whose agent names are not in the map every agent except the main one
+// rendered in the same grey and the stacked timeline could not show who used
+// what. Unlisted agents now get a distinct colour from this palette. Cyan and
+// light violet are left out: the 5h and weekly window lines use them.
+const TU_EXTRA_PALETTE = [
+  '#f59e0b', '#10b981', '#ec4899', '#ef4444', '#f97316', '#84cc16',
+  '#0ea5e9', '#d946ef', '#14b8a6', '#eab308', '#78716c', '#be123c',
+]
+const tuAssignedColors = {}
+
+// Called with the agent list of each summary load. Assignment is alphabetical
+// over the agents not yet coloured, so the same fleet gets the same colours on
+// every page load, and an agent keeps its colour for the life of the page even
+// if a later filter hides the others.
+function tuAssignColors(agents) {
+  const used = new Set(Object.values(tuAssignedColors))
+  for (const a of agents) if (TU_COLORS[a]) used.add(TU_COLORS[a])
+  const pending = [...new Set(agents)]
+    .filter((a) => !TU_COLORS[a] && !tuAssignedColors[a])
+    .sort()
+  for (const a of pending) {
+    const free = TU_EXTRA_PALETTE.find((c) => !used.has(c))
+    if (!free) break
+    tuAssignedColors[a] = free
+    used.add(free)
+  }
+}
+
 function tuGetColor(agent) {
-  return TU_COLORS[agent] || '#64748b'
+  return TU_COLORS[agent] || tuAssignedColors[agent] || '#64748b'
 }
 
 function tuMcpServerFromTool(toolName) {
@@ -15474,6 +15503,7 @@ async function loadTokenUsage() {
     const bTotal = (b.totalInput || 0) + (b.totalCacheRead || 0) + (b.totalCacheCreation || 0)
     return bTotal - aTotal
   })
+  tuAssignColors(summary.map((s) => s.agent))
   renderTuSummary(summary)
 
   const agentSelect = document.getElementById('tuAgent')
