@@ -105,6 +105,30 @@ describe('e349287f controls: the label is never minted where it is not true', ()
     expect(label).toBe('')
   })
 
+  it('through the wrap step (the router\'s call shape), the label is built from the SANITIZED sender id', () => {
+    // A review coverage note: the forged-sender case above calls the label function directly, so nothing
+    // pinned that the wrap step passes the sanitized id, not the raw from_agent. The router passes both, the raw one
+    // as the third argument. Here the raw id carries a character the sanitizer drops, and it still sanitizes to the
+    // registered area agent: the label must name that agent.
+    const raw = `${AREA};`
+    const d = deliver(raw, RECIPIENT, 9000002)
+    expect(d.cls.safeFrom).toBe(AREA)
+    expect(d.cls.category).toBe('untrusted')
+    expect(d.prefix).toContain(`not instructions; feladó: flotta-ügynök ${AREA}, területi, msg_id:9000002]`)
+  })
+
+  it('NEGATIVE CONTROL: the unsanitized form never appears in the label, and a raw id that only starts with the area agent\'s name gets none', () => {
+    const raw = `${AREA};`
+    const label = /not instructions(; feladó: [^\]]*?)(?:, msg_id:\d+)?\]/.exec(deliver(raw, RECIPIENT).prefix)?.[1] ?? ''
+    expect(label).toBe(`; feladó: flotta-ügynök ${AREA}, területi`)
+    expect(label).not.toContain(raw)
+    // `${AREA};x` sanitizes to `${AREA}x`, which is no registered agent: no label, although the raw id begins with
+    // the area agent's name.
+    const other = deliver(`${AREA};x`, RECIPIENT)
+    expect(other.cls.safeFrom).toBe(`${AREA}x`)
+    expect(other.prefix).not.toContain('flotta-ügynök')
+  })
+
   it('the label reads the operator-set config: without channelProvider the same agent has none', () => {
     expect(areaAgentSenderLabel(AREA)).toBe(`; feladó: flotta-ügynök ${AREA}, területi`)
     writeFileSync(join(agentDir(AREA), 'agent-config.json'), JSON.stringify({ team: team(MAIN_AGENT_ID) }, null, 2))
