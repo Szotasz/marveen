@@ -89,6 +89,23 @@ describe('memory-frontmatter-sweep', () => {
     expect(r.stdout).toContain('MUSZER-HIBA')
   })
 
+  it('a source that yields nothing is exit 2 even when the other one does (a glob skips a blind directory silently)', () => {
+    // agent config dirs exist, but their projects link points nowhere readable
+    const blind = join(S, 'repo2')
+    mkdirSync(join(blind, 'agents', 'geri', '.claude-config', 'projects'), { recursive: true })
+    const r = spawnSync('python3', [SWEEP, '--home', HOME, '--repo', blind, '--state', STATE], { encoding: 'utf8' })
+    expect(r.status).toBe(2)
+    expect(r.stdout).toContain('felig vak')
+    // and the home tree alone missing, with a readable agent tree
+    const r2 = spawnSync('python3', [SWEEP, '--home', join(S, 'nohome'), '--repo', REPO, '--state', STATE], { encoding: 'utf8' })
+    expect(r2.status).toBe(2)
+  })
+
+  it('a repo without agent config dirs is not blind (a host with no sub-agents)', () => {
+    const r = spawnSync('python3', [SWEEP, '--home', HOME, '--repo', join(S, 'noagents'), '--state', STATE], { encoding: 'utf8' })
+    expect(r.status).toBe(0)
+  })
+
   it('a failed message: exit 3, the state does not advance, the next run sends it', () => {
     writeFileSync(join(MEM, 'feedback_b.md'), BROKEN)
     notifier(false)
