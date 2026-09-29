@@ -606,6 +606,44 @@ main {
   background: var(--bg-input);
   overflow: hidden;
 }
+/* Weekly row: 7 equal day segments over the fill (separators drawn in the
+   card colour, so they read as gaps), day names underneath, and a thin
+   "now" marker. The fill is USAGE, the marker is TIME: usage right of the
+   marker means the week is being spent faster than it passes. */
+.quota-bar-col { position: relative; min-width: 0; }
+.quota-bar-track.week { position: relative; }
+.quota-bar-track.week::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(to right,
+    transparent 0, transparent calc(100% / 7 - 2px),
+    var(--bg-card) calc(100% / 7 - 2px), var(--bg-card) calc(100% / 7));
+  pointer-events: none;
+}
+.quota-bar-now {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 12px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--text);
+  pointer-events: none;
+}
+.quota-bar-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.quota-bar-days span {
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .quota-bar-fill {
   height: 100%;
   border-radius: 3px;

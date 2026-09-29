@@ -12143,6 +12143,29 @@ function quotaLevelClass(pct) {
   return ''
 }
 
+// Weekly quota row: 7 day segments, day names underneath and a "now" marker.
+// The window is NOT a calendar week: it runs resetsAt-7d -> resetsAt
+// (measured 2026-09-29: Monday 09:00 CEST for both the previous and the
+// current window), so the labels and the marker are derived from resetsAt,
+// never from "Monday". Each segment is labelled with the weekday it STARTS
+// on. Returns null when there is no usable current window -- the row then
+// keeps the plain bar instead of drawing a week it cannot place.
+// timeZone is for tests only; the dashboard uses the viewer's local time.
+function weekSegments(resetsAt, nowSec, lang, timeZone) {
+  const WEEK = 7 * 86400
+  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) return null
+  if (typeof nowSec !== 'number' || !Number.isFinite(nowSec)) return null
+  const start = resetsAt - WEEK
+  if (resetsAt <= nowSec || nowSec < start) return null
+  const locale = lang === 'en' ? 'en-US' : 'hu-HU'
+  const starts = Array.from({ length: 7 }, (_, i) => start + i * 86400)
+  const labels = starts.map((sec) => {
+    const s = new Date(sec * 1000).toLocaleDateString(locale, { weekday: 'long', timeZone })
+    return s.charAt(0).toUpperCase() + s.slice(1)
+  })
+  return { starts, labels, nowPct: ((nowSec - start) / WEEK) * 100 }
+}
+
 // Render the subscription quota strip from /api/overview's `quota` block.
 //
 // The rule this follows: a quota reading is only worth showing while it is
@@ -12214,9 +12237,17 @@ function renderQuotaStrip(q, fable) {
     if (q.source === 'mod' && w.sourceAgent) {
       tail += ' · ' + w.sourceAgent
     }
+    const week = labelKey === 'overview.quota.seven_day' && !w.expired
+      ? weekSegments(w.resetsAt, nowSec, window._lang)
+      : null
+    const track = `<div class="quota-bar-track${week ? ' week' : ''}"><div class="quota-bar-fill ${muted ? '' : quotaLevelClass(pct)}" style="width:${pct}%"></div></div>`
     row.innerHTML = `
       <div class="quota-bar-label">${escapeHtml(t(labelKey))}</div>
-      <div class="quota-bar-track"><div class="quota-bar-fill ${muted ? '' : quotaLevelClass(pct)}" style="width:${pct}%"></div></div>
+      ${week ? `<div class="quota-bar-col">
+        ${track}
+        <div class="quota-bar-now" style="left:${week.nowPct.toFixed(2)}%"></div>
+        <div class="quota-bar-days">${week.labels.map((d) => `<span>${escapeHtml(d)}</span>`).join('')}</div>
+      </div>` : track}
       <div class="quota-bar-value">${pct}%<span class="quota-bar-reset">${escapeHtml(tail)}</span></div>
     `
     bars.appendChild(row)
