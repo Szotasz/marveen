@@ -37,6 +37,10 @@ now_local="$(date '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || echo now)"
 #    signal), not an app crash, and the last marker line is the reason;
 #  - any other failure keeps the "app-crash" label, with systemd's own reason: a guard's OWN error (no marker line in
 #    that run), and every signal, timeout or oom-kill, whatever the run printed before it.
+# A marker line starts at the start of the line (the guards print it so), and a run that printed a Python traceback
+# crashed, whatever else it printed: a traceback echoes the source lines of its frames, indented, and the exception
+# text; on a guard's alert path those carry the marker word (found in review: an unwritable event log, and a None in the
+# PROBLEMA line's join, both labelled "not a crash" before this).
 # The marker is read from the failed run's own output only (its InvocationID), so a line of an earlier run can never
 # label a later failure. Every step is best-effort: without systemctl or journalctl, or when they say nothing, the
 # notice is today's text.
@@ -46,13 +50,19 @@ for _scope in --user --system; do
 done
 unit_prop() { [ -n "$UNIT_SCOPE" ] && systemctl "$UNIT_SCOPE" show -p "$1" --value "$UNIT" 2>/dev/null; }
 # Control characters out (the line is someone's output), and a bound on the length: this is a Telegram notice.
-_clean() { tr -d '\000-\010\013-\037\177' | tr '\n\t' '  ' | cut -c1-300 | sed 's/[[:space:]]*$//'; }
+# cut counts bytes: iconv -c then drops a multibyte character the cut split (and any invalid byte), so the notice
+# stays valid UTF-8; without iconv the text goes as cut left it.
+_utf8() { if command -v iconv >/dev/null 2>&1; then iconv -f UTF-8 -t UTF-8 -c 2>/dev/null; else cat; fi; }
+_clean() { tr -d '\000-\010\013-\037\177' | tr '\n\t' '  ' | cut -c1-300 | _utf8 | sed 's/[[:space:]]*$//'; }
 guard_line=""; why=""; label_desc=""
 if [ -n "$UNIT_SCOPE" ]; then
   _inv="$(unit_prop InvocationID)"
   _result="$(unit_prop Result)"; _status="$(unit_prop ExecMainStatus)"
   if [ -n "$_inv" ] && [ "$_result" = "exit-code" ]; then
-    guard_line="$(journalctl "$UNIT_SCOPE" "_SYSTEMD_INVOCATION_ID=$_inv" -o cat --no-pager 2>/dev/null | grep -E 'PROBLEMA:|RIASZTAS|RIASZTÁS' | tail -n 1 | _clean)"
+    _run_out="$(journalctl "$UNIT_SCOPE" "_SYSTEMD_INVOCATION_ID=$_inv" -o cat --no-pager 2>/dev/null)"
+    if ! printf '%s\n' "$_run_out" | grep -q '^Traceback (most recent call last):'; then
+      guard_line="$(printf '%s\n' "$_run_out" | grep -E '^[^[:space:]]' | grep -E 'PROBLEMA:|RIASZTAS|RIASZTÁS' | tail -n 1 | _clean)"
+    fi
   fi
   case "$_result" in
     exit-code) why="kilépési kód ${_status:-?}" ;;

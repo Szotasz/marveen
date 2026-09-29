@@ -178,6 +178,126 @@ run >/dev/null; m="$(msg)"
 assert_contains "11a. a lehulesi sor nem jeloles: app-crash" "Marveen app-crash" "$m"
 assert_absent   "11b. NEM or-jelzes" "őr-jelzés" "$m"
 
+# 12-15) A guard that CRASHED is not a guard's signal, even when the marker word is in its output (a review finding). The
+# tracebacks below have the shape Python prints (made-up paths): the frames' source lines indented, the exception last.
+export STUB_SCOPE=user STUB_RESULT=exit-code STUB_STATUS=1 STUB_DESC="Teszt-hivas-or"
+# 12) c: the event log is not writable; the calling line carries 'RIASZTAS'.
+export STUB_INV=inv-11 STUB_JOURNAL="inv-11|Traceback (most recent call last):
+inv-11|  File \"/opt/teszt/orseg.py\", line 264, in main
+inv-11|    event(now.isoformat(), f'RIASZTAS {k}: {d}')
+inv-11|  File \"/opt/teszt/orseg.py\", line 40, in event
+inv-11|    with open(EVENTS, 'a') as fh:
+inv-11|         ^^^^^^^^^^^^^^^^^
+inv-11|PermissionError: [Errno 13] Permission denied: '/opt/teszt/events.log'"
+run >/dev/null; m="$(msg)"
+assert_contains "12a. c: a traceback-es futas app-crash" "Marveen app-crash" "$m"
+assert_absent   "12b. c: NEM or-jelzes" "őr-jelzés" "$m"
+assert_absent   "12c. c: a kodsor nem ok" "event(now" "$m"
+# 13) c2: a None in the join of the PROBLEMA line itself.
+export STUB_INV=inv-12 STUB_JOURNAL="inv-12|Traceback (most recent call last):
+inv-12|  File \"/opt/teszt/orseg.py\", line 6, in main
+inv-12|    print(head + 'teszt-or: PROBLEMA: ' + '; '.join(d for _, d in problems))
+inv-12|                                          ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+inv-12|TypeError: sequence item 0: expected str instance, NoneType found"
+run >/dev/null; m="$(msg)"
+assert_contains "13a. c2: app-crash" "Marveen app-crash" "$m"
+assert_absent   "13b. c2: NEM or-jelzes" "őr-jelzés" "$m"
+# 14) The exception TEXT carries the marker, on the unindented last line of the traceback.
+export STUB_INV=inv-13 STUB_JOURNAL="inv-13|Traceback (most recent call last):
+inv-13|  File \"/opt/teszt/orseg.py\", line 9, in main
+inv-13|    raise RuntimeError(f'PROBLEMA: {x}')
+inv-13|RuntimeError: PROBLEMA: allapot-olvashatatlan"
+run >/dev/null; m="$(msg)"
+assert_contains "14a. a kivetel szovegeben allo jelolo: app-crash" "Marveen app-crash" "$m"
+assert_absent   "14b. NEM or-jelzes" "őr-jelzés" "$m"
+# 15) The guard signalled, then crashed in the same run: the crash wins.
+export STUB_INV=inv-14 STUB_JOURNAL="inv-14|teszt-or: PROBLEMA: bejovo-ut
+inv-14|Traceback (most recent call last):
+inv-14|  File \"/opt/teszt/orseg.py\", line 280, in main
+inv-14|    event(now.isoformat(), f'RIASZTAS {key}')
+inv-14|OSError: [Errno 28] No space left on device"
+run >/dev/null; m="$(msg)"
+assert_contains "15a. jelzes, utana osszeomlas: app-crash" "Marveen app-crash" "$m"
+assert_absent   "15b. NEM or-jelzes" "őr-jelzés" "$m"
+# CONTROL for 12-15: the same marker, printed by the guard itself, without a traceback, is still a guard signal.
+export STUB_INV=inv-15 STUB_JOURNAL="inv-15|2026-09-27T03:31:13Z teszt-or: PROBLEMA: bejovo-ut"
+run >/dev/null; m="$(msg)"
+assert_contains "15c. KONTROLL: traceback nelkul or-jelzes" "Ok: 2026-09-27T03:31:13Z teszt-or: PROBLEMA: bejovo-ut" "$m"
+
+# 16) An indented line is a quoted line (a traceback frame, a log excerpt), never a marker.
+export STUB_INV=inv-16 STUB_JOURNAL="inv-16|    teszt-or: PROBLEMA: idezett"
+run >/dev/null; m="$(msg)"
+assert_absent   "16a. behuzott sor nem jelolo" "őr-jelzés" "$m"
+
+# 17) Two markers in one run (e.g. a safety alert and a PROBLEMA line): the LAST one is the reason.
+export STUB_INV=inv-17 STUB_JOURNAL="inv-17|teszt-or: BIZTONSAGI RIASZTAS: elso
+inv-17|teszt-or: kozbenso sor
+inv-17|teszt-or: PROBLEMA: masodik"
+run >/dev/null; m="$(msg)"
+assert_contains "17a. az utolso jelolo sor az ok" "Ok: teszt-or: PROBLEMA: masodik" "$m"
+assert_absent   "17b. az elso nem" "BIZTONSAGI RIASZTAS: elso" "$m"
+
+# 18) systemd's reasons that had no test: oom-kill and timeout.
+export STUB_INV=inv-18 STUB_RESULT=oom-kill STUB_STATUS=9 STUB_JOURNAL="inv-18|teszt-or: PROBLEMA: x"
+run >/dev/null; m="$(msg)"
+assert_contains "18a. oom-kill ok" "Ok (systemd): elfogyott a memória (oom-kill)" "$m"
+assert_absent   "18b. oom-kill: NEM or-jelzes" "őr-jelzés" "$m"
+export STUB_INV=inv-19 STUB_RESULT=timeout STUB_STATUS=0 STUB_JOURNAL="inv-19|teszt-or: PROBLEMA: x"
+run >/dev/null; m="$(msg)"
+assert_contains "18c. idotullepes ok" "Ok (systemd): időtúllépés" "$m"
+
+# 19) The 300-byte cut on a multibyte character: the notice stays valid UTF-8 (cut counts bytes).
+export STUB_RESULT=exit-code STUB_STATUS=1 STUB_INV=inv-20
+pre="PROBLEMA: $(printf 'a%.0s' $(seq 1 289))"   # 10 + 289 = 299 bytes, then a 2-byte character on the 300th byte
+export STUB_JOURNAL="inv-20|${pre}éé vege"
+run >/dev/null
+valid="$(python3 -c 'import sys; open(sys.argv[1], "rb").read().decode("utf-8"); print("ok")' "$BASE/msgs.txt" 2>/dev/null)"
+assert_eq       "19a. a kiment szoveg ervenyes UTF-8" "ok" "$valid"
+okline="$(grep -E '^Ok: ' "$BASE/msgs.txt" | head -1)"
+assert_eq       "19b. a felbevagott karakter kiesett: 'Ok: ' + 299 bajt" "303" "$(printf '%s' "$okline" | wc -c | tr -d ' ')"
+# CONTROL: a 2-byte character that fits whole stays.
+export STUB_INV=inv-21 STUB_JOURNAL="inv-21|PROBLEMA: $(printf 'a%.0s' $(seq 1 288))é"
+run >/dev/null
+okline="$(grep -E '^Ok: ' "$BASE/msgs.txt" | head -1)"
+assert_eq       "19c. KONTROLL: az egeszen beferő karakter marad ('Ok: ' + 300 bajt)" "304" "$(printf '%s' "$okline" | wc -c | tr -d ' ')"
+
+# 20-21) REAL tracebacks, produced by the interpreter at test time (a review request: a negative test with a real
+# traceback). The guard code is made up; the traceback text is whatever this python3 prints for it. The code runs FROM
+# A FILE: read from stdin, a traceback has no source lines to print, and the marker would never reach it (measured:
+# the two controls below failed that way).
+if command -v python3 >/dev/null 2>&1; then
+  export STUB_RESULT=exit-code STUB_STATUS=1
+  # 20) c: the event log is not writable, the calling line carries RIASZTAS.
+  cat > "$BASE/orseg_c.py" <<'PYC'
+def event(line):
+    open("/nonexistent-dir-9318/events.log", "a").write(line)
+def main():
+    k, d = "bejovo-ut", "nem-Avail"
+    event(f'RIASZTAS {k}: {d}')
+main()
+PYC
+  tb="$(python3 "$BASE/orseg_c.py" 2>&1)"
+  assert_contains "20a. KONTROLL: a valodi traceback a jelolo szavu forrassort hordozza" "event(f'RIASZTAS {k}: {d}')" "$tb"
+  export STUB_INV=inv-22 STUB_JOURNAL="$(printf '%s\n' "$tb" | sed 's/^/inv-22|/')"
+  run >/dev/null; m="$(msg)"
+  assert_contains "20b. valodi traceback (c): app-crash" "Marveen app-crash" "$m"
+  assert_absent   "20c. valodi traceback (c): NEM or-jelzes" "őr-jelzés" "$m"
+  # 21) c2: a None in the join of the line that prints PROBLEMA.
+  cat > "$BASE/orseg_c2.py" <<'PYC'
+problems = [(1, None)]
+head = "2026-09-29T01:00:00Z "
+print(head + 'teszt-or: PROBLEMA: ' + '; '.join(d for _, d in problems))
+PYC
+  tb="$(python3 "$BASE/orseg_c2.py" 2>&1)"
+  assert_contains "21a. KONTROLL: a valodi traceback a PROBLEMA-sort hordozza" "teszt-or: PROBLEMA: " "$tb"
+  export STUB_INV=inv-23 STUB_JOURNAL="$(printf '%s\n' "$tb" | sed 's/^/inv-23|/')"
+  run >/dev/null; m="$(msg)"
+  assert_contains "21b. valodi traceback (c2): app-crash" "Marveen app-crash" "$m"
+  assert_absent   "21c. valodi traceback (c2): NEM or-jelzes" "őr-jelzés" "$m"
+else
+  echo "  SKIP: 20-21. nincs python3 -- a valodi traceback esetei NEM futottak"
+fi
+
 echo
 echo "PASS: $PASS  FAIL: $FAIL"
 [ "$FAIL" -eq 0 ]
