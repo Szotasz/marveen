@@ -1159,8 +1159,10 @@ STATE_DIR_ENV="export ${STATE_ENV_VAR}='${MAIN_CHAN_DIR}' && "
 # lost. When the dashboard's worker session then created the server, our
 # new-session inherited its token-less global env: the channels claude came up
 # "Not logged in", --channels ignored, Telegram dead, silently. Two layers now:
-#   1. the token rides on OUR new-session itself (`-e`, tmux >= 3.2), so this
-#      session has it whoever created the server;
+#   1. OUR pane sources the token from a 0600 file before anything else runs
+#      (TOKENARGV929; it used to ride on new-session `-e`, which left it in the
+#      tmux server's command line), so this session has it whoever created
+#      the server;
 #   2. the globals are set again right AFTER new-session, when a server
 #      certainly exists, so a later pane relaunch (auto-restart runner) and
 #      every sub-agent session inherit them too.
