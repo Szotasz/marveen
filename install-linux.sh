@@ -2134,6 +2134,16 @@ else
   ok "${CHANNEL_PROVIDER} plugin ellenorizve"
 fi
 
+# INSTPAIRPATH930: the access.json the pairing must read AND write. channels.sh moves the
+# shared $HOME/.claude/channels/<provider> dir into the install on its first start (#915,
+# scripts/channels.sh MAIN_CHAN_DIR), and the plugin writes the pending code there, so the
+# install-scoped file wins; the legacy path is only the fallback for a bridge that has not
+# migrated yet. Resolved AFTER the code is typed in, when the bot has already answered.
+_pairing_access_file() {
+  local scoped="$INSTALL_DIR/.claude/channels/$CHANNEL_PROVIDER/access.json"
+  if [ -f "$scoped" ]; then echo "$scoped"; else echo "$CHANNEL_DIR/access.json"; fi
+}
+
 # ─────────────────────────────────────────────
 # Channel pairing (Telegram only; Slack uses OAuth / App install)
 # ─────────────────────────────────────────────
@@ -2141,7 +2151,6 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
   echo ""
   echo -e "${BOLD}Telegram parositas${NC}"
 
-  ACCESS_FILE="$CHANNEL_DIR/access.json"
 
   # Is the Telegram bridge actually running?
   #
@@ -2195,6 +2204,7 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
     read -rp "$(_t prompt_pair_code)" PAIR_CODE
 
     if [ -n "$PAIR_CODE" ]; then
+      ACCESS_FILE="$(_pairing_access_file)"
       if [ ! -f "$ACCESS_FILE" ]; then
         warn "access.json nem talalhato: $ACCESS_FILE"
         echo -e "  ${DIM}Bizonyosodj meg rola, hogy a bot futott amikor uzeneteket kuldtel neki.${NC}"

@@ -1579,6 +1579,16 @@ else
 fi
 
 # Channel pairing flow (Telegram only; Slack uses OAuth / App install)
+# INSTPAIRPATH930: the access.json the pairing must read AND write. channels.sh moves the
+# shared $HOME/.claude/channels/<provider> dir into the install on its first start (#915,
+# scripts/channels.sh MAIN_CHAN_DIR), and the plugin writes the pending code there, so the
+# install-scoped file wins; the legacy path is only the fallback for a bridge that has not
+# migrated yet. Resolved AFTER the code is typed in, when the bot has already answered.
+_pairing_access_file() {
+  local scoped="$INSTALL_DIR/.claude/channels/$CHANNEL_PROVIDER/access.json"
+  if [ -f "$scoped" ]; then echo "$scoped"; else echo "$CHANNEL_DIR/access.json"; fi
+}
+
 if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
   echo ""
   echo -e "${BOLD}$(_t macos.tg_pairing_title)${NC}"
@@ -1590,7 +1600,7 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
   echo ""
   read -rp "$(_t prompt_pair_code)" PAIR_CODE
   if [ -n "$PAIR_CODE" ]; then
-    ACCESS_FILE="$CHANNEL_DIR/access.json"
+    ACCESS_FILE="$(_pairing_access_file)"
     if [ -f "$ACCESS_FILE" ]; then
       # Get the chat ID from the pending pairing in access.json
       PENDING_CHAT_ID=$(PAIR_CODE="$PAIR_CODE" python3 -c "
@@ -1628,6 +1638,10 @@ with open('$ACCESS_FILE', 'w') as f:
         echo -e "  ${ORANGE}A kod nem talalhato az access.json-ban.${NC}"
         echo -e "  ${DIM}Probald kesobb a terminalban: claude, majd /telegram:access pair $PAIR_CODE${NC}"
       fi
+    else
+      # INSTPAIRPATH930: a missing file used to skip the pairing in silence.
+      warn "access.json nem talalhato: $ACCESS_FILE"
+      echo -e "  ${DIM}Bizonyosodj meg rola, hogy a bot futott amikor uzeneteket kuldtel neki.${NC}"
     fi
   else
     echo -e "  ${DIM}$(_t macos.pairing_later)${NC}"
