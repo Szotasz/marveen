@@ -1619,6 +1619,15 @@ RESULT_FILE="$5"; BUILT="$6"; NEW_SHORT="$7"; NODE_PIN_DIR="$8"; NOTIFY="${9:-0}
 [ -n "$NODE_PIN_DIR" ] && export PATH="$NODE_PIN_DIR:$PATH"
 cd "$INSTALL_DIR" 2>/dev/null || true
 
+# FINSTAGE930: the verdict has gone missing on this host since 1.39 -- the
+# finalizer reaches "Csatorna inditva" and then simply is not there any more,
+# so nothing distinguishes "died" from "never got to _write". These stage marks
+# cost two echoes and turn the next occurrence into a location. The trap covers
+# every catchable death; a SIGKILL leaves the last STAGE line as the marker.
+STAGE="boot"
+_stage() { STAGE="$1"; echo "[finalize] stage=$1 $(date '+%H:%M:%S')" >&2; }
+trap 'echo "[finalize] SIGNAL caught in stage=${STAGE} $(date +%H:%M:%S)" >&2' TERM HUP INT
+
 _esc() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
 _write() { # status phase code message
   printf '{"status":%s,"phase":%s,"code":%s,"old":%s,"new":%s,"message":%s,"ts":%s}\n' \
@@ -1673,14 +1682,18 @@ _unit_drift() {
   return 0
 }
 
+_stage restart
 _restart
+_stage unit-drift
 UNIT_DRIFT="$(_unit_drift)"
 if [ -n "$UNIT_DRIFT" ]; then
   echo "FIGYELEM: enabled, de NEM active unit(ok) a restart utan: ${UNIT_DRIFT}" >&2
   echo "          A szolgaltatas valaszolhat a portjan, de a unitjan KIVUL fut:" >&2
   echo "          a Restart= es az OnFailure= ilyenkor NEM vonatkozik ra." >&2
 fi
+_stage health
 if _health; then
+  _stage write-verdict
   if [ -n "$UNIT_DRIFT" ]; then
     _finish success restart 0 "A frissites lement es a dashboard valaszol, DE enabled unit(ok) nem active: ${UNIT_DRIFT}. A szolgaltatas a unitjan kivul fut, tehat a Restart=/OnFailure= felugyelet nem ervenyes ra."
   fi
@@ -1690,6 +1703,7 @@ fi
 # Restart did not bring the dashboard back -> auto-rollback to the pre-update
 # commit (safe: ff-only ancestor, no force-push, no local-change discard) and
 # restart that, so the box ends on a WORKING old version.
+_stage rollback
 if [ -n "$OLD_FULL" ]; then
   git reset --hard "$OLD_FULL" >/dev/null 2>&1 || true
   # --include=dev: same reason as the main npm ci (AUTOUPDNODEENV905) -- under
