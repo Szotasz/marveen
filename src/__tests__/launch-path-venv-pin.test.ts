@@ -65,8 +65,24 @@ function sourceFiles(): string[] {
 const isComment = (line: string) => /^\s*(\/\/|\/\*|\*|#)/.test(line)
 const VENV_MARK = /FLEET_VENV_PREFIX|fleetVenvPathPrefix\(\)|\$\{venvPathPrefix\}/
 
+// FLEETVENVPINORDER930: a launch PATH set WITHOUT export ("PATH=... claude",
+// "env PATH=... claude") is a launch PATH too. It counts when PATH= stands at a
+// command boundary (line start, after && ; | ( or env) and the line starts
+// claude. A log text such as "not on PATH; PATH=$PATH" is not at a boundary.
+const BARE_LAUNCH_PATH = /(^\s*["'`]?|&&\s*|;\s*|\|\s*|\(\s*|\benv\s+)PATH=/
+const CLAUDE_LAUNCH = /\bclaude\b|CLAUDE_BIN|CLAUDE_Q|\$CLAUDE\b|claudeBin\(\)/
+const isLaunchPathLine = (l: string) => !isComment(l) && (l.includes('export PATH=') || (BARE_LAUNCH_PATH.test(l) && CLAUDE_LAUNCH.test(l)))
+
+// FLEETVENVPINORDER930: the prefix must be the FIRST thing in the value, so the
+// venv's python3 wins; at the end of PATH it is present but never used.
+const VENV_FIRST = /PATH=\\?"?(\$\{FLEET_VENV_PREFIX\}|\$FLEET_VENV_PREFIX|\$\{fleetVenvPathPrefix\(\)\}|\$\{venvPathPrefix\})/
+
+function launchPathLines(rel: string): string[] {
+  return readFileSync(join(REPO, rel), 'utf-8').split('\n').filter(isLaunchPathLine)
+}
+
 function pathExports(rel: string): { venv: number; exempt: number } {
-  const lines = readFileSync(join(REPO, rel), 'utf-8').split('\n').filter((l) => l.includes('export PATH=') && !isComment(l))
+  const lines = launchPathLines(rel)
   const venv = lines.filter((l) => VENV_MARK.test(l)).length
   return { venv, exempt: lines.length - venv }
 }
@@ -80,6 +96,22 @@ describe('every file that builds `export PATH=` is pinned (FLEETVENV923, #1626 r
 
   it.each(Object.entries(PINS))('%s: venv/exempt line counts match the pin', (rel, pin) => {
     expect(pathExports(rel)).toEqual({ venv: pin.venv, exempt: pin.exempt })
+  })
+
+  // FLEETVENVPINORDER930: present is not enough, the prefix must come first.
+  it.each(Object.entries(PINS).filter(([, p]) => p.venv > 0))('%s: every venv PATH line puts the prefix FIRST', (rel) => {
+    const venvLines = launchPathLines(rel).filter((l) => VENV_MARK.test(l))
+    expect(venvLines.length).toBeGreaterThan(0)
+    for (const l of venvLines) expect(l, `${rel}: ${l.trim()}`).toMatch(VENV_FIRST)
+  })
+
+  // The instrument itself: the bare form is caught, a log text is not.
+  it('the line matcher sees a bare "PATH=... claude" launch and skips a log text', () => {
+    expect(isLaunchPathLine('PATH="/usr/bin:$PATH" claude --model x')).toBe(true)
+    expect(isLaunchPathLine('cd "$D" && env PATH="$P" "$CLAUDE_BIN" --x')).toBe(true)
+    expect(isLaunchPathLine('  log "tmux or claude not on PATH; cannot act. PATH=$PATH"')).toBe(false)
+    expect('export PATH="/opt/homebrew/bin:${FLEET_VENV_PREFIX}$PATH"').not.toMatch(VENV_FIRST)
+    expect('export PATH="${FLEET_VENV_PREFIX}/opt/homebrew/bin:$PATH"').toMatch(VENV_FIRST)
   })
 
   it('every exemption carries its reason', () => {
