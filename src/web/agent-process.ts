@@ -2423,7 +2423,17 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     }
     const continueFlag = continueDecision.useContinue ? '--continue ' : ''
     const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : agentProvider === 'googlechat' ? 'GOOGLECHAT_STATE_DIR' : agentProvider === 'teams' ? 'TEAMS_STATE_DIR' : 'TELEGRAM_STATE_DIR'
-    const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN'
+    // CHANSTATEUNSET930: the channel STATE DIRS are stripped too, not only the
+    // bot tokens. The tmux server carries the main agent's TELEGRAM_STATE_DIR in
+    // its own env (channels.sh exports it before `tmux start-server`), so every
+    // new pane inherited it -- including channel-less agents, whose claude and
+    // every MCP server under it then looked, to channel-poller-reap's env scan,
+    // exactly like the main agent's orphaned pollers. Measured 2026-09-30 12:06
+    // and 14:21: each main-channel reap SIGTERMed the MCP servers of every
+    // channel-less agent, whose tools then reported 'failed to connect' until
+    // the agent was restarted. A channel agent
+    // re-exports its OWN dir right after this, via channelSetup below.
+    const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN TELEGRAM_STATE_DIR SLACK_STATE_DIR DISCORD_STATE_DIR GOOGLECHAT_STATE_DIR TEAMS_STATE_DIR'
     // BYO/custom-endpoint agents must have CLAUDE_CODE_OAUTH_TOKEN removed from
     // their environment, not just omitted from the launch export. The parent tmux
     // server carries the fleet OAuth token in its own env, and
