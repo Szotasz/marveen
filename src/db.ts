@@ -1937,14 +1937,24 @@ export function updateMemory(id: number, content: string, category?: string, age
   // stale. Only the row itself knows that. content/keywords come along for the
   // staleness check below, for the same reason: the parameters alone cannot say
   // whether the embedded text changed.
-  const before = db.prepare('SELECT agent_id, category, content, keywords FROM memories WHERE id = ?').get(id) as
-    { agent_id: string | null; category: string | null; content: string | null; keywords: string | null } | undefined
+  const before = db.prepare('SELECT agent_id, category, content, keywords, updated_at FROM memories WHERE id = ?').get(id) as
+    { agent_id: string | null; category: string | null; content: string | null; keywords: string | null; updated_at: number | null } | undefined
   // MEMIRASNYOM915: attributed write-trace. updated_at is set explicitly here
   // (which keeps the memories_touch trigger from firing); updated_by is the
   // caller's self-reported identity, or explicit NULL -- never the previous
   // author left in place.
+  //
+  // MEMVERSION930: the stamp must DIFFER from the stored one, not merely be set.
+  // memories_touch fires when `new.updated_at IS old.updated_at`, so a second
+  // edit of the same row within the same second used to fire it; its nested
+  // UPDATE re-ran memories_au, whose FTS 'delete' then targeted an index entry
+  // that was not there yet, and SQLite aborted the write with "database disk
+  // image is malformed". Two agents editing one shared row back to back hit
+  // exactly this. Keeping the stamp strictly increasing (at most a second
+  // ahead of the clock under a burst) keeps the trigger out of it.
+  const stamp = Math.max(now, (before?.updated_at ?? 0) + 1)
   const sets: string[] = ['content = ?', 'accessed_at = ?', 'updated_at = ?', 'updated_by = ?']
-  const params: unknown[] = [content, now, now, updatedBy ?? null]
+  const params: unknown[] = [content, now, stamp, updatedBy ?? null]
   // The stored embedding was generated from the OLD text, so an edit silently
   // leaves the vector describing text that is no longer there. Nothing in the
   // schema records that mismatch (there is no embedding_generated_at column),
