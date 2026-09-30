@@ -26,6 +26,10 @@ must not rewrite the user-level cache other Claude Code sessions load
   -- /status and /help then fall back to the plugin's own answers, or a
   forwarded command is not refused; the channel itself is not touched;
 - always exits 0: a failed patch must never stop the channel from starting;
+- the reply-keyboard patch (c67f5f34) inserts WHOLE LINES only, each carrying
+  its marker, so taking it back is deleting the lines that carry
+  "MARVEEN-PATCH(c67f5f34-kbd)" (the file is then byte-identical to the one
+  patched without it; tested);
 - with --state FILE, the outcome per file (and per patch) is written there as
   JSON, so /status can say in one line when a patch is missing
   (src/web/system-status.ts) instead of the command silently falling back.
@@ -42,6 +46,7 @@ import time
 MARKER = "// MARVEEN-PATCH(elsokor922-d4): /status and /help belong to the command hook"
 FWD_MARKER = "// MARVEEN-PATCH(elsokor922-fwd): forwarded flag for the command hook"
 EVID_MARKER = "// MARVEEN-PATCH(cmd920-evid): inbound evidence for owner write commands"
+KBD_MARKER = "// MARVEEN-PATCH(c67f5f34-kbd): one-tap answer buttons"
 
 # Each anchor is the handler's full block, up to its closing `})` at column 0.
 ANCHORS = [
@@ -75,6 +80,37 @@ EVID_INSERT = (
     "text, at: Date.now() }}) + '\\n', {{ flag: 'a', mode: 0o600 }}) }} catch {{}} " + EVID_MARKER + "\n"
 )
 
+# The staff are asked one question at a time, with lettered options (A/B/C),
+# and today they type the letter back (c67f5f34, owner request). The reply
+# tool can send no button: its schema has no such field and the send passes
+# only reply_parameters and parse_mode. A reply keyboard needs nothing on the
+# inbound side: a tapped text-only button arrives as the user's ordinary text
+# message, through the same gate, evidence log and channel notification as a
+# typed letter. So three lines, all in the reply tool: an optional `buttons`
+# list in the schema (after `files`), its check before anything is sent (the
+# tool-call handler turns the throw into a tool error), and the keyboard on
+# the LAST text chunk (an empty list removes a keyboard shown earlier). The
+# labels are outgoing text: the copy gate (scripts/hooks/outgoing-copy-gate.py)
+# audits them together with `text`.
+KBD_SCHEMA = ("reply schema files property", re.compile(
+    r"^ *description: 'Absolute file paths to attach\. [^\n]*',\n( *)\},\n", re.MULTILINE), "insert-after",
+    "{indent}buttons: {{ type: 'array', items: {{ type: 'string' }}, description: 'Optional one-tap answer buttons, "
+    "shown as a keyboard under the input field and hidden after one tap; the tapped label comes back as an ordinary "
+    "text message from the user. Also write the options into text, so the question can be answered by typing. An "
+    "empty list removes a keyboard shown earlier. At most 12 labels, each non-empty and at most 64 characters.' }}, "
+    + KBD_MARKER + "\n")
+KBD_CHECK = ("reply chat check", re.compile(r"^( *)assertAllowedChat\(chat_id\)\n", re.MULTILINE), "insert-after",
+    "{indent}const kbdButtons = args.buttons == null ? undefined : Array.isArray(args.buttons) && args.buttons.length <= 12 "
+    "&& args.buttons.every(b => typeof b === 'string' && b.trim() !== '' && b.length <= 64) ? (args.buttons as string[]) "
+    ": (() => {{ throw new Error('buttons: a list of at most 12 non-empty labels, each at most 64 characters') }})() "
+    + KBD_MARKER + "\n")
+KBD_SEND = ("reply send options", re.compile(
+    r"^( *)\.\.\.\(parseMode \? \{ parse_mode: parseMode \} : \{\}\),\n",
+    re.MULTILINE), "insert-after",
+    "{indent}...(kbdButtons && i === chunks.length - 1 ? {{ reply_markup: kbdButtons.length ? {{ keyboard: "
+    "kbdButtons.map(label => [{{ text: label }}]), one_time_keyboard: true, resize_keyboard: true }} : "
+    "{{ remove_keyboard: true as const }} }} : {{}}), " + KBD_MARKER + "\n")
+
 # Independent patches: each has its own marker and is all-or-nothing on its
 # own, so a plugin update that moves one anchor does not undo the other.
 PATCHES = [
@@ -86,6 +122,9 @@ PATCHES = [
     {"name": "evid", "marker": EVID_MARKER, "anchors": [EVID_ANCHOR], "mode": "insert-before",
      "insert": EVID_INSERT,
      "fallback": "no inbound evidence is recorded, owner write commands are refused"},
+    # an anchor may carry its own mode and insert (name, regex, mode, insert): the three kbd lines differ
+    {"name": "kbd", "marker": KBD_MARKER, "anchors": [KBD_SCHEMA, KBD_CHECK, KBD_SEND], "mode": "insert-after",
+     "fallback": "the reply tool has no buttons: a question goes out without them and is answered by typing"},
 ]
 
 
@@ -98,18 +137,21 @@ def apply_patch(text, patch):
     if patch["marker"] in text:
         return text, "already"
     out = text
-    for name, rx in patch["anchors"]:
+    for anchor in patch["anchors"]:
+        name, rx = anchor[0], anchor[1]
+        mode = anchor[2] if len(anchor) > 2 else patch["mode"]
+        insert = anchor[3] if len(anchor) > 3 else patch.get("insert", "")
         found = list(rx.finditer(out))
         if len(found) != 1:
             return text, f"anchor-missing:{name}"
         m = found[0]
         indent = m.group(1) if rx.groups else ""
-        if patch["mode"] == "remove":
+        if mode == "remove":
             out = out[:m.start()] + f"{indent}{patch['marker']} ({name} removed)\n" + out[m.end():]
-        elif patch["mode"] == "insert-before":
-            out = out[:m.start()] + patch["insert"].format(indent=indent) + out[m.start():]
+        elif mode == "insert-before":
+            out = out[:m.start()] + insert.format(indent=indent) + out[m.start():]
         else:
-            out = out[:m.end()] + patch["insert"].format(indent=indent) + out[m.end():]
+            out = out[:m.end()] + insert.format(indent=indent) + out[m.end():]
     return out, "patched"
 
 
