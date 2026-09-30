@@ -43,7 +43,7 @@ describe('telegram sendMessage deadline', () => {
     cb(res)
     res.emit('data', Buffer.from('{"ok":true}'))
     res.emit('end')
-    await expect(pending).resolves.toBeUndefined()
+    await expect(pending).resolves.toEqual({ status: 200, messageId: undefined })
   })
 
   it('a socket timeout destroys the request and REJECTS -- never hangs the caller', async () => {

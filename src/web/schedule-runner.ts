@@ -1647,8 +1647,8 @@ function resolveSchedulerOwnerChat(): string | null {
 // message is plain text (no markdown) as it always has been, so no formatMessage
 // pass is applied; getProvider throws on a non-2xx / ok:false response so the
 // callers' try/catch + classifySendError paths work for every provider.
-function sendSchedulerAlertMessage(token: string, chatId: string, text: string): Promise<void> {
-  return getProvider(CHANNEL_PROVIDER).sendMessage(token, chatId, text)
+async function sendSchedulerAlertMessage(token: string, chatId: string, text: string): Promise<void> {
+  await getProvider(CHANNEL_PROVIDER).sendMessage(token, chatId, text)
 }
 
 // One line about what the scheduler missed while it was down: which tasks it
