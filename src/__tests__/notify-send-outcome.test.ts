@@ -57,7 +57,18 @@ function expectNothingSensitiveLogged(): void {
   expect(all).not.toContain(K.text)
 }
 
-const refusal = () => new Error(`Telegram API 400: ok:false Bad Request: can't parse entities in "${K.text}"`)
+// The Bot API's own words, the way its error descriptions carry them: a description can quote the text it
+// rejected. None of them may reach the log; a failure keeps the status only (35274, 35318).
+const refusal = () => new Error(`Telegram API 400: ok:false Bad Request: can't parse entities in ${K.text}`)
+const blocked = () => new Error('Telegram API 403: Forbidden: bot was blocked by the user')
+const timeout = () => new Error('Telegram sendMessage timed out after 10000ms')
+const hangup = () => new Error('socket hang up')
+const BOT_API_WORDS = ['Bad Request', 'parse entities', 'Forbidden', 'blocked', 'timed out', 'hang up', K.text]
+
+function expectNoBotApiWordsLogged(): void {
+  const all = JSON.stringify([...mockInfo.mock.calls, ...mockWarn.mock.calls])
+  for (const words of BOT_API_WORDS) expect(all, words).not.toContain(words)
+}
 
 beforeEach(() => {
   mockSend.mockReset()
@@ -91,9 +102,7 @@ describe('notify: every send leaves an outcome line (NOTIFYSENDLOG930)', () => {
   })
 
   it('a lost alert is logged with both statuses, and without the token, the text or the chat id', async () => {
-    mockSend
-      .mockRejectedValueOnce(refusal())
-      .mockRejectedValueOnce(new Error('Telegram API 403: Forbidden: bot was blocked by the user'))
+    mockSend.mockRejectedValueOnce(refusal()).mockRejectedValueOnce(blocked())
     await notifyOwner(K.text)
     expect(mockSend).toHaveBeenCalledTimes(2)
     expect(mockWarn).toHaveBeenCalledWith(
@@ -103,14 +112,27 @@ describe('notify: every send leaves an outcome line (NOTIFYSENDLOG930)', () => {
     expect(mockInfo).not.toHaveBeenCalledWith(expect.anything(), 'Channel ertesites elkuldve')
 
     // A send that never got an HTTP answer (timeout, network) is logged too, with no status.
-    mockSend
-      .mockRejectedValueOnce(new Error('Telegram sendMessage timed out after 10000ms'))
-      .mockRejectedValueOnce(new Error('socket hang up'))
+    mockSend.mockRejectedValueOnce(timeout()).mockRejectedValueOnce(hangup())
     await notifyOwner(K.text)
     expect(mockWarn).toHaveBeenLastCalledWith(
       expect.objectContaining({ target: 'owner', firstStatus: null, retryStatus: null }),
       'Channel ertesites SIKERTELEN',
     )
     expectNothingSensitiveLogged()
+  })
+
+  it('a failure line keeps the status only: none of the Bot API error words reaches the log, whichever attempt failed', async () => {
+    // both attempts refused
+    mockSend.mockRejectedValueOnce(refusal()).mockRejectedValueOnce(blocked())
+    await notifyOwner(K.text)
+    // the HTML attempt refused, the plain-text retry delivered
+    mockSend.mockRejectedValueOnce(refusal()).mockResolvedValueOnce({ status: 200, messageId: '4244' })
+    await notifyOwner(K.text)
+    // no HTTP answer at all
+    mockSend.mockRejectedValueOnce(timeout()).mockRejectedValueOnce(hangup())
+    await notifyOwner(K.text)
+    expect(mockWarn).toHaveBeenCalledTimes(2)
+    expect(mockInfo).toHaveBeenCalledWith(expect.objectContaining({ plainTextRetry: true, firstStatus: 400 }), 'Channel ertesites elkuldve')
+    expectNoBotApiWordsLogged()
   })
 })
