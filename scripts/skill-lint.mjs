@@ -33,9 +33,13 @@
 //   node scripts/skill-lint.mjs <skill-dir | root-dir> [--json]
 // A folder with a SKILL.md is one skill; any other folder is a root, and every
 // folder under it that holds a SKILL.md is checked (node_modules and dot-folders
-// are skipped). Exit code: 0 no finding, 1 at least one finding, 2 usage or
+// are skipped). Symlinks are followed safely: every folder is visited once by
+// its real path, a symlinked folder under a root is followed only when it IS a
+// skill, and inside a skill only a symlink that stays inside the skill is
+// entered, so a loop or a link to a big outside tree cannot multiply or stall
+// the run. Exit code: 0 no finding, 1 at least one finding, 2 usage or
 // read error.
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { dirname, join, normalize, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -103,14 +107,27 @@ export function withoutCode(text) {
   return out.join('\n')
 }
 
-function listFiles(dir, base = dir) {
+/** A path's real path, or null when it cannot be resolved (a dangling link, or a loop: ELOOP). */
+function realOrNull(p) {
+  try { return realpathSync(p) } catch { return null }
+}
+
+function listFiles(dir, base = dir, baseReal = realOrNull(base), seen = new Set([realOrNull(dir)])) {
   const out = []
   for (const name of readdirSync(dir)) {
     if (name.startsWith('.') || SKIP_DIRS.has(name)) continue
     const p = join(dir, name)
-    const st = statSync(p)
-    if (st.isDirectory()) out.push(...listFiles(p, base))
-    else if (st.isFile()) out.push(relative(base, p).split(sep).join('/'))
+    const real = realOrNull(p)
+    if (real === null) continue
+    let st
+    try { st = statSync(p) } catch { continue }
+    if (st.isDirectory()) {
+      // Enter a folder once, and a symlinked one only when it stays inside the skill.
+      const inside = real === baseReal || real.startsWith(baseReal + sep)
+      if (seen.has(real) || (lstatSync(p).isSymbolicLink() && !inside)) continue
+      seen.add(real)
+      out.push(...listFiles(p, base, baseReal, seen))
+    } else if (st.isFile()) out.push(relative(base, p).split(sep).join('/'))
   }
   return out
 }
@@ -146,7 +163,14 @@ export function lintSkill(skillDir) {
   }
 
   const files = listFiles(skillDir).filter((f) => f !== 'SKILL.md')
-  const fileSet = new Set(files)
+  // A file is identified by its real path: a reference through a symlink that
+  // stays inside the skill reaches the same file as its real name.
+  const byReal = new Map(files.map((f) => [realOrNull(join(skillDir, f)), f]))
+  const canon = (fromRel, raw) => {
+    const rel = resolveRef(skillDir, fromRel, raw)
+    if (rel === null) return null
+    return byReal.get(realOrNull(join(skillDir, rel))) ?? null
+  }
 
   for (const f of files) {
     if (!f.startsWith('references/') || !f.endsWith('.md')) continue
@@ -161,8 +185,8 @@ export function lintSkill(skillDir) {
   // existing file), and the links that point to nothing.
   const fromSkill = new Set()
   for (const raw of extractReferences(skillMd)) {
-    const rel = resolveRef(skillDir, 'SKILL.md', raw)
-    if (rel !== null && fileSet.has(rel)) fromSkill.add(rel)
+    const rel = canon('SKILL.md', raw)
+    if (rel !== null) fromSkill.add(rel)
   }
   for (const raw of linkTargets(skillMd)) {
     const rel = resolveRef(skillDir, 'SKILL.md', raw)
@@ -180,9 +204,8 @@ export function lintSkill(skillDir) {
     for (const raw of extractReferences(text)) {
       // Relative to the referring file first, then to the skill root: authors
       // write both (`details.md` next to it, `scripts/x.py` from the root).
-      const own = resolveRef(skillDir, f, raw)
-      const rel = own !== null && fileSet.has(own) ? own : resolveRef(skillDir, 'SKILL.md', raw)
-      if (rel === null || rel === f || !fileSet.has(rel)) continue
+      const rel = canon(f, raw) ?? canon('SKILL.md', raw)
+      if (rel === null || rel === f) continue
       if (!fromHelpers.has(rel)) fromHelpers.set(rel, new Set())
       fromHelpers.get(rel).add(f)
     }
@@ -198,15 +221,21 @@ export function lintSkill(skillDir) {
 export function findSkills(path) {
   if (existsSync(join(path, 'SKILL.md'))) return [path]
   const out = []
+  const seen = new Set([realOrNull(path)])
   const walk = (dir) => {
     for (const name of readdirSync(dir).sort()) {
       if (name.startsWith('.') || SKIP_DIRS.has(name)) continue
       const p = join(dir, name)
+      const real = realOrNull(p)
+      if (real === null || seen.has(real)) continue
       let st
       try { st = statSync(p) } catch { continue }
       if (!st.isDirectory()) continue
+      seen.add(real)
       if (existsSync(join(p, 'SKILL.md'))) out.push(p)
-      else walk(p)
+      // A symlinked folder is followed only when it is itself a skill: a link
+      // to a group or to an outside tree is not walked.
+      else if (!lstatSync(p).isSymbolicLink()) walk(p)
     }
   }
   walk(path)

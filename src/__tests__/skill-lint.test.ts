@@ -6,7 +6,7 @@
 // a test also pins that a run leaves the files byte-for-byte as they were.
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
@@ -119,6 +119,41 @@ describe('finding skills', () => {
     expect((findSkills(root) as string[]).map((p) => p.slice(root.length + 1)).sort()).toEqual(['a', join('group', 'b')])
     expect(findSkills(join(root, 'a'))).toEqual([join(root, 'a')])
     expect(lintPath(root)).toMatchObject({ skills_checked: 2, ok: true, findings: [] })
+  })
+})
+
+describe('symlinks (Samu, #1666 review): every folder once, by its real path', () => {
+  it('a loop back to the root and a skill reachable twice are counted once each; a link OUT of the root is not walked', () => {
+    const root = mkdtempSync(join(tmpdir(), 'skill-lint-links-'))
+    skill({ 'SKILL.md': FM }, join(root, 'a'))
+    skill({ 'SKILL.md': FM }, join(root, 'real', 'b'))
+    symlinkSync(root, join(root, 'a', 'loop-up'))
+    symlinkSync(join(root, 'real', 'b'), join(root, 'b-link'))
+    const outside = mkdtempSync(join(tmpdir(), 'skill-lint-outside-'))
+    skill({ 'SKILL.md': FM }, join(outside, 'not-mine'))
+    symlinkSync(outside, join(root, 'group-link'))
+    const found = (findSkills(root) as string[]).map((p) => p.slice(root.length + 1)).sort()
+    expect(found).toEqual(['a', 'b-link'])
+    expect(lintPath(root)).toMatchObject({ skills_checked: 2, ok: true })
+  })
+  it('a symlinked skill folder under a root is still checked', () => {
+    const root = mkdtempSync(join(tmpdir(), 'skill-lint-linked-skill-'))
+    const real = skill({ 'SKILL.md': FM + 'See [x](x.md).\n' })
+    symlinkSync(real, join(root, 'linked'))
+    expect((lintPath(root).findings as Array<{ rule: string }>).map((f) => f.rule)).toEqual(['missing-reference'])
+  })
+  it('cycles and a self-link inside a skill: no crash, the real files counted once', () => {
+    const dir = skill({ 'SKILL.md': FM + 'See [r](references/r.md).\n', 'references/r.md': 'hi\n' })
+    symlinkSync('../..', join(dir, 'references', 'kor'))
+    symlinkSync('.', join(dir, 'references', 'here'))
+    symlinkSync('self', join(dir, 'self'))
+    expect(rules(dir)).toEqual([])
+  })
+  it('a symlink that stays inside the skill is followed (its files count)', () => {
+    const dir = skill({ 'SKILL.md': FM + 'Read [a](references/a.md).\n', 'references/a.md': 'See [b](more/b.md).\n', 'docs/b.md': 'B\n' })
+    symlinkSync(join(dir, 'docs'), join(dir, 'references', 'more'))
+    // reported under the file's real name (docs/b.md), reached through the link
+    expect(rules(dir)).toEqual(['nested-reference:docs/b.md'])
   })
 })
 
