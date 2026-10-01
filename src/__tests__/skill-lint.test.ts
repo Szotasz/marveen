@@ -123,6 +123,14 @@ describe('finding skills', () => {
 })
 
 describe('symlinks (Samu, #1666 review): every folder once, by its real path', () => {
+  // The cases that HUNG before the fix run the CLI in a child process with a
+  // timeout: the linter is synchronous, so an in-process regression would hold
+  // the whole job until its own timeout instead of failing here (Samu, #1667).
+  const lintCli = (dir: string) => {
+    const r = spawnSync('node', [SCRIPT, dir, '--json'], { encoding: 'utf-8', timeout: 20_000 })
+    expect(r.error, 'the linter did not finish within 20 s (a symlink loop is being walked)').toBeUndefined()
+    return { status: r.status, report: JSON.parse(r.stdout) as { skills_checked: number; findings: Array<{ rule: string; file: string }>; ok: boolean } }
+  }
   it('a loop back to the root and a skill reachable twice are counted once each; a link OUT of the root is not walked', () => {
     const root = mkdtempSync(join(tmpdir(), 'skill-lint-links-'))
     skill({ 'SKILL.md': FM }, join(root, 'a'))
@@ -132,9 +140,9 @@ describe('symlinks (Samu, #1666 review): every folder once, by its real path', (
     const outside = mkdtempSync(join(tmpdir(), 'skill-lint-outside-'))
     skill({ 'SKILL.md': FM }, join(outside, 'not-mine'))
     symlinkSync(outside, join(root, 'group-link'))
-    const found = (findSkills(root) as string[]).map((p) => p.slice(root.length + 1)).sort()
-    expect(found).toEqual(['a', 'b-link'])
-    expect(lintPath(root)).toMatchObject({ skills_checked: 2, ok: true })
+    const { status, report } = lintCli(root)
+    expect(status).toBe(0)
+    expect(report).toMatchObject({ skills_checked: 2, ok: true, findings: [] })
   })
   it('a symlinked skill folder under a root is still checked', () => {
     const root = mkdtempSync(join(tmpdir(), 'skill-lint-linked-skill-'))
@@ -147,7 +155,9 @@ describe('symlinks (Samu, #1666 review): every folder once, by its real path', (
     symlinkSync('../..', join(dir, 'references', 'kor'))
     symlinkSync('.', join(dir, 'references', 'here'))
     symlinkSync('self', join(dir, 'self'))
-    expect(rules(dir)).toEqual([])
+    const { status, report } = lintCli(dir)
+    expect(status).toBe(0)
+    expect(report).toMatchObject({ skills_checked: 1, ok: true, findings: [] })
   })
   it('a symlink that stays inside the skill is followed (its files count)', () => {
     const dir = skill({ 'SKILL.md': FM + 'Read [a](references/a.md).\n', 'references/a.md': 'See [b](more/b.md).\n', 'docs/b.md': 'B\n' })
