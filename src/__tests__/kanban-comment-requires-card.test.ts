@@ -43,6 +43,16 @@ vi.mock('../db.js', () => ({
   getHeartbeatKanbanSummary: vi.fn(() => ({})),
 }))
 
+// AUTHORGUARD829: kanban comments now reject an `author` that is not a known
+// fleet agent, the owner, or an opted-in system sender (see kanban.ts). This
+// suite's fixture author ('sanyiba') has no real `agents/sanyiba/` directory
+// on disk, so isKnownAgent is mocked to recognize it -- same shape as
+// approvals-notify.test.ts's isKnownAgent mock, kept minimal on purpose.
+vi.mock('../web/agent-config.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../web/agent-config.js')>()
+  return { ...real, isKnownAgent: (name: string) => name === 'sanyiba' }
+})
+
 const { tryHandleKanban } = await import('../web/routes/kanban.js')
 
 function postComment(cardId: string, payload: unknown) {
