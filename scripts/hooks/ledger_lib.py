@@ -13,6 +13,7 @@ chat. Pure stdlib (sqlite3) -- no node startup, no jq.
 """
 import os
 import sqlite3
+import calendar
 import time
 
 # Canonical schema. MUST stay identical to the db.ts initDatabase() migration
@@ -319,6 +320,18 @@ def recent(agent_id, limit=RECENT_LIMIT):
         con.close()
 
 
+def _arrival_epoch(ts, logged_at):
+    """Unix epoch of an inbound's channel timestamp ("2026-09-11T08:40:21.000Z",
+    always UTC). Falls back to the ledger write time when ts is missing or does
+    not parse, and is capped at it: a message cannot arrive after it was logged,
+    so a skewed ts can never widen the answered-window past the old behaviour."""
+    try:
+        base = str(ts).strip().rstrip("Z").split(".")[0]
+        return min(calendar.timegm(time.strptime(base, "%Y-%m-%dT%H:%M:%S")), int(logged_at))
+    except Exception:
+        return logged_at
+
+
 def open_question_with_age(agent_id):
     """Like open_question() but also returns the open inbound's created_at (unix
     epoch). Returns (chat_id, message_id, text, ts, created_at, attachment_kind,
@@ -336,11 +349,22 @@ def open_question_with_age(agent_id):
         if not row:
             return None
         chat_id, message_id, text, ts, created_at, rid, att_kind, att_file_id = row
+        # An inbound row is written when the model PROCESSES the message, not when
+        # it arrives, so a reply sent in between lands in the ledger BEFORE the
+        # message it answered. Measured 2026-09-11: "hahó" arrived 08:40:21Z, the
+        # reply went out 08:41:19Z, the inbound row was written 08:41:20Z -- and
+        # the reply guard blocked on a message that had already been answered.
+        # So a reply also counts when it was SENT after the inbound ARRIVED (ts).
+        # Trade-off: a new question landing while an unrelated reply is being
+        # written reads as answered; the model still has it in context, and a
+        # missed nudge is cheaper than a duplicate message to the owner.
+        arrived = _arrival_epoch(ts, created_at)
         later_out = con.execute(
             "SELECT 1 FROM conversation_log"
             " WHERE agent_id=? AND direction='out'"
-            "   AND (created_at > ? OR (created_at = ? AND id > ?)) LIMIT 1",
-            (str(agent_id), created_at, created_at, rid),
+            "   AND (created_at > ? OR (created_at = ? AND id > ?) OR created_at > ?)"
+            " LIMIT 1",
+            (str(agent_id), created_at, created_at, rid, arrived),
         ).fetchone()
         if later_out:
             return None  # the last inbound has already been answered
