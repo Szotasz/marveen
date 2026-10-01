@@ -64,6 +64,7 @@ import { launchableInstallDefault } from './default-model-guard.js'
 import { getClaudePidForSession, probeChannelPluginLiveness } from '../channel-coordinator/liveness.js'
 import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBOX_TEE, FLEET_PYTHON_VENV } from '../config.js'
 import { fleetVenvBin } from '../fleet-venv.js'
+import { protectTrailingSemicolon } from './tmux-keys.js'
 
 // FLEETVENV923: the `<venv>/bin:` prefix for a launch PATH, or '' when the venv
 // has no bin/ directory or its path cannot sit safely inside the double-quoted
@@ -3414,12 +3415,14 @@ export async function sendPromptToSession(
     while (i < oneLine.length) {
       let end = Math.min(i + CHUNK, oneLine.length)
       let slide = 0
-      while (end < oneLine.length && oneLine[end] === '-' && slide < MAX_SLIDE) {
+      // Also slide past a ';' that would END this chunk: tmux drops a trailing
+      // ';' of any argument as a command separator (TMUXSEMI1001, tmux-keys.ts).
+      while (end < oneLine.length && (oneLine[end] === '-' || oneLine[end - 1] === ';') && slide < MAX_SLIDE) {
         end++; slide++
       }
       let chunk = oneLine.slice(i, end)
       if (chunk.startsWith('-')) chunk = ' ' + chunk
-      runTmux(host, ['send-keys', '-t', session, '-l', chunk], { timeout: 5000 })
+      runTmux(host, ['send-keys', '-t', session, '-l', protectTrailingSemicolon(chunk)], { timeout: 5000 })
       i = end
       if (i < oneLine.length) await delay(30)
     }
