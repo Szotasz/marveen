@@ -71,6 +71,7 @@ import {
 import { getClaudePidForSession, hasChannelPluginAlive, probeChannelPluginLiveness, classifyRespawnStampAdvance } from '../channel-coordinator/liveness.js'
 import { getDesiredAgents } from './agent-desired-state.js'
 import { startSleepWakeDetector, systemSleptBetween } from './sleep-wake-detector.js'
+import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 
 // Lazily resolved (see makeLazyBinResolver): a module-level `resolveFromPath`
 // const throws at IMPORT time, so any environment where the binary is not
@@ -926,6 +927,9 @@ export function buildMainSessionRespawnCmd(opts: {
     // CHANSPARE925: no Agent view -- parity with channels.sh (Left backgrounds the
     // session into the daemon, whose --channels copy takes the bot poller).
     '&& export CLAUDE_CODE_DISABLE_AGENT_VIEW=1',
+    // ROOTRESPAWN1001: the recovery respawn on a root host died with "cannot be used
+    // with root/sudo privileges" whenever the tmux server lacked IS_SANDBOX.
+    `&& ${ROOT_SANDBOX_ENV}`,
     // macOS main-agent config isolation -- parity with channels.sh CFG_ENV. The
     // token is read at launch via $(cat) so the secret never lands in argv/`ps`.
     // An own-credential dir (explicit or a rotated claude-plans entry) gets NO

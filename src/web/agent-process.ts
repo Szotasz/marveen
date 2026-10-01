@@ -107,6 +107,7 @@ export function delay(ms: number): Promise<void> {
 }
 
 import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
+import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 export { CHANNEL_PLUGIN_IDS }
 
 // Pure: compute the enabledPlugins map for a sub-agent so that exactly its own
@@ -2494,7 +2495,9 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     const promptSuggestionEnv =
       // CHANSPARE925: no Agent view -- its Left key backgrounds the session into the
       // Claude Code daemon, which keeps a second --channels copy alive (bot poller hijack).
-      'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && '
+      'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && ' +
+      // ROOTRESPAWN1001: IS_SANDBOX=1 on a root host, evaluated in the pane (see root-sandbox-env.ts).
+      `${ROOT_SANDBOX_ENV} && `
     // Disable Claude Code's in-place auto-updater for every spawned agent. A
     // running agent whose updater fires does an in-place global reinstall into the
     // shared package prefix; a half-completed update can leave a broken stub and
