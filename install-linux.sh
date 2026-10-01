@@ -1096,6 +1096,26 @@ env_set_if_absent() {
   if grep -q "^$1=" "$INSTALL_DIR/.env" 2>/dev/null; then return 0; fi
   env_merge_key "$1" "$2"
 }
+env_add_list_entry() {
+  # env_add_list_entry KEY ENTRY -- make sure ENTRY is in the comma list KEY,
+  # keeping every entry already there. Read the way the server reads it: the
+  # LAST KEY= line wins (src/env-parse.ts), one pair of surrounding quotes is
+  # dropped, and each entry is compared after the server's normalisation
+  # (parseSystemSenderIds: split on commas, trim; sanitizeAgentIdent: keep
+  # [A-Za-z0-9_-]). Present -> no write; absent -> appended, as ONE KEY= line.
+  _eal_cur="$(grep "^$1=" "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  case "$_eal_cur" in
+    \"*\") _eal_cur="${_eal_cur#\"}"; _eal_cur="${_eal_cur%\"}" ;;
+    \'*\') _eal_cur="${_eal_cur#\'}"; _eal_cur="${_eal_cur%\'}" ;;
+  esac
+  _eal_cur="$(printf '%s' "$_eal_cur" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  _eal_saved_ifs="$IFS"; IFS=','
+  for _eal_e in $_eal_cur; do
+    if [ "$(printf '%s' "$_eal_e" | tr -dc 'A-Za-z0-9_-')" = "$2" ]; then IFS="$_eal_saved_ifs"; return 0; fi
+  done
+  IFS="$_eal_saved_ifs"
+  if [ -n "$(printf '%s' "$_eal_cur" | tr -d ', ')" ]; then env_merge_key "$1" "$_eal_cur,$2"; else env_merge_key "$1" "$2"; fi
+}
 (umask 077 && touch "$INSTALL_DIR/.env")
 chmod 600 "$INSTALL_DIR/.env"
 [ -s "$INSTALL_DIR/.env" ] || printf '# Main agent konfiguracio\n' >> "$INSTALL_DIR/.env"
@@ -1106,6 +1126,19 @@ env_merge_key BRAND_NAME "${BRAND_NAME}"
 env_merge_key MAIN_AGENT_ID "${MAIN_AGENT_ID}"
 env_merge_key SERVICE_ID "${SERVICE_ID}"
 env_merge_key WEB_PORT "${WEB_PORT:-3420}"
+# The fleet's own guards alert under their OWN names: the prod-tree guard
+# (scripts/install-prod-tree-guard-hook.sh) and the channels.sh shared-root
+# guard. The message route accepts a sender only if it is a registered agent,
+# the owner, or listed in SYSTEM_SENDER_IDS, so without these entries each
+# guard falls back to sending as MAIN_AGENT_ID, i.e. the supervisory system
+# writes under the main agent's name. Appended to what the operator listed,
+# never replacing it; an entry already there is not written twice.
+# KNOWN LIMIT: the server reads the list once, at start-up (src/config.ts). A
+# fresh install starts it after this; a RE-RUN over a running install does not
+# restart it, so until the next dashboard restart a guard that reads the new
+# line sends under its own name to a server that does not know it yet.
+env_add_list_entry SYSTEM_SENDER_IDS prod-tree-guard
+env_add_list_entry SYSTEM_SENDER_IDS channels-sh-guard
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   env_keep_or_set TELEGRAM_BOT_TOKEN "${BOT_TOKEN}"
   # Never demote a paired install: CHAT_ID=0 means pairing was skipped THIS
