@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { classify, isExternal, liftSubstitutions, parseVendorHosts, loadVendorHosts, parseVendorDomains, loadVendorDomains } from '../../scripts/hooks/bash-egress-parser.mjs'
+import { classify, isExternal, liftSubstitutions, parseVendorHosts, loadVendorHosts, parseVendorDomains, loadVendorDomains, maskCode, codeDestinations } from '../../scripts/hooks/bash-egress-parser.mjs'
 import {
   BASH_EGRESS_DENY,
   agentGetsBashEgressParser,
@@ -364,11 +364,11 @@ describe('a URL in a for-loop variable', () => {
   })
 })
 
-describe('still open after (a) -- pinned on purpose', () => {
+describe('still open after (a) and (d) -- pinned on purpose', () => {
   const OPEN = [
-    'bash ./fetch.sh', // the network call is inside the script file
+    'bash ./fetch.sh', // a script file is judged by (d) only when it can be read: here there is no such file and no cwd
     'python3 fetch.py',
-    `python3 - <<'PY'\nimport urllib.request; urllib.request.urlopen('https://example.org')\nPY`, // heredoc-fed interpreter
+    `python3 - <<'PY'\nimport os, urllib.request; urllib.request.urlopen(os.environ['URL'])\nPY`, // destination not a literal in the body
     'H=$(cat host.txt); curl -s "http://$H/x"', // host not literally in the command
     'curl -s "$URL"', // URL from the environment
     'curl $(echo https://example.org)', // URL computed at runtime by a substitution (#1514 review B)
@@ -621,4 +621,112 @@ describe('vendor-API domain allowlist ("domains" key, opt-in)', () => {
       expect(run('curl -s https://api.example.com/v1', without).stdout).toContain('"permissionDecision":"deny"')
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
+})
+
+// (d) Interpreter CODE BODIES (card 95800e1d): a heredoc fed to an interpreter and a script file it runs.
+// The same two claims as above: (a) a body whose network call goes to an external literal destination is
+// denied -- on the develop parser before (d) every case in the first block passed, which is the gap the card
+// names; (b) a body that only CARRIES a URL (a localhost POST, a code-editing script, a comment, a templated
+// host) still passes, and so do the shapes (d) deliberately does not judge.
+describe('(d) interpreter code bodies: heredoc and script file (95800e1d)', () => {
+  const EXT = 'egress-proba.example.org'
+  const withDir = (fn: (dir: string) => void) => {
+    const dir = mkdtempSync(join(tmpdir(), 'egress-d-'))
+    try { fn(dir) } finally { rmSync(dir, { recursive: true, force: true }) }
+  }
+  const judge = (command: string, cwd: string, vendor: string[] = []) => classify(command, 0, new Set(vendor), new Set(), { cwd })
+
+  it('the heredoc this file pinned as open before (d) is now denied', () => {
+    expect(judge(`python3 - <<'PY'\nimport urllib.request; urllib.request.urlopen('https://example.org')\nPY`, '/'))
+      .toMatchObject({ deny: true, reason: 'heredoc-external', hosts: ['example.org'] })
+  })
+
+  it('the shape that opened the card: python3 - heredoc, urllib Request to an external host', () => {
+    const cmd = `python3 - <<'EOF'\nimport json, ssl, urllib.request\nreq = urllib.request.Request('https://${EXT}/api/v1/feladatok', headers={'User-Agent': 'x'})\nwith urllib.request.urlopen(req, timeout=30) as r:\n    print(r.status)\nEOF`
+    const r = judge(cmd, '/')
+    expect(r).toMatchObject({ deny: true, reason: 'heredoc-external', hosts: [EXT] })
+  })
+
+  it('a python FILE whose call goes out is denied (absolute path, relative path after cd, stdin from the file)', () => withDir((dir) => {
+    writeFileSync(join(dir, 'hiv.py'), `import urllib.request\nurllib.request.urlopen("https://${EXT}/x")\n`)
+    expect(judge(`python3 ${join(dir, 'hiv.py')}`, '/')).toMatchObject({ deny: true, reason: 'script-file-external', hosts: [EXT] })
+    expect(judge('cd ' + dir + ' && python3 -u hiv.py', '/').deny).toBe(true)
+    expect(judge('python3 < hiv.py', dir).deny).toBe(true)
+  }))
+
+  it('other interpreters and a shebang: node fetch, bash curl (with sh -e), ./script', () => withDir((dir) => {
+    writeFileSync(join(dir, 'hiv.mjs'), `const r = await fetch("https://${EXT}/x")\n`)
+    writeFileSync(join(dir, 'hiv.sh'), `#!/bin/bash\ncurl -s https://${EXT}/x\n`)
+    writeFileSync(join(dir, 'shebang'), `#!/usr/bin/env python3\nimport requests\nrequests.get("https://${EXT}/x")\n`)
+    expect(judge('node hiv.mjs', dir)).toMatchObject({ deny: true, reason: 'script-file-external' })
+    expect(judge('bash hiv.sh', dir)).toMatchObject({ deny: true, reason: 'script-file-curl-external' })
+    expect(judge('sh -e hiv.sh', dir).deny).toBe(true)
+    expect(judge('./shebang', dir)).toMatchObject({ deny: true, reason: 'script-file-external' })
+  }))
+
+  it('a file written by a heredoc in the same command is judged by that heredoc, not by the disk', () => withDir((dir) => {
+    const cmd = `cat > ${dir}/uj.py <<'PY'\nimport urllib.request\nurllib.request.urlopen("https://${EXT}/y")\nPY\npython3 ${dir}/uj.py`
+    expect(existsSync(join(dir, 'uj.py'))).toBe(false)
+    expect(judge(cmd, dir)).toMatchObject({ deny: true, reason: 'script-file-external', hosts: [EXT] })
+  }))
+
+  it('a name bound to the URL, an f-string on a bound base, and requests.request("GET", url)', () => {
+    const body = (code: string) => `python3 - <<'PY'\n${code}\nPY`
+    expect(judge(body(`import urllib.request\nBASE = "https://${EXT}"\nurllib.request.urlopen(BASE + "/x")`), '/').deny).toBe(true)
+    expect(judge(body(`import requests\nBASE = "https://${EXT}"\nrequests.get(f"{BASE}/x")`), '/').deny).toBe(true)
+    expect(judge(body(`import requests\nrequests.request("GET", "https://${EXT}/x")`), '/').deny).toBe(true)
+  })
+
+  it('(b) a body that only CARRIES a URL passes: localhost POST with a github link in the data, a code-editing heredoc, a comment, a templated host', () => withDir((dir) => {
+    const post = `python3 - <<'PY'\nimport json, urllib.request\nbody = json.dumps({"content": "PR: https://github.com/akobza/marveen/pull/1"}).encode()\nreq = urllib.request.Request("http://localhost:3420/api/kanban/x/comments", data=body, method="POST")\nurllib.request.urlopen(req)\nPY`
+    const editing = `python3 - <<'PY'\nold = """const res = await fetch("https://api.openai.com/v1/embeddings", {"""\nprint(old)\nPY`
+    const templated = `python3 - <<'PY'\nimport urllib.request\nnetloc = input()\nurllib.request.urlopen(urllib.request.Request(f"http://{netloc}/x"))\nPY`
+    writeFileSync(join(dir, 'komment.mjs'), `// fetch("https://${EXT}/x")\nconst r = await fetch("http://localhost:3420/api")\n`)
+    expect(judge(post, dir).deny).toBe(false)
+    expect(judge(editing, dir).deny).toBe(false)
+    expect(judge(templated, dir).deny).toBe(false)
+    expect(judge('node komment.mjs', dir).deny).toBe(false)
+  }))
+
+  it('(b) shapes (d) does not judge stay as before: -m module, node --test, a syntax check, a missing file, the private network', () => withDir((dir) => {
+    writeFileSync(join(dir, 'hiv.test.mjs'), `await fetch("https://${EXT}/x")\n`)
+    expect(judge('python3 -m http.server 8000', dir).deny).toBe(false)
+    expect(judge('node --import tsx --test hiv.test.mjs', dir).deny).toBe(false)
+    expect(judge('python3 nincs-ilyen.py', dir).deny).toBe(false)
+    writeFileSync(join(dir, 'hiv.sh'), `#!/bin/bash\ncurl -s https://${EXT}/x\n`)
+    writeFileSync(join(dir, 'hiv.mjs'), `const r = await fetch("https://${EXT}/x")\n`)
+    expect(judge('bash -n hiv.sh', dir).deny).toBe(false) // a syntax check runs nothing
+    expect(judge('node --check hiv.mjs', dir).deny).toBe(false)
+    expect(judge('bash hiv.sh', dir).deny).toBe(true) // control: the same file, run, is judged
+    expect(judge(`python3 - <<'PY'\nimport urllib.request\nurllib.request.urlopen("http://nas.local/x")\nPY`, dir).deny).toBe(false)
+  }))
+
+  it('a listed vendor host passes by itself; another destination in the same body still denies', () => withDir((dir) => {
+    writeFileSync(join(dir, 'ket.py'), `import urllib.request\nurllib.request.urlopen("https://${EXT}/x")\nurllib.request.urlopen("https://masik.example.net/y")\n`)
+    writeFileSync(join(dir, 'egy.py'), `import urllib.request\nurllib.request.urlopen("https://${EXT}/x")\n`)
+    expect(judge('python3 egy.py', dir, [EXT]).deny).toBe(false)
+    expect(judge('python3 ket.py', dir, [EXT])).toMatchObject({ deny: true, hosts: ['masik.example.net'] })
+  }))
+
+  it('maskCode blanks string contents and comments, length-preserving, and keeps the quotes', () => {
+    const py = 'x = "a#b"  # c "d"\ny = f"{z}"'
+    const m = maskCode(py, 'py')
+    expect(m.length).toBe(py.length)
+    expect(m).toBe('x = "   "         \ny = f"   "')
+    const js = 'const a = `t ${x}` // c\nfetch("u") /* "q" */'
+    expect(maskCode(js, 'js')).toBe('const a = `      `     \nfetch(" ")          ')
+    expect(codeDestinations(`fetch("https://${EXT}/x")`, 'js')).toEqual([EXT])
+    expect(codeDestinations(`s = 'fetch("https://${EXT}/x")'`, 'py')).toEqual([])
+  })
+
+  it('the hook process resolves a relative script path in the payload cwd', () => withDir((dir) => {
+    writeFileSync(join(dir, 'hiv.py'), `import urllib.request\nurllib.request.urlopen("https://${EXT}/x")\n`)
+    const run = (cwd: string) => spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify({ tool_name: 'Bash', cwd, tool_input: { command: 'python3 hiv.py' } }),
+      encoding: 'utf-8',
+      env: { ...process.env, BASH_EGRESS_BLOCK_LOG: join(dir, 'blocks.jsonl'), BASH_EGRESS_VENDOR_HOSTS: join(dir, 'none.json') },
+    })
+    expect(run(dir).stdout).toContain('"permissionDecision":"deny"')
+    expect(run(tmpdir()).stdout).toBe('') // no hiv.py there: nothing to judge
+  }))
 })

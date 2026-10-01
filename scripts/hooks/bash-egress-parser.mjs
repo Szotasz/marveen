@@ -32,18 +32,22 @@
 // is not a command; the URL from the ORIGINAL text of the same span.
 //
 // WHAT THIS DOES NOT CLOSE -- said here so nobody reads "merged" as "closed" (owner/Marveen 29047):
-// the name-and-shape list will never be complete. Still open after (a): network calls INSIDE a script
-// file (`bash x.sh`, `python3 x.py` -- the hook sees only the outer command); heredoc-fed interpreters
-// (`python3 - <<'PY'`, `bash <<EOF`); a URL whose host is not literally in the command (read from a
-// file, the environment, a previous command, a curl -K config, or computed by a substitution such as
-// `curl $(echo https://x)`); every other network-capable binary (git, pip, npm, ssh, scp, rsync, dig ...).
+// the name-and-shape list will never be complete. Since (d) (card 95800e1d) a heredoc-fed interpreter
+// (`python3 - <<'PY'`, `bash <<EOF`) and a script file an interpreter runs (`python3 x.py`, `bash x.sh`)
+// are judged too, by the network call's literal destination (see section (d) above classify). Still
+// open: a call whose destination is not a literal in the body (a variable from the environment or a
+// file, a function parameter, a templated host); modules a script imports; code piped in from another
+// command; a URL whose host is not literally in the command (read from a file, the environment, a
+// previous command, a curl -K config, or computed by a substitution such as `curl $(echo https://x)`);
+// every other network-capable binary (git, pip, npm, ssh, scp, rsync, dig ...).
 // Closing those is direction (b): an allowlist / network-level gate, not this hook.
 //
 // Fail-open on unparseable input or an internal error (logged): a crashed gate must not silence the
 // fleet; that is today's behaviour, not a new hole. Every DENY is appended to the block log.
-import { readFileSync, appendFileSync, realpathSync, mkdirSync } from 'node:fs'
+import { readFileSync, appendFileSync, realpathSync, mkdirSync, existsSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve, isAbsolute } from 'node:path'
+import { homedir } from 'node:os'
 import { maskInertLiterals } from '../self-pace-gate.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -393,16 +397,240 @@ export function curlDestinations(args) {
   }
   return dests.filter((h) => !isLocalHost(h))
 }
-export function classify(command, depth = 0, vendorHosts = new Set(), vendorDomains = new Set()) {
+// --- (d) INTERPRETER CODE BODIES: a heredoc fed to an interpreter, a script file it runs (95800e1d) ---
+// The two shapes the header listed as open and the fleet actually used: a heredoc fed to an interpreter
+// (`python3 - <<'PY' ... PY`; the call that opened card 95800e1d went out this way on 2026-10-01) and a
+// script FILE an interpreter runs (`python3 x.py`, `node x.mjs`, `bash x.sh`, `./x.py` with a shebang,
+// `python3 < x.py`). A body is judged as CODE, not as text: its string-literal contents and comments are
+// blanked first (length-preserving, the idea of maskInertLiterals applied to the language), a network
+// call is looked for in what is left, and the call's FIRST argument -- where it goes -- is read from the
+// original text: a literal URL (for a socket/HTTP connection: a literal host), or a name bound to one
+// in the same body. A shell body (bash/sh) goes through classify itself.
+// Why not the one-liner rule (a network primitive and an external URL anywhere): measured on 7 days of
+// fleet commands (383 666 Bash calls), that reading, applied to the interpreter heredocs and script files,
+// would deny 230 commands that pass today, most of them a URL carried as DATA (a localhost POST whose JSON
+// names a link, a host name in a config list, another program's `fetch("https://...")` inside a string
+// literal of a code-editing script). This destination reading denies 60 commands that pass today, each a
+// real outbound call, and keeps all 188 denies of the gate before it. Its first draft also denied syntax
+// checks (`bash -n x.sh`, `node --check x.mjs`); those run nothing and are left alone.
+// A file that `cat > PATH <<TAG` writes in the same command is judged by that heredoc (on disk it is still
+// the old content when the hook runs). A relative script path follows a literal `cd` earlier in the same
+// command, else the tool call's cwd.
+// NOT judged (allowed, as before): a body or file that cannot be read or is over MAX_BODY_BYTES; a
+// destination that is not a literal (a templated host, a function parameter, a URL read from a file or
+// the environment, two variables concatenated); the modules a script IMPORTS; code piped in from another
+// command; `python -m module`; test runners (`node --test`), whose files stub the network.
+const SCRIPT_INTERPRETER = /^(?:python(?:\d+(?:\.\d+)?)?|node(?:js)?|perl|ruby|php|deno|bun|tsx|ts-node)$/
+const SHELL_INTERPRETER = /^(?:bash|sh|dash|zsh|ksh)$/
+export const MAX_BODY_BYTES = 1_000_000
+// Per language: the flags that make the next word CODE (a one-liner, judged by the rule above, not here),
+// and the options whose VALUE is the next word (so that word is not the script). `sh -e x.sh` is errexit,
+// not code: the flags differ by interpreter, so one shared set would misread it.
+const BODY_CODE_FLAGS = { py: ['-c'], js: ['-e', '-p', '--eval', '--print', 'eval'], pl: ['-e', '-E'], rb: ['-e'], php: ['-r'], sh: ['-c'] }
+const BODY_VALUE_FLAGS = {
+  py: ['-X', '-W'],
+  js: ['--import', '--require', '-r', '--loader', '--experimental-loader', '--env-file', '--conditions', '--title'],
+  pl: ['-M', '-I'], rb: ['-r', '-I'], php: ['-d', '-c'], sh: ['-o', '+o'],
+}
+// Modes that read the script but never run it (a syntax check): nothing goes out, nothing to judge. Measured on the
+// fleet's week: `bash -n x.sh` and `node --check x.mjs` were the only false denies of the first (d) draft.
+const BODY_NO_EXEC = { js: ['--check', '-c'], pl: ['-c'], rb: ['-c'], php: ['-l'] }
+export function langOf(word) {
+  const w = String(word ?? '').split('/').pop()
+  if (/^python(?:\d+(?:\.\d+)?)?$/.test(w)) return 'py'
+  if (/^(?:node(?:js)?|deno|bun|tsx|ts-node)$/.test(w)) return 'js'
+  if (w === 'perl') return 'pl'
+  if (w === 'ruby') return 'rb'
+  if (w === 'php') return 'php'
+  if (SHELL_INTERPRETER.test(w)) return 'sh'
+  return null
+}
+// The language a script names on its first line: `#!/usr/bin/python3`, `#!/usr/bin/env -S node --x`.
+export function shebangLang(text) {
+  const m = /^#!\s*(\S+)(?:[ \t]+([^\n]*))?/.exec(String(text ?? ''))
+  if (!m) return null
+  let word = m[1]
+  if (word.split('/').pop() === 'env') word = (m[2] ?? '').split(/\s+/).find((w) => w && !w.startsWith('-') && !w.includes('=')) ?? ''
+  return langOf(word)
+}
+// Blank string-literal CONTENTS and comments, length-preserving, newlines kept. The quotes (and a Python
+// string prefix) stay, so the caller finds where a literal argument starts and reads it from the original.
+export function maskCode(text, lang) {
+  const s = String(text ?? '')
+  const out = s.split('')
+  const blank = (from, to) => { for (let k = from; k < to && k < s.length; k++) if (out[k] !== '\n') out[k] = ' ' }
+  const hashComment = lang === 'py' || lang === 'pl' || lang === 'rb' || lang === 'php'
+  const slashComment = lang === 'js' || lang === 'php'
+  let i = 0
+  let lastSig = '' // the last code character, to tell a JS regex literal from a division
+  while (i < s.length) {
+    const c = s[i]
+    if ((hashComment && c === '#') || (slashComment && c === '/' && s[i + 1] === '/')) {
+      const e = s.indexOf('\n', i); const end = e === -1 ? s.length : e
+      blank(i, end); i = end; continue
+    }
+    if (slashComment && c === '/' && s[i + 1] === '*') {
+      const e = s.indexOf('*/', i + 2); const end = e === -1 ? s.length : e + 2
+      blank(i, end); i = end; continue
+    }
+    if (lang === 'js' && c === '/' && (lastSig === '' || '(,=:[!&|?{};+-*%<>~^'.includes(lastSig))) {
+      let j = i + 1; let inClass = false
+      while (j < s.length && s[j] !== '\n') {
+        if (s[j] === '\\') { j += 2; continue }
+        if (s[j] === '[') inClass = true
+        else if (s[j] === ']') inClass = false
+        else if (s[j] === '/' && !inClass) break
+        j++
+      }
+      blank(i + 1, j); i = j + 1; lastSig = '/'; continue
+    }
+    if (c === "'" || c === '"' || (c === '`' && lang === 'js')) {
+      const triple = lang === 'py' && s.startsWith(c.repeat(3), i)
+      const close = triple ? c.repeat(3) : c
+      let j = i + close.length
+      while (j < s.length) {
+        if (s[j] === '\\') { j += 2; continue }
+        if (s.startsWith(close, j)) break
+        if (!triple && c !== '`' && s[j] === '\n') break // an unterminated one-line string ends with its line
+        j++
+      }
+      blank(i + close.length, j); i = Math.min(j + close.length, s.length); lastSig = c; continue
+    }
+    if (!/\s/.test(c)) lastSig = c
+    i++
+  }
+  return out.join('')
+}
+// Callees whose FIRST argument is the destination. `.get(` / `.post(` ... cover a client object (a
+// requests.Session, httpx.Client, axios, got); a dict's `.get("key")` holds no scheme and is never judged.
+const CALLEE = /(?:\burlopen|\bRequest|\bfetch|\bWebSocket|\bcreate_connection|\bHTTPS?Connection|\bconnect|\.(?:get|post|put|patch|delete|head|options|request|stream|ws_connect)|\baxios|\bgot)\s*\(\s*/g
+// Callees whose first argument is a HOST without a scheme (http.client, socket.create_connection).
+const HOST_CALLEE = /(?:create_connection|HTTPS?Connection)\s*\(\s*$/
+const SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i
+// `NAME = "..."` / `const NAME = '...'` / `$name = "..."`: a name bound to a string literal in the body.
+const BIND = /(?:^|[;\s{(,])(?:const\s+|let\s+|var\s+|my\s+|our\s+)?\$?([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*[A-Za-z_][\w.[\], ]*)?=(?![=>])\s*(?=[rRbBuUfF]{0,2}['"`])/gm
+// The argument that starts at `pos` (masked and original align): a string literal, or a name.
+function argAt(orig, masked, pos) {
+  let k = pos
+  const pre = /^(?:(?:url|uri|href)\s*=\s*)?(?:new\s+URL\s*\(\s*)?(\(\s*)?/.exec(masked.slice(k, k + 40))
+  k += pre[0].length
+  const tuple = pre[1] !== undefined // connect((host, port)): the first element is a host
+  const lit = /^([rRbBuUfF]{0,2})(['"`])/.exec(masked.slice(k, k + 3))
+  if (lit) {
+    const q = k + lit[1].length
+    const quote = masked[q]
+    const close = masked.startsWith(quote.repeat(3), q) ? quote.repeat(3) : quote
+    const end = masked.indexOf(close, q + close.length)
+    if (end === -1) return null
+    return { value: orig.slice(q + close.length, end), next: end + close.length, tuple }
+  }
+  const id = /^([A-Za-z_][A-Za-z0-9_]*)\b/.exec(masked.slice(k, k + 80))
+  return id ? { ident: id[1], next: k + id[1].length, tuple } : null
+}
+// Every EXTERNAL destination host of the network calls in a code body (unsorted, unique).
+export function codeDestinations(body, lang) {
+  const orig = String(body ?? '')
+  const masked = maskCode(orig, lang)
+  if (masked.length !== orig.length) return []
+  const bound = new Map()
+  for (const m of masked.matchAll(BIND)) {
+    const a = argAt(orig, masked, m.index + m[0].length)
+    if (a?.value !== undefined && SCHEME.test(a.value)) bound.set(m[1], a.value)
+  }
+  const hosts = new Set()
+  for (const m of masked.matchAll(CALLEE)) {
+    let a = argAt(orig, masked, m.index + m[0].length)
+    // requests.request("GET", url) / urllib3 .request("GET", url): the destination is the 2nd argument.
+    if (a?.value !== undefined && /request\s*\(\s*$/.test(m[0]) && /^[A-Z]+$/.test(a.value)) {
+      const comma = /^\s*,\s*/.exec(masked.slice(a.next, a.next + 20))
+      a = comma ? argAt(orig, masked, a.next + comma[0].length) : null
+    }
+    if (!a) continue
+    let value = a.value ?? bound.get(a.ident)
+    if (value === undefined) continue
+    // f"{BASE}/x" / `${BASE}/x`: a leading bound name is its value.
+    value = value.replace(/^\$?\{([A-Za-z_][A-Za-z0-9_]*)\}/, (all, n) => bound.get(n) ?? all)
+    let host = null
+    if (SCHEME.test(value)) host = destHost(value)
+    else if (HOST_CALLEE.test(m[0]) || (/connect\s*\(\s*$/.test(m[0]) && a.tuple)) host = destHost(value.replace(/:\d+$/, ''))
+    if (!host || /[{}$%]/.test(host) || isLocalHost(host)) continue
+    hosts.add(host)
+  }
+  return [...hosts]
+}
+// Heredoc bodies of the ORIGINAL text, with the offset of their opener. The opener is found in the
+// MASKED text (a `<<` inside quotes is not one; `<<<` is a here-string, not a heredoc).
+function heredocBodies(orig, masked) {
+  const out = []
+  const re = /<<-?\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z_]\w*))/g
+  let m
+  while ((m = re.exec(masked))) {
+    if (masked[m.index - 1] === '<') continue
+    const tag = m[1] ?? m[2] ?? m[3]
+    const nl = orig.indexOf('\n', m.index + m[0].length)
+    if (nl === -1) continue
+    const rel = new RegExp(`^[ \\t]*${tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*$`, 'm').exec(orig.slice(nl + 1))
+    if (rel) out.push({ at: m.index, body: orig.slice(nl + 1, nl + 1 + rel.index) })
+  }
+  return out
+}
+function readBody(path) {
+  try {
+    if (!existsSync(path)) return null
+    const st = statSync(path)
+    if (!st.isFile() || st.size > MAX_BODY_BYTES) return null
+    return readFileSync(path, 'utf-8')
+  } catch { return null }
+}
+// What an interpreter runs, from the words after it: { file } a script path (a stdin redirect from a file
+// counts), { stdin: true } the code comes from stdin (`-`, or no script word), null not judged (a one-liner,
+// a module run, a test runner).
+function scriptOf(args, interp) {
+  const lang = langOf(interp)
+  const codeFlags = BODY_CODE_FLAGS[lang] ?? []
+  const valueFlags = BODY_VALUE_FLAGS[lang] ?? []
+  let stdinFile = null
+  for (let k = 0; k < args.length; k++) {
+    const w = args[k]
+    if (w === '<') { stdinFile = args[k + 1] ?? null; k++; continue }
+    if (/^<[^<&]/.test(w)) { stdinFile = w.slice(1); continue }
+    if (/^\d*[<>]/.test(w) || w === '&') { if (/^\d*(?:>>?|<)&?$/.test(w)) k++; continue }
+    if (w === '-') return stdinFile ? { file: stdinFile } : { stdin: true }
+    if (codeFlags.includes(w) || (lang === 'py' && w === '-m') || /^--test(?:$|[-=])/.test(w)) return null
+    if ((BODY_NO_EXEC[lang] ?? []).includes(w) || (lang === 'sh' && /^-[A-Za-z]*n[A-Za-z]*$/.test(w))) return null
+    if (w.startsWith('-') || (lang === 'sh' && w.startsWith('+'))) { if (valueFlags.includes(w)) k++; continue }
+    if ((interp === 'deno' || interp === 'bun') && w === 'run') continue
+    return { file: w }
+  }
+  return stdinFile ? { file: stdinFile } : { stdin: true }
+}
+// The written file of `cat > PATH <<TAG` / `cat <<TAG > PATH` / `tee PATH <<TAG` (an append is not tracked).
+function writtenPath(argv) {
+  const w0 = (argv[0] ?? '').split('/').pop()
+  if (w0 === 'tee' && argv.some((w) => w === '-a' || w === '--append')) return null
+  for (let k = 1; k < argv.length; k++) {
+    const w = argv[k]
+    if (w === '>' || w === '>|') return argv[k + 1] ?? null
+    if (/^>[^>&|]/.test(w)) return w.slice(1)
+    if (w0 === 'tee' && !w.startsWith('-') && !w.startsWith('<')) return w
+  }
+  return null
+}
+
+export function classify(command, depth = 0, vendorHosts = new Set(), vendorDomains = new Set(), ctx = {}) {
   const norm = String(command ?? '').replace(/\\\r?\n/g, ' ')
   const { stripped: orig, inners } = liftSubstitutions(norm)
   if (depth < 4) {
-    for (const inner of inners) { const r = classify(inner, depth + 1, vendorHosts, vendorDomains); if (r.deny) return r }
+    for (const inner of inners) { const r = classify(inner, depth + 1, vendorHosts, vendorDomains, ctx); if (r.deny) return r }
   }
   const masked = maskInertLiterals(orig)
   if (masked === null || masked.length !== orig.length) return { deny: false, reason: 'unparseable', hosts: [] }
   const env = collectAssignments(orig, masked)
   const loops = collectLoops(orig, masked, env)
+  const docs = heredocBodies(orig, masked)
+  const written = new Map() // absolute path -> the heredoc `cat > PATH` wrote earlier in this command
+  let cwd = ctx.cwd ?? null
+  const absPath = (p) => (/[$`*?]/.test(p) ? null : isAbsolute(p) ? p : cwd ? resolve(cwd, p) : null)
   for (const [a, b] of spans(masked)) {
     const mw = words(masked.slice(a, b))
     let i = 0
@@ -413,6 +641,47 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
     // loop-only reading would let the assigned value go unjudged.
     const plain = expand(orig.slice(a, b), env)
     const variants = loopVariants(orig.slice(a, b), env, loops)
+    // (d) code bodies (see above): `cd`, a heredoc written to a file, an interpreter's heredoc or script.
+    const av = shellWords(plain)
+    let j = 0
+    while (j < av.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(av[j]) || PREFIX_WORDS.has(av[j]))) j++
+    const first = av[j] ?? ''
+    let word = first.split('/').pop()
+    let rest = av.slice(j + 1)
+    if (word === 'npx' || word === 'bunx') { // npx [--no-install ...] tsx x.ts
+      let k = 0
+      while (k < rest.length && rest[k].startsWith('-')) k++
+      if (SCRIPT_INTERPRETER.test((rest[k] ?? '').split('/').pop())) { word = rest[k].split('/').pop(); rest = rest.slice(k + 1) }
+    }
+    const here = docs.find((d) => d.at >= a && d.at < b)
+    if (word === 'cd') {
+      const dir = rest[0]
+      cwd = dir === undefined || dir === '~' ? homedir() : dir === '-' ? null : absPath(dir)
+    } else if ((word === 'cat' || word === 'tee') && here) {
+      const p = writtenPath([word, ...rest])
+      const abs = p ? absPath(p) : null
+      if (abs) written.set(abs, here.body)
+    } else {
+      let body = null; let lang = null; let kind = null
+      if (SCRIPT_INTERPRETER.test(word) || SHELL_INTERPRETER.test(word)) {
+        const s = scriptOf(rest, word)
+        lang = langOf(word)
+        if (s?.stdin && here) { body = here.body; kind = 'heredoc' }
+        else if (s?.file) { const abs = absPath(s.file); if (abs) { body = written.get(abs) ?? readBody(abs); kind = 'script-file' } }
+      } else if (first.includes('/')) {
+        const abs = absPath(first)
+        if (abs) { body = written.get(abs) ?? readBody(abs); lang = body === null ? null : shebangLang(body); kind = 'script-file' }
+      }
+      if (body !== null && lang === 'sh') {
+        if (depth < 4) {
+          const r = classify(body, depth + 1, vendorHosts, vendorDomains, { cwd })
+          if (r.deny) return { deny: true, reason: `${kind}-${r.reason}`, hosts: r.hosts }
+        }
+      } else if (body !== null && lang) {
+        const hosts = codeDestinations(body, lang).filter((h) => !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
+        if (hosts.length) return { deny: true, reason: `${kind}-external`, hosts }
+      }
+    }
     for (const text of [plain, ...(variants ?? [])]) {
       const cmd = mw[i].split('/').pop()
       let target = null
@@ -440,8 +709,9 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
 }
 
 const GATE_MSG =
-  'Kulso halozati hivas Bash-bol TILTVA (egress hard-gate): curl vagy interpreter-egysoros kulso URL-re, ' +
-  'akkor is, ha az URL valtozoban van. A localhost/127.0.0.1 hivasok (dashboard) es a helyi halozat ' +
+  'Kulso halozati hivas Bash-bol TILTVA (egress hard-gate): curl, interpreter-egysoros, vagy egy ' +
+  'interpreternek adott heredoc / futtatott szkript-fajl halozati hivasa kulso URL-re, akkor is, ha az URL ' +
+  'valtozoban van. A localhost/127.0.0.1 hivasok (dashboard) es a helyi halozat ' +
   '(10/8, 172.16/12, 192.168/16, *.local) szabadok. Kulso tartalmat ' +
   'a quarantine-reader sub-ugynokon at kerj le; ha ez egy vendor-API hivas, kerd a fo-agenst.'
 function isInvokedDirectly() {
@@ -452,7 +722,7 @@ if (isInvokedDirectly()) {
   try { payload = JSON.parse(readFileSync(0, 'utf-8')) } catch { process.exit(0) }
   if (payload?.tool_name !== 'Bash') process.exit(0)
   let r
-  try { r = classify(payload?.tool_input?.command, 0, loadVendorHosts(), loadVendorDomains()) } catch (e) { process.stderr.write(`bash-egress-parser: internal error, allowing: ${e?.message}\n`); process.exit(0) }
+  try { r = classify(payload?.tool_input?.command, 0, loadVendorHosts(), loadVendorDomains(), { cwd: payload?.cwd || process.cwd() }) } catch (e) { process.stderr.write(`bash-egress-parser: internal error, allowing: ${e?.message}\n`); process.exit(0) }
   if (r.deny) {
     try {
       mkdirSync(dirname(BLOCK_LOG), { recursive: true })
