@@ -30,9 +30,16 @@ WHAT arrived but not WHERE FROM. Measured 2026-09-07 it demanded a TELEGRAM repl
 for an inbound that came from the owner's DISCORD DM.
 The block itself was right -- an unanswered inbound IS owed a reply -- but the
 directive named a tool that cannot deliver it. The ledger now stores the envelope
-source, and the directive is derived from it. Rows written before that column
-existed have source NULL, so the fallback is PROVIDER-AGNOSTIC wording, never a
-guess: naming the wrong tool is exactly the failure being fixed.
+source, and the directive is derived from it.
+
+WHEN THE SOURCE DOES NOT NAME A TOOL (rows written before the column existed have
+source NULL; a source with a dash, like Slack's plugin:slack-channel:slack, does
+not map to a tool name character for character): the directive falls back to the
+CONFIGURED channel of this install (CHANNEL_PROVIDER, #1606, _reply_tool_name),
+which names a VERIFIED tool from _REPLY_TOOLS. Only when that names no verified
+tool either does it use provider-agnostic wording. A source that names a DIFFERENT
+provider than the configured one never borrows the configured tool: that would be
+the wrong tool, which is exactly the failure being fixed (_directive_target).
 
 Safety: any error -> allow the stop (exit 0). A guard hook must never wedge the
 session. agent_id is derived from the session cwd, so it is generic across all
@@ -185,6 +192,29 @@ def _reply_target(source):
     return (provider, "mcp__plugin_{}_{}__reply".format(provider, server))
 
 
+def _directive_target(source):
+    """(channel_label, reply_tool) the block directive names, or (None, None).
+
+    Order (Marveen 32905): the message's own source first (_reply_target); when it
+    names no tool, the install's configured channel (_reply_tool_name, verified
+    table) -- for a NULL source unconditionally, for an unmappable source only if
+    it is the same provider; otherwise nothing, and the caller uses agnostic wording.
+    """
+    label, tool = _reply_target(source)
+    if tool:
+        return label, tool
+    configured_tool, configured = _reply_tool_name()
+    if configured_tool not in _REPLY_TOOLS.values():
+        return (None, None)
+    if not source:
+        return configured, configured_tool
+    m = re.match(r"^plugin:([^:]+):", source)
+    src = m.group(1).strip().lower() if m else ""
+    if _PROVIDER_ALIASES.get(src, src) == configured:
+        return configured, configured_tool
+    return (None, None)
+
+
 def _statefile(agent_id):
     safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in str(agent_id))
     return os.path.join(os.path.dirname(ledger_lib.db_path()), f".tg-reply-guard-{safe}")
@@ -255,8 +285,8 @@ def main():
     try:
         source = ledger_lib.source_for(agent_id, chat_id)
     except Exception:
-        source = None  # unknown provider -> agnostic wording, never a guess
-    label, tool = _reply_target(source)
+        source = None  # unknown -> the configured channel, else agnostic wording
+    label, tool = _directive_target(source)
 
     if tool:
         channel = f"{label.upper()}-ÜZENET"

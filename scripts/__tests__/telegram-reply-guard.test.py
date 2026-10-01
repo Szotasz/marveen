@@ -304,15 +304,49 @@ def main():
     check("telegram does NOT name discord tool", DC_TOOL in r, False)
 
     # 11. Legacy row (source NULL, written before the column existed) -> still
-    # blocks, but names NO tool at all. An invented tool name is worse than none.
+    # blocks, and names the CONFIGURED channel's verified tool (Marveen 32905:
+    # the #1606 provider, NOT the generic wording); with a provider whose tool is
+    # unverified it names no tool at all. CHANNEL_PROVIDER is set explicitly in
+    # every case, so the result does not depend on the host's own .env.
+    SL_TOOL = "mcp__plugin_slack-channel_slack__reply"
     db = fresh_db()
     lib = load_lib(db)
     lib.log_inbound(AGENT, "8695313113", "2003", "regi sor, nincs source",
                     "2026-09-07T07:02:03.110Z")
-    d, r, _ = run_hook(db)
+    d, r, _ = run_hook(db, extra_env={"CHANNEL_PROVIDER": "discord"})
     check("legacy row blocks", d, "block")
-    check("legacy row names no tool", (TG_TOOL in r or DC_TOOL in r), False)
+    check("legacy row + configured discord -> names the discord tool", DC_TOOL in r, True)
+    check("legacy row + configured discord -> not the generic wording",
+          "ANNAK a csatornának" in r, False)
     check("legacy row still carries chat_id", "8695313113" in r, True)
+    d, r, _ = run_hook(db, extra_env={"CHANNEL_PROVIDER": "telegram"})
+    check("legacy row + configured telegram -> names the telegram tool", TG_TOOL in r, True)
+    d, r, _ = run_hook(db, extra_env={"CHANNEL_PROVIDER": "teams"})
+    check("legacy row + unverified provider -> names no tool",
+          (TG_TOOL in r or DC_TOOL in r or SL_TOOL in r), False)
+    check("legacy row + unverified provider -> generic wording",
+          "ANNAK a csatornának" in r, True)
+
+    # 11b. The message's own source WINS over the configured channel: a Discord
+    # inbound on a Telegram-configured install names the Discord tool.
+    db = fresh_db()
+    lib = load_lib(db)
+    lib.log_inbound(AGENT, "900000000000000002", "2004", "es ez?",
+                    "2026-09-07T07:02:03.110Z", source="plugin:discord:discord")
+    d, r, _ = run_hook(db, extra_env={"CHANNEL_PROVIDER": "telegram"})
+    check("source discord beats configured telegram", (DC_TOOL in r, TG_TOOL in r), (True, False))
+
+    # 11c. A source that names no tool (a dash: Slack's plugin:slack-channel:slack)
+    # borrows the configured tool only for the SAME provider, never another one.
+    db = fresh_db()
+    lib = load_lib(db)
+    lib.log_inbound(AGENT, "C0SLACK", "2005", "slack kerdes",
+                    "2026-09-07T07:02:03.110Z", source="plugin:slack-channel:slack")
+    d, r, _ = run_hook(db, extra_env={"CHANNEL_PROVIDER": "slack"})
+    check("slack-channel source + configured slack -> the verified slack tool", SL_TOOL in r, True)
+    d, r, _ = run_hook(db, extra_env={"CHANNEL_PROVIDER": "telegram"})
+    check("slack-channel source + configured telegram -> NOT the telegram tool", TG_TOOL in r, False)
+    check("slack-channel source + configured telegram -> generic wording", "ANNAK a csatornának" in r, True)
 
     # 12. END-TO-END: the capture hook must actually RECORD the source. Without
     # this the three cases above test a column nothing ever populates.
