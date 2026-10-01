@@ -16,14 +16,16 @@
 
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { KNOWN_VOICE_MODELS, AGENTS_BASE_DIR, readAgentVoiceConfig } from '../agent-config.js'
 import { getLastInboundModality, setLastInboundModality } from '../voice-modality.js'
 import { buildTtsDirective, resolveAgentChannelStateDir, inboundIsAudio } from '../voice-directive.js'
-import { PROJECT_ROOT } from '../../config.js'
+import { PROJECT_ROOT, STORE_DIR, VOICE_CALIBRATION_ALERT_AGENT } from '../../config.js'
+import { notifyChat } from '../../notify.js'
+import { createAgentMessage } from '../../db.js'
 import type { RouteContext } from './types.js'
 
 const VOICE_DIR = join(homedir(), '.local', 'share', 'marveen-voice')
@@ -117,20 +119,316 @@ let _installInProgress = false
 // /api/voice/stt: a process HTTP-calling its own dashboard from the 5s tick
 // coupled message delivery to the HTTP server and, under sustained voice
 // traffic, threw the event loop (progressive /api/agents latency 73ms -> 12s ->
-// timeout). Returns the transcript, or null on any failure (toolkit missing,
-// invalid input, whisper non-zero). The whisper subprocess keeps its own
-// STT_TIMEOUT_MS budget inside runProc, so a slow transcription can never hang
-// the caller.
-export async function transcribeVoiceFile(fileId: string, stateDir: string): Promise<string | null> {
-  if (!isVoiceInstalled()) return null
-  if (!SAFE_FILE_ID_RE.test(fileId)) return null
-  if (!isSafeStateDir(stateDir)) return null
-  const result = await runProc(VENV_PY, [VTOOLS_PY, 'transcribe', fileId, stateDir], { timeoutMs: STT_TIMEOUT_MS })
-  if (result.code !== 0) {
-    logger.warn({ fileId, stderr: result.stderr.slice(0, 200) }, 'transcribeVoiceFile: whisper failed')
-    return null
+// timeout). The whisper subprocess keeps its own STT_TIMEOUT_MS budget inside
+// runProc, so a slow transcription can never hang the caller.
+//
+// The outcome of one speech-to-text attempt, as four DISTINGUISHABLE states.
+//
+// Why a union and not `string | null` (2026-09-07, kanban deeaa175): the old
+// signature collapsed three different things into one `null` --
+//   the toolkit is missing / the input was rejected,
+//   the model ran fine and produced nothing,
+//   the model crashed or timed out.
+// Both endpoints then had to guess. `/api/voice/directive` answered 200 + null
+// for all of them; `/api/voice/stt` answered 500 for all of them. Two endpoints,
+// same situation, opposite verdicts -- and neither told the caller which case it
+// was in. Measured that day: two real owner voice messages hit the middle case
+// (exit 0, empty output, no stderr) and vanished with no signal to anyone.
+export type VoiceTranscription =
+  | { status: 'ok'; transcript: string; confidence: 'high' | 'uncertain' | 'unreliable'; noSpeechProb: number | null; durationSec: number | null; temperature: number | null; calibrationMismatch: CalibrationMismatch | null }
+  | { status: 'no-transcript'; transcript: null; durationSec: number | null; calibrationMismatch: CalibrationMismatch | null }
+  | { status: 'failed'; transcript: null; reason: string }
+  | { status: 'unavailable'; transcript: null; reason: string }
+
+// The calibrated speech-to-text chain and the one that actually ran, when the two
+// differ (card 75c3d163). See CALIBRATED_STT_MODEL below.
+export type CalibrationMismatch = { expected: string; actual: string }
+
+// Above this the model is telling us it probably was not speech. A transcript from
+// the upper band is a CANDIDATE, and the agent has to be told so -- it is the
+// difference between acting on a message and asking about one.
+//
+// THIS NUMBER IS CALIBRATED TO A SPECIFIC MODEL, AND IT DOES NOT SURVIVE A MODEL
+// CHANGE. Measured 2026-09-07 on faster-whisper **small**: genuine owner messages sat
+// at 0.024-0.108, the two lost ones at 0.772, a quiet-noise clip that hallucinated
+// confidently at 0.875. The gap between 0.108 and 0.772 is what made 0.2 safe.
+// Re-measured the same six files after the toolkit moved to **medium**: the same
+// genuine messages came back HIGHER, and most of them crossed this threshold. The
+// recordings did not change; the scale did.
+// The figures from that first re-measurement are deliberately NOT repeated here.
+// They were superseded within the hour (the toolkit changed again at 15:34), and a
+// corrected number's old copy is exactly what keeps getting cited afterwards. The one
+// set of live figures is in the block below; there is no second place to read them.
+// SO: whoever changes the model or the decoding options of the INSTALLED toolkit
+// (~/.local/share/marveen-voice/_vtools.py, deployed by scripts/install-voice.sh) is
+// also moving this threshold, whether they mean to or not. Re-measure the known-good
+// files first and put the new range here, with the model name next to it. A threshold
+// without its measurement conditions is a number without a denominator.
+//
+// THE VALUE, AND WHAT IT RESTS ON (measured 2026-09-07 15:30-15:45Z on the calibrating install):
+//   chain      faster-whisper MEDIUM, revision 08e178d4879074, float16 on a GPU,
+//              WITH vad_filter=True, condition_on_previous_text=False AND an
+//              initial_prompt domain vocabulary (STT_INITIAL_PROMPT). That was a
+//              pinned build of the toolkit on that install, NOT the repo's
+//              scripts/voice/_vtools.py, which runs MARVEEN_WHISPER_MODEL from the Hub
+//              (default small), int8 on the CPU, without VAD or vocabulary. Every one
+//              of those is part of the calibration; change any and this number is
+//              stale. The repo's toolkit therefore reports a calibrationMismatch BY
+//              DESIGN until someone re-measures on it (card 75c3d163).
+//   speech     n=4 real owner voice messages, 4.4-9.1s, all plainly understandable
+//              Hungarian: 0.153, 0.213, 0.304, 0.860. Measured max 0.860.
+//   NON-speech n=3 synthetic controls -- digital silence, quiet pink noise, loud white
+//              noise -- ALL produced ZERO segments and therefore land on the
+//              'no-transcript' branch. They never reach this comparison at all.
+//
+// THESE NUMBERS MOVED ONCE ALREADY, INSIDE THE SAME HOUR, AND THAT IS WHY THE
+// VOCABULARY IS LISTED ABOVE. The first reading on this very model was MEASURABLY
+// LOWER. Then the initial_prompt was extended (brand names plus our own words: DNS,
+// Let's Encrypt, certbot...) -- a change nobody would file under "threshold" -- and the
+// SAME six recordings came back at the figures above. A decoding hint moved a safety
+// limit. The earlier figures are not reproduced anywhere in this file on purpose: they
+// are superseded, and a superseded number that stays readable is a number that will be
+// quoted again.
+// AND THE SHIFT IS NOT RUN-TO-RUN NOISE, WHICH HAD TO BE MEASURED SEPARATELY, because a
+// number that moves is otherwise indistinguishable from a number that wobbles: the worst
+// file was transcribed THREE times on the current chain and returned 0.860 each time
+// (15:43-15:48Z, independently of the reading above). Same input, same output, three
+// times -- so what changed between the two readings was the CHAIN, not the dice.
+//
+// The controls are the actual argument, not the maximum: with the VAD in front, this
+// threshold can no longer separate speech from non-speech, because non-speech does not
+// arrive here any more. At 0.2 it can only produce FALSE POSITIVES -- on the current
+// chain ALL FOUR genuine messages are above 0.2. 0.9 keeps the mechanism alive for a
+// genuine outlier, but the headroom above the measured maximum is 0.040 -- roughly a
+// quarter of what the first, superseded reading suggested. A margin that thin is a
+// standing instruction to re-measure before touching the toolkit again.
+// STOPPING RULE, agreed in advance on 2026-09-07: if a GENUINE message crosses 0.9
+// within the next week, the labelling gets SUSPENDED -- the number does not get raised
+// again. A threshold that keeps retreating in front of the data is not a threshold, it
+// is a running commentary.
+//
+// AND THE SECOND BRANCH OF THAT RULE, WHICH THE FIRST ONE CANNOT SEE: the rule above
+// only measures FALSE POSITIVES -- the number. It says nothing about the OTHER way this
+// fails, which is that the RECIPIENT stops reacting. If an owner gets a doubt-flag on
+// most of their good messages, they learn to skip it, and then the one genuinely
+// uncertain transcript is skipped too. A brake that people are trained to ignore has
+// already stopped being a brake, and no measurement of the threshold will reveal that --
+// the threshold looks fine right up to the end. So the labelling is ALSO suspended if
+// the owner says it bothers them, OR if they visibly stop responding to it. That second
+// condition is not measured here; it is observed by whoever talks to them, which is the
+// point: this failure mode lives outside the code, so the code has to name it or nobody
+// will.
+// n=4 IS A SMALL SAMPLE. This is the best available evidence, not a law; four owner
+// recordings are what exists. Widen it before leaning harder on this number than
+// "suppress a notice", and re-measure on the FIRST model change either way.
+const UNCERTAIN_NO_SPEECH_PROB = 0.9
+// THE CHAIN THE NUMBER ABOVE WAS MEASURED ON, as the toolkit names it on its diag line
+// (card 75c3d163): the pinned model directory, whose name carries the revision. It sits
+// HERE, in the same block as the threshold, so that whoever re-measures the threshold
+// updates its key in the same edit: a threshold and its calibration key that live apart
+// drift apart, which is how the 2026-09-07 model change moved this number while nobody
+// knew it had moved.
+export const CALIBRATED_STT_MODEL = 'faster-whisper-medium-08e178d48790749d25932bbc082711ddcfdfbc4f'
+export const CALIBRATED_STT_REVISION = '08e178d48790749d25932bbc082711ddcfdfbc4f'
+
+type VtoolsDiag = {
+  model: string | null
+  revision: string | null
+  segments: number | null
+  durationSec: number | null
+  noSpeechProb: number | null
+  temperature: number | null
+}
+
+// One line on stderr from _vtools.py. Absent on an older installed copy of the
+// toolkit (scripts/install-voice.sh deploys it separately from the dashboard),
+// so every field is optional and the caller degrades to "unknown" rather than
+// to a wrong answer.
+// Every vtools-diag line is read, not only the first, and the LAST value of a key
+// wins: a toolkit may emit an earlier line of its own (a pinned GPU build writes
+// `vtools-diag device_fallback=cpu ...` before it transcribes), and reading only the
+// first line would then lose every measurement -- silently, as "unknown".
+// model= and revision= are strings (a directory name carries letters and dashes), so
+// they get a token reader; the measurements keep the numeric one.
+function parseVtoolsDiag(stderr: string): VtoolsDiag {
+  const fields = new Map<string, string>()
+  for (const line of stderr.split('\n')) {
+    if (!line.startsWith('vtools-diag ')) continue
+    for (const m of line.slice('vtools-diag '.length).matchAll(/(?:^|\s)([a-z_]+)=(\S*)/g)) fields.set(m[1], m[2])
   }
-  return result.stdout.trim()
+  const num = (key: string): number | null => {
+    const v = fields.get(key)
+    if (!v || !/^-?[0-9.]+$/.test(v)) return null
+    const n = Number(v)
+    return Number.isFinite(n) ? n : null
+  }
+  const str = (key: string): string | null => fields.get(key) || null
+  return {
+    model: str('model'),
+    revision: str('revision'),
+    segments: num('segments'),
+    durationSec: num('duration'),
+    noSpeechProb: num('no_speech_prob'),
+    temperature: num('temperature'),
+  }
+}
+
+// Card 75c3d163, and the design decision recorded on it (2026-09-07 18:15Z): a model
+// that is not the calibrated one does NOT change the classification. Refusing 'high' on
+// a mismatch would flag every genuine message on the foreign chain -- the very false
+// positives deeaa175 removed, brought back through another door. Two different claims:
+// "the text is uncertain" belongs to the SENDER, "the threshold was made for another
+// chain" belongs to US; packing the second into the first is a category error. So the
+// mismatch travels separately (the response field, a warn, a one-time message, a state).
+// A MISSING model field is an OLDER toolkit, not a foreign model: today's behaviour,
+// no degradation, no signal.
+function calibrationMismatchOf(diag: VtoolsDiag): CalibrationMismatch | null {
+  if (diag.model == null) return null
+  const sameModel = diag.model === CALIBRATED_STT_MODEL
+  const sameRevision = diag.revision == null || diag.revision === CALIBRATED_STT_REVISION
+  if (sameModel && sameRevision) return null
+  return { expected: CALIBRATED_STT_MODEL, actual: diag.revision ? `${diag.model}@${diag.revision}` : diag.model }
+}
+
+// The persistent state of the mismatches seen so far, one entry per (expected, actual)
+// pair. It does two jobs: it is the DEDUP (the message goes once per pair and does not
+// come back after a dashboard restart), and it is the place the mismatch can still be
+// READ later (GET /api/voice/status), because a one-time message gets lost in a queue
+// and a state that nobody opens never speaks: each covers the other's failure mode.
+type CalibrationEntry = {
+  expected: string
+  actual: string
+  firstSeenAt: string
+  lastSeenAt: string
+  count: number
+  notifiedAt: string | null
+  notifiedAgent: string | null
+  messageId: number | null
+}
+// Fallback dedup for a process that cannot write the state file: without it, every
+// voice message would queue the same notice again.
+const calibrationNotifiedThisProcess = new Set<string>()
+
+function calibrationStatePath(): string {
+  return join(STORE_DIR, 'voice-calibration.json')
+}
+
+export function readCalibrationState(): Record<string, CalibrationEntry> {
+  let raw: string
+  try {
+    raw = readFileSync(calibrationStatePath(), 'utf-8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') logger.warn({ err }, 'voice: calibration state unreadable')
+    return {}
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, CalibrationEntry>
+    logger.warn('voice: calibration state is not an object, ignoring it')
+  } catch (err) {
+    logger.warn({ err }, 'voice: calibration state is not valid JSON, ignoring it')
+  }
+  return {}
+}
+
+function writeCalibrationState(state: Record<string, CalibrationEntry>): void {
+  const target = calibrationStatePath()
+  const tmp = `${target}.${process.pid}.tmp`
+  try {
+    writeFileSync(tmp, JSON.stringify(state, null, 2) + '\n', 'utf-8')
+    renameSync(tmp, target)
+  } catch (err) {
+    logger.warn({ err, target }, 'voice: could not write the calibration state')
+  }
+}
+
+function reportCalibrationMismatch(m: CalibrationMismatch): void {
+  logger.warn({ expected: m.expected, actual: m.actual },
+    'voice: the STT model is not the calibrated one -- the uncertainty threshold is NOT measured on this chain')
+  const key = `${m.expected} -> ${m.actual}`
+  const now = new Date().toISOString()
+  const state = readCalibrationState()
+  const entry: CalibrationEntry = state[key] ?? {
+    expected: m.expected, actual: m.actual, firstSeenAt: now, lastSeenAt: now, count: 0,
+    notifiedAt: null, notifiedAgent: null, messageId: null,
+  }
+  entry.count += 1
+  entry.lastSeenAt = now
+  if (!entry.notifiedAt && !calibrationNotifiedThisProcess.has(key)) {
+    try {
+      const msg = createAgentMessage(
+        'voice-calibration',
+        VOICE_CALIBRATION_ALERT_AGENT,
+        `[voice-calibration] A hang-toolkit mas beszedfelismero modellt futtat, mint amire a leirat-bizonytalansagi kuszob kalibralva van: kalibralt ${m.expected}, a diag-sor szerint ${m.actual}. ` +
+        `A besorolas (high/uncertain/unreliable) valtozatlanul fut, de a kuszob (${UNCERTAIN_NO_SPEECH_PROB}) ezen a modellen NEM MERT, tehat a bizonytalan-jelolesek ervenyessege ismeretlen. ` +
+        'Teendo: az ismert jo felveteleken a no_speech_prob tartomany ujramerese, es a src/web/routes/voice.ts kuszob-blokkjaba beirni a modell nevevel (card 75c3d163). ' +
+        'Ez az uzenet erre a modell-parra egyszer megy; az allapot: GET /api/voice/status, calibration mezo.',
+      )
+      calibrationNotifiedThisProcess.add(key)
+      entry.notifiedAt = now
+      entry.notifiedAgent = VOICE_CALIBRATION_ALERT_AGENT
+      entry.messageId = msg.id
+    } catch (err) {
+      logger.warn({ err, key }, 'voice: could not queue the calibration-mismatch notice')
+    }
+  }
+  state[key] = entry
+  writeCalibrationState(state)
+}
+
+export async function transcribeVoiceFileDetailed(fileId: string, stateDir: string): Promise<VoiceTranscription> {
+  if (!isVoiceInstalled()) return { status: 'unavailable', transcript: null, reason: 'voice toolkit not installed' }
+  if (!SAFE_FILE_ID_RE.test(fileId)) return { status: 'unavailable', transcript: null, reason: 'invalid file id' }
+  if (!isSafeStateDir(stateDir)) return { status: 'unavailable', transcript: null, reason: 'invalid state dir' }
+  const result = await runProc(VENV_PY, [VTOOLS_PY, 'transcribe', fileId, stateDir], { timeoutMs: STT_TIMEOUT_MS })
+  const diag = parseVtoolsDiag(result.stderr)
+  if (result.code !== 0) {
+    logger.warn({ fileId, code: result.code, stderr: result.stderr.slice(0, 200) }, 'transcribeVoiceFile: STT chain failed')
+    return { status: 'failed', transcript: null, reason: `stt exited ${result.code}` }
+  }
+  const calibrationMismatch = calibrationMismatchOf(diag)
+  if (calibrationMismatch) reportCalibrationMismatch(calibrationMismatch)
+  const text = result.stdout.trim()
+  if (!text) {
+    // The chain SUCCEEDED and produced nothing. This is the case that used to be
+    // silent, and it is deliberately NOT an error: the model made a decision.
+    // It still has to reach a human, because a voice message did arrive.
+    logger.warn({ fileId, durationSec: diag.durationSec, segments: diag.segments },
+      'transcribeVoiceFile: audio accepted, model produced no transcript')
+    return { status: 'no-transcript', transcript: null, durationSec: diag.durationSec, calibrationMismatch }
+  }
+  // TWO INDEPENDENT DOUBTS, and they do not mean the same thing (measured 2026-09-07):
+  //   temperature > 0 -> the DETERMINISTIC decode failed and this text was SAMPLED off
+  //                      the fallback ladder. Not "probably misheard" -- "there is no
+  //                      reliable reading of this audio at all".
+  //   noSpeechProb    -> the model doubts there was speech here, but it read it confidently.
+  //                      This is the band that produced a clean-looking "Sziasztok!" from
+  //                      quiet noise, at temperature 0.0.
+  // 'unreliable' ranks first because it is the stronger claim about the same text.
+  //
+  // MEASURED LIMIT, so nobody expects more from this field than it gives: in the sample
+  // we have, every temperature>0 case ended with ZERO segments and therefore lands on the
+  // no-transcript branch instead of here -- the diag line carries the segment's values, and
+  // a dropped segment has none. So today this branch catches nothing the other one misses.
+  // It is here for the case that DOES reach us: a sampled text that survives the filter.
+  const sampled = diag.temperature != null && diag.temperature > 0
+  const uncertain = diag.noSpeechProb != null && diag.noSpeechProb >= UNCERTAIN_NO_SPEECH_PROB
+  return {
+    status: 'ok',
+    transcript: text,
+    confidence: sampled ? 'unreliable' : uncertain ? 'uncertain' : 'high',
+    noSpeechProb: diag.noSpeechProb,
+    durationSec: diag.durationSec,
+    temperature: diag.temperature,
+    calibrationMismatch,
+  }
+}
+
+// Back-compat wrapper: same contract as before for callers that only want text
+// (the message-router tick): the transcript, or null on any other outcome.
+export async function transcribeVoiceFile(fileId: string, stateDir: string): Promise<string | null> {
+  const r = await transcribeVoiceFileDetailed(fileId, stateDir)
+  return r.status === 'ok' ? r.transcript : null
 }
 
 /**
@@ -150,7 +448,8 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
   // GET /api/voice/directive?agent=X&chat=Y[&file=FILE_ID]
-  // Returns { directive: string|null, transcript: string|null }.
+  // Returns { directive: string|null, transcript: string|null, transcriptStatus, transcriptConfidence,
+  //   transcriptNotice, noticeDelivered, calibrationMismatch } (the last five: cards deeaa175, 75c3d163).
   // directive semantics by responseMode:
   //   text  -> null (never speaks)
   //   voice -> always buildTtsDirective (speaks even for plain-text input)
@@ -159,7 +458,8 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
   // transcript: STT result when the attachment is audio and the id is valid (mode-independent --
   //   even text-mode agents benefit from knowing what a voice message said). Non-audio
   //   attachments are never pushed through speech-to-text.
-  // fail-safe: STT errors set transcript=null; directive is always attempted independently.
+  // fail-safe: STT errors set transcript=null and say why in transcriptStatus/transcriptNotice;
+  //   directive is always attempted independently.
   if (path === '/api/voice/directive' && method === 'GET') {
     const agentId = ctx.url.searchParams.get('agent') ?? ''
     const chatId = ctx.url.searchParams.get('chat') ?? ''
@@ -180,16 +480,72 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
       : null
 
     let transcript: string | null = null
+    let transcriptStatus: VoiceTranscription['status'] | null = null
+    let transcriptNotice: string | null = null
+    let transcriptConfidence: 'high' | 'uncertain' | 'unreliable' | null = null
+    let calibrationMismatch: CalibrationMismatch | null = null
     if (inboundWasAudio && isVoiceInstalled()) {
-      const sttResult = await runProc(VENV_PY, [VTOOLS_PY, 'transcribe', fileParam, stateDir], { timeoutMs: STT_TIMEOUT_MS })
-      if (sttResult.code === 0) {
-        transcript = sttResult.stdout.trim() || null
+      const stt = await transcribeVoiceFileDetailed(fileParam, stateDir)
+      transcriptStatus = stt.status
+      if (stt.status === 'ok' || stt.status === 'no-transcript') calibrationMismatch = stt.calibrationMismatch
+      if (stt.status === 'ok') {
+        transcript = stt.transcript
+        transcriptConfidence = stt.confidence
+        // An uncertain transcript is still delivered -- withholding it would
+        // recreate the silent loss from the other side -- but it is delivered
+        // WITH the doubt attached, so the agent asks instead of acting.
+        if (stt.confidence === 'unreliable') {
+          transcriptNotice = 'A leiratot a modell NEM olvasta ki megbizhatoan (a determinisztikus dekodolas megbukott, ez a szoveg mintavetelezett). Ne kezeld tenykent: mondd vissza a kuldonek, es kerd, hogy erositse meg.'
+        } else if (stt.confidence === 'uncertain') {
+          // MONDD VISSZA, not merely "ask back": the channel notice this endpoint just sent
+          // PROMISES the sender that we will repeat what we understood. If the agent only asks
+          // a question instead, the sender waits for a promise nobody keeps -- which is worse
+          // than sending nothing, because now they are expecting it. The manual step this
+          // automates (2026-09-07) was exactly a read-back, not a question.
+          transcriptNotice = 'A leirat BIZONYTALAN (a modell szerint lehet, hogy nem beszed volt). MONDD VISSZA a valaszodban SZO SZERINT, amit ertettunk, es kerd, hogy javitson -- a kuldo mar kapott egy csatorna-jelzest, hogy ezt varja tolunk. Ne kezeld tenykent.'
+        }
+      } else if (stt.status === 'no-transcript') {
+        // THE CASE THAT USED TO BE SILENT. A voice message arrived, the chain
+        // worked, and there is nothing to show for it. The sender is waiting for
+        // an answer, so this must reach the agent -- a log line reaches nobody.
+        const secs = stt.durationSec != null ? ` (${stt.durationSec.toFixed(1)} mp)` : ''
+        transcriptNotice = `Hangüzenet erkezett${secs}, de NEM sikerult leiratozni. Nem tudod, mi hangzott el -- kerdezz vissza a kuldotol.`
       } else {
-        logger.warn({ fileParam, stderr: sttResult.stderr }, '/api/voice/directive: STT failed (non-fatal)')
+        transcriptNotice = 'Hangüzenet erkezett, de a leiratozas HIBAVAL allt le. Kerdezz vissza a kuldotol, es jelezd, hogy a leiratozo nem mukodik.'
       }
     }
 
-    json(res, { directive, transcript })
+    // ---- (A) THE DELIVERY (card deeaa175) ----------------------------------
+    // The hook's stdout reaches the AGENT. That is not delivery to the PERSON
+    // who spoke: if the agent forgets to mention it, the sender is back to
+    // silence -- which is the exact failure this card exists to remove. So the
+    // SERVER tells them, on the channel, addressed to the validated `chat` that
+    // just sent the audio (never a configured alert or owner chat -- see notifyChat).
+    //
+    // NO TRANSCRIPT TEXT IN THIS MESSAGE, in either case, and that is
+    // structural rather than a compromise: this send performs the DELIVERY, the
+    // agent's reply performs the CONTENT. So the rule "transcript text does not
+    // go anywhere that leaves the machine" holds without needing an exception.
+    let noticeDelivered: boolean | null = null
+    const needsChannelNotice =
+      transcriptStatus === 'no-transcript' || transcriptConfidence === 'uncertain' || transcriptConfidence === 'unreliable'
+    if (needsChannelNotice) {
+      const text = transcriptStatus === 'no-transcript'
+        ? 'A hangüzenetedet megkaptam, de nem sikerült leiratozni, ezért nem tudom, mi hangzott el. Kérlek, írd le szöveggel.'
+        : 'A hangüzenetedet megkaptam, de csak bizonytalanul értettem. A válaszomban visszamondom, mit értettem belőle -- kérlek javíts, ha félreértettem.'
+      noticeDelivered = await notifyChat(chatId, text)
+      if (!noticeDelivered) {
+        // The notice's OWN failure has to be visible. A silent catch here would
+        // rebuild the silence one layer up: the sender would get nothing, and
+        // nothing would say so.
+        logger.warn({ chatId, transcriptStatus, transcriptConfidence },
+          'voice: a csatorna-ertesites NEM ment ki -- a kuldo nem tudja, hogy baj volt a leirattal')
+      }
+    }
+
+    // calibrationMismatch is for US, not for the sender or the agent (card 75c3d163):
+    // the hook does not print it, and it never changes transcriptConfidence above.
+    json(res, { directive, transcript, transcriptStatus, transcriptConfidence, transcriptNotice, noticeDelivered, calibrationMismatch })
     return true
   }
 
@@ -223,19 +579,24 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  // GET /api/voice/status -- is the voice toolkit installed?
+  // GET /api/voice/status -- is the voice toolkit installed? (+ calibration state, card 75c3d163)
   if (path === '/api/voice/status' && method === 'GET') {
     const installed = isVoiceInstalled()
     const voices = installed
       ? Array.from(KNOWN_VOICE_MODELS).filter((m) => existsSync(join(VOICE_DIR, 'voices', `${m}.onnx`)))
       : []
-    json(res, { installed, voices, voiceDir: VOICE_DIR })
+    // calibration: the model the uncertainty threshold was measured on, and every
+    // model-pair mismatch seen so far with its first/last time and whether the
+    // one-time notice went out (card 75c3d163). Readable here long after the
+    // notice itself has scrolled out of a queue.
+    json(res, { installed, voices, voiceDir: VOICE_DIR, calibration: { model: CALIBRATED_STT_MODEL, mismatches: Object.values(readCalibrationState()) } })
     return true
   }
 
   // POST /api/voice/stt
   // Body: { file_id: string, state_dir: string }
-  // Returns: { transcript: string }
+  // Returns: 200 { transcript, status: 'ok', confidence, no_speech_prob, calibrationMismatch },
+  //   422 no-transcript, 500 failed, 503 unavailable (card deeaa175).
   if (path === '/api/voice/stt' && method === 'POST') {
     if (!isVoiceInstalled()) { json(res, { error: 'Voice toolkit not installed' }, 503); return true }
     const body = await readBody(req)
@@ -246,13 +607,22 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     if (!SAFE_FILE_ID_RE.test(fileId)) { json(res, { error: 'Invalid file_id' }, 400); return true }
     if (!isSafeStateDir(stateDir)) { json(res, { error: 'Invalid state_dir' }, 400); return true }
 
-    const transcript = await transcribeVoiceFile(fileId, stateDir)
-    if (transcript === null) {
-      logger.warn({ fileId }, '/api/voice/stt: whisper failed')
-      json(res, { error: 'STT failed' }, 500)
+    // Same source of truth as /api/voice/directive -- the two endpoints used to
+    // disagree about the identical situation (200+null here, 500 there). Now the
+    // STATE decides the code, and the body always says which state it was.
+    const stt = await transcribeVoiceFileDetailed(fileId, stateDir)
+    if (stt.status === 'ok') {
+      json(res, { transcript: stt.transcript, status: stt.status, confidence: stt.confidence, no_speech_prob: stt.noSpeechProb, calibrationMismatch: stt.calibrationMismatch })
       return true
     }
-    json(res, { transcript })
+    if (stt.status === 'no-transcript') {
+      // NOT a 500: nothing failed. The model ran and produced no text, which is
+      // an outcome the caller has to be able to tell apart from a crash.
+      json(res, { transcript: null, status: stt.status, duration_sec: stt.durationSec, calibrationMismatch: stt.calibrationMismatch }, 422)
+      return true
+    }
+    logger.warn({ fileId, status: stt.status, reason: stt.reason }, '/api/voice/stt: STT unavailable or failed')
+    json(res, { error: 'STT failed', status: stt.status, reason: stt.reason }, stt.status === 'unavailable' ? 503 : 500)
     return true
   }
 
