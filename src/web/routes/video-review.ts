@@ -1,5 +1,5 @@
-import { createReadStream, existsSync, statSync } from 'node:fs'
-import { extname, join } from 'node:path'
+import { createReadStream, existsSync, realpathSync, statSync } from 'node:fs'
+import { extname, join, sep } from 'node:path'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { json, readBody, RequestBodyTooLargeError, serveFile } from '../http-helpers.js'
 import { createAgentMessage } from '../../db.js'
@@ -91,11 +91,16 @@ export async function tryHandleVideoReview(ctx: RouteContext, webDir: string): P
     if (method !== 'GET' && method !== 'HEAD') { json(res, { error: 'method_not_allowed' }, 405); return true }
     const abs = tickets.resolve(url.searchParams.get('ticket'))
     if (!abs) { json(res, { error: 'ticket_invalid_or_expired' }, 403); return true }
-    // The ticket names a file resolved under the root when it was minted; the
-    // root is re-checked in case the configuration changed since.
+    // The ticket names a file resolved under the root when it was minted. At
+    // serve time both are checked again: the root (the config is read per
+    // request, so it can change without a restart) and the file's REALPATH
+    // (it could have been swapped for a symlink out since the ticket; Samu,
+    // #1670 review).
     const { root } = videoReviewConfig()
-    if (!root || !(abs === root || abs.startsWith(root + '/')) || !existsSync(abs)) { json(res, { error: 'not_found' }, 404); return true }
-    streamVideo(ctx, abs)
+    let real: string | null = null
+    try { real = existsSync(abs) ? realpathSync(abs) : null } catch { real = null }
+    if (!root || !real || !(real === root || real.startsWith(root + sep))) { json(res, { error: 'not_found' }, 404); return true }
+    streamVideo(ctx, real)
     return true
   }
 

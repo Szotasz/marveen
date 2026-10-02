@@ -136,6 +136,25 @@ describe('the routes', () => {
     expect((await fetch(origin + url, { headers: { Range: 'bytes=5000-' } })).status).toBe(416)
   })
 
+  it('serve time: a root changed after the ticket is 404', async () => {
+    const url = await ticketFor('a.mp4')
+    envValues.VIDEO_REVIEW_ROOT = outside
+    expect((await fetch(origin + url)).status).toBe(404)
+    envValues.VIDEO_REVIEW_ROOT = root
+    expect((await fetch(origin + url)).status).toBe(200)
+  })
+
+  it('serve time: a file swapped for a symlink out after the ticket is not streamed', async () => {
+    writeFileSync(join(root, 'swap.mp4'), VIDEO)
+    const url = await ticketFor('swap.mp4')
+    rmSync(join(root, 'swap.mp4'))
+    symlinkSync(join(outside, 'secret.mp4'), join(root, 'swap.mp4'))
+    const r = await fetch(origin + url)
+    expect(r.status).toBe(404)
+    expect(await r.text()).not.toContain('SECRET')
+    rmSync(join(root, 'swap.mp4'))
+  })
+
   it('PUT review: non-JSON is 415, nothing written', async () => {
     const r = await put('/api/video-review/review?path=a.mp4', 'video=a.mp4', 'application/x-www-form-urlencoded')
     expect(r.status).toBe(415)
