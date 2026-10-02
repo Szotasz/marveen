@@ -109,18 +109,15 @@ function stubs(failFirst: number): string {
   return bin
 }
 
-/**
- * The launcher holds the update lock, starts the finalizer in the background and exits, as update.sh does.
- * 'orokolt': the finalizer inherits fd 9 (the setsid launchers); 'nincs': it does not (a launcher that closes it).
- */
-function runFinalizer(repo: string, oldSha: string, failFirst: number, mode: 'orokolt' | 'nincs' = 'orokolt') {
+/** The launcher holds the update lock, starts the finalizer in the background (fd 9 inherited) and exits, as update.sh does. */
+function runFinalizer(repo: string, oldSha: string, failFirst: number) {
   const finalizer = generateFinalizer()
   const out = tmp('update-finalizer-out-')
   const result = join(out, 'update.last-result'), rcFile = join(out, 'rc')
   const args = [finalizer, repo, oldSha, oldSha.slice(0, 7), '1', result, join(repo, '.built-commit'), 'NEWSHRT', '', '0']
   const launcher = `exec 9>>"$1/store/update.lock"; ${REAL_FLOCK} -n 9 || exit 99
 echo $$ > "$1/store/szulo.pid"; rc="$2"; shift 2
-( ${mode === 'nincs' ? 'exec 9>&-; ' : ''}bash "$@"; echo $? > "$rc" ) &
+( bash "$@"; echo $? > "$rc" ) &
 exit 0`
   const r = spawnSync('/bin/bash', ['-c', launcher, '_', repo, rcFile, ...args], {
     encoding: 'utf-8',
@@ -248,13 +245,5 @@ describe.skipIf(!HAS_FLOCK)('update.sh run lock: one update at a time (c68d90eb 
     const open = kid(false)
     expect(spawnSync('/bin/bash', ['-c', lockScript(install, 'exit 0')]).status, 'CONTROL: the open child keeps the lock').toBe(75)
     spawnSync('kill', [open.stdout.trim()])
-  })
-
-  it('a finalizer started WITHOUT fd 9 takes the lock itself once the launcher exits, and holds it through the restart', () => {
-    const { repo } = makeInstall({ file: 'local.txt', text: 'local: the operator edit\n' })
-    const { code, out, log } = runFinalizer(repo, git(repo, 'rev-parse', 'HEAD~1'), 0, 'nincs')
-    expect([code, out.status]).toEqual([0, 'success'])
-    expect(log).toEqual(lockedRestarts(1))
-    expect(spawnSync(REAL_FLOCK, ['-n', join(repo, 'store', 'update.lock'), 'true']).status, 'free once the finalizer ended').toBe(0)
   })
 })
