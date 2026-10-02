@@ -754,9 +754,10 @@
         </div>
         <div class="info-box" id="connectorInfoBox" data-i18n-html="connectors.builtin.dedup_html">
           Az itt listázott MCP szerverek a te Claude Code előfizetésedben bekapcsoltak (claude.ai OAuth connectorok, marketplace pluginok, lokális konfig).
-          Minden sub-agent automatikusan látja őket, mert ugyanabban a HOME-ban fut, mint a fő session.
-          Ha egy MCP már bekapcsolva van claude.ai-n, <strong>ne vedd fel még egyszer lokálisan</strong>: duplikálódik,
-          és a Claude CLI "local wins" üzenetet ad rá. A lista a dashboard indulásakor töltődik be, explicit frissítés a "Frissítés" gombbal.
+          A claude.ai-on bekapcsolt connectorokat csak az az ügynök látja, amelyik claude.ai-fiókkal van bejelentkezve (alapbeállításban a fő ügynök).
+          A csapat-ügynökök saját tokennel futnak, ezért <strong>ők nem látják a claude.ai connectorokat</strong>: ha nekik kell egy, vedd fel itt az "Új connector" gombbal, és állítsd be a "Hozzárendelés ügynökökhöz" mezőt.
+          Amelyik ügynök a claude.ai-n át már látja, annak nem kell lokálisan is felvenni (a Claude CLI ilyenkor "local wins" üzenetet ad).
+          A lista a dashboard indulásakor töltődik be, explicit frissítés a "Frissítés" gombbal.
         </div>
       </div>
 
