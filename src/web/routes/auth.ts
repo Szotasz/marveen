@@ -57,6 +57,16 @@ import {
   logConfigChange,
 } from '../../db.js'
 import { notifySecurityEvent } from '../../notify.js'
+import {
+  AGENT_TOKEN_AGENT_ID_RE,
+  AGENT_TOKEN_LABEL_RE,
+  createAgentToken,
+  listAgentTokens,
+  getAgentToken,
+  revokeAgentToken,
+} from '../auth-agent-tokens.js'
+import { AGENT_TOKEN_SCOPES, isAgentTokenScope, describeAgentTokenScope } from '../agent-token-scope.js'
+import { isKnownAgent } from '../agent-config.js'
 import type { RouteContext } from './types.js'
 
 const LOGIN_BODY_MAX_BYTES = 8 * 1024
@@ -113,6 +123,12 @@ const USER_ADMIN_KINDS = ['token', 'session'] as const
 const DEVICE_KEY_ADMIN_KINDS = ['token', 'session'] as const
 
 const DEVICE_KEY_NAME_RE = /^[\p{L}\p{N} ._-]{1,64}$/u
+
+// Who may mint/list/revoke per-agent scoped tokens. Same operator set as the
+// device keys, and deliberately NOT 'agent' or 'device': a scoped token that
+// could mint another token (or a wider scope for itself) would defeat the
+// entire point of scoping it.
+const AGENT_TOKEN_ADMIN_KINDS = ['token', 'session'] as const
 const DEVICE_KEY_MAX_EXPIRY_DAYS = 3650
 
 // { authenticated, method, user, device, login_available, setup_required }.
@@ -120,15 +136,19 @@ const DEVICE_KEY_MAX_EXPIRY_DAYS = 3650
 // parse only that field): a valid bearer -> authenticated:true. A device key is
 // an authenticated principal too (method:'device', device:<key name>).
 function statusPayload(auth: RouteContext['auth']) {
-  const authenticated = auth?.kind === 'token' || auth?.kind === 'session' || auth?.kind === 'device'
+  const authenticated = auth?.kind === 'token' || auth?.kind === 'session' || auth?.kind === 'device' || auth?.kind === 'agent'
   const method = authenticated ? auth!.kind : null
   const user = auth?.kind === 'session' ? auth.user ?? null : null
   const device = auth?.kind === 'device' ? auth.device ?? null : null
+  // An agent token's own smoke test: GET /api/auth/status with the token tells
+  // the remote agent whether it is live and under whose name, and nothing else.
+  const agent = auth?.kind === 'agent' ? auth.agent ?? null : null
   return {
     authenticated,
     method,
     user,
     device,
+    agent,
     login_available: countDashboardUsers(false) >= 1,
     setup_required: countDashboardUsers(true) === 0,
   }
@@ -331,6 +351,99 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     const created = createDashboardUser(username, hash)
     logger.info({ username: created.username }, 'dashboard user created')
     json(res, { ok: true, user: { id: created.id, username: created.username } }, 201)
+    return true
+  }
+
+  // --- Per-agent scoped tokens (TOKENSZUKITES909) ---------------------------
+  // The credential to hand a remote agent instead of the shared dashboard
+  // token: bound to one agent id, one endpoint scope, revocable on its own.
+
+  if (path === '/api/auth/agent-tokens' && method === 'GET') {
+    if (!kindAllowed(auth, AGENT_TOKEN_ADMIN_KINDS)) {
+      json(res, FORBIDDEN_KIND, 403)
+      return true
+    }
+    json(res, { tokens: listAgentTokens(), scopes: AGENT_TOKEN_SCOPES })
+    return true
+  }
+
+  if (path === '/api/auth/agent-tokens' && method === 'POST') {
+    if (!kindAllowed(auth, AGENT_TOKEN_ADMIN_KINDS)) {
+      json(res, FORBIDDEN_KIND, 403)
+      return true
+    }
+    let body: Record<string, unknown>
+    try {
+      body = await parseJsonBody(req)
+    } catch {
+      json(res, { error: 'Invalid JSON' }, 400)
+      return true
+    }
+    const agentId = str(body.agent_id).trim()
+    if (!AGENT_TOKEN_AGENT_ID_RE.test(agentId)) {
+      json(res, { error: 'Invalid agent_id (1-64 chars: letters, digits, . _ -)' }, 400)
+      return true
+    }
+    // NOT gated on isKnownAgent: a remote agent lives on another machine and
+    // has no agents/<id> directory here -- that is the whole point of minting
+    // it a token. The mint is reported back with `registered`, so a typo in the
+    // id is visible immediately instead of surfacing later as silent 403s.
+    const registered = isKnownAgent(agentId)
+    const scope = str(body.scope).trim() || 'remote-agent'
+    if (!isAgentTokenScope(scope)) {
+      json(res, { error: `Invalid scope '${scope}'. Allowed: ${AGENT_TOKEN_SCOPES.join(', ')}` }, 400)
+      return true
+    }
+    const label = (str(body.label).trim() || `${agentId} (${scope})`)
+    if (!AGENT_TOKEN_LABEL_RE.test(label)) {
+      json(res, { error: 'Invalid label (1-64 chars: letters, digits, space, . _ -)' }, 400)
+      return true
+    }
+    // Expiry is opt-in: absent/0 means the token lives until revoked.
+    let expiresInDays: number | undefined
+    if (body.expires_in_days !== undefined && body.expires_in_days !== null && body.expires_in_days !== 0) {
+      const n = Number(body.expires_in_days)
+      if (!Number.isFinite(n) || n <= 0 || n > DEVICE_KEY_MAX_EXPIRY_DAYS) {
+        json(res, { error: `Invalid expires_in_days (1-${DEVICE_KEY_MAX_EXPIRY_DAYS})` }, 400)
+        return true
+      }
+      expiresInDays = n
+    }
+    const minted = createAgentToken(agentId, label, scope, { expiresInDays })
+    logger.info({ id: minted.id, agentId, scope, registered, expiresAt: minted.expiresAt }, 'agent token minted')
+    logConfigChange('security.agent_token_mint', null, `${agentId} scope=${scope}`, auth!.kind)
+    // `token` is the one and only disclosure of the raw credential. The scope
+    // listing travels with it so whoever hands it over can see its reach.
+    json(res, {
+      ok: true,
+      id: minted.id,
+      agent_id: minted.agentId,
+      label: minted.label,
+      scope: minted.scope,
+      token: minted.token,
+      created_at: minted.createdAt,
+      expires_at: minted.expiresAt,
+      registered,
+      allows: describeAgentTokenScope(scope),
+    }, 201)
+    return true
+  }
+
+  const agentTokenMatch = /^\/api\/auth\/agent-tokens\/(\d+)$/.exec(path)
+  if (agentTokenMatch && method === 'DELETE') {
+    if (!kindAllowed(auth, AGENT_TOKEN_ADMIN_KINDS)) {
+      json(res, FORBIDDEN_KIND, 403)
+      return true
+    }
+    const id = Number(agentTokenMatch[1])
+    const existing = getAgentToken(id)
+    if (!existing || !revokeAgentToken(id)) {
+      json(res, { error: 'Agent token not found' }, 404)
+      return true
+    }
+    logger.info({ id, agentId: existing.agentId, scope: existing.scope }, 'agent token revoked')
+    logConfigChange('security.agent_token_revoke', null, `${existing.agentId} scope=${existing.scope}`, auth!.kind)
+    json(res, { ok: true })
     return true
   }
 

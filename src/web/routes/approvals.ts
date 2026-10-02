@@ -11,6 +11,7 @@ import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { resolveOwnerChatId } from '../../owner-chat.js'
 import { sendTelegramMessage } from '../telegram.js'
+import { agentTokenIdentityViolation } from '../agent-token-scope.js'
 import type { RouteContext } from './types.js'
 
 const AUTONOMY_CONFIG_PATH = join(PROJECT_ROOT, 'store', 'autonomy-config.json')
@@ -173,6 +174,13 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     const { agent_id, category, action_description, action_payload, timeout_seconds, content_hash } = body
     if (typeof agent_id !== 'string' || !agent_id.trim()) {
       json(res, { error: 'agent_id is required' }, 400)
+      return true
+    }
+    // Identity binding for scoped agent tokens: an approval request is what the
+    // owner sees and answers, so it must name the agent that actually asked.
+    const approvalViolation = agentTokenIdentityViolation(ctx.auth, agent_id, 'agent_id')
+    if (approvalViolation) {
+      json(res, { error: approvalViolation }, 403)
       return true
     }
     if (typeof category !== 'string' || !category.trim()) {

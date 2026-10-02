@@ -161,10 +161,10 @@ async function main(): Promise<void> {
     }
     case 'security:reset': {
       const r = securityReset('cli')
-      await notifySecurityEvent(`🚨 Biztonsági reset futott a dashboard CLI-ből: ${r.deviceKeysRevoked} eszközkulcs visszavonva, ${r.sessionsCleared} böngésző-munkamenet törölve. A hozzáférési token és a jelszavak változatlanok.`)
+      await notifySecurityEvent(`🚨 Biztonsági reset futott a dashboard CLI-ből: ${r.deviceKeysRevoked} eszközkulcs, ${r.agentTokensRevoked} ágens-token visszavonva, ${r.sessionsCleared} böngésző-munkamenet törölve. A hozzáférési token és a jelszavak változatlanok.`)
       process.stdout.write(
-        `Security reset done: ${r.deviceKeysRevoked} device key(s) revoked, ${r.sessionsCleared} browser session(s) cleared.\n` +
-        'Passwords and the dashboard token are untouched. Devices must be re-enrolled with new keys.\n',
+        `Security reset done: ${r.deviceKeysRevoked} device key(s) revoked, ${r.agentTokensRevoked} agent token(s) revoked, ${r.sessionsCleared} browser session(s) cleared.\n` +
+        'Passwords and the dashboard token are untouched. Devices and remote agents must be re-enrolled with new credentials.\n',
       )
       break
     }
