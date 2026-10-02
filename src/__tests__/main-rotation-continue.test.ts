@@ -14,6 +14,8 @@ function verdict(over: Partial<Parameters<typeof mainRotationContinueVerdict>[0]
   return mainRotationContinueVerdict({
     explicitDir: null,
     activeRotatedDir: null,
+    activeIsTokenPlan: false,
+    fleetToken: true,
     targetConfigDir: null,
     sharedDir: SHARED,
     projectRoot: ROOT,
@@ -24,7 +26,23 @@ function verdict(over: Partial<Parameters<typeof mainRotationContinueVerdict>[0]
 
 describe('mainRotationContinueVerdict', () => {
   it('token plan to token plan: the shared dir stays, its transcripts are there -> ok', () => {
+    expect(verdict({ activeIsTokenPlan: true })).toEqual({ ok: true })
+  })
+
+  it('first plan assignment with the fleet token: the plain isolated dir is the shared one -> ok', () => {
     expect(verdict()).toEqual({ ok: true })
+  })
+
+  it('first plan assignment without the fleet token: the main agent runs on the shared ~/.claude -> config-dir-changes', () => {
+    expect(verdict({ fleetToken: false })).toEqual({ ok: false, reason: 'config-dir-changes' })
+  })
+
+  it('an active token plan without the fleet token still runs in the shared dir -> ok', () => {
+    expect(verdict({ activeIsTokenPlan: true, fleetToken: false })).toEqual({ ok: true })
+  })
+
+  it('the dirs are compared resolved: a configDir plan that IS the shared dir, to a token plan -> ok', () => {
+    expect(verdict({ activeRotatedDir: `${SHARED}/` })).toEqual({ ok: true })
   })
 
   it('no prior conversation in the dir -> no-prior-session (claude --continue would exit at once)', () => {

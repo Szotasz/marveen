@@ -39,14 +39,19 @@ vi.mock('../web/channel-monitor.js', () => ({
 const restartAgentProcess = vi.fn(
   async (_name: string): Promise<{ ok: boolean; pid?: number; error?: string }> => ({ ok: true, pid: 123 }),
 )
-// The continue check's inputs (8c338dc4): the explicit and the active rotated config dir are set per test;
-// the shared dir is the real path shape under the temp PROJECT_ROOT.
+// The continue check's inputs (8c338dc4): the explicit and the active rotated config dir, the active
+// token plan and the fleet token are set per test; the shared dir is the real path shape under the
+// temp PROJECT_ROOT.
 let explicitMainDir: string | null = null
 let activeRotatedDir: string | null = null
+let activeRotatedTokenId: string | null = null
+let fleetTokenPresent = true
 vi.mock('../web/agent-process.js', () => ({
   restartAgentProcess: (name: string) => restartAgentProcess(name),
   resolveMainAgentConfigDir: () => explicitMainDir,
   resolveMainAgentRotatedConfigDir: () => activeRotatedDir,
+  resolveMainAgentRotatedTokenSecretId: () => activeRotatedTokenId,
+  hasFleetOauthToken: () => fleetTokenPresent,
   mainAgentSharedConfigDir: () => join(tmpRoot, '.channels-config'),
 }))
 
@@ -584,6 +589,8 @@ describe('POST /api/claude-plans/rotate with "continue" (8c338dc4)', () => {
     fleetEnabled = false
     explicitMainDir = null
     activeRotatedDir = null
+    activeRotatedTokenId = null
+    fleetTokenPresent = true
     vaultSecrets.clear()
     hardRestartMarveenChannels.mockClear().mockReturnValue({ ok: true })
     restartMainForRotationContinue.mockClear().mockResolvedValue({ ok: true, mode: 'continue' })
@@ -660,6 +667,31 @@ describe('POST /api/claude-plans/rotate with "continue" (8c338dc4)', () => {
     expect(out.body.error).toContain('no-prior-session')
     expect(stateOnDisk()).toBeNull()
     expect(restartMainForRotationContinue).not.toHaveBeenCalled()
+  })
+
+  it('no active plan and no fleet token (the main agent is on the shared ~/.claude): 409 config-dir-changes, nothing written', async () => {
+    await seedTokenPlans()
+    mkdirSync(transcripts, { recursive: true })
+    fleetTokenPresent = false
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'tok-b', continue: true })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(409)
+    expect(out.body.error).toContain('config-dir-changes')
+    expect(stateOnDisk()).toBeNull()
+    expect(hardRestartMarveenChannels).not.toHaveBeenCalled()
+    expect(restartMainForRotationContinue).not.toHaveBeenCalled()
+  })
+
+  it('an active token plan without the fleet token keeps the shared dir: the --continue restart', async () => {
+    await seedTokenPlans()
+    mkdirSync(transcripts, { recursive: true })
+    fleetTokenPresent = false
+    activeRotatedTokenId = 'claude-plan-token-tok-a'
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'tok-b', continue: true })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body.mode).toBe('continue')
+    expect(restartMainForRotationContinue).toHaveBeenCalledTimes(1)
   })
 
   it('the resume failed and the fresh fallback worked: 200 with mode fresh-fallback, the fleet leg as usual', async () => {

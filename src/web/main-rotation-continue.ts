@@ -16,7 +16,9 @@
 //      <config dir>/projects/<encoded project>/. Every token-mode plan shares the
 //      one generic isolated dir, so a token-to-token switch keeps it; a plan with
 //      its own configDir does not, and --continue there would resume a stale
-//      conversation of that dir, or nothing at all.
+//      conversation of that dir, or nothing at all. Neither does a first plan
+//      assignment without the fleet token: until then the main agent runs on the
+//      shared ~/.claude, and the token-mode plan moves it to the isolated dir.
 //   2. there must be a prior conversation in that dir: on an empty projects dir
 //      claude exits at once (the same probe startAgentProcess makes for sub-agents).
 import { existsSync } from 'node:fs'
@@ -31,6 +33,10 @@ export function mainRotationContinueVerdict(input: {
   explicitDir: string | null
   /** resolveMainAgentRotatedConfigDir(), read BEFORE the rotation state is written: the active plan's own configDir. */
   activeRotatedDir: string | null
+  /** resolveMainAgentRotatedTokenSecretId() !== null, read BEFORE the write: the active plan is a token-mode plan. */
+  activeIsTokenPlan: boolean
+  /** hasFleetOauthToken(): with no active plan, the main agent has the isolated dir only with the fleet token. */
+  fleetToken: boolean
   /** The target plan's own configDir; null for a token-mode plan. */
   targetConfigDir: string | null
   /** The generic isolated dir every token-mode plan shares (mainAgentSharedConfigDir()). */
@@ -39,12 +45,16 @@ export function mainRotationContinueVerdict(input: {
   projectRoot: string
   exists?: (path: string) => boolean
 }): ContinueVerdict {
-  const norm = (p: string | null): string | null => (p ? resolve(p) : null)
+  // The dir now and the dir after the switch, in resolveMainConfigDecision()'s order (the route has
+  // already required MAIN_AGENT_ISOLATED_CONFIG=1): the explicit dir, else the plan's own configDir,
+  // else the shared isolated dir -- which, with no active plan, needs the fleet token; without it the
+  // main agent runs on the shared ~/.claude (null), and no plan can keep that.
   const before = input.explicitDir ?? input.activeRotatedDir
-  const after = input.explicitDir ?? input.targetConfigDir
-  if (norm(before) !== norm(after)) return { ok: false, reason: 'config-dir-changes' }
+    ?? (input.activeIsTokenPlan || input.fleetToken ? input.sharedDir : null)
+  const after = resolve(input.explicitDir ?? input.targetConfigDir ?? input.sharedDir)
+  if (before === null || resolve(before) !== after) return { ok: false, reason: 'config-dir-changes' }
   const exists = input.exists ?? existsSync
-  const transcripts = join(before ?? input.sharedDir, 'projects', encodeClaudeProjectDir(input.projectRoot))
+  const transcripts = join(after, 'projects', encodeClaudeProjectDir(input.projectRoot))
   if (!exists(transcripts)) return { ok: false, reason: 'no-prior-session' }
   return { ok: true }
 }

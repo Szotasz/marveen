@@ -24,7 +24,10 @@ import { setSecret, deleteSecret, getSecret } from '../vault.js'
 import { readClaudePlansState, writeClaudePlansState, applyRotation, recordPlanObservation } from '../claude-plans-state.js'
 import { probePlanUsage, observationFromProbe, usageFromProbe } from '../../claude-plan-usage-probe.js'
 import { agentDir, writeAgentClaudePlan } from '../agent-config.js'
-import { restartAgentProcess, resolveMainAgentConfigDir, resolveMainAgentRotatedConfigDir, mainAgentSharedConfigDir } from '../agent-process.js'
+import {
+  restartAgentProcess, resolveMainAgentConfigDir, resolveMainAgentRotatedConfigDir, resolveMainAgentRotatedTokenSecretId,
+  hasFleetOauthToken, mainAgentSharedConfigDir,
+} from '../agent-process.js'
 import { hardRestartMarveenChannels, restartMainForRotationContinue } from '../channel-monitor.js'
 import { rotationReadiness } from '../claude-rotation-heartbeat.js'
 import { mainRotationContinueVerdict, type ContinueRestartResult } from '../main-rotation-continue.js'
@@ -286,6 +289,8 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
         const verdict = mainRotationContinueVerdict({
           explicitDir: resolveMainAgentConfigDir(),
           activeRotatedDir: resolveMainAgentRotatedConfigDir(),
+          activeIsTokenPlan: resolveMainAgentRotatedTokenSecretId() !== null,
+          fleetToken: hasFleetOauthToken(),
           targetConfigDir: target.configDir ?? null,
           sharedDir: mainAgentSharedConfigDir(),
           projectRoot: PROJECT_ROOT,
