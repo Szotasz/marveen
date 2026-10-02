@@ -136,11 +136,33 @@ export function hasServiceAccount(): boolean {
   }
 }
 
+/**
+ * A private key readable by group or others is refused, the way ssh refuses a
+ * loose identity file: the docs ask for `chmod 600`, and nothing used to check.
+ * Exported for tests. Checked on EVERY load, not only when the cache refreshes:
+ * `chmod` changes ctime, not mtime, so the mtime-keyed cache would never notice.
+ */
+export function assertPrivateKeyMode(mode: number, path: string): void {
+  if ((mode & 0o077) !== 0) {
+    throw new Error(
+      `Service-account key ${path} is readable by group or others (mode ${(mode & 0o777).toString(8)}); `
+      + `refusing to use it. Fix: chmod 600 ${path}`,
+    )
+  }
+}
+
 function loadServiceAccount(): ServiceAccountKey {
   // Same mtime-invalidation contract as loadTokens: a key rotated by another
   // process must not be masked by our in-memory copy.
   let currentMtime = 0
-  try { currentMtime = statSync(SERVICE_ACCOUNT_PATH).mtimeMs } catch { /* fall through to readFileSync error */ }
+  try {
+    const st = statSync(SERVICE_ACCOUNT_PATH)
+    currentMtime = st.mtimeMs
+    assertPrivateKeyMode(st.mode, SERVICE_ACCOUNT_PATH)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+    /* missing -- fall through to the readFileSync error */
+  }
   if (!cachedServiceAccount || cachedServiceAccount.mtimeMs !== currentMtime) {
     const parsed = JSON.parse(readFileSync(SERVICE_ACCOUNT_PATH, 'utf-8')) as ServiceAccountKey
     if (!parsed.client_email || !parsed.private_key) {
@@ -391,13 +413,15 @@ export async function listCalendars(): Promise<CalendarSummary[]> {
     })
     if (retry.status !== 200) {
       logger.error({ status: retry.status, body: retry.data }, 'Google calendarList error after refresh')
-      return []
+      // Same rule as getCalendarEvents (5E0A32B0): throw, never return []. An
+      // empty list here reads as "nothing shared with this identity".
+      throw new Error(`Google calendarList error after refresh: ${retry.status}`)
     }
     return (JSON.parse(retry.data) as CalendarListEntries).items ?? []
   }
   if (status !== 200) {
     logger.error({ status, body: data }, 'Google calendarList error')
-    return []
+    throw new Error(`Google calendarList error: ${status}`)
   }
   return (JSON.parse(data) as CalendarListEntries).items ?? []
 }
@@ -478,13 +502,15 @@ export async function listDriveFiles(query?: string, pageSize = 50): Promise<Dri
     })
     if (retry.status !== 200) {
       logger.error({ status: retry.status, body: retry.data }, 'Google Drive list error after refresh')
-      return []
+      // Throw, never return []: on a service account an empty list already
+      // means "nothing shared yet", so an error must not look like it.
+      throw new Error(`Google Drive list error after refresh: ${retry.status}`)
     }
     return (JSON.parse(retry.data) as DriveListResponse).files ?? []
   }
   if (status !== 200) {
     logger.error({ status, body: data }, 'Google Drive list error')
-    return []
+    throw new Error(`Google Drive list error: ${status}`)
   }
   return (JSON.parse(data) as DriveListResponse).files ?? []
 }
@@ -498,15 +524,15 @@ export async function listDriveFiles(query?: string, pageSize = 50): Promise<Dri
  * problem, which sends you off checking the sharing settings for a file that
  * was shared correctly all along.
  *
- * Returns null on failure rather than throwing: a caller summarising several
- * files should lose the one it could not read, not the whole summary. The
- * failure is logged, so it is never silent.
+ * Throws on failure, like the rest of this file: a null would let a caller
+ * treat an unreadable file as an empty one. A caller summarising several files
+ * catches per file, so it loses only the one it could not read.
  *
  * Binary formats (PDF, images) are NOT decoded here -- a PDF read as UTF-8 is
  * mojibake that looks like data. Callers that need those should fetch the
  * bytes and use a real extractor.
  */
-export async function readDriveFileText(fileId: string, mimeType?: string): Promise<string | null> {
+export async function readDriveFileText(fileId: string, mimeType?: string): Promise<string> {
   const token = await getValidAccessToken()
   const isGoogleNative = (mimeType ?? '').startsWith('application/vnd.google-apps.')
   const url = driveDownloadUrl(fileId, mimeType)
@@ -523,13 +549,13 @@ export async function readDriveFileText(fileId: string, mimeType?: string): Prom
     })
     if (retry.status !== 200) {
       logger.error({ status: retry.status, fileId }, 'Google Drive read error after refresh')
-      return null
+      throw new Error(`Google Drive read error after refresh: ${retry.status}`)
     }
     return retry.data
   }
   if (status !== 200) {
     logger.error({ status, fileId, isGoogleNative }, 'Google Drive read error')
-    return null
+    throw new Error(`Google Drive read error: ${status}`)
   }
   return data
 }

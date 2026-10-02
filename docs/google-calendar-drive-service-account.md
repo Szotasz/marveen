@@ -30,6 +30,11 @@ mailbox without Google Workspace domain-wide delegation, so Gmail stays on OAuth
    chmod 600 ~/.config/marveen/google-service-account.json
    ```
 
+   The `chmod 600` is enforced: a key file readable by group or others is
+   refused, and the error names the `chmod` that fixes it. Like ssh with a
+   loose identity file, it is better to stop than to run with a private key
+   anyone on the machine can read.
+
 4. **Share** what the agents should read with the service account's address
    (the `client_email` field in the key file, e.g.
    `my-bot@my-project.iam.gserviceaccount.com`):
