@@ -25,6 +25,7 @@ import { getLastInboundModality, setLastInboundModality } from '../voice-modalit
 import { buildTtsDirective, resolveAgentChannelStateDir, inboundIsAudio, mainChannelStateDirFor } from '../voice-directive.js'
 import { PROJECT_ROOT, STORE_DIR, VOICE_CALIBRATION_ALERT_AGENT } from '../../config.js'
 import { notifyChat } from '../../notify.js'
+import { holdVoiceNotice, isVoiceQuietTime, scheduleHeldVoiceFlush, VOICE_QUIET_END_HOUR, VOICE_QUIET_START_HOUR } from '../voice-quiet-hours.js'
 import { createAgentMessage } from '../../db.js'
 import type { RouteContext } from './types.js'
 
@@ -533,6 +534,7 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     // the wrong bot, or fail with 403 when they never started the main bot. For such an agent the server does not try
     // (noticeDelivered stays null), and the transcriptNotice below tells the agent to say it in its own reply.
     let noticeDelivered: boolean | null = null
+    let noticeHeld = false
     const needsChannelNotice =
       transcriptStatus === 'no-transcript' || transcriptConfidence === 'uncertain' || transcriptConfidence === 'unreliable'
     const chatOnMainBot = stateDir === mainChannelStateDirFor('telegram')
@@ -543,13 +545,24 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
       const text = transcriptStatus === 'no-transcript'
         ? 'A hangüzenetedet megkaptam, de nem sikerült leiratozni, ezért nem tudom, mi hangzott el. Kérlek, írd le szöveggel.'
         : 'A hangüzenetedet megkaptam, de csak bizonytalanul értettem. A válaszomban visszamondom, mit értettem belőle -- kérlek javíts, ha félreértettem.'
-      noticeDelivered = await notifyChat(chatId, text)
-      if (!noticeDelivered) {
-        // The notice's OWN failure has to be visible. A silent catch here would
-        // rebuild the silence one layer up: the sender would get nothing, and
-        // nothing would say so.
-        logger.warn({ chatId, transcriptStatus, transcriptConfidence },
-          'voice: a csatorna-ertesites NEM ment ki -- a kuldo nem tudja, hogy baj volt a leirattal')
+      const now = Date.now()
+      if (isVoiceQuietTime(now)) {
+        // 75c3d163 G2: the owners' quiet period (23:00-07:00 Budapest) holds this
+        // server-initiated message; it goes out once per chat, combined, after 07:00 (src/web/voice-quiet-hours.ts).
+        holdVoiceNotice({ chatId, text, heldAt: now })
+        scheduleHeldVoiceFlush(now, notifyChat)
+        noticeHeld = true
+        logger.info({ chatId, transcriptStatus, transcriptConfidence },
+          'voice: csatorna-ertesites a csendes idoszak vegere halasztva (23:00-07:00 Budapest)')
+      } else {
+        noticeDelivered = await notifyChat(chatId, text)
+        if (!noticeDelivered) {
+          // The notice's OWN failure has to be visible. A silent catch here would
+          // rebuild the silence one layer up: the sender would get nothing, and
+          // nothing would say so.
+          logger.warn({ chatId, transcriptStatus, transcriptConfidence },
+            'voice: a csatorna-ertesites NEM ment ki -- a kuldo nem tudja, hogy baj volt a leirattal')
+        }
       }
     }
 
@@ -558,6 +571,8 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     if (needsChannelNotice && transcriptNotice) {
       if (noticeDelivered === true) {
         if (transcriptConfidence === 'uncertain') transcriptNotice += ' A kuldo mar kapott egy csatorna-jelzest, hogy ezt varja tolunk.'
+      } else if (noticeHeld) {
+        transcriptNotice += ` A KULDO MEG NEM KAPOTT JELZEST: csendes idoszak (${VOICE_QUIET_START_HOUR}:00-0${VOICE_QUIET_END_HOUR}:00 Budapest), a szerver a jelzest 0${VOICE_QUIET_END_HOUR}:00 utan egyben kuldi el neki.`
       } else {
         const ok = chatOnMainBot ? 'a csatorna-jelzes nem ment ki' : 'a sajat botodon irt, a szerver csak a fo bottal kuld'
         const mit = transcriptStatus === 'no-transcript' ? 'nem sikerult leiratozni' : 'csak bizonytalanul ertettuk'

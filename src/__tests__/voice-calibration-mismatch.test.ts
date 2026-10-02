@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { mkdirSync, rmSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -124,9 +124,15 @@ beforeEach(async () => {
   h.notifyOk = true
   h.stateDir = null
   h.failNextMessage = false
+  // A fixed DAYTIME clock (12:00 Budapest): the channel notice keeps the owners' quiet period (75c3d163 G2), so a test
+  // that expects a notice must not depend on the hour the suite happens to run at.
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-07-15T10:00:00Z'))
   vi.resetModules()
   voice = await import('../web/routes/voice.js')
 })
+
+afterEach(() => { vi.useRealTimers() })
 
 afterAll(() => rmSync(h.dir, { recursive: true, force: true }))
 
@@ -334,5 +340,57 @@ describe('75c3d163 G1: the channel notice goes out only on the main bot, and the
     expect(body.noticeDelivered).toBe(false)
     expect(body.transcriptNotice).toContain('A KULDOT A SZERVER NEM ERTESITETTE (a csatorna-jelzes nem ment ki)')
     expect(body.transcriptNotice).not.toContain('mar kapott egy csatorna-jelzest')
+  })
+})
+
+describe('75c3d163 G2: the channel notice keeps the owners quiet period (23:00-07:00 Budapest)', () => {
+  const directive = async () => {
+    const res = { status: 0, body: '', writeHead(s: number) { this.status = s }, end(b: string) { this.body = b } }
+    const url = new URL(`http://x/api/voice/directive?agent=tesztagens&chat=123456789&file=${FILE_ID}&kind=voice`)
+    await voice.tryHandleVoice({ req: {} as never, res: res as never, path: '/api/voice/directive', method: 'GET', url })
+    return JSON.parse(res.body)
+  }
+  const uncertain = () => { h.run = { stdout: 'Sziasztok!\n', stderr: diag({ model: voice.CALIBRATED_STT_MODEL, revision: REV, nsp: '0.907' }), code: 0 } }
+  const silent = () => { h.run = { stdout: '', stderr: diag({ model: voice.CALIBRATED_STT_MODEL, revision: REV, seg: 0, nsp: '', temp: '' }), code: 0 } }
+
+  it('NEGATIVE: a voice message at 23:30 Budapest sends nothing at once, and the agent is told the notice is held', async () => {
+    vi.setSystemTime(new Date('2026-07-15T21:30:00Z')) // 23:30 CEST
+    uncertain()
+    const body = await directive()
+    expect(body.transcriptConfidence).toBe('uncertain')
+    expect(h.notified).toHaveLength(0)
+    expect(body.noticeDelivered).toBeNull()
+    expect(body.transcriptNotice).toContain('A KULDO MEG NEM KAPOTT JELZEST: csendes idoszak (23:00-07:00 Budapest)')
+    expect(body.transcriptNotice).not.toContain('mar kapott egy csatorna-jelzest')
+    expect(body.transcriptNotice).not.toContain('NEM ERTESITETTE')
+  })
+
+  it('POSITIVE: after 07:00 the notices held overnight go out once, combined for the chat', async () => {
+    vi.setSystemTime(new Date('2026-07-15T21:30:00Z')) // 23:30
+    uncertain()
+    await directive()
+    vi.setSystemTime(new Date('2026-07-16T02:00:00Z')) // 04:00
+    silent()
+    await directive()
+    expect(h.notified).toHaveLength(0)
+    const quiet = await import('../web/voice-quiet-hours.js')
+    const { notifyChat } = await import('../notify.js')
+    expect(await quiet.flushHeldVoiceNotices(Date.parse('2026-07-16T04:59:00Z'), notifyChat)).toBe(0) // 06:59: still held
+    expect(h.notified).toHaveLength(0)
+    expect(await quiet.flushHeldVoiceNotices(Date.parse('2026-07-16T05:00:30Z'), notifyChat)).toBe(1) // 07:00:30
+    expect(h.notified).toHaveLength(1)
+    expect(h.notified[0].chatId).toBe('123456789')
+    expect(h.notified[0].text).toContain('2 hangüzenetedről')
+    expect(h.notified[0].text).toContain('csak bizonytalanul értettem')
+    expect(h.notified[0].text).toContain('nem sikerült leiratozni')
+  })
+
+  it('CONTROL: at 22:59 Budapest the notice still goes out at once', async () => {
+    vi.setSystemTime(new Date('2026-07-15T20:59:00Z')) // 22:59 CEST
+    uncertain()
+    const body = await directive()
+    expect(h.notified).toHaveLength(1)
+    expect(body.noticeDelivered).toBe(true)
+    expect(body.transcriptNotice).toContain('mar kapott egy csatorna-jelzest')
   })
 })
