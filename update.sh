@@ -1515,6 +1515,12 @@ INSTALL_DIR="$1"; OLD_FULL="$2"; OLD_SHORT="$3"; PORT="$4"
 RESULT_FILE="$5"; BUILT="$6"; NEW_SHORT="$7"; NODE_PIN_DIR="$8"; NOTIFY="${9:-0}"
 [ -n "$NODE_PIN_DIR" ] && export PATH="$NODE_PIN_DIR:$PATH"
 cd "$INSTALL_DIR" 2>/dev/null || true
+# c68d90eb (B): the update lock for the whole restart and rollback. The setsid launchers hand fd 9 over (the same
+# lock, measured); a launcher that closed it (systemd-run --scope is documented to keep the caller's environment, not
+# measured here) would leave this run unlocked, so then it is taken here, after update.sh exits (at most a minute).
+if command -v flock >/dev/null 2>&1 && ! { [ -e "/proc/$$/fd/9" ] && flock -n 9; } 2>/dev/null; then
+  { exec 9>>"$INSTALL_DIR/store/update.lock" && flock -w 60 9; } 2>/dev/null || true
+fi
 
 _esc() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
 _write() { # status phase code message
