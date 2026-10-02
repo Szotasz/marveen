@@ -1,6 +1,7 @@
 import { MAIN_AGENT_ID } from '../config.js'
 import { findAgentMemoryByKeywords, saveAgentMemory, updateMemory } from '../db.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
+import { logger } from '../logger.js'
 
 // -- The owners' quiet period for the voice channel notice (75c3d163 G2) -----
 //
@@ -40,9 +41,25 @@ export function isVoiceQuietTime(nowMs: number): boolean {
   return hour >= VOICE_QUIET_START_HOUR || hour < VOICE_QUIET_END_HOUR
 }
 
+// bd849630 (2): an element that is not a numeric chat id (a wrong separator, a stray character) used
+// to drop out silently, so a mistyped list held nobody and said nothing. The count of the dropped elements goes to the
+// log once per setting value; the value itself is never logged, because chat ids identify people.
+let warnedQuietChatsValue: string | null = null
+
 /** The chats whose voice notice keeps the window: the VOICE_NOTICE_QUIET_CHATS setting, numeric ids only. */
 export function voiceQuietChats(raw: string | number = getEffectiveSettingValue('VOICE_NOTICE_QUIET_CHATS')): Set<string> {
-  return new Set(String(raw).split(',').map((s) => s.trim()).filter((s) => /^-?\d+$/.test(s)))
+  const value = String(raw)
+  const elements = value.split(',').map((s) => s.trim()).filter((s) => s !== '')
+  const valid = elements.filter((s) => /^-?\d+$/.test(s))
+  const invalid = elements.length - valid.length
+  if (invalid > 0 && value !== warnedQuietChatsValue) {
+    warnedQuietChatsValue = value
+    logger.warn(
+      { invalid, valid: valid.length },
+      'voice: VOICE_NOTICE_QUIET_CHATS has elements that are not numeric chat ids; they are ignored (comma-separated ids expected, the value is not logged)',
+    )
+  }
+  return new Set(valid)
 }
 
 /** True when this chat's notice has to wait: the chat is on the quiet list AND it is 23:00-07:00 Budapest. */

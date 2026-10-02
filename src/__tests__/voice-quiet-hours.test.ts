@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { logger } from '../logger.js'
 import {
   buildMorningVoiceNotice,
   isVoiceQuietTime,
@@ -124,5 +125,44 @@ describe('75c3d163 G2: the window holds only the recipients on the quiet list', 
     expect(voiceNoticeHeldFor('111000111', ms('2026-07-15T10:00:00Z'), lista)).toBe(false) // 12:00
     expect(voiceNoticeHeldFor('222000222', ms('2026-07-15T21:30:00Z'), lista)).toBe(false) // not on the list
     expect(voiceNoticeHeldFor('111000111', ms('2026-07-15T21:30:00Z'), new Set())).toBe(false) // empty list
+  })
+})
+
+describe('bd849630 (2): a malformed VOICE_NOTICE_QUIET_CHATS is not silent', () => {
+  it('a wrong separator holds nobody, and the count of the dropped elements goes to the log once, without the value', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+    try {
+      expect([...voiceQuietChats('333000333;444000444')]).toEqual([])
+      expect([...voiceQuietChats('333000333;444000444')]).toEqual([])
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(warn.mock.calls[0][0]).toEqual({ invalid: 1, valid: 0 })
+      expect(JSON.stringify(warn.mock.calls)).not.toMatch(/333000333|444000444/)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('a mixed list keeps the valid ids and counts the bad element; a changed bad value is logged again', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+    try {
+      expect([...voiceQuietChats('555000555, x1, -600600')].sort()).toEqual(['-600600', '555000555'])
+      expect(warn.mock.calls.map((c) => c[0])).toEqual([{ invalid: 1, valid: 2 }])
+      expect([...voiceQuietChats('555000555 x 666000666')]).toEqual([])
+      expect(warn.mock.calls.map((c) => c[0])).toEqual([{ invalid: 1, valid: 2 }, { invalid: 1, valid: 0 }])
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('a valid list, an empty one and stray commas log nothing', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+    try {
+      expect([...voiceQuietChats('777000777, -800800')].sort()).toEqual(['-800800', '777000777'])
+      expect([...voiceQuietChats('')]).toEqual([])
+      expect([...voiceQuietChats(' , 777000777 ,, ')]).toEqual(['777000777'])
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
   })
 })
