@@ -803,6 +803,11 @@ export function initDatabase(dbPathOverride?: string): void {
   // Composite index for thread-listing queries that filter on (from_agent, to_agent) without a status
   // predicate -- the status index above does not cover these and causes full table scans at scale.
   db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_messages_thread ON agent_messages(from_agent, to_agent, created_at)`)
+  // getRecipientQueueState runs RECIPIENT_LATENCY_SQL on every POST /api/messages,
+  // synchronously. Without this index it is a full scan plus a temp B-tree for
+  // the ORDER BY (measured upstream: ~15-18 ms at 33k rows); with it, an index
+  // lookup read newest-first.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_messages_delivered ON agent_messages(to_agent, delivered_at)`)
   // Card 06f062e4: the bus has no sender authentication -- from_agent is
   // self-declared and every sub-agent spawned under a parent shares that
   // parent's from_agent string, invisibly to the parent session and its
@@ -3380,6 +3385,17 @@ export interface RecipientQueueState {
 /** How many recent deliveries the latency estimate is drawn from. */
 const QUEUE_LATENCY_SAMPLE = 10
 
+/**
+ * The newest QUEUE_LATENCY_SAMPLE deliveries to one recipient. Exported so the
+ * test can check the plan of THIS statement (idx_agent_messages_delivered), not
+ * of a copy that could drift from it.
+ */
+export const RECIPIENT_LATENCY_SQL = `SELECT (delivered_at - created_at) AS latency
+       FROM agent_messages
+      WHERE to_agent = ? AND delivered_at IS NOT NULL AND delivered_at >= created_at
+      ORDER BY delivered_at DESC
+      LIMIT ?`
+
 export function getRecipientQueueState(toAgent: string): RecipientQueueState {
   const now = Math.floor(Date.now() / 1000)
   const pending = db.prepare(
@@ -3391,13 +3407,8 @@ export function getRecipientQueueState(toAgent: string): RecipientQueueState {
   // Median, not mean: one message that sat overnight because the agent was
   // offline would drag a mean far past anything the sender will actually
   // experience.
-  const latencies = db.prepare(
-    `SELECT (delivered_at - created_at) AS latency
-       FROM agent_messages
-      WHERE to_agent = ? AND delivered_at IS NOT NULL AND delivered_at >= created_at
-      ORDER BY delivered_at DESC
-      LIMIT ?`,
-  ).all(toAgent, QUEUE_LATENCY_SAMPLE) as { latency: number }[]
+  const latencies = db.prepare(RECIPIENT_LATENCY_SQL)
+    .all(toAgent, QUEUE_LATENCY_SAMPLE) as { latency: number }[]
 
   let estimatedDelaySec: number | null = null
   if (latencies.length > 0) {

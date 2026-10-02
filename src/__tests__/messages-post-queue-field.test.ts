@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { mkdirSync, rmSync } from 'node:fs'
 import { EventEmitter } from 'node:events'
 import { agentDir } from '../web/agent-config.js'
@@ -6,6 +6,18 @@ import { initDatabase } from '../db.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { tryHandleMessages } from '../web/routes/messages.js'
 import type { RouteContext } from '../web/routes/types.js'
+
+// One known peer, so a federated address passes the route's peer checks. Only
+// qualified ("<system>/<agent>") recipients consult this; the local cases
+// below never do.
+vi.mock('../web/federation/config.js', async (orig) => ({
+  ...(await orig<typeof import('../web/federation/config.js')>()),
+  getFederationConfig: () => ({
+    enabled: true,
+    systemId: 'here',
+    peers: [{ id: 'peerhost', baseUrl: 'https://peer.example', outboundToken: 'x'.repeat(40), inboundToken: 'y'.repeat(40), trust: 'untrusted' }],
+  }),
+}))
 
 // The queue state is only worth anything if it reaches the sender, and
 // POST /api/messages has THREE success responses: the plain one, the
@@ -71,6 +83,15 @@ describe('POST /api/messages returns the recipient queue on every success path',
     expect(r.statusCode).toBe(200)
     expect(r.json.targetRunning).toBe(false)
     expect((r.json.queue as Queue).queueDepth).toBe(1)
+  })
+
+  it('a FEDERATED recipient gets no queue: its queue lives on the peer', async () => {
+    // A number computed here would count rows in OUR table for an agent whose
+    // inbox is somewhere else -- a wrong number is worse than none.
+    const r = await post({ from: MAIN_AGENT_ID, to: 'peerhost/someone', content: 'szia' })
+    expect(r.statusCode).toBe(200)
+    expect(r.json.to_agent).toBe('peerhost/someone')
+    expect(r.json).not.toHaveProperty('queue')
   })
 
   it('homoglyph warning still carries the queue', async () => {

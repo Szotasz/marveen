@@ -5,6 +5,7 @@ import {
   markMessageDelivered,
   getRecipientQueueState,
   getDb,
+  RECIPIENT_LATENCY_SQL,
 } from '../db.js'
 
 beforeAll(() => { initDatabase(':memory:') })
@@ -115,6 +116,32 @@ describe('getRecipientQueueState', () => {
     createAgentMessage('a', quiet, '1')
     expect(getRecipientQueueState(busy).queueDepth).toBe(3)
     expect(getRecipientQueueState(quiet).queueDepth).toBe(1)
+  })
+
+  it('draws the median from the NEWEST deliveries, not the oldest', () => {
+    // The estimate is for the next message, so it has to follow how the
+    // recipient drains NOW. Ten old deliveries at 1000 s, then ten recent ones
+    // at 60 s: the newest ten say 60. Reading the oldest ten would say 1000.
+    const agent = uniq('fresh')
+    const now = Math.floor(Date.now() / 1000)
+    const put = (deliveredAt: number, latency: number) => {
+      const m = createAgentMessage('a', agent, `keses ${latency}`)
+      getDb().prepare(
+        `UPDATE agent_messages SET status = 'delivered', delivered_at = ?, created_at = ? WHERE id = ?`,
+      ).run(deliveredAt, deliveredAt - latency, m.id)
+    }
+    for (let i = 0; i < 10; i++) put(now - 100_000 + i, 1000)
+    for (let i = 0; i < 10; i++) put(now - 100 + i, 60)
+    expect(getRecipientQueueState(agent).estimatedDelaySec).toBe(60)
+  })
+
+  it('the latency query is served by idx_agent_messages_delivered, without a temp B-tree', () => {
+    // This runs on every POST /api/messages. The plan of the statement the
+    // code actually prepares, so a changed query cannot keep a stale check green.
+    const plan = (getDb().prepare(`EXPLAIN QUERY PLAN ${RECIPIENT_LATENCY_SQL}`)
+      .all('any-agent', 10) as { detail: string }[]).map((r) => r.detail).join(' | ')
+    expect(plan).toContain('idx_agent_messages_delivered')
+    expect(plan).not.toContain('USE TEMP B-TREE')
   })
 
   it('ignores rows whose delivered_at precedes created_at (clock skew, hand-edited data)', () => {
