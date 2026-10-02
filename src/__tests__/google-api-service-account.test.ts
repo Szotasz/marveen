@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { generateKeyPairSync, createVerify } from 'node:crypto'
-import { buildServiceAccountJwt } from '../google-api.js'
+import { buildServiceAccountJwt, buildTokenExchangeBody } from '../google-api.js'
 
 // Why a service-account path exists at all (2026-08-20): the OAuth app sits in
 // Google's "Testing" state, where the refresh token dies every 7 days, and
@@ -94,5 +94,14 @@ describe('buildServiceAccountJwt', () => {
       const jwt = buildServiceAccountJwt(SA, SCOPES, NOW + i * 1000)
       expect(jwt).not.toMatch(/[+/=]/)
     }
+  })
+})
+
+describe('buildTokenExchangeBody', () => {
+  it('asks for the JWT-bearer grant and carries the assertion unchanged', () => {
+    const body = new URLSearchParams(buildTokenExchangeBody('a.b.c'))
+    expect(body.get('grant_type')).toBe('urn:ietf:params:oauth:grant-type:jwt-bearer')
+    expect(body.get('assertion')).toBe('a.b.c')
+    expect([...body.keys()].sort()).toEqual(['assertion', 'grant_type'])
   })
 })

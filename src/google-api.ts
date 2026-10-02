@@ -182,6 +182,18 @@ export function buildServiceAccountJwt(
   return `${signingInput}.${base64url(signature)}`
 }
 
+/**
+ * The form body of the JWT-bearer token exchange (RFC 7523). Exported so the
+ * request shape is testable: a wrong grant_type is accepted by every unit test
+ * that only inspects the signed assertion, and fails only against Google.
+ */
+export function buildTokenExchangeBody(assertion: string): string {
+  return new URLSearchParams({
+    grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+    assertion,
+  }).toString()
+}
+
 // Access tokens live an hour; cache until 5 minutes before expiry so a burst
 // of calls costs one token exchange, not one per call.
 let cachedSaToken: { token: string; expiresAtMs: number } | null = null
@@ -192,14 +204,10 @@ async function getServiceAccountAccessToken(forceNew = false): Promise<string> {
   }
   const sa = loadServiceAccount()
   const assertion = buildServiceAccountJwt(sa, SERVICE_ACCOUNT_SCOPES, Date.now())
-  const params = new URLSearchParams({
-    grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-    assertion,
-  })
   const { status, data } = await httpsRequest(
     sa.token_uri || 'https://oauth2.googleapis.com/token',
     { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
-    params.toString(),
+    buildTokenExchangeBody(assertion),
   )
   if (status !== 200) {
     // Do NOT keep a stale token around after a failed exchange -- a revoked
