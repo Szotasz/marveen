@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
+import { constants } from 'node:buffer'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
@@ -12,7 +13,8 @@ import {
 
 // df2e0d97 2b: the active-model and context-token readers read the newest transcript from its end, only as far back
 // as the answer needs, and per transcript only the bytes appended since the last call. The answers must stay the old
-// whole-file backward scan's, which is kept here as the reference.
+// whole-file backward scan's, which is kept here as the reference; past V8's string limit the old scan could not
+// answer at all (the last describe).
 
 function oldActiveModel(content: string, sinceUnixSec?: number): string | null {
   const lines = content.split('\n')
@@ -255,5 +257,22 @@ describe('a transcript that is not only appended to is read whole', () => {
     expect(readers().model).toBe('claude-a')
     writeFileSync(file, '{"type":"system","x":"' + 'z'.repeat(40) + '"}\n' + modelLine('claude-b').replace('claude-b', 'claude-b-longer') + '{"type":"system"}\n')
     expect(readers().model).toBe('claude-b-longer')
+  })
+})
+
+describe('a transcript past V8\'s string limit', () => {
+  // The old readers decoded the whole transcript into one string (readFileSync(file, 'utf-8')). Past the engine's
+  // string limit that threw inside their try, after every byte was read, so they answered null: the dashboard showed
+  // no model and no context for such a session, and the context guard could not measure it. The file here is sparse
+  // (a hole of NUL bytes before the last line), so its size costs neither disk nor memory.
+  it('still answers, from its last chunk', () => {
+    const line = JSON.stringify({ type: 'assistant', timestamp: iso(3900), message: { model: 'claude-huge', usage: { input_tokens: 5, cache_read_input_tokens: 95 } } }) + '\n'
+    writeFileSync(file, '')
+    truncateSync(file, constants.MAX_STRING_LENGTH + 1_000_000)
+    appendFileSync(file, '\n' + line)
+    expect(statSync(file).size).toBeGreaterThan(constants.MAX_STRING_LENGTH)
+    const before = transcriptScanBytesReadForTests()
+    expect(readers()).toEqual({ model: 'claude-huge', tokens: 100 })
+    expect(transcriptScanBytesReadForTests() - before).toBeLessThan(2 * (256 * 1024 + 64) + 1)
   })
 })

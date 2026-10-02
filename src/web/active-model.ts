@@ -25,7 +25,9 @@ const TTL_MS = 3000
 // scan is remembered by the file's identity (dev + ino), size and mtime and the start of its last line, so the next
 // call reads only the bytes appended since (Claude Code only appends), and an unchanged file is not read at all. The
 // answer is the old one: the same lines (split on newline, trimmed, blank ones skipped), tried from the last to the
-// first, the first that answers wins.
+// first, the first that answers wins. One difference: past V8's string limit (buffer.constants.MAX_STRING_LENGTH,
+// 536 870 888 on Node 22) the old whole-file decode threw inside the readers' try, after reading every byte, and they
+// answered null; the scan answers there too.
 const SCAN_CHUNK_BYTES = 256 * 1024
 const MAX_REMEMBERED_SCANS = 512
 type ScanState = {
