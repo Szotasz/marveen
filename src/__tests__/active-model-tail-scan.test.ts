@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
@@ -204,6 +204,13 @@ describe('what is read', () => {
     expect(readers(s2).model).toBeNull()
   })
 
+  it('an answer line longer than two chunks (it spans three 256 KiB reads) is read whole', () => {
+    const long = JSON.stringify({ type: 'assistant', timestamp: iso(3700), message: { model: 'claude-long', usage: { input_tokens: 7 }, content: 'ű'.repeat(400_000) } }) + '\n'
+    expect(Buffer.byteLength(long)).toBeGreaterThan(3 * 256 * 1024)
+    writeFileSync(file, filler(5) + long + filler(2))
+    expect(readers()).toEqual({ model: 'claude-long', tokens: 7 })
+  })
+
   it('a line cut by an unfinished write is read whole once it is finished', () => {
     const line = modelLine('claude-split', 3800)
     writeFileSync(file, filler(10) + line.slice(0, 40))
@@ -230,6 +237,17 @@ describe('a transcript that is not only appended to is read whole', () => {
     expect(readers().model).toBe('claude-b')
     truncateSync(file, modelLine('claude-a').length)
     expect(readers().model).toBe('claude-a')
+  })
+
+  it('rewritten in place to the SAME size (another mtime) with the end untouched: read whole, not from the last line', () => {
+    const tail = '{"type":"system","note":"' + 'w'.repeat(100) + '"}\n'
+    writeFileSync(file, modelLine('claude-a') + tail)
+    expect(readers().model).toBe('claude-a')
+    writeFileSync(file, modelLine('claude-b') + tail)
+    // the file system's mtime clock is coarse: two writes inside one tick may share it, so the test sets it apart
+    const later = new Date(Date.now() + 5_000)
+    utimesSync(file, later, later)
+    expect(readers().model).toBe('claude-b')
   })
 
   it('rewritten in place to a larger size (the same inode): the anchor before the last line no longer matches', () => {
