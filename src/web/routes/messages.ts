@@ -1,5 +1,5 @@
 import {
-  createAgentMessage, getPendingMessages, listAgentMessages,
+  createAgentMessage, getPendingMessages, listAgentMessages, getRecipientQueueState,
   getAgentConversation, getAgentConversationThreads,
   getKanbanSeqByIdPrefix,
   markMessageDone, markMessageFailed, getAgentMessage,
@@ -21,7 +21,7 @@ import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { isHeartbeatTemplateLeak, stampHeartbeatHeader } from '../heartbeat-header-stamp.js'
 import { buildFreshnessInfo, type MessageFreshness } from '../agent-message-wrap.js'
-import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
+import { parseQualifiedId, formatQualifiedId, isQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
 import type { RouteContext } from './types.js'
 
@@ -316,7 +316,19 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
     const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote)
-    logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note }, 'Agent message created')
+    // Backpressure, returned WITH the id rather than behind a second call:
+    // `{"id":N,"status":"pending"}` alone reads as "sent", and on a busy
+    // recipient it can be 80 minutes from true. See getRecipientQueueState for
+    // the measurement this came from. Federated recipients are skipped -- their
+    // queue lives on the peer, so any number we computed here would be a local
+    // artefact, and a wrong number is worse than none. Every success response
+    // below carries it, the warning ones included.
+    const queue = isQualifiedId(storedTo) ? undefined : getRecipientQueueState(storedTo)
+    const queueField = queue ? { queue } : {}
+    logger.info(
+      { id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note, queueDepth: queue?.queueDepth },
+      'Agent message created',
+    )
     // A LOCAL recipient that is not running never receives this: the router
     // retries for a while and then abandons it, and the failure notice goes to
     // the MAIN agent, not to the sender. The caller therefore sees a plain 200
@@ -338,6 +350,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       logger.warn({ id: msg.id, to: msg.to_agent }, 'Agent message queued for a STOPPED agent -- likely to be abandoned')
       json(res, {
         ...msg,
+        ...queueField,
         targetRunning: false,
         warning: `'${msg.to_agent}' nem fut -- indítsd el (POST /api/agents/${msg.to_agent}/start), várd meg amíg feláll, és küldd újra. Egy leállított ügynöknek küldött üzenet nem várakozik, hanem elveszik.`,
       })
@@ -359,10 +372,10 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (homoglyphs.length > 0) {
       const warning = formatHomoglyphWarning(homoglyphs)
       logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, `agent message created with ${warning}`)
-      json(res, { ...msg, homoglyph_warning: warning })
+      json(res, { ...msg, ...queueField, homoglyph_warning: warning })
       return true
     }
-    json(res, msg)
+    json(res, { ...msg, ...queueField })
     return true
   }
 
