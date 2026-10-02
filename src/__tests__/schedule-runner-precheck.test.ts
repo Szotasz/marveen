@@ -108,11 +108,11 @@ describe('schedule-runner pre-check integration (source-level)', () => {
     expect(preCheckIdx).toBeLessThan(fireIdx)
   })
 
-  it('calls runPreCheck in the pending-retry loop before attemptFireTask', () => {
+  it('runs the pre-check in the pending-retry loop before attemptFireTask (the thinned async form, df2e0d97 2a)', () => {
     const retryLoopIdx = SRC.indexOf('for (const row of pendingRows)')
     expect(retryLoopIdx).toBeGreaterThan(0)
     const retryLoop = SRC.slice(retryLoopIdx, SRC.indexOf('for (const task of tasks)'))
-    expect(retryLoop).toMatch(/runPreCheck\(taskDef\)/)
+    expect(retryLoop).toMatch(/await retryPreCheck\(taskDef, now\)/)
     expect(retryLoop).toMatch(/attemptFireTask\(taskDef,/)
   })
 
