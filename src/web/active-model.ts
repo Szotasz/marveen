@@ -18,6 +18,115 @@ import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 const cache = new Map<string, { value: string | null; expiresAt: number }>()
 const TTL_MS = 3000
 
+// df2e0d97 2b: the newest transcript is read from its END, in chunks, and only as far back as the answer needs.
+// The whole-file readFileSync it replaces ran for every running agent on GET /api/agents and in the context
+// monitors: in a 20.7-hour measurement of the dashboard's event loop (df2e0d97 phase 1) the main thread read
+// 296 GB, in bursts of up to 540 MB, while the agents' newest transcripts stood open. Per (reader, transcript) the
+// scan is remembered by the file's identity (dev + ino), size and mtime and the start of its last line, so the next
+// call reads only the bytes appended since (Claude Code only appends), and an unchanged file is not read at all. The
+// answer is the old one: the same lines (split on newline, trimmed, blank ones skipped), tried from the last to the
+// first, the first that answers wins.
+const SCAN_CHUNK_BYTES = 256 * 1024
+const MAX_REMEMBERED_SCANS = 512
+type ScanState = {
+  dev: number; ino: number; size: number; mtimeMs: number; lastLineStart: number; found: unknown; foundAt: number
+  // the bytes just before lastLineStart: an in-place rewrite (not an append) changes them, and is then read whole
+  anchor: Buffer
+}
+const ANCHOR_BYTES = 64
+const scans = new Map<string, ScanState>()
+let scanBytesRead = 0
+
+// The lines of [from, to) from the last to the first, each with the offset of its first byte. Split on the byte 0x0A
+// (a multibyte UTF-8 character never contains it), so a line is decoded whole; the segment after the last newline is
+// a line too, as in content.split('\n').
+function* linesBackward(fd: number, from: number, to: number): Generator<{ start: number; text: string }> {
+  let pos = to
+  let tail: Buffer[] = []
+  let tailStart = to
+  while (pos > from) {
+    const len = Math.min(SCAN_CHUNK_BYTES, pos - from)
+    pos -= len
+    const buf = Buffer.alloc(len)
+    let got = 0
+    while (got < len) {
+      const n = readSync(fd, buf, got, len - got, pos + got)
+      if (n === 0) break
+      got += n
+    }
+    scanBytesRead += got
+    let end = got
+    for (let i = got - 1; i >= 0; i--) {
+      if (buf[i] !== 0x0a) continue
+      const piece = buf.subarray(i + 1, end)
+      yield { start: pos + i + 1, text: (tail.length ? Buffer.concat([piece, ...tail]) : piece).toString('utf-8') }
+      tail = []
+      end = i
+    }
+    tail.unshift(buf.subarray(0, end))
+    tailStart = pos
+  }
+  yield { start: tailStart, text: Buffer.concat(tail).toString('utf-8') }
+}
+
+// The answer of `pick` on the last line of the transcript that has one, or null. `key` names the reader and its
+// parameters; the remembered scan is per key and file.
+function lastAnswerInTranscript<T>(key: string, file: string, pick: (entry: any) => T | undefined): T | null {
+  const st = statSync(file)
+  const memoKey = `${key}\u0000${file}`
+  const prev = scans.get(memoKey)
+  let from = 0
+  let base: { found: unknown; foundAt: number } = { found: null, foundAt: -1 }
+  if (prev && prev.dev === st.dev && prev.ino === st.ino) {
+    if (st.size === prev.size && st.mtimeMs === prev.mtimeMs) return prev.found as T | null
+    // Grown since: only the last (maybe unfinished) line and the appended bytes need reading, unless the answer
+    // stood in that last line itself (then it may have changed with it). Same size with another mtime, or a shorter
+    // file, is read whole.
+    if (st.size > prev.size && prev.foundAt < prev.lastLineStart && sameBytes(file, prev.lastLineStart - prev.anchor.length, prev.anchor)) {
+      from = prev.lastLineStart
+      base = { found: prev.found, foundAt: prev.foundAt }
+    }
+  }
+  let found: unknown = base.found
+  let foundAt = base.foundAt
+  let lastLineStart = from
+  let anchor: Buffer = Buffer.alloc(0)
+  const fd = openSync(file, 'r')
+  try {
+    let first = true
+    for (const { start, text } of linesBackward(fd, from, st.size)) {
+      if (first) { lastLineStart = start; first = false }
+      const line = text.trim()
+      if (!line) continue
+      let answer: T | undefined
+      try { answer = pick(JSON.parse(line)) } catch { continue /* a malformed line */ }
+      if (answer !== undefined) { found = answer; foundAt = start; break }
+    }
+    // the anchor of the next call: the bytes before the last line's start
+    const anchorLen = Math.min(ANCHOR_BYTES, lastLineStart)
+    anchor = Buffer.alloc(anchorLen)
+    if (anchorLen > 0) scanBytesRead += readSync(fd, anchor, 0, anchorLen, lastLineStart - anchorLen)
+  } finally { closeSync(fd) }
+  if (scans.size >= MAX_REMEMBERED_SCANS && !scans.has(memoKey)) scans.clear()
+  scans.set(memoKey, { dev: st.dev, ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, lastLineStart, found, foundAt, anchor })
+  return found as T | null
+}
+
+function sameBytes(file: string, at: number, want: Buffer): boolean {
+  if (want.length === 0) return true
+  const got = Buffer.alloc(want.length)
+  const fd = openSync(file, 'r')
+  try {
+    if (readSync(fd, got, 0, want.length, at) !== want.length) return false
+  } finally { closeSync(fd) }
+  scanBytesRead += want.length
+  return got.equals(want)
+}
+
+// Test hooks: the bytes the backward scans have read so far, and a reset of the remembered scans.
+export function transcriptScanBytesReadForTests(): number { return scanBytesRead }
+export function resetTranscriptScansForTests(): void { scans.clear(); scanBytesRead = 0; cache.clear(); ctxCache.clear() }
+
 // Resolve the session-log directory Claude Code writes for a working dir.
 // Logs live under <config-root>/projects/<encoded-working-dir>/, where the
 // config root is ~/.claude by default but an alternate one when the agent was
@@ -50,26 +159,17 @@ export function readActiveModelFromProjectDir(workingDir: string, sinceUnixSec?:
       cache.set(cacheKey, { value: null, expiresAt: now + TTL_MS })
       return null
     }
-    const content = readFileSync(join(dir, jsonls[0].f), 'utf-8')
-    const lines = content.split('\n')
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i].trim()
-      if (!line) continue
-      try {
-        const entry = JSON.parse(line)
-        const msg = entry?.message
-        const model = msg?.model
-        if (typeof model !== 'string' || model.startsWith('<')) continue
-        if (sinceUnixSec !== undefined) {
-          const ts = entry?.timestamp
-          if (typeof ts !== 'string') continue
-          const lineUnix = Math.floor(new Date(ts).getTime() / 1000)
-          if (!Number.isFinite(lineUnix) || lineUnix < sinceUnixSec) continue
-        }
-        value = model
-        break
-      } catch { /* skip malformed JSON line */ }
-    }
+    value = lastAnswerInTranscript<string>(`active-model:${sinceUnixSec ?? ''}`, join(dir, jsonls[0].f), (entry) => {
+      const model = entry?.message?.model
+      if (typeof model !== 'string' || model.startsWith('<')) return undefined
+      if (sinceUnixSec !== undefined) {
+        const ts = entry?.timestamp
+        if (typeof ts !== 'string') return undefined
+        const lineUnix = Math.floor(new Date(ts).getTime() / 1000)
+        if (!Number.isFinite(lineUnix) || lineUnix < sinceUnixSec) return undefined
+      }
+      return model
+    })
   } catch { /* fall through */ }
   cache.set(cacheKey, { value, expiresAt: now + TTL_MS })
   return value
@@ -192,22 +292,15 @@ export function readContextTokensFromProjectDir(workingDir: string, configDir?: 
         .map(f => ({ f, mtime: statSync(join(dir, f)).mtimeMs }))
         .sort((a, b) => b.mtime - a.mtime)
       if (jsonls.length > 0) {
-        const content = readFileSync(join(dir, jsonls[0].f), 'utf-8')
-        const lines = content.split('\n')
-        for (let i = lines.length - 1; i >= 0; i--) {
-          const line = lines[i].trim()
-          if (!line) continue
-          try {
-            const u = JSON.parse(line)?.message?.usage
-            if (u && typeof u === 'object') {
-              const inp = Number(u.input_tokens) || 0
-              const cr = Number(u.cache_read_input_tokens) || 0
-              const cc = Number(u.cache_creation_input_tokens) || 0
-              const total = inp + cr + cc
-              if (total > 0) { value = total; break }
-            }
-          } catch { /* skip malformed JSON line */ }
-        }
+        value = lastAnswerInTranscript<number>('context-tokens', join(dir, jsonls[0].f), (entry) => {
+          const u = entry?.message?.usage
+          if (!u || typeof u !== 'object') return undefined
+          const inp = Number(u.input_tokens) || 0
+          const cr = Number(u.cache_read_input_tokens) || 0
+          const cc = Number(u.cache_creation_input_tokens) || 0
+          const total = inp + cr + cc
+          return total > 0 ? total : undefined
+        })
       }
     }
   } catch { /* fall through */ }
