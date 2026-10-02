@@ -575,7 +575,7 @@ function heredocBodies(orig, masked) {
     const nl = orig.indexOf('\n', m.index + m[0].length)
     if (nl === -1) continue
     const rel = new RegExp(`^[ \\t]*${tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*$`, 'm').exec(orig.slice(nl + 1))
-    if (rel) out.push({ at: m.index, body: orig.slice(nl + 1, nl + 1 + rel.index) })
+    if (rel) out.push({ at: m.index, body: orig.slice(nl + 1, nl + 1 + rel.index), start: nl + 1, end: nl + 1 + rel.index + rel[0].length })
   }
   return out
 }
@@ -644,6 +644,10 @@ function writtenPath(argv) {
 //   - an external URL assigned in the same command to a name the judged code reads is that code's destination;
 //   - a local module the judged code imports (python import, a relative JS import/require) is judged too, to a small
 //     depth.
+// And what is NOT a command is not read as one (a week of the fleet's real commands, judged by the old and the new gate,
+// showed each of these as a false deny): a heredoc body (the stdin of the command that opened it), a case statement's
+// header and pattern lists, a client name a shell function shadows, a NAME=v that is an argument or a heredoc line (the
+// environment is the command's own assignments). A substitution sees the variables of the text around it.
 const ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/
 const LEAD_WORDS = new Set(['do', 'then', 'else', 'elif', '{', '(', '!'])
 // value: options whose value is the NEXT word (an attached value, -oL / -n5 / --opt=v, is one word anyway);
@@ -790,10 +794,12 @@ function localImports(body, lang, baseDir) {
 }
 const IMPORT_DEPTH = 2
 const IMPORT_FILES = 20
-// The external destinations of a code body and of the local modules it imports (to IMPORT_DEPTH, IMPORT_FILES files).
+// The external destinations of a code body and of the local modules it imports (to IMPORT_DEPTH, IMPORT_FILES files),
+// and the bodies read ({ body, lang }: the code itself first).
 function bodyDestinations(body, lang, baseDir) {
   const hosts = new Set(codeDestinations(body, lang))
   const seen = new Set()
+  const items = [{ body, lang }]
   let layer = [{ body, lang, dir: baseDir }]
   for (let d = 0; d < IMPORT_DEPTH && layer.length && seen.size < IMPORT_FILES; d++) {
     const next = []
@@ -804,11 +810,21 @@ function bodyDestinations(body, lang, baseDir) {
         seen.add(key)
         for (const h of codeDestinations(mod.body, mod.lang)) hosts.add(h)
         next.push(mod)
+        items.push({ body: mod.body, lang: mod.lang })
       }
     }
     layer = next
   }
-  return [...hosts]
+  return { hosts: [...hosts], items }
+}
+// Code that can make a network call at all: a network primitive of its language in the code (not in a string or a
+// comment), or a network client named anywhere (a subprocess / os.system command line). An environment URL reaches only
+// such code as a destination: a preview script that reads one to answer that request from a local file (every other
+// request aborted) has none, and was a false deny on the fleet's week. Browser automation is not a primitive (see
+// NET_PRIMITIVE).
+const NET_CLIENT_WORD = /\b(?:curl|wget|nc|ncat|netcat|socat|telnet|aria2c|xh)\b/
+function netCapable(items) {
+  return items.some(({ body, lang }) => NET_PRIMITIVE.test(maskCode(body, lang)) || NET_CLIENT_WORD.test(body))
 }
 // The hosts of external URLs assigned in the command to a name the code body reads FROM THE ENVIRONMENT (python
 // os.environ / getenv, JS process.env, ruby ENV, perl $ENV{}, php getenv / $_ENV, a shell $NAME). A same-named variable
@@ -816,33 +832,94 @@ function bodyDestinations(body, lang, baseDir) {
 function envUrlDestinations(body, env) {
   const out = []
   for (const [name, value] of Object.entries(env)) {
-    if (!isExternal(value)) continue
+    const host = SCHEME.test(value) ? destHost(value) : null // a $VAR or templated host is not a literal destination
+    if (!host || isLocalHost(host)) continue
     const n = name.replace(/[$]/g, '')
     const q = `\\s*['"]${n}['"]`
     const reads = new RegExp(`environ(?:\\.get)?\\s*[\\[(]${q}|getenv\\s*\\(${q}|process\\.env(?:\\.${n}(?![A-Za-z0-9_])|\\s*\\[${q})|\\bENV\\s*\\[${q}|\\$ENV\\{\\s*${n}\\s*\\}|\\$_ENV\\s*\\[${q}|\\$\\{?${n}(?![A-Za-z0-9_])`)
-    if (reads.test(body)) out.push(hostOf(value))
+    if (reads.test(body)) out.push(host)
   }
-  return out.filter(Boolean)
+  return out
+}
+// The environment this command gives the programs it starts, as far as the command itself sets it: the assignments
+// before a command word (`NAME=v cmd`, `env NAME=v cmd`, `NAME=v` alone) and those of a declaration (export, declare,
+// typeset, readonly, local). A NAME=v that is an ARGUMENT (`docker run -e NAME=v`, `make NAME=v`) is not, and neither
+// is a line of a heredoc body (`live` has the bodies blanked).
+const DECLARE = new Set(['export', 'declare', 'typeset', 'readonly', 'local'])
+function envAssignments(live, masked) {
+  const env = {}
+  for (const [a, b] of spans(masked)) {
+    const w = shellWords(live.slice(a, b))
+    const u = unwrapLaunchers(w)
+    const until = DECLARE.has(w[u.at]) ? w.length : u.at
+    for (let k = 0; k < until; k++) {
+      const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(w[k])
+      if (m) env[m[1]] = m[2]
+    }
+  }
+  return env
+}
+// A case statement's header (`case WORD in`) and each of its pattern lists (after `in`, `;;`, `;&` or `;;&`, up to the
+// `)`), in the masked text: the words there are patterns, and a `|` between them is not a pipe. A list with no `)` in
+// this text runs to its end: lifting a `$(...)` that holds a case statement cuts it at the pattern's `)`.
+function caseRanges(masked) {
+  const out = []
+  const patternList = (p) => {
+    while (p < masked.length && /\s/.test(masked[p])) p++
+    if (/^esac(?![\w-])/.test(masked.slice(p, p + 5))) return
+    const close = masked.indexOf(')', p)
+    out.push([p, close === -1 ? masked.length : close + 1])
+  }
+  for (const m of masked.matchAll(/(^|[;&|(\n]|\b(?:then|do|else)\b)([ \t]*case[ \t]+(?:\S+[ \t]+)?in)(?=\s)/g)) {
+    const at = m.index + m[1].length
+    out.push([at, at + m[2].length])
+    patternList(at + m[2].length)
+  }
+  for (const m of masked.matchAll(/;;&?|;&/g)) patternList(m.index + m[0].length)
+  return out
+}
+// The names this shell text defines as functions, at a command position (`name() {`, `function name`): a named client
+// of that name is the function, not the program (`http() { ...; }` and then `http 8443 host` in a test script).
+function definedFunctions(masked) {
+  const out = new Set()
+  for (const m of masked.matchAll(/(?:^|[;&|(){}\n])[ \t]*(?:function[ \t]+([A-Za-z_][\w.:-]*)|([A-Za-z_][\w.:-]*)[ \t]*\([ \t]*\))/g)) out.add(m[1] ?? m[2])
+  return out
+}
+// `text` with the ranges blanked (newlines kept, length kept).
+function blankRanges(text, ranges) {
+  if (!ranges.length) return text
+  const out = text.split('')
+  for (const [s, e] of ranges) for (let k = s; k < e && k < out.length; k++) if (out[k] !== '\n') out[k] = ' '
+  return out.join('')
 }
 
 export function classify(command, depth = 0, vendorHosts = new Set(), vendorDomains = new Set(), ctx = {}) {
   const norm = String(command ?? '').replace(/\\\r?\n/g, ' ')
   const { stripped: orig, inners } = liftSubstitutions(norm)
-  if (depth < 4) {
-    for (const inner of inners) { const r = classify(inner, depth + 1, vendorHosts, vendorDomains, ctx); if (r.deny) return r }
-  }
   const masked = maskInertLiterals(orig)
-  if (masked === null || masked.length !== orig.length) return { deny: false, reason: 'unparseable', hosts: [] }
+  const parsed = masked !== null && masked.length === orig.length
+  const funcs = new Set([...(ctx.funcs ?? []), ...(parsed ? definedFunctions(masked) : [])])
+  const docs = parsed ? heredocBodies(orig, masked) : []
+  // The text a span's WORDS are read from: a heredoc body with its terminator line (the stdin of the command that
+  // opened it; an interpreter or shell it is fed to judges it as a body, see (d)) and a case header or pattern list are
+  // not commands of this shell, so they are blanked (structure still comes from the masked text).
+  const liveText = parsed ? blankRanges(orig, [...docs.map((d) => [d.start, d.end]), ...caseRanges(masked)]) : orig
+  // a value is handed on as ONE word (asWord): pasted raw into a child's text, a quoted message broke its quoting
+  const realEnv = { ...(ctx.env ?? {}), ...Object.fromEntries(Object.entries(parsed ? envAssignments(liveText, masked) : {}).map(([k, v]) => [k, asWord(v)])) }
+  if (depth < 4) {
+    // a substitution runs in a subshell of this text: it sees its functions and its variables
+    for (const inner of inners) { const r = classify(inner, depth + 1, vendorHosts, vendorDomains, { ...ctx, funcs, env: realEnv }); if (r.deny) return r }
+  }
+  if (!parsed) return { deny: false, reason: 'unparseable', hosts: [] }
   const env = { ...(ctx.env ?? {}), ...collectAssignments(orig, masked) }
   const loops = collectLoops(orig, masked, env)
-  const docs = heredocBodies(orig, masked)
   const written = new Map() // absolute path -> the heredoc `cat > PATH` wrote earlier in this command
   let cwd = ctx.cwd ?? null
   const absPath = (p) => (/[$`*?]/.test(p) ? null : isAbsolute(p) ? p : cwd ? resolve(cwd, p) : null)
   // The program an interpreter reads from a pipe: the upstream heredoc, the file it cats, or the text it prints;
   // null when it is none of these.
   const pipedProgram = (pa, pb) => {
-    const pw = shellWords(expand(orig.slice(pa, pb), env))
+    const pw = shellWords(expand(liveText.slice(pa, pb), env))
     const u = unwrapLaunchers(pw)
     const name = (pw[u.at] ?? '').split('/').pop()
     const args = pw.slice(u.at + 1)
@@ -867,13 +944,13 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
     // Every loop reading AND the plain one: a loop variable can share its name with an assignment
     // elsewhere in the command (`for u in <local>; do ...; done; u=<external>; curl "$u"`), and a
     // loop-only reading would let the assigned value go unjudged.
-    const plain = expand(orig.slice(a, b), env)
-    const variants = loopVariants(orig.slice(a, b), env, loops)
+    const plain = expand(liveText.slice(a, b), env)
+    const variants = loopVariants(liveText.slice(a, b), env, loops)
     // (d) code bodies (see above): `cd`, a heredoc written to a file, an interpreter's heredoc or script.
     const av = shellWords(plain)
     const un = unwrapLaunchers(av)
     if (un.str && depth < 4) {
-      const r = classify(un.str, depth + 1, vendorHosts, vendorDomains, { cwd, env })
+      const r = classify(un.str, depth + 1, vendorHosts, vendorDomains, { cwd, env: realEnv }) // a new process: no functions
       if (r.deny) return { deny: true, reason: `wrapped-${r.reason}`, hosts: r.hosts }
     }
     const j = un.at
@@ -894,14 +971,14 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
         if (k !== -1 && rest[k + 1] !== undefined) { str = rest[k + 1]; strKind = 'shell-string' }
       } else if (word === 'eval' && rest.length) { str = rest.join(' '); strKind = 'eval' }
       if (str !== null) {
-        const r = classify(str, depth + 1, vendorHosts, vendorDomains, { cwd, env })
+        const r = classify(str, depth + 1, vendorHosts, vendorDomains, { cwd, env: realEnv, ...(strKind === 'eval' ? { funcs } : {}) })
         if (r.deny) return { deny: true, reason: `${strKind}-${r.reason}`, hosts: r.hosts }
       }
       if ((word === 'source' || word === '.') && rest[0]) {
         const abs = absPath(rest[0])
         const sbody = abs ? (written.get(abs) ?? readBody(abs)) : null
         if (sbody !== null) {
-          const r = classify(sbody, depth + 1, vendorHosts, vendorDomains, { cwd, env })
+          const r = classify(sbody, depth + 1, vendorHosts, vendorDomains, { cwd, env: realEnv, funcs })
           if (r.deny) return { deny: true, reason: `sourced-${r.reason}`, hosts: r.hosts }
         }
       }
@@ -930,11 +1007,12 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
       }
       if (body !== null && lang === 'sh') {
         if (depth < 4) {
-          const r = classify(body, depth + 1, vendorHosts, vendorDomains, { cwd, env })
+          const r = classify(body, depth + 1, vendorHosts, vendorDomains, { cwd, env: realEnv })
           if (r.deny) return { deny: true, reason: `${kind}-${r.reason}`, hosts: r.hosts }
         }
       } else if (body !== null && lang) {
-        const hosts = [...new Set([...bodyDestinations(body, lang, baseDir), ...envUrlDestinations(body, env)])]
+        const { hosts: own, items } = bodyDestinations(body, lang, baseDir)
+        const hosts = [...new Set([...own, ...(netCapable(items) ? envUrlDestinations(body, realEnv) : [])])]
           .filter((h) => !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
         if (hosts.length) return { deny: true, reason: `${kind}-external`, hosts }
       }
@@ -945,7 +1023,7 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
       const cmd = (tw[tu.at] ?? '').split('/').pop()
       let target = null
       if (cmd === 'curl') target = 'curl'
-      else if (NET_CLIENTS.has(cmd)) target = cmd
+      else if (NET_CLIENTS.has(cmd) && !funcs.has(cmd)) target = cmd
       else if (INTERPRETER.test(cmd) && tw.slice(tu.at + 1).some((w) => CODE_FLAG.has(w)) && NET_PRIMITIVE.test(text)) target = 'one-liner'
       if (!target) continue
       // curl: the destination is read from the ARGV only. A URL inside a flag VALUE (-d, -e, -H, a

@@ -817,6 +817,39 @@ describe('(e) the command a launcher, a string or a pipe hides (c83a6bf6)', () =
     expect(clientDestinations('http', ['GET', ':3000/x'])).toEqual([])
   })
 
+  // The false denies a week of the fleet's real commands showed on the first (e) draft.
+  it('what is not a command of this shell is not read as one: a heredoc body, a case pattern list, a shell function', () => {
+    // a heredoc body is the stdin of the command that opened it (here a remote shell); fed to a local shell it is judged
+    expect(judge(`ssh -o BatchMode=yes h 'bash -s' <<'R'\nf=$(mktemp)\ncurl -s -o "$f" https://${EXT}/x\nR`).deny).toBe(false)
+    expect(judge(`bash -s <<'R'\ncurl -s https://${EXT}/x\nR`)).toMatchObject({ deny: true, hosts: [EXT] })
+    // case pattern alternatives are not a pipe, inside a substitution too; a command after a pattern is read
+    expect(judge('for c in a b; do case "$c" in claude|bash|sh|"") ;; *) echo "$c" ;; esac; done').deny).toBe(false)
+    expect(judge('n=$(for c in a b; do case "$c" in x|bash) ;; *) echo "$c" ;; esac; done | sort)').deny).toBe(false)
+    expect(judge(`case "$1" in go) curl -s https://${EXT}/x ;; esac`)).toMatchObject({ deny: true, reason: 'curl-external', hosts: [EXT] })
+    expect(judge('sed s/a/b/ x.sh | bash')).toMatchObject({ deny: true, reason: 'pipe-program-unknown' })
+    // a shell function shadows the client of the same name
+    expect(judge('http() { echo "$1"; }; http 8443 h').deny).toBe(false)
+    expect(judge(`http ${EXT}/x`)).toMatchObject({ deny: true, reason: 'http-external', hosts: [EXT] })
+  })
+
+  it('the environment is what the command itself assigns: not an argument, not a heredoc line, not a templated host', () => withDir((dir) => {
+    writeFileSync(join(dir, 'env.py'), 'import os, urllib.request\nurllib.request.urlopen(os.environ["CEL"])\n')
+    expect(judge(`docker run -e CEL=https://${EXT}/x img; python3 env.py`, dir).deny).toBe(false)
+    expect(judge(`env CEL=https://${EXT}/x python3 env.py`, dir)).toMatchObject({ deny: true, hosts: [EXT] })
+    expect(judge(`export CEL=https://${EXT}/x; python3 env.py`, dir)).toMatchObject({ deny: true, hosts: [EXT] })
+    expect(judge('CEL=http://$PROXY_HOST:3128/x python3 env.py', dir).deny).toBe(false)
+    writeFileSync(join(dir, 'illeszt.js'), 'const u = process.env.CEL\nconsole.log(u === "x")\n')
+    expect(judge(`CEL=https://${EXT}/x node illeszt.js`, dir).deny).toBe(false) // code that reads the URL but cannot call it
+    expect(judge(`python3 - <<'PY'\nT = """\nCEL=https://${EXT}/x\ncurl $CEL\n"""\nopen("x.sh", "w").write(T)\nPY`, dir).deny).toBe(false)
+  }))
+
+  it('a substitution sees the variables of the text around it', () => {
+    expect(judge(`U="\${1:-https://${EXT}/x}"; r=$(curl -s "$U")`)).toMatchObject({ deny: true, reason: 'curl-external', hosts: [EXT] })
+    expect(judge('U=http://localhost:3420/x; r=$(curl -s "$U")').deny).toBe(false)
+    // a quoted message reaches it as one word, not as loose words read as destinations
+    expect(judge(`T='a "b c d" e'; r=$(curl -s -d "{\\"t\\":\\"$T\\"}" http://localhost:3420/api/x)`).deny).toBe(false)
+  })
+
   const LOCAL = join(ROOT, 'src', '__tests__', 'fixtures', 'egress-wrapper-forms.local.json')
   it.skipIf(!existsSync(LOCAL))('the forms the tester measured (local untracked fixture; skipped where it is absent)', () => withDir((dir) => {
     const fx = JSON.parse(readFileSync(LOCAL, 'utf-8')) as { files: Record<string, string>; forms: { cmd: string; deny: boolean }[] }
