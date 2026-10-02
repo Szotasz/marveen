@@ -18403,3 +18403,14 @@ async function openResearchDoc(agent, name) {
   window._initGanttViewSwitcher = initGanttViewSwitcher
   window.renderGantt = renderGantt
 })()
+
+// VIDEOREVIEW1002: reveal the sidebar link to the review page only when the
+// install has a video root configured. Failure-proof like the other optional
+// badges: an older backend (404) or an error just leaves the link hidden.
+fetch('/api/video-review/config')
+  .then((r) => (r.ok ? r.json() : null))
+  .then((cfg) => {
+    const link = document.getElementById('sbVideoReview')
+    if (link && cfg && cfg.enabled) link.hidden = false
+  })
+  .catch(() => {})
