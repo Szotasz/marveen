@@ -850,6 +850,14 @@ describe('(e) the command a launcher, a string or a pipe hides (c83a6bf6)', () =
     expect(judge(`T='a "b c d" e'; r=$(curl -s -d "{\\"t\\":\\"$T\\"}" http://localhost:3420/api/x)`).deny).toBe(false)
   })
 
+  it('a JS request object is not a call: built for an in-process handler it passes, fetched it is a destination', () => {
+    expect(judge(`node - <<'JS'\nconst h = require("./h"); h.GET(new Request("https://${EXT}/x"))\nJS`).deny).toBe(false)
+    expect(judge(`node - <<'JS'\nfetch(new Request("https://${EXT}/x"))\nJS`)).toMatchObject({ deny: true, hosts: [EXT] })
+    expect(judge(`node - <<'JS'\nconst r = new Request("https://${EXT}/x"); fetch(r)\nJS`)).toMatchObject({ deny: true, hosts: [EXT] })
+    expect(judge(`python3 - <<'PY'\nimport urllib.request\nurllib.request.urlopen(urllib.request.Request("https://${EXT}/x"))\nPY`))
+      .toMatchObject({ deny: true, hosts: [EXT] })
+  })
+
   const LOCAL = join(ROOT, 'src', '__tests__', 'fixtures', 'egress-wrapper-forms.local.json')
   it.skipIf(!existsSync(LOCAL))('the forms the tester measured (local untracked fixture; skipped where it is absent)', () => withDir((dir) => {
     const fx = JSON.parse(readFileSync(LOCAL, 'utf-8')) as { files: Record<string, string>; forms: { cmd: string; deny: boolean }[] }

@@ -513,11 +513,11 @@ const CALLEE = /(?:\burlopen|\bRequest|\bfetch|\bWebSocket|\bcreate_connection|\
 const HOST_CALLEE = /(?:create_connection|HTTPS?Connection)\s*\(\s*$/
 const SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i
 // `NAME = "..."` / `const NAME = '...'` / `$name = "..."`: a name bound to a string literal in the body.
-const BIND = /(?:^|[;\s{(,])(?:const\s+|let\s+|var\s+|my\s+|our\s+)?\$?([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*[A-Za-z_][\w.[\], ]*)?=(?![=>])\s*(?=[rRbBuUfF]{0,2}['"`])/gm
+const BIND = /(?:^|[;\s{(,])(?:const\s+|let\s+|var\s+|my\s+|our\s+)?\$?([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*[A-Za-z_][\w.[\], ]*)?=(?![=>])\s*(?=(?:new\s+(?:URL|Request)\s*\(\s*)?[rRbBuUfF]{0,2}['"`])/gm
 // The argument that starts at `pos` (masked and original align): a string literal, or a name.
 function argAt(orig, masked, pos) {
   let k = pos
-  const pre = /^(?:(?:url|uri|href)\s*=\s*)?(?:new\s+URL\s*\(\s*)?(\(\s*)?/.exec(masked.slice(k, k + 40))
+  const pre = /^(?:(?:url|uri|href)\s*=\s*)?(?:new\s+(?:URL|Request)\s*\(\s*)?(\(\s*)?/.exec(masked.slice(k, k + 40))
   k += pre[0].length
   const tuple = pre[1] !== undefined // connect((host, port)): the first element is a host
   const lit = /^([rRbBuUfF]{0,2})(['"`])/.exec(masked.slice(k, k + 3))
@@ -544,6 +544,9 @@ export function codeDestinations(body, lang) {
   }
   const hosts = new Set()
   for (const m of masked.matchAll(CALLEE)) {
+    // JS `new Request(url)` builds a request OBJECT (route-handler tests pass one to a handler in-process); it goes out
+    // only through a call, which reads the URL through it (fetch(new Request(url)), or a name bound to one).
+    if (lang === 'js' && /^Request\b/.test(m[0]) && /\bnew\s+$/.test(masked.slice(Math.max(0, m.index - 12), m.index))) continue
     let a = argAt(orig, masked, m.index + m[0].length)
     // requests.request("GET", url) / urllib3 .request("GET", url): the destination is the 2nd argument.
     if (a?.value !== undefined && /request\s*\(\s*$/.test(m[0]) && /^[A-Z]+$/.test(a.value)) {
