@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mkdtempSync, rmSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-claude-plans-routes-test-'))
 
@@ -26,12 +27,28 @@ vi.mock('../settings-store.js', () => ({
 }))
 
 const hardRestartMarveenChannels = vi.fn((): { ok: boolean; error?: string } => ({ ok: true }))
-vi.mock('../web/channel-monitor.js', () => ({ hardRestartMarveenChannels: () => hardRestartMarveenChannels() }))
+// 8c338dc4: the opt-in --continue restart of a main-agent rotation (its steps: main-rotation-continue.test.ts).
+const restartMainForRotationContinue = vi.fn(
+  async (): Promise<{ ok: boolean; mode: 'continue' | 'fresh-fallback'; error?: string }> => ({ ok: true, mode: 'continue' }),
+)
+vi.mock('../web/channel-monitor.js', () => ({
+  hardRestartMarveenChannels: () => hardRestartMarveenChannels(),
+  restartMainForRotationContinue: () => restartMainForRotationContinue(),
+}))
 
 const restartAgentProcess = vi.fn(
   async (_name: string): Promise<{ ok: boolean; pid?: number; error?: string }> => ({ ok: true, pid: 123 }),
 )
-vi.mock('../web/agent-process.js', () => ({ restartAgentProcess: (name: string) => restartAgentProcess(name) }))
+// The continue check's inputs (8c338dc4): the explicit and the active rotated config dir are set per test;
+// the shared dir is the real path shape under the temp PROJECT_ROOT.
+let explicitMainDir: string | null = null
+let activeRotatedDir: string | null = null
+vi.mock('../web/agent-process.js', () => ({
+  restartAgentProcess: (name: string) => restartAgentProcess(name),
+  resolveMainAgentConfigDir: () => explicitMainDir,
+  resolveMainAgentRotatedConfigDir: () => activeRotatedDir,
+  mainAgentSharedConfigDir: () => join(tmpRoot, '.channels-config'),
+}))
 
 // Fake vault: a plain in-memory Map, never touches the real encrypted store or
 // macOS Keychain (see vault-master-key.test.ts for that machinery's own
@@ -550,5 +567,133 @@ describe('POST /api/claude-plans/rotate (PR2c)', () => {
     const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { agentId: 'devy', targetPlanId: 'pro' })
     await tryHandleClaudePlans(ctx)
     expect(out.status).toBe(200)
+  })
+})
+
+describe('POST /api/claude-plans/rotate with "continue" (8c338dc4)', () => {
+  const shared = join(tmpRoot, '.channels-config')
+  const transcripts = join(shared, 'projects', encodeClaudeProjectDir(tmpRoot))
+  const stateOnDisk = () => (existsSync(CLAUDE_PLANS_STATE_PATH) ? JSON.parse(readFileSync(CLAUDE_PLANS_STATE_PATH, 'utf-8')) : null)
+
+  beforeEach(() => {
+    if (existsSync(CLAUDE_PLANS_PATH)) rmSync(CLAUDE_PLANS_PATH)
+    if (existsSync(CLAUDE_PLANS_STATE_PATH)) rmSync(CLAUDE_PLANS_STATE_PATH)
+    if (existsSync(shared)) rmSync(shared, { recursive: true, force: true })
+    rotationEnabled = '1'
+    mainIsolated = '1'
+    fleetEnabled = false
+    explicitMainDir = null
+    activeRotatedDir = null
+    vaultSecrets.clear()
+    hardRestartMarveenChannels.mockClear().mockReturnValue({ ok: true })
+    restartMainForRotationContinue.mockClear().mockResolvedValue({ ok: true, mode: 'continue' })
+    restartAgentProcess.mockClear().mockResolvedValue({ ok: true, pid: 123 })
+    runFleetLeg.mockClear()
+  })
+
+  async function seedTokenPlans() {
+    for (const id of ['tok-a', 'tok-b']) {
+      await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', {
+        id, label: `Token ${id}`, token: `test-fixture-not-a-real-token-${id}`, planType: 'personal', channelsAllowed: true,
+      }).ctx)
+    }
+  }
+
+  it('token plan to token plan with a prior conversation: the --continue restart AFTER the state write, no fresh restart, mode in the response', async () => {
+    await seedTokenPlans()
+    mkdirSync(transcripts, { recursive: true })
+    let planAtRestart: string | undefined
+    restartMainForRotationContinue.mockImplementation(async () => {
+      planAtRestart = stateOnDisk()?.activePlanByAgent?.['agent-a']
+      return { ok: true, mode: 'continue' }
+    })
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'tok-b', continue: true })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body).toEqual({ ok: true, agentId: 'agent-a', activePlanId: 'tok-b', fleet: 'off', mode: 'continue' })
+    expect(planAtRestart).toBe('tok-b')
+    expect(restartMainForRotationContinue).toHaveBeenCalledTimes(1)
+    expect(hardRestartMarveenChannels).not.toHaveBeenCalled()
+  })
+
+  it('continue: false is the plain rotation: the fresh restart, and the response has no mode', async () => {
+    await seedTokenPlans()
+    mkdirSync(transcripts, { recursive: true })
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'tok-b', continue: false })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body).toEqual({ ok: true, agentId: 'agent-a', activePlanId: 'tok-b', fleet: 'off' })
+    expect(hardRestartMarveenChannels).toHaveBeenCalledTimes(1)
+    expect(restartMainForRotationContinue).not.toHaveBeenCalled()
+  })
+
+  it('a continue that is not a JSON boolean ("true") is 400: nothing written, nothing restarted', async () => {
+    await seedTokenPlans()
+    mkdirSync(transcripts, { recursive: true })
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'tok-b', continue: 'true' })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toContain('continue must be a JSON boolean')
+    expect(stateOnDisk()).toBeNull()
+    expect(hardRestartMarveenChannels).not.toHaveBeenCalled()
+    expect(restartMainForRotationContinue).not.toHaveBeenCalled()
+  })
+
+  it('to a plan with its own configDir: 409 config-dir-changes, nothing written, nothing restarted', async () => {
+    await seedTokenPlans()
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'team', label: 'Team Seat', configDir: '/opt/claude-team' })).ctx)
+    mkdirSync(transcripts, { recursive: true })
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'team', continue: true })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(409)
+    expect(out.body.error).toContain('config-dir-changes')
+    expect(stateOnDisk()).toBeNull()
+    expect(hardRestartMarveenChannels).not.toHaveBeenCalled()
+    expect(restartMainForRotationContinue).not.toHaveBeenCalled()
+  })
+
+  it('no prior conversation in the shared dir: 409 no-prior-session, nothing written, nothing restarted', async () => {
+    await seedTokenPlans()
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'tok-b', continue: true })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(409)
+    expect(out.body.error).toContain('no-prior-session')
+    expect(stateOnDisk()).toBeNull()
+    expect(restartMainForRotationContinue).not.toHaveBeenCalled()
+  })
+
+  it('the resume failed and the fresh fallback worked: 200 with mode fresh-fallback, the fleet leg as usual', async () => {
+    await seedTokenPlans()
+    mkdirSync(transcripts, { recursive: true })
+    fleetEnabled = true
+    restartMainForRotationContinue.mockResolvedValue({ ok: true, mode: 'fresh-fallback' })
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'tok-b', continue: true })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body).toEqual({ ok: true, agentId: 'agent-a', activePlanId: 'tok-b', fleet: 'started', mode: 'fresh-fallback' })
+    await vi.waitFor(() => expect(runFleetLeg).toHaveBeenCalledTimes(1))
+  })
+
+  it('the continue restart failed altogether: 500 with its error, and no fleet leg', async () => {
+    await seedTokenPlans()
+    mkdirSync(transcripts, { recursive: true })
+    fleetEnabled = true
+    restartMainForRotationContinue.mockResolvedValue({ ok: false, mode: 'fresh-fallback', error: 'respawn-pane boom' })
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'tok-b', continue: true })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(500)
+    expect(out.body.error).toContain('respawn-pane boom')
+    await new Promise((r) => setTimeout(r, 20))
+    expect(runFleetLeg).not.toHaveBeenCalled()
+  })
+
+  it('a sub-agent with continue: 400, its plan and its process untouched', async () => {
+    await seedTokenPlans()
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { agentId: 'devy', targetPlanId: 'tok-b', continue: true })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toContain('main agent only')
+    expect(stateOnDisk()).toBeNull()
+    expect(restartAgentProcess).not.toHaveBeenCalled()
   })
 })

@@ -38,6 +38,7 @@ import {
 import { sendSystemDirective } from './system-directive.js'
 import { isRestartInFlight, beginRestart, endRestart } from './restart-lock.js'
 import { resolveMainConfigDecision, type MainConfigDecision } from './main-config-decision.js'
+import { runMainContinueRestart, type ContinueRestartResult } from './main-rotation-continue.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence, reapForeignMainPollers } from './channel-poller-reap.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
@@ -1572,6 +1573,18 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
     return { ok: true }
   }
   return { ok: false, error: 'hard restart failed: tmux respawn-pane failed' }
+}
+
+// 8c338dc4: the plan rotation's opt-in continue restart (POST /api/claude-plans/rotate with
+// "continue": true): resumeMarveenSession's --continue respawn instead of the fresh one above,
+// with the fresh one as the fallback. The steps and their order live in main-rotation-continue.ts.
+export function restartMainForRotationContinue(): Promise<ContinueRestartResult> {
+  return runMainContinueRestart({
+    stampConsent: stampFableOverageConsentSharedRoots,
+    resume: resumeMarveenSession,
+    fresh: hardRestartMarveenChannels,
+    warn: (message) => logger.warn(message),
+  })
 }
 
 // Escalate a main channel input that survived the full soft recovery to a hard
