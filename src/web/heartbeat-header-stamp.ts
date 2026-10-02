@@ -25,3 +25,16 @@ export function stampHeartbeatHeader(content: string, now: Date = new Date()): s
   if (!content.startsWith('## Heartbeat ')) return content
   return content.replace(HEADER_RE, `## Heartbeat ${BUDAPEST_STAMP.format(now)}`)
 }
+
+// HBTEMPLATELEAK1002 (measured 2026-10-02, messages 33179 and 33211): the
+// heartbeat agent's own ad-hoc parsing took the FIRST "[HB-METRIKA-BLOKK ts="
+// marker in its prompt -- the sample line in the task's instructions, with the
+// literal placeholder -- and sent "## Heartbeat YYYY-MM-DD HH:MM" plus the
+// instruction text before the real report. A message that STARTS with the
+// placeholder header is a leaked template, never a report; one that merely
+// mentions the placeholder (a review, this comment) does not start that way.
+const TEMPLATE_HEADER_RE = /^## Heartbeat YYYY-MM-DD/
+
+export function isHeartbeatTemplateLeak(content: string): boolean {
+  return TEMPLATE_HEADER_RE.test(content.trimStart())
+}

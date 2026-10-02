@@ -19,7 +19,7 @@ import { MAIN_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } fr
 import { isAgentRunning } from '../agent-process.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
-import { stampHeartbeatHeader } from '../heartbeat-header-stamp.js'
+import { isHeartbeatTemplateLeak, stampHeartbeatHeader } from '../heartbeat-header-stamp.js'
 import { buildFreshnessInfo, type MessageFreshness } from '../agent-message-wrap.js'
 import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
@@ -126,6 +126,16 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       { from: string; to: string; content: string; origin_note?: string }
     if (!from?.trim() || !to?.trim() || !content?.trim()) {
       json(res, { error: 'from, to, and content are required' }, 400)
+      return true
+    }
+    // HBTEMPLATELEAK1002: a heartbeat report that still carries its template's
+    // placeholder header is the instruction text, not a report; queued, it reads
+    // as an order in the recipient's box ("Tedd most", a curl recipe). Refuse it
+    // before anything is written, so the sender sees the error and the real
+    // report is the only one that lands.
+    if (isHeartbeatTemplateLeak(content)) {
+      logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST: heartbeat template placeholder header')
+      json(res, { error: 'heartbeat_template_placeholder: the header still reads "YYYY-MM-DD"; send the report with the real timestamp' }, 422)
       return true
     }
     // Security: the channel-coordinator id grants channel-inbound delivery
