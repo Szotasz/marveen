@@ -1,4 +1,5 @@
-import { logger } from '../logger.js'
+import { MAIN_AGENT_ID } from '../config.js'
+import { findAgentMemoryByKeywords, saveAgentMemory, updateMemory } from '../db.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 
 // -- The owners' quiet period for the voice channel notice (75c3d163 G2) -----
@@ -7,8 +8,11 @@ import { getEffectiveSettingValue } from '../settings-store.js'
 // not be transcribed or was understood only uncertainly. That notice is a
 // server-initiated Telegram message, so an owner's standing quiet period
 // (23:00-07:00 Budapest: no Telegram message at all, not even a reply) applies
-// to it like to any other. Inside the window the notice is HELD and sent ONCE
-// per chat after 07:00, combined.
+// to it like to any other. Inside the
+// window the notice is NOT sent on the channel at all, not even after 07:00: it
+// goes into the main agent's morning batch row, and the owner's morning batch
+// carries it as one line (75c3d163 (a): after the quiet
+// period ONE message).
 //
 // The rule is per RECIPIENT: it holds only the chats
 // listed in the VOICE_NOTICE_QUIET_CHATS setting; everyone else is notified at
@@ -20,9 +24,10 @@ import { getEffectiveSettingValue } from '../settings-store.js'
 // reauth-healer's 23-06 install-zone window would leave 23:00-01:00 Budapest
 // open. Intl handles the CET/CEST switch.
 //
-// The held notices live in memory, like the reauth-healer's morning summary:
-// a dashboard restart inside the window drops them. The agent is told at the
-// time that the notice is held (voice.ts), so a dropped one is not a silent loss.
+// The row is a HOT memory of the main agent, ONE per chat and morning, written
+// when the notice arises: a dashboard restart inside the window loses nothing
+// (M-G2a). The code sends nothing at 07:00; the main agent's morning
+// batch reads the rows (its prompt step, added when this is live) and closes them.
 export const VOICE_QUIET_TZ = 'Europe/Budapest'
 export const VOICE_QUIET_START_HOUR = 23 // inclusive
 export const VOICE_QUIET_END_HOUR = 7 // exclusive
@@ -45,73 +50,85 @@ export function voiceNoticeHeldFor(chatId: string, nowMs: number, quietChats: Se
   return quietChats.has(String(chatId).trim()) && isVoiceQuietTime(nowMs)
 }
 
-/** Milliseconds from nowMs to the first whole minute that is no longer quiet (0 outside the window). */
-export function msUntilVoiceQuietEnd(nowMs: number): number {
-  if (!isVoiceQuietTime(nowMs)) return 0
-  // The window is at most 8 hours long (9 across the autumn clock change); a minute walk is cheap and needs no
-  // offset arithmetic of its own.
-  for (let t = Math.ceil(nowMs / 60_000) * 60_000; t <= nowMs + 10 * 3_600_000; t += 60_000) {
-    if (!isVoiceQuietTime(t)) return t - nowMs
-  }
-  throw new Error('voice quiet window did not end within 10 hours')
-}
-
 export interface HeldVoiceNotice {
   chatId: string
   text: string
   heldAt: number
 }
 
-export type ChatSender = (chatId: string, text: string) => Promise<boolean>
-
-const held = new Map<string, HeldVoiceNotice[]>()
-let flushTimer: ReturnType<typeof setTimeout> | null = null
-
-export function holdVoiceNotice(notice: HeldVoiceNotice, store: Map<string, HeldVoiceNotice[]> = held): void {
-  const list = store.get(notice.chatId) ?? []
-  list.push(notice)
-  store.set(notice.chatId, list)
-}
-
-/** The one morning message for a chat: the held notice texts, in the order they arose. */
+/** The one line the morning batch carries for a chat: the night's notices in the order they arose. */
 export function buildMorningVoiceNotice(items: readonly HeldVoiceNotice[]): string {
   const head = `Az éjszakai csendes időszakban (${VOICE_QUIET_START_HOUR}:00-0${VOICE_QUIET_END_HOUR}:00) küldött`
   if (items.length === 1) return `${head} hangüzenetedről: ${items[0].text}`
-  return [`${head} ${items.length} hangüzenetedről:`, ...items.map((i) => `- ${i.text}`)].join('\n')
+  return `${head} ${items.length} hangüzenetedről: ${items.map((i) => i.text).join(' ')}`
 }
 
-/** After the window: send every held notice, ONE message per chat, and forget them. No-op while still quiet. */
-export async function flushHeldVoiceNotices(
-  nowMs: number,
-  send: ChatSender,
-  store: Map<string, HeldVoiceNotice[]> = held,
-): Promise<number> {
-  if (isVoiceQuietTime(nowMs)) return 0
-  let sent = 0
-  for (const [chatId, items] of [...store.entries()]) {
-    store.delete(chatId)
-    if (await send(chatId, buildMorningVoiceNotice(items))) {
-      sent += 1
-    } else {
-      // The morning message's OWN failure must be visible, like the immediate notice's in voice.ts.
-      logger.warn({ chatId, count: items.length }, 'voice: a csendes idoszak utani osszesitett csatorna-ertesites NEM ment ki')
-    }
+// -- 75c3d163 (a): the morning batch row -----------------------------------
+export const MORNING_BATCH_VOICE_KEYWORD = 'reggeli-koteg-hang'
+
+const dayFmt = new Intl.DateTimeFormat('en-CA', { timeZone: VOICE_QUIET_TZ, year: 'numeric', month: '2-digit', day: '2-digit' })
+
+/** The morning a notice belongs to, as a Budapest date (YYYY-MM-DD): from 23:00 the next day's, until 07:00 that day's. */
+export function voiceNoticeMorning(nowMs: number): string {
+  const hour = parseInt(hourFmt.format(new Date(nowMs)), 10)
+  // two hours past 23:xx is always the next calendar day in Budapest, on the clock-change nights too
+  return dayFmt.format(new Date(hour >= VOICE_QUIET_START_HOUR ? nowMs + 2 * 3_600_000 : nowMs))
+}
+
+/** The row's key, ONE row per chat and morning; matched exactly, so the writer finds its own row again. */
+export function morningBatchVoiceKeywords(chatId: string, morning: string): string {
+  return `${MORNING_BATCH_VOICE_KEYWORD}, chat:${chatId}, reggel:${morning}`
+}
+
+const ITEM = '- '
+
+/** The row: a head line for the main agent with the line to carry, then the notices, one per line. */
+export function buildMorningBatchVoiceRow(chatId: string, morning: string, items: readonly HeldVoiceNotice[]): string {
+  return [
+    `REGGELI KOTEG-SOR (hangjelzes, 75c3d163): chat ${chatId}, ${morning} reggel, ${items.length} jelzes. ` +
+      `A tulajdonosi reggeli kotegbe EGY sorkent: "${buildMorningVoiceNotice(items)}" ` +
+      '(a szerver a chatnek 07:00 utan sem kuld kulon jelzest; a sort a koteg kikuldese utan zard).',
+    ...items.map((i) => ITEM + i.text),
+  ].join('\n')
+}
+
+/** The notices already in a row (its item lines), to append the next one to. */
+export function parseMorningBatchVoiceItems(content: string, chatId: string): HeldVoiceNotice[] {
+  return content.split('\n').filter((l) => l.startsWith(ITEM)).map((l) => ({ chatId, text: l.slice(ITEM.length), heldAt: 0 }))
+}
+
+export interface MorningBatchStore {
+  find(agentId: string, keywords: string): { id: number; content: string } | undefined
+  insert(agentId: string, content: string, keywords: string): number
+  update(id: number, content: string): void
+}
+
+/** The real store: the main agent's HOT memory rows (src/db.ts). */
+export const memoryMorningBatchStore: MorningBatchStore = {
+  find: (agentId, keywords) => findAgentMemoryByKeywords(agentId, 'hot', keywords),
+  insert: (agentId, content, keywords) => saveAgentMemory(agentId, content, 'hot', keywords).id,
+  update: (id, content) => { updateMemory(id, content, undefined, undefined, undefined, 'voice-quiet-hours') },
+}
+
+/**
+ * A listed chat's notice that arises in the window goes AT ONCE into the main agent's morning batch row for that chat
+ * and morning: inserted the first time, extended afterwards. Nothing is sent on the channel, neither now nor at 07:00.
+ * A store failure throws: the caller tells the agent that the notice reached nobody.
+ */
+export function queueVoiceNoticeForMorningBatch(
+  notice: HeldVoiceNotice,
+  store: MorningBatchStore = memoryMorningBatchStore,
+  agentId: string = MAIN_AGENT_ID,
+): { rowId: number; count: number; morning: string } {
+  const morning = voiceNoticeMorning(notice.heldAt)
+  const keywords = morningBatchVoiceKeywords(notice.chatId, morning)
+  const item = { ...notice, text: notice.text.replace(/\s*\n\s*/g, ' ').trim() }
+  const existing = store.find(agentId, keywords)
+  const items = [...(existing ? parseMorningBatchVoiceItems(existing.content, notice.chatId) : []), item]
+  const content = buildMorningBatchVoiceRow(notice.chatId, morning, items)
+  if (existing) {
+    store.update(existing.id, content)
+    return { rowId: existing.id, count: items.length, morning }
   }
-  return sent
-}
-
-/** One timer for the end of the window; it re-arms itself if it fires while still quiet. */
-export function scheduleHeldVoiceFlush(nowMs: number, send: ChatSender): void {
-  if (flushTimer) return
-  flushTimer = setTimeout(() => {
-    flushTimer = null
-    const now = Date.now()
-    if (isVoiceQuietTime(now)) {
-      scheduleHeldVoiceFlush(now, send)
-      return
-    }
-    flushHeldVoiceNotices(now, send).catch((err) =>
-      logger.warn({ err }, 'voice: a halasztott csatorna-ertesitesek kuldese hibara futott'))
-  }, msUntilVoiceQuietEnd(nowMs) + 5_000)
-  flushTimer.unref?.()
+  return { rowId: store.insert(agentId, content, keywords), count: items.length, morning }
 }

@@ -1851,6 +1851,16 @@ export function saveAgentMemory(
 // accessed memories" instead of "the N most recent <category> memories", so an
 // older-but-still-active memory would drop out of the list with no truncation
 // signal -- invisible to the caller, and worst right after a restart.
+/**
+ * The newest memory row of an agent with EXACTLY these keywords in this category, or undefined. For a writer
+ * that keeps one row per key and updates it (75c3d163 (a): one morning-batch row per chat and night).
+ */
+export function findAgentMemoryByKeywords(agentId: string, category: string, keywords: string): { id: number; content: string } | undefined {
+  return db.prepare(
+    'SELECT id, content FROM memories WHERE agent_id = ? AND category = ? AND keywords = ? ORDER BY id DESC LIMIT 1'
+  ).get(agentId, category, keywords) as { id: number; content: string } | undefined
+}
+
 export function getAgentMemories(agentId: string, limit: number = 20, category?: string, offset: number = 0): Memory[] {
   // offset is part of the cache key (#947): without it page 2 would be served
   // page 1's cached rows for up to MEMORY_CACHE_TTL_MS. id DESC tie-break for

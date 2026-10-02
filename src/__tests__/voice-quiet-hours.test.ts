@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildMorningVoiceNotice,
-  flushHeldVoiceNotices,
-  holdVoiceNotice,
   isVoiceQuietTime,
-  msUntilVoiceQuietEnd,
+  morningBatchVoiceKeywords,
+  queueVoiceNoticeForMorningBatch,
   voiceNoticeHeldFor,
+  voiceNoticeMorning,
   voiceQuietChats,
   type HeldVoiceNotice,
+  type MorningBatchStore,
 } from '../web/voice-quiet-hours.js'
 
 // 75c3d163 G2: the voice channel notice keeps the owners' quiet period,
@@ -36,61 +37,77 @@ describe('75c3d163 G2: the quiet window is 23:00-07:00 Budapest, whatever the ho
     // 05:30Z is 07:30 in Budapest (summer): day. A UTC window would still call it quiet.
     expect(isVoiceQuietTime(ms('2026-07-16T05:30:00Z'))).toBe(false)
   })
-
-  it('the time to the end of the window, also across the autumn clock change', () => {
-    expect(msUntilVoiceQuietEnd(ms('2026-07-15T12:00:00Z'))).toBe(0) // day
-    expect(msUntilVoiceQuietEnd(ms('2026-07-15T21:30:00Z'))).toBe(7.5 * 3_600_000) // 23:30 -> 07:00 CEST
-    expect(msUntilVoiceQuietEnd(ms('2026-07-16T04:59:30Z'))).toBe(30_000) // 06:59:30 -> 07:00
-    // 2026-10-25 03:00 CEST -> 02:00 CET: from 23:30 CEST (21:30Z) to 07:00 CET (06:00Z) is 8.5 hours
-    expect(msUntilVoiceQuietEnd(ms('2026-10-24T21:30:00Z'))).toBe(8.5 * 3_600_000)
-  })
 })
 
-describe('75c3d163 G2: a notice that arises in the window is held, and goes out ONCE per chat after 07:00', () => {
+describe('75c3d163 (a): a listed chat\'s night notice goes into ONE morning batch row per chat and morning, nothing is sent', () => {
   const notice = (chatId: string, text: string, iso: string): HeldVoiceNotice => ({ chatId, text, heldAt: ms(iso) })
+  // a store the size of the real one: rows by (agent, keywords), an id per row, every write recorded
+  const fakeStore = () => {
+    const rows: Array<{ id: number; agentId: string; keywords: string; content: string }> = []
+    const writes: string[] = []
+    const store: MorningBatchStore = {
+      find: (agentId, keywords) => [...rows].reverse().find((r) => r.agentId === agentId && r.keywords === keywords),
+      insert: (agentId, content, keywords) => { rows.push({ id: rows.length + 1, agentId, keywords, content }); writes.push('insert'); return rows.length },
+      update: (id, content) => { rows.find((r) => r.id === id)!.content = content; writes.push(`update ${id}`) },
+    }
+    return { rows, writes, store }
+  }
 
-  it('NEGATIVE: a 23:30 notice is not sent while the window lasts', async () => {
-    const store = new Map<string, HeldVoiceNotice[]>()
-    const sent: Array<{ chatId: string; text: string }> = []
-    const send = async (chatId: string, text: string) => { sent.push({ chatId, text }); return true }
-    holdVoiceNotice(notice('111', 'A hangüzenetedet megkaptam, de nem sikerült leiratozni.', '2026-07-15T21:30:00Z'), store)
-    expect(await flushHeldVoiceNotices(ms('2026-07-15T21:31:00Z'), send, store)).toBe(0) // 23:31
-    expect(await flushHeldVoiceNotices(ms('2026-07-16T04:59:00Z'), send, store)).toBe(0) // 06:59
-    expect(sent).toHaveLength(0)
-    expect(store.get('111')).toHaveLength(1)
+  it('the morning of a notice is the Budapest date of the coming morning: 23:xx counts to the next day', () => {
+    expect(voiceNoticeMorning(ms('2026-07-15T21:30:00Z'))).toBe('2026-07-16') // 23:30 CEST
+    expect(voiceNoticeMorning(ms('2026-07-15T22:10:00Z'))).toBe('2026-07-16') // 00:10 CEST
+    expect(voiceNoticeMorning(ms('2026-07-16T04:59:00Z'))).toBe('2026-07-16') // 06:59 CEST
+    expect(voiceNoticeMorning(ms('2026-01-15T22:30:00Z'))).toBe('2026-01-16') // 23:30 CET
+    // the autumn clock change night (2026-10-25 03:00 CEST -> 02:00 CET)
+    expect(voiceNoticeMorning(ms('2026-10-24T21:30:00Z'))).toBe('2026-10-25') // 23:30 CEST
+    expect(voiceNoticeMorning(ms('2026-10-25T05:30:00Z'))).toBe('2026-10-25') // 06:30 CET
   })
 
-  it('POSITIVE: after 07:00 every chat gets one combined message, in the order the notices arose', async () => {
-    const store = new Map<string, HeldVoiceNotice[]>()
-    const sent: Array<{ chatId: string; text: string }> = []
-    const send = async (chatId: string, text: string) => { sent.push({ chatId, text }); return true }
-    holdVoiceNotice(notice('111', 'ELSO', '2026-07-15T21:30:00Z'), store)
-    holdVoiceNotice(notice('222', 'MASIK CHAT', '2026-07-15T22:10:00Z'), store)
-    holdVoiceNotice(notice('111', 'MASODIK', '2026-07-16T02:00:00Z'), store)
-    expect(await flushHeldVoiceNotices(ms('2026-07-16T05:00:30Z'), send, store)).toBe(2) // 07:00:30
-    expect(sent.map((s) => s.chatId).sort()).toEqual(['111', '222'])
-    const first = sent.find((s) => s.chatId === '111')!.text
-    expect(first).toContain('(23:00-07:00)')
-    expect(first.indexOf('ELSO')).toBeLessThan(first.indexOf('MASODIK'))
-    expect(sent.find((s) => s.chatId === '222')!.text).toContain('MASIK CHAT')
-    expect(store.size).toBe(0)
-    // a second flush has nothing left to send
-    expect(await flushHeldVoiceNotices(ms('2026-07-16T05:10:00Z'), send, store)).toBe(0)
-    expect(sent).toHaveLength(2)
+  it('POSITIVE: the first notice inserts the row, a later one of the same night extends THE SAME row, in order', () => {
+    const { rows, writes, store } = fakeStore()
+    const a = queueVoiceNoticeForMorningBatch(notice('111', 'ELSO.', '2026-07-15T21:30:00Z'), store, 'fo-ugynok')
+    const b = queueVoiceNoticeForMorningBatch(notice('111', 'MASODIK.', '2026-07-16T02:00:00Z'), store, 'fo-ugynok')
+    expect(writes).toEqual(['insert', 'update 1'])
+    expect(rows).toHaveLength(1)
+    expect([a.rowId, a.count, b.rowId, b.count]).toEqual([1, 1, 1, 2])
+    expect(rows[0].agentId).toBe('fo-ugynok')
+    expect(rows[0].keywords).toBe(morningBatchVoiceKeywords('111', '2026-07-16'))
+    expect(rows[0].keywords).toBe('reggeli-koteg-hang, chat:111, reggel:2026-07-16')
+    const [head, ...items] = rows[0].content.split('\n')
+    expect(head).toContain('chat 111, 2026-07-16 reggel, 2 jelzes')
+    expect(head).toContain('EGY sorkent: "Az éjszakai csendes időszakban (23:00-07:00) küldött 2 hangüzenetedről: ELSO. MASODIK."')
+    expect(items).toEqual(['- ELSO.', '- MASODIK.'])
   })
 
-  it('a failed morning send is counted as not sent, and the chat is not retried forever', async () => {
-    const store = new Map<string, HeldVoiceNotice[]>()
-    holdVoiceNotice(notice('111', 'ELSO', '2026-07-15T21:30:00Z'), store)
-    expect(await flushHeldVoiceNotices(ms('2026-07-16T05:00:30Z'), async () => false, store)).toBe(0)
-    expect(store.size).toBe(0)
+  it('another chat, or the next morning, gets its OWN row', () => {
+    const { rows, store } = fakeStore()
+    queueVoiceNoticeForMorningBatch(notice('111', 'EGY.', '2026-07-15T21:30:00Z'), store, 'fo')
+    queueVoiceNoticeForMorningBatch(notice('222', 'MASIK CHAT.', '2026-07-15T22:00:00Z'), store, 'fo')
+    queueVoiceNoticeForMorningBatch(notice('111', 'KOVETKEZO EJSZAKA.', '2026-07-16T21:30:00Z'), store, 'fo')
+    expect(rows.map((r) => r.keywords)).toEqual([
+      'reggeli-koteg-hang, chat:111, reggel:2026-07-16',
+      'reggeli-koteg-hang, chat:222, reggel:2026-07-16',
+      'reggeli-koteg-hang, chat:111, reggel:2026-07-17',
+    ])
   })
 
-  it('the morning text: one notice on one line, several as a list under one head', () => {
-    expect(buildMorningVoiceNotice([notice('1', 'EGY', '2026-07-15T21:30:00Z')]))
-      .toBe('Az éjszakai csendes időszakban (23:00-07:00) küldött hangüzenetedről: EGY')
-    expect(buildMorningVoiceNotice([notice('1', 'EGY', '2026-07-15T21:30:00Z'), notice('1', 'KETTO', '2026-07-15T22:30:00Z')]))
-      .toBe('Az éjszakai csendes időszakban (23:00-07:00) küldött 2 hangüzenetedről:\n- EGY\n- KETTO')
+  it('a notice text never breaks the row: a newline in it becomes a space', () => {
+    const { rows, store } = fakeStore()
+    queueVoiceNoticeForMorningBatch(notice('111', 'ELSO SOR\n- NEM TETEL', '2026-07-15T21:30:00Z'), store, 'fo')
+    expect(rows[0].content.split('\n')).toHaveLength(2)
+    expect(rows[0].content.split('\n')[1]).toBe('- ELSO SOR - NEM TETEL')
+  })
+
+  it('a failing store throws, so the caller can tell the agent that the notice reached nobody', () => {
+    const store: MorningBatchStore = { find: () => undefined, insert: () => { throw new Error('memories unavailable') }, update: () => {} }
+    expect(() => queueVoiceNoticeForMorningBatch(notice('111', 'EGY.', '2026-07-15T21:30:00Z'), store, 'fo')).toThrow('memories unavailable')
+  })
+
+  it('the line the batch carries: one notice as it is, several in order on ONE line', () => {
+    expect(buildMorningVoiceNotice([notice('1', 'EGY.', '2026-07-15T21:30:00Z')]))
+      .toBe('Az éjszakai csendes időszakban (23:00-07:00) küldött hangüzenetedről: EGY.')
+    expect(buildMorningVoiceNotice([notice('1', 'EGY.', '2026-07-15T21:30:00Z'), notice('1', 'KETTO.', '2026-07-15T22:30:00Z')]))
+      .toBe('Az éjszakai csendes időszakban (23:00-07:00) küldött 2 hangüzenetedről: EGY. KETTO.')
   })
 })
 

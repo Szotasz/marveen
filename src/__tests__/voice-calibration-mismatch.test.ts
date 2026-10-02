@@ -23,6 +23,9 @@ const h = vi.hoisted(() => ({
   stateDir: null as string | null,
   quietChats: '',
   run: { stdout: '', stderr: '', code: 0 },
+  // 75c3d163 (a): the main agent's morning batch rows (the memory store), and a switch to make its write fail
+  batchRows: [] as Array<{ id: number; agentId: string; content: string; keywords: string }>,
+  batchFail: false,
 }))
 
 vi.mock('node:child_process', () => ({
@@ -64,6 +67,18 @@ vi.mock('../db.js', async (importOriginal) => ({
     }
     h.sent.push({ from, to, content })
     return { id: 9000 + h.sent.length, from_agent: from, to_agent: to, content, status: 'pending' }
+  },
+  findAgentMemoryByKeywords: (agentId: string, category: string, keywords: string) =>
+    category === 'hot' ? [...h.batchRows].reverse().find((r) => r.agentId === agentId && r.keywords === keywords) : undefined,
+  saveAgentMemory: (agentId: string, content: string, category: string, keywords?: string) => {
+    if (h.batchFail) throw new Error('memories unavailable')
+    if (category !== 'hot') throw new Error(`unexpected category ${category}`)
+    h.batchRows.push({ id: h.batchRows.length + 1, agentId, content, keywords: keywords ?? '' })
+    return { id: h.batchRows.length }
+  },
+  updateMemory: (id: number, content: string) => {
+    h.batchRows.find((r) => r.id === id)!.content = content
+    return true
   },
 }))
 
@@ -355,7 +370,7 @@ describe('75c3d163 G2: the channel notice keeps the quiet period of the LISTED r
   const LISTED = '123456789'
   const OTHER = '987654321'
   // two entries, so the route also exercises the list parsing (a single id would pass a broken separator)
-  beforeEach(() => { h.quietChats = `555000555,${LISTED}` })
+  beforeEach(() => { h.quietChats = `555000555,${LISTED}`; h.batchRows = []; h.batchFail = false })
   const directive = async (chat = LISTED) => {
     const res = { status: 0, body: '', writeHead(s: number) { this.status = s }, end(b: string) { this.body = b } }
     const url = new URL(`http://x/api/voice/directive?agent=tesztagens&chat=${chat}&file=${FILE_ID}&kind=voice`)
@@ -377,24 +392,37 @@ describe('75c3d163 G2: the channel notice keeps the quiet period of the LISTED r
     expect(body.transcriptNotice).not.toContain('NEM ERTESITETTE')
   })
 
-  it('POSITIVE: after 07:00 the notices held overnight go out once, combined for the chat', async () => {
+  it('(a) POSITIVE: the night\'s notices go into ONE morning batch row of the main agent, and 07:00:05 sends nothing', async () => {
+    const { MAIN_AGENT_ID } = await import('../config.js')
     vi.setSystemTime(new Date('2026-07-15T21:30:00Z')) // 23:30
     uncertain()
-    await directive()
+    const first = await directive()
     vi.setSystemTime(new Date('2026-07-16T02:00:00Z')) // 04:00
     silent()
     await directive()
+    vi.setSystemTime(new Date('2026-07-16T05:00:05Z')) // 07:00:05: no timer, no flush, nothing on the channel
+    await new Promise((r) => setTimeout(r, 20))
     expect(h.notified).toHaveLength(0)
-    const quiet = await import('../web/voice-quiet-hours.js')
-    const { notifyChat } = await import('../notify.js')
-    expect(await quiet.flushHeldVoiceNotices(Date.parse('2026-07-16T04:59:00Z'), notifyChat)).toBe(0) // 06:59: still held
+    expect(h.batchRows).toHaveLength(1)
+    expect(h.batchRows[0].agentId).toBe(MAIN_AGENT_ID)
+    expect(h.batchRows[0].keywords).toBe('reggeli-koteg-hang, chat:123456789, reggel:2026-07-16')
+    expect(h.batchRows[0].content).toContain('2 jelzes')
+    expect(h.batchRows[0].content).toContain('csak bizonytalanul értettem')
+    expect(h.batchRows[0].content).toContain('nem sikerült leiratozni')
+    expect(first.noticeDelivered).toBeNull()
+    expect(first.transcriptNotice).toContain('a jelzes a fo ugynok reggeli kotegebe kerult')
+    expect(first.transcriptNotice).not.toContain('egyben kuldi el')
+  })
+
+  it('(a) when the batch row cannot be written, the agent is told that the sender got nothing and the row is missing', async () => {
+    vi.setSystemTime(new Date('2026-07-15T21:30:00Z')) // 23:30
+    h.batchFail = true
+    uncertain()
+    const body = await directive()
     expect(h.notified).toHaveLength(0)
-    expect(await quiet.flushHeldVoiceNotices(Date.parse('2026-07-16T05:00:30Z'), notifyChat)).toBe(1) // 07:00:30
-    expect(h.notified).toHaveLength(1)
-    expect(h.notified[0].chatId).toBe('123456789')
-    expect(h.notified[0].text).toContain('2 hangüzenetedről')
-    expect(h.notified[0].text).toContain('csak bizonytalanul értettem')
-    expect(h.notified[0].text).toContain('nem sikerült leiratozni')
+    expect(h.batchRows).toHaveLength(0)
+    expect(body.transcriptNotice).toContain('A REGGELI KOTEG-SOR IRASA HIBARA FUTOTT')
+    expect(body.transcriptNotice).toContain('csak bizonytalanul ertettuk')
   })
 
   it('CONTROL: at 22:59 Budapest the notice still goes out at once', async () => {
@@ -414,5 +442,6 @@ describe('75c3d163 G2: the channel notice keeps the quiet period of the LISTED r
     expect(h.notified[0].chatId).toBe(OTHER)
     expect(body.noticeDelivered).toBe(true)
     expect(body.transcriptNotice).not.toContain('csendes idoszak')
+    expect(h.batchRows).toHaveLength(0)
   })
 })

@@ -25,7 +25,7 @@ import { getLastInboundModality, setLastInboundModality } from '../voice-modalit
 import { buildTtsDirective, resolveAgentChannelStateDir, inboundIsAudio, mainChannelStateDirFor } from '../voice-directive.js'
 import { PROJECT_ROOT, STORE_DIR, VOICE_CALIBRATION_ALERT_AGENT } from '../../config.js'
 import { notifyChat } from '../../notify.js'
-import { holdVoiceNotice, scheduleHeldVoiceFlush, voiceNoticeHeldFor, VOICE_QUIET_END_HOUR, VOICE_QUIET_START_HOUR } from '../voice-quiet-hours.js'
+import { queueVoiceNoticeForMorningBatch, voiceNoticeHeldFor, VOICE_QUIET_END_HOUR, VOICE_QUIET_START_HOUR } from '../voice-quiet-hours.js'
 import { createAgentMessage } from '../../db.js'
 import type { RouteContext } from './types.js'
 
@@ -534,7 +534,8 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     // the wrong bot, or fail with 403 when they never started the main bot. For such an agent the server does not try
     // (noticeDelivered stays null), and the transcriptNotice below tells the agent to say it in its own reply.
     let noticeDelivered: boolean | null = null
-    let noticeHeld = false
+    // 75c3d163 (a): null = not a quiet-list case; true = in the main agent's morning batch row; false = that write failed
+    let noticeQueued: boolean | null = null
     const needsChannelNotice =
       transcriptStatus === 'no-transcript' || transcriptConfidence === 'uncertain' || transcriptConfidence === 'unreliable'
     const chatOnMainBot = stateDir === mainChannelStateDirFor('telegram')
@@ -547,14 +548,21 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
         : 'A hangüzenetedet megkaptam, de csak bizonytalanul értettem. A válaszomban visszamondom, mit értettem belőle -- kérlek javíts, ha félreértettem.'
       const now = Date.now()
       if (voiceNoticeHeldFor(chatId, now)) {
-        // 75c3d163 G2: a recipient on the quiet list (VOICE_NOTICE_QUIET_CHATS) gets
-        // no server-initiated message 23:00-07:00 Budapest; it goes out once per chat, combined, after 07:00
-        // (src/web/voice-quiet-hours.ts). Everyone else is notified at once, as before.
-        holdVoiceNotice({ chatId, text, heldAt: now })
-        scheduleHeldVoiceFlush(now, notifyChat)
-        noticeHeld = true
-        logger.info({ chatId, transcriptStatus, transcriptConfidence },
-          'voice: csatorna-ertesites a csendes idoszak vegere halasztva (23:00-07:00 Budapest)')
+        // 75c3d163 (a): a recipient on the quiet list (VOICE_NOTICE_QUIET_CHATS) gets no
+        // server-initiated channel message for it, neither 23:00-07:00 Budapest nor after 07:00: the notice goes at
+        // once into the main agent's morning batch row (src/web/voice-quiet-hours.ts), and the owner's morning batch
+        // carries it as one line. Everyone else is notified at once, as before.
+        try {
+          const q = queueVoiceNoticeForMorningBatch({ chatId, text, heldAt: now })
+          noticeQueued = true
+          logger.info({ chatId, transcriptStatus, transcriptConfidence, rowId: q.rowId, count: q.count, morning: q.morning },
+            'voice: csatorna-ertesites helyett reggeli koteg-sor (csendes idoszak, 23:00-07:00 Budapest)')
+        } catch (err) {
+          // The write's OWN failure has to be visible, like the immediate notice's below.
+          noticeQueued = false
+          logger.warn({ err, chatId, transcriptStatus, transcriptConfidence },
+            'voice: a csendes idoszakos jelzes a reggeli kotegbe SEM kerult -- a kuldo nem kap jelzest')
+        }
       } else {
         noticeDelivered = await notifyChat(chatId, text)
         if (!noticeDelivered) {
@@ -572,8 +580,11 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     if (needsChannelNotice && transcriptNotice) {
       if (noticeDelivered === true) {
         if (transcriptConfidence === 'uncertain') transcriptNotice += ' A kuldo mar kapott egy csatorna-jelzest, hogy ezt varja tolunk.'
-      } else if (noticeHeld) {
-        transcriptNotice += ` A KULDO MEG NEM KAPOTT JELZEST: csendes idoszak (${VOICE_QUIET_START_HOUR}:00-0${VOICE_QUIET_END_HOUR}:00 Budapest), a szerver a jelzest 0${VOICE_QUIET_END_HOUR}:00 utan egyben kuldi el neki.`
+      } else if (noticeQueued === true) {
+        transcriptNotice += ` A KULDO MEG NEM KAPOTT JELZEST: csendes idoszak (${VOICE_QUIET_START_HOUR}:00-0${VOICE_QUIET_END_HOUR}:00 Budapest); a jelzes a fo ugynok reggeli kotegebe kerult, a kuldo 0${VOICE_QUIET_END_HOUR}:00 utan onnan kapja meg, kulon uzenet nem megy.`
+      } else if (noticeQueued === false) {
+        const mit = transcriptStatus === 'no-transcript' ? 'nem sikerult leiratozni' : 'csak bizonytalanul ertettuk'
+        transcriptNotice += ` A KULDO NEM KAPOTT JELZEST, ES A REGGELI KOTEG-SOR IRASA HIBARA FUTOTT (csendes idoszak, ${VOICE_QUIET_START_HOUR}:00-0${VOICE_QUIET_END_HOUR}:00 Budapest): a reggeli kotegben te mondd meg neki, hogy a hangüzenetet ${mit}.`
       } else {
         const ok = chatOnMainBot ? 'a csatorna-jelzes nem ment ki' : 'a sajat botodon irt, a szerver csak a fo bottal kuld'
         const mit = transcriptStatus === 'no-transcript' ? 'nem sikerult leiratozni' : 'csak bizonytalanul ertettuk'
