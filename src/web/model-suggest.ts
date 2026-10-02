@@ -32,7 +32,9 @@ const TOP_TIER_LABEL = humanModelLabel(TOP_TIER_MODEL)
 
 export type ModelId =
   | 'claude-haiku-4-5-20251001'
+  | 'claude-sonnet-5-5'
   | 'claude-sonnet-5'
+  | 'claude-opus-5-5[1m]'
   | 'claude-opus-5[1m]'
   | 'claude-opus-5'
   | 'claude-fable-5'
@@ -132,6 +134,8 @@ const MODEL_COST_PER_M: Record<string, number> = {
   // FELTETELEZES, nem meres -- ha valaki merte, irja felul es vegye ki ezt a sort.
   'claude-fable-5-1': 15,
   'claude-fable-5': 15,
+  // Sonnet 5.5: 2 USD / 1M input, a hivatalos models/overview oldalrol olvasva (2026-09-28, SONNET55SELECTOR928).
+  'claude-sonnet-5-5': 2,
   'claude-sonnet-5': 3,
   'claude-sonnet-4-6': 3,
   'claude-haiku-4-5': 0.80,

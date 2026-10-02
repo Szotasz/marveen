@@ -2713,7 +2713,23 @@ function populateProfileSelect(selectEl, descEl, selected) {
       if (p.id === selected) opt.selected = true
       selectEl.appendChild(opt)
     }
+    // A REQUESTED PROFILE THAT DOES NOT EXIST. No option
+    // matched, so the select used to show the FIRST profile, and the agent in
+    // fact ran under `default` (the server's silent fallback). The requested
+    // name is shown as it is, marked, with the consequence in the description.
+    const missing = selected && !profiles.some(p => p.id === selected) ? selected : null
+    if (missing) {
+      const opt = document.createElement('option')
+      opt.value = missing
+      opt.textContent = `⚠ ${missing} (${t('agents.profile_missing_option')})`
+      opt.selected = true
+      selectEl.prepend(opt)
+    }
     const updateDesc = () => {
+      if (missing && selectEl.value === missing) {
+        descEl.textContent = t('agents.profile_missing_desc', { id: missing })
+        return
+      }
       const p = profiles.find(x => x.id === selectEl.value)
       descEl.textContent = p ? p.description : ''
     }
@@ -3790,30 +3806,47 @@ async function openAgentDetail(agentName) {
   const chConnected = agentIsConnected(currentAgent)
   document.getElementById('agentDetailChStatus').innerHTML = `<span class="tg-status"><span class="tg-dot ${chConnected ? 'connected' : 'disconnected'}"></span>${chConnected ? t('agents.channel.connected') : t('agents.channel.disconnected')}</span>`
 
-  // Settings tab - load Ollama + DeepSeek models then set value
+  // Settings tab - load Ollama + DeepSeek + custom-provider models then set value
   loadAvailableModels()
   loadOllamaModels().then(() => {
     const sel = document.getElementById('editAgentModel')
     const mv = currentAgent.activeModel || currentAgent.model || 'claude-opus-4-8[1m]'
+    const customProviderId = currentAgent.customProvider || null
     // The model <select> is one shared element reused per agent. A manual
-    // OpenRouter id (or openrouter-auto:tier) may not be among the static/auto
-    // options, so setting .value would silently show nothing. Inject THIS
-    // agent's model as a selectable option (cleaning any stale injected ones
-    // first) so every agent always displays its own model, per-agent.
+    // OpenRouter id (or openrouter-auto:tier, or custom model) may not be
+    // among the static/auto options, so setting .value would silently show
+    // nothing. Inject THIS agent's model as a selectable option (cleaning any
+    // stale injected ones first) so every agent always displays its own model.
     Array.from(sel.querySelectorAll('option.dynamic-model-opt')).forEach(o => o.remove())
-    if (!Array.from(sel.options).some(o => o.value === mv)) {
-      const opt = document.createElement('option')
-      opt.value = mv
-      opt.className = 'dynamic-model-opt'
-      opt.textContent = mv.startsWith('openrouter-auto:') ? `🔀 ${mv}` : `🔀 ${mv}`
-      sel.appendChild(opt)
+    if (customProviderId) {
+      // Custom provider: select value is "custom:<providerId>"; model-id in the text input.
+      const cpVal = `custom:${customProviderId}`
+      if (!Array.from(sel.options).some(o => o.value === cpVal)) {
+        const opt = document.createElement('option')
+        opt.value = cpVal
+        opt.className = 'dynamic-model-opt'
+        opt.textContent = `🔧 ${customProviderId}`
+        sel.appendChild(opt)
+      }
+      sel.value = cpVal
+      const modelInput = document.getElementById('editAgentModelCustomModelId')
+      if (modelInput) modelInput.value = mv
+    } else {
+      if (!Array.from(sel.options).some(o => o.value === mv)) {
+        const opt = document.createElement('option')
+        opt.value = mv
+        opt.className = 'dynamic-model-opt'
+        opt.textContent = mv.startsWith('openrouter-auto:') ? `🔀 ${mv}` : `🔀 ${mv}`
+        sel.appendChild(opt)
+      }
+      sel.value = mv
     }
-    sel.value = mv
     // PICKERCLIKAPU923: re-apply the CLI gate AFTER the value is set, so the
     // agent's current model is never the disabled option regardless of which
     // of the two async loads finished first (measured in Chromium: a value set
     // onto a disabled option still reads back, but the order must not matter).
     if (lastAvailableModelsData) applyClaudeCliGate(lastAvailableModelsData)
+    updateCustomModelIdRow(sel)
   })
   populateProfileSelect(
     document.getElementById('editAgentProfile'),
@@ -4448,7 +4481,35 @@ async function loadAvailableModels() {
     )
     const orBtn = document.getElementById('openrouterBrowseBtn')
     if (orBtn) orBtn.style.display = (data.openrouterConfigured && isMainAgent) ? '' : 'none'
+
+    // Custom providers: one <option value="custom:<id>"> per defined provider.
+    const customProviders = Array.isArray(data.customProviders) ? data.customProviders : []
+    const cpGroupIds = ['editAgentModelCustomProviderGroup', 'agentModelCustomProviderGroup']
+    for (const gid of cpGroupIds) {
+      const g = document.getElementById(gid)
+      if (!g) continue
+      g.innerHTML = ''
+      if (customProviders.length === 0) { g.style.display = 'none'; continue }
+      g.style.display = ''
+      for (const p of customProviders) {
+        const opt = document.createElement('option')
+        opt.value = `custom:${p.id}`
+        opt.textContent = `🔧 ${p.label}`
+        g.appendChild(opt)
+      }
+    }
+    updateCustomModelIdRow(document.getElementById('editAgentModel'))
+    updateCustomModelIdRow(document.getElementById('agentModel'))
   } catch { /* dashboard not available */ }
+}
+
+function updateCustomModelIdRow(selectEl) {
+  if (!selectEl) return
+  const isEdit = selectEl.id === 'editAgentModel'
+  const rowId = isEdit ? 'editAgentModelCustomModelRow' : 'agentModelCustomModelRow'
+  const row = document.getElementById(rowId)
+  if (!row) return
+  row.style.display = (selectEl.value || '').startsWith('custom:') ? '' : 'none'
 }
 
 // --- OpenRouter manual-list curation (tick models into the shared dropdown) ---
@@ -4641,15 +4702,24 @@ function startModelRestartPolling(name, expectedModel, triggeredAt) {
   }, 2000)
 }
 
+document.getElementById('editAgentModel').addEventListener('change', () => {
+  updateCustomModelIdRow(document.getElementById('editAgentModel'))
+})
+
 document.getElementById('saveModelBtn').addEventListener('click', async () => {
   if (!currentAgent || currentAgent.role === 'main') return
-  const newModel = document.getElementById('editAgentModel').value
+  const selectVal = document.getElementById('editAgentModel').value
+  const isCustom = selectVal.startsWith('custom:')
+  const customProviderId = isCustom ? selectVal.slice('custom:'.length) : null
+  const newModel = isCustom
+    ? (document.getElementById('editAgentModelCustomModelId').value.trim() || selectVal)
+    : selectVal
   const name = currentAgent.name
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(name)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: newModel }),
+      body: JSON.stringify({ model: newModel, customProvider: customProviderId }),
     })
     if (!res.ok) throw new Error()
     currentAgent.model = newModel
@@ -12081,7 +12151,7 @@ function quotaLevelClass(pct) {
 // data -- and a stale or already-reset reading keeps its numbers but drops the
 // colour, because a green bar from six hours ago reassures exactly as much as
 // a green bar from six seconds ago.
-function renderQuotaStrip(q) {
+function renderQuotaStrip(q, fable) {
   const strip = document.getElementById('quotaStrip')
   const bars = document.getElementById('quotaBars')
   const note = document.getElementById('quotaStripNote')
@@ -12103,13 +12173,20 @@ function renderQuotaStrip(q) {
   const stale = q.status === 'stale'
   const nowSec = Math.floor(Date.now() / 1000)
   const windows = [
-    ['overview.quota.five_hour', q.fiveHour],
-    ['overview.quota.seven_day', q.sevenDay],
+    ['overview.quota.five_hour', q.fiveHour, stale, null],
+    ['overview.quota.seven_day', q.sevenDay, stale, null],
   ]
-  for (const [labelKey, w] of windows) {
+  // Fable/Opus comes from a different collector with its own freshness --
+  // muted independently of the statusLine-sourced `stale` above. Silently
+  // omitted (like any other null window here) when there's simply no
+  // reading yet -- non-tiered accounts never get one.
+  if (fable && fable.window) {
+    windows.push(['overview.quota.fable', fable.window, fable.status !== 'ok', fable.ageSec])
+  }
+  for (const [labelKey, w, muted0, ageSecForRow] of windows) {
     if (!w) continue
     const pct = Math.max(0, Math.min(100, Math.round(w.usedPercentage)))
-    const muted = stale || w.expired
+    const muted = muted0 || w.expired
     const row = document.createElement('div')
     row.className = 'quota-bar' + (muted ? ' muted' : '')
     let tail = ''
@@ -12117,6 +12194,13 @@ function renderQuotaStrip(q) {
       tail = ' · ' + t('overview.quota.expired')
     } else if (typeof w.resetsAt === 'number' && w.resetsAt > nowSec) {
       tail = ' · ' + t('overview.quota.resets_in', { d: formatDurationShort(w.resetsAt - nowSec) })
+    }
+    // This row's own collector age travels with it: the shared age line
+    // below (q.ageSec) only covers the statusLine source, so it says nothing
+    // about a row fed by a different collector -- without this a muted row
+    // reads as "might be old" with no way to tell minutes from days.
+    if (typeof ageSecForRow === 'number') {
+      tail += ' · ' + t('overview.quota.measured', { age: formatRelative(Date.now() - ageSecForRow * 1000) })
     }
     row.innerHTML = `
       <div class="quota-bar-label">${escapeHtml(t(labelKey))}</div>
@@ -12151,7 +12235,7 @@ async function loadOverview() {
     document.getElementById('statMemoriesSub').textContent = `${t('overview.stat.sub.memories')} · ${d.memories.categories} category`
     document.getElementById('statSkills').textContent = d.skills.count
     document.getElementById('statSkillsSub').textContent = d.skills.today > 0 ? t('overview.stat.skills_today', { n: d.skills.today }) : ''
-    renderQuotaStrip(d.quota)
+    renderQuotaStrip(d.quota, d.quotaFable)
     // Team: reuse the hierarchy graph renderer so the overview card shows
     // exactly what the Csapat page does (avatars + reports-to tree).
     try {
@@ -12271,7 +12355,16 @@ function renderUpdatesBadge(status) {
 // Dev machines follow develop on purpose; one dismissal silences the banner
 // for them while the Updates-page notice stays as the quiet ground truth.
 const BRANCH_DRIFT_DISMISS_PREFIX = 'marveen.branch-drift-dismissed.'
-const BRANCH_HEAL_COMMAND = 'git checkout main && bash update.sh'
+// The heal command has to work in BOTH states, and `git checkout main` works in
+// neither of them reliably here: with two remotes that both carry main (origin
+// and a fork) git cannot infer the branch to follow and exits 128, and
+// `checkout -b main --track origin/main` only works the FIRST time -- run it
+// again on an install that already has a local main and it exits 128 with
+// "a branch named 'main' already exists". Measured 2026-09-25 in an isolated
+// two-remote repo, git 2.53.0. `switch` then `switch -c` covers both, and the
+// `(A || B) && C` precedence is what keeps update.sh from running when neither
+// switch succeeded.
+const BRANCH_HEAL_COMMAND = 'git switch main || git switch -c main --track origin/main && bash update.sh'
 
 function branchDriftDismissed(branch) {
   try { return localStorage.getItem(BRANCH_DRIFT_DISMISS_PREFIX + branch) === '1' } catch { return false }
@@ -14363,6 +14456,32 @@ async function loadSettings() {
         renderClaudePlansPanel(body)
       }
     }
+
+    // Providers tab (synthetic, owner-only feature for custom Anthropic-compatible endpoints)
+    {
+      const mod = 'providers'
+      const btn = document.createElement('button')
+      btn.className = 'tab-btn' + (mod === activeTab ? ' active' : '')
+      btn.dataset.tab = mod
+      btn.textContent = 'Provider-ok'
+      btn.addEventListener('click', () => activateSettingsTab(mod))
+      tabNav.appendChild(btn)
+
+      const panel = document.createElement('div')
+      panel.className = 'tab-panel'
+      panel.id = `settings-panel-${mod}`
+      panel.hidden = mod !== activeTab
+
+      const container = document.createElement('div')
+      container.id = 'settingsProvidersContainer'
+      panel.appendChild(container)
+
+      tabPanels.appendChild(panel)
+
+      if (mod === activeTab) {
+        renderProvidersContent(container)
+      }
+    }
   } catch (err) {
     tabPanels.innerHTML = `<p style="padding:24px;color:var(--danger)">${t('settings.error')}</p>`
   }
@@ -14382,10 +14501,13 @@ function activateSettingsTab(mod) {
     const footer = document.getElementById('settingsAutonomyUpdatedAt')
     if (grid && !grid.innerHTML.trim()) renderAutonomyContent(grid, footer)
   }
-
   if (mod === 'claude-plans') {
     const body = document.getElementById('claudePlansBody')
     if (body && !body.innerHTML.trim()) renderClaudePlansPanel(body)
+  }
+  if (mod === 'providers') {
+    const container = document.getElementById('settingsProvidersContainer')
+    if (container && !container.innerHTML.trim()) renderProvidersContent(container)
   }
 }
 
@@ -14403,20 +14525,24 @@ async function renderClaudePlansPanel(body) {
     <p style="color:var(--text-muted);font-size:13px;margin:0 0 16px">${t('settings.claude_plans.intro')}</p>
     <div id="claudePlansList"></div>
     <div class="claude-plans-add-form">
+      <div class="claude-plans-form-title" id="cpFormTitle">${t('settings.claude_plans.form.title_add')}</div>
       <div class="form-row">
         <div class="form-group" style="flex:1">
           <label>${t('settings.claude_plans.form.id')}</label>
-          <input class="input" id="cpFormId" placeholder="personal-2">
+          <input class="input" id="cpFormId" placeholder="personal-2" autocomplete="off">
         </div>
         <div class="form-group" style="flex:1">
           <label>${t('settings.claude_plans.form.label')}</label>
-          <input class="input" id="cpFormLabel" placeholder="Second Pro">
+          <input class="input" id="cpFormLabel" placeholder="Second Pro" autocomplete="off">
         </div>
       </div>
       <div class="form-row">
-        <div class="form-group" style="flex:2">
-          <label>${t('settings.claude_plans.form.config_dir')}</label>
-          <input class="input" id="cpFormConfigDir" placeholder="~/.claude-second">
+        <div class="form-group" style="flex:1">
+          <label>${t('settings.claude_plans.form.mode')}</label>
+          <select class="input" id="cpFormMode">
+            <option value="token">${t('settings.claude_plans.form.mode_token')}</option>
+            <option value="configDir">${t('settings.claude_plans.form.mode_config_dir')}</option>
+          </select>
         </div>
         <div class="form-group" style="flex:1">
           <label>${t('settings.claude_plans.form.type')}</label>
@@ -14426,55 +14552,181 @@ async function renderClaudePlansPanel(body) {
           </select>
         </div>
       </div>
+      <div class="form-group" id="cpFormTokenGroup">
+        <label for="cpFormToken">${t('settings.claude_plans.form.token')}</label>
+        <input class="input" id="cpFormToken" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-oat01-…">
+        <div class="claude-plans-form-hint" id="cpFormTokenHint">${t('settings.claude_plans.form.token_hint')}</div>
+      </div>
+      <div class="form-group" id="cpFormConfigDirGroup" hidden>
+        <label for="cpFormConfigDir">${t('settings.claude_plans.form.config_dir')}</label>
+        <input class="input" id="cpFormConfigDir" placeholder="~/.claude-second" autocomplete="off">
+      </div>
       <label class="claude-plans-checkbox-row">
         <input type="checkbox" id="cpFormChannelsAllowed" checked>
         <span>${t('settings.claude_plans.form.channels_allowed')}</span>
       </label>
       <div id="cpFormError" class="settings-row-error" hidden></div>
-      <button class="btn-secondary btn-compact" id="cpFormAddBtn" style="margin-top:12px">${t('settings.claude_plans.form.add_btn')}</button>
+      <div class="claude-plans-form-actions">
+        <button class="btn-secondary btn-compact" id="cpFormAddBtn">${t('settings.claude_plans.form.add_btn')}</button>
+        <button class="btn-secondary btn-compact" id="cpFormCancelBtn" hidden>${t('common.btn.cancel')}</button>
+      </div>
     </div>
   `
 
-  document.getElementById('cpFormAddBtn').addEventListener('click', () => addClaudePlan())
-  for (const id of ['cpFormId', 'cpFormLabel', 'cpFormConfigDir']) {
-    document.getElementById(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') addClaudePlan() })
+  document.getElementById('cpFormMode').addEventListener('change', () => syncClaudePlanFormMode())
+  document.getElementById('cpFormAddBtn').addEventListener('click', () => saveClaudePlan())
+  document.getElementById('cpFormCancelBtn').addEventListener('click', () => resetClaudePlanForm())
+  for (const id of ['cpFormId', 'cpFormLabel', 'cpFormConfigDir', 'cpFormToken']) {
+    document.getElementById(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') saveClaudePlan() })
   }
+  claudePlanFormEditing = null
+  syncClaudePlanFormMode()
 
   await loadClaudePlansList()
 }
 
-async function addClaudePlan() {
+// The plan being edited in the form (the GET /api/claude-plans object), or
+// null while the form is in "add" mode. Only the plan's public shape is kept
+// here -- the raw token is never returned by the API and never pre-filled.
+let claudePlanFormEditing = null
+
+// Pure: form fields (+ the plan being edited, if any) -> the POST/PUT body,
+// or an i18n error key. Contract of src/web/routes/claude-plans.ts:
+//   - config-dir mode sends `configDir`;
+//   - token mode sends the raw `token` (moved into the vault server-side as
+//     claude-plan-token-<id>, never written to disk or echoed back);
+//   - token mode on EDIT with the token field left empty keeps the stored
+//     token by sending the plan's own `tokenSecretId` instead (the PUT
+//     replaces the whole plan, and a body with neither configDir nor
+//     token/tokenSecretId is rejected);
+//   - never both `token` and `configDir` (the route 400s that as ambiguous).
+function buildClaudePlanRequestBody(fields, editing) {
+  const id = editing ? editing.id : String(fields.id || '').trim()
+  const label = String(fields.label || '').trim()
+  const body = { id, label, planType: fields.planType, channelsAllowed: !!fields.channelsAllowed }
+  if (!id || !label) return { error: 'settings.claude_plans.form.error_required' }
+  if (fields.mode === 'token') {
+    const token = String(fields.token || '').trim()
+    if (token) {
+      body.token = token
+    } else if (editing && editing.tokenSecretId) {
+      body.tokenSecretId = editing.tokenSecretId
+    } else {
+      return { error: 'settings.claude_plans.form.error_token_required' }
+    }
+  } else {
+    const configDir = String(fields.configDir || '').trim()
+    if (!configDir) return { error: 'settings.claude_plans.form.error_config_dir_required' }
+    body.configDir = configDir
+  }
+  return { body, sendsNewToken: typeof body.token === 'string' }
+}
+
+function syncClaudePlanFormMode() {
+  const mode = document.getElementById('cpFormMode')?.value
+  const tokenGroup = document.getElementById('cpFormTokenGroup')
+  const dirGroup = document.getElementById('cpFormConfigDirGroup')
+  if (!tokenGroup || !dirGroup) return
+  tokenGroup.hidden = mode !== 'token'
+  dirGroup.hidden = mode === 'token'
+  const hasStoredToken = !!claudePlanFormEditing?.tokenSecretId
+  const hint = document.getElementById('cpFormTokenHint')
+  if (hint) {
+    hint.textContent = t(hasStoredToken
+      ? 'settings.claude_plans.form.token_keep_hint'
+      : 'settings.claude_plans.form.token_hint')
+  }
+  // A stored token reads as masked dots, not as an example value to type.
+  const tokenEl = document.getElementById('cpFormToken')
+  if (tokenEl) tokenEl.placeholder = hasStoredToken ? '••••••••••••' : 'sk-ant-oat01-…'
+}
+
+function resetClaudePlanForm() {
+  claudePlanFormEditing = null
+  const idEl = document.getElementById('cpFormId')
+  if (!idEl) return
+  idEl.value = ''
+  idEl.disabled = false
+  document.getElementById('cpFormLabel').value = ''
+  document.getElementById('cpFormConfigDir').value = ''
+  document.getElementById('cpFormToken').value = ''
+  document.getElementById('cpFormMode').value = 'token'
+  document.getElementById('cpFormType').value = 'personal'
+  document.getElementById('cpFormChannelsAllowed').checked = true
+  document.getElementById('cpFormTitle').textContent = t('settings.claude_plans.form.title_add')
+  document.getElementById('cpFormAddBtn').textContent = t('settings.claude_plans.form.add_btn')
+  document.getElementById('cpFormCancelBtn').hidden = true
+  document.getElementById('cpFormError').hidden = true
+  syncClaudePlanFormMode()
+}
+
+function editClaudePlan(plan) {
+  claudePlanFormEditing = plan
+  const idEl = document.getElementById('cpFormId')
+  if (!idEl) return
+  idEl.value = plan.id
+  idEl.disabled = true
+  document.getElementById('cpFormLabel').value = plan.label
+  document.getElementById('cpFormMode').value = plan.tokenSecretId ? 'token' : 'configDir'
+  document.getElementById('cpFormConfigDir').value = plan.configDir || ''
+  // Never pre-filled: the API does not return the token, and an empty field
+  // on save means "keep the stored one" (buildClaudePlanRequestBody).
+  document.getElementById('cpFormToken').value = ''
+  document.getElementById('cpFormType').value = plan.planType === 'team' ? 'team' : 'personal'
+  document.getElementById('cpFormChannelsAllowed').checked = !!plan.channelsAllowed
+  document.getElementById('cpFormTitle').textContent = t('settings.claude_plans.form.title_edit', { id: plan.id })
+  document.getElementById('cpFormAddBtn').textContent = t('common.btn.save')
+  document.getElementById('cpFormCancelBtn').hidden = false
+  document.getElementById('cpFormError').hidden = true
+  syncClaudePlanFormMode()
+  document.getElementById('cpFormLabel').focus()
+  document.querySelector('.claude-plans-add-form')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+}
+
+async function saveClaudePlan() {
   const errEl = document.getElementById('cpFormError')
   errEl.hidden = true
-  const id = document.getElementById('cpFormId').value.trim()
-  const label = document.getElementById('cpFormLabel').value.trim()
-  const configDir = document.getElementById('cpFormConfigDir').value.trim()
-  const planType = document.getElementById('cpFormType').value
-  const channelsAllowed = document.getElementById('cpFormChannelsAllowed').checked
-
-  if (!id || !label || !configDir) {
-    errEl.textContent = t('settings.claude_plans.form.error_required')
+  const editing = claudePlanFormEditing
+  const built = buildClaudePlanRequestBody({
+    id: document.getElementById('cpFormId').value,
+    label: document.getElementById('cpFormLabel').value,
+    mode: document.getElementById('cpFormMode').value,
+    configDir: document.getElementById('cpFormConfigDir').value,
+    token: document.getElementById('cpFormToken').value,
+    planType: document.getElementById('cpFormType').value,
+    channelsAllowed: document.getElementById('cpFormChannelsAllowed').checked,
+  }, editing)
+  if (built.error) {
+    errEl.textContent = t(built.error)
     errEl.hidden = false
     return
   }
 
+  const url = editing ? `/api/claude-plans/${encodeURIComponent(editing.id)}` : '/api/claude-plans'
   try {
-    const res = await fetch('/api/claude-plans', {
-      method: 'POST',
+    const res = await fetch(url, {
+      method: editing ? 'PUT' : 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, label, configDir, planType, channelsAllowed }),
+      body: JSON.stringify(built.body),
     })
-    const data = await res.json()
+    let data = null
+    try { data = await res.json() } catch { /* non-JSON error body */ }
     if (!res.ok) {
-      errEl.textContent = data.error || t('settings.claude_plans.form.error_generic')
+      errEl.textContent = (data && data.error) || t('settings.claude_plans.form.error_generic')
       errEl.hidden = false
       return
     }
-    document.getElementById('cpFormId').value = ''
-    document.getElementById('cpFormLabel').value = ''
-    document.getElementById('cpFormConfigDir').value = ''
-    document.getElementById('cpFormChannelsAllowed').checked = true
+    // The raw token leaves the DOM as soon as the server has it.
+    document.getElementById('cpFormToken').value = ''
+    const savedId = (data && data.id) || built.body.id
+    resetClaudePlanForm()
     await loadClaudePlansList()
+    // A freshly pasted token: measure it right away, so the row shows its
+    // real 5h/7d usage (or "token rejected") instead of "not checked yet".
+    if (built.sendsNewToken && data && data.tokenSecretId) {
+      const btn = document.querySelector(`.claude-plan-row[data-plan-id="${CSS.escape(savedId)}"] .claude-plan-check-btn`)
+      if (btn) await probeClaudePlan(savedId, btn)
+    }
   } catch {
     errEl.textContent = t('settings.claude_plans.form.error_generic')
     errEl.hidden = false
@@ -14484,6 +14736,119 @@ async function addClaudePlan() {
 async function deleteClaudePlan(id) {
   if (!confirm(t('settings.claude_plans.confirm_delete', { id }))) return
   await fetch(`/api/claude-plans/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  if (claudePlanFormEditing?.id === id) resetClaudePlanForm()
+  await loadClaudePlansList()
+}
+
+// Live usage per plan (piece 1 of multi-key rotation): the 5h / 7d windows
+// last recorded for this plan -- by the rotation heartbeat while the plan is
+// active, or by a live probe (POST /api/claude-plans/:id/probe, "Check now")
+// while it is idle. A window whose reset has already passed is shown muted
+// with "window already reset", same rule as the overview quota strip: an old
+// number must not look like a current one.
+function claudePlanWindowLevel(w, nowSec) {
+  if (!w || typeof w.usedPercent !== 'number') return null
+  if (typeof w.resetsAt === 'number' && w.resetsAt <= nowSec) return 'ok'
+  if (w.usedPercent >= 100 || w.status === 'rejected') return 'exhausted'
+  if (w.usedPercent >= 80) return 'warn'
+  return 'ok'
+}
+
+function claudePlanUsageLevel(observed) {
+  const windows = observed?.windows || {}
+  const nowSec = Math.floor(Date.now() / 1000)
+  const levels = [windows.five_hour, windows.seven_day].map((w) => claudePlanWindowLevel(w, nowSec)).filter(Boolean)
+  if (!levels.length) return null
+  if (levels.includes('exhausted')) return 'exhausted'
+  if (levels.includes('warn')) return 'warn'
+  return 'ok'
+}
+
+function renderClaudePlanUsage(plan, observed) {
+  const wrap = document.createElement('div')
+  wrap.className = 'claude-plan-usage'
+  const nowSec = Math.floor(Date.now() / 1000)
+  const windows = observed?.windows || {}
+
+  const bars = document.createElement('div')
+  bars.className = 'quota-bars'
+  for (const [labelKey, w] of [['overview.quota.five_hour', windows.five_hour], ['overview.quota.seven_day', windows.seven_day]]) {
+    if (!w || typeof w.usedPercent !== 'number') continue
+    const pct = Math.max(0, Math.min(100, Math.round(w.usedPercent)))
+    const expired = typeof w.resetsAt === 'number' && w.resetsAt <= nowSec
+    const lvl = claudePlanWindowLevel(w, nowSec)
+    const fillClass = expired ? '' : (lvl === 'exhausted' ? 'danger' : lvl === 'warn' ? 'warn' : '')
+    let tail = ''
+    if (expired) {
+      tail = ' · ' + t('overview.quota.expired')
+    } else if (typeof w.resetsAt === 'number') {
+      const at = new Date(w.resetsAt * 1000).toLocaleString(_lang === 'en' ? 'en-US' : 'hu-HU', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+      tail = ' · ' + t('settings.claude_plans.resets', { d: formatDurationShort(w.resetsAt - nowSec), at })
+    }
+    const row = document.createElement('div')
+    row.className = 'quota-bar' + (expired ? ' muted' : '')
+    row.innerHTML = `
+      <div class="quota-bar-label">${escapeHtml(t(labelKey))}</div>
+      <div class="quota-bar-track"><div class="quota-bar-fill ${fillClass}" style="width:${pct}%"></div></div>
+      <div class="quota-bar-value">${pct}%<span class="quota-bar-reset">${escapeHtml(tail)}</span></div>
+    `
+    bars.appendChild(row)
+  }
+  if (bars.children.length) wrap.appendChild(bars)
+
+  const foot = document.createElement('div')
+  foot.className = 'claude-plan-usage-foot'
+  const info = document.createElement('span')
+  const checkedAt = Math.max(observed?.observedAt || 0, observed?.lastProbe?.at || 0)
+  const parts = []
+  if (checkedAt > 0) {
+    parts.push(t('settings.claude_plans.checked', { age: formatPendingAge(Date.now() - checkedAt) }))
+  } else {
+    parts.push(t('settings.claude_plans.never_checked'))
+  }
+  const lp = observed?.lastProbe
+  if (lp && !lp.ok && lp.error !== 'rate_limited') {
+    parts.push(t('settings.claude_plans.probe_error.' + (lp.error || 'http_error'), { status: lp.httpStatus ?? '' }))
+    info.className = 'claude-plan-usage-error'
+  }
+  info.textContent = parts.join(' · ')
+  foot.appendChild(info)
+
+  const btn = document.createElement('button')
+  btn.className = 'btn-secondary btn-compact claude-plan-check-btn'
+  btn.textContent = t('settings.claude_plans.check_now')
+  if (!plan.tokenSecretId) {
+    btn.disabled = true
+    btn.title = t('settings.claude_plans.check_needs_token')
+  } else {
+    btn.addEventListener('click', () => probeClaudePlan(plan.id, btn))
+  }
+  foot.appendChild(btn)
+  wrap.appendChild(foot)
+  return wrap
+}
+
+async function probeClaudePlan(id, btn) {
+  const original = btn.textContent
+  btn.disabled = true
+  btn.textContent = t('settings.claude_plans.checking')
+  try {
+    const res = await fetch(`/api/claude-plans/${encodeURIComponent(id)}/probe`, { method: 'POST' })
+    if (!res.ok) {
+      let data = null
+      try { data = await res.json() } catch { /* non-JSON error body */ }
+      // A 502 is an upstream verdict (e.g. token rejected) already recorded in
+      // the state side-car; the reloaded row shows it. Anything else (404/409/
+      // 422) is not recorded, so surface it here.
+      // A 429 is the per-plan probe throttle: the reloaded row already shows
+      // the last measurement, so just say why nothing new happened.
+      if (res.status === 429) showToast(t('settings.claude_plans.probe_throttled'))
+      else if (res.status !== 502) showToast((data && data.error) || t('settings.claude_plans.probe_failed'))
+    }
+  } catch {
+    showToast(t('settings.claude_plans.probe_failed'))
+  }
+  btn.textContent = original
   await loadClaudePlansList()
 }
 
@@ -14507,11 +14872,12 @@ async function loadClaudePlansList() {
     list.innerHTML = ''
     for (const plan of plans) {
       const observed = state.plans?.[plan.id]
-      const fiveHour = observed?.windows?.five_hour
+      const level = claudePlanUsageLevel(observed)
       const isActive = state.activePlanByAgent?.[mainAgentId()] === plan.id
 
       const row = document.createElement('div')
       row.className = 'claude-plan-row'
+      row.dataset.planId = plan.id
 
       const main = document.createElement('div')
       main.style.flex = '1'
@@ -14522,29 +14888,216 @@ async function loadClaudePlansList() {
         <strong>${escapeHtml(plan.label)}</strong>
         <span class="claude-plan-badge">${plan.planType === 'team' ? t('settings.claude_plans.form.type_team') : t('settings.claude_plans.form.type_personal')}</span>
         ${!plan.channelsAllowed ? `<span class="claude-plan-badge claude-plan-badge-muted">${t('settings.claude_plans.no_channels')}</span>` : ''}
-        ${fiveHour ? `<span class="claude-plan-badge">${t('settings.claude_plans.last_known', { pct: Math.round(fiveHour.usedPercent) })}</span>` : ''}
+        ${level ? `<span class="claude-plan-badge claude-plan-status-${level}">${t('settings.claude_plans.status.' + level)}</span>` : ''}
       `
       main.appendChild(mainLine)
 
       const meta = document.createElement('div')
       meta.className = 'claude-plan-row-meta'
-      meta.textContent = `${plan.id} · ${plan.configDir}`
+      meta.textContent = `${plan.id} · ${plan.tokenSecretId ? t('settings.claude_plans.token_mode') : plan.configDir}`
       main.appendChild(meta)
 
+      main.appendChild(renderClaudePlanUsage(plan, observed))
+
       row.appendChild(main)
+
+      const actions = document.createElement('div')
+      actions.className = 'claude-plan-actions'
+      const editBtn = document.createElement('button')
+      editBtn.className = 'claude-plan-edit'
+      editBtn.title = t('common.btn.edit')
+      editBtn.setAttribute('aria-label', t('common.btn.edit'))
+      editBtn.textContent = '✎'
+      editBtn.addEventListener('click', () => editClaudePlan(plan))
+      actions.appendChild(editBtn)
 
       const delBtn = document.createElement('button')
       delBtn.className = 'claude-plan-delete'
       delBtn.title = t('common.btn.delete')
       delBtn.textContent = '×'
       delBtn.addEventListener('click', () => deleteClaudePlan(plan.id))
-      row.appendChild(delBtn)
+      actions.appendChild(delBtn)
+      row.appendChild(actions)
 
       list.appendChild(row)
     }
   } catch {
     list.innerHTML = `<p style="color:var(--danger);font-size:13px">${t('settings.error')}</p>`
   }
+}
+
+
+async function renderProvidersContent(container) {
+  container.innerHTML = '<p style="padding:16px;color:var(--text-muted);font-size:13px">Betöltés...</p>'
+  try {
+    const res = await fetch('/api/custom-providers')
+    if (!res.ok) throw new Error('fetch failed')
+    const { providers } = await res.json()
+    buildProvidersUI(container, providers)
+  } catch {
+    container.innerHTML = '<p style="padding:16px;color:var(--danger);font-size:13px">Hiba a provider lista betöltésekor.</p>'
+  }
+}
+
+function buildProvidersUI(container, providers) {
+  container.innerHTML = ''
+
+  const notice = document.createElement('p')
+  notice.style.cssText = 'font-size:12.5px;color:var(--text-muted);padding:12px 0 8px;line-height:1.5'
+  notice.textContent = 'Egyéni Anthropic Messages API (/v1/messages) kompatibilis végpontok. Tiszta OpenAI végponthoz proxy szükséges.'
+  container.appendChild(notice)
+
+  if (providers.length > 0) {
+    const tableWrap = document.createElement('div')
+    tableWrap.style.cssText = 'overflow-x:auto;margin-bottom:16px'
+    const table = document.createElement('table')
+    table.style.cssText = 'width:100%;min-width:520px;border-collapse:collapse;font-size:13px'
+    table.innerHTML = `<thead><tr style="border-bottom:1px solid var(--border)">
+      <th style="text-align:left;padding:6px 8px">Név</th>
+      <th style="text-align:left;padding:6px 8px">Base URL</th>
+      <th style="text-align:left;padding:6px 8px">Auth</th>
+      <th style="text-align:left;padding:6px 8px">Vault kulcs</th>
+      <th style="padding:6px 8px"></th>
+    </tr></thead><tbody id="customProvidersTableBody"></tbody>`
+    tableWrap.appendChild(table)
+    container.appendChild(tableWrap)
+    const tbody = table.querySelector('#customProvidersTableBody')
+    for (const p of providers) {
+      const tr = document.createElement('tr')
+      tr.style.borderBottom = '1px solid var(--border)'
+      tr.innerHTML = `
+        <td style="padding:6px 8px;font-weight:500">${escapeHtml(p.label)}</td>
+        <td style="padding:6px 8px;font-family:monospace;font-size:12px;word-break:break-all">${escapeHtml(p.baseUrl)}</td>
+        <td style="padding:6px 8px">${escapeHtml(p.authHeader)}</td>
+        <td style="padding:6px 8px;font-family:monospace;font-size:12px">${p.vaultKey ? escapeHtml(p.vaultKey) : '<em style="color:var(--text-muted)">nincs</em>'}</td>
+        <td style="padding:6px 8px;text-align:right;white-space:nowrap">
+          <button class="btn-secondary btn-compact" data-provider-edit="${escapeHtml(p.id)}" style="margin-right:4px">Szerkesztés</button>
+          <button class="btn-secondary btn-compact" style="color:var(--danger)" data-provider-delete="${escapeHtml(p.id)}">Törlés</button>
+        </td>`
+      tbody.appendChild(tr)
+    }
+    tbody.querySelectorAll('[data-provider-edit]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.providerEdit
+        const p = providers.find(x => x.id === id)
+        if (p) openAddProviderModal(container, p)
+      })
+    })
+    tbody.querySelectorAll('[data-provider-delete]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.providerDelete
+        if (!confirm(`Biztosan törlöd a(z) "${id}" providert?`)) return
+        try {
+          const r = await fetch(`/api/custom-providers/${encodeURIComponent(id)}`, { method: 'DELETE' })
+          if (!r.ok) throw new Error()
+          renderProvidersContent(container)
+          loadAvailableModels()
+        } catch { alert('Hiba a törléskor.') }
+      })
+    })
+  } else {
+    const empty = document.createElement('p')
+    empty.style.cssText = 'color:var(--text-muted);font-size:13px;padding:8px 0 16px'
+    empty.textContent = 'Nincs egyéni provider konfigurálva.'
+    container.appendChild(empty)
+  }
+
+  const addBtn = document.createElement('button')
+  addBtn.className = 'btn-primary btn-compact'
+  addBtn.textContent = '+ Új provider'
+  addBtn.addEventListener('click', () => openAddProviderModal(container))
+  container.appendChild(addBtn)
+}
+
+function openAddProviderModal(container, editProvider = null) {
+  const existing = document.getElementById('addProviderModal')
+  if (existing) existing.remove()
+
+  const isEdit = editProvider !== null
+  const v = (field) => isEdit ? escapeHtml(editProvider[field] || '') : ''
+
+  const overlay = document.createElement('div')
+  overlay.id = 'addProviderModal'
+  overlay.className = 'modal-overlay active'
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:480px">
+      <div class="modal-header">
+        <h2>${isEdit ? 'Provider szerkesztése' : 'Új egyéni provider'}</h2>
+        <button class="modal-close" id="addProviderModalClose">&times;</button>
+      </div>
+      <div class="modal-body" style="display:flex;flex-direction:column;gap:12px">
+        <div class="form-group">
+          <label class="form-label">Megjelenő név *</label>
+          <input type="text" id="cpLabel" class="input" placeholder="pl. DeepSeek (saját kulcs)" value="${v('label')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Provider azonosító (belső név) * <small style="color:var(--text-muted)">(csak a-z 0-9 _ -)</small></label>
+          <input type="text" id="cpId" class="input" placeholder="pl. my-deepseek" value="${v('id')}"${isEdit ? ' readonly style="opacity:0.6;cursor:not-allowed"' : ''}>
+          <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">Ez a provider belső neve, nem a modellazonosító. A modellt az ágens szerkesztőjében adod meg.</small>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Base URL * <small style="color:var(--text-muted)">(https:// vagy http://localhost)</small></label>
+          <input type="text" id="cpBaseUrl" class="input" placeholder="https://api.deepseek.com/anthropic" value="${v('baseUrl')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Auth header *</label>
+          <select id="cpAuthHeader" class="input">
+            <option value="x-api-key"${isEdit && editProvider.authHeader === 'x-api-key' ? ' selected' : ''}>x-api-key (ANTHROPIC_API_KEY)</option>
+            <option value="Bearer"${isEdit && editProvider.authHeader === 'Bearer' ? ' selected' : ''}>Bearer (ANTHROPIC_AUTH_TOKEN)</option>
+            <option value="none"${isEdit && editProvider.authHeader === 'none' ? ' selected' : ''}>none (Ollama-szerű, token nélkül)</option>
+          </select>
+        </div>
+        <div class="form-group" id="cpVaultKeyGroup"${isEdit && editProvider.authHeader === 'none' ? ' style="display:none"' : ''}>
+          <label class="form-label">Vault kulcs neve *</label>
+          <input type="text" id="cpVaultKey" class="input" placeholder="pl. my-deepseek-api-key" value="${v('vaultKey')}">
+          <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">A kulcs értékét a Vault tabon veheted fel.</small>
+        </div>
+        <p style="font-size:12px;color:var(--text-muted);background:var(--surface-hover);padding:10px;border-radius:6px;line-height:1.5">
+          Csak Anthropic Messages API (/v1/messages) kompatibilis végpont működik. Tiszta OpenAI végponthoz (pl. /v1/chat/completions) fordítóproxy szükséges, az most nem támogatott.
+        </p>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn-secondary" id="addProviderCancelBtn">Mégsem</button>
+          <button class="btn-primary" id="addProviderSaveBtn">Mentés</button>
+        </div>
+      </div>
+    </div>`
+  document.body.appendChild(overlay)
+
+  const closeModal = () => overlay.remove()
+  overlay.querySelector('#addProviderModalClose').addEventListener('click', closeModal)
+  overlay.querySelector('#addProviderCancelBtn').addEventListener('click', closeModal)
+
+  overlay.querySelector('#cpAuthHeader').addEventListener('change', (e) => {
+    const vkGroup = overlay.querySelector('#cpVaultKeyGroup')
+    vkGroup.style.display = e.target.value === 'none' ? 'none' : ''
+  })
+
+  overlay.querySelector('#addProviderSaveBtn').addEventListener('click', async () => {
+    const id = overlay.querySelector('#cpId').value.trim()
+    const label = overlay.querySelector('#cpLabel').value.trim()
+    const baseUrl = overlay.querySelector('#cpBaseUrl').value.trim()
+    const authHeader = overlay.querySelector('#cpAuthHeader').value
+    const vaultKey = authHeader !== 'none' ? overlay.querySelector('#cpVaultKey').value.trim() : null
+    if (!id || !label || !baseUrl || (authHeader !== 'none' && !vaultKey)) {
+      alert('Töltsd ki az összes kötelező mezőt.')
+      return
+    }
+    try {
+      const r = await fetch('/api/custom-providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, label, baseUrl, authHeader, vaultKey }),
+      })
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}))
+        alert(err.error || 'Hiba a mentéskor.')
+        return
+      }
+      overlay.remove()
+      renderProvidersContent(container)
+      loadAvailableModels()
+    } catch { alert('Hiba a mentéskor.') }
+  })
 }
 
 function buildSettingRow(def) {
@@ -14837,6 +15390,8 @@ const TU_MODEL_PRICING = {
   'claude-opus-4-6':     { in: 5.0,   out: 25.0,  cw: 6.25,  cr: 0.50 },
   // Opus 4.0 / 4.1 -- the last generation still on the old Opus pricing.
   'claude-opus-4':       { in: 15.0,  out: 75.0,  cw: 18.75, cr: 1.50 },
+  // Sonnet 5.5: 2 / 10, from the official models overview (2026-09-28).
+  'claude-sonnet-5-5':   { in: 2.0,   out: 10.0,  cw: 2.50,  cr: 0.20 },
   'claude-sonnet-5':     TU_SONNET5_PRICE,
   'claude-sonnet-4-6':   { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
   'claude-sonnet-4-5':   { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },

@@ -89,10 +89,10 @@ function isVoiceInstalled(): boolean {
 function runProc(
   cmd: string,
   args: string[],
-  opts: { stdinData?: string; timeoutMs?: number } = {},
+  opts: { stdinData?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv } = {},
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve) => {
-    const proc = spawn(cmd, args, { shell: false })
+    const proc = spawn(cmd, args, { shell: false, ...(opts.env ? { env: opts.env } : {}) })
     let stdout = ''
     let stderr = ''
     const timer = opts.timeoutMs
@@ -282,7 +282,9 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     const result = await runProc(
       VENV_PY,
       [VTOOLS_PY, 'speak', onnxPath, stateDir, chatId, text],
-      { timeoutMs: 90_000 },
+      // The installed toolkit lives outside the install tree; tell it which
+      // install it serves so it can find the conversation ledger.
+      { timeoutMs: 90_000, env: { ...process.env, MARVEEN_INSTALL_DIR: PROJECT_ROOT } },
     )
     if (result.code !== 0) {
       logger.warn({ voiceModel, chatId, stderr: result.stderr }, '/api/voice/tts: piper/sendVoice failed')

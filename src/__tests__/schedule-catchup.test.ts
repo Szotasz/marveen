@@ -9,6 +9,7 @@ import {
   catchUpMaxAgeMs,
   computeCatchUpStart,
   decideCatchUp,
+  decideCatchUpSummaryDelivery,
 } from '../web/schedule-runner.js'
 import { cronDueBetween, cronPrevOccurrence } from '../web/cron.js'
 
@@ -191,5 +192,25 @@ describe('the runner wires the policy in', () => {
     expect(SRC).toMatch(/staleThisTick\.push\(\{ task: task\.name, ageMs, type: task\.type \}\)/)
     // The miss itself is still recorded -- the fix mutes the alert, not the bookkeeping.
     expect(SRC).toMatch(/appendTaskRun\(task\.name, agentName, 'missed'\)/)
+  })
+
+  // 2026-09-02 (kanban 83b8c4c3) + review 2026-09-03 (#1153): a gap the
+  // machine SLEPT through is operator-caused downtime and is only logged; a
+  // gap with no sleep in it (process down: crash, kill, failed restart) is the
+  // outage the owner wants to hear about and still goes to the channel. Both
+  // delivery paths must exist and the call site must choose by the pure rule.
+  it('mutes only a sleep-origin gap, a non-sleep gap still reaches the channel (fix-revert guard)', () => {
+    expect(decideCatchUpSummaryDelivery(true)).toBe('log')
+    expect(decideCatchUpSummaryDelivery(false)).toBe('channel')
+    const callSite = SRC.slice(SRC.indexOf('const caughtUpReportable'), SRC.indexOf('pendingStartupGapMs = 0'))
+    expect(callSite).toMatch(/decideCatchUpSummaryDelivery\(systemSleptBetween\(now - gapMs, now\)\) === 'log'/)
+    expect(callSite).toMatch(/logCatchUpSummary\(caughtUpReportable, staleReportable, gapMs\)/)
+    expect(callSite).toMatch(/sendCatchUpSummary\(caughtUpReportable, staleReportable, gapMs\)/)
+    // The log-only variant never touches the channel; the channel variant still does.
+    const logStart = SRC.indexOf('function logCatchUpSummary')
+    const logFn = SRC.slice(logStart, SRC.indexOf('\nfunction ', logStart + 1))
+    expect(logFn).not.toMatch(/sendSchedulerAlertMessage|resolveSchedulerAlertToken/)
+    const sendFn = SRC.slice(SRC.indexOf('function sendCatchUpSummary'), SRC.indexOf('\nexport type CatchUpSummaryDelivery'))
+    expect(sendFn).toMatch(/sendSchedulerAlertMessage\(token, ownerChat, text\)/)
   })
 })

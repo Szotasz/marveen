@@ -17,6 +17,7 @@ import {
   type BundleManifest,
   type FleetBundleManifest,
 } from '../web/agent-bundle.js'
+import { MAIN_AGENT_ID } from '../config.js'
 
 // Hermetic: every test builds its own agent source tree and install target in a
 // temp dir, so nothing touches the real AGENTS_BASE_DIR. The full round-trip
@@ -136,13 +137,31 @@ describe('agent bundle export/import', () => {
 
     const destBase = join(tmp, 'agents')
     // sanitizeAgentName strips accents and any char outside [a-z0-9-]; a space
-    // is removed (not hyphenated), so "Új Név!" decays to "ujnev".
+    // becomes a hyphen, so "Új Név!" decays to "uj-nev".
     const r = importAgentBundle(bundle, {
       resolveDest: (n) => join(destBase, n),
       overrideName: 'Új Név!',
     })
-    expect(r.name).toBe('ujnev')
-    expect(existsSync(join(destBase, 'ujnev', 'CLAUDE.md'))).toBe(true)
+    expect(r.name).toBe('uj-nev')
+    expect(existsSync(join(destBase, 'uj-nev', 'CLAUDE.md'))).toBe(true)
+  })
+
+  it('refuses a name that sanitizes to the main agent id', () => {
+    // The main agent lives in PROJECT_ROOT, so the existence check against the
+    // install path cannot catch the collision; it must be refused by name.
+    const src = join(tmp, 'src')
+    makeAgent(src, { 'CLAUDE.md': 'x' })
+    const stageRoot = join(tmp, 'pack')
+    mkdirSync(stageRoot, { recursive: true })
+    stageAgentDirForExport(src, join(stageRoot, 'agent'), false)
+    const bundle = packBundle(stageRoot, 'original', false)
+    const destBase = join(tmp, 'agents')
+    const spaced = MAIN_AGENT_ID.replace(/-/g, ' ').toUpperCase()
+    expect(() => importAgentBundle(bundle, {
+      resolveDest: (n) => join(destBase, n),
+      overrideName: spaced,
+    })).toThrow(/reserved for the main agent/)
+    expect(existsSync(join(destBase, MAIN_AGENT_ID))).toBe(false)
   })
 
   it('strips machine-specific config fields on import', () => {
@@ -153,6 +172,7 @@ describe('agent bundle export/import', () => {
       remoteHost: 'devbox',
       remoteWorkdir: '/home/user/proj',
       claudeConfigDir: '/home/user/.claude-alt',
+      oauthTokenFile: '/home/user/.config/marveen/tokens/agent.token',
       displayName: 'Keep me',
     }))
     sanitizeImportedConfig(stagedAgent)
@@ -160,6 +180,8 @@ describe('agent bundle export/import', () => {
     expect(cfg.remoteHost).toBeUndefined()
     expect(cfg.remoteWorkdir).toBeUndefined()
     expect(cfg.claudeConfigDir).toBeUndefined()
+    // 2fb86ef2: a per-agent setup-token file points at a path on the source machine.
+    expect(cfg.oauthTokenFile).toBeUndefined()
     expect(cfg.model).toBe('claude-sonnet-5')
     expect(cfg.displayName).toBe('Keep me')
   })
@@ -253,6 +275,18 @@ describe('fleet bundle export/import', () => {
     expect(result.skipped).toHaveLength(0)
     expect(readFileSync(join(destBase, 'alpha', 'CLAUDE.md'), 'utf-8')).toContain('Alpha')
     expect(readFileSync(join(destBase, 'beta', 'CLAUDE.md'), 'utf-8')).toContain('Beta')
+  })
+
+  it('skips an agent named like the main agent, imports the rest', () => {
+    const bundle = packFleetBundle(join(tmp, 'f'), {
+      [MAIN_AGENT_ID]: { 'CLAUDE.md': 'impostor' },
+      beta: { 'CLAUDE.md': 'fresh' },
+    })
+    const destBase = join(tmp, 'agents')
+    const result = importAllAgentsBundle(bundle, { resolveDest: (n) => join(destBase, n), overwrite: true })
+    expect(result.imported.map((a) => a.name)).toEqual(['beta'])
+    expect(result.skipped).toEqual([{ name: MAIN_AGENT_ID, reason: 'reserved for the main agent' }])
+    expect(existsSync(join(destBase, MAIN_AGENT_ID))).toBe(false)
   })
 
   it('skips colliding agents without overwrite, replaces them with it', () => {

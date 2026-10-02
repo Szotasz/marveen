@@ -1071,7 +1071,12 @@ echo -e "${BOLD}  Konfiguracio letrehozasa...${NC}"
 env_merge_key() {
   # env_merge_key KEY VALUE -- drop any existing KEY= line, append KEY=VALUE.
   _emk_tmp="$INSTALL_DIR/.env.tmp.$$"
-  grep -v "^$1=" "$INSTALL_DIR/.env" > "$_emk_tmp" 2>/dev/null || true
+  # ENVTMPMODE925: the tmp holds the WHOLE .env (bot token, API keys) until the
+  # mv below, so it is created 0600 from its first byte -- at the umask default
+  # it was world-readable for that window (the VAULTMODE818 pattern). The rm
+  # matters too: a leftover tmp of the same name would keep its old mode.
+  rm -f "$_emk_tmp"
+  (umask 077; grep -v "^$1=" "$INSTALL_DIR/.env" > "$_emk_tmp" 2>/dev/null) || true
   printf '%s=%s\n' "$1" "$2" >> "$_emk_tmp"
   mv "$_emk_tmp" "$INSTALL_DIR/.env"
   chmod 600 "$INSTALL_DIR/.env"
@@ -1091,6 +1096,26 @@ env_set_if_absent() {
   if grep -q "^$1=" "$INSTALL_DIR/.env" 2>/dev/null; then return 0; fi
   env_merge_key "$1" "$2"
 }
+env_add_list_entry() {
+  # env_add_list_entry KEY ENTRY -- make sure ENTRY is in the comma list KEY,
+  # keeping every entry already there. Read the way the server reads it: the
+  # LAST KEY= line wins (src/env-parse.ts), one pair of surrounding quotes is
+  # dropped, and each entry is compared after the server's normalisation
+  # (parseSystemSenderIds: split on commas, trim; sanitizeAgentIdent: keep
+  # [A-Za-z0-9_-]). Present -> no write; absent -> appended, as ONE KEY= line.
+  _eal_cur="$(grep "^$1=" "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  case "$_eal_cur" in
+    \"*\") _eal_cur="${_eal_cur#\"}"; _eal_cur="${_eal_cur%\"}" ;;
+    \'*\') _eal_cur="${_eal_cur#\'}"; _eal_cur="${_eal_cur%\'}" ;;
+  esac
+  _eal_cur="$(printf '%s' "$_eal_cur" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  _eal_saved_ifs="$IFS"; IFS=','
+  for _eal_e in $_eal_cur; do
+    if [ "$(printf '%s' "$_eal_e" | tr -dc 'A-Za-z0-9_-')" = "$2" ]; then IFS="$_eal_saved_ifs"; return 0; fi
+  done
+  IFS="$_eal_saved_ifs"
+  if [ -n "$(printf '%s' "$_eal_cur" | tr -d ', ')" ]; then env_merge_key "$1" "$_eal_cur,$2"; else env_merge_key "$1" "$2"; fi
+}
 (umask 077 && touch "$INSTALL_DIR/.env")
 chmod 600 "$INSTALL_DIR/.env"
 [ -s "$INSTALL_DIR/.env" ] || printf '# Main agent konfiguracio\n' >> "$INSTALL_DIR/.env"
@@ -1101,6 +1126,19 @@ env_merge_key BRAND_NAME "${BRAND_NAME}"
 env_merge_key MAIN_AGENT_ID "${MAIN_AGENT_ID}"
 env_merge_key SERVICE_ID "${SERVICE_ID}"
 env_merge_key WEB_PORT "${WEB_PORT:-3420}"
+# The fleet's own guards alert under their OWN names: the prod-tree guard
+# (scripts/install-prod-tree-guard-hook.sh) and the channels.sh shared-root
+# guard. The message route accepts a sender only if it is a registered agent,
+# the owner, or listed in SYSTEM_SENDER_IDS, so without these entries each
+# guard falls back to sending as MAIN_AGENT_ID, i.e. the supervisory system
+# writes under the main agent's name. Appended to what the operator listed,
+# never replacing it; an entry already there is not written twice.
+# KNOWN LIMIT: the server reads the list once, at start-up (src/config.ts). A
+# fresh install starts it after this; a RE-RUN over a running install does not
+# restart it, so until the next dashboard restart a guard that reads the new
+# line sends under its own name to a server that does not know it yet.
+env_add_list_entry SYSTEM_SENDER_IDS prod-tree-guard
+env_add_list_entry SYSTEM_SENDER_IDS channels-sh-guard
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   env_keep_or_set TELEGRAM_BOT_TOKEN "${BOT_TOKEN}"
   # Never demote a paired install: CHAT_ID=0 means pairing was skipped THIS
@@ -1725,6 +1763,7 @@ DASH_UNIT="${SERVICE_ID}-dashboard"
 CHAN_UNIT="${SERVICE_ID}-channels"
 MORN_UNIT="${SERVICE_ID}-morning"
 KEEPALIVE_UNIT="${SERVICE_ID}-channel-keepalive-probe"
+INBOX_OBSERVER_UNIT="${SERVICE_ID}-main-inbox-observer"
 
 # Detect the host timezone so the scheduled-task runner (which reads
 # cron expressions in Node's local TZ) fires at the operator's wall
@@ -1925,6 +1964,47 @@ AccuracySec=20s
 WantedBy=timers.target
 EOF
 
+# ${INBOX_OBSERVER_UNIT}.service/.timer -- the main agent's inbox queue, watched
+# from OUTSIDE the dashboard process. Every other delivery path is watched by
+# something; the main agent's is not, and its only in-process reader lives in
+# the dashboard itself, so a stopped or wedged dashboard takes the watcher down
+# with it and mail to the main agent sits pending with nobody to notice.
+#
+# The repo shipping the script is not enough -- that is the exact defect the
+# observer's own header names about the unscheduled watchdog script, and it is
+# why this block exists next to the keepalive probe rather than in a README.
+cat >"$SYSTEMD_DIR/${INBOX_OBSERVER_UNIT}.service" <<EOF
+[Unit]
+Description=${BOT_NAME} out-of-process observer of the main agent's inbox queue
+
+[Service]
+Type=oneshot
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/scripts/main-inbox-observer.sh
+Environment=PATH=$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=$HOME
+${TZ_LINE}
+StandardOutput=append:$INSTALL_DIR/store/main-inbox-observer.log
+StandardError=append:$INSTALL_DIR/store/main-inbox-observer.log
+EOF
+
+# Deliberately NOT bound to the dashboard unit: "the dashboard is down" is one
+# of the states this observes, so the timer has to survive it. Six ticks fit
+# inside the 30-minute stall threshold, so one missed tick cannot push the
+# alert past the window.
+cat >"$SYSTEMD_DIR/${INBOX_OBSERVER_UNIT}.timer" <<EOF
+[Unit]
+Description=${BOT_NAME} main-agent inbox observer every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
+EOF
+
 # marveen-host-watchdog.service -- host/WSL-VM restart detector (btime-based).
 # Distinguishes a whole-VM restart (all units down at once, NOT an app crash)
 # from a service crash, and Telegrams it. See scripts/host-restart-watchdog.sh.
@@ -2010,7 +2090,7 @@ if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; the
   # ${MORN_UNIT}.timer is deliberately NOT in this list -- the seeded
   # reggeli-napindito scheduled task already delivers the morning briefing at
   # 07:30 from inside the live channel session. See the timer's comment above.
-  if systemctl --user enable "${DASH_UNIT}" "${CHAN_UNIT}" "${KEEPALIVE_UNIT}.timer" "${SERVICE_ID}-host-watchdog.service" 2>/dev/null; then
+  if systemctl --user enable "${DASH_UNIT}" "${CHAN_UNIT}" "${KEEPALIVE_UNIT}.timer" "${INBOX_OBSERVER_UNIT}.timer" "${SERVICE_ID}-host-watchdog.service" 2>/dev/null; then
     ok "systemd unitok generalva es engedelyezve"
   else
     warn "A unit-fajlok elkeszultek, de az engedelyezesuk nem sikerult -- ujrainditas utan a szolgaltatasok nem indulnak el maguktol."
@@ -2028,7 +2108,7 @@ if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; the
     echo -e "  ${DIM}Javitas most:${NC}"
     echo -e "  ${DIM}systemctl --user enable \\${NC}"
     echo -e "  ${DIM}    ${DASH_UNIT} ${CHAN_UNIT} \\${NC}"
-    echo -e "  ${DIM}    ${KEEPALIVE_UNIT}.timer ${SERVICE_ID}-host-watchdog.service${NC}"
+    echo -e "  ${DIM}    ${KEEPALIVE_UNIT}.timer ${INBOX_OBSERVER_UNIT}.timer ${SERVICE_ID}-host-watchdog.service${NC}"
   fi
   systemctl --user start "${DASH_UNIT}" "${CHAN_UNIT}" 2>/dev/null || true
   sleep 2
@@ -2087,6 +2167,16 @@ else
   ok "${CHANNEL_PROVIDER} plugin ellenorizve"
 fi
 
+# INSTPAIRPATH930: the access.json the pairing must read AND write. channels.sh moves the
+# shared $HOME/.claude/channels/<provider> dir into the install on its first start (#915,
+# scripts/channels.sh MAIN_CHAN_DIR), and the plugin writes the pending code there, so the
+# install-scoped file wins; the legacy path is only the fallback for a bridge that has not
+# migrated yet. Resolved AFTER the code is typed in, when the bot has already answered.
+_pairing_access_file() {
+  local scoped="$INSTALL_DIR/.claude/channels/$CHANNEL_PROVIDER/access.json"
+  if [ -f "$scoped" ]; then echo "$scoped"; else echo "$CHANNEL_DIR/access.json"; fi
+}
+
 # ─────────────────────────────────────────────
 # Channel pairing (Telegram only; Slack uses OAuth / App install)
 # ─────────────────────────────────────────────
@@ -2094,7 +2184,6 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
   echo ""
   echo -e "${BOLD}Telegram parositas${NC}"
 
-  ACCESS_FILE="$CHANNEL_DIR/access.json"
 
   # Is the Telegram bridge actually running?
   #
@@ -2148,6 +2237,7 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
     read -rp "$(_t prompt_pair_code)" PAIR_CODE
 
     if [ -n "$PAIR_CODE" ]; then
+      ACCESS_FILE="$(_pairing_access_file)"
       if [ ! -f "$ACCESS_FILE" ]; then
         warn "access.json nem talalhato: $ACCESS_FILE"
         echo -e "  ${DIM}Bizonyosodj meg rola, hogy a bot futott amikor uzeneteket kuldtel neki.${NC}"

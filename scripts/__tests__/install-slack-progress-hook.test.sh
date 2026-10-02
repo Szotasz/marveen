@@ -1,0 +1,528 @@
+#!/bin/bash
+# Contract tests for scripts/install-slack-progress-hook.sh
+# Run: bash scripts/__tests__/install-slack-progress-hook.test.sh
+#
+# Mirrors scripts/__tests__/install-telegram-progress-hook.test.sh. Verifies:
+#   (a) does NOT source the .env file (no `set -a; . .env` pattern)
+#   (b) does NOT fail when .env contains an unquoted value with spaces
+#   (c) does NOT execute code from a $(...) value in .env
+#   (d) correctly reads SERVICE_ID / BOT_NAME with and without quoting
+#   (e) falls back to defaults when .env is absent
+#   (f) MAIN_AGENT_ID fallback when SERVICE_ID absent
+#   (g) #1305 contract: writes NOTHING under ~/.claude -- no hook copies, no
+#       user-global settings.json edit -- and points the watchdog unit at the
+#       REPO copy of slack_progress_watchdog.py
+#   (h) the three settings hooks are repo-shipped in the tracked project
+#       .claude/settings.json ($CLAUDE_PROJECT_DIR form), so there is nothing
+#       for the installer to wire
+#   (i) installing Slack retires the Telegram progress hooks
+#   (j) provider gate: CHANNEL_PROVIDER=telegram -> installs NOTHING and
+#       retires any leftover Slack hooks (sync-hooks runs every installer)
+#   (k) provider gate: missing / unknown CHANNEL_PROVIDER resolves to telegram
+#   (l) a failing retire (own leftovers in the gate, the other provider's before
+#       an install) is printed and reaches the exit code -- never `|| true`'d
+#   (m) hermeticity: no unshimmed installer run, and (on a Mac) no testbot job
+#       registered with the host's launchd after the suite
+# (g), (i) and (j) run once per daemon branch: [Linux] systemd, [Darwin] launchd.
+#
+# All filesystem operations use a fully isolated temp tree -- the real
+# ~/.claude directory and the real INSTALL_DIR are never touched. The full-run
+# cases feed the installer a temp .env via MARVEEN_ENV_FILE (the installer's
+# test hook) so they do not depend on whatever the checkout's own .env says.
+#
+# EVERY installer run goes through run_installer, which puts PATH shims for
+# launchctl / systemctl / pidof in front. Both service managers act on the
+# real user domain whatever $HOME says: before this, only case (g) was
+# shimmed, and on a Mac cases (i) and (j) registered a REAL launchd job
+# (com.testbot.slack-progress-watchdog) from the temp plist, which outlived
+# the suite and kept firing against a deleted path. uname is shimmed as well
+# (FAKE_UNAME), so the launchd branch AND the systemd branch both run wherever
+# the suite does -- a macOS-only defect can no longer hide on Linux, or the
+# other way round.
+
+set -u
+
+PASS=0; FAIL=0
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+pass() { PASS=$((PASS + 1)); echo "  PASS: $1"; }
+fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1"; }
+assert_eq() {
+  if [ "$2" = "$3" ]; then pass "$1"
+  else fail "$1 (expected '$2', got '$3')"; fi
+}
+assert_zero()   { if [ "$2" -eq 0 ]; then pass "$1"; else fail "$1 (exit=$2)"; fi; }
+assert_absent() { if [ ! -e "$1" ]; then pass "$2"; else fail "$2 (should not exist: $1)"; fi; }
+assert_exists() { if [ -e "$1" ]; then pass "$2"; else fail "$2 (missing: $1)"; fi; }
+
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+SCRIPT="$REPO_ROOT/scripts/install-slack-progress-hook.sh"
+
+# Belt under the shims: `systemctl --user` talks to the real user manager
+# regardless of $HOME, so leave it no reachable manager either.
+export DBUS_SESSION_BUS_ADDRESS="unix:path=/nonexistent-marveen-test"
+export XDG_RUNTIME_DIR="$TMP/run"
+mkdir -p "$XDG_RUNTIME_DIR"
+
+# A temp .env that makes Slack the active provider for the full-run cases.
+ENV_SLACK="$TMP/env-slack"
+printf 'SERVICE_ID=testbot\nBOT_NAME=TestBot\nCHANNEL_PROVIDER=slack\n' > "$ENV_SLACK"
+
+# --- PATH shims: they only log their argv, and fail like an absent manager ---
+HOST_UNAME="$(uname -s)"
+SHIM_BIN="$TMP/shim-bin"; SHIM_LOG="$TMP/shim-calls.log"
+mkdir -p "$SHIM_BIN"; : > "$SHIM_LOG"
+for stub in launchctl systemctl pidof; do
+  printf '#!/bin/bash\necho "%s $*" >> "%s"\nexit 1\n' "$stub" "$SHIM_LOG" > "$SHIM_BIN/$stub"
+  chmod +x "$SHIM_BIN/$stub"
+done
+printf '#!/bin/bash\necho "${FAKE_UNAME:-Linux}"\n' > "$SHIM_BIN/uname"
+chmod +x "$SHIM_BIN/uname"
+# A shim-log line that means "a watchdog daemon was started".
+DAEMON_LOAD_RX='^(launchctl load|systemctl .*enable)'
+
+# The installer runs under /bin/bash when there is one: on macOS that is
+# bash 3.2 even when a newer bash comes first in PATH, and it is what
+# launchd-started callers get.
+if [ -x /bin/bash ]; then SYS_BASH=/bin/bash; else SYS_BASH="$(command -v bash)"; fi
+
+# run_installer <home> <env_file>   -- the ONLY way this suite runs the script.
+# FAKE_UNAME (from the caller) picks the daemon branch; default: the host's own.
+run_installer() {
+  HOME="$1" MARVEEN_ENV_FILE="$2" PATH="$SHIM_BIN:$PATH" \
+    FAKE_UNAME="${FAKE_UNAME:-$HOST_UNAME}" "$SYS_BASH" "$SCRIPT" 2>&1
+}
+
+# The watchdog daemon files of <provider> on <platform>, as the installer
+# writes them for SERVICE_ID=testbot.
+daemon_files() { # home platform provider
+  if [ "$2" = "Darwin" ]; then
+    echo "$1/Library/LaunchAgents/com.testbot.$3-progress-watchdog.plist"
+  else
+    echo "$1/.config/systemd/user/testbot-$3-progress-watchdog.timer"
+    echo "$1/.config/systemd/user/testbot-$3-progress-watchdog.service"
+  fi
+}
+plant_daemon() { # home platform provider
+  local f
+  daemon_files "$1" "$2" "$3" | while IFS= read -r f; do
+    mkdir -p "$(dirname "$f")"; printf 'leftover\n' > "$f"
+  done
+}
+assert_daemon_absent() { # home platform provider label
+  local f
+  while IFS= read -r f; do
+    assert_absent "$f" "$4: $(basename "$f") removed"
+  done < <(daemon_files "$1" "$2" "$3")
+}
+
+echo ""
+echo "(a) Static check: .env must NOT be sourced"
+if grep -qE '^\s*(set\s+-a|source\s+.*\.env|\.\s+.*\.env)' "$SCRIPT"; then
+  fail "static check: script still sources the .env (set -a / source / . .env pattern found)"
+else
+  pass "static check: no .env sourcing found"
+fi
+if grep -q 'read_env' "$SCRIPT"; then
+  pass "static check: read_env function present"
+else
+  fail "static check: read_env function missing"
+fi
+# bash 3.2 (the macOS /bin/bash) rejects constructs bash 4+ accepts; a parse
+# error there used to surface nowhere, because the script was never run on it.
+ERR="$("$SYS_BASH" -n "$SCRIPT" 2>&1)"; EXIT=$?
+if [ "$EXIT" -eq 0 ]; then pass "static check: parses under $SYS_BASH"
+else fail "static check: $SYS_BASH -n reports a parse error ($ERR)"; fi
+
+run_env_parse() {
+  local install_dir="$1"
+  local func_block
+  func_block="$(sed -n '/^read_env()/,/^BOT_NAME=.*Marveen/p' "$SCRIPT")"
+  bash -c "
+    set -euo pipefail
+    INSTALL_DIR='$install_dir'
+    $func_block
+    echo \"SERVICE_ID=\$SERVICE_ID\"
+    echo \"BOT_NAME=\$BOT_NAME\"
+  " 2>&1
+}
+
+echo ""
+echo "(b) Unquoted space value in .env"
+CASE="$TMP/case-b"
+mkdir -p "$CASE"
+cat > "$CASE/.env" <<'EOF'
+SERVICE_ID=mysvc
+OWNER_NAME=Foo Bar
+BOT_NAME=MyBot
+EOF
+OUT="$(run_env_parse "$CASE")"
+EXIT=$?
+assert_zero "unquoted space: exits 0"             $EXIT
+assert_eq   "unquoted space: SERVICE_ID correct"  "SERVICE_ID=mysvc" "$(echo "$OUT" | grep '^SERVICE_ID=')"
+assert_eq   "unquoted space: BOT_NAME correct"    "BOT_NAME=MyBot"   "$(echo "$OUT" | grep '^BOT_NAME=')"
+
+echo ""
+echo "(c) \$(...) command substitution in .env -- no execution"
+CANARY="$TMP/canary"
+CASE="$TMP/case-c"
+mkdir -p "$CASE"
+cat > "$CASE/.env" <<EOF
+SERVICE_ID=safe
+DANGER_KEY=\$(touch "$CANARY")
+BOT_NAME=SafeBot
+EOF
+OUT="$(run_env_parse "$CASE")"
+EXIT=$?
+assert_zero "cmd-injection: exits 0"              $EXIT
+assert_eq   "cmd-injection: SERVICE_ID correct"   "SERVICE_ID=safe"  "$(echo "$OUT" | grep '^SERVICE_ID=')"
+assert_eq   "cmd-injection: BOT_NAME correct"     "BOT_NAME=SafeBot" "$(echo "$OUT" | grep '^BOT_NAME=')"
+assert_absent "$CANARY" "cmd-injection: canary NOT created"
+
+echo ""
+echo "(d) Quoted values in .env"
+CASE="$TMP/case-d"
+mkdir -p "$CASE"
+cat > "$CASE/.env" <<'EOF'
+SERVICE_ID="double-quoted"
+BOT_NAME='single-quoted'
+EOF
+OUT="$(run_env_parse "$CASE")"
+EXIT=$?
+assert_zero "quoted: exits 0"                       $EXIT
+assert_eq   "quoted: double-quote stripped"  "SERVICE_ID=double-quoted" "$(echo "$OUT" | grep '^SERVICE_ID=')"
+assert_eq   "quoted: single-quote stripped"  "BOT_NAME=single-quoted"   "$(echo "$OUT" | grep '^BOT_NAME=')"
+
+echo ""
+echo "(e) Missing .env -> defaults"
+CASE="$TMP/case-e"
+mkdir -p "$CASE"
+OUT="$(run_env_parse "$CASE")"
+EXIT=$?
+assert_zero "no .env: exits 0"                  $EXIT
+assert_eq   "no .env: SERVICE_ID=marveen"  "SERVICE_ID=marveen" "$(echo "$OUT" | grep '^SERVICE_ID=')"
+assert_eq   "no .env: BOT_NAME=Marveen"    "BOT_NAME=Marveen"   "$(echo "$OUT" | grep '^BOT_NAME=')"
+
+echo ""
+echo "(f) MAIN_AGENT_ID fallback"
+CASE="$TMP/case-f"
+mkdir -p "$CASE"
+cat > "$CASE/.env" <<'EOF'
+MAIN_AGENT_ID=myagent
+BOT_NAME=MyBot
+EOF
+OUT="$(run_env_parse "$CASE")"
+EXIT=$?
+assert_zero "MAIN_AGENT_ID fallback: exits 0"                           $EXIT
+assert_eq   "MAIN_AGENT_ID fallback: SERVICE_ID resolves to myagent" \
+            "SERVICE_ID=myagent" "$(echo "$OUT" | grep '^SERVICE_ID=')"
+
+echo ""
+echo "(g) Full script: no ~/.claude write, watchdog unit targets the repo"
+# #1305 contract: the installer must not copy anything into ~/.claude/hooks and
+# must not touch ~/.claude/settings.json -- the settings hooks are repo-shipped
+# in the tracked project .claude/settings.json. The only thing it installs is
+# the watchdog daemon, whose unit must run the REPO copy of
+# slack_progress_watchdog.py. Runs once per daemon branch (systemd, launchd);
+# the service managers are PATH-shimmed, so no real daemon is (un)loaded.
+for PLAT in Linux Darwin; do
+  CASE="$TMP/case-g-$PLAT"
+  HOME_G="$CASE/home"
+  mkdir -p "$HOME_G/.claude/hooks"
+  SETTINGS_BEFORE='{"hooks":{"marker":"untouched"}}'
+  printf '%s' "$SETTINGS_BEFORE" > "$HOME_G/.claude/settings.json"
+  : > "$SHIM_LOG"
+
+  OUT2="$(FAKE_UNAME="$PLAT" run_installer "$HOME_G" "$ENV_SLACK")"
+  EXIT=$?
+  assert_zero "full script [$PLAT]: exits 0" $EXIT
+  for f in slack_progress.py slack_progress_clear.py slack_progress_reply_clear.py slack_progress_watchdog.py; do
+    assert_absent "$HOME_G/.claude/hooks/$f" "full script [$PLAT]: $f NOT copied to ~/.claude/hooks"
+  done
+
+  SETTINGS_AFTER="$(cat "$HOME_G/.claude/settings.json")"
+  assert_eq "full script [$PLAT]: user-global settings.json untouched" "$SETTINGS_BEFORE" "$SETTINGS_AFTER"
+
+  # The daemon unit (plist on Darwin, systemd service on Linux) must reference
+  # the repo watchdog, never a ~/.claude/hooks copy.
+  if [ "$PLAT" = "Darwin" ]; then
+    UNIT_FILE="$HOME_G/Library/LaunchAgents/com.testbot.slack-progress-watchdog.plist"
+  else
+    UNIT_FILE="$HOME_G/.config/systemd/user/testbot-slack-progress-watchdog.service"
+  fi
+  if [ -f "$UNIT_FILE" ]; then
+    pass "full script [$PLAT]: daemon unit written ($(basename "$UNIT_FILE"))"
+    if grep -q "$REPO_ROOT/scripts/hooks/slack_progress_watchdog.py" "$UNIT_FILE"; then
+      pass "full script [$PLAT]: unit runs the REPO watchdog"
+    else
+      fail "full script [$PLAT]: unit does not reference the repo watchdog path"
+    fi
+    if grep -q "$HOME_G/.claude/hooks" "$UNIT_FILE"; then
+      fail "full script [$PLAT]: unit still references a ~/.claude/hooks copy"
+    else
+      pass "full script [$PLAT]: unit has no ~/.claude/hooks reference"
+    fi
+    if grep -q 'MARVEEN_ROOT' "$UNIT_FILE"; then
+      pass "full script [$PLAT]: unit pins MARVEEN_ROOT (TGWDOGVAK913 belt)"
+    else
+      fail "full script [$PLAT]: unit does not pin MARVEEN_ROOT"
+    fi
+  else
+    fail "full script [$PLAT]: no daemon unit file written ($UNIT_FILE)"
+  fi
+  # The branch under test really ran, and its service manager was the shim:
+  # launchd loads the plist; on the systemd branch the pidof probe comes first.
+  if [ "$PLAT" = "Darwin" ]; then
+    if grep -q "^launchctl load .*com\.testbot\.slack-progress-watchdog\.plist" "$SHIM_LOG"; then
+      pass "full script [$PLAT]: launchctl load went to the shim, not to the host's launchd"
+    else
+      fail "full script [$PLAT]: no launchctl load reached the shim"
+    fi
+  else
+    if grep -q "^pidof systemd" "$SHIM_LOG"; then
+      pass "full script [$PLAT]: the systemd probe went to the shim, not to the host's manager"
+    else
+      fail "full script [$PLAT]: no pidof probe reached the shim"
+    fi
+  fi
+done
+
+echo ""
+echo "(h) The three settings hooks are repo-shipped, not installed"
+# The counterpart of (g): what the installer stopped writing must actually be
+# present in the tracked project settings, or the indicator is wired NOWHERE
+# and the suite would still be green. $CLAUDE_PROJECT_DIR form, because a
+# project-scope hook is resolved against the project dir, not $HOME.
+REPO_SETTINGS="$REPO_ROOT/.claude/settings.json"
+assert_exists "$REPO_SETTINGS" "repo-shipped: .claude/settings.json is tracked"
+for h in slack_progress.py slack_progress_clear.py slack_progress_reply_clear.py; do
+  if grep -q "\$CLAUDE_PROJECT_DIR/scripts/hooks/$h" "$REPO_SETTINGS"; then
+    pass "repo-shipped: $h wired in project scope"
+  else
+    fail "repo-shipped: $h NOT wired in .claude/settings.json"
+  fi
+done
+# The PostToolUse matcher is fixed now that it lives in the tracked file; it
+# must stay the loose regex that matches mcp__plugin_slack-channel_slack__reply
+# whatever the plugin id is.
+if grep -q '"matcher": "slack\.\*reply"' "$REPO_SETTINGS"; then
+  pass "repo-shipped: PostToolUse matcher is the loose slack.*reply regex"
+else
+  fail "repo-shipped: PostToolUse matcher missing or too strict"
+fi
+# Seeded agents get the same three hooks from the template (existence-guarded).
+TEMPLATE="$REPO_ROOT/templates/settings.json.template"
+for h in slack_progress.py slack_progress_clear.py slack_progress_reply_clear.py; do
+  if grep -q "scripts/hooks/$h" "$TEMPLATE"; then
+    pass "seeded agents: $h present in settings.json.template"
+  else
+    fail "seeded agents: $h missing from settings.json.template"
+  fi
+done
+
+echo ""
+echo "(i) Installing Slack retires the Telegram progress hooks"
+# Only the active provider's progress plumbing may stay wired -- otherwise the
+# dead provider's hooks run on every turn forever, and its watchdog keeps
+# firing. Once per daemon branch; the leftover Telegram daemon is planted in
+# the form that branch uses (the service managers are shimmed, so this is safe
+# here too -- it used to be left to the retire script's own test).
+for PLAT in Linux Darwin; do
+  CASE="$TMP/case-i-$PLAT"
+  HOME_I="$CASE/home"
+  mkdir -p "$HOME_I/.claude/hooks"
+  cat > "$HOME_I/.claude/settings.json" <<'JSONEOF'
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {"hooks": [
+        {"type": "command", "command": "/usr/bin/python3 /h/.claude/hooks/unrelated.py"},
+        {"type": "command", "command": "/usr/bin/python3 /h/.claude/hooks/telegram_progress.py"}
+      ]}
+    ],
+    "PostToolUse": [
+      {"matcher": "telegram.*reply",
+       "hooks": [{"type": "command", "command": "/usr/bin/python3 /h/.claude/hooks/telegram_progress_reply_clear.py"}]}
+    ]
+  }
+}
+JSONEOF
+  plant_daemon "$HOME_I" "$PLAT" telegram
+  OUT4="$(FAKE_UNAME="$PLAT" run_installer "$HOME_I" "$ENV_SLACK")"
+  EXIT=$?
+  assert_zero "retire-on-install [$PLAT]: exits 0" $EXIT
+  if grep -q 'telegram_progress' "$HOME_I/.claude/settings.json"; then
+    fail "retire-on-install [$PLAT]: telegram hooks still wired"
+  else
+    pass "retire-on-install [$PLAT]: telegram hooks unwired"
+  fi
+  assert_daemon_absent "$HOME_I" "$PLAT" telegram "retire-on-install [$PLAT]: leftover Telegram daemon"
+  assert_absent "$HOME_I/.claude/hooks/slack_progress.py" "retire-on-install [$PLAT]: no Slack hook file copied (repo-shipped since #1305)"
+  if grep -q 'unrelated\.py' "$HOME_I/.claude/settings.json"; then
+    pass "retire-on-install [$PLAT]: unrelated hook preserved"
+  else
+    fail "retire-on-install [$PLAT]: unrelated hook was destroyed"
+  fi
+done
+
+echo ""
+echo "(j) Provider gate: CHANNEL_PROVIDER=telegram -> nothing installed, leftover Slack plumbing retired"
+# sync-hooks.sh runs this installer on every update of a Telegram install too.
+# It must not wire Slack hooks or write a Slack timer there, and it must clean
+# up any Slack plumbing an earlier (ungated) update left behind -- on either
+# daemon branch, with the leftover in that branch's own form (the systemd-only
+# version of this case could never pass on a Mac: the launchd branch does not
+# touch unit files).
+ENV_TG="$TMP/env-telegram"
+printf 'SERVICE_ID=testbot\nBOT_NAME=TestBot\nCHANNEL_PROVIDER=telegram\n' > "$ENV_TG"
+for PLAT in Linux Darwin; do
+  CASE="$TMP/case-j-$PLAT"
+  HOME_J="$CASE/home"
+  mkdir -p "$HOME_J/.claude/hooks"
+  cat > "$HOME_J/.claude/settings.json" <<'JSONEOF'
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {"hooks": [
+        {"type": "command", "command": "/usr/bin/python3 /h/.claude/hooks/telegram_progress.py"},
+        {"type": "command", "command": "/usr/bin/python3 /h/.claude/hooks/slack_progress.py"}
+      ]}
+    ],
+    "PostToolUse": [
+      {"matcher": "slack.*reply",
+       "hooks": [{"type": "command", "command": "/usr/bin/python3 /h/.claude/hooks/slack_progress_reply_clear.py"}]}
+    ]
+  }
+}
+JSONEOF
+  plant_daemon "$HOME_J" "$PLAT" slack
+  plant_daemon "$HOME_J" "$PLAT" telegram
+  : > "$SHIM_LOG"
+  OUT5="$(FAKE_UNAME="$PLAT" run_installer "$HOME_J" "$ENV_TG")"
+  EXIT=$?
+  assert_zero "provider gate [$PLAT]: exits 0" $EXIT
+  assert_absent "$HOME_J/.claude/hooks/slack_progress.py" "provider gate [$PLAT]: no Slack hook file copied"
+  assert_daemon_absent "$HOME_J" "$PLAT" slack "provider gate [$PLAT]: leftover Slack daemon"
+  while IFS= read -r f; do
+    assert_exists "$f" "provider gate [$PLAT]: the active (Telegram) daemon left alone ($(basename "$f"))"
+  done < <(daemon_files "$HOME_J" "$PLAT" telegram)
+  if grep -q 'slack_progress' "$HOME_J/.claude/settings.json"; then
+    fail "provider gate [$PLAT]: leftover Slack hooks still wired"
+  else
+    pass "provider gate [$PLAT]: leftover Slack hooks unwired"
+  fi
+  if grep -q 'telegram_progress\.py' "$HOME_J/.claude/settings.json"; then
+    pass "provider gate [$PLAT]: Telegram hooks left alone"
+  else
+    fail "provider gate [$PLAT]: Telegram hooks were destroyed"
+  fi
+  # The gate stands down BEFORE the install step: nothing may be loaded.
+  LOADED="$(grep -E "$DAEMON_LOAD_RX" "$SHIM_LOG" | head -1)"
+  if [ -n "$LOADED" ]; then
+    fail "provider gate [$PLAT]: a daemon was (re)loaded ($LOADED)"
+  else
+    pass "provider gate [$PLAT]: no daemon loaded or enabled"
+  fi
+done
+
+echo ""
+echo "(k) Provider gate: missing / unknown CHANNEL_PROVIDER resolves to telegram"
+# Mirrors src/channel-provider.ts: an empty or unrecognised value means the
+# install runs on Telegram, so the Slack installer must stand down.
+for label in "missing" "none" "Slack"; do
+  CASE="$TMP/case-k-$label"
+  HOME_K="$CASE/home"
+  mkdir -p "$HOME_K/.claude/hooks"
+  echo '{"hooks":{}}' > "$HOME_K/.claude/settings.json"
+  ENV_K="$CASE/env"
+  if [ "$label" = "missing" ]; then
+    printf 'SERVICE_ID=testbot\n' > "$ENV_K"
+  else
+    printf 'SERVICE_ID=testbot\nCHANNEL_PROVIDER=%s\n' "$label" > "$ENV_K"
+  fi
+  OUT6="$(run_installer "$HOME_K" "$ENV_K")"
+  EXIT=$?
+  assert_zero "provider gate ($label): exits 0" $EXIT
+  assert_absent "$HOME_K/.claude/hooks/slack_progress.py" "provider gate ($label): no Slack hook file copied"
+  if grep -q 'slack_progress' "$HOME_K/.claude/settings.json"; then
+    fail "provider gate ($label): Slack hooks wired"
+  else
+    pass "provider gate ($label): Slack hooks not wired"
+  fi
+done
+
+echo ""
+echo "(l) A failing retire is reported and reaches the exit code -- never swallowed"
+# The retire script used to be called with `|| true`. On macOS it could not
+# even be parsed (bash 3.2), and that error -- plus the cleanup that never
+# happened -- appeared nowhere: the gate's "retire leftovers and exit 0" branch
+# was a silent no-op. A user-global settings.json that is not JSON makes the
+# retire fail for real, on every platform.
+if grep -nE 'retire-progress-watchdog\.sh.*\|\|[[:space:]]*true' "$SCRIPT" >/dev/null; then
+  fail "static check: the retire script is still called with '|| true'"
+else
+  pass "static check: no retire call is silenced with '|| true'"
+fi
+
+# Gate branch (CHANNEL_PROVIDER=telegram): the retire is the branch's whole job.
+CASE="$TMP/case-l-gate"
+HOME_L="$CASE/home"
+mkdir -p "$HOME_L/.claude"
+printf '{ this is not json' > "$HOME_L/.claude/settings.json"
+ENV_L="$CASE/env"
+printf 'SERVICE_ID=testbot\nBOT_NAME=TestBot\nCHANNEL_PROVIDER=telegram\n' > "$ENV_L"
+OUT7="$(run_installer "$HOME_L" "$ENV_L")"
+EXIT=$?
+if [ "$EXIT" -ne 0 ]; then pass "failing retire (gate): installer exits non-zero"
+else fail "failing retire (gate): installer exited 0 -- the failure was swallowed"; fi
+case "$OUT7" in
+  *"retire-progress-watchdog.sh slack FAILED (exit "*) pass "failing retire (gate): reported, with the exit code" ;;
+  *) fail "failing retire (gate): nothing reported (got: $OUT7)" ;;
+esac
+
+# Active provider (CHANNEL_PROVIDER=slack): the cross-retire of Telegram fails.
+# Never fatal -- the Slack watchdog must still be installed -- but reported,
+# and the installer's exit code says the end state is not clean.
+CASE="$TMP/case-l-active"
+HOME_L="$CASE/home"
+mkdir -p "$HOME_L/.claude"
+printf '{ this is not json' > "$HOME_L/.claude/settings.json"
+OUT8="$(run_installer "$HOME_L" "$ENV_SLACK")"
+EXIT=$?
+if [ "$EXIT" -ne 0 ]; then pass "failing retire (active): installer exits non-zero"
+else fail "failing retire (active): installer exited 0 -- the failure was swallowed"; fi
+case "$OUT8" in
+  *"retire-progress-watchdog.sh telegram FAILED (exit "*) pass "failing retire (active): reported, with the exit code" ;;
+  *) fail "failing retire (active): nothing reported (got: $OUT8)" ;;
+esac
+UNIT_L="$(find "$HOME_L/Library/LaunchAgents" "$HOME_L/.config/systemd/user" \
+          -type f \( -name '*.plist' -o -name '*.service' \) 2>/dev/null | head -1)"
+if [ -n "$UNIT_L" ]; then pass "failing retire (active): the Slack watchdog unit is still installed (never fatal)"
+else fail "failing retire (active): the failed retire blocked the install"; fi
+case "$OUT8" in
+  *"both providers' progress machinery may be live"*) pass "failing retire (active): the end-of-run summary repeats it" ;;
+  *) fail "failing retire (active): no end-of-run summary (got: $OUT8)" ;;
+esac
+
+echo ""
+echo "(m) Hermeticity: the suite never reaches the host's service manager"
+# Static: no case starts the script directly. run_installer is the one shimmed
+# entry point; a new case written the old way would, on a Mac, register a real
+# launchd job from a temp plist again.
+DIRECT_RUNS="$(grep -cE 'bash +"\$SCRIPT"' "$0" || true)"
+assert_eq "static check: no unshimmed installer run in this suite" "0" "$DIRECT_RUNS"
+# Measured, where there is a launchd to leak into (the review's acceptance
+# check): nothing labelled testbot may be registered with it.
+if [ "$HOST_UNAME" = "Darwin" ] && command -v launchctl >/dev/null 2>&1; then
+  LEAKED="$(launchctl list 2>/dev/null | grep testbot || true)"
+  if [ -z "$LEAKED" ]; then pass "host launchd: no testbot job registered"
+  else fail "host launchd: a testbot job is registered -- remove it with 'launchctl remove <label>' ($LEAKED)"; fi
+else
+  echo "  SKIP: no host launchd here (uname=$HOST_UNAME)"
+fi
+
+echo ""
+echo "===================================================="
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ] && exit 0 || exit 1

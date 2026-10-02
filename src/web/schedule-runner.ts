@@ -77,6 +77,7 @@ import { readQuotaSnapshot } from '../quota-snapshot.js'
 import { detectsFirstRunGate, detectPaneState, overfullParkedInputTail, type PaneState } from '../pane-state.js'
 import { getInjectedPrompt, matchesInjectedPrompt, type InjectedPromptRecord } from './injected-prompt-registry.js'
 import { withSessionSendLock } from './session-send-lock.js'
+import { startSleepWakeDetector, systemSleptBetween } from './sleep-wake-detector.js'
 
 // How many bare-Enter attempts the post-send resubmit tries before escalating
 // to a clear + re-inject, and the hard cap after which it gives up.
@@ -846,6 +847,36 @@ export function chatIdFromAccessConfig(raw: unknown): string | null {
   return null
 }
 
+
+// WRONGRECIP819 (Marci, 2026-08-19, kanban f1217c23): the "first allowlist
+// entry" rule below was a HEURISTIC, not a stated fact -- access.json has no
+// owner field, so with 2+ DM contacts a reordering silently redirects a
+// scheduled task's result to the wrong person. That was never hypothetical:
+// measured on this host, 6 of 7 currently-enabled sub-agent `task`-type
+// schedules either contradicted their own explicit recipient with a
+// wrapper-injected owner chat_id, or carried NO real chat target at all (their
+// true delivery is an inter-agent message) and still got a spurious "send this
+// to the owner" instruction. A warn line does not prevent the misdelivery; only
+// refusing to guess does.
+//
+// Precedence for a scheduled task's delivery target:
+//   1. task.telegramChatId === 'none'  -> no chat target, by design.
+//   2. task.telegramChatId set         -> that value, always (author-pinned).
+//   3. otherwise                       -> the agent's own bound channel, which
+//      returns ambiguousCandidates instead of picking one when 2+ DM contacts
+//      exist.
+// The config key keeps its historical `telegramChatId` name across providers so
+// existing task-config.json files stay valid; the resolved provider comes from
+// the agent, not from the key.
+export function resolveTaskChannelTarget(
+  task: Pick<ScheduledTask, 'agent' | 'telegramChatId'>,
+): BoundChannel {
+  const agentName = task.agent || MAIN_AGENT_ID
+  if (task.telegramChatId === 'none') return { provider: resolveAgentProvider(agentName), chatId: null }
+  if (task.telegramChatId) return { provider: resolveAgentProvider(agentName), chatId: task.telegramChatId }
+  return resolveBoundChannel(agentName)
+}
+
 /** How a scheduled-task prompt names the delivery channel, in Hungarian, for
  *  the "kuldd el <ide>" instruction. The reply tool itself is the same across
  *  providers -- only the channel noun and the chat_id format differ. */
@@ -870,8 +901,14 @@ export interface BoundChannel {
   /** The provider the agent is bound to (main: CHANNEL_PROVIDER; sub-agent:
    *  its agent-config.json channelProvider, falling back to CHANNEL_PROVIDER). */
   provider: ChannelProviderType
-  /** The agent's own bound chat id, or null when no binding exists. */
+  /** The agent's own bound chat id, or null when no binding exists -- or when
+   *  the binding is AMBIGUOUS (see ambiguousCandidates). */
   chatId: string | null
+  /** Set only when chatId is null BECAUSE the agent's own access.json has 2+
+   *  DM contacts and the task declared no explicit pin -- distinct from a true
+   *  config gap (missing/empty access.json), which is not an ambiguity, just
+   *  nothing to deliver to. */
+  ambiguousCandidates?: number
 }
 
 /** The agent's own bound channel + chat, or {provider, chatId:null} when no
@@ -887,18 +924,13 @@ export function resolveBoundChannel(agentName: string): BoundChannel {
     : channelStateDir(provider, agentDir(agentName))
   try {
     const raw = JSON.parse(readFileSync(join(dir, 'access.json'), 'utf-8')) as Record<string, unknown>
-    const chosen = chatIdFromAccessConfig(raw)
-    // "First allowlist entry" is a HEURISTIC, not a stated fact: access.json
-    // has no owner field, so with 2+ entries (zara/iris today) a reordering
-    // would silently redirect scheduled-task results to another person -- the
-    // exact failure class the old sentinel guarded against, now throw-free and
-    // thus invisible. The warn turns a silent misdirection into a searchable
-    // log line; behaviour is unchanged (Marveen, msg 7002).
     const candidates = Array.isArray(raw?.allowFrom) ? raw.allowFrom.length : 0
-    if (chosen && candidates > 1) {
-      logger.warn({ agent: agentName, provider, candidates, chosen }, 'bound-chat resolution is ambiguous: multiple DM allowlist entries, using the first')
-    }
-    return { provider, chatId: chosen }
+    // WRONGRECIP819: 2+ DM contacts is a GUESS, not a binding. Returning the
+    // first one with a warn line still delivers to a possibly-wrong person,
+    // and the log line is read only after the damage. Refuse instead: the
+    // caller skips delivery and raises the ambiguity where someone acts on it.
+    if (candidates > 1) return { provider, chatId: null, ambiguousCandidates: candidates }
+    return { provider, chatId: chatIdFromAccessConfig(raw) }
   } catch { return { provider, chatId: null } }
 }
 
@@ -961,6 +993,25 @@ export function runPreCheck(task: ScheduledTask): { skip: boolean; prefix?: stri
 // Missing MCP server names from the last failed pre-check, keyed by
 // task@agent, so the retry-row reason and the alert can name the servers.
 const lastMcpMissing = new Map<string, string[]>()
+
+// Task names that already produced the ambiguous-recipient [FELHIVAS] notice in
+// THIS process. The notice is a CONFIG-GAP alert, not a per-run event: without
+// this guard every fire of an affected task inserted a fresh system -> main
+// message, so a */5 task on an agent with two DM contacts would wake the main
+// agent 288 times a day until someone pinned the chat id. Every other notice in
+// this runner goes through insertPendingTaskRetryIfNew for exactly that reason;
+// that table is about RETRIES, so this one keeps its own set rather than
+// borrowing a row type it does not fit.
+//
+// Two scope decisions, both deliberate:
+//   - Process lifetime. A runner restart re-alerts once, which is correct: the
+//     new process has no memory, and the config gap is still real.
+//   - The entry is dropped once the task resolves to a concrete chat id (see
+//     the bound.chatId branch), so a pin that is added and later REMOVED alerts
+//     again instead of staying silent forever.
+// The error-level log line stays per fire: logs are for the operator reading
+// them on purpose, the agent message is an interrupt.
+const ambiguousTargetAlerted = new Set<string>()
 
 function mcpMissingReason(taskName: string, agentName: string): string {
   const missing = lastMcpMissing.get(`${taskName}@${agentName}`) ?? []
@@ -1184,9 +1235,28 @@ async function attemptFireTask(
       // to deliver to the wrong chat, and the warn below makes the config gap
       // visible. The system-level pending-retry alert further down uses the
       // owner chat by design.
-      const bound = resolveBoundChannel(agentName)
+      const bound = resolveTaskChannelTarget(task)
       if (bound.chatId) {
+        // Resolved cleanly: forget any earlier ambiguity alert for this task so
+        // that removing the pin again is not silently swallowed.
+        ambiguousTargetAlerted.delete(task.name)
         prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el ${channelDeliveryName(bound.provider)} (chat_id: ${bound.chatId}, reply tool). `
+      } else if (bound.ambiguousCandidates) {
+        // WRONGRECIP819: 2+ possible human contacts and no explicit pin -- do
+        // NOT guess. Delivery is skipped (bare tag, same as the config-gap
+        // branch below) but this is NOT a config gap, it is an unresolved
+        // author decision, so it gets error-level visibility plus a direct
+        // nudge to fix it, instead of a log line nobody is watching.
+        logger.error({ task: task.name, agent: agentName, provider: bound.provider, candidates: bound.ambiguousCandidates }, 'scheduled task: delivery target is ambiguous (2+ DM contacts, no pinned chat id) -- skipping the delivery instruction instead of guessing')
+        if (!ambiguousTargetAlerted.has(task.name)) {
+          ambiguousTargetAlerted.add(task.name)
+          createAgentMessage(
+            'system',
+            MAIN_AGENT_ID,
+            `[FELHIVAS] A(z) "${task.name}" utemezett feladat (agent: ${agentName}) cimzettje bizonytalan -- ${bound.ambiguousCandidates} lehetseges kontakt van az agens allowFrom listajan, es a task-config.json-ban nincs telegramChatId megadva. A kezbesitesi utasitas kimaradt EBBOL A futasbol (nem tippeltunk). Toltsd ki a telegramChatId mezot (konkret chat_id, vagy "none" ha a taskot nem kell csatornara kuldeni) a ~/.claude/scheduled-tasks/${task.name}/task-config.json-ban.`,
+          )
+        }
+        prefix = `[Utemezett feladat: ${task.name}] `
       } else {
         logger.warn({ task: task.name, agent: agentName, provider: bound.provider }, 'scheduled task: agent has no bound channel (access.json missing/empty) -- prompt omits the delivery instruction')
         prefix = `[Utemezett feladat: ${task.name}] `
@@ -1625,6 +1695,46 @@ function sendCatchUpSummary(
   })()
 }
 
+// Pure: where the catch-up summary goes. Sleep-origin gap -> log only;
+// anything else -> the channel. Exported so the rule is unit-tested and a
+// later "always log" or "always send" edit has to touch a named contract.
+export type CatchUpSummaryDelivery = 'log' | 'channel'
+export function decideCatchUpSummaryDelivery(sleptDuringGap: boolean): CatchUpSummaryDelivery {
+  return sleptDuringGap ? 'log' : 'channel'
+}
+
+// The same one line, LOG-ONLY. Used instead of sendCatchUpSummary when the gap
+// the scheduler is catching up on is one the machine SLEPT through (see the
+// call site and decideCatchUpSummaryDelivery): lid-close downtime is caused by
+// the operator on purpose, and pinging Telegram with "Kimaradt ütemezés (X perc
+// kiesés)" on every wake was pure noise (2026-09-02, kanban 83b8c4c3). A gap
+// with no sleep in it -- process down, crash, failed restart -- still goes to
+// the channel via sendCatchUpSummary (review 2026-09-03). The catch-up
+// MECHANISM (re-running / stale-declaring) is identical on both paths, and the
+// per-run records (appendTaskRun) and the dashboard /Ütemezések page show what
+// was caught up or declared stale either way.
+function logCatchUpSummary(
+  caughtUp: Array<{ task: string; ageMs: number }>,
+  stale: Array<{ task: string; ageMs: number }>,
+  gapMs: number,
+): void {
+  const mins = (ms: number) => `${Math.round(ms / 60000)} perc`
+  const lines = [`Kimaradt ütemezés (${mins(gapMs)} kiesés).`]
+  if (caughtUp.length) {
+    // "elindítva", not "lefutott": a catch-up injection can still land in the
+    // pending-retry queue if the target session is busy. It will run; it may
+    // not have run yet at the moment this line is logged.
+    lines.push(`Pótlás elindítva: ${caughtUp.map(e => `${e.task} (${mins(e.ageMs)} késés)`).join(', ')}`)
+  }
+  if (stale.length) {
+    lines.push(`Nem pótolva, mert elavult: ${stale.map(e => `${e.task} (${mins(e.ageMs)})`).join(', ')}`)
+  }
+  logger.info(
+    { caughtUp: caughtUp.length, stale: stale.length, gapMinutes: Math.round(gapMs / 60000) },
+    `catch-up summary (log-only: the gap is sleep-origin downtime, not an incident): ${lines.join(' ')}`,
+  )
+}
+
 // Build the pending-retry alert body shared by stage 1 (main agent,
 // inter-agent) and stage 2 (owner, channel) -- the substance (which task,
 // why stuck, how long) is identical, only the delivery channel differs.
@@ -1844,6 +1954,20 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
     )
     return
   }
+  // SLEEP GUARD (2026-09-02, kanban 83b8c4c3): elapsedMs is wall-clock time
+  // since injection. If the machine slept anywhere inside that window, the
+  // number lies -- a 2-minute task injected just before lid-close reads as
+  // "stuck for hours" on wake (observed with ledger-live-drain). A window
+  // that contains a sleep gap proves nothing about the task, so no Telegram
+  // ping; the log line and the rest of the stuck handling (one-shot flag,
+  // eviction, retries) run unchanged, and the kanban 'waiting' move is not
+  // even here: it happens in stage 1 (sendTaskInflightMainAgentNotice), so
+  // this guard cannot short-circuit it (review 2026-09-03). Genuine
+  // hangs are unaffected: their window contains no sleep gap. Trade-off,
+  // accepted: the alert is one-shot per injection, so a task that ALSO hangs
+  // for real after the wake stays Telegram-silent for that injection -- it is
+  // still visible in the log/dashboard and ages into the normal eviction path.
+  const sleptDuringWindow = systemSleptBetween(entry.injectedAt, Date.now())
   const token = resolveSchedulerAlertToken()
   if (!token) {
     logger.warn({ task: entry.taskName, agent: entry.agentName, provider: CHANNEL_PROVIDER }, 'task-timeout alert suppressed: no channel bot token (config error)')
@@ -1852,6 +1976,14 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
   const ownerChat = resolveSchedulerOwnerChat()
   if (!ownerChat) {
     logger.warn({ task: entry.taskName, agent: entry.agentName, provider: CHANNEL_PROVIDER }, 'task-timeout alert suppressed: no owner chat (ALLOWED_CHAT_ID unset/placeholder and no paired channel)')
+    return
+  }
+
+  if (sleptDuringWindow) {
+    logger.info(
+      { task: entry.taskName, agent: entry.agentName, ageMinutes, injectedAt: entry.injectedAt },
+      'task-timeout: machine slept inside the stuck-check window -- wall-clock elapsed is unreliable, Telegram alert suppressed (stuck handling continues)',
+    )
     return
   }
 
@@ -1906,6 +2038,9 @@ export function startScheduleRunner(): NodeJS.Timeout {
     logger.warn({ err }, 'task-run restart reconcile failed (non-fatal)')
   }
 
+  // Sleep/wake detection for the downtime-aware alert suppression above
+  // (idempotent; the channel monitor starts it too, whichever runs first wins).
+  startSleepWakeDetector()
   // Reload the persisted last-run times so a restart inside a task's catch-up
   // window does not re-fire an already-run task.
   loadScheduleLastRun()
@@ -2456,7 +2591,19 @@ export function startScheduleRunner(): NodeJS.Timeout {
     const caughtUpReportable = caughtUpThisTick.filter(e => e.type !== 'heartbeat')
     const staleReportable = staleThisTick.filter(e => e.type !== 'heartbeat')
     if (caughtUpReportable.length || staleReportable.length) {
-      sendCatchUpSummary(caughtUpReportable, staleReportable, pendingStartupGapMs || (now - fromMs))
+      // SLEEP GUARD, narrowed on review (#1153, 2026-09-03): only a gap the
+      // machine SLEPT through is operator-caused downtime worth muting. A gap
+      // with no sleep record in it -- the process was down: crash, kill, a
+      // failed restart -- is exactly the outage the owner wants to hear about,
+      // so that one still goes to the channel. The detector only knows sleeps
+      // it observed in-process, so a cold start after a power-off has no sleep
+      // record and reports; that is the intended fail-loud side.
+      const gapMs = pendingStartupGapMs || (now - fromMs)
+      if (decideCatchUpSummaryDelivery(systemSleptBetween(now - gapMs, now)) === 'log') {
+        logCatchUpSummary(caughtUpReportable, staleReportable, gapMs)
+      } else {
+        sendCatchUpSummary(caughtUpReportable, staleReportable, gapMs)
+      }
     }
     pendingStartupGapMs = 0
 

@@ -32,7 +32,9 @@ import {
 } from '../pane-state.js'
 import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
 import { beginRestart, endRestart } from './restart-lock.js'
-import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel, readAgentCustomProvider, readFileOr, readJsonObjectForWrite } from './agent-config.js'
+import { loadCustomProvider, type CustomProviderDef } from './custom-providers.js'
+import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict } from './agent-oauth-token-file.js'
 import { worksourceRootFor } from './worksource-queue.js'
 import { resolveAgentConfigDir, readClaudePlans, getClaudePlan } from './claude-plans.js'
 import { readClaudePlansState } from './claude-plans-state.js'
@@ -58,21 +60,36 @@ import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { decideContinueFlag, verifyContinueLaunch } from './channel-continue-policy.js'
 import { measureClaudeCliVersion } from './claude-cli-version.js'
+import { launchableInstallDefault } from './default-model-guard.js'
 import { getClaudePidForSession, probeChannelPluginLiveness } from '../channel-coordinator/liveness.js'
-import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBOX_TEE } from '../config.js'
+import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBOX_TEE, FLEET_PYTHON_VENV } from '../config.js'
+import { fleetVenvBin } from '../fleet-venv.js'
+
+// FLEETVENV923: the `<venv>/bin:` prefix for a launch PATH, or '' when the venv
+// has no bin/ directory or its path cannot sit safely inside the double-quoted
+// `export PATH="..."` of the launch command (a `"`, `$` or backtick in the
+// path would be re-interpreted by the shell; a relative path would resolve
+// against each launch's own `cd` -- skipped rather than escaped or guessed,
+// with a warning, because a fleet venv at such a path is a config mistake).
+// Exported for unit tests; `exists` is the seam.
+export function fleetVenvPathPrefix(venvDir: string = FLEET_PYTHON_VENV, exists: (p: string) => boolean = existsSync): string {
+  const { prefix, refused } = fleetVenvBin(venvDir, exists)
+  if (refused) logger.warn({ venvDir }, 'fleetVenvPathPrefix: venv path is not absolute or contains a shell-active character; PATH prefix skipped')
+  return prefix
+}
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
 import { readEnvFile } from '../env.js'
 import { loadProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
-import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection } from './agent-scaffold.js'
+import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-import { notifyChannel } from '../notify.js'
+import { notifyChannel, alertIsRedirected } from '../notify.js'
 
 // Lazy so a transient PATH gap at import time (e.g. the 04:00 auto-update
 // restart, where the finalizer omits the bin dir from PATH) cannot hard-crash
@@ -134,6 +151,28 @@ export function ownChannelProviderForScope(
   resolvedProvider: string | null,
 ): string | null {
   return hasOwnToken && resolvedProvider ? resolvedProvider : null
+}
+
+/**
+ * Teams name-sync write: set TEAMS_BOT_DISPLAY_NAME in the agent's teams .env
+ * to `displayName`, only on drift. Returns whether it wrote.
+ *
+ * ENVTMPMODE925: the teams .env holds the bot's app secret, so a file this call
+ * CREATES is 0600. writeFileSync's `mode` applies only on creation, so an
+ * existing .env keeps whatever mode the operator gave it (the write is in
+ * place, no rename). Without it a missing .env came up at the umask default.
+ */
+export function syncTeamsDisplayName(envPath: string, displayName: string | null | undefined): boolean {
+  if (!displayName) return false
+  const raw = existsSync(envPath) ? readFileSync(envPath, 'utf-8') : ''
+  const current = raw.match(/^TEAMS_BOT_DISPLAY_NAME=(.*)$/m)?.[1]?.trim()
+  if (current === displayName) return false
+  const line = `TEAMS_BOT_DISPLAY_NAME=${displayName}`
+  const next = current !== undefined
+    ? raw.replace(/^TEAMS_BOT_DISPLAY_NAME=.*$/m, line)
+    : (raw === '' || raw.endsWith('\n') ? raw + line + '\n' : raw + '\n' + line + '\n')
+  writeFileSync(envPath, next, { mode: 0o600 })
+  return true
 }
 
 // Wrap the telegram plugin's bun stdio server in a tee that persists each
@@ -466,6 +505,13 @@ export function ensureMainAgentIsolatedConfigDir(
   try { enabled = String(getEffectiveSettingValue('MAIN_AGENT_ISOLATED_CONFIG')) === '1' } catch { enabled = false }
   if (!enabled) return null
   if (!hasFleetOauthToken()) return null
+  return provisionMainIsolatedConfigDir(provider)
+}
+
+// Shared provisioning call for the generic isolated dir, factored out so the
+// fleet-token-gated path (above) and the token-mode-rotation path (below)
+// cannot drift on what they actually provision.
+function provisionMainIsolatedConfigDir(provider?: string): string | null {
   return provisionIsolatedConfigDir(
     join(PROJECT_ROOT, '.channels-config'),
     PROJECT_ROOT,
@@ -473,6 +519,21 @@ export function ensureMainAgentIsolatedConfigDir(
     MAIN_AGENT_ID,
     readExtraChannelPluginIds(),
   )
+}
+
+// Same generic isolated dir as ensureMainAgentIsolatedConfigDir, but for a
+// TOKEN-MODE rotated claude-plans entry (ClaudePlan.tokenSecretId): gated
+// only on MAIN_AGENT_ISOLATED_CONFIG=1, NOT on hasFleetOauthToken(). A
+// token-mode plan supplies its OWN token at launch (see
+// resolveMainAgentRotatedTokenSecretId) instead of the flotta's, so requiring
+// a flotta token to even provision the shared dir would be the wrong gate --
+// an install with rotation configured but no flotta token registered should
+// still be able to run token-mode plans.
+export function ensureMainAgentIsolatedConfigDirForRotatedToken(provider?: string): string | null {
+  let enabled = false
+  try { enabled = String(getEffectiveSettingValue('MAIN_AGENT_ISOLATED_CONFIG')) === '1' } catch { enabled = false }
+  if (!enabled) return null
+  return provisionMainIsolatedConfigDir(provider)
 }
 
 // READ-ONLY sibling of the two resolvers above: which config dir will the main
@@ -629,7 +690,9 @@ export function resolveMainAgentConfigDir(): string | null {
 // either threshold this returns null even if a stale activePlanByAgent entry
 // exists on disk, so turning rotation off (or dropping back to one plan)
 // cannot strand the main agent on a dir nobody is maintaining anymore.
-export function resolveMainAgentRotatedConfigDir(): string | null {
+// Shared by both resolveMainAgentRotatedConfigDir and
+// resolveMainAgentRotatedTokenSecretId, so the two can never gate differently.
+function resolveActiveMainPlan(): ReturnType<typeof getClaudePlan> {
   let isolationEnabled = false
   try { isolationEnabled = String(getEffectiveSettingValue('MAIN_AGENT_ISOLATED_CONFIG')) === '1' } catch { return null }
   if (!isolationEnabled) return null
@@ -639,8 +702,24 @@ export function resolveMainAgentRotatedConfigDir(): string | null {
   const activeId = readClaudePlansState().activePlanByAgent[MAIN_AGENT_ID]
   if (!activeId) return null
 
-  const plan = getClaudePlan(activeId)
-  return plan ? plan.configDir : null
+  return getClaudePlan(activeId)
+}
+
+export function resolveMainAgentRotatedConfigDir(): string | null {
+  return resolveActiveMainPlan()?.configDir ?? null
+}
+
+// The main agent's token-mode rotation counterpart: the vault secret id
+// holding the active plan's raw CLAUDE_CODE_OAUTH_TOKEN, when the active plan
+// is token-mode (ClaudePlan.tokenSecretId set) rather than configDir-mode.
+// Every token-mode plan shares the SAME generic isolated CLAUDE_CONFIG_DIR
+// (ensureMainAgentIsolatedConfigDir) -- this resolver answers ONLY "which
+// token", never "which dir". See ClaudePlan.tokenSecretId for why token-mode
+// exists at all (2026-09-12 incident: a configDir-mode plan registered but
+// never actually logged into, on a remote host, wedged the main session on an
+// interactive OAuth-code prompt no headless session can complete).
+export function resolveMainAgentRotatedTokenSecretId(): string | null {
+  return resolveActiveMainPlan()?.tokenSecretId ?? null
 }
 
 // Shared provisioning core for BOTH the sub-agents (ensureIsolatedChannelConfigDir)
@@ -1149,6 +1228,102 @@ export function stampProjectTrustForDir(dotClaudePath: string, projectDir: strin
   }
 }
 
+// Pre-approve a custom ANTHROPIC_API_KEY in a config root's .claude.json so
+// Claude Code's "Detected a custom API key" TUI prompt never renders in
+// --channels (non-interactive) mode.
+//
+// Root cause: when a custom provider uses authHeader=x-api-key, agent-process
+// exports ANTHROPIC_API_KEY. The Claude Code TUI treats ANTHROPIC_API_KEY as
+// an approval-required key (it shows "Detected a custom API key in your
+// environment / Do you want to use this API key?"). In --channels mode this
+// dialog cannot be answered interactively, so the agent parks on "Not logged
+// in". The ANTHROPIC_AUTH_TOKEN (Bearer) path has no such gate.
+//
+// Fix: mirror the CLI's own approval storage. The CLI stores the key as
+//   customApiKeyResponses.approved: [key.trim().slice(-20)]
+// (empirically verified from the 2.1.222 binary: `function Jne(e){return
+//  e.trim().slice(-20)}`). Pre-seeding this entry before spawn makes the CLI
+// treat the key as already approved. Idempotent; atomic 0600 write.
+export function stampCustomApiKeyApproval(dotClaudePath: string, apiKey: string): boolean {
+  const suffix = apiKey.trim().slice(-20)
+  if (!suffix) return false
+  try {
+    // JSONCLOBBER926B: a corrupt .claude.json is refused, not reset to a
+    // one-key object. It carries the agent's onboarding and project-trust
+    // flags and its local-scope MCP servers (credentials included), and the
+    // old "start fresh" silently destroyed all of them. The refusal lands in
+    // the catch below: no stamp, a warn naming the file, and the file intact.
+    const data = readJsonObjectForWrite(dotClaudePath)
+    const existing = (data.customApiKeyResponses && typeof data.customApiKeyResponses === 'object' && !Array.isArray(data.customApiKeyResponses))
+      ? data.customApiKeyResponses as Record<string, unknown>
+      : {}
+    const approved = Array.isArray(existing.approved) ? existing.approved as string[] : []
+    if (approved.includes(suffix)) return false
+    data.customApiKeyResponses = { ...existing, approved: [...approved, suffix] }
+    atomicWriteFileSync(dotClaudePath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
+    logger.info({ dotClaudePath }, 'custom-api-key: pre-stamped customApiKeyResponses.approved (prevents interactive approval prompt in --channels TUI)')
+    return true
+  } catch (err) {
+    logger.warn({ err, dotClaudePath }, 'custom-api-key: could not stamp approval (agent may park on API key prompt if running non-interactively)')
+    return false
+  }
+}
+
+// Build the shell env-export prefix for an agent's custom provider, ready to
+// prepend to a tmux launch command. Returns null when the agent has no custom
+// provider configured. Throws when the provider definition is missing or the
+// vault key is absent (mirrors the abort logic in startAgentProcess).
+//
+// The returned envPrefix ends with "&&" so it can be concatenated directly
+// before "cd <dir> && claude ...". The customApiKeyForApproval field carries
+// the raw key when authHeader=x-api-key, so the caller can pre-stamp
+// .claude.json via stampCustomApiKeyApproval (prevents the interactive
+// "Detected a custom API key" modal in non-channels TUI sessions).
+export interface CustomProviderLaunchEnv {
+  envPrefix: string
+  customApiKeyForApproval: string | null
+  model: string
+}
+
+export function buildCustomProviderLaunchEnv(agentName: string): CustomProviderLaunchEnv | null {
+  const customProviderId = readAgentCustomProvider(agentName)
+  if (!customProviderId) return null
+
+  const customProviderDef = loadCustomProvider(customProviderId)
+  if (!customProviderDef) {
+    throw new Error(`Custom provider "${customProviderId}" not found. Add it in Settings > Providers.`)
+  }
+
+  const model = readAgentModel(agentName)
+  let headerExport: string
+  let customApiKeyForApproval: string | null = null
+
+  if (customProviderDef.authHeader === 'none') {
+    headerExport = `export ANTHROPIC_AUTH_TOKEN=ollama && `
+  } else {
+    const key = getSecret(customProviderDef.vaultKey ?? '') ?? ''
+    if (!key) {
+      throw new Error(`Custom provider vault key "${customProviderDef.vaultKey}" not found. Add it in the Vault tab.`)
+    }
+    // A BAZIS ALATTUNK MEGVALTOZOTT (LATENSKULCSARGV920, #1478): a kulcs nem a launch-parancsban
+    // utazik, hanem 0600-as fajlbol olvassa a BEINDITOTT shell. A szerzo logikaja valtozatlan.
+    //
+    // A `customApiKeyForApproval` viszont SZANDEKOSAN a nyers kulcs marad: azt a hivo NEM a
+    // parancsba teszi, hanem a `.claude.json`-be stampeli (a CLI az utolso 20 karaktert tarolja),
+    // tehat az nem argv-kitettseg. Ket kulonbozo ut, ket kulonbozo szabaly.
+    const keyRef = launchSecretRef(`${agentName}.${customProviderDef.vaultKey}`, key)
+    if (customProviderDef.authHeader === 'x-api-key') {
+      headerExport = `export ANTHROPIC_API_KEY=${keyRef} && `
+      customApiKeyForApproval = key
+    } else {
+      headerExport = `export ANTHROPIC_AUTH_TOKEN=${keyRef} && `
+    }
+  }
+
+  const envPrefix = `export ANTHROPIC_BASE_URL="${customProviderDef.baseUrl}" && ${headerExport}export ANTHROPIC_MODEL=${shSingleQuote(model)} && `
+  return { envPrefix, customApiKeyForApproval, model }
+}
+
 // Pre-stamp the Fable overage-consent acknowledgment in a config root's
 // .claude.json so the "Fable 5 now uses usage credits" dialog never renders.
 //
@@ -1259,13 +1434,43 @@ export function shSingleQuote(value: string): string {
  * amit a hivo a `launchSecretRef`-fel allit elo. Egy jovobeli ag, ami megint az erteket akarna
  * beirni, eloszor a PARAMETER TIPUSAT kellene visszaallitsa -- az pedig latszik a review-ban.
  */
-export type ProviderKind = 'claude' | 'deepseek' | 'minimax' | 'openrouter' | 'ollama'
+export type ProviderKind = 'claude' | 'deepseek' | 'minimax' | 'openrouter' | 'ollama' | 'custom'
 
 export function resolveProviderEnv(
   model: string,
   /** A titok SHELL-HIVATKOZASA (pl. `"$(cat '/ut')"`), NEM az erteke. Lasd `launchSecretRef`. */
   secretShellRef: (id: string) => string | null,
+  customProviderDef?: CustomProviderDef | null,
 ): { provider: ProviderKind; exportsStr: string } {
+  // Generic custom-provider env: built from the provider definition stored in
+  // store/custom-providers.json. Only Anthropic-Messages-compatible endpoints
+  // are supported (/v1/messages); pure OpenAI endpoints require a proxy. Early
+  // return, ahead of every string-pattern discriminator below, so a custom
+  // provider's model id (which can look like anything) never accidentally
+  // matches the claude-/deepseek-/ollama branches.
+  if (customProviderDef) {
+    let headerExport: string
+    if (customProviderDef.authHeader === 'none') {
+      headerExport = `export ANTHROPIC_AUTH_TOKEN=ollama && `
+    } else {
+      // A BAZIS ALATTUNK MEGVALTOZOTT (LATENSKULCSARGV920, #1478): ez a parameter mar nem a kulcs
+      // ERTEKET adja vissza, hanem egy shell-HIVATKOZAST ra (`"$(cat '/ut')"`), amit a hivo a
+      // `launchSecretRef`-fel allit elo. A szerzo szandeka valtozatlan -- hianyzo vault-kulcsnal az
+      // inditas MEGALL, nem esik vissza csendben a rossz backendre --, csak a titok mar nem a
+      // launch-parancsban utazik. A `null` itt pontosan azt jelenti, amit nala az ures ertek.
+      const keyRef = secretShellRef(customProviderDef.vaultKey ?? '')
+      if (!keyRef) {
+        throw new Error(`Custom provider vault key "${customProviderDef.vaultKey}" not found. Add it in the Vault tab.`)
+      }
+      headerExport = customProviderDef.authHeader === 'x-api-key'
+        ? `export ANTHROPIC_API_KEY=${keyRef} && `
+        : `export ANTHROPIC_AUTH_TOKEN=${keyRef} && `
+    }
+    return {
+      provider: 'custom',
+      exportsStr: `export ANTHROPIC_BASE_URL="${customProviderDef.baseUrl}" && ${headerExport}export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+    }
+  }
   const isClaude = model.startsWith('claude-')
   const isDeepseek = model.startsWith('deepseek-')
   const isMinimax = model.startsWith('minimax-')
@@ -1595,6 +1800,36 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
   // Remote agents are handled entirely by the ssh path above (with its own
   // start guard), before any local already-running check / scaffolding.
   const remote = readAgentRemoteConfig(name)
+
+  // Per-agent setup-token file (agent-config.json "oauthTokenFile", 2fb86ef2).
+  // Decided before ANY launch step, remote agents included: a present but
+  // unusable field refuses the start, loudly, and never falls back to the fleet
+  // token (see agent-oauth-token-file.ts). Absent field -> 'unset' -> every
+  // branch below runs exactly as before.
+  const ownOauth = decideOwnOauthToken({
+    rawConfigJson: readFileOr(join(dir, 'agent-config.json'), '{}'),
+    isMainAgent: name === MAIN_AGENT_ID,
+    isRemote: !!(remote.host && remote.workdir),
+    // The launcher's own discriminators (see isCustom / isClaude below): a set
+    // customProvider wins over every model pattern, and for the rest the
+    // resolved model must start with claude-.
+    isCustomProvider: readAgentCustomProvider(name) !== null,
+    isClaudeModel: resolveOpenRouterModel(readAgentModel(name)).startsWith('claude-'),
+    authMode: readAgentAuthMode(name),
+    hasExplicitConfigDir: readAgentClaudeConfigDir(name) !== null,
+    hasClaudePlan: !!readAgentClaudePlan(name),
+    fleetTokenPath: FLEET_OAUTH_TOKEN_PATH,
+    uid: typeof process.getuid === 'function' ? process.getuid() : null,
+  })
+  if (ownOauth.kind === 'refused') {
+    logger.error(
+      { name, path: ownOauth.path, reason: ownOauth.reason, detail: ownOauth.detail },
+      'oauthTokenFile: agent NOT started (fail-closed, no fallback to the fleet token)',
+    )
+    return { ok: false, error: `oauthTokenFile: ${ownOauth.reason}${ownOauth.detail ? ` (${ownOauth.detail})` : ''}` }
+  }
+  const ownTokenFile = ownOauth.kind === 'ok' ? ownOauth.path : null
+
   if (remote.host && remote.workdir) {
     return startRemoteAgentProcess(name, remote.host, remote.workdir, opts)
   }
@@ -1637,17 +1872,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
   // (not the generic fallback). Idempotent; writes only on drift, non-fatal.
   if (agentProvider === 'teams' && hasChannel) {
     try {
-      const envPath = join(agentChannelDir, '.env')
-      const displayName = readAgentDisplayName(name)
-      const raw = existsSync(envPath) ? readFileSync(envPath, 'utf-8') : ''
-      const current = raw.match(/^TEAMS_BOT_DISPLAY_NAME=(.*)$/m)?.[1]?.trim()
-      if (displayName && current !== displayName) {
-        const line = `TEAMS_BOT_DISPLAY_NAME=${displayName}`
-        const next = current !== undefined
-          ? raw.replace(/^TEAMS_BOT_DISPLAY_NAME=.*$/m, line)
-          : (raw === '' || raw.endsWith('\n') ? raw + line + '\n' : raw + '\n' + line + '\n')
-        writeFileSync(envPath, next)
-      }
+      syncTeamsDisplayName(join(agentChannelDir, '.env'), readAgentDisplayName(name))
     } catch { /* best-effort name-sync; never block launch */ }
   }
 
@@ -1685,11 +1910,58 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
       logger.warn({ err, name }, 'pre-launch detached-claude reap failed (continuing)')
     }
 
+    // Custom provider check runs FIRST and BEFORE resolveOpenRouterModel, so
+    // an explicit customProvider field in agent-config.json takes priority over
+    // all string-pattern discriminators. This prevents model ids like `mistral:7b`
+    // from accidentally matching the Ollama branch when the operator intends a
+    // custom Anthropic-compatible endpoint.
+    // DEFAULTCLIGUARD927: an agent that resolved no model of its own launches
+    // the install default, guarded against a CLI that cannot run it.
+    const resolvedModel = resolveAgentModelDetailed(name)
+    const rawModel = resolvedModel.source === 'default' ? await launchableInstallDefault(`agent:${name}`) : resolvedModel.model
+    const customProviderId = readAgentCustomProvider(name)
+    // isCustom is true whenever an id is set -- even if the definition is missing.
+    // The guard below catches the missing-definition case and aborts before any
+    // string-pattern discriminator runs, so a deleted provider never silently
+    // falls through to the Ollama branch.
+    const isCustom = customProviderId !== null
+    const customProviderDef = customProviderId ? loadCustomProvider(customProviderId) : null
+
+    if (isCustom && !customProviderDef) {
+      // Provider id is set in agent-config but not found in custom-providers.json
+      // (deleted via DELETE /api/custom-providers/:id or corrupt store).
+      // Abort launch with a clear error rather than silently falling through to Ollama.
+      logger.error({ name, customProviderId }, 'Custom provider not found in store -- agent launch aborted. Add it in Settings > Providers.')
+      throw new Error(`Custom provider "${customProviderId}" not found. Add it in Settings > Providers.`)
+    }
+
     // `openrouter-auto:<tier>` resolves to the tier's current recommended model
     // (weekly-refreshed); a concrete OpenRouter id (contains '/') passes through.
-    const model = resolveOpenRouterModel(readAgentModel(name))
+    // Skip this resolution entirely for custom providers -- their model ids go
+    // verbatim to the custom endpoint and have no openrouter-auto semantics.
+    const model = isCustom ? rawModel : resolveOpenRouterModel(rawModel)
     const authMode = readAgentAuthMode(name)
-    const isClaude = model.startsWith('claude-')
+    const isClaude = !isCustom && model.startsWith('claude-')
+    // 2fb86ef2 backstop: the decision above already refused a custom-provider or
+    // non-Claude agent with its own token. Re-checked on the launcher's own
+    // isClaude, so a drift between the two predicates refuses instead of
+    // launching with a setup-token that no export site will use.
+    if (ownTokenFile && !isClaude) {
+      logger.error(
+        { name, path: ownTokenFile, customProviderId, model },
+        'oauthTokenFile: agent is not a Claude OAuth agent -- NOT started (a setup-token cannot take effect here)',
+      )
+      return { ok: false, error: 'oauthTokenFile: not a Claude OAuth agent' }
+    }
+    // When authHeader=x-api-key, the CLI's ANTHROPIC_API_KEY approval prompt
+    // cannot be answered in --channels mode. Pre-seed the approval into
+    // .claude.json (see stampCustomApiKeyApproval) after claudeConfigDir is
+    // resolved below. Store the key here so the stamp call has it; Bearer/none
+    // providers leave this null (they have no such gate).
+    const customApiKeyForApproval: string | null =
+      isCustom && customProviderDef?.authHeader === 'x-api-key'
+        ? getSecret(customProviderDef.vaultKey ?? '') ?? null
+        : null
     // ANTHROPIC_MODEL is REQUIRED for non-Claude models: the interactive TUI
     // validates the `--model` flag against known Anthropic models and silently
     // falls back to the built-in default (claude-opus-...) for an unrecognized
@@ -1700,10 +1972,21 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // Provider discriminator + env-export chain live in resolveProviderEnv (pure,
     // unit-tested in agent-provider-env.test.ts) so a new provider is one branch there.
     // A titok FAJLBA megy, es a launch-parancsba csak a HIVATKOZAS kerul (LATENSKULCSARGV920).
-    const { exportsStr: providerEnv } = resolveProviderEnv(model, (id) => {
-      const ertek = (getSecret(id) ?? '').trim()
-      return ertek ? launchSecretRef(`${name}.${id}`, ertek) : null
-    })
+    // A hiba-ag a SZERZOE (a hianyzo vault-kulcs megallitja az inditast, nem esik vissza csendben
+    // a rossz backendre); a titok-atadas alakja a MIENK. A ketto nem zarja ki egymast.
+    let providerEnv: string
+    try {
+      providerEnv = resolveProviderEnv(model, (id) => {
+        const ertek = (getSecret(id) ?? '').trim()
+        return ertek ? launchSecretRef(`${name}.${id}`, ertek) : null
+      }, customProviderDef).exportsStr
+    } catch (err) {
+      // Custom-provider vault key missing (deleted from the vault after the
+      // provider was configured). Abort launch with a clear error rather than
+      // silently falling through to the wrong backend.
+      logger.error({ name, customProviderId, err }, 'Custom provider vault key missing -- agent launch aborted. Add it in the Vault tab.')
+      throw err
+    }
     // When authMode is 'api', the agent uses its own ANTHROPIC_API_KEY from
     // the vault instead of the host's OAuth. The vault entry ID follows the
     // convention `agent-{name}-api-key`. We inject it as an env var so Claude
@@ -1727,6 +2010,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     const profile = loadProfileTemplate(resolveAgentSecurityProfile(name))
     writeAgentSettingsFromProfile(name, profile)
     ensureFleetRosterSection(name)
+    ensureProjectRootInClaudeMd(name)
     ensureAutonomySection(name)
     ensureSkillsPathTrapSection(name)
     ensureSystemDirectiveAuthSection(name)
@@ -1734,6 +2018,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     ensureFleetAuthSection(name)
     ensureEvidenceSection(name)
     ensureMcpListChannelSection(name)
+    ensureMessageCloseSection(name)
     // A sub-agent must load ONLY its own channel plugin. The user-scope
     // enabledPlugins would otherwise make EVERY sub-agent spawn a telegram
     // (and slack/discord) poller that falls back to the main agent's bot
@@ -1831,10 +2116,12 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
         if (!existsSync(serverPath)) throw new Error(`worksource server not found at ${serverPath}`)
         const mcpJsonPath = join(agentDir(name), '.mcp.json')
         let mcpConfig: { mcpServers: Record<string, unknown> } = { mcpServers: {} }
-        try {
-          const existing = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as { mcpServers?: Record<string, unknown> }
-          if (existing && typeof existing === 'object' && existing.mcpServers) mcpConfig = { mcpServers: existing.mcpServers }
-        } catch { /* absent or unreadable -> start from empty, do not fail the launch */ }
+        // JSONCLOBBER926B: absent -> start from empty; an existing but corrupt
+        // .mcp.json is refused (it may hold the agent's other MCP servers), and
+        // the refusal lands in this block's catch: the agent starts without the
+        // worksource channel, as for any other wiring failure, and the file stays.
+        const existing = readJsonObjectForWrite(mcpJsonPath)
+        if (isPlainObject(existing.mcpServers)) mcpConfig = { mcpServers: existing.mcpServers }
         mcpConfig.mcpServers.worksource = {
           command: process.execPath,
           args: [serverPath],
@@ -1942,12 +2229,6 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     }
     let claudeConfigDir = planResolution.configDir
     let oauthTokenEnv = ''
-    // Shared-home agents (no isolated config dir) authenticate from the rotating
-    // ~/.claude/.credentials.json by default. If the operator has a long-lived
-    // fleet setup-token, export it so EVERY locally launched agent uses the
-    // stable token instead -- this is what makes the Linux credentials-guard
-    // rename safe (a shared sub-agent with no env token would otherwise be
-    // locked out once credentials.json is moved aside). No-op without a token.
     // authMode 'own_team' (OWNTEAMVAK914): the operator explicitly opted this
     // agent OUT of the fleet credential -- it authenticates from its OWN
     // /login credential (dashboard auth-flow -> /login in the agent's tmux).
@@ -1956,7 +2237,24 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // credential is absent or expired, which would silently put the agent
     // back on the shared identity -- exactly what own_team excludes.
     const isOwnTeam = isClaude && authMode === 'own_team'
-    if (!claudeConfigDir && hasFleetOauthToken() && !isOwnTeam) {
+    // Only Claude-OAuth agents need the fleet token. BYO/custom-endpoint agents
+    // (Ollama, DeepSeek, OpenRouter, generic custom) authenticate via their own
+    // ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN. Exporting CLAUDE_CODE_OAUTH_TOKEN
+    // for those agents causes the Claude CLI to send it to the third-party
+    // endpoint instead of the provider credential -> 401 (channel-agent + custom
+    // provider bug, 2026-08-05). own_team agents are excluded too, for the
+    // reason above.
+    const needsFleetOauth = isClaude && authMode !== 'api' && !isOwnTeam
+    // Shared-home agents (no isolated config dir) authenticate from the rotating
+    // ~/.claude/.credentials.json by default. If the operator has a long-lived
+    // fleet setup-token, export it so EVERY locally launched agent uses the
+    // stable token instead -- this is what makes the Linux credentials-guard
+    // rename safe (a shared sub-agent with no env token would otherwise be
+    // locked out once credentials.json is moved aside). No-op without a token.
+    if (ownTokenFile) {
+      // 2fb86ef2: the agent's own setup-token file, INSTEAD of the fleet file.
+      oauthTokenEnv = ownOauthTokenExport(ownTokenFile)
+    } else if (!claudeConfigDir && hasFleetOauthToken() && needsFleetOauth) {
       oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
     }
     // Isolation must also cover CHANNEL-LESS Claude-OAuth agents, not just
@@ -1969,7 +2267,6 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // 2026-07-25). Only agents that never touch Anthropic OAuth stay on the
     // shared root: local/BYO-endpoint models (Ollama/DeepSeek/OpenRouter) and
     // per-agent API-key (authMode 'api') agents.
-    const needsFleetOauth = isClaude && authMode !== 'api' && !isOwnTeam
     if (!claudeConfigDir && (hasChannel || needsFleetOauth || isOwnTeam) && name !== MAIN_AGENT_ID) {
       if (isOwnTeam) {
         // own_team isolates WITHOUT the fleet token: the isolated dir is where
@@ -1997,6 +2294,14 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
           logger.warn({ name }, 'own_team auth: isolated config dir provisioning failed; agent falls back to the shared ~/.claude and will use the HOST credential, not its own Team login')
           if (hasChannel) maybeAlertSharedConfigCollision(name)
         }
+      } else if (ownTokenFile) {
+        // 2fb86ef2: isolated exactly like the fleet branch below; only the token
+        // source differs, so the fleet token's presence is irrelevant here.
+        const isolated = ensureIsolatedChannelConfigDir(name, hasChannel ? agentProvider : null)
+        if (isolated) {
+          claudeConfigDir = isolated
+          oauthTokenEnv = ownOauthTokenExport(ownTokenFile)
+        }
       } else if (hasFleetOauthToken()) {
         // Token present -> isolation works; any earlier degradation is resolved,
         // so re-arm the one-shot alert for a future token loss.
@@ -2010,7 +2315,10 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
           // Read the token at launch via $(cat) so the literal secret never
           // appears in the JS-built command string or in `ps`. The file is 0600
           // and the value lands only in this process's own environment.
-          oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
+          // BYO/custom-endpoint agents: no OAuth export, only config-dir isolation.
+          if (needsFleetOauth) {
+            oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
+          }
         }
       } else {
         logger.warn({ name }, 'isolated-config: no fleet OAuth token (store/.claude-oauth-token); keeping shared ~/.claude. Run `claude setup-token` and store it to enable per-agent isolation.')
@@ -2020,6 +2328,34 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
         // only get the WARN.
         if (hasChannel) maybeAlertSharedConfigCollision(name)
       }
+    }
+    // 2fb86ef2: a Claude agent with its own token must run isolated. On the
+    // shared ~/.claude the rotating host credential wins over the env token, so
+    // the agent would silently authenticate as the host, not with its own token.
+    if (ownTokenFile && isClaude && !claudeConfigDir) {
+      logger.error(
+        { name, path: ownTokenFile },
+        'oauthTokenFile: isolated config dir could not be provisioned -- agent NOT started (the shared ~/.claude would authenticate it with the host credential)',
+      )
+      return { ok: false, error: 'oauthTokenFile: isolated config dir could not be provisioned' }
+    }
+    // 2fb86ef2: the claim is derived from the launch env itself, not from the
+    // decision. One verdict drives both the refusal and the log: an 'ok'
+    // decision that did not reach oauthTokenEnv would run the agent on the
+    // fleet token (or none) while the log said otherwise, so it refuses.
+    const ownLaunch = ownOauthLaunchVerdict(ownOauth, oauthTokenEnv)
+    if (ownLaunch.kind === 'refuse') {
+      logger.error(
+        { name, path: ownLaunch.path },
+        'oauthTokenFile: own token decided but NOT in the launch env -- agent NOT started (no fallback to the fleet token)',
+      )
+      return { ok: false, error: 'oauthTokenFile: own token did not reach the launch env' }
+    }
+    if (ownLaunch.kind === 'own') {
+      logger.info(
+        { name, path: ownLaunch.path, fingerprint: ownLaunch.fingerprint },
+        'oauthTokenFile: own setup-token exported instead of the fleet token',
+      )
     }
     // Per-project trust pre-seed in the config root this session will ACTUALLY
     // use (isolated CLAUDE_CONFIG_DIR when set, shared ~/.claude.json
@@ -2036,6 +2372,14 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     stampFableOverageConsent(
       claudeConfigDir ? join(claudeConfigDir, '.claude.json') : join(homedir(), '.claude.json'),
     )
+    // Pre-approve ANTHROPIC_API_KEY for x-api-key custom providers so the
+    // "Detected a custom API key" TUI prompt never blocks a --channels agent.
+    if (customApiKeyForApproval) {
+      stampCustomApiKeyApproval(
+        claudeConfigDir ? join(claudeConfigDir, '.claude.json') : join(homedir(), '.claude.json'),
+        customApiKeyForApproval,
+      )
+    }
     const claudeConfigEnv = claudeConfigDir ? `export CLAUDE_CONFIG_DIR="${claudeConfigDir}" && ` : ''
     // `--continue` requires an existing session; on a brand-new agent the
     // Claude Code projects directory does not yet exist and `claude` exits
@@ -2079,7 +2423,26 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     }
     const continueFlag = continueDecision.useContinue ? '--continue ' : ''
     const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : agentProvider === 'googlechat' ? 'GOOGLECHAT_STATE_DIR' : agentProvider === 'teams' ? 'TEAMS_STATE_DIR' : 'TELEGRAM_STATE_DIR'
-    const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN'
+    // CHANSTATEUNSET930: the channel STATE DIRS are stripped too, not only the
+    // bot tokens. The tmux server carries the main agent's TELEGRAM_STATE_DIR in
+    // its own env (channels.sh exports it before `tmux start-server`), so every
+    // new pane inherited it -- including channel-less agents, whose claude and
+    // every MCP server under it then looked, to channel-poller-reap's env scan,
+    // exactly like the main agent's orphaned pollers. Measured 2026-09-30 12:06
+    // and 14:21: each main-channel reap SIGTERMed the MCP servers of every
+    // channel-less agent, whose tools then reported 'failed to connect' until
+    // the agent was restarted. A channel agent
+    // re-exports its OWN dir right after this, via channelSetup below.
+    const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN TELEGRAM_STATE_DIR SLACK_STATE_DIR DISCORD_STATE_DIR GOOGLECHAT_STATE_DIR TEAMS_STATE_DIR'
+    // BYO/custom-endpoint agents must have CLAUDE_CODE_OAUTH_TOKEN removed from
+    // their environment, not just omitted from the launch export. The parent tmux
+    // server carries the fleet OAuth token in its own env, and
+    // every new pane inherits it. The Claude CLI prefers CLAUDE_CODE_OAUTH_TOKEN
+    // over ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN, so the inherited token would
+    // reach the custom endpoint -> 401, even after the explicit export was removed.
+    // An active `unset` at launch strips the inherited value before exec.
+    // Claude-OAuth agents (needsFleetOauth=true) must keep the token intact.
+    const byoUnsetEnv = !needsFleetOauth ? 'unset CLAUDE_CODE_OAUTH_TOKEN && ' : ''
     // Slack plugin is third-party; its "not on approved allowlist" check is
     // bypassed via `allowedChannelPlugins` in /Library/Application Support/ClaudeCode/managed-settings.json.
     const auditLogEnv = agentProvider === 'slack' ? ` && export SLACK_AUDIT_LOG="${agentChannelDir}/audit.jsonl"` : ''
@@ -2129,7 +2492,9 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // restarts did not clear it; one keypress did. Env var verified present in the
     // shipped binary's CLAUDE_CODE_DISABLE_* table (2.1.205).
     const promptSuggestionEnv =
-      'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 && '
+      // CHANSPARE925: no Agent view -- its Left key backgrounds the session into the
+      // Claude Code daemon, which keeps a second --channels copy alive (bot poller hijack).
+      'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && '
     // Disable Claude Code's in-place auto-updater for every spawned agent. A
     // running agent whose updater fires does an in-place global reinstall into the
     // shared package prefix; a half-completed update can leave a broken stub and
@@ -2151,7 +2516,14 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // buildLaunchCmd(launchCwd): only the launch CWD varies between the normal start and the
     // EPERM /tmp fallback below; every env export is an absolute path and stays pointed at the
     // real agent dir.
-    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
+    //
+    // A `${byoUnsetEnv}` a SZERZO tagja (BYO/custom agensnel az orokolt OAuth-tokent le kell
+    // venni, kulonben a CLI azt preferalja a sajat kulcs helyett). A bazis azota fuggvennye tette
+    // ezt a sort az EPERM-fallback miatt; a tag ugyanabba a poziciba kerult vissza.
+    // FLEETVENV923: the fleet venv's bin/ goes FIRST so its python3 beats the
+    // Homebrew one that carries no packages.
+    const venvPathPrefix = fleetVenvPathPrefix()
+    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start
@@ -2883,6 +3255,59 @@ async function discardPlaceholderBuffer(session: string, host: string | null = n
   return finalPane != null && !detectsPastePlaceholder(finalPane)
 }
 
+// Cap on how many extra characters a single chunk boundary may absorb while
+// dodging the two tmux CLI-argument quirks below. Keeps a long run of dashes
+// or semicolons from inflating one chunk past the paste-detector threshold.
+export const TMUX_CHUNK_MAX_SLIDE = 8
+
+// Compute one `send-keys -l` chunk (and the index it ends at) for streaming
+// `oneLine` into a pane starting at `start`. Exported so the two tmux
+// CLI-argument quirks it dodges can be exercised directly in tests, without
+// driving a real tmux session:
+//
+//   - tmux send-keys doesn't support `--` option-terminator, so a chunk that
+//     STARTS with '-' parses as a flag ("command send-keys: unknown flag -s"
+//     on Hungarian suffixes like -szal/-vel/-ban). Slide the boundary up to
+//     `maxSlide` chars past any '-' that would land at the start of the next
+//     chunk. If the cap is reached and the chunk still starts with '-',
+//     prepend a space instead.
+//   - a chunk that ENDS with an unescaped ';' has that trailing ';' silently
+//     dropped: tmux's own command-line parser treats a semicolon as the end
+//     of the current command when it is the last character of the final
+//     argv element, even under -l literal mode, even though this is one
+//     argv element passed via execFileSync (no shell involved). Measured
+//     2026-09-27 (BORITEKVESZ927): every "spliced" kanban-audit/nap-zaro
+//     delivery lost exactly the one chunk-boundary ';', while ';' characters
+//     that land inside a chunk (not at its end) were always intact. Slide
+//     the boundary forward the same way, folding the next real character in
+//     instead of leaving ';' as the chunk's last byte. If the cap is reached
+//     (or there is no more text to fold in), append a trailing space so the
+//     chunk no longer ends in a bare ';'.
+export function computeTmuxChunk(
+  oneLine: string,
+  start: number,
+  chunkSize: number,
+  maxSlide: number = TMUX_CHUNK_MAX_SLIDE,
+): { chunk: string; end: number } {
+  let end = Math.min(start + chunkSize, oneLine.length)
+  let slide = 0
+  // Both dodges in ONE loop: don't let the NEXT chunk start with '-', and
+  // don't let THIS chunk end with ';'. Folding a character in for one rule can
+  // re-trigger the other: with two sequential loops, ';x-' at the boundary
+  // slid past the ';' and stopped right before the '-', so the next chunk got
+  // a ' ' prepended -- a space typed into the middle of the text.
+  while (
+    end < oneLine.length && slide < maxSlide &&
+    (oneLine[end] === '-' || oneLine[end - 1] === ';')
+  ) {
+    end++; slide++
+  }
+  let chunk = oneLine.slice(start, end)
+  if (chunk.startsWith('-')) chunk = ' ' + chunk
+  if (chunk.endsWith(';')) chunk = chunk + ' '
+  return { chunk, end }
+}
+
 // Send text to a tmux session as if typed at the prompt.
 // Uses execFileSync so callers can pass raw text -- tmux send-keys -l treats
 // the argument as literal characters, bypassing shell quoting entirely.
@@ -3038,25 +3463,12 @@ export async function sendPromptToSession(
   // Stream oneLine into the pane as CHUNK-sized literal send-keys writes,
   // followed by a submitting Enter. Extracted as a closure so the
   // clear-and-resend recovery path below can replay the EXACT same byte
-  // stream after a Ctrl-C, rather than duplicating the dash-slide logic.
-  //
-  // tmux send-keys doesn't support `--` option-terminator, so a chunk that
-  // starts with '-' parses as a flag ("command send-keys: unknown flag -s"
-  // on Hungarian suffixes like -szal/-vel/-ban). Slide the boundary up to a
-  // few chars past any '-' that lands at the start of the next chunk. Capped
-  // so a long run of dashes doesn't inflate one chunk past the paste-detector
-  // threshold; if the cap is reached, prepend a space to the chunk instead.
-  const MAX_SLIDE = 8
+  // stream after a Ctrl-C, rather than duplicating the boundary logic
+  // (see computeTmuxChunk for the two chunk-boundary dodges it applies).
   const sendChunks = async (): Promise<void> => {
     let i = 0
     while (i < oneLine.length) {
-      let end = Math.min(i + CHUNK, oneLine.length)
-      let slide = 0
-      while (end < oneLine.length && oneLine[end] === '-' && slide < MAX_SLIDE) {
-        end++; slide++
-      }
-      let chunk = oneLine.slice(i, end)
-      if (chunk.startsWith('-')) chunk = ' ' + chunk
+      const { chunk, end } = computeTmuxChunk(oneLine, i, CHUNK, TMUX_CHUNK_MAX_SLIDE)
       runTmux(host, ['send-keys', '-t', session, '-l', chunk], { timeout: 5000 })
       i = end
       if (i < oneLine.length) await delay(30)
@@ -3641,8 +4053,9 @@ async function clearStaleParkedInputInLane(
       notifyChannel(
         `🚨 A fo agens (${session}) input-mezojeben ~${Math.round((fails * UNWEDGE_COOLDOWN_MS) / 60000)} perce all egy parkolt sor, ` +
         `es emiatt a csatorna nem dolgoz fel bejovo uzenetet. KEZI FELOLDAS (par masodperc): ` +
-        `tmux attach -t ${session}, majd Ctrl-C es utana Ctrl-U (a sor torlese), vegul kilepes: Ctrl-B d. ` +
-        `A parkolt sor eleje: "${preview}"`,
+        `tmux attach -t ${session}, majd Ctrl-C es utana Ctrl-U (a sor torlese), vegul kilepes: Ctrl-B d.` +
+        // No conversation content in an alert that goes to a non-owner chat.
+        (alertIsRedirected() ? '' : ` A parkolt sor eleje: "${preview}"`),
       ).catch(() => { /* notify is best-effort */ })
       escalated = true
       logger.warn({ session, parked: parked.slice(0, 60), fails }, 'message-router: main-agent parked input -- owner notified with manual fix (box untouched)')
@@ -3715,7 +4128,8 @@ async function clearStaleParkedInputInLane(
       const preview = parked.slice(0, 80).replace(/[<>&]/g, ' ')
       notifyChannel(
         `⚠️ Egy sub-agent (${session}) input-mezojebe beragadt egy parkolt sor, ` +
-        `az auto-tisztitas ${fails}x sikertelen -- lehet kezi beavatkozas kell. Reszlet: "${preview}"`,
+        `az auto-tisztitas ${fails}x sikertelen -- lehet kezi beavatkozas kell.` +
+        (alertIsRedirected() ? '' : ` Reszlet: "${preview}"`),
       ).catch(() => { /* notify is best-effort */ })
       escalated = true
       logger.warn({ session, parked: parked.slice(0, 60), fails }, 'message-router: sub-agent parked input resisted clearing -- escalated to operator')

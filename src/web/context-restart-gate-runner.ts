@@ -1,4 +1,5 @@
 import { tmuxStderr } from './tmux-stderr.js'
+import { openQuestionIgnoringCommands } from './open-question.js'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -11,7 +12,7 @@ import { agentSessionName, capturePane } from './agent-process.js'
 import { sendSystemDirective } from './system-directive.js'
 import { detectPaneState } from '../pane-state.js'
 import { detectsUsageLimit } from '../model-fallback.js'
-import { readContextTokensFromProjectDir, projectsDirFor } from './active-model.js'
+import { readContextTokensFromProjectDir, projectsDirFor, readLastConversationTsFromProjectDir, readLastTurnActivityMs } from './active-model.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 // One copy, in a module neither runner owns (the gate imports the guard, so the
 // guard cannot import the gate back). Re-exported below because #1382's test
@@ -22,8 +23,8 @@ import { getHardGuardPhase } from './context-guard-runner.js'
 import { readGateConfig, readGateRunState, writeGateRunState } from './context-restart-gate-store.js'
 import {
   getDispatchedPendingStats,
-  openInboundQuestionMessageId,
   createAgentMessage,
+  GATE_ALERT_ORIGIN_NOTE,
 } from '../db.js'
 import {
   decideGate,
@@ -489,7 +490,25 @@ function hasLiveChildProcesses(session: string, mcpPatterns: string[]): boolean 
  * snapshot only shows whatever the terminal painted last. Between two tool
  * calls the pane reads idle; the transcript does not.
  */
-function msSinceTranscriptWrite(workingDir: string, nowMs: number, configDir?: string): number | null {
+function msSinceTranscriptWrite(
+  workingDir: string,
+  nowMs: number,
+  configDir?: string,
+  agentForLog?: string,
+): number | null {
+  // Real conversation events first, file mtime only as a fallback (GATEMTIME922).
+  // The two answer different questions: mtime says when the FILE last grew, and
+  // an IDLE session grows it forever with untimestamped bookkeeping records
+  // (atis-latch, mode, last-prompt, custom-title, agent-name,
+  // file-history-snapshot, artifact-autoreact-ledger). A gate waiting for mtime
+  // quiet is therefore waiting for something that cannot happen: measured
+  // 2026-09-22, an agent blocked 240 minutes with no stuck work at all, and
+  // again 2026-09-24, when all three sub-agents had been idle 12+ HOURS while
+  // their transcript files were 2-3 minutes old. See
+  // readLastConversationTsFromProjectDir for the full measurement.
+  const lastTurn = readLastConversationTsFromProjectDir(workingDir, configDir)
+  if (lastTurn !== null) return Math.max(0, nowMs - lastTurn)
+
   try {
     // configDir matters MORE here than for the token read: a missing root makes
     // this return a huge age, which reads as "quiet" and lets the gate clear a
@@ -504,6 +523,12 @@ function msSinceTranscriptWrite(workingDir: string, nowMs: number, configDir?: s
       if (m > newest) newest = m
     }
     if (newest === 0) return null
+    // Reached only by a transcript with no timestamped line at all (a brand-new
+    // session file). Logged rather than silent: if this ever becomes the normal
+    // path, the GATEMTIME922 bug is back and this line is the only thing that
+    // would say so.
+    logger.debug({ agent: agentForLog ?? workingDir },
+      'context-restart-gate: no timestamped transcript line found, falling back to file mtime')
     return Math.max(0, nowMs - newest)
   } catch { return null }
 }
@@ -557,11 +582,24 @@ function getLiveWorkChildArgs(session: string, mcpPatterns: string[]): string[] 
       const args = getChildArgsStr(pid) ?? ''
       if (isMcpProcess(args, mcpPatterns)) continue
       if (isNonWorkHelperProcess(args)) continue   // keep in step with the decision path
-      result.push(args || `PID ${pid}`)
+      // AGE IS PART OF THE EVIDENCE, not decoration (GATEDEADLOCK922). A
+      // Task-tool subagent and a preview server we started ourselves look
+      // identical in the args alone, and the gate blocks for both. What tells
+      // them apart is how long they have been alive: the 2026-09-22 case was a
+      // preview server at 6893s, which no turn can plausibly be. Without the
+      // number the reader has to go and measure it before deciding anything.
+      result.push(`${args || `PID ${pid}`} (${Math.round(age / 60)}p)`)
     }
     return result
   } catch { return [] }
 }
+
+/**
+ * Minutes of an UNCHANGED block reason after which the alert stops describing a
+ * wait and starts describing a defect. Deliberately longer than any plausible
+ * single turn, so a genuinely busy session never trips it.
+ */
+const NEVER_CLEARS_MIN = 120
 
 // ---- Gate check for one agent -----------------------------------------------
 
@@ -650,7 +688,7 @@ export function gatherGateInputs(name: string, nowMs: number): GateSnapshot {
   const openQuestion = (() => {
     try {
       const ledgerId = agentIdForLedger(name)
-      return openQuestionBlocks(openInboundQuestionMessageId(ledgerId),
+      return openQuestionBlocks(openQuestionIgnoringCommands(ledgerId),
                                 drainSurfacedMessageId(ledgerId))
     }
     catch { return false }
@@ -673,7 +711,11 @@ export function gatherGateInputs(name: string, nowMs: number): GateSnapshot {
     pendingOutboundCount:   dispatchedStats === null ? 1 : dispatchedStats.count,
     hasStaleOutbound:       dispatchedStats?.hasStale ?? false,
     hasChildProcesses:      childProcesses,
-    msSinceTranscriptWrite: msSinceTranscriptWrite(workingDir, nowMs, configDirFor(name)),
+    msSinceTranscriptWrite: msSinceTranscriptWrite(workingDir, nowMs, configDirFor(name), name),
+    msSinceTurnActivity: (() => {
+      const at = readLastTurnActivityMs(workingDir, configDirFor(name))
+      return at === null ? null : Math.max(0, nowMs - at)
+    })(),
     hasOpenQuestion:        openQuestion,
     hasLiveTaskState:       liveTaskState,
   }
@@ -702,7 +744,91 @@ export function diagnoseAgent(name: string, nowMs: number) {
   }
 }
 
-async function checkAgent(name: string, nowMs: number): Promise<void> {
+/**
+ * Type a slash command into a session on the send lane (the only writer to
+ * the pane while it runs). Shared by the gate's /clear and the owner's
+ * /model and /context clear, so every pane write takes the same lane.
+ */
+export async function sendSlashCommand(session: string, command: string): Promise<void> {
+  await withSessionSendLock(session, null, 'deliver', async () => {
+    execFileSync(tmuxBin(), ['send-keys', '-t', session, '-l', command], { timeout: 5000 })
+    execFileSync(tmuxBin(), ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+  })
+}
+
+// One Escape into the pane: Claude Code stops the running turn. Same send lane
+// as the slash commands, so it never lands in the middle of a typed line.
+export async function sendInterrupt(session: string): Promise<void> {
+  await withSessionSendLock(session, null, 'deliver', async () => {
+    try {
+      execFileSync(tmuxBin(), ['send-keys', '-t', session, 'Escape'], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (err) {
+      logger.warn({ site: 'context-restart-gate-runner.sendInterrupt', session, tmux: tmuxStderr(err) }, 'tmux send-keys Escape failed')
+      throw err
+    }
+  })
+}
+
+/**
+ * The gate's soft restart: /clear on the send lane, the run state stamped,
+ * and the wake nudge owed to the fresh session (the SessionStart replay hooks
+ * carry the thread). Callers decide WHETHER (the gate's decision, or the
+ * owner's /context clear after the same quiet checks); this is the one
+ * code path for HOW. Throws when the send fails.
+ */
+export async function performSoftClear(
+  name: string,
+  session: string,
+  nowMs: number,
+  contextTokens: number | null,
+): Promise<void> {
+  // A pane that is truly idle should accept it immediately; the SessionStart
+  // hooks fire on the next boot and inject the fresh context snapshot.
+  await sendSlashCommand(session, '/clear')
+  logger.info({ agent: name, contextTokens }, 'context-restart-gate: /clear sent')
+  writeGateRunState(name, {
+    ...readGateRunState(name),
+    firstBlockedAt: null,
+    lastClearAt: nowMs,
+    // Owe the fresh session a wake nudge; see WAKE_DELAY_MS.
+    pendingWakeAt: nowMs,
+  })
+  // Fast path: nudge in ~25s rather than at the next sweep (5 min by
+  // default). The persisted debt above is the fallback if this is lost.
+  await sleep(WAKE_DELAY_MS)
+  await deliverPendingWake(name, session, Date.now())
+}
+
+/** The main session's tmux session name, as every runner resolves it. */
+export function mainSessionName(): string {
+  return sessionFor(MAIN_AGENT_ID)
+}
+
+// Work that shares the main agent's sweep cadence (CMD920: the model-hold
+// revert runs "on the context-restart gate's sweep"). Registered, not
+// imported, so the hook's module can import this one without a cycle. Runs on
+// every main sweep tick, whether or not the gate itself is enabled.
+let mainSweepHook: ((nowMs: number) => Promise<void>) | null = null
+
+export function setMainSweepHook(fn: ((nowMs: number) => Promise<void>) | null): void {
+  mainSweepHook = fn
+}
+
+async function runMainSweepHook(): Promise<void> {
+  if (!mainSweepHook) return
+  try { await mainSweepHook(Date.now()) }
+  catch (err) { logger.warn({ err }, 'context-restart-gate: main sweep hook failed') }
+}
+
+/**
+ * One gate evaluation for one agent, including the side effects (the /clear,
+ * the persistent-block alert). EXPORTED FOR TESTS: the alert's envelope --
+ * sender, prefix and the 120-minute wording escalation -- is only observable
+ * from here, and all three were reverted by mutants that the suite passed
+ * (2026-09-24 review). A rule nobody can reach from a test is a rule nobody is
+ * measuring.
+ */
+export async function checkAgent(name: string, nowMs: number): Promise<void> {
   if (!readGateConfig(name).enabled) return   // fast-exit before any I/O
 
   // Settle any wake owed from an earlier /clear before measuring anything: the
@@ -734,26 +860,8 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         logger.info({ agent: name },
           'context-restart-gate: opening despite stale dispatched messages (beyond staleCutoffMs)')
       }
-      // Send /clear via the send lane. A pane that is truly idle should accept
-      // it immediately; the SessionStart hooks fire on the next boot and inject
-      // the fresh context snapshot.
       try {
-        await withSessionSendLock(session, null, 'deliver', async () => {
-          execFileSync(tmuxBin(), ['send-keys', '-t', session, '-l', '/clear'], { timeout: 5000 })
-          execFileSync(tmuxBin(), ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
-        })
-        logger.info({ agent: name, contextTokens }, 'context-restart-gate: /clear sent')
-        writeGateRunState(name, {
-          ...runState,
-          firstBlockedAt: null,
-          lastClearAt: nowMs,
-          // Owe the fresh session a wake nudge; see WAKE_DELAY_MS.
-          pendingWakeAt: nowMs,
-        })
-        // Fast path: nudge in ~25s rather than at the next sweep (5 min by
-        // default). The persisted debt above is the fallback if this is lost.
-        await sleep(WAKE_DELAY_MS)
-        await deliverPendingWake(name, session, Date.now())
+        await performSoftClear(name, session, nowMs, contextTokens)
       } catch (err) {
         logger.warn({ err, agent: name }, 'context-restart-gate: /clear send failed')
       }
@@ -779,11 +887,45 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
               childInfo = ` Blokkolo gyerekfolyamatok: ${workArgs.slice(0, 5).join('; ')}`
             }
           }
+          // A BLOCK THAT CANNOT CLEAR IS A FINDING, NOT PATIENCE (GATEDEADLOCK922).
+          // Three blocks on 2026-09-22 shared one shape: the condition waited on
+          // had no path to becoming false. Two of the three causes are fixed at
+          // the root (GATEMTIME922 above, GATESELFBLOCK922 in db.ts). The third
+          // cannot be: a child process we started ourselves is legitimately
+          // alive, and killing it to open the gate would be the gate deciding
+          // something that is not its to decide. So the alert escalates in
+          // WORDING instead of repeating the same sentence every two hours.
+          const stuckLong = typeof blockedSinceMin === 'number'
+            && blockedSinceMin >= NEVER_CLEARS_MIN
+          const escalation = stuckLong
+            ? ` FIGYELEM: ugyanez az ok ${blockedSinceMin} perce valtozatlan, tehat ez a feltetel magatol valoszinuleg NEM fog megszunni. Ez lelet, nem varakozas: vagy a blokkolo dolgot kell lezarni, vagy a kaput kell ra felkesziteni.`
+            : ''
+          // SENDER AND PREFIX BOTH MATTER HERE (GATESENDER922).
+          //
+          // This used to be createAgentMessage(name, ...), i.e. the supervisory
+          // system wrote its own alert in the WATCHED AGENT'S NAME. Measured
+          // 2026-09-22: 14 such rows existed under three different agent names,
+          // the oldest three days old, and eight read from=hex to=hex, so the
+          // main agent had been receiving its own gate alerts from itself for
+          // days without noticing.
+          //
+          // Two independent harms, the second more expensive:
+          //  1. The fleet rule for authenticating system directives requires
+          //     from_agent='system', so a GENUINE supervisory alert failed its
+          //     own authenticity test and looked like an injection.
+          //  2. Teaching agents that a [CONTEXT-RESTART-GATE] message can
+          //     legitimately arrive under an agent name erases exactly the
+          //     difference that would expose a real injection.
+          //
+          // The prefix differs from the /clear continuation directive's on
+          // purpose: one prefix for two senders and two meanings (act on this
+          // vs. read this) forced the reader to tell them apart from the
+          // sentence rather than from the envelope.
           createAgentMessage(
-            name,
+            'system',
             MAIN_AGENT_ID,
-            `[CONTEXT-RESTART-GATE] A(z) "${name}" agens kapuja ${blockedSinceMin} perce folyamatosan blokkolt. Ok: ${decision.reason}.${childInfo} A(z) ${Math.round(cfg.thresholdTokens / 1000)}k tokenes kuszob ele ert, de a kapu nem enged -- ellenorizd hogy nincs-e elakadt munka.`,
-            'context-restart-gate persistent-block alert',
+            `[CONTEXT-RESTART-GATE-RIASZTAS] A(z) "${name}" agens kapuja ${blockedSinceMin} perce folyamatosan blokkolt. Ok: ${decision.reason}.${childInfo} A(z) ${Math.round(cfg.thresholdTokens / 1000)}k tokenes kuszob ele ert, de a kapu nem enged -- ellenorizd hogy nincs-e elakadt munka.${escalation} (Tajekoztatas, nem muveletkeres.)`,
+            GATE_ALERT_ORIGIN_NOTE,
           )
           logger.warn({ agent: name, reason: decision.reason, blockedSinceMin },
             'context-restart-gate: persistent-block alert sent')
@@ -842,6 +984,7 @@ function scheduleSweep(name: string, delayMs: number): void {
       logger.info({ agent: name }, 'context-restart-gate: agent gone from roster, sweep retired')
       return
     }
+    if (name === MAIN_AGENT_ID) await runMainSweepHook()
     const cfg = readGateConfig(name)
     if (!cfg.enabled) {
       // Keep polling instead of self-terminating. Dropping the timer here made

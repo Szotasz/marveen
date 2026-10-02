@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { PROJECT_ROOT } from '../config.js'
+import { logger } from '../logger.js'
 
 // Each profile is a JSON file under templates/profiles/ with an allow/deny
 // list that Claude Code's native permissions engine understands. Choosing a
@@ -39,13 +40,51 @@ export function listProfileTemplates(): ProfileTemplate[] {
   return out.length ? out : [HARDCODED_DEFAULT_PROFILE]
 }
 
-export function loadProfileTemplate(id: string): ProfileTemplate {
+// WHICH PROFILE AN AGENT ACTUALLY GOT. A missing or
+// unreadable profile file used to fall back to `default` in silence: the agent
+// started, its settings.json was rewritten from the fallback, and the dashboard
+// kept showing the REQUESTED name. `default` is the most permissive profile,
+// so for any stricter one the silent fallback is a permission
+// WIDENING that nobody sees. The fallback itself stays (an agent that cannot
+// start is worse than one that starts under the default); what changes is that
+// it is named: `fallbackReason` says why, every load logs a WARN, and the
+// /security endpoint reports the effective profile next to the requested one.
+export type ProfileFallbackReason = 'missing' | 'unreadable'
+
+export interface ProfileResolution {
+  profile: ProfileTemplate
+  requested: string
+  effective: string
+  fallbackReason: ProfileFallbackReason | null
+}
+
+export function resolveProfileTemplate(id: string): ProfileResolution {
   const path = join(PROFILES_DIR, `${id}.json`)
+  let reason: ProfileFallbackReason = 'missing'
   if (existsSync(path)) {
-    try { return JSON.parse(readFileSync(path, 'utf-8')) as ProfileTemplate } catch { /* fall through */ }
+    try {
+      const profile = JSON.parse(readFileSync(path, 'utf-8')) as ProfileTemplate
+      return { profile, requested: id, effective: profile.id || id, fallbackReason: null }
+    } catch {
+      reason = 'unreadable'
+    }
   }
-  if (id !== 'default') return loadProfileTemplate('default')
-  return HARDCODED_DEFAULT_PROFILE
+  if (id !== 'default') {
+    const fallback = resolveProfileTemplate('default')
+    return { profile: fallback.profile, requested: id, effective: fallback.effective, fallbackReason: reason }
+  }
+  return { profile: HARDCODED_DEFAULT_PROFILE, requested: id, effective: 'default', fallbackReason: null }
+}
+
+export function loadProfileTemplate(id: string): ProfileTemplate {
+  const resolution = resolveProfileTemplate(id)
+  if (resolution.fallbackReason) {
+    logger.warn(
+      { requested: resolution.requested, effective: resolution.effective, reason: resolution.fallbackReason },
+      `Security profile "${resolution.requested}" is ${resolution.fallbackReason}; the agent gets "${resolution.effective}" instead -- a fallback can WIDEN its permissions`,
+    )
+  }
+  return resolution.profile
 }
 
 export function resolveProfilePlaceholders(value: string, ctx: { HOME: string; AGENT_DIR: string }): string {

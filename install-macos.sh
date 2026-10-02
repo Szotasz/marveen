@@ -820,7 +820,12 @@ echo -e "${BOLD}$(_t section_6_macos)${NC}"
 env_merge_key() {
   # env_merge_key KEY VALUE -- drop any existing KEY= line, append KEY=VALUE.
   _emk_tmp="$INSTALL_DIR/.env.tmp.$$"
-  grep -v "^$1=" "$INSTALL_DIR/.env" > "$_emk_tmp" 2>/dev/null || true
+  # ENVTMPMODE925: the tmp holds the WHOLE .env (bot token, API keys) until the
+  # mv below, so it is created 0600 from its first byte -- at the umask default
+  # it was world-readable for that window (the VAULTMODE818 pattern). The rm
+  # matters too: a leftover tmp of the same name would keep its old mode.
+  rm -f "$_emk_tmp"
+  (umask 077; grep -v "^$1=" "$INSTALL_DIR/.env" > "$_emk_tmp" 2>/dev/null) || true
   printf '%s=%s\n' "$1" "$2" >> "$_emk_tmp"
   mv "$_emk_tmp" "$INSTALL_DIR/.env"
   chmod 600 "$INSTALL_DIR/.env"
@@ -840,6 +845,26 @@ env_set_if_absent() {
   if grep -q "^$1=" "$INSTALL_DIR/.env" 2>/dev/null; then return 0; fi
   env_merge_key "$1" "$2"
 }
+env_add_list_entry() {
+  # env_add_list_entry KEY ENTRY -- make sure ENTRY is in the comma list KEY,
+  # keeping every entry already there. Read the way the server reads it: the
+  # LAST KEY= line wins (src/env-parse.ts), one pair of surrounding quotes is
+  # dropped, and each entry is compared after the server's normalisation
+  # (parseSystemSenderIds: split on commas, trim; sanitizeAgentIdent: keep
+  # [A-Za-z0-9_-]). Present -> no write; absent -> appended, as ONE KEY= line.
+  _eal_cur="$(grep "^$1=" "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  case "$_eal_cur" in
+    \"*\") _eal_cur="${_eal_cur#\"}"; _eal_cur="${_eal_cur%\"}" ;;
+    \'*\') _eal_cur="${_eal_cur#\'}"; _eal_cur="${_eal_cur%\'}" ;;
+  esac
+  _eal_cur="$(printf '%s' "$_eal_cur" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  _eal_saved_ifs="$IFS"; IFS=','
+  for _eal_e in $_eal_cur; do
+    if [ "$(printf '%s' "$_eal_e" | tr -dc 'A-Za-z0-9_-')" = "$2" ]; then IFS="$_eal_saved_ifs"; return 0; fi
+  done
+  IFS="$_eal_saved_ifs"
+  if [ -n "$(printf '%s' "$_eal_cur" | tr -d ', ')" ]; then env_merge_key "$1" "$_eal_cur,$2"; else env_merge_key "$1" "$2"; fi
+}
 (umask 077 && touch "$INSTALL_DIR/.env")
 chmod 600 "$INSTALL_DIR/.env"
 [ -s "$INSTALL_DIR/.env" ] || printf '# Main agent konfiguracio\n' >> "$INSTALL_DIR/.env"
@@ -850,6 +875,19 @@ env_merge_key BRAND_NAME "${BRAND_NAME}"
 env_merge_key MAIN_AGENT_ID "${MAIN_AGENT_ID}"
 env_merge_key SERVICE_ID "${SERVICE_ID}"
 env_merge_key WEB_PORT "${WEB_PORT:-3420}"
+# The fleet's own guards alert under their OWN names: the prod-tree guard
+# (scripts/install-prod-tree-guard-hook.sh) and the channels.sh shared-root
+# guard. The message route accepts a sender only if it is a registered agent,
+# the owner, or listed in SYSTEM_SENDER_IDS, so without these entries each
+# guard falls back to sending as MAIN_AGENT_ID, i.e. the supervisory system
+# writes under the main agent's name. Appended to what the operator listed,
+# never replacing it; an entry already there is not written twice.
+# KNOWN LIMIT: the server reads the list once, at start-up (src/config.ts). A
+# fresh install starts it after this; a RE-RUN over a running install does not
+# restart it, so until the next dashboard restart a guard that reads the new
+# line sends under its own name to a server that does not know it yet.
+env_add_list_entry SYSTEM_SENDER_IDS prod-tree-guard
+env_add_list_entry SYSTEM_SENDER_IDS channels-sh-guard
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   env_keep_or_set TELEGRAM_BOT_TOKEN "${BOT_TOKEN}"
   # Never demote a paired install: CHAT_ID=0 means pairing was skipped THIS
@@ -1538,6 +1576,23 @@ if [ -x "$INSTALL_DIR/scripts/install-channel-keepalive-probe.sh" ]; then
   fi
 fi
 
+# Main-agent inbox observer, installed the same way and for the same reason: a
+# probe nobody schedules is not a probe. Every delivery path except the main
+# agent's queue is watched by something, and the one in-process reader of that
+# queue lives inside the dashboard -- so when the dashboard is down or wedged,
+# the watcher is down with it and mail to the main agent sits pending unseen.
+# The observer runs from launchd instead, on its own 5-minute schedule, and
+# alerts over the direct Bot API rather than /api/*, which dies with the same
+# process. Idempotent, --load starts it at once, and non-fatal: a failed
+# observer install must not fail the whole installation.
+if [ -x "$INSTALL_DIR/scripts/install-main-inbox-observer.sh" ]; then
+  if "$INSTALL_DIR/scripts/install-main-inbox-observer.sh" --load >/dev/null 2>&1; then
+    ok "Fo-agens inbox-figyelo telepitve (5 percenkent, a dashboard folyamaton KIVUL)"
+  else
+    warn "Az inbox-figyelo telepitese nem sikerult -- inditsd kezzel: scripts/install-main-inbox-observer.sh --load"
+  fi
+fi
+
 # Verify channel plugin is working
 sleep 3
 echo ""
@@ -1557,6 +1612,16 @@ else
 fi
 
 # Channel pairing flow (Telegram only; Slack uses OAuth / App install)
+# INSTPAIRPATH930: the access.json the pairing must read AND write. channels.sh moves the
+# shared $HOME/.claude/channels/<provider> dir into the install on its first start (#915,
+# scripts/channels.sh MAIN_CHAN_DIR), and the plugin writes the pending code there, so the
+# install-scoped file wins; the legacy path is only the fallback for a bridge that has not
+# migrated yet. Resolved AFTER the code is typed in, when the bot has already answered.
+_pairing_access_file() {
+  local scoped="$INSTALL_DIR/.claude/channels/$CHANNEL_PROVIDER/access.json"
+  if [ -f "$scoped" ]; then echo "$scoped"; else echo "$CHANNEL_DIR/access.json"; fi
+}
+
 if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
   echo ""
   echo -e "${BOLD}$(_t macos.tg_pairing_title)${NC}"
@@ -1568,7 +1633,7 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
   echo ""
   read -rp "$(_t prompt_pair_code)" PAIR_CODE
   if [ -n "$PAIR_CODE" ]; then
-    ACCESS_FILE="$CHANNEL_DIR/access.json"
+    ACCESS_FILE="$(_pairing_access_file)"
     if [ -f "$ACCESS_FILE" ]; then
       # Get the chat ID from the pending pairing in access.json
       PENDING_CHAT_ID=$(PAIR_CODE="$PAIR_CODE" python3 -c "
@@ -1606,6 +1671,10 @@ with open('$ACCESS_FILE', 'w') as f:
         echo -e "  ${ORANGE}A kod nem talalhato az access.json-ban.${NC}"
         echo -e "  ${DIM}Probald kesobb a terminalban: claude, majd /telegram:access pair $PAIR_CODE${NC}"
       fi
+    else
+      # INSTPAIRPATH930: a missing file used to skip the pairing in silence.
+      warn "access.json nem talalhato: $ACCESS_FILE"
+      echo -e "  ${DIM}Bizonyosodj meg rola, hogy a bot futott amikor uzeneteket kuldtel neki.${NC}"
     fi
   else
     echo -e "  ${DIM}$(_t macos.pairing_later)${NC}"

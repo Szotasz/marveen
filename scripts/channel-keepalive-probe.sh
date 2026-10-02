@@ -34,6 +34,25 @@ LOG_TAG="channel-keepalive-probe"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*"; }
 
+# SELF-TIMEOUT (KEEPALIVEHANG923). launchd never starts a second instance of
+# a StartInterval job while one is still running, so ONE hung run (a blocked
+# tmux/ps call) silently stops every later run. Measured 2026-09-23: launchd's
+# run counter was ~240 runs (~12 h) short of the 180 s cadence since the plist
+# was loaded, the keepalive went stale from ~01:34 with a LIVE poller and no
+# probe log line, and the dashboard respawned a healthy main session 28 times
+# (02:19-13:32). A run takes well under a second; kill it long before the next
+# interval so a hang costs one tick, not a night.
+PROBE_TIMEOUT_S="${PROBE_TIMEOUT_S:-60}"
+( sleep "$PROBE_TIMEOUT_S"
+  log "WARN probe run exceeded ${PROBE_TIMEOUT_S}s -- killing it so launchd can start the next one (KEEPALIVEHANG923)"
+  kill -TERM $$ 2>/dev/null ) 2>/dev/null &
+PROBE_WATCHDOG_PID=$!
+# disown + the subshell stderr redirect: no "Terminated: 15" job notice in the
+# log on every normal run (the WARN above goes to stdout, so it still lands).
+disown "$PROBE_WATCHDOG_PID" 2>/dev/null
+# On a normal exit, stop the watchdog AND its sleep child.
+trap 'pkill -P "$PROBE_WATCHDOG_PID" 2>/dev/null; kill "$PROBE_WATCHDOG_PID" 2>/dev/null' EXIT
+
 # Whether a dedicated channel-watchdog recovery owner is actually installed on
 # THIS host. The probe declines to recover a dead pipe on purpose -- but only a
 # real, installed watchdog legitimately "owns recovery". The systemd
@@ -44,7 +63,12 @@ channel_watchdog_installed() {
   if [ "$(uname -s)" = "Darwin" ]; then
     launchctl list 2>/dev/null | grep -q 'com\.marveen\.channel-watchdog'
   else
-    systemctl --user is-enabled channel-watchdog.timer >/dev/null 2>&1
+    # The systemd units on a renamed install are agent-prefixed
+    # (<agent>-channel-watchdog.timer, the way <agent>-channels.service is);
+    # only a stock install has the bare name. Checking the bare name alone
+    # reported "no recovery unit installed" on every renamed host that HAD one.
+    systemctl --user is-enabled "${MAIN_AGENT_ID}-channel-watchdog.timer" >/dev/null 2>&1 ||
+      systemctl --user is-enabled channel-watchdog.timer >/dev/null 2>&1
   fi
 }
 
@@ -53,6 +77,21 @@ MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | hea
 MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 MAIN_AGENT_ID="${MAIN_AGENT_ID//[^a-zA-Z0-9_-]/}"
 SESSION="${MAIN_AGENT_ID}-channels"
+
+# --- resolve the channel provider (this probe is NOT telegram-only) ---
+# The poller match below greps the plugin dir out of the process argv, and that
+# dir is named after the PROVIDER. Hardcoding /telegram/ made the probe a
+# permanent no-op on every non-telegram install: it never found a poller, so it
+# never advanced store/.channel-keepalive, so the only producer left was organic
+# inbound. Measured on this discord install 2026-09-25 -- every probe tick since
+# the channel was set up logged "no live telegram poller", and the keepalive was
+# as stale as the last message the owner happened to send. That is also why the
+# channel-watchdog timer must NOT be installed before this is fixed: its STALE
+# arm would read a quiet-but-healthy session as dead and respawn it every 15
+# minutes. Derived exactly as scripts/channel-watchdog.sh derives it.
+CHANNEL_PROVIDER="$(grep -E '^CHANNEL_PROVIDER=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
+CHANNEL_PROVIDER="${CHANNEL_PROVIDER//[^a-zA-Z0-9_-]/}"
 
 TMUX_BIN="$(command -v tmux)"
 if [ -z "$TMUX_BIN" ]; then
@@ -90,8 +129,8 @@ descends_from_pane() {
 }
 
 alive=0
-# Candidate pollers: bun/node processes whose argv references a /telegram/
-# plugin dir.
+# Candidate pollers: bun/node processes whose argv references the provider's
+# plugin dir (/discord/, /telegram/, ...).
 #
 # RUNTIME_TOKEN_RX below is the portable ERE spelling of the TS side's
 # /\b(bun|node)\b/ (src/channel-coordinator/provider-poller-match.ts). It must
@@ -100,7 +139,7 @@ alive=0
 # '(^| )(bun|node)( |$|.*/)', which required a SPACE or line start before the
 # runtime token, so a poller launched from a full path -- the shape the official
 # bun installer produces, /home/USER/.bun/bin/bun -- never matched, the probe
-# reported "no live telegram poller", and the keepalive was never advanced. With
+# reported "no live <provider> poller", and the keepalive was never advanced. With
 # the 45 minute liveness ceiling that turns a quiet-but-healthy session into a
 # fresh respawn every 15 minutes: the reporter measured 41 of them in one night,
 # each losing the main agent's conversation.
@@ -115,15 +154,15 @@ while read -r cand; do
     alive=1
     break
   fi
-done < <(ps -axo pid,command 2>/dev/null | grep -E "$RUNTIME_TOKEN_RX" | grep -E '/telegram/' | grep -v grep | awk '{print $1}')
+done < <(ps -axo pid,command 2>/dev/null | grep -E "$RUNTIME_TOKEN_RX" | grep -F "/${CHANNEL_PROVIDER}/" | grep -v grep | awk '{print $1}')
 
 if [ "$alive" -ne 1 ]; then
   # Do NOT advance the keepalive: a dead pipe must stay visibly stale so a real
   # recovery owner can act. But only claim an owner that actually exists here.
   if channel_watchdog_installed; then
-    log "no live telegram poller under $SESSION (pane $pane_pid) -- pipe may be down; not touching (channel-watchdog owns recovery)"
+    log "no live $CHANNEL_PROVIDER poller under $SESSION (pane $pane_pid) -- pipe may be down; not touching (channel-watchdog owns recovery)"
   else
-    log "WARN no live telegram poller under $SESSION (pane $pane_pid) -- pipe may be down AND no channel-watchdog recovery unit is installed on this host (CHANWDOG818); automatic recovery relies only on process-death KeepAlive + the dashboard channel-monitor, so a FROZEN session while the dashboard is also down is NOT auto-recovered"
+    log "WARN no live $CHANNEL_PROVIDER poller under $SESSION (pane $pane_pid) -- pipe may be down AND no channel-watchdog recovery unit is installed on this host (CHANWDOG818); automatic recovery relies only on process-death KeepAlive + the dashboard channel-monitor, so a FROZEN session while the dashboard is also down is NOT auto-recovered"
   fi
   exit 0
 fi

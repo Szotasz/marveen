@@ -60,9 +60,13 @@ vi.mock('../db.js', () => ({
   initDatabase: () => {},
 }))
 
+// readJsonObjectForWrite mirrors the real helper for a MISSING file ({}),
+// consistent with the existsSync mock below; one test swaps in a refusal.
+const readJsonObjectForWriteMock = vi.fn((_path: string): Record<string, unknown> => ({}))
 vi.mock('../web/agent-config.js', () => ({
   AGENTS_BASE_DIR: '/mock/agents',
   listAgentNames: () => [],
+  readJsonObjectForWrite: (path: string) => readJsonObjectForWriteMock(path),
 }))
 
 vi.mock('node:fs', async (importOriginal) => {
@@ -318,6 +322,26 @@ describe('importFleet: identity takeover', () => {
       OWNER_NAME: 'Norbert',
       CHANNEL_PROVIDER: 'telegram',
     })
+  })
+
+  // JSONCLOBBER926B: a corrupt config-overrides.json is refused, not replaced by
+  // the identity keys alone. The refusal takes the import's own failure path:
+  // the error surfaces and the overrides file is never written.
+  it('apply with a corrupt config-overrides.json: refused, the file is not overwritten, the .env is not touched', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const { atomicWriteFileSync } = await import('../web/atomic-write.js')
+    const { updateEnvFile } = await import('../env.js')
+    ;(atomicWriteFileSync as any).mockClear()
+    ;(updateEnvFile as any).mockClear()
+    readJsonObjectForWriteMock.mockImplementationOnce((p: string) => {
+      throw new Error(`${p} is not valid JSON; refusing to overwrite it`)
+    })
+    expect(() => importFleet(FLEET_WITH_SOURCE_ID, { apply: true })).toThrow(/config-overrides\.json is not valid JSON/)
+    const overrideWrites = (atomicWriteFileSync as any).mock.calls
+      .filter((c: string[]) => c[0]?.includes('config-overrides.json'))
+    expect(overrideWrites).toHaveLength(0)
+    expect(updateEnvFile as any).not.toHaveBeenCalled()
+    expect(readJsonObjectForWriteMock).toHaveBeenCalledWith(expect.stringContaining('config-overrides.json'))
   })
 
   it('dry-run counts both atlas and hestia memories (no remap dedup)', async () => {

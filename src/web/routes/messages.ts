@@ -9,6 +9,7 @@ import {
   COMPLETION_REPORT_PREFIX,
   type AgentMessage,
 } from '../../db.js'
+import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coordinator/ingest.js'
 import { SYSTEM_DIRECTIVE_SENDER } from '../system-directive.js'
@@ -279,6 +280,17 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'Invalid recipient: use "<system>/<agent>" (slash) for a federated address, not the "federation:x:y" source form' }, 400)
       return true
     }
+    // Unknown LOCAL recipient (UNKNOWNTO924): reject at once.
+    // Measured: a literal 'PLACEHOLDER' recipient (x3) and an '<agent>_placeholder' one
+    // were accepted with 200 and only turned 'failed' after the ~65 min retry
+    // window, so the sender believed they had been delivered. In the last 30
+    // days these were the ONLY non-agent recipients. A registered agent that is
+    // merely not running is a different case and keeps the retry path below.
+    if (!storedTo.includes('/') && !isKnownAgent(sanitizeAgentIdent(storedTo))) {
+      logger.warn({ from: from.trim(), to: storedTo }, 'Rejected /api/messages POST to an unregistered recipient')
+      json(res, { error: `unknown recipient '${storedTo}' -- to must be a registered fleet agent id (or "<system>/<agent>" for federation)` }, 400)
+      return true
+    }
     // Code-side enforcement of the kanban-ref convention: rewrite any
     // `#<hex8>` token that maps to a real kanban_cards row into its
     // human-facing `#<seq>` form before persistence, so the dashboard and
@@ -321,6 +333,25 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       })
       return true
     }
+    // Warn-only homoglyph check -- same contract as memories/daily-log/cases.
+    //
+    // Added 2026-09-14 after a measured case. The two channels that HAD a
+    // check (kanban triggers, memories/daily-log warning field) are the
+    // low-traffic ones; this one carried 442 messages in a single day on
+    // 2026-09-11. And the damage here is not legibility: our own P1/P2/P3
+    // probes are `content LIKE` searches, so one Cyrillic letter inside a
+    // client name or an id makes every later search return zero -- the exact
+    // false-zero that cost us two wrong conclusions the same day.
+    //
+    // Warn, never block: the message is already created above, and a delivery
+    // that fails on a cosmetic check would be worse than a lookalike letter.
+    const homoglyphs = detectHomoglyphs(normalizedContent)
+    if (homoglyphs.length > 0) {
+      const warning = formatHomoglyphWarning(homoglyphs)
+      logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, `agent message created with ${warning}`)
+      json(res, { ...msg, homoglyph_warning: warning })
+      return true
+    }
     json(res, msg)
     return true
   }
@@ -336,7 +367,22 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   // enough to curl on a schedule; the point is that a growing queue behind a
   // busy agent becomes visible BEFORE someone mistakes it for lost messages.
   if (path === '/api/messages/backlog' && method === 'GET') {
-    json(res, getPendingBacklogByAgent())
+    // Ugyanaz a kikotes, mint a /api/messages-en es a /api/kanban-on: ismeretlen param -> HANGOS
+    // 400, szigoru halmaz, alias nelkul. A vegpont eddig NEMAN eldobta az `agent=`-et, tehat a
+    // teljes flotta backlogjat adta vissza -- tobbet, mint amit kertek, ami a dragabb irany.
+    const KNOWN_PARAMS = new Set(['agent', 'assignee'])
+    const unknown = [...url.searchParams.keys()].filter((k) => !KNOWN_PARAMS.has(k))
+    if (unknown.length) {
+      json(res, {
+        error: 'unknown query parameter',
+        unknown,
+        known: [...KNOWN_PARAMS],
+        hint: 'a backlog szurese "agent" (vagy "assignee"); parameter nelkul a TELJES flotta jon',
+      }, 400)
+      return true
+    }
+    const agent = url.searchParams.get('agent') ?? url.searchParams.get('assignee') ?? undefined
+    json(res, getPendingBacklogByAgent(agent))
     return true
   }
 

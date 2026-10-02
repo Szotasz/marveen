@@ -5,6 +5,7 @@ import {
   type Memory,
 } from '../../db.js'
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, MEMORY_IMPORT_CATEGORIZE_MODEL, APP_TZ } from '../../config.js'
+import { createHash } from 'crypto'
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
@@ -27,6 +28,16 @@ const SUSPICIOUS_PATTERNS = [
   /new\s+persona/i,
   /\brm\s+-rf\b/i,
 ]
+
+// MEMVERSION930: a content-derived version for optimistic concurrency. The
+// PATCH that agents use is read-modify-write (GET, prepend a dated
+// header, send the whole content back), and two agents editing the same shared
+// row within seconds used to lose one edit silently -- last writer wins, and
+// nothing told the loser. updated_at alone cannot serve as the version: it has
+// one-second resolution, so two writes in the same second compare equal.
+export function memoryVersion(content: string | null | undefined): string {
+  return createHash('sha256').update(content ?? '').digest('hex').slice(0, 16)
+}
 
 function containsSuspiciousContent(content: string): boolean {
   return SUSPICIOUS_PATTERNS.some((pattern) => pattern.test(content))
@@ -345,6 +356,25 @@ Respond ONLY with JSON, nothing else:
   }
 
   const memUpdateMatch = path.match(/^\/api\/memories\/(\d+)$/)
+  // GET /api/memories/:id -- read ONE memory back by id.
+  //
+  // Added 2026-09-14. Until then the id-addressed routes were PUT/PATCH/DELETE
+  // only: a memory could be referenced by id, edited by id and deleted by id,
+  // but never READ by id. The shared tier is full of such pointers ("see shared
+  // 5131"), and the only way to follow one was keyword search -- which silently
+  // fails when the keywords do not match. A sub-agent hit exactly that: the
+  // 404 from this path read as "the record does not exist", when what did not
+  // exist was the route. An absent route and an absent row must not look alike.
+  if (memUpdateMatch && method === 'GET') {
+    const id = parseInt(memUpdateMatch[1], 10)
+    const row = getDb()
+      .prepare('SELECT id, agent_id, category, content, keywords, created_at, accessed_at, updated_at, updated_by FROM memories WHERE id = ?')
+      .get(id) as Record<string, unknown> | undefined
+    if (!row) { json(res, { error: 'Memory not found' }, 404); return true }
+    json(res, { ...row, version: memoryVersion(row.content as string) })
+    return true
+  }
+
   if (memUpdateMatch && (method === 'PUT' || method === 'PATCH')) {
     const id = parseInt(memUpdateMatch[1], 10)
     const body = await readBody(req)
@@ -352,7 +382,33 @@ Respond ONLY with JSON, nothing else:
     // the write-trace. It is distinct from agent_id, which means "reassign
     // the row to this agent" -- an editor updating someone else's memory
     // attributes the WRITE without changing the OWNER.
-    const { content, category, tier, agent_id, keywords, updated_by } = JSON.parse(body.toString()) as { content?: string; category?: string; tier?: string; agent_id?: string; keywords?: string; updated_by?: string }
+    const { content: rawContent, category, tier, agent_id, keywords, updated_by, prepend, if_version } = JSON.parse(body.toString()) as { content?: string; category?: string; tier?: string; agent_id?: string; keywords?: string; updated_by?: string; prepend?: string; if_version?: string }
+    // MEMVERSION930. Both checks below read the row and write it inside this one
+    // synchronous stretch (better-sqlite3, no await in between), so nothing can
+    // interleave: the compare and the write are atomic with respect to every
+    // other request.
+    //  - if_version: reject with 409 when the row changed since the caller read it.
+    //  - prepend: the server puts the text in front of the CURRENT content, so the
+    //    common "dated header on top" edit needs no read-modify-write at all.
+    if ((if_version !== undefined && typeof if_version !== 'string') || (prepend !== undefined && typeof prepend !== 'string')) {
+      json(res, { error: 'if_version and prepend must be strings' }, 400)
+      return true
+    }
+    if (prepend !== undefined && rawContent !== undefined) {
+      json(res, { error: 'send either content or prepend, not both' }, 400)
+      return true
+    }
+    let content = rawContent
+    if (if_version !== undefined || prepend !== undefined) {
+      const cur = getDb().prepare('SELECT content, updated_at, updated_by FROM memories WHERE id = ?').get(id) as { content: string; updated_at: number | null; updated_by: string | null } | undefined
+      if (!cur) { json(res, { error: 'Memory not found' }, 404); return true }
+      const curVersion = memoryVersion(cur.content)
+      if (if_version !== undefined && if_version !== curVersion) {
+        json(res, { error: 'version conflict: the memory changed since you read it; re-read and redo your edit', current_version: curVersion, updated_at: cur.updated_at, updated_by: cur.updated_by }, 409)
+        return true
+      }
+      if (prepend !== undefined) content = prepend.replace(/\n+$/, '') + '\n' + cur.content
+    }
     const newCategory = (tier || category || '').toLowerCase() || undefined
     if (newCategory && !MEMORY_CATEGORIES.has(newCategory)) {
       json(res, { error: `Invalid category "${newCategory}". Allowed: ${[...MEMORY_CATEGORIES].join(', ')}` }, 400)
@@ -372,7 +428,7 @@ Respond ONLY with JSON, nothing else:
       json(res, { error: 'Content rejected by security filter' }, 400)
       return true
     }
-    if (updateMemory(id, effectiveContent, newCategory, agent_id, keywords, updated_by)) { json(res, { ok: true }); return true }
+    if (updateMemory(id, effectiveContent, newCategory, agent_id, keywords, updated_by)) { json(res, { ok: true, version: memoryVersion(effectiveContent) }); return true }
     json(res, { error: 'Memory not found' }, 404)
     return true
   }
