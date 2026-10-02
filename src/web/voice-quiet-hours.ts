@@ -1,13 +1,19 @@
 import { logger } from '../logger.js'
+import { getEffectiveSettingValue } from '../settings-store.js'
 
 // -- The owners' quiet period for the voice channel notice (75c3d163 G2) -----
 //
 // The voice route tells the SENDER on the channel when a voice message could
 // not be transcribed or was understood only uncertainly. That notice is a
-// server-initiated Telegram message, so the owners' standing quiet period
+// server-initiated Telegram message, so an owner's standing quiet period
 // (23:00-07:00 Budapest: no Telegram message at all, not even a reply) applies
 // to it like to any other. Inside the window the notice is HELD and sent ONCE
 // per chat after 07:00, combined.
+//
+// The rule is per RECIPIENT: it holds only the chats
+// listed in the VOICE_NOTICE_QUIET_CHATS setting; everyone else is notified at
+// once, as before. No person's chat id is written in code: the list is install
+// configuration, and its default is empty.
 //
 // The zone is EXPLICIT (Europe/Budapest), not the install zone: APP_TZ follows
 // SCHEDULER_TZ or the host zone, which is UTC on the fleet host, and the
@@ -27,6 +33,16 @@ const hourFmt = new Intl.DateTimeFormat('en-GB', { timeZone: VOICE_QUIET_TZ, hou
 export function isVoiceQuietTime(nowMs: number): boolean {
   const hour = parseInt(hourFmt.format(new Date(nowMs)), 10)
   return hour >= VOICE_QUIET_START_HOUR || hour < VOICE_QUIET_END_HOUR
+}
+
+/** The chats whose voice notice keeps the window: the VOICE_NOTICE_QUIET_CHATS setting, numeric ids only. */
+export function voiceQuietChats(raw: string | number = getEffectiveSettingValue('VOICE_NOTICE_QUIET_CHATS')): Set<string> {
+  return new Set(String(raw).split(',').map((s) => s.trim()).filter((s) => /^-?\d+$/.test(s)))
+}
+
+/** True when this chat's notice has to wait: the chat is on the quiet list AND it is 23:00-07:00 Budapest. */
+export function voiceNoticeHeldFor(chatId: string, nowMs: number, quietChats: Set<string> = voiceQuietChats()): boolean {
+  return quietChats.has(String(chatId).trim()) && isVoiceQuietTime(nowMs)
 }
 
 /** Milliseconds from nowMs to the first whole minute that is no longer quiet (0 outside the window). */

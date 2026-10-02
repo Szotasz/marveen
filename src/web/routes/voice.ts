@@ -25,7 +25,7 @@ import { getLastInboundModality, setLastInboundModality } from '../voice-modalit
 import { buildTtsDirective, resolveAgentChannelStateDir, inboundIsAudio, mainChannelStateDirFor } from '../voice-directive.js'
 import { PROJECT_ROOT, STORE_DIR, VOICE_CALIBRATION_ALERT_AGENT } from '../../config.js'
 import { notifyChat } from '../../notify.js'
-import { holdVoiceNotice, isVoiceQuietTime, scheduleHeldVoiceFlush, VOICE_QUIET_END_HOUR, VOICE_QUIET_START_HOUR } from '../voice-quiet-hours.js'
+import { holdVoiceNotice, scheduleHeldVoiceFlush, voiceNoticeHeldFor, VOICE_QUIET_END_HOUR, VOICE_QUIET_START_HOUR } from '../voice-quiet-hours.js'
 import { createAgentMessage } from '../../db.js'
 import type { RouteContext } from './types.js'
 
@@ -546,9 +546,10 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
         ? 'A hangüzenetedet megkaptam, de nem sikerült leiratozni, ezért nem tudom, mi hangzott el. Kérlek, írd le szöveggel.'
         : 'A hangüzenetedet megkaptam, de csak bizonytalanul értettem. A válaszomban visszamondom, mit értettem belőle -- kérlek javíts, ha félreértettem.'
       const now = Date.now()
-      if (isVoiceQuietTime(now)) {
-        // 75c3d163 G2: the owners' quiet period (23:00-07:00 Budapest) holds this
-        // server-initiated message; it goes out once per chat, combined, after 07:00 (src/web/voice-quiet-hours.ts).
+      if (voiceNoticeHeldFor(chatId, now)) {
+        // 75c3d163 G2: a recipient on the quiet list (VOICE_NOTICE_QUIET_CHATS) gets
+        // no server-initiated message 23:00-07:00 Budapest; it goes out once per chat, combined, after 07:00
+        // (src/web/voice-quiet-hours.ts). Everyone else is notified at once, as before.
         holdVoiceNotice({ chatId, text, heldAt: now })
         scheduleHeldVoiceFlush(now, notifyChat)
         noticeHeld = true

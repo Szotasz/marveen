@@ -21,6 +21,7 @@ const h = vi.hoisted(() => ({
   notified: [] as Array<{ chatId: string; text: string }>,
   notifyOk: true,
   stateDir: null as string | null,
+  quietChats: '',
   run: { stdout: '', stderr: '', code: 0 },
 }))
 
@@ -74,6 +75,12 @@ vi.mock('../notify.js', async (importOriginal) => ({
   },
 }))
 
+// 75c3d163 G2: the quiet list is install configuration (VOICE_NOTICE_QUIET_CHATS); each test sets its own.
+vi.mock('../settings-store.js', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../settings-store.js')>()
+  return { ...orig, getEffectiveSettingValue: (key: string) => (key === 'VOICE_NOTICE_QUIET_CHATS' ? h.quietChats : orig.getEffectiveSettingValue(key)) }
+})
+
 vi.mock('../web/agent-config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../web/agent-config.js')>()),
   readAgentVoiceConfig: () => ({ responseMode: 'text', voiceModel: null }),
@@ -123,6 +130,7 @@ beforeEach(async () => {
   h.notified.length = 0
   h.notifyOk = true
   h.stateDir = null
+  h.quietChats = ''
   h.failNextMessage = false
   // A fixed DAYTIME clock (12:00 Budapest): the channel notice keeps the owners' quiet period (75c3d163 G2), so a test
   // that expects a notice must not depend on the hour the suite happens to run at.
@@ -343,17 +351,20 @@ describe('75c3d163 G1: the channel notice goes out only on the main bot, and the
   })
 })
 
-describe('75c3d163 G2: the channel notice keeps the owners quiet period (23:00-07:00 Budapest)', () => {
-  const directive = async () => {
+describe('75c3d163 G2: the channel notice keeps the quiet period of the LISTED recipients (23:00-07:00 Budapest)', () => {
+  const LISTED = '123456789'
+  const OTHER = '987654321'
+  beforeEach(() => { h.quietChats = LISTED })
+  const directive = async (chat = LISTED) => {
     const res = { status: 0, body: '', writeHead(s: number) { this.status = s }, end(b: string) { this.body = b } }
-    const url = new URL(`http://x/api/voice/directive?agent=tesztagens&chat=123456789&file=${FILE_ID}&kind=voice`)
+    const url = new URL(`http://x/api/voice/directive?agent=tesztagens&chat=${chat}&file=${FILE_ID}&kind=voice`)
     await voice.tryHandleVoice({ req: {} as never, res: res as never, path: '/api/voice/directive', method: 'GET', url })
     return JSON.parse(res.body)
   }
   const uncertain = () => { h.run = { stdout: 'Sziasztok!\n', stderr: diag({ model: voice.CALIBRATED_STT_MODEL, revision: REV, nsp: '0.907' }), code: 0 } }
   const silent = () => { h.run = { stdout: '', stderr: diag({ model: voice.CALIBRATED_STT_MODEL, revision: REV, seg: 0, nsp: '', temp: '' }), code: 0 } }
 
-  it('NEGATIVE: a voice message at 23:30 Budapest sends nothing at once, and the agent is told the notice is held', async () => {
+  it('NEGATIVE: a voice message at 23:30 Budapest sends nothing at once to a LISTED recipient, and the agent is told the notice is held', async () => {
     vi.setSystemTime(new Date('2026-07-15T21:30:00Z')) // 23:30 CEST
     uncertain()
     const body = await directive()
@@ -392,5 +403,15 @@ describe('75c3d163 G2: the channel notice keeps the owners quiet period (23:00-0
     expect(h.notified).toHaveLength(1)
     expect(body.noticeDelivered).toBe(true)
     expect(body.transcriptNotice).toContain('mar kapott egy csatorna-jelzest')
+  })
+
+  it('PER RECIPIENT: an UNLISTED recipient (another owner) is notified at once at 23:30 as well', async () => {
+    vi.setSystemTime(new Date('2026-07-15T21:30:00Z')) // 23:30 CEST
+    uncertain()
+    const body = await directive(OTHER)
+    expect(h.notified).toHaveLength(1)
+    expect(h.notified[0].chatId).toBe(OTHER)
+    expect(body.noticeDelivered).toBe(true)
+    expect(body.transcriptNotice).not.toContain('csendes idoszak')
   })
 })

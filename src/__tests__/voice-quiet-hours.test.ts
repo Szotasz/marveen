@@ -5,6 +5,8 @@ import {
   holdVoiceNotice,
   isVoiceQuietTime,
   msUntilVoiceQuietEnd,
+  voiceNoticeHeldFor,
+  voiceQuietChats,
   type HeldVoiceNotice,
 } from '../web/voice-quiet-hours.js'
 
@@ -89,5 +91,21 @@ describe('75c3d163 G2: a notice that arises in the window is held, and goes out 
       .toBe('Az éjszakai csendes időszakban (23:00-07:00) küldött hangüzenetedről: EGY')
     expect(buildMorningVoiceNotice([notice('1', 'EGY', '2026-07-15T21:30:00Z'), notice('1', 'KETTO', '2026-07-15T22:30:00Z')]))
       .toBe('Az éjszakai csendes időszakban (23:00-07:00) küldött 2 hangüzenetedről:\n- EGY\n- KETTO')
+  })
+})
+
+describe('75c3d163 G2: the window holds only the recipients on the quiet list', () => {
+  it('the list: numeric chat ids, comma-separated, anything else ignored, empty = nobody', () => {
+    expect([...voiceQuietChats('')]).toEqual([])
+    expect([...voiceQuietChats(' 111000111 , -100222 ')].sort()).toEqual(['-100222', '111000111'])
+    expect([...voiceQuietChats('abc, 111000111')]).toEqual(['111000111'])
+  })
+
+  it('a listed recipient waits at 23:30 and not at 12:00; an unlisted one never waits', () => {
+    const lista = new Set(['111000111'])
+    expect(voiceNoticeHeldFor('111000111', ms('2026-07-15T21:30:00Z'), lista)).toBe(true) // 23:30 Budapest
+    expect(voiceNoticeHeldFor('111000111', ms('2026-07-15T10:00:00Z'), lista)).toBe(false) // 12:00
+    expect(voiceNoticeHeldFor('222000222', ms('2026-07-15T21:30:00Z'), lista)).toBe(false) // not on the list
+    expect(voiceNoticeHeldFor('111000111', ms('2026-07-15T21:30:00Z'), new Set())).toBe(false) // empty list
   })
 })
