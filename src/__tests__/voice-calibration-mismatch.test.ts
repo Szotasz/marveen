@@ -354,7 +354,8 @@ describe('75c3d163 G1: the channel notice goes out only on the main bot, and the
 describe('75c3d163 G2: the channel notice keeps the quiet period of the LISTED recipients (23:00-07:00 Budapest)', () => {
   const LISTED = '123456789'
   const OTHER = '987654321'
-  beforeEach(() => { h.quietChats = LISTED })
+  // two entries, so the route also exercises the list parsing (a single id would pass a broken separator)
+  beforeEach(() => { h.quietChats = `555000555,${LISTED}` })
   const directive = async (chat = LISTED) => {
     const res = { status: 0, body: '', writeHead(s: number) { this.status = s }, end(b: string) { this.body = b } }
     const url = new URL(`http://x/api/voice/directive?agent=tesztagens&chat=${chat}&file=${FILE_ID}&kind=voice`)
