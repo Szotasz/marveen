@@ -46,6 +46,8 @@ mkdir -p "$FAKE/scripts" "$FAKE/store" "$FHOME/.claude/skills/demo" \
 TMPROOT="$(dirname "$(TMPDIR="$SWEEP" mktemp -u -t probe.XXXXXX)")"
 PLANT="rarely-read-$$-$RANDOM.txt"
 cp "$SCRIPT" "$FAKE/scripts/backup.sh"
+# backup.sh sources its literal archive-membership helper (card a8a92d55).
+mkdir -p "$FAKE/scripts/lib" && cp "$(dirname "$SCRIPT")/lib/archive-list-has.sh" "$FAKE/scripts/lib/"
 
 # Load-bearing markers backup.sh insists on, plus one rarely-read file.
 if command -v sqlite3 >/dev/null 2>&1; then
