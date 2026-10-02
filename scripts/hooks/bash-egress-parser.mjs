@@ -34,12 +34,16 @@
 // WHAT THIS DOES NOT CLOSE -- said here so nobody reads "merged" as "closed" (owner/Marveen 29047):
 // the name-and-shape list will never be complete. Since (d) (card 95800e1d) a heredoc-fed interpreter
 // (`python3 - <<'PY'`, `bash <<EOF`) and a script file an interpreter runs (`python3 x.py`, `bash x.sh`)
-// are judged too, by the network call's literal destination (see section (d) above classify). Still
-// open: a call whose destination is not a literal in the body (a variable from the environment or a
-// file, a function parameter, a templated host); modules a script imports; code piped in from another
-// command; a URL whose host is not literally in the command (read from a file, the environment, a
-// previous command, a curl -K config, or computed by a substitution such as `curl $(echo https://x)`);
-// every other network-capable binary (git, pip, npm, ssh, scp, rsync, dig ...).
+// are judged too, by the network call's literal destination (see section (d) above classify). Since (e)
+// (card c83a6bf6) the command behind a launcher, inside a command string (a shell's -c, eval, a launcher's
+// command option), in a sourced file or piped into an interpreter, the script a project runner runs, the
+// destinations of the named clients (wget, nc, ncat, telnet, socat, httpie, aria2c), a URL handed to judged
+// code through an assignment in the same command, and the local modules judged code imports are judged too
+// (section (e)). Still open: a destination that is not a literal (a file, the environment set elsewhere, a
+// function parameter, a templated host, a previous command, a curl -K config, a substitution such as
+// `curl $(echo https://x)`); a launcher the table does not name; a command string nested deeper than the
+// depth limit; a module that is not a local file; every other network-capable binary (git, pip, npm, ssh,
+// scp, rsync, dig ...).
 // Closing those is direction (b): an allowlist / network-level gate, not this hook.
 //
 // Fail-open on unparseable input or an internal error (logged): a crashed gate must not silence the
@@ -135,10 +139,10 @@ export function isExternal(url) {
   return !isLocalHost(h)
 }
 function spans(masked) {
-  const out = []; let start = 0
+  const out = []; let start = 0; let op = null
   const re = /&&|\|\||;|\||\n/g; let m
-  while ((m = re.exec(masked))) { out.push([start, m.index]); start = m.index + m[0].length }
-  out.push([start, masked.length])
+  while ((m = re.exec(masked))) { out.push([start, m.index, op]); op = m[0]; start = m.index + m[0].length }
+  out.push([start, masked.length, op])
   return out
 }
 function words(s) { return s.trim().split(/\s+/).filter(Boolean) }
@@ -418,8 +422,9 @@ export function curlDestinations(args) {
 // command, else the tool call's cwd.
 // NOT judged (allowed, as before): a body or file that cannot be read or is over MAX_BODY_BYTES; a
 // destination that is not a literal (a templated host, a function parameter, a URL read from a file or
-// the environment, two variables concatenated); the modules a script IMPORTS; code piped in from another
-// command; `python -m module`; test runners (`node --test`), whose files stub the network.
+// the environment, two variables concatenated); `python -m module`; test runners (`node --test`), whose
+// files stub the network. (The local modules a script imports and the code piped into an interpreter are
+// judged since (e), see there.)
 const SCRIPT_INTERPRETER = /^(?:python(?:\d+(?:\.\d+)?)?|node(?:js)?|perl|ruby|php|deno|bun|tsx|ts-node)$/
 const SHELL_INTERPRETER = /^(?:bash|sh|dash|zsh|ksh)$/
 export const MAX_BODY_BYTES = 1_000_000
@@ -617,6 +622,209 @@ function writtenPath(argv) {
   return null
 }
 
+// --- (e) LAUNCHERS, COMMAND STRINGS, SOURCED FILES, PIPED PROGRAMS, NAMED CLIENTS (c83a6bf6) ---
+// The real command word of a sub-command was looked for after a fixed set of prefix words. So a launcher that runs the
+// rest of its arguments as a command hid that command when it carried an option with a value, or when the set did not
+// name it; a command handed over as a STRING (to a shell, to eval, to a launcher's command option) was never looked at;
+// neither was a file read with `source`, a program piped into an interpreter, a project runner, the destination of a
+// network client other than curl, a URL passed to judged code through the environment, or a local module that judged
+// code imports. The tester measured the forms (card c83a6bf6); they are form classes here, the concrete commands stay
+// out of the repository on purpose.
+// What the gate does now:
+//   - a launcher is skipped with its options (one that takes a value takes the next word, or carries it attached),
+//     its operands (a duration, a lock file, a priority) and `--`; launchers chain;
+//   - a command string (a shell's -c, eval, a launcher's command option, a launcher that joins its words) is
+//     classified as a command of its own, to the depth limit of a substitution;
+//   - `source FILE` and `. FILE` judge the file as a shell body;
+//   - a program piped into an interpreter that reads it from stdin is the upstream heredoc, file or printed text;
+//     when the upstream is none of these, the call is denied: it cannot be judged;
+//   - a project runner (uv/poetry/pipenv/pdm/hatch/rye run) is skipped to the interpreter or script it runs;
+//   - wget, nc, ncat, netcat, telnet, socat, aria2c and the httpie clients have their destinations read from the argv
+//     (the permission deny list names some of them, but it does not look inside a command string);
+//   - an external URL assigned in the same command to a name the judged code reads is that code's destination;
+//   - a local module the judged code imports (python import, a relative JS import/require) is judged too, to a small
+//     depth.
+const ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/
+const LEAD_WORDS = new Set(['do', 'then', 'else', 'elif', '{', '(', '!'])
+// value: options whose value is the NEXT word (an attached value, -oL / -n5 / --opt=v, is one word anyway);
+// operands: plain words before the command (a duration, a lock file, a priority or CPU mask); string: options whose
+// value is a whole command line; join: the remaining words are one command line; none: no command of its own unless
+// a string option gives one (the rest of its words are not a command).
+export const LAUNCHERS = {
+  env: { value: ['-u', '--unset', '-C', '--chdir'], string: ['-S', '--split-string'] },
+  sudo: { value: ['-u', '--user', '-g', '--group', '-h', '--host', '-p', '--prompt', '-C', '--close-from', '-D', '--chdir', '-r', '--role', '-t', '--type', '-T', '--command-timeout', '-U', '--other-user'] },
+  doas: { value: ['-u', '-C'] },
+  nice: { value: ['-n', '--adjustment'] },
+  ionice: { value: ['-c', '--class', '-n', '--classdata'] },
+  chrt: { value: [], operands: 1 },
+  taskset: { value: [], operands: 1 },
+  timeout: { value: ['-k', '--kill-after', '-s', '--signal'], operands: 1 },
+  stdbuf: { value: ['-i', '--input', '-o', '--output', '-e', '--error'] },
+  setsid: { value: [] },
+  nohup: { value: [] },
+  time: { value: ['-f', '--format', '-o', '--output'] },
+  command: { value: [] },
+  builtin: { value: [] },
+  exec: { value: ['-a'] },
+  xargs: { value: ['-a', '--arg-file', '-d', '--delimiter', '-E', '-I', '-L', '-n', '--max-args', '-P', '--max-procs', '-s', '--max-chars', '--process-slot-var'] },
+  flock: { value: ['-w', '--timeout', '-E', '--conflict-exit-code'], operands: 1, string: ['-c', '--command'] },
+  strace: { value: ['-e', '-o', '-p', '-s', '-u', '-a', '-b', '-I', '-O', '-S', '-X', '-P', '-E'] },
+  ltrace: { value: ['-e', '-o', '-p', '-s', '-u', '-a', '-n', '-l', '-w', '-x', '-L'] },
+  runuser: { value: ['-u', '--user', '-g', '--group', '-G', '--supp-group', '-s', '--shell', '-w', '--whitelist-environment'], string: ['-c', '--command'] },
+  su: { value: ['-g', '--group', '-G', '--supp-group', '-s', '--shell', '-w', '--whitelist-environment'], string: ['-c', '--command'], none: true },
+  watch: { value: ['-n', '--interval', '-q', '--equexit'], join: true },
+  unbuffer: { value: [] },
+  script: { value: ['-E', '--echo', '-o', '--output-limit', '-T', '--log-timing', '-B', '--log-io', '-I', '--log-in', '-O', '--log-out', '-m', '--logging-format'], string: ['-c', '--command'], none: true },
+}
+// The real command of a sub-command's words: { at, str, viaXargs } -- `at` is the index of the command word (w.length
+// when there is none), `str` a command line a launcher runs as a string (classified on its own), else null.
+export function unwrapLaunchers(w) {
+  let i = 0; let viaXargs = false
+  for (;;) {
+    while (i < w.length && (ASSIGN.test(w[i]) || LEAD_WORDS.has(w[i]))) i++
+    const name = (w[i] ?? '').split('/').pop()
+    const spec = Object.hasOwn(LAUNCHERS, name) ? LAUNCHERS[name] : null
+    if (!spec) return { at: i, str: null, viaXargs }
+    if (name === 'xargs') viaXargs = true
+    i++
+    let operands = spec.operands ?? 0
+    for (; i < w.length; i++) {
+      const t = w[i]
+      if (t === '--' && !spec.none) { i++; break }
+      const sv = (spec.string ?? []).find((f) => t === f || t.startsWith(f + '='))
+      if (sv !== undefined) return { at: w.length, str: t === sv ? (w[i + 1] ?? '') : t.slice(sv.length + 1), viaXargs }
+      if (t.startsWith('-') && t.length > 1) { if (spec.value.includes(t)) i++; continue }
+      if (spec.none) continue
+      if (name === 'env' && ASSIGN.test(t)) continue
+      if (operands > 0) { operands--; continue }
+      break
+    }
+    if (spec.join) return { at: w.length, str: w.slice(i).join(' ') || null, viaXargs }
+    if (spec.none) return { at: w.length, str: null, viaXargs }
+  }
+}
+// A shell's command-string option: -c, or a cluster of short flags that carries c (-lc, -ec).
+const SHELL_STRING_FLAG = /^-[A-Za-z]*c[A-Za-z]*$/
+const RUNNERS = new Set(['uv', 'poetry', 'pipenv', 'pdm', 'hatch', 'rye'])
+const RUNNER_VALUE = new Set(['--with', '--with-requirements', '--python', '-p', '--project', '--directory', '--env-file', '--extra', '--group', '--index', '--default-index', '--index-url', '--extra-index-url', '-e', '--env', '-f', '--find-links', '--package'])
+// `<runner> run [options] X ...`: the interpreter X, or the python script X; null when this is not a runner.
+function unwrapRunner(word, rest) {
+  if (!RUNNERS.has(word) || rest[0] !== 'run') return null
+  let k = 1
+  while (k < rest.length && rest[k].startsWith('-')) { if (RUNNER_VALUE.has(rest[k])) k++; k++ }
+  const target = rest[k]
+  if (target === undefined) return null
+  const base = target.split('/').pop()
+  if (SCRIPT_INTERPRETER.test(base) || SHELL_INTERPRETER.test(base)) return { word: base, rest: rest.slice(k + 1) }
+  if (/\.py$/.test(base)) return { word: 'python3', rest: rest.slice(k) }
+  return { word: base, rest: rest.slice(k + 1) }
+}
+export const NET_CLIENTS = new Set(['wget', 'nc', 'ncat', 'netcat', 'telnet', 'socat', 'http', 'https', 'xh', 'aria2c'])
+const URL_CLIENT_VALUE = new Set(['-O', '-o', '-a', '-e', '-i', '-P', '-t', '-T', '-w', '-U', '-l', '-A', '-R', '-D', '-Q', '-B', '-d', '-x', '-s', '-j',
+  '--header', '--post-data', '--post-file', '--body-data', '--body-file', '--method', '--user', '--password', '--http-user', '--http-password',
+  '--referer', '--user-agent', '--output-document', '--output-file', '--append-output', '--directory-prefix', '--tries', '--timeout', '--wait',
+  '--level', '--accept', '--reject', '--domains', '--quota', '--base', '--input-file', '--execute', '--load-cookies', '--save-cookies',
+  '--auth', '--auth-type', '--session', '--session-read-only', '--output', '--verify', '--cert', '--cert-key', '--proxy', '--dir', '--out'])
+const SOCKET_CLIENT_VALUE = new Set(['-p', '-s', '-w', '-x', '-X', '-i', '-q', '-I', '-O', '-T', '-V', '-e', '-c', '-m', '-d', '-o', '-g', '-G',
+  '--exec', '--sh-exec', '--lua-exec', '--proxy', '--proxy-type', '--proxy-auth', '--source-port', '--source', '--wait', '--max-conns',
+  '--output', '--hex-dump', '--delay'])
+// The external destinations of a named client's argv (the words after the client).
+export function clientDestinations(cmd, args) {
+  const dests = []
+  const add = (v) => { const h = destHost(v); if (h) dests.push(h) }
+  const socketish = cmd === 'nc' || cmd === 'ncat' || cmd === 'netcat' || cmd === 'telnet'
+  if (cmd === 'socat') {
+    for (const a of args) {
+      const m = /^(?:tcp[46]?|udp[46]?|tcp[46]?-connect|udp[46]?-connect|udp[46]?-sendto|sctp-connect|openssl|openssl-connect|ssl|socks4a?|proxy)[:]([^:,]+)/i.exec(a)
+      if (m) add(m[1])
+    }
+    return dests.filter((h) => !isLocalHost(h))
+  }
+  // a listener has no outbound destination
+  if (socketish && args.some((a) => a === '--listen' || /^-[A-Za-z]*l[A-Za-z]*$/.test(a))) return []
+  const value = socketish ? SOCKET_CLIENT_VALUE : URL_CLIENT_VALUE
+  let positional = 0
+  for (let k = 0; k < args.length; k++) {
+    const w = args[k]
+    if (/^\d*[<>]/.test(w) || w === '&') { if (/^\d*(?:>>?|<)&?$/.test(w)) k++; continue } // redirection
+    if (w === '--') continue
+    if (w.startsWith('-') && w.length > 1) { if (value.has(w)) k++; continue }
+    if (socketish) { if (positional === 0) add(w); positional++; continue } // host, then the port
+    if (cmd === 'http' || cmd === 'https' || cmd === 'xh') {               // [METHOD] URL [items]
+      if (positional === 0 && /^[A-Z]+$/.test(w)) continue
+      if (positional === 0) add(w.startsWith(':') ? 'localhost' : w)      // `:3000/x` is localhost
+      positional++
+      continue
+    }
+    add(w) // wget, aria2c: every positional is a URL
+  }
+  return dests.filter((h) => !isLocalHost(h))
+}
+// The local modules judged code imports: python `import a.b` / `from a.b import` resolved under baseDir, a relative
+// JS import/require resolved from baseDir. Only files that exist and can be read; [{ body, lang, dir }].
+const JS_EXTS = ['', '.js', '.mjs', '.cjs', '.ts', '.mts', '/index.js', '/index.mjs']
+function localImports(body, lang, baseDir) {
+  const out = []
+  if (!baseDir) return out
+  if (lang === 'py') {
+    for (const m of body.matchAll(/^[ \t]*(?:from[ \t]+([A-Za-z_][\w.]*)[ \t]+import\b|import[ \t]+([A-Za-z_][\w.]*(?:[ \t]*,[ \t]*[A-Za-z_][\w.]*)*))/gm)) {
+      const names = m[1] ? [m[1]] : m[2].split(',').map((s) => s.trim())
+      for (const name of names) {
+        const rel = name.split('.').join('/')
+        for (const cand of [join(baseDir, rel + '.py'), join(baseDir, rel, '__init__.py')]) {
+          const b = readBody(cand)
+          if (b !== null) { out.push({ body: b, lang: 'py', dir: dirname(cand) }); break }
+        }
+      }
+    }
+  } else if (lang === 'js') {
+    for (const m of body.matchAll(/(?:\bfrom[ \t]*|\bimport[ \t]*\(?[ \t]*|\brequire[ \t]*\([ \t]*)['"](\.{1,2}\/[^'"]+)['"]/g)) {
+      for (const ext of JS_EXTS) {
+        const cand = resolve(baseDir, m[1] + ext)
+        const b = readBody(cand)
+        if (b !== null) { out.push({ body: b, lang: 'js', dir: dirname(cand) }); break }
+      }
+    }
+  }
+  return out
+}
+const IMPORT_DEPTH = 2
+const IMPORT_FILES = 20
+// The external destinations of a code body and of the local modules it imports (to IMPORT_DEPTH, IMPORT_FILES files).
+function bodyDestinations(body, lang, baseDir) {
+  const hosts = new Set(codeDestinations(body, lang))
+  const seen = new Set()
+  let layer = [{ body, lang, dir: baseDir }]
+  for (let d = 0; d < IMPORT_DEPTH && layer.length && seen.size < IMPORT_FILES; d++) {
+    const next = []
+    for (const item of layer) {
+      for (const mod of localImports(item.body, item.lang, item.dir)) {
+        const key = mod.dir + '\0' + mod.body.length + '\0' + mod.body.slice(0, 64)
+        if (seen.has(key) || seen.size >= IMPORT_FILES) continue
+        seen.add(key)
+        for (const h of codeDestinations(mod.body, mod.lang)) hosts.add(h)
+        next.push(mod)
+      }
+    }
+    layer = next
+  }
+  return [...hosts]
+}
+// The hosts of external URLs assigned in the command to a name the code body reads FROM THE ENVIRONMENT (python
+// os.environ / getenv, JS process.env, ruby ENV, perl $ENV{}, php getenv / $_ENV, a shell $NAME). A same-named variable
+// of the code itself is not the environment and does not count.
+function envUrlDestinations(body, env) {
+  const out = []
+  for (const [name, value] of Object.entries(env)) {
+    if (!isExternal(value)) continue
+    const n = name.replace(/[$]/g, '')
+    const q = `\\s*['"]${n}['"]`
+    const reads = new RegExp(`environ(?:\\.get)?\\s*[\\[(]${q}|getenv\\s*\\(${q}|process\\.env(?:\\.${n}(?![A-Za-z0-9_])|\\s*\\[${q})|\\bENV\\s*\\[${q}|\\$ENV\\{\\s*${n}\\s*\\}|\\$_ENV\\s*\\[${q}|\\$\\{?${n}(?![A-Za-z0-9_])`)
+    if (reads.test(body)) out.push(hostOf(value))
+  }
+  return out.filter(Boolean)
+}
+
 export function classify(command, depth = 0, vendorHosts = new Set(), vendorDomains = new Set(), ctx = {}) {
   const norm = String(command ?? '').replace(/\\\r?\n/g, ' ')
   const { stripped: orig, inners } = liftSubstitutions(norm)
@@ -625,13 +833,33 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
   }
   const masked = maskInertLiterals(orig)
   if (masked === null || masked.length !== orig.length) return { deny: false, reason: 'unparseable', hosts: [] }
-  const env = collectAssignments(orig, masked)
+  const env = { ...(ctx.env ?? {}), ...collectAssignments(orig, masked) }
   const loops = collectLoops(orig, masked, env)
   const docs = heredocBodies(orig, masked)
   const written = new Map() // absolute path -> the heredoc `cat > PATH` wrote earlier in this command
   let cwd = ctx.cwd ?? null
   const absPath = (p) => (/[$`*?]/.test(p) ? null : isAbsolute(p) ? p : cwd ? resolve(cwd, p) : null)
-  for (const [a, b] of spans(masked)) {
+  // The program an interpreter reads from a pipe: the upstream heredoc, the file it cats, or the text it prints;
+  // null when it is none of these.
+  const pipedProgram = (pa, pb) => {
+    const pw = shellWords(expand(orig.slice(pa, pb), env))
+    const u = unwrapLaunchers(pw)
+    const name = (pw[u.at] ?? '').split('/').pop()
+    const args = pw.slice(u.at + 1)
+    if (name === 'cat') {
+      const doc = docs.find((d) => d.at >= pa && d.at < pb)
+      if (doc) return doc.body
+      const file = args.find((t) => !t.startsWith('-') && !/^\d*[<>]/.test(t))
+      const abs = file ? absPath(file) : null
+      return abs ? (written.get(abs) ?? readBody(abs)) : null
+    }
+    if (name === 'echo' || name === 'printf') return args.filter((t) => !/^-[neE]+$/.test(t)).join(' ')
+    return null
+  }
+  const spanList = spans(masked)
+  for (let si = 0; si < spanList.length; si++) {
+    const [a, b, op] = spanList[si]
+    const prevSpan = si > 0 ? spanList[si - 1] : null
     const mw = words(masked.slice(a, b))
     let i = 0
     while (i < mw.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(mw[i]) || PREFIX_WORDS.has(mw[i]))) i++
@@ -643,15 +871,40 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
     const variants = loopVariants(orig.slice(a, b), env, loops)
     // (d) code bodies (see above): `cd`, a heredoc written to a file, an interpreter's heredoc or script.
     const av = shellWords(plain)
-    let j = 0
-    while (j < av.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(av[j]) || PREFIX_WORDS.has(av[j]))) j++
+    const un = unwrapLaunchers(av)
+    if (un.str && depth < 4) {
+      const r = classify(un.str, depth + 1, vendorHosts, vendorDomains, { cwd, env })
+      if (r.deny) return { deny: true, reason: `wrapped-${r.reason}`, hosts: r.hosts }
+    }
+    const j = un.at
     const first = av[j] ?? ''
     let word = first.split('/').pop()
     let rest = av.slice(j + 1)
+    const run = unwrapRunner(word, rest)
+    if (run) { word = run.word; rest = run.rest }
     if (word === 'npx' || word === 'bunx') { // npx [--no-install ...] tsx x.ts
       let k = 0
       while (k < rest.length && rest[k].startsWith('-')) k++
       if (SCRIPT_INTERPRETER.test((rest[k] ?? '').split('/').pop())) { word = rest[k].split('/').pop(); rest = rest.slice(k + 1) }
+    }
+    if (depth < 4) {
+      let str = null; let strKind = null
+      if (SHELL_INTERPRETER.test(word)) {
+        const k = rest.findIndex((t) => SHELL_STRING_FLAG.test(t))
+        if (k !== -1 && rest[k + 1] !== undefined) { str = rest[k + 1]; strKind = 'shell-string' }
+      } else if (word === 'eval' && rest.length) { str = rest.join(' '); strKind = 'eval' }
+      if (str !== null) {
+        const r = classify(str, depth + 1, vendorHosts, vendorDomains, { cwd, env })
+        if (r.deny) return { deny: true, reason: `${strKind}-${r.reason}`, hosts: r.hosts }
+      }
+      if ((word === 'source' || word === '.') && rest[0]) {
+        const abs = absPath(rest[0])
+        const sbody = abs ? (written.get(abs) ?? readBody(abs)) : null
+        if (sbody !== null) {
+          const r = classify(sbody, depth + 1, vendorHosts, vendorDomains, { cwd, env })
+          if (r.deny) return { deny: true, reason: `sourced-${r.reason}`, hosts: r.hosts }
+        }
+      }
     }
     const here = docs.find((d) => d.at >= a && d.at < b)
     if (word === 'cd') {
@@ -662,31 +915,38 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
       const abs = p ? absPath(p) : null
       if (abs) written.set(abs, here.body)
     } else {
-      let body = null; let lang = null; let kind = null
+      let body = null; let lang = null; let kind = null; let baseDir = cwd
       if (SCRIPT_INTERPRETER.test(word) || SHELL_INTERPRETER.test(word)) {
         const s = scriptOf(rest, word)
         lang = langOf(word)
         if (s?.stdin && here) { body = here.body; kind = 'heredoc' }
-        else if (s?.file) { const abs = absPath(s.file); if (abs) { body = written.get(abs) ?? readBody(abs); kind = 'script-file' } }
+        else if (s?.stdin && op === '|' && prevSpan) {
+          body = pipedProgram(prevSpan[0], prevSpan[1]); kind = 'pipe-program'
+          if (body === null) return { deny: true, reason: 'pipe-program-unknown', hosts: [] }
+        } else if (s?.file) { const abs = absPath(s.file); if (abs) { body = written.get(abs) ?? readBody(abs); kind = 'script-file'; baseDir = dirname(abs) } }
       } else if (first.includes('/')) {
         const abs = absPath(first)
-        if (abs) { body = written.get(abs) ?? readBody(abs); lang = body === null ? null : shebangLang(body); kind = 'script-file' }
+        if (abs) { body = written.get(abs) ?? readBody(abs); lang = body === null ? null : shebangLang(body); kind = 'script-file'; baseDir = dirname(abs) }
       }
       if (body !== null && lang === 'sh') {
         if (depth < 4) {
-          const r = classify(body, depth + 1, vendorHosts, vendorDomains, { cwd })
+          const r = classify(body, depth + 1, vendorHosts, vendorDomains, { cwd, env })
           if (r.deny) return { deny: true, reason: `${kind}-${r.reason}`, hosts: r.hosts }
         }
       } else if (body !== null && lang) {
-        const hosts = codeDestinations(body, lang).filter((h) => !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
+        const hosts = [...new Set([...bodyDestinations(body, lang, baseDir), ...envUrlDestinations(body, env)])]
+          .filter((h) => !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
         if (hosts.length) return { deny: true, reason: `${kind}-external`, hosts }
       }
     }
     for (const text of [plain, ...(variants ?? [])]) {
-      const cmd = mw[i].split('/').pop()
+      const tw = shellWords(text)
+      const tu = unwrapLaunchers(tw)
+      const cmd = (tw[tu.at] ?? '').split('/').pop()
       let target = null
       if (cmd === 'curl') target = 'curl'
-      else if (INTERPRETER.test(cmd) && mw.slice(i + 1).some((w) => CODE_FLAG.has(w)) && NET_PRIMITIVE.test(text)) target = 'one-liner'
+      else if (NET_CLIENTS.has(cmd)) target = cmd
+      else if (INTERPRETER.test(cmd) && tw.slice(tu.at + 1).some((w) => CODE_FLAG.has(w)) && NET_PRIMITIVE.test(text)) target = 'one-liner'
       if (!target) continue
       // curl: the destination is read from the ARGV only. A URL inside a flag VALUE (-d, -e, -H, a
       // JSON payload) is data sent to wherever curl connects, not a destination. The fleet reports PR
@@ -694,10 +954,13 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
       // with URL_RE denied exactly that (#1514 re-review, measured on the merged head). An interpreter
       // one-liner has no argv to read, so its code is still scanned with URL_RE.
       let found
-      const argv = target === 'curl' ? shellWords(text) : null
-      const at = argv ? argv.findIndex((w) => w.split('/').pop() === 'curl') : -1
-      if (at !== -1) found = curlDestinations(argv.slice(at + 1))
-      else found = [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
+      if (target === 'curl') found = curlDestinations(tw.slice(tu.at + 1))
+      else if (target === 'one-liner') found = [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
+      else found = clientDestinations(cmd, tw.slice(tu.at + 1))
+      // the arguments xargs feeds from a pipe: the URLs of the upstream command
+      if (tu.viaXargs && op === '|' && prevSpan) {
+        found = [...found, ...[...orig.slice(prevSpan[0], prevSpan[1]).matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)]
+      }
       // A listed vendor host (or a host under a listed domain) passes only by itself: any other
       // destination in the same call still denies.
       const hosts = [...new Set(found)].filter((h) => !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
@@ -709,9 +972,10 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
 }
 
 const GATE_MSG =
-  'Kulso halozati hivas Bash-bol TILTVA (egress hard-gate): curl, interpreter-egysoros, vagy egy ' +
-  'interpreternek adott heredoc / futtatott szkript-fajl halozati hivasa kulso URL-re, akkor is, ha az URL ' +
-  'valtozoban van. A localhost/127.0.0.1 hivasok (dashboard) es a helyi halozat ' +
+  'Kulso halozati hivas Bash-bol TILTVA (egress hard-gate): curl, wget/nc-szeru kliens, interpreter-egysoros, ' +
+  'vagy egy interpreternek adott heredoc / futtatott szkript-fajl halozati hivasa kulso URL-re, akkor is, ha az ' +
+  'URL valtozoban van, es akkor is, ha a parancs inditoba, parancs-szovegbe, source-olt fajlba vagy csobe van ' +
+  'csomagolva. A localhost/127.0.0.1 hivasok (dashboard) es a helyi halozat ' +
   '(10/8, 172.16/12, 192.168/16, *.local) szabadok. Kulso tartalmat ' +
   'a quarantine-reader sub-ugynokon at kerj le; ha ez egy vendor-API hivas, kerd a fo-agenst.'
 function isInvokedDirectly() {

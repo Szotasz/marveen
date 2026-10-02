@@ -15,12 +15,12 @@
 // (isInvokedDirectly), so importing it here runs no side effects.
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { classify, isExternal, liftSubstitutions, parseVendorHosts, loadVendorHosts, parseVendorDomains, loadVendorDomains, maskCode, codeDestinations } from '../../scripts/hooks/bash-egress-parser.mjs'
+import { classify, isExternal, liftSubstitutions, parseVendorHosts, loadVendorHosts, parseVendorDomains, loadVendorDomains, maskCode, codeDestinations, unwrapLaunchers, clientDestinations } from '../../scripts/hooks/bash-egress-parser.mjs'
 import {
   BASH_EGRESS_DENY,
   agentGetsBashEgressParser,
@@ -728,5 +728,102 @@ describe('(d) interpreter code bodies: heredoc and script file (95800e1d)', () =
     })
     expect(run(dir).stdout).toContain('"permissionDecision":"deny"')
     expect(run(tmpdir()).stdout).toBe('') // no hiv.py there: nothing to judge
+  }))
+})
+
+// (e) c83a6bf6: the command word a launcher, a command string, a sourced file, a pipe or a project runner hides; the
+// destinations of the named clients; a URL handed over through the environment; a local module the code imports.
+// One representative per form class, with a local control for each. The concrete forms the tester measured live are
+// in a LOCAL, untracked fixture (src/__tests__/fixtures/*.local.json, gitignored), read by the last test of this
+// block when it is present (the decision on the card: they do not go into a public repository).
+describe('(e) the command a launcher, a string or a pipe hides (c83a6bf6)', () => {
+  const EXT = 'egress-proba.example.org'
+  const withDir = (fn: (dir: string) => void) => {
+    const dir = mkdtempSync(join(tmpdir(), 'egress-e-'))
+    try { fn(dir) } finally { rmSync(dir, { recursive: true, force: true }) }
+  }
+  const judge = (command: string, cwd = '/', vendor: string[] = []) => classify(command, 0, new Set(vendor), new Set(), { cwd })
+
+  it('unwrapLaunchers: the command after a launcher, its options (with a value or attached), operands and --', () => {
+    expect(unwrapLaunchers(['timeout', '-k', '2', '5', 'sleep', '1'])).toMatchObject({ at: 4, str: null })
+    expect(unwrapLaunchers(['nice', '-n', '5', 'ls'])).toMatchObject({ at: 3 })
+    expect(unwrapLaunchers(['stdbuf', '-oL', 'ls'])).toMatchObject({ at: 2 })
+    expect(unwrapLaunchers(['setsid', 'nohup', 'ls'])).toMatchObject({ at: 2 })
+    expect(unwrapLaunchers(['env', '-i', 'A=1', 'ls'])).toMatchObject({ at: 3 })
+    expect(unwrapLaunchers(['runuser', '-u', 'x', '--', 'ls'])).toMatchObject({ at: 4 })
+    expect(unwrapLaunchers(['flock', '/tmp/l', 'ls'])).toMatchObject({ at: 2 })
+    expect(unwrapLaunchers(['flock', '/tmp/l', '-c', 'ls -l'])).toMatchObject({ str: 'ls -l' })
+    expect(unwrapLaunchers(['watch', '-n', '1', 'ls', '-l'])).toMatchObject({ str: 'ls -l' })
+    expect(unwrapLaunchers(['su', '-', 'x', '-c', 'ls'])).toMatchObject({ str: 'ls' })
+    expect(unwrapLaunchers(['su', 'x'])).toMatchObject({ at: 2, str: null })
+    expect(unwrapLaunchers(['xargs', '-n', '1', 'ls'])).toMatchObject({ at: 3, viaXargs: true })
+    expect(unwrapLaunchers(['ls', '-l'])).toMatchObject({ at: 0, str: null })
+  })
+
+  it('a launcher with an option value in front of a client: denied; in front of a local call: passes', () => {
+    expect(judge(`timeout -k 2 5 curl -s https://${EXT}/x`)).toMatchObject({ deny: true, reason: 'curl-external', hosts: [EXT] })
+    expect(judge('timeout -k 2 5 curl -s http://localhost:3420/api/health').deny).toBe(false)
+  })
+
+  it('a command string run by a shell: denied; a local one passes', () => {
+    expect(judge(`sh -c "curl -s https://${EXT}/x"`)).toMatchObject({ deny: true, reason: 'shell-string-curl-external', hosts: [EXT] })
+    expect(judge('sh -c "curl -s http://127.0.0.1:3420/api/health"').deny).toBe(false)
+  })
+
+  it('a sourced file is judged as a shell body', () => withDir((dir) => {
+    writeFileSync(join(dir, 'hiv.sh'), `curl -s https://${EXT}/x\n`)
+    writeFileSync(join(dir, 'helyi.sh'), 'curl -s http://localhost:3420/api/health\n')
+    expect(judge('source hiv.sh', dir)).toMatchObject({ deny: true, reason: 'sourced-curl-external', hosts: [EXT] })
+    expect(judge('source helyi.sh', dir).deny).toBe(false)
+  }))
+
+  it('a program piped into an interpreter is the upstream heredoc; an upstream that cannot be read is denied', () => {
+    expect(judge(`cat <<'PY' | python3\nimport urllib.request\nurllib.request.urlopen("https://${EXT}/x")\nPY`))
+      .toMatchObject({ deny: true, reason: 'pipe-program-external', hosts: [EXT] })
+    expect(judge(`cat <<'PY' | python3\nprint(1)\nPY`).deny).toBe(false)
+    expect(judge('git show HEAD:x.py | python3')).toMatchObject({ deny: true, reason: 'pipe-program-unknown' })
+    expect(judge('git show HEAD:x.json | python3 -m json.tool').deny).toBe(false) // a module run reads data, not a program
+  })
+
+  it('a project runner runs the script behind it', () => withDir((dir) => {
+    writeFileSync(join(dir, 'hiv.py'), `import urllib.request\nurllib.request.urlopen("https://${EXT}/x")\n`)
+    writeFileSync(join(dir, 'tiszta.py'), 'print(1)\n')
+    expect(judge('uv run hiv.py', dir)).toMatchObject({ deny: true, reason: 'script-file-external', hosts: [EXT] })
+    expect(judge('uv run tiszta.py', dir).deny).toBe(false)
+  }))
+
+  it('a URL handed to the code through the environment is its destination; a same-named code variable is not', () => withDir((dir) => {
+    writeFileSync(join(dir, 'env.py'), 'import os, urllib.request\nurllib.request.urlopen(os.environ["CEL"])\n')
+    writeFileSync(join(dir, 'nev.py'), 'CEL = "x"\nprint(CEL)\n')
+    expect(judge(`CEL=https://${EXT}/x python3 env.py`, dir)).toMatchObject({ deny: true, hosts: [EXT] })
+    expect(judge(`CEL=https://${EXT}/x python3 nev.py`, dir).deny).toBe(false)
+    expect(judge('CEL=http://localhost:3420/x python3 env.py', dir).deny).toBe(false)
+  }))
+
+  it('a local module the script imports is judged too', () => withDir((dir) => {
+    writeFileSync(join(dir, 'kliens.py'), `import urllib.request\ndef hiv():\n    return urllib.request.urlopen("https://${EXT}/x")\n`)
+    writeFileSync(join(dir, 'fo.py'), 'import kliens\nkliens.hiv()\n')
+    writeFileSync(join(dir, 'tiszta.py'), 'import json\nprint(json.dumps(1))\n')
+    expect(judge('python3 fo.py', dir)).toMatchObject({ deny: true, reason: 'script-file-external', hosts: [EXT] })
+    expect(judge('python3 tiszta.py', dir).deny).toBe(false)
+  }))
+
+  it('a named client other than curl: its destinations from the argv; a listener and a local target pass', () => {
+    expect(judge(`wget -q https://${EXT}/x`)).toMatchObject({ deny: true, reason: 'wget-external', hosts: [EXT] })
+    expect(judge('wget -q -O /tmp/x http://localhost:3420/api/health').deny).toBe(false)
+    expect(clientDestinations('nc', ['-w', '3', EXT, '443'])).toEqual([EXT])
+    expect(clientDestinations('nc', ['-l', '1234'])).toEqual([])
+    expect(clientDestinations('socat', ['-', `TCP:${EXT}:443`])).toEqual([EXT])
+    expect(clientDestinations('http', ['GET', ':3000/x'])).toEqual([])
+  })
+
+  const LOCAL = join(ROOT, 'src', '__tests__', 'fixtures', 'egress-wrapper-forms.local.json')
+  it.skipIf(!existsSync(LOCAL))('the forms the tester measured (local untracked fixture; skipped where it is absent)', () => withDir((dir) => {
+    const fx = JSON.parse(readFileSync(LOCAL, 'utf-8')) as { files: Record<string, string>; forms: { cmd: string; deny: boolean }[] }
+    mkdirSync(join(dir, 'sub'), { recursive: true })
+    for (const [name, body] of Object.entries(fx.files)) writeFileSync(join(dir, name), body)
+    const at = (cmd: string) => cmd.split('<F>').join(dir)
+    const got = fx.forms.map((f) => ({ cmd: f.cmd, deny: judge(at(f.cmd), dir).deny === true }))
+    expect(got).toEqual(fx.forms.map((f) => ({ cmd: f.cmd, deny: f.deny })))
   }))
 })
