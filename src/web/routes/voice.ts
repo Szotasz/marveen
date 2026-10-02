@@ -22,7 +22,7 @@ import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { KNOWN_VOICE_MODELS, AGENTS_BASE_DIR, readAgentVoiceConfig } from '../agent-config.js'
 import { getLastInboundModality, setLastInboundModality } from '../voice-modality.js'
-import { buildTtsDirective, resolveAgentChannelStateDir, inboundIsAudio } from '../voice-directive.js'
+import { buildTtsDirective, resolveAgentChannelStateDir, inboundIsAudio, mainChannelStateDirFor } from '../voice-directive.js'
 import { PROJECT_ROOT, STORE_DIR, VOICE_CALIBRATION_ALERT_AGENT } from '../../config.js'
 import { notifyChat } from '../../notify.js'
 import { createAgentMessage } from '../../db.js'
@@ -497,12 +497,13 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
         if (stt.confidence === 'unreliable') {
           transcriptNotice = 'A leiratot a modell NEM olvasta ki megbizhatoan (a determinisztikus dekodolas megbukott, ez a szoveg mintavetelezett). Ne kezeld tenykent: mondd vissza a kuldonek, es kerd, hogy erositse meg.'
         } else if (stt.confidence === 'uncertain') {
-          // MONDD VISSZA, not merely "ask back": the channel notice this endpoint just sent
-          // PROMISES the sender that we will repeat what we understood. If the agent only asks
-          // a question instead, the sender waits for a promise nobody keeps -- which is worse
-          // than sending nothing, because now they are expecting it. The manual step this
-          // automates (2026-09-07) was exactly a read-back, not a question.
-          transcriptNotice = 'A leirat BIZONYTALAN (a modell szerint lehet, hogy nem beszed volt). MONDD VISSZA a valaszodban SZO SZERINT, amit ertettunk, es kerd, hogy javitson -- a kuldo mar kapott egy csatorna-jelzest, hogy ezt varja tolunk. Ne kezeld tenykent.'
+          // MONDD VISSZA, not merely "ask back": when the channel notice below goes out, it PROMISES
+          // the sender that we will repeat what we understood. If the agent only asks a question
+          // instead, the sender waits for a promise nobody keeps -- which is worse than sending
+          // nothing, because now they are expecting it. The manual step this automates (2026-09-07)
+          // was exactly a read-back, not a question. Whether the promise was made is added below,
+          // after the send (75c3d163 G1): the agent is told what actually reached the sender.
+          transcriptNotice = 'A leirat BIZONYTALAN (a modell szerint lehet, hogy nem beszed volt). MONDD VISSZA a valaszodban SZO SZERINT, amit ertettunk, es kerd, hogy javitson. Ne kezeld tenykent.'
         }
       } else if (stt.status === 'no-transcript') {
         // THE CASE THAT USED TO BE SILENT. A voice message arrived, the chain
@@ -526,10 +527,19 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     // structural rather than a compromise: this send performs the DELIVERY, the
     // agent's reply performs the CONTENT. So the rule "transcript text does not
     // go anywhere that leaves the machine" holds without needing an exception.
+    //
+    // ONLY ON THE MAIN BOT (75c3d163 G1, review): notifyChat sends with the install's bot (CHANNEL_TOKEN). An
+    // agent with its OWN bot has the sender's chat on that bot, so a notice from the main bot would reach the person from
+    // the wrong bot, or fail with 403 when they never started the main bot. For such an agent the server does not try
+    // (noticeDelivered stays null), and the transcriptNotice below tells the agent to say it in its own reply.
     let noticeDelivered: boolean | null = null
     const needsChannelNotice =
       transcriptStatus === 'no-transcript' || transcriptConfidence === 'uncertain' || transcriptConfidence === 'unreliable'
-    if (needsChannelNotice) {
+    const chatOnMainBot = stateDir === mainChannelStateDirFor('telegram')
+    if (needsChannelNotice && !chatOnMainBot) {
+      logger.info({ agentId, chatId, transcriptStatus, transcriptConfidence },
+        'voice: csatorna-ertesites kihagyva -- az ugynok sajat botjan ir, a szerver csak a fo bottal kuld; az ugynok mondja el a kuldonek')
+    } else if (needsChannelNotice) {
       const text = transcriptStatus === 'no-transcript'
         ? 'A hangüzenetedet megkaptam, de nem sikerült leiratozni, ezért nem tudom, mi hangzott el. Kérlek, írd le szöveggel.'
         : 'A hangüzenetedet megkaptam, de csak bizonytalanul értettem. A válaszomban visszamondom, mit értettem belőle -- kérlek javíts, ha félreértettem.'
@@ -540,6 +550,18 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
         // nothing would say so.
         logger.warn({ chatId, transcriptStatus, transcriptConfidence },
           'voice: a csatorna-ertesites NEM ment ki -- a kuldo nem tudja, hogy baj volt a leirattal')
+      }
+    }
+
+    // What the AGENT is told must match what reached the SENDER (75c3d163 G1): the read-back promise only when the
+    // notice actually went out; otherwise the agent learns that the sender knows nothing yet, and why.
+    if (needsChannelNotice && transcriptNotice) {
+      if (noticeDelivered === true) {
+        if (transcriptConfidence === 'uncertain') transcriptNotice += ' A kuldo mar kapott egy csatorna-jelzest, hogy ezt varja tolunk.'
+      } else {
+        const ok = chatOnMainBot ? 'a csatorna-jelzes nem ment ki' : 'a sajat botodon irt, a szerver csak a fo bottal kuld'
+        const mit = transcriptStatus === 'no-transcript' ? 'nem sikerult leiratozni' : 'csak bizonytalanul ertettuk'
+        transcriptNotice += ` A KULDOT A SZERVER NEM ERTESITETTE (${ok}): a valaszod elejen te mondd meg neki, hogy a hangüzenetet ${mit}.`
       }
     }
 

@@ -19,6 +19,8 @@ const h = vi.hoisted(() => ({
   sent: [] as Array<{ from: string; to: string; content: string }>,
   failNextMessage: false,
   notified: [] as Array<{ chatId: string; text: string }>,
+  notifyOk: true,
+  stateDir: null as string | null,
   run: { stdout: '', stderr: '', code: 0 },
 }))
 
@@ -68,7 +70,7 @@ vi.mock('../notify.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../notify.js')>()),
   notifyChat: async (chatId: string, text: string) => {
     h.notified.push({ chatId, text })
-    return true
+    return h.notifyOk
   },
 }))
 
@@ -79,7 +81,9 @@ vi.mock('../web/agent-config.js', async (importOriginal) => ({
 
 vi.mock('../web/voice-directive.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../web/voice-directive.js')>()),
-  resolveAgentChannelStateDir: () => `${process.env.HOME}/.claude/channels/telegram`,
+  // the main bot's dir unless a test puts the agent on its own bot (75c3d163 G1)
+  resolveAgentChannelStateDir: () => h.stateDir ?? `${process.env.HOME}/.claude/channels/telegram`,
+  mainChannelStateDirFor: () => `${process.env.HOME}/.claude/channels/telegram`,
   inboundIsAudio: () => true,
 }))
 
@@ -117,6 +121,8 @@ beforeEach(async () => {
   mkdirSync(h.dir, { recursive: true })
   h.sent.length = 0
   h.notified.length = 0
+  h.notifyOk = true
+  h.stateDir = null
   h.failNextMessage = false
   vi.resetModules()
   voice = await import('../web/routes/voice.js')
@@ -268,5 +274,65 @@ describe('75c3d163: where the mismatch can be read later, and where it must not 
     // the channel notice is the deeaa175 delivery: no transcript text, and nothing about calibration
     expect(h.notified[0].text).not.toContain('Sziasztok')
     expect(h.notified[0].text).not.toMatch(/small|kalibr|calibr/i)
+  })
+})
+
+// 75c3d163 G1 (review notes): the channel notice is sent with the install's bot, so it may only go out for a
+// chat on the MAIN bot; an agent with its own bot gets no server notice, and the agent is told to say it itself. And
+// in every case the agent's transcriptNotice says what actually reached the sender (no promise that was not made).
+describe('75c3d163 G1: the channel notice goes out only on the main bot, and the agent is told what reached the sender', () => {
+  // the second candidate of resolveAgentChannelStateDir (an own bot under the alternative name): it passes the route's
+  // isSafeStateDir and is not the main bot's dir
+  const OWN_BOT = `${process.env.HOME}/.claude/channels/telegram-sajatbotos`
+  const directive = async (agent = 'tesztagens') => {
+    const res = { status: 0, body: '', writeHead(s: number) { this.status = s }, end(b: string) { this.body = b } }
+    const url = new URL(`http://x/api/voice/directive?agent=${agent}&chat=123456789&file=${FILE_ID}&kind=voice`)
+    await voice.tryHandleVoice({ req: {} as never, res: res as never, path: '/api/voice/directive', method: 'GET', url })
+    return JSON.parse(res.body)
+  }
+  const uncertain = () => { h.run = { stdout: 'Sziasztok!\n', stderr: diag({ model: voice.CALIBRATED_STT_MODEL, revision: REV, nsp: '0.907' }), code: 0 } }
+  const silent = () => { h.run = { stdout: '', stderr: diag({ model: voice.CALIBRATED_STT_MODEL, revision: REV, seg: 0, nsp: '', temp: '' }), code: 0 } }
+
+  it('OWN BOT, uncertain: no notice from the main bot, and the agent is told the sender knows nothing yet', async () => {
+    h.stateDir = OWN_BOT
+    uncertain()
+    const body = await directive('sajatbotos')
+    expect(body.transcriptConfidence).toBe('uncertain')
+    expect(h.notified).toHaveLength(0)
+    expect(body.noticeDelivered).toBeNull()
+    expect(body.transcriptNotice).toContain('A KULDOT A SZERVER NEM ERTESITETTE (a sajat botodon irt')
+    expect(body.transcriptNotice).toContain('csak bizonytalanul ertettuk')
+    expect(body.transcriptNotice).not.toContain('mar kapott egy csatorna-jelzest')
+  })
+
+  it('OWN BOT, no transcript: no notice from the main bot, and the agent is told to say it was not transcribed', async () => {
+    h.stateDir = OWN_BOT
+    silent()
+    const body = await directive('sajatbotos')
+    expect(body.transcriptStatus).toBe('no-transcript')
+    expect(h.notified).toHaveLength(0)
+    expect(body.noticeDelivered).toBeNull()
+    expect(body.transcriptNotice).toContain('A KULDOT A SZERVER NEM ERTESITETTE (a sajat botodon irt')
+    expect(body.transcriptNotice).toContain('nem sikerult leiratozni')
+  })
+
+  it('MAIN BOT, uncertain (control): the notice goes out once, and only then is the promise stated', async () => {
+    uncertain()
+    const body = await directive()
+    expect(h.notified).toHaveLength(1)
+    expect(h.notified[0].chatId).toBe('123456789')
+    expect(body.noticeDelivered).toBe(true)
+    expect(body.transcriptNotice).toContain('mar kapott egy csatorna-jelzest')
+    expect(body.transcriptNotice).not.toContain('NEM ERTESITETTE')
+  })
+
+  it('MAIN BOT, the send fails: the agent is NOT told that the sender was notified', async () => {
+    h.notifyOk = false
+    uncertain()
+    const body = await directive()
+    expect(h.notified).toHaveLength(1)
+    expect(body.noticeDelivered).toBe(false)
+    expect(body.transcriptNotice).toContain('A KULDOT A SZERVER NEM ERTESITETTE (a csatorna-jelzes nem ment ki)')
+    expect(body.transcriptNotice).not.toContain('mar kapott egy csatorna-jelzest')
   })
 })
