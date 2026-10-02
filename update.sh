@@ -18,6 +18,41 @@ export MARVEEN_LANG
 # shellcheck source=install-lang.sh
 source "$(dirname "$0")/install-lang.sh"
 
+# c68d90eb (B): ONE update at a time, whoever starts it. The dashboard's pidfile
+# gate (below) guards only its own button: this script overwrites that pidfile
+# unconditionally, so the unattended auto-update or a manual run could still
+# overlap a running update, and two runs interleaving stash, pull, build and
+# rollback destroy local changes (measured 2026-10-02 12:22Z: every line of
+# store/update.log twice, then a reset after the pop).
+# The lock is an fd lock (flock): it is held while this script AND the detached
+# finalizer run (the finalizer inherits fd 9; the services it starts do not, see
+# _restart there), and the kernel drops it when they end, so a crash leaves no
+# stale lock. A second run exits at once, touches nothing, and says so in
+# store/update.log; a dashboard-started one also releases the placeholder the
+# dashboard wrote into store/update.pid before spawning it (else the button
+# stays locked for up to an hour). Without flock(1) (macOS has none) the run
+# goes on as before.
+mkdir -p "$INSTALL_DIR/store"
+if command -v flock >/dev/null 2>&1; then
+  exec 9>>"$INSTALL_DIR/store/update.lock"
+  if ! flock -n 9; then
+    UPDATE_LOCK_MSG="[$(date -u +%Y-%m-%dT%H:%M:%SZ)] update.sh (pid $$): egy masik frissites fut (store/update.lock); ez a futas semmihez nem nyult, kilep."
+    # A dashboard-started run already has stderr on store/update.log: one line there, not two.
+    if ! [ "/proc/$$/fd/2" -ef "$INSTALL_DIR/store/update.log" ]; then
+      echo "$UPDATE_LOCK_MSG" >> "$INSTALL_DIR/store/update.log" 2>/dev/null || true
+    fi
+    echo -e "${RED}${UPDATE_LOCK_MSG}${NC}" >&2
+    # The placeholder carries the dashboard's own pid, i.e. our parent's; anything else is left alone.
+    if [ "$(head -n 1 "$INSTALL_DIR/store/update.pid" 2>/dev/null)" = "$PPID" ]; then
+      rm -f "$INSTALL_DIR/store/update.pid"
+    fi
+    exit 75
+  fi
+else
+  echo -e "  ${DIM}Futas-zar nem elerheto (flock hianyzik); csak a dashboard pidfile-kapuja ved.${NC}"
+fi
+# --- end of the run lock (c68d90eb (B)) ---
+
 # --- Outcome reporting (kills the false-success UI) ---------------------------
 RESULT_STATUS="failed"
 RESULT_PHASE="init"
@@ -1464,8 +1499,13 @@ fi
 # systemd-run scope can be created instead of silently falling back to a direct
 # restart that self-kills and bricks the box.
 FINALIZE_SCRIPT="$INSTALL_DIR/store/update-finalize.sh"
-cat > "$FINALIZE_SCRIPT" <<'FINALIZE_EOF'
-#!/usr/bin/env bash
+# c68d90eb (A): the finalizer's rollback stashes the popped local changes through
+# the SAME gate and net as the auto-stash above, so the two functions are carried
+# in BY VALUE (declare -f), not written a second time.
+{
+printf '#!/usr/bin/env bash\n'
+declare -f autostash_undeletable_paths autostash_restore_untracked
+cat <<'FINALIZE_EOF'
 # Detached update finalizer. Args:
 #   $1 INSTALL_DIR  $2 OLD_FULL_SHA  $3 OLD_SHORT  $4 PORT
 #   $5 RESULT_FILE  $6 BUILT_COMMIT_FILE  $7 NEW_SHORT  $8 NODE_PIN_DIR
@@ -1501,7 +1541,8 @@ _finish() { _write "$1" "$2" "$3" "$4"; _notify "$1"; exit "$3"; }
 _health() { local i=0; while [ "$i" -lt 20 ]; do
   curl -fsS -m 3 -o /dev/null "http://127.0.0.1:${PORT}/" 2>/dev/null && return 0
   sleep 1; i=$(( i + 1 )); done; return 1; }
-_restart() { "$INSTALL_DIR/scripts/stop.sh"; "$INSTALL_DIR/scripts/start.sh"; }
+# c68d90eb (B): fd 9 is the update lock; the services started here must not hold it.
+_restart() { "$INSTALL_DIR/scripts/stop.sh" 9>&-; "$INSTALL_DIR/scripts/start.sh" 9>&-; }
 
 # ZAKARFELUGY921: THE PORT ANSWERING IS NOT PROOF THAT THE SERVICES ARE UNDER
 # THEIR UNITS. That is exactly how the reported install looked for two days: the
@@ -1545,10 +1586,45 @@ if _health; then
 fi
 
 # Restart did not bring the dashboard back -> auto-rollback to the pre-update
-# commit (safe: ff-only ancestor, no force-push, no local-change discard) and
-# restart that, so the box ends on a WORKING old version.
+# commit (ff-only ancestor, no force-push) and restart that, so the box ends on a
+# WORKING old version.
+#
+# c68d90eb (A), measured 2026-10-02 12:22-12:23Z: by now
+# the auto-stash has ALREADY been popped back, so the operator's local changes are
+# on disk again, and a bare `git reset --hard` here destroyed them (this comment
+# used to say "no local-change discard"; it was wrong). They are stashed again
+# first, through the same gate and net as the auto-stash, and popped back onto
+# the old version. When the gate refuses or the stash fails, the rollback does
+# NOT run: a running box with intact files beats a working box without them.
+ROLLBACK_NOTE=""
 if [ -n "$OLD_FULL" ]; then
+  ROLLBACK_STASH=""
+  if [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null | grep -vE ' HEARTBEAT\.md$' | head -n 1)" ]; then
+    ROLLBACK_GATE_RC=0
+    ROLLBACK_UNDELETABLE=$(autostash_undeletable_paths) || ROLLBACK_GATE_RC=$?
+    if [ "$ROLLBACK_GATE_RC" != 0 ]; then
+      _finish failed health-check 1 "A frissites utan a dashboard nem indult el, es a visszaallitas ELMARADT: a helyi valtozasok nem menthetok biztonsagosan (stash-kapu rc ${ROLLBACK_GATE_RC}, $(printf '%s\n' "$ROLLBACK_UNDELETABLE" | grep -c . | tr -d ' ') nem torolheto ut). A munkafa erintetlen; kezi beavatkozas szukseges."
+    fi
+    ROLLBACK_TOP_BEFORE=$(git rev-parse -q --verify refs/stash 2>/dev/null || true)
+    if ! git stash push -u -m "marveen-update-rollback-stash $(date +%Y%m%d-%H%M%S)" >/dev/null 2>&1; then
+      ROLLBACK_TOP_AFTER=$(git rev-parse -q --verify refs/stash 2>/dev/null || true)
+      if [ -n "$ROLLBACK_TOP_AFTER" ] && [ "$ROLLBACK_TOP_AFTER" != "$ROLLBACK_TOP_BEFORE" ]; then
+        autostash_restore_untracked "$ROLLBACK_TOP_AFTER" >/dev/null 2>&1 || true
+      fi
+      _finish failed health-check 1 "A frissites utan a dashboard nem indult el, es a visszaallitas ELMARADT: a helyi valtozasok stash-e sikertelen (${ROLLBACK_TOP_AFTER:-uj bejegyzes nem keletkezett}). Kezi beavatkozas szukseges."
+    fi
+    ROLLBACK_STASH=$(git rev-parse -q --verify refs/stash 2>/dev/null || true)
+  fi
   git reset --hard "$OLD_FULL" >/dev/null 2>&1 || true
+  if [ -n "$ROLLBACK_STASH" ]; then
+    if git stash pop >/dev/null 2>&1; then
+      ROLLBACK_NOTE=" A helyi valtozasok visszakerultek."
+    else
+      # A conflict leaves markers in the tree: clean it back to the old version; the entry stays in `git stash list`.
+      git reset --hard "$OLD_FULL" >/dev/null 2>&1 || true
+      ROLLBACK_NOTE=" A helyi valtozasok a stash-ben maradtak (${ROLLBACK_STASH}): git stash list / git stash apply."
+    fi
+  fi
   # --include=dev: same reason as the main npm ci (AUTOUPDNODEENV905) -- under
   # NODE_ENV=production a plain ci prunes the compiler and the rebuild below
   # dies silently, re-creating the pruned tree this rollback tries to escape.
@@ -1559,11 +1635,12 @@ if [ -n "$OLD_FULL" ]; then
   _restart
 fi
 if _health; then
-  _finish rolled-back health-check 6 "A frissites utan a dashboard nem indult el; visszaalltunk a korabbi mukodo verziora (${OLD_SHORT}). A frissites nem ment ki."
+  _finish rolled-back health-check 6 "A frissites utan a dashboard nem indult el; visszaalltunk a korabbi mukodo verziora (${OLD_SHORT}). A frissites nem ment ki.${ROLLBACK_NOTE}"
 else
-  _finish failed health-check 1 "A dashboard a frissites es a visszaallitas utan sem valaszol a ${PORT} porton. Kezi beavatkozas szukseges."
+  _finish failed health-check 1 "A dashboard a frissites es a visszaallitas utan sem valaszol a ${PORT} porton. Kezi beavatkozas szukseges.${ROLLBACK_NOTE}"
 fi
 FINALIZE_EOF
+} > "$FINALIZE_SCRIPT"
 chmod +x "$FINALIZE_SCRIPT"
 
 echo -e "  Szolgaltatasok ujrainditasa..."
