@@ -106,7 +106,11 @@ set_export_in_rc() {
   local var="$1" line="$2"
   for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
     [ -f "$rc" ] || continue
-    sed -i "/^[[:space:]]*export[[:space:]]\+${var}=/d" "$rc"
+    # Portable (BSD/macOS sed has no `sed -i` without a suffix argument).
+    # Rewrite in place via cat so the rc file keeps its inode and permissions;
+    # `|| true` because grep -v exits 1 when every line is filtered out.
+    { grep -Ev "^[[:space:]]*export[[:space:]]+${var}=" "$rc" || true; } >"$rc.tmp" \
+      && cat "$rc.tmp" >"$rc" && rm -f "$rc.tmp"
     printf '%s\n' "$line" >>"$rc"
     warn "RC frissitve ($(basename "$rc")): export ${var}=..."
   done
@@ -765,8 +769,11 @@ else
     # pattern the store/.claude-oauth-token write below already gates on.
     OAUTH_TOKEN_INPUT=""
     for _try in 1 2 3; do
-      read -p "  OAuth token: " _tok
-      _tok="$(printf '%s' "$_tok" | tr -d '[:space:]')"
+      # Read into OAUTH_TOKEN_INPUT (not a new name): the desktop installer
+      # derives its prompts from this file by variable name.
+      read -p "  OAuth token: " OAUTH_TOKEN_INPUT
+      _tok="$(printf '%s' "$OAUTH_TOKEN_INPUT" | tr -d '[:space:]')"
+      OAUTH_TOKEN_INPUT=""
       [ -z "$_tok" ] && break
       if printf '%s' "$_tok" | grep -Eq '^sk-ant-oat01-[A-Za-z0-9_-]{40,}$'; then
         OAUTH_TOKEN_INPUT="$_tok"
