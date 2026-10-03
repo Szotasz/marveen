@@ -6,6 +6,7 @@ import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { triggerLikeClause } from './homoglyph.js'
+import type { LiveKanban } from './web/heartbeat-kanban-verify.js'
 
 let db: Database.Database
 // The path the CURRENT handle was opened on (null for ':memory:'). Kept so
@@ -3073,6 +3074,27 @@ export const HEARTBEAT_PLANNED_COUNT_SQL =
 export function countPlannedKanbanCards(): number {
   const row = db.prepare(HEARTBEAT_PLANNED_COUNT_SQL).get() as { n: number } | undefined
   return row?.n ?? 0
+}
+
+// HBFABRIC1003: what a heartbeat digest's Kanban lines are checked against at
+// send time (src/web/heartbeat-kanban-verify.ts). The counts come from the SAME
+// queries the heartbeat-summary endpoint serves, so a digest that copied its
+// metrics block matches by construction. `movedInWindow` is the allowed drift:
+// the cards whose updated_at is inside the window, archived ones included.
+export function getHeartbeatKanbanLive(windowSec: number): LiveKanban {
+  const s = getHeartbeatKanbanSummary()
+  const since = Math.floor(Date.now() / 1000) - windowSec
+  const moved = db.prepare('SELECT COUNT(*) AS n FROM kanban_cards WHERE updated_at >= ?').get(since) as { n: number }
+  const byId = db.prepare('SELECT status, priority, archived_at, updated_at FROM kanban_cards WHERE id = ?')
+  return {
+    counts: { urgent: s.urgent.length, in_progress: s.in_progress.length, waiting: s.waiting.length, planned: countPlannedKanbanCards() },
+    movedInWindow: moved.n,
+    card: (id: string) => {
+      const r = byId.get(id) as { status: string; priority: string; archived_at: number | null; updated_at: number | null } | undefined
+      if (!r) return null
+      return { status: r.status, priority: r.priority, archived: r.archived_at !== null, movedInWindow: (r.updated_at ?? 0) >= since }
+    },
+  }
 }
 
 export function getHeartbeatKanbanSummary(): HeartbeatKanbanSummary {
