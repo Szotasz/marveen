@@ -21,9 +21,12 @@ followed on the same line, or alone on the next, by a **value-shaped** token: a
 digit, an internal capital, a symbol, or a bare word right after a colon.
 Placeholders (`[...]`, `***`, `xxx`, `${VAR}`), all-caps words, e-mail
 addresses and URLs are not values. Inside a URL only `user:pass@` and
-`password=...` count.
+`password=...` count. Before the scan every whitespace character but the
+newline becomes a plain space (a no-break space from `&nbsp;`, a thin space, the
+CR of a CRLF line end, ...), so no Unicode space between the key and the value
+hides the value.
 
-A letter with a credential goes out only when all three hold:
+A letter with a credential goes out only when all of these hold:
 
 1. the value is not on the **shared list** (values known to be shared);
 2. the value has not gone to a **different recipient** before (the second,
@@ -31,10 +34,17 @@ A letter with a credential goes out only when all three hold:
    The only way past this is an **alias**: the fingerprint plus an allowed
    recipient set (one customer, several addresses), live only once an approval
    of category `credential_alias` on its hash is approved;
-3. a one-shot **acknowledgement** exists for this exact letter (recipients +
+3. the letter has **one recipient** (to, cc and bcc together): one customer's
+   own credential goes to that customer. Several recipients pass only when an
+   approved alias names exactly these addresses (or more) as one customer for
+   the value; the deny prints the full fingerprint and the alias command, since
+   a value that never went out is not in the state yet;
+4. a one-shot **acknowledgement** exists for this exact letter (recipients +
    subject + body, the same anchor the email approval gate uses): "this is the
-   recipient's own, unique credential". It never lifts 1 or 2, and an
-   acknowledgement given while the value counted as shared is void.
+   recipient's own, unique credential". It never lifts 1, 2 or 3, and an
+   acknowledgement given for a letter the gate refuses is void. A used
+   acknowledgement records the pair it covered (the fingerprints and the
+   recipient set); a new recipient is a new letter and needs its own.
 
 The deny message names the keyword, the line, the length and an 8-hex
 fingerprint prefix, and the command that would resolve it. **The value itself

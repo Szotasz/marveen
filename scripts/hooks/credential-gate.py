@@ -137,6 +137,26 @@ def shared_by_history(data: dict, hits: list, recipients: list):
     return out
 
 
+def multi_recipient_uncovered(data: dict, hits: list, recipients: list):
+    """A letter that carries a credential to MORE THAN ONE recipient (to, cc
+    and bcc together): one customer's own, unique credential goes to that
+    customer. Allowed only when an owner-approved alias names these recipients
+    as one customer for the value. Returns [(hit, alias_detail)] for the hits
+    no approved alias covers; [] for a single recipient."""
+    if len(recipients) < 2:
+        return []
+    out = []
+    for h in hits:
+        detail = None
+        alias = data["aliases"].get(h["fp"])
+        if alias:
+            ok, detail = alias_authorized(alias.get("anchor", ""))
+            if ok and set(recipients) <= set(alias.get("recipients") or []):
+                continue
+        out.append((h, detail))
+    return out
+
+
 def take_ack(data: dict, anchor: str):
     """Consume the one-shot acknowledgement for this anchor (inside the
     caller's state lock). Returns the ack or None."""
@@ -204,20 +224,33 @@ def main():
             data = st.data
             shared = [h for h in hits if h["fp"] in data["shared"]]
             history = shared_by_history(data, hits, recipients) if cfg["auto_shared"] else []
-            if (shared or history) and not warn:
+            multi = multi_recipient_uncovered(data, hits, recipients)
+            if (shared or history or multi) and not warn:
                 # An acknowledgement given for a letter whose value counts as
-                # shared is VOID: it was given in a context the gate refuses, and
+                # shared, or that carries it to several recipients, is VOID: it was
+                # given in a context the gate refuses, and
                 # a later alias approval must be followed by a fresh, deliberate
                 # one -- not by a stale "own" claim waiting in the state.
                 void = take_ack(data, anchor)
                 if void:
-                    void["voided"] = "kozos-lista" if shared else "kozos-elozmeny"
+                    void["voided"] = "kozos-lista" if shared else "kozos-elozmeny" if history else "tobb-cimzett"
                 else:
                     st.write = False
                 if shared:
                     refusal = ("kozos-lista", found + "Ez az ertek a KOZOS hitelesito adatok listajan all "
                                "(tobb cimzettnel azonos, vagy partner vagy sajat rendszer adata): ugyfelnek nem "
                                "mehet ki, jelolessel sem. Vedd ki a levelbol.")
+                elif not history:
+                    h, detail = multi[0]
+                    refusal = ("tobb-cimzett", found +
+                               f"A(z) {h['fp'][:8]} ujjlenyomatu ertek EGY levelben {len(recipients)} cimzetthez "
+                               "menne (to, cc es bcc egyutt): egy ugyfel sajat, egyedi adata csak hozza mehet, "
+                               "jelolessel sem mehet ki igy, a mar megadott jeloles ervenytelen.\n"
+                               "Ha a cimzettek ugyanannak az ugyfelnek a cimei: alias-bejegyzes kell, ertek nelkul "
+                               f"({CLI} alias --fp {h['fp']} " + " ".join(f"--to {r}" for r in recipients)
+                               + f" --request --by <ki>), es annak jovahagyasa ({ALIAS_CATEGORY} kategoria); "
+                               "kulonben a hitelesito adat csak a sajat cimzettjenek mehet, a tobbi cimzett nelkul."
+                               + (f"\nAz alias allapota: {detail}." if detail else ""))
                 else:
                     h, earlier, detail = history[0]
                     refusal = ("kozos-elozmeny", found +
@@ -231,6 +264,10 @@ def main():
             elif not warn:
                 ack = take_ack(data, anchor)
                 if ack:
+                    # the pair the acknowledgement covered: these values to exactly these recipients
+                    # (the anchor binds the whole envelope, so a new recipient is a new letter)
+                    ack["fps"] = sorted({h["fp"] for h in hits})
+                    ack["recipients"] = recipients
                     log["ack"] = {"id": ack.get("id"), "by": ack.get("by"), "reason": ack.get("reason")}
                 else:
                     st.write = False
@@ -246,7 +283,7 @@ def main():
                     data["seen"].setdefault(h["fp"], {"recipients": recipients, "first": cl.now_stamp()})
             if warn:
                 log["would_deny"] = ("kozos-lista" if shared else "kozos-elozmeny" if history
-                                     else "jeloles-nelkul")
+                                     else "tobb-cimzett" if multi else "jeloles-nelkul")
     except cl.GateConfigError as exc:
         deny(found + f"A kapu allapota nem kezelheto: {exc}.", dict(log, reason="allapot"))
     if refusal:

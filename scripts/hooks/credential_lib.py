@@ -205,6 +205,9 @@ _PLACEHOLDER = re.compile(
 _SYMBOLS = set("!#$%&*+/=?@^_|~\\")
 _EMAIL = re.compile(r"^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$")
 _SEPARATORS = " \t:=-/,()\"'" + _DASHES + _TYPO_OPEN + _TYPO_CLOSE
+# Every whitespace character but the newline (str.isspace: the no-break space that
+# &nbsp; decodes to, the thin and the em space, a CR of a Windows line end, ...).
+_WS_BUT_NEWLINE = re.compile(r"[^\S\n]")
 
 
 def _has_accent(word: str) -> bool:
@@ -244,7 +247,7 @@ def _candidate(text: str, start: int, line_end: int, cfg: dict):
     examined = 0
     wrapped = False
     while i < stop and examined < cfg["scan_tokens"]:
-        while i < line_end and text[i] in _SEPARATORS:
+        while i < line_end and (text[i] in _SEPARATORS or text[i].isspace()):
             if text[i] in ":=":
                 after_colon, since_colon = True, 0
             i += 1
@@ -283,7 +286,7 @@ def _candidate(text: str, start: int, line_end: int, cfg: dict):
             examined += 1
             i = j
             continue
-        rest = text[j:line_end].lstrip(" \t")
+        rest = text[j:line_end].lstrip()
         clause_end = rest == "" or rest[0] in ",;)"
         if core and _value_shaped(core, after_colon and since_colon == 0, clause_end, cfg):
             return (i + max(raw.find(core), 0), core)
@@ -295,9 +298,12 @@ def _candidate(text: str, start: int, line_end: int, cfg: dict):
 
 def prepare_text(text: str) -> str:
     """HTML tags out (each replaced by a space, newlines kept, so line numbers
-    stay), entities decoded. A plain-text letter passes unchanged apart from
-    the entity decoding."""
-    return html.unescape(_TAG.sub(" ", text or ""))
+    stay), entities decoded, and every whitespace character but the newline
+    made a plain space: a no-break space (&nbsp;), a thin space or the CR of a
+    CRLF line end between the key and the value must not hide the value, and a
+    keyword written with a no-break space inside ("Wi-Fi kulcs") must still
+    match. A plain-text letter passes unchanged apart from these."""
+    return _WS_BUT_NEWLINE.sub(" ", html.unescape(_TAG.sub(" ", text or "")))
 
 
 def detect(text: str, cfg: dict, fingerprint) -> list:
@@ -308,7 +314,9 @@ def detect(text: str, cfg: dict, fingerprint) -> list:
     for m in cfg["_kw_re"].finditer(text):
         # inside a URL ("/login?next=..."), a keyword is a path or a parameter
         # name: only "keyword=value" there is a credential
-        tok_start = max(text.rfind(ws, 0, m.start()) for ws in (" ", "\n", "\t")) + 1
+        tok_start = m.start()
+        while tok_start > 0 and not text[tok_start - 1].isspace():
+            tok_start -= 1
         head = text[tok_start:m.start()].lower()
         if ("://" in head or head.startswith("www.")) and text[m.end():m.end() + 1] != "=":
             continue
@@ -410,10 +418,15 @@ def alias_anchor(fp: str, recipients) -> str:
 
 def resolve_fp(data: dict, prefix: str) -> str:
     """A full fingerprint from the 8-hex prefix shown in logs and deny
-    messages. Unknown or ambiguous prefixes raise; nothing is guessed."""
+    messages. Unknown or ambiguous prefixes raise; nothing is guessed. A FULL
+    64-hex fingerprint is taken as it is: a letter denied before its value
+    ever went out (several recipients at once) prints the full, keyed
+    fingerprint, because the state does not know it yet."""
     prefix = prefix.strip().lower()
     if not re.fullmatch(r"[0-9a-f]{8,64}", prefix):
         raise GateConfigError(f"az ujjlenyomat 8-64 hex jegy kell legyen: {prefix!r}")
+    if len(prefix) == 64:
+        return prefix
     pool = set(data["seen"]) | set(data["shared"]) | set(data["aliases"])
     for ack in data["acks"]:
         pool.update(ack.get("fps") or [])

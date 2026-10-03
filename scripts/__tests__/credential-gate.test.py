@@ -376,6 +376,135 @@ def test_fail_closed():
           {"shared", "acks_open", "acks_used", "seen", "aliases"}, st.stdout + st.stderr)
 
 
+def test_whitespace_class():
+    print("T1: every Unicode whitespace between the key and the value, the &nbsp; family, CRLF")
+    spaces = [chr(i) for i in range(0x110000) if chr(i).isspace()]
+    check("the whitespace class is the 29 code points of str.isspace", len(spaces) == 29, str(len(spaces)))
+    forms = (("Jelszó:", ""), ("Jelszó", ": "), ("admin jelszó", ""))
+    for head, tail in forms:
+        missed = [f"U+{ord(c):04X}" for c in spaces if c != "\n" and len(detect(head + c + tail + VAL)) != 1]
+        check(f"one hit across every whitespace but the newline: {head!r} + ws + {tail!r} + value", not missed,
+              " ".join(missed))
+    for ent in ("&nbsp;", "&#160;", "&#xA0;", "&ensp;", "&emsp;", "&thinsp;"):
+        check(f"one hit with the entity {ent} after the key", len(detect("<p>Jelszó:" + ent + VAL + "</p>")) == 1)
+    check("one hit with &nbsp; and a space", len(detect("Jelszó:&nbsp; " + VAL)) == 1)
+    got = detect("Kedves Ugyfel!\r\nJelszó:\r\n" + VAL + "\r\nUdvozlettel\r\n")
+    check("CRLF: the value on the next line is found, as with LF, on its own line", len(got) == 1 and got[0]["line"] == 3,
+          repr(got))
+    check("CRLF: a value on the same line", len(detect("Jelszó: " + VAL + "\r\n")) == 1)
+    check("CRLF: a label line, then the value indented", len(detect("Felhasználó: admin\r\nJelszó:\r\n  " + VAL2 + "\r\n")) == 1)
+    check("a keyword written with a no-break space inside still matches",
+          len(detect("Wi-Fi" + chr(0xA0) + "kulcs: \"Kert!proba\"")) == 1)
+    check("no hit: a sentence with no-break spaces stays a sentence",
+          detect("A jelszó" + chr(0xA0) + "legalább 8 karakter hosszú legyen.") == [])
+    check("no hit: CRLF, an empty line between the label and the value (the next line only)",
+          detect("Jelszó:\r\n\r\n" + VAL) == [])
+    # the token reader itself steps over any whitespace (not only through prepare_text)
+    raw = "Jelszó:" + chr(0xA0) + VAL
+    got = cl._candidate(raw, len("Jelszó"), len(raw), CFG)
+    check("the scan steps over a raw no-break space too", got is not None and got[1] == VAL, repr(got))
+    raw = "Jelszó: titkosproba" + chr(0x2009)
+    got = cl._candidate(raw, len("Jelszó"), len(raw), CFG)
+    check("a bare word ends its clause before a raw thin space at the line end", got is not None and got[1] == "titkosproba",
+          repr(got))
+    print("T1 on the hook (the tester's six forms and CRLF)")
+    td, store = make_store()
+    bodies = ("Jelszó:" + chr(0xA0) + VAL, "<p>Jelszó:&nbsp;" + VAL + "</p>", "Jelszó:" + chr(0x2009) + VAL,
+              "Jelszó:" + chr(0x202F) + VAL, "Jelszó" + chr(0xA0) + ": " + VAL, "Jelszó:&nbsp; " + VAL)
+    for k, body in enumerate(bodies):
+        r = gate(store, "Bash", bash_send(td, "ugyfel@example.invalid", "Kedves Ugyfel!\n" + body + "\n", name=f"t1-{k}.txt"))
+        check(f"hook: form {k + 1} is denied", r.returncode == 2 and log_lines(store)[-1].get("reason") == "jeloles-nelkul",
+              r.stderr)
+    r = gate(store, "mcp__mail__send_email", {"to": "ugyfel@example.invalid", "subject": "x",
+                                               "body": "Kedves Ugyfel!\r\nJelszó:\r\n" + VAL + "\r\n"})
+    check("hook: CRLF with the value on the next line is denied", r.returncode == 2, r.stderr)
+
+
+def test_multi_recipient():
+    print("T2: one letter carrying a credential to more than one recipient")
+    td, store = make_store()
+    base = bash_send(td, "ugyfel@example.invalid", LETTER)
+    for label, extra in (("to+cc", "--cc masik@example.invalid"), ("to+bcc", "--bcc masik@example.invalid"),
+                         ("two to", "--to masik@example.invalid")):
+        cmd = {"command": base["command"].replace("send.py ", f"send.py {extra} ", 1)}
+        r = gate(store, "Bash", cmd)
+        check(f"{label}: denied", r.returncode == 2 and log_lines(store)[-1].get("reason") == "tobb-cimzett", r.stderr)
+        check(f"{label}: the deny names the alias way out, every recipient and the approval category",
+              "alias --fp" in r.stderr and "--to masik@example.invalid" in r.stderr
+              and "--to ugyfel@example.invalid" in r.stderr and "credential_alias" in r.stderr, r.stderr)
+        cli(store, "ack", "--anchor", anchor_for(cmd), "--by", "teszt", "--reason", "probalom jelolessel atvinni (proba)")
+        r = gate(store, "Bash", cmd)
+        check(f"{label}: an acknowledgement does not lift it", r.returncode == 2
+              and log_lines(store)[-1].get("reason") == "tobb-cimzett", r.stderr)
+    with cl_state(store) as st:
+        voided = [a.get("voided") for a in st.data["acks"]]
+    check("... and every acknowledgement given for such a letter is void", voided == ["tobb-cimzett"] * 3, repr(voided))
+    for label, ti in (("MCP to+cc", {"to": "ugyfel@example.invalid", "cc": "masik@example.invalid"}),
+                      ("MCP two addresses in one to", {"to": "ugyfel@example.invalid, Masik <masik@example.invalid>"}),
+                      ("MCP a to list", {"to": ["ugyfel@example.invalid", "masik@example.invalid"]})):
+        r = gate(store, "mcp__mail__send_email", dict(ti, subject="x", body=LETTER))
+        check(f"{label}: denied", r.returncode == 2 and log_lines(store)[-1].get("reason") == "tobb-cimzett", r.stderr)
+    r = gate(store, "Bash", {"command": base["command"].replace("send.py ", "send.py --cc UGYFEL@example.invalid ", 1)})
+    check("the same address twice (case apart) is one recipient, not two",
+          r.returncode == 2 and log_lines(store)[-1].get("reason") == "jeloles-nelkul", r.stderr)
+    print("T2: the owner-approved alias, and the acknowledgement's pair")
+    two = {"command": base["command"].replace("send.py ", "send.py --cc masik@example.invalid ", 1)}
+    r = gate(store, "Bash", two)
+    toks = r.stderr.split()
+    full = toks[toks.index("--fp") + 1] if "--fp" in toks else ""
+    fp8 = full[:8]
+    check("the deny prints the FULL keyed fingerprint (the value never went out, the state does not know it)",
+          len(full) == 64 and fp8 == log_lines(store)[-1]["hits"][0]["fp8"], full)
+    a = cli(store, "alias", "--fp", full, "--to", "ugyfel@example.invalid", "--to", "masik@example.invalid")
+    check("the alias command the deny prints works on the first denied letter", a.returncode == 0, a.stderr)
+    check("an unknown 8-hex prefix is still refused, nothing guessed",
+          cli(store, "alias", "--fp", "0123abcd", "--to", "a@example.invalid").returncode == 2)
+    r = gate(store, "Bash", two)
+    check("an alias without an approval changes nothing",
+          r.returncode == 2 and "nincs jovahagyott alias" in r.stderr and log_lines(store)[-1].get("reason") == "tobb-cimzett",
+          r.stderr)
+    with cl_state(store) as st:
+        alias = next(iter(st.data["aliases"].values()))
+    approve(store, "credential_alias", alias["anchor"])
+    r = gate(store, "Bash", two)
+    check("with the approved alias the letter still needs its own acknowledgement",
+          r.returncode == 2 and log_lines(store)[-1].get("reason") == "jeloles-nelkul", r.stderr)
+    cli(store, "ack", "--anchor", anchor_of(r), "--by", "teszt", "--reason", "ugyanaz az ugyfel ket cime (alias, proba)")
+    r = gate(store, "Bash", two)
+    check("alias + acknowledgement: the letter goes out", r.returncode == 0, r.stderr)
+    with cl_state(store) as st:
+        used = [a for a in st.data["acks"] if a.get("consumed") and not a.get("voided")]
+    check("the used acknowledgement records the pair it covered: the fingerprints and exactly these recipients",
+          len(used) == 1 and used[0].get("recipients") == ["masik@example.invalid", "ugyfel@example.invalid"]
+          and len(used[0].get("fps") or []) == 1 and used[0]["fps"][0].startswith(fp8), repr(used))
+    three = {"command": two["command"].replace("send.py ", "send.py --bcc harmadik@example.invalid ", 1)}
+    r = gate(store, "Bash", three)
+    # the value already went to the two: the history check (it comes before the several-recipients check) refuses
+    check("a third recipient is not covered by the alias", r.returncode == 2
+          and log_lines(store)[-1].get("reason") == "kozos-elozmeny", r.stderr)
+    r = gate(store, "Bash", bash_send(td, "masik@example.invalid", LETTER))
+    check("an acknowledgement covers its own letter only: the same value to one of the two needs a new one",
+          r.returncode == 2 and log_lines(store)[-1].get("reason") == "jeloles-nelkul", r.stderr)
+    td, store = make_store()
+    two = {"command": base["command"].replace("send.py ", "send.py --cc masik@example.invalid ", 1)}
+    r = gate(store, "Bash", two)
+    toks = r.stderr.split()
+    full = toks[toks.index("--fp") + 1] if "--fp" in toks else ""
+    cli(store, "alias", "--fp", full, "--to", "ugyfel@example.invalid", "--to", "masik@example.invalid")
+    with cl_state(store) as st:
+        alias = next(iter(st.data["aliases"].values()), {})
+    approve(store, "credential_alias", alias.get("anchor", ""))
+    other = {"command": base["command"].replace("send.py ", "send.py --cc harmadik@example.invalid ", 1)}
+    r = gate(store, "Bash", other)
+    check("an approved alias covers exactly its recipients: a different pair is refused for several recipients",
+          r.returncode == 2 and log_lines(store)[-1].get("reason") == "tobb-cimzett", r.stderr)
+    td, store = make_store()
+    r = gate(store, "Bash", {"command": base["command"].replace("send.py ", "send.py --cc masik@example.invalid ", 1)},
+             CREDENTIAL_GATE_MODE="warn")
+    check("warn: goes out, logged with what block mode would have done",
+          r.returncode == 0 and log_lines(store)[-1].get("would_deny") == "tobb-cimzett", r.stderr)
+
+
 def test_no_value_anywhere():
     print("(5) the value is never written")
     leaks = []
@@ -411,6 +540,8 @@ if __name__ == "__main__":
     test_scope_and_drafts()
     test_warn_mode()
     test_fail_closed()
+    test_whitespace_class()
+    test_multi_recipient()
     test_no_value_anywhere()
     print(f"\n{'ALL PASS' if not failed else f'{len(failed)} FAIL'}")
     sys.exit(1 if failed else 0)
