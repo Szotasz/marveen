@@ -56,6 +56,64 @@ PENDING_FILE = GARMIN_DIR / "pending_run_analysis.txt"
 MARVEEN_DIR = Path(__file__).resolve().parents[1]
 TOKEN_FILE = MARVEEN_DIR / "store" / ".dashboard-token"
 MESSAGES_URL = "http://localhost:3420/api/messages"
+
+def main_agent_id() -> str:
+    """The installation's own main-agent id, resolved THE WAY THE PRODUCT DOES.
+
+    BEEGETETT913: this used to be a hardcoded agent name from a different
+    install ("picard", "seven"). A name that does not exist here is not a loud
+    failure -- the dashboard rejects the POST with 403 and the gate's alert is
+    lost, or worse, it is accepted into a mailbox nobody reads.
+
+    The fallback is "marveen" ON PURPOSE, and it is not the old defect coming
+    back: src/config.ts resolves MAIN_AGENT_ID exactly this way
+    (`env['MAIN_AGENT_ID'] ?? 'marveen'`) so that an older install upgrading in
+    place keeps working. On such an install "marveen" IS the registered main
+    agent, so the POST is accepted. The defect was never "there is a default" --
+    it was a name written into this script that had nothing to do with the
+    install it runs on. Resolving it the same way the product does is the fix.
+
+    THIS IS A LINE-FOR-LINE MIRROR of src/env.ts `readEnvFile`, and the mirror
+    is the point: an earlier version of this function was DELIBERATELY more
+    tolerant (it stripped a leading `export `, a trailing ` # comment`, and one
+    side's quote), and on five measured shapes it answered something the product
+    never would. The worst of them was `export MAIN_AGENT_ID=x`: the product's
+    key becomes `export MAIN_AGENT_ID`, so the key is absent and the fallback
+    applies -- exactly the "an id that is not this install's" misdirection this
+    change exists to remove. Measured 2026-09-27 against the compiled dist.
+
+    So every rule below is the product's rule, including the ones that look
+    wrong in isolation:
+      - a line is skipped only if blank or starting with `#` (after trim)
+      - the key is everything before the FIRST `=`, trimmed -- so `export K=v`
+        has the key `export K` and never matches
+      - the value is trimmed, and quotes come off ONLY when both ends carry the
+        same one; a trailing comment is part of the value
+      - an EMPTY value stays `""`, because the product's `??` is nullish-only
+      - the LAST matching line wins, because the product overwrites the key
+    """
+    env = MARVEEN_DIR / ".env"
+    talalt: str | None = None
+    try:
+        for line in env.read_text(encoding="utf-8").splitlines():
+            trimmelt = line.strip()
+            if not trimmelt or trimmelt.startswith("#"):
+                continue
+            egyenlo = trimmelt.find("=")
+            if egyenlo == -1:
+                continue
+            kulcs = trimmelt[:egyenlo].strip()
+            ertek = trimmelt[egyenlo + 1:].strip()
+            if (ertek.startswith('"') and ertek.endswith('"')) or (
+                ertek.startswith("'") and ertek.endswith("'")
+            ):
+                ertek = ertek[1:-1]
+            if kulcs != "MAIN_AGENT_ID":
+                continue
+            talalt = ertek
+    except OSError:
+        pass
+    return "marveen" if talalt is None else talalt
 # Proof-of-life artefact: its mtime answers "did the silent path actually run
 # today", which "is the task enabled" does not.
 HEARTBEAT_FILE = MARVEEN_DIR / "store" / "garmin-run-gate-last.txt"
@@ -103,13 +161,21 @@ def current_activity_id() -> str:
         return "?"
 
 
-def notify_seven(activity_id: str) -> None:
+def notify_main_agent(activity_id: str) -> None:
     """Wake Seven. Raises on any failure so the caller can roll the state back."""
+    # SENDER AND RECIPIENT ARE BOTH THE MAIN AGENT, and the sender is not a
+    # descriptive label. Measured on the live dashboard 2026-09-25:
+    #   from=garmin-gate -> HTTP 403,  from=memoria-gate -> HTTP 403,
+    #   from=<the install's main agent> -> HTTP 200
+    # The API only accepts a registered fleet agent id, so a readable name like
+    # "garmin-gate" loses the message just as surely as the old hardcoded one
+    # did. The source is named in the content prefix instead.
+    agent = main_agent_id()
     token = TOKEN_FILE.read_text().strip()
     payload = json.dumps(
         {
-            "from": "geordi",
-            "to": "seven",
+            "from": agent,
+            "to": agent,
             "content": NOTIFY_TEMPLATE.format(
                 activity_id=activity_id, pending=PENDING_FILE
             ),
@@ -168,11 +234,11 @@ def main() -> int:
 
     activity_id = current_activity_id()
     try:
-        notify_seven(activity_id)
+        notify_main_agent(activity_id)
     except (urllib.error.URLError, OSError, RuntimeError, ValueError) as exc:
         restore_state(snapshot)
         print(
-            f"new run {activity_id} found but notifying seven failed ({exc}); "
+            f"new run {activity_id} found but notifying the main agent failed ({exc}); "
             "state rolled back, the next tick will find it again",
             file=sys.stderr,
         )

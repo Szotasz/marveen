@@ -144,7 +144,68 @@ TOKEN_FILE = MARVEEN_DIR / "store" / ".dashboard-token"
 MARKER_FILE = MARVEEN_DIR / "store" / "memoria-heartbeat-gate-last.txt"
 MESSAGES_URL = "http://localhost:3420/api/messages"
 
-AGENT = "picard"
+def main_agent_id() -> str:
+    """The installation's own main-agent id, resolved THE WAY THE PRODUCT DOES.
+
+    BEEGETETT913: this used to be a hardcoded agent name from a different
+    install ("picard", "seven"). A name that does not exist here is not a loud
+    failure -- the dashboard rejects the POST with 403 and the gate's alert is
+    lost, or worse, it is accepted into a mailbox nobody reads.
+
+    The fallback is "marveen" ON PURPOSE, and it is not the old defect coming
+    back: src/config.ts resolves MAIN_AGENT_ID exactly this way
+    (`env['MAIN_AGENT_ID'] ?? 'marveen'`) so that an older install upgrading in
+    place keeps working. On such an install "marveen" IS the registered main
+    agent, so the POST is accepted. The defect was never "there is a default" --
+    it was a name written into this script that had nothing to do with the
+    install it runs on. Resolving it the same way the product does is the fix.
+
+    THIS IS A LINE-FOR-LINE MIRROR of src/env.ts `readEnvFile`, and the mirror
+    is the point: an earlier version of this function was DELIBERATELY more
+    tolerant (it stripped a leading `export `, a trailing ` # comment`, and one
+    side's quote), and on five measured shapes it answered something the product
+    never would. The worst of them was `export MAIN_AGENT_ID=x`: the product's
+    key becomes `export MAIN_AGENT_ID`, so the key is absent and the fallback
+    applies -- exactly the "an id that is not this install's" misdirection this
+    change exists to remove. Measured 2026-09-27 against the compiled dist.
+
+    So every rule below is the product's rule, including the ones that look
+    wrong in isolation:
+      - a line is skipped only if blank or starting with `#` (after trim)
+      - the key is everything before the FIRST `=`, trimmed -- so `export K=v`
+        has the key `export K` and never matches
+      - the value is trimmed, and quotes come off ONLY when both ends carry the
+        same one; a trailing comment is part of the value
+      - an EMPTY value stays `""`, because the product's `??` is nullish-only
+      - the LAST matching line wins, because the product overwrites the key
+    """
+    env = MARVEEN_DIR / ".env"
+    talalt: str | None = None
+    try:
+        for line in env.read_text(encoding="utf-8").splitlines():
+            trimmelt = line.strip()
+            if not trimmelt or trimmelt.startswith("#"):
+                continue
+            egyenlo = trimmelt.find("=")
+            if egyenlo == -1:
+                continue
+            kulcs = trimmelt[:egyenlo].strip()
+            ertek = trimmelt[egyenlo + 1:].strip()
+            if (ertek.startswith('"') and ertek.endswith('"')) or (
+                ertek.startswith("'") and ertek.endswith("'")
+            ):
+                ertek = ertek[1:-1]
+            if kulcs != "MAIN_AGENT_ID":
+                continue
+            talalt = ertek
+    except OSError:
+        pass
+    return "marveen" if talalt is None else talalt
+# Resolved once at import: AGENT is not only the message recipient, it is
+# also the SQL filter in the activity queries below. A None here does not
+# fail -- it silently matches no rows, so the gate would report "no
+# activity" forever. Caught by scripts/__tests__/memoria-heartbeat-gate.test.py.
+AGENT = main_agent_id()
 
 # The agent's own `--mark-seen` call is logged by the PostToolUse hook AFTER
 # this script has read the maximum, so the marker can never cover it and the
@@ -271,7 +332,11 @@ def wake_agent(seen: dict[str, int], maxima: dict[str, int]) -> None:
         tool_max=maxima["tool_call_log"],
         tool_new=count_new(seen["tool_call_log"], "tool_call_log"),
     )
-    payload = json.dumps({"from": "geordi", "to": AGENT, "content": content}).encode()
+    # The sender is the agent id, not a descriptive label: the API accepts only
+    # a registered fleet agent id and answers 403 to anything else (measured
+    # 2026-09-25 against the live dashboard). What the message IS says so in its
+    # own text, not in the envelope.
+    payload = json.dumps({"from": AGENT, "to": AGENT, "content": content}).encode()
     req = urllib.request.Request(
         MESSAGES_URL,
         data=payload,
@@ -374,6 +439,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.conv_upto is not None and not args.mark_seen:
         parser.error("--conv-upto only means anything together with --mark-seen")
+
 
     return mark_seen(args.conv_upto) if args.mark_seen else check()
 
