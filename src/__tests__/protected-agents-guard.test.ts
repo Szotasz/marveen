@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,6 +13,7 @@ import {
   recordProtectedAgentEvent,
 } from '../web/protected-agents.js'
 import { getDesiredAgents } from '../web/agent-desired-state.js'
+import { BUNDLE_SCHEMA_VERSION, importAgentBundle, importAllAgentsBundle } from '../web/agent-bundle.js'
 import { tryHandleAgents } from '../web/routes/agents.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -150,6 +152,38 @@ describe('stop and delete routes refuse a protected agent', () => {
   })
 })
 
+describe('identity and lifecycle writes are refused for a protected agent', () => {
+  const protectedName = DEFAULT_PROTECTED_AGENTS[0]
+
+  // Sentinel's review (2026-10-03) on card 2fd5bfae: stopping a protected agent
+  // is loud, rewriting it is silent. A missing supervisor is noticed; one whose
+  // CLAUDE.md, mcp.json, model or auth was swapped still runs, still answers,
+  // and is no longer the agent anyone relied on.
+  it.each([
+    [`/api/agents/${protectedName}`, 'config-overwrite'],
+    [`/api/agents/${protectedName}/context-guard`, 'context-guard-write'],
+    [`/api/agents/${protectedName}/remote`, 'remote-write'],
+    [`/api/agents/${protectedName}/security`, 'security-profile-write'],
+  ])('PUT %s returns 400 and names the action', async (path, action) => {
+    const before = [...getDesiredAgents()].sort()
+    const { ctx, out } = fakeCtx(path, 'PUT')
+    const handled = await tryHandleAgents(ctx, join(PROJECT_ROOT, 'web'))
+
+    expect(handled).toBe(true)
+    expect(out.status).toBe(400)
+    expect(String(out.body?.error)).toContain(action)
+    expect([...getDesiredAgents()].sort()).toEqual(before)
+  })
+
+  it('still serves GET /context-guard for a protected agent', async () => {
+    // Reading the config is not a lifecycle change, and the dashboard needs it.
+    // Refusing the read too would be protection theatre with a usability cost.
+    const { ctx, out } = fakeCtx(`/api/agents/${protectedName}/context-guard`, 'GET')
+    await tryHandleAgents(ctx, join(PROJECT_ROOT, 'web'))
+    expect(out.status).not.toBe(400)
+  })
+})
+
 describe('guard placement is load-bearing', () => {
   it('stop checks protection before clearing desired state or stopping', () => {
     const stopBlock = sourceBetween(agentsSource, 'const stopMatch', '// Main-agent inbox PULL')
@@ -173,11 +207,137 @@ describe('guard placement is load-bearing', () => {
     expect(deleteBlock.indexOf('isMainChannelsAgent(name)')).toBeGreaterThan(-1)
   })
 
+  it('every identity-write route refuses before it reads the body or writes', () => {
+    // Same rule as stop/delete: the guard must precede the mutation, and here
+    // also the readBody -- there is no reason to parse a payload we refuse.
+    for (const [startMarker, endMarker, writeCall] of [
+      ["const contextGuardMatch = path.match", "// GET /api/context-guard", 'writeContextGuardConfig(name'],
+      ["const remoteCfgMatch = path.match", "if (path === '/api/team/graph'", 'writeAgentRemoteConfig(name'],
+      ["if (secGetMatch && method === 'PUT')", '// PUT /api/agents/:name/auto-restart', 'writeAgentSecurityProfile(name'],
+      ["if (agentMatch && method === 'PUT')", 'json(res, { ok: true })', 'checkAgentPutFields(name'],
+    ] as const) {
+      const block = sourceBetween(agentsSource, startMarker, endMarker)
+      const guard = block.indexOf('denyProtectedWrite(name')
+      expect(guard, `missing guard in ${startMarker}`).toBeGreaterThan(-1)
+      expect(guard, `guard after write in ${startMarker}`).toBeLessThan(block.indexOf(writeCall))
+      expect(guard, `guard after readBody in ${startMarker}`).toBeLessThan(block.indexOf('readBody(req)'))
+    }
+  })
+
   it('the reconciler names an out-of-band disappearance instead of logging a routine restart', () => {
     expect(monitorSource).toMatch(/Protected agent disappeared from tmux unexpectedly/)
     expect(monitorSource).toMatch(/protected agent disappeared from tmux unexpectedly, restarted/)
     const reconcile = sourceBetween(monitorSource, 'async function reconcileDesiredAgents', 'Backward-compatible alias')
     expect(reconcile.indexOf('isProtectedAgent(name)')).toBeGreaterThan(-1)
     expect(reconcile.indexOf('recordProtectedAgentEvent')).toBeGreaterThan(-1)
+  })
+})
+
+describe('an overwriting import cannot replace a protected agent', () => {
+  // The sharpest of the identity-rewrite doors: POST /api/agents/import with
+  // overwrite=1 swaps the WHOLE agents/<name>/ directory in one call. The guard
+  // sits in the importer rather than in the route, because the importer is where
+  // the destination name is finally resolved (manifest name or ?name= override)
+  // and where the rmSync happens -- a route-level check on the override alone
+  // would miss a bundle that simply carries the protected name inside.
+  const protectedName = DEFAULT_PROTECTED_AGENTS[0]
+  let tmp: string
+
+  beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), 'protected-import-')) })
+  afterEach(() => { rmSync(tmp, { recursive: true, force: true }) })
+
+  function stage(root: string, files: Record<string, string>): void {
+    for (const [rel, content] of Object.entries(files)) {
+      const p = join(root, rel)
+      mkdirSync(dirname(p), { recursive: true })
+      writeFileSync(p, content)
+    }
+  }
+
+  function packSingle(agentName: string, files: Record<string, string>): Buffer {
+    const root = join(tmp, `single-${agentName}`)
+    stage(join(root, 'agent'), files)
+    writeFileSync(join(root, 'manifest.json'), JSON.stringify({
+      schemaVersion: BUNDLE_SCHEMA_VERSION, agentName, includesSecrets: false,
+    }))
+    const out = join(root, 'bundle.tar.gz')
+    execFileSync('tar', ['-czf', out, '-C', root, 'manifest.json', 'agent'])
+    return readFileSync(out)
+  }
+
+  function packFleet(agents: Record<string, Record<string, string>>): Buffer {
+    const root = join(tmp, 'fleet')
+    for (const [name, files] of Object.entries(agents)) stage(join(root, 'agents', name), files)
+    writeFileSync(join(root, 'manifest.json'), JSON.stringify({
+      schemaVersion: BUNDLE_SCHEMA_VERSION, kind: 'fleet', agents: Object.keys(agents), includesSecrets: false,
+    }))
+    const out = join(root, 'fleet.tar.gz')
+    execFileSync('tar', ['-czf', out, '-C', root, 'manifest.json', 'agents'])
+    return readFileSync(out)
+  }
+
+  it('refuses the overwrite and leaves the installed persona byte-identical', () => {
+    const dest = join(tmp, 'agents')
+    stage(join(dest, protectedName), { 'CLAUDE.md': '# the real supervisor', '.mcp.json': '{"mcpServers":{}}' })
+    const bundle = packSingle(protectedName, { 'CLAUDE.md': '# substituted', '.mcp.json': '{"mcpServers":{"evil":{}}}' })
+
+    expect(() => importAgentBundle(bundle, { overwrite: true, resolveDest: (n) => join(dest, n) }))
+      .toThrow(/Protected agent .* cannot be overwritten/)
+    expect(readFileSync(join(dest, protectedName, 'CLAUDE.md'), 'utf8')).toBe('# the real supervisor')
+    expect(readFileSync(join(dest, protectedName, '.mcp.json'), 'utf8')).toBe('{"mcpServers":{}}')
+  })
+
+  it('refuses it just as firmly when the protected name comes from ?name=', () => {
+    // The bundle is innocent-looking; the override is what aims it at the
+    // supervisor. Resolving the guard after the override is what covers this.
+    const dest = join(tmp, 'agents')
+    stage(join(dest, protectedName), { 'CLAUDE.md': '# the real supervisor' })
+    const bundle = packSingle('harmless', { 'CLAUDE.md': '# substituted' })
+
+    expect(() => importAgentBundle(bundle, { overrideName: protectedName, overwrite: true, resolveDest: (n) => join(dest, n) }))
+      .toThrow(/Protected agent .* cannot be overwritten/)
+    expect(readFileSync(join(dest, protectedName, 'CLAUDE.md'), 'utf8')).toBe('# the real supervisor')
+  })
+
+  it('installs a protected name on a machine that does not have that agent yet', () => {
+    // Deliberately allowed: there is no running supervisor to subvert here, and
+    // refusing would block a legitimate move of the supervisor to a new host.
+    const dest = join(tmp, 'agents')
+    const bundle = packSingle(protectedName, { 'CLAUDE.md': '# fresh install' })
+    const result = importAgentBundle(bundle, { resolveDest: (n) => join(dest, n) })
+
+    expect(result.name).toBe(protectedName)
+    expect(readFileSync(join(dest, protectedName, 'CLAUDE.md'), 'utf8')).toBe('# fresh install')
+  })
+
+  it('skips only the protected agent in a fleet import and still installs the rest', () => {
+    const dest = join(tmp, 'agents')
+    stage(join(dest, protectedName), { 'CLAUDE.md': '# the real supervisor' })
+    stage(join(dest, 'alpha'), { 'CLAUDE.md': '# old alpha' })
+    const bundle = packFleet({
+      [protectedName]: { 'CLAUDE.md': '# substituted' },
+      alpha: { 'CLAUDE.md': '# new alpha' },
+    })
+
+    const result = importAllAgentsBundle(bundle, { overwrite: true, resolveDest: (n) => join(dest, n) })
+
+    expect(result.imported.map((a) => a.name)).toEqual(['alpha'])
+    expect(result.skipped).toEqual([{ name: protectedName, reason: 'protected agent, not overwritten' }])
+    expect(readFileSync(join(dest, protectedName, 'CLAUDE.md'), 'utf8')).toBe('# the real supervisor')
+    expect(readFileSync(join(dest, 'alpha', 'CLAUDE.md'), 'utf8')).toBe('# new alpha')
+  })
+
+  it('the refusal sits before the directory is removed', () => {
+    // Placement is load-bearing here too: a guard after the rmSync would leave
+    // the supervisor deleted even though the import was refused.
+    const source = readFileSync(join(__dirname, '..', 'web', 'agent-bundle.ts'), 'utf8')
+    for (const marker of ['export function importAgentBundle', 'export function importAllAgentsBundle']) {
+      const block = sourceBetween(source, marker, marker === 'export function importAgentBundle'
+        ? 'Suggested download filename'
+        : 'export function fleetBundleFilename')
+      const guard = block.indexOf('isProtectedAgent(name)')
+      expect(guard, `missing guard in ${marker}`).toBeGreaterThan(-1)
+      expect(guard, `guard after rmSync in ${marker}`).toBeLessThan(block.indexOf('rmSync(dest'))
+    }
   })
 })
