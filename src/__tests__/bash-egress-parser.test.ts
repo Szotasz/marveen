@@ -13,14 +13,14 @@
 //
 // The hook is a .mjs script run by Claude Code. It guards its own entry point
 // (isInvokedDirectly), so importing it here runs no side effects.
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { classify, isExternal, liftSubstitutions, parseVendorHosts, loadVendorHosts, parseVendorDomains, loadVendorDomains } from '../../scripts/hooks/bash-egress-parser.mjs'
+import { classify, isExternal, liftSubstitutions, parseVendorHosts, loadVendorHosts, parseVendorDomains, loadVendorDomains, PREFIX_WORDS } from '../../scripts/hooks/bash-egress-parser.mjs'
 import {
   BASH_EGRESS_DENY,
   agentGetsBashEgressParser,
@@ -35,6 +35,19 @@ import { isPrivateTarget } from '../../scripts/hooks/bash-egress-parser.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const HOOK = join(ROOT, 'scripts', 'hooks', 'bash-egress-parser.mjs')
+
+// A test run must never append to the repo's real block log. Every spawn below passes its own temp
+// BASH_EGRESS_BLOCK_LOG; this default catches a future spawn that forgets (they all inherit
+// process.env), and the afterAll check fails the run if store/ was touched anyway.
+const REPO_BLOCK_LOG = join(ROOT, 'store', 'bash-egress-blocks.jsonl')
+const stamp = (p: string) => (existsSync(p) ? `${statSync(p).size}:${statSync(p).mtimeMs}` : 'absent')
+const REPO_BLOCK_LOG_BEFORE = stamp(REPO_BLOCK_LOG)
+const TEST_LOG_DIR = mkdtempSync(join(tmpdir(), 'bash-egress-default-log-'))
+process.env.BASH_EGRESS_BLOCK_LOG = join(TEST_LOG_DIR, 'blocks.jsonl')
+afterAll(() => {
+  rmSync(TEST_LOG_DIR, { recursive: true, force: true })
+  expect(stamp(REPO_BLOCK_LOG)).toBe(REPO_BLOCK_LOG_BEFORE)
+})
 
 // The name list, modelled the way bash-egress-deny.test.ts models it (anchored
 // full-match, per sub-command). Used ONLY to state the "before" number.
@@ -364,11 +377,211 @@ describe('a URL in a for-loop variable', () => {
   })
 })
 
+// EGRESSHEREDOC924 (owner GO 2026-10-02): a heredoc / here-string that IS an interpreter's program
+// is judged like a -c / -e body; a shell interpreter's body gets the whole-command analysis.
+describe('heredoc-fed interpreters', () => {
+  const PY_EXT = `python3 - <<'PY'\nimport urllib.request\nurllib.request.urlopen('https://example.org/')\nPY`
+  const DENY: Array<[string, string]> = [
+    [PY_EXT, 'heredoc-external'],
+    [`node <<EOF\nfetch('https://example.org/').then(r => r.text())\nEOF`, 'heredoc-external'],
+    [`perl <<-'PL'\n\tuse LWP::Simple; getprint('http://example.org/');\n\tPL`, 'heredoc-external'],
+    [`ruby <<RB\nrequire 'net/http'; puts Net::HTTP.get(URI('https://example.org/'))\nRB`, 'heredoc-external'],
+    [`php <<'P'\n<?php echo file_get_contents('https://example.org/');\nP`, 'heredoc-external'],
+    [`/usr/bin/python3 - <<"PY"\nimport requests; requests.get("https://example.org/")\nPY`, 'heredoc-external'],
+    [`python3 <<< "import urllib.request; urllib.request.urlopen('https://example.org/')"`, 'heredoc-external'],
+    [`bash <<EOF\ncurl -s https://example.org/\nEOF`, 'heredoc-curl-external'],
+    [`sh <<'S'\ncd /tmp && curl -s example.org/x\nS`, 'heredoc-curl-external'],
+    [`zsh <<-EOF\n\tcurl -s http://example.org/\n\tEOF`, 'heredoc-curl-external'],
+    [`bash <<< 'curl -s https://example.org/'`, 'heredoc-curl-external'],
+    // a variable assigned in the same command, expanded in an unquoted-tag body
+    [`U=https://example.org/; python3 - <<EOF\nimport urllib.request; urllib.request.urlopen('$U')\nEOF`, 'heredoc-external'],
+    // a loop variable in an unquoted-tag body
+    [`for u in https://example.org/; do python3 - <<EOF\nimport urllib.request; urllib.request.urlopen('$u')\nEOF\ndone`, 'heredoc-external'],
+  ]
+  const ALLOW = [
+    `python3 - <<'PY'\nimport urllib.request\nurllib.request.urlopen('http://localhost:3420/api/health')\nPY`,
+    `python3 - <<'PY'\nimport json,urllib.request\ntok=open('store/.dashboard-token').read().strip()\nr=urllib.request.Request('http://127.0.0.1:3420/api/kanban',headers={'Authorization':'Bearer '+tok})\nprint(json.loads(urllib.request.urlopen(r).read()))\nPY`,
+    `python3 - <<'PY'\nimport urllib.request\nurllib.request.urlopen('http://192.168.1.5:8096/')\nPY`,
+    `node <<EOF\nfetch('http://nas.local:5000/').then(r => r.text())\nEOF`,
+    `bash <<EOF\ncurl -s http://localhost:3420/api/health\nEOF`,
+    `python3 <<< "import urllib.request; urllib.request.urlopen('http://localhost:3420/x')"`,
+    // a URL carried as data with no network primitive: passes, as in a one-liner
+    `python3 - <<'PY'\nprint('https://example.org/')\nPY`,
+    // a quoted tag does not expand $U, so the assigned external URL never reaches the body
+    `U=https://example.org/; python3 - <<'PY'\nimport urllib.request; urllib.request.urlopen('http://localhost:3420/$U')\nPY`,
+    // a heredoc to a NON-interpreter is inert text, URL and curl word included
+    `cat <<EOF\ncurl https://example.org/\nEOF`,
+    `cat > /tmp/notes.md <<'EOF'\nimport urllib.request; urllib.request.urlopen('https://example.org/')\nEOF`,
+  ]
+  it('POSITIVE CONTROL: the same body as a -c one-liner was already denied', () => {
+    expect(deny(`python3 -c "import urllib.request; urllib.request.urlopen('https://example.org/')"`)).toBe(true)
+  })
+  it('denies an external URL in an interpreter heredoc / here-string body, naming the host', () => {
+    for (const [cmd, reason] of DENY) expect({ cmd, r: classify(cmd) }).toEqual({ cmd, r: { deny: true, reason, hosts: ['example.org'] } })
+  })
+  it('lets localhost, private-network, data-only and non-interpreter heredocs through', () => {
+    for (const cmd of ALLOW) expect({ cmd, deny: deny(cmd) }).toEqual({ cmd, deny: false })
+  })
+  it('a listed vendor host passes in a heredoc body too, and does not launder another host', () => {
+    const V = parseVendorHosts({ hosts: ['api.elevenlabs.io'] })
+    expect(classify(`python3 - <<'PY'\nimport urllib.request; urllib.request.urlopen('https://api.elevenlabs.io/v1/voices')\nPY`, 0, V).deny).toBe(false)
+    expect(classify(`python3 - <<'PY'\nimport urllib.request; urllib.request.urlopen('https://api.elevenlabs.io/v1'); urllib.request.urlopen('https://evil.com/')\nPY`, 0, V))
+      .toMatchObject({ deny: true, hosts: ['evil.com'] })
+  })
+  // KNOWN COLLATERAL, pinned so it stays visible while the false-positive policy is PENDING an owner
+  // decision (strict is the current behaviour, not a ruling): a localhost call whose
+  // PAYLOAD mentions an external URL is denied, because the body is judged exactly like a one-liner
+  // and the one-liner path already denies this shape. Replayed on 14 days of sub-agent commands,
+  // this was 7 of the 15 newly denied heredocs (dashboard posts quoting a github.com / pypi.org URL).
+  it('PARITY: a localhost call carrying an external URL as data is denied in both paths', () => {
+    const body = `import urllib.request\nurllib.request.urlopen('http://localhost:3420/api/messages', data=b'PR: https://github.com/o/r/pull/1')`
+    expect(classify(`python3 -c "${body.replace(/\n/g, '; ')}"`)).toMatchObject({ deny: true, hosts: ['github.com'] })
+    expect(classify(`python3 - <<'PY'\n${body}\nPY`)).toMatchObject({ deny: true, hosts: ['github.com'] })
+  })
+  // The heredoc twin of 'a loop with too many values to judge one by one fails closed': past
+  // MAX_LOOP_VARIANTS the body is not read value by value, and without the heredoc-loop-unbounded
+  // branch the span would fall through to the plain reading, where $u is still the literal text
+  // `$u` (no URL, no host), so an external value hidden among the many would pass.
+  it('a heredoc body fed by a loop with too many values to judge one by one fails closed', () => {
+    const loopOf = (values: string[]) =>
+      `for u in ${values.join(' ')}; do python3 - <<EOF\nimport urllib.request; urllib.request.urlopen('$u')\nEOF\ndone`
+    const local = (n: number) => Array.from({ length: n }, (_, i) => `http://localhost/${i}`)
+    // 65 local values: past the cap of 64, so it is the unbounded branch that denies, not a host
+    expect(classify(loopOf(local(65)))).toEqual({ deny: true, reason: 'heredoc-loop-unbounded', hosts: [] })
+    // the external value is the LAST of 70: it is never judged, the cap is the only thing that stops it
+    expect(classify(loopOf([...local(69), 'https://example.org/x']))).toEqual({ deny: true, reason: 'heredoc-loop-unbounded', hosts: [] })
+    // CONTROLS: exactly at the cap the values ARE judged one by one (local passes, one external names its host)
+    expect(deny(loopOf(local(64)))).toBe(false)
+    expect(classify(loopOf([...local(63), 'https://example.org/x']))).toEqual({ deny: true, reason: 'heredoc-external', hosts: ['example.org'] })
+  })
+  it('the hook process denies the heredoc shape and stays silent on its localhost twin', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bash-egress-heredoc-'))
+    try {
+      const run = (command: string) => spawnSync(process.execPath, [HOOK], {
+        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+        encoding: 'utf-8',
+        env: { ...process.env, BASH_EGRESS_BLOCK_LOG: join(dir, 'blocks.jsonl'), BASH_EGRESS_VENDOR_HOSTS: join(dir, 'none.json') },
+      })
+      expect(run(PY_EXT).stdout).toContain('"permissionDecision":"deny"')
+      expect(readFileSync(join(dir, 'blocks.jsonl'), 'utf-8')).toContain('"reason":"heredoc-external"')
+      expect(run(PY_EXT.replace('https://example.org/', 'http://localhost:3420/api/health')).stdout).toBe('')
+      expect(run('while read u; do curl -s "$u"; done <<< "https://example.org/"').stdout).toContain('"permissionDecision":"deny"')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+})
+
+// A prefix before the interpreter must not hide it (reviewer probe A5-A7, card 4c108004, asked for
+// on 09-24). The table MUST name every PREFIX_WORDS entry: a word added to the set without a row
+// here fails the first test, so the heredoc path can never silently skip a new prefix.
+describe('every PREFIX_WORDS entry in front of a heredoc-fed interpreter', () => {
+  const FORMS: Record<string, string[]> = {
+    env: ['env', 'env A=1', 'env -i A=1', 'env -u HOME'],
+    sudo: ['sudo', 'sudo -n', 'sudo -u root'],
+    command: ['command'],
+    exec: ['exec', 'exec -a name'],
+    time: ['time', 'time -p'],
+    nohup: ['nohup'],
+    nice: ['nice', 'nice -n 5', 'nice -5'],
+    timeout: ['timeout 30', 'timeout 30s', 'timeout -k 5 30', 'timeout --preserve-status 1m'],
+    stdbuf: ['stdbuf -oL', 'stdbuf -o L', 'stdbuf -oL -eL'],
+    do: ['do'],
+    then: ['then'],
+    else: ['else'],
+    elif: ['elif'],
+    '{': ['{'],
+    '(': ['('],
+    '!': ['!'],
+  }
+  const PY = (u: string) => `python3 - <<'PY'\nimport urllib.request\nurllib.request.urlopen('${u}')\nPY`
+  const SH = (u: string) => `bash <<'SH'\ncurl -s ${u}\nSH`
+  const forms = () => Object.values(FORMS).flat()
+  it('the table covers exactly the PREFIX_WORDS set', () => {
+    expect(Object.keys(FORMS).sort()).toEqual([...(PREFIX_WORDS as Set<string>)].sort())
+  })
+  it('denies the python and the bash heredoc behind every prefix form', () => {
+    for (const p of forms()) for (const body of [PY, SH]) {
+      const cmd = `${p} ${body('https://example.org/x')}`
+      expect({ cmd, r: classify(cmd) }).toMatchObject({ cmd, r: { deny: true, hosts: ['example.org'] } })
+    }
+  })
+  it('CONTROL: the localhost twin behind every prefix form passes', () => {
+    for (const p of forms()) for (const body of [PY, SH]) {
+      const cmd = `${p} ${body('http://localhost:3420/api/health')}`
+      expect({ cmd, deny: deny(cmd) }).toEqual({ cmd, deny: false })
+    }
+  })
+  it('a prefix with options no longer hides curl or a one-liner on the plain path either', () => {
+    expect(deny('timeout 30 curl -s https://example.org/x')).toBe(true)
+    expect(deny('stdbuf -oL curl -s https://example.org/x')).toBe(true)
+    expect(deny('nice -n 5 curl -s https://example.org/x')).toBe(true)
+    expect(deny(`timeout 10 python3 -c "import urllib.request; urllib.request.urlopen('https://example.org')"`)).toBe(true)
+    expect(deny('timeout 30 curl -s http://localhost:3420/api/health')).toBe(false)
+  })
+})
+
+// PowerShell (reviewer probe A12): on WSL powershell.exe reaches the network from the Windows side.
+describe('PowerShell bodies', () => {
+  it('denies an external URL in a -Command one-liner or a heredoc-fed -Command -', () => {
+    for (const cmd of [
+      `powershell.exe -Command - <<'PS'\nInvoke-WebRequest https://example.org/x\nPS`,
+      `pwsh -c - <<'PS'\niwr -UseBasicParsing https://example.org/x\nPS`,
+      `powershell.exe -NoProfile -Command "Invoke-RestMethod 'https://example.org/x'"`,
+      `/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -command "curl https://example.org/x"`,
+      `PowerShell.exe -Command "(New-Object Net.WebClient).DownloadString('https://example.org/x')"`,
+    ]) expect({ cmd, r: classify(cmd) }).toMatchObject({ cmd, r: { deny: true, hosts: ['example.org'] } })
+  })
+  it('CONTROLS: localhost, and an external URL with no network cmdlet, pass', () => {
+    for (const cmd of [
+      `powershell.exe -Command "Invoke-WebRequest http://localhost:3420/api/health"`,
+      `powershell.exe -Command - <<'PS'\nWrite-Output 'https://example.org/x'\nPS`,
+      // a "curl" word is a network primitive ONLY in PowerShell, not in a python body
+      `python3 - <<'PY'\nprint("curl https://example.org/x")\nPY`,
+    ]) expect({ cmd, deny: deny(cmd) }).toEqual({ cmd, deny: false })
+  })
+})
+
+// A `while read` loop fed by a here-string or heredoc binds its variable in the same command, just
+// like `for u in ...` (the header's "URL in a variable assigned in the same command").
+describe('a URL fed to a while-read loop', () => {
+  it('POSITIVE CONTROL: the for-loop form was already denied', () => {
+    expect(classify('for u in https://example.org/; do curl -s "$u"; done')).toMatchObject({ deny: true, hosts: ['example.org'] })
+  })
+  it('denies the here-string and heredoc forms, naming the host', () => {
+    for (const cmd of [
+      'while read u; do curl -s "$u"; done <<< "https://example.org/"',
+      "while IFS= read -r u; do curl -s \"$u\"; done <<< 'https://example.org/'",
+      'while read u; do curl -s "$u"; done <<EOF\nhttp://localhost:3420/a\nhttps://example.org/\nEOF',
+      'while read -r name u; do curl -s "$u"; done <<\'EOF\'\nx https://example.org/\nEOF',
+      'U=https://example.org/; while read u; do curl -s "$u"; done <<< "$U"',
+      'read u <<< "https://example.org/"; curl -s "$u"',
+      'while read u; do python3 -c "import urllib.request as r; r.urlopen(\'$u\')"; done <<< "https://example.org/"',
+    ]) expect({ cmd, r: classify(cmd) }).toMatchObject({ cmd, r: { deny: true, hosts: ['example.org'] } })
+  })
+  it('CONTROLS: local and private values pass, and a fed value used only in a local path', () => {
+    for (const cmd of [
+      'while read u; do curl -s "$u"; done <<< "http://localhost:3420/x"',
+      'while read u; do curl -s "$u"; done <<EOF\nhttp://localhost:3420/a\nhttp://192.168.1.5/b\nEOF',
+      'while read id; do curl -s http://localhost:3420/api/kanban/$id; done <<< "abc def"',
+      // a here-string to a non-read command is still inert
+      'grep -c x <<< "https://example.org/"',
+    ]) expect({ cmd, deny: deny(cmd) }).toEqual({ cmd, deny: false })
+  })
+})
+
 describe('still open after (a) -- pinned on purpose', () => {
   const OPEN = [
     'bash ./fetch.sh', // the network call is inside the script file
     'python3 fetch.py',
-    `python3 - <<'PY'\nimport urllib.request; urllib.request.urlopen('https://example.org')\nPY`, // heredoc-fed interpreter
+    // a program PIPED into an interpreter (the heredoc is on cat, not on python3); the heredoc on the
+    // interpreter itself is closed since EGRESSHEREDOC924, see 'heredoc-fed interpreters' below
+    `cat <<'PY' | python3 -\nimport urllib.request; urllib.request.urlopen('https://example.org')\nPY`,
+    'while read u; do curl -s "$u"; done < urls.txt', // loop values read from a file
+    // the families the header lists as open after EGRESSHEREDOC924 (reviewer probe A8-A11, A14)
+    'xargs -n1 curl -s <<< "https://example.org/x"', // an argument builder fed on stdin
+    'mapfile -t a <<< "https://example.org/x"; curl -s "${a[0]}"', // an array filler
+    'IFS=, read a b <<< "x,https://example.org/x"; curl -s "$b"', // read under a non-default IFS
+    'while read u; do curl -s "$u"; done < <(echo https://example.org/x)', // process substitution input
+    `python3 - <<'PY'\nimport socket; socket.create_connection(("example.org", 80))\nPY`, // no URL scheme
     'H=$(cat host.txt); curl -s "http://$H/x"', // host not literally in the command
     'curl -s "$URL"', // URL from the environment
     'curl $(echo https://example.org)', // URL computed at runtime by a substitution (#1514 review B)
