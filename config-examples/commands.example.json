@@ -1,0 +1,36 @@
+{
+  "commands": [
+    {
+      "name": "new",
+      "description": "a /context clear aliasa",
+      "kind": "actions",
+      "body": [{ "action": "context clear" }],
+      "enabled": true
+    },
+    {
+      "name": "clear",
+      "description": "a /context clear aliasa",
+      "kind": "actions",
+      "body": [{ "action": "context clear" }],
+      "enabled": true
+    },
+    {
+      "name": "melymunka",
+      "description": "Opus 4 órára, magas effort",
+      "kind": "actions",
+      "body": [
+        { "action": "model", "value": "opus", "hold": "4h" },
+        { "action": "effort", "value": "high" },
+        { "action": "message", "value": "Mélymunka-mód bekapcsolva." }
+      ],
+      "enabled": true
+    },
+    {
+      "name": "napzaro",
+      "description": "a nap összefoglalása; az argumentum a fókusz",
+      "kind": "prompt",
+      "body": "Foglald össze a mai napot röviden. Fókusz: $ARGUMENTS",
+      "enabled": true
+    }
+  ]
+}

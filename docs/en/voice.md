@@ -47,6 +47,17 @@ Inter-agent messages (no `chat_id`) bypass the voice pipeline entirely — no TT
 | `voice` | Always reply as audio, even for text input |
 | `auto` | Reply as audio only when the inbound message was a voice note |
 
+### Inbound transcription (`transcribeInbound`)
+
+Agents in `voice` or `auto` mode always get inbound voice notes transcribed: the router runs faster-whisper and replaces the attachment with an `[Hang átirat]: ...` line in the prompt.
+
+For `text`-mode agents this is **off by default** (the agent receives the raw voice attachment, as before). Turn it on explicitly:
+
+- per agent: `"voice": { "transcribeInbound": true }` in the agent's `agent-config.json` (or `PUT /api/agents/:id/voice-config { "transcribeInbound": true }`);
+- install-wide default: `VOICE_TRANSCRIBE_INBOUND=1` in `.env` (read at dashboard start). A per-agent `"transcribeInbound": false` opts that agent back out.
+
+Each transcription is a local faster-whisper run, so enabling it for many agents costs CPU time per voice note.
+
 ### Voice models
 
 TTS uses Piper ONNX models. Models are stored in `~/.local/share/marveen-voice/voices/`.
@@ -67,7 +78,7 @@ Mode and voice model are configurable per agent from the dashboard (agent detail
 
 ```
 GET  /api/agents/:id/voice-config
-PUT  /api/agents/:id/voice-config   { responseMode, voiceModel }
+PUT  /api/agents/:id/voice-config   { responseMode, voiceModel, transcribeInbound }
 ```
 
 Settings persist in the agent's `agent-config.json`.
@@ -76,4 +87,4 @@ Settings persist in the agent's `agent-config.json`.
 
 ### Notes
 
-Piper models are monolingual per model file. The Hungarian models (`hu_HU-*`) apply Hungarian letter-to-sound rules to all input — English technical terms will be pronounced using Hungarian phonemes and may sound incorrect. Keep English jargon out of TTS strings where possible, or substitute phonetic spellings before synthesis.
+Piper models are monolingual per model file. The Hungarian models (`hu_HU-*`) apply Hungarian letter-to-sound rules to all input — English technical terms will be pronounced using Hungarian phonemes and may sound incorrect. Keep English jargon out of TTS strings where possible. `speak()` rewrites the words listed in `scripts/voice/pronunciation-hu.json` into a Hungarian phonetic spelling before synthesis (whole-word, case-insensitive; a hyphenated or known glued Hungarian suffix is kept, words inside domains/paths/addresses are left alone). The installer copies the lexicon next to the installed `_vtools.py`; re-run the install after changing it.

@@ -38,6 +38,10 @@ export const CLAUDE_MODEL_MIN_CLI: Readonly<Record<string, ClaudeModelCliRequire
     minCli: '2.1.278',
     measured: '2.1.110 -> 400 unrecognized_model (hermes, 2026-09-23); 2.1.278 and 2.1.280 -> OK (owner Mac, 2026-09-22)',
   },
+  'claude-sonnet-5-5': {
+    minCli: '2.1.283',
+    measured: '2.1.283 -> OK (claude -p, plugin-free config, main host, 2026-09-28 21:4x); lower versions NOT measured, so they count as unsupported',
+  },
   'claude-opus-5-5': {
     minCli: '2.1.280',
     measured: '2.1.110 and 2.1.278 -> 400 unrecognized_model; 2.1.280 -> OK for both claude-opus-5-5 and claude-opus-5-5[1m] (owner Mac, 2026-09-22)',
@@ -79,6 +83,35 @@ export function isModelUnsupportedByCli(model: string, installedVersion: string 
   const req = CLAUDE_MODEL_MIN_CLI[baseModelId(model)]
   if (!req) return false
   return compareVersions(installedVersion, req.minCli) < 0
+}
+
+export interface DefaultModelLaunchDecision {
+  /** The model to launch. */
+  model: string
+  /** The distribution default that was replaced, or null when it launches as is. */
+  replaced: string | null
+  /** The CLI minimum of the replaced default, or null when nothing was replaced. */
+  minCli: string | null
+}
+
+/**
+ * DEFAULTCLIGUARD927: the model a MODEL-LESS launch should use. Callers pass
+ * the shipped distribution default ONLY when no operator value resolved (an
+ * explicit value is the operator's choice, and the picker already guards it).
+ * When the installed CLI is measured not to launch that default, the previous
+ * tier is used instead. Same fail-open rule as the picker gate: an unmeasured
+ * version (null) changes nothing.
+ */
+export function launchableDefaultModel(
+  distributionDefault: string,
+  fallback: string,
+  installedVersion: string | null,
+): DefaultModelLaunchDecision {
+  if (!isModelUnsupportedByCli(distributionDefault, installedVersion)) {
+    return { model: distributionDefault, replaced: null, minCli: null }
+  }
+  const req = CLAUDE_MODEL_MIN_CLI[baseModelId(distributionDefault)]
+  return { model: fallback, replaced: distributionDefault, minCli: req?.minCli ?? null }
 }
 
 export interface ClaudeSupportSummary {

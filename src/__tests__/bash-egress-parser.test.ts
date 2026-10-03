@@ -15,12 +15,12 @@
 // (isInvokedDirectly), so importing it here runs no side effects.
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { classify, isExternal, liftSubstitutions } from '../../scripts/hooks/bash-egress-parser.mjs'
+import { classify, isExternal, liftSubstitutions, parseVendorHosts, loadVendorHosts, parseVendorDomains, loadVendorDomains } from '../../scripts/hooks/bash-egress-parser.mjs'
 import {
   BASH_EGRESS_DENY,
   agentGetsBashEgressParser,
@@ -29,6 +29,9 @@ import {
   injectSelfPaceGate,
 } from '../web/agent-scaffold.js'
 import { MAIN_AGENT_ID } from '../config.js'
+
+// @ts-expect-error -- plain .mjs hook script, no types
+import { isPrivateTarget } from '../../scripts/hooks/bash-egress-parser.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const HOOK = join(ROOT, 'scripts', 'hooks', 'bash-egress-parser.mjs')
@@ -122,6 +125,40 @@ describe('(a) the named shapes', () => {
   })
 })
 
+// A one-liner's URL is found by scheme (URL_RE), so the scheme list decides what a network
+// primitive can reach unseen. It used to be http/https/ftp only; every other libcurl scheme
+// passed, e.g. PHP curl_exec to sftp:// or smtp://, or a PHP ftps:// stream (Refs #1611).
+describe('one-liner URLs in every libcurl network scheme', () => {
+  const SCHEMES = ['ftps', 'sftp', 'scp', 'tftp', 'smb', 'smbs', 'dict', 'gopher', 'gophers',
+    'imap', 'imaps', 'pop3', 'pop3s', 'smtp', 'smtps', 'ldap', 'ldaps', 'telnet', 'mqtt', 'rtsp']
+  const curlExec = (url: string) => `php -r '$c=curl_init("${url}"); curl_exec($c);'`
+  it('denies an external host in each scheme when a network primitive is used', () => {
+    for (const s of SCHEMES) {
+      const cmd = curlExec(`${s}://example.org/x`)
+      expect({ cmd, r: classify(cmd) }).toEqual({ cmd, r: { deny: true, reason: 'one-liner-external', hosts: ['example.org'] } })
+    }
+  })
+  it('denies the stream-wrapper and LWP shapes and the variable-assigned URL', () => {
+    for (const cmd of [
+      `php -r 'file_get_contents("ftps://example.org/x");'`,
+      `perl -MLWP::Simple -e 'get("gopher://example.org/x")'`,
+      `U=sftp://example.org/x; php -r "\\$c=curl_init('$U'); curl_exec(\\$c);"`,
+    ]) expect({ cmd, deny: deny(cmd) }).toEqual({ cmd, deny: true })
+  })
+  it('still lets the same schemes reach loopback', () => {
+    for (const s of SCHEMES) {
+      const cmd = curlExec(`${s}://localhost/x`)
+      expect({ cmd, deny: deny(cmd) }).toEqual({ cmd, deny: false })
+    }
+  })
+  it('does not deny a one-liner that only carries such a URL as data', () => {
+    for (const cmd of [
+      `python3 -c 'print("sftp://example.org/x")'`,
+      `node -e 'console.log("smtp://example.org")'`,
+    ]) expect({ cmd, deny: deny(cmd) }).toEqual({ cmd, deny: false })
+  })
+})
+
 // curl's destination is its argv, not only a scheme-bearing URL (#1514 review,
 // finding A). A positional argument is always a URL to curl; flag VALUES are not.
 describe('curl destinations read from the argv', () => {
@@ -136,7 +173,8 @@ describe('curl destinations read from the argv', () => {
     'curl --url=example.org/x',
     'curl -x example.org:8080 http://localhost:3420/',
     'curl --connect-to localhost:80:example.org:80 http://localhost/',
-    'curl -s -w "%{http_code}" -o /dev/null 10.0.0.5:8080/',
+    // a public address; a private one (10.0.0.5) is local since #1611, see the private-network block
+    'curl -s -w "%{http_code}" -o /dev/null 203.0.113.5:8080/',
   ]
   const PASS = [
     'curl -H "Host: example.org" http://localhost:3420/x',
@@ -157,7 +195,7 @@ describe('curl destinations read from the argv', () => {
 })
 
 describe('what counts as local', () => {
-  it('treats only loopback names as local', () => {
+  it('treats the loopback names as local', () => {
     expect(isExternal('http://localhost:3420/api')).toBe(false)
     expect(isExternal('http://127.0.0.1/')).toBe(false)
     expect(isExternal('http://[::1]:3420/')).toBe(false)
@@ -171,6 +209,78 @@ describe('what counts as local', () => {
   })
   it('denies a curl that mixes a local and an external URL', () => {
     expect(deny('curl -s http://localhost:3420/api/health http://example.org/x')).toBe(true)
+  })
+})
+
+// Private network (maintainer decision on #1611, 2026-09-27): agents may reach RFC 1918 and .local
+// targets from the shell. Decided by the LITERAL host string, never by DNS.
+describe('private network targets', () => {
+  const py = (u: string) => `python3 -c "import urllib.request; urllib.request.urlopen('${u}')"`
+  const ALLOW = [
+    'curl -s http://192.168.31.100:8096/',
+    'curl -s 10.0.0.5:8080/',
+    'curl -s http://172.16.0.1/',
+    'curl -s http://172.31.255.254/',
+    'curl -s http://127.0.0.2/',
+    'curl -s http://nas.local:5000/',
+    'curl -s http://[fd00::1]:80/',
+    'curl -s http://[fe80::1]/',
+    py('http://192.168.1.5/x'),
+    'U=http://nas.local/x; curl -s "$U"',
+    'curl --url http://10.1.2.3/',
+    'curl -x http://192.168.1.2:3128 http://localhost:3420/',
+  ]
+  const DENY: Array<[string, string[]]> = [
+    // look-alikes: the private string is not the host
+    ['curl -s http://192.168.1.1.evil.com/', ['192.168.1.1.evil.com']],
+    ['curl -s http://evil.com.local.attacker.net/', ['evil.com.local.attacker.net']],
+    ['curl -s http://10.0.0.1@evil.com/', ['evil.com']],
+    // no dot boundary / single label: the resolver may complete it through a search domain
+    ['curl -s http://xlocal/', ['xlocal']],
+    ['curl -s http://local/', ['local']],
+    // a public NAME that may resolve to a private address is not waved through by name alone
+    ['curl -s http://nas.example.com/', ['nas.example.com']],
+    // IPv4 spellings a resolver reads differently from how they look: fail closed
+    ['curl -s http://0x0a.0.0.1/', ['0x0a.0.0.1']],
+    ['curl -s http://012.0.0.1/', ['012.0.0.1']],
+    ['curl -s http://167772161/', ['167772161']],
+    ['curl -s http://10.1/', ['10.1']],
+    // just outside the ranges
+    ['curl -s http://172.15.0.1/', ['172.15.0.1']],
+    ['curl -s http://172.32.0.1/', ['172.32.0.1']],
+    ['curl -s http://100.64.0.1/', ['100.64.0.1']], // CGNAT, not RFC 1918
+    ['curl -s http://169.254.169.254/latest/meta-data/', ['169.254.169.254']], // cloud metadata
+    [py('http://0x0a.0.0.1/x'), ['0x0a.0.0.1']],
+    // a private target does not launder another destination in the same call
+    ['curl -s http://192.168.1.5/ http://example.org/', ['example.org']],
+    ['curl -s --resolve nas.local:80:203.0.113.9 http://nas.local/', ['203.0.113.9']],
+    ['curl -s http://192.168.1.5/; curl -s http://example.org/', ['example.org']],
+  ]
+  it('lets private-network targets through, on every path the parser reads', () => {
+    for (const cmd of ALLOW) expect({ cmd, deny: deny(cmd) }).toEqual({ cmd, deny: false })
+  })
+  it('denies look-alikes, non-canonical IPv4, out-of-range and mixed calls, naming the host', () => {
+    for (const [cmd, hosts] of DENY) expect({ cmd, r: classify(cmd) }).toMatchObject({ cmd, r: { deny: true, hosts } })
+  })
+  it('isPrivateTarget decides by the literal string', () => {
+    for (const h of ['10.0.0.1', '172.16.0.1', '172.31.0.1', '192.168.0.1', '127.0.0.5', 'nas.local', 'a.b.local', '[fd12::1]', '[fe80::1]'])
+      expect({ h, p: isPrivateTarget(h) }).toEqual({ h, p: true })
+    for (const h of ['8.8.8.8', '172.15.0.1', '172.32.0.1', '192.169.0.1', '169.254.1.1', '100.64.0.1', '010.0.0.1', '10.0.0', '10.0.0.256',
+      'local', 'xlocal', '.local', 'nas.local.evil.com', 'nas.example.com', '[2001:db8::1]', '[::ffff:192.168.1.1]', ''])
+      expect({ h, p: isPrivateTarget(h) }).toEqual({ h, p: false })
+  })
+  it('the hook process stays silent on a LAN call and denies a look-alike', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bash-egress-lan-'))
+    try {
+      const run = (command: string) => spawnSync(process.execPath, [HOOK], {
+        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+        encoding: 'utf-8',
+        env: { ...process.env, BASH_EGRESS_BLOCK_LOG: join(dir, 'blocks.jsonl'), BASH_EGRESS_VENDOR_HOSTS: join(dir, 'none.json') },
+      })
+      expect(run('curl -s http://192.168.31.100:8096/').stdout).toBe('')
+      expect(run('curl -s http://nas.local:5000/').stdout).toBe('')
+      expect(run('curl -s http://192.168.1.1.evil.com/').stdout).toContain('"permissionDecision":"deny"')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })
 
@@ -203,6 +313,57 @@ describe('inert text is not a command', () => {
 // WHAT STAYS OPEN after this change, pinned as tests so nobody reads the merge
 // as "closed". The name-and-shape list will never be complete; closing these
 // needs an allowlist / network-level gate (direction (b), a separate decision).
+// A `for` loop variable is an assignment too, one value per turn. The reported call
+// on 2026-09-29 reached three external GETs this way, while the same URL as a literal was denied.
+describe('a URL in a for-loop variable', () => {
+  const unbounded = `for u in ${Array.from({ length: 70 }, (_, i) => `http://localhost/${i}`).join(' ')}; do curl -s "$u"; done`
+  it('POSITIVE CONTROL: the literal and the plain assignment were already denied', () => {
+    expect(classify('curl -s https://api.deltacrm.io/x')).toMatchObject({ deny: true, hosts: ['api.deltacrm.io'] })
+    expect(classify('U=https://api.deltacrm.io/x; curl -s "$U"')).toMatchObject({ deny: true, hosts: ['api.deltacrm.io'] })
+  })
+  it('the reported shape is denied, naming the host', () => {
+    expect(classify('for u in https://deltacrm.io/api/v1/health https://api.deltacrm.io/x; do curl -s "$u"; done'))
+      .toMatchObject({ deny: true, reason: 'curl-external', hosts: ['deltacrm.io'] })
+  })
+  it('every value is judged: one external value among local ones denies', () => {
+    expect(classify('for u in http://localhost:3420/a https://evil.example/b; do curl -s "$u"; done'))
+      .toMatchObject({ deny: true, hosts: ['evil.example'] })
+  })
+  it('the ${u} form, the newline form, nested loops and values taken from an assignment', () => {
+    expect(deny('for u in https://evil.example/a; do curl -s "${u}/x"; done')).toBe(true)
+    expect(deny('for u in https://evil.example/a\ndo\n  curl -s "$u"\ndone')).toBe(true)
+    expect(deny('for h in localhost evil.example; do for p in a b; do curl -s "http://$h/$p"; done; done')).toBe(true)
+    expect(deny('A=https://evil.example/a; for u in $A http://localhost/b; do curl "$u"; done')).toBe(true)
+  })
+  it('a one-liner fed by a loop variable', () => {
+    expect(deny('for u in https://evil.example/a; do python3 -c "import urllib.request as r; r.urlopen(\'$u\')"; done')).toBe(true)
+  })
+  it("review: a loop variable that shares its name with an assignment does not hide the assigned value", () => {
+    expect(classify('for u in http://localhost/a; do true; done; u=https://evil.example/x; curl -s "$u"'))
+      .toMatchObject({ deny: true, hosts: ['evil.example'] })
+    expect(classify('u=https://evil.example/x; for u in http://localhost/a; do true; done; curl -s "$u"'))
+      .toMatchObject({ deny: true, hosts: ['evil.example'] })
+  })
+  it('a loop opened right after a paren, (for ...', () => {
+    expect(deny('(for u in https://evil.example/a; do curl -s "$u"; done)')).toBe(true)
+  })
+  it('a URL inside a quoted loop value is still judged (the value goes in as that URL, not dropped)', () => {
+    expect(deny(`for p in '{"u": "https://evil.example/x"}'; do python3 -c "import urllib.request as r; r.urlopen('$p')"; done`)).toBe(true)
+  })
+  it('a loop with too many values to judge one by one fails closed', () => {
+    expect(classify(unbounded)).toMatchObject({ deny: true, reason: 'curl-loop-unbounded' })
+  })
+  it('CONTROLS: local loops, a loop variable used only in a local path, and "for" inside quotes pass', () => {
+    expect(deny('for u in http://localhost:3420/a http://127.0.0.1:3420/b; do curl -s "$u"; done')).toBe(false)
+    expect(deny('for f in a b; do curl -s http://localhost:3420/$f; done')).toBe(false)
+    expect(deny('echo "for u in https://evil.example; do curl $u; done"')).toBe(false)
+  })
+  it('CONTROL from the fleet replay: a loop of JSON bodies posted to localhost is data, not a host', () => {
+    expect(classify(`for p in '{"agent_id":"a","text":"delete, item 42"}' '{"b":"c d"}'; do curl -s -X POST http://localhost:3420/api/approvals -d "$p"; done`))
+      .toMatchObject({ deny: false })
+  })
+})
+
 describe('still open after (a) -- pinned on purpose', () => {
   const OPEN = [
     'bash ./fetch.sh', // the network call is inside the script file
@@ -226,7 +387,8 @@ describe('the hook process', () => {
   const run = (payload: unknown, log: string) => spawnSync(process.execPath, [HOOK], {
     input: typeof payload === 'string' ? payload : JSON.stringify(payload),
     encoding: 'utf-8',
-    env: { ...process.env, BASH_EGRESS_BLOCK_LOG: log },
+    // The install's own vendor list must not leak into these cases: a path that does not exist = no exception.
+    env: { ...process.env, BASH_EGRESS_BLOCK_LOG: log, BASH_EGRESS_VENDOR_HOSTS: join(tmpdir(), 'no-such-vendor-hosts.json') },
   })
 
   it('denies an external shape with a PreToolUse deny decision, and logs host only', () => {
@@ -303,5 +465,160 @@ describe('wiring', () => {
     expect(spawnBody).toContain('if (agentGetsBashEgressParser(name)) injectBashEgressParser(existing)')
     const web = readFileSync(join(ROOT, 'src', 'web.ts'), 'utf-8')
     expect(web).toMatch(/if \(ensureBashEgressParser\(agentName\)\) bashParserPatched\.push\(agentName\)/)
+  })
+})
+
+// EGRESSVENDOR925 (owner decision, TG 16894): a per-install list of vendor-API hosts a Bash curl
+// may reach. EXACT host match -- the allowlist must not become a suffix or userinfo trick.
+describe('vendor-API host allowlist (store/egress-vendor-hosts.json)', () => {
+  const V = parseVendorHosts({ hosts: ['api.elevenlabs.io'] })
+  const d = (cmd: string) => classify(cmd, 0, V)
+
+  it('the listed host passes, over https and with the usual flags', () => {
+    expect(d('curl -s https://api.elevenlabs.io/v1/voices -H "xi-api-key: $K"').deny).toBe(false)
+    expect(d('curl -sS -X POST "https://api.elevenlabs.io/v1/text-to-speech/abc" -d @body.json -o out.mp3').deny).toBe(false)
+    expect(d('U=https://api.elevenlabs.io/v1/models; curl -s "$U"').deny).toBe(false)
+    // inside a command substitution too -- the usual shape for reading a JSON answer
+    expect(d('R=$(curl -s https://api.elevenlabs.io/v1/voices -H "xi-api-key: $K"); echo "$R" | head -c 200').deny).toBe(false)
+    expect(d('R=$(curl -s https://evil.com/x); echo "$R"').deny).toBe(true)
+  })
+
+  it('negative control: the same calls are denied without the list (today\'s behaviour)', () => {
+    expect(classify('curl -s https://api.elevenlabs.io/v1/voices').deny).toBe(true)
+  })
+
+  it('look-alikes stay denied: suffix, userinfo, subdomain, parent domain', () => {
+    expect(d('curl -s https://api.elevenlabs.io.evil.com/x')).toMatchObject({ deny: true, hosts: ['api.elevenlabs.io.evil.com'] })
+    expect(d('curl -s https://api.elevenlabs.io@evil.com/x')).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    expect(d('curl -s https://x.api.elevenlabs.io/x').deny).toBe(true)
+    expect(d('curl -s https://elevenlabs.io/x').deny).toBe(true)
+    expect(d('curl -s https://example.org/x')).toMatchObject({ deny: true, hosts: ['example.org'] })
+  })
+
+  it('a listed host does not launder another destination in the same call', () => {
+    expect(d('curl -s https://api.elevenlabs.io/v1 https://evil.com/x')).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    expect(d('curl -s -x http://evil.com:8080 https://api.elevenlabs.io/v1')).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    expect(d('curl -s --connect-to api.elevenlabs.io:443:evil.com:443 https://api.elevenlabs.io/v1').deny).toBe(true)
+    expect(d('curl -s https://api.elevenlabs.io/v1; curl -s https://evil.com/x').deny).toBe(true)
+  })
+
+  it('only plain DNS names are accepted as entries: no wildcard, leading dot, IP, localhost, port', () => {
+    const bad = parseVendorHosts({ hosts: ['*.elevenlabs.io', '.elevenlabs.io', '1.2.3.4', 'localhost', 'api.elevenlabs.io:443', 'Api.ElevenLabs.io', 'user@api.elevenlabs.io', 42, null] })
+    expect([...bad]).toEqual([])
+    expect(classify('curl -s https://x.elevenlabs.io/y', 0, parseVendorHosts({ hosts: ['*.elevenlabs.io'] })).deny).toBe(true)
+  })
+
+  it('a missing, unreadable or malformed file means no exception', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vendor-hosts-'))
+    try {
+      expect(loadVendorHosts(join(dir, 'absent.json')).size).toBe(0)
+      const f = join(dir, 'bad.json')
+      writeFileSync(f, '{ not json')
+      expect(loadVendorHosts(f).size).toBe(0)
+      writeFileSync(f, JSON.stringify(['api.elevenlabs.io']))
+      expect(loadVendorHosts(f).size).toBe(0)
+      writeFileSync(f, JSON.stringify({ hosts: ['api.elevenlabs.io'] }))
+      expect([...loadVendorHosts(f)]).toEqual(['api.elevenlabs.io'])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('the hook process reads the file: listed host silent, look-alike denied, no file = deny', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vendor-hook-'))
+    try {
+      const vendor = join(dir, 'egress-vendor-hosts.json')
+      writeFileSync(vendor, JSON.stringify({ hosts: ['api.elevenlabs.io'] }))
+      const run = (command: string, vendorPath: string) => spawnSync(process.execPath, [HOOK], {
+        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+        encoding: 'utf-8',
+        env: { ...process.env, BASH_EGRESS_BLOCK_LOG: join(dir, 'blocks.jsonl'), BASH_EGRESS_VENDOR_HOSTS: vendorPath },
+      })
+      expect(run('curl -s https://api.elevenlabs.io/v1/voices', vendor).stdout).toBe('')
+      expect(run('curl -s https://api.elevenlabs.io.evil.com/v1', vendor).stdout).toContain('"permissionDecision":"deny"')
+      expect(run('curl -s https://api.elevenlabs.io/v1/voices', join(dir, 'none.json')).stdout).toContain('"permissionDecision":"deny"')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+})
+
+// #1611 (policy proposal, opt-in): an OPTIONAL "domains" key in the same file -- a listed domain or
+// any subdomain of it passes, on a label boundary. Everything the exact "hosts" list guarantees
+// (no look-alike, no laundering, no widening entry) must still hold for the suffix rule.
+describe('vendor-API domain allowlist ("domains" key, opt-in)', () => {
+  const NONE = new Set<string>()
+  const D = parseVendorDomains({ domains: ['example.com'] })
+  const d = (cmd: string) => classify(cmd, 0, NONE, D)
+
+  it('the listed domain and its subdomains pass, positional curl and one-liner', () => {
+    expect(d('curl -s https://example.com/x').deny).toBe(false)
+    expect(d('curl -s https://api.example.com/v1 -H "Authorization: Bearer $T"').deny).toBe(false)
+    expect(d('curl -s a.b.example.com/plain-http-no-scheme').deny).toBe(false)
+    expect(d("python3 -c \"import urllib.request; urllib.request.urlopen('https://files.example.com/a')\"").deny).toBe(false)
+    expect(d('U=https://api.example.com/v1; curl -s "$U"').deny).toBe(false)
+  })
+
+  it('negative control: without the key the same calls are denied (today\'s behaviour)', () => {
+    expect(classify('curl -s https://api.example.com/v1').deny).toBe(true)
+    expect(classify('curl -s https://api.example.com/v1', 0, NONE, NONE).deny).toBe(true)
+    // and "hosts" stays EXACT: a hosts entry is never read as a suffix rule
+    expect(classify('curl -s https://api.example.com/v1', 0, parseVendorHosts({ hosts: ['example.com'] })).deny).toBe(true)
+  })
+
+  it('look-alikes stay denied: no label boundary, suffix of another domain, userinfo', () => {
+    expect(d('curl -s https://evilexample.com/x')).toMatchObject({ deny: true, hosts: ['evilexample.com'] })
+    expect(d('curl -s https://example.com.evil.net/x')).toMatchObject({ deny: true, hosts: ['example.com.evil.net'] })
+    expect(d('curl -s https://example.com@evil.net/x')).toMatchObject({ deny: true, hosts: ['evil.net'] })
+    expect(d('curl -s https://api.example.com@evil.net/x')).toMatchObject({ deny: true, hosts: ['evil.net'] })
+    expect(d('curl -s https://xexample.com/x').deny).toBe(true)
+    expect(d('curl -s https://example.org/x').deny).toBe(true)
+  })
+
+  it('a listed domain does not launder another destination in the same call', () => {
+    expect(d('curl -s https://api.example.com/v1 https://evil.net/x')).toMatchObject({ deny: true, hosts: ['evil.net'] })
+    expect(d('curl -s -x http://evil.net:8080 https://api.example.com/v1')).toMatchObject({ deny: true, hosts: ['evil.net'] })
+    expect(d('curl -s --connect-to api.example.com:443:evil.net:443 https://api.example.com/v1').deny).toBe(true)
+    expect(d('curl -s https://api.example.com/v1; curl -s https://evil.net/x').deny).toBe(true)
+    expect(d('R=$(curl -s https://evil.net/x); curl -s https://api.example.com/v1').deny).toBe(true)
+  })
+
+  it('only plain DNS names are accepted: no wildcard, leading dot, IP, localhost, port, userinfo', () => {
+    const bad = parseVendorDomains({ domains: ['*.example.com', '.example.com', '1.2.3.4', '10.0.0.0', 'localhost', 'com', 'example.com:443', 'Example.COM', 'user@example.com', '', 42, null] })
+    expect([...bad]).toEqual([])
+    // an IP target never matches a domain entry
+    expect(classify('curl -s https://1.2.3.4/x', 0, NONE, parseVendorDomains({ domains: ['example.com'] })).deny).toBe(true)
+    expect(parseVendorDomains({ hosts: ['example.com'] }).size).toBe(0)
+    expect(parseVendorDomains(null).size).toBe(0)
+  })
+
+  it('a missing, unreadable or malformed file means no exception; "hosts" and "domains" load independently', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vendor-domains-'))
+    try {
+      expect(loadVendorDomains(join(dir, 'absent.json')).size).toBe(0)
+      const f = join(dir, 'v.json')
+      writeFileSync(f, '{ not json')
+      expect(loadVendorDomains(f).size).toBe(0)
+      writeFileSync(f, JSON.stringify({ hosts: ['api.elevenlabs.io'] }))
+      expect(loadVendorDomains(f).size).toBe(0)
+      expect([...loadVendorHosts(f)]).toEqual(['api.elevenlabs.io'])
+      writeFileSync(f, JSON.stringify({ hosts: ['api.elevenlabs.io'], domains: ['example.com'] }))
+      expect([...loadVendorDomains(f)]).toEqual(['example.com'])
+      expect([...loadVendorHosts(f)]).toEqual(['api.elevenlabs.io'])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('the hook process reads the key: subdomain silent, look-alike denied, key absent = deny', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vendor-domains-hook-'))
+    try {
+      const withKey = join(dir, 'with.json')
+      const without = join(dir, 'without.json')
+      writeFileSync(withKey, JSON.stringify({ domains: ['example.com'] }))
+      writeFileSync(without, JSON.stringify({ hosts: [] }))
+      const run = (command: string, vendorPath: string) => spawnSync(process.execPath, [HOOK], {
+        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+        encoding: 'utf-8',
+        env: { ...process.env, BASH_EGRESS_BLOCK_LOG: join(dir, 'blocks.jsonl'), BASH_EGRESS_VENDOR_HOSTS: vendorPath },
+      })
+      expect(run('curl -s https://api.example.com/v1', withKey).stdout).toBe('')
+      expect(run('curl -s https://example.com.evil.net/v1', withKey).stdout).toContain('"permissionDecision":"deny"')
+      expect(run('curl -s https://api.example.com/v1', without).stdout).toContain('"permissionDecision":"deny"')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })

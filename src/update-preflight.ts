@@ -30,14 +30,14 @@
 export interface GitRunner {
   // Current branch name. "HEAD" (or empty) signals a detached checkout.
   currentBranch(): string
-  // Number of local commits ahead of the upstream tracking ref
-  // (git rev-list --count @{u}..HEAD). Returns 0 when there is no upstream
+  // Number of local commits ahead of origin/<branch>, the ref update.sh pulls
+  // (git rev-list --count origin/<branch>..HEAD; not @{u}, see UPSTREAMSRC927). Returns 0 when there is no upstream
   // or the probe fails (the safe default: do not block on an uncertain
   // count -- the branch-on-origin probe below catches the no-upstream case
   // on its own terms).
   aheadCount(): number
   // Number of upstream commits the local checkout is missing
-  // (git rev-list --count HEAD..@{u}), same failure convention as above.
+  // (git rev-list --count HEAD..origin/<branch>), same failure convention as above.
   // Ahead ALONE is not a divergence: there is simply nothing to
   // fast-forward to, and update.sh proceeds. Only ahead AND behind
   // together mean the histories parted and ff-only must refuse.
@@ -153,7 +153,7 @@ export function checkUpdatePreflight(git: GitRunner): PreflightResult {
       reason: 'detached-head',
       message:
         'Repository is in a detached-HEAD state. ' +
-        'Check out a release branch before updating, e.g.: git checkout main',
+        'Check out a release branch before updating, e.g.: git switch main || git switch -c main --track origin/main',
     }
   }
 
@@ -176,7 +176,7 @@ export function checkUpdatePreflight(git: GitRunner): PreflightResult {
       message:
         `Branch '${branch}' does not exist on origin, so there is nothing to ` +
         'pull. Updates can only run from a branch that origin also has, e.g.: ' +
-        'git checkout main',
+        'git switch main || git switch -c main --track origin/main',
     }
   }
 

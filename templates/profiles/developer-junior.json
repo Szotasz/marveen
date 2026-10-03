@@ -6,10 +6,8 @@
   "filesystem": {
     "allow": [
       "Read(${AGENT_DIR}/**)",
-      "Write(${AGENT_DIR}/**)",
       "Edit(${AGENT_DIR}/**)",
       "Read(/tmp/**)",
-      "Write(/tmp/**)",
       "Bash(git:*)",
       "Bash(npm:*)",
       "Bash(node:*)",

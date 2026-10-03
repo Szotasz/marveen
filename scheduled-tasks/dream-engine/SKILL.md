@@ -105,8 +105,16 @@ Limitáció: ha az utolsó 7 napban már volt ajánlás, skip-eld. A mérvadó f
 tesszük hivatalossá, akkor a bucket végén ÍRNI is kell (`date -u +%F > .external-ops-last-run`),
 különben marad a DREAM.md archívum.
 
-Output (max 1 ajánlás): repo URL + 1 mondat indok hogy MIÉRT releváns {{OWNER_NAME}}nak (figyelembe véve: AI tartalomgyártás, magyar piac, fejlesztési flotta menedzsment, marketing).
+**Fokozatos autonómia:** ha találtál egy releváns external opportunity-t, OLVASD KI az
+`external_skill_adoption` kategóriát a `{{INSTALL_DIR}}/store/autonomy-config.json` fájlból.
+Ha a config vagy a kategória hiányzik, kezeld `level 1`-ként (fail closed).
 
+- **Level 1: csak jelez:** kizárólag a repo URL-t és a relevancia indokát írd a DREAM.md-be. NE módosíts skillt.
+- **Level 2: javasol + jóváhagyás:** a DREAM.md-ben adj konkrét, helyi skill-adaptációs tervet (melyik skill create/patch, mi változna), de NE írj skill-fájlt. A reggeli napindító ezt a tulajdonos elé viszi; csak későbbi tulajdonosi döntés után hajtható végre.
+
+Az `external_skill_adoption` kategória legmagasabb engedélyezett szintje 2. A Dream Engine külső opportunity alapján nem hoz létre és nem módosít skill-fájlt önállóan. A tényleges adaptációhoz tulajdonosi döntés szükséges.
+
+Output (max 1 opportunity): repo URL + relevancia + `mode=report|propose`.
 ### Bucket 5 — 🛠 Skill-flotta health (csak NEM-pinned skillek)
 
 ```bash

@@ -110,6 +110,10 @@ export function requiresAuth(path: string, method: string): boolean {
   if (path === '/api/auth/login' && method === 'POST') return false
   if (method === 'GET' && (path === '/api/marveen/avatar' || /^\/api\/agents\/[^/]+\/avatar$/.test(path))) return false
   if (path === '/.well-known/fleetq' && method === 'GET') return true
+  // VIDEOREVIEW1002: <video src> cannot send a bearer header. The stream is
+  // authorised by a single-file, short-lived ticket instead, which the handler
+  // checks itself (routes/video-review.ts); without a valid ticket it is 403.
+  if (path === '/api/video-review/file' && (method === 'GET' || method === 'HEAD')) return false
   return path.startsWith('/api/')
 }
 

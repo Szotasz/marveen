@@ -21,6 +21,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import command_prompt  # noqa: E402
 try:
     import ledger_lib  # noqa: E402
     _HAS_LEDGER = True
@@ -220,10 +221,21 @@ def main():
     # Sub-agents only: the main agent receives Telegram via --channels directly.
     if _is_main_session(payload):
         sys.exit(0)
+    # the command hook may block this prompt: do not drain into it
+    if command_prompt.command_block(payload.get("prompt") or "") is not None:
+        sys.exit(0)
     try:
         drain(payload)
-    except Exception:
-        pass
+    except Exception as exc:
+        # SILENTOLLAMA926: the tool call must not break, but the failure must
+        # not vanish either. The claimed inbox file stays in place and is picked
+        # up by the next run (see _claim_one), so nothing is lost; the line says
+        # why this run delivered nothing.
+        try:
+            import hook_errlog  # noqa: E402
+            hook_errlog.report("channel-inbox-drain", "drain failed, inbox left claimed for the next run", exc)
+        except Exception:
+            pass
     sys.exit(0)
 
 

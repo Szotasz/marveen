@@ -1,12 +1,14 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, rmSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 import { readConfiguredMainModel } from '../web/channel-monitor.js'
-import { DISTRIBUTION_DEFAULT_AGENT_MODEL } from '../config-registry.js'
+import { DISTRIBUTION_DEFAULT_AGENT_MODEL, DISTRIBUTION_DEFAULT_FALLBACK_MODEL } from '../config-registry.js'
+import { CLI_VERSION_OVERRIDE_ENV } from '../web/claude-cli-version.js'
+import ts from 'typescript'
 
 // The main agent's model is resolved by TWO independent implementations:
 //
@@ -35,10 +37,25 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = join(__dirname, '..', '..')
 const CHANNELS_SH = join(REPO_ROOT, 'scripts', 'channels.sh')
 
+// DEFAULTCLIGUARD927: the third layer is guarded against the installed CLI on
+// both sides. Pin the CLI version to UNMEASURED ('' = fail-open) for every
+// case, so the host's real `claude` never decides a result here; the guard
+// cases below set a version explicitly. The child shell inherits process.env.
+const savedCliVersion = process.env[CLI_VERSION_OVERRIDE_ENV]
+beforeEach(() => { process.env[CLI_VERSION_OVERRIDE_ENV] = '' })
 const roots: string[] = []
 afterEach(() => {
+  if (savedCliVersion === undefined) delete process.env[CLI_VERSION_OVERRIDE_ENV]
+  else process.env[CLI_VERSION_OVERRIDE_ENV] = savedCliVersion
   while (roots.length) rmSync(roots.pop() as string, { recursive: true, force: true })
 })
+
+// The shell side requires the REAL guard module out of dist/. Transpile the
+// source once, so the shell and the TS side run the same table and decision.
+const CLI_SUPPORT_JS = ts.transpileModule(
+  readFileSync(join(REPO_ROOT, 'src', 'claude-cli-support.ts'), 'utf-8'),
+  { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } },
+).outputText
 
 /** Build a throwaway install root. channels.sh derives INSTALL_DIR from its own
  *  path, so a copy under <root>/scripts sees <root> as the install. */
@@ -54,7 +71,9 @@ function fixture(envBody: string | null, settingsBody: string | null): string {
   // three layers, exactly like production.
   mkdirSync(join(root, 'dist'), { recursive: true })
   writeFileSync(join(root, 'dist', 'config-registry.js'),
-    `exports.DISTRIBUTION_DEFAULT_AGENT_MODEL = ${JSON.stringify(DISTRIBUTION_DEFAULT_AGENT_MODEL)};\n`)
+    `exports.DISTRIBUTION_DEFAULT_AGENT_MODEL = ${JSON.stringify(DISTRIBUTION_DEFAULT_AGENT_MODEL)};\n` +
+    `exports.DISTRIBUTION_DEFAULT_FALLBACK_MODEL = ${JSON.stringify(DISTRIBUTION_DEFAULT_FALLBACK_MODEL)};\n`)
+  writeFileSync(join(root, 'dist', 'claude-cli-support.js'), CLI_SUPPORT_JS)
   if (envBody !== null) writeFileSync(join(root, '.env'), envBody + '\n')
   if (settingsBody !== null) writeFileSync(join(root, '.claude', 'settings.json'), settingsBody + '\n')
   return root
@@ -100,6 +119,55 @@ describe('main-agent model resolution: launch and respawn agree', () => {
     expect(fromTs).toBe(want)
     // ...and, the invariant that actually matters, they are right TOGETHER.
     expect(fromTs).toBe(fromShell)
+  })
+})
+
+// DEFAULTCLIGUARD927 (Szotasz review of #1609): a model-less install on a CLI
+// measured too old for the shipped default launches the previous tier, on the
+// launch AND the respawn path alike; explicit values are never touched.
+// label, CLI version ('' = unmeasured), .env body, settings.json body, expected
+const GUARD_CASES: Array<[string, string, string | null, string | null, string]> = [
+  ['model-less on the AVX-less pin 2.1.110 -> the previous tier', '2.1.110', null, null, DISTRIBUTION_DEFAULT_FALLBACK_MODEL],
+  ['model-less on 2.1.278 -> the previous tier', '2.1.278', null, null, DISTRIBUTION_DEFAULT_FALLBACK_MODEL],
+  ['model-less on 2.1.280 -> the shipped default', '2.1.280', null, null, DISTRIBUTION_DEFAULT_AGENT_MODEL],
+  ['model-less, CLI unmeasured -> the shipped default (fail-open)', '', null, null, DISTRIBUTION_DEFAULT_AGENT_MODEL],
+  ['explicit MAIN_AGENT_MODEL on 2.1.110 is the operator\'s choice, untouched', '2.1.110', 'MAIN_AGENT_MODEL=claude-opus-5-5[1m]', null, 'claude-opus-5-5[1m]'],
+  ['explicit settings.json model on 2.1.110 is untouched', '2.1.110', null, '{"model":"claude-opus-5-5[1m]"}', 'claude-opus-5-5[1m]'],
+]
+
+describe('the distribution default is guarded against the installed CLI (DEFAULTCLIGUARD927)', () => {
+  it('the shipped default is one the pin cannot run, so these cases exercise a real fallback', () => {
+    expect(DISTRIBUTION_DEFAULT_FALLBACK_MODEL).not.toBe(DISTRIBUTION_DEFAULT_AGENT_MODEL)
+  })
+
+  it.each(GUARD_CASES)('%s', (_label, cli, envBody, settingsBody, want) => {
+    process.env[CLI_VERSION_OVERRIDE_ENV] = cli
+    const root = fixture(envBody, settingsBody)
+    const fromShell = shellResolves(root)
+    const fromTs = readConfiguredMainModel(root)
+    expect(fromShell).toBe(want)
+    expect(fromTs).toBe(want)
+    expect(fromTs).toBe(fromShell)
+  })
+
+  it('the shell fallback leaves a NAMED line in channels-failures.log', () => {
+    process.env[CLI_VERSION_OVERRIDE_ENV] = '2.1.110'
+    const root = fixture(null, null)
+    mkdirSync(join(root, 'store'), { recursive: true })
+    shellResolves(root)
+    const log = readFileSync(join(root, 'store', 'channels-failures.log'), 'utf-8')
+    expect(log).toContain('DEFAULTCLIGUARD927')
+    expect(log).toContain('2.1.110')
+    expect(log).toContain(DISTRIBUTION_DEFAULT_FALLBACK_MODEL)
+  })
+
+  it('a dist WITHOUT the guard module keeps the default (fail-open) and says so', () => {
+    process.env[CLI_VERSION_OVERRIDE_ENV] = '2.1.110'
+    const root = fixture(null, null)
+    rmSync(join(root, 'dist', 'claude-cli-support.js'))
+    mkdirSync(join(root, 'store'), { recursive: true })
+    expect(shellResolves(root)).toBe(DISTRIBUTION_DEFAULT_AGENT_MODEL)
+    expect(readFileSync(join(root, 'store', 'channels-failures.log'), 'utf-8')).toContain('guard unavailable')
   })
 })
 

@@ -86,4 +86,28 @@ describe('reapChannelOrphans live-pane guard', () => {
     expect(r.skippedLivePane).toEqual([])
     expect(alive(c)).toBe(false)
   })
+
+  // TMUXSERVERREAP929: the env scan matched the tmux server itself (channels.sh
+  // had created it with the state-dir var exported), the reap killed it, and the
+  // whole fleet went down three times in 17 hours.
+  it('D: spares a candidate that is the tmux server itself', async () => {
+    const d = victim(); await sleep(150)
+    writeFileSync(join(chanDir, 'bot.pid'), String(d))
+    fakeTmuxPrints(`case "$1" in display-message) echo ${d} ;; *) echo 4242 ;; esac`)
+    const r = reapChannelOrphans('telegram', agentDir, { tmuxPath: fakeTmux })
+    await sleep(500)
+    expect(r.reaped).not.toContain(d)
+    expect(r.skippedTmuxServer).toBe(true)
+    expect(alive(d)).toBe(true)
+  })
+
+  it('E: refuses to reap when the tmux server pid cannot be resolved (fail-safe)', async () => {
+    const e = victim(); await sleep(150)
+    writeFileSync(join(chanDir, 'bot.pid'), String(e))
+    fakeTmuxPrints(`case "$1" in display-message) exit 1 ;; *) echo 4242 ;; esac`)
+    const r = reapChannelOrphans('telegram', agentDir, { tmuxPath: fakeTmux })
+    await sleep(500)
+    expect(r.reaped).toEqual([])
+    expect(alive(e)).toBe(true)
+  })
 })

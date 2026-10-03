@@ -135,6 +135,15 @@ export interface GateInputs {
    */
   msSinceTranscriptWrite: number | null
 
+  /**
+   * Milliseconds since the last TURN line (user / assistant) of the
+   * transcript -- bookkeeping lines (a hook-blocked prompt's record,
+   * metadata) excluded. Used by the owner-command verdicts, which would
+   * otherwise see their own blocked prompt as activity; the automatic gate
+   * keeps msSinceTranscriptWrite. Optional: undefined/null = not measured.
+   */
+  msSinceTurnActivity?: number | null
+
   /** Last inbound channel message has no later outbound (unresolved turn). */
   hasOpenQuestion: boolean
 

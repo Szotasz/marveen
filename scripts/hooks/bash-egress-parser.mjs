@@ -16,6 +16,17 @@
 // Hosts are cut with a regex, not URL(), so http://localhost:$PORT stays local, while
 // localhost.evil.com and localhost@evil.com are external.
 //
+// PRIVATE NETWORK (maintainer decision on #1611, 2026-09-27): agents may reach private network
+// targets from the shell. Local, besides the loopback names above, is decided by the LITERAL host
+// string only, never by DNS: a canonical dotted-quad IPv4 in 10/8, 172.16/12, 192.168/16 or 127/8, a
+// bracketed IPv6 in fc00::/7 (ULA) or fe80::/10 (link-local), or a name whose LAST label is `local`
+// (mDNS, e.g. nas.local). A public name that happens to resolve to a private address stays external
+// (nas.example.com), and so does every IPv4 spelling a resolver reads differently from how it looks
+// (0x0a.0.0.1, 012.0.0.1, 167772161, 10.1) -- fail closed. 169.254/16 is deliberately NOT local:
+// it carries the cloud instance-metadata endpoint. 100.64/10 (CGNAT) is not RFC 1918 and stays
+// external. A single-label name (nas, xlocal) is external too: the resolver may complete it through
+// a search domain to anywhere.
+//
 // HOW IT READS THE COMMAND: structure from the MASKED text (maskInertLiterals blanks quoted strings
 // and heredoc bodies, length-preserving), so a `curl` or `;` inside a quoted argument or a heredoc
 // is not a command; the URL from the ORIGINAL text of the same span.
@@ -37,8 +48,48 @@ import { maskInertLiterals } from '../self-pace-gate.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 export const BLOCK_LOG = process.env.BASH_EGRESS_BLOCK_LOG || join(ROOT, 'store', 'bash-egress-blocks.jsonl')
+// EGRESSVENDOR925: vendor-API hosts a Bash call may reach (owner decision, per install).
+// store/egress-vendor-hosts.json = { "hosts": ["api.elevenlabs.io"] }. EXACT host match only:
+// no wildcard, no suffix match, no subdomain inheritance -- `elevenlabs.io.evil.com` and
+// `x.api.elevenlabs.io` are other hosts. A missing or unreadable file, or an entry that is not
+// a plain DNS name, means no exception: today's behaviour (deny). This is NOT
+// store/egress-allowlist.json -- that one is the WebFetch / quarantine-reader list.
+export const VENDOR_HOSTS_PATH = process.env.BASH_EGRESS_VENDOR_HOSTS || join(ROOT, 'store', 'egress-vendor-hosts.json')
+// A plain DNS name: labels of [a-z0-9-], no leading/trailing hyphen, at least one dot, a letter TLD.
+// Not an IP, not localhost, no `*`, no leading dot, no port, no userinfo.
+const VENDOR_HOST = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/
+export function parseVendorHosts(raw) {
+  const list = raw && typeof raw === 'object' && Array.isArray(raw.hosts) ? raw.hosts : []
+  return new Set(list.filter((h) => typeof h === 'string' && VENDOR_HOST.test(h)))
+}
+export function loadVendorHosts(path = VENDOR_HOSTS_PATH) {
+  try { return parseVendorHosts(JSON.parse(readFileSync(path, 'utf-8'))) } catch { return new Set() }
+}
+// OPTIONAL, opt-in (#1611, a policy proposal): the same file may also carry
+// `"domains": ["example.com"]` -- a listed domain OR any subdomain of it passes. The match is on a
+// LABEL boundary: `api.example.com` matches `example.com`, while `evilexample.com`,
+// `example.com.evil.net` and `example.com@evil.net` (whose host is evil.net) do not. Entries are
+// shape-checked exactly like "hosts" (a plain DNS name: no wildcard, no leading dot, no IP, no
+// port, no userinfo), so an IP or `*.x` can never widen the list. A missing key, a malformed
+// file, or an entry that is not a plain DNS name adds nothing: today's behaviour. Kept separate
+// from "hosts" on purpose, so an existing exact entry never silently becomes a suffix rule.
+export function parseVendorDomains(raw) {
+  const list = raw && typeof raw === 'object' && Array.isArray(raw.domains) ? raw.domains : []
+  return new Set(list.filter((h) => typeof h === 'string' && VENDOR_HOST.test(h)))
+}
+export function loadVendorDomains(path = VENDOR_HOSTS_PATH) {
+  try { return parseVendorDomains(JSON.parse(readFileSync(path, 'utf-8'))) } catch { return new Set() }
+}
+export function hostInDomains(host, domains) {
+  for (const d of domains) if (host === d || host.endsWith(`.${d}`)) return true
+  return false
+}
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
-const URL_RE = /\b(?:https?|ftp):\/\/[^\s'"`<>\\)]+/gi
+// One-liner URL schemes: every network scheme libcurl speaks (minus file:, and ipfs:/ipns:, which
+// resolve through a gateway, not the literal host). A one-liner reaches all of them through a curl
+// binding (PHP curl_exec, pycurl) or a stream wrapper (PHP ftps://, Perl LWP gopher://), so an
+// http/ftp-only list let `php -r '...curl_init("sftp://host/")...curl_exec(...)'` out untouched.
+const URL_RE = /\b(?:https?|ftps?|sftp|scp|tftp|smbs?|dict|gophers?|imaps?|pop3s?|smtps?|ldaps?|telnet|mqtt|rtsp):\/\/[^\s'"`<>\\)]+/gi
 const INTERPRETER = /^(?:python(?:\d+(?:\.\d+)?)?|node(?:js)?|perl|ruby|php|deno|bun)$/
 const CODE_FLAG = new Set(['-c', '-e', '-E', '-r', '--eval', '-p', '--print', 'eval'])
 // Words that can stand before the real command word of a sub-command. The shell keywords are here
@@ -58,10 +109,26 @@ export function hostOf(url) {
   const m = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/?#]*@)?(\[[^\]]*\]|[^/:?#]*)/i.exec(url)
   return m ? m[1].toLowerCase() : null
 }
+// Canonical dotted-quad only: no leading zero, no hex/octal/decimal/short forms.
+const OCTET = '(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)'
+const CANON_IPV4 = new RegExp(`^${OCTET}(?:\\.${OCTET}){3}$`)
+const MDNS_NAME = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+local$/
+// A private-network target by its literal spelling (see the PRIVATE NETWORK note in the header).
+export function isPrivateTarget(host) {
+  const h = String(host ?? '').toLowerCase()
+  if (CANON_IPV4.test(h)) {
+    const [a, b] = h.split('.').map(Number)
+    return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
+  }
+  const v6 = /^\[([0-9a-f:.]+)\]$/.exec(h)
+  if (v6) return /^f[cd][0-9a-f]{0,2}:/.test(v6[1]) || /^fe[89ab][0-9a-f]?:/.test(v6[1])
+  return MDNS_NAME.test(h)
+}
+export function isLocalHost(host) { return LOCAL_HOSTS.has(host) || isPrivateTarget(host) }
 export function isExternal(url) {
   const h = hostOf(url)
   if (h === null || h === '') return false
-  return !LOCAL_HOSTS.has(h)
+  return !isLocalHost(h)
 }
 function spans(masked) {
   const out = []; let start = 0
@@ -80,6 +147,44 @@ function collectAssignments(orig, masked) {
     }
   }
   return env
+}
+// `for NAME in w1 w2 ...`: the loop variable takes EACH value in turn.
+// NAME=value alone never saw it, so `for u in https://x ...; do curl "$u"; done` reached curl with an
+// unread destination and passed, while the same URL as a literal or a plain assignment was denied.
+// The keyword is found in the MASKED text (a quoted "for u in" is not a loop), the values are read
+// from the ORIGINAL text, unquoted, with this command's assignments expanded in them.
+function collectLoops(orig, masked, env) {
+  const loops = {}
+  for (const [a, b] of spans(masked)) {
+    const m = /(?:^|[\s(!{])for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in(?=\s|$)/.exec(masked.slice(a, b))
+    if (!m) continue
+    const vals = shellWords(expand(orig.slice(a + m.index + m[0].length, b), env))
+    loops[m[1]] = [...(loops[m[1]] ?? []), ...vals]
+  }
+  return loops
+}
+// Every reading of a span a loop can produce: one text per loop value (per combination, for nested
+// loops). Past MAX_LOOP_VARIANTS the span is not judged value by value: null, and the caller fails
+// closed -- a hand-written URL loop is a few values, never hundreds.
+const MAX_LOOP_VARIANTS = 64
+// A value goes into the text as ONE word: pasting `'{"a":"b c"}'` raw broke the command's own
+// quoting, and its fragments were read as hosts (measured on the fleet's week of commands: a loop
+// of JSON bodies posted to localhost with -d "$p" was denied). A URL never holds whitespace or a
+// quote, so such a value is replaced by the first URL inside it, or by a neutral word.
+function asWord(value) {
+  if (/^[^\s'"`\\]+$/.test(value)) return value
+  return (String(value).match(URL_RE) ?? [])[0] ?? 'x'
+}
+function loopVariants(text, env, loops) {
+  let out = [text]
+  for (const [v, vals] of Object.entries(loops)) {
+    const re = new RegExp(`\\$\\{${v}\\}|\\$${v}(?![A-Za-z0-9_])`, 'g')
+    if (!re.test(text)) continue
+    re.lastIndex = 0
+    out = out.flatMap((t) => vals.map((x) => t.replace(re, () => asWord(x))))
+    if (out.length > MAX_LOOP_VARIANTS) return null
+  }
+  return out.map((t) => expand(t, env))
 }
 function expand(text, env) {
   return text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (all, a, b) => (env[a ?? b] ?? all))
@@ -252,7 +357,11 @@ export function destHost(value) {
   const noScheme = value.replace(/^[^/?#\s]*:\/\//, '')
   const m = /^(?:[^@/?#]*@)?(\[[^\]]*\]|[^/:?#]*)/.exec(noScheme)
   const h = m ? m[1].toLowerCase() : ''
-  return HOSTNAME.test(h) ? h : null
+  if (HOSTNAME.test(h)) return h
+  // A literal host that is not a regular hostname (single label, 0x0a.0.0.1, 167772161, 10.1) is
+  // still a destination curl will resolve; returning null here let it pass unchecked. Fail closed.
+  // Only plain literal tokens qualify, so a $VAR, a glob or a relative path still yields null.
+  return /^(?=[^.]*[a-z0-9])[a-z0-9][a-z0-9._-]*$/.test(h) ? h : null
 }
 // Every external destination host in a curl argv (the words AFTER `curl`).
 export function curlDestinations(args) {
@@ -282,47 +391,58 @@ export function curlDestinations(args) {
     }
     addUrl(w) // positional: always a URL to curl
   }
-  return dests.filter((h) => !LOCAL_HOSTS.has(h))
+  return dests.filter((h) => !isLocalHost(h))
 }
-export function classify(command, depth = 0) {
+export function classify(command, depth = 0, vendorHosts = new Set(), vendorDomains = new Set()) {
   const norm = String(command ?? '').replace(/\\\r?\n/g, ' ')
   const { stripped: orig, inners } = liftSubstitutions(norm)
   if (depth < 4) {
-    for (const inner of inners) { const r = classify(inner, depth + 1); if (r.deny) return r }
+    for (const inner of inners) { const r = classify(inner, depth + 1, vendorHosts, vendorDomains); if (r.deny) return r }
   }
   const masked = maskInertLiterals(orig)
   if (masked === null || masked.length !== orig.length) return { deny: false, reason: 'unparseable', hosts: [] }
   const env = collectAssignments(orig, masked)
+  const loops = collectLoops(orig, masked, env)
   for (const [a, b] of spans(masked)) {
     const mw = words(masked.slice(a, b))
     let i = 0
     while (i < mw.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(mw[i]) || PREFIX_WORDS.has(mw[i]))) i++
     if (i >= mw.length) continue
-    const cmd = mw[i].split('/').pop()
-    const text = expand(orig.slice(a, b), env)
-    let target = null
-    if (cmd === 'curl') target = 'curl'
-    else if (INTERPRETER.test(cmd) && mw.slice(i + 1).some((w) => CODE_FLAG.has(w)) && NET_PRIMITIVE.test(text)) target = 'one-liner'
-    if (!target) continue
-    // curl: the destination is read from the ARGV only. A URL inside a flag VALUE (-d, -e, -H, a
-    // JSON payload) is data sent to wherever curl connects, not a destination. The fleet reports PR
-    // links with a localhost curl whose -d JSON carries a github.com URL, and scanning the whole text
-    // with URL_RE denied exactly that (#1514 re-review, measured on the merged head). An interpreter
-    // one-liner has no argv to read, so its code is still scanned with URL_RE.
-    let found
-    const argv = target === 'curl' ? shellWords(text) : null
-    const at = argv ? argv.findIndex((w) => w.split('/').pop() === 'curl') : -1
-    if (at !== -1) found = curlDestinations(argv.slice(at + 1))
-    else found = [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
-    const hosts = [...new Set(found)]
-    if (hosts.length) return { deny: true, reason: `${target}-external`, hosts }
+    // Every loop reading AND the plain one: a loop variable can share its name with an assignment
+    // elsewhere in the command (`for u in <local>; do ...; done; u=<external>; curl "$u"`), and a
+    // loop-only reading would let the assigned value go unjudged.
+    const plain = expand(orig.slice(a, b), env)
+    const variants = loopVariants(orig.slice(a, b), env, loops)
+    for (const text of [plain, ...(variants ?? [])]) {
+      const cmd = mw[i].split('/').pop()
+      let target = null
+      if (cmd === 'curl') target = 'curl'
+      else if (INTERPRETER.test(cmd) && mw.slice(i + 1).some((w) => CODE_FLAG.has(w)) && NET_PRIMITIVE.test(text)) target = 'one-liner'
+      if (!target) continue
+      // curl: the destination is read from the ARGV only. A URL inside a flag VALUE (-d, -e, -H, a
+      // JSON payload) is data sent to wherever curl connects, not a destination. The fleet reports PR
+      // links with a localhost curl whose -d JSON carries a github.com URL, and scanning the whole text
+      // with URL_RE denied exactly that (#1514 re-review, measured on the merged head). An interpreter
+      // one-liner has no argv to read, so its code is still scanned with URL_RE.
+      let found
+      const argv = target === 'curl' ? shellWords(text) : null
+      const at = argv ? argv.findIndex((w) => w.split('/').pop() === 'curl') : -1
+      if (at !== -1) found = curlDestinations(argv.slice(at + 1))
+      else found = [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
+      // A listed vendor host (or a host under a listed domain) passes only by itself: any other
+      // destination in the same call still denies.
+      const hosts = [...new Set(found)].filter((h) => !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
+      if (hosts.length) return { deny: true, reason: `${target}-external`, hosts }
+      if (variants === null) return { deny: true, reason: `${target}-loop-unbounded`, hosts: [] }
+    }
   }
   return { deny: false, reason: null, hosts: [] }
 }
 
 const GATE_MSG =
   'Kulso halozati hivas Bash-bol TILTVA (egress hard-gate): curl vagy interpreter-egysoros kulso URL-re, ' +
-  'akkor is, ha az URL valtozoban van. A localhost/127.0.0.1 hivasok (dashboard) szabadok. Kulso tartalmat ' +
+  'akkor is, ha az URL valtozoban van. A localhost/127.0.0.1 hivasok (dashboard) es a helyi halozat ' +
+  '(10/8, 172.16/12, 192.168/16, *.local) szabadok. Kulso tartalmat ' +
   'a quarantine-reader sub-ugynokon at kerj le; ha ez egy vendor-API hivas, kerd a fo-agenst.'
 function isInvokedDirectly() {
   try { return realpathSync(fileURLToPath(import.meta.url)) === (process.argv[1] ? realpathSync(process.argv[1]) : '') } catch { return false }
@@ -332,7 +452,7 @@ if (isInvokedDirectly()) {
   try { payload = JSON.parse(readFileSync(0, 'utf-8')) } catch { process.exit(0) }
   if (payload?.tool_name !== 'Bash') process.exit(0)
   let r
-  try { r = classify(payload?.tool_input?.command) } catch (e) { process.stderr.write(`bash-egress-parser: internal error, allowing: ${e?.message}\n`); process.exit(0) }
+  try { r = classify(payload?.tool_input?.command, 0, loadVendorHosts(), loadVendorDomains()) } catch (e) { process.stderr.write(`bash-egress-parser: internal error, allowing: ${e?.message}\n`); process.exit(0) }
   if (r.deny) {
     try {
       mkdirSync(dirname(BLOCK_LOG), { recursive: true })

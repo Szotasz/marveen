@@ -18,6 +18,16 @@ import { readFileSync } from 'node:fs'
 /** Same default as QUOTA_MAX_AGE_SEC in scripts/limit-monitor.sh. */
 export const DEFAULT_MAX_AGE_SEC = 21600
 
+// The Fable/Opus weekly window is not part of the statusLine block above --
+// it only shows up there while a session is actively using Fable, which is
+// rarely true. scripts/usage-collect.py is the authoritative source instead,
+// writing store/usage-latest.json on its own schedule (a heartbeat task,
+// every 15 minutes). Its freshness bar has to be much tighter than the
+// statusLine's 6h: a missed run here means the collector itself is down, not
+// just "no session lately". ~3x the collection interval, the same margin
+// usage-collect.py's own alert refire windows use.
+export const DEFAULT_FABLE_MAX_AGE_SEC = 2700
+
 export interface QuotaWindow {
   /** Percentage of the window already spent, 0-100. */
   usedPercentage: number
@@ -94,4 +104,65 @@ export function readQuotaSnapshot(
     fiveHour,
     sevenDay,
   }
+}
+
+/**
+ * The Fable/Opus weekly window, read separately because it comes from a
+ * different writer (scripts/usage-collect.py -> store/usage-latest.json)
+ * with its own shape and its own freshness rule. Missing/stale/unreadable
+ * all degrade to 'missing' or 'stale' rather than throwing, same rule as
+ * readQuotaSnapshot: the dashboard must still render.
+ */
+export interface FableSnapshot {
+  status: 'ok' | 'stale' | 'missing'
+  ageSec: number | null
+  window: QuotaWindow | null
+}
+
+/** usage-collect.py's window shape: `used_percent`, not the statusLine's `used_percentage`. */
+function readOpusWindow(raw: unknown, nowSec: number): QuotaWindow | null {
+  if (!raw || typeof raw !== 'object') return null
+  const w = raw as { used_percent?: unknown; resets_at?: unknown }
+  if (typeof w.used_percent !== 'number' || !Number.isFinite(w.used_percent)) return null
+  const resetsAt = typeof w.resets_at === 'number' && Number.isFinite(w.resets_at) ? w.resets_at : null
+  return {
+    usedPercentage: w.used_percent,
+    resetsAt,
+    expired: resetsAt !== null && resetsAt <= nowSec,
+  }
+}
+
+export function readFableSnapshot(
+  file: string,
+  nowSec: number = Math.floor(Date.now() / 1000),
+  maxAgeSec: number = DEFAULT_FABLE_MAX_AGE_SEC,
+): FableSnapshot {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(readFileSync(file, 'utf-8'))
+  } catch {
+    return { status: 'missing', ageSec: null, window: null }
+  }
+  if (!parsed || typeof parsed !== 'object') return { status: 'missing', ageSec: null, window: null }
+
+  const d = parsed as { generated_at?: unknown; claude?: unknown }
+  const claude = d.claude && typeof d.claude === 'object' ? (d.claude as Record<string, unknown>) : null
+  const windows = claude?.windows && typeof claude.windows === 'object' ? (claude.windows as Record<string, unknown>) : null
+  // Non-tiered accounts report this window as null forever, same as the
+  // collector's own "skip gracefully" handling -- that's a permanent
+  // "nothing to show", not a freshness problem, so it stays 'missing'.
+  // NOTE: usage-collect.py's field is `used_percent`, not the statusLine's
+  // `used_percentage` -- readWindow() above is the wrong shape for this source.
+  const window = windows ? readOpusWindow(windows.seven_day_opus, nowSec) : null
+  if (!window) return { status: 'missing', ageSec: null, window: null }
+
+  // A missing generated_at counts as maximally old, matching how
+  // readQuotaSnapshot treats a missing written_at above.
+  let generatedAtSec = 0
+  if (typeof d.generated_at === 'string') {
+    const ms = Date.parse(d.generated_at)
+    if (!Number.isNaN(ms)) generatedAtSec = Math.floor(ms / 1000)
+  }
+  const ageSec = Math.max(0, nowSec - generatedAtSec)
+  return { status: ageSec > maxAgeSec ? 'stale' : 'ok', ageSec, window }
 }

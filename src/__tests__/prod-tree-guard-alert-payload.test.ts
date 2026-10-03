@@ -98,14 +98,15 @@ function makeRepo(dirName: string): string {
  *  reads it, and the hook's `curl -m 5` dies on its timeout with the body
  *  unread. Measured: every case red at ~5.5s each, positive control included,
  *  against an unmodified script. */
-async function switchTo(repo: string, branch: string): Promise<string> {
+async function switchTo(repo: string, branch: string, alertTo: string | null = ALERT_TO): Promise<string> {
   captured = []
   execFileSync('git', ['-C', repo, 'branch', branch])
+  const env: NodeJS.ProcessEnv = { ...process.env, MARVEEN_DASHBOARD_ORIGIN: origin }
+  // null = no override, so the hook falls back to its own default recipient.
+  if (alertTo === null) delete env.MARVEEN_GUARD_ALERT_TO
+  else env.MARVEEN_GUARD_ALERT_TO = alertTo
   // Never fails the checkout: the hook is best-effort by contract.
-  await execFileAsync('git', ['-C', repo, 'checkout', '-q', branch], {
-    timeout: 20000,
-    env: { ...process.env, MARVEEN_DASHBOARD_ORIGIN: origin, MARVEEN_GUARD_ALERT_TO: ALERT_TO },
-  })
+  await execFileAsync('git', ['-C', repo, 'checkout', '-q', branch], { timeout: 20000, env })
   for (let i = 0; i < 100 && captured.length === 0; i++) await new Promise((r) => setTimeout(r, 20))
   expect(captured.length).toBe(1)
   return captured[0]
@@ -145,5 +146,37 @@ describe('prod-tree-guard post-checkout alert: the payload is encoded, not inter
     expect(parsed.to).toBe(ALERT_TO)
     expect(parsed.to).not.toBe(FORGED_TO)
     expect(parsed.content).toContain('post-checkout hook')
+  })
+})
+
+// WHO the alert is sent AS. /api/messages answers an unregistered `from` with
+// HTTP 403 (src/web/routes/messages.ts, isKnownAgent), and the main agent id is
+// install-specific. The hook used to send as a literal 'marveen': measured
+// 2026-09-27 on an install whose main agent is 'lean-chief', that sender is
+// rejected, so the branch-switch alert could never arrive there. The installed
+// hook now reads MAIN_AGENT_ID from the install's .env (GUARDFROM924, #1569);
+// nothing pinned that, so these cases do. Against the hardcoded version the
+// first two go red.
+describe('prod-tree-guard post-checkout alert: the sender is this install\'s main agent', () => {
+  it('sends AS and TO the MAIN_AGENT_ID named in .env, not a literal agent name', async () => {
+    const repo = makeRepo('renamed')
+    writeFileSync(join(repo, '.env'), 'OTHER=1\nMAIN_AGENT_ID=renamed-main\n')
+    const parsed = JSON.parse(await switchTo(repo, 'feature-ordinary', null))
+    expect(parsed.from).toBe('renamed-main')
+    expect(parsed.to).toBe('renamed-main')
+  })
+
+  it('an explicit recipient override changes only the recipient, the sender stays the main agent', async () => {
+    const repo = makeRepo('override')
+    writeFileSync(join(repo, '.env'), 'MAIN_AGENT_ID="renamed-main"\n')
+    const parsed = JSON.parse(await switchTo(repo, 'feature-ordinary'))
+    expect(parsed.from).toBe('renamed-main')
+    expect(parsed.to).toBe(ALERT_TO)
+  })
+
+  it('without MAIN_AGENT_ID in .env it falls back to the stock main agent name', async () => {
+    const parsed = JSON.parse(await switchTo(makeRepo('stock'), 'feature-ordinary', null))
+    expect(parsed.from).toBe('marveen')
+    expect(parsed.to).toBe('marveen')
   })
 })

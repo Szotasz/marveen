@@ -42,10 +42,13 @@ write_result() {
 
 retry() {
   local tries="$1" pause="$2"; shift 2
-  local i=1
+  local i=1 rc=0
   while true; do
-    if "$@"; then return 0; fi
-    if [ "$i" -ge "$tries" ]; then return 1; fi
+    rc=0; "$@" || rc=$?
+    if [ "$rc" -eq 0 ]; then return 0; fi
+    # UPDOOMNPMCI926: return the LAST attempt's exit code, not a flat 1 -- a
+    # caller that must tell an OOM kill (137) from a lockfile error needs it.
+    if [ "$i" -ge "$tries" ]; then return "$rc"; fi
     echo -e "  ${DIM}retry $i/$tries...${NC}"; sleep "$pause"; pause=$(( pause * 2 )); i=$(( i + 1 ))
   done
 }
@@ -286,17 +289,28 @@ if [ "$CURRENT_BRANCH" = "HEAD" ] || [ -z "$CURRENT_BRANCH" ]; then
   # LECSERELI a fetch-refspecet, nem HOZZAFUZ -- a klon eredeti
   # `+refs/tags/<tag>:refs/tags/<tag>` sora kiesik. Az update-utra artalmatlan
   # (az ag-refbol dolgozik), de ez a parancs maradando config-valtozas.
+  #
+  # BRANCHHEAL925 (2026-09-25, #1566): the advice below is no longer the bare
+  # `git checkout main`. On an install with two remotes that both carry main
+  # (origin plus a fork) that form exits 128 -- git cannot infer which to
+  # follow -- and `checkout -b main --track origin/main` works exactly ONCE,
+  # failing on every install that has healed before. `git switch main ||
+  # git switch -c main --track origin/main` covers both states, and it is the
+  # same command the dashboard hands the user (web/app.js BRANCH_HEAL_COMMAND).
+  # The SHALLOW limitation above is unchanged by that: with no branch refs
+  # there is nothing for either form to switch TO, which is why the fetch
+  # steps still come first here.
   if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ] || [ -f .git/shallow ]; then
     if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
-      echo "       This is a SHALLOW clone with no branch refs, so 'git checkout main' cannot work here."
+      echo "       This is a SHALLOW clone with no branch refs, so no switch to main can work here yet."
       echo "       Fetch the release branch first, then switch to it:"
     else
-      echo "       Ez egy SHALLOW klon, ag-ref nelkul, tehat a 'git checkout main' itt nem tud mukodni."
+      echo "       Ez egy SHALLOW klon, ag-ref nelkul, tehat main-re valtani itt meg semmivel nem lehet."
       echo "       Eloszor hozd le a release branchet, es csak utana valts ra:"
     fi
     echo "         git remote set-branches origin main"
     echo "         git fetch --unshallow origin"
-    echo "         git checkout main"
+    echo "         git switch main || git switch -c main --track origin/main"
   else
     # NYELV-AG (UPDATEENHU921, 2026-09-21). Korabban ez a ket sor EN nyelven is
     # MAGYARUL ment, mikozben a folotte allo HIBA/ERROR fejlec helyesen valtott.
@@ -307,7 +321,7 @@ if [ "$CURRENT_BRANCH" = "HEAD" ] || [ -z "$CURRENT_BRANCH" ]; then
     else
       echo "       Allj at egy release branchre, majd indithatod ujra a frissitest, pl.:"
     fi
-    echo "         git checkout main"
+    echo "         git switch main || git switch -c main --track origin/main"
   fi
   exit 2
 fi
@@ -331,7 +345,7 @@ if ! git ls-remote --exit-code --heads origin "$CURRENT_BRANCH" >/dev/null 2>&1;
     echo "       Csak az origin-on is meglevo (kovetett) branchrol lehet frissiteni."
     echo "       Allj at egy release branchre, pl.:"
   fi
-  echo "         git checkout main"
+  echo "         git switch main || git switch -c main --track origin/main"
   exit 2
 fi
 
@@ -398,6 +412,57 @@ restore_stash_before_exit() {
   fi
 }
 
+# UPDOOMNPMCI926: `npm ci` failed after the pull. npm ci deletes node_modules
+# before installing, so the tree is on the NEW commit with a half-installed
+# dependency set; the running dashboard still has the old code in memory, but
+# its next start (or any fresh node process) would load from the broken tree.
+# The old path only printed a fixed "package-lock.json out of sync" line and
+# exited 1 with no rollback, so the report said "failed" while the tree sat on
+# the new commit. Measured on a 3.8 GB, swapless host: the OOM killer ended
+# npm ci three times in 33 s (exit 137), and the message blamed the lockfile.
+# Now: name the cause from the exit code, roll back exactly like the build
+# failure below (old commit, its dependencies, its build), and report what
+# actually happened -- including a rollback whose own npm ci failed too.
+npm_ci_failed() {
+  local rc="$1"
+  if [ "$rc" -eq 137 ]; then
+    if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+      echo -e "${RED}ERROR:${NC} npm ci was killed (exit 137, SIGKILL) -- most likely the machine ran out of memory."
+      echo -e "  Check with: dmesg | grep -i 'killed process'  (the lockfile is not the cause)"
+    else
+      echo -e "${RED}HIBA:${NC} az npm ci-t a rendszer leállította (137-es kilépési kód, SIGKILL), valószínűleg elfogyott a memória."
+      echo -e "  Ellenőrzés: dmesg | grep -i 'killed process'  (nem a package-lock.json a hiba)"
+    fi
+  else
+    if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+      echo -e "${RED}ERROR:${NC} npm ci failed (exit code ${rc}). Details: npm ci"
+    else
+      echo -e "${RED}HIBA:${NC} az npm ci sikertelen (kilépési kód: ${rc}). Részletek: npm ci"
+    fi
+  fi
+  echo -e "  Visszaallitas a korabbi verziora (${OLD_VERSION})..."
+  local deps_ok=0
+  if [ -n "$OLD_VERSION_FULL" ]; then
+    git reset --hard "$OLD_VERSION_FULL" >/dev/null 2>&1 || true
+    if npm ci --silent --include=dev 2>/dev/null; then deps_ok=1; fi
+    npm rebuild better-sqlite3 --silent 2>/dev/null || true
+    npm run build --silent 2>/dev/null || true
+    [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
+  fi
+  local cause="a függőségek telepítése elbukott (kilépési kód: ${rc})"
+  [ "$rc" -eq 137 ] && cause="a függőségek telepítését a rendszer leállította (137, valószínűleg memóriahiány)"
+  if [ "$deps_ok" = "1" ]; then
+    RESULT_STATUS="rolled-back"
+    RESULT_MSG="A frissítés közben ${cause}; a rendszer visszaállt a korábbi működő verzióra (${OLD_VERSION}). A frissítés nem ment ki."
+  else
+    RESULT_STATUS="failed"
+    RESULT_MSG="A frissítés közben ${cause}, és a visszaállítás függőség-telepítése sem sikerült: a kód a korábbi verzión (${OLD_VERSION}) áll, de a node_modules hiányos lehet. Kézi beavatkozás kell: npm ci --include=dev, majd npm run build."
+    echo -e "${RED}HIBA:${NC} a visszaallitas npm ci-je is elbukott; a node_modules hianyos lehet. Kezi beavatkozas kell: npm ci --include=dev && npm run build"
+  fi
+  restore_stash_before_exit
+  exit 6
+}
+
 # Save current version
 OLD_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
@@ -417,8 +482,25 @@ OLD_VERSION_FULL=$(git rev-parse HEAD 2>/dev/null || echo "")
 # DEFAULT -- see the UPDATE_AUTO_REBASE block below, which is off unless the
 # operator of this install turns it on.
 RESULT_PHASE="pull"
-AHEAD=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
-BEHIND=$(git rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
+# DIVERGENCE-REF (UPSTREAMSRC927): measure the ref the pull below will merge,
+# fetched NOW -- not `@{u}`. Two ways `@{u}` answered a different question:
+#   - it is only as fresh as the last fetch, and nothing in the product fetches
+#     on a schedule. With local commits and new upstream commits, the stale ref
+#     said "ahead 1, behind 0", this guard let it through, and `pull --ff-only`
+#     then died with a generic message; the UPDATE_AUTO_REBASE=1 path below,
+#     built for exactly that case, never started (measured on a throwaway repo).
+#   - it is whatever the branch tracks, while the pull names origin/<branch>.
+# `git fetch origin <branch>` is the first half of that pull, and FETCH_HEAD is
+# precisely what its merge would take. A failed fetch is said out loud and the
+# guard falls back to the last known origin ref; the pull then reports the
+# network failure itself.
+DIVERGENCE_REF="FETCH_HEAD"
+if ! git fetch --quiet origin "$CURRENT_BRANCH" 2>>"$INSTALL_DIR/store/update.log"; then
+  DIVERGENCE_REF="origin/${CURRENT_BRANCH}"
+  echo -e "  ${ORANGE}Figyelem:${NC} a 'git fetch origin ${CURRENT_BRANCH}' elbukott; az elteres-ellenorzes az utolso ismert ${DIVERGENCE_REF} refet meri, ami elavult lehet."
+fi
+AHEAD=$(git rev-list --count "${DIVERGENCE_REF}..HEAD" 2>/dev/null || echo 0)
+BEHIND=$(git rev-list --count "HEAD..${DIVERGENCE_REF}" 2>/dev/null || echo 0)
 if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
   # Diverged history: ahead AND behind. #1112 made this refuse ON PURPOSE -- a
   # human has to reconcile it -- and that stays the DEFAULT here. What this adds
@@ -626,6 +708,39 @@ EOF
   return 0
 }
 
+# macOS twin of install_keepalive_probe_timer (KEEPALIVEMAC926). The Linux half
+# landed with #1313 and install-macos.sh got the launchd unit the same day, but
+# the template only reaches NEW installs -- and update.sh, the one thing that
+# runs weekly on the machines that already have the bug, had no Darwin branch at
+# all, so every Mac installed before 2026-09-14 still has no probe.
+# Measured on this install 2026-09-26 05:07: launchctl had no
+# com.marveen.channel-keepalive-probe, and store/channels-failures.log shows
+# main-agent respawns ONLY between 22:00 and 07:00 (19 that night, one every
+# ~15 minutes, zero between 07:00 and 22:00) -- the same quiet-night-reads-as-a-
+# wedge loop the Linux comment above describes. The respawn never clears the
+# condition that triggers it (nothing refreshes the file afterwards either), so
+# it repeats until the owner's first morning message warms the file.
+# Idempotent: once the plist exists this writes nothing and prints nothing. The
+# label is read from the installer so a rename there cannot silently turn this
+# into a weekly reload.
+install_keepalive_probe_launchd() {
+  [ "$(uname -s 2>/dev/null)" = "Darwin" ] || return 0
+  _ka_installer="$INSTALL_DIR/scripts/install-channel-keepalive-probe.sh"
+  [ -x "$_ka_installer" ] || return 0
+  command -v launchctl >/dev/null 2>&1 || return 0
+  _ka_label="$(sed -n 's/^LABEL="\(.*\)"$/\1/p' "$_ka_installer" | head -1)"
+  [ -n "$_ka_label" ] || _ka_label="com.marveen.channel-keepalive-probe"
+  if [ -f "$HOME/Library/LaunchAgents/${_ka_label}.plist" ]; then
+    return 0
+  fi
+  if "$_ka_installer" --load >/dev/null 2>&1; then
+    echo -e "  Keepalive-szonda telepitve (3 percenkent, hamis respawn ellen): ${_ka_label}"
+  else
+    echo -e "  FIGYELEM: a keepalive-szonda telepitese nem sikerult -- inditsd kezzel: scripts/install-channel-keepalive-probe.sh --load"
+  fi
+  return 0
+}
+
 # Morning-timer parking (MORNTIMERPARK914 -- the missing half of the locked
 # MORNCONS1 decision, 2026-07-27). The #1313 installer change stops ENABLING
 # the 07:27 morning timer on NEW installs, but every already-installed Linux
@@ -689,10 +804,126 @@ park_morning_timer() {
   return 0
 }
 
+# Main-agent inbox observer, for hosts that already exist. The installers wire
+# it on a fresh install; without this, every machine installed before it stays
+# exactly as it was -- the script present, nothing running it -- which is the
+# defect the observer itself is about, one level up.
+#
+# Two platforms, two mechanisms, and BOTH are needed here: on Linux the unit
+# pair below, on macOS the launchd installer (which refuses to run anywhere
+# else). Idempotent on both: the Linux half writes nothing once the timer unit
+# exists, the launchd half rewrites the same plist byte for byte.
+install_main_inbox_observer_unit() {
+  [ -x "$INSTALL_DIR/scripts/main-inbox-observer.sh" ] || return 0
+  if [ "$(uname -s)" = "Darwin" ]; then
+    [ -x "$INSTALL_DIR/scripts/install-main-inbox-observer.sh" ] || return 0
+    if "$INSTALL_DIR/scripts/install-main-inbox-observer.sh" --load >/dev/null 2>&1; then
+      echo -e "  Fo-agens inbox-figyelo telepitve (5 percenkent, launchd)"
+    else
+      echo -e "  FIGYELEM: az inbox-figyelo telepitese nem sikerult -- kezzel: scripts/install-main-inbox-observer.sh --load"
+    fi
+    return 0
+  fi
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  [ -d "$units_dir" ] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  # Same service-id derivation as the keepalive timer above, and for the same
+  # reason: extend the units that actually exist on this host.
+  for chan_unit in "$units_dir/"*-channels.service; do
+    [ -f "$chan_unit" ] || continue
+    _svc_id="$(basename "$chan_unit" -channels.service)"
+    _io_unit="${_svc_id}-main-inbox-observer"
+    [ -f "$units_dir/${_io_unit}.timer" ] && continue
+    _bot_name="$(sed -n 's/^BOT_NAME=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | tr -d '"')"
+    [ -n "$_bot_name" ] || _bot_name="Marveen"
+    _tz_line="# no explicit TZ detected; inheriting host default"
+    _tz="$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || true)"
+    [ -n "$_tz" ] && [ "$_tz" != "UTC" ] && _tz_line="Environment=TZ=$_tz"
+    cat >"$units_dir/${_io_unit}.service" <<EOF
+[Unit]
+Description=${_bot_name} out-of-process observer of the main agent's inbox queue
+
+[Service]
+Type=oneshot
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/scripts/main-inbox-observer.sh
+Environment=PATH=$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=$HOME
+${_tz_line}
+StandardOutput=append:$INSTALL_DIR/store/main-inbox-observer.log
+StandardError=append:$INSTALL_DIR/store/main-inbox-observer.log
+EOF
+    # Not bound to the dashboard unit on purpose: "the dashboard is down" is one
+    # of the states being observed, so the timer must outlive it.
+    cat >"$units_dir/${_io_unit}.timer" <<EOF
+[Unit]
+Description=${_bot_name} main-agent inbox observer every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl --user daemon-reload 2>/dev/null || true
+    if systemctl --user enable --now "${_io_unit}.timer" >/dev/null 2>&1; then
+      echo -e "  Fo-agens inbox-figyelo telepitve (5 percenkent, a dashboard folyamaton kivul): ${_io_unit}.timer"
+    else
+      echo -e "  FIGYELEM: ${_io_unit}.timer unit megirva, de az engedelyezese nem sikerult -- inditsd kezzel: systemctl --user enable --now ${_io_unit}.timer"
+    fi
+  done
+  return 0
+}
+
+# UPDUNITTGENV930: #1450 took `Environment=TELEGRAM_ENV=<home>/.claude/channels/telegram/.env`
+# out of the two notifier units install-linux.sh writes (<slug>-host-watchdog.service and
+# <slug>-notify@.service), but only for NEW installs: an existing host keeps the line,
+# and on a MIGRATED install (install-scoped channel dir) it points at the empty legacy
+# path and overrides the notifier's own resolution, so the failure notifier never sends.
+# Only that exact legacy value goes (<the unit's own HOME>/.claude/channels/telegram/.env):
+# an operator's deliberate TELEGRAM_ENV pointing anywhere else stays. On an
+# unmigrated install removing it is harmless, the notifier falls back to the same path.
+strip_legacy_notifier_telegram_env() {
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  [ -d "$units_dir" ] || return 0
+  _patched=0
+  for _unit in "$units_dir/"*-host-watchdog.service "$units_dir/"*-notify@.service; do
+    [ -f "$_unit" ] || continue
+    # The legacy value is the SHARED dir under the unit's own HOME: the installer writes
+    # both lines from the same $HOME, and the shipped template carried both as the same
+    # /home/<user> placeholder, so one form covers both. Matched as whole
+    # fixed strings: the install-scoped <install>/.claude/channels/telegram/.env, the
+    # correct path on a migrated install, must never match.
+    _uhome="$(sed -n 's/^Environment=HOME=//p' "$_unit" | head -1)"
+    [ -n "$_uhome" ] || _uhome="$HOME"
+    _legacy1="Environment=TELEGRAM_ENV=${_uhome}/.claude/channels/telegram/.env"
+    if grep -qxF -e "$_legacy1" "$_unit"; then
+      if grep -vxF -e "$_legacy1" "$_unit" >"${_unit}.marveen-new" 2>/dev/null \
+         && cat "${_unit}.marveen-new" >"$_unit" 2>/dev/null; then
+        rm -f "${_unit}.marveen-new"
+        _patched=1
+        echo -e "  Hiba-ertesito unit javitva (regi TELEGRAM_ENV sor ki): $(basename "$_unit")"
+      else
+        rm -f "${_unit}.marveen-new"
+        echo -e "  FIGYELEM: a hiba-ertesito unit nem volt irhato: $_unit"
+      fi
+    fi
+  done
+  if [ "$_patched" = "1" ]; then
+    systemctl --user daemon-reload 2>/dev/null || true
+  fi
+  return 0
+}
+
 run_unit_maintenance() {
   repair_morning_timer "$@"
   migrate_channels_restart "$@"
   install_keepalive_probe_timer "$@"
+  install_keepalive_probe_launchd "$@"
+  install_main_inbox_observer_unit "$@"
+  strip_legacy_notifier_telegram_env "$@"
   park_morning_timer "$@"
   return 0
 }
@@ -916,10 +1147,10 @@ if git diff "$OLD_VERSION" "$NEW_VERSION" --name-only | grep -qE "^package(-lock
   # TypeScript compiler and makes the build below fail -> rollback -> the same
   # failure next run, forever (the rollback also reverts the freshly pulled
   # update.sh, so a fix can never arrive through this path on its own).
-  if ! retry 3 3 npm ci --silent --include=dev; then
-    echo -e "  HIBA: npm ci sikertelen. Valoszinuleg a package-lock.json nincs szinkronban."
-    echo -e "  Reszletekert futtasd: npm ci"
-    exit 1
+  NPM_CI_RC=0
+  retry 3 3 npm ci --silent --include=dev || NPM_CI_RC=$?
+  if [ "$NPM_CI_RC" -ne 0 ]; then
+    npm_ci_failed "$NPM_CI_RC"
   fi
   # Security posture check, NOT a hard gate. npm audit queries the
   # registry and can fail for reasons entirely outside the operator's

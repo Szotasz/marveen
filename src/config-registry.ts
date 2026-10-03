@@ -18,6 +18,11 @@
 // fallback (channels.sh), the effective default for the MAIN agent on any
 // install whose settings.json has no model. So this value is INHERITED by NEW
 // agents and by existing model-less installs; it is not a mere worker knob.
+// It is ALSO, via model-suggest.ts's TOP_TIER_MODEL, the ceiling the "which
+// model should this agent run" advisor recommends -- that reuse is
+// deliberate (see model-suggest.ts's MODELSUGGEST807 comment), which means
+// this constant must be bumped every time a strictly-better/cheaper tier
+// ships, or the advisor starts recommending a regression.
 // The [1m] suffix is DELIBERATE, and the real reason is that inheritance, not
 // continuity: a new agent is as long-lived as the current fleet (all of whom
 // run explicit [1m]), and a narrower window would reproduce the context-guard
@@ -28,7 +33,31 @@
 // the CLI already handles the 4.8[1m] default. The valueSet below carries BOTH
 // claude-opus-5 and claude-opus-5[1m] so an operator can still pick the
 // non-1M form.
-export const DISTRIBUTION_DEFAULT_AGENT_MODEL = 'claude-opus-5[1m]'
+// MODELSUGGEST923 (measured 2026-09-26): OPUS55SELECTOR922 (#1492, 2026-09-23)
+// added claude-opus-5-5[1m] to the picker's valueSet but never bumped THIS
+// constant, so model-suggest.ts kept recommending the older claude-opus-5[1m]
+// as an "upgrade" over agents already running claude-opus-5-5[1m] -- a real
+// regression suggestion, live on 5 of 5 fleet agents including two already on
+// 5.5. The picker already offers 5.5, so the ceiling must follow. This is the
+// exact drift class MODELSUGGEST807 already fixed once (for the 4.8->5
+// transition); it recurred because that fix anchored the ceiling to this
+// constant instead of to "whatever the newest tier is", and nothing bumps
+// this constant automatically when a new tier ships.
+export const DISTRIBUTION_DEFAULT_AGENT_MODEL = 'claude-opus-5-5[1m]'
+
+// DEFAULTCLIGUARD927: the tier a MODEL-LESS launch falls back to when the
+// installed Claude Code CLI is measured (claude-cli-support.ts) not to launch
+// DISTRIBUTION_DEFAULT_AGENT_MODEL. The default above reaches every existing
+// model-less install on a plain code update, and nothing else on that launch
+// path checks the CLI: an AVX-less host is pinned to CLI 2.1.110 (CLAUDE_PIN
+// in channels.sh / install-linux.sh / fix-avx.sh), DISABLE_AUTOUPDATER keeps
+// any older CLI where it is, and on such a CLI claude-opus-5-5 answers every
+// prompt with 400 unrecognized_model -- the session comes up and goes silent.
+// This must be a model the OLDEST pinned CLI launches (a test pins that), and
+// it moves one tier up whenever the default does. Explicit operator values
+// (MAIN_AGENT_MODEL, a settings.json model, an agent's own model, a configured
+// DEFAULT_AGENT_MODEL) are never replaced by it.
+export const DISTRIBUTION_DEFAULT_FALLBACK_MODEL = 'claude-opus-5[1m]'
 
 export type SettingType = 'int' | 'string' | 'color' | 'boolean'
 
@@ -159,7 +188,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     default: 30,
     min: 1,
     max: 365,
-    description: 'Ennyi napnál régebbi "done" kártyák automatikusan archiválódnak a listKanbanCards() hívásakor.',
+    description: 'Ennyi napnál régebbi "done" kártyák automatikusan archiválódnak. Az óránként futó kanban-archiváló runner végzi (nem a lekérdezés).',
     module: 'kanban',
     secret: false,
     requiresRestart: false,
@@ -271,6 +300,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: 'string',
     default: '',
     description: 'Az a cím, amin az ÜGYNÖKÖK érik el a dashboard API-ját onnan, ahol futnak (pl. http://localhost:3420 egy gépes telepítésnél, vagy egy belső szolgáltatás-név k8s-en). Üres = a régi viselkedés: DASHBOARD_PUBLIC_URL, annak hiányában localhost. Ez NEM a böngészőnek szóló publikus cím.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'FLEET_PYTHON_VENV',
+    type: 'string',
+    default: '',
+    description: 'A flotta közös Python venv mappája, abszolút útvonal (kezdő ~ = home; relatív útvonal nem érvényes). Ha a <mappa>/bin létezik, minden ügynök indítási PATH-jának elejére kerül, így a skillek sima python3 hívása és a venv CLI-jei (markitdown stb.) a venv-ből jönnek. Nincs beállítva (alapértelmezés) vagy nem létező mappa = kikapcsolva. Az itt üresen hagyott mező NEM kapcsolja ki a .env-ben megadott értéket: kikapcsoláshoz a .env-ből kell törölni, vagy itt nem létező mappát megadni (pl. /nonexistent).',
     module: 'system',
     secret: false,
     requiresRestart: true,
@@ -529,6 +567,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
       'claude-opus-5-5[1m]',
       'claude-opus-5',
       'claude-opus-5[1m]',
+      'claude-sonnet-5-5',
       'claude-sonnet-5',
       'claude-fable-5',
       'claude-fable-5-1',
@@ -548,6 +587,33 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: 'boolean',
     default: '0',
     description: 'Automata Claude-kulcs rotáció: ha a fő agent aktív előfizetése kifogy, automatikusan váltson egy másik regisztrált planre. Előfeltétel: MAIN_AGENT_ISOLATED_CONFIG=1 és legalább 2 regisztrált plan a claude-plans.json-ban. A váltás a fő agent session-jének újraindításával jár.',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: false,
+  },
+  // Opt-in: the shared fleet token (store/.claude-oauth-token) follows the
+  // main agent's rotation. Default OFF -- with it off, a rotation touches the
+  // main agent only, exactly as before. Read at rotation time by
+  // POST /api/claude-plans/rotate (src/web/claude-plan-fleet-wiring.ts).
+  {
+    key: 'CLAUDE_ROTATION_FLEET',
+    type: 'boolean',
+    default: '0',
+    description: 'A flotta is kövesse a rotációt: amikor a fő agent egy token-módú planre vált, a közös flotta-token (store/.claude-oauth-token) is erre a plan tokenjére cserélődik (mentéssel), és minden olyan sub-agent újraindul, amely ezt a közös tokent használja. Saját tokenes / saját configDir-os agenteket nem érint. configDir-módú célplannél a flotta-lépés kimarad. Előfeltétel: CLAUDE_ROTATION_ENABLED=1.',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: false,
+  },
+  // Opt-in background refresh of IDLE plans' 5h/7d usage by the rotation
+  // heartbeat (scripts/claude-plan-rotate-check.ts -> refreshIdlePlans). Each
+  // probe is a real Messages API call that spends the probed plan's own quota,
+  // so it is off by default and independent of CLAUDE_ROTATION_ENABLED: an
+  // operator can keep the Settings bars fresh without automatic rotation.
+  {
+    key: 'CLAUDE_PLAN_USAGE_REFRESH',
+    type: 'boolean',
+    default: '0',
+    description: 'A tétlen (épp nem használt) token-módú planek 5 órás és heti keretét a rotációs heartbeat a háttérben is lekérdezi, planenként legfeljebb 30 percenként. Minden lekérdezés egy valódi, minimális API-hívás, ami az adott plan saját keretéből fogy, ezért alapból KI. A rotációtól (CLAUDE_ROTATION_ENABLED) függetlenül bekapcsolható, ha csak a Beállítások sávjait akarod frissen tartani.',
     module: 'claude-plans',
     secret: false,
     requiresRestart: false,

@@ -154,3 +154,32 @@ describe('web-reading profile posture (TMPLPERM908)', () => {
     }
   })
 })
+
+describe('file-path rules only for the tools Claude Code consults (PERMWRITERULE927)', () => {
+  // Claude Code checks file permissions against Read(path) and Edit(path) only;
+  // Edit rules cover every file-editing tool, Write included. A Write(path) rule
+  // is accepted and never consulted. MEASURED 2026-09-27 on CLI 2.1.283, -p probes
+  // with controls: deny Edit(//dir/x) blocked the Write tool, deny Write(//dir/x)
+  // did not (the file was created); --allowedTools Edit(//dir/**) let the write
+  // through, Write(//dir/**) did not (refused), and the bare tool name Write did.
+  // The CLI's own startup warning says the same ("is not matched by file
+  // permission checks -- only Edit(path) rules are"). So such a rule in a
+  // template reads like a grant or a deny that does not exist.
+  const INERT_PATH_RULE = /^(Write|NotebookEdit|Glob|MultiEdit)\(/
+
+  it('no shipped profile carries a path rule for Write, NotebookEdit, Glob or MultiEdit', () => {
+    const offenders: string[] = []
+    for (const p of listProfileTemplates()) {
+      for (const r of [...p.filesystem.allow, ...p.filesystem.deny]) {
+        if (INERT_PATH_RULE.test(r)) offenders.push(`${p.id}: ${r}`)
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+
+  it('the check itself sees such a rule (negative control)', () => {
+    expect(INERT_PATH_RULE.test('Write(${AGENT_DIR}/**)')).toBe(true)
+    expect(INERT_PATH_RULE.test('Edit(${AGENT_DIR}/**)')).toBe(false)
+    expect(INERT_PATH_RULE.test('WebFetch(*)')).toBe(false)
+  })
+})

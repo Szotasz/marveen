@@ -25,3 +25,12 @@ Olyan, mintha az asszisztens éjszaka "átgondolná a napot": mit tanultunk, mit
 5. **🛠 Skill-flotta health** — elavult (nem-pinned, régóta nem használt) skill-ek jelzése.
 
 Reggel a napindító a `DREAM.md` 5 bucketjét teszi a jelentés élére, az email/naptár/AI-hírek szekciók elé. Minden művelet helyi (SQL + opcionális helyi embedding), nincs külső API-hívás. Akadály esetén a `DREAM.md` végére hiba-szekció kerül, amit reggel látsz.
+
+### External opportunity + fokozatos autonómia
+
+A külső opportunity-k kezelése az `external_skill_adoption` autonómia-kategóriát követi. Az alapérték `level: 1`, ezért egy friss vagy frissített telepítés nem kezd el magától capability-t módosítani.
+
+- **Level 1:** a Dream Engine csak jelzi az opportunity-t a `DREAM.md`-ben.
+- **Level 2:** konkrét helyi skill-adaptációt javasol, de a skill-fájlt nem módosítja; a döntés a tulajdonosé.
+
+Az `external_skill_adoption` kategória legmagasabb engedélyezett szintje 2. A Dream Engine külső opportunity alapján nem hoz létre és nem módosít skill-fájlt önállóan; a tényleges adaptációhoz tulajdonosi döntés szükséges. A külső README/repo-leírás csak javaslati bemenet, és nem ad felhatalmazást skill-fájl módosítására.

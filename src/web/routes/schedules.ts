@@ -12,7 +12,7 @@ import { isValidCronShape } from '../cron.js'
 import { readBody, json, RequestBodyTooLargeError } from '../http-helpers.js'
 import { sanitizeScheduleName, safeJoin } from '../sanitize.js'
 import { listAgentNames } from '../agent-config.js'
-import { readFileOr } from '../agent-config.js'
+import { readFileOr, readJsonObjectForWrite } from '../agent-config.js'
 import {
   SCHEDULED_TASKS_DIR, MAX_SCHEDULED_TASK_PROMPT_LEN,
   listScheduledTasks, writeScheduledTask, markDefaultTaskRemoved,
@@ -236,7 +236,8 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
 
     const configPath = join(dir, 'task-config.json')
     let config: Record<string, unknown> = {}
-    try { config = JSON.parse(readFileOr(configPath, '{}')) } catch { /* use empty */ }
+    // JSONCLOBBER926: a corrupt task-config.json is refused, not reset to {enabled}.
+    config = readJsonObjectForWrite(configPath)
     const newEnabled = !(config.enabled !== false)
     config.enabled = newEnabled
     atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))

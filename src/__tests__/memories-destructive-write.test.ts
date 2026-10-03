@@ -14,7 +14,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
 import { initDatabase, saveAgentMemory, getMemoryById, getMemoryVersions, getDb } from '../db.js'
-import { tryHandleMemories } from '../web/routes/memories.js'
+import { tryHandleMemories, memoryVersion } from '../web/routes/memories.js'
 import type { RouteContext } from '../web/routes/types.js'
 import { Readable } from 'node:stream'
 
@@ -266,14 +266,15 @@ describe('non-owner write warning (card 29c8cf33, option A) -- warns, never bloc
     const { id } = saveAgentMemory('leandev', SHORT, 'cold')
     const r = await call(`/api/memories/${id}`, 'PUT', { content: 'sajat javitas' }, undefined, 'leandev')
     expect(r.status).toBe(200)
-    expect(r.body).toEqual({ ok: true })
+    // The unchanged shape is develop's since #1661: { ok, version } (MEMVERSION930).
+    expect(r.body).toEqual({ ok: true, version: memoryVersion('sajat javitas') })
   })
 
   it('NO header at all -> byte-identical old behaviour (the 119 callers that never change)', async () => {
     const { id } = saveAgentMemory('leanscout', SHORT, 'cold')
     const r = await call(`/api/memories/${id}`, 'PUT', { content: 'fejlec nelkul' })
     expect(r.status).toBe(200)
-    expect(r.body).toEqual({ ok: true })
+    expect(r.body).toEqual({ ok: true, version: memoryVersion('fejlec nelkul') })
   })
 
   it('SCHEMA FACT: every row has an owner, so the ownerless branch is defensive only', () => {

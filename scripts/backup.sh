@@ -61,7 +61,16 @@ fi
 REPOLIST="$(mktemp -t claudeclaw-repo.XXXXXX)"
 HOMELIST="$(mktemp -t claudeclaw-home.XXXXXX)"
 MANIFEST="$(mktemp -t claudeclaw-manifest.XXXXXX)"
-STAGE="$(mktemp -d -t claudeclaw-stage.XXXXXX)"
+# The staging tree lives next to the archives, NOT in $TMPDIR. macOS runs
+# com.apple.bsd.dirhelper daily at 03:35 (StartCalendarInterval) with
+# CLEAN_FILES_OLDER_THAN_DAYS=3: it deletes $TMPDIR files whose atime is older
+# than three days. `cp -p` below preserves the SOURCE atime, so every file that
+# is rarely read (an agent's CLAUDE.md, a channel .env, the dashboard token, a
+# small side database) arrives in the stage already "three days old" and can be
+# swept between the copy and the tar. The archive is still written, the
+# verification below then reports the holes, and the nightly job fails.
+# BACKUP_DIR is not a sweep target, and the EXIT trap still removes the stage.
+STAGE="$(mktemp -d "${BACKUP_DIR}/.stage.XXXXXX")"
 BUNDLE=""
 trap 'rm -f "${REPOLIST}" "${HOMELIST}" "${MANIFEST}"; [[ -n "${BUNDLE}" ]] && rm -f "${BUNDLE}"; rm -rf "${STAGE}"' EXIT
 
@@ -214,6 +223,7 @@ fi
 # `cp -pR` preserves modes so the 0600 token files stay private.
 cp "${MANIFEST}" "${STAGE}/MANIFEST.txt"
 
+STAGE_FAILS=0
 stage_group() {  # stage_group <listfile> <base> <group>
   local list="$1" base="$2" group="$3" rel parent
   [[ -s "${list}" ]] || return 0
@@ -221,7 +231,17 @@ stage_group() {  # stage_group <listfile> <base> <group>
     [[ -z "${rel}" ]] && continue
     parent="$(dirname "${rel}")"
     mkdir -p "${STAGE}/${group}/${parent}"
-    cp -pR "${base}/${rel}" "${STAGE}/${group}/${parent}/"
+    # BACKUPALERT925: one unreadable file (e.g. a root-owned 0600 leftover) used
+    # to abort the whole run under `set -e`, so no archive was written at all.
+    # Skip it loudly instead; the manifest still names it, so the verification
+    # below reports it as MISSING and the run fails with exit 6 and an alert.
+    if ! cp -pR "${base}/${rel}" "${STAGE}/${group}/${parent}/"; then
+      # A directory entry can be PARTIALLY copied (one unreadable file inside):
+      # the manifest names the directory, which did get in, so verification
+      # alone would pass. Count every staging failure and fail the run on it.
+      STAGE_FAILS=$((STAGE_FAILS + 1))
+      echo "backup: WARN could not fully stage ${group}/${rel} -- the run will fail (exit 6)" >&2
+    fi
   done < "${list}"
 }
 
@@ -290,6 +310,11 @@ if ( cd "${HOME}" && find .claude/projects -maxdepth 2 -type d -name memory -pri
   }
 fi
 
+if [[ "${STAGE_FAILS}" -gt 0 ]]; then
+  echo "backup: FAILED staging -- ${STAGE_FAILS} entr(y/ies) could not be copied completely (see WARN lines above)." >&2
+  missing=$((missing + STAGE_FAILS))
+fi
+
 if [[ "${missing}" -gt 0 ]]; then
   echo "backup: FAILED verification -- ${missing} item(s) named in the manifest are not in ${ARCHIVE}." >&2
   echo "backup: the archive is kept for inspection, but do NOT treat it as a good copy." >&2
@@ -300,9 +325,12 @@ if [[ "${missing}" -gt 0 ]]; then
   # the next turn. Best-effort: a messaging problem must not change the exit
   # code or mask the real failure.
   if [[ -x "${REPO_ROOT}/scripts/agent-msg.sh" ]]; then
-    bash "${REPO_ROOT}/scripts/agent-msg.sh" halpali halpali \
+    # BACKUPALERT925: the recipient used to be a literal agent name from the
+    # author's machine, so on any other fleet the alert went nowhere and the
+    # swallowed error hid that too. Address this install's main agent.
+    bash "${REPO_ROOT}/scripts/agent-msg.sh" "${MAIN_AGENT_ID}" "${MAIN_AGENT_ID}" \
       "[MENTES] A napi mentes ellenorzese ELBUKOTT ${STAMP}-kor: ${missing} tetel hianyzik az archivumbol (reszletek: logs/backup.log). Az archivum NEM tekintheto jo masolatnak." \
-      >/dev/null 2>&1 || true
+      >/dev/null 2>&1 || echo "backup: WARN could not queue the failure alert for ${MAIN_AGENT_ID}" >&2
   fi
   exit 6
 fi

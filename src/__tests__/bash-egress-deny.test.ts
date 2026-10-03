@@ -92,6 +92,17 @@ describe('BASH_EGRESS_DENY rule set', () => {
     expect(denied('curl -s https://api.github.com/rate_limit')).toBe(true)
   })
 
+  // #1611: a host listed for the Bash egress PARSER (store/egress-vendor-hosts.json, "hosts" or
+  // "domains") is NOT exempt from this list. Deny rules are evaluated before any PreToolUse hook
+  // and deny always beats allow, so `curl https://<listed host>` is still refused here; the parser
+  // list only opens the shapes this name list does not match (plain http, interpreter one-liners).
+  // Pinned so that a change to that interaction is a deliberate, visible decision.
+  it('still denies curl https to a host the parser allowlist would let through', () => {
+    expect(denied('curl -s https://api.elevenlabs.io/v1/voices')).toBe(true)
+    expect(denied('curl -s https://api.example.com/v1')).toBe(true)
+    expect(denied('curl -s http://api.example.com/v1')).toBe(false)
+  })
+
   // Measured collateral, pinned deliberately (2026-09-07). An internal POST
   // whose DOUBLE-quoted payload quotes an https URL matches the curl rule.
   // Single quotes do not (the engine excludes single-quoted content). The fix
