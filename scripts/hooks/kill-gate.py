@@ -27,7 +27,8 @@ WHAT IS BLOCKED (exit 2, the reason and the safe form on stderr):
       `pkill -P <n>` / `pkill -g <n>` with such an n.
   (c) a signal sender AND a lookup of the service manager BY NAME in the same command:
       `pgrep`, `pidof`, `ps -C`, or a grep/awk/sed filter whose arguments name systemd
-      (`[s]ystemd` included), a `pgrep` with only a user/group selector (every process
+      (`[s]ystemd` included) or the user manager's unit (`user@1000.service`, the ps
+      unit or cgroup column), a `pgrep` with only a user/group selector (every process
       of that user), and `pgrep -P`/`-g` with PID 1 or the manager. Whatever such a
       lookup returns, systemd is among it. A lookup that prints nothing a kill could
       use is a guard, not a lookup, and passes: `grep -q`/`-c`/`-l`, `pgrep -c`,
@@ -308,10 +309,17 @@ _SILENT_SHORT = {'pgrep': 'c', 'pidof': 'q', 'grep': 'qclL', 'egrep': 'qclL', 'f
                  'rg': 'qclL'}
 
 
+# The user manager's own unit, as a ps unit or cgroup column shows it (user@1000.service,
+# user@$UID): a filter on it finds the manager without the word systemd. A digit, `$` or
+# `{` after the @, so an e-mail address (user@example.com) is not read as one.
+_USER_MANAGER_UNIT = re.compile(r'user@(?:[0-9]|\$|\{)')
+
+
 def _names_manager(word):
     """A pattern or a name that names the service manager. `[s]ystemd` and `s\\ystemd`
     count: a grep pattern is written so to keep from matching its own command line."""
-    return 'systemd' in re.sub(r'[\[\]\\]', '', word).lower()
+    w = re.sub(r'[\[\]\\]', '', word).lower()
+    return 'systemd' in w or _USER_MANAGER_UNIT.search(w) is not None
 
 
 def _silent(base, args):
