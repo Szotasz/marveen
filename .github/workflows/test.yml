@@ -78,4 +78,8 @@ jobs:
       # hermetic (LEDGER_DB_PATH on a throwaway DB, temp dirs).
       - run: python3 scripts/__tests__/telegram-reply-guard.test.py
       - run: python3 scripts/__tests__/ledger-replay-reply-tool.test.py
+      # CREDGATE1003: the credential gate stops a letter carrying a password;
+      # its fail-closed and never-log-the-value cases are gate instruments.
+      # Hermetic: CREDENTIAL_GATE_STORE on throwaway dirs, made-up values.
+      - run: python3 scripts/__tests__/credential-gate.test.py
       - run: bash scripts/__tests__/conversation-ledger.test.sh
