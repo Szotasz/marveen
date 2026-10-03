@@ -542,6 +542,35 @@ else
     fail "drain precheck: the question was lost after a precheck"
 fi
 
+# (g7) preCheck THROTTLE: the DEDUP marker in (g6) is written by the MODEL TURN,
+#      so a turn that never completes -- an API usage limit, a crashed session --
+#      leaves the question open and this preCheck fires again two minutes later,
+#      forever. Measured on the live install 2026-09-20: 502 fires across the 18
+#      hours the account was usage-limited, for two unanswered questions, each
+#      one an API call that could not possibly succeed. Fire at full cadence a
+#      few times, then back off.
+mkdir -p "$TMPDIR_BASE/ld7"; DB_LD7="$TMPDIR_BASE/ld7/x.db"
+emit_inbound 10000000001 1150 "A model turn sosem fut le" | run_hook ledger-capture.py "$DB_LD7"
+age_rows "$DB_LD7" 120
+LD7_FIRED=0
+for _ in $(seq 1 12); do
+    if [ -z "$(run_drain_precheck "$DB_LD7")" ]; then
+        LD7_FIRED=$((LD7_FIRED + 1))
+    fi
+done
+assert_eq "drain precheck: a never-answered question stops firing every tick" "5" "$LD7_FIRED"
+
+# the throttle keeps its own budget file: the dedup marker stays untouched, so
+# (g6)'s contract ("never records the surfaced id") still holds under throttling
+assert_eq "drain precheck: the throttle does not record the surfaced id" "" \
+    "$(cat "$TMPDIR_BASE/ld7/.ledger-drain-marveen" 2>/dev/null)"
+
+# a DIFFERENT question must not inherit the exhausted budget
+emit_reply 10000000001 "Vegre valasz" | run_hook ledger-outbound.py "$DB_LD7"
+emit_inbound 10000000001 1151 "Uj kerdes, friss budget" | run_hook ledger-capture.py "$DB_LD7"
+age_rows "$DB_LD7" 120
+assert_eq "drain precheck: a new message_id gets a fresh budget" "" "$(run_drain_precheck "$DB_LD7")"
+
 # ---------------------------------------------------------------------------
 # (h) SECOND CHANNEL PROVIDER -- the ledger must not be blind to a non-Telegram
 #     channel. Regression guard: both hooks were hardcoded to
