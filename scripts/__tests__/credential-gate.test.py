@@ -221,6 +221,7 @@ def test_detector():
         "Köszönjük, a rendszer rendben működik.",
         "A jelszóváltoztatás sikeres volt.",                             # a compound word
         "A spinning wheel and a pinpoint.",                              # 'pin' inside words
+        "Kérdés esetén: admin@example-proba.invalid vagy admin@proba.invalid",  # an address, not a label
         "Jelszó:\n\n" + VAL,                                            # the next line only, not further
         "A jelszó\n" + VAL,                                              # no label: no continuation
     )

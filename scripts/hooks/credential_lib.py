@@ -312,6 +312,9 @@ def detect(text: str, cfg: dict, fingerprint) -> list:
         head = text[tok_start:m.start()].lower()
         if ("://" in head or head.startswith("www.")) and text[m.end():m.end() + 1] != "=":
             continue
+        # "admin@..." is an e-mail address, not a label: the keyword is its local part
+        if text[m.end():m.end() + 1] == "@":
+            continue
         line_end = text.find("\n", m.end())
         line_end = len(text) if line_end < 0 else line_end
         got = _candidate(text, m.end(), line_end, cfg)
