@@ -86,6 +86,7 @@ import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 import { exactTmuxTarget } from '../tmux-target.js'
 import { beginMainRespawn } from './main-respawn-hold.js'
 import { whileNotFrozen } from './fleet-freeze.js'
+import { isProtectedAgent, recordProtectedAgentEvent } from './protected-agents.js'
 
 // Lazily resolved (see makeLazyBinResolver): a module-level `resolveFromPath`
 // const throws at IMPORT time, so any environment where the binary is not
@@ -3329,7 +3330,32 @@ async function reconcileDesiredAgents(): Promise<void> {
       isRestartInFlight,
       isWithinRestartGrace,
       memGateAllowsStart,
-      start: (name) => startAgentProcess(name),
+      // Out-of-band stop detection (2fd5bfae). A protected agent reaching
+      // this callback did NOT go through the API: the guard in
+      // routes/agents.ts refuses stop and delete for it. Nor is it mid
+      // managed-restart, because runReconcileBurst has already skipped
+      // isRestartInFlight and isWithinRestartGrace before calling start.
+      // What is left is one of the OS-level bypasses this feature knowingly
+      // leaves open (tmux kill-session, kill -9, tmux kill-server, rm -rf on
+      // the agent directory). They cannot be prevented from here; the
+      // accepted decision was that they must at least be NAMED rather than
+      // restarted in silence, hence the error-level line and the audit
+      // record on top of the burst's ordinary reconcile line.
+      start: async (name) => {
+        if (!isProtectedAgent(name)) return startAgentProcess(name)
+        logger.error({ agent: name }, 'Protected agent disappeared from tmux unexpectedly -- restarting (out-of-band stop, not via the API)')
+        const r = await startAgentProcess(name)
+        const started = r.ok || r.error === 'Agent is already running'
+        recordProtectedAgentEvent({
+          agent: name,
+          action: 'out-of-band-disappearance',
+          outcome: started ? 'restarted' : 'restart-failed',
+          note: started
+            ? 'protected agent disappeared from tmux unexpectedly, restarted'
+            : `protected agent disappeared from tmux unexpectedly, restart FAILED: ${r.error ?? 'unknown error'}`,
+        })
+        return r
+      },
       afterStart: (name) => { agentLastRestart.set(name, Date.now()) },
       gap: (name) => waitReconcileGap({
         now: Date.now,

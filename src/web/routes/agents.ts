@@ -133,6 +133,7 @@ import {
   sharedEnvAuthKeysCopiedTo,
 } from '../agent-process.js'
 import { addDesiredAgent, getDesiredAgents, removeDesiredAgent } from '../agent-desired-state.js'
+import { describeApiCaller, isProtectedAgent, recordProtectedAgentEvent } from '../protected-agents.js'
 import { RemoteStatusCache } from '../remote-status-cache.js'
 import type { AgentRunState } from '../ssh-tmux.js'
 import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
@@ -2409,6 +2410,21 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       json(res, { error: 'Main agent lifecycle is service-managed; use /api/marveen/restart for recovery' }, 400)
       return true
     }
+    // Protected agents (card 2fd5bfae): refuse before anything mutates. The
+    // order is the whole point -- removeDesiredAgent() below runs
+    // unconditionally, so a guard placed after it would leave the agent
+    // running but no longer desired, i.e. unprotected on the next reconcile.
+    if (isProtectedAgent(name)) {
+      recordProtectedAgentEvent({
+        agent: name,
+        action: 'stop',
+        outcome: 'blocked',
+        source: describeApiCaller(ctx.auth, req.socket?.remoteAddress),
+        note: 'POST /stop refused by the protected-agents guard',
+      })
+      json(res, { error: 'Protected agent, önállóan nem állítható le' }, 400)
+      return true
+    }
     // Explicit stop clears intent so the monitor will not resurrect it -- and
     // it must happen BEFORE the stop yields. stopAgentProcess() now awaits ~2s
     // while the session settles; in that window the agent is already dead but
@@ -2831,6 +2847,22 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // here would remove whatever it holds and strip the main agent from every
     // team's reportsTo/delegatesTo (MAINGHOST1024).
     if (isMainChannelsAgent(name)) { json(res, { error: 'The main agent cannot be deleted' }, 400); return true }
+    // The protected-agents guard runs here, next to the main-agent one and
+    // still BEFORE the directory check. The order matters: a protected
+    // sub-agent HAS a directory, so unlike the main agent it never had even
+    // the accidental cover of the existsSync below -- this route deleted it,
+    // dir and all, with no check at all.
+    if (isProtectedAgent(name)) {
+      recordProtectedAgentEvent({
+        agent: name,
+        action: 'delete',
+        outcome: 'blocked',
+        source: describeApiCaller(ctx.auth, req.socket?.remoteAddress),
+        note: 'DELETE /api/agents/<name> refused by the protected-agents guard',
+      })
+      json(res, { error: 'Protected agent, önállóan nem törölhető' }, 400)
+      return true
+    }
     const dir = agentDir(name)
     if (!existsSync(dir)) { json(res, { error: 'Agent not found' }, 404); return true }
     // Clear the desired run-state FIRST, before anything yields. Deleting an
