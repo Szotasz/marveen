@@ -2,7 +2,9 @@
 """Regression test for scripts/hooks/kill-gate.py (card 0ad8d161).
 
 The gate refuses (a) a signal sender together with a parent-PID lookup in one command,
-and (b) a target that is PID 1, -1 or the caller's `systemd --user`. Every command
+(b) a target that is PID 1, -1 or the caller's `systemd --user`, and (c) a signal
+sender together with a lookup of the manager by name (pgrep, pidof, ps -C, a grep/awk
+filter naming systemd) in one command. Every command
 below is given to the gate as TEXT (the hook input); none of them is ever executed,
 and the service-manager lookup is replaced by a stub (PID 4242) except in the two
 end-to-end runs, which only read /proc.
@@ -100,6 +102,46 @@ check('pkill -u <user> <pattern> passes (a pattern narrows it)', not blocks('pki
 check('pkill -P $$ (own children) passes', not blocks('pkill -P $$'))
 check('pkill -P $LAUNCHER passes', not blocks('pkill -P $LAUNCHER'))
 check('kill %1 (a job) passes', not blocks('kill %1'))
+# A subshell's closing paren sticks to the last word ("4242)"): still a number.
+check('(kill -TERM <manager>) in a subshell', blocks('(kill -TERM %d)' % MANAGER))
+check('$(kill -9 <manager>) in a substitution', blocks('echo $(kill -9 %d)' % MANAGER))
+check('(kill -TERM <other pid>) in a subshell passes', not blocks('(kill -TERM 4243)'))
+
+print('(c) a signal plus a lookup of the service manager by name in one command')
+check('kill -TERM $(pgrep -x systemd)', blocks('kill -TERM $(pgrep -x systemd)'))
+check('kill $(pidof systemd)', blocks('kill $(pidof systemd)'))
+check('kill -9 $(pgrep -u <user> -x systemd)', blocks('kill -9 $(pgrep -u agent-x -x systemd)'))
+check('kill `pidof systemd` (backticks)', blocks('kill `pidof systemd`'))
+check('pgrep -f "systemd --user" piped into xargs kill', blocks("pgrep -f 'systemd --user' | xargs kill"))
+check('pidof systemd piped into xargs kill -9', blocks('pidof systemd | xargs kill -9'))
+check('kill $(ps -C systemd -o pid=)', blocks('kill $(ps -C systemd -o pid=)'))
+check('ps | grep systemd | awk | xargs kill', blocks("ps -eo pid,comm | grep systemd | awk '{print $1}' | xargs kill"))
+check('grep [s]ystemd (the self-excluding pattern)', blocks("ps aux | grep '[s]ystemd --user' | awk '{print $2}' | xargs kill"))
+check('awk filtering on systemd', blocks("ps -eo pid,comm | awk '$2==\"systemd\"{print $1}' | xargs kill"))
+check('a for loop over pgrep systemd', blocks('for p in $(pgrep systemd); do kill $p; done'))
+check('pkill -P $(pgrep -x systemd)', blocks('pkill -P $(pgrep -x systemd)'))
+check('pgrep -d, (a delimiter value) does not hide the name', blocks('kill -TERM $(pgrep -d, -x systemd)'))
+check('the manager binary path as the pattern', blocks("kill $(pgrep -f '/usr/lib/systemd/systemd --user')"))
+check('sudo kill -HUP $(pidof systemd)', blocks('sudo kill -HUP $(pidof systemd)'))
+check('inside bash -c (single quotes)', blocks("bash -c 'kill $(pidof systemd)'"))
+check('inside bash -c (double quotes)', blocks('bash -c "kill $(pidof systemd)"'))
+check('kill $(pgrep -u <user>) (every process of the user)', blocks('kill $(pgrep -u agent-x)'))
+check('kill $(pgrep -P <manager>) (its children)', blocks('kill $(pgrep -P %d)' % MANAGER))
+check('kill $(pgrep -P 1)', blocks('kill $(pgrep -P 1)'))
+# The guard the stop skill asks for prints nothing a kill could use: it must pass.
+check('a grep -q guard on the comm passes', not blocks('ps -o comm= -p $P | grep -qx systemd || kill $P'))
+check('a grep --quiet guard passes', not blocks('ps -o comm= -p $P | grep --quiet systemd || kill $P'))
+check('the guard inside bash -c passes', not blocks("bash -c 'ps -o comm= -p $P | grep -qx systemd || kill $P'"))
+check('pgrep -c (a count) passes', not blocks('pgrep -c systemd; kill "$(cat run.pid)"'))
+check('pidof -q (an exit status) passes', not blocks('pidof -q systemd && kill "$(cat run.pid)"'))
+check('grep -l (a file list) passes', not blocks('grep -l systemd *.service; kill "$(cat run.pid)"'))
+check('kill -0 $(pidof systemd) (a probe) passes', not blocks('kill -0 $(pidof systemd)'))
+check('pgrep -x systemd alone (no signal) passes', not blocks('pgrep -x systemd'))
+check('a pattern kill without systemd is not this rule', not blocks("pgrep -f 'next dev' | xargs kill"))
+check('pgrep -u <user> <pattern> passes', not blocks('kill $(pgrep -u agent-x node)'))
+check('kill $(pgrep -P $$) (own children) passes', not blocks('kill $(pgrep -P $$)'))
+check('a quoted message naming the lookup passes', not blocks('git commit -m "kill $(pidof systemd) is blocked"'))
+check('prose next to a kill passes', not blocks('kill "$(cat run.pid)"; echo "systemd is fine"'))
 
 print('context: text that only NAMES a kill is not a kill')
 check('a data heredoc', not blocks("cat > note.md <<'EOF'\n" + INCIDENT + "\nEOF"))

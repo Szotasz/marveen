@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """kill-gate.py -- PreToolUse(Bash) gate: no signal to the user's service manager, and
-no signal to a PID that the same command took from a parent-PID lookup.
+no signal to a PID that the same command took from a parent-PID lookup or from a
+lookup of the manager by name.
 
 WHY IT EXISTS (card 0ad8d161, 2026-10-03): an agent stopped a detached launcher with
 
@@ -24,6 +25,14 @@ WHAT IS BLOCKED (exit 2, the reason and the safe form on stderr):
       signal), `killall5`, `pkill`/`killall` whose pattern names systemd or that has
       only a user/group selector and no pattern (every process of that user), and
       `pkill -P <n>` / `pkill -g <n>` with such an n.
+  (c) a signal sender AND a lookup of the service manager BY NAME in the same command:
+      `pgrep`, `pidof`, `ps -C`, or a grep/awk/sed filter whose arguments name systemd
+      (`[s]ystemd` included), a `pgrep` with only a user/group selector (every process
+      of that user), and `pgrep -P`/`-g` with PID 1 or the manager. Whatever such a
+      lookup returns, systemd is among it. A lookup that prints nothing a kill could
+      use is a guard, not a lookup, and passes: `grep -q`/`-c`/`-l`, `pgrep -c`,
+      `pidof -q` (`ps -o comm= -p $P | grep -qx systemd || kill $P` is the check the
+      stop skill asks for).
   A signal-0 probe (`kill -0`) and the list forms (`kill -l`, `killall -l`) send
   nothing and pass.
 
@@ -42,8 +51,14 @@ WHAT IT CANNOT SEE (stated, not hidden): a PID carried over from an EARLIER call
 set in one Bash call and signalled in the next); a parent lookup in another language
 (os.getppid, psutil) or a column cut out of `ps -ef`; a signal sent from an
 interpreter payload (os.kill); `eval "<string>"`; `systemctl --user exit`, which stops
-the manager without a signal; a remote host (ssh). The dynamic case has its own
-answer, scripts/safe-kill, not this gate.
+the manager without a signal, and the other forms that stop the user's processes with
+no signal word (`loginctl kill-user`/`terminate-user`, `systemctl --user kill`/`stop`);
+a PID taken from `systemctl --user show -p MainPID`; a `ps -u <user>` selection or a
+/proc/*/comm loop fed to a kill; a remote host (ssh). The dynamic case has its own
+answer, scripts/safe-kill, not this gate. One false positive is accepted: a filter
+that names systemd for another purpose in the same command as a kill (an awk or sed
+guard, a grep through a file) is read as a lookup. Write a guard with `grep -q`, put
+the other filter in its own call, or stop through safe-kill.
 
 FAILURE MODE: unreadable input blocks, like every governance gate in this repo. An
 error INSIDE the gate blocks only a command that names a signal sender (the cheap
@@ -200,8 +215,9 @@ _PKILL_VALUE = ('-s', '--session', '-t', '--terminal', '-u', '--euid', '-U', '--
 _PKILL_SELECT_USER = ('-u', '--euid', '-U', '--uid', '-G', '--group')
 
 
-def _parse_pkill(args):
-    """(signal, pattern, {option: [values]}) of a pkill call."""
+def _parse_pkill(args, value_opts=_PKILL_VALUE):
+    """(signal, pattern, {option: [values]}) of a pkill call (or of a pgrep call, with
+    pgrep's value options)."""
     sig, pattern, opts, i = 'TERM', None, {}, 0
     while i < len(args):
         a = args[i]
@@ -212,7 +228,7 @@ def _parse_pkill(args):
                 sig = v
             i += 1
             continue
-        if a in _PKILL_VALUE:
+        if a in value_opts:
             v = args[i + 1] if i + 1 < len(args) else ''
             opts.setdefault(a, []).append(v)
             if a == '--signal':
@@ -261,7 +277,53 @@ def _parse_killall(args):
 
 
 def _number(word):
-    return int(word) if re.fullmatch(r'-?[0-9]+', word or '') else None
+    # A subshell's or a substitution's closing paren sticks to the last word:
+    # `(kill -TERM 4242)` and `$(pgrep -P 1)` hand over "4242)" and "1)".
+    word = (word or '').rstrip(')')
+    return int(word) if re.fullmatch(r'-?[0-9]+', word) else None
+
+
+def _scripts(seg, toks, idx, scan):
+    """The `bash -c` scripts of a segment, with their `(` restored. _bare_tokens turns
+    every `(` into a space for the command-name search, which breaks a `$(...)` inside
+    the script (`kill $(pidof systemd)` would read as one kill segment). The replacement
+    is one character for one, so the original text is the same span of the segment."""
+    flat = seg.replace('(', ' ')
+    out = []
+    for sub in scan._sub_scripts(toks, idx):
+        p = flat.find(sub) if sub else -1
+        out.append(seg[p:p + len(sub)] if p >= 0 else sub)
+    return out
+
+
+# (c) The lookups by name: the tools whose output can carry the PIDs of the processes
+# their arguments name. pgrep's own value options add -d (the delimiter).
+_NAME_TOOLS = ('pgrep', 'pidof', 'ps', 'grep', 'egrep', 'fgrep', 'rg', 'awk', 'gawk', 'mawk',
+               'nawk', 'sed')
+_PGREP_VALUE = _PKILL_VALUE + ('-d', '--delimiter')
+# The modes that print nothing a kill could use (an exit status, a count, a file list):
+# a guard, not a lookup. Per tool, because the same letter differs (pgrep -l lists PIDs).
+_SILENT_LONG = ('--quiet', '--silent', '--count', '--files-with-matches', '--files-without-match')
+_SILENT_SHORT = {'pgrep': 'c', 'pidof': 'q', 'grep': 'qclL', 'egrep': 'qclL', 'fgrep': 'qclL',
+                 'rg': 'qclL'}
+
+
+def _names_manager(word):
+    """A pattern or a name that names the service manager. `[s]ystemd` and `s\\ystemd`
+    count: a grep pattern is written so to keep from matching its own command line."""
+    return 'systemd' in re.sub(r'[\[\]\\]', '', word).lower()
+
+
+def _silent(base, args):
+    short = _SILENT_SHORT.get(base, '')
+    for a in args:
+        if a == '--':
+            break
+        if a in _SILENT_LONG:
+            return True
+        if short and re.fullmatch(r'-[A-Za-z]+', a) and any(ch in short for ch in a[1:]):
+            return True
+    return False
 
 
 class Gate:
@@ -287,17 +349,42 @@ class Gate:
 
     def check(self, cmd):
         """The reason to block, or None."""
-        reason, senders, lookups = self._eval(cmd, 0)
+        reason, senders, lookups, names = self._eval(cmd, 0)
         if reason:
             return reason
         if senders and lookups:
             return ('a signal is sent in the same command that looks up a parent PID (%s). '
                     'For a detached process that PID is the user service manager '
                     '(systemd --user)' % lookups[0])
+        if senders and names:
+            return ('a signal is sent in the same command that looks up the service manager '
+                    'by name (%s). Whatever such a lookup returns, systemd is among it: init '
+                    '(PID 1) or the user service manager (systemd --user)' % names[0])
+        return None
+
+    def _name_lookup(self, base, args, seg):
+        """Why this segment is a lookup of the service manager by name (rule c), or None."""
+        if base not in _NAME_TOOLS or _silent(base, args):
+            return None
+        if any(_names_manager(a) for a in args):
+            return '`%s` names systemd: %s' % (base, seg.strip().rstrip(')')[:80])
+        if base != 'pgrep':
+            return None
+        _sig, pattern, opts = _parse_pkill(args, _PGREP_VALUE)
+        for o in ('-P', '--parent', '-g', '--pgroup'):
+            for v in opts.get(o, []):
+                n = _number(v)
+                if n is not None and self._target_reason(n, ''):
+                    return ('`pgrep %s %s` lists the children or the group of init or the manager'
+                            % (o, v.rstrip(')')))
+        narrowed = any(o in opts for o in ('-P', '--parent', '-g', '--pgroup', '-s', '--session',
+                                           '-t', '--terminal', '-F', '--pidfile'))
+        if pattern is None and not narrowed and any(o in opts for o in _PKILL_SELECT_USER):
+            return '`pgrep` with only a user/group selector lists every process of that user'
         return None
 
     def _eval(self, cmd, depth):
-        """(reason, senders, lookups) of one command text and its `bash -c` scripts.
+        """(reason, senders, lookups, names) of one command text and its `bash -c` scripts.
 
         The structure is read from the lite view: segments() and the tokenizer are
         quote-aware, and a quoted string with whitespace is never taken for a command
@@ -306,7 +393,7 @@ class Gate:
         The text-level lookups use the code view, where quoted prose is blanked."""
         scan = self.scan
         code, lite = views(cmd, scan)
-        senders, lookups = [], []
+        senders, lookups, names = [], [], []
         for seg in scan.segments(lite):
             toks = scan._bare_tokens(seg)
             idx, base = _command(toks, scan)
@@ -361,19 +448,23 @@ class Gate:
                         lookups.append('`ps` asked for the ppid field: %s' % seg.strip()[:80])
                         break
             if reason:
-                return reason, senders, lookups
-            for sub in scan._sub_scripts(toks, idx):
+                return reason, senders, lookups, names
+            found = self._name_lookup(base, args, seg)
+            if found:
+                names.append(found)
+            for sub in _scripts(seg, toks, idx, scan):
                 if not sub or sub == cmd:
                     continue
                 if depth >= _MAX_NEST:
-                    return 'the command nests too deep (%d levels) to follow' % depth, senders, lookups
-                r2, s2, l2 = self._eval(sub, depth + 1)
+                    return 'the command nests too deep (%d levels) to follow' % depth, senders, lookups, names
+                r2, s2, l2, n2 = self._eval(sub, depth + 1)
                 if r2:
-                    return r2, senders, lookups
+                    return r2, senders, lookups, names
                 senders.extend(s2)
                 lookups.extend(l2)
+                names.extend(n2)
         lookups.extend(_text_lookups(code, lite))
-        return None, senders, lookups
+        return None, senders, lookups, names
 
 
 def _text_lookups(code, lite):
