@@ -6,7 +6,6 @@
   "filesystem": {
     "allow": [
       "Read(${AGENT_DIR}/**)",
-      "Write(${AGENT_DIR}/**)",
       "Edit(${AGENT_DIR}/**)",
       "Read(${AGENT_DIR}/.claude-config/**)",
       "Read(${PROJECT_ROOT}/research-inbox/**)",
@@ -35,10 +34,8 @@
       "Bash(${PROJECT_ROOT}/scripts/notify.sh:*)",
       "WebFetch(*)",
       "WebSearch(*)",
-      "Write(${PROJECT_ROOT}/research-inbox/**)",
       "Edit(${PROJECT_ROOT}/research-inbox/**)",
       "Bash(mkdir:*)",
-      "Write(${AGENT_DIR}/.claude/skills/**)",
       "Edit(${AGENT_DIR}/.claude/skills/**)"
     ],
     "deny": [

@@ -142,7 +142,8 @@ describe('web-reading profile posture (TMPLPERM908)', () => {
     // the product-needed grants stay
     expect(p.filesystem.allow).toContain('Bash(bash ${PROJECT_ROOT}/scripts/agent-mem.sh:*)')
     expect(p.filesystem.allow).toContain('Bash(pdf2txt.py:*)')
-    expect(p.filesystem.allow).toContain('Write(${PROJECT_ROOT}/research-inbox/**)')
+    // The research-inbox write grant is the Edit rule: Write(path) is never consulted (PERMWRITERULE927).
+    expect(p.filesystem.allow).toContain('Edit(${PROJECT_ROOT}/research-inbox/**)')
   })
 
   it('no template carries a Bash rule with a ** glob (prefix matching cannot glob)', () => {
