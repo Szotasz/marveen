@@ -71,6 +71,13 @@ def watched():
     return names
 LOG = os.path.join(ROOT, "store", "persona-changes.log")
 HASHES = os.path.join(ROOT, "store", ".persona-hashes.json")
+# Fast-path cache: per watched file the stat() key and the time it was hashed. Kept apart from
+# HASHES so that file's format (name -> sha256) does not change.
+STATS = os.path.join(ROOT, "store", ".persona-stat.json")
+# git's "racy" rule: a stat key is only trusted when the file's newest timestamp is older than the
+# moment it was hashed by more than this. A write inside the same timestamp tick would otherwise
+# leave the key unchanged.
+RACY_NS = 2 * 10**9
 
 
 def state_dir():
@@ -187,6 +194,64 @@ def save_known(d):
         pass
 
 
+def stat_key(path):
+    """Identity of the file's current bytes as far as stat() can tell, or None.
+
+    mtime alone is not enough: os.utime()/`touch -r` set it to anything. ctime cannot be set from
+    userspace (every write, rename and utime bumps it), so a rewrite that restores mtime and size
+    still changes the key. An atomic replace changes the inode too.
+    """
+    try:
+        st = os.stat(path)
+    except Exception:
+        return None
+    return [st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_ino]
+
+
+def load_stats():
+    try:
+        d = json.load(open(STATS, encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_stats(d):
+    try:
+        os.makedirs(os.path.dirname(STATS), exist_ok=True)
+        tmp = STATS + ".tmp"
+        json.dump(d, open(tmp, "w", encoding="utf-8"))
+        os.replace(tmp, STATS)
+    except Exception:
+        pass
+
+
+def fingerprint(name, known, stats, fresh_stats):
+    """sha256 of a watched file, skipping the read when no file-system signal says it changed.
+
+    The skip applies only when the file is already in `known`, its cached stat key equals the
+    current one, and that key is not racy (see RACY_NS). Everything else, including a missing or
+    corrupt cache, falls through to the full hash: the cache can only make the hook faster, never
+    quieter. Known limit: a stat key that survives a content change needs root (resetting the
+    clock, writing the block device) or a file system without a meaningful ctime; a hook that
+    watches for a careless or unaware writer does not defend against that, and neither did the
+    full hash against a writer who also edits store/.persona-hashes.json.
+    """
+    path = os.path.join(ROOT, name)
+    key = stat_key(path)
+    cached = stats.get(name)
+    if key is not None and name in known and isinstance(cached, dict) and cached.get("key") == key:
+        seen = cached.get("seen")
+        if isinstance(seen, int) and seen - max(key[0], key[1]) > RACY_NS:
+            fresh_stats[name] = cached
+            return known[name]
+    seen = time.time_ns()
+    d = digest(path)
+    if d is not None and key is not None:
+        fresh_stats[name] = {"key": key, "seen": seen}
+    return d
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -195,6 +260,8 @@ def main():
     tool = payload.get("tool_name") or "?"
 
     known = load_known()
+    stats = load_stats()
+    fresh_stats = {}
     # (nev, fajta): "modositva" | "letrehozva" | "torolve". A modositas volt az
     # egyetlen, amit az elso valtozat latott; egy UJ persona-fajl (agents/<uj>/SOUL.md)
     # es egy TOROLT fajl nema maradt (review a #1546-on). Mindketto ugyanaz a
@@ -202,7 +269,7 @@ def main():
     events = []
     current = {}
     for name in watched():
-        d = digest(os.path.join(ROOT, name))
+        d = fingerprint(name, known, stats, fresh_stats)
         if d is None:
             continue
         current[name] = d
@@ -221,6 +288,8 @@ def main():
         if kind == "torolve":
             merged.pop(name, None)  # egy ujrakeszitett fajl igy ujra "letrehozva" lesz
     save_known(merged)
+    if fresh_stats != stats:
+        save_stats(fresh_stats)
     if first_run or not events:
         return 0
 
