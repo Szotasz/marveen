@@ -447,6 +447,11 @@ export function formatMainParkedSection(
   )
 }
 
+// Exported so the test pins the wording the agent actually receives.
+export const EMAIL_UNREADABLE_INSTRUCTION =
+  `Ha az email-eszkoz nem erheto el, vagy a lekerdezes hibara fut, az Email szakaszba ezt ird: ` +
+  `"EMAIL NEM OLVASHATO: <a hiba>". Ilyenkor SOHA ne ird, hogy nincs uj level -- nem tudjuk.`
+
 function buildAgentPrompt(data: HeartbeatData): string {
   const timeStr = data.timestamp.toLocaleString('hu-HU', { timeZone: APP_TZ })
 
@@ -456,6 +461,13 @@ function buildAgentPrompt(data: HeartbeatData): string {
   prompt += `Heartbeat ellenorzes -- ${timeStr}\n\n`
   prompt += `Az alabbi adatokat gyujtottem nativ modon (API/DB). Fogalmazz tomor, emberi osszefoglalot ${OWNER_NAME} szamara.\n`
   prompt += `FONTOS: Nezd meg az emaileket is MCP-n keresztul (search_emails, utolso 2 ora, olvasatlanok).\n`
+  // Email is the one source in this round that the code does NOT fetch, so a
+  // missing or failing MCP tool leaves no trace of its own: the summary simply
+  // has no mail in it, which reads exactly like "no new mail". The calendar
+  // section below already refuses to render a failed fetch as a free calendar;
+  // this line asks the agent for the same distinction, because only it can see
+  // whether the call worked.
+  prompt += `${EMAIL_UNREADABLE_INSTRUCTION}\n`
   prompt += `Hasznald a HEARTBEAT.md formatumot.\n\n`
 
   // MAINBOXPARK816 stage 1: a parked main-agent input box silences the channel
