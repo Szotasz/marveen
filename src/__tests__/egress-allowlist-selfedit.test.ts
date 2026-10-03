@@ -71,6 +71,9 @@ describe('gate: Bash is fail-closed on the allowlist', () => {
     'cat /tmp/x.json > store/egress-allowlist.json',
     'jq ".domains += [\\"x\\"]" store/egress-allowlist.json > $TARGET',
     'cp /tmp/x store/egress-allow*',
+    'cp /tmp/x store/egress-allowlist.*',
+    'rm -rf store/egress-allowlist.history',
+    'echo x > store/egress-allowlist.history/history.log',
   ]
   it.each(denied)('denies: %s', (command) => {
     expect(decide('Bash', { command })).toEqual({ deny: true, reason: 'egress-allowlist' })
@@ -89,6 +92,12 @@ describe('gate: Bash is fail-closed on the allowlist', () => {
     'git commit -m "docs: store/egress-allowlist.json is owner-managed"',
     "cat > /tmp/note.md <<'EOF'\nsub-agents may not edit store/egress-allowlist.json\nEOF",
     'cp a.txt b.txt',
+    // this gate's own source and test files are not the store object (review on #1678)
+    'npx vitest run src/__tests__/egress-allowlist-selfedit.test.ts',
+    'git add src/web/egress-allowlist-baseline.ts',
+    'git diff develop -- src/web/egress-allowlist-baseline.ts',
+    'npx tsc --noEmit -p . && npx vitest run src/__tests__/egress-allowlist-selfedit.test.ts',
+    'cat store/egress-allowlist.history/history.log',
   ]
   it.each(allowed)('allows: %s', (command) => {
     expect(decide('Bash', { command }).deny).toBe(false)
