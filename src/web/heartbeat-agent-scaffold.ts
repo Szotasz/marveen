@@ -244,13 +244,26 @@ When you receive the heartbeat prompt:
 
    \`\`\`bash
    TOKEN=$(cat ${id.storeDir}/.dashboard-token)
-   curl -s -X POST ${id.dashboardOrigin}/api/messages \\
+   curl -s -w '\\nHTTP %{http_code}\\n' -X POST ${id.dashboardOrigin}/api/messages \\
      -H "Content-Type: application/json" \\
      -H "Authorization: Bearer $TOKEN" \\
      -d '{"from":"heartbeat","to":"${id.mainAgentId}","content":"<the formatted text>"}'
    \`\`\`
 
-4. **Stop.** Do not Telegram-reply, do not Slack, do not message
+4. **Read the answer's last line** (HBFABRIC1003). The server checks
+   the Kanban lines against the live board before it accepts them.
+   - \`HTTP 200\`: done, go to step 5.
+   - \`HTTP 422\` with \`heartbeat_kanban_mismatch\`: the Kanban lines
+     you sent were NOT the block's. Go back to step 1, copy the block
+     from THIS prompt again, VERBATIM, and send ONCE more. Do not
+     re-measure and do not type a number yourself: the block is the
+     only source.
+   - Anything else, or a SECOND failure: stop. Never a third send. On a
+     \`heartbeat_kanban_mismatch\` the server has already told
+     ${id.botName} that this round's digest was refused, with the
+     differences.
+
+5. **Stop.** Do not Telegram-reply, do not Slack, do not message
    anyone else. The handoff to the main agent is the entire job. The
    main agent handles the human-facing relay decision.
 

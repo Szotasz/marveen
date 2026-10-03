@@ -5,6 +5,8 @@ import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID } from '../config.js'
 import { tryHandleMessages, resetHeartbeatRefusalNoteForTest } from '../web/routes/messages.js'
 import { parseKanbanClaims, verifyHeartbeatKanban, HEARTBEAT_KANBAN_WINDOW_SEC } from '../web/heartbeat-kanban-verify.js'
 import type { RouteContext } from '../web/routes/types.js'
+import { renderHeartbeatMetricsBlock } from '../web/heartbeat-metrics-inject.js'
+import { renderHeartbeatClaudeMd, currentHeartbeatIdentity } from '../web/heartbeat-agent-scaffold.js'
 
 // HBFABRIC1003 (measured 2026-10-03, EGRESSPHANTOM1003): the 17:00 digest named a
 // card that never existed (EGRESSFP1003) and counts off by one (414/696 against a
@@ -231,5 +233,52 @@ describe('a refused heartbeat digest is reported to the main agent (Geri, #1684 
     const before = notes().length
     expect((await post(digest(REAL.replace('- planned: 4', '- planned: 9'), 'main-refused-marker-b2'))).statusCode).toBe(422)
     expect(notes().length).toBe(before)
+  })
+})
+
+// FORMAT PIN (Marveen, after Geri measured the old digest formats: 21 pre-09-11
+// digests gave 0 recognised lines -- the gate would have skipped silently -- and
+// words like "etc" read as ids). The gate reads what the metrics renderer writes;
+// if the renderer's Kanban format drifts, THIS fails, not the gate in production.
+describe('format pin: the metrics block the heartbeat copies is what the gate parses', () => {
+  const RAW = [
+    'HB_METRICS_V1 ts=2026-10-03 17:00',
+    'COUNTS urgent=2 in_progress=1 waiting=371 planned=545 new_hot_memories_1h=0 db_size_mb=474.4 waiting_shown=2',
+    'URGENT CARDA CARDA (URGENT): first urgent title',
+    'URGENT CARDB CARDB: second one',
+    'WAITING CARDC CARDC: a waiting card',
+    'WAITING CARDD CARDD: another waiting card',
+    'CALENDAR_EVENTS n=0 window=2h',
+    'TOKEN_PRUNE state=ok retention_days=90 lag_hours=0.27 tolerance_hours=48',
+    'SCHEDULES enabled=34',
+    'TASK_RUNS_1H total=41 fired=12 skipped=29',
+  ].join('\n')
+
+  it('a digest built from the rendered block yields exactly the four numeric claims and only real ids', () => {
+    const block = renderHeartbeatMetricsBlock(RAW)
+    const digestText = '## Heartbeat 2026-10-03 17:00 (Europe/Budapest)\nmerve: 2026-10-03 17:00\n\n' + block
+    expect(parseKanbanClaims(digestText)).toEqual([
+      { key: 'urgent', count: 2, ids: ['CARDA', 'CARDB'] },
+      { key: 'in_progress', count: 1, ids: [] },
+      { key: 'waiting', count: 371, ids: ['CARDC', 'CARDD'] },
+      { key: 'planned', count: 545, ids: [] },
+    ])
+  })
+
+  it('an instrument failure renders no claim, so the gate lets the honest report through', () => {
+    const block = renderHeartbeatMetricsBlock('HB_METRICS_V1 ts=2026-10-03 17:00\nERROR summary: missing/null fields: db_size_mb\nSCHEDULES enabled=1')
+    const digestText = '## Heartbeat 2026-10-03 17:00\n' + block
+    expect(parseKanbanClaims(digestText).filter((c) => c.count !== null || c.ids.length > 0)).toEqual([])
+  })
+})
+
+describe('the heartbeat agent reads the answer and resends once (scaffold)', () => {
+  const md = renderHeartbeatClaudeMd(currentHeartbeatIdentity())
+  it('the send prints the HTTP status, and the 422 branch resends ONCE from the block, never a third time', () => {
+    expect(md).toContain("curl -s -w '\\nHTTP %{http_code}\\n' -X POST")
+    expect(md).toMatch(/HTTP 422`? with `heartbeat_kanban_mismatch`/)
+    expect(md).toContain('send ONCE more')
+    expect(md).toContain('Never a third send')
+    expect(md).toMatch(/Do not\s+re-measure/)
   })
 })
