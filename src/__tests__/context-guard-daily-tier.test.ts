@@ -16,6 +16,7 @@ import {
   normalizeContextGuardConfig,
   dailyHandoffArmed,
   dailyHandoffDue,
+  dailyHandoffStep,
   DAILY_HANDOFF_REASON_PREFIX,
   IDLE_FLUSH_REASON_PREFIX,
   DEFAULT_CONTEXT_GUARD,
@@ -99,6 +100,49 @@ describe('dailyHandoffDue -- same due-semantics as the nightly restart', () => {
   it('is never due when the tier is not armed', () => {
     expect(dailyHandoffDue({ ...DAILY_ONLY, dailyHandoffTime: null }, MIDNIGHT, null, NOW)).toBe(false)
     expect(dailyHandoffDue({ ...DAILY_ONLY, dailyHandoffEnabled: false }, MIDNIGHT, null, NOW)).toBe(false)
+  })
+})
+
+describe('dailyHandoffStep -- the served record is seeded while ARMED', () => {
+  // The measured case (Marveen fleet, 2026-09-29): the dashboard process first
+  // saw the agents at ~02:05 with the tier OFF, the tier was armed at 12:53 for
+  // 03:00, and four agents were handed off at 12:56 -- a slot already passed
+  // today counted as missed. Every time below is on one local day.
+  const at = (h: number, m: number, dayOffset = 0) =>
+    MIDNIGHT + dayOffset * 86_400_000 + (h * 60 + m) * 60_000
+  const OFF: ContextGuardConfig = { ...DAILY_ONLY, dailyHandoffEnabled: false, dailyHandoffTime: '03:00' }
+  const ON: ContextGuardConfig = { ...DAILY_ONLY, dailyHandoffTime: '03:00' }
+
+  it('a disarmed tier keeps no record, so nothing stale survives to the arming', () => {
+    expect(dailyHandoffStep(OFF, undefined, MIDNIGHT, at(2, 5))).toEqual({ due: false, record: undefined })
+    // ...and one seeded earlier is forgotten, not kept.
+    expect(dailyHandoffStep(OFF, at(2, 5), MIDNIGHT, at(12, 0))).toEqual({ due: false, record: undefined })
+  })
+
+  it('armed after today\'s slot: seeds at the arming, does NOT fire today, fires tomorrow', () => {
+    let record = dailyHandoffStep(OFF, undefined, MIDNIGHT, at(2, 5)).record   // first sight, tier off
+    let step = dailyHandoffStep(ON, record, MIDNIGHT, at(12, 53))              // armed
+    expect(step.due).toBe(false)
+    record = step.record
+    step = dailyHandoffStep(ON, record, MIDNIGHT, at(12, 56))                  // the sweep that fired
+    expect(step.due).toBe(false)
+    const tomorrow = MIDNIGHT + 86_400_000
+    expect(dailyHandoffStep(ON, step.record, tomorrow, at(2, 59, 1)).due).toBe(false)
+    expect(dailyHandoffStep(ON, step.record, tomorrow, at(3, 0, 1)).due).toBe(true)
+  })
+
+  it('armed before today\'s slot: fires AT the slot, not before', () => {
+    let record = dailyHandoffStep(OFF, undefined, MIDNIGHT, at(0, 1)).record
+    const armed = dailyHandoffStep(ON, record, MIDNIGHT, at(0, 15))
+    expect(armed.due).toBe(false)
+    record = armed.record
+    expect(dailyHandoffStep(ON, record, MIDNIGHT, at(2, 59)).due).toBe(false)
+    expect(dailyHandoffStep(ON, record, MIDNIGHT, at(3, 0)).due).toBe(true)
+  })
+
+  it('an already-armed agent keeps its record and is due at the slot as before', () => {
+    const step = dailyHandoffStep(ON, at(3, 0, -1), MIDNIGHT, at(3, 1))
+    expect(step).toEqual({ due: true, record: at(3, 0, -1) })
   })
 })
 
@@ -267,6 +311,27 @@ describe('runner wiring', () => {
       '    lastDailyHandoff.set(name, nowMs)\n' +
       '  }',
     )
+  })
+
+  it('the runner takes the served record from dailyHandoffStep, forgetting it while disarmed', () => {
+    const code = src('src/web/context-guard-runner.ts')
+    // The step is only a fix if the runner APPLIES both halves of its answer:
+    // an `undefined` record must delete the entry, or the stale seed survives
+    // disarming and the 2026-09-29 misfire comes back.
+    expect(code).toContain('dailyHandoffStep(cfg, lastDailyHandoff.get(name), localMidnightMs(nowMs), nowMs)')
+    expect(code).toContain('if (step.record === undefined) lastDailyHandoff.delete(name)')
+    expect(code).toContain('else lastDailyHandoff.set(name, step.record)')
+  })
+
+  it('a disarmed tier is forgotten on EVERY sweep, before the idle gate (didi, 987baf44)', () => {
+    const code = src('src/web/context-guard-runner.ts')
+    // An agent that is never idle while the tier is off must still lose its
+    // old ARMED record; otherwise re-arming after the slot fires at once.
+    const forget = code.indexOf('if (!dailyHandoffArmed(cfg)) {\n        lastDailyHandoff.delete(name)')
+    const idleGate = code.indexOf("if (!running || state.phase !== 'idle') return false\n      const step = dailyHandoffStep(")
+    expect(forget).toBeGreaterThan(-1)
+    expect(idleGate).toBeGreaterThan(-1)
+    expect(forget).toBeLessThan(idleGate)
   })
 
   it('the daily reason selects the scheduled wording, not the act tier percentage prompt', () => {
