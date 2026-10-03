@@ -166,6 +166,21 @@ describe('POST /api/approvals/:id/consume (f2c5edb0)', () => {
     expect(c.out.body).toEqual({ ok: false, reason: 'not_found' })
   })
 
+  it('the endpoint reads the window strictly: with EMAIL_APPROVAL_WINDOW_S="1e3" a letter approved 60 s ago still goes (parseInt made that 1 s)', async () => {
+    approval('w1')
+    getDb().prepare('UPDATE approvals SET resolved_at = ? WHERE id = ?').run(Math.floor(Date.now() / 1000) - 60, 'w1')
+    const prev = process.env.EMAIL_APPROVAL_WINDOW_S
+    process.env.EMAIL_APPROVAL_WINDOW_S = '1e3'
+    try {
+      const c = consumeCtx('w1', { content_hash: HASH, consumer: 't' })
+      await tryHandleApprovals(c.ctx)
+      expect(c.out.status).toBe(200)
+    } finally {
+      if (prev === undefined) delete process.env.EMAIL_APPROVAL_WINDOW_S
+      else process.env.EMAIL_APPROVAL_WINDOW_S = prev
+    }
+  })
+
   it('the plain status poll still answers for the same id (the consume route does not shadow GET)', async () => {
     approval('h4')
     const out: { status: number; body: any } = { status: 0, body: null }
@@ -183,6 +198,13 @@ describe('validators and the shared window (f2c5edb0)', () => {
     expect(approvalWindowSeconds({ EMAIL_APPROVAL_WINDOW_S: '60' })).toBe(60)
     expect(approvalWindowSeconds({ EMAIL_APPROVAL_WINDOW_S: 'x' })).toBe(1800)
     expect(approvalWindowSeconds({ EMAIL_APPROVAL_WINDOW_S: '0' })).toBe(1800)
+  })
+
+  it('the window parse is strict (db121902 D2): "1e3" is not 1 s and "60s" is not 60; only plain digits count', () => {
+    for (const bad of ['1e3', '60s', '1.5', '-60', '', '99999999999999999999']) {
+      expect(approvalWindowSeconds({ EMAIL_APPROVAL_WINDOW_S: bad })).toBe(1800)
+    }
+    expect(approvalWindowSeconds({ EMAIL_APPROVAL_WINDOW_S: ' 60 ' })).toBe(60)
   })
 
   it('the gate and the endpoint carry the same default window (a drift here would let one path accept what the other calls stale)', () => {

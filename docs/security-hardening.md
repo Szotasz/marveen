@@ -298,8 +298,9 @@ python3 scripts/approval-consume.py --id <approval id> --content-hash <anchor> \
 1800 s like the gate). Of two attempts exactly one gets 200; the other gets
 409 with a reason (`already_consumed`, `not_approved`, `hash_mismatch`,
 `expired`, `wrong_category`). The row records the consumer and the Message-Id
-the tool generated up front (`consumed_by`, `consumed_ref`), and every call,
-refused ones included, leaves a row in `approval_events`. The gate and the
+the tool generated up front (`consumed_by`, `consumed_ref`), and every call on
+an existing approval, refused ones included, leaves a row in `approval_events`
+(an unknown id is a 404 and leaves none). The gate and the
 endpoint read the same `consumed_at IS NULL`, so a letter consumed by one path
 is refused by the other.
 

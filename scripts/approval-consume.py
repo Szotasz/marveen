@@ -18,7 +18,8 @@ Exit codes (the caller sends only on 0; everything else means DO NOT SEND):
   0  consumed: this letter may go out now
   3  refused (409): already_consumed, not_approved, hash_mismatch, expired or wrong_category
   4  unknown approval id (404)
-  2  usage error, missing token, unreachable dashboard, any other status or an unreadable answer
+  2  usage error, missing token, unreachable dashboard, any other status (a redirect included: it
+     is never followed) or an unreadable answer
 One JSON line on stdout says what happened; nothing secret is printed.
 """
 import argparse
@@ -36,6 +37,18 @@ DEFAULT_TOKEN_FILE = os.path.join(ROOT, "store", ".dashboard-token")
 RC_CONSUMED, RC_USAGE, RC_REFUSED, RC_NOT_FOUND = 0, 2, 3, 4
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _MSGID = re.compile(r"^<[^<>\s@]+@[^<>\s@]+>$")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect. On a 302 urllib turns the POST into a GET, carries the bearer token
+    to the new location, and an ok:true there would read as consumed although nothing was. A 3xx is
+    answered like any other unexpected status: exit 2, do not send."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 def consume(api, token, approval_id, content_hash, consumer, message_id=None, timeout=15):
@@ -59,7 +72,7 @@ def consume(api, token, approval_id, content_hash, consumer, message_id=None, ti
         headers={"Content-Type": "application/json", "Authorization": "Bearer " + token},
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _OPENER.open(req, timeout=timeout) as resp:
             status, raw = resp.status, resp.read()
     except urllib.error.HTTPError as exc:
         status, raw = exc.code, exc.read()

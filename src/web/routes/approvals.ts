@@ -58,9 +58,14 @@ export function computeTimeoutAt(category: string, timeoutSeconds: unknown, nowM
 // counted from resolved_at. The SAME variable and default as the gate
 // (EMAIL_APPROVAL_WINDOW_S, 1800 s in scripts/hooks/email-approval-gate.py), so
 // the two consume paths agree on when an approval has gone stale.
+// Strict parse (db121902 D2): plain ASCII digits only, surrounding blanks allowed
+// as the gate's int() allows them. parseInt read "1e3" as 1 s and "60s" as 60;
+// anything that is not a positive safe integer now falls back to the default.
 export function approvalWindowSeconds(env: NodeJS.ProcessEnv = process.env): number {
-  const v = Number.parseInt(env.EMAIL_APPROVAL_WINDOW_S ?? '', 10)
-  return Number.isFinite(v) && v > 0 ? v : 1800
+  const raw = (env.EMAIL_APPROVAL_WINDOW_S ?? '').trim()
+  if (!/^[0-9]+$/.test(raw)) return 1800
+  const v = Number(raw)
+  return Number.isSafeInteger(v) && v > 0 ? v : 1800
 }
 
 // The consumer names the sending tool in the audit trail. Printable only (no

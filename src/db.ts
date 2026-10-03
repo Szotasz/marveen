@@ -1338,8 +1338,10 @@ export function initDatabase(dbPathOverride?: string): void {
   // used it. Rows consumed by the gate leave both NULL.
   try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_by TEXT') } catch { /* already exists */ }
   try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_ref TEXT') } catch { /* already exists */ }
-  // Every consume call leaves a row here, the refused ones too: a second send
-  // attempt on a used approval is exactly the event worth seeing afterwards.
+  // Every consume call on an EXISTING approval leaves a row here, the refused
+  // ones too: a second send attempt on a used approval is exactly the event
+  // worth seeing afterwards. An unknown id (404) leaves none, so every row
+  // names a real approval.
   // consumed_backfill is for a one-off data fix of rows a past send never
   // consumed; it is written by an operator script, never by the API.
   db.exec(`
