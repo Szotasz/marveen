@@ -637,7 +637,7 @@ FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$INSTALL_DIR/store/channe
 # first run, killing every session. Recorded here because it also decides WHICH
 # package spec the self-heal below reinstalls: on such a host "latest" is the
 # one thing we must never install.
-CLAUDE_PIN="2.1.110"   # keep in sync with install-linux.sh / scripts/fix-avx.sh
+CLAUDE_PIN="2.1.112"   # keep in sync with install-linux.sh / scripts/fix-avx.sh
 CLAUDE_PKG="@anthropic-ai/claude-code"
 AVX_LESS=0
 if grep -qE '^flags[[:space:]]*:' /proc/cpuinfo 2>/dev/null && ! grep -qiw avx /proc/cpuinfo 2>/dev/null; then

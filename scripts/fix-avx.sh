@@ -5,8 +5,9 @@
 # bot could never boot) and left the auto-updater on (first run swaps the pinned
 # Node build for the latest Bun ELF binary -> SIGILL). New installs are fixed by
 # install-linux.sh (#608); this script repairs machines installed before that:
-#   1. re-pins claude to 2.1.110 -- the last release shipping the Node cli.js
-#      entrypoint (2.1.120+ is Bun-only) AND supporting --channels
+#   1. re-pins claude to 2.1.112 -- the last release shipping the Node cli.js
+#      entrypoint (2.1.113+ is Bun-only, measured 2026-09-23) AND supporting
+#      --channels
 #   2. persists DISABLE_AUTOUPDATER=1 (rc files, same pattern as the installer)
 #   3. verifies claude actually launches (no Illegal instruction)
 #
@@ -19,7 +20,7 @@ warn() { echo -e "  ${ORANGE}!${NC} $*"; }
 err()  { echo -e "  ${RED}✗${NC} $*"; }
 
 # Keep in sync with install-linux.sh CLAUDE_PIN.
-CLAUDE_PIN="2.1.110"
+CLAUDE_PIN="2.1.112"
 
 echo -e "${BOLD}Marveen -- AVX-less host remediation (claude @${CLAUDE_PIN} + updater off)${NC}"
 echo ""
