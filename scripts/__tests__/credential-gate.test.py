@@ -155,6 +155,11 @@ def test_acceptance():
           len(allow) == 1 and allow[0]["ack"]["by"] == "teszt-ugynok" and "egyedi" in allow[0]["ack"]["reason"])
     r = gate(store, "Bash", bash_send(td, "ugyfel@example.invalid", LETTER))
     check("(2) the acknowledgement is one-shot: the same letter again is denied", r.returncode == 2)
+    a = cli(store, "ack", "--anchor", anchor, "--by", "teszt-ugynok", "--reason", "ugyanannak a levelnek ujra (proba)")
+    other = LETTER.replace("Udvozlettel", "Koszonettel")
+    r = gate(store, "Bash", bash_send(td, "ugyfel@example.invalid", other, name="other.txt"))
+    check("(2) the acknowledgement is bound to its letter: another body is denied", r.returncode == 2
+          and log_lines(store)[-1].get("reason") == "jeloles-nelkul", r.stderr)
 
     td, store = make_store()
     s = cli(store, "shared-add", "--note", "kozos eszkoz-jelszo (proba)", stdin=SHARED + "\n")
@@ -313,7 +318,8 @@ def test_scope_and_drafts():
     check("a Bash call that is not a send passes", gate(store, "Bash", {"command": "ls -la"}).returncode == 0)
     check("a tool that cannot carry a letter passes", gate(store, "Read", {"file_path": "/x"}).returncode == 0)
     r = gate(store, "mcp__mail__create_draft", {"subject": "x", "body": LETTER})
-    check("a credential with no readable recipient is denied", r.returncode == 2 and "cimzett" in r.stderr, r.stderr)
+    check("a credential with no readable recipient is denied, for that reason",
+          r.returncode == 2 and log_lines(store)[-1].get("reason") == "cimzett-nelkul", r.stderr)
 
 
 def test_warn_mode():
