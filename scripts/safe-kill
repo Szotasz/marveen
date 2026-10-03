@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+"""safe-kill -- send a signal only to a process the caller started and recorded.
+
+    safe-kill --record FILE PID                       right after the launch: write
+                                                      "PID STARTTIME" to FILE (mode 0600)
+    safe-kill --pidfile FILE [PID] [-s SIGNAL] [--dry-run]
+
+WHY (card 0ad8d161): on 2026-10-03 a stop command signalled a PID it had taken from
+`ps -o ppid=`. For a detached process that parent is the user service manager
+(`systemd --user`), and signalling it stopped every process of the user, the whole
+agent fleet with it. scripts/hooks/kill-gate.py refuses such a command statically.
+What a static gate cannot know is WHICH process a variable will hold at run time, so
+the safe stop is a separate step that checks the target at the moment of the stop:
+
+  1. the PID file is yours: a regular file (a symlink is refused), owned by the calling
+     uid, not writable by group or others, holding one PID (and, if --record wrote it,
+     the process start time);
+  2. the target is alive, belongs to the calling uid, and is not PID 1, a `systemd`,
+     an `init`, a tmux server or client, an sshd, nor a running `systemd --user` of
+     the calling uid;
+  3. the PID was not recycled: a recorded start time must equal field 22 of
+     /proc/<pid>/stat; a bare PID file must not be older than the process (a process
+     that started AFTER the file was written is a different process on a reused PID).
+
+The usual launch writes the file itself:  <command> & echo $! > run.pid
+For a launcher that forks again (setsid, a daemonizing program) $! is NOT the
+long-lived process: record the PID the program reports, not $!.
+
+Exit: 0 signal sent (or, with --dry-run, would be sent); 2 refused, the reason on
+stderr; 64 usage error. Linux only (/proc).
+"""
+import importlib.util
+import os
+import signal
+import stat
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+GATE = os.path.join(HERE, 'hooks', 'kill-gate.py')
+
+# Processes whose death takes others with them. tmux: every agent pane lives in one
+# server; sshd: the remote session; systemd/init: the user's or the host's processes.
+CRITICAL_COMMS = ('systemd', 'init', 'sshd', 'sd-pam', '(sd-pam)')
+CRITICAL_PREFIXES = ('systemd', 'tmux')
+
+
+class Refused(Exception):
+    pass
+
+
+def _gate():
+    spec = importlib.util.spec_from_file_location('_safe_kill_gate', GATE)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _read(path, binary=False):
+    with open(path, 'rb' if binary else 'r', **({} if binary else {'encoding': 'utf-8', 'errors': 'replace'})) as fh:
+        return fh.read()
+
+
+def proc_info(pid, proc='/proc'):
+    """{'comm', 'uid', 'state', 'start'} of a live process, or None if it is gone.
+    `start` is field 22 of /proc/<pid>/stat (clock ticks after boot). The comm in
+    the stat line may hold spaces and parentheses, so it is cut at the LAST ')'."""
+    base = os.path.join(proc, str(pid))
+    try:
+        st = _read(os.path.join(base, 'stat'))
+        comm = _read(os.path.join(base, 'comm')).strip()
+        status = _read(os.path.join(base, 'status'))
+    except OSError:
+        return None
+    rest = st[st.rindex(')') + 1:].split()
+    uid = next((int(line.split()[1]) for line in status.splitlines() if line.startswith('Uid:')), None)
+    return {'comm': comm, 'uid': uid, 'state': rest[0], 'start': int(rest[19])}
+
+
+def boot_time(proc='/proc'):
+    for line in _read(os.path.join(proc, 'stat')).splitlines():
+        if line.startswith('btime '):
+            return int(line.split()[1])
+    raise Refused('the boot time is not readable from %s/stat' % proc)
+
+
+def read_pidfile(path, uid):
+    """(pid, start or None, mtime). Refuses anything that is not the caller's own file."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise Refused('the PID file %s cannot be opened as a regular file (%s; a symlink is '
+                      'refused)' % (path, exc.strerror))
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise Refused('the PID file %s is not a regular file' % path)
+        if st.st_uid != uid:
+            raise Refused('the PID file %s belongs to uid %d, not to you (uid %d)' % (path, st.st_uid, uid))
+        if st.st_mode & 0o022:
+            raise Refused('the PID file %s is writable by group or others (mode %o)' % (path, st.st_mode & 0o777))
+        data = os.read(fd, 256).decode('ascii', 'replace').split()
+    finally:
+        os.close(fd)
+    if not data or not data[0].isdigit() or (len(data) > 1 and not data[1].isdigit()) or len(data) > 2:
+        raise Refused('the PID file %s does not hold "PID" or "PID STARTTIME"' % path)
+    return int(data[0]), (int(data[1]) if len(data) > 1 else None), st.st_mtime
+
+
+def check_target(pid, uid, proc='/proc', managers=None):
+    """The live process behind `pid`, if it may be signalled at all; refuses otherwise."""
+    if pid <= 1:
+        raise Refused('PID %d is init or not a process' % pid)
+    info = proc_info(pid, proc)
+    if info is None:
+        raise Refused('PID %d is not running (nothing to stop)' % pid)
+    if info['state'] == 'Z':
+        raise Refused('PID %d has already exited (a zombie waiting for its parent)' % pid)
+    if info['uid'] != uid:
+        raise Refused('PID %d belongs to uid %s, not to you (uid %d)' % (pid, info['uid'], uid))
+    comm = info['comm']
+    if comm in CRITICAL_COMMS or comm.startswith(CRITICAL_PREFIXES):
+        raise Refused('PID %d is "%s": stopping it takes other processes with it' % (pid, comm))
+    if managers is None:
+        managers = _gate().manager_pids(proc, uid)
+    if pid in managers:
+        raise Refused('PID %d is your user service manager (systemd --user)' % pid)
+    return info
+
+
+def parse_signal(spec):
+    s = spec.upper()
+    if s.isdigit():
+        return signal.Signals(int(s))
+    return signal.Signals[s if s.startswith('SIG') else 'SIG' + s]
+
+
+def stop(pidfile, pid=None, sig=signal.SIGTERM, dry_run=False, uid=None, proc='/proc',
+         managers=None, kill_fn=os.kill, now=time.time):
+    """Check everything, then signal. Returns the message for stdout; raises Refused."""
+    uid = os.getuid() if uid is None else uid
+    fpid, fstart, mtime = read_pidfile(pidfile, uid)
+    if pid is not None and pid != fpid:
+        raise Refused('PID %d is not the one in %s (%d)' % (pid, pidfile, fpid))
+    info = check_target(fpid, uid, proc, managers)
+    if fstart is not None:
+        if fstart != info['start']:
+            raise Refused('PID %d was reused: the recorded start time %d is not the running '
+                          'process %d' % (fpid, fstart, info['start']))
+    else:
+        started = boot_time(proc) + info['start'] / float(os.sysconf('SC_CLK_TCK'))
+        if started > mtime + 1.0:
+            raise Refused('PID %d started %.0f s after %s was written: a reused PID, not '
+                          'your process' % (fpid, started - mtime, pidfile))
+    if dry_run:
+        return 'safe-kill: would send %s to %d (%s)' % (sig.name, fpid, info['comm'])
+    kill_fn(fpid, sig)
+    return 'safe-kill: sent %s to %d (%s)' % (sig.name, fpid, info['comm'])
+
+
+def record(pidfile, pid, uid=None, proc='/proc', managers=None):
+    """Write "PID STARTTIME" for one of the caller's processes, atomically, mode 0600."""
+    uid = os.getuid() if uid is None else uid
+    info = check_target(pid, uid, proc, managers)
+    tmp = '%s.%d.tmp' % (pidfile, os.getpid())
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        os.write(fd, ('%d %d\n' % (pid, info['start'])).encode('ascii'))
+    finally:
+        os.close(fd)
+    os.replace(tmp, pidfile)
+    return 'safe-kill: recorded %d (%s) in %s' % (pid, info['comm'], pidfile)
+
+
+USAGE = ('usage: safe-kill --record FILE PID\n'
+         '       safe-kill --pidfile FILE [PID] [-s SIGNAL] [--dry-run]\n')
+
+
+def main(argv):
+    args = list(argv)
+    try:
+        if args[:1] == ['--record'] and len(args) == 3 and args[2].isdigit():
+            print(record(args[1], int(args[2])))
+            return 0
+        pidfile, pid, sig, dry = None, None, signal.SIGTERM, False
+        while args:
+            a = args.pop(0)
+            if a == '--pidfile' and args:
+                pidfile = args.pop(0)
+            elif a in ('-s', '--signal') and args:
+                spec = args.pop(0)
+                try:
+                    sig = parse_signal(spec)
+                except (KeyError, ValueError):
+                    sys.stderr.write('safe-kill: unknown signal "%s"\n' % spec + USAGE)
+                    return 64
+            elif a == '--dry-run':
+                dry = True
+            elif a.isdigit() and pid is None:
+                pid = int(a)
+            else:
+                sys.stderr.write(USAGE)
+                return 64
+        if pidfile is None:
+            sys.stderr.write(USAGE)
+            return 64
+        print(stop(pidfile, pid, sig, dry))
+        return 0
+    except Refused as exc:
+        sys.stderr.write('safe-kill: REFUSED: %s.\n' % exc)
+        return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

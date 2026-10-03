@@ -84,6 +84,12 @@ jobs:
       # REPLAYTOOL924: the reply-tool naming in the ledger hooks had tests that
       # only ran by hand, so a green PR said nothing about them. All three are
       # hermetic (LEDGER_DB_PATH on a throwaway DB, temp dirs).
+      # KILLGATE (card 0ad8d161): the kill gate and safe-kill are gate instruments, so
+      # their tests run here, not by hand. Both are hermetic: the gate's commands are
+      # hook INPUT and never executed; safe-kill runs on a fake /proc with a
+      # recording kill function, no signal is sent.
+      - run: python3 scripts/__tests__/kill-gate.test.py
+      - run: python3 scripts/__tests__/safe-kill.test.py
       - run: python3 scripts/__tests__/telegram-reply-guard.test.py
       - run: python3 scripts/__tests__/ledger-replay-reply-tool.test.py
       - run: bash scripts/__tests__/conversation-ledger.test.sh
