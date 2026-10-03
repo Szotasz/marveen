@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Consume an email_send approval on the SEND path, right before the letter goes out (f2c5edb0).
+"""Consume an approval on the SEND path, right before the message goes out (f2c5edb0; SMS db121902).
 
 The email approval gate (scripts/hooks/email-approval-gate.py) consumes an approval only when it can
 read the send in the command text. A tool that mails through a script on another host (ssh + a
@@ -8,14 +8,22 @@ Such a tool calls this helper immediately BEFORE it sends and sends ONLY when it
 flips consumed_at in one conditional write (POST /api/approvals/<id>/consume), so of two attempts on
 the same approval exactly one gets a yes.
 
+db121902: an SMS approval (category external_message) is consumed the same way, by
+scripts/sms/seeme-send.py right before the gateway call. It has no content anchor and no Message-Id
+(the recipient is pinned by the approval text, which the sender checks); --ref names the message.
+
 Usage:
   approval-consume.py --id <approval id> --content-hash <64-hex anchor> --consumer <tool name>
                       [--message-id '<local@domain>'] [--api http://localhost:3420] [--token-file PATH]
+  approval-consume.py --category external_message --id <approval id> --consumer <tool name>
+                      [--ref <gateway reference>] [--api http://localhost:3420] [--token-file PATH]
   --message-id: the Message-Id the tool generated and will hand to its mailer, so the approval row
                 names the letter that used it.
+  --ref:        external_message only: the reference the tool hands its SMS gateway (1-120
+                printable characters, no surrounding blanks), recorded the same way.
 
 Exit codes (the caller sends only on 0; everything else means DO NOT SEND):
-  0  consumed: this letter may go out now
+  0  consumed: this message may go out now
   3  refused (409): already_consumed, not_approved, hash_mismatch, expired or wrong_category
   4  unknown approval id (404)
   2  usage error, missing token, unreachable dashboard, any other status (a redirect included: it
@@ -51,20 +59,48 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_NoRedirect)
 
 
-def consume(api, token, approval_id, content_hash, consumer, message_id=None, timeout=15):
+CATEGORIES = ("email_send", "external_message")
+
+
+def _is_ref(v):
+    """The gateway reference of an SMS, recorded exactly as sent: 1-120 printable characters and no
+    surrounding blanks (the endpoint checks the same)."""
+    return (isinstance(v, str) and 1 <= len(v) <= 120 and v.strip() == v
+            and all(ord(c) >= 32 and ord(c) != 127 for c in v))
+
+
+def consume(api, token, approval_id, content_hash, consumer, message_id=None, timeout=15,
+            category="email_send", ref=None):
     """Return (rc, body). Never raises for an HTTP or network failure: any outcome other than a
-    200 maps to a non-zero rc, so a caller that sends only on rc 0 fails closed."""
-    if not _HASH.match(content_hash or ""):
-        return RC_USAGE, {"error": "content_hash must be the 64-char lowercase sha256 hex anchor"}
+    200 maps to a non-zero rc, so a caller that sends only on rc 0 fails closed. An email_send
+    approval needs the content anchor; an external_message one takes neither the anchor nor a
+    Message-Id, only an optional ref."""
+    if category not in CATEGORIES:
+        return RC_USAGE, {"error": "category must be email_send or external_message"}
+    if category == "email_send":
+        if not _HASH.match(content_hash or ""):
+            return RC_USAGE, {"error": "content_hash must be the 64-char lowercase sha256 hex anchor"}
+        if ref is not None:
+            return RC_USAGE, {"error": "ref belongs to external_message; a letter names itself with message_id"}
+    else:
+        if content_hash or message_id is not None:
+            return RC_USAGE, {"error": "an external_message approval has no content anchor and no Message-Id"}
+        if ref is not None and not _is_ref(ref):
+            return RC_USAGE, {"error": "ref must be 1-120 printable characters without surrounding blanks"}
     if not consumer or not consumer.strip():
         return RC_USAGE, {"error": "consumer is required"}
     if message_id is not None and not _MSGID.match(message_id):
         return RC_USAGE, {"error": "message_id must look like <local@domain>"}
     if not approval_id or "/" in approval_id:
         return RC_USAGE, {"error": "approval id is required and may not contain '/'"}
-    payload = {"content_hash": content_hash, "consumer": consumer.strip()}
-    if message_id is not None:
-        payload["message_id"] = message_id
+    if category == "email_send":
+        payload = {"content_hash": content_hash, "consumer": consumer.strip()}
+        if message_id is not None:
+            payload["message_id"] = message_id
+    else:
+        payload = {"category": category, "consumer": consumer.strip()}
+        if ref is not None:
+            payload["ref"] = ref
     req = urllib.request.Request(
         api.rstrip("/") + "/api/approvals/" + approval_id + "/consume",
         data=json.dumps(payload).encode("utf-8"),
@@ -93,10 +129,12 @@ def consume(api, token, approval_id, content_hash, consumer, message_id=None, ti
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--category", choices=CATEGORIES, default="email_send")
     ap.add_argument("--id", required=True)
-    ap.add_argument("--content-hash", required=True)
+    ap.add_argument("--content-hash")  # required for email_send; consume() checks it
     ap.add_argument("--consumer", required=True)
     ap.add_argument("--message-id")
+    ap.add_argument("--ref")
     ap.add_argument("--api", default=DEFAULT_API)
     ap.add_argument("--token-file", default=DEFAULT_TOKEN_FILE)
     try:
@@ -111,7 +149,8 @@ def main(argv=None):
     if not token:
         print(json.dumps({"consumed": False, "rc": RC_USAGE, "error": "token file is empty"}))
         return RC_USAGE
-    rc, body = consume(a.api, token, a.id, a.content_hash, a.consumer, a.message_id)
+    rc, body = consume(a.api, token, a.id, a.content_hash, a.consumer, a.message_id,
+                       category=a.category, ref=a.ref)
     out = {"consumed": rc == RC_CONSUMED, "rc": rc}
     if rc == RC_CONSUMED:
         appr = body.get("approval") or {}

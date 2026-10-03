@@ -54,15 +54,31 @@ TUDATOSAN NEM ATVETT ELEMEK, ES MIERT:
     User-Agentet ELoVIGYAZATOSSAGBOL (olcso, artalmatlan), DE HA EZ MEGIS ELoALL, NE
     ISMETELD A SMS-GATE.APP DIAGNoZISAT VAKON -- merd le UJRA erre a hostra.
 
+EGY JOVAHAGYAS = EGY SMS (kartya `db121902`, a `f2c5edb0` kovetoje):
+  A kapu (3. pont) a jovahagyast korabban csak OLVASTA, igy ugyanaz a jovahagyott sor
+  barmennyi kuldest atengedett. Kulso cimzettnel a szkript most a SeeMe-hivas ELOTT
+  ELFOGYASZTJA a jovahagyast: POST /api/approvals/<id>/consume (category
+  external_message, consumer seeme-send, ref = a SeeMe reference), a
+  scripts/approval-consume.py consume()-jan at, es CSAK 200 utan kuld. 409 (mar
+  felhasznalva, lejart, nem jovahagyott, mas kategoria), 404 vagy barmilyen hiba:
+  NEM kuld, es a naplo (store/seeme-send.log) NEM-KULDVE sort kap. Az ablak ugyanaz,
+  mint a leveleke: a jovahagyastol (resolved_at) 1800 s, az EMAIL_APPROVAL_WINDOW_S
+  szerint (a kartya D1 dontese).
+  Sorrend: kapu (GET) -> a dry-run itt kilep, NEM fogyaszt -> credentials (elobb, hogy
+  egy hianyzo kulcs ne egessen el jovahagyast) -> fogyasztas -> SeeMe. Ami a fogyasztas
+  UTAN bukik el (SeeMe-hiba, ketertelmu halozati hiba), az a jovahagyast mar
+  elhasznalta: uj kuldeshez UJ jovahagyas kell. Ez szandekos: a ketertelmu esetben az
+  SMS kimehetett. Belso cimzettnel valtozatlan: nincs jovahagyas, nincs fogyasztas.
+
 HASZNALAT:
   printf '%s' "A szoveg" | python3 scripts/sms/seeme-send.py --to 36301234567 [--approval <uuid>]
   printf '%s' "A szoveg" | python3 scripts/sms/seeme-send.py --to 36305552860 --dry-run
 
   --dry-run    : a cimzett-alakot, az osztalyozast es a KAPUT ellenorzi, kiirja, van-e
-                 credentials -- de NEM kuld, credentials nelkul is lefut.
+                 credentials -- de NEM kuld es NEM fogyaszt, credentials nelkul is lefut.
   --approval   : kulso cimzettnel KOTELEZO. A szkript lekerdezi, es CSAK `approved`
                  statusznal kuld, ES csak ha a cimzett szama SZEREPEL a keres
-                 leirasaban.
+                 leirasaban. A valodi kuldes elott elfogyasztja: egy jovahagyas EGY SMS.
   --reference  : sajat azonosito a SeeMe fele (opcionalis, alapertelmezetten
                  `fleet-adhoc-<unix-ido>`).
 
@@ -75,10 +91,10 @@ BELSO SZAMOK: store/seeme-internal-numbers.json -> {"internal": ["36305552860", 
   A SZAMFORMATUM ITT ES A KULDESNEL IS: '+' NELKuLI nemzetkozi alak (36...), ahogy a
   SeeMe API varja -- lasd kaszap-crm/src/lib/sms.ts normalizeHungarianMobile().
 """
-import argparse, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request
+import argparse, importlib.util, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-ENV_FILE = os.path.join(ROOT, "store", "seeme-gateway.env")
+ENV_FILE = os.environ.get("SEEME_ENV_FILE") or os.path.join(ROOT, "store", "seeme-gateway.env")
 # INTERNAL_FILE es DASH_TOKEN_FILE felulirhato env-valtozoval -- KIZAROLAG a
 # hermetikus teszt (seeme-send.test.sh) miatt, ami egy fris checkoutban (CI,
 # uj worktree) SOSEM latja a valodi store/ tartalmat (gitignore-olt). Alapertelmezett
@@ -87,10 +103,21 @@ ENV_FILE = os.path.join(ROOT, "store", "seeme-gateway.env")
 # a CI-n PIROSAT adott (`osztalyozas` mindig KULSO -- "a fajl NEM LETEZIK"), mert a
 # +36305552860 teszt-szam csak az EN sajat, nem-committolt store/seeme-internal-
 # numbers.json-omban szerepelt -- egy fris checkout ezt sosem latja.
+# db121902: ugyanigy felulirhato a fenti ENV_FILE (SEEME_ENV_FILE), a LOG_FILE
+# (SEEME_LOG_FILE) es a DASH_BASE (SEEME_DASH_BASE): a VALODI kuldest es a fogyasztast
+# mero teszt (seeme-send-consume.test.py) csonk dashboarddal, csonk SeeMe-vel es
+# labor-naploval fut, az eles store/-hoz es a futo dashboardhoz nem nyul. Eles
+# hasznalatnal egyik sincs beallitva. Aki beallitja, a kaput egy masik szerverre
+# iranyitja -- ugyanaz az osztaly, mint a SEEME_DASH_TOKEN_FILE: ez a fajl a fejlece
+# szerint szankcionalt ut, nem kikenyszeritett kapu.
 INTERNAL_FILE = os.environ.get("SEEME_INTERNAL_FILE") or os.path.join(ROOT, "store", "seeme-internal-numbers.json")
-LOG_FILE = os.path.join(ROOT, "store", "seeme-send.log")
+LOG_FILE = os.environ.get("SEEME_LOG_FILE") or os.path.join(ROOT, "store", "seeme-send.log")
 DASH_TOKEN_FILE = os.environ.get("SEEME_DASH_TOKEN_FILE") or os.path.join(ROOT, "store", ".dashboard-token")
-DASH_BASE = "http://localhost:3420"
+DASH_BASE = os.environ.get("SEEME_DASH_BASE") or "http://localhost:3420"
+# db121902: a fogyaszto seged (ugyanaz, amit a levelkuldok hasznalnak) es a nev, amivel
+# a jovahagyas soran (consumed_by) es az esemenynaploban szerepelunk.
+CONSUME_HELPER = os.path.join(ROOT, "scripts", "approval-consume.py")
+CONSUMER = "seeme-send"
 DEFAULT_BASE = "https://seeme.hu/gateway"
 # Elovigyazatossagbol, NEM mert protekcio -- lasd a fejlecet.
 USER_AGENT = "kaszap-jobs-seeme-gateway/1.0 (+marveen)"
@@ -198,6 +225,40 @@ def log(line):
         print(f"FIGYELEM: a naplo-iras nem sikerult ({exc})", file=sys.stderr)
 
 
+# Mit jelent a fogyasztas visszautasitasa (409 reason) annak, aki a hibat olvassa.
+REFUSAL_HINT = {
+    "already_consumed": "ezzel a jovahagyassal mar ment (vagy indult) SMS. Mielott ujat kersz, "
+                        "nezd meg a naploban es a SeeMe portalon az elozo reference-t.",
+    "expired": "a jovahagyas az ablakon kivul van (EMAIL_APPROVAL_WINDOW_S, alapbol 1800 s a "
+               "dontestol) -- uj jovahagyas kell.",
+    "not_approved": "a jovahagyas statusza a fogyasztas pillanataban nem approved.",
+    "wrong_category": "a jovahagyas nem external_message kategoriaju.",
+}
+
+
+def consume_approval(approval_id, to, reference):
+    """db121902: EGY jovahagyas = EGY SMS. A SeeMe-hivas ELOTT elfogyasztja a jovahagyast
+    (POST /api/approvals/<id>/consume, category external_message, ref = a SeeMe reference), es
+    CSAK igen (200) eseten ter vissza. Minden mas -- 409, 404, elerhetetlen dashboard, hianyzo
+    seged -- naplosor + die: NEM kuldunk."""
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    try:
+        spec = importlib.util.spec_from_file_location("approval_consume", CONSUME_HELPER)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        tok = open(DASH_TOKEN_FILE, encoding="utf-8").read().strip()
+    except Exception as exc:
+        log(f"{stamp}\tNEM-KULDVE\tfogyasztas elott: {type(exc).__name__}\t{to}\treference={reference}\tapproval={approval_id}")
+        die(f"a jovahagyas fogyasztasa el sem indulhatott ({type(exc).__name__}: {exc}) -- NEM kuldok")
+    rc, body = helper.consume(DASH_BASE, tok, approval_id, None, CONSUMER, category="external_message", ref=reference)
+    if rc != 0:
+        reason = str(body.get("reason") or body.get("error") or "-")
+        log(f"{stamp}\tNEM-KULDVE\tfogyasztas rc={rc} {reason}\t{to}\treference={reference}\tapproval={approval_id}")
+        hint = REFUSAL_HINT.get(reason, "a kapu ZARVA marad.")
+        die(f"a jovahagyas NEM fogyaszthato (rc={rc}, {reason}) -- NEM kuldok.\n      {hint}")
+    return body
+
+
 def main():
     ap = argparse.ArgumentParser(add_help=True)
     ap.add_argument("--to", required=True, help="cimzett, magyar mobil, barmilyen szokasos alakban")
@@ -253,6 +314,12 @@ def main():
     env = read_env()
     base = env.get("SEEME_BASE") or DEFAULT_BASE
     reference = args.reference or f"fleet-adhoc-{int(time.time())}"
+
+    # db121902: a credentials MAR betoltve (egy hianyzo kulcs ne egessen el jovahagyast);
+    # a fogyasztas a SeeMe-hivas ELOTT, es csak igen utan megyunk tovabb.
+    if not is_internal:
+        consume_approval(args.approval, to, reference)
+        print(f"fogyasztva  : {args.approval} (consumer {CONSUMER}, reference {reference})")
 
     params = {
         "key": env["SEEME_API_KEY"],

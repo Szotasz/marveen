@@ -306,3 +306,32 @@ is refused by the other.
 
 A 409 means: do not send, and check the sent mailbox before deciding anything,
 because the earlier attempt may already have gone out.
+
+## SMS approvals (external_message)
+
+An `external_message` approval authorizes ONE SMS through
+`scripts/sms/seeme-send.py`. The script used to read the approval only
+(approved, the right category, the recipient's number in the description), so
+one approved row let any number of messages out. It now consumes the approval
+on the same endpoint right before the gateway call, and calls the gateway only
+on a yes:
+
+```bash
+python3 scripts/approval-consume.py --category external_message --id <approval id> \
+  --consumer seeme-send --ref <gateway reference> || exit 1   # 0 = send now
+```
+
+An SMS approval has no content anchor and no Message-Id: its recipient is
+pinned by the approval text, which the sender checks before it consumes. `ref`
+(1-120 printable characters) is the reference the gateway gets, recorded as
+`consumed_ref`. The category must match exactly in both directions, so a letter
+approval never pays for an SMS and an SMS approval never pays for a letter. The
+window is the letter's (`EMAIL_APPROVAL_WINDOW_S`, 1800 s from the approval):
+the sender runs right after the approval, and an old, forgotten approval should
+not send to an outside party later.
+
+The sender consumes after its credentials load (a missing key does not burn an
+approval) and before the gateway call. A failure after the consume, a gateway
+error or an ambiguous network error, has used the approval: a new send needs a
+new approval, because in the ambiguous case the message may have gone out. The
+dry run consumes nothing, and an internal number needs no approval at all.

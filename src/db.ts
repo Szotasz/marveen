@@ -5427,29 +5427,44 @@ export interface ApprovalConsumeResult {
   approval?: Approval
 }
 
-// One-shot consumption of an email_send approval by the SEND path itself
-// (f2c5edb0). The single conditional UPDATE is the whole decision: only the
-// call that flips consumed_at from NULL wins, so two concurrent senders can
-// never both get a yes. The conditions mirror the gate's find_and_consume
-// (scripts/hooks/email-approval-gate.py): same category, approved, unconsumed,
-// the exact content anchor, resolved inside the time window. A row the gate
-// consumed is refused here and vice versa -- both read consumed_at IS NULL.
+// db121902: the categories the send path consumes. An email_send approval is
+// pinned to one letter by its content_hash. An external_message approval (an
+// SMS through scripts/sms/seeme-send.py) has no anchor: its recipient is pinned
+// by the approval text, which the sender checks before it consumes.
+export type ConsumableCategory = 'email_send' | 'external_message'
+
+// One-shot consumption of an approval by the SEND path itself (f2c5edb0 for
+// letters, db121902 for SMS). The single conditional UPDATE is the whole
+// decision: only the call that flips consumed_at from NULL wins, so two
+// concurrent senders can never both get a yes. The conditions mirror the gate's
+// find_and_consume (scripts/hooks/email-approval-gate.py): the exact category
+// (an email approval never pays for an SMS, nor the other way round), approved,
+// unconsumed, resolved inside the time window, and for email_send the exact
+// content anchor. A row the gate consumed is refused here and vice versa --
+// both read consumed_at IS NULL. messageId is the reference the row records:
+// the Message-Id of a letter, the gateway reference of an SMS.
 export function consumeApproval(params: {
   id: string
-  contentHash: string
+  category?: ConsumableCategory
+  contentHash?: string | null
   consumer: string
   messageId?: string | null
   windowSeconds: number
   nowS?: number
 }): ApprovalConsumeResult {
   const now = params.nowS ?? Math.floor(Date.now() / 1000)
+  const category: ConsumableCategory = params.category ?? 'email_send'
+  const anchored = category === 'email_send'
   const ref = params.messageId ?? null
   return db.transaction((): ApprovalConsumeResult => {
+    // A letter without an anchor never matches: content_hash = NULL is never true.
+    const args: unknown[] = [now, params.consumer, ref, params.id, category, now - params.windowSeconds]
+    if (anchored) args.push(params.contentHash ?? null)
     const changes = db.prepare(`
       UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ?
-       WHERE id = ? AND category = 'email_send' AND status = 'approved' AND consumed_at IS NULL
-         AND content_hash = ? AND resolved_at IS NOT NULL AND resolved_at >= ?
-    `).run(now, params.consumer, ref, params.id, params.contentHash, now - params.windowSeconds).changes
+       WHERE id = ? AND category = ? AND status = 'approved' AND consumed_at IS NULL
+         AND resolved_at IS NOT NULL AND resolved_at >= ?${anchored ? ' AND content_hash = ?' : ''}
+    `).run(...args).changes
     const event = db.prepare(`
       INSERT INTO approval_events (approval_id, event, reason, actor, ref, created_at) VALUES (?, ?, ?, ?, ?, ?)
     `)
@@ -5460,10 +5475,10 @@ export function consumeApproval(params: {
     }
     let reason: ApprovalConsumeRefusal
     if (!row) reason = 'not_found'
-    else if (row.category !== 'email_send') reason = 'wrong_category'
+    else if (row.category !== category) reason = 'wrong_category'
     else if (row.consumed_at != null) reason = 'already_consumed'
     else if (row.status !== 'approved') reason = 'not_approved'
-    else if (row.content_hash !== params.contentHash) reason = 'hash_mismatch'
+    else if (anchored && (params.contentHash == null || row.content_hash !== params.contentHash)) reason = 'hash_mismatch'
     else reason = 'expired'
     if (row) event.run(params.id, 'consume_refused', reason, params.consumer, ref, now)
     return { ok: false, reason, approval: row }

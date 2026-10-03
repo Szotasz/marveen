@@ -9,7 +9,9 @@ POST /api/approvals/<id>/consume:
   - 404 -> 4; 500, an unreadable answer, an unreachable dashboard, a missing token -> 2 (never 0);
   - a malformed anchor or Message-Id is refused locally (2) and the dashboard is never called;
   - a 200 is a yes only with ok:true, and a 302 is never followed, so its target never gets the
-    token (db121902 D2, with a control that plain urllib does follow it).
+    token (db121902 D2, with a control that plain urllib does follow it);
+  - an SMS approval (--category external_message, db121902) is consumed without an anchor, with
+    an optional --ref, once; an anchor, a Message-Id or a malformed ref is refused locally.
 
 Run: python3 <thisfile>   Exit 0 = all pass.
 """
@@ -79,14 +81,15 @@ class Stub(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
-        if body is None or body.get("content_hash") != HASH:
+        sms = body is not None and body.get("category") == "external_message"  # db121902: no anchor
+        if not sms and (body is None or body.get("content_hash") != HASH):
             return self._send(409, {"ok": False, "reason": "hash_mismatch"})
         if aid in Stub.consumed:
             return self._send(409, {"ok": False, "reason": "already_consumed",
                                     "approval": {"id": aid, "consumed_by": Stub.consumed[aid]}})
         Stub.consumed[aid] = body.get("consumer")
         return self._send(200, {"ok": True, "approval": {"id": aid, "consumed_at": 1, "consumed_by": body.get("consumer"),
-                                                         "consumed_ref": body.get("message_id")}})
+                                                         "consumed_ref": body.get("ref" if sms else "message_id")}})
 
     def _send(self, status, obj, raw=None):
         data = raw if raw is not None else json.dumps(obj).encode("utf-8")
@@ -191,6 +194,34 @@ rc, body = mod.consume(API, TOKEN, "appr-5", HASH, "lib-caller")
 check("consume() returns (0, body) on the first call", rc == 0 and body.get("ok") is True)
 rc, body = mod.consume(API, TOKEN, "appr-5", HASH, "lib-caller")
 check("consume() returns (3, body) on the second call", rc == 3 and body.get("reason") == "already_consumed")
+
+# --- db121902: an SMS approval (external_message): no anchor, no Message-Id, an optional ref -------
+before = len(Stub.seen)
+rc, out = run("--category", "external_message", "--id", "sms-1", "--consumer", "seeme-send", "--ref", "fleet-adhoc-1")
+check("an SMS consume exits 0 without an anchor and echoes the ref", rc == 0 and out.get("consumed_ref") == "fleet-adhoc-1")
+check("the SMS body is exactly category + consumer + ref", len(Stub.seen) > before and
+      Stub.seen[before][2] == {"category": "external_message", "consumer": "seeme-send", "ref": "fleet-adhoc-1"})
+rc, out = run("--category", "external_message", "--id", "sms-1", "--consumer", "seeme-send", "--ref", "fleet-adhoc-2")
+check("a SECOND SMS consume of the same approval exits 3 (already_consumed)", rc == 3 and out.get("reason") == "already_consumed")
+rc, out = run("--category", "external_message", "--id", "sms-2", "--consumer", "seeme-send")
+check("the ref is optional", rc == 0 and len(Stub.seen) > 0 and
+      Stub.seen[-1][2] == {"category": "external_message", "consumer": "seeme-send"})
+rc, body = mod.consume(API, TOKEN, "sms-3", None, "lib-caller", category="external_message", ref="r-3")
+check("consume() takes category and ref", rc == 0 and (body.get("approval") or {}).get("consumed_ref") == "r-3")
+before = len(Stub.seen)
+SMS = ("--category", "external_message", "--id", "sms-4", "--consumer", "seeme-send")
+for args, what in (
+        (SMS + ("--content-hash", HASH), "an SMS consume with an anchor"),
+        (SMS + ("--message-id", "<m1@example.org>"), "an SMS consume with a Message-Id"),
+        (SMS + ("--ref", " padded"), "a ref with a surrounding blank"),
+        (SMS + ("--ref", "x" * 121), "a 121-character ref"),
+        (SMS + ("--ref", "a" + chr(10) + "b"), "a ref with a newline"),
+        (("--id", "appr-9", "--content-hash", HASH, "--consumer", "send-tool", "--ref", "r1"), "a letter consume with a ref"),
+        (("--id", "appr-9", "--consumer", "send-tool"), "a letter consume without its anchor"),
+        (("--category", "sms", "--id", "appr-9", "--consumer", "send-tool"), "an unknown category")):
+    rc, _ = run(*args)
+    check("%s is refused locally (2)" % what, rc == 2)
+check("none of the SMS-side local refusals reached the dashboard", len(Stub.seen) == before)
 
 # --- control: this suite can fail -----------------------------------------------------------------
 # Without it, a stub that answered 200 to everything would make every refusal check above vacuous.

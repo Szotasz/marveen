@@ -28,6 +28,10 @@ export SEEME_DASH_TOKEN_FILE="$FIXTURE_DIR/.dashboard-token"
 printf '{"internal": ["36305552860"]}' > "$SEEME_INTERNAL_FILE"
 printf 'teszt-fixture-token-nem-valodi' > "$SEEME_DASH_TOKEN_FILE"
 trap 'rm -rf "$FIXTURE_DIR"' EXIT
+# db121902: a "nem letezo approval-id" eset eddig az ELO dashboardot hivta (a beegetett
+# DASH_BASE miatt) a hamis tokennel. Most egy zart helyi portra mutat (SEEME_DASH_BASE):
+# a lekerdezes ugyanugy elbukik, a kapu ZARVA marad, de az elo rendszert nem eri el.
+export SEEME_DASH_BASE="http://127.0.0.1:$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
 
 run() {
   # run <to> <approval-or-empty> <stdin-text>
