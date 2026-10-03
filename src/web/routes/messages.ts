@@ -16,7 +16,7 @@ import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coor
 import { SYSTEM_DIRECTIVE_SENDER } from '../system-directive.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
-import { MAIN_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
+import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
@@ -119,6 +119,25 @@ export function attachFreshness(messages: AgentMessage[]): AgentMessageWithFresh
   }))
 }
 
+// HBFABRIC1003 follow-up: a refused heartbeat digest is reported to the main
+// agent as an informational system note (no action is requested of it), at
+// most once per HEARTBEAT_REFUSAL_NOTE_GAP_MS. Exported for the test.
+export const HEARTBEAT_REFUSAL_NOTE_GAP_MS = 10 * 60 * 1000
+let lastHeartbeatRefusalNoteMs = 0
+export function resetHeartbeatRefusalNoteForTest(): void { lastHeartbeatRefusalNoteMs = 0 }
+function noteHeartbeatRefusal(problems: string[], nowMs: number = Date.now()): void {
+  if (nowMs - lastHeartbeatRefusalNoteMs < HEARTBEAT_REFUSAL_NOTE_GAP_MS) return
+  lastHeartbeatRefusalNoteMs = nowMs
+  try {
+    createAgentMessage('system', MAIN_AGENT_ID,
+      '[HB-KAPU] A heartbeat digestjét a szerver elutasította (422, HBFABRIC1003): a Kanban-sorai nem egyeztek az élő táblával, '
+      + 'ezért ebben a körben NEM érkezik digest. Eltérések: ' + problems.join('; ')
+      + '. Tájékoztatás, teendőt nem kér; ha a digest kell, a GET /api/kanban/heartbeat-summary adja az élő számokat.')
+  } catch (err) {
+    logger.warn({ err }, 'HBFABRIC1003: could not queue the heartbeat refusal note')
+  }
+}
+
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -149,6 +168,13 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     const kanbanVerdict = verifyHeartbeatKanban(content, () => getHeartbeatKanbanLive(HEARTBEAT_KANBAN_WINDOW_SEC))
     if (!kanbanVerdict.ok) {
       logger.warn({ from: from.trim(), to: to.trim(), problems: kanbanVerdict.problems }, 'Rejected /api/messages POST: heartbeat Kanban lines do not match the live board')
+      // The heartbeat agent does not read the POST's status (its task ends at
+      // "send, stop"), so a refusal would otherwise be an hour with NO digest
+      // that only the dashboard log knows about (Geri's #1684 verify). The
+      // main agent is told instead -- server-side, not by the sender's
+      // discipline -- at most once per window, so a retrying sender cannot
+      // flood its box.
+      if (sanitizeAgentIdent(from) === HEARTBEAT_AGENT_ID) noteHeartbeatRefusal(kanbanVerdict.problems)
       json(res, {
         error: 'heartbeat_kanban_mismatch: the Kanban lines do not match the live board. Re-read the metrics block (GET /api/kanban/heartbeat-summary) and copy it, do not retype it.',
         problems: kanbanVerdict.problems,

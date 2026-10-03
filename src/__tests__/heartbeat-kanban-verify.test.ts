@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { initDatabase, getDb, getHeartbeatKanbanLive } from '../db.js'
-import { MAIN_AGENT_ID } from '../config.js'
-import { tryHandleMessages } from '../web/routes/messages.js'
+import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID } from '../config.js'
+import { tryHandleMessages, resetHeartbeatRefusalNoteForTest } from '../web/routes/messages.js'
 import { parseKanbanClaims, verifyHeartbeatKanban, HEARTBEAT_KANBAN_WINDOW_SEC } from '../web/heartbeat-kanban-verify.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -30,8 +30,8 @@ function fakeCtx(body: unknown): { ctx: RouteContext; res: { statusCode: number;
   return { ctx: { req, res, path, method: 'POST', url: new URL(`http://localhost${path}`), fedPeer: null }, res: state }
 }
 
-async function post(content: string): Promise<{ statusCode: number; json: Record<string, unknown> }> {
-  const { ctx, res } = fakeCtx({ from: MAIN_AGENT_ID, to: MAIN_AGENT_ID, content })
+async function post(content: string, from: string = MAIN_AGENT_ID): Promise<{ statusCode: number; json: Record<string, unknown> }> {
+  const { ctx, res } = fakeCtx({ from, to: MAIN_AGENT_ID, content })
   expect(await tryHandleMessages(ctx)).toBe(true)
   return { statusCode: res.statusCode, json: res.body ? JSON.parse(res.body) : {} }
 }
@@ -206,5 +206,30 @@ describe('the tolerance is the movement the board really had', () => {
     expect(live.movedInWindow).toBe(1)
     expect(live.card('MOVED-HBF')?.movedInWindow).toBe(true)
     getDb().prepare("DELETE FROM kanban_cards WHERE id = 'MOVED-HBF'").run()
+  })
+})
+
+describe('a refused heartbeat digest is reported to the main agent (Geri, #1684 verify)', () => {
+  const notes = () =>
+    (getDb().prepare("SELECT content FROM agent_messages WHERE from_agent = 'system' AND to_agent = ? AND content LIKE '[HB-KAPU]%'")
+      .all(MAIN_AGENT_ID) as Array<{ content: string }>)
+
+  it('the heartbeat sender: 422, and ONE system note naming the differences; a retry inside the gap adds none', async () => {
+    resetHeartbeatRefusalNoteForTest()
+    const before = notes().length
+    const bad = digest(REAL.replace('W1-HBF, W2-HBF', 'EGRESSFP1003, W1-HBF'), 'hb-refused-marker-a1')
+    expect((await post(bad, HEARTBEAT_AGENT_ID)).statusCode).toBe(422)
+    expect(notes().length).toBe(before + 1)
+    expect(notes()[notes().length - 1].content).toContain('waiting: card EGRESSFP1003 does not exist')
+    expect((await post(bad, HEARTBEAT_AGENT_ID)).statusCode).toBe(422)
+    expect(notes().length).toBe(before + 1)
+    expect(rows('hb-refused-marker-a1')).toBe(0)
+  })
+
+  it('another sender\'s refused digest is not reported (only the heartbeat\'s missing hour matters)', async () => {
+    resetHeartbeatRefusalNoteForTest()
+    const before = notes().length
+    expect((await post(digest(REAL.replace('- planned: 4', '- planned: 9'), 'main-refused-marker-b2'))).statusCode).toBe(422)
+    expect(notes().length).toBe(before)
   })
 })
