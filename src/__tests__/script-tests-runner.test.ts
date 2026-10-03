@@ -19,6 +19,7 @@ import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { suiteOutcome } from './setup/suite-outcome.js'
 
 const ROOT = join(__dirname, '..', '..')
 const DIR = join(ROOT, 'scripts', '__tests__')
@@ -40,6 +41,17 @@ describe('scripts/__tests__ suites', () => {
       timeout: 300_000,
       cwd: ROOT,
     })
+    if (suiteOutcome(res.status) === 'skip') {
+      // A suite whose positive control cannot be met on this platform has
+      // measured NOTHING here. Failing it is a false alarm (see wait-for on
+      // macOS); passing it silently is worse, because a skip would then be
+      // indistinguishable from a green run. So it is loud, and the reason is
+      // required to be there -- a bare 77 with no explanation is a failure.
+      const why = `${res.stdout ?? ''}${res.stderr ?? ''}`
+      console.warn(`--- ${name} SKIPPED (exit 77) ---\n${why}`)
+      expect(why, `${name} exited 77 without saying why`).toMatch(/SKIP/)
+      return
+    }
     if (res.status !== 0) {
       console.error(`--- ${name} stdout ---\n${res.stdout ?? ''}`)
       console.error(`--- ${name} stderr ---\n${res.stderr ?? ''}`)
