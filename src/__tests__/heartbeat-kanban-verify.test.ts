@@ -174,6 +174,17 @@ describe('POST /api/messages checks a digest against the live board (HBFABRIC100
   })
 })
 
+describe('the board is read only for a digest that makes a claim', () => {
+  it('a non-digest, and a digest without numeric/id Kanban lines, never call the board', () => {
+    let calls = 0
+    const getLive = () => { calls++; throw new Error('board read') }
+    expect(verifyHeartbeatKanban('[Samu] ### Kanban\n- waiting: 414 (X1-HBF)', getLive)).toEqual({ ok: true })
+    expect(verifyHeartbeatKanban('## Heartbeat 2026-10-03 17:00\n### Tasks\n- enabled: 1', getLive)).toEqual({ ok: true })
+    expect(verifyHeartbeatKanban('## Heartbeat 2026-10-03 17:00\n### Kanban\n- waiting: meresi hiba', getLive)).toEqual({ ok: true })
+    expect(calls).toBe(0)
+  })
+})
+
 describe('the tolerance is the movement the board really had', () => {
   it('cards moved in the window: an off-by-one count and a just-moved card are accepted', () => {
     const now = Math.floor(Date.now() / 1000)
@@ -183,8 +194,8 @@ describe('the tolerance is the movement the board really had', () => {
       card: (id: string) => (id === 'W9-JUST' ? { status: 'planned', priority: 'normal', archived: false, movedInWindow: true } : null),
     }
     const content = digest('- waiting: 4 (W9-JUST)\n- planned: 4', `m${now}`)
-    expect(verifyHeartbeatKanban(content, live)).toEqual({ ok: true })
-    expect(verifyHeartbeatKanban(content.replace('- waiting: 4', '- waiting: 5'), live)).toEqual({
+    expect(verifyHeartbeatKanban(content, () => live)).toEqual({ ok: true })
+    expect(verifyHeartbeatKanban(content.replace('- waiting: 4', '- waiting: 5'), () => live)).toEqual({
       ok: false, problems: ['waiting: sent 5, live 3 (tolerance 1)'],
     })
   })

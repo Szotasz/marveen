@@ -87,10 +87,17 @@ export interface LiveKanban {
 
 export type KanbanVerdict = { ok: true } | { ok: false; problems: string[] }
 
-export function verifyHeartbeatKanban(content: string, live: LiveKanban): KanbanVerdict {
+/**
+ * `getLive` is called ONLY for a digest that makes a claim: every other message
+ * (the vast majority of POST /api/messages) costs no board query at all.
+ */
+export function verifyHeartbeatKanban(content: string, getLive: () => LiveKanban): KanbanVerdict {
   if (!content.startsWith('## Heartbeat ')) return { ok: true }
+  const claims = parseKanbanClaims(content)
+  if (!claims.some((c) => c.count !== null || c.ids.length > 0)) return { ok: true }
+  const live = getLive()
   const problems: string[] = []
-  for (const claim of parseKanbanClaims(content)) {
+  for (const claim of claims) {
     if (claim.count !== null) {
       const real = live.counts[claim.key]
       if (Math.abs(claim.count - real) > live.movedInWindow) {

@@ -146,7 +146,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // a card id that never existed and counts it had typed before reading its
     // metrics block. Refused before anything is written, so the sender sees the
     // difference and the made-up report never reaches the main agent's box.
-    const kanbanVerdict = verifyHeartbeatKanban(content, getHeartbeatKanbanLive(HEARTBEAT_KANBAN_WINDOW_SEC))
+    const kanbanVerdict = verifyHeartbeatKanban(content, () => getHeartbeatKanbanLive(HEARTBEAT_KANBAN_WINDOW_SEC))
     if (!kanbanVerdict.ok) {
       logger.warn({ from: from.trim(), to: to.trim(), problems: kanbanVerdict.problems }, 'Rejected /api/messages POST: heartbeat Kanban lines do not match the live board')
       json(res, {
