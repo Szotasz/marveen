@@ -16,6 +16,7 @@ import {
   scanFile,
   allowlistReason,
   ALLOWLISTED_PATHS,
+  SECRET_PATTERNS,
   type ScanInput,
 } from '../security/secret-gate.js';
 
@@ -129,6 +130,38 @@ describe('detector 2: content', () => {
     const [hit] = scanFile(f('docs/x.md', `key: ${titok}`));
     expect(hit.reason).not.toContain(titok);
     expect(JSON.stringify(hit)).not.toContain(titok);
+  });
+
+  // Review condition on #1095 (2026-09-14). ENV-VAR shape on purpose, as asked:
+  // in a sentence (`a token sbp_...`) the labelled pass catches this by
+  // accident, so a sentence-shaped test would pass even with the pattern wrong.
+  // `SUPABASE_ACCESS_TOKEN=` ends in an underscore, so `\btoken` does NOT match
+  // there -- this is the form that actually exercises the new entry.
+  it('blocks a Supabase PAT in its environment-variable form', () => {
+    const pat = `sbp_${'0123456789abcdef0123456789abcdef01234567'}`;
+    const r = runGate([f('scripts/deploy.sh', `export SUPABASE_ACCESS_TOKEN="${pat}"`)]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0].reason).toContain('Supabase personal access token');
+    expect(JSON.stringify(r.findings)).not.toContain(pat);
+  });
+
+  // The gate calls `pattern.exec()` once per file on THESE objects
+  // (runGate -> inputs.flatMap(scanFile)). A /g regex keeps `lastIndex` between
+  // those calls, so the file after a match resumes past the end and returns
+  // null: a silent false negative, and the gate's whole job is to not have one.
+  // The mask adds the flag itself where it needs every occurrence.
+  it('no SECRET_PATTERNS entry is global -- exec() would carry lastIndex across files', () => {
+    const globalisak = SECRET_PATTERNS.filter(p => p.pattern.flags.includes('g')).map(p => p.name);
+    expect(globalisak).toEqual([]);
+  });
+
+  // The red probe for the line above, so it is a measurement and not a claim:
+  // the same shape with /g misses the SECOND file.
+  it('demonstrates the /g failure it guards against', () => {
+    const pat = `sbp_${'0123456789abcdef0123456789abcdef01234567'}`;
+    const globalis = /\bsbp_[0-9a-f]{40}\b/g;
+    expect(globalis.exec(`A=${pat}`)).not.toBeNull();
+    expect(globalis.exec(`B=${pat}`)).toBeNull();
   });
 });
 
