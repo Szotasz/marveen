@@ -5,8 +5,7 @@ import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
 import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, STORE_DIR } from './config.js'
-import { watchEgressAllowlistBaseline } from './web/egress-allowlist-baseline.js'
-import { createAgentMessage } from './db.js'
+import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress-allowlist-baseline.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
@@ -660,10 +659,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       // EGRESSSELFEDIT824: hash baseline + a report of every change to the allowlist, by any
       // route. Same placement as the re-render watcher: only the instance that owns the hooks
       // watches the shared store, a worktree / sandbox instance does not.
-      watchEgressAllowlistBaseline(STORE_DIR, (report) => {
-        logger.warn({ report }, 'egress-allowlist.json changed')
-        createAgentMessage('system', MAIN_AGENT_ID, report)
-      })
+      watchEgressAllowlistBaseline(STORE_DIR, queueAllowlistReport)
       if (pruned.length) logger.info({ pruned }, 'Stale hook entries pruned from agent settings.json')
       if (patched.length) logger.info({ patched }, 'PreCompact hook backfilled into agent settings.json')
       if (rootPatched.length) logger.info({ patched: rootPatched }, 'CLAUDE.md install-anchored paths re-anchored on the current PROJECT_ROOT (HOSTMOVE923)')

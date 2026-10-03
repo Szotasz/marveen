@@ -3,11 +3,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { gateDecision, allowlistBashSegmentAllowed } from '../../scripts/self-pace-gate.mjs'
-import { agentGetsGovernanceGates } from '../web/agent-scaffold.js'
+import { agentGetsGovernanceGates, ensureGovernanceGateCommands } from '../web/agent-scaffold.js'
+import { initDatabase, getPendingMessages } from '../db.js'
 import {
   checkEgressAllowlistBaseline,
   describeAllowlistChange,
   watchEgressAllowlistBaseline,
+  queueAllowlistReport,
   HISTORY_DIRNAME,
 } from '../web/egress-allowlist-baseline.js'
 import { MAIN_AGENT_ID } from '../config.js'
@@ -119,8 +121,17 @@ describe('gate: the hook end to end, and who it applies to', () => {
     expect(r.stdout).toBe('')
     expect(r.status).toBe(0)
   })
-  it('the gate is wired for sub-agents only: the main agent, the legitimate writer, is not gated', () => {
+  it('POSITIVE CONTROL: the main agent, the legitimate writer, is never given this gate', () => {
     expect(agentGetsGovernanceGates(MAIN_AGENT_ID)).toBe(false)
+    // the migration that wires the gate refuses the main agent outright
+    expect(ensureGovernanceGateCommands(MAIN_AGENT_ID)).toBe(false)
+  })
+  it('POSITIVE CONTROL: a plain read passes, while a sub-agent redirect and an interpreter write are stopped', () => {
+    for (const command of ['cat store/egress-allowlist.json', 'jq . store/egress-allowlist.json', 'shasum -a 256 store/egress-allowlist.json']) {
+      expect(decide('Bash', { command }).deny).toBe(false)
+    }
+    expect(decide('Bash', { command: "echo '{}' > store/egress-allowlist.json" }).deny).toBe(true)
+    expect(decide('Bash', { command: "python3 -c \"open('store/egress-allowlist.json','w')\"" }).deny).toBe(true)
   })
 })
 
@@ -211,6 +222,36 @@ describe('baseline: the dashboard actually runs it (binding lock)', () => {
     // same branch as the reader watcher: right after it, before the branch logs its patches
     expect(call).toBeGreaterThan(reader)
     expect(src.slice(reader, call)).not.toMatch(/^\s*\}/m) // no block closes in between
-    expect(src.slice(call, call + 300)).toContain("createAgentMessage('system', MAIN_AGENT_ID, report)")
+    expect(src.slice(call, call + 80)).toContain('watchEgressAllowlistBaseline(STORE_DIR, queueAllowlistReport)')
+  })
+})
+
+describe('baseline: the report is a QUEUED message, not only a callback', () => {
+  beforeEach(() => { initDatabase(':memory:') })
+  const queued = () => getPendingMessages(MAIN_AGENT_ID).filter((m) => m.from_agent === 'system')
+
+  it('a plain fs write (no hook involved) puts ONE system message in the main agent queue, with the hash and the diff', async () => {
+    const { createHash } = await import('node:crypto')
+    checkEgressAllowlistBaseline(store, queueAllowlistReport)
+    expect(queued()).toHaveLength(0)
+    const bytes = JSON.stringify({ domains: ['a.example', 'b.example', 'evil.example'] })
+    writeFileSync(join(store, ['egress', 'allowlist'].join('-') + '.json'), bytes)
+    checkEgressAllowlistBaseline(store, queueAllowlistReport)
+    const msgs = queued()
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0].content).toContain('domains +evil.example')
+    expect(msgs[0].content).toContain(createHash('sha256').update(bytes).digest('hex').slice(0, 12))
+    // rewriting the history afterwards does not take the sent report back
+    rmSync(join(store, HISTORY_DIRNAME), { recursive: true, force: true })
+    expect(queued()).toHaveLength(1)
+  })
+
+  it('a write made while the dashboard was down is queued by the boot check', () => {
+    checkEgressAllowlistBaseline(store, queueAllowlistReport)
+    writeFileSync(allowlist, JSON.stringify({ domains: ['offline.example'] }))
+    const stop = watchEgressAllowlistBaseline(store, queueAllowlistReport, 60_000)
+    stop()
+    expect(queued()).toHaveLength(1)
+    expect(queued()[0].content).toContain('+offline.example')
   })
 })

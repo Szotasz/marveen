@@ -23,6 +23,9 @@
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, watchFile, unwatchFile } from 'node:fs'
 import { join } from 'node:path'
+import { MAIN_AGENT_ID } from '../config.js'
+import { createAgentMessage } from '../db.js'
+import { logger } from '../logger.js'
 
 export const HISTORY_DIRNAME = 'egress-allowlist.history'
 const MISSING = 'missing'
@@ -145,4 +148,14 @@ export function watchEgressAllowlistBaseline(
   run()
   watchFile(file, { interval: intervalMs }, run)
   return () => unwatchFile(file, run)
+}
+
+/**
+ * The production report: a `system` message in the main agent's queue, written the moment the
+ * change is seen. Its value is exactly that it is ALREADY QUEUED: a history directory rewritten
+ * later (same OS user) does not take back a message that has been sent.
+ */
+export function queueAllowlistReport(report: string): void {
+  logger.warn({ report }, 'egress-allowlist.json changed')
+  createAgentMessage('system', MAIN_AGENT_ID, report)
 }
