@@ -124,6 +124,17 @@ describe('(A) which tasks the runner sends itself -- flag-less tasks are untouch
   // Marveen, 1.: the direct send must not fall under skipIfBusy / the session
   // path. The branch sits before the quota gate and before attemptFireTask in
   // the tick, so a busy main agent cannot hold it back.
+  // Geri's #1687 verify: removing the direct branch from runScheduledTaskNow
+  // survived -- a manual "run now" would silently fall back to the LLM round.
+  it('the manual run-now takes the direct branch before any session dispatch', () => {
+    const src = readFileSync(join(__dirname, '..', 'web', 'schedule-runner.ts'), 'utf-8')
+    const fn = src.slice(src.indexOf('export async function runScheduledTaskNow('))
+    const direct = fn.indexOf('if (isDirectDigestTask(task)) {\n    const sent = await sendHeartbeatDigestDirect(')
+    const dispatch = fn.indexOf('await attemptFireTask(task, agentName, now)')
+    expect(direct).toBeGreaterThan(0)
+    expect(dispatch).toBeGreaterThan(direct)
+  })
+
   it('in the tick, the direct branch runs before the quota gate and the session dispatch', () => {
     const src = readFileSync(join(__dirname, '..', 'web', 'schedule-runner.ts'), 'utf-8')
     const direct = src.indexOf('if (isDirectDigestTask(task)) {\n        await sendHeartbeatDigestDirect(')
@@ -164,6 +175,15 @@ describe('(B) the gap guard (Marveen, 2.)', () => {
   it('inside the grace period nothing is reported yet', () => {
     const g = gapDeps()
     expect(checkHeartbeatDigestGaps(task, SLOT + HEARTBEAT_DIGEST_GRACE_MS - 60_000, g.deps)).toEqual([])
+  })
+
+  // Geri's #1687 verify: a mutant with the grace set to 0 survived the line
+  // above, because the test computed its own "inside" from the same constant.
+  // The contract in absolute minutes: 9 minutes after the slot is too early.
+  it('9 minutes after the slot is still inside the grace (absolute, not derived from the constant)', () => {
+    const g = gapDeps()
+    expect(checkHeartbeatDigestGaps(task, SLOT + 9 * 60_000, g.deps)).toEqual([])
+    expect(checkHeartbeatDigestGaps(task, SLOT + 11 * 60_000, g.deps)).toHaveLength(1)
   })
 
   it('a missing digest is reported EXACTLY once per slot, however many passes run', () => {

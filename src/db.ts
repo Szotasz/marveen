@@ -3950,11 +3950,6 @@ const TASK_RUN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 // the scheduler (see docs + the boritek-nelkuli skill) looks for an OPEN run.
 export const OPEN_TASK_RUN_STATUSES: ReadonlySet<string> = new Set(['fired', 'fired_late', 'fired_busy'])
 
-/**
- * Record that a run was dispatched. Returns the row id so the caller can close
- * the run later with markTaskRunCompleted -- without it there is no way to
- * attach an ending to a beginning, which is why completions were never written.
- */
 // HBFABRIC1003 gap guard: did a heartbeat digest (first line "## Heartbeat ")
 // from `fromAgent` reach `toAgent` at or after `sinceMs`? created_at is seconds.
 export function hasHeartbeatDigestSince(fromAgent: string, toAgent: string, sinceMs: number): boolean {
@@ -3974,6 +3969,11 @@ export function hasAgentMessageStartingWith(fromAgent: string, toAgent: string, 
   return row !== undefined
 }
 
+/**
+ * Record that a run was dispatched. Returns the row id so the caller can close
+ * the run later with markTaskRunCompleted -- without it there is no way to
+ * attach an ending to a beginning, which is why completions were never written.
+ */
 export function appendTaskRun(name: string, agent: string, status = 'fired'): number {
   const now = Date.now()
   // Only a dispatch opens a run the watchdog will later close. Every other
