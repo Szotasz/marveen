@@ -30,6 +30,10 @@ must not rewrite the user-level cache other Claude Code sessions load
   its marker, so taking it back is deleting the lines that carry
   "MARVEEN-PATCH(c67f5f34-kbd)" (the file is then byte-identical to the one
   patched without it; tested);
+- the permission-approver patch (fc8629d7) works the same way, and it is the
+  one patch that fails CLOSED: when its anchors are not all there, a one-line
+  fallback (perm-off) takes the plugin's permission capability away, so a
+  permission request reaches nobody's chat instead of every allowlisted one;
 - with --state FILE, the outcome per file (and per patch) is written there as
   JSON, so /status can say in one line when a patch is missing
   (src/web/system-status.ts) instead of the command silently falling back.
@@ -47,6 +51,8 @@ MARKER = "// MARVEEN-PATCH(elsokor922-d4): /status and /help belong to the comma
 FWD_MARKER = "// MARVEEN-PATCH(elsokor922-fwd): forwarded flag for the command hook"
 EVID_MARKER = "// MARVEEN-PATCH(cmd920-evid): inbound evidence for owner write commands"
 KBD_MARKER = "// MARVEEN-PATCH(c67f5f34-kbd): one-tap answer buttons"
+PERM_MARKER = "// MARVEEN-PATCH(fc8629d7-perm): permission requests only for the approver list"
+PERM_OFF_MARKER = "// MARVEEN-PATCH(fc8629d7-perm-off): permission relay off, the approver patch did not apply"
 
 # Each anchor is the handler's full block, up to its closing `})` at column 0.
 ANCHORS = [
@@ -111,8 +117,40 @@ KBD_SEND = ("reply send options", re.compile(
     "kbdButtons.map(label => [{{ text: label }}]), one_time_keyboard: true, resize_keyboard: true }} : "
     "{{ remove_keyboard: true as const }} }} : {{}}), " + KBD_MARKER + "\n")
 
+# The plugin relays the main agent's tool-permission request to EVERY chat in
+# access.allowFrom, with Allow / Deny buttons, and takes an answer -- a button or
+# a "yes <id>" text -- from any of them (fc8629d7: an owner who is not the
+# operator got "Permission: Bash" buttons). Allowlisted means "may talk to the
+# agent", not "may approve its tool calls". So the approvers are a list of their
+# own, TELEGRAM_PERMISSION_APPROVERS (comma-separated chat ids) in the channel's
+# .env next to TELEGRAM_BOT_TOKEN (the file the plugin loads itself) or in the
+# real environment, and all three paths check it: the relay sends only to them,
+# the button and the text answer count only from them. An empty or missing list
+# leaves the permission capability undeclared, so Claude Code relays nothing:
+# the request stays in the terminal (fail-closed). Five lines, one per anchor.
+PERM_LIST = ("mcp server construction", re.compile(r"^const mcp = new Server\(\n", re.MULTILINE), "insert-before",
+    "const PERMISSION_APPROVERS = (process.env.TELEGRAM_PERMISSION_APPROVERS ?? '').split(',')"
+    ".map(s => s.trim()).filter(Boolean) " + PERM_MARKER + "\n")
+PERM_CAP = ("permission capability", re.compile(r"^( *)'claude/channel/permission': \{\},\n", re.MULTILINE), "insert-after",
+    "{indent}...(PERMISSION_APPROVERS.length ? {{}} : {{ 'claude/channel/permission': undefined }}), " + PERM_MARKER + "\n")
+PERM_RELAY = ("permission relay loop", re.compile(r"^( *)for \(const chat_id of access\.allowFrom\) \{\n", re.MULTILINE),
+    "insert-after", "{indent}  if (!PERMISSION_APPROVERS.includes(chat_id)) continue " + PERM_MARKER + "\n")
+PERM_BUTTON = ("permission button answer", re.compile(r"^( *)const \[, behavior, request_id\] = m\n", re.MULTILINE),
+    "insert-after",
+    "{indent}if (!PERMISSION_APPROVERS.includes(senderId)) {{ await ctx.answerCallbackQuery({{ text: 'Not authorized.' }})"
+    ".catch(() => {{}}); return }} " + PERM_MARKER + "\n")
+# A "yes <id>" from someone who may not approve is not relayed as chat either
+# (the plugin never did that for this shape); it is dropped.
+PERM_TEXT = ("permission text answer", re.compile(r"^( *)if \(permMatch\) \{\n", re.MULTILINE), "insert-after",
+    "{indent}  if (!PERMISSION_APPROVERS.includes(String(from.id))) return " + PERM_MARKER + "\n")
+# The fallback, applied only when the approver patch could not be: the
+# capability is taken away for good, whatever the list says.
+PERM_OFF = ("permission capability", PERM_CAP[1], "insert-after",
+    "{indent}...({{ 'claude/channel/permission': undefined }}), " + PERM_OFF_MARKER + "\n")
+
 # Independent patches: each has its own marker and is all-or-nothing on its
 # own, so a plugin update that moves one anchor does not undo the other.
+# "only_if_failed" names a patch whose anchor-missing is this one's condition.
 PATCHES = [
     {"name": "d4", "marker": MARKER, "anchors": ANCHORS, "mode": "remove",
      "fallback": "/status and /help fall back to the plugin's own answers"},
@@ -125,6 +163,11 @@ PATCHES = [
     # an anchor may carry its own mode and insert (name, regex, mode, insert): the three kbd lines differ
     {"name": "kbd", "marker": KBD_MARKER, "anchors": [KBD_SCHEMA, KBD_CHECK, KBD_SEND], "mode": "insert-after",
      "fallback": "the reply tool has no buttons: a question goes out without them and is answered by typing"},
+    {"name": "perm", "marker": PERM_MARKER, "anchors": [PERM_LIST, PERM_CAP, PERM_RELAY, PERM_BUTTON, PERM_TEXT],
+     "mode": "insert-after",
+     "fallback": "the perm-off line takes the permission relay away instead (next line), so approvals stay in the terminal"},
+    {"name": "perm-off", "marker": PERM_OFF_MARKER, "anchors": [PERM_OFF], "mode": "insert-after", "only_if_failed": "perm",
+     "fallback": "the plugin still relays permission requests to EVERY allowlisted chat, with Allow / Deny buttons"},
 ]
 
 
@@ -156,21 +199,29 @@ def apply_patch(text, patch):
 
 
 def patch_text(text):
-    """Returns (new_text, [(patch name, status), ...])."""
+    """Returns (new_text, [(patch name, status), ...]). A patch with
+    only_if_failed runs only when that patch is anchor-missing in this run;
+    otherwise its status is 'not-needed'."""
     results = []
+    statuses = {}
     for patch in PATCHES:
-        text, status = apply_patch(text, patch)
+        dep = patch.get("only_if_failed")
+        if dep and not statuses.get(dep, "").startswith("anchor-missing"):
+            status = "not-needed"
+        else:
+            text, status = apply_patch(text, patch)
+        statuses[patch["name"]] = status
         results.append((patch, status))
     return text, results
 
 
 def file_status(results):
-    """One word for the file: 'already' when every patch was there,
-    'patched' when this run wrote one, else the first anchor-missing."""
+    """One word for the file: 'already' when every patch was there (or not
+    needed), 'patched' when this run wrote one, else the first anchor-missing."""
     statuses = [st for _, st in results]
     if "patched" in statuses:
         return "patched"
-    if all(st == "already" for st in statuses):
+    if all(st in ("already", "not-needed") for st in statuses):
         return "already"
     return next(st for st in statuses if st.startswith("anchor-missing"))
 
