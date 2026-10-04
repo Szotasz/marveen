@@ -135,6 +135,12 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
             <span class="sb-label">Ötletláda</span>
           </a>
+          <!-- VIDEOREVIEW1002: a plain link (no data-page), so it navigates in the
+               SAME tab; the Bridge denies new windows. Shown only when configured. -->
+          <a href="/video-review" class="sb-link" id="sbVideoReview" hidden>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="15" height="14" rx="2"/><polygon points="17 9 22 6 22 18 17 15"/></svg>
+            <span class="sb-label">Videó-visszajelzés</span>
+          </a>
         </div>
       </div>
       <div class="sb-group" data-group="stats">
@@ -754,9 +760,10 @@
         </div>
         <div class="info-box" id="connectorInfoBox" data-i18n-html="connectors.builtin.dedup_html">
           Az itt listázott MCP szerverek a te Claude Code előfizetésedben bekapcsoltak (claude.ai OAuth connectorok, marketplace pluginok, lokális konfig).
-          Minden sub-agent automatikusan látja őket, mert ugyanabban a HOME-ban fut, mint a fő session.
-          Ha egy MCP már bekapcsolva van claude.ai-n, <strong>ne vedd fel még egyszer lokálisan</strong>: duplikálódik,
-          és a Claude CLI "local wins" üzenetet ad rá. A lista a dashboard indulásakor töltődik be, explicit frissítés a "Frissítés" gombbal.
+          A claude.ai-on bekapcsolt connectorokat csak az az ügynök látja, amelyik claude.ai-fiókkal van bejelentkezve (alapbeállításban a fő ügynök).
+          A csapat-ügynökök saját tokennel futnak, ezért <strong>ők nem látják a claude.ai connectorokat</strong>: ha nekik kell egy, vedd fel itt az "Új connector" gombbal, és állítsd be a "Hozzárendelés ügynökökhöz" mezőt.
+          Amelyik ügynök a claude.ai-n át már látja, annak nem kell lokálisan is felvenni (a Claude CLI ilyenkor "local wins" üzenetet ad).
+          A lista a dashboard indulásakor töltődik be, explicit frissítés a "Frissítés" gombbal.
         </div>
       </div>
 

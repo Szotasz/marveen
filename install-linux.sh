@@ -98,6 +98,24 @@ ensure_in_rc() {
   done
 }
 
+# Like ensure_in_rc, but REPLACES an existing `export <VAR>=` line instead of
+# keeping it. For credentials ensure_in_rc was wrong: once a bad or old token
+# line was in ~/.bashrc, a re-run with the correct token skipped the rc ("marker
+# already there"), so every interactive shell kept exporting the stale value.
+set_export_in_rc() {
+  local var="$1" line="$2"
+  for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    [ -f "$rc" ] || continue
+    # Portable (BSD/macOS sed has no `sed -i` without a suffix argument).
+    # Rewrite in place via cat so the rc file keeps its inode and permissions;
+    # `|| true` because grep -v exits 1 when every line is filtered out.
+    { grep -Ev "^[[:space:]]*export[[:space:]]+${var}=" "$rc" || true; } >"$rc.tmp" \
+      && cat "$rc.tmp" >"$rc" && rm -f "$rc.tmp"
+    printf '%s\n' "$line" >>"$rc"
+    warn "RC frissitve ($(basename "$rc")): export ${var}=..."
+  done
+}
+
 # Tobbsoros blokkot ad az rc fajlokhoz ha a <marker> meg nem szerepel bennuk.
 # Hasznalat: ensure_block_in_rc "marker" "$BLOKK_VALTOZO"
 ensure_block_in_rc() {
@@ -161,6 +179,12 @@ case "$INSTALL_DIR" in
     exit 1
     ;;
 esac
+
+# WSL detection, used by the auth prompt and the service launch below.
+IS_WSL=false
+if [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
+  IS_WSL=true
+fi
 
 INSTALL_STEP="prerequisites"
 # ─────────────────────────────────────────────
@@ -668,6 +692,13 @@ IS_HEADLESS=false
 if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
   IS_HEADLESS=true
 fi
+# WSLg exports DISPLAY/WAYLAND_DISPLAY on every WSL2 distro, so the check above
+# called a WSL box "desktop" and made Enter mean "3 = skip". On WSL the services
+# can only use a token (see service_auth_present), so default to the token path
+# there, exactly like a headless server.
+if [ "$IS_WSL" = "true" ]; then
+  IS_HEADLESS=true
+fi
 
 # Skip the prompt only when THIS INSTALL already carries a credential the
 # services can read (a re-run, or the dashboard wizard got there first).
@@ -685,8 +716,12 @@ else
   fi
   if [ "$IS_HEADLESS" = "true" ]; then
     echo ""
-    echo -e "  ${BLUE}Headless szerver detektalva (nincs DISPLAY).${NC}"
-    echo -e "  ${BLUE}Bongeszo-alapu bejelentkezes nem lehetseges.${NC}"
+    if [ "$IS_WSL" = "true" ]; then
+      echo -e "  ${BLUE}WSL detektalva: a hatterszolgaltatasok csak tokent tudnak hasznalni.${NC}"
+    else
+      echo -e "  ${BLUE}Headless szerver detektalva (nincs DISPLAY).${NC}"
+      echo -e "  ${BLUE}Bongeszo-alapu bejelentkezes nem lehetseges.${NC}"
+    fi
     echo -e "  ${BOLD}Ajanlott: OAuth token (2) vagy API key (1).${NC}"
     echo ""
   fi
@@ -710,7 +745,7 @@ else
     read -p "  ANTHROPIC_API_KEY (sk-ant-...): " ANTHROPIC_API_KEY_INPUT
     if [ -n "$ANTHROPIC_API_KEY_INPUT" ]; then
       export ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY_INPUT"
-      ensure_in_rc 'ANTHROPIC_API_KEY' "export ANTHROPIC_API_KEY=\"$ANTHROPIC_API_KEY_INPUT\""
+      set_export_in_rc 'ANTHROPIC_API_KEY' "export ANTHROPIC_API_KEY=\"$ANTHROPIC_API_KEY_INPUT\""
       CLAUDE_AUTH_ENV_LINE="ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY_INPUT}"
       ok "ANTHROPIC_API_KEY beallitva"
     else
@@ -724,11 +759,32 @@ else
     echo -e "  ${BOLD}2.${NC} Futtasd: ${BLUE}claude setup-token${NC}"
     echo -e "  ${BOLD}3.${NC} A bongeszo megnyilik, jelentkezz be a Claude fiokoddal"
     echo -e "  ${BOLD}4.${NC} Masold vissza ide a kiirt tokent:"
+    echo -e "  ${DIM}A token sk-ant-oat01- kezdetu. A bongeszoben megjeleno kod NEM a token:${NC}"
+    echo -e "  ${DIM}azt a setup-token ablakaba kell beirni, es utana a terminal irja ki a tokent.${NC}"
     echo ""
-    read -p "  OAuth token: " OAUTH_TOKEN_INPUT
+    # Shape-check BEFORE the value is written anywhere. Without it any paste was
+    # accepted -- typically the one-time code the browser shows during
+    # `claude setup-token` -- and landed in ~/.bashrc and .env as if it were the
+    # token; the services then failed to authenticate with no hint why. Same
+    # pattern the store/.claude-oauth-token write below already gates on.
+    OAUTH_TOKEN_INPUT=""
+    for _try in 1 2 3; do
+      # Read into OAUTH_TOKEN_INPUT (not a new name): the desktop installer
+      # derives its prompts from this file by variable name.
+      read -p "  OAuth token: " OAUTH_TOKEN_INPUT
+      _tok="$(printf '%s' "$OAUTH_TOKEN_INPUT" | tr -d '[:space:]')"
+      OAUTH_TOKEN_INPUT=""
+      [ -z "$_tok" ] && break
+      if printf '%s' "$_tok" | grep -Eq '^sk-ant-oat01-[A-Za-z0-9_-]{40,}$'; then
+        OAUTH_TOKEN_INPUT="$_tok"
+        break
+      fi
+      warn "Ez nem setup-token (nem sk-ant-oat01- kezdetu, vagy tul rovid). Probald ujra, vagy hagyd uresen a kihagyashoz."
+    done
+    unset _tok _try
     if [ -n "$OAUTH_TOKEN_INPUT" ]; then
       export CLAUDE_CODE_OAUTH_TOKEN="$OAUTH_TOKEN_INPUT"
-      ensure_in_rc 'CLAUDE_CODE_OAUTH_TOKEN' "export CLAUDE_CODE_OAUTH_TOKEN=\"$OAUTH_TOKEN_INPUT\""
+      set_export_in_rc 'CLAUDE_CODE_OAUTH_TOKEN' "export CLAUDE_CODE_OAUTH_TOKEN=\"$OAUTH_TOKEN_INPUT\""
       CLAUDE_AUTH_ENV_LINE="CLAUDE_CODE_OAUTH_TOKEN=${OAUTH_TOKEN_INPUT}"
       # Ellenorzes
       if claude auth status &>/dev/null; then
@@ -2125,14 +2181,14 @@ if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; the
 else
   warn "systemd --user nem elerheto (WSL / konteneren / VPS user-session nelkul) -- kozvetlen inditas."
   mkdir -p "$INSTALL_DIR/store"
-  # Root VPS/container: claude refuses --dangerously-skip-permissions as uid 0,
-  # which would kill the agent tmux sessions the dashboard spawns. Opt into the
-  # sandbox escape hatch so first boot works (start.sh/channels.sh do the same).
-  [ "$(id -u)" = "0" ] && export IS_SANDBOX=1
-  nohup "$NODE_PATH" "$INSTALL_DIR/dist/index.js" >"$INSTALL_DIR/store/dashboard.log" 2>&1 &
-  echo $! >"$INSTALL_DIR/store/dashboard.pid"
-  nohup bash "$INSTALL_DIR/scripts/channels.sh" >"$INSTALL_DIR/store/channels.log" 2>&1 &
-  echo $! >"$INSTALL_DIR/store/channels.pid"
+  # Launch through start.sh rather than a second copy of its nohup lines. The
+  # copy here never checked for a running instance, so re-running the installer
+  # (the usual move after a half-failed install) started a SECOND channels.sh on
+  # the same bot token -- two pollers splitting the incoming messages, no error
+  # anywhere. start.sh's direct-launch branch is idempotent (flock + pidfile +
+  # cmdline check), sets IS_SANDBOX for root, and writes the same pidfiles the
+  # checks below read.
+  bash "$INSTALL_DIR/scripts/start.sh" >>"$INSTALL_DIR/store/boot.log" 2>&1 || true
   sleep 3
   if kill -0 "$(cat "$INSTALL_DIR/store/dashboard.pid" 2>/dev/null)" 2>/dev/null; then
     ok "Dashboard fut (nohup, pid $(cat "$INSTALL_DIR/store/dashboard.pid"))"
@@ -2147,6 +2203,36 @@ else
     SVCFAIL=1
   fi
   echo -e "  ${DIM}Ujrainditas kesobb: ./scripts/start.sh${NC}"
+  if [ "$IS_WSL" = "true" ]; then
+    # Without systemd nothing restarts the services after a WSL restart, and
+    # the installer used to stop at the one-line warning above.
+    echo ""
+    echo -e "  ${ORANGE}WSL-en a systemd nincs bekapcsolva, ezert a Marveen a WSL ujraindulasa utan nem indul el magatol.${NC}"
+    echo -e "  ${DIM}Bekapcsolas: ird be az /etc/wsl.conf fajlba (sudo):${NC}"
+    echo "    [boot]"
+    echo "    systemd=true"
+    echo -e "  ${DIM}majd Windows PowerShellben: wsl --shutdown, nyisd meg ujra az Ubuntut, es futtasd ujra ezt a telepitot.${NC}"
+  fi
+fi
+
+# WSL2 shuts the whole VM down shortly after the last WSL window closes
+# (vmIdleTimeout), and that stops every service with it -- systemd and linger do
+# not help (scripts/systemd/README-host-stability.md). The fix lives on the
+# Windows side and must not be written from Linux, so only detect and explain.
+if [ "$IS_WSL" = "true" ]; then
+  _wslcfg=""
+  _cmd="$(command -v cmd.exe 2>/dev/null || echo /mnt/c/Windows/System32/cmd.exe)"
+  _winprofile="$("$_cmd" /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')"
+  [ -n "$_winprofile" ] && _wslcfg="$(wslpath -u "$_winprofile" 2>/dev/null)/.wslconfig"
+  if [ -z "$_wslcfg" ] || ! grep -Eqi '^[[:space:]]*vmIdleTimeout[[:space:]]*=[[:space:]]*-1' "$_wslcfg" 2>/dev/null; then
+    echo ""
+    echo -e "  ${ORANGE}WSL: ha bezarod az utolso Ubuntu ablakot, a Windows par perc mulva leallitja a WSL-t, es vele a Marveent is.${NC}"
+    echo -e "  ${DIM}Javitas Windowson: a %UserProfile%\\.wslconfig fajlba ird be:${NC}"
+    echo "    [wsl2]"
+    echo "    vmIdleTimeout=-1"
+    echo -e "  ${DIM}majd PowerShellben egyszer: wsl --shutdown${NC}"
+  fi
+  unset _wslcfg _winprofile _cmd
 fi
 
 # Ellenorzes
@@ -2272,9 +2358,19 @@ with open('$ACCESS_FILE', 'w') as f:
           ok "Parositas sikeres! (chat ID: $PENDING_CHAT_ID)"
           ok ".env ALLOWED_CHAT_ID frissitve"
           ok "Policy: allowlist (csak te erheted el a botot)"
-          # Ujrainditjuk, hogy felvegye az uj access.json-t
-          systemctl --user restart "${CHAN_UNIT}" 2>/dev/null || true
-          ok "${CHAN_UNIT} $(_t linux.chan_restarted)"
+          # Ujrainditjuk, hogy felvegye az uj access.json-t. The tick used to
+          # print after `restart ... || true`, so on a no-systemd host (WSL) it
+          # claimed a restart that never ran. Without systemd the bridge was
+          # started by start.sh, so restart it the same way.
+          if systemctl --user restart "${CHAN_UNIT}" 2>/dev/null; then
+            ok "${CHAN_UNIT} $(_t linux.chan_restarted)"
+          elif bash "$INSTALL_DIR/scripts/stop.sh" >>"$INSTALL_DIR/store/boot.log" 2>&1 \
+               && bash "$INSTALL_DIR/scripts/start.sh" >>"$INSTALL_DIR/store/boot.log" 2>&1 \
+               && sleep 3 && _bridge_is_up; then
+            ok "${CHAN_UNIT} $(_t linux.chan_restarted)"
+          else
+            warn "A csatorna ujrainditasa nem sikerult -- futtasd: ./scripts/stop.sh && ./scripts/start.sh"
+          fi
         else
           warn "A kod nem talalhato az access.json pending bejegyzesei kozott."
           echo -e "  ${DIM}Lehetseges okok:${NC}"

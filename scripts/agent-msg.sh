@@ -12,7 +12,17 @@
 #   content: plain text (quotes / newlines OK) -- the body is built with json.dumps (no quoting pitfalls).
 #   large / multi-line content may come from STDIN when the 3rd arg is "-":
 #     echo "<long text>" | bash scripts/agent-msg.sh <from> <to> -
-# Output: success -> "OK id=<n>"; failure -> "FAIL <reason>" + a line in store/agent-msg-failures.log, exit 1.
+# Output: success -> "OK id=<n> queue=<depth> (~<n> min)"; failure -> "FAIL <reason>"
+#         + a line in store/agent-msg-failures.log, exit 1.
+#   The queue fields come from the POST response: a message is accepted instantly
+#   but only DELIVERED into an idle gap in the recipient's pane, which on a busy
+#   agent was measured at 80+ minutes. "queue=" is the recipient's pending count
+#   including this message; "(~n min)" is the median delivery delay of its recent
+#   messages and is OMITTED when there is no history (unknown is not "instant").
+#   Both are absent against a server that does not return them, so the line is
+#   then exactly "OK id=<n>" as before.
+#   At MARVEEN_QUEUE_WARN_AT (default 3) or more waiting, a stderr notice says so
+#   at the moment the sender decides whether to send the next one.
 #
 # LOG FORMAT, store/agent-msg-failures.log (tab-separated, one line per failure):
 #   <YYYY-MM-DD HH:MM:SS>  FAIL  from=<a>  to=<b>  url=<endpoint>  http=<code>  resp=<first 200 bytes>
@@ -26,6 +36,7 @@
 #   MARVEEN_WEB_PORT   port for the default localhost base (default 3420)
 #   MARVEEN_TOKEN_FILE bearer token file (default <repo>/store/.dashboard-token)
 #   MARVEEN_HOMOGLYPH_BIN  the checker (default <repo>/scripts/lib/homoglyph.py)
+#   MARVEEN_QUEUE_WARN_AT  queue depth that triggers the stderr notice (default 3, 0 = off)
 # MEASURED 2026-09-13: a remote agent runs this helper OUTSIDE this repo, where localhost:3420
 # does not exist -- it had to fall back to raw curl, i.e. exactly the unchecked pattern this file was
 # written to eliminate. A hardcoded base URL silently un-installs the helper for everyone not on this
@@ -112,23 +123,49 @@ while [ "$attempt" -lt "$max" ]; do
   # above says it exists to prevent, one field further in. The exit code stays 0
   # on purpose: the row really was accepted, so this is not a send failure. It
   # just must not be silent.
-  read -r ID WARN <<EOF
-$(printf '%s' "$JSON" | python3 -c 'import sys,json
+  #
+  # The queue state rides in the same parse. "-" stands for an empty field so
+  # `read` cannot shift the warning text into it. The delay is rounded UP to at
+  # least one minute: a 20-second median printed as "~0 min" would read as
+  # "instant", the same lie a NULL flattened to 0 would tell.
+  read -r ID DEPTH MINS WARN <<EOF
+$(printf '%s' "$JSON" | python3 -c 'import sys,json,math
 try:
   d=json.load(sys.stdin)
   if not isinstance(d,dict): d={}
 except Exception:
   d={}
+q=d.get("queue") if isinstance(d.get("queue"),dict) else {}
+depth=q.get("queueDepth")
+delay=q.get("estimatedDelaySec")
+depth="-" if not isinstance(depth,int) or isinstance(depth,bool) else str(depth)
+mins="-" if not isinstance(delay,(int,float)) or isinstance(delay,bool) else str(max(1,math.ceil(delay/60)))
 w=" ".join(str(d.get("warning","")).split())
-print((d.get("id","") or "-"), w)' 2>/dev/null)
+print((d.get("id","") or "-"), depth, mins, w)' 2>/dev/null)
 EOF
   [ "$ID" = "-" ] && ID=""
+  [ "${DEPTH:-}" = "-" ] && DEPTH=""
+  [ "${MINS:-}" = "-" ] && MINS=""
   if { [ "$CODE" = "200" ] || [ "$CODE" = "201" ]; } && [ -n "$ID" ]; then
+    # "OK id=<n>" stays the prefix: callers and docs grep for it.
+    LINE="OK id=$ID"
+    [ -n "${DEPTH:-}" ] && LINE="$LINE queue=$DEPTH"
+    [ -n "${MINS:-}" ] && LINE="$LINE (~${MINS} min)"
     if [ -n "${WARN:-}" ]; then
-      echo "OK id=$ID  WARNING: $WARN" >&2
-      echo "OK id=$ID (warning)"
+      echo "$LINE  WARNING: $WARN" >&2
+      echo "$LINE (warning)"
     else
-      echo "OK id=$ID"
+      echo "$LINE"
+    fi
+    # Printing the number is not enough on its own: the sender has already
+    # sent by the time they read it. Say it on stderr, at the moment the next
+    # send is being decided. Not a refusal -- an urgent message must still get
+    # through.
+    WARN_AT="${MARVEEN_QUEUE_WARN_AT:-3}"
+    case "$WARN_AT" in ''|*[!0-9]*) WARN_AT=3 ;; esac
+    if [ -n "${DEPTH:-}" ] && [ "$WARN_AT" -gt 0 ] && [ "$DEPTH" -ge "$WARN_AT" ]; then
+      echo "NOTICE: $DEPTH message(s) are waiting for $TO${MINS:+, measured delay ~${MINS} min}." >&2
+      echo "  It is busy; prefer adding to an existing message or a shared card over another message." >&2
     fi
     exit 0
   fi
