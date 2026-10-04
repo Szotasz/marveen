@@ -80,9 +80,9 @@ export function fleetVenvPathPrefix(venvDir: string = FLEET_PYTHON_VENV, exists:
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
 import { readEnvFile } from '../env.js'
-import { loadProfileTemplate } from './profiles.js'
+import { loadProfileTemplate, profileWantsThinChiefHandoff } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
-import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection } from './agent-scaffold.js'
+import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
@@ -107,6 +107,7 @@ export function delay(ms: number): Promise<void> {
 }
 
 import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
+import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 export { CHANNEL_PLUGIN_IDS }
 
 // Pure: compute the enabledPlugins map for a sub-agent so that exactly its own
@@ -2014,6 +2015,16 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     ensureAutonomySection(name)
     ensureSkillsPathTrapSection(name)
     ensureSystemDirectiveAuthSection(name)
+    ensureAgentIdHeaderSection(name)
+    // OPT-IN, DEFAULT OFF (PR #1357 review). The THIN CHIEF handoff is this
+    // fleet's reporting standard -- how a specialist hands a result to its
+    // coordinator -- not a property of the software. Injecting it into every
+    // downstream install's agent CLAUDE.md would be shipping our process as if
+    // it were a feature. No shipped profile sets the flag, so a fresh install
+    // gets nothing; the fleet that wrote it opts in on its own profiles.
+    // Turning the flag off does not remove a section an agent already carries:
+    // ensureThinChiefHandoffSection only appends, and nothing here deletes.
+    if (profileWantsThinChiefHandoff(profile)) ensureThinChiefHandoffSection(name)
     ensureMemorySearchLabelSection(name)
     ensureFleetAuthSection(name)
     ensureEvidenceSection(name)
@@ -2494,7 +2505,9 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     const promptSuggestionEnv =
       // CHANSPARE925: no Agent view -- its Left key backgrounds the session into the
       // Claude Code daemon, which keeps a second --channels copy alive (bot poller hijack).
-      'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && '
+      'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && ' +
+      // ROOTRESPAWN1001: IS_SANDBOX=1 on a root host, evaluated in the pane (see root-sandbox-env.ts).
+      `${ROOT_SANDBOX_ENV} && `
     // Disable Claude Code's in-place auto-updater for every spawned agent. A
     // running agent whose updater fires does an in-place global reinstall into the
     // shared package prefix; a half-completed update can leave a broken stub and

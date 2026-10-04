@@ -364,6 +364,8 @@ nav { display: flex; gap: 4px; }
   vertical-align: middle;
 }
 .updates-badge[hidden] { display: none; }
+/* VIDEOREVIEW1002: .sb-link is display:flex, which wins over the UA [hidden] rule. */
+.sb-link[hidden] { display: none; }
 
 .updates-summary {
   padding: 16px 18px;
