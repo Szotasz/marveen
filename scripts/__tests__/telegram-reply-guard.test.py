@@ -67,10 +67,32 @@ def env_patch(vars, install_dir=None):
 AGENT = "tgguard-test"
 
 
+_QUIET_STATE = []
+
+
+def quiet_state_dir():
+    """A channel state dir with an explicit, EMPTY quiet-hours config, made once per run.
+
+    The quiet-hours brake (scripts/hooks/telegram_quiet_hours.py) reports a MISSING config on stderr as a
+    deployment defect, and run_hook reads any stderr as UNCLEAN. The cases here are not about quiet hours, so
+    they run with a config that names no chat: the brake is present and silent (STATE_EMPTY). Always set, not
+    inherited: a TELEGRAM_STATE_DIR from the calling session would bring a real config, and with it a real
+    quiet window at night. The missing-config case is pinned on its own in main().
+    """
+    if not _QUIET_STATE:
+        d = tempfile.TemporaryDirectory(prefix="tgguard-quiet-")
+        _TMPDIRS.append(d)
+        with open(os.path.join(d.name, "quiet-hours.json"), "w", encoding="utf-8") as f:
+            json.dump({}, f)
+        _QUIET_STATE.append(d.name)
+    return _QUIET_STATE[0]
+
+
 def run_hook(db_path, cwd=None, extra_env=None):
     env = dict(os.environ)
     env["LEDGER_DB_PATH"] = db_path
     env["MARVEEN_AGENT_ID"] = AGENT
+    env["TELEGRAM_STATE_DIR"] = quiet_state_dir()
     if extra_env:
         env.update(extra_env)
     p = subprocess.run(
@@ -372,6 +394,23 @@ def main():
     check("capture still records text", row[1] if row else None, "ez mi is?")
     check("capture -> guard names discord tool",
           DC_TOOL in run_hook(db)[1], True)
+
+    # The quiet-hours brake's absence is loud: with NO config at the channel state dir, the guard does not
+    # crash (rc 0) and says so on stderr and in a log next to the channel state.
+    db = fresh_db()
+    lib = load_lib(db)
+    lib.log_inbound(AGENT, "8695313113", "1020", "mennyi 3+3?", "2026-08-02T22:10:00.000Z")
+    nincs = tempfile.TemporaryDirectory(prefix="tgguard-noquiet-")
+    _TMPDIRS.append(nincs)
+    d, _r, _ = run_hook(db, extra_env={"TELEGRAM_STATE_DIR": nincs.name})
+    check("quiet-hours config missing: reported, not a crash",
+          isinstance(d, str) and d.startswith("UNCLEAN(rc=0)") and "QUIET-HOURS DEFECT" in d, True)
+    check("quiet-hours config missing: the defect log is written next to the channel state",
+          os.path.exists(os.path.join(nincs.name, "quiet-hours-defect.log")), True)
+    # Control: the same question with the empty config is a plain block, so the line above came from the
+    # missing config and not from the question.
+    d, _r, _ = run_hook(db)
+    check("quiet-hours control: with the empty config the same question blocks", d, "block")
 
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)

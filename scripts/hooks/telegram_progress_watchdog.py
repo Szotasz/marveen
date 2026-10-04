@@ -44,7 +44,7 @@ Standalone: scans every agent's per-agent telegram state dir. No marveen src
 dependency; only Python stdlib + the `tmux` binary. Bot API base is overridable
 via TELEGRAM_API_BASE (tests point it at a local stub).
 """
-import datetime, os, glob, json, time, subprocess, urllib.request
+import datetime, os, glob, json, sys, time, subprocess, urllib.request
 
 # State dirs to scan: per-agent dirs under the fleet, plus the default dir.
 #
@@ -103,6 +103,45 @@ TURN_ANCHOR_SLACK_SEC = 120
 # Far below WEDGED_SEC because the hung-reply signal is precise. Env-tunable so
 # a live install can adjust without a code change.
 DEFAULT_WEDGED_UP_SEC = 180
+
+
+def _quiet_chats(state_dir, pend):
+    """Which of this marker's chats are inside their quiet window right now.
+
+    ⛔ The module ships next to this file (repo), not in ~/.claude/hooks: on 2026-09-12 an
+    installer overwrote the sibling hooks and the quiet branch was lost because its dependency
+    lived outside the repo (card e6680b3c). A MISSING module or config is reported, not
+    swallowed -- a brake whose absence is silent is how that regression survived ten days.
+    ⛔ FAIL-OPEN on purpose: if we cannot tell, we deliver. A late answer is recoverable; a
+    permanently withheld one is not. The loud log is what makes the fail-open reviewable.
+    """
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import telegram_quiet_hours as _q
+    except ImportError as e:
+        _wd_quiet_defect(f"import telegram_quiet_hours failed ({e}) -- QUIET HOURS NOT ENFORCED")
+        return []
+    st = _q.config_state(state_dir)
+    if st in (_q.STATE_MISSING, _q.STATE_UNREADABLE):
+        _wd_quiet_defect(f"quiet-hours config {st} at {_q.config_path(state_dir)} -- QUIET HOURS NOT ENFORCED")
+        return []
+    out = []
+    for p in pend or []:
+        try:
+            if _q.in_quiet(state_dir, p.get("chat_id")):
+                out.append(p.get("chat_id"))
+        except Exception as e:
+            _wd_quiet_defect(f"in_quiet raised {type(e).__name__}: {e}")
+    return out
+
+
+def _wd_quiet_defect(msg):
+    """The absence of the quiet brake must leave a trace; it never stops the watchdog."""
+    try:
+        sys.stderr.write("[watchdog] QUIET-HOURS DEFECT: " + str(msg) + "\n")
+    except Exception:
+        pass
+
 ERROR_TEXT = ("⚠️ Valami elakadt, és erre nem érkezett válasz. "
               "Lehet, hogy újra kell indítani az ügynököt, vagy próbáld újra kicsit később.")
 
@@ -374,6 +413,11 @@ def handle_dir(progress_dir):
         # waiting for it today -- deliver NOTHING, drop the marker. The
         # placeholder message is cleaned up only while Telegram still allows
         # deletion (<48h); past that the delete can only fail (HTTP 400).
+        # ⛔ QUIET HOURS, DELIBERATELY NOT GATED HERE (card e6680b3c): this branch only REMOVES a
+        # ⛔ >24h stale placeholder, it delivers no content, so it is not a message into the
+        # ⛔ owner's window. Gating it would leave a day-old "Dolgozom rajta…" standing even
+        # ⛔ longer. The gate below covers every path that SENDS something. If a future change
+        # ⛔ adds a send here, the quiet-hours test fails on the ordering assertion -- on purpose.
         if age > max_age:
             if age < TELEGRAM_DELETE_WINDOW_SEC:
                 if tok is None:
@@ -421,6 +465,21 @@ def handle_dir(progress_dir):
             fire = False
             reason = ""
         if not fire:
+            continue
+
+        # ⛔ QUIET HOURS (card e6680b3c). The submit-side filter stops a placeholder from being
+        # ⛔ CREATED inside an owner's window, but it cannot help here: all three fire conditions
+        # ⛔ above are AGE-based with no time-of-day check, so a placeholder created legitimately
+        # ⛔ BEFORE the window (22:58 local, agent down) fires INSIDE it (23:00+). With the
+        # ⛔ wedged backstop the gap is 15 minutes. Measured on this file, 2026-09-22.
+        # ⇒ Defer, do not drop: leave the marker standing so the next tick after the window
+        #   delivers it. The answer is late, never lost.
+        # LIMIT, stated: if a marker holds SEVERAL chats and only one is quiet, the whole marker
+        # waits. In practice a marker is one round of one chat; splitting it would mean rewriting
+        # the pending list mid-flight, which can lose entries -- a worse failure than a late reply.
+        if _quiet_chats(state_dir, pend):
+            log(progress_dir, f"quiet-hours defer: {os.path.basename(path)} "
+                              f"reason={reason} age={int(age)}s -- marker kept")
             continue
 
         if tok is None:

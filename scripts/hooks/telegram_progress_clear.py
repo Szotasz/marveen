@@ -168,12 +168,33 @@ def main():
 
     # Already nudged once (or loop guard tripped) and STILL no reply -> guaranteed
     # fallback: deliver the agent's final answer to the chat, then clear.
+    # Quiet hours: never deliver the transcript fallback into an owner's window
+    # (measured 2026-09-22: fallback-delivered=True to an owner chat inside its window).
+    # The absence of this brake must not be silent. THIS is the branch that delivered into an
+    # owner's window on 2026-09-22, and a bare `except: quiet = set()` here would repeat the
+    # 09-12 regression with no trace at all -- the missing log is what made it last ten days.
+    quiet = set()
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import telegram_quiet_hours as _q
+    except ImportError as e:
+        log(sd, f"[stop] QUIET-HOURS DEFECT: import telegram_quiet_hours failed ({e}) -- NOT ENFORCED")
+        _q = None
+    if _q is not None:
+        st = _q.config_state(sd)
+        if st in (_q.STATE_MISSING, _q.STATE_UNREADABLE):
+            # MISSING and EMPTY both silence in_quiet(); only the first is a deployment defect.
+            log(sd, f"[stop] QUIET-HOURS DEFECT: config {st} at {_q.config_path(sd)} -- NOT ENFORCED")
+        try:
+            quiet = {str(p.get("chat_id")) for p in pend if _q.in_quiet(sd, p.get("chat_id"))}
+        except Exception as e:
+            log(sd, f"[stop] QUIET-HOURS DEFECT: in_quiet raised {type(e).__name__}: {e}")
     answer = last_assistant_text(transcript)
     tok = token(sd)
     if tok:
         for p in pend:
             cid, mid = p.get("chat_id"), p.get("message_id")
-            if answer:
+            if answer and str(cid) not in quiet:
                 try:
                     api(tok, "sendMessage", {"chat_id": cid, "text": answer[:4000]})
                 except Exception as e:

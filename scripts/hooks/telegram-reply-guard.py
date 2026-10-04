@@ -52,6 +52,26 @@ import json
 import re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+def _quiet_defect(msg):
+    """The ABSENCE of the quiet-hours brake must not be silent. This never stops the guard
+    (a Stop hook must not break over a config), but it leaves a trace: stderr + a log file
+    next to the channel state, so the next person can see the brake was not in effect."""
+    line = "[reply-guard] QUIET-HOURS DEFECT: " + str(msg)
+    try:
+        sys.stderr.write(line + "\n")
+    except Exception:
+        pass
+    try:
+        sd = os.environ.get("TELEGRAM_STATE_DIR") or os.path.join(
+            os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd(), ".claude", "channels", "telegram")
+        os.makedirs(sd, exist_ok=True)
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())   # `time` mar importalva; a `datetime` NEM
+        with open(os.path.join(sd, "quiet-hours-defect.log"), "a", encoding="utf-8") as f:
+            f.write(stamp + " " + line + "\n")
+    except Exception:
+        pass
+
 import ledger_lib  # noqa: E402
 
 # Tunables (overridable via env for tests / ops).
@@ -263,9 +283,48 @@ def main():
     if _is_ack(text):
         sys.exit(0)
 
+    # Quiet hours (card 30d968cd; restored 2026-09-22 21:2xZ after the fix was
+    # overwritten): inside the chat's window never block, and do not count the
+    # stop. A message that ARRIVED in a window ages from the window END, so it is
+    # still enforced after the window closes instead of going stale overnight.
+    anchor = created_at
+    # The module ships in THIS script's directory (line 37 already put it on sys.path).
+    # It used to be imported from ~/.claude/hooks -- an un-versioned directory that an
+    # installer overwrote on 2026-09-12 (card e6680b3c). A hook must not depend on a file
+    # that ships outside the repo: such a dependency has no test, no review and no history.
+    _sd = os.environ.get("TELEGRAM_STATE_DIR") or os.path.join(
+        os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd(), ".claude", "channels", "telegram")
+    _q = None
+    try:
+        import telegram_quiet_hours as _q
+    except ImportError as e:
+        # A MISSING MODULE IS A DEPLOYMENT DEFECT, NOT A RUNTIME HICCUP. Swallowing it is how
+        # the 09-12 regression stayed invisible for ten days: the guard kept running with no
+        # quiet-hours protection and nothing, anywhere, said it was gone.
+        _quiet_defect(f"import telegram_quiet_hours failed ({e}) -- QUIET HOURS NOT ENFORCED")
+    if _q is not None:
+        # The same distinction one level down: a MISSING config and an EMPTY config both make
+        # in_quiet() False, but only the first one means the deployment is not what we think.
+        _st = _q.config_state(_sd)
+        if _st in (_q.STATE_MISSING, _q.STATE_UNREADABLE):
+            _quiet_defect(f"quiet-hours config {_st} at {_q.config_path(_sd)} -- QUIET HOURS NOT ENFORCED")
+        try:
+            if _q.in_quiet(_sd, chat_id):
+                sys.exit(0)
+            if created_at is not None:
+                _end = _q.quiet_window_end(_sd, chat_id, int(created_at))
+                if _end:
+                    anchor = _end
+        except SystemExit:
+            raise
+        except Exception as e:
+            # A genuine runtime error stays non-fatal -- the guard must not break the Stop
+            # hook -- but it is not silent either. That is the whole point of this block.
+            _quiet_defect(f"quiet-hours check raised {type(e).__name__}: {e}")
+
     # Too old -> don't nag forever (abandoned / deliberately-unanswered message).
     try:
-        if created_at is not None and (int(time.time()) - int(created_at)) > STALE_SECONDS:
+        if anchor is not None and (int(time.time()) - int(anchor)) > STALE_SECONDS:
             sys.exit(0)
     except Exception:
         sys.exit(0)
