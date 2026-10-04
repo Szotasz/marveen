@@ -1,6 +1,14 @@
 import { join, isAbsolute } from 'node:path'
 import { checkTaskMcpRequirements } from './schedule-mcp-precheck.js'
 import { collectHeartbeatMetricsBlock } from './heartbeat-metrics-inject.js'
+import {
+  sendHeartbeatDigestDirect,
+  checkHeartbeatDigestGaps,
+  HEARTBEAT_GAP_CHECK_INTERVAL_MS,
+  type DirectDigestDeps,
+  type GapGuardDeps,
+} from './heartbeat-direct-digest.js'
+import { verifyHeartbeatKanban, HEARTBEAT_KANBAN_WINDOW_SEC } from './heartbeat-kanban-verify.js'
 import { existsSync, readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -11,11 +19,15 @@ import {
   MAIN_AGENT_ID,
   BOT_NAME,
   APP_TZ_INVALID,
+  APP_TZ,
   CHANNEL_PROVIDER,
 } from '../config.js'
 import { resolveOwnerChatId, configuredOwnerChatFor } from '../owner-chat.js'
 import {
   appendTaskRun,
+  getHeartbeatKanbanLive,
+  hasHeartbeatDigestSince,
+  hasAgentMessageStartingWith,
   markTaskRunCompleted,
   setTaskRunDelivery,
   getTaskRunStatus,
@@ -1566,6 +1578,57 @@ export function taskInjectionRank(t: Pick<ScheduledTask, 'forceSend' | 'type'>):
 // for it). Reuses attemptFireTask, so a stopped agent is auto-started and the
 // prompt is queued for delivery exactly like a real cron fire. Returns a
 // per-target summary string for the API/UI.
+// HBFABRIC1003 (A): the digest family that the runner sends itself.
+export function isDirectDigestTask(task: { type?: string; injectMetrics?: boolean; sendDigestDirect?: boolean; agent: string }): boolean {
+  return task.type === 'heartbeat' && task.injectMetrics === true && task.sendDigestDirect === true && task.agent !== 'all'
+}
+
+const BUDAPEST_LABEL = (ms: number) =>
+  new Date(ms).toLocaleString('sv-SE', { timeZone: APP_TZ }).slice(0, 16)
+
+function directDigestDeps(): DirectDigestDeps {
+  return {
+    collectBlock: collectHeartbeatMetricsBlock,
+    verify: (digest) => verifyHeartbeatKanban(digest, () => getHeartbeatKanbanLive(HEARTBEAT_KANBAN_WINDOW_SEC)),
+    send: (from, to, content) => { createAgentMessage(from, to, content) },
+    appendRun: (task, agent, status) => { appendTaskRun(task, agent, status) },
+    warn: (obj, msg) => logger.warn(obj, msg),
+    tz: APP_TZ,
+    nowLabel: () => BUDAPEST_LABEL(Date.now()),
+    mainAgentId: MAIN_AGENT_ID,
+  }
+}
+
+// HBFABRIC1003 (B): every heartbeat task with injectMetrics is a digest task,
+// direct or not -- the gap guard reports a missing digest whatever the route.
+export function digestGapGuardDeps(): GapGuardDeps {
+  return {
+    prevOccurrence: (schedule, fromMs, toMs) => cronPrevOccurrence(schedule, fromMs, toMs),
+    digestSince: (agent, sinceMs) => hasHeartbeatDigestSince(agent, MAIN_AGENT_ID, sinceMs),
+    noteExists: (marker) => hasAgentMessageStartingWith('system', MAIN_AGENT_ID, marker),
+    sendNote: (content) => { createAgentMessage('system', MAIN_AGENT_ID, content) },
+    slotLabel: BUDAPEST_LABEL,
+  }
+}
+
+// The digest family: enabled heartbeat tasks with injectMetrics, sendDigestDirect
+// or NOT -- the old LLM route's missing digest is reported the same way.
+export function digestGapTasks(tasks: Array<{ name: string; agent: string; schedule: string; enabled: boolean; type?: string; injectMetrics?: boolean }>) {
+  return tasks
+    .filter((t) => t.enabled && t.type === 'heartbeat' && t.injectMetrics === true && t.agent !== 'all')
+    .map((t) => ({ name: t.name, agent: t.agent, schedule: t.schedule }))
+}
+
+export function runHeartbeatGapCheck(nowMs: number = Date.now()): string[] {
+  return checkHeartbeatDigestGaps(digestGapTasks(listScheduledTasks()), nowMs, digestGapGuardDeps())
+}
+
+export function startHeartbeatGapGuard(): ReturnType<typeof setInterval> {
+  return setInterval(() => {
+    try { runHeartbeatGapCheck() } catch (err) { logger.warn({ err }, 'HBFABRIC1003: heartbeat gap check failed') }
+  }, HEARTBEAT_GAP_CHECK_INTERVAL_MS)
+}
+
 export async function runScheduledTaskNow(
   taskName: string,
   opts: { allowDisabled?: boolean } = {},
@@ -1576,6 +1639,11 @@ export async function runScheduledTaskNow(
   // enabled:false so the cron never fires them, but a guarded endpoint can
   // still trigger them (e.g. the post-rollback diagnosis, PR-D).
   if (!task.enabled && !opts.allowDisabled) return { ok: false, error: 'Schedule is disabled' }
+
+  if (isDirectDigestTask(task)) {
+    const sent = await sendHeartbeatDigestDirect(task.name, task.agent, directDigestDeps())
+    return sent ? { ok: true, result: `${task.agent}: sent-direct` } : { ok: false, error: 'direct digest could not be sent' }
+  }
 
   const now = Date.now()
   const targets = task.agent === 'all'
@@ -2429,6 +2497,17 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // does not double-run them on a dashboard restart.
       if (task.type === 'command') {
         runCommandTask(task, now)
+        scheduleLastRun.set(task.name, now)
+        persistScheduleLastRun()
+        continue
+      }
+
+      // HBFABRIC1003: a digest task the runner sends itself. No session, so no
+      // quota gate (no LLM spend), no desktop gate and NO skipIfBusy: it has
+      // to go out exactly while the main agent is busy. A failure is recorded
+      // as an 'error' run and reported by the gap guard.
+      if (isDirectDigestTask(task)) {
+        await sendHeartbeatDigestDirect(task.name, task.agent, directDigestDeps())
         scheduleLastRun.set(task.name, now)
         persistScheduleLastRun()
         continue

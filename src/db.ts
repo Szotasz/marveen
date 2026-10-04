@@ -3955,6 +3955,25 @@ export const OPEN_TASK_RUN_STATUSES: ReadonlySet<string> = new Set(['fired', 'fi
  * the run later with markTaskRunCompleted -- without it there is no way to
  * attach an ending to a beginning, which is why completions were never written.
  */
+// HBFABRIC1003 gap guard: did a heartbeat digest (first line "## Heartbeat ")
+// from `fromAgent` reach `toAgent` at or after `sinceMs`? created_at is seconds.
+export function hasHeartbeatDigestSince(fromAgent: string, toAgent: string, sinceMs: number): boolean {
+  const row = db.prepare(
+    "SELECT 1 FROM agent_messages WHERE from_agent = ? AND to_agent = ? AND created_at >= ? AND substr(content, 1, 13) = '## Heartbeat ' LIMIT 1",
+  ).get(fromAgent, toAgent, Math.floor(sinceMs / 1000))
+  return row !== undefined
+}
+
+// HBFABRIC1003 gap guard: has a message starting with `prefix` already been
+// queued from `fromAgent` to `toAgent`? Keeps the one-note-per-slot rule across
+// a dashboard restart (the in-memory state would not).
+export function hasAgentMessageStartingWith(fromAgent: string, toAgent: string, prefix: string): boolean {
+  const row = db.prepare(
+    'SELECT 1 FROM agent_messages WHERE from_agent = ? AND to_agent = ? AND substr(content, 1, ?) = ? LIMIT 1',
+  ).get(fromAgent, toAgent, prefix.length, prefix)
+  return row !== undefined
+}
+
 export function appendTaskRun(name: string, agent: string, status = 'fired'): number {
   const now = Date.now()
   // Only a dispatch opens a run the watchdog will later close. Every other
