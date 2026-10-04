@@ -90,19 +90,36 @@ mkdir -p ~/.claude/skills/$SKILL_NAME/references
 - `references/`: Documentation loaded into context as needed
 - `assets/`: Templates, icons, or other static files
 
-### Step 5: Update Skill Index
+### Step 5: Run the Linter (required)
+
+Check the new or changed skill against Anthropic's "Skill authoring best practices" (https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices):
+
+```bash
+L=../../scripts/skill-lint.mjs; [ -f "$L" ] || L=scripts/skill-lint.mjs   # sub-agent cwd: agents/<name>/; main agent: the install root
+node "$L" ~/.claude/skills/$SKILL_NAME
+```
+
+If it reports a finding (non-zero exit), fix it and run it again until it is clean. The rules it checks:
+- "Keep SKILL.md body under 500 lines for optimal performance" (the body after the frontmatter).
+- "For reference files longer than 100 lines, include a table of contents at the top" (a `references/` file over 100 lines).
+- "Keep references one level deep from SKILL.md": every supporting file is linked from SKILL.md itself, not only from another supporting file.
+- Every relative markdown link in SKILL.md points to a file that exists.
+
+The linter only reports; it never rewrites. Do not rewrite a skill installed from an outside source because of it.
+
+### Step 6: Update Skill Index
 
 ```bash
 bash scripts/skill-index.sh
 ```
 
-### Step 6: Validate
+### Step 7: Validate
 
 Test the skill mentally:
 - Would the description trigger on a realistic user message?
 - Are the steps clear enough to follow without the original context?
 - Are edge cases covered in Pitfalls?
-- Is the SKILL.md under 500 lines?
+- Is the SKILL.md body under 500 lines, and does the linter (Step 5) pass?
 
 ## Pitfalls
 
@@ -121,4 +138,4 @@ Before finalizing, verify:
 - [ ] Variables are clearly marked with `[brackets]`
 - [ ] Pitfalls section has at least one entry
 - [ ] Verification section explains how to confirm success
-- [ ] Under 500 lines
+- [ ] Under 500 lines, and `skill-lint` reports no finding

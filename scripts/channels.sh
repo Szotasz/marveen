@@ -865,7 +865,7 @@ TMUX="$(command -v tmux)"
 # the one place the pane-scrape recovery could still misread it (the v1.15.0
 # dim-strip catches it on the recovery side, but killing it at the SOURCE on MAIN
 # too closes the gap end-to-end). Parity with the sub-agent launch.
-MCP_BATCH_ENV="export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000 && "
+MCP_BATCH_ENV="export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && "
 
 # Resolve the main agent's model so we can pass --model explicitly. Without
 # --model claude-code falls back to its built-in default, which can drift
@@ -1244,6 +1244,11 @@ _tmux_set_auth_globals() {
   $TMUX set-environment -g CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION false 2>/dev/null || true
   # CHANSPARE925: and the Agent-view kill switch (see the export above).
   $TMUX set-environment -g CLAUDE_CODE_DISABLE_AGENT_VIEW 1 2>/dev/null || true
+  # ROOTRESPAWN1001: a pane gets the tmux SERVER's environment, so the IS_SANDBOX
+  # export above reaches it only when this script created the server. Put it in
+  # the server's global env on a root host, so a later respawn of any pane (the
+  # dashboard's recovery, a manual respawn of the dead pane) inherits it too.
+  if [ "$(id -u)" = "0" ]; then $TMUX set-environment -g IS_SANDBOX 1 2>/dev/null || true; fi
   # Same for the auto-updater kill switch. A plain `export` above only reaches
   # sessions that inherit THIS shell, i.e. only when channels.sh happened to
   # create the tmux server first; the dashboard's worker sessions often win that

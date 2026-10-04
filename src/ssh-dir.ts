@@ -7,7 +7,7 @@
 //   scripts/remote-access-enroll.ts      join(homedir(), '.ssh')  -- knew NOTHING about it
 // A seam that only some writers honour is not a seam. Measured consequence:
 // 62 real `marveen-remote` keys accumulated in operators' authorized_keys from
-// ordinary test runs (Tecton 13, isapp06 51, pestihazak 4; cleaned 2026-09-15).
+// ordinary test runs (three installs: 13, 51 and 4; cleaned 2026-09-15).
 //
 // FAIL-CLOSED RULE: under a test runner, resolving to the REAL ~/.ssh is a bug,
 // never an intent. A suite that means to exercise enrollment points
@@ -17,7 +17,7 @@
 // operator's authorized_keys instead is precisely what this module exists to stop.
 //
 // Production is unaffected: neither VITEST nor NODE_ENV=test exists in a live
-// install (measured 2026-09-15 on isapp06 -- .env, the systemd units and every
+// install (measured 2026-09-15 on a production install -- .env, the systemd units and every
 // running marveen process: zero occurrences). If the guard ever DOES fire in
 // production it would break real device pairing, so every message names the
 // signal that triggered it and the one variable that resolves it.
