@@ -6,6 +6,7 @@ import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { triggerLikeClause } from './homoglyph.js'
+import type { LiveKanban } from './web/heartbeat-kanban-verify.js'
 
 let db: Database.Database
 // The path the CURRENT handle was opened on (null for ':memory:'). Kept so
@@ -841,6 +842,11 @@ export function initDatabase(dbPathOverride?: string): void {
   // Composite index for thread-listing queries that filter on (from_agent, to_agent) without a status
   // predicate -- the status index above does not cover these and causes full table scans at scale.
   db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_messages_thread ON agent_messages(from_agent, to_agent, created_at)`)
+  // getRecipientQueueState runs RECIPIENT_LATENCY_SQL on every POST /api/messages,
+  // synchronously. Without this index it is a full scan plus a temp B-tree for
+  // the ORDER BY (measured upstream: ~15-18 ms at 33k rows); with it, an index
+  // lookup read newest-first.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_messages_delivered ON agent_messages(to_agent, delivered_at)`)
   // Card 06f062e4: the bus has no sender authentication -- from_agent is
   // self-declared and every sub-agent spawned under a parent shares that
   // parent's from_agent string, invisibly to the parent session and its
@@ -3070,6 +3076,27 @@ export function countPlannedKanbanCards(): number {
   return row?.n ?? 0
 }
 
+// HBFABRIC1003: what a heartbeat digest's Kanban lines are checked against at
+// send time (src/web/heartbeat-kanban-verify.ts). The counts come from the SAME
+// queries the heartbeat-summary endpoint serves, so a digest that copied its
+// metrics block matches by construction. `movedInWindow` is the allowed drift:
+// the cards whose updated_at is inside the window, archived ones included.
+export function getHeartbeatKanbanLive(windowSec: number): LiveKanban {
+  const s = getHeartbeatKanbanSummary()
+  const since = Math.floor(Date.now() / 1000) - windowSec
+  const moved = db.prepare('SELECT COUNT(*) AS n FROM kanban_cards WHERE updated_at >= ?').get(since) as { n: number }
+  const byId = db.prepare('SELECT status, priority, archived_at, updated_at FROM kanban_cards WHERE id = ?')
+  return {
+    counts: { urgent: s.urgent.length, in_progress: s.in_progress.length, waiting: s.waiting.length, planned: countPlannedKanbanCards() },
+    movedInWindow: moved.n,
+    card: (id: string) => {
+      const r = byId.get(id) as { status: string; priority: string; archived_at: number | null; updated_at: number | null } | undefined
+      if (!r) return null
+      return { status: r.status, priority: r.priority, archived: r.archived_at !== null, movedInWindow: (r.updated_at ?? 0) >= since }
+    },
+  }
+}
+
 export function getHeartbeatKanbanSummary(): HeartbeatKanbanSummary {
   const urgent = db.prepare(HEARTBEAT_URGENT_SQL).all() as KanbanCard[]
   const in_progress = db.prepare(HEARTBEAT_IN_PROGRESS_SQL).all() as KanbanCard[]
@@ -3452,6 +3479,86 @@ export function getPendingBacklogByAgent(agent?: string): AgentBacklog[] {
     .map(r => ({ agent: r.agent, pending: r.pending, oldestAgeSeconds: Math.max(0, now - r.oldest) }))
     // oldest-first: whoever has been waiting longest is the one worth looking at
     .sort((a, b) => b.oldestAgeSeconds - a.oldestAgeSeconds)
+}
+
+/**
+ * What a sender needs to know at the moment they send: how far back of the
+ * queue this message just landed, and roughly how long that queue takes.
+ *
+ * WHY THIS EXISTS (2026-08-20, measured). The router can only tmux-inject into
+ * an IDLE gap in the recipient's pane, so a busy agent's queue drains at
+ * whatever rate its turns end -- nothing to do with how fast we post. Measured
+ * that day from the main agent to a busy sub-agent: six consecutive messages
+ * took 51, 94, 97, 86, 82 and 81 minutes to arrive, ~7-9 minutes apart, while the sender saw only
+ * `{"id":N,"status":"pending"}` and read it as "sent". Two agents ended up
+ * measuring the same production database in the same two minutes because
+ * neither knew the other's instruction was still 80 minutes from landing.
+ *
+ * The backlog endpoint already existed -- and that was exactly the problem: it
+ * had to be ASKED. The sender decides whether to send the NEXT message at the
+ * moment they get this response, so the number belongs HERE, where it cannot
+ * be forgotten. (A fix that depends on someone remembering something is not
+ * a fix.)
+ *
+ * Deliberately NOT a refusal above some threshold: an urgent message must be
+ * able to get through. The goal is visibility, not prohibition.
+ */
+export interface RecipientQueueState {
+  /** Pending messages ahead of, and including, the one just created. */
+  queueDepth: number
+  /** Age of the oldest pending message for this recipient, in seconds. */
+  oldestPendingSec: number
+  /**
+   * Median created -> delivered latency over this recipient's recent
+   * deliveries, in seconds. NULL when there is no delivery history to measure:
+   * a 0 here would read as "arrives instantly", which is the opposite of what
+   * "we don't know yet" means.
+   */
+  estimatedDelaySec: number | null
+}
+
+/** How many recent deliveries the latency estimate is drawn from. */
+const QUEUE_LATENCY_SAMPLE = 10
+
+/**
+ * The newest QUEUE_LATENCY_SAMPLE deliveries to one recipient. Exported so the
+ * test can check the plan of THIS statement (idx_agent_messages_delivered), not
+ * of a copy that could drift from it.
+ */
+export const RECIPIENT_LATENCY_SQL = `SELECT (delivered_at - created_at) AS latency
+       FROM agent_messages
+      WHERE to_agent = ? AND delivered_at IS NOT NULL AND delivered_at >= created_at
+      ORDER BY delivered_at DESC
+      LIMIT ?`
+
+export function getRecipientQueueState(toAgent: string): RecipientQueueState {
+  const now = Math.floor(Date.now() / 1000)
+  const pending = db.prepare(
+    `SELECT COUNT(*) AS n, MIN(created_at) AS oldest
+       FROM agent_messages
+      WHERE status = 'pending' AND to_agent = ?`,
+  ).get(toAgent) as { n: number; oldest: number | null }
+
+  // Median, not mean: one message that sat overnight because the agent was
+  // offline would drag a mean far past anything the sender will actually
+  // experience.
+  const latencies = db.prepare(RECIPIENT_LATENCY_SQL)
+    .all(toAgent, QUEUE_LATENCY_SAMPLE) as { latency: number }[]
+
+  let estimatedDelaySec: number | null = null
+  if (latencies.length > 0) {
+    const sorted = latencies.map(r => r.latency).sort((a, b) => a - b)
+    const mid = Math.floor(sorted.length / 2)
+    estimatedDelaySec = sorted.length % 2 === 1
+      ? sorted[mid]
+      : Math.round((sorted[mid - 1] + sorted[mid]) / 2)
+  }
+
+  return {
+    queueDepth: pending.n,
+    oldestPendingSec: pending.oldest === null ? 0 : Math.max(0, now - pending.oldest),
+    estimatedDelaySec,
+  }
 }
 
 // Close a pending backlog that is NOT going to be delivered -- stale rows an

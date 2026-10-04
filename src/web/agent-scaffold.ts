@@ -369,7 +369,21 @@ export function hookScriptAlreadyEffectiveInOtherScope(
 // than the CURRENT PROJECT_ROOT is rewritten to the current root. Suffixes,
 // not a remembered old root, are the detector, so it needs no migration
 // record and is idempotent: a second run finds nothing foreign.
-const INSTALL_ANCHORED_SUFFIXES = ['/store/.dashboard-token', '/scripts/hooks/', '/scripts/skill-index.sh'] as const
+//
+// Every install path the scaffold or the templates write into a CLAUDE.md or a
+// hook prompt must be listed here, or it keeps the old root after a move: the
+// recipient-ledger recipe and the skill-lint line were missing (HOSTMOVE1003,
+// found 2026-10-03 against the live fleet's CLAUDE.md files).
+// host-move-proof-recipes.test.ts pins the list against the source and the
+// templates. Exact file suffixes on purpose: a bare `/scripts/` or `/agents/`
+// would also match paths of other projects (or ~/.claude/agents/).
+export const INSTALL_ANCHORED_SUFFIXES = [
+  '/store/.dashboard-token',
+  '/scripts/hooks/',
+  '/scripts/skill-index.sh',
+  '/scripts/recipient-ledger.mjs',
+  '/scripts/skill-lint.mjs',
+] as const
 // An absolute path prefix: starts with a `/` that is not the tail of something
 // else (`~/x`, `{{X}}/x`, `a/x` are not absolute roots -- the lookbehind keeps
 // them out), runs until the suffix, and never crosses whitespace, quotes,
@@ -399,7 +413,10 @@ export function rewriteForeignProjectRoot(text: string, currentRoot: string): Fo
   const foreign = new Set<string>()
   let replaced = 0
   const out = text.replace(FOREIGN_ROOT_RE, (whole, prefix: string, suffix: string) => {
-    if (prefix === root) return whole
+    // A path INSIDE the current install is never foreign: the lazy prefix of
+    // <root>/agents/x/scripts/hooks/y is <root>/agents/x, which must not be
+    // "re-anchored" to <root>/scripts/hooks/y (HOSTMOVE1003).
+    if (prefix === root || prefix.startsWith(root + '/')) return whole
     foreign.add(prefix)
     replaced++
     return root + suffix
@@ -701,6 +718,14 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // function replaces permissions wholesale on each spawn, so without it a
   // respawn would silently drop what ensureBashEgressDeny() merged in.
   denyList.push(...BASH_EGRESS_DENY)
+  // Fleet baseline: the deny FLOOR every agent gets regardless of profile.
+  // Pushed here rather than copied into each templates/profiles/*.json so a
+  // profile added tomorrow cannot silently ship without it. Deduped against what
+  // the profile already declared (developer-senior and marketer both carry some
+  // of these), so the written file stays readable.
+  for (const rule of FLEET_BASELINE_DENY.map(r => resolveProfilePlaceholders(r, ctx))) {
+    if (!denyList.includes(rule)) denyList.push(rule)
+  }
   // Per-agent tool-name deny (agent-config.json "toolDeny"): merged LAST and
   // on EVERY spawn, because this function replaces the deny list wholesale --
   // a name written straight into settings.json disappears at the next respawn
@@ -942,6 +967,95 @@ export const BASH_EGRESS_DENY = [
   'Bash(*/ncat *)',
   'Bash(telnet *)',
   'Bash(*/telnet *)',
+]
+
+// The fleet-wide deny FLOOR: applied to EVERY profile, exactly like
+// BASH_EGRESS_DENY above and for the same reason. permissions.deny is rebuilt
+// WHOLESALE from the security profile on every spawn, so a rule that lives only
+// in one profile -- or worse, hand-written into a settings.json -- is not a
+// floor at all: it is whatever the agent's profile happens to carry, and it
+// disappears at the next respawn.
+//
+// Measured 2026-09-25 (DENYARGS925). The hand-edited lists would have dropped 5
+// rules on one agent and 9 on another at their next restart, and a
+// default-profile agent never had them at all: default.json carries ONE rule, so
+// it sat at 16 while a developer-senior agent sat at 24. Raising default.json
+// alone does not fix that -- profiles are independent, so a marketer or
+// developer-senior agent would still miss whatever was added there, and every
+// future profile is a new hole. One list, applied to all.
+//
+// Two rules in here are deliberately weaker than they look, and are kept for the
+// owner's stated posture rather than as protection:
+//   Bash(curl -X POST:*) is DECORATION. An argument-bearing rule matches the
+//     command's leading words exactly, so `curl -s -X POST` -- the form every
+//     example in our own docs uses -- walks past it (measured twice).
+//     Do not read it as coverage.
+//   Bash(git push --force:*) and Bash(git push -f:*) are FRICTION against a
+//     slip, not a guard: `git push --quiet --force <remote>` and
+//     `/usr/bin/git push --force <remote>` both RAN on a list carrying them
+//     (measured 2026-09-25 and again 2026-10-03). A deny rule matches the
+//     command text from its leading words, so an inserted flag, `git -C <path>`
+//     or an absolute path moves the words out from under it. It is NOT fixable
+//     by a better pattern: the one pattern that would catch every form denies
+//     the whole `git` command (`Bash(*/git *)`), and that was measured to block
+//     read-only calls such as `/usr/bin/git -C <worktree> status --short`. A
+//     force-push guard has to PARSE the command, which is a hook's job, not a
+//     deny list's.
+//   Bash(sudo:*) holds against an inserted prefix word but NOT against an
+//     absolute path (`/usr/bin/sudo -n true` ran on a list carrying only the
+//     name rule, measured 2026-09-25), which is why it has the `*/sudo *`
+//     partner the network rules always had. NOTE the shape's cost: the partner
+//     matches the whole command text, so a command that merely NAMES a path
+//     ending in `/sudo` is denied too. That is the safe direction, but it is an
+//     over-match, not a precise rule.
+//
+// The narrow rm rules (`rm -rf ${HOME}`, `rm -rf /`) have NO `*/` partner, and that is deliberate, not an
+// omission: the review asked to keep them "and their */ partners", but the developer-senior profile
+// they come from never had any. The absolute-path form (`/usr/bin/rm -rf /`) is therefore NOT covered by
+// the deny list, exactly as `/usr/bin/sudo` was before its partner (measured 2026-09-25). The partner that
+// would fit is an exact-text glob (`Bash(*/rm -rf /)`), because the broad `*/rm *` also denies every
+// `/usr/bin/rm -rf <anything>`; that shape has NOT been measured, and an unmeasured rule that reads as
+// cover is what this block warns about, so it is left out until it is.
+//
+// The HOME form differs by channel, and only one of the two is measured: a sub-agent gets the RESOLVED
+// absolute home (`rm -rf /home/<user>`), the main agent gets the tracked .claude/settings.json with `~`
+// (`rm -rf ~`). `~` was measured to match in a Read() rule (TMPLPERM908); that a Bash rule matches the
+// typed `~` text, and not the shell's expansion of it, has NOT been measured.
+//
+// What is NOT in the floor, and why (upstream review of #1562, 2026-09-25): the
+// broad Bash(rm:*) and its `*/rm *` partner. A fleet-wide rm ban refuses real
+// daily work (scratch and worktree cleanup, restoring files after a mutation
+// test: roughly 650 commands with a real rm subcommand in 7 days on the
+// reviewing fleet), and a compound command containing one is refused AS A
+// WHOLE. The floor carries the narrow forms instead (`rm -rf ${HOME}`,
+// `rm -rf /`), which are what the developer-senior profile already denied.
+// Whether to ban rm fleet-wide is a policy decision an installation can take
+// per profile (the marketer profile carries Bash(rm:*) itself), not a default
+// this list should impose.
+//
+// Cover for the token files that actually hold the secrets on an install
+// (store/.dashboard-token and friends) is deliberately NOT here. Every agent
+// reads those with `cat` every round, so whether a Read() rule reaches a Bash
+// read decides between "partial cover" and "the fleet stops". That measurement
+// is open; the rule waits for it.
+//
+// The HOME placeholder is resolved through resolveProfilePlaceholders like any
+// profile rule, which also rewrites a single leading '/' to '//': a single-slash
+// absolute Read rule is PROJECT-RELATIVE and silently never matches (TMPLPERM908).
+export const FLEET_BASELINE_DENY = [
+  'Read(${HOME}/.ssh/**)',
+  'Read(${HOME}/.aws/**)',
+  'Read(${HOME}/.gnupg/**)',
+  'Read(${HOME}/.env)',
+  'Read(**/.env)',
+  'Bash(sudo:*)',
+  'Bash(*/sudo *)',
+  'Bash(rm -rf ${HOME}:*)',
+  'Bash(rm -rf /:*)',
+  'Bash(curl -X POST:*)',
+  'Bash(git push --force:*)',
+  'Bash(git push -f:*)',
+  'mcp__playwright__browser_run_code_unsafe',
 ]
 
 // Idempotently merge the egress deny rules into a settings object's
@@ -1923,6 +2037,20 @@ export function scaffoldAgentDir(name: string) {
   // Seed settings.json from template so the agent gets the PreCompact
   // hook (memory save + skill reflection) out of the box. Only if the
   // file doesn't exist yet -- user edits and later profile writes stay.
+  //
+  // The template carries BASH_EGRESS_DENY but deliberately NOT
+  // FLEET_BASELINE_DENY, and the asymmetry is measured, not an oversight
+  // (DENYARGS925, 2026-09-25): the file written here holds 10 deny rules and
+  // zero of the floor's 13, but no session ever reads it in that state. On the
+  // create path (routes/agents.ts) this call and writeAgentSettingsFromProfile()
+  // are separated by two synchronous writes -- no await, no process launch --
+  // and on the spawn path the profile write runs before Claude Code starts.
+  // loadProfileTemplate() cannot fail its way past that either: it falls back to
+  // `default` and finally to HARDCODED_DEFAULT_PROFILE rather than throwing.
+  // The floor's single route is therefore the profile write, and the parity test
+  // in fleet-baseline-deny.test.ts pins that choice WITH its condition: add a
+  // route that scaffolds without writing the profile right after, and the floor
+  // belongs in this template too.
   const settingsJson = join(dir, '.claude', 'settings.json')
   if (!existsSync(settingsJson)) {
     const tplPath = join(PROJECT_ROOT, 'templates', 'settings.json.template')

@@ -478,6 +478,35 @@ export function dailyHandoffDue(
   return restartDue(lastRunMs, nowMs, dailyDueAtMs(localMidnightMs, mins))
 }
 
+/**
+ * One sweep's step of the daily tier's "last served" record, for one agent.
+ *
+ * The record is seeded on first sight so that a guard process starting after
+ * today's slot does not fire it at once. But the seed must be taken while the
+ * tier is ARMED: seeded while disarmed, the record holds the moment the
+ * dashboard process first saw the agent (say 02:05), and arming the tier later
+ * the same day (say 12:53, slot 03:00) finds "last served 02:05, before today's
+ * slot, slot passed" -- due, and it fires on the very next sweep. Measured on
+ * a live fleet 2026-09-29: armed 12:53, four agents handed off at 12:56.
+ *
+ * So a disarmed tier forgets the record, and the first armed sight seeds it.
+ * Arming after today's slot then waits for tomorrow; arming before it fires at
+ * the slot, as configured.
+ *
+ * Returns whether the slot is due now, and the record to keep (undefined =
+ * forget it).
+ */
+export function dailyHandoffStep(
+  cfg: ContextGuardConfig,
+  lastRunMs: number | undefined,
+  localMidnightMs: number,
+  nowMs: number,
+): { due: boolean; record: number | undefined } {
+  if (!dailyHandoffArmed(cfg)) return { due: false, record: undefined }
+  if (lastRunMs === undefined) return { due: false, record: nowMs }
+  return { due: dailyHandoffDue(cfg, localMidnightMs, lastRunMs, nowMs), record: lastRunMs }
+}
+
 /** Slack between HANDOFF.md's mtime and the last transcript activity before
  *  the handoff counts as stale. The handoff-writing turn itself touches the
  *  transcript slightly AFTER the file write (tool result + closing reply), so
