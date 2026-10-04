@@ -17,6 +17,7 @@ import {
   dailyHandoffArmed,
   dailyHandoffDue,
   dailyHandoffStep,
+  dailyHandoffSweep,
   DAILY_HANDOFF_REASON_PREFIX,
   IDLE_FLUSH_REASON_PREFIX,
   DEFAULT_CONTEXT_GUARD,
@@ -143,6 +144,36 @@ describe('dailyHandoffStep -- the served record is seeded while ARMED', () => {
   it('an already-armed agent keeps its record and is due at the slot as before', () => {
     const step = dailyHandoffStep(ON, at(3, 0, -1), MIDNIGHT, at(3, 1))
     expect(step).toEqual({ due: true, record: at(3, 0, -1) })
+  })
+})
+
+describe('dailyHandoffSweep -- one sweep, in the order the runner applies it', () => {
+  const at = (h: number, m: number) => MIDNIGHT + (h * 60 + m) * 60_000
+  const OFF: ContextGuardConfig = { ...DAILY_ONLY, dailyHandoffEnabled: false, dailyHandoffTime: '03:00' }
+  const ON: ContextGuardConfig = { ...DAILY_ONLY, dailyHandoffTime: '03:00' }
+
+  it('a disarmed tier forgets the record even when the agent is NOT eligible (never idle)', () => {
+    // The case the order exists for: forgetting must not wait behind the idle gate,
+    // or a never-idle agent keeps its old armed record and re-arming fires at once.
+    expect(dailyHandoffSweep(OFF, at(2, 5), false, MIDNIGHT, at(12, 0))).toEqual({ due: false, record: undefined })
+    expect(dailyHandoffSweep(OFF, at(2, 5), true, MIDNIGHT, at(12, 0))).toEqual({ due: false, record: undefined })
+  })
+
+  it('armed but not eligible: the record is kept as it is, neither seeded nor forgotten', () => {
+    expect(dailyHandoffSweep(ON, at(1, 0), false, MIDNIGHT, at(12, 0))).toEqual({ due: false, record: at(1, 0) })
+    expect(dailyHandoffSweep(ON, undefined, false, MIDNIGHT, at(12, 0))).toEqual({ due: false, record: undefined })
+  })
+
+  it('armed and eligible: first sight seeds without firing; a record from before the slot fires after it', () => {
+    expect(dailyHandoffSweep(ON, undefined, true, MIDNIGHT, at(12, 53))).toEqual({ due: false, record: at(12, 53) })
+    expect(dailyHandoffSweep(ON, at(1, 0), true, MIDNIGHT, at(3, 0))).toEqual({ due: true, record: at(1, 0) })
+  })
+
+  it('the misfire end to end: armed after the slot, an agent busy while disarmed does not fire on arming', () => {
+    let record = dailyHandoffSweep(ON, undefined, true, MIDNIGHT, at(0, 30)).record   // seeded, armed
+    record = dailyHandoffSweep(OFF, record, false, MIDNIGHT, at(2, 0)).record         // disarmed while busy
+    const armed = dailyHandoffSweep(ON, record, true, MIDNIGHT, at(12, 53))           // armed after 03:00
+    expect(armed.due).toBe(false)
   })
 })
 
@@ -313,25 +344,13 @@ describe('runner wiring', () => {
     )
   })
 
-  it('the runner takes the served record from dailyHandoffStep, forgetting it while disarmed', () => {
+  it('the runner applies BOTH halves of dailyHandoffSweep, gated on running and idle', () => {
     const code = src('src/web/context-guard-runner.ts')
-    // The step is only a fix if the runner APPLIES both halves of its answer:
-    // an `undefined` record must delete the entry, or the stale seed survives
-    // disarming and the 2026-09-29 misfire comes back.
-    expect(code).toContain('dailyHandoffStep(cfg, lastDailyHandoff.get(name), localMidnightMs(nowMs), nowMs)')
-    expect(code).toContain('if (step.record === undefined) lastDailyHandoff.delete(name)')
-    expect(code).toContain('else lastDailyHandoff.set(name, step.record)')
-  })
-
-  it('a disarmed tier is forgotten on EVERY sweep, before the idle gate, so a never-idle agent keeps no old armed record', () => {
-    const code = src('src/web/context-guard-runner.ts')
-    // An agent that is never idle while the tier is off must still lose its
-    // old ARMED record; otherwise re-arming after the slot fires at once.
-    const forget = code.indexOf('if (!dailyHandoffArmed(cfg)) {\n        lastDailyHandoff.delete(name)')
-    const idleGate = code.indexOf("if (!running || state.phase !== 'idle') return false\n      const step = dailyHandoffStep(")
-    expect(forget).toBeGreaterThan(-1)
-    expect(idleGate).toBeGreaterThan(-1)
-    expect(forget).toBeLessThan(idleGate)
+    // The decision is unit-tested below; what only the runner can get wrong is the
+    // eligibility it passes and applying an `undefined` record as a delete.
+    expect(code).toContain("dailyHandoffSweep(\n        cfg, lastDailyHandoff.get(name), running && state.phase === 'idle', localMidnightMs(nowMs), nowMs,")
+    expect(code).toContain('if (sweep.record === undefined) lastDailyHandoff.delete(name)')
+    expect(code).toContain('else lastDailyHandoff.set(name, sweep.record)')
   })
 
   it('the daily reason selects the scheduled wording, not the act tier percentage prompt', () => {

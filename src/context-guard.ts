@@ -507,6 +507,30 @@ export function dailyHandoffStep(
   return { due: dailyHandoffDue(cfg, localMidnightMs, lastRunMs, nowMs), record: lastRunMs }
 }
 
+/**
+ * One sweep of the daily-tier bookkeeping for one agent, as the runner applies it.
+ *
+ * The order is the point. A disarmed tier forgets the record on EVERY sweep, before
+ * the eligibility gate: an agent that was never idle while the tier was off would
+ * otherwise keep its old armed record, and arming the tier after the slot would
+ * fire at once. Seeding and firing stay behind the gate (`eligible`: the agent is
+ * running and idle), where an ineligible sweep keeps the record untouched.
+ *
+ * Returns whether the slot is due on this sweep, and the record to keep
+ * (undefined = forget it).
+ */
+export function dailyHandoffSweep(
+  cfg: ContextGuardConfig,
+  lastRunMs: number | undefined,
+  eligible: boolean,
+  localMidnightMs: number,
+  nowMs: number,
+): { due: boolean; record: number | undefined } {
+  if (!dailyHandoffArmed(cfg)) return { due: false, record: undefined }
+  if (!eligible) return { due: false, record: lastRunMs }
+  return dailyHandoffStep(cfg, lastRunMs, localMidnightMs, nowMs)
+}
+
 /** Slack between HANDOFF.md's mtime and the last transcript activity before
  *  the handoff counts as stale. The handoff-writing turn itself touches the
  *  transcript slightly AFTER the file write (tool result + closing reply), so
