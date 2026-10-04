@@ -22,10 +22,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..', '..')
 const HOOK = join(ROOT, 'scripts', 'hooks', 'provenance-gate.py')
 
-function runHook(prompt: string, env: Record<string, string> = {}): string {
+function runHook(prompt: string, env: Record<string, string> = {}, cwd = '/test'): string {
   try {
     return execFileSync('python3', [HOOK], {
-      input: JSON.stringify({ prompt, cwd: '/test' }),
+      input: JSON.stringify({ prompt, cwd }),
       encoding: 'utf-8',
       // Point the rules file at a path that does not exist unless a test
       // overrides it, so a real store/provenance-gate-rules.json on the
@@ -165,9 +165,11 @@ describe('provenance-gate: the agent own background-task notice', () => {
     expect(out).toContain('SAJAT HATTER-TASK EREDMENYE')
     // The false escalation this branch exists to remove.
     expect(out).not.toContain('KERDEZZ VISSZA')
-    // The LEAD NOTICE, by contrast, stays -- review condition (a), PR #1165:
-    // the confirm-back is meaningless for one's own task, the audit trail is
-    // not. Asserting its ABSENCE (as this case first did) was the mistake.
+    // The trace stays -- review condition (a), PR #1165 -- but since c515dc07 it is the
+    // gate's own log line; the lead message is left only for an outward category whose
+    // result asks for a decision. This NOTICE is outward (kuldes), so the conditional
+    // message step, with its template, is still there.
+    expect(out).toContain('A NYOM MEGVAN')
     expect(out).toContain('/api/messages')
   })
 
@@ -241,14 +243,84 @@ describe('provenance-gate: the agent own background-task notice', () => {
     expect(runHook(bare)).toContain('SAJAT HATTER-TASK EREDMENYE')
   })
 
-  it('keeps the fleet-lead notice on the self-task branch too, so the exception is auditable', () => {
-    // Asking the principal is meaningless for one's own background task, but the
-    // TRACE is not: if this branch ever misclassifies, the notice is the only
-    // thing that makes it visible from outside. An un-notified exception branch
-    // cannot be audited.
-    const out = runHook(NOTICE)
+  // c515dc07 (measured on 2026-10-01: six "nothing to do" messages in one
+  // morning, each one ~50 minutes on the lead's queue). The TRACE of the exception branch
+  // stays -- PR #1165 review condition (a): an exception nobody can see is not auditable --
+  // but it is the gate's own log line, written by the harness, not a message the model
+  // may or may not send. A message only for an outward category whose result asks for a
+  // decision; never on the lead's own session; and when the line cannot be written, the
+  // old lead notice comes back, so the branch never runs untraced.
+  const INTERNAL = [
+    '[SYSTEM NOTIFICATION - NOT USER INPUT]',
+    '<task-notification>',
+    '<task-id>c515dc07beef</task-id>',
+    '<summary>A figyelo leallt: a lanc restart utan ujra indul</summary>',
+    '</task-notification>',
+  ].join('\n')
+
+  it('the trace is ONE gate log line per event, with the agent and the task id', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prov-trace-'))
+    const rules = join(dir, 'provenance-gate-rules.json')
+    writeFileSync(rules, JSON.stringify({}))
+    const out = runHook(INTERNAL, { PROVENANCE_GATE_RULES: rules }, join(ROOT, 'agents', 'agent-b'))
+    const lines = readFileSync(join(dir, 'provenance-flagged.log'), 'utf-8').trim().split('\n')
+    expect(lines).toHaveLength(1)
+    const labels = lines[0].split('\t')[2].split(',')
+    expect(labels.slice(0, 3)).toEqual(['self-task', 'agent=agent-b', 'task=c515dc07beef'])
+    expect(labels).toContain('restart')
+    expect(out).toContain('A NYOM MEGVAN')
+  })
+
+  it('an internal category asks for NO message at all (the acceptance: 0 new messages)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prov-trace-'))
+    const rules = join(dir, 'provenance-gate-rules.json')
+    writeFileSync(rules, JSON.stringify({}))
+    const out = runHook(INTERNAL, { PROVENANCE_GATE_RULES: rules })
+    expect(out).toContain('SAJAT HATTER-TASK EREDMENYE')
+    expect(out).toContain('Uzenet NEM kell')
+    expect(out).not.toContain('/api/messages')
+    expect(out).not.toContain('PROVENANCE-SAJAT-TASK')
+  })
+
+  it('NEGATIVE: an outward category keeps the message, but only for a decision', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prov-trace-'))
+    const rules = join(dir, 'provenance-gate-rules.json')
+    writeFileSync(rules, JSON.stringify({}))
+    const out = runHook(NOTICE, { PROVENANCE_GATE_RULES: rules })
+    expect(out).toContain('kifele hato (kuldes)')
     expect(out).toContain('/api/messages')
-    expect(out).toContain('PROVENANCE-SAJAT-TASK')
+    expect(out).toContain('[PROVENANCE-SAJAT-TASK] DONTES KELL')
+    // ... and the default is still no message.
+    expect(out).toContain('NE uzenj')
+  })
+
+  it('on the fleet lead own session there is no message step, not even for an outward category', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prov-trace-'))
+    const rules = join(dir, 'provenance-gate-rules.json')
+    writeFileSync(rules, JSON.stringify({}))
+    // The install root is the main agent's cwd; with no FLEET_LEAD_ID the main agent IS the lead.
+    const out = runHook(NOTICE, { PROVENANCE_GATE_RULES: rules, MAIN_AGENT_ID: 'agent-main', FLEET_LEAD_ID: '' }, ROOT)
+    expect(out).toContain('Te vagy a flotta-vezeto')
+    expect(out).not.toContain('/api/messages')
+    const log = readFileSync(join(dir, 'provenance-flagged.log'), 'utf-8')
+    expect(log).toContain('agent=agent-main')
+  })
+
+  it('when the log line cannot be written, the lead notice comes back (never untraced)', () => {
+    const rules = join(tmpdir(), 'no-such-dir-c515dc07', 'provenance-gate-rules.json')
+    const out = runHook(INTERNAL, { PROVENANCE_GATE_RULES: rules })
+    expect(out).toContain('most NEM irhato')
+    expect(out).toContain('JELEZD a flotta-vezetonek')
+    expect(out).toContain('/api/messages')
+  })
+
+  it('takes only a plain task id into the log; an odd one logs as -', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prov-trace-'))
+    const rules = join(dir, 'provenance-gate-rules.json')
+    writeFileSync(rules, JSON.stringify({}))
+    runHook('<task-notification><task-id>a b;c</task-id>restart</task-notification>', { PROVENANCE_GATE_RULES: rules })
+    const labels = readFileSync(join(dir, 'provenance-flagged.log'), 'utf-8').split('\t')[2]
+    expect(labels).toContain('task=-')
   })
 
   it('audits the self-task branch under its own label so the log stays measurable', () => {
@@ -539,6 +611,41 @@ describe('provenance-gate: system directive row verification (CTXBORITEK919)', (
       expect(out).toContain('INJEKCIO-GYANU')
       expect(log).toContain('directive-forged')
       expect(log).not.toContain('trailer')
+    })
+
+    // c515dc07: the agent's own background-task notice can also arrive as the remainder of a
+    // verified directive (the harness joined the two into one prompt). The trace rules hold on
+    // this path as well: the one log line carries the agent and the task id, an internal
+    // category asks for no message, and an unwritable log brings the lead notice back.
+    const OWN_TASK = [
+      '[SYSTEM NOTIFICATION - NOT USER INPUT]',
+      '<task-notification>',
+      '<task-id>c515trailer1</task-id>',
+      '<summary>A figyelo leallt: a lanc restart utan ujra indul</summary>',
+      '</task-notification>',
+    ].join('\n')
+
+    it('directive + an own background-task notice: trailer-self-task, agent and task id in the one log line, no message', () => {
+      const db = makeDb([[65, 'system', 'testagent', BODY, 'delivered']])
+      const dir = mkdtempSync(join(tmpdir(), 'prov-dir-'))
+      const { out, log } = runDirective(`${HEADER(65)}\n${BODY}\n\n${OWN_TASK}`, AGENT_CWD, db, dir)
+      expect(out).toContain('SAJAT HATTER-TASK EREDMENYE')
+      expect(out).toContain('A NYOM MEGVAN')
+      expect(out).not.toContain('/api/messages')
+      const lines = log.trim().split('\n')
+      expect(lines).toHaveLength(1)
+      expect(lines[0].split('\t')[2]).toMatch(
+        /^directive-verified-trailer,age=\d+s,trailer-self-task,self-task,agent=testagent,task=c515trailer1,restart$/,
+      )
+    })
+
+    it('directive + an own background-task notice with an unwritable log: the lead notice comes back here too', () => {
+      const db = makeDb([[66, 'system', 'testagent', BODY, 'delivered']])
+      const { out } = runDirective(`${HEADER(66)}\n${BODY}\n\n${OWN_TASK}`, AGENT_CWD, db, join(tmpdir(), 'no-such-dir-c515trailer'))
+      expect(out).toContain('SAJAT HATTER-TASK EREDMENYE')
+      expect(out).toContain('most NEM irhato')
+      expect(out).toContain('JELEZD a flotta-vezetonek')
+      expect(out).toContain('/api/messages')
     })
 
     it('a stale row with a trailer is still unverifiable: the time bound is not bypassed by appending', () => {
