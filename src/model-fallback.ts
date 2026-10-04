@@ -128,7 +128,8 @@ export type ModelAction =
  * actual write+restart) separately.
  *
  *   - limit detected & a lower model exists -> downgrade to it.
- *   - limit detected & already at the bottom -> nothing (cannot go lower).
+ *   - limit detected & already at the bottom -> nothing inside the revert
+ *     window; past it, revert anyway (a stale --continue banner must not pin it).
  *   - no limit & downgraded long enough ago -> revert to the primary (chain[0]).
  *   - otherwise -> nothing.
  */
@@ -136,7 +137,14 @@ export function decideModelAction(f: ModelFallbackFacts): ModelAction {
   if (f.limitDetected) {
     const next = nextFallbackModel(f.currentModel, f.chain)
     if (next && next !== f.currentModel) return { kind: 'downgrade', model: next }
-    return { kind: 'none' }
+    // At the bottom of the chain (FALLBACKSTUCK924): a limit
+    // banner here must not block the revert forever. After a downgrade the
+    // session restarts with --continue, so on an idle pane the OLD banner can
+    // sit in the bottom region indefinitely and the agent never gets back to
+    // the primary. Past the revert window, try the primary anyway: if the
+    // limit is real, the next sweep sees the banner on the primary and
+    // downgrades again -- at most one retry per window, never a pinned fleet.
+    if (f.downgradedAt === null || f.now - f.downgradedAt < f.revertAfterMs) return { kind: 'none' }
   }
   if (f.downgradedAt !== null && f.now - f.downgradedAt >= f.revertAfterMs) {
     const primary = f.chain[0]

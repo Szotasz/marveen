@@ -79,17 +79,19 @@ def run_hook(db_path, cwd=None, extra_env=None):
         capture_output=True, text=True, env=env, timeout=20,
     )
     out = p.stdout.strip()
-    decision = None
+    decision, reason = None, ""
     if out:
         try:
-            decision = json.loads(out).get("decision")
+            parsed = json.loads(out)
+            decision = parsed.get("decision")
+            reason = parsed.get("reason") or ""
         except Exception:
             decision = "PARSE_ERROR:" + out
     # An allow is "exit 0, no output". A hook that crashes before deciding
     # looks the same on stdout, so the run must also be clean.
     if p.returncode != 0 or p.stderr.strip():
         decision = f"UNCLEAN(rc={p.returncode}):{p.stderr.strip()[-200:]}"
-    return decision, p.returncode
+    return decision, reason, p.returncode
 
 
 # Kept alive for the whole run; TemporaryDirectory removes each one when the
@@ -134,25 +136,25 @@ def main():
     db = fresh_db()
     lib = load_lib(db)
     lib.log_inbound(AGENT, "8695313113", "1001", "mennyi 2+2?", "2026-08-02T22:00:00.000Z")
-    d, _ = run_hook(db)
+    d, _r, _ = run_hook(db)
     check("unanswered question blocks", d, "block")
 
     # 2. Same question, but answered via reply-tool (outbound logged) -> ALLOW
     lib.log_outbound(AGENT, "8695313113", "4")
-    d, _ = run_hook(db)
+    d, _r, _ = run_hook(db)
     check("answered question allows", d, None)
 
     # 3. Pure acknowledgement -> ALLOW (no reply owed)
     db = fresh_db()
     lib = load_lib(db)
     lib.log_inbound(AGENT, "8695313113", "1002", "köszi 👍", "2026-08-02T22:05:00.000Z")
-    d, _ = run_hook(db)
+    d, _r, _ = run_hook(db)
     check("ack allows", d, None)
     # Liveness control: the same DB with a real question after the ack must
     # block. Without it "ack allows" is also what a hook that never finds
     # anything would return.
     lib.log_inbound(AGENT, "8695313113", "1012", "és mikor?", "2026-08-02T22:06:00.000Z")
-    d, _ = run_hook(db)
+    d, _r, _ = run_hook(db)
     check("ack control: a later question on the same DB blocks", d, "block")
 
     # 4. Stale (older than STALE_SECONDS) unanswered question -> ALLOW
@@ -164,11 +166,11 @@ def main():
     con.execute("UPDATE conversation_log SET created_at=? WHERE message_id='1003'",
                 (int(time.time()) - 4000,))
     con.commit(); con.close()
-    d, _ = run_hook(db)
+    d, _r, _ = run_hook(db)
     check("stale question allows", d, None)
     # Control: the same row with a staleness window wider than its age must
     # block, so it is the age that allowed it, not a hook that saw nothing.
-    d, _ = run_hook(db, extra_env={"TG_GUARD_STALE_SECONDS": "86400"})
+    d, _r, _ = run_hook(db, extra_env={"TG_GUARD_STALE_SECONDS": "86400"})
     check("stale control: same row inside the window blocks", d, "block")
 
     # 5. Max-block backstop: after MAX_BLOCKS blocks on the same id -> ALLOW
@@ -176,9 +178,9 @@ def main():
     lib = load_lib(db)
     lib.log_inbound(AGENT, "8695313113", "1004", "makacs kerdes", "2026-08-02T22:10:00.000Z")
     env = {"TG_GUARD_MAX_BLOCKS": "2"}
-    d1, _ = run_hook(db, extra_env=env)   # block 1
-    d2, _ = run_hook(db, extra_env=env)   # block 2
-    d3, _ = run_hook(db, extra_env=env)   # now over the cap -> allow
+    d1, _r, _ = run_hook(db, extra_env=env)   # block 1
+    d2, _r, _ = run_hook(db, extra_env=env)   # block 2
+    d3, _r, _ = run_hook(db, extra_env=env)   # now over the cap -> allow
     check("maxblock #1 blocks", d1, "block")
     check("maxblock #2 blocks", d2, "block")
     check("maxblock #3 allows (backstop)", d3, None)
@@ -186,10 +188,10 @@ def main():
     # 6. No inbound at all (e.g. a heartbeat-only turn) -> ALLOW
     db = fresh_db()
     lib = load_lib(db)
-    d, _ = run_hook(db)
+    d, _r, _ = run_hook(db)
     check("no inbound allows", d, None)
     lib.log_inbound(AGENT, "8695313113", "1006", "most mar van kerdes?", "2026-08-02T22:20:00.000Z")
-    d, _ = run_hook(db)
+    d, _r, _ = run_hook(db)
     check("no-inbound control: once a question arrives it blocks", d, "block")
 
     # 6b. Rows ledgered under ANOTHER agent must not make this one block. This
@@ -197,9 +199,9 @@ def main():
     db = fresh_db()
     lib = load_lib(db)
     lib.log_inbound("some-other-agent", "8695313113", "1007", "kinek szol ez?", "2026-08-02T22:25:00.000Z")
-    d, _ = run_hook(db)
+    d, _r, _ = run_hook(db)
     check("another agent's open question does not block this one", d, None)
-    d, _ = run_hook(db, extra_env={"MARVEEN_AGENT_ID": "some-other-agent"})
+    d, _r, _ = run_hook(db, extra_env={"MARVEEN_AGENT_ID": "some-other-agent"})
     check("... but blocks the agent it belongs to", d, "block")
 
     # 7. Provider resolution and the reply-tool name it produces.
@@ -273,6 +275,103 @@ def main():
         f.write("{}")
     fresh_db()
     check("fresh_db: leaves another DB's statefile alone", os.path.exists(other), True)
+
+    # ---- PROVIDERVAK908: the directive must name the RIGHT channel's reply tool.
+    # Measured 2026-09-07: a DISCORD inbound (the owner's DM) was answered with a demand for a TELEGRAM reply. The
+    # decision was right, the instruction was undeliverable -- so asserting only
+    # decision=="block" (as this file did) passes straight through the bug.
+    TG_TOOL = "mcp__plugin_telegram_telegram__reply"
+    DC_TOOL = "mcp__plugin_discord_discord__reply"
+
+    # 9. Discord inbound -> names the Discord tool, and NOT the Telegram one.
+    db = fresh_db()
+    lib = load_lib(db)
+    lib.log_inbound(AGENT, "900000000000000001", "2001", "ez mi is?",
+                    "2026-09-07T07:02:03.110Z", source="plugin:discord:discord")
+    d, r, _ = run_hook(db)
+    check("discord inbound blocks", d, "block")
+    check("discord names discord tool", DC_TOOL in r, True)
+    check("discord does NOT name telegram tool", TG_TOOL in r, False)
+
+    # 10. Telegram inbound -> unchanged behaviour, names the Telegram tool.
+    db = fresh_db()
+    lib = load_lib(db)
+    lib.log_inbound(AGENT, "8695313113", "2002", "mi ujsag?",
+                    "2026-09-07T07:02:03.110Z", source="plugin:telegram:telegram")
+    d, r, _ = run_hook(db)
+    check("telegram inbound blocks", d, "block")
+    check("telegram names telegram tool", TG_TOOL in r, True)
+    check("telegram does NOT name discord tool", DC_TOOL in r, False)
+
+    # 11. Legacy row (source NULL, written before the column existed) -> still
+    # blocks, and names the CONFIGURED channel's verified tool (Marveen 32905:
+    # the #1606 provider, NOT the generic wording); with a provider whose tool is
+    # unverified it names no tool at all. CHANNEL_PROVIDER is set explicitly in
+    # every case, so the result does not depend on the host's own .env.
+    SL_TOOL = "mcp__plugin_slack-channel_slack__reply"
+    db = fresh_db()
+    lib = load_lib(db)
+    lib.log_inbound(AGENT, "8695313113", "2003", "regi sor, nincs source",
+                    "2026-09-07T07:02:03.110Z")
+    d, r, _ = run_hook(db, extra_env={"CHANNEL_PROVIDER": "discord"})
+    check("legacy row blocks", d, "block")
+    check("legacy row + configured discord -> names the discord tool", DC_TOOL in r, True)
+    check("legacy row + configured discord -> not the generic wording",
+          "ANNAK a csatornának" in r, False)
+    check("legacy row still carries chat_id", "8695313113" in r, True)
+    d, r, _ = run_hook(db, extra_env={"CHANNEL_PROVIDER": "telegram"})
+    check("legacy row + configured telegram -> names the telegram tool", TG_TOOL in r, True)
+    d, r, _ = run_hook(db, extra_env={"CHANNEL_PROVIDER": "teams"})
+    check("legacy row + unverified provider -> names no tool",
+          (TG_TOOL in r or DC_TOOL in r or SL_TOOL in r), False)
+    check("legacy row + unverified provider -> generic wording",
+          "ANNAK a csatornának" in r, True)
+
+    # 11b. The message's own source WINS over the configured channel: a Discord
+    # inbound on a Telegram-configured install names the Discord tool.
+    db = fresh_db()
+    lib = load_lib(db)
+    lib.log_inbound(AGENT, "900000000000000002", "2004", "es ez?",
+                    "2026-09-07T07:02:03.110Z", source="plugin:discord:discord")
+    d, r, _ = run_hook(db, extra_env={"CHANNEL_PROVIDER": "telegram"})
+    check("source discord beats configured telegram", (DC_TOOL in r, TG_TOOL in r), (True, False))
+
+    # 11c. A source that names no tool (a dash: Slack's plugin:slack-channel:slack)
+    # borrows the configured tool only for the SAME provider, never another one.
+    db = fresh_db()
+    lib = load_lib(db)
+    lib.log_inbound(AGENT, "C0SLACK", "2005", "slack kerdes",
+                    "2026-09-07T07:02:03.110Z", source="plugin:slack-channel:slack")
+    d, r, _ = run_hook(db, extra_env={"CHANNEL_PROVIDER": "slack"})
+    check("slack-channel source + configured slack -> the verified slack tool", SL_TOOL in r, True)
+    d, r, _ = run_hook(db, extra_env={"CHANNEL_PROVIDER": "telegram"})
+    check("slack-channel source + configured telegram -> NOT the telegram tool", TG_TOOL in r, False)
+    check("slack-channel source + configured telegram -> generic wording", "ANNAK a csatornának" in r, True)
+
+    # 12. END-TO-END: the capture hook must actually RECORD the source. Without
+    # this the three cases above test a column nothing ever populates.
+    db = fresh_db()
+    lib = load_lib(db)
+    capture = os.path.join(HOOKS, "ledger-capture.py")
+    envelope = (
+        '<channel source="plugin:discord:discord" chat_id="900000000000000001" '
+        'message_id="3001" user="stylnet" ts="2026-09-07T07:02:03.110Z">'
+        "ez mi is?</channel>"
+    )
+    env = dict(os.environ)
+    env["LEDGER_DB_PATH"] = db
+    env["MARVEEN_AGENT_ID"] = AGENT
+    subprocess.run([sys.executable, capture],
+                   input=json.dumps({"cwd": os.path.dirname(db), "prompt": envelope}),
+                   capture_output=True, text=True, env=env, timeout=20)
+    con = lib.connect()
+    row = con.execute("SELECT source, text FROM conversation_log"
+                      " WHERE message_id='3001'").fetchone()
+    con.close()
+    check("capture records source", row[0] if row else None, "plugin:discord:discord")
+    check("capture still records text", row[1] if row else None, "ez mi is?")
+    check("capture -> guard names discord tool",
+          DC_TOOL in run_hook(db)[1], True)
 
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)

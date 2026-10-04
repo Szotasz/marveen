@@ -70,6 +70,8 @@ import {
 // module so the standalone channel-coordinator reuses the exact same probe.
 import { getClaudePidForSession, hasChannelPluginAlive, probeChannelPluginLiveness, classifyRespawnStampAdvance } from '../channel-coordinator/liveness.js'
 import { getDesiredAgents } from './agent-desired-state.js'
+import { startSleepWakeDetector, systemSleptBetween } from './sleep-wake-detector.js'
+import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 
 // Lazily resolved (see makeLazyBinResolver): a module-level `resolveFromPath`
 // const throws at IMPORT time, so any environment where the binary is not
@@ -925,6 +927,9 @@ export function buildMainSessionRespawnCmd(opts: {
     // CHANSPARE925: no Agent view -- parity with channels.sh (Left backgrounds the
     // session into the daemon, whose --channels copy takes the bot poller).
     '&& export CLAUDE_CODE_DISABLE_AGENT_VIEW=1',
+    // ROOTRESPAWN1001: the recovery respawn on a root host died with "cannot be used
+    // with root/sudo privileges" whenever the tmux server lacked IS_SANDBOX.
+    `&& ${ROOT_SANDBOX_ENV}`,
     // macOS main-agent config isolation -- parity with channels.sh CFG_ENV. The
     // token is read at launch via $(cat) so the secret never lands in argv/`ps`.
     // An own-credential dir (explicit or a rotated claude-plans entry) gets NO
@@ -1920,8 +1925,21 @@ function checkMainKeepaliveStaleness(): void {
     }
     return
   }
-  logger.warn({ ageMs, paneState }, 'Channel keep-alive stale -- main session likely wedged/deaf, respawning via respawn-pane')
-  sendRoutineAlert('keepalive-respawn', `⚠️ A fő channel keep-alive ${ageMin} perce nem frissült -- respawn-pane a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik, memoria marad).`)
+  // SLEEP GUARD (2026-09-02, kanban 83b8c4c3): a keepalive that went stale
+  // because the machine was asleep is not deafness -- every writer of that
+  // file was suspended right along with the poller. The respawn below still
+  // runs (harmless self-healing, it re-establishes the keepalive), but the
+  // Telegram alert is suppressed: waking the machine should not ping the owner
+  // about an "outage" they caused by closing the lid. The staleness window is
+  // exactly [mtime, now], so a sleep gap overlapping it explains the age.
+  // Genuine wedge-while-running has no sleep gap in that window and alerts
+  // as before. The loop-breaker alert above is NOT gated: a respawn loop is a
+  // real fault whatever the clock did.
+  const staleDueToSleep = ageMs != null && systemSleptBetween(now - ageMs, now)
+  logger.warn({ ageMs, paneState, staleDueToSleep }, 'Channel keep-alive stale -- main session likely wedged/deaf, respawning via respawn-pane')
+  if (!staleDueToSleep) {
+    sendRoutineAlert('keepalive-respawn', `⚠️ A fő channel keep-alive ${ageMin} perce nem frissült -- respawn-pane a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik, memoria marad).`)
+  }
   keepaliveMtimeAtLastRespawn = keepaliveMtimeMs
   if (respawnMarveenSessionFresh()) {
     marveenLastKeepaliveRespawn = now
@@ -2107,6 +2125,10 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
   // per-agent spawn path never reaches, so an already-running unstamped install
   // heals on the next dashboard boot instead of never.
   try { stampFableOverageConsentSharedRoots() } catch { /* backstop handlers remain */ }
+
+  // Sleep/wake detection for the keepalive-staleness alert suppression
+  // (idempotent; the schedule runner starts it too, whichever runs first wins).
+  startSleepWakeDetector()
 
   const mainProvider = getMainAgentProvider()
 

@@ -36,7 +36,6 @@ const PINS: Record<string, Pin> = {
   'install-macos.sh': { venv: 0, exempt: 3, why: "the installer's own PATH while installing bun/node" },
   'install-linux.sh': { venv: 0, exempt: 7, why: "the installer's own PATH, and the lines it appends to the user's shell rc" },
   'install-lang.sh': { venv: 0, exempt: 2, why: "the installer's own PATH, and the line it appends to the user's shell rc" },
-  'install-windows.ps1': { venv: 0, exempt: 1, why: 'WSL bootstrap line for bun, written into the rc' },
 }
 
 const EXTS = new Set(['.sh', '.ts', '.mjs', '.js', '.cjs', '.py', '.ps1'])

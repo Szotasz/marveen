@@ -1,11 +1,12 @@
 import {
-  createAgentMessage, getPendingMessages, listAgentMessages,
+  createAgentMessage, getPendingMessages, listAgentMessages, getRecipientQueueState,
   getAgentConversation, getAgentConversationThreads,
   getKanbanSeqByIdPrefix,
   markMessageDone, markMessageFailed, getAgentMessage,
   closeOtelSpan,
   getPendingBacklogByAgent,
   countNewerMessagesForRows,
+  getHeartbeatKanbanLive,
   COMPLETION_REPORT_PREFIX,
   type AgentMessage,
 } from '../../db.js'
@@ -19,9 +20,10 @@ import { MAIN_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } fr
 import { isAgentRunning } from '../agent-process.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
-import { stampHeartbeatHeader } from '../heartbeat-header-stamp.js'
+import { isHeartbeatTemplateLeak, stampHeartbeatHeader } from '../heartbeat-header-stamp.js'
+import { verifyHeartbeatKanban, HEARTBEAT_KANBAN_WINDOW_SEC } from '../heartbeat-kanban-verify.js'
 import { buildFreshnessInfo, type MessageFreshness } from '../agent-message-wrap.js'
-import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
+import { parseQualifiedId, formatQualifiedId, isQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
 import type { RouteContext } from './types.js'
 
@@ -126,6 +128,31 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       { from: string; to: string; content: string; origin_note?: string }
     if (!from?.trim() || !to?.trim() || !content?.trim()) {
       json(res, { error: 'from, to, and content are required' }, 400)
+      return true
+    }
+    // HBTEMPLATELEAK1002: a heartbeat report that still carries its template's
+    // placeholder header is the instruction text, not a report; queued, it reads
+    // as an order in the recipient's box ("Tedd most", a curl recipe). Refuse it
+    // before anything is written, so the sender sees the error and the real
+    // report is the only one that lands.
+    if (isHeartbeatTemplateLeak(content)) {
+      logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST: heartbeat template placeholder header')
+      json(res, { error: 'heartbeat_template_placeholder: the header still reads "YYYY-MM-DD"; send the report with the real timestamp' }, 422)
+      return true
+    }
+    // HBFABRIC1003: a digest's Kanban lines must match the live board at send
+    // time (counts within the drift the board actually had, every listed card
+    // real and in the state its line claims). On 2026-10-03 17:00 the agent sent
+    // a card id that never existed and counts it had typed before reading its
+    // metrics block. Refused before anything is written, so the sender sees the
+    // difference and the made-up report never reaches the main agent's box.
+    const kanbanVerdict = verifyHeartbeatKanban(content, () => getHeartbeatKanbanLive(HEARTBEAT_KANBAN_WINDOW_SEC))
+    if (!kanbanVerdict.ok) {
+      logger.warn({ from: from.trim(), to: to.trim(), problems: kanbanVerdict.problems }, 'Rejected /api/messages POST: heartbeat Kanban lines do not match the live board')
+      json(res, {
+        error: 'heartbeat_kanban_mismatch: the Kanban lines do not match the live board. Re-read the metrics block (GET /api/kanban/heartbeat-summary) and copy it, do not retype it.',
+        problems: kanbanVerdict.problems,
+      }, 422)
       return true
     }
     // Security: the channel-coordinator id grants channel-inbound delivery
@@ -306,7 +333,19 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
     const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote)
-    logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note }, 'Agent message created')
+    // Backpressure, returned WITH the id rather than behind a second call:
+    // `{"id":N,"status":"pending"}` alone reads as "sent", and on a busy
+    // recipient it can be 80 minutes from true. See getRecipientQueueState for
+    // the measurement this came from. Federated recipients are skipped -- their
+    // queue lives on the peer, so any number we computed here would be a local
+    // artefact, and a wrong number is worse than none. Every success response
+    // below carries it, the warning ones included.
+    const queue = isQualifiedId(storedTo) ? undefined : getRecipientQueueState(storedTo)
+    const queueField = queue ? { queue } : {}
+    logger.info(
+      { id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note, queueDepth: queue?.queueDepth },
+      'Agent message created',
+    )
     // A LOCAL recipient that is not running never receives this: the router
     // retries for a while and then abandons it, and the failure notice goes to
     // the MAIN agent, not to the sender. The caller therefore sees a plain 200
@@ -328,6 +367,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       logger.warn({ id: msg.id, to: msg.to_agent }, 'Agent message queued for a STOPPED agent -- likely to be abandoned')
       json(res, {
         ...msg,
+        ...queueField,
         targetRunning: false,
         warning: `'${msg.to_agent}' nem fut -- indítsd el (POST /api/agents/${msg.to_agent}/start), várd meg amíg feláll, és küldd újra. Egy leállított ügynöknek küldött üzenet nem várakozik, hanem elveszik.`,
       })
@@ -349,10 +389,10 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (homoglyphs.length > 0) {
       const warning = formatHomoglyphWarning(homoglyphs)
       logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, `agent message created with ${warning}`)
-      json(res, { ...msg, homoglyph_warning: warning })
+      json(res, { ...msg, ...queueField, homoglyph_warning: warning })
       return true
     }
-    json(res, msg)
+    json(res, { ...msg, ...queueField })
     return true
   }
 

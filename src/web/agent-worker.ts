@@ -22,6 +22,7 @@ import { withSessionSendLock } from './session-send-lock.js'
 import { readClaudeCodeOauthJson } from './claude-credentials.js'
 import { detectPaneState } from '../pane-state.js'
 import { notifyChannel } from '../notify.js'
+import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 
 // =============================================================================
 // Interactive-tmux agent worker (jun.15 subscription migration).
@@ -547,6 +548,8 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
     `export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false; ` +
     // CHANSPARE925: no Agent view (Left would background the worker into the daemon).
     `export CLAUDE_CODE_DISABLE_AGENT_VIEW=1; ` +
+    // ROOTRESPAWN1001: IS_SANDBOX=1 on a root host (see root-sandbox-env.ts).
+    `${ROOT_SANDBOX_ENV}; ` +
     customEnvPrefix +
     `cd ${shArg(ctx.home)} && ` +
     `${shArg(claudeLaunchBin)} --dangerously-skip-permissions --model ${shArg(workerModel)}`

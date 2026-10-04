@@ -80,9 +80,9 @@ export function fleetVenvPathPrefix(venvDir: string = FLEET_PYTHON_VENV, exists:
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
 import { readEnvFile } from '../env.js'
-import { loadProfileTemplate } from './profiles.js'
+import { loadProfileTemplate, profileWantsThinChiefHandoff } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
-import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection } from './agent-scaffold.js'
+import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
@@ -107,6 +107,7 @@ export function delay(ms: number): Promise<void> {
 }
 
 import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
+import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 export { CHANNEL_PLUGIN_IDS }
 
 // Pure: compute the enabledPlugins map for a sub-agent so that exactly its own
@@ -2014,6 +2015,16 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     ensureAutonomySection(name)
     ensureSkillsPathTrapSection(name)
     ensureSystemDirectiveAuthSection(name)
+    ensureAgentIdHeaderSection(name)
+    // OPT-IN, DEFAULT OFF (PR #1357 review). The THIN CHIEF handoff is this
+    // fleet's reporting standard -- how a specialist hands a result to its
+    // coordinator -- not a property of the software. Injecting it into every
+    // downstream install's agent CLAUDE.md would be shipping our process as if
+    // it were a feature. No shipped profile sets the flag, so a fresh install
+    // gets nothing; the fleet that wrote it opts in on its own profiles.
+    // Turning the flag off does not remove a section an agent already carries:
+    // ensureThinChiefHandoffSection only appends, and nothing here deletes.
+    if (profileWantsThinChiefHandoff(profile)) ensureThinChiefHandoffSection(name)
     ensureMemorySearchLabelSection(name)
     ensureFleetAuthSection(name)
     ensureEvidenceSection(name)
@@ -2423,7 +2434,17 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     }
     const continueFlag = continueDecision.useContinue ? '--continue ' : ''
     const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : agentProvider === 'googlechat' ? 'GOOGLECHAT_STATE_DIR' : agentProvider === 'teams' ? 'TEAMS_STATE_DIR' : 'TELEGRAM_STATE_DIR'
-    const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN'
+    // CHANSTATEUNSET930: the channel STATE DIRS are stripped too, not only the
+    // bot tokens. The tmux server carries the main agent's TELEGRAM_STATE_DIR in
+    // its own env (channels.sh exports it before `tmux start-server`), so every
+    // new pane inherited it -- including channel-less agents, whose claude and
+    // every MCP server under it then looked, to channel-poller-reap's env scan,
+    // exactly like the main agent's orphaned pollers. Measured 2026-09-30 12:06
+    // and 14:21: each main-channel reap SIGTERMed the MCP servers of every
+    // channel-less agent, whose tools then reported 'failed to connect' until
+    // the agent was restarted. A channel agent
+    // re-exports its OWN dir right after this, via channelSetup below.
+    const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN TELEGRAM_STATE_DIR SLACK_STATE_DIR DISCORD_STATE_DIR GOOGLECHAT_STATE_DIR TEAMS_STATE_DIR'
     // BYO/custom-endpoint agents must have CLAUDE_CODE_OAUTH_TOKEN removed from
     // their environment, not just omitted from the launch export. The parent tmux
     // server carries the fleet OAuth token in its own env, and
@@ -2484,7 +2505,9 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     const promptSuggestionEnv =
       // CHANSPARE925: no Agent view -- its Left key backgrounds the session into the
       // Claude Code daemon, which keeps a second --channels copy alive (bot poller hijack).
-      'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && '
+      'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && ' +
+      // ROOTRESPAWN1001: IS_SANDBOX=1 on a root host, evaluated in the pane (see root-sandbox-env.ts).
+      `${ROOT_SANDBOX_ENV} && `
     // Disable Claude Code's in-place auto-updater for every spawned agent. A
     // running agent whose updater fires does an in-place global reinstall into the
     // shared package prefix; a half-completed update can leave a broken stub and
@@ -3245,6 +3268,59 @@ async function discardPlaceholderBuffer(session: string, host: string | null = n
   return finalPane != null && !detectsPastePlaceholder(finalPane)
 }
 
+// Cap on how many extra characters a single chunk boundary may absorb while
+// dodging the two tmux CLI-argument quirks below. Keeps a long run of dashes
+// or semicolons from inflating one chunk past the paste-detector threshold.
+export const TMUX_CHUNK_MAX_SLIDE = 8
+
+// Compute one `send-keys -l` chunk (and the index it ends at) for streaming
+// `oneLine` into a pane starting at `start`. Exported so the two tmux
+// CLI-argument quirks it dodges can be exercised directly in tests, without
+// driving a real tmux session:
+//
+//   - tmux send-keys doesn't support `--` option-terminator, so a chunk that
+//     STARTS with '-' parses as a flag ("command send-keys: unknown flag -s"
+//     on Hungarian suffixes like -szal/-vel/-ban). Slide the boundary up to
+//     `maxSlide` chars past any '-' that would land at the start of the next
+//     chunk. If the cap is reached and the chunk still starts with '-',
+//     prepend a space instead.
+//   - a chunk that ENDS with an unescaped ';' has that trailing ';' silently
+//     dropped: tmux's own command-line parser treats a semicolon as the end
+//     of the current command when it is the last character of the final
+//     argv element, even under -l literal mode, even though this is one
+//     argv element passed via execFileSync (no shell involved). Measured
+//     2026-09-27 (BORITEKVESZ927): every "spliced" kanban-audit/nap-zaro
+//     delivery lost exactly the one chunk-boundary ';', while ';' characters
+//     that land inside a chunk (not at its end) were always intact. Slide
+//     the boundary forward the same way, folding the next real character in
+//     instead of leaving ';' as the chunk's last byte. If the cap is reached
+//     (or there is no more text to fold in), append a trailing space so the
+//     chunk no longer ends in a bare ';'.
+export function computeTmuxChunk(
+  oneLine: string,
+  start: number,
+  chunkSize: number,
+  maxSlide: number = TMUX_CHUNK_MAX_SLIDE,
+): { chunk: string; end: number } {
+  let end = Math.min(start + chunkSize, oneLine.length)
+  let slide = 0
+  // Both dodges in ONE loop: don't let the NEXT chunk start with '-', and
+  // don't let THIS chunk end with ';'. Folding a character in for one rule can
+  // re-trigger the other: with two sequential loops, ';x-' at the boundary
+  // slid past the ';' and stopped right before the '-', so the next chunk got
+  // a ' ' prepended -- a space typed into the middle of the text.
+  while (
+    end < oneLine.length && slide < maxSlide &&
+    (oneLine[end] === '-' || oneLine[end - 1] === ';')
+  ) {
+    end++; slide++
+  }
+  let chunk = oneLine.slice(start, end)
+  if (chunk.startsWith('-')) chunk = ' ' + chunk
+  if (chunk.endsWith(';')) chunk = chunk + ' '
+  return { chunk, end }
+}
+
 // Send text to a tmux session as if typed at the prompt.
 // Uses execFileSync so callers can pass raw text -- tmux send-keys -l treats
 // the argument as literal characters, bypassing shell quoting entirely.
@@ -3400,25 +3476,12 @@ export async function sendPromptToSession(
   // Stream oneLine into the pane as CHUNK-sized literal send-keys writes,
   // followed by a submitting Enter. Extracted as a closure so the
   // clear-and-resend recovery path below can replay the EXACT same byte
-  // stream after a Ctrl-C, rather than duplicating the dash-slide logic.
-  //
-  // tmux send-keys doesn't support `--` option-terminator, so a chunk that
-  // starts with '-' parses as a flag ("command send-keys: unknown flag -s"
-  // on Hungarian suffixes like -szal/-vel/-ban). Slide the boundary up to a
-  // few chars past any '-' that lands at the start of the next chunk. Capped
-  // so a long run of dashes doesn't inflate one chunk past the paste-detector
-  // threshold; if the cap is reached, prepend a space to the chunk instead.
-  const MAX_SLIDE = 8
+  // stream after a Ctrl-C, rather than duplicating the boundary logic
+  // (see computeTmuxChunk for the two chunk-boundary dodges it applies).
   const sendChunks = async (): Promise<void> => {
     let i = 0
     while (i < oneLine.length) {
-      let end = Math.min(i + CHUNK, oneLine.length)
-      let slide = 0
-      while (end < oneLine.length && oneLine[end] === '-' && slide < MAX_SLIDE) {
-        end++; slide++
-      }
-      let chunk = oneLine.slice(i, end)
-      if (chunk.startsWith('-')) chunk = ' ' + chunk
+      const { chunk, end } = computeTmuxChunk(oneLine, i, CHUNK, TMUX_CHUNK_MAX_SLIDE)
       runTmux(host, ['send-keys', '-t', session, '-l', chunk], { timeout: 5000 })
       i = end
       if (i < oneLine.length) await delay(30)

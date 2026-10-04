@@ -17,6 +17,8 @@ No secrets or personal data are baked in: the dashboard token is read from
 ## When to use
 - Saving/searching memory, posting daily-log, sending inter-agent messages.
 - Reading kanban (due today / stuck / by status) without writing SQL by hand.
+- Writing a kanban comment, move or field where `scripts/kartya-es-ertesites.py`
+  refuses your agent (its roster is a literal; see "Kanban writes" below).
 - Escaping text for a Telegram MarkdownV2 message.
 - An email heartbeat: pre-filter unread mail to a compact JSON before the model
   reasons about it.
@@ -60,6 +62,32 @@ python3 $P/fleet.py kanban-due
 python3 $P/mail_triage.py 90                            # unread <= 90 min -> JSON
 ```
 
+## Kanban writes (comment / move / set)
+`scripts/kartya-es-ertesites.py` is the gated path for a card comment or a status
+move (accent gate, owner notification, the automated marker), and WHERE IT RUNS IT
+STAYS THE PATH. Its roster is a literal, though, so on an install whose agents are
+not in it every `--author` is refused. These three carry no roster: they send what
+the dashboard accepts, and they check nothing the gated tool checks.
+```bash
+P=../../seed-skills/fleet-helper/scripts
+python3 $P/fleet.py kanban-comment <id> <author> "<text>"       # or "-": the text from stdin
+python3 $P/fleet.py kanban-move <id> <status> <actor>           # actor REQUIRED
+python3 $P/fleet.py kanban-set <id> <field> <value> <actor>     # "null" clears; actor REQUIRED
+```
+- **The actor is not decoration.** The move route uses it to suppress the
+  "task assigned to you" echo when you move your own card; without it the move
+  still answers `{"ok":true}` and the echo arrives later, costing a round. The PUT
+  route writes it on the status-change audit event. A missing argument is a usage
+  error (exit 2) and nothing is sent.
+- `kanban-set` writes ONE field per call: title, description, status, assignee,
+  priority, project, parent_id, due_date, sort_order, archived_at. Any other field
+  is a 400 naming the accepted ones, and the card is not touched. It is the only
+  shipped way to due_date, project, parent_id and sort_order.
+- A move or a set here leaves NO comment. Where the reason matters, write the
+  comment first.
+- The body is built with `json.dumps` from the arguments, so backticks and `$(...)`
+  in a comment are text, never shell.
+
 ## The heartbeat gate pattern (the high-value idea)
 Frequent heartbeats often wake the model just to run deterministic checks and
 then stay silent - wasted tokens. Naively skipping the turn can be unsafe if your
@@ -74,5 +102,8 @@ only does the judgment + notification. Zero scheduler/runner changes. See
 
 ## Safety
 - Token is read from `store/.dashboard-token` at call time; never printed or committed.
-- Kanban helpers are READ-ONLY; mutations stay in your own audited flows.
+- The kanban READ helpers (due / stuck / status) are read-only SQL. The three
+  WRITE commands go through the dashboard API with the token, like every other
+  write here; prefer `scripts/kartya-es-ertesites.py` where your agent is on its
+  roster.
 - `mail_rules.json` (your real senders) is gitignored.

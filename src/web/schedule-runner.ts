@@ -77,6 +77,7 @@ import { readQuotaSnapshot } from '../quota-snapshot.js'
 import { detectsFirstRunGate, detectPaneState, overfullParkedInputTail, type PaneState } from '../pane-state.js'
 import { getInjectedPrompt, matchesInjectedPrompt, type InjectedPromptRecord } from './injected-prompt-registry.js'
 import { withSessionSendLock } from './session-send-lock.js'
+import { startSleepWakeDetector, systemSleptBetween } from './sleep-wake-detector.js'
 
 // How many bare-Enter attempts the post-send resubmit tries before escalating
 // to a clear + re-inject, and the hard cap after which it gives up.
@@ -1694,6 +1695,46 @@ function sendCatchUpSummary(
   })()
 }
 
+// Pure: where the catch-up summary goes. Sleep-origin gap -> log only;
+// anything else -> the channel. Exported so the rule is unit-tested and a
+// later "always log" or "always send" edit has to touch a named contract.
+export type CatchUpSummaryDelivery = 'log' | 'channel'
+export function decideCatchUpSummaryDelivery(sleptDuringGap: boolean): CatchUpSummaryDelivery {
+  return sleptDuringGap ? 'log' : 'channel'
+}
+
+// The same one line, LOG-ONLY. Used instead of sendCatchUpSummary when the gap
+// the scheduler is catching up on is one the machine SLEPT through (see the
+// call site and decideCatchUpSummaryDelivery): lid-close downtime is caused by
+// the operator on purpose, and pinging Telegram with "Kimaradt ütemezés (X perc
+// kiesés)" on every wake was pure noise (2026-09-02, kanban 83b8c4c3). A gap
+// with no sleep in it -- process down, crash, failed restart -- still goes to
+// the channel via sendCatchUpSummary (review 2026-09-03). The catch-up
+// MECHANISM (re-running / stale-declaring) is identical on both paths, and the
+// per-run records (appendTaskRun) and the dashboard /Ütemezések page show what
+// was caught up or declared stale either way.
+function logCatchUpSummary(
+  caughtUp: Array<{ task: string; ageMs: number }>,
+  stale: Array<{ task: string; ageMs: number }>,
+  gapMs: number,
+): void {
+  const mins = (ms: number) => `${Math.round(ms / 60000)} perc`
+  const lines = [`Kimaradt ütemezés (${mins(gapMs)} kiesés).`]
+  if (caughtUp.length) {
+    // "elindítva", not "lefutott": a catch-up injection can still land in the
+    // pending-retry queue if the target session is busy. It will run; it may
+    // not have run yet at the moment this line is logged.
+    lines.push(`Pótlás elindítva: ${caughtUp.map(e => `${e.task} (${mins(e.ageMs)} késés)`).join(', ')}`)
+  }
+  if (stale.length) {
+    lines.push(`Nem pótolva, mert elavult: ${stale.map(e => `${e.task} (${mins(e.ageMs)})`).join(', ')}`)
+  }
+  logger.info(
+    { caughtUp: caughtUp.length, stale: stale.length, gapMinutes: Math.round(gapMs / 60000) },
+    `catch-up summary (log-only: the gap is sleep-origin downtime, not an incident): ${lines.join(' ')}`,
+  )
+}
+
 // Build the pending-retry alert body shared by stage 1 (main agent,
 // inter-agent) and stage 2 (owner, channel) -- the substance (which task,
 // why stuck, how long) is identical, only the delivery channel differs.
@@ -1913,6 +1954,20 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
     )
     return
   }
+  // SLEEP GUARD (2026-09-02, kanban 83b8c4c3): elapsedMs is wall-clock time
+  // since injection. If the machine slept anywhere inside that window, the
+  // number lies -- a 2-minute task injected just before lid-close reads as
+  // "stuck for hours" on wake (observed with ledger-live-drain). A window
+  // that contains a sleep gap proves nothing about the task, so no Telegram
+  // ping; the log line and the rest of the stuck handling (one-shot flag,
+  // eviction, retries) run unchanged, and the kanban 'waiting' move is not
+  // even here: it happens in stage 1 (sendTaskInflightMainAgentNotice), so
+  // this guard cannot short-circuit it (review 2026-09-03). Genuine
+  // hangs are unaffected: their window contains no sleep gap. Trade-off,
+  // accepted: the alert is one-shot per injection, so a task that ALSO hangs
+  // for real after the wake stays Telegram-silent for that injection -- it is
+  // still visible in the log/dashboard and ages into the normal eviction path.
+  const sleptDuringWindow = systemSleptBetween(entry.injectedAt, Date.now())
   const token = resolveSchedulerAlertToken()
   if (!token) {
     logger.warn({ task: entry.taskName, agent: entry.agentName, provider: CHANNEL_PROVIDER }, 'task-timeout alert suppressed: no channel bot token (config error)')
@@ -1921,6 +1976,14 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
   const ownerChat = resolveSchedulerOwnerChat()
   if (!ownerChat) {
     logger.warn({ task: entry.taskName, agent: entry.agentName, provider: CHANNEL_PROVIDER }, 'task-timeout alert suppressed: no owner chat (ALLOWED_CHAT_ID unset/placeholder and no paired channel)')
+    return
+  }
+
+  if (sleptDuringWindow) {
+    logger.info(
+      { task: entry.taskName, agent: entry.agentName, ageMinutes, injectedAt: entry.injectedAt },
+      'task-timeout: machine slept inside the stuck-check window -- wall-clock elapsed is unreliable, Telegram alert suppressed (stuck handling continues)',
+    )
     return
   }
 
@@ -1975,6 +2038,9 @@ export function startScheduleRunner(): NodeJS.Timeout {
     logger.warn({ err }, 'task-run restart reconcile failed (non-fatal)')
   }
 
+  // Sleep/wake detection for the downtime-aware alert suppression above
+  // (idempotent; the channel monitor starts it too, whichever runs first wins).
+  startSleepWakeDetector()
   // Reload the persisted last-run times so a restart inside a task's catch-up
   // window does not re-fire an already-run task.
   loadScheduleLastRun()
@@ -2525,7 +2591,19 @@ export function startScheduleRunner(): NodeJS.Timeout {
     const caughtUpReportable = caughtUpThisTick.filter(e => e.type !== 'heartbeat')
     const staleReportable = staleThisTick.filter(e => e.type !== 'heartbeat')
     if (caughtUpReportable.length || staleReportable.length) {
-      sendCatchUpSummary(caughtUpReportable, staleReportable, pendingStartupGapMs || (now - fromMs))
+      // SLEEP GUARD, narrowed on review (#1153, 2026-09-03): only a gap the
+      // machine SLEPT through is operator-caused downtime worth muting. A gap
+      // with no sleep record in it -- the process was down: crash, kill, a
+      // failed restart -- is exactly the outage the owner wants to hear about,
+      // so that one still goes to the channel. The detector only knows sleeps
+      // it observed in-process, so a cold start after a power-off has no sleep
+      // record and reports; that is the intended fail-loud side.
+      const gapMs = pendingStartupGapMs || (now - fromMs)
+      if (decideCatchUpSummaryDelivery(systemSleptBetween(now - gapMs, now)) === 'log') {
+        logCatchUpSummary(caughtUpReportable, staleReportable, gapMs)
+      } else {
+        sendCatchUpSummary(caughtUpReportable, staleReportable, gapMs)
+      }
     }
     pendingStartupGapMs = 0
 

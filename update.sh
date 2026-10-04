@@ -877,12 +877,53 @@ EOF
   return 0
 }
 
+# UPDUNITTGENV930: #1450 took `Environment=TELEGRAM_ENV=<home>/.claude/channels/telegram/.env`
+# out of the two notifier units install-linux.sh writes (<slug>-host-watchdog.service and
+# <slug>-notify@.service), but only for NEW installs: an existing host keeps the line,
+# and on a MIGRATED install (install-scoped channel dir) it points at the empty legacy
+# path and overrides the notifier's own resolution, so the failure notifier never sends.
+# Only that exact legacy value goes (<the unit's own HOME>/.claude/channels/telegram/.env):
+# an operator's deliberate TELEGRAM_ENV pointing anywhere else stays. On an
+# unmigrated install removing it is harmless, the notifier falls back to the same path.
+strip_legacy_notifier_telegram_env() {
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  [ -d "$units_dir" ] || return 0
+  _patched=0
+  for _unit in "$units_dir/"*-host-watchdog.service "$units_dir/"*-notify@.service; do
+    [ -f "$_unit" ] || continue
+    # The legacy value is the SHARED dir under the unit's own HOME: the installer writes
+    # both lines from the same $HOME, and the shipped template carried both as the same
+    # /home/<user> placeholder, so one form covers both. Matched as whole
+    # fixed strings: the install-scoped <install>/.claude/channels/telegram/.env, the
+    # correct path on a migrated install, must never match.
+    _uhome="$(sed -n 's/^Environment=HOME=//p' "$_unit" | head -1)"
+    [ -n "$_uhome" ] || _uhome="$HOME"
+    _legacy1="Environment=TELEGRAM_ENV=${_uhome}/.claude/channels/telegram/.env"
+    if grep -qxF -e "$_legacy1" "$_unit"; then
+      if grep -vxF -e "$_legacy1" "$_unit" >"${_unit}.marveen-new" 2>/dev/null \
+         && cat "${_unit}.marveen-new" >"$_unit" 2>/dev/null; then
+        rm -f "${_unit}.marveen-new"
+        _patched=1
+        echo -e "  Hiba-ertesito unit javitva (regi TELEGRAM_ENV sor ki): $(basename "$_unit")"
+      else
+        rm -f "${_unit}.marveen-new"
+        echo -e "  FIGYELEM: a hiba-ertesito unit nem volt irhato: $_unit"
+      fi
+    fi
+  done
+  if [ "$_patched" = "1" ]; then
+    systemctl --user daemon-reload 2>/dev/null || true
+  fi
+  return 0
+}
+
 run_unit_maintenance() {
   repair_morning_timer "$@"
   migrate_channels_restart "$@"
   install_keepalive_probe_timer "$@"
   install_keepalive_probe_launchd "$@"
   install_main_inbox_observer_unit "$@"
+  strip_legacy_notifier_telegram_env "$@"
   park_morning_timer "$@"
   return 0
 }
