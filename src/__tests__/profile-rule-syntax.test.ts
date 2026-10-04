@@ -12,6 +12,13 @@ import { PROJECT_ROOT } from '../config.js'
 // These tests pin the normalization + template posture so a future edit cannot
 // silently regress to the never-matching shapes.
 
+// Every shipped profile template. Kept in one place so a new template cannot
+// be added while quietly skipping the whole-fleet assertions below.
+const PROFILE_IDS = [
+  'marketer', 'researcher', 'developer-junior', 'developer-senior',
+  'applier', 'sub-dev', 'default',
+] as const
+
 const ctx = { HOME: '/Users/testuser', AGENT_DIR: '/Users/testuser/ClaudeClaw/agents/tester' }
 
 describe('resolveProfilePlaceholders rule normalization', () => {
@@ -57,6 +64,19 @@ describe('web-reading profile posture (TMPLPERM908)', () => {
   // real posture (SSH/AWS/.env, sudo, rm, curl -X POST, git push); it is simply
   // advisory under permissive. Tightening the mode again is an OWNER decision,
   // not a template edit, and it must land with the agents' work rerouted first.
+  // The messaging grant is asserted PER PROFILE, not as one shared literal.
+  // `scripts/agent-post.sh` no longer exists in the repo (it was replaced by
+  // agent-msg.sh, the CLAUDE.md-documented inter-agent helper), and researcher
+  // was repointed at agent-msg.sh. Asserting the removed script for BOTH
+  // profiles made this case fail on researcher while still passing on marketer,
+  // which grants the stale path to this day -- that stale marketer grant is a
+  // separate question for the profile owner and is deliberately not changed
+  // here. What the case protects is unchanged: each profile must still carry a
+  // messaging-helper grant, so a silent drop of it is caught.
+  const MESSAGING_ALLOW: Record<string, string> = {
+    marketer: 'Bash(${PROJECT_ROOT}/scripts/agent-post.sh:*)',
+    researcher: 'Bash(bash ${PROJECT_ROOT}/scripts/agent-msg.sh:*)',
+  }
   for (const id of ['marketer', 'researcher']) {
     it(`${id} stays permissive (owner decision) and carries the measured capability allows`, () => {
       const p = loadProfileTemplate(id)
@@ -64,13 +84,70 @@ describe('web-reading profile posture (TMPLPERM908)', () => {
       expect(p.permissionMode).toBe('permissive')
       expect(p.filesystem.allow).toContain('Read(${HOME}/.claude/skills/**)')
       expect(p.filesystem.allow).toContain('Bash(${PROJECT_ROOT}/scripts/notify.sh:*)')
-      expect(p.filesystem.allow).toContain('Bash(${PROJECT_ROOT}/scripts/agent-post.sh:*)')
+      expect(p.filesystem.allow).toContain(MESSAGING_ALLOW[id])
       expect(p.filesystem.deny).toContain('Read(${HOME}/.ssh/**)')
     })
   }
 
+  // No template may hardcode THIS install's directory name. `${HOME}/marveen`
+  // only resolves for an install that happens to live in ~/marveen; everywhere
+  // else the rule silently matches nothing, which turns an allow into a missing
+  // capability and a deny into no protection at all. `${PROJECT_ROOT}` is
+  // substituted from the running install (profiles.ts), so it is correct by
+  // construction. A bare `${HOME}` stays legal: ~/.ssh, ~/Downloads and
+  // ~/.claude/skills really are home-relative, not install-relative.
+  // The list above is the input to two whole-fleet assertions, so a template
+  // added without touching it would be silently exempt from both.
+  it('PROFILE_IDS covers every template on disk', () => {
+    expect([...PROFILE_IDS].sort()).toEqual(listProfileTemplates().map(p => p.id).sort())
+  })
+
+  it('no template hardcodes an install directory under ${HOME}', () => {
+    for (const id of PROFILE_IDS) {
+      const p = loadProfileTemplate(id)
+      for (const rule of [...p.filesystem.allow, ...p.filesystem.deny, ...(p.additionalDirectories ?? [])]) {
+        expect(rule).not.toContain('${HOME}/marveen')
+      }
+    }
+  })
+
+  // Every entry in a permission list must be a rule, not a path. A bare path
+  // ("/mnt/e/Library/**") is not a rule, Claude Code does not match it against
+  // anything, so it silently grants nothing while reading like a grant.
+  // (PR #1357 fleet review, 2026-09-25, item 1e.)
+  it('every allow/deny entry carries a tool prefix', () => {
+    for (const id of PROFILE_IDS) {
+      const p = loadProfileTemplate(id)
+      for (const rule of [...p.filesystem.allow, ...p.filesystem.deny]) {
+        // Tool(...), a bare tool name (WebSearch), or an MCP tool (mcp__srv__tool)
+        expect(rule, `${id}: ${rule}`).toMatch(/^(mcp__\w|[A-Z][A-Za-z]*(\(|$))/)
+      }
+    }
+  })
+
+  // researcher is the most prompt-injection-exposed profile (external content,
+  // draft-only), and it ships to every install. It gets only what the product
+  // needs. Each assertion pins one item of the PR #1357 fleet review
+  // (2026-09-25): a general interpreter sidesteps the whole deny list; store/
+  // holds the dashboard and fleet tokens; a raw dashboard POST is any write,
+  // not only memory and messaging (the agent-msg.sh / agent-mem.sh helpers
+  // cover those); /mnt/... paths are one machine's layout, not the product's.
+  it('researcher ships without the injection-exposed grants', () => {
+    const p = loadProfileTemplate('researcher')
+    const rules = [...p.filesystem.allow, ...(p.additionalDirectories ?? [])]
+    expect(p.filesystem.allow.filter(r => /^Bash\((python3?|node|perl|ruby|bash -c|sh -c)\b/.test(r))).toEqual([])
+    expect((p.additionalDirectories ?? []).filter(d => /\/store(\/|$)/.test(d))).toEqual([])
+    expect(p.filesystem.allow.filter(r => /^Bash\(curl\b.*-X\s*POST/i.test(r))).toEqual([])
+    expect(rules.filter(r => r.includes('/mnt/'))).toEqual([])
+    // the product-needed grants stay
+    expect(p.filesystem.allow).toContain('Bash(bash ${PROJECT_ROOT}/scripts/agent-mem.sh:*)')
+    expect(p.filesystem.allow).toContain('Bash(pdf2txt.py:*)')
+    // The research-inbox write grant is the Edit rule: Write(path) is never consulted (PERMWRITERULE927).
+    expect(p.filesystem.allow).toContain('Edit(${PROJECT_ROOT}/research-inbox/**)')
+  })
+
   it('no template carries a Bash rule with a ** glob (prefix matching cannot glob)', () => {
-    for (const id of ['marketer', 'researcher', 'developer-junior', 'developer-senior', 'applier', 'sub-dev', 'default']) {
+    for (const id of PROFILE_IDS) {
       const p = loadProfileTemplate(id)
       for (const rule of [...p.filesystem.allow, ...p.filesystem.deny]) {
         if (rule.startsWith('Bash(')) expect(rule).not.toContain('**')
