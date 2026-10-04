@@ -42,6 +42,15 @@ vi.mock('../web/atomic-write.js', () => ({
 vi.mock('../db.js', () => ({
   appendTaskRun: vi.fn(),
   listPendingTaskRetries: () => mockListPendingRetries(),
+  // ESCALATEAFTER921: attemptFireTask now looks up the single retry row for
+  // (taskName, agentName) before the busy check, mirroring the real
+  // getPendingTaskRetry(taskName, agentName) query over the same table
+  // listPendingTaskRetries() reads (see db.ts). Derived from the same fixture
+  // list so per-test mockListPendingRetries() overrides stay authoritative.
+  getPendingTaskRetry: (taskName: unknown, agentName: unknown) =>
+    (mockListPendingRetries() as Array<Record<string, unknown>>).find(
+      (r) => r.task_name === taskName && r.agent_name === agentName,
+    ),
   deletePendingTaskRetry: (...a: unknown[]) => mockDeletePendingRetry(...a),
   updatePendingTaskRetry: () => mockUpdatePendingRetry(),
   insertPendingTaskRetryIfNew: vi.fn(),

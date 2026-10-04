@@ -57,7 +57,7 @@ describe('busy-pane scheduled-task delivery is recorded distinctly', () => {
     const callIdx = SCHEDULE_RUNNER.indexOf('await sendPromptToSession(session, fullPrompt, host, {')
     expect(callIdx).toBeGreaterThan(0)
     const call = SCHEDULE_RUNNER.slice(callIdx, callIdx + 300)
-    expect(call).toMatch(/waitForIdle:\s*!task\.forceSend/)
+    expect(call).toMatch(/waitForIdle:\s*!forceSend\b/)
     expect(call).toMatch(/onBusySend:\s*\(\)\s*=>\s*\{/)
   })
 
