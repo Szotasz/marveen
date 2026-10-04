@@ -5,6 +5,7 @@ import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN } from '../../config.js
 import {
   createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals,
   createAgentMessage, setApprovalTelegramMessageId,
+  listOwnerGoApprovalsBetween, lastOwnerGoDigestDay, recordOwnerGoDigest,
   type Approval,
 } from '../../db.js'
 import { logger } from '../../logger.js'
@@ -67,6 +68,26 @@ export function buildOwnerApprovalText(approval: Approval): string {
   ].join('\n')
 }
 
+// bc7c1e9d: an email_send request of the main agent that
+// cites a written owner GO it already holds must not ping the owner again -- on
+// 2026-09-23 four such pings (13:05-13:27Z) each asked for a decision another
+// owner had already made. Every other request still notifies, unchanged: a
+// sub-agent's, a main-agent one without a GO reference, any other category.
+// The reference only silences the ping; the request stays pending until it is
+// resolved, and the one-shot hash gate of the send is untouched.
+// (b): the silenced requests are not invisible either. The
+// "main agent" is a self-declared agent_id behind the shared token, so a
+// silenced ping alone would let any token holder hide a request from the owner;
+// every such request is listed in the owner's next daily digest instead.
+// Pure + exported for tests.
+export function ownerGoCoversRequest(approval: Pick<Approval, 'agent_id' | 'category' | 'owner_go_ref'>): boolean {
+  return approval.agent_id === MAIN_AGENT_ID && approval.category === 'email_send' && Boolean(approval.owner_go_ref)
+}
+
+// A GO reference is a short pointer to where the owner said it (e.g.
+// "tesztelek-tg-101"), never free text.
+const OWNER_GO_REF_RX = /^[A-Za-z0-9][A-Za-z0-9._:#/-]{0,119}$/
+
 // When the owner send is suppressed or fails AND the requester is the main
 // agent, there is no in-band signal left at all: the leg-2 short-circuit
 // below skips the main-agent message unconditionally. The old self-notify was
@@ -127,7 +148,7 @@ function notifyMainAgent(approval: Approval): void {
   // "notified" while no human ever saw it. The owner Telegram above is the
   // real notification; a self-addressed message is noise that hides the gap.
   if (approval.agent_id === MAIN_AGENT_ID) {
-    logger.info({ approvalId: approval.id }, 'approval main-agent notify skipped: requester is the main agent (owner is notified on Telegram)')
+    logger.info({ approvalId: approval.id, ownerGoRef: approval.owner_go_ref }, 'approval main-agent notify skipped: requester is the main agent')
     return
   }
   try {
@@ -146,6 +167,121 @@ function notifyMainAgent(approval: Approval): void {
   }
 }
 
+// --- bc7c1e9d (b): the daily owner digest of the GO-cited requests ---
+// One message to the owner per Budapest calendar day, sent from 07:00 on the
+// next morning, and only if the day had such a request (an empty day is
+// settled without a message). Per row: time, the self-declared agent_id, the
+// category, the envelope hash prefix, the GO reference and the state; never
+// the content. A day is settled at most once (the digest table's key).
+export const OWNER_GO_DIGEST_HOUR = 7
+// A missed morning (the server was down) is caught up day by day, but never
+// further back than this: older days stay on the dashboard.
+export const OWNER_GO_DIGEST_MAX_CATCHUP_DAYS = 7
+// A failed Telegram send is retried, but not on every sweep tick.
+export const OWNER_GO_DIGEST_RETRY_MS = 15 * 60_000
+
+const BUDAPEST = 'Europe/Budapest'
+
+function budapestParts(ms: number): { day: string; hour: number; minute: number } {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: BUDAPEST, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date(ms))
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? ''
+  return { day: `${get('year')}-${get('month')}-${get('day')}`, hour: Number(get('hour')), minute: Number(get('minute')) }
+}
+
+function shiftDay(day: string, days: number): string {
+  const [y, m, d] = day.split('-').map(Number)
+  return new Date(Date.UTC(y, m - 1, d) + days * 86_400_000).toISOString().slice(0, 10)
+}
+
+// The UTC instant (ms) of 00:00 Budapest time on `day`; the offset is +1h or +2h (DST). Pure + exported for tests.
+export function budapestMidnightUtcMs(day: string): number {
+  const [y, m, d] = day.split('-').map(Number)
+  for (const offsetHours of [2, 1]) {
+    const ms = Date.UTC(y, m - 1, d) - offsetHours * 3_600_000
+    const p = budapestParts(ms)
+    if (p.day === day && p.hour === 0 && p.minute === 0) return ms
+  }
+  throw new Error(`no Budapest midnight for ${day}`)
+}
+
+// Which Budapest day's digest is due at `nowMs`: the oldest unsettled complete
+// day, from OWNER_GO_DIGEST_HOUR on, at most OWNER_GO_DIGEST_MAX_CATCHUP_DAYS
+// back; the very first run starts with yesterday. Pure + exported for tests.
+export function ownerGoDigestDayDue(nowMs: number, lastSettledDay: string | null): string | null {
+  const now = budapestParts(nowMs)
+  if (now.hour < OWNER_GO_DIGEST_HOUR) return null
+  const yesterday = shiftDay(now.day, -1)
+  const floor = shiftDay(now.day, -OWNER_GO_DIGEST_MAX_CATCHUP_DAYS)
+  let due = lastSettledDay === null ? yesterday : shiftDay(lastSettledDay, 1)
+  if (due < floor) due = floor
+  return due <= yesterday ? due : null
+}
+
+const DIGEST_STATE: Record<Approval['status'], string> = {
+  pending: 'függőben',
+  approved: 'jóváhagyva',
+  rejected: 'elutasítva',
+  timeout: 'lejárt',
+}
+
+// Owner-facing digest text. Plain text, proper accents, no request content. Pure + exported for tests.
+export function buildOwnerGoDigestText(day: string, rows: Approval[]): string {
+  const lines = rows.map((row) => {
+    const at = budapestParts(row.requested_at * 1000)
+    const time = `${String(at.hour).padStart(2, '0')}:${String(at.minute).padStart(2, '0')}`
+    const hash = row.content_hash ? row.content_hash.slice(0, 12) : '-'
+    const state = row.consumed_at ? 'felhasználva' : DIGEST_STATE[row.status]
+    return `${time} | ${row.agent_id} | ${row.category} | boríték ${hash} | GO: ${row.owner_go_ref ?? '-'} | ${state}`
+  })
+  return [
+    `[NAPI ÖSSZESÍTŐ] ${day}: a fő ügynök ${rows.length} email-jóváhagyási kérése meglévő tulajdonosi GO-ra hivatkozott`,
+    'Ezekről egyenként nem ment értesítés. Soronként: idő | kérő | kategória | boríték-hash eleje | GO | állapot.',
+    ...lines,
+    'Részletek: Dashboard -> Jóváhagyások',
+  ].join('\n')
+}
+
+let digestInFlight = false
+let lastDigestFailureMs = 0
+
+// Settles at most one due day per call. Returns what happened (for the sweep log and the tests).
+export async function sendOwnerGoDigestIfDue(nowMs: number = Date.now()): Promise<'none' | 'empty' | 'telegram' | 'in_band' | 'failed'> {
+  if (digestInFlight) return 'none'
+  const day = ownerGoDigestDayDue(nowMs, lastOwnerGoDigestDay())
+  if (!day) return 'none'
+  const rows = listOwnerGoApprovalsBetween(budapestMidnightUtcMs(day) / 1000, budapestMidnightUtcMs(shiftDay(day, 1)) / 1000)
+  if (rows.length === 0) {
+    recordOwnerGoDigest(day, 0, 'empty', null)
+    return 'empty'
+  }
+  if (lastDigestFailureMs && nowMs - lastDigestFailureMs < OWNER_GO_DIGEST_RETRY_MS) return 'none'
+  digestInFlight = true
+  try {
+    const text = buildOwnerGoDigestText(day, rows)
+    const ownerChat = TELEGRAM_BOT_TOKEN ? resolveOwnerChatId() : null
+    if (!TELEGRAM_BOT_TOKEN || !ownerChat) {
+      // Same degraded path as a suppressed ping: visible in-band, never dropped.
+      logger.warn({ day, rows: rows.length }, 'owner GO digest: no Telegram path to the owner -- delivered in-band to the main agent')
+      createAgentMessage('system', MAIN_AGENT_ID, `[OWNER_UNREACHED owner-go-digest] ${text}`)
+      recordOwnerGoDigest(day, rows.length, 'in_band', null)
+      return 'in_band'
+    }
+    const messageId = await sendTelegramMessage(TELEGRAM_BOT_TOKEN, ownerChat, text)
+    recordOwnerGoDigest(day, rows.length, 'telegram', messageId ?? null)
+    lastDigestFailureMs = 0
+    logger.info({ day, rows: rows.length, messageId }, 'owner GO digest sent')
+    return 'telegram'
+  } catch (err) {
+    lastDigestFailureMs = nowMs
+    logger.warn({ err, day, rows: rows.length }, 'owner GO digest FAILED -- retried after the backoff; the requests are on the dashboard')
+    return 'failed'
+  } finally {
+    digestInFlight = false
+  }
+}
+
 export function startApprovalTimeoutSweeper(): NodeJS.Timeout {
   return setInterval(() => {
     try {
@@ -154,6 +290,7 @@ export function startApprovalTimeoutSweeper(): NodeJS.Timeout {
     } catch (err) {
       logger.warn({ err }, 'Approval timeout sweep failed')
     }
+    sendOwnerGoDigestIfDue().catch((err) => logger.warn({ err }, 'owner GO digest sweep failed'))
   }, 60_000)
 }
 
@@ -162,7 +299,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
   // POST /api/approvals -- create new approval request
   if (path === '/api/approvals' && method === 'POST') {
-    let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown; timeout_seconds?: unknown; content_hash?: unknown }
+    let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown; timeout_seconds?: unknown; content_hash?: unknown; owner_go_ref?: unknown }
     try {
       body = JSON.parse((await readBody(req)).toString())
     } catch {
@@ -170,7 +307,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const { agent_id, category, action_description, action_payload, timeout_seconds, content_hash } = body
+    const { agent_id, category, action_description, action_payload, timeout_seconds, content_hash, owner_go_ref } = body
     if (typeof agent_id !== 'string' || !agent_id.trim()) {
       json(res, { error: 'agent_id is required' }, 400)
       return true
@@ -195,6 +332,15 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'content_hash must be a 64-char lowercase sha256 hex string if provided' }, 400)
       return true
     }
+    if (owner_go_ref !== undefined && (typeof owner_go_ref !== 'string' || !OWNER_GO_REF_RX.test(owner_go_ref.trim()))) {
+      json(res, { error: 'owner_go_ref must be a short reference (letters, digits, . _ : # / -; at most 120 characters) if provided' }, 400)
+      return true
+    }
+    const goRef = typeof owner_go_ref === 'string' ? owner_go_ref.trim() : null
+    const goHonoured = goRef !== null && ownerGoCoversRequest({ agent_id: agent_id.trim(), category: category.trim(), owner_go_ref: goRef })
+    if (goRef !== null && !goHonoured) {
+      logger.warn({ agent_id, category }, 'owner_go_ref ignored: only an email_send request of the main agent may cite an owner GO -- the owner is notified as usual')
+    }
 
     const id = randomUUID()
     const timeout_at = computeTimeoutAt(category, timeout_seconds)
@@ -206,9 +352,14 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       action_payload: typeof action_payload === 'string' ? action_payload : null,
       timeout_at,
       content_hash: typeof content_hash === 'string' ? content_hash : null,
+      owner_go_ref: goHonoured ? goRef : null,
     })
 
-    notifyOwner(approval)
+    if (ownerGoCoversRequest(approval)) {
+      logger.info({ approvalId: approval.id, ownerGoRef: approval.owner_go_ref }, 'approval owner notification skipped: the main agent cites an existing owner GO -- listed in the next daily owner digest')
+    } else {
+      notifyOwner(approval)
+    }
     notifyMainAgent(approval)
     logger.info({ id, agent_id, category }, 'Approval request created')
     json(res, approval, 201)
