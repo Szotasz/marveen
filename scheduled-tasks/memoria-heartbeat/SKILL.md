@@ -82,7 +82,12 @@ Lépések:
    - ...
    EOF
    ```
-4. Index regen (mindkét szint):
+4. Linter az érintett skillen (KÖTELEZŐ, a skill-akció után):
+   ```bash
+   node {{INSTALL_DIR}}/scripts/skill-lint.mjs ~/.claude/skills/<NEV>
+   ```
+   Ha hibát jelez (nem 0 a kilépési kód): javítsd a jelzett pontot, és futtasd újra, amíg tiszta nem lesz. A szabályok (Anthropic, Skill authoring best practices): a SKILL.md törzse legfeljebb 500 sor; a 100 sornál hosszabb `references/` fájl tetején tartalomjegyzék; minden segédfájlra közvetlenül a SKILL.md mutasson; a SKILL.md linkjei létező fájlra mutassanak. A linter csak jelez; külső forrásból telepített skillt ne írj át.
+5. Index regen (mindkét szint):
    ```bash
    bash {{INSTALL_DIR}}/scripts/skill-index.sh          # globális index frissítése
    bash {{INSTALL_DIR}}/scripts/skill-index.sh "$(pwd)" # ágensspecifikus merged index frissítése
