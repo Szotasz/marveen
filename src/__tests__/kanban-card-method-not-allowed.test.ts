@@ -1,5 +1,5 @@
 // A bare 404 cannot say WHICH half of the request was wrong. On the
-// single-card path only PUT and DELETE are routed, so every other method fell
+// single-card path only PUT and DELETE were routed (GET too since 2dd78397), so every other method fell
 // through to the catch-all "Not found" -- byte-identical to the answer for a
 // card id that does not exist. That ambiguity is not theoretical: it has twice
 // sent a caller looking for the wrong bug, once concluding that an endpoint
@@ -58,25 +58,25 @@ describe('unrouted methods on the single-card path answer 405, not a bare 404', 
     const { ctx, out } = fakeCtx(`/api/kanban/${CARD}`, 'PATCH', { priority: 'normal' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(405)
-    expect(out.headers.allow).toBe('PUT, DELETE')
+    expect(out.headers.allow).toBe('GET, PUT, DELETE')
   })
 
   it('POST answers 405 as well -- the rule is the method set, not one verb', async () => {
     const { ctx, out } = fakeCtx(`/api/kanban/${CARD}`, 'POST', { title: 'x' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(405)
-    expect(out.headers.allow).toBe('PUT, DELETE')
+    expect(out.headers.allow).toBe('GET, PUT, DELETE')
   })
 
-  // Measured, and it corrects a natural assumption: there is NO GET on this
-  // path. Advertising one in the Allow header would send the next caller into
-  // the same fog, one method further along.
-  it('GET answers 405 too, because no single-card read route exists', async () => {
+  // 2dd78397: GET IS routed on this path now (one card, archived ones included; the detailed
+  // tests are in kanban-single-card-get.test.ts). Here only its effect on this file's rule: GET
+  // is no longer an unrouted method, so it answers 200, and the Allow header names it.
+  it('GET is routed now: it answers the card, not 405', async () => {
     const { ctx, out } = fakeCtx(`/api/kanban/${CARD}`, 'GET')
     expect(await tryHandleKanban(ctx)).toBe(true)
-    expect(out.status).toBe(405)
-    expect(out.headers.allow).toBe('PUT, DELETE')
-    expect(out.headers.allow).not.toContain('GET')
+    expect(out.status).toBe(200)
+    expect(out.body.id).toBe(CARD)
+    expect(out.headers.allow).toBeUndefined()
   })
 
   it('the body says the METHOD is the problem, not the card id', async () => {
