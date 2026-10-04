@@ -12,6 +12,8 @@ import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { resolveOwnerChatId } from '../../owner-chat.js'
 import { sendTelegramMessage } from '../telegram.js'
+import { TELEGRAM_MAX_TEXT } from '../commands.js'
+import { TEST_RUN_PREFIX } from '../../test-run-marker.js'
 import type { RouteContext } from './types.js'
 
 const AUTONOMY_CONFIG_PATH = join(PROJECT_ROOT, 'store', 'autonomy-config.json')
@@ -168,17 +170,32 @@ function notifyMainAgent(approval: Approval): void {
 }
 
 // --- bc7c1e9d (b): the daily owner digest of the GO-cited requests ---
-// One message to the owner per Budapest calendar day, sent from 07:00 on the
-// next morning, and only if the day had such a request (an empty day is
-// settled without a message). Per row: time, the self-declared agent_id, the
-// category, the envelope hash prefix, the GO reference and the state; never
-// the content. A day is settled at most once (the digest table's key).
+// One message to the owner from 07:00 Budapest time on the next morning, and
+// only if the day had such a request (an empty day is settled without a
+// message). Per row: time, the self-declared agent_id, the category, the
+// envelope hash prefix, the GO reference and the state; never the content. A
+// day is settled at most once (the digest table's key). b606226d: a morning
+// that catches up several days sends them in the same message, day by day.
 export const OWNER_GO_DIGEST_HOUR = 7
-// A missed morning (the server was down) is caught up day by day, but never
-// further back than this: older days stay on the dashboard.
+// A missed morning (the server was down) is caught up, but never further back
+// than this: older days stay on the dashboard.
 export const OWNER_GO_DIGEST_MAX_CATCHUP_DAYS = 7
 // A failed Telegram send is retried, but not on every sweep tick.
 export const OWNER_GO_DIGEST_RETRY_MS = 15 * 60_000
+// b606226d: the digest is ONE Telegram message, so it must fit the Bot API's
+// text limit (TELEGRAM_MAX_TEXT) together with the [TESZT] marker that
+// sendTelegramMessage puts in front during a test run. One line per request
+// did not: from 2026-10-01 05:00Z the 55 requests of 2026-09-30 got 400
+// "message is too long" (255 of 258 attempts in four days, the other three
+// network errors), and as the oldest unsettled day goes first, no later day
+// went out either. Measured as String.length, like the other Telegram senders
+// here (chunkText in ../commands.ts).
+export const OWNER_GO_DIGEST_MAX_CHARS = TELEGRAM_MAX_TEXT - TEST_RUN_PREFIX.length
+// b606226d: after this many failed sends in a row the due days are settled
+// in-band to the main agent (the path a missing owner chat takes), so a digest
+// that cannot be delivered does not hold back the following mornings. The
+// count is kept in memory: a restart starts it again.
+export const OWNER_GO_DIGEST_MAX_SEND_FAILURES = 3
 
 const BUDAPEST = 'Europe/Budapest'
 
@@ -219,6 +236,18 @@ export function ownerGoDigestDayDue(nowMs: number, lastSettledDay: string | null
   return due <= yesterday ? due : null
 }
 
+// Every day due at `nowMs`, oldest first: from ownerGoDigestDayDue's day to
+// yesterday. b606226d: they are sent together, so the oldest one can no longer
+// hold back the rest. Pure + exported for tests.
+export function ownerGoDigestDaysDue(nowMs: number, lastSettledDay: string | null): string[] {
+  const first = ownerGoDigestDayDue(nowMs, lastSettledDay)
+  if (first === null) return []
+  const yesterday = shiftDay(budapestParts(nowMs).day, -1)
+  const days: string[] = []
+  for (let day = first; day <= yesterday; day = shiftDay(day, 1)) days.push(day)
+  return days
+}
+
 const DIGEST_STATE: Record<Approval['status'], string> = {
   pending: 'függőben',
   approved: 'jóváhagyva',
@@ -226,56 +255,190 @@ const DIGEST_STATE: Record<Approval['status'], string> = {
   timeout: 'lejárt',
 }
 
-// Owner-facing digest text. Plain text, proper accents, no request content. Pure + exported for tests.
-export function buildOwnerGoDigestText(day: string, rows: Approval[]): string {
-  const lines = rows.map((row) => {
-    const at = budapestParts(row.requested_at * 1000)
-    const time = `${String(at.hour).padStart(2, '0')}:${String(at.minute).padStart(2, '0')}`
-    const hash = row.content_hash ? row.content_hash.slice(0, 12) : '-'
-    const state = row.consumed_at ? 'felhasználva' : DIGEST_STATE[row.status]
-    return `${time} | ${row.agent_id} | ${row.category} | boríték ${hash} | GO: ${row.owner_go_ref ?? '-'} | ${state}`
-  })
+// One due day of the digest: the Budapest calendar day and its GO-cited requests.
+export interface OwnerGoDigestDay {
+  day: string
+  rows: Approval[]
+}
+
+function budapestHhmm(sec: number): string {
+  const at = budapestParts(sec * 1000)
+  return `${String(at.hour).padStart(2, '0')}:${String(at.minute).padStart(2, '0')}`
+}
+
+function digestState(row: Approval): string {
+  return row.consumed_at ? 'felhasználva' : DIGEST_STATE[row.status]
+}
+
+function digestRowLine(row: Approval): string {
+  const hash = row.content_hash ? row.content_hash.slice(0, 12) : '-'
+  return `${budapestHhmm(row.requested_at)} | ${row.agent_id} | ${row.category} | boríték ${hash} | GO: ${row.owner_go_ref ?? '-'} | ${digestState(row)}`
+}
+
+// Counts per key, the most frequent first (a tie in key order), whatever order the rows come in.
+function countsByKey(rows: Approval[], key: (row: Approval) => string): Array<[string, number]> {
+  const counts = new Map<string, number>()
+  for (const row of rows) counts.set(key(row), (counts.get(key(row)) ?? 0) + 1)
+  return [...counts].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+}
+
+function fullDayLines(d: OwnerGoDigestDay, multi: boolean): string[] {
+  const lines = d.rows.map(digestRowLine)
+  return multi ? [`${d.day}: ${d.rows.length} kérés`, ...lines] : lines
+}
+
+// b606226d: the compact form of a day whose rows do not fit -- the first and
+// the last time, and the count per state and per GO reference, the most
+// frequent first. At most `maxRefs` references are named, the rest are summed.
+function compactDayLines(d: OwnerGoDigestDay, multi: boolean, maxRefs: number): string[] {
+  const times = d.rows.map((row) => row.requested_at)
+  const first = budapestHhmm(times.reduce((a, b) => Math.min(a, b)))
+  const last = budapestHhmm(times.reduce((a, b) => Math.max(a, b)))
+  const span = first === last ? `${first}-kor` : `az első ${first}-kor, az utolsó ${last}-kor`
+  const refs = countsByKey(d.rows, (row) => row.owner_go_ref ?? '-')
+  const named = refs.slice(0, maxRefs).map(([ref, n]) => `${ref} ${n}`)
+  const rest = refs.slice(named.length)
+  const restRows = rest.reduce((sum, [, n]) => sum + n, 0)
+  const goText = named.length === 0
+    ? `${refs.length} különböző hivatkozás (a lista nem fér el)`
+    : rest.length === 0
+      ? named.join(', ')
+      : `${named.join(', ')}, és még ${rest.length} hivatkozás összesen ${restRows} kéréssel`
   return [
-    `[NAPI ÖSSZESÍTŐ] ${day}: a fő ügynök ${rows.length} email-jóváhagyási kérése meglévő tulajdonosi GO-ra hivatkozott`,
-    'Ezekről egyenként nem ment értesítés. Soronként: idő | kérő | kategória | boríték-hash eleje | GO | állapot.',
-    ...lines,
-    'Részletek: Dashboard -> Jóváhagyások',
-  ].join('\n')
+    multi ? `${d.day}: ${d.rows.length} kérés, ${span}` : `Idő: ${span}`,
+    `Állapot szerint: ${countsByKey(d.rows, digestState).map(([state, n]) => `${state} ${n}`).join(', ')}`,
+    `GO-hivatkozásonként: ${goText}`,
+  ]
+}
+
+function renderDigest(days: OwnerGoDigestDay[], compact: ReadonlySet<number>, maxRefs: number): string {
+  const multi = days.length > 1
+  const total = days.reduce((n, d) => n + d.rows.length, 0)
+  const anyFull = compact.size < days.length
+  const anyCompact = compact.size > 0
+  const subject = `a fő ügynök ${total} email-jóváhagyási kérése meglévő tulajdonosi GO-ra hivatkozott`
+  const header = multi
+    ? `[NAPI ÖSSZESÍTŐ] ${days[0].day} és ${days[days.length - 1].day} között ${days.length} napon: ${subject}`
+    : `[NAPI ÖSSZESÍTŐ] ${days[0].day}: ${subject}`
+  const explain = ['Ezekről egyenként nem ment értesítés.']
+  if (anyCompact) {
+    explain.push(anyFull
+      ? 'Ahol a soros lista nem fér egy üzenetbe, ott csak a darabszámok állnak.'
+      : 'A soros lista nem fér egy üzenetbe, ezért itt csak a darabszámok állnak.')
+  }
+  if (anyFull) explain.push('Soronként: idő | kérő | kategória | boríték-hash eleje | GO | állapot.')
+  const footer = anyCompact ? 'A soros lista: Dashboard -> Jóváhagyások' : 'Részletek: Dashboard -> Jóváhagyások'
+  const sections = days.map((d, i) => (compact.has(i) ? compactDayLines(d, multi, maxRefs) : fullDayLines(d, multi)))
+  // Several days: a blank line before each day and before the footer, so the days read apart on a phone.
+  const body = multi ? sections.flatMap((lines) => ['', ...lines]).concat('') : sections.flat()
+  return [header, explain.join(' '), ...body, footer].join('\n')
+}
+
+// Owner-facing digest text of the due days (oldest first, each with at least
+// one request): one Telegram message of at most `maxChars`. Plain text, proper
+// accents, no request content. b606226d: every day lists its rows while the
+// whole fits; past the limit the largest day turns compact first, then the
+// next largest; if even that is too long (many long GO references), fewer
+// references are named, and only an input far beyond the catch-up window gets
+// cut at a whole line. Never split into several messages: the owner asked for
+// fewer notifications. Pure + exported for tests.
+export function buildOwnerGoDigestText(days: OwnerGoDigestDay[], maxChars: number = OWNER_GO_DIGEST_MAX_CHARS): string {
+  const compact = new Set<number>()
+  let text = renderDigest(days, compact, Infinity)
+  const largestFirst = days
+    .map((d, i) => ({ i, size: fullDayLines(d, true).join('\n').length }))
+    .sort((a, b) => b.size - a.size || a.i - b.i)
+  for (const { i } of largestFirst) {
+    if (text.length <= maxChars) return text
+    compact.add(i)
+    text = renderDigest(days, compact, Infinity)
+  }
+  const mostRefs = days.reduce((m, d) => Math.max(m, new Set(d.rows.map((row) => row.owner_go_ref ?? '-')).size), 0)
+  for (let maxRefs = mostRefs - 1; maxRefs >= 0 && text.length > maxChars; maxRefs--) {
+    text = renderDigest(days, compact, maxRefs)
+  }
+  if (text.length <= maxChars) return text
+  const tail = ['(A többi nem fér egy üzenetbe.)', 'A soros lista: Dashboard -> Jóváhagyások']
+  const lines = text.split('\n').slice(0, -1)
+  while (lines.length > 1 && [...lines, ...tail].join('\n').length > maxChars) lines.pop()
+  return [...lines, ...tail].join('\n').slice(0, maxChars)
 }
 
 let digestInFlight = false
 let lastDigestFailureMs = 0
+let digestSendFailures = 0
 
-// Settles at most one due day per call. Returns what happened (for the sweep log and the tests).
+export function _resetOwnerGoDigestStateForTest(): void {
+  digestInFlight = false
+  lastDigestFailureMs = 0
+  digestSendFailures = 0
+}
+
+// The days are recorded oldest first: the settled mark is max(day), so a write
+// that stops halfway still leaves a settled prefix, and the rest is due again.
+function settleDigestDays(batch: OwnerGoDigestDay[], delivery: 'empty' | 'telegram' | 'in_band', messageId: number | null): void {
+  for (const d of batch) {
+    if (d.rows.length === 0) recordOwnerGoDigest(d.day, 0, 'empty', null)
+    else recordOwnerGoDigest(d.day, d.rows.length, delivery, messageId)
+  }
+}
+
+// Same degraded path as a suppressed ping: visible in-band, never dropped. The
+// reason says why the owner did not get it.
+function settleDigestInBand(batch: OwnerGoDigestDay[], text: string, reason: string): void {
+  createAgentMessage('system', MAIN_AGENT_ID, `[OWNER_UNREACHED owner-go-digest] reason=${reason} ${text}`)
+  settleDigestDays(batch, 'in_band', null)
+  digestSendFailures = 0
+  lastDigestFailureMs = 0
+}
+
+// Settles every due day per call, in one message. Returns what happened (for the sweep log and the tests).
 export async function sendOwnerGoDigestIfDue(nowMs: number = Date.now()): Promise<'none' | 'empty' | 'telegram' | 'in_band' | 'failed'> {
   if (digestInFlight) return 'none'
-  const day = ownerGoDigestDayDue(nowMs, lastOwnerGoDigestDay())
-  if (!day) return 'none'
-  const rows = listOwnerGoApprovalsBetween(budapestMidnightUtcMs(day) / 1000, budapestMidnightUtcMs(shiftDay(day, 1)) / 1000)
-  if (rows.length === 0) {
-    recordOwnerGoDigest(day, 0, 'empty', null)
+  const due = ownerGoDigestDaysDue(nowMs, lastOwnerGoDigestDay())
+  if (due.length === 0) return 'none'
+  const batch: OwnerGoDigestDay[] = due.map((day) => ({
+    day,
+    rows: listOwnerGoApprovalsBetween(budapestMidnightUtcMs(day) / 1000, budapestMidnightUtcMs(shiftDay(day, 1)) / 1000),
+  }))
+  const withRows = batch.filter((d) => d.rows.length > 0)
+  if (withRows.length === 0) {
+    settleDigestDays(batch, 'empty', null)
     return 'empty'
   }
   if (lastDigestFailureMs && nowMs - lastDigestFailureMs < OWNER_GO_DIGEST_RETRY_MS) return 'none'
   digestInFlight = true
+  const logCtx = { days: withRows.map((d) => d.day), rows: withRows.reduce((n, d) => n + d.rows.length, 0) }
   try {
-    const text = buildOwnerGoDigestText(day, rows)
+    const text = buildOwnerGoDigestText(withRows)
     const ownerChat = TELEGRAM_BOT_TOKEN ? resolveOwnerChatId() : null
     if (!TELEGRAM_BOT_TOKEN || !ownerChat) {
-      // Same degraded path as a suppressed ping: visible in-band, never dropped.
-      logger.warn({ day, rows: rows.length }, 'owner GO digest: no Telegram path to the owner -- delivered in-band to the main agent')
-      createAgentMessage('system', MAIN_AGENT_ID, `[OWNER_UNREACHED owner-go-digest] ${text}`)
-      recordOwnerGoDigest(day, rows.length, 'in_band', null)
+      logger.warn(logCtx, 'owner GO digest: no Telegram path to the owner -- delivered in-band to the main agent')
+      settleDigestInBand(batch, text, 'no-telegram-path')
       return 'in_band'
     }
-    const messageId = await sendTelegramMessage(TELEGRAM_BOT_TOKEN, ownerChat, text)
-    recordOwnerGoDigest(day, rows.length, 'telegram', messageId ?? null)
+    let messageId: number | null
+    try {
+      messageId = await sendTelegramMessage(TELEGRAM_BOT_TOKEN, ownerChat, text)
+    } catch (err) {
+      digestSendFailures += 1
+      lastDigestFailureMs = nowMs
+      if (digestSendFailures < OWNER_GO_DIGEST_MAX_SEND_FAILURES) {
+        logger.warn({ err, ...logCtx, failures: digestSendFailures }, 'owner GO digest FAILED -- retried after the backoff; the requests are on the dashboard')
+        return 'failed'
+      }
+      logger.warn({ err, ...logCtx, failures: digestSendFailures }, 'owner GO digest FAILED repeatedly -- delivered in-band to the main agent, so the next day is not held back')
+      settleDigestInBand(batch, text, `send-failed failures=${digestSendFailures}`)
+      return 'in_band'
+    }
+    settleDigestDays(batch, 'telegram', messageId ?? null)
+    digestSendFailures = 0
     lastDigestFailureMs = 0
-    logger.info({ day, rows: rows.length, messageId }, 'owner GO digest sent')
+    logger.info({ ...logCtx, messageId }, 'owner GO digest sent')
     return 'telegram'
   } catch (err) {
     lastDigestFailureMs = nowMs
-    logger.warn({ err, day, rows: rows.length }, 'owner GO digest FAILED -- retried after the backoff; the requests are on the dashboard')
+    logger.warn({ err, ...logCtx }, 'owner GO digest FAILED -- retried after the backoff; the requests are on the dashboard')
     return 'failed'
   } finally {
     digestInFlight = false
