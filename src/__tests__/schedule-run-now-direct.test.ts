@@ -10,7 +10,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // attemptFireTask is module-internal; its first observable step is the
 // restart-lock check, so that is the probe. The stub answers "restart in
 // flight", which makes attemptFireTask return 'busy' before it touches tmux:
-// even under the mutant nothing reaches a live session.
+// even under the mutant nothing reaches a live session. The tmux layer below
+// it is stubbed to throw as well (see the agent-process mock).
 
 const h = vi.hoisted(() => ({
   tasks: [] as unknown[],
@@ -33,6 +34,24 @@ vi.mock('../web/restart-lock.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../web/restart-lock.js')>()),
   isRestartInFlight: h.restartProbe,
 }))
+
+// Belt and braces (Geri's #1690 verify): the test's safety must not hang on
+// attemptFireTask's internal order. If a refactor ever moves a tmux step ahead
+// of the restart-lock check, these throw instead of touching a live session or
+// starting the heartbeat agent on the host that runs the suite.
+vi.mock('../web/agent-process.js', async (importOriginal) => {
+  const unreachable = (fn: string) => () => {
+    throw new Error(`schedule-run-now-direct: ${fn} must not be reached from this test`)
+  }
+  return {
+    ...(await importOriginal<typeof import('../web/agent-process.js')>()),
+    sessionExistsOnHost: unreachable('sessionExistsOnHost'),
+    startAgentProcess: unreachable('startAgentProcess'),
+    sendPromptToSession: unreachable('sendPromptToSession'),
+    isSessionReadyForPrompt: unreachable('isSessionReadyForPrompt'),
+    capturePane: unreachable('capturePane'),
+  }
+})
 
 vi.mock('../db.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../db.js')>()),
