@@ -487,7 +487,7 @@ export function dailyHandoffDue(
  * dashboard process first saw the agent (say 02:05), and arming the tier later
  * the same day (say 12:53, slot 03:00) finds "last served 02:05, before today's
  * slot, slot passed" -- due, and it fires on the very next sweep. Measured on
- * the Marveen fleet 2026-09-29: armed 12:53, four agents handed off at 12:56.
+ * a live fleet 2026-09-29: armed 12:53, four agents handed off at 12:56.
  *
  * So a disarmed tier forgets the record, and the first armed sight seeds it.
  * Arming after today's slot then waits for tomorrow; arming before it fires at

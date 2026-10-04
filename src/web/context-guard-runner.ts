@@ -470,7 +470,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     dailyHandoffDue: (() => {
       // Forgetting does NOT wait for an idle sweep: an agent that was never idle
       // while the tier was off would otherwise keep its old armed record, and
-      // re-arming after the slot would fire at once (didi, 987baf44). Seeding
+      // re-arming after the slot would fire at once. Seeding
       // and firing stay behind the idle gate, as before.
       if (!dailyHandoffArmed(cfg)) {
         lastDailyHandoff.delete(name)

@@ -104,7 +104,7 @@ describe('dailyHandoffDue -- same due-semantics as the nightly restart', () => {
 })
 
 describe('dailyHandoffStep -- the served record is seeded while ARMED', () => {
-  // The measured case (Marveen fleet, 2026-09-29): the dashboard process first
+  // The measured case (a live fleet, 2026-09-29): the dashboard process first
   // saw the agents at ~02:05 with the tier OFF, the tier was armed at 12:53 for
   // 03:00, and four agents were handed off at 12:56 -- a slot already passed
   // today counted as missed. Every time below is on one local day.
@@ -323,7 +323,7 @@ describe('runner wiring', () => {
     expect(code).toContain('else lastDailyHandoff.set(name, step.record)')
   })
 
-  it('a disarmed tier is forgotten on EVERY sweep, before the idle gate (didi, 987baf44)', () => {
+  it('a disarmed tier is forgotten on EVERY sweep, before the idle gate, so a never-idle agent keeps no old armed record', () => {
     const code = src('src/web/context-guard-runner.ts')
     // An agent that is never idle while the tier is off must still lose its
     // old ARMED record; otherwise re-arming after the slot fires at once.
