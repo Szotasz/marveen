@@ -450,8 +450,107 @@ function schedulesInSegment(seg) {
 // masking keeps the length, so the quoted argument is then taken from the same place
 // in the command itself and judged as a command of its own (gateDecision, depth <= 3).
 // The -c option is the first word of the form -...c after the shell word, before any
-// `;`, `&`, `|`, newline or quote, and the script is the quoted word right after it.
+// `;`, `&`, `|`, newline or quote, and the script is the shell word right after it,
+// read by shellWordAt below.
 const SHELL_C_WORD_RX = /(?:bash|sh|dash|zsh|ksh|su|runuser|flock)\b/iy
+
+// The script argument is ONE shell word, read the way the shell reads it (eabc253c).
+// Adjacent quoted and unquoted parts are one word: `'a'\''b'` and `'a'"'"'b'` are both the
+// word a'b, the two forms bash's printf %q and Python's shlex.quote write for a single
+// quote inside a quoted word. $'...' decodes its backslash escapes (ANSI-C quoting) and
+// $"..." reads as "...". Inside "..." a backslash escapes only $ ` " and itself; outside
+// quotes it escapes any character. The word ends at an unquoted blank, newline or one of
+// ; & | ( ) < >. A $(...) or a backquoted part is kept as text up to its close: its
+// value is only known when it runs, and the text is what the checks can read.
+// Measured 2026-10-04 (eabc253c): `bash -c $'crontab -r'` and both escape forms of a
+// nested `bash -c '...'` passed, because only the first quoted part of the word was read.
+// One pass, so the time is linear in the word (the hook fails open after 10 s). null: an
+// unterminated quote or substitution, a word the shell would not run.
+const ANSI_C_ESCAPES = { a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?' }
+const WORD_END = new Set([' ', '\t', '\n', ';', '&', '|', '(', ')', '<', '>'])
+const HEX = /^[0-9A-Fa-f]+$/
+function hexDigits(s, i, max) {
+  let j = i
+  while (j < s.length && j - i < max && HEX.test(s[j])) j++
+  return j
+}
+export function shellWordAt(src, at) {
+  const s = String(src ?? '')
+  const n = s.length
+  let i = at
+  let out = ''
+  if (i < n && s[i] === '#') return null // a comment, no word
+  while (i < n && !WORD_END.has(s[i])) {
+    const c = s[i]
+    if (c === "'") {
+      const close = s.indexOf("'", i + 1)
+      if (close === -1) return null
+      out += s.slice(i + 1, close)
+      i = close + 1
+    } else if (c === '$' && s[i + 1] === "'") {
+      i += 2
+      for (;;) {
+        if (i >= n) return null
+        const d = s[i]
+        if (d === "'") { i++; break }
+        if (d !== '\\' || i + 1 >= n) { out += d; i++; continue }
+        const e = s[i + 1]
+        if (Object.prototype.hasOwnProperty.call(ANSI_C_ESCAPES, e)) { out += ANSI_C_ESCAPES[e]; i += 2; continue }
+        if (e >= '0' && e <= '7') {
+          let j = i + 1
+          while (j < n && j - (i + 1) < 3 && s[j] >= '0' && s[j] <= '7') j++
+          out += String.fromCharCode(parseInt(s.slice(i + 1, j), 8) & 0xff)
+          i = j
+          continue
+        }
+        const width = e === 'x' ? 2 : e === 'u' ? 4 : e === 'U' ? 8 : 0
+        const j = width ? hexDigits(s, i + 2, width) : i + 2
+        if (width && j > i + 2) {
+          const cp = parseInt(s.slice(i + 2, j), 16)
+          out += e === 'x' ? String.fromCharCode(cp) : cp <= 0x10ffff ? String.fromCodePoint(cp) : ''
+          i = j
+          continue
+        }
+        if (e === 'c' && i + 2 < n) { out += String.fromCharCode(s.charCodeAt(i + 2) & 0x1f); i += 3; continue }
+        out += '\\' + e // not an escape: both characters stay
+        i += 2
+      }
+    } else if (c === '"' || (c === '$' && s[i + 1] === '"')) {
+      i += c === '$' ? 2 : 1
+      for (;;) {
+        if (i >= n) return null
+        const d = s[i]
+        if (d === '"') { i++; break }
+        if (d === '\\' && i + 1 < n && '$`"\\'.includes(s[i + 1])) { out += s[i + 1]; i += 2; continue }
+        out += d
+        i++
+      }
+    } else if (c === '\\') {
+      if (i + 1 < n) out += s[i + 1]
+      i += 2
+    } else if (c === '$' && s[i + 1] === '(') {
+      let depth = 0
+      const start = i
+      i++
+      for (;;) {
+        if (i >= n) return null
+        if (s[i] === '(') depth++
+        else if (s[i] === ')' && --depth === 0) { i++; break }
+        i++
+      }
+      out += s.slice(start, i)
+    } else if (c === '`') {
+      const close = s.indexOf('`', i + 1)
+      if (close === -1) return null
+      out += s.slice(i, close + 1)
+      i = close + 1
+    } else {
+      out += c
+      i++
+    }
+  }
+  return out
+}
 export function shellCScripts(command) {
   const src = String(command ?? '').replace(/\\\r?\n/g, ' ')
   const view = maskInertLiterals(src, { strict: false }) ?? src
@@ -473,14 +572,6 @@ export function shellCScripts(command) {
       if (j > i + 2 && view[j - 1] === 'c' && j < n && isWs(view.charCodeAt(j))) { optAt[i] = i; optEnd[i] = j }
     }
   }
-  // where a quoted string opened at i closes, as the shell reads it
-  const sq = new Int32Array(n + 2)
-  const dq = new Int32Array(n + 2)
-  sq[n] = sq[n + 1] = dq[n] = dq[n + 1] = -1
-  for (let i = n - 1; i >= 0; i--) {
-    sq[i] = src[i] === "'" ? i : sq[i + 1]
-    dq[i] = src[i] === '"' ? i : src[i] === '\\' ? dq[Math.min(i + 2, n)] : dq[i + 1]
-  }
   const memo = new Map()
   const scripts = new Set() // by the position the script starts at
   const out = []
@@ -494,13 +585,8 @@ export function shellCScripts(command) {
     while (at < n && (src[at] === ' ' || src[at] === '\t')) at++
     if (scripts.has(at)) return
     scripts.add(at)
-    if (src[at] === "'") {
-      const close = sq[at + 1]
-      if (close !== -1) out.push(src.slice(at + 1, close))
-    } else if (src[at] === '"') {
-      const close = dq[at + 1]
-      if (close !== -1) out.push(src.slice(at + 1, close).replace(/\\(["\\$`])/g, '$1'))
-    }
+    const word = shellWordAt(src, at)
+    if (word) out.push(word)
   })
   return out
 }
