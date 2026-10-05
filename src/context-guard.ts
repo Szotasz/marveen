@@ -531,6 +531,29 @@ export function dailyHandoffSweep(
   return dailyHandoffStep(cfg, lastRunMs, localMidnightMs, nowMs)
 }
 
+/**
+ * dailyHandoffSweep applied to the runner's record map: an `undefined` record
+ * deletes the agent's entry, anything else replaces it. Returns whether the slot
+ * is due on this sweep.
+ *
+ * It exists so the runner's call is one expression with nowhere to put an early
+ * return: a gate in front of the sweep (`if (!running) return false`) is exactly
+ * the bug the sweep's order fixes -- the forget waits behind the idle gate again.
+ */
+export function applyDailyHandoffSweep(
+  records: Map<string, number>,
+  name: string,
+  cfg: ContextGuardConfig,
+  eligible: boolean,
+  localMidnightMs: number,
+  nowMs: number,
+): boolean {
+  const sweep = dailyHandoffSweep(cfg, records.get(name), eligible, localMidnightMs, nowMs)
+  if (sweep.record === undefined) records.delete(name)
+  else records.set(name, sweep.record)
+  return sweep.due
+}
+
 /** Slack between HANDOFF.md's mtime and the last transcript activity before
  *  the handoff counts as stale. The handoff-writing turn itself touches the
  *  transcript slightly AFTER the file write (tool result + closing reply), so

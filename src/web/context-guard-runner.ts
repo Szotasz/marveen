@@ -29,7 +29,7 @@ import {
   contextLimitForModel,
   calibrateLimit,
   handoffStaleMinutes,
-  dailyHandoffSweep,
+  applyDailyHandoffSweep,
   DAILY_HANDOFF_REASON_PREFIX,
   IDLE_FLUSH_REASON_PREFIX,
   INITIAL_GUARD_STATE,
@@ -463,15 +463,8 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     // that can restart, and the probe is a single stat().
     idleMs: running && needPct ? measureIdleMs(name, nowMs) : null,
     // Seed-on-first-ARMED-sight, and forget-while-disarmed on every sweep:
-    // dailyHandoffSweep decides both; the runner only applies the record.
-    dailyHandoffDue: (() => {
-      const sweep = dailyHandoffSweep(
-        cfg, lastDailyHandoff.get(name), running && state.phase === 'idle', localMidnightMs(nowMs), nowMs,
-      )
-      if (sweep.record === undefined) lastDailyHandoff.delete(name)
-      else lastDailyHandoff.set(name, sweep.record)
-      return sweep.due
-    })(),
+    // dailyHandoffSweep decides both, applyDailyHandoffSweep applies the record.
+    dailyHandoffDue: applyDailyHandoffSweep(lastDailyHandoff, name, cfg, running && state.phase === 'idle', localMidnightMs(nowMs), nowMs),
   }
 
   const decision = decideGuard(state, inputs, cfg)

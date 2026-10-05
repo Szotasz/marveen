@@ -18,6 +18,7 @@ import {
   dailyHandoffDue,
   dailyHandoffStep,
   dailyHandoffSweep,
+  applyDailyHandoffSweep,
   DAILY_HANDOFF_REASON_PREFIX,
   IDLE_FLUSH_REASON_PREFIX,
   DEFAULT_CONTEXT_GUARD,
@@ -174,6 +175,38 @@ describe('dailyHandoffSweep -- one sweep, in the order the runner applies it', (
     record = dailyHandoffSweep(OFF, record, false, MIDNIGHT, at(2, 0)).record         // disarmed while busy
     const armed = dailyHandoffSweep(ON, record, true, MIDNIGHT, at(12, 53))           // armed after 03:00
     expect(armed.due).toBe(false)
+  })
+})
+
+describe('applyDailyHandoffSweep -- the sweep applied to the runner\'s record map', () => {
+  const at = (h: number, m: number) => MIDNIGHT + (h * 60 + m) * 60_000
+  const OFF: ContextGuardConfig = { ...DAILY_ONLY, dailyHandoffEnabled: false, dailyHandoffTime: '03:00' }
+  const ON: ContextGuardConfig = { ...DAILY_ONLY, dailyHandoffTime: '03:00' }
+
+  it('a never-running agent on a disarmed tier loses its record, so arming after the slot does not fire', () => {
+    const records = new Map([['a', at(0, 30)]])
+    expect(applyDailyHandoffSweep(records, 'a', OFF, false, MIDNIGHT, at(2, 0))).toBe(false)
+    expect(records.has('a')).toBe(false)
+    expect(applyDailyHandoffSweep(records, 'a', ON, true, MIDNIGHT, at(12, 53))).toBe(false)
+    expect(records.get('a')).toBe(at(12, 53))
+  })
+
+  it('armed but not eligible: the record is left exactly as it was', () => {
+    const records = new Map([['a', at(1, 0)]])
+    expect(applyDailyHandoffSweep(records, 'a', ON, false, MIDNIGHT, at(12, 0))).toBe(false)
+    expect(records.get('a')).toBe(at(1, 0))
+    const empty = new Map<string, number>()
+    applyDailyHandoffSweep(empty, 'a', ON, false, MIDNIGHT, at(12, 0))
+    expect(empty.has('a')).toBe(false)
+  })
+
+  it('armed and eligible: returns due for a record from before the slot, and touches only its own agent', () => {
+    const records = new Map([['a', at(1, 0)], ['b', at(0, 10)]])
+    expect(applyDailyHandoffSweep(records, 'a', ON, true, MIDNIGHT, at(3, 0))).toBe(true)
+    expect(records.get('a')).toBe(at(1, 0))
+    expect(applyDailyHandoffSweep(records, 'a', OFF, false, MIDNIGHT, at(3, 0))).toBe(false)
+    expect(records.has('a')).toBe(false)
+    expect(records.get('b')).toBe(at(0, 10))
   })
 })
 
@@ -344,13 +377,16 @@ describe('runner wiring', () => {
     )
   })
 
-  it('the runner applies BOTH halves of dailyHandoffSweep, gated on running and idle', () => {
+  it('the runner computes dailyHandoffDue in ONE call, gated on running and idle', () => {
     const code = src('src/web/context-guard-runner.ts')
-    // The decision is unit-tested below; what only the runner can get wrong is the
-    // eligibility it passes and applying an `undefined` record as a delete.
-    expect(code).toContain("dailyHandoffSweep(\n        cfg, lastDailyHandoff.get(name), running && state.phase === 'idle', localMidnightMs(nowMs), nowMs,")
-    expect(code).toContain('if (sweep.record === undefined) lastDailyHandoff.delete(name)')
-    expect(code).toContain('else lastDailyHandoff.set(name, sweep.record)')
+    // Applying the record is behaviour-tested above (applyDailyHandoffSweep); what only
+    // the runner can get wrong is the eligibility it passes. The whole property line is
+    // pinned, so nothing can stand in front of the call: an early `if (!running) return
+    // false` or a `running && ...` guard would put the forget behind the idle gate again.
+    expect(code).toContain(
+      "\n    dailyHandoffDue: applyDailyHandoffSweep(lastDailyHandoff, name, cfg, running && state.phase === 'idle', localMidnightMs(nowMs), nowMs),\n",
+    )
+    expect(code.match(/dailyHandoffDue:/g)).toHaveLength(1)
   })
 
   it('the daily reason selects the scheduled wording, not the act tier percentage prompt', () => {
