@@ -211,7 +211,7 @@ export function readModQuotaSnapshot(
   let sources = 0
   for (const name of names) {
     let d: {
-      agent?: unknown; alive_at?: unknown; state?: unknown
+      agent?: unknown; alive_at?: unknown; updated_at?: unknown; state?: unknown
       history?: Array<{ ts?: unknown; reason?: unknown }>; usage?: { rateLimits?: unknown }
     }
     try {
@@ -254,10 +254,18 @@ export function readModQuotaSnapshot(
   }
 }
 
-/** When a mod source's numbers were last current (unix seconds), or null when unknown. */
-function sourceDataSec(d: { alive_at?: unknown; state?: unknown; history?: Array<{ ts?: unknown; reason?: unknown }> }): number | null {
-  if ((d.state === 'working' || d.state === 'awaiting_approval') && typeof d.alive_at === 'number') {
-    return Math.floor(d.alive_at / 1000)
+/**
+ * When a mod source's numbers were last current (unix seconds), or null when
+ * unknown. A working or approval-waiting source counts from its LAST EVENT
+ * (updated_at: turn start, tool call, ask) -- not alive_at, which the mod's
+ * minute tick refreshes, so a session parked on a prompt for three hours, or
+ * inside a 27-minute tool call, would read as "measured just now" (Geri #1693).
+ */
+function sourceDataSec(d: {
+  updated_at?: unknown; state?: unknown; history?: Array<{ ts?: unknown; reason?: unknown }>
+}): number | null {
+  if ((d.state === 'working' || d.state === 'awaiting_approval') && typeof d.updated_at === 'number') {
+    return Math.floor(d.updated_at / 1000)
   }
   const history = Array.isArray(d.history) ? d.history : []
   for (let i = history.length - 1; i >= 0; i--) {

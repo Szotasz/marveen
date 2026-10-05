@@ -17,12 +17,15 @@ afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
 // A mod state file. By default an idle agent whose last turn completed
 // `turnAgoSec` ago; its alive_at keeps ticking regardless (aliveAgoSec).
-function source(agent: string, limits: unknown[], o: { turnAgoSec?: number | null; aliveAgoSec?: number; state?: string } = {}) {
+function source(agent: string, limits: unknown[], o: {
+  turnAgoSec?: number | null; aliveAgoSec?: number; state?: string; updatedAgoSec?: number; history?: unknown[]
+} = {}) {
   const turnAgo = o.turnAgoSec === undefined ? 30 : o.turnAgoSec
-  const history = turnAgo === null ? [{ ts: (NOW - 999) * 1000, from: 'starting', to: 'idle', reason: 'session.start' }]
-    : [{ ts: (NOW - turnAgo) * 1000, from: 'working', to: 'idle', reason: 'turn.complete:answer' }]
+  const history = o.history ?? (turnAgo === null ? [{ ts: (NOW - 999) * 1000, from: 'starting', to: 'idle', reason: 'session.start' }]
+    : [{ ts: (NOW - turnAgo) * 1000, from: 'working', to: 'idle', reason: 'turn.complete:answer' }])
   writeFileSync(join(dir, `${agent}.json`), JSON.stringify({
-    agent, state: o.state ?? 'idle', alive_at: (NOW - (o.aliveAgoSec ?? 5)) * 1000, history, usage: { rateLimits: limits },
+    agent, state: o.state ?? 'idle', alive_at: (NOW - (o.aliveAgoSec ?? 5)) * 1000,
+    updated_at: (NOW - (o.updatedAgoSec ?? o.aliveAgoSec ?? 5)) * 1000, history, usage: { rateLimits: limits },
   }))
 }
 const five = (pct: number, resetSec = NOW + 3600) => ({ kind: 'five_hour', percentUsed: pct, resetsAt: iso(resetSec) })
@@ -86,11 +89,34 @@ describe('readModQuotaSnapshot', () => {
     expect(readModQuotaSnapshot(dir, NOW, 21600).status).toBe('stale')
   })
 
-  it('a working agent is current now', () => {
-    source('alpha', [week(20)], { turnAgoSec: 8 * 3600, aliveAgoSec: 7, state: 'working' })
-    const q = readModQuotaSnapshot(dir, NOW, 21600)
-    expect(q.ageSec).toBe(7)
-    expect(q.status).toBe('ok')
+  it('a working agent counts from its last event (updated_at), not the minute tick', () => {
+    source('alpha', [week(20)], { turnAgoSec: 8 * 3600, aliveAgoSec: 7, updatedAgoSec: 7, state: 'working' })
+    expect(readModQuotaSnapshot(dir, NOW, 21600)).toMatchObject({ ageSec: 7, status: 'ok' })
+    // inside a 27-minute tool call: alive_at ticks, the last event is 27 minutes old
+    source('alpha', [week(20)], { aliveAgoSec: 20, updatedAgoSec: 27 * 60, state: 'working' })
+    expect(readModQuotaSnapshot(dir, NOW, 21600).ageSec).toBe(27 * 60)
+  })
+
+  it('a session parked on an approval prompt for 3 hours is NOT "just now" (Geri #1693)', () => {
+    source('zara', [week(20)], { aliveAgoSec: 20, updatedAgoSec: 3 * 3600, state: 'awaiting_approval' })
+    expect(readModQuotaSnapshot(dir, NOW, 21600).ageSec).toBe(3 * 3600)
+  })
+
+  it('the LAST completed turn counts, not the first', () => {
+    source('alpha', [week(20)], { history: [
+      { ts: (NOW - 7200) * 1000, from: 'working', to: 'idle', reason: 'turn.complete:answer' },
+      { ts: (NOW - 7100) * 1000, from: 'idle', to: 'working', reason: 'turn.start' },
+      { ts: (NOW - 600) * 1000, from: 'working', to: 'idle', reason: 'turn.complete:answer' },
+    ] })
+    expect(readModQuotaSnapshot(dir, NOW).ageSec).toBe(600)
+  })
+
+  it('if ANY chosen window has an unknown age, the snapshot age is unknown (stale)', () => {
+    source('samu', [five(50)], { turnAgoSec: 60 })
+    source('dani', [week(40)], { turnAgoSec: null })
+    const q = readModQuotaSnapshot(dir, NOW)
+    expect(q.ageSec).toBeNull()
+    expect(q.status).toBe('stale')
   })
 
   it('no completed turn since the session started: unknown age, stale', () => {
