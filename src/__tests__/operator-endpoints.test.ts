@@ -78,7 +78,10 @@ vi.mock('../web/system-status.js', () => ({
 }))
 vi.mock('../web/agent-config.js', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
-  isKnownAgent: (n: string) => n === 'samu' || n === 'marveen',
+  // The real isKnownAgent also answers TRUE for names that resolve to the agents/
+  // base itself ('./', 'x/..', 'samu/..': safeJoin allows the exact base), so the
+  // mock does too -- the route's own name check must be what refuses them.
+  isKnownAgent: (n: string) => ['samu', 'marveen', './', 'x/..', 'samu/..'].includes(n),
   readAgentRemoteHost: () => null,
 }))
 vi.mock('../web/agent-process.js', async (orig) => ({
@@ -206,6 +209,18 @@ describe('forwarded actions', () => {
     ])
     expect(h.audit.map(a => a.key)).toEqual(['operator:agent-start', 'operator:agent-stop', 'operator:agent-restart'])
     expect(h.audit[0]!.actor).toBe('operator:it-op#7')
+  })
+
+  it('a name that resolves to the agents/ base (and that isKnownAgent accepts) is a 404 and forwards nothing', async () => {
+    for (const raw of ['.%2F', 'x%2F..', 'samu%2F..']) {
+      for (const action of ['restart', 'stop', 'start']) {
+        expect((await call('POST', `/api/operator/agents/${raw}/${action}`)).status, `${raw} ${action}`).toBe(404)
+      }
+      expect((await call('POST', `/api/operator/agents/${raw}/commands/login`)).status).toBe(404)
+      expect((await call('GET', `/api/operator/agents/${raw}/pane/stream`)).status).toBe(404)
+    }
+    expect(h.forwarded).toEqual([])
+    expect(h.prompts).toEqual([])
   })
 
   it('an unknown or malformed agent name is a 404 and forwards nothing', async () => {
@@ -374,6 +389,14 @@ describe('operator login: key in, HttpOnly cookie out', () => {
     const r = await call('POST', '/api/operator/login', { body: { key: k.key }, auth: undefined })
     expect(r.status).toBe(403)
     expect(r.headers['set-cookie']).toBeUndefined()
+  })
+
+  it('a browser session lasts at most 12 hours, even when the key lives longer', async () => {
+    const k = createDeviceKey('it-op4', { scope: 'operator', expiresInDays: 300 })
+    const r = await call('POST', '/api/operator/login', { body: { key: k.key }, auth: undefined })
+    const maxAge = Number(/Max-Age=(\d+)/.exec(r.headers['set-cookie']!)![1])
+    expect(maxAge).toBeGreaterThan(12 * 3600 - 5)
+    expect(maxAge).toBeLessThanOrEqual(12 * 3600)
   })
 
   it('the cookie name is the one the gate reads', () => {
