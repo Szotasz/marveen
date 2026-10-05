@@ -51,6 +51,9 @@ export function shouldNotifyDelegator(fromAgent: string, toAgent: string, conten
   return true
 }
 
+/** The result a voice-channel answer is closed with: it is read by the relay, never delivered. */
+export const VOICE_MAILBOX_RESULT = 'voice-channel mailbox: no session delivery; the voice relay reads it'
+
 // Frozen at module load, like the config constant it derives from.
 const SYSTEM_SENDERS = parseSystemSenderIds(SYSTEM_SENDER_IDS, sanitizeAgentIdent)
 
@@ -339,7 +342,16 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // window, so the sender believed they had been delivered. In the last 30
     // days these were the ONLY non-agent recipients. A registered agent that is
     // merely not running is a different case and keeps the retry path below.
-    if (!storedTo.includes('/') && !isKnownAgent(sanitizeAgentIdent(storedTo))) {
+    // VOICEREPLY1005: the voice channel id is a PULL MAILBOX, not an agent. The
+    // voice relay sends the owner's dictation in as VOICE_CHANNEL_AGENT_ID, and
+    // an answer goes back to the same id; the relay reads it from the sender's
+    // conversation (GET /api/messages?agent=<sender>). No session owns it, so
+    // it must be accepted here even though it is not a registered agent -- the
+    // UNKNOWNTO924 gate below rejected every voice answer (measured 2026-10-05,
+    // 400 "unknown recipient") -- and closed at once below, so the router never
+    // tries to deliver it and raises no [handoff-failure].
+    const isVoiceMailbox = !storedTo.includes('/') && sanitizeAgentIdent(storedTo) === VOICE_CHANNEL_AGENT_ID
+    if (!storedTo.includes('/') && !isVoiceMailbox && !isKnownAgent(sanitizeAgentIdent(storedTo))) {
       logger.warn({ from: from.trim(), to: storedTo }, 'Rejected /api/messages POST to an unregistered recipient')
       json(res, { error: `unknown recipient '${storedTo}' -- to must be a registered fleet agent id (or "<system>/<agent>" for federation)` }, 400)
       return true
@@ -359,6 +371,12 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
     const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote)
+    if (isVoiceMailbox) {
+      markMessageDone(msg.id, VOICE_MAILBOX_RESULT)
+      logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, 'Voice-channel answer stored in the mailbox (no session delivery)')
+      json(res, { ...(getAgentMessage(msg.id) ?? msg), mailbox: true })
+      return true
+    }
     // Backpressure, returned WITH the id rather than behind a second call:
     // `{"id":N,"status":"pending"}` alone reads as "sent", and on a busy
     // recipient it can be 80 minutes from true. See getRecipientQueueState for
