@@ -1,2 +1,6 @@
-# Written by Claude Code itself each time it loads the mod.
+# Written by Claude Code itself each time it loads the mod. tsconfig.json
+# extends the types/ copy, so it must not be committed on its own: in a fresh
+# checkout that target does not exist and every TS transformer that walks up
+# to this tsconfig fails on it (the full vitest run did, 2026-10-05).
 .claude-plugin/types/
+tsconfig.json
