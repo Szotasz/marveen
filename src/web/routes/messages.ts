@@ -350,7 +350,10 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // UNKNOWNTO924 gate below rejected every voice answer (measured 2026-10-05,
     // 400 "unknown recipient") -- and closed at once below, so the router never
     // tries to deliver it and raises no [handoff-failure].
-    const isVoiceMailbox = !storedTo.includes('/') && sanitizeAgentIdent(storedTo) === VOICE_CHANNEL_AGENT_ID
+    // EXACT match on the stored id (review #1697): the row is closed at once, so
+    // a near-miss like 'hanna!' (sanitised to 'hanna') would be stored under a
+    // name the relay never reads, and lost without a sound. It gets the 400.
+    const isVoiceMailbox = storedTo === VOICE_CHANNEL_AGENT_ID
     if (!storedTo.includes('/') && !isVoiceMailbox && !isKnownAgent(sanitizeAgentIdent(storedTo))) {
       logger.warn({ from: from.trim(), to: storedTo }, 'Rejected /api/messages POST to an unregistered recipient')
       json(res, { error: `unknown recipient '${storedTo}' -- to must be a registered fleet agent id (or "<system>/<agent>" for federation)` }, 400)

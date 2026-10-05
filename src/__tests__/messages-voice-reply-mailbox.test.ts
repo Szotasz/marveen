@@ -67,6 +67,14 @@ describe('POST /api/messages to the voice channel mailbox (VOICEREPLY1005)', () 
     expect(r.json.targetRunning).toBeUndefined()
   })
 
+  it('a near-miss of the voice id is a 400, not a mailbox row nobody reads', async () => {
+    for (const to of [`${VOICE_CHANNEL_AGENT_ID}!`, `h.${VOICE_CHANNEL_AGENT_ID}`, `${VOICE_CHANNEL_AGENT_ID.slice(0, 2)} ${VOICE_CHANNEL_AGENT_ID.slice(2)}`]) {
+      const r = await post({ from: MAIN_AGENT_ID, to, content: 'x' })
+      expect(r.statusCode, to).toBe(400)
+      expect(r.json.mailbox).toBeUndefined()
+    }
+  })
+
   it('every other unregistered recipient is still rejected (UNKNOWNTO924 unchanged)', async () => {
     for (const to of ['PLACEHOLDER', 'szabolcs', `${VOICE_CHANNEL_AGENT_ID}x`]) {
       const r = await post({ from: MAIN_AGENT_ID, to, content: 'x' })
