@@ -509,6 +509,18 @@ export function writeAgentMemoryIsolation(name: string, enabled: boolean): void 
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
+// Opt-in per-agent agent-state-observer mod (default OFF, MODSTERMEK1005).
+// When true the launcher loads plugins/agent-state-observer for this agent's
+// session (see state-observer.ts for the version gate and what it writes).
+export function readAgentStateObserver(name: string): boolean {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    return config.stateObserver === true
+  } catch { /* fall through */ }
+  return false
+}
+
 // Opt-in per-agent worksource channel (default OFF). When true the router hands
 // inter-agent messages to this agent by writing a file into its worksource
 // queue instead of typing them into its tmux pane, and the launcher loads the
