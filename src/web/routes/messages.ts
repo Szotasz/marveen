@@ -351,7 +351,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // 400 "unknown recipient") -- and closed at once below, so the router never
     // tries to deliver it and raises no [handoff-failure].
     // EXACT match on the stored id (review #1697): the row is closed at once, so
-    // a near-miss like 'hanna!' (sanitised to 'hanna') would be stored under a
+    // a near-miss (the voice id plus a stray character, sanitised back to the voice id) would be stored under a
     // name the relay never reads, and lost without a sound. It gets the 400.
     const isVoiceMailbox = storedTo === VOICE_CHANNEL_AGENT_ID
     if (!storedTo.includes('/') && !isVoiceMailbox && !isKnownAgent(sanitizeAgentIdent(storedTo))) {
