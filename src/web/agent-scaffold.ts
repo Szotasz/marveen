@@ -2539,23 +2539,31 @@ function buildSkillsPathTrapBody(): string {
     // Chief memóriája. A skills symlink nem az egyetlen ilyen út; a szabály
     // általános, ezért itt, ugyanabban a blokkban kap helyet.
     //
-    // 2026-10-05 HATÓKÖR-JAVÍTÁS (balazsmarveenja mérte, marveen-is visszamérte):
-    // a korábbi szöveg "a tiéd SOHA" alakban általánosított, és az TÚL TAG. A
-    // `~/.claude/projects` alatti könyvtár a MUNKAKÖNYVTÁR slugja szerint kulcsolt,
-    // tehát egy `agents/<nev>` cwd-vel futó ügynöknél a slug a SAJÁTJA, és a saját
-    // session-je be is tölti. Mérve: 14 slug közül 13 ügynök-specifikus, 10-ben
-    // van `memory/MEMORY.md`, és egy percekkel a mérés előtt frissült. Az eredeti
-    // eset VÁLTOZATLANUL valós: ott IDEGEN slug állt az útban. A kár a tág alakkal
-    // NÉMA: egy friss kontextus jóhiszeműen felhagy egy MŰKÖDŐ memória-úttal, és
-    // akkor a "NINCS MENTAL NOTE" szabálynak nem marad hordozója.
-    'Ugyanez a csapda a MEMÓRIÁRA is áll, de SZŰKEBBEN: a `.claude-config/projects`',
-    'szintén symlink a `~/.claude/projects`-re, DE az alatta lévő könyvtár a',
-    'MUNKAKÖNYVTÁR slugja szerint kulcsolt. Tehát NE feltételezd: NÉZD MEG, melyik',
-    'slug az (`readlink -f`). Ha a sajátod, a `memory/MEMORY.md` is a tiéd, és a',
-    'saját session-öd betölti. Az eredeti eset azért volt valós, mert ott IDEGEN slug',
-    'állt az útban, nem azért, mert ez az út sosem a sajátod. A FLOTTA memóriája',
-    'ettől függetlenül a dashboard API (`POST /api/memories`, `agent_id`-vel): a',
-    'keresés és a heartbeat ott dolgozik. A szabály itt ELLENŐRZÉS, nem tilalom.',
+    // 2026-10-05 HATÓKÖR-JAVÍTÁS, a review (#1700) és két mérés alapján: a Claude
+    // Code az auto-memória könyvtárát a GIT-REPÓ GYÖKERE szerint kulcsolja, nem a
+    // munkakönyvtár szerint. Mérve CC 2.1.289-en (macOS) és 2.1.284-en (Linux),
+    // eldobható mappákkal: git-checkouton belül saját repó nélkül
+    // `<config>/projects/<gyökér-slug>/memory`, saját (stub) `.git`-tel
+    // `<config>/projects/<...-agents-<név>>/memory`. Stub nélkül a `-agents-<név>`
+    // slug csak transcript-könyvtár. Hogy egy ügynök memóriája KÖZÖS-e a fő
+    // ágensével, azt a git-gyökér ÉS az dönti el, hogy a `projects` könyvtára közös-e
+    // (symlink a `~/.claude/projects`-re). A 2026-09-07-i eset (`-home-istvan-marveen`)
+    // is ez volt: a telepítés gyökér-slugja, vagyis a közös könyvtár. Ezért a
+    // kritérium a rendszerprompt által MEGADOTT, feloldott útvonal, nem egy
+    // levezetett slug -- a munkakönyvtár-szabály git-checkouton épp a megelőzni
+    // kívánt néma veszteséget okozná, csak a másik oldalon.
+    'Ugyanez a csapda a MEMÓRIÁRA is áll: a `.claude-config/projects` lehet symlink',
+    'a `~/.claude/projects`-re. Hogy melyik memória-könyvtár a tiéd, azt NE a',
+    'munkakönyvtárad nevéből vezesd le: a mérvadó a rendszerprompt memória-szakaszában',
+    'MEGADOTT útvonal, `readlink -f`-fel feloldva. Git-checkout telepítésen (alapeset)',
+    'a Claude Code ezt a REPO GYÖKERE szerint kulcsolja: ha a feloldott útvonal a',
+    '`~/.claude/projects/` alatti, a telepítés gyökerének slugjával kulcsolt könyvtár,',
+    'akkor az a fő ágensé, és ami oda kerül, azt a fő ágens és minden ugyanezt kapó',
+    'ügynök session-je betölti. A tiéd, ha a feloldott útvonal a saját',
+    '`.claude-config`-od valódi könyvtárában van, vagy a saját mappád slugja szerepel',
+    'benne (saját stub git-repó vagy git nélküli telepítés). A saját, csak rád',
+    'tartozó emlék helye ettől függetlenül a dashboard API (`POST /api/memories`,',
+    '`agent_id`-vel).',
   ].join('\n')
 }
 
