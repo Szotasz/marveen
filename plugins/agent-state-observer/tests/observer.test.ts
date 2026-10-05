@@ -39,6 +39,7 @@ function engine(on: any, opts: Opts = {}) {
   on('turn.complete', () => r['turn.complete'] ?? ({ text: '' }))
   on('session.measure', () => r['session.measure'] ?? ({ changed: [] }))
   on('session.end', () => r['session.end'] ?? ({ sessionId: 'sess-1' }))
+  on('tool.call', () => r['tool.call'] ?? ({ result: { stdout: '', stderr: '', interrupted: false } }))
   return writes
 }
 
@@ -177,6 +178,18 @@ test('every hook hands back the engine result unchanged', async ($: any, on: any
   expect(await done($)).toEqual({ text: 'engine-answer' })
   expect(await $.session.measure({ context: { window: 1 }, rateLimits: [], changed: ['context'] })).toEqual({ changed: ['context'] })
   expect(await $.session.end({ reason: 'other' })).toEqual({ sessionId: 'engine-session' })
+})
+
+// Geri #1695 (MM12b): the tool result is how the tool's output reaches the
+// model -- the most important pass-through of all.
+test('a tool call hands back the engine result unchanged', async ($: any, on: any) => {
+  const engineResult = { result: { stdout: 'engine-out', stderr: '', interrupted: false } }
+  engine(on, { results: { 'tool.call': engineResult } })
+  await start($)
+  await turn($)
+  const ran = await $.tool.call({ tool: 'Bash', command: 'ls' })
+  expect(ran.result).toEqual(engineResult.result)
+  expect(ran.deny).toBeUndefined()
 })
 
 test('a write that fails is swallowed: the turn goes on and results are unchanged', async ($: any, on: any) => {
