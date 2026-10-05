@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
+import { join } from 'node:path'
 
 // The subscription quota the whole fleet draws from, as the statusLine command
 // last saw it. scripts/statusline-ratelimit.sh writes the block to
@@ -46,7 +47,11 @@ export interface QuotaSnapshot {
   fiveHour: QuotaWindow | null
   sevenDay: QuotaWindow | null
   /** Why there is nothing to show; only set when status is 'missing'. */
-  reason?: 'no-file' | 'unreadable' | 'no-rate-limits'
+  reason?: 'no-file' | 'unreadable' | 'no-rate-limits' | 'no-source'
+  /** Where the numbers come from (QUOTAMOD1005); absent on the plain statusLine read. */
+  source?: 'statusline' | 'mod'
+  /** The agent whose session the mod reading came from (source 'mod' only). */
+  sourceAgent?: string | null
 }
 
 function readWindow(raw: unknown, nowSec: number): QuotaWindow | null {
@@ -165,4 +170,93 @@ export function readFableSnapshot(
   }
   const ageSec = Math.max(0, nowSec - generatedAtSec)
   return { status: ageSec > maxAgeSec ? 'stale' : 'ok', ageSec, window }
+}
+
+/**
+ * QUOTAMOD1005 -- the same windows read from the agent-state-observer mod's
+ * state files (<dir>/<agent>.json, see src/web/state-observer.ts). This is the
+ * source that works on a setup-token install, where the statusLine block never
+ * arrives.
+ *
+ * Each file's rateLimits come from THAT session's last API response, so an
+ * idle agent's numbers age while the others burn the window. The rule, per
+ * kind: drop a reading whose window has already reset, take the LATEST window
+ * still open, and within it the HIGHEST percentage (the same rule as
+ * scripts/usage-alert/usage_alert.py). A missing five_hour means "no window
+ * open" (it disappears at its reset and returns with the next API response).
+ * Freshness travels with the data: ageSec is the chosen source's alive_at age.
+ */
+export function readModQuotaSnapshot(
+  dir: string,
+  nowSec: number = Math.floor(Date.now() / 1000),
+  maxAgeSec: number = DEFAULT_MAX_AGE_SEC,
+): QuotaSnapshot {
+  const empty = { ageSec: null, maxAgeSec, fiveHour: null, sevenDay: null, source: 'mod' as const, sourceAgent: null }
+  let names: string[]
+  try {
+    names = readdirSync(dir).filter((n) => n.endsWith('.json'))
+  } catch {
+    return { status: 'missing', reason: 'no-file', ...empty }
+  }
+  type Pick = { pct: number; resetsAt: number; agent: string; aliveSec: number }
+  const best: Record<'five_hour' | 'seven_day', Pick | null> = { five_hour: null, seven_day: null }
+  let sources = 0
+  for (const name of names) {
+    let d: { agent?: unknown; alive_at?: unknown; usage?: { rateLimits?: unknown } }
+    try {
+      d = JSON.parse(readFileSync(join(dir, name), 'utf-8'))
+    } catch {
+      continue // a half-written file: the next render reads it whole
+    }
+    if (!d || typeof d !== 'object' || typeof d.alive_at !== 'number') continue
+    sources++
+    const agent = typeof d.agent === 'string' && d.agent ? d.agent : name.slice(0, -'.json'.length)
+    const aliveSec = Math.floor(d.alive_at / 1000)
+    const limits = Array.isArray(d.usage?.rateLimits) ? d.usage!.rateLimits as unknown[] : []
+    for (const raw of limits) {
+      const r = raw as { kind?: unknown; percentUsed?: unknown; resetsAt?: unknown }
+      if (r.kind !== 'five_hour' && r.kind !== 'seven_day') continue
+      if (typeof r.percentUsed !== 'number' || !Number.isFinite(r.percentUsed) || typeof r.resetsAt !== 'string') continue
+      const resetsAt = Math.floor(Date.parse(r.resetsAt) / 1000)
+      if (!Number.isFinite(resetsAt) || resetsAt <= nowSec) continue
+      const cur = best[r.kind]
+      if (!cur || resetsAt > cur.resetsAt || (resetsAt === cur.resetsAt && r.percentUsed > cur.pct)) {
+        best[r.kind] = { pct: r.percentUsed, resetsAt, agent, aliveSec }
+      }
+    }
+  }
+  if (sources === 0) return { status: 'missing', reason: 'no-file', ...empty }
+  const picks = [best.five_hour, best.seven_day].filter((p): p is Pick => p !== null)
+  if (picks.length === 0) return { status: 'missing', reason: 'no-rate-limits', ...empty }
+  const freshest = picks.reduce((a, b) => (b.aliveSec > a.aliveSec ? b : a))
+  const ageSec = Math.max(0, nowSec - Math.min(...picks.map((p) => p.aliveSec)))
+  const window = (p: Pick | null): QuotaWindow | null =>
+    p ? { usedPercentage: p.pct, resetsAt: p.resetsAt, expired: false } : null
+  return {
+    status: ageSec > maxAgeSec ? 'stale' : 'ok',
+    ageSec,
+    maxAgeSec,
+    fiveHour: window(best.five_hour),
+    sevenDay: window(best.seven_day),
+    source: 'mod',
+    sourceAgent: best.seven_day?.agent ?? freshest.agent,
+  }
+}
+
+/**
+ * Which of the two readings the strip shows: a fresh one over a stale one over
+ * none, and between two of the same standing the younger. When neither has a
+ * reading, the answer says so as 'no-source': the strip then tells the operator
+ * that on a setup-token install the numbers need the observer mod on an agent.
+ */
+export function chooseQuotaSnapshot(statusLine: QuotaSnapshot, mod: QuotaSnapshot): QuotaSnapshot {
+  const tagged: QuotaSnapshot = { ...statusLine, source: 'statusline' }
+  const rank = (q: QuotaSnapshot) => (q.status === 'ok' ? 2 : q.status === 'stale' ? 1 : 0)
+  if (rank(tagged) === 0 && rank(mod) === 0) {
+    // An API-key account has no windows at all: keep that answer when either source gave it.
+    const noLimits = tagged.reason === 'no-rate-limits' || mod.reason === 'no-rate-limits'
+    return { ...tagged, reason: noLimits ? 'no-rate-limits' : 'no-source' }
+  }
+  if (rank(mod) !== rank(tagged)) return rank(mod) > rank(tagged) ? mod : tagged
+  return (mod.ageSec ?? Infinity) < (tagged.ageSec ?? Infinity) ? mod : tagged
 }

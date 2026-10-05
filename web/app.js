@@ -12213,6 +12213,13 @@ function renderQuotaStrip(q, fable) {
   if (typeof q.ageSec === 'number') {
     age.textContent = t('overview.quota.measured', { age: formatRelative(Date.now() - q.ageSec * 1000) })
   }
+  // QUOTAMOD1005: say where the numbers come from -- the statusLine block, or
+  // the observer mod on a named agent (whose session's last API answer it is).
+  if (q.source === 'mod') {
+    age.textContent += (age.textContent ? ' · ' : '') + t('overview.quota.source_mod', { agent: q.sourceAgent || '?' })
+  } else if (q.source === 'statusline') {
+    age.textContent += (age.textContent ? ' · ' : '') + t('overview.quota.source_statusline')
+  }
   if (stale) {
     note.textContent = t('overview.quota.stale')
     note.className = 'quota-strip-note warn'
