@@ -263,9 +263,11 @@
     for (const s of r.data.secrets) {
       const tr = document.createElement('tr')
       tr.append(el('td', s.id), el('td', s.label), el('td', s.updatedAt || s.createdAt))
-      tr.style.cursor = 'pointer'
-      tr.title = 'Kattints az érték felülírásához'
-      tr.addEventListener('click', () => { $('op-vault-id').value = s.id; $('op-vault-value').focus() })
+      if (me.capabilities.vaultOverwrite) {
+        tr.style.cursor = 'pointer'
+        tr.title = 'Kattints az érték felülírásához'
+        tr.addEventListener('click', () => { $('op-vault-id').value = s.id; $('op-vault-value').focus() })
+      }
       body.append(tr)
     }
   }
@@ -279,6 +281,10 @@
     if (label) body.label = label
     const r = await api('PUT', '/api/operator/vault/' + encodeURIComponent(id), body)
     valueInput.value = ''
+    if (r.status === 403 && r.data && r.data.capability === 'vaultOverwrite') {
+      msg('op-vault-msg', 'Ez a titok már létezik, és felülírni a tulajdonos nem engedte.', 'err')
+      return
+    }
     if (r.ok) {
       msg('op-vault-msg', (r.data.created ? 'Létrehozva: ' : 'Felülírva: ') + id + '. A tulajdonos értesítést kapott.', 'ok')
       loadVault()

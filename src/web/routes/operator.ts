@@ -389,6 +389,8 @@ export async function tryHandleOperator(ctx: RouteContext, webDir: string): Prom
       return true
     }
     const existing = listSecrets().find(s => s.id === id)
+    // Replacing a key is the stronger right: its own switch, OFF by default.
+    if (existing && !requireCapability(ctx, access, 'vaultOverwrite')) return true
     const finalLabel = typeof label === 'string' && label.trim() ? label.trim().slice(0, 200) : (existing?.label ?? id)
     setSecret(id, finalLabel, value)
     const sync = syncSecret(id)

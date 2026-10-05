@@ -246,6 +246,29 @@ describe('forwarded actions', () => {
     expect(h.forwarded).toEqual([])
   })
 
+  it('overwriting an existing secret needs vaultOverwrite; vaultWrite alone only creates', async () => {
+    h.secrets.set('OPENAI_KEY', { label: 'OpenAI', value: 'old' })
+    h.access.capabilities.vaultOverwrite = false
+    const r = await call('PUT', '/api/operator/vault/OPENAI_KEY', { body: { value: 'new' } })
+    expect(r.status).toBe(403)
+    expect(r.body.capability).toBe('vaultOverwrite')
+    expect(h.secrets.get('OPENAI_KEY')!.value).toBe('old')
+    expect(h.notified).toEqual([])
+    expect(h.audit).toEqual([])
+    // a new id still goes through on vaultWrite alone
+    expect((await call('PUT', '/api/operator/vault/NEW_ONE', { body: { value: 'v' } })).status).toBe(200)
+    expect(h.secrets.get('NEW_ONE')!.value).toBe('v')
+    // and vaultOverwrite without vaultWrite opens nothing
+    h.access.capabilities.vaultWrite = false
+    h.access.capabilities.vaultOverwrite = true
+    expect((await call('PUT', '/api/operator/vault/OPENAI_KEY', { body: { value: 'x' } })).status).toBe(403)
+    expect(h.secrets.get('OPENAI_KEY')!.value).toBe('old')
+  })
+
+  it('ssh pool ids stay refused with every vault switch on', async () => {
+    expect((await call('PUT', '/api/operator/vault/ssh-key-abc', { body: { value: 'x' } })).status).toBe(400)
+  })
+
   it('a new secret says so in the owner notification', async () => {
     await call('PUT', '/api/operator/vault/NEW_KEY', { body: { value: 'v' } })
     expect(h.notified[0]).toContain('új titok létrehozva')
@@ -490,7 +513,7 @@ describe('the owner section (web/app.js)', () => {
 
   it('every operator string exists in both languages', () => {
     const keys = [...new Set([...fn.matchAll(/t\('(auth\.operator\.[\w.]+)'/g)].map(m => m[1]!))].filter(k => !k.endsWith('.'))
-    for (const c of ['agentControl', 'mainAgentRestart', 'update', 'vaultWrite', 'paneView', 'commands']) keys.push(`auth.operator.cap.${c}`)
+    for (const c of ['agentControl', 'mainAgentRestart', 'update', 'vaultWrite', 'vaultOverwrite', 'paneView', 'commands']) keys.push(`auth.operator.cap.${c}`)
     expect(keys.length).toBeGreaterThan(10)
     for (const lang of ['hu', 'en']) {
       const L = readFileSync(join(__dirname, `../../web/lang/${lang}.js`), 'utf-8')

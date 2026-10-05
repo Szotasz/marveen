@@ -190,7 +190,7 @@ describe('the owner switches', () => {
   it('only a literal true turns anything on; unknown keys and commands are dropped', () => {
     const a = normaliseOperatorAccess({ enabled: 'yes', capabilities: { update: true, paneView: 1, bogus: true }, commands: ['login', 'rm -rf', 'mcp', 'login'] })
     expect(a.enabled).toBe(false)
-    expect(a.capabilities).toEqual({ agentControl: false, mainAgentRestart: false, update: true, vaultWrite: false, paneView: false, commands: false })
+    expect(a.capabilities).toEqual({ agentControl: false, mainAgentRestart: false, update: true, vaultWrite: false, vaultOverwrite: false, paneView: false, commands: false })
     expect(a.commands).toEqual(['login', 'mcp'])
   })
 
