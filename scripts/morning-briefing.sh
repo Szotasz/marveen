@@ -12,6 +12,11 @@
 export PATH="$HOME/.local/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# FLEETVENV923: the fleet venv's bin/ first, as in every other claude launch --
+# the briefing session runs the same skills (#1626 review, tree-level pin).
+. "$INSTALL_DIR/scripts/fleet-venv-prefix.sh" 2>/dev/null || fleet_venv_prefix() { :; }
+FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$INSTALL_DIR/store/morning.log")"
+[ -n "$FLEET_VENV_PREFIX" ] && export PATH="$FLEET_VENV_PREFIX$PATH"
 # CLAUDE_BIN overrides the lookup. The PATH export above is deliberate (systemd
 # hands this script a minimal PATH), but it also wipes anything a caller put in
 # front -- so a test cannot substitute a stub by prepending to PATH, and would
@@ -85,6 +90,8 @@ SENTINEL="MORNING_SENT_OK_$(date +%s)_$$"
 RUN_OUT="$(mktemp)"
 trap 'rm -f "$RUN_OUT"' EXIT
 
+# ROOTRESPAWN1001: claude refuses --dangerously-skip-permissions as root without it.
+if [ "$(id -u)" = "0" ]; then export IS_SANDBOX=1; fi
 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 $CLAUDE --dangerously-skip-permissions \
   --channels plugin:telegram@claude-plugins-official \
   -p "Reggeli napindító - készítsd el és küld el Telegramra (chat_id: $CHAT_ID).

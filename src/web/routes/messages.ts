@@ -1,11 +1,12 @@
 import {
-  createAgentMessage, getPendingMessages, listAgentMessages,
+  createAgentMessage, getPendingMessages, listAgentMessages, getRecipientQueueState,
   getAgentConversation, getAgentConversationThreads,
   getKanbanSeqByIdPrefix,
   markMessageDone, markMessageFailed, getAgentMessage,
   closeOtelSpan,
   getPendingBacklogByAgent,
   countNewerMessagesForRows,
+  getHeartbeatKanbanLive,
   COMPLETION_REPORT_PREFIX,
   type AgentMessage,
 } from '../../db.js'
@@ -15,13 +16,14 @@ import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coor
 import { SYSTEM_DIRECTIVE_SENDER } from '../system-directive.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
-import { MAIN_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
+import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
-import { stampHeartbeatHeader } from '../heartbeat-header-stamp.js'
+import { isHeartbeatTemplateLeak, stampHeartbeatHeader } from '../heartbeat-header-stamp.js'
+import { verifyHeartbeatKanban, HEARTBEAT_KANBAN_WINDOW_SEC } from '../heartbeat-kanban-verify.js'
 import { buildFreshnessInfo, type MessageFreshness } from '../agent-message-wrap.js'
-import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
+import { parseQualifiedId, formatQualifiedId, isQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
 import type { RouteContext } from './types.js'
 
@@ -117,6 +119,25 @@ export function attachFreshness(messages: AgentMessage[]): AgentMessageWithFresh
   }))
 }
 
+// HBFABRIC1003 follow-up: a refused heartbeat digest is reported to the main
+// agent as an informational system note (no action is requested of it), at
+// most once per HEARTBEAT_REFUSAL_NOTE_GAP_MS. Exported for the test.
+export const HEARTBEAT_REFUSAL_NOTE_GAP_MS = 10 * 60 * 1000
+let lastHeartbeatRefusalNoteMs = 0
+export function resetHeartbeatRefusalNoteForTest(): void { lastHeartbeatRefusalNoteMs = 0 }
+function noteHeartbeatRefusal(problems: string[], nowMs: number = Date.now()): void {
+  if (nowMs - lastHeartbeatRefusalNoteMs < HEARTBEAT_REFUSAL_NOTE_GAP_MS) return
+  lastHeartbeatRefusalNoteMs = nowMs
+  try {
+    createAgentMessage('system', MAIN_AGENT_ID,
+      '[HB-KAPU] A heartbeat digestjét a szerver elutasította (422, HBFABRIC1003): a Kanban-sorai nem egyeztek az élő táblával, '
+      + 'ezért ebben a körben NEM érkezik digest. Eltérések: ' + problems.join('; ')
+      + '. Tájékoztatás, teendőt nem kér; ha a digest kell, a GET /api/kanban/heartbeat-summary adja az élő számokat.')
+  } catch (err) {
+    logger.warn({ err }, 'HBFABRIC1003: could not queue the heartbeat refusal note')
+  }
+}
+
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -126,6 +147,38 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       { from: string; to: string; content: string; origin_note?: string }
     if (!from?.trim() || !to?.trim() || !content?.trim()) {
       json(res, { error: 'from, to, and content are required' }, 400)
+      return true
+    }
+    // HBTEMPLATELEAK1002: a heartbeat report that still carries its template's
+    // placeholder header is the instruction text, not a report; queued, it reads
+    // as an order in the recipient's box ("Tedd most", a curl recipe). Refuse it
+    // before anything is written, so the sender sees the error and the real
+    // report is the only one that lands.
+    if (isHeartbeatTemplateLeak(content)) {
+      logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST: heartbeat template placeholder header')
+      json(res, { error: 'heartbeat_template_placeholder: the header still reads "YYYY-MM-DD"; send the report with the real timestamp' }, 422)
+      return true
+    }
+    // HBFABRIC1003: a digest's Kanban lines must match the live board at send
+    // time (counts within the drift the board actually had, every listed card
+    // real and in the state its line claims). On 2026-10-03 17:00 the agent sent
+    // a card id that never existed and counts it had typed before reading its
+    // metrics block. Refused before anything is written, so the sender sees the
+    // difference and the made-up report never reaches the main agent's box.
+    const kanbanVerdict = verifyHeartbeatKanban(content, () => getHeartbeatKanbanLive(HEARTBEAT_KANBAN_WINDOW_SEC))
+    if (!kanbanVerdict.ok) {
+      logger.warn({ from: from.trim(), to: to.trim(), problems: kanbanVerdict.problems }, 'Rejected /api/messages POST: heartbeat Kanban lines do not match the live board')
+      // The heartbeat agent does not read the POST's status (its task ends at
+      // "send, stop"), so a refusal would otherwise be an hour with NO digest
+      // that only the dashboard log knows about (Geri's #1684 verify). The
+      // main agent is told instead -- server-side, not by the sender's
+      // discipline -- at most once per window, so a retrying sender cannot
+      // flood its box.
+      if (sanitizeAgentIdent(from) === HEARTBEAT_AGENT_ID) noteHeartbeatRefusal(kanbanVerdict.problems)
+      json(res, {
+        error: 'heartbeat_kanban_mismatch: the Kanban lines do not match the live board. Re-read the metrics block (GET /api/kanban/heartbeat-summary) and copy it, do not retype it.',
+        problems: kanbanVerdict.problems,
+      }, 422)
       return true
     }
     // Security: the channel-coordinator id grants channel-inbound delivery
@@ -306,7 +359,19 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
     const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote)
-    logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note }, 'Agent message created')
+    // Backpressure, returned WITH the id rather than behind a second call:
+    // `{"id":N,"status":"pending"}` alone reads as "sent", and on a busy
+    // recipient it can be 80 minutes from true. See getRecipientQueueState for
+    // the measurement this came from. Federated recipients are skipped -- their
+    // queue lives on the peer, so any number we computed here would be a local
+    // artefact, and a wrong number is worse than none. Every success response
+    // below carries it, the warning ones included.
+    const queue = isQualifiedId(storedTo) ? undefined : getRecipientQueueState(storedTo)
+    const queueField = queue ? { queue } : {}
+    logger.info(
+      { id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note, queueDepth: queue?.queueDepth },
+      'Agent message created',
+    )
     // A LOCAL recipient that is not running never receives this: the router
     // retries for a while and then abandons it, and the failure notice goes to
     // the MAIN agent, not to the sender. The caller therefore sees a plain 200
@@ -328,6 +393,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       logger.warn({ id: msg.id, to: msg.to_agent }, 'Agent message queued for a STOPPED agent -- likely to be abandoned')
       json(res, {
         ...msg,
+        ...queueField,
         targetRunning: false,
         warning: `'${msg.to_agent}' nem fut -- indítsd el (POST /api/agents/${msg.to_agent}/start), várd meg amíg feláll, és küldd újra. Egy leállított ügynöknek küldött üzenet nem várakozik, hanem elveszik.`,
       })
@@ -349,10 +415,10 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (homoglyphs.length > 0) {
       const warning = formatHomoglyphWarning(homoglyphs)
       logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, `agent message created with ${warning}`)
-      json(res, { ...msg, homoglyph_warning: warning })
+      json(res, { ...msg, ...queueField, homoglyph_warning: warning })
       return true
     }
-    json(res, msg)
+    json(res, { ...msg, ...queueField })
     return true
   }
 

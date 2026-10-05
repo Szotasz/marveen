@@ -139,6 +139,13 @@ export interface ScheduledTask {
   // instructing the round to run it was measured failing 4 separate times
   // (fabricated numbers with the instruction standing).
   injectMetrics?: boolean
+  // type='heartbeat' + injectMetrics only (HBFABRIC1003): the runner SENDS the
+  // digest itself -- the measured block, a header and nothing else -- as an
+  // inter-agent message to the main agent, with no LLM round at all. The
+  // round's one job was to copy the block and POST it; it was measured
+  // failing at exactly that (2026-10-03: a number typed before reading the
+  // block, then twice the POST written out as text and never run).
+  sendDigestDirect?: boolean
   // Explicit Telegram delivery target for this task's result (WRONGRECIP819).
   // Unset means "resolve it automatically" -- safe only when the agent's own
   // channel access.json has exactly one DM contact; with 2+ contacts the
@@ -182,7 +189,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = hasSkill ? readFileOr(skillPath, '') : ''
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; requiresDesktop?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; injectMetrics?: unknown; telegramChatId?: string } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; requiresDesktop?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; injectMetrics?: unknown; sendDigestDirect?: unknown; telegramChatId?: string } = {}
   try {
     config = JSON.parse(readFileOr(configPath, '{}'))
   } catch { /* use defaults */ }
@@ -208,6 +215,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     stuckAfterMinutes: parseFiniteMinutes(config.stuckAfterMinutes),
     requires: parseRequires(config.requires),
     injectMetrics: config.injectMetrics === true,
+    sendDigestDirect: config.sendDigestDirect === true,
     telegramChatId: typeof config.telegramChatId === 'string' && config.telegramChatId.trim() ? config.telegramChatId.trim() : undefined,
   }
 }
@@ -249,7 +257,7 @@ export function listScheduledTasks(): ScheduledTask[] {
 
 export function writeScheduledTask(
   taskName: string,
-  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number; injectMetrics?: boolean; telegramChatId?: string },
+  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number; injectMetrics?: boolean; sendDigestDirect?: boolean; telegramChatId?: string },
 ): void {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   mkdirSync(dir, { recursive: true })
@@ -286,6 +294,7 @@ export function writeScheduledTask(
   if (data.catchUpMaxAgeMinutes !== undefined) config.catchUpMaxAgeMinutes = data.catchUpMaxAgeMinutes
   if (data.stuckAfterMinutes !== undefined) config.stuckAfterMinutes = data.stuckAfterMinutes
   if (data.injectMetrics !== undefined) config.injectMetrics = data.injectMetrics
+  if (data.sendDigestDirect !== undefined) config.sendDigestDirect = data.sendDigestDirect
   if (data.telegramChatId !== undefined) config.telegramChatId = data.telegramChatId
   if (data.description !== undefined) config.description = data.description
   if (!config.createdAt) config.createdAt = Math.floor(Date.now() / 1000)

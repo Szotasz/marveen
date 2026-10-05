@@ -2,6 +2,7 @@ import { readFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { atomicWriteFileSync } from './web/atomic-write.js'
+import { parseEnvContent } from './env-parse.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 // CLAUDECLAW_ENV_DIR: test-only escape hatch so the suite can point .env
@@ -19,24 +20,7 @@ export function readEnvFile(keys?: string[]): Record<string, string> {
     return {}
   }
 
-  const result: Record<string, string> = {}
-  for (const line of content.split('\n')) {
-    const trimmed = line.trim()
-    if (!trimmed || trimmed.startsWith('#')) continue
-    const eqIdx = trimmed.indexOf('=')
-    if (eqIdx === -1) continue
-    const key = trimmed.slice(0, eqIdx).trim()
-    let value = trimmed.slice(eqIdx + 1).trim()
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1)
-    }
-    if (keys && !keys.includes(key)) continue
-    result[key] = value
-  }
-  return result
+  return parseEnvContent(content, keys)
 }
 
 // The mode a newly created .env gets: it holds secrets, and install-macos.sh /

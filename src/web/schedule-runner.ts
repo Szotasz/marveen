@@ -1,6 +1,14 @@
 import { join, isAbsolute } from 'node:path'
 import { checkTaskMcpRequirements } from './schedule-mcp-precheck.js'
 import { collectHeartbeatMetricsBlock } from './heartbeat-metrics-inject.js'
+import {
+  sendHeartbeatDigestDirect,
+  checkHeartbeatDigestGaps,
+  HEARTBEAT_GAP_CHECK_INTERVAL_MS,
+  type DirectDigestDeps,
+  type GapGuardDeps,
+} from './heartbeat-direct-digest.js'
+import { verifyHeartbeatKanban, HEARTBEAT_KANBAN_WINDOW_SEC } from './heartbeat-kanban-verify.js'
 import { existsSync, readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -11,11 +19,15 @@ import {
   MAIN_AGENT_ID,
   BOT_NAME,
   APP_TZ_INVALID,
+  APP_TZ,
   CHANNEL_PROVIDER,
 } from '../config.js'
 import { resolveOwnerChatId, configuredOwnerChatFor } from '../owner-chat.js'
 import {
   appendTaskRun,
+  getHeartbeatKanbanLive,
+  hasHeartbeatDigestSince,
+  hasAgentMessageStartingWith,
   markTaskRunCompleted,
   setTaskRunDelivery,
   getTaskRunStatus,
@@ -77,6 +89,7 @@ import { readQuotaSnapshot } from '../quota-snapshot.js'
 import { detectsFirstRunGate, detectPaneState, overfullParkedInputTail, type PaneState } from '../pane-state.js'
 import { getInjectedPrompt, matchesInjectedPrompt, type InjectedPromptRecord } from './injected-prompt-registry.js'
 import { withSessionSendLock } from './session-send-lock.js'
+import { startSleepWakeDetector, systemSleptBetween } from './sleep-wake-detector.js'
 
 // How many bare-Enter attempts the post-send resubmit tries before escalating
 // to a clear + re-inject, and the hard cap after which it gives up.
@@ -1565,6 +1578,57 @@ export function taskInjectionRank(t: Pick<ScheduledTask, 'forceSend' | 'type'>):
 // for it). Reuses attemptFireTask, so a stopped agent is auto-started and the
 // prompt is queued for delivery exactly like a real cron fire. Returns a
 // per-target summary string for the API/UI.
+// HBFABRIC1003 (A): the digest family that the runner sends itself.
+export function isDirectDigestTask(task: { type?: string; injectMetrics?: boolean; sendDigestDirect?: boolean; agent: string }): boolean {
+  return task.type === 'heartbeat' && task.injectMetrics === true && task.sendDigestDirect === true && task.agent !== 'all'
+}
+
+const BUDAPEST_LABEL = (ms: number) =>
+  new Date(ms).toLocaleString('sv-SE', { timeZone: APP_TZ }).slice(0, 16)
+
+function directDigestDeps(): DirectDigestDeps {
+  return {
+    collectBlock: collectHeartbeatMetricsBlock,
+    verify: (digest) => verifyHeartbeatKanban(digest, () => getHeartbeatKanbanLive(HEARTBEAT_KANBAN_WINDOW_SEC)),
+    send: (from, to, content) => { createAgentMessage(from, to, content) },
+    appendRun: (task, agent, status) => { appendTaskRun(task, agent, status) },
+    warn: (obj, msg) => logger.warn(obj, msg),
+    tz: APP_TZ,
+    nowLabel: () => BUDAPEST_LABEL(Date.now()),
+    mainAgentId: MAIN_AGENT_ID,
+  }
+}
+
+// HBFABRIC1003 (B): every heartbeat task with injectMetrics is a digest task,
+// direct or not -- the gap guard reports a missing digest whatever the route.
+export function digestGapGuardDeps(): GapGuardDeps {
+  return {
+    prevOccurrence: (schedule, fromMs, toMs) => cronPrevOccurrence(schedule, fromMs, toMs),
+    digestSince: (agent, sinceMs) => hasHeartbeatDigestSince(agent, MAIN_AGENT_ID, sinceMs),
+    noteExists: (marker) => hasAgentMessageStartingWith('system', MAIN_AGENT_ID, marker),
+    sendNote: (content) => { createAgentMessage('system', MAIN_AGENT_ID, content) },
+    slotLabel: BUDAPEST_LABEL,
+  }
+}
+
+// The digest family: enabled heartbeat tasks with injectMetrics, sendDigestDirect
+// or NOT -- the old LLM route's missing digest is reported the same way.
+export function digestGapTasks(tasks: Array<{ name: string; agent: string; schedule: string; enabled: boolean; type?: string; injectMetrics?: boolean }>) {
+  return tasks
+    .filter((t) => t.enabled && t.type === 'heartbeat' && t.injectMetrics === true && t.agent !== 'all')
+    .map((t) => ({ name: t.name, agent: t.agent, schedule: t.schedule }))
+}
+
+export function runHeartbeatGapCheck(nowMs: number = Date.now()): string[] {
+  return checkHeartbeatDigestGaps(digestGapTasks(listScheduledTasks()), nowMs, digestGapGuardDeps())
+}
+
+export function startHeartbeatGapGuard(): ReturnType<typeof setInterval> {
+  return setInterval(() => {
+    try { runHeartbeatGapCheck() } catch (err) { logger.warn({ err }, 'HBFABRIC1003: heartbeat gap check failed') }
+  }, HEARTBEAT_GAP_CHECK_INTERVAL_MS)
+}
+
 export async function runScheduledTaskNow(
   taskName: string,
   opts: { allowDisabled?: boolean } = {},
@@ -1575,6 +1639,11 @@ export async function runScheduledTaskNow(
   // enabled:false so the cron never fires them, but a guarded endpoint can
   // still trigger them (e.g. the post-rollback diagnosis, PR-D).
   if (!task.enabled && !opts.allowDisabled) return { ok: false, error: 'Schedule is disabled' }
+
+  if (isDirectDigestTask(task)) {
+    const sent = await sendHeartbeatDigestDirect(task.name, task.agent, directDigestDeps())
+    return sent ? { ok: true, result: `${task.agent}: sent-direct` } : { ok: false, error: 'direct digest could not be sent' }
+  }
 
   const now = Date.now()
   const targets = task.agent === 'all'
@@ -1692,6 +1761,46 @@ function sendCatchUpSummary(
       logger.warn({ err }, 'catch-up summary delivery failed')
     }
   })()
+}
+
+// Pure: where the catch-up summary goes. Sleep-origin gap -> log only;
+// anything else -> the channel. Exported so the rule is unit-tested and a
+// later "always log" or "always send" edit has to touch a named contract.
+export type CatchUpSummaryDelivery = 'log' | 'channel'
+export function decideCatchUpSummaryDelivery(sleptDuringGap: boolean): CatchUpSummaryDelivery {
+  return sleptDuringGap ? 'log' : 'channel'
+}
+
+// The same one line, LOG-ONLY. Used instead of sendCatchUpSummary when the gap
+// the scheduler is catching up on is one the machine SLEPT through (see the
+// call site and decideCatchUpSummaryDelivery): lid-close downtime is caused by
+// the operator on purpose, and pinging Telegram with "Kimaradt ütemezés (X perc
+// kiesés)" on every wake was pure noise (2026-09-02, kanban 83b8c4c3). A gap
+// with no sleep in it -- process down, crash, failed restart -- still goes to
+// the channel via sendCatchUpSummary (review 2026-09-03). The catch-up
+// MECHANISM (re-running / stale-declaring) is identical on both paths, and the
+// per-run records (appendTaskRun) and the dashboard /Ütemezések page show what
+// was caught up or declared stale either way.
+function logCatchUpSummary(
+  caughtUp: Array<{ task: string; ageMs: number }>,
+  stale: Array<{ task: string; ageMs: number }>,
+  gapMs: number,
+): void {
+  const mins = (ms: number) => `${Math.round(ms / 60000)} perc`
+  const lines = [`Kimaradt ütemezés (${mins(gapMs)} kiesés).`]
+  if (caughtUp.length) {
+    // "elindítva", not "lefutott": a catch-up injection can still land in the
+    // pending-retry queue if the target session is busy. It will run; it may
+    // not have run yet at the moment this line is logged.
+    lines.push(`Pótlás elindítva: ${caughtUp.map(e => `${e.task} (${mins(e.ageMs)} késés)`).join(', ')}`)
+  }
+  if (stale.length) {
+    lines.push(`Nem pótolva, mert elavult: ${stale.map(e => `${e.task} (${mins(e.ageMs)})`).join(', ')}`)
+  }
+  logger.info(
+    { caughtUp: caughtUp.length, stale: stale.length, gapMinutes: Math.round(gapMs / 60000) },
+    `catch-up summary (log-only: the gap is sleep-origin downtime, not an incident): ${lines.join(' ')}`,
+  )
 }
 
 // Build the pending-retry alert body shared by stage 1 (main agent,
@@ -1913,6 +2022,20 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
     )
     return
   }
+  // SLEEP GUARD (2026-09-02, kanban 83b8c4c3): elapsedMs is wall-clock time
+  // since injection. If the machine slept anywhere inside that window, the
+  // number lies -- a 2-minute task injected just before lid-close reads as
+  // "stuck for hours" on wake (observed with ledger-live-drain). A window
+  // that contains a sleep gap proves nothing about the task, so no Telegram
+  // ping; the log line and the rest of the stuck handling (one-shot flag,
+  // eviction, retries) run unchanged, and the kanban 'waiting' move is not
+  // even here: it happens in stage 1 (sendTaskInflightMainAgentNotice), so
+  // this guard cannot short-circuit it (review 2026-09-03). Genuine
+  // hangs are unaffected: their window contains no sleep gap. Trade-off,
+  // accepted: the alert is one-shot per injection, so a task that ALSO hangs
+  // for real after the wake stays Telegram-silent for that injection -- it is
+  // still visible in the log/dashboard and ages into the normal eviction path.
+  const sleptDuringWindow = systemSleptBetween(entry.injectedAt, Date.now())
   const token = resolveSchedulerAlertToken()
   if (!token) {
     logger.warn({ task: entry.taskName, agent: entry.agentName, provider: CHANNEL_PROVIDER }, 'task-timeout alert suppressed: no channel bot token (config error)')
@@ -1921,6 +2044,14 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
   const ownerChat = resolveSchedulerOwnerChat()
   if (!ownerChat) {
     logger.warn({ task: entry.taskName, agent: entry.agentName, provider: CHANNEL_PROVIDER }, 'task-timeout alert suppressed: no owner chat (ALLOWED_CHAT_ID unset/placeholder and no paired channel)')
+    return
+  }
+
+  if (sleptDuringWindow) {
+    logger.info(
+      { task: entry.taskName, agent: entry.agentName, ageMinutes, injectedAt: entry.injectedAt },
+      'task-timeout: machine slept inside the stuck-check window -- wall-clock elapsed is unreliable, Telegram alert suppressed (stuck handling continues)',
+    )
     return
   }
 
@@ -1975,6 +2106,9 @@ export function startScheduleRunner(): NodeJS.Timeout {
     logger.warn({ err }, 'task-run restart reconcile failed (non-fatal)')
   }
 
+  // Sleep/wake detection for the downtime-aware alert suppression above
+  // (idempotent; the channel monitor starts it too, whichever runs first wins).
+  startSleepWakeDetector()
   // Reload the persisted last-run times so a restart inside a task's catch-up
   // window does not re-fire an already-run task.
   loadScheduleLastRun()
@@ -2368,6 +2502,17 @@ export function startScheduleRunner(): NodeJS.Timeout {
         continue
       }
 
+      // HBFABRIC1003: a digest task the runner sends itself. No session, so no
+      // quota gate (no LLM spend), no desktop gate and NO skipIfBusy: it has
+      // to go out exactly while the main agent is busy. A failure is recorded
+      // as an 'error' run and reported by the gap guard.
+      if (isDirectDigestTask(task)) {
+        await sendHeartbeatDigestDirect(task.name, task.agent, directDigestDeps())
+        scheduleLastRun.set(task.name, now)
+        persistScheduleLastRun()
+        continue
+      }
+
       let targetAgents: string[]
 
       if (task.agent === 'all') {
@@ -2525,7 +2670,19 @@ export function startScheduleRunner(): NodeJS.Timeout {
     const caughtUpReportable = caughtUpThisTick.filter(e => e.type !== 'heartbeat')
     const staleReportable = staleThisTick.filter(e => e.type !== 'heartbeat')
     if (caughtUpReportable.length || staleReportable.length) {
-      sendCatchUpSummary(caughtUpReportable, staleReportable, pendingStartupGapMs || (now - fromMs))
+      // SLEEP GUARD, narrowed on review (#1153, 2026-09-03): only a gap the
+      // machine SLEPT through is operator-caused downtime worth muting. A gap
+      // with no sleep record in it -- the process was down: crash, kill, a
+      // failed restart -- is exactly the outage the owner wants to hear about,
+      // so that one still goes to the channel. The detector only knows sleeps
+      // it observed in-process, so a cold start after a power-off has no sleep
+      // record and reports; that is the intended fail-loud side.
+      const gapMs = pendingStartupGapMs || (now - fromMs)
+      if (decideCatchUpSummaryDelivery(systemSleptBetween(now - gapMs, now)) === 'log') {
+        logCatchUpSummary(caughtUpReportable, staleReportable, gapMs)
+      } else {
+        sendCatchUpSummary(caughtUpReportable, staleReportable, gapMs)
+      }
     }
     pendingStartupGapMs = 0
 

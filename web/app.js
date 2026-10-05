@@ -12151,6 +12151,13 @@ function quotaLevelClass(pct) {
 // data -- and a stale or already-reset reading keeps its numbers but drops the
 // colour, because a green bar from six hours ago reassures exactly as much as
 // a green bar from six seconds ago.
+// "measured N ago" -- except for a reading under a minute old, where the
+// relative formatter says "now" and the sentence would read "measured now ago".
+function quotaMeasuredText(ageSec) {
+  if (ageSec < 60) return t('overview.quota.measured_now')
+  return t('overview.quota.measured', { age: formatRelative(Date.now() - ageSec * 1000) })
+}
+
 function renderQuotaStrip(q, fable) {
   const strip = document.getElementById('quotaStrip')
   const bars = document.getElementById('quotaBars')
@@ -12200,7 +12207,12 @@ function renderQuotaStrip(q, fable) {
     // about a row fed by a different collector -- without this a muted row
     // reads as "might be old" with no way to tell minutes from days.
     if (typeof ageSecForRow === 'number') {
-      tail += ' · ' + t('overview.quota.measured', { age: formatRelative(Date.now() - ageSecForRow * 1000) })
+      tail += ' · ' + quotaMeasuredText(ageSecForRow)
+    }
+    // QUOTAMOD1005: with the mod source each window names its own agent -- the
+    // 5-hour and the weekly reading may come from different sessions.
+    if (q.source === 'mod' && w.sourceAgent) {
+      tail += ' · ' + w.sourceAgent
     }
     row.innerHTML = `
       <div class="quota-bar-label">${escapeHtml(t(labelKey))}</div>
@@ -12211,10 +12223,25 @@ function renderQuotaStrip(q, fable) {
   }
 
   if (typeof q.ageSec === 'number') {
-    age.textContent = t('overview.quota.measured', { age: formatRelative(Date.now() - q.ageSec * 1000) })
+    age.textContent = quotaMeasuredText(q.ageSec)
+  }
+  // QUOTAMOD1005: say where the numbers come from -- the statusLine block, or
+  // the observer mod on a named agent (whose session's last API answer it is).
+  if (q.source === 'mod') {
+    const agents = Array.isArray(q.sourceAgents) ? q.sourceAgents : []
+    const label = agents.length === 1
+      ? t('overview.quota.source_mod', { agent: agents[0] })
+      : t('overview.quota.source_mod_many', { n: agents.length })
+    age.textContent += (age.textContent ? ' · ' : '') + label
+  } else if (q.source === 'statusline') {
+    age.textContent += (age.textContent ? ' · ' : '') + t('overview.quota.source_statusline')
   }
   if (stale) {
-    note.textContent = t('overview.quota.stale')
+    // The warning names the source it is about: the status line, or the
+    // observed sessions (whose numbers are their last API answer).
+    note.textContent = q.source === 'mod'
+      ? t(typeof q.ageSec === 'number' ? 'overview.quota.stale_mod' : 'overview.quota.stale_mod_unknown')
+      : t('overview.quota.stale')
     note.className = 'quota-strip-note warn'
     note.hidden = false
   }
@@ -15437,8 +15464,63 @@ const TU_MODEL_COLORS = ['#6366f1','#06b6d4','#f59e0b','#22c55e','#ef4444','#8b5
 
 function tuGetModelColor(idx) { return TU_MODEL_COLORS[idx % TU_MODEL_COLORS.length] }
 
+// Agents missing from TU_COLORS used to share the '#64748b' fallback, so on a
+// fleet whose agent names are not in the map every agent except the main one
+// rendered in the same grey and the stacked timeline could not show who used
+// what. Unlisted agents now get a distinct colour from this palette.
+//
+// The palette is disjoint from EVERY TU_COLORS value and from the chart's own
+// line colours, not only from the listed agents present in the current load:
+// the summary depends on the selected period, so a listed agent can appear
+// after a period switch, and a palette colour it shares would then belong to
+// two agents at once (review on #1646: 'geri' got #f59e0b on 1h, 'codi' showed
+// up with the same colour on 7d).
+const TU_RESERVED_COLORS = [
+  '#06b6d4', // 5h window line
+  '#8b5cf6', // weekly window line
+  '#3b82f6', // 5h reset marker
+  '#f59e0b', // day marker
+  '#ef4444', // week marker
+  '#64748b', // legacy grey fallback
+]
+const TU_EXTRA_PALETTE = [
+  '#f97316', '#84cc16', '#0ea5e9', '#d946ef', '#14b8a6', '#eab308',
+  '#78716c', '#be123c', '#a16207', '#15803d', '#1d4ed8', '#c2410c',
+  '#4d7c0f', '#7f1d1d', '#fb7185', '#92400e',
+]
+const tuAssignedColors = {}
+let tuGeneratedCount = 0
+
+// Past the palette, a generated hue instead of the grey: golden-angle steps
+// keep consecutive agents far apart on the wheel. Returned as an hsl() string,
+// which canvas and CSS both accept and which never equals a hex palette entry.
+function tuGeneratedColor(n) {
+  return `hsl(${Math.round((n * 137.508 + 20) % 360)}, 62%, 46%)`
+}
+
+// Called with the agent list of each summary load. Assignment is alphabetical
+// over the agents not yet coloured, so the same fleet gets the same colours on
+// every page load, and an agent keeps its colour for the life of the page even
+// if a later filter hides the others.
+function tuAssignColors(agents) {
+  const used = new Set([
+    ...Object.values(TU_COLORS),
+    ...TU_RESERVED_COLORS,
+    ...Object.values(tuAssignedColors),
+  ])
+  const pending = [...new Set(agents)]
+    .filter((a) => !TU_COLORS[a] && !tuAssignedColors[a])
+    .sort()
+  for (const a of pending) {
+    const free = TU_EXTRA_PALETTE.find((c) => !used.has(c))
+    const colour = free || tuGeneratedColor(tuGeneratedCount++)
+    tuAssignedColors[a] = colour
+    used.add(colour)
+  }
+}
+
 function tuGetColor(agent) {
-  return TU_COLORS[agent] || '#64748b'
+  return TU_COLORS[agent] || tuAssignedColors[agent] || '#64748b'
 }
 
 function tuMcpServerFromTool(toolName) {
@@ -15490,6 +15572,7 @@ async function loadTokenUsage() {
     const bTotal = (b.totalInput || 0) + (b.totalCacheRead || 0) + (b.totalCacheCreation || 0)
     return bTotal - aTotal
   })
+  tuAssignColors(summary.map((s) => s.agent))
   renderTuSummary(summary)
 
   const agentSelect = document.getElementById('tuAgent')
@@ -18403,3 +18486,14 @@ async function openResearchDoc(agent, name) {
   window._initGanttViewSwitcher = initGanttViewSwitcher
   window.renderGantt = renderGantt
 })()
+
+// VIDEOREVIEW1002: reveal the sidebar link to the review page only when the
+// install has a video root configured. Failure-proof like the other optional
+// badges: an older backend (404) or an error just leaves the link hidden.
+fetch('/api/video-review/config')
+  .then((r) => (r.ok ? r.json() : null))
+  .then((cfg) => {
+    const link = document.getElementById('sbVideoReview')
+    if (link && cfg && cfg.enabled) link.hidden = false
+  })
+  .catch(() => {})

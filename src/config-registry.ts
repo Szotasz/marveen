@@ -305,6 +305,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'FLEET_PYTHON_VENV',
+    type: 'string',
+    default: '',
+    description: 'A flotta közös Python venv mappája, abszolút útvonal (kezdő ~ = home; relatív útvonal nem érvényes). Ha a <mappa>/bin létezik, minden ügynök indítási PATH-jának elejére kerül, így a skillek sima python3 hívása és a venv CLI-jei (markitdown stb.) a venv-ből jönnek. Nincs beállítva (alapértelmezés) vagy nem létező mappa = kikapcsolva. Az itt üresen hagyott mező NEM kapcsolja ki a .env-ben megadott értéket: kikapcsoláshoz a .env-ből kell törölni, vagy itt nem létező mappát megadni (pl. /nonexistent).',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     key: 'OLLAMA_URL',
     type: 'string',
     default: 'http://localhost:11434',
