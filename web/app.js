@@ -12151,6 +12151,13 @@ function quotaLevelClass(pct) {
 // data -- and a stale or already-reset reading keeps its numbers but drops the
 // colour, because a green bar from six hours ago reassures exactly as much as
 // a green bar from six seconds ago.
+// "measured N ago" -- except for a reading under a minute old, where the
+// relative formatter says "now" and the sentence would read "measured now ago".
+function quotaMeasuredText(ageSec) {
+  if (ageSec < 60) return t('overview.quota.measured_now')
+  return t('overview.quota.measured', { age: formatRelative(Date.now() - ageSec * 1000) })
+}
+
 function renderQuotaStrip(q, fable) {
   const strip = document.getElementById('quotaStrip')
   const bars = document.getElementById('quotaBars')
@@ -12200,7 +12207,12 @@ function renderQuotaStrip(q, fable) {
     // about a row fed by a different collector -- without this a muted row
     // reads as "might be old" with no way to tell minutes from days.
     if (typeof ageSecForRow === 'number') {
-      tail += ' · ' + t('overview.quota.measured', { age: formatRelative(Date.now() - ageSecForRow * 1000) })
+      tail += ' · ' + quotaMeasuredText(ageSecForRow)
+    }
+    // QUOTAMOD1005: with the mod source each window names its own agent -- the
+    // 5-hour and the weekly reading may come from different sessions.
+    if (q.source === 'mod' && w.sourceAgent) {
+      tail += ' · ' + w.sourceAgent
     }
     row.innerHTML = `
       <div class="quota-bar-label">${escapeHtml(t(labelKey))}</div>
@@ -12211,17 +12223,25 @@ function renderQuotaStrip(q, fable) {
   }
 
   if (typeof q.ageSec === 'number') {
-    age.textContent = t('overview.quota.measured', { age: formatRelative(Date.now() - q.ageSec * 1000) })
+    age.textContent = quotaMeasuredText(q.ageSec)
   }
   // QUOTAMOD1005: say where the numbers come from -- the statusLine block, or
   // the observer mod on a named agent (whose session's last API answer it is).
   if (q.source === 'mod') {
-    age.textContent += (age.textContent ? ' · ' : '') + t('overview.quota.source_mod', { agent: q.sourceAgent || '?' })
+    const agents = Array.isArray(q.sourceAgents) ? q.sourceAgents : []
+    const label = agents.length === 1
+      ? t('overview.quota.source_mod', { agent: agents[0] })
+      : t('overview.quota.source_mod_many', { n: agents.length })
+    age.textContent += (age.textContent ? ' · ' : '') + label
   } else if (q.source === 'statusline') {
     age.textContent += (age.textContent ? ' · ' : '') + t('overview.quota.source_statusline')
   }
   if (stale) {
-    note.textContent = t('overview.quota.stale')
+    // The warning names the source it is about: the status line, or the
+    // observed sessions (whose numbers are their last API answer).
+    note.textContent = q.source === 'mod'
+      ? t(typeof q.ageSec === 'number' ? 'overview.quota.stale_mod' : 'overview.quota.stale_mod_unknown')
+      : t('overview.quota.stale')
     note.className = 'quota-strip-note warn'
     note.hidden = false
   }

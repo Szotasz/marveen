@@ -15,9 +15,14 @@ let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'quota-mod-')) })
 afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
-function source(agent: string, limits: unknown[], aliveAgoSec = 30) {
+// A mod state file. By default an idle agent whose last turn completed
+// `turnAgoSec` ago; its alive_at keeps ticking regardless (aliveAgoSec).
+function source(agent: string, limits: unknown[], o: { turnAgoSec?: number | null; aliveAgoSec?: number; state?: string } = {}) {
+  const turnAgo = o.turnAgoSec === undefined ? 30 : o.turnAgoSec
+  const history = turnAgo === null ? [{ ts: (NOW - 999) * 1000, from: 'starting', to: 'idle', reason: 'session.start' }]
+    : [{ ts: (NOW - turnAgo) * 1000, from: 'working', to: 'idle', reason: 'turn.complete:answer' }]
   writeFileSync(join(dir, `${agent}.json`), JSON.stringify({
-    agent, alive_at: (NOW - aliveAgoSec) * 1000, usage: { rateLimits: limits },
+    agent, state: o.state ?? 'idle', alive_at: (NOW - (o.aliveAgoSec ?? 5)) * 1000, history, usage: { rateLimits: limits },
   }))
 }
 const five = (pct: number, resetSec = NOW + 3600) => ({ kind: 'five_hour', percentUsed: pct, resetsAt: iso(resetSec) })
@@ -29,8 +34,8 @@ describe('readModQuotaSnapshot', () => {
     const q = readModQuotaSnapshot(dir, NOW)
     expect(q.status).toBe('ok')
     expect(q.source).toBe('mod')
-    expect(q.sourceAgent).toBe('alpha')
-    expect(q.fiveHour).toEqual({ usedPercentage: 12, resetsAt: NOW + 3600, expired: false })
+    expect(q.sourceAgents).toEqual(['alpha'])
+    expect(q.fiveHour).toEqual({ usedPercentage: 12, resetsAt: NOW + 3600, expired: false, sourceAgent: 'alpha' })
     expect(q.sevenDay?.usedPercentage).toBe(30)
     expect(q.ageSec).toBe(30)
   })
@@ -40,7 +45,7 @@ describe('readModQuotaSnapshot', () => {
     source('z-busy', [week(72)])
     const q = readModQuotaSnapshot(dir, NOW)
     expect(q.sevenDay?.usedPercentage).toBe(72)
-    expect(q.sourceAgent).toBe('z-busy')
+    expect(q.sevenDay?.sourceAgent).toBe('z-busy')
   })
 
   it('a later window beats a higher reading of an earlier one', () => {
@@ -63,9 +68,42 @@ describe('readModQuotaSnapshot', () => {
     expect(q.fiveHour).toBeNull()
   })
 
-  it('a stale source is marked stale, not dropped', () => {
-    source('alpha', [week(20)], 30_000)
+  it('each window names its own agent (Geri #1693: the 5-hour reading is not labelled with the weekly one)', () => {
+    source('samu', [five(91), week(10)])
+    source('dani', [week(44)])
+    const q = readModQuotaSnapshot(dir, NOW)
+    expect(q.fiveHour?.sourceAgent).toBe('samu')
+    expect(q.sevenDay?.sourceAgent).toBe('dani')
+    expect(q.sourceAgents?.sort()).toEqual(['dani', 'samu'])
+  })
+
+  it('the age is that of the NUMBERS (last turn), not of the ticking alive_at', () => {
+    source('alpha', [week(20)], { turnAgoSec: 3 * 3600, aliveAgoSec: 10 })
+    const q = readModQuotaSnapshot(dir, NOW, 21600)
+    expect(q.ageSec).toBe(3 * 3600)
+    expect(q.status).toBe('ok')
+    source('alpha', [week(20)], { turnAgoSec: 8 * 3600, aliveAgoSec: 10 })
     expect(readModQuotaSnapshot(dir, NOW, 21600).status).toBe('stale')
+  })
+
+  it('a working agent is current now', () => {
+    source('alpha', [week(20)], { turnAgoSec: 8 * 3600, aliveAgoSec: 7, state: 'working' })
+    const q = readModQuotaSnapshot(dir, NOW, 21600)
+    expect(q.ageSec).toBe(7)
+    expect(q.status).toBe('ok')
+  })
+
+  it('no completed turn since the session started: unknown age, stale', () => {
+    source('alpha', [week(20)], { turnAgoSec: null })
+    const q = readModQuotaSnapshot(dir, NOW)
+    expect(q.ageSec).toBeNull()
+    expect(q.status).toBe('stale')
+  })
+
+  it('the age is the OLDEST among the chosen windows', () => {
+    source('samu', [five(50)], { turnAgoSec: 60 })
+    source('dani', [week(40)], { turnAgoSec: 7200 })
+    expect(readModQuotaSnapshot(dir, NOW).ageSec).toBe(7200)
   })
 
   it('no state files at all -> missing / no-file; files without readings -> no-rate-limits', () => {
@@ -89,7 +127,7 @@ describe('chooseQuotaSnapshot', () => {
     ({ status, ageSec, maxAgeSec: 21600, fiveHour: null, sevenDay: { usedPercentage: 10, resetsAt: NOW + 9, expired: false }, ...extra })
 
   it('setup-token install: no statusLine file, the mod reading is shown', () => {
-    const mod = reading('ok', 40, { source: 'mod', sourceAgent: 'alpha' })
+    const mod = reading('ok', 40, { source: 'mod', sourceAgents: ['alpha'] })
     expect(chooseQuotaSnapshot(missing('no-file'), mod)).toBe(mod)
   })
 
@@ -116,10 +154,21 @@ describe('the wiring', () => {
     expect(SRC).toMatch(/readModQuotaSnapshot\(STATE_OBSERVER_STATE_DIR, nowSec, maxAgeSec\)/)
   })
 
+  it('the strip uses the source-aware stale text, the per-window agent and the "just now" wording', () => {
+    const APP = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
+    const fn = APP.slice(APP.indexOf('function renderQuotaStrip('), APP.indexOf('async function loadOverview('))
+    expect(fn).toMatch(/q\.source === 'mod'\s*\?\s*t\(typeof q\.ageSec === 'number' \? 'overview\.quota\.stale_mod' : 'overview\.quota\.stale_mod_unknown'\)/)
+    expect(fn).toMatch(/q\.source === 'mod' && w\.sourceAgent/)
+    expect(fn).toMatch(/source_mod_many/)
+    expect(fn).not.toMatch(/t\('overview\.quota\.measured', \{ age/)
+    expect(APP).toMatch(/if \(ageSec < 60\) return t\('overview\.quota\.measured_now'\)/)
+  })
+
   it('every new strip message exists in both languages', () => {
     for (const lang of ['hu', 'en']) {
       const L = readFileSync(join(__dirname, `../../web/lang/${lang}.js`), 'utf-8')
-      for (const key of ['overview.quota.none.no_source', 'overview.quota.source_mod', 'overview.quota.source_statusline']) {
+      for (const key of ['overview.quota.none.no_source', 'overview.quota.source_mod', 'overview.quota.source_statusline',
+        'overview.quota.source_mod_many', 'overview.quota.measured_now', 'overview.quota.stale_mod', 'overview.quota.stale_mod_unknown']) {
         expect(L, `${lang}: ${key}`).toContain(`'${key}'`)
       }
     }
