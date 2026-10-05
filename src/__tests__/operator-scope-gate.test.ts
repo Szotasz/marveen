@@ -165,6 +165,20 @@ describe('POST /api/auth/device-keys with a scope', () => {
     }
   })
 
+  it('an operator key lives at most 365 days; a full key keeps its 3650-day ceiling', async () => {
+    const ok = fakeCtx('POST', '/api/auth/device-keys', { name: 'it-op', scope: 'operator', expires_in_days: 365 }, owner)
+    await tryHandleAuth(ok.ctx)
+    expect(ok.out.status).toBe(201)
+    const tooLong = fakeCtx('POST', '/api/auth/device-keys', { name: 'it-op', scope: 'operator', expires_in_days: 366 }, owner)
+    await tryHandleAuth(tooLong.ctx)
+    expect(tooLong.out.status).toBe(400)
+    const full = fakeCtx('POST', '/api/auth/device-keys', { name: 'phone', expires_in_days: 3650 }, owner)
+    await tryHandleAuth(full.ctx)
+    expect(full.out.status).toBe(201)
+    expect(() => createDeviceKey('it-op', { scope: 'operator', expiresInDays: 366 })).toThrow(/at most 365 days/)
+    expect(createDeviceKey('phone', { expiresInDays: 3650 }).scope).toBe('full')
+  })
+
   it('an unknown scope is refused', async () => {
     const { ctx, out } = fakeCtx('POST', '/api/auth/device-keys', { name: 'x', scope: 'admin' }, owner)
     await tryHandleAuth(ctx)

@@ -38,6 +38,8 @@ const KEY_PREFIX = 'mvdk_'
 export type DeviceKeyScope = 'full' | 'operator'
 export const DEVICE_KEY_SCOPES: readonly DeviceKeyScope[] = ['full', 'operator']
 export const OPERATOR_KEY_DEFAULT_EXPIRY_DAYS = 90
+/** An operator key lives at most a year (owner decision 2026-10-05; a full key keeps its own ceiling). */
+export const OPERATOR_KEY_MAX_EXPIRY_DAYS = 365
 
 export interface DeviceKeyPrincipal {
   id: number
@@ -93,6 +95,9 @@ export function createDeviceKey(name: string, opts: { expiresInDays?: number; in
   const scope = opts.scope ?? 'full'
   if (scope === 'operator' && !(opts.expiresInDays && opts.expiresInDays > 0)) {
     throw new Error('an operator key must expire')
+  }
+  if (scope === 'operator' && opts.expiresInDays! > OPERATOR_KEY_MAX_EXPIRY_DAYS) {
+    throw new Error(`an operator key lives at most ${OPERATOR_KEY_MAX_EXPIRY_DAYS} days`)
   }
   const raw = KEY_PREFIX + randomBytes(32).toString('base64url')
   const keyHash = sha256hex(raw)

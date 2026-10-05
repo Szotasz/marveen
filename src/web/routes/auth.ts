@@ -47,6 +47,7 @@ import {
   getDeviceKey,
   DEVICE_KEY_SCOPES,
   OPERATOR_KEY_DEFAULT_EXPIRY_DAYS,
+  OPERATOR_KEY_MAX_EXPIRY_DAYS,
   type DeviceKeyScope,
 } from '../auth-device-keys.js'
 import { removeBridgeSshAccess, sshDirOverride } from '../bridge-enroll.js'
@@ -378,8 +379,10 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     let expiresInDays: number | undefined = scope === 'operator' ? OPERATOR_KEY_DEFAULT_EXPIRY_DAYS : undefined
     if (body.expires_in_days !== undefined && body.expires_in_days !== null && body.expires_in_days !== 0) {
       const n = Number(body.expires_in_days)
-      if (!Number.isFinite(n) || n <= 0 || n > DEVICE_KEY_MAX_EXPIRY_DAYS) {
-        json(res, { error: `Invalid expires_in_days (1-${DEVICE_KEY_MAX_EXPIRY_DAYS})` }, 400)
+      // An operator key has its own, shorter ceiling (a year); a full key keeps 3650.
+      const maxDays = scope === 'operator' ? OPERATOR_KEY_MAX_EXPIRY_DAYS : DEVICE_KEY_MAX_EXPIRY_DAYS
+      if (!Number.isFinite(n) || n <= 0 || n > maxDays) {
+        json(res, { error: `Invalid expires_in_days (1-${maxDays})` }, 400)
         return true
       }
       expiresInDays = n
