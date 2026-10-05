@@ -1,12 +1,28 @@
 // DASHOPERATOR1005 PR-2: an 'operator' scoped device key reaches /api/operator/*
 // only, decided before any handler; it must expire; and only the owner (token,
 // session) reads or changes what an operator gets.
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
 import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
-import { initDatabase } from '../db.js'
+// The owner-switch file goes to a scratch path, never the checkout's store/.
+const ACCESS_FILE = vi.hoisted(() => {
+  const { mkdtempSync } = require('node:fs') as typeof import('node:fs')
+  const { tmpdir } = require('node:os') as typeof import('node:os')
+  const { join } = require('node:path') as typeof import('node:path')
+  return join(mkdtempSync(join(tmpdir(), 'op-access-route-')), 'operator-access.json')
+})
+vi.mock('../web/operator-access.js', async (orig) => {
+  const real = await orig<typeof import('../web/operator-access.js')>()
+  return {
+    ...real,
+    readOperatorAccess: (p?: string) => real.readOperatorAccess(p ?? ACCESS_FILE),
+    writeOperatorAccess: (a: any, p?: string) => real.writeOperatorAccess(a, p ?? ACCESS_FILE),
+  }
+})
+
+import { initDatabase, getDb } from '../db.js'
 import { createDeviceKey, resolveDeviceKey, _clearDeviceKeyCacheForTest } from '../web/auth-device-keys.js'
 import { resolveAuth } from '../web/auth-gate.js'
 import { operatorGateDecision, OPERATOR_API_PREFIX } from '../web/operator-gate.js'
@@ -59,8 +75,16 @@ describe('operatorGateDecision over every enumerated /api path', () => {
   })
 
   it('an operator key is refused on every path outside /api/operator/', () => {
-    const allowed = paths.filter(p => !p.startsWith(OPERATOR_API_PREFIX) && operatorGateDecision(operator, p, () => ON) === null)
+    // A literal, not the imported constant: a mutated prefix must not move the test with it.
+    expect(OPERATOR_API_PREFIX).toBe('/api/operator/')
+    const allowed = paths.filter(p => !p.startsWith('/api/operator/') && operatorGateDecision(operator, p, () => ON) === null)
     expect(allowed).toEqual([])
+  })
+
+  it('a sibling of the operator prefix is outside it (the owner switch route, a future /api/operatorX)', () => {
+    for (const p of ['/api/operator-access', '/api/operators', '/api/operator']) {
+      expect(operatorGateDecision(operator, p, () => ON), p).not.toBeNull()
+    }
   })
 
   it('with the surface OFF the operator key is refused everywhere, /api/operator/* included', () => {
@@ -161,6 +185,26 @@ describe('the owner switches', () => {
     expect(readOperatorAccess(join(dir, 'nope.json'))).toEqual(defaultOperatorAccess())
     writeFileSync(join(dir, 'bad.json'), '{"enabled": tru')
     expect(readOperatorAccess(join(dir, 'bad.json'))).toEqual(defaultOperatorAccess())
+  })
+
+  it('an owner PUT lands in config_change_log with the before, the after and the actor', async () => {
+    const before = getDb().prepare("SELECT COUNT(*) AS c FROM config_change_log WHERE key = 'operator-access'").get() as { c: number }
+    const { ctx, out } = fakeCtx('PUT', '/api/operator-access', { enabled: true, capabilities: { update: true } }, { kind: 'session', user: 'owner' } as RouteContext['auth'])
+    expect(await tryHandleOperatorAccess(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    const rows = getDb().prepare("SELECT old_value, new_value, actor FROM config_change_log WHERE key = 'operator-access' ORDER BY id").all() as Array<{ old_value: string; new_value: string; actor: string }>
+    expect(rows.length).toBe(before.c + 1)
+    const row = rows[rows.length - 1]!
+    expect(JSON.parse(row.new_value)).toMatchObject({ enabled: true, capabilities: { update: true, paneView: false } })
+    expect(JSON.parse(row.old_value)).toHaveProperty('enabled')
+    expect(row.actor).toBe('session:owner')
+  })
+
+  it('an unexpected stored scope reads as operator (fail closed), only the literal full is full', () => {
+    const k = createDeviceKey('odd')
+    getDb().prepare("UPDATE device_keys SET scope = 'FULL' WHERE id = ?").run(k.id)
+    _clearDeviceKeyCacheForTest()
+    expect(resolveDeviceKey(k.key)?.scope).toBe('operator')
   })
 
   it('GET/PUT /api/operator-access is owner-only: device keys (full or operator) get 403', async () => {

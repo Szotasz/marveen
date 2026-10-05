@@ -70,8 +70,10 @@ interface CachedKey {
   scope: DeviceKeyScope
 }
 
+// Fail closed: only the literal 'full' (the column default) is a full key. An
+// unexpected stored value reads as the narrowest scope, never the widest.
 function toScope(value: unknown): DeviceKeyScope {
-  return value === 'operator' ? 'operator' : 'full'
+  return value === 'full' ? 'full' : 'operator'
 }
 
 const cache = new Map<string, CachedKey>()
