@@ -480,6 +480,17 @@ describe('the operator page (web/operator.js, web/operator.html)', () => {
     expect(JS).not.toMatch(/localStorage|sessionStorage|indexedDB/)
   })
 
+  it('offers the overwrite (click a listed secret) only with vaultOverwrite on', () => {
+    const fn = JS.slice(JS.indexOf('async function loadVault('), JS.indexOf("$('op-vault-form')"))
+    const guard = fn.indexOf('if (me.capabilities.vaultOverwrite) {')
+    const click = fn.indexOf("tr.addEventListener('click'")
+    expect(guard).toBeGreaterThan(0)
+    expect(click).toBeGreaterThan(guard)
+    // the click handler sits INSIDE the guarded block
+    expect(fn.slice(guard, click)).not.toMatch(/\n      \}\n/)
+    expect(fn.match(/addEventListener\('click'/g)).toHaveLength(1)
+  })
+
   it('sends no keystrokes: no input path into a pane exists on the page', () => {
     expect(JS).not.toMatch(/\/keys\b|terminal-input/)
     expect(HTML).not.toMatch(/\/app\.js/)
