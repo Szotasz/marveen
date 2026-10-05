@@ -4,7 +4,15 @@ import { test, expect } from 'claude-code/testing'
 // so nothing touches the disk, a session or a timer.
 const DIR = '/install/store/mod-state'
 
-type Opts = { env?: Record<string, string | undefined>; disabled?: string[]; rateLimits?: unknown[] }
+type Opts = {
+  env?: Record<string, string | undefined>
+  disabled?: string[]
+  rateLimits?: unknown[]
+  /** The engine's own answers, to prove they come back unchanged. */
+  results?: Record<string, unknown>
+  /** Every fs.write throws. */
+  failWrite?: boolean
+}
 
 function engine(on: any, opts: Opts = {}) {
   const env = opts.env ?? { MARVEEN_AGENT_ID: 'alpha', MARVEEN_STATE_OBSERVER_DIR: DIR }
@@ -12,6 +20,7 @@ function engine(on: any, opts: Opts = {}) {
   on('env.get', ($: any, e: { name: string }) => ({ value: env[e.name] }))
   on('fs.exists', ($: any, e: { path: string }) => ({ value: (opts.disabled ?? []).some(n => e.path === `${DIR}/${n}`) }))
   on('fs.write', ($: any, e: { path: string; text: string }) => {
+    if (opts.failWrite) throw new Error('disk full')
     writes.push(e)
     return { value: undefined }
   })
@@ -23,10 +32,13 @@ function engine(on: any, opts: Opts = {}) {
     cost: { usd: 1.5 },
   } }))
   on('clock.every', () => new Promise(() => {}))
-  on('session.start', ($: any, e: { cwd: string }) => ({ cwd: e.cwd }))
-  on('turn.start', ($: any, e: { turnId: string }) => ({ turnId: e.turnId }))
+  const r = opts.results ?? {}
+  on('session.start', ($: any, e: { cwd: string }) => r['session.start'] ?? ({ cwd: e.cwd }))
+  on('turn.start', ($: any, e: { turnId: string }) => r['turn.start'] ?? ({ turnId: e.turnId }))
   on('tool.check', () => ({ decision: 'ask', reason: 'gate', hook: 'PreToolUse' }))
-  on('turn.complete', () => ({ text: '' }))
+  on('turn.complete', () => r['turn.complete'] ?? ({ text: '' }))
+  on('session.measure', () => r['session.measure'] ?? ({ changed: [] }))
+  on('session.end', () => r['session.end'] ?? ({ sessionId: 'sess-1' }))
   return writes
 }
 
@@ -146,4 +158,35 @@ test('the per-agent DISABLE of this agent stops its writes', async ($: any, on: 
   await turn($)
   await settle()
   expect(writes.length).toBe(0)
+})
+
+// Geri's #1692 review gaps (a) and (b): the observe-only promise held for EVERY
+// hook, and a failing write never reaching the agent.
+
+test('every hook hands back the engine result unchanged', async ($: any, on: any) => {
+  engine(on, { results: {
+    'session.start': { cwd: '/engine-cwd' },
+    'turn.start': { turnId: 'engine-turn' },
+    'turn.complete': { text: 'engine-answer' },
+    'session.measure': { changed: ['context'] },
+    'session.end': { sessionId: 'engine-session' },
+  } })
+
+  expect(await start($)).toEqual({ cwd: '/engine-cwd' })
+  expect(await $.turn.start({ text: 'hi', turnId: 't1' })).toEqual({ turnId: 'engine-turn' })
+  expect(await done($)).toEqual({ text: 'engine-answer' })
+  expect(await $.session.measure({ context: { window: 1 }, rateLimits: [], changed: ['context'] })).toEqual({ changed: ['context'] })
+  expect(await $.session.end({ reason: 'other' })).toEqual({ sessionId: 'engine-session' })
+})
+
+test('a write that fails is swallowed: the turn goes on and results are unchanged', async ($: any, on: any) => {
+  engine(on, { failWrite: true })
+
+  await start($)
+  await turn($)
+  const checked = await $.tool.check({ tool: 'Bash', input: { command: 'ls' }, tool_use_id: 'u1' })
+  const answer = await done($)
+  await settle()
+  expect(checked).toEqual({ decision: 'ask', reason: 'gate', hook: 'PreToolUse' })
+  expect(answer).toEqual({ text: '' })
 })
