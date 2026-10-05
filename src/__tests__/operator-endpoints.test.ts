@@ -478,6 +478,16 @@ describe('the owner section (web/app.js)', () => {
     expect(fn).toMatch(/id="opKeyExpiry" type="number" min="1" max="365"/)
   })
 
+  it('offers exactly the server capabilities, and every one starts OFF', () => {
+    const list = /const OPERATOR_CAPS = \[([^\]]*)\]/.exec(APP)![1]!.split(',').map(x => x.trim().replace(/'/g, '')).filter(Boolean)
+    expect(list).toEqual([...OPERATOR_CAPABILITIES])
+    const d = defaultOperatorAccess()
+    expect(d.enabled).toBe(false)
+    expect(Object.values(d.capabilities).every(v => v === false)).toBe(true)
+    expect(Object.keys(d.capabilities).sort()).toEqual([...OPERATOR_CAPABILITIES].sort())
+    expect(d.commands).toEqual([])
+  })
+
   it('every operator string exists in both languages', () => {
     const keys = [...new Set([...fn.matchAll(/t\('(auth\.operator\.[\w.]+)'/g)].map(m => m[1]!))].filter(k => !k.endsWith('.'))
     for (const c of ['agentControl', 'mainAgentRestart', 'update', 'vaultWrite', 'paneView', 'commands']) keys.push(`auth.operator.cap.${c}`)
