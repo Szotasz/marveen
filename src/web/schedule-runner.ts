@@ -969,7 +969,29 @@ export function resolvePreCheckPath(taskName: string, preCheck: string): string 
   return isAbsolute(rooted) ? rooted : join(SCHEDULED_TASKS_DIR, taskName, rooted)
 }
 
-export function runPreCheck(task: ScheduledTask): { skip: boolean; prefix?: string } {
+// The pre-check's time limit. Kept at 10 s: spawnSync blocks the dashboard's
+// event loop for as long as the script runs, so a longer limit costs every
+// other request; the fix for slow scripts is below, not a bigger number.
+export const PRECHECK_TIMEOUT_MS = 10_000
+
+// The script runs in its OWN process group, and the time limit ends the whole
+// group. spawnSync's timeout signals only its direct child (bash): a program
+// the script started kept running as an orphan. On 2026-10-05 15:00 the AI
+// quota watcher's precheck timed out, the runner fired the task anyway, and
+// the orphaned python -- still in its ssh -- ran next to the task's own run;
+// both used one key file and the first to finish wiped the other's (Nova
+// 18545/18547). `set -m` gives the background job its own group (pgid = pid);
+// the TERM trap ends that group, KILL a second later for anything that stayed.
+// The script's stdout, stderr and exit status pass through unchanged.
+export const PRECHECK_GROUP_WRAPPER = [
+  'set -m',
+  'bash "$1" &',
+  'pid=$!',
+  'trap \'kill -TERM -- -"$pid" 2>/dev/null; sleep 1; kill -KILL -- -"$pid" 2>/dev/null; exit 143\' TERM',
+  'wait "$pid"',
+].join('\n')
+
+export function runPreCheck(task: ScheduledTask, timeoutMs: number = PRECHECK_TIMEOUT_MS): { skip: boolean; prefix?: string } {
   if (!task.preCheck) return { skip: false }
   const scriptPath = resolvePreCheckPath(task.name, task.preCheck)
   if (!existsSync(scriptPath)) {
@@ -977,7 +999,7 @@ export function runPreCheck(task: ScheduledTask): { skip: boolean; prefix?: stri
     return { skip: false }
   }
   try {
-    const r = spawnSync('bash', [scriptPath], { timeout: 10_000, encoding: 'utf-8' })
+    const r = spawnSync('bash', ['-c', PRECHECK_GROUP_WRAPPER, 'precheck', scriptPath], { timeout: timeoutMs, encoding: 'utf-8', killSignal: 'SIGTERM' })
     if (r.error) {
       logger.warn({ task: task.name, error: r.error.message }, 'pre-check script spawn error, running LLM anyway')
       return { skip: false }
