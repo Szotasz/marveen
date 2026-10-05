@@ -16,6 +16,7 @@ const h = vi.hoisted(() => ({
   prompts: [] as Array<{ session: string; text: string }>,
   sendResult: 'sent' as string,
   audit: [] as Array<{ key: string; newValue: unknown; actor: string }>,
+  mainId: '',
 }))
 
 vi.mock('../web/operator-access.js', async (orig) => ({
@@ -78,10 +79,11 @@ vi.mock('../web/system-status.js', () => ({
 }))
 vi.mock('../web/agent-config.js', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
+  ...(await (async () => { const { MAIN_AGENT_ID: mainId } = await import('../config.js'); h.mainId = mainId; return {} })()),
   // The real isKnownAgent also answers TRUE for names that resolve to the agents/
   // base itself ('./', 'x/..', 'samu/..': safeJoin allows the exact base), so the
   // mock does too -- the route's own name check must be what refuses them.
-  isKnownAgent: (n: string) => ['samu', 'marveen', './', 'x/..', 'samu/..'].includes(n),
+  isKnownAgent: (n: string) => ['samu', 'marveen', './', 'x/..', 'samu/..'].includes(n) || n === h.mainId,
   readAgentRemoteHost: () => null,
 }))
 vi.mock('../web/agent-process.js', async (orig) => ({
@@ -93,6 +95,7 @@ vi.mock('../web/agent-process.js', async (orig) => ({
 }))
 
 import { initDatabase } from '../db.js'
+import { MAIN_AGENT_ID } from '../config.js'
 import { createDeviceKey, revokeDeviceKey, _clearDeviceKeyCacheForTest } from '../web/auth-device-keys.js'
 import { resolveAuth, requiresAuth } from '../web/auth-gate.js'
 import { defaultOperatorAccess, OPERATOR_CAPABILITIES, type OperatorAccess } from '../web/operator-access.js'
@@ -223,6 +226,32 @@ describe('forwarded actions', () => {
     expect(h.prompts).toEqual([])
   })
 
+  it('the main agent: restart needs its own switch (not agentControl); start/stop are 400', async () => {
+    const main = encodeURIComponent(MAIN_AGENT_ID)
+    h.access.capabilities.mainAgentRestart = false
+    const off = await call('POST', `/api/operator/agents/${main}/restart`)
+    expect(off.status).toBe(403)
+    expect(off.body.capability).toBe('mainAgentRestart')
+    for (const action of ['start', 'stop']) expect((await call('POST', `/api/operator/agents/${main}/${action}`)).status).toBe(400)
+    expect(h.forwarded).toEqual([])
+    h.access.capabilities.mainAgentRestart = true
+    h.access.capabilities.agentControl = false
+    expect((await call('POST', `/api/operator/agents/${main}/restart`)).status).toBe(200)
+    expect(h.forwarded).toEqual([{ handler: 'agents', path: `/api/agents/${main}/restart`, body: '' }])
+    // and agentControl alone never reaches the main agent
+    h.forwarded.length = 0
+    h.access.capabilities.mainAgentRestart = false
+    h.access.capabilities.agentControl = true
+    expect((await call('POST', `/api/operator/agents/${main}/restart`)).status).toBe(403)
+    expect(h.forwarded).toEqual([])
+  })
+
+  it('a new secret says so in the owner notification', async () => {
+    await call('PUT', '/api/operator/vault/NEW_KEY', { body: { value: 'v' } })
+    expect(h.notified[0]).toContain('új titok létrehozva')
+    expect(h.notified[0]).not.toContain('MEGLÉVŐ')
+  })
+
   it('an unknown or malformed agent name is a 404 and forwards nothing', async () => {
     for (const p of ['/api/operator/agents/nobody/restart', '/api/operator/agents/..%2Fx/restart', '/api/operator/agents/%E0/restart']) {
       const r = await call('POST', p)
@@ -258,7 +287,7 @@ describe('status: a projection with no content field', () => {
     expect(r.status).toBe(200)
     const keys = keysDeep(r.body)
     for (const k of CONTENT) expect(keys.has(k), k).toBe(false)
-    expect(Object.keys(r.body.agents[0]).sort()).toEqual([...OPERATOR_AGENT_FIELDS].sort())
+    expect(Object.keys(r.body.agents[0]).sort()).toEqual([...OPERATOR_AGENT_FIELDS, 'isMain'].sort())
     for (const s of ['SECRET-AGENT', 'SECRET-DESCRIPTION', 'SECRET-CLAUDEMD', 'secret_bot', 'SECRET-COMMIT', 'tok@', '12345', 'secret-task', 'unlisted']) {
       expect(r.raw, s).not.toContain(s)
     }
@@ -296,6 +325,7 @@ describe('vault: write-only', () => {
     expect(h.audit).toEqual([{ key: 'operator:vault-overwrite', newValue: 'OPENAI_KEY', actor: 'operator:it-op#7' }])
     expect(h.notified).toHaveLength(1)
     expect(h.notified[0]).toContain('OPENAI_KEY')
+    expect(h.notified[0]).toContain('MEGLÉVŐ titok cserélve')
     expect(h.notified[0]).toContain('it-op')
     expect(h.notified[0]).not.toContain('sk-NEW-VALUE')
   })
@@ -450,7 +480,7 @@ describe('the owner section (web/app.js)', () => {
 
   it('every operator string exists in both languages', () => {
     const keys = [...new Set([...fn.matchAll(/t\('(auth\.operator\.[\w.]+)'/g)].map(m => m[1]!))].filter(k => !k.endsWith('.'))
-    for (const c of ['agentControl', 'update', 'vaultWrite', 'paneView', 'commands']) keys.push(`auth.operator.cap.${c}`)
+    for (const c of ['agentControl', 'mainAgentRestart', 'update', 'vaultWrite', 'paneView', 'commands']) keys.push(`auth.operator.cap.${c}`)
     expect(keys.length).toBeGreaterThan(10)
     for (const lang of ['hu', 'en']) {
       const L = readFileSync(join(__dirname, `../../web/lang/${lang}.js`), 'utf-8')

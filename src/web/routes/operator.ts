@@ -85,6 +85,8 @@ export const OPERATOR_AGENT_FIELDS = [
 export function projectAgentRow(a: AgentSummary): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const f of OPERATOR_AGENT_FIELDS) out[f] = a[f] ?? null
+  // Derived, not a summary field: the page offers the main agent's restart under its own switch.
+  out.isMain = isMainChannelsAgent(a.name)
   return out
 }
 
@@ -318,10 +320,21 @@ export async function tryHandleOperator(ctx: RouteContext, webDir: string): Prom
   // --- agent control: start / stop / restart ---
   const controlMatch = path.match(/^\/api\/operator\/agents\/([^/]+)\/(start|stop|restart)$/)
   if (controlMatch && method === 'POST') {
-    if (!requireCapability(ctx, access, 'agentControl')) return true
     const name = agentFromPath(ctx, controlMatch[1]!)
     if (!name) return true
     const action = controlMatch[2]!
+    // The main agent is not part of agentControl: its lifecycle is service-managed
+    // (start/stop answer 400, as on the owner route), and a hard restart has its
+    // own switch, OFF by default (owner decision 2026-10-05).
+    if (isMainChannelsAgent(name)) {
+      if (action !== 'restart') {
+        json(res, { error: 'Main agent lifecycle is service-managed' }, 400)
+        return true
+      }
+      if (!requireCapability(ctx, access, 'mainAgentRestart')) return true
+    } else if (!requireCapability(ctx, access, 'agentControl')) {
+      return true
+    }
     audit(ctx, `agent-${action}`, name)
     await forward(ctx, `/api/agents/${encodeURIComponent(name)}/${action}`, c => tryHandleAgents(c, webDir))
     return true
@@ -381,7 +394,9 @@ export async function tryHandleOperator(ctx: RouteContext, webDir: string): Prom
     const sync = syncSecret(id)
     audit(ctx, existing ? 'vault-overwrite' : 'vault-create', id)
     const when = new Date().toLocaleString('hu-HU')
-    void notifySecurityEvent(`Üzemeltetői vault-írás: "${id}" ${existing ? 'felülírva' : 'létrehozva'}, kulcs: ${ctx.auth.device ?? '?'}, ${when}. (Az érték nem kerül az értesítésbe.)`)
+    // An overwrite says so in words: an EXISTING secret was replaced (owner decision 2026-10-05).
+    const what = existing ? `MEGLÉVŐ titok cserélve: "${id}"` : `új titok létrehozva: "${id}"`
+    void notifySecurityEvent(`Üzemeltetői vault-írás, ${what}. Kulcs: ${ctx.auth.device ?? '?'}, ${when}. (Az érték nem kerül az értesítésbe.)`)
     // The value is never echoed back.
     json(res, { ok: true, id, created: !existing, synced: sync.updated })
     return true

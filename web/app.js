@@ -14157,7 +14157,7 @@ async function mintDeviceKey() {
 // key reaches /operator and /api/operator/* only (the server enforces it), and
 // it always expires.
 
-const OPERATOR_CAPS = ['agentControl', 'update', 'vaultWrite', 'paneView', 'commands']
+const OPERATOR_CAPS = ['agentControl', 'mainAgentRestart', 'update', 'vaultWrite', 'paneView', 'commands']
 const OPERATOR_CMDS = ['login', 'mcp']
 
 function renderOperatorAccessSection(body) {

@@ -123,7 +123,14 @@
       const actions = document.createElement('td')
       const row = el('div', null, 'op-row')
       const enc = encodeURIComponent(a.name)
-      if (caps.agentControl) {
+      if (a.isMain) {
+        if (caps.mainAgentRestart && a.running) {
+          row.append(actionButton('Újraindítás', () => {
+            if (!confirm('A fő ágens újraindítása a gazda csatornáját is újraindítja. Folytatod?')) return Promise.resolve()
+            return agentAction(a.name, `/api/operator/agents/${enc}/restart`, 'Újraindítás')
+          }))
+        }
+      } else if (caps.agentControl) {
         if (a.running) {
           row.append(actionButton('Újraindítás', () => agentAction(a.name, `/api/operator/agents/${enc}/restart`, 'Újraindítás')))
           row.append(actionButton('Leállítás', () => {
