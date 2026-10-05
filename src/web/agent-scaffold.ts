@@ -2538,13 +2538,24 @@ function buildSkillsPathTrapBody(): string {
     // írni. Megmérve: `projects -> ~/.claude/projects`, tehát az a fájl a Lean
     // Chief memóriája. A skills symlink nem az egyetlen ilyen út; a szabály
     // általános, ezért itt, ugyanabban a blokkban kap helyet.
-    'Ugyanez a csapda a MEMÓRIÁRA is áll (2026-09-07-én megmérve, leanarchivist):',
-    'a `.claude-config/projects` szintén symlink a `~/.claude/projects`-re, tehát a',
-    '`.claude-config/projects/.../memory/MEMORY.md` NEM a te memóriád, hanem a Lean',
-    'Chiefé -- az ő session-je tölti be, a tiéd soha. A te memóriád a dashboard API,',
-    '`agent_id`-vel címezve (`POST /api/memories`). Általános szabály: a `.claude`',
-    'vagy `.claude-config` alatti útvonal soha nem a sajátod, akkor sem, ha a',
-    'munkakönyvtáradban látszik. Írás előtt nézd meg, hova mutat: `ls -la`.',
+    //
+    // 2026-10-05 HATÓKÖR-JAVÍTÁS (balazsmarveenja mérte, marveen-is visszamérte):
+    // a korábbi szöveg "a tiéd SOHA" alakban általánosított, és az TÚL TAG. A
+    // `~/.claude/projects` alatti könyvtár a MUNKAKÖNYVTÁR slugja szerint kulcsolt,
+    // tehát egy `agents/<nev>` cwd-vel futó ügynöknél a slug a SAJÁTJA, és a saját
+    // session-je be is tölti. Mérve: 14 slug közül 13 ügynök-specifikus, 10-ben
+    // van `memory/MEMORY.md`, és egy percekkel a mérés előtt frissült. Az eredeti
+    // eset VÁLTOZATLANUL valós: ott IDEGEN slug állt az útban. A kár a tág alakkal
+    // NÉMA: egy friss kontextus jóhiszeműen felhagy egy MŰKÖDŐ memória-úttal, és
+    // akkor a "NINCS MENTAL NOTE" szabálynak nem marad hordozója.
+    'Ugyanez a csapda a MEMÓRIÁRA is áll, de SZŰKEBBEN: a `.claude-config/projects`',
+    'szintén symlink a `~/.claude/projects`-re, DE az alatta lévő könyvtár a',
+    'MUNKAKÖNYVTÁR slugja szerint kulcsolt. Tehát NE feltételezd: NÉZD MEG, melyik',
+    'slug az (`readlink -f`). Ha a sajátod, a `memory/MEMORY.md` is a tiéd, és a',
+    'saját session-öd betölti. Az eredeti eset azért volt valós, mert ott IDEGEN slug',
+    'állt az útban, nem azért, mert ez az út sosem a sajátod. A FLOTTA memóriája',
+    'ettől függetlenül a dashboard API (`POST /api/memories`, `agent_id`-vel): a',
+    'keresés és a heartbeat ott dolgozik. A szabály itt ELLENŐRZÉS, nem tilalom.',
   ].join('\n')
 }
 
