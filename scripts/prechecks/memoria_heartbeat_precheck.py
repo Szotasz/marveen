@@ -21,7 +21,7 @@ Contract (schedule-runner.ts runPreCheck): stdout "SKIP" skips the LLM round,
 anything else (or a non-zero exit, a crash, a timeout) runs it. This script
 FAILS OPEN: every error path prints nothing and exits 0, so the round runs.
 
-Modes (file MODE_PATH, one word; absent or unknown = DEFAULT_MODE):
+Modes (file MODE_PATH, one word; absent = DEFAULT_MODE, unknown = shadow):
   shadow  never prints SKIP; only logs what it would have done.
   live    prints SKIP when the window is empty.
 Every decision is logged as one JSON line to LOG_PATH, in both modes.
@@ -45,8 +45,11 @@ LOG_PATH = os.environ.get('MHP_LOG_PATH', f'{ROOT}/store/precheck/memoria-heartb
 MODE_PATH = os.environ.get('MHP_MODE_PATH', f'{ROOT}/store/precheck/memoria-heartbeat.mode')
 MAX_SILENCE_S = 4 * 3600
 # The mode when MODE_PATH is absent or holds anything else. A release decision:
-# 'shadow' logs only and never skips; 'live' skips an empty window.
-DEFAULT_MODE = 'shadow'
+# 'shadow' logs only and never skips; 'live' skips an empty window. 'live' since
+# the 24 h shadow measurement on the reference install (2026-10-05): after every
+# would-skip decision whose round the runner fired, the round ended quiet. An
+# owner opts out with the single word 'shadow' in MODE_PATH.
+DEFAULT_MODE = 'live'
 STAMP_FILE_NAME = 'memoria-heartbeat-state.json'
 
 
@@ -99,7 +102,9 @@ def read_mode():
             mode = fh.read().strip()
     except FileNotFoundError:
         return DEFAULT_MODE
-    return mode if mode in ('shadow', 'live') else DEFAULT_MODE
+    # A file that is there but unreadable is somebody's choice, mistyped: take
+    # the side that never skips, so a garbled opt-out cannot turn skipping on.
+    return mode if mode in ('shadow', 'live') else 'shadow'
 
 
 def user_text(content):

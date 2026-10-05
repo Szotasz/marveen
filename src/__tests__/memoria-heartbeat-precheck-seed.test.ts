@@ -44,7 +44,7 @@ describe('memoria-heartbeat preCheck seed', () => {
     expect(py).toMatch(/os\.path\.dirname\(os\.path\.dirname\(os\.path\.dirname\(os\.path\.abspath\(__file__\)\)\)\)/)
   })
 
-  it('SKIP is printed only in live mode (shadow, the default, never skips)', () => {
+  it('SKIP is printed only in live mode (shadow never skips)', () => {
     const py = readFileSync(LOGIC, 'utf-8')
     expect(py).toMatch(/skipped = would_skip and mode == 'live'/)
     expect((py.match(/print\('SKIP'\)/g) ?? []).length).toBe(1)
@@ -52,8 +52,10 @@ describe('memoria-heartbeat preCheck seed', () => {
 
   it('the default mode is a deliberate release decision, pinned here', () => {
     const py = readFileSync(LOGIC, 'utf-8')
-    expect(py).toMatch(/^DEFAULT_MODE = 'shadow'$/m)
+    expect(py).toMatch(/^DEFAULT_MODE = 'live'$/m)
     expect(py).toMatch(/except FileNotFoundError:\n\s+return DEFAULT_MODE/)
+    // a present but garbled mode file is a mistyped choice: it never turns skipping on
+    expect(py).toMatch(/return mode if mode in \('shadow', 'live'\) else 'shadow'/)
   })
 
   it('names no install, user or agent of ours (the distribution hardcode rule)', () => {

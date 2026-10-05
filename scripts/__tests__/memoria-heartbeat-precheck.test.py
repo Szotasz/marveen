@@ -87,12 +87,18 @@ class DecisionTest(Base):
         self.assertTrue(log['skipped'])
 
     def test_shadow_never_skips_but_logs_would_skip(self):
-        # no mode file at all = shadow
+        self.set_mode('shadow')
         code, out, log = self.run_check()
         self.assertEqual((code, out), (0, ''))
         self.assertTrue(log['would_skip'])
         self.assertFalse(log['skipped'])
         self.assertEqual(log['mode'], 'shadow')
+
+    def test_no_mode_file_is_the_shipped_default_live(self):
+        code, out, log = self.run_check()
+        self.assertEqual((code, out), (0, 'SKIP'))
+        self.assertTrue(log['skipped'])
+        self.assertEqual(log['mode'], 'live')
 
     def test_a_tool_call_after_the_stamp_runs_the_round(self):
         self.set_mode('live')
