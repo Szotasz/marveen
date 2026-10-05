@@ -402,7 +402,7 @@ function findBotTokenDuplicate(
   return null
 }
 
-interface AgentSummary {
+export interface AgentSummary {
   name: string
   displayName: string
   description: string
@@ -618,7 +618,7 @@ function getAgentDetail(name: string): AgentDetail {
   }
 }
 
-function listAgentSummaries(): AgentSummary[] {
+export function listAgentSummaries(): AgentSummary[] {
   return listAgentNames().map(getAgentSummary)
 }
 

@@ -13954,6 +13954,7 @@ async function renderAuthCard() {
   if (status.method === 'token' || status.method === 'session') {
     renderDeviceKeysSection(body)
     renderBridgeEnrollSection(body)
+    renderOperatorAccessSection(body)
   }
 }
 
@@ -14081,6 +14082,7 @@ async function refreshDeviceKeyList() {
       const lastUsed = k.lastUsedAt ? new Date(k.lastUsedAt * 1000).toLocaleString() : t('auth.devices.never_used')
       const expires = k.expiresAt ? ` &middot; ${t('auth.devices.expires', { date: new Date(k.expiresAt * 1000).toLocaleDateString() })}` : ''
       const bridge = k.installId ? ` <span class="auth-device-bridge-badge">${t('auth.devices.bridge_badge')}</span>` : ''
+        + (k.scope === 'operator' ? ` <span class="auth-device-bridge-badge">${t('auth.operator.badge')}</span>` : '')
       return `<div class="auth-session-row auth-device-row" data-key-id="${k.id}">` +
         `<span class="auth-device-name">${escapeHtml(k.name)}${bridge}</span>` +
         `<span class="auth-device-meta">${created} &middot; ${t('auth.devices.last_used', { date: lastUsed })}${expires}</span>` +
@@ -14144,6 +14146,115 @@ async function mintDeviceKey() {
         await navigator.clipboard.writeText(data.key)
         document.getElementById('authDevCopyBtn').textContent = t('auth.devices.copied')
       } catch { document.getElementById('authDevMintedKey').select() }
+    })
+    refreshDeviceKeyList()
+  } catch { msg.classList.add('err'); msg.textContent = t('auth.login.err_network') }
+}
+
+// === IT operator access (DASHOPERATOR1005) ===
+// The owner decides what an IT operator may do: one switch per capability,
+// all OFF by default, and the whole surface OFF until "enabled". An operator
+// key reaches /operator and /api/operator/* only (the server enforces it), and
+// it always expires.
+
+const OPERATOR_CAPS = ['agentControl', 'update', 'vaultWrite', 'paneView', 'commands']
+const OPERATOR_CMDS = ['login', 'mcp']
+
+function renderOperatorAccessSection(body) {
+  const wrap = document.createElement('div')
+  wrap.className = 'auth-device-keys'
+  wrap.id = 'authOperatorAccess'
+  wrap.innerHTML =
+    `<div class="auth-sessions-title">${t('auth.operator.title')}</div>` +
+    `<p class="auth-muted">${t('auth.operator.desc')}</p>` +
+    `<label class="auth-operator-switch"><input type="checkbox" id="opAccEnabled"> <strong>${t('auth.operator.enabled')}</strong></label>` +
+    `<div id="opAccCaps">` +
+      OPERATOR_CAPS.map((c) => `<label class="auth-operator-switch"><input type="checkbox" data-op-cap="${c}"> ${t('auth.operator.cap.' + c)}</label>`).join('') +
+      `<div class="auth-muted" style="margin-left:1.5em">` +
+        OPERATOR_CMDS.map((c) => `<label class="auth-operator-switch"><input type="checkbox" data-op-cmd="${c}"> /${c}</label>`).join(' ') +
+      `</div>` +
+    `</div>` +
+    `<div class="auth-form-msg" id="opAccMsg"></div>` +
+    `<div class="auth-form auth-device-mint">` +
+      `<input id="opKeyName" type="text" autocapitalize="off" spellcheck="false" maxlength="64" placeholder="${t('auth.operator.name_placeholder')}">` +
+      `<input id="opKeyExpiry" type="number" min="1" max="365" placeholder="${t('auth.operator.expiry_placeholder')}">` +
+      `<button class="btn-secondary" id="opKeyMintBtn">${t('auth.operator.mint')}</button>` +
+      `<div class="auth-form-msg" id="opKeyMsg"></div>` +
+      `<div id="opKeyMinted" hidden></div>` +
+    `</div>`
+  body.appendChild(wrap)
+  wrap.querySelectorAll('input[type=checkbox]').forEach((cb) => cb.addEventListener('change', saveOperatorAccess))
+  document.getElementById('opKeyMintBtn').addEventListener('click', mintOperatorKey)
+  loadOperatorAccess()
+}
+
+function applyOperatorAccess(a) {
+  document.getElementById('opAccEnabled').checked = !!a.enabled
+  for (const c of OPERATOR_CAPS) document.querySelector(`[data-op-cap="${c}"]`).checked = !!(a.capabilities && a.capabilities[c])
+  for (const c of OPERATOR_CMDS) document.querySelector(`[data-op-cmd="${c}"]`).checked = (a.commands || []).includes(c)
+  document.getElementById('opAccCaps').style.opacity = a.enabled ? '1' : '0.5'
+}
+
+async function loadOperatorAccess() {
+  try {
+    const r = await fetch('/api/operator-access')
+    if (r.ok) applyOperatorAccess(await r.json())
+  } catch { /* the section stays at its unchecked defaults */ }
+}
+
+async function saveOperatorAccess(ev) {
+  const msg = document.getElementById('opAccMsg')
+  msg.className = 'auth-form-msg'
+  // Turning on the pane view shows the operator the conversation itself: ask first.
+  if (ev && ev.target && ev.target.dataset.opCap === 'paneView' && ev.target.checked && !confirm(t('auth.operator.pane_warning'))) {
+    ev.target.checked = false
+    return
+  }
+  const next = {
+    enabled: document.getElementById('opAccEnabled').checked,
+    capabilities: Object.fromEntries(OPERATOR_CAPS.map((c) => [c, document.querySelector(`[data-op-cap="${c}"]`).checked])),
+    commands: OPERATOR_CMDS.filter((c) => document.querySelector(`[data-op-cmd="${c}"]`).checked),
+  }
+  try {
+    const r = await fetch('/api/operator-access', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next) })
+    if (!r.ok) throw new Error(String(r.status))
+    applyOperatorAccess(await r.json())
+    msg.classList.add('ok'); msg.textContent = t('auth.operator.saved')
+  } catch {
+    msg.classList.add('err'); msg.textContent = t('auth.card.err_generic')
+    loadOperatorAccess()
+  }
+}
+
+async function mintOperatorKey() {
+  const msg = document.getElementById('opKeyMsg')
+  const minted = document.getElementById('opKeyMinted')
+  const name = (document.getElementById('opKeyName').value || '').trim()
+  const expiryRaw = document.getElementById('opKeyExpiry').value
+  msg.className = 'auth-form-msg'
+  minted.hidden = true
+  if (!name) { msg.classList.add('err'); msg.textContent = t('auth.devices.err_name'); return }
+  const payload = { name, scope: 'operator' }
+  if (expiryRaw) payload.expires_in_days = Number(expiryRaw)
+  try {
+    const r = await fetch('/api/auth/device-keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+    const data = await r.json().catch(() => ({}))
+    if (!r.ok) { msg.classList.add('err'); msg.textContent = data.error || t('auth.card.err_generic'); return }
+    document.getElementById('opKeyName').value = ''
+    document.getElementById('opKeyExpiry').value = ''
+    const url = `${location.origin}/operator`
+    minted.hidden = false
+    minted.innerHTML =
+      `<p class="auth-muted">${t('auth.operator.minted_hint', { date: new Date(data.expires_at * 1000).toLocaleDateString(), url: escapeHtml(url) })}</p>` +
+      `<div class="auth-form auth-device-minted-row">` +
+        `<input id="opKeyMintedVal" type="text" readonly value="${escapeHtml(data.key)}" onclick="this.select()">` +
+        `<button class="btn-secondary btn-compact" id="opKeyCopyBtn">${t('auth.devices.copy')}</button>` +
+      `</div>`
+    document.getElementById('opKeyCopyBtn').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(data.key)
+        document.getElementById('opKeyCopyBtn').textContent = t('auth.devices.copied')
+      } catch { document.getElementById('opKeyMintedVal').select() }
     })
     refreshDeviceKeyList()
   } catch { msg.classList.add('err'); msg.textContent = t('auth.login.err_network') }
