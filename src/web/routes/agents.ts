@@ -2194,7 +2194,17 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // nothing. A running agent restarts as before; a stopped one that is still
     // desired (it should be up) is started, as the reconciler would; a stopped one
     // that is NOT desired is refused, and /start is the one door that runs it.
-    if (!isAgentRunning(name) && !getDesiredAgents().has(name)) {
+    //
+    // A remote agent whose host does not answer reads as not-running too, and
+    // "stopped on purpose" would be the wrong diagnosis there -- nobody knows
+    // whether it runs. That case gets its own answer (503, host-unreachable)
+    // and nothing is attempted: a restart over a dead ssh link cannot succeed.
+    const runState = agentRunState(name)
+    if (runState === 'unreachable') {
+      json(res, { error: 'Agent runs on a remote host that is not reachable right now, so its run state is unknown; nothing was restarted', code: 'host-unreachable' }, 503)
+      return true
+    }
+    if (runState !== 'running' && !getDesiredAgents().has(name)) {
       json(res, { error: 'Agent is not running and was stopped on purpose (not in the desired run-state); use /start to run it', code: 'stopped-not-desired' }, 409)
       return true
     }
