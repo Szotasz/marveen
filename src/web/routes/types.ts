@@ -24,7 +24,7 @@ export interface RouteContext {
    *  against the roster but NOT authenticated -- one shared token means it can
    *  be typed by anyone, so it may warn and attribute, never authorize.
    *  Lets routes distinguish a human session from a token/fleet caller. */
-  auth?: { kind: 'token' | 'session' | 'federation' | 'device'; user?: string; peer?: string; device?: string; deviceId?: number; agent?: string }
+  auth?: { kind: 'token' | 'session' | 'federation' | 'device'; user?: string; peer?: string; device?: string; deviceId?: number; agent?: string; scope?: 'full' | 'operator' }
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<boolean>

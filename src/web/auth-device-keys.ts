@@ -29,9 +29,20 @@ const LAST_USED_DEBOUNCE_SEC = 60
 // scanners) and visually distinct from the 64-hex dashboard token.
 const KEY_PREFIX = 'mvdk_'
 
+/**
+ * What a key may reach (DASHOPERATOR1005). 'full' is every key minted before
+ * this field existed and stays the default. 'operator' is the IT operator's
+ * key: the gate lets it reach /api/operator/* only (operator-gate.ts), and it
+ * must expire -- an operator key without an end date cannot be minted.
+ */
+export type DeviceKeyScope = 'full' | 'operator'
+export const DEVICE_KEY_SCOPES: readonly DeviceKeyScope[] = ['full', 'operator']
+export const OPERATOR_KEY_DEFAULT_EXPIRY_DAYS = 90
+
 export interface DeviceKeyPrincipal {
   id: number
   name: string
+  scope: DeviceKeyScope
 }
 
 export interface DeviceKeyInfo {
@@ -43,6 +54,7 @@ export interface DeviceKeyInfo {
   /** SSH enrollment id (marveen-remote:<uuid>) for Bridge-paired keys; null
    *  for keys minted outside the pairing flow. */
   installId: string | null
+  scope: DeviceKeyScope
 }
 
 export interface MintedDeviceKey extends DeviceKeyInfo {
@@ -55,6 +67,11 @@ interface CachedKey {
   name: string
   lastUsedAt: number | null
   expiresAt: number | null
+  scope: DeviceKeyScope
+}
+
+function toScope(value: unknown): DeviceKeyScope {
+  return value === 'operator' ? 'operator' : 'full'
 }
 
 const cache = new Map<string, CachedKey>()
@@ -70,18 +87,22 @@ function nowSec(): number {
 // Mint a new key. The raw value exists only in the returned object; the row
 // stores its hash. expiresInDays is opt-in -- omitted means the key lives until
 // revoked.
-export function createDeviceKey(name: string, opts: { expiresInDays?: number; installId?: string } = {}): MintedDeviceKey {
+export function createDeviceKey(name: string, opts: { expiresInDays?: number; installId?: string; scope?: DeviceKeyScope } = {}): MintedDeviceKey {
+  const scope = opts.scope ?? 'full'
+  if (scope === 'operator' && !(opts.expiresInDays && opts.expiresInDays > 0)) {
+    throw new Error('an operator key must expire')
+  }
   const raw = KEY_PREFIX + randomBytes(32).toString('base64url')
   const keyHash = sha256hex(raw)
   const now = nowSec()
   const expiresAt = opts.expiresInDays ? now + Math.floor(opts.expiresInDays * 24 * 60 * 60) : null
   const installId = opts.installId ?? null
   const info = getDb()
-    .prepare('INSERT INTO device_keys (key_hash, name, created_at, last_used_at, expires_at, install_id) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(keyHash, name, now, null, expiresAt, installId)
+    .prepare('INSERT INTO device_keys (key_hash, name, created_at, last_used_at, expires_at, install_id, scope) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(keyHash, name, now, null, expiresAt, installId, scope)
   const id = Number(info.lastInsertRowid)
-  cache.set(keyHash, { id, name, lastUsedAt: null, expiresAt })
-  return { id, name, createdAt: now, lastUsedAt: null, expiresAt, installId, key: raw }
+  cache.set(keyHash, { id, name, lastUsedAt: null, expiresAt, scope })
+  return { id, name, createdAt: now, lastUsedAt: null, expiresAt, installId, scope, key: raw }
 }
 
 function removeByHash(keyHash: string): void {
@@ -98,10 +119,10 @@ export function resolveDeviceKey(raw: string): DeviceKeyPrincipal | null {
   let entry = cache.get(keyHash)
   if (!entry) {
     const row = getDb()
-      .prepare('SELECT id, name, last_used_at, expires_at FROM device_keys WHERE key_hash = ?')
-      .get(keyHash) as { id: number; name: string; last_used_at: number | null; expires_at: number | null } | undefined
+      .prepare('SELECT id, name, last_used_at, expires_at, scope FROM device_keys WHERE key_hash = ?')
+      .get(keyHash) as { id: number; name: string; last_used_at: number | null; expires_at: number | null; scope: string } | undefined
     if (!row) return null
-    entry = { id: row.id, name: row.name, lastUsedAt: row.last_used_at, expiresAt: row.expires_at }
+    entry = { id: row.id, name: row.name, lastUsedAt: row.last_used_at, expiresAt: row.expires_at, scope: toScope(row.scope) }
     cache.set(keyHash, entry)
   }
   const now = nowSec()
@@ -122,14 +143,14 @@ export function resolveDeviceKey(raw: string): DeviceKeyPrincipal | null {
       return null
     }
   }
-  return { id: entry.id, name: entry.name }
+  return { id: entry.id, name: entry.name, scope: entry.scope }
 }
 
-function rowToInfo(r: { id: number; name: string; created_at: number; last_used_at: number | null; expires_at: number | null; install_id: string | null }): DeviceKeyInfo {
-  return { id: r.id, name: r.name, createdAt: r.created_at, lastUsedAt: r.last_used_at, expiresAt: r.expires_at, installId: r.install_id }
+function rowToInfo(r: { id: number; name: string; created_at: number; last_used_at: number | null; expires_at: number | null; install_id: string | null; scope: string }): DeviceKeyInfo {
+  return { id: r.id, name: r.name, createdAt: r.created_at, lastUsedAt: r.last_used_at, expiresAt: r.expires_at, installId: r.install_id, scope: toScope(r.scope) }
 }
 
-const INFO_COLUMNS = 'id, name, created_at, last_used_at, expires_at, install_id'
+const INFO_COLUMNS = 'id, name, created_at, last_used_at, expires_at, install_id, scope'
 
 export function listDeviceKeys(): DeviceKeyInfo[] {
   const rows = getDb()

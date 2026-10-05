@@ -8,6 +8,9 @@ import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS
 import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress-allowlist-baseline.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
+import { operatorGateDecision } from './web/operator-gate.js'
+import { readOperatorAccess } from './web/operator-access.js'
+import { tryHandleOperatorAccess } from './web/routes/operator-access.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
 import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
 import { isBlockedCrossOriginWrite, originMatchesServedHost } from './web/csrf-origin.js'
@@ -172,10 +175,21 @@ export function startWebServer(port = 3420): http.Server {
       res.end(JSON.stringify({ error: 'Unauthorized' }))
       return
     }
+    // DASHOPERATOR1005: an operator-scoped key reaches /api/operator/* only,
+    // decided here, before ANY handler (including network-info below) runs.
+    if (requiresAuth(path, method)) {
+      const operatorDenied = operatorGateDecision(auth, path, () => readOperatorAccess())
+      if (operatorDenied) {
+        logger.warn({ path, method, device: auth.kind === 'device' ? auth.device : undefined, reason: operatorDenied }, 'operator gate: denied')
+        res.writeHead(403, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Forbidden for this credential', reason: operatorDenied }))
+        return
+      }
+    }
     const fedPeerForCtx: string | null = auth.kind === 'federation' ? auth.peer : null
     const ctxAuth =
       auth.kind === 'token' ? { kind: 'token' as const, agent: auth.agent }
-      : auth.kind === 'device' ? { kind: 'device' as const, device: auth.device, deviceId: auth.deviceId }
+      : auth.kind === 'device' ? { kind: 'device' as const, device: auth.device, deviceId: auth.deviceId, scope: auth.scope }
       : auth.kind === 'session' ? { kind: 'session' as const, user: auth.user }
       : auth.kind === 'federation' ? { kind: 'federation' as const, peer: auth.peer }
       : undefined
@@ -193,6 +207,7 @@ export function startWebServer(port = 3420): http.Server {
       const routeCtx: RouteContext = { req, res, path, method, url, fedPeer: fedPeerForCtx, auth: ctxAuth }
 
       if (await tryHandleAuth(routeCtx)) return
+      if (await tryHandleOperatorAccess(routeCtx)) return
       if (await tryHandleSecurity(routeCtx)) return
       if (await tryHandleBridgeServicePorts(routeCtx)) return
       if (await tryHandleProfiles(routeCtx)) return
