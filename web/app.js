@@ -867,16 +867,19 @@ async function loadKanban() {
         if (sortSel) sortSel.value = storedSort
       }
     }
-    const [cardsRes, assigneesRes, projectsRes, labelsRes] = await Promise.all([
+    const [cardsRes, assigneesRes, projectsRes, labelsRes, staleRes] = await Promise.all([
       fetch('/api/kanban'),
       fetch('/api/kanban/assignees'),
       fetch('/api/kanban-projects'),
       fetch('/api/kanban/labels'),
+      fetch('/api/kanban/stale?days=14'),
     ])
     kanbanCards = await cardsRes.json()
     kanbanAssignees = await assigneesRes.json()
     kanbanProjects = await projectsRes.json()
     kanbanAllLabels = await labelsRes.json()
+    // The stale list is an extra: if it fails, the board still loads.
+    if (staleRes.ok) kanbanStaleCards = (await staleRes.json()).cards || []
     populateProjectFilter()
     populateProjectSuggestions()
     setupAssigneeFilter()
@@ -1240,12 +1243,98 @@ function renderKanbanOngoing(cards) {
   }
 }
 
+// --- kanban stale review ---
+let kanbanStaleCards = []
+let kanbanStaleDeepLinkHandled = false
+let kanbanStaleOverlay = null
+
+function kanbanStaleRowHtml(card) {
+  const assignee = String(card.assignee || '').trim() || t('kanban.stale.unassigned')
+  const status = t('kanban.status.' + card.status)
+  return `<div class="kanban-stale-row" data-card-id="${escapeHtml(card.id)}">` +
+    `<div class="kanban-stale-card"><span class="seq">#${escapeHtml(card.seq ?? '?')}</span>` +
+    `<strong>${escapeHtml(card.title)}</strong></div>` +
+    `<div class="kanban-stale-meta">${escapeHtml(assignee)} · ${escapeHtml(status)} · ${escapeHtml(t('kanban.stale.idle', { n: card.idle_days }))}</div>` +
+    `<div class="kanban-stale-actions">` +
+    `<button type="button" class="btn-secondary" data-decision="keep">${escapeHtml(t('kanban.stale.keep'))}</button>` +
+    `<button type="button" class="btn-secondary" data-decision="idea">${escapeHtml(t('kanban.stale.idea'))}</button>` +
+    `<button type="button" class="btn-danger" data-decision="close">${escapeHtml(t('kanban.stale.close'))}</button>` +
+    `</div></div>`
+}
+
+function renderKanbanStaleModal() {
+  if (!kanbanStaleOverlay) return
+  const list = kanbanStaleOverlay.querySelector('.kanban-stale-list')
+  list.innerHTML = kanbanStaleCards.length
+    ? kanbanStaleCards.map(kanbanStaleRowHtml).join('')
+    : `<p class="naplo-empty">${escapeHtml(t('kanban.stale.empty'))}</p>`
+  list.querySelectorAll('[data-decision]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const row = button.closest('.kanban-stale-row')
+      const id = row.dataset.cardId
+      row.querySelectorAll('button').forEach((item) => { item.disabled = true })
+      try {
+        const response = await fetch(`/api/kanban/${encodeURIComponent(id)}/stale-decision`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ decision: button.dataset.decision, actor: kanbanMoveActor() }),
+        })
+        const result = await response.json()
+        if (!response.ok) throw new Error(result.error || response.statusText)
+        kanbanStaleCards = kanbanStaleCards.filter((card) => card.id !== id)
+        showToast(t('kanban.stale.saved'))
+        renderKanbanStaleModal()
+        await loadKanban()
+      } catch (err) {
+        showToast(t('kanban.stale.error', { msg: err.message || String(err) }))
+        row.querySelectorAll('button').forEach((item) => { item.disabled = false })
+      }
+    })
+  })
+}
+
+function openKanbanStaleReview() {
+  if (!kanbanStaleOverlay) {
+    kanbanStaleOverlay = document.createElement('div')
+    kanbanStaleOverlay.className = 'modal-overlay'
+    kanbanStaleOverlay.innerHTML = `<div class="modal modal-wide kanban-stale-modal"><div class="modal-header"><h2>${escapeHtml(t('kanban.stale.title'))}</h2><button type="button" class="modal-close" aria-label="${escapeHtml(t('common.close'))}">×</button></div><div class="modal-body kanban-stale-list"></div></div>`
+    document.body.appendChild(kanbanStaleOverlay)
+    kanbanStaleOverlay.querySelector('.modal-close').addEventListener('click', () => closeModal(kanbanStaleOverlay))
+    attachOverlayCloseGuard(kanbanStaleOverlay)
+  }
+  renderKanbanStaleModal()
+  openModal(kanbanStaleOverlay)
+}
+
+function renderKanbanStaleChip() {
+  let chip = document.getElementById('kanbanStaleReviewChip')
+  // Above the board: after the owner strip when there is one, else after the filter row.
+  const anchor = document.getElementById('kanbanOwnerStrip') || document.getElementById('kanbanBoardFilters')
+  if (!chip) {
+    chip = document.createElement('button')
+    chip.id = 'kanbanStaleReviewChip'
+    chip.className = 'kanban-stale-chip'
+    chip.addEventListener('click', openKanbanStaleReview)
+    anchor?.insertAdjacentElement('afterend', chip)
+  }
+  chip.hidden = kanbanStaleCards.length === 0
+  chip.textContent = t('kanban.stale.chip', { n: kanbanStaleCards.length })
+  if (!kanbanStaleDeepLinkHandled && new URLSearchParams(location.search).get('review') === 'stale') {
+    kanbanStaleDeepLinkHandled = true
+    const url = new URL(location.href)
+    url.searchParams.delete('review')
+    history.replaceState(history.state, '', url.pathname + url.search + url.hash)
+    openKanbanStaleReview()
+  }
+}
+// --- end kanban stale review ---
+
 function renderKanban() {
   const cardById = new Map(kanbanCards.map(c => [c.id, c]))
 
   renderKanbanColumnChips()
   renderKanbanQuickFilters()
   renderKanbanSearchHint()
+  renderKanbanStaleChip()
 
   // Determine which top-level cards are visible under current filters.
   const visibleCardIds = new Set()

@@ -19,6 +19,7 @@ import {
   getDbFileSizeMb,
   getTokenPruneLag,
   getStuckKanbanCards,
+  listStaleKanbanCards, decideStaleKanbanCard, StaleKanbanDecisionError,
   type TokenPruneLag,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
@@ -42,7 +43,7 @@ const KANBAN_READONLY_FIELDS = new Set<string>([
   // dispatched_at is a real column set by the dispatch path (markKanbanCardDispatched),
   // never by a PUT, but getKanbanCard's SELECT * returns it so the dashboard's
   // whole-card send carries it back. Accept-and-ignore, do not 400.
-  'dispatched_at',
+  'dispatched_at', 'stale_kept_at',
 ])
 
 // Every key POST /api/kanban/:id/move accepts; anything else is a 400, same
@@ -489,6 +490,31 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { ...result, empty_reason: 'nincs megkezdett kártya' })
     } else {
       json(res, result)
+    }
+    return true
+  }
+
+  if (path === '/api/kanban/stale' && method === 'GET') {
+    const raw = url.searchParams.get('days') ?? '14'
+    const days = Number(raw)
+    if (!Number.isInteger(days) || days <= 0) { json(res, { error: 'days must be a positive integer' }, 400); return true }
+    const cards = listStaleKanbanCards({ days })
+    json(res, { days, count: cards.length, cards })
+    return true
+  }
+
+  const staleDecisionMatch = path.match(/^\/api\/kanban\/([^/]+)\/stale-decision$/)
+  if (staleDecisionMatch && method === 'POST') {
+    const id = decodeURIComponent(staleDecisionMatch[1])
+    let data: { decision?: string; actor?: string }
+    try { data = JSON.parse((await readBody(req)).toString()) } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+    try {
+      json(res, decideStaleKanbanCard(id, data.decision as any, data.actor))
+    } catch (err) {
+      if (err instanceof StaleKanbanDecisionError) {
+        const status = err.code === 'not_found' ? 404 : err.code === 'archived' ? 409 : 400
+        json(res, { error: err.message, code: err.code }, status)
+      } else throw err
     }
     return true
   }

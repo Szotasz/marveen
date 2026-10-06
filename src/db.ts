@@ -1,7 +1,8 @@
 import Database from 'better-sqlite3'
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync, statSync } from 'node:fs'
-import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ, EMBED_URL, EMBED_MODEL, EMBED_DIMS, MAIN_AGENT_ID } from './config.js'
+import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ, EMBED_URL, EMBED_MODEL, EMBED_DIMS, MAIN_AGENT_ID, OWNER_NAME } from './config.js'
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
@@ -227,6 +228,13 @@ export function initDatabase(dbPathOverride?: string): void {
     }
   } catch (err) {
     logger.warn({ err }, 'kanban_cards testing-status migration failed -- continuing')
+  }
+  // After the testing-status rebuild above, which copies a fixed column list:
+  // a column added before it would be dropped again on an old database.
+  try {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN stale_kept_at INTEGER')
+  } catch {
+    // column already exists
   }
   // Migration: add agent_id, category, auto_generated columns to memories
   try {
@@ -2444,6 +2452,9 @@ export interface KanbanCard {
   // falling back to created_at when it has never moved. Use this for ageing and
   // stuck detection; updated_at is reset by comments and edits.
   last_status_at?: number
+  // Set when the owner decides to keep a stale card: the stale clock restarts
+  // from here without writing a fake status event. NULL = never reviewed.
+  stale_kept_at: number | null
   archived_at: number | null
   // Set the first time the card is moved to in_progress and the assigned agent
   // is woken (kanban -> agent dispatch). NULL = never dispatched; the once-only
@@ -2539,6 +2550,99 @@ export function listKanbanCards(
     if (v !== undefined) c.active_seconds = v
   }
   return cards
+}
+
+// === Stale-card review ===
+//
+// Open cards that have not changed column for `days` (default 14) days, oldest
+// first, for the owner to decide on one by one: keep (restart the clock), idea
+// (file it in the idea box and archive the card) or close (done + archive).
+function normalizeKanbanLabelName(value: unknown): string {
+  return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase()
+}
+
+export interface StaleKanbanCard {
+  id: string
+  seq: number
+  title: string
+  status: KanbanCard['status']
+  assignee: string | null
+  priority: KanbanCard['priority']
+  last_status_at: number
+  stale_kept_at: number | null
+  idle_days: number
+}
+
+export function listStaleKanbanCards(opts: { days?: number; owner?: string; now?: number } = {}): StaleKanbanCard[] {
+  const days = opts.days ?? 14
+  const owner = (opts.owner ?? OWNER_NAME).trim().toLowerCase()
+  const now = opts.now ?? Math.floor(Date.now() / 1000)
+  const cutoff = now - days * 86400
+  const rows = db.prepare(`
+    SELECT c.rowid AS seq, c.id, c.title, c.status, c.assignee, c.priority,
+           COALESCE(MAX(e.created_at), c.created_at) AS last_status_at, c.stale_kept_at
+    FROM kanban_cards c
+    LEFT JOIN kanban_card_events e ON e.card_id = c.id
+    WHERE c.archived_at IS NULL AND c.status != 'done'
+    GROUP BY c.id
+  `).all() as Array<Omit<StaleKanbanCard, 'idle_days'>>
+  const labels = db.prepare(`
+    SELECT k.card_id, l.name FROM kanban_card_labels k JOIN labels l ON l.id = k.label_id
+  `).all() as Array<{ card_id: string; name: string }>
+  // Cards that are meant to sit still are not stale: the ongoing-work label
+  // ("Folyamatos") and the owner-queue label ("Rád vár"), compared without
+  // accents and case. The owner's own cards are left out for the same reason:
+  // this list is what the owner reviews about everybody else's work.
+  const excluded = new Set(labels.filter(({ name }) => ['folyamatos', 'rad var'].includes(normalizeKanbanLabelName(name))).map(({ card_id }) => card_id))
+  return rows
+    .filter((card) => !excluded.has(card.id))
+    .filter((card) => String(card.assignee ?? '').trim().toLowerCase() !== owner)
+    .map((card) => {
+      const idleAt = Math.max(card.last_status_at, card.stale_kept_at ?? 0)
+      return { ...card, idle_days: Math.floor((now - idleAt) / 86400), idleAt }
+    })
+    .filter((card) => card.idleAt <= cutoff)
+    .sort((a, b) => a.idleAt - b.idleAt)
+    .map(({ idleAt: _idleAt, ...card }) => card)
+}
+
+export type StaleKanbanDecision = 'keep' | 'idea' | 'close'
+
+export class StaleKanbanDecisionError extends Error {
+  constructor(public code: 'invalid_decision' | 'not_found' | 'archived', message: string) { super(message) }
+}
+
+export function decideStaleKanbanCard(id: string, decision: StaleKanbanDecision, actor?: string): { ok: true; decision: StaleKanbanDecision; idea_id?: string } {
+  if (!['keep', 'idea', 'close'].includes(decision)) throw new StaleKanbanDecisionError('invalid_decision', 'Invalid stale-card decision')
+  return db.transaction(() => {
+    const card = getKanbanCard(id)
+    if (!card) throw new StaleKanbanDecisionError('not_found', 'Kanban card not found')
+    if (card.archived_at != null) throw new StaleKanbanDecisionError('archived', 'Kanban card is already archived')
+    const now = Math.floor(Date.now() / 1000)
+    const by = String(actor || '').trim() || OWNER_NAME
+    let ideaId: string | undefined
+    if (decision === 'keep') {
+      db.prepare('UPDATE kanban_cards SET stale_kept_at = ? WHERE id = ?').run(now, id)
+    } else if (decision === 'idea') {
+      ideaId = randomUUID().slice(0, 8)
+      const note = `Kanban #${card.seq} (${card.id}) -> Ötletláda, ${by}`
+      createIdea({ id: ideaId, title: card.title, description: [card.description, note].filter(Boolean).join('\n'), category: 'Egyéb', scope: 'munka', status: 'reviewed', source: 'kanban-stale', kanban_id: null, impact: null, effort: null })
+      archiveKanbanCard(id)
+    } else {
+      moveKanbanCard(id, 'done', card.sort_order, by)
+      archiveKanbanCard(id)
+    }
+    const assignee = String(card.assignee ?? '').trim()
+    if (assignee && assignee.toLowerCase() !== OWNER_NAME.trim().toLowerCase()) {
+      const text = decision === 'keep'
+        ? `[Elavult kártyák átnézése] ${OWNER_NAME} döntése: marad (a számláló nullázva)`
+        : decision === 'idea'
+          ? `[Elavult kártyák átnézése] ${OWNER_NAME} döntése: ötletbe került (Ötletláda), a kártya archiválva`
+          : `[Elavult kártyák átnézése] ${OWNER_NAME} döntése: lezárva (done + archiválva)`
+      addKanbanComment(id, by, text)
+    }
+    return { ok: true as const, decision, ...(ideaId ? { idea_id: ideaId } : {}) }
+  })()
 }
 
 // Whether any card -- archived included -- is assigned to `name`, case-insensitively.
