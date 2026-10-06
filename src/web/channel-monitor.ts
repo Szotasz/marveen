@@ -1,4 +1,5 @@
 import { tmuxStderr } from './tmux-stderr.js'
+import { writeMainExtraPluginsSettings } from './main-extra-plugins-settings.js'
 import { decideSkipTrace, decideMenuPassTrace, type SkipTraceState } from './monitor-trace.js'
 import { existsSync, readFileSync, statSync, writeFileSync, utimesSync } from 'node:fs'
 import { hostname } from 'node:os'
@@ -910,6 +911,13 @@ export function buildMainSessionRespawnCmd(opts: {
    * and channel-watchdog.sh already export it; this is the third launcher.
    */
   channelStateEnv: { name: string; dir: string }
+  /**
+   * SLACKDMVESZT1006: the --settings file that ENABLES the extras for this
+   * session only (writeMainExtraPluginsSettings). Without it a recovery
+   * respawn lists the extras on --channels while the project scope keeps them
+   * disabled, and the extra bot comes up deaf. null/absent = no flag.
+   */
+  extraSettingsPath?: string | null
 }): string {
   return [
     // FLEETVENV923: same venv-first PATH as startAgentProcess and channels.sh.
@@ -958,6 +966,7 @@ export function buildMainSessionRespawnCmd(opts: {
     '&&', opts.claudePath,
     ...(opts.continueSession ? ['--continue'] : []),
     '--dangerously-skip-permissions',
+    ...(opts.extraSettingsPath ? ['--settings', shSingleQuote(opts.extraSettingsPath)] : []),
     // Escape the model id so a value like `claude-opus-4-8[1m]` is not
     // glob-expanded -- and so a hostile value cannot break out of the quote and
     // inject a command into the string the tmux respawn-pane shell runs. This is
@@ -1009,6 +1018,7 @@ export function respawnMainSessionFresh(): void {
     claudePath: claudeBin(),
     pluginId: provider.pluginId,
     extraPluginIds: readExtraChannelPluginIds(),
+    extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, readExtraChannelPluginIds()),
     channelStateEnv: mainChannelStateEnv(provider.type),
     model: readConfiguredMainModel(),
     // The main session always starts a new conversation -- this is the whole
@@ -1103,6 +1113,7 @@ export async function resumeMarveenSession(): Promise<boolean> {
       claudePath: claudeBin(),
       pluginId: provider.pluginId,
       extraPluginIds: readExtraChannelPluginIds(),
+    extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, readExtraChannelPluginIds()),
       channelStateEnv: mainChannelStateEnv(provider.type),
       model: readConfiguredMainModel(),
       continueSession: true,
@@ -1362,6 +1373,7 @@ function respawnMarveenSessionFresh(): boolean {
       claudePath: claudeBin(),
       pluginId: provider.pluginId,
       extraPluginIds: readExtraChannelPluginIds(),
+    extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, readExtraChannelPluginIds()),
       channelStateEnv: mainChannelStateEnv(provider.type),
       model: readConfiguredMainModel(),
       continueSession: false,
