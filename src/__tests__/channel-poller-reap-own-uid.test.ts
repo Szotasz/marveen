@@ -112,8 +112,10 @@ function spawnWithEnv(cmd: string, args: string[], env: Record<string, string>):
   kids.push(p.pid!)
   return p.pid!
 }
-// bot.pid names it, so the runtime check of the env scan does not apply (a `sleep` stands in for the poller).
-const poller = () => spawnWithEnv('/bin/sleep', ['300'], { TELEGRAM_STATE_DIR: chanDir })
+// bot.pid names it, so the runtime check of the env scan does not apply (a `sleep` stands in for the poller);
+// it carries the plugin marker, as a real poller does, because both candidate sources require it (cf075d41).
+const pluginRoot = join(tmp, 'plugins', 'cache', 'official', 'telegram', '0.0.1')
+const poller = () => spawnWithEnv('/bin/sleep', ['300'], { TELEGRAM_STATE_DIR: chanDir, CLAUDE_PLUGIN_ROOT: pluginRoot })
 function fakeTmuxPrints(body: string): void {
   writeFileSync(fakeTmux, `#!/bin/sh\n${body}\n`)
   chmodSync(fakeTmux, 0o755)

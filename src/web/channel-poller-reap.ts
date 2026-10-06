@@ -73,6 +73,81 @@ function listPollerPidsByStateDir(envVar: string, chanDir: string): number[] {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Plugin-process markers for the reap candidates (card cf075d41).
+//
+// The state-dir variable is exported by the session launcher, so every
+// descendant of the owning agent inherits it: its claude, its Bash tools,
+// builds, test runs and watchers. selectReapablePollers spares the pane, its
+// ancestors, any `claude` and every env-scan hit that is not a JS runtime, but
+// a node/npm/npx job the agent started (and detached) passes the runtime check.
+// Claude Code sets CLAUDE_PLUGIN_ROOT=<plugin cache>/<provider>/<ver> only for
+// the plugin server it spawns and that server's children; measured on a live
+// host, every real poller carried it and none of the other processes with the
+// state dir did. So an env-scan candidate needs BOTH markers, and bot.pid is
+// honoured only while it names a process with the plugin marker: the pid space
+// wraps, and a stale bot.pid can name a pid the kernel has since given to an
+// unrelated process.
+
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+// The CLAUDE_PLUGIN_ROOT anchor for one provider: the env literal, then the
+// provider dir segment ending on a path/version/space boundary, so `/telegram`
+// does not match a longer sibling like `/telegram-inline`.
+function pluginRootRegex(pluginRootNeedle: string): RegExp {
+  return new RegExp(`CLAUDE_PLUGIN_ROOT=\\S*${escapeRe(pluginRootNeedle)}(?:[/@ ]|$)`)
+}
+
+/**
+ * The poller candidates of ONE channel state dir: a `ps eww -e` row counts only
+ * if it carries BOTH the state-dir literal `<envVar>=<chanDir>` (ending on
+ * whitespace or end of line, so `/x/telegram` does not also match
+ * `/x/telegram-old`) AND the provider's CLAUDE_PLUGIN_ROOT anchor.
+ * Exported for testability.
+ */
+export function parseStateDirPollerPids(
+  psEwwOutput: string,
+  envVar: string,
+  chanDir: string,
+  pluginRootNeedle: string,
+): number[] {
+  const rootRe = pluginRootRegex(pluginRootNeedle)
+  const dirRe = new RegExp(`(?:^|\\s)${escapeRe(envVar)}=${escapeRe(chanDir)}(?:\\s|$)`)
+  const out: number[] = []
+  for (const line of psEwwOutput.split('\n')) {
+    if (!dirRe.test(line) || !rootRe.test(line)) continue
+    const m = line.match(/^\s*(\d+)\s/)
+    if (!m) continue
+    const pid = parseInt(m[1]!, 10)
+    if (pid > 1) out.push(pid)
+  }
+  return out
+}
+
+/**
+ * Is `pid`, in the same `ps eww -e` snapshot, a plugin process of the provider
+ * (CLAUDE_PLUGIN_ROOT anchor present)? bot.pid is only trusted through this
+ * check. Exported for testability.
+ */
+export function isPluginPollerPid(psEwwOutput: string, pid: number, pluginRootNeedle: string): boolean {
+  const rootRe = pluginRootRegex(pluginRootNeedle)
+  for (const line of psEwwOutput.split('\n')) {
+    const m = line.match(/^\s*(\d+)\s/)
+    if (m && parseInt(m[1]!, 10) === pid) return rootRe.test(line)
+  }
+  return false
+}
+
+// One `ps eww -e` snapshot; empty on failure (no candidate then, so nothing is reaped).
+function psEwwSnapshot(chanDir: string): string {
+  try {
+    return execSync('/bin/ps eww -e', { timeout: 5000, encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 })
+  } catch (err) {
+    logger.warn({ err, chanDir }, 'channel-poller-reap: ps scan failed')
+    return ''
+  }
+}
+
 function readBotPid(chanDir: string): number | null {
   const path = join(chanDir, 'bot.pid')
   if (!existsSync(path)) return null
@@ -103,6 +178,8 @@ export interface ReapResult {
   skippedUnknownOwner: number[]
   // 35ea0375: the signal outcome by kind; `reaped` holds only the pids actually killed.
   killOutcome: KillOutcomes
+  // cf075d41: processes that carry the state dir, or sit in bot.pid, but are not plugin processes: never candidates.
+  skippedNotPlugin: number[]
 }
 
 // ---------------------------------------------------------------------------
@@ -421,6 +498,11 @@ function logNotKilled(where: Record<string, unknown>, o: KillOutcomes): void {
 //                     through that path. The gap this leaves is narrow and
 //                     named: a NON-JS orphan whose pid is no longer in bot.pid.
 //
+// The candidates reach this selection already narrowed to plugin processes
+// (cf075d41, "Plugin-process markers" above): an env-scan hit needs the
+// CLAUDE_PLUGIN_ROOT marker too, and bot.pid counts only while it names a
+// process with that marker. Guard 4 stays as a second layer for the env scan.
+//
 // The pollers themselves are descendants of the pane and are still reaped --
 // that is the whole point of reaping BEFORE a respawn (a surviving poller
 // 409-races the new one). Only the pane itself and its ancestors are spared.
@@ -450,18 +532,7 @@ export function selectReapablePollers(
   const byPid = new Map<number, ProcRow>()
   for (const p of procs) byPid.set(p.pid, p)
 
-  // Every ancestor of every live pane, walked once.
-  const paneAncestors = new Set<number>()
-  for (const pane of panePids) {
-    let cur = byPid.get(pane)?.ppid
-    const seen = new Set<number>()
-    for (let hops = 0; hops < 16 && cur !== undefined && cur > 1; hops++) {
-      if (seen.has(cur)) break
-      seen.add(cur)
-      paneAncestors.add(cur)
-      cur = byPid.get(cur)?.ppid
-    }
-  }
+  const paneAncestors = paneAncestorPids(procs, panePids)
 
   const reap: number[] = []
   const spared: PollerSelection['spared'] = []
@@ -479,6 +550,27 @@ export function selectReapablePollers(
   return { reap, spared }
 }
 
+/**
+ * Pure: every ancestor of every live pane (the tmux server, a pane's parent),
+ * walked once, at most 16 hops per pane. Exported for testability.
+ */
+export function paneAncestorPids(procs: ProcRow[], panePids: Set<number>): Set<number> {
+  const byPid = new Map<number, ProcRow>()
+  for (const p of procs) byPid.set(p.pid, p)
+  const paneAncestors = new Set<number>()
+  for (const pane of panePids) {
+    let cur = byPid.get(pane)?.ppid
+    const seen = new Set<number>()
+    for (let hops = 0; hops < 16 && cur !== undefined && cur > 1; hops++) {
+      if (seen.has(cur)) break
+      seen.add(cur)
+      paneAncestors.add(cur)
+      cur = byPid.get(cur)?.ppid
+    }
+  }
+  return paneAncestors
+}
+
 export function reapChannelOrphans(
   provider: ChannelProviderType,
   agentDirPath: string,
@@ -486,9 +578,22 @@ export function reapChannelOrphans(
 ): ReapResult {
   const chanDir = channelStateDir(provider, agentDirPath)
   const envVar = STATE_ENV_VAR[provider]
+  const pluginRootNeedle = PLUGIN_ROOT_NEEDLE[provider]
 
-  const fromBotPid = readBotPid(chanDir)
-  const fromEnvScan = listPollerPidsByStateDir(envVar, chanDir)
+  // cf075d41: one `ps eww -e` snapshot, both sources narrowed to plugin
+  // processes (see "Plugin-process markers" above).
+  const psEww = psEwwSnapshot(chanDir)
+  const botPid = readBotPid(chanDir)
+  const fromBotPid = botPid !== null && isPluginPollerPid(psEww, botPid, pluginRootNeedle) ? botPid : null
+  const fromEnvScan = parseStateDirPollerPids(psEww, envVar, chanDir, pluginRootNeedle)
+  const skippedNotPlugin = [...new Set([
+    ...(botPid !== null && fromBotPid === null ? [botPid] : []),
+    ...parsePollerPidsFromPs(psEww, envVar, chanDir).filter((pid) => !fromEnvScan.includes(pid) && pid !== fromBotPid),
+  ])]
+  if (skippedNotPlugin.length > 0) {
+    logger.info({ provider, chanDir, skippedNotPlugin: skippedNotPlugin.length },
+      'channel-poller-reap: spared processes that carry the state dir or sit in bot.pid but are not plugin processes (cf075d41)')
+  }
 
   // Deduplicate while preserving order so the bot.pid path is logged first.
   const candidates: number[] = []
@@ -507,7 +612,7 @@ export function reapChannelOrphans(
   const procs = candidates.length > 0 ? snapshotProcs() : []
   if (candidates.length > 0 && procs.length === 0) {
     logger.warn({ provider, chanDir, candidates }, 'channel-poller-reap: ps snapshot unavailable, skipping reap (fail-safe)')
-    return { reaped: [], source: { fromBotPid, fromEnvScan }, skippedLivePane: [], skippedOtherUid: [], skippedUnknownOwner: [], killOutcome: noKills() }
+    return { reaped: [], source: { fromBotPid, fromEnvScan }, skippedLivePane: [], skippedOtherUid: [], skippedUnknownOwner: [], killOutcome: noKills(), skippedNotPlugin }
   }
   // Second fail-safe layer (upstream, Logra's review 2026-09-19, card 08a02137):
   // an empty live-pane set means the tmux query itself failed (a real server
@@ -518,7 +623,7 @@ export function reapChannelOrphans(
   if (candidates.length > 0 && panePids.size === 0) {
     logger.warn({ provider, chanDir, candidates },
       'channel-poller-reap: could not resolve live tmux panes, refusing to reap (fail-safe)')
-    return { reaped: [], source: { fromBotPid, fromEnvScan }, skippedLivePane: [], skippedOtherUid: [], skippedUnknownOwner: [], killOutcome: noKills() }
+    return { reaped: [], source: { fromBotPid, fromEnvScan }, skippedLivePane: [], skippedOtherUid: [], skippedUnknownOwner: [], killOutcome: noKills(), skippedNotPlugin }
   }
   const selection = selectReapablePollers(candidates, procs, panePids, fromBotPid)
   // A candidate that IS a live pane leader is the exact 08a02137 signature;
@@ -580,6 +685,7 @@ export function reapChannelOrphans(
     skippedOtherUid: owners.foreign,
     skippedUnknownOwner: owners.unknown,
     killOutcome,
+    skippedNotPlugin,
   }
 }
 
@@ -740,11 +846,22 @@ export function reapDetachedChannelClaudes(opts: { channelNeedle?: string; tmuxP
     logger.warn('channel-poller-reap: no live panes resolved, skipping detached-claude reap (fail-safe)')
     return []
   }
-  const orphans = findOrphanChannelClaudes(procs, live, opts.channelNeedle)
+  const detached = findOrphanChannelClaudes(procs, live, opts.channelNeedle)
+  const where = { channelNeedle: opts.channelNeedle ?? '(all)' }
+  // cf075d41: the orphan test looks UP from the claude (is it or an ancestor a
+  // live pane?), so a detached `claude --channels` that sits ABOVE a live pane
+  // leader passes it. Such a claude is never signalled: the pane under it is a
+  // live session. The same pane-ancestor set as selectReapablePollers.
+  const paneAncestors = paneAncestorPids(procs, live)
+  const skippedPaneAncestor = detached.filter((pid) => paneAncestors.has(pid))
+  if (skippedPaneAncestor.length > 0) {
+    logger.warn({ skippedPaneAncestor, ...where },
+      'channel-poller-reap: detached channel claude is an ancestor of a live pane, sparing it (cf075d41)')
+  }
+  const orphans = detached.filter((pid) => !paneAncestors.has(pid))
   // 35ea0375: the process table is host-wide; only this user's orphans are signalled.
   const uid = opts.ownUid === undefined ? dashboardUid() : opts.ownUid
   const owners = splitByOwner(orphans, uid, opts.ownerOf)
-  const where = { channelNeedle: opts.channelNeedle ?? '(all)' }
   logOwnerSkips(where, owners)
   for (const pid of owners.own) killBunChildren(pid, uid, opts)
   const killOutcome = terminatePids(owners.own, { kill: opts.kill })
