@@ -15,7 +15,7 @@ export function alertIsRedirected(): boolean {
 // ALERT_CHAT_ID when it is set, otherwise to the owner chat.
 export async function notifyChannel(text: string): Promise<void> {
   const alertChat = normalizeChatId(ALERT_CHAT_ID)
-  if (alertChat) return sendToChat(alertChat, text)
+  if (alertChat) return sendToChat(alertChat, text, 'alert')
   return notifyOwner(text)
 }
 
@@ -41,10 +41,27 @@ export async function notifyOwner(text: string): Promise<void> {
     logger.warn(`Channel ertesites kihagyva: ${reason}`)
     return
   }
-  return sendToChat(owner.chatId, text)
+  return sendToChat(owner.chatId, text, 'owner')
 }
 
-async function sendToChat(chatId: string, text: string): Promise<void> {
+// NOTIFYSENDLOG930 -- every send leaves one line in the channel log: the
+// outcome, the HTTP status of the answer and the id the Bot API gave the new
+// message. Before this, the two catches below swallowed every outcome, so
+// neither a delivered nor a lost alert could be told from store/dashboard.log.
+// The line names the target by its role, never the raw chat id, and carries
+// no token and no text: a Bot API error description can quote the text it
+// rejected, so on failure only the status is kept.
+type SendTarget = 'owner' | 'alert'
+
+/** The HTTP status in a provider send error ("Telegram API 403: ...",
+ *  "Discord API 404: ...", "Slack API HTTP 500"), or null when the send never
+ *  got an HTTP answer (timeout, network) or the answer carried no code. */
+function sendErrorStatus(err: unknown): number | null {
+  const m = /(?:Telegram API|Discord API|Slack API HTTP) (\d{3})\b/.exec(err instanceof Error ? err.message : String(err))
+  return m ? Number(m[1]) : null
+}
+
+async function sendToChat(chatId: string, text: string, target: SendTarget): Promise<void> {
   if (!CHANNEL_TOKEN) {
     logger.warn('Channel ertesites kihagyva: nincs token')
     return
@@ -57,14 +74,24 @@ async function sendToChat(chatId: string, text: string): Promise<void> {
   const formatted = provider.formatMessage(outbound)
   const chunks = provider.splitMessage(formatted)
 
-  for (const chunk of chunks) {
+  for (const [i, chunk] of chunks.entries()) {
+    const where = { provider: CHANNEL_PROVIDER, target, chunk: i + 1, chunks: chunks.length }
     try {
       const parseMode = CHANNEL_PROVIDER === 'telegram' ? 'HTML' : undefined
-      await provider.sendMessage(CHANNEL_TOKEN, chatId, chunk, parseMode)
-    } catch {
+      const receipt = await provider.sendMessage(CHANNEL_TOKEN, chatId, chunk, parseMode)
+      logger.info({ ...where, status: receipt?.status ?? null, messageId: receipt?.messageId ?? null }, 'Channel ertesites elkuldve')
+    } catch (err) {
+      const firstStatus = sendErrorStatus(err)
       try {
-        await provider.sendMessage(CHANNEL_TOKEN, chatId, outbound.slice(0, 4096))
-      } catch { /* last resort, give up */ }
+        const receipt = await provider.sendMessage(CHANNEL_TOKEN, chatId, outbound.slice(0, 4096))
+        logger.info(
+          { ...where, status: receipt?.status ?? null, messageId: receipt?.messageId ?? null, plainTextRetry: true, firstStatus },
+          'Channel ertesites elkuldve',
+        )
+      } catch (retryErr) {
+        // last resort, give up -- but say so
+        logger.warn({ ...where, firstStatus, retryStatus: sendErrorStatus(retryErr) }, 'Channel ertesites SIKERTELEN')
+      }
     }
   }
 }
