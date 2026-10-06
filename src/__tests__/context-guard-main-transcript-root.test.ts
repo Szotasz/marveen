@@ -28,6 +28,7 @@
 // Claude login.
 
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
+import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -123,7 +124,9 @@ describe('context-guard: which config root the main agent is measured from', () 
     const { measureContextTokens } = await import('../web/context-guard-runner.js')
     const subDir = join(FIXTURE, 'agents', 'ponder', '.claude-config')
     const subWorkingDir = join(PROJECT_ROOT, 'agents', 'ponder')
-    const encodedSub = subWorkingDir.replace(/[/.]/g, '-')
+    // The measured Claude Code rule (src/claude-project-dir.ts), not a
+    // re-derivation: the fixture dir must be the one the reader looks in.
+    const encodedSub = encodeClaudeProjectDir(subWorkingDir)
     writeTranscript(join(subDir, 'projects', encodedSub), 'sub.jsonl', 7_777, 1)
     subAgentConfigDir = subDir
     try {

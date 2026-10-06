@@ -41,14 +41,20 @@ place.
 ## What it does
 
 `BASH_EGRESS_DENY` in `src/web/agent-scaffold.ts` is the single source of truth
-for a small `permissions.deny` list that lands in **every** agent's
-`settings.json`:
+for the EGRESS part of `permissions.deny`, and it lands in **every** agent's
+`settings.json` by three routes:
 
 - on spawn, via `writeAgentSettingsFromProfile()`,
 - on server startup, via `ensureBashEgressDeny()` (existing fleet, and the main
   agent -- see the scope note below),
 - on scaffold, via `templates/settings.json.template` (so the next agent created
   starts gated -- a parity test keeps the template and the constant in step).
+
+It is **not** the only list any more: since DENYARGS925 a second constant, the
+fleet deny FLOOR, feeds the same block. The two are described together in the
+next section, because the difference between them is not what they deny but how
+they REACH an agent -- and that is the part that decides what happens when one
+of them is edited.
 
 Denied: `curl` to an `https://` URL, and `wget` / `nc` / `ncat` / `telnet`
 outright. A `deny` rule is checked **before** the
@@ -60,6 +66,44 @@ anything an agent could not do through it anyway.
 The sanctioned route for external content is unchanged: the quarantine-reader
 sub-agent, through `WebFetch`, where the domain check already runs. A host being
 on the egress allowlist does not open it to the shell.
+
+## Two lists, and why they are not one
+
+Since DENYARGS925 (2026-09-25) `permissions.deny` is fed by TWO constants in
+`src/web/agent-scaffold.ts`. Reading either one as "the" deny list is the
+mistake this section exists to prevent.
+
+| | `BASH_EGRESS_DENY` | `FLEET_BASELINE_DENY` |
+|---|---|---|
+| covers | shell URL-fetch verbs: `curl` to `https://`, `wget`, `nc`, `ncat`, `telnet` | the fleet FLOOR: key/credential dirs, `.env`, `sudo`, `rm -rf` of `$HOME` and `/`, force-push (friction only), the unsafe browser-code MCP tool |
+| sub-agent gets it | spawn + server-startup migration + scaffold template | **spawn only** (`writeAgentSettingsFromProfile`) |
+| main agent gets it | `ensureBashEgressDeny()` into its own config dir | the repo's tracked `.claude/settings.json` (the scaffold never writes the main agent, #1305) |
+| parity guarded by | `bash-egress-deny.test.ts` (template vs constant) | `fleet-baseline-deny.test.ts` (shipped file vs constant, both directions) |
+
+Two consequences follow from the row that differs, and both are deliberate:
+
+**The floor has no startup migration.** An agent that is running right now and is
+not respawned keeps whatever deny list it started with; the egress rules would be
+merged into its file at the next server start, the floor would not. The floor
+therefore takes effect at the next spawn, not at the next server restart. This is
+the honest limit, not a claim of immediate fleet-wide cover.
+
+**The floor is deliberately NOT in `templates/settings.json.template`.** Measured
+2026-09-25: after `scaffoldAgentDir()` the template-derived file carries 10 deny
+rules and **zero** of the floor's 13 -- but on the create path
+(`routes/agents.ts`) `scaffoldAgentDir()`, `writeAgentModel()`,
+`writeAgentSecurityProfile()` and `writeAgentSettingsFromProfile()` are four
+SYNCHRONOUS calls with no await and no session launch between them, and on the
+spawn path the profile write runs before the Claude Code process starts. So the
+template-only state exists on disk but no session reads it, and
+`loadProfileTemplate()` cannot throw its way around that: a missing or unparseable
+profile falls back to `default` and finally to `HARDCODED_DEFAULT_PROFILE`. The
+live fleet agrees: the leanest agent here carries 16 rules, none carries 10.
+
+If a future change adds a route that scaffolds WITHOUT writing the profile
+straight after, that reasoning expires and the floor belongs in the template too.
+The parity test names this condition so the decision can be re-measured rather
+than re-argued.
 
 ## Where the main agent's copy goes
 
@@ -122,3 +166,111 @@ This is a deny list, not a sandbox.
   `https://` URL matches the `curl` rule. Single-quoted payloads do not (the
   permission engine excludes single-quoted content). Use single quotes or
   `-d @file` for such a call.
+
+# What the URL gate does not cover
+
+Both web controls are wired to **one tool**. `scripts/hooks/egress-gate.mjs`
+runs as a `PreToolUse` hook with matcher `WebFetch`, and `wrapUntrustedFetch()`
+(`src/prompt-safety.ts`) frames what that tool returns. Everything else that
+brings the outside world into an agent's context is outside both:
+
+- **`WebSearch`** -- result snippets are external text; no allowlist decided
+  which sites they came from, and nothing wraps them on the way in.
+- **Any MCP server that fetches** -- a browser server (playwright, chrome), a
+  docs server, an API connector. The agent's own `curl` is denied by
+  `BASH_EGRESS_DENY`, but an MCP server makes the request in its own process,
+  where neither control can see it.
+
+This is stated in a comment inside `egress-gate.mjs`. It was not stated here,
+which is the wrong place for it to be missing: the comment is read by whoever
+edits the gate, this file is read by whoever decides what to install. An
+operator adding a browser MCP server was therefore adding an ungated,
+unlabelled content path while reading that egress was covered.
+
+The fleet ships no browser by default, so a stock install is unaffected. But
+the fleet's own scaffolding expects browsers to appear (the largest profile is
+described as "filesystem + playwright + chrome"), so this is a normal
+deployment, not an exotic one.
+
+## Why a browser payload is the sharper case
+
+A fetched page cannot run code in the agent; it can only try to talk to it. A
+browser payload arrives the same way -- except the browser it arrives through
+holds live logged-in sessions, and the agent reading it has a shell, a
+filesystem and outbound channels. The realistic attack is not an exploit, it is
+a sentence: text on the page addressed to the agent rather than to the reader.
+
+The defence against that is framing, not filtering: content the agent knows is
+content cannot impersonate an instruction. `WebFetch` gets that framing from
+the wrapper. A browser payload gets none.
+
+## The opt-in envelope hook
+
+`scripts/hooks/browser-content-notice.py` is a `PostToolUse` hook that wraps
+browser / search results in an `<untrusted source="..." fetch-nonce="...">`
+envelope before the model sees them -- the same framing `wrapUntrustedFetch()`
+gives the `WebFetch` path -- scrubs forged security tags out of the payload,
+names any injection patterns it matched (forged `<untrusted>` /
+`<system-reminder>` envelopes, a pre-injected scrub sentinel, instruction
+overrides, credential targets, exfil shapes) and appends the full payload to
+`store/browser-content.log` for reading outside the model's context.
+
+It is **not registered by default** -- an install with no browser gains nothing
+from it. Operators who run a browser MCP server wire it themselves, in the
+project `settings.json` or `settings.local.json`:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "mcp__playwright__browser_.*|mcp__chrome.*|WebSearch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/browser-content-notice.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### The shape rule, and the silent fallback behind it
+
+`hookSpecificOutput.updatedToolOutput` replaces a tool result before it reaches
+the model. It is not unconditional, and the condition is the important part
+(measured 2026-09-20, Claude Code 2.1.278):
+
+- **MCP tool**: a plain string replaced the result outright. The original never
+  reached the model.
+- **Built-in tool** (`WebSearch`): the replacement must match THAT TOOL'S
+  OUTPUT SHAPE. A string was rejected -- `expected: object` -- the harness
+  logged `... does not match WebSearch's output shape; using original output`,
+  and the raw payload reached the model unchanged.
+
+The rejection is an execution-error record, not part of the tool result, so
+**from the model's side a broken envelope is indistinguishable from a working
+one**: the content simply arrives unwrapped, as it always did.
+
+That is why the hook writes two layers on every call and never treats the
+first as sufficient:
+
+1. `updatedToolOutput` -- the envelope. Shape-preserving: a string stays a
+   string, MCP content blocks stay blocks with their original keys, a record
+   keeps every key and only its free-text leaves are wrapped. A shape it
+   cannot mirror confidently is left alone, because a rejected replacement
+   leaves the RAW payload in context -- declining is the safer failure.
+2. `additionalContext` -- the label, which cannot be shape-rejected. It states
+   that a payload arriving WITHOUT an envelope means the envelope was rejected,
+   so the absence is readable rather than invisible.
+
+The label quotes nothing back. Its own text is trusted framing, so echoing a
+matched line there would reopen the channel the hook exists to close. Pattern
+names and counts only; the payload itself goes to the log.
+
+`envelope_attempted` in the log records which shape the hook tried. It says
+"attempted", never "succeeded": the hook cannot observe the harness's decision,
+and a field that claimed success would be the most misleading line in the file.

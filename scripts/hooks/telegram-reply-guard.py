@@ -22,7 +22,24 @@ hook adds NO new state model -- it reuses ledger_lib.open_question_with_age):
   - If this same message_id has already been blocked MAX_BLOCKS times -> allow;
     a hard backstop so a wedged model can never be trapped in an infinite loop.
   - Otherwise -> BLOCK with a directive telling the model to send the reply via
-    mcp__plugin_telegram_telegram__reply(chat_id=...) before stopping.
+    the reply tool OF THE CHANNEL THE MESSAGE CAME FROM, with chat_id=...
+
+PROVIDER-AWARENESS (PROVIDERVAK908): this hook used to name
+mcp__plugin_telegram_telegram__reply unconditionally, because the ledger recorded
+WHAT arrived but not WHERE FROM. Measured 2026-09-07 it demanded a TELEGRAM reply
+for an inbound that came from the owner's DISCORD DM.
+The block itself was right -- an unanswered inbound IS owed a reply -- but the
+directive named a tool that cannot deliver it. The ledger now stores the envelope
+source, and the directive is derived from it.
+
+WHEN THE SOURCE DOES NOT NAME A TOOL (rows written before the column existed have
+source NULL; a source with a dash, like Slack's plugin:slack-channel:slack, does
+not map to a tool name character for character): the directive falls back to the
+CONFIGURED channel of this install (CHANNEL_PROVIDER, #1606, _reply_tool_name),
+which names a VERIFIED tool from _REPLY_TOOLS. Only when that names no verified
+tool either does it use provider-agnostic wording. A source that names a DIFFERENT
+provider than the configured one never borrows the configured tool: that would be
+the wrong tool, which is exactly the failure being fixed (_directive_target).
 
 Safety: any error -> allow the stop (exit 0). A guard hook must never wedge the
 session. agent_id is derived from the session cwd, so it is generic across all
@@ -69,6 +86,133 @@ def _is_ack(text):
     if not tokens:
         return True  # emoji-only acknowledgement
     return all(tok in _ACK_WORDS for tok in tokens)
+
+
+_CHANNEL_PROVIDERS = ("telegram", "discord", "slack", "googlechat", "teams")
+
+# A plugin key can be named for the provider without matching the MCP tool
+# prefix, so the provider name is what CHANNEL_PROVIDER states, not what a key
+# happens to spell.
+_PROVIDER_ALIASES = {"slack-channel": "slack"}
+
+# The reply tool's name is NOT f"mcp__plugin_{provider}_{provider}__reply": it is
+# mcp__plugin_<plugin directory>_<MCP server>__reply, and the two halves differ
+# per provider. Slack is the case that proves it -- the plugin checks in under
+# `slack-channel` while its MCP server is `slack`, so the tool is
+# mcp__plugin_slack-channel_slack__reply, the spelling the rest of the repo uses.
+# Only names verified against a source are listed here: telegram and discord from
+# their installed plugins' .mcp.json, slack from this repo's own usages. A
+# provider missing from the table falls through to the generic wording below
+# rather than to an invented name -- the same principle this guard already
+# applies to an unknown provider, and the reason it exists at all.
+_REPLY_TOOLS = {
+    "telegram": "mcp__plugin_telegram_telegram__reply",
+    "discord": "mcp__plugin_discord_discord__reply",
+    "slack": "mcp__plugin_slack-channel_slack__reply",
+}
+
+
+def _channel_provider():
+    """Which channel this install actually speaks on.
+
+    CHANNEL_PROVIDER in the env, then the install-dir .env -- the same resolution
+    order ledger_lib.main_agent_id()/owner_name() already use, and the only source
+    that is right regardless of how the plugins got enabled.
+
+    Only if that is missing do we fall back to enabledPlugins. That fallback reads
+    the PROJECT settings file, because this fleet runs with an isolated
+    CLAUDE_CONFIG_DIR: ~/.claude/settings.json is NOT the active user settings
+    here, and reading it was wrong even when it happened to agree. The fallback is
+    also order-dependent (a settings file listing telegram before discord picks
+    telegram), which is exactly why .env wins.
+    """
+    v = os.environ.get("CHANNEL_PROVIDER")
+    if v and v.strip():
+        return v.strip().lower()
+    try:
+        with open(os.path.join(ledger_lib._install_dir(), ".env")) as f:
+            for line in f:
+                if line.startswith("CHANNEL_PROVIDER="):
+                    name = line.split("=", 1)[1].strip()
+                    if name:
+                        return name.lower()
+    except Exception:
+        pass
+    try:
+        import json as _json
+        base = os.environ.get("CLAUDE_PROJECT_DIR") or ledger_lib._install_dir()
+        with open(os.path.join(base, ".claude", "settings.json")) as f:
+            enabled = _json.load(f).get("enabledPlugins") or {}
+        for key, on in enabled.items():
+            if not on:
+                continue
+            name = str(key).split("@", 1)[0].strip().lower()
+            name = _PROVIDER_ALIASES.get(name, name)
+            if name in _CHANNEL_PROVIDERS:
+                return name
+    except Exception:
+        pass
+    return ""
+
+
+def _reply_tool_name():
+    """Name the reply tool of the channel plugin THIS install actually speaks on.
+
+    The guard used to hardcode the Telegram tool name. On a Discord-only install
+    that directive named a tool that does not exist in the session, so the model
+    could not comply and the guard blocked on a message it had in fact answered.
+    """
+    provider = _channel_provider()
+    tool = _REPLY_TOOLS.get(provider)
+    if tool:
+        return tool, provider
+    # Unknown provider, or one whose real tool name we cannot verify: name no
+    # specific tool rather than a wrong one. A wrong name is worse than none,
+    # because the model cannot comply with a directive naming a tool that is not
+    # in its session -- which is the bug this guard was written to remove.
+    return "a csatorna reply tool", provider or "csatorna"
+
+
+_SOURCE_RX = re.compile(r"^plugin:([A-Za-z0-9_]+):([A-Za-z0-9_]+)$")
+
+
+def _reply_target(source):
+    """(channel_label, reply_tool_name) for an envelope source, or (None, None).
+
+    Only a source whose segments are plain [A-Za-z0-9_] yields a tool name: the
+    MCP tool id is mcp__plugin_<provider>_<server>__reply, and a segment with a
+    dot or a dash does not map to it character-for-character. In that case the
+    caller falls back to provider-agnostic wording -- an invented tool name is
+    worse than no tool name, because the model would call it and fail.
+    """
+    m = _SOURCE_RX.match(source or "")
+    if not m:
+        return (None, None)
+    provider, server = m.group(1), m.group(2)
+    return (provider, "mcp__plugin_{}_{}__reply".format(provider, server))
+
+
+def _directive_target(source):
+    """(channel_label, reply_tool) the block directive names, or (None, None).
+
+    Order (Marveen 32905): the message's own source first (_reply_target); when it
+    names no tool, the install's configured channel (_reply_tool_name, verified
+    table) -- for a NULL source unconditionally, for an unmappable source only if
+    it is the same provider; otherwise nothing, and the caller uses agnostic wording.
+    """
+    label, tool = _reply_target(source)
+    if tool:
+        return label, tool
+    configured_tool, configured = _reply_tool_name()
+    if configured_tool not in _REPLY_TOOLS.values():
+        return (None, None)
+    if not source:
+        return configured, configured_tool
+    m = re.match(r"^plugin:([^:]+):", source)
+    src = m.group(1).strip().lower() if m else ""
+    if _PROVIDER_ALIASES.get(src, src) == configured:
+        return configured, configured_tool
+    return (None, None)
 
 
 def _statefile(agent_id):
@@ -138,12 +282,26 @@ def main():
     if len(snippet) > 160:
         snippet = snippet[:157] + "..."
 
+    try:
+        source = ledger_lib.source_for(agent_id, chat_id)
+    except Exception:
+        source = None  # unknown -> the configured channel, else agnostic wording
+    label, tool = _directive_target(source)
+
+    if tool:
+        channel = f"{label.upper()}-ÜZENET"
+        how = f"a {tool} toolon keresztül (chat_id={chat_id})"
+        sees = f"ő csak a(z) {label} csatornát látja"
+    else:
+        channel = "CSATORNA-ÜZENET"
+        how = f"ANNAK a csatornának a reply tooljával, ahonnan jött (chat_id={chat_id})"
+        sees = "ő csak a csatornát látja, a transzkriptet nem"
+
     reason = (
-        f"⚠️ VÁLASZOLATLAN TELEGRAM-ÜZENET (chat_id={chat_id}): \"{snippet}\"\n"
-        f"A fordulót NEM zárhatod le, amíg NEM küldtél Telegram-választ a "
-        f"mcp__plugin_telegram_telegram__reply toolon keresztül (chat_id={chat_id}). "
+        f"⚠️ VÁLASZOLATLAN {channel} (chat_id={chat_id}): \"{snippet}\"\n"
+        f"A fordulót NEM zárhatod le, amíg NEM küldtél választ {how}. "
         f"A sima szöveges (assistant text) kimenet NEM jut el a felhasználóhoz -- "
-        f"ő csak a Telegramot látja. Küldd el a választ a reply toollal MOST, "
+        f"{sees}. Küldd el a választ a reply toollal MOST, "
         f"utána zárhatod a fordulót."
     )
     print(json.dumps({"decision": "block", "reason": reason}))

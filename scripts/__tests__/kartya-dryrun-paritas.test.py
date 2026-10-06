@@ -90,9 +90,12 @@ def run(card_id, extra=(), root=TOKEN_ROOT):
         # kulonben a futas MAR A HORGONY-KAPUN elhal, es a teszt a ROSSZ OKBOL lenne piros.
         # Ez a kapu UJABB, mint a teszt elso valtozata -- merve 2026-09-08-an: mind az ot
         # "paritas" ellenorzes ezen bukott, nem a merni kivant viselkedesen.
+        # KOMMENTERTESITES922: ez a suite a DRY-RUN PARITAST meri, nem az ertesitest. A
+        # komment-modu hivasai atadjak a kartyat mas flotta-agensnek, amit az uj
+        # ertesites-kapu megtagad -- a kapcsolo KIMONDJA, hogy itt ez szandekos.
         [sys.executable, SCRIPT, '--id', card_id, '--assignee', 'boni',
          '--title', f'{card_id} paritas teszt',
-         '--author', 'Boni', *extra],
+         '--author', 'Boni', '--nincs-ertesites-szandekos', *extra],
         capture_output=True, text=True, env=env, timeout=30)
 
 
@@ -258,6 +261,39 @@ check('21 B2: a mezoelvalasztos nev NEM nemitja el a figyelmeztetest',
       'AZ ELOZO MEZOMOZGATAS' in o, f'{o!r}')
 check('22 B2: es a nev egeszben jon vissza, a szerkezet serulese nelkul',
       'Silent / mezok: z' in o, f'{o!r}')
+
+# --- 9. KOMMENT-MOD + --msg-file: A TOKEN-KAPU A DRY-RUN AGON IS ALL (KOMMENTMSGFILE922) ---
+# Samu lelete (28122): a komment-agi dry-run token NELKUL is ZOLDET mondott, az eles futas pedig
+# FELBE irt volna (komment igen, uzenet nem). Ez ugyanaz a hazugsag, amit a letrehozo ag mar
+# megtanult -- a paritas ezert ide tartozik, nem csak az uj suite-ba.
+# A javitas utan a token-kapu az IRAS ELOTT all, tehat a dry-run mondata is mas: nem "a komment mar
+# beirodott", hanem hogy be SEM irodna.
+def run_kapcsolo_nelkul(card_id, extra, root):
+    # A kozos run() a --nincs-ertesites-szandekos-t is beteszi, ami a --msg-file-lal ELLENTMOND:
+    # azzal ez a ket eset a KONTRADIKCIO-kapun akadna fenn, es a 23. allitas ROSSZ OKBOL lenne zold.
+    # (Merve: pontosan ez tortent az elso valtozatnal.)
+    env = dict(os.environ)
+    env['KARTYA_DB'] = DB_PATH
+    env['CLAUDECLAW_ROOT'] = root
+    return subprocess.run([sys.executable, SCRIPT, '--id', card_id, *extra],
+                          capture_output=True, text=True, env=env, timeout=30)
+
+
+seed('KTOK1')
+d = run_kapcsolo_nelkul('KTOK1', ('--comment-file', msgfile('KTOK1'), '--author', 'Boni',
+                                  '--msg-file', msgfile('KTOK1'), '--assignee', 'samu', '--dry-run'),
+                        NOTOKEN_ROOT)
+o = d.stdout + d.stderr
+check('23 komment-mod + --msg-file: a dry-run token NELKUL PIROS (nem zold)', d.returncode != 0, f'{o!r}')
+check('24 es kimondja, hogy a komment SEM irodna be', 'komment SEM irodna be' in o, f'{o!r}')
+# POZITIV KONTROLL ugyanazon a muszeren: tokennel ugyanez a futas ATMEGY. Enelkul a 23. allitas
+# akkor is zold lenne, ha a dry-run barmilyen okbol mindig pirosat adna.
+seed('KTOK2')
+d2 = run_kapcsolo_nelkul('KTOK2', ('--comment-file', msgfile('KTOK2'), '--author', 'Boni',
+                                   '--msg-file', msgfile('KTOK2'), '--assignee', 'samu', '--dry-run'),
+                         TOKEN_ROOT)
+o2 = d2.stdout + d2.stderr
+check('25 pozitiv kontroll: tokennel ugyanez a dry-run ATMEGY', d2.returncode == 0 and 'DRY-RUN OK' in o2, f'{o2!r}')
 
 print()
 if FAILS:

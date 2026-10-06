@@ -2,15 +2,11 @@ import { mkdirSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import {
-  searchMemories,
-  recentMemories,
-  touchMemory,
   saveMemory,
   decayMemories as dbDecay,
   pruneAuditLogs,
   pruneTokenUsage,
   getMemoriesForChat,
-  type Memory,
 } from './db.js'
 import { runAgent } from './agent.js'
 import { logger } from './logger.js'
@@ -75,35 +71,13 @@ const SEMANTIC_PATTERN =
 // Skip: trivial messages not worth remembering
 const SKIP_PATTERN = /^(ok|igen|nem|koszi|kosz|hello|szia|hi|hey|thx|thanks|jo|oke|persze|rendben|ja|aha|\.+|!+|\?+)$/i
 
-export async function buildMemoryContext(
-  chatId: string,
-  userMessage: string
-): Promise<string> {
-  // Relaxed kept for the conversational recall path: this is a suggestion
-  // surfaced next to a live message, not an answer to "do we know this".
-  // Changing it is a separate decision from the endpoint's strict default.
-  const ftsResults = searchMemories(userMessage, chatId, 3, true)
-  const recent = recentMemories(chatId, 5)
-
-  const seen = new Set<number>()
-  const combined: Memory[] = []
-
-  for (const m of [...ftsResults, ...recent]) {
-    if (!seen.has(m.id)) {
-      seen.add(m.id)
-      combined.push(m)
-    }
-  }
-
-  if (combined.length === 0) return ''
-
-  for (const m of combined) {
-    touchMemory(m.id)
-  }
-
-  const lines = combined.map((m) => `- ${m.content} (${m.sector})`)
-  return `[Memoria kontextus]\n${lines.join('\n')}`
-}
+// buildMemoryContext used to live here: 3 FTS hits + 5 recent rows as a
+// [Memoria kontextus] block. It never had a caller, from the first release
+// (f24eacc8) on, and it did not read the agent tiers at all: it filtered on
+// chat_id (the old Telegram-chat rows) and bumped salience on every hit. Removed
+// rather than wired (HOTMEMHAMIS925). Whether an agent's hot/warm memory should
+// load on its own is a product decision; if yes, it needs a new loader keyed on
+// agent_id + category with a size cap, not this function.
 
 // buildKanbanContext used to live here: it rendered EVERY unarchived card's
 // FULL title into a [Kanban tabla] block (no limit, no truncation -- ~1 MB of

@@ -22,6 +22,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
+import command_prompt  # noqa: E402
 
 
 def _web_port():
@@ -51,6 +52,8 @@ def main():
     agent_id = ledger_lib.agent_id_from_payload(payload)
     if agent_id != ledger_lib.main_agent_id():
         sys.exit(0)  # sub-agents are delivered by the router push path
+    if command_prompt.command_block(payload.get("prompt") or "") is not None:
+        sys.exit(0)  # the command hook may block this prompt: do not drain into it
 
     try:
         token_path = os.path.join(ledger_lib._install_dir(), "store", ".dashboard-token")

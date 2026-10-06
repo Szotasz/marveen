@@ -13,7 +13,6 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=/path/to/marveen/scripts/host-restart-watchdog.sh
 Environment=MARVEEN_STORE=/path/to/marveen/store
-Environment=TELEGRAM_ENV=/home/USER/.claude/channels/telegram/.env
 Environment=PATH=/home/USER/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/USER
 Environment=TZ=Europe/Budapest

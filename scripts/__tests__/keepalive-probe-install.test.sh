@@ -138,6 +138,104 @@ printf '[Service]\n' > "$UNITS2/hex-channels.service"
 run_fn "$UNITS2" >/dev/null
 assert_eq "missing probe script -> no units written" "1" "$(ls "$UNITS2" | wc -l | tr -d ' ')"
 
+# ---------------------------------------------------------------------------
+# 3. update.sh, macOS half (KEEPALIVEMAC926). The Linux migration above landed
+#    for #1313; the launchd twin only ever existed in the install-macos.sh
+#    TEMPLATE, which by definition never reaches a Mac installed before it. So
+#    every such Mac kept the bug, and the weekly update could not cure it.
+#    Measured 2026-09-26: launchctl had no com.marveen.channel-keepalive-probe
+#    and channels-failures.log showed respawns only between 22:00 and 07:00,
+#    every ~15 minutes, zero during the day.
+# ---------------------------------------------------------------------------
+echo
+echo "update.sh install_keepalive_probe_launchd"
+
+MACFN="$(awk '/^install_keepalive_probe_launchd\(\) \{/,/^\}$/' "$REPO/update.sh")"
+if [ -z "$MACFN" ]; then
+  fail "install_keepalive_probe_launchd() not found in update.sh"
+  echo; echo "PASS=$PASS FAIL=$FAIL"; exit 1
+fi
+
+assert_contains "run_unit_maintenance calls the launchd half" \
+  "$(awk '/^run_unit_maintenance\(\) \{/,/^\}$/' "$REPO/update.sh")" \
+  "install_keepalive_probe_launchd"
+
+MAC="$TMP/mac"
+mkdir -p "$MAC/install/scripts" "$MAC/home/Library/LaunchAgents" "$MAC/bin"
+
+# launchctl stub: its mere presence is the command -v gate; it is never the
+# thing under test (the real installer does the loading).
+printf '#!/bin/bash\nexit 0\n' > "$MAC/bin/launchctl"; chmod +x "$MAC/bin/launchctl"
+
+# Installer stub: records the call, and writes the plist the way the real one
+# does, so the idempotence contract is exercised end to end.
+write_mac_installer() {
+  cat > "$MAC/install/scripts/install-channel-keepalive-probe.sh" <<EOF
+#!/bin/bash
+LABEL="$1"
+echo "\$*" >> "$MAC/installer.calls"
+mkdir -p "\$HOME/Library/LaunchAgents"
+: > "\$HOME/Library/LaunchAgents/$1.plist"
+exit ${2:-0}
+EOF
+  chmod +x "$MAC/install/scripts/install-channel-keepalive-probe.sh"
+}
+
+# $1: what `uname -s` should say.
+run_mac_fn() {
+  printf '#!/bin/bash\necho %s\n' "$1" > "$MAC/bin/uname"; chmod +x "$MAC/bin/uname"
+  PATH="$MAC/bin:$PATH" HOME="$MAC/home" \
+    bash -c "set -eu; INSTALL_DIR='$MAC/install'; $MACFN
+install_keepalive_probe_launchd" 2>&1
+}
+
+# 3a. Not a Mac -> the Linux path already owns this host, touch nothing.
+write_mac_installer "com.marveen.channel-keepalive-probe"
+: > "$MAC/installer.calls"
+OUT="$(run_mac_fn Linux)"
+assert_eq "non-Darwin host -> installer never called" "0" "$(wc -c < "$MAC/installer.calls" | tr -d ' ')"
+assert_eq "non-Darwin host -> prints nothing" "" "$OUT"
+
+# 3b. A Mac missing the probe: install it and say so.
+OUT="$(run_mac_fn Darwin)"
+assert_contains "installer called with --load" "$(cat "$MAC/installer.calls")" "--load"
+assert_eq "plist landed in ~/Library/LaunchAgents" "yes" \
+  "$([ -f "$MAC/home/Library/LaunchAgents/com.marveen.channel-keepalive-probe.plist" ] && echo yes || echo no)"
+assert_contains "reports what it did" "$OUT" "com.marveen.channel-keepalive-probe"
+
+# 3c. Idempotent: update.sh runs weekly, and a reload every week is not a fix.
+: > "$MAC/installer.calls"
+OUT="$(run_mac_fn Darwin)"
+assert_eq "second run calls no installer" "0" "$(wc -c < "$MAC/installer.calls" | tr -d ' ')"
+assert_eq "second run prints nothing" "" "$OUT"
+
+# 3d. Rename drift: the idempotence check must read the label FROM the
+#     installer. A hardcoded label would miss the existing plist and reload
+#     launchd on every single update -- silently, forever.
+write_mac_installer "com.renamed.keepalive-probe"
+: > "$MAC/installer.calls"
+run_mac_fn Darwin >/dev/null
+: > "$MAC/installer.calls"
+OUT="$(run_mac_fn Darwin)"
+assert_eq "renamed label is honoured on the idempotence check" "0" \
+  "$(wc -c < "$MAC/installer.calls" | tr -d ' ')"
+
+# 3e. An install predating the installer script -> do nothing rather than fail
+#     the whole update.
+rm -f "$MAC/install/scripts/install-channel-keepalive-probe.sh"
+rm -f "$MAC/home/Library/LaunchAgents/"*.plist
+: > "$MAC/installer.calls"
+OUT="$(run_mac_fn Darwin)"
+assert_eq "missing installer -> nothing written" "0" \
+  "$(ls "$MAC/home/Library/LaunchAgents" | wc -l | tr -d ' ')"
+assert_eq "missing installer -> update is not failed" "" "$OUT"
+
+# 3f. A failing installer must WARN, not pass silently.
+write_mac_installer "com.marveen.channel-keepalive-probe" 1
+rm -f "$MAC/home/Library/LaunchAgents/"*.plist
+OUT="$(run_mac_fn Darwin)"
+assert_contains "a failed install is reported, not swallowed" "$OUT" "FIGYELEM"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

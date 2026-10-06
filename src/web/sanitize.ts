@@ -3,8 +3,13 @@ import { resolve, sep } from 'node:path'
 // NFD + combining-mark strip so Hungarian input like "etrendiro" decays
 // to "etrendiro" instead of silently losing every accented character
 // and producing "trendr".
+// Whitespace becomes a hyphen, like sanitizeScheduleName: "Lean Writer" used
+// to decay to "leanwriter", a name nobody typed. Every lookup resolves an
+// existing directory name, which never contains whitespace, so this changes
+// only what a NEW name becomes.
 export function sanitizeAgentName(raw: string): string {
   return raw.trim().toLowerCase()
+    .replace(/\s+/g, '-')
     .normalize('NFD')
     .replace(/[̀-ͯ]/g, '')
     .replace(/[^a-z0-9-]/g, '')

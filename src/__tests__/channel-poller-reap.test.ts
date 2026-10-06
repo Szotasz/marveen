@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { parsePollerPidsFromPs, findOrphanChannelClaudes, type ProcRow } from '../web/channel-poller-reap.js'
+import {
+  parsePollerPidsFromPs,
+  findOrphanChannelClaudes,
+  parseMainDirPollerPids,
+  nearestClaudeAncestor,
+  findForeignMainPollers,
+  type ProcRow,
+} from '../web/channel-poller-reap.js'
 
 // Sample rows captured from a real `ps eww -e` on macOS during the
 // 2026-06-01 channel-disconnect incident. The bun poller, the slack
@@ -147,5 +154,93 @@ describe('findOrphanChannelClaudes', () => {
       { pid: 76621, ppid: 35874, command: `${CLAUDE} --channels plugin:telegram@claude-plugins-official` },
     ]
     expect(findOrphanChannelClaudes(allLive, new Set([76621]))).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Foreign MAIN-token poller reaper (2026-07-18 incident).
+
+// A `ps eww -e` snapshot with three telegram pollers:
+//   35352 -> the LEGIT main poller (no TELEGRAM_STATE_DIR override; default dir)
+//   44001 -> a THIEF: local-agent-mode claude auto-loaded the plugin, also no
+//            state-dir override, so it too polls the MAIN token
+//   30067 -> a SUB-AGENT (plutus) poller: has TELEGRAM_STATE_DIR override
+const PS_EWW_MAIN = [
+  '  35352 ??  S   0:01.00 bun run --cwd /Users/x/.claude/plugins/cache/claude-plugins-official/telegram/0.0.6 --silent start HOME=/Users/x CLAUDE_PLUGIN_ROOT=/Users/x/.claude/plugins/cache/claude-plugins-official/telegram/0.0.6',
+  '  44001 ??  S   0:00.20 bun run --cwd /Users/x/.claude/plugins/cache/claude-plugins-official/telegram/0.0.6 --silent start HOME=/Users/x CLAUDE_PLUGIN_ROOT=/Users/x/.claude/plugins/cache/claude-plugins-official/telegram/0.0.6',
+  '  30067 ??  S   0:00.30 bun run --cwd /Users/x/marveen/agents/plutus/.claude-config/plugins/cache/claude-plugins-official/telegram/0.0.6 --silent start HOME=/Users/x CLAUDE_PLUGIN_ROOT=/Users/x/marveen/agents/plutus/.claude-config/plugins/cache/claude-plugins-official/telegram/0.0.6 TELEGRAM_STATE_DIR=/Users/x/marveen/agents/plutus/.claude/channels/telegram',
+  '   1234 ??  Ss  0:00.00 /bin/zsh HOME=/Users/x',
+].join('\n')
+
+describe('parseMainDirPollerPids', () => {
+  it('selects main-dir telegram pollers (no state-dir override), excluding sub-agents', () => {
+    const pids = parseMainDirPollerPids(PS_EWW_MAIN, '/telegram', 'TELEGRAM_STATE_DIR')
+    expect(pids.sort((a, b) => a - b)).toEqual([35352, 44001])
+  })
+
+  it('does not match a sibling plugin dir like /telegram-inline', () => {
+    const ps = '  55555 ??  S 0:00.01 bun run --cwd /x start CLAUDE_PLUGIN_ROOT=/Users/x/.claude/plugins/data/telegram-inline'
+    expect(parseMainDirPollerPids(ps, '/telegram', 'TELEGRAM_STATE_DIR')).toEqual([])
+  })
+
+  it('returns empty when nothing carries CLAUDE_PLUGIN_ROOT for the provider', () => {
+    const ps = '  1234 ??  Ss 0:00.00 /bin/zsh HOME=/Users/x'
+    expect(parseMainDirPollerPids(ps, '/telegram', 'TELEGRAM_STATE_DIR')).toEqual([])
+  })
+})
+
+describe('nearestClaudeAncestor', () => {
+  // poller 35352 -> bun-run wrapper 35346 -> claude 35264 (pane leader)
+  const byPid = new Map<number, ProcRow>([
+    [35352, { pid: 35352, ppid: 35346, command: 'bun server.ts' }],
+    [35346, { pid: 35346, ppid: 35264, command: 'bun run --cwd .../telegram/0.0.6 start' }],
+    [35264, { pid: 35264, ppid: 1135, command: '/opt/homebrew/bin/claude --channels plugin:telegram@claude-plugins-official' }],
+    [1135, { pid: 1135, ppid: 1, command: 'tmux new-session -d -s marveen-channels' }],
+  ])
+
+  it('walks up to the owning claude', () => {
+    expect(nearestClaudeAncestor(35352, byPid)).toBe(35264)
+  })
+
+  it('returns null when no claude ancestor exists', () => {
+    const orphan = new Map<number, ProcRow>([
+      [900, { pid: 900, ppid: 800, command: 'bun server.ts' }],
+      [800, { pid: 800, ppid: 1, command: 'bun run --cwd .../telegram/0.0.6 start' }],
+    ])
+    expect(nearestClaudeAncestor(900, orphan)).toBeNull()
+  })
+})
+
+describe('findForeignMainPollers', () => {
+  // Legit poller 35352 owned by pane-leader claude 35264.
+  // Thief poller 44001 owned by a local-agent-mode claude 44000, which is a
+  // DESCENDANT of the pane (44000 -> 35264) but NOT the pane leader itself --
+  // so an "ancestor includes the pane" test would wrongly spare it; only
+  // pane-pid EQUALITY on the nearest claude ancestor separates them.
+  const procs: ProcRow[] = [
+    { pid: 35352, ppid: 35346, command: 'bun server.ts' },
+    { pid: 35346, ppid: 35264, command: 'bun run --cwd .../telegram/0.0.6 start' },
+    { pid: 35264, ppid: 1135, command: '/opt/homebrew/bin/claude --channels plugin:telegram@...' },
+    { pid: 44001, ppid: 44050, command: 'bun server.ts' },
+    { pid: 44050, ppid: 44000, command: 'bun run --cwd .../telegram/0.0.6 start' },
+    { pid: 44000, ppid: 35264, command: '/opt/homebrew/bin/claude' },
+    { pid: 1135, ppid: 1, command: 'tmux new-session -d -s marveen-channels' },
+  ]
+
+  it('spares the legit main poller, kills the thief', () => {
+    const legit = new Set([35264]) // the channels pane leader
+    expect(findForeignMainPollers([35352, 44001], procs, legit)).toEqual([44001])
+  })
+
+  it('fail-safe: empty legit set reaps nothing', () => {
+    expect(findForeignMainPollers([35352, 44001], procs, new Set())).toEqual([])
+  })
+
+  it('skips a candidate whose owning claude cannot be resolved', () => {
+    const noOwner: ProcRow[] = [
+      { pid: 900, ppid: 800, command: 'bun server.ts' },
+      { pid: 800, ppid: 1, command: 'bun run --cwd .../telegram/0.0.6 start' },
+    ]
+    expect(findForeignMainPollers([900], noOwner, new Set([35264]))).toEqual([])
   })
 })

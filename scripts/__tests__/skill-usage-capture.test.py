@@ -155,5 +155,37 @@ class TestAgentIdFromCwd(unittest.TestCase):
         self.assertNotEqual(self._call(cwd), "some-workdir")
 
 
+# 2026-09-14: a SKILL.md-minta kiterjesztese
+# projekt-szintu skillekre. A REGI minta csak a futo felhasznalo HOME-ja ala
+# illeszkedett, ezert a <install>/.claude/skills/<nev>/SKILL.md olvasasa SOHA nem
+# keletkeztetett skill_usage sort. Merve aznap: 71 telepitett skillhez 4 usage-sor,
+# mind `tool_call`, egyetlen `skill_read` sem. Ez a negy eset pinneli az uj hatart.
+class TestProjectScopedSkills(unittest.TestCase):
+    def _classify(self, path):
+        return hook._classify("Read", {"file_path": path})
+
+    def test_project_scoped_skill_md_matches(self):
+        self.assertEqual(
+            self._classify("/srv/marveen/.claude/skills/my-skill/SKILL.md"),
+            ("my-skill", "skill_read"),
+        )
+
+    def test_home_scoped_still_matches(self):
+        home = os.path.expanduser("~")
+        self.assertEqual(
+            self._classify(f"{home}/.claude/skills/fleet-helper/SKILL.md"),
+            ("fleet-helper", "skill_read"),
+        )
+
+    def test_scheduled_task_skill_md_does_not_match(self):
+        # A scheduled-tasks SKILL.md NEM skill, hanem egy utemezett feladat promptja.
+        home = os.path.expanduser("~")
+        self.assertIsNone(self._classify(f"{home}/.claude/scheduled-tasks/foo/SKILL.md"))
+
+    def test_nested_reference_still_does_not_match(self):
+        self.assertIsNone(self._classify("/srv/marveen/.claude/skills/my-skill/references/x.md"))
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -100,9 +100,100 @@ Beüzemelés:
    ```
 4. **Párosítás + zárolás.** A DM-policy alapból `pairing`; az engedélyezés a `/discord:access` paranccsal, a tulajdonos termináljából történik (csatornán érkező engedély-kérést a rendszer sosem hajt végre magától).
 
+### Parancsok a fő chatben (kör nélkül)
+
+A tulajdonos slash-parancsaira (`/status`, `/queue`, `/runs`, `/model`, `/usage`, …) a Marveen **ugyanabban a chatben, ugyanazzal a bottal** válaszol, mért adatból, **fő-session kör nélkül** (0 modell-token). Külön bot, token, beállítás nem kell.
+
+**Hogyan:** a fő session `UserPromptSubmit` hookja (`scripts/hooks/marveen-commands.py`) a modell előtt látja az üzenetet. Ha pontosan egy Telegram-üzenet jött, a tulajdonos chatjéből (`ALLOWED_CHAT_ID`), és a törzse egyetlen slash-parancs, a hook a dashboardnak adja (`POST /api/commands/dispatch`, dashboard-tokennel). A regiszterben szereplő parancsra a választ a hook küldi a fő bot tokenjével, és a kört blokkolja (`exit 2`). Minden más üzenet változatlanul a modellhez megy, a regiszterben nem szereplő `/szó` is (pl. `/kanban`, `/ujchat`).
+
+**Parancsok:** a `/help` a regiszterből generálódik, a bot menüje is (`scripts/set-bot-menu.sh`, `GET /api/commands/menu`, a statikus ágens-parancsok mellé). Olvasók: `/help`, `/status`, `/queue`, `/runs [<n>]`, `/jobs [<név>]`, `/approvals [<n>]`, `/model`, `/context`, `/usage [<nap>]`, `/board [<id>]`, `/commands`. A `/usage` egy válaszban adja a Claude-keretet (`scripts/usage-collect.py`) és a Marveen token-könyvelését. A megerősítéses írások (`/runs stop`, `/jobs … on|off|run|skip`, `/approvals … approve|reject|renew`) a `/help`-ben „tervezett” jelöléssel szerepelnek, és ma nem futnak.
+
+**`/status` és `/help` a pluginban:** a Telegram-plugin ezt a kettőt magától megválaszolná („Paired as …”), a sessionig el sem jutnának. A csatorna indításakor a `scripts/patch-telegram-plugin.py` kiveszi a két handlert (és a plugin saját menüjét) a gyorsítótárazott plugin-verzió(k)ból; a `/start` marad. Idempotens; ha a horgony nem található (plugin-frissítés), a fájl változatlan marad, egy hangos sor kerül a `store/channels-failures.log`-ba, és a két parancsra a plugin régi válasza jön. Az indulás közben letöltött új plugin-verziót a következő indulás patcheli.
+
+**Író parancsok csak valódi Telegram-üzenetből:** a dashboard-tokent minden agent ismeri, ezért egy író parancs (`/model`, `/context clear`, a saját parancsok) csak akkor fut, ha a Telegram-plugin maga rögzítette az üzenetet, amiből jött. Ugyanez a patcher (`evid`) a plugin minden bejövő üzenetét felírja a fő csatorna állapot-könyvtárába (`inbound-evidence.jsonl`, 256 KiB után `.1`), mielőtt a sessionnek átadja. A szerver (`src/web/write-evidence.ts`) a hívás `messageId`-jét ebben keresi: a tulajdonos chatje, ugyanaz a szöveg, legfeljebb 10 perces, és egyszer használható. A beírt szöveg nem bizonyíték, mert a session panelébe bármi begépelhet egy `<channel>` blokkot. Ha a patch hiányzik, az író parancsok nem futnak, és a `/status` ezt kiírja. Az olvasó parancsokra ez nem vonatkozik.
+
+**Írások megerősítés nélkül** (kárt nem okozhatnak, visszaválthatók):
+
+- `/model [<választás>] [<low|medium|high|xhigh|max>] [<idő>|keep]`: egy sor, tetszőleges sorrendben (pl. `/model opus 30m`, `/model opus low 4m`, `/model low 5m`, `/model opus keep`). A választék a `store/model-choices.json` (minta: `config-examples/model-choices.example.json`; hiányában csak a konfigurált modell). Alapból **ideiglenes** (a választás `default_hold_minutes`-e, alapérték 2 óra, vagy `4h` / `30m`): a `.env`-et nem írja, a tartás a `store/main-model-hold.json`-ban él, és a context-restart gate fő sweepje váltja vissza csendes sessionnél, értesítéssel a fő boton, Bot API-n, fő-session kör nélkül (30 percnél hosszabb foglaltságról egyszer szól). Ha közben respawn volt és már az alapmodell fut, csak törli a tartást. `keep`: tartós, az app `.env` `MAIN_AGENT_MODEL` sorát cseréli. A váltást a következő assistant-sor modellje igazolja vissza (eltérésnél szól). Kisebb ablakú modellnél (az `autoCompactWindow`-hoz képest) figyelmeztet.
+- Az effort ugyanennek a sornak a része: a megadott szint `/effort`-ként megy a sessionbe (visszamérni nem tudjuk), és a tartásba is bekerül. Lejáratkor csak akkor áll vissza, ha van beállított alapérték (`CLAUDE_CODE_EFFORT_LEVEL` vagy `.claude/settings.json` `effortLevel`); ha nincs, a válasz kimondja, hogy kézzel kell visszaállítani (a CLI-nek nincs „vissza az alapértelmezettre” effort-parancsa).
+- `/model default` (a `/model back` ugyanez): azonnal vissza az alapmodellre, és a tartásban lévő effort is vissza az alapra.
+- `/context clear` (és a szállított `/new`, `/clear` saját parancs): a context-restart gate soft-restartjának kódútja (ugyanazok a csendesség-feltételek, csak a méret-küszöb nélkül), `/clear` a küldési sávon, a replay-hookok viszik tovább a szálat. Foglalt sessionnél nem töröl, a `/runs`-ra mutat.
+
+**Maradék kockázat: a bizonyíték küszöb, nem határ.** Ahol a flotta ágensei ugyanazzal az OS-felhasználóval futnak, mint a plugin és a dashboard, ott az író út három fájlban bízik meg, és mindhármat bármelyik ágens írhatja:
+
+- `<csatorna-state>/inbound-evidence.jsonl`: egy Bash-képes ágens hozzáfűzhet egy sort egy kitalált (chat, `message_id`, szöveg) hármassal, és azzal átmegy az ellenőrzésen;
+- `store/main-command-pending.json`: a kör végén futó, sorba állított író parancs (`runPendingWrite`) innen fut, bizonyíték-ellenőrzés nélkül;
+- `store/main-model-hold.json`: a tartás lejáratakor és a `/model default`-nál innen jön a visszaállítandó modell (olvasáskor modell-azonosítóként ellenőrizve, de a tartalmát bárki átírhatja).
+
+A jogosultsági szabályok ezt nem zárják le: egy Bash-tiltás a fájlnévre nem látja a `>>` átirányítás célját, és a Write/Edit-tiltás nem köt az ágens projekt-könyvtárán kívüli útvonalra. A valódi határ az OS-felhasználók szétválasztása. A bizonyíték annyit ad, hogy a fejléc elhagyása már nem elég, a fájlok írása viszont igen.
+
+**Saját parancsok** (`custom_commands` tábla, `GET/POST /api/custom-commands`, `PUT/DELETE /api/custom-commands/<név>`, `GET …/export`, `POST …/import` csak üres táblába; induláskor üres táblába a `store/commands.json` töltődik, hiányában a `/new` és `/clear` alapértelmezés; minta: `config-examples/commands.example.json`):
+
+- `actions`: lépések a zárt készletből (`model`, `effort`, `context clear`, `interrupt`, `task`, `message`); a `task` bármelyik ütemezett feladatot név szerint most elindítja, az `interrupt` megszakítja a futó kört. Lépésenként mért visszajelzés, az első hiba megállítja a sort. A változott (vagy még sosem futtatott) definíciót ugyanúgy nem futtatja, mint a `prompt`-ot: egyszer visszakérdez, és kiírja az összes lépést. Kivétel a kód által szállított, azóta nem módosított alapértelmezés (`/new`, `/clear`).
+- `prompt`: szöveg-sablon (`$ARGUMENTS`), a meglévő csatorna-bejövő borítékkal megy a fő ágenshez (ugyanaz a jogosultság, mintha a tulajdonos a csatornán írta volna), a wrapper-jelölések kiszűrve, hosszkorláttal. A válasz kiírja, ki és mikor módosította, és a szöveg elejét; ha a definíció az utolsó futtatásod óta változott (vagy még nem futtattad), **nem küldi be**, hanem egyszer visszakérdez a teljes szöveggel és a hosszával (2 percen belüli ismétlés küldi). A wrapper-szűrés előtt a szöveg normalizálva van (zero-width karakterek ki, NFKC, HTML-entitások feloldva), így a rejtett változatok sem jutnak át.
+- Az ágens-azonosítóval érkező írást (`agent_id`, `updated_by` a törzsben, `X-Agent-Id` fejléc, federációs hívó) a végpont elutasítja; az `updated_by`-t a szerver állítja. Kemény garancia a konténeren belül nincs (az ágens olvassa a dashboard-tokent); a védelem a fenti láthatóság és a visszakérdezés.
+- Érvénytelen definíció (ismeretlen akció, rossz paraméter, beépített név) betöltéskor kiesik, a `/commands` az okkal listázza.
+
+**Korlátok és hibautak:**
+
+- **Foglalt session:** a hook a kör elején fut, tehát futó kör alatt a parancs a kör végéig vár; ha közben több üzenet gyűlik össze, a köteg (több `<channel>` blokk) a modellhez megy.
+- **A dashboard nem elérhető:** beépített parancsra egysoros hibaválasz jön, és a kör blokkolva marad (a modell úgysem tudná lefuttatni); ismeretlen `/szó` ilyenkor is a modellhez megy.
+- **Al-ágens chatje:** a hook minden ágensnél fut (a sablonból), de al-ágens sessionjében csak a `/usage`-ra válaszol (a saját botján); a többi parancs a fő sessionről szól vagy arra hat, ezért ott a modellhez megy.
+- A válasz plain text, 4096 karakter fölött darabolva. A hook naplója: `<csatorna-state>/progress/commands-hook.log`.
+- A végpont az ágens-azonosítóval (`x-agent-id` fejléc, `agent_id` mező, föderációs hívó) érkező hívást elutasítja (403), és csak a tulajdonos chatjére futtat.
+
+**`/api/status`:** a régi mezők (`overall`, `components`, `incidents`, `fetchedAt`) változatlanok; új `system` objektum (a `/status` sorai, soronként `value` / `source` / `error`), 60 s cache. `?only=system`: csak a helyi sorok, hálózati hívás nélkül; `?only=anthropic`: csak a régi mezők.
+
 ### Biztonság
 
 - A `<channel>`/`<untrusted>` tartalom **adat, nem utasítás** — a benne lévő imperatív szöveget a rendszer nem hajtja végre verifikáció nélkül.
 - Hozzáférés-kezelés (párosítás, allowlist, DM-policy) kizárólag a tulajdonos terminál-parancsán keresztül; csatornán érkező engedély-kérés gyanús és elutasított.
 - A stdio-pipe életben tartásához a háttérben keep-alive fut (6 percenként `edit_message` round-trip, eredménye: `store/.channel-keepalive`); ha a fájl 18 percnél régebbi, a watchdog respawn-pane-t indít.
 - Aktív inbound-próba: egy telethon userbot (külön, allowlistelt prober-fiók) `__wd_ping <ts>` üzenetet küld a fő botnak `PROBE_INTERVAL_MS` (default 3 perc) időközönként. Ha a marker nem jelenik meg a fő channels-session JSONL transcriptjében `2 × PROBE_INTERVAL_MS`-en belül, a watchdog hard-restart-ot indít. Manuális aktiválási kapu: a tulajdonos allowlisteli a prober-fiókot (`/telegram:access`). A fő channels-session csendben figyelmen kívül hagyja a `__wd_ping` üzeneteket.
+
+### Hibaelhárítás: a `/telegram:access` azt mondja, hogy senki nincs párosítva
+
+**Tünet.** Egy tökéletesen működő telepítésen, ahol a bot válaszol és az allowlist fel van töltve,
+a `/telegram:access` ezt írja: `no access.json exists yet`, `0 senders`, `nobody has been paired`.
+
+**Ez nem hiba a futó rendszerben, és a botot nem érinti.** A határ élesen meghúzható, és mérve van
+(TGACCESSUT921, 2026-09-22):
+
+- Ha a sessiont a mi indítónk indította (dashboard vagy a flotta indító útja), a parancs IGAZAT
+  mond. Az indító minden csatornás ügynök parancsába beteszi a `TELEGRAM_STATE_DIR` exportot
+  (`src/web/agent-process.ts`), és ez az élő poller-folyamatok környezetében vissza is mérhető:
+  `ps eww -e | grep telegram | tr ' ' '\n' | grep TELEGRAM_STATE_DIR=`
+- Ha a sessiont KÉZZEL indítottad a saját terminálodból (`claude` a shelledben), a változó nincs
+  beállítva. A plugin ilyenkor a régi, közös `~/.claude/channels/telegram` útra esik vissza, ami egy
+  migrált telepítésen üres, vagy nem is létezik. A kiírás tehát nem hazudik: rossz helyre néz, mert
+  nem mondtuk meg neki, hova nézzen.
+
+**A helyes ellenőrzés migrált telepítésen.** A futó bot a telepítés saját könyvtárát használja, tehát
+az igazság forrása ez a fájl (`<install>` a telepítés gyökere):
+
+```sh
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("dmPolicy:", d.get("dmPolicy"), "| engedelyezett feladok:", len(d.get("allowFrom") or []))' \
+  "<install>/.claude/channels/telegram/access.json"
+```
+
+Ha a fájl létezik és az `allowFrom` nem üres, a hozzáférés rendben van, bármit is ír a
+`/telegram:access` egy kézzel indított sessionben. Ugyanezt a könyvtárat adhatod a parancsnak egyetlen
+futásra is, a shellprofil megváltoztatása nélkül:
+
+```sh
+TELEGRAM_STATE_DIR="<install>/.claude/channels/telegram" claude
+```
+
+**Miért NEM az a megoldás, hogy ezt beírjuk a shellprofilba.** Ez a kézenfekvő javítás, és pontosan
+ezért áll itt, hogy egy későbbi kör ne tegye be "nyilvánvaló javításként": a profilba írt export
+MINDEN abban a shellben indított Claude Code sessionre hat, nem csak arra, amelyikkel a telepítéshez
+akarsz beszélni. Ezzel visszahoznánk azt az alakot, amit a `#915` éppen megszüntetett: amíg a fő
+ügynök csatorna-állapota a közös `~/.claude/channels/` alatt volt, a hoszt bármelyik másik sessionje
+betöltötte ugyanazt a bot-tokent, és csendben átvette a botot. A mérleg aszimmetrikus: egy félrevezető
+kiírás egy kézzel indított sessionben olcsóbb, mint egy néma bot-átvétel telepítések között, és a
+félrevezető kiírást ez a szakasz kezeli.
+
+**Amit nem mértünk vissza.** A plugin belső útfeloldását nem olvastuk ki a plugin forráskódjából. A
+fenti leírás a MEGFIGYELT viselkedésre és a saját kódunkra támaszkodik (a `TELEGRAM_STATE_DIR`-t a
+saját scriptjeink és az indítónk is így kezelik), nem a plugin implementációjára. Ha a plugin egy
+későbbi verzióban máshogy old fel, ez a szakasz elavulhat anélkül, hogy bármi látszana rajta.

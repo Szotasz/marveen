@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { PROJECT_ROOT } from '../config.js'
+import { logger } from '../logger.js'
 
 // Each profile is a JSON file under templates/profiles/ with an allow/deny
 // list that Claude Code's native permissions engine understands. Choosing a
@@ -14,6 +15,45 @@ export interface ProfileTemplate {
   description: string
   permissionMode: 'strict' | 'permissive'
   filesystem: { allow: string[]; deny: string[] }
+  // Directories OUTSIDE the agent's own working directory that it may touch.
+  // MEASURED 2026-09-06 (gembaecho): an `allow` entry alone is NOT enough for a
+  // path outside the agent cwd -- Claude Code asks for approval on every single
+  // `ls`/`cat`/`grep`/Write against it even when `Bash(ls:*)` and
+  // `Read(<path>/**)` are both allowlisted. The extra scope has to be declared
+  // as `permissions.additionalDirectories`; with it the identical command runs
+  // silently. Placeholders (${AGENT_DIR}, ${HOME}) are resolved like the
+  // allow/deny lists. Optional -- a profile that stays inside its own dir
+  // needs none.
+  additionalDirectories?: string[]
+
+  // ---- Opt-in house rules (default OFF) --------------------------------
+  // Two things the fleet that built this repo runs on, which are OUR process
+  // and not part of the product: the destructive-command PreToolUse gate and
+  // the THIN CHIEF handoff section injected into an agent's CLAUDE.md. A
+  // downstream install has its own review culture and its own idea of what an
+  // agent may delete, so shipping either one switched on would be imposing a
+  // process, not providing a capability.
+  //
+  // Absent == false on purpose: an install that never heard of these gets
+  // neither, and no template edit is needed to stay that way. Turning one on
+  // is a deliberate, per-profile decision. (PR #1357 review, Szabolcs.)
+  //
+  // Switching either OFF does not strip it from an agent that already has it:
+  // writeAgentSettingsFromProfile merges into the existing settings.json and
+  // ensureThinChiefHandoffSection only ever appends, so the flags govern what
+  // is APPLIED from here on, not a retroactive teardown. Removing a gate from
+  // a live agent stays a deliberate, separate act.
+  destructiveGate?: boolean
+  thinChiefHandoff?: boolean
+}
+
+/** Absent or non-true == off. Keeps the default in ONE place. */
+export function profileWantsDestructiveGate(p: ProfileTemplate | null | undefined): boolean {
+  return p?.destructiveGate === true
+}
+
+export function profileWantsThinChiefHandoff(p: ProfileTemplate | null | undefined): boolean {
+  return p?.thinChiefHandoff === true
 }
 
 export const PROFILES_DIR = join(PROJECT_ROOT, 'templates', 'profiles')
@@ -39,13 +79,51 @@ export function listProfileTemplates(): ProfileTemplate[] {
   return out.length ? out : [HARDCODED_DEFAULT_PROFILE]
 }
 
-export function loadProfileTemplate(id: string): ProfileTemplate {
+// WHICH PROFILE AN AGENT ACTUALLY GOT. A missing or
+// unreadable profile file used to fall back to `default` in silence: the agent
+// started, its settings.json was rewritten from the fallback, and the dashboard
+// kept showing the REQUESTED name. `default` is the most permissive profile,
+// so for any stricter one the silent fallback is a permission
+// WIDENING that nobody sees. The fallback itself stays (an agent that cannot
+// start is worse than one that starts under the default); what changes is that
+// it is named: `fallbackReason` says why, every load logs a WARN, and the
+// /security endpoint reports the effective profile next to the requested one.
+export type ProfileFallbackReason = 'missing' | 'unreadable'
+
+export interface ProfileResolution {
+  profile: ProfileTemplate
+  requested: string
+  effective: string
+  fallbackReason: ProfileFallbackReason | null
+}
+
+export function resolveProfileTemplate(id: string): ProfileResolution {
   const path = join(PROFILES_DIR, `${id}.json`)
+  let reason: ProfileFallbackReason = 'missing'
   if (existsSync(path)) {
-    try { return JSON.parse(readFileSync(path, 'utf-8')) as ProfileTemplate } catch { /* fall through */ }
+    try {
+      const profile = JSON.parse(readFileSync(path, 'utf-8')) as ProfileTemplate
+      return { profile, requested: id, effective: profile.id || id, fallbackReason: null }
+    } catch {
+      reason = 'unreadable'
+    }
   }
-  if (id !== 'default') return loadProfileTemplate('default')
-  return HARDCODED_DEFAULT_PROFILE
+  if (id !== 'default') {
+    const fallback = resolveProfileTemplate('default')
+    return { profile: fallback.profile, requested: id, effective: fallback.effective, fallbackReason: reason }
+  }
+  return { profile: HARDCODED_DEFAULT_PROFILE, requested: id, effective: 'default', fallbackReason: null }
+}
+
+export function loadProfileTemplate(id: string): ProfileTemplate {
+  const resolution = resolveProfileTemplate(id)
+  if (resolution.fallbackReason) {
+    logger.warn(
+      { requested: resolution.requested, effective: resolution.effective, reason: resolution.fallbackReason },
+      `Security profile "${resolution.requested}" is ${resolution.fallbackReason}; the agent gets "${resolution.effective}" instead -- a fallback can WIDEN its permissions`,
+    )
+  }
+  return resolution.profile
 }
 
 export function resolveProfilePlaceholders(value: string, ctx: { HOME: string; AGENT_DIR: string }): string {

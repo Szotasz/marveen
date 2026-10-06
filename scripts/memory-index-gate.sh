@@ -128,15 +128,57 @@ esac
 #                   ag felulirta, a szamolas NULLAROL indul ujra, es enelkul ez
 #                   a restart lathatatlan (merve: egy 43 085 B-os regi pillanatkep
 #                   BOVEN a 24 408-as "maximum" folott allt).
-PREVMAX="$(jq -r '.max_seen // 0' "$STATE" 2>/dev/null)"
+# --- JSON-olvasas jq NELKUL IS (MEMIDXJQ924) ------------------------------
+# A `jq` nem minden telepitesen van fent -- a Debian-alapu kepek jellemzoen nem
+# hozzak, es ezen a gepen sincs. Puszta `2>/dev/null` mogott ez a fajl CSENDBEN
+# ures erteket kapott volna minden mezore: a futo maximum nullarol indul, az
+# oroklott idok elvesznek, a link-meres pedig "nem adott szamot" agra esik.
+# Az utobbi meg fail-safe (ebreszt), az elso ketto viszont NEM: egy elveszett
+# `max_seen` ugyanaz a nema adatvesztes, ami ellen ez a kapu keszult.
+# python3 mar ma is kotelezo fuggoseg (a hookok arra epulnek), tehat mindig van
+# tartalek olvaso. Ugyanaz a minta, ami a scripts/channels.sh-ban all a
+# settings.json model-mezojere, es ugyanabbol az okbol.
+#
+# _json_get <mezo> <alapertelmezes> [json]   -- a JSON-t a STDIN-en varja.
+# Az alapertelmezes a jq `//` szemantikajat koveti: akkor lep eletbe, ha a mezo
+# hianyzik, `null` vagy `false`. Az ures sztring NEM ilyen, azt a jq is
+# atengedi -- a fallback is.
+_json_get() {
+  if command -v jq >/dev/null 2>&1; then
+    if [ "${3:-}" = json ]; then jq -c ".${1} // ${2}" 2>/dev/null
+    else jq -r ".${1} // ${2}" 2>/dev/null; fi
+    return 0
+  fi
+  _JF="$1" _JD="$2" _JM="${3:-}" python3 -c '
+import json, os, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+if not isinstance(d, dict):
+    d = {}
+v = d.get(os.environ["_JF"])
+if v is None or v is False:          # a jq `//` pontosan ezekre lep
+    d_ = os.environ["_JD"]
+    print("" if d_ == "empty" else d_)
+elif isinstance(v, (dict, list)):    # `-c` es `-r` is JSON-t ad tomb/objektumra
+    print(json.dumps(v, separators=(",", ":"), ensure_ascii=False))
+elif v is True:
+    print("true")
+else:
+    print(v)
+' 2>/dev/null
+}
+
+PREVMAX="$(_json_get max_seen 0 < "$STATE")"
 case "$PREVMAX" in ''|null|*[!0-9]*) PREVMAX=0 ;; esac
 # Az orokolt idok. Ha van oroklott csucs, de ido nem allt mellette (a mezok
 # bevezetese ELOTT irt state), akkor az ido ISMERETLEN -- es ismeretlent nem
 # talalunk ki: `null` megy be, nem a mostani ora. Egy kitalalt idobelyeg
 # ugyanazt a tevedest adna vissza, csak datummal megtamogatva, ami rosszabb.
-PREVMAXAT="$(jq -r '.max_seen_at // empty' "$STATE" 2>/dev/null)"
+PREVMAXAT="$(_json_get max_seen_at empty < "$STATE")"
 case "$PREVMAXAT" in ''|null|*[!0-9]*) PREVMAXAT=null ;; esac
-PREVSINCE="$(jq -r '.since // empty' "$STATE" 2>/dev/null)"
+PREVSINCE="$(_json_get since empty < "$STATE")"
 case "$PREVSINCE" in ''|null|*[!0-9]*) PREVSINCE=null ;; esac
 NOW="$(date +%s)"
 if [ "$PREVMAX" = 0 ]; then
@@ -209,14 +251,14 @@ else
   # negykent jelentve tobb bajnak latszana, mint amennyi. (Merve 2026-09-18:
   # ugyanazon a lapon 43 elofordulas / 27 egyedi cel -- mindketto helyes szam,
   # de mas kerdesre valaszol.)
-  LCMISS="$(printf '%s' "$LCOUT" | jq -r '.missing // empty' 2>/dev/null)"
-  LCMISSOCC="$(printf '%s' "$LCOUT" | jq -r '.missing_occurrences // 0' 2>/dev/null)"
-  LCUNIQ="$(printf '%s' "$LCOUT" | jq -r '.unique_targets // 0' 2>/dev/null)"
-  LCCHECKED="$(printf '%s' "$LCOUT" | jq -r '.links_checked // empty' 2>/dev/null)"
-  LCFILES="$(printf '%s' "$LCOUT" | jq -r '.files_scanned // empty' 2>/dev/null)"
-  LCLIST="$(printf '%s' "$LCOUT" | jq -c '.missing_list // []' 2>/dev/null)"
+  LCMISS="$(printf '%s' "$LCOUT" | _json_get missing empty)"
+  LCMISSOCC="$(printf '%s' "$LCOUT" | _json_get missing_occurrences 0)"
+  LCUNIQ="$(printf '%s' "$LCOUT" | _json_get unique_targets 0)"
+  LCCHECKED="$(printf '%s' "$LCOUT" | _json_get links_checked empty)"
+  LCFILES="$(printf '%s' "$LCOUT" | _json_get files_scanned empty)"
+  LCLIST="$(printf '%s' "$LCOUT" | _json_get missing_list '[]' json)"
   if [ "$LCRC" != 0 ]; then
-    LINKERR="$(printf '%s' "$LCOUT" | jq -r '.error // empty' 2>/dev/null)"
+    LINKERR="$(printf '%s' "$LCOUT" | _json_get error empty)"
     [ -n "$LINKERR" ] || LINKERR="a link-ellenorzo hibaval allt le (rc=$LCRC)"
   else
     # Ures-ellenorzes ELOSZOR: hianyzo mezo es nem-szam ugyanaz a hiba, de a

@@ -19,6 +19,9 @@ import { tmpdir } from 'node:os'
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-memlabel-test-'))
 
 vi.mock('../config.js', () => ({
+  // agent-scaffold imports settings-store (MCPOROKLES923), which derives a path from
+  // STORE_DIR at import time. A never-created dir: nothing here reads the store.
+  STORE_DIR: '/nonexistent/claudeclaw-test-store',
   PROJECT_ROOT: tmpRoot,
   OWNER_NAME: 'TestOwner',
   MAIN_AGENT_ID: 'agent-a',
@@ -171,5 +174,16 @@ describe('buildMemorySearchLabelBody', () => {
   // relaxed=false "a real hit" outright, which is false on an empty body.
   it('does not equate relaxed=false with having a hit', () => {
     expect(buildMemorySearchLabelBody('agent-b')).toContain('hits=0')
+  })
+
+  // A raw accented byte in q returns HTTP 400 with an empty body and NO
+  // X-Memory-Search header, so the grep prints nothing and it looks exactly
+  // like an empty hit though the search never ran. Measured 2026-09-19. The
+  // body must warn to percent-encode (or use -G --data-urlencode) so no agent
+  // reads a 400 as "no memory".
+  it('warns that a raw accented q is a silent 400, not an empty result', () => {
+    const b = buildMemorySearchLabelBody('agent-b')
+    expect(b).toContain('400')
+    expect(b).toContain('--data-urlencode')
   })
 })

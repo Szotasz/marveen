@@ -17,7 +17,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readQuotaSnapshot, DEFAULT_MAX_AGE_SEC } from '../web/quota.js'
+import { readQuotaSnapshot, DEFAULT_MAX_AGE_SEC, readFableSnapshot, DEFAULT_FABLE_MAX_AGE_SEC } from '../web/quota.js'
 
 const NOW = 1_788_700_000
 
@@ -128,5 +128,81 @@ describe('readQuotaSnapshot', () => {
   it('treats a missing written_at as maximally old rather than brand new', () => {
     write({ rate_limits: { five_hour: { used_percentage: 10, resets_at: NOW + 60 } } })
     expect(readQuotaSnapshot(file, NOW).status).toBe('stale')
+  })
+})
+
+// Fable/Opus comes from a different writer (scripts/usage-collect.py's
+// store/usage-latest.json), a different shape (ISO generated_at, used_percent
+// under claude.windows.seven_day_opus) and a much tighter freshness rule --
+// the collector runs every 15 minutes, so a stale reading here means the
+// collector itself stopped, not just "no session lately".
+describe('readFableSnapshot', () => {
+  let fableFile: string
+  beforeEach(() => { fableFile = join(dir, 'usage-latest.json') })
+
+  function writeFable(payload: unknown): void {
+    writeFileSync(fableFile, typeof payload === 'string' ? payload : JSON.stringify(payload))
+  }
+
+  function healthyFable(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      generated_at: new Date((NOW - 60) * 1000).toISOString(),
+      claude: {
+        source: 'authoritative',
+        windows: {
+          seven_day_opus: { used_percent: 37, resets_at: NOW + 86400 },
+        },
+      },
+      ...overrides,
+    }
+  }
+
+  it('reports a missing file as missing, not an error', () => {
+    const snap = readFableSnapshot(fableFile, NOW)
+    expect(snap.status).toBe('missing')
+    expect(snap.window).toBeNull()
+    expect(snap.ageSec).toBeNull()
+  })
+
+  it('reports a corrupt file as missing', () => {
+    writeFable('{ not json')
+    expect(readFableSnapshot(fableFile, NOW).status).toBe('missing')
+  })
+
+  it('reports a non-tiered account (seven_day_opus null) as missing', () => {
+    writeFable({ generated_at: new Date(NOW * 1000).toISOString(), claude: { windows: { seven_day_opus: null } } })
+    expect(readFableSnapshot(fableFile, NOW).status).toBe('missing')
+  })
+
+  it('reads a fresh window', () => {
+    writeFable(healthyFable())
+    const snap = readFableSnapshot(fableFile, NOW)
+    expect(snap.status).toBe('ok')
+    expect(snap.ageSec).toBe(60)
+    expect(snap.window).toEqual({ usedPercentage: 37, resetsAt: NOW + 86400, expired: false })
+  })
+
+  it('marks the reading stale past the collector-cadence threshold', () => {
+    writeFable(healthyFable({ generated_at: new Date((NOW - DEFAULT_FABLE_MAX_AGE_SEC - 1) * 1000).toISOString() }))
+    const snap = readFableSnapshot(fableFile, NOW)
+    expect(snap.status).toBe('stale')
+    // the number still travels, muted rather than dropped
+    expect(snap.window?.usedPercentage).toBe(37)
+  })
+
+  it('honours a caller-supplied threshold', () => {
+    writeFable(healthyFable({ generated_at: new Date((NOW - 100) * 1000).toISOString() }))
+    expect(readFableSnapshot(fableFile, NOW, 60).status).toBe('stale')
+    expect(readFableSnapshot(fableFile, NOW, 600).status).toBe('ok')
+  })
+
+  it('flags a window whose reset time has already passed', () => {
+    writeFable(healthyFable({ claude: { windows: { seven_day_opus: { used_percent: 80, resets_at: NOW - 1 } } } }))
+    expect(readFableSnapshot(fableFile, NOW).window?.expired).toBe(true)
+  })
+
+  it('treats a missing generated_at as maximally old rather than brand new', () => {
+    writeFable({ claude: { windows: { seven_day_opus: { used_percent: 10, resets_at: NOW + 60 } } } })
+    expect(readFableSnapshot(fableFile, NOW).status).toBe('stale')
   })
 })

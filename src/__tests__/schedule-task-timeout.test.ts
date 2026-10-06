@@ -483,7 +483,10 @@ describe('in-flight registration wiring', () => {
   const SRC = readFileSync(join(__dirname, '../web/schedule-runner.ts'), 'utf-8')
 
   it('injectedAt is the submit time, not the tick start', () => {
-    const sendIdx = SRC.indexOf('await sendPromptToSession(session, fullPrompt, host, { waitForIdle: !task.forceSend })')
+    // AUDITBORITEKVESZ918 turned the opts bag multi-line (onBusySend), so the
+    // anchor is the call itself: this test is about the ORDER of the submit
+    // stamp, not about how the argument list is formatted.
+    const sendIdx = SRC.indexOf('await sendPromptToSession(session, fullPrompt, host, {')
     const stampIdx = SRC.indexOf('const submittedAt = Date.now()')
     expect(sendIdx).toBeGreaterThan(0)
     expect(stampIdx).toBeGreaterThan(sendIdx)

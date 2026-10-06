@@ -11,8 +11,10 @@ import { AGENTS_BASE_DIR } from '../web/agent-config.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 // Fixture agent directories required by the from-auth check in /api/messages.
-// 'localboss' is the fictional test sender used throughout this suite.
-const FIXTURE_AGENTS = ['localboss']
+// 'localboss' is the fictional test sender used throughout this suite;
+// 'localmate' is a registered local recipient (UNKNOWNTO924 rejects an
+// unregistered one with 400).
+const FIXTURE_AGENTS = ['localboss', 'localmate']
 
 const TMP = mkdtempSync(join(tmpdir(), 'fed-feedback-test-'))
 const IN_TOKEN = 'b'.repeat(64)

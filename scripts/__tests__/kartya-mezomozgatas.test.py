@@ -81,7 +81,10 @@ def comment(card_id, text, extra=()):
     env['KARTYA_DB'] = DB_PATH
     env['CLAUDECLAW_ROOT'] = SANDBOX_ROOT
     return subprocess.run(
-        [sys.executable, SCRIPT, '--id', card_id, '--comment-file', cf, '--author', 'Boni', *extra],
+        # KOMMENTERTESITES922: ez a suite a MEZOMOZGATAST meri; az ertesites-kapunak sajat
+        # suite-ja van (kartya-komment-ertesites). A kapcsolo kimondja a kihagyast.
+        [sys.executable, SCRIPT, '--id', card_id, '--comment-file', cf, '--author', 'Boni',
+         '--nincs-ertesites-szandekos', *extra],
         capture_output=True, text=True, env=env, timeout=30)
 
 

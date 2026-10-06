@@ -139,6 +139,28 @@ TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || echo)"
 BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo ismeretlen)"
 case "$BRANCH" in develop|main|master) exit 0 ;; esac
 [ "${MARVEEN_PROD_CHECKOUT_OK:-0}" = "1" ] && exit 0
+# A rebase's (merge/cherry-pick/bisect's) FIRST step is a checkout to detached
+# HEAD -- abbrev-ref reports the literal string "HEAD", which matches nothing
+# in the case above, so an in-progress operation hit this guard mid-flight and
+# got auto-reverted to the home branch, pulling the tree out from under the
+# very operation that just checked it out (msg 3042-3045: four rebase attempts,
+# always "index contains uncommitted changes" from a provably clean index --
+# the index was fine, the tree under it had just been yanked back to main).
+# The guard's job is to catch an UNNOTICED switch, not to interrupt a running
+# multi-step git operation -- detect one and skip the revert, but still alert.
+GIT_DIR_CUR="$(git rev-parse --git-dir 2>/dev/null || echo)"
+OP=""
+if [ -n "$GIT_DIR_CUR" ]; then
+  if [ -d "$GIT_DIR_CUR/rebase-merge" ] || [ -d "$GIT_DIR_CUR/rebase-apply" ]; then
+    OP="rebase"
+  elif [ -f "$GIT_DIR_CUR/CHERRY_PICK_HEAD" ]; then
+    OP="cherry-pick"
+  elif [ -f "$GIT_DIR_CUR/MERGE_HEAD" ]; then
+    OP="merge"
+  elif [ -f "$GIT_DIR_CUR/BISECT_LOG" ]; then
+    OP="bisect"
+  fi
+fi
 # Revert target: the deployment's default branch, derived, not assumed.
 HOME_BRANCH=""
 for b in develop main master; do
@@ -151,7 +173,9 @@ done
 # fire (measured 2026-08-22). Recursion is self-limiting: the revert lands on
 # the home branch, where this hook exits at the case-guard above.
 REVERTED="nem"
-if [ -z "$HOME_BRANCH" ]; then
+if [ -n "$OP" ]; then
+  REVERTED="nem (folyamatban levo git-muvelet: $OP -- a guard nem szakitja meg)"
+elif [ -z "$HOME_BRANCH" ]; then
   REVERTED="nem (nincs develop/main/master ag)"
 elif [ -z "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
   if git checkout "$HOME_BRANCH" -q 2>/dev/null; then
@@ -170,7 +194,77 @@ TOKEN_FILE="$PROD_ROOT/store/.dashboard-token"
 # from a scratch root is word-for-word identical to a real one, and the
 # reader starts an investigation (cost one wasted round on 2026-08-22).
 ORIGIN="${MARVEEN_DASHBOARD_ORIGIN:-http://localhost:3420}"
-ALERT_TO="${MARVEEN_GUARD_ALERT_TO:-marveen}"
+# GUARDFROM924: the main agent id is install-specific (renamed installs);
+# a hardcoded 'marveen' is rejected as an unknown sender (HTTP 403, measured
+# on a renamed install) and is an unknown recipient too, so the alert never arrived.
+MAIN_ID="$(sed -n 's/^MAIN_AGENT_ID=//p' "$PROD_ROOT/.env" 2>/dev/null | head -1 | tr -d '"' | tr -cd 'A-Za-z0-9_-')"
+MAIN_ID="${MAIN_ID:-marveen}"
+# THE GUARD SENDS UNDER ITS OWN NAME WHERE THAT NAME IS REGISTERED, and under
+# the install's main agent id (MAIN_ID) where it is not. Measured 2026-09-26
+# against the live dashboard: `from=prod-tree-guard` is answered HTTP 403
+# "unknown agent" there, while `from=<the .env MAIN_AGENT_ID>` is accepted. The
+# sender check (src/web/routes/messages.ts) accepts the owner, an id listed in
+# SYSTEM_SENDER_IDS, the voice channel, or a directory under agents/ -- and
+# SYSTEM_SENDER_IDS is EMPTY by default (src/config.ts), with no
+# agents/prod-tree-guard/ directory anywhere in the tree.
+# So HARDCODING the guard name would repeat, under a new name, the defect
+# GUARDFROM924 removed: a sender the API refuses, and a guard that reverts a
+# branch switch but can never say so. READING THE LIST satisfies both halves --
+# a deployment that registers the guard gets the honest sender it asked for,
+# and one that does not keeps an alert that arrives.
+# The .env line is read the way the server reads it (src/env-parse.ts parseEnvContent):
+# every line trimmed, blank and # lines skipped, split at the FIRST "=", key and value
+# trimmed, ONE pair of matching surrounding quotes stripped, and the LAST occurrence of
+# the key wins. The last part is the one that matters: this used to be `head -1`, so a
+# .env with two SYSTEM_SENDER_IDS lines (first lists the guard, last does not) made the
+# hook send as prod-tree-guard while the server had never registered it, and the alert was
+# refused. Measured by Sam against a server-faithful stub, 2026-09-30. An awk that is
+# missing yields an empty list, i.e. the main agent id: the safe direction.
+ENV_SYSTEM_SENDERS=""
+if [ -r "$PROD_ROOT/.env" ]; then
+  ENV_SYSTEM_SENDERS="$(awk '
+    { line = $0
+      sub(/^[ \t\r]+/, "", line); sub(/[ \t\r]+$/, "", line)
+      if (line == "" || substr(line, 1, 1) == "#") next
+      i = index(line, "=")
+      if (i == 0) next
+      k = substr(line, 1, i - 1); v = substr(line, i + 1)
+      gsub(/^[ \t]+|[ \t]+$/, "", k); gsub(/^[ \t]+|[ \t]+$/, "", v)
+      if (k != "SYSTEM_SENDER_IDS") next
+      n = length(v)
+      if (n >= 2) {
+        a = substr(v, 1, 1); b = substr(v, n, 1)
+        if ((a == "\042" || a == "\047") && a == b) v = substr(v, 2, n - 2)
+      }
+      last = v; seen = 1 }
+    END { if (seen) print last }' "$PROD_ROOT/.env" 2>/dev/null)" || ENV_SYSTEM_SENDERS=""
+fi
+GUARD_SENDER_ID="prod-tree-guard"
+# The list is normalised the way the server does it, so this cannot accept a
+# spelling the API would then refuse: parseSystemSenderIds (src/config.ts) splits
+# on commas and trims, sanitizeAgentIdent (src/prompt-safety.ts) drops every
+# character outside [A-Za-z0-9_-]. Case is significant there, so it is here.
+# KNOWN LIMIT, not measured live: config.ts reads SYSTEM_SENDER_IDS once, at module
+# load ("adding a sender needs a dashboard restart"), while this hook reads the
+# .env at run time. Registering the guard in the .env without restarting the
+# dashboard therefore sends as prod-tree-guard against a server that does not know
+# it yet, and the alert is refused (HTTP 403, reported on stderr) until the restart.
+ALERT_FROM="$MAIN_ID"
+_ifs_saved="$IFS"
+IFS=','
+for _sender in $ENV_SYSTEM_SENDERS; do
+  _sender="$(printf '%s' "$_sender" | tr -dc 'A-Za-z0-9_-')"
+  if [ "$_sender" = "$GUARD_SENDER_ID" ]; then
+    ALERT_FROM="$GUARD_SENDER_ID"
+    break
+  fi
+done
+IFS="$_ifs_saved"
+# THE RECIPIENT COMES FROM MAIN_ID, NEVER FROM ALERT_FROM. With the guard
+# registered, addressing the alert to ALERT_FROM would send it TO THE GUARD
+# ITSELF -- a mailbox with no reader, the silent loss this guard exists to
+# prevent. MARVEEN_GUARD_ALERT_TO redirects WHO IS TOLD, and only that.
+ALERT_TO="${MARVEEN_GUARD_ALERT_TO:-$MAIN_ID}"
 # Honest delivery (NOTIFYVAKSWEEP826): the alert POST used to be fire-and-
 # forget -- a failed send left the branch-switch alert lost with no trace.
 # The hook stays exit-0 (a guard must not break git), but a delivery failure
@@ -190,8 +284,8 @@ ALERT_TO="${MARVEEN_GUARD_ALERT_TO:-marveen}"
 ALERT_TEXT="[PROD-FA ORSEG, post-checkout hook] Fa: $TOPLEVEL -- agat valtott a(z) $BRANCH agra. (Ha ez az utvonal nem a telepites fo faja, ez PROBA, nem eles riasztas.) AUTO-VISSZAALLITAS: $REVERTED. Commitot a pre-commit hook blokkol; szandekos valtashoz MARVEEN_PROD_CHECKOUT_OK=1."
 GUARD_BODY=""
 if command -v python3 >/dev/null 2>&1; then
-  GUARD_BODY="$(GUARD_TO="$ALERT_TO" GUARD_TEXT="$ALERT_TEXT" python3 -c 'import json,os,sys
-sys.stdout.write(json.dumps({"from":"marveen","to":os.environ["GUARD_TO"],"content":os.environ["GUARD_TEXT"]}))' 2>/dev/null)" || GUARD_BODY=""
+  GUARD_BODY="$(GUARD_FROM="$ALERT_FROM" GUARD_TO="$ALERT_TO" GUARD_TEXT="$ALERT_TEXT" python3 -c 'import json,os,sys
+sys.stdout.write(json.dumps({"from":os.environ["GUARD_FROM"],"to":os.environ["GUARD_TO"],"content":os.environ["GUARD_TEXT"]}))' 2>/dev/null)" || GUARD_BODY=""
 fi
 if [ -z "$GUARD_BODY" ]; then
   # No encoder, no send: a body the shell glued together is exactly what this

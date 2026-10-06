@@ -32,6 +32,12 @@ for (const arg of process.argv.slice(2)) {
   const scheme = sep >= 0 ? rest.slice(0, sep) : ''
   const vaultId = sep >= 0 ? rest.slice(sep + 3) : rest
   if (!headerName || !vaultId) continue
+  // VAULTSZELES826: an SSH private key never leaves as an HTTP header to a remote server
+  // (same rule as isSshPrivateKeyId in vault-acl.ts).
+  if (vaultId.trim().startsWith('ssh-key-')) {
+    process.stderr.write(`vault-headers-helper: refused, SSH private keys are not sent as headers: "${vaultId}"\n`)
+    continue
+  }
   const secret = getSecret(vaultId)
   if (secret === null) {
     process.stderr.write(`vault-headers-helper: vault secret "${vaultId}" not found\n`)

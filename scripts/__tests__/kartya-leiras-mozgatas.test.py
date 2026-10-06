@@ -70,7 +70,9 @@ def fut(card_id, komment, leiras=None, extra=()):
     cf = os.path.join(d, 'c.txt')
     with open(cf, 'w', encoding='utf-8') as f:
         f.write(komment)
-    args = [sys.executable, SCRIPT, '--id', card_id, '--comment-file', cf, '--author', 'Geri']
+    # KOMMENTERTESITES922: ez a suite a LEIRAS-MOZGATAST meri, nem az ertesitest.
+    args = [sys.executable, SCRIPT, '--id', card_id, '--comment-file', cf, '--author', 'Geri',
+            '--nincs-ertesites-szandekos']
     if leiras is not None:
         df = os.path.join(d, 'd.txt')
         with open(df, 'w', encoding='utf-8') as f:

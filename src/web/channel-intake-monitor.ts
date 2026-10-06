@@ -27,6 +27,7 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs'
+import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { logger } from '../logger.js'
@@ -219,10 +220,10 @@ function readTelegramToken(agentName: string): string | null {
   }
 }
 
-/** Transcript dir Claude Code uses for a cwd: every '/' replaced with '-'. */
+/** Transcript dir Claude Code uses for a cwd under the shared root (encoder: src/claude-project-dir.ts). */
 export function transcriptDirFor(agentName: string, projectRoot: string): string {
   const cwd = agentName === MAIN_AGENT_ID ? projectRoot : agentDir(agentName)
-  return join(process.env['HOME'] ?? homedir(), '.claude', 'projects', cwd.replace(/\//g, '-'))
+  return join(process.env['HOME'] ?? homedir(), '.claude', 'projects', encodeClaudeProjectDir(cwd))
 }
 
 // Same CONFIG-DIR BLIND SPOT the keepalive watchdog hit (see mainTranscriptDirs
@@ -235,7 +236,7 @@ export function transcriptDirFor(agentName: string, projectRoot: string): string
 export function transcriptDirsFor(agentName: string, projectRoot: string): string[] {
   if (agentName === MAIN_AGENT_ID) return mainTranscriptDirs()
   const cwd = agentDir(agentName)
-  const encoded = cwd.replace(/\//g, '-')
+  const encoded = encodeClaudeProjectDir(cwd)
   const roots = [
     join(process.env['HOME'] ?? homedir(), '.claude'),
     join(cwd, '.claude-config'),

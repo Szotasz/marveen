@@ -54,6 +54,7 @@ Részletes, funkciónkénti leírások a [`docs/`](docs/README.md) mappában —
 | Beszélgetés-folytonosság | [docs/conversation-continuity.md](docs/conversation-continuity.md) |
 | Channel reply-guard | [docs/channel-reply-guard.md](docs/channel-reply-guard.md) |
 | Telegram haladásjelző | [docs/telegram-progress-indicator.md](docs/telegram-progress-indicator.md) |
+| Slack haladásjelző | [docs/slack-progress-indicator.md](docs/slack-progress-indicator.md) |
 | Új asszisztens onboarding | [docs/onboarding-uj-asszisztens.md](docs/onboarding-uj-asszisztens.md) |
 
 ## Öntanulás & Seed-ek

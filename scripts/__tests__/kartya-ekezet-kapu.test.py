@@ -124,10 +124,44 @@ def main():
     check('rovid ekezet nelkuli szoveg szabad', r.returncode == 0, f'rc={r.returncode} {r.stderr[:200]}')
     check('rovid szoveg bekerult', db_count('EKEZET4') == 1)
 
+    # 5. ARANY-KAPU (EKEZETARANY921, 2026-09-21). Az elozo alak `any`-predikatum volt: egy 800+
+    #    karakteres, ekezet nelkuli szoveg ATMENT, ha a vegen allt EGY ekezetes szo (Marveen merese:
+    #    831 karakter, 0,36 szazalek). Ez a kartya KAPUJA: a token-ekezetes hosszu szoveg MEGTAGADVA,
+    #    a 3. eset (rendesen ekezetezett, 10,6 szazalek) valtozatlanul atmegy -- a ketto EGYUTT a
+    #    bizonyitek, kulon egyik sem.
+    TOKEN_EKEZET = (HOSSZU_EKEZET_NELKUL + ' ' + HOSSZU_EKEZET_NELKUL + ' ' + HOSSZU_EKEZET_NELKUL
+                    + ' A cim: Telepítő.')
+    assert len(TOKEN_EKEZET) >= 800
+    betuk = [ch for ch in TOKEN_EKEZET if ch.isalpha()]
+    arany = sum(1 for ch in betuk if ch in 'áéíóöőúüűÁÉÍÓÖŐÚÜŰ') / len(betuk)
+    assert arany < 0.01, arany
+    seed('EKEZET5')
+    r = comment('EKEZET5', TOKEN_EKEZET)
+    check('5 hosszu szoveg EGY ekezetes szoval MEGTAGADVA (arany-kapu, nem jelenlet-kapu)',
+          r.returncode != 0 and 'MEGTAGADVA' in (r.stdout + r.stderr), f'rc={r.returncode} {(r.stdout + r.stderr)[:200]}')
+    check('5 a megtagadas kimondja a MERT aranyt es a kuszobot',
+          'ekezet-arany' in (r.stdout + r.stderr) and '4%' in (r.stdout + r.stderr), (r.stdout + r.stderr)[:300])
+    check('5 a sor NEM keletkezett meg', db_count('EKEZET5') == 0, f'{db_count("EKEZET5")} sor')
+    #    A kiut MEGMARAD (Marveen kikotese): ugyanez a szoveg kimondott felulbiralassal bemegy.
+    seed('EKEZET6')
+    r = comment('EKEZET6', TOKEN_EKEZET, ('--ekezet-nelkul-szandekos',))
+    check('5 kimondott felulbiralassal a token-ekezetes szoveg is bemegy', r.returncode == 0 and db_count('EKEZET6') == 1,
+          f'rc={r.returncode} {r.stderr[:200]}')
+    #    Es a hatar-eset a kuszob FELETT: 5 szazalekos szoveg atmegy (a kuszob 4, nem 10).
+    ot_szazalek = ('Ez egy mérés a tábla adatán, a küszöb fölött. ' * 3
+                   + 'A tobbi resz szandekosan nyers log es azonosito, ekezet nelkul, hogy az arany ot szazalek korul legyen. ' * 4)
+    betuk = [ch for ch in ot_szazalek if ch.isalpha()]
+    arany = sum(1 for ch in betuk if ch in 'áéíóöőúüűÁÉÍÓÖŐÚÜŰ') / len(betuk)
+    assert 0.04 <= arany <= 0.08, arany
+    seed('EKEZET7')
+    r = comment('EKEZET7', ot_szazalek)
+    check(f'5 kuszob feletti ({arany:.1%}) szoveg atmegy', r.returncode == 0 and db_count('EKEZET7') == 1,
+          f'rc={r.returncode} {r.stderr[:200]}')
+
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)
         sys.exit(1)
-    print(f"\nOK: {4} eset, mind zold.")
+    print(f"\nOK: {7} eset, mind zold.")
 
 
 if __name__ == '__main__':
