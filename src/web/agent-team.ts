@@ -8,8 +8,9 @@
 
 import { join } from 'node:path'
 import { MAIN_AGENT_ID } from '../config.js'
+import { logger } from '../logger.js'
 import { atomicWriteFileSync } from './atomic-write.js'
-import { agentDir, readFileOr, listAgentNames, readAgentSecurityProfile } from './agent-config.js'
+import { agentDir, readFileOr, listAgentNames, readAgentSecurityProfile , readJsonObjectForWrite } from './agent-config.js'
 
 export interface TeamConfig {
   role: 'leader' | 'member'
@@ -83,7 +84,7 @@ export function resolveAgentSecurityProfile(name: string): string {
 export function writeAgentTeam(name: string, team: TeamConfig): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config = readJsonObjectForWrite(configPath)
   config.team = team
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
@@ -177,6 +178,19 @@ export function reportsToCreatesCycle(
 // fall back to the main agent, and anyone who delegated to them drops the id.
 export function cleanupTeamReferences(removedName: string): void {
   for (const other of listAgentNames()) {
+    // JSONCLOBBER926: one agent's corrupt agent-config.json (writeAgentTeam now
+    // refuses to overwrite it) must not stop the cleanup of the others -- the
+    // deletion this runs after has already happened. Warn and move on.
+    try {
+      cleanupTeamReferencesFor(other, removedName)
+    } catch (err) {
+      logger.warn({ agent: other, removed: removedName, err: (err as Error)?.message }, 'cleanupTeamReferences: skipping an agent whose config could not be updated')
+    }
+  }
+}
+
+function cleanupTeamReferencesFor(other: string, removedName: string): void {
+  {
     const team = readAgentTeam(other)
     let dirty = false
     if (team.reportsTo === removedName) {

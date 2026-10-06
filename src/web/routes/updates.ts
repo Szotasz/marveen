@@ -6,7 +6,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { PROJECT_ROOT, STORE_DIR } from '../../config.js'
 import { logger } from '../../logger.js'
 import {
-  getUpdateStatus, refreshUpdateStatus,
+  getUpdateStatus, refreshUpdateStatus, trackedBranch,
 } from '../update-checker.js'
 import {
   checkUpdatePreflight, checkNoConcurrentUpdate, classifyLockWriteError,
@@ -250,8 +250,12 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
         ['status', '--porcelain', '--untracked-files=no'],
         { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' },
       ),
-      aheadCount: () => countRevs('@{u}..HEAD'),
-      behindCount: () => countRevs('HEAD..@{u}'),
+      // UPSTREAMSRC927: origin/<branch>, the ref update.sh pulls -- not `@{u}`,
+      // which is whatever the branch happens to track. No fetch here (this is
+      // the request path); the ref can be stale, which is why update.sh fetches
+      // and measures again before its own divergence check.
+      aheadCount: () => countRevs(`origin/${trackedBranch()}..HEAD`),
+      behindCount: () => countRevs(`HEAD..origin/${trackedBranch()}`),
       // Mirrors update.sh guard 2. `git ls-remote --exit-code --heads` exits
       // 2 for "no such branch" and 128 for a transport/auth failure -- the
       // difference matters: only 2 is evidence, 128 is an unknown we must not

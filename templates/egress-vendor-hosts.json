@@ -1,0 +1,4 @@
+{
+  "_comment": "Copy to store/egress-vendor-hosts.json (per install, gitignored). Vendor-API hosts a Bash curl / interpreter one-liner may reach past scripts/hooks/bash-egress-parser.mjs. EXACT host names only: no '*', no leading dot, no IP, no port; subdomains are NOT covered. Missing or invalid file = no exception (every external host is denied). Owner decision per entry.",
+  "hosts": []
+}

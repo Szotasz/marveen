@@ -42,8 +42,11 @@ SESSION="${MAIN_AGENT_ID}-channels"
 BOT_NAME="$(env_val BOT_NAME)"
 BOT_NAME="${BOT_NAME:-$MAIN_AGENT_ID}"
 
-CHAT_ID="$(env_val ALLOWED_CHAT_ID)"
-if [ -z "$CHAT_ID" ]; then
+. "$(cd "$(dirname "$0")" && pwd)/lib/owner-chat.sh"
+# CHATID0: resolve_owner_chat_id, not a raw ALLOWED_CHAT_ID read -- the old
+# read let the installer's "0" placeholder through unnoticed, and never fell
+# back to a paired channel's access.json.
+if ! CHAT_ID="$(resolve_owner_chat_id "$INSTALL_DIR/.env" 2>>"$LOG")"; then
   # No owner chat configured: there is nobody to alert, and guessing one would
   # send a quota warning to a stranger. Stay silent rather than misdeliver.
   log "no ALLOWED_CHAT_ID in .env, monitor cannot alert -- exiting"
@@ -125,7 +128,14 @@ if [ -s "$QUOTA_FILE" ] && command -v python3 >/dev/null 2>&1; then
   fi
   case "$QUOTA_OUT" in
     STALE*)
-      log "quota file stale ($(printf '%s' "$QUOTA_OUT" | cut -f2)s), skipping the measured path"
+      # A reading with no usable written_at is not "old", it is unstamped, and
+      # the fix is in the writer, not in the clock -- so it gets its own words
+      # instead of an age counted from 1970.
+      if [ "$(printf '%s' "$QUOTA_OUT" | cut -f2)" = "nostamp" ]; then
+        log "quota file has no usable written_at ($(printf '%s' "$QUOTA_OUT" | cut -f3)), skipping the measured path"
+      else
+        log "quota file stale ($(printf '%s' "$QUOTA_OUT" | cut -f2)s), skipping the measured path"
+      fi
       ;;
     EXPIRED*)
       # Said out loud on purpose: an alert withheld must not look the same as a

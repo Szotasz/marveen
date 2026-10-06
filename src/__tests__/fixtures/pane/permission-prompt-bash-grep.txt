@@ -1,0 +1,24 @@
+
+  Waiting on the reviewers before touching either worktree.
+
+✻ Waiting for 2 background agents to finish
+
+────────────────────────────────────────────────────────────────────────────────
+ Bash command · from the general-purpose agent
+
+   │ cd /Users/OPERATOR/Developer/Projects/example-wt && grep -n
+   │ "firstSymbol\|secondSymbol\|thirdSymbol\|fourthSy
+   │ mbol\|fifthSymbol\|func transition"
+   │ src/Example/ExampleController.swift
+   Locate the functions
+
+ │ grep on
+ │ 'src/Example/ExampleController.swift' after
+ │ a cd would search a directory that cannot be determined here, and a Read()
+ │ deny rule is configured; only you can approve running it anyway.
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to amend

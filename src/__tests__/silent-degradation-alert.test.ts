@@ -113,7 +113,7 @@ const SRC = readFileSync(join(__dirname, '../web/agent-process.ts'), 'utf-8')
 
 describe('silent-degradation alert wiring', () => {
   it('routes the alert through notifyChannel (direct Bot API, not the inter-agent relay)', () => {
-    expect(SRC).toMatch(/import \{ notifyChannel \} from '\.\.\/notify\.js'/)
+    expect(SRC).toMatch(/import \{ notifyChannel[^}]*\} from '\.\.\/notify\.js'/)
     expect(SRC).toMatch(/notifyChannel\(/)
   })
 

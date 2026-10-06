@@ -1,0 +1,12 @@
+# NOTE: replace /path/to/marveen (install dir), /home/USER (home), and USER=youruser with your values.
+[Unit]
+Description=Marveen out-of-process observer of the main agent's inbox queue (nothing inside the dashboard process reports a stalled MAIN queue)
+
+[Service]
+Type=oneshot
+ExecStart=/path/to/marveen/scripts/main-inbox-observer.sh
+Environment=PATH=/home/USER/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/USER
+Environment=TZ=Europe/Budapest
+StandardOutput=append:/path/to/marveen/store/main-inbox-observer.log
+StandardError=append:/path/to/marveen/store/main-inbox-observer.log

@@ -1,4 +1,6 @@
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { mkdirSync, rmSync } from 'node:fs'
+import { agentDir } from '../web/agent-config.js'
 import { EventEmitter } from 'node:events'
 import { initDatabase } from '../db.js'
 import { MAIN_AGENT_ID } from '../config.js'
@@ -56,10 +58,17 @@ describe('POST /api/messages to the main agent (MSGWARN908)', () => {
     expect(r.json.to_agent).toBe(MAIN_AGENT_ID)
   })
 
+  // A REGISTERED but stopped sub-agent (a bare agents/<id>/ dir, no tmux):
+  // since UNKNOWNTO924 an unregistered id is rejected with 400, so the stand-in
+  // must exist on disk to exercise the not-running warning.
+  const STOPPED = 'stopped-test-agent-msgwarn'
+  beforeAll(() => { mkdirSync(agentDir(STOPPED), { recursive: true }) })
+  afterAll(() => { rmSync(agentDir(STOPPED), { recursive: true, force: true }) })
+
   it('still warns for a genuinely stopped sub-agent (the gate is not loosened)', async () => {
     // No tmux in the test env, so any sub-agent id reads as stopped -- the
     // exemption must be main-only, not a blanket removal of the warning.
-    const r = await post({ from: MAIN_AGENT_ID, to: 'no-such-agent-session', content: 'ping' })
+    const r = await post({ from: MAIN_AGENT_ID, to: STOPPED, content: 'ping' })
     expect(r.statusCode).toBe(200)
     expect(r.json.targetRunning).toBe(false)
     expect(String(r.json.warning)).toContain('nem fut')

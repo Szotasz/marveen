@@ -16,6 +16,8 @@ const {
   writeClaudePlansState,
   recordObservation,
   applyRotation,
+  recordPlanObservation,
+  recordFleetRotation,
   CLAUDE_PLANS_STATE_PATH,
 } = await import('../web/claude-plans-state.js')
 
@@ -125,5 +127,30 @@ describe('applyRotation', () => {
     const snapshot = JSON.parse(JSON.stringify(before))
     applyRotation(before, 'marveen', 'team')
     expect(before).toEqual(snapshot)
+  })
+})
+
+describe('fleet record (CLAUDE_ROTATION_FLEET)', () => {
+  const fleet = {
+    fleetPlanId: 'team', rotatedAt: 1, outcome: 'rotated' as const,
+    restarted: ['a'], failed: [], notRunning: [], line: 'FLEET_ROTATE plan=team',
+  }
+  const obs = { observedAt: 2, source: 'probe', windows: {} }
+
+  it('round-trips through write/read', () => {
+    writeClaudePlansState(recordFleetRotation({ activePlanByAgent: {}, plans: {} }, fleet))
+    expect(readClaudePlansState().fleet).toEqual(fleet)
+  })
+
+  it('survives every other transition (observation, rotation)', () => {
+    const s0 = recordFleetRotation({ activePlanByAgent: {}, plans: {} }, fleet)
+    expect(recordPlanObservation(s0, 'x', obs).fleet).toEqual(fleet)
+    expect(recordObservation(s0, 'main', 'x', obs).fleet).toEqual(fleet)
+    expect(applyRotation(s0, 'main', 'x').fleet).toEqual(fleet)
+  })
+
+  it('a malformed fleet key is dropped, not fatal', () => {
+    writeFileSync(CLAUDE_PLANS_STATE_PATH, JSON.stringify({ activePlanByAgent: {}, plans: {}, fleet: 'nope' }))
+    expect(readClaudePlansState()).toEqual({ activePlanByAgent: {}, plans: {} })
   })
 })

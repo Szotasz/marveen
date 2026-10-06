@@ -13,15 +13,17 @@ import type { AgentStatusSignals, AgentStatusRow } from '../agent-status.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
+import { snapshotPersonaFile, writePersonaFileIfUnchanged } from '../persona-write-guard.js'
 import { measureClaudeCliVersion } from '../claude-cli-version.js'
+import { launchableInstallDefault } from '../default-model-guard.js'
 import { claudeSupportForCli, isModelUnsupportedByCli, CLAUDE_MODEL_MIN_CLI } from '../../claude-cli-support.js'
 import { CHANNEL_PLUGIN_IDS } from '../plugin-ids.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
 import { loadOpenRouterCatalog, fetchAllOpenRouterModels, loadCuratedManual, addCuratedManual, removeCuratedManual } from '../openrouter-models.js'
+import { listCustomProviders } from '../custom-providers.js'
 import {
   agentDir,
   agentConfigRoot,
-  DEFAULT_MODEL,
   readFileOr,
   extractDescriptionFromClaudeMd,
   findAvatarForAgent,
@@ -52,7 +54,10 @@ import {
   readAgentVoiceConfig,
   writeAgentVoiceConfig,
   KNOWN_VOICE_MODELS,
+  readAgentCustomProvider,
+  writeAgentCustomProvider,
   type AuthMode,
+  readJsonObjectForWrite,
 } from '../agent-config.js'
 import { readClaudePlans, resolveAgentConfigDir } from '../claude-plans.js'
 import {
@@ -133,6 +138,7 @@ import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
 import { getChannelHealth } from '../channel-health-monitor.js'
 import {
   loadProfileTemplate,
+  resolveProfileTemplate,
   resolveProfilePlaceholders,
 } from '../profiles.js'
 import { sanitizeAgentName, safeJoin } from '../sanitize.js'
@@ -328,10 +334,9 @@ export function setAgentEnabledPlugins(name: string, provider: ChannelProviderTy
   const settingsDir = join(agentDir(name), '.claude')
   const settingsPath = join(settingsDir, 'settings.json')
   mkdirSync(settingsDir, { recursive: true })
-  let existing: Record<string, unknown> = {}
-  if (existsSync(settingsPath)) {
-    try { existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { /* overwrite */ }
-  }
+  // JSONCLOBBER926: an existing but unreadable settings.json is refused, not
+  // overwritten -- see readJsonObjectForWrite.
+  const existing: Record<string, unknown> = readJsonObjectForWrite(settingsPath)
   const plugins = (existing.enabledPlugins ?? {}) as Record<string, boolean>
   for (const [p, pluginKey] of Object.entries(CHANNEL_PLUGIN_IDS)) {
     plugins[pluginKey] = p === provider
@@ -447,6 +452,7 @@ interface AgentSummary {
 
 interface AgentDetail extends AgentSummary {
   memoryIsolation: boolean
+  customProvider: string | null
   claudeMd: string
   soulMd: string
   mcpJson: string
@@ -602,6 +608,7 @@ function getAgentDetail(name: string): AgentDetail {
   return {
     ...summary,
     memoryIsolation: readAgentMemoryIsolation(name),
+    customProvider: readAgentCustomProvider(name),
     claudeMd,
     soulMd,
     mcpJson,
@@ -689,6 +696,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         // base id, so the [1m] variant inherits the 2.1.280 minimum -- pinned in picker-cli-gate.test.ts.
         { id: 'claude-opus-5-5[1m]', label: 'Opus 5.5 (1M kontextus, legújabb Opus)', minCli: CLAUDE_MODEL_MIN_CLI['claude-opus-5-5'].minCli },
         { id: 'claude-opus-5', label: 'Opus 5' },
+        { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5 (legújabb Sonnet)', minCli: CLAUDE_MODEL_MIN_CLI['claude-sonnet-5-5'].minCli },
         { id: 'claude-sonnet-5', label: 'Sonnet 5' },
         { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
         { id: 'claude-fable-5', label: 'Fable 5' },
@@ -726,6 +734,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // Feeds the "OpenRouter - kézi" optgroup in every agent's model dropdown.
       openrouterManual: hasOpenRouter ? loadCuratedManual() : [],
       openrouterConfigured: hasOpenRouter,
+      // Custom Anthropic-compatible providers defined in store/custom-providers.json.
+      customProviders: listCustomProviders(),
     })
     return true
   }
@@ -1015,7 +1025,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const { description, model: rawModel, profile: rawProfile } = data as { name: string; description: string; model?: string; profile?: string }
     const rawName = typeof data.name === 'string' ? data.name.trim() : ''
     const name = sanitizeAgentName(rawName)
-    const model = resolveModelId(rawModel || DEFAULT_MODEL)
+    // DEFAULTCLIGUARD927: no model in the request = the install default,
+    // guarded (fresh probe, like the gate below) so a create on a CLI that
+    // cannot run the shipped default gets the previous tier, not a 422 for a
+    // model the caller never picked.
+    const model = resolveModelId(rawModel || await launchableInstallDefault('agent-create', { fresh: true }))
     const profileId = (rawProfile || 'default').trim() || 'default'
 
     if (!name) { json(res, { error: 'Name is required' }, 400); return true }
@@ -1024,6 +1038,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const cliGate = await refuseIfCliCannotLaunch(model)
     if (cliGate) { json(res, cliGate, 422); return true }
     if (!description) { json(res, { error: 'Description is required' }, 400); return true }
+    // The main agent lives in PROJECT_ROOT, not under agents/, so the existsSync
+    // below never sees it: without this, a sub-agent named like the main one
+    // is created and shares its id in messages, kanban and memories.
+    if (name === MAIN_AGENT_ID) { json(res, { error: 'Name is reserved for the main agent' }, 409); return true }
     if (existsSync(agentDir(name))) { json(res, { error: 'Agent already exists' }, 409); return true }
 
     scaffoldAgentDir(name)
@@ -1046,14 +1064,36 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // a template-personality agent exists and is usable, so the fleet has to hear
     // about it for the same reason a fully generated one does.
     let personalityPendingDetail: string | null = null
+    // PERSONANOCLOBBER923: the agent dir is visible from scaffoldAgentDir() on,
+    // and generation below can take many minutes. Snapshot the personality files
+    // NOW, and let both completion paths write only while each file is still
+    // exactly this -- an operator who wrote it in the meantime wins. See
+    // persona-write-guard.ts for the measured incident.
+    const personaFiles = (['CLAUDE.md', 'SOUL.md'] as const).map(file => {
+      const path = join(agentDir(name), file)
+      return { file, path, baseline: snapshotPersonaFile(path) }
+    })
+    const [claudeMdFile, soulMdFile] = personaFiles
+    // Files a completion path left alone because they changed under it.
+    const personaSkipped: Array<{ file: string; sidecarPath: string | null }> = []
+    // Files the success path already wrote, so a throw after the first write
+    // does not have the fallback report our own generated file as "changed".
+    const personaWrittenByUs = new Set<string>()
     try {
       const [claudeMd, soulMd] = await Promise.all([
         generateClaudeMd(name, description, model),
         generateSoulMd(name, description),
       ])
-      atomicWriteFileSync(join(agentDir(name), 'CLAUDE.md'), claudeMd)
-      atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), soulMd)
-      logger.info({ name }, 'Agent created successfully')
+      for (const [f, content] of [[claudeMdFile, claudeMd], [soulMdFile, soulMd]] as const) {
+        const r = writePersonaFileIfUnchanged(f.path, f.baseline, content, { saveSidecarOnSkip: true })
+        if (r.written) personaWrittenByUs.add(f.file)
+        else personaSkipped.push({ file: f.file, sidecarPath: r.sidecarPath })
+      }
+      if (personaSkipped.length > 0) {
+        logger.warn({ name, skipped: personaSkipped }, 'Agent created; generated personality NOT written over files changed during generation (saved as *.generated.md)')
+      } else {
+        logger.info({ name }, 'Agent created successfully')
+      }
     } catch (err) {
       // NO DESTRUCTIVE ROLLBACK. This used to be
       //   rmSync(agentDir(name), { recursive: true, force: true })
@@ -1079,17 +1119,50 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // exist.
       const detail = err instanceof Error ? err.message : 'Unknown error'
       logger.error({ err, name }, 'Agent personality generation failed -- falling back to template, agent kept')
+      // PERSONANOCLOBBER923: the template goes only where the file is still
+      // untouched. A failed generation must NEVER replace content somebody
+      // wrote while it ran -- that is exactly the measured incident. No sidecar
+      // here: a placeholder has nothing worth keeping.
+      let templateWritten = false
       try {
-        atomicWriteFileSync(join(agentDir(name), 'CLAUDE.md'), fallbackClaudeMd(name, description, model))
-        atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), fallbackSoulMd(name, description))
-        atomicWriteFileSync(join(agentDir(name), PERSONALITY_PENDING_SENTINEL), `${new Date().toISOString()}\n${detail}\n`)
+        for (const [f, content] of [
+          [claudeMdFile, fallbackClaudeMd(name, description, model)],
+          [soulMdFile, fallbackSoulMd(name, description)],
+        ] as const) {
+          if (personaWrittenByUs.has(f.file)) continue
+          const r = writePersonaFileIfUnchanged(f.path, f.baseline, content, { saveSidecarOnSkip: false })
+          if (r.written) templateWritten = true
+          else personaSkipped.push({ file: f.file, sidecarPath: null })
+        }
+        // The sentinel says "this agent's personality is a placeholder", so it
+        // is written only when a placeholder actually landed.
+        if (templateWritten) {
+          atomicWriteFileSync(join(agentDir(name), PERSONALITY_PENDING_SENTINEL), `${new Date().toISOString()}\n${detail}\n`)
+        }
       } catch (fallbackErr) {
         // Even the template write failed (disk full, permissions). Still do NOT
         // delete: a half-built agent an operator can inspect beats a vanished
         // one they cannot.
         logger.error({ err: fallbackErr, name }, 'Fallback template write failed; agent left in place for inspection')
       }
-      personalityPendingDetail = detail
+      if (personaSkipped.length > 0) {
+        logger.warn({ name, skipped: personaSkipped }, 'Personality generation failed; fallback template NOT written over files changed during generation')
+      }
+      if (templateWritten) personalityPendingDetail = detail
+    }
+
+    // A skip is never silent: besides the log line, the main agent hears which
+    // files were left alone, because the HTTP caller may be long gone by the
+    // time a slow generation finishes.
+    if (personaSkipped.length > 0) {
+      try {
+        const list = personaSkipped
+          .map(s => s.sidecarPath ? `${s.file} (a generált változat: ${s.sidecarPath})` : s.file)
+          .join(', ')
+        createAgentMessage('system', MAIN_AGENT_ID, `Az új ügynök (${name}) személyiség-generálása NEM írta felül ezeket a fájlokat, mert a generálás közben valaki módosította őket: ${list}. A kézi tartalom maradt érvényben.`)
+      } catch (err) {
+        logger.warn({ err, name }, 'Personality write skipped, and the main-agent notice about it failed')
+      }
     }
 
     // Notifications are deliberately OUTSIDE the try above. They used to sit
@@ -1111,6 +1184,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       logger.warn({ err, name }, 'Agent created, but the team notification failed')
     }
 
+    const skippedField = personaSkipped.length > 0
+      ? { personalitySkipped: personaSkipped.map(s => ({ file: s.file, generatedPath: s.sidecarPath })) }
+      : {}
+
     if (personalityPendingDetail !== null) {
       // The warning says what actually happens next. An earlier wording promised
       // "It is queued for regeneration", and there is no queue: the sentinel is
@@ -1118,7 +1195,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // What DOES exist is PUT /api/agents/:name with claudeMd/soulMd, so that is
       // what the message points at. The sentinel stays as a marker for whenever a
       // regeneration path gets built; it just must not be described as one today.
-      json(res, { ok: true, name, personalityPending: true, warning: 'Agent created with a template personality because generation failed. Edit CLAUDE.md and SOUL.md to replace it.', detail: personalityPendingDetail }, 200)
+      json(res, { ok: true, name, personalityPending: true, warning: 'Agent created with a template personality because generation failed. Edit CLAUDE.md and SOUL.md to replace it.', detail: personalityPendingDetail, ...skippedField }, 200)
+      return true
+    }
+
+    if (personaSkipped.length > 0) {
+      json(res, { ok: true, name, ...skippedField })
       return true
     }
 
@@ -1467,10 +1549,16 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const name = decodeURIComponent(secGetMatch[1])
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
     const profileId = readAgentSecurityProfile(name)
-    const profile = loadProfileTemplate(profileId)
+    // Resolved, not loaded: this is read on every dashboard view, and the WARN
+    // belongs to the spawn that applies the profile, not to a page load.
+    const resolution = resolveProfileTemplate(profileId)
+    const profile = resolution.profile
     const placeholders = { HOME: homedir(), AGENT_DIR: agentDir(name) }
     json(res, {
       profile: profileId,
+      // What the agent actually runs under, and why it differs.
+      effectiveProfile: resolution.effective,
+      fallbackReason: resolution.fallbackReason,
       label: profile.label,
       description: profile.description,
       permissionMode: profile.permissionMode,
@@ -2280,6 +2368,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
       authMode?: AuthMode; apiKey?: string; claudePlan?: string; memoryIsolation?: boolean
       modelProfile?: string | null
+      customProvider?: string | null
     }
 
     // Unknown fields are rejected rather than silently dropped -- see
@@ -2314,6 +2403,17 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // PICKERCLIKAPU923: same gate as the picker and the POST, fresh probe.
       const cliGate = await refuseIfCliCannotLaunch(String(data.model))
       if (cliGate) { json(res, cliGate, 422); return true }
+      // When a custom provider is being set (either in this same request or
+      // already persisted), validate the model id to prevent apostrophe/shell
+      // metacharacter breakout from the single-quoted `'${model}'` in the
+      // agent launch command. Allow: alphanumeric, dot, underscore, dash, colon, slash.
+      const incomingProvider = data.customProvider !== undefined ? (data.customProvider || null) : readAgentCustomProvider(name)
+      if (incomingProvider) {
+        if (!/^[a-zA-Z0-9._/:+-]+$/.test(data.model)) {
+          json(res, { error: 'Custom provider model id contains disallowed characters (allowed: a-z A-Z 0-9 . _ / : + -)' }, 400)
+          return true
+        }
+      }
       writeAgentModel(name, data.model)
     }
     // Card c755f4b2 Block B: optional generic capability tier. An unknown id
@@ -2338,6 +2438,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         json(res, { error: `modelProfile must be one of ${MODEL_PROFILE_IDS.join('|')}` }, 400)
         return true
       }
+    }
+    if (data.customProvider !== undefined) {
+      writeAgentCustomProvider(name, data.customProvider || null)
     }
     if (data.authMode !== undefined) {
       writeAgentAuthMode(name, data.authMode)
@@ -2419,17 +2522,18 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   }
 
   // PUT /api/agents/:name/voice-config
-  // Body: { responseMode?: 'text'|'voice'|'auto', voiceModel?: string }
+  // Body: { responseMode?: 'text'|'voice'|'auto', voiceModel?: string, transcribeInbound?: boolean }
   if (voiceConfigMatch && method === 'PUT') {
     const name = decodeURIComponent(voiceConfigMatch[1])
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
     const body = await readBody(req)
-    let data: { responseMode?: string; voiceModel?: string }
+    let data: { responseMode?: string; voiceModel?: string; transcribeInbound?: unknown }
     try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'invalid JSON' }, 400); return true }
     try {
       writeAgentVoiceConfig(name, {
         responseMode: data.responseMode as 'text' | 'voice' | 'auto' | undefined,
         voiceModel: data.voiceModel,
+        transcribeInbound: data.transcribeInbound as boolean | undefined,
       })
     } catch (err: unknown) {
       json(res, { error: err instanceof Error ? err.message : 'invalid config' }, 400)

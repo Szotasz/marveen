@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { buildWorkerPrompt, decidePoll, configDirKeychainService, workerHomeFor, workerStartAllowed } from '../web/agent-worker.js'
+import { buildWorkerPrompt, decidePoll, configDirKeychainService, workerHomeFor, workerStartAllowed, workerModelSource } from '../web/agent-worker.js'
 
 // Pure-logic tests for the interactive-tmux worker that backs runAgent on the
 // subscription (jun.15 migration). The live-session orchestration is exercised
@@ -29,6 +29,18 @@ describe('buildWorkerPrompt', () => {
   it('does not inject any persona / project voice', () => {
     const p = buildWorkerPrompt('TASK', out, done)
     expect(p).not.toMatch(/Marveen|Szabolcs|asszisztens/i)
+  })
+})
+
+// APRO920 (c)(2): the worker launch log line's source label -- which
+// config-chain element actually supplied --model.
+describe('workerModelSource', () => {
+  it('names the env var when MARVEEN_WORKER_MODEL is set', () => {
+    expect(workerModelSource({ MARVEEN_WORKER_MODEL: 'claude-opus-5' } as NodeJS.ProcessEnv)).toBe('env:MARVEEN_WORKER_MODEL')
+  })
+
+  it('falls back to "default" (the .env-backed DEFAULT_AGENT_MODEL) when unset', () => {
+    expect(workerModelSource({} as NodeJS.ProcessEnv)).toBe('default')
   })
 })
 
@@ -141,5 +153,47 @@ describe('workerStartAllowed (WORKERHOME1: WEB_ONLY must suppress every worker s
     const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
     expect(src).toContain("tryResolveFromPath('claude')")
     expect(src).not.toMatch(/`claude --dangerously-skip-permissions/)
+  })
+})
+
+describe('worker custom-provider inheritance (subscription-less fleet support)', () => {
+  // String-contract guard: the source must wire the custom provider path so
+  // that subscription-less fleets (custom LiteLLM / OpenRouter endpoint) get
+  // working background workers without extra config.
+
+  it('buildCustomProviderLaunchEnv is imported from agent-process', () => {
+    const __dirname = dirname(fileURLToPath(import.meta.url))
+    const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
+    expect(src).toContain('buildCustomProviderLaunchEnv')
+    expect(src).toContain('stampCustomApiKeyApproval')
+  })
+
+  it('buildCustomProviderLaunchEnv is only called when no MARVEEN_WORKER_MODEL override is set', () => {
+    const __dirname = dirname(fileURLToPath(import.meta.url))
+    const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
+    // The call must be guarded by a WORKER_MODEL_OVERRIDE falsy check so an
+    // explicit override skips the custom-provider lookup entirely.
+    expect(src).toMatch(/if\s*\(\s*!WORKER_MODEL_OVERRIDE\s*\)[\s\S]{1,500}buildCustomProviderLaunchEnv/)
+  })
+
+  it('launch string concatenates customEnvPrefix between config-dir export and cd', () => {
+    const __dirname = dirname(fileURLToPath(import.meta.url))
+    const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
+    // The launch template must include customEnvPrefix in its concatenation chain.
+    expect(src).toContain('customEnvPrefix')
+    // Both the CLAUDE_CONFIG_DIR export and the cd must appear alongside it in
+    // the same launch-building block.
+    const launchBlock = src.slice(src.indexOf('const launch ='), src.indexOf('const launch =') + 600)
+    expect(launchBlock).toContain('CLAUDE_CONFIG_DIR')
+    expect(launchBlock).toContain('customEnvPrefix')
+    expect(launchBlock).toContain('ctx.home')
+  })
+
+  it('x-api-key path stamps .claude.json approval in the worker configDir', () => {
+    const __dirname = dirname(fileURLToPath(import.meta.url))
+    const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
+    // stampCustomApiKeyApproval must be called with ctx.configDir in scope.
+    expect(src).toContain('stampCustomApiKeyApproval')
+    expect(src).toContain("ctx.configDir, '.claude.json'")
   })
 })

@@ -95,6 +95,9 @@ export interface ReapResult {
   // collapsed the pane before respawn-pane could run. Logged whenever non-empty
   // so a recurrence is visible instead of silently "just working".
   skippedLivePane: number[]
+  // True when the tmux server itself matched the candidate sources and was
+  // spared (TMUXSERVERREAP929). Killing it takes every agent session down.
+  skippedTmuxServer?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -247,11 +250,36 @@ export function reapChannelOrphans(
   // reap nothing) instead of contradicting it.
   const live = livePanePids(opts.tmuxPath ?? 'tmux')
   const liveQueryFailed = live.size === 0
-  const all = liveQueryFailed ? [] : candidates.filter((pid) => !live.has(pid))
   const skippedLivePane = liveQueryFailed ? [] : candidates.filter((pid) => live.has(pid))
   if (liveQueryFailed && candidates.length > 0) {
     logger.warn({ provider, chanDir, candidates },
       'channel-poller-reap: could not resolve live tmux panes, refusing to reap (fail-safe)')
+  }
+
+  // Never kill the tmux SERVER either (TMUXSERVERREAP929). When channels.sh
+  // creates the server itself (after a host reboot it usually does: it runs
+  // `tmux start-server` with the state-dir var already exported), the server
+  // process carries TELEGRAM_STATE_DIR in its own environment, so the env scan
+  // matches it. Killing it tears down EVERY agent's pane on the host, not just
+  // this one's poller. Measured 2026-09-28 12:47, 14:47 and 2026-09-29 04:31:
+  // the reap's `reaped` list held the server pid (the parent of every pane),
+  // the next `tmux list-panes` answered "no server running", and the whole
+  // fleet died and came back only through the service manager.
+  // Fail-safe like the live-pane guard: an unresolved server pid refuses the
+  // reap instead of guessing, because the guess is exactly the fleet kill.
+  const serverPid = liveQueryFailed ? null : tmuxServerPid(opts.tmuxPath ?? 'tmux')
+  const serverQueryFailed = !liveQueryFailed && serverPid === null
+  if (serverQueryFailed && candidates.length > 0) {
+    logger.warn({ provider, chanDir, candidates },
+      'channel-poller-reap: could not resolve the tmux server pid, refusing to reap (fail-safe)')
+  }
+  const skippedTmuxServer = serverPid !== null && candidates.includes(serverPid) && !live.has(serverPid)
+  const all = liveQueryFailed || serverQueryFailed
+    ? []
+    : candidates.filter((pid) => !live.has(pid) && pid !== serverPid)
+  if (skippedTmuxServer) {
+    logger.warn({ provider, chanDir, serverPid, fromBotPid, fromEnvScan },
+      'channel-poller-reap: candidate IS the tmux server, sparing it (killing it would take down every agent session)')
   }
 
   // SIGTERM, give bun/node ~300ms to flush, then SIGKILL stragglers.
@@ -272,7 +300,7 @@ export function reapChannelOrphans(
     logger.warn({ provider, chanDir, skippedLivePane, fromBotPid, fromEnvScan },
       'channel-poller-reap: candidate IS a live pane leader, sparing it (respawn-pane will replace it)')
   }
-  return { reaped: all, source: { fromBotPid, fromEnvScan }, skippedLivePane }
+  return { reaped: all, source: { fromBotPid, fromEnvScan }, skippedLivePane, skippedTmuxServer }
 }
 
 // ---------------------------------------------------------------------------
@@ -364,6 +392,18 @@ function snapshotProcs(): ProcRow[] {
   } catch (err) {
     logger.warn({ err }, 'channel-poller-reap: ps -axww snapshot failed')
     return []
+  }
+}
+
+// The tmux server's own pid, or null when it cannot be resolved.
+function tmuxServerPid(tmuxPath: string): number | null {
+  try {
+    const out = execSync(`${tmuxPath} display-message -p '#{pid}'`, { timeout: 5000, encoding: 'utf-8' })
+    const n = parseInt(out.trim().split('\n')[0] ?? '', 10)
+    return Number.isFinite(n) && n > 1 ? n : null
+  } catch (err) {
+    logger.warn({ err }, 'channel-poller-reap: tmux display-message failed')
+    return null
   }
 }
 

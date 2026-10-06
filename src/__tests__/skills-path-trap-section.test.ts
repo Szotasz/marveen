@@ -11,6 +11,9 @@ import { tmpdir } from 'node:os'
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-skilltrap-test-'))
 
 vi.mock('../config.js', () => ({
+  // agent-scaffold imports settings-store (MCPOROKLES923), which derives a path from
+  // STORE_DIR at import time. A never-created dir: nothing here reads the store.
+  STORE_DIR: '/nonexistent/claudeclaw-test-store',
   PROJECT_ROOT: tmpRoot,
   OWNER_NAME: 'TestOwner',
   MAIN_AGENT_ID: 'agent-a',

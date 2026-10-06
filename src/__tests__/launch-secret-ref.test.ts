@@ -119,8 +119,25 @@ describe('launchSecretRef: a titok fájlba megy, a parancsba csak a hivatkozás'
     const minta_proba = 'export ANTHROPIC_AUTH_TOKEN="${key}" && '
     expect(minta_proba.match(tiltott) ?? []).toHaveLength(1)
 
-    // es a HELYES alaknak ott kell lennie mind a negy helyen (nem eleg, hogy a rossz eltunt)
-    expect((forras.match(/launchSecretRef\(/g) ?? []).length).toBeGreaterThanOrEqual(3)
+    // A DARABSZAM-KUSZOB NEM PIN, ES EZ MERVE VAN (Samu lelete a #1369 rebase review-jan).
+    // Korabban itt egy `>= 3` allitas allt. A #1369 rebase egy UJ `launchSecretRef`-hivast hozott
+    // (`buildCustomProviderLaunchEnv`), ezert amikor egy mutans a CALLBACK hivasat kivette, a
+    // darabszam 3 MARADT, es a teszt ZOLD maradt: az uj hivas NEMAN kipotolta a kivettet.
+    // Egy kuszob tehat pont akkor lazul, amikor a fajl no. Ezert mostantol HELYENKENT merunk.
+    const hivasiHelyek: Array<[string, string]> = [
+      // a provider-ut: a `resolveProviderEnv`-nek atadott callback
+      ['resolveProviderEnv callback', 'resolveProviderEnv(model,'],
+      // a BYO-ut
+      ['BYO apiKeyEnv', 'apiKeyEnv = `export ANTHROPIC_API_KEY='],
+      // a custom-provider ut (a #1369 hozta)
+      ['buildCustomProviderLaunchEnv', 'const keyRef = launchSecretRef('],
+    ]
+    for (const [nev, horgony] of hivasiHelyek) {
+      const i = forras.indexOf(horgony)
+      expect(i, `${nev}: a horgony nem talalhato (${horgony})`).toBeGreaterThan(-1)
+      const szelet = forras.slice(i, i + 400)
+      expect(szelet, `${nev}: ezen a hivasi helyen a titok HIVATKOZASKENT kell atmenjen`).toContain('launchSecretRef(')
+    }
 
     // A TAKARITAS BEKOTESE A `stopAgentProcess` TORZSEBEN ALLJON, ne csak valahol a fajlban.
     // MERT MUTANSSAL MERVE: a hivas torlese a leallitasbol eloszor ZOLDEN tulelt -- a

@@ -4,34 +4,40 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
-import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID } from './config.js'
+import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, STORE_DIR } from './config.js'
+import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress-allowlist-baseline.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
+import { operatorGateDecision } from './web/operator-gate.js'
+import { readOperatorAccess } from './web/operator-access.js'
+import { tryHandleOperatorAccess } from './web/routes/operator-access.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
 import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
 import { isBlockedCrossOriginWrite, originMatchesServedHost } from './web/csrf-origin.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureGovernanceGateCommands, ensureTelegramCopyGate, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureProjectRootInClaudeMd, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureBashEgressParser, ensureGovernanceGateCommands, ensureTelegramCopyGate, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { mainAgentConfigDirIfSeparate } from './web/agent-process.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
 import { startUpdateChecker } from './web/update-checker.js'
-import { startScheduleRunner } from './web/schedule-runner.js'
+import { startScheduleRunner, startHeartbeatGapGuard } from './web/schedule-runner.js'
 import { startChannelPluginMonitor } from './web/channel-monitor.js'
 import { startInboundProber } from './web/inbound-probe.js'
 import { startChannelHealthMonitor } from './web/channel-health-monitor.js'
 import { startChannelIntakeMonitor } from './web/channel-intake-monitor.js'
 import { startStuckInputWatcher } from './web/stuck-input-watcher.js'
+import { startMidTurnCommandWatcher } from './web/midturn-commands.js'
 import { startInboxNudgeWatcher } from './web/inbox-nudge-watcher.js'
 import { startStuckToolCallWatcher } from './web/stuck-tool-call-watcher.js'
 import { startReauthHealer } from './web/reauth-healer.js'
 import { startAutoRestartRunner } from './web/auto-restart-runner.js'
 import { startModelFallbackRunner } from './web/model-fallback-runner.js'
+import { startKanbanArchiveRunner } from './web/kanban-archive-runner.js'
 import { startContextGuardRunner } from './web/context-guard-runner.js'
-import { startContextRestartGateRunner } from './web/context-restart-gate-runner.js'
+import { startContextRestartGateRunner, setMainSweepHook } from './web/context-restart-gate-runner.js'
 import { collectTokenUsage } from './web/token-usage.js'
 import { logger } from './logger.js'
 import { tryHandleAuth } from './web/routes/auth.js'
@@ -41,6 +47,12 @@ import { tryHandleProfiles } from './web/routes/profiles.js'
 import { tryHandleMessages } from './web/routes/messages.js'
 import { tryHandleFederation } from './web/routes/federation.js'
 import { startFederationPoller } from './web/federation/poller.js'
+import { registerBuiltinCommands } from './web/builtin-commands.js'
+import { tryHandleCommands } from './web/routes/commands.js'
+import { initCustomCommands } from './web/custom-commands.js'
+import { sweepModelHold, armHoldExpiryFromFile } from './web/main-model.js'
+import { runPendingWrite } from './web/pending-write.js'
+import { tryHandleCustomCommands } from './web/routes/custom-commands.js'
 import { startCapabilitySummaryRunner } from './web/federation/capability-runner.js'
 import { ensureFederationClaudeMdSection } from './web/federation/onboarding.js'
 import { tryHandleAgentTerminal } from './web/routes/agent-terminal.js'
@@ -76,6 +88,7 @@ import { tryHandleDesktopLock, sweepExpiredDesktopLock } from './web/routes/desk
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
 import { tryHandleCosts, startCostsSyncTask } from './web/routes/costs.js'
 import { tryHandleIdeas } from './web/routes/ideas.js'
+import { tryHandleVideoReview } from './web/routes/video-review.js'
 import { tryHandleToolLog } from './web/routes/tool-log.js'
 import { tryHandleSpans } from './web/routes/spans.js'
 import { tryHandleSkillUsage } from './web/routes/skill-usage.js'
@@ -87,6 +100,7 @@ import { tryHandleVoice } from './web/routes/voice.js'
 import { tryHandleVaultSsh } from './web/routes/vault-ssh.js'
 import { tryHandleFleet } from './web/routes/fleet.js'
 import { tryHandleVaultSshKeys } from './web/routes/vault-ssh-keys.js'
+import { tryHandleCustomProviders } from './web/routes/custom-providers.js'
 import type { RouteContext } from './web/routes/types.js'
 import { isMalformedBodyError } from './web/malformed-body.js'
 
@@ -161,10 +175,21 @@ export function startWebServer(port = 3420): http.Server {
       res.end(JSON.stringify({ error: 'Unauthorized' }))
       return
     }
+    // DASHOPERATOR1005: an operator-scoped key reaches /api/operator/* only,
+    // decided here, before ANY handler (including network-info below) runs.
+    if (requiresAuth(path, method)) {
+      const operatorDenied = operatorGateDecision(auth, path, () => readOperatorAccess())
+      if (operatorDenied) {
+        logger.warn({ path, method, device: auth.kind === 'device' ? auth.device : undefined, reason: operatorDenied }, 'operator gate: denied')
+        res.writeHead(403, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Forbidden for this credential', reason: operatorDenied }))
+        return
+      }
+    }
     const fedPeerForCtx: string | null = auth.kind === 'federation' ? auth.peer : null
     const ctxAuth =
-      auth.kind === 'token' ? { kind: 'token' as const }
-      : auth.kind === 'device' ? { kind: 'device' as const, device: auth.device, deviceId: auth.deviceId }
+      auth.kind === 'token' ? { kind: 'token' as const, agent: auth.agent }
+      : auth.kind === 'device' ? { kind: 'device' as const, device: auth.device, deviceId: auth.deviceId, scope: auth.scope }
       : auth.kind === 'session' ? { kind: 'session' as const, user: auth.user }
       : auth.kind === 'federation' ? { kind: 'federation' as const, peer: auth.peer }
       : undefined
@@ -182,6 +207,7 @@ export function startWebServer(port = 3420): http.Server {
       const routeCtx: RouteContext = { req, res, path, method, url, fedPeer: fedPeerForCtx, auth: ctxAuth }
 
       if (await tryHandleAuth(routeCtx)) return
+      if (await tryHandleOperatorAccess(routeCtx)) return
       if (await tryHandleSecurity(routeCtx)) return
       if (await tryHandleBridgeServicePorts(routeCtx)) return
       if (await tryHandleProfiles(routeCtx)) return
@@ -213,12 +239,15 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleUpdates(routeCtx)) return
       if (await tryHandleOnboarding(routeCtx)) return
       if (await tryHandleStatus(routeCtx)) return
+      if (await tryHandleCommands(routeCtx)) return
+      if (await tryHandleCustomCommands(routeCtx)) return
       if (await tryHandleAutonomy(routeCtx)) return
       if (await tryHandleApprovals(routeCtx)) return
       if (await tryHandleDesktopLock(routeCtx)) return
       if (await tryHandleTokenUsage(routeCtx)) return
       if (await tryHandleCosts(routeCtx)) return
       if (await tryHandleIdeas(routeCtx)) return
+      if (await tryHandleVideoReview(routeCtx, WEB_DIR)) return
       if (await tryHandleSpans(routeCtx)) return
       if (await tryHandleToolLog(routeCtx)) return
       if (await tryHandleSkillUsage(routeCtx)) return
@@ -226,6 +255,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleVoice(routeCtx)) return
       if (await tryHandleVaultSshKeys(routeCtx)) return
       if (await tryHandleVaultSsh(routeCtx)) return
+      if (await tryHandleCustomProviders(routeCtx)) return
       if (await tryHandleAuditLog(routeCtx)) return
       if (await tryHandleFleetQ(routeCtx)) return
       if (await tryHandleFleet(routeCtx)) return
@@ -381,6 +411,8 @@ export function startWebServer(port = 3420): http.Server {
 
   const scheduleInterval = webOnly ? undefined : startScheduleRunner()
   if (!webOnly) logger.info('Schedule runner started (60s poll)')
+  // HBFABRIC1003 (B): a missing heartbeat digest is reported, whatever its route.
+  const heartbeatGapInterval = webOnly ? undefined : startHeartbeatGapGuard()
 
   // Pre-start the interactive agent worker (subscription backend) so the first
   // heartbeat / scheduled generation after boot does not pay the cold-boot
@@ -445,6 +477,9 @@ export function startWebServer(port = 3420): http.Server {
   const stuckInputInterval = webOnly ? undefined : startStuckInputWatcher()
   if (!webOnly) logger.info('Stuck-input watcher started (15s poll, 20s offset)')
 
+  const midTurnCommandInterval = webOnly ? undefined : startMidTurnCommandWatcher()
+  if (!webOnly) logger.info('Mid-turn command watcher started (3s poll)')
+
   const stuckToolCallInterval = webOnly ? undefined : startStuckToolCallWatcher()
   if (!webOnly) logger.info('Stuck-tool-call watcher started (30s poll, 35s offset)')
 
@@ -459,6 +494,15 @@ export function startWebServer(port = 3420): http.Server {
 
   const modelFallbackInterval = webOnly ? undefined : startModelFallbackRunner()
   if (!webOnly) logger.info('Model-fallback runner started (60s poll, 50s offset)')
+
+  // The kanban archive sweep used to ride along on every listKanbanCards() call (measured on
+  // our install), so reading the board wrote to it. It is a scheduled job now -- and it MUST
+  // be started here, or KANBAN_ARCHIVE_DONE_DAYS silently stops doing anything. Same caveat as
+  // every neighbouring runner on this line: a web-only instance never starts it, so on a
+  // web-only deployment the setting is a silent no-op too -- same failure class this comment
+  // is about, just inherited from the webOnly gate rather than reintroduced by this change.
+  const kanbanArchiveInterval = webOnly ? undefined : startKanbanArchiveRunner()
+  if (!webOnly) logger.info('Kanban archive runner started (60min poll, 70s offset)')
 
   const contextGuardInterval = webOnly ? undefined : startContextGuardRunner()
   if (!webOnly) logger.info('Context-guard runner started (5min poll, 4.5min initial delay)')
@@ -539,10 +583,25 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     ensureAutonomySection(MAIN_AGENT_ID)
     ensureSkillsPathTrapSection(MAIN_AGENT_ID)
     ensureSystemDirectiveAuthSection(MAIN_AGENT_ID)
+    ensureAgentIdHeaderSection(MAIN_AGENT_ID)
     ensureMemorySearchLabelSection(MAIN_AGENT_ID)
     ensureFleetAuthSection(MAIN_AGENT_ID)
     ensureEvidenceSection(MAIN_AGENT_ID)
     ensureMcpListChannelSection(MAIN_AGENT_ID)
+    ensureMessageCloseSection(MAIN_AGENT_ID)
+  }
+
+  // Owner slash commands (CMD920, spec D-4): the registry the main session's
+  // UserPromptSubmit hook (scripts/hooks/marveen-commands.py) dispatches into
+  // through POST /api/commands/dispatch, answered without a main-session turn.
+  registerBuiltinCommands()
+  if (!webOnly) {
+    initCustomCommands()
+    // The /model hold revert: a one-shot timer at the exact expiry (re-armed
+    // here from a hold that survived a restart), with the gate's main sweep as
+    // the fallback for a busy session at expiry.
+    armHoldExpiryFromFile()
+    setMainSweepHook(async (nowMs) => { await sweepModelHold(nowMs); await runPendingWrite(nowMs) })
   }
 
   // Backfill the PreCompact hook into existing agents' settings.json so the
@@ -560,11 +619,13 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
   } else {
     try {
       const patched: string[] = []
+      const rootPatched: string[] = []
       const stalePatched: string[] = []
       const provPatched: string[] = []
       const egressPatched: string[] = []
       const bashEgressPatched: string[] = []
       const bashEgressUncovered: string[] = []
+      const bashParserPatched: string[] = []
       const govPatched: string[] = []
       const copyGatePatched: string[] = []
       const pruned: string[] = []
@@ -583,6 +644,9 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
         // the re-registration below lands on a clean, unblocked settings file.
         pruned.push(...pruneStaleHooksFromSettingsFile(agentSettingsPath(agentName)))
         if (ensureAgentHooks(agentName)) patched.push(agentName)
+        // HOSTMOVE923: same guard as the hook writes -- a worktree instance must
+        // not re-anchor the live fleet's CLAUDE.md onto ITS root.
+        if (ensureProjectRootInClaudeMd(agentName)) rootPatched.push(agentName)
         if (ensureAgentStalenessHook(agentName)) stalePatched.push(agentName)
         if (ensureAgentProvenanceHook(agentName)) provPatched.push(agentName)
         if (ensureEgressGate(agentName)) egressPatched.push(agentName)
@@ -595,6 +659,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
         const bashDenyDir = agentName === MAIN_AGENT_ID ? mainAgentConfigDirIfSeparate() : null
         if (agentName === MAIN_AGENT_ID && !bashDenyDir) bashEgressUncovered.push(agentName)
         else if (ensureBashEgressDeny(agentName, bashDenyDir)) bashEgressPatched.push(agentName)
+        if (ensureBashEgressParser(agentName)) bashParserPatched.push(agentName)
         if (ensureGovernanceGateCommands(agentName)) govPatched.push(agentName)
         if (ensureTelegramCopyGate(agentName)) copyGatePatched.push(agentName)
         ensureQuarantineReader(agentName)
@@ -608,14 +673,20 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       // rule that guards the settings writes above guards this watcher.
       watchEgressAllowlistForReaderRender(listAgentNames, (agents) =>
         logger.info({ agents }, 'quarantine-reader definitions re-rendered after egress-allowlist.json change'))
+      // EGRESSSELFEDIT824: hash baseline + a report of every change to the allowlist, by any
+      // route. Same placement as the re-render watcher: only the instance that owns the hooks
+      // watches the shared store, a worktree / sandbox instance does not.
+      watchEgressAllowlistBaseline(STORE_DIR, queueAllowlistReport)
       if (pruned.length) logger.info({ pruned }, 'Stale hook entries pruned from agent settings.json')
       if (patched.length) logger.info({ patched }, 'PreCompact hook backfilled into agent settings.json')
+      if (rootPatched.length) logger.info({ patched: rootPatched }, 'CLAUDE.md install-anchored paths re-anchored on the current PROJECT_ROOT (HOSTMOVE923)')
       if (stalePatched.length) logger.info({ patched: stalePatched }, 'staleness-guard UserPromptSubmit hook backfilled into agent settings.json')
       if (provPatched.length) logger.info({ patched: provPatched }, 'provenance-gate UserPromptSubmit hook backfilled into agent settings.json')
       if (egressPatched.length) logger.info({ patched: egressPatched }, 'egress-gate WebFetch hook backfilled into agent settings.json')
       if (bashEgressPatched.length) logger.info({ patched: bashEgressPatched }, 'Bash egress deny rules backfilled into agent settings.json (permissions.deny)')
       if (bashEgressUncovered.length) logger.warn({ agents: bashEgressUncovered },
         'Bash egress deny NOT applied to the main agent: it runs on the shared user config root, which is also the operator\'s own shell. Give it a config dir of its own (MAIN_AGENT_ISOLATED_CONFIG / MAIN_AGENT_CONFIG_DIR) to cover it without covering the operator.')
+      if (bashParserPatched.length) logger.info({ patched: bashParserPatched }, 'bash-egress-parser Bash hook backfilled into agent settings.json (EGRESSPARSER923)')
       if (govPatched.length) logger.info({ patched: govPatched }, 'governance gate hook commands upgraded to absolute node path in agent settings.json')
       if (copyGatePatched.length) logger.info({ patched: copyGatePatched }, 'outgoing-copy-gate wired onto the Telegram send tools in agent settings.json (GATECOPY828)')
     } catch (err) {
@@ -647,6 +718,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
   server.close = (cb?: (err?: Error) => void) => {
     clearInterval(routerInterval)
     clearInterval(scheduleInterval)
+    clearInterval(heartbeatGapInterval)
     if (pluginMonitorInterval) clearInterval(pluginMonitorInterval)
     workerLivenessCancelled = true
     if (workerLivenessInterval) clearInterval(workerLivenessInterval)
@@ -654,11 +726,13 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     if (channelIntakeInterval) clearInterval(channelIntakeInterval)
     if (costsSyncInterval) clearInterval(costsSyncInterval)
     clearInterval(stuckInputInterval)
+    if (midTurnCommandInterval) clearInterval(midTurnCommandInterval)
     clearInterval(stuckToolCallInterval)
     if (inboxNudgeInterval) clearInterval(inboxNudgeInterval)
     if (reauthHealerInterval) clearInterval(reauthHealerInterval)
     clearInterval(autoRestartInterval)
     clearInterval(modelFallbackInterval)
+    clearInterval(kanbanArchiveInterval)
     clearInterval(contextGuardInterval)
     clearInterval(approvalTimeoutInterval)
     clearInterval(authSessionSweepInterval)

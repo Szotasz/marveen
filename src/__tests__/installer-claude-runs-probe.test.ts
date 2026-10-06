@@ -95,7 +95,13 @@ describe.skipIf(!HAVE_TIMEOUT)('_claude_runs is a real launch probe, not --versi
       it('healthy class (-p exits 1 fast with the Not-logged-in JSON): RUNS, auth-free, isolated config dir, cleaned up', () => {
         const log = join(mkdtempSync(join(tmpdir(), 'clirv-log-')), 'env')
         const dir = mockClaude('healthy', log)
-        expect(runProbe(src, dir, { CLAUDE_CODE_OAUTH_TOKEN: 'leak-oauth', ANTHROPIC_API_KEY: 'leak-key', ANTHROPIC_AUTH_TOKEN: 'leak-tok' })).toBe(0)
+        // PROBEFLAKY924: this case must RUN, so its timeout must never be the
+        // thing that decides it. The mock exits at once, but under a full-suite
+        // load bash + env + timeout + exec was measured at up to 1.5 s against
+        // the shared 2 s, and the case flipped to NO. A generous per-case limit
+        // costs nothing here (the mock never waits); the spin case keeps 2 s,
+        // because there the timeout firing IS the assertion.
+        expect(runProbe(src, dir, { CLAUDE_PROBE_TIMEOUT: '30', CLAUDE_CODE_OAUTH_TOKEN: 'leak-oauth', ANTHROPIC_API_KEY: 'leak-key', ANTHROPIC_AUTH_TOKEN: 'leak-tok' })).toBe(0)
         const seen = Object.fromEntries(readFileSync(log, 'utf-8').trim().split('\n').map(l => l.split('=', 2)))
         expect(seen.OAUTH).toBe('unset')
         expect(seen.APIKEY).toBe('unset')

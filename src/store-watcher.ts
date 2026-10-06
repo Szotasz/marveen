@@ -84,9 +84,17 @@ const recentEvents = new Map<string, number>()
 
 let watcher: ReturnType<typeof watch> | null = null
 
+// Whole-directory denylist prefixes, for trees whose filenames vary (so a
+// fixed-name SYSTEM_FILES entry can't cover them). scheduled-runs/ is the
+// SCHEDPROMPTREF917 snapshot dir: ~100 new files/day by design (one per
+// large-task fire), which would otherwise drown every real agent-created-file
+// audit row in scheduler noise.
+const SYSTEM_DIR_PREFIXES = ['scheduled-runs/']
+
 function isSystemFile(rel: string): boolean {
   const name = basename(rel)
-  return SYSTEM_FILES.has(name) || SYSTEM_RE.test(name)
+  if (SYSTEM_FILES.has(name) || SYSTEM_RE.test(name)) return true
+  return SYSTEM_DIR_PREFIXES.some(prefix => rel.startsWith(prefix))
 }
 
 export function startStoreWatcher(): void {

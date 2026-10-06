@@ -25,6 +25,31 @@ scripts/github-pr-monitor.sh
 scripts/hooks/telegram-ack.py
 "
 
+# ---------------------------------------------------------------------------
+# tmux isolation -- cases (b) and (c) run the REAL limit-monitor.sh
+# ---------------------------------------------------------------------------
+# #1565 item 5, second call site. limit-monitor.sh runs `tmux list-sessions`
+# and then `tmux capture-pane` on EVERY session it finds (pane_text). Measured
+# from an agent's pane without this block: case (b)'s trace captured all six
+# live fleet panes, this suite's own pane among them. Case (b) happens to take
+# its verdict from the SESSION= trace line, so it did not flip -- but the suite
+# was reading live screens, and any case that looks at the monitor's alert
+# decision would inherit whatever was printed on them at that second.
+#
+# TMUX_TMPDIR ALONE DOES NOT ISOLATE: while $TMUX is set -- and it always is
+# when the suite runs inside an agent's pane -- tmux takes the socket from
+# $TMUX and ignores TMUX_TMPDIR entirely.
+unset TMUX TMUX_PANE
+export TMUX_TMPDIR="$TMPDIR_BASE/tmux"; mkdir -p "$TMUX_TMPDIR"
+# Prove it instead of trusting it. An error here is FINE (no server = no panes);
+# what must never happen is tmux answering with a session name.
+if tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -q .; then
+  echo "  FAIL: tmux isolation BROKEN: the cases can see live sessions:"
+  tmux list-sessions -F '#{session_name}' 2>/dev/null | sed 's/^/          /'
+  echo "        Cases (b) and (c) would read those screens instead of a clean server."
+  exit 1
+fi
+
 echo "ops-scripts portability tests"
 echo "============================="
 

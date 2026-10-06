@@ -70,6 +70,12 @@ vi.mock('../channel-provider.js', async (importOriginal) => {
 vi.mock('../web/scheduled-tasks-io.js', () => ({
   listScheduledTasks: () => mockListScheduledTasks(),
   SCHEDULED_TASKS_DIR: '/tmp/marveen-parked-janitor-no-tasks-dir',
+  // SCHEDPROMPTREF917: attemptFireTask reads these on every fire (size-guard
+  // + inline/snapshot threshold). Real values -- the fixtures' short prompts
+  // must stay well under them so the size-guard/snapshot path never trips.
+  SCHEDULED_TASK_INLINE_MAX_CHARS: 1_500,
+  SCHEDULED_TASK_BODY_WARN_CHARS: 20_000,
+  MAX_SCHEDULED_TASK_PROMPT_LEN: 50_000,
 }))
 
 vi.mock('../web/agent-process.js', () => ({

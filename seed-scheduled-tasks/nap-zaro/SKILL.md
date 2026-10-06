@@ -40,16 +40,26 @@ def get(path):
     req = urllib.request.Request(f'http://localhost:{port}{path}', headers={'Authorization': f'Bearer {token}'})
     return json.load(urllib.request.urlopen(req))
 hhmm = lambda t: dt.datetime.fromtimestamp(t).strftime('%H:%M')
-mems, off = [], 0
+uj, frissitett, off = [], [], 0
 while True:  # a listázás accessed_at szerint rendez, ezért a teljes halmazon szűrünk
     page = get(f'/api/memories?agent={{MAIN_AGENT_ID}}&limit=200&offset={off}')
     rows = page if isinstance(page, list) else page.get('memories', page.get('results', []))
     if not rows: break
-    mems += [m for m in rows if m.get('created_at', 0) > since and m.get('agent_id') == '{{MAIN_AGENT_ID}}']
+    for m in rows:
+        if m.get('agent_id') != '{{MAIN_AGENT_ID}}':
+            continue
+        is_uj = m.get('created_at', 0) > since
+        if is_uj:
+            uj.append(m)
+        elif (m.get('updated_at') or 0) > since:
+            frissitett.append(m)
     off += len(rows)
-print(f'-- uj emlekek: {len(mems)}')
-for m in sorted(mems, key=lambda m: m['created_at']):
+print(f'-- uj emlekek: {len(uj)}')
+for m in sorted(uj, key=lambda m: m['created_at']):
     print(f"   {hhmm(m['created_at'])} [{m.get('category')}] {m['content'][:160]!r}")
+print(f'-- frissitett emlekek: {len(frissitett)}')
+for m in sorted(frissitett, key=lambda m: m['updated_at']):
+    print(f"   {hhmm(m['updated_at'])} [{m.get('category')}] {m.get('updated_by')} {m['content'][:60]!r} ... {m['content'][-300:]!r}")
 cards = [c for c in get('/api/kanban') if (c.get('updated_at') or 0) > since]
 print(f'-- mozgott kartyak: {len(cards)}')
 for c in sorted(cards, key=lambda c: c['updated_at']):
@@ -68,7 +78,7 @@ find ~/.claude/skills ~/.claude/scheduled-tasks {{INSTALL_DIR}}/.claude/skills -
    Ha a válasz alakja más, mint amit a szkript vár (hibaüzenet, üres lista a várt adat helyett),
    azt írd le, ne nullát: a „0 új emlék” csak akkor igaz, ha a lekérdezés sikerült.
 
-3. **Bejegyzés írása.** Ha 0 új emlék, 0 mozgott kártya ÉS 0 módosított skill-fájl, akkor is írj egy egysoros bejegyzést
+3. **Bejegyzés írása.** Ha 0 új emlék, 0 frissített emlék, 0 mozgott kártya ÉS 0 módosított skill-fájl, akkor is írj egy egysoros bejegyzést
    (`nincs új tétel az utolsó bejegyzés óta`), mert így látszik, hogy a kör lefutott, és a csend
    nem kimaradás. Egyébként témák szerint csoportosíts, ne emlékenként listázz: minden téma egy
    rövid bekezdés, időponttal, az eredménnyel, és a kártya-azonosítóval, ha van. Ne találj ki

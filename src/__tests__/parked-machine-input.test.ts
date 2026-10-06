@@ -99,6 +99,22 @@ const PARKED_HUMAN_DRAFT_ABOUT_SCHEDULING = [
 
 const IDLE = ['', SEP, '❯ ', SEP, FOOTER].join('\n')
 
+// SCHEDPROMPTREF917 (spec test 8): the reference variant adds body-file/
+// body-sha256/body-chars attributes but the tag still opens with
+// `<scheduled-task ` (space), which `^<scheduled-task[\s>]` already matches --
+// this fixture locks that in against a future regex tightening.
+const PARKED_SCHEDULED_REFERENCE = [
+  '',
+  SEP,
+  '❯ <scheduled-task source="scheduled-task:kanban-audit"',
+  '  body-file="/opt/marveen/store/scheduled-runs/20260917-080000-kanban-audit-a3f9.md"',
+  '  body-sha256="deadbeef" body-chars="48745"> A feladat teljes szovege a',
+  '  body-file fajlban van. Olvasd be TELJESEN (Read), es azt hajtsd vegre.',
+  '  </scheduled-task>',
+  SEP,
+  FOOTER,
+].join('\n')
+
 describe('parkedScheduledTaskInput', () => {
   it('detects a parked scheduler wrapper block', () => {
     expect(parkedScheduledTaskInput(PARKED_SCHEDULED_MULTIROW)).toBe(true)
@@ -106,6 +122,11 @@ describe('parkedScheduledTaskInput', () => {
 
   it('detects a bare parked <scheduled-task> block', () => {
     expect(parkedScheduledTaskInput(PARKED_BARE_SCHEDULED_TAG)).toBe(true)
+  })
+
+  it('detects a parked reference-variant block (body-file/body-sha256/body-chars attrs)', () => {
+    expect(parkedScheduledTaskInput(PARKED_SCHEDULED_REFERENCE)).toBe(true)
+    expect(parkedMachineOriginInput(PARKED_SCHEDULED_REFERENCE)).toBe(true)
   })
 
   it('ignores an inter-agent message (not a scheduled tick)', () => {

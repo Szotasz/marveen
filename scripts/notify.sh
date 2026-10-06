@@ -12,7 +12,6 @@ if [ ! -f "$ENV_FILE" ]; then
 fi
 
 TOKEN=$(grep '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" | cut -d= -f2-)
-CHAT_ID=$(grep '^ALLOWED_CHAT_ID=' "$ENV_FILE" | cut -d= -f2-)
 MAIN_AGENT_ID=$(grep '^MAIN_AGENT_ID=' "$ENV_FILE" | head -1 | cut -d= -f2-)
 MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 
@@ -21,11 +20,20 @@ if [ -z "$TOKEN" ]; then
   exit 1
 fi
 
-# CHATID0: "0" is the installer placeholder, not a chat. Without this the
-# FALLBACK channel fails exactly where it is needed most -- it fires when the
-# plugin is down, and on a placeholder install it would post to chat_id=0.
-if [ -z "$CHAT_ID" ] || [ "$CHAT_ID" = "0" ]; then
-  echo "Hiba: ALLOWED_CHAT_ID nincs beallitva"
+# CHATID0: resolve_owner_chat_id, not a raw ALLOWED_CHAT_ID read -- "0" is the
+# installer placeholder, not a chat, and neither empty nor falsy. Without this
+# the FALLBACK channel fails exactly where it is needed most -- it fires when
+# the plugin is down, and on a placeholder install it would post to chat_id=0.
+# The access.json fallback still applies here: a paired channel survives even
+# while the plugin process itself is down, because it reads the same file the
+# plugin wrote, not the plugin's live state. It is the MAIN install's file
+# even when a sub-agent runs this script with its own TELEGRAM_STATE_DIR
+# (the lib ignores that variable), and only a single paired DM entry counts.
+. "$SCRIPT_DIR/lib/owner-chat.sh"
+# The resolver's reason line goes to stderr as is (not captured: any stderr
+# noise on the success path would otherwise become part of the chat id).
+if ! CHAT_ID="$(resolve_owner_chat_id "$ENV_FILE")"; then
+  echo "Hiba: ALLOWED_CHAT_ID nincs beallitva (az ok a fenti sorban)"
   exit 1
 fi
 

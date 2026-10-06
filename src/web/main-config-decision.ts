@@ -33,8 +33,10 @@ import { logger } from '../logger.js'
 import { createAgentMessage } from '../db.js'
 import {
   ensureMainAgentIsolatedConfigDir,
+  ensureMainAgentIsolatedConfigDirForRotatedToken,
   resolveMainAgentConfigDir,
   resolveMainAgentRotatedConfigDir,
+  resolveMainAgentRotatedTokenSecretId,
   readMainSharedConfigState,
   mainSharedConfigTrigger,
   type MainSharedConfigTrigger,
@@ -61,6 +63,13 @@ export type MainConfigDecision = {
    *  about the plain isolated dir). False for the generic credential-less
    *  isolated dir, which DOES need the token. */
   readonly ownCredentials: boolean
+  /** Vault secret id for a token-mode rotated plan's CLAUDE_CODE_OAUTH_TOKEN,
+   *  or null. Set only when ownCredentials is false and isolatedConfigDir is
+   *  the generic flotta dir -- a token-mode plan shares that dir and swaps
+   *  only which token gets exported. Never both this AND ownCredentials at
+   *  once: a configDir-mode rotated plan sets ownCredentials, a token-mode one
+   *  sets this. */
+  readonly tokenSecretId: string | null
   readonly fleetToken: boolean
   readonly trigger: MainSharedConfigTrigger
 }
@@ -109,8 +118,9 @@ function warnDueNow(): boolean {
 function noteState(d: Omit<MainConfigDecision, typeof MAIN_CONFIG_DECISION>): void {
   try {
     if (!d.trigger) {
+      const mode = d.ownCredentials ? 'own-credential' : d.tokenSecretId ? `rotated-token(${d.tokenSecretId})` : 'isolated'
       line(d.isolatedConfigDir
-        ? `main-agent respawn: ${d.ownCredentials ? 'own-credential' : 'isolated'} CLAUDE_CONFIG_DIR=${d.isolatedConfigDir}`
+        ? `main-agent respawn: ${mode} CLAUDE_CONFIG_DIR=${d.isolatedConfigDir}`
         : 'main-agent respawn: shared ~/.claude (no isolation configured, no fleet token) -- expected for a stock install')
       return
     }
@@ -142,13 +152,20 @@ export function resolveMainConfigDecision(): MainConfigDecision {
   const explicit = resolveMainAgentConfigDir()
   const rotated = explicit ? null : resolveMainAgentRotatedConfigDir()
   const ownDir = explicit ?? rotated
-  const state = readMainSharedConfigState(ownDir ?? ensureMainAgentIsolatedConfigDir())
+  // A rotated TOKEN-mode plan carries no configDir of its own -- it shares the
+  // generic isolated dir, so it is only worth checking once neither explicit
+  // nor a rotated configDir already answered the question.
+  const rotatedTokenSecretId = ownDir ? null : resolveMainAgentRotatedTokenSecretId()
+  const resolvedDir = ownDir
+    ?? (rotatedTokenSecretId ? ensureMainAgentIsolatedConfigDirForRotatedToken() : ensureMainAgentIsolatedConfigDir())
+  const state = readMainSharedConfigState(resolvedDir)
   // isolatedDirExists is an INPUT to the verdict, not part of it: carrying it
   // along would invite a later reader to re-derive the trigger from the
   // decision and quietly disagree with mainSharedConfigTrigger.
   const d = {
     isolatedConfigDir: state.isolatedConfigDir,
     ownCredentials: ownDir != null,
+    tokenSecretId: rotatedTokenSecretId,
     fleetToken: state.fleetToken,
     trigger: mainSharedConfigTrigger(state),
   }
@@ -168,9 +185,11 @@ export function mainConfigDecisionForTest(
   const isolatedConfigDir = partial.isolatedConfigDir ?? null
   const fleetToken = partial.fleetToken ?? false
   const ownCredentials = partial.ownCredentials ?? false
+  const tokenSecretId = partial.tokenSecretId ?? null
   return {
     isolatedConfigDir,
     ownCredentials,
+    tokenSecretId,
     fleetToken,
     trigger: partial.trigger ?? mainSharedConfigTrigger({ isolatedConfigDir, fleetToken, isolatedDirExists: false }),
   } as MainConfigDecision
