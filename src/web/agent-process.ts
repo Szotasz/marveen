@@ -32,7 +32,8 @@ import {
 } from '../pane-state.js'
 import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
 import { beginRestart, endRestart } from './restart-lock.js'
-import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readFileOr, readJsonObjectForWrite } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readFileOr, readJsonObjectForWrite } from './agent-config.js'
+import { buildExtraChannelLaunch, enableExtraPlugins } from './agent-extra-channels.js'
 import { loadCustomProvider, type CustomProviderDef } from './custom-providers.js'
 import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict } from './agent-oauth-token-file.js'
 import { worksourceRootFor } from './worksource-queue.js'
@@ -464,8 +465,11 @@ export function ensureIsolatedChannelConfigDir(
   // null = channel-less agent: provision the isolated dir with EVERY channel
   // plugin disabled (scopeChannelPlugins(null)) instead of enabling one.
   providerType: ChannelProviderType | null,
+  // AGENTEXTRACH1006: co-listen plugins that must stay enabled next to the
+  // primary one (the same re-enable the main agent's extras get).
+  extraPluginIds: string[] = [],
 ): string | null {
-  return provisionIsolatedConfigDir(join(agentDir(name), '.claude-config'), agentDir(name), providerType, name)
+  return provisionIsolatedConfigDir(join(agentDir(name), '.claude-config'), agentDir(name), providerType, name, extraPluginIds)
 }
 
 // The main channels agent (started by scripts/channels.sh, cwd = PROJECT_ROOT)
@@ -1869,6 +1873,17 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // Channel-less agents (inter-agent only, no direct Telegram/Slack) are allowed to start
   }
 
+  // AGENTEXTRACH1006: co-listen providers next to the primary one. Only an
+  // extra whose OWN state dir holds a token takes part; a configured but
+  // tokenless one is skipped loudly rather than loading a plugin that could
+  // fall back to another bot's token.
+  const extraLaunch = buildExtraChannelLaunch(readAgentExtraChannels(name), agentProvider, dir)
+  if (extraLaunch.skipped.length > 0) {
+    logger.warn({ name, skipped: extraLaunch.skipped }, 'extraChannels: provider configured but no token in its state dir -- not loaded')
+  }
+  const hasExtraChannels = extraLaunch.providers.length > 0
+  const hasAnyChannel = hasChannel || hasExtraChannels
+
   // Teams name-sync (companion to make-teams-manifest.sh): keep
   // TEAMS_BOT_DISPLAY_NAME in the agent's teams .env equal to the agent's
   // displayName, so the generated Teams manifest names the bot after the agent
@@ -1897,6 +1912,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
       const agentProvider = resolveAgentProvider(name)
       const dir = agentDir(name)
       reapChannelOrphans(agentProvider, dir, { tmuxPath: tmuxBin() })
+      for (const p of extraLaunch.providers) reapChannelOrphans(p, dir, { tmuxPath: tmuxBin() })
     } catch (err) {
       logger.warn({ err, name }, 'pre-launch channel-poller reap failed (continuing)')
     }
@@ -2217,9 +2233,9 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
         const scopeProvider = useMcpJsonForChannel
           ? null
           : ownChannelProviderForScope(!!token, agentProvider)
-        s.enabledPlugins = scopeChannelPlugins(
-          scopeProvider,
-          s.enabledPlugins as Record<string, boolean> | undefined,
+        s.enabledPlugins = enableExtraPlugins(
+          scopeChannelPlugins(scopeProvider, s.enabledPlugins as Record<string, boolean> | undefined),
+          extraLaunch.pluginIds,
         )
         writeFileSync(settingsPath, JSON.stringify(s, null, 2))
       } catch (err) {
@@ -2296,7 +2312,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // 2026-07-25). Only agents that never touch Anthropic OAuth stay on the
     // shared root: local/BYO-endpoint models (Ollama/DeepSeek/OpenRouter) and
     // per-agent API-key (authMode 'api') agents.
-    if (!claudeConfigDir && (hasChannel || needsFleetOauth || isOwnTeam) && name !== MAIN_AGENT_ID) {
+    if (!claudeConfigDir && (hasAnyChannel || needsFleetOauth || isOwnTeam) && name !== MAIN_AGENT_ID) {
       if (isOwnTeam) {
         // own_team isolates WITHOUT the fleet token: the isolated dir is where
         // the agent's own /login credential lives (macOS Keychain scopes the
@@ -2304,7 +2320,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
         // of the dir -- and on Linux the provisioner deliberately never
         // touches .credentials.json, see ISOLATED_CONFIG_SKIP), so the
         // isolation gate must NOT be hasFleetOauthToken() here.
-        const isolated = ensureIsolatedChannelConfigDir(name, hasChannel ? agentProvider : null)
+        const isolated = ensureIsolatedChannelConfigDir(name, hasChannel ? agentProvider : null, extraLaunch.pluginIds)
         if (isolated) {
           claudeConfigDir = isolated
           // Linux keeps the credential as a file, so its absence is reliably
@@ -2321,12 +2337,12 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
           // Falling back to the shared ~/.claude would put the agent on the
           // OWNER's rotating credential -- the opposite of own_team. Loud.
           logger.warn({ name }, 'own_team auth: isolated config dir provisioning failed; agent falls back to the shared ~/.claude and will use the HOST credential, not its own Team login')
-          if (hasChannel) maybeAlertSharedConfigCollision(name)
+          if (hasAnyChannel) maybeAlertSharedConfigCollision(name)
         }
       } else if (ownTokenFile) {
         // 2fb86ef2: isolated exactly like the fleet branch below; only the token
         // source differs, so the fleet token's presence is irrelevant here.
-        const isolated = ensureIsolatedChannelConfigDir(name, hasChannel ? agentProvider : null)
+        const isolated = ensureIsolatedChannelConfigDir(name, hasChannel ? agentProvider : null, extraLaunch.pluginIds)
         if (isolated) {
           claudeConfigDir = isolated
           oauthTokenEnv = ownOauthTokenExport(ownTokenFile)
@@ -2338,7 +2354,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
         // A channel-less agent provisions with a null provider so its isolated
         // settings.json disables EVERY channel plugin -- it has no bot token,
         // so a loaded plugin could only fight the fleet over poller slots.
-        const isolated = ensureIsolatedChannelConfigDir(name, hasChannel ? agentProvider : null)
+        const isolated = ensureIsolatedChannelConfigDir(name, hasChannel ? agentProvider : null, extraLaunch.pluginIds)
         if (isolated) {
           claudeConfigDir = isolated
           // Read the token at launch via $(cat) so the literal secret never
@@ -2355,7 +2371,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
         // ~/.claude this is an active plugin-slot collision -> raise a loud
         // alert. Channel-less agents cannot contend for a plugin slot, so they
         // only get the WARN.
-        if (hasChannel) maybeAlertSharedConfigCollision(name)
+        if (hasAnyChannel) maybeAlertSharedConfigCollision(name)
       }
     }
     // 2fb86ef2: a Claude agent with its own token must run isolated. On the
@@ -2441,13 +2457,13 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // bot.pid) with a fresh fallback, see below. Channel-less agents keep
     // --continue as before.
     const usesLaunchSecret = providerEnv !== '' || apiKeyEnv !== ''
-    const installedCli = hasChannel ? (await measureClaudeCliVersion()).version : null
+    const installedCli = hasAnyChannel ? (await measureClaudeCliVersion()).version : null
     const continueDecision = decideContinueFlag({
       hasPriorSession, fresh: !!opts.fresh, hasChannel, isMainAgent: name === MAIN_AGENT_ID,
       provider: agentProvider, usesLaunchSecret, fleetTokenLaunch: oauthTokenEnv !== '',
-      useMcpJsonForChannel, installedCli,
+      useMcpJsonForChannel, installedCli, extraProviders: extraLaunch.providers,
     })
-    if (hasChannel && hasPriorSession && !opts.fresh) {
+    if (hasAnyChannel && hasPriorSession && !opts.fresh) {
       logger.info({ name, useContinue: continueDecision.useContinue, reason: continueDecision.reason, installedCli }, 'channel agent resume decision')
     }
     const continueFlag = continueDecision.useContinue ? '--continue ' : ''
@@ -2475,13 +2491,14 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // Slack plugin is third-party; its "not on approved allowlist" check is
     // bypassed via `allowedChannelPlugins` in /Library/Application Support/ClaudeCode/managed-settings.json.
     const auditLogEnv = agentProvider === 'slack' ? ` && export SLACK_AUDIT_LOG="${agentChannelDir}/audit.jsonl"` : ''
-    const channelSetup = hasChannel
+    const channelSetup = (hasChannel
       ? `export ${stateEnvVar}="${agentChannelDir}"${auditLogEnv} && `
-      : ''
+      : '') + extraLaunch.envExports
     // SLACKDMVESZT1006: every provider this launch does NOT use points at the
     // agent's own (token-less) state dir, so a plugin loaded for any other
-    // reason can never fall back to the main agent's token.
-    const stateFence = buildChannelStateFence(hasChannel ? [agentProvider] : [], dir)
+    // reason can never fall back to the main agent's token. The extras export
+    // their own real dir (envExports above), so they are excluded from the fence.
+    const stateFence = buildChannelStateFence([...(hasChannel ? [agentProvider] : []), ...extraLaunch.providers], dir)
     // When the per-agent mcp.json+tee path is active (SUBAGENT_INBOX_TEE), the
     // plugin is already loaded as a plain MCP server, so ALSO passing --channels
     // would register the plugin a SECOND way -- a duplicate poller racing the tee
@@ -2489,7 +2506,12 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // rely solely on mcp.json (enabledPlugins is already forced false above for
     // the same reason). Every other agent (non-telegram, main, or flag off) keeps
     // the --channels launch path unchanged.
-    const channelFlag = hasChannel && !useMcpJsonForChannel ? `--channels plugin:${provider.pluginId}` : ''
+    // AGENTEXTRACH1006: the extras ride the SAME --channels list (a plugin that
+    // is loaded but not listed delivers nothing). With the telegram mcp.json
+    // path the primary is absent from the list and only the extras remain.
+    const primaryChannel = hasChannel && !useMcpJsonForChannel ? `plugin:${provider.pluginId}` : ''
+    const channelList = (primaryChannel + extraLaunch.channelArgs).trim()
+    const channelFlag = channelList ? `--channels ${channelList}` : ''
     // Channel-plugin MCP-registration guard (2026-06-23): the telegram/slack/etc.
     // channel plugin registers as a stdio MCP server loaded via --channels. Claude
     // Code connects stdio MCP servers in batches of MCP_SERVER_CONNECTION_BATCH_SIZE
@@ -2502,7 +2524,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // size and per-server timeout, and force non-blocking startup, so a slow local
     // MCP can never crowd the channel plugin out of registration. Only set for
     // channel-having agents (channel-less agents have no plugin to protect).
-    const mcpEnv = hasChannel
+    const mcpEnv = hasAnyChannel
       ? 'export MCP_SERVER_CONNECTION_BATCH_SIZE=10 && export MCP_CONNECTION_NONBLOCKING=1 && export MCP_TIMEOUT=60000 && '
       : ''
     // Disable Claude Code's history-based prompt suggestions -- the DIM (ANSI
@@ -2616,7 +2638,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // attaches. Non-blocking setTimeout poller (the dashboard is single-threaded
     // -- a synchronous sleep loop would freeze the whole event loop). Only for
     // channel-having sub-agents; MAIN comes up via channels.sh, not this path.
-    if (hasChannel && name !== MAIN_AGENT_ID) {
+    if (hasAnyChannel && name !== MAIN_AGENT_ID) {
       const epermDeadline = Date.now() + 14_000
       let epermRestarted = false
       const checkEperm = () => {
@@ -2736,6 +2758,10 @@ export async function stopAgentProcess(name: string): Promise<{ ok: boolean; err
         const agentProvider = resolveAgentProvider(name)
         const dir = agentDir(name)
         reapChannelOrphans(agentProvider, dir, { tmuxPath: tmuxBin() })
+        // AGENTEXTRACH1006: the co-listen pollers are orphaned the same way.
+        for (const p of readAgentExtraChannels(name)) {
+          if (p !== agentProvider) reapChannelOrphans(p, dir, { tmuxPath: tmuxBin() })
+        }
       } catch (err) {
         logger.warn({ err, name }, 'post-stop channel-poller reap failed')
       }

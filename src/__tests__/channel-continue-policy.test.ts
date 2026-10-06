@@ -65,7 +65,7 @@ describe('the launch path is wired to the policy', () => {
     expect(PROCESS_SRC).not.toContain("(hasPriorSession && !opts.fresh && !hasChannel) ? '--continue ' : ''")
     expect(PROCESS_SRC).toContain('const usesLaunchSecret = providerEnv !== \'\' || apiKeyEnv !== \'\'')
     expect(PROCESS_SRC).toContain('fleetTokenLaunch: oauthTokenEnv !== \'\'')
-    expect(PROCESS_SRC).toContain('installedCli = hasChannel ? (await measureClaudeCliVersion()).version : null')
+    expect(PROCESS_SRC).toContain('installedCli = hasAnyChannel ? (await measureClaudeCliVersion()).version : null')
     expect(PROCESS_SRC).toContain("const continueFlag = continueDecision.useContinue ? '--continue ' : ''")
   })
   it('a resumed channel launch is verified with the plugin-liveness probe and falls back to a FRESH start', () => {

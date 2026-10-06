@@ -41,6 +41,8 @@ import {
   isKnownAgent,
   readAgentChannelProvider,
   writeAgentChannelProvider,
+  readAgentExtraChannels,
+  writeAgentExtraChannels,
   readAgentAuthMode,
   writeAgentAuthMode,
   readAgentClaudePlan,
@@ -115,6 +117,7 @@ import {
   sendPromptToSession,
   capturePane,
   delay,
+  resolveAgentProvider,
 } from '../agent-process.js'
 import { addDesiredAgent, getDesiredAgents, removeDesiredAgent } from '../agent-desired-state.js'
 import { RemoteStatusCache } from '../remote-status-cache.js'
@@ -1428,8 +1431,29 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       return true
     }
 
-    const { botToken, appToken, channelId } = JSON.parse(body.toString()) as { botToken: string; appToken?: string; channelId?: string }
+    const { botToken, appToken, channelId, extra, allowFrom } = JSON.parse(body.toString()) as { botToken: string; appToken?: string; channelId?: string; extra?: unknown; allowFrom?: unknown }
     if (!botToken?.trim()) { json(res, { error: 'botToken is required' }, 400); return true }
+
+    // AGENTEXTRACH1006: `extra: true` connects this provider NEXT TO the
+    // agent's primary channel instead of replacing it. The primary's
+    // channelProvider and enabledPlugins stay untouched; the provider is
+    // appended to agent-config extraChannels and the launcher co-listens.
+    const asExtra = extra === true
+    if (asExtra) {
+      if (isMain) { json(res, { error: 'The main agent co-listens through CHANNEL_PLUGINS_EXTRA in .env, not through extraChannels' }, 400); return true }
+      if (resolveAgentProvider(name) === provider) { json(res, { error: `${provider} is already this agent's primary channel` }, 400); return true }
+    }
+    // Optional explicit allowlist (AGENTEXTRACH1006): a non-empty list of user
+    // ids writes dmPolicy 'allowlist' instead of 'pairing', so an operator
+    // wiring a known owner does not have to pair by hand. Anything that is not
+    // a plain id is refused rather than written into an access policy.
+    let accessAllowFrom: string[] | null = null
+    if (allowFrom !== undefined) {
+      if (!Array.isArray(allowFrom) || allowFrom.length === 0 || !allowFrom.every(v => typeof v === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(v))) {
+        json(res, { error: 'allowFrom must be a non-empty array of user ids' }, 400); return true
+      }
+      accessAllowFrom = [...new Set(allowFrom as string[])]
+    }
 
     // Discord-specific channelId guard: the dashboard ships the channel where
     // the bot will post by default; without it the plugin spins up but cannot
@@ -1492,8 +1516,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
     atomicWriteFileSync(join(stateDir, '.env'), envContent, { mode: 0o600 })
     atomicWriteFileSync(join(stateDir, 'access.json'), JSON.stringify({
-      dmPolicy: 'pairing',
-      allowFrom: [],
+      dmPolicy: accessAllowFrom ? 'allowlist' : 'pairing',
+      allowFrom: accessAllowFrom ?? [],
       groups: {},
       pending: {},
     }, null, 2))
@@ -1509,8 +1533,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       restarted = r.ok
       wasRunning = true
     } else {
-      writeAgentChannelProvider(name, provider)
-      setAgentEnabledPlugins(name, provider)
+      if (asExtra) {
+        writeAgentExtraChannels(name, [...readAgentExtraChannels(name), provider])
+      } else {
+        writeAgentChannelProvider(name, provider)
+        setAgentEnabledPlugins(name, provider)
+      }
       if (provider === 'telegram') sendWelcomeMessage(name, botToken.trim()).catch(() => {})
       wasRunning = isAgentRunning(name)
       // Same restart-slot discipline as the GC branch above: this too is a
@@ -1536,7 +1564,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       }
     }
 
-    json(res, { ok: true, botName: validation.botName, restarted, wasRunning })
+    json(res, { ok: true, botName: validation.botName, restarted, wasRunning, ...(asExtra ? { extra: true } : {}) })
     return true
   }
 
@@ -1549,6 +1577,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const accessFile = join(stateDir, 'access.json')
     if (existsSync(envFile)) unlinkSync(envFile)
     if (existsSync(accessFile)) unlinkSync(accessFile)
+    // AGENTEXTRACH1006: removing a co-listen provider must not take the
+    // primary channel with it -- only the extras list changes.
+    const extras = readAgentExtraChannels(name)
+    if (extras.includes(provider as ChannelProviderType)) {
+      writeAgentExtraChannels(name, extras.filter(p => p !== provider))
+      json(res, { ok: true, extra: true })
+      return true
+    }
     writeAgentChannelProvider(name, '')
     resetAgentEnabledPlugins(name)
     json(res, { ok: true })

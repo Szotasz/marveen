@@ -3,6 +3,8 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, MAIN_AGENT_ID, DEFAULT_AGENT_MODEL } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { parseExtraChannels } from './agent-extra-channels.js'
+import type { ChannelProviderType } from '../channel-provider.js'
 import { logger } from '../logger.js'
 import { safeJoin } from './sanitize.js'
 import { isValidModelId, InvalidModelIdError } from '../model-id.js'
@@ -466,6 +468,32 @@ export function writeAgentChannelProvider(name: string, provider: string): void 
   let config: Record<string, unknown> = {}
   config = readJsonObjectForWrite(configPath)
   config.channelProvider = provider
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
+// Per-agent CO-LISTEN channels (AGENTEXTRACH1006): providers an agent serves IN
+// ADDITION to its channelProvider, e.g. a Telegram agent that also answers on
+// Slack. The sub-agent counterpart of the main agent's CHANNEL_PLUGINS_EXTRA.
+// Absent field -> [] -> the launch is byte-identical to before. Unknown values
+// and the primary provider itself are dropped (see parseExtraChannels).
+export function readAgentExtraChannels(name: string): ChannelProviderType[] {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}')) as Record<string, unknown>
+    const primary = typeof config.channelProvider === 'string' ? config.channelProvider.trim() || null : null
+    return parseExtraChannels(config.extraChannels, primary)
+  } catch {
+    return []
+  }
+}
+
+export function writeAgentExtraChannels(name: string, extras: readonly string[]): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  const config = readJsonObjectForWrite(configPath)
+  const primary = typeof config.channelProvider === 'string' ? config.channelProvider.trim() || null : null
+  const clean = parseExtraChannels(extras, primary)
+  if (clean.length > 0) config.extraChannels = clean
+  else delete config.extraChannels
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
